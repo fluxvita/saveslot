@@ -1,0 +1,1681 @@
+# saveslot · 事件格式 v1
+
+> 日志里每种事件的字段级定义，是实现 `log` 与 `apply` 的依据，也是导出文件的格式说明：不依赖 saveslot 的代码，只凭本文应当能读懂一份导出的日志。
+> 规则本身（什么时候产生哪种事件、判定怎么做）在 [`03-data-model/`](03-data-model/README.md)；分层与不变量在 [`02-architecture.md`](02-architecture.md)。本文只定义"事件里写什么、怎么写"。
+> **冻结规则**：本文在第一次对外发布本机模式之前冻结，此后只增不改（§1.6）；此前开发过程中产生的日志不承诺兼容（[`07-scope-v1.md`](07-scope-v1.md)「事件格式的冻结点」）。冻结前新出现的待定项登记在 [`08-open-questions.md`](08-open-questions.md)。
+
+## 1. 范围与约定
+
+### 1.1 事件由什么组成
+
+一个租户一条只追加的日志。日志里的每一条是一个**事件**，由两部分组成：
+
+| 部分 | 是什么 | 能删吗 | 进链吗 |
+|---|---|---|---|
+| **事件头** | 一个 JSON 对象。说明这是第几条、什么类型、谁做的、什么时候、属于哪次操作 | 永不删改 | 是 |
+| **内容块** | 零个或多个，每块是一个 JSON 值，按 `(seq, path)` 寻址，各带一个校验和 | 只有墓碑事件落账时可以整块清空 | 否 |
+
+- 事件头里**不出现任何用户内容，也不出现任何由用户内容算出的值**（判定方法见 §2.3）。
+- 内容块分两种：**元数据块**（只含不透明 ID、枚举、序号与下标、版本号、布尔值、入口时刻与由它得出的日期和到期时刻、客户端软件的标识，第一版不会被删除）与**数据块**（含用户内容或由它算出的值，记来源，在删除级联范围内）。§5 每个事件的词表里标了每个 path 属于哪种。
+
+### 1.2 编码
+
+| 项 | 规定 |
+|---|---|
+| 事件头、内容块 | JSON，按 **RFC 8785（JCS）** 序列化为 UTF-8 字节。JCS 字节是权威形式；存储里拆出的索引列只是索引，`verify` 核对它们与权威形式一致 |
+| 缺省字段 | 不编码。没有值的可选字段不出现在对象里，不写 `null`。新增可选字段因此不改变旧事件的字节 |
+| 整数 | `seq`、下标、版本号、计数用 JSON 数字，取值范围 0 至 2^53 − 1 |
+| 十进制数 | **一律写成字符串**（`"45"`、`"5.5"`），不用 JSON 数字。金额、数量、`decimal` 字段、`min` / `max` 都是 |
+| 时刻 | 字符串，UTC，固定毫秒精度：`2026-11-10T04:41:07.123Z` |
+| 日期 | 字符串 `YYYY-MM-DD` |
+| 业务时间区间 | 对象 `{"from": <点>, "to": <点>}`，左闭右开；`to` 缺省表示一直延续。点的写法随表的粒度：`date` 粒度用日期，`instant` 粒度用时刻 |
+| 布尔、枚举 | JSON 布尔；枚举用小写 snake_case 字符串 |
+| 字段值 | 见 §1.3 |
+| 哈希、校验和 | 64 位小写十六进制字符串 |
+
+### 1.3 字段值的写法
+
+事件里凡是"某个字段的值"，按字段类型写成：
+
+| 字段类型 | 写法 | 例 |
+|---|---|---|
+| `text`、`enum` | 字符串 | `"餐饮"` |
+| `integer` | 十进制字符串 | `"3"` |
+| `decimal` | 十进制字符串 | `"5.5"` |
+| `boolean` | 布尔 | `true` |
+| `date` | 日期字符串 | `"2026-11-10"` |
+| `zoned_datetime` | `{"instant": <时刻>, "zone": <IANA 时区名>}` | `{"instant":"2026-11-10T04:31:00.000Z","zone":"Asia/Shanghai"}` |
+| `quantity` | `{"value": <十进制字符串>, "unit": <单位代码>}`，已换算到字段声明的单位，精度与舍入按编译后的定义（§7） | `{"value":"54","unit":"CNY"}` |
+| `ref` | 被引用的行或实体的 ID | `"r_01JC8Z…"` |
+| 空值（可选字段显式置空） | `null` | `null` |
+
+"原始值"指调用方交来、未经换算的值，形状相同，单位是调用方给的那个。原始值出现在两处：`write.head` 的 `ops/<i>/set/<字段ID>` 块；以及没带证据的写入存下的 `api_call` 源数据的 `request` 块（那一个 op 的请求 JSON，§5.6）。
+
+### 1.4 标识
+
+事件里的标识都是不透明字符串，由 saveslot 分配，不含可读名称。
+
+| 标识 | 形状 | 说明 |
+|---|---|---|
+| `seq` | 整数 | 事件在日志里的位置，从 1 起 |
+| 操作号 | 整数 | 一次操作的头事件的 `seq`（§4.1） |
+| `tn_…` | 租户 ID | 全局唯一 |
+| `u_…`、`ci_…`；固定值 `system` | 主体 ID：用户、连接实例、内核自身 | 全局唯一 |
+| `n_…` | 节点 ID（`node_id`） | 全局唯一；见 §2.2 |
+| `sl_…` | slot ID | 租户内唯一 |
+| `t1`、`f2`、`r1` | 表 ID（租户内唯一）、字段 ID（表内唯一）、规则 ID | 递增的短 ID，删掉的不复用 |
+| `r_…` | 行 ID（UUIDv7） | 事件类表、无时间表 |
+| `e_…` | 实体 ID（UUIDv7） | 状态类表 |
+| `p_…` | 派生行的 `partition_id` | |
+| 源数据 | 用产生它的 `source.recorded` 事件的 `seq` 引用；对外的 `s_…` ID 记在该事件里 | |
+| `pi_…` | 待处理事项 ID；删除 ID 与它是同一个 | |
+| `d_…`、`m_…` | schema 草稿 ID、迁移 ID | |
+| `rs_…` | 一次恢复的 ID（`restore_id`） | |
+
+各前缀的位数与生成方式见 [`03-data-model/01-objects.md`](03-data-model/01-objects.md)「标识的写法」；例子里的 ID 用 `…` 缩写。
+
+### 1.5 链与校验和
+
+- **事件头哈希** = SHA-256（事件头的 JCS 字节）。
+- 事件头的 `prev_hash` = 上一条事件的事件头哈希。第一条事件（租户创世）的 `prev_hash` 是 64 个 `0`。
+- **内容块校验和** = SHA-256（该块 JSON 值的 JCS 字节）。它和内容存在一起，随内容一起清空；**事件头里不放任何内容块的校验和**。
+- 校验和只用于发现存储损坏。它不是对内容的承诺：块被删除后不留任何由它算出的值，事后无从证明、也无从比对"这里原来是什么"。
+- 哈希与校验和由应用层计算，不依赖数据库函数。
+
+### 1.6 版本与演进
+
+- 每个事件头带 `v`：**该事件类型的格式版本**，从 1 起。
+- **只增不改**：已有类型的已有字段、已有 path 的含义与形状不变。可以做的改动只有五种：新增事件类型；给已有类型新增可选的事件头字段；给已有类型新增 path；给已有的块新增可选键；给枚举新增取值。**规则只有一条：凡是带了旧内核不认识的形状的事件，必须带更高的 `v`。** 用到新事件头字段、新 path、新键或新枚举值的事件，该事件类型的 `v` 加一；没用到这些的事件照旧写原来的 `v`，旧事件的字节不变。新旧版本的事件并存于同一条日志。新增事件类型从 `v` = 1 起。
+- **新内核必须能重放所有旧版本的事件。**
+- **旧内核遇到不认识的事件类型或不认识的 `v`，停止 `apply` 并报错，不跳过。** 没有"忽略未知键"这条路径：在认识的 `v` 之下，事件头字段、path、块里的键、枚举值都是已知的全集，出现全集之外的东西说明事件不合法，同样停止（它可能改变事件的含义）。`apply` 按严格模式解析。
+
+---
+
+## 2. 通用事件头
+
+### 2.1 字段
+
+| 字段 | 类型 | 出现在 | 含义 |
+|---|---|---|---|
+| `seq` | 整数 | 所有事件 | 日志位置 |
+| `v` | 整数 | 所有事件 | 该事件类型的格式版本 |
+| `type` | 字符串 | 所有事件 | 事件类型（§6.1） |
+| `actor` | 字符串 | 所有事件 | 做这件事的主体 ID；必须已在本租户登记。内核自己产生的事件是 `system` |
+| `at` | 时刻 | 所有事件 | 记录时刻。取 max（调用上下文的 `now`，上一条事件的 `at`）；同一次操作的全部事件 `at` 相同。先后顺序以 `seq` 为准，`at` 只保证不倒退 |
+| `prev_hash` | 哈希 | 所有事件 | 上一条事件的事件头哈希 |
+| `op` | 整数 | 操作里头事件以外的事件 | 所属操作的操作号（头事件的 `seq`）。**没有 `op` 的事件就是一次操作的头事件** |
+| `slot` | slot ID | 属于某个 slot 的事件 | 租户级事件（创世、恢复、主体）没有 |
+| `trigger` | 枚举（§6.9） | `actor` 为 `system` 的头事件 | 由哪个后台任务或流程触发 |
+| `node_id` | 字符串 | 只有 `tenant.genesis`、`tenant.restored` | 见 §2.2 |
+| `restore_id`、`restore_count`、`restored_to`、`high_water` | 字符串、整数、整数、整数 | 只有 `tenant.restored` | 见 §5.2 |
+
+除此之外，事件头没有别的字段。表、行、意图、被引用的事件等都在内容块里：定位与意图在元数据块 `target`，调用上下文在 `ctx`；对别的事件的引用分布在 `target`（`origin_event`、`by_event`）、`revert`、`valid_sources`、`op_sources`、`positions` 以及各块的 `sources`、`deps` 里。
+
+例（一次纠错写入里的基础写入事件的事件头）：
+
+```json
+{"actor":"ci_7HQ2…","at":"2026-11-10T04:41:07.123Z","op":25,"prev_hash":"9f2c…e1","seq":27,"slot":"sl_4KTZ…","type":"write.base","v":1}
+```
+
+### 2.2 事件的身份
+
+第一版的事件头**没有** `event_id`。约定：
+
+> 一条事件的身份 =（它之前最近一条 `tenant.genesis` 或 `tenant.restored` 事件的 `node_id`，它自己的 `seq`）。
+
+- `tenant.genesis` 的 `node_id` 在建租户时随机生成。
+- 每次恢复换一个新的 `node_id`。恢复后 `seq` 从高水位之后接着编，但两次推进高水位之间分配过的 `seq` 可能被再用一次；换 `node_id` 保证丢失的那段时间线上的事件与恢复后的新事件不会同名。
+
+### 2.3 "不含用户内容"的判定方法
+
+一个值能不能放进事件头，按下面的顺序判断，任何一条不满足就只能放内容块：
+
+1. 它是 saveslot 分配的不透明标识、固定枚举、序号、版本号、或记录时刻之一。
+2. 把这个租户的全部用户输入（原话、字段值、名称、调用方自报的标识、调用方给的时间）换成别的，它不变。
+3. 它不是任何内容的哈希、校验和、长度或计数。
+
+按这三条，下面这些都**不能**放事件头：请求键、显式幂等键与内容指纹、分组键值、任何内容的哈希、业务时间区间（起止点是用户说的）、字段值、表名与字段名、连接实例的名称、任务标识 `task`、调用方给的 `stated_at`。
+
+---
+
+## 3. 内容块
+
+### 3.1 寻址
+
+每个内容块的地址是 `(seq, path)`：所在事件的 `seq` 加一个 `path`。
+
+`path` 的语法：
+
+- 一段或多段，用 `/` 连接，全部是 ASCII。
+- 每一段只能是三种之一：**该事件类型的固定词**（小写字母与下划线，如 `fields`、`text`、`target`）、**不透明 ID**（字段 ID、表 ID）、**十进制下标**（从 0 起，无前导零）。
+- `path` 里不出现用户内容或由它算出的值。因此地址可以写进墓碑、删除事件的位置列表、日志之外的删除登记和导出占位。
+
+每种事件类型有哪些 path、每个 path 的 JSON 形状，在 §5 逐个列出。词表随事件格式版本只增不改。
+
+### 3.2 删除一个块
+
+- **块是删除的最小单位，整块清空，没有块内的部分删除。** 需要按字段、按条目删除的内容，在词表里就切成了每字段每项一块（值、来源、字面命中、区间各一块）、每条目一块。
+- 只有 `deletion.executed`（墓碑）事件能清空内容块；`apply` 处理墓碑时，把它列出的每个块的内容与校验和清空，并记下墓碑的 `seq`。
+- 清空后的块仍占着地址，状态是"已由 #n 移除"（n 是墓碑的 `seq`）。标记里没有内容，也没有原内容的校验和或长度。
+- 重放时 `apply` 遇到"已由 #n 移除"的块，按该块不存在处理。重放到早于墓碑的事件时不需要往后看。
+
+### 3.3 一个块的三种状态
+
+| 状态 | 存储里 | 导出文件里（§8） |
+|---|---|---|
+| 在 | 内容 + 校验和 | `{"v": <内容>, "sum": <校验和>}` |
+| 已移除 | 内容与校验和为空，`removed_by` = 墓碑的 `seq` | `{"removed_by": <墓碑的 seq>}` |
+| 待删除（宽限期内，默认不导出） | 内容 + 校验和（仍在存储里，只是读不到） | `{"pending_deletion": <删除已确认事件的 seq>}`。同一块被两次待执行的删除列入时，写最早的那一次 |
+
+没有移除标记却找不到内容，或内容与校验和不符，`verify` 报"不符"；"已移除"单独报，不算不符。
+
+### 3.4 来源与级联
+
+每个数据块在 §5 的词表里写明两件事：
+
+- **来源**：它依赖哪些源数据。写法有三种：直接依赖某些 `source.recorded` 事件；依赖"某次写入对某个字段的贡献"（即另一个事件的 `fields/<字段ID>/<k>` 块，沿它继续追）；依赖本事件里的另一个块。
+- **删除时**：隐私删除级联到它的来源时，它被列进那次删除的位置列表，到期清空。
+
+元数据块没有来源，第一版不会被任何删除列入位置列表。
+
+### 3.5 求得的内容单独成块，带 `deps`
+
+**一个数据块里只放本次请求自己带来的内容**（调用方这次给的值、这次给的区间端点）。凡是由**别的贡献**求得或抄来的内容，放在单独的数据块里，块上带 `deps`，指明内容出自哪些贡献：
+
+```json
+"deps": [{"event": 15, "field": "f2", "k": 0}, {"event": 22, "existence": 0}]
+```
+
+`deps` 的每一项指向一条 `write.base` 事件的一项贡献：某个字段的第 `k` 项，或它对"存在"的第 `k` 项贡献（`"existence": <k>`）。schema 切换时 `backfill` 补出的值（§5.5）不是 `write.base` 的贡献，**不进 `deps`，也不用 `carried` 引用**：它出自 schema 里写的常量，不会被隐私删除、不会被重述，抄一份不产生删不到的用户内容。块里的值出自它时，来源写成 `schema_const` 条目（§5.7）。
+
+这类块有：
+
+| 块 | 求得或抄来的是什么 |
+|---|---|
+| `write.base` 的 `span/…`（§5.7） | 一项贡献解析后的区间：默认终点、`corrected_span` 停在别的贡献给出的挡点上；回退、回到合并基写回的各项，区间抄自被回掉的写入与搬运来的各段；过期 `ver` 的写入被期间的写入切成几项 |
+| `write.base` 的 `ack/<j>`、`duplicate` | 被覆盖、被比中的贡献的区间与值 |
+| 事项的条目块与 `scope_valid`（§5.8） | 别的写入的值与区间 |
+| 删除事件的 `results/…`、`restated/<k>`（§5.9） | 删除后的各段、被重述的贡献 |
+
+规则只有两条：
+
+1. **`deps` 里任何一项被隐私删除，或被某次删除重述（§5.9，无论重述成什么结果），这个块就列入那次删除的位置列表。** 带区间的块（`span/…`、`results/…/fields/…`、带 `value` 的 `restated/<k>`）里，值来源的搬运引用 `carried`（§5.7）指向的那一项**一律同时列进 `deps`**，所以这类块只需要看 `deps`。不带区间的 `sources/<字段ID>/<k>` 没有 `deps`：它的 `carried` 指向的项被删除、或被重述为 `dropped` 时，它连同同一项的 `fields`、`literal` 列入位置列表。
+2. **被清掉、而 `apply` 之后仍需要的结果，由那次删除事件重新给出**（`restated/<k>`、`results/…`，事项条目由随后的 `item.refreshed`）。**一项贡献的判定结果以日志里最近一次给出它的事件为准。**
+
+这样，日志里由某个贡献求得的内容，在这个贡献被删除时都找得到、删得掉；删除事件自己的块同样带 `deps`，后来的删除照此清掉它们。
+
+---
+
+## 4. 一次操作的事件构成与顺序
+
+### 4.1 操作与操作号
+
+**一次操作** = 调用方的一次请求（或内核的一次后台动作）在一个事务里追加的全部事件。它们的 `seq` 连续。
+
+- 第一条是**头事件**：没有 `op` 字段。它的 `seq` 是这次操作的**操作号**。
+- 其余事件带 `op` = 操作号。
+- 同一次操作的事件 `actor`、`at` 相同。
+
+**对外的序号一律是操作号**：写入回执的 `seq`、`ver` 里的序号、`history` 时间线的 #n、`revert: {undo: n}` 的 n、`as_of`、`changes` 的 `since` / `until`、版本表的记录时间区间、事项版本里的序号。操作内部各事件自己的 `seq` 只用于内容块寻址与事件之间的引用，不对外。
+
+按记录位置读（`as_of: S`）时，操作号不大于 S 的操作整体可见，其余整体不可见；S 落在一次操作中间等同于落在它的操作号上。
+
+哪些事件类型可以做头事件：
+
+| 头事件 | 操作 |
+|---|---|
+| `write.head` | 一次 `write` 请求 |
+| `item.resolved` | 一次 `resolve`（删除的撤回除外） |
+| `deletion.confirmed` | 确认一次删除 |
+| `deletion.cancelled` | 撤回一次删除 |
+| `deletion.executed` | 到期物理删除 |
+| `schema.draft_submitted` | 提交一份 schema 草稿 |
+| `schema.switched`、`schema.migration_failed` | 后台迁移走到切换或失败 |
+| `slot.policy_set` | 改 slot 策略（建 slot 时的初始策略属于 `schema.draft_submitted` 的操作）。**作头事件是保留的形状，第一版不产生**：第一版里它只作为建 slot 那次操作的一员出现 |
+| `principal.registered`、`principal.renamed`、`principal.revoked` | 主体管理 |
+| `tenant.genesis`、`tenant.restored` | 建租户、恢复 |
+
+带元数据块 `ctx`（§5.1）的头事件：**调用方发起的全部头事件**（`write.head`、`item.resolved`、`deletion.confirmed`、`deletion.cancelled`、`schema.draft_submitted`、三种 `principal.*`；将来作头事件的 `slot.policy_set` 也带），以及 `system` 产生的 `deletion.confirmed`、`deletion.cancelled`。其余由系统生成的头事件（`tenant.genesis`、`tenant.restored`、`deletion.executed`、`schema.switched`、`schema.migration_failed`）不带。带了请求键的另有 `request_key` 块。
+
+### 4.2 写入
+
+一次 `write` 请求追加的事件，按这个顺序：
+
+1. `write.head`：一条。
+2. `source.recorded`：每段新证据一条，按证据在请求里的先后（先请求级、再各 op 的内联段）。没带证据时每个 op 一条 `api_call`：请求级证据与内联证据都没有的 op 才产生；一次请求里有的 op 带证据、有的不带时，`api_call` 排在全部证据段之后，按 op 在请求里的顺序。`source_ref` 不产生事件。
+3. 逐个 op，按请求里的顺序：
+   - `write.base`：这个 op 作用的行或实体一条（一个 op 只作用于一行或一个实体；回退连带改动多行时每行一条）。无操作的字段不进 `write.base`；这个 op 的全部字段都是无操作时不产生。
+   - 这个 op 引出的事项事件：`item.created`、`item.merged`、`item.refreshed`、`item.superseded`。
+4. `write.derived`：全部 op 之后，按派生依赖的拓扑序、同一规则内按 `partition_id` 的字典序，每个结果有变化的派生行一条。
+
+例：第一步"今天午饭花了 45 元"（与 [`../guide/02-walkthrough.md`](../guide/02-walkthrough.md) 是同一本账、同一套序号）。
+
+| `seq` | `type` | `op` | 说明 |
+|---|---|---|---|
+| 21 | `write.head` | — | 头事件，操作号 21 |
+| 22 | `source.recorded` | 21 | 原话，对外 ID `s_1` |
+| 23 | `write.base` | 21 | 新增午饭那一行 |
+| 24 | `write.derived` | 21 | 2026-11 的月合计 |
+
+回执里 `seq: 21`，这一行的 `ver: "v21.0"`。
+
+例：带过期 `ver` 的写入成为冲突候选。
+
+| `seq` | `type` | `op` | 说明 |
+|---|---|---|---|
+| 37 | `write.head` | — | 操作号 37 |
+| 38 | `source.recorded` | 37 | "打车是 32 元" |
+| 39 | `write.base` | 37 | `fields/f3/0` 的 `status` 是 `candidate` |
+| 40 | `item.created` | 37 | 冲突事项 |
+
+生效值没变，没有 `write.derived`；这一行的 `ver` 不变。
+
+### 4.3 解决事项
+
+`resolve` 追加的事件：
+
+1. `item.resolved`：头事件。
+2. `source.recorded`：解决请求带的证据每段一条；带了 `note`、或处理会触发写入而又没带证据时，另有一条 `api_call`（请求本身，含 `note`）。既没带证据、也没带 `note`、又不触发写入时不产生。`item.resolved` 以操作来源引用它们（`op_sources`）。
+3. 处理触发的 `write.base`（采纳候选、确认提议、回到合并基、撤销被标记的行），以及由它引出的事项事件。
+4. `write.derived`。
+
+处理 `schema_change` 事项时，`item.resolved` 之后是 `schema.confirmed` 或 `schema.rejected`，见 §4.5。
+
+例：`take_candidate`，采纳上例的 32。
+
+| `seq` | `type` | `op` | 说明 |
+|---|---|---|---|
+| 41 | `item.resolved` | — | 操作号 41 |
+| 42 | `source.recorded` | 41 | `api_call`：解决请求本身 |
+| 43 | `write.base` | 41 | 金额 32，值来源是对 #39 那次贡献的引用，#42 是操作来源 |
+| 44 | `write.derived` | 41 | 月合计 |
+
+### 4.4 删除
+
+**确认**：
+
+1. `deletion.confirmed`：头事件，写全算好的结果。
+2. 因删除而转为待确认的写入各引出一条 `item.created`；因删除被取代的事项各一条 `item.superseded`；内容条目被清掉而仍未决的事项各一条 `item.refreshed`。
+3. `write.derived`：受影响的派生行。
+
+**撤回**：`deletion.cancelled`（头）→ 事项事件 → `write.derived`，形状与确认对称。
+
+**到期**：`deletion.executed`（头，墓碑），只这一条。它不改变当前业务状态。
+
+例：删掉纠错那句话（午饭金额回到 45）。
+
+| `seq` | `type` | `op` | `actor` | 说明 |
+|---|---|---|---|---|
+| 42 | `deletion.confirmed` | — | 连接实例 A | 操作号 42（接讲解里"保持 35"的那次解决 #41；§4.3 的例子是另一条分支——采纳候选，占用 #41–#44——两个例子不同时成立）；午饭那一行的新 `ver` 是 `v42.0` |
+| 43 | `write.derived` | 42 | 连接实例 A | 月合计 |
+| 44 | `deletion.executed` | — | `system` | 24 小时后（宽限期在 2026-11-11T05:02:11Z 到期，这期间这个租户没有别的操作，所以紧接着就是它）；`trigger: "deletion_expiry"` |
+
+### 4.5 schema
+
+**提交草稿**（建 slot 或改结构），编译不通过是报错，不产生任何事件。编译通过后：
+
+1. `schema.draft_submitted`：头事件。
+2. `schema.superseded`：这个 slot 有一份尚未确认的旧草稿时，一条（连同旧草稿的 `schema_change` 事项的 `item.superseded`）。
+3. `schema.compiled`。
+4. 之后分两种：
+   - 自动生效（新建 slot，或按 slot 策略可自动生效）：`schema.confirmed` → 建 slot 时一条 `slot.policy_set`（初始策略）→ **不需要重建任何物理表**（`rebuilt_tables` 为空：只改目录的变更）或建 slot 时直接 `schema.switched`，否则 `schema.migration_started`。判据是物理形状变没变，与改动类别无关：加一个可选字段属于"只改元数据"类别，但要重建物理表，走 `schema.migration_started`。**新增一张表不算重建**：新表是空的，没有旧写入要转换，建表在切换的事务里完成，直接 `schema.switched`（`rebuilt_tables` 为空）。
+   - 待确认：`item.created`（`schema_change` 事项）。
+
+**确认或拒绝**（`resolve`）：`item.resolved`（头）→ `schema.confirmed` 或 `schema.rejected` → 确认时接着是 `schema.switched`（不需要重建物理表）或 `schema.migration_started`。
+
+**后台迁移结束**：`schema.switched`（头，`actor: "system"`，`trigger: "migration"`）→ 因切换被取代的事项各一条 `item.superseded`。失败则是 `schema.migration_failed`（头）。
+
+后台构建新版表的过程不产生事件。
+
+例：建 `ledger` slot。
+
+| `seq` | `type` | `op` |
+|---|---|---|
+| 2 | `schema.draft_submitted` | — |
+| 3 | `schema.compiled` | 2 |
+| 4 | `schema.confirmed` | 2 |
+| 5 | `slot.policy_set` | 2 |
+| 6 | `schema.switched` | 2 |
+
+例：给 `ledger` 加一张 `budgets` 表（第 1 版 → 第 2 版；`add_table` 按默认策略自动生效，不重建已有的表）。
+
+| `seq` | `type` | `op` |
+|---|---|---|
+| 45 | `schema.draft_submitted` | — |
+| 46 | `schema.compiled` | 45 |
+| 47 | `schema.confirmed` | 45 |
+| 48 | `schema.switched` | 45 |
+
+### 4.6 后台任务与恢复
+
+内核自己发起的操作，头事件的 `actor` 是 `system`，并带 `trigger`。第一版有四种：到期物理删除（`deletion.executed`）、迁移切换或失败、恢复流程里追加的 `tenant.restored`、恢复流程里按删除登记补出的删除事件（`deletion.confirmed`、`deletion.cancelled`、`deletion.executed`）。
+
+读取记录的落盘与清理、残留清理、高水位推进、对拍、日志校验、导出都不产生事件。
+
+---
+
+## 5. 事件类型
+
+每个类型给出：谁产生、事件头特有字段、内容块词表、`apply` 据此做什么。词表里"种类"一栏：**元**是元数据块，**数**是数据块。
+
+### 5.1 头事件共有的块
+
+| path | 种类 | 内容 | 说明 |
+|---|---|---|---|
+| `ctx` | 元 | 见下 | 这次操作的调用上下文与判定版本。调用方发起的全部头事件都有，`system` 产生的删除确认与撤回也有；其余由系统生成的头事件没有（清单见 §4.1） |
+| `task` | 数 | 字符串 | 调用方自报的任务标识。来源同 `request_key` |
+| `request_key` | 数 | `{"key": <字符串>}` | 服务端由"连接实例 + 任务 + 规范化请求"算出的请求键 |
+| `idempotency` | 数 | `{"key": <字符串>, "fingerprint": <哈希>}` | 调用方显式给的幂等键，与请求内容的指纹 |
+
+`task`、`request_key`、`idempotency` 只出现在调用方发起的头事件里。它们的来源：这次操作的全部证据（本操作的全部 `source.recorded` 事件与被 `source_ref` 引用的源数据）。其中任何一条被隐私删除，这三个块随之删除。宽限期内 `request_key` 与 `idempotency` 仍参与查重。同一个头事件里 `request_key` 与 `idempotency` 至多出现一个：调用方给了显式幂等键就只记 `idempotency`。
+
+**没有任何源数据的操作**（`delete`、`schema_draft`、既没带证据也没带 `note` 的 `resolve`；`write` 总有源数据）：这三个块没有来源，不在任何隐私删除的级联范围内。删除预览的"不会删除"里如实列出（契约的 `operation_labels`）；所以任务标识不应包含用户内容。
+
+`ctx` 的形状：
+
+```json
+{
+  "now": "2026-11-10T04:41:07.123Z",
+  "today": "2026-11-10",
+  "ruleset_version": 1,
+  "policy_version": 1,
+  "literal_checker": "literal@1"
+}
+```
+
+| 键 | 含义 |
+|---|---|
+| `now` | 调用上下文里的当前时刻（入口取的，可能早于事件头的 `at`） |
+| `today` | `now` 在该 slot 时区下的日期。没有 slot 的操作（`principal.*`）缺省不写 |
+| `ruleset_version` | 这次操作做机械判定时用的规则版本（内核的整数版本号）。不做判定的操作也照记当时内核的版本 |
+| `policy_version` | 这次操作判定时该 slot 的策略版本。没有 slot 的操作（`principal.*`）缺省不写；新建 slot 的 `schema.draft_submitted` 记同一操作里初始策略的版本 |
+| `literal_checker` | 字面命中核对器的版本（含同义表版本）。只有 `write.head` 与触发写入的 `item.resolved` 有 |
+
+删除重放时，每次旧写入按它自己的头事件记下的 `ruleset_version` 与 `policy_version` 重算。
+
+### 5.2 租户
+
+#### `tenant.genesis`
+
+日志的第一条事件（`seq` = 1，`prev_hash` 为 64 个 `0`）。由 `saveslot init` 或服务器模式建租户时产生。`actor` 是被登记的用户主体。
+
+事件头特有：`node_id`。
+
+它由系统在建租户时生成，不是一次调用方的操作：**不带 `ctx`**，也没有 `task`、`request_key`。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `tenant` | 元 | `{"tenant_id": <字符串>, "storage_format": <整数>, "event_format": 1}` |
+| `user` | 元 | `{"principal": <主体 ID>, "kind": "user"}` |
+| `system` | 元 | `{"principal": "system", "kind": "system"}` |
+
+`apply`：建 `principals` 的两行。
+
+#### `tenant.restored`
+
+恢复备份、快照之后追加的第一条事件。`actor: "system"`，`trigger: "restore"`。
+
+事件头特有：
+
+| 字段 | 含义 |
+|---|---|
+| `node_id` | 新生成，之后的事件身份用它 |
+| `restore_id` | 这次恢复的 ID，恢复流程靠它判断这条事件是否已经追加过 |
+| `restore_count` | 恢复之后的租户恢复次数（恢复前的值加 1）。对外的 `ver`、事项版本、句柄里的第二个数就是它 |
+| `restored_to` | 恢复出的日志里最后一条事件的 `seq` |
+| `high_water` | 恢复时锚点存储记下的 `seq` 高水位。本事件的 `seq` = max（`restored_to`，`high_water`）+ 1 |
+
+没有内容块。`verify` 据此认可 `restored_to` 与本事件之间的 `seq` 空档。
+
+`apply`：记下当前恢复次数（供 `ver` 编码）。
+
+### 5.3 主体
+
+三种都是头事件，`actor` 是发起登记的用户主体。它们是调用方发起的操作，带 §5.1 的 `ctx`（没有 slot，所以只有 `now`、`ruleset_version`）。**第一版不带 `task`、`request_key`、`idempotency`**：契约的 `connections.*` 没有这两个参数，主体管理不做幂等去重。
+
+#### `principal.registered`
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `principal` | 元 | `{"principal": <主体 ID>, "kind": "connection", "scopes": ["saveslot.read","saveslot.write"], "via": "token" \| "oauth", "client": <OAuth 客户端标识>}`。`client` 只在 `via` 为 `oauth` 时有，是客户端软件的标识，不是用户内容 |
+| `name` | 数 | `{"name": "MacBook · Claude Code"}`。用户起的名字。来源：无，不在隐私删除的级联范围内；删除预览的 `not_deleted` 里以 `connection_names` 如实列出 |
+
+#### `principal.renamed`
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `principal` | 元 | `{"principal": <主体 ID>}` |
+| `name` | 数 | `{"name": <新名字>}` |
+
+#### `principal.revoked`
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `principal` | 元 | `{"principal": <主体 ID>}` |
+
+`apply`：维护 `principals`（种类、名称、scope、状态）。令牌本身不在日志里，在控制面。
+
+### 5.4 slot 策略
+
+#### `slot.policy_set`
+
+建 slot 时作为 `schema.draft_submitted` 操作的一员产生（初始策略）；之后改策略时是头事件（第一版没有改策略的操作，只产生初始的那一条）。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `policy` | 元 | 见下 |
+
+```json
+{
+  "policy_version": 1,
+  "effective_value_rule": "keep_current",
+  "rank": {"user_stated": 2, "agent_inferred": 1, "miss": 0},
+  "auto_apply": ["add_table", "add_derived_table", "add_optional_field", "description",
+                 "rename_unused", "loosen_constraint", "duplicate_keys"],
+  "high_impact": [],
+  "user_session_only": []
+}
+```
+
+| 键 | 含义 |
+|---|---|
+| `policy_version` | 这个 slot 的策略版本，每条 `slot.policy_set` 加 1 |
+| `effective_value_rule` | 冲突期间的生效值规则。第一版只有 `keep_current` |
+| `rank` | 来源级别的秩表：字面命中时取声明级别的秩，未命中取 `miss`。第一版只记不用 |
+| `auto_apply` | 哪些类别的 schema 改动可以不经确认自动生效。取值：`add_table`、`add_derived_table`、`add_optional_field`、`description`、`rename_unused`、`loosen_constraint`、`duplicate_keys`（各自的含义见 [`03-data-model/07-schema-evolution.md`](03-data-model/07-schema-evolution.md)「改动分类与迁移手段」的表）。建 slot 时的默认策略七个全开，如上例 |
+| `high_impact` | 策略额外指定为高影响的表或字段：`[{"table": <表 ID>, "fields": [<字段 ID>]}]`。第一版恒为空；**非空是保留的形状，不属于 `v` = 1**，启用时 `slot.policy_set` 的 `v` 加一 |
+| `user_session_only` | 只接受用户会话确认的处理方式：`[{"type": <事项类型>, "decision": <处理方式>}]`。第一版恒为空；非空同上，是保留的形状 |
+
+`apply`：更新 `slots` 的当前策略指针。
+
+### 5.5 schema 生命周期
+
+#### `schema.draft_submitted`
+
+头事件。`actor` 是提交者。带 §5.1 的块。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"draft_id": "d_…", "base_version": <整数>, "creates_slot": <布尔>}`。建 slot 时没有 `base_version` |
+| `draft` | 数 | 提交的 schema 文档全文（JSON）。来源：无。schema 文档里的名称、说明、枚举值不在隐私删除的级联范围内 |
+
+#### `schema.compiled`
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"draft_id": "d_…", "target_version": <整数>, "outcome": "applied" \| "pending"}` |
+| `compiled` | 数 | 编译后的定义（§7）。来源：无，理由同上。重放用它，不重新编译 |
+| `changes` | 元 | 逐项改动，见下 |
+
+`changes` 是一个数组，每项的键与契约的 `SchemaChange`（[`04-contract-types.md`](04-contract-types.md) 5.3）逐个相同，只有一处不同：`target` 里的表、字段写 ID 不写名字（名字是用户写的文字，不进元数据块）。
+
+```json
+[
+  {"target": {"slot": true}, "change": "create_slot", "class": "create",
+   "compatible_with_old_writes": true, "destructive": false, "auto": true},
+  {"target": {"table": "t1"}, "change": "add_table", "class": "create",
+   "compatible_with_old_writes": true, "destructive": false, "auto": true},
+  {"target": {"table": "t2", "rule": true}, "change": "change_rule", "class": "deterministic",
+   "compatible_with_old_writes": true, "destructive": false, "auto": false},
+  {"target": {"table": "t1", "field": "f4"}, "change": "change_type", "class": "deterministic",
+   "compatible_with_old_writes": false, "destructive": false, "auto": false}
+]
+```
+
+| 键 | 含义 |
+|---|---|
+| `target` | 改的是什么，四种写法：slot 级 `{"slot": true}`（`create_slot`、`rename_slot`、`change_timezone`）；表级 `{"table": <表 ID>}`；字段级 `{"table": <表 ID>, "field": <字段 ID>}`；派生规则 `{"table": <表 ID>, "rule": true}` |
+| `change` | 改动码，取值见 [`03-data-model/07-schema-evolution.md`](03-data-model/07-schema-evolution.md)「改动分类与迁移手段」的表 |
+| `class` | 类别：`create`（新建 slot、新增表）/ `metadata` / `deterministic`。保留值：`reextract` |
+| `compatible_with_old_writes`、`destructive`、`auto` | 编译时的判定结果，照记。`target.outcome` 由各项的 `auto` 得出（全部为真才是 `applied`）；重放读记下的值，不按当时的策略重算 |
+
+每个 slot 的第一条 `schema.compiled` 总含一项 `create_slot`（上例的前两项是新建 slot 的情形，后两项是之后某次修改的情形，放在一起只为列全写法）。
+
+影响预览里的行数、试跑样例是提交时的估计，不进事件。
+
+#### `schema.confirmed`
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"draft_id": "d_…", "target_version": <整数>, "by": "auto" \| "resolve"}` |
+
+#### `schema.rejected`
+
+确认方拒绝了草稿。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"draft_id": "d_…"}` |
+
+#### `schema.superseded`
+
+尚未确认的草稿被同一 slot 的新草稿取代。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"draft_id": "d_…", "by_draft": "d_…"}` |
+
+#### `schema.migration_started`
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"migration_id": "m_…", "draft_id": "d_…", "from_version": <整数>, "to_version": <整数>}` |
+
+`apply`：只记迁移状态。构建中的新版表是本地运行状态，不由本事件建立。
+
+#### `schema.switched`
+
+当前版本指针指向新版。不需要重建物理表的变更（`rebuilt_tables` 为空）与建 slot 时，它是提交或确认那次操作的一员；经过后台迁移的是头事件（`actor: "system"`，`trigger: "migration"`）。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"draft_id": "d_…", "from_version": <整数>, "to_version": <整数>, "migration_id": "m_…", "rebuilt_tables": ["t1","t2"]}`。建 slot 时没有 `from_version`；没有经过迁移时没有 `migration_id`。`rebuilt_tables` 只列重建了物理表的**基础表**；派生表每次切换都按新定义重建，不列在这里，也没有 `tables/<表ID>` 块（它们的核对靠各自派生写入的校验和） |
+| `tables/<表ID>` | 数 | `{"rows": <整数>, "checksum": <哈希>}`：该新版表建好后的逻辑行数与结果校验和（算法见 §5.12）。每张重建的表一块。来源：该表全部行的全部贡献 |
+
+- `tables/<表ID>` 用来核对，不用来生成：重放到本事件时，`apply` 按 `compiled` 里的定义把旧版的每条写入转换成新版形状、建好 `rebuilt_tables` 里的表，再与这一块比较；块已被删除时跳过核对。逐条转换是逐项的：旧写入在一个字段上的每一项变成新版同一字段上的一项，带值的项按 `migrate` 求值（更早一次切换补出的贡献同样转换，仍记在那次切换上），值为空（`"value": null`）、`no_value`、`uncovered` 的项不求值、原样带过去；状态、区间、来源、是否被回掉不变（[`03-data-model/07-schema-evolution.md`](03-data-model/07-schema-evolution.md)「确定性转换怎么重放」）。
+- 该表有任何一行的任何贡献被隐私删除时，这一块列入那次删除的位置列表。
+- `apply`：建新版物理表（重放时）；改 `slots` 的当前版本；旧版标为已退役；按新定义重建派生表；`counts` 按新版表重建。常量 `backfill` 补出的值登记为本事件的贡献（`base_sources` 里事件 `seq` 是本事件、另带行或实体 ID、种类是 schema 常量；版本表里出处是本事件、意图 `schema_switch`）。补值不改行或实体的 `ver`。之后的事件不引用这项贡献：值落回它时来源写 `schema_const` 条目（§5.7）。
+
+#### `schema.migration_failed`
+
+头事件，`actor: "system"`，`trigger: "migration"`。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"migration_id": "m_…", "reason": "build_failed" \| "verify_failed"}` |
+
+`apply`：迁移状态置为失败，旧版仍是当前。
+
+### 5.6 源数据
+
+#### `source.recorded`
+
+一段证据存为一条源数据。别的事件用本事件的 `seq` 引用它。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"source_id": "s_…", "kind": <证据种类>, "level": "user_stated" \| "agent_inferred", "op_index": <整数>}`。`op_index` 只在 `api_call` 时有 |
+| `text` | 数 | `{"text": <原文>}`。`user_message`、`agent_note`、`tool_result` |
+| `file` | 数 | `{"name": …, "mime": …, "size": <整数>, "sha256": <哈希>, "origin": …, "excerpt": …}`。`file_ref`；后三个键可缺 |
+| `request` | 数 | 请求本身的 JSON。`api_call`：`write` 是那一个 op（无操作字段的值不记，只留字段名）；`resolve` 只记 `id`、`decision`、`candidate`、`note` 与所带证据的引用（源数据 ID），**不含证据段的内容**——证据各有自己的源数据，这里再记一份就是一处删不到的副本 |
+| `stated_at` | 数 | `{"at": <时刻>}`。调用方给的"这句话是什么时候说的"，可缺 |
+
+- `kind` 取值：`user_message`、`agent_note`、`tool_result`、`file_ref`、`api_call`。`source_ref` 不产生事件。
+- 每条源数据恰有 `text`、`file`、`request` 之一。
+- 四个数据块的来源都是本事件自己：这条源数据被隐私删除时，四块全部删除，`target` 留下。
+- `apply`：登记源数据（供来源表引用、供 `sources` 列出与搜索）。
+
+### 5.7 写入
+
+#### `write.head`（逻辑写入头）
+
+每次 `write` 请求一条，头事件。带 §5.1 的块，另有：
+
+| path | 种类 | 内容 | 来源 |
+|---|---|---|---|
+| `request` | 元 | `{"sv": <整数>, "sv_basis": "explicit" \| "fallback"}`：请求带的 schema 版本，以及它是调用方带的还是按读取记录兜底取得的 | — |
+| `ops/<i>/target` | 元 | 见下 | — |
+| `ops/<i>/set/<字段ID>` | 数 | 这个字段的**原始值**（§1.3）。只对不是无操作的字段记 | 该字段在这个 op 里引用的全部证据（同时需要） |
+| `ops/<i>/noop` | 元 | 这个 op 里无操作的字段 ID 列表：`["f4"]`。没有无操作字段时不出现 | — |
+| `ops/<i>/valid` | 数 | 区间参数的原始写法，见下 | `evidence_by_field` 的 `valid` 映射到的证据；没映射就是这个 op 的全部证据 |
+| `ops/<i>/revert` | 元 | `{"undo_op": <操作号>, "include_later": <布尔>}` | — |
+| `ops/<i>/acknowledge` | 元 | `["overwrite"]` | — |
+| `ops/<i>/named_fields` | 元 | 这个 op 里按名字引用的字段 ID 列表，供改名预览统计 | — |
+| `ops/<i>/refs` | 数 | 请求里用临时名引用本请求新建的行时：`{"as": "<临时名>"}`（本 op 新建的行登记的临时名）。临时名是调用方起的文字，只在本请求内有意义；解析后的行 ID 记在引用它的字段值里 | 这个 op 的全部证据 |
+
+**无操作的字段不留值**：与所见版本同值、又没有显式指向证据的字段，事件里只在 `ops/<i>/noop` 列出字段 ID，任何块里都没有它的值。op 的个数由 `ops/<i>/target` 的个数得出，不另记。
+
+`ops/<i>/target`：
+
+```json
+{
+  "table": "t1",
+  "row": "r_01JC8Z…",
+  "intent": "correct",
+  "ver": {"op": 21, "restore_count": 0, "basis": "explicit"}
+}
+```
+
+| 键 | 含义 |
+|---|---|
+| `table` | 表 ID |
+| `row` / `entity` | 目标行或实体。新增时是 saveslot 刚分配的 ID |
+| `by_entity_key` | `true` 表示调用方是按 `entity_key` 定位的 |
+| `created` | `true` 表示这个 op 新建了这一行或这个实体（`undo` 据此识别首次创建）。它是机械判定：隐私删除让它变化时，删除事件的 `recreated/<k>` 给出新值，以最近一次给出的为准（§5.9） |
+| `intent` | 意图（§6.2） |
+| `ver` | 这个 op 所见的版本。`basis`：`explicit`（调用方带的）/ `fallback`（按读取记录兜底）/ `same_request`（本请求前面的 op 新建的，不需要 `ver`）。新增时没有 `ver` |
+
+`ops/<i>/valid`（只有状态类表有）：
+
+```json
+{"from": {"mode": "given", "value": "2026-11-02"}, "to": {"mode": "next_change"}}
+```
+
+| 键 | `mode` 取值 |
+|---|---|
+| `from` | `given`（带 `value`）/ `now` / `corrected_span` |
+| `to` | `given`（带 `value`）/ `open` / `next_change` / `corrected_span` |
+
+`corrected_span` 是意图为 `correct` 而起止都没传时的写法：区间取该字段包含"现在"、以挡点为界的那一段。`next_change` 与 `corrected_span` 解析出的端点是机械判定的结果，删除重放时按删除后的状态重新解析。但端点本身是由别的贡献求得的值（停在谁给出的挡点上），所以解析结果记在 `write.base` 的 `span/<字段ID>/<k>` 块里并带 `deps`（§3.5）；给出挡点的贡献被删、或解析结果被删除重放改掉时，旧块清除，由删除事件的 `restated/<k>` 给出新值（§5.9）。
+
+`apply`：把 `request_key` / `idempotency` 写进请求键索引（指向本操作号）。其余块只供 `timeline`、幂等重放的回执、删除重放与审计使用。
+
+#### `write.base`（基础写入）
+
+一个 op 对一行或一个实体的写入。状态类表按实体记一条，不按物理段。
+
+**一个字段的贡献是按区间排好的若干项，一项一块。** 事件类表与无时间表上每个字段恒为一项（`k = 0`）。状态类表上通常也是一项；一个字段在不同区间上值不同或状态不同时有多项：`undo`、回到合并基要写回几段不同的旧值；佐证的区间里一部分仍同值（`corroborated`）、一部分已被别人改掉（按普通写入参与判定）；`undo` 只回掉仍生效的部分。各项的区间互不相交，`k` 按区间起点升序、从 0 起。
+
+| path | 种类 | 内容 | 来源 |
+|---|---|---|---|
+| `target` | 元 | 见下 | — |
+| `fields/<字段ID>/<k>` | 数 | 这次写入对该字段的一项贡献：生效状态与值，见下 | `sources/<字段ID>/<k>` 列出的值来源；状态类表另加 `valid_sources` |
+| `sources/<字段ID>/<k>` | 数 | 这一项的值来源列表，见下 | 同 `fields/<字段ID>/<k>`，两块同生同灭 |
+| `literal/<字段ID>/<k>` | 数 | 这一项的字面命中记录，见下 | 同 `fields/<字段ID>/<k>` |
+| `span/<字段ID>/<k>` | 数 | 状态类表：这一项解析后的区间，见下 | 同 `fields/<字段ID>/<k>`，另加本块的 `deps`（§3.5） |
+| `existence/<k>` | 元 | 对"存在"的一项贡献，与字段一样按项记（事件类表、无时间表恒为 `k = 0`）。撤销：`{"status": …, "scope": "whole" \| "interval"}`；恢复存在（回掉一次撤销时的写回项）：另带 `"restored": true`。见下 | — |
+| `span/existence/<k>` | 数 | `scope` 为 `interval` 的那一项的区间：撤销的区间，或恢复存在的区间。见下 | 调用方给的撤销：`valid_sources`，另加本块的 `deps`；回掉写回的项：本块的 `deps` |
+| `valid_sources` | 元 | 区间参数的来源：`[<源数据事件的 seq>]` | — |
+| `op_sources` | 元 | 操作来源：`[<源数据事件的 seq>]` | — |
+| `duplicate` | 数 | 疑似重复的判定：`{"matched": [<行 ID>], "keys": [<字段 ID>], "deps": […]}`。`matched` 是命中的行（最多 10 个，按最近写入排）；`keys` 是命中的那一组 `duplicate_keys`。只在新增且已生效时有。写入时判一次，之后不重算 | `deps`：被比中的那些行在这些字段上当时生效的贡献 |
+| `ack/<j>` | 数 | `acknowledge` 确认覆盖的一段：`{"field": "f2", "valid": {…}, "value": …, "op": <写下这一段的操作号>, "deps": […]}` | `deps`：写下这一段的贡献，以及给出这一段两端的贡献 |
+| `revert` | 元 | **回退记录**：这次写入回掉了哪些项，见下。`revert: {undo}` 与 `take_previous` 的基础写入都带它，形状相同。只有事件 `seq`、操作号、字段 ID 与下标，不含区间 | — |
+
+`target`：
+
+```json
+{"op_index": 0, "table": "t1", "row": "r_01JC8Z…", "intent": "correct", "cause": "request", "sv": 1}
+```
+
+| 键 | 含义 |
+|---|---|
+| `op_index` | 对应 `write.head` 的第几个 op。由 `resolve` 触发的没有 |
+| `table`、`row` / `entity` | 目标 |
+| `intent` | 意图（§6.2） |
+| `cause` | `request`（调用方的写入）/ `resolve`（处理事项触发）。保留值见 §10 |
+| `item` | `cause` 为 `resolve` 时，被处理的事项 ID |
+| `sv` | 这次写入按哪个 schema 版本解释字段 |
+| `created` | 同头事件 |
+
+`fields/<字段ID>/<k>`：
+
+```json
+{"status": "applied", "value": {"value": "54", "unit": "CNY"}}
+```
+
+| 键 | 含义 |
+|---|---|
+| `status` | 这一项的生效状态：`applied`、`candidate`、`awaiting`、`corroborated`（§6.3）。无操作的字段没有项 |
+| `value` | 写入的值，规范写法（§1.3） |
+| `no_value` | `true`：这一项把该字段置回**没有任何贡献**的状态（状态类表：在它的区间上）。三种表都适用，只出现在回退与回到合并基里：写回的那一处在取值位置上**没有任何贡献**。它**盖住**下面的值。取值位置上该处在一次撤销之内时不用它，用 `uncovered`。此时没有 `value`，这一项也没有 `sources/<字段ID>/<k>` 与 `literal/<字段ID>/<k>`。它与 `"value": null` 不同：后者是把一个可选字段显式置空，是一个有来源的值。必填字段被置回没有值时，行或该业务时刻是否还存在按存在的普通规则判断 |
+| `uncovered` | `true`：这一项**只做登记，不给值，也不盖住下面的东西**——被回掉的项在这一段不再生效，它之下是什么就露出什么。只出现在回退与回到合并基里：取值位置上这一段在一次撤销之内（被回掉的是在空洞里填值的写入）。此时没有 `value`、`sources`、`literal`，有 `span/<字段ID>/<k>` 与 `deps`。与 `no_value` 的区别：`no_value` 把这一处置为没有任何贡献，之后撤销被回掉时这里仍然没有值；`uncovered` 不盖，撤销被回掉或被删之后，撤销之下原来的值照常出现。它也不盖住别的写入：该处另有一次不在回退记录里、后来才因删除而生效的填值时，露出的是那次填值 |
+
+状态类表上，每一项另有一块 `span/<字段ID>/<k>`，记这一项解析后的区间：
+
+```json
+{"valid": {"from": "2026-11-02", "to": "2026-11-10"},
+ "deps": [{"event": 15, "field": "f2", "k": 0}]}
+```
+
+```json
+{"seen_valid": {"from": "2026-11-02"}}
+```
+
+| 键 | 含义 |
+|---|---|
+| `valid` | 这一项解析后的生效区间（逐字段、逐项）。`status` 为 `applied`、`awaiting`、`corroborated` 时按写入当时的状态解析 |
+| `seen_valid` | 只有 `candidate`：按写入方所见版本解析的区间。候选的区间就是它，此时没有 `valid` |
+| `deps` | 解析这个区间时用到的别的贡献（§3.5）：默认终点、`corrected_span` 停在的挡点是谁给出的；把这次写入切成几项的那些贡献（所见版本之后改过值的写入）；这一项是搬运来的时，`sources/<字段ID>/<k>` 里 `carried` 指向的那一项。**回掉写回的项**（回退、回到合并基）另含：回退记录里的各项、盖住被跳过部分的各次写入的贡献；回到合并基的另含事项的各候选。普通写入两端都由本次请求显式给出、又只有一项时没有 `deps` |
+
+- 请求里出现、且不是无操作的字段至少有一项。请求里没出现的字段、无操作的字段都没有块。
+- **事件不记写入前的值，也不记写入后的整行。** 写入后的状态由"之前的状态 + 本事件 `status` 为 `applied` 的各项"得出；状态类表是把每一项的 `value` 赋给它的 `valid` 区间内的每个业务时刻，再按"相邻且各字段值都相同的点归为一段"规范化分段。这两步都是确定的，不含判定。
+- `status` 为 `corroborated`：值与所见版本相同且显式指了证据。不产生新版本，只给该字段在这一项的 `valid` 区间上追加来源。**佐证端点** = 这次佐证的起点与**显式**终点里落在佐证项区间端点上的那些（默认终点解析出的端点不算）；它由这一项当前的 `status`、`valid` 与 `write.head` 的 `ops/<i>/valid` 原始写法得出，不另记。
+- **一项贡献的判定结果（生效状态、区间、`deps`）以日志里最近一次给出它的事件为准**：本事件，或之后某条 `deletion.confirmed` / `deletion.cancelled` 的 `restated/<k>`（§5.9）。之后的 `undo`、冲突判据、对它的引用都读最新的。
+- **重放时遇到 `span` 块已被移除的项**：这一项在本事件处不落账；它由之后重述它的那条删除事件落账（没有被重述，说明它已不是贡献）。
+
+`sources/<字段ID>/<k>`：
+
+```json
+[{"kind": "value", "source": 26}]
+```
+
+```json
+[{"kind": "value", "carried": {"event": 39, "field": "f3", "k": 0}}]
+```
+
+| 条目 | 含义 |
+|---|---|
+| `{"kind":"value","source":<seq>}` | 值来源是一条源数据（`source.recorded` 的 `seq`） |
+| `{"kind":"value","carried":{"event":<seq>,"field":<字段ID>,"k":<整数>}}` | 值是搬运来的（回退、采纳候选、回到合并基）：引用另一条 `write.base` 事件对该字段的第 `k` 项贡献。状态类表上搬运的区间就是这一项自己的区间（`span/<字段ID>/<k>`），这里不重复记 |
+| `{"kind":"schema_const","sv":<整数>,"field":<字段ID>}` | 值出自 schema 常量：第 `sv` 版切换时，这个字段的常量 `backfill` 补出的值（`field` 是该版里的字段 ID；表就是本事件的目标表）。值照常写在项里。不指向任何事件，不产生 `deps`。这一项没有 `literal` 块 |
+
+同一块里的多条 `source` 是"同时需要"；多条 `carried` 是"任一仍在即可"（采纳候选时并入的同值候选）。
+
+`existence/<k>` 与 `span/existence/<k>`：
+
+```json
+{"status": "applied", "scope": "interval"}
+```
+
+```json
+{"valid": {"from": "2026-11-10", "to": "2026-11-20"}}
+```
+
+"存在"与字段一样按项记：一次写入对"存在"的贡献是按区间排好的若干项，各项区间互不相交，`k` 从 0 起。调用方的一次撤销恒为一项；回掉写回的可以是几项（恢复存在的范围被别的写入隔成不相连的几段时）。
+
+- `scope` 为 `whole`：撤销整行或整个实体。它不含内容，是纯粹的决定，没有来源，证据被删也照记录；这时没有 `span/existence/<k>`。
+- `scope` 为 `interval`（只有状态类表）：等于"这段没有值"。区间记在 `span/existence/<k>`，它是内容。调用方给的撤销，来源是 `valid_sources`，来源被隐私删除后这次撤销整体没有贡献；只带起点的撤销，终点按 `next_change` 解析（任一字段在起点之后的第一个挡点），解析结果同样记在这里，并带 `deps`（给出那个挡点的贡献）。
+- 重放时 `scope` 为 `interval` 而 `span/existence/<k>` 已被移除：这一项在本事件处不落账，规则同字段项。
+- **回掉写回的"存在"项**（带回退记录 `revert` 的写入）有两种，都按回掉的统一定义求得（见下）：
+  - `restored: true`：被回掉的是一次撤销，取值位置上这一段是存在的 → 行或实体在这一段恢复存在。被撤销盖住的值本来就还在，不需要写回字段项；字段另有改动要回掉的，照常写回字段项。
+  - 不带 `restored`：被回掉的是一次"恢复存在"，取值位置上这一段是不存在的 → 写回一项撤销，形状与普通撤销的项相同。它没有 `valid_sources`，区间的来源是 `span/existence/<k>` 的 `deps`。
+  - 两种的 `scope` 与被回掉的那一项相同；`interval` 时 `deps` 含回退记录里对应的项、给出取值位置上状态的那一项、盖住被跳过部分的写入。
+
+`literal/<字段ID>/<k>`：
+
+```json
+{"segments": [{"source": 22, "result": "hit"}, {"source": 26, "result": "miss"}]}
+```
+
+按这一项引用的每段证据各记一条，`result` 取 `hit` / `miss` / `na`。核对器版本在头事件的 `ctx` 里。只有值来源是源数据（`source` 条目）的项有这一块：搬运来的项（`carried`）不重新做字面核对，没有 `literal` 块，它的核对结果看被搬运的那一项；来源是 `schema_const` 的项、`no_value` 与 `uncovered` 的项同样没有。
+
+`revert`（回退记录）与"回掉"的统一定义：
+
+`undo` 与 `take_previous` 是同一种操作——**回掉**——的两个取法。一次回掉由三样东西构成：
+
+| | 是什么 | 怎么来 |
+|---|---|---|
+| ① 回退记录 | 回掉哪些项，逐项列出 | **照记录**。写入时列定，记在本块里；删除重放不改它 |
+| ② 范围 | 在哪些业务时间上回掉（状态类表） | **重放里重求** |
+| ③ 取值的位置与值 | 回到哪个位置的状态；那里的值是什么 | 位置**照记录**，值**重放里重求** |
+
+```json
+{"before_op": 25,
+ "items": [{"event": 27, "field": "f3", "k": 0}],
+ "skipped": [{"event": 27, "field": "f1", "k": 0, "by_op": 33}]}
+```
+
+```json
+{"as_of_op": 29, "item": "pi_3KD…",
+ "items": [{"event": 35, "field": "f3", "k": 0}]}
+```
+
+| 键 | 含义 |
+|---|---|
+| `before_op` | `undo`：取值的位置是这次操作**之前**的状态。它就是被撤回的那次写入的操作号 |
+| `as_of_op` | `take_previous`：取值的位置是**截至**这个操作号的状态。它是解决时事项记下的合并基（`merge_base_op`），之后不重算。与 `before_op` 恰有其一 |
+| `item` | `take_previous`：所解决的事项 |
+| `items` | 被回掉的项：`{"event", "field", "k"}`，或对"存在"的一项 `{"event", "existence": <k>}`。`include_later` 连带回掉的后来写入的项另带 `"later": true` |
+| `skipped` | 只有 `undo`：写入当时已被后来的写入覆盖而跳过的贡献（整项，或它的一部分）；`by_op` 是覆盖它的那次写入。**被跳过的项同样列在 `items` 里**，这里只是另外标出当时的情况，供历史与回执使用；跳过的区间不记，删除重放不读它 |
+
+**① 回退记录里列哪些项**（写入时列定）：
+
+- `undo`：被撤回的那次操作在本行或本实体上的**全部**项（含它对"存在"的各项），**写入当时整项被跳过的也列入**。带 `include_later` 时，要连带回掉的后来写入**也逐项列入**，包括其中回退或回到合并基写回的项。全部被跳过时照常记这条基础写入：没有写回项，只有 `target`、`op_sources` 与本块。
+- `take_previous`：事项的冲突单元与区间内，**合并基之后、本次解决之前生效过的全部项**。"生效过" = 在这段记录时间里落账为 `applied` 或 `corroborated`（写入时，或经删除重述），不论解决那一刻它是否已被后来的写入盖住、是否已被别的回掉登记过；含回退或回到合并基写回的项。目标是"存在"的事项，冲突单元是整行或整个实体：这段时间里对任何字段、对"存在"生效过的项都列入。**候选从未生效，不进回退记录**，由事项的解决关闭。
+- 记录不随删除重放改变。解决时还没生效、之后才因一次删除而生效的写入不在记录里；它对结果的影响完全由下面的范围规则决定（它排在回退记录某一项之后时算盖住那一项，三种表相同）。
+
+**② 范围**：
+
+- **一项的范围 = 它的区间，扣除仍被盖住的部分；`take_previous` 再与事项的区间取交。** "盖住"：在这一项之后、本次回掉之前，有不在回退记录里的已生效的项在该处取代了它（同一字段上更晚的值；撤销之上更晚的恢复存在或填值；字段值或恢复存在之上更晚的撤销）。事项的区间 = 仍存在的各候选的区间之并。
+- **三种表是同一条规则。** 事件类表、无时间表上一项没有区间，当作一个不可分的整体：仍被盖住时范围为空，这一项**整项不回掉**；否则整项回掉。事项的区间在这两种表上是整个冲突单元，候选全都不在时为空。
+- 写入时按当时的状态求，结果就是本事件写回各项的区间（`span/…`）之和；范围为空的项没有写回项。
+- **删除重放时重新求**：各项取它在重放里的区间（被重述过就按重述后的），被删的操作不算盖住，被删的候选不计入事项的区间。所以盖住它的写入被删之后，原来跳过的部分（或整项）也回掉；被回掉的项的区间被重新解析之后，回掉的是新的整段；候选被删之后，事项的区间相应缩小。写入时没有写回项、重放后范围不再为空的，写回项由删除事件的 `restated/<k>` 首次给出（下标从该字段或"存在"在本事件里已用过的最大下标之后接着编）。
+- **登记的效力只在范围内**：回退记录里的项在范围内不再生效，范围之外照常生效。
+
+**③ 值**：范围内的每一处，取重放里"取值的位置"上的状态。字段一侧：该处有值，写回项以 `carried` 引用给出它的贡献（给出它的是 schema 切换的补值时不写 `carried`，来源写 `schema_const` 条目，`span` 的 `deps` 不列它）；没有任何贡献，写回 `no_value`；**该处在一次撤销之内，写回一条 `uncovered` 的项**——被回掉的项（在空洞里填值的那一项）登记之后不再算填值，撤销重新露出，这一处回到空洞，撤销之下的值没有动，之后撤销被回掉或被删时照常出现。"存在"一侧：该处是存在的，写回"恢复存在"；是不存在的，写回一项撤销。任何情况下都不会落回被回掉的项自己的值。
+
+**不变式：本事件在一个字段（或"存在"）上写回各项的区间之和，就是这次回掉在该字段（或"存在"）上的范围。** 范围内处处有写回项（有值、`no_value`、`uncovered`、恢复存在、撤销之一）；`apply` 登记"已被回掉"只读这些项的区间，不自己求范围。回退记录里的一项登记在"它的区间与这个范围之交"上。只有范围为空（全部被跳过的 `undo`）时没有写回项。
+
+**权威定义是参考求值器的伪代码**，在 [`03-data-model/03-deletion.md`](03-data-model/03-deletion.md)「重放规则 · 回掉的权威定义」；本节与其余文档的文字说明与它不一致时，以伪代码为准。
+
+**被回掉的项是否生效，以回退记录为准，不看写回了什么。** 从本操作号起，`items` 列出的项在范围内不再提供任何东西：不给值，不追加来源，它的佐证端点不再算挡点。来源表这样登记，之后的 `undo`、冲突判据、参考求值器都按它。
+
+**写回的项**（两种取法规则相同）：
+
+- `span/…`（及重述）的 `deps` 含：回退记录的各项、给出取值位置上状态的贡献、盖住被跳过部分的写入；`take_previous` 另含各候选。
+- 它们与普通贡献一样参加删除重放的同值重算（§5.9），有两条限定：
+  - 回退记录里还有项在重放里是贡献（含佐证）、且范围非空时，写回的项**不因为与之前同值而被丢掉**（它的作用是让那些项不生效）。
+  - 回退记录里的项在重放里全都不是贡献，或范围为空时，写回的项成为 `dropped`。例：`take_previous` 之后候选全被删，事项的区间为空，生效的一方照常生效；生效的一方全被删而候选还在，写回的项为 `dropped`，候选保持已关闭。
+- 一条写回项对应的回退记录项只有一部分不再是贡献时，把它的区间重述窄即可。
+
+**回掉的目标本身是一次回掉**（撤回一次撤回；撤回一次 `take_previous` 的解决）：按普通写入处理，回掉的是那次写回的各项，取值的位置是那次操作之前。**回退记录的条目在删除重放里覆盖：记录里列出的下标，加上同一（事件, 字段或"存在"）上新编出的下标**。新编出的下标 = 不在那条基础写入事件写入时的块路径里的下标，由某次删除事件的重述首次给出（一项在重放后分成几项时新分出来的；不论是哪一次删除编出的）。写入时已经存在而没有列入的下标（当时是候选或待确认的项）不在其内，之后生效了也不补——与"解决时未生效的写入不在记录里"是同一条。重放时一条写入原有的项沿用它的下标、留在与它原区间相交的第一段上（原区间 = 本次重放之前日志里最近一次给出这一项的区间），新分出来的项从已用过的最大下标之后接着编；两条原有的项落进同一段时留下标最小的，其余重述为 `dropped`；一项已列入某次回掉的回退记录、另一项没有列入时不并段，各自重述。那次操作登记为"已被回掉"的项**登记不变**，它们的值经由这次的写回项（搬运自它们）重新出现。被撤回的是一次 `take_previous` 的解决时，事项保持已解决。
+
+例（回掉一次"恢复存在"）：操作 20（#22）撤销 `[11-05, 11-15)`；操作 30（#32）`undo: 20`，写回 `existence/0 {applied, interval, restored}`；操作 40 `undo: 30`，基础写入 #42。取值位置是操作 30 之前，那时这一段是不存在的，所以写回一项撤销：
+
+```
+existence/0        {"status":"applied","scope":"interval"}
+span/existence/0   {"valid":{"from":"2026-11-05","to":"2026-11-15"},"deps":[{"event":32,"existence":0},{"event":22,"existence":0}]}
+revert             {"before_op":30,"items":[{"event":32,"existence":0}]}
+```
+
+例（恢复存在的范围是两段）：实体全程有值；操作 20（#22）撤销 `[11-05, 11-15)`；操作 25 在空洞里填了 `[11-08, 11-10)`（带齐必填字段）；操作 40 `undo: 20`，基础写入 #42：
+
+```
+existence/0        {"status":"applied","scope":"interval","restored":true}
+span/existence/0   {"valid":{"from":"2026-11-05","to":"2026-11-08"},"deps":[{"event":22,"existence":0},{"event":27,"field":"f2","k":0}]}
+existence/1        {"status":"applied","scope":"interval","restored":true}
+span/existence/1   {"valid":{"from":"2026-11-10","to":"2026-11-15"},"deps":[{"event":22,"existence":0},{"event":27,"field":"f2","k":0}]}
+revert             {"before_op":20,"items":[{"event":22,"existence":0}]}
+```
+
+例（撤回一次在空洞里填值的写入）：实体全程 5000（#12）；操作 20（#22）撤销 `[11-05, 11-15)`；操作 25（#27）在空洞里填了 `[11-08, 11-10) 3000`；操作 40 `undo: 25`，基础写入 #42。取值位置（操作 25 之前）上这一段在撤销之内，写回一条不带内容的项：
+
+```
+fields/f2/0   {"status":"applied","uncovered":true}
+span/f2/0     {"valid":{"from":"2026-11-08","to":"2026-11-10"},"deps":[{"event":27,"field":"f2","k":0},{"event":22,"existence":0}]}
+revert        {"before_op":25,"items":[{"event":27,"field":"f2","k":0}]}
+```
+
+`apply` 按 `span/f2/0` 把 #27 的项登记为"已被操作 40 回掉"，它不再算填值，`[11-08, 11-10)` 回到 #22 的空洞；实体的 `ver` 换成 `v40.0`。之后操作 50 `undo: 20`：撤销被回掉，写回"恢复存在" `[11-05, 11-15)`；`[11-08, 11-10)` 上 #27 与 #22 都已被回掉，露出 #12 的 5000，全程 5000。
+
+例（没有值）：实体已有 #12 `[10-01, 11-01) 5000`，11-01 之后没有值；#22（操作 20）在空着的时间里填了 `[11-02, 11-20) 3000`；操作 40 `undo: 20`，基础写入 #42：
+
+```
+fields/f2/0   {"status":"applied","no_value":true}
+span/f2/0     {"valid":{"from":"2026-11-02","to":"2026-11-20"},"deps":[{"event":22,"field":"f2","k":0}]}
+revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
+```
+
+`apply` 把该字段在 `[11-02, 11-20)` 上置为没有值；必填字段没有值的业务时刻成为无值区间。来源表里 #22 的第 0 项登记为"已被操作 40 回掉"。事件类表上的例子：撤回"第一次填备注"的那次写入，写回 `fields/f4/0 {"status":"applied","no_value":true}`，备注回到没有任何贡献的状态。
+
+例（`take_previous`，生效一方的区间比事项的区间大）：#12 `[10-01, ∞) 5000`；L（操作 20，基础 #22）显式 `[11-02, 12-01) 3000`，已生效；A（基础 #27）带旧 `ver` 写显式 `[11-10, 11-15) 4000`，成为候选，事项的区间是 `[11-10, 11-15)`，合并基是操作 10。操作 40 以 `take_previous` 解决，基础写入 #41：
+
+```
+fields/f2/0   {"status":"applied","value":{"value":"5000","unit":"CNY"}}
+sources/f2/0  [{"kind":"value","carried":{"event":12,"field":"f2","k":0}}]
+span/f2/0     {"valid":{"from":"2026-11-10","to":"2026-11-15"},"deps":[{"event":12,"field":"f2","k":0},{"event":22,"field":"f2","k":0},{"event":27,"field":"f2","k":0}]}
+revert        {"as_of_op":10,"item":"pi_…","items":[{"event":22,"field":"f2","k":0}]}
+```
+
+L 只在 `[11-10, 11-15)` 上被回掉，两侧的 3000 照旧。
+
+`apply`：
+
+| 看什么 | 改什么 |
+|---|---|
+| `fields/*/*` 里 `status: applied` | 业务表当前版本的对应字段（状态类表：按 `span/*/*` 的区间逐项赋值后规范化分段）；版本表在受影响的单元格上各加一个版本，记录时间区间从本操作号起；`counts` |
+| `fields/*/*` 里 `applied`、`corroborated`；`existence/*` 里 `applied` | `base_sources`（字段 × 项 × 来源；状态类表带区间）。"存在"项的字段 ID 一栏用固定值 `existence`（字段 ID 都是 `f<n>`，不会相撞） |
+| 各块的 `deps` 与 `carried` | `block_deps`（块 → 它依赖的贡献），供删除找级联的块 |
+| `existence/*` 里 `applied`、不带 `restored` | 业务表的已撤销标记或无值区间（区间取 `span/existence/<k>`）；版本表 |
+| `fields/*/*` 里 `no_value` | 该字段在这一项的区间上置为没有值；版本表 |
+| `fields/*/*` 里 `uncovered` | 不赋值。该字段在这一项的区间上取登记之后露出的那一项（最后一个生效、没被登记回掉的字段项或撤销）；版本表 |
+| `revert` | **只在这次基础写入生效时登记**：`base_sources` 里把 `items` 列出的项登记为"已被本操作回掉"（登记的范围只读块：回退记录的一项登记在"它的区间 ∩ 本事件在同一字段或'存在'上写回各项的区间之和"上；之后被删除事件重述的，按重述后的区间）。这次写入进了待确认时不登记，确认生效时（由那次解决触发的落账）登记；待确认的回掉因一次删除不再属高影响、在自己的写入号生效时，由那条删除事件的落账登记（用提议时列的回退记录）；被拒绝或被取代则不登记。全部被跳过的 `undo` 算已生效，没有写回项，登记的范围为空。登记"已被回掉"只有这一条路径 |
+| `existence/*` 里 `applied`、带 `restored` | 业务表在该范围内撤掉已撤销标记或无值区间；版本表 |
+| `candidate`、`awaiting` | 不改业务表与版本表 |
+| `duplicate` | 无（标记由 `item.created` 得出） |
+
+这一行或实体的 `ver` 在有任何一个字段项或"存在"项为 `applied` 时换成本操作号。
+
+例（状态类表，`undo` 一次覆盖了两段的写入）：基础 #12 `[10-01, ∞) 5000`；#15 `[11-10, ∞) 4000`；#22 `[11-02, 11-20) 3000`；操作 30 `undo: 20`，基础写入 #32：
+
+```
+fields/f2/0   {"status":"applied","value":{"value":"5000","unit":"CNY"}}
+sources/f2/0  [{"kind":"value","carried":{"event":12,"field":"f2","k":0}}]
+span/f2/0     {"valid":{"from":"2026-11-02","to":"2026-11-10"},"deps":[{"event":12,"field":"f2","k":0},{"event":15,"field":"f2","k":0},{"event":22,"field":"f2","k":0}]}
+fields/f2/1   {"status":"applied","value":{"value":"4000","unit":"CNY"}}
+sources/f2/1  [{"kind":"value","carried":{"event":15,"field":"f2","k":0}}]
+span/f2/1     {"valid":{"from":"2026-11-10","to":"2026-11-20"},"deps":[{"event":15,"field":"f2","k":0},{"event":22,"field":"f2","k":0}]}
+revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
+```
+
+#### `write.derived`（派生写入）
+
+规则引擎刷新一个派生行。
+
+| path | 种类 | 内容 | 来源 |
+|---|---|---|---|
+| `target` | 元 | `{"table": "t2", "rule": "r1", "rule_version": 1, "partition": "p_8WM…", "read_pos": <seq>, "reads": [{"table": "t1"}], "emptied": <布尔>}` | — |
+| `key` | 数 | 分组键值：`{"values": ["2026-11-01"]}`，按规则分组键的顺序 | 落进该分组的基础行在分组键所依赖字段上的贡献 |
+| `checksum` | 数 | `{"checksum": <哈希>}`：这次刷新结果的校验和（§5.12） | 读集里的基础贡献 |
+
+- `read_pos`：刷新时读到的日志位置（本操作里它之前最后一条事件的 `seq`）。
+- `reads`：读了哪些基础表。第一版只记到表一级；更细的读集将来作为新增的可选键加入，不改已有事件。
+- `emptied`：`true` 表示这个分组刷新后没有行了，派生行删除。
+- `key` 只在两种情况下有：这个 `partition_id` 第一次出现（登记"分组键值 → `partition_id`"的映射）；上一次登记映射的 `key` 块已被列入某次删除的位置列表，而这个分组又有了行（重新登记）。
+- 分组因删除而变空时，登记映射的 `key` 块列入位置列表。
+- `checksum` 用来核对，不用来生成；读集里有贡献被删除时列入位置列表，之后按时刻还原该派生值时跳过核对。
+- `apply`：按 `rule_version` 的规则在当前基础数据上重算这个分区，写进派生表；有 `checksum` 就核对；维护 `partitions`、`derived_reads`。派生行的版本是本操作号。
+
+### 5.8 待处理事项
+
+事项的当前状态完全由这五种事件（以及删除生命周期事件）算出。事项版本对外编码（事项 ID，事项内容最近一次变化的操作号，租户恢复次数）。
+
+事项内容按条目切块。条目块里的值与区间都出自别的写入，所以每个条目块都带 `deps`（§3.5）：
+
+```json
+"deps": [{"event": 39, "field": "f3", "k": 0}]
+```
+
+`deps` 列出条目里的**值与区间端点**所出自的全部贡献：写下这个值的那一项，以及把这一段截成现在这样的那些贡献。`deps` 列出的贡献被隐私删除或被重述时，这个条目块列入位置列表；事项仍未决的，随后的 `item.refreshed`（`entries_deleted`）重新给出条目，候选与 `matched` 条目也在内。
+
+**引用的命名**（全文一致）：
+
+| 值是什么 | 键名 |
+|---|---|
+| 操作号 | `op`，或以 `_op` 结尾 |
+| 事件 `seq`（`write.base`、头事件等） | `event`，或以 `_event` 结尾；指向内容块的再带 `field` 与 `k`（或 `"existence": <k>`），或带 `path` |
+| 源数据（`source.recorded` 事件的 `seq`） | `source`，或 `sources`、以 `_sources` 结尾（`valid_sources`、`op_sources`） |
+| 日志位置 | `read_pos`（`write.derived`）：读到的最后一条事件的 `seq` |
+
+位置列表里块地址的 `seq` 是地址的一部分。
+
+#### `item.created`
+
+| path | 种类 | 内容 | 来源 |
+|---|---|---|---|
+| `target` | 元 | 见下 | — |
+| `scope_valid` | 数 | 状态类表：事项覆盖的业务时间区间 `{"from": …, "to": …, "deps": […]}` | `deps`：各候选或提议的那几项贡献 |
+| `current/<k>` | 数 | 当前生效值的一段：`{"field": "f3", "value": …, "valid": {…}, "op": <写下它的操作号>, "deps": […]}` | `deps` |
+| `candidates/<k>` | 数 | 一个候选（一次写入在这个冲突单元上的全部候选项），见下 | `deps` |
+| `proposed/<k>` | 数 | 待确认的提议在一个字段上的值：`{"field": …, "value": …, "valid": {…}, "deps": […]}` | `deps` |
+| `previous/<k>` | 数 | 合并基上的值的一段：`{"field": …, "value": …, "valid": {…}, "deps": […]}`。`take_previous` 会回到它 | `deps` |
+| `impact/<k>` | 数 | 执行后会改掉什么的一条，见下 | `deps` |
+| `matched/<k>` | 数 | `flagged`：疑似重复的另一行 `{"row": …, "deps": […]}` | `deps` |
+
+`target`：
+
+```json
+{
+  "item": "pi_3KD…",
+  "type": "conflict",
+  "reason": "stale_write",
+  "table": "t1",
+  "row": "r_01JC9A…",
+  "unit": ["f3"],
+  "merge_base_op": 29,
+  "origin_event": 39,
+  "ruleset_version": 1,
+  "policy_version": 1
+}
+```
+
+| 键 | 含义 |
+|---|---|
+| `item` | 事项 ID |
+| `type` | 事项类型（§6.4） |
+| `reason` | 成因码（§6.6） |
+| `table`、`row` / `entity` | 目标所在。`schema_change` 事项没有，改为 `draft` |
+| `unit` | 冲突单元：一个字段，或 schema 声明的一个字段组里的全部字段。目标是"存在"（撤销参与的冲突）时为 `"existence"` |
+| `merge_base_op` | `conflict`：合并基的操作号（各候选所带 `ver` 中最早的那个版本） |
+| `origin_event` | 引出这个事项的 `write.base` 事件的 `seq` |
+| `draft` | `schema_change`：草稿 ID |
+| `related_item` | 成因为 `restored_candidate` 时：候选原来所在的那个事项 |
+| `ruleset_version`、`policy_version` | 判定这个事项时用的两个版本 |
+
+`candidates/<k>`：
+
+```json
+{"event": 39, "intent": "correct",
+ "seen": {"op": 29, "restore_count": 0},
+ "cause": "stale_write",
+ "items": [{"field": "f3", "k": 0, "value": {"value": "32", "unit": "CNY"}}],
+ "deps": [{"event": 39, "field": "f3", "k": 0}]}
+```
+
+**一个候选 = 一次写入在这个冲突单元上成了候选的全部项**，一个候选一条。冲突单元是字段组时，同一次写入改了组里两个字段，是一个候选、`items` 里两项；状态类表上一次写入在这个单元上被切成几段、其中几段成了候选，也是一个候选、`items` 里几项。同一条 `write.base` 在同一个事项里至多是一个候选。
+
+- `event` 是候选所在的 `write.base` 事件的 `seq`（写入者即该事件的 `actor`）；`seen` 是候选所带的 `ver`；`cause` 见 §6.7。
+- `items` 逐项列出：`field` 与 `k` 指明是那条事件的哪一项，`value` 是它的值；状态类表每项另有 `valid`（这一项的所见区间）。候选是撤销时 `intent` 为 `revoke`，`items` 里是 `{"existence": <k>}`（带区间的撤销另有 `valid`），没有 `field` 与 `value`。
+- `deps` 含 `items` 里的每一项，以及截出这些区间的贡献。
+- **下标 `k` 就是候选号**，全文只有这一套：契约 `Candidate.index`、`resolve` 的 `candidate`、`item.resolved` 的 `candidate`、`item.refreshed` 的 `dropped_candidates` / `restored_candidates` 与它重新给出的 `candidates/<k>`，指的都是它。`take_candidate` 采纳该候选的**全部项**。
+- 候选的一部分项因隐私删除不再是贡献、其余仍在时，候选还是这个候选（下标不变）：原条目块按 `deps` 清除，随后的 `item.refreshed` 用同一个下标重新给出只含剩余项的条目。全部项都不在了，才列入 `dropped_candidates`。
+
+`impact/<k>` 的形状随成因：
+
+| 成因 | 形状 |
+|---|---|
+| 抹掉变化点（高影响 ①）、跨空洞填值 | `{"kind": "overwritten_segment", "field": …, "valid": {…}, "value": …, "op": <写下这一段的操作号>, "deps": […]}` |
+| 撤销仍被引用的行（高影响 ②） | `{"kind": "referencing_row", "table": …, "row": …, "field": …}` |
+| `undo` 带 `include_later`（高影响 ④） | `{"kind": "reverted_write", "op": <操作号>, "deps": […]}` |
+| `conflict`：`take_previous` 会回掉的写入 | `{"kind": "reverted_write", "op": <操作号>, "deps": […]}` |
+| `conflict`：候选若生效会覆盖的段 | `{"kind": "overwritten_segment", …}` |
+
+`apply`：`pending_items` 加一行（状态未决，事项版本 = 本操作号）；`pending_entries` 登记各条目块的位置；按事项类型设标记：`conflict` → `disputed`（带事项、`unit` 里的字段、区间），`awaiting_confirmation` → `awaiting`（同上），`flagged` → `flagged`。
+
+#### `item.merged`
+
+新的候选并入已有的冲突事项。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"item": "pi_…", "merge_base_op": <操作号>, "origin_event": <seq>, "ruleset_version": …, "policy_version": …}` |
+| `candidates/<k>` | 数 | 新并入的候选。`k` 接着该事项已有候选的下标往后编，整个事项生命周期内不复用 |
+| `scope_valid`、`previous/<k>`、`impact/<k>` | 数 | 合并后重算的结果，**整组取代**该事项之前的同名条目 |
+
+`apply`：事项版本换成本操作号；之前的 `previous/*`、`impact/*`、`scope_valid` 条目作废（块本身仍在各自的事件里）。
+
+#### `item.refreshed`
+
+事项的目标被一次没读过它的写入改到，或高影响 ② 的引用方有变化：事项保持未决，内容更新。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"item": "pi_…", "by_event": <seq>, "writer_had_read": <布尔>, "cause": "target_overwritten" \| "references_changed" \| "entries_deleted" \| "entries_restored", "dropped_candidates": [<下标>], "restored_candidates": [<下标>], "merge_base_op": <操作号>}` |
+| `current/<k>`、`previous/<k>`、`impact/<k>`、`proposed/<k>`、`scope_valid` | 数 | 刷新后的结果，整组取代之前的同名条目 |
+| `candidates/<k>`、`matched/<k>` | 数 | 重新给出的候选条目、疑似重复的另一行，形状与 `item.created` 里的相同（带 `deps`）。**沿用原下标 `k`，只取代同下标的那一条**，没给出的保持原样。用在两处：条目块被一次删除清掉而条目仍在（例如候选的所见区间被重新解析，或候选少了一项而其余项仍在，候选仍是候选）；撤回删除时放回被去掉的候选 |
+
+- `writer_had_read`：写入方当时是否读过这个事项的当前版本。写入时查一次读取审计，把结果记在这里，重放不重算。`cause` 为 `target_overwritten` 时恒为 `false`（读过就是取代，不是刷新）。
+- `cause` 为 `entries_deleted`：隐私删除清掉了事项的部分条目而事项仍未决（例如去掉了一个候选），`dropped_candidates` 列出被去掉的候选下标；此时没有 `by_event`。`by_event` 是改到事项目标的那条 `write.base` 事件（`references_changed` 时是引用方的那条）。
+- `cause` 为 `entries_restored`：撤回一次删除之后，事项当初被去掉的候选放回来。`restored_candidates` 只列**整条被去掉过**的候选的下标（与 `dropped_candidates` 对称）；候选当初只少了一部分项、撤回后那些项回来的，下标不进 `restored_candidates`，本事件用同一下标重新给出含全部项的 `candidates/<k>`。本事件的 `candidates/<k>` 按撤回后的状态重新给出它们（以本事件为准，不读回原来的块）；此时没有 `by_event`。
+- 撤回删除时事项**已经解决**的，不产生 `item.refreshed`，原事项的解决不动。放回来的候选按撤回时的当前状态重新判定，由撤回事件逐项重述：与当前生效值同值的项，按普通规则成为 `dropped`（没指证据）或 `corroborated`（指了证据）；否则仍是 `candidate`。只要还有一项是 `candidate`，随后一条 `item.created`（成因 `restored_candidate`）为这个候选另开事项，新事项里它的 `items` 只含仍是候选的那几项。回执的 `rejudged` 按候选给一条：还有项是候选记 `reopened`；否则有项成了佐证记 `corroborated`，全部成了 `dropped` 记 `dropped`。
+- `apply`：事项版本换成本操作号。
+
+#### `item.superseded`
+
+事项不再需要处理。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"item": "pi_…", "reason": <取代原因，§6.6>, "by_event": <seq>, "writer_had_read": <布尔>}` |
+
+`by_event` 是取代它的事件的 `seq`：`overwritten` 时是那条 `write.base`，`schema_switched` 时是 `schema.switched`，`deleted` / `deletion_cancelled` 时是删除确认或撤回的头事件，`draft_replaced` 时是 `schema.superseded`。`writer_had_read` 只在 `reason` 为 `overwritten` 时有。
+
+`apply`：事项状态置为已被取代；撤掉对应标记；事项版本换成本操作号。
+
+#### `item.resolved`
+
+头事件。人或 Agent 处理了一个事项。带 §5.1 的块。
+
+| path | 种类 | 内容 | 来源 |
+|---|---|---|---|
+| `target` | 元 | 见下 | — |
+| `op_sources` | 元 | 这次解决的操作来源：`[<源数据事件的 seq>]`（解决请求带的证据，以及含 `note` 的 `api_call`）。没带证据也没带 `note` 时不出现 | — |
+| `confirmation` | 数 | `{"hash": <哈希>}`：所确认内容的哈希 | 被确认的那些条目块；其中任何一块被删除，本块随之删除 |
+
+```json
+{"item": "pi_3KD…", "decision": "take_candidate", "candidate": 0,
+ "item_op": 37, "restore_count": 0, "via": "call"}
+```
+
+| 键 | 含义 |
+|---|---|
+| `decision` | 处理方式（§6.5） |
+| `candidate` | `take_candidate`：采纳的候选下标（`candidates/<k>` 的 `k`）。采纳该候选的全部项 |
+| `item_op`、`restore_count` | 所确认的事项版本 |
+| `via` | `call`。保留值：`elicitation` |
+
+- 谁解决的是事件头的 `actor`；经哪个凭证由 `actor` 得出。
+- `confirmation` 的哈希由内核在落账时算：SHA-256（被确认的条目块的校验和，按 `(seq, path)` 排序后以换行连接）。被确认的条目块 = 该事项当前有效的全部条目块（`current`、`candidates`、`proposed`、`previous`、`impact`、`matched`、`scope_valid`）；`schema_change` 事项是对应草稿的 `schema.compiled` 的 `compiled` 块。没有任何条目块的事项不产生本块。
+- `note` 不在本事件里：它随解决请求存为源数据（§4.3），由 `op_sources` 引用，事项详情回显的 `note` 从那里取，随那条源数据的隐私删除清除。
+- **`take_previous`** 触发的基础写入带回退记录 `revert`（§5.7）：合并基的操作号记在它的 `as_of_op` 里，被回掉的项逐项列在 `items` 里。它与 `undo` 是同一种操作，重放规则只有 §5.7 那一套。候选不在回退记录里，由本事件关闭。
+- **确认一次待确认的回退**（`awaiting_confirmation` · `confirm`，提议是 `undo`）：确认触发的基础写入带**自己的** `revert`，按确认时的状态列定（与事项刷新后的影响一致），登记与写回都按它、以本次解决的操作号为准。提议那条基础写入里的 `revert` 只是提议内容，用于事项与预览，不用于登记。
+- 处理 `deletion` 事项（撤回）不产生本事件，见 `deletion.cancelled`。
+- `apply`：事项状态置为已解决、记下处理方式；撤掉对应标记；`request_key` 进请求键索引。处理触发的写入由随后的 `write.base` 落账。
+
+### 5.9 删除
+
+#### `deletion.confirmed`
+
+头事件。一次隐私删除被确认，进入宽限期。带 `ctx`（`system` 产生的也带）；调用方确认的另带 §5.1 的其余块。**一次删除只针对一个 slot**：`sources` 都属于事件头 `slot` 指的那个 slot，跨 slot 由调用方分成多次删除。调用方确认的，`actor` 是确认者；恢复流程按删除登记重新生成的，`actor` 是 `system`、`trigger` 是 `restore`。
+
+| path | 种类 | 内容 | 来源 |
+|---|---|---|---|
+| `target` | 元 | 见下 | — |
+| `positions` | 元 | 到期要清空的内容块：`[{"seq": 26, "path": "text"}, {"seq": 27, "path": "fields/f3/0"}]` | — |
+| `summary` | 数 | `{"hash": <哈希>}`：影响摘要的哈希（确认句柄绑定的那个） | 被删的内容；它自己列在 `positions` 里 |
+| `results/<k>/target` | 元 | 一个受影响的行或实体：`{"table": …, "row": …, "outcome": <枚举>}` | — |
+| `results/<k>/fields/<字段ID>/<j>` | 数 | 删除后该字段的一段，见下 | 块里的 `carried` 引用的贡献，另加块里的 `deps` |
+| `results/<k>/existence` | 数 | 状态类表：删除后的无值区间 `{"gaps": [{"from": …, "to": …}], "deps": […]}` | `deps`：留下这些空洞的撤销，以及截断它们的贡献 |
+| `restated/<k>` | 数 | 被这次删除**重述**的一项贡献：重放之后它的判定结果，见下 | 它指向的那一项贡献，另加块里的 `deps` 与 `carried` |
+| `recreated/<k>` | 元 | 首次创建标记的变化：`{"event": <write.base 的 seq>, "created": <布尔>}` | — |
+| `superseded_items` | 元 | 因删除被取代的事项 ID 列表 | — |
+
+`target`：
+
+```json
+{"deletion": "pi_9QX…", "kind": "privacy", "due_at": "2026-11-11T05:02:11.000Z",
+ "sources": [26], "origin": "request"}
+```
+
+| 键 | 含义 |
+|---|---|
+| `deletion` | 删除 ID，也是宽限期内那条 `deletion` 事项的 ID |
+| `kind` | `privacy`。保留值见 §10 |
+| `due_at` | 宽限期到期时刻 |
+| `sources` | 被删的源数据（`source.recorded` 的 `seq`） |
+| `origin` | `request` / `restored_unconfirmed`（登记里有、恢复出的日志里没有，重新生成并给新的宽限期）/ `restored_pending`（登记待执行，沿用原到期时刻）/ `restored_executed`（登记已执行，`due_at` 即本事件的 `at`，紧接着就是墓碑） |
+
+`results/<k>/target` 的 `outcome`：`deleted`（整行删除）/ `kept_fields_cleared`（保留，部分字段变空）/ `fields_reverted`（部分字段回到更早的值）/ `resegmented`（状态类表重新分段）。
+
+`results/<k>/fields/<字段ID>/<j>`：删除后这个字段的一段（事件类表恒为 `j = 0`）：
+
+```json
+{"value": {"value": "45", "unit": "CNY"},
+ "sources": [{"kind": "value", "carried": {"event": 23, "field": "f3", "k": 0}}]}
+```
+
+状态类表另带 `valid` 与 `deps`：
+
+```json
+{"valid": {"from": "2026-11-20"}, "value": {"value": "5000", "unit": "CNY"},
+ "sources": [{"kind": "value", "carried": {"event": 12, "field": "f2", "k": 0}}],
+ "deps": [{"event": 12, "field": "f2", "k": 0}, {"event": 32, "field": "f2", "k": 0}]}
+```
+
+- **段的定义**：状态类表上，删除后该字段的状态按"由哪一项贡献给出"切成段——同一项贡献连续给出值的最长区间是一段。`carried` 指向给出这一段的那一项。`deps` **总是含 `carried` 指向的那一项**（这一段的区间出自它，它被重述时这一块要清除），另加把这一段截成现在这样的其他贡献（盖住它两侧的写入、留下相邻空洞的撤销）。
+- **列哪些**：只列被这次删除改动了的字段。状态类表上列出两类段，**整段列出，不裁剪到有变化的那部分**：
+  1. 段内任何一个业务时刻上，取值或给出它的贡献项与删除前不同；
+  2. 由本次被重述的项（`restated`）给出的段。
+
+  没列到的段保持原样。字段变空时 `value` 为 `null`、`sources` 为空数组。带区间的撤销被删除时，重新可见的值按它所在的整段列出（那一段的区间是给出它的贡献自己的，不含被删的撤销区间），`results/<k>/existence` 给出删除后剩下的空洞。空洞的区间可以没有 `from`（从最早起）；`from` 与 `to` 都没有表示整个实体在任何业务时刻都没有值。
+- 值是从更早的贡献搬来的，来源一律写成 `carried`。以后删到这些贡献的来源时，本块同样在级联范围内。值落回 schema 切换的补值时，来源写 `schema_const` 条目（§5.7），不写 `carried`、不进 `deps`；带值的 `restated/<k>` 同样适用。
+
+`restated/<k>`：重放之后，某一项贡献的判定结果。形状与 `write.base` 里一项的判定结果相同（`fields` 的 `status` 加 `span` 的内容）：
+
+```json
+{"event": 18, "field": "f2", "k": 0, "status": "applied", "valid": {"from": "2026-11-02"}}
+```
+
+```json
+{"event": 26, "field": "f2", "k": 0, "status": "corroborated",
+ "valid": {"from": "2026-11-05", "to": "2026-11-20"}}
+```
+
+| 键 | 含义 |
+|---|---|
+| `event`、`field`、`k` | 指向哪条 `write.base` 的哪个字段的第几项。重述的是对"存在"的一项贡献时，没有 `field` 与 `k`，改为 `"existence": <k>`；它是恢复存在的项时另带 `"restored": true` |
+| `status` | 重放之后的生效状态：`applied`、`corroborated`、`candidate`、`awaiting`，或 `dropped`（这一项不再是贡献：成了同值而当初没指证据；回退记录里的项全都不是贡献或范围为空（回掉写回的项）；或它的区间并进了同一字段的另一项）。搬运来的项（回退、采纳候选、回到合并基写回的）与普通贡献一视同仁 |
+| `valid` / `seen_valid` | 状态类表：重放之后的区间。`candidate` 用 `seen_valid`；`dropped` 没有 |
+| `deps` | 重放之后解析这个区间时用到的别的贡献，含义同 `span` 的 `deps` |
+| `value`、`sources` | 只在搬运项（回退、回到合并基写回的项）被重放改了值或搬运来源时有：新的值与新的 `carried` 引用（`carried` 指向的项同时列进 `deps`） |
+| `no_value` | `true`：重放之后这一项写回的是"没有值"（含义同 `write.base` 的 `no_value`）。此时没有 `value` 与 `sources` |
+| `uncovered` | `true`：重放之后这一项只做登记、不给值（含义同 `write.base` 的 `uncovered`）。此时没有 `value` 与 `sources` |
+
+- **哪些项要重述**：
+  1. 重放之后，判定结果（生效状态、区间、`deps`、搬运项的值与来源、是否 `no_value` 或 `uncovered`）与日志里最近一次给出的不同的每一项。
+  2. **给出它当前判定结果的块被本次删除清掉、而重放之后仍是贡献的每一项**。这个块是它原来的 `span`，或更早一次删除的 `restated/<k>`。结果没变也重新给出，因为原块已不可读；不重新给出的话，从空存储重放时这一项会被当成"已不是贡献"。
+
+  原来的字段块被本次删除清掉、重放之后又有了新结果的搬运项，沿用原来的 `k` 重述。撤回事件同样按这两条。
+- **重述覆盖的情形**：候选或待确认的项因删除而生效（给出生效后的 `status` 与 `valid`，可能是 `applied`，也可能是 `corroborated`）；因删除转为待确认（`awaiting`，新事项由随后的 `item.created` 给出，它的 `origin_event` 指向这条 `write.base`）；改值变佐证、佐证变改值；默认终点、`corrected_span`、只带起点的撤销的终点被重新解析；回退写回的项因"之前的状态"变了而变。
+- **以最近一次为准**：一项贡献的判定结果以日志里最近一次给出它的事件为准。之后的 `undo`、冲突判据里"那次写入记下的区间"、对它的引用都按它；佐证端点按重述后的 `status` 与 `valid` 得出。
+- 它是数据块：指向的那一项被删除或再次被重述、`deps` 里任何一项被删除或被重述时，它列入那次删除的位置列表（§3.5）。
+
+**`recreated/<k>`**：删除重放让"哪次写入是首次创建"变了时记下。`created` 同样以最近一次给出的为准。
+
+**`positions` 是这次删除要清空的全部内容块**，各项删除各自列全（与别的待执行删除重叠的块照列）。它包括：
+
+| 类别 | 块 |
+|---|---|
+| 被删的源数据 | `text` / `file` / `request` / `stated_at` |
+| 这些来源的贡献 | `write.base` 的 `fields/*/*`、`sources/*/*`、`literal/*/*`、`span/*/*`、带区间撤销的 `span/existence/*` |
+| 原始传参与操作标识 | `write.head` 的 `ops/<i>/set/*`、`ops/<i>/valid`、`ops/<i>/refs`；相关操作的 `task`、`request_key`、`idempotency` |
+| `deps` 里有被删或被重述的贡献的块（§3.5） | 别的写入的 `span/*/*`、`span/existence/*`、`ack/*`、`duplicate`；事项的条目块与 `scope_valid`；更早的删除事件的 `results/*/fields/*/*`、`results/*/existence`、`restated/*` |
+| `carried` 指向被删或被重述为 `dropped` 的贡献的项 | 搬运项的 `fields/*/*`、`sources/*/*`（搬运项没有 `literal` 块；它的 `span` 已在上一行） |
+| 随之失效的 | `item.resolved` 的 `confirmation`；派生写入的 `key`、`checksum`；`schema.switched` 的 `tables/*` |
+| 本事件自己的 | `summary` |
+
+受影响的行或实体的 `ver` 换成本操作号。
+
+`apply`：
+
+  - 按 `results/*` 改业务表当前版本（整行删除、字段置空、字段回到给出的值、重新分段）；版本表在受影响的单元格上加一个版本（意图记为 `deletion`）。
+  - `base_sources`：去掉字段块列在 `positions` 里的项；按 `restated/*` 写入每个被重述项的生效状态、区间与搬运引用（`dropped` 的去掉；`candidate`、`awaiting` 的不算生效；同一项两者都有时以 `restated` 为准）。因删除而生效的项在贡献先后里仍排在自己原来的位置。`block_deps` 随之更新。
+  - `no_value` 的重述：该字段在这一项的区间上置为没有值。被回掉的项的登记（回退记录 `revert`）不因重述而变。
+  - `counts`：整行删除、行因删除而出现或消失时更新行数。
+  - `recreated`：更新首次创建的登记。
+  - `superseded_items`：事项状态由随后的 `item.superseded` 事件落账。
+  - `positions` 列出的块此后读不到（逻辑删除），到期前仍在存储里。
+  - `deletions` 加一行（待执行）；宽限期内的 `deletion` 事项由这一行得出。
+
+#### `deletion.cancelled`
+
+头事件。宽限期内撤回一次删除。`actor` 是撤回者；恢复流程按登记补出的，`actor` 是 `system`、`trigger` 是 `restore`。带 `ctx`；调用方撤回的另带 §5.1 的其余块。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"deletion": "pi_…", "origin": "request" \| "restore_cancel"}` |
+| `results/<k>/target`、`results/<k>/fields/<字段ID>/<j>`、`results/<k>/existence` | 元 / 数 | 与 `deletion.confirmed` 同形：撤回后受影响的行或实体的样子（按定义连同宽限期内的写入再算一次） |
+| `restated/<k>`、`recreated/<k>` | 数 / 元 | 与 `deletion.confirmed` 同形：撤回后各项贡献的判定结果与首次创建标记。因那次删除而生效、撤回后退回未生效状态的写入，在这里重述为 `candidate` 或 `awaiting`；被那次删除重述过的项，在这里按撤回后的状态再重述一次 |
+| `restored_items` | 元 | 恢复为未决的事项 ID 列表 |
+| `kept_superseded/<k>` | 元 | 保持"已被取代"的事项：`{"item": "pi_…", "by_event": <seq>}` |
+| `kept_effective/<k>` | 元 | 因删除而生效、宽限期内已被别的写入当作基线而不退回的写入：`{"event": <seq>, "items": [{"field": …, "k": …}], "by_event": <以它为基线的那条 write.base 的 seq>}` |
+
+- 被那次删除列入 `positions` 的块恢复可读（仍被别的待执行删除列出的除外）。其中带 `deps` 的块，内容是删除之前求得的；撤回之后是否仍然成立由重放决定，变了的由本事件的 `restated`、`results` 重新给出，并以本事件为准。
+- 那次删除确认事件自己的 `results/*`、`restated/*` 块此后不再是"最近一次给出的"；它们留在日志里，照 §3.5 随它们的 `deps` 清除。
+
+`apply`：按 `results/*` 改业务表与版本表（版本的意图记为 `deletion_cancelled`）；行回来或消失时更新 `counts`；按 `restated/*`、`recreated/*` 更新来源表与首次创建的登记；`deletions` 置为已撤回；恢复的事项由 `restored_items` 置回未决。
+
+#### `deletion.executed`（墓碑）
+
+头事件，`actor: "system"`。`trigger`：到期的是 `deletion_expiry`，恢复流程补的是 `restore_backfill`。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"deletion": "pi_…", "reason": "expiry" \| "restore_backfill"}` |
+| `positions` | 元 | 这次清空的内容块：`[{"seq": …, "path": …}]` |
+
+- 墓碑里没有任何描述被删内容的文字，也没有由它算出的值。
+- `positions` 一般等于对应 `deletion.confirmed` 的 `positions`；块已被更早的墓碑清空的跳过，不重复列。
+- 墓碑永不过期。
+- `apply`：把 `positions` 列出的每个块清空并记 `removed_by` = 本事件的 `seq`；清掉各版本物理表（含退役表）、版本表、`pending_entries`、`partitions`、请求键索引、全文索引里由这些块得出的内容；`deletions` 置为已执行。当前业务状态不变。
+
+### 5.10 第一版产生事件的操作一览
+
+| 操作 | 产生事件吗 |
+|---|---|
+| `write`、`resolve`、`schema_draft`、`delete`、撤回删除 | 是（上文） |
+| 签发、改名、吊销连接实例 | 是（`principal.*`） |
+| 被拒的请求（校验失败、`read_first`、`insufficient_scope`、编译失败……） | 否。被拒的写入不产生事件，也不做去重 |
+| 全部字段都是无操作的写入 | `write.head` 与 `source.recorded`；没有 `write.base` |
+| 所有读操作（含删除预览） | 否。读取记进读取记录，不进日志 |
+| 日志校验、对拍、导出、读取审计查询 | 否 |
+| 读取记录的落盘与清理、残留清理、高水位推进、所有权 epoch | 否 |
+
+### 5.11 `apply` 维护的物化状态由什么重建
+
+| 物化状态 | 由哪些事件的哪些部分重建 |
+|---|---|
+| 主体登记 | `tenant.genesis` 的 `user`、`system`；`principal.*` |
+| 当前恢复次数 | 最后一条 `tenant.restored` 的 `restore_count`（没有则为 0） |
+| slot、当前版本指针、当前策略 | `schema.compiled` 的 `compiled`；`schema.switched` 的 `target`；`slot.policy_set` |
+| schema 版本表、迁移状态、数据目录的结构部分 | `schema.*` |
+| 业务表当前版本、版本表、行数计数 | `write.base` 的 `target`、`fields/*/*`（`applied`）、`existence/*`；`write.base` 的 `span/*/*`、`span/existence/*`；`deletion.confirmed` / `deletion.cancelled` 的 `results/*`、`restated/*`；`schema.switched`（按 `compiled` 转换旧版写入）；`deletion.executed`（清空） |
+| 来源表（含每项贡献的当前区间、首次创建的登记、佐证端点） | `write.base` 的 `fields/*/*` 与 `existence/*` 的 `status`、`span/*/*`、`span/existence/*`、`sources/*/*`、`valid_sources`、`op_sources`、`target.created`、`revert`（"已被回掉"的登记）；`write.head` 的 `ops/<i>/valid`（判别显式终点）；`deletion.*` 的 `restated/*`、`recreated/*`；`schema.switched`（按 `compiled` 转换旧版各项，登记常量 `backfill` 补出的贡献） |
+| 块依赖索引 | 各数据块的 `deps` 与 `sources/*/*`、`results/*`、`restated/*` 里的 `carried` |
+| 派生表、分组映射、派生读集 | `write.derived`；`schema.switched`（按新规则重建） |
+| 待处理事项及其条目 | `item.*`；`deletion.confirmed` / `deletion.cancelled`（`deletion` 事项本身、`superseded_items`、`restored_items`） |
+| 数据标记 `disputed`、`awaiting`、`flagged` | 未决事项的 `target` 与 `scope_valid` |
+| 请求键索引 | 各头事件的 `request_key`、`idempotency` |
+| 删除表 | `deletion.*` 的 `target` |
+| 源数据登记、全文索引 | `source.recorded` |
+| 数据目录的概况与取值示例 | 由当前业务表现算，不由事件直接给出 |
+
+### 5.12 结果校验和的算法
+
+用于 `write.derived` 的 `checksum` 与 `schema.switched` 的 `tables/<表ID>`。
+
+- **一个派生行**：把结果列按字段 ID 的字典序排成对象 `{<字段ID>: <值>}`（值按 §1.3），取 JCS 字节的 SHA-256。
+- **一张表**：把每个逻辑行写成 `{"id": <行或实体 ID>, "valid": <区间，状态类表才有>, "fields": {<字段ID>: <值>}}`，按 `id`、再按 `valid.from` 排序；逐行取 JCS 字节，以一个换行符（`0x0A`）连接；对整体取 SHA-256。已撤销的行不计入。
+
+---
+
+## 6. 枚举
+
+**"保留值"只指第一版不产生、遇到即停机的那一类；第一版正在用的专用取值（主体 `system`、"存在"的 `existence`）叫"固定值"，是 `v` = 1 的合法内容。保留值不属于 `v` = 1 的取值集合。** 本节各表里列出的是第一版内核会产生的取值；标"保留"的只是把名字占住，第一版内核不产生，也不接受——在 `v` = 1 的事件里遇到，按未知形状停机（§1.6）。将来启用某个保留值时，用到它的事件所属类型的 `v` 加一。"第一版恒为空"的键同理：非空的形状不属于 `v` = 1。
+
+### 6.1 事件类型
+
+第一版产生：
+
+| `type` | 说明 |
+|---|---|
+| `tenant.genesis` | 租户创世 |
+| `tenant.restored` | 恢复 |
+| `principal.registered`、`principal.renamed`、`principal.revoked` | 主体 |
+| `slot.policy_set` | slot 策略 |
+| `schema.draft_submitted`、`schema.compiled`、`schema.confirmed`、`schema.rejected`、`schema.superseded`、`schema.migration_started`、`schema.switched`、`schema.migration_failed` | schema 生命周期 |
+| `source.recorded` | 源数据 |
+| `write.head`、`write.base`、`write.derived` | 写入 |
+| `item.created`、`item.merged`、`item.refreshed`、`item.superseded`、`item.resolved` | 待处理事项 |
+| `deletion.confirmed`、`deletion.cancelled`、`deletion.executed` | 删除 |
+
+留位（第一版不产生）：见 §10。
+
+### 6.2 意图 `intent`
+
+| 值 | 含义 |
+|---|---|
+| `insert` | 新增 |
+| `update` | 变更 |
+| `correct` | 纠错 |
+| `revoke` | 撤销 |
+
+回退（`revert`）不是意图，`write.base` 另带回退记录 `revert`；它与 `take_previous` 触发的基础写入是同一种操作（区别只在 `revert` 块里是 `before_op` 还是 `as_of_op`）。回掉写入的意图：`undo` 调用方给了意图就用它，没给时取**被撤回的操作在这一行（或实体）上 `seq` 最大的那条 `write.base` 的意图**，不看 `include_later` 连带回掉的写入；`take_previous` 取**回退记录里事件 `seq` 最大的那一项所在 `write.base` 的意图**，回退记录为空时取 `update`。这个意图只表示"沿用的来历"，实际效果以写回项为准：例如目标是"存在"的冲突里生效的一方是撤销，`take_previous` 那条恢复存在的写入沿用到的意图是 `revoke`，而它写回的是 `existence` 的 `restored` 项；`timeline` 展示这类写入时以回退记录与写回项说明做了什么，不单看意图。保留值：`applied_by_rule`（系统裁定，§10）。
+
+版本表里每个版本也记一个意图，供 `timeline` 与 `changes` 给出。除上面四个外另有三个取值，只用于由删除或 schema 切换产生的版本，不出现在 `write.base` 里：
+
+| 值 | 含义 |
+|---|---|
+| `deletion` | 这个版本由一次删除确认产生 |
+| `deletion_cancelled` | 这个版本由一次撤回删除产生 |
+| `schema_switch` | 这个版本由一次 schema 切换的 `backfill` 在本来没有值的位置补出（出处是那条 `schema.switched`） |
+
+### 6.3 字段生效状态 `status`
+
+| 值 | 含义 | 改业务表吗 | 记来源吗 |
+|---|---|---|---|
+| `applied` | 已生效 | 是 | 是 |
+| `candidate` | 冲突候选，未生效 | 否 | 记在事件里，不进来源表 |
+| `awaiting` | 高影响，等待确认，未生效 | 否 | 同上 |
+| `corroborated` | 同值且显式指了证据：追加来源 | 否 | 是 |
+| `dropped` | 只出现在删除事件的 `restated/<k>` 里：这一项经删除重放后不再是贡献（成了同值而当初没指证据）；回掉写回的项，其回退记录里的项全都不是贡献或范围为空；或它的区间并进了同一字段的另一项 | 否 | 否 |
+| `noop` | 与所见版本同值且没指证据：无操作。**不出现在 `write.base` 里**（无操作的字段没有项，只在 `write.head` 的 `ops/<i>/noop` 列出字段 ID）；这个取值只用于契约的回执 | 否 | 否 |
+
+### 6.4 事项类型 `type`
+
+`conflict`、`awaiting_confirmation`、`flagged`、`schema_change`。`deletion` 事项不由 `item.*` 事件表达（§5.9）。保留值：`migration_diff`、`sync_rejected`。
+
+### 6.5 处理方式 `decision`
+
+| 事项类型 | 取值 |
+|---|---|
+| `conflict` | `keep_effective`、`take_candidate`、`take_previous` |
+| `awaiting_confirmation` | `confirm`、`reject` |
+| `flagged` | `keep`、`revoke` |
+| `schema_change` | `confirm`、`reject` |
+
+`deletion` 事项的撤回（对外的处理方式 `cancel`）不经 `item.resolved`，由 `deletion.cancelled` 表达（§5.9）。
+
+保留值：`migration_diff` 的 `accept_all`、`rows`（逐行接受、拒绝或给值）、`keep_rest_and_switch`、`abandon`。
+
+### 6.6 成因码与取代原因
+
+`item.created` 的 `reason`：
+
+| 值 | 事项类型 | 含义 |
+|---|---|---|
+| `stale_write` | `conflict` | 带过期 `ver` 的写入与期间的写入相交 |
+| `overwrites_change_point` | `awaiting_confirmation` | 抹掉已记录的变化点（含跨空洞填值） |
+| `referenced_row` | `awaiting_confirmation` | 撤销仍被引用的行 |
+| `undo_includes_later` | `awaiting_confirmation` | `undo` 连后来的写入一起回掉 |
+| `conflict_cleared_by_deletion` | `awaiting_confirmation` | 删除让冲突消失，而该写入仍属高影响 |
+| `restored_candidate` | `conflict` | 撤回删除放回了一个候选，而它原来所在的事项在宽限期内已被解决：为它另开一个事项，`related_item` 指向原事项 |
+| `duplicate_keys` | `flagged` | 命中疑似重复的判据 |
+| `schema_change` | `schema_change` | 草稿需要确认 |
+
+保留值：`policy_high_impact`。
+
+`deletion` 事项没有 `item.created`；对外给出的成因码就是 `deletion.confirmed` 的 `origin`（§6.8）。
+
+`item.superseded` 的 `reason`：
+
+| 值 | 含义 |
+|---|---|
+| `overwritten` | 目标被一次读过该事项的写入改到 |
+| `schema_switched` | schema 已切换，且事项涉及被改动的字段 |
+| `deleted` | 隐私删除让事项失去目标、候选或提议失去全部值来源、或成因被删 |
+| `draft_replaced` | `schema_change` 事项对应的草稿被新草稿取代 |
+| `deletion_cancelled` | 因删除而生成的待确认事项，在删除撤回后不再成立 |
+
+保留值：`evidence_deleted`、`migration_failed`。
+
+### 6.7 候选的来由 `cause`
+
+`stale_write`。保留值：`displaced_by_rule`。
+
+### 6.8 其他取值
+
+| 字段 | 取值 |
+|---|---|
+| `source.recorded` 的 `kind` | `user_message`、`agent_note`、`tool_result`、`file_ref`、`api_call` |
+| 来源级别 `level` | `user_stated`、`agent_inferred`。保留：`external_authority` |
+| 字面命中 `result` | `hit`、`miss`、`na` |
+| `ver.basis` | `explicit`、`fallback`、`same_request` |
+| `valid` 的 `mode` | `given`、`now`、`open`、`next_change`、`corrected_span` |
+| `write.base` 的 `cause` | `request`、`resolve` |
+| `existence` 的 `scope` | `whole`、`interval` |
+| `deletion.confirmed` 的 `kind` | `privacy` |
+| `deletion.confirmed` 的 `origin` | `request`、`restored_unconfirmed`、`restored_pending`、`restored_executed` |
+| `deletion.cancelled` 的 `origin` | `request`、`restore_cancel` |
+| `deletion.executed` 的 `reason` | `expiry`、`restore_backfill` |
+| 删除结果 `outcome` | `deleted`、`kept_fields_cleared`、`fields_reverted`、`resegmented` |
+| `schema.compiled` 的 `outcome` | `applied`、`pending` |
+| 改动类别 `class` | `create`、`metadata`、`deterministic`。保留：`reextract` |
+| `schema.migration_failed` 的 `reason` | `build_failed`、`verify_failed` |
+| `item.refreshed` 的 `cause` | `target_overwritten`、`references_changed`、`entries_deleted`、`entries_restored` |
+| `item.resolved` 的 `via` | `call`。保留：`elicitation` |
+| 主体 `kind` | `user`、`connection`、`system` |
+| `write.head` `request.sv_basis` | `explicit`、`fallback` |
+| `schema.confirmed` 的 `by` | `auto`、`resolve` |
+| `principal.registered` 的 `via` | `token`、`oauth` |
+| `impact/<k>` 的 `kind` | `overwritten_segment`、`referencing_row`、`reverted_write` |
+| `sources/…` 条目的 `kind` | `value`（来自源数据，或带 `carried` 的搬运）、`schema_const`（出自 schema 常量） |
+| `slot.policy_set` 的 `effective_value_rule` | `keep_current` |
+| `slot.policy_set` 的 `auto_apply` | 七个改动类取值，见 §5.4 |
+| 事项 `target.unit` 的固定值 | `"existence"`（目标是"存在"时；第一版在用，不是保留值） |
+| 编译后定义（§7）里的枚举 | 表的 `kind`、`time.type`、`granularity`、`rule.time_dependency`、`rule.scope.kind`、`rounding`、`ref.target`：取值列在 §7 的表里 |
+| 导出清单（§8）的 `pending_deletions` | 取值列在 §8 |
+
+**哪些键算枚举**：§5、§7、§8 的表格与形状说明里写成 `a | b` 或"取值：…"的键都是枚举，受 §1.6"遇到不认识的取值就停"的约束；本节是它们的索引，以各节的定义为准。
+
+### 6.9 `trigger`
+
+| 值 | 用在 |
+|---|---|
+| `deletion_expiry` | 到期物理删除 |
+| `migration` | 后台迁移的切换与失败 |
+| `restore` | `tenant.restored`；恢复流程按登记重新生成的删除确认与撤回 |
+| `restore_backfill` | 恢复流程补的墓碑 |
+
+保留值：`job`、`retired_purge`、`rejudge`、`ruling`。
+
+---
+
+## 7. 编译后的 schema 定义
+
+`schema.compiled` 的 `compiled` 块。建第一个 slot 就产生，之后重放、按时刻读、删除重放、迁移构建都只读它，不重新编译草稿。
+
+```json
+{
+  "compiler": 1,
+  "slot": "sl_4KTZ…",
+  "name": "ledger",
+  "sv": 1,
+  "timezone": "Asia/Shanghai",
+  "tables": [
+    {
+      "id": "t1", "name": "expenses", "kind": "base", "description": "每笔支出一行",
+      "time": {"type": "event", "field": "f1"},
+      "physical": {"table": "t_t1_v1"},
+      "fields": [
+        {"id": "f1", "name": "date", "type": "date", "required": true, "description": "支出当天"},
+        {"id": "f2", "name": "category", "type": "text", "required": true, "description": "类别"},
+        {"id": "f3", "name": "amount", "type": "quantity", "required": true, "min": "0", "description": "金额",
+         "unit": {"code": "CNY", "dimension": "currency:CNY"},
+         "precision": {"scale": 2, "rounding": "half_up"}},
+        {"id": "f4", "name": "note", "type": "text", "description": "备注"}
+      ],
+      "duplicate_keys": [["f1", "f2", "f3"]],
+      "together": []
+    },
+    {
+      "id": "t2", "name": "monthly_total", "kind": "derived", "description": "每月支出合计",
+      "physical": {"table": "d_t2_v1"},
+      "rule": {
+        "id": "r1", "version": 1,
+        "sql": "SELECT date_trunc('month', \"t1\".\"f1\"::timestamp)::date AS \"f1\", sum(\"t1\".\"f3\") AS \"f2\" FROM \"t1\" GROUP BY 1",
+        "time_dependency": "bucketed",
+        "depends_on": [{"table": "t1", "field": "f1"}, {"table": "t1", "field": "f3"}],
+        "scope": {"kind": "group", "key": ["f1"], "key_from_free_text": false}
+      },
+      "fields": [
+        {"id": "f1", "name": "month", "type": "date", "description": "该月第一天"},
+        {"id": "f2", "name": "total", "type": "quantity", "description": "该月支出合计",
+         "unit": {"code": "CNY", "dimension": "currency:CNY"},
+         "precision": {"scale": 2, "rounding": "half_up"}}
+      ]
+    }
+  ]
+}
+```
+
+| 位置 | 键 | 含义 |
+|---|---|---|
+| 顶层 | `compiler` | 编译器输出格式的版本。定义的结构有不兼容变化时加 1；`apply` 遇到不认识的值停止。分工：事件的 `v` 管 `schema.compiled` 这条事件有哪些块、块里有哪些键；`compiler` 管 `compiled` 块内部这份定义的结构与编译规则（同一份草稿编译出什么）。给定义新增键（如字段的 `offset`、多字段的 `migrate`）时两者都加一 |
+| | `slot`、`name`、`sv`、`timezone` | slot ID、名称、这一版的版本号、时区 |
+| | `tables` | **这一版里全部的表**（不只是改动的），每张给完整定义。重放时只凭这一块就能解释这一版的全部写入 |
+| 表 | `id`、`name`、`kind`、`description` | `kind`：`base` / `derived` |
+| | `time` | `{"type": "none"}` / `{"type": "event", "field": <字段 ID>}` / `{"type": "state", "granularity": "date" \| "instant"}` |
+| | `entity_key` | 状态类表的自然键：字段 ID 数组 |
+| | `together` | 字段组：字段 ID 数组的数组。同组字段是一个冲突单元 |
+| | `duplicate_keys` | 疑似重复的判据：字段 ID 数组的数组 |
+| | `physical` | `{"table": <物理表名>, "since": <整数>}`。`since` 是这张物理表最初建于哪个版本；与本版 `sv` 相同时可省，表示本版新建 |
+| 基础表的字段 | `id`、`name`、`type`、`description`、`required` | |
+| | `min`、`max` | 十进制字符串 |
+| | `values` | `enum` 的取值 |
+| | `unit` | `quantity`：`{"code": <单位代码>, "dimension": <量纲标识>, "to_base": <十进制字符串>}`。`to_base` 是换算到该量纲基准单位的系数；货币与温度没有（每种货币、每种温度单位自成量纲，不换算）。代码、量纲与系数取自单位词表 `units@1`（[`03-data-model/10-types-and-units.md`](03-data-model/10-types-and-units.md)） |
+| | `precision` | `quantity`、`decimal`：`{"scale": <小数位数 0–12>, "rounding": "half_up" \| "half_even"}`。字段没声明时由编译器按默认回填（货币取 ISO 4217 的最小单位位数，其余 6；舍入 `half_up`）。写入换算后的舍入、同值判断、`min` / `max` 校验都按它；字面命中比的是原始值 |
+| | `ref` | `{"table": <表 ID>, "target": "row" \| "entity"}` |
+| | `migrate` | 这一版对该字段做的确定性转换：`{"sql": <按上一版的表 ID、字段 ID 绑定的表达式>}`。第一版表达式里只能出现本字段在上一版里的 ID 与常量；只对带值的项求值。同量纲换单位由编译器生成 |
+| | `backfill` | 收紧约束时对违反行的补值：`{"sql": …}`（同样只引用本字段；只对有旧值的位置求值）或 `{"const": <值>}`（没有旧值的位置只有它给值；新增必填字段、可选改必填一律必须是这一种，不看表里有没有行）。两种形式不同时出现 |
+| | `from` | 这一版的该字段在上一版里对应的字段 ID（改名、换类型时）。新增字段没有 |
+| 派生表 | `rule.id`、`rule.version` | 规则 ID 与版本。规则文本或它依赖的字段定义有变化时版本加 1 |
+| | `rule.sql` | 按表 ID、字段 ID 绑定后的受限 SQL，输出列名是派生字段 ID |
+| | `rule.time_dependency` | `none` / `bucketed` / `now` |
+| | `rule.depends_on` | 静态列级依赖 |
+| | `rule.scope` | 重算范围：`{"kind": "group", "key": [<派生字段 ID>]}` 或 `{"kind": "tenant"}`；`key_from_free_text` 表示分组键来自自由文本字段 |
+| 派生表的字段 | `type`、`unit`、`precision` | 由编译器推断回填 |
+
+- 名称、说明、枚举值是 schema 作者写的文字，可能含用户原话；它们不在隐私删除的级联范围内。
+- 重新抽取（`reextract`）的声明不进第一版的编译结果，留位见 §10。
+
+---
+
+## 8. 导出文件
+
+导出 = 这个租户的全部事件，从 `seq` 1 起（续传时从 `after` 之后起），按 `seq` 升序。读取记录、控制面、物化状态都不在其中。
+
+- 文件是 **NDJSON**：每行一个 JSON 对象，UTF-8，行尾 `0x0A`。每行本身按 JCS 序列化。
+- **第一行是清单**，之后每行一个事件。
+
+清单：
+
+```json
+{"saveslot_export": 1, "tenant_id": "tn_…", "event_format": 1, "restore_count": 0,
+ "upto": 43, "events": 43,
+ "exported_at": "2026-11-10T08:00:00.000Z", "pending_deletions": "placeholder"}
+```
+
+| 键 | 含义 |
+|---|---|
+| `saveslot_export` | 导出文件格式的版本 |
+| `tenant_id`、`event_format` | 租户 ID；事件格式的版本 |
+| `restore_count` | 导出时的租户恢复次数 |
+| `after` | 续传时才有：本文件只含 `seq` 大于它的事件。带 `after` 的文件不能单独重放，要接在前一段之后 |
+| `upto`、`events` | 本文件最后一条事件的 `seq`；本文件的事件条数（有恢复空档时小于 `upto` 与起点之差） |
+| `exported_at` | 导出时刻 |
+| `pending_deletions` | `placeholder`（默认：宽限期内待删除的块换成占位）/ `included`（用户会话显式要求包含） |
+
+事件行：
+
+```json
+{"h": {"actor": "ci_7HQ2…", "at": "2026-11-10T04:41:07.123Z", "op": 25, "prev_hash": "9f2c…e1",
+       "seq": 27, "slot": "sl_4KTZ…", "type": "write.base", "v": 1},
+ "c": {"fields/f3/0": {"pending_deletion": 42},
+       "literal/f3/0": {"pending_deletion": 42},
+       "sources/f3/0": {"pending_deletion": 42},
+       "target": {"v": {"cause": "request", "intent": "correct", "op_index": 0, "row": "r_01JC8Z…", "sv": 1, "table": "t1"},
+                  "sum": "c20a…5d"}}}
+```
+
+| 键 | 含义 |
+|---|---|
+| `h` | 事件头对象。读取方对它重新做 JCS 序列化，得到的字节就是进链的字节 |
+| `c` | 内容块：`path` → 块的状态（§3.3 的三种形状之一）。没有内容块的事件没有 `c` |
+
+例子是宽限期内导出的（删除在 2026-11-10T05:02Z 确认，导出在三小时后；清单的 `upto` 是 43，墓碑 #44 还没有追加）：这次纠错的三个块同生同灭，都是待删除的占位。墓碑落账之后再导出，它们是 `{"removed_by": 44}`。
+
+读取方校验：逐行对 `h` 取事件头哈希，核对下一行的 `prev_hash`；对每个 `{"v", "sum"}` 核对校验和。`seq` 的空档必须由随后的 `tenant.restored` 说明。
+
+带占位的导出重放后，日志末端的业务状态与线上一致（删除后的样子写在 `deletion.confirmed` 里）；占位处的历史内容不可得，也无法再撤回那次删除。
+
+---
+
+## 9. 事件头里留下了什么
+
+隐私删除只清空内容块。事件头永远留在链上，元数据块在第一版里也不删除；另有几类数据块没有来源，或来源不是被删的那句话，也不随这次删除清除。这一节列出删除之后还留着什么，以及每一项为什么留、能不能不留。
+
+### 9.1 事件头（进链，不能删改）
+
+| 字段 | 看得出什么 | 为什么必须在事件头 | 若要求不保留 |
+|---|---|---|---|
+| `seq`、`prev_hash` | 日志里有过这一条，位置在哪 | 链的组成部分 | 不可能移走：没有它们就没有链 |
+| `v`、`type` | 这是一次什么性质的操作（一次写入、一条证据、一次确认……）。不含意图、不含表 | 重放时必须在不读内容的情况下知道怎么处理这条事件；旧内核据此判断能不能继续 | 可以把类型合并得更粗（例如把 `write.base` 与 `source.recorded` 并成一种），代价是新事件格式版本，旧事件不变 |
+| `actor` | 是哪个主体做的 | 每个事件都有经手人是内核不变量；主体的吊销、审计都按它 | 可移进元数据块。代价：`verify` 不读内容就无法检查"actor 已登记" |
+| `at` | 什么时候记下的 | 幂等窗口、宽限期到期、记录时刻单调都依赖它 | 可降低精度（到秒或到分钟），是新版本里的写法变化 |
+| `op` | 哪几条事件属于同一次操作 | 按记录位置读时，操作要整体可见或整体不可见 | 可移进元数据块，代价同 `actor` |
+| `slot` | 属于哪个 slot（不透明 ID，不是名字） | 将来按 slot 做部分复制时，事件头是全量复制的，要靠它过滤 | 可移进元数据块；部分复制届时改为读元数据块 |
+| `trigger` | 内核的哪类后台任务 | 不涉及用户 | — |
+| `node_id`、`restore_*`、`high_water` | 租户建于哪个节点、恢复过几次 | 事件身份与 `seq` 空档的说明 | 不涉及用户内容 |
+
+### 9.2 元数据块（不进链，第一版不删除）
+
+| 内容 | 看得出什么 | 若要求不保留 |
+|---|---|---|
+| 表 ID、行或实体 ID | 某张表里有过某一行；行 ID 是 UUIDv7，带毫秒级的创建时间 | 整行被隐私删除时，把这一行的全部 `target` 块也列进位置列表。**不改事件头，不改已有事件**；代价是整行删除后版本表里不再留"该处已删除"的记录，按时刻读到那一段时看不到这一行存在过 |
+| 意图 | 这次写入是新增、变更、纠错还是撤销 | 同上，随 `target` 一起删 |
+| 被引用的源数据与写入的 `seq` | 哪次写入依据了哪条证据（都只是序号） | 同上 |
+| 事项的类型、成因码、处理方式 | 有过一次冲突或待确认，后来怎么处理的 | 事项的目标整行被删时一并删除 `target` 块 |
+| 删除 ID、到期时刻、位置列表 | 有过一次删除，清掉了哪些位置 | 不能删：墓碑与位置列表是"删除不复活"的依据 |
+| 规则版本、策略版本、`now`、`today` | 判定时用的版本与入口时刻。`today` 是入口时刻在 slot 时区下的日期，看得出用户给 slot 设的时区落在哪一天，看不出别的 | 不涉及用户内容 |
+
+### 9.3 看不出什么
+
+删除到期后，从留下的东西里看不出：被删内容给出的任何值、证据原文、出自被删内容的业务时间区间（含由它求得的端点：别的写入停在它上面的默认终点、回退与删除结果里抄下的区间，见 §3.5）、改的是哪个字段的名字与值（**字段 ID 留得下来**：它出现在数据块的 path 里，而 path 留在位置列表中；也出现在几处元数据块里——无操作字段的列表 `ops/<i>/noop`、`named_fields`、回退记录 `revert` 的条目、事项 `target` 的 `unit`、`kept_effective` 的 `items`。所以看得出"哪次写入、哪个事项涉及第几号字段"，看不出字段名与值）、表名与字段名、分组键值、被删内容的哈希或长度。**有一处例外：别的请求的请求键，见 §9.5。**
+
+另外，一次操作里各类事件的条数本身看得出几件事：这次写入带了几段证据、有几个 op、引出了几个事项、有几个派生行变了。事件条数由用户内容决定，但不含内容本身。
+
+把字段 ID 也去掉的办法是把 path 与这些元数据块里的字段 ID 换成不带含义的序号，属于新的事件格式版本；第一版不做。
+
+### 9.4 不随这次删除清除的数据块
+
+下面这些是数据块（含用户写的文字，或由用户内容算出的值），但它们没有来源，或者来源不是被删的那句话，所以一次隐私删除清不到它们。删除预览的 `not_deleted` 如实列出其中与本次删除有关的。
+
+| 内容 | 在哪 | 为什么不清除 | 怎么去掉 |
+|---|---|---|---|
+| 连接实例的名称 | `principal.registered` / `principal.renamed` 的 `name` | 用户起的名字，不是由源数据得出的 | 给连接实例改名只追加新名字；清除旧名字要新增一种删除，第一版没有 |
+| schema 草稿与编译结果里的文字（表名、字段名、说明、枚举值、`migrate` 与 `backfill` 里的常量） | `schema.draft_submitted`、`schema.compiled` 的块（§5.5、§7） | schema 作者写的文字，不记来源。其中 `backfill` 的常量经切换补进业务表与版本表之后同样不清除，之后引用它的写回项与删除结果里也照抄这个值 | 同上；第一版只能不在 schema 里写用户原话 |
+| 没有任何源数据的操作自报的任务标识、请求键、显式幂等键与指纹 | `deletion.confirmed`、`schema.draft_submitted`、既没带证据也没带 `note` 的 `item.resolved` 的 `task`、`request_key`、`idempotency`（§5.1） | 这些操作没有证据，三个块没有来源可沿着删 | 任务标识不要包含用户内容（工具描述里写明）；请求键过了幂等窗口后可以由一次新增的清理动作清空，第一版不做 |
+| 别的请求的请求键与幂等键指纹 | 见 §9.5 | 它们只随自己那次请求的证据删除 | 见 §9.5 |
+| 另一句话里重复的内容 | 别的 `source.recorded` 的 `text` 等 | 用户在另一句话里说了同样的内容，那是另一条源数据，不在这次删除的范围内 | 把那条源数据也列为删除目标 |
+
+"存在"项 `existence/<k>` 是元数据块（只有状态与范围，没有内容），照 §9.2 留下：看得出某一行被撤销过。
+
+### 9.5 已知边界：请求键是含内容的哈希
+
+- **请求键**（`request_key`）由"连接实例 + 任务 + 规范化请求"算出；**显式幂等键的指纹**（`idempotency.fingerprint`）是请求内容的哈希。两者都按**原始请求体**算，请求里原样带回的无操作字段的值也参与了计算。
+- 它们的来源是**本次请求的证据**：本次请求的任何一段证据被隐私删除，它们随之清除。它们**不随**"无操作字段所同值的那个旧来源"清除。
+- 所以有这样一种情形：用户说过一句话 A（记下值 X），后来另一次请求原样带回了 X、并带着另一句话 B 的证据。隐私删除 A 之后，X 在全库的值、原文、区间里都检索不到；但那次请求的请求键还在，它是一个含 X 的哈希。
+- **看得出什么**：拿到这个租户存储的人，如果已经知道那次请求的其余全部内容，可以用猜测的 X 重算哈希来比对。哈希本身推不出 X。
+- **为什么留**：请求键是幂等判断的依据（宽限期内重发一条刚被删除的写入时不能重新写入）；把无操作字段排除在请求键之外，会让"带回的值不同"的两次请求被判为同一次。日志里除此之外不留无操作字段的任何值（§5.7）。
+- **若要求不保留**：请求键过了幂等窗口（服务端算出的 10 分钟，显式幂等键 24 小时）之后不再有用，可以新增一种清理动作把过期的 `request_key`、`idempotency` 块清空；这是新增事件类型，不改已有事件。第一版不做：它们只随证据删除。
+
+### 9.6 待办：法务确认
+
+> **待办（服务器模式上线前；不挡本机模式与开发）**：把本节发给法务，并说明服务器模式打算在哪些地区提供。请法务逐项回答"可以留 / 不可以留"：
+>
+> 1. §9.1 的事件头：删除后仍看得出某时刻有过一次什么性质的操作、由哪个连接实例做的、属于哪个 slot。
+> 2. §9.2 的元数据块：某张表里有过某一行（行 ID 带毫秒级创建时间）、写入的意图、涉及第几号字段、有过冲突及其处理方式。
+> 3. §9.5 的请求键：一个由请求内容算出的哈希，只随本次请求的证据删除。
+> 4. §9.4 的几类文字：连接实例的名称、schema 里的文字、另一句话里重复的内容。
+> 5. 删除的执行方式：24 小时宽限期与法定删除时限的关系；物理删除的时点、备份保留期怎么向用户告知。
+>
+> 每一项"不可以留"对应的改法与代价见各小节的"若要求不保留"一栏。只有"日志里有过这一条"（`seq`、`prev_hash`）无法去掉。
+
+---
+
+## 10. 留位与演进
+
+下面这些第一版不产生。每一项写明将来加入时新增什么；**加入时都不需要改写已有事件**。按 §1.6 的规则，凡是用到下表里新增的 path、键或枚举值的事件，该事件类型的 `v` 加一；没用到的事件照旧。
+
+| 能力 | 将来新增什么 |
+|---|---|
+| 系统裁定（级别高的候选自动生效） | `write.base` 的 `cause` 加 `ruling`、`intent` 加 `applied_by_rule`；候选的 `cause` 加 `displaced_by_rule`；`trigger` 加 `ruling`；`slot.policy_set` 的 `effective_value_rule` 加新值。它要用到的输入第一版已经在记：`literal/*`、`stated_at`、`ctx` 的两个版本号、`merge_base_op`、`ver.basis`、`writer_had_read`、`seen_valid` |
+| 重判（让旧事项改用新规则或新策略） | 新事件类型 `judge.rejudged`（头事件，`trigger: "rejudge"`）：列出被重判的写入与事项、新的生效状态、新的两个版本号。内核停用某个旧规则版本之前，必须先对还用着它的写入做一次重判 |
+| 删除证据（只删原文，值留下） | `deletion.confirmed` 的 `kind` 加 `evidence`；`item.superseded` 的 `reason` 用上 `evidence_deleted`。位置列表只含源数据的原文块 |
+| 按行隐私删除 | `deletion.confirmed` 的 `target` 加可选的 `rows`；计算与事件形状不变 |
+| 抽取作业（重新抽取类迁移、新字段补抽） | 新事件类型 `schema.migration_result`（翻译结果按 `items/<工作项>/<字段ID>` 切块，来源是工作项附带的全部原文）、`schema.migration_abandoned`（第一版不产生：确定性迁移没有人工放弃的出口）；`schema.switched` 加可选块 `pending_extraction`；事项类型 `migration_diff` 及其处理方式；`compiled` 的字段加 `reextract`；`deletion.confirmed` 加可选块 `reextract/<k>`；数据标记 `pending_extraction` |
+| 大写入作业 | 新事件类型 `job.accepted`（请求内容按 op 切块）、`job.completed`、`job.failed`；`trigger` 加 `job`；数据标记 `stale` |
+| 退役表清理 | 新事件类型 `schema.retired_purged`（`actor: "system"`，`trigger: "retired_purge"`），列出被清理的物理表 |
+| slot 策略修改、策略指定的高影响 | `slot.policy_set` 作为头事件由用户会话产生（没有 `op` 字段、带 `ctx`，是新的形状，`v` 加一）；`high_impact`、`user_session_only` 开始有内容；成因码 `policy_high_impact` |
+| scope 变更 | 新事件类型 `principal.scope_changed` |
+| `elicitation` 确认 | 启用 `item.resolved` 的 `via` 的保留值 `elicitation`；用到它的 `item.resolved` 的 `v` 加一 |
+| 加密 | 存储里每个内容块留有可空的密钥标识；校验和改为对密文求时是存储格式的变化，不是事件格式的变化 |
+| 签名检查点、哈希树 | 新事件类型，定期对一段事件头做承诺；旧事件不追加 |
+| 回退到指定版本（`revert: {to, fields}`） | `write.head` 的 `ops/<i>/revert` 加可选键 `to_op`、`fields`；`write.base` 的形状不变（值来源照旧是 `carried`） |
+| 改正实体的键（`rekey`） | 一种新的写入意图或 `ops/<i>/target` 的可选键，连同它自己的 `write.base` 形状；第一版键不可改，写错了靠撤销重写 |
+| 引用多个字段的 `migrate` / `backfill` | `compiled` 里字段的 `migrate` / `backfill` 允许出现别的字段 ID，并新增"由转换产生的贡献"的记法（一条只写了输入字段的旧写入在新字段上产生的项）；属于新版本下的重放规则：带这种定义的 `schema.compiled`（`v` 与 `compiler` 都加一）与随后的 `schema.switched`（`v` 加一）；旧的编译与切换事件按旧规则重放 |
+| 温度单位互相换算 | `compiled` 里 `unit` 加可选键 `offset`（十进制字符串）；已有定义没有它，含义不变 |
+| 词表外的自定义单位 | `compiled` 里 `unit` 的 `code` 取词表外的值时另带完整定义；属于新的单位词表版本 |
+
+**多节点**（本地 + 云、多设备、离线写入）：
+
+- 别的节点产生、被主节点接受的事件，事件头加一个可选字段 `origin`：`{"node": <node_id>, "seq": <该节点上的序号>}`。没有 `origin` 的事件，身份按 §2.2 的约定推出，所以已有事件不用动。
+- 新事件类型 `sync.primary_changed`（主节点切换）等同步控制事件；事项类型 `sync_rejected`。
+- 事件头只含不透明 ID 且带 `slot`，按 slot 做部分复制时事件头与墓碑全量复制，内容块按 slot 过滤。
+
+---
+
+## 11. 本文待定项
+
+没有。写格式时遗留的几项都已定下：单位词表、精度与舍入见 [`03-data-model/10-types-and-units.md`](03-data-model/10-types-and-units.md)；默认策略与 `auto_apply` 的取值见 §5.4；标识的前缀见 §1.4。之后新出现的待定项登记在 [`08-open-questions.md`](08-open-questions.md)。
