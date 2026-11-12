@@ -128,6 +128,12 @@ function emptyRecorded(): Recorded {
 }
 
 const INF = Number.MAX_SAFE_INTEGER;
+
+/**
+ * How often the evaluator took the paths of 09 §5.7 for original items sharing a segment, and how
+ * many replays the fixed point of "reverts in effect" needed: for occurrence checks in tests only.
+ */
+export const segmentStats = { split: 0, forcedMerge: 0, maxRounds: 0, extended: 0 };
 const NO_VALUE = "novalue";
 
 const refKey = (r: { event: Seq; target: Target; k: number }) => `${r.event}/${r.target}/${r.k}`;
@@ -166,12 +172,17 @@ class Replay {
   readonly deleted: ReadonlySet<SourceKey>;
   readonly rec: Recorded;
 
+  /** Reverts whose records count when original items share a segment (in effect in the result). */
+  readonly counting: ReadonlySet<OpNumber>;
+
   constructor(
     schema: TableSchema,
     ops: readonly Op[],
     deleted: ReadonlySet<SourceKey>,
     rec: Recorded,
+    counting: ReadonlySet<OpNumber> = new Set(),
   ) {
+    this.counting = counting;
     this.schema = schema;
     this.ops = ops;
     this.deleted = deleted;
@@ -401,19 +412,100 @@ class Replay {
    * when two land on the same one the smallest index stays (the other is dropped); new items
    * continue after the largest index used.
    */
-  assignIndices(event: Seq, target: Target, fresh: Item[]): void {
+  /**
+   * Whether this deletion clears the item's interval block as last given: its deps contain a
+   * deleted contribution. The evaluator does not track deps; it takes, merging more rather than
+   * less, every contribution as last given with an interval endpoint at one of the item's
+   * endpoints on the same field or on existence (the shape of 05-time «给出挡点的贡献»).
+   * It over-approximates (merges more): a kernel tracking deps exactly may merge less. A later
+   * comparison with the kernel should list the cases where the kernel merges less separately,
+   * not count them as disagreements.
+   */
+  blockCleared(event: Seq, target: Target, b: { k: number; valid: IvSet }): boolean {
+    const ends = new Set<Point>();
+    for (const x of b.valid) {
+      if (x.from !== null) ends.add(x.from);
+      if (x.to !== null) ends.add(x.to);
+    }
+    for (const [key, xs] of this.rec.latest) {
+      const [ev, t] = key.split("/") as [string, Target];
+      if (Number(ev) === event && t === target) continue;
+      if (t !== target && t !== "existence" && target !== "existence") continue;
+      const touches = xs.some((x) =>
+        x.valid.some(
+          (iv) => (iv.from !== null && ends.has(iv.from)) || (iv.to !== null && ends.has(iv.to)),
+        ),
+      );
+      if (touches && this.deletedItem(Number(ev), t)) return true;
+    }
+    return false;
+  }
+
+  /** The counting reverts whose records list an item, as a comparable key. */
+  listing(ref: ItemRef): string {
+    return [...this.counting]
+      .filter((op) =>
+        (this.rec.revertRecords.get(op) ?? this.revertRecords.get(op) ?? []).some(
+          (r) => r.event === ref.event && r.target === ref.target && r.k === ref.k,
+        ),
+      )
+      .sort((a, b) => a - b)
+      .join(",");
+  }
+
+  assignIndices(event: Seq, target: Target, fresh: Item[]): Item[] {
     fresh.sort((a, b) => ((a.valid[0]?.from ?? "") < (b.valid[0]?.from ?? "") ? -1 : 1));
     const base = [...(this.rec.latest.get(etKey(event, target)) ?? [])].sort((a, b) => a.k - b.k);
-    const assigned = new Map<Item, number>();
+    // Each original item stays on the first new item intersecting its interval as last given.
+    const landing = new Map<Item, { k: number; valid: IvSet }[]>();
     for (const b of base) {
       const hit = fresh.find((it) => !isEmpty(intersect(it.valid, b.valid)));
-      if (hit !== undefined && !assigned.has(hit)) assigned.set(hit, b.k);
+      if (hit !== undefined) landing.set(hit, [...(landing.get(hit) ?? []), b]);
+    }
+    const out: Item[] = [];
+    const used: number[] = [];
+    for (const it of fresh) {
+      const originals = landing.get(it) ?? [];
+      const keys = originals.map((b) => this.listing({ event, target, k: b.k }));
+      if (originals.length < 2 || keys.every((x) => x === keys[0])) {
+        // Same listing records: one item, the smallest index; the others are dropped.
+        const k = originals[0]?.k;
+        if (k !== undefined) {
+          it.k = k;
+          used.push(k);
+        } else it.k = -1;
+        out.push(it);
+        continue;
+      }
+      // Different listing records: cut at the originals' starts (09 §5.7). Each runs from its
+      // original start (not before the segment's) to the next one's; the first from the segment
+      // start, the last to its end; whatever lies outside the originals goes to the left
+      // neighbour. Adjacent pieces with the same listing records merge again.
+      const pieces = cutSegment(
+        it.valid,
+        originals.map((b, i) => ({
+          k: b.k,
+          start: b.valid[0]?.from ?? null,
+          key: keys[i] ?? "",
+          cleared: this.blockCleared(event, target, b),
+          union: b.valid,
+        })),
+      );
+      if (pieces.filter((p) => !isEmpty(p.valid)).length > 1) segmentStats.split++;
+      else segmentStats.forcedMerge++;
+      for (const p of pieces) {
+        if (isEmpty(p.valid)) continue;
+        const k = Math.min(...p.ks);
+        used.push(k);
+        const valid = normalize(p.valid);
+        // A piece keeps only the explicit ends that are its own endpoints.
+        const ends = it.explicitEnds.filter((t) => valid.some((x) => x.from === t || x.to === t));
+        out.push({ ...it, k, valid, explicitEnds: ends });
+      }
     }
     let next = Math.max(-1, ...base.map((b) => b.k)) + 1;
-    for (const it of fresh) {
-      const k = assigned.get(it);
-      it.k = k ?? next++;
-    }
+    for (const it of out) if (it.k < 0 || !used.includes(it.k)) it.k = next++;
+    return out;
   }
 
   push(fresh: Item[]): void {
@@ -424,8 +516,7 @@ class Replay {
     }
     for (const g of groups.values()) {
       const first = g[0];
-      if (first !== undefined) this.assignIndices(first.event, first.target, g);
-      this.items.push(...g);
+      if (first !== undefined) this.items.push(...this.assignIndices(first.event, first.target, g));
     }
   }
 
@@ -1313,6 +1404,70 @@ class Replay {
   }
 }
 
+/** One original item landing in a segment, for `cutSegment`. */
+export interface Original {
+  readonly k: number;
+  /** Start of its interval as last given before this replay (null: from the earliest). */
+  readonly start: Point | null;
+  /** The counting revert records listing it, as a comparable key. */
+  readonly key: string;
+  /** Its interval block is cleared by this deletion: it provides no cut point. */
+  readonly cleared: boolean;
+  /** Its interval as last given (to tell whether the segment reaches beyond the originals). */
+  readonly union: IvSet;
+}
+
+/**
+ * 09 §5.7: original items of one write landing in one segment. Cut at the starts of the items
+ * whose interval this deletion does not clear; each runs from its start (the first from the
+ * segment start) to the next one's start, the last to the segment end, so whatever lies outside
+ * the originals goes to the left neighbour (or the first item). A cleared item joins the piece to
+ * its left (right if none). Adjacent pieces whose cut-providing items have the same listing
+ * records merge again. Each piece keeps the smallest index among its members.
+ */
+export function cutSegment(
+  segment: IvSet,
+  originals: readonly Original[],
+): { ks: number[]; key: string; valid: IvSet }[] {
+  const all = [...originals].sort((x, y) =>
+    x.start === y.start
+      ? x.k - y.k
+      : x.start === null
+        ? -1
+        : y.start === null
+          ? 1
+          : x.start < y.start
+            ? -1
+            : 1,
+  );
+  const usable = all.filter((o) => !o.cleared);
+  const order = usable.length > 0 ? usable : all.slice(0, 1);
+  const joins = new Map<number, number[]>();
+  for (const o of all) {
+    if (order.includes(o)) continue;
+    const left = [...order].reverse().find((u) => all.indexOf(u) < all.indexOf(o));
+    const host = left ?? order[0];
+    if (host !== undefined) joins.set(host.k, [...(joins.get(host.k) ?? []), o.k]);
+  }
+  if (!isEmpty(subtract(segment, union(...originals.map((o) => o.union))))) {
+    segmentStats.extended++;
+  }
+  const segFrom = segment[0]?.from ?? null;
+  const pieces: { ks: number[]; key: string; valid: IvSet }[] = [];
+  order.forEach((o, i) => {
+    const from = i === 0 ? segFrom : o.start;
+    const next = order[i + 1]?.start ?? null;
+    const valid = intersect(segment, [{ from, to: i === order.length - 1 ? null : next }]);
+    const members = [o.k, ...(joins.get(o.k) ?? [])];
+    const last = pieces[pieces.length - 1];
+    if (last !== undefined && last.key === o.key) {
+      last.ks.push(...members);
+      last.valid = union(last.valid, valid);
+    } else pieces.push({ ks: members, key: o.key, valid });
+  });
+  return pieces;
+}
+
 /** Step 3, "x 取代 r". */
 function supersedes(x: Item, r: Item): boolean {
   const xIsFieldValue = x.target !== "existence" && x.content.kind === "value";
@@ -1408,10 +1563,21 @@ export function evaluateLog(
   >();
   const steps: LogStep[] = [];
   const deletedNow = () => new Set<SourceKey>([...pending.values()].flatMap((d) => [...d.sources]));
+  // The reverts whose records count when original items share a segment are those in effect in
+  // the replay's own result: replay until the set used equals the set that comes out.
+  let counting = new Set<OpNumber>();
   const replay = (deleted: ReadonlySet<SourceKey>) => {
-    const r = new Replay(schema, ops, deleted, rec);
-    r.run();
-    return r;
+    for (let i = 0; i < 8; i++) {
+      const r = new Replay(schema, ops, deleted, rec, counting);
+      r.run();
+      segmentStats.maxRounds = Math.max(segmentStats.maxRounds, i + 1);
+      const applied = new Set(
+        [...r.revertStatus].filter(([, st]) => st === "applied").map(([op]) => op),
+      );
+      if (applied.size === counting.size && [...applied].every((op) => counting.has(op))) return r;
+      counting = applied;
+    }
+    throw new Error("reverts in effect do not settle");
   };
   let prev = replay(new Set());
   let prevState = prev.result();
@@ -1431,7 +1597,10 @@ export function evaluateLog(
       const state = r.result();
       rec.external.push(externalChange(e.op, prevState, state, fieldIds(r)));
       r.recordLatest();
+      // A later deletion can bring the row or entity back (e.g. by removing a revert's write-back
+      // that hid it): from then on it is no longer removed.
       if (prevState.exists && !state.exists) removed = true;
+      else if (state.exists) removed = false;
       steps.push({ entry: e, refused: false, state });
       prev = r;
       prevState = state;

@@ -1026,5 +1026,7 @@ describe("appendix I", () => {
     expect(gaps(ev)).toBe("[-inf, 10-01) + [11-05, 11-15)");
   });
 
-  // No I.4: not constructible; a corroboration's candidate part takes effect only by merging (05-time «用同样的值写»).
+  // No I.4: not constructible. A corroboration's candidate part takes effect only once the write
+  // that split it off is deleted, and that write gave the boundary between the parts; cut points
+  // come only from original intervals the deletion does not clear (09 §5.7), so the parts merge.
 });

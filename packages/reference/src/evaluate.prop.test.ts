@@ -385,10 +385,10 @@ describe.each(both)("%s table", (_, schema, state) => {
                   : "none";
             expect({ key, now: st, was, branch }).not.toMatchObject({ branch: "none" });
           }
-          expect({ key, count: statuses.length }).toEqual({
-            key,
-            count: Math.min(statuses.length, was.length),
-          });
+          // One pending item per write and field and kind: a judgement carried by several
+          // contribution items (a segment cut by 09 §5.7) is still one pending item.
+          const kinds = new Set(statuses).size;
+          expect({ key, kinds }).toEqual({ key, kinds: Math.min(kinds, new Set(was).size) });
         }
       }),
       { numRuns: RUNS },
