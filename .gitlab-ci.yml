@@ -8,6 +8,10 @@ workflow:
 
 # `pnpm check`: type check, lint, unit and property tests, dependency rules, doc links, JSON examples.
 check:
+  # Runs take about 1.5 minutes. A hard bound from outside the test process: test-level limits
+  # cannot preempt synchronous code, so a stalled run would otherwise hold the runner until the
+  # project's default job timeout.
+  timeout: 20 minutes
   parallel:
     matrix:
       - NODE_IMAGE: ["node:24", "node:latest"]
