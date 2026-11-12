@@ -1,2 +1,4 @@
 packages:
   - packages/*
+  # Experiment harnesses: private, not one of the packages in 02-architecture §11.
+  - experiments

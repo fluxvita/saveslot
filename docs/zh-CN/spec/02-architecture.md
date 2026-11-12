@@ -300,7 +300,12 @@ slot 策略的结构里为"某类操作只接受用户会话的确认"留了位�
 - **单写者与所有权 epoch**：一个租户的存储同一时间只被一个进程写。
   - 每次打开租户时，所有权 epoch 加 1 并记在存储里；每个写事务在锁下核对 epoch，不一致说明别的进程已经接手，本进程放弃这个租户、清掉进程内缓存。
     这样连接闲置关闭、滚动部署、路由抖动时，旧进程也不会写坏数据。
-  - PGlite：锁文件写入随机 token 与启动时间，不靠 pid（pid 会被复用）；加锁的具体做法由单写者锁实验确认；检测到数据目录在 iCloud Drive、Dropbox 一类同步盘里时给出警告。
+  - PGlite：
+    - **锁**：数据目录下 `saveslot.lock` 上的操作系统文件锁，经带预编译包的原生扩展取得（Node 标准库没有）；进程死即由内核释放，不靠 pid（pid 会被复用）。锁文件只作加锁对象，不写内容。
+    - **属主文件**：`saveslot.owner` 记随机 token、启动时间与 epoch，用"写临时文件、改名"原子替换。每个写事务开始时与提交前各读一次，token 不符即放弃租户：直接终止 DB Worker，**不做关闭检查点**（否则旧实例的页会写回新属主的库）。库里的 epoch 照记照核；但 PGlite 的旧实例从自己的缓冲池读 `meta`，看不到新值，所以 PGlite 上以属主文件为准。
+    - **防线的主次**：真正的防线是"持有者活着就不会失效"的内核锁；属主核对是最后一道，只覆盖锁文件被删除或替换这类锁失效，拦不住失效那一刻已经写出的预写日志。因此 PGlite 不得改用会过期的锁（心跳、超时一类）；saveslot 自己的任何清理都不删 `saveslot.lock` 与 `saveslot.owner`。
+    - 检测到数据目录在 iCloud Drive、Dropbox 一类同步盘里时给出警告。
+    - 依据见单写者锁实验的结果报告（[`../process/experiments/exp-8-single-writer-lock.md`](../process/experiments/exp-8-single-writer-lock.md)）。
   - PostgreSQL：路由保证一个进程，epoch 兜底。
 - **每租户写入串行**：进程内按租户排队，事务里再拿 advisory lock；`seq` 在事务内从库里取，即提交顺序。后台任务的写入与前台写入走同一条队。
 
@@ -310,7 +315,11 @@ slot 策略的结构里为"某类操作只接受用户会话的确认"留了位�
   - 超时只能终止整个 Worker，等于数据库崩溃一次、重启时走崩溃恢复，会打断排队中的写事务。所以**主防线是事前的**：写入准入估算、编译时拒绝高代价写法（派生规则、试跑、受限 SQL 都适用）；超时只是最后手段，是否启用由沙箱实验决定。
   - 一条慢查询会挡住这个租户的写入，最长到超时时长；本机单用户可以接受，延迟上限待实验后写明。
 - **PostgreSQL 上的受限 SQL**：只读角色、只读事务、`statement_timeout`。第一版受限 SQL 与写入共用该租户的一条连接、串行执行。
-- **持久性**：已确认的写入在崩溃、断电后不能丢。PGlite 默认关闭落盘，"打开配置项即可"只是假设，能否达标由持久性实验确认（[`07-scope-v1.md`](07-scope-v1.md) 实验 1）；不达标就换成随 saveslot 打包的原生 PostgreSQL。
+- **持久性**：已确认的写入在崩溃、断电后不能丢。
+  - PGlite 在 Node 上自身不落盘：默认启动参数带 `-F`；去掉之后，它的文件系统层也不把同步调用交给宿主。saveslot 的做法：去掉 `-F`，`wal_sync_method = fsync`，给 NODEFS 装一个调用宿主 `fsync` 的钩子。
+  - 打开时读回这些设置并自检：打开时那次提交必须经钩子同步 `pg_wal`，不符即拒绝打开（`durability_not_applied`）。
+  - 钩子依赖 PGlite 的内部结构，所以 PGlite 版本钉死到补丁号；升级 PGlite 必须重跑持久性实验步骤一（两个平台）与钩子计数的单元测试。
+  - 能否达标由持久性实验确认（[`07-scope-v1.md`](07-scope-v1.md) 实验 1；结果报告见 [`../process/experiments/exp-1-pglite-durability.md`](../process/experiments/exp-1-pglite-durability.md)）；不达标就换成随 saveslot 打包的原生 PostgreSQL。
 
 ### 记录时刻
 

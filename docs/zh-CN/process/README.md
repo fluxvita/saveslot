@@ -6,6 +6,7 @@
 |---|---|
 | [`decisions/`](decisions/) | 设计决定及其理由 |
 | [`walkthroughs/`](walkthroughs/) | 场景推演 |
+| [`experiments/`](experiments/) | 开发前实验的运行结果（做法与通过标准在 `decisions/pre-dev-w0-experiments.md`） |
 
 **关于审查报告**：决定稿里提到的审查报告（如"一致性审查 C-3""第二轮核对 R-B1"）是设计阶段的内部审查记录，不在本仓库；每条发现的结论与理由都已写进对应的决定稿，条目号只作标识。
 

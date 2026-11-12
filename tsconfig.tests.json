@@ -9,5 +9,11 @@
     "allowImportingTsExtensions": true,
     "customConditions": ["source"]
   },
-  "include": ["packages/*/src/**/*.test.ts", "scripts/**/*.ts", "vitest.config.ts"]
+  "include": [
+    "packages/*/src/**/*.test.ts",
+    "packages/*/src/**/*.fixture.ts",
+    "scripts/**/*.ts",
+    "experiments/**/*.ts",
+    "vitest.config.ts"
+  ]
 }

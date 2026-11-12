@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "0.5.16",
-    "@fluxvita/saveslot-kernel": "workspace:*"
+    "@fluxvita/saveslot-kernel": "workspace:*",
+    "fs-native-extensions": "1.5.3"
   },
   "private": true
 }

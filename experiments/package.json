@@ -1,0 +1,16 @@
+{
+  "name": "@fluxvita/saveslot-experiments",
+  "version": "0.0.0",
+  "description": "Harnesses for the pre-development experiments (docs/zh-CN/process/decisions/pre-dev-w0-experiments.md). Not published.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.16",
+    "@fluxvita/saveslot-kernel": "workspace:*",
+    "@fluxvita/saveslot-store-pglite": "workspace:*"
+  }
+}
