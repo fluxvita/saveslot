@@ -206,7 +206,14 @@ importers:
         specifier: workspace:*
         version: link:../contract-core
 
-  packages/contract-core: {}
+  packages/contract-core:
+    devDependencies:
+      canonicalize:
+        specifier: 5.1.0
+        version: 5.1.0
+      fast-check:
+        specifier: 4.10.2
+        version: 4.10.2
 
   packages/daemon:
     dependencies:
@@ -600,6 +607,11 @@ packages:
   cac@7.1.0:
     resolution: {integrity: sha512-LMDU/U2yA4IPIY8KT0NsNPWEYZvAMkbgyspxJ6btJaYV+WMDOHAZCmB0lsTObiHaRS1V/ztKAl7+TSkTqXyeoA==}
     engines: {node: '>=20.19.0'}
+
+  canonicalize@5.1.0:
+    resolution: {integrity: sha512-bab9+WefZljqQ8jT0qRwVmTyzAUU63K97QIQD3agynIBrb6sa5M2eAy8Hv8K3p4V9+ONVYZKtGYl4Dg+/5Gumw==}
+    engines: {node: '>=22'}
+    hasBin: true
 
   chai@6.3.0:
     resolution: {integrity: sha512-XWAtwJ6OHO+tj0EKCs0Y2UamnyOxseZWltU4x2U2wh8g4AigdjwvtUjvLP2tqkA/avxHEtzxNaqGq/YGNwckKg==}
@@ -1327,6 +1339,8 @@ snapshots:
   assertion-error@2.0.1: {}
 
   cac@7.1.0: {}
+
+  canonicalize@5.1.0: {}
 
   chai@6.3.0: {}
 
