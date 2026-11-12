@@ -2,7 +2,7 @@
 
 > 范围：让一次写入能声明"它是以哪些已读到的值为前提写出来的"，并在前提变了之后让所有读取方看得到。
 > 输入：[`../../spec/03-data-model/02-integrity-and-records.md`](../../spec/03-data-model/02-integrity-and-records.md)（读取记录、纠错影响查询）、[`../../spec/03-data-model/03-deletion.md`](../../spec/03-data-model/03-deletion.md)（删除重放、回掉的权威定义）、[`../../spec/03-data-model/05-time.md`](../../spec/03-data-model/05-time.md)（状态类表的粒度）、[`../../spec/09-event-format.md`](../../spec/09-event-format.md)（事件格式）、[`../../spec/04-contract.md`](../../spec/04-contract.md) 与 [`../../spec/04-contract-types.md`](../../spec/04-contract-types.md)（契约）、[`../../spec/05-surfaces.md`](../../spec/05-surfaces.md)（MCP 与 HTTP）、[`../../spec/02-architecture.md`](../../spec/02-architecture.md)（K1–K14、模块、存储格式 v1）、[`../../spec/07-scope-v1.md`](../../spec/07-scope-v1.md)（第一版范围）、[`../../spec/10-evals.md`](../../spec/10-evals.md)（评测）。
-> 状态：决定稿，**尚未落进规格**。要改的位置见 §14；起草时自行决定的事项见 §15；发现的问题见 §16；没有核对到的范围见 §17。动到事件格式的各项集中列在 §12，**都要在事件格式 v1 冻结之前**落进规格。
+> 状态：决定稿，**已落进规格**。规则以 [`../../spec/`](../../spec/README.md) 为准，两者不一致时以规格为准；本文保留取舍的理由、最小例子与当时的核对记录。
 > 文中"事件格式 5.7"指 `09-event-format.md` 的 §5.7，"伪代码"指 `03-deletion.md`「重放规则 · 回掉的权威定义」。与连接器的来源键有关的规定见 [`pre-dev-w8-connector-access.md`](pre-dev-w8-connector-access.md)（下称"接入面的决定稿"）。
 
 ## 0. 总览

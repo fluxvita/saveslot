@@ -2,7 +2,7 @@
 
 > 这是决定稿，记决定与理由。范围：Agent 接上 saveslot 之后"会不会在对的时候用它"，以及人从零到第一个 Agent 能用要做多少事；另含导出文件的可选加密。
 > 对照的规格：[`05-surfaces.md`](../../spec/05-surfaces.md)（MCP 与 HTTP）、[`06-cli.md`](../../spec/06-cli.md)（CLI 与上手流程）、[`01-positioning.md`](../../spec/01-positioning.md)「分层与接入面」、[`10-evals.md`](../../spec/10-evals.md) 第 2.2 节、[`09-event-format.md`](../../spec/09-event-format.md) 第 8 节；讲解 [`11-deployment.md`](../../guide/11-deployment.md)；调研 [`references-mcp.md`](../../research/references-mcp.md)。
-> 状态：决定稿，尚未落进规格，要改的位置见 §9。本文不改规格。
+> 状态：决定稿，**已落进规格**。规则以 [`../../spec/`](../../spec/README.md) 为准，两者不一致时以规格为准；本文保留取舍的理由、最小例子与当时的核对记录。
 > 外部事实（MCP 协议、各宿主的行为与命令、加密格式）查了官方文档，来源见 §11；没查到或没把握的在 §10 标"未核实"，正文里用到时也当场标出。
 
 ## 0. 总览

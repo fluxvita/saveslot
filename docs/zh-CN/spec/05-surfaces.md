@@ -477,7 +477,7 @@ expenses r_01JC… 整行删除：date、category 只来自这句话
 | `too_large` | `admission`："影响约 N 行，请拆成每批 ≤ K 行"；`evidence_segment` / `request`：给出上限与实际大小，建议改用 file_ref 加摘录；`result_budget`：给出缩小的办法（如"请用 tables 指定少几张表"）；`premise_entries`："一个 op 最多声明 16 条前提，只列真正用到的记录"；`premise_fan_in`："r_… 已被 1000 条前提指向，不能再声明以它为前提" |
 | `sql_rejected` | 指出第几行哪个节点 / 函数不在白名单里（白名单见 data-model [「受限 SQL」](03-data-model/11-restricted-sql.md)）；不暴露物理名；`unknown_name`：凭证范围外的表与不存在的表报同一句话，报错里不出现范围外的名字；`FOR SYSTEM_TIME` 时指向 `saveslot_history` |
 | `sql_timeout` | 建议加条件或缩小时间范围 |
-| `draft_outdated` | `base_version`：给出当前版本，"请用 saveslot_catalog level=schema 取回最新文档后重新修改"；`migrating`："ledger 正在迁移到 v2（进度 120 / 2300），完成后再提交"；`table_written`："budgets 在草稿提交之后有了写入，这份草稿里只对从未写入的表放开的改动不能再确认；请 reject 它，或提交新的草稿" |
+| `draft_outdated` | `base_version`：给出当前版本，"请用 saveslot_catalog level=schema 取回最新文档后重新修改"；`migrating`："ledger 正在迁移到 v2（进度 120 / 2300），完成后再提交"；`table_written`："budgets 在草稿提交之后有了写入，这份草稿里按"从未被写入"编译的改动不能再确认；请 reject 它，或提交新的草稿" |
 | `field_unmatched` | "f3 duration 未出现；要改名请带回 id，要删除请列入 drop_fields" |
 | `confirmation_mismatch` | "pi_… 的内容已变（…），请把新内容告诉用户后再处理"，附新版本与新内容 |
 | `item_closed` | 说明当前状态："pi_… 已于 … 按 keep_effective 解决" / "pi_… 已被 #63 取代（该字段已被改过）" / "这项删除的撤回期已过" |

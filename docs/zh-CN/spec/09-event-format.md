@@ -198,7 +198,7 @@
 |---|---|
 | `write.base` 的 `span/…`（§5.7） | 一项贡献解析后的区间：默认终点、`corrected_span` 停在别的贡献给出的挡点上；回退、回到合并基写回的各项，区间抄自被回掉的写入与搬运来的各段；过期 `ver` 的写入被期间的写入切成几项 |
 | `write.base` 的 `ack/<j>`、`duplicate` | 被覆盖、被比中的贡献的区间与值 |
-| `schema.switched` 的 `backfill/<表ID>/<字段ID>/<n>`（§5.5） | 状态类表上常量补值的区间：由别的贡献定下的、实体存在而字段为空的那段 |
+| `schema.switched` 的 `backfill/<表ID>/<字段ID>/<n>`（§5.5；状态类表，事件类表与无时间表的 `backfill_rows/*` 是元数据块，不在此列） | 状态类表上常量补值的区间：由别的贡献定下的、实体存在而字段为空的那段 |
 | `write.head` 的 `ops/<i>/premise_valid/<j>`（§5.7） | 前提声明的范围取自依赖行的业务时间、而那个时间值出自别的贡献时，解析出的点或区间 |
 | 事项的条目块与 `scope_valid`（§5.8） | 别的写入的值与区间 |
 | 删除事件的 `results/…`、`restated/<k>`（§5.9） | 删除后的各段、被重述的贡献 |
@@ -618,13 +618,13 @@
 |---|---|---|
 | `target` | 元 | `{"draft_id": "d_…", "from_version": <整数>, "to_version": <整数>, "migration_id": "m_…", "rebuilt_tables": ["t1","t2"]}`。建 slot 时没有 `from_version`；没有经过迁移时没有 `migration_id`。`rebuilt_tables` 只列按日志重建了物理表、要核对的**基础表**；新增的表与从未被写入而改了结构的表虽然新建了物理表，但没有旧写入要转换，不列入。派生表每次切换都按新定义重建，不列在这里，也没有 `tables/<表ID>` 块（它们的核对靠各自派生写入的校验和） |
 | `tables/<表ID>` | 数 | `{"rows": <整数>, "checksum": <哈希>}`：该新版表建好后的逻辑行数与结果校验和（算法见 §5.13）。每张重建的表一块。来源：该表全部行的全部贡献 |
-| `backfill/<表ID>/<字段ID>` | 元 | 事件类表、无时间表：这次切换的常量 `backfill` 给这个字段补了值的行，行 ID 列表（升序）。没有补值时不出现 |
+| `backfill_rows/<表ID>/<字段ID>/<n>` | 元 | 事件类表、无时间表：这次切换的常量 `backfill` 给这个字段补了值的行，行 ID 列表。全部行 ID 按升序连续切分，每块至多 10,000 个，`n` 从 0 起。没有补值时不出现 |
 | `backfill/<表ID>/<字段ID>/<n>` | 数 | 状态类表：补了值的一段，`{"entity": <实体 ID>, "valid": {…}, "deps": […]}`，一段一块，`n` 从 0 起。区间由别的贡献决定（补的是那些贡献之外、实体存在而字段为空的那段），`deps` 指向它们 | `deps`（§3.5） |
 
 - `tables/<表ID>` 用来核对，不用来生成：重放到本事件时，`apply` 按 `compiled` 里的定义把旧版的每条写入转换成新版形状、建好 `rebuilt_tables` 里的表，再与这一块比较；块已被删除时跳过核对。逐条转换是逐项的：旧写入在一个字段上的每一项变成新版同一字段上的一项，带值的项按 `migrate` 求值（更早一次切换补出的贡献同样转换，仍记在那次切换上），值为空（`"value": null`）、`no_value`、`uncovered` 的项不求值、原样带过去；状态、区间、来源、是否被回掉不变（[`03-data-model/07-schema-evolution.md`](03-data-model/07-schema-evolution.md)「确定性转换怎么重放」）。
 - 该表有任何一行的任何贡献被隐私删除时，这一块列入那次删除的位置列表。
 - **补值位置照记录，删除不改**：之后的删除不重述切换补值，也不追补常量。删除让某处字段变空时，它就是空的（`kept_fields_cleared`），即使那个字段是必填的。状态类表的补值段，`deps` 里的贡献被删时这一块列入那次删除的位置列表（§3.5），那一段补值随之不再存在。
-- `apply`：建新版物理表（重放时；`compiled` 里 `physical.since` 等于本版的表都要建）；改 `slots` 的当前版本；旧版标为已退役；按新定义重建派生表；`counts` 按新版表重建；键索引 `external_keys` 按新版表重建（去掉了来源键的表，条目清空）。重建时保留"已让出"与"冻结"（连同冻结集合）：让出了键的已撤销行上仍留着键字段的值，按值重建会与持有者同键。前提的声明与状态不因切换而变，切换不产生 `premise.changed`。常量 `backfill` 补出的值**照 `backfill/*` 的记录**登记为本事件的贡献（`base_sources` 里事件 `seq` 是本事件、另带行或实体 ID、种类是 schema 常量；版本表里出处是本事件、意图 `schema_switch`），不按重放到这里时的状态现算补在哪。`backfill/<表ID>/<字段ID>/<n>` 已被移除的那一段不登记：那一段补值不再存在。`backfill/<表ID>/<字段ID>` 列出的行在重放到这里时不存在的，照记录登记进来源表（这一项贡献照样存在），业务表上没有这一行就不写；这一行之后由删除结果整行给出（§5.9「列哪些」里"存在"的给出者变了的行）。补值不改行或实体的 `ver`。之后的事件不引用这项贡献：值落回它时来源写 `schema_const` 条目（§5.7）。
+- `apply`：建新版物理表（重放时；`compiled` 里 `physical.since` 等于本版的表都要建）；改 `slots` 的当前版本；旧版标为已退役；按新定义重建派生表；`counts` 按新版表重建；键索引 `external_keys` 按新版表重建（去掉了来源键的表，条目清空）。重建时保留"已让出"与"冻结"（连同冻结集合）：让出了键的已撤销行上仍留着键字段的值，按值重建会与持有者同键。前提的声明与状态不因切换而变，切换不产生 `premise.changed`。常量 `backfill` 补出的值**照 `backfill_rows/*` 与 `backfill/*` 的记录**登记为本事件的贡献（`base_sources` 里事件 `seq` 是本事件、另带行或实体 ID、种类是 schema 常量；版本表里出处是本事件、意图 `schema_switch`），不按重放到这里时的状态现算补在哪。`backfill/<表ID>/<字段ID>/<n>` 已被移除的那一段不登记：那一段补值不再存在。`backfill_rows/<表ID>/<字段ID>/<n>` 列出的行在重放到这里时不存在的，照记录登记进来源表（这一项贡献照样存在），业务表上没有这一行就不写；这一行之后由删除结果整行给出（§5.9「列哪些」里"存在"的给出者变了的行）。补值不改行或实体的 `ver`。之后的事件不引用这项贡献：值落回它时来源写 `schema_const` 条目（§5.7）。
 
 #### `schema.migration_failed`
 
@@ -991,7 +991,7 @@ L 只在 `[11-10, 11-15)` 上被回掉，两侧的 3000 照旧。
 
 | 看什么 | 改什么 |
 |---|---|
-| `fields/*/*` 里 `status: applied` | 业务表当前版本的对应字段（状态类表：按 `span/*/*` 的区间逐项赋值后规范化分段）；版本表在受影响的单元格上各加一个版本，记录时间区间从本操作号起；`counts` |
+| `fields/*/*` 里 `status: applied` | 业务表当前版本的对应字段（状态类表：按 `span/*/*` 的区间逐项赋值后规范化分段）。目标行或实体在重放到这里时不存在（创建它的写入的块已全部移除）的，建一行，只含这次写入给出的字段；它与线上的中间状态不必相同，末端由删除结果整行给出（§5.9）；版本表在受影响的单元格上各加一个版本，记录时间区间从本操作号起；`counts` |
 | `fields/*/*` 里 `applied`、`corroborated`；`existence/*` 里 `applied` | `base_sources`（字段 × 项 × 来源；状态类表带区间）。"存在"项的字段 ID 一栏用固定值 `existence`（字段 ID 都是 `f<n>`，不会相撞） |
 | 各块的 `deps` 与 `carried` | `block_deps`（块 → 它依赖的贡献），供删除找级联的块 |
 | `existence/*` 里 `applied`、不带 `restored` | 业务表的已撤销标记或无值区间（区间取 `span/existence/<k>`）；版本表 |
@@ -1158,7 +1158,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 
 - `writer_had_read`：写入方当时是否读过这个事项的当前版本。写入时查一次读取审计，把结果记在这里，重放不重算。`cause` 为 `target_overwritten` 时恒为 `false`（读过就是取代，不是刷新）。
 - `cause` 为 `entries_deleted`：隐私删除清掉了事项的部分条目而事项仍未决（例如去掉了一个候选），`dropped_candidates` 列出被去掉的候选下标；此时没有 `by_event`。`by_event` 是改到事项目标的那条 `write.base` 事件（`references_changed` 时是引用方的那条）。
-- `cause` 为 `matched_changed`：`flagged` 事项被比中的另一行被撤销或改动，事项仍未决；`by_event` 是那条 `write.base`。`flagged` 事项不看读没读过，没有 `writer_had_read`。
+- `cause` 为 `matched_changed`：`flagged` 事项比中的两行里任何一行（被标记的那一行，或被比中的另一行）被撤销或改动，事项仍未决；`by_event` 是那条 `write.base`。`flagged` 事项不看读没读过，没有 `writer_had_read`。
 - `cause` 为 `entries_restored`：撤回一次删除之后，事项当初被去掉的候选放回来。`restored_candidates` 只列**整条被去掉过**的候选的下标（与 `dropped_candidates` 对称）；候选当初只少了一部分项、撤回后那些项回来的，下标不进 `restored_candidates`，本事件用同一下标重新给出含全部项的 `candidates/<k>`。本事件的 `candidates/<k>` 按撤回后的状态重新给出它们（以本事件为准，不读回原来的块）；此时没有 `by_event`。
 - 撤回删除时事项**已经解决**的，不产生 `item.refreshed`，原事项的解决不动。放回来的候选按撤回时的当前状态重新判定，由撤回事件逐项重述：与当前生效值同值的项，按普通规则成为 `dropped`（没指证据）或 `corroborated`（指了证据）；否则仍是 `candidate`。只要还有一项是 `candidate`，随后一条 `item.created`（成因 `restored_candidate`）为这个候选另开事项，新事项里它的 `items` 只含仍是候选的那几项。回执的 `rejudged` 按候选给一条：还有项是候选记 `reopened`；否则有项成了佐证记 `corroborated`，全部成了 `dropped` 记 `dropped`。
 - `apply`：事项版本换成本操作号。
@@ -1171,7 +1171,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 |---|---|---|
 | `target` | 元 | `{"item": "pi_…", "reason": <取代原因，§6.6>, "by_event": <seq>, "writer_had_read": <布尔>}` |
 
-`by_event` 是取代它的事件的 `seq`：`overwritten` 时是那条 `write.base`，`schema_switched` 时是 `schema.switched`，`deleted` / `deletion_cancelled` 时是删除确认或撤回的头事件，`draft_replaced` 时是 `schema.superseded`。`matched_changed` 时是改到被比中那一行的 `write.base`。`writer_had_read` 只在 `reason` 为 `overwritten` 时有；`flagged` 事项不带它。
+`by_event` 是取代它的事件的 `seq`：`overwritten` 时是那条 `write.base`，`schema_switched` 时是 `schema.switched`，`deleted` / `deletion_cancelled` 时是删除确认或撤回的头事件，`draft_replaced` 时是 `schema.superseded`。`matched_changed` 时是改到比中的两行之一的那条 `write.base`。`writer_had_read` 只在 `reason` 为 `overwritten` 时有；`flagged` 事项不带它。
 
 `apply`：事项状态置为已被取代；撤掉对应标记；事项版本换成本操作号。
 
@@ -1314,7 +1314,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 `apply`：
 
   - 按 `results/*` 改业务表当前版本（整行删除、字段置空、字段回到给出的值、重新分段）。`results` 里的行或实体在重放到这里时不存在（创建它的写入的块全已移除，`apply` 当时没有建行），就新建它；版本表在受影响的单元格上加一个版本（意图记为 `deletion`）。
-  - `base_sources`：去掉字段块列在 `positions` 里的项；按 `restated/*` 写入每个被重述项的生效状态、区间与搬运引用（`dropped` 的去掉；`candidate`、`awaiting` 的不算生效；同一项两者都有时以 `restated` 为准）。因删除而生效的项在贡献先后里仍排在自己原来的位置。`block_deps` 随之更新。
+  - `base_sources`：去掉字段块列在 `positions` 里的项；`positions` 里列到的状态类表补值段（`schema.switched` 的 `backfill/*/*/*`）对应的 schema 常量贡献同样去掉；按 `restated/*` 写入每个被重述项的生效状态、区间与搬运引用（`dropped` 的去掉；`candidate`、`awaiting` 的不算生效；同一项两者都有时以 `restated` 为准）。因删除而生效的项在贡献先后里仍排在自己原来的位置。`block_deps` 随之更新。
   - `no_value` 的重述：该字段在这一项的区间上置为没有值。被回掉的项的登记（回退记录 `revert`）不因重述而变。
   - `counts`：整行删除、行因删除而出现或消失时更新行数。
   - `recreated`：更新首次创建的登记。
@@ -1340,7 +1340,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 - 被那次删除列入 `positions` 的块恢复可读（仍被别的待执行删除列出的除外）。其中带 `deps` 的块，内容是删除之前求得的；撤回之后是否仍然成立由重放决定，变了的由本事件的 `restated`、`results` 重新给出，并以本事件为准。
 - 那次删除确认事件自己的 `results/*`、`restated/*` 块此后不再是"最近一次给出的"；它们留在日志里，照 §3.5 随它们的 `deps` 清除。
 
-`apply`：按 `results/*` 改业务表与版本表（版本的意图记为 `deletion_cancelled`；行在重放里不存在时新建，同确认）；行回来或消失时更新 `counts`；按 `restated/*`、`recreated/*` 更新来源表与首次创建的登记；被这次删除冻结的来源键条目从冻结集合里去掉这项删除的 ID，集合空了才转回"在"；`deletions` 置为已撤回；恢复的事项由 `restored_items` 置回未决。前提状态的变化由同一操作里的 `premise.changed` 落账。
+`apply`：按 `results/*` 改业务表与版本表（版本的意图记为 `deletion_cancelled`；行在重放里不存在时新建，同确认）；行回来或消失时更新 `counts`；按 `restated/*`、`recreated/*` 更新来源表与首次创建的登记；被那次删除去掉的状态类表补值段放回 `base_sources`（仍被别的待执行删除列出的除外）；被这次删除冻结的来源键条目从冻结集合里去掉这项删除的 ID，集合空了才转回"在"；`deletions` 置为已撤回；恢复的事项由 `restored_items` 置回未决。前提状态的变化由同一操作里的 `premise.changed` 落账。
 
 #### `deletion.executed`（墓碑）
 
@@ -1534,7 +1534,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 | `deleted` | 隐私删除让事项失去目标、候选或提议失去全部值来源、或成因被删 |
 | `draft_replaced` | `schema_change` 事项对应的草稿被新草稿取代 |
 | `deletion_cancelled` | 因删除而生成的待确认事项，在删除撤回后不再成立 |
-| `matched_changed` | `flagged` 事项被比中的行被撤销或改动，疑似重复不再成立 |
+| `matched_changed` | `flagged` 事项比中的两行里任何一行被撤销或改动，疑似重复不再成立 |
 
 保留值：`evidence_deleted`、`migration_failed`。
 
@@ -1757,7 +1757,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 
 | 内容 | 看得出什么 | 若要求不保留 |
 |---|---|---|
-| 表 ID、行或实体 ID（含 `schema.switched` 的 `backfill/<表ID>/<字段ID>` 行 ID 列表） | 某张表里有过某一行；行 ID 是 UUIDv7，带毫秒级的创建时间 | 整行被隐私删除时，把这一行的全部 `target` 块也列进位置列表。**不改事件头，不改已有事件**；代价是整行删除后版本表里不再留"该处已删除"的记录，按时刻读到那一段时看不到这一行存在过 |
+| 表 ID、行或实体 ID（含 `schema.switched` 的 `backfill_rows/<表ID>/<字段ID>/<n>` 行 ID 列表） | 某张表里有过某一行；行 ID 是 UUIDv7，带毫秒级的创建时间 | 整行被隐私删除时，把这一行的全部 `target` 块也列进位置列表。**不改事件头，不改已有事件**；代价是整行删除后版本表里不再留"该处已删除"的记录，按时刻读到那一段时看不到这一行存在过 |
 | 意图 | 这次写入是新增、变更、纠错还是撤销 | 同上，随 `target` 一起删 |
 | 被引用的源数据与写入的 `seq` | 哪次写入引用了哪条证据（都只是序号） | 同上 |
 | 事项的类型、成因码、处理方式 | 有过一次冲突或待确认，后来怎么处理的 | 事项的目标整行被删时一并删除 `target` 块 |
