@@ -1,6 +1,6 @@
 # saveslot · 数据层机制（目录）
 
-数据机制与内核规则的权威定义，按主题分成 10 份。日志里每种事件的字段级定义另见 [`../09-event-format.md`](../09-event-format.md)。定位与边界见 [`../01-positioning.md`](../01-positioning.md)；
+数据机制与内核规则的权威定义，按主题分成 11 份。日志里每种事件的字段级定义另见 [`../09-event-format.md`](../09-event-format.md)。定位与边界见 [`../01-positioning.md`](../01-positioning.md)；
 操作契约见 [`../04-contract.md`](../04-contract.md)，外化面见 [`../05-surfaces.md`](../05-surfaces.md)（MCP、HTTP）与 [`../06-cli.md`](../06-cli.md)（CLI）；契约只引用这里的规则，不另定规则。
 一个从头走到尾的例子见讲解 [`../../guide/02-walkthrough.md`](../../guide/02-walkthrough.md)（与本目录不一致处以本目录为准）。
 待定项统一记在 [`../08-open-questions.md`](../08-open-questions.md)。
@@ -19,3 +19,4 @@
 | [`08-schema-migration.md`](08-schema-migration.md) | schema 变更的状态机、物理做法、抽取作业（第一版不做）、官方 schema | 状态机；物理做法；抽取作业；官方 schema 与用户 schema |
 | [`09-references-conflict-sync.md`](09-references-conflict-sync.md) | 强弱引用、模型放在哪、动态 schema、冲突处理，以及第一版不实现的同步协议 | 引用：强与弱；模型放在哪；语义：动态 schema；冲突处理（冲突判据、撤销与并发修改、既版本对不上又是高影响、系统裁定）；同步协议（第一版不做） |
 | [`10-types-and-units.md`](10-types-and-units.md) | 字段类型的取值范围、清空字段、同值判据、精度与舍入、单位词表、字面命中用的单位同义表 | 字段类型与取值范围；清空字段；同值判据；精度与舍入；单位词表；单位同义表 |
+| [`11-restricted-sql.md`](11-restricted-sql.md) | 受限 SQL：`sql`、派生规则、转换表达式三种场合共用的语法树白名单，名字解析与改写、时间写法、确定性、上限、拒绝的原因码、白名单的版本与测试 | 受限 SQL（三种场合、处理步骤、语句形状、名字、时间、类型、白名单、确定性、代价、拒绝时报什么、白名单的版本与变更、怎么测） |

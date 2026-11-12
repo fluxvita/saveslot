@@ -8,7 +8,7 @@
 |---|---|
 | [`01-positioning.md`](01-positioning.md) | 定位、服务对象、产品形态、场景判据、分层与接入面、管什么不管什么、部署形态、技术选型、后续规划 |
 | [`02-architecture.md`](02-architecture.md) | 工程架构：内核不变量 K1–K14、服务层策略、模块与依赖、运行时、存储抽象与存储格式、信任边界、代码组织与测试 |
-| [`03-data-model/`](03-data-model/README.md) | 数据机制与内核规则的权威定义，按主题分 10 份，目录里有每份的一句话说明 |
+| [`03-data-model/`](03-data-model/README.md) | 数据机制与内核规则的权威定义，按主题分 11 份（含受限 SQL 的白名单），目录里有每份的一句话说明 |
 | [`04-contract.md`](04-contract.md) | 操作契约的规则：各操作什么时候返回什么、为什么 |
 | [`04-contract-types.md`](04-contract-types.md) | 操作契约的类型定义：每个操作的参数、结果、错误与全部枚举，字段名与结构以它为准 |
 | [`05-surfaces.md`](05-surfaces.md) | 外化面：MCP 与 HTTP 各自的规则 |
@@ -18,4 +18,4 @@
 | [`09-event-format.md`](09-event-format.md) | 事件格式：每种事件的事件头字段、内容块与编码；也是导出文件的格式说明 |
 | [`10-evals.md`](10-evals.md) | eval 规格：让真实的 Agent 经 MCP 完成任务的评测，每个阶段的验收用它 |
 
-规格只写方案本身。某条规则为什么这样定、经过了哪些审查，在 [`../process/`](../process/README.md)（决定稿、场景推演）；调研依据在 [`../research/`](../research/)。
+规格只写方案本身。某条规则为什么这样定、经过了哪些审查，在 [`../process/`](../process/README.md)（决定稿、场景推演）；调研来源在 [`../research/`](../research/)。

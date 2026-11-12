@@ -1,12 +1,12 @@
 # 参考：MCP 与相关系统的接口设计
 
 > 2026-11-09 调研（3 个子任务分别读了官方文档与源码，链接锚定到读过的版本）。服务于 saveslot 的 MCP / API 接口设计；
-> saveslot 自己的设计见 [`data-model.md`](../spec/03-data-model/README.md)。标"未核实"的需上线前实测。
+> saveslot 自己的设计见 [`data-model`](../spec/03-data-model/README.md)，MCP 与 HTTP 外化面见 [`05-surfaces.md`](../spec/05-surfaces.md)。第一节的 `instructions` / prompts 两列与第二节的描述原则另按各家文档复查过，来源见当处。标"未核实"的需上线前实测。
 
 ## 结论
 
 - **只有"工具调用 + `isError` 文本结果"能假设所有客户端都支持**；elicitation、structuredContent、resources、prompts、
-  annotations 都只能当可选增强。印证 saveslot 的"MCP 按最差宿主设计"。
+  annotations 都只能当可选增强。服务器的 `instructions` 多数宿主会交给模型，但不是都确认过，2026-07-28 下客户端还可以不取。印证 saveslot 的"MCP 按最差宿主设计"。
 - **没有一个现成系统覆盖 saveslot 的需求**（含 Teable）：用户自定义 schema 的表、规则生成的派生表、带前后值的写日志、读日志、
   纠错与变更的区分、写前待确认、数据来源——各家只做到其中一两样。
 - **最值得借鉴的三处**：Graphiti 的"原始片段 + 事实带来源列表 + 只作废不删除"；Supabase 的"确认凭证绑定内容哈希并签名"；
@@ -34,7 +34,7 @@
   | `idempotentHint` | 同参数重复调用无额外效果 | false |
   | `openWorldHint` | 与外部开放世界交互 | true |
 
-  客户端用法：Claude 只读工具免逐次确认、破坏性工具必弹确认；Claude Code 依据只读 / 幂等决定断线后重试一次、只读工具并行；
+  客户端用法：Claude 只读工具免逐次确认、破坏性工具必弹确认；Claude Code 按只读 / 幂等决定断线后重试一次、只读工具并行；
   VS Code 只读跳过确认；Codex 非只读弹确认；ChatGPT 所有写操作都要确认。**注解不能代替服务端的授权、校验与确认。**
 - **elicitation**（2025-06-18 引入）：form 模式只能扁平对象 + 原始类型，**禁止索要密码 / API key / token**（须走 URL 模式）；
   只能发给声明过该能力的客户端；必须处理 decline / cancel / 不支持；`requestState` 要做完整性保护（HMAC）并绑定主体、TTL、请求摘要。
@@ -43,30 +43,40 @@
 - **分页**：规范的 cursor 只覆盖 list 类方法，**工具结果的分页要自己在参数里设计**。
 - **取消与重发**：Streamable HTTP 下关闭流即取消；去掉了断点续传，断流后客户端用新 id 重发 → **写操作必须服务端幂等**。
 - **有状态工具**：协议无会话；跨调用状态用工具返回的不透明 handle（每次校验授权、描述里写明有效期、过期返回 `isError`）。
+- **服务器的 `instructions`**：给模型的提示，规范写明"可以加进系统提示"，没有长度上限。2025-11-25 在初始化结果里；2026-07-28 去掉了初始化握手，`instructions` 改在 `server/discover` 的结果里——这个调用对客户端是可选的，结果可缓存，除缓存时长外还有缓存范围（例子里是 `public`）。两个版本都没有"`instructions` 变更"的通知。
+  [2025-11-25 schema](https://modelcontextprotocol.io/specification/2025-11-25/schema)、[discover](https://modelcontextprotocol.io/specification/2026-07-28/server/discover)
+  → saveslot 的 `instructions` 含用户的 slot 名，缓存范围必须是不跨凭证共享的取值（确切取值实现时核实）。
+- **prompts**：由用户选择何时用（user-controlled），典型呈现是斜杠命令；参数只有名字、标题、说明、是否必填，取值只能是字符串；消息角色只有 user 与 assistant；列表不随连接变化，可随授权变化。
+  [prompts](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts)
 - **远程授权**：OAuth 2.1，RFC 9728 Protected Resource Metadata、PKCE、RFC 8707 audience 校验、禁止透传 token；
   客户端注册 CIMD（推荐）/ DCR（弃用但保留）；权限不足返回 403 `insufficient_scope` 做 step-up。
   [authorization](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
 
 ### 客户端支持（官方核心功能矩阵已于 2026-05-27 下线，以下按各家文档）
 
-| 客户端 | Resources | Prompts | Elicitation | 远程 OAuth | 结果大小 |
-|---|---|---|---|---|---|
-| Claude Code | 支持 | 支持 | 支持（仅交互终端） | 支持 | 默认 25k tokens，10k 警告 |
-| claude.ai / Desktop | 支持 | 支持 | 未写明 | 支持（DCR） | 约 15 万字符，单次 240 秒 |
-| ChatGPT | 未写明 | 未写明 | 支持 | CIMD、DCR | — |
-| Cursor | 支持 | 支持 | 支持 | 支持 | — |
-| VS Code / Copilot | 支持 | 支持 | 支持 | 支持 | — |
-| Codex CLI | 未写明 | 未写明 | 未写明 | CIMD、DCR | — |
+| 客户端 | `instructions` | Resources | Prompts | Elicitation | 远程 OAuth | 结果大小 |
+|---|---|---|---|---|---|---|
+| Claude Code | 会话开始时加载；与预先加载的工具描述在 4,096 个字符处截断 | 支持 | 支持，呈现为 `/服务名:prompt 名` | 支持（仅交互终端） | 支持 | 默认 25k tokens，10k 警告 |
+| claude.ai / Desktop | 未核实 | 支持 | 可以暴露，怎么呈现未核实 | 未写明 | 支持；优先 CIMD，否则退回 DCR，要求登记固定的回调地址 | 约 15 万字符，单次 240 秒 |
+| ChatGPT | 与工具元数据一起使用；建议"Use this when…"的句式 | 未写明 | 未核实 | 支持 | CIMD、DCR | — |
+| Cursor | 未核实 | 支持 | 标为支持，怎么呈现未核实 | 支持 | 支持 | — |
+| VS Code / Copilot | 未核实 | 支持 | Copilot 会话里不暴露选择入口 | 支持 | 支持 | — |
+| Codex CLI | 读取作为服务级指引；建议前 512 个字符自成一体 | 未写明 | 未核实 | 未写明 | CIMD、DCR；添加命令可以指定用哪一种 | — |
+| Gemini CLI | 追加到系统指令 | — | 斜杠命令 | — | — | — |
 
 来源：[Claude Code](https://code.claude.com/docs/en/mcp)、[Claude 连接器](https://claude.com/docs/connectors/building)、
-[ChatGPT](https://developers.openai.com/plugins/build/mcp-server)、[Cursor](https://cursor.com/docs/context/mcp)、
-[VS Code](https://code.visualstudio.com/api/extension-guides/ai/mcp)、[Codex](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
+[Claude 连接器的认证](https://claude.com/docs/connectors/building/authentication.md)、
+[ChatGPT](https://developers.openai.com/plugins/build/mcp-server)、[ChatGPT Apps SDK](https://developers.openai.com/apps-sdk/build/mcp-server)、
+[Cursor](https://cursor.com/docs/context/mcp)、[VS Code](https://code.visualstudio.com/api/extension-guides/ai/mcp)、
+[Codex](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)、[Gemini CLI](https://geminicli.com/docs/tools/mcp-server/)。
+Gemini CLI 的文档页写明它已被另一款 CLI 取代，后者没有添加命令，`instructions` 与 prompts 的支持未核实。
 
 ## 二、工具设计原则
 
 来源：[Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents)、
 [mcp-server-dev skill](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/mcp-server-dev)、
-[Claude 连接器目录审核要求](https://claude.com/docs/connectors/building/review-criteria)。
+[Claude 连接器目录审核要求](https://claude.com/docs/connectors/building/review-criteria)、
+[ChatGPT 应用提交准则](https://developers.openai.com/apps-sdk/app-submission-guidelines)。
 
 - **工具少而高层**：1–15 个最好，15–30 个要审查合并，30 个以上改"搜索 + 执行"模式；合并多步工作流，不 1:1 包 API。
 - **统一前缀命名**（如 `saveslot_`），名字 ≤ 64 字符。
@@ -74,8 +84,11 @@
 - **返回高信号内容**：少给 UUID，用可读标识；提供 `concise / detailed` 两档；写操作返回后续要用的 ID，不只回"ok"。
 - **省 token**：分页、过滤、截断、合理默认值；截断时告诉模型怎么缩小范围（"显示 10 / 847 条，请缩小查询"）。
 - **报错可执行**：说清错在哪、下一步调用什么、附正确示例；不返回笼统的 "Internal Server Error"。
-- **描述写清做什么、返回什么、不做什么**，相近工具互相指明何时改用对方；
-  **描述不能指挥模型**（如"必须先调用 X"会被当作提示注入），依赖关系用中性写法或放进报错提示。
+- **描述写清做什么、返回什么、不做什么，以及何时调用**，相近工具互相指明何时改用对方。
+  **可以写何时调用；不得操纵模型的行为**：审核要求原文是"每个工具的描述应当准确说明它做什么、何时调用"，被拒的是另几类写法——
+  让模型调用用户没要求的外部工具、干扰别的工具、覆盖系统指令、藏指令；ChatGPT 的提交准则同样要求写明何时使用，
+  并禁止"超出用户明确意图的过宽触发"、禁止影响模型对别的服务的选择。依赖关系写成条件句（"改已有的记录前先读它"），
+  不写成"必须先调用 X"。saveslot 据此把文本分成静态与动态两类（05-surfaces 4.3）。
 - **用真实多步任务做 eval**，按调用次数、参数错误、token 迭代。
 
 ## 三、记忆类系统
@@ -184,6 +197,7 @@ MCP [Teable Skill 文档](https://help.teable.ai/en/basic/ai/teable-skill.md)。
 ## 六、对 saveslot 接口设计的启示
 
 1. **只以工具为必需能力**；resources（数据目录浏览）、prompts、elicitation、structuredContent 都做成可选增强，缺了流程照样走通。
+   服务器的 `instructions` 同样不能当作一定到位：适用条件既写进 `instructions`，也写进各工具的描述。
 2. **读写分成不同工具，全部 `saveslot_` 前缀，总数控制在 15 个以内**；删除单独成工具并标破坏性。注解只是提示，权限与确认在服务端强制。
 3. **协议元数据由服务端补全**（连接实例、幂等键、来源级别默认值），模型填意图、表、行、值、证据，并**原样带回读取时拿到的版本标记与 schema 版本**（2026-11-09 定：MCP 无状态，服务端补预期版本会让乐观并发失效；未带时按 read_log 兜底）。
    写操作**服务端幂等**（应对断流重发）。
@@ -196,7 +210,7 @@ MCP [Teable Skill 文档](https://help.teable.ai/en/basic/ai/teable-skill.md)。
    第一次调用只返回影响说明（借鉴 Notion 两段式）；elicitation 仅在客户端声明支持时作增强。
 8. **schema 变更沿用同一套 handle**：起草返回 `draft_id` + 预览 diff，确认时校验哈希后执行原子切换，放弃也显式调用（借鉴 Neon，但切换是原子的而非重跑）。
 9. **只读 SQL 纵深防御**：AST 白名单（语句、节点、函数）、单语句 / prepared statement、只读事务、专用只读角色、超时、`max_rows` 截断并返回总数，
-   与派生规则共用同一校验器。
+   与派生规则共用同一校验器。saveslot 的白名单见 data-model [「受限 SQL」](../spec/03-data-model/11-restricted-sql.md)。
 10. **数据目录分级展开**：默认只给表名与摘要，按需展开到字段、关系、概况（借鉴 Supabase、Airtable）。
 11. **把各家没做好的做成一等能力**：每次写入的来源与写入者（区分人 / 哪个 Agent / 哪个 MCP 客户端，借鉴 Notion）、按时刻读、纠错作为独立的写入意图、
     写入后对自动修正返回结构化 `warnings`。
@@ -210,5 +224,8 @@ MCP [Teable Skill 文档](https://help.teable.ai/en/basic/ai/teable-skill.md)。
 
 - claude.ai / Desktop 是否支持 elicitation；各客户端交给模型的是 structuredContent 还是文本；除 Claude Code 外谁已支持 2026-07-28。
 - Codex CLI 对 resources、prompts、elicitation 的支持。
+- claude.ai / Desktop、Cursor、VS Code 是否把服务器的 `instructions` 交给模型；claude.ai / Desktop、ChatGPT、Codex 是否支持 prompts、怎么呈现，Cursor 怎么呈现。
+- 2026-07-28 下客户端在 `server/discover` 的缓存到期后是否重新获取；缓存范围的确切字段名与"不跨凭证共享"对应的取值；规范是否要求 `instructions` 不重复工具描述里已有的信息。
+- 各宿主添加命令的确切写法（服务名、`-e` / `--env`、`--scope`、`--transport` 的先后）是否被接受，`claude mcp add-json` 是否更合适；`codex mcp get` / `remove` 与选择作用域的参数；`code --add-mcp` 写到哪一处配置、是否幂等。
 - Mem0 托管 MCP 的参数；Graphiti 搜索是否默认排除已作废的事实；Letta 是否有第一方 MCP server。
 - Airtable 官方工具的参数与 `revert_action` 细节；Supabase 默认对哪些工具开启确认；Neon 是否设置语句超时。
