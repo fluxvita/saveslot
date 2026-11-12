@@ -611,4 +611,186 @@ describe("review cases", () => {
     expect(tl(run.final)).toEqual(tl(base.final));
     expect(tl(run.final)).toEqual(['[10-01, 11-03) "1"', '[11-03, 11-07) "2"', '[11-07, inf) "3"']);
   });
+
+  it("a candidate whose item lost its only candidate is restored, not put back, after a resolve of another item", () => {
+    // 03-deletion «撤回与宽限期»: putting back applies to a candidate removed from an item that
+    // stayed open; #81's item lost its only candidate, so the deletion superseded it, and the
+    // cancellation restores it. The grace-period resolve closes a different item (#111's). #81
+    // keeps its corroborated part, and #91 still reverts it.
+    const sw = (
+      op: number,
+      seen: number,
+      from: string,
+      end: string,
+      value: string,
+      src: string,
+      explicit = false,
+    ) => put(op, op + 1, value, [src], from, end, { seen, explicit });
+    const prefix: LogEntry[] = [
+      sw(10, 0, "10-01", "open", "3", "S1"),
+      sw(30, 20, "11-03", "open", "2", "S1"),
+      put(50, 51, "1", ["S2"], "11-01", "open", { seen: 40, acknowledge: ["overwrite"] }),
+      sw(60, 50, "11-03", "open", "2", "S1", true),
+      sw(80, 50, "11-01", "open", "1", "S2", true),
+      { kind: "undo", op: 90, event: 91, target: 80 },
+    ];
+    const grace: LogEntry[] = [
+      sw(110, 90, "11-01", "open", "1", "G0"),
+      {
+        kind: "resolve",
+        op: 120,
+        event: 121,
+        decision: "keep_effective",
+        candidates: [111],
+        unit: "f2",
+      },
+    ];
+    const run = evaluateLog(STATE, [...prefix, del(100, "d", ["S2"]), ...grace, cancel(140, "d")]);
+    expect(run.steps.at(-1)?.putBack).toEqual([]);
+    expect(items(run.final, 81)).toEqual([
+      'f2/0 corroborated [11-01, 11-03) "1"',
+      'f2/1 candidate [11-03, inf) "1"',
+    ]);
+    expect(items(run.final, 91)).toEqual(['f2/0 applied [11-01, 11-03) "1" carried #51/f2/0']);
+    const base = evaluateLog(STATE, [...prefix, ...grace]).final;
+    expect(items(run.final, 91)).toEqual(items(base, 91));
+    expect(tl(run.final)).toEqual(tl(base));
+  });
+
+  it("putting back a candidate keeps the corroborated part of the same write", () => {
+    // 03-deletion «撤回与宽限期»: what is put back is the candidate. #15 corroborates 9 on
+    // [11-01, 11-15) and is a candidate on [10-01, 11-01) (where #13 changed the value); #17 is
+    // the other candidate of the item. The deletion removes #15; the item is resolved in the grace
+    // period; at the cancellation only the candidate part is judged again (a new conflict item).
+    const log: LogEntry[] = [
+      put(10, 11, "9", ["s11"], "10-01", "open"),
+      put(12, 13, "9.5", ["s13"], "10-01", "11-01"),
+      put(14, 15, "9", ["s15"], "10-01", "11-15", { seen: 10, explicit: true }),
+      put(16, 17, "8", ["s17"], "10-01", "11-01", { seen: 10 }),
+      del(20, "d", ["s15"]),
+      {
+        kind: "resolve",
+        op: 22,
+        event: 23,
+        decision: "keep_effective",
+        candidates: [17],
+        unit: "f2",
+      },
+      cancel(24, "d"),
+    ];
+    const run = evaluateLog(STATE, log);
+    expect(run.steps.at(-1)?.putBack).toEqual([{ event: 15, target: "f2", judged: "candidate" }]);
+    expect(items(run.final, 15)).toEqual([
+      'f2/0 candidate [10-01, 11-01) "9"',
+      'f2/1 corroborated [11-01, 11-15) "9"',
+    ]);
+  });
+
+  describe("«撤回还原» with an item kept superseded: the baseline keeps it closed too", () => {
+    // 03-deletion «推论» «撤回还原»: the baseline is the replay in which kept writes take effect
+    // at their own write numbers and writes whose items were kept superseded do not take effect.
+    const judged = (ev: Evaluation) =>
+      ev.items
+        .filter((x) => x.status !== "dropped")
+        .map((x) => `#${x.event}/${x.k} ${x.status}${x.closed ? " closed" : ""}`)
+        .sort();
+
+    it("state table: a superseded awaiting write does not take effect outside the grace write", () => {
+      // #41 awaits (high impact); #51 restates #21 with evidence and awaits too. Deleting S2, S4
+      // lets #41 take effect and removes #51 (its item superseded). The grace write #71 builds on
+      // that version (#41 kept in effect) and changes f2 inside #51's interval (#51's item kept
+      // superseded). #51 does not take effect: [11-03, 11-05) is #41's 2.
+      const sw = (
+        op: number,
+        seen: number,
+        from: string,
+        end: string,
+        value: string,
+        src: string,
+        opts: Partial<WriteOp> = {},
+      ) => put(op, op + 1, value, [src], from, end, { seen, ...opts });
+      const prefix: LogEntry[] = [
+        sw(10, 0, "10-01", "open", "1", "S1"),
+        sw(20, 10, "11-03", "open", "3", "S1"),
+        sw(30, 20, "11-01", "11-05", "1", "S2", { acknowledge: ["overwrite"] }),
+        sw(40, 30, "11-03", "open", "2", "S1"),
+        put(50, 51, "3", ["S4"], "11-03", "open", { seen: 40, explicit: true }),
+      ];
+      const grace = sw(70, 60, "11-05", "open", "1", "G0");
+      const run = evaluateLog(STATE, [
+        ...prefix,
+        del(60, "d", ["S2", "S4"]),
+        grace,
+        cancel(90, "d"),
+      ]);
+      const step = run.steps.at(-1);
+      expect(step?.keptEffective).toEqual([{ event: 41, target: "f2" }]);
+      expect(step?.keptSuperseded).toEqual([51]);
+      expect(tl(run.final)).toEqual([
+        '[10-01, 11-03) "1"',
+        '[11-03, 11-05) "2"',
+        '[11-05, inf) "1"',
+      ]);
+      const base = evaluateLog(STATE, [...prefix, grace], {
+        forcedEffective: [{ event: 41, target: "f2" }],
+        forcedSuperseded: [51],
+      }).final;
+      expect(tl(base)).toEqual(tl(run.final));
+      expect(judged(base)).toEqual(judged(run.final));
+      // Forcing only the kept write: #51 takes effect there and [11-03, 11-05) is 3.
+      const keptOnly = evaluateLog(STATE, [...prefix, grace], {
+        forcedEffective: [{ event: 41, target: "f2" }],
+      }).final;
+      expect(tl(keptOnly)).toEqual([
+        '[10-01, 11-03) "1"',
+        '[11-03, 11-05) "3"',
+        '[11-05, inf) "1"',
+      ]);
+    });
+
+    it("event table: a superseded candidate is not judged again", () => {
+      // #21 conflicts with #11; #41 (evidence pointed at, version before #31) conflicts with #31.
+      // Deleting S1 lets #21 take effect and removes #41 (its item superseded); the grace write
+      // #71 keeps #21 in effect and changes f2 (#41's item kept superseded). #41 stays a closed
+      // candidate and #51 stays the change it was.
+      const EVENT: TableSchema = { kind: "event", required: ["f2"] };
+      const ew = (
+        op: number,
+        seen: number,
+        value: string,
+        src: string,
+        explicit = false,
+      ): WriteOp => ({
+        kind: "write",
+        op,
+        event: op + 1,
+        seen,
+        fields: { f2: { value, sources: [src], explicit } },
+      });
+      const prefix: LogEntry[] = [
+        ew(10, 0, "3", "S1"),
+        ew(20, 0, "1", "S3"),
+        ew(30, 20, "1", "S1"),
+        ew(40, 20, "3", "S1", true),
+        ew(50, 40, "3", "S1", true),
+      ];
+      const grace = ew(70, 60, "2", "G0");
+      const run = evaluateLog(EVENT, [...prefix, del(60, "d", ["S1"]), grace, cancel(90, "d")]);
+      const step = run.steps.at(-1);
+      expect(step?.keptEffective).toEqual([{ event: 21, target: "f2" }]);
+      expect(step?.keptSuperseded).toEqual([41]);
+      expect(items(run.final, 41)).toEqual(['f2/0 candidate [-inf, inf) "3" (closed)']);
+      const base = evaluateLog(EVENT, [...prefix, grace], {
+        forcedEffective: [{ event: 21, target: "f2" }],
+        forcedSuperseded: [41],
+      }).final;
+      expect(judged(base)).toEqual(judged(run.final));
+      // Forcing only the kept write: #41 is judged again and takes effect, #51 corroborates it.
+      const keptOnly = evaluateLog(EVENT, [...prefix, grace], {
+        forcedEffective: [{ event: 21, target: "f2" }],
+      }).final;
+      expect(items(keptOnly, 41)).toEqual(['f2/0 applied [-inf, inf) "3"']);
+      expect(items(keptOnly, 51)).toEqual(['f2/0 corroborated [-inf, inf) "3"']);
+    });
+  });
 });

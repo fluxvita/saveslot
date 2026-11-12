@@ -590,17 +590,31 @@ class Replay {
     };
     // A candidate put back by a cancellation after its item was resolved keeps the judgement it
     // got then (03-deletion «撤回与宽限期»).
-    const rejudged = this.rec.rejudged.get(etKey(o.event, f));
+    // Only the candidate part is put back: the write's corroborated part is judged as usual.
+    const key = etKey(o.event, f);
+    const rejudged = this.rec.rejudged.get(key);
     if (rejudged !== undefined) {
-      const item = {
-        ...base,
-        valid: res.valid,
-        explicitEnds: rejudged === "corroborated" ? res.explicitEnds : [],
-        defaultEnd: res.defaultEnd,
-        from: res.from,
-      };
-      if (rejudged === "dropped") this.shadows.push({ ...item, status: "candidate" });
-      else out.push({ ...item, status: rejudged });
+      const usual: Item[] = [];
+      this.rec.rejudged.delete(key);
+      try {
+        this.judgeField(o, f, input, seen, cur, usual);
+      } finally {
+        this.rec.rejudged.set(key, rejudged);
+      }
+      for (const it of usual) {
+        if (it.status === "corroborated") out.push(it);
+        else if (rejudged === "dropped") this.shadows.push({ ...it, status: "candidate" });
+        else {
+          const ends = res.explicitEnds.filter((t) =>
+            it.valid.some((x) => x.from === t || x.to === t),
+          );
+          out.push({
+            ...it,
+            status: rejudged,
+            explicitEnds: rejudged === "corroborated" ? ends : [],
+          });
+        }
+      }
       return;
     }
     if (sameAsSeen && !input.explicit) {
@@ -1351,7 +1365,10 @@ const pendingStatus = (x: { status: string; closed?: true }) =>
 export function evaluateLog(
   schema: TableSchema,
   log: readonly LogEntry[],
-  options: { readonly forcedEffective?: readonly { event: Seq; target: Target }[] } = {},
+  options: {
+    readonly forcedEffective?: readonly { event: Seq; target: Target }[];
+    readonly forcedSuperseded?: readonly Seq[];
+  } = {},
 ): LogEvaluation {
   const rec = emptyRecorded();
   const ops: Op[] = [];
@@ -1489,11 +1506,14 @@ export function evaluateLog(
     prevState = state;
   }
   // The baseline of «撤回还原»: a replay of this log as written, with the given writes counted as
-  // already in effect and so taking effect at their own write numbers. The write-time judgements
-  // stay those of the log; only the final replay sees the forced set.
+  // already in effect and so taking effect at their own write numbers, and the given writes whose
+  // items were kept superseded closed (as at a cancellation: they do not take effect). The
+  // write-time judgements stay those of the log; only the final replay sees the forced sets.
   const forced = options.forcedEffective ?? [];
-  if (forced.length > 0) {
+  const superseded = options.forcedSuperseded ?? [];
+  if (forced.length > 0 || superseded.length > 0) {
     for (const x of forced) rec.keptEffective.add(etKey(x.event, x.target));
+    for (const e of superseded) rec.keptSuperseded.add(e);
     return { steps, final: replay(deletedNow()).result() };
   }
   return { steps, final: prevState };
@@ -1550,6 +1570,30 @@ function cancelDeletion(
     new Set(ev.items.filter(pendingStatus).map((x) => etKey(x.event, x.target)));
   const wasPending = pendingIn(d.beforeState);
   const nowPending = pendingIn(preCancelState);
+  // Item membership, approximated (the evaluator does not track item identities): the other
+  // candidates pending on the same unit just before the deletion share the item.
+  const siblings = (key: string, target: Target): Seq[] =>
+    d.beforeState.items
+      .filter(
+        (x) =>
+          x.target === target &&
+          etKey(x.event, x.target) !== key &&
+          x.status === "candidate" &&
+          pendingStatus(x),
+      )
+      .map((x) => x.event);
+  // The item stayed open after the deletion removed this candidate, and a grace-period decision
+  // resolved it: a resolve on the unit whose candidates include one of the siblings. An item that
+  // lost its only candidate was superseded by the deletion instead (and is restored).
+  const resolvedInGrace = (key: string, target: Target): boolean => {
+    const sib = siblings(key, target);
+    return grace.some(
+      (y) =>
+        y.kind === "resolve" &&
+        (y.unit === target || y.unit === "existence") &&
+        y.candidates.some((c) => sib.includes(c)),
+    );
+  };
 
   for (const key of new Set([...ets(preCancel), ...ets(d.before)])) {
     const [ev, target] = key.split("/") as [string, Target];
@@ -1580,9 +1624,8 @@ function cancelDeletion(
     // The item counts as superseded by the deletion when no other candidate of the same unit
     // stayed pending and no grace-period resolution closed it (same modelling limit as below).
     const itemLives =
-      [...wasPending].some(
-        (other) => other !== key && other.endsWith(`/${target}`) && nowPending.has(other),
-      ) || grace.some((y) => y.kind === "resolve" && (y.unit === target || y.unit === "existence"));
+      siblings(key, target).some((other) => nowPending.has(etKey(other, target))) ||
+      resolvedInGrace(key, target);
     if (wasPending.has(key) && !nowPending.has(key) && !itemLives) {
       const was = d.before.items.filter((x) => x.event === event && x.target === target);
       // "Changed" by the conflict criterion (09-references-conflict-sync «冲突判据» ②): the
@@ -1612,8 +1655,9 @@ function cancelDeletion(
   // Candidates the deletion removed, of an item resolved in the grace period, are put back and
   // judged on the state at the cancellation: same value as in effect → no-op or corroboration,
   // otherwise a new conflict item. A re-judged candidate stays at its own write number.
-  // Modelling limit: the evaluator does not track item identities, so "its item was resolved"
-  // is taken as "a `resolve` on the same conflict unit in the grace period".
+  // Modelling limit: the evaluator does not track item identities; "its item was resolved" is
+  // taken as "a grace-period resolve on the unit lists a candidate pending alongside it just
+  // before the deletion" (see `resolvedInGrace`).
   const putBack = [...wasPending].filter((key) => {
     const [ev, target] = key.split("/") as [string, Target];
     const o = ops.find((x) => x.event === Number(ev));
@@ -1625,10 +1669,7 @@ function cancelDeletion(
     if (!wasCandidate) return false;
     const input = o.fields[target];
     const sources = [...(input?.sources ?? []), ...(o.validSources ?? [])];
-    return (
-      sources.some((x) => d.sources.includes(x)) &&
-      grace.some((y) => y.kind === "resolve" && (y.unit === target || y.unit === "existence"))
-    );
+    return sources.some((x) => d.sources.includes(x)) && resolvedInGrace(key, target);
   });
   if (putBack.length === 0) return kept;
   // Judged once, on the cancellation's replay with none of the put-back candidates in it yet;

@@ -316,12 +316,13 @@ describe.each(both)("%s table", (_, schema, state) => {
 
   it("«撤回还原»: after a cancellation, what grace-period writes did not cover is as the forced replay", () => {
     // 03-deletion «推论» «撤回还原»: the part not covered by grace-period writes equals the replay
-    // in which the deletion was never confirmed and the writes recorded as kept in effect take
-    // effect at their own write numbers. Compared: field values outside grace-period coverage,
-    // and the judgement and openness of every item of the operations before the deletion. Other
-    // deletions may be pending throughout; grace-period steps include restatements and decisions.
-    // Rule-based differences named by the cancellation itself are left out of the item
-    // comparison: items it kept superseded and candidates it put back (03-deletion «撤回与宽限期»).
+    // in which the deletion was never confirmed, the writes recorded as kept in effect take
+    // effect at their own write numbers, and writes whose items were kept superseded do not take
+    // effect. Compared: field values outside grace-period coverage, and the judgement and openness
+    // of every item of the operations before the deletion. Other deletions may be pending
+    // throughout; grace-period steps include restatements and decisions. Candidates the
+    // cancellation put back are left out of the item comparison: their judgement at the
+    // cancellation is a rule of its own (03-deletion «撤回与宽限期»).
     fc.assert(
       fc.property(
         steps,
@@ -360,6 +361,7 @@ describe.each(both)("%s table", (_, schema, state) => {
           const cancelled = run.final;
           const base = evaluateLog(schema, [...prefix.filter((e) => !refused.has(e)), ...grace], {
             forcedEffective: kept,
+            forcedSuperseded: cancelStep?.keptSuperseded ?? [],
           }).final;
           const graceEvents = new Set(
             grace
@@ -402,10 +404,7 @@ describe.each(both)("%s table", (_, schema, state) => {
               .filter((e): e is Op => e.kind !== "deletion" && e.kind !== "cancel")
               .map((e) => e.event),
           );
-          const excluded = new Set([
-            ...(cancelStep?.keptSuperseded ?? []).map(String),
-            ...(cancelStep?.putBack ?? []).map((x) => String(x.event)),
-          ]);
+          const excluded = new Set((cancelStep?.putBack ?? []).map((x) => String(x.event)));
           const judgement = (ev: Evaluation) =>
             ev.items
               .filter(
