@@ -41,7 +41,8 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 ## Commits
 
 - Conventional Commits, scoped by package or doc area: `feat(kernel): …`, `fix(cli): …`, `docs(spec): …`.
-- Sign off every commit (`git commit -s`).
+- Every commit needs a `Signed-off-by` from a person (DCO). The sign-off is that person's certification, not yours: add it (`git commit -s`, with their name and email as the commit author) only when the person you work for has asked you to commit the change on their behalf. Never sign off on your own, and never sign off as a tool.
+- Do not add trailers that attribute a commit to an AI tool (such as `Co-authored-by` for an assistant).
 - Follow the maintainers' current workflow for reaching `main`. Once merge requests are required, changes reach `main` only through them.
 - Split unrelated changes into separate commits. Commit only when asked.
 

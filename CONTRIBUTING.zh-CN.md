@@ -4,15 +4,16 @@
 
 ## 流程
 
-1. 从主分支拉一个分支。
-2. 提合并请求。CI 全绿，并有一人评审通过。
+1. 从主分支拉一个分支。没有向仓库推分支的权限时，先 fork，在自己的 fork 里拉分支。
+2. 向 `main` 提合并请求（用了 fork 就从 fork 提）。CI 全绿，并有一人评审通过。
 3. squash 合并。
 
 ## 约定
 
 - **提交信息**用 conventional commits（`feat(kernel): …`、`fix(cli): …`、`docs(spec): …`）。
 - **语言**：提交信息、代码注释、标识符、日志与报错文案一律用英文。文档目前以中文版（`docs/zh-CN/`）为准，公开前补齐英文版，英文版放在 `docs/` 下不带语言标记的位置。
-- **每个提交带 `Signed-off-by`**（`git commit -s`）。这是 DCO（Developer Certificate of Origin）：表示你有权按本项目的许可证提交这段内容。本项目不设 CLA。
+- **每个提交带 `Signed-off-by`**（`git commit -s`）。这是 DCO（Developer Certificate of Origin）：表示你有权按本项目的许可证提交这段内容。本项目不设 CLA。签名用真实姓名，邮箱与提交作者的邮箱相同；CI 会检查签名与作者是否一致。
+- **借助 AI 完成的贡献**：可以用 AI 工具。签名永远由人来加，不由工具加；签名的人对改动负责，如同亲手写的一样：读过、理解，并且有权按本项目的许可证提交。不要在提交信息里加把改动归于 AI 工具的署名行，签名已经说明谁负责。
 - **规格先行**。改变行为的改动，在同一个合并请求里改 `docs/zh-CN/spec/`；影响读者理解的，同步改 `docs/zh-CN/guide/`。改事件格式、内核不变量、契约的不兼容改动，先在 `docs/zh-CN/process/decisions/` 提一份决定稿并通过评审，再改规格与代码。
 - **不提交**密钥、内部地址、与项目无关的个人信息。
 - 本地跑检查：`pnpm check`（类型检查、lint、测试、依赖规则、文档链接、JSON 例子）。CI 跑的是同一组脚本。
@@ -21,7 +22,7 @@
 
 - 缺陷与任务：Issues。
 - 提问与设计讨论：Discussions。
-- 安全问题：用仓库的私密漏洞报告，不要公开提 Issue。
+- 安全问题：见 [`SECURITY.zh-CN.md`](SECURITY.zh-CN.md)，不要公开提 Issue。
 
 ## 许可证
 
