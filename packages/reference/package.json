@@ -1,0 +1,27 @@
+{
+  "name": "@fluxvita/saveslot-reference",
+  "version": "0.0.0",
+  "description": "Reference evaluator for replay, revert and privacy deletion: the most literal implementation of the definition, used only as a test oracle. Independent of the kernel's judging code.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@fluxvita/saveslot-contract-core": "workspace:*"
+  },
+  "private": true,
+  "devDependencies": {
+    "fast-check": "4.10.2"
+  }
+}

@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "packages/contract-core" },
+    { "path": "packages/reference" },
     { "path": "packages/kernel" },
     { "path": "packages/store-pglite" },
     { "path": "packages/store-postgres" },

@@ -1,5 +1,8 @@
 // Dependency rules from docs/zh-CN/spec/02-architecture.md: §11 (packages) and §4 (kernel modules).
 // The allowed edges below are the whole rule set: anything not listed is forbidden.
+//
+// `reference` is the reference evaluator (§11 «测试矩阵»): a test oracle that must not depend on
+// the kernel's judging code. It may import only contract-core, and only test files may import it.
 
 /** Package → workspace packages it may import (§11 table "依赖" column). */
 const PACKAGE_DEPS = {
@@ -14,7 +17,12 @@ const PACKAGE_DEPS = {
   client: ["contract"],
   cli: ["client"],
   saveslot: ["cli", "daemon"],
+  reference: ["contract-core"],
 };
+
+/** Test-only packages: any test file may import them, no other file may. */
+const TEST_ONLY_PACKAGES = ["reference"];
+const TEST_FILE = "\\.test\\.ts$";
 
 /** Kernel module → kernel modules it may import (§4 table "依赖" column). */
 const KERNEL_MODULE_DEPS = {
@@ -77,7 +85,11 @@ const packageRules = Object.entries(PACKAGE_DEPS).map(([pkg, allowed]) => ({
   comment: `${pkg} may only import workspace packages: ${allowed.join(", ") || "(none)"}`,
   severity: "error",
   from: { path: `^packages/${pkg}/` },
-  to: { path: `^packages/(?!(?:${alt([pkg, ...allowed])})/)` },
+  to: {
+    path: `^packages/(?!(?:${alt([pkg, ...allowed])})/)`,
+    // Test-only packages are covered by the "test-only-package" rule instead.
+    pathNot: `^packages/(?:${alt(TEST_ONLY_PACKAGES)})/`,
+  },
 }));
 
 const kernelModuleRules = Object.entries(KERNEL_MODULE_DEPS).map(([mod, allowed]) => ({
@@ -95,6 +107,16 @@ module.exports = {
   forbidden: [
     ...packageRules,
     ...kernelModuleRules,
+    {
+      name: "test-only-package",
+      comment: `Only test files may import ${TEST_ONLY_PACKAGES.join(", ")} (§11 «测试矩阵»)`,
+      severity: "error",
+      from: {
+        path: "^packages/",
+        pathNot: [`^packages/(?:${alt(TEST_ONLY_PACKAGES)})/`, TEST_FILE],
+      },
+      to: { path: `^packages/(?:${alt(TEST_ONLY_PACKAGES)})/` },
+    },
     {
       name: "kernel-unknown-module",
       comment:
