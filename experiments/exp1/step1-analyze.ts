@@ -4,10 +4,10 @@
 //   node --conditions=source experiments/exp1/step1-analyze.ts --tracer linux-strace|macos-fs_usage
 //        --trace <trace.txt> --writer <writer.jsonl>
 //
-// Prints counts per commit window. A commit "has a WAL sync" when a sync call on a pg_wal file
-// (Linux: path decoded by strace -y) or, on macOS, any fsync / F_FULLFSYNC line falls in its window.
-// The macOS count is an upper bound to be read together with the raw lines it prints: fs_usage does
-// not always name the file.
+// Prints counts per commit window. A commit "has a WAL sync" when a sync call on a pg_wal file falls
+// in its window. Linux: the path is decoded by strace -y. macOS: fs_usage prints no path on fcntl /
+// fsync lines, so the descriptor's path is learnt from earlier lines of the trace (see below); sync
+// calls on a descriptor whose path never showed are counted in `unknownFdSyncs` and not as WAL.
 //
 // Refuses (exit 1, no counts) when the trace holds no line from the writer: on Linux no line carries
 // the pid from the writer's "ready" line, on macOS no line comes from a `node` process. A trace of
@@ -46,6 +46,8 @@ function fail(message: string): never {
 
 // Lines the tracer attributes to the writer process.
 let writerTraceLines = 0;
+// macOS: sync calls on a descriptor whose path the trace never showed (counted as not on pg_wal).
+let unknownFdSyncs = 0;
 
 if (tracer === "linux-strace") {
   // "<pid> 1731400000.123456 fsync(12</path/pg_wal/000000010000000000000001>) = 0"
@@ -66,12 +68,22 @@ if (tracer === "linux-strace") {
     events.push({ t: Number(ts) * 1000, kind: call, wal: rest.includes("/pg_wal/"), line });
   }
 } else if (tracer === "macos-fs_usage") {
-  // "13:02:11.123456  fsync  F=12  0.004000  node.123" (format varies by release)
+  // fs_usage -w lines: "<hh:mm:ss.us>  <call>  <fields>  <elapsed> [W] <process>.<thread>".
+  // fcntl and fsync lines carry no path, and the WAL segment is usually opened before the tracer
+  // attaches, so a descriptor's path is learnt from the trace itself:
+  //   open   F=<fd> (...) <path>            → fd is <path>
+  //   pwrite F=<fd> ...                      followed, on the same thread, by
+  //     WrData[<flags>] D=... B=... <dev> <path>  → fd is <path>
+  //   close  F=<fd>                          → fd forgotten
+  // Only F_FULLFSYNC (fcntl 51), F_BARRIERFSYNC (85), fsync and fdatasync count as sync calls.
   const day = commits[0] ? new Date(commits[0].commitStart) : new Date();
+  const fdPath = new Map<string, string>();
+  const lastWriteFd = new Map<string, string>(); // thread → fd of its last write / pwrite
   for (const line of lines) {
-    // fs_usage ends each line with "<process name>.<thread id>".
-    if (!/\snode\.\d+\s*$/.test(line)) continue;
+    const owner = /\snode\.(\d+)\s*$/.exec(line);
+    if (!owner) continue;
     writerTraceLines++;
+    const thread = owner[1] as string;
     const m = /^(\d\d):(\d\d):(\d\d\.\d+)\s+(\S+)(.*)$/.exec(line);
     if (!m) continue;
     const [, hh, mm, ss, call, rest] = m as unknown as [
@@ -82,18 +94,35 @@ if (tracer === "linux-strace") {
       string,
       string,
     ];
+    const fd = /\bF=(\d+)/.exec(rest)?.[1];
+    const path = /\s(\/?private\/\S+|\/\S+)\s+\d+\.\d+/.exec(rest)?.[1];
+    if (call.startsWith("WrData")) {
+      const writeFd = lastWriteFd.get(thread);
+      if (writeFd !== undefined && path !== undefined) fdPath.set(writeFd, path);
+      lastWriteFd.delete(thread);
+      continue;
+    }
+    lastWriteFd.delete(thread);
+    if ((call === "write" || call === "pwrite") && fd !== undefined) lastWriteFd.set(thread, fd);
+    if (call.startsWith("open") && fd !== undefined && path !== undefined) fdPath.set(fd, path);
+    if (call === "close" && fd !== undefined) fdPath.delete(fd);
     const text = `${call}${rest}`;
-    if (!/fsync|FULLFSYNC|fcntl/i.test(text)) continue;
+    const kind = /FULLFSYNC|cmd=51\b/.test(text)
+      ? "F_FULLFSYNC"
+      : /BARRIERFSYNC|cmd=85\b/.test(text)
+        ? "F_BARRIERFSYNC"
+        : call === "fsync" || call === "fdatasync"
+          ? call
+          : undefined;
+    if (kind === undefined) continue;
     const d = new Date(day);
     d.setHours(Number(hh), Number(mm), 0, 0);
+    const target = fd === undefined ? undefined : fdPath.get(fd);
+    if (target === undefined) unknownFdSyncs++;
     events.push({
       t: d.getTime() + Number(ss) * 1000,
-      kind: /FULLFSYNC|\b51\b/.test(text)
-        ? "F_FULLFSYNC"
-        : /BARRIER|\b85\b/.test(text)
-          ? "F_BARRIERFSYNC"
-          : call,
-      wal: text.includes("pg_wal"),
+      kind,
+      wal: target?.includes("/pg_wal/") ?? false,
       line,
     });
   }
@@ -126,6 +155,7 @@ console.log(
       tracer,
       writerPid,
       writerTraceLines,
+      unknownFdSyncs,
       commits: commits.length,
       commitsWithAnySyncCall: perCommit.filter((c) => c.syncCalls > 0).length,
       commitsWithWalSyncCall: perCommit.filter((c) => c.walSyncCalls > 0).length,
