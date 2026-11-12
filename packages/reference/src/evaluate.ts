@@ -800,17 +800,26 @@ class Replay {
     }
     const record =
       this.rec.revertRecords.get(n) ?? this.undoRecord(o.target, o.includeLater ?? false, n);
-    this.revert(o.event, n, record, { before: o.target }, null, (inScope, apply, rollback) => {
-      const recStatus = this.rec.revertStatus.get(n);
-      if (recStatus === "applied") return "applied"; // deviation two
-      if (recStatus === "awaiting" && this.resolvedAwaiting.has(o.event)) return "awaiting";
-      // High impact ④: an undo that reverts later writes (05-time «高影响写入»).
-      if (o.includeLater && inScope.some((r) => r.op !== o.target)) return "awaiting";
-      if (this.acknowledged(o) || inScope.every((r) => r.content.kind === "revoke")) {
-        return "applied";
-      }
-      return this.highImpact(n - 1, n - 1, n, apply, rollback) ? "awaiting" : "applied";
-    });
+    const undoneRevert = this.revertStatus.get(o.target) === "applied" ? o.target : null;
+    this.revert(
+      o.event,
+      n,
+      record,
+      { before: o.target },
+      null,
+      (inScope, apply, rollback) => {
+        const recStatus = this.rec.revertStatus.get(n);
+        if (recStatus === "applied") return "applied"; // deviation two
+        if (recStatus === "awaiting" && this.resolvedAwaiting.has(o.event)) return "awaiting";
+        // High impact ④: an undo that reverts later writes (05-time «高影响写入»).
+        if (o.includeLater && inScope.some((r) => r.op !== o.target)) return "awaiting";
+        if (this.acknowledged(o) || inScope.every((r) => r.content.kind === "revoke")) {
+          return "applied";
+        }
+        return this.highImpact(n - 1, n - 1, n, apply, rollback) ? "awaiting" : "applied";
+      },
+      undoneRevert,
+    );
   }
 
   confirm(o: ConfirmOp): void {
@@ -822,7 +831,17 @@ class Replay {
       const record =
         this.rec.revertRecords.get(o.op) ??
         this.undoRecord(target.target, target.includeLater ?? false, o.op);
-      this.revert(o.event, o.op, record, { before: target.target }, null, () => "applied");
+      const undoneRevert =
+        this.revertStatus.get(target.target) === "applied" ? target.target : null;
+      this.revert(
+        o.event,
+        o.op,
+        record,
+        { before: target.target },
+        null,
+        () => "applied",
+        undoneRevert,
+      );
       return;
     }
     // Executes the proposal as recorded in the item (05-time «高影响写入»).
@@ -935,6 +954,7 @@ class Replay {
     pos: { before: OpNumber } | { asOf: OpNumber },
     k: Item[] | null,
     decide: (inScope: Item[], apply: () => void, rollback: () => void) => RevertResult["status"],
+    undoneRevert: OpNumber | null = null,
   ): void {
     // Step 1: R' = the listed items, plus indices of the same (event, target) first given by a
     // deletion's restatement (not present when the event was written).
@@ -944,8 +964,18 @@ class Replay {
       const base = this.rec.writeTime.get(etKey(x.event, x.target));
       return base !== undefined && !base.some((b) => b.k === x.k);
     };
+    // An undo of a revert m: also every write-back item of m on this row first given by a
+    // deletion's restatement, whether or not R names its (event, target) — R may be empty, m
+    // having had no write-back then. The decision is "undo m's change on this row".
+    const firstGivenLater = (x: Item) => {
+      const base = this.rec.writeTime.get(etKey(x.event, x.target));
+      return base === undefined || !base.some((b) => b.k === x.k);
+    };
     const rPrime = this.items.filter(
-      (x) => rKeys.has(refKey(x)) || (rEts.has(etKey(x.event, x.target)) && isNewIndex(x)),
+      (x) =>
+        rKeys.has(refKey(x)) ||
+        (rEts.has(etKey(x.event, x.target)) && isNewIndex(x)) ||
+        (undoneRevert !== null && x.op === undoneRevert && firstGivenLater(x)),
     );
     const zai = rPrime.filter((x) => effective(x.status));
 

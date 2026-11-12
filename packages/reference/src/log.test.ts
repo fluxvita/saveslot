@@ -794,3 +794,88 @@ describe("review cases", () => {
     });
   });
 });
+
+describe("undo of a revert", () => {
+  // 03-deletion «回掉的权威定义» step 1: an undo whose target m is itself a revert expands to every
+  // write-back item of m on this row first given by a deletion's restatement, even when its
+  // record is empty because m had no write-back when the undo was written.
+  it("state table: the undone revert regains write-back items after a deletion; the undo reverts them", () => {
+    // #22 is wholly covered by X (#25) when operation 30 undoes it: no write-back. Operation 40
+    // undoes operation 30: accepted, empty record. Deleting X gives operation 30 a write-back
+    // (5000 on [11-02, 11-20)); operation 40 now reverts it: back to #22's 3000.
+    const log: LogEntry[] = [
+      put(10, 12, "5000", ["S12"], "10-01", "open"),
+      put(20, 22, "3000", ["S22"], "11-02", "11-20"),
+      put(23, 25, "3500", ["S_X"], "11-02", "11-20"),
+      { kind: "undo", op: 30, event: 32, target: 20, seen: 23, acknowledge: ["overwrite"] },
+      { kind: "undo", op: 40, event: 42, target: 30 },
+    ];
+    const asWritten = evaluateLog(STATE, log).final;
+    expect(asWritten.reverts).toEqual([
+      { op: 30, event: 32, status: "applied", record: [{ event: 22, target: "f2", k: 0 }] },
+      { op: 40, event: 42, status: "applied", record: [] },
+    ]);
+    const ev = evaluateLog(STATE, [...log, del(50, "d", ["S_X"])]).final;
+    expect(items(ev, 32)).toEqual(['f2/0 applied [11-02, 11-20) "5000" carried #12/f2/0']);
+    expect(items(ev, 42)).toEqual(['f2/0 applied [11-02, 11-20) "3000" carried #22/f2/0']);
+    expect(tl(ev)).toEqual([
+      '[10-01, 11-02) "5000"',
+      '[11-02, 11-20) "3000"',
+      '[11-20, inf) "5000"',
+    ]);
+  });
+
+  it("event table: the same on a single value", () => {
+    // Operation 40 undoes W2, wholly covered by W3: no write-back. Operation 50 undoes operation
+    // 40: accepted, empty record. Deleting S3 gives operation 40 a write-back (45, from W1);
+    // operation 50 reverts it: back to W2's 54.
+    const EVENT: TableSchema = { kind: "event", required: ["f3"] };
+    const ew = (op: number, value: string, src: string): WriteOp => ({
+      kind: "write",
+      op,
+      event: op + 2,
+      fields: { f3: { value, sources: [src] } },
+    });
+    const log: LogEntry[] = [
+      ew(21, "45", "S1"),
+      ew(25, "54", "S2"),
+      ew(33, "60", "S3"),
+      { kind: "undo", op: 40, event: 42, target: 25 },
+      { kind: "undo", op: 50, event: 52, target: 40 },
+    ];
+    expect(
+      evaluateLog(EVENT, log).final.reverts.map((r) => [r.op, r.status, r.record.length]),
+    ).toEqual([
+      [40, "applied", 1],
+      [50, "applied", 0],
+    ]);
+    const ev = evaluateLog(EVENT, [...log, del(60, "d", ["S3"])]).final;
+    expect(items(ev, 42)).toEqual(['f3/0 applied [-inf, inf) "45" carried #23/f3/0']);
+    expect(items(ev, 52)).toEqual(['f3/0 applied [-inf, inf) "54" carried #27/f3/0']);
+    expect(ev.fields["f3"]?.[0]?.value).toBe("54");
+  });
+
+  it("a revert with write-back items from the start: unchanged", () => {
+    const log: LogEntry[] = [
+      put(10, 12, "5000", ["S12"], "10-01", "open"),
+      put(20, 22, "3000", ["S22"], "11-02", "11-20"),
+      { kind: "undo", op: 30, event: 32, target: 20, seen: 20, acknowledge: ["overwrite"] },
+      { kind: "undo", op: 40, event: 42, target: 30 },
+      put(44, 46, "7", ["S9"], "12-01", "12-02"),
+      del(50, "d", ["S9"]),
+    ];
+    const ev = evaluateLog(STATE, log).final;
+    expect(ev.reverts[1]).toEqual({
+      op: 40,
+      event: 42,
+      status: "applied",
+      record: [{ event: 32, target: "f2", k: 0 }],
+    });
+    expect(items(ev, 42)).toEqual(['f2/0 applied [11-02, 11-20) "3000" carried #22/f2/0']);
+    expect(tl(ev)).toEqual([
+      '[10-01, 11-02) "5000"',
+      '[11-02, 11-20) "3000"',
+      '[11-20, inf) "5000"',
+    ]);
+  });
+});

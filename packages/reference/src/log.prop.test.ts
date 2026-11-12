@@ -43,6 +43,8 @@ type Step =
   /** Restate an earlier write's value for its field, with or without evidence pointed at. */
   | { t: "resend"; back: number; src: string; explicit: boolean }
   | { t: "undo"; back: number }
+  /** Undo an earlier undo (a revert), if any. */
+  | { t: "undoRevert"; back: number }
   | { t: "delete"; src: string[] }
   | { t: "cancel"; back: number }
   /** Resolve the first open conflict item (by field), if any. */
@@ -83,6 +85,10 @@ const step: fc.Arbitrary<Step> = fc.oneof(
   {
     weight: 1,
     arbitrary: fc.record({ t: fc.constant("undo" as const), back: fc.nat({ max: 2 }) }),
+  },
+  {
+    weight: 1,
+    arbitrary: fc.record({ t: fc.constant("undoRevert" as const), back: fc.nat({ max: 1 }) }),
   },
   {
     weight: 2,
@@ -188,6 +194,10 @@ function extend(
       if (target !== undefined && target !== writes()[0]?.op) {
         out.push({ kind: "undo", op, event: op + 1, target });
       }
+    } else if (s.t === "undoRevert") {
+      const undos = out.filter((e) => e.kind === "undo");
+      const target = undos[undos.length - 1 - s.back]?.op;
+      if (target !== undefined) out.push({ kind: "undo", op, event: op + 1, target });
     } else if (s.t === "delete") {
       out.push({ kind: "deletion", op, id: `pi_${op}`, sources: s.src });
     } else if (s.t === "cancel") {
@@ -275,6 +285,8 @@ const counts = {
   restoredByCancel: 0,
   keptEffective: 0,
   withDecisions: 0,
+  undoOfRevert: 0,
+  undoOfRevertRegained: 0,
 };
 
 describe.each(both)("%s table", (_, schema, state) => {
@@ -422,6 +434,91 @@ describe.each(both)("%s table", (_, schema, state) => {
     );
   });
 
+  it("an accepted undo of a revert leaves none of that revert's write-back items giving a value", () => {
+    // 03-deletion «回掉的权威定义» step 1: the undo covers every write-back item of the revert on
+    // this row, also those first given by a later deletion's restatement. Where a later write
+    // covers one, that write gives the value. Besides random logs, a skeleton reaches the case:
+    // W; X covering W (wholly or partly); undo W (no write-back where X covers it); undo that
+    // undo; then, sometimes, X's source deleted.
+    const skeleton = fc.record({
+      w: fc.tuple(fc.nat({ max: DAYS.length - 2 }), fc.nat({ max: DAYS.length - 1 })),
+      x: fc.tuple(fc.nat({ max: DAYS.length - 2 }), fc.nat({ max: DAYS.length - 1 })),
+      deleteX: fc.boolean(),
+    });
+    fc.assert(
+      fc.property(steps, skeleton, fc.array(step, { maxLength: 3 }), (st, sk, tail) => {
+        const head = extend(schema, [], st, 10);
+        const at = Math.max(...head.map((o) => o.op)) + 10;
+        const span = ([a, b]: [number, number]) =>
+          state
+            ? {
+                valid: {
+                  from: { mode: "given" as const, value: DAYS[a] as BizPoint },
+                  to: { mode: "given" as const, value: DAYS[Math.max(b, a + 1)] ?? "2026-12-01" },
+                },
+              }
+            : {};
+        const body: LogEntry[] = [
+          {
+            kind: "write",
+            op: at,
+            event: at + 1,
+            ...span(sk.w),
+            fields: { f2: { value: "7", sources: ["SW"] } },
+          },
+          {
+            kind: "write",
+            op: at + 10,
+            event: at + 11,
+            ...span(sk.x),
+            fields: { f2: { value: "8", sources: ["SX"] } },
+          },
+          {
+            kind: "undo",
+            op: at + 20,
+            event: at + 21,
+            target: at,
+            seen: at + 10,
+            acknowledge: ["overwrite"],
+          },
+          {
+            kind: "undo",
+            op: at + 30,
+            event: at + 31,
+            target: at + 20,
+            seen: at + 20,
+            acknowledge: ["overwrite"],
+          },
+          ...(sk.deleteX
+            ? [{ kind: "deletion" as const, op: at + 40, id: "pi_x", sources: ["SX"] }]
+            : []),
+        ];
+        const log = extend(schema, [...head, ...body], tail, at + 50);
+        const ev = evaluateLog(schema, log).final;
+        const status = new Map(ev.reverts.map((r) => [r.op, r]));
+        for (const u of log) {
+          if (u.kind !== "undo") continue;
+          const undo = status.get(u.op);
+          const target = status.get(u.target);
+          if (undo?.status !== "applied" || target?.status !== "applied") continue;
+          counts.undoOfRevert++;
+          if (
+            undo.record.length === 0 &&
+            ev.items.some((x) => x.event === u.event && x.status !== "dropped")
+          ) {
+            counts.undoOfRevertRegained++;
+          }
+          for (const [f, segs] of Object.entries(ev.fields)) {
+            for (const seg of segs ?? []) {
+              expect({ f, by: seg.by?.event }).not.toEqual({ f, by: target.event });
+            }
+          }
+        }
+      }),
+      { numRuns: RUNS },
+    );
+  });
+
   it("deletion events add no pending items beyond the three kinds the corollary names", () => {
     // 03-deletion «推论» «删除不增加未决事项»: each new pending item after a deletion is (1) an
     // awaiting item converted from a conflict item this deletion superseded, (2) the very item an
@@ -508,6 +605,11 @@ it("cancellations keep writes in effect in the sampled logs", () => {
 
 it("grace periods with decisions occur in the sampled logs", () => {
   expect(counts.withDecisions).toBeGreaterThan(0);
+});
+
+it("undos of reverts occur in the sampled logs, also ones whose target regained write-back items", () => {
+  expect(counts.undoOfRevert).toBeGreaterThan(0);
+  expect(counts.undoOfRevertRegained).toBeGreaterThan(0);
 });
 
 it("the restored-item branch occurs in the sampled logs", () => {
