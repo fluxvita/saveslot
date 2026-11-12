@@ -16,6 +16,7 @@ import type {
   ToParam,
   WriteOp,
 } from "./model.ts";
+import { Hits, propRuns } from "./testing/prop-coverage.fixture.ts";
 import { stateWithoutIndices, timeline } from "./views.ts";
 
 // An explicit time limit; on a failure (including running out of time) fast-check reports the
@@ -27,7 +28,7 @@ const STATE: TableSchema = { kind: "state", required: ["f2"] };
 const EVENT: TableSchema = { kind: "event", required: ["f2"] };
 const DAYS = ["11-01", "11-03", "11-05", "11-07", "11-09"].map((x) => `2026-${x}` as BizPoint);
 const SOURCES = ["S1", "S2", "S3", "S4", "S5"];
-const RUNS = 1500;
+const RUNS = propRuns(1500);
 
 type Step =
   | {
@@ -250,6 +251,142 @@ function extend(
 }
 
 const steps = fc.array(step, { minLength: 2, maxLength: 9 });
+
+/** A generator for one sample in four, a skeleton reaching the checked situation for three. */
+const mostly = <T>(random: fc.Arbitrary<T>, skeleton: fc.Arbitrary<T>) =>
+  fc.oneof({ weight: 1, arbitrary: random }, { weight: 3, arbitrary: skeleton });
+
+/**
+ * Random steps, then writes with an old version that do not acknowledge (conflicts or awaiting
+ * writes, citing S5), each followed by a deletion of other sources: deletions with pending items
+ * around.
+ */
+const deletionAfterConflict: fc.Arbitrary<Step[]> = fc
+  .tuple(
+    fc.array(step, { minLength: 1, maxLength: 6 }),
+    fc.array(
+      fc.tuple(
+        write.map((w) => ({ ...w, f: "f2" as FieldId, v: "9", src: "S5", lag: 4, ack: false })),
+        fc.record({
+          t: fc.constant("delete" as const),
+          src: fc.subarray(["S1", "S2", "S3", "S4"], { minLength: 1, maxLength: 2 }),
+        }),
+      ),
+      { minLength: 2, maxLength: 3 },
+    ),
+  )
+  .map(([head, pairs]) => [...head, ...pairs.flat()]);
+
+/** Sources the log's writes cite: as a source of a field or as evidence for an interval. */
+function citedSources(log: readonly LogEntry[]): string[] {
+  const out = new Set<string>();
+  for (const e of log) {
+    if (e.kind !== "write") continue;
+    for (const x of Object.values(e.fields)) for (const y of x?.sources ?? []) out.add(y);
+    for (const y of e.validSources ?? []) out.add(y);
+  }
+  return [...out].sort();
+}
+
+/**
+ * Steps, and two sets of one or two sources to delete after them: mostly sources the log cites,
+ * now and then any.
+ */
+const withTwoSets = (schema: TableSchema, from: fc.Arbitrary<Step[]> = steps) =>
+  from.chain((st) => {
+    const cited = citedSources(extend(schema, [], st, 10));
+    const any = fc.subarray(SOURCES, { minLength: 1, maxLength: 2 });
+    const one =
+      cited.length > 0
+        ? fc.oneof(
+            {
+              weight: 7,
+              arbitrary: fc.subarray(cited, { minLength: 1, maxLength: Math.min(2, cited.length) }),
+            },
+            { weight: 1, arbitrary: any },
+          )
+        : any;
+    return fc.record({ st: fc.constant(st), a: one, b: one });
+  });
+
+/** Writes, then an undo of one of them: a revert with write-back items for deletions to restate. */
+const revertSteps: fc.Arbitrary<Step[]> = fc
+  .tuple(fc.array(write, { minLength: 2, maxLength: 5 }), fc.nat({ max: 2 }))
+  .map(([ws, back]) => [...ws, { t: "undo" as const, back }]);
+
+/**
+ * The row or entity gone after one deletion and back after the other: #11 (S1) everywhere; #21
+ * (S5) with the version before #11, a candidate; #31 (S4) corroborates on the first stretch;
+ * take_previous on #21's item writes back "no value" where #21 is; #51 (S1) restates #31's value
+ * there, awaiting. Deleting S1 leaves only #31 under the write-back: nothing has a value. Deleting
+ * S5 takes the write-back's reason away: #31 gives the value again.
+ */
+const goneAndBack: fc.Arbitrary<{ st: Step[]; a: string[]; b: string[] }> = fc.constant({
+  st: [
+    {
+      t: "write",
+      f: "f2",
+      v: "1",
+      src: "S1",
+      from: 0,
+      to: "open",
+      lag: 0,
+      explicit: false,
+      ack: true,
+    },
+    {
+      t: "write",
+      f: "f2",
+      v: "2",
+      src: "S5",
+      from: 0,
+      to: "open",
+      lag: 1,
+      explicit: false,
+      ack: false,
+    },
+    { t: "write", f: "f2", v: "1", src: "S4", from: 0, to: 1, lag: 0, explicit: true, ack: false },
+    { t: "resolve", decision: "take_previous" },
+    { t: "write", f: "f2", v: "1", src: "S1", from: 0, to: 1, lag: 0, explicit: true, ack: false },
+  ],
+  a: ["S1"],
+  b: ["S5"],
+});
+
+/**
+ * A log, two deleted sets and the further operations: random; a revert restated by the
+ * deletions, an undo of it first among the further operations; or the row or entity gone after
+ * one deletion and back after the other, an undo first.
+ */
+const furtherCase = (schema: TableSchema) =>
+  fc.oneof(
+    {
+      weight: 1,
+      arbitrary: fc.tuple(
+        withTwoSets(schema),
+        fc.array(furtherStep, { minLength: 1, maxLength: 4 }),
+      ),
+    },
+    {
+      weight: 2,
+      arbitrary: fc.tuple(
+        withTwoSets(schema, revertSteps),
+        fc
+          .array(furtherStep, { maxLength: 2 })
+          .map((xs): Step[] => [{ t: "undoRevert", back: 0 }, ...xs]),
+      ),
+    },
+    {
+      weight: 1,
+      arbitrary: fc.tuple(
+        goneAndBack,
+        fc
+          .array(furtherStep, { maxLength: 2 })
+          .map((xs): Step[] => [{ t: "undo", back: 0 }, ...xs]),
+      ),
+    },
+  );
+
 const both = [
   ["state", STATE, true],
   ["event", EVENT, false],
@@ -283,6 +420,17 @@ function writeTimeStatuses(run: LogEvaluation): Map<string, string[]> {
   return out;
 }
 
+/** Whether deleting `sources` after `log` changes its state or items. */
+function changes(schema: TableSchema, log: LogEntry[], sources: string[]): boolean {
+  const last = Math.max(...log.map((o) => o.op));
+  const before = evaluateLog(schema, log).final;
+  const after = evaluateLog(schema, [
+    ...log,
+    { kind: "deletion", op: last + 1, id: "pi_probe", sources },
+  ]).final;
+  return JSON.stringify(stateWithoutIndices(after)) !== JSON.stringify(stateWithoutIndices(before));
+}
+
 const counts = {
   restoredByDeletion: 0,
   restoredByCancel: 0,
@@ -300,17 +448,18 @@ describe.each(both)("%s table", (_, schema, state) => {
   it("successive deletions: A then B = B then A = {A, B} at once, after any log", () => {
     // 02-architecture §11 «顺序无关». The log before A and B keeps its own deletions,
     // cancellations and grace-period writes.
+    // Measured share of hits: about 0.65 (state) and 0.64 (event).
+    const hits = new Hits(0.5);
     fc.assert(
       fc.property(
-        steps,
-        fc.subarray(SOURCES, { minLength: 1, maxLength: 2 }),
-        fc.subarray(SOURCES, { minLength: 1, maxLength: 2 }),
-        (st, a, b) => {
+        withTwoSets(schema),
+        hits.track(({ st, a, b }) => {
           const log = extend(schema, [], st, 10);
           const pending = pendingSources(evaluateLog(schema, log));
           const aOnly = a.filter((x) => !b.includes(x) && !pending.has(x));
           const bOnly = b.filter((x) => !pending.has(x));
           fc.pre(aOnly.length > 0 && bOnly.length > 0);
+          if (changes(schema, log, aOnly) && changes(schema, log, bOnly)) hits.hit();
           const last = Math.max(...log.map((o) => o.op));
           const run = (entries: LogEntry[]) =>
             stateWithoutIndices(evaluateLog(schema, [...log, ...entries]).final);
@@ -327,10 +476,11 @@ describe.each(both)("%s table", (_, schema, state) => {
           ]);
           expect(ba).toEqual(ab);
           expect(once).toEqual(ab);
-        },
+        }),
       ),
       { numRuns: RUNS },
     );
+    hits.check();
   });
 
   it("successive deletions: the same further operations after either order give the same result", () => {
@@ -338,18 +488,18 @@ describe.each(both)("%s table", (_, schema, state) => {
     // a ver (undo, take_previous and the other decisions), appended after A then B, B then A or
     // {A, B} at once, give the same state and items. A write with an old ver may be judged
     // differently: a deletion counts as a change over the intervals it recorded.
+    // Measured share of hits: about 0.85 (state) and 0.83 (event).
+    const hits = new Hits(0.7);
     fc.assert(
       fc.property(
-        steps,
-        fc.subarray(SOURCES, { minLength: 1, maxLength: 2 }),
-        fc.subarray(SOURCES, { minLength: 1, maxLength: 2 }),
-        fc.array(furtherStep, { minLength: 1, maxLength: 4 }),
-        (st, a, b, after) => {
+        furtherCase(schema),
+        hits.track(([{ st, a, b }, after]) => {
           const log = extend(schema, [], st, 10);
           const pending = pendingSources(evaluateLog(schema, log));
           const aOnly = a.filter((x) => !b.includes(x) && !pending.has(x));
           const bOnly = b.filter((x) => !pending.has(x));
           fc.pre(aOnly.length > 0 && bOnly.length > 0);
+          if (changes(schema, log, aOnly) && changes(schema, log, bOnly)) hits.hit();
           const last = Math.max(...log.map((o) => o.op));
           const orders: LogEntry[][] = [
             [
@@ -373,10 +523,11 @@ describe.each(both)("%s table", (_, schema, state) => {
             stateWithoutIndices(evaluateLog(schema, [...log, ...ds, ...tail]).final),
           );
           for (const y of rest) expect(y).toEqual(x);
-        },
+        }),
       ),
       { numRuns: RUNS },
     );
+    hits.check();
   });
 
   it("«撤回还原»: after a cancellation, what grace-period writes did not cover is as the forced replay", () => {
@@ -388,18 +539,20 @@ describe.each(both)("%s table", (_, schema, state) => {
     // throughout; grace-period steps include restatements and decisions. Candidates the
     // cancellation put back are left out of the item comparison: their judgement at the
     // cancellation is a rule of its own (03-deletion «撤回与宽限期»).
+    // Measured share of hits: about 0.89 on both tables.
+    const hits = new Hits(0.75);
     fc.assert(
       fc.property(
-        steps,
-        fc.subarray(SOURCES, { minLength: 1, maxLength: 2 }),
+        withTwoSets(schema),
         fc.array(graceStep, { maxLength: 3 }),
         fc.boolean(),
-        (st, sources, graceSteps, lateVer) => {
+        hits.track(({ st, a: sources }, graceSteps, lateVer) => {
           const prefix = extend(schema, [], st, 10);
           const prefixRun = evaluateLog(schema, prefix);
           const pending = pendingSources(prefixRun);
           const dSources = sources.filter((x) => !pending.has(x));
           fc.pre(dSources.length > 0);
+          if (changes(schema, prefix, dSources)) hits.hit();
           const dOp = Math.max(...prefix.map((o) => o.op)) + 10;
           const withD: LogEntry[] = [
             ...prefix,
@@ -485,10 +638,11 @@ describe.each(both)("%s table", (_, schema, state) => {
               .sort();
           };
           expect(judgement(cancelled)).toEqual(judgement(base));
-        },
+        }),
       ),
       { numRuns: RUNS },
     );
+    hits.check();
   });
 
   it("an accepted undo of a revert leaves none of that revert's write-back items giving a value", () => {
@@ -502,78 +656,87 @@ describe.each(both)("%s table", (_, schema, state) => {
       x: fc.tuple(fc.nat({ max: DAYS.length - 2 }), fc.nat({ max: DAYS.length - 1 })),
       deleteX: fc.boolean(),
     });
+    // Measured share of hits: about 0.86 (state) and 0.91 (event).
+    const hits = new Hits(0.7);
     fc.assert(
-      fc.property(steps, skeleton, fc.array(step, { maxLength: 3 }), (st, sk, tail) => {
-        const head = extend(schema, [], st, 10);
-        const at = Math.max(...head.map((o) => o.op)) + 10;
-        const span = ([a, b]: [number, number]) =>
-          state
-            ? {
-                valid: {
-                  from: { mode: "given" as const, value: DAYS[a] as BizPoint },
-                  to: { mode: "given" as const, value: DAYS[Math.max(b, a + 1)] ?? "2026-12-01" },
-                },
+      fc.property(
+        steps,
+        skeleton,
+        fc.array(step, { maxLength: 3 }),
+        hits.track((st, sk, tail) => {
+          const head = extend(schema, [], st, 10);
+          const at = Math.max(...head.map((o) => o.op)) + 10;
+          const span = ([a, b]: [number, number]) =>
+            state
+              ? {
+                  valid: {
+                    from: { mode: "given" as const, value: DAYS[a] as BizPoint },
+                    to: { mode: "given" as const, value: DAYS[Math.max(b, a + 1)] ?? "2026-12-01" },
+                  },
+                }
+              : {};
+          const body: LogEntry[] = [
+            {
+              kind: "write",
+              op: at,
+              event: at + 1,
+              ...span(sk.w),
+              fields: { f2: { value: "7", sources: ["SW"] } },
+            },
+            {
+              kind: "write",
+              op: at + 10,
+              event: at + 11,
+              ...span(sk.x),
+              fields: { f2: { value: "8", sources: ["SX"] } },
+            },
+            {
+              kind: "undo",
+              op: at + 20,
+              event: at + 21,
+              target: at,
+              seen: at + 10,
+              acknowledge: ["overwrite"],
+            },
+            {
+              kind: "undo",
+              op: at + 30,
+              event: at + 31,
+              target: at + 20,
+              seen: at + 20,
+              acknowledge: ["overwrite"],
+            },
+            ...(sk.deleteX
+              ? [{ kind: "deletion" as const, op: at + 40, id: "pi_x", sources: ["SX"] }]
+              : []),
+          ];
+          const log = extend(schema, [...head, ...body], tail, at + 50);
+          const ev = evaluateLog(schema, log).final;
+          const status = new Map(ev.reverts.map((r) => [r.op, r]));
+          for (const u of log) {
+            if (u.kind !== "undo") continue;
+            const undo = status.get(u.op);
+            const target = status.get(u.target);
+            if (undo?.status !== "applied" || target?.status !== "applied") continue;
+            counts.undoOfRevert++;
+            hits.hit();
+            if (
+              undo.record.length === 0 &&
+              ev.items.some((x) => x.event === u.event && x.status !== "dropped")
+            ) {
+              counts.undoOfRevertRegained++;
+            }
+            for (const [f, segs] of Object.entries(ev.fields)) {
+              for (const seg of segs ?? []) {
+                expect({ f, by: seg.by?.event }).not.toEqual({ f, by: target.event });
               }
-            : {};
-        const body: LogEntry[] = [
-          {
-            kind: "write",
-            op: at,
-            event: at + 1,
-            ...span(sk.w),
-            fields: { f2: { value: "7", sources: ["SW"] } },
-          },
-          {
-            kind: "write",
-            op: at + 10,
-            event: at + 11,
-            ...span(sk.x),
-            fields: { f2: { value: "8", sources: ["SX"] } },
-          },
-          {
-            kind: "undo",
-            op: at + 20,
-            event: at + 21,
-            target: at,
-            seen: at + 10,
-            acknowledge: ["overwrite"],
-          },
-          {
-            kind: "undo",
-            op: at + 30,
-            event: at + 31,
-            target: at + 20,
-            seen: at + 20,
-            acknowledge: ["overwrite"],
-          },
-          ...(sk.deleteX
-            ? [{ kind: "deletion" as const, op: at + 40, id: "pi_x", sources: ["SX"] }]
-            : []),
-        ];
-        const log = extend(schema, [...head, ...body], tail, at + 50);
-        const ev = evaluateLog(schema, log).final;
-        const status = new Map(ev.reverts.map((r) => [r.op, r]));
-        for (const u of log) {
-          if (u.kind !== "undo") continue;
-          const undo = status.get(u.op);
-          const target = status.get(u.target);
-          if (undo?.status !== "applied" || target?.status !== "applied") continue;
-          counts.undoOfRevert++;
-          if (
-            undo.record.length === 0 &&
-            ev.items.some((x) => x.event === u.event && x.status !== "dropped")
-          ) {
-            counts.undoOfRevertRegained++;
-          }
-          for (const [f, segs] of Object.entries(ev.fields)) {
-            for (const seg of segs ?? []) {
-              expect({ f, by: seg.by?.event }).not.toEqual({ f, by: target.event });
             }
           }
-        }
-      }),
+        }),
+      ),
       { numRuns: RUNS },
     );
+    hits.check();
   });
 
   it("original items of one write in one segment: cut only on intervals not cleared, no endpoint leaks", () => {
@@ -586,98 +749,110 @@ describe.each(both)("%s table", (_, schema, state) => {
     if (!state) return;
     const skeleton = fc.record({
       yFrom: fc.constantFrom("2026-11-08", "2026-11-10", "2026-11-12") as fc.Arbitrary<BizPoint>,
-      listed: fc.boolean(),
-      ending: fc.constantFrom("cancel", "delete-y", "none"),
+      // The cut comes with a listing and "cancel", the forced merge with a listing and
+      // "delete-y"; the rest are controls.
+      listed: fc.constantFrom(true, true, true, false),
+      ending: fc.constantFrom("cancel", "cancel", "delete-y", "delete-y", "none"),
       tailSteps: fc.array(step, { maxLength: 2 }),
     });
+    // Measured share of hits: about 0.61.
+    const hits = new Hits(0.45);
     fc.assert(
-      fc.property(skeleton, ({ yFrom, listed, ending, tailSteps }) => {
-        const iv = (from: BizPoint, to: BizPoint | null) => ({
-          from: { mode: "given" as const, value: from },
-          to: to === null ? { mode: "open" as const } : { mode: "given" as const, value: to },
-        });
-        const wr = (
-          op: number,
-          from: BizPoint,
-          to: BizPoint | null,
-          value: string,
-          src: string,
-          extra: Partial<WriteOp> = {},
-        ): WriteOp => ({
-          kind: "write",
-          op,
-          event: op + 1,
-          valid: iv(from, to),
-          fields: { f2: { value, sources: [src] } },
-          ...extra,
-        });
-        const log: LogEntry[] = [
-          wr(10, "2026-10-01", null, "5000", "B1"),
-          wr(12, "2026-11-25", null, "4500", "B2"),
-          wr(15, yFrom, null, "4000", "B3"),
-          wr(20, "2026-11-02", "2026-11-20", "3000", "B4"),
-          { kind: "undo", op: 30, event: 31, target: 20, seen: 20, acknowledge: ["overwrite"] },
-          ...(listed
-            ? [
-                wr(33, "2026-11-03", "2026-11-05", "3500", "B5", { seen: 25 }),
-                {
-                  kind: "resolve" as const,
-                  op: 35,
-                  event: 36,
-                  decision: "take_previous" as const,
-                  candidates: [34],
-                  unit: "f2" as const,
-                },
-              ]
-            : []),
-          { kind: "deletion", op: 40, id: "pi_d", sources: ["B2"] },
-          ...(ending === "cancel" ? [{ kind: "cancel" as const, op: 50, id: "pi_d" }] : []),
-          ...(ending === "delete-y"
-            ? [{ kind: "deletion" as const, op: 50, id: "pi_y", sources: ["B3"] }]
-            : []),
-        ];
-        const full = extend(schema, log, tailSteps, 60);
-        const before = { ...segmentStats };
-        const run = evaluateLog(schema, full);
-        counts.splitPath += segmentStats.split - before.split;
-        counts.mergePath += segmentStats.forcedMerge - before.forcedMerge;
-        // No endpoint from a deleted source: every endpoint is a date some op with its sources
-        // intact gave itself.
-        const pendingSet = new Set<string>();
-        for (const st of run.steps) {
-          if (st.refused) continue;
-          if (st.entry.kind === "deletion") for (const x of st.entry.sources) pendingSet.add(x);
-          if (st.entry.kind === "cancel") pendingSet.delete(st.entry.id === "pi_d" ? "B2" : "B3");
-        }
-        const dates = new Set<string>();
-        for (const o of full) {
-          if (o.kind !== "write" || o.valid === undefined || o.valid === "corrected_span") continue;
-          if (Object.values(o.fields).some((x) => x?.sources.some((y) => pendingSet.has(y))))
-            continue;
-          if (o.valid.from.mode === "given") dates.add(o.valid.from.value);
-          if (o.valid.to.mode === "given") dates.add(o.valid.to.value);
-        }
-        const ev = run.final;
-        for (const segs of Object.values(ev.fields)) {
-          for (const seg of segs ?? []) {
-            for (const x of seg.valid)
-              for (const p of [x.from, x.to]) if (p !== null) expect(dates).toContain(p);
+      fc.property(
+        skeleton,
+        hits.track(({ yFrom, listed, ending, tailSteps }) => {
+          const iv = (from: BizPoint, to: BizPoint | null) => ({
+            from: { mode: "given" as const, value: from },
+            to: to === null ? { mode: "open" as const } : { mode: "given" as const, value: to },
+          });
+          const wr = (
+            op: number,
+            from: BizPoint,
+            to: BizPoint | null,
+            value: string,
+            src: string,
+            extra: Partial<WriteOp> = {},
+          ): WriteOp => ({
+            kind: "write",
+            op,
+            event: op + 1,
+            valid: iv(from, to),
+            fields: { f2: { value, sources: [src] } },
+            ...extra,
+          });
+          const log: LogEntry[] = [
+            wr(10, "2026-10-01", null, "5000", "B1"),
+            wr(12, "2026-11-25", null, "4500", "B2"),
+            wr(15, yFrom, null, "4000", "B3"),
+            wr(20, "2026-11-02", "2026-11-20", "3000", "B4"),
+            { kind: "undo", op: 30, event: 31, target: 20, seen: 20, acknowledge: ["overwrite"] },
+            ...(listed
+              ? [
+                  wr(33, "2026-11-03", "2026-11-05", "3500", "B5", { seen: 25 }),
+                  {
+                    kind: "resolve" as const,
+                    op: 35,
+                    event: 36,
+                    decision: "take_previous" as const,
+                    candidates: [34],
+                    unit: "f2" as const,
+                  },
+                ]
+              : []),
+            { kind: "deletion", op: 40, id: "pi_d", sources: ["B2"] },
+            ...(ending === "cancel" ? [{ kind: "cancel" as const, op: 50, id: "pi_d" }] : []),
+            ...(ending === "delete-y"
+              ? [{ kind: "deletion" as const, op: 50, id: "pi_y", sources: ["B3"] }]
+              : []),
+          ];
+          const full = extend(schema, log, tailSteps, 60);
+          const before = { ...segmentStats };
+          const run = evaluateLog(schema, full);
+          counts.splitPath += segmentStats.split - before.split;
+          counts.mergePath += segmentStats.forcedMerge - before.forcedMerge;
+          if (segmentStats.split > before.split || segmentStats.forcedMerge > before.forcedMerge) {
+            hits.hit();
           }
-        }
-        if (ending === "cancel" && tailSteps.length === 0) {
-          const base = evaluateLog(
-            schema,
-            full.filter((e) => e.kind !== "deletion" && e.kind !== "cancel"),
-            {
-              forcedEffective: run.steps.at(-1)?.keptEffective ?? [],
-              forcedSuperseded: run.steps.at(-1)?.keptSuperseded ?? [],
-            },
-          ).final;
-          expect(timeline(ev, "f2")).toEqual(timeline(base, "f2"));
-        }
-      }),
-      { numRuns: 300 },
+          // No endpoint from a deleted source: every endpoint is a date some op with its sources
+          // intact gave itself.
+          const pendingSet = new Set<string>();
+          for (const st of run.steps) {
+            if (st.refused) continue;
+            if (st.entry.kind === "deletion") for (const x of st.entry.sources) pendingSet.add(x);
+            if (st.entry.kind === "cancel") pendingSet.delete(st.entry.id === "pi_d" ? "B2" : "B3");
+          }
+          const dates = new Set<string>();
+          for (const o of full) {
+            if (o.kind !== "write" || o.valid === undefined || o.valid === "corrected_span")
+              continue;
+            if (Object.values(o.fields).some((x) => x?.sources.some((y) => pendingSet.has(y))))
+              continue;
+            if (o.valid.from.mode === "given") dates.add(o.valid.from.value);
+            if (o.valid.to.mode === "given") dates.add(o.valid.to.value);
+          }
+          const ev = run.final;
+          for (const segs of Object.values(ev.fields)) {
+            for (const seg of segs ?? []) {
+              for (const x of seg.valid)
+                for (const p of [x.from, x.to]) if (p !== null) expect(dates).toContain(p);
+            }
+          }
+          if (ending === "cancel" && tailSteps.length === 0) {
+            const base = evaluateLog(
+              schema,
+              full.filter((e) => e.kind !== "deletion" && e.kind !== "cancel"),
+              {
+                forcedEffective: run.steps.at(-1)?.keptEffective ?? [],
+                forcedSuperseded: run.steps.at(-1)?.keptSuperseded ?? [],
+              },
+            ).final;
+            expect(timeline(ev, "f2")).toEqual(timeline(base, "f2"));
+          }
+        }),
+      ),
+      { numRuns: RUNS },
     );
+    hits.check();
   });
 
   it("deletion events add no pending items beyond the kinds the corollary names", () => {
@@ -690,91 +865,98 @@ describe.each(both)("%s table", (_, schema, state) => {
     // candidate after its item was resolved (pending at write time, removed by the deletion it
     // cancels). Items are identified by (write, field); a kind is the status the item had when it
     // was last pending.
+    // Measured share of hits: about 0.48 (state) and 0.54 (event).
+    const hits = new Hits(0.35);
     fc.assert(
-      fc.property(steps, (st) => {
-        const log = extend(schema, [], st, 10);
-        const run = evaluateLog(schema, log);
-        const atWrite = writeTimeStatuses(run);
-        // Why each item stopped being pending, as of the previous step: a deletion event, or
-        // something else (a decision, a later write); and the kinds it had then.
-        const supersededBy = new Map<string, { by: "deletion" | "other"; kinds: string[] }>();
-        let before: Evaluation | undefined;
-        for (const s of run.steps) {
-          const prev = before;
-          before = s.state;
-          if (s.refused || prev === undefined) continue;
-          const isDeletion = s.entry.kind === "deletion" || s.entry.kind === "cancel";
-          const pendingNow = new Map<string, ItemResult[]>();
-          for (const x of s.state.items.filter(isPending)) {
-            pendingNow.set(etKey(x), [...(pendingNow.get(etKey(x)) ?? []), x]);
-          }
-          const pendingPrev = new Map<string, ItemResult[]>();
-          for (const x of prev.items.filter(isPending)) {
-            pendingPrev.set(etKey(x), [...(pendingPrev.get(etKey(x)) ?? []), x]);
-          }
-          if (isDeletion) {
-            const putBack = new Set((s.putBack ?? []).map(etKey));
-            for (const [key, xs] of pendingNow) {
-              const prevPending = (pendingPrev.get(key) ?? []).map((x) => x.status);
-              const earlier = supersededBy.get(key);
-              const original =
-                prevPending.length === 0 && earlier?.by === "deletion" ? earlier.kinds : [];
-              for (const x of xs) {
-                const branch = prevPending.includes(x.status)
-                  ? "not new"
-                  : x.status === "awaiting" && prevPending.includes("candidate")
-                    ? "converted"
-                    : x.status === "candidate" && prevPending.includes("awaiting")
-                      ? "replaced now"
-                      : original.includes(x.status)
-                        ? "restored"
-                        : original.length > 0
-                          ? "replaced"
-                          : s.entry.kind === "cancel" && putBack.has(key)
-                            ? "put back"
-                            : "none";
-                if (branch === "restored") {
-                  if (s.entry.kind === "deletion") counts.restoredByDeletion++;
-                  else counts.restoredByCancel++;
+      fc.property(
+        mostly(steps, deletionAfterConflict),
+        hits.track((st) => {
+          const log = extend(schema, [], st, 10);
+          const run = evaluateLog(schema, log);
+          const atWrite = writeTimeStatuses(run);
+          // Why each item stopped being pending, as of the previous step: a deletion event, or
+          // something else (a decision, a later write); and the kinds it had then.
+          const supersededBy = new Map<string, { by: "deletion" | "other"; kinds: string[] }>();
+          let before: Evaluation | undefined;
+          for (const s of run.steps) {
+            const prev = before;
+            before = s.state;
+            if (s.refused || prev === undefined) continue;
+            const isDeletion = s.entry.kind === "deletion" || s.entry.kind === "cancel";
+            const pendingNow = new Map<string, ItemResult[]>();
+            for (const x of s.state.items.filter(isPending)) {
+              pendingNow.set(etKey(x), [...(pendingNow.get(etKey(x)) ?? []), x]);
+            }
+            const pendingPrev = new Map<string, ItemResult[]>();
+            for (const x of prev.items.filter(isPending)) {
+              pendingPrev.set(etKey(x), [...(pendingPrev.get(etKey(x)) ?? []), x]);
+            }
+            if (isDeletion) {
+              const putBack = new Set((s.putBack ?? []).map(etKey));
+              if (pendingNow.size > 0) hits.hit();
+              for (const [key, xs] of pendingNow) {
+                const prevPending = (pendingPrev.get(key) ?? []).map((x) => x.status);
+                const earlier = supersededBy.get(key);
+                const original =
+                  prevPending.length === 0 && earlier?.by === "deletion" ? earlier.kinds : [];
+                for (const x of xs) {
+                  const branch = prevPending.includes(x.status)
+                    ? "not new"
+                    : x.status === "awaiting" && prevPending.includes("candidate")
+                      ? "converted"
+                      : x.status === "candidate" && prevPending.includes("awaiting")
+                        ? "replaced now"
+                        : original.includes(x.status)
+                          ? "restored"
+                          : original.length > 0
+                            ? "replaced"
+                            : s.entry.kind === "cancel" && putBack.has(key)
+                              ? "put back"
+                              : "none";
+                  if (branch === "restored") {
+                    if (s.entry.kind === "deletion") counts.restoredByDeletion++;
+                    else counts.restoredByCancel++;
+                  }
+                  if (branch === "replaced") counts.replacedAfterEarlier++;
+                  expect({
+                    key,
+                    at: s.entry,
+                    now: x.status,
+                    prevPending,
+                    supersededBy: earlier,
+                    branch,
+                  }).not.toMatchObject({ branch: "none" });
                 }
-                if (branch === "replaced") counts.replacedAfterEarlier++;
-                expect({
-                  key,
-                  at: s.entry,
-                  now: x.status,
-                  prevPending,
-                  supersededBy: earlier,
-                  branch,
-                }).not.toMatchObject({ branch: "none" });
+                // One for one: one pending item per write and field and kind (a judgement carried
+                // by several contribution items, a segment cut by 09 §5.7, is still one), and no
+                // more kinds than the items it restores or replaces (a put-back candidate: than at
+                // write time).
+                const kinds = new Set(xs.map((x) => x.status)).size;
+                const before = new Set(
+                  prevPending.length > 0
+                    ? prevPending
+                    : original.length > 0
+                      ? original
+                      : (atWrite.get(key) ?? []),
+                ).size;
+                expect({ key, kinds }).toEqual({ key, kinds: Math.min(kinds, before) });
               }
-              // One for one: one pending item per write and field and kind (a judgement carried
-              // by several contribution items, a segment cut by 09 §5.7, is still one), and no
-              // more kinds than the items it restores or replaces (a put-back candidate: than at
-              // write time).
-              const kinds = new Set(xs.map((x) => x.status)).size;
-              const before = new Set(
-                prevPending.length > 0
-                  ? prevPending
-                  : original.length > 0
-                    ? original
-                    : (atWrite.get(key) ?? []),
-              ).size;
-              expect({ key, kinds }).toEqual({ key, kinds: Math.min(kinds, before) });
             }
-          }
-          for (const [key, xs] of pendingPrev) {
-            if (!pendingNow.has(key)) {
-              supersededBy.set(key, {
-                by: isDeletion ? "deletion" : "other",
-                kinds: [...new Set(xs.map((x) => x.status))],
-              });
+            for (const [key, xs] of pendingPrev) {
+              if (!pendingNow.has(key)) {
+                supersededBy.set(key, {
+                  by: isDeletion ? "deletion" : "other",
+                  kinds: [...new Set(xs.map((x) => x.status))],
+                });
+              }
             }
+            for (const key of pendingNow.keys()) supersededBy.delete(key);
           }
-          for (const key of pendingNow.keys()) supersededBy.delete(key);
-        }
-      }),
+        }),
+      ),
       { numRuns: RUNS },
     );
+    hits.check();
   });
 });
 
