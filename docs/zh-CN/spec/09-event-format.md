@@ -25,7 +25,7 @@
 | 事件头、内容块 | JSON，按 **RFC 8785（JCS）** 序列化为 UTF-8 字节。JCS 字节是权威形式；存储里拆出的索引列只是索引，`verify` 核对它们与权威形式一致 |
 | 缺省字段 | 不编码。没有值的可选字段不出现在对象里，不写 `null`。新增可选字段因此不改变旧事件的字节 |
 | 整数 | `seq`、下标、版本号、计数用 JSON 数字，取值范围 0 至 2^53 − 1 |
-| 十进制数 | **一律写成字符串**（`"45"`、`"5.5"`），不用 JSON 数字。金额、数量、`decimal` 字段、`min` / `max` 都是 |
+| 十进制数 | **一律写成字符串**（`"45"`、`"5.5"`），不用 JSON 数字。金额、数量、`decimal` 字段、`min` / `max` 都是。由 saveslot 求出或换算后的值用**规范形** `-?(0\|[1-9][0-9]*)(\.[0-9]*[1-9])?`：不带指数与正号，整数部分无前导零，小数部分无尾随零，零写 `"0"`（没有 `-0`），按 `scale` 舍入之后再写成这个形状。同值的两个数因此只有一种字节。调用方交来的原始值不规范化（§1.3） |
 | 时刻 | 字符串，UTC，固定毫秒精度：`2026-11-10T04:41:07.123Z` |
 | 日期 | 字符串 `YYYY-MM-DD` |
 | 业务时间区间 | 对象 `{"from": <点>, "to": <点>}`，左闭右开；`to` 缺省表示一直延续。点的写法随表的粒度：`date` 粒度用日期，`instant` 粒度用时刻 |
@@ -49,7 +49,7 @@
 | `ref` | 被引用的行或实体的 ID | `"r_01JC8Z…"` |
 | 空值（可选字段显式置空） | `null` | `null` |
 
-"原始值"指调用方交来、未经换算的值，形状相同，单位是调用方给的那个。原始值出现在两处：`write.head` 的 `ops/<i>/set/<字段ID>` 块；以及没带证据的写入为每个进了事件的 op 存下的 `api_call` 源数据的 `request` 块（那一个 op 的请求 JSON，§5.6）。
+"原始值"指调用方交来、未经换算的值，形状相同，单位是调用方给的那个；十进制按调用方的原文记（调用方给的是 JSON 数字时，记它在请求里的数字文本），不改写成规范形，字面命中比的就是它。除原始值外，事件里的十进制值都是 §1.2 的规范形，`integer` 同样（没有小数部分）。原始值出现在两处：`write.head` 的 `ops/<i>/set/<字段ID>` 块；以及没带证据的写入为每个进了事件的 op 存下的 `api_call` 源数据的 `request` 块（那一个 op 的请求 JSON，§5.6）。
 
 ### 1.4 标识
 
@@ -482,7 +482,7 @@
 
 | path | 种类 | 内容 |
 |---|---|---|
-| `principal` | 元 | `{"principal": <主体 ID>, "kind": "connection", "scopes": ["saveslot.read","saveslot.write"], "slots": ["sl_4KTZ…"], "via": "token" \| "oauth", "client": <OAuth 客户端标识>}`。`client` 只在 `via` 为 `oauth` 时有，是客户端软件的标识，不是用户内容。`slots` 见下 |
+| `principal` | 元 | `{"principal": <主体 ID>, "kind": "connection", "scopes": ["saveslot.read","saveslot.write"], "slots": ["sl_4KTZ…"], "via": "token" \| "oauth", "client": <OAuth 客户端标识>}`。`client` 在 `via` 为 `oauth` 时必有、否则没有，是客户端软件的标识，不是用户内容。`slots` 见下 |
 | `name` | 数 | `{"name": "MacBook · Claude Code"}`。用户起的名字。来源：无，不在隐私删除的级联范围内；删除预览的 `not_deleted` 里以 `connection_names` 如实列出 |
 
 `slots` 是这个连接实例的 **slot 范围**：slot ID 的数组，按 ID 升序、不重复、不为空。**缺省 = 全部**，含之后新建的 slot（缺省字段不编码，不限定范围的登记事件里没有这个键）。同一组 `scopes` 对范围内的每个 slot 一样。它只含 saveslot 分配的不透明 ID，与 `scopes` 同放在元数据块里；主体事件是租户级事件，事件头没有 `slot`，范围也不进事件头。范围签发后不能改，要改就吊销后重签。服务层按 `principals` 里记下的范围构造调用上下文的可见范围，控制面不另存一份。
@@ -1067,7 +1067,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 |---|---|---|---|
 | `target` | 元 | 见下 | — |
 | `scope_valid` | 数 | 状态类表：事项覆盖的业务时间区间 `{"from": …, "to": …, "deps": […]}` | `deps`：各候选或提议的那几项贡献 |
-| `current/<k>` | 数 | 当前生效值的一段：`{"field": "f3", "value": …, "valid": {…}, "op": <写下它的操作号>, "deps": […]}` | `deps` |
+| `current/<k>` | 数 | 当前生效值的一段：`{"field": "f3", "value": …, "valid": {…}, "op": <写下它的操作号>, "deps": […]}`。`valid` 只在状态类表上有，本表 `proposed`、`previous` 与 `impact` 的 `overwritten_segment` 同样 | `deps` |
 | `candidates/<k>` | 数 | 一个候选（一次写入在这个冲突单元上的全部候选项），见下 | `deps` |
 | `proposed/<k>` | 数 | 待确认的提议在一个字段上的值：`{"field": …, "value": …, "valid": {…}, "deps": […]}` | `deps` |
 | `previous/<k>` | 数 | 合并基上的值的一段：`{"field": …, "value": …, "valid": {…}, "deps": […]}`。`take_previous` 会回到它 | `deps` |
@@ -1097,11 +1097,11 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 | `type` | 事项类型（§6.4） |
 | `reason` | 成因码（§6.6） |
 | `table`、`row` / `entity` | 目标所在。`schema_change` 事项没有，改为 `draft` |
-| `unit` | 冲突单元，一律是数组：一个字段（`["f3"]`），或 schema 声明的一个字段组里的全部字段（各字段 ID）。目标是"存在"（撤销参与的冲突）时写 `["existence"]` |
-| `merge_base_op` | `conflict`：合并基的操作号（各候选所带 `ver` 中最早的那个版本） |
-| `origin_event` | 引出这个事项的 `write.base` 事件的 `seq` |
-| `draft` | `schema_change`：草稿 ID |
-| `related_item` | 成因为 `restored_candidate` 时：候选原来所在的那个事项 |
+| `unit` | 冲突单元，一律是数组：一个字段（`["f3"]`），或 schema 声明的一个字段组里的全部字段（各字段 ID）。目标是"存在"（撤销参与的冲突）时写 `["existence"]`。`flagged` 事项可缺（标记的是整行）；`schema_change` 没有 |
+| `merge_base_op` | `conflict` 必有，其余类型没有：合并基的操作号（各候选所带 `ver` 中最早的那个版本） |
+| `origin_event` | 由写入引起的事项（`conflict`、`awaiting_confirmation`、`flagged`）必有：引出这个事项的 `write.base` 事件的 `seq`。`schema_change` 没有 |
+| `draft` | `schema_change` 必有，其余类型没有：草稿 ID |
+| `related_item` | 当且仅当成因为 `restored_candidate`：候选原来所在的那个事项 |
 | `ruleset_version`、`policy_version` | 判定这个事项时用的两个版本 |
 
 `candidates/<k>`：
@@ -1127,7 +1127,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 | 成因 | 形状 |
 |---|---|
 | 抹掉变化点（高影响 ①）、跨空洞填值 | `{"kind": "overwritten_segment", "field": …, "valid": {…}, "value": …, "op": <写下这一段的操作号>, "deps": […]}` |
-| 撤销仍被引用的行（高影响 ②） | `{"kind": "referencing_row", "table": …, "row": …, "field": …}` |
+| 撤销仍被引用的行（高影响 ②） | `{"kind": "referencing_row", "table": …, "row": …, "field": …}`；引用方在状态类表上时写 `entity` 代替 `row` |
 | `undo` 带 `include_later`（高影响 ④） | `{"kind": "reverted_write", "op": <操作号>, "deps": […]}` |
 | `conflict`：`take_previous` 会回掉的写入 | `{"kind": "reverted_write", "op": <操作号>, "deps": […]}` |
 | `conflict`：候选若生效会覆盖的段 | `{"kind": "overwritten_segment", …}` |
@@ -1161,6 +1161,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 - `cause` 为 `matched_changed`：`flagged` 事项比中的两行里任何一行（被标记的那一行，或被比中的另一行）被撤销或改动，事项仍未决；`by_event` 是那条 `write.base`。`flagged` 事项不看读没读过，没有 `writer_had_read`。
 - `cause` 为 `entries_restored`：撤回一次删除之后，事项当初被去掉的候选放回来。`restored_candidates` 只列**整条被去掉过**的候选的下标（与 `dropped_candidates` 对称）；候选当初只少了一部分项、撤回后那些项回来的，下标不进 `restored_candidates`，本事件用同一下标重新给出含全部项的 `candidates/<k>`。本事件的 `candidates/<k>` 按撤回后的状态重新给出它们（以本事件为准，不读回原来的块）；此时没有 `by_event`。
 - 撤回删除时事项**已经解决**的，不产生 `item.refreshed`，原事项的解决不动。放回来的候选按撤回时的当前状态重新判定，由撤回事件逐项重述：与当前生效值同值的项，按普通规则成为 `dropped`（没指证据）或 `corroborated`（指了证据）；否则仍是 `candidate`。只要还有一项是 `candidate`，随后一条 `item.created`（成因 `restored_candidate`）为这个候选另开事项，新事项里它的 `items` 只含仍是候选的那几项。回执的 `rejudged` 按候选给一条：还有项是候选记 `reopened`；否则有项成了佐证记 `corroborated`，全部成了 `dropped` 记 `dropped`。
+- `target` 各键的出现条件：`dropped_candidates` 只随 `entries_deleted`、`restored_candidates` 只随 `entries_restored`，出现时非空；`by_event` 在 `entries_deleted`、`entries_restored` 时没有，其余成因必有；`writer_had_read` 在 `target_overwritten`（恒为 `false`）与 `references_changed` 时必有，其余成因没有；`merge_base_op` 对每种成因都可缺，给出时是刷新后的合并基。
 - `apply`：事项版本换成本操作号。
 
 #### `item.superseded`
@@ -1654,7 +1655,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 | | `rsql` | 编译这一版时用的受限 SQL 白名单版本（如 `rsql@1`，[`03-data-model/11-restricted-sql.md`](03-data-model/11-restricted-sql.md)「白名单的版本与变更」）。这一版的 `migrate` / `backfill` 表达式按它求值，重放也按它。派生规则各自另记（`rule.rsql`）。内核保留旧版本的行为；白名单改变了已有项的行为就出新版本。内核不认识的版本：`apply` 停止（§1.6） |
 | | `slot`、`name`、`sv`、`timezone` | slot ID、名称、这一版的版本号、时区 |
 | | `tables` | **这一版里全部的表**（不只是改动的），每张给完整定义。重放时只凭这一块就能解释这一版的全部写入 |
-| 表 | `id`、`name`、`kind`、`description` | `kind`：`base` / `derived` |
+| 表 | `id`、`name`、`kind`、`description` | 都必有。`kind`：`base` / `derived`。`description` 在表、基础表字段、派生字段上都必有（schema 文档里说明是必填的，编译时缺了就不通过） |
 | | `aliases` | 别名：字符串数组，可缺。给 Agent 看的说法，不参与名字解析。基础表、派生表都可以有 |
 | | `time` | `{"type": "none"}` / `{"type": "event", "field": <字段 ID>}` / `{"type": "state", "granularity": "date" \| "instant"}` |
 | | `entity_key` | 状态类表的自然键：字段 ID 数组 |
@@ -1662,7 +1663,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 | | `duplicate_keys` | 疑似重复的判据：字段 ID 数组的数组 |
 | | `external_key` | 来源键：字段 ID 数组（1–4 个），可缺。只出现在事件类表与无时间表上；键字段不出现在 `together` 里 |
 | | `physical` | `{"table": <物理表名>, "since": <整数>}`。`since` 是这张物理表最初建于哪个版本；与本版 `sv` 相同时可省，表示本版新建（新增的表、重建的表、从未被写入而改了结构的表） |
-| 基础表的字段 | `id`、`name`、`type`、`description`、`required` | |
+| 基础表的字段 | `id`、`name`、`type`、`description`、`required` | 前四个必有；`required` 只在为 `true` 时出现，缺省即可选 |
 | | `aliases` | 别名，同表的 `aliases` |
 | | `min`、`max` | 十进制字符串 |
 | | `values` | `enum` 的取值 |
