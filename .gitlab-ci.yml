@@ -33,6 +33,24 @@ dco:
   script:
     - node scripts/check-dco.ts "$CI_MERGE_REQUEST_DIFF_BASE_SHA"
 
+# The merge request title is a Conventional Commit: it becomes the squash commit's subject.
+mr-title:
+  image: node:24
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - node scripts/check-mr-title.ts
+
+# A project-held list of terms appears nowhere in tracked files, paths, the merge request's commit
+# messages or title (the list is the masked variable SAVESLOT_FORBIDDEN_TERMS_B64; output names
+# terms by index only); code and the spec cite spec sections, not ruling numbers.
+forbidden-terms:
+  image: node:24
+  variables:
+    GIT_DEPTH: 0
+  script:
+    - node scripts/check-forbidden-terms.ts
+
 # No secrets in the commits of a merge request, or anywhere in the history of the default branch.
 secrets:
   image:

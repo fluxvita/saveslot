@@ -19,6 +19,8 @@
     "docs:links": "node scripts/check-doc-links.ts",
     "docs:json": "node scripts/check-json-examples.ts",
     "dco": "node scripts/check-dco.ts",
+    "mr-title": "node scripts/check-mr-title.ts",
+    "terms": "node scripts/check-forbidden-terms.ts",
     "check": "pnpm typecheck && pnpm lint && pnpm test:unit && pnpm test:prop && pnpm deps && pnpm docs:links && pnpm docs:json",
     "clean": "tsc -b --clean",
     "changeset": "changeset"

@@ -1,13 +1,21 @@
 // Tests for the repository check scripts: each check must fail on the inputs it exists to catch.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { dcoProblem } from "./check-dco.ts";
 import { checkDocLinks, headingAnchors, slugify } from "./check-doc-links.ts";
+import {
+  decodeTerms,
+  formatHit,
+  scan,
+  termMatcher,
+  trackedFiles,
+} from "./check-forbidden-terms.ts";
 import { checkJsonExamples, parseError } from "./check-json-examples.ts";
+import { titleProblem } from "./check-mr-title.ts";
 
 const REPO = resolve(import.meta.dirname, "..");
 const dirs: string[] = [];
@@ -88,6 +96,154 @@ describe("DCO", () => {
     expect(dcoProblem(commit("feat: x\n\nSigned-off-by: B <b@example.com>\n"))).toMatch(
       /from the author/,
     );
+  });
+});
+
+describe("MR title", () => {
+  it("accepts Conventional Commits, with or without a scope or a breaking-change mark", () => {
+    for (const t of [
+      "feat(store-pglite): add the DB Worker backend",
+      "fix: trace the writer itself",
+      "docs(spec)!: rename a block",
+      "Draft: test(reference): cover D.5",
+    ]) {
+      expect(titleProblem(t), t).toBeUndefined();
+    }
+  });
+
+  it("rejects other titles", () => {
+    for (const t of [
+      "Add the DB Worker backend",
+      "feature: x",
+      "Feat: x",
+      "feat(Kernel): x",
+      "feat(): x",
+      "feat:x",
+      "feat: ",
+      "feat(kernel) x",
+      " feat: x",
+      "",
+    ]) {
+      expect(titleProblem(t), JSON.stringify(t)).toBeDefined();
+    }
+  });
+});
+
+describe("forbidden terms", () => {
+  // A made-up list; the real one is never part of the repository.
+  const FAKE = ["Zorblax", "Quux Widget", "紫色河马"];
+  const b64 = (terms: string[]) => Buffer.from(terms.join("\n")).toString("base64");
+
+  function repo(files: Record<string, string | Buffer>): string {
+    const root = mkdtempSync(join(tmpdir(), "saveslot-terms-"));
+    dirs.push(root);
+    for (const [path, body] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), body);
+    }
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: root, stdio: "pipe" });
+    git("init", "-q");
+    git("add", "-A");
+    return root;
+  }
+
+  it("decodes newline-separated terms, ignoring blank lines and spaces", () => {
+    expect(decodeTerms(Buffer.from(" a \r\n\nb c\n").toString("base64"))).toEqual(["a", "b c"]);
+  });
+
+  it("matches case-insensitively at word boundaries, and CJK terms inside CJK text", () => {
+    const m = termMatcher("Zorblax");
+    expect(m.test("see ZORBLAX here")).toBe(true);
+    expect(m.test("zorblax.")).toBe(true);
+    expect(m.test("Zorblaxes")).toBe(false);
+    expect(m.test("myZorblax")).toBe(false);
+    expect(termMatcher("Quux Widget").test("a quux  widget b")).toBe(true);
+    expect(termMatcher("紫色河马").test("这是紫色河马的说明")).toBe(true);
+    expect(termMatcher("a.b").test("axb")).toBe(false);
+  });
+
+  it("reports terms in contents, file names, commit messages and the title, by index", () => {
+    const root = repo({
+      "docs/a.md": "line one\nmentions zorblax here\n",
+      "zorblax-notes.txt": "clean\n",
+      "src/b.ts": "// 紫色河马\nconst quux = 1;\n",
+      "img.bin": Buffer.from([0, 1, 2, 0x5a, 0x6f, 0x72, 0x62, 0x6c, 0x61, 0x78]),
+    });
+    const hits = scan({
+      root,
+      files: trackedFiles(root),
+      terms: FAKE,
+      commits: [{ sha: "abcdef0123456789", message: "feat: x\n\nabout Quux Widget\n" }],
+      title: "fix: zorblax",
+    }).map(formatHit);
+    expect(hits.sort()).toEqual(
+      [
+        "docs/a.md:2: forbidden term #1",
+        "zorblax-notes.txt (file name): forbidden term #1",
+        "src/b.ts:1: forbidden term #3",
+        "commit abcdef012345:3: forbidden term #2",
+        "MR title: forbidden term #1",
+      ].sort(),
+    );
+  });
+
+  it("reports ruling-number references in packages and the spec, not elsewhere", () => {
+    const root = repo({
+      "packages/kernel/src/x.ts": "// see R204\n",
+      "docs/zh-CN/spec/a.md": "按 R112 处理\n",
+      "docs/zh-CN/process/b.md": "R204 is fine here\n",
+      "packages/kernel/src/y.ts": "const R2000 = 1; // XR204\n",
+    });
+    const hits = scan({ root, files: trackedFiles(root), terms: [] }).map(formatHit);
+    expect(hits.sort()).toEqual(
+      [
+        "docs/zh-CN/spec/a.md:1: ruling-number reference (cite the spec section instead)",
+        "packages/kernel/src/x.ts:1: ruling-number reference (cite the spec section instead)",
+      ].sort(),
+    );
+  });
+
+  const SCRIPT = join(REPO, "scripts/check-forbidden-terms.ts");
+  function run(root: string, env: Record<string, string>) {
+    const clean = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([k]) => !k.startsWith("CI_") && k !== "SAVESLOT_FORBIDDEN_TERMS_B64",
+      ),
+    );
+    const r = spawnSync("node", ["--no-warnings", SCRIPT], {
+      cwd: root,
+      env: { ...clean, ...env },
+      encoding: "utf8",
+    });
+    return { code: r.status, output: `${r.stdout}${r.stderr}` };
+  }
+
+  it("fails on a hit and never prints a term or the encoded list", () => {
+    const root = repo({ "a.md": "one Quux Widget, one 紫色河马\n" });
+    const encoded = b64(FAKE);
+    const r = run(root, { SAVESLOT_FORBIDDEN_TERMS_B64: encoded });
+    expect(r.code).toBe(1);
+    expect(r.output).toContain("a.md:1: forbidden term #2");
+    expect(r.output).toContain("a.md:1: forbidden term #3");
+    for (const secret of [...FAKE, encoded, ...FAKE.map((t) => t.toLowerCase())]) {
+      expect(r.output).not.toContain(secret);
+    }
+    expect(r.output.toLowerCase()).not.toMatch(/zorblax|quux|widget|河马/);
+  });
+
+  it("passes a clean tree", () => {
+    const root = repo({ "a.md": "nothing to see\n" });
+    const r = run(root, { SAVESLOT_FORBIDDEN_TERMS_B64: b64(FAKE) });
+    expect(r.code).toBe(0);
+    expect(r.output).toContain("Forbidden terms OK: 3 term(s)");
+  });
+
+  it("without the list: fails in the project's pipelines, warns elsewhere", () => {
+    const root = repo({ "a.md": "nothing to see\n" });
+    expect(run(root, { CI_PROJECT_PATH: "agentx/saveslot" }).code).toBe(1);
+    const fork = run(root, { CI_PROJECT_PATH: "someone/saveslot" });
+    expect(fork.code).toBe(0);
+    expect(fork.output).toMatch(/Warning: SAVESLOT_FORBIDDEN_TERMS_B64 is not set/);
   });
 });
 

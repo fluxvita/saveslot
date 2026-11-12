@@ -7,7 +7,7 @@ The full contributor guide is currently in Chinese: [`docs/zh-CN/guide/12-contri
 ## Workflow
 
 1. Create a branch from `main`. If you cannot push branches to the repository, fork it and create the branch in your fork.
-2. Open a merge request against `main` (from your fork, if you used one) and fill in the template. Its title is a Conventional Commit and becomes the squash commit's subject.
+2. Open a merge request against `main` (from your fork, if you used one) and fill in the template. Its title is a Conventional Commit and becomes the squash commit's subject; CI checks the title (`feat`, `fix`, `docs`, `test`, `build`, `ci`, `chore`, `refactor`, `perf`, `revert`, `style`; scope in lower case).
 3. To be merged, CI must pass, every review thread must be resolved, and a maintainer must approve it.
 4. A maintainer merges it with squash.
 
