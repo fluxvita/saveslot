@@ -29,6 +29,9 @@
 // | `ItemResult`                  | one `fields/<f>/<k>` or `existence/<k>` item with its `span`, as     |
 // |                               | `write.base` or a later `restated/<k>` gives it (09 §5.9)           |
 // | `Evaluation.fields` / `gaps`  | `results/<k>/fields/<f>/<j>` / `results/<k>/existence` (09 §5.9)     |
+// | `DeletionEvent`               | `deletion.confirmed` (`target.deletion`, `target.sources`)          |
+// | `CancelEvent`                 | `deletion.cancelled` (`target.deletion`)                            |
+// | `ItemResult.closed`           | the item is resolved, rejected, or `kept_superseded` (09 §5.9)      |
 //
 // Not modelled in this first version: source keys (`external_key`), conflict groups
 // (`together`), schema switches and constant backfill, premises, `ref` fields and high impact ②,
@@ -130,6 +133,27 @@ export interface ConfirmOp extends OpBase {
 
 export type Op = WriteOp | RevokeOp | UndoOp | ResolveOp | ConfirmOp;
 
+/**
+ * A privacy deletion confirmed (`deletion.confirmed`, 09 §5.9): from here on, until cancelled,
+ * its sources count as deleted. `id` is the deletion ID.
+ */
+export interface DeletionEvent {
+  readonly kind: "deletion";
+  readonly op: OpNumber;
+  readonly id: string;
+  readonly sources: readonly SourceKey[];
+}
+
+/** A pending deletion cancelled in its grace period (`deletion.cancelled`, 09 §5.9). */
+export interface CancelEvent {
+  readonly kind: "cancel";
+  readonly op: OpNumber;
+  readonly id: string;
+}
+
+/** One entry of the log of a row or entity: an operation, or a deletion event. */
+export type LogEntry = Op | DeletionEvent | CancelEvent;
+
 /** An item reference: `{event, field, k}` or `{event, existence: k}` (09 §5.7). */
 export interface ItemRef {
   readonly event: Seq;
@@ -163,6 +187,11 @@ export interface ItemResult extends ItemRef {
   /** Write-backs and taken candidates: the items the value is carried from. */
   readonly carried?: readonly ItemRef[];
   readonly registrations: readonly Registration[];
+  /**
+   * A candidate or awaiting item whose pending item is closed: resolved or rejected by a person,
+   * or kept superseded when a deletion was cancelled. Pending = candidate or awaiting, not closed.
+   */
+  readonly closed?: true;
 }
 
 /** One segment of a field after replay: the longest stretch one item gives (09 §5.9). */
@@ -193,4 +222,46 @@ export interface Evaluation {
   readonly reverts: readonly RevertResult[];
   /** The write that counts as the first creation (03-deletion «首次创建标记»). */
   readonly created: Seq | undefined;
+}
+
+/** The state after one log entry. */
+export interface LogStep {
+  readonly entry: LogEntry;
+  /**
+   * The entry was refused and did not enter the log: a request citing a source pending deletion
+   * or writing to a row a pending deletion removed (03-deletion «撤回与宽限期»), or a deletion of
+   * a source already pending deletion.
+   */
+  readonly refused: boolean;
+  readonly state: Evaluation;
+  /** A cancellation: the writes it recorded as kept in effect (`kept_effective`). */
+  readonly keptEffective?: readonly {
+    readonly event: Seq;
+    readonly target: FieldId | "existence";
+  }[];
+  /**
+   * A cancellation: writes whose judgement changed because of the writes kept in effect (the
+   * cancellation's replay against the same replay without them): statuses before and after, and
+   * the kept writes behind it (03-deletion «预览与回执要写明的内容»).
+   */
+  readonly knockOn?: readonly {
+    readonly event: Seq;
+    readonly target: FieldId | "existence";
+    readonly before: string;
+    readonly after: string;
+    readonly because: readonly { readonly event: Seq; readonly target: FieldId | "existence" }[];
+  }[];
+  /** A cancellation: events whose pending items it kept superseded (`kept_superseded`). */
+  readonly keptSuperseded?: readonly Seq[];
+  /** A cancellation: candidates it put back after their item was resolved, and their judgement. */
+  readonly putBack?: readonly {
+    readonly event: Seq;
+    readonly target: FieldId | "existence";
+    readonly judged: "dropped" | "corroborated" | "candidate";
+  }[];
+}
+
+export interface LogEvaluation {
+  readonly steps: readonly LogStep[];
+  readonly final: Evaluation;
 }

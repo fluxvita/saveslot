@@ -7,18 +7,17 @@
 // Reverting (`undo`, `take_previous`) follows the pseudocode in 03-deletion «回掉的权威定义»
 // step by step. Nothing here imports the kernel (02-architecture §11 «测试矩阵»).
 //
-// Two passes: the first replays with nothing deleted and is the write-time judgement (what the
-// log records); the second replays with the deleted set and reads from the first only what the
-// definition says is kept as recorded: revert records R and merge bases (03-deletion «回掉»
-// ①、③), the statuses that deviation two protects, the fields judged no-op, and the item
-// indices that step 6 keeps.
-//
-// Assumption: every deletion comes after every operation in the input; deletions interleaved
-// with operations (and deletion cancellation) are not modelled. Under it the first pass is the
-// write-time judgement, so "already in effect" (deviation two) means in effect at write time or
-// by a person's decision, corroborations included; a write that took effect only through a
-// deletion's recomputation is never protected. Once deletions may precede later operations, the
-// first pass must replay the log in its real order, confirmed deletions included.
+// The log of a row or entity is walked in order: operations, deletion confirmations and
+// cancellations (`evaluateLog`). Each operation is judged when it enters the log, on the state
+// with the deletions confirmed and not cancelled by then; that judgement is what the log records.
+// Each deletion event replays the whole log with the deleted set it leaves and keeps from the
+// record only what the definition keeps: revert records R and merge bases (03-deletion «回掉»
+// ①、③), the write-time statuses deviation two protects ("already in effect" = in effect at
+// write time or by a person's decision, corroborations included; not a write that took effect
+// only through a deletion's recomputation), the fields judged no-op, and the item indices as last
+// given (step 6). A cancellation also keeps what the grace period settled (03-deletion «撤回与
+// 宽限期»): writes taken as a baseline stay in effect, items a grace-period write changed stay
+// superseded, candidates put back after their item was resolved are judged at that point.
 
 import {
   canonicalize,
@@ -52,6 +51,9 @@ import type {
   ItemContent,
   ItemRef,
   ItemResult,
+  LogEntry,
+  LogEvaluation,
+  LogStep,
   Op,
   Registration,
   ResolveOp,
@@ -83,14 +85,46 @@ interface Item {
   readonly from: Point | null;
 }
 
-/** What the second pass keeps from the first (the log as written). */
+/**
+ * What a replay keeps from the log as written: the judgement each operation got at its own point
+ * in the log (with the deletions confirmed and not cancelled by then), and what deletion events
+ * recorded. Operations not in `judged` are judged afresh by the replay.
+ */
 interface Recorded {
-  readonly items: ReadonlyMap<string, readonly { k: number; valid: IvSet; status: Status }[]>;
-  readonly revertRecords: ReadonlyMap<OpNumber, readonly ItemRef[]>;
-  readonly revertStatus: ReadonlyMap<OpNumber, RevertResult["status"]>;
-  readonly mergeBases: ReadonlyMap<OpNumber, { mergeBase: OpNumber; k: readonly ItemRef[] }>;
+  readonly judged: Set<OpNumber>;
+  /** Item statuses and intervals at write time: what deviation two protects; original indices. */
+  readonly writeTime: Map<string, { k: number; valid: IvSet; status: Status }[]>;
+  /** Item intervals as last given (by the write or a later deletion event): for indices. */
+  readonly latest: Map<string, { k: number; valid: IvSet }[]>;
+  readonly revertRecords: Map<OpNumber, ItemRef[]>;
+  readonly revertStatus: Map<OpNumber, RevertResult["status"]>;
+  readonly mergeBases: Map<OpNumber, { mergeBase: OpNumber; k: ItemRef[] }>;
   /** (event, field) judged a no-op at write time: stays a no-op in every replay. */
-  readonly noops: ReadonlySet<string>;
+  readonly noops: Set<string>;
+  /** (event, target) a cancellation kept in effect (`kept_effective`). */
+  readonly keptEffective: Set<string>;
+  /** Events whose pending items a cancellation kept superseded (`kept_superseded`). */
+  readonly keptSuperseded: Set<Seq>;
+  /** Candidates put back by a cancellation after their item was resolved, judged at that point. */
+  readonly rejudged: Map<string, "dropped" | "corroborated" | "candidate">;
+  /** Deletion confirmations and cancellations, with where they changed each field's value. */
+  readonly external: { op: OpNumber; changed: Map<FieldId, IvSet>; changedEntity: boolean }[];
+}
+
+function emptyRecorded(): Recorded {
+  return {
+    judged: new Set(),
+    writeTime: new Map(),
+    latest: new Map(),
+    revertRecords: new Map(),
+    revertStatus: new Map(),
+    mergeBases: new Map(),
+    noops: new Set(),
+    keptEffective: new Set(),
+    keptSuperseded: new Set(),
+    rejudged: new Map(),
+    external: [],
+  };
 }
 
 const INF = Number.MAX_SAFE_INTEGER;
@@ -130,13 +164,13 @@ class Replay {
   readonly schema: TableSchema;
   readonly ops: readonly Op[];
   readonly deleted: ReadonlySet<SourceKey>;
-  readonly rec: Recorded | null;
+  readonly rec: Recorded;
 
   constructor(
     schema: TableSchema,
     ops: readonly Op[],
     deleted: ReadonlySet<SourceKey>,
-    rec: Recorded | null,
+    rec: Recorded,
   ) {
     this.schema = schema;
     this.ops = ops;
@@ -150,10 +184,14 @@ class Replay {
     // People's decisions are executed as recorded (03-deletion «两条原则», deviation one): a
     // candidate whose item a person resolved stays closed, an awaiting write a person confirmed
     // or rejected is not re-judged.
-    this.closedCandidates = new Set(ops.flatMap((o) => (o.kind === "resolve" ? o.candidates : [])));
-    this.resolvedAwaiting = new Set(
-      ops.flatMap((o) => (o.kind === "confirm" || o.kind === "reject" ? [o.target] : [])),
-    );
+    this.closedCandidates = new Set([
+      ...ops.flatMap((o) => (o.kind === "resolve" ? o.candidates : [])),
+      ...rec.keptSuperseded,
+    ]);
+    this.resolvedAwaiting = new Set([
+      ...ops.flatMap((o) => (o.kind === "confirm" || o.kind === "reject" ? [o.target] : [])),
+      ...rec.keptSuperseded,
+    ]);
     this.opsByEvent = new Map(ops.map((o) => [o.event, o]));
   }
 
@@ -345,8 +383,9 @@ class Replay {
    * intersects, that item was never in effect and is judged again.
    */
   recordedStatus(event: Seq, target: Target, valid: IvSet): "effective" | Status | undefined {
-    if (this.rec === null) return undefined;
-    const base = this.rec.items.get(etKey(event, target)) ?? [];
+    if (this.rec.keptEffective.has(etKey(event, target))) return "effective";
+    const base = this.rec.writeTime.get(etKey(event, target));
+    if (base === undefined) return undefined;
     const hit = base.filter((b) => !isEmpty(intersect(b.valid, valid)));
     const pool = hit.length > 0 ? hit : base;
     if (pool.some((b) => b.status === "candidate")) return "candidate";
@@ -364,13 +403,7 @@ class Replay {
    */
   assignIndices(event: Seq, target: Target, fresh: Item[]): void {
     fresh.sort((a, b) => ((a.valid[0]?.from ?? "") < (b.valid[0]?.from ?? "") ? -1 : 1));
-    if (this.rec === null) {
-      fresh.forEach((it, i) => {
-        it.k = i;
-      });
-      return;
-    }
-    const base = [...(this.rec.items.get(etKey(event, target)) ?? [])].sort((a, b) => a.k - b.k);
+    const base = [...(this.rec.latest.get(etKey(event, target)) ?? [])].sort((a, b) => a.k - b.k);
     const assigned = new Map<Item, number>();
     for (const b of base) {
       const hit = fresh.find((it) => !isEmpty(intersect(it.valid, b.valid)));
@@ -447,13 +480,32 @@ class Replay {
         if (covers(inter, s) && this.vis(f, s, cur) !== value) return true;
       }
     }
+    // Deletion confirmations and cancellations are operations that change values too (conflict
+    // criterion ②); L's interval is where they changed the unit's value.
+    for (const changed of this.externalChanges(f, seen, cur)) {
+      if (!this.isState) return true;
+      const inter = intersect(seenValid, changed);
+      for (const s of this.segments([inter])) {
+        if (covers(inter, s) && this.vis(f, s, cur) !== value) return true;
+      }
+    }
     return false;
+  }
+
+  /** Where deletion events after `seen` and up to `cur` changed the value of `f`. */
+  externalChanges(f: FieldId, seen: number, cur: number): IvSet[] {
+    return this.rec.external
+      .filter((e) => e.op > seen && e.op <= cur)
+      .map((e) => e.changed.get(f) ?? [])
+      .filter((c) => !isEmpty(c));
   }
 
   /** Whether a revoke over `valid` meets a change in effect since `seen` (conflict criterion). */
   revokeConflicts(valid: IvSet, seen: number, cur: number): boolean {
-    return this.fieldIds.some((f) =>
-      this.changesSince(f, seen, cur).some((c) => !isEmpty(intersect(c.changed, valid))),
+    return this.fieldIds.some(
+      (f) =>
+        this.changesSince(f, seen, cur).some((c) => !isEmpty(intersect(c.changed, valid))) ||
+        this.externalChanges(f, seen, cur).some((c) => !isEmpty(intersect(c, valid))),
     );
   }
 
@@ -498,7 +550,7 @@ class Replay {
       if (input === undefined) continue;
       // A field judged a no-op at write time stays a no-op in every replay: its same-value
       // judgement is not recomputed (03-deletion «两条原则», deviation one; «重放规则», no-op row).
-      if (o.noop?.includes(f) || this.rec?.noops.has(etKey(o.event, f))) continue;
+      if (o.noop?.includes(f) || this.rec.noops.has(etKey(o.event, f))) continue;
       if (this.isDeleted(input.sources)) continue;
       this.judgeField(o, f, input, seen, cur, fresh);
     }
@@ -536,11 +588,26 @@ class Replay {
       op: n,
       content: { kind: "value" as const, value: input.value },
     };
+    // A candidate put back by a cancellation after its item was resolved keeps the judgement it
+    // got then (03-deletion «撤回与宽限期»).
+    const rejudged = this.rec.rejudged.get(etKey(o.event, f));
+    if (rejudged !== undefined) {
+      const item = {
+        ...base,
+        valid: res.valid,
+        explicitEnds: rejudged === "corroborated" ? res.explicitEnds : [],
+        defaultEnd: res.defaultEnd,
+        from: res.from,
+      };
+      if (rejudged === "dropped") this.shadows.push({ ...item, status: "candidate" });
+      else out.push({ ...item, status: rejudged });
+      return;
+    }
     if (sameAsSeen && !input.explicit) {
       // Same value as seen, no evidence pointed at: not a contribution (03-deletion «贡献»). At
       // write time that is a no-op, kept as recorded; in a replay a former change becomes
       // `dropped`.
-      if (this.rec === null) this.noops.add(etKey(o.event, f));
+      if (!this.rec.judged.has(o.op)) this.noops.add(etKey(o.event, f));
       this.shadows.push({
         ...base,
         status: "candidate",
@@ -593,6 +660,9 @@ class Replay {
         ? true
         : this.conflicts(f, v, seenValid, defaultEnd, from, seen, cur);
     if (r === "effective") conflict = false; // deviation two: what was in effect stays in effect
+    // An awaiting write a person confirmed or rejected is a recorded decision (deviation one): it
+    // stays awaiting for its confirmation to execute, and is not judged into a candidate.
+    if (r === "awaiting" && this.resolvedAwaiting.has(o.event)) conflict = false;
     const content = { kind: "value" as const, value: input.value };
     if (conflict) {
       out.push({
@@ -687,7 +757,12 @@ class Replay {
   acknowledged(o: WriteOp | UndoOp): boolean {
     if (o.acknowledge === undefined || o.seen === undefined) return false;
     const seen = o.seen;
-    return !this.items.some((x) => x.op > seen && x.op < o.op && effective(x.status));
+    // A deletion or cancellation that changed the entity gave it a new ver (03-deletion «重放规则»,
+    // ver row): a ver before it is not current.
+    return (
+      !this.items.some((x) => x.op > seen && x.op < o.op && effective(x.status)) &&
+      !this.rec.external.some((e) => e.op > seen && e.op < o.op && e.changedEntity)
+    );
   }
 
   undo(o: UndoOp): void {
@@ -699,11 +774,10 @@ class Replay {
     // counting, values stay). A target that is itself a revert in effect is accepted even when it
     // has no write-back now: a deletion's recomputation may give it some. The answer is the
     // write-time one and is kept in every replay.
-    const rejected =
-      this.rec !== null
-        ? this.rec.revertStatus.get(n) === "rejected"
-        : this.revertStatus.get(o.target) !== "applied" &&
-          !this.items.some((x) => x.op === o.target && effective(x.status));
+    const rejected = this.rec.revertStatus.has(n)
+      ? this.rec.revertStatus.get(n) === "rejected"
+      : this.revertStatus.get(o.target) !== "applied" &&
+        !this.items.some((x) => x.op === o.target && effective(x.status));
     if (rejected) {
       this.reverts.push({ op: n, event: o.event, status: "rejected", record: [] });
       this.revertStatus.set(n, "rejected");
@@ -711,9 +785,9 @@ class Replay {
       return;
     }
     const record =
-      this.rec?.revertRecords.get(n) ?? this.undoRecord(o.target, o.includeLater ?? false, n);
+      this.rec.revertRecords.get(n) ?? this.undoRecord(o.target, o.includeLater ?? false, n);
     this.revert(o.event, n, record, { before: o.target }, null, (inScope, apply, rollback) => {
-      const recStatus = this.rec?.revertStatus.get(n);
+      const recStatus = this.rec.revertStatus.get(n);
       if (recStatus === "applied") return "applied"; // deviation two
       if (recStatus === "awaiting" && this.resolvedAwaiting.has(o.event)) return "awaiting";
       // High impact ④: an undo that reverts later writes (05-time «高影响写入»).
@@ -732,7 +806,7 @@ class Replay {
       if (this.revertStatus.get(target.op) !== "awaiting") return;
       // The confirmation lists its own record as of the confirmation (09 §5.8 `item.resolved`).
       const record =
-        this.rec?.revertRecords.get(o.op) ??
+        this.rec.revertRecords.get(o.op) ??
         this.undoRecord(target.target, target.includeLater ?? false, o.op);
       this.revert(o.event, o.op, record, { before: target.target }, null, () => "applied");
       return;
@@ -803,7 +877,7 @@ class Replay {
       return;
     }
     // take_previous: revert to the merge base (01-objects «各处理方式的执行语义»).
-    let rec = this.rec?.mergeBases.get(n);
+    let rec = this.rec.mergeBases.get(n);
     if (rec === undefined) {
       const cands = this.candidatesOf(o.candidates, o.unit);
       const seens = o.candidates.map((e) => {
@@ -828,7 +902,7 @@ class Replay {
       this.mergeBases.set(n, { mergeBase, k: rec.k as ItemRef[] });
       this.revertRecords.set(n, record);
     }
-    const record = this.rec?.revertRecords.get(n) ?? this.revertRecords.get(n) ?? [];
+    const record = this.rec.revertRecords.get(n) ?? this.revertRecords.get(n) ?? [];
     const kKeys = new Set(rec.k.map(refKey));
     const kEts = new Set(rec.k.map((r) => etKey(r.event, r.target)));
     // K present in the replay: not deleted; same-valued in the replay still counts (step 2).
@@ -853,9 +927,8 @@ class Replay {
     const rKeys = new Set(record.map(refKey));
     const rEts = new Set(record.map((r) => etKey(r.event, r.target)));
     const isNewIndex = (x: Item) => {
-      if (this.rec === null) return false;
-      const base = this.rec.items.get(etKey(x.event, x.target)) ?? [];
-      return !base.some((b) => b.k === x.k);
+      const base = this.rec.writeTime.get(etKey(x.event, x.target));
+      return base !== undefined && !base.some((b) => b.k === x.k);
     };
     const rPrime = this.items.filter(
       (x) => rKeys.has(refKey(x)) || (rEts.has(etKey(x.event, x.target)) && isNewIndex(x)),
@@ -1093,11 +1166,15 @@ class Replay {
       content: x.content,
       ...(x.carried ? { carried: x.carried } : {}),
       registrations: this.regs.get(refKey(x)) ?? [],
+      ...((x.status === "candidate" && this.closedCandidates.has(x.event)) ||
+      (x.status === "awaiting" && this.resolvedAwaiting.has(x.event))
+        ? { closed: true as const }
+        : {}),
     }));
-    // Items of the first pass that are no longer items and were not deleted: `dropped`.
-    if (this.rec !== null) {
+    // Items as last given that are no longer items and were not deleted: `dropped`.
+    {
       const present = new Set(this.items.map(refKey));
-      for (const [et, base] of this.rec.items) {
+      for (const [et, base] of this.rec.latest) {
         const [ev, target] = et.split("/") as [string, Target];
         const event = Number(ev);
         for (const b of base) {
@@ -1140,24 +1217,55 @@ class Replay {
     return false;
   }
 
-  recorded(): Recorded {
-    const items = new Map<string, { k: number; valid: IvSet; status: Status }[]>();
+  /** Copies the write-time judgement of operation `o` into the record. */
+  recordOp(o: Op): void {
+    const rec = this.rec;
+    rec.judged.add(o.op);
+    const groups = new Map<string, Item[]>();
+    for (const x of this.items) {
+      if (x.op !== o.op) continue;
+      const key = etKey(x.event, x.target);
+      groups.set(key, [...(groups.get(key) ?? []), x]);
+    }
+    for (const [key, xs] of groups) {
+      rec.writeTime.set(
+        key,
+        xs.map((x) => ({ k: x.k, valid: x.valid, status: x.status })),
+      );
+      rec.latest.set(
+        key,
+        xs.map((x) => ({ k: x.k, valid: x.valid })),
+      );
+    }
+    for (const key of this.noops) if (key.startsWith(`${o.event}/`)) rec.noops.add(key);
+    if (o.kind === "write") for (const f of o.noop ?? []) rec.noops.add(etKey(o.event, f));
+    const record = this.revertRecords.get(o.op);
+    if (record !== undefined) rec.revertRecords.set(o.op, record);
+    const status = this.revertStatus.get(o.op);
+    if (status !== undefined) rec.revertStatus.set(o.op, status);
+    const mb = this.mergeBases.get(o.op);
+    if (mb !== undefined) rec.mergeBases.set(o.op, mb);
+  }
+
+  /**
+   * After a deletion event: every item as now given becomes the latest given. Indices no longer
+   * given keep their last interval, so that an item that comes back keeps its index.
+   */
+  recordLatest(): void {
+    const groups = new Map<string, Item[]>();
     for (const x of this.items) {
       const key = etKey(x.event, x.target);
-      items.set(key, [...(items.get(key) ?? []), { k: x.k, valid: x.valid, status: x.status }]);
+      groups.set(key, [...(groups.get(key) ?? []), x]);
     }
-    return {
-      items,
-      revertRecords: this.revertRecords,
-      revertStatus: this.revertStatus,
-      mergeBases: this.mergeBases,
-      noops: new Set([
-        ...this.noops,
-        ...this.ops.flatMap((o) =>
-          o.kind === "write" ? (o.noop ?? []).map((f) => etKey(o.event, f)) : [],
-        ),
-      ]),
-    };
+    for (const [key, xs] of groups) {
+      const now = xs.map((x) => ({ k: x.k, valid: x.valid }));
+      const kept = (this.rec.latest.get(key) ?? []).filter((b) => !now.some((x) => x.k === b.k));
+      this.rec.latest.set(key, [...now, ...kept]);
+    }
+  }
+
+  statusOf(event: Seq, target: Target): Status[] {
+    return this.items.filter((x) => x.event === event && x.target === target).map((x) => x.status);
   }
 }
 
@@ -1169,25 +1277,406 @@ function supersedes(x: Item, r: Item): boolean {
   return (x.target === r.target && x.content.kind !== "uncovered") || x.content.kind === "revoke";
 }
 
+interface KnockOn {
+  readonly event: Seq;
+  readonly target: Target;
+  readonly before: string;
+  readonly after: string;
+  readonly because: readonly { event: Seq; target: Target }[];
+}
+
+/**
+ * What a deletion event changed: where each field's value changed (its L for the conflict
+ * criterion) and whether it changed the entity at all — values, or the judgement of any item —
+ * which gives the entity a new ver (03-deletion «重放规则», ver row).
+ */
+function externalChange(
+  op: OpNumber,
+  before: Evaluation,
+  after: Evaluation,
+  fields: readonly FieldId[],
+): { op: OpNumber; changed: Map<FieldId, IvSet>; changedEntity: boolean } {
+  const changed = changedRegions(before, after, fields);
+  const sig = (ev: Evaluation) =>
+    JSON.stringify(
+      ev.items
+        .filter((x) => x.status !== "dropped")
+        .map((x) => [x.event, x.target, x.k, x.status, x.valid])
+        .sort(),
+    );
+  const changedEntity =
+    [...changed.values()].some((c) => !isEmpty(c)) ||
+    sig(before) !== sig(after) ||
+    before.exists !== after.exists;
+  return { op, changed, changedEntity };
+}
+
+/** The value of `f` on segment `seg` as an evaluation shows it, as a comparable token. */
+function shownTok(ev: Evaluation, f: FieldId, seg: Iv): string {
+  if (ev.kind === "state" && ev.gaps.some((g) => covers([g], seg))) return NO_VALUE;
+  const hit = (ev.fields[f] ?? []).find((x) => covers(x.valid, seg));
+  if (hit === undefined || hit.by === undefined) return "none";
+  return tok(hit.value);
+}
+
+/** Where each field's value differs between two states (a deletion event's L, conflict ②). */
+function changedRegions(
+  before: Evaluation,
+  after: Evaluation,
+  fields: readonly FieldId[],
+): Map<FieldId, IvSet> {
+  const sets: IvSet[] = [before.gaps, after.gaps];
+  for (const ev of [before, after]) {
+    for (const segs of Object.values(ev.fields)) for (const x of segs ?? []) sets.push(x.valid);
+  }
+  const segs = after.kind === "state" ? elementarySegments(endpoints(sets)) : [ALL];
+  return new Map(
+    fields.map((f) => [
+      f,
+      normalize(segs.filter((g) => shownTok(before, f, g) !== shownTok(after, f, g))),
+    ]),
+  );
+}
+
+const pendingStatus = (x: { status: string; closed?: true }) =>
+  (x.status === "candidate" || x.status === "awaiting") && x.closed === undefined;
+
+/**
+ * Evaluates the log of one row or entity: operations interleaved with deletion confirmations and
+ * cancellations, by operation number. Each operation is judged at its own point in the log, on
+ * the state with the deletions confirmed and not cancelled by then (03-deletion «撤回与宽限期»:
+ * writes in the grace period run on the state after the deletion); every deletion event replays
+ * the whole log with the deleted set it leaves, keeping what the definition keeps as recorded.
+ */
+export function evaluateLog(
+  schema: TableSchema,
+  log: readonly LogEntry[],
+  options: { readonly forcedEffective?: readonly { event: Seq; target: Target }[] } = {},
+): LogEvaluation {
+  const rec = emptyRecorded();
+  const ops: Op[] = [];
+  const pending = new Map<
+    string,
+    { op: OpNumber; sources: readonly SourceKey[]; before: Replay; beforeState: Evaluation }
+  >();
+  const steps: LogStep[] = [];
+  const deletedNow = () => new Set<SourceKey>([...pending.values()].flatMap((d) => [...d.sources]));
+  const replay = (deleted: ReadonlySet<SourceKey>) => {
+    const r = new Replay(schema, ops, deleted, rec);
+    r.run();
+    return r;
+  };
+  let prev = replay(new Set());
+  let prevState = prev.result();
+  // A pending deletion removed the row or entity: writes to it are refused until it comes back.
+  let removed = false;
+  const fieldIds = (r: Replay) => r.fieldIds;
+
+  for (const e of [...log].sort((a, b) => a.op - b.op)) {
+    const deleted = deletedNow();
+    if (e.kind === "deletion") {
+      if (pending.has(e.id) || e.sources.some((x) => deleted.has(x))) {
+        steps.push({ entry: e, refused: true, state: prevState });
+        continue;
+      }
+      pending.set(e.id, { op: e.op, sources: e.sources, before: prev, beforeState: prevState });
+      const r = replay(deletedNow());
+      const state = r.result();
+      rec.external.push(externalChange(e.op, prevState, state, fieldIds(r)));
+      r.recordLatest();
+      if (prevState.exists && !state.exists) removed = true;
+      steps.push({ entry: e, refused: false, state });
+      prev = r;
+      prevState = state;
+      continue;
+    }
+    if (e.kind === "cancel") {
+      const d = pending.get(e.id);
+      if (d === undefined) {
+        steps.push({ entry: e, refused: true, state: prevState });
+        continue;
+      }
+      pending.delete(e.id);
+      const supersededBefore = new Set(rec.keptSuperseded);
+      const rejudgedBefore = new Set(rec.rejudged.keys());
+      const kept = cancelDeletion(
+        rec,
+        ops,
+        d,
+        e.op,
+        prev,
+        prevState,
+        () => replay(deletedNow()),
+        (key) => {
+          // The operation from which the write has been in effect without interruption.
+          let since: OpNumber = e.op;
+          for (let i = steps.length - 1; i >= 0; i--) {
+            const st = steps[i];
+            if (st === undefined || st.refused) continue;
+            const on = st.state.items.some(
+              (x) => etKey(x.event, x.target) === key && effective(x.status as Status),
+            );
+            if (!on) break;
+            since = st.entry.op;
+          }
+          return since;
+        },
+      );
+      const r = replay(deletedNow());
+      const state = r.result();
+      rec.external.push(externalChange(e.op, prevState, state, fieldIds(r)));
+      r.recordLatest();
+      if (state.exists || pending.size === 0) removed = false;
+      // Writes whose judgement changed because of the writes kept in effect: this replay
+      // against the same replay without them.
+      const knockOn: KnockOn[] = [];
+      if (kept.length > 0) {
+        const keys = kept.map((k) => etKey(k.event, k.target));
+        for (const k of keys) rec.keptEffective.delete(k);
+        const without = replay(deletedNow());
+        for (const k of keys) rec.keptEffective.add(k);
+        const judged = (x: Replay) =>
+          new Map(
+            [...new Set(x.items.map((i) => etKey(i.event, i.target)))].map((k) => {
+              const [ev, t] = k.split("/") as [string, Target];
+              return [k, x.statusOf(Number(ev), t).sort().join()];
+            }),
+          );
+        const a = judged(r);
+        const b = judged(without);
+        for (const k of new Set([...a.keys(), ...b.keys()])) {
+          if (keys.includes(k) || a.get(k) === b.get(k)) continue;
+          const [ev, t] = k.split("/") as [string, Target];
+          knockOn.push({
+            event: Number(ev),
+            target: t,
+            before: b.get(k) ?? "none",
+            after: a.get(k) ?? "none",
+            because: kept,
+          });
+        }
+      }
+      const keptSuperseded = [...rec.keptSuperseded].filter((x) => !supersededBefore.has(x));
+      const putBack = [...rec.rejudged.entries()]
+        .filter(([k]) => !rejudgedBefore.has(k))
+        .map(([k, judged]) => {
+          const [ev, t] = k.split("/") as [string, Target];
+          return { event: Number(ev), target: t, judged };
+        });
+      steps.push({
+        entry: e,
+        refused: false,
+        state,
+        keptEffective: kept,
+        knockOn,
+        keptSuperseded,
+        putBack,
+      });
+      prev = r;
+      prevState = state;
+      continue;
+    }
+    if (refused(e, deleted, removed && pending.size > 0)) {
+      steps.push({ entry: e, refused: true, state: prevState });
+      continue;
+    }
+    ops.push(e);
+    const r = replay(deleted);
+    r.recordOp(e);
+    const state = r.result();
+    steps.push({ entry: e, refused: false, state });
+    prev = r;
+    prevState = state;
+  }
+  // The baseline of «撤回还原»: a replay of this log as written, with the given writes counted as
+  // already in effect and so taking effect at their own write numbers. The write-time judgements
+  // stay those of the log; only the final replay sees the forced set.
+  const forced = options.forcedEffective ?? [];
+  if (forced.length > 0) {
+    for (const x of forced) rec.keptEffective.add(etKey(x.event, x.target));
+    return { steps, final: replay(deletedNow()).result() };
+  }
+  return { steps, final: prevState };
+}
+
+/**
+ * Requests refused while a deletion is pending (03-deletion «撤回与宽限期»): citing a source
+ * pending deletion as evidence, or writing to a row or entity a pending deletion removed
+ * (`not_found`: nothing is created, nothing revived). Resolving and confirming items is not a
+ * write to the row and goes ahead.
+ */
+function refused(o: Op, deleted: ReadonlySet<SourceKey>, removed: boolean): boolean {
+  const cites: SourceKey[] =
+    o.kind === "write"
+      ? [...Object.values(o.fields).flatMap((x) => x?.sources ?? []), ...(o.validSources ?? [])]
+      : o.kind === "revoke"
+        ? [...(o.validSources ?? [])]
+        : [];
+  if (cites.some((x) => deleted.has(x))) return true;
+  return removed && (o.kind === "write" || o.kind === "revoke" || o.kind === "undo");
+}
+
+/** The version an operation saw: its `ver`, or the version just before it. */
+function seenOf(o: Op): OpNumber {
+  if (o.kind === "write" || o.kind === "revoke" || o.kind === "undo") return o.seen ?? o.op - 1;
+  return o.op - 1;
+}
+
+/**
+ * What a cancellation keeps from the grace period (03-deletion «撤回与宽限期»). The replay that
+ * follows recomputes everything else as if the deletion had never been confirmed.
+ */
+function cancelDeletion(
+  rec: Recorded,
+  ops: readonly Op[],
+  d: { op: OpNumber; sources: readonly SourceKey[]; before: Replay; beforeState: Evaluation },
+  cancelOp: OpNumber,
+  preCancel: Replay,
+  preCancelState: Evaluation,
+  replayAfter: () => Replay,
+  effectiveSince: (key: string) => OpNumber,
+): { event: Seq; target: Target }[] {
+  const kept: { event: Seq; target: Target }[] = [];
+  // The state without this deletion, every other pending deletion still applied: what this
+  // deletion alone made effective shows against it.
+  const withoutThis = replayAfter();
+  const grace = ops.filter((o) => o.op > d.op && o.op < cancelOp);
+  const inEffectAtWriteTime = (o: Op) =>
+    [...rec.writeTime.entries()].some(
+      ([key, xs]) => key.startsWith(`${o.event}/`) && xs.some((x) => effective(x.status)),
+    );
+  const ets = (r: Replay) => new Set(r.items.map((x) => etKey(x.event, x.target)));
+  const pendingIn = (ev: Evaluation) =>
+    new Set(ev.items.filter(pendingStatus).map((x) => etKey(x.event, x.target)));
+  const wasPending = pendingIn(d.beforeState);
+  const nowPending = pendingIn(preCancelState);
+
+  for (const key of new Set([...ets(preCancel), ...ets(d.before)])) {
+    const [ev, target] = key.split("/") as [string, Target];
+    const event = Number(ev);
+    const atWrite = rec.writeTime.get(key) ?? [];
+    const madeEffective =
+      atWrite.length > 0 &&
+      !atWrite.some((x) => effective(x.status)) &&
+      preCancel.statusOf(event, target).some(effective) &&
+      !withoutThis.statusOf(event, target).some(effective);
+    // Writes that took effect because of the deletion go back, unless a write in the grace
+    // period took the version they made as its baseline (`kept_effective`): a write on this row
+    // or entity, any field, with a ver not before the confirmation, that took effect (at write
+    // time, by a person's decision, or as a corroboration; a write of only no-ops does not).
+    // The protection lasts: from here on the write counts as already in effect (deviation two).
+    // The baseline write comes after the write took effect and saw it: its ver is not earlier.
+    const since = madeEffective ? effectiveSince(key) : Number.POSITIVE_INFINITY;
+    if (
+      madeEffective &&
+      grace.some((y) => inEffectAtWriteTime(y) && y.op > since && seenOf(y) >= since)
+    ) {
+      rec.keptEffective.add(key);
+      kept.push({ event, target });
+      continue;
+    }
+    // Items the deletion superseded stay superseded when a grace-period write changed what they
+    // concern, by the conflict criterion (`kept_superseded`); the others are restored.
+    // The item counts as superseded by the deletion when no other candidate of the same unit
+    // stayed pending and no grace-period resolution closed it (same modelling limit as below).
+    const itemLives =
+      [...wasPending].some(
+        (other) => other !== key && other.endsWith(`/${target}`) && nowPending.has(other),
+      ) || grace.some((y) => y.kind === "resolve" && (y.unit === target || y.unit === "existence"));
+    if (wasPending.has(key) && !nowPending.has(key) && !itemLives) {
+      const was = d.before.items.filter((x) => x.event === event && x.target === target);
+      // "Changed" by the conflict criterion (09-references-conflict-sync «冲突判据» ②): the
+      // grace-period write changed the unit's value in effect where the candidate lies, and the
+      // candidate's value differs from the new one there. Corroborations and same-value writes do
+      // not change the value in effect.
+      const touched = grace.some((y) =>
+        was.some((w) => {
+          const fields = target === "existence" ? preCancel.fieldIds : [target];
+          return fields.some((f) =>
+            preCancel.changesSince(f, y.op - 1, y.op).some((c) => {
+              const inter = intersect(c.changed, w.valid);
+              if (isEmpty(inter)) return false;
+              if (w.content.kind !== "value") return true;
+              const mine = tok(w.content.value);
+              return preCancel
+                .segments([inter])
+                .some((g) => covers(inter, g) && preCancel.vis(f, g, y.op) !== mine);
+            }),
+          );
+        }),
+      );
+      if (touched) rec.keptSuperseded.add(event);
+    }
+  }
+
+  // Candidates the deletion removed, of an item resolved in the grace period, are put back and
+  // judged on the state at the cancellation: same value as in effect → no-op or corroboration,
+  // otherwise a new conflict item. A re-judged candidate stays at its own write number.
+  // Modelling limit: the evaluator does not track item identities, so "its item was resolved"
+  // is taken as "a `resolve` on the same conflict unit in the grace period".
+  const putBack = [...wasPending].filter((key) => {
+    const [ev, target] = key.split("/") as [string, Target];
+    const o = ops.find((x) => x.event === Number(ev));
+    if (o?.kind !== "write" || target === "existence") return false;
+    // Only candidates: an awaiting write the deletion removed comes back to its own item.
+    const wasCandidate = d.beforeState.items.some(
+      (x) => x.event === Number(ev) && x.target === target && x.status === "candidate",
+    );
+    if (!wasCandidate) return false;
+    const input = o.fields[target];
+    const sources = [...(input?.sources ?? []), ...(o.validSources ?? [])];
+    return (
+      sources.some((x) => d.sources.includes(x)) &&
+      grace.some((y) => y.kind === "resolve" && (y.unit === target || y.unit === "existence"))
+    );
+  });
+  if (putBack.length === 0) return kept;
+  // Judged once, on the cancellation's replay with none of the put-back candidates in it yet;
+  // the result is recorded and the replay that follows does not judge them again.
+  for (const key of putBack) rec.rejudged.set(key, "dropped");
+  const after = replayAfter();
+  const afterState = after.result();
+  for (const key of putBack) {
+    const [ev, target] = key.split("/") as [string, FieldId];
+    // Left out of this replay, the candidate is a shadow there: its value and the interval it
+    // resolves to at its own write number.
+    const item = after.shadows.find((x) => x.event === Number(ev) && x.target === target);
+    const o = ops.find((x) => x.event === Number(ev));
+    if (item === undefined || item.content.kind !== "value" || o?.kind !== "write") continue;
+    const value = tok(item.content.value);
+    const sets: IvSet[] = [item.valid, afterState.gaps];
+    for (const x of afterState.fields[target] ?? []) sets.push(x.valid);
+    const segs = (afterState.kind === "state" ? elementarySegments(endpoints(sets)) : [ALL]).filter(
+      (g) => covers(item.valid, g),
+    );
+    const same = segs.every((g) => shownTok(afterState, target, g) === value);
+    rec.rejudged.set(
+      key,
+      same ? (o.fields[target]?.explicit ? "corroborated" : "dropped") : "candidate",
+    );
+  }
+  return kept;
+}
+
 /**
  * Evaluates one row or entity: `ops` are its operations (any order; replayed by operation
- * number), `deleted` the source data removed by privacy deletion.
+ * number), `deleted` the source data removed by one privacy deletion confirmed after all of them.
  */
 export function evaluate(
   schema: TableSchema,
   ops: readonly Op[],
   deleted: Iterable<SourceKey> = [],
 ): Evaluation {
-  const base = new Replay(schema, ops, new Set(), null);
-  base.run();
-  const replay = new Replay(schema, ops, new Set(deleted), base.recorded());
-  replay.run();
-  return replay.result();
+  const sources = [...new Set(deleted)];
+  const last = Math.max(0, ...ops.map((o) => o.op));
+  const log: LogEntry[] =
+    sources.length > 0
+      ? [...ops, { kind: "deletion", op: last + 1, id: "deletion", sources }]
+      : [...ops];
+  return evaluateLog(schema, log).final;
 }
 
-/** The write-time judgement alone (the first pass), for comparing with a replay. */
+/** The write-time judgement alone: nothing deleted. */
 export function evaluateAsWritten(schema: TableSchema, ops: readonly Op[]): Evaluation {
-  const base = new Replay(schema, ops, new Set(), null);
-  base.run();
-  return base.result();
+  return evaluateLog(schema, ops).final;
 }

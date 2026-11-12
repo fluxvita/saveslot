@@ -15,10 +15,11 @@
 
 import type { BizPoint, FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
 import { describe, expect, it } from "vitest";
-import { evaluate } from "./evaluate.ts";
+import { evaluate, evaluateLog } from "./evaluate.ts";
 import type {
   ConfirmOp,
   Evaluation,
+  LogEntry,
   Op,
   ResolveOp,
   RevokeOp,
@@ -37,6 +38,12 @@ const short = (xs: string[]) => xs.map((s) => s.replaceAll("2026-", ""));
 const tl = (ev: Evaluation, f: FieldId = "f2") => short(timeline(ev, f));
 const segs = (ev: Evaluation, f: FieldId = "f2") => short(segments(ev, f));
 const items = (ev: Evaluation, event: number) => short(itemsOf(ev, event));
+/** Like `items`, marking candidates and awaiting items whose pending item is closed. */
+const itemsClosed = (ev: Evaluation, event: number) =>
+  items(ev, event).map((s) => {
+    const x = ev.items.find((i) => i.event === event && s.startsWith(`${i.target}/${i.k} `));
+    return x?.closed ? `${s} (closed)` : s;
+  });
 const gaps = (ev: Evaluation) => showIv(ev.gaps).replaceAll("2026-", "");
 
 function to(x: string): ToParam {
@@ -99,6 +106,14 @@ function takePrevious(
   unit: FieldId | "existence" = "f2",
 ): ResolveOp {
   return { kind: "resolve", op, event, decision: "take_previous", candidates, unit };
+}
+
+function del(op: number, id: string, sources: string[]): LogEntry {
+  return { kind: "deletion", op, id, sources };
+}
+
+function cancel(op: number, id: string): LogEntry {
+  return { kind: "cancel", op, id };
 }
 
 function confirm(op: number, event: number, target: number): ConfirmOp {
@@ -471,11 +486,58 @@ describe("appendix D", () => {
     });
   });
 
-  // Must land before the kernel's `delete` starts, together with order independence of
-  // successive deletions (02-architecture §11 «顺序无关»).
-  it.todo(
-    "D.5: cancelling a deletion after the item was resolved (cancellation and interleaved deletions are not modelled)",
-  );
+  describe("D.5: a candidate put back after its item was resolved in the grace period", () => {
+    // pre-dev-w6-final-fixes appendix D.5. L in effect; two candidates; the deletion removes
+    // candidate 1; the item is resolved in the grace period; the deletion is cancelled. The
+    // original item stays resolved; candidate 1 is judged on the state at the cancellation
+    // (03-deletion «撤回与宽限期»).
+    const head = (c1: string, c1Explicit: boolean): Op[] => [
+      put(10, 11, "9", ["s11"], "10-01", "open"),
+      put(12, 13, "9.5", ["s13"], "10-01", "open"),
+      put(14, 15, c1, ["s15"], "10-01", "open", { seen: 10, explicit: c1Explicit }),
+      put(16, 17, "8", ["s17"], "10-01", "open", { seen: 10 }),
+    ];
+
+    it("different from the value then in effect: a new conflict item", () => {
+      const log: LogEntry[] = [
+        ...head("10", false),
+        del(20, "pi_a", ["s15"]),
+        {
+          kind: "resolve",
+          op: 22,
+          event: 23,
+          decision: "keep_effective",
+          candidates: [17],
+          unit: "f2",
+        },
+        cancel(24, "pi_a"),
+      ];
+      const ev = evaluateLog(BUDGETS, log).final;
+      expect(itemsClosed(ev, 15)).toEqual(['f2/0 candidate [10-01, inf) "10"']);
+      expect(itemsClosed(ev, 17)).toEqual(['f2/0 candidate [10-01, inf) "8" (closed)']);
+      expect(tl(ev)).toEqual(['[10-01, inf) "9.5"']);
+    });
+
+    it("same as the value then in effect, evidence pointed at: a corroboration, no item", () => {
+      const log: LogEntry[] = [
+        ...head("8", true),
+        del(20, "pi_a", ["s15"]),
+        {
+          kind: "resolve",
+          op: 22,
+          event: 23,
+          decision: "take_candidate",
+          candidates: [17],
+          unit: "f2",
+          take: 17,
+        },
+        cancel(24, "pi_a"),
+      ];
+      const ev = evaluateLog(BUDGETS, log).final;
+      expect(itemsClosed(ev, 15)).toEqual(['f2/0 corroborated [10-01, inf) "8"']);
+      expect(tl(ev)).toEqual(['[10-01, inf) "8"']);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 import type { BizPoint, FieldId } from "@fluxvita/saveslot-contract-core";
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { evaluate, evaluateAsWritten } from "./evaluate.ts";
 import { covers, intersect, isEmpty, type Point } from "./interval.ts";
 import type {
@@ -15,6 +15,11 @@ import type {
   ValidParam,
   WriteOp,
 } from "./model.ts";
+
+// An explicit time limit; on a failure (including running out of time) fast-check reports the
+// seed and path that reproduce it: `fc.assert(..., { seed, path, endOnFailure: true })`.
+vi.setConfig({ testTimeout: 30_000 });
+fc.configureGlobal({ interruptAfterTimeLimit: 25_000, markInterruptAsFailure: true });
 
 const STATE: TableSchema = { kind: "state", required: ["f2"] };
 const EVENT: TableSchema = { kind: "event", required: ["f2"] };
