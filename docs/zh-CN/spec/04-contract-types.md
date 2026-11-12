@@ -850,10 +850,16 @@ interface DeletionPreviewResult extends CommonResult, PageResult {   // 分页�
 
 interface DeletionRowResult {
   target: TargetRef;
-  /** sources_changed：值没变，只换了给出者（例：被删的写入给出的值，另有一次佐证或后来的写入给出同一个值）。 */
+  /** sources_changed：取值没变，这一行因为给出者、判定结果或给出它们的块被重新给出而列出（例：被删的写入给出的值，另有一次佐证或
+   *  后来的写入给出同一个值；给出空洞的撤销因删除被重新解析，空洞仍在原处；某一项只是被原样重述）。 */
   result: "deleted" | "kept_fields_cleared" | "fields_reverted" | "resegmented" | "sources_changed";
   /** 删除后的样子。deleted 时不给。事件类表给 values；状态类表给 spans。 */
   after?: { values?: Values; spans?: Span[] };
+  /** 只有状态类表：删除后由有值变成无值的区间，以及原因。没有时不给。一个区间只列一次：落在撤销之内取 revocation_extended，否则 required_field_removed。
+   *  required_field_removed：某个必填字段在该处已没有仍在的贡献。
+   *  revocation_extended：一次只带起点的撤销，终点停在被删写入给出的挡点上，删除后延伸过去；
+   *  落在延伸部分里的写入没带齐必填字段，撑不起这一段。 */
+  gaps_opened?: Array<{ valid: Interval; cause: "required_field_removed" | "revocation_extended" }>;
   cleared?: FieldName[];             // kept_fields_cleared：变空的字段
   /** fields_reverted：每个回到更早值的字段。 */
   /** from_seq 与 schema_const 必有其一：回到的是哪次写入的值，或回到的是 schema 第 sv 版切换时常量 backfill 的补值（没有写入可指）。 */
@@ -1978,6 +1984,7 @@ type ValidationDetailCode =
   // 写入
   | "type_mismatch" | "unit_missing" | "unit_unknown" | "unit_dimension" | "out_of_range"
   | "enum_value" | "required_missing" | "required_in_gap" | "ref_not_found" | "ref_wrong_table"
+  | "malformed"                     // 十进制原文不符合 JSON 数字语法（04-contract 第 1 节「值的编码」）
   // schema 编译
   | "reserved_name" | "duplicate_name" | "description_missing" | "unknown_type"
   | "entity_key_not_required" | "cross_slot_ref"
