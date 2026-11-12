@@ -75,7 +75,7 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
   - **可分页的结果**（`rows`、事项列表、源数据列表、`timeline`、`changes`、预览的 `rows`）：适配器按预算确定本页实际显示的行数，**截断点就是页边界**——`next_cursor` 从没显示的第一行开始，不漏行。结果带 `truncated: {shown, total}`。
   - **`structuredContent` 与文本同页**：两者内容一致，不在结构化结果里多给。
   - **不可分页的读结果**超出预算时不截断，报 `too_large`（`result_budget`），附缩小的办法：`level: "schema"` 的文档、单个事项的详情、删除预览里 `rows` 之外的列表（这些列表本身各有 50 条的上限）。读操作什么都没落账，报错后缩小范围重读即可。
-  - **已经落账的操作不报 `too_large`**（`write`、`resolve`、`delete`、`schema_draft` 的回执）：操作已经生效，报错会让调用方以为没写，重发又命中同一个请求键、得到同一个错误。回执必给：操作号、每个 op 的目标与新 `ver`、生成的事项 ID 一定在；超出预算的部分（逐字段结果、`derived[]`、`affected_reads`、`premise_affected.rows`、各列表的后几条）截短，结果带 `omitted[]` 列明省掉了什么，文本写明"回执已截短，写入已生效，可用 `history` 查看全部"。
+  - **已经落账的操作不报 `too_large`**（`write`、`resolve`、`delete`、`schema_draft` 的回执）：操作已经生效，报错会让调用方以为没写，重发又命中同一个请求键、得到同一个错误。回执必给：操作号、每个 op 的目标与新 `ver`、生成的事项 ID 一定在；超出预算的部分（逐字段结果、`derived[]`、`affected_reads`、`premise_affected.rows`、各列表的后几条；`delete` 的逐行结果只留目标与新 `ver`；`schema_draft` 的逐项改动与回填后的文档全文）截短，结果带 `omitted[]` 列明省掉了什么，文本写明"回执已截短，写入已生效，可用 `history` 查看全部"。
   - `saveslot_sql` 没有 `cursor`：超出时显示前若干行，文本写明总数与"请加条件或聚合"。
 
 ## 4. 文本的渲染
@@ -128,14 +128,14 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
 | `rounded` | `amount 已按 2 位小数舍入：45.678 → 45.68` |
 | `timezone_assumed` | `时刻没带时区，按 Asia/Shanghai` |
 | `time_truncated` | `这张表按日记录，已取 2026-11-10 当天` |
-| `ver_fallback` / `sv_fallback` / `item_ver_fallback` | `没带 ver，用了你最近一次读到的 v57.0（rd_…）` |
+| `ver_fallback` / `sv_fallback` / `item_ver_fallback` | `没带 ver，用了你最近一次读到的 v57.0（rd_…）`；兜底取自写入回执（`from_write`）时：`没带 ver，用了你在 #55 的写入回执里得到的 v57.0` |
 | `renamed` | `duration 已改名为 minutes` |
 | `overwrote_corroborated` | `盖掉了一段被另一条证据佐证过的值：2026-11-20 起 5000 CNY（s_…）` |
 | `pending_deletion_on_target` | `该行有一项可撤回的删除（pi_…）` |
 | `clock_behind_log` | `本机时钟比日志末端晚了 N 分钟，记录时刻按日志末端` |
 | `evidence_unreferenced` | `第 1 段证据没有被任何 op 引用：已存为源数据，但不是任何值的来源` |
 | `evidence_not_stored` | `这次请求没有留下任何记录，带的第 0、1 段证据也没有存下` |
-| `premise_ver_fallback` | `前提没带 ver，用了你最近一次读到的 v40.0（rd_…）` |
+| `premise_ver_fallback` | `前提没带 ver，用了你最近一次读到的 v40.0（rd_…）`；取自写入回执时同 `ver_fallback` |
 | `premise_already_changed` | `声明的前提在你读取之后已变（#60）；这一行已带上"前提已变"` |
 | `external_key_skipped` | `第 3、7 个 op 被跳过：第 3 个对应的行已撤销（#58）；第 7 个的来源键有一项可撤回的删除（pi_…）` |
 | `external_key_resync` | `这些行来自外部系统；删除后若连接器再次同步同一条记录，它会重新出现。要彻底忘掉，先在来源系统里删除，或让连接器停止同步它` |
@@ -208,13 +208,13 @@ ledger · schema v2 · Asia/Shanghai
   monthly_total（派生 · 只读）每月支出合计
 ```
 
-`table`：表的种类、时间类型、行数与业务时间范围、规模提示；每个字段的名字、类型、单位、说明、是否必填与范围、别名；疑似重复判据、来源键、字段组；派生表的规则版本与依赖。说明与别名都是不可信文本，在边界里（例子里省略了标签）。
+`table`：表的种类、时间类型、行数与业务时间范围、规模提示；每个字段的名字、类型、单位、精度（`decimal`、`quantity`：小数位数）、说明、是否必填与范围、别名；疑似重复判据、来源键、字段组；派生表的规则版本与依赖。说明与别名都是不可信文本，在边界里（例子里省略了标签）。
 
 ```
 health · schema v2 · Asia/Shanghai
 runs（基础 · 事件类，按 date）每次跑步一行 · 132 行 · 2026-03-02 至 2026-11-08
   date        date        跑步当天（slot 时区的自然日）  必填
-  distance    quantity km 距离  必填 ≥ 0  别名：里程、公里数
+  distance    quantity km 6 位小数 距离  必填 ≥ 0  别名：里程、公里数
   …
   疑似重复判据：date + distance
 weekly_mileage（派生 · 只读）每周跑量与记录覆盖，周一起算 · 规则 r1 v1 · 依赖 runs.date、runs.distance
@@ -305,7 +305,7 @@ s_0 用户原话 · 2026-11-09 20:03 · MacBook · Codex · 待删除（pi_4K…
 
 `get`：原文（或文件引用的名字、类型、大小、摘录），以及它产生了哪些数据：哪一行、哪次写入、哪些字段、是值来源还是操作来源。
 
-`deletion_preview`：文本第一行写总量（"将删除 3 条源数据、1024 行，重算 12 个派生值"）；**单列"以下原本未生效的写入将会生效"**，不和其余结果混在一起；**单列"以下写入将转为待确认"**；逐行写结果与判定理由（例："runs r_01JC… 整行删除：date 只来自这句话；s_R3 也提到这次跑步，但它的写入只给了 distance"）；有 `co_evidence` 时写"同一次写入里另有 s_…，可按字段佐证后再删"；行保留下来但失去来源键时（`external_key_removed`）写明"这一行将失去来源键；之后连接器再同步同一条记录，会新增另一行"；受影响的行有来源键时给 `external_key_resync` 那句提醒，来源全部被删的行另说明"之后的同步不会补回当时被跳过的记录"——被跳过的同步没进日志，不逐条列出；不会删除的内容如实写出；最后写 `dc_…` 与它的有效期。另有两段单列，没有时不写：
+`deletion_preview`：文本第一行写总量（"将删除 3 条源数据、1024 行，重算 12 个派生值"）；**单列"以下原本未生效的写入将会生效"**，不和其余结果混在一起；**单列"以下写入将转为待确认"**；逐行写结果与判定理由（例："runs r_01JC… 整行删除：date 只来自这句话；s_R3 也提到这次跑步，但它的写入只给了 distance"）；有 `co_evidence` 时写"同一次写入里另有 s_…，可按字段佐证后再删"；行保留下来但失去来源键时（`external_key_removed`）写明"这一行将失去来源键；之后连接器再同步同一条记录，会新增另一行"；键将冻结的行（`external_key_frozen`）写明"这一行的来源键在撤回期内冻结：不能转移，按它的同步一律跳过"，有 `also_by` 时接着写"它还被 pi_… 冻结，撤回这一项之后仍冻结，要等那一项撤回或执行"，不写键值；受影响的行有来源键时给 `external_key_resync` 那句提醒，来源全部被删的行另说明"之后的同步不会补回当时被跳过的记录"——被跳过的同步没进日志，不逐条列出；不会删除的内容如实写出；最后写 `dc_…` 与它的有效期。另有两段单列，没有时不写：
 
 - **以将被改动的值为前提的行**：`以下 3 行以将被改动的值为前提，删除后会带上"前提已变"，但不会被删除：tasks r_01JG…、r_01JH…、r_01JK…`（最多 50 行，另写总数）。
 - **删除后仍保留、但不再支撑任何数据的源数据**（`orphaned_sources`）：`以下源数据删除后仍保留，但不再支撑任何数据；内容若也要忘掉，可一并列入删除：s_1n、s_2`。只列这次删除之后由"支撑了数据"变成"什么都不支撑"的那些，本来就不支撑数据的不列；列表有上限时另写总数（`orphaned_sources_total`）。这些源数据的原文不在这里显示，要看用 `saveslot_sources` 的 `get`。
@@ -441,7 +441,7 @@ budgets 推广 变更：2026-11-02 起改为 3000 CNY（一直延续）会覆盖
 - 本次写入并入已有事项（`merged`）或刷新了一个没读过的事项（`refreshed`）时，不给版本，写"已并入 pi_…（其中还有别的写入的候选），请先 saveslot_pending pi_… 查看"、"你的写入改到了一个未决事项 pi_… 的目标，事项仍未解决，请先 saveslot_pending pi_… 查看"。
 - **重放**：文本第一行写明"这是 3 分钟前同一请求的回执，本次没有新记录；若确实是新的一条，请带 idempotency_key 重新提交"。原写入已被删除时写"原写入已被删除（pi_…），未重新写入"。重放回执里当时没进日志的按来源键 op（没变、被跳过）只给下标，写"第 n 个 op 当时没有改动或被跳过，详情未记录"；相近的键与已有的键不给。
 
-**`saveslot_schema_draft` 回执**：第一行写结果（"已生效，ledger schema v2" 或 "待确认，事项 pi_…（版本 iv_…）"）；逐项改动一行，写目标、类别、对旧版写入是否兼容、是否破坏性；影响预览写受影响行数、派生值变化、按旧名字使用它的调用方、试跑失败的行数与样例；回填 ID 后的文档不在文本里重复，写"回填 ID 后的文档可用 saveslot_catalog level=schema 取回"（结构化结果里有）。
+**`saveslot_schema_draft` 回执**：第一行写结果（"已生效，ledger schema v2" 或 "待确认，事项 pi_…（版本 iv_…）"）；逐项改动一行，写目标、类别、对旧版写入是否兼容、是否破坏性；影响预览写受影响行数、派生值变化、按旧名字使用它的调用方、试跑失败的行数与样例；回填 ID 后的文档不在文本里重复，写"回填 ID 后的文档可用 saveslot_catalog level=schema draft=d_… 取回"（结构化结果里有；回执截掉了文档全文时只能这样取回）。
 
 ```
 待确认 · ledger schema v1 → v2 · 草稿 d_2A… · 事项 pi_A4…（版本 iv_c7…）
@@ -450,7 +450,7 @@ budgets 推广 变更：2026-11-02 起改为 3000 CNY（一直延续）会覆盖
 请先把上面的改动告诉用户，同意后 saveslot_resolve pi_A4… confirm
 ```
 
-**`saveslot_delete` 回执**：文本第一行写出撤回期限与方法；第二行写总量；随后逐行结果、因删除生效的写入、转为待确认的写入；最后写每处的状态（逻辑删除 → 物理删除时间 → 备份），不宣称"已从所有备份删除"；本机模式写明"saveslot 服务没在运行时，物理删除在下次启动时执行"与系统级备份的边界；写出删除后仍保留的元数据。预览里单列的"以将被改动的值为前提的行"与"删除后仍保留、但不再支撑任何数据的源数据"（`orphaned_sources`）在回执里照样单列；涉及来源键的行照样给 `external_key_resync` 的提醒。这项删除到期关闭时，`deletion` 事项的说明里再写一次同一条提醒：那之后的第一次同步就会把记录写回来，而那时不会再有提示。
+**`saveslot_delete` 回执**：文本第一行写出撤回期限与方法；第二行写总量；随后逐行结果、因删除生效的写入、转为待确认的写入；最后写每处的状态（逻辑删除 → 物理删除时间 → 备份），不宣称"已从所有备份删除"；本机模式写明"saveslot 服务没在运行时，物理删除在下次启动时执行"与系统级备份的边界；写出删除后仍保留的元数据。回执给的是按确认时的状态重算的预览内容：预览里单列的"仍引用被删行的行"（`dangling_refs`）、"以将被改动的值为前提的行"与"删除后仍保留、但不再支撑任何数据的源数据"（`orphaned_sources`）在回执里照样单列，键将冻结的行照样写明；涉及来源键的行照样给 `external_key_resync` 的提醒。这项删除到期关闭时，`deletion` 事项的说明里再写一次同一条提醒：那之后的第一次同步就会把记录写回来，而那时不会再有提示。
 
 ```
 已删除，24 小时内（至 2026-11-12 09:12）可撤回：saveslot_resolve pi_4K… cancel
@@ -466,7 +466,7 @@ expenses r_01JC… 整行删除：date、category 只来自这句话
 
 | code | 文本里的下一步 |
 |---|---|
-| `invalid_argument` | 指出哪个参数，附正确示例 / 候选；模式配错时给该模式完整的示例。事件类表传了 `valid_at`："runs 是事件类表，没有生效区间；查 2026-11-03 当天请用 valid_during: ["2026-11-03", "2026-11-04")，或 where: [{field: "date", op: "=", value: "2026-11-03"}]"。多候选没指定：列出候选 #58 / #61。按来源键写入的几种：`insert_with_external_key`："meals 声明了来源键，按来源键写入请用 update 并给 external_key"；`duplicate_external_key`："第 2、9 个 op 的来源键相同，请去掉重复的一条再提交"；`external_key_in_use`："这个来源键已由 r_… 占着；要把它转到这一行，先撤销 r_…"（冻结时写"这个来源键有一项可撤回的删除（pi_…），删除了结之前不能转移"）；`external_key_not_transferable`："这个来源键是 r_… 补键得来的，不能再转"；`external_key_transferred`："这一行的来源键已转给 r_…，不能再恢复它"。前提的几种指出是第几个 op 的第几条前提：`premise_self`："前提不能指向这个 op 自己的目标"；`premise_historical_ver`："h41.0 是历史版本，请用 saveslot_query 读到当前的 ver"；`cross_slot`："前提只能指向同一 slot 的表"；`premises_with_external_key` / `premises_with_revert` / `premises_with_revoke`："这种 op 不能带 premises" |
+| `invalid_argument` | 指出哪个参数，附正确示例 / 候选；模式配错时给该模式完整的示例。事件类表传了 `valid_at`："runs 是事件类表，没有生效区间；查 2026-11-03 当天请用 valid_during: ["2026-11-03", "2026-11-04")，或 where: [{field: "date", op: "=", value: "2026-11-03"}]"。多候选没指定（`candidate_required`）：按 `candidate_choices` 列出候选的下标与写入，如"候选 0（#58，MacBook · Claude Code）/ 候选 1（#61，MacBook · Codex）"。按来源键写入的几种：`insert_with_external_key`："meals 声明了来源键，按来源键写入请用 update 并给 external_key"；`duplicate_external_key`："第 2、9 个 op 的来源键相同，请去掉重复的一条再提交"；`external_key_in_use`："这个来源键已由 r_… 占着；要把它转到这一行，先撤销 r_…"（冻结时写"这个来源键有一项可撤回的删除（pi_…），删除了结之前不能转移"）；`external_key_not_transferable`："这个来源键是 r_… 补键得来的，不能再转"；`external_key_transferred`："这一行的来源键已转给 r_…，不能再恢复它"。前提的几种指出是第几个 op 的第几条前提：`premise_self`："前提不能指向这个 op 自己的目标"；`premise_historical_ver`："h41.0 是历史版本，请用 saveslot_query 读到当前的 ver"；`cross_slot`："前提只能指向同一 slot 的表"；`premises_with_external_key` / `premises_with_revert` / `premises_with_revoke`："这种 op 不能带 premises" |
 | `unknown_table` / `unknown_field` | 列出最接近的名字（`nearest`，最多 3 个）；建议 `saveslot_catalog`。最接近的名字只从本次调用可见的名字里取：凭证范围外的 slot、表与字段，与不存在的一样，永远不出现在报错里。顺序照契约第 11 节：别名与请求里的名字折叠后相同的对象，它的名字排在最前，其余按折叠后的编辑距离（"价钱 不是字段名；amount 的别名里有它，请写 amount"）；文本里写的是名字，不回显别名 |
 | `not_found` | 被宽限期内的删除去掉的："该行已被删除（pi_…，可撤回）"，不回显内容；`slot`："没有名为 sleep 的 slot；有哪些 slot 用 saveslot_catalog 查看"；前提的目标找不到时指出是第几个 op 的第几条前提；其余建议用 `saveslot_query` 重新定位。凭证范围外的 ID 与 slot 和不存在的报同一句话 |
 | `revoked` | "这一行已在 #63 撤销；要恢复它，用 revert: {undo: 63}" |
@@ -480,7 +480,7 @@ expenses r_01JC… 整行删除：date、category 只来自这句话
 | `draft_outdated` | `base_version`：给出当前版本，"请用 saveslot_catalog level=schema 取回最新文档后重新修改"；`migrating`："ledger 正在迁移到 v2（进度 120 / 2300），完成后再提交"；`table_written`："budgets 在草稿提交之后有了写入，这份草稿里按"从未被写入"编译的改动不能再确认；请 reject 它，或提交新的草稿" |
 | `field_unmatched` | "f3 duration 未出现；要改名请带回 id，要删除请列入 drop_fields" |
 | `confirmation_mismatch` | "pi_… 的内容已变（…），请把新内容告诉用户后再处理"，附新版本与新内容 |
-| `item_closed` | 说明当前状态："pi_… 已于 … 按 keep_effective 解决" / "pi_… 已被 #63 取代（该字段已被改过）" / "这项删除的撤回期已过" |
+| `item_closed` | 说明当前状态："pi_… 已于 … 按 keep_effective 解决" / "pi_… 已被 #63 取代（该字段已被改过）" / "这项删除的撤回期已过"（已执行的写"这项删除已于 … 执行，不能撤回"） |
 | `preview_outdated` | "预览之后又有写入改到了删除范围，影响已变"，给出新预览与新的 `dc_`，请把新范围告诉用户后再删 |
 | `handle_expired` | 给出重新获取的方法；已执行过的删除确认附删除 ID |
 | `insufficient_scope` | 需要哪个 scope；需要用户会话的写"这项操作只能由用户本人在命令行里做"；`all_slots`："新建 slot 需要能访问全部 slot 的连接；这个连接只能访问指定的几个 slot" |
@@ -594,7 +594,7 @@ ledger: 2 张表
 | `task` | | 这次任务的短标签（如 `weekly-review`），同一任务里的读和写用同一个值；saveslot 用它把"你读到的版本"和"你之后的写入"对上。不要放用户的话或数据 |
 | `limit` | | 返回多少条。默认 20，上限 200。只在列表类结果上有（`saveslot_catalog` 的 `list` 默认 50） |
 | `cursor` | | 上一页结果里的 `next_cursor`，原样带回取下一页。不要自己构造；换了查询条件就不要再带 |
-| `detail` | | `concise`（默认）或 `detailed`。默认就够用；需要完整的来源与标记明细时才用 `detailed` |
+| `detail` | | `concise`（默认）或 `detailed`。只在 `saveslot_query`，以及 `saveslot_history` 的 `as_of` 上有。默认就够用；需要完整的来源与标记明细时才用 `detailed` |
 | `idempotency_key` | | 只在 4 个写工具上有。平时不用给：内容相同的重发会被自动识别为同一次。**确实又发生了一笔内容相同的记录时**，带一个新的值再写。同一个值配不同的内容会报错 |
 
 **`saveslot_catalog`**
@@ -603,6 +603,7 @@ ledger: 2 张表
 |---|---|---|
 | `level` | | `list`（默认）看有哪些 slot 和表；`table` 看某几张表的字段、单位与概况；`schema` 取某个 slot 的完整 schema 文档，只在要改 schema 时用 |
 | `slot` | `schema` 时必填 | slot 名。`list` 时给了就只看这个 slot |
+| `draft` | | 只对 `schema`：草稿 ID（`d_…`），取这份草稿回填了 ID 的文档，而不是当前版本。草稿是什么状态都能取 |
 | `tables` | `table` 时必填 | 表名数组，1–10 张。写成 `ledger.expenses`；表名在你能看到的各 slot 里不重名时可只写 `expenses`。写名字，不写别名 |
 
 **`saveslot_query`**
@@ -675,7 +676,7 @@ ledger: 2 张表
 | `ops[].row` | 改事件类表、无时间表的已有行时 | 行 ID（`r_…`），从读结果里取。`insert` 不给；按 `external_key` 写入时不给 |
 | `ops[].entity` | 改状态类表的已有实体时，与 `entity_key` 给其一 | 实体 ID（`e_…`） |
 | `ops[].entity_key` | 同上 | 按自然键找到状态类表的实体，如 `{"category": "餐饮"}`；实体不存在会新建。意图用 `update`。键写错会建出一个新实体，回执会列出该表已有的键，并标出写法相近的 |
-| `ops[].external_key` | | 这条记录在来源系统里的编号（表声明了来源键时才能用）：给出全部键字段的值，意图用 `update`，不带 `ver` 与 `row`。saveslot 里已有这条记录时，拿每个字段和你上次交来的值比：没变就不动；变了、而这里没人改过就更新；这里也有人改过，就记为候选、等人决定，不覆盖。还没有这条记录就新增。用户撤销过的记录会被跳过。给一行没有来源键的已有行补上来源键时，与 `row`、`ver` 一起给 |
+| `ops[].external_key` | | 这条记录在来源系统里的编号（表声明了来源键时才能用）：给出全部键字段的值，意图用 `update` 或 `correct`，不带 `ver` 与 `row`。saveslot 里已有这条记录时，拿每个字段和你上次交来的值比：没变就不动；变了、而这里没人改过就更新；这里也有人改过，就记为候选、等人决定，不覆盖。还没有这条记录就新增。用户撤销过的记录会被跳过。给一行没有来源键的已有行补上来源键时，与 `row`、`ver` 一起给 |
 | `ops[].as` | | 给这次新插入的行起一个临时名（如 `p1`），同一请求里后面的 op 用 `"@p1"` 引用它。只在本请求内有效。按 `external_key` 写入的 op 也可以带：新增时指新的那一行，命中已有行时指那一行 |
 | `ops[].ver` | 改已有的行时应带 | 读这一行时拿到的 `ver`，原样带回；saveslot 靠它发现别人在你读之后改过。没带时用你上次读到的版本。本请求里新建的行不用带；按 `external_key` 写入时不带 |
 | `ops[].set` | 除 `revoke`、`revert`、只带 `premises` 的 `update` 外必填 | 字段名 → 值。只写要改的字段；带单位的值写 `{value, unit}`；清空一个可选字段写 `null`。与 `revert` 不能同时给 |
@@ -696,7 +697,7 @@ ledger: 2 张表
 | `item_ver` | 应带 | 事项详情或回执里的 `iv_…`，原样带回；事项在你看过之后变了会报错并附最新内容。撤回删除不用带 |
 | `candidate` | 多个候选时必填 | 只用于 `take_candidate`：采纳第几个候选（详情里的下标，从 0 起）。只有一个候选时可以不给 |
 | `note` | | 备注，说明为什么这样处理。会作为一条源数据存下来，之后可以按普通的删除流程删掉 |
-| `evidence` / `evidence_refs` / `evidence_by_field` | | 这次处理的证据原文（如用户说"以后一个为准"）。`evidence` 是数组，用户说的话写 `{kind: "user_message", text}`，放原话；`evidence_refs`、`evidence_by_field` 用下标指明用到哪几段、哪个字段出自哪段 |
+| `evidence` / `evidence_by_field` | | 这次处理的证据原文（如用户说"以后一个为准"）。`evidence` 是数组，用户说的话写 `{kind: "user_message", text}`，放原话；`evidence_by_field` 用 `evidence` 的下标（从 0 起）指明哪个字段出自哪段 |
 
 **`saveslot_schema_draft`**
 
@@ -807,7 +808,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
   | 头 | 对应 | 说明 |
   |---|---|---|
   | `Authorization: Bearer <令牌>` | 凭证 | 连接实例令牌或用户会话 |
-  | `X-Task-Id` | 契约的 `task` | 所有端点可用 |
+  | `X-Task-Id` | 契约的 `task` | 除管理类端点外都可用 |
   | `Idempotency-Key` | 契约的 `idempotency_key` | 只对写端点；窗口 24 小时 |
   | `Prefer: respond-async`（后续） | `mode: "job"` | |
 
@@ -823,7 +824,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 |---|---|---|---|---|
 | `GET /v1/slots` | `catalog`（`list`） | `limit`、`cursor` | `saveslot.read` | 200 |
 | `GET /v1/slots/{slot}` | `catalog`（`list`，只看这个 slot） | `limit`、`cursor` | `saveslot.read` | 200 |
-| `GET /v1/slots/{slot}/schema` | `catalog`（`schema`） | — | `saveslot.read` | 200 |
+| `GET /v1/slots/{slot}/schema` | `catalog`（`schema`） | `draft` | `saveslot.read` | 200 |
 | `GET /v1/slots/{slot}/tables/{table}`、`GET /v1/tables/{table}` | `catalog`（`table`，一张表） | — | `saveslot.read` | 200 |
 | `GET /v1/slots/{slot}/tables` | `catalog`（`table`，多张表） | `tables`（必填，最多 10 张） | `saveslot.read` | 200 |
 | `POST /v1/query` | `query` | 请求体 | `saveslot.read` | 200 |
@@ -871,12 +872,12 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 | 端点 | 操作 | 查询参数 / 请求体 | 凭证 |
 |---|---|---|---|
 | `POST /v1/connections` | `connections.issue` | 请求体 `{name, scopes?, slots?}`（`slots` 不给 = 全部 slot，含以后新建的） | 用户会话 |
-| `GET /v1/connections` | `connections.list`（每项带 slot 范围） | `include_revoked`、`limit`、`cursor` | 用户会话 |
+| `GET /v1/connections` | `connections.list`（每项带 slot 范围） | `include_revoked`（`true` 时已吊销与已停用的都列出）、`limit`、`cursor` | 用户会话 |
 | `PATCH /v1/connections/{id}` | `connections.update` | 请求体 `{name}` | 用户会话 |
 | `DELETE /v1/connections/{id}` | `connections.revoke` | — | 用户会话 |
 | `GET /v1/slots/{slot}/policy` | `policy.get` | — | `saveslot.read` |
 | `PUT /v1/slots/{slot}/policy`（后续） | `policy.set` | 请求体 | 用户会话 |
-| `GET /v1/reads` | `reads.list` | `connection`、`slot`、`table`、`task`、`since`、`until`、`limit`、`cursor` | 用户会话 |
+| `GET /v1/reads` | `reads.list` | `connection`、`slot`、`table`、`of_task`（只列带这个任务标识的读取）、`since`、`until`、`limit`、`cursor` | 用户会话 |
 | `GET /v1/log/verify` | `log.verify` | — | 用户会话 |
 | `POST /v1/log/reconcile` | `log.reconcile`：同步返回，耗时随日志大小增长 | — | 用户会话 |
 | `GET /v1/export` | `export` | `after_seq`、`include_pending_deletion` | 用户会话 |

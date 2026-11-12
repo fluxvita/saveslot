@@ -1,7 +1,7 @@
 # saveslot · 操作契约的类型定义
 
 > 本文是操作契约的**结构**：每个操作的参数、结果、错误与全部枚举，写成 TypeScript 类型。规则与说明（什么时候返回什么、为什么）在 [`04-contract.md`](04-contract.md)；内核规则在 [`03-data-model/`](03-data-model/README.md)；MCP 与 HTTP 怎么承载在 [`05-surfaces.md`](05-surfaces.md)。
-> **字段名、嵌套结构与枚举值以本文为准。** 实现里的 `contract-core` / `contract` 两个包与本文逐项对应；OpenAPI、MCP 的 `inputSchema` / `outputSchema` 都由它们生成。MCP 参数的 `description` 是写给模型看的措辞，原文在 [`05-surfaces.md`](05-surfaces.md) 9.1；本文参数上的注释说明类型与约束。
+> **字段名、嵌套结构与枚举值以本文为准。** 实现里的 `contract-core` / `contract` 两个包与本文逐项对应；OpenAPI 由它们生成，MCP 的 `inputSchema` / `outputSchema` 由本文件的类型按 [`05-surfaces.md`](05-surfaces.md) 第 1 节的映射表组合生成。MCP 参数的 `description` 是写给模型看的措辞，原文在 [`05-surfaces.md`](05-surfaces.md) 9.1；本文参数上的注释说明类型与约束。
 
 ## 0. 约定
 
@@ -16,10 +16,10 @@
   | 含义 | 键名 |
   |---|---|
   | 操作号（见 1.2） | `seq` |
-  | 记录时刻 | `recorded_at` |
+  | 记录时刻 | 结果顶层：`recorded_at`；描述某个已发生的事件的嵌套对象（`resolution`、`superseded`、`reads[]`、`removed`）里：`at` |
   | 谁做的 | `actor` |
-  | 对象的种类 | `type`（事项）、`kind`（证据、源数据、改动、删除） |
-  | 码 | `code`（错误、提醒、提示、校验明细）、`reason`（原因码：事项为什么产生 / 被取代、标记的成因、错误的细分） |
+  | 对象的种类 | `type`（事项）、`kind`（证据、源数据、删除）；schema 改动用 `change`（改动码）与 `class`（类别） |
+  | 码 | `code`（错误、提醒、提示、校验明细）、`reason`（原因码：事项为什么产生 / 被取代、标记的成因、错误的细分）；候选的来由用 `cause`（与事件格式同名） |
   | 待处理事项 | `item`（只给 ID）或 `{id, item_ver}` |
 
 ### 0.2 第一版不实现
@@ -28,14 +28,16 @@
 
 | 位置 | 第一版不实现的 |
 |---|---|
-| `write` | `mode: "job"` 与作业（`status: "job"`、`job`、单个 op 超阈值自动转作业）；`revert: {to, fields}`；逐字段结果 `applied_by_rule` |
+| `write` | `mode: "job"` 与作业（`status: "job"`、`job`、单个 op 超阈值自动转作业）；`revert: {to, fields}`；逐字段结果 `applied_by_rule`；意图 `applied_by_rule` |
 | `write`（MCP） | op 级 `acknowledge`、证据段的 `level`（HTTP 开放） |
+| 证据 | 来源级别 `external_authority` |
 | `history` | `mode: "composition"` |
 | `sources` | `mode: "search"` 的全文检索（第一版是子串匹配，参数相同） |
 | `deletion_preview` / `delete` | `kind: "evidence"`、`rows`；结果里的 `reextract`、`cleared`、`collateral_rows` |
-| `pending` / `resolve` | 事项类型 `migration_diff` 及其处理方式；作业（`jb_…`） |
+| `pending` / `resolve` | 事项类型 `migration_diff` 及其处理方式；作业（`jb_…`）；取代原因 `evidence_deleted`、`migration_failed`；候选的来由 `displaced_by_rule` |
 | `schema_draft` | 改动类别 `reextract`；字段上的 `reextract`；`extends`、`compatibility`；`derived` 改 `base`；**在写入过的表上**：表的时间类型变更、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 与其他类型互转、改 `ref` 的目标、换一组来源键（`change_external_key`）、来源键字段改类型或收紧约束（对应的改动码见 5.3；`reason` 是 `table_written`）；`migrate` / `backfill` 表达式引用本字段以外的字段；最外层不是聚合的派生规则、沙箱函数规则。草稿里出现时整份草稿报 `not_in_this_version` |
 | 标记 | `stale`、`pending_extraction`；`possibly_affected` 的 `applied_by_rule` |
+| 提醒 | `job_items_appended` |
 | 提示 | `job_failed` |
 | 操作 | `extract_claim`、`extract_submit`、`policy.set` |
 | 错误 | `lease_expired`、`referenced` |
@@ -142,6 +144,10 @@ type UntrustedText = string;
 | 带时区的时刻 `zoned_datetime` | 一个字符串（带偏移与时区名） | `{"instant": <时刻>, "zone": <IANA 时区名>}` |
 | 业务时间区间 | `{valid_from, valid_to}`，开口终点是 `null`；`date` 粒度另给 `valid_to_inclusive` | `{"from", "to"}`，开口终点是缺省 |
 | 整数、小数、数量、日期、布尔、枚举、文本 | 两边相同（整数与小数都是十进制字符串） | 同左 |
+| "存在"（这一行 / 这段是否存在） | 在字段名的位置上写 `"*"`：`fields` 的键、`unit` 与标记里的字段数组 | `"existence"`；事项 `target` 的 `unit` 写 `["existence"]` |
+| 删除的逐行结果 | `result` | `outcome`（`results/<k>/target`），取值相同 |
+| 执行后会改掉的段（事项的影响） | `impact.overwritten`（被覆盖的段）与 `impact.filled_gaps`（被填掉的无值区间） | `impact/<k>` 的 `overwritten_segment`：被覆盖的是无值区间（`value` 为空）的段，在契约里进 `filled_gaps`；其余进 `overwritten` |
+| 疑似重复命中的行 | `FlaggedDetail.related`（命中的那组键值另在 `matched_values`） | `matched`（`write.base` 的 `duplicate`、`item.created` 的 `matched/<k>`） |
 
 ### 1.5 目标
 
@@ -198,7 +204,6 @@ interface WriteCommonParams extends CommonParams {
 interface PageParams {
   limit?: number;                  // 默认 20，上限 200
   cursor?: Cursor;
-  detail?: "concise" | "detailed"; // 默认 concise
 }
 
 interface CommonResult {
@@ -248,7 +253,7 @@ interface SourceRefSegment {
 }
 ```
 
-op 上与证据有关的三个字段（定义在 `WriteOp`、`ResolveParams`）：
+op 上与证据有关的三个字段（定义在 `WriteOp`；`ResolveParams` 只取 `evidence` 与 `evidence_by_field`，见 5.2）：
 
 ```ts
 interface EvidenceOnOp {
@@ -284,7 +289,7 @@ interface Marks {
   /** 有提议尚未生效；给出的是当前值。 */
   awaiting?: Array<{ item: ItemId; fields: Array<FieldName | "*">; valid?: Interval; proposed?: Values | null; proposed_revert?: { undo: Seq } }>;  // proposed: null = 提议撤销；提议是一次回退时不给 proposed，给 proposed_revert
   /** 值已生效，只是被标记。 */
-  flagged?: Array<{ item: ItemId; reason: FlaggedReason; related?: TargetRef }>;
+  flagged?: Array<{ item: ItemId; reason: FlaggedReason; related?: TargetRef }>;   // related：被比中的行里操作号最大的那一行；完整列表见事项详情的 related
   /** 该行被纠错过。 */
   corrected?: true;
   /** 该行已撤销。只在 include_revoked: true 时出现。 */
@@ -318,7 +323,7 @@ interface Marks {
 type FlaggedReason  = "duplicate_keys";
 type AffectedReason = "correct" | "revoke" | "retroactive" | "plan_changed" | "applied_by_rule" /* @later */;
 
-/** 前提变了的原因。前四个与 AffectedReason 同名同义；update：前提被变更（事件类表、无时间表上的 update 也算）；
+/** 前提变了的原因。correct、revoke、retroactive、plan_changed 与 AffectedReason 同名同义；update：前提被变更（事件类表、无时间表上的 update 也算）；
  *  deleted：隐私删除改掉了前提的值。一次写入在所声明的范围上同时有追溯与未来的部分时取 retroactive。 */
 type PremiseReason = "correct" | "update" | "revoke" | "retroactive" | "plan_changed" | "deleted";
 
@@ -379,6 +384,9 @@ interface CatalogParams extends CommonParams {
   /** list（默认）：slot 与表的清单。table：某几张表的字段与概况。schema：某个 slot 的完整 schema 文档。 */
   level?: "list" | "table" | "schema";
   slot?: SlotName;               // list：只看这个 slot。schema：必填
+  /** 只对 schema：读这份草稿编译后的文档（ID 已回填），不读当前版本。草稿是什么状态都可以读；照常记读取记录。
+   *  草稿不存在或不可见报 not_found（draft）。 */
+  draft?: DraftId;
   tables?: TableName[];          // table：必填，1–10 张
   limit?: number;                // 只对 list：默认 50，上限 200（按表计）
   cursor?: Cursor;
@@ -413,8 +421,11 @@ interface CatalogTables extends CommonResult {
       aliases?: UntrustedText[];                 // 字段的别名，至多 8 个；不参与名字解析
       required?: true; unit?: string; min?: string; max?: string; values?: string[];
       ref?: { table: TableName; target: "row" | "entity" };
+      /** decimal、quantity 字段：小数位数与舍入方式（schema 没声明时是编译器回填的默认值）。写入时超出的位数按它舍入（提醒 rounded）。 */
+      precision?: { scale: number; rounding: Rounding };
       examples?: UntrustedText[];                // 最近 K 个不同取值
     }>;
+    /** depends_on：规则依赖的字段，每项写成"表名.字段名"（"runs.distance"）。派生规则不跨 slot，表名是同一 slot 内的短表名，不带 slot 前缀。 */
     rule?: { id: string; version: number; sql: UntrustedText; time_dependency: "none" | "bucketed" | "now"; depends_on: string[] };
     profile: {
       rows: number;
@@ -429,11 +440,16 @@ interface CatalogTables extends CommonResult {
 
 type FieldType = "text" | "integer" | "decimal" | "boolean" | "enum" | "date" | "zoned_datetime" | "quantity" | "ref";
 
+/** half_up：四舍五入，恰在一半时远离零。half_even：恰在一半时取偶。 */
+type Rounding = "half_up" | "half_even";
+
 interface CatalogSchema extends CommonResult {
   level: "schema";
-  slot: SlotName; sv: Sv;
-  document: SchemaDocument;      // ID 与 base_version 已填好，改完可直接交给 schema_draft
-  policy: SlotPolicy;            // 只读，8.2
+  slot: SlotName;
+  sv: Sv;                        // 带 draft 时是这份草稿确认后会成为的版本，否则是当前版本
+  draft?: DraftId;               // 带 draft 参数时原样回显
+  document: SchemaDocument;      // ID 与 base_version 已填好，改完可直接交给 schema_draft。带 draft 参数时是那份草稿编译后的文档
+  policy: SlotPolicy;            // 只读，8.2。总是当前生效的策略：草稿不改策略
 }
 
 /** schema 文档。格式的权威定义在 data-model「schema 文档格式」。 */
@@ -487,6 +503,8 @@ interface QueryParams extends CommonParams, PageParams {
   /** 求值时刻："今天"（依赖"今天"的派生值）与不带时间限定读状态类表都取它。不传取入口时刻。 */
   at?: Instant;
   include_revoked?: boolean;     // 默认 false
+  /** 默认 concise。detailed：每行另给 RowDetail（4.1）。只在返回 Row 的地方有：query，以及 history 的 as_of。 */
+  detail?: "concise" | "detailed";
 }
 
 /**
@@ -602,11 +620,12 @@ interface AsOfParams extends CommonParams, PageParams, Target {
   as_of: RecordPoint | { read: ReadId } | { task: string };
   /** 不给时，状态类实体返回当时所知的全部段。 */
   valid_at?: BizTime;
+  detail?: "concise" | "detailed";   // 同 QueryParams.detail
 }
 
 interface ChangesParams extends CommonParams, PageParams {
   mode: "changes";
-  table: TableName;
+  table: TableName;              // 基础表。派生表报 invalid_argument（derived_table）
   row?: RowId; entity?: EntityId; entity_key?: Record<FieldName, Value>;   // 不给目标 = 整张表
   /** 不含。"my_last_read" = 本连接实例（带 task 时只认同一任务）对这张表最近一次读取的位置；没读过报 read_first。 */
   since: RecordPoint | "my_last_read";
@@ -757,7 +776,8 @@ type SourceDeletion =
   | { state: "pending"; item: ItemId; expires_at: Instant }
   | { state: "removed"; at: Instant; reason: TombstoneReason };
 
-type TombstoneReason = "expiry" | "restore_backfill";
+/** expiry：宽限期到期。restore_backfill：恢复备份后按删除登记补做。import_placeholder：导入时为导出里占位的待删除项补的墓碑。 */
+type TombstoneReason = "expiry" | "restore_backfill" | "import_placeholder";
 ```
 
 例（`get`）：
@@ -794,7 +814,7 @@ interface DeletionPreviewResult extends CommonResult, PageResult {   // 分页�
   confirm: DeleteConfirm;
   confirm_expires_at: Instant;
   slot: SlotName;
-  kind: "privacy" | "evidence";
+  kind: "privacy" | "evidence" /* @later */;
   totals: { sources: number; rows: number; derived: number };
   rows: DeletionRowResult[];
   /** 原本未生效、将因删除生效的写入。最多 50 条，另给总数。 */
@@ -842,6 +862,9 @@ interface DeletionRowResult {
   basis?: Record<FieldName, Seq[]>;
   /** 这一行保留下来，但它的来源键随被删的贡献一起去掉：之后连接器再同步同一条记录，会新增另一行。另见提醒 external_key_resync。 */
   external_key_removed?: true;
+  /** 这一行的来源键将因这项删除冻结：冻结期间不能转移，按它的同步一律跳过。只在键将冻结的行上给；不列键值。
+   *  also_by：同一个键上另外几项未执行的删除。有它时，撤回这一项之后键仍冻结，要等这几项都撤回或执行。 */
+  external_key_frozen?: { also_by?: ItemId[] };
   /** 同一次写入里的其他证据段：可用 source_ref + evidence_by_field 按字段佐证后再删。 */
   co_evidence?: Array<{ seq: Seq; fields: FieldName[]; sources: SourceId[] }>;
 }
@@ -915,13 +938,20 @@ interface ItemBase {
   slot: SlotName;
   reason: ItemReason;
   opened_at: Instant; opened_by: Actor;
-  /** 当前凭证可用的处理方式。已关闭的事项为空。 */
+  /** 当前凭证可用的处理方式。已关闭的事项为空。deletion 事项宽限期已过、墓碑尚未落账（deletion_overdue 期间）时仍是 open，这里也为空。 */
   decisions: Decision[];
   /** 需要用户会话才能用的处理方式（slot 策略指定时）。@later */
   user_session_only?: Decision[];
-  resolution?: { decision: Decision; seq: Seq; at: Instant; actor: Actor; note?: UntrustedText };   // status: resolved
-  superseded?: { reason: SupersededReason; by?: Seq; at: Instant };                                 // status: superseded
+  resolution?: ItemResolution;                                        // status: resolved
+  superseded?: { reason: SupersededReason; by?: Seq; at: Instant };   // status: superseded
 }
+
+/** 事项怎么解决的，两支：
+ *  按处理方式解决（resolve）；
+ *  deletion 事项到期执行（物理删除）：seq 是墓碑事件的 seq（它是一次 system 操作的头事件），actor 恒为 system，不给。"执行"不是调用方可选的处理方式，不进 Decision。 */
+type ItemResolution =
+  | { decision: Decision; seq: Seq; at: Instant; actor: Actor; note?: UntrustedText }
+  | { executed: true; seq: Seq; at: Instant; reason: TombstoneReason };
 
 /** 事项的目标。unit = 冲突单元里的字段；["*"] = 这一行 / 这段是否存在。 */
 interface ItemTarget extends TargetRef { unit?: Array<FieldName | "*">; valid?: Interval }
@@ -970,8 +1000,8 @@ interface AwaitingDetail extends ItemBase {
 
 /** 执行后会改掉什么。在事项版本的绑定范围内。 */
 interface AwaitingImpact {
-  overwritten?: Array<{ field: FieldName; valid: Interval; value: Value; seq: Seq; actor: Actor }>;   // 会被覆盖的段（含会被填掉的无值区间：value 为 null）
-  filled_gaps?: Array<{ valid: Interval; revoked_by?: Seq }>;                                          // 会被填掉的空洞
+  overwritten?: Array<{ field: FieldName; valid: Interval; value: Value; seq: Seq; actor: Actor }>;   // 会被覆盖的段
+  filled_gaps?: Array<{ valid: Interval; revoked_by?: Seq }>;                                          // 会被填掉的无值区间（只列在这里）
   reverted?: Array<{ seq: Seq; actor: Actor; fields: FieldName[] }>;                                   // 会被回掉的后来写入
   referrers?: TargetRef[];                                                                             // 仍引用该行的行
 }
@@ -983,13 +1013,17 @@ interface FlaggedDetail extends ItemBase {
   related: TargetRef[];
   /** 命中的那一组 duplicate_keys 与键值。 */
   keys: FieldName[];
-  matched?: Values;
+  matched_values?: Values;
 }
 
 interface ConflictDetail extends ItemBase {
   type: "conflict";
   target: ItemTarget;
-  effective: { seq: Seq; actor: Actor; values?: Values; spans?: Span[]; exists: boolean };
+  /** 当前生效方。状态类表上冲突区间内的生效值可以由几次写入分段给出：spans 每段带给出它的写入；
+   *  段内没有任何写入给出状态时（从未写过的无值段）不给 seq、actor；撤销留下的空洞给那次撤销。
+   *  顶层 seq / actor 是这些段里操作号最大的那次（事件类表与无时间表只有一个）。顶层总有值：冲突的成立要求合并基之后有改变生效值的写入，
+   *  所以冲突区间里至少有一段由写入给出。 */
+  effective: { seq: Seq; actor: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean };
   candidates: Candidate[];
   /** 成因是 restored_candidate 时：候选原来所在的那个事项。 */
   related_item?: ItemId;
@@ -1028,7 +1062,7 @@ interface SchemaChangeDetail extends ItemBase {
 
 interface DeletionDetail extends ItemBase {
   type: "deletion";
-  kind: "privacy" | "evidence";
+  kind: "privacy" | "evidence" /* @later */;
   expires_at: Instant;
   totals: { sources: number; rows: number; derived: number };
   states: DeletionState[];
@@ -1077,7 +1111,7 @@ interface DeletionState {
 ```ts
 type Intent = "insert" | "update" | "correct" | "revoke" | "applied_by_rule" /* 只出现在结果里；@later */;
 
-/** 历史里一个版本的意图：写入的意图，或由删除产生的版本的两个取值（与事件格式 6.2 同名）。 */
+/** 历史里一个版本的意图：写入的意图，或另外三个版本意图——由删除确认、撤回删除、schema 切换产生的版本（与事件格式 6.2 同名）。 */
 type VersionIntent = Intent | "deletion" | "deletion_cancelled" | "schema_switch";   // schema_switch：schema 切换时常量 backfill 补出的版本
 
 interface WriteParams extends WriteCommonParams {
@@ -1147,7 +1181,7 @@ interface WriteResult extends CommonResult {
   derived: DerivedChange[];      // 最多 20 条
   derived_total: number;
   pending: PendingRef[];
-  superseded: Array<{ item: ItemId; type: ItemType }>;
+  superseded: Array<{ item: ItemId; type: ItemType; reason: SupersededReason }>;   // 写入取代事项的原因：overwritten 或 matched_changed
   affected_reads?: AffectedReads;
   /** 这次操作改动的行上，别的行声明过的前提的变化。没有时不给。 */
   premise_affected?: PremiseAffected;
@@ -1220,12 +1254,14 @@ interface OpResult {
 type FieldResultCode = "applied" | "candidate" | "awaiting" | "corroborated" | "noop" | "applied_by_rule" /* @later */;
 
 /** timeline 里一项贡献的结果码。比写入回执多一个 dropped：这一项经一次隐私删除的重放后不再是贡献
- *  （与前面的值相同而当初没指证据；它回掉的那次写入已不在；或它的区间并进了同一字段的另一项）。只出现在 timeline。 */
-type TimelineResultCode = FieldResultCode | "dropped";
+ *  （与前面的值相同而当初没指证据；它回掉的那次写入已不在；或它的区间并进了同一字段的另一项）。只出现在 timeline。
+ *  不含 noop：无操作不产生版本，timeline 不列无操作的字段。 */
+type TimelineResultCode = Exclude<FieldResultCode, "noop"> | "dropped";
 
 type FieldResult =
-  | { result: "applied"; before: Value | undefined;
-      after: Value | undefined;  // 回退写回"没有值"（no_value）或只让被回掉的写入不再生效（uncovered）时不给
+  | { result: "applied";
+      before?: Value;            // 新增、或这里原来没有值时不给
+      after?: Value;             // 回退写回"没有值"（no_value）或只让被回掉的写入不再生效（uncovered）时不给
       no_value?: true; uncovered?: true;
       merged?: true;             // 带回的 ver 不是当前版本，但这个字段之后没人动过：已自动合并
       overwritten?: Array<{ valid: Interval; value: Value | null; seq: Seq }> }   // 状态类表：被覆盖或被切开的段
@@ -1236,7 +1272,7 @@ type FieldResult =
       valid?: Interval;          // 候选的区间
       effective: Value | null;   // 当前生效值
       current_ver: Ver;          // 当前生效版本。不算读到，不参与兜底
-      by: { seq: Seq; actor: Actor };            // 是谁的哪次写入改过它
+      by: { seq: Seq; actor: Actor };            // 是谁的哪次写入改过它；当前值由几次写入分段给出时取操作号最大的那次（同 ConflictDetail.effective）
       previous: ConflictDetail["previous"];
       impact?: AwaitingImpact }                  // 候选若生效会属高影响时
   | { result: "awaiting"; item: ItemId; impact: AwaitingImpact }
@@ -1281,7 +1317,7 @@ interface PremiseAffected {
   count: number;                     // 因本次操作新带上标记的依赖行数
   matched: number;                   // 因本次操作撤掉标记的依赖行数
   by_reason: Partial<Record<PremiseReason, number>>;
-  /** 新带上标记的依赖行：最多 20 行（deletion_preview 里最多 50 行）。回执超出结果预算时属于可截短的列表。 */
+  /** 新带上标记的依赖行：最多 20 行（deletion_preview 与 delete 里最多 50 行）。回执超出结果预算时属于可截短的列表。 */
   rows: Array<{ target: TargetRef; fields: FieldName[]; declared: { seq: Seq; actor: Actor } }>;
 }
 ```
@@ -1376,7 +1412,9 @@ interface PremiseAffected {
 ### 5.2 `resolve`
 
 ```ts
-interface ResolveParams extends WriteCommonParams, EvidenceOnOp {
+/** 证据只有 evidence 与 evidence_by_field：resolve 没有请求级证据，不收 evidence_refs。
+ *  evidence_by_field 的下标数的就是本次的 evidence 数组；处理触发写入时，它按字段指明那次写入的证据。 */
+interface ResolveParams extends WriteCommonParams, Omit<EvidenceOnOp, "evidence_refs"> {
   id: ItemId;
   decision: Decision;
   /** 读到的事项版本。没带时兜底；deletion 的 cancel 不用带。 */
@@ -1416,6 +1454,9 @@ interface ResolveResult extends CommonResult {
     premise_affected?: PremiseAffected;   // 撤回让前提的值变了或恢复了：新带上与撤掉标记的依赖行
   };
   replayed?: true;
+  /** 回执里省略的部分，取值与 WriteResult.omitted 同一集合：指的是触发的写入（write）的回执。
+   *  重放时按日志重建不出的部分，或回执超出外化面的结果预算时截短的部分。操作号、目标、新 ver、生成的事项 ID 不截。 */
+  omitted?: WriteResult["omitted"];
 }
 ```
 
@@ -1471,6 +1512,9 @@ interface SchemaDraftResult extends CommonResult {
   item?: { id: ItemId; item_ver: ItemVer };  // outcome: pending。本回执已给出事项的全部内容，算读到
   superseded_draft?: DraftId;                // 被这次提交取代的旧草稿
   replayed?: true;
+  /** 回执超出外化面的结果预算：草稿已提交，不报错，截短并列明——changes（逐项改动的后几条）；document（截掉了文档全文，文本提示用 catalog 的 schema 档带 draft 重读）。
+   *  草稿 ID、目标 sv、新 sv、生成的事项 ID 不截。 */
+  omitted?: Array<"changes" | "document">;
 }
 
 interface SchemaChange {
@@ -1602,23 +1646,35 @@ interface DeleteResult extends CommonResult {
     cancel_with: { op: "resolve"; id: ItemId; decision: "cancel" };
   };
   seq: Seq;
-  kind: "privacy" | "evidence";
+  kind: "privacy" | "evidence" /* @later */;
+  /** 从 totals 到 local_deferred：按确认时的状态重算的预览内容。预览里有的列表回执里都有，上限与 _total 同预览（rows 除外，见下）；
+   *  rows 另带新 ver，now_awaiting 另带生成的事项。其余是回执另给的。 */
   totals: { sources: number; rows: number; derived: number };
   rows: Array<DeletionRowResult & { ver?: Ver }>;    // 仍存在的行 / 实体带新 ver。最多 200 条，另给 rows_total
   rows_total: number;
   now_effective: DeletionPreviewResult["now_effective"];
+  now_effective_total: number;
   now_awaiting: Array<{ seq: Seq; target: TargetRef; item: { id: ItemId; item_ver: ItemVer }; impact: AwaitingImpact }>;
+  now_awaiting_total: number;
   superseded: DeletionPreviewResult["superseded"];
+  superseded_total: number;
+  group_keys_cleared?: DeletionPreviewResult["group_keys_cleared"];
+  dangling_refs: DeletionPreviewResult["dangling_refs"];
+  dangling_refs_total: number;
+  not_deleted: DeletionPreviewResult["not_deleted"];
+  orphaned_sources: DeletionPreviewResult["orphaned_sources"];
+  orphaned_sources_total: number;
+  premise_affected?: PremiseAffected;   // 删除让前提的值变了的依赖行：已带上 premise_changed（reason: deleted）
+  local_deferred?: true;
   derived: DerivedChange[];
   derived_total: number;
   states: DeletionState[];
   /** 删除后仍保留的元数据。 */
   retained_metadata: Array<"event_headers" | "row_existence" | "actors_and_intents">;
-  not_deleted: DeletionPreviewResult["not_deleted"];
-  orphaned_sources: DeletionPreviewResult["orphaned_sources"];
-  orphaned_sources_total: number;
-  premise_affected?: PremiseAffected;   // 删除让前提的值变了的依赖行：已带上 premise_changed（reason: deleted）
   replayed?: true;
+  /** 回执超出外化面的结果预算：删除已生效，不报错，截短并列明——rows（逐行结果的明细）、derived（派生值的后几条）、
+   *  lists（其余各列表的后几条）、premise_affected（premise_affected.rows）。rows 截短时每行只留目标与新 ver：删除 ID、操作号、目标、新 ver、生成的事项 ID 不截。 */
+  omitted?: Array<"rows" | "derived" | "lists" | "premise_affected">;
   reextract?: Array<{ target: TargetRef; fields: FieldName[]; job: JobId }>;   // @later
   cleared?: Array<{ target: TargetRef; fields: FieldName[] }>;                 // @later
 }
@@ -1641,7 +1697,13 @@ interface DeleteResult extends CommonResult {
     "basis": { "date": [21], "category": [21], "amount": [21] },
     "ver": "v42.0" }],
   "rows_total": 1,
-  "now_effective": [], "now_awaiting": [], "superseded": [],
+  "now_effective": [], "now_effective_total": 0,
+  "now_awaiting": [], "now_awaiting_total": 0,
+  "superseded": [], "superseded_total": 0,
+  "dangling_refs": [], "dangling_refs_total": 0,
+  "not_deleted": [{ "kind": "retained_metadata" }],
+  "orphaned_sources": [], "orphaned_sources_total": 0,
+  "local_deferred": true,
   "derived": [{ "table": "ledger.monthly_total", "key": { "month": "2026-11-01" }, "field": "total",
     "before": { "value": "89", "unit": "CNY" }, "after": { "value": "80", "unit": "CNY" } }],
   "derived_total": 1,
@@ -1650,9 +1712,7 @@ interface DeleteResult extends CommonResult {
       "due": "2026-11-12T09:12:30+08:00", "deferred_to_next_start": true },
     { "place": "backups", "state": "retained", "since": "2026-11-11T09:12:30+08:00", "managed": false }
   ],
-  "retained_metadata": ["event_headers", "row_existence", "actors_and_intents"],
-  "not_deleted": [{ "kind": "retained_metadata" }],
-  "orphaned_sources": [], "orphaned_sources_total": 0
+  "retained_metadata": ["event_headers", "row_existence", "actors_and_intents"]
 }
 ```
 
@@ -1668,12 +1728,15 @@ interface DeleteResult extends CommonResult {
 
 ```ts
 /** 与本次调用的某个部分有关的结构化提醒。op = ops 的下标。 */
+/** 兜底取得的 ver 出自哪里，两者恰好一个：某次读取，或本连接实例某次写入回执（那次写入的操作号）。 */
+type FallbackOrigin = { read: ReadId; from_write?: never } | { from_write: Seq; read?: never };
+
 type Warning =
   | { code: "unit_converted"; op: number; field: FieldName; from: Quantity; to: Quantity }
   | { code: "rounded"; op: number; field: FieldName; from: string; to: string; scale: number }          // 小数位数超过字段的 scale，已按 rounding 舍入
   | { code: "timezone_assumed"; op?: number; field?: FieldName; param?: string; timezone: string }   // 时刻没带时区，按 slot 时区
   | { code: "time_truncated"; op?: number; param: string; from: Instant; to: DateStr }               // 按日的表收到时刻，取了所在日
-  | { code: "ver_fallback"; op: number; ver: Ver; read: ReadId }
+  | ({ code: "ver_fallback"; op: number; ver: Ver } & FallbackOrigin)
   | { code: "sv_fallback"; sv: Sv; read: ReadId }
   | { code: "item_ver_fallback"; item_ver: ItemVer; read?: ReadId }
   | { code: "renamed"; op?: number; table?: TableName; from: string; to: string }                    // 用了旧名
@@ -1682,7 +1745,7 @@ type Warning =
   | { code: "overwrote_corroborated"; op: number; field: FieldName; valid: Interval; sources: SourceId[] }
   | { code: "pending_deletion_on_target"; op?: number; item: ItemId }                                // 目标有一项可撤回的删除
   | { code: "clock_behind_log"; behind_seconds: number }                                             // 入口时刻早于日志末端的记录时刻
-  | { code: "premise_ver_fallback"; op: number; premise: number; ver: Ver; read: ReadId }            // 前提没带 ver，用了最近一次读到的；premise = premises 的下标
+  | ({ code: "premise_ver_fallback"; op: number; premise: number; ver: Ver } & FallbackOrigin)   // 前提没带 ver，用了最近一次读到的；premise = premises 的下标
   | { code: "premise_already_changed"; op: number; premise: number; since: Seq }                     // 声明时前提已经变了：这一行一写下就带 premise_changed
   | { code: "evidence_not_stored"; evidence: number[] }                                              // write：请求没有产生事件（全部 op 都是按来源键的 unchanged / skipped），显式带的证据段也没有存下
   | { code: "external_key_skipped"; ops: number[] }                                                  // write：有按来源键的 op 被跳过（outcome: skipped）
@@ -1727,6 +1790,8 @@ interface Connection {
   via: "token" | "oauth";        // 本地令牌 / 静态令牌，或一次 OAuth 授权
   client?: string;               // via: oauth 时的客户端标识
   created_at: Instant; last_used_at?: Instant;
+  /** 与 Actor.state 一致：已吊销（revoked）或因导入而停用（disabled）时给；有效时不给。 */
+  state?: "revoked" | "disabled";
   revoked_at?: Instant;
 }
 
@@ -1735,13 +1800,13 @@ interface ConnectionsIssueResult extends Connection {
   token: string;
 }
 
-interface ConnectionsListParams { include_revoked?: boolean; limit?: number; cursor?: Cursor }
+interface ConnectionsListParams { include_revoked?: boolean; limit?: number; cursor?: Cursor }   // include_revoked: true 时已吊销与已停用的都列出；默认都不列
 interface ConnectionsListResult extends PageResult { connections: Connection[] }
 
 interface ConnectionsUpdateParams { id: ConnectionId; name: string }   // 只能改名
 interface ConnectionsRevokeParams { id: ConnectionId }
 type ConnectionsUpdateResult = Connection;
-type ConnectionsRevokeResult = Connection;                             // revoked_at 已填；重复吊销返回同一结果
+type ConnectionsRevokeResult = Connection;                             // state 是 revoked，revoked_at 已填；重复吊销返回同一结果
 ```
 
 例：
@@ -1761,7 +1826,7 @@ interface PolicyGetParams { slot: SlotName }
 
 interface SlotPolicy {
   slot: SlotName;
-  version: number;               // 策略版本：每次变更加 1
+  policy_version: number;        // 策略版本：每次变更加 1（与事件格式同名）
   /** 冲突期间的生效值规则。第一版只有 keep_current。 */
   effective_value_rule: "keep_current" | "by_rank" /* @later */;
   /** 来源级别的秩表。第一版只记不用。 */
@@ -1776,7 +1841,7 @@ interface SlotPolicy {
   set_by: Actor; set_at: Instant; seq: Seq;
 }
 
-interface PolicySetParams extends Omit<SlotPolicy, "version" | "set_by" | "set_at" | "seq"> {}   // @later
+interface PolicySetParams extends Omit<SlotPolicy, "policy_version" | "set_by" | "set_at" | "seq"> {}   // @later
 ```
 
 ### 8.3 `reads.list`
@@ -1785,7 +1850,7 @@ interface PolicySetParams extends Omit<SlotPolicy, "version" | "set_by" | "set_a
 interface ReadsListParams extends PageParams {
   connection?: ConnectionId | string;   // ID 或名字
   slot?: SlotName; table?: TableName;
-  task?: string;
+  of_task?: string;                     // 筛选：只列带这个任务标识的读取。HTTP 上是同名查询参数；不是 CommonParams.task
   since?: Instant; until?: Instant;
 }
 
@@ -1934,7 +1999,7 @@ type ValidationDetailCode =
 
 | `code` | `reason` | 其余附带字段 |
 |---|---|---|
-| `invalid_argument` | `missing` / `malformed` / `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target`（`undo` 的目标是插入或首次创建、从没生效过的候选或待确认写入，或 schema 切换的操作号）/ `event_table_valid_at` / `no_value_now`（状态类表上不带区间的纠错，"现在"那一点该字段无值）/ `no_time_table` / `not_state_table` / `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `pending_deletion_source` / `cross_slot`（预览的源数据跨 slot；前提指向别的 slot 里可见的表。靠 `param` 区分是哪一种）/ `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots`（签发时 `slots` 是空数组）/ `tenant_not_empty`（导入的目标租户不是空的）/ 按来源键写入：`insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / 写入的前提：`premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` | `param`；`candidates?: string[]`；`example?: object`（该模式或该参数完整的正确示例）；`duplicate_external_key` 时 `ops: number[]`（同键的两个 op 的下标）；`external_key_in_use` 时 `deletions?: ItemId[]`（键被冻结：冻结它的全部删除）或 `holder?: RowId`（占着它的未撤销的行）；`external_key_not_transferable`、`external_key_transferred` 时 `holder: RowId`（占着或现在持有这个键的行） |
+| `invalid_argument` | `missing` / `malformed` / `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target`（`undo` 的目标是插入或首次创建、从没生效过的候选或待确认写入，或 schema 切换的操作号）/ `event_table_valid_at` / `no_value_now`（状态类表上不带区间的纠错，"现在"那一点该字段无值）/ `no_time_table` / `not_state_table` / `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `derived_table`（`history` 的 `changes` 以派生表为目标）/ `pending_deletion_source` / `cross_slot`（预览的源数据跨 slot；前提指向别的 slot 里可见的表。靠 `param` 区分是哪一种）/ `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots`（签发时 `slots` 是空数组）/ `tenant_not_empty`（导入的目标租户不是空的）/ 按来源键写入：`insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / 写入的前提：`premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` | `param`；`candidates?: string[]`（`ambiguous_table` 的候选表名）；`candidate_required` 时 `candidate_choices: Array<{ index: number; seq: Seq; actor: Actor }>`（事项的各候选：下标、所在写入、写入者）；`example?: object`（该模式或该参数完整的正确示例）；`duplicate_external_key` 时 `ops: number[]`（同键的两个 op 的下标）；`external_key_in_use` 时 `deletions?: ItemId[]`（键被冻结：冻结它的全部删除）或 `holder?: RowId`（占着它的未撤销的行）；`external_key_not_transferable`、`external_key_transferred` 时 `holder: RowId`（占着或现在持有这个键的行） |
 | `unknown_table` / `unknown_field` | — | `name`、`nearest: string[]`（只取可见的名字，最多 3 个；别名与 `name` 按 `keymatch@1` 的折叠比较后相同的对象，其名字排在最前；其余按折叠之后的编辑距离从小到大，相同时按名字的 `C` 排序） |
 | `not_found` | `row` / `entity` / `item` / `source` / `draft` / `connection` / `read` / `slot` | `deletion?: ItemId`（被宽限期内的删除去掉时；不回显内容）；`sources?: Array<{id, state: "unknown" \| "pending_deletion" \| "removed", deletion?}>` |
 | `revoked` | — | `target: TargetRef`、`revoked_by: Seq`（用 `revert: {undo}` 恢复） |
@@ -1948,7 +2013,7 @@ type ValidationDetailCode =
 | `draft_outdated` | `base_version` / `migrating` / `table_written`（确认时，草稿所改结构的那张表已被写入）/ `migrate_failed`（确认时，`migrate` 对试跑之后的新写入求值失败） | `current_sv`；`migrating` 时 `migration: MigrationStatus` |
 | `field_unmatched` | — | `fields: Array<{table, id, name}>` |
 | `confirmation_mismatch` | `changed` / `restored` | `current: ItemDetail`（含新的 `item_ver`） |
-| `item_closed` | `resolved` / `superseded` / `expired` | `resolution?` / `superseded?`（形状同事项详情） |
+| `item_closed` | `resolved` / `superseded` / `expired` | `resolution?` / `superseded?`（形状同事项详情）；`expired`（`deletion` 的宽限期已过）：已执行给 `resolution`（执行一支），尚未执行给 `expires_at` |
 | `preview_outdated` | — | `preview: DeletionPreviewResult`（含新的 `dc_`） |
 | `unauthenticated` | `missing` / `invalid` / `revoked` / `expired` | — |
 | `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"`（`all_slots`：限定了 slot 范围的凭证新建 slot） |
@@ -1966,13 +2031,13 @@ type ValidationDetailCode =
 | 操作 | 除通用错误外可能返回 |
 |---|---|
 | 通用（所有操作） | `invalid_argument`、`unauthenticated`、`insufficient_scope`、`rate_limited`、`not_in_this_version`、`unavailable`、`internal` |
-| `catalog` | `unknown_table`、`not_found`（`slot`）、`too_large`（`result_budget`） |
+| `catalog` | `unknown_table`、`not_found`（`slot`；`draft`）、`too_large`（`result_budget`）、`handle_expired` |
 | `query` | `unknown_table`、`unknown_field`、`handle_expired` |
 | `sql` | `sql_rejected`（含 `unknown_name`：表不存在或不可见）、`sql_timeout`、`handle_expired` |
 | `history` | `unknown_table`、`unknown_field`、`not_found`（含 `as_of: {read}` 指向不可见的读取）、`read_first`、`handle_expired` |
 | `sources` | `not_found`（含 `slot`）、`handle_expired` |
-| `deletion_preview` | `not_found`、`handle_expired`、`preview_outdated` |
-| `pending` | `not_found`（含 `slot`）、`handle_expired` |
+| `deletion_preview` | `not_found`、`handle_expired`、`preview_outdated`、`too_large`（`result_budget`） |
+| `pending` | `not_found`（含 `slot`）、`handle_expired`、`too_large`（`result_budget`） |
 | `write` | `unknown_table`、`unknown_field`、`not_found`（含前提指向的行）、`revoked`、`derived_readonly`、`validation_failed`、`read_first`、`schema_incompatible`、`too_large`（含 `premise_entries`、`premise_fan_in`） |
 | `resolve` | `not_found`、`item_closed`、`confirmation_mismatch`、`read_first`、`draft_outdated`（`table_written` / `migrate_failed`：`schema_change` 的 `confirm`），以及触发的写入可能返回的 |
 | `schema_draft` | `validation_failed`、`draft_outdated`、`field_unmatched`、`too_large` |

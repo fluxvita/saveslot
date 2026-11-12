@@ -1097,7 +1097,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 | `type` | 事项类型（§6.4） |
 | `reason` | 成因码（§6.6） |
 | `table`、`row` / `entity` | 目标所在。`schema_change` 事项没有，改为 `draft` |
-| `unit` | 冲突单元：一个字段，或 schema 声明的一个字段组里的全部字段。目标是"存在"（撤销参与的冲突）时为 `"existence"` |
+| `unit` | 冲突单元，一律是数组：一个字段（`["f3"]`），或 schema 声明的一个字段组里的全部字段（各字段 ID）。目标是"存在"（撤销参与的冲突）时写 `["existence"]` |
 | `merge_base_op` | `conflict`：合并基的操作号（各候选所带 `ver` 中最早的那个版本） |
 | `origin_event` | 引出这个事项的 `write.base` 事件的 `seq` |
 | `draft` | `schema_change`：草稿 ID |
@@ -1489,6 +1489,8 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 | `dropped` | 只出现在删除事件的 `restated/<k>` 里：这一项经删除重放后不再是贡献（成了同值而当初没指证据）；回掉写回的项，其回退记录里的项全都不是贡献或范围为空；或它的区间并进了同一字段的另一项 | 否 | 否 |
 | `noop` | 与所见版本同值且没指证据：无操作。**不出现在 `write.base` 里**（无操作的字段没有项，只在 `write.head` 的 `ops/<i>/noop` 列出字段 ID）；这个取值只用于契约的回执 | 否 | 否 |
 
+保留值：`applied_by_rule`（后续：系统裁定让候选按规则生效）。
+
 ### 6.4 事项类型 `type`
 
 `conflict`、`awaiting_confirmation`、`flagged`、`schema_change`。`deletion` 事项不由 `item.*` 事件表达（§5.9）。保留值：`migration_diff`、`sync_rejected`。
@@ -1576,7 +1578,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 | `sources/…` 条目的 `kind` | `value`（来自源数据，或带 `carried` 的搬运）、`schema_const`（出自 schema 常量） |
 | `slot.policy_set` 的 `effective_value_rule` | `keep_current` |
 | `slot.policy_set` 的 `auto_apply` | 八个改动类取值，见 §5.4 |
-| 事项 `target.unit` 的固定值 | `"existence"`（目标是"存在"时；第一版在用，不是保留值） |
+| 事项 `target.unit` 的固定值 | `"existence"`（目标是"存在"时 `unit` 写 `["existence"]`；第一版在用，不是保留值） |
 | 编译后定义（§7）里的枚举 | 表的 `kind`、`time.type`、`granularity`、`rule.time_dependency`、`rule.scope.kind`、`rounding`、`ref.target`：取值列在 §7 的表里 |
 | 导出清单（§8）的 `pending_deletions` | 取值列在 §8 |
 
@@ -1825,7 +1827,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2","k":0}]}
 
 | 能力 | 将来新增什么 |
 |---|---|
-| 系统裁定（级别高的候选自动生效） | `write.base` 的 `cause` 加 `ruling`、`intent` 加 `applied_by_rule`；候选的 `cause` 加 `displaced_by_rule`；`trigger` 加 `ruling`；`slot.policy_set` 的 `effective_value_rule` 加新值。它要用到的输入第一版已经在记：`literal/*`、`stated_at`、`ctx` 的两个版本号、`merge_base_op`、`ver.basis`、`writer_had_read`、`seen_valid` |
+| 系统裁定（级别高的候选自动生效） | `write.base` 的 `cause` 加 `ruling`、`intent` 加 `applied_by_rule`、字段项的 `status` 加 `applied_by_rule`（按规则生效）；候选的 `cause` 加 `displaced_by_rule`；`trigger` 加 `ruling`；`slot.policy_set` 的 `effective_value_rule` 加 `by_rank`（按来源级别的秩裁定）。它要用到的输入第一版已经在记：`literal/*`、`stated_at`、`ctx` 的两个版本号、`merge_base_op`、`ver.basis`、`writer_had_read`、`seen_valid` |
 | 重判（让旧事项改用新规则或新策略） | 新事件类型 `judge.rejudged`（头事件，`trigger: "rejudge"`）：列出被重判的写入与事项、新的生效状态、新的两个版本号。内核停用某个旧规则版本之前，必须先对还用着它的写入做一次重判 |
 | 删除证据（只删原文，值留下） | `deletion.confirmed` 的 `kind` 加 `evidence`；`item.superseded` 的 `reason` 用上 `evidence_deleted`。位置列表只含源数据的原文块 |
 | 按行隐私删除 | `deletion.confirmed` 的 `target` 加可选的 `rows`；计算与事件形状不变 |
