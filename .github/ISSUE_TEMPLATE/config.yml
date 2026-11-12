@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security issue
+    url: https://github.com/fluxvita/saveslot/security/advisories/new
+    about: Report vulnerabilities privately; see SECURITY.md.
+  - name: Questions and design discussion
+    url: https://github.com/fluxvita/saveslot/discussions
+    about: Ask in Discussions rather than opening an issue.

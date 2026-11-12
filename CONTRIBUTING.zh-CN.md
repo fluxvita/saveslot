@@ -5,8 +5,9 @@
 ## 流程
 
 1. 从主分支拉一个分支。没有向仓库推分支的权限时，先 fork，在自己的 fork 里拉分支。
-2. 向 `main` 提合并请求（用了 fork 就从 fork 提）。CI 全绿，并有一人评审通过。
-3. squash 合并。
+2. 向 `main` 提合并请求（用了 fork 就从 fork 提），按模板填写。标题用 conventional commits 写法，它就是 squash 之后那个提交的标题。
+3. 合并的条件：CI 全绿，评审讨论全部解决，并由一位维护者批准。
+4. 由维护者 squash 合并。
 
 ## 约定
 
@@ -20,7 +21,7 @@
 
 ## 在哪讨论
 
-- 缺陷与任务：Issues。
+- 缺陷、任务与调研：Issues，选对应的模板。
 - 提问与设计讨论：Discussions。
 - 安全问题：见 [`SECURITY.zh-CN.md`](SECURITY.zh-CN.md)，不要公开提 Issue。
 
