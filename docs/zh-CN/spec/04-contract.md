@@ -160,7 +160,7 @@
 - **临时名 `as`**：新增时绑定到新分配的行，命中已有行时绑定到命中的那一行，同一请求里后面的 op 可以用它写 `ref`。这个 op 被跳过时临时名不绑定：后面用它写 `ref` 的按来源键 op 一并跳过（`skip_reason: "ref_skipped"`），普通 op 报 `validation_failed`（`ref_not_found`）。
 - **键字段不可改**：`set` 里出现键字段且与行上的值不同，报 `invalid_argument`（`key_field_changed`）。
 - **给没有来源键的行补一次键**：普通的 `update`，带 `row` 与 `ver`（可以同时带 `set` 改别的字段），另带 `external_key`；只有这种写法能同时给 `row` 与 `external_key`。这一行须未撤销、全部键字段都没有值；行已有键时，与已有的键相同是无操作，不同报 `key_field_changed`。键的状态决定结果：
-  - 有一项宽限期内的删除会去掉这个键在任何一行上的贡献（键被冻结）：`invalid_argument`（`external_key_in_use`，附删除 ID）。
+  - 有宽限期内的删除会去掉这个键在任何一行上的贡献（键被冻结）：`invalid_argument`（`external_key_in_use`，附冻结它的全部删除 ID）。
   - 被一行未撤销的行占着：`invalid_argument`（`external_key_in_use`，附占着它的行 ID）。要转，先撤销它。
   - 被一行已撤销、创建时就带着这个键的行占着：键转到这一行。
   - 被一行已撤销、键是补键得来的行占着：`invalid_argument`（`external_key_not_transferable`，附占着它的行 ID）。不连环转移。
@@ -398,6 +398,7 @@
 - `timeline` 列出这一行 / 实体上的全部操作，含没有生效的（候选、待确认）与由 `resolve`、删除、撤回触发的；条目的 `via` 说明来由。内容已按删除移除的字段带 `removed: true`。schema 切换时常量 `backfill` 补出的值也是一条：`intent` 是 `schema_switch`，`via` 是 `{schema: {sv}}`，`actor` 是 `system`，没有源数据；它不改行的 `ver`，所以当前 `ver` 里的操作号可以比这一条早。回退写回的字段可能带 `no_value` 或 `uncovered`（含义见 5.4）。声明了前提的写入带 `premises`（目标、字段、所见版本、现在是否已变）；重申与清除也各是一条，清除的 `premises` 是空数组。
 - `as_of` 接受操作号、时刻、`{read}`（任何连接实例的一次读取）或 `{task}`（**限本连接实例**的该任务，默认取它对这个目标的最后一次读取，`other_reads` 列出其余几次）；后两种按那次读取的记录时刻与业务时间条件还原。结果标明当时的 `sv`，值按它解释。`{read}` 指向一次不可见范围内的读取时报 `not_found`（`read`）。
 - `changes` 的 `since: "my_last_read"` = 本连接实例（带 `task` 时只认同一任务；用户会话时是这个会话）对这张表最近一次读取的位置；没读过报 `read_first`。
+- **`changes` 不以派生表为目标。** 读过派生值（如月度合计）的一方要知道读到的值是否已不成立：对派生规则所汇总的基础表查 `changes`，`since` 取那次读取结果的操作号——不用 `my_last_read`：只读过合计的一方对基础表没有读取记录，会得到 `read_first`；或者直接重读合计。第一版的影响查询不覆盖对派生值的读取，这是读方唯一的办法。
 
 ### `sources`
 
@@ -414,7 +415,8 @@
 - 结果要写明哪些内容由 data-model「删除 · 预览与回执要写明的内容」定义。**原本未生效、将因删除生效的写入单列**（`now_effective`）；冲突将消失但仍属高影响、将转为待确认的写入另列（`now_awaiting`）。`not_deleted` 如实列出不会删除的：外部文件、schema 里的文字、保留的元数据、连接实例的名称（`connection_names`：它不是由源数据得出的，不在级联范围内）、没有任何源数据的操作自报的任务标识与显式幂等键（`operation_labels`）。
 - **删除后仍保留、但不再支撑任何数据的源数据**（`orphaned_sources`）：只列这次删除之后由"支撑了数据"变成"什么都不支撑"的源数据 ID——典型的是同一次写入里的另一段证据、后来对同一件事的转述。它们不在这次删除的范围内，照常保留；列出来供调用方决定是否一并删除。
 - **以将被改动的值为前提的行**（`premise_affected`，预告）：删除会让它们带上 `premise_changed`（原因 `deleted`），它们自己不会被删除。删除不沿前提传播：依赖行的值来源是它自己的证据。
-- **来源键**：受影响的行有来源键时，`warnings` 给 `external_key_resync`——物理删除之后 saveslot 不记得这个键，连接器再次同步同一条记录时它会作为新的一行重新出现；要彻底忘掉，先在来源系统里删除，或让连接器停止同步它。行的来源全部被删时，之后的同步也不会补回当时被跳过的记录（被跳过的 op 不进日志，预览不逐条列出）。行保留下来、但会失去来源键的，逐行结果带 `external_key_removed`。宽限期内被这项删除去掉的键仍然占位：命中它的按来源键 op 被跳过（`pending_deletion`）。
+- **来源键**：受影响的行有来源键时，`warnings` 给 `external_key_resync`——物理删除之后 saveslot 不记得这个键，连接器再次同步同一条记录时它会作为新的一行重新出现；要彻底忘掉，先在来源系统里删除，或让连接器停止同步它。行的来源全部被删时，之后的同步也不会补回当时被跳过的记录（被跳过的 op 不进日志，预览不逐条列出）。一项删除可以让多个键同时冻结；同一个键也可以被几项删除同时冻结，要等这几项都撤回或执行之后才按删除后的状态重算持有者，撤回其中一项不解冻。行保留下来、但会失去来源键的，逐行结果带 `external_key_removed`。宽限期内被这项删除去掉的键仍然占位：命中它的按来源键 op 被跳过（`pending_deletion`）。
+- 逐行结果列出值或给出它的贡献与删除前不同的行：值没变、只换了给出者的行，`result` 是 `sources_changed`（例：被删的写入给出的值，另有一次佐证给出同一个值）。
 - 逐行结果里 `fields_reverted` 的 `reverted_to` 写明每个字段回到谁的值：`from_seq`（回到那次写入的值）与 `schema_const: {sv}`（回到那一版 schema 切换时常量 `backfill` 的补值，没有写入可指）二者必有其一。
 - **只有 `rows[]` 分页**；其余列表各自最多 50 条，另给总数。`totals` 总是全量；`dc_` 绑定的是整份预览，不随翻页变。
 - **删除 ID 在预览时预分配**，绑定在 `dc_` 里。认出"这个 `dc_` 已经执行过"靠的是按这个删除 ID 查删除表，不靠内容哈希。
@@ -425,7 +427,7 @@
 
 - 给 `id` 看详情；不给则列出。`status` 默认 `open`，按挂起时长倒序。只列可见 slot 的事项；`slot` 过滤指向不存在或不可见的 slot 报 `not_found`（`slot`），不可见的事项 ID 报 `not_found`。
 - **事项详情给出事项的全部内容**：目标、当前值、提议或候选、影响、可用的处理方式。影响在事项版本的绑定范围内（data-model「待处理事项」）。查看详情算读到了该事项版本。
-- **已关闭的事项按 ID 一直可查**：已解决的给 `resolution`，已被取代的给 `superseded`。`deletion` 事项到期后仍可查 `states[]`；到期后尚未物理删除的带 `overdue`。受影响的行曾有来源键时，`deletion` 事项到期关闭后的详情在 `warnings` 里再给一次 `external_key_resync`：那之后的第一次同步就会把记录写回来，而此时不会再有别的提示。
+- **已关闭的事项按 ID 一直可查**：已解决的给 `resolution`，已被取代的给 `superseded`。`flagged` 事项被比中的行被撤销或改动时，取代（或刷新）的原因是 `matched_changed`：它不看写入方读没读过事项。`deletion` 事项到期后仍可查 `states[]`；到期后尚未物理删除的带 `overdue`。受影响的行曾有来源键时，`deletion` 事项到期关闭后的详情在 `warnings` 里再给一次 `external_key_resync`：那之后的第一次同步就会把记录写回来，而此时不会再有别的提示。
 - `schema_change` 事项确认之后、迁移进行中或失败时，详情带 `migration`（目标版本、状态、进度）：调用方凭事项 ID 查迁移进行到哪。
 
 ### `resolve`
@@ -435,7 +437,7 @@
 1. 事项不存在 → `not_found`。
 2. 事项已关闭：已解决、处理方式相同 → 返回原结果，`replayed: true`；已解决、处理方式不同，或已被取代 → `item_closed`（附已有结果，或取代的原因）。所以过了很久用旧 `item_ver` 重发同一处理方式，也按重放返回。
 3. 按第 6 节核对绑定的内容；对不上 → `confirmation_mismatch`（附当前内容与新的 `item_ver`）。
-4. `schema_change` 的 `confirm`：在同一个事务里重新判断草稿里只对从未被写入的表放开的改动（`schema_draft` 一节），这张表已被写入时报 `draft_outdated`（`table_written`）；草稿带 `migrate` 时，对试跑之后的新写入（迁移期间带旧 `sv` 的写入）重新求值，有失败的报 `draft_outdated`（`migrate_failed`）。两种都不产生任何事件，事项保持未决；调用方 `reject` 这份草稿，或提交新草稿取代它。
+4. `schema_change` 的 `confirm`：在同一个事务里重新判断。草稿里凡按"从未被写入"编译的改动（只对从未被写入的表放开的结构改动，以及归入 `restructure_unused` 的各项，见 `schema_draft` 一节），所在的表在确认时已被写入，一律报 `draft_outdated`（`table_written`）；草稿带 `migrate` 时，对试跑之后的新写入（迁移期间带旧 `sv` 的写入）重新求值，有失败的报 `draft_outdated`（`migrate_failed`）。两种都不产生任何事件，事项保持未决；调用方 `reject` 这份草稿，或提交新草稿取代它。
 
 - `take_candidate` 在事项有多个候选时必须给 `candidate`（详情里候选的 `index`；下标在事项生命周期内不复用），否则 `invalid_argument`（`candidate_required`，附候选）。
 - `evidence` 与 `note`：`evidence` 每段存为一条源数据；带了 `note`、或处理会触发写入而没带证据时，解决请求本身（含 `note`）另存一条 `api_call`。**不触发写入的处理方式（`keep_effective`、`reject`、`keep`、schema 的确认与拒绝）同样如此**，所以 `note` 总有地方落、总能被隐私删除清掉。它们只是操作来源；事项详情的 `resolution.note` 从这条源数据回显，源数据被删后不再回显。既没带证据也没带 `note`、又不触发写入的解决不产生源数据。
@@ -458,7 +460,7 @@
   - 这张表最近 30 天也没有提交者以外的连接实例按名字读写过时，这些改动，连同同一张表上的 `drop_field`、`change_type`、`change_dimension`、`change_unit`、`change_precision`、`tighten_constraint`，`add_required_field`、`change_time_field`，都归入 `restructure_unused`，自动生效：没有值可丢，`class` 记 `metadata`，`destructive` 是 `false`，`migrate` 不必给。新增必填字段与可选改必填仍须给常量形式的 `backfill`。有别人读写过时要确认，影响的 `consumers` 列出他们。
   - 依赖这张表的派生规则在同一次编译里按新定义重新编译；规则的输出没变的不另列改动。
   - 经 `restructure_unused` 生效的任何改动之后，带旧 `sv` 写这张表的写入一律被拒：`schema_incompatible`，`changed_fields` 给一项 `{field: "*", change: <改动码>}`，`"*"` 表示整张表。
-  - 草稿等确认期间这张表被写入了：确认时报 `draft_outdated`（`table_written`，见 `resolve`）。
+  - 草稿等确认期间这张表被写入了：草稿里凡按"从未被写入"编译的改动都不再成立，确认时一律报 `draft_outdated`（`table_written`，见 `resolve`）。
 - **第一版不支持的键或改动**：`reextract`、`extends`、`compatibility`、`derived` 改 `base`；在写入过的表上改时间类型、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 互转与改目标、换一组来源键（`change_external_key`）、改来源键字段的类型或收紧它的约束。写入过的表上仍可以加来源键（键字段须是同一份草稿新增的字段）或去掉它，都要确认。草稿里出现时整份报 `not_in_this_version`，`param` 指到那个键，不产生任何事件；因为表已被写入而不支持的，`reason` 是 `table_written`。
 - **新建 slot** 要求凭证的 slot 范围是"全部"：限定了 slot 范围的凭证报 `insufficient_scope`（`required_scope: "all_slots"`），不论草稿里的 slot 名是否与某个不可见的 slot 重名。凭证同时没有 `saveslot.schema` 时先报缺 scope（`required_scope: "saveslot.schema"`）：先查动作，再查范围。
 - 编译失败报 `validation_failed`（`schema`），`details[]` 逐条指出文档里的位置。`base_version` 不是当前版本、或迁移进行中，报 `draft_outdated`。有已有字段没匹配到、也没列入删除，报 `field_unmatched`。

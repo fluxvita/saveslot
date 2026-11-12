@@ -830,7 +830,8 @@ interface DeletionPreviewResult extends CommonResult, PageResult {   // 分页�
 
 interface DeletionRowResult {
   target: TargetRef;
-  result: "deleted" | "kept_fields_cleared" | "fields_reverted" | "resegmented";
+  /** sources_changed：值没变，只换了给出者（例：被删的写入给出的值，另有一次佐证或后来的写入给出同一个值）。 */
+  result: "deleted" | "kept_fields_cleared" | "fields_reverted" | "resegmented" | "sources_changed";
   /** 删除后的样子。deleted 时不给。事件类表给 values；状态类表给 spans。 */
   after?: { values?: Values; spans?: Span[] };
   cleared?: FieldName[];             // kept_fields_cleared：变空的字段
@@ -946,6 +947,7 @@ type SupersededReason =
   | "draft_replaced"           // schema_change：同一 slot 提交了新草稿
   | "deleted"                  // 目标、候选的全部值来源或成因被隐私删除
   | "deletion_cancelled"       // 因删除而生成的待确认事项，在删除撤回后不再成立
+  | "matched_changed"          // flagged：被比中的行被撤销或改动（不看写入方读没读过事项）
   | "evidence_deleted"         // @later
   | "migration_failed";        // @later
 
@@ -1182,7 +1184,7 @@ interface OpResult {
    *  ref_skipped = 用了一个被跳过的 op 的临时名（附 ref_op）。这几项写入时从当前状态取，不进事件。 */
   skip_reason?: "revoked" | "pending_deletion" | "ref_skipped";
   revoked_by?: Seq;
-  deletion?: ItemId;
+  deletion?: ItemId;             // pending_deletion：冻结这个键的删除；几项同时冻结时给最早确认的那一项
   ref_op?: number;               // ref_skipped：临时名所属的那个 op 的下标
   created_entity?: true;
   /** created_entity 时：该表已有的实体键，最多 10 个。相近的键在前，其余按最近写入。 */
@@ -1932,7 +1934,7 @@ type ValidationDetailCode =
 
 | `code` | `reason` | 其余附带字段 |
 |---|---|---|
-| `invalid_argument` | `missing` / `malformed` / `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target`（`undo` 的目标是插入或首次创建、从没生效过的候选或待确认写入，或 schema 切换的操作号）/ `event_table_valid_at` / `no_value_now`（状态类表上不带区间的纠错，"现在"那一点该字段无值）/ `no_time_table` / `not_state_table` / `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `pending_deletion_source` / `cross_slot`（预览的源数据跨 slot；前提指向别的 slot 里可见的表。靠 `param` 区分是哪一种）/ `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots`（签发时 `slots` 是空数组）/ `tenant_not_empty`（导入的目标租户不是空的）/ 按来源键写入：`insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / 写入的前提：`premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` | `param`；`candidates?: string[]`；`example?: object`（该模式或该参数完整的正确示例）；`duplicate_external_key` 时 `ops: number[]`（同键的两个 op 的下标）；`external_key_in_use` 时 `deletion?: ItemId`（键被冻结）或 `holder?: RowId`（占着它的未撤销的行）；`external_key_not_transferable`、`external_key_transferred` 时 `holder: RowId`（占着或现在持有这个键的行） |
+| `invalid_argument` | `missing` / `malformed` / `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target`（`undo` 的目标是插入或首次创建、从没生效过的候选或待确认写入，或 schema 切换的操作号）/ `event_table_valid_at` / `no_value_now`（状态类表上不带区间的纠错，"现在"那一点该字段无值）/ `no_time_table` / `not_state_table` / `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `pending_deletion_source` / `cross_slot`（预览的源数据跨 slot；前提指向别的 slot 里可见的表。靠 `param` 区分是哪一种）/ `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots`（签发时 `slots` 是空数组）/ `tenant_not_empty`（导入的目标租户不是空的）/ 按来源键写入：`insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / 写入的前提：`premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` | `param`；`candidates?: string[]`；`example?: object`（该模式或该参数完整的正确示例）；`duplicate_external_key` 时 `ops: number[]`（同键的两个 op 的下标）；`external_key_in_use` 时 `deletions?: ItemId[]`（键被冻结：冻结它的全部删除）或 `holder?: RowId`（占着它的未撤销的行）；`external_key_not_transferable`、`external_key_transferred` 时 `holder: RowId`（占着或现在持有这个键的行） |
 | `unknown_table` / `unknown_field` | — | `name`、`nearest: string[]`（只取可见的名字，最多 3 个；别名与 `name` 按 `keymatch@1` 的折叠比较后相同的对象，其名字排在最前；其余按折叠之后的编辑距离从小到大，相同时按名字的 `C` 排序） |
 | `not_found` | `row` / `entity` / `item` / `source` / `draft` / `connection` / `read` / `slot` | `deletion?: ItemId`（被宽限期内的删除去掉时；不回显内容）；`sources?: Array<{id, state: "unknown" \| "pending_deletion" \| "removed", deletion?}>` |
 | `revoked` | — | `target: TargetRef`、`revoked_by: Seq`（用 `revert: {undo}` 恢复） |

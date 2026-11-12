@@ -155,7 +155,7 @@ FROM budgets FOR VALID_TIME AS OF saveslot_today() AS b
 **单位**：
 
 - 加减、比较、`sum` / `avg` / `min` / `max`、`COALESCE` / `CASE` / `GREATEST` / `LEAST` 的各分支：带单位的操作数必须是同一个单位代码。同量纲而单位不同（`km` 与 `mi`）也不收：第一版 SQL 里没有单位换算函数。`sql` 报 `sql_rejected`（`type`），派生规则报 `unit_inference_failed`。
-- 与字面量或参数比较、加减：字面量与参数按这一侧的单位理解（契约 `SqlParams`）。与没有单位的字段（`integer`、`decimal`）加减或比较不收。
+- 与字面量或参数比较、加减：字面量与参数按这一侧的单位理解（契约 `SqlParams`）。`COALESCE` / `CASE` / `GREATEST` / `LEAST` 的分支里的字面量同样按带单位的那一支理解，如 `COALESCE(SUM(amount), 0)` 的 `0` 是 `amount` 的单位下的 0；各分支都是字面量时没有单位。与没有单位的字段（`integer`、`decimal`）加减或比较不收。
 - 乘除：带单位的量乘或除以没有单位的数，单位不变；同一单位的两个量相除得无量纲 `1`；其余两个带单位的量相乘、相除，派生规则要求把该输出字段声明为 `decimal`（否则 `unit_inference_failed`），`sql` 的结果列是 `decimal`、不带单位（「单位词表」）。
 - `count` 的结果是 `integer`。派生字段的精度推断见「精度与舍入」。
 
