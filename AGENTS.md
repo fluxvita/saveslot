@@ -42,7 +42,7 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 
 - Conventional Commits, scoped by package or doc area: `feat(kernel): …`, `fix(cli): …`, `docs(spec): …`.
 - Sign off every commit (`git commit -s`).
-- Changes reach `main` only through merge requests; `main` does not accept direct pushes.
+- Follow the maintainers' current workflow for reaching `main`. Once merge requests are required, changes reach `main` only through them.
 - Split unrelated changes into separate commits. Commit only when asked.
 
 ## Tests
