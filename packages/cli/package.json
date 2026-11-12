@@ -1,0 +1,24 @@
+{
+  "name": "@fluxvita/saveslot-cli",
+  "version": "0.0.0",
+  "description": "The saveslot command line client.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@fluxvita/saveslot-client": "workspace:*"
+  },
+  "private": true
+}

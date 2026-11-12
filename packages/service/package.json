@@ -1,0 +1,25 @@
+{
+  "name": "@fluxvita/saveslot-service",
+  "version": "0.0.0",
+  "description": "The saveslot service layer: identity, permissions, idempotency waiting, handles, rate limits, control plane storage.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@fluxvita/saveslot-kernel": "workspace:*",
+    "@fluxvita/saveslot-contract": "workspace:*"
+  },
+  "private": true
+}

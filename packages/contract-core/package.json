@@ -1,0 +1,22 @@
+{
+  "name": "@fluxvita/saveslot-contract-core",
+  "version": "0.0.0",
+  "description": "Data shapes shared by the kernel and the contract: value encoding, evidence, flags, intents, domain errors, event format types.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {},
+  "private": true
+}

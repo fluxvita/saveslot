@@ -1,0 +1,16 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/contract-core" },
+    { "path": "packages/kernel" },
+    { "path": "packages/store-pglite" },
+    { "path": "packages/store-postgres" },
+    { "path": "packages/contract" },
+    { "path": "packages/service" },
+    { "path": "packages/server" },
+    { "path": "packages/daemon" },
+    { "path": "packages/client" },
+    { "path": "packages/cli" },
+    { "path": "packages/saveslot" }
+  ]
+}

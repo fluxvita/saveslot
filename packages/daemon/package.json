@@ -1,0 +1,27 @@
+{
+  "name": "@fluxvita/saveslot-daemon",
+  "version": "0.0.0",
+  "description": "Process entry for the saveslot service: backend selection, configuration, background task scheduler.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@fluxvita/saveslot-server": "workspace:*",
+    "@fluxvita/saveslot-service": "workspace:*",
+    "@fluxvita/saveslot-store-pglite": "workspace:*",
+    "@fluxvita/saveslot-store-postgres": "workspace:*"
+  },
+  "private": true
+}

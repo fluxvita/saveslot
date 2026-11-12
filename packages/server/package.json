@@ -1,0 +1,25 @@
+{
+  "name": "@fluxvita/saveslot-server",
+  "version": "0.0.0",
+  "description": "HTTP and MCP adapters for saveslot.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@fluxvita/saveslot-service": "workspace:*",
+    "@fluxvita/saveslot-contract": "workspace:*"
+  },
+  "private": true
+}
