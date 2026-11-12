@@ -8,14 +8,23 @@
 // (Linux: path decoded by strace -y) or, on macOS, any fsync / F_FULLFSYNC line falls in its window.
 // The macOS count is an upper bound to be read together with the raw lines it prints: fs_usage does
 // not always name the file.
+//
+// Refuses (exit 1, no counts) when the trace holds no line from the writer: on Linux no line carries
+// the pid from the writer's "ready" line, on macOS no line comes from a `node` process. A trace of
+// the wrong process would otherwise read as "0 sync calls", which looks like a valid result.
 
 import { readFileSync } from "node:fs";
 import { arg } from "../lib/util.ts";
 
 const tracer = arg("tracer");
 const lines = readFileSync(arg("trace"), "utf8").split("\n");
-const commits = readFileSync(arg("writer"), "utf8")
-  .split("\n")
+const writerLines = readFileSync(arg("writer"), "utf8").split("\n");
+const ready = writerLines
+  .filter((l) => l.includes('"ready"'))
+  .map((l) => JSON.parse(l) as { pid: number })[0];
+if (!ready) fail("the writer output has no ready line");
+const writerPid = ready.pid;
+const commits = writerLines
   .filter((l) => l.includes('"commitStart"'))
   .map(
     (l) =>
@@ -30,11 +39,20 @@ interface Ev {
 }
 const events: Ev[] = [];
 
+function fail(message: string): never {
+  console.error(`step1-analyze: ${message}; no result reported`);
+  process.exit(1);
+}
+
+// Lines the tracer attributes to the writer process.
+let writerTraceLines = 0;
+
 if (tracer === "linux-strace") {
   // "<pid> 1731400000.123456 fsync(12</path/pg_wal/000000010000000000000001>) = 0"
   const re =
     /^(?:\d+\s+)?(\d+\.\d+)\s+(fsync|fdatasync|sync_file_range|msync|fcntl|openat|open)\((.*)$/;
   for (const line of lines) {
+    if (new RegExp(`^${writerPid}\\s`).test(line)) writerTraceLines++;
     const m = re.exec(line);
     if (!m) continue;
     const [, ts, call, rest] = m as unknown as [string, string, string, string];
@@ -51,6 +69,9 @@ if (tracer === "linux-strace") {
   // "13:02:11.123456  fsync  F=12  0.004000  node.123" (format varies by release)
   const day = commits[0] ? new Date(commits[0].commitStart) : new Date();
   for (const line of lines) {
+    // fs_usage ends each line with "<process name>.<thread id>".
+    if (!/\snode\.\d+\s*$/.test(line)) continue;
+    writerTraceLines++;
     const m = /^(\d\d):(\d\d):(\d\d\.\d+)\s+(\S+)(.*)$/.exec(line);
     if (!m) continue;
     const [, hh, mm, ss, call, rest] = m as unknown as [
@@ -80,6 +101,13 @@ if (tracer === "linux-strace") {
   throw new Error(`unknown tracer ${tracer}`);
 }
 
+if (commits.length === 0) fail("the writer output has no commits");
+if (writerTraceLines === 0) {
+  fail(
+    `the trace has no line from the writer (pid ${writerPid}); it traced another process or nothing`,
+  );
+}
+
 const perCommit = commits.map((c) => {
   const inWindow = events.filter((e) => e.t >= c.commitStart && e.t <= c.committedAt);
   return {
@@ -96,6 +124,8 @@ console.log(
   JSON.stringify(
     {
       tracer,
+      writerPid,
+      writerTraceLines,
       commits: commits.length,
       commitsWithAnySyncCall: perCommit.filter((c) => c.syncCalls > 0).length,
       commitsWithWalSyncCall: perCommit.filter((c) => c.walSyncCalls > 0).length,
