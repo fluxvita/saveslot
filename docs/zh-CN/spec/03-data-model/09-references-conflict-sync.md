@@ -30,13 +30,13 @@
 - **写时抽取，优先由调用方 Agent 完成**：schema 由 saveslot 维护，但"按 schema 把一句话变成结构化数据"
   这一步的推理，用调用方 Agent 自己背后的模型来做（它本来就在跑模型），saveslot 不必另调一次；
   而且它最清楚用户此刻的意图。它经 MCP 读取 schema、按 schema 提交结构化写入并附上源数据，saveslot 只做确定性校验。
-- **没有 Agent 的调用方**（脚本、程序）经 API 直接写结构化数据；只能给出原始数据时，交给 saveslot 的 worker 抽取（worker 不进第一版，见 positioning「后续规划」）。
+- **没有 Agent 的调用方**（脚本、程序）经 API 直接写结构化数据；只能给出原始数据时，交给调用模型的后台执行方（worker）抽取（worker 不进第一版，见 positioning「后续规划」）。
 - **模型的输出记成日志事件**：每次抽取的结果（及它引用的源数据、用的 schema 版本）作为事件记入日志。
   重放时用记下的结果，不重新调用模型——类似 MySQL 的 row-based binlog 记录结果，
   而不是 statement-based 那样重新执行含非确定函数的语句。只有受影响的部分才需要重新抽取。
-- **没有 Agent 在场的工作，由 saveslot 自己的模型 worker 完成**（不进第一版）：外部来源同步、定时任务、
+- **没有 Agent 在场的工作，由调用模型的后台执行方（worker）完成**（不进第一版）：外部来源同步、定时任务、
   schema 变更后的批量重算、从积累的源数据起草新 schema。
-- saveslot 的 worker 也是一个有身份的客户端，写入的来源级别是"Agent 推断"，同样走权限和冲突规则。
+- worker 也是一个有身份的客户端，写入的来源级别是"Agent 推断"，同样走权限和冲突规则。
 - 模型接入：**用户自带 API Key**。没配 Key 时 saveslot 仍可运行，只是没有后台抽取和重算。
 
 ## 语义：动态 schema

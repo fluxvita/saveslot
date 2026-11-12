@@ -6,11 +6,11 @@ English · [简体中文](README.zh-CN.md)
 
 - **Time is first-class.** A database stores the present; agent memory stores what was said. saveslot stores the timeline of a thing: what it is now, how it got there, and the evidence behind every step.
 - **Agents interpret, saveslot enforces.** Understanding intent and turning conversation into structured writes is the agent's job. saveslot only does deterministic checking, recording and execution; its core path does not depend on a model.
-- **One append-only log is the single source of truth.** Every piece of state is either a log event or derived from the log deterministically, so an export is the log, and replaying it on any backend yields the same state.
+- **All state comes from one append-only log.** Every piece of state is either a log event or derived from the log deterministically, so an export is the log, and replaying it on any backend yields the same state.
 
 ## Status
 
-saveslot is in the **design phase**. There is no code yet; the first implementation milestone (P0) is next.
+saveslot is in **early development**. The design is specified and the first implementation milestone (P0: toolchain, event format types, storage ports) is under way. Nothing is usable yet.
 
 The design documents are currently written in **Simplified Chinese** under [`docs/zh-CN/`](docs/zh-CN/). An English edition will be added under `docs/` before the project is announced.
 
@@ -27,4 +27,4 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
-[Apache-2.0](LICENSE).
+[Apache-2.0](LICENSE). The name and logo are covered by the [trademark policy](TRADEMARKS.md).

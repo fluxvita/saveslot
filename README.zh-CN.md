@@ -91,5 +91,5 @@ saveslot 是给所有 Agent 用的数据底座：跟踪会随时间演变的事�
 ## 仓库与许可证
 
 - 仓库：`fluxvita/saveslot`；网站：`saveslot.ai`；npm 包：`@fluxvita/saveslot`。
-- 许可证：[Apache-2.0](LICENSE)，代码与文档相同。
+- 许可证：[Apache-2.0](LICENSE)，代码与文档相同。名字与标识的使用见[商标政策](TRADEMARKS.zh-CN.md)。
 - 参与贡献：[`CONTRIBUTING.md`](CONTRIBUTING.zh-CN.md) 与 [`docs/zh-CN/guide/12-contributing.md`](docs/zh-CN/guide/12-contributing.md)。
