@@ -801,7 +801,7 @@ const _negatives = () => {
   const validWithoutDeps: ResultFieldBlock = { ...resultFieldEvent, valid: from1120 };
   // @ts-expect-error `deps` without `valid`
   const depsWithoutValid: ResultFieldBlock = { ...resultFieldEvent, deps: [] };
-  // R180: `description` is required on tables and fields; `required` appears only as `true`.
+  // §7: `description` is required on tables and fields; `required` appears only as `true`.
   // @ts-expect-error a compiled table has a `description`
   const tableNoDescription: CompiledSchema["tables"][number] = {
     id: "t9",
@@ -831,7 +831,7 @@ const _negatives = () => {
     // @ts-expect-error `required` is written only when `true`
     fields: [{ id: "f1", name: "body", type: "text", description: "Body", required: false }],
   };
-  // R174: a raw value keeps the caller's text, so a non-canonical decimal is a valid set block.
+  // §1.3: a raw value keeps the caller's text, so a non-canonical decimal is a valid set block.
   const rawSet: EventOf<"write.head">["blocks"]["ops/0/set/f3"] = { value: "1.0", unit: "CNY" };
   // A5: blocks every event of the type has must be present in an export line.
   const lineWithoutTarget: ExportEventLineOf<"write.base"> = {

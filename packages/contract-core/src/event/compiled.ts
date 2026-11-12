@@ -40,7 +40,7 @@ export interface ConstBackfill {
   readonly const: FieldValue;
 }
 
-/** Keys every field has; `description` is required on every field (§7, R180). */
+/** Keys every field has; `description` is required on every field (§7). */
 interface FieldBase<T extends FieldType> {
   readonly id: FieldId;
   readonly name: string;
@@ -51,7 +51,7 @@ interface FieldBase<T extends FieldType> {
 
 /** Keys only base table fields have. */
 interface BaseFieldExtras {
-  /** Present only when `true`; absent = optional (§7, R180). */
+  /** Present only when `true`; absent = optional (§7). */
   readonly required?: true;
   readonly migrate?: SqlExpression;
   readonly backfill?: SqlExpression | ConstBackfill;
@@ -111,7 +111,7 @@ export type CompiledTime =
 interface TableBase {
   readonly id: TableId;
   readonly name: string;
-  /** Required on every table (§7, R180). */
+  /** Required on every table (§7). */
   readonly description: string;
   readonly aliases?: readonly string[];
   readonly physical: CompiledPhysical;

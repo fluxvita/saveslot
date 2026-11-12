@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isCanonicalDecimal, isCanonicalInteger, isRawDecimal } from "./values.ts";
 
-// §1.2 / §1.3 (R174): canonical decimals for values saveslot computes or converts; raw decimals
+// §1.2 / §1.3: canonical decimals for values saveslot computes or converts; raw decimals
 // for caller-given values, kept verbatim. A template literal type cannot tell "1.0" from "1", so
 // these runtime predicates are where the canonical form is enforced.
 
@@ -14,7 +14,7 @@ describe("decimal predicates", () => {
     },
   );
 
-  it.each(["1.0", "5.50", "-0", "-0.0", "0.0", "01", "00", "-01.5", "1e3", "1E-2", "1.5e+2"])(
+  it.each(["1.0", "5.50", "-0", "-0.0", "0.0", "1e3", "1E-2", "1.5e+2", "0e0", "-0.10E5"])(
     "%j is raw but not canonical",
     (s) => {
       expect(isCanonicalDecimal(s)).toBe(false);
@@ -22,13 +22,30 @@ describe("decimal predicates", () => {
     },
   );
 
-  it.each(["", "+1", ".5", "1.", "-", "1,5", " 1", "1 ", "NaN", "Infinity", "0x10", "1_000", "５"])(
-    "%j is neither",
-    (s) => {
-      expect(isCanonicalDecimal(s)).toBe(false);
-      expect(isRawDecimal(s)).toBe(false);
-    },
-  );
+  it.each([
+    "",
+    "+1",
+    ".5",
+    "1.",
+    "-",
+    "1,5",
+    " 1",
+    "1 ",
+    "NaN",
+    "Infinity",
+    "0x10",
+    "1_000",
+    "５",
+    "01",
+    "00",
+    "-01.5",
+    "1e",
+    "1e+",
+    "1.e3",
+  ])("%j is neither", (s) => {
+    expect(isCanonicalDecimal(s)).toBe(false);
+    expect(isRawDecimal(s)).toBe(false);
+  });
 
   it("canonical integers have no fraction, no leading zeros and no -0", () => {
     for (const s of ["0", "3", "-3", "120"]) expect(isCanonicalInteger(s), s).toBe(true);

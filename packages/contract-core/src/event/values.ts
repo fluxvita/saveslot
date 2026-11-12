@@ -164,7 +164,7 @@ const SHORT_NUMBER = "[1-9][0-9]*";
 
 /**
  * Full syntax of each identifier kind (01-objects.md「标识的写法」). Short IDs (`t<n>`, `f<n>`,
- * `r<n>`): `n` is a decimal integer from 1 without leading zeros (R173).
+ * `r<n>`): `n` is a decimal integer from 1 without leading zeros (01-objects 「标识的写法」).
  */
 export const ID_PATTERNS = {
   tenant: new RegExp(`^tn_${CROCKFORD}{26}$`),
@@ -194,14 +194,14 @@ export function isId(kind: IdKind, s: string): boolean {
 const INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HASH_RE = /^[0-9a-f]{64}$/;
-/** §1.2 canonical decimal (R174); `-0` is excluded separately. */
+/** §1.2 canonical decimal; `-0` is excluded separately. */
 const CANONICAL_DECIMAL_RE = /^-?(0|[1-9][0-9]*)(\.[0-9]*[1-9])?$/;
 const CANONICAL_INTEGER_RE = /^-?(0|[1-9][0-9]*)$/;
 /**
- * Raw decimal text (§1.3, R174): the JSON number grammar (a caller's JSON number keeps its number
- * text, exponent included), also admitting leading zeros, which a caller's decimal string may carry.
+ * Raw decimal text (§1.3): the JSON number grammar (RFC 8259 §6), for a caller's decimal string and
+ * a caller's JSON number text alike. Exponents are allowed; leading zeros are not.
  */
-const RAW_DECIMAL_RE = /^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$/;
+const RAW_DECIMAL_RE = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/;
 
 /** A syntactically and calendrically valid UTC instant with millisecond precision. */
 export function isInstant(s: string): boolean {
@@ -229,7 +229,11 @@ export function isCanonicalInteger(s: string): boolean {
   return CANONICAL_INTEGER_RE.test(s) && s !== "-0";
 }
 
-/** A raw decimal as a caller may give it (verbatim; not canonical). Every canonical decimal is raw too. */
+/**
+ * A raw decimal as a caller may give it (verbatim; not canonical): the JSON number grammar, as a
+ * string or as a JSON number's text (§1.3). Exponents are allowed; leading zeros, `+1`, `.5` and
+ * `1.` are not. Every canonical decimal is raw too.
+ */
 export function isRawDecimal(s: string): boolean {
   return RAW_DECIMAL_RE.test(s);
 }
