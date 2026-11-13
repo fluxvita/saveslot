@@ -17,6 +17,20 @@ const items = (ev: Evaluation, event: number) =>
     return x?.closed ? `${s} (closed)` : s;
   });
 
+/** The items of an event on f2: the cases given an f3 part by `withF3` assert f2 only. */
+const f2Items = (ev: Evaluation, event: number) =>
+  items(ev, event).filter((x) => x.startsWith("f2/"));
+
+/**
+ * Gives a write an applied part on f3 from a source no case deletes: an undo of a write with no
+ * applied part is rejected (04-write-and-read «第 n 次写入是什么»), so the cases that undo a
+ * write whose f2 part is a candidate or a corroboration give it this part.
+ */
+const withF3 = (w: WriteOp): WriteOp => ({
+  ...w,
+  fields: { ...w.fields, f3: { value: "x", sources: ["S_F3"] } },
+});
+
 function put(
   op: number,
   event: number,
@@ -720,8 +734,8 @@ describe("review cases", () => {
       sw(30, 20, "11-03", "open", "2", "S1"),
       put(50, 51, "1", ["S2"], "11-01", "open", { seen: 40, acknowledge: ["overwrite"] }),
       sw(60, 50, "11-03", "open", "2", "S1", true),
-      sw(80, 50, "11-01", "open", "1", "S2", true),
-      { kind: "undo", op: 90, event: 91, target: 80 },
+      withF3(sw(80, 50, "11-01", "open", "1", "S2", true)),
+      { kind: "undo", op: 90, event: 91, target: 80, seen: 80, acknowledge: ["overwrite"] },
     ];
     const grace: LogEntry[] = [
       sw(110, 90, "11-01", "open", "1", "G0"),
@@ -736,13 +750,13 @@ describe("review cases", () => {
     ];
     const run = evaluateLog(STATE, [...prefix, del(100, "d", ["S2"]), ...grace, cancel(140, "d")]);
     expect(run.steps.at(-1)?.putBack).toEqual([]);
-    expect(items(run.final, 81)).toEqual([
+    expect(f2Items(run.final, 81)).toEqual([
       'f2/0 corroborated [11-01, 11-03) "1"',
       'f2/1 candidate [11-03, inf) "1"',
     ]);
-    expect(items(run.final, 91)).toEqual(['f2/0 applied [11-01, 11-03) "1" carried #51/f2/0']);
+    expect(f2Items(run.final, 91)).toEqual(['f2/0 applied [11-01, 11-03) "1" carried #51/f2/0']);
     const base = evaluateLog(STATE, [...prefix, ...grace]).final;
-    expect(items(run.final, 91)).toEqual(items(base, 91));
+    expect(f2Items(run.final, 91)).toEqual(f2Items(base, 91));
     expect(tl(run.final)).toEqual(tl(base));
   });
 
@@ -1007,13 +1021,13 @@ describe("original items of one write in one segment (09 §5.7)", () => {
     const log: LogEntry[] = [
       w(10, 11, "10-01", "open", "1", "S1"),
       w(20, 21, "11-01", "11-03", "3", "S3", { seen: 10, acknowledge: ["overwrite"] }),
-      w(30, 31, "11-01", "open", "1", "S1", { seen: 10, explicit: true }),
+      withF3(w(30, 31, "11-01", "open", "1", "S1", { seen: 10, explicit: true })),
       { kind: "undo", op: 40, event: 41, target: 30, seen: 30, acknowledge: ["overwrite"] },
       del(60, "d", ["S3"]),
     ];
     const ev = evaluateLog(STATE, log).final;
-    expect(items(ev, 31)).toEqual(['f2/0 corroborated [11-01, inf) "1"', "f2/1 dropped"]);
-    expect(items(ev, 41)).toEqual(['f2/0 applied [11-01, inf) "1" carried #11/f2/0']);
+    expect(f2Items(ev, 31)).toEqual(['f2/0 corroborated [11-01, inf) "1"', "f2/1 dropped"]);
+    expect(f2Items(ev, 41)).toEqual(['f2/0 applied [11-01, inf) "1" carried #11/f2/0']);
     expect(short(segments(ev, "f2"))).toEqual([
       '[10-01, 11-01) "1" by #11/f2/0',
       '[11-01, inf) "1" by #41/f2/0',
@@ -1028,8 +1042,8 @@ describe("original items of one write in one segment (09 §5.7)", () => {
     const log: LogEntry[] = [
       w(10, 12, "10-01", "open", "5000", "S12"),
       w(20, 22, "11-02", "11-10", "3000", "S_B"),
-      w(24, 26, "11-05", "11-20", "5000", "S_A", { seen: 10, explicit: true }),
-      { kind: "undo", op: 30, event: 32, target: 24 },
+      withF3(w(24, 26, "11-05", "11-20", "5000", "S_A", { seen: 10, explicit: true })),
+      { kind: "undo", op: 30, event: 32, target: 24, seen: 24, acknowledge: ["overwrite"] },
       del(40, "d", ["S_B"]),
       {
         kind: "write",
@@ -1040,8 +1054,8 @@ describe("original items of one write in one segment (09 §5.7)", () => {
       },
     ];
     const ev = evaluateLog(STATE, log).final;
-    expect(items(ev, 26)).toEqual(['f2/0 corroborated [11-05, 11-20) "5000"', "f2/1 dropped"]);
-    expect(items(ev, 51)).toEqual(['f2/0 applied [11-12, inf) "2000"']);
+    expect(f2Items(ev, 26)).toEqual(['f2/0 corroborated [11-05, 11-20) "5000"', "f2/1 dropped"]);
+    expect(f2Items(ev, 51)).toEqual(['f2/0 applied [11-12, inf) "2000"']);
   });
 
   describe("at a cancellation, items only the cancelled deletion gave are not originals", () => {
@@ -1183,9 +1197,9 @@ describe("order independence compares state and items, not restatement indices",
   const log: LogEntry[] = [
     put(10, 11, "1", ["S1"], "10-01", "open", { seen: 0, acknowledge: ["overwrite"] }),
     put(20, 21, "2", ["S5"], "11-03", "open", { seen: 0 }),
-    put(30, 31, "1", ["S5"], "11-01", "open", { seen: 20, explicit: true }),
+    withF3(put(30, 31, "1", ["S5"], "11-01", "open", { seen: 20, explicit: true })),
     put(40, 41, "2", ["S4"], "11-01", "11-03", { seen: 30 }),
-    { kind: "undo", op: 60, event: 61, target: 30 },
+    { kind: "undo", op: 60, event: 61, target: 30, seen: 40, acknowledge: ["overwrite"] },
   ];
   const a = del(61, "pi_a", ["S4"]);
   const b = del(62, "pi_b", ["S1", "S2"]);
@@ -1220,7 +1234,10 @@ describe("order independence compares state and items, not restatement indices",
         del(61, "pi_ab", ["S4", "S1", "S2"]),
         ...further,
       ]).final;
-      expect(ab.reverts.at(-1)?.record).toEqual([{ event: 61, target: "f2" }]);
+      expect(ab.reverts.at(-1)?.record).toEqual([
+        { event: 61, target: "f2" },
+        { event: 61, target: "f3" },
+      ]);
       expect(stateWithoutIndices(ba)).toEqual(stateWithoutIndices(ab));
       expect(stateWithoutIndices(once)).toEqual(stateWithoutIndices(ab));
     }
@@ -1237,8 +1254,8 @@ describe("original items landing in one segment merge, in every order of the del
     put(10, 11, "3", ["S3"], "10-01", "open", { seen: 0 }),
     put(20, 21, "1", ["S4"], "11-05", "open", { seen: 10 }),
     put(30, 31, "1", ["S1"], "11-01", "11-03", { seen: 20 }),
-    put(40, 41, "3", ["S1"], "11-01", "open", { seen: 10, explicit: true }),
-    { kind: "undo", op: 50, event: 51, target: 40 },
+    withF3(put(40, 41, "3", ["S1"], "11-01", "open", { seen: 10, explicit: true })),
+    { kind: "undo", op: 50, event: 51, target: 40, seen: 40, acknowledge: ["overwrite"] },
   ];
   const orders: Record<string, LogEntry[]> = {
     "S4 then S3": [del(51, "pi_a", ["S4"]), del(52, "pi_b", ["S3"])],
@@ -1248,17 +1265,20 @@ describe("original items landing in one segment merge, in every order of the del
 
   it("before the deletions: three items; the undo lists the write's (event, target)", () => {
     const ev = evaluateLog(STATE, log).final;
-    expect(items(ev, 41)).toEqual([
+    expect(f2Items(ev, 41)).toEqual([
       'f2/0 candidate [11-01, 11-03) "3"',
       'f2/1 corroborated [11-03, 11-05) "3"',
       'f2/2 candidate [11-05, inf) "3"',
     ]);
-    expect(ev.reverts.at(-1)?.record).toEqual([{ event: 41, target: "f2" }]);
+    expect(ev.reverts.at(-1)?.record).toEqual([
+      { event: 41, target: "f2" },
+      { event: 41, target: "f3" },
+    ]);
   });
 
   it.each(Object.entries(orders))("%s: one candidate item", (_, ds) => {
     const ev = evaluateLog(STATE, [...log, ...ds]).final;
-    expect(items(ev, 41)).toEqual([
+    expect(f2Items(ev, 41)).toEqual([
       'f2/0 candidate [11-01, inf) "3"',
       "f2/1 dropped",
       "f2/2 dropped",
@@ -1285,7 +1305,7 @@ describe("original items landing in one segment merge, in every order of the del
     ];
     // Dropped entries are restatement bookkeeping (03-deletion «推论» «顺序无关»), left out.
     const items41 = (entries: LogEntry[]) =>
-      items(evaluateLog(STATE, [...withS5, ...entries]).final, 41).filter(
+      f2Items(evaluateLog(STATE, [...withS5, ...entries]).final, 41).filter(
         (x) => !x.endsWith("dropped"),
       );
     const only = items41([del(51, "pi_b", ["S3", "S5"])]);
@@ -1402,7 +1422,9 @@ describe("logs whose items once depended on the order of deletions", () => {
         ]).final,
     );
     for (const ev of results) {
-      expect(items(ev, 51).filter((x) => !x.endsWith("dropped"))).toEqual(expected);
+      expect(items(ev, 51).filter((x) => !x.endsWith("dropped") && x.startsWith("f2/"))).toEqual(
+        expected,
+      );
     }
     const [x, ...rest] = results.map(stateWithoutIndices);
     for (const y of rest) expect(y).toEqual(x);
@@ -1474,8 +1496,8 @@ describe("logs whose items once depended on the order of deletions", () => {
       w2(20, "1", "S3", "11-05", { mode: "next_change" }, 10),
       w2(30, "1", "S4", "11-05", until("11-07"), 20, true),
       w2(40, "3", "S5", "11-05", { mode: "next_change" }, 30, true),
-      w2(50, "3", "S2", "11-01", open, 10, true),
-      { kind: "undo", op: 60, event: 61, target: 50 },
+      withF3(w2(50, "3", "S2", "11-01", open, 10, true)),
+      { kind: "undo", op: 60, event: 61, target: 50, seen: 50, acknowledge: ["overwrite"] },
       w2(70, "1", "S3", "11-07", open, 60),
       w2(80, "3", "S4", "11-05", { mode: "next_change" }, 70),
     ];
@@ -1876,7 +1898,15 @@ describe("an include_later undo takes back later writes only where they supersed
     // #11 writes 1 on [11-01, 11-05); #21 writes 2 on [11-03, 11-09), superseding #11 on
     // [11-03, 11-05). Undo #11 with include_later, confirmed: the value position is before #11,
     // where f2 has no value. #21 is taken back on [11-03, 11-05) only; on [11-05, 11-09) it stays.
+    // #6 creates the entity on days the case does not meet: the first creation cannot be undone.
     const log: LogEntry[] = [
+      {
+        kind: "write",
+        op: 5,
+        event: 6,
+        valid: sp("10-01", "10-10"),
+        fields: { f2: { value: "0", sources: ["S0"] } },
+      },
       {
         kind: "write",
         op: 10,
@@ -1906,7 +1936,7 @@ describe("an include_later undo takes back later writes only where they supersed
       { event: 21, target: "f2", later: true },
     ]);
     expect(items(ev, 41)).toEqual(["f2/0 applied [11-01, 11-05) no_value"]);
-    expect(tl(ev)).toEqual(['[11-05, 11-09) "2"']);
+    expect(tl(ev)).toEqual(['[10-01, 10-10) "0"', '[11-05, 11-09) "2"']);
   });
 
   it("a later item covered whole by a write outside the record has no range: not high-impact ④", () => {

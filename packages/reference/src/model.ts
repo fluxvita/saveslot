@@ -217,6 +217,8 @@ export interface RevertResult {
   readonly op: OpNumber;
   readonly event: Seq;
   readonly status: "applied" | "awaiting" | "rejected";
+  /** Rejected because the row is still revoked once the undo is written. */
+  readonly reason?: "revoked";
   /** The revert record R as listed when the revert took effect (or was proposed). */
   readonly record: readonly RevertEntry[];
   /** `overwrote_corroborated`: the write-back revoke hides a later corroboration (05-time). */

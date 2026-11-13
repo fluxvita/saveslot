@@ -15,13 +15,22 @@ import type {
   FieldStretch,
   JudgeInput,
   Judgement,
-  KeepEffectiveInput,
   OpRecord,
   RejectInput,
+  RevertRecord,
   RowView,
   TableShape,
+  Target,
+  Unit,
   WriteRecord,
 } from "./model.ts";
+import {
+  judgeRevertOf,
+  judgeTakePrevious,
+  judgeUndo,
+  type RevertOutcome,
+  undoEntries,
+} from "./revert.ts";
 import { EVERYTHING, effective, RowState, refKey, refOf, valueToken } from "./state.ts";
 import { judgeRevoke, judgeWrite } from "./write.ts";
 
@@ -49,6 +58,8 @@ const quiet = {
   acknowledged: false,
   warnings: [],
   created: false,
+  takesBack: [],
+  hides: [],
 } as const;
 
 /** Judges one operation on the state; returns the judgement and the state after it. */
@@ -82,6 +93,60 @@ export function judgeOp(
       record,
       ...rest,
       created: input.kind === "write" && isFirstCreation(state, record),
+      takesBack: [],
+      hides: [],
+    };
+  } else if (input.kind === "undo") {
+    const out = judgeUndo(state, input);
+    const record: RevertRecord = {
+      ...base,
+      kind: "undo",
+      status: out.status,
+      revert: { entries: out.entries, before: out.before, skipped: out.skipped },
+      items: out.items,
+      seen: input.seen,
+      seenExplicit: input.seenExplicit,
+      ...(input.acknowledge ? { acknowledge: true as const } : {}),
+      ...(input.includeLater ? { includeLater: true as const } : {}),
+      ack: out.acknowledged ? out.overwritten : [],
+    };
+    judgement = { ...quiet, ...revertJudgement(out), record };
+  } else if (input.kind === "take_previous") {
+    openCandidates(state, input.unit, input.candidates);
+    const out = judgeTakePrevious(state, input);
+    const record: RevertRecord = {
+      ...base,
+      kind: "take_previous",
+      status: "applied",
+      revert: {
+        entries: out.entries,
+        mergeBase: out.mergeBase,
+        candidates: input.candidates,
+        unit: input.unit,
+        skipped: [],
+      },
+      items: out.items,
+      ack: [],
+    };
+    judgement = { ...quiet, ...revertJudgement(out), record };
+  } else if (input.kind === "confirm" && awaitingUndo(state, input.target) !== undefined) {
+    // Confirming an awaiting undo: the record is listed again as of the confirmation, written by
+    // the confirmation (04-write-and-read «撤回某次写入（undo）»; 03-deletion «回掉的权威定义»
+    // step 4; 09 §5.8).
+    const u = awaitingUndo(state, input.target) as RevertRecord;
+    const before = u.revert.before as number;
+    const entries = undoEntries(state, before, u.includeLater === true, input.op, input.index);
+    const out = judgeRevertOf(state, input, entries, { before }, null, false);
+    judgement = {
+      ...quiet,
+      ...revertJudgement(out),
+      record: {
+        ...base,
+        kind: "confirm",
+        target: input.target,
+        items: out.items,
+        revert: { entries: out.entries, before, skipped: out.skipped },
+      },
     };
   } else if (input.kind === "confirm") {
     judgement = { record: confirm(state, input, base), ...quiet };
@@ -89,13 +154,32 @@ export function judgeOp(
     awaitingOf(state, input);
     judgement = { record: { ...base, kind: "reject", target: input.target }, ...quiet };
   } else {
-    keepEffective(state, input);
+    openCandidates(state, input.unit, input.candidates);
     judgement = {
       record: { ...base, kind: "keep_effective", unit: input.unit, candidates: input.candidates },
       ...quiet,
     };
   }
   return { judgement, state: new RowState(state.table, [...state.records, judgement.record]) };
+}
+
+function revertJudgement(out: RevertOutcome) {
+  return {
+    erased: out.erased as Judgement["erased"],
+    overwritten: out.overwritten,
+    acknowledged: out.acknowledged,
+    warnings: out.warnings,
+    takesBack: out.takesBack,
+    hides: out.hides,
+  };
+}
+
+/** The awaiting undo written by event `target`, not yet confirmed or rejected. */
+function awaitingUndo(state: RowState, target: Seq): RevertRecord | undefined {
+  const r = state.records.find((x) => x.event === target);
+  if (r?.kind !== "undo" || r.status !== "awaiting" || state.resolvedAwaiting(target))
+    return undefined;
+  return r;
 }
 
 /** Judges the operations in order from nothing. */
@@ -143,24 +227,20 @@ function confirm(
   return { ...base, kind: "confirm", target: input.target, items };
 }
 
-function keepEffective(state: RowState, input: KeepEffectiveInput): void {
-  for (const e of input.candidates) {
+/** A keep-effective or take-previous resolution needs open candidates of the item on its unit. */
+function openCandidates(state: RowState, unit: Unit, candidates: readonly Seq[]): void {
+  for (const e of candidates) {
     const has = state.items.some(
       (x) =>
         x.event === e &&
         x.status === "candidate" &&
-        (input.unit === "existence"
+        (unit === "existence"
           ? x.target === "existence"
-          : x.target !== "existence" && input.unit.fields.includes(x.target)),
+          : x.target !== "existence" && unit.fields.includes(x.target)),
     );
-    if (
-      !has ||
-      state.closedCandidate(
-        e,
-        input.unit === "existence" ? "existence" : (input.unit.fields[0] as FieldId),
-      )
-    ) {
-      throw new JudgeError("invalid", "no open candidate to keep out", { event: e });
+    const target: Target = unit === "existence" ? "existence" : (unit.fields[0] as FieldId);
+    if (!has || state.closedCandidate(e, target)) {
+      throw new JudgeError("invalid", "no open candidate in the item", { event: e });
     }
   }
 }

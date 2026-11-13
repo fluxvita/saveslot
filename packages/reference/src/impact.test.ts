@@ -87,3 +87,37 @@ describe("high impact ① at a value ↔ no value boundary", () => {
     expect(statusOf(ops, 31)).toEqual(["awaiting"]);
   });
 });
+
+it("an optional field the filling write did not give is empty, not a hole: no change point", () => {
+  // 05-time «无值区间»: 可选字段不带就是空. #21 revokes [11-01, 11-03); #31 fills it with f2 only;
+  // #41 writes 1 from 11-01 on. Undoing #41 writes back 9 there and no value after 11-03. f3 is
+  // empty on both sides of 11-03 (it appears in the log, on other days): no change point of f3
+  // is erased, so the undo is not high impact.
+  const ops: Op[] = [
+    {
+      ...put(10, 0, { f2: "1" }, "10-01", "open"),
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "x", sources: ["S10"] } },
+      valid: {
+        from: { mode: "given", value: d("10-01") },
+        to: { mode: "given", value: d("10-05") },
+      },
+    },
+    {
+      kind: "revoke",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: d("11-01") },
+        to: { mode: "given", value: d("11-03") },
+      },
+      validSources: ["S20"],
+    },
+    { ...put(30, 20, { f2: "9" }, "11-01", "11-03"), acknowledge: ["overwrite"] },
+    { ...put(40, 30, { f2: "1" }, "11-01", "open"), acknowledge: ["overwrite"] },
+    { kind: "undo", op: 50, event: 51, target: 40 },
+  ];
+  expect(evaluateAsWritten(STATE, ops).reverts).toEqual([
+    { op: 50, event: 51, status: "applied", record: [{ event: 41, target: "f2" }] },
+  ]);
+});

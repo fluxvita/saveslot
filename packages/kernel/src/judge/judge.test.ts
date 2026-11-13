@@ -118,8 +118,32 @@ function items(j: Judgement) {
     k: x.k,
     status: x.status,
     valid: x.valid,
-    ...(x.content.kind === "value" ? { value: x.content.value } : { revoke: true }),
+    ...(x.content.kind === "value"
+      ? { value: x.content.value }
+      : x.content.kind === "revoke"
+        ? { revoke: true }
+        : { [x.content.kind]: true }),
+    ...("carried" in x && x.carried !== undefined ? { carried: x.carried } : {}),
   }));
+}
+
+function undo(
+  op: number,
+  target: number,
+  o: { seen?: number; ack?: boolean; later?: boolean } = {},
+): JudgeInput {
+  return {
+    kind: "undo",
+    op,
+    index: 0,
+    event: op + 1,
+    ruleset: 1,
+    target,
+    seen: o.seen ?? op - 1,
+    seenExplicit: o.seen !== undefined,
+    ...(o.ack ? { acknowledge: true } : {}),
+    ...(o.later ? { includeLater: true } : {}),
+  };
 }
 
 const iv = (from: string | null, to: string | null = null) => [
@@ -816,4 +840,606 @@ it("a stale write meeting both a revoke and a field change in between: one candi
   expect(j.conflicts).toEqual([
     { unit: "existence", with: [20, 30], items: [{ event: 41, target: "f2", k: 0 }] },
   ]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Reverts (03-deletion «回掉的权威定义»; 04-write-and-read «撤回某次写入（undo）»).
+
+const ref = (event: number, target: string, k = 0) => ({ event, target, k });
+const depsOf = (j: Judgement) =>
+  j.record.kind === "reject" || j.record.kind === "keep_effective"
+    ? []
+    : j.record.items.map((x) => x.deps);
+
+describe("undo", () => {
+  it("09 §5.7 example: an undo of a write over two stretches writes back two items", () => {
+    const { state, js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "5000" } }),
+      write({ op: 13, valid: span("11-10", "open"), fields: { f2: "4000" }, ack: true }),
+      write({ op: 20, valid: span("11-02", "11-20"), fields: { f2: "3000" }, ack: true }),
+      // Back to 5000 | 4000 erases 11-02 and 11-20 (①): acknowledged with the current ver.
+      undo(30, 20, { seen: 20, ack: true }),
+    ]);
+    const j = last(js);
+    expect(j.record).toMatchObject({
+      kind: "undo",
+      status: "applied",
+      revert: { entries: [{ event: 21, target: "f2" }], before: 20, skipped: [] },
+    });
+    expect(items(j)).toEqual([
+      {
+        target: "f2",
+        k: 0,
+        status: "applied",
+        valid: iv("11-02", "11-10"),
+        value: "5000",
+        carried: [ref(11, "f2")],
+      },
+      {
+        target: "f2",
+        k: 1,
+        status: "applied",
+        valid: iv("11-10", "11-20"),
+        value: "4000",
+        carried: [ref(14, "f2")],
+      },
+    ]);
+    expect(j.acknowledged).toBe(true);
+    expect(stretches(state, "f2")).toEqual([
+      [d("10-01"), d("11-10"), "5000"],
+      [d("11-10"), null, "4000"],
+    ]);
+  });
+
+  it("09 §5.7 deps example: a no_value write-back depends on who gives its ends at the position", () => {
+    const { js } = run(STATE, [
+      write({ op: 12, seen: 0, valid: span("10-01", "11-20"), fields: { f2: "5000" } }),
+      write({ op: 42, valid: span("11-10", "11-25"), fields: { f2: "4800" }, ack: true }),
+      undo(50, 42, { seen: 42, ack: true }),
+    ]);
+    const j = last(js);
+    expect(items(j)).toEqual([
+      {
+        target: "f2",
+        k: 0,
+        status: "applied",
+        valid: iv("11-10", "11-20"),
+        value: "5000",
+        carried: [ref(13, "f2")],
+      },
+      { target: "f2", k: 1, status: "applied", valid: iv("11-20", "11-25"), no_value: true },
+    ]);
+    expect(depsOf(j)[1]).toEqual([ref(13, "f2"), ref(43, "f2")]);
+  });
+
+  it("only the part still in effect is undone; the covered part is skipped, with the covering op", () => {
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-09"), fields: { f2: "2" }, ack: true }),
+      write({ op: 30, valid: span("11-05", "11-09"), fields: { f2: "3" }, ack: true }),
+      undo(40, 20, { seen: 30, ack: true }),
+    ]);
+    const j = last(js);
+    expect(items(j)).toEqual([
+      {
+        target: "f2",
+        k: 0,
+        status: "applied",
+        valid: iv("11-01", "11-05"),
+        value: "1",
+        carried: [ref(11, "f2")],
+      },
+    ]);
+    expect(j.record).toMatchObject({
+      revert: { skipped: [{ event: 21, target: "f2", byOp: 30 }] },
+    });
+  });
+
+  it("include_later taking back a later write is high impact ④; the confirmation lists the record again", () => {
+    const base = [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-05"), fields: { f2: "2" }, ack: true }),
+      write({ op: 30, valid: span("11-03", "11-09"), fields: { f2: "3" }, ack: true }),
+      undo(40, 20, { seen: 30, ack: true, later: true }),
+    ];
+    const { state, js } = run(STATE, base);
+    const j = last(js);
+    expect(j.record).toMatchObject({ kind: "undo", status: "awaiting" });
+    expect(j.takesBack).toEqual([30]);
+    // #31 is taken back on [11-03, 11-05) only (D(x)); beyond the undone write it stays.
+    expect(items(j).map((x) => [x.valid, x.status])).toEqual([[iv("11-01", "11-05"), "awaiting"]]);
+    // A later write that #21 supersedes nowhere does not join the record at the confirmation;
+    // one that does joins it (04-write-and-read «撤回某次写入（undo）»: listed again as of the
+    // confirmation).
+    const more = run(STATE, [
+      ...base,
+      write({ op: 50, valid: span("11-02", "11-04"), fields: { f2: "5" }, ack: true }),
+      { kind: "confirm", op: 60, index: 0, event: 61, ruleset: 1, target: 41 },
+    ]);
+    expect(last(more.js).record).toMatchObject({
+      kind: "confirm",
+      revert: {
+        entries: [
+          { event: 21, target: "f2" },
+          { event: 31, target: "f2", later: true },
+          { event: 51, target: "f2", later: true },
+        ],
+      },
+    });
+    expect(stretches(more.state, "f2")).toEqual([
+      [d("10-01"), d("11-05"), "1"],
+      [d("11-05"), d("11-09"), "3"],
+      [d("11-09"), null, "1"],
+    ]);
+    void state;
+  });
+
+  it("undoing a fill in a hole writes back an uncovered item: the hole is back", () => {
+    const { state, js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      revoke(20, span("11-01", "11-07") as RevokeInput["valid"]),
+      write({ op: 30, valid: span("11-03", "11-05"), fields: { f2: "5" }, ack: true }),
+      undo(40, 30, { seen: 30, ack: true }),
+    ]);
+    expect(items(last(js))).toEqual([
+      { target: "f2", k: 0, status: "applied", valid: iv("11-03", "11-05"), uncovered: true },
+    ]);
+    expect(view(state).gaps).toEqual([...iv(null, "10-01"), ...iv("11-01", "11-07")]);
+  });
+
+  it("undoing a revoke restores existence and is not ①", () => {
+    const { state, js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      revoke(20, span("11-01", "11-07") as RevokeInput["valid"]),
+      undo(30, 20),
+    ]);
+    expect(items(last(js))).toEqual([
+      { target: "existence", k: 0, status: "applied", valid: iv("11-01", "11-07"), restore: true },
+    ]);
+    expect(view(state).gaps).toEqual(iv(null, "10-01"));
+  });
+
+  it("a write-back revoke hiding a later field write is ④; a hidden corroboration only warns", () => {
+    const head = [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      revoke(20, span("11-01", "11-07") as RevokeInput["valid"]),
+      undo(30, 20),
+    ];
+    const hides = run(STATE, [
+      ...head,
+      write({ op: 40, valid: span("11-02", "11-04"), fields: { f2: "6" }, ack: true }),
+      undo(50, 30, { seen: 40, ack: true }),
+    ]);
+    expect(last(hides.js).record).toMatchObject({ status: "awaiting" });
+    expect(last(hides.js).hides).toEqual([ref(41, "f2")]);
+    const corroborates = run(STATE, [
+      ...head,
+      write({ op: 40, valid: span("11-02", "11-04"), fields: { f2: "1" }, explicit: true }),
+      undo(50, 30, { seen: 40, ack: true }),
+    ]);
+    expect(last(corroborates.js).record).toMatchObject({ status: "applied" });
+    expect(last(corroborates.js).warnings).toEqual([
+      { field: "f2", valid: iv("11-02", "11-04"), corroboration: ref(41, "f2") },
+    ]);
+  });
+
+  it("an undone corroboration stops giving endpoints (05-time «挡点»)", () => {
+    // #21 corroborates f2 on [11-05, 11-20) and changes f3; undo 30 lists and registers both, so
+    // 11-05 no longer stops #41's default end.
+    const head = [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "5000" } }),
+      write({
+        op: 20,
+        valid: span("11-05", "11-20"),
+        fields: { f2: "5000", f3: "x" },
+        explicit: true,
+      }),
+    ];
+    const later = write({ op: 40, valid: span("11-03", "next"), fields: { f2: "2000" } });
+    const kept = run(STATE, [...head, later]);
+    expect(items(last(kept.js))[0]?.valid).toEqual(iv("11-03", "11-05"));
+    const undone = run(STATE, [...head, undo(30, 20, { seen: 20, ack: true }), later]);
+    // f2 is written back to 5000 (the value before #21, no endpoints); f3 to no value.
+    expect(items(undone.js[2] as Judgement).map((x) => x.target)).toEqual(["f2", "f3"]);
+    expect(items(last(undone.js))[0]?.valid).toEqual(iv("11-03"));
+  });
+
+  it("undoing an undo lists the undo's event on the targets of its record", () => {
+    const { state, js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-05"), fields: { f2: "2" }, ack: true }),
+      undo(30, 20, { seen: 20, ack: true }),
+      undo(40, 30, { seen: 30, ack: true }),
+    ]);
+    expect(last(js).record).toMatchObject({ revert: { entries: [{ event: 31, target: "f2" }] } });
+    expect(stretches(state, "f2")).toEqual([
+      [d("10-01"), d("11-01"), "1"],
+      [d("11-01"), d("11-05"), "2"],
+      [d("11-05"), null, "1"],
+    ]);
+  });
+
+  it("rejected: the first creation, a write that changed no value, a candidate, another row's op", () => {
+    const { state } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-05"), fields: { f2: "1" }, explicit: true }),
+      write({ op: 30, seen: 10, valid: span("11-02", "11-04"), fields: { f2: "1" } }),
+      write({ op: 40, valid: span("11-06", "11-08"), fields: { f2: "2" }, ack: true }),
+      write({ op: 50, seen: 30, valid: span("11-06", "11-08"), fields: { f2: "3" } }),
+    ]);
+    for (const target of [10, 20, 30, 50, 99]) {
+      expect(() => judgeOp(state, undo(60, target))).toThrow(
+        expect.objectContaining({ reason: "invalid_argument" }),
+      );
+    }
+  });
+});
+
+describe("undo on revoked rows, of confirmed reverts; write-back deps", () => {
+  const confirm = (op: number, target: number): JudgeInput => ({
+    kind: "confirm",
+    op,
+    index: 0,
+    event: op + 1,
+    ruleset: 1,
+    target,
+  });
+
+  it("event tables: an undo leaving the row revoked is `revoked`; undoing the revoke is not", () => {
+    // 04-write-and-read «撤回某次写入（undo）»: judged on the row once the undo is written.
+    const { state } = run(EVENT, [
+      write({ op: 10, seen: 0, fields: { f2: "1" } }),
+      write({ op: 20, fields: { f2: "2" } }),
+      revoke(30),
+    ]);
+    expect(() => judgeOp(state, undo(40, 20))).toThrow(
+      expect.objectContaining({ reason: "revoked", detail: { ops: [30] } }),
+    );
+    const back = judgeOp(state, undo(40, 30));
+    expect(back.judgement.record).toMatchObject({ status: "applied" });
+    expect(view(back.state).exists).toBe(true);
+    // Taking the revoke back with include_later: the row exists once written; ④, awaiting.
+    const later = judgeOp(state, undo(40, 20, { later: true })).judgement;
+    expect(later.record).toMatchObject({
+      status: "awaiting",
+      revert: {
+        entries: [
+          { event: 21, target: "f2" },
+          { event: 31, target: "existence", later: true },
+        ],
+      },
+    });
+    expect(later.takesBack).toEqual([30]);
+  });
+
+  it("a write-back revoke depends on the revoke giving its state (03-deletion step 8)", () => {
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      revoke(20, span("11-01", "11-07") as RevokeInput["valid"]),
+      undo(30, 20),
+      undo(40, 30),
+    ]);
+    expect(items(last(js))).toEqual([
+      { target: "existence", k: 0, status: "applied", valid: iv("11-01", "11-07"), revoke: true },
+    ]);
+    expect(depsOf(last(js))).toEqual([[ref(21, "existence"), ref(31, "existence")]]);
+  });
+
+  it("an undo of an awaiting revert since confirmed, by the proposal's operation (09 §5.7)", () => {
+    const head = [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-05"), fields: { f2: "2" }, ack: true }),
+      write({ op: 30, valid: span("11-03", "11-09"), fields: { f2: "3" }, ack: true }),
+      undo(40, 20, { later: true }),
+      confirm(50, 41),
+    ];
+    const byProposal = run(STATE, [...head, undo(60, 40, { seen: 50, ack: true })]);
+    const byConfirmation = run(STATE, [...head, undo(60, 50, { seen: 50, ack: true })]);
+    expect(last(byProposal.js).record).toMatchObject({
+      kind: "undo",
+      status: "applied",
+      revert: { entries: [{ event: 51, target: "f2" }], before: 50 },
+    });
+    expect(last(byProposal.js)).toEqual(last(byConfirmation.js));
+    expect(stretches(byProposal.state, "f2")).toEqual([
+      [d("10-01"), d("11-01"), "1"],
+      [d("11-01"), d("11-03"), "2"],
+      [d("11-03"), d("11-09"), "3"],
+      [d("11-09"), null, "1"],
+    ]);
+  });
+
+  it("an operation with a change of its own on the row: its own change is undone, not the confirmed revert", () => {
+    // Op 40 writes f3 (index 0) and proposes an undo (index 1) that #51 confirms. undo(40) takes
+    // back op 40's own change; the confirmed revert is undone by 50.
+    const head = [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-05"), fields: { f2: "2" }, ack: true }),
+      write({ op: 30, valid: span("11-03", "11-09"), fields: { f2: "3" }, ack: true }),
+      write({ op: 40, seen: 30, valid: span("10-01", "open"), fields: { f3: "x" } }),
+      { ...undo(40, 20, { later: true }), index: 1, event: 42 },
+      confirm(50, 42),
+    ];
+    const { state } = run(STATE, head);
+    const f2Before = stretches(state, "f2");
+    const r = judgeOp(state, undo(60, 40, { seen: 50, ack: true }));
+    expect(r.judgement.record).toMatchObject({
+      kind: "undo",
+      status: "applied",
+      revert: { before: 40 },
+    });
+    const rec = r.judgement.record;
+    expect(rec.kind === "undo" ? rec.revert.entries : []).toContainEqual({
+      event: 41,
+      target: "f3",
+    });
+    expect(stretches(r.state, "f3")).toEqual([[d("10-01"), null, null]]);
+    expect(stretches(r.state, "f2")).toEqual(f2Before);
+  });
+
+  it("an operation with nothing applied and two confirmed reverts: nothing to undo by it", () => {
+    // Two awaiting undos in one request (①, no acknowledge), each confirmed: undo(40) is
+    // `invalid_argument`; each is undone by its confirming operation.
+    const { state, js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-05"), fields: { f2: "2" }, ack: true }),
+      write({ op: 30, valid: span("11-01", "11-05"), fields: { f3: "a" }, ack: true }),
+      undo(40, 20),
+      { ...undo(40, 30), index: 1, event: 42 },
+      confirm(50, 41),
+      confirm(55, 42),
+    ]);
+    expect(js[3]?.record).toMatchObject({ status: "awaiting" });
+    expect(js[4]?.record).toMatchObject({ status: "awaiting" });
+    expect(() => judgeOp(state, undo(60, 40))).toThrow(
+      expect.objectContaining({ reason: "invalid_argument" }),
+    );
+    expect(judgeOp(state, undo(60, 50, { seen: 55, ack: true })).judgement.record).toMatchObject({
+      revert: { before: 50 },
+    });
+  });
+
+  it("an undo naming an unconfirmed proposal is not taken as another proposal's confirmation", () => {
+    const { state } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-05"), fields: { f2: "2" }, ack: true }),
+      write({ op: 30, valid: span("11-01", "11-05"), fields: { f3: "a" }, ack: true }),
+      undo(40, 20),
+      undo(45, 30),
+      confirm(50, 41),
+    ]);
+    expect(() => judgeOp(state, undo(60, 45))).toThrow(
+      expect.objectContaining({ reason: "invalid_argument" }),
+    );
+  });
+
+  it("deps: pieces joined across adjacent revokes depend on every one, not only those at the ends", () => {
+    // Three adjacent revokes taken back together by #61 (the confirmed include_later undo of #21),
+    // then #61 undone: one write-back revoke over [11-01, 11-07) depends on #41 in the middle too.
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-07"), fields: { f2: "2" }, ack: true }),
+      revoke(30, span("11-01", "11-03") as RevokeInput["valid"]),
+      revoke(40, span("11-03", "11-05") as RevokeInput["valid"]),
+      revoke(50, span("11-05", "11-07") as RevokeInput["valid"]),
+      undo(55, 20, { later: true }),
+      confirm(60, 56),
+      undo(70, 60),
+    ]);
+    const j = last(js);
+    const i = items(j).findIndex((x) => x.target === "existence");
+    expect(items(j)[i]).toMatchObject({ valid: iv("11-01", "11-07"), revoke: true });
+    expect(depsOf(j)[i]).toEqual(
+      expect.arrayContaining([ref(31, "existence"), ref(41, "existence"), ref(51, "existence")]),
+    );
+  });
+
+  it("deps: a write-back depends on the giver on the right of its end", () => {
+    // Two adjacent revokes taken back together, then undone: f2's uncovered [11-01, 11-04) ends
+    // where the second revoke's hole begins.
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-07"), fields: { f2: "2" }, ack: true }),
+      revoke(30, span("11-01", "11-04") as RevokeInput["valid"]),
+      revoke(40, span("11-04", "11-07") as RevokeInput["valid"]),
+      undo(50, 20, { later: true }),
+      confirm(60, 51),
+      undo(70, 60),
+    ]);
+    const j = last(js);
+    const i = items(j).findIndex(
+      (x) => x.target === "f2" && "uncovered" in x && x.valid[0]?.to === d("11-04"),
+    );
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(depsOf(j)[i]).toContainEqual(ref(41, "existence"));
+  });
+
+  it("deps: on an event table, undoing the undo of a revoke depends on the revoke and that undo", () => {
+    const { js } = run(EVENT, [
+      write({ op: 10, seen: 0, fields: { f2: "1" } }),
+      revoke(20),
+      undo(30, 20),
+      undo(40, 30),
+    ]);
+    expect(items(last(js))).toEqual([
+      {
+        target: "existence",
+        k: 0,
+        status: "applied",
+        valid: [{ from: null, to: null }],
+        revoke: true,
+      },
+    ]);
+    expect(depsOf(last(js))).toEqual([[ref(21, "existence"), ref(31, "existence")]]);
+  });
+
+  it("a write to a revoked row lists the revokes in effect, not those taken back", () => {
+    const { state } = run(EVENT, [
+      write({ op: 10, seen: 0, fields: { f2: "1" } }),
+      revoke(20),
+      undo(30, 20),
+      undo(40, 30),
+    ]);
+    expect(() => judgeOp(state, write({ op: 50, fields: { f2: "2" } }))).toThrow(
+      expect.objectContaining({ reason: "revoked", detail: { ops: [40] } }),
+    );
+  });
+
+  it("the revoked check is for undo only: a take_previous on a revoked row takes effect", () => {
+    const { state } = run(EVENT, [
+      write({ op: 10, seen: 0, fields: { f2: "1" } }),
+      write({ op: 20, fields: { f2: "2" }, ack: true }),
+      write({ op: 30, seen: 10, fields: { f2: "3" } }),
+      revoke(40),
+    ]);
+    const r = judgeOp(state, {
+      kind: "take_previous",
+      op: 50,
+      index: 0,
+      event: 51,
+      ruleset: 1,
+      unit: { fields: ["f2"] },
+      candidates: [31],
+    });
+    expect(r.judgement.record).toMatchObject({ kind: "take_previous", status: "applied" });
+  });
+
+  it("an undo's acknowledge counts only with an explicit ver", () => {
+    const head = [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-05"), fields: { f2: "2" }, ack: true }),
+    ];
+    const explicit = run(STATE, [...head, undo(30, 20, { seen: 20, ack: true })]);
+    expect(last(explicit.js).record).toMatchObject({ status: "applied" });
+    const fromLog = run(STATE, [...head, undo(30, 20, { ack: true })]);
+    expect(last(fromLog.js).record).toMatchObject({ status: "awaiting" });
+  });
+
+  it("skipped lists the undone operation's own entries only, not later ones", () => {
+    // #51 covers the later #31 on [11-07, 11-09) and meets nothing of #21: not in R.
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-05"), fields: { f2: "2" }, ack: true }),
+      write({ op: 30, valid: span("11-03", "11-09"), fields: { f2: "3" }, ack: true }),
+      write({ op: 50, valid: span("11-07", "11-09"), fields: { f2: "5" }, ack: true }),
+      undo(60, 20, { later: true }),
+    ]);
+    expect(last(js).record).toMatchObject({
+      status: "awaiting",
+      revert: {
+        entries: [
+          { event: 21, target: "f2" },
+          { event: 31, target: "f2", later: true },
+        ],
+        skipped: [],
+      },
+    });
+    expect(last(js).takesBack).toEqual([30]);
+  });
+
+  it("a write-back revoke does not hide a later write in the record: that one is taken back", () => {
+    // #51 (the confirmation of #41) wrote back f2 and a restore. Undoing it with include_later lists
+    // #61, which supersedes its f2 item: the write-back revoke meets #61, but #61 is in R (④ by
+    // taking it back), not hidden.
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-05"), fields: { f2: "2" }, ack: true }),
+      revoke(30, span("11-01", "11-07") as RevokeInput["valid"]),
+      undo(40, 20, { later: true }),
+      confirm(50, 41),
+      write({ op: 60, valid: span("11-02", "11-04"), fields: { f2: "6" }, ack: true }),
+      undo(70, 50, { seen: 60, ack: true, later: true }),
+    ]);
+    const j = last(js);
+    expect(j.record).toMatchObject({
+      status: "awaiting",
+      revert: {
+        entries: [
+          { event: 51, target: "existence" },
+          { event: 51, target: "f2" },
+          { event: 61, target: "f2", later: true },
+        ],
+      },
+    });
+    expect(items(j).some((x) => x.target === "existence" && "revoke" in x)).toBe(true);
+    expect(j.takesBack).toEqual([60]);
+    expect(j.hides).toEqual([]);
+  });
+
+  it("a revoke filled since does not leave the position absent: the undo writes back a restore", () => {
+    // 03-deletion «回掉的权威定义» step 6: inside a revoke in effect that has not been restored or
+    // filled since. #31 fills #21's hole; undoing the second revoke #41 restores existence there.
+    const { state, js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      revoke(20, span("11-01", "11-07") as RevokeInput["valid"]),
+      write({ op: 30, valid: span("11-01", "11-07"), fields: { f2: "5" }, ack: true }),
+      revoke(40, span("11-01", "11-07") as RevokeInput["valid"]),
+      undo(50, 40),
+    ]);
+    expect(items(last(js))).toEqual([
+      { target: "existence", k: 0, status: "applied", valid: iv("11-01", "11-07"), restore: true },
+    ]);
+    expect(stretches(state, "f2")).toEqual([
+      [d("10-01"), d("11-01"), "1"],
+      [d("11-01"), d("11-07"), "5"],
+      [d("11-07"), null, "1"],
+    ]);
+  });
+
+  it("where a write fills a hole, an optional field it does not give is empty, not the hole", () => {
+    // 05-time «无值区间»: 可选字段不带就是空. f3 is empty on both sides of 11-01 and 11-07, so
+    // writing it over everything erases no change point of it: not ①.
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      revoke(20, span("11-01", "11-07") as RevokeInput["valid"]),
+      write({ op: 30, valid: span("11-01", "11-07"), fields: { f2: "5" }, ack: true }),
+      write({ op: 40, valid: span("10-01", "open"), fields: { f3: "y" } }),
+    ]);
+    expect(last(js).erased).toEqual([]);
+    expect(items(last(js))).toEqual([
+      { target: "f3", k: 0, status: "applied", valid: iv("10-01"), value: "y" },
+    ]);
+  });
+});
+
+describe("take_previous", () => {
+  it("goes back to the merge base on the item's stretch and closes the candidates", () => {
+    const { state, js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "open"), fields: { f2: "5" }, ack: true }),
+      write({ op: 30, seen: 10, valid: span("11-05", "11-09"), fields: { f2: "4" } }),
+      {
+        kind: "take_previous",
+        op: 40,
+        index: 0,
+        event: 41,
+        ruleset: 1,
+        unit: { fields: ["f2"] },
+        candidates: [31],
+      },
+    ]);
+    const j = last(js);
+    expect(j.record).toMatchObject({
+      kind: "take_previous",
+      status: "applied",
+      revert: { entries: [{ event: 21, target: "f2" }], mergeBase: 10, candidates: [31] },
+    });
+    expect(items(j)).toEqual([
+      {
+        target: "f2",
+        k: 0,
+        status: "applied",
+        valid: iv("11-05", "11-09"),
+        value: "1",
+        carried: [ref(11, "f2")],
+      },
+    ]);
+    expect(state.closedCandidate(31, "f2")).toBe(true);
+    expect(stretches(state, "f2")).toEqual([
+      [d("10-01"), d("11-01"), "1"],
+      [d("11-01"), d("11-05"), "5"],
+      [d("11-05"), d("11-09"), "1"],
+      [d("11-09"), null, "5"],
+    ]);
+  });
 });

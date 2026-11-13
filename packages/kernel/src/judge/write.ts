@@ -30,15 +30,7 @@ import type {
   WriteInput,
 } from "./model.ts";
 import { type Resolved, resolve, uniqueRefs } from "./resolve.ts";
-import {
-  effective,
-  type Item,
-  type Limit,
-  NO_VALUE,
-  type RowState,
-  refOf,
-  valueToken,
-} from "./state.ts";
+import { type Item, type Limit, NO_VALUE, type RowState, refOf, valueToken } from "./state.ts";
 
 /** What judging one write or revoke gives, before the record is assembled. */
 export interface WriteOutcome {
@@ -64,11 +56,12 @@ interface Part {
   readonly deps: readonly ItemRef[];
 }
 
-interface Draft {
+export interface Draft {
   readonly target: FieldId | "existence";
   readonly status: ItemStatus;
   readonly valid: IntervalSet;
   readonly content: RecordedItem["content"];
+  readonly carried?: readonly ItemRef[];
   readonly deps: readonly ItemRef[];
 }
 
@@ -103,6 +96,7 @@ export function numbered(drafts: readonly Draft[]): RecordedItem[] {
         status: d.status,
         valid: d.valid,
         content: d.content,
+        ...(d.carried !== undefined ? { carried: d.carried } : {}),
         deps: d.deps,
       });
     });
@@ -110,7 +104,7 @@ export function numbered(drafts: readonly Draft[]): RecordedItem[] {
   return out;
 }
 
-function asItems(
+export function asItems(
   items: readonly RecordedItem[],
   o: { op: OpNumber; index: number; event: number },
 ): Item[] {
@@ -123,6 +117,7 @@ function asItems(
     status: x.status,
     valid: x.valid,
     content: x.content,
+    ...(x.carried !== undefined ? { carried: x.carried } : {}),
     deps: x.deps,
     explicitEnds: [],
     defaultEnd: false,
@@ -247,7 +242,7 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
   // Event and timeless tables: a revoked row cannot be written; checked on the part taking effect
   // only, after the conflict step, so a stale write meeting a revoke is a candidate (step 5).
   if (!state.isState && applied.length > 0 && state.revoked(curAt)) {
-    throw new JudgeError("revoked", "the row is revoked", { ops: revokedBy(state, curAt) });
+    throw new JudgeError("revoked", "the row is revoked", { ops: state.revokedBy(curAt) });
   }
 
   // Checks that depend on the current state, on the part taking effect only (step 5).
@@ -289,12 +284,6 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
     };
   });
   return { items, noop, conflicts: withItems, erased, overwritten, acknowledged, warnings };
-}
-
-function revokedBy(state: RowState, at: Limit): OpNumber[] {
-  return state.items
-    .filter((x) => x.status === "applied" && x.content.kind === "revoke" && state.sees(x, at))
-    .map((x) => x.op);
 }
 
 /** The items in effect after the seen version that changed `f` (or existence) inside `valid`. */
@@ -458,10 +447,12 @@ function shownKey(s: Shown): string {
 }
 
 /** The stretches an item in effect overwrites: where the field shows another value now. */
-function overwrittenBy(state: RowState, d: Draft, curAt: Limit): Overwritten[] {
-  if (d.target === "existence" || d.content.kind !== "value") return [];
+export function overwrittenBy(state: RowState, d: Draft, curAt: Limit): Overwritten[] {
+  if (d.target === "existence") return [];
+  if (d.content.kind !== "value" && d.content.kind !== "no_value") return [];
   const f = d.target;
-  const v = valueToken(d.content.value);
+  // A write-back of "no value" overwrites wherever the field shows something else.
+  const v = d.content.kind === "value" ? valueToken(d.content.value) : "none";
   const out: { valid: Interval[]; was: Shown; key: string }[] = [];
   for (const s of state.piecesIn(d.valid)) {
     if (state.token(f, s, curAt) === v) continue;

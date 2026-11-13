@@ -138,8 +138,8 @@ it("an undo lists its target's targets as of its write; no-op fields are not tar
 });
 
 describe("which undo targets are accepted", () => {
-  // 04-write-and-read «撤回某次写入（undo）»: `undo_target` only when no item of the target on this
-  // row ever took effect (in effect or corroborated).
+  // 04-write-and-read «撤回某次写入（undo）»: `undo_target` when no item of the target on this row
+  // is applied: corroborations and no-ops changed no value.
   const base = put(10, 12, "5000", ["S0"], "10-01", "open");
   const later = (op: number): WriteOp => ({
     kind: "write",
@@ -149,27 +149,54 @@ describe("which undo targets are accepted", () => {
     fields: { f2: { value: "2000", sources: ["S9"] } },
   });
 
-  it("a corroboration-only write can be undone: its endpoints stop counting, values stay", () => {
-    // 05-time «挡点»: a corroboration reverted by an undo no longer gives endpoints.
+  it("a corroboration-only write is rejected: it changed no value", () => {
+    // 04-write-and-read «第 n 次写入是什么»: 只做了同值佐证 → `invalid_argument`.
     const corroborate = put(20, 21, "5000", ["S1"], "11-05", "11-20", { explicit: true });
-    const kept = evaluate(STATE, [base, corroborate, later(40)]);
-    expect(itemsOf(kept, 41)).toEqual(['f2/0 applied [2026-11-03, 2026-11-05) "2000"']);
-    const undone = evaluate(STATE, [
+    const ev = evaluate(STATE, [
       base,
       corroborate,
       { kind: "undo", op: 30, event: 31, target: 20 },
     ]);
-    expect(undone.reverts).toEqual([
-      { op: 30, event: 31, status: "applied", record: [{ event: 21, target: "f2" }] },
-    ]);
-    expect(short(timeline(undone, "f2"))).toEqual(['[10-01, inf) "5000"']);
+    expect(ev.reverts).toEqual([{ op: 30, event: 31, status: "rejected", record: [] }]);
+    // The corroboration still counts: its endpoint 11-05 stops a later default end.
     const after = evaluate(STATE, [
       base,
       corroborate,
       { kind: "undo", op: 30, event: 31, target: 20 },
       later(40),
     ]);
-    expect(itemsOf(after, 41)).toEqual(['f2/0 applied [2026-11-03, inf) "2000"']);
+    expect(itemsOf(after, 41)).toEqual(['f2/0 applied [2026-11-03, 2026-11-05) "2000"']);
+  });
+
+  it("a write with a part applied is accepted; its corroborated part is registered too", () => {
+    // f2 corroborated, f3 applied in one write: the undo lists both and registers both, so the
+    // corroboration's endpoints stop counting (05-time «挡点»).
+    const mixed: WriteOp = {
+      ...put(20, 21, "5000", ["S1"], "11-05", "11-20", { explicit: true }),
+      fields: {
+        f2: { value: "5000", sources: ["S1"], explicit: true },
+        f3: { value: "x", sources: ["S1"] },
+      },
+    };
+    const ev = evaluate(STATE, [
+      base,
+      mixed,
+      // Writing f3 back to nothing erases its change points (①): acknowledged with the current ver.
+      { kind: "undo", op: 30, event: 31, target: 20, seen: 20, acknowledge: ["overwrite"] },
+      later(40),
+    ]);
+    expect(ev.reverts).toEqual([
+      {
+        op: 30,
+        event: 31,
+        status: "applied",
+        record: [
+          { event: 21, target: "f2" },
+          { event: 21, target: "f3" },
+        ],
+      },
+    ]);
+    expect(itemsOf(ev, 41)).toEqual(['f2/0 applied [2026-11-03, inf) "2000"']);
   });
 
   it("a write of nothing but no-ops is rejected", () => {
@@ -264,4 +291,118 @@ it("a corroboration does not make the ver stale: acknowledge after it still coun
     ev.items.filter((x) => x.event === event).map((x) => x.status);
   expect(statuses(32)).toEqual(["corroborated"]);
   expect(statuses(42)).toEqual(["applied"]);
+});
+
+it("undoing the write that counts as the first creation is rejected: revoke instead", () => {
+  // 04-write-and-read «第 n 次写入是什么»: the first creation cannot be undone. #21 gives only the
+  // optional f3, so #31, the first write giving the required f2, is the first creation.
+  const ops: Op[] = [
+    { kind: "write", op: 20, event: 21, fields: { f3: { value: "1", sources: ["S1"] } } },
+    { kind: "write", op: 30, event: 31, fields: { f2: { value: "9", sources: ["S2"] } } },
+    { kind: "undo", op: 40, event: 41, target: 30 },
+  ];
+  const ev = evaluate(EVENT, ops);
+  expect(ev.created).toBe(31);
+  expect(ev.reverts).toEqual([{ op: 40, event: 41, status: "rejected", record: [] }]);
+});
+
+describe("an undo on a revoked row of an event table", () => {
+  // 04-write-and-read «撤回某次写入（undo）»: an undo passes the checks on the current state; the
+  // row still revoked once the undo is written is `revoked`. Undoing the revoke itself, or taking
+  // it back with `include_later` (high impact ④), leaves the row existing.
+  const ops: Op[] = [
+    { kind: "write", op: 10, event: 11, fields: { f2: { value: "1", sources: ["S1"] } } },
+    { kind: "write", op: 20, event: 21, fields: { f2: { value: "2", sources: ["S2"] } } },
+    { kind: "revoke", op: 30, event: 31 },
+  ];
+
+  it("is rejected while the row stays revoked", () => {
+    const ev = evaluate(EVENT, [...ops, { kind: "undo", op: 40, event: 41, target: 20 }]);
+    expect(ev.reverts).toEqual([
+      { op: 40, event: 41, status: "rejected", reason: "revoked", record: [] },
+    ]);
+    expect(itemsOf(ev, 41)).toEqual([]);
+    expect(ev.exists).toBe(false);
+  });
+
+  it("undoing the revoke is accepted", () => {
+    const ev = evaluate(EVENT, [...ops, { kind: "undo", op: 40, event: 41, target: 30 }]);
+    expect(ev.reverts[0]?.status).toBe("applied");
+    expect(ev.exists).toBe(true);
+  });
+
+  it("taking the revoke back with include_later awaits confirmation (④)", () => {
+    const ev = evaluate(EVENT, [
+      ...ops,
+      { kind: "undo", op: 40, event: 41, target: 20, includeLater: true },
+    ]);
+    expect(ev.reverts).toEqual([
+      {
+        op: 40,
+        event: 41,
+        status: "awaiting",
+        record: [
+          { event: 21, target: "f2" },
+          { event: 31, target: "existence", later: true },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("undoing a revert put into effect by a confirmation", () => {
+  // 09 §5.7 «回退记录里列哪些条目»: when m is an awaiting revert put into effect by a confirmation,
+  // the confirmation's base write and its revert record are taken, not the proposal's. By the
+  // confirming operation the undo is an ordinary one (04-write-and-read «第 n 次写入是什么»).
+  const ops: Op[] = [
+    put(10, 11, "1", ["S1"], "10-01", "open"),
+    put(20, 21, "2", ["S2"], "11-01", "11-05", { seen: 10, acknowledge: ["overwrite"] }),
+    put(30, 31, "3", ["S3"], "11-03", "11-09", { seen: 20, acknowledge: ["overwrite"] }),
+    { kind: "undo", op: 40, event: 41, target: 20, includeLater: true },
+    { kind: "confirm", op: 50, event: 51, target: 41 },
+  ];
+  const undo = (target: number): Op => ({
+    kind: "undo",
+    op: 60,
+    event: 61,
+    target,
+    seen: 50,
+    acknowledge: ["overwrite"],
+  });
+
+  it("by the proposal's operation number", () => {
+    const ev = evaluate(STATE, [...ops, undo(40)]);
+    expect(ev.reverts.at(-1)).toEqual({
+      op: 60,
+      event: 61,
+      status: "applied",
+      record: [{ event: 51, target: "f2" }],
+    });
+    expect(short(timeline(ev, "f2"))).toEqual([
+      '[10-01, 11-01) "1"',
+      '[11-01, 11-03) "2"',
+      '[11-03, 11-09) "3"',
+      '[11-09, inf) "1"',
+    ]);
+  });
+
+  it("by the confirming operation, the same", () => {
+    const by = (target: number) => evaluate(STATE, [...ops, undo(target)]);
+    expect(by(50).reverts.at(-1)).toEqual(by(40).reverts.at(-1));
+    expect(timeline(by(50), "f2")).toEqual(timeline(by(40), "f2"));
+  });
+});
+
+it("revoking a revoked row of an event table again is a no-op", () => {
+  // 04-write-and-read «已撤销的行不可写»: 再次撤销是无操作. Undoing the first revoke brings the
+  // row back.
+  const ops: Op[] = [
+    { kind: "write", op: 10, event: 11, fields: { f2: { value: "1", sources: ["S1"] } } },
+    { kind: "revoke", op: 20, event: 21 },
+    { kind: "revoke", op: 30, event: 31 },
+  ];
+  const ev = evaluate(EVENT, ops);
+  expect(itemsOf(ev, 31)).toEqual([]);
+  const back = evaluate(EVENT, [...ops, { kind: "undo", op: 40, event: 41, target: 20 }]);
+  expect(back.exists).toBe(true);
 });

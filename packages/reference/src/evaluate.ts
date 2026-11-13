@@ -332,7 +332,11 @@ class Replay {
   /** The value of `f` as the judgements see it: "no value" wherever the entity has none. */
   vis(f: FieldId, seg: Iv, limit: number): string {
     if (this.isState && !this.hasValue(seg, limit)) return NO_VALUE;
-    return stateTok(this.fieldState(f, seg, limit));
+    const st = this.fieldState(f, seg, limit);
+    // Where the entity has a value, a field the filling writes did not give is empty, not a hole
+    // (05-time «无值区间»: 可选字段不带就是空).
+    if (this.isState && st.kind === "hole") return "none";
+    return stateTok(st);
   }
 
   /** Value change points of `f`, including value ↔ no value (05-time «挡点»). */
@@ -806,6 +810,9 @@ class Replay {
       if (s === null || c === null) return;
       seenValid = s.valid;
       valid = c.valid;
+    } else if (!this.isState && this.revokedRow()) {
+      // Revoking a revoked row again is a no-op (04-write-and-read «已撤销的行不可写»).
+      return;
     }
     const r = this.recordedStatus(o.event, "existence", seenValid);
     let conflict = seen < cur && this.revokeConflicts(seenValid, seen, cur);
@@ -887,18 +894,39 @@ class Replay {
     );
   }
 
-  undo(o: UndoOp): void {
+  /**
+   * The operation an undo of `target` takes back: `target`, or, when it proposed a revert that a
+   * confirmation put into effect, that confirmation: its base write and revert record are the ones
+   * taken, not the proposal's (09 §5.7 «回退记录里列哪些条目»).
+   */
+  undone(target: OpNumber): OpNumber {
+    const m = this.ops.find((x) => x.op === target);
+    if (m?.kind !== "undo" || this.revertStatus.get(target) !== "awaiting") return target;
+    const c = this.ops.find(
+      (x) =>
+        x.kind === "confirm" && x.target === m.event && this.revertStatus.get(x.op) === "applied",
+    );
+    return c?.op ?? target;
+  }
+
+  undo(input: UndoOp): void {
+    const o = { ...input, target: this.undone(input.target) };
     const n = o.op;
-    // `undo_target` (04-write-and-read «撤回某次写入（undo）»): rejected when no item of the
-    // target on this row is in effect or corroborated when the undo is written, pending deletions
+    // `undo_target` (04-write-and-read «撤回某次写入（undo）», «第 n 次写入是什么»): rejected when no
+    // item of the target on this row is applied when the undo is written, pending deletions
     // included. So a candidate, an awaiting write (its confirmation is a separate operation), a
-    // write of nothing but no-ops, or a revert with no write-back (a pending deletion may have
-    // restated them all as dropped) is rejected; a corroboration-only write can be undone (its
-    // corroboration and endpoints stop counting, values stay). The answer is the write-time one
-    // and is kept in every replay.
+    // write of nothing but no-ops or corroborations (it changed no value: nothing to undo), or a
+    // revert with no write-back (a pending deletion may have restated them all as dropped) is
+    // rejected. A write with a part applied is accepted; its corroborated part is in the record
+    // too and is registered with the rest. The answer is the write-time one and is kept in every
+    // replay.
+    // The write that counts as the first creation cannot be undone either: revoke instead
+    // (04-write-and-read «第 n 次写入是什么»).
+    const creation = this.created();
     const rejected = this.rec.revertStatus.has(n)
       ? this.rec.revertStatus.get(n) === "rejected"
-      : !this.items.some((x) => x.op === o.target && effective(x.status));
+      : !this.items.some((x) => x.op === o.target && x.status === "applied") ||
+        (creation !== undefined && this.opsByEvent.get(creation)?.op === o.target);
     if (rejected) {
       this.reverts.push({ op: n, event: o.event, status: "rejected", record: [] });
       this.revertStatus.set(n, "rejected");
@@ -917,6 +945,15 @@ class Replay {
         const recStatus = this.rec.revertStatus.get(n);
         if (recStatus === "applied") return "applied"; // deviation two
         if (recStatus === "awaiting" && this.resolvedAwaiting.has(o.event)) return "awaiting";
+        // Event and timeless tables: an undo of a revoked row is rejected (`revoked`) when the row
+        // is still revoked once it is written (04-write-and-read «撤回某次写入（undo）»). An undo of
+        // the revoke itself, or one taking it back with `include_later` (④), leaves it existing.
+        if (!this.isState && this.revokedRow()) {
+          apply();
+          const still = this.revokedRow();
+          rollback();
+          if (still) return "revoked";
+        }
         // High impact ④: an item marked `later` has a non-empty range (05-time «高影响写入»).
         // and a write-back revoke that hides later field writes.
         if (laterInRange || hides) return "awaiting";
@@ -934,10 +971,10 @@ class Replay {
     if (target?.kind === "undo") {
       if (this.revertStatus.get(target.op) !== "awaiting") return;
       // The confirmation lists its own record as of the confirmation (09 §5.8 `item.resolved`).
+      const m = this.undone(target.target);
       const record =
-        this.rec.revertRecords.get(o.op) ??
-        this.undoRecord(target.target, target.includeLater ?? false, o.op);
-      this.revert(o.event, o.op, record, { before: target.target }, null, () => "applied");
+        this.rec.revertRecords.get(o.op) ?? this.undoRecord(m, target.includeLater ?? false, o.op);
+      this.revert(o.event, o.op, record, { before: m }, null, () => "applied");
       return;
     }
     // Executes the proposal as recorded in the item (05-time «高影响写入»).
@@ -1079,7 +1116,7 @@ class Replay {
       rollback: () => void,
       laterInRange: boolean,
       hides: boolean,
-    ) => RevertResult["status"],
+    ) => RevertResult["status"] | "revoked",
   ): void {
     // Step 1: R' = every item of every (event, target) R lists, whatever its index (given at
     // write time or by a deletion) and whatever its status at write time.
@@ -1199,7 +1236,14 @@ class Replay {
               !isEmpty(subtract(intersect(w.valid, x.valid), this.registeredSet(x, n))),
           ),
       );
-    const status = decide(zai, apply, rollback, laterInRange, hidden("applied"));
+    const verdict = decide(zai, apply, rollback, laterInRange, hidden("applied"));
+    if (verdict === "revoked") {
+      this.reverts.push({ op: n, event, status: "rejected", reason: "revoked", record: [] });
+      this.revertStatus.set(n, "rejected");
+      this.revertRecords.set(n, []);
+      return;
+    }
+    const status = verdict;
     this.reverts.push({
       op: n,
       event,
@@ -1307,15 +1351,16 @@ class Replay {
   // -------------------------------------------------------------------------------------------
   // Results.
 
+  /** Event and timeless tables: a revoke in effect, not registered as reverted. */
+  revokedRow(): boolean {
+    return this.items.some(
+      (x) =>
+        x.content.kind === "revoke" && x.status === "applied" && !this.registeredOn(x, ALL, INF),
+    );
+  }
+
   rowExists(): boolean {
-    if (
-      this.items.some(
-        (x) =>
-          x.content.kind === "revoke" && x.status === "applied" && !this.registeredOn(x, ALL, INF),
-      )
-    ) {
-      return false;
-    }
+    if (this.revokedRow()) return false;
     const contributes = (f: FieldId, nonNull: boolean) =>
       this.items.some(
         (x) =>

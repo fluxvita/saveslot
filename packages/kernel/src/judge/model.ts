@@ -139,14 +139,70 @@ export interface KeepEffectiveInput extends OpBase {
   readonly candidates: readonly Seq[];
 }
 
-export type JudgeInput = WriteInput | RevokeInput | ConfirmInput | RejectInput | KeepEffectiveInput;
+/**
+ * `undo`: take back operation `target` on this row or entity (04-write-and-read «撤回某次写入（undo）»).
+ * `ver` is optional; `seen` counts only for `acknowledge`.
+ */
+export interface UndoInput extends OpBase, SeenVersion {
+  readonly kind: "undo";
+  readonly target: OpNumber;
+  readonly includeLater?: boolean;
+  readonly acknowledge?: boolean;
+}
+
+/** A conflict item resolved by `take_previous`: back to the value at the merge base. */
+export interface TakePreviousInput extends OpBase {
+  readonly kind: "take_previous";
+  readonly unit: Unit;
+  readonly candidates: readonly Seq[];
+}
+
+export type JudgeInput =
+  | WriteInput
+  | RevokeInput
+  | ConfirmInput
+  | RejectInput
+  | KeepEffectiveInput
+  | UndoInput
+  | TakePreviousInput;
 
 // ---------------------------------------------------------------------------------------------
 // Records: what the log keeps of a judgement.
 
 export type ItemContent =
   | { readonly kind: "value"; readonly value: FieldValue }
-  | { readonly kind: "revoke" };
+  | { readonly kind: "revoke" }
+  /** A write-back of "no contribution at all" (09 §5.7 `no_value`). */
+  | { readonly kind: "no_value" }
+  /** A write-back that only registers: gives nothing, covers nothing (09 §5.7 `uncovered`). */
+  | { readonly kind: "uncovered" }
+  /** A write-back that restores existence (09 §5.7 `existence` with `restored`). */
+  | { readonly kind: "restore" };
+
+/** An entry of a revert record: an (event, target), never an index (09 §5.7 `revert.items`). */
+export interface RevertEntry {
+  readonly event: Seq;
+  readonly target: Target;
+  /** A later write an `include_later` undo takes back with the undone operation. */
+  readonly later?: true;
+}
+
+/**
+ * A revert (03-deletion «回掉的权威定义»): the record R, where the values are taken from, and the
+ * skipped entries (`undo` only, for history and receipts).
+ */
+export interface RevertSpec {
+  readonly entries: readonly RevertEntry[];
+  /** `undo`: the operation taken back (values from before it). */
+  readonly before?: OpNumber;
+  /** `take_previous`: the merge base (values as of it). */
+  readonly mergeBase?: OpNumber;
+  /** `take_previous`: the events whose candidates make up the item, on `unit`. */
+  readonly candidates?: readonly Seq[];
+  readonly unit?: Unit;
+  /** Entries already covered by later writes when the undo was written, one per covering op. */
+  readonly skipped: readonly (RevertEntry & { readonly byOp: OpNumber })[];
+}
 
 export interface RecordedItem {
   readonly target: Target;
@@ -191,6 +247,29 @@ export interface ConfirmRecord extends RecordBase {
   readonly kind: "confirm";
   readonly target: Seq;
   readonly items: readonly RecordedItem[];
+  /**
+   * Confirming an awaiting undo: the revert as listed at the confirmation (04-write-and-read
+   * «撤回某次写入（undo）», 09 §5.8); its write-backs are `items`.
+   */
+  readonly revert?: RevertSpec;
+}
+
+/**
+ * An `undo` or a `take_previous`. `status` is the revert's: awaiting (an undo of high impact; its
+ * items are the proposal, with status awaiting) or applied.
+ */
+export interface RevertRecord extends RecordBase {
+  readonly kind: "undo" | "take_previous";
+  readonly status: "applied" | "awaiting";
+  readonly revert: RevertSpec;
+  readonly items: readonly RecordedItem[];
+  /** `undo`: as the caller gave them. */
+  readonly seen?: OpNumber;
+  readonly seenExplicit?: boolean;
+  readonly acknowledge?: true;
+  readonly includeLater?: true;
+  /** An undo of high impact ① taken into effect by `acknowledge`: the stretches it overwrote. */
+  readonly ack: readonly Overwritten[];
 }
 
 export interface RejectRecord extends RecordBase {
@@ -204,7 +283,12 @@ export interface KeepEffectiveRecord extends RecordBase {
   readonly candidates: readonly Seq[];
 }
 
-export type OpRecord = WriteRecord | ConfirmRecord | RejectRecord | KeepEffectiveRecord;
+export type OpRecord =
+  | WriteRecord
+  | ConfirmRecord
+  | RejectRecord
+  | KeepEffectiveRecord
+  | RevertRecord;
 
 // ---------------------------------------------------------------------------------------------
 // What a judgement says beyond the record (receipts, pending items).
@@ -264,6 +348,13 @@ export interface Judgement {
   readonly warnings: readonly CoveredCorroboration[];
   /** The write counts as the first creation of the row or entity (03-deletion «首次创建标记»). */
   readonly created: boolean;
+  /**
+   * High impact ④ of an `undo` (05-time «高影响写入»): the later operations it takes back (an
+   * entry marked `later` with a non-empty range), and the later field items in effect a
+   * write-back revoke hides.
+   */
+  readonly takesBack: readonly OpNumber[];
+  readonly hides: readonly ItemRef[];
 }
 
 // ---------------------------------------------------------------------------------------------

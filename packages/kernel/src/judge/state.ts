@@ -104,14 +104,18 @@ function itemsOf(records: readonly OpRecord[]): Item[] {
   for (const r of records) {
     if (r.kind === "reject" || r.kind === "keep_effective") continue;
     // A confirmation executes the awaiting write as proposed: for the conflict criterion its
-    // items are written the way that write was (a default end or not).
+    // items are written the way that write was (a default end or not). Write-backs of reverts
+    // have no raw interval: no explicit ends, no default end.
+    const written = r.kind === "write" || r.kind === "revoke";
     const proposal =
       r.kind === "confirm"
         ? records.find((y) => y.event === r.target && (y.kind === "write" || y.kind === "revoke"))
-        : r;
+        : written
+          ? r
+          : undefined;
     const raw =
       proposal?.kind === "write" || proposal?.kind === "revoke" ? proposal.valid : undefined;
-    const ends = r.kind === "confirm" ? [] : givenEnds(raw, r.now);
+    const ends = r.kind === "write" || r.kind === "revoke" ? givenEnds(raw, r.now) : [];
     const nextChange =
       proposal !== undefined &&
       (raw === undefined || (raw !== "corrected_span" && raw.to.mode === "next_change"));
@@ -135,6 +139,56 @@ function itemsOf(records: readonly OpRecord[]): Item[] {
   return out;
 }
 
+/** "Registered as reverted by operation `op` on `valid`" (03-deletion «回掉的权威定义» step 5). */
+export interface Registration {
+  readonly op: OpNumber;
+  readonly index: number;
+  readonly valid: IntervalSet;
+}
+
+/** Step 3, "x 取代 r". */
+export function supersedes(x: Item, r: Item): boolean {
+  const xIsFieldValue = x.target !== "existence" && x.content.kind === "value";
+  if (r.content.kind === "revoke") return x.content.kind === "restore" || xIsFieldValue;
+  if (r.content.kind === "restore") return x.content.kind === "revoke";
+  return (x.target === r.target && x.content.kind !== "uncovered") || x.content.kind === "revoke";
+}
+
+const etKey = (event: Seq, target: Target) => `${event}/${target}`;
+
+/**
+ * The registrations a revert in effect makes, from what its record holds (09 §5.7 `revert`, the
+ * `apply` row): each item in effect of an entry is registered on its interval ∩ the union of the
+ * revert's write-back intervals on its target; an item of an entry marked `later` only within
+ * D(x), the items in effect of the undone operation's entries it supersedes.
+ */
+export function registrationsOf(
+  items: readonly Item[],
+  revert: {
+    op: OpNumber;
+    index: number;
+    entries: readonly { event: Seq; target: Target; later?: true }[];
+  },
+  writeBacks: readonly Item[],
+): { item: Item; reg: Registration }[] {
+  const entries = new Map(revert.entries.map((e) => [etKey(e.event, e.target), e]));
+  const before = (x: Item) => x.op < revert.op || (x.op === revert.op && x.index < revert.index);
+  const inEffect = items.filter(
+    (x) => entries.has(etKey(x.event, x.target)) && before(x) && effective(x.status),
+  );
+  const isLater = (x: Item) => entries.get(etKey(x.event, x.target))?.later === true;
+  const out: { item: Item; reg: Registration }[] = [];
+  for (const x of inEffect) {
+    const t = canonical(writeBacks.filter((w) => w.target === x.target).flatMap((w) => w.valid));
+    const domain = isLater(x)
+      ? canonical(inEffect.filter((y) => !isLater(y) && supersedes(x, y)).flatMap((y) => y.valid))
+      : [WHOLE];
+    const valid = meet(meet(x.valid, t), domain);
+    if (valid.length > 0) out.push({ item: x, reg: { op: revert.op, index: revert.index, valid } });
+  }
+  return out;
+}
+
 /** Orders items by when they were written: operation, place in the request, event. */
 export function later(a: Item, b: Item): boolean {
   if (a.op !== b.op) return a.op > b.op;
@@ -153,11 +207,44 @@ export class RowState {
   /** Items not in the records: a tentative judgement being tried. */
   private readonly extra: readonly Item[];
 
-  constructor(table: TableShape, records: readonly OpRecord[], extra: readonly Item[] = []) {
+  /** Registrations of reverts in effect, by item (refKey). */
+  readonly regs: ReadonlyMap<string, readonly Registration[]>;
+  /** Registrations of a tentative judgement being tried. */
+  private readonly extraRegs: readonly { item: Item; reg: Registration }[];
+
+  constructor(
+    table: TableShape,
+    records: readonly OpRecord[],
+    extra: readonly Item[] = [],
+    extraRegs: readonly { item: Item; reg: Registration }[] = [],
+  ) {
     this.table = table;
     this.records = records;
     this.extra = extra;
+    this.extraRegs = extraRegs;
     this.items = [...itemsOf(records), ...extra];
+    const regs = new Map<string, Registration[]>();
+    const add = (x: { item: Item; reg: Registration }) =>
+      regs.set(refKey(x.item), [...(regs.get(refKey(x.item)) ?? []), x.reg]);
+    for (const r of records) {
+      const revert =
+        (r.kind === "undo" || r.kind === "take_previous") && r.status === "applied"
+          ? r.revert
+          : r.kind === "confirm"
+            ? r.revert
+            : undefined;
+      if (revert === undefined) continue;
+      const writeBacks = this.items.filter((x) => x.op === r.op && x.event === r.event);
+      for (const x of registrationsOf(
+        this.items,
+        { op: r.op, index: r.index, entries: revert.entries },
+        writeBacks,
+      )) {
+        add(x);
+      }
+    }
+    for (const x of extraRegs) add(x);
+    this.regs = regs;
     this.isState = table.kind === "state";
     const units = new Map<FieldId, readonly FieldId[]>();
     for (const g of table.groups) for (const f of g) units.set(f, [...g].sort());
@@ -165,9 +252,14 @@ export class RowState {
     this.unitOf = units;
   }
 
-  /** The same state with `extra` items written (a tentative judgement). */
-  with(extra: readonly Item[]): RowState {
-    return new RowState(this.table, this.records, [...this.extra, ...extra]);
+  /** The same state with `extra` items written (a tentative judgement), and their registrations. */
+  with(extra: readonly Item[], regs: readonly { item: Item; reg: Registration }[] = []): RowState {
+    return new RowState(
+      this.table,
+      this.records,
+      [...this.extra, ...extra],
+      [...this.extraRegs, ...regs],
+    );
   }
 
   sees(x: Item, at: Limit): boolean {
@@ -195,16 +287,48 @@ export class RowState {
    * revokes (03-deletion «重放规则», the value of a field).
    */
   fieldState(f: FieldId, seg: Interval, at: Limit): FieldState {
+    // Write-backs that only register (`uncovered`) give nothing and cover nothing; restores only
+    // cancel revokes, which the same revert registers (03-deletion «回掉的权威定义» step 6).
     let best: Item | undefined;
     for (const x of this.items) {
       if (x.status !== "applied" || !this.sees(x, at) || !within(seg, x.valid)) continue;
-      const counts = (x.target === f && x.content.kind === "value") || x.content.kind === "revoke";
-      if (!counts) continue;
+      const counts =
+        (x.target === f && (x.content.kind === "value" || x.content.kind === "no_value")) ||
+        x.content.kind === "revoke";
+      if (!counts || this.registeredOn(x, seg, at)) continue;
       if (best === undefined || later(x, best)) best = x;
     }
     if (best === undefined) return { kind: "none" };
     if (best.content.kind === "revoke") return { kind: "hole", by: best };
-    return { kind: "value", value: best.content.value, by: best };
+    if (best.content.kind === "value")
+      return { kind: "value", value: best.content.value, by: best };
+    return { kind: "none" };
+  }
+
+  /** Registrations of an item visible at `at`. */
+  registrations(x: Item, at: Limit): Registration[] {
+    return (this.regs.get(refKey(x)) ?? []).filter(
+      (r) =>
+        r.op <= at.upTo ||
+        (at.request !== undefined && r.op === at.request.op && r.index < at.request.below),
+    );
+  }
+
+  /** Whether the item is registered as reverted on the whole piece, as of `at`. */
+  registeredOn(x: Item, seg: Interval, at: Limit): boolean {
+    return this.registrations(x, at).some((r) => within(seg, r.valid));
+  }
+
+  /** Whether a registration of the item reaches point `p`, its ends included. */
+  registeredAtEnd(x: Item, p: BizPoint, at: Limit): boolean {
+    return this.registrations(x, at).some((r) =>
+      r.valid.some((v) => (v.from === null || v.from <= p) && (v.to === null || p <= v.to)),
+    );
+  }
+
+  /** Where the item is registered as reverted, as of `at`. */
+  registeredSet(x: Item, at: Limit): IntervalSet {
+    return canonical(this.registrations(x, at).flatMap((r) => r.valid));
   }
 
   /** State tables: a point has a value when every required field has one (05-time «无值区间»). */
@@ -218,6 +342,9 @@ export class RowState {
   token(f: FieldId, seg: Interval, at: Limit): string {
     if (this.isState && !this.hasValue(seg, at)) return NO_VALUE;
     const s = this.fieldState(f, seg, at);
+    // Where the entity has a value, a field the filling writes did not give is empty, not a hole
+    // (05-time «无值区间»: 可选字段不带就是空).
+    if (this.isState && s.kind === "hole") return "none";
     return s.kind === "value" ? valueToken(s.value) : s.kind;
   }
 
@@ -262,13 +389,17 @@ export class RowState {
     for (const c of this.items) {
       if (c.status !== "corroborated" || c.target !== f || !this.sees(c, at)) continue;
       for (const p of c.explicitEnds) {
+        // Reverted by an undo or take_previous: the endpoint no longer counts. An end endpoint
+        // belongs to the stretch just before it, so the registration is read as closed here.
+        if (this.registeredAtEnd(c, p, at)) continue;
         const coveredOver = this.items.some(
           (x) =>
             x.status === "applied" &&
             this.sees(x, at) &&
             later(x, c) &&
-            (x.target === f || x.content.kind === "revoke") &&
-            holds(x.valid, p),
+            ((x.target === f && x.content.kind !== "uncovered") || x.content.kind === "revoke") &&
+            holds(x.valid, p) &&
+            !holds(this.registeredSet(x, at), p),
         );
         if (!coveredOver) out.push(p);
       }
@@ -327,9 +458,20 @@ export class RowState {
 
   /** Event and timeless tables: the row has a revoke in effect. */
   revoked(at: Limit): boolean {
-    return this.items.some(
-      (x) => x.status === "applied" && x.content.kind === "revoke" && this.sees(x, at),
-    );
+    return this.revokedBy(at).length > 0;
+  }
+
+  /** Event and timeless tables: the operations whose revokes are in effect. */
+  revokedBy(at: Limit): OpNumber[] {
+    return this.items
+      .filter(
+        (x) =>
+          x.status === "applied" &&
+          x.content.kind === "revoke" &&
+          this.sees(x, at) &&
+          !this.registeredOn(x, WHOLE, at),
+      )
+      .map((x) => x.op);
   }
 
   /** Operations after `seen` and before `n` (other requests) with an item in effect. */
@@ -351,14 +493,20 @@ export class RowState {
 
   /** Records of keep-effective decisions and confirmations: which pending items are closed. */
   closedCandidate(event: Seq, target: Target): boolean {
-    return this.records.some(
-      (r) =>
-        r.kind === "keep_effective" &&
-        r.candidates.includes(event) &&
-        (r.unit === "existence"
-          ? target === "existence"
-          : target !== "existence" && r.unit.fields.includes(target)),
-    );
+    return this.records.some((r) => {
+      const item =
+        r.kind === "keep_effective"
+          ? { unit: r.unit, candidates: r.candidates }
+          : r.kind === "take_previous"
+            ? { unit: r.revert.unit, candidates: r.revert.candidates ?? [] }
+            : undefined;
+      if (item === undefined || item.unit === undefined || !item.candidates.includes(event)) {
+        return false;
+      }
+      return item.unit === "existence"
+        ? target === "existence"
+        : target !== "existence" && item.unit.fields.includes(target);
+    });
   }
 
   resolvedAwaiting(event: Seq): boolean {
