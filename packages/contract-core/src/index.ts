@@ -6,6 +6,7 @@ export * from "./event/compiled.ts";
 export * from "./event/enums.ts";
 export * from "./event/event.ts";
 export * from "./event/header.ts";
+export * from "./event/parse.ts";
 export * from "./event/values.ts";
 export * from "./event/vocabulary.ts";
 export * from "./jcs.ts";
