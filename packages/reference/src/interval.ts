@@ -45,7 +45,7 @@ export function normalize(xs: readonly Iv[]): IvSet {
   const out: Iv[] = [];
   for (const x of sorted) {
     const last = out[out.length - 1];
-    if (last !== undefined && (last.to === null || (x.from !== null && x.from <= last.to))) {
+    if (last !== undefined && (last.to === null || x.from === null || x.from <= last.to)) {
       out[out.length - 1] = { from: last.from, to: toLe(last.to, x.to) ? x.to : last.to };
     } else {
       out.push(x);

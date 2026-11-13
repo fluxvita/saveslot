@@ -286,6 +286,36 @@ const deletionAfterConflict: fc.Arbitrary<Step[]> = fc
   )
   .map(([head, pairs]) => [...head, ...pairs.flat()]);
 
+/**
+ * Random steps, then a write in effect (S2), a write with an older version over the same days
+ * that does not acknowledge (S5, a candidate), a deletion of S2 that removes the conflict's cause,
+ * and its cancellation: the candidate's item, superseded by the deletion, comes back with its kind
+ * unchanged (the restored branch of «删除不增加未决事项»).
+ */
+const restoreAfterCancel: fc.Arbitrary<Step[]> = fc
+  .tuple(
+    fc.array(step, { maxLength: 4 }),
+    fc.nat({ max: DAYS.length - 2 }),
+    fc.constantFrom<"open" | "next">("open", "next"),
+  )
+  .map(([head, from, to]) => [
+    ...head,
+    {
+      t: "write",
+      f: "f2",
+      v: "2",
+      src: "S2",
+      from,
+      to: "open",
+      lag: 0,
+      explicit: false,
+      ack: true,
+    },
+    { t: "write", f: "f2", v: "9", src: "S5", from, to, lag: 1, explicit: false, ack: false },
+    { t: "delete", src: ["S2"] },
+    { t: "cancel", back: 0 },
+  ]);
+
 /** Sources the log's writes cite: as a source of a field or as evidence for an interval. */
 function citedSources(log: readonly LogEntry[]): string[] {
   const out = new Set<string>();
@@ -1309,7 +1339,13 @@ describe.each(both)("%s table", (_, schema, state) => {
     const hits = new Hits(0.35);
     fc.assert(
       fc.property(
-        mostly(steps, deletionAfterConflict),
+        mostly(
+          steps,
+          fc.oneof(
+            { weight: 2, arbitrary: deletionAfterConflict },
+            { weight: 1, arbitrary: restoreAfterCancel },
+          ),
+        ),
         hits.track((st) => {
           const log = extend(schema, [], st, 10);
           const run = evaluateLog(schema, log);
