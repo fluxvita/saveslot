@@ -109,6 +109,34 @@ describe("undo of a write that never took effect itself is rejected", () => {
   });
 });
 
+it("an undo lists its target's targets as of its write; no-op fields are not targets", () => {
+  // 03-deletion «回掉的权威定义» ①, 09 §5.7: the record lists the undone write's targets as of its
+  // write (its write-time blocks), whatever their status then. A field the write left a no-op
+  // has no item and is not a target. `skipped` (entries already superseded when the undo is
+  // written, with `by_op`) is for history and receipts only and plays no part in coverage: the
+  // reference evaluator does not produce it.
+  const ev = evaluate(EVENT, [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      fields: { f2: { value: "1", sources: ["S1"] }, f3: { value: "x", sources: ["S1"] } },
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      fields: { f2: { value: "2", sources: ["S2"] }, f3: { value: "x", sources: ["S2"] } },
+    },
+    { kind: "write", op: 25, event: 26, fields: { f2: { value: "3", sources: ["S3"] } } },
+    { kind: "undo", op: 30, event: 31, target: 20 },
+  ]);
+  expect(ev.reverts).toEqual([
+    { op: 30, event: 31, status: "applied", record: [{ event: 21, target: "f2" }] },
+  ]);
+});
+
 describe("which undo targets are accepted", () => {
   // 04-write-and-read «撤回某次写入（undo）»: `undo_target` only when no item of the target on this
   // row ever took effect (in effect or corroborated).
@@ -132,7 +160,7 @@ describe("which undo targets are accepted", () => {
       { kind: "undo", op: 30, event: 31, target: 20 },
     ]);
     expect(undone.reverts).toEqual([
-      { op: 30, event: 31, status: "applied", record: [{ event: 21, target: "f2", k: 0 }] },
+      { op: 30, event: 31, status: "applied", record: [{ event: 21, target: "f2" }] },
     ]);
     expect(short(timeline(undone, "f2"))).toEqual(['[10-01, inf) "5000"']);
     const after = evaluate(STATE, [
@@ -154,8 +182,10 @@ describe("which undo targets are accepted", () => {
     expect(ev.reverts).toEqual([{ op: 30, event: 31, status: "rejected", record: [] }]);
   });
 
-  it("a revert in effect with no write-back now is accepted and recorded", () => {
-    // Operation 30 undoes #22, which X has wholly covered: no write-back, `revert` only.
+  it("a revert in effect with no write-back is rejected", () => {
+    // Operation 30 undoes #22, which X has wholly covered: no write-back, `revert` only. Operation
+    // 40 undoes operation 30, which changed nothing on this row: `undo_target`, like any target
+    // with nothing in effect.
     const ev = evaluate(STATE, [
       base,
       put(20, 22, "3000", ["S22"], "11-02", "11-20"),
@@ -165,8 +195,8 @@ describe("which undo targets are accepted", () => {
     ]);
     expect(itemsOf(ev, 32)).toEqual([]);
     expect(ev.reverts).toEqual([
-      { op: 30, event: 32, status: "applied", record: [{ event: 22, target: "f2", k: 0 }] },
-      { op: 40, event: 42, status: "applied", record: [] },
+      { op: 30, event: 32, status: "applied", record: [{ event: 22, target: "f2" }] },
+      { op: 40, event: 42, status: "rejected", record: [] },
     ]);
   });
 });

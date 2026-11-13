@@ -202,12 +202,23 @@ export interface FieldSegment {
   readonly by?: ItemRef;
 }
 
+/**
+ * One entry of a revert record (09 §5.7 `revert.items`): an (event, target), not an index. It
+ * covers every item of that (event, target) in a replay.
+ */
+export interface RevertEntry {
+  readonly event: Seq;
+  readonly target: FieldId | "existence";
+  /** A later write an `include_later` undo takes back with the undone operation. */
+  readonly later?: true;
+}
+
 export interface RevertResult {
   readonly op: OpNumber;
   readonly event: Seq;
   readonly status: "applied" | "awaiting" | "rejected";
   /** The revert record R as listed when the revert took effect (or was proposed). */
-  readonly record: readonly ItemRef[];
+  readonly record: readonly RevertEntry[];
 }
 
 export interface Evaluation {

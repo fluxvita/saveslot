@@ -605,17 +605,21 @@ export interface AckBlock {
 }
 
 /**
- * An item listed in an `undo` revert record; `later` marks items reverted through
- * `include_later`, which only `undo` has (a `take_previous` record lists plain references).
+ * An entry of a revert record (§5.7): an (event, target), not an index. It covers every item of
+ * that event on that target in a replay, whatever its index and its status when written.
  */
-export type RevertItem =
-  | (FieldContributionRef & { readonly later?: true })
-  | (ExistenceContributionRef & { readonly later?: true });
+export type RevertTarget =
+  | { readonly event: Seq; readonly field: FieldId; readonly existence?: never }
+  | { readonly event: Seq; readonly existence: true; readonly field?: never };
 
-/** An `undo` item that was already covered when the revert was written. */
-export type SkippedItem =
-  | (FieldContributionRef & { readonly by_op: OpNumber })
-  | (ExistenceContributionRef & { readonly by_op: OpNumber });
+/**
+ * An entry of an `undo` revert record; `later` marks a later write's entry taken back through
+ * `include_later`, which only `undo` has (a `take_previous` record lists plain entries).
+ */
+export type RevertItem = RevertTarget & { readonly later?: true };
+
+/** An `undo` entry that was skipped when the revert was written: for history and receipts only. */
+export type SkippedItem = RevertTarget & { readonly by_op: OpNumber };
 
 /** `revert` (meta): the revert record of an `undo` or of a `take_previous`. */
 export type RevertBlock =
@@ -629,7 +633,7 @@ export type RevertBlock =
   | {
       readonly as_of_op: OpNumber;
       readonly item: ItemId;
-      readonly items: readonly ContributionRef[];
+      readonly items: readonly RevertTarget[];
       readonly before_op?: never;
       readonly skipped?: never;
     };

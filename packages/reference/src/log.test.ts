@@ -65,7 +65,7 @@ describe("operations after a deletion are judged on the state it leaves", () => 
     const ev = evaluateLog(STATE, log).final;
     expect(items(ev, 15)).toEqual(['f2/0 applied [10-01, inf) "10"']);
     expect(ev.reverts).toEqual([
-      { op: 20, event: 21, status: "applied", record: [{ event: 15, target: "f2", k: 0 }] },
+      { op: 20, event: 21, status: "applied", record: [{ event: 15, target: "f2" }] },
     ]);
     expect(items(ev, 21)).toEqual(['f2/0 applied [10-01, inf) "9" carried #11/f2/0']);
     expect(tl(ev)).toEqual(['[10-01, inf) "9"']);
@@ -885,39 +885,57 @@ describe("review cases", () => {
 });
 
 describe("undo of a revert", () => {
-  // 03-deletion «回掉的权威定义» step 1: an undo whose target m is itself a revert expands to every
-  // write-back item of m on this row first given by a deletion's restatement, even when its
-  // record is empty because m had no write-back when the undo was written.
-  it("state table: the undone revert regains write-back items after a deletion; the undo reverts them", () => {
+  // 03-deletion «回掉的权威定义» step 1; 04-write-and-read «撤回某次写入（undo）». An undo whose
+  // target m is itself a revert lists m's event on every target m's record lists; it is rejected
+  // when m has no write-back item when the undo is written, pending deletions included.
+  const head: LogEntry[] = [
+    put(10, 12, "5000", ["S12"], "10-01", "open"),
+    put(20, 22, "3000", ["S22"], "11-02", "11-20"),
+    put(23, 25, "3500", ["S_X"], "11-02", "11-20"),
+    { kind: "undo", op: 30, event: 32, target: 20, seen: 23, acknowledge: ["overwrite"] },
+  ];
+
+  it("state table: a revert with no write-back cannot be undone, also after a deletion gives it one", () => {
     // #22 is wholly covered by X (#25) when operation 30 undoes it: no write-back. Operation 40
-    // undoes operation 30: accepted, empty record. Deleting X gives operation 30 a write-back
-    // (5000 on [11-02, 11-20)); operation 40 now reverts it: back to #22's 3000.
-    const log: LogEntry[] = [
-      put(10, 12, "5000", ["S12"], "10-01", "open"),
-      put(20, 22, "3000", ["S22"], "11-02", "11-20"),
-      put(23, 25, "3500", ["S_X"], "11-02", "11-20"),
-      { kind: "undo", op: 30, event: 32, target: 20, seen: 23, acknowledge: ["overwrite"] },
-      { kind: "undo", op: 40, event: 42, target: 30 },
-    ];
+    // undoes operation 30: rejected. Deleting X later gives operation 30 a write-back (5000 on
+    // [11-02, 11-20)); operation 40 stays rejected, as written.
+    const log: LogEntry[] = [...head, { kind: "undo", op: 40, event: 42, target: 30 }];
     const asWritten = evaluateLog(STATE, log).final;
     expect(asWritten.reverts).toEqual([
-      { op: 30, event: 32, status: "applied", record: [{ event: 22, target: "f2", k: 0 }] },
-      { op: 40, event: 42, status: "applied", record: [] },
+      { op: 30, event: 32, status: "applied", record: [{ event: 22, target: "f2" }] },
+      { op: 40, event: 42, status: "rejected", record: [] },
     ]);
     const ev = evaluateLog(STATE, [...log, del(50, "d", ["S_X"])]).final;
     expect(items(ev, 32)).toEqual(['f2/0 applied [11-02, 11-20) "5000" carried #12/f2/0']);
-    expect(items(ev, 42)).toEqual(['f2/0 applied [11-02, 11-20) "3000" carried #22/f2/0']);
-    expect(tl(ev)).toEqual([
-      '[10-01, 11-02) "5000"',
-      '[11-02, 11-20) "3000"',
-      '[11-20, inf) "5000"',
-    ]);
+    expect(items(ev, 42)).toEqual([]);
+    expect(tl(ev)).toEqual(['[10-01, inf) "5000"']);
   });
 
-  it("event table: the same on a single value", () => {
+  it("state table: accepted while a pending deletion gives the revert a write-back; covers nothing once it is cancelled", () => {
+    // Deleting X (pending) gives operation 30 a write-back; operation 40 undoes it then: accepted,
+    // back to #22's 3000. Cancelling the deletion takes the write-back away again: operation 40
+    // covers nothing, and the end is as if it had never been accepted.
+    const pending: LogEntry[] = [
+      ...head,
+      del(35, "d", ["S_X"]),
+      { kind: "undo", op: 40, event: 42, target: 30 },
+    ];
+    const during = evaluateLog(STATE, pending).final;
+    expect(during.reverts.find((r) => r.op === 40)).toEqual({
+      op: 40,
+      event: 42,
+      status: "applied",
+      record: [{ event: 32, target: "f2" }],
+    });
+    expect(items(during, 42)).toEqual(['f2/0 applied [11-02, 11-20) "3000" carried #22/f2/0']);
+    const ev = evaluateLog(STATE, [...pending, cancel(45, "d")]).final;
+    expect(items(ev, 42)).toEqual(["f2/0 dropped"]);
+    expect(tl(ev)).toEqual(tl(evaluateLog(STATE, head).final));
+  });
+
+  it("event table: a revert with no write-back cannot be undone", () => {
     // Operation 40 undoes W2, wholly covered by W3: no write-back. Operation 50 undoes operation
-    // 40: accepted, empty record. Deleting S3 gives operation 40 a write-back (45, from W1);
-    // operation 50 reverts it: back to W2's 54.
+    // 40: rejected, also after deleting S3 gives operation 40 a write-back (45, from W1).
     const EVENT: TableSchema = { kind: "event", required: ["f3"] };
     const ew = (op: number, value: string, src: string): WriteOp => ({
       kind: "write",
@@ -936,12 +954,12 @@ describe("undo of a revert", () => {
       evaluateLog(EVENT, log).final.reverts.map((r) => [r.op, r.status, r.record.length]),
     ).toEqual([
       [40, "applied", 1],
-      [50, "applied", 0],
+      [50, "rejected", 0],
     ]);
     const ev = evaluateLog(EVENT, [...log, del(60, "d", ["S3"])]).final;
     expect(items(ev, 42)).toEqual(['f3/0 applied [-inf, inf) "45" carried #23/f3/0']);
-    expect(items(ev, 52)).toEqual(['f3/0 applied [-inf, inf) "54" carried #27/f3/0']);
-    expect(ev.fields["f3"]?.[0]?.value).toBe("54");
+    expect(items(ev, 52)).toEqual([]);
+    expect(ev.fields["f3"]?.[0]?.value).toBe("45");
   });
 
   it("a revert with write-back items from the start: unchanged", () => {
@@ -958,7 +976,7 @@ describe("undo of a revert", () => {
       op: 40,
       event: 42,
       status: "applied",
-      record: [{ event: 32, target: "f2", k: 0 }],
+      record: [{ event: 32, target: "f2" }],
     });
     expect(items(ev, 42)).toEqual(['f2/0 applied [11-02, 11-20) "3000" carried #22/f2/0']);
     expect(tl(ev)).toEqual([
@@ -982,9 +1000,10 @@ describe("original items of one write in one segment (09 §5.7)", () => {
   const at = (run: ReturnType<typeof evaluateLog>, kind: string) =>
     run.steps.filter((x) => x.entry.kind === kind).at(-1)?.state as Evaluation;
 
-  it("a cut point the deletion clears is not used: the items merge (no deleted endpoint left)", () => {
+  it("the part of the undone write that takes effect through a deletion is undone too", () => {
     // W20 (S3) splits W30 into a candidate part and a corroborated part at 11-03; undo 40 lists
-    // only the corroborated part. Deleting S3 clears that boundary: one item, 11-03 gone.
+    // (#31, f2), both parts. Deleting S3 makes W30 one corroboration [11-01, ∞), all of it in
+    // effect: the undo covers it all and writes back #11's 1 there (same value).
     const log: LogEntry[] = [
       w(10, 11, "10-01", "open", "1", "S1"),
       w(20, 21, "11-01", "11-03", "3", "S3", { seen: 10, acknowledge: ["overwrite"] }),
@@ -994,15 +1013,18 @@ describe("original items of one write in one segment (09 §5.7)", () => {
     ];
     const ev = evaluateLog(STATE, log).final;
     expect(items(ev, 31)).toEqual(['f2/0 corroborated [11-01, inf) "1"', "f2/1 dropped"]);
-    expect(items(ev, 41)).toEqual(["f2/0 dropped"]);
-    expect(short(segments(ev, "f2"))).toEqual(['[10-01, inf) "1" by #11/f2/0']);
+    expect(items(ev, 41)).toEqual(['f2/0 applied [11-01, inf) "1" carried #11/f2/0']);
+    expect(short(segments(ev, "f2"))).toEqual([
+      '[10-01, 11-01) "1" by #11/f2/0',
+      '[11-01, inf) "1" by #41/f2/0',
+    ]);
   });
 
-  it("example A: the boundary came from the deleted write; the undo reverts nothing there", () => {
+  it("example A: the boundary came from the deleted write; the undo covers the whole write", () => {
     // #26 is a candidate on [11-05, 11-10) (where #22 changed the value) and a corroboration on
-    // [11-10, 11-20); undo 30 lists the corroboration. Deleting #22's source clears the boundary:
-    // one corroboration [11-05, 11-20), the undo's record points at a dropped item, and 11-20
-    // still stops a later default end.
+    // [11-10, 11-20); undo 30 lists (#26, f2). Deleting #22's source makes #26 one corroboration
+    // [11-05, 11-20), all of it covered by the undo: its endpoints stop counting, so 11-20 no
+    // longer stops a later default end.
     const log: LogEntry[] = [
       w(10, 12, "10-01", "open", "5000", "S12"),
       w(20, 22, "11-02", "11-10", "3000", "S_B"),
@@ -1019,7 +1041,7 @@ describe("original items of one write in one segment (09 §5.7)", () => {
     ];
     const ev = evaluateLog(STATE, log).final;
     expect(items(ev, 26)).toEqual(['f2/0 corroborated [11-05, 11-20) "5000"', "f2/1 dropped"]);
-    expect(items(ev, 51)).toEqual(['f2/0 applied [11-12, 11-20) "2000"']);
+    expect(items(ev, 51)).toEqual(['f2/0 applied [11-12, inf) "2000"']);
   });
 
   describe("at a cancellation, items only the cancelled deletion gave are not originals", () => {
@@ -1060,11 +1082,11 @@ describe("original items of one write in one segment (09 §5.7)", () => {
       },
     ];
 
-    it("listed by a revert in effect, not listed: one item after the cancellation", () => {
+    it("listed by a take_previous in effect: one item after the cancellation", () => {
       const log = [...head(), ...takePrevious, del(40, "d", ["S13"]), cancel(50, "d")];
       const run = evaluateLog(STATE, log);
       expect(run.final.reverts.find((r) => r.op === 35)?.record).toEqual([
-        { event: 32, target: "f2", k: 0 },
+        { event: 32, target: "f2" },
       ]);
       expect(items(at(run, "deletion"), 32)).toEqual([
         'f2/0 applied [11-02, 11-10) "5000" carried #12/f2/0',
@@ -1079,7 +1101,7 @@ describe("original items of one write in one segment (09 §5.7)", () => {
       expect(tl(run.final)).toEqual(tl(base));
     });
 
-    it("three items, two with the same listing records: one item after the cancellation", () => {
+    it("three items: one item after the cancellation", () => {
       const y2 = [w(16, 18, "11-15", "open", "3800", "S18")];
       const tp: LogEntry[] = [
         w(33, 34, "11-04", "11-06", "3500", "SA", { seen: 25 }),
@@ -1105,7 +1127,7 @@ describe("original items of one write in one segment (09 §5.7)", () => {
       expect(tl(run.final)).toEqual(tl(base));
     });
 
-    it("A′: listed only by an awaiting proposal: not counted, merged", () => {
+    it("A′: listed by an awaiting proposal: one item", () => {
       const awaiting: LogEntry[] = [
         w(32, 33, "11-04", "11-06", "5100", "SL"),
         { kind: "undo", op: 37, event: 38, target: 30, includeLater: true },
@@ -1123,7 +1145,7 @@ describe("original items of one write in one segment (09 §5.7)", () => {
       ]);
     });
 
-    it("listed by no revert: merged", () => {
+    it("listed by no revert: one item", () => {
       const run = evaluateLog(STATE, [...head(), del(40, "d", ["S13"]), cancel(50, "d")]);
       expect(items(run.final, 32)).toEqual([
         'f2/0 applied [11-02, 11-20) "5000" carried #12/f2/0',
@@ -1133,7 +1155,8 @@ describe("original items of one write in one segment (09 §5.7)", () => {
   });
 
   it("both listed by the same revert: merged", () => {
-    // B.1's write-back items, both listed by undo 40; deleting S13 makes them one segment.
+    // B.1's write-back items, both covered by undo 40's one entry (#32, f2); deleting S13 makes
+    // them one segment.
     const log: LogEntry[] = [
       w(10, 12, "10-01", "open", "5000", "S12"),
       w(13, 15, "11-10", "open", "4000", "S13"),
@@ -1144,8 +1167,7 @@ describe("original items of one write in one segment (09 §5.7)", () => {
     ];
     const run = evaluateLog(STATE, log);
     expect(run.final.reverts.find((r) => r.op === 40)?.record).toEqual([
-      { event: 32, target: "f2", k: 0 },
-      { event: 32, target: "f2", k: 1 },
+      { event: 32, target: "f2" },
     ]);
     expect(items(run.final, 32)).toEqual([
       'f2/0 applied [11-02, 11-20) "5000" carried #12/f2/0',
@@ -1179,8 +1201,8 @@ describe("order independence compares state and items, not restatement indices",
   });
 
   it("an undo of the undo appended after each: the same state and items", () => {
-    // The undo lists #61's two write-back items, numbered differently in the two orders; the
-    // revert record is compared by the items it names, not their indices.
+    // #61 has two write-back items, numbered differently in the two orders; the undo's record
+    // lists (#61, f2) once, which covers both.
     for (const ack of [false, true]) {
       const further: LogEntry[] = [
         {
@@ -1198,21 +1220,19 @@ describe("order independence compares state and items, not restatement indices",
         del(61, "pi_ab", ["S4", "S1", "S2"]),
         ...further,
       ]).final;
-      expect(ab.reverts.at(-1)?.record).toHaveLength(2);
+      expect(ab.reverts.at(-1)?.record).toEqual([{ event: 61, target: "f2" }]);
       expect(stateWithoutIndices(ba)).toEqual(stateWithoutIndices(ab));
       expect(stateWithoutIndices(once)).toEqual(stateWithoutIndices(ab));
     }
   });
 });
 
-describe("cut points come only from items none of whose interval blocks a deleted contribution drew", () => {
+describe("original items landing in one segment merge, in every order of the deletions", () => {
   // 03-deletion «回掉的权威定义» step 6, 09 §5.7; found by the order-independence property.
-  // #41 has an old ver and is cut by #31 (11-03) and #21 (11-05): k0 [11-01, 11-03) candidate,
-  // k1 [11-03, 11-05) corroborating #11, k2 [11-05, ∞) candidate. #51 undoes #41 and lists k1.
-  // Deleting S4 first restates k1 as [11-03, ∞): that block no longer depends on #21. Deleting S3
-  // next turns all of #41 into one candidate segment, where k1 (listed by #51) and k0 (not listed)
-  // land. k1's block as written ends at #21's start, drawn by S4: k1 gives no cut point, also after
-  // the restatement, so the segment is one item, as when S3 is deleted first or both at once.
+  // #41 has an old ver and is split by #31 (11-03) and #21 (11-05): k0 [11-01, 11-03) candidate,
+  // k1 [11-03, 11-05) corroborating #11, k2 [11-05, ∞) candidate. #51 undoes #41 and lists
+  // (#41, f2). Deleting S3 turns all of #41 into one candidate segment; the originals landing
+  // there merge into k0, whatever the order of the deletions.
   const log: LogEntry[] = [
     put(10, 11, "3", ["S3"], "10-01", "open", { seen: 0 }),
     put(20, 21, "1", ["S4"], "11-05", "open", { seen: 10 }),
@@ -1226,28 +1246,25 @@ describe("cut points come only from items none of whose interval blocks a delete
     "both at once": [del(51, "pi_ab", ["S4", "S3"])],
   };
 
-  it("before the deletions: three items, the corroborating one listed by the undo", () => {
+  it("before the deletions: three items; the undo lists the write's (event, target)", () => {
     const ev = evaluateLog(STATE, log).final;
     expect(items(ev, 41)).toEqual([
       'f2/0 candidate [11-01, 11-03) "3"',
       'f2/1 corroborated [11-03, 11-05) "3"',
       'f2/2 candidate [11-05, inf) "3"',
     ]);
-    expect(ev.reverts.at(-1)?.record).toEqual([{ event: 41, target: "f2", k: 1 }]);
+    expect(ev.reverts.at(-1)?.record).toEqual([{ event: 41, target: "f2" }]);
   });
 
-  it.each(Object.entries(orders))(
-    "%s: one candidate item; the undo's record names a dropped item",
-    (_, ds) => {
-      const ev = evaluateLog(STATE, [...log, ...ds]).final;
-      expect(items(ev, 41)).toEqual([
-        'f2/0 candidate [11-01, inf) "3"',
-        "f2/1 dropped",
-        "f2/2 dropped",
-      ]);
-      expect(tl(ev)).toEqual(['[11-01, 11-03) "1"']);
-    },
-  );
+  it.each(Object.entries(orders))("%s: one candidate item", (_, ds) => {
+    const ev = evaluateLog(STATE, [...log, ...ds]).final;
+    expect(items(ev, 41)).toEqual([
+      'f2/0 candidate [11-01, inf) "3"',
+      "f2/1 dropped",
+      "f2/2 dropped",
+    ]);
+    expect(tl(ev)).toEqual(['[11-01, 11-03) "1"']);
+  });
 
   it("the three orders give the same state and items, also after an undo of the undo", () => {
     for (const further of [[], [{ kind: "undo", op: 60, event: 61, target: 50 }]] as LogEntry[][]) {
@@ -1259,9 +1276,8 @@ describe("cut points come only from items none of whose interval blocks a delete
   });
 
   describe("a cancelled deletion's restatement does not count", () => {
-    // #26 (S5) from 11-07, before #41: deleting S4 restates k1 as [11-03, 11-07), an end drawn by
-    // S5. Once that deletion is cancelled, deleting S3 and S5 gives what deleting S3 and S5 alone
-    // gives.
+    // #26 (S5) from 11-07, before #41: deleting S4 restates k1 as [11-03, 11-07). Once that
+    // deletion is cancelled, deleting S3 and S5 gives what deleting S3 and S5 alone gives.
     const withS5: LogEntry[] = [
       ...log.slice(0, 2),
       put(25, 26, "2", ["S5"], "11-07", "open", { seen: 20 }),
@@ -1277,12 +1293,8 @@ describe("cut points come only from items none of whose interval blocks a delete
     it("deleting S4 restates k1 with an end drawn by S5", () => {
       expect(items41([del(51, "pi_a", ["S4"])])).toContain('f2/1 corroborated [11-03, 11-07) "3"');
     });
-    it("deleting S3 and S5 alone: three candidate items", () => {
-      expect(only).toEqual([
-        'f2/0 candidate [11-01, 11-03) "3"',
-        'f2/1 candidate [11-03, 11-05) "3"',
-        'f2/2 candidate [11-05, inf) "3"',
-      ]);
+    it("deleting S3 and S5 alone: one candidate item", () => {
+      expect(only).toEqual(['f2/0 candidate [11-01, inf) "3"']);
     });
     it("delete S4, cancel it, delete S3 and S5: as deleting S3 and S5 alone", () => {
       expect(
@@ -1297,12 +1309,11 @@ describe("cut points come only from items none of whose interval blocks a delete
   });
 });
 
-describe("a revert covers by its expansion: an index first given later is not cut from a listed one", () => {
+describe("a revert covers every item of a listed (event, target), also an index first given later", () => {
   // 03-deletion «回掉的权威定义» steps 1 and 6, 09 §5.7. #51 has the ver of #11 and corroborates
-  // [11-03, ∞); undo #61 lists that item. Deleting S2 first uncovers #21's 2 on [11-09, ∞): #51 was
-  // in effect there, so a new index k1 applied [11-09, ∞) is given (its start drawn by #41's end)
-  // and #61's expansion covers it. Deleting S1 next makes k1 corroborate again, in one segment
-  // with k0: both are covered by #61, so they are one item, as in every other order.
+  // [11-03, ∞); undo #61 lists (#51, f2). Deleting S2 first uncovers #21's 2 on [11-09, ∞): #51 was
+  // in effect there, so a new index k1 applied [11-09, ∞) is given, and #61 covers it. Deleting S1
+  // next makes k1 corroborate again, in one segment with k0: one item, as in every other order.
   const at = (
     op: number,
     v: string,
@@ -1356,10 +1367,12 @@ describe("a revert covers by its expansion: an index first given later is not cu
   });
 });
 
-describe("judgements that must not depend on the order of deletions use the write-time blocks", () => {
-  // 03-deletion «回掉的权威定义» steps 1 and 6, 09 §5.7 «以写入时的区间块为准». Each log: #51 has the
-  // ver of #11 and is cut into covered and uncovered items; #61 undoes it. Every order of the
-  // deletions gives the same state and items.
+describe("logs whose items once depended on the order of deletions", () => {
+  // 03-deletion «回掉的权威定义» steps 1 and 6, 09 §5.7. Each log: #51 has the ver of #11 and is
+  // split into several items; #61 undoes it and lists (#51, f2). Every order of the deletions
+  // gives the same state and items. These logs were found against the cut rules that indices
+  // used to need; a revert now covers by (event, target), and the originals landing in one
+  // segment merge.
   const w2 = (
     op: number,
     v: string,
@@ -1395,10 +1408,10 @@ describe("judgements that must not depend on the order of deletions use the writ
     for (const y of rest) expect(y).toEqual(x);
   };
 
-  it("a new index split from an uncovered item is not covered, also when it takes effect", () => {
-    // Deleting S5 first turns [11-05, ∞) of #51's uncovered candidate k1 into a corroboration under
-    // a new index: it split from k1 by the write-time intervals, so #61 does not cover it (or undo
-    // it).
+  it("a new index split from a candidate item: covered like the rest of the write", () => {
+    // Deleting S5 first turns [11-05, ∞) of #51's candidate k1 into a corroboration under a new
+    // index. #61 covers (#51, f2), so the new index is covered too; once S1 is deleted as well, the
+    // candidate parts land in one segment and merge.
     check(
       [
         w2(10, "2", "S1", "10-01", open, 0),
@@ -1411,13 +1424,13 @@ describe("judgements that must not depend on the order of deletions use the writ
         w2(80, "2", "S5", "11-05", { mode: "next_change" }, 70),
       ],
       [[["S1"], ["S5"]], [["S5"], ["S1"]], [["S1", "S5"]]],
-      ['f2/0 candidate [11-01, 11-03) "2"', 'f2/1 candidate [11-03, inf) "2"'],
+      ['f2/0 candidate [11-01, inf) "2"'],
     );
   });
 
-  it("a new index's cut eligibility uses the write-time block of the item it split from", () => {
-    // Deleting S5 first splits [11-05, 11-07) off #51's k1 as a new index. k1's write-time block
-    // starts at #41's start (S5): neither k1 nor the new index provides a cut point.
+  it("a new index split off an original lands with it in one item", () => {
+    // Deleting S5 first splits [11-05, 11-07) off #51's k1 as a new index; after S1 is deleted too
+    // all of #51 is one candidate segment.
     check(
       [
         w2(10, "1", "S1", "10-01", open, 0),
@@ -1432,9 +1445,9 @@ describe("judgements that must not depend on the order of deletions use the writ
     );
   });
 
-  it("the cut position is the write-time start, not the latest start", () => {
-    // Deleting S3 first restates #51's k1 as [11-05, 11-07), an end drawn by #21 (S5). k1 still
-    // cuts at its write-time start 11-05 (#41's end, not deleted) after S1 and S5 are deleted.
+  it("an original restated by a deletion merges with the others once they share a segment", () => {
+    // Deleting S3 first restates #51's k1 as [11-05, 11-07). After S1 and S5 are deleted, #51 is
+    // one candidate segment from 11-03, in every order.
     check(
       [
         w2(10, "2", "S1", "10-01", open, 0),
@@ -1447,15 +1460,15 @@ describe("judgements that must not depend on the order of deletions use the writ
         w2(80, "2", "S1", "11-07", until("11-09"), 70, true),
       ],
       [[["S3"], ["S1", "S5"]], [["S1", "S5"], ["S3"]], [["S3", "S1", "S5"]]],
-      ['f2/0 candidate [11-03, 11-05) "2"', 'f2/1 candidate [11-05, inf) "2"'],
+      ['f2/0 candidate [11-03, inf) "2"'],
     );
   });
 
   it("an original item lands by its write-time block: the undo covers the same items in every order", () => {
-    // #51's k0 [11-01, 11-07) is listed by #61; k1 [11-07, ∞) is not. Deleting S5 first restates
-    // k1 as [11-05, ∞); after S3 is deleted too, [11-05, 11-07) takes effect. It lies in k0's
-    // write-time block, not k1's: a new index split from k0, covered by #61 and taken back by it,
-    // as in the other orders. Values: [11-05, 11-07) is 1, given by #61.
+    // #51's k0 [11-01, 11-07) and k1 [11-07, ∞): #61 lists (#51, f2). Deleting S5 first restates
+    // k1 as [11-05, ∞); after S3 is deleted too, [11-05, 11-07) takes effect under a new index,
+    // covered by #61 and taken back by it, as in the other orders. Values: [11-05, 11-07) is 1,
+    // given by #61.
     const log: LogEntry[] = [
       w2(10, "3", "S1", "10-01", open, 0),
       w2(20, "1", "S3", "11-05", { mode: "next_change" }, 10),
@@ -1479,10 +1492,9 @@ describe("judgements that must not depend on the order of deletions use the writ
     expect(tl(ev)).toEqual(['[10-01, 11-05) "3"', '[11-05, 11-07) "1"', '[11-07, inf) "3"']);
   });
 
-  it("an item cuts at its write-time start even where a deletion moved its start", () => {
-    // #51's k1 is written as [11-07, 11-09). Deleting S4 first restates it as [11-03, 11-09)
-    // (11-03 is #21's start, not deleted). After S1 is deleted too it still cuts at 11-07, as in
-    // the other orders.
+  it("an item whose start a deletion moved merges like the others", () => {
+    // #51's k1 is written as [11-07, 11-09). Deleting S4 first restates it as [11-03, 11-09).
+    // After S1 is deleted too, #51 is one candidate segment, as in the other orders.
     check(
       [
         w2(10, "3", "S1", "10-01", open, 0),
@@ -1494,19 +1506,14 @@ describe("judgements that must not depend on the order of deletions use the writ
         w2(70, "1", "S1", "11-03", { mode: "next_change" }, 60),
       ],
       [[["S4"], ["S1"]], [["S1"], ["S4"]], [["S4", "S1"]]],
-      [
-        'f2/0 candidate [11-01, 11-07) "3"',
-        'f2/1 candidate [11-07, 11-09) "3"',
-        'f2/2 candidate [11-09, inf) "3"',
-      ],
+      ['f2/0 candidate [11-01, inf) "3"'],
     );
   });
 });
 
-describe("a block's deps are those when it was given, not intervals given later", () => {
-  // Deleting S4 extends #27's default end to 11-20, the start of #41's k1, whose block was given
-  // when #27 ended at 11-14: k1's deps are #21 (S2), which no order deletes. All three orders keep
-  // the cut at 11-20.
+describe("a default end a deletion extends does not split a write's items", () => {
+  // Deleting S4 extends #27's default end to 11-20, the start of #41's k1. Once #41 is one
+  // candidate segment, all three orders give one item.
   const log: LogEntry[] = [
     put(10, 11, "3", ["S3"], "10-01", "open", { seen: 0 }),
     put(20, 21, "1", ["S2"], "11-20", "open", { seen: 10 }),
@@ -1523,17 +1530,17 @@ describe("a block's deps are those when it was given, not intervals given later"
     "S3, S5 then S4": [del(51, "pi_b", ["S3", "S5"]), del(52, "pi_a", ["S4"])],
     "all at once": [del(51, "pi_ab", ["S4", "S3", "S5"])],
   };
-  it.each(Object.entries(orders))("%s: two candidate items, cut at 11-20", (_, ds) => {
+  it.each(Object.entries(orders))("%s: one candidate item", (_, ds) => {
     expect(
       items(evaluateLog(STATE, [...log, ...ds]).final, 41).filter((x) => !x.endsWith("dropped")),
-    ).toEqual(['f2/0 candidate [11-10, 11-20) "3"', 'f2/1 candidate [11-20, inf) "3"']);
+    ).toEqual(['f2/0 candidate [11-10, inf) "3"']);
   });
 });
 
 it("an undo of a revert takes back all of that revert's write-back items, also one dropped when the undo was written", () => {
   // 03-deletion «回掉的权威定义» step 1, 09 §5.7. #71 undoes the undo #61 and writes back 7 on
   // [11-01, 11-03) and [11-05, 11-07). Deleting SX (#51) merges #71's items into one, k1 dropped.
-  // During the grace period #91 undoes #71; its record lists only k0. Cancelling the deletion brings
+  // During the grace period #91 undoes #71; its record lists (#71, f2). Cancelling the deletion brings
   // k1 back: #91 takes it back too, so no write-back item of #71 gives a value.
   const log: LogEntry[] = [
     put(10, 11, "1", ["S1"], "10-01", "open", { seen: 0, acknowledge: ["overwrite"] }),
@@ -1548,7 +1555,7 @@ it("an undo of a revert takes back all of that revert's write-back items, also o
     cancel(100, "pi_x"),
   ];
   const run = evaluateLog(STATE, log);
-  expect(run.steps[8]?.state.reverts.at(-1)?.record).toEqual([{ event: 71, target: "f2", k: 0 }]);
+  expect(run.steps[8]?.state.reverts.at(-1)?.record).toEqual([{ event: 71, target: "f2" }]);
   expect(short(segments(run.final, "f2"))).toEqual([
     '[11-01, 11-03) "1" by #91/f2/0',
     '[11-03, 11-05) "8" by #51/f2/0',
@@ -1794,7 +1801,8 @@ describe("revert statuses are decided one by one in operation order, each as if 
 
   it("an include_later undo whose high impact depends on a deletion settles", () => {
     // Found by review: counting the undo in effect made it high-impact (awaiting), not counting
-    // it made it not high-impact (in effect through the deletion).
+    // it made it not high-impact (in effect through the deletion). Decided in operation order,
+    // each revert as if in effect, the answer is one.
     const log: LogEntry[] = [
       {
         kind: "write",
@@ -1842,11 +1850,381 @@ describe("revert statuses are decided one by one in operation order, each as if 
       del(82, "pi_0", ["S4", "S6"]),
     ];
     const run = evaluateLog(STATE, log);
-    // Awaiting when written (it takes back #31, a later write) and after the deletion: deciding it
-    // as in effect sees the later write it would take back.
+    // Awaiting when written: it lists #41's f2 as `later`, whose range is not empty. Deleting S4
+    // and S6 removes the undone write #21 altogether: D(#41) is empty, no item marked `later` has a
+    // range, so the undo is no longer high-impact and takes effect at its own number (05-time
+    // «高影响写入» ④).
     expect(
       run.steps.find((x) => x.entry.op === 70)?.state.reverts.map((r) => [r.op, r.status]),
     ).toEqual([[70, "awaiting"]]);
-    expect(run.final.reverts.map((r) => [r.op, r.status])).toEqual([[70, "awaiting"]]);
+    expect(run.final.reverts.map((r) => [r.op, r.status])).toEqual([[70, "applied"]]);
+  });
+});
+
+describe("an include_later undo takes back later writes only where they supersede the undone write", () => {
+  // 03-deletion «回掉的权威定义» step 2: an item x marked `later` is taken back on D(x), the union
+  // of the intervals of the undone operation's items in effect that x supersedes. Two places where
+  // this narrows what an undo did when written (the whole later item was taken back, and any
+  // later item in the record made it high-impact ④).
+  const sp = (from: string, to: string) => ({
+    from: { mode: "given" as const, value: d(from) },
+    to: { mode: "given" as const, value: d(to) },
+  });
+  const ack = { acknowledge: ["overwrite"] as ["overwrite"] };
+
+  it("a later write is taken back only within D(x); beyond the undone write it stays", () => {
+    // #11 writes 1 on [11-01, 11-05); #21 writes 2 on [11-03, 11-09), superseding #11 on
+    // [11-03, 11-05). Undo #11 with include_later, confirmed: the value position is before #11,
+    // where f2 has no value. #21 is taken back on [11-03, 11-05) only; on [11-05, 11-09) it stays.
+    const log: LogEntry[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        valid: sp("11-01", "11-05"),
+        fields: { f2: { value: "1", sources: ["S1"] } },
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: sp("11-03", "11-09"),
+        fields: { f2: { value: "2", sources: ["S2"] } },
+        ...ack,
+      },
+      { kind: "undo", op: 30, event: 31, target: 10, includeLater: true },
+      { kind: "confirm", op: 40, event: 41, target: 31 },
+    ];
+    const ev = evaluateLog(STATE, log).final;
+    expect(ev.reverts.map((r) => [r.op, r.status])).toEqual([
+      [30, "awaiting"],
+      [40, "applied"],
+    ]);
+    expect(ev.reverts[1]?.record).toEqual([
+      { event: 11, target: "f2" },
+      { event: 21, target: "f2", later: true },
+    ]);
+    expect(items(ev, 41)).toEqual(["f2/0 applied [11-01, 11-05) no_value"]);
+    expect(tl(ev)).toEqual(['[11-05, 11-09) "2"']);
+  });
+
+  it("a later item covered whole by a write outside the record has no range: not high-impact ④", () => {
+    // #21 writes 2; #31 revokes [11-03, 11-05), superseding #21 there; #41 undoes #31, its
+    // write-back restores existence there and covers #31 whole. Undo #21 with include_later: the
+    // record lists #31 (later), not #41 (a restore does not supersede a field value). #31's range
+    // is empty, so the undo is not high-impact ④ and takes effect at its own number: 1 again.
+    const log: LogEntry[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        valid: sp("11-01", "11-09"),
+        fields: { f2: { value: "1", sources: ["S1"] } },
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: sp("11-01", "11-09"),
+        fields: { f2: { value: "2", sources: ["S2"] } },
+        ...ack,
+      },
+      {
+        kind: "revoke",
+        op: 30,
+        event: 31,
+        seen: 20,
+        valid: sp("11-03", "11-05"),
+        validSources: ["S3"],
+      },
+      { kind: "undo", op: 40, event: 41, target: 30, seen: 30, ...ack },
+      { kind: "undo", op: 50, event: 51, target: 20, includeLater: true, seen: 40, ...ack },
+    ];
+    const ev = evaluateLog(STATE, log).final;
+    expect(ev.reverts.find((r) => r.op === 50)).toEqual({
+      op: 50,
+      event: 51,
+      status: "applied",
+      record: [
+        { event: 21, target: "f2" },
+        { event: 31, target: "existence", later: true },
+      ],
+    });
+    expect(tl(ev)).toEqual(['[11-01, 11-09) "1"']);
+  });
+});
+
+describe("an item marked later is registered only within D(x)", () => {
+  // 03-deletion «回掉的权威定义» step 5: an item in effect is registered on its interval ∩ T(t);
+  // an item marked `later` only within its domain D(x) as well, so an undo that is not high-impact
+  // ④ registers no later write's item.
+  const sp = (from: string, to: string) => ({
+    from: { mode: "given" as const, value: d(from) },
+    to: { mode: "given" as const, value: d(to) },
+  });
+  const ack = { acknowledge: ["overwrite"] as ["overwrite"] };
+  const regsBy = (ev: Evaluation, event: number, op: number) =>
+    ev.items
+      .filter((x) => x.event === event && x.status !== "dropped")
+      .flatMap((x) => x.registrations.filter((r) => r.byOp === op).map((r) => r.valid));
+
+  it("a later entry left with an uncovered item only: nothing registered after the deletion", () => {
+    // Found by the property on include_later undos not confirmed. Undo 50 of #31 writes back
+    // #51/f3/0 no value and #51/f3/1 uncovered; undo 60 (include_later) lists (#51, f3) as later
+    // and awaits. Deleting S1 turns #41 into a change covering #31 on [11-01, 11-03) and drops
+    // #51/f3/0: (#51, f3) has only the uncovered item, which supersedes nothing, so D is empty,
+    // undo 60 is not high-impact and takes effect, and registers nothing of #51.
+    const log: LogEntry[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: d("10-01") }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S1"] } },
+        ...ack,
+      },
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 19,
+        valid: sp("11-03", "11-05"),
+        validSources: ["S3"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 20,
+        valid: sp("11-01", "11-05"),
+        fields: { f3: { value: "2", sources: ["S2"] } },
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 30,
+        valid: sp("11-01", "11-03"),
+        fields: { f3: { value: "2", sources: ["S3"], explicit: true } },
+        ...ack,
+      },
+      { kind: "undo", op: 50, event: 51, target: 30, seen: 40, ...ack },
+      { kind: "undo", op: 60, event: 61, target: 30, includeLater: true, seen: 50 },
+      del(62, "pi_0", ["S1"]),
+    ];
+    const run = evaluateLog(STATE, log);
+    expect(run.steps.find((x) => x.entry.op === 60)?.state.reverts.at(-1)).toMatchObject({
+      status: "awaiting",
+      record: [
+        { event: 31, target: "f3" },
+        { event: 51, target: "f3", later: true },
+      ],
+    });
+    expect(run.final.reverts.find((r) => r.op === 60)?.status).toBe("applied");
+    expect(items(run.final, 51)).toContain("f3/1 applied [11-03, 11-05) uncovered");
+    expect(regsBy(run.final, 51, 60)).toEqual([]);
+  });
+
+  it("across targets: a later revoke listed through a field item is not registered over the undone revoke", () => {
+    // W (#51) is an undo of a confirmed include_later undo: it writes back a restore on
+    // [11-05, 11-08), a revoke on [11-08, 11-15) and f2 3 on [11-05, 11-08). V (#61) revokes
+    // [11-07, 11-20) later and supersedes W's restore and f2 item, so undo 70 (include_later, of W)
+    // lists it. D(V) = [11-05, 11-08): V is registered on [11-07, 11-08) only, not over W's revoke
+    // on [11-08, 11-15), which V does not supersede.
+    const log: LogEntry[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        valid: { from: { mode: "given", value: d("10-01") }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S1"] } },
+      },
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: sp("11-05", "11-15"),
+        validSources: ["S2"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 20,
+        valid: sp("11-05", "11-08"),
+        fields: { f2: { value: "3", sources: ["S3"] } },
+        ...ack,
+      },
+      { kind: "undo", op: 40, event: 41, target: 20, includeLater: true, seen: 30, ...ack },
+      { kind: "confirm", op: 45, event: 46, target: 41 },
+      { kind: "undo", op: 50, event: 51, target: 45, seen: 45, ...ack },
+      {
+        kind: "revoke",
+        op: 60,
+        event: 61,
+        seen: 50,
+        valid: sp("11-07", "11-20"),
+        validSources: ["S6"],
+      },
+      { kind: "undo", op: 70, event: 71, target: 50, includeLater: true, seen: 60, ...ack },
+      { kind: "confirm", op: 75, event: 76, target: 71 },
+    ];
+    const ev = evaluateLog(STATE, log).final;
+    expect(items(ev, 51)).toEqual([
+      "existence/0 applied [11-05, 11-08) restore",
+      "existence/1 applied [11-08, 11-15) revoke",
+      'f2/0 applied [11-05, 11-08) "3" carried #31/f2/0',
+    ]);
+    expect(ev.reverts.find((r) => r.op === 75)?.record).toContainEqual({
+      event: 61,
+      target: "existence",
+      later: true,
+    });
+    expect(regsBy(ev, 61, 75)).toEqual([[{ from: d("11-07"), to: d("11-08") }]]);
+  });
+
+  it("a later item registered by an undo that is not high-impact already provides nothing there", () => {
+    // As above, with an undo of V (op 65) whose write-back restores existence over V: V's range
+    // is empty, so undo 70 is not high-impact and takes effect without a confirmation. It still
+    // registers V on [11-07, 11-08) (T(existence) there comes from W's restore, which only a
+    // revoke supersedes, and D(V) is not empty); apply does not compute coverage. V is registered
+    // there by undo 65 already, so the registration changes no value (03-deletion step 5).
+    const log: LogEntry[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        valid: { from: { mode: "given", value: d("10-01") }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S1"] } },
+      },
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: sp("11-05", "11-15"),
+        validSources: ["S2"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 20,
+        valid: sp("11-05", "11-08"),
+        fields: { f2: { value: "3", sources: ["S3"] } },
+        ...ack,
+      },
+      { kind: "undo", op: 40, event: 41, target: 20, includeLater: true, seen: 30, ...ack },
+      { kind: "confirm", op: 45, event: 46, target: 41 },
+      { kind: "undo", op: 50, event: 51, target: 45, seen: 45, ...ack },
+      {
+        kind: "revoke",
+        op: 60,
+        event: 61,
+        seen: 50,
+        valid: sp("11-07", "11-20"),
+        validSources: ["S6"],
+      },
+      { kind: "undo", op: 65, event: 66, target: 60, seen: 60, ...ack },
+      { kind: "undo", op: 70, event: 71, target: 50, includeLater: true, seen: 65, ...ack },
+    ];
+    const ev = evaluateLog(STATE, log).final;
+    expect(ev.reverts.find((r) => r.op === 70)?.status).toBe("applied");
+    expect(regsBy(ev, 61, 70)).toEqual([[{ from: d("11-07"), to: d("11-08") }]]);
+    expect(regsBy(ev, 61, 65)).toEqual([[{ from: d("11-07"), to: d("11-20") }]]);
+  });
+});
+
+describe("an undo's coverage does not depend on the deletions around it", () => {
+  // 03-deletion «推论»: «撤回还原» and «顺序无关». Counterexamples to covering by index: an undo
+  // written after a deletion listed indices that deletion gave, and a deletion of a source no
+  // write cites rebuilt items the undo had not listed. Covering by (event, target), neither
+  // depends on what was deleted when the undo was written.
+  const open: ToParam = { mode: "open" };
+  const next: ToParam = { mode: "next_change" };
+  const until = (md: string): ToParam => ({ mode: "given", value: d(md) });
+  const w = (
+    op: number,
+    v: string,
+    src: string,
+    from: string,
+    to: ToParam,
+    seen: number,
+    extra: Partial<WriteOp> = {},
+  ): WriteOp => ({
+    kind: "write",
+    op,
+    event: op + 1,
+    seen,
+    valid: { from: { mode: "given", value: d(from) }, to },
+    fields: { f2: { value: v, sources: [src] } },
+    acknowledge: ["overwrite"],
+    ...extra,
+  });
+  const state = (log: LogEntry[]) => stateWithoutIndices(evaluateLog(STATE, log).final);
+
+  it("an undo written after a deletion keeps its effect when two deletions are deleted and cancelled", () => {
+    const g = (from: string, to: ToParam) => ({
+      from: { mode: "given" as const, value: d(from) },
+      to,
+    });
+    const head: LogEntry[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        valid: g("11-01", open),
+        fields: { f2: { value: "1", sources: ["S1"] } },
+      },
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        valid: g("11-01", until("11-05")),
+        validSources: ["S5"],
+        seen: 10,
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        valid: g("11-05", next),
+        fields: { f2: { value: "3", sources: ["S4"] } },
+        seen: 20,
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        valid: g("11-03", next),
+        fields: { f2: { value: "1", sources: ["S2"], explicit: true } },
+        seen: 10,
+        acknowledge: ["overwrite"],
+      },
+      del(50, "pi_mid", ["S4"]),
+      { kind: "undo", op: 60, event: 61, target: 40 },
+    ];
+    // Deleting S1 and S5 and cancelling both leaves the log as it was.
+    const cycle = [del(81, "a", ["S1"]), del(82, "b", ["S5"]), cancel(83, "a"), cancel(85, "b")];
+    expect(state([...head, ...cycle])).toEqual(state(head));
+  });
+
+  it("deleting a source nothing cites changes nothing, also with an undo written after a deletion", () => {
+    const head: LogEntry[] = [
+      w(10, "1", "S1", "10-01", open, 0),
+      w(30, "2", "S3", "11-07", open, 10),
+      w(40, "1", "S6", "11-07", until("11-11"), 30),
+      w(50, "1", "S2", "11-01", open, 10, {
+        fields: { f2: { value: "1", sources: ["S2"], explicit: true } },
+      }),
+      del(55, "pi_3", ["S3"]),
+      { kind: "undo", op: 60, event: 61, target: 50 },
+    ];
+    expect(state([...head, del(70, "pi_9", ["S9"])])).toEqual(state(head));
   });
 });

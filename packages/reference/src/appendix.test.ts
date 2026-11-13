@@ -152,7 +152,7 @@ describe("appendix A", () => {
       'f2/1 applied [11-10, 11-20) "4000" carried #15/f2/0',
     ]);
     expect(ev.reverts).toMatchObject([
-      { op: 30, status: "applied", record: [{ event: 22, target: "f2", k: 0 }] },
+      { op: 30, status: "applied", record: [{ event: 22, target: "f2" }] },
     ]);
     expect(tl(ev)).toEqual(['[10-01, 11-10) "5000"', '[11-10, inf) "4000"']);
   });
@@ -464,8 +464,8 @@ describe("appendix D", () => {
       expect(items(ev, 63)).toEqual(['f2/0 candidate [-inf, inf) "5.5"']);
       expect(items(ev, 72)).toEqual(['f2/0 applied [-inf, inf) "12" carried #35/f2/0']);
       expect(ev.reverts[0]?.record).toEqual([
-        { event: 42, target: "f2", k: 0 },
-        { event: 59, target: "f2", k: 0 },
+        { event: 42, target: "f2" },
+        { event: 59, target: "f2" },
       ]);
     });
 
@@ -575,7 +575,7 @@ describe("appendix E", () => {
     const ev = evaluate(BUDGETS, e1);
     expect(items(ev, 27)).toEqual(['f2/0 candidate [11-10, 11-15) "4000"']);
     expect(items(ev, 41)).toEqual(['f2/0 applied [11-10, 11-15) "5000" carried #12/f2/0']);
-    expect(ev.reverts[0]?.record).toEqual([{ event: 22, target: "f2", k: 0 }]);
+    expect(ev.reverts[0]?.record).toEqual([{ event: 22, target: "f2" }]);
     expect(tl(ev)).toEqual([
       '[10-01, 11-02) "5000"',
       '[11-02, 11-10) "3000"',
@@ -606,8 +606,8 @@ describe("appendix E", () => {
   it("E.4: a revert between the items of the revert record", () => {
     const ev = evaluate(BUDGETS, e4);
     expect(ev.reverts.find((r) => r.op === 50)?.record).toEqual([
-      { event: 22, target: "f2", k: 0 },
-      { event: 32, target: "f2", k: 0 },
+      { event: 22, target: "f2" },
+      { event: 32, target: "f2" },
     ]);
     expect(items(ev, 51)).toEqual(['f2/0 applied [11-05, 11-10) "5000" carried #12/f2/0']);
     expect(tl(ev)).toEqual(['[10-01, inf) "5000"']);
@@ -662,7 +662,7 @@ describe("appendix E", () => {
       ];
       const ev = evaluate(BUDGETS, ops);
       expect(items(ev, 27)).toEqual(["existence/0 candidate [11-05, 11-15) revoke"]);
-      expect(ev.reverts[0]?.record).toEqual([{ event: 22, target: "f2", k: 0 }]);
+      expect(ev.reverts[0]?.record).toEqual([{ event: 22, target: "f2" }]);
       expect(items(ev, 41)).toEqual(['f2/0 applied [11-05, 11-15) "5000" carried #12/f2/0']);
     });
 
@@ -685,9 +685,9 @@ describe("appendix E", () => {
     const ev = evaluate(BUDGETS, e7);
     expect(ev.reverts.find((r) => r.op === 45)?.status).toBe("awaiting");
     expect(ev.reverts.find((r) => r.op === 50)?.record).toEqual([
-      { event: 22, target: "f2", k: 0 },
-      { event: 27, target: "f2", k: 0 },
-      { event: 41, target: "f2", k: 0 },
+      { event: 22, target: "f2" },
+      { event: 27, target: "f2", later: true },
+      { event: 41, target: "f2", later: true },
     ]);
     expect(items(ev, 52)).toEqual(['f2/0 applied [11-02, 11-20) "5000" carried #12/f2/0']);
     expect(tl(ev)).toEqual(['[10-01, inf) "5000"']);
@@ -709,7 +709,7 @@ describe("appendix E", () => {
     ];
     const asWritten = evaluate(BUDGETS, ops);
     expect(items(asWritten, 30)).toEqual(['f2/0 candidate [11-12, 11-20) "2800"']);
-    expect(asWritten.reverts[0]?.record).toEqual([{ event: 22, target: "f2", k: 0 }]);
+    expect(asWritten.reverts[0]?.record).toEqual([{ event: 22, target: "f2" }]);
     const ev = evaluate(BUDGETS, ops, ["S_Z"]);
     expect(items(ev, 30)).toEqual(['f2/0 applied [11-12, 11-20) "2800"']);
     expect(items(ev, 41)).toEqual(['f2/0 applied [11-10, 11-12) "5000" carried #12/f2/0']);
@@ -749,7 +749,7 @@ describe("appendix F", () => {
       expect(items(asWritten, 32)).toEqual([]);
       expect(asWritten.reverts[0]).toMatchObject({
         status: "applied",
-        record: [{ event: 22, target: "f2", k: 0 }],
+        record: [{ event: 22, target: "f2" }],
       });
       const ev = evaluate(BUDGETS, ops("11-02"), ["S_X"]);
       expect(items(ev, 32)).toEqual(['f2/0 applied [11-02, 11-20) "5000" carried #12/f2/0']);
@@ -944,14 +944,14 @@ describe("appendix G", () => {
       expect(ev.reverts.find((r) => r.op === 30)).toMatchObject({
         status: "awaiting",
         record: [
-          { event: 22, target: "f2", k: 0 },
-          { event: 27, target: "f2", k: 0 },
+          { event: 22, target: "f2" },
+          { event: 27, target: "f2", later: true },
         ],
       });
       expect(ev.reverts.find((r) => r.op === 40)?.record).toEqual([
-        { event: 22, target: "f2", k: 0 },
-        { event: 27, target: "f2", k: 0 },
-        { event: 35, target: "f2", k: 0 },
+        { event: 22, target: "f2" },
+        { event: 27, target: "f2", later: true },
+        { event: 35, target: "f2", later: true },
       ]);
       expect(tl(ev)).toEqual(['[10-01, inf) "5000"']);
     });
@@ -1027,6 +1027,5 @@ describe("appendix I", () => {
   });
 
   // No I.4: not constructible. A corroboration's candidate part takes effect only once the write
-  // that split it off is deleted, and that write gave the boundary between the parts; cut points
-  // come only from original intervals the deletion does not clear (09 §5.7), so the parts merge.
+  // that split it off is deleted; the parts then land in one segment and merge (09 §5.7).
 });

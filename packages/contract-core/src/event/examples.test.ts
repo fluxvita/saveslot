@@ -213,14 +213,17 @@ const literal = {
 
 const revertUndo = {
   before_op: 25,
-  items: [{ event: 27, field: "f3", k: 0 }],
-  skipped: [{ event: 27, field: "f1", k: 0, by_op: 33 }],
+  items: [
+    { event: 27, field: "f3" },
+    { event: 27, field: "f1" },
+  ],
+  skipped: [{ event: 27, field: "f1", by_op: 33 }],
 } as const satisfies RevertBlock;
 
 const revertTakePrevious = {
   as_of_op: 29,
   item: "pi_3KD…",
-  items: [{ event: 35, field: "f3", k: 0 }],
+  items: [{ event: 35, field: "f3" }],
 } as const satisfies RevertBlock;
 
 const ack = {
@@ -241,7 +244,7 @@ const revertRestoreExistence = {
       { event: 22, existence: 0 },
     ],
   },
-  revert: { before_op: 30, items: [{ event: 32, existence: 0 }] },
+  revert: { before_op: 30, items: [{ event: 32, existence: true }] },
 } as const;
 
 const revertTwoStretches = {
@@ -261,7 +264,7 @@ const revertTwoStretches = {
       { event: 27, field: "f2", k: 0 },
     ],
   },
-  revert: { before_op: 20, items: [{ event: 22, existence: 0 }] },
+  revert: { before_op: 20, items: [{ event: 22, existence: true }] },
 } as const;
 
 const revertUncovered = {
@@ -273,7 +276,7 @@ const revertUncovered = {
       { event: 22, existence: 0 },
     ],
   },
-  revert: { before_op: 25, items: [{ event: 27, field: "f2", k: 0 }] },
+  revert: { before_op: 25, items: [{ event: 27, field: "f2" }] },
 } as const;
 
 const revertNoValue = {
@@ -282,7 +285,7 @@ const revertNoValue = {
     valid: { from: "2026-11-02", to: "2026-11-20" },
     deps: [{ event: 22, field: "f2", k: 0 }],
   },
-  revert: { before_op: 20, items: [{ event: 22, field: "f2", k: 0 }] },
+  revert: { before_op: 20, items: [{ event: 22, field: "f2" }] },
 } as const;
 
 const takePrevious = {
@@ -296,7 +299,7 @@ const takePrevious = {
       { event: 27, field: "f2", k: 0 },
     ],
   },
-  revert: { as_of_op: 10, item: "pi_…", items: [{ event: 22, field: "f2", k: 0 }] },
+  revert: { as_of_op: 10, item: "pi_…", items: [{ event: 22, field: "f2" }] },
 } as const;
 
 const undoTwoSegments = {
@@ -319,7 +322,7 @@ const undoTwoSegments = {
       { event: 22, field: "f2", k: 0 },
     ],
   },
-  revert: { before_op: 20, items: [{ event: 22, field: "f2", k: 0 }] },
+  revert: { before_op: 20, items: [{ event: 22, field: "f2" }] },
 } as const;
 
 /** A whole write.base event with the blocks of one of the worked examples. */
@@ -788,12 +791,18 @@ const _negatives = () => {
     as_of_op: 29,
     item: "pi_3KD…",
     // @ts-expect-error `include_later` (and so `later`) exists only for `undo`
-    items: [{ event: 35, field: "f3", k: 0, later: true }],
+    items: [{ event: 35, field: "f3", later: true }],
   };
   // Positive control for A3: the same item is fine in an `undo` record.
   const laterOnUndo: RevertBlock = {
     before_op: 25,
-    items: [{ event: 35, field: "f3", k: 0, later: true }],
+    items: [{ event: 35, field: "f3", later: true }],
+  };
+  // A revert record lists (event, target) entries, not items by index.
+  const revertWithIndex: RevertBlock = {
+    before_op: 25,
+    // @ts-expect-error a revert record entry has no `k`
+    items: [{ event: 27, field: "f3", k: 0 }],
   };
   // A4: a result segment has `valid` and `deps` together or neither.
   const from1120 = { from: "2026-11-20" } as const;
@@ -855,6 +864,7 @@ const _negatives = () => {
     principalCtxToday,
     laterOnTakePrevious,
     laterOnUndo,
+    revertWithIndex,
     validWithoutDeps,
     depsWithoutValid,
     lineWithoutTarget,

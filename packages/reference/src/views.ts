@@ -67,24 +67,17 @@ export function itemsOf(ev: Evaluation, event: number): string[] {
  * An evaluation without restatement bookkeeping, for order independence (03-deletion «推论»
  * «顺序无关»): state and items are compared, restatement indices and `dropped` entries are not.
  * Items lose their index `k`, and so do references to items (`carried`, a segment's giver). A
- * revert's record names the items it lists by the interval and content they have now (an item
- * no longer present by its event and target), in no particular order.
+ * revert's record (by event and target) is compared in no particular order.
  */
 export function stateWithoutIndices(ev: Evaluation): unknown {
   const ref = (r: ItemRef) => ({ event: r.event, target: r.target });
-  const listed = (r: ItemRef) => {
-    const x = ev.items.find(
-      (i) => i.event === r.event && i.target === r.target && i.k === r.k && i.status !== "dropped",
-    );
-    return x ? { ...ref(r), valid: x.valid, content: x.content } : ref(r);
-  };
   const byJson = (a: unknown, b: unknown) => JSON.stringify(a).localeCompare(JSON.stringify(b));
   return {
     kind: ev.kind,
     exists: ev.exists,
     gaps: ev.gaps,
     created: ev.created,
-    reverts: ev.reverts.map((r) => ({ ...r, record: r.record.map(listed).sort(byJson) })),
+    reverts: ev.reverts.map((r) => ({ ...r, record: [...r.record].sort(byJson) })),
     fields: Object.fromEntries(
       Object.entries(ev.fields).map(([f, segs]) => [
         f,
