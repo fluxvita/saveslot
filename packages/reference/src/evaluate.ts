@@ -86,16 +86,59 @@ interface Item {
 }
 
 /**
+ * An interval block of an item as given by an event, with its deps approximated when it was given:
+ * the (event, target) of every other item on the same field or on existence with an interval
+ * endpoint at one of the block's endpoints in that replay (the shape of 05-time «给出挡点的贡献»).
+ */
+interface Block {
+  readonly k: number;
+  readonly valid: IvSet;
+  readonly deps: readonly string[];
+}
+
+/** One block in an item's history: who gave it; `dropped`: a restatement as dropped (no block). */
+type HistoryEntry = Block & { readonly by: string; readonly dropped?: true };
+
+/**
+ * The block of each index as last given before this replay (03-deletion «回掉的权威定义» step 6,
+ * 09 §5.7): going back in log order, blocks given by the confirmation of a deletion cancelled
+ * since and restatements as dropped are skipped; the first block that gives an interval counts.
+ * `alsoSkip`: one more deletion whose blocks to skip.
+ */
+function latestBlocks(rec: Recorded, key: string, alsoSkip?: string): Block[] {
+  const out = new Map<number, Block>();
+  const done = new Set<number>();
+  const hist = rec.history.get(key) ?? [];
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const h = hist[i] as HistoryEntry;
+    if (done.has(h.k)) continue;
+    if (h.dropped || rec.cancelled.has(h.by) || h.by === alsoSkip) continue;
+    out.set(h.k, { k: h.k, valid: h.valid, deps: h.deps });
+    done.add(h.k);
+  }
+  return [...out.values()];
+}
+
+/**
  * What a replay keeps from the log as written: the judgement each operation got at its own point
  * in the log (with the deletions confirmed and not cancelled by then), and what deletion events
  * recorded. Operations not in `judged` are judged afresh by the replay.
  */
 interface Recorded {
   readonly judged: Set<OpNumber>;
-  /** Item statuses and intervals at write time: what deviation two protects; original indices. */
-  readonly writeTime: Map<string, { k: number; valid: IvSet; status: Status }[]>;
-  /** Item intervals as last given (by the write or a later deletion event): for indices. */
-  readonly latest: Map<string, { k: number; valid: IvSet }[]>;
+  /**
+   * Item statuses and interval blocks at write time: what deviation two protects; original
+   * indices; the write's block for cut points (step 6).
+   */
+  readonly writeTime: Map<string, (Block & { status: Status })[]>;
+  /**
+   * Every interval block each item was given, in log order: by its write, by deletion
+   * confirmations (`by`: the deletion ID) and by cancellations (`by`: "cancel"); `dropped` marks
+   * a restatement as dropped. The block as last given is read from it (`latestBlocks`).
+   */
+  readonly history: Map<string, HistoryEntry[]>;
+  /** Deletions cancelled so far: their confirmations' blocks never count (step 6). */
+  readonly cancelled: Set<string>;
   readonly revertRecords: Map<OpNumber, ItemRef[]>;
   readonly revertStatus: Map<OpNumber, RevertResult["status"]>;
   readonly mergeBases: Map<OpNumber, { mergeBase: OpNumber; k: ItemRef[] }>;
@@ -115,7 +158,8 @@ function emptyRecorded(): Recorded {
   return {
     judged: new Set(),
     writeTime: new Map(),
-    latest: new Map(),
+    history: new Map(),
+    cancelled: new Set(),
     revertRecords: new Map(),
     revertStatus: new Map(),
     mergeBases: new Map(),
@@ -413,53 +457,165 @@ class Replay {
    * continue after the largest index used.
    */
   /**
-   * Whether this deletion clears the item's interval block as last given: its deps contain a
-   * deleted contribution. The evaluator does not track deps; it takes, merging more rather than
-   * less, every contribution as last given with an interval endpoint at one of the item's
-   * endpoints on the same field or on existence (the shape of 05-time «给出挡点的贡献»).
-   * It over-approximates (merges more): a kernel tracking deps exactly may merge less. A later
-   * comparison with the kernel should list the cases where the kernel merges less separately,
-   * not count them as disagreements.
+   * Whether the item provides no cut point (03-deletion «回掉的权威定义» step 6, 09 §5.7): the
+   * block its write gave (for an index first given by a deletion, the write's block of the
+   * original it split from) has deps containing a contribution in the current deleted set. The
+   * current deleted set is `this.deleted`: a confirmation's replay includes that deletion, a
+   * cancellation's replay excludes the cancelled one, other replays take the deletions confirmed
+   * and not cancelled. The write's block is fixed in the log, so the result does not depend on the
+   * order of deletions or on cancelled ones; the cut position is that block's start too
+   * (`writeStart`), so the check covers it. The evaluator has no tombstones.
+   *
+   * Deps are approximated per block when it was given: the earlier contributions in effect with
+   * an interval endpoint at one of the block's endpoints, on the same field or on existence (the
+   * shape of 05-time «给出挡点的贡献»). It over-approximates (merges more): a kernel tracking deps
+   * exactly may merge less. A later comparison with the kernel should list the cases where the
+   * kernel merges less separately, not count them as disagreements.
    */
-  blockCleared(event: Seq, target: Target, b: { k: number; valid: IvSet }): boolean {
-    const ends = new Set<Point>();
-    for (const x of b.valid) {
-      if (x.from !== null) ends.add(x.from);
-      if (x.to !== null) ends.add(x.to);
-    }
-    for (const [key, xs] of this.rec.latest) {
-      const [ev, t] = key.split("/") as [string, Target];
-      if (Number(ev) === event && t === target) continue;
-      if (t !== target && t !== "existence" && target !== "existence") continue;
-      const touches = xs.some((x) =>
-        x.valid.some(
-          (iv) => (iv.from !== null && ends.has(iv.from)) || (iv.to !== null && ends.has(iv.to)),
-        ),
-      );
-      if (touches && this.deletedItem(Number(ev), t)) return true;
-    }
-    return false;
+  blockCleared(event: Seq, target: Target, k: number): boolean {
+    const key = etKey(event, target);
+    const own = (xs: readonly Block[] | undefined) => (xs ?? []).filter((b) => b.k === k);
+    // An index first given by a deletion has no block of its own in the write: it takes the
+    // write's block of the original item it split from.
+    const latest = own(latestBlocks(this.rec, key));
+    const parent = this.splitFrom(event, target, k, latest[0]?.valid ?? []);
+    const writeBlocks = (this.rec.writeTime.get(key) ?? []).filter((b) => b.k === (parent ?? k));
+    // The write's block (the parent's for a new index) is checked whole; the block as last given
+    // only decides which segment the item lands in.
+    const depSets = writeBlocks.map((b) => b.deps);
+    return depSets.some((deps) =>
+      deps.some((d) => {
+        const [ev, t] = d.split("/") as [string, Target];
+        return this.deletedItem(Number(ev), t);
+      }),
+    );
   }
 
-  /** The counting reverts whose records list an item, as a comparable key. */
+  /** A block's deps as of this replay (see `Block`). */
+  depsOf(x: { event: Seq; target: Target; op: OpNumber; valid: IvSet }): string[] {
+    const ends = new Set<Point>();
+    for (const iv of x.valid) {
+      if (iv.from !== null) ends.add(iv.from);
+      if (iv.to !== null) ends.add(iv.to);
+    }
+    const out = new Set<string>();
+    for (const y of this.items) {
+      if (y.event === x.event && y.target === x.target) continue;
+      // 09 §3.5, 05-time «给出挡点的贡献»: only contributions before the resolved write, in
+      // effect (candidates and awaiting items do not count).
+      if (y.op >= x.op || !effective(y.status)) continue;
+      if (y.target !== x.target && y.target !== "existence" && x.target !== "existence") continue;
+      const touches = y.valid.some(
+        (iv) => (iv.from !== null && ends.has(iv.from)) || (iv.to !== null && ends.has(iv.to)),
+      );
+      if (touches) out.add(etKey(y.event, y.target));
+    }
+    return [...out].sort();
+  }
+
+  /**
+   * For an index first given by a deletion's restatement (not in the write's blocks), the index
+   * of the original item it split from (03-deletion «回掉的权威定义» step 1): the original whose
+   * interval at write time holds the new item's start; a start outside every original interval or
+   * in a gap goes to the left neighbour by write-time start (the first one when there is none).
+   * Undefined for an index the write gave.
+   */
+  splitFrom(event: Seq, target: Target, k: number, valid: IvSet): number | undefined {
+    const base = this.rec.writeTime.get(etKey(event, target));
+    if (base === undefined || base.some((b) => b.k === k)) return undefined;
+    const start = valid[0]?.from ?? null;
+    const sorted = [...base].sort((a, b) => {
+      const x = a.valid[0]?.from ?? null;
+      const y = b.valid[0]?.from ?? null;
+      return x === y ? a.k - b.k : x === null ? -1 : y === null ? 1 : x < y ? -1 : 1;
+    });
+    const inside = sorted.find((b) =>
+      start === null ? b.valid.some((iv) => iv.from === null) : containsPoint(b.valid, start),
+    );
+    if (inside !== undefined) return inside.k;
+    let left = sorted[0];
+    for (const b of sorted) {
+      const from = b.valid[0]?.from ?? null;
+      if (from === null || (start !== null && from <= start)) left = b;
+    }
+    return left?.k;
+  }
+
+  /**
+   * Where an original item cuts (03-deletion «回掉的权威定义» step 6, 09 §5.7): the start of its
+   * write-time block; for an index first given by a deletion, the start of the write-time block of
+   * the original it split from. Like every judgement that must not depend on the order of
+   * deletions, it uses the blocks fixed at write time.
+   */
+  writeStart(event: Seq, target: Target, b: { k: number; valid: IvSet }): Point | null {
+    const key = etKey(event, target);
+    const k = this.splitFrom(event, target, b.k, b.valid) ?? b.k;
+    return this.rec.writeTime.get(key)?.find((x) => x.k === k)?.valid[0]?.from ?? null;
+  }
+
+  /** Whether a new index split from an item the record lists (step 1's expansion). */
+  coveredNewIndex(
+    record: readonly ItemRef[],
+    x: { event: Seq; target: Target; k: number; valid: IvSet },
+  ): boolean {
+    const parent = this.splitFrom(x.event, x.target, x.k, x.valid);
+    return (
+      parent !== undefined &&
+      record.some((r) => r.event === x.event && r.target === x.target && r.k === parent)
+    );
+  }
+
+  /**
+   * The counting reverts whose expansion (03-deletion «回掉的权威定义» step 1, R') covers an item,
+   * as a comparable key: the items its record lists; indices first given by a deletion's
+   * restatement that split from a listed item; and, for an undo whose target m is itself a revert, every
+   * write-back item of m. Items of one write are then cut apart only between items a revert
+   * covers and items that existed at write time and were not listed (candidates or awaiting then).
+   */
   listing(ref: ItemRef): string {
+    const valid =
+      latestBlocks(this.rec, etKey(ref.event, ref.target)).find((b) => b.k === ref.k)?.valid ?? [];
+    const itemOp = this.opsByEvent.get(ref.event)?.op;
     return [...this.counting]
-      .filter((op) =>
-        (this.rec.revertRecords.get(op) ?? this.revertRecords.get(op) ?? []).some(
-          (r) => r.event === ref.event && r.target === ref.target && r.k === ref.k,
-        ),
-      )
+      .filter((op) => {
+        const record = this.rec.revertRecords.get(op) ?? this.revertRecords.get(op) ?? [];
+        if (record.some((r) => r.event === ref.event && r.target === ref.target && r.k === ref.k)) {
+          return true;
+        }
+        if (this.coveredNewIndex(record, { ...ref, valid })) return true;
+        const m = this.undoneRevertOf(op);
+        return m !== null && itemOp === m;
+      })
       .sort((a, b) => a - b)
       .join(",");
   }
 
+  /** For an undo (or the confirmation of one) whose target is a revert: that revert's op. */
+  undoneRevertOf(op: OpNumber): OpNumber | null {
+    let o = this.ops.find((x) => x.op === op);
+    if (o?.kind === "confirm" || o?.kind === "reject") {
+      const t = this.opsByEvent.get(o.target);
+      o = t?.kind === "undo" ? t : undefined;
+    }
+    if (o?.kind !== "undo") return null;
+    const target = this.ops.find((x) => x.op === o.target);
+    const isRevert =
+      target?.kind === "undo" ||
+      (target?.kind === "resolve" && target.decision === "take_previous");
+    return isRevert ? o.target : null;
+  }
+
   assignIndices(event: Seq, target: Target, fresh: Item[]): Item[] {
     fresh.sort((a, b) => ((a.valid[0]?.from ?? "") < (b.valid[0]?.from ?? "") ? -1 : 1));
-    const base = [...(this.rec.latest.get(etKey(event, target)) ?? [])].sort((a, b) => a.k - b.k);
-    // Each original item stays on the first new item intersecting its interval as last given.
+    const base = latestBlocks(this.rec, etKey(event, target)).sort((a, b) => a.k - b.k);
+    // Each original item stays on the first new item intersecting its write-time block (03-deletion
+    // «回掉的权威定义» step 6); an index first given by a deletion lands by its interval as last
+    // given, which keeps its number only: its coverage is that of the item it split from.
+    const writeTime = this.rec.writeTime.get(etKey(event, target)) ?? [];
     const landing = new Map<Item, { k: number; valid: IvSet }[]>();
     for (const b of base) {
-      const hit = fresh.find((it) => !isEmpty(intersect(it.valid, b.valid)));
+      const at = writeTime.find((w) => w.k === b.k)?.valid ?? b.valid;
+      const hit = fresh.find((it) => !isEmpty(intersect(it.valid, at)));
       if (hit !== undefined) landing.set(hit, [...(landing.get(hit) ?? []), b]);
     }
     const out: Item[] = [];
@@ -485,9 +641,9 @@ class Replay {
         it.valid,
         originals.map((b, i) => ({
           k: b.k,
-          start: b.valid[0]?.from ?? null,
+          start: this.writeStart(event, target, b),
           key: keys[i] ?? "",
-          cleared: this.blockCleared(event, target, b),
+          cleared: this.blockCleared(event, target, b.k),
           union: b.valid,
         })),
       );
@@ -1047,26 +1203,19 @@ class Replay {
     decide: (inScope: Item[], apply: () => void, rollback: () => void) => RevertResult["status"],
     undoneRevert: OpNumber | null = null,
   ): void {
-    // Step 1: R' = the listed items, plus indices of the same (event, target) first given by a
-    // deletion's restatement (not present when the event was written).
+    // Step 1: R' = the listed items, plus indices first given by a deletion's restatement (not
+    // present when the event was written) that split from a listed item, by write-time intervals;
+    // indices split from an item that existed and was not listed are not added.
     const rKeys = new Set(record.map(refKey));
-    const rEts = new Set(record.map((r) => etKey(r.event, r.target)));
-    const isNewIndex = (x: Item) => {
-      const base = this.rec.writeTime.get(etKey(x.event, x.target));
-      return base !== undefined && !base.some((b) => b.k === x.k);
-    };
-    // An undo of a revert m: also every write-back item of m on this row first given by a
-    // deletion's restatement, whether or not R names its (event, target) — R may be empty, m
-    // having had no write-back then. The decision is "undo m's change on this row".
-    const firstGivenLater = (x: Item) => {
-      const base = this.rec.writeTime.get(etKey(x.event, x.target));
-      return base === undefined || !base.some((b) => b.k === x.k);
-    };
+    // An undo of a revert m: every write-back item of m on this row, every target and index,
+    // whether or not R lists it and whether it existed at write time or a deletion's restatement
+    // first gave it. R may be empty (m had no write-back then, or a pending deletion had restated
+    // them as dropped). The decision is "undo m's change on this row".
     const rPrime = this.items.filter(
       (x) =>
         rKeys.has(refKey(x)) ||
-        (rEts.has(etKey(x.event, x.target)) && isNewIndex(x)) ||
-        (undoneRevert !== null && x.op === undoneRevert && firstGivenLater(x)),
+        this.coveredNewIndex(record, x) ||
+        (undoneRevert !== null && x.op === undoneRevert),
     );
     const zai = rPrime.filter((x) => effective(x.status));
 
@@ -1309,10 +1458,13 @@ class Replay {
     // Items as last given that are no longer items and were not deleted: `dropped`.
     {
       const present = new Set(this.items.map(refKey));
-      for (const [et, base] of this.rec.latest) {
+      // Every index the log has given: one given only by a cancelled deletion was restated as
+      // dropped by the cancellation.
+      for (const [et, hist] of this.rec.history) {
+        const ks = [...new Set(hist.map((h) => h.k))].sort((a, b) => a - b);
         const [ev, target] = et.split("/") as [string, Target];
         const event = Number(ev);
-        for (const b of base) {
+        for (const b of ks.map((k) => ({ k }))) {
           const ref = { event, target, k: b.k };
           if (present.has(refKey(ref)) || this.deletedItem(event, target)) continue;
           const op = this.opsByEvent.get(event)?.op ?? 0;
@@ -1365,12 +1517,22 @@ class Replay {
     for (const [key, xs] of groups) {
       rec.writeTime.set(
         key,
-        xs.map((x) => ({ k: x.k, valid: x.valid, status: x.status })),
+        xs.map((x) => ({
+          k: x.k,
+          valid: x.valid,
+          deps: this.depsOf(x),
+          status: x.status,
+        })),
       );
-      rec.latest.set(
-        key,
-        xs.map((x) => ({ k: x.k, valid: x.valid })),
-      );
+      rec.history.set(key, [
+        ...(rec.history.get(key) ?? []),
+        ...xs.map((x) => ({
+          k: x.k,
+          valid: x.valid,
+          deps: this.depsOf(x),
+          by: "write",
+        })),
+      ]);
     }
     for (const key of this.noops) if (key.startsWith(`${o.event}/`)) rec.noops.add(key);
     if (o.kind === "write") for (const f of o.noop ?? []) rec.noops.add(etKey(o.event, f));
@@ -1383,20 +1545,55 @@ class Replay {
   }
 
   /**
-   * After a deletion event: every item as now given becomes the latest given. Indices no longer
-   * given keep their last interval, so that an item that comes back keeps its index.
+   * After a deletion event (`by`: the deletion ID for a confirmation, "cancel" for a
+   * cancellation), what it restates: every item whose interval differs from its block as last
+   * given gets a new block, with its deps as of this replay; an item whose interval did not change
+   * is not restated and keeps its block. Indices of a present (event, target) no longer given are
+   * restated as dropped. A cancellation (`cancelled`: the deletion it cancels) also restates, as
+   * they are, the items whose block as last given came from the cancelled deletion (03-deletion
+   * «结果怎么落进日志»), so that going back past that deletion does not reach an outdated block.
    */
-  recordLatest(): void {
+  recordLatest(by: string, cancelled?: string): void {
     const groups = new Map<string, Item[]>();
     for (const x of this.items) {
       const key = etKey(x.event, x.target);
       groups.set(key, [...(groups.get(key) ?? []), x]);
     }
     for (const [key, xs] of groups) {
-      const now = xs.map((x) => ({ k: x.k, valid: x.valid }));
-      const kept = (this.rec.latest.get(key) ?? []).filter((b) => !now.some((x) => x.k === b.k));
-      this.rec.latest.set(key, [...now, ...kept]);
+      const before = latestBlocks(this.rec, key);
+      const added: HistoryEntry[] = [];
+      for (const x of xs) {
+        const prev = before.find((b) => b.k === x.k);
+        const same = prev !== undefined && JSON.stringify(prev.valid) === JSON.stringify(x.valid);
+        const fromCancelled =
+          cancelled !== undefined && this.lastGivenBy(key, x.k, cancelled) === cancelled;
+        if (same && !fromCancelled) continue;
+        added.push({
+          k: x.k,
+          valid: x.valid,
+          deps: this.depsOf(x),
+          by,
+        });
+      }
+      for (const b of before) {
+        if (xs.some((x) => x.k === b.k)) continue;
+        added.push({ k: b.k, valid: b.valid, deps: [], by, dropped: true });
+      }
+      if (added.length > 0)
+        this.rec.history.set(key, [...(this.rec.history.get(key) ?? []), ...added]);
     }
+  }
+
+  /** Who gave the index's block as last given, counting the deletion `cancelled` as not cancelled. */
+  lastGivenBy(key: string, k: number, cancelled: string): string | undefined {
+    const hist = this.rec.history.get(key) ?? [];
+    for (let i = hist.length - 1; i >= 0; i--) {
+      const h = hist[i] as HistoryEntry;
+      if (h.k !== k || h.dropped) continue;
+      if (h.by !== cancelled && this.rec.cancelled.has(h.by)) continue;
+      return h.by;
+    }
+    return undefined;
   }
 
   statusOf(event: Seq, target: Target): Status[] {
@@ -1596,7 +1793,7 @@ export function evaluateLog(
       const r = replay(deletedNow());
       const state = r.result();
       rec.external.push(externalChange(e.op, prevState, state, fieldIds(r)));
-      r.recordLatest();
+      r.recordLatest(e.id);
       // A later deletion can bring the row or entity back (e.g. by removing a revert's write-back
       // that hid it): from then on it is no longer removed.
       if (prevState.exists && !state.exists) removed = true;
@@ -1613,6 +1810,7 @@ export function evaluateLog(
         continue;
       }
       pending.delete(e.id);
+      rec.cancelled.add(e.id);
       const supersededBefore = new Set(rec.keptSuperseded);
       const rejudgedBefore = new Set(rec.rejudged.keys());
       const kept = cancelDeletion(
@@ -1641,7 +1839,7 @@ export function evaluateLog(
       const r = replay(deletedNow());
       const state = r.result();
       rec.external.push(externalChange(e.op, prevState, state, fieldIds(r)));
-      r.recordLatest();
+      r.recordLatest("cancel", e.id);
       if (state.exists || pending.size === 0) removed = false;
       // Writes whose judgement changed because of the writes kept in effect: this replay
       // against the same replay without them.
