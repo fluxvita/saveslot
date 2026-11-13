@@ -20,5 +20,9 @@
   "dependencies": {
     "@fluxvita/saveslot-contract-core": "workspace:*"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@fluxvita/saveslot-reference": "workspace:*",
+    "fast-check": "4.10.2"
+  }
 }

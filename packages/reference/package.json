@@ -9,6 +9,9 @@
       "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "source": "./src/testing/index.fixture.ts"
     }
   },
   "files": [

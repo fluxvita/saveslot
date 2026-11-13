@@ -1,0 +1,383 @@
+// The state of one row or entity as `judge` reads it: items, values, change points and blocking
+// points as of a position in the log (docs/zh-CN/spec/03-data-model/05-time.md «状态类表的状态»,
+// «写状态：参数与默认»; 03-deletion «重放规则» «行 / 实体的存在»).
+//
+// Items are never removed: the state as of an earlier position is the items written up to it.
+
+import {
+  type BizPoint,
+  canonicalize,
+  type FieldId,
+  type FieldValue,
+  type JcsValue,
+  type OpNumber,
+  type Seq,
+} from "@fluxvita/saveslot-contract-core";
+import {
+  bounds,
+  canonical,
+  cut,
+  cutPoints,
+  holds,
+  type Interval,
+  type IntervalSet,
+  meet,
+  startOf,
+  WHOLE,
+  within,
+} from "../time/index.ts";
+import type {
+  ItemContent,
+  ItemRef,
+  ItemStatus,
+  OpRecord,
+  TableShape,
+  Target,
+  Unit,
+  ValidParam,
+} from "./model.ts";
+
+/** An item with what the judgements read from the raw parameters of its write. */
+export interface Item {
+  readonly event: Seq;
+  readonly target: Target;
+  readonly k: number;
+  readonly op: OpNumber;
+  readonly index: number;
+  readonly status: ItemStatus;
+  readonly valid: IntervalSet;
+  readonly content: ItemContent;
+  readonly carried?: readonly ItemRef[];
+  readonly deps: readonly ItemRef[];
+  /**
+   * The start and explicit end the caller gave that lie on the item's interval: its
+   * corroboration endpoints when it is a corroboration (09 §5.7).
+   */
+  readonly explicitEnds: readonly BizPoint[];
+  /**
+   * Written with a default end: the conflict criterion's "默认终点". (A part cut from a stale
+   * corroboration is always a candidate, never an L, so it needs no mark of its own.)
+   */
+  readonly defaultEnd: boolean;
+}
+
+/**
+ * A position in the log: everything up to operation `upTo`, plus the ops of request `request.op`
+ * before index `request.below` (the earlier ops of the request being judged).
+ */
+export interface Limit {
+  readonly upTo: OpNumber;
+  readonly request?: { readonly op: OpNumber; readonly below: number };
+}
+
+export const EVERYTHING: Limit = { upTo: Number.MAX_SAFE_INTEGER };
+
+export const refOf = (x: { event: Seq; target: Target; k: number }): ItemRef => ({
+  event: x.event,
+  target: x.target,
+  k: x.k,
+});
+
+export const refKey = (r: ItemRef): string => `${r.event}/${r.target}/${r.k}`;
+
+export const effective = (s: ItemStatus): boolean => s === "applied" || s === "corroborated";
+
+/** A field's state on a stretch, as a token comparable for equality. */
+export const NO_VALUE = "no_value";
+export const valueToken = (v: FieldValue): string => `v:${canonicalize(v as JcsValue)}`;
+
+export type FieldState =
+  | { readonly kind: "value"; readonly value: FieldValue; readonly by: Item }
+  | { readonly kind: "none" }
+  | { readonly kind: "hole"; readonly by: Item };
+
+/** The start and the explicit end of raw parameters, as resolved with "now". */
+export function givenEnds(valid: ValidParam | undefined, now: BizPoint): BizPoint[] {
+  if (valid === undefined) return [now];
+  if (valid === "corrected_span") return [];
+  const from = valid.from.mode === "given" ? valid.from.value : now;
+  return valid.to.mode === "given" ? [from, valid.to.value] : [from];
+}
+
+function itemsOf(records: readonly OpRecord[]): Item[] {
+  const out: Item[] = [];
+  for (const r of records) {
+    if (r.kind === "reject" || r.kind === "keep_effective") continue;
+    // A confirmation executes the awaiting write as proposed: for the conflict criterion its
+    // items are written the way that write was (a default end or not).
+    const proposal =
+      r.kind === "confirm"
+        ? records.find((y) => y.event === r.target && (y.kind === "write" || y.kind === "revoke"))
+        : r;
+    const raw =
+      proposal?.kind === "write" || proposal?.kind === "revoke" ? proposal.valid : undefined;
+    const ends = r.kind === "confirm" ? [] : givenEnds(raw, r.now);
+    const nextChange =
+      proposal !== undefined &&
+      (raw === undefined || (raw !== "corrected_span" && raw.to.mode === "next_change"));
+    for (const x of r.items) {
+      out.push({
+        event: r.event,
+        target: x.target,
+        k: x.k,
+        op: r.op,
+        index: r.index,
+        status: x.status,
+        valid: x.valid,
+        content: x.content,
+        ...(x.carried !== undefined ? { carried: x.carried } : {}),
+        deps: x.deps,
+        explicitEnds: ends.filter((p) => bounds(x.valid, p)),
+        defaultEnd: nextChange && x.target !== "existence",
+      });
+    }
+  }
+  return out;
+}
+
+/** Orders items by when they were written: operation, place in the request, event. */
+export function later(a: Item, b: Item): boolean {
+  if (a.op !== b.op) return a.op > b.op;
+  if (a.index !== b.index) return a.index > b.index;
+  return a.event > b.event;
+}
+
+export class RowState {
+  readonly table: TableShape;
+  readonly records: readonly OpRecord[];
+  readonly items: readonly Item[];
+  readonly isState: boolean;
+  /** Each field's conflict unit. */
+  readonly unitOf: ReadonlyMap<FieldId, readonly FieldId[]>;
+
+  /** Items not in the records: a tentative judgement being tried. */
+  private readonly extra: readonly Item[];
+
+  constructor(table: TableShape, records: readonly OpRecord[], extra: readonly Item[] = []) {
+    this.table = table;
+    this.records = records;
+    this.extra = extra;
+    this.items = [...itemsOf(records), ...extra];
+    this.isState = table.kind === "state";
+    const units = new Map<FieldId, readonly FieldId[]>();
+    for (const g of table.groups) for (const f of g) units.set(f, [...g].sort());
+    for (const f of table.fields) if (!units.has(f)) units.set(f, [f]);
+    this.unitOf = units;
+  }
+
+  /** The same state with `extra` items written (a tentative judgement). */
+  with(extra: readonly Item[]): RowState {
+    return new RowState(this.table, this.records, [...this.extra, ...extra]);
+  }
+
+  sees(x: Item, at: Limit): boolean {
+    if (x.op <= at.upTo) return true;
+    return at.request !== undefined && x.op === at.request.op && x.index < at.request.below;
+  }
+
+  unitKey(u: Unit): string {
+    return u === "existence" ? "existence" : [...u.fields].sort().join(",");
+  }
+
+  /** The pieces of the timeline on which every item, and `extra`, is constant. */
+  pieces(extra: readonly IntervalSet[] = []): Interval[] {
+    if (!this.isState) return [WHOLE];
+    return cut(cutPoints([...extra, ...this.items.map((x) => x.valid)]));
+  }
+
+  /** The pieces lying inside `a`. */
+  piecesIn(a: IntervalSet): Interval[] {
+    return this.pieces([a]).filter((s) => within(s, a));
+  }
+
+  /**
+   * A field on a piece: the last item in effect covering it among the field's value items and the
+   * revokes (03-deletion «重放规则», the value of a field).
+   */
+  fieldState(f: FieldId, seg: Interval, at: Limit): FieldState {
+    let best: Item | undefined;
+    for (const x of this.items) {
+      if (x.status !== "applied" || !this.sees(x, at) || !within(seg, x.valid)) continue;
+      const counts = (x.target === f && x.content.kind === "value") || x.content.kind === "revoke";
+      if (!counts) continue;
+      if (best === undefined || later(x, best)) best = x;
+    }
+    if (best === undefined) return { kind: "none" };
+    if (best.content.kind === "revoke") return { kind: "hole", by: best };
+    return { kind: "value", value: best.content.value, by: best };
+  }
+
+  /** State tables: a point has a value when every required field has one (05-time «无值区间»). */
+  hasValue(seg: Interval, at: Limit): boolean {
+    const req = this.table.valued;
+    if (req.length > 0) return req.every((f) => this.fieldState(f, seg, at).kind === "value");
+    return this.table.fields.some((f) => this.fieldState(f, seg, at).kind === "value");
+  }
+
+  /** A field's value as the judgements compare it: "no value" wherever the entity has none. */
+  token(f: FieldId, seg: Interval, at: Limit): string {
+    if (this.isState && !this.hasValue(seg, at)) return NO_VALUE;
+    const s = this.fieldState(f, seg, at);
+    return s.kind === "value" ? valueToken(s.value) : s.kind;
+  }
+
+  /** Value change points of a field, value ↔ no value included (05-time «状态类表的状态»). */
+  changePoints(f: FieldId, at: Limit): BizPoint[] {
+    const segs = this.pieces();
+    const out: BizPoint[] = [];
+    for (let i = 1; i < segs.length; i++) {
+      const a = segs[i - 1] as Interval;
+      const b = segs[i] as Interval;
+      if (b.from !== null && this.token(f, a, at) !== this.token(f, b, at)) out.push(b.from);
+    }
+    return out;
+  }
+
+  /**
+   * The change points high impact ① protects (05-time «高影响写入»): a value ↔ no value boundary
+   * counts only on the fields that define "has a value" (the required ones; every field when none
+   * is required); other fields are compared only between points where the entity has a value.
+   */
+  impactPoints(f: FieldId, at: Limit): BizPoint[] {
+    const defines = this.defines(f);
+    const segs = this.pieces();
+    const out: BizPoint[] = [];
+    for (let i = 1; i < segs.length; i++) {
+      const a = this.token(f, segs[i - 1] as Interval, at);
+      const b = this.token(f, segs[i] as Interval, at);
+      const from = (segs[i] as Interval).from;
+      if (from === null || a === b) continue;
+      if (!defines && (a === NO_VALUE || b === NO_VALUE)) continue;
+      out.push(from);
+    }
+    return out;
+  }
+
+  /**
+   * Corroboration endpoints of a field that still count: not covered over by a later item in
+   * effect on the field or a revoke (05-time «用同样的值写»).
+   */
+  corroborationEnds(f: FieldId, at: Limit): BizPoint[] {
+    const out: BizPoint[] = [];
+    for (const c of this.items) {
+      if (c.status !== "corroborated" || c.target !== f || !this.sees(c, at)) continue;
+      for (const p of c.explicitEnds) {
+        const coveredOver = this.items.some(
+          (x) =>
+            x.status === "applied" &&
+            this.sees(x, at) &&
+            later(x, c) &&
+            (x.target === f || x.content.kind === "revoke") &&
+            holds(x.valid, p),
+        );
+        if (!coveredOver) out.push(p);
+      }
+    }
+    return out;
+  }
+
+  /** Blocking points of a field, or of any field (05-time «状态类表的状态»). */
+  blockingPoints(f: FieldId | "any", at: Limit): BizPoint[] {
+    const fs = f === "any" ? this.table.fields : [f];
+    const ps = new Set<BizPoint>();
+    for (const g of fs) {
+      for (const p of this.changePoints(g, at)) ps.add(p);
+      for (const p of this.corroborationEnds(g, at)) ps.add(p);
+    }
+    return [...ps].sort();
+  }
+
+  /**
+   * The contributions giving a blocking point (05-time «给出挡点的贡献»): every item in effect up
+   * to `at` on the field (any field for "any") or on existence whose interval has the point as an
+   * end, both sides, covered or not.
+   */
+  givers(p: BizPoint, f: FieldId | "any", at: Limit): ItemRef[] {
+    // At a value ↔ no value boundary the items of the fields defining "has a value" give it too.
+    const boundary = this.isState && this.hasValueBoundary(p, at);
+    return this.items
+      .filter(
+        (x) =>
+          effective(x.status) &&
+          this.sees(x, at) &&
+          (f === "any" ||
+            x.target === f ||
+            x.target === "existence" ||
+            (boundary && this.defines(x.target))) &&
+          bounds(x.valid, p),
+      )
+      .map(refOf);
+  }
+
+  /** Whether `f` is one of the fields that define "has a value" (every field when none is). */
+  defines(f: FieldId | "existence"): boolean {
+    if (f === "existence") return false;
+    return this.table.valued.length === 0 || this.table.valued.includes(f);
+  }
+
+  /** Whether the entity has a value on one side of `p` and none on the other. */
+  hasValueBoundary(p: BizPoint, at: Limit): boolean {
+    const segs = this.pieces([[{ from: p, to: null }]]);
+    const i = segs.findIndex((s) => s.from === p);
+    const before = segs[i - 1];
+    const after = segs[i];
+    if (before === undefined || after === undefined) return false;
+    return this.hasValue(before, at) !== this.hasValue(after, at);
+  }
+
+  /** Event and timeless tables: the row has a revoke in effect. */
+  revoked(at: Limit): boolean {
+    return this.items.some(
+      (x) => x.status === "applied" && x.content.kind === "revoke" && this.sees(x, at),
+    );
+  }
+
+  /** Operations after `seen` and before `n` (other requests) with an item in effect. */
+  opsBetween(seen: OpNumber, n: OpNumber): OpNumber[] {
+    const ops = new Set<OpNumber>();
+    for (const x of this.items)
+      if (x.op > seen && x.op < n && x.status === "applied") ops.add(x.op);
+    return [...ops].sort((a, b) => a - b);
+  }
+
+  /** Where operation `m` changed field `f` (state tables), or whether it did (others: WHOLE). */
+  changedBy(m: OpNumber, f: FieldId): IntervalSet {
+    const before: Limit = { upTo: m - 1 };
+    const after: Limit = { upTo: m };
+    return canonical(
+      this.pieces().filter((s) => this.token(f, s, before) !== this.token(f, s, after)),
+    );
+  }
+
+  /** Records of keep-effective decisions and confirmations: which pending items are closed. */
+  closedCandidate(event: Seq, target: Target): boolean {
+    return this.records.some(
+      (r) =>
+        r.kind === "keep_effective" &&
+        r.candidates.includes(event) &&
+        (r.unit === "existence"
+          ? target === "existence"
+          : target !== "existence" && r.unit.fields.includes(target)),
+    );
+  }
+
+  resolvedAwaiting(event: Seq): boolean {
+    return this.records.some(
+      (r) => (r.kind === "confirm" || r.kind === "reject") && r.target === event,
+    );
+  }
+
+  /** Where the items of a set lie, as one set. */
+  span(xs: readonly Item[]): IntervalSet {
+    return canonical(xs.flatMap((x) => x.valid));
+  }
+
+  /** The start of a set (the earliest point), or null. */
+  start(a: IntervalSet): BizPoint | null {
+    return startOf(a);
+  }
+
+  meet(a: IntervalSet, b: IntervalSet): IntervalSet {
+    return meet(a, b);
+  }
+}

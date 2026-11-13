@@ -250,3 +250,18 @@ it("an awaiting write whose conflict appears after a deletion becomes a candidat
   expect(itemsOf(ev, 61)).toEqual(['f2/0 candidate [2026-11-01, inf) "3"']);
   expect(short(timeline(ev, "f2"))).toEqual(['[11-01, inf) "1"']);
 });
+
+it("a corroboration does not make the ver stale: acknowledge after it still counts", () => {
+  // 05-time «用同样的值写»: a corroboration makes no version and does not change `ver`.
+  const ops: Op[] = [
+    put(10, 12, "5000", ["S1"], "10-01", "open"),
+    put(20, 22, "4000", ["S2"], "11-10", "open", { seen: 10, acknowledge: ["overwrite"] }),
+    put(30, 32, "4000", ["S3"], "11-12", "11-15", { seen: 20, explicit: true }),
+    put(40, 42, "3000", ["S4"], "11-02", "open", { seen: 20, acknowledge: ["overwrite"] }),
+  ];
+  const ev = evaluate(STATE, ops);
+  const statuses = (event: number) =>
+    ev.items.filter((x) => x.event === event).map((x) => x.status);
+  expect(statuses(32)).toEqual(["corroborated"]);
+  expect(statuses(42)).toEqual(["applied"]);
+});

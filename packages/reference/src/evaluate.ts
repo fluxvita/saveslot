@@ -349,6 +349,28 @@ class Replay {
   }
 
   /**
+   * The change points high impact ① protects (05-time «高影响写入»): a value ↔ no value boundary
+   * counts only on the fields that define "has a value" (the required fields; every field when
+   * none is required); the other fields are compared only between points where the entity has a
+   * value, value ↔ empty still being a change.
+   */
+  impactChangePoints(f: FieldId, limit: number): Point[] {
+    const defines = this.schema.required.length === 0 || this.schema.required.includes(f);
+    const segs = this.segments();
+    const out: Point[] = [];
+    for (let i = 1; i < segs.length; i++) {
+      const a = segs[i - 1];
+      const b = segs[i];
+      if (a === undefined || b === undefined || b.from === null) continue;
+      const va = this.vis(f, a, limit);
+      const vb = this.vis(f, b, limit);
+      if (!defines && (va === NO_VALUE || vb === NO_VALUE)) continue;
+      if (va !== vb) out.push(b.from);
+    }
+    return out;
+  }
+
+  /**
    * Corroboration endpoints of `f` that still count: not covered over by a later write in
    * effect, not reverted (05-time «挡点»).
    */
@@ -585,12 +607,12 @@ class Replay {
     if (!this.isState) return false;
     const before = new Map(
       this.fieldIds.map((f) => {
-        const s = new Set(this.valueChangePoints(f, seen));
-        return [f, this.valueChangePoints(f, cur).filter((p) => s.has(p))];
+        const s = new Set(this.impactChangePoints(f, seen));
+        return [f, this.impactChangePoints(f, cur).filter((p) => s.has(p))];
       }),
     );
     apply();
-    const after = new Map(this.fieldIds.map((f) => [f, new Set(this.valueChangePoints(f, n))]));
+    const after = new Map(this.fieldIds.map((f) => [f, new Set(this.impactChangePoints(f, n))]));
     rollback();
     return this.fieldIds.some((f) => (before.get(f) ?? []).some((p) => !after.get(f)?.has(p)));
   }
@@ -857,9 +879,10 @@ class Replay {
     if (o.acknowledge === undefined || o.seen === undefined) return false;
     const seen = o.seen;
     // A deletion or cancellation that changed the entity gave it a new ver (03-deletion «重放规则»,
-    // ver row): a ver before it is not current.
+    // ver row): a ver before it is not current. A corroboration makes no version and leaves the
+    // ver as it was (05-time «用同样的值写»): only items applied after it count.
     return (
-      !this.items.some((x) => x.op > seen && x.op < o.op && effective(x.status)) &&
+      !this.items.some((x) => x.op > seen && x.op < o.op && x.status === "applied") &&
       !this.rec.external.some((e) => e.op > seen && e.op < o.op && e.changedEntity)
     );
   }
