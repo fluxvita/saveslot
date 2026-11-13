@@ -285,7 +285,12 @@ export function undoEntries(
       for (const t of [...new Set(own.entries.map((e) => e.target))].sort()) {
         add({ event: rec.event, target: t });
       }
-    } else if (rec.kind === "write" || rec.kind === "revoke" || rec.kind === "confirm") {
+    } else if (
+      rec.kind === "write" ||
+      rec.kind === "revoke" ||
+      rec.kind === "confirm" ||
+      rec.kind === "take_candidate"
+    ) {
       for (const t of [...new Set(rec.items.map((x) => x.target))].sort()) {
         add({ event: rec.event, target: t });
       }
@@ -485,31 +490,38 @@ export function judgeRevertOf(
 // ---------------------------------------------------------------------------------------------
 // take_previous
 
-/** The candidate items of a pending item: of `candidates` on `unit`, still candidates. */
+/**
+ * The candidate items of a pending item (K): of `candidates`, still candidates, belonging to an
+ * item on `unit` (09 §5.8 `candidates/<k>`: by event and the item's unit, not by index).
+ */
 export function candidatesOf(state: RowState, unit: Unit, candidates: readonly Seq[]): Item[] {
   return state.items.filter(
-    (x) =>
-      candidates.includes(x.event) &&
-      x.status === "candidate" &&
-      (unit === "existence" || (x.target !== "existence" && unit.fields.includes(x.target))),
+    (x) => candidates.includes(x.event) && x.status === "candidate" && state.inUnit(x, unit),
   );
 }
 
-export function judgeTakePrevious(
-  state: RowState,
-  t: TakePreviousInput,
-): RevertOutcome & { mergeBase: OpNumber } {
-  const k = candidatesOf(state, t.unit, t.candidates);
-  // The merge base: the earliest version the candidates carried (01-objects «各处理方式的执行语义»).
-  const mergeBase = Math.min(
-    ...t.candidates.map((e) => {
+/** The merge base: the earliest version the candidates carried (01-objects «各处理方式的执行语义»). */
+export function mergeBaseOf(state: RowState, candidates: readonly Seq[]): OpNumber {
+  return Math.min(
+    ...candidates.map((e) => {
       const r = state.records.find((x) => x.event === e);
       return r !== undefined && (r.kind === "write" || r.kind === "revoke") ? r.seen : (r?.op ?? 0);
     }),
   );
-  // The record: every (event, target) with an item in effect after the merge base and before
-  // this resolution, in the item's unit and interval (03-deletion «回掉的权威定义» ①).
-  const cur: Limit = { upTo: t.op - 1, request: { op: t.op, below: t.index } };
+}
+
+/**
+ * The (event, target)s with an item in effect after the merge base and before this resolution, in
+ * the item's unit and interval: take_previous's revert record (03-deletion «回掉的权威定义» ①), and
+ * take_candidate's covered writes (09 §5.8 `take`). On existence every target counts.
+ */
+export function coveredSince(
+  state: RowState,
+  r: { op: OpNumber; index: number; unit: Unit },
+  mergeBase: OpNumber,
+  k: readonly Item[],
+): RevertEntry[] {
+  const cur: Limit = { upTo: r.op - 1, request: { op: r.op, below: r.index } };
   const domain = canonical(k.flatMap((c) => c.valid));
   const entries = new Map<string, RevertEntry>();
   for (const x of state.items) {
@@ -517,15 +529,25 @@ export function judgeTakePrevious(
       x.op > mergeBase &&
       state.sees(x, cur) &&
       effective(x.status) &&
-      (t.unit === "existence" || (x.target !== "existence" && t.unit.fields.includes(x.target))) &&
+      (r.unit === "existence" || (x.target !== "existence" && r.unit.fields.includes(x.target))) &&
       !isNothing(meet(x.valid, domain))
     ) {
       const key = etKey(x.event, x.target);
       if (!entries.has(key)) entries.set(key, { event: x.event, target: x.target });
     }
   }
+  return [...entries.values()];
+}
+
+export function judgeTakePrevious(
+  state: RowState,
+  t: TakePreviousInput,
+): RevertOutcome & { mergeBase: OpNumber } {
+  const k = candidatesOf(state, t.unit, t.candidates);
+  const mergeBase = mergeBaseOf(state, t.candidates);
+  const entries = coveredSince(state, t, mergeBase, k);
   return {
-    ...judgeRevertOf(state, t, [...entries.values()], { asOf: mergeBase }, k, false),
+    ...judgeRevertOf(state, t, entries, { asOf: mergeBase }, k, false),
     mergeBase,
   };
 }

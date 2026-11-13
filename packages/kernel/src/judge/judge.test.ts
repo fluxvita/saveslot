@@ -146,6 +146,7 @@ function undo(
   };
 }
 
+const WHOLE_IV = { from: null, to: null };
 const iv = (from: string | null, to: string | null = null) => [
   { from: from === null ? null : d(from), to: to === null ? null : d(to) },
 ];
@@ -1441,5 +1442,435 @@ describe("take_previous", () => {
       [d("11-05"), d("11-09"), "1"],
       [d("11-09"), null, "5"],
     ]);
+  });
+});
+
+describe("take_candidate", () => {
+  const take = (
+    op: number,
+    unit: "existence" | readonly FieldId[],
+    candidates: readonly number[],
+    taken: number,
+  ): JudgeInput => ({
+    kind: "take_candidate",
+    op,
+    index: 0,
+    event: op + 1,
+    ruleset: 1,
+    unit: unit === "existence" ? "existence" : { fields: unit },
+    candidates,
+    take: taken,
+  });
+
+  it("takes every candidate item of the write, per target on their union; records merge base and cover", () => {
+    // #41 is cut around a corroboration into two candidate stretches; both take effect.
+    const { state, js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-03"), fields: { f2: "2" }, ack: true }),
+      write({ op: 30, valid: span("11-07", "11-09"), fields: { f2: "2" }, ack: true }),
+      write({
+        op: 40,
+        seen: 10,
+        valid: span("11-01", "11-09"),
+        fields: { f2: "1" },
+        explicit: true,
+      }),
+      take(50, ["f2"], [41], 41),
+    ]);
+    const j = last(js);
+    expect(items(j)).toEqual([
+      {
+        target: "f2",
+        k: 0,
+        status: "applied",
+        valid: [...iv("11-01", "11-03"), ...iv("11-07", "11-09")],
+        value: "1",
+        carried: [ref(41, "f2", 0), ref(41, "f2", 2)],
+      },
+    ]);
+    expect(j.record).toMatchObject({
+      kind: "take_candidate",
+      take: 41,
+      mergeBase: 10,
+      cover: [
+        { event: 21, target: "f2" },
+        { event: 31, target: "f2" },
+      ],
+    });
+    expect(stretches(state, "f2")).toEqual([[d("10-01"), null, "1"]]);
+    // The item is closed: no other decision on it.
+    expect(() =>
+      judgeOp(state, {
+        kind: "keep_effective",
+        op: 60,
+        index: 0,
+        event: 61,
+        ruleset: 1,
+        unit: { fields: ["f2"] },
+        candidates: [41],
+      }),
+    ).toThrow(expect.objectContaining({ reason: "invalid" }));
+  });
+
+  it("same-valued candidates of the item are value sources too", () => {
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-09"), fields: { f2: "2" }, ack: true }),
+      write({ op: 30, seen: 10, valid: span("11-01", "11-05"), fields: { f2: "3" } }),
+      write({ op: 40, seen: 10, valid: span("11-03", "11-07"), fields: { f2: "3" } }),
+      take(50, ["f2"], [31, 41], 31),
+    ]);
+    expect(items(last(js))).toEqual([
+      {
+        target: "f2",
+        k: 0,
+        status: "applied",
+        valid: iv("11-01", "11-05"),
+        value: "3",
+        carried: [ref(31, "f2"), ref(41, "f2")],
+      },
+    ]);
+  });
+
+  it("a stretch without a value is not the same value: the candidate is written there", () => {
+    // f3 is x on #31's whole interval underneath, but undoing #16 left [11-01, 11-03) without a
+    // value (f2 none): taking #31 on existence writes f3 there too, with f2 carried.
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("11-03", "open"), fields: { f2: "1" } }),
+      write({ op: 15, valid: span("11-01", "11-03"), fields: { f2: "2" }, ack: true }),
+      write({ op: 18, valid: span("11-01", "open"), fields: { f3: "x" }, ack: true }),
+      undo(22, 15, { seen: 18, ack: true }),
+      revoke(25, span("11-05", "11-07") as RevokeInput["valid"], 22),
+      write({
+        op: 30,
+        seen: 18,
+        valid: span("11-01", "11-07"),
+        fields: { f3: "x" },
+        explicit: true,
+      }),
+      undo(35, 25),
+      take(40, "existence", [31], 31),
+    ]);
+    expect(items(js[5] as Judgement).map((x) => [x.status, x.valid])).toEqual([
+      ["candidate", iv("11-01", "11-03")],
+      ["corroborated", iv("11-03", "11-05")],
+      ["candidate", iv("11-05", "11-07")],
+    ]);
+    expect(items(last(js)).map((x) => [x.target, x.valid])).toEqual([
+      ["f2", iv("11-01", "11-03")],
+      ["f3", [...iv("11-01", "11-03"), ...iv("11-05", "11-07")]],
+    ]);
+  });
+
+  it("a field unit passes the checks on the current state an ordinary write passes", () => {
+    // 04-write-and-read «判定顺序» step 5. Event table: the row revoked since → `revoked`.
+    const event = run(EVENT, [
+      write({ op: 10, seen: 0, fields: { f2: "1", f3: "a" } }),
+      write({ op: 20, fields: { f2: "2" } }),
+      write({ op: 30, seen: 10, fields: { f2: "3" } }),
+      revoke(35, undefined, 30),
+    ]);
+    expect(() => judgeOp(event.state, take(40, ["f2"], [31], 31))).toThrow(
+      expect.objectContaining({ reason: "revoked", detail: { ops: [35] } }),
+    );
+    // State table: f3 into [11-01, 11-05), where there is no value, without f2.
+    const state = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("11-05", "open"), fields: { f2: "1", f3: "a" } }),
+      write({ op: 20, valid: span("11-05", "11-09"), fields: { f3: "b" }, ack: true }),
+      write({ op: 30, seen: 10, valid: span("11-01", "11-07"), fields: { f3: "c" } }),
+    ]);
+    expect(() => judgeOp(state.state, take(40, ["f3"], [31], 31))).toThrow(
+      expect.objectContaining({
+        reason: "validation_failed",
+        detail: { missing: ["f2"], valid: iv("11-01", "11-05") },
+      }),
+    );
+  });
+
+  it("a field group: every field of the candidate in the unit takes effect", () => {
+    const { js } = run(GROUPED, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f4: "1", f5: "a" } }),
+      write({ op: 20, valid: span("11-01", "open"), fields: { f4: "2" }, ack: true }),
+      write({ op: 30, seen: 10, valid: span("11-03", "11-07"), fields: { f4: "3", f5: "b" } }),
+      take(40, ["f4", "f5"], [31], 31),
+    ]);
+    expect(items(last(js)).map((x) => [x.target, x.valid, "value" in x ? x.value : null])).toEqual([
+      ["f4", iv("11-03", "11-07"), "3"],
+      ["f5", iv("11-03", "11-07"), "b"],
+    ]);
+  });
+
+  it("nothing to write when the value is already in effect: the item is resolved, ver unchanged", () => {
+    // #41 conflicts with #21; #51 then writes the same value: taking #41 writes nothing.
+    const { state, js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-05"), fields: { f2: "2" }, ack: true }),
+      write({ op: 40, seen: 10, valid: span("11-01", "11-05"), fields: { f2: "3" } }),
+      write({ op: 50, valid: span("11-01", "11-05"), fields: { f2: "3" }, ack: true }),
+      take(60, ["f2"], [41], 41),
+    ]);
+    expect(items(last(js))).toEqual([]);
+    expect(state.closedCandidate(41, "f2")).toBe(true);
+    expect(state.opsBetween(50, 61)).toEqual([]);
+  });
+
+  it("refused: a candidate not in the item, a unit the candidate is not on", () => {
+    const { state } = run(EVENT, [
+      write({ op: 10, seen: 0, fields: { f2: "1" } }),
+      revoke(20, undefined, 10),
+      write({ op: 30, seen: 10, fields: { f2: "2" } }),
+    ]);
+    expect(() => judgeOp(state, take(40, "existence", [31], 11))).toThrow(
+      expect.objectContaining({ reason: "invalid" }),
+    );
+    // #31 met a revoke: its candidate is on existence, not on f2.
+    expect(() => judgeOp(state, take(40, ["f2"], [31], 31))).toThrow(
+      expect.objectContaining({ reason: "invalid" }),
+    );
+  });
+
+  const resolveAs = (
+    kind: "keep_effective" | "take_previous",
+    op: number,
+    unit: "existence" | readonly FieldId[],
+    candidates: readonly number[],
+  ): JudgeInput => ({
+    kind,
+    op,
+    index: 0,
+    event: op + 1,
+    ruleset: 1,
+    unit: unit === "existence" ? "existence" : { fields: unit },
+    candidates,
+  });
+
+  it("every resolution checks the unit it names: a write that met a revoke is on existence", () => {
+    const { state } = run(EVENT, [
+      write({ op: 10, seen: 0, fields: { f2: "1" } }),
+      revoke(20, undefined, 10),
+      write({ op: 30, seen: 10, fields: { f2: "2" } }),
+    ]);
+    for (const kind of ["keep_effective", "take_previous"] as const) {
+      expect(() => judgeOp(state, resolveAs(kind, 40, ["f2"], [31]))).toThrow(
+        expect.objectContaining({ reason: "invalid" }),
+      );
+      expect(judgeOp(state, resolveAs(kind, 40, "existence", [31])).judgement.record.kind).toBe(
+        kind,
+      );
+    }
+  });
+
+  it("one write in a field item and an existence item: taking one leaves the other open", () => {
+    // #31 from 11-01 to its next change, as of ver 12: f2 stops at #13's 11-03 and meets only #21
+    // (a field item); f3 runs on and meets the revoke #26 (an existence item).
+    const { state } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1", f3: "a" } }),
+      write({ op: 12, valid: span("11-03", "open"), fields: { f2: "5" }, ack: true }),
+      write({ op: 20, seen: 12, valid: span("11-01", "11-03"), fields: { f2: "2" }, ack: true }),
+      revoke(25, span("11-05", "11-07") as RevokeInput["valid"], 20),
+      write({ op: 30, seen: 12, valid: span("11-01", "next"), fields: { f2: "9", f3: "b" } }),
+    ]);
+    const mine = state.items.filter((x) => x.event === 31);
+    expect(mine.map((x) => [x.target, x.status, x.onExistence === true])).toEqual([
+      ["f2", "candidate", false],
+      ["f3", "candidate", true],
+    ]);
+    const tookExistence = judgeOp(state, take(40, "existence", [31], 31)).state;
+    expect(tookExistence.closedCandidate(31, "f3")).toBe(true);
+    expect(tookExistence.closedCandidate(31, "f2")).toBe(false);
+    const tookField = judgeOp(state, take(40, ["f2"], [31], 31)).state;
+    expect(tookField.closedCandidate(31, "f2")).toBe(true);
+    expect(tookField.closedCandidate(31, "f3")).toBe(false);
+  });
+
+  it("the merge base is the earliest version the candidates carried, whichever is taken", () => {
+    const { js } = run(EVENT, [
+      write({ op: 10, seen: 0, fields: { f2: "1" } }),
+      write({ op: 20, fields: { f2: "2" }, ack: true }),
+      write({ op: 30, fields: { f2: "3" }, ack: true }),
+      write({ op: 40, seen: 10, fields: { f2: "4" } }),
+      write({ op: 50, seen: 20, fields: { f2: "5" } }),
+      take(60, ["f2"], [41, 51], 51),
+    ]);
+    expect(last(js).record).toMatchObject({ mergeBase: 10 });
+  });
+
+  it("the cover lists every write over the item's stretch, as take_previous's record would", () => {
+    // Two candidates on disjoint stretches, each under a write in effect: both writes covered.
+    const { state } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-01", "11-03"), fields: { f2: "2" }, ack: true }),
+      write({ op: 30, valid: span("11-07", "11-09"), fields: { f2: "3" }, ack: true }),
+      write({ op: 40, seen: 10, valid: span("11-01", "11-03"), fields: { f2: "4" } }),
+      write({ op: 50, seen: 10, valid: span("11-07", "11-09"), fields: { f2: "5" } }),
+    ]);
+    const took = judgeOp(state, take(60, ["f2"], [41, 51], 41)).judgement.record;
+    const previous = judgeOp(state, resolveAs("take_previous", 60, ["f2"], [41, 51])).judgement
+      .record;
+    expect(took).toMatchObject({
+      cover: [
+        { event: 21, target: "f2" },
+        { event: 31, target: "f2" },
+      ],
+    });
+    expect(took.kind === "take_candidate" ? took.cover : []).toEqual(
+      previous.kind === "take_previous" ? previous.revert.entries : null,
+    );
+  });
+
+  it("a state table revoke taken where part of its stretch already has no value: written whole", () => {
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("11-03", "open"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-05", "open"), fields: { f2: "2" }, ack: true }),
+      revoke(30, span("11-01", "11-07") as RevokeInput["valid"], 10),
+      take(40, "existence", [31], 31),
+    ]);
+    expect(items(js[2] as Judgement)).toEqual([
+      { target: "existence", k: 0, status: "candidate", valid: iv("11-01", "11-07"), revoke: true },
+    ]);
+    expect(items(last(js))).toEqual([
+      { target: "existence", k: 0, status: "applied", valid: iv("11-01", "11-07"), revoke: true },
+    ]);
+    expect(depsOf(last(js))).toEqual([[ref(31, "existence")]]);
+  });
+
+  describe("on existence", () => {
+    it("state table: a modification fills the gap, required fields carried from the merge base", () => {
+      // 09-references-conflict-sync «撤销与并发修改»: no existence item; f2 carried from #11 where
+      // there is no value; [11-01, 11-03) stays without a value.
+      const { state, js } = run(STATE, [
+        write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1", f3: "a" } }),
+        revoke(20, span("11-01", "11-07") as RevokeInput["valid"], 10),
+        write({ op: 30, seen: 10, valid: span("11-03", "11-09"), fields: { f3: "2" } }),
+        take(40, "existence", [31], 31),
+      ]);
+      expect(items(last(js))).toEqual([
+        {
+          target: "f2",
+          k: 0,
+          status: "applied",
+          valid: iv("11-03", "11-07"),
+          value: "1",
+          carried: [ref(11, "f2")],
+        },
+        {
+          target: "f3",
+          k: 0,
+          status: "applied",
+          valid: iv("11-03", "11-09"),
+          value: "2",
+          carried: [ref(31, "f3")],
+        },
+      ]);
+      expect(view(state).gaps).toEqual([...iv(null, "10-01"), ...iv("11-01", "11-03")]);
+      // f2's deps: what it carries, the candidate taken, the revoke leaving the stretch without a
+      // value (11-07 is its end), and the givers of the value ↔ no value boundary at 11-03.
+      expect(depsOf(last(js))).toEqual([
+        [ref(11, "f2"), ref(21, "existence"), ref(31, "f3")],
+        [ref(31, "f3")],
+      ]);
+    });
+
+    it("carried required deps: the revoke over the stretch, a boundary giver, merge base sides", () => {
+      const takeOn = (head: JudgeInput[]) =>
+        last(run(STATE, [...head, take(40, "existence", [31], 31)]).js);
+      const carriedF2 = (j: Judgement) =>
+        items(j)
+          .map((x, i) => ({ x, deps: depsOf(j)[i] }))
+          .filter((y) => y.x.target === "f2");
+      // The revoke covers the stretch inside: its ends are no boundary, only the revoke gives it.
+      const inside = takeOn([
+        write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+        revoke(20, span("11-01", "11-09") as RevokeInput["valid"], 10),
+        write({ op: 30, seen: 10, valid: span("11-03", "11-07"), fields: { f3: "x" } }),
+      ]);
+      expect(carriedF2(inside).map((y) => [y.x.valid, y.deps])).toEqual([
+        [iv("11-03", "11-07"), [ref(11, "f2"), ref(21, "existence"), ref(31, "f3")]],
+      ]);
+      // 11-05 is a value ↔ no value boundary; #26 (after the merge base) gives the value side.
+      const boundary = takeOn([
+        write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+        revoke(20, span("11-01", "11-05") as RevokeInput["valid"], 10),
+        write({ op: 25, seen: 20, valid: span("11-05", "open"), fields: { f2: "3" }, ack: true }),
+        write({ op: 30, seen: 10, valid: span("11-03", "11-09"), fields: { f3: "x" } }),
+      ]);
+      expect(carriedF2(boundary).map((y) => [y.x.valid, y.deps])).toEqual([
+        [iv("11-03", "11-05"), [ref(11, "f2"), ref(21, "existence"), ref(26, "f2"), ref(31, "f3")]],
+      ]);
+      // At the merge base f2 changes at 11-04 (#11 | #14): both stretches depend on both sides.
+      const sides = takeOn([
+        write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+        write({ op: 13, valid: span("11-04", "open"), fields: { f2: "2" }, ack: true }),
+        revoke(20, span("11-01", "11-07") as RevokeInput["valid"], 13),
+        write({ op: 30, seen: 13, valid: span("11-01", "11-07"), fields: { f3: "x" } }),
+      ]);
+      expect(carriedF2(sides).map((y) => [y.x.valid, y.deps])).toEqual([
+        [iv("11-01", "11-04"), [ref(11, "f2"), ref(14, "f2"), ref(21, "existence"), ref(31, "f3")]],
+        [iv("11-04", "11-07"), [ref(11, "f2"), ref(14, "f2"), ref(21, "existence"), ref(31, "f3")]],
+      ]);
+    });
+
+    it("state table: a required field the merge base does not give either is required_in_gap", () => {
+      const { state } = run(STATE, [
+        write({ op: 10, seen: 0, valid: span("11-05", "open"), fields: { f2: "1" } }),
+        revoke(20, span("11-05", "11-09") as RevokeInput["valid"], 10),
+        write({ op: 30, seen: 10, valid: span("11-01", "11-07"), fields: { f3: "x" } }),
+      ]);
+      expect(() => judgeOp(state, take(40, "existence", [31], 31))).toThrow(
+        expect.objectContaining({
+          reason: "validation_failed",
+          detail: expect.objectContaining({ reason: "required_in_gap" }),
+        }),
+      );
+    });
+
+    it("event table: a modification restores the row; writes are accepted; undoing the take revokes it again", () => {
+      const head = [
+        write({ op: 10, seen: 0, fields: { f2: "1" } }),
+        revoke(20, undefined, 10),
+        write({ op: 30, seen: 10, fields: { f2: "2" } }),
+        take(40, "existence", [31], 31),
+      ];
+      const { state, js } = run(EVENT, head);
+      expect(items(last(js))).toEqual([
+        { target: "existence", k: 0, status: "applied", valid: [WHOLE_IV], restore: true },
+        {
+          target: "f2",
+          k: 0,
+          status: "applied",
+          valid: [WHOLE_IV],
+          value: "2",
+          carried: [ref(31, "f2")],
+        },
+      ]);
+      expect(view(state).exists).toBe(true);
+      expect(depsOf(last(js))).toEqual([[ref(31, "f2")], [ref(31, "f2")]]);
+      expect(judgeOp(state, write({ op: 50, fields: { f2: "3" } })).judgement.record).toMatchObject(
+        {
+          kind: "write",
+        },
+      );
+      const undone = run(EVENT, [...head, undo(50, 40)]);
+      expect(view(undone.state).exists).toBe(false);
+      // The original revoke counts again (the restore is registered as reverted), and so does
+      // the revoke written back.
+      expect(() => judgeOp(undone.state, write({ op: 60, fields: { f2: "3" } }))).toThrow(
+        expect.objectContaining({ reason: "revoked", detail: { ops: [20, 50] } }),
+      );
+    });
+
+    it("a revoke taken takes effect", () => {
+      const { state, js } = run(EVENT, [
+        write({ op: 10, seen: 0, fields: { f2: "1" } }),
+        write({ op: 20, fields: { f2: "2" }, ack: true }),
+        revoke(30, undefined, 10),
+        take(40, "existence", [31], 31),
+      ]);
+      expect(items(last(js))).toEqual([
+        { target: "existence", k: 0, status: "applied", valid: [WHOLE_IV], revoke: true },
+      ]);
+      expect(depsOf(last(js))).toEqual([[ref(31, "existence")]]);
+      expect(view(state).exists).toBe(false);
+    });
   });
 });

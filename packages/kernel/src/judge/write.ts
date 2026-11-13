@@ -63,6 +63,7 @@ export interface Draft {
   readonly content: RecordedItem["content"];
   readonly carried?: readonly ItemRef[];
   readonly deps: readonly ItemRef[];
+  readonly onExistence?: true;
 }
 
 /** Positions of op `index` of request `n`: its seen version, the current state, after it. */
@@ -98,6 +99,7 @@ export function numbered(drafts: readonly Draft[]): RecordedItem[] {
         content: d.content,
         ...(d.carried !== undefined ? { carried: d.carried } : {}),
         deps: d.deps,
+        ...(d.onExistence ? { onExistence: true as const } : {}),
       });
     });
   }
@@ -119,6 +121,7 @@ export function asItems(
     content: x.content,
     ...(x.carried !== undefined ? { carried: x.carried } : {}),
     deps: x.deps,
+    ...(x.onExistence ? { onExistence: true as const } : {}),
     explicitEnds: [],
     defaultEnd: false,
   }));
@@ -217,6 +220,7 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
           valid: p.seenValid,
           content: { kind: "value", value: p.input.value },
           deps: p.deps,
+          ...(withRevoke ? { onExistence: true as const } : {}),
         });
       }
       conflicts.push({
@@ -406,7 +410,20 @@ function conflictingOps(
  * field (05-time «无值区间»).
  */
 function checkGaps(state: RowState, w: WriteInput, applied: readonly Draft[], curAt: Limit): void {
-  const missing = state.table.required.filter((f) => w.fields[f] === undefined);
+  checkGapsOf(state, Object.keys(w.fields) as FieldId[], applied, curAt);
+}
+
+/**
+ * The parts taking effect that fall where the entity has no value must give every required field
+ * (05-time «无值区间»): `validation_failed` with the missing fields and where, otherwise.
+ */
+export function checkGapsOf(
+  state: RowState,
+  given: readonly FieldId[],
+  applied: readonly Draft[],
+  curAt: Limit,
+): void {
+  const missing = state.table.required.filter((f) => !given.includes(f));
   if (missing.length === 0) return;
   for (const d of applied) {
     const gap = canonical(state.piecesIn(d.valid).filter((s) => !state.hasValue(s, curAt)));

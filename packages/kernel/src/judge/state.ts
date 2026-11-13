@@ -49,6 +49,8 @@ export interface Item {
   readonly content: ItemContent;
   readonly carried?: readonly ItemRef[];
   readonly deps: readonly ItemRef[];
+  /** A field candidate in an item whose unit is existence. */
+  readonly onExistence?: true;
   /**
    * The start and explicit end the caller gave that lie on the item's interval: its
    * corroboration endpoints when it is a corroboration (09 §5.7).
@@ -131,6 +133,7 @@ function itemsOf(records: readonly OpRecord[]): Item[] {
         content: x.content,
         ...(x.carried !== undefined ? { carried: x.carried } : {}),
         deps: x.deps,
+        ...(x.onExistence ? { onExistence: true as const } : {}),
         explicitEnds: ends.filter((p) => bounds(x.valid, p)),
         defaultEnd: nextChange && x.target !== "existence",
       });
@@ -296,6 +299,7 @@ export class RowState {
         (x.target === f && (x.content.kind === "value" || x.content.kind === "no_value")) ||
         x.content.kind === "revoke";
       if (!counts || this.registeredOn(x, seg, at)) continue;
+      if (x.content.kind === "revoke" && this.restoredSince(x, seg, at)) continue;
       if (best === undefined || later(x, best)) best = x;
     }
     if (best === undefined) return { kind: "none" };
@@ -469,9 +473,29 @@ export class RowState {
           x.status === "applied" &&
           x.content.kind === "revoke" &&
           this.sees(x, at) &&
-          !this.registeredOn(x, WHOLE, at),
+          !this.registeredOn(x, WHOLE, at) &&
+          !this.restoredSince(x, WHOLE, at),
       )
       .map((x) => x.op);
+  }
+
+  /**
+   * Event and timeless tables: a restore in effect, not registered as reverted, after revoke `r`
+   * covers the piece, so `r` no longer counts (03-deletion «重放规则», the value of a field). Any
+   * restore does: a take_candidate's, which registers no revoke, or a revert's over a revoke the
+   * revert did not register. State tables: never (a take there writes no restore).
+   */
+  restoredSince(r: Item, seg: Interval, at: Limit): boolean {
+    if (this.isState) return false;
+    return this.items.some(
+      (y) =>
+        y.content.kind === "restore" &&
+        y.status === "applied" &&
+        later(y, r) &&
+        this.sees(y, at) &&
+        within(seg, y.valid) &&
+        !this.registeredOn(y, seg, at),
+    );
   }
 
   /** Operations after `seen` and before `n` (other requests) with an item in effect. */
@@ -495,7 +519,7 @@ export class RowState {
   closedCandidate(event: Seq, target: Target): boolean {
     return this.records.some((r) => {
       const item =
-        r.kind === "keep_effective"
+        r.kind === "keep_effective" || r.kind === "take_candidate"
           ? { unit: r.unit, candidates: r.candidates }
           : r.kind === "take_previous"
             ? { unit: r.revert.unit, candidates: r.revert.candidates ?? [] }
@@ -503,10 +527,23 @@ export class RowState {
       if (item === undefined || item.unit === undefined || !item.candidates.includes(event)) {
         return false;
       }
-      return item.unit === "existence"
-        ? target === "existence"
-        : target !== "existence" && item.unit.fields.includes(target);
+      return this.inUnit({ event, target }, item.unit);
     });
+  }
+
+  /**
+   * Whether the candidates of (event, target) belong to an item on `unit`: existence takes the
+   * revoke and the field candidates that met a revoke; a field unit the others on its fields.
+   */
+  inUnit(x: { event: Seq; target: Target }, unit: Unit): boolean {
+    const onExistence =
+      x.target === "existence" ||
+      this.items.some(
+        (y) => y.event === x.event && y.target === x.target && y.onExistence === true,
+      );
+    return unit === "existence"
+      ? onExistence
+      : !onExistence && x.target !== "existence" && unit.fields.includes(x.target);
   }
 
   resolvedAwaiting(event: Seq): boolean {

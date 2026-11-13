@@ -20,7 +20,6 @@ import type {
   RevertRecord,
   RowView,
   TableShape,
-  Target,
   Unit,
   WriteRecord,
 } from "./model.ts";
@@ -32,6 +31,7 @@ import {
   undoEntries,
 } from "./revert.ts";
 import { EVERYTHING, effective, RowState, refKey, refOf, valueToken } from "./state.ts";
+import { judgeTakeCandidate } from "./take.ts";
 import { judgeRevoke, judgeWrite } from "./write.ts";
 
 /** The ruleset versions this `judge` judges by (02-architecture §3 «判定的版本»). */
@@ -129,6 +129,22 @@ export function judgeOp(
       ack: [],
     };
     judgement = { ...quiet, ...revertJudgement(out), record };
+  } else if (input.kind === "take_candidate") {
+    openCandidates(state, input.unit, input.candidates);
+    const out = judgeTakeCandidate(state, input);
+    judgement = {
+      ...quiet,
+      record: {
+        ...base,
+        kind: "take_candidate",
+        unit: input.unit,
+        candidates: input.candidates,
+        take: input.take,
+        mergeBase: out.mergeBase,
+        cover: out.cover,
+        items: out.items,
+      },
+    };
   } else if (input.kind === "confirm" && awaitingUndo(state, input.target) !== undefined) {
     // Confirming an awaiting undo: the record is listed again as of the confirmation, written by
     // the confirmation (04-write-and-read «撤回某次写入（undo）»; 03-deletion «回掉的权威定义»
@@ -227,19 +243,13 @@ function confirm(
   return { ...base, kind: "confirm", target: input.target, items };
 }
 
-/** A keep-effective or take-previous resolution needs open candidates of the item on its unit. */
-function openCandidates(state: RowState, unit: Unit, candidates: readonly Seq[]): void {
+/** A conflict resolution needs open candidates of the item on its unit. */
+export function openCandidates(state: RowState, unit: Unit, candidates: readonly Seq[]): void {
   for (const e of candidates) {
-    const has = state.items.some(
-      (x) =>
-        x.event === e &&
-        x.status === "candidate" &&
-        (unit === "existence"
-          ? x.target === "existence"
-          : x.target !== "existence" && unit.fields.includes(x.target)),
+    const mine = state.items.filter(
+      (x) => x.event === e && x.status === "candidate" && state.inUnit(x, unit),
     );
-    const target: Target = unit === "existence" ? "existence" : (unit.fields[0] as FieldId);
-    if (!has || state.closedCandidate(e, target)) {
+    if (mine.length === 0 || mine.some((x) => state.closedCandidate(e, x.target))) {
       throw new JudgeError("invalid", "no open candidate in the item", { event: e });
     }
   }

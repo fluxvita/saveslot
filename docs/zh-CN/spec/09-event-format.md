@@ -112,7 +112,7 @@
 | `restore_id`、`restored_to`、`high_water` | 字符串、整数、整数 | 只有 `tenant.restored` | 见 §5.2 |
 | `imported_upto` | 整数 | 只有 `tenant.imported` | 见 §5.2 |
 
-除此之外，事件头没有别的字段。表、行、意图、被引用的事件等都在内容块里：定位与意图在元数据块 `target`，调用上下文在 `ctx`；对别的事件的引用分布在 `target`（`origin_event`、`by_event`）、`revert`、`valid_sources`、`op_sources`、`positions`、写入头的 `ops/<i>/baseline`、`ops/<i>/premises/<j>`、`ops/<i>/premise_covers`、`premise.changed` 的 `targets/<k>` 以及各块的 `sources`、`deps` 里。
+除此之外，事件头没有别的字段。表、行、意图、被引用的事件等都在内容块里：定位与意图在元数据块 `target`，调用上下文在 `ctx`；对别的事件的引用分布在 `target`（`origin_event`、`by_event`）、`revert`、`take`、`valid_sources`、`op_sources`、`positions`、写入头的 `ops/<i>/baseline`、`ops/<i>/premises/<j>`、`ops/<i>/premise_covers`、`premise.changed` 的 `targets/<k>` 以及各块的 `sources`、`deps` 里。
 
 例（一次纠错写入里的基础写入事件的事件头）：
 
@@ -783,6 +783,7 @@
 | `duplicate` | 数 | 疑似重复的判定：`{"matched": [<行 ID>], "keys": [<字段 ID>], "deps": […]}`。`matched` 是命中的行（最多 10 个，按最近写入排）；`keys` 是命中的那一组 `duplicate_keys`。只在新增且已生效时有。写入时判一次，之后不重算 | `deps`：被比中的那些行在这些字段上当时生效的贡献 |
 | `ack/<j>` | 数 | `acknowledge` 确认覆盖的一段：`{"field": "f2", "valid": {…}, "value": …, "op": <写下这一段的操作号>, "deps": […]}` | `deps`：写下这一段的贡献，以及给出这一段两端的贡献 |
 | `revert` | 元 | **回退记录**：这次写入回掉了哪几次操作在哪些目标上的改动，见下。`revert: {undo}` 与 `take_previous` 的基础写入都带它，形状相同。只有事件 `seq`、操作号与目标（字段 ID 或"存在"），不含下标与区间 | — |
+| `take` | 元 | **采纳记录**：`take_candidate` 触发的基础写入带它，为删除重放留下所需的记录，见 §5.8「`item.resolved`」。只有事项、候选号、操作号与（事件, 目标），不含下标与区间，不随删除清除 | — |
 
 `target`：
 
@@ -874,6 +875,7 @@
   - `restored: true`：被回掉的是一次撤销，取值位置上这一段是存在的 → 行或实体在这一段恢复存在。被撤销盖住的值本来就还在，不需要写回字段项；字段另有改动要回掉的，照常写回字段项。
   - 不带 `restored`：被回掉的是一次"恢复存在"，取值位置上这一段是不存在的 → 写回一项撤销，形状与普通撤销的项相同。它没有 `valid_sources`，区间的来源是 `span/existence/<k>` 的 `deps`。
   - 两种的 `scope` 与被回掉的那一项相同；`interval` 时 `deps` 含回退记录的条目覆盖的对应项、给出取值位置上状态的那一项、盖住被跳过部分的写入、这一项每个区间端点处取值位置上相邻两段状态的给出者。
+- **采纳"存在"上的修改候选写的"存在"项**（事件类表、无时间表，带采纳记录 `take` 的写入）：`restored: true`、`scope` 为 `whole`，行恢复存在；没有 `revert` 块，不登记那次撤销——撤销之后另有生效的恢复存在时那次撤销不再算（03-deletion「重放规则」"字段的值"一行）。状态类表上采纳这类候选不写"存在"项，按填无值区间落字段项（必填字段从合并基搬运）。
 
 `literal/<字段ID>/<k>`：
 
@@ -1017,6 +1019,7 @@ L 只在 `[11-10, 11-15)` 上被回掉，两侧的 3000 照旧。
 | `fields/*/*` 里 `no_value` | 该字段在这一项的区间上置为没有值；版本表 |
 | `fields/*/*` 里 `uncovered` | 不赋值。该字段在这一项的区间上取登记之后露出的那一项（最后一个生效、没被登记回掉的字段项或撤销）；版本表 |
 | `revert` | **只在这次基础写入生效时登记**：`base_sources` 里把 `items` 列出的各（事件, 目标）在当前的项登记为"已被本操作回掉"（登记的范围只读块：不标 `later` 的条目上的项（`undo` 里是被撤回操作自己的项，`take_previous` 的条目都不标）登记在"它的区间 ∩ 本事件在同一字段或'存在'上写回各项的区间之和"上；标 `later` 的条目上的项 x 再与 D(x) 取交，D(x) 由 `apply` 自己算：被撤回操作的项里，状态为 `applied` 或 `corroborated`（来源表里的当前区间，被删除重述过的按重述后的）、且 x 按回掉的步骤 3 能取代的那些项的区间之并，取代关系只看内容的种类，都在块里；之后被删除事件重述的，按重述后的区间）。这次写入进了待确认时不登记，确认生效时（由那次解决触发的落账）登记；待确认的回掉因一次删除不再属高影响、在自己的写入号生效时，由那条删除事件的落账登记（用提议时列的回退记录）；被拒绝或被取代则不登记。全部被跳过的 `undo` 算已生效，没有写回项，登记的范围为空。登记"已被回掉"只有这一条路径 |
+| `take` | 无。它不登记回掉：覆盖集里的写入由采纳写下的项按普通的取代关系盖过 |
 | `existence/*` 里 `applied`、带 `restored` | 业务表在该范围内撤掉已撤销标记或无值区间；版本表 |
 | `candidate`、`awaiting` | 不改业务表与版本表 |
 | `duplicate` | 无（标记由 `item.created` 得出） |
@@ -1138,6 +1141,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 - `event` 是候选所在的 `write.base` 事件的 `seq`（写入者即该事件的 `actor`）；`seen` 是候选所带的 `ver`（按来源键的写入是这个冲突单元各字段的同步基线位置中最早的那个，取自 `ops/<i>/baseline`）；`cause` 见 §6.7。
 - `items` 逐项列出：`field` 与 `k` 指明是那条事件的哪一项，`value` 是它的值；状态类表每项另有 `valid`（这一项的所见区间）。候选是撤销时 `intent` 为 `revoke`，`items` 里是 `{"existence": <k>}`（带区间的撤销另有 `valid`），没有 `field` 与 `value`。
 - `deps` 含 `items` 里的每一项，以及截出这些区间的贡献。
+- 事项的候选项（采纳与回到合并基所说的 K）按（`event`, 事项 `target.unit`）认，不按 `items` 里的下标：删除让同一次候选写入的几项合并、留最小下标时，按下标认会认丢。
 - **下标 `k` 就是候选号**，全文只有这一套：契约 `Candidate.index`、`resolve` 的 `candidate`、`item.resolved` 的 `candidate`、`item.refreshed` 的 `dropped_candidates` / `restored_candidates` 与它重新给出的 `candidates/<k>`，指的都是它。`take_candidate` 采纳该候选的**全部项**。
 - 候选的一部分项因隐私删除不再是贡献、其余仍在时，候选还是这个候选（下标不变）：原条目块按 `deps` 清除，随后的 `item.refreshed` 用同一个下标重新给出只含剩余项的条目。全部项都不在了，才列入 `dropped_candidates`。
 
@@ -1220,6 +1224,20 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 - 谁解决的是事件头的 `actor`；经哪个凭证由 `actor` 得出。
 - `confirmation` 的哈希由内核在落账时算：SHA-256（被确认的条目块的校验和，按 `(seq, path)` 排序后以换行连接）。被确认的条目块 = 该事项当前有效的全部条目块（`current`、`candidates`、`proposed`、`previous`、`impact`、`matched`、`scope_valid`）；`schema_change` 事项是对应草稿的 `schema.compiled` 的 `compiled` 块。没有任何条目块的事项不产生本块。
 - `note` 不在本事件里：它随解决请求存为源数据（§4.3），由 `op_sources` 引用，事项详情回显的 `note` 从那里取，随那条源数据的隐私删除清除。
+- **`take_candidate`** 触发的基础写入带采纳记录 `take`：
+
+  ```json
+  {"item": "pi_3KD…", "candidate": 0, "merge_base_op": 29,
+   "items": [{"event": 35, "field": "f3"}]}
+  ```
+
+  | 键 | 含义 |
+  |---|---|
+  | `item`、`candidate` | 所解决的事项与采纳的候选号 |
+  | `merge_base_op` | 解决时事项记下的合并基，之后不重算 |
+  | `items` | 覆盖集：事项的冲突单元与区间内、合并基之后、本次解决之前有项生效过的（事件, 目标），列法与 `take_previous` 的回退记录相同（§5.7），条目形状同 `revert.items`（不带 `later`） |
+
+  这块是元信息，只有序号与目标，不随删除清除。覆盖集里的写入不登记回掉：采纳写下的项按普通的取代关系盖过它们。
 - **`take_previous`** 触发的基础写入带回退记录 `revert`（§5.7）：合并基的操作号记在它的 `as_of_op` 里，被回掉的（事件, 目标）列在 `items` 里。它与 `undo` 是同一种操作，重放规则只有 §5.7 那一套。候选不在回退记录里，由本事件关闭。
 - **确认一次待确认的回退**（`awaiting_confirmation` · `confirm`，提议是 `undo`）：确认触发的基础写入带**自己的** `revert`，按确认时的状态列定（与事项刷新后的影响一致），登记与写回都按它、以本次解决的操作号为准。提议那条基础写入里的 `revert` 只是提议内容，用于事项与预览，不用于登记。
 - 处理 `deletion` 事项（撤回）不产生本事件，见 `deletion.cancelled`。

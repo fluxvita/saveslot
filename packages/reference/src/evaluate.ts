@@ -56,6 +56,7 @@ import type {
   LogStep,
   Op,
   Registration,
+  RejectionReason,
   ResolveOp,
   RevertEntry,
   RevertResult,
@@ -211,6 +212,8 @@ class Replay {
   readonly revertRecords = new Map<OpNumber, RevertEntry[]>();
   readonly revertStatus = new Map<OpNumber, RevertResult["status"]>();
   readonly mergeBases = new Map<OpNumber, { mergeBase: OpNumber; k: ItemRef[] }>();
+  /** Resolutions rejected: a take_candidate of a modification with a required field nowhere. */
+  readonly rejections: { op: OpNumber; reason: RejectionReason }[] = [];
   readonly noops = new Set<string>();
   readonly fieldIds: FieldId[];
   readonly closedCandidates: Set<Seq>;
@@ -309,6 +312,7 @@ class Replay {
         it.target === f && (it.content.kind === "value" || it.content.kind === "noValue");
       if (!isField && it.content.kind !== "revoke") continue;
       if (this.registeredOn(it, seg, limit)) continue;
+      if (!isField && !this.liveRevoke(it, seg, limit)) continue;
       if (best === undefined || it.op > best.op || (it.op === best.op && it.event > best.event)) {
         best = it;
       }
@@ -1004,9 +1008,13 @@ class Replay {
   resolveItem(o: ResolveOp): void {
     const n = o.op;
     if (o.decision === "keep_effective") return;
+    if (o.decision === "take_candidate" && o.unit === "existence") {
+      this.takeExistence(o);
+      return;
+    }
     if (o.decision === "take_candidate") {
       if (o.take === undefined || o.unit === "existence") {
-        throw new Error("take_candidate needs `take` and a field unit");
+        throw new Error("take_candidate needs `take`");
       }
       const f = o.unit;
       const cands = this.candidatesOf(o.candidates, f);
@@ -1020,11 +1028,35 @@ class Replay {
               tok(x.content.value) === tok(value.kind === "value" ? value.value : null),
           )
         : [];
+      // The interval: the union of the taken write's candidate items on the unit (all of them, a
+      // candidate being every item of the write there: 09 §5.8 `candidates/<k>`).
       const giver = taken[0] ?? carried[0];
       if (giver === undefined || giver.content.kind !== "value") return;
+      const valid = taken.length > 0 ? union(...taken.map((x) => x.valid)) : giver.valid;
       const v = tok(giver.content.value);
-      const segs = this.segments([giver.valid]).filter((s) => covers(giver.valid, s));
+      const segs = this.segments([valid]).filter((s) => covers(valid, s));
       if (segs.every((s) => this.vis(f, s, n - 1) === v)) return; // same value: not a contribution
+      // The checks on the current state an ordinary write passes, on what takes effect
+      // (04-write-and-read «判定顺序» step 5), when the take is judged: a revoked row cannot be
+      // written. A take that entered the log is a person's decision, executed as recorded in a
+      // replay (03-deletion «两条原则», deviation one).
+      const judging = !this.rec.judged.has(n);
+      if (judging && !this.isState && this.revokedRow()) {
+        this.reject(o, "revoked");
+        return;
+      }
+      // A state table: where the entity has no value, every required field must be given
+      // (05-time «无值区间»).
+      const req = this.schema.required.length > 0 ? this.schema.required : [];
+      if (
+        judging &&
+        this.isState &&
+        req.some((r) => r !== f) &&
+        segs.some((s) => !this.hasValue(s, n - 1))
+      ) {
+        this.reject(o, "missing_required");
+        return;
+      }
       this.push([
         {
           event: o.event,
@@ -1032,7 +1064,7 @@ class Replay {
           k: 0,
           op: n,
           status: "applied",
-          valid: giver.valid,
+          valid,
           content: giver.content,
           carried: carried.map(refOf),
           explicitEnds: [],
@@ -1070,6 +1102,140 @@ class Replay {
       // lists the field writes of the same stretch (09 §5.7).
       () => "applied",
     );
+  }
+
+  /**
+   * A resolution rejected when judged: it writes nothing, and the log refuses it (`evaluateLog`), so
+   * it closes nothing either.
+   */
+  reject(o: ResolveOp, reason: RejectionReason): void {
+    this.rejections.push({ op: o.op, reason });
+  }
+
+  /** The merge base of a conflict item: the earliest version its candidates carried. */
+  mergeBaseOf(candidates: readonly Seq[]): OpNumber {
+    return Math.min(
+      ...candidates.map((e) => {
+        const c = this.opsByEvent.get(e);
+        return c !== undefined && (c.kind === "write" || c.kind === "revoke")
+          ? (c.seen ?? c.op - 1)
+          : (c?.op ?? 0);
+      }),
+    );
+  }
+
+  /**
+   * take_candidate on an item whose unit is existence (09-references-conflict-sync «撤销与并发
+   * 修改»; 01-objects «各处理方式的执行语义»). The candidate taken is a revoke: it takes effect on
+   * its interval. It is a modification: its fields take effect on their intervals; on an event
+   * table the row exists again (a restore, the revoke not registered as reverted); on a state
+   * table where the entity has no value inside the candidate's interval, the required fields the
+   * candidate does not give are carried from the merge base there, and with none there the
+   * resolution is rejected (`required_in_gap`); optional fields not given are empty.
+   */
+  takeExistence(o: ResolveOp): void {
+    const n = o.op;
+    if (o.take === undefined) throw new Error("take_candidate needs `take`");
+    const cands = this.candidatesOf(o.candidates, "existence");
+    const taken = cands.filter((x) => x.event === o.take && !this.shadows.includes(x));
+    const base = {
+      event: o.event,
+      op: n,
+      status: "applied" as const,
+      explicitEnds: [],
+      defaultEnd: false,
+      from: null,
+    };
+    const fresh: Item[] = [];
+    const revokes = taken.filter((x) => x.target === "existence");
+    if (revokes.length > 0) {
+      const valid = union(...revokes.map((x) => x.valid));
+      const already = this.isState
+        ? this.segments([valid])
+            .filter((s) => covers(valid, s))
+            .every((s) => !this.hasValue(s, n - 1))
+        : this.revokedRow();
+      if (!already) {
+        fresh.push({ ...base, target: "existence", k: 0, valid, content: { kind: "revoke" } });
+      }
+      this.push(fresh);
+      return;
+    }
+    const targets = [...new Set(taken.map((x) => x.target))].sort() as FieldId[];
+    for (const f of targets) {
+      const mine = taken.filter((x) => x.target === f && x.content.kind === "value");
+      const first = mine[0];
+      if (first === undefined || first.content.kind !== "value") continue;
+      const value = first.content.value;
+      const valid = union(...mine.map((x) => x.valid));
+      const v = tok(value);
+      const segs = this.segments([valid]).filter((s) => covers(valid, s));
+      if (segs.every((s) => this.vis(f, s, n - 1) === v)) continue;
+      const carried = cands.filter(
+        (x) => x.target === f && x.content.kind === "value" && tok(x.content.value) === v,
+      );
+      fresh.push({
+        ...base,
+        target: f,
+        k: 0,
+        valid,
+        content: first.content,
+        carried: carried.map(refOf),
+      });
+    }
+    if (!this.isState) {
+      if (this.revokedRow()) {
+        fresh.push({
+          ...base,
+          target: "existence",
+          k: 0,
+          valid: [ALL],
+          content: { kind: "restore" },
+        });
+      }
+      this.push(fresh);
+      return;
+    }
+    // State tables: the required fields the candidate does not give, carried from the merge base
+    // where the entity has no value inside the candidate's interval.
+    const scope = union(...taken.map((x) => x.valid));
+    const gap = normalize(
+      this.segments([scope]).filter((s) => covers(scope, s) && !this.hasValue(s, n - 1)),
+    );
+    const mergeBase = this.mergeBaseOf(o.candidates);
+    const req = this.schema.required.length > 0 ? this.schema.required : [];
+    for (const f of req.filter((r) => !targets.includes(r))) {
+      let k = 0;
+      let run: { valid: Iv[]; value: FieldValue; by: Item } | undefined;
+      const flush = () => {
+        if (run === undefined) return;
+        fresh.push({
+          ...base,
+          target: f,
+          k: k++,
+          valid: normalize(run.valid),
+          content: { kind: "value", value: run.value },
+          carried: [refOf(run.by)],
+        });
+        run = undefined;
+      };
+      for (const s of this.segments([gap]).filter((x) => covers(gap, x))) {
+        const st = this.fieldState(f, s, mergeBase);
+        if (st.kind !== "value") {
+          this.reject(o, "required_in_gap");
+          return;
+        }
+        const last = run?.valid[run.valid.length - 1];
+        if (run !== undefined && run.by === st.by && last !== undefined && last.to === s.from) {
+          run.valid.push(s);
+        } else {
+          flush();
+          run = { valid: [s], value: st.value, by: st.by };
+        }
+      }
+      flush();
+    }
+    this.push(fresh);
   }
 
   /**
@@ -1351,11 +1517,31 @@ class Replay {
   // -------------------------------------------------------------------------------------------
   // Results.
 
-  /** Event and timeless tables: a revoke in effect, not registered as reverted. */
+  /**
+   * Event and timeless tables: a revoke in effect, not registered as reverted, and not restored
+   * since (a take_candidate restores the row without registering the revoke).
+   */
   revokedRow(): boolean {
-    return this.items.some(
-      (x) =>
-        x.content.kind === "revoke" && x.status === "applied" && !this.registeredOn(x, ALL, INF),
+    return this.items.some((x) => this.liveRevoke(x, ALL, INF));
+  }
+
+  /**
+   * A revoke in effect at a segment: not registered there and, on event and timeless tables, with
+   * no restore in effect after it (a restore a take_candidate wrote; a revert's restore registers
+   * the revoke as well).
+   */
+  liveRevoke(x: Item, seg: Iv, limit: number): boolean {
+    if (x.content.kind !== "revoke" || x.status !== "applied" || x.op > limit) return false;
+    if (!covers(x.valid, seg) || this.registeredOn(x, seg, limit)) return false;
+    if (this.isState) return true;
+    return !this.items.some(
+      (y) =>
+        y.content.kind === "restore" &&
+        y.status === "applied" &&
+        y.op > x.op &&
+        y.op <= limit &&
+        covers(y.valid, seg) &&
+        !this.registeredOn(y, seg, limit),
     );
   }
 
@@ -1816,6 +2002,13 @@ export function evaluateLog(
     }
     ops.push(e);
     const r = replay(deleted);
+    // A resolution rejected when judged never enters the log, as a refused request.
+    const rejected = r.rejections.find((x) => x.op === e.op);
+    if (rejected !== undefined) {
+      ops.pop();
+      steps.push({ entry: e, refused: true, rejected: rejected.reason, state: prevState });
+      continue;
+    }
     r.recordOp(e);
     const state = r.result();
     steps.push({ entry: e, refused: false, state });

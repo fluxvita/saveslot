@@ -3,8 +3,8 @@
 
 import type { BizPoint } from "@fluxvita/saveslot-contract-core";
 import { describe, expect, it } from "vitest";
-import { evaluate } from "./evaluate.ts";
-import type { Op, TableSchema, ToParam, WriteOp } from "./model.ts";
+import { evaluate, evaluateLog } from "./evaluate.ts";
+import type { Evaluation, Op, TableSchema, ToParam, WriteOp } from "./model.ts";
 import { itemsOf, timeline } from "./views.ts";
 
 const STATE: TableSchema = { kind: "state", required: ["f2"] };
@@ -405,4 +405,262 @@ it("revoking a revoked row of an event table again is a no-op", () => {
   expect(itemsOf(ev, 31)).toEqual([]);
   const back = evaluate(EVENT, [...ops, { kind: "undo", op: 40, event: 41, target: 20 }]);
   expect(back.exists).toBe(true);
+});
+
+it("take_candidate takes every candidate item of the taken write, not only the first", () => {
+  // 09 §5.8 `candidates/<k>`: a candidate is every item of a write that became a candidate on the
+  // unit; take_candidate takes all of them. #41 is cut into a candidate, a corroboration and a
+  // candidate; taking it puts 1 on both candidate stretches.
+  const ops: Op[] = [
+    put(10, 11, "1", ["S1"], "10-01", "open"),
+    put(20, 21, "2", ["S2"], "11-01", "11-03", { seen: 10, acknowledge: ["overwrite"] }),
+    put(30, 31, "2", ["S3"], "11-07", "11-09", { seen: 20, acknowledge: ["overwrite"] }),
+    put(40, 41, "1", ["S4"], "11-01", "11-09", { seen: 10, explicit: true }),
+    {
+      kind: "resolve",
+      op: 50,
+      event: 51,
+      decision: "take_candidate",
+      candidates: [41],
+      take: 41,
+      unit: "f2",
+    },
+  ];
+  const ev = evaluate(STATE, ops);
+  expect(itemsOf(ev, 41)).toEqual([
+    'f2/0 candidate [2026-11-01, 2026-11-03) "1"',
+    'f2/1 corroborated [2026-11-03, 2026-11-07) "1"',
+    'f2/2 candidate [2026-11-07, 2026-11-09) "1"',
+  ]);
+  expect(short(timeline(ev, "f2"))).toEqual(['[10-01, inf) "1"']);
+});
+
+describe("take_candidate on an item whose unit is existence", () => {
+  // 09-references-conflict-sync «撤销与并发修改»; 01-objects «各处理方式的执行语义».
+  const take = (op: number, candidate: number): Op => ({
+    kind: "resolve",
+    op,
+    event: op + 1,
+    decision: "take_candidate",
+    candidates: [candidate],
+    take: candidate,
+    unit: "existence",
+  });
+  const sp = (from: string, end: string) => ({
+    from: { mode: "given" as const, value: d(from) },
+    to: end === "open" ? { mode: "open" as const } : { mode: "given" as const, value: d(end) },
+  });
+
+  it("state table: a modification fills the gap, required fields carried from the merge base", () => {
+    // #31 (ver 10) writes f3 over [11-03, 11-09) while #21 revoked [11-01, 11-07): a candidate on
+    // existence. Taken: f3 = 2 on [11-03, 11-09); f2 carried from #11 where there is no value,
+    // [11-03, 11-07); [11-01, 11-03) stays without a value. No existence item.
+    const ops: Op[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        valid: sp("10-01", "open"),
+        fields: { f2: { value: "1", sources: ["S1"] }, f3: { value: "a", sources: ["S1"] } },
+      },
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: sp("11-01", "11-07"),
+        validSources: ["S2"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        valid: sp("11-03", "11-09"),
+        fields: { f3: { value: "2", sources: ["S3"] } },
+      },
+    ];
+    expect(itemsOf(evaluate(STATE, ops), 31)).toEqual([
+      'f3/0 candidate [2026-11-03, 2026-11-09) "2"',
+    ]);
+    const ev = evaluate(STATE, [...ops, take(40, 31)]);
+    expect(itemsOf(ev, 41)).toEqual([
+      'f2/0 applied [2026-11-03, 2026-11-07) "1" carried #11/f2/0',
+      'f3/0 applied [2026-11-03, 2026-11-09) "2" carried #31/f3/0',
+    ]);
+    expect(short(ev.gaps.map((g) => `[${g.from}, ${g.to})`))).toEqual([
+      "[null, 10-01)",
+      "[11-01, 11-03)",
+    ]);
+  });
+
+  it("state table: a required field the merge base does not give either is required_in_gap", () => {
+    const ops: Op[] = [
+      put(10, 11, "1", ["S1"], "11-05", "open"),
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: sp("11-05", "11-09"),
+        validSources: ["S2"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        valid: sp("11-01", "11-07"),
+        fields: { f3: { value: "x", sources: ["S3"] } },
+      },
+    ];
+    expect(itemsOf(evaluate(STATE, ops), 31)).toEqual([
+      'f3/0 candidate [2026-11-01, 2026-11-07) "x"',
+    ]);
+    // Rejected when judged, the take is refused: it writes and closes nothing.
+    const step = evaluateLog(STATE, [...ops, take(40, 31)]).steps.at(-1);
+    expect({ refused: step?.refused, rejected: step?.rejected }).toEqual({
+      refused: true,
+      rejected: "required_in_gap",
+    });
+    expect(itemsOf(step?.state as Evaluation, 41)).toEqual([]);
+    expect(step?.state.items.filter((x) => x.event === 31).map((x) => x.closed)).toEqual([
+      undefined,
+    ]);
+  });
+
+  it("event table: a modification restores the row; undoing the take revokes it again", () => {
+    const ops: Op[] = [
+      { kind: "write", op: 10, event: 11, fields: { f2: { value: "1", sources: ["S1"] } } },
+      { kind: "revoke", op: 20, event: 21, seen: 10 },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        fields: { f2: { value: "2", sources: ["S3"] } },
+      },
+    ];
+    expect(itemsOf(evaluate(EVENT, ops), 31)).toEqual(['f2/0 candidate [-inf, inf) "2"']);
+    const ev = evaluate(EVENT, [...ops, take(40, 31)]);
+    expect(itemsOf(ev, 41)).toEqual([
+      "existence/0 applied [-inf, inf) restore",
+      'f2/0 applied [-inf, inf) "2" carried #31/f2/0',
+    ]);
+    expect(ev.exists).toBe(true);
+    const undone = evaluate(EVENT, [
+      ...ops,
+      take(40, 31),
+      { kind: "undo", op: 50, event: 51, target: 40 },
+    ]);
+    expect(undone.reverts.at(-1)?.status).toBe("applied");
+    expect(undone.exists).toBe(false);
+  });
+
+  it("a revoke taken takes effect", () => {
+    const ops: Op[] = [
+      { kind: "write", op: 10, event: 11, fields: { f2: { value: "1", sources: ["S1"] } } },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        fields: { f2: { value: "2", sources: ["S2"] } },
+      },
+      { kind: "revoke", op: 30, event: 31, seen: 10 },
+    ];
+    expect(itemsOf(evaluate(EVENT, ops), 31)).toEqual(["existence/0 candidate [-inf, inf) revoke"]);
+    const ev = evaluate(EVENT, [...ops, take(40, 31)]);
+    expect(itemsOf(ev, 41)).toEqual(["existence/0 applied [-inf, inf) revoke"]);
+    expect(ev.exists).toBe(false);
+  });
+});
+
+it("take_candidate on a field of a revoked event row is rejected (revoked)", () => {
+  // 04-write-and-read «判定顺序» step 5: the candidate takes effect when taken, so the revoked row
+  // check applies then, as to an ordinary write. Undoing the revoke afterwards restores the row.
+  const ops: Op[] = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      fields: { f2: { value: "1", sources: ["S1"] }, f3: { value: "a", sources: ["S1"] } },
+    },
+    { kind: "write", op: 20, event: 21, fields: { f2: { value: "2", sources: ["S2"] } } },
+    { kind: "write", op: 30, event: 31, seen: 10, fields: { f2: { value: "3", sources: ["S3"] } } },
+    { kind: "revoke", op: 35, event: 36, seen: 30 },
+    {
+      kind: "resolve",
+      op: 40,
+      event: 41,
+      decision: "take_candidate",
+      candidates: [31],
+      take: 31,
+      unit: "f2",
+    },
+  ];
+  const step = evaluateLog(EVENT, ops).steps.at(-1);
+  expect({ refused: step?.refused, rejected: step?.rejected }).toEqual({
+    refused: true,
+    rejected: "revoked",
+  });
+  expect(evaluate(EVENT, [...ops, { kind: "undo", op: 50, event: 51, target: 35 }]).exists).toBe(
+    true,
+  );
+});
+
+it("take_candidate on a field into a stretch without a value, without the required fields, is rejected", () => {
+  // 05-time «无值区间»: the part taking effect where the entity has no value must give every
+  // required field; the same write with the current ver would be refused.
+  const ops: Op[] = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      valid: {
+        from: { mode: "given", value: d("11-05") },
+        to: { mode: "open" },
+      },
+      fields: { f2: { value: "1", sources: ["S1"] }, f3: { value: "a", sources: ["S1"] } },
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: d("11-05") },
+        to: { mode: "given", value: d("11-09") },
+      },
+      fields: { f3: { value: "b", sources: ["S2"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: d("11-01") },
+        to: { mode: "given", value: d("11-07") },
+      },
+      fields: { f3: { value: "c", sources: ["S3"] } },
+    },
+    {
+      kind: "resolve",
+      op: 40,
+      event: 41,
+      decision: "take_candidate",
+      candidates: [31],
+      take: 31,
+      unit: "f3",
+    },
+  ];
+  const run = evaluateLog(STATE, ops);
+  expect(itemsOf(run.final, 31)).toEqual(['f3/0 candidate [2026-11-01, 2026-11-07) "c"']);
+  const step = run.steps.at(-1);
+  expect({ refused: step?.refused, rejected: step?.rejected }).toEqual({
+    refused: true,
+    rejected: "missing_required",
+  });
 });

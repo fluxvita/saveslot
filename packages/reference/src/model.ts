@@ -213,6 +213,9 @@ export interface RevertEntry {
   readonly later?: true;
 }
 
+/** Why a resolution was rejected: what the same write would get (04-write-and-read «判定顺序»). */
+export type RejectionReason = "required_in_gap" | "revoked" | "missing_required";
+
 export interface RevertResult {
   readonly op: OpNumber;
   readonly event: Seq;
@@ -253,6 +256,8 @@ export interface LogStep {
    * pending deletion touching its contributions, by operation number.
    */
   readonly notFound?: readonly string[];
+  /** Refused because the resolution was rejected when judged, and why. */
+  readonly rejected?: RejectionReason;
   readonly state: Evaluation;
   /** A cancellation: the writes it recorded as kept in effect (`kept_effective`). */
   readonly keptEffective?: readonly {

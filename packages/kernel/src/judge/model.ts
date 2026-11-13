@@ -157,6 +157,15 @@ export interface TakePreviousInput extends OpBase {
   readonly candidates: readonly Seq[];
 }
 
+/** A conflict item resolved by `take_candidate`: the candidate of write `take` takes effect. */
+export interface TakeCandidateInput extends OpBase {
+  readonly kind: "take_candidate";
+  readonly unit: Unit;
+  readonly candidates: readonly Seq[];
+  /** The event of the candidate taken: one of `candidates`. */
+  readonly take: Seq;
+}
+
 export type JudgeInput =
   | WriteInput
   | RevokeInput
@@ -164,7 +173,8 @@ export type JudgeInput =
   | RejectInput
   | KeepEffectiveInput
   | UndoInput
-  | TakePreviousInput;
+  | TakePreviousInput
+  | TakeCandidateInput;
 
 // ---------------------------------------------------------------------------------------------
 // Records: what the log keeps of a judgement.
@@ -219,6 +229,11 @@ export interface RecordedItem {
    * carried items. Empty when both ends were given by the request and the field has one item.
    */
   readonly deps: readonly ItemRef[];
+  /**
+   * A candidate of a field in an item whose unit is existence: the write met a revoke in between
+   * (09-references-conflict-sync «撤销与并发修改»).
+   */
+  readonly onExistence?: true;
 }
 
 interface RecordBase {
@@ -283,12 +298,27 @@ export interface KeepEffectiveRecord extends RecordBase {
   readonly candidates: readonly Seq[];
 }
 
+/**
+ * A `take_candidate` (09 §5.8 `take`): the candidate taken, the merge base and the covered
+ * (event, target)s, kept for a privacy deletion's replay; its items are what the candidate wrote.
+ */
+export interface TakeCandidateRecord extends RecordBase {
+  readonly kind: "take_candidate";
+  readonly unit: Unit;
+  readonly candidates: readonly Seq[];
+  readonly take: Seq;
+  readonly mergeBase: OpNumber;
+  readonly cover: readonly RevertEntry[];
+  readonly items: readonly RecordedItem[];
+}
+
 export type OpRecord =
   | WriteRecord
   | ConfirmRecord
   | RejectRecord
   | KeepEffectiveRecord
-  | RevertRecord;
+  | RevertRecord
+  | TakeCandidateRecord;
 
 // ---------------------------------------------------------------------------------------------
 // What a judgement says beyond the record (receipts, pending items).

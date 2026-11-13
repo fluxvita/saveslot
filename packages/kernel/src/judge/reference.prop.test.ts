@@ -58,7 +58,7 @@ const shape = (s: TableSchema): TableShape => ({
 interface Decision {
   readonly after: number;
   readonly pick: number;
-  readonly kind: "confirm" | "reject" | "keep" | "previous" | "undo" | "revoke";
+  readonly kind: "confirm" | "reject" | "keep" | "previous" | "take" | "undo" | "revoke";
   readonly flag: number;
   readonly focus: boolean;
 }
@@ -72,6 +72,8 @@ const decision: fc.Arbitrary<Decision> = fc.record({
     "reject",
     "keep",
     "previous",
+    "take",
+    "take",
     "undo",
     "undo",
     "revoke",
@@ -259,6 +261,177 @@ const candidatesSkeleton = (state: boolean) =>
       return toOps(tail, state, head);
     });
 
+/**
+ * An item whose unit is existence, taken: #21 revokes (on a state table, a stretch); #31, with the
+ * version before it, writes f2 or the optional f3 and becomes a candidate on existence; #41 takes
+ * it. On a state table the entity may start late, so that the merge base has no f2 where the
+ * candidate fills (`required_in_gap`). Random steps follow.
+ */
+const existenceSkeleton = (state: boolean) =>
+  fc
+    .tuple(
+      fc.nat({ max: 2 }),
+      fc.nat({ max: 2 }),
+      fc.constantFrom(true, true, false),
+      fc.constantFrom<FieldId>("f2", "f3"),
+      fc.array(writeStep, { maxLength: 3 }),
+    )
+    .map(([b, c, late, f, tail]) => {
+      const head: Op[] = [
+        {
+          kind: "write",
+          op: 10,
+          event: 11,
+          seen: 0,
+          ...(state
+            ? {
+                valid: late
+                  ? span(2, null)
+                  : { ...span(0, null), from: { mode: "given", value: "2026-10-01" as BizPoint } },
+              }
+            : {}),
+          fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+          acknowledge: ["overwrite"],
+        },
+        {
+          kind: "revoke",
+          op: 20,
+          event: 21,
+          seen: 10,
+          ...(state ? { valid: span(b, b + 3), validSources: ["S20"] } : {}),
+        },
+        {
+          kind: "write",
+          op: 30,
+          event: 31,
+          seen: 10,
+          ...(state ? { valid: span(c, c + 3) } : {}),
+          fields: { [f]: { value: "2", sources: ["S30"] } },
+        },
+        {
+          kind: "resolve",
+          op: 40,
+          event: 41,
+          decision: "take_candidate",
+          candidates: [31],
+          take: 31,
+          unit: "existence",
+        },
+      ];
+      return toOps(tail, state, head);
+    });
+
+/**
+ * State tables: a candidate cut into several stretches around a corroboration (#41: the version
+ * before #21 and #31, explicit), taken whole. Random steps follow.
+ */
+const splitSkeleton = fc
+  .tuple(fc.nat({ max: 1 }), fc.array(writeStep, { maxLength: 3 }))
+  .map(([a, tail]) => {
+    const head: Op[] = [
+      {
+        ...put(10, 0, "1", {
+          ...span(0, null),
+          from: { mode: "given", value: "2026-10-01" as BizPoint },
+        }),
+        seen: 0,
+      },
+      put(20, 10, "2", span(a, a + 1)),
+      put(30, 20, "2", span(a + 3, a + 4)),
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 10,
+        valid: span(a, a + 4),
+        fields: { f2: { value: "1", sources: ["S40"], explicit: true } },
+      },
+      {
+        kind: "resolve",
+        op: 50,
+        event: 51,
+        decision: "take_candidate",
+        candidates: [41],
+        take: 41,
+        unit: "f2",
+      },
+    ];
+    return toOps(tail, true, head);
+  });
+
+/**
+ * A take on a field the checks on the current state refuse, as they would the ordinary write: on
+ * an event table the row revoked after the candidate (#41); on a state table the candidate reaching
+ * where the entity has no value, without the required f2. `revokeIt` false leaves the event row
+ * existing, the take accepted. Random steps follow.
+ */
+const refusedTakeSkeleton = (state: boolean) =>
+  fc
+    .tuple(fc.boolean(), fc.nat({ max: 1 }), fc.array(writeStep, { maxLength: 3 }))
+    .map(([revokeIt, a, tail]) => {
+      const sp = (f: number, t: number | null) => (state ? { valid: span(f, t) } : {});
+      const head: Op[] = state
+        ? [
+            {
+              kind: "write",
+              op: 10,
+              event: 11,
+              seen: 0,
+              ...sp(2, null),
+              fields: {
+                f2: { value: "1", sources: ["S10"] },
+                f3: { value: "a", sources: ["S10"] },
+              },
+              acknowledge: ["overwrite"],
+            },
+            {
+              kind: "write",
+              op: 20,
+              event: 21,
+              seen: 10,
+              ...sp(2, 4),
+              fields: { f3: { value: "b", sources: ["S20"] } },
+              acknowledge: ["overwrite"],
+            },
+            {
+              kind: "write",
+              op: 30,
+              event: 31,
+              seen: 10,
+              ...sp(a, 3),
+              fields: { f3: { value: "c", sources: ["S30"] } },
+            },
+          ]
+        : [
+            {
+              kind: "write",
+              op: 10,
+              event: 11,
+              seen: 0,
+              fields: {
+                f2: { value: "1", sources: ["S10"] },
+                f3: { value: "a", sources: ["S10"] },
+              },
+              acknowledge: ["overwrite"],
+            },
+            put(20, 10, "2", undefined),
+            put(30, 10, "3", undefined, false),
+            ...(revokeIt ? [{ kind: "revoke" as const, op: 40, event: 41, seen: 30 }] : []),
+          ];
+      return toOps(tail, state, [
+        ...head,
+        {
+          kind: "resolve",
+          op: 50,
+          event: 51,
+          decision: "take_candidate",
+          candidates: [31],
+          take: 31,
+          unit: state ? "f3" : "f2",
+        },
+      ]);
+    });
+
 const scenario = (state: boolean) =>
   fc
     .record({
@@ -269,11 +442,16 @@ const scenario = (state: boolean) =>
             { weight: 1, arbitrary: laterSkeleton(true) },
             { weight: 1, arbitrary: holeSkeleton },
             { weight: 1, arbitrary: candidatesSkeleton(true) },
+            { weight: 1, arbitrary: existenceSkeleton(true) },
+            { weight: 1, arbitrary: splitSkeleton },
+            { weight: 1, arbitrary: refusedTakeSkeleton(true) },
           )
         : fc.oneof(
             { weight: 2, arbitrary: fc.constant(null) },
             { weight: 1, arbitrary: laterSkeleton(false) },
             { weight: 1, arbitrary: candidatesSkeleton(false) },
+            { weight: 1, arbitrary: existenceSkeleton(false) },
+            { weight: 1, arbitrary: refusedTakeSkeleton(false) },
           ),
       decisions: fc.array(decision, { maxLength: 5 }),
       fallback: fc.array(fc.boolean(), { maxLength: 9 }),
@@ -292,6 +470,10 @@ function withoutVer(o: Op, drop: boolean): Op {
   const { seen: _, ...rest } = o;
   return rest;
 }
+
+/** The unit of the item a candidate item belongs to, as the reference names it. */
+const unitOf = (x: { target: string; onExistence?: true }): FieldId | "existence" =>
+  x.target === "existence" || x.onExistence === true ? "existence" : (x.target as FieldId);
 
 function toInput(o: Op): JudgeInput {
   const base = { op: o.op, index: 0, event: o.event, ruleset: 1 };
@@ -335,14 +517,20 @@ function toInput(o: Op): JudgeInput {
     case "confirm":
     case "reject":
       return { ...base, kind: o.kind, target: o.target };
-    case "resolve":
-      if (o.decision === "take_candidate") throw new Error("take_candidate is judged elsewhere");
-      return {
-        ...base,
-        kind: o.decision,
-        unit: o.unit === "existence" ? "existence" : { fields: [o.unit] },
-        candidates: o.candidates,
-      };
+    case "resolve": {
+      const unit = o.unit === "existence" ? ("existence" as const) : { fields: [o.unit] };
+      if (o.decision === "take_candidate") {
+        if (o.take === undefined) throw new Error("take_candidate needs `take`");
+        return {
+          ...base,
+          kind: "take_candidate",
+          unit,
+          candidates: o.candidates,
+          take: o.take,
+        };
+      }
+      return { ...base, kind: o.decision, unit, candidates: o.candidates };
+    }
     default:
       throw new Error(`not judged here: ${(o as Op).kind}`);
   }
@@ -447,13 +635,15 @@ function judged(schema: TableSchema, ops: readonly Op[], decisions: readonly Dec
           .filter(
             (x) =>
               x.status === "candidate" &&
-              x.target === o.unit &&
+              unitOf(x) === o.unit &&
               !state.closedCandidate(x.event, x.target),
           )
           .map((x) => x.event),
       );
       const candidates = o.candidates.filter((e) => open.has(e));
-      if (candidates.length > 0) enter({ ...o, candidates });
+      if (candidates.length > 0 && (o.take === undefined || candidates.includes(o.take))) {
+        enter({ ...o, candidates });
+      }
     } else if (o.kind === "confirm" || o.kind === "reject") {
       // A skeleton's decision, on an item still awaiting.
       const awaiting = state.items.some(
@@ -488,26 +678,34 @@ function judged(schema: TableSchema, ops: readonly Op[], decisions: readonly Dec
           enter({ kind: "revoke", op, event, seen: (d.flag & 1) === 1 ? op - 11 : op - 1 });
           return;
         }
+        const resolving = d.kind === "keep" || d.kind === "previous" || d.kind === "take";
         const open = state.items.filter((x) =>
-          d.kind === "keep" || d.kind === "previous"
+          resolving
             ? x.status === "candidate" && !state.closedCandidate(x.event, x.target)
             : x.status === "awaiting" && !state.resolvedAwaiting(x.event),
         );
         const x = open[d.pick % Math.max(1, open.length)];
         if (x === undefined) return;
+        const unit = unitOf(x);
         const candidates =
-          d.kind === "previous"
-            ? [...new Set(open.filter((y) => y.target === x.target).map((y) => y.event))]
+          d.kind === "previous" || d.kind === "take"
+            ? [...new Set(open.filter((y) => unitOf(y) === unit).map((y) => y.event))]
             : [x.event];
         enter(
-          d.kind === "keep" || d.kind === "previous"
+          resolving
             ? {
                 kind: "resolve",
                 op,
                 event,
-                decision: d.kind === "keep" ? "keep_effective" : "take_previous",
+                decision:
+                  d.kind === "keep"
+                    ? "keep_effective"
+                    : d.kind === "take"
+                      ? "take_candidate"
+                      : "take_previous",
                 candidates,
-                unit: x.target,
+                unit,
+                ...(d.kind === "take" ? { take: x.event } : {}),
               }
             : { kind: d.kind, op, event, target: x.event },
         );
@@ -531,15 +729,21 @@ function fillsGap(schema: TableSchema, before: readonly Op[], o: Op): boolean {
   );
 }
 
-/** Event tables: the reference has a revoke in effect on the row after `before`. */
-const revokedRow = (schema: TableSchema, before: readonly Op[]) =>
-  evaluateLog(schema, before).final.items.some(
-    (x) =>
-      x.target === "existence" &&
-      x.content.kind === "revoke" &&
-      x.status === "applied" &&
-      x.registrations.length === 0,
+/**
+ * Event tables: the reference has a revoke in effect on the row after `before`: not registered as
+ * reverted, and no restore in effect after it (a take_candidate's restore).
+ */
+const revokedRow = (schema: TableSchema, before: readonly Op[]) => {
+  const items = evaluateLog(schema, before).final.items;
+  const live = (x: (typeof items)[number], kind: string) =>
+    x.target === "existence" &&
+    x.content.kind === kind &&
+    x.status === "applied" &&
+    x.registrations.length === 0;
+  return items.some(
+    (r) => live(r, "revoke") && !items.some((y) => live(y, "restore") && y.op > r.op),
   );
+};
 
 /** The reference puts a part of `o` into effect (applied, or awaiting: in effect but for ①). */
 const takesEffect = (schema: TableSchema, before: readonly Op[], o: Op) =>
@@ -628,6 +832,17 @@ describe.each(both)("%s table", (_, schema, isState) => {
                     : tr.kind;
               seen[`undoOf_${kind}`] = (seen[`undoOf_${kind}`] ?? 0) + 1;
             }
+            if (r.kind === "take_candidate") {
+              seen["take"] = (seen["take"] ?? 0) + 1;
+              if (r.unit === "existence") seen["takeExistence"] = (seen["takeExistence"] ?? 0) + 1;
+              if (r.items.length === 0) seen["takeNothing"] = (seen["takeNothing"] ?? 0) + 1;
+              for (const y of r.items) {
+                const key = `take_${y.content.kind}${y.carried?.some((c) => c.event !== r.take) ? "_carriedOther" : ""}`;
+                seen[key] = (seen[key] ?? 0) + 1;
+              }
+              if (r.items.some((y) => y.target !== "existence" && y.valid.length > 1))
+                seen["takeManyStretches"] = (seen["takeManyStretches"] ?? 0) + 1;
+            }
             if (r.kind === "take_previous") {
               seen["takePrevious"] = (seen["takePrevious"] ?? 0) + 1;
               if ((r.revert.candidates?.length ?? 0) > 1)
@@ -661,6 +876,20 @@ describe.each(both)("%s table", (_, schema, isState) => {
                 status: "rejected",
               });
               seen[`undoRefused_${r.reason}`] = (seen[`undoRefused_${r.reason}`] ?? 0) + 1;
+              continue;
+            }
+            if (r.op.kind === "resolve") {
+              // A take refused: as the ordinary write would be (`revoked`, a gap without the
+              // required fields), or on existence with a required field nowhere to carry from.
+              const rej = evaluateLog(schema, [...r.before, r.op]).steps.at(-1)?.rejected;
+              const expected =
+                rej === undefined
+                  ? "accepted"
+                  : rej === "revoked"
+                    ? "revoked"
+                    : "validation_failed";
+              expect({ op: r.op.op, reason: r.reason }).toEqual({ op: r.op.op, reason: expected });
+              seen[`takeRefused_${rej}`] = (seen[`takeRefused_${rej}`] ?? 0) + 1;
               continue;
             }
             if (r.reason === "revoked") {
@@ -754,5 +983,25 @@ describe.each(both)("%s table", (_, schema, isState) => {
     );
     if (process.env["JUDGE_STATS"]) console.log(schema.kind, JSON.stringify(seen));
     hits.check();
+    // take_candidate is reached often enough to count: per sample, at least these shares.
+    const share = (key: string) => (seen[key] ?? 0) / seen.samples;
+    const minimum: Record<string, number> = isState
+      ? {
+          take: 0.1,
+          takeExistence: 0.03,
+          takeManyStretches: 0.03,
+          takeRefused_required_in_gap: 0.005,
+          takeRefused_missing_required: 0.005,
+        }
+      : {
+          take: 0.1,
+          takeExistence: 0.08,
+          take_restore: 0.06,
+          take_revoke: 0.002,
+          takeRefused_revoked: 0.005,
+        };
+    for (const [key, min] of Object.entries(minimum)) {
+      expect({ key, enough: share(key) >= min }).toEqual({ key, enough: true });
+    }
   });
 });
