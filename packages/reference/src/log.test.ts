@@ -397,10 +397,9 @@ describe("a candidate put back as a corroboration", () => {
     },
   ];
 
-  it("is a corroboration at its own write number", () => {
-    // At operation 14 its end 11-01 is covered by the take-candidate write at 22, which changed
-    // the value over an interval containing it (05-time «挡点»): #29's default end does not stop
-    // there. Placed at the cancellation's number (26) it would, and #29 would end at 11-01.
+  it("is a corroboration at its own write number, without endpoints", () => {
+    // A put-back corroboration only closes the candidate and adds sources: its endpoints are no
+    // blocking points (05-time «挡点»), so #29's default end does not stop at 11-01.
     const ev = evaluateLog(STATE, log).final;
     expect(items(ev, 15)).toEqual(['f2/0 corroborated [10-01, 11-01) "8"']);
     expect(items(ev, 29)).toEqual(['f2/0 applied [10-15, inf) "7"']);
@@ -427,6 +426,96 @@ describe("a candidate put back as a corroboration", () => {
     expect(items(ev, 15)).toEqual(['f2/0 candidate [10-01, 11-01) "8"']);
     expect(items(ev, 25)).toEqual(['f2/0 applied [10-15, inf) "7"']);
     expect(tl(ev)).toEqual(['[10-01, 10-15) "8"', '[10-15, inf) "7"']);
+  });
+});
+
+describe("a put-back corroboration gives no value and no blocking point", () => {
+  // 03-deletion «撤回与宽限期»: a candidate put back at a cancellation and judged a corroboration
+  // only closes the candidate and adds sources. Its start and end are no blocking points in the
+  // cancellation's replay or any later one; a later deletion removing the value it corroborates
+  // makes it the candidate that decision closed. Found by the «撤回还原» property: #21 (S2) is a
+  // candidate 3 on [11-01, 11-03); deleting S2 and S5 removes it and #41; keep_effective closes
+  // #31's item; cancelling the deletion puts #21 back as a corroboration of #41's 3.
+  const w = (
+    op: number,
+    v: string,
+    src: string,
+    from: string,
+    to: ToParam,
+    seen: number,
+    extra: Partial<WriteOp> = {},
+  ): WriteOp => ({
+    kind: "write",
+    op,
+    event: op + 1,
+    seen,
+    valid: { from: { mode: "given", value: d(from) }, to },
+    fields: { f2: { value: v, sources: [src], ...(extra.fields ? {} : {}) } },
+    ...extra,
+  });
+  const prefix = (from41: string): LogEntry[] => [
+    w(10, "1", "S1", "10-01", { mode: "open" }, 0, { acknowledge: ["overwrite"] }),
+    w(20, "3", "S2", "11-01", { mode: "given", value: d("11-03") }, 0, {
+      fields: { f2: { value: "3", sources: ["S2"], explicit: true } },
+    }),
+    w(30, "3", "S1", "11-01", { mode: "open" }, 0),
+    w(40, "3", "S5", from41, { mode: "next_change" }, 30),
+  ];
+  const grace: LogEntry[] = [
+    {
+      kind: "resolve",
+      op: 60,
+      event: 61,
+      decision: "keep_effective",
+      candidates: [31],
+      unit: "f2",
+    },
+  ];
+  const run = (from41: string, after: LogEntry[] = []) =>
+    evaluateLog(STATE, [
+      ...prefix(from41),
+      del(50, "pi_d", ["S2", "S5"]),
+      ...grace,
+      cancel(80, "pi_d"),
+      ...after,
+    ]);
+  /** The replay as never deleted, with what the cancellation kept (03-deletion «撤回还原»). */
+  const neverDeleted = (
+    from41: string,
+    r: ReturnType<typeof evaluateLog>,
+    after: LogEntry[] = [],
+  ) =>
+    evaluateLog(STATE, [...prefix(from41), ...grace, ...after], {
+      forcedEffective: r.steps.at(-1 - after.length)?.keptEffective ?? [],
+      forcedSuperseded: r.steps.at(-1 - after.length)?.keptSuperseded ?? [],
+    }).final;
+
+  it("its end does not stop a default end: as never deleted", () => {
+    const r = run("11-01");
+    expect(r.steps.at(-1)?.putBack).toEqual([{ event: 21, target: "f2", judged: "corroborated" }]);
+    expect(items(r.final, 21)).toEqual(['f2/0 corroborated [11-01, 11-03) "3"']);
+    expect(items(r.final, 41)).toEqual(['f2/0 applied [11-01, inf) "3"']);
+    expect(tl(r.final)).toEqual(['[10-01, 11-01) "1"', '[11-01, inf) "3"']);
+    expect(tl(r.final)).toEqual(tl(neverDeleted("11-01", r)));
+  });
+
+  it("its start does not stop a default end either", () => {
+    // #41 from 10-15: #21's start 11-01 does not cut it.
+    const r = run("10-15");
+    expect(items(r.final, 41)).toEqual(['f2/0 applied [10-15, inf) "3"']);
+    expect(tl(r.final)).toEqual(tl(neverDeleted("10-15", r)));
+  });
+
+  it("a later deletion of the value it corroborates closes it as a candidate", () => {
+    // Deleting S5 after the cancellation removes #41: #21 corroborates nothing and is the
+    // candidate keep_effective closed, as in the replay that never deleted S2.
+    const after = [del(90, "pi_5", ["S5"])];
+    const r = run("11-01", after);
+    expect(items(r.final, 21)).toEqual(['f2/0 candidate [11-01, 11-03) "3" (closed)']);
+    expect(items(neverDeleted("11-01", r), 21)).toEqual(
+      items(evaluateLog(STATE, [...prefix("11-01"), ...grace, ...after]).final, 21),
+    );
+    expect(tl(r.final)).toEqual(['[10-01, inf) "1"']);
   });
 });
 

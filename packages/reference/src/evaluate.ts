@@ -83,6 +83,13 @@ interface Item {
   /** Resolved with a default end (`next_change`), and its start: for the conflict criterion. */
   readonly defaultEnd: boolean;
   readonly from: Point | null;
+  /**
+   * A candidate put back by a cancellation and judged a corroboration (03-deletion «撤回与宽限期»):
+   * it only closes the candidate and adds sources. No endpoints, gives no blocking points.
+   */
+  readonly putBack?: true;
+  /** A put-back corroboration whose value is gone: the candidate the grace-period decision closed. */
+  readonly closedByDecision?: true;
 }
 
 /**
@@ -150,6 +157,8 @@ interface Recorded {
   readonly keptSuperseded: Set<Seq>;
   /** Candidates put back by a cancellation after their item was resolved, judged at that point. */
   readonly rejudged: Map<string, "dropped" | "corroborated" | "candidate">;
+  /** The cancellation that judged each put-back candidate: its corroboration is judged as of it. */
+  readonly rejudgedAt: Map<string, OpNumber>;
   /** Deletion confirmations and cancellations, with where they changed each field's value. */
   readonly external: { op: OpNumber; changed: Map<FieldId, IvSet>; changedEntity: boolean }[];
 }
@@ -167,6 +176,7 @@ function emptyRecorded(): Recorded {
     keptEffective: new Set(),
     keptSuperseded: new Set(),
     rejudged: new Map(),
+    rejudgedAt: new Map(),
     external: [],
   };
 }
@@ -507,7 +517,7 @@ class Replay {
       if (y.event === x.event && y.target === x.target) continue;
       // 09 §3.5, 05-time «给出挡点的贡献»: only contributions before the resolved write, in
       // effect (candidates and awaiting items do not count).
-      if (y.op >= x.op || !effective(y.status)) continue;
+      if (y.op >= x.op || !effective(y.status) || y.putBack) continue;
       if (y.target !== x.target && y.target !== "existence" && x.target !== "existence") continue;
       const touches = y.valid.some(
         (iv) => (iv.from !== null && ends.has(iv.from)) || (iv.to !== null && ends.has(iv.to)),
@@ -855,16 +865,11 @@ class Replay {
       for (const it of usual) {
         if (it.status === "corroborated") out.push(it);
         else if (rejudged === "dropped") this.shadows.push({ ...it, status: "candidate" });
-        else {
-          const ends = res.explicitEnds.filter((t) =>
-            it.valid.some((x) => x.from === t || x.to === t),
-          );
-          out.push({
-            ...it,
-            status: rejudged,
-            explicitEnds: rejudged === "corroborated" ? ends : [],
-          });
-        }
+        // A put-back corroboration has no endpoints; whether the value it corroborates is still
+        // there is settled once the replay is complete (`settlePutBack`).
+        else if (rejudged === "corroborated") {
+          out.push({ ...it, status: "corroborated", explicitEnds: [], putBack: true });
+        } else out.push({ ...it, status: rejudged, explicitEnds: [] });
       }
       return;
     }
@@ -1358,6 +1363,46 @@ class Replay {
       else if (o.kind === "resolve") this.resolveItem(o);
       else this.confirm(o);
     }
+    this.settlePutBack();
+  }
+
+  /**
+   * A put-back corroboration corroborates only where the value it carries is still the value in
+   * effect as of the cancellation that judged it (a later deletion may have removed that value;
+   * later writes do not count); elsewhere it is the candidate that decision closed (03-deletion
+   * «撤回与宽限期»). It gives no value, endpoint or blocking point, so settling it after the
+   * replay changes nothing else.
+   */
+  settlePutBack(): void {
+    for (const it of this.items.filter((x) => x.putBack && x.status === "corroborated")) {
+      if (it.content.kind !== "value" || it.target === "existence") continue;
+      const v = tok(it.content.value);
+      const at = this.rec.rejudgedAt.get(etKey(it.event, it.target)) ?? INF;
+      const segs = this.segments([it.valid]).filter((g) => covers(it.valid, g));
+      const same = normalize(segs.filter((g) => this.vis(it.target as FieldId, g, at) === v));
+      const gone = subtract(it.valid, same);
+      if (isEmpty(gone)) continue;
+      this.items.splice(this.items.indexOf(it), 1);
+      const { putBack: _, ...closed } = it;
+      const parts = [
+        ...pieces(same).map((valid): Item => ({ ...it, valid })),
+        ...pieces(gone).map(
+          (valid): Item => ({ ...closed, status: "candidate", valid, closedByDecision: true }),
+        ),
+      ].sort((a, b) => ((a.valid[0]?.from ?? "") < (b.valid[0]?.from ?? "") ? -1 : 1));
+      // The first part keeps the index; the others continue after the largest index used.
+      let next =
+        Math.max(
+          ...this.items
+            .filter((x) => x.event === it.event && x.target === it.target)
+            .map((x) => x.k),
+          it.k,
+        ) + 1;
+      parts.forEach((x, i) => {
+        x.k = i === 0 ? it.k : next++;
+        this.items.push(x);
+      });
+    }
   }
 
   // -------------------------------------------------------------------------------------------
@@ -1454,7 +1499,8 @@ class Replay {
       content: x.content,
       ...(x.carried ? { carried: x.carried } : {}),
       registrations: this.regs.get(refKey(x)) ?? [],
-      ...((x.status === "candidate" && this.closedCandidates.has(x.event)) ||
+      ...((x.status === "candidate" &&
+        (this.closedCandidates.has(x.event) || x.closedByDecision)) ||
       (x.status === "awaiting" && this.resolvedAwaiting.has(x.event))
         ? { closed: true as const }
         : {}),
@@ -2110,6 +2156,7 @@ function cancelDeletion(
       key,
       same ? (o.fields[target]?.explicit ? "corroborated" : "dropped") : "candidate",
     );
+    rec.rejudgedAt.set(key, cancelOp);
   }
   return kept;
 }
