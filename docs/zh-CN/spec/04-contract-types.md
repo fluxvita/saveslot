@@ -1886,6 +1886,8 @@ interface LogVerifyResult {
   events: number;
   chain: { intact: true } | { intact: false; broken_at: number /* 事件的 seq */ };
   checksum_mismatch: Array<{ seq: number; path: string }>;   // 内容块的位置；不含内容
+  /** 拆出的索引列与事件头、target 块不符的事件；不算链断裂，照事件头与 target 块重算即可修复。只给位置。 */
+  index_mismatch: Array<{ seq: number }>;
   removed: number;                                            // 已按删除移除的内容块数
   /** 恢复留下的 seq 空档；不算断裂。 */
   gaps: Array<{ after: number; before: number; restore: number /* 恢复事件的 seq */ }>;

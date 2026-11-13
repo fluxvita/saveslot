@@ -494,7 +494,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `saveslot reads` | `reads.list` | `--connection`、`--since` | 时刻、连接实例、`task`、操作、读到的表 / 行与版本（`saveslot connect` 的自检标"自检"）；只给版本，不给值 | P1 |
 | `saveslot export` | `export` | `-o <文件>`（默认标准输出）、`--after-seq`、`--include-pending-deletion`、`--encrypt`、`--passphrase-file <路径>`、`--passphrase-fd <n>` | NDJSON；加了 `--encrypt` 时是 age v1 的二进制文件（建议以 `.ndjson.age` 结尾）。结束时在标准错误写事件数、末尾 `seq`、是否含待删除内容；加密时另写"下次续传用 --after-seq <upto>"与解密命令 | P3 |
 | `saveslot import <文件>…` | `import` | `--passphrase-file <路径>`、`--passphrase-fd <n>`（文件是 age 加密的导出时）、`--yes`、`--profile` | 执行前：原租户 ID、事件数、导出时刻、是否含待删除内容，以及"这份导出之后在原处做的删除不在其中"；结束时：停用了多少主体、补了多少墓碑、带不过来的东西（读取记录、凭证、外部文件），并提示用 `saveslot connect` 重新签发 | P5 |
-| `saveslot verify` | `log.verify` | — | 事件总数；事件头链完整与否（或自第 k 条起断裂）；校验和不符的位置；已按删除移除的位置；恢复留下的 `seq` 空档 | P1 |
+| `saveslot verify` | `log.verify` | — | 事件总数；事件头链完整与否（或自第 k 条起断裂）；校验和不符的位置；索引列与事件头不符的位置；已按删除移除的位置；恢复留下的 `seq` 空档 | P1 |
 | `saveslot verify --replay` | `log.reconcile` | — | 比较到的 `seq`；从空存储重放日志与线上的 (b) 类逻辑表逐表比较的结果；不一致时列出表与行（只给 ID）。执行时显示进度（重放、追平、比较），进入比较阶段时提示"写入暂时排队"；输出末尾写明它查不出 `delete` 自己算错的结果 | P2 |
 
 `--include-pending-deletion` 在交互式下要再确认一次："导出里将包含宽限期内待删除的内容，撤回期过后它们仍留在导出文件里。"非交互式下必须同时给 `--yes`，否则不执行，退出码 8。
