@@ -1099,6 +1099,174 @@ describe.each(both)("%s table", (_, schema, state) => {
     splits.check();
   });
 
+  it("an include_later undo neither confirmed nor in effect when written never takes back a later write's item", () => {
+    // 05-time «高影响写入» ④, 09 §5.7: revert statuses are decided in operation order, each as if
+    // in effect. An include_later undo that took back later writes awaits confirmation; if a
+    // deletion later puts it in effect without a confirmation, what it executes registers only
+    // items of its target. Samples: some writes; on the state table sometimes a revoke inside the
+    // target's interval; the target write; up to three later writes over it and, mostly, an undo
+    // of the target (its write-back items are a later operation too); an include_later undo of
+    // the target (with or without acknowledge); one or two deletions (the first sometimes
+    // cancelled) and further steps. A hit: the undo awaited when written and is in effect at the
+    // end — the path where the check bites.
+    // Half the samples come from the skeleton; there the undo stays awaiting (it would take back
+    // the later undo's item), so they are not hits but catch an evaluator that decides it in effect.
+    // Measured share of hits: about 0.06 (state) and 0.09 (event).
+    const sample = fc.record({
+      pre: fc.array(step, { minLength: 1, maxLength: 3 }),
+      revoke: fc.option(
+        fc.record({
+          from: fc.nat({ max: 2 }),
+          to: fc.nat({ max: 3 }),
+          src: fc.constantFrom(...SOURCES),
+        }),
+      ),
+      mid: fc.constant([] as Extract<Step, { t: "write" }>[]),
+      target: write,
+      // Later writes cite S3–S5 and the deletions mostly take those: the later writes the undo
+      // took back go away and the undo can come into effect.
+      later: fc.array(
+        fc
+          .tuple(write, fc.constantFrom("S3", "S4", "S5"))
+          .map(([w, src]) => ({ ...w, src, lag: 0, ack: true })),
+        { maxLength: 3 },
+      ),
+      ack: fc.boolean(),
+      // An undo of the target before the include_later one: its write-back items are a later
+      // operation the include_later undo may take back.
+      innerUndo: fc.constantFrom(true, true, false),
+      dels: fc.array(
+        fc.oneof(
+          { weight: 1, arbitrary: fc.subarray(["S3", "S4", "S5"], { minLength: 1, maxLength: 2 }) },
+          { weight: 1, arbitrary: fc.subarray(SOURCES, { minLength: 1, maxLength: 2 }) },
+        ),
+        { minLength: 1, maxLength: 2 },
+      ),
+      cancelFirst: fc.constantFrom(false, false, true),
+      tail: fc.array(furtherStep, { maxLength: 2 }),
+    });
+    // A skeleton after the case that made the evaluator loop: two writes of the required field
+    // from S1, a write of f3 from S3, a revoke inside the target's interval, a write of f3 from S5,
+    // the target (f3 from S3), an undo of the target, then the include_later one; S1 deleted.
+    // Dates and the value are random.
+    const skeleton = fc
+      .record({
+        v: fc.constantFrom("1", "2"),
+        f3From: fc.integer({ min: 1, max: 3 }),
+        rev: fc.record({ from: fc.nat({ max: 2 }), to: fc.nat({ max: 3 }) }),
+        from: fc.nat({ max: 1 }),
+        tail: fc.array(furtherStep, { maxLength: 1 }),
+      })
+      .map(({ v, f3From, rev, from, tail }) => {
+        const w = (
+          f: FieldId,
+          src: string,
+          at: number,
+          ack: boolean,
+        ): Extract<Step, { t: "write" }> => ({
+          t: "write",
+          f,
+          v,
+          src,
+          from: at,
+          to: "open",
+          lag: 0,
+          explicit: false,
+          ack,
+        });
+        return {
+          pre: [w("f2", "S1", 0, true), w("f2", "S1", 0, true), w("f3", "S3", f3From, true)],
+          revoke: { ...rev, src: "S2" },
+          mid: [w("f3", "S5", from, false)],
+          target: w("f3", "S3", from, true),
+          later: [] as Extract<Step, { t: "write" }>[],
+          ack: true,
+          innerUndo: true,
+          dels: [["S1"]],
+          cancelFirst: false,
+          tail,
+        };
+      });
+    const hits = new Hits(0.04);
+    fc.assert(
+      fc.property(
+        fc.oneof({ weight: 1, arbitrary: sample }, { weight: 1, arbitrary: skeleton }),
+        hits.track(
+          ({ pre, revoke, mid, target, later, ack, innerUndo, dels, cancelFirst, tail }) => {
+            const before = extend(schema, [], pre, 10);
+            const revokeOp = 10 + 10 * pre.length;
+            if (revoke !== null && state) {
+              before.push({
+                kind: "revoke",
+                op: revokeOp,
+                event: revokeOp + 1,
+                seen: revokeOp - 1,
+                valid: {
+                  from: { mode: "given", value: DAYS[revoke.from] as BizPoint },
+                  to: {
+                    mode: "given",
+                    value: (DAYS[Math.max(revoke.to, revoke.from + 1)] ?? "2026-12-01") as BizPoint,
+                  },
+                },
+                validSources: [revoke.src],
+              });
+            }
+            const targetOp = revokeOp + 10 + 10 * mid.length;
+            const writes = extend(schema, before, [...mid, target, ...later], revokeOp + 10);
+            fc.pre(writes.some((e) => e.kind === "write" && e.op === targetOp));
+            const lastWrite = Math.max(...writes.map((e) => e.op));
+            const inner: LogEntry[] = innerUndo
+              ? [
+                  {
+                    kind: "undo",
+                    op: lastWrite + 10,
+                    event: lastWrite + 11,
+                    target: targetOp,
+                    seen: lastWrite,
+                    acknowledge: ["overwrite"],
+                  },
+                ]
+              : [];
+            const last = lastWrite + (innerUndo ? 10 : 0);
+            const undoOp = last + 10;
+            const log: LogEntry[] = [
+              ...writes,
+              ...inner,
+              {
+                kind: "undo",
+                op: undoOp,
+                event: undoOp + 1,
+                target: targetOp,
+                includeLater: true,
+                seen: last,
+                ...(ack ? { acknowledge: ["overwrite"] as const } : {}),
+              },
+            ];
+            dels.forEach((sources, i) => {
+              log.push({ kind: "deletion", op: undoOp + 2 + i, id: `pi_${i}`, sources });
+            });
+            if (cancelFirst) log.push({ kind: "cancel", op: undoOp + 5, id: "pi_0" });
+            const full = extend(schema, log, tail, undoOp + 10);
+            const run = evaluateLog(schema, full);
+            const atWrite = run.steps
+              .find((x) => x.entry.op === undoOp)
+              ?.state.reverts.find((r) => r.op === undoOp)?.status;
+            const confirmed = full.some((e) => e.kind === "confirm" && e.target === undoOp + 1);
+            const final = run.final.reverts.find((r) => r.op === undoOp)?.status;
+            if (atWrite === "applied" || confirmed || final !== "applied") return;
+            if (atWrite === "awaiting") hits.hit();
+            const foreign = run.final.items
+              .filter((x) => x.registrations.some((r) => r.byOp === undoOp) && x.op !== targetOp)
+              .map((x) => `${x.event}/${x.target}/${x.k}`);
+            expect({ undoOp, foreign }).toEqual({ undoOp, foreign: [] });
+          },
+        ),
+      ),
+      { numRuns: RUNS },
+    );
+    hits.check();
+  });
+
   it("deletion events add no pending items beyond the kinds the corollary names", () => {
     // 03-deletion «推论» «删除不增加未决事项»: each new pending item after a deletion is an awaiting
     // item converted from a conflict item this deletion superseded, or comes from the same

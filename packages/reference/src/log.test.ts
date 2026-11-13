@@ -1619,3 +1619,145 @@ it("a deletion that brings the entity back ends the refusal of writes to it", ()
     expect(tl(run.final)).toEqual(['[11-01, 11-03) "1"']);
   }
 });
+
+describe("revert statuses are decided one by one in operation order, each as if in effect", () => {
+  // 09 §5.7, 05-time «高影响写入»: deciding a revert counts the earlier ones by their decided
+  // status and itself as in effect, once, never judged again. Each case below made the
+  // evaluator loop when "the reverts in effect in the result" was its own input.
+  const g = (from: string, to: ToParam) => ({
+    from: { mode: "given" as const, value: d(from) },
+    to,
+  });
+  const open: ToParam = { mode: "open" };
+  const ack = { acknowledge: ["overwrite"] as const };
+
+  it("an include_later undo that would take back a later write's item awaits, before and after a deletion", () => {
+    // #81 undoes #61 with include_later; its record lists #71's write-back items (a later write).
+    // Counted in effect, #81 covers #71's items 1 and 2 but not 0: #71 is cut, item 1 is in
+    // #81's scope, so #81 takes back a later write: high-impact ④, awaiting. Deciding #81 as not
+    // in effect instead would see #71 as one item, outside #81's scope, decide #81 in effect, and
+    // then, executed with #81 counted, cut #71 and take back its item 1 without confirmation.
+    const log: LogEntry[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: g("10-01", open),
+        fields: { f2: { value: "1", sources: ["S1"] } },
+        ...ack,
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: g("10-01", open),
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+        ...ack,
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 20,
+        valid: g("11-07", open),
+        fields: { f3: { value: "1", sources: ["S3"], explicit: false } },
+        ...ack,
+      },
+      {
+        kind: "revoke",
+        op: 40,
+        event: 41,
+        seen: 30,
+        valid: g("11-03", { mode: "given", value: d("11-05") }),
+        validSources: ["S2"],
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 40,
+        valid: g("11-03", open),
+        fields: { f3: { value: "1", sources: ["S5"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 60,
+        event: 61,
+        seen: 50,
+        valid: g("11-03", open),
+        fields: { f3: { value: "1", sources: ["S3"], explicit: false } },
+        ...ack,
+      },
+      { kind: "undo", op: 70, event: 71, target: 60, includeLater: false, seen: 60, ...ack },
+      { kind: "undo", op: 80, event: 81, target: 60, includeLater: true, seen: 70, ...ack },
+    ];
+    for (const entries of [log, [...log, del(90, "pi_d", ["S1"])]]) {
+      const ev = evaluateLog(STATE, entries).final;
+      expect(ev.reverts.map((r) => [r.op, r.status])).toEqual([
+        [70, "applied"],
+        [80, "awaiting"],
+      ]);
+      expect(ev.items.filter((x) => x.registrations.some((r) => r.byOp === 80))).toEqual([]);
+    }
+  });
+
+  it("an include_later undo whose high impact depends on a deletion settles", () => {
+    // Found by review: counting the undo in effect made it high-impact (awaiting), not counting
+    // it made it not high-impact (in effect through the deletion).
+    const log: LogEntry[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: g("11-01", open),
+        fields: { f2: { value: "1", sources: ["S1"] } },
+        ...ack,
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: g("11-05", open),
+        validSources: ["S4"],
+        fields: {
+          f3: { value: "2", sources: ["S6"], explicit: true },
+          f2: { value: "2", sources: ["S6"] },
+        },
+        ...ack,
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 20,
+        valid: g("11-05", open),
+        validSources: ["S3"],
+        fields: { f2: { value: "1", sources: ["S3", "S5"] } },
+        ...ack,
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 10,
+        valid: g("11-01", { mode: "next_change" }),
+        fields: { f2: { value: "1", sources: ["S2"], explicit: true } },
+        ...ack,
+      },
+      del(50, "pi_mid", ["S5"]),
+      { kind: "undo", op: 70, event: 71, target: 20, includeLater: true },
+      del(82, "pi_0", ["S4", "S6"]),
+    ];
+    const run = evaluateLog(STATE, log);
+    // Awaiting when written (it takes back #31, a later write) and after the deletion: deciding it
+    // as in effect sees the later write it would take back.
+    expect(
+      run.steps.find((x) => x.entry.op === 70)?.state.reverts.map((r) => [r.op, r.status]),
+    ).toEqual([[70, "awaiting"]]);
+    expect(run.final.reverts.map((r) => [r.op, r.status])).toEqual([[70, "awaiting"]]);
+  });
+});

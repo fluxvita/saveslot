@@ -174,10 +174,10 @@ function emptyRecorded(): Recorded {
 const INF = Number.MAX_SAFE_INTEGER;
 
 /**
- * How often the evaluator took the paths of 09 §5.7 for original items sharing a segment, and how
- * many replays the fixed point of "reverts in effect" needed: for occurrence checks in tests only.
+ * How often the evaluator took the paths of 09 §5.7 for original items sharing a segment: for
+ * occurrence checks in tests only.
  */
-export const segmentStats = { split: 0, forcedMerge: 0, maxRounds: 0, extended: 0 };
+export const segmentStats = { split: 0, forcedMerge: 0, extended: 0 };
 const NO_VALUE = "novalue";
 
 const refKey = (r: { event: Seq; target: Target; k: number }) => `${r.event}/${r.target}/${r.k}`;
@@ -218,6 +218,8 @@ class Replay {
 
   /** Reverts whose records count when original items share a segment (in effect in the result). */
   readonly counting: ReadonlySet<OpNumber>;
+  /** Revert statuses already decided, in operation order (not judged again). */
+  readonly fixed: ReadonlyMap<OpNumber, RevertResult["status"]>;
 
   constructor(
     schema: TableSchema,
@@ -225,8 +227,10 @@ class Replay {
     deleted: ReadonlySet<SourceKey>,
     rec: Recorded,
     counting: ReadonlySet<OpNumber> = new Set(),
+    fixed: ReadonlyMap<OpNumber, RevertResult["status"]> = new Map(),
   ) {
     this.counting = counting;
+    this.fixed = fixed;
     this.schema = schema;
     this.ops = ops;
     this.deleted = deleted;
@@ -1299,7 +1303,7 @@ class Replay {
     };
 
     // Step 4: a revert that is not in effect registers nothing and writes nothing back.
-    const status = decide(zai, apply, rollback);
+    const status = this.fixed.get(n) ?? decide(zai, apply, rollback);
     this.reverts.push({ op: n, event, status, record });
     this.revertStatus.set(n, status);
     if (!this.revertRecords.has(n)) this.revertRecords.set(n, [...record]);
@@ -1760,21 +1764,35 @@ export function evaluateLog(
   >();
   const steps: LogStep[] = [];
   const deletedNow = () => new Set<SourceKey>([...pending.values()].flatMap((d) => [...d.sources]));
-  // The reverts whose records count when original items share a segment are those in effect in
-  // the replay's own result: replay until the set used equals the set that comes out.
-  let counting = new Set<OpNumber>();
+  // Revert statuses are decided one by one in operation order and never judged again (09 §5.7,
+  // 05-time «高影响写入»): deciding revert n counts the earlier reverts by their decided status
+  // and n itself as in effect, so n is judged in the world it would act in (an `include_later`
+  // undo that would take back a later write's item is judged high-impact). The result then cuts
+  // and registers with every revert decided in effect. Counting n as not in effect instead would
+  // let n be decided in effect in a world where it takes back nothing later and then, executed
+  // with itself counted, take back a later write's item without confirmation.
   const replay = (deleted: ReadonlySet<SourceKey>) => {
-    for (let i = 0; i < 8; i++) {
-      const r = new Replay(schema, ops, deleted, rec, counting);
+    const fixed = new Map<OpNumber, RevertResult["status"]>();
+    const inEffect = () =>
+      new Set([...fixed].filter(([, st]) => st === "applied").map(([op]) => op));
+    let r = new Replay(schema, ops, deleted, rec, inEffect(), fixed);
+    r.run();
+    for (let guard = 0; guard <= ops.length; guard++) {
+      const next = [...r.revertStatus.keys()]
+        .filter((op) => !fixed.has(op))
+        .sort((a, b) => a - b)[0];
+      if (next === undefined) {
+        const result = new Replay(schema, ops, deleted, rec, inEffect(), fixed);
+        result.run();
+        return result;
+      }
+      const judging = inEffect();
+      judging.add(next);
+      r = new Replay(schema, ops, deleted, rec, judging, fixed);
       r.run();
-      segmentStats.maxRounds = Math.max(segmentStats.maxRounds, i + 1);
-      const applied = new Set(
-        [...r.revertStatus].filter(([, st]) => st === "applied").map(([op]) => op),
-      );
-      if (applied.size === counting.size && [...applied].every((op) => counting.has(op))) return r;
-      counting = applied;
+      fixed.set(next, r.revertStatus.get(next) ?? "rejected");
     }
-    throw new Error("reverts in effect do not settle");
+    throw new Error("revert statuses not decided");
   };
   let prev = replay(new Set());
   let prevState = prev.result();
