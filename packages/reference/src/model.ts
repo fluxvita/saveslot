@@ -219,6 +219,8 @@ export interface RevertResult {
   readonly status: "applied" | "awaiting" | "rejected";
   /** The revert record R as listed when the revert took effect (or was proposed). */
   readonly record: readonly RevertEntry[];
+  /** `overwrote_corroborated`: the write-back revoke hides a later corroboration (05-time). */
+  readonly warnings?: readonly "overwrote_corroborated"[];
 }
 
 export interface Evaluation {
@@ -240,10 +242,15 @@ export interface LogStep {
   readonly entry: LogEntry;
   /**
    * The entry was refused and did not enter the log: a request citing a source pending deletion
-   * or writing to a row a pending deletion removed (03-deletion «撤回与宽限期»), or a deletion of
-   * a source already pending deletion.
+   * or writing to a row or entity pending deletions removed whole (03-deletion «撤回与宽限期»), or
+   * a deletion of a source already pending deletion.
    */
   readonly refused: boolean;
+  /**
+   * Refused as `not_found`: the row or entity was removed whole by pending deletions; every
+   * pending deletion touching its contributions, by operation number.
+   */
+  readonly notFound?: readonly string[];
   readonly state: Evaluation;
   /** A cancellation: the writes it recorded as kept in effect (`kept_effective`). */
   readonly keptEffective?: readonly {

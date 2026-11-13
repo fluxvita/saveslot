@@ -2228,3 +2228,182 @@ describe("an undo's coverage does not depend on the deletions around it", () => 
     expect(state([...head, del(70, "pi_9", ["S9"])])).toEqual(state(head));
   });
 });
+
+describe("a row removed whole by pending deletions is judged on the deleted sets", () => {
+  // 03-deletion «撤回与宽限期»: a write (revoke, undo) to a row or entity is refused with
+  // `not_found` when it does not exist with the current deleted set and exists without the
+  // pending deletions; `not_found` lists every pending deletion touching its contributions there.
+  // Otherwise the ordinary rules apply. Only the sets count, not the order of the deletions.
+  const open: ToParam = { mode: "open" };
+  const w = (
+    op: number,
+    v: string,
+    src: string,
+    from: string,
+    to: ToParam,
+    seen: number,
+    extra: Partial<WriteOp> = {},
+  ): WriteOp => ({
+    kind: "write",
+    op,
+    event: op + 1,
+    seen,
+    valid: { from: { mode: "given", value: d(from) }, to },
+    fields: { f2: { value: v, sources: [src] } },
+    acknowledge: ["overwrite"],
+    ...extra,
+  });
+  const state = (log: LogEntry[]) => stateWithoutIndices(evaluateLog(STATE, log).final);
+
+  it("the order of the deletions and a cancelled one do not change whether a write is refused", () => {
+    const head: LogEntry[] = [
+      w(10, "1", "S1", "11-01", open, 0),
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: { from: { mode: "given", value: d("11-01") }, to: open },
+        validSources: ["S3"],
+      },
+    ];
+    const write = w(40, "5", "S7", "11-01", open, 39);
+    const ab = state([...head, del(30, "pi_a", ["S3"]), del(31, "pi_b", ["S1"]), write]);
+    const ba = state([...head, del(30, "pi_b", ["S1"]), del(31, "pi_a", ["S3"]), write]);
+    const once = state([...head, del(30, "pi_ab", ["S3", "S1"]), write]);
+    expect(ab).toEqual(once);
+    expect(ba).toEqual(once);
+    // A cancelled deletion leaves no trace.
+    const cancelled = state([
+      ...head,
+      del(30, "pi_a", ["S3"]),
+      del(31, "pi_b", ["S1"]),
+      cancel(32, "pi_a"),
+      write,
+    ]);
+    expect(cancelled).toEqual(state([...head, del(30, "pi_b", ["S1"]), write]));
+  });
+
+  it("event table: only an optional field's contribution left: refused", () => {
+    const EVENT: TableSchema = { kind: "event", required: ["f2"] };
+    const run = evaluateLog(EVENT, [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        fields: { f2: { value: "1", sources: ["S1"] }, f3: { value: "x", sources: ["S2"] } },
+      },
+      del(20, "pi_1", ["S1"]),
+      { kind: "write", op: 30, event: 31, fields: { f3: { value: "y", sources: ["S3"] } } },
+    ]);
+    expect(run.steps[1]?.state.exists).toBe(false);
+    expect(run.steps.at(-1)).toMatchObject({ refused: true, notFound: ["pi_1"] });
+  });
+
+  it("state table: only a revoke of part of the interval left: refused", () => {
+    const run = evaluateLog(STATE, [
+      w(10, "1", "S1", "10-01", open, 0),
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: {
+          from: { mode: "given", value: d("11-01") },
+          to: { mode: "given", value: d("11-05") },
+        },
+        validSources: ["S2"],
+      },
+      del(30, "pi_1", ["S1"]),
+      w(40, "5", "S4", "11-10", open, 39),
+    ]);
+    expect(run.steps[2]?.state.exists).toBe(false);
+    expect(run.steps.at(-1)).toMatchObject({ refused: true, notFound: ["pi_1"] });
+  });
+
+  it("lists every pending deletion touching the row, by operation number", () => {
+    const run = evaluateLog(STATE, [
+      w(10, "1", "S1", "10-01", open, 0),
+      w(20, "2", "S2", "11-01", open, 10),
+      del(30, "pi_b", ["S2"]),
+      del(31, "pi_a", ["S1"]),
+      del(32, "pi_c", ["S9"]),
+      w(40, "5", "S4", "11-10", open, 39),
+    ]);
+    expect(run.steps.at(-1)).toMatchObject({ refused: true, notFound: ["pi_b", "pi_a"] });
+  });
+});
+
+describe("a write-back revoke that hides a later field write is high-impact ④", () => {
+  // 05-time «高影响写入» ④, 03-deletion «回掉的权威定义»: an undo (or take_previous) whose
+  // write-back revoke would hide a field write in effect after the undone operation, not under
+  // its record, awaits confirmation. A hidden corroboration is not high-impact: a warning.
+  // #11 5; #21 revokes [11-05, 11-15); undo 30 restores it; #41 then writes there; undo 50 undoes
+  // the restore, writing back the revoke.
+  const sp = (from: string, to: string) => ({
+    from: { mode: "given" as const, value: d(from) },
+    to: { mode: "given" as const, value: d(to) },
+  });
+  const ack = { acknowledge: ["overwrite"] as ["overwrite"] };
+  const head: LogEntry[] = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      valid: { from: { mode: "given", value: d("10-01") }, to: { mode: "open" } },
+      fields: { f2: { value: "5", sources: ["S1"] } },
+    },
+    {
+      kind: "revoke",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: sp("11-05", "11-15"),
+      validSources: ["S2"],
+    },
+    { kind: "undo", op: 30, event: 31, target: 20, seen: 20, ...ack },
+  ];
+  const later = (value: string, to: string, explicit = false): WriteOp => ({
+    kind: "write",
+    op: 40,
+    event: 41,
+    seen: 30,
+    valid: sp("11-05", to),
+    fields: { f2: { value, sources: ["S4"], ...(explicit ? { explicit } : {}) } },
+  });
+  const undo: LogEntry = { kind: "undo", op: 50, event: 51, target: 30, seen: 40, ...ack };
+  const status50 = (ev: Evaluation) => ev.reverts.find((r) => r.op === 50)?.status;
+
+  it("9 filling [11-05, 11-15) exactly: awaits (it took effect directly before)", () => {
+    const ev = evaluateLog(STATE, [...head, later("9", "11-15"), undo]).final;
+    expect(status50(ev)).toBe("awaiting");
+    expect(tl(ev)).toEqual(['[10-01, 11-05) "5"', '[11-05, 11-15) "9"', '[11-15, inf) "5"']);
+  });
+
+  it("9 written on [11-05, 11-20): awaits (it took effect directly before)", () => {
+    const ev = evaluateLog(STATE, [...head, later("9", "11-20"), undo]).final;
+    expect(status50(ev)).toBe("awaiting");
+    expect(tl(ev)).toEqual(['[10-01, 11-05) "5"', '[11-05, 11-20) "9"', '[11-20, inf) "5"']);
+  });
+
+  it("a hidden same-value corroboration: in effect, with overwrote_corroborated", () => {
+    const ev = evaluateLog(STATE, [...head, later("5", "11-15", true), undo]).final;
+    expect(ev.reverts.find((r) => r.op === 50)).toMatchObject({
+      status: "applied",
+      warnings: ["overwrote_corroborated"],
+    });
+    expect(tl(ev)).toEqual(['[10-01, 11-05) "5"', '[11-15, inf) "5"']);
+  });
+
+  it("confirmed: the revoke is written back and hides the later write", () => {
+    const ev = evaluateLog(STATE, [
+      ...head,
+      later("9", "11-15"),
+      undo,
+      { kind: "confirm", op: 60, event: 61, target: 51 },
+    ]).final;
+    expect(ev.reverts.find((r) => r.op === 60)?.status).toBe("applied");
+    expect(items(ev, 61)).toEqual(["existence/0 applied [11-05, 11-15) revoke"]);
+    expect(tl(ev)).toEqual(['[10-01, 11-05) "5"', '[11-15, inf) "5"']);
+  });
+});

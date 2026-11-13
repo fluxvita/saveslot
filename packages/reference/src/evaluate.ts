@@ -890,12 +890,13 @@ class Replay {
       record,
       { before: o.target },
       null,
-      (inScope, apply, rollback, laterInRange) => {
+      (inScope, apply, rollback, laterInRange, hides) => {
         const recStatus = this.rec.revertStatus.get(n);
         if (recStatus === "applied") return "applied"; // deviation two
         if (recStatus === "awaiting" && this.resolvedAwaiting.has(o.event)) return "awaiting";
         // High impact ④: an item marked `later` has a non-empty range (05-time «高影响写入»).
-        if (laterInRange) return "awaiting";
+        // and a write-back revoke that hides later field writes.
+        if (laterInRange || hides) return "awaiting";
         if (this.acknowledged(o) || inScope.every((r) => r.content.kind === "revoke")) {
           return "applied";
         }
@@ -992,33 +993,54 @@ class Replay {
           : (c?.op ?? 0);
       });
       const mergeBase = Math.min(...seens);
-      const domain = union(...cands.map((c) => c.valid));
-      const listed = new Map<string, RevertEntry>();
-      for (const x of this.items) {
-        if (
-          x.op > mergeBase &&
-          x.op < n &&
-          effective(x.status) &&
-          (o.unit === "existence" || x.target === o.unit) &&
-          !isEmpty(intersect(x.valid, domain))
-        ) {
-          listed.set(etKey(x.event, x.target), { event: x.event, target: x.target });
-        }
-      }
-      const record = [...listed.values()];
+      const record = this.takePreviousRecord(o, mergeBase, cands, n);
       rec = { mergeBase, k: cands.filter((c) => !this.shadows.includes(c)).map(refOf) };
       this.mergeBases.set(n, { mergeBase, k: rec.k as ItemRef[] });
       this.revertRecords.set(n, record);
     }
     const record = this.rec.revertRecords.get(n) ?? this.revertRecords.get(n) ?? [];
-    const kKeys = new Set(rec.k.map(refKey));
-    const kEts = new Set(rec.k.map((r) => etKey(r.event, r.target)));
-    // K present in the replay: not deleted; same-valued in the replay still counts (step 2).
-    const kItems = [...this.items, ...this.shadows].filter(
+    const kItems = this.kItemsOf(rec.k);
+    this.revert(
+      o.event,
+      n,
+      record,
+      { asOf: rec.mergeBase },
+      kItems,
+      // A take_previous takes effect directly. It never hides a later field write: its record
+      // lists the field writes of the same stretch (09 §5.7).
+      () => "applied",
+    );
+  }
+
+  /**
+   * The take_previous record (03-deletion «回掉的权威定义» ①): the (event, target) with an item in
+   * effect after the merge base and before operation `n`, in the item's unit and interval.
+   */
+  takePreviousRecord(o: ResolveOp, mergeBase: OpNumber, cands: Item[], n: OpNumber): RevertEntry[] {
+    const domain = union(...cands.map((c) => c.valid));
+    const listed = new Map<string, RevertEntry>();
+    for (const x of this.items) {
+      if (
+        x.op > mergeBase &&
+        x.op < n &&
+        effective(x.status) &&
+        (o.unit === "existence" || x.target === o.unit) &&
+        !isEmpty(intersect(x.valid, domain))
+      ) {
+        listed.set(etKey(x.event, x.target), { event: x.event, target: x.target });
+      }
+    }
+    return [...listed.values()];
+  }
+
+  /** K present in the replay: not deleted; same-valued in the replay still counts (step 2). */
+  kItemsOf(k: readonly ItemRef[]): Item[] {
+    const kKeys = new Set(k.map(refKey));
+    const kEts = new Set(k.map((r) => etKey(r.event, r.target)));
+    return [...this.items, ...this.shadows].filter(
       (x) =>
         kKeys.has(refKey(x)) || (this.shadows.includes(x) && kEts.has(etKey(x.event, x.target))),
     );
-    this.revert(o.event, n, record, { asOf: rec.mergeBase }, kItems, () => "applied");
   }
 
   /** 03-deletion «回掉的权威定义», steps 1–8 (without `deps`). */
@@ -1033,6 +1055,7 @@ class Replay {
       apply: () => void,
       rollback: () => void,
       laterInRange: boolean,
+      hides: boolean,
     ) => RevertResult["status"],
   ): void {
     // Step 1: R' = every item of every (event, target) R lists, whatever its index (given at
@@ -1132,8 +1155,37 @@ class Replay {
 
     // Step 4: a revert that is not in effect registers nothing and writes nothing back.
     const laterInRange = zai.some((r) => isLater(r) && !isEmpty(scope.get(r) ?? []));
-    const status = decide(zai, apply, rollback, laterInRange);
-    this.reverts.push({ op: n, event, status, record });
+    // A write-back revoke hiding a later field write (05-time «高影响写入» ④, undo only: a
+    // take_previous lists the field writes of the same stretch): a field item in effect, not under
+    // R, after the undone operation and before n, whose interval meets the revoke's beyond what
+    // earlier reverts registered. A hidden corroboration: a warning.
+    const lower = "before" in pos ? pos.before : pos.asOf;
+    const hidden = (status: Status) =>
+      fresh.some(
+        (w) =>
+          w.target === "existence" &&
+          w.content.kind === "revoke" &&
+          this.items.some(
+            (x) =>
+              x.target !== "existence" &&
+              x.status === status &&
+              (x.content.kind === "value" || x.content.kind === "noValue") &&
+              !entries.has(etKey(x.event, x.target)) &&
+              x.op > lower &&
+              x.op < n &&
+              !isEmpty(subtract(intersect(w.valid, x.valid), this.registeredSet(x, n))),
+          ),
+      );
+    const status = decide(zai, apply, rollback, laterInRange, hidden("applied"));
+    this.reverts.push({
+      op: n,
+      event,
+      status,
+      record,
+      ...(status === "applied" && hidden("corroborated")
+        ? { warnings: ["overwrote_corroborated" as const] }
+        : {}),
+    });
     this.revertStatus.set(n, status);
     if (!this.revertRecords.has(n)) this.revertRecords.set(n, [...record]);
     if (status !== "applied") return;
@@ -1566,8 +1618,6 @@ export function evaluateLog(
   };
   let prev = replay(new Set());
   let prevState = prev.result();
-  // A pending deletion removed the row or entity: writes to it are refused until it comes back.
-  let removed = false;
   const fieldIds = (r: Replay) => r.fieldIds;
 
   for (const e of [...log].sort((a, b) => a.op - b.op)) {
@@ -1582,10 +1632,6 @@ export function evaluateLog(
       const state = r.result();
       rec.external.push(externalChange(e.op, prevState, state, fieldIds(r)));
       r.recordLatest(e.id);
-      // A later deletion can bring the row or entity back (e.g. by removing a revert's write-back
-      // that hid it): from then on it is no longer removed.
-      if (prevState.exists && !state.exists) removed = true;
-      else if (state.exists) removed = false;
       steps.push({ entry: e, refused: false, state });
       prev = r;
       prevState = state;
@@ -1628,7 +1674,6 @@ export function evaluateLog(
       const state = r.result();
       rec.external.push(externalChange(e.op, prevState, state, fieldIds(r)));
       r.recordLatest("cancel", e.id);
-      if (state.exists || pending.size === 0) removed = false;
       // Writes whose judgement changed because of the writes kept in effect: this replay
       // against the same replay without them.
       const knockOn: KnockOn[] = [];
@@ -1678,9 +1723,28 @@ export function evaluateLog(
       prevState = state;
       continue;
     }
-    if (refused(e, deleted, removed && pending.size > 0)) {
+    if (refused(e, deleted)) {
       steps.push({ entry: e, refused: true, state: prevState });
       continue;
+    }
+    // Removed whole by pending deletions (03-deletion «撤回与宽限期»), judged on the sets only: the
+    // row or entity does not exist with the current deleted set and exists without the pending
+    // deletions (here, every confirmed deletion is pending). Any other case follows the ordinary
+    // rules. `not_found` lists every pending deletion touching its contributions there.
+    if (
+      (e.kind === "write" || e.kind === "revoke" || e.kind === "undo") &&
+      pending.size > 0 &&
+      !prevState.exists
+    ) {
+      const without = replay(new Set());
+      if (without.result().exists) {
+        const notFound = [...pending.entries()]
+          .filter(([, d]) => touches(schema, ops, rec, without, d.sources))
+          .sort(([, a], [, b]) => a.op - b.op)
+          .map(([id]) => id);
+        steps.push({ entry: e, refused: true, state: prevState, notFound });
+        continue;
+      }
     }
     ops.push(e);
     const r = replay(deleted);
@@ -1706,19 +1770,45 @@ export function evaluateLog(
 
 /**
  * Requests refused while a deletion is pending (03-deletion «撤回与宽限期»): citing a source
- * pending deletion as evidence, or writing to a row or entity a pending deletion removed
- * (`not_found`: nothing is created, nothing revived). Resolving and confirming items is not a
- * write to the row and goes ahead.
+ * pending deletion as evidence. (Writing to a row or entity pending deletions removed whole is
+ * judged in `evaluateLog`, on two replays.) Resolving and confirming items is not a write to the
+ * row and goes ahead.
  */
-function refused(o: Op, deleted: ReadonlySet<SourceKey>, removed: boolean): boolean {
+function refused(o: Op, deleted: ReadonlySet<SourceKey>): boolean {
   const cites: SourceKey[] =
     o.kind === "write"
       ? [...Object.values(o.fields).flatMap((x) => x?.sources ?? []), ...(o.validSources ?? [])]
       : o.kind === "revoke"
         ? [...(o.validSources ?? [])]
         : [];
-  if (cites.some((x) => deleted.has(x))) return true;
-  return removed && (o.kind === "write" || o.kind === "revoke" || o.kind === "undo");
+  return cites.some((x) => deleted.has(x));
+}
+
+/**
+ * Whether deleting `sources` touches a contribution of the row or entity in `replay`: an item
+ * whose own value or interval sources are among them, or an item carried from one that is.
+ */
+function touches(
+  schema: TableSchema,
+  ops: readonly Op[],
+  rec: Recorded,
+  replay: Replay,
+  sources: readonly SourceKey[],
+): boolean {
+  const probe = new Replay(schema, ops, new Set(sources), rec);
+  const byRef = new Map(replay.items.map((x) => [refKey(x), x]));
+  const seen = new Set<string>();
+  const hit = (x: Item): boolean => {
+    const key = refKey(x);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (probe.deletedItem(x.event, x.target)) return true;
+    return (x.carried ?? []).some((r) => {
+      const y = byRef.get(refKey(r));
+      return y !== undefined ? hit(y) : probe.deletedItem(r.event, r.target);
+    });
+  };
+  return replay.items.some(hit);
 }
 
 /** The version an operation saw: its `ver`, or the version just before it. */

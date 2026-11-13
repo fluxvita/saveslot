@@ -177,7 +177,7 @@
 - **重申与清除**：`update` 不带 `set`、带非空的 `premises` 是**重申**——值不变，按所见的 `ver`，这一行现有的值以这些为前提仍然成立。`update` 带 `premises: []` 是**清除**：这一行的前提声明全部去掉，这是去掉前提的唯一写法。两者都不改行的 `ver`，都不能被 `undo`（没有可撤回的改动）。不带 `set` 的 `update` 也没带 `premises`，报 `invalid_argument`（`missing`）。
 - **一个带 `premises` 的 op 覆盖什么**：它自己写下的各项，以及这一行在所见版本上就已生效、之后仍生效的其余各项——后者只在这个 op 全部字段都已生效时才覆盖（有字段成了候选或进了待确认时只覆盖自己写下的项）；清除不受这一条限制，照样清掉整行。回执的 `premise_covered` 给出另外覆盖的字段数。
 - **校验**（判定顺序第 5 步，与 `ref` 目标的校验同处）：
-  - 表不存在或不可见报 `unknown_table`，字段不存在报 `unknown_field`；行 / 实体不存在、已被隐私删除或不可见报 `not_found`（`param` 指到 `ops/<i>/premises/<j>`；被宽限期内的删除去掉时附删除 ID）。
+  - 表不存在或不可见报 `unknown_table`，字段不存在报 `unknown_field`；行 / 实体不存在、已被隐私删除或不可见报 `not_found`（`param` 指到 `ops/<i>/premises/<j>`；被宽限期内的删除整行去掉时附全部相关删除的 ID）。
   - 指向本 op 自己的目标：`invalid_argument`（`premise_self`）。指向派生表：`not_in_this_version`（`value`）。指向别的 slot 里可见的表：`invalid_argument`（`cross_slot`）。`ver` 是历史版本：`invalid_argument`（`premise_historical_ver`）；不是这个目标的版本：`invalid_argument`（`not_this_target`）。`valid_at` / `valid_during` 用在非状态类表的目标上：`invalid_argument`（`not_state_table`）；两者同时给：`invalid_argument`（`mutually_exclusive`）。
   - 目标已被 1,000 条有效声明指向：拒绝声明方，`too_large`（`premise_fan_in`，附目标与当前条数）。上限只在声明时检查，落在声明方：被依赖的一方永远不会因为别人的声明而写不进去。
   - **不拒绝的两种**：`ver` 已过期、且所声明的范围在那之后变过；前提目标已撤销。两者都照常写入，这一行一写下就带标记，回执的 `premises[].state` 是 `changed`，`warnings` 给 `premise_already_changed`。理由：证据（用户刚说的话）要落下，标记对所有读方可见，写入方在同一个回执里就知道。`ver` 已过期但所声明的范围没变过的，照常写入、不标。
@@ -553,7 +553,7 @@
 |---|---|
 | `invalid_argument` | 参数缺失、格式不对、互斥的参数同时给、模式与参数配错；表名有歧义；`changes` 以派生表为目标；`revert` 的目标不对；时间参数用在不适用的表上、粒度不对；多候选时没给 `candidate`；引用待删除的源数据；预览跨 slot；同一显式幂等键配不同的请求内容；证据下标越界或映射为空；运算符不适用于字段类型；按来源键写入的写法不对、同一请求里同一个来源键出现两次、补键时键已被占用或不能转移、让出了键的行要重新存在；前提用在不能带的 op 上、指向自己、指向历史版本或别的 slot；签发时 slot 列表为空；导入的目标租户不是空的。细分见 `reason` |
 | `unknown_table` / `unknown_field` | 名字不存在，或不在可见范围内（含前提里的表与字段）；附最接近的名字 |
-| `not_found` | 行 / 实体不存在、已被删除或不可见（含前提指向的行）；事项、源数据、草稿、连接实例、读取不存在或不可见；指定的 slot 不存在或不可见（`slot`）。被宽限期内的删除去掉时附删除 ID，不回显内容 |
+| `not_found` | 行 / 实体不存在、已被删除或不可见（含前提指向的行）；事项、源数据、草稿、连接实例、读取不存在或不可见；指定的 slot 不存在或不可见（`slot`）。被宽限期内的删除整行去掉时附全部相关删除的 ID（`deletions`），不回显内容 |
 | `revoked` | 事件类表、无时间表上写到已撤销的行（含重申、清除前提的目标行）。按来源键命中已撤销的行不报错，那个 op 被跳过 |
 | `derived_readonly` | 写派生表；附它的基础表 |
 | `validation_failed` | 写入的类型、单位量纲、范围、必填不符，`ref` 的目标不存在或不可见，写入触发的派生刷新求值出错（`rule_eval_failed`），迁移进行中带旧 `sv` 的写入对新版求值转换表达式失败（`migrate_failed`，`path` 指到那个 op 的那个字段，按新版本重读再写）；schema 编译失败（含来源键与别名的规则） |
