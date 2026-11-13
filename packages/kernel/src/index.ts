@@ -1,3 +1,4 @@
+export * from "./apply/index.ts";
 export * from "./log/index.ts";
 export * from "./ops/index.ts";
 export * from "./rules/index.ts";

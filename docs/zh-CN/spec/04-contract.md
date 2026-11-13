@@ -676,7 +676,7 @@
 | 操作 | 做什么 |
 |---|---|
 | `connections.issue` | 签发连接实例：名字、scope、slot 范围（`slots`：slot 名或 `slot_id` 的数组，不给 = 全部；每个都必须存在且可见，否则 `not_found`（`slot`）；空数组报 `invalid_argument`（`empty_slots`））。结果里的令牌只返回这一次，saveslot 只存它的哈希 |
-| `connections.list` / `update` / `revoke` | 列出（含每个连接实例的 slot 范围；`include_revoked: true` 时已吊销与已停用的都列出）、改名、吊销。`update` 只能改名；吊销立即生效，重复吊销返回同一结果。签发、改名、吊销都记为日志事件 |
+| `connections.list` / `update` / `revoke` | 列出（含每个连接实例的 slot 范围；`include_revoked: true` 时已吊销与已停用的都列出）、改名、吊销。`update` 只能改名；吊销立即生效，重复吊销返回同一结果：吊销已吊销或已停用的连接实例不记事件，返回它的当前状态（已停用的仍是 `disabled`）。签发、改名、吊销都记为日志事件 |
 | `policy.get` | slot 策略：策略版本（`policy_version`）、冲突期间的生效值规则（`effective_value_rule`）、来源级别的秩表（第一版只记不用）、哪些 schema 改动自动生效。任何有 `saveslot.read` 的凭证可调用；slot 须在它的可见范围内，否则 `not_found`（`slot`） |
 | `policy.set`（后续） | 修改 slot 策略 |
 | `reads.list` | 读取审计：哪个连接实例在什么时候读了哪些数据（含对源数据原文的读取）。只给版本，不给值；每条带 `task`；结果写明读取记录保留到哪一刻。一次读取在某张表上读到的行版本数超过阈值（初值 1,000，多见于受限 SQL 的聚合）时，这张表不逐行列，列在 `coarse` 里：只有表与读取时的日志位置（data-model「读取记录」） |

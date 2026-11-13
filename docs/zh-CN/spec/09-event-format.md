@@ -487,6 +487,8 @@
 | `principal` | 元 | `{"principal": <主体 ID>, "kind": "connection", "scopes": ["saveslot.read","saveslot.write"], "slots": ["sl_4KTZ…"], "via": "token" \| "oauth", "client": <OAuth 客户端标识>}`。`client` 在 `via` 为 `oauth` 时必有、否则没有，是客户端软件的标识，不是用户内容。`slots` 见下 |
 | `name` | 数 | `{"name": "MacBook · Claude Code"}`。用户起的名字。来源：无，不在隐私删除的级联范围内；删除预览的 `not_deleted` 里以 `connection_names` 如实列出 |
 
+`scopes` 不重复、必含 `saveslot.read`，按 `Scope` 枚举的列出顺序（`saveslot.read`、`saveslot.write`、`saveslot.schema`、`saveslot.delete`）排列：同一组权限只有一种写法。
+
 `slots` 是这个连接实例的 **slot 范围**：slot ID 的数组，按 ID 升序、不重复、不为空。**缺省 = 全部**，含之后新建的 slot（缺省字段不编码，不限定范围的登记事件里没有这个键）。同一组 `scopes` 对范围内的每个 slot 一样。它只含 saveslot 分配的不透明 ID，与 `scopes` 同放在元数据块里；主体事件是租户级事件，事件头没有 `slot`，范围也不进事件头。范围签发后不能改，要改就吊销后重签。服务层按 `principals` 里记下的范围构造调用上下文的可见范围，控制面不另存一份。
 
 #### `principal.renamed`

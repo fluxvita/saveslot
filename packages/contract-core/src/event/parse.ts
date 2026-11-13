@@ -90,9 +90,13 @@ const SHAPES: Partial<Record<string, ShapeChecker>> = {
     if (!keys(v, at, ["principal", "kind", "scopes", "via"], ["slots", "client"], issues)) return;
     check(str(v["principal"]) && isId("connection", v["principal"]), at, "principal", issues);
     check(v["kind"] === "connection", at, "kind", issues);
+    // Known scopes, including saveslot.read, unique, in the order SCOPES lists them.
     const scopes = v["scopes"];
+    const order = (s: Json) => (SCOPES as readonly Json[]).indexOf(s);
     check(
-      Array.isArray(scopes) && scopes.every((s) => (SCOPES as readonly Json[]).includes(s)),
+      Array.isArray(scopes) &&
+        scopes.includes("saveslot.read") &&
+        scopes.every((s, i) => order(s) >= 0 && (i === 0 || order(scopes[i - 1]) < order(s))),
       at,
       "scopes",
       issues,

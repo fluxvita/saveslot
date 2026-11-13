@@ -87,7 +87,7 @@ describe("parseEvent: valid events", () => {
     const p = {
       principal: CONN,
       kind: "connection",
-      scopes: ["saveslot.read", "saveslot.write"],
+      scopes: ["saveslot.read", "saveslot.write", "saveslot.schema", "saveslot.delete"],
       via: "oauth",
       client: "Claude Desktop",
       slots: [SLOT_A, SLOT_B],
@@ -218,6 +218,10 @@ describe("parseEvent: required and forbidden parts", () => {
 
   it.each([
     ["a user as the principal", { principal: USER }, "principal: principal"],
+    ["no scopes", { scopes: [] }, "principal: scopes"],
+    ["no read scope", { scopes: ["saveslot.write"] }, "principal: scopes"],
+    ["repeated scopes", { scopes: ["saveslot.read", "saveslot.read"] }, "principal: scopes"],
+    ["scopes out of order", { scopes: ["saveslot.write", "saveslot.read"] }, "principal: scopes"],
     ["another kind", { kind: "user" }, "principal: kind"],
     ["an unknown via", { via: "password" }, "principal: via"],
     ["empty slots", { slots: [] }, "principal: slots"],
