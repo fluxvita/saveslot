@@ -1759,6 +1759,7 @@ type Warning =
   | { code: "external_key_resync"; rows: TargetRef[]; rows_total: number }                           // deletion_preview、delete、到期关闭的 deletion 事项详情：受影响的行有来源键，
                                                                                                      // 物理删除后 saveslot 不记得这个键，连接器再同步同一条记录时会作为新行重新出现。rows 最多 50 行
   | { code: "single_field_external_key"; table: TableName }                                          // schema_draft：来源键只有一个字段，多个来源系统写这张表时 ID 可能相撞
+  | { code: "group_key_free_text"; table: TableName }                                                // schema_draft：派生表的分组键来自自由文本字段，删除时随分组一起清除
   | { code: "job_items_appended"; op: number; job: JobId };                                          // @later
 
 /** 与本次调用相关的提示，最多 3 条。每一种都只按调用方的可见范围计算：范围外的 slot 不出现在任何提示里。 */

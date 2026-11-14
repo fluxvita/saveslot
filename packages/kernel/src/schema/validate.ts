@@ -9,9 +9,19 @@
 // - units and precision: 10 «单位词表», «精度与舍入»
 // - time, keys, groups: 07 «文档结构» (事件类表, 状态类表, 来源键, 字段组, 疑似重复 rows), 07 «字段组»;
 //   09 §7 table keys
-// - ref: 07 «类型» (same slot), 07 «从未被写入的表上改结构» (ref.target matches the time type)
+// - ref: 07 «类型» (same slot), 07 «从未被写入的表上改结构» (ref.target matches the time type),
+//   07 «表间关系» (refs are between base tables)
+// - derived tables: 07 «文档结构» 派生表 row (rule, field declarations); keys only base tables or
+//   base fields take: 04-contract «schema_draft» (key_not_applicable, external_key_table_kind)
 
-import type { DocField, DocSlot, DocTable, SchemaDetail, SchemaDetailCode } from "./model.ts";
+import type {
+  DocDerivedTable,
+  DocField,
+  DocSlot,
+  DocTable,
+  SchemaDetail,
+  SchemaDetailCode,
+} from "./model.ts";
 import { FIELD_TYPE_SET } from "./model.ts";
 import { unitCandidates, unitOf } from "./units.ts";
 
@@ -97,13 +107,15 @@ export function fieldsByName(t: DocTable): Map<string, DocField> {
   return m;
 }
 
-const TABLES = new WeakMap<DocSlot, ReadonlyMap<string, DocTable>>();
+type AnyTable = DocTable | DocDerivedTable;
+
+const TABLES = new WeakMap<DocSlot, ReadonlyMap<string, AnyTable>>();
 
 /** The tables of the document by folded name (the first one of a name); built once per document. */
-export function tablesByName(doc: DocSlot): ReadonlyMap<string, DocTable> {
+export function tablesByName(doc: DocSlot): ReadonlyMap<string, AnyTable> {
   let m = TABLES.get(doc);
   if (m === undefined) {
-    const built = new Map<string, DocTable>();
+    const built = new Map<string, AnyTable>();
     for (const t of doc.tables) if (!built.has(fold(t.name))) built.set(fold(t.name), t);
     TABLES.set(doc, built);
     m = built;
@@ -115,7 +127,7 @@ export function tablesByName(doc: DocSlot): ReadonlyMap<string, DocTable> {
  * The table a `ref.table` names: a table name of this document, or a qualified name whose slot is
  * this one. `cross_slot` for another slot's table; undefined when no table has the name.
  */
-export function refTable(doc: DocSlot, name: string): DocTable | "cross_slot" | undefined {
+export function refTable(doc: DocSlot, name: string): AnyTable | "cross_slot" | undefined {
   const dot = name.indexOf(".");
   let table = name;
   if (dot >= 0) {
@@ -178,6 +190,8 @@ function field(f: DocField, doc: DocSlot, seen: Set<string>, out: Findings): voi
     const target = refTable(doc, f.ref.table);
     if (target === "cross_slot") out.add(`${at}/ref/table`, "cross_slot_ref");
     else if (target === undefined) out.add(`${at}/ref/table`, "unknown_reference");
+    // References are between base tables (07 «表间关系»).
+    else if (target.kind === "derived") out.add(`${at}/ref/table`, "key_not_applicable");
     else {
       // A row is referenced on an event or timeless table, an entity on a state table.
       const state = target.time.type === "state";
@@ -209,6 +223,7 @@ function names(
 function table(t: DocTable, doc: DocSlot, out: Findings): void {
   const at = t.path;
   const byName = fieldsByName(t);
+  if (t.keys.has("rule")) out.add(`${at}/rule`, "key_not_applicable");
   if (t.fields.length === 0) out.add(`${at}/fields`, "out_of_bounds");
   const seen = new Set<string>();
   for (const f of t.fields) field(f, doc, seen, out);
@@ -272,6 +287,44 @@ function table(t: DocTable, doc: DocSlot, out: Findings): void {
   }
 }
 
+/** Keys only base fields take. */
+const BASE_FIELD_KEYS = ["required", "min", "max", "values", "ref"];
+/** Keys only base tables take; `external_key` has its own code. */
+const BASE_TABLE_KEYS = ["time", "entity_key", "together", "duplicate_keys"];
+
+/**
+ * A derived table: its fields' names and descriptions as a base table's; a declared `type` only
+ * `decimal`, a declared `unit` from `units@1`, a scale in 0–12. Its rule is compiled after these.
+ */
+function derivedTable(t: DocDerivedTable, out: Findings): void {
+  const at = t.path;
+  for (const k of BASE_TABLE_KEYS) if (t.keys.has(k)) out.add(`${at}/${k}`, "key_not_applicable");
+  if (t.keys.has("external_key")) out.add(`${at}/external_key`, "external_key_table_kind");
+  if (t.fields.length === 0) out.add(`${at}/fields`, "out_of_bounds");
+  const seen = new Set<string>();
+  for (const f of t.fields) {
+    const p = f.path;
+    if (!NAME.test(f.name) || RESERVED_FIELDS.has(fold(f.name)))
+      out.add(`${p}/name`, "reserved_name");
+    if (seen.has(fold(f.name))) out.add(`${p}/name`, "duplicate_name");
+    seen.add(fold(f.name));
+    description(f.description, p, out);
+    for (const k of BASE_FIELD_KEYS) if (f.keys.has(k)) out.add(`${p}/${k}`, "key_not_applicable");
+    if (f.type !== undefined) {
+      if (!FIELD_TYPE_SET.has(f.type)) out.add(`${p}/type`, "unknown_type");
+      // Only a product or quotient of quantities is declared, as decimal (07 «文档结构»).
+      else if (f.type !== "decimal") out.add(`${p}/type`, "key_not_applicable");
+    }
+    if (f.unit !== undefined) {
+      if (f.type === "decimal") out.add(`${p}/unit`, "key_not_applicable");
+      else if (unitOf(f.unit) === undefined)
+        out.add(`${p}/unit`, "unit_unknown", { allowed_units: unitCandidates(f.unit) });
+    }
+    if (f.scale !== undefined && (f.scale < 0 || f.scale > 12))
+      out.add(`${p}/scale`, "out_of_bounds");
+  }
+}
+
 /** Every finding of the document, in document order. Empty when it compiles. */
 export function validate(doc: DocSlot, existingSlotNames: readonly string[]): SchemaDetail[] {
   const out = new Findings();
@@ -284,7 +337,8 @@ export function validate(doc: DocSlot, existingSlotNames: readonly string[]): Sc
     if (seen.has(fold(t.name))) out.add(`${t.path}/name`, "duplicate_name");
     seen.add(fold(t.name));
     description(t.description, t.path, out);
-    table(t, doc, out);
+    if (t.kind === "derived") derivedTable(t, out);
+    else table(t, doc, out);
   }
   return out.list;
 }

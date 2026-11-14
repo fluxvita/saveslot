@@ -98,6 +98,7 @@ export function compile(
     document,
     slotId: SLOT_ID,
     nextTableNumber: 1,
+    nextRuleNumber: 1,
     existingSlotNames: [],
     ...o,
   });

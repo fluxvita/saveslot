@@ -42,7 +42,7 @@
    - 只留可见范围内的表；引用读时计算的派生表时，把它的规则作为子查询展开；
    - `saveslot_now()`、`saveslot_today()` 换成本次调用的参数，`saveslot_date(f)` 换成内部列（「时间」）；
    - `/`、`%`、`mod()` 的除数换成 `NULLIF(除数, 0)`；`*` 展开成可见字段。
-8. **执行**：反解析成文本，在只读事务里执行。
+8. **执行**：反解析成文本，在只读事务里执行。会话固定 `standard_conforming_strings = on`（与 architecture §8 的其他固定会话设置一起）：打印出的字符串字面量里反斜杠不转义，它的含义依赖这项设置。
 9. **读取记录**：`sql` 的结构指纹从第 5 步之后的语法树得出（「读取记录里记什么形状」）。
 
 - 报错只出现逻辑名、节点名与函数名，不出现物理名；`line` 是调用方原文里的行号。
@@ -299,7 +299,7 @@ FROM budgets FOR VALID_TIME AS OF saveslot_today() AS b
 3. **文本只按字节比较**。文本列用 `C` 排序规则，写入时已做 NFC 规范化，相等即逐码点相同。依赖字符分类或大小写折叠的不收：`lower`、`upper`、`initcap`、`ILIKE`、正则、`SIMILAR TO`、`COLLATE`。`length`、`substr` 这类按字符计的函数依赖数据库编码，两个后端的数据库编码都固定为 UTF-8（PGlite 的默认编码实现时核实）。
 4. **没有浮点**。数一律是 `numeric` 或 `bigint`；不收浮点类型与返回浮点的函数（`date_part`、`sqrt`、`power`、`exp`、`ln`、`random`……）。
 5. **结果不取决于行的先后**。派生规则不收 `ORDER BY` 后的 `LIMIT` / `OFFSET`、`DISTINCT ON`、依赖并列次序的窗口函数、`ROWS` 帧、有序聚合（见上各表）。
-6. **求值不因数据出错**。`/`、`%`、`mod()` 的除数为 0 时得空（改写成 `NULLIF(除数, 0)`）；整数除以整数不收；派生规则里不收会因值而失败的转换与函数（`text` 转数、`make_date`）。剩下的只有 64 位整数溢出：`sql` 报 `sql_rejected`（`runtime`）；派生规则在编译试跑时报 `rule_sql_rejected`，之后在某次基础写入的刷新里发生时，整个写入被拒，报 `validation_failed`（`write`），明细码 `rule_eval_failed`，不产生事件。
+6. **求值不因数据出错**。`/`、`%`、`mod()` 的除数为 0 时得空（改写成 `NULLIF(除数, 0)`）；整数除以整数不收；派生规则里不收会因值而失败的转换与函数（`text` 转数、`make_date`）。剩下的只有因数据而起的几种：64 位整数溢出、转换成 `numeric(p, s)` 时超出精度、`date` 加减常量天数后超出日期范围。`sql` 报 `sql_rejected`（`runtime`）；派生规则在编译试跑时报 `rule_sql_rejected`，之后在某次基础写入的刷新里发生时，整个写入被拒，报 `validation_failed`（`write`），明细码 `rule_eval_failed`，不产生事件。
 7. **两个后端上逐项比过**。每一项都有双后端用例（「怎么测」）；出现差异的项，要么从白名单移除，要么由内核钉死行为（显式排序规则、显式舍入、强制排序），然后出新的白名单版本。
 
 ### 代价

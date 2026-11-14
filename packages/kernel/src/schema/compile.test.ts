@@ -237,7 +237,7 @@ describe("the compiled definition", () => {
 });
 
 describe("the spec's examples", () => {
-  // 07 «例：新建 slot（v1 草稿）», without the derived table.
+  // 07 «例：新建 slot（v1 草稿）», its base table (the whole example: ./compile-derived.test.ts).
   it("health", () => {
     const r = ok(
       compile({
@@ -368,7 +368,6 @@ describe("keys v1 does not support: not_in_this_version", () => {
 describe("in v1, not compiled yet: not_implemented", () => {
   it.each([
     ["a draft changing a slot", (d: Doc) => (d.base_version = 1), "base_version"],
-    ["a derived table", (d: Doc) => (d.tables[2] = { name: "x", kind: "derived" }), "tables/2"],
     ["aliases on a table", (d: Doc) => (d.tables[1].aliases = ["a"]), "tables/1/aliases"],
     [
       "aliases on a field",
@@ -703,7 +702,9 @@ describe("the form of the document: invalid_argument", () => {
 });
 
 describe("the caller's input", () => {
-  it("refuses a slot ID or a table number that is not one", () => {
+  it("refuses a slot ID or a table or rule number that is not one", () => {
+    expect(() => compile(ledger(), { nextRuleNumber: 0 })).toThrow(/rule number/);
+    expect(() => compile(ledger(), { nextRuleNumber: 2.5 })).toThrow(/rule number/);
     expect(() => compile(ledger(), { slotId: "sl_x" as never })).toThrow(/slot ID/);
     expect(() => compile(ledger(), { nextTableNumber: 0 })).toThrow(/table number/);
     expect(() => compile(ledger(), { nextTableNumber: 1.5 })).toThrow(/table number/);

@@ -140,6 +140,7 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
 | `external_key_skipped` | `第 3、7 个 op 被跳过：第 3 个对应的行已撤销（#58）；第 7 个的来源键有一项可撤回的删除（pi_…）` |
 | `external_key_resync` | `这些行来自外部系统；删除后若连接器再次同步同一条记录，它会重新出现。要彻底忘掉，先在来源系统里删除，或让连接器停止同步它` |
 | `single_field_external_key` | `meals 的来源键只有一个字段：多个来源系统写这张表时 ID 可能相撞` |
+| `group_key_free_text` | `notes_by_feeling 的分组键取自用户原文：删除时随分组一起清除` |
 | `multi_segment_unmapped` | **只放在结构化结果里、不渲染**——模型在当前对话里没法据此做什么；删除预览那一侧另有对应说明（`co_evidence`） |
 
 **`notices[]`**：每个结果末尾最多 3 条，措辞中性；每一种都只按本次调用可见的范围计算，范围外的 slot 不出现在任何提示里：

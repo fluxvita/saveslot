@@ -9,7 +9,9 @@ import type {
   RefTarget,
   Rounding,
   SlotId,
+  TimeDependency,
 } from "@fluxvita/saveslot-contract-core";
+import type { SqlReason } from "../rules/index.ts";
 
 /** The detail codes the compiler reports (04-contract-types `ValidationDetailCode`, schema part). */
 export type SchemaDetailCode =
@@ -28,7 +30,11 @@ export type SchemaDetailCode =
   | "key_not_applicable"
   | "out_of_bounds"
   | "duplicate_entry"
-  | "timezone_unknown";
+  | "timezone_unknown"
+  // A derived table's rule (11-restricted-sql.md «拒绝时报什么», derived rule column).
+  | "rule_sql_rejected"
+  | "nondeterministic_function"
+  | "unit_inference_failed";
 
 /** One finding, at its position in the document (`tables/0/fields/2`, `tables/1/entity_key/0`). */
 export interface SchemaDetail {
@@ -36,6 +42,10 @@ export interface SchemaDetail {
   readonly code: SchemaDetailCode;
   /** `unit_unknown`: codes of `units@1` the text may have meant; may be empty. */
   readonly allowed_units?: readonly string[];
+  /** A rule's details: the line in its SQL, the reason, a fix when one can be given. */
+  readonly line?: number;
+  readonly sql_reason?: SqlReason;
+  readonly suggestion?: string;
 }
 
 export type CompileError =
@@ -49,14 +59,21 @@ export type CompileError =
       readonly reason: "missing" | "malformed";
       readonly param: string;
     }
-  /** In v1, but not compiled yet: changing a slot, derived tables, aliases. Not for callers to see as such. */
+  /** In v1, but not compiled yet: changing a slot, aliases, rule forms not compiled yet. Not for callers to see as such. */
   | { readonly code: "not_implemented"; readonly what: string; readonly param: string };
 
-export type CompileWarning = {
-  readonly code: "single_field_external_key";
-  /** Position of the table's `external_key`. */
-  readonly path: string;
-};
+export type CompileWarning =
+  | {
+      readonly code: "single_field_external_key";
+      /** Position of the table's `external_key`. */
+      readonly path: string;
+    }
+  | {
+      /** A derived table's group key comes from free text: it goes with the group when deleted (06 «派生行身份»). */
+      readonly code: "group_key_free_text";
+      /** Position of the derived table's `rule`. */
+      readonly path: string;
+    };
 
 export interface CompileNewSlotInput {
   /** The schema document as the caller gave it (parsed JSON). */
@@ -65,6 +82,8 @@ export interface CompileNewSlotInput {
   readonly slotId: SlotId;
   /** The next table number free in the tenant: table IDs are unique in the tenant and never reused. */
   readonly nextTableNumber: number;
+  /** The next rule number free in the tenant: rule IDs are unique in the tenant and never reused. */
+  readonly nextRuleNumber: number;
   /** The names of the tenant's slots, for `duplicate_name`. */
   readonly existingSlotNames: readonly string[];
 }
@@ -73,7 +92,7 @@ export type CompileResult =
   | {
       readonly ok: true;
       readonly compiled: CompiledSchema;
-      /** `schema.compiled` `changes`: `create_slot` and one `add_table` per table. */
+      /** `schema.compiled` `changes`: `create_slot`, then `add_table` / `add_derived_table` per table. */
       readonly changes: ChangesBlock;
       readonly outcome: "applied";
       readonly targetVersion: 1;
@@ -107,7 +126,10 @@ export type DocTime =
   | { readonly type: "state"; readonly granularity: "date" | "instant" };
 
 export interface DocTable {
+  readonly kind: "base";
   readonly path: string;
+  /** Keys present: a derived table's `rule` is reported, not read. */
+  readonly keys: ReadonlySet<string>;
   readonly name: string;
   readonly description?: string;
   readonly time: DocTime;
@@ -118,10 +140,34 @@ export interface DocTable {
   readonly duplicate_keys?: readonly (readonly string[])[];
 }
 
+/** A field of a derived table as written: type, unit and precision only where inference needs them. */
+export interface DocDerivedField {
+  readonly path: string;
+  readonly name: string;
+  readonly description?: string;
+  /** Keys present: keys only base fields take are reported, not read. */
+  readonly keys: ReadonlySet<string>;
+  readonly type?: string;
+  readonly unit?: string;
+  readonly scale?: number;
+  readonly rounding?: Rounding;
+}
+
+export interface DocDerivedTable {
+  readonly kind: "derived";
+  readonly path: string;
+  readonly name: string;
+  readonly description?: string;
+  /** Keys present: keys only base tables take are reported, not read. */
+  readonly keys: ReadonlySet<string>;
+  readonly rule: { readonly sql: string; readonly time_dependency: TimeDependency };
+  readonly fields: readonly DocDerivedField[];
+}
+
 export interface DocSlot {
   readonly slot: string;
   readonly timezone: string;
-  readonly tables: readonly DocTable[];
+  readonly tables: readonly (DocTable | DocDerivedTable)[];
 }
 
 export const FIELD_TYPE_SET: ReadonlySet<string> = new Set<FieldType>([

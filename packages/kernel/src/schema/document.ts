@@ -4,9 +4,20 @@
 //
 // Keys only a change to an existing slot has (`id`, `rename_to`, `drop_tables`, `drop_fields`,
 // `migrate`, `backfill`) are unknown keys here: refused, never ignored, so a misspelt key is not
-// silently dropped.
+// silently dropped. A key of the document's vocabulary on a table or field it does not apply to
+// (`time` on a derived table, `rule` on a base table, `required` on a derived field) is read as
+// present, not by its value: ./validate.ts reports it.
 
-import type { CompileError, DocField, DocSlot, DocTable, DocTime } from "./model.ts";
+import type { TimeDependency } from "@fluxvita/saveslot-contract-core";
+import type {
+  CompileError,
+  DocDerivedField,
+  DocDerivedTable,
+  DocField,
+  DocSlot,
+  DocTable,
+  DocTime,
+} from "./model.ts";
 
 type Obj = Record<string, unknown>;
 
@@ -14,17 +25,12 @@ export const isObject = (v: unknown): v is Obj =>
   v !== null && typeof v === "object" && !Array.isArray(v);
 
 const TOP_KEYS = ["slot", "base_version", "timezone", "tables"];
-const TABLE_KEYS = [
-  "name",
-  "kind",
-  "description",
-  "time",
-  "fields",
-  "entity_key",
-  "external_key",
-  "together",
-  "duplicate_keys",
-];
+/** Keys only base tables take. */
+const BASE_TABLE_KEYS = ["time", "entity_key", "external_key", "together", "duplicate_keys"];
+/** Every table key of the vocabulary (aliases are stopped before the form is read). */
+const TABLE_KEYS = ["name", "kind", "description", "fields", "rule", ...BASE_TABLE_KEYS];
+const RULE_KEYS = ["sql", "time_dependency"];
+const TIME_DEPENDENCIES: readonly string[] = ["none", "bucketed", "now"];
 const FIELD_KEYS = [
   "name",
   "type",
@@ -66,7 +72,7 @@ export function unsupportedKey(doc: Obj): CompileError | undefined {
 
 /**
  * The first thing in v1 that this compiler does not compile yet, in document order: a draft that
- * changes a slot (`base_version` not null), a derived table, aliases.
+ * changes a slot (`base_version` not null), aliases.
  */
 export function notYet(doc: Obj): CompileError | undefined {
   const at = (what: string, param: string): CompileError => ({
@@ -79,7 +85,6 @@ export function notYet(doc: Obj): CompileError | undefined {
     return at("a draft changing a slot", "base_version");
   }
   for (const [t, i] of objs(doc["tables"])) {
-    if (t["kind"] === "derived") return at("a derived table", `tables/${i}`);
     if ("aliases" in t) return at("aliases", `tables/${i}/aliases`);
     for (const [f, j] of objs(t["fields"])) {
       if ("aliases" in f) return at("aliases", `tables/${i}/fields/${j}/aliases`);
@@ -199,6 +204,22 @@ function field(v: unknown, at: string): DocField {
     });
   }
   if ("unit" in f) out.unit = string(f["unit"], `${at}/unit`);
+  precision(f, at, out);
+  if ("ref" in f) {
+    const r = object(f["ref"], `${at}/ref`, ["table", "target"], ["table", "target"]);
+    const target = r["target"];
+    if (target !== "row" && target !== "entity") throw malformed(`${at}/ref/target`);
+    out.ref = { table: string(r["table"], `${at}/ref/table`), target };
+  }
+  return out;
+}
+
+/** The precision keys of a field: an integer scale, a known rounding. */
+function precision(
+  f: Record<string, unknown>,
+  at: string,
+  out: { scale?: number; rounding?: "half_up" | "half_even" },
+) {
   if ("scale" in f) {
     const s = f["scale"];
     if (typeof s !== "number" || !Number.isInteger(s)) throw malformed(`${at}/scale`);
@@ -209,22 +230,54 @@ function field(v: unknown, at: string): DocField {
     if (r !== "half_up" && r !== "half_even") throw malformed(`${at}/rounding`);
     out.rounding = r;
   }
-  if ("ref" in f) {
-    const r = object(f["ref"], `${at}/ref`, ["table", "target"], ["table", "target"]);
-    const target = r["target"];
-    if (target !== "row" && target !== "entity") throw malformed(`${at}/ref/target`);
-    out.ref = { table: string(r["table"], `${at}/ref/table`), target };
-  }
+}
+
+/** A derived field: name, description, and type, unit and precision where inference needs them. */
+function derivedField(v: unknown, at: string): DocDerivedField {
+  const f = object(v, at, FIELD_KEYS, ["name"]);
+  const out: { -readonly [K in keyof DocDerivedField]: DocDerivedField[K] } = {
+    path: at,
+    name: string(f["name"], `${at}/name`),
+    keys: new Set(Object.keys(f)),
+  };
+  if ("description" in f) out.description = string(f["description"], `${at}/description`);
+  if ("type" in f) out.type = string(f["type"], `${at}/type`);
+  if ("unit" in f) out.unit = string(f["unit"], `${at}/unit`);
+  precision(f, at, out);
   return out;
 }
 
-function table(v: unknown, at: string): DocTable {
+function derivedTable(t: Record<string, unknown>, at: string): DocDerivedTable {
+  const fields = t["fields"];
+  if (!Array.isArray(fields)) throw malformed(`${at}/fields`);
+  const r = object(t["rule"], `${at}/rule`, RULE_KEYS, RULE_KEYS);
+  const td = r["time_dependency"];
+  if (typeof td !== "string" || !TIME_DEPENDENCIES.includes(td))
+    throw malformed(`${at}/rule/time_dependency`);
+  const out: { -readonly [K in keyof DocDerivedTable]: DocDerivedTable[K] } = {
+    kind: "derived",
+    path: at,
+    name: string(t["name"], `${at}/name`),
+    keys: new Set(Object.keys(t)),
+    rule: { sql: string(r["sql"], `${at}/rule/sql`), time_dependency: td as TimeDependency },
+    fields: fields.map((f, i) => derivedField(f, `${at}/fields/${i}`)),
+  };
+  if ("description" in t) out.description = string(t["description"], `${at}/description`);
+  return out;
+}
+
+function table(v: unknown, at: string): DocTable | DocDerivedTable {
+  const kind = object(v, at, TABLE_KEYS, ["name", "kind"])["kind"];
+  if (kind === "derived") {
+    return derivedTable(object(v, at, TABLE_KEYS, ["name", "kind", "rule", "fields"]), at);
+  }
   const t = object(v, at, TABLE_KEYS, ["name", "kind", "time", "fields"]);
-  // `derived` is stopped before the form is read (notYet).
-  if (t["kind"] !== "base") throw malformed(`${at}/kind`);
+  if (kind !== "base") throw malformed(`${at}/kind`);
   const fields = t["fields"];
   if (!Array.isArray(fields)) throw malformed(`${at}/fields`);
   const out: { -readonly [K in keyof DocTable]: DocTable[K] } = {
+    kind: "base",
+    keys: new Set(Object.keys(t)),
     path: at,
     name: string(t["name"], `${at}/name`),
     time: time(t["time"], `${at}/time`),
