@@ -1,6 +1,7 @@
 // What apply plans: the changes an event makes to the materialized state, and why apply stops.
 
 import type { Seq } from "@fluxvita/saveslot-contract-core";
+import type { SqlValue } from "../store/ports.ts";
 
 export type ApplyErrorReason =
   /** Not a valid v1 event (§1.6). */
@@ -159,5 +160,56 @@ export type Change =
       readonly to: string | null;
     }
   | { readonly kind: "flags_drop"; readonly item: string }
+  /** Rows added to a kernel table (`base_sources`). */
+  | {
+      readonly kind: "rows_insert";
+      readonly table: "base_sources";
+      readonly columns: readonly string[];
+      readonly rows: readonly (readonly SqlValue[])[];
+    }
+  /** An item's "reverted" registrations (`base_sources.reverted`, JCS) after a revert. */
+  | {
+      readonly kind: "base_sources_reverted";
+      readonly row_id: string;
+      readonly event: Seq;
+      readonly field: string;
+      readonly k: number;
+      readonly reverted: string;
+    }
+  /** The write that first created the row or entity (`row_origins`). */
+  | {
+      readonly kind: "row_origin";
+      readonly row_id: string;
+      readonly table_id: string;
+      readonly seq: Seq;
+    }
+  /** A row's or entity's rows of a business table, replaced by its settled current version. */
+  | {
+      readonly kind: "rows_replace";
+      readonly table: string;
+      readonly key: "row_id" | "entity_id";
+      readonly id: string;
+      readonly columns: readonly string[];
+      readonly rows: readonly (readonly SqlValue[])[];
+    }
+  /**
+   * A row's version cells: open cells no longer current end at `op` (or are dropped, when `op`
+   * opened them), new ones open at `op`.
+   */
+  | {
+      readonly kind: "cells";
+      readonly table: string;
+      readonly row_id: string;
+      readonly state: boolean;
+      readonly op: Seq;
+      readonly close: readonly {
+        readonly field: string;
+        readonly valid_from: string | null;
+        readonly rec_from: Seq;
+      }[];
+      readonly columns: readonly string[];
+      readonly rows: readonly (readonly SqlValue[])[];
+    }
+  | { readonly kind: "counts_add"; readonly table_id: string; readonly delta: number }
   /** The block dependency index (§5.12): blocks → the contributions they depend on. */
   | { readonly kind: "block_deps"; readonly rows: readonly BlockDepRow[] };

@@ -266,6 +266,15 @@ describe("planEvent: what this phase stops on, never skips", () => {
     );
   });
 
+  it("a block at path __proto__ is checked like any other path, not taken as the prototype", () => {
+    const [ev] = slotOp();
+    for (const value of [{ request_key: { key: "smuggled" } }, 5]) {
+      const blocks = new Map((ev as ApplyEvent).blocks);
+      blocks.set("__proto__", { state: "present", value });
+      expect(reason({ ...(ev as ApplyEvent), blocks })).toMatch(/^invalid: .*__proto__/);
+    }
+  });
+
   it("a draft changing a slot", () => {
     const [ev] = op(9, [
       {

@@ -22,5 +22,9 @@
     "@fluxvita/saveslot-kernel": "workspace:*",
     "fs-native-extensions": "1.5.3"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@fluxvita/saveslot-reference": "workspace:*",
+    "fast-check": "4.10.2"
+  }
 }
