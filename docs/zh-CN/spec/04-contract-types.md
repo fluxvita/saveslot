@@ -1967,7 +1967,7 @@ interface ValidationDetail {
   rows?: number; samples?: TargetRef[];   // backfill_required：违反的行数与样例
   referenced_by?: string[];      // still_referenced：依赖它的对象在 schema 文档里的位置（同 path 的写法）
   /** rule_sql_rejected、nondeterministic_function、unit_inference_failed、migrate_failed、rule_eval_failed：细分原因，与 sql_rejected 的 reason 同一套取值。 */
-  sql_reason?: "not_select" | "function" | "node" | "system_time" | "unknown_name" | "type" | "limit" | "runtime";
+  sql_reason?: "syntax" | "not_select" | "function" | "node" | "system_time" | "unknown_name" | "type" | "limit" | "runtime";
   suggestion?: string;           // 机器可用的改法：如替换后的 SQL 片段
 }
 
@@ -2023,7 +2023,7 @@ type ValidationDetailCode =
 | `read_first` | `no_read` / `task_mismatch` | `target: "row" \| "item" \| "slot" \| "table"`、`ref?: TargetRef \| ItemId \| SlotName`；`task_mismatch` 时 `read_task`、`task` |
 | `schema_incompatible` | — | `current_sv`、`changed_fields: Array<{field, change}>`（`field` 是 `"*"` 时表示整张表：这张表经 `restructure_unused` 改过结构） |
 | `too_large` | `evidence_segment` / `request` / `admission` / `result_budget` / `premise_entries` / `premise_fan_in` | `limit_bytes?`、`actual_bytes?`；`admission` 时 `estimated_rows`、`suggested_batch`；`result_budget` 时 `narrow_by: string[]`；`premise_fan_in` 时 `target: TargetRef`、`count`（目标当前被多少条有效声明指向）。这些原因都发生在落账之前；已经落账的操作回执超预算时不报错，截短并带 `omitted[]` |
-| `sql_rejected` | `not_select` / `function` / `node` / `system_time` / `unknown_name` / `type`（类型或单位不合）/ `limit`（超出上限）/ `runtime`（求值出错，如 64 位整数溢出） | `line`、`node`（不暴露物理名）、`use?: "history"` |
+| `sql_rejected` | `syntax`（语法错误，文本不是良构的 Unicode）/ `not_select` / `function` / `node` / `system_time` / `unknown_name` / `type`（类型或单位不合）/ `limit`（超出上限）/ `runtime`（求值出错，如 64 位整数溢出） | `line`、`node`（不暴露物理名）、`use?: "history"` |
 | `sql_timeout` | — | `elapsed_ms` |
 | `draft_outdated` | `base_version` / `migrating` / `table_written`（确认时，草稿所改结构的那张表已被写入）/ `migrate_failed`（确认时，`migrate` 对试跑之后的新写入求值失败） | `current_sv`；`migrating` 时 `migration: MigrationStatus` |
 | `field_unmatched` | — | `fields: Array<{table, id, name}>` |

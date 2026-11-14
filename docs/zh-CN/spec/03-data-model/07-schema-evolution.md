@@ -170,7 +170,7 @@
 | 字段组 | 表上的 `together`（可选，字段名数组的数组，如 `[["start", "end"]]`） | Agent | 同组字段是一个冲突单元（见下方「字段组」）；不能含来源键的键字段 |
 | 字段 | `name`、`id`、`type`、`description`（必填）、`aliases`（可选）、`required`、`min` / `max`、`values`（枚举）、`unit`、`scale` / `rounding`（`quantity`、`decimal` 的精度，可选）、`ref: {table, target: "row" \| "entity"}` | Agent，`id` 由 saveslot 回填 | 类型的取值范围、单位词表、精度的默认值见「字段类型、同值与单位」 |
 | 疑似重复 | `duplicate_keys`（字段名数组的数组，每组是一套判据） | Agent | 只能用在事件类表与无时间表上。软判据：命中生成待处理事项，不拒绝写入（见「写入请求 · 疑似重复」）；首版不做硬唯一约束 |
-| 派生表 | `rule.sql`、`rule.time_dependency`（`none` / `bucketed` / `now`）；每个字段一句 `description` | Agent | SQL 用名字写，saveslot 存为按 ID 绑定的形式（改名不坏规则）；字段类型、单位、依赖、重算范围由 saveslot 推断回填 |
+| 派生表 | `rule.sql`、`rule.time_dependency`（`none` / `bucketed` / `now`）；每个字段一句 `description`，可选 `type`（只收 `decimal`）、`unit`、`scale` / `rounding` | Agent | SQL 用名字写，saveslot 存为按 ID 绑定的形式（改名不坏规则）；字段类型、单位、精度、依赖、重算范围由 saveslot 推断回填；派生字段的类型是 `text`、`enum`、`ref`、`integer`、`decimal`、`quantity`、`boolean`、`date` 之一，不能是 `zoned_datetime`（聚合出的时刻没有时区部分，取日用 `saveslot_date`）。规则的输出列按名字（不分 ASCII 大小写）一一对到派生字段，表达式须写 `AS <字段名>`。字段上写的 `type` / `unit` / `scale` / `rounding` 只在推不出时补上；推得出时写了就须与推断一致：与推断的单位矛盾（含把带单位的结果写成 `decimal`）报 `unit_inference_failed`，其余报 `rule_sql_rejected` |
 | 迁移 | 字段上的 `migrate`（受限 SQL 表达式，确定性转换）、`backfill`（收紧约束时补违反的行）；表上的 `drop_fields`；slot 上的 `drop_tables`。`reextract: {from, instructions}`（重新抽取：从哪些旧字段与源数据原文抽、怎么抽；`from` 为空即新字段补抽）**第一版不支持** | Agent | 只在 saveslot 推不出时写；同量纲改单位由 saveslot 自动换算，不需要迁移函数；重新抽取走抽取作业（见下文「抽取作业」） |
 | 官方 schema | `extends`、`compatibility` | — | 键名预留，细则待定 |
 
@@ -188,7 +188,7 @@
   要换算就把汇率作为基础数据接入、在派生规则里算（见「派生规则」）。
 - **表间关系**：基础表之间用 `ref` 声明；派生关系由 saveslot 解析规则得出。
 - **字段组**（`together`）：并发写入按字段合并，单个字段上的约束不会被合并破坏，会被破坏的只是跨字段的关系。例：出差 `start 11-01, end 11-05`，一方把 `end` 改成 11-03，一方把 `start` 改成 11-04，各自都不冲突，合并出 `start` 晚于 `end` 的行。只有 schema 的作者知道哪些字段有关系，所以由 schema 声明：同组字段作为一个冲突单元，改到组里任何一个字段，就与改到组里任何字段的写入相交。不声明时每个字段自成一个单元。字段组只影响冲突判定与事项的目标，不影响挡点、来源、同值判断（见「冲突处理 · 冲突判据」）。字段组在编译后的定义里、随 `sv` 走；删除重放按写入记下的 `sv`。**来源键的键字段不能进字段组**（`validation_failed`，`external_key_in_together`）：键字段从不参与同步基线，放进字段组会让它与同组字段的冲突判定纠缠在一起。
-- **派生字段的单位**由 saveslot 推断（`sum` / `avg` / `min` / `max`、乘除常数）；推不出就报错，要求在该字段写明 `unit`。
+- **派生字段的单位**由 saveslot 推断（`sum` / `avg` / `min` / `max`、乘除常数）；推不出（两个带单位的量相乘、相除）就报 `unit_inference_failed`，要求把该字段声明为 `decimal`，或写明 `unit`。
 - **兼容性与迁移类别由 saveslot 判定**（只改元数据 / 确定性转换 / 重新抽取），在编译回执的 `changes` 里逐项列出。
 - **第一版 `migrate`、`backfill` 的表达式只能引用本字段自己的旧值与常量**（表达式里唯一能出现的列名是这个字段在 `base_version` 里的名字）。引用别的字段报 `not_in_this_version`。原因：迁移是把旧版的每条写入逐条转换成新版形状（见下文「确定性转换怎么重放」），一条写入只记它涉及的字段；转换只依赖本字段时，每条写入对这个字段的那一项恰好变成新版的一项，状态、区间、来源原样带过去。依赖别的字段时，一条只写了别的字段的写入也会改变转换结果，它在新版里算不算一项贡献、区间怎么定，需要另一套规则，后续再做。要按几个字段合成一个新字段，第一版的做法是加一个派生表，或由 Agent 读出来重新写入。
 - **草稿里的 `migrate` 表达式与 `reextract.from` 一律按 `base_version` 的名字解析**（同一草稿里既改名又改类型时不会歧义；`from` 可以引用本草稿要删的旧字段）。

@@ -150,22 +150,24 @@ FROM budgets FOR VALID_TIME AS OF saveslot_today() AS b
 - 另外两种类型只能作为中间值：`timestamp`（只来自 `date::timestamp`，给 `date_trunc` 用）与 `interval`（只作为窗口帧偏移的字面量）。
 - 不收的类型：`real`、`double precision` 等浮点，`integer` / `smallint`（只用 `bigint`），`money`、`json` / `jsonb`、数组、区间类型、`uuid`、`bytea`、`xml` 等。
 - **字面量**：字符串、整数、小数（`1.5` 是 `numeric`）、`TRUE` / `FALSE`、`NULL`。带类型前缀的只收 `DATE '…'` 与 `INTERVAL '…'`（后者只在窗口帧里）。与 `date`、`timestamptz` 比较的字符串字面量，由 saveslot 按契约的格式校验（日期 `YYYY-MM-DD`，时刻必须带偏移），不按数据库的日期风格解析。
+- **整数一律是 64 位**：数据库会定成 32 位的值（整数常量、`length`、`strpos`、`date - date`）与整数的 `sum`（数据库给 `numeric`），按 `bigint` 理解，执行的文本里包一层 `CAST(… AS bigint)`；超出 64 位按「确定性」第 6 条报溢出。数据库只收 32 位整数的位置（`substr` 的位置与长度、`left` / `right` 的长度、`split_part` 的序号、`round` / `trunc` 的位数、`date` 加减的天数），第一版只收 32 位以内的整数常量，原样执行。
+- **没定型的 `NULL`**：`NULL` 只能出现在另一侧或别的分支能给它定类型的地方（`x + NULL`、`x = NULL`、`COALESCE(x, NULL)`、`CASE … ELSE NULL`、`IN` 列表里）；两侧都没有类型（`NULL + NULL`、`-NULL`、`NULL = NULL`）、作函数或聚合的参数（`abs(NULL)`、`sum(NULL)`）、作类型转换的对象（`NULL::numeric`）不收，报 `type`。布尔的位置（`WHERE NULL`、`NOT NULL`）与 `NULL IS NULL` 收。`NULLIF` 两边都是字符串字面量时结果是 `text`。
 - **结果列的类型**：`sql` 的列定义按推出的类型给 `FieldType`；`timestamptz` 列给 `"unknown"`，单元格是 UTC 的 RFC 3339 时刻；推不出的给 `"unknown"`。
 
 **单位**：
 
 - 加减、比较、`sum` / `avg` / `min` / `max`、`COALESCE` / `CASE` / `GREATEST` / `LEAST` 的各分支：带单位的操作数必须是同一个单位代码。同量纲而单位不同（`km` 与 `mi`）也不收：第一版 SQL 里没有单位换算函数。`sql` 报 `sql_rejected`（`type`），派生规则报 `unit_inference_failed`。
 - 与字面量或参数比较、加减：字面量与参数按这一侧的单位理解（契约 `SqlParams`）。`COALESCE` / `CASE` / `GREATEST` / `LEAST` 的分支里的字面量同样按带单位的那一支理解，如 `COALESCE(SUM(amount), 0)` 的 `0` 是 `amount` 的单位下的 0；各分支都是字面量时没有单位。与没有单位的字段（`integer`、`decimal`）加减或比较不收。
-- 乘除：带单位的量乘或除以没有单位的数，单位不变；同一单位的两个量相除得无量纲 `1`；其余两个带单位的量相乘、相除，派生规则要求把该输出字段声明为 `decimal`（否则 `unit_inference_failed`），`sql` 的结果列是 `decimal`、不带单位（「单位词表」）。
+- 乘除：带单位的量乘或除以没有单位的数，单位不变；同一单位的两个量相除得无量纲 `1`；其余两个带单位的量相乘、相除，派生规则要求把该输出字段声明为 `decimal` 或写明 `unit`（否则 `unit_inference_failed`），`sql` 的结果列是 `decimal`、不带单位（「单位词表」）。
 - `count` 的结果是 `integer`。派生字段的精度推断见「精度与舍入」。
 
 **类型转换**（`x::t` 与 `CAST(x AS t)` 同一个节点）：
 
 | 转换 | `sql` | 派生规则 | 转换表达式 | 说明 |
 |---|---|---|---|---|
-| `bigint` → `numeric`、`numeric(p, s)` | 收 | 收 | 收 | |
+| `bigint` → `numeric`、`numeric(p, s)` | 收 | 收 | 收 | `s` 至多 12（「精度与舍入」） |
 | `numeric` → `bigint` | 收 | 收 | 收 | 四舍五入，恰在一半时远离零 |
-| `numeric` → `numeric(p, s)` | 收 | 收 | 收 | 舍入方式同上 |
+| `numeric` → `numeric(p, s)` | 收 | 收 | 收 | 舍入方式同上；`s` 至多 12 |
 | `date` → `timestamp` | 收 | 收 | 收 | 给 `date_trunc` 用 |
 | `timestamp` → `date` | 收 | 收 | 收 | |
 | `text` → `numeric`、`bigint`、`boolean` | 不收 | 不收 | 收 | 会因值而失败，报 `migrate_failed`（三处时机见「拒绝时报什么」） |
@@ -226,10 +228,10 @@ FROM budgets FOR VALID_TIME AS OF saveslot_today() AS b
 | `*` | 整数、`numeric` | 同类 | S D M | |
 | `/` | 至少一边是 `numeric` | `numeric` | S D M | 除数为 0 得空；两边都是整数不收（会悄悄截断），提示写 `::numeric` |
 | `%` | 整数、`numeric` | 同类 | S D M | 除数为 0 得空 |
-| `date + 整数`、`整数 + date`、`date - 整数` | | `date` | S D M | 加减天数 |
+| `date + 整数`、`整数 + date`、`date - 整数` | | `date` | S D M | 加减天数；第一版整数只收 32 位以内的常量（「类型」） |
 | `date - date` | | 整数 | S D M | 相差的天数 |
 | `\|\|` | 两边都是 `text` | `text` | S D M | 与其他类型拼接不收（那一种随会话设置） |
-| `LIKE`、`NOT LIKE`，可带 `ESCAPE` | `text` | `boolean` | S D M | 区分大小写，按字节匹配 |
+| `LIKE`、`NOT LIKE`，可带 `ESCAPE` | `text` | `boolean` | S D M | 区分大小写，按字节匹配。第一版模式只收字符串常量（或 `NULL`），且不以转义字符结尾（数据库会因此出错）；转义字符不写时是 `\`，`ESCAPE` 只收长度为 0 或 1 的字符串常量 |
 | `AND`、`OR`、`NOT`；`IS [NOT] NULL`；`IS [NOT] TRUE / FALSE / UNKNOWN` | | `boolean` | S D M | |
 
 共 13 行（同义写法不另算）。
@@ -241,25 +243,25 @@ FROM budgets FOR VALID_TIME AS OF saveslot_today() AS b
 | 函数 | 参数 | 结果 | 场合 | 说明 |
 |---|---|---|---|---|
 | `abs` | 整数、`numeric` | 同类 | S D M | |
-| `round` | `numeric`；`numeric, 整数` | `numeric` | S D M | 恰在一半时远离零，与 `half_up` 相同（「精度与舍入」） |
-| `trunc` | `numeric`；`numeric, 整数` | `numeric` | S D M | 向零截断 |
+| `round` | `numeric`；`numeric, 整数常量` | `numeric` | S D M | 恰在一半时远离零，与 `half_up` 相同（「精度与舍入」）。参数是整数不收（数据库走浮点的版本），提示写 `::numeric`；`trunc`、`floor`、`ceil`、`sign` 同样 |
+| `trunc` | `numeric`；`numeric, 整数常量` | `numeric` | S D M | 向零截断 |
 | `floor`、`ceil`（`ceiling` 同义） | `numeric` | `numeric` | S D M | |
 | `sign` | `numeric` | `numeric` | S D M | |
 | `mod` | 两个整数；两个 `numeric` | 同类 | S D M | 除数为 0 得空 |
-| `date_trunc` | `text` 常量, `timestamp` | `timestamp` | S D M | 第一个参数只收 `'day'`、`'week'`、`'month'`、`'quarter'`、`'year'`；`week` 以周一为始。写法：`date_trunc('week', d::timestamp)::date`。参数是 `timestamptz`（含 `date` 不加 `::timestamp` 时被隐式转成的）不收，按"不确定"拒绝并给出这个改法 |
+| `date_trunc` | `text` 常量, `timestamp` | `timestamp` | S D M | 第一个参数只收（小写的）`'day'`、`'week'`、`'month'`、`'quarter'`、`'year'`；`week` 以周一为始。写法：`date_trunc('week', d::timestamp)::date`。参数是 `timestamptz`（含 `date` 不加 `::timestamp` 时被隐式转成的）不收，按"不确定"拒绝并给出这个改法 |
 | `EXTRACT(<字段> FROM <date>)` | `date` | `numeric` | S D M | 字段只收 `year`、`quarter`、`month`、`day`、`dow`、`isodow`、`doy`、`week`、`isoyear`。参数只能是 `date`；`date_part()` 不收（返回浮点） |
 | `make_date` | 三个整数 | `date` | S M | 非法日期会出错，派生规则不收 |
 | `length`（`char_length` 同义） | `text` | 整数 | S D M | 按字符数 |
-| `substr`、`substring(… FROM … FOR …)` | `text, 整数[, 整数]` | `text` | S D M | 按字符位置 |
-| `left`、`right` | `text, 整数` | `text` | S D M | |
+| `substr`、`substring(… FROM … FOR …)` | `text, 整数常量[, 整数常量]` | `text` | S D M | 按字符位置；长度不为负 |
+| `left`、`right` | `text, 整数常量` | `text` | S D M | |
 | `strpos`、`position(… IN …)` | `text, text` | 整数 | S D M | |
 | `starts_with` | `text, text` | `boolean` | S D M | |
 | `btrim`、`ltrim`、`rtrim`、`trim(…)` | `text[, text]` | `text` | S D M | |
 | `replace` | `text, text, text` | `text` | S D M | |
-| `split_part` | `text, text, 整数` | `text` | S D M | |
+| `split_part` | `text, text, 整数常量` | `text` | S D M | 序号不为 0 |
 | `saveslot_now()`、`saveslot_today()`、`saveslot_date(f)` | 见「时间」 | | 见「时间」 | |
 
-共 24 个函数（同义名与 SQL 标准的特殊写法不另算）：数值 7、日期 3、文本 11、saveslot 3。`COALESCE`、`NULLIF`、`GREATEST`、`LEAST`、`CASE` 是语法节点，见上。
+共 24 个函数（同义名与 SQL 标准的特殊写法不另算）：数值 7、日期 3、文本 11、saveslot 3。表里的"整数常量"是数据库只收 32 位整数的位置，第一版只收 32 位以内的常量（「类型」）。`COALESCE`、`NULLIF`、`GREATEST`、`LEAST`、`CASE` 是语法节点，见上。
 
 #### 聚合函数
 
@@ -333,6 +335,7 @@ FROM budgets FOR VALID_TIME AS OF saveslot_today() AS b
 
 | 情形 | `sql` | 派生规则 | 转换表达式 |
 |---|---|---|---|
+| 语法错误；文本不是良构的 Unicode | `sql_rejected`（`syntax`） | `rule_sql_rejected` | `rule_sql_rejected` |
 | 不是单条 `SELECT` | `sql_rejected`（`not_select`） | `rule_sql_rejected` | `rule_sql_rejected` |
 | 节点或节点的形式不在白名单 | `sql_rejected`（`node`） | `rule_sql_rejected` | `rule_sql_rejected` |
 | 函数、运算符、类型转换不在白名单（含签名不对） | `sql_rejected`（`function`） | `rule_sql_rejected` | `rule_sql_rejected` |
@@ -348,7 +351,7 @@ FROM budgets FOR VALID_TIME AS OF saveslot_today() AS b
 
 - `sql_rejected` 附 `line`（原文行号）与 `node`（节点名、函数名或调用方写的逻辑名，不含物理名）；外化面据此指出"第几行哪个节点 / 函数"（surfaces「文本的渲染」）。
 - 派生规则与转换表达式的明细附 `path`（`tables/<i>/rule/sql`、`tables/<i>/fields/<j>/migrate`……）、`line`，能给出改法时附 `suggestion`（如替换后的 SQL 片段）；细分原因写在 `sql_reason`，取值与 `sql_rejected` 的原因码同一套。
-- 派生规则里的分析结果（是否用了 `saveslot_now()` / `saveslot_today()`、是否不带时间限定读状态类表、是否按 `saveslot_date` 或 `date_trunc` 分桶）与它声明的 `time_dependency` 不一致时，报 `rule_sql_rejected`，`suggestion` 给出应声明的值。
+- 派生规则里的分析结果（是否用了 `saveslot_now()` / `saveslot_today()`、是否不带时间限定读状态类表、分组键是不是一个 `date` 字段、`saveslot_date(f)` 或 `date_trunc(单位, …)` 套在这两者上；只是读到日期字段的分组键不算分桶）与它声明的 `time_dependency` 不一致时，报 `rule_sql_rejected`，`suggestion` 给出应声明的值。
 
 ### 白名单的版本与变更
 
@@ -384,3 +387,5 @@ FROM budgets FOR VALID_TIME AS OF saveslot_today() AS b
 - 有序聚合（`string_agg … ORDER BY`）、分位数、标准差。
 - `LATERAL`、递归 CTE、返回多行的函数：要有能事前估算代价的办法。
 - 派生规则里依赖次序的窗口函数：要求排序键能证明没有并列（如以 `row_id` 收尾）之后可以放开。
+- 只收 32 位整数的位置（`substr`、`left` / `right`、`split_part`、`round` / `trunc` 的位数、`date` 加减的天数）用非常量的整数：要先定下超出 32 位时的行为。
+- 取自数据的 `LIKE` 模式：要先定下模式以转义字符结尾时的结果（数据库会出错，求值就因数据而出错）。

@@ -17,6 +17,9 @@
     },
     "./testing": {
       "source": "./src/testing.fixture.ts"
+    },
+    "./rsql-testing": {
+      "source": "./src/rules/rsql/rsql-testing.fixture.ts"
     }
   },
   "files": [
@@ -26,7 +29,8 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@fluxvita/saveslot-contract-core": "workspace:*"
+    "@fluxvita/saveslot-contract-core": "workspace:*",
+    "libpg-query": "18.2.4"
   },
   "private": true,
   "devDependencies": {
