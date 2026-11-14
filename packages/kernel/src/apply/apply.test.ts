@@ -137,10 +137,11 @@ describe("apply stops, never skips", () => {
   });
 
   it("on a block shape it cannot check yet", () => {
-    const ev = { ...event("write.head", { ctx: {}, request: {} }) };
-    const header = { ...ev.header, actor: CONN, slot: SLOT };
+    // `write.derived` has no shape check yet.
+    const ev = { ...event("write.derived", { target: {} }) };
+    const header = { ...ev.header, actor: CONN, slot: SLOT, op: 2 };
     expect(reason({ ...ev, header })).toBe(
-      "unsupported @2: apply stopped at seq 2: block shapes not supported yet: WriteCtx, WriteRequest",
+      "unsupported @2: apply stopped at seq 2: block shapes not supported yet: DerivedTarget",
     );
   });
 

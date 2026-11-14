@@ -131,11 +131,17 @@ export interface RejectInput extends OpBase {
   readonly target: Seq;
 }
 
-/** A conflict item resolved by keeping the effective value: these candidates do not take effect. */
+/**
+ * A conflict item resolved by keeping the effective value: these candidates do not take effect.
+ *
+ * Decisions on a conflict item (`keep_effective`, `take_previous`, `take_candidate`) are on the
+ * whole item (04-contract §6): the caller passes every candidate the item holds at
+ * the decision, never a subset. Judge does not look the item up and does not check this.
+ */
 export interface KeepEffectiveInput extends OpBase {
   readonly kind: "keep_effective";
   readonly unit: Unit;
-  /** The events whose candidates on `unit` make up the item. */
+  /** The events whose candidates on `unit` make up the item: all of them (see above). */
   readonly candidates: readonly Seq[];
 }
 
@@ -154,6 +160,7 @@ export interface UndoInput extends OpBase, SeenVersion {
 export interface TakePreviousInput extends OpBase {
   readonly kind: "take_previous";
   readonly unit: Unit;
+  /** All candidates of the item, as for `KeepEffectiveInput`. */
   readonly candidates: readonly Seq[];
 }
 
@@ -161,6 +168,7 @@ export interface TakePreviousInput extends OpBase {
 export interface TakeCandidateInput extends OpBase {
   readonly kind: "take_candidate";
   readonly unit: Unit;
+  /** All candidates of the item, as for `KeepEffectiveInput`. */
   readonly candidates: readonly Seq[];
   /** The event of the candidate taken: one of `candidates`. */
   readonly take: Seq;
@@ -255,7 +263,7 @@ export interface WriteRecord extends RecordBase, SeenVersion {
   /** Fields judged a no-op: no item, no value kept (09 §5.7 `ops/<i>/noop`). */
   readonly noop: readonly FieldId[];
   /** A high impact write taken into effect by `acknowledge`: the stretches it overwrote (`ack/<j>`). */
-  readonly ack: readonly Overwritten[];
+  readonly ack: readonly AckStretch[];
 }
 
 export interface ConfirmRecord extends RecordBase {
@@ -284,7 +292,7 @@ export interface RevertRecord extends RecordBase {
   readonly acknowledge?: true;
   readonly includeLater?: true;
   /** An undo of high impact ① taken into effect by `acknowledge`: the stretches it overwrote. */
-  readonly ack: readonly Overwritten[];
+  readonly ack: readonly AckStretch[];
 }
 
 export interface RejectRecord extends RecordBase {
@@ -346,6 +354,20 @@ export interface Overwritten {
   readonly was: Shown;
   readonly deps: readonly ItemRef[];
 }
+
+/**
+ * A stretch an `acknowledge` confirmed overwriting, as the log keeps it (09 §5.7 `ack/<j>`): the
+ * value and the operation that wrote it, or no value (the entity had none there, or the field no
+ * contribution: not told apart), with the contributions its ends (and value) came from.
+ */
+export type AckStretch = {
+  readonly field: FieldId;
+  readonly valid: IntervalSet;
+  readonly deps: readonly ItemRef[];
+} & (
+  | { readonly value: FieldValue; readonly op: OpNumber; readonly noValue?: never }
+  | { readonly noValue: true; readonly value?: never; readonly op?: never }
+);
 
 /** A conflict of one op on one unit (09-references-conflict-sync «冲突判据»). */
 export interface Conflict {

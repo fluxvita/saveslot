@@ -12,7 +12,14 @@
 // are recorded for a deletion's replay; they register nothing.
 
 import type { FieldId, OpNumber } from "@fluxvita/saveslot-contract-core";
-import { canonical, type Interval, type IntervalSet, isNothing, WHOLE } from "../time/index.ts";
+import {
+  canonical,
+  type Interval,
+  type IntervalSet,
+  isNothing,
+  parts,
+  WHOLE,
+} from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
 import type { ItemRef, RecordedItem, RevertEntry, TakeCandidateInput } from "./model.ts";
 import { uniqueRefs } from "./resolve.ts";
@@ -45,13 +52,16 @@ export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): Take
       ? state.piecesIn(valid).every((s) => !state.hasValue(s, cur))
       : state.revoked(cur);
     if (!already) {
-      drafts.push({
-        target: "existence",
-        status: "applied",
-        valid,
-        content: { kind: "revoke" },
-        deps: revokes.map(refOf),
-      });
+      // One item per stretch: an item has one interval (09 §5.7 `span/existence/<k>`).
+      for (const part of parts(valid)) {
+        drafts.push({
+          target: "existence",
+          status: "applied",
+          valid: part,
+          content: { kind: "revoke" },
+          deps: revokes.map(refOf),
+        });
+      }
     }
     return { items: numbered(drafts), mergeBase, cover };
   }
@@ -75,14 +85,17 @@ export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): Take
         )
         .map(refOf),
     );
-    drafts.push({
-      target: f,
-      status: "applied",
-      valid,
-      content: { kind: "value", value },
-      carried,
-      deps: carried,
-    });
+    // One item per stretch: an item has one interval (09 §5.7 `span/<f>/<k>`).
+    for (const part of parts(valid)) {
+      drafts.push({
+        target: f,
+        status: "applied",
+        valid: part,
+        content: { kind: "value", value },
+        carried,
+        deps: carried,
+      });
+    }
   }
 
   // A field unit: the checks on the current state an ordinary write passes, on what takes effect

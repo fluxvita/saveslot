@@ -138,6 +138,7 @@ const SPEC_PATHS: ReadonlyArray<readonly [string, string, "meta" | "data"]> = [
   ["write.base", "duplicate", "data"],
   ["write.base", "ack/0", "data"],
   ["write.base", "revert", "meta"],
+  ["write.base", "take", "meta"],
   // §5.7 write.derived
   ["write.derived", "target", "meta"],
   ["write.derived", "key", "data"],

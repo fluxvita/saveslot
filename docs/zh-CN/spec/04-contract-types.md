@@ -966,6 +966,7 @@ type ItemReason =
   | "overwrites_change_point"       // awaiting_confirmation：抹掉已记录的变化点（含跨空洞填值）
   | "referenced_row"                // awaiting_confirmation：撤销仍被引用的行
   | "undo_includes_later"           // awaiting_confirmation：undo 连后来的写入一起回掉
+  | "undo_hides_later"              // awaiting_confirmation：undo 写回的撤销会遮住后来的写入（与上一种同时成立时记上一种）
   | "conflict_cleared_by_deletion"  // awaiting_confirmation：删除让冲突消失，而该写入仍属高影响
   | "policy_high_impact"            // awaiting_confirmation：slot 策略指定的表 / 字段 @later
   | "duplicate_keys"                // flagged

@@ -595,14 +595,19 @@ export interface DuplicateBlock {
   readonly deps: Deps;
 }
 
-/** `ack/<j>` (data): one stretch an `acknowledge` confirmed overwriting. */
-export interface AckBlock {
+/**
+ * `ack/<j>` (data): one stretch an `acknowledge` confirmed overwriting: its value and the operation
+ * that wrote it, or `no_value` where it had none (the entity had no value, or the field no
+ * contribution; not told apart).
+ */
+export type AckBlock = {
   readonly field: FieldId;
   readonly valid: BizInterval;
-  readonly value: FieldValue;
-  readonly op: OpNumber;
   readonly deps: Deps;
-}
+} & (
+  | { readonly value: FieldValue; readonly op: OpNumber; readonly no_value?: never }
+  | { readonly no_value: true; readonly value?: never; readonly op?: never }
+);
 
 /**
  * An entry of a revert record (§5.7): an (event, target), not an index. It covers every item of
@@ -637,6 +642,18 @@ export type RevertBlock =
       readonly before_op?: never;
       readonly skipped?: never;
     };
+
+/**
+ * `take` (meta): the take record of a `take_candidate` (§5.8 `item.resolved`): the item, the
+ * candidate taken, the merge base and the covered (event, target)s, listed as a `take_previous`
+ * revert record is. Sequence numbers and targets only; it registers nothing.
+ */
+export interface TakeBlock {
+  readonly item: ItemId;
+  readonly candidate: Index;
+  readonly merge_base_op: OpNumber;
+  readonly items: readonly RevertTarget[];
+}
 
 // =============================================================================================
 // §5.7 write.derived
@@ -708,6 +725,7 @@ export type ItemCreatedTarget =
           | "overwrites_change_point"
           | "referenced_row"
           | "undo_includes_later"
+          | "undo_hides_later"
           | "conflict_cleared_by_deletion";
         readonly unit: ConflictUnit;
         readonly origin_event: Seq;
@@ -1086,6 +1104,7 @@ export interface BlockShapes {
   Duplicate: DuplicateBlock;
   Ack: AckBlock;
   Revert: RevertBlock;
+  Take: TakeBlock;
   DerivedTarget: DerivedTarget;
   DerivedKey: DerivedKeyBlock;
   Checksum: ChecksumBlock;

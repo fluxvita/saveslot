@@ -278,6 +278,21 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
 
   const warnings = awaiting || !state.isState ? [] : coveredCorroborations(state, applied, curAt);
   const items = numbered(drafts);
+  // A write is one candidate in one item: every part of it that met a revoke goes to the one
+  // conflict on existence (09-references-conflict-sync «撤销与并发修改»; 09 §5.8 "同一条
+  // write.base 在同一个事项里至多是一个候选").
+  const onExistence = conflicts.filter((c) => c.unit === "existence");
+  if (onExistence.length > 1) {
+    const first = conflicts.indexOf(onExistence[0] as Conflict);
+    const merged: Conflict = {
+      unit: "existence",
+      with: [...new Set(onExistence.flatMap((c) => c.with))].sort((x, y) => x - y),
+      items: onExistence.flatMap((c) => c.items),
+    };
+    const rest = conflicts.filter((c) => c.unit !== "existence");
+    conflicts.length = 0;
+    conflicts.push(...rest.slice(0, first), merged, ...rest.slice(first));
+  }
   const withItems = conflicts.map((c) => {
     const targets = new Set(c.items.map((x) => x.target));
     return {

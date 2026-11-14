@@ -433,6 +433,11 @@ it("take_candidate takes every candidate item of the taken write, not only the f
     'f2/2 candidate [2026-11-07, 2026-11-09) "1"',
   ]);
   expect(short(timeline(ev, "f2"))).toEqual(['[10-01, inf) "1"']);
+  // One item per stretch: an item has one interval (09 §5.7 `span/<f>/<k>`).
+  expect(itemsOf(ev, 51)).toEqual([
+    'f2/0 applied [2026-11-01, 2026-11-03) "1" carried #41/f2/0,#41/f2/2',
+    'f2/1 applied [2026-11-07, 2026-11-09) "1" carried #41/f2/0,#41/f2/2',
+  ]);
 });
 
 describe("take_candidate on an item whose unit is existence", () => {
@@ -663,4 +668,68 @@ it("take_candidate on a field into a stretch without a value, without the requir
     refused: true,
     rejected: "missing_required",
   });
+});
+
+it("take_candidate on existence of a candidate cut in stretches: one item per stretch", () => {
+  // #31 (ver 10, f3 = a with evidence) is the same as seen on [11-01, 11-09) but changed since on
+  // [11-01, 11-03) (#21) and revoked on [11-07, 11-09) (#26): two candidate stretches on
+  // existence around a corroboration. Taken, f3 is written on each stretch as its own item, and
+  // f2 is carried where there is no value.
+  const sp = (from: string, end: string) => ({
+    from: { mode: "given" as const, value: d(from) },
+    to: end === "open" ? { mode: "open" as const } : { mode: "given" as const, value: d(end) },
+  });
+  const ops: Op[] = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      valid: sp("10-01", "open"),
+      fields: { f2: { value: "1", sources: ["S1"] }, f3: { value: "a", sources: ["S1"] } },
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: sp("11-01", "11-03"),
+      fields: { f3: { value: "b", sources: ["S2"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "revoke",
+      op: 25,
+      event: 26,
+      seen: 20,
+      valid: sp("11-07", "11-09"),
+      validSources: ["S3"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      valid: sp("11-01", "11-09"),
+      fields: { f3: { value: "a", sources: ["S4"], explicit: true } },
+    },
+    {
+      kind: "resolve",
+      op: 40,
+      event: 41,
+      decision: "take_candidate",
+      candidates: [31],
+      take: 31,
+      unit: "existence",
+    },
+  ];
+  expect(itemsOf(evaluate(STATE, ops.slice(0, 4)), 31)).toEqual([
+    'f3/0 candidate [2026-11-01, 2026-11-03) "a"',
+    'f3/1 corroborated [2026-11-03, 2026-11-07) "a"',
+    'f3/2 candidate [2026-11-07, 2026-11-09) "a"',
+  ]);
+  expect(itemsOf(evaluate(STATE, ops), 41)).toEqual([
+    'f2/0 applied [2026-11-07, 2026-11-09) "1" carried #11/f2/0',
+    'f3/0 applied [2026-11-01, 2026-11-03) "a" carried #31/f3/0,#31/f3/2',
+    'f3/1 applied [2026-11-07, 2026-11-09) "a" carried #31/f3/0,#31/f3/2',
+  ]);
 });

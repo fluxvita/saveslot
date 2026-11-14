@@ -199,7 +199,7 @@
 | 块 | 求得或抄来的是什么 |
 |---|---|
 | `write.base` 的 `span/…`（§5.7） | 一项贡献解析后的区间：默认终点、`corrected_span` 停在别的贡献给出的挡点上；回退、回到合并基写回的各项，区间抄自被回掉的写入与搬运来的各段；过期 `ver` 的写入被期间的写入切成几项 |
-| `write.base` 的 `ack/<j>`、`duplicate` | 被覆盖、被比中的贡献的区间与值 |
+| `write.base` 的 `ack/<j>`、`duplicate` | 被覆盖、被比中的贡献的区间与值；被覆盖的一段原来没有值时（`ack/<j>` 的 `no_value`），是给出它两端的贡献与它所在的撤销 |
 | `schema.switched` 的 `backfill/<表ID>/<字段ID>/<n>`（§5.5；状态类表，事件类表与无时间表的 `backfill_rows/*` 是元数据块，不在此列） | 状态类表上常量补值的区间：由别的贡献定下的、实体存在而字段为空的那段 |
 | `write.head` 的 `ops/<i>/premise_valid/<j>`（§5.7） | 前提声明的范围取自依赖行的业务时间、而那个时间值出自别的贡献时，解析出的点或区间 |
 | 事项的条目块与 `scope_valid`（§5.8） | 别的写入的值与区间 |
@@ -781,7 +781,7 @@
 | `valid_sources` | 元 | 区间参数的来源：`[<源数据事件的 seq>]` | — |
 | `op_sources` | 元 | 操作来源：`[<源数据事件的 seq>]` | — |
 | `duplicate` | 数 | 疑似重复的判定：`{"matched": [<行 ID>], "keys": [<字段 ID>], "deps": […]}`。`matched` 是命中的行（最多 10 个，按最近写入排）；`keys` 是命中的那一组 `duplicate_keys`。只在新增且已生效时有。写入时判一次，之后不重算 | `deps`：被比中的那些行在这些字段上当时生效的贡献 |
-| `ack/<j>` | 数 | `acknowledge` 确认覆盖的一段：`{"field": "f2", "valid": {…}, "value": …, "op": <写下这一段的操作号>, "deps": […]}` | `deps`：写下这一段的贡献，以及给出这一段两端的贡献 |
+| `ack/<j>` | 数 | `acknowledge` 确认覆盖的一段：原来有值时 `{"field": "f2", "valid": {…}, "value": …, "op": <写下这一段的操作号>, "deps": […]}`；原来没有值时 `{"field": "f2", "valid": {…}, "no_value": true, "deps": […]}`，没有 `value` 与 `op`。`no_value` 与 `fields/<f>/<k>` 里的同名键同义：这一段原来没有值，不区分是实体无值还是字段没有贡献。`value` 与 `no_value` 恰有其一 | `deps`：写下这一段的贡献（原来有值时），给出这一段两端的贡献，这一段在一次撤销之内时另含那次撤销 |
 | `revert` | 元 | **回退记录**：这次写入回掉了哪几次操作在哪些目标上的改动，见下。`revert: {undo}` 与 `take_previous` 的基础写入都带它，形状相同。只有事件 `seq`、操作号与目标（字段 ID 或"存在"），不含下标与区间 | — |
 | `take` | 元 | **采纳记录**：`take_candidate` 触发的基础写入带它，为删除重放留下所需的记录，见 §5.8「`item.resolved`」。只有事项、候选号、操作号与（事件, 目标），不含下标与区间，不随删除清除 | — |
 
@@ -1119,7 +1119,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `type` | 事项类型（§6.4） |
 | `reason` | 成因码（§6.6） |
 | `table`、`row` / `entity` | 目标所在。`schema_change` 事项没有，改为 `draft` |
-| `unit` | 冲突单元，一律是数组：一个字段（`["f3"]`），或 schema 声明的一个字段组里的全部字段（各字段 ID）。目标是"存在"（撤销参与的冲突）时写 `["existence"]`。`flagged` 事项可缺（标记的是整行）；`schema_change` 没有 |
+| `unit` | 冲突单元，一律是数组：一个字段（`["f3"]`），或 schema 声明的一个字段组里的全部字段（各字段 ID）。目标是"存在"（撤销参与的冲突）时写 `["existence"]`。`awaiting_confirmation` 事项：提议涉及"存在"时写 `["existence"]`（整行或整段，字段不另列），否则是提议涉及的全部字段，按字段 ID 排序。`flagged` 事项可缺（标记的是整行）；`schema_change` 没有 |
 | `merge_base_op` | `conflict` 必有，其余类型没有：合并基的操作号（各候选所带 `ver` 中最早的那个版本） |
 | `origin_event` | 由写入引起的事项（`conflict`、`awaiting_confirmation`、`flagged`）必有：引出这个事项的 `write.base` 事件的 `seq`。`schema_change` 没有 |
 | `draft` | `schema_change` 必有，其余类型没有：草稿 ID |
@@ -1564,6 +1564,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `overwrites_change_point` | `awaiting_confirmation` | 抹掉已记录的变化点（含跨空洞填值） |
 | `referenced_row` | `awaiting_confirmation` | 撤销仍被引用的行 |
 | `undo_includes_later` | `awaiting_confirmation` | `undo` 连后来的写入一起回掉 |
+| `undo_hides_later` | `awaiting_confirmation` | `undo` 写回的撤销会遮住后来的写入（两种成因同时成立时记 `undo_includes_later`） |
 | `conflict_cleared_by_deletion` | `awaiting_confirmation` | 删除让冲突消失，而该写入仍属高影响 |
 | `restored_candidate` | `conflict` | 撤回删除放回了一个候选，而它原来所在的事项在宽限期内已被解决：为它另开一个事项，`related_item` 指向原事项 |
 | `duplicate_keys` | `flagged` | 命中疑似重复的判据 |

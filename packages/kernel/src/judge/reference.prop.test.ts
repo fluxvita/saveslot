@@ -13,529 +13,19 @@
 // half of «写入路径与参考一致». The reference has no conflict groups and no multi-op requests; those
 // are covered by fixed cases (judge.test.ts), as are `deps` and the overwritten stretches.
 
-import type { BizPoint, FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
-import { evaluateLog, type Op, type TableSchema, type WriteOp } from "@fluxvita/saveslot-reference";
-import {
-  DAYS,
-  EVENT,
-  Hits,
-  propRuns,
-  STATE,
-  type Step,
-  stale,
-  step,
-  toOps,
-} from "@fluxvita/saveslot-reference/testing";
+import { evaluateLog, type Op, type TableSchema } from "@fluxvita/saveslot-reference";
+import { EVENT, Hits, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 import { isNothing, meet } from "../time/index.ts";
-import { JudgeError } from "./errors.ts";
-import { emptyState, judgeOp, stateFromRecord, view } from "./judge.ts";
-import type { JudgeInput, Judgement, TableShape } from "./model.ts";
+import { judgeOp, stateFromRecord, view } from "./judge.ts";
+import { type Judged, judged, scenario } from "./scenarios.fixture.ts";
 import { EVERYTHING, type RowState, refKey } from "./state.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 50_000, markInterruptAsFailure: true });
 
 const RUNS = propRuns(1500);
-const NOW = "2026-11-05";
-
-const shape = (s: TableSchema): TableShape => ({
-  kind: s.kind,
-  fields: ["f2", "f3"],
-  valued: s.required,
-  required: s.required,
-  groups: [],
-});
-
-/**
- * An op inserted after another, as the log so far makes it possible: a person's decision on the
- * `pick`-th open pending item (take_previous on every open candidate of its unit); an undo of the
- * `pick`-th operation in the log, whatever it was (a revoke, a revert, a confirmation, the first
- * creation; with `focus`, among the operations that are not plain writes), with `include_later`,
- * `acknowledge` and an explicit `ver` by `flag`; on event tables, a revoke.
- */
-interface Decision {
-  readonly after: number;
-  readonly pick: number;
-  readonly kind: "confirm" | "reject" | "keep" | "previous" | "take" | "undo" | "revoke";
-  readonly flag: number;
-  readonly focus: boolean;
-}
-
-const decision: fc.Arbitrary<Decision> = fc.record({
-  after: fc.nat(),
-  pick: fc.nat(),
-  kind: fc.constantFrom<Decision["kind"]>(
-    "confirm",
-    "confirm",
-    "reject",
-    "keep",
-    "previous",
-    "take",
-    "take",
-    "undo",
-    "undo",
-    "revoke",
-  ),
-  flag: fc.nat({ max: 7 }),
-  focus: fc.boolean(),
-});
-
-/** Inserted ops take these offsets after the op they follow; their events are the next number. */
-const SLOTS = [3, 5, 7];
-
-/** A current write without `acknowledge`: high impact whenever it erases a change point. */
-const overwrite: fc.Arbitrary<Step> = fc.record({
-  t: fc.constant("write" as const),
-  f: fc.constant<FieldId>("f2"),
-  v: fc.constantFrom("1", "2", "3"),
-  src: fc.constant(["S1"]),
-  from: fc.nat({ max: 4 }),
-  to: fc.oneof(fc.constant<"open">("open"), fc.nat({ max: 5 })),
-  lag: fc.constant(0),
-  explicit: fc.constant(false),
-  ack: fc.constant(false),
-});
-
-const writeStep = fc.oneof(
-  { weight: 4, arbitrary: step },
-  { weight: 1, arbitrary: stale },
-  { weight: 1, arbitrary: overwrite },
-);
-
-const day = (i: number) => DAYS[Math.min(i, DAYS.length - 1)] as BizPoint;
-const span = (from: number, to: number | null) => ({
-  from: { mode: "given" as const, value: day(from) },
-  to: to === null ? { mode: "open" as const } : { mode: "given" as const, value: day(to) },
-});
-const put = (
-  op: number,
-  seen: number,
-  v: string,
-  valid: ReturnType<typeof span> | undefined,
-  ack = true,
-): WriteOp => ({
-  kind: "write",
-  op,
-  event: op + 1,
-  seen,
-  ...(valid !== undefined ? { valid } : {}),
-  fields: { f2: { value: v, sources: [`S${op}`] } },
-  ...(ack ? { acknowledge: ["overwrite"] as const } : {}),
-});
-
-/**
- * An include_later undo of a write that a later write overlaps: high impact ④, then often a
- * decision on it; or its confirmation and an undo of the revert so put into effect, by the
- * proposal's operation or the confirmation's (09 §5.7). Random steps follow.
- */
-const laterSkeleton = (state: boolean) =>
-  fc
-    .tuple(
-      fc.nat({ max: 1 }),
-      fc.nat({ max: 1 }),
-      fc.boolean(),
-      fc.constantFrom<null | 40 | 50>(null, null, 40, 50),
-      fc.array(writeStep, { maxLength: 3 }),
-    )
-    .map(([a, b, ack, undoConfirmed, tail]) => {
-      const sp = (f: number, t: number | null) => (state ? span(f, t) : undefined);
-      const head: Op[] = [
-        {
-          ...put(
-            10,
-            0,
-            "1",
-            state
-              ? { ...span(0, null), from: { mode: "given", value: "2026-10-01" as BizPoint } }
-              : undefined,
-          ),
-          seen: 0,
-        },
-        put(20, 10, "2", sp(a, a + 2)),
-        put(30, 20, "3", sp(a + 1 + b, a + 4 + b)),
-        {
-          kind: "undo",
-          op: 40,
-          event: 41,
-          target: 20,
-          includeLater: true,
-          ...(ack ? { seen: 30, acknowledge: ["overwrite"] as const } : {}),
-        },
-        ...(undoConfirmed === null
-          ? []
-          : [
-              { kind: "confirm" as const, op: 50, event: 51, target: 41 },
-              {
-                kind: "undo" as const,
-                op: 60,
-                event: 61,
-                target: undoConfirmed,
-                ...(ack ? { seen: 50, acknowledge: ["overwrite"] as const } : {}),
-              },
-            ]),
-      ];
-      return toOps(tail, state, head);
-    });
-
-/**
- * State tables: a revoked stretch, a fill in it undone (an `uncovered` write-back), the revoke
- * undone (a restore), a write in the restored stretch, and the undo of the revoke undone (a
- * write-back revoke that hides it: ④). Random steps follow.
- */
-const holeSkeleton = fc
-  .tuple(fc.nat({ max: 1 }), fc.boolean(), fc.array(writeStep, { maxLength: 3 }))
-  .map(([a, ack, tail]) => {
-    const head: Op[] = [
-      {
-        ...put(10, 0, "1", {
-          ...span(0, null),
-          from: { mode: "given", value: "2026-10-01" as BizPoint },
-        }),
-        seen: 0,
-      },
-      {
-        kind: "revoke",
-        op: 20,
-        event: 21,
-        seen: 10,
-        valid: span(a, a + 3),
-        validSources: ["S20"],
-      },
-      put(30, 20, "5", span(a + 1, a + 2)),
-      { kind: "undo", op: 40, event: 41, target: 30, seen: 30, acknowledge: ["overwrite"] },
-      { kind: "undo", op: 50, event: 51, target: 20, seen: 40, acknowledge: ["overwrite"] },
-      put(60, 50, "6", span(a, a + 1)),
-      {
-        kind: "undo",
-        op: 70,
-        event: 71,
-        target: 50,
-        ...(ack ? { seen: 60, acknowledge: ["overwrite"] as const } : {}),
-      },
-    ];
-    return toOps(tail, true, head);
-  });
-
-/**
- * Two candidates of one item with different versions: #21 and #31 change f2; #41 (ver 10) and #51
- * (ver 20) conflict with them. A take_previous on both goes back to the earliest version (01-objects
- * «各处理方式的执行语义»: the merge base). Random steps follow.
- */
-const candidatesSkeleton = (state: boolean) =>
-  fc
-    .tuple(fc.nat({ max: 1 }), fc.boolean(), fc.boolean(), fc.array(writeStep, { maxLength: 3 }))
-    .map(([a, take, undoIt, tail]) => {
-      const sp = (f: number, t: number | null) => (state ? span(f, t) : undefined);
-      const head: Op[] = [
-        {
-          ...put(
-            10,
-            0,
-            "1",
-            state
-              ? { ...span(0, null), from: { mode: "given", value: "2026-10-01" as BizPoint } }
-              : undefined,
-          ),
-          seen: 0,
-        },
-        put(20, 10, "2", sp(a, a + 3)),
-        put(30, 20, "3", sp(a + 1, a + 4)),
-        put(40, 10, "4", sp(a, a + 2), false),
-        put(50, 20, "5", sp(a + 1, a + 3), false),
-        ...(take
-          ? [
-              {
-                kind: "resolve" as const,
-                op: 60,
-                event: 61,
-                decision: "take_previous" as const,
-                candidates: [41, 51],
-                unit: "f2" as FieldId,
-              },
-              ...(undoIt ? [{ kind: "undo" as const, op: 70, event: 71, target: 60 }] : []),
-            ]
-          : []),
-      ];
-      return toOps(tail, state, head);
-    });
-
-/**
- * An item whose unit is existence, taken: #21 revokes (on a state table, a stretch); #31, with the
- * version before it, writes f2 or the optional f3 and becomes a candidate on existence; #41 takes
- * it. On a state table the entity may start late, so that the merge base has no f2 where the
- * candidate fills (`required_in_gap`). Random steps follow.
- */
-const existenceSkeleton = (state: boolean) =>
-  fc
-    .tuple(
-      fc.nat({ max: 2 }),
-      fc.nat({ max: 2 }),
-      fc.constantFrom(true, true, false),
-      fc.constantFrom<FieldId>("f2", "f3"),
-      fc.array(writeStep, { maxLength: 3 }),
-    )
-    .map(([b, c, late, f, tail]) => {
-      const head: Op[] = [
-        {
-          kind: "write",
-          op: 10,
-          event: 11,
-          seen: 0,
-          ...(state
-            ? {
-                valid: late
-                  ? span(2, null)
-                  : { ...span(0, null), from: { mode: "given", value: "2026-10-01" as BizPoint } },
-              }
-            : {}),
-          fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
-          acknowledge: ["overwrite"],
-        },
-        {
-          kind: "revoke",
-          op: 20,
-          event: 21,
-          seen: 10,
-          ...(state ? { valid: span(b, b + 3), validSources: ["S20"] } : {}),
-        },
-        {
-          kind: "write",
-          op: 30,
-          event: 31,
-          seen: 10,
-          ...(state ? { valid: span(c, c + 3) } : {}),
-          fields: { [f]: { value: "2", sources: ["S30"] } },
-        },
-        {
-          kind: "resolve",
-          op: 40,
-          event: 41,
-          decision: "take_candidate",
-          candidates: [31],
-          take: 31,
-          unit: "existence",
-        },
-      ];
-      return toOps(tail, state, head);
-    });
-
-/**
- * State tables: a candidate cut into several stretches around a corroboration (#41: the version
- * before #21 and #31, explicit), taken whole. Random steps follow.
- */
-const splitSkeleton = fc
-  .tuple(fc.nat({ max: 1 }), fc.array(writeStep, { maxLength: 3 }))
-  .map(([a, tail]) => {
-    const head: Op[] = [
-      {
-        ...put(10, 0, "1", {
-          ...span(0, null),
-          from: { mode: "given", value: "2026-10-01" as BizPoint },
-        }),
-        seen: 0,
-      },
-      put(20, 10, "2", span(a, a + 1)),
-      put(30, 20, "2", span(a + 3, a + 4)),
-      {
-        kind: "write",
-        op: 40,
-        event: 41,
-        seen: 10,
-        valid: span(a, a + 4),
-        fields: { f2: { value: "1", sources: ["S40"], explicit: true } },
-      },
-      {
-        kind: "resolve",
-        op: 50,
-        event: 51,
-        decision: "take_candidate",
-        candidates: [41],
-        take: 41,
-        unit: "f2",
-      },
-    ];
-    return toOps(tail, true, head);
-  });
-
-/**
- * A take on a field the checks on the current state refuse, as they would the ordinary write: on
- * an event table the row revoked after the candidate (#41); on a state table the candidate reaching
- * where the entity has no value, without the required f2. `revokeIt` false leaves the event row
- * existing, the take accepted. Random steps follow.
- */
-const refusedTakeSkeleton = (state: boolean) =>
-  fc
-    .tuple(fc.boolean(), fc.nat({ max: 1 }), fc.array(writeStep, { maxLength: 3 }))
-    .map(([revokeIt, a, tail]) => {
-      const sp = (f: number, t: number | null) => (state ? { valid: span(f, t) } : {});
-      const head: Op[] = state
-        ? [
-            {
-              kind: "write",
-              op: 10,
-              event: 11,
-              seen: 0,
-              ...sp(2, null),
-              fields: {
-                f2: { value: "1", sources: ["S10"] },
-                f3: { value: "a", sources: ["S10"] },
-              },
-              acknowledge: ["overwrite"],
-            },
-            {
-              kind: "write",
-              op: 20,
-              event: 21,
-              seen: 10,
-              ...sp(2, 4),
-              fields: { f3: { value: "b", sources: ["S20"] } },
-              acknowledge: ["overwrite"],
-            },
-            {
-              kind: "write",
-              op: 30,
-              event: 31,
-              seen: 10,
-              ...sp(a, 3),
-              fields: { f3: { value: "c", sources: ["S30"] } },
-            },
-          ]
-        : [
-            {
-              kind: "write",
-              op: 10,
-              event: 11,
-              seen: 0,
-              fields: {
-                f2: { value: "1", sources: ["S10"] },
-                f3: { value: "a", sources: ["S10"] },
-              },
-              acknowledge: ["overwrite"],
-            },
-            put(20, 10, "2", undefined),
-            put(30, 10, "3", undefined, false),
-            ...(revokeIt ? [{ kind: "revoke" as const, op: 40, event: 41, seen: 30 }] : []),
-          ];
-      return toOps(tail, state, [
-        ...head,
-        {
-          kind: "resolve",
-          op: 50,
-          event: 51,
-          decision: "take_candidate",
-          candidates: [31],
-          take: 31,
-          unit: state ? "f3" : "f2",
-        },
-      ]);
-    });
-
-const scenario = (state: boolean) =>
-  fc
-    .record({
-      steps: fc.array(writeStep, { minLength: 2, maxLength: 9 }),
-      skeleton: state
-        ? fc.oneof(
-            { weight: 3, arbitrary: fc.constant(null) },
-            { weight: 1, arbitrary: laterSkeleton(true) },
-            { weight: 1, arbitrary: holeSkeleton },
-            { weight: 1, arbitrary: candidatesSkeleton(true) },
-            { weight: 1, arbitrary: existenceSkeleton(true) },
-            { weight: 1, arbitrary: splitSkeleton },
-            { weight: 1, arbitrary: refusedTakeSkeleton(true) },
-          )
-        : fc.oneof(
-            { weight: 2, arbitrary: fc.constant(null) },
-            { weight: 1, arbitrary: laterSkeleton(false) },
-            { weight: 1, arbitrary: candidatesSkeleton(false) },
-            { weight: 1, arbitrary: existenceSkeleton(false) },
-            { weight: 1, arbitrary: refusedTakeSkeleton(false) },
-          ),
-      decisions: fc.array(decision, { maxLength: 5 }),
-      fallback: fc.array(fc.boolean(), { maxLength: 9 }),
-    })
-    .map(({ steps, skeleton, decisions, fallback }) => ({
-      ops: (skeleton ?? toOps(steps, state)).map((o, i) => withoutVer(o, fallback[i] === true)),
-      decisions,
-    }));
-
-/**
- * A write or undo whose `ver` came from the read log rather than the request: the reference's form
- * is an op without `seen` (the current version, not explicit), so `acknowledge` does not count.
- */
-function withoutVer(o: Op, drop: boolean): Op {
-  if (!drop || (o.kind !== "write" && o.kind !== "undo") || o.op === 10) return o;
-  const { seen: _, ...rest } = o;
-  return rest;
-}
-
-/** The unit of the item a candidate item belongs to, as the reference names it. */
-const unitOf = (x: { target: string; onExistence?: true }): FieldId | "existence" =>
-  x.target === "existence" || x.onExistence === true ? "existence" : (x.target as FieldId);
-
-function toInput(o: Op): JudgeInput {
-  const base = { op: o.op, index: 0, event: o.event, ruleset: 1 };
-  switch (o.kind) {
-    case "write": {
-      const fields: Partial<Record<FieldId, { value: FieldValue; explicit?: boolean }>> = {};
-      for (const [f, x] of Object.entries(o.fields)) {
-        if (x === undefined || o.noop?.includes(f as FieldId)) continue;
-        fields[f as FieldId] = { value: x.value, ...(x.explicit ? { explicit: true } : {}) };
-      }
-      return {
-        ...base,
-        kind: "write",
-        seen: o.seen ?? o.op - 1,
-        seenExplicit: o.seen !== undefined,
-        ...(o.valid !== undefined ? { valid: o.valid } : {}),
-        now: o.now ?? NOW,
-        fields,
-        ...(o.acknowledge !== undefined ? { acknowledge: true } : {}),
-      };
-    }
-    case "revoke":
-      return {
-        ...base,
-        kind: "revoke",
-        seen: o.seen ?? o.op - 1,
-        seenExplicit: o.seen !== undefined,
-        ...(o.valid !== undefined ? { valid: o.valid } : {}),
-        now: o.now ?? NOW,
-      };
-    case "undo":
-      return {
-        ...base,
-        kind: "undo",
-        target: o.target,
-        ...(o.includeLater ? { includeLater: true } : {}),
-        seen: o.seen ?? o.op - 1,
-        seenExplicit: o.seen !== undefined,
-        ...(o.acknowledge !== undefined ? { acknowledge: true } : {}),
-      };
-    case "confirm":
-    case "reject":
-      return { ...base, kind: o.kind, target: o.target };
-    case "resolve": {
-      const unit = o.unit === "existence" ? ("existence" as const) : { fields: [o.unit] };
-      if (o.decision === "take_candidate") {
-        if (o.take === undefined) throw new Error("take_candidate needs `take`");
-        return {
-          ...base,
-          kind: "take_candidate",
-          unit,
-          candidates: o.candidates,
-          take: o.take,
-        };
-      }
-      return { ...base, kind: o.decision, unit, candidates: o.candidates };
-    }
-    default:
-      throw new Error(`not judged here: ${(o as Op).kind}`);
-  }
-}
-
 /**
  * The items as the reference lists them, with their registrations. The proposal of an awaiting
  * undo (its write-backs with status awaiting) is left out: the reference keeps it in the revert's
@@ -595,123 +85,6 @@ function revertsOf(steps: readonly Judged[]) {
       },
     ];
   });
-}
-
-interface Judged {
-  readonly op: Op;
-  readonly input: JudgeInput;
-  readonly judgement: Judgement;
-  readonly before: RowState;
-  readonly state: RowState;
-}
-
-/**
- * Judges the log op by op, inserting the decisions; ops `judge` refuses are dropped. Returns the
- * steps that entered the log and the refusals, each with the ops before it.
- */
-function judged(schema: TableSchema, ops: readonly Op[], decisions: readonly Decision[]) {
-  const table = shape(schema);
-  const isEventTable = schema.kind !== "state";
-  let state = emptyState(table);
-  const steps: Judged[] = [];
-  const refused: { op: Op; reason: string; before: readonly Op[] }[] = [];
-  const enter = (o: Op) => {
-    const input = toInput(o);
-    try {
-      const r = judgeOp(state, input);
-      steps.push({ op: o, input, judgement: r.judgement, before: state, state: r.state });
-      state = r.state;
-    } catch (e) {
-      if (!(e instanceof JudgeError)) throw e;
-      refused.push({ op: o, reason: e.reason, before: steps.map((x) => x.op) });
-    }
-  };
-  ops.forEach((o, i) => {
-    if (o.kind === "resolve") {
-      // A skeleton's resolution, on the candidates still open (a dropped `ver` may have changed
-      // which writes conflict).
-      const open = new Set(
-        state.items
-          .filter(
-            (x) =>
-              x.status === "candidate" &&
-              unitOf(x) === o.unit &&
-              !state.closedCandidate(x.event, x.target),
-          )
-          .map((x) => x.event),
-      );
-      const candidates = o.candidates.filter((e) => open.has(e));
-      if (candidates.length > 0 && (o.take === undefined || candidates.includes(o.take))) {
-        enter({ ...o, candidates });
-      }
-    } else if (o.kind === "confirm" || o.kind === "reject") {
-      // A skeleton's decision, on an item still awaiting.
-      const awaiting = state.items.some(
-        (x) => x.event === o.target && x.status === "awaiting" && !state.resolvedAwaiting(x.event),
-      );
-      if (awaiting) enter(o);
-    } else enter(o);
-    decisions
-      .filter((x) => x.after % ops.length === i)
-      .forEach((d, j) => {
-        const slot = SLOTS[j];
-        if (slot === undefined) return;
-        const op = o.op + slot;
-        const event = op + 1;
-        if (d.kind === "undo") {
-          const pool = d.focus ? steps.filter((k) => k.op.kind !== "write") : steps;
-          const target = pool[d.pick % Math.max(1, pool.length)]?.op.op;
-          if (target === undefined) return;
-          enter({
-            kind: "undo",
-            op,
-            event,
-            target,
-            includeLater: (d.flag & 1) === 1,
-            ...((d.flag & 4) === 4 ? { seen: op - 1 } : {}),
-            ...((d.flag & 2) === 2 ? { acknowledge: ["overwrite"] as const } : {}),
-          });
-          return;
-        }
-        if (d.kind === "revoke") {
-          if (!isEventTable) return;
-          enter({ kind: "revoke", op, event, seen: (d.flag & 1) === 1 ? op - 11 : op - 1 });
-          return;
-        }
-        const resolving = d.kind === "keep" || d.kind === "previous" || d.kind === "take";
-        const open = state.items.filter((x) =>
-          resolving
-            ? x.status === "candidate" && !state.closedCandidate(x.event, x.target)
-            : x.status === "awaiting" && !state.resolvedAwaiting(x.event),
-        );
-        const x = open[d.pick % Math.max(1, open.length)];
-        if (x === undefined) return;
-        const unit = unitOf(x);
-        const candidates =
-          d.kind === "previous" || d.kind === "take"
-            ? [...new Set(open.filter((y) => unitOf(y) === unit).map((y) => y.event))]
-            : [x.event];
-        enter(
-          resolving
-            ? {
-                kind: "resolve",
-                op,
-                event,
-                decision:
-                  d.kind === "keep"
-                    ? "keep_effective"
-                    : d.kind === "take"
-                      ? "take_candidate"
-                      : "take_previous",
-                candidates,
-                unit,
-                ...(d.kind === "take" ? { take: x.event } : {}),
-              }
-            : { kind: d.kind, op, event, target: x.event },
-        );
-      });
-  });
-  return { table, steps, refused };
 }
 
 /**
@@ -832,6 +205,9 @@ describe.each(both)("%s table", (_, schema, isState) => {
                     : tr.kind;
               seen[`undoOf_${kind}`] = (seen[`undoOf_${kind}`] ?? 0) + 1;
             }
+            if (x.judgement.conflicts.some((c) => c.unit === "existence" && c.items.length > 1)) {
+              seen["existenceSeveralFields"] = (seen["existenceSeveralFields"] ?? 0) + 1;
+            }
             if (r.kind === "take_candidate") {
               seen["take"] = (seen["take"] ?? 0) + 1;
               if (r.unit === "existence") seen["takeExistence"] = (seen["takeExistence"] ?? 0) + 1;
@@ -840,7 +216,8 @@ describe.each(both)("%s table", (_, schema, isState) => {
                 const key = `take_${y.content.kind}${y.carried?.some((c) => c.event !== r.take) ? "_carriedOther" : ""}`;
                 seen[key] = (seen[key] ?? 0) + 1;
               }
-              if (r.items.some((y) => y.target !== "existence" && y.valid.length > 1))
+              // Several stretches: more than one item on a field.
+              if (r.items.some((y) => y.target !== "existence" && y.k > 0))
                 seen["takeManyStretches"] = (seen["takeManyStretches"] ?? 0) + 1;
             }
             if (r.kind === "take_previous") {
@@ -949,6 +326,18 @@ describe.each(both)("%s table", (_, schema, isState) => {
 
             // What the judgement says beyond the items, against the reference's statuses.
             const j = x.judgement;
+            // Every item one interval, every (target, index) once (09 §5.7: one span per item).
+            if (j.record.kind !== "reject" && j.record.kind !== "keep_effective") {
+              const keys = j.record.items.map((y) => `${y.target}/${y.k}`);
+              expect({ step: i, unique: new Set(keys).size === keys.length }).toEqual({
+                step: i,
+                unique: true,
+              });
+              expect({ step: i, one: j.record.items.every((y) => y.valid.length === 1) }).toEqual({
+                step: i,
+                one: true,
+              });
+            }
             const mine = s.state.items.filter((y) => y.event === x.op.event);
             const has = (status: string) => mine.some((y) => y.status === status);
             expect({ step: i, conflict: j.conflicts.length > 0 }).toEqual({
@@ -991,6 +380,7 @@ describe.each(both)("%s table", (_, schema, isState) => {
           takeExistence: 0.03,
           takeManyStretches: 0.03,
           takeRefused_required_in_gap: 0.005,
+          existenceSeveralFields: 0.02,
           takeRefused_missing_required: 0.005,
         }
       : {
@@ -999,6 +389,7 @@ describe.each(both)("%s table", (_, schema, isState) => {
           take_restore: 0.06,
           take_revoke: 0.002,
           takeRefused_revoked: 0.005,
+          existenceSeveralFields: 0.02,
         };
     for (const [key, min] of Object.entries(minimum)) {
       expect({ key, enough: share(key) >= min }).toEqual({ key, enough: true });

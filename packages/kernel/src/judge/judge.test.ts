@@ -780,7 +780,15 @@ describe("review cases", () => {
       seenExplicit: true,
     });
     if (j.record.kind !== "write") throw new Error();
-    expect(j.record.ack).toEqual(j.overwritten);
+    // As the log keeps it (09 §5.7 `ack/<j>`): the value and the op that wrote it, no giver item.
+    expect(j.record.ack).toEqual(
+      j.overwritten.map((o) => ({
+        field: o.field,
+        valid: o.valid,
+        deps: o.deps,
+        ...(o.was.kind === "value" ? { value: o.was.value, op: o.was.op } : { noValue: true }),
+      })),
+    );
     expect(j.record.ack.map((o) => o.valid)).toEqual([iv("11-02", "11-10"), iv("11-10")]);
     // Not acknowledged: no ack stretches in the record.
     const fb = last(
@@ -798,6 +806,47 @@ describe("review cases", () => {
     expect(fb.record).toMatchObject({ seenExplicit: false, ack: [] });
   });
 
+  it("acknowledged over a stretch without a value: the ack keeps it as no value (09 §5.7 `ack/<j>`)", () => {
+    // #31 runs over 1 | gap | 2: ① (11-01, 11-05 erased), acknowledged with the current ver.
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "11-01"), fields: { f2: "1" } }),
+      write({ op: 20, valid: span("11-05", "open"), fields: { f2: "2" }, ack: true }),
+      write({ op: 30, seen: 20, valid: span("10-20", "open"), fields: { f2: "3" }, ack: true }),
+    ]);
+    const j = last(js);
+    expect(j.acknowledged).toBe(true);
+    expect(j.record.kind === "write" ? j.record.ack : []).toEqual([
+      { field: "f2", valid: iv("10-20", "11-01"), value: "1", op: 10, deps: [ref(11, "f2")] },
+      {
+        field: "f2",
+        valid: iv("11-01", "11-05"),
+        noValue: true,
+        deps: [ref(11, "f2"), ref(21, "f2")],
+      },
+      { field: "f2", valid: iv("11-05"), value: "2", op: 20, deps: [ref(21, "f2")] },
+    ]);
+  });
+
+  it("an undo writing back no value past ① by acknowledge keeps what it overwrote", () => {
+    const { js } = run(STATE, [
+      write({ op: 12, seen: 0, valid: span("10-01", "11-20"), fields: { f2: "5000" } }),
+      write({ op: 42, valid: span("11-10", "11-25"), fields: { f2: "4800" }, ack: true }),
+      undo(50, 42, { seen: 42, ack: true }),
+    ]);
+    const j = last(js);
+    expect(j.record).toMatchObject({ kind: "undo", status: "applied" });
+    expect(items(j).map((x) => [x.valid, "no_value" in x])).toEqual([
+      [iv("11-10", "11-20"), false],
+      [iv("11-20", "11-25"), true],
+    ]);
+    // One stretch per item written back: the 5000 one and the no-value one both overwrite 4800.
+    const deps = [ref(13, "f2"), ref(43, "f2")];
+    expect(j.record.kind === "undo" ? j.record.ack : []).toEqual([
+      { field: "f2", valid: iv("11-10", "11-20"), value: "4800", op: 42, deps },
+      { field: "f2", valid: iv("11-20", "11-25"), value: "4800", op: 42, deps },
+    ]);
+  });
+
   it("an interval whose end is not after its start is validation_failed", () => {
     const { state } = run(STATE, BUDGET);
     expect(() =>
@@ -807,6 +856,30 @@ describe("review cases", () => {
       judgeOp(state, revoke(30, span("11-05", "11-03") as RevokeInput["valid"])),
     ).toThrow(expect.objectContaining({ reason: "validation_failed" }));
   });
+});
+
+it("a write whose fields both meet a revoke is one candidate in one item on existence", () => {
+  // 09 §5.8: one write.base is at most one candidate in an item.
+  for (const table of [EVENT, STATE]) {
+    const valid = table.kind === "state" ? { valid: span("10-01", "open") } : {};
+    const { js } = run(table, [
+      write({ op: 10, seen: 0, ...valid, fields: { f2: "1", f3: "a" } }),
+      revoke(
+        20,
+        table.kind === "state" ? (span("11-01", "11-07") as RevokeInput["valid"]) : undefined,
+        10,
+      ),
+      write({
+        op: 30,
+        seen: 10,
+        ...(table.kind === "state" ? { valid: span("11-03", "11-05") } : {}),
+        fields: { f2: "2", f3: "b" },
+      }),
+    ]);
+    expect(last(js).conflicts).toEqual([
+      { unit: "existence", with: [20], items: [ref(31, "f2"), ref(31, "f3")] },
+    ]);
+  }
 });
 
 it("a confirmed default-end write counts as a default-end write for later conflicts", () => {
@@ -1255,7 +1328,7 @@ describe("undo on revoked rows, of confirmed reverts; write-back deps", () => {
     expect(depsOf(j)[i]).toContainEqual(ref(41, "existence"));
   });
 
-  it("deps: on an event table, undoing the undo of a revoke depends on the revoke and that undo", () => {
+  it("deps: on an event table, no item has deps, a write-back revoke included (09 §3.5)", () => {
     const { js } = run(EVENT, [
       write({ op: 10, seen: 0, fields: { f2: "1" } }),
       revoke(20),
@@ -1271,7 +1344,8 @@ describe("undo on revoked rows, of confirmed reverts; write-back deps", () => {
         revoke: true,
       },
     ]);
-    expect(depsOf(last(js))).toEqual([[ref(21, "existence"), ref(31, "existence")]]);
+    // No business time, so nothing comes from other contributions' dates: no deps.
+    expect(depsOf(last(js))).toEqual([[]]);
   });
 
   it("a write to a revoked row lists the revokes in effect, not those taken back", () => {
@@ -1462,7 +1536,7 @@ describe("take_candidate", () => {
     take: taken,
   });
 
-  it("takes every candidate item of the write, per target on their union; records merge base and cover", () => {
+  it("takes every candidate item of the write, one item per stretch; records merge base and cover", () => {
     // #41 is cut around a corroboration into two candidate stretches; both take effect.
     const { state, js } = run(STATE, [
       write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
@@ -1483,7 +1557,15 @@ describe("take_candidate", () => {
         target: "f2",
         k: 0,
         status: "applied",
-        valid: [...iv("11-01", "11-03"), ...iv("11-07", "11-09")],
+        valid: iv("11-01", "11-03"),
+        value: "1",
+        carried: [ref(41, "f2", 0), ref(41, "f2", 2)],
+      },
+      {
+        target: "f2",
+        k: 1,
+        status: "applied",
+        valid: iv("11-07", "11-09"),
         value: "1",
         carried: [ref(41, "f2", 0), ref(41, "f2", 2)],
       },
@@ -1558,7 +1640,8 @@ describe("take_candidate", () => {
     ]);
     expect(items(last(js)).map((x) => [x.target, x.valid])).toEqual([
       ["f2", iv("11-01", "11-03")],
-      ["f3", [...iv("11-01", "11-03"), ...iv("11-05", "11-07")]],
+      ["f3", iv("11-01", "11-03")],
+      ["f3", iv("11-05", "11-07")],
     ]);
   });
 
@@ -1844,7 +1927,7 @@ describe("take_candidate", () => {
         },
       ]);
       expect(view(state).exists).toBe(true);
-      expect(depsOf(last(js))).toEqual([[ref(31, "f2")], [ref(31, "f2")]]);
+      expect(depsOf(last(js))).toEqual([[], []]);
       expect(judgeOp(state, write({ op: 50, fields: { f2: "3" } })).judgement.record).toMatchObject(
         {
           kind: "write",
@@ -1869,7 +1952,7 @@ describe("take_candidate", () => {
       expect(items(last(js))).toEqual([
         { target: "existence", k: 0, status: "applied", valid: [WHOLE_IV], revoke: true },
       ]);
-      expect(depsOf(last(js))).toEqual([[ref(31, "existence")]]);
+      expect(depsOf(last(js))).toEqual([[]]);
       expect(view(state).exists).toBe(false);
     });
   });

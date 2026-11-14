@@ -11,11 +11,13 @@ import type { FieldId, Seq } from "@fluxvita/saveslot-contract-core";
 import { canonical, type Interval, type IntervalSet, WHOLE } from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
 import type {
+  AckStretch,
   ConfirmInput,
   FieldStretch,
   JudgeInput,
   Judgement,
   OpRecord,
+  Overwritten,
   RejectInput,
   RevertRecord,
   RowView,
@@ -86,7 +88,7 @@ export function judgeOp(
           : [],
       items: out.items,
       noop: out.noop,
-      ack: out.acknowledged ? out.overwritten : [],
+      ack: out.acknowledged ? out.overwritten.map(ackOf) : [],
     };
     const { items: _, noop: __, ...rest } = out;
     judgement = {
@@ -108,7 +110,7 @@ export function judgeOp(
       seenExplicit: input.seenExplicit,
       ...(input.acknowledge ? { acknowledge: true as const } : {}),
       ...(input.includeLater ? { includeLater: true as const } : {}),
-      ack: out.acknowledged ? out.overwritten : [],
+      ack: out.acknowledged ? out.overwritten.map(ackOf) : [],
     };
     judgement = { ...quiet, ...revertJudgement(out), record };
   } else if (input.kind === "take_previous") {
@@ -176,7 +178,23 @@ export function judgeOp(
       ...quiet,
     };
   }
+  // Event and timeless tables have no business time: no item there comes from other contributions'
+  // dates, so none has `deps` (09 §3.5: only an item with an interval carries them).
+  if (!state.isState) judgement = { ...judgement, record: withoutDeps(judgement.record) };
   return { judgement, state: new RowState(state.table, [...state.records, judgement.record]) };
+}
+
+/** An overwritten stretch as the log keeps it (09 §5.7 `ack/<j>`). */
+function ackOf(o: Overwritten): AckStretch {
+  const base = { field: o.field, valid: o.valid, deps: o.deps };
+  return o.was.kind === "value"
+    ? { ...base, value: o.was.value, op: o.was.op }
+    : { ...base, noValue: true };
+}
+
+function withoutDeps(r: OpRecord): OpRecord {
+  if (r.kind === "reject" || r.kind === "keep_effective") return r;
+  return { ...r, items: r.items.map((x) => ({ ...x, deps: [] })) } as OpRecord;
 }
 
 function revertJudgement(out: RevertOutcome) {

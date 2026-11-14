@@ -1057,21 +1057,22 @@ class Replay {
         this.reject(o, "missing_required");
         return;
       }
-      this.push([
-        {
+      // One item per stretch: an item has one interval (09 §5.7 `span/<f>/<k>`).
+      this.push(
+        pieces(valid).map((part) => ({
           event: o.event,
           target: f,
           k: 0,
           op: n,
-          status: "applied",
-          valid,
+          status: "applied" as const,
+          valid: part,
           content: giver.content,
           carried: carried.map(refOf),
           explicitEnds: [],
           defaultEnd: false,
           from: null,
-        },
-      ]);
+        })),
+      );
       return;
     }
     // take_previous: revert to the merge base (01-objects «各处理方式的执行语义»).
@@ -1156,7 +1157,15 @@ class Replay {
             .every((s) => !this.hasValue(s, n - 1))
         : this.revokedRow();
       if (!already) {
-        fresh.push({ ...base, target: "existence", k: 0, valid, content: { kind: "revoke" } });
+        for (const part of pieces(valid)) {
+          fresh.push({
+            ...base,
+            target: "existence",
+            k: 0,
+            valid: part,
+            content: { kind: "revoke" },
+          });
+        }
       }
       this.push(fresh);
       return;
@@ -1174,14 +1183,16 @@ class Replay {
       const carried = cands.filter(
         (x) => x.target === f && x.content.kind === "value" && tok(x.content.value) === v,
       );
-      fresh.push({
-        ...base,
-        target: f,
-        k: 0,
-        valid,
-        content: first.content,
-        carried: carried.map(refOf),
-      });
+      for (const part of pieces(valid)) {
+        fresh.push({
+          ...base,
+          target: f,
+          k: 0,
+          valid: part,
+          content: first.content,
+          carried: carried.map(refOf),
+        });
+      }
     }
     if (!this.isState) {
       if (this.revokedRow()) {

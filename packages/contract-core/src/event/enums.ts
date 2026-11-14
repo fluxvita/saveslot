@@ -112,6 +112,7 @@ export const ITEM_CREATED_REASONS = [
   "overwrites_change_point",
   "referenced_row",
   "undo_includes_later",
+  "undo_hides_later",
   "conflict_cleared_by_deletion",
   "restored_candidate",
   "duplicate_keys",

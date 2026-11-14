@@ -104,15 +104,57 @@ describe("parseEvent: valid events", () => {
   });
 
   it("checks the shapes of exactly these blocks so far", () => {
-    expect([...CHECKED_SHAPES].sort()).toEqual([
-      "GenesisTenant",
-      "PrincipalCtx",
-      "PrincipalName",
-      "PrincipalRef",
-      "RegisteredPrincipal",
-      "SystemPrincipal",
-      "UserPrincipal",
-    ]);
+    expect([...CHECKED_SHAPES].sort()).toEqual(
+      [
+        "GenesisTenant",
+        "PrincipalCtx",
+        "PrincipalName",
+        "PrincipalRef",
+        "RegisteredPrincipal",
+        "SystemPrincipal",
+        "UserPrincipal",
+        // a write's events (parse-write.test.ts)
+        "Ack",
+        "Acknowledge",
+        "Candidate",
+        "Confirmation",
+        "CurrentEntry",
+        "ExistenceItem",
+        "ExistenceSpan",
+        "FieldEntry",
+        "FieldIdList",
+        "FieldItem",
+        "Idempotency",
+        "Impact",
+        "ItemCreatedTarget",
+        "ItemMergedTarget",
+        "ItemRefreshedTarget",
+        "ItemResolvedTarget",
+        "ItemSupersededTarget",
+        "Literal",
+        "OpRevert",
+        "OpTarget",
+        "RawValue",
+        "RequestKey",
+        "ResolveCtx",
+        "Revert",
+        "ScopeValid",
+        "SourceFile",
+        "SourceRequest",
+        "SourceSeqList",
+        "SourceTarget",
+        "SourceText",
+        "Sources",
+        "Span",
+        "StatedAt",
+        "Take",
+        "Task",
+        "ValidParam",
+        "WriteBaseTarget",
+        "WriteCtx",
+        "WriteRequest",
+      ].sort(),
+    );
   });
 });
 
@@ -294,23 +336,18 @@ describe("parseEvent: header", () => {
 });
 
 describe("parseEvent: shapes without a checker", () => {
-  it("reports a write as unsupported, not ok", () => {
-    const s = {
-      header: { ...head("write.head"), slot: SLOT_A },
-      blocks: { ctx: {}, request: {} },
-    };
-    expect(parse(s)).toEqual({
-      ok: false,
-      kind: "unsupported",
-      shapes: ["WriteCtx", "WriteRequest"],
-    });
+  // `write.derived` is not checked yet.
+  const derived = {
+    header: { ...head("write.derived"), op: 25, slot: SLOT_A },
+    blocks: { target: {} },
+  };
+
+  it("reports a block whose shape has no checker as unsupported, not ok", () => {
+    expect(parse(derived)).toEqual({ ok: false, kind: "unsupported", shapes: ["DerivedTarget"] });
   });
 
   it("reports invalid before unsupported", () => {
-    const s = {
-      header: { ...head("write.head"), slot: SLOT_A, v: 2 },
-      blocks: { ctx: {}, request: {} },
-    };
+    const s = { ...derived, header: { ...derived.header, v: 2 } };
     expect(parse(s)).toEqual({
       ok: false,
       kind: "invalid",

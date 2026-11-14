@@ -8,4 +8,5 @@ export {
   view,
 } from "./judge.ts";
 export type * from "./model.ts";
+export { uniqueRefs } from "./resolve.ts";
 export type { RowState } from "./state.ts";

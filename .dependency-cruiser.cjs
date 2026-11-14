@@ -22,7 +22,8 @@ const PACKAGE_DEPS = {
 
 /** Test-only packages: any test file may import them, no other file may. */
 const TEST_ONLY_PACKAGES = ["reference"];
-const TEST_FILE = "\\.test\\.ts$";
+/** Test files, and the fixtures only tests import. */
+const TEST_FILE = "\\.(test|fixture)\\.ts$";
 
 /** Kernel module → kernel modules it may import (§4 table "依赖" column). */
 const KERNEL_MODULE_DEPS = {
@@ -116,6 +117,13 @@ module.exports = {
         pathNot: [`^packages/(?:${alt(TEST_ONLY_PACKAGES)})/`, TEST_FILE],
       },
       to: { path: `^packages/(?:${alt(TEST_ONLY_PACKAGES)})/` },
+    },
+    {
+      name: "fixture-only-in-tests",
+      comment: "A fixture (*.fixture.ts) serves tests: only test files and fixtures may import it",
+      severity: "error",
+      from: { path: "^packages/", pathNot: [TEST_FILE] },
+      to: { path: "\\.fixture\\.ts$" },
     },
     {
       name: "kernel-unknown-module",

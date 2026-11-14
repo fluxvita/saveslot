@@ -144,6 +144,7 @@ export const VOCABULARY = {
     { path: "duplicate", kind: "data", shape: "Duplicate" },
     { path: "ack/<n>", kind: "data", shape: "Ack" },
     { path: "revert", kind: "meta", shape: "Revert" },
+    { path: "take", kind: "meta", shape: "Take" },
   ],
   "write.derived": [
     { path: "target", kind: "meta", shape: "DerivedTarget", always: true },

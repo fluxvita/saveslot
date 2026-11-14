@@ -9,8 +9,10 @@
 // Block shapes are added type by type. A block whose shape has no checker yet makes the result
 // `unsupported` (not `ok`): the caller must stop, as for an invalid event.
 
+import { check, type Issues, isObject, type Json, keys, type ShapeChecker, str } from "./check.ts";
 import { EVENT_TYPES, type EventType, PRINCIPAL_VIAS, SCOPES, TRIGGERS } from "./enums.ts";
 import { HEADER_FIELDS, HEADER_RULES, type HeaderField } from "./header.ts";
+import { WRITE_EVENT_RULES, WRITE_SHAPES } from "./shapes-write.ts";
 import { isEventInteger, isHash, isId, isInstant } from "./values.ts";
 import { matchPath, VOCABULARY, type VocabularyEntry } from "./vocabulary.ts";
 
@@ -21,45 +23,7 @@ export type ParseResult =
   /** Valid as far as checked, but a block's shape has no checker yet. */
   | { readonly ok: false; readonly kind: "unsupported"; readonly shapes: readonly string[] };
 
-type Json = unknown;
-type Issues = string[];
-
-const isObject = (v: Json): v is Record<string, Json> =>
-  v !== null && typeof v === "object" && !Array.isArray(v);
-
-/**
- * Checks that `v` is an object whose keys are exactly the required ones plus some optional ones.
- * Returns whether the values should be checked.
- */
-function keys(
-  v: Json,
-  at: string,
-  required: readonly string[],
-  optional: readonly string[],
-  issues: Issues,
-): v is Record<string, Json> {
-  if (!isObject(v)) {
-    issues.push(`${at}: not an object`);
-    return false;
-  }
-  for (const k of Object.keys(v)) {
-    if (!required.includes(k) && !optional.includes(k)) issues.push(`${at}: unknown key ${k}`);
-  }
-  const missing = required.filter((k) => !(k in v));
-  for (const k of missing) issues.push(`${at}: missing key ${k}`);
-  // Values are checked only when every required key is there, so a missing key is reported once.
-  return missing.length === 0;
-}
-
-function check(cond: boolean, at: string, what: string, issues: Issues): void {
-  if (!cond) issues.push(`${at}: ${what}`);
-}
-
-const str = (v: Json): v is string => typeof v === "string";
-
 // --- block shapes (§5.1–§5.3) ------------------------------------------------------------------
-
-type ShapeChecker = (v: Json, at: string, issues: Issues) => void;
 
 const SHAPES: Partial<Record<string, ShapeChecker>> = {
   // §5.2 tenant.genesis
@@ -129,6 +93,8 @@ const SHAPES: Partial<Record<string, ShapeChecker>> = {
     if (!keys(v, at, ["name"], [], issues)) return;
     check(str(v["name"]), at, "name", issues);
   },
+  // §5.6–§5.8
+  ...WRITE_SHAPES,
 };
 
 /** The block shapes this module checks so far. */
@@ -255,6 +221,11 @@ export function parseEvent(
     const checker = SHAPES[entry.shape];
     if (checker === undefined) unsupported.add(entry.shape);
     else checker(blocks[path], path, issues);
+  }
+  // Rules between the blocks of one event (§5.6–§5.8).
+  if (Object.hasOwn(WRITE_EVENT_RULES, type)) {
+    const paths = new Set([...Object.keys(blocks), ...removedSet]);
+    WRITE_EVENT_RULES[type]?.(paths, blocks, issues);
   }
   for (const entry of VOCABULARY[type] as readonly VocabularyEntry[]) {
     if (entry.always && !(entry.path in blocks) && !removedSet.has(entry.path)) {
