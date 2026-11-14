@@ -32,6 +32,7 @@ const KERNEL_MODULE_DEPS = {
   audit: ["store"],
   flags: ["store"],
   rules: ["store"],
+  request: ["schema", "time"],
   time: ["store"],
   judge: ["time"],
   derive: ["rules", "log"],
@@ -39,6 +40,7 @@ const KERNEL_MODULE_DEPS = {
   schema: ["store", "log", "audit", "rules", "time", "apply", "derive"],
   pending: ["store", "log", "apply"],
   write: [
+    "request",
     "store",
     "log",
     "audit",

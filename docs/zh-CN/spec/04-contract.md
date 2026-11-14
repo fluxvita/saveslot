@@ -54,14 +54,17 @@
 - **操作号**：一次 `write`、`resolve`、`delete`、撤回各有一个操作号（它的头事件的 `seq`；`write` 的也叫写入号）。**对外出现的序号全部是操作号**：回执的 `seq`、`ver` 里的序号、`timeline` 的条目、`undo` 的目标、`as_of` / `since` / `until` 的取值。一次操作内部各条事件的序号不对外（data-model「编号」）。
 - **值的编码**（types 1.4）：
   - `decimal`、`integer` 写入时接受十进制字符串（推荐）或 JSON 数字，服务端按原始文本解析，不经双精度；返回一律是字符串。`integer` 是 64 位有符号整数，超出 JSON 数字安全范围（2^53 − 1）的值必须写成字符串。
-  - **调用方交来的十进制原文**（`decimal`、`integer` 的值，`quantity` 的 `value`）：字符串与 JSON 数字用同一套语法，即 JSON 数字的语法 `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`，可带指数。不接受前导零（`01`）、正号（`+1`）、`.5`、`1.`、`NaN`、`Infinity`，报 `validation_failed`（`malformed`）。原始值因此只有一种文法。
-  - `quantity`、`decimal` 的小数位数超过字段的 `scale` 时，按字段的 `rounding` 舍入后落账，`warnings` 给 `rounded`（data-model「精度与舍入」）。
+  - **JSON 数字的精度看通道**：HTTP 通道由 saveslot 自己解析请求体，JSON 数字按原始文本解析。经 MCP 等由宿主或 SDK 解析参数的通道，saveslot 拿到的已是双精度数，取它最短的往返十进制写法：安全整数（绝对值不超过 2^53 − 1 的整数）无论几位都照收，它本来就是精确的；其余的有效数字不超过 15 位照收（15 位以内的十进制原文解析成双精度再写回，仍是原文），超过 15 位报 `validation_failed`（`malformed`），提示写成字符串；`integer` 字段收到的数字另须是安全整数，否则同样报 `malformed`。宿主已经把原文解析走了样的（如 `1.0000000000000001` 被解析成 `1`），saveslot 无从发现：要更多位数请写成字符串。
+  - **调用方交来的十进制原文**（`decimal`、`integer` 的值，`quantity` 的 `value`）：字符串与 JSON 数字用同一套语法，即 JSON 数字的语法 `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`，可带指数。不接受前导零（`01`）、正号（`+1`）、`.5`、`1.`、`NaN`、`Infinity`，报 `validation_failed`（`malformed`）。原文至多 100 个字符，超过的同样报 `malformed`，在解析之前判。原始值因此只有一种文法。
+  - `integer` 字段收到带小数部分的值（`"1.5"` 或 `1.5`）：不论写成字符串还是数字，都报 `validation_failed`（`type_mismatch`）。
+  - `quantity`、`decimal` 的小数位数超过字段的 `scale` 时，按字段的 `rounding` 舍入后落账，`warnings` 给 `rounded`（data-model「精度与舍入」）。例外：换算过单位的 `quantity` 只给 `unit_converted`（`to` 是换算并舍入后的值），不另给 `rounded`——换算后的精确值未必是有限小数，`rounded` 的 `from` 写不出来。
   - **清空**：值写 `null` 是清空一个可选字段，它是一次有来源的贡献；必填字段不能清空，报 `validation_failed`（`required_missing`）。
   - `quantity` 必须带 `unit`，缺了报 `validation_failed`（`unit_missing`）；单位取自固定的单位词表，不在词表里报 `unit_unknown`，量纲与字段不同（含货币不同）报 `unit_dimension`；同量纲的单位自动换算到字段声明的单位，`warnings` 给 `unit_converted`。
   - 值的 JSON 类型与字段声明的类型不符（如给 `integer` 字段一个对象或布尔）：`validation_failed`（`type_mismatch`）。`enum` 字段的值不在声明的取值里：`validation_failed`（`enum_value`，附 `allowed_values`）。
-  - `zoned_datetime` 缺时区时按 slot 时区，`warnings` 给 `timezone_assumed`。
+  - `zoned_datetime` 缺时区时按 slot 时区，`warnings` 给 `timezone_assumed`。时区写成 `[UTC]` 或 `[区域/地点]`，且须是运行时认得的名字，与 slot 时区同一条规则（data-model「schema 文档格式」）；`PRC`、`EST`、`+08:00` 这类写法、与时区不符的偏移，报 `validation_failed`（`type_mismatch`）。时区名与运行时的规范名只差大小写时，规范化后的值用规范名的写法，原始值照调用方写的记（data-model「同值判据」）。
+  - **日期与时刻的范围**：时刻换算到 UTC 之后、按日的表取它在 slot 时区的那一天之后，都须落在 0001-01-01 至 9999-12-31。字段值越界报 `validation_failed`（`out_of_range`），区间参数与 `stated_at` 越界报 `invalid_argument`（`malformed`）。偏移按 RFC 3339：小时 00–23、分钟 00–59，否则是写法不对（字段值 `type_mismatch`，区间参数 `malformed`）。时刻至多到毫秒，更细的位数须全是 0，否则同样是写法不对。
   - `ref` 写被引用行的 `row` / `entity`，或同一请求里新插入行的临时名 `"@p1"`。
-  - `text` 返回时是不可信文本（第 8 节）。
+  - `text` 须是良构的 Unicode（不含孤立代理项），不得含 NUL（U+0000：PostgreSQL 的 `text` 存不了），否则报 `validation_failed`（`type_mismatch`）；8 KB 的上限对调用方的原文与 NFC 之后的结果都判，超出报 `out_of_range`。返回时是不可信文本（第 8 节）。
 
 ## 2. 版本令牌：`ver`、`sv`、`item_ver`
 
@@ -100,7 +103,8 @@
 
 - **“纠错”是标注，不是种类**：一条源数据被某次意图为 `correct` 的写入用作值来源时，读结果里带 `correction: true`（types 4.6）；它由写入意图得出，不改变这条源数据的种类与来源级别。
 - **必填**：三种文本段的 `text` 必填且非空；`file_ref` 的 `name`、`mime`、`size`、`sha256` 必填，`origin`、`excerpt` 可选；`source_ref` 的 `id` 必填，引用宽限期内待删除的源数据报 `invalid_argument`（`pending_deletion_source`）。
-- **大小**（初值，open-questions「接口的数值与细则」）：单段 32 KB，单次请求 256 KB；**按 UTF-8 字节数，只算 `text` 与 `excerpt`**。超出报 `too_large`（`evidence_segment` / `request`）。大文本只交 `file_ref` 加摘录。
+- **大小**（初值，open-questions「接口的数值与细则」）：单段 32 KB，单次请求 256 KB；**按 UTF-8 字节数，只算 `text` 与 `excerpt`**。超出报 `too_large`（`evidence_segment` / `request`）。大文本只交 `file_ref` 加摘录。`file_ref` 的 `name`、`mime` 各至多 256 个字符、`origin` 至多 2048 个字符（按码点数），不含控制字符。
+- **证据文本**（`text`、`excerpt` 与 `file_ref` 的各项文本）须是良构的 Unicode、不含 NUL；不符合的、超长的报 `invalid_argument`（`malformed`，`param` 指到那一项）。
 - **声明级别**：段上的 `level` 覆盖按 `kind` 推出的默认值；`external_authority` 第一版不开放，声明它报 `not_in_this_version`。级别只在字面命中时参与冲突裁决（data-model「来源级别」）。
   - 将来开放 `external_authority` 时，能否声明它由连接实例被授予的权限决定：只能由用户会话在签发时授予，写入方不能自报，别的连接实例不能转授；授予记在主体登记事件里。没被授予而声明了它，整个请求被拒，不降级成 `agent_inferred`——降级会让写入方误以为自己的值带着权威级别。
 - **陈述时间**：段上可选的 `stated_at`，这句话是什么时候说的；不给就是未知。只记录，第一版不参与任何判定。
@@ -150,6 +154,19 @@
 - **按 `entity_key` 写入 = 有则写入、无则创建**：意图用 `update`；实体不存在时创建，结果带 `created_entity: true` 与 `existing_keys`（该表已有的实体键，最多 10 个）。
   - 新键与已有的键写法相近时，另带 `similar_keys`（最多 5 个），每个附相近的原因 `match`：`fold`（折叠大小写、全半角、空白之后相同）、`affix`（一方是另一方的开头或结尾）、`edit`（只差一两个字），已撤销的实体另标 `revoked`。判据是 `keymatch@1`（data-model「相近的键」），比较范围是该表本次调用可见的全部实体，含已撤销的。`existing_keys` 里相近的键排在前面，其余按最近写入。
   - 两项都是写入那一刻按当时的状态算出的提示：写入照常生效，不生成事项，不进事件。写错了键的改法是撤销刚建的实体（不带区间的 `revoke`），再按对的键写入。
+- **请求所在的 slot**：表名写限定名 `slot.table` 时就是那个 slot；只写表名时，取可见范围内唯一有这张表的 slot，几个 slot 里都有报 `invalid_argument`（`ambiguous_table`，附候选的限定名），哪里都没有报 `unknown_table`。各 op 落在不同的 slot 报 `invalid_argument`（`cross_slot`，`param` 指到第一个不一致的 `ops/<i>/table`）。
+- **与状态无关的参数校验**（判定顺序第 1 步）：带回的 `sv` 大于当前版本报 `invalid_argument`（`malformed`，`param` 为 `sv`）；`ver` 写成历史版本（`h41.0`）或别的写法报 `invalid_argument`（`malformed`）；`entity_key` 用在非状态类表上报 `invalid_argument`（`not_state_table`），状态类表没声明自然键报 `malformed`，键字段缺了报 `missing`、多了报 `malformed`（`param` 指到那个键）；写派生表报 `derived_readonly`。
+- **其余与状态无关的原因码**（同属判定顺序第 1 步；`param` 都指到出问题的那一项）：
+  - 请求里的对象只认自身的键；值为 `undefined` 的键当作没写（经 JSON 传来的请求不会有，嵌入调用时会有）；数组有空位报 `invalid_argument`（`malformed`）。不认识的参数键报 `invalid_argument`（`malformed`）。
+  - 一次超过 1,000 个 op：`too_large`（`request`，附 `limit`；临时值，open-questions「接口的数值与细则」）。
+  - `task`、`idempotency_key` 为空、超过 256 个字符（按码点数）、不是良构的 Unicode 或含控制字符：`invalid_argument`（`malformed`）。
+  - 状态类表上给 `row`：`invalid_argument`（`malformed`）。
+  - 同一个 `set` 里按不分大小写是同一字段的两个键：`invalid_argument`（`malformed`，`param` 指到第二种写法）；`entity_key` 里同样，`param` 指到那个键。
+  - `acknowledge`、`evidence_refs` 里的重复项：`invalid_argument`（`malformed`，`param` 指到第二次出现的那一项）。
+  - 限定名 `slot.table` 的 slot 不是本请求所在的 slot：`invalid_argument`（`cross_slot`）。
+  - 状态类表上 `valid_from` 不早于 `valid_to`：`invalid_argument`（`malformed`，`param` 为 `valid_to`）。
+  - `ref` 写临时名 `"@p1"`：第一版没有 `as`，请求里不会有绑定它的 op，报 `validation_failed`（`ref_not_found`）。
+  - 证据段 `source_ref`：第一版不开放，`not_in_this_version`（`parameter`，`param` 指到那一段）。
 - **`valid_from` / `valid_to` 只用于状态类表**；用在别的表上报 `invalid_argument`（`not_state_table`）。实体的键字段不随业务时间变化：带区间的写入里出现 `entity_key` 的键字段且值与实体的键不同，报 `invalid_argument`（`key_field_changed`）。
 - **同一请求里多个 op 作用于同一行 / 实体**：后面的 op 看得到前面 op 的结果。对本请求里新建的行 / 实体，后面的 op 不需要 `ver`；对请求之前已存在的，各 op 带的 `ver` 都表示"请求开始时所见的版本"，冲突判定只比请求之外的写入。各 op 独立判定：一个 op 成了候选，不影响其他 op 生效。同一行 / 实体只得一个新 `ver`。
 - **`acknowledge: ["overwrite"]`**：已与用户确认覆盖类的高影响，直接生效。**只在这个 op 显式带了当前 `ver` 时有效**，否则照常进待确认（data-model「写状态」）。哪些外化面开放见 surfaces。
@@ -627,6 +644,7 @@
   - 给了 `idempotency_key`：请求键 = 调用方 + 该键。
   - **调用方**是连接实例；凭用户会话调用时是这个用户会话。
   - **规范化**：对调用方发来的请求体做 JCS（RFC 8785）编码，不含 `task` 与 `idempotency_key`，**不含服务端兜底补上的 `ver` / `sv` / `item_ver`**。所以隔了一次读取、原样重发的请求仍是同一个请求键。
+  - **JSON 数字在规范形里的写法看通道**（第 1 节）：saveslot 自己解析请求体的通道按数字在请求体里的原文写；经宿主解析的通道拿到的是双精度数，按 JCS 的数字写法写。所以同一个请求体经 HTTP 与经 MCP 发来，规范形可能不同（`1.50` 与 `1.5`），是两个请求键；同一通道上的原样重发不受影响。
   - **例外一：前提的版本**。规范化**包含每条前提解析后的所见版本**（含兜底取得的）。"前提又变了、再核对一次、请求体逐字不变"是重申的正常用法；不含它，第二次重申会在窗口里被当成第一次的重放，返回一个过时的 `state: current`。只对前提这一处；写入目标兜底补上的 `ver` 仍不进规范化。
   - **例外二：只含按来源键 op 的请求不计算服务端请求键**，不论在不在窗口内，重发都逐条三方比较：来源键本身就让重发幂等，同样的内容再交一遍得到 `unchanged`。显式 `idempotency_key` 照样可用：请求产生了事件时照旧记下；请求没产生事件时不被记下，重发按来源键重新判定，结果相同。含普通 op 的请求照旧计算请求键（按原始请求体，其中按来源键 op 的内容同样在内）；连接器把按来源键的 op 与普通 op 分开请求即可。
   - 两个例外作用于不同的请求：按来源键的 op 不能带前提。
