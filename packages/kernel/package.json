@@ -10,6 +10,11 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./anchor-file": {
+      "source": "./src/store/anchor-file.ts",
+      "types": "./dist/store/anchor-file.d.ts",
+      "default": "./dist/store/anchor-file.js"
+    },
     "./testing": {
       "source": "./src/testing.fixture.ts"
     }

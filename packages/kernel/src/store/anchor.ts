@@ -74,10 +74,42 @@ export interface Anchor {
   readonly importInProgress?: ImportId;
 }
 
+/**
+ * Why an anchor store refused or failed an operation. `code` is stable; the message is for people
+ * and never carries the stored content.
+ * - `invalid_entry`: a deletion entry, seq or count given to a write is not of the port's shape.
+ * - `not_in_progress`: `endRestore` / `endImport` / `abortImport` with no such marker, or with
+ *   another ID.
+ * - `import_refused`: `beginImport` on an anchor that is not empty.
+ * - `corrupt`: the stored anchor cannot be read (implementation).
+ * - `conflict`: another writer changed the stored anchor (implementation).
+ */
+export type AnchorStoreErrorCode =
+  | "invalid_entry"
+  | "not_in_progress"
+  | "import_refused"
+  | "corrupt"
+  | "conflict";
+
+export class AnchorStoreError extends Error {
+  readonly code: AnchorStoreErrorCode;
+  constructor(code: AnchorStoreErrorCode, message: string, opts: { cause?: unknown } = {}) {
+    super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
+    this.name = "AnchorStoreError";
+    this.code = code;
+  }
+}
+
+/**
+ * The anchor store port. The high water mark never decreases on any path: `advanceHighWater`,
+ * `endRestore` and `endImport` each keep the larger of the stored and the given value.
+ */
 export interface AnchorStore {
+  /** The tenant's anchor; a tenant never written has the empty anchor (no entries, 0, 0). */
   read(tenant: TenantId): Promise<Anchor>;
   /** Adds an entry or replaces the entry with the same deletion ID as a whole. */
   putDeletion(tenant: TenantId, entry: DeletionEntry): Promise<void>;
+  /** Removes the entry with this deletion ID; nothing when there is none. */
   removeDeletion(tenant: TenantId, deletion: DeletionId): Promise<void>;
   /** Only increases; a lower value is ignored. */
   advanceHighWater(tenant: TenantId, seq: Seq): Promise<void>;
@@ -86,15 +118,20 @@ export interface AnchorStore {
    * progress, returns the anchor unchanged.
    */
   beginRestore(tenant: TenantId, restore: RestoreId): Promise<Anchor>;
+  /**
+   * Clears "restore in progress" and advances the high water mark to `highWater` (never lowers
+   * it). `not_in_progress` when no restore, or another restore, is in progress.
+   */
   endRestore(tenant: TenantId, restore: RestoreId, highWater: Seq): Promise<void>;
   /**
-   * Sets "import in progress". Refused when the anchor is not empty: any deletion entry, a
-   * non-zero restore count, or any in-progress marker.
+   * Sets "import in progress". Refused (`import_refused`) when the anchor is not empty: any
+   * deletion entry, a non-zero restore count, or any in-progress marker, including this import's.
    */
   beginImport(tenant: TenantId, importId: ImportId): Promise<void>;
   /**
    * Writes, in one durable write, the deletion entries derived from the imported log, the high
-   * water mark and the restore count, and clears the marker.
+   * water mark (never lowering it) and the restore count, and clears the marker.
+   * `not_in_progress` when no import, or another import, is in progress.
    */
   endImport(
     tenant: TenantId,
@@ -105,6 +142,9 @@ export interface AnchorStore {
       readonly restoreCount: number;
     },
   ): Promise<void>;
-  /** Clears only the "import in progress" marker, writes no entries (rollback). */
+  /**
+   * Clears only the "import in progress" marker, writes no entries (rollback). Nothing when no
+   * import is in progress (re-entry may call it twice); `not_in_progress` for another import.
+   */
   abortImport(tenant: TenantId, importId: ImportId): Promise<void>;
 }

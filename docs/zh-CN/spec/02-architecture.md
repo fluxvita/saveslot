@@ -396,20 +396,22 @@ interface TenantStore {
 ```ts
 interface AnchorStore {
   // 每个写操作都必须落盘后才返回
-  read(tenant): Promise<Anchor>
+  read(tenant): Promise<Anchor>                                  // 从未写过的租户读到空锚点（没有登记、高水位 0、恢复次数 0）
   putDeletion(tenant, entry: DeletionEntry): Promise<void>      // 新增或整项覆盖
-  removeDeletion(tenant, deletionId): Promise<void>
+  removeDeletion(tenant, deletionId): Promise<void>              // 没有这一项时什么都不做
   advanceHighWater(tenant, seq): Promise<void>                   // 只增不减
   beginRestore(tenant, restoreId): Promise<Anchor>               // 置"恢复进行中"并把恢复次数加 1；已在进行中则原样返回
-  endRestore(tenant, restoreId, highWater): Promise<void>
-  beginImport(tenant, importId): Promise<void>                   // 置"导入进行中"（带导入 ID）；锚点不空（有删除登记、恢复次数不为 0、已有任一进行中标记）时拒绝
+  endRestore(tenant, restoreId, highWater): Promise<void>        // 清"恢复进行中"，高水位取两者较大者；没有在进行中的恢复、或 ID 不同时拒绝
+  beginImport(tenant, importId): Promise<void>                   // 置"导入进行中"（带导入 ID）；锚点不空（有删除登记、恢复次数不为 0、已有任一进行中标记，含同一个导入的）时拒绝
   endImport(tenant, importId,
             r: { deletions: DeletionEntry[]; highWater: Seq; restoreCount: number }): Promise<void>
-                                                                 // 一次落盘写入由导入的日志得出的全部删除登记、高水位与恢复次数，并清标记
-  abortImport(tenant, importId): Promise<void>                   // 只清"导入进行中"标记，不写登记（回滚用）
+                                                                 // 一次落盘写入由导入的日志得出的全部删除登记、高水位（取两者较大者）与恢复次数，并清标记；没有在进行中的导入、或 ID 不同时拒绝
+  abortImport(tenant, importId): Promise<void>                   // 只清"导入进行中"标记，不写登记（回滚用）；没有标记时什么都不做（重入时可能调两次），ID 不同时拒绝
 }
 ```
 
+- **高水位在任何路径上都只增不减**：`advanceHighWater`、`endRestore`、`endImport` 都取存着的与给出的两者中较大的那个。
+- 写进去的登记项、高水位与恢复次数不合端口的形状（状态、种类不在枚举里，`seq` 不是正整数等）时拒绝，什么都不写。
 - **必须与租户存储分开存放、分开备份。** 两者被一起恢复时，内核补不了也发现不了——这是写明的边界。
 - **持久性要求**：每次写入落盘后才返回；确认删除时，登记落盘之后才能提交租户事务。
 - 接口在 `kernel` 包里；登记项的字段、状态与对照表的权威定义在 data-model「删除之后 · 删除登记」。
