@@ -628,6 +628,8 @@ const counts = {
   restoredByDeletion: 0,
   restoredByCancel: 0,
   keptEffective: 0,
+  refusedInBase: 0,
+  putBackDiffers: 0,
   withDecisions: 0,
   undoOfRevert: 0,
   undoOfRevertRegained: 0,
@@ -663,6 +665,129 @@ function noEndpointLeak(full: readonly LogEntry[], run: LogEvaluation): void {
         for (const p of [x.from, x.to]) if (p !== null) expect(dates).toContain(p);
     }
   }
+}
+
+/**
+ * «撤回还原» (03-deletion «推论»): delete `pi_d` (the last entry of `withD`), then the grace-period
+ * entries, then cancel at `cancelOp`; the part grace-period writes did not cover must be as the
+ * replay of `prefix` and the grace-period entries without the deletion, with the writes the
+ * cancellation kept in effect forced in effect and those it kept superseded forced out. Compared:
+ * field values outside grace-period coverage, and the judgement and openness of every item of
+ * the operations in `prefix`. The cancellation's own rules go first: a grace-period decision the
+ * replay refuses, and a candidate put back and judged again, are compared by what they gave.
+ * Undefined when the deletion itself is refused.
+ */
+function checkCancelRestores(
+  schema: TableSchema,
+  prefix: readonly LogEntry[],
+  withD: readonly LogEntry[],
+  graceAll: readonly LogEntry[],
+  cancelOp: number,
+):
+  | { kept: number; refusedInBase: number; putBackDiffers: number; withDecisions: boolean }
+  | undefined {
+  const state = schema.kind === "state";
+  const run = evaluateLog(schema, [
+    ...withD,
+    ...graceAll,
+    { kind: "cancel", op: cancelOp, id: "pi_d" },
+  ]);
+  // Entries refused in the run never entered the log; the baseline has none of them.
+  const refused = new Set(run.steps.filter((x) => x.refused).map((x) => x.entry));
+  if (refused.has(withD[withD.length - 1] as LogEntry)) return undefined;
+  const grace = graceAll.filter((e) => !refused.has(e));
+  const cancelStep = run.steps.at(-1);
+  const kept = cancelStep?.keptEffective ?? [];
+  const cancelled = run.final;
+  const baseRun = evaluateLog(schema, [...prefix.filter((e) => !refused.has(e)), ...grace], {
+    forcedEffective: kept,
+    forcedSuperseded: cancelStep?.keptSuperseded ?? [],
+  });
+  const base = baseRun.final;
+  const graceEvents = new Set(
+    grace.filter((e): e is Op => e.kind !== "deletion" && e.kind !== "cancel").map((e) => e.event),
+  );
+  // A candidate the cancellation put back is judged again on the state at the cancellation
+  // (03-deletion «撤回与宽限期»), which is the definition; the forced replay may judge it otherwise
+  // (a write kept in effect can change its judgement there). Where the two judgements differ, its
+  // intervals go by the cancellation's, not the replay's (03-deletion «推论» «撤回还原»).
+  const putBackOf = (ev: Evaluation, x: { event: number; target: string }) =>
+    ev.items.filter((y) => y.event === x.event && y.target === x.target);
+  const judgedAs = (items: ItemResult[]) =>
+    JSON.stringify(items.map((y) => [y.status, y.closed === true, y.valid]));
+  const putBackDiffers = (cancelStep?.putBack ?? []).filter(
+    (x) => judgedAs(putBackOf(cancelled, x)) !== judgedAs(putBackOf(base, x)),
+  );
+  for (const f of ["f2", "f3"] as FieldId[]) {
+    const coveredBy = (ev: Evaluation): IvSet[] =>
+      ev.items
+        .filter(
+          // A grace-period write to a required field also covers whether the row or
+          // entity has a value there, which every field shows.
+          (x) =>
+            graceEvents.has(x.event) &&
+            (x.target === f ||
+              x.target === "existence" ||
+              schema.required.includes(x.target as FieldId)),
+        )
+        .map((x) => x.valid);
+    const rejudged = putBackDiffers
+      .filter(
+        (x) =>
+          x.target === f ||
+          x.target === "existence" ||
+          schema.required.includes(x.target as FieldId),
+      )
+      .flatMap((x) => [...putBackOf(cancelled, x), ...putBackOf(base, x)].map((y) => y.valid));
+    const covered = union(...coveredBy(cancelled), ...coveredBy(base), ...rejudged);
+    const sets: IvSet[] = [covered, cancelled.gaps, base.gaps];
+    for (const ev of [cancelled, base]) for (const x of ev.fields[f] ?? []) sets.push(x.valid);
+    const segs = state ? elementarySegments(endpoints(sets)) : [{ from: null, to: null }];
+    for (const g of segs) {
+      if (covers(covered, g)) continue;
+      const at = (ev: Evaluation) => {
+        if (state && ev.gaps.some((x) => covers([x], g))) return "no value";
+        if (!state && !ev.exists) return "no row";
+        return JSON.stringify((ev.fields[f] ?? []).find((x) => covers(x.valid, g))?.value ?? null);
+      };
+      expect({ f, at: g, value: at(cancelled) }).toEqual({ f, at: g, value: at(base) });
+    }
+  }
+  // Items of the operations before the deletion.
+  const prefixEvents = new Set(
+    prefix.filter((e): e is Op => e.kind !== "deletion" && e.kind !== "cancel").map((e) => e.event),
+  );
+  const excluded = new Set((cancelStep?.putBack ?? []).map((x) => String(x.event)));
+  // A decision taken in the grace period is judged on the state after the deletion, and stays
+  // in effect after the cancellation (03-deletion «撤回与宽限期»). The baseline may refuse it
+  // (a take_candidate whose required field has no value there without the deletion): what it
+  // closed is then the grace period's doing, covered like the parts its writes cover.
+  const refusedInBase = baseRun.steps
+    .filter((x) => x.refused && grace.includes(x.entry))
+    .map((x) => x.entry);
+  for (const e of refusedInBase) {
+    if (e.kind === "resolve") for (const c of e.candidates) excluded.add(String(c));
+    if (e.kind === "confirm") excluded.add(String(e.target));
+  }
+  // Per (write, target, status, openness): the business time its items cover. Index
+  // bookkeeping (how a segment is cut into items, 09 §5.7) is not part of the state.
+  const judgement = (ev: Evaluation) => {
+    const by = new Map<string, IvSet[]>();
+    for (const x of ev.items) {
+      if (!prefixEvents.has(x.event) || x.status === "dropped") continue;
+      if (excluded.has(String(x.event))) continue;
+      const key = `${etKey(x)} ${x.status}${x.closed ? " closed" : ""}`;
+      by.set(key, [...(by.get(key) ?? []), x.valid]);
+    }
+    return [...by.entries()].map(([key, vs]) => `${key} ${JSON.stringify(union(...vs))}`).sort();
+  };
+  expect(judgement(cancelled)).toEqual(judgement(base));
+  return {
+    kept: kept.length,
+    refusedInBase: refusedInBase.length,
+    putBackDiffers: putBackDiffers.length,
+    withDecisions: grace.some((e) => e.kind !== "write"),
+  };
 }
 
 describe.each(both)("%s table", (_, schema, state) => {
@@ -805,7 +930,9 @@ describe.each(both)("%s table", (_, schema, state) => {
     // of every item of the operations before the deletion. Other deletions may be pending
     // throughout; grace-period steps include restatements and decisions. Candidates the
     // cancellation put back are left out of the item comparison: their judgement at the
-    // cancellation is a rule of its own (03-deletion «撤回与宽限期»).
+    // cancellation is a rule of its own (03-deletion «撤回与宽限期»). So are the candidates of a
+    // grace-period decision the replay refuses: the decision stays in effect, so what it closed
+    // is covered by the grace period (the fixed case below).
     // Measured share of hits: about 0.89 on both tables.
     const hits = new Hits(0.75);
     fc.assert(
@@ -830,81 +957,12 @@ describe.each(both)("%s table", (_, schema, state) => {
           // can make the cancellation keep a write in effect.
           grace = grace.map((e) => (e.kind === "write" && lateVer ? { ...e, seen: e.op - 1 } : e));
           const cancelOp = dOp + 10 * (graceSteps.length + 2);
-          const run = evaluateLog(schema, [
-            ...withD,
-            ...grace,
-            { kind: "cancel", op: cancelOp, id: "pi_d" },
-          ]);
-          // Entries refused in the run never entered the log; the baseline has none of them.
-          const refused = new Set(run.steps.filter((x) => x.refused).map((x) => x.entry));
-          fc.pre(!refused.has(withD[withD.length - 1] as LogEntry));
-          grace = grace.filter((e) => !refused.has(e));
-          const cancelStep = run.steps.at(-1);
-          const kept = cancelStep?.keptEffective ?? [];
-          counts.keptEffective += kept.length;
-          if (grace.some((e) => e.kind !== "write")) counts.withDecisions++;
-          const cancelled = run.final;
-          const base = evaluateLog(schema, [...prefix.filter((e) => !refused.has(e)), ...grace], {
-            forcedEffective: kept,
-            forcedSuperseded: cancelStep?.keptSuperseded ?? [],
-          }).final;
-          const graceEvents = new Set(
-            grace
-              .filter((e): e is Op => e.kind !== "deletion" && e.kind !== "cancel")
-              .map((e) => e.event),
-          );
-          for (const f of ["f2", "f3"] as FieldId[]) {
-            const coveredBy = (ev: Evaluation): IvSet[] =>
-              ev.items
-                .filter(
-                  // A grace-period write to a required field also covers whether the row or
-                  // entity has a value there, which every field shows.
-                  (x) =>
-                    graceEvents.has(x.event) &&
-                    (x.target === f ||
-                      x.target === "existence" ||
-                      schema.required.includes(x.target as FieldId)),
-                )
-                .map((x) => x.valid);
-            const covered = union(...coveredBy(cancelled), ...coveredBy(base));
-            const sets: IvSet[] = [covered, cancelled.gaps, base.gaps];
-            for (const ev of [cancelled, base])
-              for (const x of ev.fields[f] ?? []) sets.push(x.valid);
-            const segs = state ? elementarySegments(endpoints(sets)) : [{ from: null, to: null }];
-            for (const g of segs) {
-              if (covers(covered, g)) continue;
-              const at = (ev: Evaluation) => {
-                if (state && ev.gaps.some((x) => covers([x], g))) return "no value";
-                if (!state && !ev.exists) return "no row";
-                return JSON.stringify(
-                  (ev.fields[f] ?? []).find((x) => covers(x.valid, g))?.value ?? null,
-                );
-              };
-              expect({ f, at: g, value: at(cancelled) }).toEqual({ f, at: g, value: at(base) });
-            }
-          }
-          // Items of the operations before the deletion.
-          const prefixEvents = new Set(
-            prefix
-              .filter((e): e is Op => e.kind !== "deletion" && e.kind !== "cancel")
-              .map((e) => e.event),
-          );
-          const excluded = new Set((cancelStep?.putBack ?? []).map((x) => String(x.event)));
-          // Per (write, target, status, openness): the business time its items cover. Index
-          // bookkeeping (how a segment is cut into items, 09 §5.7) is not part of the state.
-          const judgement = (ev: Evaluation) => {
-            const by = new Map<string, IvSet[]>();
-            for (const x of ev.items) {
-              if (!prefixEvents.has(x.event) || x.status === "dropped") continue;
-              if (excluded.has(String(x.event))) continue;
-              const key = `${etKey(x)} ${x.status}${x.closed ? " closed" : ""}`;
-              by.set(key, [...(by.get(key) ?? []), x.valid]);
-            }
-            return [...by.entries()]
-              .map(([key, vs]) => `${key} ${JSON.stringify(union(...vs))}`)
-              .sort();
-          };
-          expect(judgement(cancelled)).toEqual(judgement(base));
+          const checked = checkCancelRestores(schema, prefix, withD, grace, cancelOp);
+          fc.pre(checked !== undefined);
+          counts.keptEffective += checked.kept;
+          counts.refusedInBase += checked.refusedInBase;
+          counts.putBackDiffers += checked.putBackDiffers;
+          if (checked.withDecisions) counts.withDecisions++;
         }),
       ),
       { numRuns: RUNS },
@@ -1439,6 +1497,226 @@ describe.each(both)("%s table", (_, schema, state) => {
 it("cancellations keep writes in effect in the sampled logs", () => {
   // Guards against a generator that never reaches `kept_effective`.
   expect(counts.keptEffective).toBeGreaterThan(0);
+});
+
+it("«撤回还原»: a grace-period decision the replay without the deletion refuses", () => {
+  // Fixed log of a sampled case. Op 90 takes the previous value over [11-07, 11-09), so the
+  // required f2 has no value there. Deleting S5 removes the candidate op 90 decided on, so f2
+  // has a value throughout and the grace-period take_candidate at op 110 is accepted. Without
+  // the deletion it is refused (`missing_required`). After the cancellation it stays in effect
+  // (03-deletion «撤回与宽限期»): candidate 81 is closed in one run and open in the other, and
+  // the comparison leaves it out.
+  const given = (from: string, to?: string) => ({
+    from: { mode: "given" as const, value: from as BizPoint },
+    to:
+      to === undefined
+        ? { mode: "open" as const }
+        : { mode: "given" as const, value: to as BizPoint },
+  });
+  const prefix: LogEntry[] = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: given("2026-10-01"),
+      fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: given("2026-10-01"),
+      fields: { f2: { value: "1", sources: ["S2"], explicit: false } },
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 0,
+      valid: given("2026-11-07", "2026-11-09"),
+      fields: { f2: { value: "3", sources: ["S5"], explicit: false } },
+    },
+    {
+      kind: "write",
+      op: 40,
+      event: 41,
+      seen: 30,
+      valid: {
+        from: { mode: "given", value: "2026-11-03" as BizPoint },
+        to: { mode: "next_change" },
+      },
+      fields: { f2: { value: "1", sources: ["S3"], explicit: true } },
+    },
+    {
+      kind: "write",
+      op: 70,
+      event: 71,
+      seen: 60,
+      valid: given("2026-11-05"),
+      fields: { f3: { value: "3", sources: ["S2"], explicit: false } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 80,
+      event: 81,
+      seen: 50,
+      valid: given("2026-11-05"),
+      fields: { f3: { value: "2", sources: ["S3"], explicit: true } },
+      acknowledge: ["overwrite"],
+    },
+    { kind: "resolve", op: 90, event: 91, decision: "take_previous", candidates: [31], unit: "f2" },
+  ];
+  const withD: LogEntry[] = [...prefix, { kind: "deletion", op: 100, id: "pi_d", sources: ["S5"] }];
+  const grace: LogEntry[] = [
+    {
+      kind: "resolve",
+      op: 110,
+      event: 111,
+      decision: "take_candidate",
+      candidates: [81],
+      unit: "f3",
+      take: 81,
+    },
+  ];
+  expect(checkCancelRestores(STATE, prefix, withD, grace, 130)).toEqual({
+    kept: 0,
+    refusedInBase: 1,
+    putBackDiffers: 0,
+    withDecisions: true,
+  });
+  const base = evaluateLog(STATE, [...prefix, ...grace]).steps.at(-1);
+  expect({ refused: base?.refused, rejected: base?.rejected }).toEqual({
+    refused: true,
+    rejected: "missing_required",
+  });
+  const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 130, id: "pi_d" }]);
+  const ev = run.final;
+  const item = (event: number) => {
+    const x = ev.items.find((y) => y.event === event);
+    return { status: x?.status, closed: x?.closed === true, valid: x?.valid };
+  };
+  expect(item(81)).toEqual({
+    status: "candidate",
+    closed: true,
+    valid: [{ from: "2026-11-05", to: null }],
+  });
+  expect(item(111)).toEqual({
+    status: "applied",
+    closed: false,
+    valid: [{ from: "2026-11-05", to: null }],
+  });
+  expect(item(91)).toEqual({
+    status: "applied",
+    closed: false,
+    valid: [{ from: "2026-11-07", to: "2026-11-09" }],
+  });
+  // After the cancellation, over [11-07, 11-09) item 111 gives f3 its value while the required
+  // f2 has none (item 91): a state a write would be refused for (`missing_required`), reached
+  // through deletion, grace-period decision and cancellation. As the reference gives it now:
+  // the row has no value there, and the fields show it on both sides.
+  const seg: Iv = { from: "2026-11-07" as BizPoint, to: "2026-11-09" as BizPoint };
+  expect(ev.gaps).toEqual([
+    { from: null, to: "2026-10-01" },
+    { from: "2026-11-07", to: "2026-11-09" },
+  ]);
+  expect(ev.fields["f2"]?.map((x) => [x.valid, x.value])).toEqual([
+    [[{ from: "2026-10-01", to: "2026-11-07" }], "1"],
+    [[{ from: "2026-11-09", to: null }], "1"],
+  ]);
+  expect(ev.fields["f3"]?.map((x) => [x.valid, x.value, x.by?.event ?? null])).toEqual([
+    [[{ from: "2026-10-01", to: "2026-11-05" }], null, null],
+    [[{ from: "2026-11-05", to: "2026-11-07" }], "2", 111],
+    [[{ from: "2026-11-09", to: null }], "2", 111],
+  ]);
+  expect((ev.fields["f3"] ?? []).some((x) => covers(x.valid, seg))).toBe(false);
+});
+
+it("«撤回还原»: a put-back candidate judged again where the forced replay puts it in effect", () => {
+  // Fixed log of a sampled case. Ops 20, 40 and 50 carry stale versions: 21, 41 and 51 are
+  // candidates. Deleting S4 removes 31 and 51; 41 takes effect through it. In the grace period,
+  // 71 takes candidate 21 on the version after the deletion, so the cancellation keeps 41 in
+  // effect. 51's item was resolved in the grace period: put back, it is judged again on the state
+  // at the cancellation (03-deletion «撤回与宽限期»): 3 against 1 on [11-03, 11-05), a candidate
+  // of a conflict item of its own. In the forced replay 41 in effect moves 51's `next_change` end
+  // to 11-05, where nothing changed since its version: it takes effect there, 3. The cancellation's
+  // rule is the definition; the comparison takes 51's interval by it.
+  const given = (from: string, to?: string) => ({
+    from: { mode: "given" as const, value: from as BizPoint },
+    to:
+      to === undefined
+        ? { mode: "open" as const }
+        : to === "next"
+          ? { mode: "next_change" as const }
+          : { mode: "given" as const, value: to as BizPoint },
+  });
+  const w = (
+    op: number,
+    seen: number,
+    from: string,
+    to: string | undefined,
+    value: string,
+    src: string,
+    explicit: boolean,
+    ack: boolean,
+  ): LogEntry => ({
+    kind: "write",
+    op,
+    event: op + 1,
+    seen,
+    valid: given(from, to),
+    fields: { f2: { value, sources: [src], explicit } },
+    ...(ack ? { acknowledge: ["overwrite" as const] } : {}),
+  });
+  const prefix: LogEntry[] = [
+    w(10, 0, "2026-10-01", undefined, "1", "S1", false, true),
+    w(20, 0, "2026-11-05", undefined, "2", "S2", false, false),
+    w(30, 10, "2026-11-07", undefined, "2", "S4", true, true),
+    w(40, 10, "2026-11-05", undefined, "3", "S1", true, false),
+    w(50, 20, "2026-11-03", "next", "3", "S4", true, true),
+  ];
+  const withD: LogEntry[] = [...prefix, { kind: "deletion", op: 60, id: "pi_d", sources: ["S4"] }];
+  const grace: LogEntry[] = [
+    {
+      kind: "resolve",
+      op: 70,
+      event: 71,
+      decision: "take_candidate",
+      candidates: [21],
+      unit: "f2",
+      take: 21,
+    },
+  ];
+  expect(checkCancelRestores(STATE, prefix, withD, grace, 90)).toEqual({
+    kept: 1,
+    refusedInBase: 0,
+    putBackDiffers: 1,
+    withDecisions: true,
+  });
+  const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 90, id: "pi_d" }]);
+  const cancel = run.steps.at(-1);
+  expect(cancel?.keptEffective?.map((x) => x.event)).toEqual([41]);
+  expect(cancel?.putBack).toEqual([{ event: 51, target: "f2", judged: "candidate" }]);
+  const seg: Iv = { from: "2026-11-03" as BizPoint, to: "2026-11-05" as BizPoint };
+  const valueAt = (ev: Evaluation) =>
+    (ev.fields["f2"] ?? []).find((x) => covers(x.valid, seg))?.value;
+  const item51 = (ev: Evaluation) => {
+    const x = ev.items.find((y) => y.event === 51);
+    return { status: x?.status, closed: x?.closed === true, valid: x?.valid };
+  };
+  // After the cancellation: 1 on [11-03, 11-05), 51 an open candidate there.
+  expect(valueAt(run.final)).toBe("1");
+  expect(item51(run.final)).toEqual({ status: "candidate", closed: false, valid: [seg] });
+  // The forced replay: 51 in effect, 3.
+  const base = evaluateLog(STATE, [...prefix, ...grace], {
+    forcedEffective: cancel?.keptEffective ?? [],
+    forcedSuperseded: cancel?.keptSuperseded ?? [],
+  }).final;
+  expect(valueAt(base)).toBe("3");
+  expect(item51(base)).toEqual({ status: "applied", closed: false, valid: [seg] });
 });
 
 describe("state table: a revert covers by (event, target)", () => {
