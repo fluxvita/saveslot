@@ -272,6 +272,7 @@ CREATE INDEX block_deps_dep ON block_deps (dep_event, dep_field, dep_k);`,
   target_table ${T},
   target_row ${T},
   state ${T} NOT NULL,
+  decision ${T},                    -- how a resolved item was resolved
   version_op BIGINT NOT NULL        -- operation number of the latest content change
 );
 CREATE INDEX pending_items_target ON pending_items (target_table, target_row);`,

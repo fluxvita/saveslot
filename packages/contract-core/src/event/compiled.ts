@@ -120,8 +120,8 @@ interface TableBase {
 interface BaseTableCommon extends TableBase {
   readonly kind: "base";
   readonly fields: readonly CompiledBaseField[];
+  /** Conflict groups: a field in at most one group, each of two fields or more. */
   readonly together?: readonly (readonly FieldId[])[];
-  readonly duplicate_keys?: readonly (readonly FieldId[])[];
 }
 
 /** External key: 1–4 key fields. */
@@ -131,7 +131,10 @@ export type ExternalKey =
   | readonly [FieldId, FieldId, FieldId]
   | readonly [FieldId, FieldId, FieldId, FieldId];
 
-/** A base table. `external_key` only on event and timeless tables; `entity_key` only on state tables. */
+/**
+ * A base table. `external_key` and `duplicate_keys` only on event and timeless tables; `entity_key`
+ * only on state tables.
+ */
 export type CompiledBaseTable = BaseTableCommon &
   (
     | {
@@ -139,12 +142,15 @@ export type CompiledBaseTable = BaseTableCommon &
           | { readonly type: "none" }
           | { readonly type: "event"; readonly field: FieldId };
         readonly external_key?: ExternalKey;
+        readonly duplicate_keys?: readonly (readonly FieldId[])[];
         readonly entity_key?: never;
       }
     | {
         readonly time: { readonly type: "state"; readonly granularity: Granularity };
-        readonly entity_key?: readonly FieldId[];
+        /** Not empty; every key field required. */
+        readonly entity_key?: readonly [FieldId, ...FieldId[]];
         readonly external_key?: never;
+        readonly duplicate_keys?: never;
       }
   );
 

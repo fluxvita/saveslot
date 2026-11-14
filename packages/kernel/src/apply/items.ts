@@ -1,0 +1,152 @@
+// apply of the pending item events (docs/zh-CN/spec/09-event-format.md §5.8): `pending_items`, the
+// positions of their entry blocks (`pending_entries`) and the data flags open items give
+// (`flags`: `disputed`, `awaiting`, `flagged`; 02-architecture §8).
+//
+// Entry blocks are registered by position, removed ones too (a removed data block still stands
+// where it was, §1.1). `item.merged` and `item.refreshed` give some groups whole: the item's
+// earlier entries of those groups stop counting, and the flag's interval follows the new
+// `scope_valid` (none given: an empty group, no interval).
+
+import { canonicalize, type JsonValue, type Seq } from "@fluxvita/saveslot-contract-core";
+import { ApplyError, type Change, type EntryRef } from "./model.ts";
+
+type Obj = Readonly<Record<string, JsonValue>>;
+
+/** The flag an open item of each type sets. */
+const FLAG_OF: Readonly<Record<string, string>> = {
+  conflict: "disputed",
+  awaiting_confirmation: "awaiting",
+  flagged: "flagged",
+};
+
+/** The groups `item.merged` / `item.refreshed` give whole (§5.8). */
+const WHOLE_GROUPS: Readonly<Record<string, readonly string[]>> = {
+  "item.merged": ["scope_valid", "previous", "impact"],
+  "item.refreshed": ["scope_valid", "current", "previous", "impact", "proposed"],
+};
+
+/** The item an update is for, read by the caller. */
+export interface ItemInput {
+  readonly state: string;
+  /** The next entry number of the item (`pending_entries.n`). */
+  readonly nextEntry: number;
+}
+
+const isEntry = (path: string) => path !== "target";
+
+/** Entry blocks of the event, in path order, numbered from `from`. */
+function entries(item: string, seq: Seq, paths: readonly string[], from: number): EntryRef[] {
+  return paths
+    .filter(isEntry)
+    .sort()
+    .map((path, i) => ({ item, n: from + i, seq, path }));
+}
+
+function interval(v: JsonValue | undefined): { from: string | null; to: string | null } {
+  if (v === undefined || v === null || typeof v !== "object" || Array.isArray(v)) {
+    return { from: null, to: null };
+  }
+  const o = v as Obj;
+  return {
+    from: (o["from"] as string | undefined) ?? null,
+    to: (o["to"] as string | undefined) ?? null,
+  };
+}
+
+export function planItem(
+  type: string,
+  seq: Seq,
+  op: Seq,
+  slot: string | undefined,
+  present: Obj,
+  paths: readonly string[],
+  input: { readonly item?: ItemInput },
+): Change[] | undefined {
+  const t = present["target"] as Obj | undefined;
+  // An update is for an open item (§5.8).
+  if (type !== "item.created" && type.startsWith("item.")) {
+    const id = (t as Obj)["item"] as string;
+    if (input.item === undefined || input.item.state !== "open") {
+      throw new ApplyError("inconsistent", seq, `no open item ${id}`);
+    }
+  }
+  switch (type) {
+    // §5.8 item.created: a new open item, its entries, the flag of its type.
+    case "item.created": {
+      const target = t as Obj;
+      const id = target["item"] as string;
+      const row = (target["row"] ?? target["entity"] ?? null) as string | null;
+      const table = (target["table"] ?? null) as string | null;
+      const out: Change[] = [
+        {
+          kind: "item_insert",
+          row: {
+            id,
+            type: target["type"] as string,
+            slot_id: slot ?? null,
+            target_table: table,
+            target_row: row,
+            state: "open",
+            version_op: op,
+          },
+        },
+        { kind: "entries_insert", entries: entries(id, seq, paths, 0) },
+      ];
+      const flag = FLAG_OF[target["type"] as string];
+      if (flag !== undefined && table !== null && row !== null) {
+        const unit = target["unit"];
+        out.push({
+          kind: "flag_insert",
+          row: {
+            table_id: table,
+            row_id: row,
+            flag,
+            item_id: id,
+            fields: unit === undefined ? null : canonicalize(unit),
+            ...rename(interval(present["scope_valid"])),
+          },
+        });
+      }
+      return out;
+    }
+    // §5.8 item.merged / item.refreshed: the item's version is this operation; whole groups
+    // replace the earlier entries of the same name, candidates and matched rows by index.
+    case "item.merged":
+    case "item.refreshed": {
+      const id = (t as Obj)["item"] as string;
+      const groups = WHOLE_GROUPS[type] as readonly string[];
+      const byIndex = paths.filter((p) => /^(candidates|matched)\/\d+$/.test(p));
+      return [
+        { kind: "item_update", id, version_op: op },
+        { kind: "entries_drop", item: id, groups, paths: type === "item.refreshed" ? byIndex : [] },
+        { kind: "entries_insert", entries: entries(id, seq, paths, input.item?.nextEntry ?? 0) },
+        { kind: "flag_valid", item: id, ...interval(present["scope_valid"]) },
+      ];
+    }
+    // §5.8 item.superseded: no longer to handle; its flags go.
+    case "item.superseded": {
+      const id = (t as Obj)["item"] as string;
+      return [
+        { kind: "item_update", id, state: "superseded", version_op: op },
+        { kind: "flags_drop", item: id },
+      ];
+    }
+    // §5.8 item.resolved: resolved with its decision; its flags go. The write it triggers is
+    // applied by the `write.base` after it.
+    case "item.resolved": {
+      const target = t as Obj;
+      const id = target["item"] as string;
+      return [
+        { kind: "item_update", id, state: "resolved", decision: target["decision"] as string },
+        { kind: "flags_drop", item: id },
+      ];
+    }
+    default:
+      return undefined;
+  }
+}
+
+const rename = (v: { from: string | null; to: string | null }) => ({
+  valid_from: v.from,
+  valid_to: v.to,
+});

@@ -63,7 +63,7 @@
 | `u_…`、`ci_…`；固定值 `system` | 主体 ID：用户、连接实例、内核自身 | 全局唯一 |
 | `n_…` | 节点 ID（`node_id`） | 全局唯一；见 §2.2 |
 | `sl_…` | slot ID | 租户内唯一 |
-| `t1`、`f2`、`r1` | 表 ID（租户内唯一）、字段 ID（表内唯一）、规则 ID | 递增的短 ID，删掉的不复用 |
+| `t1`、`f2`、`r1` | 表 ID（租户内唯一）、字段 ID（表内唯一）、规则 ID | 递增的短 ID，删掉的不复用；数字部分从 1 起、无前导零、至多 9 位 |
 | `r_…` | 行 ID（UUIDv7） | 事件类表、无时间表 |
 | `e_…` | 实体 ID（UUIDv7） | 状态类表 |
 | `p_…` | 派生行的 `partition_id` | |
@@ -1703,10 +1703,10 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | | `tables` | **这一版里全部的表**（不只是改动的），每张给完整定义。重放时只凭这一块就能解释这一版的全部写入 |
 | 表 | `id`、`name`、`kind`、`description` | 都必有。`kind`：`base` / `derived`。`description` 在表、基础表字段、派生字段上都必有（schema 文档里说明是必填的，编译时缺了就不通过） |
 | | `aliases` | 别名：字符串数组，可缺。给 Agent 看的说法，不参与名字解析。基础表、派生表都可以有 |
-| | `time` | `{"type": "none"}` / `{"type": "event", "field": <字段 ID>}` / `{"type": "state", "granularity": "date" \| "instant"}` |
-| | `entity_key` | 状态类表的自然键：字段 ID 数组 |
-| | `together` | 字段组：字段 ID 数组的数组。同组字段是一个冲突单元 |
-| | `duplicate_keys` | 疑似重复的判据：字段 ID 数组的数组 |
+| | `time` | `{"type": "none"}` / `{"type": "event", "field": <字段 ID>}` / `{"type": "state", "granularity": "date" \| "instant"}`。事件类表的 `field` 是本表一个 `date` 或 `zoned_datetime` 字段 |
+| | `entity_key` | 状态类表的自然键：字段 ID 数组，可缺；给出时非空，各键字段都必填 |
+| | `together` | 字段组：字段 ID 数组的数组。同组字段是一个冲突单元，所以一个字段至多在一个组里，每组至少两个字段 |
+| | `duplicate_keys` | 疑似重复的判据：字段 ID 数组的数组。只出现在事件类表与无时间表上（状态类表不声明它，见 [`03-data-model/04-write-and-read.md`](03-data-model/04-write-and-read.md)「疑似重复」） |
 | | `external_key` | 来源键：字段 ID 数组（1–4 个），可缺。只出现在事件类表与无时间表上；键字段不出现在 `together` 里 |
 | | `physical` | `{"table": <物理表名>, "since": <整数>}`。`since` 是这张物理表最初建于哪个版本；与本版 `sv` 相同时可省，表示本版新建（新增的表、重建的表、从未被写入而改了结构的表） |
 | 基础表的字段 | `id`、`name`、`type`、`description`、`required` | 前四个必有；`required` 只在为 `true` 时出现，缺省即可选 |
@@ -1724,7 +1724,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | | `rule.sql` | 按表 ID、字段 ID 绑定后的受限 SQL，输出列名是派生字段 ID |
 | | `rule.time_dependency` | `none` / `bucketed` / `now` |
 | | `rule.depends_on` | 静态列级依赖 |
-| | `rule.scope` | 重算范围：`{"kind": "group", "key": [<派生字段 ID>]}` 或 `{"kind": "tenant"}`；`key_from_free_text` 表示分组键来自自由文本字段 |
+| | `rule.scope` | 重算范围：`{"kind": "group", "key": [<派生字段 ID>], "key_from_free_text": <布尔>}` 或 `{"kind": "tenant"}`。`group` 时 `key_from_free_text` 必有，表示分组键来自自由文本字段 |
 | 派生表的字段 | `type`、`unit`、`precision` | 由编译器推断回填 |
 | | `aliases` | 别名，同表的 `aliases` |
 

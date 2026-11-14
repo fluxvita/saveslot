@@ -12,6 +12,7 @@
 import { check, type Issues, isObject, type Json, keys, type ShapeChecker, str } from "./check.ts";
 import { EVENT_TYPES, type EventType, PRINCIPAL_VIAS, SCOPES, TRIGGERS } from "./enums.ts";
 import { HEADER_FIELDS, HEADER_RULES, type HeaderField } from "./header.ts";
+import { SCHEMA_EVENT_RULES, SCHEMA_SHAPES } from "./shapes-schema.ts";
 import { WRITE_EVENT_RULES, WRITE_SHAPES } from "./shapes-write.ts";
 import { isEventInteger, isHash, isId, isInstant } from "./values.ts";
 import { matchPath, VOCABULARY, type VocabularyEntry } from "./vocabulary.ts";
@@ -93,9 +94,13 @@ const SHAPES: Partial<Record<string, ShapeChecker>> = {
     if (!keys(v, at, ["name"], [], issues)) return;
     check(str(v["name"]), at, "name", issues);
   },
+  // §5.4, §5.5, §7
+  ...SCHEMA_SHAPES,
   // §5.6–§5.8
   ...WRITE_SHAPES,
 };
+
+const EVENT_RULES = { ...SCHEMA_EVENT_RULES, ...WRITE_EVENT_RULES };
 
 /** The block shapes this module checks so far. */
 export const CHECKED_SHAPES: readonly string[] = Object.keys(SHAPES);
@@ -222,10 +227,10 @@ export function parseEvent(
     if (checker === undefined) unsupported.add(entry.shape);
     else checker(blocks[path], path, issues);
   }
-  // Rules between the blocks of one event (§5.6–§5.8).
-  if (Object.hasOwn(WRITE_EVENT_RULES, type)) {
+  // Rules between the blocks of one event (§5.5–§5.8).
+  if (Object.hasOwn(EVENT_RULES, type)) {
     const paths = new Set([...Object.keys(blocks), ...removedSet]);
-    WRITE_EVENT_RULES[type]?.(paths, blocks, issues);
+    EVENT_RULES[type]?.(paths, blocks, issues);
   }
   for (const entry of VOCABULARY[type] as readonly VocabularyEntry[]) {
     if (entry.always && !(entry.path in blocks) && !removedSet.has(entry.path)) {

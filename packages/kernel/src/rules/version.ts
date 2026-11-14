@@ -18,3 +18,14 @@ export const KNOWN_RULESET_VERSIONS: ReadonlySet<number> = new Set([1]);
 export function isKnownRulesetVersion(version: number): boolean {
   return KNOWN_RULESET_VERSIONS.has(version);
 }
+
+/**
+ * The restricted SQL whitelist versions this kernel evaluates (03-data-model/11-restricted-sql.md
+ * «白名单的版本与变更»): a compiled definition's `rsql` and each rule's. `apply` stops on others
+ * (09-event-format §7).
+ */
+export const KNOWN_RSQL_VERSIONS: ReadonlySet<string> = new Set(["rsql@1"]);
+
+export function isKnownRsqlVersion(version: string): boolean {
+  return KNOWN_RSQL_VERSIONS.has(version);
+}

@@ -33,13 +33,13 @@ import {
 
 // --- values --------------------------------------------------------------------------------------
 
-const oneOf = (list: readonly string[], v: Json) => (list as readonly Json[]).includes(v);
+export const oneOf = (list: readonly string[], v: Json) => (list as readonly Json[]).includes(v);
 const seq = (v: Json) => isEventInteger(v) && v >= 1;
-const int = (v: Json) => isEventInteger(v);
-const id = (kind: Parameters<typeof isId>[0], v: Json) => str(v) && isId(kind, v);
+export const int = (v: Json) => isEventInteger(v);
+export const id = (kind: Parameters<typeof isId>[0], v: Json) => str(v) && isId(kind, v);
 const point = (v: Json): v is string => str(v) && (isDate(v) || isInstant(v));
 
-function interval(v: Json, at: string, issues: Issues): void {
+export function interval(v: Json, at: string, issues: Issues): void {
   if (!keys(v, at, ["from"], ["to"], issues)) return;
   const from = v["from"];
   check(point(from), at, "from", issues);
@@ -54,7 +54,7 @@ function interval(v: Json, at: string, issues: Issues): void {
 }
 
 /** A field value (§1.3); `raw`: as the caller gave it (`ops/<i>/set`), else normalized. */
-function value(v: Json, at: string, issues: Issues, raw = false): void {
+export function value(v: Json, at: string, issues: Issues, raw = false): void {
   if (v === null || str(v) || typeof v === "boolean") return;
   if (!isObject(v)) {
     issues.push(`${at}: not a field value`);
@@ -85,7 +85,13 @@ function contribution(v: Json, at: string, issues: Issues): void {
   check(int(v["k"]), at, "k", issues);
 }
 
-function list(v: Json, at: string, issues: Issues, each: ShapeChecker, nonEmpty = false): void {
+export function list(
+  v: Json,
+  at: string,
+  issues: Issues,
+  each: ShapeChecker,
+  nonEmpty = false,
+): void {
   if (!Array.isArray(v)) {
     issues.push(`${at}: not an array`);
     return;
@@ -96,7 +102,7 @@ function list(v: Json, at: string, issues: Issues, each: ShapeChecker, nonEmpty 
   });
 }
 
-const deps: ShapeChecker = (v, at, issues) => list(v, at, issues, contribution);
+export const deps: ShapeChecker = (v, at, issues) => list(v, at, issues, contribution);
 
 function tableTarget(v: Record<string, Json>, at: string, issues: Issues): void {
   check(id("table", v["table"]), at, "table", issues);
@@ -125,8 +131,8 @@ function versions(v: Record<string, Json>, at: string, issues: Issues): void {
   check(int(v["policy_version"]), at, "policy_version", issues);
 }
 
-const slotCtx =
-  (literal: "required" | "optional"): ShapeChecker =>
+export const slotCtx =
+  (literal: "required" | "optional" | "absent"): ShapeChecker =>
   (v, at, issues) => {
     const base = ["now", "today", "ruleset_version", "policy_version"];
     const req = literal === "required" ? [...base, "literal_checker"] : base;
