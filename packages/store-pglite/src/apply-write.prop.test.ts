@@ -9,9 +9,6 @@
 // read as of every earlier operation gives that step's state, and replaying the whole log into an
 // empty storage gives the same tables (K12).
 
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   appendOperation,
   applyEvents,
@@ -39,18 +36,16 @@ import {
 import { evaluateLog, type TableSchema } from "@fluxvita/saveslot-reference";
 import { EVENT, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
-import { afterAll, describe, expect, it, vi } from "vitest";
-import { PgliteBackend, type PgliteTenantStore } from "./backend.ts";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { PgliteTenantStore } from "./backend.ts";
+import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
 
-// Each sample builds a store and compares several tables after every step; 60 samples a table
-// take several minutes, more when `pnpm check` runs the other test files beside it.
-vi.setConfig({ testTimeout: 1_200_000 });
-fc.configureGlobal({ interruptAfterTimeLimit: 1_150_000, markInterruptAsFailure: true });
+vi.setConfig({ testTimeout: 600_000 });
+fc.configureGlobal({ interruptAfterTimeLimit: 550_000, markInterruptAsFailure: true });
 
 const RUNS = propRuns(60);
 /**
- * `PROP_SEED` fixes the seed: a large run goes in several processes of a size one process holds
- * (each sample opens and closes PGlite stores), each with its own seed.
+ * `PROP_SEED` fixes the seed (and `PROP_PATH` with it replays one counterexample).
  */
 const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
 
@@ -123,21 +118,6 @@ const CHANGES = [
   destructive: false,
   auto: true,
 }));
-
-const roots: string[] = [];
-afterAll(() => {
-  for (const r of roots) rmSync(r, { recursive: true, force: true });
-}, 120_000);
-/** Removes the storage opened last (each sample removes its own when it is done). */
-const drop = () => {
-  const r = roots.pop();
-  if (r !== undefined) rmSync(r, { recursive: true, force: true });
-};
-const open = async () => {
-  const root = mkdtempSync(join(tmpdir(), "saveslot-apply-write-"));
-  roots.push(root);
-  return new PgliteBackend().open({ kind: "pglite", dir: join(root, "tenant") }, { create: true });
-};
 
 let minute = 0;
 const nextNow = () => {
@@ -473,9 +453,10 @@ async function everything(tx: ReadTx): Promise<Record<string, unknown[]>> {
   return out;
 }
 
-async function replayed(store: PgliteTenantStore) {
-  const replica = await open();
-  try {
+async function replayed(store: PgliteTenantStore, into: ReusableStore) {
+  await into.reset();
+  const replica = into.store;
+  {
     const events = await store.read((tx) => tx.query("SELECT * FROM events ORDER BY seq"));
     const content = await store.read((tx) => tx.query("SELECT * FROM content ORDER BY seq, path"));
     await replica.write(async (tx) => {
@@ -495,9 +476,6 @@ async function replayed(store: PgliteTenantStore) {
       await applyEvents(tx, await readEvents(tx, 1, last));
     });
     return await replica.read(everything);
-  } finally {
-    await replica.close();
-    drop();
   }
 }
 
@@ -510,6 +488,19 @@ const both = [
 const totals: Record<string, number> = {};
 
 describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
+  // One store for the samples and one to replay into, each emptied before use: opening PGlite
+  // builds a database (seconds), emptying one takes milliseconds.
+  let main: ReusableStore;
+  let replica: ReusableStore;
+  beforeAll(async () => {
+    main = await openReusable("saveslot-apply-write-");
+    replica = await openReusable("saveslot-apply-write-replica-");
+  }, 120_000);
+  afterAll(async () => {
+    await main?.close();
+    await replica?.close();
+  }, 120_000);
+
   it("apply on storage gives judge's view and the reference evaluator, step by step and as of each operation", async () => {
     const seen = { samples: 0, skipped: 0, steps: 0, replayed: 0 };
     const hits: Record<string, number> = {};
@@ -534,8 +525,11 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
           seen.skipped++;
           return;
         }
-        const store = await open();
-        try {
+        await main.reset();
+        const store = main.store;
+        // Nothing of the sample before is left.
+        expect(await store.read(snapshot)).toEqual(main.blank);
+        {
           await createTenant(
             store,
             createOpsContext({
@@ -686,12 +680,9 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
           // K12: replaying the whole log into an empty storage gives the same tables (every fourth
           // sample: the replay costs as much as the sample, and checks the same apply each time).
           if (seen.samples % 4 === 1) {
-            expect(await replayed(store)).toEqual(await store.read(everything));
+            expect(await replayed(store, replica)).toEqual(await store.read(everything));
             seen.replayed++;
           }
-        } finally {
-          await store.close();
-          drop();
         }
       }),
       {
