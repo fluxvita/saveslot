@@ -1,2 +1,2 @@
-// Placeholder entry point. The package's contents are added in later merge requests.
-export {};
+// HTTP and MCP adapters for saveslot (docs/zh-CN/spec/02-architecture.md §11).
+export * from "./local.ts";

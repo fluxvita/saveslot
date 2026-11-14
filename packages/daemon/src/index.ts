@@ -1,2 +1,3 @@
-// Placeholder entry point. The package's contents are added in later merge requests.
-export {};
+// Process entry for the saveslot service (docs/zh-CN/spec/02-architecture.md §7, §11).
+export * from "./main.ts";
+export * from "./service.ts";

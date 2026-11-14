@@ -120,6 +120,7 @@ $ saveslot init
   control/       控制面（文件）：凭证哈希、租户目录、锚点（删除登记、seq 高水位、恢复次数）、句柄签名密钥
   credentials/   用户会话令牌（0600）
   config.toml    监听方式、数值策略
+  run/           saveslot 服务运行时（0700）：saveslot.lock（服务进程一级的锁）、saveslot.pid、saveslot.sock
 $ saveslot start
 saveslot 服务已在后台启动 · pid 4211 · 监听 ~/.saveslot/run/saveslot.sock · 数据 ~/.saveslot/data
 $ saveslot schema templates
@@ -150,7 +151,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 
 1. **安装**：第一版发一个 npm 包，含 CLI 与 saveslot 服务；独立可执行文件与桌面安装包等实验 6（桌面打包）的结论（[`07-scope-v1.md`](07-scope-v1.md)「实现顺序」）。
 2. **初始化**：`saveslot init` 是唯一直接打开存储的命令，saveslot 服务在运行时拒绝执行。数据目录可用 `--data-dir` 另放，落在 iCloud Drive、Dropbox 一类同步盘里时给出警告（[`02-architecture.md`](02-architecture.md) §7）。`control/` 下是几个文件：`credentials.json`（令牌的哈希、用户会话）、`tenant.json`（租户目录）、`anchor.json`（锚点存储：删除登记、`seq` 高水位、恢复次数、"恢复进行中"与"导入进行中"标记）、`keys/`（句柄签名密钥）；每次写入都是"写临时文件 → 落盘 → 改名覆盖"，只有 saveslot 服务进程写（[`02-architecture.md`](02-architecture.md) §5、§8）。锚点不在数据目录里；但默认布局下两者同在 `~/.saveslot/`，系统级备份通常一起恢复，这时 saveslot 补不了也发现不了。只有用 `--data-dir` 把数据目录另放、且只恢复了数据目录时，才能按登记补删：用 `saveslot start --restored` 启动，服务先走恢复流程再对外服务；恢复流程中途被打断时，下次启动不管带没带 `--restored` 都会接着做完再对外服务（[`02-architecture.md`](02-architecture.md) §8；[`03-data-model/03-deletion.md`](03-data-model/03-deletion.md)「删除之后」）。
-3. **启动 / 停止 / 自启**：`saveslot start` 后台启动（`--foreground` 前台，看日志用）；`saveslot stop` 先把 read_log 缓冲落盘、排空写队列再退出。开机自启 `saveslot service install`（macOS launchd 用户级代理，Linux systemd 用户服务）。宿主启动 `saveslot mcp` 时若 saveslot 服务没在运行，`saveslot mcp` 先把它拉起来——两个宿主同时拉起时，后到的发现套接字已在就直接连上，单写者锁兜底保证不会有两个进程写数据；这样装好自启之前，宿主照样能用。自动拉起默认打开，配置 `mcp.autostart = false` 可关；`saveslot stop` 时提示"MCP 宿主重新连接时会再次启动，彻底停用请关掉自动拉起或移除宿主里的 saveslot"。`saveslot mcp` 固定连本地 saveslot 服务，不随 `--profile` / `saveslot profile use` 变（云服务不经它，宿主直接走远程 MCP）。
+3. **启动 / 停止 / 自启**：`saveslot start` 后台启动（`--foreground` 前台，看日志用）；`saveslot stop` 先把 read_log 缓冲落盘、排空写队列再退出；它先确认 `run/saveslot.lock` 被占着（即服务在运行），再对 `run/saveslot.pid` 里的进程发 SIGTERM，锁没被占着时残留的 pid 文件不算数（[`02-architecture.md`](02-architecture.md) §7）。开机自启 `saveslot service install`（macOS launchd 用户级代理，Linux systemd 用户服务）。宿主启动 `saveslot mcp` 时若 saveslot 服务没在运行，`saveslot mcp` 先把它拉起来——两个宿主同时拉起时，后到的发现套接字已在就直接连上，单写者锁兜底保证不会有两个进程写数据；这样装好自启之前，宿主照样能用。自动拉起默认打开，配置 `mcp.autostart = false` 可关；`saveslot stop` 时提示"MCP 宿主重新连接时会再次启动，彻底停用请关掉自动拉起或移除宿主里的 saveslot"。`saveslot mcp` 固定连本地 saveslot 服务，不随 `--profile` / `saveslot profile use` 变（云服务不经它，宿主直接走远程 MCP）。
 4. **建第一个 slot**：`saveslot slot create` 就是 `schema_draft`（`base_version: null`），新建 slot 编译通过即生效、返回 `sv: 1`（[`04-contract.md`](04-contract.md)「`schema_draft`」）；建 slot 同时由内核写一条默认 slot 策略事件。
 5. **起步 schema 从哪来**：见第 3.1 节。
 6. **签发并接入宿主**：见第 3.2 节。
@@ -672,7 +673,7 @@ P1 结束时 CLI 已能完成第 3 节的整条上手流程，含 `saveslot setu
 |---|---|
 | 只在 unix socket 上监听，目录 0700、套接字 0600 | 别的系统用户、网络上的任何人 |
 | 回环 TCP 默认关；打开时只绑回环地址，校验 `Host` / `Origin` | 局域网访问；网页经 DNS 重绑定访问。**打开后本机其他系统用户也能连上**，对他们只剩令牌一道防线 |
-| 每个请求都要令牌（连接实例或用户会话），套接字权限不代替认证 | 区分主体、限定 scope：每个 Agent 只能做它的连接实例被授予的事，读写各自留痕。它不是对同权限程序的防护——够得着套接字的程序一般也读得到凭证文件（8.3） |
+| 每个请求都要令牌（连接实例或用户会话），套接字权限不代替认证。唯一的例外是 `GET /health`：不涉及任何主体与数据，`saveslot start` 比较版本、`saveslot mcp` 判断服务是否已起来都要用它；响应只有 `state`（`starting` / `ready` / `stopping` / `failed`）、`version`、`pid`、`since`，`failed` 时另带一个不含路径与用户数据的原因码。其余路径没带令牌与不存在一样回 404，不区分 | 区分主体、限定 scope：每个 Agent 只能做它的连接实例被授予的事，读写各自留痕。它不是对同权限程序的防护——够得着套接字的程序一般也读得到凭证文件（8.3） |
 | 本地模式不提供绑定到非回环地址的配置 | 误配置把个人数据暴露到网络；跨设备用服务器模式（我们的云服务，或自部署——那是另一套带 OAuth 的启动方式，不是给本机模式开一个端口） |
 
 CLI 与 `saveslot mcp` 只认配置里的套接字路径，不接受从环境变量改成任意 URL 的本地连接，少一种被误配置引到别处的可能；这不是防护——同权限的程序照样能改 `config.toml`。
