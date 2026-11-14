@@ -1703,7 +1703,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | | `tables` | **这一版里全部的表**（不只是改动的），每张给完整定义。重放时只凭这一块就能解释这一版的全部写入 |
 | 表 | `id`、`name`、`kind`、`description` | 都必有。`kind`：`base` / `derived`。`description` 在表、基础表字段、派生字段上都必有（schema 文档里说明是必填的，编译时缺了就不通过） |
 | | `aliases` | 别名：字符串数组，可缺。给 Agent 看的说法，不参与名字解析。基础表、派生表都可以有 |
-| | `time` | `{"type": "none"}` / `{"type": "event", "field": <字段 ID>}` / `{"type": "state", "granularity": "date" \| "instant"}`。事件类表的 `field` 是本表一个 `date` 或 `zoned_datetime` 字段 |
+| | `time` | `{"type": "none"}` / `{"type": "event", "field": <字段 ID>}` / `{"type": "state", "granularity": "date" \| "instant"}`。事件类表的 `field` 是本表一个必填的 `date` 或 `zoned_datetime` 字段 |
 | | `entity_key` | 状态类表的自然键：字段 ID 数组，可缺；给出时非空，各键字段都必填 |
 | | `together` | 字段组：字段 ID 数组的数组。同组字段是一个冲突单元，所以一个字段至多在一个组里，每组至少两个字段 |
 | | `duplicate_keys` | 疑似重复的判据：字段 ID 数组的数组。只出现在事件类表与无时间表上（状态类表不声明它，见 [`03-data-model/04-write-and-read.md`](03-data-model/04-write-and-read.md)「疑似重复」） |

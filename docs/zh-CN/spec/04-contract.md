@@ -465,6 +465,7 @@
   - 草稿等确认期间这张表被写入了：草稿里凡按"从未被写入"编译的改动都不再成立，确认时一律报 `draft_outdated`（`table_written`，见 `resolve`）。
 - **第一版不支持的键或改动**：`reextract`、`extends`、`compatibility`、`derived` 改 `base`；在写入过的表上改时间类型、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 互转与改目标、换一组来源键（`change_external_key`）、改来源键字段的类型或收紧它的约束。写入过的表上仍可以加来源键（键字段须是同一份草稿新增的字段）或去掉它，都要确认。草稿里出现时整份报 `not_in_this_version`，`param` 指到那个键，不产生任何事件；因为表已被写入而不支持的，`reason` 是 `table_written`。
 - **新建 slot** 要求凭证的 slot 范围是"全部"：限定了 slot 范围的凭证报 `insufficient_scope`（`required_scope: "all_slots"`），不论草稿里的 slot 名是否与某个不可见的 slot 重名。凭证同时没有 `saveslot.schema` 时先报缺 scope（`required_scope: "saveslot.schema"`）：先查动作，再查范围。
+- 文档的形式不对报 `invalid_argument`，`param` 是文档里的位置（写法同明细的 `path`，如 `tables/0/fields/2/min`）：文档不是对象、键的 JSON 类型不对、出现不认识的键、字符串不是良构的 Unicode（含孤立的代理项，写不进日志）、枚举值不合内容规则（见 data-model「字段类型与取值范围」）（`malformed`），缺了必有的键（`missing`）。不认识的键不忽略：拼错的 `requried` 若被忽略，字段就悄悄成了可选。`min` / `max` 可以写十进制字符串（不带指数），也可以写 JSON 数字，但数字只收 ±(2^53 − 1) 之内的整数；带小数的边界一律写成字符串：JSON 数字解析之后，已经分不出调用方写的是哪个十进制数。
 - 编译失败报 `validation_failed`（`schema`），`details[]` 逐条指出文档里的位置。`base_version` 不是当前版本、或迁移进行中，报 `draft_outdated`。有已有字段没匹配到、也没列入删除，报 `field_unmatched`。
 - 四个与数据有关的编译明细码：
   - `still_referenced`：要删的表或字段仍被依赖（被 `ref` 指着的表；被派生规则、`entity_key`、`external_key`、`time.field`、`duplicate_keys`、`together` 用到的字段）。`referenced_by` 给出依赖方在文档里的位置；同一份草稿里把依赖方一并改掉即可。
@@ -475,9 +476,14 @@
 
   | 明细码 | 什么时候 |
   |---|---|
-  | `description_missing` | 表、字段、派生字段没写说明（`description` 必填），或写成空串 |
+  | `description_missing` | 表、字段、派生字段没写说明（`description` 必填），或写成空串、全是空白 |
   | `unknown_type` | 字段的 `type` 不是 types 4.2 的 `FieldType` 之一 |
   | `entity_key_not_required` | `entity_key` 列出的字段不是必填字段 |
+  | `unknown_reference` | 文档里按名字指向的东西不存在：`time.field`、`entity_key`、`external_key`、`together`、`duplicate_keys` 里的字段名，`ref.table` 里的表名 |
+  | `key_not_applicable` | 键或它的取值用在不适用的类型或表上：`min` / `max` 不在 `integer`、`decimal`、`quantity` 上，`values` 不在 `enum` 上，`unit` 不在 `quantity` 上，`scale` / `rounding` 不在 `decimal`、`quantity` 上，`ref` 不在 `ref` 字段上；`entity_key` 不在状态类表上，`duplicate_keys` 在状态类表上；`time.field` 指的字段不是必填的 `date` 或 `zoned_datetime`；`ref.target` 是 `row` 而目标是状态类表，或是 `entity` 而目标不是状态类表 |
+  | `out_of_bounds` | 取值越界：`min` 大于 `max`；`min` / `max` 超出类型的范围（`integer` 是 64 位有符号整数，`decimal`、`quantity` 的整数部分至多 18 位）；`scale` 不在 0–12；表没有字段；枚举没有取值或超过 200 个，枚举值为空或超过 64 个字符；说明超过 500 个字符；`entity_key` 为空，`external_key` 不是 1–4 个字段，`together` 的一组少于两个字段，`duplicate_keys` 的一组为空。长度按码点数 |
+  | `duplicate_entry` | 同一个列表里重复的项：枚举值重复（区分大小写）；`entity_key`、`external_key`、`together`、`duplicate_keys` 的一组里同一字段出现两次；一个字段进了两个 `together` 组。名字相撞是 `duplicate_name` |
+  | `timezone_unknown` | slot 的 `timezone` 不是认得的时区名：不是 `UTC` 或"区域/地点"的写法（如偏移量 `+08:00`、没有 `/` 的短名 `CST`），或不在所用的时区库里 |
 
 - 来源键的编译明细码：声明在状态类表或派生表上（`external_key_table_kind`）；键字段的类型不是 `text`、`enum`、`integer`（`external_key_field_type`）；写入过的表上把已有字段声明为键（`external_key_existing_field`）；键字段出现在 `together` 里（`external_key_in_together`）。只声明了一个键字段时，`warnings` 给 `single_field_external_key`：多个来源系统写这张表时 ID 可能相撞。
 - 别名不合规则（超过 8 个、超过 64 个字符、规范化后为空或含控制字符、同一对象内重复、与同一作用域里仍可解析的名字相同）：`validation_failed`，明细码 `alias_invalid`，`path` 指到那一项。

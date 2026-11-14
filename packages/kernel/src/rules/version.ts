@@ -29,3 +29,6 @@ export const KNOWN_RSQL_VERSIONS: ReadonlySet<string> = new Set(["rsql@1"]);
 export function isKnownRsqlVersion(version: string): boolean {
   return KNOWN_RSQL_VERSIONS.has(version);
 }
+
+/** The whitelist version this kernel compiles new definitions with (09-event-format §7 `rsql`). */
+export const CURRENT_RSQL_VERSION = "rsql@1";

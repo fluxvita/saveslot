@@ -162,9 +162,9 @@
 
 | 层级 | 键 | 谁写 | 说明 |
 |---|---|---|---|
-| slot | `slot`、`base_version`、`timezone`、`rename_to`（可选） | Agent | `timezone` 决定 `date` 的自然日语义；`rename_to` 给 slot 改名 |
+| slot | `slot`、`base_version`、`timezone`、`rename_to`（可选） | Agent | `timezone` 决定 `date` 的自然日语义，是一个 IANA 时区名：`UTC`，或"区域/地点"的写法（至少一个 `/`，如 `Asia/Shanghai`、`Etc/GMT+8`）；别名也可以用，照原样记；偏移量（`+08:00`）与没有 `/` 的短名（`CST`）不收；`rename_to` 给 slot 改名 |
 | 表 | `name`、`id`、`kind`（`base` / `derived`）、`description`（必填）、`aliases`（可选）、`time` | Agent，`id` 由 saveslot 回填 | `time.type`：`none` / `event` / `state`；`aliases` 见下方「别名」 |
-| 事件类表 | `time: {type: "event", field: "<字段>"}` | Agent | 指定发生时间字段（`date` 或 `zoned_datetime`） |
+| 事件类表 | `time: {type: "event", field: "<字段>"}` | Agent | 指定发生时间字段（`date` 或 `zoned_datetime`），这个字段须必填：每一行都有发生时间 |
 | 状态类表 | `time: {type: "state", granularity: "date" \| "instant"}`、`entity_key`（可选，字段名数组，如 `["category"]`） | Agent | 生效区间由 saveslot 管理，不作为字段出现；`entity_key` 是可选的自然键，列出的字段须必填；键字段不随业务时间变化，键唯一是全时间唯一（见「时间 · 按 `entity_key` 写入」） |
 | 来源键 | 表上的 `external_key`（可选，字段名数组，1–4 个字段，如 `["origin", "external_id"]`） | Agent | 记录在来源系统里的标识，按它写入时有则更新、无则新增（见「按来源键写入」）。只能用在事件类表与无时间表上（否则 `validation_failed`，`external_key_table_kind`）；键字段的类型只能是 `text`、`enum`、`integer`（否则 `external_key_field_type`：别的类型同值要经换算、舍入或时区，不适合当标识）；键字段可选可必填，可选时表里可以有没有来源键的行；唯一范围是表，比较按同值判据。只声明了一个键字段时编译回执给提醒 `single_field_external_key`（多个来源系统写这张表时 ID 可能相撞，键里宜带一个区分来源的字段） |
 | 字段组 | 表上的 `together`（可选，字段名数组的数组，如 `[["start", "end"]]`） | Agent | 同组字段是一个冲突单元（见下方「字段组」）；不能含来源键的键字段 |
@@ -175,7 +175,7 @@
 | 官方 schema | `extends`、`compatibility` | — | 键名预留，细则待定 |
 
 - **类型（首版）**：`text`、`integer`、`decimal`、`boolean`、`enum`、`date`、`zoned_datetime`（时刻 + IANA 时区，"哪一天"可复算）、
-  `quantity`（数值 + 单位，存为声明单位下的十进制数）、`ref`（指向同一 slot 的另一张表；第一版不跨 slot）。各类型的取值范围见「字段类型、同值与单位」。
+  `quantity`（数值 + 单位，存为声明单位下的十进制数）、`ref`（指向同一 slot 的一张表，可以是它自己所在的表；第一版不跨 slot）。各类型的取值范围见「字段类型、同值与单位」。
 - **名字**：slot 名、表名、字段名只用字母、数字与下划线，字母开头，至多 63 个字符；不得以 `_` 开头，字段名不得是 `valid`、`valid_from`、`valid_to`、`row_id`、`entity_id`。违反时编译报 `validation_failed`（`reserved_name`）。各自作用域内不分 ASCII 大小写唯一（`duplicate_name`）。说明文字与别名不受这个限制。
 - **别名**（`aliases`，表与字段上可选，基础表、派生表、基础字段、派生字段都可以带）：用户与 Agent 对这张表、这个字段的其他叫法（口语叫法、旧称、另一种语言的叫法），帮读目录的 Agent 把用户的说法对到名字上。不设 slot 级的别名。
   - 上限：每个对象至多 8 个，每个至多 64 个字符（见「字段类型、同值与单位」）。
@@ -255,8 +255,14 @@
         ] }
     ]
   },
-  "changes": [{ "target": { "slot": true }, "change": "create_slot", "class": "create",
-                "compatible_with_old_writes": true, "destructive": false, "auto": true }]
+  "changes": [
+    { "target": { "slot": true }, "change": "create_slot", "class": "create",
+      "compatible_with_old_writes": true, "destructive": false, "auto": true },
+    { "target": { "table": "runs" }, "change": "add_table", "class": "create",
+      "compatible_with_old_writes": true, "destructive": false, "auto": true },
+    { "target": { "table": "weekly_mileage" }, "change": "add_derived_table", "class": "create",
+      "compatible_with_old_writes": true, "destructive": false, "auto": true }
+  ]
 }
 ```
 

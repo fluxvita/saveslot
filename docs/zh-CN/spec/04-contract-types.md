@@ -2002,7 +2002,12 @@ type ValidationDetailCode =
   | "external_key_existing_field"   // 写入过的表上加来源键，键字段不是同一份草稿新增的字段
   | "external_key_in_together"      // 来源键字段出现在 together 里
   | "rule_eval_failed"              // 写入触发的派生刷新求值出错（如 64 位整数溢出）：整个写入被拒，不产生事件
-  | "alias_invalid";                // 别名超过 8 个或 64 个字符、规范化后为空或含控制字符、同一对象内重复、与同一作用域里仍可解析的名字相同
+  | "alias_invalid"                 // 别名超过 8 个或 64 个字符、规范化后为空或含控制字符、同一对象内重复、与同一作用域里仍可解析的名字相同
+  | "unknown_reference"             // 文档里按名字指向的字段或表不存在（time.field、entity_key、external_key、together、duplicate_keys、ref.table）
+  | "key_not_applicable"            // 键或它的取值用在不适用的类型或表上（如 min 写在 text 字段上、entity_key 写在非状态类表上、ref.target 与目标表的时间类型不符）
+  | "out_of_bounds"                 // 取值越界：min 大于 max、超出类型的范围、scale 不在 0–12、个数或长度超限
+  | "duplicate_entry"               // 同一个列表里重复的项：枚举值重复、键列表里同一字段出现两次、一个字段进了两个 together 组
+  | "timezone_unknown";             // slot 的 timezone 不是认得的时区名
 ```
 
 每个错误码的附带字段：
