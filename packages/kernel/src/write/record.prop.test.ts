@@ -17,7 +17,7 @@ import { JudgeError } from "../judge/errors.ts";
 import { judgeOp, stateFromRecord } from "../judge/judge.ts";
 import type { OpRecord } from "../judge/model.ts";
 import { type Judged, judged, scenario, toInput } from "../judge/scenarios.fixture.ts";
-import { asInThisPhase, DecisionOverItems, eventsOfSteps } from "./log.fixture.ts";
+import { asInThisPhase, eventsOfSteps } from "./log.fixture.ts";
 import { decodeRecords, type RowContext, type StoredEvent } from "./record.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -86,14 +86,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     fc.assert(
       fc.property(scenario(isState), ({ ops, decisions }) => {
         const { steps, refused } = judged(schema, ops.map(asInThisPhase), decisions);
-        // A decision over candidates in items apart is not one item's: not this property's.
-        let events: ReturnType<typeof eventsOf>;
-        try {
-          events = eventsOf(ctx, steps);
-        } catch (e) {
-          if (e instanceof DecisionOverItems) return;
-          throw e;
-        }
+        const events = eventsOf(ctx, steps);
         seen["samples"] = (seen["samples"] ?? 0) + 1;
         // Every event passes the strict parse of its type.
         for (const e of events.flat()) {

@@ -23,15 +23,6 @@ const itemId = (n: number): ItemId =>
 const unitKey = (u: Unit) => (u === "existence" ? "existence" : [...u.fields].sort().join(","));
 
 /**
- * A decision whose candidates lie in more than one open item: the scenarios resolve a unit's
- * candidates together, while candidates whose intervals do not meet are items apart (01-objects
- * «目标与合并»). The caller skips the sample.
- */
-export class DecisionOverItems extends Error {
-  override readonly name = "DecisionOverItems";
-}
-
-/**
  * The ops as this phase writes them. No `evidence_by_field`: a same-valued write is a no-op, never a
  * corroboration, and the format has no place yet for "this field's evidence was pointed at" (a
  * later phase).
@@ -201,7 +192,8 @@ export function eventsOfSteps(
         const holding = open.filter(
           (x) => x.unit === key && x.candidates.some((c) => theirs.includes(c)),
         );
-        if (holding.length > 1) throw new DecisionOverItems("a decision over several items");
+        // The scenarios resolve one item at a time (judge/scenarios.fixture.ts `itemsOfUnit`).
+        if (holding.length > 1) throw new Error("a decision over several items");
         const it = holding[0];
         item = it?.item;
         version = it?.version;

@@ -7,6 +7,7 @@ import type { BizPoint, FieldId, FieldValue } from "@fluxvita/saveslot-contract-
 import type { Op, TableSchema, WriteOp } from "@fluxvita/saveslot-reference";
 import { DAYS, type Step, stale, step, toOps } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
+import { canonical, type IntervalSet, meet } from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
 import { emptyState, judgeOp } from "./judge.ts";
 import type { JudgeInput, Judgement, TableShape } from "./model.ts";
@@ -489,6 +490,33 @@ function withoutVer(o: Op, drop: boolean): Op {
 }
 
 /** The unit of the item a candidate item belongs to, as the reference names it. */
+/**
+ * The open conflict items of a unit, as the pipeline groups the candidates still open there
+ * (01-objects «目标与合并»): by write, in log order, a write's candidates joining the earliest item
+ * whose interval meets theirs (on state tables), or opening one.
+ */
+function itemsOfUnit(
+  state: RowState,
+  unit: FieldId | "existence",
+): { events: number[]; spans: IntervalSet }[] {
+  const spansOf = new Map<number, IntervalSet>();
+  for (const x of state.items) {
+    if (x.status !== "candidate" || unitOf(x) !== unit) continue;
+    if (state.closedCandidate(x.event, x.target)) continue;
+    spansOf.set(x.event, canonical([...(spansOf.get(x.event) ?? []), ...x.valid]));
+  }
+  const items: { events: number[]; spans: IntervalSet }[] = [];
+  for (const [event, spans] of [...spansOf].sort(([a], [b]) => a - b)) {
+    const it = items.find((i) => !state.isState || meet(i.spans, spans).length > 0);
+    if (it === undefined) items.push({ events: [event], spans });
+    else {
+      it.events.push(event);
+      it.spans = canonical([...it.spans, ...spans]);
+    }
+  }
+  return items;
+}
+
 export const unitOf = (x: { target: string; onExistence?: true }): FieldId | "existence" =>
   x.target === "existence" || x.onExistence === true ? "existence" : (x.target as FieldId);
 
@@ -584,22 +612,15 @@ export function judged(schema: TableSchema, ops: readonly Op[], decisions: reado
   };
   ops.forEach((o, i) => {
     if (o.kind === "resolve") {
-      // A skeleton's resolution, on its unit's item as it is now: every candidate still open there
-      // (a dropped `ver` may have changed which writes conflict).
-      const open = new Set(
-        state.items
-          .filter(
-            (x) =>
-              x.status === "candidate" &&
-              unitOf(x) === o.unit &&
-              !state.closedCandidate(x.event, x.target),
-          )
-          .map((x) => x.event),
-      );
-      const candidates = [...open].sort((a, b) => a - b);
-      if (candidates.length > 0 && (o.take === undefined || candidates.includes(o.take))) {
-        enter({ ...o, candidates });
-      }
+      // A skeleton's resolution, on one item of its unit as the items are now: the candidates still
+      // open there, grouped as the pipeline groups them (01-objects «目标与合并»: a write's
+      // candidates join the earliest item whose interval meets theirs, or open one). A
+      // take_candidate goes to the item holding the candidate taken; another decision to the
+      // earliest item. (A dropped `ver` may have changed which writes conflict.)
+      const items = itemsOfUnit(state, o.unit);
+      const item =
+        o.take === undefined ? items[0] : items.find((i) => i.events.includes(o.take as number));
+      if (item !== undefined) enter({ ...o, candidates: item.events });
     } else if (o.kind === "confirm" || o.kind === "reject") {
       // A skeleton's decision, on an item still awaiting.
       const awaiting = state.items.some(
@@ -645,8 +666,9 @@ export function judged(schema: TableSchema, ops: readonly Op[], decisions: reado
         const x = open[d.pick % Math.max(1, open.length)];
         if (x === undefined) return;
         const unit = unitOf(x);
+        // A decision on the item holding the candidate picked (01-objects «目标与合并»).
         const candidates = resolving
-          ? [...new Set(open.filter((y) => unitOf(y) === unit).map((y) => y.event))]
+          ? (itemsOfUnit(state, unit).find((i) => i.events.includes(x.event))?.events ?? [x.event])
           : [x.event];
         enter(
           resolving
