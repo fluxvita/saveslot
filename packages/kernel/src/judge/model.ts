@@ -56,16 +56,9 @@ export interface TableShape {
 // ---------------------------------------------------------------------------------------------
 // Raw parameters (09 §5.7 `ops/<i>/valid`; 05-time «写状态：参数与默认»).
 
-export type FromParam =
-  | { readonly mode: "given"; readonly value: BizPoint }
-  | { readonly mode: "now" };
-export type ToParam =
-  | { readonly mode: "given"; readonly value: BizPoint }
-  | { readonly mode: "open" }
-  | { readonly mode: "next_change" };
+export type { FromParam, ToParam, ValidParam } from "../request/types.ts";
 
-/** `corrected_span`: intent correct with neither end given. */
-export type ValidParam = { readonly from: FromParam; readonly to: ToParam } | "corrected_span";
+import type { FromParam, ToParam, ValidParam } from "../request/types.ts";
 
 /** The conflict unit of an item or a pending item: a group of fields, or existence. */
 export type Unit = { readonly fields: readonly FieldId[] } | "existence";

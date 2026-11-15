@@ -20,7 +20,7 @@ const base = {
   trigger: null,
   task: null,
   visibility: { kind: "all" },
-  request_key: null,
+  idempotency_key_window: 86_400_000,
   idempotency_window: 86_400_000,
   now: NOW,
   confirmation: null,
@@ -32,7 +32,7 @@ const full = {
     kind: "scoped",
     slots: [{ slot: SLOT_A, tables: [{ table: "t2" }, { table: "t10" }] }, { slot: SLOT_B }],
   },
-  request_key: "rk-1",
+  idempotency_key_window: 3_600_000,
   confirmation: { item_op: 42, restore_count: 0, via: "call" },
 };
 const internal = { ...base, actor: "system", trigger: "expireDeletions" };

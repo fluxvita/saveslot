@@ -65,9 +65,12 @@ export interface OpsContext {
   /** Self-reported task identifier. */
   readonly task: string | null;
   readonly visibility: Visibility;
-  readonly request_key: string | null;
-  /** Idempotency window length in milliseconds (a service-layer policy). */
+  /**
+   * Idempotency windows in milliseconds (a service-layer policy): of the request keys the kernel
+   * computes from the request, and of the explicit idempotency keys callers give.
+   */
   readonly idempotency_window: number;
+  readonly idempotency_key_window: number;
   /** The current time, taken at the entry; the kernel does not read a clock. */
   readonly now: Instant;
   readonly confirmation: Confirmation | null;
@@ -93,8 +96,8 @@ const KEYS = [
   "trigger",
   "task",
   "visibility",
-  "request_key",
   "idempotency_window",
+  "idempotency_key_window",
   "now",
   "confirmation",
 ] as const;
@@ -225,6 +228,8 @@ export function createOpsContext(input: Json): OpsContext {
   } else if (trigger !== null) fail("trigger only with actor system");
   const window = o["idempotency_window"];
   if (!isEventInteger(window)) fail("idempotency_window is not a non-negative integer");
+  const keyWindow = o["idempotency_key_window"];
+  if (!isEventInteger(keyWindow)) fail("idempotency_key_window is not a non-negative integer");
   const now = o["now"];
   if (!str(now) || !isInstant(now)) fail("now is not an instant");
   return deepFreeze({
@@ -233,8 +238,8 @@ export function createOpsContext(input: Json): OpsContext {
     trigger: trigger as InternalOperation | null,
     task: nullableString(o["task"], "task"),
     visibility: visibility(o["visibility"]),
-    request_key: nullableString(o["request_key"], "request_key"),
     idempotency_window: window,
+    idempotency_key_window: keyWindow,
     now: now as Instant,
     confirmation: confirmation(o["confirmation"]),
   });

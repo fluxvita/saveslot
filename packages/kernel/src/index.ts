@@ -2,8 +2,8 @@ export * from "./apply/index.ts";
 export * from "./judge/index.ts";
 export * from "./log/index.ts";
 export * from "./ops/index.ts";
-// The business time parameter types (FromParam, ToParam, ValidParam) are also declared by judge, with
-// the same shapes, until judge refers to request's: exported from judge here meanwhile.
+// The business time parameter types (FromParam, ToParam, ValidParam) are request's; judge takes the
+// same ones and re-exports them, so they come out through judge.
 export {
   type ChangedFields,
   checkSvCompatibility,

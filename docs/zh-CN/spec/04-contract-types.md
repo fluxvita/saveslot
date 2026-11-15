@@ -1735,7 +1735,7 @@ interface DeleteResult extends CommonResult {
 
 ```ts
 /** 与本次调用的某个部分有关的结构化提醒。op = ops 的下标。 */
-/** 兜底取得的 ver 出自哪里，两者恰好一个：某次读取，或本连接实例某次写入回执（那次写入的操作号）。 */
+/** 兜底取得的 ver / sv 出自哪里，两者恰好一个：某次读取，或本连接实例某次写入回执（那次写入的操作号）。 */
 type FallbackOrigin = { read: ReadId; from_write?: never } | { from_write: Seq; read?: never };
 
 type Warning =
@@ -1744,7 +1744,7 @@ type Warning =
   | { code: "timezone_assumed"; op?: number; field?: FieldName; param?: string; timezone: string }   // 时刻没带时区，按 slot 时区
   | { code: "time_truncated"; op?: number; param: string; from: Instant; to: DateStr }               // 按日的表收到时刻，取了所在日
   | ({ code: "ver_fallback"; op: number; ver: Ver } & FallbackOrigin)
-  | { code: "sv_fallback"; sv: Sv; read: ReadId }
+  | ({ code: "sv_fallback"; sv: Sv } & FallbackOrigin)
   | { code: "item_ver_fallback"; item_ver: ItemVer; read?: ReadId }
   | { code: "renamed"; op?: number; table?: TableName; from: string; to: string }                    // 用了旧名
   | { code: "multi_segment_unmapped"; op: number; fields: FieldName[] }                              // 多段证据没给字段映射

@@ -1,6 +1,7 @@
 // Test helpers of the kernel for other packages' tests (store-pglite): hand-written events, the
-// anchor store conformance cases, the judged scenarios of the comparison, and the events of
-// judged logs. Source only (not built); only test files may import it.
+// anchor store conformance cases, the judged scenarios of the comparison, the events of judged
+// logs, and the write pipeline with identifiers chosen by the test. Source only (not built); only
+// test files may import it.
 
 export * from "./apply/slot.fixture.ts";
 export {
@@ -18,3 +19,4 @@ export {
   FIRST_OP,
   type LoggedEvent,
 } from "./write/log.fixture.ts";
+export { type WriteInput, writeInTx } from "./write/pipeline.ts";

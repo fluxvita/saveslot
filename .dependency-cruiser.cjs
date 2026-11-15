@@ -34,7 +34,7 @@ const KERNEL_MODULE_DEPS = {
   rules: ["store"],
   request: ["schema", "time"],
   time: ["store"],
-  judge: ["time"],
+  judge: ["time", "request"],
   derive: ["rules", "log"],
   apply: ["store", "log", "flags", "rules", "time"],
   schema: ["store", "log", "audit", "rules", "time", "apply", "derive"],

@@ -25,7 +25,7 @@ export async function createLocalHome(home: string, backend: StorageBackend): Pr
         trigger: null,
         task: null,
         visibility: { kind: "all" },
-        request_key: null,
+        idempotency_key_window: 86_400_000,
         idempotency_window: 86_400_000,
         now: "2026-11-14T08:00:00.000Z",
         confirmation: null,
