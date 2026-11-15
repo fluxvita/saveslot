@@ -202,6 +202,22 @@ function comparable(e: LoggedEvent, items: Map<string, string>): unknown {
   return { type: e.type, seq: e.seq, blocks };
 }
 
+/**
+ * What a row's version is about: its view without the stretches of a field no contribution gives
+ * (value null, no `by`). The view lists such a stretch once the field has any item, a candidate
+ * included, while the row itself, and its version table, did not change.
+ */
+function asVersion(state: Parameters<typeof view>[0]): string {
+  const v = view(state);
+  const fields = Object.fromEntries(
+    Object.entries(v.fields).flatMap(([f, xs]) => {
+      const given = (xs ?? []).filter((x) => x.value !== null || x.by !== undefined);
+      return given.length > 0 ? [[f, given]] : [];
+    }),
+  );
+  return JSON.stringify({ ...v, fields });
+}
+
 const both = [
   ["state", STATE, true],
   ["event", EVENT, false],
@@ -254,9 +270,8 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         const first = judged(schema, sent, []);
         const versions = first.steps
           .filter((x, k) => {
-            const before =
-              k === 0 ? undefined : JSON.stringify(view((first.steps[k - 1] as typeof x).state));
-            return JSON.stringify(view(x.state)) !== before;
+            const before = k === 0 ? undefined : asVersion((first.steps[k - 1] as typeof x).state);
+            return asVersion(x.state) !== before;
           })
           .map((x) => x.op.op);
         const toVersion = (s: number) => versions.filter((v) => v <= s).at(-1);

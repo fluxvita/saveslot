@@ -1141,3 +1141,184 @@ describe("reads: the fallback looks at the last read first; a write flushes the 
     T,
   );
 });
+
+describe("ver: the version a receipt gives is one a later write may bring back (04-contract §2)", () => {
+  const E = (entity: string) => ({ table: "entities", entity });
+  /** The cells an operation opened and closed in the entity's version table. */
+  const cellsOf = (op: number) =>
+    s.store.read(async (tx) => {
+      const q = (where: string) =>
+        tx.query<{ field_id: string; f: string; t: string | null }>(
+          `SELECT field_id, valid_from::text AS f, valid_to::text AS t FROM t_t2_v1__ver
+           WHERE ${where} = $1 ORDER BY field_id, valid_from`,
+          [op],
+        );
+      return { opened: (await q("rec_from")).rows, closed: (await q("rec_to")).rows };
+    });
+
+  it(
+    "a stale write that only becomes a candidate gives no new version; the one it gives is accepted",
+    async () => {
+      // A revoke of [11-01, 11-07), a fill, its undo, the revoke's undo, a write, the undo of the
+      // revoke's undo; then a stale write of c seeing the fill's undo: a candidate.
+      const e = await send({
+        sv: 1,
+        ops: [{ intent: "insert", table: "entities", valid_from: "2026-10-01", set: { b: "1" } }],
+      });
+      const entity = e.ops[0]?.target.entity as string;
+      const ack = { acknowledge: ["overwrite"] };
+      const v20 = await send({
+        sv: 1,
+        ops: [
+          {
+            ...E(entity),
+            intent: "revoke",
+            ver: verAt(e),
+            valid_from: "2026-11-01",
+            valid_to: "2026-11-07",
+          },
+        ],
+      });
+      const w30 = await send({
+        sv: 1,
+        ops: [
+          {
+            ...E(entity),
+            intent: "update",
+            ver: verAt(v20),
+            valid_from: "2026-11-03",
+            valid_to: "2026-11-05",
+            ...ack,
+            set: { b: "5" },
+          },
+        ],
+      });
+      const u40 = await send({
+        sv: 1,
+        ops: [{ ...E(entity), ver: verAt(w30), ...ack, revert: { undo: w30.seq } }],
+      });
+      const u50 = await send({
+        sv: 1,
+        ops: [{ ...E(entity), ver: verAt(u40), ...ack, revert: { undo: v20.seq } }],
+      });
+      const w60 = await send({
+        sv: 1,
+        ops: [
+          {
+            ...E(entity),
+            intent: "update",
+            ver: verAt(u50),
+            valid_from: "2026-11-01",
+            valid_to: "2026-11-03",
+            ...ack,
+            set: { b: "6" },
+          },
+        ],
+      });
+      await send({ sv: 1, ops: [{ ...E(entity), revert: { undo: u50.seq } }] });
+      const w80 = await send({
+        sv: 1,
+        ops: [
+          {
+            ...E(entity),
+            intent: "update",
+            ver: verAt(u40),
+            valid_from: "2026-11-01",
+            valid_to: "2026-11-03",
+            ...ack,
+            set: { c: "1" },
+          },
+        ],
+      });
+      expect(w80.ops[0]?.fields["c"]).toMatchObject([{ result: "candidate" }]);
+      // No cell opened or closed: the version stays the one before, and the receipt says so.
+      expect(await cellsOf(w80.seq)).toEqual({ opened: [], closed: [] });
+      expect(verAt(w80)).toBe(verAt(w60));
+      const put = (ver: string) =>
+        send({
+          sv: 1,
+          ops: [
+            {
+              ...E(entity),
+              intent: "update",
+              ver,
+              valid_from: "2026-11-01",
+              valid_to: "2026-11-03",
+              set: { b: "7" },
+            },
+          ],
+        });
+      expect(await put(`v${w80.seq}.0`)).toMatchObject({
+        refused: "invalid_argument",
+        reason: "not_this_target",
+      });
+      expect(await put(verAt(w80))).not.toHaveProperty("refused");
+    },
+    T,
+  );
+
+  it(
+    "the undo of a fill where nothing was ever written opens a cell: its version is the undo's, and accepted",
+    async () => {
+      // The entity has a value from 11-05 on; before it nothing was ever written.
+      const e = await send({
+        sv: 1,
+        ops: [{ intent: "insert", table: "entities", valid_from: "2026-11-05", set: { b: "x" } }],
+      });
+      const entity = e.ops[0]?.target.entity as string;
+      const fill = await send({
+        sv: 1,
+        ops: [
+          {
+            ...E(entity),
+            intent: "update",
+            ver: verAt(e),
+            valid_from: "2026-11-01",
+            valid_to: "2026-11-03",
+            acknowledge: ["overwrite"],
+            set: { b: "f" },
+          },
+        ],
+      });
+      expect(fill).not.toHaveProperty("refused");
+      const u = await send({
+        sv: 1,
+        ops: [
+          {
+            ...E(entity),
+            ver: verAt(fill),
+            acknowledge: ["overwrite"],
+            revert: { undo: fill.seq },
+          },
+        ],
+      });
+      expect(u).not.toHaveProperty("refused");
+      // ① The undo's receipt gives its own operation as the version.
+      expect(verAt(u)).toBe(`v${u.seq}.0`);
+      // ② It closes the fill's cells and opens one: the field defining "has a value" (b, required)
+      // gets a cell without a value where the entity has none (02-architecture §8 版本表).
+      expect(await cellsOf(u.seq)).toEqual({
+        opened: [{ field_id: "f2", f: "2026-11-01", t: "2026-11-03" }],
+        closed: [
+          { field_id: "f2", f: "2026-11-01", t: "2026-11-03" },
+          { field_id: "f3", f: "2026-11-01", t: "2026-11-03" },
+        ],
+      });
+      // ③ A write bringing that version back is accepted.
+      const again = await send({
+        sv: 1,
+        ops: [
+          {
+            ...E(entity),
+            intent: "update",
+            ver: verAt(u),
+            valid_from: "2026-11-05",
+            set: { c: "y" },
+          },
+        ],
+      });
+      expect(again).not.toHaveProperty("refused");
+    },
+    T,
+  );
+});
