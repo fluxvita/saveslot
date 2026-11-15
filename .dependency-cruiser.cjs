@@ -52,7 +52,7 @@ const KERNEL_MODULE_DEPS = {
     "schema",
     "pending",
   ],
-  read: ["store", "audit", "flags", "rules", "time", "schema", "pending"],
+  read: ["store", "audit", "flags", "rules", "time", "schema", "pending", "request"],
   delete: ["store", "log", "rules", "time", "judge", "apply", "derive", "schema", "pending"],
   jobs: ["write", "schema", "pending", "apply"],
   sync: ["log", "write", "apply"],

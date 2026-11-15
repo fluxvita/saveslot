@@ -20,7 +20,14 @@ import type {
   StorageBackend,
   TenantStore,
 } from "@fluxvita/saveslot-kernel";
-import { openTenantDecision, readTail } from "@fluxvita/saveslot-kernel";
+import {
+  createOpsContext,
+  flushReads,
+  type InternalOperation,
+  type OpsContext,
+  openTenantDecision,
+  readTail,
+} from "@fluxvita/saveslot-kernel";
 import { openFileAnchorStore } from "@fluxvita/saveslot-kernel/anchor-file";
 
 type TenantId = `tn_${string}`;
@@ -153,12 +160,45 @@ export async function openLocalTenant(o: {
   }
 }
 
+/** The context of a local internal operation: `system`, the task's name, the time given. */
+function systemContext(t: LocalTenant, trigger: InternalOperation, now: string): OpsContext {
+  return createOpsContext({
+    tenant: t.tenant,
+    actor: "system",
+    trigger,
+    task: null,
+    visibility: { kind: "all" },
+    idempotency_window: 0,
+    idempotency_key_window: 0,
+    now,
+    confirmation: null,
+  });
+}
+
+/** Writes the tenant's buffered reads (the internal operation `flushReads`); how many were written. */
+export async function flushLocalReads(
+  t: LocalTenant,
+  now: string = new Date().toISOString(),
+): Promise<number> {
+  return (await flushReads(t.store, systemContext(t, "flushReads", now))).flushed;
+}
+
 /**
- * Closes the local tenant: the high water moves up to the log's end, then the storage closes. The
- * high water is moved best-effort (§8: it never decides whether a write succeeded); a failure is
- * returned for the caller to log.
+ * Closes the tenant (`closeTenant`, 02-architecture §4): writes the buffered reads, moves the high
+ * water up to the log's end, then closes the storage. Both first steps are best-effort (the high
+ * water never decides whether a write succeeded, §8; a read lost is within the loss window, §7): a
+ * failure is returned for the caller to log, and the storage closes regardless.
  */
-export async function closeLocalTenant(t: LocalTenant): Promise<{ highWaterError?: unknown }> {
+export async function closeLocalTenant(
+  t: LocalTenant,
+  now: string = new Date().toISOString(),
+): Promise<{ readsError?: unknown; highWaterError?: unknown }> {
+  let readsError: unknown;
+  try {
+    await flushReads(t.store, systemContext(t, "closeTenant", now));
+  } catch (e) {
+    readsError = e;
+  }
   let highWaterError: unknown;
   try {
     const tail = await t.store.read((tx) => readTail(tx));
@@ -167,7 +207,10 @@ export async function closeLocalTenant(t: LocalTenant): Promise<{ highWaterError
     highWaterError = e;
   }
   await t.store.close();
-  return highWaterError === undefined ? {} : { highWaterError };
+  return {
+    ...(readsError === undefined ? {} : { readsError }),
+    ...(highWaterError === undefined ? {} : { highWaterError }),
+  };
 }
 
 /** A read that touches the storage's worker: fails once the worker is gone. */

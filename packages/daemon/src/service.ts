@@ -13,11 +13,12 @@
 //    the kernel's `openTenant` checks; `ready`, or `failed` with a code and no service.
 // While ready, a light read every few seconds notices a DB Worker that died: the database is not
 // reopened in the process; the service goes `failed` and exits non-zero, to be started again from
-// outside (by `saveslot mcp`, launchd or systemd).
+// outside (by `saveslot mcp`, launchd or systemd). Every few seconds too, the buffered reads are
+// written (`flushReads`, §7).
 //
 // Stop (SIGTERM, SIGINT or stop()): `stopping`, stop accepting connections, close the tenant (the
-// high water moves up to the log's end, then the storage closes), remove the socket and pid files,
-// release the lock. The read_log flush before closing (§7) comes here once read_log is built.
+// buffered reads are written, the high water moves up to the log's end, then the storage closes),
+// remove the socket and pid files, release the lock.
 //
 // Log lines go to stderr, one per line, with no user data and no paths.
 
@@ -27,6 +28,7 @@ import type { HealthBody, LocalListener } from "@fluxvita/saveslot-server";
 import { listenLocal } from "@fluxvita/saveslot-server";
 import {
   closeLocalTenant,
+  flushLocalReads,
   type LocalTenant,
   openLocalTenant,
   probeLocalTenant,
@@ -50,6 +52,8 @@ export interface RunServiceOptions {
   readonly signals?: boolean;
   /** Interval of the DB Worker probe, in milliseconds (default 5000). */
   readonly probeMs?: number;
+  /** Interval of writing the buffered reads (`flushReads`), in milliseconds (default 5000, §7). */
+  readonly readsFlushMs?: number;
   /** Where log lines go (default stderr). */
   readonly log?: (line: string) => void;
   /** Called once the service listens, before the tenant is opened (state `starting`). */
@@ -110,6 +114,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   let listener: LocalListener | undefined;
   let lock: DirLockHandle | undefined;
   let probe: NodeJS.Timeout | undefined;
+  let readsFlush: NodeJS.Timeout | undefined;
   /** Settles once opening the tenant has settled, the storage closed again if stopped meanwhile. */
   let opening: Promise<void> | undefined;
   let resolveExited!: (e: Exited) => void;
@@ -140,6 +145,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       if (state !== "failed") state = "stopping";
       say("stopping");
       if (probe !== undefined) clearInterval(probe);
+      if (readsFlush !== undefined) clearInterval(readsFlush);
       if (o.signals !== false) {
         process.off("SIGTERM", onSignal);
         process.off("SIGINT", onSignal);
@@ -153,6 +159,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         tenant = undefined;
         try {
           const r = await closeLocalTenant(t);
+          if (r.readsError !== undefined) say("reads_not_flushed", { code: codeOf(r.readsError) });
           if (r.highWaterError !== undefined)
             say("high_water_not_advanced", { code: codeOf(r.highWaterError) });
         } catch (e) {
@@ -267,6 +274,22 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         },
       );
     }, o.probeMs ?? 5000);
+    let flushing = false;
+    readsFlush = setInterval(() => {
+      const t = tenant;
+      // One flush at a time; a failed one leaves the reads buffered for the next (§7).
+      if (t === undefined || state !== "ready" || flushing) return;
+      flushing = true;
+      flushLocalReads(t).then(
+        () => {
+          flushing = false;
+        },
+        (e: unknown) => {
+          flushing = false;
+          if (state === "ready") say("reads_flush_failed", { code: codeOf(e) });
+        },
+      );
+    }, o.readsFlushMs ?? 5000);
   })();
   await opening;
   return handle;

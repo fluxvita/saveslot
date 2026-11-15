@@ -5,8 +5,15 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createOpsContext, createTenant, type StorageBackend } from "@fluxvita/saveslot-kernel";
-import { controlDir, tenantFile } from "./local-tenant.ts";
+import {
+  createOpsContext,
+  createTenant,
+  newReadId,
+  readBufferOf,
+  type StorageBackend,
+  type TenantStore,
+} from "@fluxvita/saveslot-kernel";
+import { controlDir, type LocalTenant, tenantFile } from "./local-tenant.ts";
 
 export const TEST_TENANT = `tn_${"8".repeat(26)}` as const;
 export const TEST_USER = `u_${"1".repeat(26)}` as const;
@@ -62,4 +69,29 @@ export function anchorFileText(a: {
       },
     },
   })}\n`;
+}
+
+/** Records a read in the tenant's read buffer as a read operation would; returns its ID. */
+export function recordTestRead(t: LocalTenant): string {
+  const read = newReadId();
+  readBufferOf(t.store).record({
+    read,
+    actor: TEST_USER,
+    task: null,
+    at: "2026-11-15T08:00:00.000Z",
+    pos: 1,
+    operation: "catalog",
+    rows: [],
+    coarse: [],
+    lastRead: [],
+  } as never);
+  return read;
+}
+
+/** The read IDs written to the tenant's read_log, in the order recorded. */
+export async function writtenReads(store: TenantStore): Promise<string[]> {
+  const r = await store.read((tx) =>
+    tx.query<{ read_id: string }>("SELECT read_id FROM read_log ORDER BY n"),
+  );
+  return r.rows.map((x) => x.read_id);
 }

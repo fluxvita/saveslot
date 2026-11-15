@@ -399,26 +399,50 @@ CREATE INDEX premise_edges_target ON premise_edges (target);`,
   {
     name: "read_log",
     class: "local",
+    // One row per read (03-data-model/02-integrity-and-records.md «读取记录»): what it read, the
+    // shape of its query, and its business time condition. No values; the condition is the only
+    // caller-given value kept (impact queries need it).
     ddl: `CREATE TABLE read_log (
-  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  read_id ${T} PRIMARY KEY,         -- rd_…
+  n BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE,  -- order of recording
   actor ${T} NOT NULL,
   task ${T},
-  at ${T} NOT NULL,
-  operation ${T} NOT NULL,
+  at ${T} NOT NULL,                 -- the entry's "now"
+  pos BIGINT NOT NULL,              -- log position when read: the latest operation number
+  operation ${T} NOT NULL CHECK (operation IN
+    ('query', 'sql', 'history', 'sources', 'catalog', 'pending', 'deletion_preview')),
+  selfcheck BOOLEAN NOT NULL DEFAULT FALSE,
   slot_id ${T},
+  sv INTEGER,
   table_id ${T},
-  row_id ${T},                      -- NULL for a table-level record
+  shape ${T},                       -- structural fingerprint of the query; no user values
+  valid ${T},                       -- business time condition (JCS)
+  source_id ${T}                    -- a source read in full
+);
+CREATE INDEX read_log_at ON read_log (at);
+CREATE INDEX read_log_actor ON read_log (actor, n);`,
+  },
+  {
+    name: "read_log_rows",
+    class: "local",
+    // What a read got: a row, entity or partition with the version read, one per entity on state
+    // tables; or a table-level record (target NULL: the table as of the read's position).
+    ddl: `CREATE TABLE read_log_rows (
+  read_id ${T} NOT NULL,
+  k INTEGER NOT NULL,               -- order within the read
+  table_id ${T} NOT NULL,
+  target ${T},                      -- row / entity / partition ID; NULL for a table-level record
   ver_op BIGINT,
   ver_restore_count INTEGER,
-  shape ${T},                       -- structural fingerprint of the query; no user values
-  valid ${T}                        -- business time condition (JCS); kept for impact queries
+  PRIMARY KEY (read_id, k)
 );
-CREATE INDEX read_log_row ON read_log (table_id, row_id);
-CREATE INDEX read_log_at ON read_log (at);`,
+CREATE INDEX read_log_rows_target ON read_log_rows (table_id, target);`,
   },
   {
     name: "last_read",
     class: "local",
+    // The version each actor (and task) last read, for the fallback (04-contract §2). For `sv` the
+    // target is the slot ID and `op` is the schema version.
     ddl: `CREATE TABLE last_read (
   actor ${T} NOT NULL,
   task ${T} NOT NULL DEFAULT '',
@@ -426,6 +450,7 @@ CREATE INDEX read_log_at ON read_log (at);`,
   kind ${T} NOT NULL CHECK (kind IN ('ver', 'sv', 'item')),
   op BIGINT NOT NULL,
   restore_count INTEGER NOT NULL,
+  read_id ${T} NOT NULL,            -- the read it came from
   PRIMARY KEY (actor, task, target, kind)
 );`,
   },

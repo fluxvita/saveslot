@@ -13,3 +13,4 @@ export function randomCrockford(n: number): string {
 
 export const newNodeId = () => `n_${randomCrockford(26)}` as const;
 export const newConnectionId = () => `ci_${randomCrockford(26)}` as const;
+export const newReadId = () => `rd_${randomCrockford(16)}` as const;

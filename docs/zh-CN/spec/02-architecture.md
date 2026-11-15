@@ -189,7 +189,7 @@ slot 策略的结构里为"某类操作只接受用户会话的确认"留了位�
 | L4 | `request` 写入请求 | **纯函数，不读存储。** 写入请求的形状、名字、类型、单位与范围的校验（判定顺序第 1 步），值的规范化（单位换算、按精度舍入、规范的十进制与时刻写法）与原始写法，区间参数的解析，请求所在的 slot，请求键的规范化内容 | schema、time | 有 |
 | L4 | `pending` 待处理事项 | 事项的生成、合并、刷新与取代；解决时按事项类型核对绑定的内容；只生成事件，不执行解决动作。合并基与影响这类机械判定的结果由调用方（`ops`、`write`、`delete`）先调 `judge` 算好交给它，它不依赖 `judge` | store、log、apply | `migration_diff` 后续 |
 | L5 | `write` 写入管线 | 调 `request` 校验与规范化、证据存为源数据、`ver` / `sv` 检查与兜底、请求键查重、按来源键定位（查键索引）并取出逐字段的同步基线、前提的校验与兜底、取出目标行的现状交给 `judge`、生成写入事件、调 `derive`、疑似重复与字面命中的判定；生成前提变化事件（经 `store` 读 `premise_decls`、`premise_edges` 与版本表，调 `judge`） | store、log、audit、rules、time、judge、apply、derive、schema、pending、request | 有 |
-| L5 | `read` 读取 | 简单查询、受限 SQL、历史与按时刻读、源数据列出与搜索、标记汇总（含前提标记的现算）、纠错影响查询、读取记入 `audit` | store、audit、flags、rules、time、schema、pending | 派生值构成后续 |
+| L5 | `read` 读取 | 简单查询、受限 SQL、历史与按时刻读、源数据列出与搜索、标记汇总（含前提标记的现算）、纠错影响查询、读取记入 `audit`；查询参数里的名字、值与业务时间按 `request` 的同一套规则解析与规范化 | store、audit、flags、rules、time、schema、pending、request | 派生值构成后续 |
 | L5 | `delete` 删除 | 影响计算（沿值来源）、取出受影响行的全部写入交给 `judge` 重放、生成删除生命周期事件与前提变化事件、调 `derive`；返回"要写进锚点存储的内容" | store、log、rules、time、judge、apply、derive、schema、pending | 删除证据、按行删除后续 |
 | L6 | `jobs` 作业 | 大写入作业、抽取作业 | write、schema、pending、apply | 后续 |
 | L6 | `sync` 同步 | 节点间日志同步 | log、write、apply | 不实现 |
@@ -470,7 +470,8 @@ interface AnchorStore {
 | 表 | 归哪个模块 | 丢了会怎样 | 第一版 |
 |---|---|---|---|
 | `meta`：存储格式版本、租户 ID、所有权 epoch、固定的会话设置、建出现有内部日期列所用的时区库版本、当前恢复次数的缓存 | `store` | epoch 丢了：下次打开重新加 1。时区库版本丢了：按版本不同处理，本地重建内部日期列与受影响的派生分区。恢复次数以日志里最后一条"恢复"或"导入"事件为准（没有则为 0），丢了从日志重读；当前租户 ID 以最近一条创世或导入事件为准 | 有 |
-| `read_log` | `audit` | 导出后读取历史不随行；纠错影响查不到之前的读取 | 有 |
+| `read_log`（一次读取一行：读取 ID、时刻、actor、任务、日志位置、读了什么、结构指纹、业务时间条件） | `audit` | 导出后读取历史不随行；纠错影响查不到之前的读取 | 有 |
+| `read_log_rows`（一次读取读到的行与版本，状态类表一个实体一条；表级记录不带行） | `audit` | 同上 | 有 |
 | `last_read`（最近读到的 `ver`、`sv`、事项版本） | `audit` | 兜底从零开始：没带版本的写入报 `read_first` | 有 |
 | `possibly_affected` | `audit` | 之前读到旧值的连接实例不再收到提醒 | 有 |
 | `field_name_usage` | `audit` | 改名预览少列消费方 | 有 |
