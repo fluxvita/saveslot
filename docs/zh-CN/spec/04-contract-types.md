@@ -1280,7 +1280,7 @@ type FieldResult =
       valid?: Interval;          // 候选的区间
       effective: Value | null;   // 当前生效值
       current_ver: Ver;          // 当前生效版本。不算读到，不参与兜底
-      by: { seq: Seq; actor: Actor };            // 是谁的哪次写入改过它；当前值由几次写入分段给出时取操作号最大的那次（同 ConflictDetail.effective）；effective 就是这次写入给的值，各段的全貌见 ConflictDetail.effective.spans
+      by: { seq: Seq; actor: Actor };            // 是谁的哪次写入改过它：候选区间里各段给出状态的写入（空洞处是留下它的那次撤销；从未写过的段不算）中操作号最大的那次（同 ConflictDetail.effective）；effective 就是这次写入在这个字段上给的值，by 是撤销时 effective 为 null；各段的全貌见 ConflictDetail.effective.spans
       previous: ConflictDetail["previous"];
       impact?: AwaitingImpact }                  // 候选若生效会属高影响时
   | { result: "awaiting"; item: ItemId; impact: AwaitingImpact }

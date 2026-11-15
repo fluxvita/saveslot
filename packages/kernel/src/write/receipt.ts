@@ -16,12 +16,17 @@ import type {
   CompiledBaseTable,
   CompiledSchema,
   EntityId,
+  FieldId,
   FieldValue,
   OpNumber,
 } from "@fluxvita/saveslot-contract-core";
+import { type Limit, type RowState, stateFromRecord } from "../judge/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { type Interval as Stretch, WHOLE } from "../time/index.ts";
 import { type EntityKeyText, keyFields, keyOf } from "./keys.ts";
-import type { StoredEvent } from "./record.ts";
+import { tableShape } from "./plan.ts";
+import { rowEvents } from "./reads.ts";
+import { decodeRecords, type RowContext, type StoredEvent } from "./record.ts";
 
 export type FieldResultCode = "applied" | "candidate" | "awaiting" | "corroborated" | "noop";
 
@@ -257,6 +262,42 @@ async function operationEvents(tx: ReadTx, op: OpNumber): Promise<StoredEvent[]>
   }));
 }
 
+/**
+ * Who gave a candidate's target its state on the candidate's part, as of operation `op`
+ * (04-contract-types `FieldResult.by`): stretch by stretch, the write whose value is in effect, or
+ * on a stretch without a value the revoke that left it; stretches no write ever gave a state are
+ * left out. The latest of them, with the value it gave the field (none: a revoke, or the row's
+ * existence as the target).
+ */
+function givenBy(
+  state: RowState,
+  target: string,
+  part: Stretch,
+  op: OpNumber,
+): { readonly op: OpNumber; readonly value: FieldValue } | undefined {
+  const at: Limit = { upTo: op };
+  const defining = state.table.valued.length > 0 ? state.table.valued : state.table.fields;
+  let top: { op: OpNumber; value: FieldValue } | undefined;
+  const offer = (by: OpNumber, value: FieldValue) => {
+    if (top === undefined || by > top.op) top = { op: by, value };
+  };
+  for (const seg of state.isState ? state.piecesIn([part]) : [WHOLE]) {
+    // Without a value there: the revoke that left the hole, if one did.
+    const hole = defining.map((f) => state.fieldState(f, seg, at)).find((x) => x.kind === "hole");
+    if (hole !== undefined && hole.kind === "hole") {
+      offer(hole.by.op, null);
+      continue;
+    }
+    if (state.isState && !state.hasValue(seg, at)) continue;
+    const fields = target === "existence" ? defining : [target as FieldId];
+    for (const f of fields) {
+      const x = state.fieldState(f, seg, at);
+      if (x.kind === "value") offer(x.by.op, target === "existence" ? null : x.value);
+    }
+  }
+  return top;
+}
+
 /** The row's version (01-objects «版本标记») as of operation `op`. */
 async function verAsOf(
   tx: ReadTx,
@@ -387,6 +428,24 @@ export async function readReceipt(
     // By field name, built as entries: a name like `__proto__` stays a key of its own.
     const fields = new Map<string, FieldResult | FieldResult[]>();
     const rowVer = await verAsOf(tx, table, rowId, op, o.restoreCount);
+    // The row as the operation judged it, for who gave what a candidate met: read once, and only
+    // when the op has a candidate.
+    let judged: RowState | undefined;
+    if (
+      base !== undefined &&
+      Object.values(base.blocks).some((b) => (b as { status?: string })?.status === "candidate")
+    ) {
+      const ctx: RowContext = {
+        table: table.id,
+        target: isState ? { entity: rowId as never } : { row: rowId as never },
+        shape: tableShape(table),
+        granularity: table.time.type === "state" ? table.time.granularity : "date",
+      };
+      judged = stateFromRecord(ctx.shape, decodeRecords(ctx, await rowEvents(tx, table.id, rowId)));
+      // The writers of whatever may be `by`.
+      const missing = [...new Set(judged.items.map((y) => y.op))].filter((n) => !actors.has(n));
+      for (const [n, a] of await actorsOf(tx, missing)) actors.set(n, a);
+    }
 
     /** What carrying out an item would change, from its impact entries (`only`: some of them). */
     const impactOf = (blocks: readonly Blocks[]): Impact => {
@@ -444,12 +503,14 @@ export async function readReceipt(
       const onExistence =
         x.current.some((b) => b["field"] === "existence") ||
         x.previous.some((b) => b["field"] === "existence");
-      const cur = x.current.filter((b) => on(b));
       const prev = x.previous.filter((b) => on(b));
-      const top = cur
-        .map(opOf)
-        .filter((n): n is number => n !== undefined)
-        .sort((a, b) => b - a)[0];
+      // Who gave what the candidate met, and its value, from the row as judged (not the entries'
+      // deps, which also hold what cut a stretch's ends, the candidate itself among them).
+      const given =
+        judged === undefined
+          ? undefined
+          : givenBy(judged, target, isState ? (part as unknown as Stretch) : WHOLE, op);
+      const top = given?.op;
       const exists = (bs: readonly Blocks[]) =>
         onExistence
           ? bs.some((b) => b["field"] === "existence" && b["revoked"] !== true)
@@ -464,11 +525,9 @@ export async function readReceipt(
       const impact = impactOf(mine);
       return {
         // The value the `by` write gave (the whole picture is the item's ConflictDetail).
-        effective: onExistence
-          ? null
-          : ((cur.find((b) => b["field"] === target && opOf(b) === top)?.["value"] ??
-              cur.find((b) => b["field"] === target)?.["value"] ??
-              null) as FieldValue),
+        // The value the `by` write gave (none when it is a revoke); the whole picture is the item's
+        // ConflictDetail.
+        effective: given?.value ?? null,
         ...(rowVer !== undefined ? { current_ver: rowVer } : {}),
         ...(top !== undefined ? { by: { seq: top, actor: actors.get(top) ?? "" } } : {}),
         ...(x.mergeBase !== undefined

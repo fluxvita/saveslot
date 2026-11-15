@@ -13,7 +13,12 @@ import {
   readEvents,
   readTail,
 } from "@fluxvita/saveslot-kernel";
-import { COMPILED_V1, createSlotEvents, writeInTx } from "@fluxvita/saveslot-kernel/testing";
+import {
+  COMPILED_V1,
+  createSlotEvents,
+  queryInTx,
+  writeInTx,
+} from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
@@ -1259,6 +1264,97 @@ describe("refreshes, round two (09-event-format §5.8 «一次请求里的事项
         reason: "not_implemented",
       });
       expect((await s.store.read(readTail))?.seq).toBe(before);
+    },
+    T,
+  );
+});
+
+describe("a candidate's by and effective: the write that gave what it met (04-contract-types FieldResult)", () => {
+  /** What query reads of the entities table at a day. */
+  const readAt = async (day: string) =>
+    (
+      await s.store.read((tx) =>
+        queryInTx(tx, {
+          actor: USER as never,
+          task: null,
+          now: "2026-11-05T12:00:00.000Z" as never,
+          visibility: { kind: "all" },
+          params: { table: "entities", valid_at: day },
+          read: "rd_0000000000000000" as never,
+        }),
+      )
+    ).result.rows.map((x) => x.values["b"]);
+  const scenario = async (revoke: boolean) => {
+    const put = (o: Record<string, unknown>, actor = USER) =>
+      send({ sv: 1, ops: [{ table: "entities", ...o }] }, { actor });
+    const e = await send({
+      sv: 1,
+      ops: [
+        {
+          intent: "insert",
+          table: "entities",
+          valid_from: "2026-11-01",
+          valid_to: "2026-11-20",
+          set: { b: "x" },
+        },
+      ],
+    });
+    const entity = e.ops[0]?.target.entity as string;
+    const y = await put(
+      {
+        intent: "update",
+        entity,
+        ver: verAt(e),
+        valid_from: "2026-11-10",
+        valid_to: "2026-11-20",
+        set: { b: "y" },
+      },
+      OTHER,
+    );
+    const v = revoke
+      ? await put(
+          {
+            intent: "revoke",
+            entity,
+            ver: verAt(y),
+            valid_from: "2026-11-05",
+            valid_to: "2026-11-08",
+          },
+          OTHER,
+        )
+      : undefined;
+    const z = await put({
+      intent: "update",
+      entity,
+      ver: verAt(e),
+      valid_from: "2026-11-03",
+      valid_to: "2026-11-25",
+      set: { b: "z" },
+    });
+    const part = (z.ops[0]?.fields["b"] ?? []) as readonly {
+      result: string;
+      effective?: unknown;
+      by?: { seq: number; actor: string };
+    }[];
+    return { y, v, z, candidate: part.find((x) => x.result === "candidate") };
+  };
+
+  it(
+    "on existence, the latest giver a revoke: by is the revoke, effective none, and query reads no row there",
+    async () => {
+      const { v, candidate } = await scenario(true);
+      expect(candidate).toMatchObject({ effective: null, by: { seq: v?.seq, actor: OTHER } });
+      expect(await readAt("2026-11-06")).toEqual([]);
+    },
+    T,
+  );
+
+  it(
+    "the latest giver a write: by is that write, effective its value, as query reads it there",
+    async () => {
+      const { y, candidate } = await scenario(false);
+      expect(candidate).toMatchObject({ effective: "y", by: { seq: y.seq, actor: OTHER } });
+      expect(await readAt("2026-11-12")).toEqual([candidate?.effective]);
     },
     T,
   );
