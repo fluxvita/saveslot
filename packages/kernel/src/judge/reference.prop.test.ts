@@ -26,6 +26,7 @@ vi.setConfig({ testTimeout: 60_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 50_000, markInterruptAsFailure: true });
 
 const RUNS = propRuns(1500);
+const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
 /**
  * The items as the reference lists them, with their registrations. The proposal of an awaiting
  * undo (its write-backs with status awaiting) is left out: the reference keeps it in the revert's
@@ -368,7 +369,11 @@ describe.each(both)("%s table", (_, schema, isState) => {
           });
         }),
       ),
-      { numRuns: RUNS },
+      {
+        numRuns: RUNS,
+        ...(SEED !== undefined ? { seed: SEED } : {}),
+        ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
+      },
     );
     if (process.env["JUDGE_STATS"]) console.log(schema.kind, JSON.stringify(seen));
     hits.check();

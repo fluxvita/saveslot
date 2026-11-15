@@ -216,7 +216,13 @@ class Replay {
   readonly rejections: { op: OpNumber; reason: RejectionReason }[] = [];
   readonly noops = new Set<string>();
   readonly fieldIds: FieldId[];
-  readonly closedCandidates: Set<Seq>;
+  /**
+   * Candidates a person's decision closed, by `<event>/<unit>`: a decision on one conflict unit's
+   * item closes the write's candidates in that unit only (01-objects «目标与合并»: a write that is a
+   * candidate in two units is two items, resolved apart). The unit "existence" covers every item
+   * of the write, as `candidatesOf` reads it.
+   */
+  readonly closedCandidates: Set<string>;
   readonly resolvedAwaiting: Set<Seq>;
   readonly opsByEvent: Map<Seq, Op>;
 
@@ -244,8 +250,11 @@ class Replay {
     // candidate whose item a person resolved stays closed, an awaiting write a person confirmed
     // or rejected is not re-judged.
     this.closedCandidates = new Set([
-      ...ops.flatMap((o) => (o.kind === "resolve" ? o.candidates : [])),
-      ...rec.keptSuperseded,
+      ...ops.flatMap((o) =>
+        o.kind === "resolve" ? o.candidates.map((c) => `${c}/${o.unit}`) : [],
+      ),
+      // Kept superseded through a deletion: the whole write, as before.
+      ...[...rec.keptSuperseded].map((e) => `${e}/existence`),
     ]);
     this.resolvedAwaiting = new Set([
       ...ops.flatMap((o) => (o.kind === "confirm" || o.kind === "reject" ? [o.target] : [])),
@@ -256,6 +265,14 @@ class Replay {
 
   get isState(): boolean {
     return this.schema.kind === "state";
+  }
+
+  /** Whether a decision closed the candidate of write `event` on `target`. */
+  closedCandidate(event: Seq, target: Target): boolean {
+    return (
+      this.closedCandidates.has(`${event}/${target}`) ||
+      this.closedCandidates.has(`${event}/existence`)
+    );
   }
 
   isDeleted(sources: readonly SourceKey[]): boolean {
@@ -757,7 +774,7 @@ class Replay {
     const v = tok(input.value);
     const r = this.recordedStatus(o.event, f, seenValid);
     let conflict =
-      r === "candidate" && this.closedCandidates.has(o.event)
+      r === "candidate" && this.closedCandidate(o.event, f)
         ? true
         : this.conflicts(f, v, seenValid, defaultEnd, from, seen, cur);
     if (r === "effective") conflict = false; // deviation two: what was in effect stays in effect
@@ -820,7 +837,7 @@ class Replay {
     }
     const r = this.recordedStatus(o.event, "existence", seenValid);
     let conflict = seen < cur && this.revokeConflicts(seenValid, seen, cur);
-    if (r === "candidate" && this.closedCandidates.has(o.event)) conflict = true;
+    if (r === "candidate" && this.closedCandidate(o.event, "existence")) conflict = true;
     if (r === "effective") conflict = false;
     const base = {
       event: o.event,
@@ -1641,7 +1658,7 @@ class Replay {
       ...(x.carried ? { carried: x.carried } : {}),
       registrations: this.regs.get(refKey(x)) ?? [],
       ...((x.status === "candidate" &&
-        (this.closedCandidates.has(x.event) || x.closedByDecision)) ||
+        (this.closedCandidate(x.event, x.target) || x.closedByDecision)) ||
       (x.status === "awaiting" && this.resolvedAwaiting.has(x.event))
         ? { closed: true as const }
         : {}),

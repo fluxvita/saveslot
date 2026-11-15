@@ -733,3 +733,73 @@ it("take_candidate on existence of a candidate cut in stretches: one item per st
     'f3/1 applied [2026-11-07, 2026-11-09) "a" carried #31/f3/0,#31/f3/2',
   ]);
 });
+
+describe("a decision closes a write's candidates in its own unit only", () => {
+  // 01-objects «目标与合并»: a write that became a candidate in two units is two items, resolved
+  // apart. #31, seeing #10, meets the take_previous #15 on both f2 and f3: an item each.
+  const ops: Op[] = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    { kind: "revoke", op: 13, event: 14, seen: 2 },
+    {
+      kind: "resolve",
+      op: 15,
+      event: 16,
+      decision: "take_previous",
+      candidates: [14],
+      unit: "existence",
+    },
+    { kind: "revoke", op: 20, event: 21, seen: 10 },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      fields: { f2: { value: "2", sources: ["S30"] }, f3: { value: "b", sources: ["S30"] } },
+    },
+    {
+      kind: "resolve",
+      op: 33,
+      event: 34,
+      decision: "take_candidate",
+      candidates: [31],
+      unit: "f2",
+      take: 31,
+    },
+  ];
+  const closedOf = (ops: readonly Op[]) =>
+    evaluateLog(EVENT, ops)
+      .final.items.filter((x) => x.event === 31 && x.status === "candidate")
+      .map((x) => [x.target, x.closed === true]);
+
+  it("taking #31 on f2's item leaves its candidate on f3 open", () => {
+    expect(closedOf(ops)).toEqual([
+      ["f2", true],
+      ["f3", false],
+    ]);
+  });
+
+  it("each unit's item resolved: both closed", () => {
+    expect(
+      closedOf([
+        ...ops,
+        {
+          kind: "resolve",
+          op: 36,
+          event: 37,
+          decision: "keep_effective",
+          candidates: [31],
+          unit: "f3",
+        },
+      ]),
+    ).toEqual([
+      ["f2", true],
+      ["f3", true],
+    ]);
+  });
+});
