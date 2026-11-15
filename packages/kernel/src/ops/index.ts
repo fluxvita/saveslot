@@ -6,5 +6,6 @@ export { newReadId } from "./ids.ts";
 export * from "./open-tenant.ts";
 export * from "./principals.ts";
 export * from "./read.ts";
+export * from "./schema.ts";
 export * from "./tenant.ts";
 export * from "./write.ts";
