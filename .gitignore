@@ -5,3 +5,6 @@ dist/
 *.tsbuildinfo
 coverage/
 experiments/out/
+
+# Output of scripts/soak-props.ts
+soak/
