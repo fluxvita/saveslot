@@ -17,6 +17,7 @@ import {
   createTenant,
   eventsOf,
   type NewEvent,
+  readBufferOf,
   readEvents,
   readTail,
   view,
@@ -331,6 +332,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
               windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
               visibility: { kind: "all" },
               params: requestOf(o, o.op === FIRST_OP ? 0 : 1, isState),
+              reads: readBufferOf(store),
               newId: (kind) =>
                 kind === "row"
                   ? ROW

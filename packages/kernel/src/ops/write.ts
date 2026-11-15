@@ -4,16 +4,25 @@
 // Not reachable from any surface yet: the pending item contents (entries, items a write refreshes
 // or supersedes) are not produced, so the receipt and the log lack them until they are.
 
+import { readBufferOf } from "../audit/index.ts";
 import type { TenantStore } from "../store/ports.ts";
 import { type WriteReceipt, writeInTx } from "../write/index.ts";
-import type { OpsContext } from "./context.ts";
+import { createOpsContext, type OpsContext } from "./context.ts";
+import { flushReads } from "./flush-reads.ts";
 import { randomCrockford } from "./ids.ts";
 
 const PREFIX = { row: "r_", entity: "e_", source: "s_", item: "pi_" } as const;
 const LENGTH = { row: 26, entity: 26, source: 16, item: 16 } as const;
 
 /** Writes `params` (a `WriteParams` as the caller sent it) as `ctx.actor`. */
-export function write(store: TenantStore, ctx: OpsContext, params: unknown): Promise<WriteReceipt> {
+export async function write(
+  store: TenantStore,
+  ctx: OpsContext,
+  params: unknown,
+): Promise<WriteReceipt> {
+  // The reads so far are written first, in a transaction of their own: they stay written even if
+  // this write is refused and rolled back (02-architecture §7 «read_log 的持久性»).
+  await flushReads(store, createOpsContext({ ...ctx, actor: "system", trigger: "flushReads" }));
   return store.write((tx) =>
     writeInTx(tx, {
       actor: ctx.actor,
@@ -23,6 +32,7 @@ export function write(store: TenantStore, ctx: OpsContext, params: unknown): Pro
       visibility: ctx.visibility,
       params,
       newId: (kind) => `${PREFIX[kind]}${randomCrockford(LENGTH[kind])}`,
+      reads: readBufferOf(store),
     }),
   );
 }

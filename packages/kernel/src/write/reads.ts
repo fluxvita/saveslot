@@ -198,6 +198,26 @@ export async function svFromWrite(
   return { found: (JSON.parse(x.body) as { sv: number }).sv, op: Number(x.seq) as OpNumber };
 }
 
+/**
+ * A read of the target by `actor` under another task than `task` (or without one when it has
+ * one), for `read_first`'s `task_mismatch`. The buffered reads were written at the start of the
+ * write operation, so the stored ones are all there are.
+ */
+export async function readUnderAnotherTask(
+  tx: ReadTx,
+  actor: string,
+  task: string | null,
+  kind: "ver" | "sv" | "item",
+  target: string,
+): Promise<{ readonly task: string | null } | undefined> {
+  const r = await tx.query<{ task: string }>(
+    "SELECT task FROM last_read WHERE actor = $1 AND kind = $2 AND target = $3 AND task <> $4 LIMIT 1",
+    [actor, kind, target, task ?? ""],
+  );
+  const x = r.rows[0];
+  return x === undefined ? undefined : { task: x.task === "" ? null : x.task };
+}
+
 /** The operations of the row's versions (01-objects «版本标记»: not `schema_switch`). */
 export async function rowVersions(tx: ReadTx, verTable: string, row: string): Promise<Set<number>> {
   const r = await tx.query<{ v: unknown }>(

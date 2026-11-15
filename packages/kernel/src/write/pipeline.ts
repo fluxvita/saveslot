@@ -31,6 +31,7 @@ import {
   type TableId,
 } from "@fluxvita/saveslot-contract-core";
 import { ApplyError, applyEvents, eventsOf } from "../apply/index.ts";
+import { lastRead, type ReadBuffer, type ReadId } from "../audit/index.ts";
 import {
   emptyState,
   JudgeError,
@@ -54,7 +55,9 @@ import {
 import type { Tx } from "../store/ports.ts";
 import { refreshesDerived, tableShape, todayIn, verOfRow, writable } from "./plan.ts";
 import {
+  type Fallback,
   readSlots,
+  readUnderAnotherTask,
   requestKeyHit,
   restoreCount,
   rowEvents,
@@ -93,20 +96,49 @@ export interface WriteInput {
   readonly params: unknown;
   /** New identifiers (01-objects «标识的写法»), from the caller. */
   readonly newId: (kind: "row" | "entity" | "source" | "item") => string;
+  /** The open store's buffered reads: the fallback looks there before the stored ones. */
+  readonly reads: ReadBuffer;
 }
 
 const RULESET = 1;
 
+/** Where a `ver` or `sv` taken by fallback came from: a read, or the caller's own write. */
+export type FallbackOrigin = { readonly read: ReadId } | { readonly from_write: number };
+
 /** A warning of the receipt: normalization's, or a `ver` / `sv` taken by fallback (04-contract §2). */
 export type ReceiptWarning =
   | WriteWarning
-  | {
-      readonly code: "ver_fallback";
-      readonly op: number;
-      readonly ver: string;
-      readonly from_write: number;
-    }
-  | { readonly code: "sv_fallback"; readonly sv: number; readonly from_write: number };
+  | ({ readonly code: "ver_fallback"; readonly op: number; readonly ver: string } & FallbackOrigin)
+  | ({ readonly code: "sv_fallback"; readonly sv: number } & FallbackOrigin);
+
+/**
+ * The version a request left out (04-contract §2 «兜底»): the latest this connection read, under
+ * the call's task, counting a version its own write receipt gave as read too. So the newer of the
+ * last read and the own write's (the read on a tie: read after the write, it is no older). Neither:
+ * `task_mismatch` when it read or wrote the target under another task (or without one), `no_read`
+ * otherwise.
+ */
+async function fallback(
+  tx: Tx,
+  input: WriteInput,
+  task: string | null,
+  q: { readonly kind: "ver" | "sv"; readonly target: string },
+  fromWrite: () => Promise<Fallback<number>>,
+): Promise<
+  | { readonly found: number; readonly restoreCount?: number; readonly origin: FallbackOrigin }
+  | { readonly reason: "no_read" }
+  | { readonly reason: "task_mismatch"; readonly readTask: string | null }
+> {
+  const read = await lastRead(tx, input.reads, { actor: input.actor, task, ...q });
+  const own = await fromWrite();
+  if (read !== undefined && (!("found" in own) || read.op >= own.found)) {
+    return { found: read.op, restoreCount: read.restoreCount, origin: { read: read.read } };
+  }
+  if ("found" in own) return { found: own.found, origin: { from_write: own.op } };
+  if (own.reason === "task_mismatch") return own;
+  const other = await readUnderAnotherTask(tx, input.actor, task, q.kind, q.target);
+  return other !== undefined ? { reason: "task_mismatch", readTask: other.task } : own;
+}
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
@@ -303,11 +335,13 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   let sv = req.sv;
   let svBasis: "explicit" | "fallback" = "explicit";
   if (sv === undefined) {
-    const f = await svFromWrite(tx, slot.slot, actor, task);
+    const f = await fallback(tx, input, task, { kind: "sv", target: slot.slot }, () =>
+      svFromWrite(tx, slot.slot, actor, task),
+    );
     if (!("found" in f)) throw readFirst(f, { target: "slot", ref: slot.name }, task, "sv");
     sv = f.found;
     svBasis = "fallback";
-    warnings.push({ code: "sv_fallback", sv, from_write: f.op });
+    warnings.push({ code: "sv_fallback", sv, ...f.origin });
     // A request given its sv was checked in normalizing; one taking it by fallback is checked now.
     const incompatible = checkSvCompatibility({
       request: req,
@@ -403,7 +437,9 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       seenExplicit = true;
     } else if (o.kind === "undo") seen = (op - 1) as OpNumber;
     else {
-      const f = await verFromWrite(tx, verTable, id, actor, task);
+      const f = await fallback(tx, input, task, { kind: "ver", target: id }, () =>
+        verFromWrite(tx, verTable, id, actor, task),
+      );
       const ref = {
         table: `${slot.name}.${table.name}`,
         ...(isState ? { entity: id } : { row: id }),
@@ -413,8 +449,8 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       warnings.push({
         code: "ver_fallback",
         op: o.index,
-        ver: `v${f.found}.${restore}`,
-        from_write: f.op,
+        ver: `v${f.found}.${f.restoreCount ?? restore}`,
+        ...f.origin,
       });
     }
     const intent =

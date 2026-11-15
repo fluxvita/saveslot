@@ -10,6 +10,8 @@ import {
   createOpsContext,
   createTenant,
   eventsOf,
+  flushReads,
+  readBufferOf,
   readEvents,
   readTail,
   write,
@@ -103,6 +105,7 @@ async function send(
         visibility: { kind: "all" },
         params,
         newId,
+        reads: readBufferOf(s.store),
       }),
     );
   } catch (e) {
@@ -1002,4 +1005,139 @@ describe("what pending adds, not yet produced", () => {
     "a write taking effect on an open item's unit and interval supersedes it (item.superseded)",
   );
   it.todo("a write on the target of an open item it did not read refreshes it (item.refreshed)");
+});
+
+describe("reads: the fallback looks at the last read first; a write flushes the reads it finds", () => {
+  let reads = 0;
+  /** Records a read by `actor` (under `task`) of what `last` lists, as a read entry point would. */
+  const read = (
+    last: { kind: "ver" | "sv"; target: string; op: number }[],
+    o: { actor?: string; task?: string | null } = {},
+  ) => {
+    const id = `rd_${String(++reads).padStart(16, "0")}`;
+    readBufferOf(s.store).record({
+      read: id as never,
+      actor: (o.actor ?? USER) as never,
+      task: o.task ?? null,
+      at: now() as never,
+      pos: 1 as never,
+      operation: "query",
+      rows: [],
+      coarse: [],
+      lastRead: last.map((x) => ({ ...x, restoreCount: 0 })),
+    });
+    return id;
+  };
+
+  it(
+    "ver: the newer of the last read and the caller's own write; its own later write wins, applied",
+    async () => {
+      const a = await insertRow();
+      const row = rowAt(a);
+      read([{ kind: "ver", target: row, op: a.seq }]);
+      const own = await update(row, { c: "own" }, verAt(a));
+      const r = await update(row, { b: "y" });
+      // Seen at its own write: no conflict with itself, and the warning names that write.
+      expect(r.status).toBe("saved");
+      expect(r.warnings).toEqual([
+        { code: "ver_fallback", op: 0, ver: `v${own.seq}.0`, from_write: own.seq },
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "ver: read after the caller's own write, another's change included: the version read, warned with the read",
+    async () => {
+      const a = await insertRow();
+      const row = rowAt(a);
+      const theirs = await update(row, { c: "theirs" }, verAt(a), { actor: OTHER });
+      const r1 = read([{ kind: "ver", target: row, op: theirs.seq }]);
+      const r = await update(row, { b: "y" });
+      expect(r.status).toBe("saved");
+      expect(r.warnings).toEqual([
+        { code: "ver_fallback", op: 0, ver: `v${theirs.seq}.0`, read: r1 },
+      ]);
+      expect(
+        ((await eventsOfOp(r.seq))[0]?.blocks["ops/0/target"] as { ver?: unknown } | undefined)
+          ?.ver,
+      ).toEqual({
+        op: theirs.seq,
+        restore_count: 0,
+        basis: "fallback",
+      });
+    },
+    T,
+  );
+
+  it(
+    "sv: the schema version last read; warned with the read",
+    async () => {
+      const r1 = read([{ kind: "sv", target: SLOT, op: 1 }]);
+      const r = await send({ ops: [{ intent: "insert", table: "rows", set: { b: "x" } }] });
+      expect(r.warnings).toEqual([{ code: "sv_fallback", sv: 1, read: r1 }]);
+    },
+    T,
+  );
+
+  it(
+    "read under another task, never written: read_first, task_mismatch with the task read under",
+    async () => {
+      const a = await insertRow();
+      const row = rowAt(a);
+      // The reads land in the stored ones first (the ops entry flushes them at its start).
+      read([{ kind: "ver", target: row, op: a.seq }], { actor: OTHER, task: "t-1" });
+      await flushReads(
+        s.store,
+        createOpsContext({
+          tenant: TENANT,
+          actor: "system",
+          trigger: "flushReads",
+          task: null,
+          visibility: { kind: "all" },
+          idempotency_key_window: 86_400_000,
+          idempotency_window: 600_000,
+          now: now(),
+          confirmation: null,
+        }),
+      );
+      expect(await update(row, { b: "y" }, undefined, { actor: OTHER })).toEqual({
+        refused: "read_first",
+        reason: "task_mismatch",
+        target: "row",
+        ref: { table: "ledger.rows", row },
+        param: "ops/0/ver",
+        read_task: "t-1",
+        task: null,
+      });
+    },
+    T,
+  );
+
+  it(
+    "the ops entry writes the buffered reads first: they stay even when the write is refused",
+    async () => {
+      const r1 = read([{ kind: "sv", target: SLOT, op: 1 }]);
+      const ctx = createOpsContext({
+        tenant: TENANT,
+        actor: USER,
+        trigger: null,
+        task: null,
+        visibility: { kind: "all" },
+        idempotency_key_window: 86_400_000,
+        idempotency_window: 600_000,
+        now: now(),
+        confirmation: null,
+      });
+      await expect(
+        write(s.store, ctx, { sv: 1, ops: [{ intent: "insert", table: "nope", set: { b: "x" } }] }),
+      ).rejects.toMatchObject({ code: "unknown_table" });
+      expect(readBufferOf(s.store).size).toBe(0);
+      const kept = await s.store.read((tx) =>
+        tx.query<{ read_id: string }>("SELECT read_id FROM last_read WHERE kind = 'sv'"),
+      );
+      expect(kept.rows.map((x) => x.read_id)).toEqual([r1]);
+    },
+    T,
+  );
 });
