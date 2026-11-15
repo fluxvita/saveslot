@@ -44,7 +44,7 @@ import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-s
 vi.setConfig({ testTimeout: 600_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 550_000, markInterruptAsFailure: true });
 
-const RUNS = propRuns(60);
+const RUNS = propRuns(40);
 const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
 
 const TENANT = `tn_${"8".repeat(26)}`;

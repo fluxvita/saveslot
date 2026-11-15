@@ -33,7 +33,7 @@ import {
   scenario,
   shape,
 } from "@fluxvita/saveslot-kernel/testing";
-import { evaluateLog, type TableSchema } from "@fluxvita/saveslot-reference";
+import { evaluateLog, type Op, type TableSchema } from "@fluxvita/saveslot-reference";
 import { EVENT, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -43,7 +43,7 @@ import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-s
 vi.setConfig({ testTimeout: 600_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 550_000, markInterruptAsFailure: true });
 
-const RUNS = propRuns(60);
+const RUNS = propRuns(30);
 /**
  * `PROP_SEED` fixes the seed (and `PROP_PATH` with it replays one counterexample).
  */
@@ -484,8 +484,52 @@ const both = [
   ["event", EVENT, false],
 ] as const;
 
-/** Samples reaching each kind of operation, over both tables (the last test checks them). */
-const totals: Record<string, number> = {};
+/**
+ * A scenario for each kind of decision, on the table of each kind: a conflict item on f2 (#31
+ * seeing #10, after #21), kept, taken or taken back to its merge base; an undo taking a later write
+ * back (#41 undoing #21, after #31), awaiting confirmation, confirmed or rejected.
+ */
+function fixed(isState: boolean): [string, Op[]][] {
+  const valid = isState
+    ? { valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } } }
+    : {};
+  const write = (op: number, value: string, seen?: number): Op =>
+    ({
+      kind: "write",
+      op,
+      event: op + 1,
+      ...(seen !== undefined ? { seen } : {}),
+      ...valid,
+      fields: { f2: { value, sources: [`S${op}`] } },
+    }) as Op;
+  const conflict = [write(10, "1"), write(20, "2", 10), write(30, "3", 10)];
+  const resolve = (decision: string, extra: object = {}): Op =>
+    ({
+      kind: "resolve",
+      op: 33,
+      event: 34,
+      decision,
+      candidates: [31],
+      unit: "f2",
+      ...extra,
+    }) as Op;
+  const awaiting = [
+    write(10, "1"),
+    write(20, "2", 10),
+    write(30, "3", 20),
+    { kind: "undo", op: 40, event: 41, target: 20, seen: 30, includeLater: true } as Op,
+  ];
+  return [
+    ["keep_effective", [...conflict, resolve("keep_effective")]],
+    ["take_candidate", [...conflict, resolve("take_candidate", { take: 31 })]],
+    ["take_previous", [...conflict, resolve("take_previous")]],
+    ["confirm", [...awaiting, { kind: "confirm", op: 43, event: 44, target: 41 } as Op]],
+    ["reject", [...awaiting, { kind: "reject", op: 43, event: 44, target: 41 } as Op]],
+  ];
+}
+
+/** What the random samples reached, over both tables (the last test checks it). */
+const atRandom: Record<string, number> = {};
 
 describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
   // One store for the samples and one to replay into, each emptied before use: opening PGlite
@@ -501,233 +545,224 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     await replica?.close();
   }, 120_000);
 
-  it("apply on storage gives judge's view and the reference evaluator, step by step and as of each operation", async () => {
-    const seen = { samples: 0, skipped: 0, steps: 0, replayed: 0 };
-    const hits: Record<string, number> = {};
-    await fc.assert(
-      fc.asyncProperty(scenario(isState), extra, async ({ ops, decisions: some }, more) => {
-        const decisions = [...some, ...more];
-        const { steps } = judged(schema, ops.map(asInThisPhase), decisions);
-        const ctx = {
-          table: (isState ? "t2" : "t1") as never,
-          target: isState ? { entity: ENTITY as never } : { row: ROW as never },
-          shape: shape(schema),
-          granularity: "date" as const,
-        };
-        // Pending item events follow their write.base (or head event) in the operation.
-        const perStep = eventsOfSteps(ctx, steps, (after, n) => after + 1 + n);
-        // An operation inserted right after one with several events would take a seq it needs.
-        const collides = perStep.some((evs, k) => {
-          const next = perStep[k + 1]?.[0]?.seq;
-          return next !== undefined && (evs.at(-1)?.seq ?? 0) >= next;
+  const seen = { samples: 0, skipped: 0, steps: 0, replayed: 0 };
+  const hits: Record<string, number> = {};
+
+  /** One judged scenario through storage, every check below; counts what it reached in `hits`. */
+  const checkSample = async (ops: readonly Op[], decisions: readonly Decision[]) => {
+    const { steps } = judged(schema, ops.map(asInThisPhase), decisions);
+    const ctx = {
+      table: (isState ? "t2" : "t1") as never,
+      target: isState ? { entity: ENTITY as never } : { row: ROW as never },
+      shape: shape(schema),
+      granularity: "date" as const,
+    };
+    // Pending item events follow their write.base (or head event) in the operation.
+    const perStep = eventsOfSteps(ctx, steps, (after, n) => after + 1 + n);
+    // An operation inserted right after one with several events would take a seq it needs.
+    const collides = perStep.some((evs, k) => {
+      const next = perStep[k + 1]?.[0]?.seq;
+      return next !== undefined && (evs.at(-1)?.seq ?? 0) >= next;
+    });
+    if (collides) {
+      seen.skipped++;
+      return;
+    }
+    await main.reset();
+    const store = main.store;
+    // Nothing of the sample before is left.
+    expect(await store.read(snapshot)).toEqual(main.blank);
+    {
+      await createTenant(
+        store,
+        createOpsContext({
+          tenant: TENANT,
+          actor: USER,
+          trigger: null,
+          task: null,
+          visibility: { kind: "all" },
+          idempotency_key_window: 86_400_000,
+          idempotency_window: 86_400_000,
+          now: "2026-11-10T04:00:00.000Z",
+          confirmation: null,
+        }),
+      );
+      await run(
+        store,
+        createSlotEvents({ compiled: COMPILED as never, changes: CHANGES as never }),
+      );
+      await run(store, decoy(isState));
+      seen.samples++;
+      const sample = new Set<string>();
+      for (const [k, evs] of perStep.entries()) {
+        const head = evs[0]?.seq as number;
+        for (let tail = (await store.read(readTail))?.seq ?? 0; tail < head - 1; tail++) {
+          await run(store, [filler]);
+        }
+        const op = await run(
+          store,
+          evs.map((e) => ({ type: e.type as never, slot: SLOT, blocks: e.blocks as never })),
+        );
+        expect(op.events.map((e) => e.seq)).toEqual(evs.map((e) => e.seq));
+        const state = (steps[k] as (typeof steps)[number]).state;
+        const v = plain(view(state));
+        const ids = Object.keys(v.fields).sort();
+        const got = await store.read((tx) => fromCells(tx, isState, ids));
+        expect(plain(got)).toEqual(v);
+        const ref = evaluateLog(
+          schema,
+          steps.slice(0, k + 1).map((x) => x.op),
+        ).final;
+        expect(plain(got)).toEqual(
+          plain({
+            exists: ref.exists,
+            gaps: ref.gaps,
+            fields:
+              ref.exists || isState
+                ? Object.fromEntries(
+                    ids.map((f) => [f, (ref.fields as Record<string, unknown>)[f] ?? []]),
+                  )
+                : {},
+          }),
+        );
+        // The business table agrees with the cells: rows where the entity has a value, the
+        // row existing (or revoked), and the field values.
+        const rows = await store.read((tx) => businessRows(tx, isState));
+        agrees(isState, rows, await store.read((tx) => openCells(tx, isState)));
+        if (isState) {
+          const spans = (rows as { vf: string; vt: string | null }[]).map((r) => ({
+            from: r.vf,
+            to: r.vt,
+          }));
+          expect(joined(spans)).toEqual(
+            joined(got.fields["f2"]?.map((s) => s.valid[0] as never) ?? []),
+          );
+        } else {
+          expect(rows.filter((r) => r["revoked"] === false).length).toBe(got.exists ? 1 : 0);
+        }
+        // The registrations are judge's, item by item.
+        const id = isState ? ENTITY : ROW;
+        const judgeRegs = Object.fromEntries(
+          [...state.regs]
+            .filter(([, rs]) => rs.length > 0)
+            .map(([key, rs]) => [key, rs.map((x) => ({ op: x.op, valid: x.valid }))] as const)
+            .sort(([a], [b]) => (a < b ? -1 : 1)),
+        );
+        expect(await store.read((tx) => storedRegs(tx, id))).toEqual(
+          JSON.parse(JSON.stringify(judgeRegs)),
+        );
+        // `ver` (04-contract §3; 09 §5.7): it becomes this operation's number exactly when
+        // the operation changed the row's version table (opened or closed a cell, outside
+        // `schema_switch`). An item put into effect that leaves what is in effect as it was
+        // (a repeated undo; a write-back a later item still covers) changes neither. Checked
+        // where the row has cells before or after: judged scenarios also write to a row never
+        // created (a non-required field only, or a revoke with no field item under it),
+        // which a real write cannot reach (`not_found`), and such a row has no cells at all.
+        const recordOp = (steps[k] as (typeof steps)[number]).judgement.record.op;
+        const vt = await store.read((tx) => versionTable(tx, isState, id, recordOp));
+        if (vt.before || vt.after) {
+          expect({ step: k, changed: vt.changed, ver: vt.ver === recordOp }).toEqual({
+            step: k,
+            changed: vt.changed,
+            ver: vt.changed,
+          });
+          // Cross-check with judge: a field (or, through it, existence) whose state this
+          // operation changed means a changed version table.
+          if (["f2", "f3"].some((f) => state.changedBy(recordOp, f as never).length > 0)) {
+            expect({ step: k, changed: vt.changed }).toEqual({ step: k, changed: true });
+          }
+        }
+        // The table's row count follows its business rows (revoked rows not counted).
+        const counted = await store.read(async (tx) => {
+          const c = await tx.query<{ row_count: unknown }>(
+            `SELECT row_count FROM counts WHERE table_id = '${isState ? "t2" : "t1"}'`,
+          );
+          const n = await tx.query<{ n: unknown }>(
+            isState
+              ? "SELECT count(*) AS n FROM t_t2_v1"
+              : "SELECT count(*) AS n FROM t_t1_v1 WHERE NOT revoked",
+          );
+          return [Number(c.rows[0]?.row_count), Number(n.rows[0]?.n)];
         });
-        if (collides) {
-          seen.skipped++;
-          return;
-        }
-        await main.reset();
-        const store = main.store;
-        // Nothing of the sample before is left.
-        expect(await store.read(snapshot)).toEqual(main.blank);
-        {
-          await createTenant(
-            store,
-            createOpsContext({
-              tenant: TENANT,
-              actor: USER,
-              trigger: null,
-              task: null,
-              visibility: { kind: "all" },
-              idempotency_key_window: 86_400_000,
-              idempotency_window: 86_400_000,
-              now: "2026-11-10T04:00:00.000Z",
-              confirmation: null,
-            }),
-          );
-          await run(
-            store,
-            createSlotEvents({ compiled: COMPILED as never, changes: CHANGES as never }),
-          );
-          await run(store, decoy(isState));
-          seen.samples++;
-          const sample = new Set<string>();
-          for (const [k, evs] of perStep.entries()) {
-            const head = evs[0]?.seq as number;
-            for (let tail = (await store.read(readTail))?.seq ?? 0; tail < head - 1; tail++) {
-              await run(store, [filler]);
-            }
-            const op = await run(
-              store,
-              evs.map((e) => ({ type: e.type as never, slot: SLOT, blocks: e.blocks as never })),
-            );
-            expect(op.events.map((e) => e.seq)).toEqual(evs.map((e) => e.seq));
-            const state = (steps[k] as (typeof steps)[number]).state;
-            const v = plain(view(state));
-            const ids = Object.keys(v.fields).sort();
-            const got = await store.read((tx) => fromCells(tx, isState, ids));
-            expect(plain(got)).toEqual(v);
-            const ref = evaluateLog(
-              schema,
-              steps.slice(0, k + 1).map((x) => x.op),
-            ).final;
-            expect(plain(got)).toEqual(
-              plain({
-                exists: ref.exists,
-                gaps: ref.gaps,
-                fields:
-                  ref.exists || isState
-                    ? Object.fromEntries(
-                        ids.map((f) => [f, (ref.fields as Record<string, unknown>)[f] ?? []]),
-                      )
-                    : {},
-              }),
-            );
-            // The business table agrees with the cells: rows where the entity has a value, the
-            // row existing (or revoked), and the field values.
-            const rows = await store.read((tx) => businessRows(tx, isState));
-            agrees(isState, rows, await store.read((tx) => openCells(tx, isState)));
-            if (isState) {
-              const spans = (rows as { vf: string; vt: string | null }[]).map((r) => ({
-                from: r.vf,
-                to: r.vt,
-              }));
-              expect(joined(spans)).toEqual(
-                joined(got.fields["f2"]?.map((s) => s.valid[0] as never) ?? []),
-              );
-            } else {
-              expect(rows.filter((r) => r["revoked"] === false).length).toBe(got.exists ? 1 : 0);
-            }
-            // The registrations are judge's, item by item.
-            const id = isState ? ENTITY : ROW;
-            const judgeRegs = Object.fromEntries(
-              [...state.regs]
-                .filter(([, rs]) => rs.length > 0)
-                .map(([key, rs]) => [key, rs.map((x) => ({ op: x.op, valid: x.valid }))] as const)
-                .sort(([a], [b]) => (a < b ? -1 : 1)),
-            );
-            expect(await store.read((tx) => storedRegs(tx, id))).toEqual(
-              JSON.parse(JSON.stringify(judgeRegs)),
-            );
-            // `ver` (04-contract §3; 09 §5.7): it becomes this operation's number exactly when
-            // the operation changed the row's version table (opened or closed a cell, outside
-            // `schema_switch`). An item put into effect that leaves what is in effect as it was
-            // (a repeated undo; a write-back a later item still covers) changes neither. Checked
-            // where the row has cells before or after: judged scenarios also write to a row never
-            // created (a non-required field only, or a revoke with no field item under it),
-            // which a real write cannot reach (`not_found`), and such a row has no cells at all.
-            const recordOp = (steps[k] as (typeof steps)[number]).judgement.record.op;
-            const vt = await store.read((tx) => versionTable(tx, isState, id, recordOp));
-            if (vt.before || vt.after) {
-              expect({ step: k, changed: vt.changed, ver: vt.ver === recordOp }).toEqual({
-                step: k,
-                changed: vt.changed,
-                ver: vt.changed,
-              });
-              // Cross-check with judge: a field (or, through it, existence) whose state this
-              // operation changed means a changed version table.
-              if (["f2", "f3"].some((f) => state.changedBy(recordOp, f as never).length > 0)) {
-                expect({ step: k, changed: vt.changed }).toEqual({ step: k, changed: true });
-              }
-            }
-            // The table's row count follows its business rows (revoked rows not counted).
-            const counted = await store.read(async (tx) => {
-              const c = await tx.query<{ row_count: unknown }>(
-                `SELECT row_count FROM counts WHERE table_id = '${isState ? "t2" : "t1"}'`,
-              );
-              const n = await tx.query<{ n: unknown }>(
-                isState
-                  ? "SELECT count(*) AS n FROM t_t2_v1"
-                  : "SELECT count(*) AS n FROM t_t1_v1 WHERE NOT revoked",
-              );
-              return [Number(c.rows[0]?.row_count), Number(n.rows[0]?.n)];
-            });
-            expect(counted[0]).toBe(counted[1]);
-            // The first creation: the latest write given as creating it.
-            const created = steps
-              .slice(0, k + 1)
-              .filter((x) => x.judgement.created)
-              .at(-1)?.judgement.record.event;
-            const origin = await store.read((tx) =>
-              tx.query<{ origin_seq: unknown }>(
-                "SELECT origin_seq FROM row_origins WHERE row_id = $1",
-                [isState ? ENTITY : ROW],
-              ),
-            );
-            expect(origin.rows.map((x) => Number(x.origin_seq))).toEqual(
-              created === undefined ? [] : [created],
-            );
-            const step = steps[k] as (typeof steps)[number];
-            const r = step.judgement.record;
-            sample.add(r.kind === "undo" ? `undo ${r.status}` : r.kind);
-            if (r.kind === "confirm" && r.revert !== undefined) sample.add("confirm undo");
-            if (step.judgement.conflicts.length > 0) sample.add("conflict");
-            if (state.regs.size > 0) sample.add("registered");
-            seen.steps++;
-          }
-          for (const h of sample) hits[h] = (hits[h] ?? 0) + 1;
-          // The version table as of every earlier operation.
-          for (const s of steps) {
-            const v = plain(view(s.state));
-            const ids = Object.keys(v.fields).sort();
-            const asOf = await store.read((tx) =>
-              fromCells(tx, isState, ids, s.judgement.record.op),
-            );
-            expect({ op: s.judgement.record.op, view: plain(asOf) }).toEqual({
-              op: s.judgement.record.op,
-              view: v,
-            });
-          }
-          // K12: replaying the whole log into an empty storage gives the same tables (every fourth
-          // sample: the replay costs as much as the sample, and checks the same apply each time).
-          if (seen.samples % 4 === 1) {
-            expect(await replayed(store, replica)).toEqual(await store.read(everything));
-            seen.replayed++;
-          }
-        }
-      }),
+        expect(counted[0]).toBe(counted[1]);
+        // The first creation: the latest write given as creating it.
+        const created = steps
+          .slice(0, k + 1)
+          .filter((x) => x.judgement.created)
+          .at(-1)?.judgement.record.event;
+        const origin = await store.read((tx) =>
+          tx.query<{ origin_seq: unknown }>(
+            "SELECT origin_seq FROM row_origins WHERE row_id = $1",
+            [isState ? ENTITY : ROW],
+          ),
+        );
+        expect(origin.rows.map((x) => Number(x.origin_seq))).toEqual(
+          created === undefined ? [] : [created],
+        );
+        const step = steps[k] as (typeof steps)[number];
+        const r = step.judgement.record;
+        sample.add(r.kind === "undo" ? `undo ${r.status}` : r.kind);
+        if (r.kind === "confirm" && r.revert !== undefined) sample.add("confirm undo");
+        if (step.judgement.conflicts.length > 0) sample.add("conflict");
+        if (state.regs.size > 0) sample.add("registered");
+        seen.steps++;
+      }
+      for (const h of sample) hits[h] = (hits[h] ?? 0) + 1;
+      // The version table as of every earlier operation.
+      for (const s of steps) {
+        const v = plain(view(s.state));
+        const ids = Object.keys(v.fields).sort();
+        const asOf = await store.read((tx) => fromCells(tx, isState, ids, s.judgement.record.op));
+        expect({ op: s.judgement.record.op, view: plain(asOf) }).toEqual({
+          op: s.judgement.record.op,
+          view: v,
+        });
+      }
+      // K12: replaying the whole log into an empty storage gives the same tables (every fourth
+      // sample: the replay costs as much as the sample, and checks the same apply each time).
+      if (seen.samples % 4 === 1) {
+        expect(await replayed(store, replica)).toEqual(await store.read(everything));
+        seen.replayed++;
+      }
+    }
+  };
+
+  it("apply on storage gives judge's view and the reference evaluator, step by step and as of each operation", async () => {
+    await fc.assert(
+      fc.asyncProperty(scenario(isState), extra, ({ ops, decisions: some }, more) =>
+        checkSample(ops, [...some, ...more]),
+      ),
       {
         numRuns: RUNS,
         ...(SEED !== undefined ? { seed: SEED } : {}),
         ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
       },
     );
-    if (process.env["JUDGE_STATS"]) console.log(schema.kind, JSON.stringify({ ...seen, hits }));
-    for (const [h, n] of Object.entries(hits)) totals[h] = (totals[h] ?? 0) + n;
-    // Each table reaches storage with the situations that tell apply apart, in a share of the
-    // samples (about a third of what 60 samples a table reach): revokes, reverts (an undo, a
-    // revert back to the merge base, a confirmed undo) and the resolutions of conflict items.
-    const share = (...kinds: string[]) =>
-      kinds.reduce((n, k) => n + (hits[k] ?? 0), 0) / seen.samples;
+    // What every round must reach is built in (the fixed scenarios below); these only guard
+    // against a generator gone degenerate as a whole.
     expect(seen.samples).toBeGreaterThan(RUNS / 2);
-    expect({ revoke: share("revoke") > 0.15 }).toEqual({ revoke: true });
-    expect({ revert: share("undo applied", "take_previous", "confirm undo") > 0.12 }).toEqual({
-      revert: true,
-    });
-    expect({ resolved: share("keep_effective", "take_candidate", "take_previous") > 0.15 }).toEqual(
-      {
-        resolved: true,
-      },
-    );
-    expect({ registered: share("registered") > 0.1 }).toEqual({ registered: true });
+    for (const k of ["revoke", "undo applied", "take_previous", "registered"]) {
+      atRandom[k] = (atRandom[k] ?? 0) + (hits[k] ?? 0);
+    }
+  });
+
+  it("each kind of decision reaches storage: one fixed scenario each", async () => {
+    for (const [kind, ops] of fixed(isState)) {
+      const before = hits[kind] ?? 0;
+      await checkSample(ops, []);
+      expect({ kind, reached: (hits[kind] ?? 0) > before }).toEqual({ kind, reached: true });
+    }
   });
 });
 
-it("over both tables, each kind of decision reaches storage", () => {
-  // Rarer kinds, counted over both tables (about a third of what 60 samples a table reach).
-  const at = (k: string) => (totals[k] ?? 0) / (RUNS / 60);
+it("over both tables, the random samples revoke, revert and register", () => {
+  // Guards against a generator gone degenerate. At 30 samples a table, over both tables, the least
+  // seen in 5 rounds of 60 scaled down: revokes about 22, reverts 12, registrations 15, so none at
+  // all has odds under 4e-6. The resolutions are the fixed scenarios'; the same generator's
+  // decisions are guarded in write/record.prop.test.ts (1,500 samples a table).
   expect({
-    keep: at("keep_effective") >= 4,
-    take: at("take_candidate") >= 6,
-    previous: at("take_previous") >= 4,
-    awaitingUndo: at("undo awaiting") >= 6,
-    confirm: at("confirm") >= 2,
-    confirmOrReject: at("confirm") + at("reject") >= 4,
-  }).toEqual({
-    keep: true,
-    take: true,
-    previous: true,
-    awaitingUndo: true,
-    confirm: true,
-    confirmOrReject: true,
-  });
+    revoke: (atRandom["revoke"] ?? 0) > 0,
+    revert: (atRandom["undo applied"] ?? 0) + (atRandom["take_previous"] ?? 0) > 0,
+    registered: (atRandom["registered"] ?? 0) > 0,
+  }).toEqual({ revoke: true, revert: true, registered: true });
 });

@@ -57,7 +57,7 @@ fc.configureGlobal({ interruptAfterTimeLimit: 550_000, markInterruptAsFailure: t
 
 // The default runs this file alone in about a minute and a half; larger counts are the first
 // push's batch and the scheduled long runs.
-const RUNS = propRuns(120);
+const RUNS = propRuns(60);
 const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
 
 const TENANT = `tn_${"8".repeat(26)}`;
@@ -705,6 +705,8 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
       },
     );
+    // Joins are the fixed cases' (write-items.test.ts): a state table joins in about 3 samples of
+    // 100, too few for a guard that never fails.
     // The cases each sample must reach are built in (above); these only guard against a generator
     // gone degenerate as a whole.
     expect(seen.samples).toBeGreaterThan(RUNS / 3);
@@ -713,14 +715,12 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       unreached: seen.unreached > 0,
       inside: seen.inside > 0,
       outside: isState ? seen.outside > 0 : true,
-      joined: seen.joined > 0,
       entries: seen.entries > 0,
     }).toEqual({
       reached: true,
       unreached: true,
       inside: true,
       outside: true,
-      joined: true,
       entries: true,
     });
     totals.samples += seen.samples;

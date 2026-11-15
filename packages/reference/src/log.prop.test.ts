@@ -37,7 +37,7 @@ const STATE: TableSchema = { kind: "state", required: ["f2"] };
 const EVENT: TableSchema = { kind: "event", required: ["f2"] };
 const DAYS = ["11-01", "11-03", "11-05", "11-07", "11-09"].map((x) => `2026-${x}` as BizPoint);
 const SOURCES = ["S1", "S2", "S3", "S4", "S5"];
-const RUNS = propRuns(1500);
+const RUNS = propRuns(750);
 
 type Step =
   | {

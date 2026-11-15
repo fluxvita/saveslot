@@ -175,7 +175,8 @@ describe.each(both)("%s table", (_, schema, isState) => {
     expect(seen.registered / seen.samples).toBeGreaterThan(0.15);
     if (isState) {
       expect(seen.gaps / seen.samples).toBeGreaterThan(0.07);
-      expect(seen.uncovered / seen.samples).toBeGreaterThan(0.04);
+      // At least 6.9 % seen over 5 runs of 1,500: 2 % leaves odds under 1e-12 a run.
+      expect(seen.uncovered / seen.samples).toBeGreaterThan(0.02);
     } else expect(seen.revoked / seen.samples).toBeGreaterThan(0.2);
   });
 });

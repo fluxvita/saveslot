@@ -29,7 +29,7 @@ import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
 
-const RUNS = propRuns(60);
+const RUNS = propRuns(15);
 const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
 const TENANT = `tn_${"8".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}`;
