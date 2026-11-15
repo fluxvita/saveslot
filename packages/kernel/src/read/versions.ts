@@ -269,10 +269,12 @@ export async function rowFactsAsOf(
     }
     if (t.time.type !== "state") {
       const rv = await tx.query<{ id: string; v: unknown }>(
-        `SELECT row_id AS id, max(rec_from) AS v FROM ${versions}
-         WHERE row_id = ANY($1) AND field_id = 'existence' AND revoked
-           AND rec_from <= $2 AND (rec_to IS NULL OR rec_to > $2)
-         GROUP BY row_id`,
+        // The revoke's own operation (its contribution's), not when the cell was last cut.
+        `SELECT v.row_id AS id, max((SELECT e.op FROM events e WHERE e.seq = v.src_event)) AS v
+         FROM ${versions} v
+         WHERE v.row_id = ANY($1) AND v.field_id = 'existence' AND v.revoked
+           AND v.rec_from <= $2 AND (v.rec_to IS NULL OR v.rec_to > $2)
+         GROUP BY v.row_id`,
         [unique, s] as never,
       );
       for (const x of rv.rows) revokedBy.set(x.id, Number(x.v));

@@ -246,9 +246,11 @@ export async function rowFacts(
   }
   if (t.time.type !== "state") {
     const rv = await tx.query<{ id: string; v: unknown }>(
-      `SELECT row_id AS id, max(rec_from) AS v FROM ${versions}
-       WHERE row_id = ANY($1) AND field_id = 'existence' AND revoked AND rec_to IS NULL
-       GROUP BY row_id`,
+      // The revoke's own operation (its contribution's), not when the cell was last cut.
+      `SELECT v.row_id AS id, max((SELECT e.op FROM events e WHERE e.seq = v.src_event)) AS v
+       FROM ${versions} v
+       WHERE v.row_id = ANY($1) AND v.field_id = 'existence' AND v.revoked AND v.rec_to IS NULL
+       GROUP BY v.row_id`,
       [unique] as never,
     );
     for (const x of rv.rows) revokedBy.set(x.id, Number(x.v));
@@ -260,7 +262,9 @@ export async function rowFacts(
 
 /**
  * State entities: the business time where a field's value in effect (now, or after operation `s`)
- * comes from a correction: the version table's cells with the intent `correct`.
+ * comes from a correction: cells whose value a `correct` write gave (their `src_event`). Not the
+ * cell's own intent: a cell is closed and opened again whenever another write cuts it, and then
+ * holds that write's intent, its value still the correction's.
  */
 export async function correctSpansOf(
   tx: ReadTx,
@@ -276,10 +280,15 @@ export async function correctSpansOf(
       ? "valid_from::text AS vf, valid_to::text AS vt"
       : `to_char(valid_from, ${INSTANT_TEXT}) AS vf, to_char(valid_to, ${INSTANT_TEXT}) AS vt`;
   const r = await tx.query<{ row_id: string; field_id: string; vf: string; vt: string | null }>(
-    `SELECT row_id, field_id, ${interval} FROM ${versions}
-     WHERE row_id = ANY($1) AND intent = 'correct' AND field_id <> 'existence' AND ${
-       s === undefined ? "rec_to IS NULL" : "rec_from <= $2 AND (rec_to IS NULL OR rec_to > $2)"
-     }`,
+    `SELECT v.row_id, v.field_id, ${interval} FROM ${versions} v
+     WHERE v.row_id = ANY($1) AND v.field_id <> 'existence' AND ${
+       s === undefined
+         ? "v.rec_to IS NULL"
+         : "v.rec_from <= $2 AND (v.rec_to IS NULL OR v.rec_to > $2)"
+     } AND EXISTS (
+       SELECT 1 FROM events e JOIN content c ON c.seq = e.seq AND c.path = 'target'
+       WHERE e.seq = v.src_event AND e.type = 'write.base' AND c.body IS NOT NULL
+         AND (c.body::jsonb ->> 'intent') = 'correct')`,
     (s === undefined ? [ids] : [ids, s]) as never,
   );
   for (const x of r.rows)

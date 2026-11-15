@@ -377,6 +377,8 @@ type Cell = {
   rec_from: unknown;
   intent: string;
   revoked: boolean | null;
+  /** The operation of the contribution that gave the cell. */
+  src_op: unknown;
 } & Record<string, unknown>;
 
 /** The cells of the target in effect after operation `s`. */
@@ -391,7 +393,9 @@ async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, id: string, s: number
     : "NULL AS vf, NULL AS vt";
   const cols = t.fields.flatMap((f) => selectOf(f).map((x, i) => `${x} AS c_${f.id}_${i}`));
   const r = await tx.query<Cell>(
-    `SELECT field_id, ${interval}, rec_from, intent, revoked, ${cols.join(", ")} FROM ${versions}
+    `SELECT field_id, ${interval}, rec_from, intent, revoked,
+       (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS src_op, ${cols.join(", ")}
+     FROM ${versions} v
      WHERE row_id = $1 AND rec_from <= $2 AND (rec_to IS NULL OR rec_to > $2)`,
     [id, s],
   );
@@ -612,7 +616,8 @@ export async function asOfInTx(
       const revoke = cells.find((c) => c.field_id === "existence" && c.revoked === true);
       const marks: Marks = {
         ...(version.corrected ? { corrected: true as const } : {}),
-        ...(revoke !== undefined ? { revoked: { seq: Number(revoke.rec_from) as never } } : {}),
+        // The revoke's own operation, not when its cell was last cut.
+        ...(revoke !== undefined ? { revoked: { seq: Number(revoke.src_op) as never } } : {}),
       };
       rows.push({
         table: qualified,
