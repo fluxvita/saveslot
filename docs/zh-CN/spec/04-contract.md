@@ -127,9 +127,15 @@
 - **区间一律左闭右开。** 结果里的区间在按日的表上同时给 `valid_to_inclusive`（区间里的最后一天）；一直延续的区间 `valid_to` 为 `null`。
 - **日期与时刻的换算**：按日的表收到时刻，按 slot 时区取所在日，`warnings` 给 `time_truncated`；按时刻的表收到日期，读写都报 `invalid_argument`（`granularity`），`example` 给出那一天在 slot 时区下的起止时刻。
 - **状态类表**：
-  - 默认读取返回每个实体当前生效的那一段，带它的 `valid_from` / `valid_to`；当前没有值的实体不出现。
+  - 默认读取返回每个实体当前生效的那一段，带它的 `valid_from` / `valid_to`；当前没有值的实体不出现。"当前"取求值时刻 `at`（不传取入口时刻）：按日的表上是它在 slot 时区下的那一天，按时刻的表上就是这一刻。
   - `valid_at`：返回那一刻生效的段。
-  - `valid_during`：返回与区间相交的每一段，一段一行。端点默认不截到区间内（`clip: true` 才截）；相邻同值段默认按所选字段合并（`coalesce: false` 才不合并）。`where` 里的 `valid_from` / `valid_to` 只在带 `valid_during` 时可用。
+  - `valid_during`：返回与区间相交的每一段，一段一行。端点默认不截到区间内（`clip: true` 才截）；相邻同值段默认按所选字段合并（`coalesce: false` 才不合并）。`where` 里的 `valid_from` / `valid_to` 只在带 `valid_during` 时可用。次序是：
+    1. 对字段的条件先筛实体原始的各段；
+    2. 剩下的段里，相接、所选字段的值相同的合并，不论它们自己是否与区间相交——调用方看到的是这个值真实的起止。只看值，不看标记：标记是读取当时的，若由它决定怎么合并，翻页期间出现的标记会把已经给出的行拆开。合并后的行带上各段的标记：事项类的标记各带自己的区间，`corrected` 是任一段出自纠错就有；
+    3. 留下与区间相交的；
+    4. `valid_from` / `valid_to` 的条件作用在合并之后的段上；
+    5. 最后才 `clip`。
+  - `clip`、`coalesce` 只用于带 `valid_during` 读状态类表：用在别的表上报 `invalid_argument`（`not_state_table`），用在状态类表上却没给 `valid_during` 报 `invalid_argument`（`malformed`）。不悄悄忽略。
   - `valid_at` 与 `valid_during` 同时给：`invalid_argument`（`mutually_exclusive`）。
 - **事件类表**没有生效区间：传 `valid_at` 报 `invalid_argument`（`event_table_valid_at`），`example` 给出改写成 `valid_during` 或 `where` 的写法。`valid_during` 按发生时间字段筛选；字段是 `zoned_datetime` 而区间给的是日期时，按 slot 时区的自然日。
 - **无时间表**传 `valid_at` / `valid_during`：`invalid_argument`（`no_time_table`）。
@@ -328,7 +334,7 @@
 | `disputed` | 有未解决的冲突事项；给出的是按规则给出的生效值。带事项、冲突单元里的字段、区间 |
 | `awaiting` | 有提议尚未生效；给出的是当前值 |
 | `flagged` | 值已生效，只是被标记；算不算数由读方判断 |
-| `corrected` | 该行被纠错过 |
+| `corrected` | 该行被纠错过。状态类表上按段给：这一段里所读字段的值出自纠错写入（合并的段里任一段是即可） |
 | `revoked` | 该行已撤销；只在 `include_revoked: true` 时出现 |
 | `possibly_affected` | 本连接实例之前读过的版本后来受影响；值后来恢复则撤掉 |
 | `partially_deleted` | 按时刻读、还原时，当时的部分数据已删除 |
@@ -387,8 +393,13 @@
 
 - **逐行读**：返回的 `ver` 可用于写入，也作兜底。读取自动记入 read_log（data-model「读取记录」）。
 - `where` 的运算符对各类型的适用范围见 types 4.3；用在不适用的类型上报 `invalid_argument`（`operator_type`）。`quantity` 的比较值带单位，同量纲换算后比较。
-- 默认只返回未撤销的行；`include_revoked: true` 时已撤销的行带 `marks.revoked`。
-- 默认排序：事件类表按发生时间倒序；状态类表按实体、再按 `valid_from`；无时间表按最近改动倒序；派生表按分组键升序。
+  - **比较值按写入的同一套规则读**（第 1 节「值的编码」），不合格的报 `invalid_argument`（`malformed`，`param` 指到那个值）。`text` 的比较值先做 NFC 再比，`contains` 同样。`decimal`、`integer`、`quantity` 按精确值比较，不按字段的精度舍入（舍入会让比较值越过已存的值）。
+  - `zoned_datetime` 按时刻比较。拿日期去比报 `invalid_argument`（`malformed`），`example` 给出时刻的写法；按日比较要用内部日期列，留待它实现。这是有意与同值判据（时刻与时区都相同）不同：排序类运算符只能按时刻比，`=` 若与 `<=` 加 `>=` 不一致会更糟。比较值没带偏移与时区时按 slot 时区读，`warnings` 给 `timezone_assumed`。
+  - 报错里回显调用方写的名字（`name`、`param` 里的各段）各截到 200 个字符。
+  - `!=` 的结果含该字段为空的行（空与任何值都不相等）；`<`、`<=`、`>`、`>=` 不含空。
+- 默认只返回未撤销的行；`include_revoked: true` 时已撤销的行带 `marks.revoked`。状态类表上撤销是无值区间，没有"已撤销的行"，`include_revoked` 不多给任何东西。
+- 默认排序：事件类表按发生时间倒序，同一时间按行 ID 升序；状态类表按实体 ID 升序、再按 `valid_from` 升序；无时间表按最近改动倒序，同一次改动按行 ID 升序；派生表按分组键升序。给了 `order` 时先按它，再按这组默认的键。空值在升序、降序里都排在最后；文本按码点比较。`cursor` 以这组键为准：下一页从上一页最后一行的键之后开始。
+- `total` 数的是返回的行，即合并（`coalesce`）之后的段；一个实体的几段可以分在两页。
 - 状态类表一段一行；`ver` 按实体给，同一实体的各段相同。时间参数见第 4 节。
 - 行上可能带 `premise_changed`（第 7 节）。`detail: "detailed"` 时每行另给 `detail.premises`：这一行当前生效的全部前提声明（含没变的），读方据此看"这一行站在什么上"。
 
@@ -667,7 +678,7 @@
 | 翻页 | `cur_` | 签名，绑定查询条件 + 首页的操作号 + 恢复次数 | 1 小时 | `handle_expired`，重新查询 |
 | 作业、抽取租约（后续） | `jb_`、`ls_` | 稳定 ID；签名 | 作业结束后 30 天；15 分钟 | `not_found`；`lease_expired` |
 
-- 翻页固定在首页的操作号：翻页期间的新写入不会造成漏行、重行；换条件即失效。
+- 翻页固定在首页的操作号：翻页期间的新写入不会造成漏行、重行；换条件即失效。后续各页按首页那一刻的记录状态（与首页的求值时刻）给出行与值；标记是读取当时的（未决事项没有历史），行怎么切分不受标记影响。首页之后有恢复或导入的，后续页报 `handle_expired`（`restored`）。句柄绑定的是查询条件，不含 `limit`：页与页之间可以换每页条数。
 - **恢复备份或导入之后**：`ver`、`item_ver`、`dc_`、`cur_` 都带租户恢复次数。恢复与导入都让恢复次数加 1，之前签发的一律对不上。**恢复点**是最近那次恢复的 `restored_to`（`tenant.restored`），或导入的 `imported_upto`（`tenant.imported`）。
   - `ver`：恢复次数**恰好比当前小 1**、且操作号不超过恢复点的，按它自己的操作号判定冲突；其余的（操作号在恢复点之后，或恢复次数更旧），以恢复点为它读到的位置，按冲突判据比较恢复点之后的写入。前提里的 `ver` 同此。
     - 理由：恢复点及以前的事件在两条时间线里逐字节相同，按原操作号判不会错，还能多查出恢复点之前的并发改动；恢复点之后的那段可能已经丢失，只能保守处理。恢复次数差 2 及以上时，中间那次恢复之前的时间线是否与现在一致无从判断，所以不放宽。

@@ -3,6 +3,7 @@ export * from "./audit/index.ts";
 export * from "./judge/index.ts";
 export * from "./log/index.ts";
 export * from "./ops/index.ts";
+export { type QueryReadResult, ReadError, type Row } from "./read/index.ts";
 // The business time parameter types (FromParam, ToParam, ValidParam) are request's; judge takes the
 // same ones and re-exports them, so they come out through judge.
 export {

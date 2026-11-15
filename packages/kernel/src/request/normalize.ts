@@ -32,7 +32,7 @@ import type {
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize, isId } from "@fluxvita/saveslot-contract-core";
 import { dateInZone, nextDay, startOfDay } from "../time/index.ts";
-import { fold, nearest, splitTableName } from "./names.ts";
+import { echoName, echoPath, fold, nearest, splitTableName } from "./names.ts";
 import { isJsonNumber } from "./number.ts";
 import { get, has, isDenseArray, isObj, keysOf, type Obj } from "./own.ts";
 import { instantText, parseDateTime, validDate } from "./times.ts";
@@ -71,8 +71,14 @@ class Refused extends Error {
   }
 }
 
+/** Throws the error, its echoed names and paths cut to `ECHO_CHARS` code points each. */
 const refuse = (error: RequestError): never => {
-  throw new Refused(error);
+  const e = error as RequestError & { param?: string; name?: string };
+  throw new Refused({
+    ...error,
+    ...(typeof e.param === "string" ? { param: echoPath(e.param) } : {}),
+    ...(typeof e.name === "string" ? { name: echoName(e.name) } : {}),
+  } as RequestError);
 };
 const invalid = (reason: string, param: string, extra: Record<string, unknown> = {}): never =>
   refuse({ code: "invalid_argument", reason, param, ...extra } as RequestError);

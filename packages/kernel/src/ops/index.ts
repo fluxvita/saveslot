@@ -5,5 +5,6 @@ export * from "./flush-reads.ts";
 export { newReadId } from "./ids.ts";
 export * from "./open-tenant.ts";
 export * from "./principals.ts";
+export * from "./read.ts";
 export * from "./tenant.ts";
 export * from "./write.ts";

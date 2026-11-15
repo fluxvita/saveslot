@@ -524,3 +524,27 @@ describe("raw values pass the head event's shape check (09 §1.3)", () => {
     ).toMatchObject({ ok: false });
   });
 });
+
+describe("names echoed in errors", () => {
+  it("cuts a name and each path segment to 200 code points", () => {
+    const long = "x".repeat(100_000);
+    const t = errorOf(
+      normalize(op({ intent: "insert", table: long, set: { date: "2026-11-10" } })),
+    );
+    expect(t).toMatchObject({ code: "unknown_table", name: "x".repeat(200) });
+    const f = errorOf(
+      normalize(op({ intent: "insert", table: "runs", set: { date: "2026-11-10", [long]: 1 } })),
+    );
+    expect(f).toMatchObject({
+      code: "unknown_field",
+      name: "x".repeat(200),
+      param: `ops/0/set/${"x".repeat(200)}`,
+    });
+    expect(errorOf(normalize({ ...insertExpense(), [long]: 1 }))).toEqual({
+      code: "invalid_argument",
+      reason: "malformed",
+      param: "x".repeat(200),
+    });
+    expect(JSON.stringify(f).length).toBeLessThan(2_000);
+  });
+});

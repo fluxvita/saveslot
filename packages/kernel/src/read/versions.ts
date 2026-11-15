@@ -1,0 +1,286 @@
+// The rows a query selects as of an operation number S, from the version table (02-architecture
+// §8: `t_<table>_v<n>__ver`, every cell with the record interval it held), for the pages after the
+// first: a page is fixed to its first page's operation (04-contract §15), so writes made meanwhile
+// neither drop nor repeat rows.
+//
+// The state as of S is rebuilt from the cells in effect then (`rec_from ≤ S < rec_to`), the way
+// apply builds the business table from its cells: a state entity has a value on a piece of business
+// time where every required field has a value (any field, when none is required) and no revoke is
+// in effect, pieces with the same values running together; an event or timeless row exists when it
+// has cells, revoked when a revoke is in effect. The business time and the conditions are then
+// evaluated here, operator by operator as ./select.ts writes them in SQL for the first page:
+// - `=`, `<`, `<=`, `>`, `>=`, `in`, `contains`: an empty value matches none; `!=` matches it;
+// - numbers exactly (`value × den op num` in SQL; rationals here), text by exact code points (the
+//   "C" collation), dates and instants by their fixed-width text, booleans false before true;
+// - an open interval end compares as later than any point (`COALESCE(valid_to, 'infinity')`).
+// The first page and a page read as of the same S must agree: query.prop.test checks it.
+
+import type {
+  CompiledBaseField,
+  CompiledBaseTable,
+  FieldValue,
+  JsonValue,
+} from "@fluxvita/saveslot-contract-core";
+import { canonicalize } from "@fluxvita/saveslot-contract-core";
+import { compare, rationalOf } from "../request/index.ts";
+import type { ReadTx } from "../store/ports.ts";
+import type { Condition, Literal, QueryPlan } from "./params.ts";
+import {
+  correctSpansOf,
+  decode,
+  INSTANT_TEXT,
+  physical,
+  type RowFacts,
+  readFlagsOf,
+  type SelectedRow,
+  selectOf,
+} from "./select.ts";
+
+type Cell = {
+  row_id: string;
+  field_id: string;
+  vf: string | null;
+  vt: string | null;
+  rec_from: unknown;
+  revoked: boolean | null;
+} & Record<string, unknown>;
+
+/** Every cell of the table in effect after operation `s`. */
+async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, s: number): Promise<Cell[]> {
+  const { versions } = physical(t);
+  const state = t.time.type === "state";
+  const interval = state
+    ? t.time.granularity === "date"
+      ? "valid_from::text AS vf, valid_to::text AS vt"
+      : `to_char(valid_from, ${INSTANT_TEXT}) AS vf, to_char(valid_to, ${INSTANT_TEXT}) AS vt`
+    : "NULL AS vf, NULL AS vt";
+  const cols = t.fields.flatMap((f) => selectOf(f).map((x, i) => `${x} AS c_${f.id}_${i}`));
+  const r = await tx.query<Cell>(
+    `SELECT row_id, field_id, ${interval}, rec_from, revoked, ${cols.join(", ")} FROM ${versions}
+     WHERE rec_from <= $1 AND (rec_to IS NULL OR rec_to > $1)`,
+    [s],
+  );
+  return [...r.rows];
+}
+
+const cellValue = (f: CompiledBaseField, c: Cell): FieldValue =>
+  decode(
+    f,
+    selectOf(f).map((_, i) => c[`c_${f.id}_${i}`]),
+  );
+const same = (a: FieldValue | undefined, b: FieldValue | undefined) =>
+  canonicalize((a ?? null) as JsonValue) === canonicalize((b ?? null) as JsonValue);
+
+/** A state entity's segments from its cells: where it has a value, equal pieces run together. */
+export function segmentsOf(
+  t: CompiledBaseTable,
+  cells: readonly Cell[],
+): { from: string; to: string | null; values: Record<string, FieldValue> }[] {
+  const points = new Set<string>();
+  for (const c of cells) {
+    if (c.vf !== null) points.add(c.vf);
+    if (c.vt !== null) points.add(c.vt);
+  }
+  const sorted = [...points].sort();
+  const required = t.fields.filter((f) => f.required === true);
+  const out: { from: string; to: string | null; values: Record<string, FieldValue> }[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const from = sorted[i] as string;
+    const to = sorted[i + 1] ?? null;
+    const here = cells.filter(
+      (c) => (c.vf as string) <= from && (c.vt === null || (to !== null && to <= c.vt)),
+    );
+    if (here.some((c) => c.field_id === "existence" && c.revoked === true)) continue;
+    const values: Record<string, FieldValue> = Object.create(null);
+    for (const f of t.fields) {
+      const c = here.find((x) => x.field_id === f.id);
+      values[f.id] = c === undefined ? null : cellValue(f, c);
+    }
+    const valued =
+      required.length > 0
+        ? required.every((f) => here.some((c) => c.field_id === f.id) && values[f.id] !== null)
+        : t.fields.some((f) => values[f.id] !== null);
+    if (!valued) continue;
+    const last = out.at(-1);
+    if (
+      last !== undefined &&
+      last.to === from &&
+      t.fields.every((f) => same(last.values[f.id], values[f.id]))
+    )
+      out[out.length - 1] = { ...last, to };
+    else out.push({ from, to, values });
+  }
+  return out;
+}
+
+// --- conditions, evaluated here -------------------------------------------------------------------
+
+/** A column's value as compared: null when empty. */
+type Cmp = string | boolean | { readonly num: bigint; readonly den: bigint } | null;
+
+function columnValue(c: Condition["column"], r: SelectedRow): { v: Cmp; open?: true } {
+  if (c === "valid_from") return { v: r.validFrom ?? null };
+  if (c === "valid_to")
+    return r.validTo === null || r.validTo === undefined
+      ? { v: null, open: true }
+      : { v: r.validTo };
+  const x = r.values[c.id];
+  if (x === null || x === undefined) return { v: null };
+  if (typeof x === "boolean") return { v: x };
+  if (typeof x === "string")
+    return { v: c.type === "integer" || c.type === "decimal" ? rationalOf(x) : x };
+  if ("instant" in x) return { v: x.instant };
+  return { v: rationalOf(x.value) };
+}
+
+function order(a: Cmp, b: Literal): number {
+  if (b.kind === "number") return compare(a as { num: bigint; den: bigint }, b.value);
+  if (b.kind === "boolean") return a === b.value ? 0 : a === false ? -1 : 1;
+  // Code point order: for the fixed-width ASCII of dates and instants, string order is the same.
+  return cmpCodePoints(a as string, b.value);
+}
+
+function cmpCodePoints(a: string, b: string): number {
+  const x = [...a];
+  const y = [...b];
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const d = ((x[i] as string).codePointAt(0) ?? 0) - ((y[i] as string).codePointAt(0) ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return x.length === y.length ? 0 : x.length < y.length ? -1 : 1;
+}
+
+function compareOp(op: string, col: { v: Cmp; open?: true }, lit: Literal): boolean {
+  if (col.open === true) {
+    // `COALESCE(valid_to, 'infinity')`: later than any point.
+    return op === "!=" || op === ">" || op === ">=";
+  }
+  if (col.v === null) return op === "!=";
+  const c = order(col.v, lit);
+  switch (op) {
+    case "=":
+      return c === 0;
+    case "!=":
+      return c !== 0;
+    case "<":
+      return c < 0;
+    case "<=":
+      return c <= 0;
+    case ">":
+      return c > 0;
+    default:
+      return c >= 0;
+  }
+}
+
+/** Whether a row meets a condition, as ./select.ts's SQL decides it. */
+export function meetsCondition(c: Condition, r: SelectedRow): boolean {
+  const col = columnValue(c.column, r);
+  switch (c.op) {
+    case "is_null":
+      return (col.v === null) === c.isNull;
+    case "in":
+      return c.values.some((v) => compareOp("=", col, v));
+    case "contains":
+      return typeof col.v === "string" && col.v.includes((c.value as { value: string }).value);
+    default:
+      return compareOp(c.op, col, c.value);
+  }
+}
+
+const within = (p: string, from: string, to: string | null) => from <= p && (to === null || p < to);
+
+/** The rows the plan selects as of operation `s`, as `selectRows` would have then. */
+export async function selectRowsAsOf(
+  tx: ReadTx,
+  plan: QueryPlan,
+  s: number,
+): Promise<SelectedRow[]> {
+  const t = plan.table;
+  const byRow = new Map<string, Cell[]>();
+  for (const c of await cellsAsOf(tx, t, s))
+    byRow.set(c.row_id, [...(byRow.get(c.row_id) ?? []), c]);
+  const rows: SelectedRow[] = [];
+  for (const [id, cells] of byRow) {
+    if (plan.kind === "state") {
+      for (const seg of segmentsOf(t, cells)) {
+        const time = plan.time;
+        // Over an interval every segment: merging comes before the interval (./rows.ts).
+        const keep = time.kind === "during" || within(time.point, seg.from, seg.to);
+        if (keep)
+          rows.push({
+            id,
+            validFrom: seg.from,
+            validTo: seg.to,
+            revoked: false,
+            values: seg.values,
+          });
+      }
+      continue;
+    }
+    const values: Record<string, FieldValue> = Object.create(null);
+    for (const f of t.fields) {
+      const c = cells.find((x) => x.field_id === f.id);
+      values[f.id] = c === undefined ? null : cellValue(f, c);
+    }
+    const revoked = cells.some((c) => c.field_id === "existence" && c.revoked === true);
+    if (revoked && !plan.includeRevoked) continue;
+    if (plan.kind === "event" && plan.time.kind === "during" && t.time.type === "event") {
+      const tf = t.time.field;
+      const v = values[tf];
+      const point =
+        typeof v === "string"
+          ? v
+          : typeof v === "object" && v !== null && "instant" in v
+            ? v.instant
+            : null;
+      if (point === null || !within(point, plan.time.from, plan.time.to)) continue;
+    }
+    rows.push({ id, revoked, values });
+  }
+  // Conditions on the fields here; those on valid_from / valid_to apply after merging (./rows.ts).
+  const onFields = plan.where.filter((c) => typeof c.column !== "string");
+  return rows.filter((r) => onFields.every((c) => meetsCondition(c, r)));
+}
+
+/** `ver`, the revoke in effect, `corrected` as of operation `s`; the open items' flags of now. */
+export async function rowFactsAsOf(
+  tx: ReadTx,
+  t: CompiledBaseTable,
+  ids: readonly string[],
+  s: number,
+): Promise<RowFacts> {
+  const { versions } = physical(t);
+  const unique = [...new Set(ids)];
+  const ver = new Map<string, number>();
+  const revokedBy = new Map<string, number>();
+  const corrected = new Set<string>();
+  if (unique.length > 0) {
+    const vr = await tx.query<{ id: string; v: unknown; c: boolean }>(
+      `SELECT row_id AS id, max(rec_from) AS v, bool_or(intent = 'correct') AS c FROM ${versions}
+       WHERE row_id = ANY($1) AND rec_from <= $2 AND intent <> 'schema_switch' GROUP BY row_id`,
+      [unique, s] as never,
+    );
+    for (const x of vr.rows) {
+      ver.set(x.id, Number(x.v));
+      if (x.c === true) corrected.add(x.id);
+    }
+    if (t.time.type !== "state") {
+      const rv = await tx.query<{ id: string; v: unknown }>(
+        `SELECT row_id AS id, max(rec_from) AS v FROM ${versions}
+         WHERE row_id = ANY($1) AND field_id = 'existence' AND revoked
+           AND rec_from <= $2 AND (rec_to IS NULL OR rec_to > $2)
+         GROUP BY row_id`,
+        [unique, s] as never,
+      );
+      for (const x of rv.rows) revokedBy.set(x.id, Number(x.v));
+    }
+  }
+  return {
+    ver,
+    revokedBy,
+    corrected,
+    correctSpans: await correctSpansOf(tx, t, unique, s),
+    flags: await readFlagsOf(tx, t.id, unique),
+  };
+}

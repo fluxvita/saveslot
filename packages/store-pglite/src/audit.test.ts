@@ -69,11 +69,11 @@ beforeAll(async () => {
   rs = await openReusable("saveslot-audit-");
   store = rs.store;
 }, 120_000);
-afterAll(() => rs?.close());
+afterAll(() => rs?.close(), 120_000);
 beforeEach(async () => {
   await rs.reset();
   readBufferOf(store).take();
-});
+}, 120_000);
 
 const rowsOf = (sql: string) =>
   store.read(async (tx) =>

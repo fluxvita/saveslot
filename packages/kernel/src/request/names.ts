@@ -58,3 +58,15 @@ export function splitTableName(name: string): [string | undefined, string] {
   const dot = name.indexOf(".");
   return dot < 0 ? [undefined, name] : [name.slice(0, dot), name.slice(dot + 1)];
 }
+
+/** Longest name or path segment an error echoes, in code points (a longer one is cut). */
+export const ECHO_CHARS = 200;
+
+/** A name as an error echoes it: at most `ECHO_CHARS` code points. */
+export function echoName(s: string): string {
+  const cps = [...s];
+  return cps.length > ECHO_CHARS ? cps.slice(0, ECHO_CHARS).join("") : s;
+}
+
+/** A parameter path as an error echoes it: each segment at most `ECHO_CHARS` code points. */
+export const echoPath = (path: string): string => path.split("/").map(echoName).join("/");
