@@ -36,14 +36,16 @@ import {
   selectOf,
 } from "./select.ts";
 
-type Cell = {
-  row_id: string;
+/** A cell of one row or entity: field, business interval, record start, revoke, values. */
+export type RowCell = {
   field_id: string;
   vf: string | null;
   vt: string | null;
   rec_from: unknown;
   revoked: boolean | null;
 } & Record<string, unknown>;
+
+type Cell = RowCell & { row_id: string };
 
 /** Every cell of the table in effect after operation `s`. */
 async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, s: number): Promise<Cell[]> {
@@ -63,7 +65,7 @@ async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, s: number): Promise<C
   return [...r.rows];
 }
 
-const cellValue = (f: CompiledBaseField, c: Cell): FieldValue =>
+const cellValue = (f: CompiledBaseField, c: RowCell): FieldValue =>
   decode(
     f,
     selectOf(f).map((_, i) => c[`c_${f.id}_${i}`]),
@@ -74,7 +76,7 @@ const same = (a: FieldValue | undefined, b: FieldValue | undefined) =>
 /** A state entity's segments from its cells: where it has a value, equal pieces run together. */
 export function segmentsOf(
   t: CompiledBaseTable,
-  cells: readonly Cell[],
+  cells: readonly RowCell[],
 ): { from: string; to: string | null; values: Record<string, FieldValue> }[] {
   const points = new Set<string>();
   for (const c of cells) {

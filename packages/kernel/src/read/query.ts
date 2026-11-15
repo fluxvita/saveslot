@@ -144,7 +144,8 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
     actor: input.actor,
     task: plan.task,
     at: input.now,
-    pos: latest as never,
+    // The state read: a later page's is the first page's (04-contract §15).
+    pos: (asOf ?? latest) as never,
     operation: "query",
     slot: named.slot.slot,
     sv: named.slot.sv,

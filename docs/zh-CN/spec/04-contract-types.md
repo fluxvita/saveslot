@@ -644,7 +644,7 @@ interface TimelineResult extends CommonResult, PageResult {
   /** 当前版本。只有它能用于写入；返回它算一次逐行读。 */
   ver: Ver;
   entries: TimelineEntry[];      // 新的在前
-  /** 读过各版本的读取（任何连接实例的）。不给查询条件。 */
+  /** 读过各版本的读取（任何连接实例的）；seq 是读到的版本。不给查询条件。只在首页给。 */
   reads?: Array<{ read: ReadId; seq: Seq; at: Instant; actor: Actor; task?: string }>;
 }
 
@@ -685,7 +685,7 @@ interface SourceRef {
 
 interface AsOfResult extends CommonResult, PageResult {
   mode: "as_of";
-  as_of: { seq: Seq; recorded_at: Instant };
+  as_of: { seq: Seq; recorded_at?: Instant };   // 早于第一条操作：seq 为 0，不带 recorded_at
   sv: Sv;                        // 当时的 schema 版本，值按它解释
   rows: Row[];                   // ver 是 HistoricalVer，historical: true；目标当时不存在则为空
   other_reads?: Array<{ read: ReadId; seq: Seq; at: Instant }>;   // as_of: {task} 时：同一任务对这个目标的其余读取
@@ -1859,7 +1859,7 @@ interface ReadsListParams extends PageParams {
   connection?: ConnectionId | string;   // ID 或名字
   slot?: SlotName; table?: TableName;
   of_task?: string;                     // 筛选：只列带这个任务标识的读取。HTTP 上是同名查询参数；不是 CommonParams.task
-  since?: Instant; until?: Instant;
+  since?: Instant; until?: Instant;    // [since, until)
 }
 
 interface ReadsListResult extends PageResult {
@@ -1873,7 +1873,7 @@ interface ReadsListResult extends PageResult {
     /** 读到的行与版本。只给版本，不给值。最多 50 条，另给总数。 */
     rows?: Array<{ target: TargetRef; seq: Seq }>;
     rows_total?: number;
-    /** 读到的行太多、改记成表级记录的表（data-model「读取记录」）：只有表与读取时的日志位置，没有逐行的版本。 */
+    /** 读到的行太多、改记成表级记录的表（data-model「读取记录」）：只有表与这次读取所见状态的位置，没有逐行的版本。 */
     coarse?: Array<{ table: TableName; pos: Seq }>;
     valid?: { at?: BizTime; during?: [BizTime, BizTime | null] };   // 问的业务时间
     source?: SourceId;           // 读的是源数据原文

@@ -407,10 +407,11 @@ CREATE INDEX premise_edges_target ON premise_edges (target);`,
   actor ${T} NOT NULL,
   task ${T},
   at ${T} NOT NULL,                 -- the entry's "now"
-  pos BIGINT NOT NULL,              -- log position when read: the latest operation number
+  pos BIGINT NOT NULL,              -- the position of the state read (an operation number)
   operation ${T} NOT NULL CHECK (operation IN
     ('query', 'sql', 'history', 'sources', 'catalog', 'pending', 'deletion_preview')),
   selfcheck BOOLEAN NOT NULL DEFAULT FALSE,
+  historical BOOLEAN NOT NULL DEFAULT FALSE,  -- read as of a record time: not a read of versions in effect
   slot_id ${T},
   sv INTEGER,
   table_id ${T},

@@ -15,10 +15,11 @@ import type {
   DateStr,
   FieldValue,
 } from "@fluxvita/saveslot-contract-core";
-import { canonicalize, isInstant } from "@fluxvita/saveslot-contract-core";
+import { canonicalize, isDate, isInstant } from "@fluxvita/saveslot-contract-core";
 import {
   compare,
   get,
+  has,
   isDenseArray,
   isObj,
   keysOf,
@@ -104,6 +105,23 @@ function cutMarks(m: Marks | undefined, from: string, to: string | null): Marks 
   return Object.keys(out).length === 0 ? undefined : out;
 }
 
+/**
+ * Whether a state segment `[from, to)` is corrected (04-contract §7): a value of a field read comes
+ * from a correction there (the version table's cells of intent `correct`, as of the state read).
+ */
+export function correctedWithin(
+  spans:
+    | readonly { readonly field: string; readonly from: string; readonly to: string | null }[]
+    | undefined,
+  read: ReadonlySet<string>,
+  from: string,
+  to: string | null,
+): boolean {
+  return (spans ?? []).some(
+    (c) => read.has(c.field) && (c.to === null || c.to > from) && (to === null || c.from < to),
+  );
+}
+
 function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): Marks | undefined {
   const t = plan.table;
   const name = new Map(t.fields.map((f) => [f.id as string, f.name]));
@@ -139,12 +157,8 @@ function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): Marks | unde
   if (r.validFrom === undefined) {
     if (facts.corrected.has(r.id)) out.corrected = true;
   } else {
-    const vf = r.validFrom;
-    const vt = r.validTo ?? null;
-    const hit = (facts.correctSpans.get(r.id) ?? []).some(
-      (c) => read.has(c.field) && (c.to === null || c.to > vf) && (vt === null || c.from < vt),
-    );
-    if (hit) out.corrected = true;
+    if (correctedWithin(facts.correctSpans.get(r.id), read, r.validFrom, r.validTo ?? null))
+      out.corrected = true;
   }
   const revokedBy = facts.revokedBy.get(r.id);
   if (r.revoked && revokedBy !== undefined) out.revoked = { seq: revokedBy as never };
@@ -314,9 +328,9 @@ export function shownRows(
 
 // --- order ---------------------------------------------------------------------------------------
 
-type KeyType = "number" | "text" | "plain" | "boolean" | "count";
+export type KeyType = "number" | "text" | "plain" | "boolean" | "count";
 
-interface KeySpec {
+export interface KeySpec {
   readonly type: KeyType;
   readonly dir: "asc" | "desc";
 }
@@ -486,11 +500,24 @@ export interface Position {
   readonly restoreCount: number;
   /** The keys of the last row given. */
   readonly keys: readonly (string | boolean | number | null)[];
+  /**
+   * What the first page resolved besides its point, when the call needs it again: `history`
+   * `as_of`'s business time condition taken from a read (`{at}` or `{during}`).
+   */
+  readonly condition?: { readonly at?: string; readonly during?: readonly [string, string | null] };
 }
 
 export function encodePosition(identity: string, p: Position): string {
   return Buffer.from(
-    JSON.stringify({ v: 1, q: identity, s: p.seq, t: p.at, r: p.restoreCount, k: p.keys }),
+    JSON.stringify({
+      v: 1,
+      q: identity,
+      s: p.seq,
+      t: p.at,
+      r: p.restoreCount,
+      k: p.keys,
+      ...(p.condition !== undefined ? { c: p.condition } : {}),
+    }),
     "utf8",
   ).toString("base64url");
 }
@@ -504,6 +531,8 @@ export function decodePosition(
     readonly specs: readonly KeySpec[];
     readonly restoreCount: number;
     readonly latest: number;
+    /** Whether the call carries a business time condition (`as_of` only). */
+    readonly condition?: true;
   },
 ): Position {
   const bad = () => invalid("malformed", param);
@@ -514,7 +543,8 @@ export function decodePosition(
   } catch {
     throw bad();
   }
-  if (!isObj(o) || [...keysOf(o)].sort().join(",") !== "k,q,r,s,t,v" || get(o, "v") !== 1)
+  const shape = isObj(o) ? [...keysOf(o)].sort().join(",") : "";
+  if (!isObj(o) || (shape !== "k,q,r,s,t,v" && shape !== "c,k,q,r,s,t,v") || get(o, "v") !== 1)
     throw bad();
   if (get(o, "q") !== check.identity) throw bad();
   const seq = get(o, "s");
@@ -550,5 +580,33 @@ export function decodePosition(
       throw bad();
     return x;
   });
-  return { seq, at, restoreCount: r, keys };
+  // A business time condition, only in a call that carries one: an `at` or `during` of real
+  // dates or instants, a `during` of one kind and starting before it ends.
+  const date = (x: unknown): x is string =>
+    typeof x === "string" && /^\d{4}-\d{2}-\d{2}$/.test(x) && isDate(x);
+  const instant = (x: unknown): x is string =>
+    typeof x === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(x) &&
+    isInstant(x);
+  const point = (x: unknown): x is string => date(x) || instant(x);
+  let condition: Position["condition"];
+  if (has(o, "c")) {
+    if (check.condition !== true) throw bad();
+    const c = get(o, "c");
+    if (!isObj(c)) throw bad();
+    const ck = [...keysOf(c)].sort().join(",");
+    const cat = get(c, "at");
+    const cd = get(c, "during");
+    if (ck === "at" && point(cat)) condition = { at: cat };
+    else if (
+      ck === "during" &&
+      isDenseArray(cd) &&
+      cd.length === 2 &&
+      point(cd[0]) &&
+      (cd[1] === null || (date(cd[0]) === date(cd[1]) && point(cd[1]) && cd[0] < cd[1]))
+    )
+      condition = { during: [cd[0], cd[1] as string | null] };
+    else throw bad();
+  }
+  return { seq, at, restoreCount: r, keys, ...(condition !== undefined ? { condition } : {}) };
 }

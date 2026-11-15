@@ -96,6 +96,7 @@ describe("writeReads", () => {
         pos: 12,
         operation: "query",
         selfcheck: false,
+        historical: false,
         slot_id: SLOT,
         sv: 1,
         table_id: "t1",

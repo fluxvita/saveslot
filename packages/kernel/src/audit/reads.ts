@@ -70,11 +70,16 @@ export interface ReadEntry {
   readonly task: string | null;
   /** The entry's "now". */
   readonly at: Instant;
-  /** The latest operation number when read. */
+  /**
+   * The position of the state it read: the latest operation number for a read of the current
+   * state, the first page's for a later page, the record point for a read as of one.
+   */
   readonly pos: Seq;
   readonly operation: ReadOperation;
   /** The self-check when a connection is issued (04-contract-types §8.3). */
   readonly selfcheck?: true;
+  /** Read as of a record time (`history` `as_of`): its versions were not in effect then read. */
+  readonly historical?: true;
   readonly slot?: SlotId;
   readonly sv?: number;
   readonly table?: TableId;
@@ -143,6 +148,11 @@ export class ReadBuffer {
     return undefined;
   }
 
+  /** The buffered reads, in the order recorded. */
+  entries(): readonly ReadEntry[] {
+    return [...this.#entries];
+  }
+
   /** A buffered read by its ID. */
   find(read: ReadId): ReadEntry | undefined {
     return this.#entries.find((e) => e.read === read);
@@ -168,9 +178,9 @@ const ROWS_PER_INSERT = 1000;
 export async function writeReads(tx: Tx, entries: readonly ReadEntry[]): Promise<void> {
   for (const e of entries) {
     await tx.query(
-      `INSERT INTO read_log (read_id, actor, task, at, pos, operation, selfcheck, slot_id, sv,
-         table_id, shape, valid, source_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      `INSERT INTO read_log (read_id, actor, task, at, pos, operation, selfcheck, historical,
+         slot_id, sv, table_id, shape, valid, source_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         e.read,
         e.actor,
@@ -179,6 +189,7 @@ export async function writeReads(tx: Tx, entries: readonly ReadEntry[]): Promise
         e.pos,
         e.operation,
         e.selfcheck === true,
+        e.historical === true,
         e.slot ?? null,
         e.sv ?? null,
         e.table ?? null,

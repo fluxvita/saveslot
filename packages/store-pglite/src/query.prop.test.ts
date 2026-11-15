@@ -8,7 +8,9 @@
 //   when asked), nothing in a gap;
 // - event and timeless tables: the row when it exists, with its values; a revoked row only with
 //   `include_revoked`, marked revoked.
-// The view itself equals the reference evaluator's at each step (apply-write.prop checks it).
+// At the end, `history` as of each step's operation must give that step's view (05-time «记录时间
+// 一侧»: as of S, every operation numbered up to S in effect). The view itself equals the reference
+// evaluator's at each step (apply-write.prop checks it).
 
 import {
   appendOperation,
@@ -16,6 +18,7 @@ import {
   createOpsContext,
   createTenant,
   eventsOf,
+  history,
   type NewEvent,
   query,
   readTail,
@@ -43,6 +46,8 @@ vi.setConfig({ testTimeout: 300_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 270_000, markInterruptAsFailure: true });
 
 const RUNS = propRuns(30);
+/** `PROP_SEED` fixes the seed. */
+const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
 const TENANT = `tn_${"8".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}`;
 const ROW = `r_${"6".repeat(26)}`;
@@ -273,8 +278,13 @@ describe.each([
     // Samples, and those run (a scenario whose events would collide in seq is not).
     const seen = { samples: 0, run: 0 };
     const reached: Record<string, number> = {};
+    // Samples that reached each case at least once.
+    const bySample: Record<string, number> = {};
+    let thisSample = new Set<string>();
     const reach = (k: string) => {
       reached[k] = (reached[k] ?? 0) + 1;
+      if (!thisSample.has(k)) bySample[k] = (bySample[k] ?? 0) + 1;
+      thisSample.add(k);
     };
     await fc.assert(
       fc.asyncProperty(
@@ -283,6 +293,7 @@ describe.each([
         fc.array(read, { minLength: 1, maxLength: 3 }),
         async ({ ops, decisions: some }, more, reads) => {
           seen.samples++;
+          thisSample = new Set();
           const { steps } = judged(schema, ops.map(asInThisPhase), [...some, ...more]);
           const perStep = eventsOfSteps(
             {
@@ -338,7 +349,34 @@ describe.each([
               }),
               { table: isState ? "entities" : "rows", limit: 200, ...params },
             );
+          const opsSeen: number[] = [];
+          // What query gave at each step, revoked rows included: as_of that step gives the same.
+          type Seen = {
+            from?: string;
+            to?: string | null;
+            ver: string;
+            values: unknown;
+            marks: unknown;
+          };
+          const seenAt: Seen[][] = [];
+          // Marks the record keeps; disputed and awaiting are pending items at the time of reading.
+          const kept = (m: Record<string, unknown> | undefined) => {
+            const o = Object.fromEntries(
+              Object.entries(m ?? {}).filter(([k]) => k === "revoked" || k === "corrected"),
+            );
+            return Object.keys(o).length === 0 ? null : o;
+          };
+          const seenOf = (rows: Awaited<ReturnType<typeof q>>["rows"]): Seen[] =>
+            rows
+              .filter((x) => (isState ? x.entity === ENTITY : x.row === ROW))
+              .map((x) => ({
+                ...(isState ? { from: x.valid_from, to: x.valid_to } : {}),
+                ver: x.ver.replace(/^v/, "h"),
+                values: x.values,
+                marks: kept(x.marks as never),
+              }));
           for (const [k, evs] of perStep.entries()) {
+            opsSeen.push(evs[0]?.seq as number);
             const head = evs[0]?.seq as number;
             for (let tail = (await store.read(readTail))?.seq ?? 0; tail < head - 1; tail++)
               await run(store, [filler]);
@@ -347,6 +385,17 @@ describe.each([
               evs.map((e) => ({ type: e.type as never, slot: SLOT, blocks: e.blocks as never })),
             );
             const v = JSON.parse(JSON.stringify(view((steps[k] as (typeof steps)[number]).state)));
+            seenAt.push(
+              seenOf(
+                (
+                  await q(
+                    isState
+                      ? { valid_during: ["2026-09-01", null], coalesce: false }
+                      : { include_revoked: true },
+                  )
+                ).rows,
+              ),
+            );
 
             if (!isState) {
               const own = (r: Awaited<ReturnType<typeof q>>) => r.rows.filter((x) => x.row === ROW);
@@ -372,7 +421,21 @@ describe.each([
             const segs = segmentsOfView(v);
             if (segs.length > 1) reach("several segments");
             if (v.gaps.length > 1) reach("inner gap");
-            for (const r of reads) {
+            // Besides the random reads, every step reads each way at the first point (before every
+            // scenario's days: nothing) and at its first segment's start (something), so neither
+            // case rests on what the random reads pick.
+            const fixed = (a: number) =>
+              (["valid_at", "at", "during"] as const).map((kind) => ({
+                kind,
+                a,
+                b: undefined,
+                fields: "all" as const,
+                clip: false,
+                coalesce: false,
+              }));
+            const start = segs[0] === undefined ? undefined : POINTS.indexOf(segs[0].from);
+            expect({ step: k, start }).not.toEqual({ step: k, start: -1 });
+            for (const r of [...reads, ...fixed(0), ...(start === undefined ? [] : fixed(start))]) {
               const a = POINTS[r.a] as string;
               const pick = r.fields === "all" ? ["b", "c"] : [r.fields];
               const proj = (s: Seg) => ({
@@ -438,12 +501,86 @@ describe.each([
               reach(expected.length === 0 ? `${r.kind}: nothing` : r.kind);
             }
           }
+          // history as_of each operation gives that step's view (05-time «记录时间一侧»).
+          const ctx = createOpsContext({
+            tenant: TENANT,
+            actor: USER,
+            trigger: null,
+            task: null,
+            visibility: { kind: "all" },
+            idempotency_key_window: 0,
+            idempotency_window: 0,
+            now: "2026-11-10T04:00:00.000Z",
+            confirmation: null,
+          });
+          for (const [k, op] of opsSeen.entries()) {
+            const v = JSON.parse(JSON.stringify(view((steps[k] as (typeof steps)[number]).state)));
+            type AsOfRow = {
+              values: Record<string, unknown>;
+              valid_from?: string;
+              valid_to?: string | null;
+              ver: string;
+              marks?: { revoked?: unknown };
+            };
+            const asOf = async (extra: Record<string, unknown> = {}) =>
+              (
+                (await history(store, ctx, {
+                  table: isState ? "entities" : "rows",
+                  ...(isState ? { entity: ENTITY } : { row: ROW }),
+                  mode: "as_of",
+                  as_of: op,
+                  limit: 200,
+                  ...extra,
+                })) as unknown as { rows: AsOfRow[] }
+              ).rows;
+            const r = { rows: await asOf() };
+            const asSeen = (rows: AsOfRow[]): Seen[] =>
+              rows.map((x) => ({
+                ...(isState ? { from: x.valid_from, to: x.valid_to } : {}),
+                ver: x.ver,
+                values: x.values,
+                marks: kept(x.marks as never),
+              }));
+            // Versions, values and marks, revoked rows included, as query gave them then.
+            expect({ step: k, as_of: asSeen(r.rows) }).toEqual({ step: k, as_of: seenAt[k] });
+            if (seenAt[k]?.some((x) => x.marks !== null)) reach("as_of marks");
+            if (isState) {
+              // At a business point: the segment holding it, a segment's end excluded.
+              const a = POINTS[k % POINTS.length] as string;
+              expect({ step: k, valid_at: a, as_of: asSeen(await asOf({ valid_at: a })) }).toEqual({
+                step: k,
+                valid_at: a,
+                as_of: (seenAt[k] ?? []).filter((x) =>
+                  contains({ from: x.from, to: x.to } as never, a),
+                ),
+              });
+            }
+            if (isState) {
+              const got = r.rows.map((x) => ({
+                from: x.valid_from,
+                to: x.valid_to,
+                values: x.values,
+              }));
+              expect({ step: k, as_of: got }).toEqual({ step: k, as_of: segmentsOfView(v) });
+              reach("as_of");
+            } else {
+              const value = (f: string) => (v.fields[f]?.[0]?.value ?? null) as string | null;
+              const live = r.rows
+                .filter((x) => x.marks?.revoked === undefined)
+                .map((x) => x.values);
+              expect({ step: k, as_of: live }).toEqual({
+                step: k,
+                as_of: v.exists ? [{ b: value("f2"), c: value("f3") }] : [],
+              });
+              reach(v.exists ? "as_of row" : "as_of none");
+            }
+          }
         },
       ),
-      { numRuns: RUNS },
+      { numRuns: RUNS, ...(SEED !== undefined ? { seed: SEED } : {}) },
     );
     expect(seen.run / seen.samples).toBeGreaterThanOrEqual(0.8);
-    if (process.env["JUDGE_STATS"]) console.log(JSON.stringify({ ...seen, reached }));
+    if (process.env["JUDGE_STATS"]) console.log(JSON.stringify({ ...seen, reached, bySample }));
     const needed = isState
       ? [
           "valid_at",
@@ -454,7 +591,7 @@ describe.each([
           "several segments",
           "inner gap",
         ]
-      : ["row", "revoked row"];
+      : ["row", "revoked row", "as_of marks"];
     for (const n of needed)
       expect({ n, reached: (reached[n] ?? 0) > 0 }).toEqual({ n, reached: true });
   });
