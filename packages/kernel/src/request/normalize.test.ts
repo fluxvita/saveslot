@@ -138,7 +138,7 @@ describe("an accepted request", () => {
         }),
       ),
     );
-    expect(o.target).toEqual({ kind: "entity_key", key: { f1: "Cash" } });
+    expect(o.target).toEqual({ kind: "entity_key", key: { f1: { value: "Cash", raw: "Cash" } } });
     expect(o.fields).toEqual({ f2: { value: "5", raw: "5" } });
   });
 

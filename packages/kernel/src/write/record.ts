@@ -133,6 +133,8 @@ export interface OpEncoding {
   readonly intent: Intent;
   /** The first creation of the row or entity (`created`, 09 §5.7): judge's `created`. */
   readonly created?: true;
+  /** The op located its entity by `entity_key` (`by_entity_key`, 09 §5.7). */
+  readonly byEntityKey?: true;
   /** The raw values the caller gave (`ops/<i>/set/<f>`, 09 §1.3), for every field it set. */
   readonly raw?: Readonly<Partial<Record<FieldId, RawFieldValue>>>;
   /** The `restore_count` of the version the op saw (`ver`, a candidate's `seen`). */
@@ -286,11 +288,15 @@ export function encodeOp(
   if (e.intent === "insert" && (seen.seen !== r.op - 1 || seen.seenExplicit)) {
     throw new Error("an insert has no ver: it sees the state just before it");
   }
-  const ver = e.intent === "insert" ? undefined : verOf(seen, r.kind === "undo", e.restoreCount);
+  // Creating by key is a creation too: no `ver` (09 §5.7: 新增时没有 ver).
+  const creates = e.byEntityKey === true && e.created === true;
+  const ver =
+    e.intent === "insert" ? undefined : verOf(seen, r.kind === "undo" || creates, e.restoreCount);
   head[`ops/${i}/target`] = {
     table: ctx.table,
     ...ctx.target,
     intent: e.intent,
+    ...(e.byEntityKey ? { by_entity_key: true } : {}),
     ...(e.created ? { created: true } : {}),
     ...(ver !== undefined ? { ver } : {}),
   };

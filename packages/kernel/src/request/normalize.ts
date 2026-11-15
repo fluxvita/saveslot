@@ -26,7 +26,6 @@ import type {
   CompiledTable,
   DateStr,
   FieldId,
-  FieldValue,
   Instant,
   TableId,
 } from "@fluxvita/saveslot-contract-core";
@@ -494,10 +493,10 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
     };
     let target: NormalizedTarget;
     if (p.target.kind === "entity_key") {
-      const key: Record<FieldId, FieldValue> = {};
+      const key: Record<FieldId, NormalizedField> = {};
       for (const [f, , v] of p.target.entries) {
         const n = value(f, v);
-        if (n !== undefined) key[f.id] = n.value;
+        if (n !== undefined) key[f.id] = n;
       }
       target = { kind: "entity_key", key };
     } else if (p.target.kind === "row")

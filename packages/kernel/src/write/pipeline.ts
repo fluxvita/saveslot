@@ -10,8 +10,12 @@
 //      applied;
 //   6. the receipt, read back from the log.
 //
+// An op by `entity_key` (05-time «按 entity_key 写入») writes the entity holding the key, or creates
+// it: the key goes into the op's `set`, so a stretch without a value gets its key fields too, and a
+// key field given otherwise is refused (`key_field_changed`).
+//
 // Stopped as not implemented, with nothing written: a write to a table some kept derived rule reads
-// (the refresh comes with `derive`), a target by `entity_key`, and a row with a flagged item.
+// (the refresh comes with `derive`), and a row with a flagged item.
 // Pending items (01-objects «待处理事项», «不过期»; 09 §5.8 «一次请求里的事项内容»): an op's
 // conflicts join the open item of their unit whose interval meets theirs, or open one; a write of
 // high impact opens an awaiting item. Their contents are the request's end state: the item events
@@ -25,7 +29,9 @@ import {
   canonicalize,
   type EntityId,
   type FieldId,
+  type FieldValue,
   type ItemId,
+  type JcsValue,
   type JsonValue,
   type OpNumber,
   type PrincipalId,
@@ -59,6 +65,7 @@ import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
 import { contentBlocks, type ItemContents, openItemsOn, writerHadRead } from "../pending/index.ts";
 import {
   checkSvCompatibility,
+  type NormalizedField,
   type NormalizedOp,
   normalizeWrite,
   type RequestError,
@@ -67,6 +74,16 @@ import {
 } from "../request/index.ts";
 import type { Tx } from "../store/ports.ts";
 import { type IntervalSet, meet, WHOLE } from "../time/index.ts";
+import {
+  type EntityKeyText,
+  entitiesByKey,
+  existingKeys,
+  type KeyValues,
+  keyFields,
+  keyOf,
+  keyText,
+  keyToken,
+} from "./keys.ts";
 import { refreshesDerived, tableShape, todayIn, verOfRow, writable } from "./plan.ts";
 import {
   type Fallback,
@@ -457,11 +474,24 @@ function judgeFailure(e: JudgeError, index: number): WriteError {
 }
 
 /** The raw values a write gave, as the head event records them (09 §1.3). */
-function rawOf(o: NormalizedOp): Partial<Record<FieldId, RawFieldValue>> {
+function rawOf(
+  fields: Readonly<Record<FieldId, NormalizedField>> | undefined,
+): Partial<Record<FieldId, RawFieldValue>> {
   return Object.fromEntries(
-    Object.entries(o.fields ?? {}).map(([f, x]) => [f, (x?.raw ?? null) as RawFieldValue]),
+    Object.entries(fields ?? {}).map(([f, x]) => [f, (x?.raw ?? null) as RawFieldValue]),
   );
 }
+
+const valuesOf = (key: Readonly<Record<FieldId, NormalizedField>>) =>
+  Object.fromEntries(Object.entries(key).map(([f, x]) => [f, x.value])) as Record<
+    FieldId,
+    FieldValue
+  >;
+const sameValue = (a: FieldValue, b: FieldValue | undefined) =>
+  b !== undefined && canonicalize(a as JcsValue) === canonicalize(b as JcsValue);
+
+/** How many keys a receipt lists for an entity created by key (04-contract §5.1). */
+const EXISTING_KEYS = 10;
 
 /** Writes the request in `tx`; returns its receipt, or the original one for a repeated request. */
 export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt> {
@@ -578,6 +608,10 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   const headBlocks: Record<string, JsonValue> = {};
   const opEvents: NewEvent[] = [];
   const noopNames = new Map<number, string[]>();
+  // Entities this request created by key: by table and key, and each one's key.
+  const createdByKey = new Map<string, EntityId>();
+  const keyOfCreated = new Map<string, { table: TableId; key: KeyValues }>();
+  const keysShown = new Map<number, EntityKeyText[]>();
 
   for (const o of req.ops) {
     const table = tableOf(o.table);
@@ -587,12 +621,45 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     const param = `ops/${o.index}`;
     const verTable = `${table.physical.table}__ver`;
 
-    // The row or entity.
+    // The row or entity. By key: the entity this request created with it, else the one stored.
+    let byKey: EntityId | undefined;
+    let createsByKey = false;
     if (o.target.kind === "entity_key") {
-      throw new WriteError("internal", "writing by entity_key is not implemented", {
-        reason: "not_implemented",
-        param: `${param}/entity_key`,
-      });
+      const key = valuesOf(o.target.key);
+      const token = `${table.id} ${keyToken(table, key)}`;
+      byKey = createdByKey.get(token);
+      if (byKey === undefined) {
+        const held = await entitiesByKey(tx, table, key);
+        // Keys are unique over all time (05-time): two holders is a store out of order.
+        if (held.length > 1) {
+          throw new WriteError("internal", "two entities hold one key", {
+            reason: "inconsistent",
+            param: `${param}/entity_key`,
+          });
+        }
+        byKey = held[0];
+      }
+      if (byKey === undefined) {
+        // Revoking or undoing by a key no entity holds has nothing to act on.
+        if (o.kind !== "write") {
+          throw new WriteError("not_found", "no entity holds this key", {
+            param: `${param}/entity_key`,
+          });
+        }
+        // The keys before it: this request's earlier ones first, the latest first, then the stored.
+        const earlier = [...keyOfCreated.values()]
+          .filter((x) => x.table === table.id)
+          .reverse()
+          .map((x) => keyText(table, x.key));
+        keysShown.set(
+          o.index,
+          [...earlier, ...(await existingKeys(tx, table, EXISTING_KEYS))].slice(0, EXISTING_KEYS),
+        );
+        byKey = input.newId("entity") as EntityId;
+        createsByKey = true;
+        createdByKey.set(token, byKey);
+        keyOfCreated.set(byKey, { table: table.id, key });
+      }
     }
     if ((o.target.kind === "row" && isState) || (o.target.kind === "entity" && !isState)) {
       throw new WriteError("invalid_argument", "row on a state table, or entity on another", {
@@ -600,12 +667,14 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         param,
       });
     }
-    const isNew = o.target.kind === "new";
-    const id = isNew
-      ? input.newId(isState ? "entity" : "row")
-      : o.target.kind === "row"
-        ? o.target.row
-        : o.target.entity;
+    const isNew = o.target.kind === "new" || createsByKey;
+    const id =
+      byKey ??
+      (o.target.kind === "new"
+        ? input.newId(isState ? "entity" : "row")
+        : o.target.kind === "row"
+          ? o.target.row
+          : (o.target as { entity: EntityId }).entity);
     let work = rows.get(id);
     if (work === undefined) {
       const ctx: RowContext = {
@@ -677,6 +746,42 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         ...f.origin,
       });
     }
+    // Key fields: in a write by key the key joins `set`; given in `set`, a key field must be the
+    // entity's key (05-time «按 entity_key 写入»: 键字段不可改), by the same value tokens.
+    let fields = o.fields;
+    const keyed = isState ? keyFields(table) : [];
+    if (o.kind === "write" && keyed.length > 0) {
+      const key = o.target.kind === "entity_key" ? o.target.key : undefined;
+      const merged: Record<FieldId, NormalizedField> = { ...(o.fields ?? {}) };
+      for (const f of keyed) {
+        const given = o.fields?.[f.id];
+        if (given === undefined) {
+          if (key?.[f.id] !== undefined) merged[f.id] = key[f.id] as NormalizedField;
+          continue;
+        }
+        // The entity's key: the one located by, the one this request created it with, or the one
+        // its creating event gave.
+        const own: KeyValues | undefined =
+          key !== undefined
+            ? valuesOf(key)
+            : (keyOfCreated.get(id)?.key ?? (await keyOf(tx, table, id as EntityId)));
+        if (own === undefined) {
+          throw new WriteError("internal", "an entity of a keyed table without a key", {
+            reason: "inconsistent",
+            param,
+          });
+        }
+        if (!sameValue(given.value, own[f.id])) {
+          const at = o.named.find((n) => n.field === f.id && n.param.startsWith(`${param}/set/`));
+          throw new WriteError("invalid_argument", "a key field cannot change", {
+            reason: "key_field_changed",
+            param: at?.param ?? `${param}/set`,
+          });
+        }
+      }
+      fields = merged;
+    }
+
     const intent =
       o.intent ?? (o.undo !== undefined ? undoneIntent(work.events, o.undo.target) : "update");
     const ack = o.acknowledge.includes("overwrite");
@@ -690,7 +795,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
             ...(o.valid !== undefined ? { valid: o.valid } : {}),
             now: nowPoint,
             fields: Object.fromEntries(
-              Object.entries(o.fields ?? {}).map(([f, x]) => [f, { value: x?.value ?? null }]),
+              Object.entries(fields ?? {}).map(([f, x]) => [f, { value: x?.value ?? null }]),
             ),
             ...(ack ? { acknowledge: true } : {}),
           }
@@ -782,8 +887,9 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     }
     const enc = encodeOp(work.ctx, judgeInput, j, {
       intent: intent as "insert" | "update" | "correct" | "revoke",
+      ...(o.target.kind === "entity_key" ? { byEntityKey: true as const } : {}),
       ...(j.created ? { created: true as const } : {}),
-      raw: rawOf(o),
+      raw: rawOf(fields),
       restoreCount: restore,
       sv,
       sources: sourcesOf(o),
@@ -928,11 +1034,13 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
           const noop = noopNames.get(o.index) ?? [];
           const set = raw["set"] as Record<string, JsonValue> | undefined;
           const request: Record<string, JsonValue> = { ...raw };
-          if (set !== undefined && noop.length > 0) {
+          // A key field a write by key took from `entity_key` is not in `set`: nothing to strip.
+          const stripped = set === undefined ? [] : noop.filter((n) => Object.hasOwn(set, n));
+          if (set !== undefined && stripped.length > 0) {
             request["set"] = Object.fromEntries(
-              Object.entries(set).filter(([n]) => !noop.includes(n)),
+              Object.entries(set).filter(([n]) => !stripped.includes(n)),
             );
-            request["noop"] = noop;
+            request["noop"] = stripped;
           }
           return {
             type: "source.recorded",
@@ -994,5 +1102,10 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     restoreCount: restore,
     replayed: false,
   })) as WriteReceipt;
-  return warnings.length > 0 ? { ...receipt, warnings } : receipt;
+  const ops = receipt.ops.map((r, i) => {
+    const keys = keysShown.get(i);
+    return keys !== undefined && r.created_entity ? { ...r, existing_keys: keys } : r;
+  });
+  const out = keysShown.size > 0 ? { ...receipt, ops } : receipt;
+  return warnings.length > 0 ? { ...out, warnings } : out;
 }

@@ -157,7 +157,7 @@
 
 - **"应带回"**：不带时用兜底（第 2 节），兜底也没有才报 `read_first`。按来源键的 op 是例外：不带 `ver`、不带 `row`。给没有来源键的行补键的 op（见下）是普通的 `update`，照常带 `row` 与 `ver`。
 - **`update` 与 `correct`**：`update` 是情况变了或补充信息；`correct` 是原来的值本来就是错的，会触发纠错影响查询。只有调用方分得清，必须显式标注（data-model「写入请求」）。
-- **按 `entity_key` 写入 = 有则写入、无则创建**：意图用 `update`；实体不存在时创建，结果带 `created_entity: true` 与 `existing_keys`（该表已有的实体键，最多 10 个）。
+- **按 `entity_key` 写入 = 有则写入、无则创建**：意图用 `update`；实体不存在时创建，结果带 `created_entity: true` 与 `existing_keys`（该表已有的实体键，最多 10 个；同一请求里在它之前新建的键也算，排在最前）。键的文本给成能原样写回的写法（带时区的时刻是该时区下带偏移的本地时刻加时区名）。
   - 新键与已有的键写法相近时，另带 `similar_keys`（最多 5 个），每个附相近的原因 `match`：`fold`（折叠大小写、全半角、空白之后相同）、`affix`（一方是另一方的开头或结尾）、`edit`（只差一两个字），已撤销的实体另标 `revoked`。判据是 `keymatch@1`（data-model「相近的键」），比较范围是该表本次调用可见的全部实体，含已撤销的。`existing_keys` 里相近的键排在前面，其余按最近写入。
   - 两项都是写入那一刻按当时的状态算出的提示：写入照常生效，不生成事项，不进事件。写错了键的改法是撤销刚建的实体（不带区间的 `revoke`），再按对的键写入。
 - **请求所在的 slot**：表名写限定名 `slot.table` 时就是那个 slot；只写表名时，取可见范围内唯一有这张表的 slot，几个 slot 里都有报 `invalid_argument`（`ambiguous_table`，附候选的限定名），哪里都没有报 `unknown_table`。各 op 落在不同的 slot 报 `invalid_argument`（`cross_slot`，`param` 指到第一个不一致的 `ops/<i>/table`）。

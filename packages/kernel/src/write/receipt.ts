@@ -7,17 +7,20 @@
 // or awaiting part, its pending item with the item's details (a candidate's `effective`,
 // `current_ver`, `by`, `previous` and, when taking it would be high impact, `impact`; an awaiting
 // part's `impact`), `undo.of` with what was skipped and what later writes were taken back, and the
-// pending items the write opened, joined, refreshed or superseded, each once. Not given yet:
-// `before`, `overwritten`, `merged` (auto-merged fields), `resolved`, `existing_keys`; derived
-// changes, affected reads and premises. They come with the read path, derived refresh and keys.
+// pending items the write opened, joined, refreshed or superseded, each once; an entity created
+// by key gets `existing_keys` from the pipeline (not in the log: a replay lists it in `omitted`).
+// Not given yet: `before`, `overwritten`, `merged` (auto-merged fields), `resolved`; derived
+// changes, affected reads and premises. They come with the read path and derived refresh.
 
 import type {
   CompiledBaseTable,
   CompiledSchema,
+  EntityId,
   FieldValue,
   OpNumber,
 } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
+import { type EntityKeyText, keyFields, keyOf } from "./keys.ts";
 import type { StoredEvent } from "./record.ts";
 
 export type FieldResultCode = "applied" | "candidate" | "awaiting" | "corroborated" | "noop";
@@ -77,10 +80,18 @@ export interface OpReceipt {
     readonly table: string;
     readonly row?: string;
     readonly entity?: string;
+    /** An op by `entity_key`: the entity's key, by field name (04-contract-types `TargetRef`). */
+    readonly entity_key?: Readonly<Record<string, FieldValue>>;
   };
   readonly intent: string;
   readonly ver?: string;
   readonly created_entity?: true;
+  /**
+   * An entity created by `entity_key`: the table's keys before it, at most 10 (04-contract §5.1),
+   * caller data. Worked out at the write from the state then, not in the log: the pipeline adds them
+   * and a replay leaves them out.
+   */
+  readonly existing_keys?: readonly EntityKeyText[];
   readonly fields: Readonly<Record<string, FieldResult | readonly FieldResult[]>>;
   readonly undo?: {
     readonly of: OpNumber;
@@ -120,6 +131,8 @@ export interface WriteReceipt {
     readonly reason: string;
   }[];
   readonly replayed?: true;
+  /** A replay's parts the log cannot give back (04-contract §14 «重放返回什么»). */
+  readonly omitted?: readonly "existing_keys"[];
   readonly warnings?: readonly {
     readonly code: string;
     readonly op?: number;
@@ -351,6 +364,7 @@ export async function readReceipt(
   const opOfEvent = await opsOf(tx, later);
 
   let pendingStatus = false;
+  let keysLeftOut = false;
   const ops: OpReceipt[] = [];
   for (let i = 0; i < request.op_count; i++) {
     const t = head[`ops/${i}/target`] as {
@@ -359,7 +373,10 @@ export async function readReceipt(
       entity?: string;
       intent: string;
       ver?: { op: number };
+      by_entity_key?: true;
+      created?: true;
     };
+    if (t.by_entity_key && t.created) keysLeftOut = true;
     const table = tableOf(t.table);
     const isState = table.time.type === "state";
     const byDate = table.time.type === "state" && table.time.granularity === "date";
@@ -567,10 +584,19 @@ export async function readReceipt(
     }
     const created = (base?.blocks["target"] as { created?: true } | undefined)?.created === true;
     const ver = rowVer;
+    // The key of an entity located or created by key, from the event that created it.
+    const key = t.by_entity_key ? await keyOf(tx, table, rowId as EntityId) : undefined;
     ops.push({
       target: {
         table: `${o.slotName}.${table.name}`,
         ...(isState ? { entity: rowId } : { row: rowId }),
+        ...(key !== undefined
+          ? {
+              entity_key: Object.fromEntries(
+                keyFields(table).map((f) => [f.name, key[f.id] ?? null]),
+              ),
+            }
+          : {}),
       },
       intent: t.intent,
       ...(ver !== undefined ? { ver } : {}),
@@ -649,5 +675,6 @@ export async function readReceipt(
     pending,
     superseded,
     ...(o.replayed ? { replayed: true as const } : {}),
+    ...(o.replayed && keysLeftOut ? { omitted: ["existing_keys" as const] } : {}),
   };
 }

@@ -54,7 +54,11 @@ export type NormalizedTarget =
   | { readonly kind: "new" }
   | { readonly kind: "row"; readonly row: RowId }
   | { readonly kind: "entity"; readonly entity: EntityId }
-  | { readonly kind: "entity_key"; readonly key: Readonly<Record<FieldId, FieldValue>> };
+  | {
+      readonly kind: "entity_key";
+      /** By key field ID: normalized as a value of the field, with the raw value as written. */
+      readonly key: Readonly<Record<FieldId, NormalizedField>>;
+    };
 
 export interface NormalizedField {
   /**
