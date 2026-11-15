@@ -5,6 +5,7 @@ export * from "./log/index.ts";
 export * from "./ops/index.ts";
 export {
   type AsOfResult,
+  type CatalogResult,
   type QueryReadResult,
   ReadError,
   type ReadsListResult,

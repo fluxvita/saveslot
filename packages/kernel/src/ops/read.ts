@@ -1,10 +1,12 @@
-// The `query` and `history` operations (docs/zh-CN/spec/04-contract-types.md §4.3, §4.5): the call context and the
+// The read operations `query`, `history`, `catalog` and `reads.list` (docs/zh-CN/spec/04-contract-types.md §4.2, §4.3, §4.5, §8.3): the call context and the
 // parameters into `read`, in one read transaction of the tenant store; the read is recorded in the
 // store's read buffer once it succeeded (02-architecture §7 «read_log 的持久性»).
 
 import { readBufferOf } from "../audit/index.ts";
 import {
   type AsOfResult,
+  type CatalogResult,
+  catalogInTx,
   historyInTx,
   type QueryReadResult,
   queryInTx,
@@ -69,4 +71,24 @@ export async function readsList(
   // list is then of the table alone, numbered as written (02-architecture §7 «read_log 的持久性»).
   await flushReads(store, createOpsContext({ ...ctx, actor: "system", trigger: "flushReads" }));
   return store.read((tx) => readsListInTx(tx, { actor: ctx.actor, now: ctx.now, params }));
+}
+
+/** Reads `params` (a `CatalogParams`) as `ctx.actor`: `list`, `table` or `schema`. */
+export async function catalog(
+  store: TenantStore,
+  ctx: OpsContext,
+  params: unknown,
+): Promise<CatalogResult> {
+  const { result, entry } = await store.read((tx) =>
+    catalogInTx(tx, {
+      actor: ctx.actor,
+      task: ctx.task,
+      now: ctx.now,
+      visibility: ctx.visibility,
+      params,
+      read: newReadId(),
+    }),
+  );
+  readBufferOf(store).record(entry);
+  return result;
 }

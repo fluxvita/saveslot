@@ -42,7 +42,7 @@
 | 操作 | `extract_claim`、`extract_submit`、`policy.set` |
 | 错误 | `lease_expired`、`referenced` |
 | slot 策略 | 冲突期间按来源级别裁定（第一版只有 `keep_current`）；额外的高影响表 / 字段；"某类处理只接受用户会话的确认"开关 |
-| 概况 | `catalog` 的表概况第一版只有行数与业务时间范围、规模提示 `scale`、每个字段最近 K 个不同取值；没有"最近一次写入时间" |
+| 概况 | `catalog` 的表概况第一版只有行数与业务时间范围、规模提示 `scale`、每个字段最近 K 个不同取值；没有"最近一次写入时间"。概况随 P2 给出（07-scope）：在那之前 `table` 档不带 `profile`、`examples`、`described_by` |
 
 ---
 
@@ -427,7 +427,8 @@ interface CatalogTables extends CommonResult {
     }>;
     /** depends_on：规则依赖的字段，每项写成"表名.字段名"（"runs.distance"）。派生规则不跨 slot，表名是同一 slot 内的短表名，不带 slot 前缀。 */
     rule?: { id: string; version: number; sql: UntrustedText; time_dependency: "none" | "bucketed" | "now"; depends_on: string[] };
-    profile: {
+    /** 概况（连同字段的 examples 与 described_by）随 P2 给出（07-scope），在那之前不带；见 0.2。 */
+    profile?: {
       rows: number;
       time_range?: { from: BizTime; to: BizTime };
       /** 规模提示：行数超过舒适线时给，读时按当前行数与内核自带的界线算出，不进事件，不是数据标记。

@@ -1,6 +1,14 @@
 // Reads (docs/zh-CN/spec/02-architecture.md §4 `read`): `query` in this version.
 
 export {
+  type CatalogInput,
+  type CatalogListResult,
+  type CatalogResult,
+  type CatalogSchemaResult,
+  type CatalogTablesResult,
+  catalogInTx,
+} from "./catalog.ts";
+export {
   asOfInTx,
   type HistoryInput,
   type HistoryOutput,
