@@ -257,9 +257,10 @@
 2. `source.recorded`：每段新证据一条，按证据在请求里的先后（先请求级、再各 op 的内联段）。没带证据时，**每个进了事件的 op 一条 `api_call`**：请求级证据与内联证据都没有的 op 才产生；没进事件的 op 不存。一次请求里有的 op 带证据、有的不带时，`api_call` 排在全部证据段之后，按 op 在请求里的顺序。`source_ref` 不产生事件。
 3. 逐个进了事件的 op，按请求里的顺序：
    - `write.base`：这个 op 作用的行或实体一条（一个 op 只作用于一行或一个实体；回退连带改动多行时每行一条）。无操作的字段不进 `write.base`；这个 op 的全部字段都是无操作时不产生，只改前提的 op（重申、清除）也不产生。
-   - 这个 op 引出的事项事件：`item.created`、`item.merged`、`item.refreshed`、`item.superseded`。
-4. `premise.changed`：全部 op 与事项事件之后，至多一条，只在这次操作让某些前提声明变了状态时有（§5.10）。
-5. `write.derived`：按派生依赖的拓扑序、同一规则内按 `partition_id` 的字典序，每个结果有变化的派生行一条。
+   - 这个 op 开出或并入的事项：`item.created`、`item.merged`（条目按整次请求结束时的状态，见第 4 步）。
+4. 已有事项的刷新与取代：全部 op 的事件之后，`item.refreshed`、`item.superseded`，每个事项至多一条（§5.8「一次请求里的事项内容」）。
+5. `premise.changed`：全部 op 与事项事件之后，至多一条，只在这次操作让某些前提声明变了状态时有（§5.10）。
+6. `write.derived`：按派生依赖的拓扑序、同一规则内按 `partition_id` 的字典序，每个结果有变化的派生行一条。
 
 **一个请求里没有任何 op 进事件**（全部是按来源键的 `unchanged` / `skipped`）时，这次请求**不追加任何事件**：没有 `write.head`、没有源数据、没有请求键，也没有操作号；回执照给。
 
@@ -1088,7 +1089,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | path | 种类 | 内容 | 来源 |
 |---|---|---|---|
 | `target` | 元 | 见下 | — |
-| `scope_valid` | 数 | 状态类表：事项覆盖的业务时间区间 `{"from": …, "to": …, "deps": […]}` | `deps`：各候选或提议的那几项贡献 |
+| `scope_valid` | 数 | 状态类表：事项覆盖的业务时间区间，逐段给出 `{"spans": [{"from": …, "to": …}, …], "deps": […]}`。只有这一种形状，一段时也是长度为 1 的 `spans`；各段按起点升序、互不相交也不相接（相接的合成一段）、粒度一致（都按日或都按时刻），每段 `from` 早于 `to`，`to` 可缺（开口）只能出现在最后一段。不取各段的外包：标记、"改到"的判断与执行都按 `spans` 逐段走 | `deps`：各候选或提议的那几项贡献 |
 | `current/<k>` | 数 | 当前生效值的一段：`{"field": "f3", "value": …, "valid": {…}, "op": <写下它的操作号>, "deps": […]}`。`valid` 只在状态类表上有，本表 `proposed`、`previous` 与 `impact` 的 `overwritten_segment` 同样 | `deps` |
 | `candidates/<k>` | 数 | 一个候选（一次写入在这个冲突单元上的全部候选项），见下 | `deps` |
 | `proposed/<k>` | 数 | 待确认的提议在一个字段上的值：`{"field": …, "value": …, "valid": {…}, "deps": […]}` | `deps` |
@@ -1126,6 +1127,22 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `related_item` | 当且仅当成因为 `restored_candidate`：候选原来所在的那个事项 |
 | `ruleset_version`、`policy_version` | 判定这个事项时用的两个版本 |
 
+冲突单元是"存在"的事项（过期写入撞上撤销，或撤销成了候选），`current/<k>` 与 `previous/<k>` 只记这个单元上的东西，两种条目都列：
+- 被撤销的段：`{"field": "existence", "revoked": true, "valid": {…}, "op": <那次撤销的操作号>, "deps": […]}`；
+- 有值的段：`{"field": "existence", "valid": {…}, "deps": […]}`，不带 `revoked`、`op`、`value`，`deps` 是让这一段有值的那些贡献。
+
+`valid` 只在状态类表上有（事件类表与无时间表上整行一条），`previous` 里同样。事项区间里两种条目都没盖到的段，没有值、也不是撤销造成的（例如在从未写过的一段里填了值、这次填值又被撤回之后的那一段）。洞里的填值被撤回之后，那一段回到撤销留下的空洞，条目是撤销条目。条目不列各字段的值。契约里冲突事项的 `effective` 与 `previous`（`{seq, exists, values?, spans?}`）在读取时组装：`exists` 与 `spans` 出自这些条目，`values` 读那一行当时的值，不进事项内容。
+
+**一次请求里的事项内容**：事项版本的操作号是这次请求的，分不出请求里的第几个 op；回执给出事项的全部内容就算读过。所以事项的内容按整次请求结束时的状态算：
+- 一次请求里，每个事项至多产生一组内容。这次请求新开的事项，`item.created`（以及请求里后来的 op 并入它的 `item.merged`）的条目按请求结束时的状态；已有的事项被这次请求里任何一个 op 改到，只在全部 op 的事件之后算一次刷新或取代，条目同样按请求结束时的状态，`by_event` 是最后一个改到它的 `write.base`。
+- 是否"读过"按请求开始时事项的版本判。这次请求并入过的事项一律按没读过，与并入、改到的先后无关：不取代（取代会把这次请求刚并进去的候选一起丢掉），被改到时刷新，事件里记 `writer_had_read: false`。
+- 被改到的事项，`by_event` 逐个 op 判：比较每个 op 之前与之后事项单元上的生效值，最后一个确实改了的 op 的 `write.base`；改了又改回的，按最后那次算。
+- 这次请求并入了、又没有哪个 op 改到的事项，并入带来的内容变化由 `item.merged` 自己给出（它带 `current`），不另出 `item.refreshed`，回执只标 `merged`。
+- 内容不能悄悄过期：一次请求结束时，对它写过的每一行上没被改到的未决事项重算内容（条目连同 `op`、`deps`，以及影响），与现有内容不同就刷新（`cause` 为 `entries_changed`），只刷新、不取代，不看读没读过。例如同一段被第二次撤销，"存在"事项的条目改指后一次撤销；字段单元上的同值佐证，值没变、不算改到，但影响里多了一次写入。
+- 回执的 `pending[]` 里每个事项只出现一次，带上适用的标记（`merged`、`refreshed`；这次请求新开的事项给 `item_ver`，不标 `merged`）；被取代的只出现在 `superseded[]`。
+
+"改到"也按冲突单元：事项的冲突单元是字段时，看这些字段在事项区间里的状态有没有变；是"存在"时，只看有值与无值的变化（状态类表逐段看该段是否有值，事件类表与无时间表看整行是否被撤销），字段值的改动不算改到它——事项内容里没有字段值，字段值变了事项内容不变，不该刷新。
+
 `candidates/<k>`：
 
 ```json
@@ -1153,7 +1170,9 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | 撤销仍被引用的行（高影响 ②） | `{"kind": "referencing_row", "table": …, "row": …, "field": …}`；引用方在状态类表上时写 `entity` 代替 `row` |
 | `undo` 带 `include_later`（高影响 ④） | `{"kind": "reverted_write", "op": <操作号>, "deps": […]}` |
 | `conflict`：`take_previous` 会回掉的写入 | `{"kind": "reverted_write", "op": <操作号>, "deps": […]}` |
-| `conflict`：候选若生效会覆盖的段 | `{"kind": "overwritten_segment", …}` |
+| `conflict`：候选若生效会属高影响时，它会覆盖的段 | `{"kind": "overwritten_segment", …}`。只在把这个候选的各项放到当前状态之上生效会抹掉当前的变化点时列（与写入判高影响 ① 同一个判法，逐个候选判；只有状态类表有变化点）；`deps` 另含该候选的那几项，读的一方据此分出是哪个候选的 |
+
+`overwritten_segment` 覆盖的是无值的段（会被填上的无值区间）时，`value` 为 `null`，`op` 是留下它的那次撤销，没有撤销留下它时不给 `op`；契约里它进 `filled_gaps`。
 
 `apply`：`pending_items` 加一行（状态未决，事项版本 = 本操作号）；`pending_entries` 登记各条目块的位置；按事项类型设标记：`conflict` → `disputed`（带事项、`unit` 里的字段、区间），`awaiting_confirmation` → `awaiting`（同上），`flagged` → `flagged`。
 
@@ -1166,19 +1185,21 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `target` | 元 | `{"item": "pi_…", "merge_base_op": <操作号>, "origin_event": <seq>, "ruleset_version": …, "policy_version": …}` |
 | `candidates/<k>` | 数 | 新并入的候选。`k` 接着该事项已有候选的下标往后编，整个事项生命周期内不复用 |
 | `scope_valid`、`previous/<k>`、`impact/<k>` | 数 | 合并后重算的结果，**整组取代**该事项之前的同名条目。这几组每次都整组给出，零块即空组 |
+| `current/<k>` | 数 | 合并后（按整次请求结束时的状态）的当前生效值，整组取代之前的 `current`；没给出 `current` 的 `item.merged` 沿用之前的 |
 
 `apply`：事项版本换成本操作号；之前的 `previous/*`、`impact/*`、`scope_valid` 条目作废（块本身仍在各自的事件里）。
 
 #### `item.refreshed`
 
-事项的目标被一次没读过它的写入改到，或高影响 ② 的引用方有变化：事项保持未决，内容更新。
+事项的目标被一次没读过它的写入改到，或高影响 ② 的引用方有变化，或一次请求结束时重算出的内容变了：事项保持未决，内容更新。
 
 | path | 种类 | 内容 |
 |---|---|---|
-| `target` | 元 | `{"item": "pi_…", "by_event": <seq>, "writer_had_read": <布尔>, "cause": "target_overwritten" \| "references_changed" \| "entries_deleted" \| "entries_restored" \| "matched_changed", "dropped_candidates": [<下标>], "restored_candidates": [<下标>], "merge_base_op": <操作号>}` |
+| `target` | 元 | `{"item": "pi_…", "by_event": <seq>, "writer_had_read": <布尔>, "cause": "target_overwritten" \| "references_changed" \| "entries_deleted" \| "entries_restored" \| "matched_changed" \| "entries_changed", "dropped_candidates": [<下标>], "restored_candidates": [<下标>], "merge_base_op": <操作号>}` |
 | `current/<k>`、`previous/<k>`、`impact/<k>`、`proposed/<k>`、`scope_valid` | 数 | 刷新后的结果，整组取代之前的同名条目。**这几组每次都整组给出，零块即空组**；没有"没给出即不变"的读法 |
 | `candidates/<k>`、`matched/<k>` | 数 | 重新给出的候选条目、疑似重复的另一行，形状与 `item.created` 里的相同（带 `deps`）。**沿用原下标 `k`，只取代同下标的那一条**，没给出的保持原样。用在两处：条目块被一次删除清掉而条目仍在（例如候选的所见区间被重新解析，或候选少了一项而其余项仍在，候选仍是候选）；撤回删除时放回被去掉的候选 |
 
+- `cause` 为 `entries_changed`：一次请求结束时，事项没被改到，但重算出的内容与现有不同（"一次请求里的事项内容"）；`by_event` 是这次请求在这一行上最后一条 `write.base`；没有 `writer_had_read`。
 - `writer_had_read`：写入方当时是否读过这个事项的当前版本。写入时查一次读取审计，把结果记在这里，重放不重算。`cause` 为 `target_overwritten` 时恒为 `false`（读过就是取代，不是刷新）。
 - `cause` 为 `entries_deleted`：隐私删除清掉了事项的部分条目而事项仍未决（例如去掉了一个候选），`dropped_candidates` 列出被去掉的候选下标；此时没有 `by_event`。`by_event` 是改到事项目标的那条 `write.base` 事件（`references_changed` 时是引用方的那条）。
 - `cause` 为 `matched_changed`：`flagged` 事项比中的两行里任何一行（被标记的那一行，或被比中的另一行）被撤销或改动，事项仍未决；`by_event` 是那条 `write.base`。`flagged` 事项不看读没读过，没有 `writer_had_read`。
@@ -1614,7 +1635,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `schema.compiled` 的 `outcome` | `applied`、`pending` |
 | 改动类别 `class` | `create`、`metadata`、`deterministic`。保留：`reextract` |
 | `schema.migration_failed` 的 `reason` | `build_failed`、`verify_failed` |
-| `item.refreshed` 的 `cause` | `target_overwritten`、`references_changed`、`entries_deleted`、`entries_restored`、`matched_changed` |
+| `item.refreshed` 的 `cause` | `target_overwritten`、`references_changed`、`entries_deleted`、`entries_restored`、`matched_changed`、`entries_changed` |
 | `item.resolved` 的 `via` | `call`。保留：`elicitation` |
 | 主体 `kind` | `user`、`connection`、`system` |
 | 主体的状态（`principals` 里，由事件得出，不写在块里） | `revoked`（由 `principal.revoked`）、`disabled`（由 `tenant.imported`）；两者都不是的主体有效 |

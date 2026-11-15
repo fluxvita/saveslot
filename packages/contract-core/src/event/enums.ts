@@ -251,6 +251,7 @@ export const REFRESH_CAUSES = [
   "entries_deleted",
   "entries_restored",
   "matched_changed",
+  "entries_changed",
 ] as const;
 export type RefreshCause = (typeof REFRESH_CAUSES)[number];
 

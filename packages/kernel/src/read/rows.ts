@@ -42,13 +42,66 @@ export function spansMeet(
   return spans.some((s) => (s.to === null || s.to > from) && (to === null || s.from < to));
 }
 
-/** A flag's business time as the marks give it (04-contract-types §3: `valid`). */
-function markInterval(spans: readonly Span[] | undefined): Interval | undefined {
-  const [s] = spans ?? [];
-  if (s === undefined) return undefined;
-  return s.to === null
-    ? { from: s.from as BizPoint }
-    : { from: s.from as BizPoint, to: s.to as BizPoint };
+/**
+ * A flag's business time as the marks give it (04-contract-types §3: `spans`): the item's spans
+ * within the row's interval `[from, to)`, cut to it, adjacent ones joined; undefined on a row
+ * without one (event and timeless tables) or a flag without spans.
+ */
+function markSpans(
+  spans: readonly Span[] | undefined,
+  from: string | undefined,
+  to: string | null | undefined,
+): Interval[] | undefined {
+  if (spans === undefined) return undefined;
+  const lo = from;
+  const hi = to ?? null;
+  const cut = spans
+    .filter(
+      (s) => lo === undefined || ((s.to === null || s.to > lo) && (hi === null || s.from < hi)),
+    )
+    .map((s) => ({
+      from: lo === undefined || s.from > lo ? s.from : lo,
+      to: hi === null ? s.to : s.to === null || s.to > hi ? hi : s.to,
+    }))
+    .sort((a, b) => cmpText(a.from, b.from));
+  const out: { from: string; to: string | null }[] = [];
+  for (const s of cut) {
+    const last = out.at(-1);
+    if (last !== undefined && last.to !== null && last.to >= s.from) {
+      if (s.to === null || s.to > last.to) last.to = s.to;
+    } else out.push({ ...s });
+  }
+  return out.map((s) =>
+    s.to === null
+      ? { from: s.from as BizPoint }
+      : { from: s.from as BizPoint, to: s.to as BizPoint },
+  );
+}
+
+/** A mark's spans as `Span`s, to cut again. */
+const asSpans = (xs: readonly Interval[]): Span[] =>
+  xs.map((x) => ({ from: x.from, to: x.to ?? null }));
+
+/** The item marks of a row with their spans cut to the row's interval `[from, to)`. */
+function cutMarks(m: Marks | undefined, from: string, to: string | null): Marks | undefined {
+  if (m === undefined) return undefined;
+  const cut = <T extends { spans?: readonly Interval[] }>(xs?: readonly T[]) => {
+    const kept = (xs ?? []).flatMap((x) => {
+      if (x.spans === undefined) return [x];
+      const spans = markSpans(asSpans(x.spans), from, to) ?? [];
+      return spans.length === 0 ? [] : [{ ...x, spans }];
+    });
+    return kept.length === 0 ? undefined : kept;
+  };
+  const { disputed: _d, awaiting: _a, ...rest } = m;
+  const disputed = cut(m.disputed);
+  const awaiting = cut(m.awaiting);
+  const out: Marks = {
+    ...rest,
+    ...(disputed !== undefined ? { disputed } : {}),
+    ...(awaiting !== undefined ? { awaiting } : {}),
+  };
+  return Object.keys(out).length === 0 ? undefined : out;
 }
 
 function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): Marks | undefined {
@@ -56,8 +109,8 @@ function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): Marks | unde
   const name = new Map(t.fields.map((f) => [f.id as string, f.name]));
   const read = new Set<string>(plan.fields.map((f) => f.id));
   const out: {
-    disputed?: { item: never; fields: string[]; valid?: Interval }[];
-    awaiting?: { item: never; fields: string[]; valid?: Interval }[];
+    disputed?: { item: never; fields: string[]; spans?: Interval[] }[];
+    awaiting?: { item: never; fields: string[]; spans?: Interval[] }[];
     flagged?: { item: never; reason: "duplicate_keys" }[];
     corrected?: true;
     revoked?: { seq: never };
@@ -71,13 +124,14 @@ function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): Marks | unde
       out.flagged = [...(out.flagged ?? []), { item: f.item as never, reason: "duplicate_keys" }];
       continue;
     }
-    const valid = markInterval(f.spans);
+    const spans =
+      r.validFrom === undefined ? undefined : markSpans(f.spans, r.validFrom, r.validTo);
     const list = out[f.flag] ?? [];
     out[f.flag] = list;
     list.push({
       item: f.item as never,
       fields: f.fields.map((x) => (x === "existence" ? "*" : (name.get(x) ?? x))),
-      ...(valid !== undefined ? { valid } : {}),
+      ...(spans !== undefined ? { spans } : {}),
     });
   }
   // corrected: an event or timeless row ever corrected; a state table's segment where a value
@@ -98,15 +152,30 @@ function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): Marks | unde
 }
 
 /**
- * The marks of a merged row: each item's mark once (with its own interval), `corrected` when any
- * segment's is.
+ * The marks of a merged row: each item's mark once, its spans those of the segments together
+ * (the item's spans within the merged row), `corrected` when any segment's is.
  */
 function unionMarks(a: Marks | undefined, b: Marks | undefined): Marks | undefined {
   if (a === undefined) return b;
   if (b === undefined) return a;
-  const items = <T extends { item: string }>(x?: readonly T[], y?: readonly T[]) => {
-    const out = [...(x ?? [])];
-    for (const m of y ?? []) if (!out.some((o) => o.item === m.item)) out.push(m);
+  const items = <T extends { item: string; spans?: readonly Interval[] }>(
+    x?: readonly T[],
+    y?: readonly T[],
+  ) => {
+    const out: T[] = [...(x ?? [])];
+    for (const m of y ?? []) {
+      const i = out.findIndex((o) => o.item === m.item);
+      if (i < 0) out.push(m);
+      else {
+        const o = out[i] as T;
+        if (o.spans !== undefined || m.spans !== undefined) {
+          const spans =
+            markSpans(asSpans([...(o.spans ?? []), ...(m.spans ?? [])]), undefined, undefined) ??
+            [];
+          out[i] = { ...o, spans };
+        }
+      }
+    }
     return out.length === 0 ? undefined : out;
   };
   const disputed = items(a.disputed, b.disputed);
@@ -198,14 +267,10 @@ export function shownRows(
       segs = segs.map((s) => {
         const vf = s.r.validFrom as string;
         const vt = s.r.validTo ?? null;
-        return {
-          ...s,
-          r: {
-            ...s.r,
-            validFrom: [vf, from].sort(cmpText)[1] as string,
-            validTo: to === null ? vt : vt === null || vt > to ? to : vt,
-          },
-        };
+        const validFrom = [vf, from].sort(cmpText)[1] as string;
+        const validTo = to === null ? vt : vt === null || vt > to ? to : vt;
+        // The marks' spans within the clipped row; an item no longer meeting it goes.
+        return { marks: cutMarks(s.marks, validFrom, validTo), r: { ...s.r, validFrom, validTo } };
       });
     }
   }

@@ -58,8 +58,8 @@ export interface FlagRow {
   readonly flag: string;
   readonly item_id: string;
   readonly fields: string | null;
-  readonly valid_from: string | null;
-  readonly valid_to: string | null;
+  /** JCS of the item's spans, `[{from, to?}, …]` (`scope_valid`); none on other tables. */
+  readonly spans: string | null;
 }
 
 /** Where an entry block of an item is: `pending_entries`. */
@@ -156,8 +156,7 @@ export type Change =
   | {
       readonly kind: "flag_valid";
       readonly item: string;
-      readonly from: string | null;
-      readonly to: string | null;
+      readonly spans: string | null;
     }
   | { readonly kind: "flags_drop"; readonly item: string }
   /** Rows added to a kernel table (`base_sources`). */

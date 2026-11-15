@@ -639,18 +639,14 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
     case "flag_insert": {
       const r = c.row;
       await tx.query(
-        `INSERT INTO flags (table_id, row_id, flag, item_id, fields, valid_from, valid_to)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [r.table_id, r.row_id, r.flag, r.item_id, r.fields, r.valid_from, r.valid_to],
+        `INSERT INTO flags (table_id, row_id, flag, item_id, fields, spans)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [r.table_id, r.row_id, r.flag, r.item_id, r.fields, r.spans],
       );
       return;
     }
     case "flag_valid":
-      await tx.query("UPDATE flags SET valid_from = $2, valid_to = $3 WHERE item_id = $1", [
-        c.item,
-        c.from,
-        c.to,
-      ]);
+      await tx.query("UPDATE flags SET spans = $2 WHERE item_id = $1", [c.item, c.spans]);
       return;
     case "flags_drop":
       await tx.query("DELETE FROM flags WHERE item_id = $1", [c.item]);

@@ -136,6 +136,8 @@ afterAll(async () => {
 }, T);
 beforeEach(async () => {
   await s.reset();
+  // The open store's buffered reads outlive a reset: a case must not see an earlier case's.
+  readBufferOf(s.store).take();
   ids = 0;
   await createTenant(
     s.store,
@@ -349,7 +351,11 @@ describe("the main path", () => {
         intent: "insert",
         ver: `v${e.seq}.0`,
         created_entity: true,
-        fields: { b: [{ result: "applied", after: "x", valid: { from: "2026-11-01", to: null } }] },
+        fields: {
+          b: [
+            { result: "applied", after: "x", valid: { valid_from: "2026-11-01", valid_to: null } },
+          ],
+        },
       });
       const r = await send({
         sv: 1,
@@ -366,7 +372,7 @@ describe("the main path", () => {
       });
       expect(r.ops[0]?.fields).toEqual({
         b: [{ result: "noop" }],
-        c: [{ result: "applied", after: "y", valid: { from: "2026-11-01", to: null } }],
+        c: [{ result: "applied", after: "y", valid: { valid_from: "2026-11-01", valid_to: null } }],
       });
     },
     T,
@@ -410,10 +416,30 @@ describe("the main path", () => {
               target: { table: "ledger.rows", row },
               intent: "update",
               ver: `v${y.seq}.0`,
-              fields: { b: { result: "candidate", after: "z", item } },
+              fields: {
+                b: {
+                  result: "candidate",
+                  after: "z",
+                  item,
+                  effective: "y",
+                  current_ver: `v${y.seq}.0`,
+                  by: { seq: y.seq, actor: USER },
+                  previous: { seq: a.seq, exists: true, values: { b: "x" } },
+                },
+              },
             },
           ],
-          { status: "pending", pending: [{ id: item, type: "conflict", reason: "stale_write" }] },
+          {
+            status: "pending",
+            pending: [
+              {
+                id: item,
+                type: "conflict",
+                reason: "stale_write",
+                item_ver: `iv_${item.slice(3)}.${c1.seq}.0`,
+              },
+            ],
+          },
         ),
       );
       const c2 = await update(row, { b: "w" }, ver);
@@ -469,10 +495,14 @@ describe("the main path", () => {
           set: { b },
         })),
       });
-      const [created, ...merged] = r.pending;
-      expect(merged).toEqual([
-        { ...created, merged: true },
-        { ...created, merged: true },
+      // One item, listed once: opened by this request, its contents as of the request's end.
+      expect(r.pending).toEqual([
+        {
+          id: r.pending[0]?.id,
+          type: "conflict",
+          reason: "stale_write",
+          item_ver: expect.stringMatching(/^iv_/),
+        },
       ]);
       expect(
         (await eventsOfOp(r.seq))
@@ -612,7 +642,12 @@ describe("the main path", () => {
       });
       const c2 = await update(row, { b: "w" }, ver);
       expect(c2.pending).toEqual([
-        { id: idN("item", ids - 1), type: "conflict", reason: "stale_write" },
+        {
+          id: idN("item", ids - 1),
+          type: "conflict",
+          reason: "stale_write",
+          item_ver: `iv_${idN("item", ids - 1).slice(3)}.${c2.seq}.0`,
+        },
       ]);
       expect(c2.pending[0]?.id).not.toBe(item);
     },
@@ -995,16 +1030,6 @@ describe("refusals: nothing is written", () => {
     },
     T,
   );
-});
-
-describe("what pending adds, not yet produced", () => {
-  it.todo(
-    "the items an op opens or joins carry their entries (current, previous, proposed, impact)",
-  );
-  it.todo(
-    "a write taking effect on an open item's unit and interval supersedes it (item.superseded)",
-  );
-  it.todo("a write on the target of an open item it did not read refreshes it (item.refreshed)");
 });
 
 describe("reads: the fallback looks at the last read first; a write flushes the reads it finds", () => {

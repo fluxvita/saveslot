@@ -524,12 +524,17 @@ export function encodeResolution(
 
 // --- decoding ----------------------------------------------------------------------------------
 
-/** The event types the records come from; `source.recorded` carries none and is passed over. */
+/**
+ * The event types the records come from; `source.recorded`, `item.refreshed` and `item.superseded`
+ * carry none and are passed over (a refresh re-gives candidates only in the deletion phase).
+ */
 const DECODED_TYPES = new Set([
   "write.head",
   "write.base",
   "item.created",
   "item.merged",
+  "item.refreshed",
+  "item.superseded",
   "item.resolved",
   "source.recorded",
 ]);
@@ -563,7 +568,10 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
 
   for (const x of sorted) {
     const b = x.blocks;
-    if (!DECODED_TYPES.has(x.header.type)) {
+    // A refresh re-giving candidates is the deletion phase's, not decoded here.
+    const regives =
+      x.header.type === "item.refreshed" && Object.keys(b).some((p) => p.startsWith("candidates/"));
+    if (!DECODED_TYPES.has(x.header.type) || regives) {
       throw new Error(`decodeRecords does not handle ${x.header.type} (seq ${x.header.seq})`);
     }
     if (x.header.type === "write.head") heads.set(x.header.seq, b);

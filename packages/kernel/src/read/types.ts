@@ -60,12 +60,14 @@ export interface Marks {
   readonly disputed?: readonly {
     readonly item: ItemId;
     readonly fields: readonly string[];
-    readonly valid?: Interval;
+    /** State tables: the item's spans within this row's interval, in order. */
+    readonly spans?: readonly Interval[];
   }[];
   readonly awaiting?: readonly {
     readonly item: ItemId;
     readonly fields: readonly string[];
-    readonly valid?: Interval;
+    /** State tables: the item's spans within this row's interval, in order. */
+    readonly spans?: readonly Interval[];
   }[];
   readonly flagged?: readonly { readonly item: ItemId; readonly reason: "duplicate_keys" }[];
   readonly corrected?: true;

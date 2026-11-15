@@ -285,9 +285,9 @@ type SourceKind = "user_message" | "agent_note" | "tool_result" | "file_ref" | "
 ```ts
 interface Marks {
   /** 有未解决的冲突事项；给出的是按规则裁定的生效值。一行可以有多个事项。 */
-  disputed?: Array<{ item: ItemId; fields: Array<FieldName | "*">; valid?: Interval }>;   // "*" = 争议的是这一行 / 这段是否存在
+  disputed?: Array<{ item: ItemId; fields: Array<FieldName | "*">; spans?: Interval[] }>;   // "*" = 争议的是这一行 / 这段是否存在；spans：事项区间的各段
   /** 有提议尚未生效；给出的是当前值。 */
-  awaiting?: Array<{ item: ItemId; fields: Array<FieldName | "*">; valid?: Interval; proposed?: Values | null; proposed_revert?: { undo: Seq } }>;  // proposed: null = 提议撤销；提议是一次回退时不给 proposed，给 proposed_revert
+  awaiting?: Array<{ item: ItemId; fields: Array<FieldName | "*">; spans?: Interval[]; proposed?: Values | null; proposed_revert?: { undo: Seq } }>;  // proposed: null = 提议撤销；提议是一次回退时不给 proposed，给 proposed_revert
   /** 值已生效，只是被标记。 */
   flagged?: Array<{ item: ItemId; reason: FlaggedReason; related?: TargetRef }>;   // related：被比中的行里操作号最大的那一行；完整列表见事项详情的 related
   /** 该行被纠错过。 */
@@ -960,7 +960,7 @@ type ItemResolution =
   | { executed: true; seq: Seq; at: Instant; reason: TombstoneReason };
 
 /** 事项的目标。unit = 冲突单元里的字段；["*"] = 这一行 / 这段是否存在。 */
-interface ItemTarget extends TargetRef { unit?: Array<FieldName | "*">; valid?: Interval }
+interface ItemTarget extends TargetRef { unit?: Array<FieldName | "*">; spans?: Interval[] }   // spans：状态类表上事项区间的各段，按起点升序、互不相接
 
 type ItemReason =
   | "overwrites_change_point"       // awaiting_confirmation：抹掉已记录的变化点（含跨空洞填值）
@@ -1279,7 +1279,7 @@ type FieldResult =
       valid?: Interval;          // 候选的区间
       effective: Value | null;   // 当前生效值
       current_ver: Ver;          // 当前生效版本。不算读到，不参与兜底
-      by: { seq: Seq; actor: Actor };            // 是谁的哪次写入改过它；当前值由几次写入分段给出时取操作号最大的那次（同 ConflictDetail.effective）
+      by: { seq: Seq; actor: Actor };            // 是谁的哪次写入改过它；当前值由几次写入分段给出时取操作号最大的那次（同 ConflictDetail.effective）；effective 就是这次写入给的值，各段的全貌见 ConflictDetail.effective.spans
       previous: ConflictDetail["previous"];
       impact?: AwaitingImpact }                  // 候选若生效会属高影响时
   | { result: "awaiting"; item: ItemId; impact: AwaitingImpact }
@@ -1304,7 +1304,7 @@ interface PendingRef {
   id: ItemId; type: ItemType; reason: ItemReason;
   item_ver?: ItemVer;            // 只有本次新生成、且回执给全了内容的才带（算读到）
   merged?: true;                 // 并入了已有事项：不带 item_ver，要先看详情
-  refreshed?: true;              // 本次写入改到了一个没读过的未决事项的目标：事项已刷新、保持未决
+  refreshed?: true;              // 本次写入改到了一个没读过的未决事项的目标，或没改到而重算出的内容变了：事项已刷新、保持未决
   /** 只在 replayed 的回执里给：事项现在的状态；已解决的附处理方式。 */
   state?: "open" | "resolved" | "superseded";
   decision?: Decision;

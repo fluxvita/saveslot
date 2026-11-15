@@ -299,8 +299,7 @@ CREATE INDEX pending_items_target ON pending_items (target_table, target_row);`,
   flag ${T} NOT NULL,
   item_id ${T} NOT NULL,
   fields ${T},                      -- JCS array of field IDs
-  valid_from ${T},
-  valid_to ${T},
+  spans ${T},                       -- JCS array of the item's spans (state tables)
   PRIMARY KEY (table_id, row_id, flag, item_id)
 );`,
   },

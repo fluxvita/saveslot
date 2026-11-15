@@ -745,10 +745,12 @@ export type ItemCreatedTarget =
       readonly draft: DraftId;
     });
 
-/** `scope_valid` (data, state tables): the item's business time interval, with `deps`. */
+/**
+ * `scope_valid` (data, state tables): the item's business time interval as its spans, by start,
+ * apart (neither overlapping nor touching), only the last one open; with `deps`.
+ */
 export interface ScopeValidBlock {
-  readonly from: BizPoint;
-  readonly to?: BizPoint;
+  readonly spans: readonly [BizInterval, ...BizInterval[]];
   readonly deps: Deps;
 }
 
@@ -757,13 +759,30 @@ export interface ScopeValidBlock {
  * `valid` only on state tables (§5.8), likewise in `proposed`, `previous` and
  * `overwritten_segment` impacts.
  */
-export interface CurrentEntryBlock {
-  readonly field: FieldId;
-  readonly value: FieldValue;
-  readonly valid?: BizInterval;
-  readonly op: OpNumber;
-  readonly deps: Deps;
-}
+/**
+ * An entry on the unit "existence" (§5.8): a revoked stretch, `op` the revoke, or a stretch with a
+ * value, `deps` what gives it one. A stretch neither covers has no value, and not from a revoke;
+ * the fields' values are not part of the item.
+ */
+export type RevokedEntryBlock =
+  | {
+      readonly field: "existence";
+      readonly revoked: true;
+      readonly valid?: BizInterval;
+      readonly op: OpNumber;
+      readonly deps: Deps;
+    }
+  | { readonly field: "existence"; readonly valid?: BizInterval; readonly deps: Deps };
+
+export type CurrentEntryBlock =
+  | {
+      readonly field: FieldId;
+      readonly value: FieldValue;
+      readonly valid?: BizInterval;
+      readonly op: OpNumber;
+      readonly deps: Deps;
+    }
+  | RevokedEntryBlock;
 
 /** One item of a candidate: a field item, or an existence item (`intent: "revoke"`). */
 export type CandidateItem =
@@ -803,7 +822,8 @@ export type ImpactBlock =
       readonly field: FieldId;
       readonly valid?: BizInterval;
       readonly value: FieldValue;
-      readonly op: OpNumber;
+      /** The write that gave the stretch; on a stretch without a value, the revoke, if one did. */
+      readonly op?: OpNumber;
       readonly deps: Deps;
     }
   | (TableTarget & { readonly kind: "referencing_row"; readonly field: FieldId })
@@ -848,6 +868,13 @@ export type ItemRefreshedTarget =
   | {
       readonly item: ItemId;
       readonly cause: "matched_changed";
+      readonly by_event: Seq;
+      readonly merge_base_op?: OpNumber;
+    }
+  | {
+      /** Recomputed at the end of a request without being reached (§5.8): no reads looked at. */
+      readonly item: ItemId;
+      readonly cause: "entries_changed";
       readonly by_event: Seq;
       readonly merge_base_op?: OpNumber;
     }
@@ -1113,6 +1140,7 @@ export interface BlockShapes {
   CurrentEntry: CurrentEntryBlock;
   Candidate: CandidateBlock;
   FieldEntry: FieldEntryBlock;
+  PreviousEntry: FieldEntryBlock | RevokedEntryBlock;
   Impact: ImpactBlock;
   Matched: MatchedBlock;
   ItemMergedTarget: ItemMergedTarget;

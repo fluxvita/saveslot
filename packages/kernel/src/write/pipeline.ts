@@ -11,9 +11,13 @@
 //   6. the receipt, read back from the log.
 //
 // Stopped as not implemented, with nothing written: a write to a table some kept derived rule reads
-// (the refresh comes with `derive`), and a target by `entity_key`. Pending items get their
-// candidates, merge base and version here; their entries, and the open items a write refreshes or
-// supersedes, are added at `pendingEffects` (01-objects «不过期：合并、取代与刷新»).
+// (the refresh comes with `derive`), a target by `entity_key`, and a row with a flagged item.
+// Pending items (01-objects «待处理事项», «不过期»; 09 §5.8 «一次请求里的事项内容»): an op's
+// conflicts join the open item of their unit whose interval meets theirs, or open one; a write of
+// high impact opens an awaiting item. Their contents are the request's end state: the item events
+// get their entries after the last op; an open item some op reached is then superseded when the
+// writer had read it as the request began, refreshed otherwise; an open item no op reached whose
+// entries, recomputed, changed is refreshed. Each item gets one set of contents a request.
 
 import { createHash } from "node:crypto";
 import {
@@ -33,17 +37,26 @@ import {
 import { ApplyError, applyEvents, eventsOf } from "../apply/index.ts";
 import { lastRead, type ReadBuffer, type ReadId } from "../audit/index.ts";
 import {
+  awaitingImpact,
+  conflictImpact,
   emptyState,
+  type ItemRef,
   JudgeError,
   type JudgeInput,
   type Judgement,
   judgeOp,
+  type Limit,
+  proposalImpact,
   type RowState,
+  reaches,
+  scopeOf,
   stateFromRecord,
   type TableShape,
   type Unit,
+  unitEntries,
 } from "../judge/index.ts";
 import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
+import { contentBlocks, type ItemContents, openItemsOn, writerHadRead } from "../pending/index.ts";
 import {
   checkSvCompatibility,
   type NormalizedOp,
@@ -53,6 +66,7 @@ import {
   type WriteWarning,
 } from "../request/index.ts";
 import type { Tx } from "../store/ports.ts";
+import { type IntervalSet, meet, WHOLE } from "../time/index.ts";
 import { refreshesDerived, tableShape, todayIn, verOfRow, writable } from "./plan.ts";
 import {
   type Fallback,
@@ -164,24 +178,36 @@ function readFirst(
   });
 }
 
-/**
- * What `pending` adds to a judged op: the entries of the items it opens or joins, and the open
- * items on the row it refreshes or supersedes (01-objects «不过期：合并、取代与刷新»). Not
- * implemented yet: no entries, nothing refreshed or superseded.
- */
-export function pendingEffects(
-  _state: RowState,
-  _judgement: Judgement,
-): { readonly refreshed: readonly ItemId[]; readonly superseded: readonly ItemId[] } {
-  return { refreshed: [], superseded: [] };
-}
-
 const unitKey = (u: Unit) => (u === "existence" ? "existence" : [...u.fields].sort().join(","));
+const unitIn = (u: readonly string[]): Unit =>
+  u[0] === "existence" ? "existence" : { fields: u as FieldId[] };
 
-interface OpenItem {
+/** A pending item on the row the pipeline keeps track of while it writes. */
+interface TrackedItem {
   readonly item: ItemId;
+  readonly type: "conflict" | "awaiting_confirmation";
+  readonly unit: Unit;
+  /** Conflict items: the candidates so far, and the merge base. */
   candidates: number;
   mergeBase: OpNumber;
+  /** The items of its candidates (conflict) or of the proposal (awaiting). */
+  refs: ItemRef[];
+  /** The event of the write that opened it (awaiting: the proposal). */
+  readonly origin: Seq;
+  /** Its version when the request began (an item opened by the request: this operation). */
+  readonly versionOp: OpNumber;
+  /** Opened by this request. */
+  readonly here: boolean;
+  /** Joined by a candidate of this request. */
+  mergedHere: boolean;
+  /** The last `write.base` of this request that reached it (01-objects «不过期»: 改到). */
+  reachedBy?: Seq;
+  /** Its entry groups as the log holds them before this request, by path. */
+  readonly stored: Readonly<Record<string, unknown>>;
+  /** Awaiting items: the writes its proposal would take back, as last given. */
+  reverted: { readonly op: OpNumber; readonly deps: readonly ItemRef[] }[];
+  /** This request's `item.created` / `item.merged` events of the item, filled at its end. */
+  readonly fills: { readonly index: number; readonly merged: boolean }[];
 }
 
 interface RowWork {
@@ -190,37 +216,223 @@ interface RowWork {
   state: RowState;
   /** Created by an earlier op of this request. */
   createdHere: boolean;
-  /** Open conflict items on the row, by conflict unit. */
-  readonly open: Map<string, OpenItem>;
+  /** The open items on the row. */
+  readonly items: TrackedItem[];
+  /** The last `write.base` of this request on the row. */
+  lastBase?: Seq;
 }
 
-/** The open conflict items of a row from its item events, by unit. */
-function openConflictItems(events: readonly StoredEvent[], resolved: Set<string>) {
-  const open = new Map<string, OpenItem>();
-  const unitOf = new Map<string, string>();
+/** The entry groups of an item (09 §5.8), and those each kind of item event gives whole. */
+const GROUPS = ["scope_valid", "current", "previous", "impact", "proposed"] as const;
+const GIVES: Readonly<Record<string, readonly string[]>> = {
+  "item.created": GROUPS,
+  // `current` with it as the pipeline writes it (one set of contents a request); an older one
+  // without keeps the earlier.
+  "item.merged": ["scope_valid", "current", "previous", "impact"],
+  "item.refreshed": GROUPS,
+};
+const groupOf = (path: string) => path.split("/")[0] as string;
+
+/** The blocks of the groups `groups` among `blocks`. */
+const pick = (blocks: Readonly<Record<string, unknown>>, groups: readonly string[]) =>
+  Object.fromEntries(Object.entries(blocks).filter(([p]) => groups.includes(groupOf(p))));
+
+const refIn = (d: { event: number; field?: string; existence?: number; k?: number }): ItemRef => ({
+  event: d.event as Seq,
+  target: (d.field ?? "existence") as ItemRef["target"],
+  k: d.k ?? d.existence ?? 0,
+});
+
+/** The open items of a row, from its item events and the items' state now. */
+function trackedItems(
+  events: readonly StoredEvent[],
+  open: ReadonlyMap<string, OpNumber>,
+): TrackedItem[] {
+  const by = new Map<string, TrackedItem & { stored: Record<string, unknown> }>();
   for (const e of events) {
     const t = e.blocks["target"] as
-      | { item: ItemId; type?: string; unit?: string[]; merge_base_op?: number }
+      | {
+          item: ItemId;
+          type?: string;
+          unit?: string[];
+          merge_base_op?: number;
+          origin_event?: number;
+        }
       | undefined;
-    if (e.header.type === "item.resolved" && t !== undefined) resolved.add(t.item);
-    if (e.header.type !== "item.created" && e.header.type !== "item.merged") continue;
-    if (t === undefined) continue;
-    if (e.header.type === "item.created") {
-      if (t.type !== "conflict") continue;
-      unitOf.set(t.item, [...(t.unit ?? [])].sort().join(","));
-    }
-    const key = unitOf.get(t.item);
-    if (key === undefined) continue;
+    if (t === undefined || !open.has(t.item)) continue;
+    const refs = Object.entries(e.blocks)
+      .filter(([p]) => p.startsWith("candidates/"))
+      .flatMap(([, c]) => {
+        const cand = c as {
+          event: Seq;
+          items: { field?: FieldId; k?: number; existence?: number }[];
+        };
+        return cand.items.map((y) => refIn({ event: cand.event, ...y }));
+      });
     const n = Object.keys(e.blocks).filter((p) => p.startsWith("candidates/")).length;
-    const prior = open.get(key);
-    open.set(key, {
-      item: t.item,
-      candidates: (prior?.item === t.item ? prior.candidates : 0) + n,
-      mergeBase: (t.merge_base_op ?? prior?.mergeBase ?? 0) as OpNumber,
-    });
+    if (e.header.type === "item.created") {
+      if (t.type !== "conflict" && t.type !== "awaiting_confirmation") continue;
+      by.set(t.item, {
+        item: t.item,
+        type: t.type,
+        unit: unitIn(t.unit ?? []),
+        candidates: n,
+        mergeBase: (t.merge_base_op ?? 0) as OpNumber,
+        refs,
+        origin: (t.origin_event ?? 0) as Seq,
+        versionOp: open.get(t.item) as OpNumber,
+        here: false,
+        mergedHere: false,
+        stored: {},
+        reverted: [],
+        fills: [],
+      });
+    }
+    const x = by.get(t.item);
+    if (x === undefined) continue;
+    if (e.header.type === "item.merged") {
+      x.candidates += n;
+      x.refs = [...x.refs, ...refs];
+    }
+    // Candidates re-given by a refresh keep their indices: only the merge base may change.
+    if (e.header.type !== "item.created" && t.merge_base_op !== undefined)
+      x.mergeBase = t.merge_base_op as OpNumber;
+    // A group an event gives replaces the earlier one whole (09 §5.8: zero blocks, an empty group).
+    const all = GIVES[e.header.type];
+    const gives =
+      e.header.type === "item.merged" &&
+      !Object.keys(e.blocks).some((p) => p.startsWith("current/"))
+        ? all?.filter((g) => g !== "current")
+        : all;
+    if (gives !== undefined) {
+      for (const p of Object.keys(x.stored)) if (gives.includes(groupOf(p))) delete x.stored[p];
+      Object.assign(x.stored, pick(e.blocks, gives));
+    }
   }
-  for (const [k, v] of open) if (resolved.has(v.item)) open.delete(k);
-  return open;
+  for (const x of by.values()) {
+    x.reverted = Object.entries(x.stored)
+      .filter(
+        ([p, b]) => p.startsWith("impact/") && (b as { kind: string }).kind === "reverted_write",
+      )
+      .map(([, b]) => {
+        const r = b as {
+          op: number;
+          deps: { event: number; field?: string; existence?: number; k?: number }[];
+        };
+        return { op: r.op as OpNumber, deps: r.deps.map(refIn) };
+      });
+  }
+  return [...by.values()];
+}
+
+/**
+ * Whether the writer had read the item's version as the request began (01-objects «不过期»): its
+ * own receipt gave it whole when its write opened the item, or it read it (the version it last
+ * read, under the same task, is the item's then, with the restore count now).
+ */
+async function hadRead(
+  tx: Tx,
+  input: WriteInput,
+  task: string | null,
+  t: TrackedItem,
+  restore: number,
+): Promise<boolean> {
+  if (
+    await writerHadRead(tx, { id: t.item, type: t.type, versionOp: t.versionOp }, input.actor, task)
+  ) {
+    return true;
+  }
+  const read = await lastRead(tx, input.reads, {
+    actor: input.actor,
+    task,
+    kind: "item",
+    target: t.item,
+  });
+  return read !== undefined && read.op === t.versionOp && read.restoreCount === restore;
+}
+
+/** An awaiting item's proposal: the awaiting items of the write that opened it. */
+function withProposals(state: RowState, items: TrackedItem[]): TrackedItem[] {
+  for (const t of items) {
+    if (t.type !== "awaiting_confirmation") continue;
+    t.refs = state.items
+      .filter((x) => x.event === t.origin && x.status === "awaiting")
+      .map((x) => ({ event: x.event, target: x.target, k: x.k }));
+  }
+  return items;
+}
+
+/** The interval of a tracked item: its candidates' or proposal's items (state tables). */
+function scopeFor(state: RowState, t: TrackedItem): IntervalSet {
+  return state.isState ? scopeOf(state, t.refs) : [WHOLE];
+}
+
+/**
+ * The entries of an item as of `at` (09 §5.8), every group: a conflict item's interval, current
+ * values, values at the merge base and impact; an awaiting item's interval, current values,
+ * proposal and impact (what the proposal would overwrite now, and the writes it would take back
+ * while they are in effect).
+ */
+function itemContents(state: RowState, t: TrackedItem, at: Limit): ItemContents {
+  const scope = scopeFor(state, t);
+  const scopeBlock = state.isState ? { scope: { valid: scope, deps: t.refs } } : {};
+  const current = unitEntries(state, t.unit, scope, at, t.refs);
+  if (t.type === "conflict") {
+    return {
+      ...scopeBlock,
+      current,
+      previous: unitEntries(state, t.unit, scope, { upTo: t.mergeBase }, t.refs),
+      impact: conflictImpact(state, t.unit, scope, t.mergeBase, t.refs, at),
+    };
+  }
+  const proposed = t.refs.flatMap((r) => {
+    const x = state.items.find((y) => y.event === r.event && y.target === r.target && y.k === r.k);
+    if (x === undefined || x.target === "existence" || x.content.kind !== "value") return [];
+    const value = x.content.value;
+    const field = x.target;
+    // One entry a span of the proposal's interval.
+    return (state.isState ? x.valid : [WHOLE]).map((v) => ({
+      field,
+      value,
+      ...(state.isState ? { valid: v } : {}),
+      deps: [r],
+    }));
+  });
+  return {
+    ...scopeBlock,
+    current,
+    proposed,
+    impact: awaitingImpactNow(state, t, at),
+  };
+}
+
+/**
+ * An awaiting item's impact as of `at`. A proposal that is an `undo` is judged again on the state
+ * now, the same undo of the same operation: what it would take back or hide is the judge's, the
+ * writes after it included (high impact ④). Any other proposal: what it would overwrite now.
+ */
+function awaitingImpactNow(state: RowState, t: TrackedItem, at: Limit) {
+  const opened = state.records.find((r) => r.event === t.origin);
+  if (opened?.kind === "undo" && opened.revert.before !== undefined) {
+    const op = (at.upTo + 1) as OpNumber;
+    try {
+      const again = judgeOp(state, {
+        kind: "undo",
+        op,
+        index: 0,
+        event: (op + 1) as Seq,
+        ruleset: RULESET,
+        seen: at.upTo,
+        seenExplicit: true,
+        target: opened.revert.before,
+        ...(opened.includeLater ? { includeLater: true } : {}),
+      });
+      return awaitingImpact(state, again.judgement);
+    } catch (e) {
+      if (!(e instanceof JudgeError)) throw e;
+    }
+  }
+  return proposalImpact(state, t.refs, t.reverted, at);
 }
 
 /** The intent of the undone operation's last `write.base` on the row (01-objects). */
@@ -403,19 +615,31 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         granularity,
       };
       if (isNew) {
-        work = { ctx, events: [], state: emptyState(shape), createdHere: false, open: new Map() };
+        work = { ctx, events: [], state: emptyState(shape), createdHere: false, items: [] };
       } else {
         if ((await rowTable(tx, id)) !== table.id) {
           throw new WriteError("not_found", "no such row or entity", { param });
         }
         const events = await rowEvents(tx, table.id, id);
         const state = stateFromRecord(shape, decodeRecords(ctx, events));
+        const open = await openItemsOn(tx, table.id, id);
+        // A flagged item reached by a write is refreshed or superseded by its own rule
+        // (`matched_changed`), which comes with duplicate detection.
+        if (open.some((x) => x.type === "flagged")) {
+          throw new WriteError("internal", "writing a row with a flagged item is not implemented", {
+            reason: "not_implemented",
+            param,
+          });
+        }
         work = {
           ctx,
           events,
           state,
           createdHere: false,
-          open: openConflictItems(events, new Set()),
+          items: withProposals(
+            state,
+            trackedItems(events, new Map(open.map((x) => [x.id, x.versionOp as OpNumber]))),
+          ),
         };
       }
       rows.set(id, work);
@@ -493,26 +717,69 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     }
     const j = judged.judgement;
     work.state = judged.state;
-    // The entries of the items, and the open items this write refreshes or supersedes.
-    pendingEffects(judged.state, j);
-
+    // Conflicts join the open item of the same unit whose interval meets theirs, the earliest of
+    // several (01-objects «目标与合并»); one meeting none opens an item.
     const conflictItems = j.conflicts.map((c) => {
-      const k = unitKey(c.unit);
-      const prior = work.open.get(k);
+      const theirs = scopeFor(work.state, { refs: [...c.items] } as TrackedItem);
+      const prior = work.items.find(
+        (x) =>
+          x.type === "conflict" &&
+          unitKey(x.unit) === unitKey(c.unit) &&
+          (!isState || meet(scopeFor(work.state, x), theirs).length > 0),
+      );
       if (prior !== undefined) {
         const candidate = prior.candidates;
         prior.candidates++;
         prior.mergeBase = Math.min(prior.mergeBase, seen) as OpNumber;
+        prior.refs = [...prior.refs, ...c.items];
+        if (!prior.here) prior.mergedHere = true;
         return { item: prior.item, merged: true as const, candidate, mergeBase: prior.mergeBase };
       }
       const item = input.newId("item") as ItemId;
-      work.open.set(k, { item, candidates: 1, mergeBase: seen });
+      work.items.push({
+        item,
+        type: "conflict",
+        unit: c.unit,
+        candidates: 1,
+        mergeBase: seen,
+        refs: [...c.items],
+        origin: next as Seq,
+        versionOp: op,
+        here: true,
+        mergedHere: false,
+        stored: {},
+        reverted: [],
+        fills: [],
+      });
       return { item, candidate: 0, mergeBase: seen };
     });
     const recorded = "items" in j.record ? j.record.items : [];
     const awaitingItem = recorded.some((x) => x.status === "awaiting")
       ? (input.newId("item") as ItemId)
       : undefined;
+    if (awaitingItem !== undefined) {
+      const proposal = recorded.filter((x) => x.status === "awaiting");
+      work.items.push({
+        item: awaitingItem,
+        type: "awaiting_confirmation",
+        unit: proposal.some((x) => x.target === "existence")
+          ? "existence"
+          : { fields: [...new Set(proposal.map((x) => x.target as FieldId))].sort() },
+        candidates: 0,
+        mergeBase: seen,
+        refs: proposal.map((x) => ({ event: next as Seq, target: x.target, k: x.k })),
+        origin: next as Seq,
+        versionOp: op,
+        here: true,
+        mergedHere: false,
+        stored: {},
+        // The later writes an `undo` would take back or hide (high impact ④), as judged now.
+        reverted: awaitingImpact(work.state, j).flatMap((x) =>
+          x.kind === "reverted_write" ? [{ op: x.op, deps: x.deps }] : [],
+        ),
+        fills: [],
+      });
+    }
     const enc = encodeOp(work.ctx, judgeInput, j, {
       intent: intent as "insert" | "update" | "correct" | "revoke",
       ...(j.created ? { created: true as const } : {}),
@@ -526,11 +793,29 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     });
     Object.assign(headBlocks, enc.head);
     if (enc.base !== undefined) {
+      const baseSeq = next as Seq;
       opEvents.push({ type: "write.base", slot: slot.slot, blocks: enc.base as never });
       next++;
-      for (const it of enc.items) {
+      work.lastBase = baseSeq;
+      // The items it opens or joins; their entries come at the end of the request (rule: an item's
+      // contents are the request's end state, 01-objects «不过期»).
+      enc.items.forEach((it, n) => {
+        const conflict = conflictItems[n];
+        const id = conflict !== undefined ? conflict.item : awaitingItem;
+        work.items
+          .find((x) => x.item === id)
+          ?.fills.push({ index: opEvents.length, merged: it.type === "item.merged" });
         opEvents.push({ type: it.type, slot: slot.slot, blocks: it.blocks as never });
         next++;
+      });
+      // The open items it reaches, settled at the end of the request.
+      for (const t of work.items) {
+        // Op by op: what this op changed, from just before it to just after it.
+        const before: Limit = { upTo: (op - 1) as OpNumber, request: { op, below: o.index } };
+        const after: Limit = { upTo: (op - 1) as OpNumber, request: { op, below: o.index + 1 } };
+        if (!t.here && reaches(work.state, before, after, t.unit, scopeFor(work.state, t))) {
+          t.reachedBy = baseSeq;
+        }
       }
     }
     if (isNew && (enc.base !== undefined || j.created)) work.createdHere = true;
@@ -539,6 +824,72 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         o.index,
         j.record.noop.map((f) => table.fields.find((x) => x.id === f)?.name ?? f),
       );
+    }
+  }
+
+  // The pending items, as of the request's end (01-objects «不过期»): the request's item events
+  // get their entries; an open item some op reached is superseded when the writer had read it as
+  // the request began (not one this request joined), refreshed otherwise; an open item on a row the
+  // request wrote that no op reached is refreshed when its entries, recomputed, changed (their
+  // impact does not go stale, 01-objects «影响»). Each item gets one of these at most.
+  const atEnd: Limit = { upTo: op };
+  for (const work of rows.values()) {
+    for (const t of [...work.items]) {
+      const blocks = contentBlocks(itemContents(work.state, t, atEnd));
+      for (const f of t.fills) {
+        const ev = opEvents[f.index] as NewEvent;
+        const groups = f.merged ? (GIVES["item.merged"] as readonly string[]) : GROUPS;
+        opEvents[f.index] = { ...ev, blocks: { ...ev.blocks, ...pick(blocks, groups) } as never };
+      }
+      if (t.here || work.lastBase === undefined) continue;
+      const mergeBase = t.type === "conflict" ? { merge_base_op: t.mergeBase } : {};
+      if (t.reachedBy !== undefined) {
+        if (!t.mergedHere && (await hadRead(tx, input, task, t, restore))) {
+          opEvents.push({
+            type: "item.superseded",
+            slot: slot.slot,
+            blocks: {
+              target: {
+                item: t.item,
+                reason: "overwritten",
+                by_event: t.reachedBy,
+                writer_had_read: true,
+              },
+            } as never,
+          });
+          work.items.splice(work.items.indexOf(t), 1);
+        } else {
+          opEvents.push({
+            type: "item.refreshed",
+            slot: slot.slot,
+            blocks: {
+              target: {
+                item: t.item,
+                by_event: t.reachedBy,
+                writer_had_read: false,
+                cause: "target_overwritten",
+                ...mergeBase,
+              },
+              ...blocks,
+            } as never,
+          });
+        }
+        next++;
+        continue;
+      }
+      // A join of this request gave the item's contents with it (item.merged): nothing more.
+      if (t.mergedHere) continue;
+      const held = t.stored;
+      if (canonicalize(held as never) === canonicalize(blocks as never)) continue;
+      opEvents.push({
+        type: "item.refreshed",
+        slot: slot.slot,
+        blocks: {
+          target: { item: t.item, by_event: work.lastBase, cause: "entries_changed", ...mergeBase },
+          ...blocks,
+        } as never,
+      });
+      next++;
     }
   }
 

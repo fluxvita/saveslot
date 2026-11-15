@@ -4,8 +4,8 @@
 //
 // Entry blocks are registered by position, removed ones too (a removed data block still stands
 // where it was, §1.1). `item.merged` and `item.refreshed` give some groups whole: the item's
-// earlier entries of those groups stop counting, and the flag's interval follows the new
-// `scope_valid` (none given: an empty group, no interval).
+// earlier entries of those groups stop counting, and the flag's spans follow the new `scope_valid`
+// (none given: an empty group, no spans).
 
 import { canonicalize, type JsonValue, type Seq } from "@fluxvita/saveslot-contract-core";
 import { ApplyError, type Change, type EntryRef } from "./model.ts";
@@ -42,15 +42,11 @@ function entries(item: string, seq: Seq, paths: readonly string[], from: number)
     .map((path, i) => ({ item, n: from + i, seq, path }));
 }
 
-function interval(v: JsonValue | undefined): { from: string | null; to: string | null } {
-  if (v === undefined || v === null || typeof v !== "object" || Array.isArray(v)) {
-    return { from: null, to: null };
-  }
-  const o = v as Obj;
-  return {
-    from: (o["from"] as string | undefined) ?? null,
-    to: (o["to"] as string | undefined) ?? null,
-  };
+/** The flag's spans: those of `scope_valid`, as JCS. */
+function spans(v: JsonValue | undefined): string | null {
+  if (v === undefined || v === null || typeof v !== "object" || Array.isArray(v)) return null;
+  const s = (v as Obj)["spans"];
+  return Array.isArray(s) ? canonicalize(s) : null;
 }
 
 export function planItem(
@@ -103,7 +99,7 @@ export function planItem(
             flag,
             item_id: id,
             fields: unit === undefined ? null : canonicalize(unit),
-            ...rename(interval(present["scope_valid"])),
+            spans: spans(present["scope_valid"]),
           },
         });
       }
@@ -114,13 +110,18 @@ export function planItem(
     case "item.merged":
     case "item.refreshed": {
       const id = (t as Obj)["item"] as string;
-      const groups = WHOLE_GROUPS[type] as readonly string[];
+      // An item.merged giving `current` gives it whole too; one without keeps the earlier.
+      const current = type === "item.merged" && paths.some((p) => p.startsWith("current/"));
+      const groups = [
+        ...(WHOLE_GROUPS[type] as readonly string[]),
+        ...(current ? ["current"] : []),
+      ];
       const byIndex = paths.filter((p) => /^(candidates|matched)\/\d+$/.test(p));
       return [
         { kind: "item_update", id, version_op: op },
         { kind: "entries_drop", item: id, groups, paths: type === "item.refreshed" ? byIndex : [] },
         { kind: "entries_insert", entries: entries(id, seq, paths, input.item?.nextEntry ?? 0) },
-        { kind: "flag_valid", item: id, ...interval(present["scope_valid"]) },
+        { kind: "flag_valid", item: id, spans: spans(present["scope_valid"]) },
       ];
     }
     // §5.8 item.superseded: no longer to handle; its flags go.
@@ -145,8 +146,3 @@ export function planItem(
       return undefined;
   }
 }
-
-const rename = (v: { from: string | null; to: string | null }) => ({
-  valid_from: v.from,
-  valid_to: v.to,
-});

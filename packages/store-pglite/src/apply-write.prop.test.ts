@@ -27,6 +27,7 @@ import {
   COMPILED_V1,
   createSlotEvents,
   type Decision,
+  DecisionOverItems,
   eventsOfSteps,
   judged,
   SLOT,
@@ -515,7 +516,15 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
           granularity: "date" as const,
         };
         // Pending item events follow their write.base (or head event) in the operation.
-        const perStep = eventsOfSteps(ctx, steps, (after, n) => after + 1 + n);
+        // A decision over candidates in items apart is not one item's: not this property's.
+        let perStep: ReturnType<typeof eventsOfSteps>;
+        try {
+          perStep = eventsOfSteps(ctx, steps, (after, n) => after + 1 + n);
+        } catch (e) {
+          if (!(e instanceof DecisionOverItems)) throw e;
+          seen.skipped++;
+          return;
+        }
         // An operation inserted right after one with several events would take a seq it needs.
         const collides = perStep.some((evs, k) => {
           const next = perStep[k + 1]?.[0]?.seq;

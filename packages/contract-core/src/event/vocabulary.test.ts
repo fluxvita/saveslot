@@ -155,6 +155,7 @@ const SPEC_PATHS: ReadonlyArray<readonly [string, string, "meta" | "data"]> = [
   ["item.merged", "target", "meta"],
   ["item.merged", "candidates/1", "data"],
   ["item.merged", "scope_valid", "data"],
+  ["item.merged", "current/0", "data"],
   ["item.merged", "previous/0", "data"],
   ["item.merged", "impact/0", "data"],
   ["item.refreshed", "target", "meta"],

@@ -17,6 +17,7 @@ export { type QueryInput, queryInTx } from "./read/query.ts";
 export * from "./store/anchor-conformance.fixture.ts";
 export {
   asInThisPhase,
+  DecisionOverItems,
   eventsOfRequest,
   eventsOfSteps,
   FIRST_OP,

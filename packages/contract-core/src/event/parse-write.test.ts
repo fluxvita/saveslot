@@ -188,7 +188,7 @@ const SAMPLES: Record<string, Sample> = {
         ruleset_version: 1,
         policy_version: 1,
       },
-      scope_valid: { from: "2026-11-01", to: "2026-11-09", deps },
+      scope_valid: { spans: [{ from: "2026-11-01", to: "2026-11-09" }], deps },
       "current/0": { field: "f3", value: "30", op: 21, deps },
       "candidates/0": {
         event: 27,
@@ -881,4 +881,46 @@ it("parseEvent: an awaiting item may be for an undo hiding later writes", () => 
     reason: "undo_hides_later",
   });
   expect(parse(s)).toEqual({ ok: true, type: "item.created" });
+});
+
+describe("scope_valid: the item's interval as its spans (§5.8)", () => {
+  const scope = (spans: unknown) =>
+    issues(parse(withBlock(S("item.created"), "scope_valid", { spans, deps })));
+  const span = (from: string, to?: string) => ({ from, ...(to !== undefined ? { to } : {}) });
+
+  it("accepts spans by start, apart, one granularity, the last one open", () => {
+    expect(scope([span("2026-11-01", "2026-11-03"), span("2026-11-05")])).toEqual([]);
+    expect(scope([span("2026-11-01T00:00:00.000Z", "2026-11-01T06:00:00.000Z")])).toEqual([]);
+  });
+
+  it.each([
+    ["none", [], "scope_valid.spans: at least one span"],
+    [
+      "touching",
+      [span("2026-11-01", "2026-11-03"), span("2026-11-03", "2026-11-05")],
+      "scope_valid: spans by start, apart",
+    ],
+    [
+      "overlapping",
+      [span("2026-11-01", "2026-11-04"), span("2026-11-03", "2026-11-05")],
+      "scope_valid: spans by start, apart",
+    ],
+    [
+      "out of order",
+      [span("2026-11-05", "2026-11-07"), span("2026-11-01", "2026-11-03")],
+      "scope_valid: spans by start, apart",
+    ],
+    [
+      "open before the last",
+      [span("2026-11-01"), span("2026-11-05", "2026-11-07")],
+      "scope_valid: only the last span open",
+    ],
+    [
+      "dates and instants mixed",
+      [span("2026-11-01", "2026-11-03"), span("2026-11-05T00:00:00.000Z")],
+      "scope_valid: spans of one granularity",
+    ],
+  ])("refuses spans %s", (_, spans, issue) => {
+    expect(scope(spans)).toContain(issue);
+  });
 });

@@ -384,10 +384,12 @@ describe.each([
                 r.fields === "all" ? {} : { fields: [r.fields] };
               let expected: ReturnType<typeof proj>[];
               if (r.kind === "valid_at" || r.kind === "at") {
-                expected = segs.filter((s) => contains(s, a)).map(proj);
-                if (r.kind === "valid_at") params["valid_at"] = a;
+                // The first point: a day before every scenario's (it falls in no segment).
+                const p = r.a === 0 ? "2026-09-01" : a;
+                expected = segs.filter((s) => contains(s, p)).map(proj);
+                if (r.kind === "valid_at") params["valid_at"] = p;
                 // 04:00Z is noon of the same day in the slot's zone.
-                else params["at"] = `${a}T04:00:00Z`;
+                else params["at"] = `${p}T04:00:00Z`;
               } else {
                 const bIdx = r.b;
                 // The first point: an interval before every scenario's days (it meets nothing).

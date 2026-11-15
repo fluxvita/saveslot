@@ -199,6 +199,10 @@ function comparable(e: LoggedEvent, items: Map<string, string>): unknown {
   if (e.type === "write.head") {
     for (const k of ["ctx", "request", "task", "request_key", "idempotency"]) delete blocks[k];
   }
+  // The items' entries are checked against the reference in the property below.
+  for (const k of Object.keys(blocks)) {
+    if (/^(scope_valid|current\/|previous\/|proposed\/|impact\/)/.test(k)) delete blocks[k];
+  }
   return { type: e.type, seq: e.seq, blocks };
 }
 
@@ -360,15 +364,25 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
           );
           const got = await store.read(async (tx) => {
             const last = (await readTail(tx))?.seq ?? 0;
-            return (await readEvents(tx, head, last))
-              .filter((e) => e.header["type"] !== "source.recorded")
-              .map((e) => ({
-                type: e.header["type"] as string,
-                seq: Number(e.header["seq"]),
-                blocks: Object.fromEntries(
-                  [...e.blocks].flatMap(([p, b]) => (b.state === "present" ? [[p, b.value]] : [])),
-                ),
-              }));
+            return (
+              (await readEvents(tx, head, last))
+                // Sources are the pipeline's; refreshes and supersessions are checked separately.
+                .filter(
+                  (e) =>
+                    !["source.recorded", "item.refreshed", "item.superseded"].includes(
+                      e.header["type"] as string,
+                    ),
+                )
+                .map((e) => ({
+                  type: e.header["type"] as string,
+                  seq: Number(e.header["seq"]),
+                  blocks: Object.fromEntries(
+                    [...e.blocks].flatMap(([p, b]) =>
+                      b.state === "present" ? [[p, b.value]] : [],
+                    ),
+                  ),
+                }))
+            );
           });
           expect({ step: k, events: got.map((e) => comparable(e, realItems)) }).toEqual({
             step: k,

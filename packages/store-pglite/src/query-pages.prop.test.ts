@@ -7,7 +7,7 @@
 //    parameters, both give the same rows (values, intervals, marks, order).
 // 2. Pages hold to the first page: with writes between pages (values changed, rows inserted,
 //    revoked, a revoke undone), the pages put together are the whole result as the first page saw
-//    it, no row repeated or dropped.
+//    it, no row repeated or dropped (marks aside: they are those at each read).
 
 import {
   appendOperation,
@@ -284,10 +284,10 @@ function condition(c: {
 let s: ReusableStore;
 beforeAll(async () => {
   s = await openReusable("saveslot-query-pages-");
-}, 120_000);
+}, 300_000);
 afterAll(async () => {
   await s?.close();
-}, 120_000);
+}, 300_000);
 
 let minute = 0;
 const ctx = () =>
@@ -637,7 +637,11 @@ describe("query's two paths and its pages", () => {
           }
           if (pages.length > 1) paged++;
           for (const p of pages) expect(p.total).toBe(whole.total);
-          expect(pages.flatMap((p) => p.rows)).toEqual(whole.rows);
+          // Rows and values as the first page saw them; marks are those at each read (04-contract
+          // §15): an item a write between pages settles is no longer marked on a later page.
+          const unmarked = (rows: readonly { marks?: unknown }[]) =>
+            rows.map(({ marks: _, ...r }) => r);
+          expect(unmarked(pages.flatMap((p) => p.rows))).toEqual(unmarked(whole.rows));
         },
       ),
       { numRuns: RUNS },

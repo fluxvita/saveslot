@@ -727,11 +727,18 @@ describe("resolutions and what the scenarios do not reach", () => {
 
   it("the decoder refuses what this phase does not decode", () => {
     const ctx = ctxOf("event");
+    // Refreshes and supersessions carry no records: passed over; a refresh re-giving a candidate
+    // is the deletion phase's.
+    expect(
+      decodeRecords(ctx, [
+        { header: { type: "item.superseded", seq: 5, op: 4 }, blocks: {} },
+        { header: { type: "item.refreshed", seq: 6, op: 4 }, blocks: {} },
+      ]),
+    ).toEqual([]);
     expect(() =>
-      decodeRecords(ctx, [{ header: { type: "item.superseded", seq: 5, op: 4 }, blocks: {} }]),
-    ).toThrow("does not handle item.superseded");
-    expect(() =>
-      decodeRecords(ctx, [{ header: { type: "item.refreshed", seq: 5, op: 4 }, blocks: {} }]),
+      decodeRecords(ctx, [
+        { header: { type: "item.refreshed", seq: 5, op: 4 }, blocks: { "candidates/0": {} } },
+      ]),
     ).toThrow("does not handle item.refreshed");
     // A decision this phase does not decode, on an item it knows.
     const inputs = [

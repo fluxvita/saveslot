@@ -107,13 +107,20 @@ export async function rowEvents(tx: ReadTx, table: string, row: string): Promise
       ? []
       : await eventsAt(
           tx,
-          `type IN ('item.merged', 'item.resolved') AND seq IN (SELECT c.seq FROM content c
+          `type IN ('item.merged', 'item.refreshed', 'item.superseded', 'item.resolved') AND seq IN (SELECT c.seq FROM content c
              WHERE c.path = 'target' AND c.body IS NOT NULL AND (c.body::jsonb ->> 'item') = ANY($1))`,
           [items],
         );
   const ops = [
     ...new Set(
-      [...own, ...onItems].filter((e) => e.header.type !== "item.resolved").map((e) => e.header.op),
+      [...own, ...onItems]
+        .filter(
+          (e) =>
+            e.header.type === "write.base" ||
+            e.header.type === "item.created" ||
+            e.header.type === "item.merged",
+        )
+        .map((e) => e.header.op),
     ),
   ];
   const heads = ops.length === 0 ? [] : await eventsAt(tx, "seq = ANY($1)", [ops]);

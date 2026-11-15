@@ -7,6 +7,7 @@ import type { FieldId, ItemId, RawFieldValue } from "@fluxvita/saveslot-contract
 import type { Op } from "@fluxvita/saveslot-reference";
 import type { JudgeInput, Judgement, Unit } from "../judge/model.ts";
 import type { Judged } from "../judge/scenarios.fixture.ts";
+import { canonical, type IntervalSet, meet, WHOLE } from "../time/index.ts";
 import { encodeOp, encodeResolution, type RowContext } from "./record.ts";
 
 /** The operation of the scenarios' first write: the insert that makes the row or entity. */
@@ -20,6 +21,15 @@ const itemId = (n: number): ItemId =>
     .replace(/[ILOU]/g, "Z")}` as ItemId;
 
 const unitKey = (u: Unit) => (u === "existence" ? "existence" : [...u.fields].sort().join(","));
+
+/**
+ * A decision whose candidates lie in more than one open item: the scenarios resolve a unit's
+ * candidates together, while candidates whose intervals do not meet are items apart (01-objects
+ * «目标与合并»). The caller skips the sample.
+ */
+export class DecisionOverItems extends Error {
+  override readonly name = "DecisionOverItems";
+}
 
 /**
  * The ops as this phase writes them. No `evidence_by_field`: a same-valued write is a no-op, never a
@@ -69,10 +79,17 @@ export function eventsOfSteps(
   steps: readonly Judged[],
   itemSeq: (after: number, n: number) => number,
 ): LoggedEvent[][] {
-  const open = new Map<
-    string,
-    { item: ItemId; candidates: number[]; mergeBase: number; version: number }
-  >();
+  // The open conflict items in the order they were opened (01-objects «目标与合并»: a conflict
+  // joins the earliest open item of its unit whose interval meets its candidate items').
+  const open: {
+    item: ItemId;
+    unit: string;
+    spans: IntervalSet;
+    candidates: number[];
+    mergeBase: number;
+    version: number;
+  }[] = [];
+  const isState = ctx.shape.kind === "state";
   const awaiting = new Map<number, { item: ItemId; version: number }>();
   let next = 1;
   const out: LoggedEvent[][] = [];
@@ -92,11 +109,21 @@ export function eventsOfSteps(
       const seenOp = r.seen ?? r.op - 1;
       const conflictItems = j.conflicts.map((c) => {
         const key = unitKey(c.unit);
-        const prior = open.get(key);
+        const mine: IntervalSet = isState
+          ? canonical(
+              r.items
+                .filter((x) => c.items.some((y) => y.target === x.target && y.k === x.k))
+                .flatMap((x) => x.valid),
+            )
+          : [WHOLE];
+        const prior = open.find(
+          (x) => x.unit === key && (!isState || meet(x.spans, mine).length > 0),
+        );
         if (prior !== undefined) {
           prior.candidates.push(r.event);
           prior.mergeBase = Math.min(prior.mergeBase, seenOp);
           prior.version = r.op;
+          prior.spans = isState ? canonical([...prior.spans, ...mine]) : [WHOLE];
           return {
             item: prior.item,
             merged: true as const,
@@ -105,7 +132,14 @@ export function eventsOfSteps(
           };
         }
         const item = itemId(next++);
-        open.set(key, { item, candidates: [r.event], mergeBase: seenOp, version: r.op });
+        open.push({
+          item,
+          unit: key,
+          spans: mine,
+          candidates: [r.event],
+          mergeBase: seenOp,
+          version: r.op,
+        });
         return { item, candidate: 0, mergeBase: seenOp };
       });
       const awaitingItem = r.items.some((x) => x.status === "awaiting")
@@ -157,11 +191,22 @@ export function eventsOfSteps(
               ? r.unit
               : undefined;
         const key = unit === undefined ? "" : unitKey(unit);
-        const it = open.get(key);
+        // The item holding the decision's candidates; several: not one item's decision.
+        const theirs: readonly number[] =
+          r.kind === "take_previous"
+            ? (r.revert.candidates ?? [])
+            : r.kind === "keep_effective" || r.kind === "take_candidate"
+              ? r.candidates
+              : [];
+        const holding = open.filter(
+          (x) => x.unit === key && x.candidates.some((c) => theirs.includes(c)),
+        );
+        if (holding.length > 1) throw new DecisionOverItems("a decision over several items");
+        const it = holding[0];
         item = it?.item;
         version = it?.version;
         if (r.kind === "take_candidate") candidate = it?.candidates.indexOf(r.take);
-        open.delete(key);
+        if (it !== undefined) open.splice(open.indexOf(it), 1);
       }
       if (item === undefined || version === undefined)
         throw new Error("a decision without its item");

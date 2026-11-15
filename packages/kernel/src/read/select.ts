@@ -302,11 +302,10 @@ async function readFlags(
     flag: string;
     item_id: string;
     fields: string | null;
-    valid_from: string | null;
-    valid_to: string | null;
+    spans: string | null;
     type: string | null;
   }>(
-    `SELECT f.row_id, f.flag, f.item_id, f.fields, f.valid_from, f.valid_to, p.type
+    `SELECT f.row_id, f.flag, f.item_id, f.fields, f.spans, p.type
      FROM flags f LEFT JOIN pending_items p ON p.id = f.item_id
      WHERE f.table_id = $1 AND f.row_id = ANY($2) ORDER BY f.item_id`,
     [table, ids] as never,
@@ -318,8 +317,14 @@ async function readFlags(
       item: x.item_id as ItemId,
       itemType: x.type,
       fields: x.fields === null ? ["existence"] : (JSON.parse(x.fields) as string[]),
-      // Stored today as one interval (the flags table's valid_from / valid_to).
-      spans: x.valid_from === null ? undefined : [{ from: x.valid_from, to: x.valid_to }],
+      // The item's spans, JCS (state tables); none on event and timeless tables.
+      spans:
+        x.spans === null
+          ? undefined
+          : (JSON.parse(x.spans) as { from: string; to?: string }[]).map((y) => ({
+              from: y.from,
+              to: y.to ?? null,
+            })),
     },
   }));
 }

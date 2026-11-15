@@ -644,6 +644,83 @@ describe("state tables", () => {
 });
 
 describe("marks from open items", () => {
+  it("marks a state table's segments within the item's spans only, the spans cut to each row", async () => {
+    // A stale write of the category on [11-10, 11-20): a conflict item over those days.
+    const before = (await q({ table: "budgets" })).rows.find((x) => x.entity === entityA)
+      ?.ver as string;
+    await w1({
+      ops: [
+        {
+          intent: "update",
+          table: "budgets",
+          entity: entityA,
+          set: { category: "rent" },
+          valid_from: "2026-11-12",
+          valid_to: "2026-11-16",
+        },
+      ],
+    });
+    const r = await w(
+      {
+        sv: 1,
+        ops: [
+          {
+            intent: "update",
+            table: "budgets",
+            entity: entityA,
+            ver: before,
+            set: { category: "fun" },
+            valid_from: "2026-11-10",
+            valid_to: "2026-11-20",
+          },
+        ],
+      },
+      OTHER,
+    );
+    expect(r.pending).toHaveLength(1);
+    const item = r.pending[0]?.id;
+    const marksOf = async (params: Record<string, unknown>) =>
+      (await q({ table: "budgets", ...params })).rows
+        .filter((x) => x.entity === entityA)
+        .map((x) => [x.valid_from, x.valid_to, x.marks?.disputed ?? null]);
+    const d = (from: string, to: string) => [{ item, fields: ["category"], spans: [{ from, to }] }];
+    // The user's rent on [11-12, 11-16) splits the item's days: each segment within them carries
+    // the item with its spans cut to the segment; those outside carry nothing.
+    expect(await marksOf({ valid_during: ["2026-11-01", null], coalesce: false })).toEqual([
+      ["2026-11-01", "2026-11-10", null],
+      ["2026-11-10", "2026-11-12", d("2026-11-10", "2026-11-12")],
+      ["2026-11-12", "2026-11-16", d("2026-11-12", "2026-11-16")],
+      ["2026-11-16", "2026-11-20", d("2026-11-16", "2026-11-20")],
+      ["2026-11-20", null, null],
+    ]);
+    // Merged by the category read: the item's spans within each merged row.
+    expect(await marksOf({ fields: ["category"], valid_during: ["2026-11-01", null] })).toEqual([
+      ["2026-11-01", "2026-11-12", d("2026-11-10", "2026-11-12")],
+      ["2026-11-12", "2026-11-16", d("2026-11-12", "2026-11-16")],
+      ["2026-11-16", null, d("2026-11-16", "2026-11-20")],
+    ]);
+    // Clipped: the spans cut to the clipped row; outside the item's days, no mark.
+    expect(
+      await marksOf({
+        fields: ["category"],
+        valid_during: ["2026-11-17", "2026-11-19"],
+        clip: true,
+      }),
+    ).toEqual([["2026-11-17", "2026-11-19", d("2026-11-17", "2026-11-19")]]);
+    expect(
+      await marksOf({
+        fields: ["category"],
+        valid_during: ["2026-11-21", "2026-11-23"],
+        clip: true,
+      }),
+    ).toEqual([["2026-11-21", "2026-11-23", null]]);
+    // A point within and outside the item's days.
+    expect(await marksOf({ valid_at: "2026-11-14" })).toEqual([
+      ["2026-11-12", "2026-11-16", d("2026-11-12", "2026-11-16")],
+    ]);
+    expect(await marksOf({ valid_at: "2026-11-05" })).toEqual([["2026-11-01", "2026-11-10", null]]);
+  });
+
   it("marks a disputed field, only when the field is read", async () => {
     // A stale write of the note: a candidate and a conflict item on the note (f4).
     const before = (

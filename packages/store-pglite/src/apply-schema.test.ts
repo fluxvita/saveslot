@@ -115,8 +115,7 @@ const candidate = (event: number) => ({
   deps: [{ event, field: "f2", k: 0 }],
 });
 const scope = (from: string, event: number) => ({
-  from,
-  to: "2026-11-05",
+  spans: [{ from, to: "2026-11-05" }],
   deps: [{ event, field: "f2", k: 0 }],
 });
 
@@ -521,8 +520,7 @@ describe("sources, request keys and pending items", () => {
           flag: "disputed",
           item_id: CONFLICT,
           fields: '["f2"]',
-          valid_from: "2026-11-01",
-          valid_to: "2026-11-05",
+          spans: '[{"from":"2026-11-01","to":"2026-11-05"}]',
         },
         {
           table_id: "t4",
@@ -530,8 +528,7 @@ describe("sources, request keys and pending items", () => {
           flag: "awaiting",
           item_id: AWAITING,
           fields: '["existence"]',
-          valid_from: null,
-          valid_to: null,
+          spans: null,
         },
       ]);
     },
@@ -572,9 +569,9 @@ describe("sources, request keys and pending items", () => {
       expect(
         await rows(store, `SELECT version_op FROM pending_items WHERE id = '${CONFLICT}'`),
       ).toEqual([{ version_op: op }]);
-      expect(
-        await rows(store, `SELECT valid_from FROM flags WHERE item_id = '${CONFLICT}'`),
-      ).toEqual([{ valid_from: "2026-10-30" }]);
+      expect(await rows(store, `SELECT spans FROM flags WHERE item_id = '${CONFLICT}'`)).toEqual([
+        { spans: '[{"from":"2026-10-30","to":"2026-11-05"}]' },
+      ]);
     },
     T,
   );
@@ -608,9 +605,9 @@ describe("sources, request keys and pending items", () => {
         { n: 4, content_seq: mergeOp + 1, content_path: "candidates/1" },
         { n: 7, content_seq: op + 1, content_path: "candidates/0" },
       ]);
-      expect(
-        await rows(store, `SELECT valid_from, valid_to FROM flags WHERE item_id = '${CONFLICT}'`),
-      ).toEqual([{ valid_from: null, valid_to: null }]);
+      expect(await rows(store, `SELECT spans FROM flags WHERE item_id = '${CONFLICT}'`)).toEqual([
+        { spans: null },
+      ]);
     },
     T,
   );

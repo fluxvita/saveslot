@@ -136,6 +136,7 @@ describe("parseEvent: valid events", () => {
         "Candidate",
         "Confirmation",
         "CurrentEntry",
+        "PreviousEntry",
         "ExistenceItem",
         "ExistenceSpan",
         "FieldEntry",

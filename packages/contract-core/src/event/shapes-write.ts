@@ -146,6 +146,25 @@ export const slotCtx =
 
 // --- shapes --------------------------------------------------------------------------------------
 
+/**
+ * An entry on the unit "existence" (09 §5.8): a revoked stretch, `{field: "existence", revoked:
+ * true, valid?, op, deps}`, `op` the revoke; or a stretch with a value, `{field: "existence",
+ * valid?, deps}`. A stretch neither covers has no value, and not from a revoke.
+ */
+function existenceEntry(v: Record<string, unknown>, at: string, issues: string[]): void {
+  if (!("revoked" in v)) {
+    if (!keys(v, at, ["field", "deps"], ["valid"], issues)) return;
+    if ("valid" in v) interval(v["valid"], `${at}.valid`, issues);
+    deps(v["deps"], `${at}.deps`, issues);
+    return;
+  }
+  if (!keys(v, at, ["field", "revoked", "op", "deps"], ["valid"], issues)) return;
+  check(v["revoked"] === true, at, "revoked", issues);
+  check(int(v["op"]), at, "op", issues);
+  if ("valid" in v) interval(v["valid"], `${at}.valid`, issues);
+  deps(v["deps"], `${at}.deps`, issues);
+}
+
 export const WRITE_SHAPES: Record<string, ShapeChecker> = {
   // §5.1
   WriteCtx: slotCtx("required"),
@@ -449,12 +468,44 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     check(id("item", v["item"]), at, "item", issues);
     versions(v, at, issues);
   },
+  /**
+   * The item's interval as its spans: at least one, by start, neither overlapping nor touching
+   * (touching ones are one span), of one granularity, only the last one open.
+   */
   ScopeValid(v, at, issues) {
-    if (!keys(v, at, ["from", "deps"], ["to"], issues)) return;
-    interval({ from: v["from"], ...("to" in v ? { to: v["to"] } : {}) }, at, issues);
+    if (!keys(v, at, ["spans", "deps"], [], issues)) return;
+    const spans = v["spans"];
+    if (!Array.isArray(spans) || spans.length === 0) {
+      issues.push(`${at}.spans: at least one span`);
+    } else {
+      spans.forEach((s, i) => {
+        interval(s, `${at}.spans[${i}]`, issues);
+        const prev = i > 0 ? spans[i - 1] : undefined;
+        // One granularity: every span by date, or every one by instant.
+        const first = spans[0];
+        if (i > 0 && isObject(first) && isObject(s) && point(first["from"]) && point(s["from"])) {
+          check(
+            isDate(first["from"]) === isDate(s["from"]),
+            at,
+            "spans of one granularity",
+            issues,
+          );
+        }
+        if (isObject(prev)) {
+          check("to" in prev, at, "only the last span open", issues);
+          if (isObject(s) && "to" in prev && point(prev["to"]) && point(s["from"])) {
+            check(prev["to"] < s["from"], at, "spans by start, apart", issues);
+          }
+        }
+      });
+    }
     deps(v["deps"], `${at}.deps`, issues);
   },
   CurrentEntry(v, at, issues) {
+    if (isObject(v) && v["field"] === "existence") {
+      existenceEntry(v, at, issues);
+      return;
+    }
     if (!keys(v, at, ["field", "value", "op", "deps"], ["valid"], issues)) return;
     check(id("field", v["field"]), at, "field", issues);
     check(int(v["op"]), at, "op", issues);
@@ -499,6 +550,18 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     }
     deps(v["deps"], `${at}.deps`, issues);
   },
+  /** `previous/<n>`: a field's value at the merge base, or an entry on the unit "existence". */
+  PreviousEntry(v, at, issues) {
+    if (isObject(v) && v["field"] === "existence") {
+      existenceEntry(v, at, issues);
+      return;
+    }
+    if (!keys(v, at, ["field", "value", "deps"], ["valid"], issues)) return;
+    check(id("field", v["field"]), at, "field", issues);
+    value(v["value"], `${at}.value`, issues);
+    if ("valid" in v) interval(v["valid"], `${at}.valid`, issues);
+    deps(v["deps"], `${at}.deps`, issues);
+  },
   FieldEntry(v, at, issues) {
     if (!keys(v, at, ["field", "value", "deps"], ["valid"], issues)) return;
     check(id("field", v["field"]), at, "field", issues);
@@ -509,9 +572,11 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
   Impact(v, at, issues) {
     const kind = isObject(v) ? v["kind"] : undefined;
     if (kind === "overwritten_segment") {
-      if (!keys(v, at, ["kind", "field", "value", "op", "deps"], ["valid"], issues)) return;
+      // A stretch without a value (a gap filled) has no op unless a revoke left it.
+      if (!keys(v, at, ["kind", "field", "value", "deps"], ["valid", "op"], issues)) return;
       check(id("field", v["field"]), at, "field", issues);
-      check(int(v["op"]), at, "op", issues);
+      if ("op" in v) check(int(v["op"]), at, "op", issues);
+      check("op" in v || v["value"] === null, at, "op", issues);
       value(v["value"], `${at}.value`, issues);
       if ("valid" in v) interval(v["valid"], `${at}.valid`, issues);
       deps(v["deps"], `${at}.deps`, issues);
@@ -539,6 +604,7 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
       target_overwritten: { req: ["by_event", "writer_had_read"], opt: [] },
       references_changed: { req: ["by_event", "writer_had_read"], opt: [] },
       matched_changed: { req: ["by_event"], opt: [] },
+      entries_changed: { req: ["by_event"], opt: [] },
       entries_deleted: { req: [], opt: ["dropped_candidates"] },
       entries_restored: { req: [], opt: ["restored_candidates"] },
     };

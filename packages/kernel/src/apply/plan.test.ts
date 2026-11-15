@@ -465,8 +465,7 @@ describe("planEvent: pending items", () => {
         blocks: {
           target: conflictTarget,
           scope_valid: {
-            from: "2026-11-01",
-            to: "2026-11-05",
+            spans: [{ from: "2026-11-01", to: "2026-11-05" }],
             deps: [{ event: 32, field: "f2", k: 0 }],
           },
           "current/0": segment(20),
@@ -506,8 +505,7 @@ describe("planEvent: pending items", () => {
           flag: "disputed",
           item_id: ITEM,
           fields: '["f2"]',
-          valid_from: "2026-11-01",
-          valid_to: "2026-11-05",
+          spans: '[{"from":"2026-11-01","to":"2026-11-05"}]',
         },
       },
       {
@@ -580,8 +578,7 @@ describe("planEvent: pending items", () => {
         flag: "awaiting",
         item_id: ITEM,
         fields: '["existence"]',
-        valid_from: null,
-        valid_to: null,
+        spans: null,
       },
     });
     const flagged = op(30, [
@@ -675,8 +672,7 @@ describe("planEvent: pending items", () => {
           target: { item: ITEM, merge_base_op: 9, origin_event: 42, ...versions },
           "candidates/1": candidate(42),
           scope_valid: {
-            from: "2026-10-30",
-            to: "2026-11-05",
+            spans: [{ from: "2026-10-30", to: "2026-11-05" }],
             deps: [{ event: 42, field: "f2", k: 0 }],
           },
         },
@@ -697,7 +693,7 @@ describe("planEvent: pending items", () => {
           { item: ITEM, n: 5, seq: 42, path: "scope_valid" },
         ],
       },
-      { kind: "flag_valid", item: ITEM, from: "2026-10-30", to: "2026-11-05" },
+      { kind: "flag_valid", item: ITEM, spans: '[{"from":"2026-10-30","to":"2026-11-05"}]' },
       {
         kind: "block_deps",
         rows: ["candidates/1", "scope_valid"].map((path) => ({
@@ -733,7 +729,7 @@ describe("planEvent: pending items", () => {
       groups: ["scope_valid", "current", "previous", "impact", "proposed"],
       paths: ["candidates/1"],
     });
-    expect(changes[3]).toEqual({ kind: "flag_valid", item: ITEM, from: null, to: null });
+    expect(changes[3]).toEqual({ kind: "flag_valid", item: ITEM, spans: null });
   });
 
   it("an update of an item that is missing or not open is inconsistent: decided in the plan", () => {
