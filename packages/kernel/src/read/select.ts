@@ -304,7 +304,7 @@ export async function correctSpansOf(
 async function readFlags(
   tx: ReadTx,
   table: string,
-  ids: readonly string[],
+  ids: readonly string[] | null,
 ): Promise<{ row: string; flag: Flag }[]> {
   const r = await tx.query<{
     row_id: string;
@@ -316,8 +316,8 @@ async function readFlags(
   }>(
     `SELECT f.row_id, f.flag, f.item_id, f.fields, f.spans, p.type
      FROM flags f LEFT JOIN pending_items p ON p.id = f.item_id
-     WHERE f.table_id = $1 AND f.row_id = ANY($2) ORDER BY f.item_id`,
-    [table, ids] as never,
+     WHERE f.table_id = $1${ids === null ? "" : " AND f.row_id = ANY($2)"} ORDER BY f.item_id`,
+    (ids === null ? [table] : [table, ids]) as never,
   );
   return r.rows.map((x) => ({
     row: x.row_id,
@@ -336,6 +336,17 @@ async function readFlags(
             })),
     },
   }));
+}
+
+/** The flags on every row of `table`, by row (open items' flags only are kept in `flags`). */
+export async function readTableFlags(tx: ReadTx, table: string): Promise<Map<string, Flag[]>> {
+  const out = new Map<string, Flag[]>();
+  for (const f of await readFlags(tx, table, null)) {
+    const xs = out.get(f.row);
+    if (xs === undefined) out.set(f.row, [f.flag]);
+    else xs.push(f.flag);
+  }
+  return out;
 }
 
 /** The open items' flags on the given rows, by row. */

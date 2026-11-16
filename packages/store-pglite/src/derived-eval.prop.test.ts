@@ -158,6 +158,9 @@ function byKey(
 
 const sorted = (m: Map<string, DerivedRow>) =>
   [...m.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
+/** Entries by their text key, in order. */
+const byText = <T>(xs: Iterable<readonly [string, T]>) =>
+  [...xs].sort(([a], [b]) => (a < b ? -1 : 1));
 
 /** The rule body as printed for evaluation, run over the logical table instead of the CTE. */
 const withoutCte = (sql: string) => sql.slice(sql.indexOf(") SELECT ") + 2);
@@ -467,22 +470,31 @@ function oracle(
 ) {
   const derived = fieldsOf.tables.find((t) => t.id === "t9");
   if (derived === undefined || derived.kind !== "derived") throw new Error("no t9");
-  const live = rows.filter((r) => !r.revoked && holds(s.where, r.cells)).map((r) => r.cells);
-  const groups = new Map<string, { key: Value; rows: Readonly<Record<string, Cell>>[] }>();
+  // Row IDs as load gives them (`r<index>`).
+  const live = rows
+    .map((r, i) => ({ r, id: `r${i}` }))
+    .filter(({ r }) => !r.revoked && holds(s.where, r.cells));
+  const groups = new Map<
+    string,
+    { key: Value; rows: Readonly<Record<string, Cell>>[]; ids: string[] }
+  >();
   if (s.key === undefined) {
-    if (live.length > 0) groups.set("", { key: null, rows: [...live] });
+    if (live.length > 0)
+      groups.set("", { key: null, rows: live.map((x) => x.r.cells), ids: live.map((x) => x.id) });
   } else {
-    for (const c of live) {
-      const k = keyOf(s.key, c);
+    for (const { r, id: rowId } of live) {
+      const k = keyOf(s.key, r.cells);
       const id = valueId(k);
-      const g = groups.get(id) ?? { key: k, rows: [] };
-      g.rows.push(c);
+      const g = groups.get(id) ?? { key: k, rows: [], ids: [] };
+      g.rows.push(r.cells);
+      g.ids.push(rowId);
       groups.set(id, g);
     }
   }
   const out = new Map<string, DerivedRow>();
+  const members = new Map<string, string[]>();
   for (const g of groups.values()) {
-    if (s.having && g.rows.length <= 1) continue;
+    const dropped = s.having && g.rows.length <= 1;
     const values: Record<string, FieldValue> = {};
     const raw: Value[] = [
       ...(s.key !== undefined ? [g.key] : []),
@@ -504,10 +516,12 @@ function oracle(
       else values[f.id] = roundQ(v.v, 0, "half_up") as FieldValue;
     });
     const key = s.key === undefined ? [] : [values["f1"] as FieldValue];
-    out.set(keyText(key), { values, key });
+    // Every group's members, whether HAVING keeps it or not.
+    members.set(keyText(key), [...g.ids].sort());
+    if (!dropped) out.set(keyText(key), { values, key });
   }
   void e;
-  return out;
+  return Object.assign(out, { members });
 }
 
 /** A value with every object's keys in sorted order, as a compiled definition read from the log. */
@@ -521,6 +535,20 @@ function sortedKeys(v: unknown): unknown {
   );
 }
 const fromLog = <T>(schema: T): T => sortedKeys(schema) as T;
+
+/** The members' row IDs by the JCS of their group key, sorted. */
+function memberSets(e: RuleEvaluation, rows: readonly Record<string, unknown>[]) {
+  const out = new Map<string, string[]>();
+  for (const r of rows) {
+    const m = e.decodeMember(r);
+    const k = keyText(m.key);
+    const xs = out.get(k);
+    if (xs === undefined) out.set(k, [m.row]);
+    else xs.push(m.row);
+  }
+  for (const xs of out.values()) xs.sort();
+  return byText(out);
+}
 
 /** Every row of the full result is found again, alone and the same, by the partition query. */
 async function partitionsAgree(
@@ -590,6 +618,12 @@ describe("A: rewriting keeps the meaning (generated rules)", () => {
         )
           counts.decimalKeys++;
         counts.partitions += await partitionsAgree(e, phys.rows, where);
+        // Every derived row's group has members (HAVING may drop groups that have some).
+        const members = await attempt("s_phys", e.members.sql, e.members.params);
+        if ("error" in members) throw new Error(`${where}\nmembers: ${members.error}`);
+        const memberKeys = new Set(members.rows.map((r) => keyText(e.decodeMember(r).key)));
+        for (const k of byKey(e, phys.rows).keys())
+          expect(memberKeys.has(k), `${where}\nno members of ${k}`).toBe(true);
         // The bound text as stored, for rules without quotients (whose digits the guard changes).
         const bound = derived.rule.sql;
         if (/ \/ |avg\(/.test(bound)) return;
@@ -641,7 +675,22 @@ describe("B: the values are the rule's meaning (restricted shapes)", () => {
         await load(runs, rows);
         const out = await attempt("s_phys", e.all.sql);
         if ("error" in out) throw new Error(`${sql}: ${out.error}`);
-        expect(sorted(byKey(e, out.rows)), sql).toEqual(sorted(oracle(s, e, schema, rows)));
+        const want = oracle(s, e, schema, rows);
+        expect(sorted(byKey(e, out.rows)), sql).toEqual(sorted(want));
+        // The rule's members: for every group, HAVING or not, its rows after WHERE, by row ID.
+        const members = await attempt("s_phys", e.members.sql, e.members.params);
+        if ("error" in members) throw new Error(`${sql}: ${members.error}`);
+        expect(memberSets(e, members.rows), `${sql}: members`).toEqual(byText(want.members));
+        // Among some rows only (every other one, revoked or not): the same sets, kept to them.
+        const some = rows.map((_, i) => `r${i}`).filter((_, i) => i % 2 === 0);
+        const among = e.membersAmong(some);
+        const amongRows = await attempt("s_phys", among.sql, among.params);
+        if ("error" in amongRows) throw new Error(`${sql}: ${amongRows.error}`);
+        const kept = new Set(some);
+        const wantAmong = [...want.members]
+          .map(([k, ids]) => [k, ids.filter((id) => kept.has(id))] as const)
+          .filter(([, ids]) => ids.length > 0);
+        expect(memberSets(e, amongRows.rows), `${sql}: members among`).toEqual(byText(wantAmong));
         await partitionsAgree(e, out.rows, sql);
         checked++;
       }),

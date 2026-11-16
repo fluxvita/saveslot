@@ -329,13 +329,14 @@ type AffectedReason = "correct" | "revoke" | "retroactive" | "plan_changed" | "a
  *  deleted：隐私删除改掉了前提的值。一次写入在所声明的范围上同时有追溯与未来的部分时取 retroactive。 */
 type PremiseReason = "correct" | "update" | "revoke" | "retroactive" | "plan_changed" | "deleted";
 
-/** 派生行没有自己的标记，带输入上的汇总：只统计规则所依赖的字段上有标记的基础行。 */
+/** 派生行没有自己的标记，带输入上的汇总：落进这个分区的基础行（规则 WHERE 之后的行；FILTER 不影响，HAVING 不涉及）里，
+ *  在规则所依赖的字段上、或在这一行的"存在"上带标记的行数。同一行带同一种标记只算一次。四项都为 0 时也给。 */
 interface InputMarks {
   disputed: number;
   awaiting: number;
   flagged: number;
   premise_changed: number;   // 规则所依赖的字段上带 premise_changed 的基础行数
-  items: ItemId[];       // 最多 10 个
+  items: ItemId[];       // 涉及的未决事项，按 ID 的字符串顺序，最多 10 个
 }
 ```
 
@@ -1765,7 +1766,6 @@ type Warning =
                                                                                                      // 物理删除后 saveslot 不记得这个键，连接器再同步同一条记录时会作为新行重新出现。rows 最多 50 行
   | { code: "single_field_external_key"; table: TableName }                                          // schema_draft：来源键只有一个字段，多个来源系统写这张表时 ID 可能相撞
   | { code: "group_key_free_text"; table: TableName }                                                // schema_draft：派生表的分组键来自自由文本字段，删除时随分组一起清除
-  | { code: "input_marks_unavailable"; table: TableName }                                           // query 读派生表：输入上的标记（input_marks）这一版没有汇总；缺省不等于输入上没有标记
   | { code: "job_items_appended"; op: number; job: JobId };                                          // @later
 
 /** 与本次调用相关的提示，最多 3 条。每一种都只按调用方的可见范围计算：范围外的 slot 不出现在任何提示里。 */

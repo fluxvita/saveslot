@@ -86,6 +86,19 @@ export interface Row extends TargetRef {
   readonly valid_to?: BizPoint | null;
   readonly valid_to_inclusive?: DateStr;
   readonly marks?: Marks;
+  /** Derived rows only: the marks on the rows the rule reads, on the fields it depends on. */
+  readonly input_marks?: InputMarks;
+}
+
+/** §3 `InputMarks`: base rows of the partition with marks on the fields the rule depends on. */
+export interface InputMarks {
+  readonly disputed: number;
+  readonly awaiting: number;
+  readonly flagged: number;
+  /** Premises are a later version: always 0 here. */
+  readonly premise_changed: number;
+  /** The open items among them, by ID in string order, at most 10. */
+  readonly items: readonly ItemId[];
 }
 
 export type ReadWarning =
@@ -95,9 +108,7 @@ export type ReadWarning =
       readonly from: string;
       readonly to: DateStr;
     }
-  | { readonly code: "timezone_assumed"; readonly param: string; readonly timezone: string }
-  /** query of a derived table: the input marks are not summed in this version. */
-  | { readonly code: "input_marks_unavailable"; readonly table: string };
+  | { readonly code: "timezone_assumed"; readonly param: string; readonly timezone: string };
 
 /** §4.3 `QueryReadResult`. */
 export interface QueryReadResult {

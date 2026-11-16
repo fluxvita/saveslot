@@ -60,6 +60,37 @@ const RULES = [
     "none",
   ],
   ["t11", "all_runs", "SELECT sum(distance) AS total FROM runs", ["total"], "none"],
+  // Members: WHERE drops rows, FILTER does not; HAVING drops groups that still have members.
+  [
+    "t12",
+    "long_december",
+    "SELECT route AS route, count(*) FILTER (WHERE distance > 2) AS long FROM runs WHERE date >= DATE '2026-12-01' GROUP BY 1",
+    ["route", "long"],
+    "none",
+  ],
+  [
+    "t13",
+    "busy_routes",
+    "SELECT route AS route, count(*) AS runs FROM runs GROUP BY 1 HAVING count(*) > 1",
+    ["route", "runs"],
+    "none",
+  ],
+  // A key of two columns.
+  [
+    "t14",
+    "route_weeks",
+    "SELECT route AS route, date_trunc('week', date::timestamp)::date AS week, count(*) AS runs FROM runs GROUP BY 1, 2",
+    ["route", "week", "runs"],
+    "bucketed",
+  ],
+  // A whole aggregate over the rows of one route only (input marks of its own rows).
+  [
+    "t15",
+    "meadow_total",
+    "SELECT sum(distance) AS total FROM runs WHERE route = 'meadow'",
+    ["total"],
+    "none",
+  ],
 ] as const;
 
 beforeAll(async () => {
@@ -227,11 +258,11 @@ async function refused(params: Record<string, unknown>): Promise<unknown> {
   return "read";
 }
 
-const WARNING = (table: string) => [{ code: "input_marks_unavailable", table }];
+const NO_MARKS = { disputed: 0, awaiting: 0, flagged: 0, premise_changed: 0, items: [] };
 
 describe("query of a derived table", () => {
   it(
-    "empty before any write: no rows, and the warning that input marks are not summed",
+    "empty before any write: no rows",
     async () => {
       const { result } = await query({ table: "weekly" });
       expect(result).toEqual({
@@ -240,7 +271,6 @@ describe("query of a derived table", () => {
         sv: 1,
         total: 0,
         rows: [],
-        warnings: WARNING("health.weekly"),
       });
     },
     T,
@@ -259,12 +289,14 @@ describe("query of a derived table", () => {
           key: { week: "2026-10-26" },
           ver: expect.stringMatching(/^v\d+\.0$/),
           values: { week: "2026-10-26", total: { value: "2", unit: "km" }, runs: "1" },
+          input_marks: NO_MARKS,
         },
         {
           table: "health.weekly",
           key: { week: "2026-11-02" },
           ver: `v${c}.0`,
           values: { week: "2026-11-02", total: { value: "6", unit: "km" }, runs: "2" },
+          input_marks: NO_MARKS,
         },
       ]);
       expect(a).toBeLessThan(c);
@@ -416,6 +448,240 @@ describe("later pages of a derived table", () => {
       const second = await next(first);
       const all = (await query({ table: "weekly" })).result.rows;
       expect([...first.result.rows, ...second.result.rows]).toEqual(all.slice(0, 2));
+    },
+    T,
+  );
+});
+
+describe("input marks of derived rows", () => {
+  const item = (c: string) => `pi_${c.repeat(16)}`;
+  /** A flag on fields of the row, or (`null`) on the whole row, as flagged items have. */
+  const flag = (row: string, kind: string, it: string, fields: string[] | null) =>
+    store.write((tx) =>
+      tx.query(
+        "INSERT INTO flags (table_id, row_id, flag, item_id, fields, spans) VALUES ('t1', $1, $2, $3, $4, NULL)",
+        [row, kind, it, fields === null ? null : JSON.stringify(fields)],
+      ),
+    );
+  const id = (n: number) => `r_${String(n).padStart(26, "0")}`;
+  async function insertRow(date: string, distance: string, route: string | null) {
+    const n = rows;
+    await insert(date, distance, route);
+    return id(n);
+  }
+  const marksOf = async (table: string) =>
+    (await query({ table })).result.rows.map((r) => [r.key, r.input_marks]);
+  const marksByKey = async (table: string) =>
+    new Map((await marksOf(table)).map(([k, m]) => [JSON.stringify(k), m] as const));
+  const marks = (
+    m: Partial<Record<"disputed" | "awaiting" | "flagged", number>>,
+    items: string[],
+  ) => ({
+    ...NO_MARKS,
+    ...m,
+    items,
+  });
+
+  it(
+    "flags on the fields the rule depends on, or on the row's existence, of the rows in the partition",
+    async () => {
+      const a = await insertRow("2026-12-07", "5", "river");
+      const b = await insertRow("2026-12-08", "1", "river");
+      const c = await insertRow("2026-11-23", "1", "river");
+      const d = await insertRow("2026-12-09", "3", "river");
+      await revoke(Number(d.slice(2)));
+      // a: two disputed items and one awaiting, on distance.
+      await flag(a, "disputed", item("A"), ["f2"]);
+      await flag(a, "awaiting", item("B"), ["f2"]);
+      await flag(a, "disputed", item("C"), ["f2"]);
+      // b: on feeling, which no rule here reads; and on the row's existence.
+      await flag(b, "disputed", item("D"), ["f4"]);
+      await flag(b, "awaiting", item("E"), ["existence"]);
+      // c: item A again, in another week; outside long_december's WHERE.
+      await flag(c, "disputed", item("A"), ["f1"]);
+      // d: revoked, so not read by any rule.
+      await flag(d, "disputed", item("F"), ["f2"]);
+
+      const weekly = new Map(
+        (await marksOf("weekly")).map(([k, m]) => [JSON.stringify(k), m] as const),
+      );
+      expect(weekly.get(JSON.stringify({ week: "2026-12-07" }))).toEqual({
+        disputed: 1,
+        awaiting: 2,
+        flagged: 0,
+        premise_changed: 0,
+        items: [item("A"), item("B"), item("C"), item("E")],
+      });
+      expect(weekly.get(JSON.stringify({ week: "2026-11-23" }))).toEqual({
+        disputed: 1,
+        awaiting: 0,
+        flagged: 0,
+        premise_changed: 0,
+        items: [item("A")],
+      });
+      // long_december reads route, distance and date: b counts though FILTER drops it; c is
+      // outside WHERE.
+      expect(await marksOf("long_december")).toEqual([
+        [
+          { route: "river" },
+          {
+            disputed: 1,
+            awaiting: 2,
+            flagged: 0,
+            premise_changed: 0,
+            items: [item("A"), item("B"), item("C"), item("E")],
+          },
+        ],
+      ]);
+      // by_route reads route only: the flags on distance and date do not count, existence does.
+      const byRoute = new Map(
+        (await marksOf("by_route")).map(([k, m]) => [JSON.stringify(k), m] as const),
+      );
+      expect(byRoute.get(JSON.stringify({ route: "river" }))).toEqual({
+        disputed: 0,
+        awaiting: 1,
+        flagged: 0,
+        premise_changed: 0,
+        items: [item("E")],
+      });
+    },
+    T,
+  );
+
+  it(
+    "items in string order, at most 10; a row counted once per kind",
+    async () => {
+      const r = await insertRow("2026-12-14", "2", "river");
+      const ids = "ZYXWVTSRQPNM".split("").map(item);
+      for (const it of ids) await flag(r, "disputed", it, ["f2"]);
+      const weekly = new Map(
+        (await marksOf("weekly")).map(([k, m]) => [JSON.stringify(k), m] as const),
+      );
+      expect(weekly.get(JSON.stringify({ week: "2026-12-14" }))).toEqual({
+        disputed: 1,
+        awaiting: 0,
+        flagged: 0,
+        premise_changed: 0,
+        items: [...ids].sort().slice(0, 10),
+      });
+    },
+    T,
+  );
+
+  it(
+    "items across rows in string order, whatever order the rows come in",
+    async () => {
+      const first = await insertRow("2026-12-21", "1", "river");
+      const second = await insertRow("2026-12-22", "1", "river");
+      await flag(first, "disputed", item("Z"), ["f2"]);
+      await flag(second, "awaiting", item("A"), ["f2"]);
+      const weekly = new Map(
+        (await marksOf("weekly")).map(([k, m]) => [JSON.stringify(k), m] as const),
+      );
+      expect(weekly.get(JSON.stringify({ week: "2026-12-21" }))).toEqual({
+        disputed: 1,
+        awaiting: 1,
+        flagged: 0,
+        premise_changed: 0,
+        items: [item("A"), item("Z")],
+      });
+    },
+    T,
+  );
+
+  it(
+    "a group HAVING drops has members but no row: reading is not disturbed by it",
+    async () => {
+      await insertRow("2026-12-15", "1", "lake");
+      const busy = await query({ table: "busy_routes" });
+      expect(busy.result.rows.map((r) => r.key)).not.toContainEqual({ route: "lake" });
+      expect(busy.result.rows.every((r) => r.input_marks !== undefined)).toBe(true);
+    },
+    T,
+  );
+
+  it(
+    "HAVING: a flag in a dropped group counts nowhere; one in a kept group counts there",
+    async () => {
+      const kept = await insertRow("2026-12-16", "1", "hill");
+      await insertRow("2026-12-17", "1", "hill");
+      const dropped = await insertRow("2026-12-16", "1", "cove");
+      await flag(kept, "disputed", item("G"), ["f5"]);
+      await flag(dropped, "awaiting", item("H"), ["f5"]);
+      const busy = await marksByKey("busy_routes");
+      expect(busy.has(JSON.stringify({ route: "cove" }))).toBe(false);
+      expect(busy.get(JSON.stringify({ route: "hill" }))).toEqual(
+        marks({ disputed: 1 }, [item("G")]),
+      );
+      // Nor does it leak into any other row.
+      for (const m of busy.values()) expect(m?.items).not.toContain(item("H"));
+    },
+    T,
+  );
+
+  it(
+    "a whole aggregate (key {}): its rows' flags, flagged ones (no fields) too",
+    async () => {
+      const a = await insertRow("2026-12-18", "2", "meadow");
+      const b = await insertRow("2026-12-19", "3", "meadow");
+      await insertRow("2026-12-20", "4", "meadow");
+      await flag(a, "disputed", item("I"), ["f2"]);
+      await flag(b, "flagged", item("J"), null);
+      expect(await marksOf("meadow_total")).toEqual([
+        [{}, marks({ disputed: 1, flagged: 1 }, [item("I"), item("J")])],
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "a NULL group key: its rows' flags count on the NULL row",
+    async () => {
+      const r = await insertRow("2026-12-21", "1", null);
+      await flag(r, "awaiting", item("K"), ["f5"]);
+      const byRoute = await marksByKey("by_route");
+      expect(byRoute.get(JSON.stringify({ route: null }))).toEqual(
+        marks({ awaiting: 1 }, [item("K")]),
+      );
+    },
+    T,
+  );
+
+  it(
+    "a key of two columns: a flag counts on its own (route, week) only",
+    async () => {
+      const a = await insertRow("2026-12-21", "1", "dune");
+      await insertRow("2026-12-22", "1", "dune");
+      await insertRow("2026-12-28", "1", "dune");
+      await flag(a, "disputed", item("L"), ["f1"]);
+      const rw = await marksByKey("route_weeks");
+      expect(rw.get(JSON.stringify({ route: "dune", week: "2026-12-21" }))).toEqual(
+        marks({ disputed: 1 }, [item("L")]),
+      );
+      expect(rw.get(JSON.stringify({ route: "dune", week: "2026-12-28" }))).toEqual(NO_MARKS);
+    },
+    T,
+  );
+
+  it(
+    "a flag on a row of a later page: its marks there, the pages as one read of it all",
+    async () => {
+      // The latest week: the last page of weekly, ascending.
+      const r = await insertRow("2027-01-04", "1", "pond");
+      await flag(r, "disputed", item("M"), ["f2"]);
+      const all = (await query({ table: "weekly" })).result.rows;
+      const pages: (typeof all)[number][] = [];
+      let page = await query({ table: "weekly", limit: 1 });
+      pages.push(...page.result.rows);
+      while (page.result.next_position !== undefined) {
+        page = await query({ table: "weekly", limit: 1, position: page.result.next_position });
+        pages.push(...page.result.rows);
+      }
+      expect(pages.length).toBeGreaterThan(1);
+      expect(pages).toEqual(all);
+      expect(page.result.rows.map((x) => [x.key, x.input_marks])).toEqual([
+        [{ week: "2027-01-04" }, marks({ disputed: 1 }, [item("M")])],
+      ]);
     },
     T,
   );

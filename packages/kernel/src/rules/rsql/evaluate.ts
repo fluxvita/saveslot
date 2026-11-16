@@ -62,6 +62,24 @@ export interface RuleEvaluation {
   partition(key: readonly FieldValue[]): RuleQuery;
   /** A result row of either query; undefined when it stands for no derived row. */
   decode(row: Readonly<Record<string, unknown>>): DerivedRow | undefined;
+  /** The base table the rule reads. */
+  readonly base: TableId;
+  /**
+   * The rule's members: every row of the base table the rule reads after WHERE, with the group key
+   * it falls in (the key of the same expressions, decoded alike). A group HAVING drops has members
+   * but no derived row.
+   */
+  readonly members: RuleQuery;
+  /** The members among these base rows only (`members` restricted to the row IDs given). */
+  membersAmong(rows: readonly string[]): {
+    readonly sql: string;
+    readonly params: readonly [readonly string[]];
+  };
+  /** A row of `members`: its group key (in `rule.scope.key` order) and its row ID. */
+  decodeMember(row: Readonly<Record<string, unknown>>): {
+    readonly key: readonly FieldValue[];
+    readonly row: string;
+  };
 }
 
 const TABLE_ID = /^t[1-9][0-9]{0,8}$/;
@@ -462,9 +480,38 @@ export function evaluateRule(schema: CompiledSchema, table: TableId): RuleEvalua
   });
   if (whole) cols.push(`"r"."${INPUTS}"`);
   const head = `WITH ${logicalTable(a.table)} SELECT ${cols.join(", ")} FROM (${body}) AS "r"`;
+  const membersBody = printRule(stmt, {
+    table: a.table.id,
+    column: (e) => {
+      const col = a.columnOf(e);
+      return col.kind === "field"
+        ? col.field.id
+        : (col.name as "row_id" | "entity_id" | "valid_from" | "valid_to");
+    },
+    outputs,
+    groupKey: a.groupKey,
+    hints: a.hints,
+    evaluate: true,
+    members: true,
+  });
+  const keyCols = key.map((f) =>
+    f.type === "boolean" ? `"m"."${f.id}"` : `CAST("m"."${f.id}" AS text) AS "${f.id}"`,
+  );
+  const members = `WITH ${logicalTable(a.table)} SELECT ${[...keyCols, `"m"."row_id"`].join(", ")} FROM (${membersBody}) AS "m"`;
 
   return {
     table,
+    base: a.table.id,
+    members: { sql: members, params: [] },
+    membersAmong: (rows) => ({
+      sql: `${members} WHERE "m"."row_id" = ANY($1)`,
+      params: [[...rows]],
+    }),
+    decodeMember(row) {
+      const id = row["row_id"];
+      if (typeof id !== "string") return internal("a member without its row ID");
+      return { key: key.map((f) => decodeValue(f, row[f.id])), row: id };
+    },
     all: { sql: head, params: [] },
     partition(values) {
       if (values.length !== key.length) internal("key of another length");

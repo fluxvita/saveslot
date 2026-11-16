@@ -11,8 +11,12 @@
 //   and has no effect: it is the evaluation time of rules depending on today, which this version
 //   computes at read time only, and which no derived table of this version has. `include_revoked`
 //   gives nothing more: a derived row is never revoked.
-// - Input marks are not summed in this version: every read says so (`input_marks_unavailable`),
-//   since an absent `input_marks` would read as "no marks on the inputs".
+// - Each row carries `input_marks` (04-contract §7): of the base rows in its partition (the rule's
+//   members: evaluate's members query, of the same checked rule and key decoding), those with an
+//   open item's flag on a field the rule depends on, counted once per row and kind; a flag on the
+//   row's existence counts too. Given when all are 0 as well, so that "none" is never "not
+//   computed". The base table's flags are read first; only the flagged rows' members are asked
+//   for, so the cost follows the flagged rows, not the table's size.
 // - A later page reads the derived table as it is: a derived table has no state as of a record
 //   time. When a derived write changed the table after the first page, the page is
 //   `handle_expired` (`derived_changed`) and the caller reads again from the first page; when
@@ -29,7 +33,13 @@ import {
 } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry, ReadRow } from "../audit/index.ts";
 import { get, has, instantText, type Obj, parseDateTime } from "../request/index.ts";
-import { decodeDerivedRow, derivedRowsQuery } from "../rules/index.ts";
+import {
+  decodeDerivedRow,
+  derivedRowsQuery,
+  evaluateRule,
+  type RuleEvaluation,
+  RuleEvaluationError,
+} from "../rules/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 import {
@@ -43,9 +53,10 @@ import {
 } from "./params.ts";
 import type { QueryInput, QueryOutput } from "./query-io.ts";
 import { cmpKeys, type KeySpec, keyType, keyValue } from "./rows.ts";
-import { conditionSql, logPosition, Params, restoreCount } from "./select.ts";
+import { conditionSql, logPosition, Params, readTableFlags, restoreCount } from "./select.ts";
 import type { NamedTable } from "./slots.ts";
 import {
+  type InputMarks,
   invalid,
   notImplemented,
   ReadError,
@@ -214,6 +225,7 @@ export async function queryDerived(
   }
 
   // The rows.
+  const e = evaluateRule(named.slot.compiled, t.id);
   const q = derivedRowsQuery(t);
   const p = new Params();
   const conds = where.map((c) => conditionSql(c, p));
@@ -233,7 +245,8 @@ export async function queryDerived(
       ...keyFields.map((f) => keyValue(d.values[f.id])),
       d.partition,
     ];
-    return { item: { row, partition: d.partition, ver: d.ver }, keys };
+    const keyText = canonicalize(keyFields.map((f) => d.values[f.id] ?? null) as JsonValue);
+    return { item: { row, partition: d.partition, ver: d.ver, key: keyText }, keys };
   });
   items.sort((a, b) => cmpKeys(specs, a.keys, b.keys));
   const seq = position?.seq ?? latest;
@@ -247,15 +260,20 @@ export async function queryDerived(
     limit,
   });
 
-  warnings.push({ code: "input_marks_unavailable", table: qualified });
+  const marks = await inputMarks(
+    tx,
+    e,
+    t,
+    page.map((x) => x.key),
+  );
   const result = {
     table: qualified,
     slot: named.slot.name,
     sv: named.slot.sv,
     total: items.length,
     ...(next !== undefined ? { next_position: next } : {}),
-    rows: page.map((x) => x.row),
-    warnings,
+    rows: page.map((x): Row => ({ ...x.row, input_marks: marks.get(x.key) as InputMarks })),
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 
   const tableId = t.id as TableId;
@@ -300,4 +318,82 @@ function literalId(l: unknown): unknown {
   return o.kind === "number" && o.value !== undefined
     ? { n: String(o.value.num), d: String(o.value.den) }
     : l;
+}
+
+/**
+ * The input marks of the partitions with these keys (JCS of the group key): the rule's members
+ * falling in them, their open items' flags on the fields the rule depends on in the base table
+ * (or on the row's existence), each kind counted once per row; the items by ID, at most 10.
+ */
+export async function inputMarks(
+  tx: ReadTx,
+  e: Pick<RuleEvaluation, "base" | "membersAmong" | "decodeMember">,
+  t: CompiledDerivedTable,
+  keys: readonly string[],
+): Promise<Map<string, InputMarks>> {
+  const out = new Map<string, InputMarks>();
+  if (keys.length === 0) return out;
+  const zero = (): InputMarks => ({
+    disputed: 0,
+    awaiting: 0,
+    flagged: 0,
+    premise_changed: 0,
+    items: [] as never,
+  });
+  // The base rows with flags first (usually few): with none, every row's marks are 0 and the
+  // members are not asked for; with some, only those rows' groups. The cost follows the flagged
+  // rows, not the table's size.
+  const depends = new Set(t.rule.depends_on.filter((d) => d.table === e.base).map((d) => d.field));
+  const flags = await readTableFlags(tx, e.base);
+  for (const [row, fs] of flags) {
+    const kept = fs.filter((f) =>
+      f.fields.some((x) => x === "existence" || depends.has(x as never)),
+    );
+    if (kept.length === 0) flags.delete(row);
+    else flags.set(row, kept);
+  }
+  if (flags.size === 0) {
+    for (const k of keys) out.set(k, zero());
+    return out;
+  }
+  const wanted = new Set(keys);
+  const rowsOf = new Map<string, string[]>();
+  const q = e.membersAmong([...flags.keys()]);
+  for (const r of (await tx.query<Record<string, unknown>>(q.sql, q.params as never)).rows) {
+    let m: { readonly key: readonly unknown[]; readonly row: string };
+    try {
+      m = e.decodeMember(r);
+    } catch (x) {
+      // A key out of what its type represents: its group has no derived row (the rule's own
+      // evaluation never decodes it), so it is on no page.
+      if (x instanceof RuleEvaluationError) continue;
+      throw x;
+    }
+    const k = canonicalize(m.key as unknown as JsonValue);
+    // Members of groups not on this page, or that HAVING drops, are not asked for.
+    if (!wanted.has(k)) continue;
+    const xs = rowsOf.get(k);
+    if (xs === undefined) rowsOf.set(k, [m.row]);
+    else xs.push(m.row);
+  }
+  for (const k of keys) {
+    const counts = { disputed: 0, awaiting: 0, flagged: 0 };
+    const items = new Set<string>();
+    for (const row of rowsOf.get(k) ?? []) {
+      const seen = new Set<string>();
+      for (const f of flags.get(row) ?? []) {
+        if (!f.fields.some((x) => x === "existence" || depends.has(x as never))) continue;
+        items.add(f.item);
+        if (seen.has(f.flag)) continue;
+        seen.add(f.flag);
+        counts[f.flag]++;
+      }
+    }
+    out.set(k, {
+      ...counts,
+      premise_changed: 0,
+      items: [...items].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).slice(0, 10) as never,
+    });
+  }
+  return out;
 }

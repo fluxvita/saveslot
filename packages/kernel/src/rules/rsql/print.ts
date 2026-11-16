@@ -62,6 +62,11 @@ export interface PrintNames {
   readonly hints: PrintHints;
   /** Print for evaluation: guarded quotients, NULLIF divisors, the input count of a whole aggregate. */
   readonly evaluate?: boolean;
+  /**
+   * Print the rule's members instead (with `evaluate`): the group key expressions and the row ID
+   * of every row the rule reads after WHERE, without aggregating; no GROUP BY, no HAVING.
+   */
+  readonly members?: boolean;
 }
 
 function ident(s: string, shape: (s: string) => boolean): string {
@@ -188,6 +193,7 @@ class Printer {
   }
 
   statement(s: RuleStatement): string {
+    if (this.#n.members === true) return this.#members(s);
     const out = s.targets.map((t, i) => {
       const id = this.#n.outputs[i];
       if (id === undefined) throw new Error("an output column without a field ID");
@@ -200,6 +206,24 @@ class Printer {
     if (this.#n.groupKey.length > 0)
       parts.push(`GROUP BY ${this.#n.groupKey.map((i) => i + 1).join(", ")}`);
     if (s.having !== undefined) parts.push(`HAVING ${this.expr(s.having)}`);
+    return parts.join(" ");
+  }
+
+  /**
+   * The rows of the rule's partitions. Sound for this version's rules: one table, an aggregate at
+   * the outermost level, no window function or subquery anywhere (the converter takes none), so a
+   * group key expression is a function of one row and WHERE keeps the same rows either way.
+   */
+  #members(s: RuleStatement): string {
+    const out = this.#n.groupKey.map((i) => {
+      const t = s.targets[i];
+      const id = this.#n.outputs[i];
+      if (t === undefined || id === undefined) throw new Error("a group key without its output");
+      return `${this.expr(t.expr)} AS ${ident(id, (x) => FIELD_ID.test(x))}`;
+    });
+    out.push(`${this.#table}."row_id" AS "row_id"`);
+    const parts = [`SELECT ${out.join(", ")}`, `FROM ${this.#table}`];
+    if (s.where !== undefined) parts.push(`WHERE ${this.expr(s.where)}`);
     return parts.join(" ");
   }
 }
