@@ -18,8 +18,9 @@
     "node": ">=24"
   },
   "dependencies": {
+    "@fluxvita/saveslot-contract": "workspace:*",
     "@fluxvita/saveslot-service": "workspace:*",
-    "@fluxvita/saveslot-contract": "workspace:*"
+    "@modelcontextprotocol/server": "2.4.0"
   },
   "private": true
 }

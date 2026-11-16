@@ -1,14 +1,15 @@
 // The local listener: HTTP on a unix domain socket (docs/zh-CN/spec/06-cli.md §2 «CLI 怎么连
 // saveslot», §8.1). `GET /health` is the only route that takes no token (06 §8.1): it involves no
 // principal and no data, and is what `saveslot start` compares versions with and `saveslot mcp`
-// checks the service is up with. `/v1/…` goes to the HTTP adapter (`api.ts`), when given. Every
-// other request gets 404 with no body. The MCP adapter mounts here later.
+// checks the service is up with. `/v1/…` goes to the HTTP adapter (`api.ts`) and `/mcp` to the MCP
+// adapter (`mcp/handler.ts`), when the service is given. Every other request gets 404 with no body.
 //
 // The socket file is made 0600 at once; its directory is the caller's (0700).
 
 import { chmod } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { type Api, handleApi } from "./api.ts";
+import { createMcpAdapter, handleMcp } from "./mcp/handler.ts";
 
 /** The body of `GET /health`: no paths, no user data. */
 export interface HealthBody {
@@ -29,11 +30,13 @@ export interface LocalListener {
 export async function listenLocal(o: {
   readonly socketPath: string;
   readonly health: () => HealthBody;
-  /** The HTTP adapter for `/v1/…`. */
+  /** The service, for the HTTP adapter (`/v1/…`) and the MCP adapter (`/mcp`). */
   readonly api?: Api;
 }): Promise<LocalListener> {
+  const mcp = createMcpAdapter({ version: () => o.health().version });
   const server: Server = createServer((req, res) => {
     if (o.api !== undefined && handleApi(o.api, req, res)) return;
+    if (o.api !== undefined && handleMcp(mcp, o.api, req, res)) return;
     // The path alone decides; a query string is not part of the route.
     const path = (req.url ?? "").split("?")[0];
     if (req.method === "GET" && path === "/health") {
@@ -58,10 +61,12 @@ export async function listenLocal(o: {
   });
   await chmod(o.socketPath, 0o600);
   return {
-    close: () =>
-      new Promise<void>((resolve, reject) => {
+    close: async () => {
+      await mcp.handler.close();
+      await new Promise<void>((resolve, reject) => {
         server.close((e) => (e ? reject(e) : resolve()));
         server.closeIdleConnections();
-      }),
+      });
+    },
   };
 }

@@ -213,19 +213,9 @@ function queryParams(search: URLSearchParams): Obj {
   return out;
 }
 
-/** The body as JSON, read as it arrives, cut off past the limit. */
-function readBody(req: IncomingMessage): Promise<Obj> {
+/** The body's bytes, read as they arrive, cut off past the limit (413 `too_large`). */
+export function readBytes(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const type = (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
-    if (type !== "application/json") {
-      reject(
-        new ContractError("invalid_argument", "the body is JSON (Content-Type: application/json)", {
-          reason: "malformed",
-          param: "",
-        }),
-      );
-      return;
-    }
     const chunks: Buffer[] = [];
     let size = 0;
     let done = false;
@@ -254,30 +244,43 @@ function readBody(req: IncomingMessage): Promise<Obj> {
     req.on("end", () => {
       if (done) return;
       done = true;
-      let v: unknown;
-      try {
-        v = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      } catch {
-        reject(
-          new ContractError("invalid_argument", "the body is not JSON", {
-            reason: "malformed",
-            param: "",
-          }),
-        );
-        return;
-      }
-      if (v === null || typeof v !== "object" || Array.isArray(v)) {
-        reject(
-          new ContractError("invalid_argument", "the body is a JSON object", {
-            reason: "malformed",
-            param: "",
-          }),
-        );
-        return;
-      }
-      resolve(v as Obj);
+      resolve(Buffer.concat(chunks));
     });
   });
+}
+
+/** Whether the request says its body is JSON. */
+export function isJson(req: IncomingMessage): boolean {
+  const type = (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
+  return type === "application/json";
+}
+
+/** The body as a JSON object, read as it arrives, cut off past the limit. */
+async function readBody(req: IncomingMessage): Promise<Obj> {
+  if (!isJson(req)) {
+    throw new ContractError(
+      "invalid_argument",
+      "the body is JSON (Content-Type: application/json)",
+      { reason: "malformed", param: "" },
+    );
+  }
+  const bytes = await readBytes(req);
+  let v: unknown;
+  try {
+    v = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new ContractError("invalid_argument", "the body is not JSON", {
+      reason: "malformed",
+      param: "",
+    });
+  }
+  if (v === null || typeof v !== "object" || Array.isArray(v)) {
+    throw new ContractError("invalid_argument", "the body is a JSON object", {
+      reason: "malformed",
+      param: "",
+    });
+  }
+  return v as Obj;
 }
 
 /**
@@ -285,7 +288,7 @@ function readBody(req: IncomingMessage): Promise<Obj> {
  * read, or a body cut off at the limit) closes the connection: the rest of the request is never
  * read, and its bytes are never taken for a next request on the same connection.
  */
-function send(
+export function send(
   req: IncomingMessage,
   res: ServerResponse,
   status: number,
@@ -318,13 +321,13 @@ function send(
   res.end(text);
 }
 
-function sendError(req: IncomingMessage, res: ServerResponse, e: ContractError): number {
+export function sendError(req: IncomingMessage, res: ServerResponse, e: ContractError): number {
   const status = HTTP_STATUS[e.code];
   send(req, res, status, { error: { code: e.code, message: e.message, ...e.detail } });
   return status;
 }
 
-const header = (req: IncomingMessage, name: string): string | undefined => {
+export const header = (req: IncomingMessage, name: string): string | undefined => {
   const v = req.headers[name];
   return Array.isArray(v) ? undefined : v;
 };
