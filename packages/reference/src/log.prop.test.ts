@@ -1273,114 +1273,172 @@ describe.each(both)("%s table", (_, schema, state) => {
           tail,
         };
       });
-    const hits = new Hits(0.04);
+    // Reaching the checked path is built in (the fixed sample below); the random samples only
+    // guard against a generator gone degenerate (about 42 hits on the state table at 750 runs:
+    // odds of none about e^-42).
+    const hits = new Hits(Number.MIN_VALUE);
+    const samples = fc.oneof({ weight: 1, arbitrary: sample }, { weight: 1, arbitrary: skeleton });
+    type Sample = typeof samples extends fc.Arbitrary<infer T> ? T : never;
+    const check = (
+      h: { hit(): void },
+      { pre, revoke, mid, target, later, ack, innerUndo, dels, cancelFirst, tail }: Sample,
+    ) => {
+      const before = extend(schema, [], pre, 10);
+      const revokeOp = 10 + 10 * pre.length;
+      if (revoke !== null && state) {
+        before.push({
+          kind: "revoke",
+          op: revokeOp,
+          event: revokeOp + 1,
+          seen: revokeOp - 1,
+          valid: {
+            from: { mode: "given", value: DAYS[revoke.from] as BizPoint },
+            to: {
+              mode: "given",
+              value: (DAYS[Math.max(revoke.to, revoke.from + 1)] ?? "2026-12-01") as BizPoint,
+            },
+          },
+          validSources: [revoke.src],
+        });
+      }
+      const targetOp = revokeOp + 10 + 10 * mid.length;
+      const writes = extend(schema, before, [...mid, target, ...later], revokeOp + 10);
+      fc.pre(writes.some((e) => e.kind === "write" && e.op === targetOp));
+      const lastWrite = Math.max(...writes.map((e) => e.op));
+      const inner: LogEntry[] = innerUndo
+        ? [
+            {
+              kind: "undo",
+              op: lastWrite + 10,
+              event: lastWrite + 11,
+              target: targetOp,
+              seen: lastWrite,
+              acknowledge: ["overwrite"],
+            },
+          ]
+        : [];
+      const last = lastWrite + (innerUndo ? 10 : 0);
+      const undoOp = last + 10;
+      const log: LogEntry[] = [
+        ...writes,
+        ...inner,
+        {
+          kind: "undo",
+          op: undoOp,
+          event: undoOp + 1,
+          target: targetOp,
+          includeLater: true,
+          seen: last,
+          ...(ack ? { acknowledge: ["overwrite"] as const } : {}),
+        },
+      ];
+      dels.forEach((sources, i) => {
+        log.push({ kind: "deletion", op: undoOp + 2 + i, id: `pi_${i}`, sources });
+      });
+      if (cancelFirst) log.push({ kind: "cancel", op: undoOp + 5, id: "pi_0" });
+      const full = extend(schema, log, tail, undoOp + 10);
+      const run = evaluateLog(schema, full);
+      const atWrite = run.steps
+        .find((x) => x.entry.op === undoOp)
+        ?.state.reverts.find((r) => r.op === undoOp)?.status;
+      const confirmed = full.some((e) => e.kind === "confirm" && e.target === undoOp + 1);
+      const final = run.final.reverts.find((r) => r.op === undoOp)?.status;
+      if (atWrite === "applied" || confirmed || final !== "applied") return;
+      if (atWrite === "awaiting") h.hit();
+      const items = run.final.items.filter((x) => x.status !== "dropped");
+      const regOn = (x: ItemResult, g: Iv, other: (op: number) => boolean) =>
+        x.registrations.some((r) => other(r.byOp) && covers(r.valid, g));
+      const supersedes = (y: ItemResult, x: ItemResult) => {
+        const yField = y.target !== "existence" && y.content.kind === "value";
+        if (x.content.kind === "revoke") return y.content.kind === "restore" || yField;
+        if (x.content.kind === "restore") return y.content.kind === "revoke";
+        return (
+          (y.target === x.target && y.content.kind !== "uncovered") || y.content.kind === "revoke"
+        );
+      };
+      const providing: string[] = [];
+      for (const x of items) {
+        if (x.op === targetOp || x.content.kind === "uncovered") continue;
+        for (const reg of x.registrations.filter((r) => r.byOp === undoOp)) {
+          for (const g of elementarySegments(endpoints([reg.valid, x.valid]))) {
+            if (!covers(reg.valid, g)) continue;
+            if (regOn(x, g, (op) => op !== undoOp)) continue;
+            const superseded = items.some(
+              (y) =>
+                y.status === "applied" &&
+                y.op > x.op &&
+                y.op !== undoOp &&
+                supersedes(y, x) &&
+                covers(y.valid, g) &&
+                !regOn(y, g, () => true),
+            );
+            if (!superseded) providing.push(`${x.event}/${x.target}/${x.k} ${JSON.stringify(g)}`);
+          }
+        }
+      }
+      expect({ undoOp, providing }).toEqual({ undoOp, providing: [] });
+    };
     fc.assert(
       fc.property(
-        fc.oneof({ weight: 1, arbitrary: sample }, { weight: 1, arbitrary: skeleton }),
-        hits.track(
-          ({ pre, revoke, mid, target, later, ack, innerUndo, dels, cancelFirst, tail }) => {
-            const before = extend(schema, [], pre, 10);
-            const revokeOp = 10 + 10 * pre.length;
-            if (revoke !== null && state) {
-              before.push({
-                kind: "revoke",
-                op: revokeOp,
-                event: revokeOp + 1,
-                seen: revokeOp - 1,
-                valid: {
-                  from: { mode: "given", value: DAYS[revoke.from] as BizPoint },
-                  to: {
-                    mode: "given",
-                    value: (DAYS[Math.max(revoke.to, revoke.from + 1)] ?? "2026-12-01") as BizPoint,
-                  },
-                },
-                validSources: [revoke.src],
-              });
-            }
-            const targetOp = revokeOp + 10 + 10 * mid.length;
-            const writes = extend(schema, before, [...mid, target, ...later], revokeOp + 10);
-            fc.pre(writes.some((e) => e.kind === "write" && e.op === targetOp));
-            const lastWrite = Math.max(...writes.map((e) => e.op));
-            const inner: LogEntry[] = innerUndo
-              ? [
-                  {
-                    kind: "undo",
-                    op: lastWrite + 10,
-                    event: lastWrite + 11,
-                    target: targetOp,
-                    seen: lastWrite,
-                    acknowledge: ["overwrite"],
-                  },
-                ]
-              : [];
-            const last = lastWrite + (innerUndo ? 10 : 0);
-            const undoOp = last + 10;
-            const log: LogEntry[] = [
-              ...writes,
-              ...inner,
-              {
-                kind: "undo",
-                op: undoOp,
-                event: undoOp + 1,
-                target: targetOp,
-                includeLater: true,
-                seen: last,
-                ...(ack ? { acknowledge: ["overwrite"] as const } : {}),
-              },
-            ];
-            dels.forEach((sources, i) => {
-              log.push({ kind: "deletion", op: undoOp + 2 + i, id: `pi_${i}`, sources });
-            });
-            if (cancelFirst) log.push({ kind: "cancel", op: undoOp + 5, id: "pi_0" });
-            const full = extend(schema, log, tail, undoOp + 10);
-            const run = evaluateLog(schema, full);
-            const atWrite = run.steps
-              .find((x) => x.entry.op === undoOp)
-              ?.state.reverts.find((r) => r.op === undoOp)?.status;
-            const confirmed = full.some((e) => e.kind === "confirm" && e.target === undoOp + 1);
-            const final = run.final.reverts.find((r) => r.op === undoOp)?.status;
-            if (atWrite === "applied" || confirmed || final !== "applied") return;
-            if (atWrite === "awaiting") hits.hit();
-            const items = run.final.items.filter((x) => x.status !== "dropped");
-            const regOn = (x: ItemResult, g: Iv, other: (op: number) => boolean) =>
-              x.registrations.some((r) => other(r.byOp) && covers(r.valid, g));
-            const supersedes = (y: ItemResult, x: ItemResult) => {
-              const yField = y.target !== "existence" && y.content.kind === "value";
-              if (x.content.kind === "revoke") return y.content.kind === "restore" || yField;
-              if (x.content.kind === "restore") return y.content.kind === "revoke";
-              return (
-                (y.target === x.target && y.content.kind !== "uncovered") ||
-                y.content.kind === "revoke"
-              );
-            };
-            const providing: string[] = [];
-            for (const x of items) {
-              if (x.op === targetOp || x.content.kind === "uncovered") continue;
-              for (const reg of x.registrations.filter((r) => r.byOp === undoOp)) {
-                for (const g of elementarySegments(endpoints([reg.valid, x.valid]))) {
-                  if (!covers(reg.valid, g)) continue;
-                  if (regOn(x, g, (op) => op !== undoOp)) continue;
-                  const superseded = items.some(
-                    (y) =>
-                      y.status === "applied" &&
-                      y.op > x.op &&
-                      y.op !== undoOp &&
-                      supersedes(y, x) &&
-                      covers(y.valid, g) &&
-                      !regOn(y, g, () => true),
-                  );
-                  if (!superseded)
-                    providing.push(`${x.event}/${x.target}/${x.k} ${JSON.stringify(g)}`);
-                }
-              }
-            }
-            expect({ undoOp, providing }).toEqual({ undoOp, providing: [] });
-          },
-        ),
+        samples,
+        hits.track((x) => check(hits, x)),
       ),
       { numRuns: RUNS },
     );
     hits.check();
+    // A sample of each table that takes the checked path: the include_later undo awaits when
+    // written and a deletion puts it in effect.
+    const fixedSample = (state
+      ? {
+          pre: [{ t: "undoRevert", back: 0 }],
+          revoke: null,
+          mid: [],
+          target: {
+            t: "write",
+            f: "f3",
+            v: "3",
+            src: "S4",
+            from: 1,
+            to: 2,
+            lag: 1,
+            explicit: false,
+            ack: true,
+          },
+          later: [],
+          ack: false,
+          innerUndo: false,
+          dels: [["S4", "S5"]],
+          cancelFirst: false,
+          tail: [],
+        }
+      : {
+          pre: [
+            { t: "undo", back: 1 },
+            { t: "resolve", decision: "take_previous" },
+          ],
+          revoke: { from: 1, to: 0, src: "S2" },
+          mid: [],
+          target: {
+            t: "write",
+            f: "f2",
+            v: "3",
+            src: "S4",
+            from: 1,
+            to: "open",
+            lag: 1,
+            explicit: true,
+            ack: true,
+          },
+          later: [],
+          ack: false,
+          innerUndo: true,
+          dels: [["S5"], ["S3", "S4"]],
+          cancelFirst: false,
+          tail: [],
+        }) as unknown as Sample;
+    let fixed = false;
+    check({ hit: () => (fixed = true) }, fixedSample);
+    expect({ fixedSampleReachesTheCheck: fixed }).toEqual({ fixedSampleReachesTheCheck: true });
   });
 
   it("deletion events add no pending items beyond the kinds the corollary names", () => {
@@ -1805,80 +1863,94 @@ describe("state table: a revert covers by (event, target)", () => {
     // in effect. Skeleton: random steps; M (SM); X (SX), a later write over part of M and maybe
     // beyond; undo M with include_later, confirmed; sometimes a deletion. Checked: outside the
     // intervals of M's items in effect, the values are those of the same log without the undo.
-    // Measured share of hits: about 0.14.
-    const hits = new Hits(0.09);
+    // Measured share of hits: about 0.11. Reaching the check is built in (the fixed sample below);
+    // the random samples only guard against a generator gone degenerate (about 82 hits at 750
+    // runs: odds of none about e^-82).
+    const hits = new Hits(Number.MIN_VALUE);
+    const skeleton = fc.record({
+      m: pair,
+      x: pair,
+      del: fc.constantFrom<string[]>([], [], ["SX"], ["S1"], ["S2", "S3"]),
+    });
+    type Skeleton = typeof skeleton extends fc.Arbitrary<infer T> ? T : never;
+    const check = (h: { hit(): void }, st: Step[], sk: Skeleton) => {
+      const head = extend(STATE, [], st, 10);
+      const m = Math.max(0, ...head.map((o) => o.op)) + 10;
+      const undo: LogEntry[] = [
+        { kind: "undo", op: m + 20, event: m + 21, target: m, includeLater: true },
+        { kind: "confirm", op: m + 30, event: m + 31, target: m + 21 },
+      ];
+      const log = (withUndo: boolean): LogEntry[] => [
+        ...head,
+        {
+          kind: "write",
+          op: m,
+          event: m + 1,
+          seen: m - 1,
+          valid: span(...sk.m),
+          fields: { f2: { value: "7", sources: ["SM"] } },
+          acknowledge: ["overwrite"],
+        },
+        {
+          kind: "write",
+          op: m + 10,
+          event: m + 11,
+          seen: m,
+          valid: span(...sk.x),
+          fields: { f2: { value: "8", sources: ["SX"] } },
+          acknowledge: ["overwrite"],
+        },
+        ...(withUndo ? undo : []),
+        ...(sk.del.length > 0
+          ? [{ kind: "deletion" as const, op: m + 40, id: "pi_d", sources: sk.del }]
+          : []),
+      ];
+      const ev = evaluateLog(STATE, log(true)).final;
+      const without = evaluateLog(STATE, log(false)).final;
+      const own = union(
+        ...ev.items
+          .filter(
+            (x) => x.event === m + 1 && (x.status === "applied" || x.status === "corroborated"),
+          )
+          .map((x) => x.valid),
+      );
+      const later = ev.reverts
+        .find((r) => r.op === m + 30)
+        ?.record.some((e) => e.event === m + 11 && e.later === true);
+      const beyond = ev.items.some(
+        (x) => x.event === m + 11 && x.status === "applied" && !isEmpty(subtract(x.valid, own)),
+      );
+      if (later && beyond) h.hit();
+      const ends = endpoints([
+        own,
+        ...[ev, without].flatMap((e) => (e.fields["f2"] ?? []).map((s) => s.valid)),
+      ]);
+      for (const seg of elementarySegments(ends)) {
+        if (covers(own, seg)) continue;
+        expect({ seg, v: valueAt(ev, "f2", seg) }).toEqual({
+          seg,
+          v: valueAt(without, "f2", seg),
+        });
+      }
+    };
     fc.assert(
       fc.property(
         fc.array(step, { maxLength: 4 }),
-        fc.record({
-          m: pair,
-          x: pair,
-          del: fc.constantFrom<string[]>([], [], ["SX"], ["S1"], ["S2", "S3"]),
-        }),
-        hits.track((st, sk) => {
-          const head = extend(STATE, [], st, 10);
-          const m = Math.max(0, ...head.map((o) => o.op)) + 10;
-          const undo: LogEntry[] = [
-            { kind: "undo", op: m + 20, event: m + 21, target: m, includeLater: true },
-            { kind: "confirm", op: m + 30, event: m + 31, target: m + 21 },
-          ];
-          const log = (withUndo: boolean): LogEntry[] => [
-            ...head,
-            {
-              kind: "write",
-              op: m,
-              event: m + 1,
-              seen: m - 1,
-              valid: span(...sk.m),
-              fields: { f2: { value: "7", sources: ["SM"] } },
-              acknowledge: ["overwrite"],
-            },
-            {
-              kind: "write",
-              op: m + 10,
-              event: m + 11,
-              seen: m,
-              valid: span(...sk.x),
-              fields: { f2: { value: "8", sources: ["SX"] } },
-              acknowledge: ["overwrite"],
-            },
-            ...(withUndo ? undo : []),
-            ...(sk.del.length > 0
-              ? [{ kind: "deletion" as const, op: m + 40, id: "pi_d", sources: sk.del }]
-              : []),
-          ];
-          const ev = evaluateLog(STATE, log(true)).final;
-          const without = evaluateLog(STATE, log(false)).final;
-          const own = union(
-            ...ev.items
-              .filter(
-                (x) => x.event === m + 1 && (x.status === "applied" || x.status === "corroborated"),
-              )
-              .map((x) => x.valid),
-          );
-          const later = ev.reverts
-            .find((r) => r.op === m + 30)
-            ?.record.some((e) => e.event === m + 11 && e.later === true);
-          const beyond = ev.items.some(
-            (x) => x.event === m + 11 && x.status === "applied" && !isEmpty(subtract(x.valid, own)),
-          );
-          if (later && beyond) hits.hit();
-          const ends = endpoints([
-            own,
-            ...[ev, without].flatMap((e) => (e.fields["f2"] ?? []).map((s) => s.valid)),
-          ]);
-          for (const seg of elementarySegments(ends)) {
-            if (covers(own, seg)) continue;
-            expect({ seg, v: valueAt(ev, "f2", seg) }).toEqual({
-              seg,
-              v: valueAt(without, "f2", seg),
-            });
-          }
-        }),
+        skeleton,
+        hits.track((st, sk) => check(hits, st, sk)),
       ),
       { numRuns: RUNS },
     );
     hits.check();
+    // A sample that reaches the check: X over [1, 4) taken back with M over [0, 3), and applied
+    // beyond M's items.
+    let fixed = false;
+    check({ hit: () => (fixed = true) }, [{ t: "undoRevert", back: 1 }] as Step[], {
+      m: [0, 3],
+      x: [1, 4],
+      del: [],
+    });
+    expect({ fixedSampleReachesTheCheck: fixed }).toEqual({ fixedSampleReachesTheCheck: true });
   });
 });
 
