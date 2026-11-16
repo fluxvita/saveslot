@@ -1802,7 +1802,8 @@ interface Connection {
   slots?: Array<{ slot: SlotName; slot_id: SlotId }>;   // slot 范围；不给 = 全部
   via: "token" | "oauth";        // 本地令牌 / 静态令牌，或一次 OAuth 授权
   client?: string;               // via: oauth 时的客户端标识
-  created_at: Instant; last_used_at?: Instant;
+  created_at: Instant;
+  last_used_at?: Instant;        // 这一版不给（08-open-questions「连接实例的最近使用时刻」）
   /** 与 Actor.state 一致：已吊销（revoked）或因导入而停用（disabled）时给；有效时不给。 */
   state?: "revoked" | "disabled";
   revoked_at?: Instant;

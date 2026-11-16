@@ -17,11 +17,20 @@ import {
 } from "@fluxvita/saveslot-contract-core";
 import { applyEvents, eventsOf } from "../apply/index.ts";
 import { appendOperation, type NewEvent } from "../log/index.ts";
+import {
+  digest,
+  limitOf,
+  logPosition,
+  pageAfter,
+  positionOf,
+  restoreCount,
+} from "../read/index.ts";
 import { RULESET_VERSION } from "../rules/version.ts";
 import type { ReadTx, TenantStore, Tx } from "../store/ports.ts";
 import type { OpsContext } from "./context.ts";
 import { OpsError } from "./errors.ts";
 import { newConnectionId } from "./ids.ts";
+import { begin } from "./management.ts";
 
 export interface IssueConnectionParams {
   readonly name: string;
@@ -47,6 +56,10 @@ export interface ConnectionRecord {
   readonly state: "active" | "revoked" | "disabled";
   /** The `principal.registered` event. */
   readonly registered_seq: Seq;
+  /** When it was registered: that event's recorded time. */
+  readonly created_at: string;
+  /** Revoked: when (the `principal.revoked` event's recorded time). */
+  readonly revoked_at?: string;
 }
 
 const DEFAULT_SCOPES: readonly Scope[] = ["saveslot.read", "saveslot.write"];
@@ -61,6 +74,8 @@ interface Row {
   client: string | null;
   state: "active" | "revoked" | "disabled";
   registered_seq: unknown;
+  created_at: string;
+  revoked_at: string | null;
 }
 
 function record(r: Row): ConnectionRecord {
@@ -73,28 +88,22 @@ function record(r: Row): ConnectionRecord {
     ...(r.client === null ? {} : { client: r.client }),
     state: r.state,
     registered_seq: Number(r.registered_seq),
+    created_at: r.created_at,
+    ...(r.state === "revoked" && r.revoked_at !== null ? { revoked_at: r.revoked_at } : {}),
   };
 }
 
-async function principal(tx: ReadTx, id: string): Promise<Row | undefined> {
-  const r = await tx.query<Row>("SELECT * FROM principals WHERE id = $1", [id]);
-  return r.rows[0];
-}
+/** The principals' columns, with the times of their registration and revocation. */
+const PRINCIPALS = `SELECT p.*, r.at AS created_at,
+  (SELECT e.at FROM events e JOIN content c ON c.seq = e.seq AND c.path = 'principal'
+   WHERE e.type = 'principal.revoked' AND c.body IS NOT NULL
+     AND (c.body::jsonb ->> 'principal') = p.id
+   ORDER BY e.seq DESC LIMIT 1) AS revoked_at
+  FROM principals p JOIN events r ON r.seq = p.registered_seq`;
 
-/** The checks every management operation starts with; returns the acting user. */
-async function begin(tx: ReadTx, ctx: OpsContext): Promise<UserId> {
-  const t = await tx.query<{ value: string }>("SELECT value FROM meta WHERE key = 'tenant_id'");
-  if (t.rows[0]?.value !== ctx.tenant) {
-    throw new OpsError("internal", "the context's tenant is not the tenant of this storage");
-  }
-  // Only user sessions (04-contract §17). The service layer checks this first; this is defence.
-  const actor = await principal(tx, ctx.actor);
-  if (actor?.kind !== "user" || actor.state !== "active") {
-    throw new OpsError("insufficient_scope", "management operations are for user sessions", {
-      required_scope: "user_session",
-    });
-  }
-  return actor.id as UserId;
+async function principal(tx: ReadTx, id: string): Promise<Row | undefined> {
+  const r = await tx.query<Row>(`${PRINCIPALS} WHERE p.id = $1`, [id]);
+  return r.rows[0];
 }
 
 /** Whether another connection already holds `name` (revoked and disabled ones included). */
@@ -254,5 +263,82 @@ export async function revokeConnection(
       blocks: { ctx: ctxBlock(ctx), principal: { principal: params.id } },
     });
     return record((await principal(tx, params.id)) as Row);
+  });
+}
+
+/** `connections.list` parameters (04-contract-types §8.1); `position` is the service's unsigned page. */
+export interface ListConnectionsParams {
+  /** Revoked and disabled ones too. Default: active ones only. */
+  readonly include_revoked?: boolean;
+  readonly limit?: number;
+  readonly position?: string;
+}
+
+export interface ListConnectionsResult {
+  readonly total: number;
+  readonly connections: readonly ConnectionRecord[];
+  /** The next page's position, unsigned (the service layer wraps it as `next_cursor`). */
+  readonly next_position?: string;
+}
+
+/**
+ * `connections.list`, for a user session (04-contract §17): the connection instances in the order
+ * they were registered; tokens and their hashes are not stored here, so never listed.
+ */
+export async function listConnections(
+  store: TenantStore,
+  ctx: OpsContext,
+  params: ListConnectionsParams = {},
+): Promise<ListConnectionsResult> {
+  return store.read(async (tx) => {
+    await begin(tx, ctx);
+    const p = params as unknown as Readonly<Record<string, unknown>>;
+    for (const k of Object.keys(p)) {
+      if (!["include_revoked", "limit", "position"].includes(k)) {
+        throw new OpsError("invalid_argument", `unknown parameter ${k}`, {
+          reason: "malformed",
+          param: k,
+        });
+      }
+    }
+    if (p["include_revoked"] !== undefined && typeof p["include_revoked"] !== "boolean") {
+      throw new OpsError("invalid_argument", "include_revoked is a boolean", {
+        reason: "malformed",
+        param: "include_revoked",
+      });
+    }
+    const all = params.include_revoked === true;
+    const rows = await tx.query<Row>(
+      `${PRINCIPALS} WHERE p.kind = 'connection' ${all ? "" : "AND p.state = 'active'"}
+       ORDER BY p.registered_seq`,
+    );
+    const limit = limitOf(p as never);
+    const specs = [{ type: "count", dir: "asc" }] as const;
+    const identity = digest({ op: "connections.list", include_revoked: all });
+    const restore = await restoreCount(tx);
+    const latest = await logPosition(tx);
+    const position = positionOf(p as never, {
+      identity,
+      specs: specs as never,
+      restoreCount: restore,
+      latest,
+    });
+    const { page, next } = pageAfter(
+      rows.rows.map((r) => ({ item: record(r), keys: [Number(r.registered_seq)] })),
+      {
+        specs: specs as never,
+        identity,
+        position,
+        seq: position?.seq ?? latest,
+        at: position?.at ?? ctx.now,
+        restoreCount: restore,
+        limit,
+      },
+    );
+    return {
+      total: rows.rows.length,
+      connections: page,
+      ...(next !== undefined ? { next_position: next } : {}),
+    };
   });
 }

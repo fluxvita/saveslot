@@ -8,6 +8,7 @@ export * from "./context.ts";
 export * from "./errors.ts";
 export * from "./flush-reads.ts";
 export { newReadId } from "./ids.ts";
+export * from "./log.ts";
 export * from "./open-tenant.ts";
 export * from "./principals.ts";
 export * from "./read.ts";

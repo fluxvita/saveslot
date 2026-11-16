@@ -11,7 +11,10 @@ import {
   createTenant,
   issueConnection,
   KERNEL_TABLES,
+  listConnections,
+  logVerify,
   OpsError,
+  ReadError,
   type ReadTx,
   readEvents,
   readTail,
@@ -53,7 +56,7 @@ const refusal = async (p: Promise<unknown>) => {
   try {
     await p;
   } catch (e) {
-    if (e instanceof OpsError) return { code: e.code, ...e.detail };
+    if (e instanceof OpsError || e instanceof ReadError) return { code: e.code, ...e.detail };
     throw e;
   }
   return "accepted";
@@ -109,6 +112,7 @@ describe("connections", () => {
       via: "token",
       state: "active",
       registered_seq: 2,
+      created_at: "2026-11-10T04:02:00.000Z",
     });
   });
 
@@ -203,6 +207,7 @@ describe("connections", () => {
   it("revokes; revoking again appends nothing", async () => {
     expect(await revokeConnection(store, ctx(USER, 7), { id: phone as never })).toMatchObject({
       state: "revoked",
+      revoked_at: "2026-11-10T04:07:00.000Z",
     });
     const before = await tail(store);
     expect(await revokeConnection(store, ctx(USER, 8), { id: phone as never })).toMatchObject({
@@ -226,6 +231,96 @@ describe("connections", () => {
         code: "not_found",
         reason: "connection",
         param: "id",
+      });
+    }
+  });
+});
+
+describe("connections.list and log.verify (04-contract §17)", () => {
+  it("lists the active connections in the order they were registered, without any token", async () => {
+    const r = await listConnections(store, ctx(USER, 10));
+    expect(r).toEqual({
+      total: 1,
+      connections: [
+        expect.objectContaining({
+          id: desk,
+          name: "Phone",
+          state: "active",
+          created_at: "2026-11-10T04:02:00.000Z",
+        }),
+      ],
+    });
+    // Only the contract's fields: no token, no hash.
+    const allowed = [
+      "id",
+      "name",
+      "scopes",
+      "slots",
+      "via",
+      "client",
+      "state",
+      "registered_seq",
+      "created_at",
+      "revoked_at",
+    ];
+    for (const c of r.connections)
+      expect(Object.keys(c).filter((k) => !allowed.includes(k))).toEqual([]);
+    expect(JSON.stringify(r)).not.toMatch(/slt_|"hash"/);
+  });
+
+  it("include_revoked: the revoked one too, with when it was revoked", async () => {
+    const r = await listConnections(store, ctx(USER, 10), { include_revoked: true });
+    expect(r.total).toBe(2);
+    expect(r.connections.map((c) => [c.id, c.state, c.revoked_at])).toEqual([
+      [desk, "active", undefined],
+      [phone, "revoked", "2026-11-10T04:07:00.000Z"],
+    ]);
+  });
+
+  it("pages by limit and position", async () => {
+    const first = await listConnections(store, ctx(USER, 10), { include_revoked: true, limit: 1 });
+    expect(first.connections.map((c) => c.id)).toEqual([desk]);
+    expect(first.next_position).toEqual(expect.any(String));
+    const second = await listConnections(store, ctx(USER, 10), {
+      include_revoked: true,
+      limit: 1,
+      position: first.next_position as string,
+    });
+    expect(second.connections.map((c) => c.id)).toEqual([phone]);
+    expect(second).not.toHaveProperty("next_position");
+    // A position belongs to its parameters.
+    expect(
+      await refusal(
+        listConnections(store, ctx(USER, 10), { position: first.next_position as string }),
+      ),
+    ).toMatchObject({ code: "invalid_argument", param: "position" });
+  });
+
+  it("refuses a wrong parameter", async () => {
+    expect(
+      await refusal(listConnections(store, ctx(USER, 10), { include_revoked: "yes" } as never)),
+    ).toMatchObject({ code: "invalid_argument", param: "include_revoked" });
+    expect(
+      await refusal(listConnections(store, ctx(USER, 10), { all: true } as never)),
+    ).toMatchObject({ code: "invalid_argument", param: "all" });
+  });
+
+  it("log.verify: the log is intact", async () => {
+    expect(await logVerify(store, ctx(USER, 10))).toEqual({
+      events: await tail(store),
+      chain: { intact: true },
+      checksum_mismatch: [],
+      removed: 0,
+      gaps: [],
+      index_mismatch: [],
+    });
+  });
+
+  it("both are for user sessions only: a connection instance is refused", async () => {
+    for (const p of [listConnections(store, ctx(desk, 10)), logVerify(store, ctx(desk, 10))]) {
+      expect(await refusal(p)).toEqual({
+        code: "insufficient_scope",
+        required_scope: "user_session",
       });
     }
   });
