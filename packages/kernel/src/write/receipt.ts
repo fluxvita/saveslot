@@ -21,6 +21,15 @@ import type {
   OpNumber,
 } from "@fluxvita/saveslot-contract-core";
 import { type Limit, type RowState, stateFromRecord } from "../judge/index.ts";
+import {
+  type Blocks,
+  candidateImpactBlocks,
+  type ItemEntries,
+  impactOut,
+  itemEntries,
+  itemVer,
+  type Naming,
+} from "../pending/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { type Interval as Stretch, WHOLE } from "../time/index.ts";
 import { type EntityKeyText, keyFields, keyOf } from "./keys.ts";
@@ -145,7 +154,6 @@ export interface WriteReceipt {
   }[];
 }
 
-type Blocks = Readonly<Record<string, unknown>>;
 type Span = { readonly from: string | null; readonly to: string | null };
 const spanIn = (v: { from?: string; to?: string } | undefined): Span => ({
   from: v?.from ?? null,
@@ -168,67 +176,8 @@ function intervalOut(v: Span, byDate: boolean): Interval {
   };
 }
 
-/** The groups each item event gives whole (09 §5.8): zero blocks of a group given, an empty group. */
-const GIVES: Readonly<Record<string, readonly string[]>> = {
-  "item.created": ["current", "previous", "impact"],
-  "item.merged": ["previous", "impact"],
-  "item.refreshed": ["current", "previous", "impact"],
-};
-
-/** The item version as callers see it (04-contract `item_ver`): item ID, its version, restore count. */
-export const itemVer = (item: string, op: number, restoreCount: number) =>
-  `iv_${item.slice(3)}.${op}.${restoreCount}`;
-
-/** Each item's latest entries as of operation `op`: the last item event giving each group. */
-async function latestEntries(tx: ReadTx, items: readonly string[], op: number) {
-  const out = new Map<
-    string,
-    { current: Blocks[]; previous: Blocks[]; impact: Blocks[]; mergeBase?: number }
-  >();
-  if (items.length === 0) return out;
-  const r = await tx.query<{
-    seq: unknown;
-    type: string;
-    path: string;
-    body: string;
-    item: string;
-  }>(
-    `SELECT e.seq, e.type, c.path, c.body, t.body::jsonb ->> 'item' AS item
-     FROM events e JOIN content t ON t.seq = e.seq AND t.path = 'target' AND t.body IS NOT NULL
-     JOIN content c ON c.seq = e.seq AND c.body IS NOT NULL
-     WHERE e.type IN ('item.created', 'item.merged', 'item.refreshed') AND e.op <= $2
-       AND (t.body::jsonb ->> 'item') = ANY($1)
-     ORDER BY e.seq, c.path`,
-    [items, op] as never,
-  );
-  // A group given by an event replaces the item's earlier one (09 §5.8: whole groups).
-  const bySeq = new Map<number, { item: string; blocks: Record<string, unknown> }>();
-  for (const x of r.rows) {
-    const e = bySeq.get(Number(x.seq)) ?? { item: x.item, blocks: {} };
-    e.blocks[x.path] = JSON.parse(x.body);
-    bySeq.set(Number(x.seq), e);
-  }
-  const types = new Map(r.rows.map((x) => [Number(x.seq), x.type]));
-  for (const [seq, e] of [...bySeq].sort(([a], [b]) => a - b)) {
-    const cur = out.get(e.item) ?? { current: [], previous: [], impact: [] };
-    const group = (g: string) =>
-      Object.entries(e.blocks)
-        .filter(([p]) => p.startsWith(`${g}/`))
-        .sort(([a], [b]) => Number(a.split("/")[1]) - Number(b.split("/")[1]))
-        .map(([, v]) => v as Blocks);
-    const type = types.get(seq) ?? "";
-    const gives = GIVES[type] ?? [];
-    // An item.merged giving `current` gives it whole; one without keeps the earlier.
-    const merged = type === "item.merged" && group("current").length > 0;
-    if (gives.includes("current") || merged) cur.current = group("current");
-    if (gives.includes("previous")) cur.previous = group("previous");
-    if (gives.includes("impact")) cur.impact = group("impact");
-    const t = e.blocks["target"] as { merge_base_op?: number } | undefined;
-    if (t?.merge_base_op !== undefined) cur.mergeBase = t.merge_base_op;
-    out.set(e.item, cur);
-  }
-  return out;
-}
+/** The item version as callers see it (04-contract `item_ver`); the pending details write the same. */
+export { itemVer };
 
 /** The actors of operations. */
 async function actorsOf(tx: ReadTx, ops: readonly number[]): Promise<Map<number, string>> {
@@ -367,32 +316,10 @@ export async function readReceipt(
   const itemIds = [
     ...new Set(itemEvents.map((e) => (e.blocks["target"] as { item: string }).item)),
   ];
-  const entries = await latestEntries(tx, itemIds, op);
-  // The operations behind the entries: an entry's own, or (a stretch of the unit "existence" with a
-  // value) the latest of the contributions giving it.
-  const depEvents = new Set<number>();
-  for (const x of entries.values()) {
-    for (const b of x.current) {
-      if (typeof b["op"] !== "number")
-        for (const d of (b["deps"] ?? []) as { event: number }[]) depEvents.add(d.event);
-    }
-  }
-  const opOfDep = await opsOf(tx, [...depEvents]);
-  const opOf = (b: Blocks): number | undefined =>
-    typeof b["op"] === "number"
-      ? (b["op"] as number)
-      : Math.max(
-          0,
-          ...((b["deps"] ?? []) as { event: number }[]).map((d) => opOfDep.get(d.event) ?? 0),
-        ) || undefined;
-  const actorOps = new Set<number>();
-  for (const x of entries.values()) {
-    for (const b of [...x.current, ...x.impact]) {
-      const n = opOf(b);
-      if (n !== undefined) actorOps.add(n);
-    }
-  }
-  const actors = await actorsOf(tx, [...actorOps]);
+  // The items' entries as of this operation, read as the pending details read them.
+  const entries = await itemEntries(tx, itemIds, op);
+  // The writers of what may be a candidate's `by` (read below, from the row as judged).
+  const actors = new Map<number, string>();
   // Which pending item each candidate or awaiting part went to.
   const itemOf = new Map<string, string>();
   for (const e of itemEvents) {
@@ -461,45 +388,16 @@ export async function readReceipt(
       for (const [n, a] of await actorsOf(tx, missing)) actors.set(n, a);
     }
 
-    /** What carrying out an item would change, from its impact entries (`only`: some of them). */
-    const impactOf = (blocks: readonly Blocks[]): Impact => {
-      const segs = blocks.filter((b) => b["kind"] === "overwritten_segment");
-      // A gap (a stretch without a value) is filled (04-contract-types `filled_gaps`); a value
-      // cleared to null is overwritten like any other.
-      const overwritten = segs
-        .filter((b) => b["gap"] !== true)
-        .map((b) => ({
-          field: name(b["field"] as string),
-          ...(b["valid"] !== undefined ? { valid: iv(spanIn(b["valid"] as never)) } : {}),
-          value: (b["value"] ?? null) as FieldValue,
-          seq: b["op"] as number,
-          actor: actors.get(b["op"] as number) ?? "",
-        }));
-      const filled = segs
-        .filter((b) => b["gap"] === true)
-        .map((b) => ({
-          ...(b["valid"] !== undefined ? { valid: iv(spanIn(b["valid"] as never)) } : {}),
-          ...(typeof b["op"] === "number" ? { revoked_by: b["op"] as number } : {}),
-        }));
-      const reverted = blocks
-        .filter((b) => b["kind"] === "reverted_write")
-        .map((b) => ({
-          seq: b["op"] as number,
-          actor: actors.get(b["op"] as number) ?? "",
-          fields: [
-            ...new Set(
-              (b["deps"] as { field?: string }[]).map((d) =>
-                d.field !== undefined ? name(d.field) : "*",
-              ),
-            ),
-          ].sort(),
-        }));
-      return {
-        ...(overwritten.length > 0 ? { overwritten } : {}),
-        ...(filled.length > 0 ? { filled_gaps: filled } : {}),
-        ...(reverted.length > 0 ? { reverted } : {}),
-      };
+    /** How the receipt writes field names, intervals and actors (as the pending details do). */
+    const naming: Naming<string> = {
+      field: name,
+      interval: (v) => iv(v) as unknown as Record<string, unknown>,
+      actor: (a) => a,
+      isState,
     };
+    /** What carrying out an item would change, from (some of) its impact entries. */
+    const impactOf = (x: ItemEntries, blocks: readonly Blocks[]): Impact =>
+      impactOut(x, naming, blocks) as unknown as Impact;
 
     /** A candidate's or awaiting part's details, from its item's latest entries (09 §5.8). */
     const itemDetails = (
@@ -513,7 +411,7 @@ export async function readReceipt(
       if (x === undefined) return {};
       const on = (b: Blocks) =>
         !isState || b["valid"] === undefined || overlaps(spanIn(b["valid"] as never), part);
-      if (status !== "candidate") return { impact: impactOf(x.impact) };
+      if (status !== "candidate") return { impact: impactOf(x, x.impact) };
       // On the unit "existence" the entries say where the row has a value; on fields, the values.
       const onExistence =
         x.current.some((b) => b["field"] === "existence") ||
@@ -532,12 +430,7 @@ export async function readReceipt(
           : isState
             ? bs.some((b) => b["value"] !== null && b["value"] !== undefined)
             : true;
-      const mine = x.impact.filter(
-        (b) =>
-          b["kind"] === "overwritten_segment" &&
-          ((b["deps"] ?? []) as { event: number }[]).some((d) => d.event === event),
-      );
-      const impact = impactOf(mine);
+      const impact = impactOf(x, candidateImpactBlocks(x, event));
       return {
         // The value the `by` write gave (the whole picture is the item's ConflictDetail).
         // The value the `by` write gave (none when it is a revoke); the whole picture is the item's
