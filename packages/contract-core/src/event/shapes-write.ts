@@ -1,10 +1,10 @@
 // Block shape checks of a write's events (docs/zh-CN/spec/09-event-format.md §5.6 `source.recorded`,
-// §5.7 `write.head` and `write.base`, §5.8 the pending item events), shape by shape, as the types
-// in ./blocks.ts give them. Shapes only: whether a field ID exists in the schema, or whether a
+// §5.7 `write.head`, `write.base` and `write.derived`, §5.8 the pending item events), shape by shape,
+// as the types in ./blocks.ts give them. Shapes only: whether a field ID exists in the schema, or whether a
 // value fits the field's type, is the kernel's check.
 //
 // Not here yet, so still `unsupported`: the blocks of later phases (`refs`, `baseline`, the premise
-// blocks, `duplicate`, `matched`) and `write.derived`.
+// blocks, `duplicate`, `matched`).
 
 import { check, type Issues, isObject, type Json, keys, type ShapeChecker, str } from "./check.ts";
 import {
@@ -166,6 +166,50 @@ function existenceEntry(v: Record<string, unknown>, at: string, issues: string[]
 }
 
 export const WRITE_SHAPES: Record<string, ShapeChecker> = {
+  // §5.7 write.derived
+  DerivedTarget(v, at, issues) {
+    const req = ["table", "rule", "rule_version", "partition", "read_pos", "reads", "emptied"];
+    if (!keys(v, at, req, [], issues)) return;
+    check(id("table", v["table"]), at, "table", issues);
+    check(id("rule", v["rule"]), at, "rule", issues);
+    check(int(v["rule_version"]) && v["rule_version"] >= 1, at, "rule_version", issues);
+    check(id("partition", v["partition"]), at, "partition", issues);
+    // The seq of the last event before it in its operation: a member event, after its head.
+    check(int(v["read_pos"]) && v["read_pos"] >= 1, at, "read_pos", issues);
+    list(
+      v["reads"],
+      `${at}.reads`,
+      issues,
+      (r, rat, ris) => {
+        if (!keys(r, rat, ["table"], [], ris)) return;
+        check(id("table", r["table"]), rat, "table", ris);
+      },
+      true,
+    );
+    // One spelling of a read set: no table twice, in ascending string order of the IDs ("t10"
+    // before "t2").
+    const reads = v["reads"];
+    if (Array.isArray(reads)) {
+      const ids = reads.map((r) => (isObject(r) ? r["table"] : undefined));
+      if (ids.every((x): x is string => str(x))) {
+        check(
+          ids.every((x, i) => i === 0 || (ids[i - 1] as string) < x),
+          `${at}.reads`,
+          "not in ascending order without repeats",
+          issues,
+        );
+      }
+    }
+    check(typeof v["emptied"] === "boolean", at, "emptied", issues);
+  },
+  DerivedKey(v, at, issues) {
+    if (!keys(v, at, ["values"], [], issues)) return;
+    list(v["values"], `${at}.values`, issues, (x, xat, xis) => value(x, xat, xis));
+  },
+  Checksum(v, at, issues) {
+    if (!keys(v, at, ["checksum"], [], issues)) return;
+    check(str(v["checksum"]) && isHash(v["checksum"]), at, "checksum", issues);
+  },
   // §5.1
   WriteCtx: slotCtx("required"),
   ResolveCtx: slotCtx("optional"),
@@ -696,6 +740,18 @@ const oneRequestId: EventRule = (paths, _, issues) => {
 const TEXT_KINDS = ["user_message", "agent_note", "tool_result"];
 
 export const WRITE_EVENT_RULES: Readonly<Record<string, EventRule>> = {
+  // §5.7: an emptied partition has no result, so neither a key nor a checksum; a partition with a
+  // row has the checksum of its result.
+  "write.derived"(paths, blocks, issues) {
+    const t = blocks["target"];
+    const emptied = isObject(t) ? t["emptied"] : undefined;
+    if (emptied === true) {
+      check(!paths.has("key"), "key", "not with emptied", issues);
+      check(!paths.has("checksum"), "checksum", "not with emptied", issues);
+    } else if (emptied === false) {
+      check(paths.has("checksum"), "checksum", "required unless emptied", issues);
+    }
+  },
   // §5.6: exactly one of `text`, `file`, `request`, each with its kinds.
   "source.recorded"(paths, blocks, issues) {
     const content = ["text", "file", "request"].filter((p) => paths.has(p));

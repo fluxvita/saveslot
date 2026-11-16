@@ -1,4 +1,4 @@
-// Shape checks of a write's events (09-event-format §5.6–§5.8): a well-formed sample of every block
+// Shape checks of a write's events (09-event-format §5.6–§5.8, `write.derived` in §5.7): a well-formed sample of every block
 // shape the checks cover, then, block by block, the negatives every checker must report (an unknown
 // key, each required key missing), and the rules a shape adds beyond its keys.
 
@@ -14,6 +14,7 @@ const ITEM = `pi_${"8".repeat(16)}`;
 const ITEM_B = `pi_${"9".repeat(16)}`;
 const SOURCE = `s_${"3".repeat(16)}`;
 const AT = "2026-11-10T04:41:07.123Z";
+const PARTITION = `p_${"5".repeat(16)}`;
 
 const member = (type: string, seq: number, op = 25) => ({
   type,
@@ -323,6 +324,52 @@ const SAMPLES: Record<string, Sample> = {
         restore_count: 0,
         via: "call",
       },
+    },
+  },
+  "write.derived": {
+    header: member("write.derived", 41),
+    blocks: {
+      target: {
+        table: "t2",
+        rule: "r1",
+        rule_version: 1,
+        partition: PARTITION,
+        read_pos: 40,
+        reads: [{ table: "t1" }],
+        emptied: false,
+      },
+      key: { values: ["2026-11-01", null, { value: "5", unit: "km" }] },
+      checksum: { checksum: HASH },
+    },
+  },
+  "write.derived emptied": {
+    header: member("write.derived", 42),
+    blocks: {
+      target: {
+        table: "t2",
+        rule: "r1",
+        rule_version: 3,
+        partition: PARTITION,
+        read_pos: 1,
+        reads: [{ table: "t10" }, { table: "t2" }],
+        emptied: true,
+      },
+    },
+  },
+  "write.derived whole": {
+    header: member("write.derived", 43),
+    blocks: {
+      target: {
+        table: "t2",
+        rule: "r1",
+        rule_version: 1,
+        partition: PARTITION,
+        read_pos: 40,
+        reads: [{ table: "t1" }],
+        emptied: false,
+      },
+      key: { values: [] },
+      checksum: { checksum: HASH },
     },
   },
 };
@@ -703,6 +750,50 @@ describe("parseEvent: a write's blocks, value by value", () => {
       { ver: { op: 21, restore_count: 0, basis: "external_key" } },
       "ops/0/target: external_key basis without by_external_key",
     ],
+    // write.derived (§5.7)
+    ["write.derived", "target", { table: "x" }, "target: table"],
+    ["write.derived", "target", { rule: "t1" }, "target: rule"],
+    ["write.derived", "target", { rule_version: 0 }, "target: rule_version"],
+    ["write.derived", "target", { rule_version: "1" }, "target: rule_version"],
+    ["write.derived", "target", { partition: "p_1" }, "target: partition"],
+    ["write.derived", "target", { partition: BAD_ID }, "target: partition"],
+    ["write.derived", "target", { read_pos: 0 }, "target: read_pos"],
+    ["write.derived", "target", { read_pos: -1 }, "target: read_pos"],
+    [
+      "write.derived",
+      "target",
+      { reads: [{ table: "t1" }, { table: "t1" }] },
+      "target.reads: not in ascending order without repeats",
+    ],
+    [
+      "write.derived",
+      "target",
+      { reads: [{ table: "t3" }, { table: "t1" }] },
+      "target.reads: not in ascending order without repeats",
+    ],
+    [
+      "write.derived",
+      "target",
+      { reads: [{ table: "t2" }, { table: "t10" }] },
+      "target.reads: not in ascending order without repeats",
+    ],
+    ["write.derived", "target", { read_pos: 1.5 }, "target: read_pos"],
+    ["write.derived", "target", { reads: [] }, "target.reads: empty"],
+    ["write.derived", "target", { reads: {} }, "target.reads: not an array"],
+    ["write.derived", "target", { reads: [{ table: "f1" }] }, "target.reads[0]: table"],
+    [
+      "write.derived",
+      "target",
+      { reads: [{ table: "t1", x: 1 }] },
+      "target.reads[0]: unknown key x",
+    ],
+    ["write.derived", "target", { reads: ["t1"] }, "target.reads[0]: not an object"],
+    ["write.derived", "target", { emptied: "no" }, "target: emptied"],
+    ["write.derived", "key", { values: "2026-11-01" }, "key.values: not an array"],
+    ["write.derived", "key", { values: [{ value: "05", unit: "km" }] }, "key.values[0]: decimal"],
+    ["write.derived", "key", { values: [1] }, "key.values[0]: not a field value"],
+    ["write.derived", "checksum", { checksum: "abc" }, "checksum: checksum"],
+    ["write.derived", "checksum", { checksum: HASH.toUpperCase() }, "checksum: checksum"],
   ];
   it.each(cases)("%s %s %j: %s", (name, path, patch, issue) => {
     expect(issues(parse(patched(name, path, patch)))).toContain(issue);
@@ -723,6 +814,26 @@ describe("parseEvent: rules between the blocks of one write event", () => {
     const { [path]: _, ...rest } = s.blocks;
     return { ...s, blocks: rest };
   };
+
+  it("write.derived: emptied has neither key nor checksum; a row has its checksum", () => {
+    const emptied = S("write.derived emptied");
+    expect(issues(parse(withBlock(emptied, "key", { values: ["2026-11-01"] })))).toContain(
+      "key: not with emptied",
+    );
+    expect(issues(parse(withBlock(emptied, "checksum", { checksum: HASH })))).toContain(
+      "checksum: not with emptied",
+    );
+    // A cleared block counts as present.
+    expect(issues(parse(emptied, ["checksum"]))).toContain("checksum: not with emptied");
+    const row = S("write.derived");
+    expect(issues(parse(without(row, "checksum")))).toContain("checksum: required unless emptied");
+    // A checksum cleared by a deletion (09 §5.7) is still there.
+    expect(parse(without(row, "checksum"), ["checksum"])).toEqual({
+      ok: true,
+      type: "write.derived",
+    });
+    expect(parse(without(row, "key"))).toEqual({ ok: true, type: "write.derived" });
+  });
 
   it("source.recorded: exactly one of text, file, request, each with its kinds", () => {
     const req = S("source.recorded");

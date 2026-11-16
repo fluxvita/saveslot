@@ -134,8 +134,11 @@ describe("parseEvent: valid events", () => {
         "Ack",
         "Acknowledge",
         "Candidate",
+        "Checksum",
         "Confirmation",
         "CurrentEntry",
+        "DerivedKey",
+        "DerivedTarget",
         "PreviousEntry",
         "ExistenceItem",
         "ExistenceSpan",
@@ -354,14 +357,18 @@ describe("parseEvent: header", () => {
 });
 
 describe("parseEvent: shapes without a checker", () => {
-  // `write.derived` is not checked yet.
+  // `premise.changed` is not checked yet.
   const derived = {
-    header: { ...head("write.derived"), op: 25, slot: SLOT_A },
-    blocks: { target: {} },
+    header: { ...head("premise.changed"), op: 25, slot: SLOT_A },
+    blocks: { "targets/0": {} },
   };
 
   it("reports a block whose shape has no checker as unsupported, not ok", () => {
-    expect(parse(derived)).toEqual({ ok: false, kind: "unsupported", shapes: ["DerivedTarget"] });
+    expect(parse(derived)).toEqual({
+      ok: false,
+      kind: "unsupported",
+      shapes: ["PremiseTarget"],
+    });
   });
 
   it("reports invalid before unsupported", () => {

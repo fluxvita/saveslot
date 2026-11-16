@@ -137,11 +137,11 @@ describe("apply stops, never skips", () => {
   });
 
   it("on a block shape it cannot check yet", () => {
-    // `write.derived` has no shape check yet.
-    const ev = { ...event("write.derived", { target: {} }) };
+    // `premise.changed` has no shape check yet.
+    const ev = { ...event("premise.changed", { "targets/0": {} }) };
     const header = { ...ev.header, actor: CONN, slot: SLOT, op: 2 };
     expect(reason({ ...ev, header })).toBe(
-      "unsupported @2: apply stopped at seq 2: block shapes not supported yet: DerivedTarget",
+      "unsupported @2: apply stopped at seq 2: block shapes not supported yet: PremiseTarget",
     );
   });
 
