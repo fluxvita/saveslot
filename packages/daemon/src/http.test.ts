@@ -5,6 +5,7 @@
 
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { request } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initLocalHome, type Operation, sessionFile } from "@fluxvita/saveslot-service";
@@ -381,6 +382,125 @@ describe("HTTP's own", () => {
     },
     T,
   );
+});
+
+describe("connections a response is sent on before the request arrived whole", () => {
+  /** Writes `chunks` on one raw connection; everything read until the server closes it. */
+  function raw(
+    chunks: readonly (string | Buffer | number)[],
+  ): Promise<{ text: string; closed: boolean }> {
+    return new Promise((resolve) => {
+      const sock = connect(socketFile(home));
+      let text = "";
+      sock.setEncoding("latin1");
+      sock.on("data", (c: string) => {
+        text += c;
+      });
+      sock.on("error", () => {});
+      sock.on("close", () => resolve({ text, closed: true }));
+      // A number is a pause, in milliseconds, before the next chunk.
+      void (async () => {
+        for (const c of chunks) {
+          if (typeof c === "number") await new Promise((r) => setTimeout(r, c));
+          else if (!sock.destroyed) sock.write(c);
+        }
+      })();
+      // Never ends its side: only the server's close ends this.
+      setTimeout(() => {
+        sock.destroy();
+        resolve({ text, closed: false });
+      }, 10_000);
+    });
+  }
+  const head = (o: { method: string; path: string; token?: string; length: number }) =>
+    `${o.method} ${o.path} HTTP/1.1\r\nHost: local\r\n${o.token !== undefined ? `Authorization: Bearer ${o.token}\r\n` : ""}Content-Type: application/json\r\nContent-Length: ${o.length}\r\n\r\n`;
+
+  it(
+    "a body past the limit: 413, Connection: close, the connection closed; a request after it on that connection is not served",
+    async () => {
+      const body = Buffer.alloc(2 * 1024 * 1024, 0x20);
+      const next =
+        "GET /v1/slots HTTP/1.1\r\nHost: local\r\nAuthorization: Bearer " + session + "\r\n\r\n";
+      const r = await raw([
+        head({ method: "POST", path: "/v1/query", token: session, length: body.length }),
+        body,
+        next,
+      ]);
+      expect(r.closed).toBe(true);
+      const responses = r.text.match(/HTTP\/1\.1 \d{3}/g) ?? [];
+      expect(responses).toEqual(["HTTP/1.1 413"]);
+      expect(r.text.toLowerCase()).toContain("connection: close");
+    },
+    T,
+  );
+
+  it(
+    "refused before the body is read (no token): 401 at once and the connection closed, the body not waited for",
+    async () => {
+      // Says 8 MiB, sends 1 KiB: the server answers without reading or waiting for the rest.
+      const r = await raw([
+        head({ method: "POST", path: "/v1/query", length: 8 * 1024 * 1024 }),
+        Buffer.alloc(1024, 0x20),
+      ]);
+      expect(r.closed).toBe(true);
+      expect(r.text.match(/HTTP\/1\.1 \d{3}/g)).toEqual(["HTTP/1.1 401"]);
+      expect(r.text.toLowerCase()).toContain("connection: close");
+    },
+    T,
+  );
+
+  it(
+    "the rest of the body and a next request arriving after the response: that request is not served",
+    async () => {
+      const next = `GET /v1/connections HTTP/1.1\r\nHost: local\r\nAuthorization: Bearer ${session}\r\n\r\n`;
+      // Its response could not be read anyway (this side is ended): what shows it was served is
+      // the log, one line a request.
+      const before = lines.length;
+      const r = await raw([
+        head({ method: "POST", path: "/v1/query", length: 4 }),
+        "{}",
+        200,
+        "  ",
+        next,
+      ]);
+      expect(r.closed).toBe(true);
+      expect(r.text.match(/HTTP\/1\.1 \d{3}/g)).toEqual(["HTTP/1.1 401"]);
+      expect(lines.slice(before).filter((l) => l.includes(" request "))).toEqual([
+        expect.stringContaining("status=401"),
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "a route of a later version with a body still coming: 501 and closed",
+    async () => {
+      const r = await raw([
+        head({ method: "POST", path: "/v1/sql", token: session, length: 8 * 1024 * 1024 }),
+        "{",
+      ]);
+      expect(r.closed).toBe(true);
+      expect(r.text.match(/HTTP\/1\.1 \d{3}/g)).toEqual(["HTTP/1.1 501"]);
+    },
+    T,
+  );
+});
+
+describe("query keys of the caller's", () => {
+  it("__proto__ and constructor are keys like any other: refused as unknown", async () => {
+    for (const k of ["__proto__", "constructor"]) {
+      const r = await http({ method: "GET", path: `/v1/connections?${k}=x`, token: session });
+      expect({
+        k,
+        status: r.status,
+        param: (JSON.parse(r.body) as { error: { param: string } }).error.param,
+      }).toEqual({
+        k,
+        status: 400,
+        param: k,
+      });
+    }
+  });
 });
 
 describe("the log", () => {

@@ -49,6 +49,9 @@ export interface Api {
   readonly log: (fields: Readonly<Record<string, string | number>>) => void;
 }
 
+/** How long a connection closed before its request arrived whole is kept for the response to be read. */
+const CLOSE_GRACE_MS = 1000;
+
 /** The request body limit (temporary; 08-open-questions, experiment 4). */
 export const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -186,7 +189,9 @@ const ROUTES: readonly Route[] = [
 
 /** The query string as parameters, by the contract's names. */
 function queryParams(search: URLSearchParams): Obj {
-  const out: Obj = {};
+  // Keys are the caller's: no prototype, so `__proto__` or `constructor` is a key like any other,
+  // for the operation to refuse as unknown.
+  const out: Obj = Object.create(null) as Obj;
   for (const key of new Set(search.keys())) {
     const all = search.getAll(key);
     if (all.length > 1) {
@@ -213,7 +218,6 @@ function readBody(req: IncomingMessage): Promise<Obj> {
   return new Promise((resolve, reject) => {
     const type = (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
     if (type !== "application/json") {
-      req.resume();
       reject(
         new ContractError("invalid_argument", "the body is JSON (Content-Type: application/json)", {
           reason: "malformed",
@@ -276,20 +280,47 @@ function readBody(req: IncomingMessage): Promise<Obj> {
   });
 }
 
-function send(res: ServerResponse, status: number, body: unknown, headers: Obj = {}): void {
+/**
+ * Sends a response. One sent before the request has arrived whole (a refusal before the body is
+ * read, or a body cut off at the limit) closes the connection: the rest of the request is never
+ * read, and its bytes are never taken for a next request on the same connection.
+ */
+function send(
+  req: IncomingMessage,
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  headers: Obj = {},
+): void {
   const text = JSON.stringify(body);
+  const close = !req.complete;
   res.writeHead(status, {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(text),
     "cache-control": "no-store",
+    ...(close ? { connection: "close" } : {}),
     ...(headers as Record<string, string>),
   });
+  if (close) {
+    // Not drained: the request stays paused, so what is left of it is not read past the buffers
+    // already full, and the sender is held back by its own. After the response the connection is
+    // ended on this side and destroyed only after a grace: destroyed at once (what the HTTP server
+    // does after a `Connection: close` response), a client still sending would fail its write and
+    // drop the response unread. A request parsed on it meanwhile is not served: after a
+    // `Connection: close` response the HTTP server serves none on that connection.
+    const socket = req.socket;
+    req.pause();
+    socket.destroySoon = () => {
+      socket.end();
+      setTimeout(() => socket.destroy(), CLOSE_GRACE_MS).unref();
+    };
+  }
   res.end(text);
 }
 
-function sendError(res: ServerResponse, e: ContractError): number {
+function sendError(req: IncomingMessage, res: ServerResponse, e: ContractError): number {
   const status = HTTP_STATUS[e.code];
-  send(res, status, { error: { code: e.code, message: e.message, ...e.detail } });
+  send(req, res, status, { error: { code: e.code, message: e.message, ...e.detail } });
   return status;
 }
 
@@ -313,9 +344,9 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
   void (async () => {
     const ctx = api.ready();
     if (ctx === undefined) {
-      req.resume();
       finish(
         sendError(
+          req,
           res,
           new ContractError("unavailable", "the service is starting", { reason: "starting" }),
         ),
@@ -329,9 +360,9 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
         authorization: header(req, "authorization"),
       });
       if (!("kind" in who)) {
-        req.resume();
         const status = HTTP_STATUS.unauthenticated;
         send(
+          req,
           res,
           status,
           { error: { code: who.code, message: "the credential is not good", reason: who.reason } },
@@ -361,12 +392,10 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
         return true;
       });
       if (r === undefined) {
-        req.resume();
         throw new ContractError("not_found", "no such route", { reason: "route" });
       }
       name = r.name;
       if (r.operation === undefined) {
-        req.resume();
         throw new ContractError("not_in_this_version", "not in this version", {
           reason: "operation",
         });
@@ -374,7 +403,6 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
       // Each part of the path of its form, or refused before it reaches anything.
       (r.parts ?? []).forEach((kind, i) => {
         if (kind !== "any" && !PART_FORM[kind].test(parts[i] ?? "")) {
-          req.resume();
           throw new ContractError(
             "invalid_argument",
             `the ${kind} in the path is not of its form`,
@@ -395,7 +423,7 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
           });
         }
         body = await readBody(req);
-      } else req.resume();
+      }
       const params = r.params !== undefined ? r.params(parts, query, body) : r.body ? body : query;
       const task = header(req, "x-task-id");
       const idempotencyKey = header(req, "idempotency-key");
@@ -419,10 +447,10 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
         call,
         warn: ctx.warn,
       });
-      send(res, 200, result);
+      send(req, res, 200, result);
       finish(200);
     } catch (e) {
-      finish(sendError(res, contractError(e, ctx.warn)));
+      finish(sendError(req, res, contractError(e, ctx.warn)));
     }
   })();
   return true;
