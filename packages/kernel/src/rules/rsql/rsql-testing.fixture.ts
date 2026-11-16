@@ -12,7 +12,7 @@
 import fc from "fast-check";
 
 export { Hits, propRuns } from "@fluxvita/saveslot-reference/testing";
-export { rule, TABLES, UNITS } from "./rules.fixture.ts";
+export { derivedSchema, rule, TABLES, UNITS } from "./rules.fixture.ts";
 /** fast-check, for packages that run these rules without depending on it themselves. */
 export { fc };
 

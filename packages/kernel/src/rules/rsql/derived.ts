@@ -159,7 +159,7 @@ function oneStatement(sql: string): void {
   if (semis.length > 1 || (semis.length === 1 && words[words.length - 1] !== semis[0])) notSelect();
 }
 
-interface Checked {
+export interface Checked {
   readonly stmt: RuleStatement;
   readonly analysis: Analysis;
 }
@@ -339,6 +339,16 @@ export function checkBoundRule(input: DerivedRuleInput): DerivedRuleResult {
   } catch (e) {
     return failure(input.sql, input, e);
   }
+}
+
+/**
+ * The checked form of a rule's ID-bound text, for evaluation (./evaluate.ts): parsed and checked
+ * again as checkBoundRule does. Throws on any problem; a bound text that compiled has none. Not
+ * exported from the package.
+ */
+export function checkedBoundRule(input: DerivedRuleInput): Checked {
+  rsqlParser();
+  return check(input.sql, input, "ids");
 }
 
 /**

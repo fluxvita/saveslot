@@ -23,6 +23,20 @@ describe("storage format v1 on PGlite", () => {
     expect(Number(r.rows[0]?.v)).toBeGreaterThanOrEqual(180006);
   });
 
+  it("turns standard_conforming_strings on over a connection where it is off", async () => {
+    const c = await PGlite.create();
+    try {
+      await c.exec("SET standard_conforming_strings = off");
+      for (const s of SESSION_SETTINGS) await c.exec(s);
+      const r = await c.query("SHOW standard_conforming_strings");
+      expect(r.rows[0]).toEqual({ standard_conforming_strings: "on" });
+      // What restricted SQL's printed literals rely on: a backslash is itself.
+      expect((await c.query("SELECT length('a\\') AS n")).rows[0]).toEqual({ n: 2 });
+    } finally {
+      await c.close();
+    }
+  });
+
   it("has the fixed session settings and a UTF8 database", async () => {
     const r = await db.query<{ enc: string; tz: string; ds: string }>(
       "SELECT current_setting('server_encoding') AS enc, current_setting('TimeZone') AS tz, current_setting('DateStyle') AS ds",

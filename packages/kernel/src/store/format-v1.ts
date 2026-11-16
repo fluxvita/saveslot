@@ -44,6 +44,8 @@ export const SESSION_SETTINGS = [
   "SET datestyle = 'ISO, YMD'",
   "SET intervalstyle = 'iso_8601'",
   "SET extra_float_digits = 3",
+  // String literals printed into restricted SQL keep backslashes as they are (11 «处理步骤» 8).
+  "SET standard_conforming_strings = on",
 ] as const;
 
 export const KERNEL_TABLES: readonly KernelTable[] = [

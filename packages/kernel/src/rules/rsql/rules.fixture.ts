@@ -1,8 +1,13 @@
 // A slot for the restricted SQL tests: tables of every time type covering every base field type,
 // already given IDs as the schema compiler would. Fictional names.
 
-import type { CompiledBaseTable } from "@fluxvita/saveslot-contract-core";
-import type { DerivedRuleInput } from "./derived.ts";
+import type {
+  CompiledBaseTable,
+  CompiledDerivedField,
+  CompiledSchema,
+} from "@fluxvita/saveslot-contract-core";
+import { compileDerivedRule, type DerivedRuleInput } from "./derived.ts";
+import { RSQL_VERSION } from "./whitelist.ts";
 
 const KM = { code: "km", dimension: "length", to_base: "1000" } as const;
 const MI = { code: "mi", dimension: "length", to_base: "1609.344" } as const;
@@ -146,5 +151,36 @@ export function rule(
     derivedTables: ["weekly"],
     path: "tables/5/rule/sql",
     ...more,
+  };
+}
+
+/**
+ * The compiled schema of the slot with one derived table `t9` ("weekly", physical `d_t9_v1`) of
+ * the rule; throws when the rule does not compile.
+ */
+export function derivedSchema(input: DerivedRuleInput): CompiledSchema {
+  const r = compileDerivedRule(input);
+  if (!r.ok) throw new Error(JSON.stringify(r.error));
+  return {
+    compiler: 1,
+    rsql: RSQL_VERSION,
+    slot: "sl_health" as CompiledSchema["slot"],
+    name: input.slot.name,
+    sv: 1 as CompiledSchema["sv"],
+    timezone: "Asia/Shanghai" as CompiledSchema["timezone"],
+    tables: [
+      ...input.tables,
+      {
+        id: "t9",
+        name: "weekly",
+        kind: "derived",
+        description: "derived",
+        physical: { table: "d_t9_v1" },
+        rule: { id: "r1", version: 1 as never, ...r.rule },
+        fields: r.fields.map(
+          (f, i) => ({ ...f, id: `f${i + 1}`, description: f.name }) as CompiledDerivedField,
+        ),
+      },
+    ],
   };
 }
