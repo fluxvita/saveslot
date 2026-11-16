@@ -32,6 +32,7 @@ import {
   SLOT,
   scenario,
   shape,
+  withConfirmations,
 } from "@fluxvita/saveslot-kernel/testing";
 import { evaluateLog, type Op, type TableSchema } from "@fluxvita/saveslot-reference";
 import { EVENT, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
@@ -127,7 +128,12 @@ const nextNow = () => {
 
 const run = (s: PgliteTenantStore, events: NewEvent[]) =>
   s.write(async (tx) => {
-    const op = await appendOperation(tx, { actor: USER as never, now: nextNow(), events });
+    // A decision confirms the item's entries as they are (09 §5.8): the hash the pipeline gives.
+    const op = await appendOperation(tx, {
+      actor: USER as never,
+      now: nextNow(),
+      events: await withConfirmations(tx, events),
+    });
     await applyEvents(tx, eventsOf(op));
     return op;
   });

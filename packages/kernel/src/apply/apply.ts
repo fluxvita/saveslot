@@ -33,6 +33,7 @@ import {
 import type { BlockState, PreparedOperation } from "../log/index.ts";
 import { isKnownRulesetVersion } from "../rules/version.ts";
 import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
+import { confirmationHash, entryChecksums } from "./confirmation.ts";
 import { type ItemInput, planItem } from "./items.ts";
 import { ApplyError, type BlockDepRow, type Change, type PrincipalRow } from "./model.ts";
 import { planSchema, type SlotInput, type SwitchInput } from "./schema.ts";
@@ -346,7 +347,16 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
       [id],
     );
     const row = r.rows[0];
-    return row === undefined ? {} : { item: { state: row.state, nextEntry: Number(row.next) } };
+    if (row === undefined) return {};
+    const confirmation =
+      p.type === "item.resolved" ? confirmationHash(await entryChecksums(tx, id)) : undefined;
+    return {
+      item: {
+        state: row.state,
+        nextEntry: Number(row.next),
+        ...(confirmation !== undefined ? { confirmation } : {}),
+      },
+    };
   }
   return {};
 }

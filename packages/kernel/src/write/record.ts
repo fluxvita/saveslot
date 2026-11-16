@@ -458,6 +458,8 @@ export interface ResolutionEncoding {
   /** The item's version the decision confirmed (`item_op`, `restore_count`, 09 §5.8). */
   readonly itemOp: OpNumber;
   readonly restoreCount: number;
+  /** The value sources of the items the triggered write gives itself (not carried): `op_sources`. */
+  readonly sources?: readonly Seq[];
 }
 
 export interface EncodedResolution {
@@ -499,7 +501,7 @@ export function encodeResolution(
       cause: "resolve",
       item: e.item,
     },
-    ...itemsOut(ctx, r.items, []),
+    ...itemsOut(ctx, r.items, e.sources ?? []),
   };
   if (r.kind === "confirm" && r.revert !== undefined) {
     base["revert"] = {

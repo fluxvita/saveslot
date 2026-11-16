@@ -654,7 +654,7 @@
 | `target` | 元 | `{"source_id": "s_…", "kind": <证据种类>, "level": "user_stated" \| "agent_inferred", "op_index": <整数>}`。`op_index` 只在 `write` 的 `api_call` 时有：这条源数据是请求里第几个 op 的请求（与 `write.head` 的 `ops/<i>` 的 `i` 相同）。`resolve` 的 `api_call` 没有 |
 | `text` | 数 | `{"text": <原文>}`。`user_message`、`agent_note`、`tool_result` |
 | `file` | 数 | `{"name": …, "mime": …, "size": <整数>, "sha256": <哈希>, "origin": …, "excerpt": …}`。`file_ref`；后三个键可缺 |
-| `request` | 数 | 请求本身的 JSON。`api_call`：`write` 是那一个 op（无操作字段的值不记，只留字段名；按来源键的 op 含 `external_key` 的值；重申与清除含它的 `premises`）；`resolve` 只记 `id`、`decision`、`candidate`、`note` 与所带证据的引用（源数据 ID），**不含证据段的内容**——证据各有自己的源数据，这里再记一份就是一处删不到的副本 |
+| `request` | 数 | 请求本身的 JSON。`api_call`：`write` 是那一个 op（无操作字段的值不记，只留字段名；按来源键的 op 含 `external_key` 的值；重申与清除含它的 `premises`）；`resolve` 只记 `id`、`decision`、`candidate`、`note` 与所带证据的引用（`evidence`：各段的源数据 ID，按证据在请求里的先后；没带证据时没有这个键），**不含证据段的内容**——证据各有自己的源数据，这里再记一份就是一处删不到的副本 |
 | `stated_at` | 数 | `{"at": <时刻>}`。调用方给的"这句话是什么时候说的"，可缺 |
 
 - `kind` 取值：`user_message`、`agent_note`、`tool_result`、`file_ref`、`api_call`。`source_ref` 不产生事件。
@@ -1243,7 +1243,10 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `via` | `call`。保留值：`elicitation` |
 
 - 谁解决的是事件头的 `actor`；经哪个凭证由 `actor` 得出。
-- `confirmation` 的哈希由内核在落账时算：SHA-256（被确认的条目块的校验和，按 `(seq, path)` 排序后以换行连接）。被确认的条目块 = 该事项当前有效的全部条目块（`current`、`candidates`、`proposed`、`previous`、`impact`、`matched`、`scope_valid`）；`schema_change` 事项是对应草稿的 `schema.compiled` 的 `compiled` 块。没有任何条目块的事项不产生本块。
+- `confirmation` 的哈希**追加时算、落账时核对**：内核追加本事件前，从事项当前有效的条目块算出它写进本块；落账时按落账到这里的状态再算一遍，与本块不一致即为日志与状态不符（`inconsistent`），停止落账。两处用同一个算法：SHA-256（被确认的条目块的校验和，按 `(seq, path)` 排序后以换行连接）。
+  - 被确认的条目块 = 该事项当前有效的全部条目块，也就是"事项内容"：事项的 `item.created`、`item.merged`、`item.refreshed` 给出的 `current`、`candidates`、`proposed`、`previous`、`impact`、`matched`、`scope_valid` 各块，减去之后被同一事项的事件整组取代的（规则同上面 `item.merged`、`item.refreshed`）。候选与提议以它们的条目块进哈希，块里引用的贡献（`deps`、候选的 `event`）随块一起算在内。刷新与 `confirmation_mismatch` 用的是同一个"事项内容"：内容变了，事项版本跟着换新，旧版本的哈希也就对不上。
+  - `schema_change` 事项是对应草稿的 `schema.compiled` 的 `compiled` 块。
+  - 没有任何条目块的事项不产生本块。被确认的条目块里有一块被删除时，本块随之删除，落账不再核对它。
 - `note` 不在本事件里：它随解决请求存为源数据（§4.3），由 `op_sources` 引用，事项详情回显的 `note` 从那里取，随那条源数据的隐私删除清除。
 - **`take_candidate`** 触发的基础写入带采纳记录 `take`：
 
@@ -1535,7 +1538,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `correct` | 纠错 |
 | `revoke` | 撤销 |
 
-回退（`revert`）不是意图，`write.base` 另带回退记录 `revert`；它与 `take_previous` 触发的基础写入是同一种操作（区别只在 `revert` 块里是 `before_op` 还是 `as_of_op`）。回掉写入的意图：`undo` 调用方给了意图就用它，没给时取**被撤回的操作在这一行（或实体）上 `seq` 最大的那条 `write.base` 的意图**，不看 `include_later` 连带回掉的写入；`take_previous` 取**回退记录里事件 `seq` 最大的那一项所在 `write.base` 的意图**，回退记录为空时取 `update`。这个意图只表示"沿用的来历"，实际效果以写回项为准：例如目标是"存在"的冲突里生效的一方是撤销，`take_previous` 那条恢复存在的写入沿用到的意图是 `revoke`，而它写回的是 `existence` 的 `restored` 项；`timeline` 展示这类写入时以回退记录与写回项说明做了什么，不单看意图。保留值：`applied_by_rule`（系统裁定，§10）。
+回退（`revert`）不是意图，`write.base` 另带回退记录 `revert`；它与 `take_previous` 触发的基础写入是同一种操作（区别只在 `revert` 块里是 `before_op` 还是 `as_of_op`）。回掉写入的意图：`undo` 调用方给了意图就用它，没给时取**被撤回的操作在这一行（或实体）上 `seq` 最大的那条 `write.base` 的意图**，不看 `include_later` 连带回掉的写入；`take_previous` 取**回退记录里事件 `seq` 最大的那一项所在 `write.base` 的意图**，回退记录为空时取 `update`。处理事项触发的另两种写入同样沿用：`take_candidate` 取**被采纳候选各项里事件 `seq` 最大的那一项所在 `write.base` 的意图**，确认待确认事项（`confirm`）取**提议各项里事件 `seq` 最大的那一项所在 `write.base` 的意图**。这些意图只表示"沿用的来历"，实际效果以写回项为准：例如目标是"存在"的冲突里生效的一方是撤销，`take_previous` 那条恢复存在的写入沿用到的意图是 `revoke`，而它写回的是 `existence` 的 `restored` 项；`timeline` 展示这类写入时以回退记录与写回项说明做了什么，不单看意图。保留值：`applied_by_rule`（系统裁定，§10）。
 
 版本表里每个版本也记一个意图，供 `timeline` 与 `changes` 给出。除上面四个外另有三个取值，只用于由删除或 schema 切换产生的版本，不出现在 `write.base` 里：
 

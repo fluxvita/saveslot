@@ -23,7 +23,6 @@
 // writer had read it as the request began, refreshed otherwise; an open item no op reached whose
 // entries, recomputed, changed is refreshed. Each item gets one set of contents a request.
 
-import { createHash } from "node:crypto";
 import {
   type CompiledBaseTable,
   canonicalize,
@@ -74,6 +73,7 @@ import {
 } from "../request/index.ts";
 import type { Tx } from "../store/ports.ts";
 import { type IntervalSet, meet, WHOLE } from "../time/index.ts";
+import { WriteError } from "./errors.ts";
 import {
   type EntityKeyText,
   entitiesByKey,
@@ -89,7 +89,6 @@ import {
   type Fallback,
   readSlots,
   readUnderAnotherTask,
-  requestKeyHit,
   restoreCount,
   rowEvents,
   rowTable,
@@ -100,18 +99,10 @@ import {
 } from "./reads.ts";
 import { readReceipt, type WriteReceipt } from "./receipt.ts";
 import { decodeRecords, encodeOp, type RowContext, type StoredEvent } from "./record.ts";
+import { findRequest, requestKeyOf } from "./request-key.ts";
+import { evidenceSource } from "./sources.ts";
 
-/** An error the write pipeline returns, by contract error code (04-contract-types §9). */
-export class WriteError extends Error {
-  override readonly name = "WriteError";
-  readonly code: string;
-  readonly detail: Readonly<Record<string, unknown>>;
-  constructor(code: string, message: string, detail: Record<string, unknown> = {}) {
-    super(message);
-    this.code = code;
-    this.detail = detail;
-  }
-}
+export { WriteError };
 
 export interface WriteInput {
   readonly actor: PrincipalId;
@@ -131,7 +122,7 @@ export interface WriteInput {
   readonly reads: ReadBuffer;
 }
 
-const RULESET = 1;
+export const RULESET = 1;
 
 /** Where a `ver` or `sv` taken by fallback came from: a read, or the caller's own write. */
 export type FallbackOrigin = { readonly read: ReadId } | { readonly from_write: number };
@@ -171,18 +162,16 @@ async function fallback(
   return other !== undefined ? { reason: "task_mismatch", readTask: other.task } : own;
 }
 
-const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
-
-function requestFailure(e: RequestError): WriteError {
+export function requestFailure(e: RequestError): WriteError {
   return new WriteError(e.code, `the request is refused: ${e.code}`, { ...e });
 }
 
 /** `read_first` (04-contract-types §9): what to read first, and why the fallback found nothing. */
-function readFirst(
+export function readFirst(
   f:
     | { readonly reason: "no_read" }
     | { readonly reason: "task_mismatch"; readonly readTask: string | null },
-  what: { readonly target: "row" | "slot"; readonly ref: unknown },
+  what: { readonly target: "row" | "slot" | "item"; readonly ref: unknown },
   task: string | null,
   param: string,
 ): WriteError {
@@ -200,12 +189,14 @@ const unitIn = (u: readonly string[]): Unit =>
   u[0] === "existence" ? "existence" : { fields: u as FieldId[] };
 
 /** A pending item on the row the pipeline keeps track of while it writes. */
-interface TrackedItem {
+export interface TrackedItem {
   readonly item: ItemId;
   readonly type: "conflict" | "awaiting_confirmation";
   readonly unit: Unit;
   /** Conflict items: the candidates so far, and the merge base. */
   candidates: number;
+  /** Conflict items: each candidate's write event, by its index (`candidates/<k>`). */
+  readonly cands: Seq[];
   mergeBase: OpNumber;
   /** The items of its candidates (conflict) or of the proposal (awaiting). */
   refs: ItemRef[];
@@ -227,7 +218,7 @@ interface TrackedItem {
   readonly fills: { readonly index: number; readonly merged: boolean }[];
 }
 
-interface RowWork {
+export interface RowWork {
   readonly ctx: RowContext;
   readonly events: readonly StoredEvent[];
   state: RowState;
@@ -287,6 +278,10 @@ function trackedItems(
         return cand.items.map((y) => refIn({ event: cand.event, ...y }));
       });
     const n = Object.keys(e.blocks).filter((p) => p.startsWith("candidates/")).length;
+    const cands = Object.entries(e.blocks).flatMap(([p, c]) => {
+      const m = /^candidates\/(\d+)$/.exec(p);
+      return m === null ? [] : [[Number(m[1]), (c as { event: Seq }).event] as const];
+    });
     if (e.header.type === "item.created") {
       if (t.type !== "conflict" && t.type !== "awaiting_confirmation") continue;
       by.set(t.item, {
@@ -294,6 +289,7 @@ function trackedItems(
         type: t.type,
         unit: unitIn(t.unit ?? []),
         candidates: n,
+        cands: [],
         mergeBase: (t.merge_base_op ?? 0) as OpNumber,
         refs,
         origin: (t.origin_event ?? 0) as Seq,
@@ -310,6 +306,9 @@ function trackedItems(
     if (e.header.type === "item.merged") {
       x.candidates += n;
       x.refs = [...x.refs, ...refs];
+    }
+    if (e.header.type === "item.created" || e.header.type === "item.merged") {
+      for (const [k, ev] of cands) x.cands[k] = ev;
     }
     // Candidates re-given by a refresh keep their indices: only the merge base may change.
     if (e.header.type !== "item.created" && t.merge_base_op !== undefined)
@@ -347,9 +346,9 @@ function trackedItems(
  * own receipt gave it whole when its write opened the item, or it read it (the version it last
  * read, under the same task, is the item's then, with the restore count now).
  */
-async function hadRead(
+export async function hadRead(
   tx: Tx,
-  input: WriteInput,
+  input: { readonly actor: PrincipalId; readonly reads: ReadBuffer },
   task: string | null,
   t: TrackedItem,
   restore: number,
@@ -380,7 +379,7 @@ function withProposals(state: RowState, items: TrackedItem[]): TrackedItem[] {
 }
 
 /** The interval of a tracked item: its candidates' or proposal's items (state tables). */
-function scopeFor(state: RowState, t: TrackedItem): IntervalSet {
+export function scopeFor(state: RowState, t: TrackedItem): IntervalSet {
   return state.isState ? scopeOf(state, t.refs) : [WHOLE];
 }
 
@@ -459,7 +458,7 @@ function undoneIntent(events: readonly StoredEvent[], undone: OpNumber): Normali
   return (last?.intent ?? "update") as NormalizedOp["intent"];
 }
 
-function judgeFailure(e: JudgeError, index: number): WriteError {
+export function judgeFailure(e: JudgeError, index: number): WriteError {
   const param = `ops/${index}`;
   switch (e.reason) {
     case "invalid_argument":
@@ -492,6 +491,120 @@ const sameValue = (a: FieldValue, b: FieldValue | undefined) =>
 
 /** How many keys a receipt lists for an entity created by key (04-contract §5.1). */
 const EXISTING_KEYS = 10;
+
+/**
+ * A row or entity as a request finds it: its state rebuilt from its events, and its open items
+ * with what they hold. A flagged item on it stops the request: refreshing or superseding one comes
+ * with duplicate detection (`matched_changed`).
+ */
+export async function loadRow(tx: Tx, ctx: RowContext, param: string): Promise<RowWork> {
+  const id = ("row" in ctx.target ? ctx.target.row : ctx.target.entity) as string;
+  if ((await rowTable(tx, id)) !== ctx.table) {
+    throw new WriteError("not_found", "no such row or entity", { param });
+  }
+  const events = await rowEvents(tx, ctx.table, id);
+  const state = stateFromRecord(ctx.shape, decodeRecords(ctx, events));
+  const open = await openItemsOn(tx, ctx.table, id);
+  if (open.some((x) => x.type === "flagged")) {
+    throw new WriteError("internal", "writing a row with a flagged item is not implemented", {
+      reason: "not_implemented",
+      param,
+    });
+  }
+  return {
+    ctx,
+    events,
+    state,
+    createdHere: false,
+    items: withProposals(
+      state,
+      trackedItems(events, new Map(open.map((x) => [x.id, x.versionOp as OpNumber]))),
+    ),
+  };
+}
+
+/**
+ * The pending items as of the request's end (01-objects «不过期»; 09 §5.8 «一次请求里的事项内容»):
+ * the request's item events get their entries; an open item some op reached is superseded when the
+ * writer had read it as the request began (not one this request joined), refreshed otherwise; an
+ * open item on a row the request wrote that no op reached is refreshed when its entries,
+ * recomputed, changed (their impact does not go stale, 01-objects «影响»). Each item gets one of
+ * these at most. Appends to `events`; returns how many it appended.
+ */
+export async function settleItems(
+  tx: Tx,
+  rows: Iterable<RowWork>,
+  o: {
+    readonly op: OpNumber;
+    readonly slot: NonNullable<NewEvent["slot"]>;
+    readonly writer: { readonly actor: PrincipalId; readonly reads: ReadBuffer };
+    readonly task: string | null;
+    readonly restore: number;
+    readonly events: NewEvent[];
+  },
+): Promise<number> {
+  let added = 0;
+  const atEnd: Limit = { upTo: o.op };
+  for (const work of rows) {
+    for (const t of [...work.items]) {
+      const blocks = contentBlocks(itemContents(work.state, t, atEnd));
+      for (const f of t.fills) {
+        const ev = o.events[f.index] as NewEvent;
+        const groups = f.merged ? (GIVES["item.merged"] as readonly string[]) : GROUPS;
+        o.events[f.index] = { ...ev, blocks: { ...ev.blocks, ...pick(blocks, groups) } as never };
+      }
+      if (t.here || work.lastBase === undefined) continue;
+      const mergeBase = t.type === "conflict" ? { merge_base_op: t.mergeBase } : {};
+      if (t.reachedBy !== undefined) {
+        if (!t.mergedHere && (await hadRead(tx, o.writer, o.task, t, o.restore))) {
+          o.events.push({
+            type: "item.superseded",
+            slot: o.slot,
+            blocks: {
+              target: {
+                item: t.item,
+                reason: "overwritten",
+                by_event: t.reachedBy,
+                writer_had_read: true,
+              },
+            } as never,
+          });
+          work.items.splice(work.items.indexOf(t), 1);
+        } else {
+          o.events.push({
+            type: "item.refreshed",
+            slot: o.slot,
+            blocks: {
+              target: {
+                item: t.item,
+                by_event: t.reachedBy,
+                writer_had_read: false,
+                cause: "target_overwritten",
+                ...mergeBase,
+              },
+              ...blocks,
+            } as never,
+          });
+        }
+        added++;
+        continue;
+      }
+      // A join of this request gave the item's contents with it (item.merged): nothing more.
+      if (t.mergedHere) continue;
+      if (canonicalize(t.stored as never) === canonicalize(blocks as never)) continue;
+      o.events.push({
+        type: "item.refreshed",
+        slot: o.slot,
+        blocks: {
+          target: { item: t.item, by_event: work.lastBase, cause: "entries_changed", ...mergeBase },
+          ...blocks,
+        } as never,
+      });
+      added++;
+    }
+  }
+  return added;
+}
 
 /** Writes the request in `tx`; returns its receipt, or the original one for a repeated request. */
 export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt> {
@@ -526,25 +639,10 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   const warnings: ReceiptWarning[] = [...req.warnings];
 
   // Step 2: the request key in its window.
-  const explicit = req.requestKey.idempotencyKey;
-  const key =
-    explicit !== undefined
-      ? sha256(canonicalize(["idempotency", actor, explicit]))
-      : sha256(canonicalize([actor, task ?? null, req.requestKey.content]));
-  const fingerprint = req.requestKey.fingerprint;
-  const since = new Date(
-    Date.parse(now) -
-      (explicit !== undefined ? input.windows.idempotencyKey : input.windows.requestKey),
-  ).toISOString();
-  const hit = await requestKeyHit(tx, key, since);
+  const rk = requestKeyOf(actor, task ?? null, req.requestKey);
+  const hit = await findRequest(tx, rk, now, input.windows);
   if (hit !== undefined) {
-    if (explicit !== undefined && hit.fingerprint !== fingerprint) {
-      throw new WriteError("invalid_argument", "the idempotency key was used for another request", {
-        reason: "idempotency_key_reuse",
-        param: "idempotency_key",
-      });
-    }
-    const replay = await readReceipt(tx, hit.op, {
+    const replay = await readReceipt(tx, hit, {
       compiled: slot.compiled,
       slotName: slot.name,
       restoreCount: restore,
@@ -683,34 +781,9 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         shape,
         granularity,
       };
-      if (isNew) {
-        work = { ctx, events: [], state: emptyState(shape), createdHere: false, items: [] };
-      } else {
-        if ((await rowTable(tx, id)) !== table.id) {
-          throw new WriteError("not_found", "no such row or entity", { param });
-        }
-        const events = await rowEvents(tx, table.id, id);
-        const state = stateFromRecord(shape, decodeRecords(ctx, events));
-        const open = await openItemsOn(tx, table.id, id);
-        // A flagged item reached by a write is refreshed or superseded by its own rule
-        // (`matched_changed`), which comes with duplicate detection.
-        if (open.some((x) => x.type === "flagged")) {
-          throw new WriteError("internal", "writing a row with a flagged item is not implemented", {
-            reason: "not_implemented",
-            param,
-          });
-        }
-        work = {
-          ctx,
-          events,
-          state,
-          createdHere: false,
-          items: withProposals(
-            state,
-            trackedItems(events, new Map(open.map((x) => [x.id, x.versionOp as OpNumber]))),
-          ),
-        };
-      }
+      work = isNew
+        ? { ctx, events: [], state: emptyState(shape), createdHere: false, items: [] }
+        : await loadRow(tx, ctx, param);
       rows.set(id, work);
     }
 
@@ -835,6 +908,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       if (prior !== undefined) {
         const candidate = prior.candidates;
         prior.candidates++;
+        prior.cands[candidate] = next as Seq;
         prior.mergeBase = Math.min(prior.mergeBase, seen) as OpNumber;
         prior.refs = [...prior.refs, ...c.items];
         if (!prior.here) prior.mergedHere = true;
@@ -846,6 +920,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         type: "conflict",
         unit: c.unit,
         candidates: 1,
+        cands: [next as Seq],
         mergeBase: seen,
         refs: [...c.items],
         origin: next as Seq,
@@ -871,6 +946,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
           ? "existence"
           : { fields: [...new Set(proposal.map((x) => x.target as FieldId))].sort() },
         candidates: 0,
+        cands: [],
         mergeBase: seen,
         refs: proposal.map((x) => ({ event: next as Seq, target: x.target, k: x.k })),
         origin: next as Seq,
@@ -933,102 +1009,21 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     }
   }
 
-  // The pending items, as of the request's end (01-objects «不过期»): the request's item events
-  // get their entries; an open item some op reached is superseded when the writer had read it as
-  // the request began (not one this request joined), refreshed otherwise; an open item on a row the
-  // request wrote that no op reached is refreshed when its entries, recomputed, changed (their
-  // impact does not go stale, 01-objects «影响»). Each item gets one of these at most.
-  const atEnd: Limit = { upTo: op };
-  for (const work of rows.values()) {
-    for (const t of [...work.items]) {
-      const blocks = contentBlocks(itemContents(work.state, t, atEnd));
-      for (const f of t.fills) {
-        const ev = opEvents[f.index] as NewEvent;
-        const groups = f.merged ? (GIVES["item.merged"] as readonly string[]) : GROUPS;
-        opEvents[f.index] = { ...ev, blocks: { ...ev.blocks, ...pick(blocks, groups) } as never };
-      }
-      if (t.here || work.lastBase === undefined) continue;
-      const mergeBase = t.type === "conflict" ? { merge_base_op: t.mergeBase } : {};
-      if (t.reachedBy !== undefined) {
-        if (!t.mergedHere && (await hadRead(tx, input, task, t, restore))) {
-          opEvents.push({
-            type: "item.superseded",
-            slot: slot.slot,
-            blocks: {
-              target: {
-                item: t.item,
-                reason: "overwritten",
-                by_event: t.reachedBy,
-                writer_had_read: true,
-              },
-            } as never,
-          });
-          work.items.splice(work.items.indexOf(t), 1);
-        } else {
-          opEvents.push({
-            type: "item.refreshed",
-            slot: slot.slot,
-            blocks: {
-              target: {
-                item: t.item,
-                by_event: t.reachedBy,
-                writer_had_read: false,
-                cause: "target_overwritten",
-                ...mergeBase,
-              },
-              ...blocks,
-            } as never,
-          });
-        }
-        next++;
-        continue;
-      }
-      // A join of this request gave the item's contents with it (item.merged): nothing more.
-      if (t.mergedHere) continue;
-      const held = t.stored;
-      if (canonicalize(held as never) === canonicalize(blocks as never)) continue;
-      opEvents.push({
-        type: "item.refreshed",
-        slot: slot.slot,
-        blocks: {
-          target: { item: t.item, by_event: work.lastBase, cause: "entries_changed", ...mergeBase },
-          ...blocks,
-        } as never,
-      });
-      next++;
-    }
-  }
+  next += await settleItems(tx, rows.values(), {
+    op,
+    slot: slot.slot,
+    writer: input,
+    task,
+    restore,
+    events: opEvents,
+  });
 
   // Sources: the request's evidence, or each op's request as an `api_call` (04-write-and-read
   // «不变量：每次写入都有源数据»), without the values of its no-op fields.
   const rawOps = (input.params as { ops: JsonValue[] }).ops;
   const sources: NewEvent[] =
     req.evidence.length > 0
-      ? req.evidence.map((ev) => ({
-          type: "source.recorded",
-          slot: slot.slot,
-          blocks: {
-            target: {
-              source_id: input.newId("source"),
-              kind: ev.kind,
-              // Declared on the segment, or by its kind (04-write-and-read «来源级别»).
-              level: ev.level ?? (ev.kind === "user_message" ? "user_stated" : "agent_inferred"),
-            },
-            ...(ev.kind === "file_ref"
-              ? {
-                  file: {
-                    name: ev.name,
-                    mime: ev.mime,
-                    size: ev.size,
-                    sha256: ev.sha256,
-                    ...(ev.origin !== undefined ? { origin: ev.origin } : {}),
-                    ...(ev.excerpt !== undefined ? { excerpt: ev.excerpt } : {}),
-                  },
-                }
-              : { text: { text: ev.text } }),
-            ...(ev.stated_at !== undefined ? { stated_at: { at: ev.stated_at } } : {}),
-          },
-        }))
+      ? req.evidence.map((ev) => evidenceSource(ev, slot.slot, input.newId("source")))
       : req.ops.map((o) => {
           const raw = rawOps[o.index] as Record<string, JsonValue>;
           const noop = noopNames.get(o.index) ?? [];
@@ -1070,9 +1065,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       },
       request: { sv, sv_basis: svBasis, op_count: req.ops.length },
       ...(task !== null ? { task } : {}),
-      ...(explicit !== undefined
-        ? { idempotency: { key, fingerprint: fingerprint as string } }
-        : { request_key: { key } }),
+      ...rk.block,
       ...headBlocks,
     },
   };

@@ -340,12 +340,24 @@ export async function readReceipt(
   },
 ): Promise<WriteReceipt | undefined> {
   const events = await operationEvents(tx, op);
-  const head = events.find((e) => e.header.type === "write.head")?.blocks as Blocks | undefined;
-  const request = head?.["request"] as { sv: number; op_count: number } | undefined;
+  const bases = events.filter((e) => e.header.type === "write.base");
+  // A write request, or a decision on a pending item and the write it triggers (09 §5.8
+  // `item.resolved`): the op's target is then its `write.base`'s, in the head's place.
+  const resolved = events[0]?.header.type === "item.resolved";
+  const head = (resolved ? {} : events.find((e) => e.header.type === "write.head")?.blocks) as
+    | Blocks
+    | undefined;
+  const firstBase = bases[0]?.blocks["target"] as { sv: number } | undefined;
+  const request = (
+    resolved
+      ? firstBase !== undefined
+        ? { sv: firstBase.sv, op_count: bases.length }
+        : undefined
+      : head?.["request"]
+  ) as { sv: number; op_count: number } | undefined;
   if (head === undefined || request === undefined) return undefined;
   const tableOf = (id: string) =>
     o.compiled.tables.find((t) => t.id === id && t.kind === "base") as CompiledBaseTable;
-  const bases = events.filter((e) => e.header.type === "write.base");
   const itemEvents = events.filter(
     (e) => e.header.type === "item.created" || e.header.type === "item.merged",
   );
@@ -408,7 +420,7 @@ export async function readReceipt(
   let keysLeftOut = false;
   const ops: OpReceipt[] = [];
   for (let i = 0; i < request.op_count; i++) {
-    const t = head[`ops/${i}/target`] as {
+    const t = (resolved ? bases[i]?.blocks["target"] : head[`ops/${i}/target`]) as {
       table: string;
       row?: string;
       entity?: string;
@@ -424,7 +436,9 @@ export async function readReceipt(
     const iv = (v: Span) => intervalOut(v, byDate);
     const name = (f: string) => table.fields.find((x) => x.id === f)?.name ?? f;
     const rowId = (t.row ?? t.entity) as string;
-    const base = bases.find((b) => (b.blocks["target"] as { op_index: number }).op_index === i);
+    const base = resolved
+      ? bases[i]
+      : bases.find((b) => (b.blocks["target"] as { op_index: number }).op_index === i);
     // By field name, built as entries: a name like `__proto__` stays a key of its own.
     const fields = new Map<string, FieldResult | FieldResult[]>();
     const rowVer = await verAsOf(tx, table, rowId, op, o.restoreCount);

@@ -30,6 +30,11 @@ export interface ItemInput {
   readonly state: string;
   /** The next entry number of the item (`pending_entries.n`). */
   readonly nextEntry: number;
+  /**
+   * `item.resolved`: the confirmation hash of the item's entry blocks in effect (`confirmation.ts`);
+   * undefined: it has none; `"removed"`: one of them was removed by a tombstone.
+   */
+  readonly confirmation?: string;
 }
 
 const isEntry = (path: string) => path !== "target";
@@ -138,6 +143,19 @@ export function planItem(
     case "item.resolved": {
       const target = t as Obj;
       const id = target["item"] as string;
+      // The hash the decision confirmed, computed when the event was appended, is that of the item's
+      // entries as applied (§5.8 «追加时算、落账时核对»). Removed with an entry it covered, it is not
+      // checked.
+      const given = present["confirmation"] as Obj | undefined;
+      const now = input.item?.confirmation;
+      const removed = given === undefined && paths.includes("confirmation");
+      if (!removed && now !== "removed" && (given?.["hash"] as string | undefined) !== now) {
+        throw new ApplyError(
+          "inconsistent",
+          seq,
+          `the confirmation of ${id} does not match its entries`,
+        );
+      }
       return [
         { kind: "item_update", id, state: "resolved", decision: target["decision"] as string },
         { kind: "flags_drop", item: id },

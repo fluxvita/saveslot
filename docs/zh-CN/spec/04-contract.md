@@ -81,7 +81,7 @@
 - **单位**：连接实例。凭用户会话调用时是这个用户会话（它的所有调用共用一份"最近读到"）；给人用的外化面应显式带回版本、不靠兜底。
 - **`task`**：带了 `task` 的调用只认同一 `task` 下的读取；没带 `task` 的调用只认没带 `task` 的读取。读过但 `task` 不同时，`read_first` 的 `reason` 是 `task_mismatch`。
 - **什么算读到 `ver`**：逐行读——`query`、`history` 的 `timeline` 返回的当前版本；以及本连接实例自己的写入回执里**已生效**的 `ver`。`sql`、聚合类读取、按时刻读到的历史版本不算；回执里 `candidate` 结果附的 `current_ver` 不算。
-- **什么算读到 `item_ver`**：查看该事项的详情；或本次写入 / 删除 / 草稿提交**新生成**了该事项、且回执给出了它的全部内容（data-model「待处理事项 · 事项 ID 与事项版本」）。只列出事项 ID 的地方不算；回执里标了 `merged` 或 `refreshed` 的不算，要先看详情。
+- **什么算读到 `item_ver`**：查看该事项的详情；`resolve` 报 `confirmation_mismatch` 时附带的 `current`，它就是该事项此刻的详情，等同于查看详情；或本次写入 / 删除 / 草稿提交**新生成**了该事项、且回执给出了它的全部内容（data-model「待处理事项 · 事项 ID 与事项版本」）。只列出事项 ID 的地方不算；回执里标了 `merged` 或 `refreshed` 的不算，要先看详情。
 - **什么算读到 `sv`**：本连接实例对该 slot 的任何一次读取，含 `catalog`。带回的 `sv` 落后时不一概拒绝，只拒绝写到不兼容变化的字段（`schema_incompatible`）。
 - **前提里的 `ver`**（`ops[i].premises[j].ver`，5.1）与写入目标的 `ver` 同一套规则：应带回，没带时兜底，提醒是 `premise_ver_fallback`；无可兜底报 `read_first`。
 - **按来源键的 op 不用兜底**：它不带 `ver`，所见版本由内核取同步基线（5.1），不查读取记录，没读过也不报 `read_first`。
@@ -470,7 +470,7 @@
 
 1. 事项不存在 → `not_found`。
 2. 事项已关闭：已解决、处理方式相同 → 返回原结果，`replayed: true`；已解决、处理方式不同，或已被取代 → `item_closed`（附已有结果，或取代的原因）。所以过了很久用旧 `item_ver` 重发同一处理方式，也按重放返回。
-3. 按第 6 节核对绑定的内容；对不上 → `confirmation_mismatch`（附当前内容与新的 `item_ver`）。
+3. 按第 6 节核对绑定的内容；对不上 → `confirmation_mismatch`，附 `current`：该事项此刻的详情（含新的 `item_ver`），与同一时刻查看详情所得相同，算读到（第 2 节）。
 4. `schema_change` 的 `confirm`：在同一个事务里重新判断。草稿里凡按"从未被写入"编译的改动（只对从未被写入的表放开的结构改动，以及归入 `restructure_unused` 的各项，见 `schema_draft` 一节），所在的表在确认时已被写入，一律报 `draft_outdated`（`table_written`）；草稿带 `migrate` 时，对试跑之后的新写入（迁移期间带旧 `sv` 的写入）重新求值，有失败的报 `draft_outdated`（`migrate_failed`）。两种都不产生任何事件，事项保持未决；调用方 `reject` 这份草稿，或提交新草稿取代它。
 
 - `take_candidate` 在事项有多个候选时必须给 `candidate`（详情里候选的 `index`；下标在事项生命周期内不复用），否则 `invalid_argument`（`candidate_required`，附候选 `candidate_choices`：每个候选的下标、所在写入的操作号与写入者）。

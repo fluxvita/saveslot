@@ -2,3 +2,4 @@ export { type ReceiptWarning, WriteError, type WriteInput, writeInTx } from "./p
 export * from "./plan.ts";
 export type { FieldResult, OpReceipt, PendingRef, WriteReceipt } from "./receipt.ts";
 export * from "./record.ts";
+export * from "./resolve.ts";

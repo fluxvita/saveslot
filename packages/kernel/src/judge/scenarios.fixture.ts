@@ -593,7 +593,17 @@ export interface Judged {
  * Judges the log op by op, inserting the decisions; ops `judge` refuses are dropped. Returns the
  * steps that entered the log and the refusals, each with the ops before it.
  */
-export function judged(schema: TableSchema, ops: readonly Op[], decisions: readonly Decision[]) {
+export function judged(
+  schema: TableSchema,
+  ops: readonly Op[],
+  decisions: readonly Decision[],
+  /**
+   * Where inserted ops go: their offsets after the op they follow, and how far after its operation
+   * an inserted op's event comes (1: right after; 2: a source between, as the pipeline appends a
+   * decision that writes with its `api_call` source).
+   */
+  numbering: { readonly slots?: readonly number[]; readonly eventAfter?: number } = {},
+) {
   const table = shape(schema);
   const isEventTable = schema.kind !== "state";
   let state = emptyState(table);
@@ -631,12 +641,13 @@ export function judged(schema: TableSchema, ops: readonly Op[], decisions: reado
     decisions
       .filter((x) => x.after % ops.length === i)
       .forEach((d, j) => {
-        const slot = SLOTS[j];
+        const slot = (numbering.slots ?? SLOTS)[j];
         if (slot === undefined) return;
         const op = o.op + slot;
         // A decision that writes nothing (reject, keep_effective) is its own operation: its event
         // is the decision itself, numbered as the operation (09 §4.1). Others write a base event.
-        const event = d.kind === "reject" || d.kind === "keep" ? op : op + 1;
+        const event =
+          d.kind === "reject" || d.kind === "keep" ? op : op + (numbering.eventAfter ?? 1);
         if (d.kind === "undo") {
           const pool = d.focus ? steps.filter((k) => k.op.kind !== "write") : steps;
           const target = pool[d.pick % Math.max(1, pool.length)]?.op.op;

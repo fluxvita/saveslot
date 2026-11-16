@@ -3,6 +3,7 @@
 // logs, and the write pipeline with identifiers chosen by the test. Source only (not built); only
 // test files may import it.
 
+export { withConfirmations } from "./apply/confirmation.fixture.ts";
 export * from "./apply/slot.fixture.ts";
 export {
   type Decision,
@@ -25,3 +26,4 @@ export {
   type LoggedEvent,
 } from "./write/log.fixture.ts";
 export { type WriteInput, writeInTx } from "./write/pipeline.ts";
+export { resolveInTx } from "./write/resolve.ts";

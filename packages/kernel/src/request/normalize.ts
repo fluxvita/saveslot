@@ -62,7 +62,7 @@ export const EVIDENCE_REQUEST_BYTES = 256 * 1024;
 export const FILE_REF_CHARS = { name: 256, mime: 256, origin: 2048 } as const;
 
 /** Thrown inside the first pass with the request's error. */
-class Refused extends Error {
+export class Refused extends Error {
   readonly error: RequestError;
   constructor(error: RequestError) {
     super(error.code);
@@ -71,7 +71,7 @@ class Refused extends Error {
 }
 
 /** Throws the error, its echoed names and paths cut to `ECHO_CHARS` code points each. */
-const refuse = (error: RequestError): never => {
+export const refuse = (error: RequestError): never => {
   const e = error as RequestError & { param?: string; name?: string };
   throw new Refused({
     ...error,
@@ -79,17 +79,20 @@ const refuse = (error: RequestError): never => {
     ...(typeof e.name === "string" ? { name: echoName(e.name) } : {}),
   } as RequestError);
 };
-const invalid = (reason: string, param: string, extra: Record<string, unknown> = {}): never =>
-  refuse({ code: "invalid_argument", reason, param, ...extra } as RequestError);
-const notYet = (param: string, reason: "parameter" | "value" = "parameter"): never =>
+export const invalid = (
+  reason: string,
+  param: string,
+  extra: Record<string, unknown> = {},
+): never => refuse({ code: "invalid_argument", reason, param, ...extra } as RequestError);
+export const notYet = (param: string, reason: "parameter" | "value" = "parameter"): never =>
   refuse({ code: "not_in_this_version", reason, param });
 
 const utf8Bytes = (s: string) => new TextEncoder().encode(s).length;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it finds
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+export const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 /** A JSON integer: a number, or a JsonNumber whose text is an integer. */
-function intOf(v: unknown): number | undefined {
+export function intOf(v: unknown): number | undefined {
   if (typeof v === "number") return Number.isSafeInteger(v) ? v : undefined;
   if (isJsonNumber(v) && /^-?(0|[1-9][0-9]*)$/.test(v.text)) {
     const n = Number(v.text);
@@ -98,7 +101,8 @@ function intOf(v: unknown): number | undefined {
   return undefined;
 }
 
-function tag(o: Obj, key: string): string | undefined {
+/** `task` or `idempotency_key`: non-empty, well-formed, at most MAX_TAG_CHARS, no control chars. */
+export function tag(o: Obj, key: string): string | undefined {
   if (!has(o, key)) return undefined;
   const v = get(o, key);
   if (
@@ -139,7 +143,7 @@ const VER = /^v([1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
 // --- evidence (04-contract §3) ------------------------------------------------------------------
 
-function evidence(v: unknown): EvidenceSegment[] {
+export function evidence(v: unknown): EvidenceSegment[] {
   if (v === undefined) return [];
   if (!isDenseArray(v)) return invalid("malformed", "evidence");
   let total = 0;
@@ -362,7 +366,8 @@ function bizPoint(v: unknown, at: string, c: PointCtx): DateStr | Instant {
 // --- request key (04-contract §14) ----------------------------------------------------------------
 
 /** RFC 8785 form of the request without task and idempotency_key; JsonNumbers as their own text. */
-function requestContent(params: Obj): string {
+/** The request's canonical content, without `task` and `idempotency_key` (its request key's). */
+export function requestContent(params: Obj): string {
   const out: string[] = [];
   const walk = (v: unknown): void => {
     if (isJsonNumber(v)) out.push(v.text);

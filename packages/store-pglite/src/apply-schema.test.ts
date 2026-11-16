@@ -11,8 +11,10 @@ import {
   ApplyError,
   appendOperation,
   applyEvents,
+  confirmationHash,
   createOpsContext,
   createTenant,
+  entryChecksums,
   eventsOf,
   KERNEL_TABLES,
   type NewEvent,
@@ -613,6 +615,77 @@ describe("sources, request keys and pending items", () => {
   );
 
   it(
+    "a decision whose confirmation is not the item's entries' hash is inconsistent, nothing kept",
+    async () => {
+      const before = await store.read((tx) => readTail(tx));
+      const wrong = stopped(
+        run(store, [
+          {
+            type: "item.resolved",
+            slot: SLOT,
+            blocks: {
+              ctx: {
+                now: "2026-11-10T05:00:00.000Z",
+                today: "2026-11-10",
+                ruleset_version: 1,
+                policy_version: 1,
+              },
+              target: {
+                item: CONFLICT,
+                decision: "keep_effective",
+                item_op: 41,
+                restore_count: 0,
+                via: "call",
+              },
+              confirmation: { hash: "0".repeat(64) },
+            },
+          },
+        ]),
+      );
+      expect(await wrong).toBe(
+        `inconsistent: the confirmation of ${CONFLICT} does not match its entries`,
+      );
+      expect(await store.read((tx) => readTail(tx))).toEqual(before);
+    },
+    T,
+  );
+
+  it(
+    "a decision without a confirmation on an item with entries is inconsistent, nothing kept",
+    async () => {
+      const before = await store.read((tx) => readTail(tx));
+      const missing = stopped(
+        run(store, [
+          {
+            type: "item.resolved",
+            slot: SLOT,
+            blocks: {
+              ctx: {
+                now: "2026-11-10T05:00:00.000Z",
+                today: "2026-11-10",
+                ruleset_version: 1,
+                policy_version: 1,
+              },
+              target: {
+                item: CONFLICT,
+                decision: "keep_effective",
+                item_op: 41,
+                restore_count: 0,
+                via: "call",
+              },
+            },
+          },
+        ]),
+      );
+      expect(await missing).toBe(
+        `inconsistent: the confirmation of ${CONFLICT} does not match its entries`,
+      );
+      expect(await store.read((tx) => readTail(tx))).toEqual(before);
+    },
+    T,
+  );
+
+  it(
     "item.superseded and item.resolved: state, decision, flags gone, the resolution's request key",
     async () => {
       const sup = await run(store, [
@@ -625,6 +698,10 @@ describe("sources, request keys and pending items", () => {
           },
         },
       ]);
+      // The hash of what the decision confirms: the item's entries as they are (§5.8).
+      const hash = await store.read(async (tx) =>
+        confirmationHash(await entryChecksums(tx, CONFLICT)),
+      );
       const res = await run(store, [
         {
           type: "item.resolved",
@@ -644,6 +721,7 @@ describe("sources, request keys and pending items", () => {
               restore_count: 0,
               via: "call",
             },
+            ...(hash !== undefined ? { confirmation: { hash } } : {}),
           },
         },
       ]);

@@ -7,8 +7,10 @@
 import {
   appendOperation,
   applyEvents,
+  confirmationHash,
   createOpsContext,
   createTenant,
+  entryChecksums,
   eventsOf,
   flushReads,
   readBufferOf,
@@ -613,6 +615,7 @@ describe("the main path", () => {
       const c1 = await update(row, { b: "z" }, ver);
       const item = c1.pending[0]?.id as string;
       await s.store.write(async (tx) => {
+        const hash = confirmationHash(await entryChecksums(tx, item));
         const op = await appendOperation(tx, {
           actor: USER as never,
           now: now() as never,
@@ -634,6 +637,7 @@ describe("the main path", () => {
                   restore_count: 0,
                   via: "call",
                 },
+                ...(hash !== undefined ? { confirmation: { hash } } : {}),
               },
             },
           ],

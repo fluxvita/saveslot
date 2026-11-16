@@ -22,6 +22,12 @@ export {
 } from "./normalize.ts";
 export { decimalText, isJsonNumber, JsonNumber, jsonNumber, keepNumberText } from "./number.ts";
 export { get, has, isDenseArray, isObj, keysOf, type Obj } from "./own.ts";
+export {
+  type NormalizedResolve,
+  type NormalizeResolveResult,
+  normalizeResolve,
+  type ResolveDecision,
+} from "./resolve.ts";
 export { instantText, type ParsedDateTime, parseDateTime, validDate } from "./times.ts";
 export type * from "./types.ts";
 export { normalizeValue, type ValueResult } from "./values.ts";
