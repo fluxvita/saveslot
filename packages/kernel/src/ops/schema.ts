@@ -4,8 +4,10 @@
 // compiled (`applied`), confirmed (`auto`), the default policy, switched.
 //
 // In this version only a new slot: a draft changing a slot (`base_version` not null) is
-// `not_in_this_version`. A document with a derived table or an external key compiles, but apply
-// cannot build those yet, so it stops here (internal `not_implemented`) before anything is logged.
+// `not_in_this_version`. Derived tables are created with the slot, except those whose rule this
+// version does not evaluate (`not_in_this_version` on the table's `rule`). A document with an
+// external key compiles, but apply cannot build it yet, so it stops here (internal
+// `not_implemented`) before anything is logged.
 //
 // The slot ID, the draft ID and the next free table and rule numbers are read and used in the same
 // write transaction: the store has one writer, so two slots never take the same numbers.
@@ -19,7 +21,7 @@ import type { CompiledSchema, JsonValue } from "@fluxvita/saveslot-contract-core
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import { ApplyError, applyEvents, eventsOf } from "../apply/index.ts";
 import { appendOperation, type NewEvent } from "../log/index.ts";
-import { loadRsql, RULESET_VERSION } from "../rules/index.ts";
+import { evaluationRefusal, loadRsql, RULESET_VERSION } from "../rules/index.ts";
 import { compileNewSlot, DEFAULT_SLOT_POLICY, filledDocument } from "../schema/index.ts";
 import type { ReadTx, TenantStore } from "../store/ports.ts";
 import { todayIn } from "../write/index.ts";
@@ -262,19 +264,23 @@ export async function schemaDraft(
       });
     }
     const compiled = result.compiled;
-    // What apply cannot build yet stops here, before anything is logged.
+    // What this version does not evaluate or build stops here, before anything is logged: a rule
+    // depending on today, one calling saveslot_date, a decimal group key that may have more
+    // places than its scale (evaluationRefusal, which apply checks again); an external key.
     compiled.tables.forEach((t, i) => {
-      if (t.kind === "derived" || ("external_key" in t && t.external_key !== undefined))
-        throw new SchemaDraftError(
-          "internal",
-          t.kind === "derived"
-            ? "a derived table is not applied yet"
-            : "an external key is not applied yet",
-          {
-            reason: "not_implemented",
-            param: t.kind === "derived" ? `tables/${i}` : `tables/${i}/external_key`,
-          },
-        );
+      if (t.kind === "derived") {
+        const refusal = evaluationRefusal(compiled, t.id);
+        if (refusal !== undefined)
+          throw new SchemaDraftError(
+            "not_in_this_version",
+            `a derived rule of this kind is not evaluated in this version: ${refusal.kind}`,
+            { reason: "parameter", param: `tables/${i}/rule` },
+          );
+      } else if ("external_key" in t && t.external_key !== undefined)
+        throw new SchemaDraftError("internal", "an external key is not applied yet", {
+          reason: "not_implemented",
+          param: `tables/${i}/external_key`,
+        });
     });
 
     const draft = newDraftId();

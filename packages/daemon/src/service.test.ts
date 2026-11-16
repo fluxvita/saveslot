@@ -27,7 +27,7 @@ import { anchorFileText, createLocalHome } from "@fluxvita/saveslot-service/test
 import { osFileLock, PgliteBackend, type PgliteTenantStore } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { LEDGER } from "./contract-suite.fixture.ts";
-import { httpRequest } from "./http-driver.fixture.ts";
+import { httpDriver } from "./http-driver.fixture.ts";
 import { main } from "./main.ts";
 import { lockDir, pidFile, runService, socketFile } from "./service.ts";
 
@@ -156,9 +156,9 @@ describe("the service process", () => {
     await again.release();
   });
 
-  it("comes back after each of three SIGKILLs in a row, and then compiles a document's rules", async () => {
+  it("comes back after each of three SIGKILLs in a row: a slot's derived table is read and refreshed, a document's rules compile", async () => {
     // A process started after one that did not exit cleanly loads the restricted SQL parser
-    // when it opens the tenant, as the first one did.
+    // when it opens the tenant, as the first one did, and serves the derived tables as before.
     const h = join(root, `crash-${n++}`);
     await initLocalHome({
       home: h,
@@ -167,49 +167,75 @@ describe("the service process", () => {
       now: new Date().toISOString(),
     });
     const session = readFileSync(sessionFile(h), "utf8").trim();
+    const call = (op: Parameters<ReturnType<typeof httpDriver>>[1], params: unknown) =>
+      httpDriver(() => h)(session, op, params as never);
+    const withRule = (slot: string, table: string) => ({
+      ...LEDGER,
+      slot,
+      tables: [
+        { ...LEDGER.tables[0], name: table },
+        {
+          name: `${table}_by_day`,
+          kind: "derived",
+          description: "notes a day",
+          rule: {
+            sql: `SELECT date AS day, count(note) AS notes FROM ${table} GROUP BY 1`,
+            time_dependency: "bucketed",
+          },
+          fields: [
+            { name: "day", description: "the day" },
+            { name: "notes", description: "notes that day" },
+          ],
+        },
+      ],
+    });
+    const insert = (table: string, note: string) =>
+      call("write", {
+        sv: 1,
+        ops: [{ intent: "insert", table, set: { date: "2026-11-02", note } }],
+      });
+    const notes = async (table: string) =>
+      (
+        (await call("query", { table })) as {
+          result: { rows: { values: unknown; input_marks: unknown }[] };
+        }
+      ).result.rows.map((r) => [r.values, (r.input_marks as { disputed: number }).disputed]);
+
     let p = start(h);
+    expect(await until(h, ["ready"])).toMatchObject({ pid: p.proc.pid });
+    expect(await call("schema_draft", { document: withRule("ledger", "expenses") })).toMatchObject({
+      result: { outcome: "applied" },
+    });
+    expect(await insert("expenses", "tea")).toMatchObject({ result: { status: "saved" } });
     for (let i = 0; i < 3; i++) {
-      expect(await until(h, ["ready"]), `start ${i}`).toMatchObject({ pid: p.proc.pid });
       p.proc.kill("SIGKILL");
       expect(await p.exit).toEqual({ code: null, signal: "SIGKILL" });
       p = start(h);
+      expect(await until(h, ["ready"]), `restart ${i}`).toMatchObject({ pid: p.proc.pid });
     }
-    expect(await until(h, ["ready"])).toMatchObject({ pid: p.proc.pid });
-    // A derived table's rule compiles; the document stops only at what this version cannot
-    // build yet (a derived table), after compiling.
-    const r = await httpRequest(h, {
-      method: "POST",
-      path: "/v1/drafts",
-      token: session,
-      body: JSON.stringify({
-        document: {
-          ...LEDGER,
-          tables: [
-            ...LEDGER.tables,
-            {
-              name: "notes_by_day",
-              kind: "derived",
-              description: "notes a day",
-              rule: {
-                sql: "SELECT date AS day, count(note) AS notes FROM expenses GROUP BY 1",
-                time_dependency: "bucketed",
-              },
-              fields: [
-                { name: "day", description: "the day" },
-                { name: "notes", description: "notes that day" },
-              ],
-            },
-          ],
-        },
-      }),
+    // The derived table as before; a write refreshes it; a new document's rule compiles.
+    expect(await notes("expenses_by_day")).toEqual([[{ day: "2026-11-02", notes: "1" }, 0]]);
+    expect(await insert("expenses", "bun")).toMatchObject({
+      result: {
+        derived: [
+          {
+            table: "ledger.expenses_by_day",
+            key: { day: "2026-11-02" },
+            field: "notes",
+            before: "1",
+            after: "2",
+          },
+        ],
+      },
     });
-    expect(JSON.parse(r.body).error).toMatchObject({
-      reason: "not_implemented",
-      param: "tables/1",
+    expect(await notes("expenses_by_day")).toEqual([[{ day: "2026-11-02", notes: "2" }, 0]]);
+    expect(await call("schema_draft", { document: withRule("health", "meals") })).toMatchObject({
+      result: { outcome: "applied" },
     });
     p.proc.kill("SIGTERM");
     expect(await p.exit).toEqual({ code: 0, signal: null });
-    // Four starts, each through crash recovery: slower than one start under a full run's load.
+    // Four starts, three of them through crash recovery: slower than one start under a full
+    // run's load.
   }, 240_000);
 
   it("does not serve when the anchor says the log went back, and still stops cleanly", async () => {

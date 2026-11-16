@@ -1,6 +1,7 @@
 // `schema_draft` creating a slot (04-contract §10 `schema_draft`; 04-contract-types §5.3) through
 // the ops entry: the slot is created in one operation and query, write and catalog use it; the
-// receipt; replays and explicit idempotency keys; every refusal of this version.
+// receipt; replays and explicit idempotency keys; a slot with a derived table, refreshed by writes
+// and read with its input marks; every refusal of this version.
 
 import {
   catalog,
@@ -175,6 +176,142 @@ describe("creating a slot", () => {
   );
 });
 
+/** The document with a derived table over expenses: notes a day. */
+const WITH_DERIVED = {
+  ...structuredClone(DOCUMENT),
+  tables: [
+    ...structuredClone(DOCUMENT).tables,
+    {
+      name: "totals",
+      kind: "derived",
+      description: "notes a day",
+      fields: [
+        { name: "date", description: "the day" },
+        { name: "n", description: "how many" },
+      ],
+      rule: {
+        sql: "SELECT date, count(note) AS n FROM expenses GROUP BY date",
+        time_dependency: "bucketed",
+      },
+    },
+  ],
+};
+
+describe("a slot with a derived table", () => {
+  it(
+    "is created with it; a write refreshes it, its receipt gives the change; query reads it with input marks",
+    async () => {
+      const r = await draft({ document: structuredClone(WITH_DERIVED) });
+      expect(r).toMatchObject({ slot: "ledger", outcome: "applied", sv: 1 });
+      expect(r.changes).toContainEqual(
+        expect.objectContaining({ target: { table: "totals" }, change: "add_derived_table" }),
+      );
+      const empty = await query(s.store, ctx(), { table: "totals" });
+      expect(empty.rows).toEqual([]);
+
+      const w = (await write(s.store, ctx(), {
+        sv: 1,
+        ops: [{ intent: "insert", table: "expenses", set: { date: "2026-11-02", note: "tea" } }],
+      })) as unknown as { status: string; derived: unknown[]; derived_total: number };
+      expect(w.status).toBe("saved");
+      expect(w.derived).toEqual([
+        {
+          table: "ledger.totals",
+          key: { date: "2026-11-02" },
+          field: "n",
+          before: null,
+          after: "1",
+        },
+      ]);
+      expect(w.derived_total).toBe(1);
+      await write(s.store, ctx(), {
+        sv: 1,
+        ops: [{ intent: "insert", table: "expenses", set: { date: "2026-11-02", note: "bun" } }],
+      });
+      const q = await query(s.store, ctx(), { table: "totals" });
+      expect(q.rows.map((x) => [x.key, x.values, x.input_marks])).toEqual([
+        [
+          { date: "2026-11-02" },
+          { date: "2026-11-02", n: "2" },
+          { disputed: 0, awaiting: 0, flagged: 0, premise_changed: 0, items: [] },
+        ],
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "replays the same request: the same receipt, no second slot",
+    async () => {
+      const first = await draft({ document: structuredClone(WITH_DERIVED) });
+      const again = await draft({ document: structuredClone(WITH_DERIVED) });
+      const { replayed, ...rest } = again;
+      expect(replayed).toBe(true);
+      expect(rest).toEqual(first);
+      expect(await slotCount()).toBe(1);
+    },
+    T,
+  );
+
+  /** The document with expenses carrying a decimal and a zoned date-time, and one derived rule. */
+  const ruled = (sql: string, fields: string[], time_dependency: string) => ({
+    ...structuredClone(DOCUMENT),
+    tables: [
+      {
+        ...structuredClone(DOCUMENT).tables[0],
+        fields: [
+          ...(structuredClone(DOCUMENT).tables[0]?.fields ?? []),
+          { name: "price", type: "decimal", description: "how much" },
+          { name: "paid_at", type: "zoned_datetime", description: "when paid" },
+        ],
+      },
+      structuredClone(DOCUMENT).tables[1],
+      {
+        name: "summary",
+        kind: "derived",
+        description: "a summary",
+        fields: fields.map((name) => ({ name, description: name })),
+        rule: { sql, time_dependency },
+      },
+    ],
+  });
+
+  it.each([
+    [
+      "depending on today",
+      ruled(
+        "SELECT count(note) AS n FROM expenses WHERE date > saveslot_today() - 30",
+        ["n"],
+        "now",
+      ),
+    ],
+    ["reading a state table", ruled("SELECT sum(amount) AS total FROM budgets", ["total"], "now")],
+    [
+      "calling saveslot_date",
+      ruled(
+        "SELECT saveslot_date(paid_at) AS d, count(note) AS n FROM expenses GROUP BY 1",
+        ["d", "n"],
+        "bucketed",
+      ),
+    ],
+    [
+      "with a decimal group key that may have more places than its scale",
+      ruled("SELECT price / 2 AS k, count(note) AS n FROM expenses GROUP BY 1", ["k", "n"], "none"),
+    ],
+  ])("refuses a rule %s: not_in_this_version on the rule, nothing logged", async (_, doc) => {
+    expect(await refused({ document: doc })).toEqual({
+      code: "not_in_this_version",
+      reason: "parameter",
+      param: "tables/2/rule",
+    });
+    const n = await s.store.read((tx) =>
+      tx.query<{ n: unknown }>("SELECT count(*) AS n FROM events WHERE type LIKE 'schema.%'"),
+    );
+    expect(Number(n.rows[0]?.n)).toBe(0);
+    expect(await slotCount()).toBe(0);
+  });
+});
+
 describe("idempotency", () => {
   it(
     "replays the same request: the same receipt, no second slot",
@@ -212,25 +349,6 @@ describe("idempotency", () => {
 });
 
 describe("refusals", () => {
-  const derived = {
-    ...structuredClone(DOCUMENT),
-    tables: [
-      ...structuredClone(DOCUMENT).tables,
-      {
-        name: "totals",
-        kind: "derived",
-        description: "notes a day",
-        fields: [
-          { name: "date", description: "the day" },
-          { name: "n", description: "how many" },
-        ],
-        rule: {
-          sql: "SELECT date, count(*) AS n FROM expenses GROUP BY date",
-          time_dependency: "bucketed",
-        },
-      },
-    ],
-  };
   const keyed = {
     ...structuredClone(DOCUMENT),
     tables: [
@@ -299,13 +417,8 @@ describe("refusals", () => {
   );
 
   it(
-    "stops a derived table and an external key before anything is logged (not applied yet)",
+    "stops an external key before anything is logged (not applied yet)",
     async () => {
-      expect(await refused({ document: derived })).toEqual({
-        code: "internal",
-        reason: "not_implemented",
-        param: "tables/2",
-      });
       expect(await refused({ document: keyed })).toEqual({
         code: "internal",
         reason: "not_implemented",
