@@ -59,6 +59,13 @@ async function refused(f: () => unknown): Promise<Record<string, unknown>> {
   throw new Error("not refused");
 }
 
+/** Another base64url character with the same upper four bits (the last of 43 keeps only those). */
+const sameBytesOtherSpelling = (c: string): string => {
+  const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const i = ALPHABET.indexOf(c);
+  return ALPHABET[(i & ~3) | ((i + 1) & 3)] as string;
+};
+
 describe("paging handles (cur_)", () => {
   it("round-trip: the position comes back from a handle this service signed", async () => {
     const keys = await CursorKeys.open(home());
@@ -92,8 +99,11 @@ describe("paging handles (cur_)", () => {
       `cur_${re({ ...o, x: later(10 * 60 * 60_000) })}.${mac}`,
       // Signed by another home's key.
       other.sign("P", A, NOW),
-      // The signature altered.
-      `cur_${payload}.${mac.slice(0, -1)}${mac.endsWith("A") ? "B" : "A"}`,
+      // The signature altered (a character in the middle: every bit there counts).
+      `cur_${payload}.${mac.slice(0, 20)}${mac[20] === "A" ? "B" : "A"}${mac.slice(21)}`,
+      // The signature spelled another way that decodes to the same bytes (the last character's
+      // spare bits): only the canonical spelling is taken.
+      `cur_${payload}.${mac.slice(0, -1)}${sameBytesOtherSpelling(mac.at(-1) as string)}`,
       // Not of the form.
       "cur_",
       `cur_${payload}`,
@@ -333,6 +343,20 @@ describe("contractError", () => {
       "not_implemented",
       { error: "WriteError", param: "ops/0/set/*" },
     ]);
+  });
+
+  it("an error of any kernel class with a contract code passes; a system error's code does not", () => {
+    class SchemaDraftError extends Error {
+      override readonly name = "SchemaDraftError";
+      readonly code = "invalid_argument";
+      readonly detail = { reason: "malformed", param: "document" };
+    }
+    expect(contractError(new SchemaDraftError("m"), warn)).toMatchObject({
+      code: "invalid_argument",
+      detail: { param: "document" },
+    });
+    const system = Object.assign(new Error("ENOENT: /secret/path"), { code: "ENOENT" });
+    expect(contractError(system, warn)).toMatchObject({ code: "internal" });
   });
 
   it("any other internal error, or an error of no contract: internal with an incident, nothing of the cause", () => {

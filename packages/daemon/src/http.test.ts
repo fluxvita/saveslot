@@ -1,0 +1,405 @@
+// The HTTP adapter on the local socket, against a running service (05-surfaces §13–§15): the
+// contract cases through an HTTP driver, then what is HTTP's own — statuses and headers, the body
+// limit, the query string, routes of later versions, the service still starting — and the log:
+// one line a request, never a token, a header value, a path part or a body.
+
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { initLocalHome, type Operation, sessionFile } from "@fluxvita/saveslot-service";
+import { osFileLock, PgliteBackend } from "@fluxvita/saveslot-store-pglite";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { contractSuite, type Driver, type Outcome } from "./contract-suite.fixture.ts";
+import { type RunningService, runService, socketFile } from "./service.ts";
+
+const T = 60_000;
+const root = mkdtempSync(join(tmpdir(), "saveslot-http-"));
+const home = join(root, "home");
+const lines: string[] = [];
+let service: RunningService;
+let session = "";
+
+interface Reply {
+  readonly status: number;
+  readonly headers: Record<string, string | string[] | undefined>;
+  readonly body: string;
+}
+
+/** One request on the socket. */
+function http(o: {
+  method: string;
+  path: string;
+  token?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  socket?: string;
+}): Promise<Reply> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        socketPath: o.socket ?? socketFile(home),
+        method: o.method,
+        path: o.path,
+        headers: {
+          ...(o.token !== undefined && o.token !== ""
+            ? { authorization: `Bearer ${o.token}` }
+            : {}),
+          ...(o.body !== undefined ? { "content-type": "application/json" } : {}),
+          ...(o.headers ?? {}),
+        },
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8").on("data", (c: string) => {
+          body += c;
+        });
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+      },
+    );
+    req.on("error", reject);
+    if (o.body !== undefined) req.write(o.body);
+    req.end();
+  });
+}
+
+const query = (p: Record<string, unknown>) => {
+  const s = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) s.set(k, Array.isArray(v) ? v.join(",") : String(v));
+  const t = s.toString();
+  return t === "" ? "" : `?${t}`;
+};
+
+/** The contract's operations over HTTP (05-surfaces §14, §15). */
+const driver: Driver = async (credential, operation: Operation, params, o = {}) => {
+  const headers: Record<string, string> = {
+    ...(o.task !== undefined ? { "x-task-id": o.task } : {}),
+    ...(o.idempotencyKey !== undefined ? { "idempotency-key": o.idempotencyKey } : {}),
+  };
+  const { id, ...rest } = params as { id?: string } & Record<string, unknown>;
+  const at: Record<Operation, { method: string; path: string; body?: true }> = {
+    catalog: { method: "GET", path: "/v1/slots" },
+    query: { method: "POST", path: "/v1/query", body: true },
+    history: { method: "POST", path: "/v1/history", body: true },
+    pending: { method: "GET", path: id !== undefined ? `/v1/pending/${id}` : "/v1/pending" },
+    write: { method: "POST", path: "/v1/writes", body: true },
+    resolve: { method: "POST", path: `/v1/pending/${id}/resolution`, body: true },
+    schema_draft: { method: "POST", path: "/v1/drafts", body: true },
+    "connections.issue": { method: "POST", path: "/v1/connections", body: true },
+    "connections.list": { method: "GET", path: "/v1/connections" },
+    "connections.update": { method: "PATCH", path: `/v1/connections/${id}`, body: true },
+    "connections.revoke": { method: "DELETE", path: `/v1/connections/${id}` },
+    "reads.list": { method: "GET", path: "/v1/reads" },
+    "log.verify": { method: "GET", path: "/v1/log/verify" },
+  };
+  const r = at[operation];
+  const inPath = ["pending", "resolve", "connections.update", "connections.revoke"].includes(
+    operation,
+  );
+  const p = inPath ? rest : (params as Record<string, unknown>);
+  const reply = await http({
+    method: r.method,
+    path: r.body ? r.path : `${r.path}${query(p)}`,
+    token: credential,
+    headers,
+    ...(r.body ? { body: JSON.stringify(p) } : {}),
+  });
+  const json = JSON.parse(reply.body) as Record<string, unknown>;
+  if (reply.status === 200) return { result: json };
+  const { message: _, ...error } = json["error"] as Record<string, unknown>;
+  return { error } as Outcome;
+};
+
+beforeAll(async () => {
+  await initLocalHome({
+    home,
+    backend: new PgliteBackend(),
+    lock: osFileLock,
+    now: new Date().toISOString(),
+  });
+  session = readFileSync(sessionFile(home), "utf8").trim();
+  service = await runService({ home, version: "t", signals: false, log: (l) => lines.push(l) });
+  expect(service.state).toBe("ready");
+}, T);
+afterAll(async () => {
+  await service?.stop();
+  rmSync(root, { recursive: true, force: true });
+}, T);
+
+describe("the contract over HTTP", () => {
+  contractSuite(() => ({ driver, session }));
+});
+
+describe("HTTP's own", () => {
+  const err = (r: Reply) => (JSON.parse(r.body) as { error: Record<string, unknown> }).error;
+
+  it("/health takes no token; a path outside /v1/ is 404 with no body", async () => {
+    expect((await http({ method: "GET", path: "/health" })).status).toBe(200);
+    const r = await http({ method: "GET", path: "/elsewhere" });
+    expect([r.status, r.body]).toEqual([404, ""]);
+  });
+
+  it("401 with WWW-Authenticate: Bearer, and error=invalid_token for a token that is not good", async () => {
+    const missing = await http({ method: "GET", path: "/v1/slots" });
+    expect([missing.status, missing.headers["www-authenticate"], err(missing)["reason"]]).toEqual([
+      401,
+      "Bearer",
+      "missing",
+    ]);
+    const bad = await http({ method: "GET", path: "/v1/slots", token: `slt_${"A".repeat(43)}` });
+    expect([bad.status, bad.headers["www-authenticate"], err(bad)["reason"]]).toEqual([
+      401,
+      'Bearer error="invalid_token"',
+      "invalid",
+    ]);
+    // Authentication comes first: an unknown route without a token is 401, not 404.
+    expect((await http({ method: "GET", path: "/v1/nowhere" })).status).toBe(401);
+  });
+
+  it("an unknown route is 404 (route); a route of a later version is 501", async () => {
+    const r = await http({ method: "GET", path: "/v1/nowhere", token: session });
+    expect([r.status, err(r)["code"], err(r)["reason"]]).toEqual([404, "not_found", "route"]);
+    const later = await http({ method: "POST", path: "/v1/sql", token: session, body: "{}" });
+    expect([later.status, err(later)["code"]]).toEqual([501, "not_in_this_version"]);
+  });
+
+  it("the body: JSON only, at most 1 MiB, cut off past it; parameters not in the query string too", async () => {
+    const type = await http({
+      method: "POST",
+      path: "/v1/query",
+      token: session,
+      headers: { "content-type": "text/plain" },
+      body: "{}",
+    });
+    expect([type.status, err(type)["code"]]).toEqual([400, "invalid_argument"]);
+    const big = await http({
+      method: "POST",
+      path: "/v1/query",
+      token: session,
+      body: JSON.stringify({ table: "ledger.expenses", pad: "x".repeat(1024 * 1024) }),
+    });
+    expect([big.status, err(big)["code"], err(big)["reason"]]).toEqual([
+      413,
+      "too_large",
+      "request_body",
+    ]);
+    const both = await http({ method: "POST", path: "/v1/query?x=1", token: session, body: "{}" });
+    expect(both.status).toBe(400);
+    const notJson = await http({ method: "POST", path: "/v1/query", token: session, body: "{" });
+    expect(notJson.status).toBe(400);
+  });
+
+  it("the query string: a key twice is refused; limit a number; a table by its two path parts", async () => {
+    const twice = await http({ method: "GET", path: "/v1/slots?limit=1&limit=2", token: session });
+    expect([twice.status, err(twice)["param"]]).toEqual([400, "limit"]);
+    const one = await http({ method: "GET", path: "/v1/slots?limit=1", token: session });
+    expect(one.status).toBe(200);
+    const table = await http({
+      method: "GET",
+      path: "/v1/slots/ledger/tables/expenses",
+      token: session,
+    });
+    expect(table.status).toBe(200);
+    expect(table.body).toContain("expenses");
+  });
+
+  it("each path part of its form, or refused before it reaches anything", async () => {
+    const cases: [string, string, string | undefined, string][] = [
+      ["GET", "/v1/pending/constructor", undefined, "id"],
+      ["GET", "/v1/pending/__proto__", undefined, "id"],
+      ["POST", "/v1/pending/toString/resolution", "{}", "id"],
+      ["PATCH", "/v1/connections/__proto__", JSON.stringify({ name: "x" }), "id"],
+      ["DELETE", `/v1/connections/pi_${"1".repeat(16)}x`, undefined, "id"],
+      ["GET", "/v1/slots/con%2Fstructor", undefined, "slot"],
+      ["GET", "/v1/slots/ledger/tables/ex%20penses", undefined, "table"],
+      ["GET", `/v1/tables/${"t".repeat(65)}`, undefined, "table"],
+    ];
+    for (const [method, path, body, param] of cases) {
+      const r = await http({
+        method,
+        path,
+        token: session,
+        ...(body !== undefined ? { body } : {}),
+      });
+      expect({ path, status: r.status, param: err(r)["param"] }).toEqual({
+        path,
+        status: 400,
+        param,
+      });
+    }
+  });
+
+  it("task and idempotency key only as headers: in the body they are refused", async () => {
+    for (const k of ["task", "idempotency_key"]) {
+      const r = await http({
+        method: "POST",
+        path: "/v1/query",
+        token: session,
+        body: JSON.stringify({ [k]: "x" }),
+      });
+      expect([r.status, err(r)["param"]]).toEqual([400, k]);
+    }
+    const id = await http({
+      method: "POST",
+      path: `/v1/pending/pi_${"1".repeat(16)}/resolution`,
+      token: session,
+      body: JSON.stringify({ id: `pi_${"2".repeat(16)}`, decision: "keep_effective" }),
+    });
+    expect([id.status, err(id)["param"]]).toEqual([400, "id"]);
+  });
+
+  it("every route of this version reaches its operation; every later one is 501", async () => {
+    // A connection to rename, an item ID of the right form.
+    const issued = JSON.parse(
+      (
+        await http({
+          method: "POST",
+          path: "/v1/connections",
+          token: session,
+          body: JSON.stringify({ name: "routes" }),
+        })
+      ).body,
+    ) as { id: string };
+    const ITEM = `pi_${"3".repeat(16)}`;
+    // A row to read the history of.
+    const written = JSON.parse(
+      (
+        await http({
+          method: "POST",
+          path: "/v1/writes",
+          token: session,
+          body: JSON.stringify({
+            sv: 1,
+            ops: [{ intent: "insert", table: "ledger.expenses", set: { date: "2026-11-15" } }],
+          }),
+        })
+      ).body,
+    ) as { ops: { target: { row: string } }[] };
+    const row = written.ops[0]?.target.row;
+    const ours: [string, string, string | undefined, number][] = [
+      ["GET", "/v1/slots", undefined, 200],
+      ["GET", "/v1/slots/ledger", undefined, 200],
+      ["GET", "/v1/slots/ledger/schema", undefined, 200],
+      ["GET", "/v1/slots/ledger/tables?tables=expenses", undefined, 200],
+      ["GET", "/v1/slots/ledger/tables/expenses", undefined, 200],
+      ["GET", "/v1/tables/expenses", undefined, 200],
+      ["POST", "/v1/query", JSON.stringify({ table: "ledger.expenses" }), 200],
+      ["POST", "/v1/history", JSON.stringify({ table: "ledger.expenses", row }), 200],
+      ["GET", "/v1/pending", undefined, 200],
+      // No such item: the operation answers (404 not_found, item), not the router.
+      ["GET", `/v1/pending/${ITEM}`, undefined, 404],
+      [
+        "POST",
+        `/v1/pending/${ITEM}/resolution`,
+        JSON.stringify({ decision: "keep_effective" }),
+        404,
+      ],
+      ["POST", "/v1/writes", JSON.stringify({ sv: 1, ops: [] }), 400],
+      ["POST", "/v1/drafts", JSON.stringify({ document: { slot: "x" } }), 400],
+      ["POST", "/v1/connections", JSON.stringify({ name: "routes 2" }), 200],
+      ["GET", "/v1/connections", undefined, 200],
+      ["PATCH", `/v1/connections/${issued.id}`, JSON.stringify({ name: "renamed" }), 200],
+      ["DELETE", `/v1/connections/${issued.id}`, undefined, 200],
+      ["GET", "/v1/reads", undefined, 200],
+      ["GET", "/v1/log/verify", undefined, 200],
+    ];
+    for (const [method, path, body, status] of ours) {
+      const r = await http({
+        method,
+        path,
+        token: session,
+        ...(body !== undefined ? { body } : {}),
+      });
+      const reason = r.status === 200 ? undefined : err(r)["reason"];
+      expect({ method, path, status: r.status, routed: reason !== "route" }).toEqual({
+        method,
+        path,
+        status,
+        routed: true,
+      });
+    }
+    const later: [string, string][] = [
+      ["POST", "/v1/sql"],
+      ["GET", "/v1/sources"],
+      ["GET", "/v1/sources/s_1"],
+      ["POST", "/v1/deletions/preview"],
+      ["POST", "/v1/deletions"],
+      ["GET", "/v1/deletions/pi_1"],
+      ["GET", "/v1/drafts/d_1"],
+      ["POST", "/v1/claims"],
+      ["POST", "/v1/claims/ls_1/results"],
+      ["GET", "/v1/jobs"],
+      ["GET", "/v1/jobs/jb_1"],
+      ["GET", "/v1/slots/ledger/policy"],
+      ["PUT", "/v1/slots/ledger/policy"],
+      ["POST", "/v1/log/reconcile"],
+      ["GET", "/v1/export"],
+      ["POST", "/v1/import"],
+    ];
+    for (const [method, path] of later) {
+      const r = await http({
+        method,
+        path,
+        token: session,
+        ...(method === "GET" ? {} : { body: "{}" }),
+      });
+      expect({ method, path, status: r.status }).toEqual({ method, path, status: 501 });
+    }
+  });
+
+  it(
+    "503 while the service is still opening the tenant",
+    async () => {
+      // A second home, its request sent the moment the socket listens.
+      const h2 = join(root, "starting");
+      await initLocalHome({
+        home: h2,
+        backend: new PgliteBackend(),
+        lock: osFileLock,
+        now: new Date().toISOString(),
+      });
+      let early: Promise<Reply> | undefined;
+      const s2 = await runService({
+        home: h2,
+        version: "t",
+        signals: false,
+        log: () => {},
+        onListening: () => {
+          early = http({ method: "GET", path: "/v1/slots", socket: socketFile(h2) });
+        },
+      });
+      try {
+        const r = await (early as Promise<Reply>);
+        expect([r.status, err(r)["code"], err(r)["reason"]]).toEqual([
+          503,
+          "unavailable",
+          "starting",
+        ]);
+      } finally {
+        await s2.stop();
+      }
+    },
+    T,
+  );
+});
+
+describe("the log", () => {
+  it("one line a request with its route and status; no token, header value, path part or body", () => {
+    const requests = lines.filter((l) => l.includes(" request "));
+    expect(requests.length).toBeGreaterThan(20);
+    for (const l of requests) expect(l).toMatch(/ method=\w+ route=\w+ status=\d{3} ms=\d+$/);
+    const all = lines.join("\n");
+    expect(all).not.toMatch(/(slt|sls)_[A-Za-z0-9_-]{8}/);
+    for (const secret of [
+      "Bearer",
+      "tea",
+      "bus",
+      "weekly-review",
+      "tea-1",
+      "ledger.expenses",
+      "pi_1111",
+    ]) {
+      expect({ secret, found: all.includes(secret) }).toEqual({ secret, found: false });
+    }
+  });
+});

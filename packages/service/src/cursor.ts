@@ -182,6 +182,8 @@ export class CursorKeys {
     const id = o["k"];
     if (typeof id !== "string" || !this.#keys.has(id)) throw malformed();
     const given = Buffer.from(m[2] as string, "base64url");
+    // Only the one canonical spelling: the last character's spare bits make others decode alike.
+    if (given.toString("base64url") !== m[2]) throw malformed();
     const want = this.#mac(id, payload);
     if (given.length !== want.length || !timingSafeEqual(given, want)) throw malformed();
     const { a, p, x } = o;

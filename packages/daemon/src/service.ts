@@ -30,6 +30,8 @@ import {
   ControlFileError,
   Credentials,
   CredentialsCorrupt,
+  CursorKeys,
+  CursorKeysCorrupt,
   checkLocalHome,
   closeLocalTenant,
   flushLocalReads,
@@ -60,6 +62,10 @@ export interface RunServiceOptions {
   readonly probeMs?: number;
   /** Interval of writing the buffered reads (`flushReads`), in milliseconds (default 5000, §7). */
   readonly readsFlushMs?: number;
+  /** The server-computed request key's window, in milliseconds (default 10 minutes). */
+  readonly requestKeyWindowMs?: number;
+  /** The clock (tests). */
+  readonly clock?: () => string;
   /** Where log lines go (default stderr). */
   readonly log?: (line: string) => void;
   /** Called once the service listens, before the tenant is opened (state `starting`). */
@@ -120,6 +126,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   let reason: string | undefined;
   let tenant: LocalTenant | undefined;
   let credentials: Credentials | undefined;
+  let cursors: CursorKeys | undefined;
   let listener: LocalListener | undefined;
   let lock: DirLockHandle | undefined;
   let probe: NodeJS.Timeout | undefined;
@@ -218,6 +225,23 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   await rm(socketFile(o.home), { force: true });
   listener = await listenLocal({
     socketPath: socketFile(o.home),
+    api: {
+      ready: () =>
+        state === "ready" &&
+        tenant !== undefined &&
+        credentials !== undefined &&
+        cursors !== undefined
+          ? {
+              tenant,
+              credentials,
+              cursors,
+              windows: { requestKey: o.requestKeyWindowMs ?? 600_000, idempotencyKey: 86_400_000 },
+              now: o.clock ?? (() => new Date().toISOString()),
+              warn: (event, fields) => say(event, fields),
+            }
+          : undefined,
+      log: (fields) => say("request", fields),
+    },
     health: (): HealthBody => ({
       state: state === "stopped" ? "stopping" : state,
       version: o.version,
@@ -264,6 +288,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         credentials = await Credentials.load(o.home);
         const dropped = await pruneCredentials(r.tenant, credentials);
         if (dropped > 0) say("credentials_pruned", { count: dropped });
+        cursors = await CursorKeys.open(o.home);
       } catch (e) {
         await closeLocalTenant(r.tenant).catch(() => {});
         state = "failed";
@@ -272,7 +297,9 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
             ? "credentials_permissions"
             : e instanceof CredentialsCorrupt
               ? "credentials_corrupt"
-              : codeOf(e);
+              : e instanceof CursorKeysCorrupt
+                ? "cursor_keys_corrupt"
+                : codeOf(e);
         say("failed", { reason });
         return;
       }

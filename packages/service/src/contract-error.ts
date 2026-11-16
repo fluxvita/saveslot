@@ -56,7 +56,11 @@ export class ContractError extends Error {
   }
 }
 
-/** What a kernel error looks like: WriteError, ReadError and OpsError all have these. */
+/**
+ * What a kernel error looks like: the kernel's entries throw errors of their own classes (write,
+ * read, ops, schema draft, …), each with a contract code and its detail. Recognized by having a
+ * contract code, not by class: a system error's code (`ENOENT`, a store's `store_locked`) is none.
+ */
 interface KernelError {
   readonly name: string;
   readonly code: string;
@@ -67,7 +71,7 @@ interface KernelError {
 const isKernelError = (e: unknown): e is KernelError =>
   e instanceof Error &&
   typeof (e as { code?: unknown }).code === "string" &&
-  ["WriteError", "ReadError", "OpsError"].includes(e.name);
+  KNOWN.has((e as unknown as { code: string }).code);
 
 /** The contract's parameter names that appear in error paths: structure, not content. */
 const STRUCTURE = new Set([
@@ -137,7 +141,7 @@ export function contractError(
   warn: (event: string, fields: Readonly<Record<string, string>>) => void,
 ): ContractError {
   if (e instanceof ContractError) return e;
-  if (isKernelError(e) && KNOWN.has(e.code)) {
+  if (isKernelError(e)) {
     const detail: Record<string, unknown> = { ...(e.detail ?? {}) };
     // The kernel's page position is the caller's `cursor`.
     if (detail["param"] === "position") detail["param"] = "cursor";
