@@ -26,5 +26,5 @@ export {
   type RuleQuery,
   rowChecksum,
 } from "./evaluate.ts";
-export { loadRsql } from "./load.ts";
+export { isRsqlLoaded, loadRsql } from "./load.ts";
 export { RSQL_VERSION } from "./whitelist.ts";

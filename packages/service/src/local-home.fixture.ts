@@ -18,6 +18,9 @@ import { Credentials } from "./credentials.ts";
 import { controlDir, type LocalTenant, tenantFile } from "./local-tenant.ts";
 import { newToken, tokenHash } from "./tokens.ts";
 
+/** Whether the restricted SQL parser is loaded in this process (the tenant's opening loads it). */
+export { isRsqlLoaded } from "@fluxvita/saveslot-kernel";
+
 export const TEST_TENANT = `tn_${"8".repeat(26)}` as const;
 export const TEST_USER = `u_${"1".repeat(26)}` as const;
 

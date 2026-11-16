@@ -10,8 +10,14 @@
 // The decision is pure: the caller reads the anchor and the log's end and passes them in. The
 // import, restore and catch-up flows are not compiled yet: each of the first three cases stops as
 // not implemented, naming which, and the tenant does not serve.
+//
+// A tenant that serves needs the restricted SQL parser: reading a derived table, refreshing one
+// after a write and replaying a derived write all evaluate rules, and evaluating does not load the
+// parser itself. `openTenant` loads it before it lets the tenant serve; the host calls it when it
+// opens the tenant's storage, and every evaluating path comes after.
 
 import type { Seq } from "@fluxvita/saveslot-contract-core";
+import { loadRsql } from "../rules/index.ts";
 import type { ImportId, RestoreId } from "../store/anchor.ts";
 
 export interface OpenTenantFacts {
@@ -40,4 +46,14 @@ export function openTenantDecision(f: OpenTenantFacts): OpenTenantDecision {
   // The high water never passes the committed log end (§8): below it, the log went back.
   if (f.logEnd < f.highWater) return { kind: "not_implemented", what: "log_behind_high_water" };
   return { kind: "serve" };
+}
+
+/**
+ * `openTenant` steps 1–3, and, when the tenant serves, the restricted SQL parser loaded: the host
+ * calls it after opening the tenant's storage, before any call reaches the tenant.
+ */
+export async function openTenant(f: OpenTenantFacts): Promise<OpenTenantDecision> {
+  const decision = openTenantDecision(f);
+  if (decision.kind === "serve") await loadRsql();
+  return decision;
 }

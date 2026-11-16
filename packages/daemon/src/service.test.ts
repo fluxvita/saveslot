@@ -22,9 +22,12 @@ import {
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
 import { anchorFileText, createLocalHome } from "@fluxvita/saveslot-service/testing";
 import { osFileLock, PgliteBackend, type PgliteTenantStore } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { LEDGER } from "./contract-suite.fixture.ts";
+import { httpRequest } from "./http-driver.fixture.ts";
 import { main } from "./main.ts";
 import { lockDir, pidFile, runService, socketFile } from "./service.ts";
 
@@ -152,6 +155,62 @@ describe("the service process", () => {
     const again = await osFileLock.acquire(lockDir(h));
     await again.release();
   });
+
+  it("comes back after each of three SIGKILLs in a row, and then compiles a document's rules", async () => {
+    // A process started after one that did not exit cleanly loads the restricted SQL parser
+    // when it opens the tenant, as the first one did.
+    const h = join(root, `crash-${n++}`);
+    await initLocalHome({
+      home: h,
+      backend: new PgliteBackend(),
+      lock: osFileLock,
+      now: new Date().toISOString(),
+    });
+    const session = readFileSync(sessionFile(h), "utf8").trim();
+    let p = start(h);
+    for (let i = 0; i < 3; i++) {
+      expect(await until(h, ["ready"]), `start ${i}`).toMatchObject({ pid: p.proc.pid });
+      p.proc.kill("SIGKILL");
+      expect(await p.exit).toEqual({ code: null, signal: "SIGKILL" });
+      p = start(h);
+    }
+    expect(await until(h, ["ready"])).toMatchObject({ pid: p.proc.pid });
+    // A derived table's rule compiles; the document stops only at what this version cannot
+    // build yet (a derived table), after compiling.
+    const r = await httpRequest(h, {
+      method: "POST",
+      path: "/v1/drafts",
+      token: session,
+      body: JSON.stringify({
+        document: {
+          ...LEDGER,
+          tables: [
+            ...LEDGER.tables,
+            {
+              name: "notes_by_day",
+              kind: "derived",
+              description: "notes a day",
+              rule: {
+                sql: "SELECT date AS day, count(note) AS notes FROM expenses GROUP BY 1",
+                time_dependency: "bucketed",
+              },
+              fields: [
+                { name: "day", description: "the day" },
+                { name: "notes", description: "notes that day" },
+              ],
+            },
+          ],
+        },
+      }),
+    });
+    expect(JSON.parse(r.body).error).toMatchObject({
+      reason: "not_implemented",
+      param: "tables/1",
+    });
+    p.proc.kill("SIGTERM");
+    expect(await p.exit).toEqual({ code: 0, signal: null });
+    // Four starts, each through crash recovery: slower than one start under a full run's load.
+  }, 240_000);
 
   it("does not serve when the anchor says the log went back, and still stops cleanly", async () => {
     const h = home();

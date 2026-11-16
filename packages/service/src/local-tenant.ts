@@ -25,7 +25,7 @@ import {
   flushReads,
   type InternalOperation,
   type OpsContext,
-  openTenantDecision,
+  openTenant,
   readTail,
 } from "@fluxvita/saveslot-kernel";
 import { openFileAnchorStore } from "@fluxvita/saveslot-kernel/anchor-file";
@@ -141,7 +141,7 @@ export async function openLocalTenant(o: {
       await store.close();
       return { ok: false, failure: "tenant_empty" };
     }
-    const decision = openTenantDecision({
+    const decision = await openTenant({
       importInProgress: a.importInProgress,
       restoreInProgress: a.restoreInProgress,
       logEnd: tail.seq,
