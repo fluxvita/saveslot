@@ -17,8 +17,9 @@
 // `source.recorded`; the request key index of head events; the pending item events (./items.ts);
 // `write.base` (./write-base.ts: the source table, "reverted" registrations, the row settled from
 // all its items into the business and version tables); the block dependency index of every
-// event applied. `write.head` changes nothing else in this phase (§5.7: its other blocks are
-// read by timeline, replayed receipts, deletion replay and audit). Not yet: `write.derived`,
+// event applied; `write.derived` (./derived.ts: the partition recomputed and checked, the derived
+// row, `partitions`, `derived_reads`). `write.head` changes nothing else in this phase (§5.7: its
+// other blocks are read by timeline, replayed receipts, deletion replay and audit). Not yet:
 // deletion.
 
 import {
@@ -31,9 +32,11 @@ import {
   type Seq,
 } from "@fluxvita/saveslot-contract-core";
 import type { BlockState, PreparedOperation } from "../log/index.ts";
+import { type DerivedRow, evaluateRule, RuleEvaluationError } from "../rules/index.ts";
 import { isKnownRulesetVersion } from "../rules/version.ts";
-import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
+import { isDataError, type ReadTx, type SqlValue, type Tx } from "../store/ports.ts";
 import { confirmationHash, entryChecksums } from "./confirmation.ts";
+import { canonicalKeyFault, type DerivedInput, planDerived } from "./derived.ts";
 import { type ItemInput, planItem } from "./items.ts";
 import { ApplyError, type BlockDepRow, type Change, type PrincipalRow } from "./model.ts";
 import { planSchema, type SlotInput, type SwitchInput } from "./schema.ts";
@@ -58,6 +61,7 @@ export interface PlanInputs {
   readonly slot?: SlotInput;
   readonly item?: ItemInput;
   readonly writeBase?: WriteBaseInput;
+  readonly derived?: DerivedInput;
 }
 
 /** The events of an operation just appended, for apply in the same transaction. */
@@ -114,6 +118,10 @@ function parsed(ev: ApplyEvent): Parsed {
   return { type: r.type, present, paths: [...ev.blocks.keys()] };
 }
 
+/** The paths of an event's blocks a deletion cleared. */
+const removedOf = (ev: ApplyEvent): ReadonlySet<string> =>
+  new Set([...ev.blocks].filter(([, b]) => b.state !== "present").map(([path]) => path));
+
 /** Parses, checks versions and returns the changes of one event. Pure; throws {@link ApplyError}. */
 export function planEvent(ev: ApplyEvent, inputs: PlanInputs = {}): Change[] {
   const { type, present, paths } = parsed(ev);
@@ -125,6 +133,9 @@ export function planEvent(ev: ApplyEvent, inputs: PlanInputs = {}): Change[] {
     planSchema(type, ev.seq, slot, block, inputs) ??
     planItem(type, ev.seq, op, slot, present, paths, inputs) ??
     planBase(type, ev.seq, op, present, inputs) ??
+    (type === "write.derived"
+      ? planDerived(ev.seq, op, present, removedOf(ev), inputs.derived)
+      : undefined) ??
     planOther(type, ev.seq, slot, block, present);
   if (changes === undefined) {
     throw new ApplyError("not_implemented", ev.seq, `apply of ${type} is not implemented yet`);
@@ -339,6 +350,10 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
     };
   }
   if (p.type === "write.base") return { writeBase: await readRow(tx, ev, p) };
+  if (p.type === "write.derived") {
+    const derived = await readDerived(tx, ev, p);
+    return derived === undefined ? {} : { derived };
+  }
   if (UPDATES_ITEM.has(p.type)) {
     const id = (p.present["target"] as Obj)["item"] as string;
     const r = await tx.query<{ state: string; next: unknown }>(
@@ -360,6 +375,96 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
   }
   return {};
 }
+
+/** What the plan of a `write.derived` reads: the slot's definition, the partition, recomputed. */
+async function readDerived(
+  tx: ReadTx,
+  ev: ApplyEvent,
+  p: Parsed,
+): Promise<DerivedInput | undefined> {
+  const slot = ev.header["slot"] as string;
+  const cur = await tx.query<{ body: string | null }>(
+    `SELECT c.body FROM schema_versions v JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
+     WHERE v.slot_id = $1 AND v.state = 'current'`,
+    [slot],
+  );
+  const body = cur.rows[0]?.body;
+  if (body === undefined || body === null) return undefined;
+  const schema = JSON.parse(body) as CompiledSchema;
+  const target = p.present["target"] as Obj;
+  const tableId = target["table"] as string;
+  const partition = target["partition"] as string;
+  const table = schema.tables.find((t) => t.id === tableId);
+  if (table === undefined || table.kind !== "derived") return undefined;
+
+  const reg = await tx.query<{ group_key: string | null }>(
+    "SELECT group_key FROM partitions WHERE derived_table_id = $1 AND partition_id = $2",
+    [tableId, partition],
+  );
+  const registered = reg.rows[0] === undefined ? undefined : { groupKey: reg.rows[0].group_key };
+  const keyBlock = p.present["key"] as Obj | undefined;
+  // A key block in the canonical form of the key fields' types, or nothing is looked up with it.
+  const keyFault =
+    keyBlock === undefined ? undefined : canonicalKeyFault(table, keyBlock["values"] as JsonValue);
+  let keyTakenBy: string | undefined;
+  let idTakenBy: string | undefined;
+  if (keyBlock !== undefined && keyFault === undefined) {
+    const taken = await tx.query<{ partition_id: string }>(
+      "SELECT partition_id FROM partitions WHERE derived_table_id = $1 AND group_key = $2",
+      [tableId, canonicalize(keyBlock["values"] as JsonValue)],
+    );
+    keyTakenBy = taken.rows[0]?.partition_id;
+    // partition_id is unique in the tenant (01-objects «标识的写法»), not only in its table.
+    const other = await tx.query<{ derived_table_id: string }>(
+      "SELECT derived_table_id FROM partitions WHERE partition_id = $1 AND derived_table_id <> $2",
+      [partition, tableId],
+    );
+    idTakenBy = other.rows[0]?.derived_table_id;
+  }
+  const physical = table.physical.table;
+  const ex = await tx.query(`SELECT 1 FROM "${physical}" WHERE partition_id = $1`, [partition]);
+  const exists = ex.rows.length > 0;
+
+  // The key to recompute with: the event's, or the one registered.
+  const key =
+    keyBlock !== undefined
+      ? (keyBlock["values"] as readonly FieldValueOf[])
+      : registered?.groupKey != null
+        ? (JSON.parse(registered.groupKey) as readonly FieldValueOf[])
+        : undefined;
+  let recomputed: DerivedInput["recomputed"];
+  if (keyFault !== undefined) recomputed = { error: keyFault };
+  else if (key !== undefined) {
+    const e = evaluateRule(schema, table.id);
+    if (key.length !== (table.rule.scope.kind === "tenant" ? 0 : table.rule.scope.key.length)) {
+      recomputed = { error: `a key of ${key.length} values` };
+    } else {
+      try {
+        const q = e.partition(key);
+        const rows: DerivedRow[] = [];
+        for (const r of (await tx.query<Record<string, unknown>>(q.sql, q.params)).rows) {
+          const d = e.decode(r);
+          if (d !== undefined) rows.push(d);
+        }
+        recomputed = { rows };
+      } catch (x) {
+        if (x instanceof RuleEvaluationError) recomputed = { error: x.message };
+        else if (isDataError(x)) recomputed = { error: `database: ${(x as Error).message}` };
+        else throw x;
+      }
+    }
+  }
+  return {
+    schema,
+    registered,
+    keyTakenBy,
+    ...(idTakenBy !== undefined ? { idTakenBy } : {}),
+    recomputed,
+    exists,
+  };
+}
+
+type FieldValueOf = DerivedRow["key"][number];
 
 /** A stored instant or date column as the event format writes it. */
 const asText = (col: string, instant: boolean) =>
@@ -722,6 +827,39 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
         [c.table_id, c.delta],
         `no count of ${c.table_id}`,
       );
+      return;
+    case "partition_insert":
+      await tx.query(
+        "INSERT INTO partitions (derived_table_id, partition_id, group_key) VALUES ($1, $2, $3)",
+        [c.table_id, c.partition, c.group_key],
+      );
+      return;
+    case "derived_set":
+      await tx.query(`DELETE FROM "${c.table}" WHERE partition_id = $1`, [c.partition]);
+      await insert(
+        tx,
+        `"${c.table}"`,
+        ["partition_id", ...c.columns, "ver"],
+        [c.partition, ...c.values, c.ver],
+      );
+      return;
+    case "derived_delete":
+      await one(
+        tx,
+        seq,
+        `DELETE FROM "${c.table}" WHERE partition_id = $1`,
+        [c.partition],
+        `no derived row ${c.partition}`,
+      );
+      return;
+    case "derived_reads":
+      for (const r of c.rows) {
+        await tx.query(
+          `INSERT INTO derived_reads (derived_seq, base_table_id, partition_id, rule_version, read_pos)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [r.derived_seq, r.base_table_id, r.partition_id, r.rule_version, r.read_pos],
+        );
+      }
       return;
     case "block_deps":
       for (const r of c.rows) {

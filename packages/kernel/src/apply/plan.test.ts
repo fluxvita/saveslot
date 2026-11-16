@@ -3,8 +3,9 @@
 // version, and the forms this phase stops on. Storage-backed tests are in store-pglite.
 
 import type { JsonValue } from "@fluxvita/saveslot-contract-core";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { buildOperation, type NewEvent } from "../log/index.ts";
+import { loadRsql } from "../rules/index.ts";
 import {
   ApplyError,
   type ApplyEvent,
@@ -15,6 +16,8 @@ import {
   type SlotInput,
 } from "./apply.ts";
 import { CHANGES_V1, COMPILED_V1, createSlotEvents, DRAFT, SLOT } from "./slot.fixture.ts";
+
+beforeAll(() => loadRsql());
 
 const USER = `u_${"1".repeat(26)}` as const;
 const ROW = `r_${"6".repeat(26)}`;
@@ -190,13 +193,17 @@ describe("planEvent: what this phase stops on, never skips", () => {
     kind: "derived",
     description: "sums",
     physical: { table: "d_t5_v1" },
+    // Depends on today: computed at read time, not evaluated in this version.
     rule: {
       id: "r1",
       version: 1,
       rsql: "rsql@1",
-      sql: 'SELECT count(*) AS "f1" FROM "t1"',
-      time_dependency: "none",
-      depends_on: [],
+      sql: 'SELECT count("t1"."f5") AS "f1" FROM "t1" WHERE ("t1"."f1" > saveslot_today())',
+      time_dependency: "now",
+      depends_on: [
+        { table: "t1", field: "f1" },
+        { table: "t1", field: "f5" },
+      ],
       scope: { kind: "tenant" },
     },
     fields: [{ id: "f1", name: "n", type: "integer", description: "rows" }],
@@ -205,9 +212,22 @@ describe("planEvent: what this phase stops on, never skips", () => {
 
   it.each([
     [
-      "a derived table",
+      "a derived table depending on today",
       { compiled: withTables([...COMPILED_V1.tables, derived]) },
-      "not_implemented: derived table t5 is not applied yet",
+      "not_implemented: derived table t5: today is not evaluated yet",
+    ],
+    [
+      "a derived table whose rule does not check against its definition",
+      {
+        compiled: withTables([
+          ...COMPILED_V1.tables,
+          {
+            ...derived,
+            rule: { ...derived.rule, sql: 'SELECT count("t1"."f99") AS "f1" FROM "t1"' },
+          },
+        ]),
+      },
+      expect.stringMatching(/^inconsistent: derived table t5: its rule does not check \(/),
     ],
     [
       "an external key",
@@ -230,7 +250,7 @@ describe("planEvent: what this phase stops on, never skips", () => {
       "not_implemented: a change to a slot is not applied yet",
     ],
   ])("schema.compiled with %s", (_, o, expected) => {
-    expect(reason(slotOp(o)[1] as ApplyEvent)).toBe(expected);
+    expect(reason(slotOp(o)[1] as ApplyEvent)).toEqual(expected);
   });
 
   it("schema.compiled awaiting confirmation", () => {

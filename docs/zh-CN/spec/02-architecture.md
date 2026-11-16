@@ -450,7 +450,7 @@ interface AnchorStore {
 | `row_origins` | 行或实体 ID | 首次创建它的那条 `write.base` 的 `seq`（最近一次给出的为准） | 基础写入、删除生命周期 | 是 |
 | `sources` | 源数据事件的 `seq` | 对外 ID `s_…`、种类、声明级别、slot、删除状态（在 / 待删除 / 已移除） | 源数据、删除生命周期 | 是 |
 | 派生表 `d_<表ID>_v<n>` | `partition_id` | 结果列 | 派生写入 | 是 |
-| `partitions` | `(派生表 ID, partition_id)` | 分组键值（内容，随删除清空） | 派生写入 | 是 |
+| `partitions` | `(派生表 ID, partition_id)`；`partition_id` 在租户内唯一，不只在本表内 | 分组键值（内容，随删除清空） | 派生写入 | 是 |
 | `derived_reads` | `(派生写入 seq, 基础表 ID, partition_id)` | 规则版本、读集的日志位置 | 派生写入 | 是 |
 | `counts` | `(表 ID, 分区键)` | 行数 | 基础写入、删除生命周期（整行删除、撤回后行回来）、切换（重建） | 是 |
 | `pending_items` | 事项 ID | 类型、slot、目标、状态、事项版本、已解决事项的处理方式 | 待处理事项生命周期、删除生命周期 | 是 |

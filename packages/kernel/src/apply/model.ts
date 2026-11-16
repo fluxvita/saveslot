@@ -210,5 +210,34 @@ export type Change =
       readonly rows: readonly (readonly SqlValue[])[];
     }
   | { readonly kind: "counts_add"; readonly table_id: string; readonly delta: number }
+  /** A derived partition registered: its group key as JCS (`partitions`). */
+  | {
+      readonly kind: "partition_insert";
+      readonly table_id: string;
+      readonly partition: string;
+      readonly group_key: string;
+    }
+  /** A derived row set to its recomputed values, `ver` the operation. */
+  | {
+      readonly kind: "derived_set";
+      readonly table: string;
+      readonly partition: string;
+      readonly columns: readonly string[];
+      readonly values: readonly SqlValue[];
+      readonly ver: Seq;
+    }
+  /** A derived row removed: its partition emptied. */
+  | { readonly kind: "derived_delete"; readonly table: string; readonly partition: string }
+  /** The partition-level read set of a derived write (`derived_reads`). */
+  | {
+      readonly kind: "derived_reads";
+      readonly rows: readonly {
+        readonly derived_seq: Seq;
+        readonly base_table_id: string;
+        readonly partition_id: string;
+        readonly rule_version: number;
+        readonly read_pos: Seq;
+      }[];
+    }
   /** The block dependency index (§5.12): blocks → the contributions they depend on. */
   | { readonly kind: "block_deps"; readonly rows: readonly BlockDepRow[] };

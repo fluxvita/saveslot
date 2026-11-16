@@ -5,20 +5,25 @@
 // `schema.compiled` (with `create_slot`) → `schema.confirmed` → `slot.policy_set` →
 // `schema.switched` (no `from_version`, nothing rebuilt). Changing a slot's schema, migrations and
 // rejected or superseded drafts stop apply as not implemented, never skipped. So does a definition
-// with a derived table or an external key: their tables and indexes belong to later phases, and an
-// empty table would leave the state silently behind the log.
+// with an external key, or with a derived rule this version does not evaluate: their indexes and
+// evaluation belong to later phases, and an empty table would leave the state silently behind the
+// log. Derived tables get their physical tables here (./derived.ts).
 //
 // Tables are only ever created here, from the compiled definition: never by hand.
 
 import {
   type CompiledBaseField,
   type CompiledBaseTable,
+  type CompiledDerivedTable,
   type CompiledSchema,
+  type CompiledTable,
   canonicalize,
   type JsonValue,
   type Seq,
 } from "@fluxvita/saveslot-contract-core";
+import { evaluationRefusal } from "../rules/index.ts";
 import { isKnownRsqlVersion } from "../rules/version.ts";
+import { derivedTableDdl } from "./derived.ts";
 import { ApplyError, type Change } from "./model.ts";
 
 type Obj = Readonly<Record<string, JsonValue>>;
@@ -100,27 +105,26 @@ export function baseTableDdl(t: CompiledBaseTable): string {
 }
 
 /** What the catalog keeps of a table (02-architecture §8 `catalog`): its definition as compiled. */
-const structureOf = (t: CompiledBaseTable): string => {
+const structureOf = (t: CompiledTable): string => {
   const { physical: _, ...rest } = t;
   return canonicalize(rest as unknown as JsonValue);
 };
 
 /**
- * Stops on what a compiled definition holds that this phase does not apply: derived tables,
- * external keys, and tables built in an earlier version (creating a slot builds every table).
+ * Stops on what a compiled definition holds that this phase does not apply: external keys, derived
+ * rules this version does not evaluate, and tables built in an earlier version (creating a slot
+ * builds every table).
  */
-function admit(seq: Seq, c: CompiledSchema): CompiledBaseTable[] {
+function admit(
+  seq: Seq,
+  c: CompiledSchema,
+): { base: CompiledBaseTable[]; derived: CompiledDerivedTable[] } {
   if (!isKnownRsqlVersion(c.rsql)) {
     throw new ApplyError("unknown_version", seq, `unknown rsql version ${c.rsql}`);
   }
   const base: CompiledBaseTable[] = [];
+  const derived: CompiledDerivedTable[] = [];
   for (const t of c.tables) {
-    if (t.kind === "derived") {
-      throw new ApplyError("not_implemented", seq, `derived table ${t.id} is not applied yet`);
-    }
-    if ("external_key" in t && t.external_key !== undefined) {
-      throw new ApplyError("not_implemented", seq, `external key of ${t.id} is not applied yet`);
-    }
     if ((t.physical.since ?? c.sv) !== c.sv) {
       throw new ApplyError(
         "not_implemented",
@@ -128,9 +132,35 @@ function admit(seq: Seq, c: CompiledSchema): CompiledBaseTable[] {
         `table ${t.id} built in version ${t.physical.since} is not applied yet`,
       );
     }
+    if (t.kind === "derived") {
+      let refusal: ReturnType<typeof evaluationRefusal>;
+      try {
+        refusal = evaluationRefusal(c, t.id);
+      } catch (e) {
+        // The definition's rule does not check against its own fields or tables: the event's
+        // content, not a defect of the kernel.
+        throw new ApplyError(
+          "inconsistent",
+          seq,
+          `derived table ${t.id}: its rule does not check (${(e as Error).message})`,
+        );
+      }
+      if (refusal !== undefined) {
+        throw new ApplyError(
+          "not_implemented",
+          seq,
+          `derived table ${t.id}: ${refusal.kind} is not evaluated yet`,
+        );
+      }
+      derived.push(t);
+      continue;
+    }
+    if ("external_key" in t && t.external_key !== undefined) {
+      throw new ApplyError("not_implemented", seq, `external key of ${t.id} is not applied yet`);
+    }
     base.push(t);
   }
-  return base;
+  return { base, derived };
 }
 
 /** The compiled definition a `schema.switched` switches to, read by the caller. */
@@ -194,7 +224,7 @@ export function planSchema(
         throw new ApplyError("inconsistent", seq, `no compiled version ${String(t["to_version"])}`);
       }
       const c = to.compiled;
-      const tables = admit(seq, c);
+      const { base: tables, derived } = admit(seq, c);
       const s = input.slot;
       const inconsistent = (what: string) => new ApplyError("inconsistent", seq, what);
       if (s === undefined) throw inconsistent(`no slot ${String(slot)}`);
@@ -202,10 +232,25 @@ export function planSchema(
         throw inconsistent(`slot ${String(slot)} already has version ${s.currentSv}`);
       // §4.5: the initial policy comes before the switch that creates the slot.
       if (s.policySeq === null) throw inconsistent(`slot ${String(slot)} has no policy`);
-      const taken = tables.find((x) => s.tables.has(x.id));
+      const taken = [...tables, ...derived].find((x) => s.tables.has(x.id));
       if (taken !== undefined) throw inconsistent(`table ${taken.id} already exists`);
       return [
-        { kind: "ddl", sql: tables.map(baseTableDdl).join("\n") },
+        {
+          kind: "ddl",
+          sql: [
+            ...tables.map(baseTableDdl),
+            ...derived.map((x) => derivedTableDdl(x, (type) => COLUMN_TYPES[type])),
+          ].join("\n"),
+        },
+        ...derived.map(
+          (x): Change => ({
+            kind: "catalog_insert",
+            table_id: x.id,
+            sv: c.sv,
+            slot: c.slot,
+            structure: structureOf(x),
+          }),
+        ),
         ...tables.flatMap((x): Change[] => [
           {
             kind: "catalog_insert",
