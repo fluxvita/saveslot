@@ -22,22 +22,19 @@ import type {
   ItemId,
   JsonValue,
   OpNumber,
+  PartitionId,
   RowId,
   Seq,
   TableId,
 } from "@fluxvita/saveslot-contract-core";
-import {
-  ApplyError,
-  applyEvents,
-  confirmationHash,
-  entryChecksums,
-  eventsOf,
-} from "../apply/index.ts";
+import { ApplyError, confirmationHash, entryChecksums } from "../apply/index.ts";
 import { lastRead, type ReadId } from "../audit/index.ts";
+import type { DerivedWrite } from "../derive/index.ts";
 import { JudgeError, type JudgeInput, judgeOp, reaches, type Unit } from "../judge/index.ts";
-import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
+import { type NewEvent, readTail } from "../log/index.ts";
 import { normalizeResolve, type ResolveDecision } from "../request/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
+import { appendWithDerived } from "./derive-step.ts";
 import { WriteError } from "./errors.ts";
 import {
   judgeFailure,
@@ -51,7 +48,7 @@ import {
 } from "./pipeline.ts";
 import { tableShape, todayIn, writable } from "./plan.ts";
 import { readSlots, readUnderAnotherTask, restoreCount, type SlotRow } from "./reads.ts";
-import { itemVer, readReceipt, type WriteReceipt } from "./receipt.ts";
+import { itemVer, readReceipt, type WriteReceipt, withDerived } from "./receipt.ts";
 import { encodeResolution, type RowContext } from "./record.ts";
 import { findRequest, requestKeyOf } from "./request-key.ts";
 import { evidenceSource } from "./sources.ts";
@@ -67,7 +64,7 @@ export interface ResolveReceipt {
   /** The write the decision triggered: as the write receipt gives it. */
   readonly write?: Pick<
     WriteReceipt,
-    "seq" | "sv" | "ops" | "derived" | "derived_total" | "pending" | "superseded"
+    "seq" | "sv" | "ops" | "derived" | "derived_total" | "pending" | "superseded" | "omitted"
   >;
   readonly replayed?: true;
   readonly warnings?: readonly ResolveWarning[];
@@ -216,7 +213,13 @@ async function itemVerFromOwn(
 async function readResolution(
   tx: ReadTx,
   op: OpNumber,
-  o: { readonly slot: SlotRow; readonly restoreCount: number; readonly replayed: boolean },
+  o: {
+    readonly slot: SlotRow;
+    readonly restoreCount: number;
+    readonly replayed: boolean;
+    /** A first receipt's derived writes, in memory (a replay has only the log). */
+    readonly derived?: readonly DerivedWrite[];
+  },
 ): Promise<ResolveReceipt> {
   const head = await tx.query<{ type: string; body: string | null }>(
     `SELECT e.type, c.body FROM events e LEFT JOIN content c ON c.seq = e.seq AND c.path = 'target'
@@ -229,12 +232,16 @@ async function readResolution(
   }
   const t = JSON.parse(h.body) as { item: ItemId; decision: ResolveDecision };
   const item = await itemRow(tx, t.item);
-  const write = await readReceipt(tx, op, {
+  const read = await readReceipt(tx, op, {
     compiled: o.slot.compiled,
     slotName: o.slot.name,
     restoreCount: o.restoreCount,
     replayed: o.replayed,
   });
+  const write =
+    read !== undefined && o.derived !== undefined
+      ? withDerived(read, o.derived, o.slot.compiled, o.slot.name)
+      : read;
   return {
     id: t.item,
     type: item?.type ?? "conflict",
@@ -251,6 +258,7 @@ async function readResolution(
             derived_total: write.derived_total,
             pending: write.pending,
             superseded: write.superseded,
+            ...(write.omitted !== undefined ? { omitted: write.omitted } : {}),
           },
         }
       : {}),
@@ -581,16 +589,17 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
       ...(hash !== undefined ? { confirmation: { hash } } : {}),
     } as never,
   };
-  const prepared = await appendOperation(tx, {
-    actor,
-    now: now as never,
-    events: [head, ...sources, ...opEvents],
-  });
-  if (prepared.op !== op) {
-    throw new WriteError("internal", "the operation's numbers are not as planned");
-  }
+  // Appended and applied; the derived tables the triggered write reaches refreshed in the same
+  // transaction (K5).
+  let step: Awaited<ReturnType<typeof appendWithDerived>>;
   try {
-    await applyEvents(tx, eventsOf(prepared));
+    step = await appendWithDerived(tx, {
+      actor,
+      now,
+      events: [head, ...sources, ...opEvents],
+      schema: slot.compiled,
+      newPartitionId: () => input.newId("partition") as PartitionId,
+    });
   } catch (e) {
     if (e instanceof ApplyError) {
       throw new WriteError("internal", "the decision could not be applied", {
@@ -600,6 +609,14 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     }
     throw e;
   }
-  const out = await readResolution(tx, op, { slot, restoreCount: restore, replayed: false });
+  if (step.prepared.op !== op) {
+    throw new WriteError("internal", "the operation's numbers are not as planned");
+  }
+  const out = await readResolution(tx, op, {
+    slot,
+    restoreCount: restore,
+    replayed: false,
+    derived: step.derived,
+  });
   return warnings.length > 0 ? { ...out, warnings } : out;
 }

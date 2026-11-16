@@ -463,17 +463,47 @@ describe("derivedWrites: order across tables, evaluation errors, null fields, re
     ]);
   });
 
-  it("an evaluation failing on the data is thrown as it is: out of range, a database data error", async () => {
+  it("the evaluation failing on the data is the rule's: out of range, a database data error", async () => {
     const sql = (await import("../rules/index.ts")).evaluateRule(WEEKLY, "t9").all.sql;
     const { RuleEvaluationError } = await import("../rules/index.ts");
     await expect(
       run(WEEKLY, routed({ rules: new Map([[sql, [week("10001-01-04", "1.00", "1")]]]) })),
-    ).rejects.toBeInstanceOf(RuleEvaluationError);
-    const dataError = Object.assign(new Error("bigint out of range"), { code: "22003" });
+    ).rejects.toMatchObject({ reason: "date_out_of_range", field: "f1" });
+    const dataError = Object.assign(new Error("bigint out of range"), { sqlState: "22003" });
+    const thrown = await run(WEEKLY, async () => {
+      throw dataError;
+    }).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(RuleEvaluationError);
+    expect(thrown).toMatchObject({ reason: "22003", field: undefined, cause: dataError });
+    // Not of class 22: as it is.
+    const other = Object.assign(new Error("connection lost"), { sqlState: "08006" });
     await expect(
       run(WEEKLY, async () => {
-        throw dataError;
+        throw other;
       }),
+    ).rejects.toBe(other);
+  });
+
+  it("reading the partitions or the stored rows failing on the data is not the rule's: as it is", async () => {
+    const sql = (await import("../rules/index.ts")).evaluateRule(WEEKLY, "t9").all.sql;
+    const dataError = Object.assign(new Error("invalid input syntax"), { sqlState: "22P02" });
+    const failing =
+      (when: (sql: string) => boolean): Query =>
+      async (q, params) => {
+        if (when(q)) throw dataError;
+        return routed({ rules: new Map([[sql, [week("2026-11-09", "1.00", "1")]]]) })(q, params);
+      };
+    await expect(
+      run(
+        WEEKLY,
+        failing((q) => q.startsWith("SELECT partition_id")),
+      ),
+    ).rejects.toBe(dataError);
+    await expect(
+      run(
+        WEEKLY,
+        failing((q) => /FROM "d_t9_v1"$/.test(q)),
+      ),
     ).rejects.toBe(dataError);
   });
 

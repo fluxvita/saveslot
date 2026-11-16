@@ -38,6 +38,7 @@ import {
   decodeDerivedRow,
   derivedRowsQuery,
   evaluateRule,
+  evaluating,
   rowChecksum,
   type StoredDerivedRow,
 } from "../rules/index.ts";
@@ -108,14 +109,19 @@ async function refreshTable(
   const { query } = input;
   const e = evaluateRule(input.schema, t.id);
 
-  // The recomputation, by key.
+  // The recomputation, by key: the only step whose failure on the data is the rule's
+  // (RuleEvaluationError); the partitions and stored rows below fail as they do.
   const computed = new Map<
     string,
     { key: readonly FieldValue[]; values: Record<FieldId, FieldValue> }
   >();
-  for (const r of (await query(e.all.sql, e.all.params)).rows) {
-    const d = e.decode(r);
-    if (d === undefined) continue;
+  const evaluated = await evaluating(async () =>
+    (await query(e.all.sql, e.all.params)).rows.flatMap((r) => {
+      const d = e.decode(r);
+      return d === undefined ? [] : [d];
+    }),
+  );
+  for (const d of evaluated) {
     const k = keyText(d.key);
     if (computed.has(k)) throw new Error(`derived rule ${t.rule.id}: two rows with one key`);
     computed.set(k, { key: d.key, values: { ...d.values } });

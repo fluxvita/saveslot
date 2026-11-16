@@ -32,9 +32,9 @@ import {
   type Seq,
 } from "@fluxvita/saveslot-contract-core";
 import type { BlockState, PreparedOperation } from "../log/index.ts";
-import { type DerivedRow, evaluateRule, RuleEvaluationError } from "../rules/index.ts";
+import { type DerivedRow, evaluateRule, evaluating, RuleEvaluationError } from "../rules/index.ts";
 import { isKnownRulesetVersion } from "../rules/version.ts";
-import { isDataError, type ReadTx, type SqlValue, type Tx } from "../store/ports.ts";
+import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
 import { confirmationHash, entryChecksums } from "./confirmation.ts";
 import { canonicalKeyFault, type DerivedInput, planDerived } from "./derived.ts";
 import { type ItemInput, planItem } from "./items.ts";
@@ -439,17 +439,21 @@ async function readDerived(
     if (key.length !== (table.rule.scope.kind === "tenant" ? 0 : table.rule.scope.key.length)) {
       recomputed = { error: `a key of ${key.length} values` };
     } else {
+      // Only the evaluation (its query and decoding) failing on the data is the recomputation's
+      // error; reading the derived table or its partitions above fails as it does.
       try {
         const q = e.partition(key);
-        const rows: DerivedRow[] = [];
-        for (const r of (await tx.query<Record<string, unknown>>(q.sql, q.params)).rows) {
-          const d = e.decode(r);
-          if (d !== undefined) rows.push(d);
-        }
+        const rows = await evaluating(async () => {
+          const out: DerivedRow[] = [];
+          for (const r of (await tx.query<Record<string, unknown>>(q.sql, q.params)).rows) {
+            const d = e.decode(r);
+            if (d !== undefined) out.push(d);
+          }
+          return out;
+        });
         recomputed = { rows };
       } catch (x) {
         if (x instanceof RuleEvaluationError) recomputed = { error: x.message };
-        else if (isDataError(x)) recomputed = { error: `database: ${(x as Error).message}` };
         else throw x;
       }
     }

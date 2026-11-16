@@ -1,12 +1,7 @@
 // Pure pieces of the write pipeline (02-architecture §4 L5 `write`): what a compiled table is to
 // `judge`, whether a write must refresh derived tables, and "today" in the slot's time zone.
 
-import type {
-  CompiledBaseTable,
-  CompiledSchema,
-  FieldId,
-  TableId,
-} from "@fluxvita/saveslot-contract-core";
+import type { CompiledBaseTable, FieldId } from "@fluxvita/saveslot-contract-core";
 import type { TableShape } from "../judge/index.ts";
 
 /** The table as `judge` sees it (judge/model.ts `TableShape`). */
@@ -26,20 +21,6 @@ export function tableShape(t: CompiledBaseTable): TableShape {
 
 const isConst = (b: unknown) =>
   b !== null && typeof b === "object" && Object.hasOwn(b as object, "const");
-
-/**
- * Whether a write to `table` must refresh a derived table in the same transaction (K5): some rule
- * whose result is kept in a table reads it. Rules computed at read time (`time_dependency: now`)
- * keep nothing and do not count.
- */
-export function refreshesDerived(compiled: CompiledSchema, table: TableId): boolean {
-  return compiled.tables.some(
-    (t) =>
-      t.kind === "derived" &&
-      t.rule.time_dependency !== "now" &&
-      t.rule.depends_on.some((d) => d.table === table),
-  );
-}
 
 /**
  * Whether the caller may write `table` of `slot`. The first version always passes every slot and

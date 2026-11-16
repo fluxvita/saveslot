@@ -35,6 +35,7 @@ import {
   type JcsValue,
   type TableId,
 } from "@fluxvita/saveslot-contract-core";
+import { sqlStateOf } from "../../store/ports.ts";
 import type { Analysis, DeclaredField } from "./analyze.ts";
 import { checkedBoundRule } from "./derived.ts";
 import type { Expr, RuleStatement } from "./ir.ts";
@@ -220,18 +221,49 @@ export type EvaluationRefusal =
   | { readonly kind: "decimal_key"; readonly field: FieldId };
 
 /**
- * A rule's result this version cannot represent, by the data (11-restricted-sql «确定性» 6): a date
- * outside 0001-01-01 – 9999-12-31, a decimal with more than 18 integer digits. Not a kernel fault:
- * the write whose refresh meets it is refused (`rule_eval_failed`).
+ * A rule's evaluation failing on the data (11-restricted-sql «确定性» 6): a result this version
+ * cannot represent (a date outside 0001-01-01 – 9999-12-31, a decimal with more than 18 integer
+ * digits; `field` is the field), or the evaluation query failing on the data in the database
+ * (SQLSTATE class 22: a value out of range, a division the guard does not cover; `reason` is the
+ * SQLSTATE, `field` undefined). Not a kernel fault: the write whose refresh meets it is refused
+ * (`rule_eval_failed`).
  */
 export class RuleEvaluationError extends Error {
   readonly code = "rule_eval_failed";
-  readonly reason: "date_out_of_range" | "number_out_of_range";
-  readonly field: FieldId;
-  constructor(field: FieldId, reason: RuleEvaluationError["reason"], message: string) {
-    super(message);
+  readonly reason: "date_out_of_range" | "number_out_of_range" | `22${string}`;
+  readonly field: FieldId | undefined;
+  constructor(
+    field: FieldId | undefined,
+    reason: RuleEvaluationError["reason"],
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
     this.field = field;
     this.reason = reason;
+  }
+}
+
+/**
+ * Runs the step that executes a rule's evaluation query and decodes its result. A statement of it
+ * failing on the data (SQLSTATE class 22) is the rule failing on the data: thrown as
+ * RuleEvaluationError with the SQLSTATE as `reason`. Any other error, and the RuleEvaluationErrors
+ * decoding throws, as they are. Only that step is to be wrapped: reading the derived table or its
+ * partitions failing on the data is not the rule's failure.
+ */
+export async function evaluating<T>(step: () => Promise<T>): Promise<T> {
+  try {
+    return await step();
+  } catch (e) {
+    const state = sqlStateOf(e);
+    if (state?.startsWith("22") === true)
+      throw new RuleEvaluationError(
+        undefined,
+        state as `22${string}`,
+        `database: ${(e as Error).message}`,
+        { cause: e },
+      );
+    throw e;
   }
 }
 

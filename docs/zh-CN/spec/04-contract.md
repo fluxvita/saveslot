@@ -273,7 +273,7 @@
 - `pending[]`：本次生成、并入或刷新的事项。新生成的带 `item_ver`；`merged`（并入已有事项）与 `refreshed`（改到了一个没读过的未决事项的目标，或事项没被改到、重算出的内容变了）不带，要先看详情。
 - `superseded[]`：因本次写入被取代的事项。**只有读过事项当前版本的写入方改到它的目标，事项才被取代**；没读过时事项刷新、保持未决（data-model「待处理事项」）。
 - `affected_reads`：触发影响查询时给——`correct`、`revoke`、状态类表上任何让值发生变化的写入。按原因计数，不含本次写入所带 `ver` 出自的那次读取；`covered_since` 是读取记录保留到的时刻，更早的读取不在统计内；`possible` 是其中只能算"可能受影响"的读取数（受限 SQL 读了很多行、只留了表级记录的读取，以及按版本集合匹配的读取）：这类读取说不出到底用没用到被改的那一行，宁可多报，所以单独计数；`not_covered` 列出没有覆盖的读取种类。
-- `derived[]`：受影响的派生值，最多 20 条，另给 `derived_total`。
+- `derived[]`：受影响的派生值，一个派生行上变了的一个字段一条（分组键字段不单列，它们在 `key` 里），最多 20 条，另给 `derived_total`（字段条目的总数）。列的是值的变化：派生行出现或消失时，前后都是 null 的字段没有条目；除分组键以外的字段前后都是 null 的派生行，`derived[]` 里没有它，`derived_total` 也不计它。幂等重放的回执里 `derived[]` 为空，`derived_total` 是这次操作的派生写入条数（每个受影响的分区一条），见第 14 节。
 - `premise_affected`：这次操作改动的行上，别的行声明过的前提的变化——新带上 `premise_changed` 的依赖行数（`count`）、撤掉标记的依赖行数（`matched`）、按原因计数、依赖行最多 20 行（`deletion_preview` 与 `delete` 里最多 50 行）。没有时不给。`resolve` 触发的写入、`delete` 的结果、撤回删除的 `cancelled` 里同样有它；`deletion_preview` 里是预告。
 - 每个 op 的 `premises[]` 与请求的 `premises` 一一对应：实际采用的所见版本（兜底时是兜底到的那个）、`state`（`current` / `changed`，`changed` 时附原因与使前提变了的操作号）。
 - `replayed`：幂等重放（第 14 节）。
@@ -293,7 +293,7 @@
 - `status` 的规则不变：`skipped` 不影响它，另给提醒 `external_key_skipped`（列出被跳过的 op 下标）。
 - 被跳过不报错：普通写入写到已撤销的行报 `revoked`，因为调用方点名了这一行；连接器整批交来，不知道其中哪条被用户撤销过，一条被撤销的记录不应让同批的其余记录失败。要恢复由人来：按行 ID `revert: {undo}` 撤回那次撤销。
 
-**写入准入**：超出准入阈值报 `too_large`（`admission`），附 `estimated_rows` 与 `suggested_batch`，由调用方分批。后续加入作业后，带 `mode: "job"` 的转作业。
+**写入准入**：超出准入阈值报 `too_large`（`admission`），附 `estimated_rows` 与 `suggested_batch`，由调用方分批。后续加入作业后，带 `mode: "job"` 的转作业。第一版每次基础改动整条重算受影响的规则，代价随规则所读的表变大、不随请求大小变化，分批也降不下来，所以准入不拒绝、不报这个原因；按受影响分区估算之后启用（open-questions「派生刷新的代价估算与准入阈值」）。
 
 ## 6. 待处理事项：类型 × 处理方式 × 是否生效 × scope
 
@@ -599,7 +599,7 @@
 | `validation_failed` | 写入的类型、单位量纲、范围、必填不符，`ref` 的目标不存在或不可见，写入触发的派生刷新求值出错（`rule_eval_failed`），迁移进行中带旧 `sv` 的写入对新版求值转换表达式失败（`migrate_failed`，`path` 指到那个 op 的那个字段，按新版本重读再写）；schema 编译失败（含来源键与别名的规则） |
 | `read_first` | 没带 `ver` / `item_ver` / `sv`（含前提里的 `ver`）、也没有可兜底的读取；`since: "my_last_read"` 而没读过 |
 | `schema_incompatible` | 带回的 `sv` 之后，所写字段发生了不兼容变化；或所写的表经 `restructure_unused` 改过结构（`changed_fields` 给 `"*"`） |
-| `too_large` | 证据段或请求超上限；超出写入准入阈值；不可分页的结果超出外化面的结果预算；一个 op 的前提超过 16 条，或前提目标已被 1,000 条有效声明指向 |
+| `too_large` | 证据段或请求超上限；超出写入准入阈值（第一版不报，见第 5.4 节「写入准入」）；不可分页的结果超出外化面的结果预算；一个 op 的前提超过 16 条，或前提目标已被 1,000 条有效声明指向 |
 | `sql_rejected` | 受限 SQL 校验不过（含引用了不存在或不可见的表、类型或单位不合、超出上限），或执行时求值出错（`runtime`） |
 | `sql_timeout` | 受限 SQL 执行超时 |
 | `draft_outdated` | 草稿的 `base_version` 不是当前版本，或迁移进行中；确认时草稿所改结构的那张表已被写入（`table_written`），或 `migrate` 对试跑之后的新写入求值失败（`migrate_failed`） |
@@ -668,10 +668,10 @@
 - 同一显式键配不同的请求内容：`invalid_argument`（`idempotency_key_reuse`）。为此显式键另记一份请求内容指纹，指纹是内容，随证据删除（architecture K13）。
 - **只对产生事件的终态结果去重**：`saved`、`pending`（以及后续的 `job`）。**被拒的写入不产生事件，也不去重**：重发时按当时的状态重新校验（例如先按 `read_first` 读过之后原样重发，会正常执行）；`rate_limited`、`unavailable` 这类暂时性错误同样不记。
 - **恰好一次由内核保证**（architecture K13）：请求键随写入同一事务记下、查重；崩溃后重发也不会写两次。请求键是内容，随该写入的证据删除一起删；物理删除前已列入待删除的请求键照样命中，结果带 `original_deleted`，不重新写入（data-model「撤回与宽限期」）。
-- **重放返回什么**：`replayed: true`，没有新写入。回执按日志重建：操作号、每个 op 的逐字段结果、当时得到的 `ver`、新建的行 / 实体 ID、当时生成或并入的事项 ID。按日志重建不出的部分省略并在 `omitted[]` 里列明：`affected_reads`；派生值的改前改后值（`derived_values`）；逐字段结果里的改前值——日志不记写入前的值，它所出自的贡献已被删除时取不回（`before_values`）；状态类表上无操作段的区间与解析结果——无操作的字段日志里只留字段名（`noop_segments`）；`undo` 跳过的部分的区间（`skipped_spans`）；这次写入自己的内容已被删除的部分（`deleted_content`，此时另有 `original_deleted`）；没进事件的按来源键 op（`unrecorded_ops`：这些下标只给 `op_index`，`external_key_summary` 里 `unchanged`、`skipped` 两项的计数也不给）；`existing_keys` 与 `similar_keys`（取值 `existing_keys`；两者由写入那一刻的状态算出，不进事件）。不按当前状态重算这些部分：那会让同一请求的两次回执不同。前提的部分（`premises`、`premise_covered`、`premise_affected`）记在元数据里，可以完整重建，标记状态是当时的。事项只给**当前状态**（未决 / 已解决附处理方式 / 已被取代），不给 `item_ver`；回执里的 `ver` 与事项都不算读到、不参与兜底。
+- **重放返回什么**：`replayed: true`，没有新写入。回执按日志重建：操作号、每个 op 的逐字段结果、当时得到的 `ver`、新建的行 / 实体 ID、当时生成或并入的事项 ID。按日志重建不出的部分省略并在 `omitted[]` 里列明：`affected_reads`；派生值的改前改后值（`derived_values`；此时 `derived[]` 为空，`derived_total` 按日志里这次操作的派生写入条数给，与首次回执按字段条目计的口径不同）；逐字段结果里的改前值——日志不记写入前的值，它所出自的贡献已被删除时取不回（`before_values`）；状态类表上无操作段的区间与解析结果——无操作的字段日志里只留字段名（`noop_segments`）；`undo` 跳过的部分的区间（`skipped_spans`）；这次写入自己的内容已被删除的部分（`deleted_content`，此时另有 `original_deleted`）；没进事件的按来源键 op（`unrecorded_ops`：这些下标只给 `op_index`，`external_key_summary` 里 `unchanged`、`skipped` 两项的计数也不给）；`existing_keys` 与 `similar_keys`（取值 `existing_keys`；两者由写入那一刻的状态算出，不进事件）。不按当前状态重算这些部分：那会让同一请求的两次回执不同。前提的部分（`premises`、`premise_covered`、`premise_affected`）记在元数据里，可以完整重建，标记状态是当时的。事项只给**当前状态**（未决 / 已解决附处理方式 / 已被取代），不给 `item_ver`；回执里的 `ver` 与事项都不算读到、不参与兜底。
 - 窗口内真的又发生了一笔内容与证据都一字不差的写入时，调用方要带一个不同的 `idempotency_key`；否则按重发处理。
 - 同一请求键的请求还在执行时，后到的等待前一个的结果，不并行执行。
-- `resolve` 对已解决事项、同一处理方式的重发返回原结果；同一 `dc_` 的 `delete` 重发返回原结果。
+- `resolve` 对已解决事项、同一处理方式的重发返回原结果；其中触发的写入（`write`）按上面写入重放的规则重建，重建不出的部分同样列在 `write.omitted[]` 里，`derived_total` 同样按派生写入条数给；同一 `dc_` 的 `delete` 重发返回原结果。
 
 ## 15. 句柄与令牌
 

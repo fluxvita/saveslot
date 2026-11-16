@@ -1192,6 +1192,7 @@ interface WriteResult extends CommonResult {
   /** 与请求的 ops 一一对应。幂等重放的回执里，没进事件的按来源键 op 只给它的下标（omitted 含 "unrecorded_ops"）。 */
   ops: Array<OpResult | { op_index: number }>;
   derived: DerivedChange[];      // 最多 20 条
+  /** 首次回执：受影响的派生字段条目总数。幂等重放：derived 为空，这里是这次操作的派生写入条数（每个分区一条），omitted 含 derived_values。 */
   derived_total: number;
   pending: PendingRef[];
   superseded: Array<{ item: ItemId; type: ItemType; reason: SupersededReason }>;   // 写入取代事项的原因：overwritten 或 matched_changed
@@ -1448,7 +1449,7 @@ interface ResolveResult extends CommonResult {
   item_ver: ItemVer;             // 解决后的新版本
   status: "resolved";
   /** 处理触发了写入时：形状同写入回执的对应部分。 */
-  write?: Pick<WriteResult, "seq" | "sv" | "ops" | "derived" | "derived_total" | "pending" | "superseded" | "affected_reads" | "premise_affected">;
+  write?: Pick<WriteResult, "seq" | "sv" | "ops" | "derived" | "derived_total" | "pending" | "superseded" | "affected_reads" | "premise_affected" | "omitted">;
   /** schema_change 的 confirm。 */
   schema?: { switched: boolean; sv?: Sv; migration?: MigrationStatus };
   /** deletion 的 cancel。 */
@@ -2030,7 +2031,7 @@ type ValidationDetailCode =
 | `validation_failed` | `write` / `schema` | `details[]`、`current_sv?`（`write` 的明细码含 `rule_eval_failed` 与 `migrate_failed`：迁移进行中带旧 `sv` 的写入对新版求值失败，拒绝这次写入而不是让切换失败） |
 | `read_first` | `no_read` / `task_mismatch` | `target: "row" \| "item" \| "slot" \| "table"`、`ref?: TargetRef \| ItemId \| SlotName`；`task_mismatch` 时 `read_task`、`task` |
 | `schema_incompatible` | — | `current_sv`、`changed_fields: Array<{field, change}>`（`field` 是 `"*"` 时表示整张表：这张表经 `restructure_unused` 改过结构） |
-| `too_large` | `evidence_segment` / `request` / `admission` / `result_budget` / `premise_entries` / `premise_fan_in` | `limit_bytes?`、`actual_bytes?`；`admission` 时 `estimated_rows`、`suggested_batch`；`result_budget` 时 `narrow_by: string[]`；`premise_fan_in` 时 `target: TargetRef`、`count`（目标当前被多少条有效声明指向）。这些原因都发生在落账之前；已经落账的操作回执超预算时不报错，截短并带 `omitted[]` |
+| `too_large` | `evidence_segment` / `request` / `admission` / `result_budget` / `premise_entries` / `premise_fan_in` | `limit_bytes?`、`actual_bytes?`；`admission` 时 `estimated_rows`、`suggested_batch`（第一版整条规则重算，代价不随请求大小变化，准入不拒绝、不报 `admission`；按受影响分区估算之后启用）；`result_budget` 时 `narrow_by: string[]`；`premise_fan_in` 时 `target: TargetRef`、`count`（目标当前被多少条有效声明指向）。这些原因都发生在落账之前；已经落账的操作回执超预算时不报错，截短并带 `omitted[]` |
 | `sql_rejected` | `syntax`（语法错误，文本不是良构的 Unicode）/ `not_select` / `function` / `node` / `system_time` / `unknown_name` / `type`（类型或单位不合）/ `limit`（超出上限）/ `runtime`（求值出错，如 64 位整数溢出） | `line`、`node`（不暴露物理名）、`use?: "history"` |
 | `sql_timeout` | — | `elapsed_ms` |
 | `draft_outdated` | `base_version` / `migrating` / `table_written`（确认时，草稿所改结构的那张表已被写入）/ `migrate_failed`（确认时，`migrate` 对试跑之后的新写入求值失败） | `current_sv`；`migrating` 时 `migration: MigrationStatus` |

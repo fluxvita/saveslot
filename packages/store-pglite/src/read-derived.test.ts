@@ -3,8 +3,9 @@
 // derived table, the warning that input marks are not summed, the read record, and later pages
 // against derived writes after the first page.
 //
-// The slot's derived tables are built and written by apply; base rows are changed in their table
-// directly (the write pipeline does not yet write a table a derived rule reads).
+// The slot's derived tables are built and written by apply; base rows and flags are changed in their
+// tables directly, so that each case sets up exactly what it reads (the write pipeline's refresh is
+// covered by write-derived.test.ts).
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -93,10 +93,10 @@ const now = () => {
   minute++;
   return `2026-11-05T0${Math.floor(minute / 60) % 10}:${String(minute % 60).padStart(2, "0")}:00.000Z`;
 };
-const newId = (kind: "row" | "entity" | "source" | "item") => {
+const newId = (kind: "row" | "entity" | "source" | "item" | "partition") => {
   ids++;
   const n = String(ids).padStart(kind === "row" || kind === "entity" ? 26 : 16, "0");
-  return `${{ row: "r_", entity: "e_", source: "s_", item: "pi_" }[kind]}${n}`;
+  return `${{ row: "r_", entity: "e_", source: "s_", item: "pi_", partition: "p_" }[kind]}${n}`;
 };
 
 /** Sends `params` through the pipeline as `actor`; the error, if refused. */

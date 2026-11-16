@@ -20,6 +20,7 @@ import type {
   FieldValue,
   OpNumber,
 } from "@fluxvita/saveslot-contract-core";
+import type { DerivedWrite } from "../derive/index.ts";
 import { type Limit, type RowState, stateFromRecord } from "../judge/index.ts";
 import {
   type Blocks,
@@ -131,13 +132,68 @@ export interface PendingRef {
   readonly decision?: string;
 }
 
+/** 04-contract-types `DerivedChange`: one field of one derived row this write changed. */
+export interface DerivedChange {
+  /** Qualified: `slot.table`. */
+  readonly table: string;
+  readonly key: Readonly<Record<string, FieldValue>>;
+  readonly field: string;
+  readonly before: FieldValue;
+  readonly after: FieldValue;
+}
+
+/** At most this many derived changes in a receipt (04-contract §5.4). */
+export const DERIVED_SHOWN = 20;
+
+/**
+ * The first receipt's derived changes, from the derived writes in memory: the derived table by
+ * its qualified name, the group key and the field by name. Changes of values only: a derived row
+ * appearing or emptied whose fields besides the key are null on both sides gives no entry and is
+ * not counted in `derived_total`, though it is a derived write (a replay counts those instead).
+ */
+export function withDerived(
+  receipt: WriteReceipt,
+  writes: readonly DerivedWrite[],
+  compiled: CompiledSchema,
+  slotName: string,
+): WriteReceipt {
+  const all: DerivedChange[] = [];
+  for (const w of writes) {
+    const t = compiled.tables.find((x) => x.id === w.target.table);
+    if (t === undefined || t.kind !== "derived") continue;
+    const nameOf = (id: string) => t.fields.find((f) => f.id === id)?.name ?? id;
+    const keyIds = t.rule.scope.kind === "tenant" ? [] : t.rule.scope.key;
+    const key: Record<string, FieldValue> = Object.create(null);
+    keyIds.forEach((id, i) => {
+      key[nameOf(id)] = w.groupKey[i] ?? null;
+    });
+    for (const c of w.changes) {
+      // The group key's fields are the row's key, given in `key`: not a change of their own.
+      if (keyIds.includes(c.field)) continue;
+      all.push({
+        table: `${slotName}.${t.name}`,
+        key,
+        field: nameOf(c.field),
+        before: c.before,
+        after: c.after,
+      });
+    }
+  }
+  return { ...receipt, derived: all.slice(0, DERIVED_SHOWN), derived_total: all.length };
+}
+
 export interface WriteReceipt {
   readonly status: "saved" | "pending";
   readonly sv: number;
   readonly seq: OpNumber;
   readonly ops: readonly OpReceipt[];
-  readonly derived: readonly never[];
-  readonly derived_total: 0;
+  /** The derived values this write changed, at most 20 (first receipt only; a replay gives none). */
+  readonly derived: readonly DerivedChange[];
+  /**
+   * First receipt: the number of derived field changes. Replay: the number of the operation's
+   * derived writes (the log keeps no values before or after).
+   */
+  readonly derived_total: number;
   readonly pending: readonly PendingRef[];
   readonly superseded: readonly {
     readonly item: string;
@@ -146,7 +202,7 @@ export interface WriteReceipt {
   }[];
   readonly replayed?: true;
   /** A replay's parts the log cannot give back (04-contract §14 «重放返回什么»). */
-  readonly omitted?: readonly "existing_keys"[];
+  readonly omitted?: readonly ("existing_keys" | "derived_values")[];
   readonly warnings?: readonly {
     readonly code: string;
     readonly op?: number;
@@ -290,6 +346,7 @@ export async function readReceipt(
 ): Promise<WriteReceipt | undefined> {
   const events = await operationEvents(tx, op);
   const bases = events.filter((e) => e.header.type === "write.base");
+  const derivedWritten = events.filter((e) => e.header.type === "write.derived").length;
   // A write request, or a decision on a pending item and the write it triggers (09 §5.8
   // `item.resolved`): the op's target is then its `write.base`'s, in the head's place.
   const resolved = events[0]?.header.type === "item.resolved";
@@ -638,10 +695,18 @@ export async function readReceipt(
     seq: op,
     ops,
     derived: [],
-    derived_total: 0,
+    // A replay counts the derived writes; a first receipt's are filled in by the caller.
+    derived_total: derivedWritten,
     pending,
     superseded,
     ...(o.replayed ? { replayed: true as const } : {}),
-    ...(o.replayed && keysLeftOut ? { omitted: ["existing_keys" as const] } : {}),
+    ...(o.replayed && (keysLeftOut || derivedWritten > 0)
+      ? {
+          omitted: [
+            ...(keysLeftOut ? ["existing_keys" as const] : []),
+            ...(derivedWritten > 0 ? ["derived_values" as const] : []),
+          ],
+        }
+      : {}),
   };
 }

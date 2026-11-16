@@ -460,7 +460,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         await run([filler]);
       }
       const now = "now" in step.input ? (step.input.now as string) : "2026-11-05";
-      const newId = (kind: "row" | "entity" | "source" | "item") =>
+      const newId = (kind: "row" | "entity" | "source" | "item" | "partition") =>
         kind === "row"
           ? ROW
           : kind === "entity"

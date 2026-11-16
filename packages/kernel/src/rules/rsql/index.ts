@@ -20,6 +20,7 @@ export {
   type DerivedRow,
   type EvaluationRefusal,
   evaluateRule,
+  evaluating,
   evaluationRefusal,
   type RuleEvaluation,
   RuleEvaluationError,

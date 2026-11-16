@@ -1,15 +1,15 @@
-// Derived writes through the log and apply, on PGlite (06-derived.md «刷新范围与写入准入»,
-// «行身份»; 09-event-format.md §4.2 step 6, §5.7 `write.derived`). A slot with three derived tables
-// over `runs` is created by its schema events; then, step by step, an operation's head is appended,
-// a base row changes, derivedWrites gives the derived writes, they are appended to the same
-// operation and applied. After each step:
+// Derived writes through the write pipeline, the log and apply, on PGlite (06-derived.md «刷新范围与写入
+// 准入», «行身份»; 09-event-format.md §4.2 step 6, §5.7 `write.derived`). A slot with derived tables
+// over `runs` is created by its schema events; then, step by step, a write request inserts, updates,
+// revokes or restores a row of runs, and the pipeline appends the derived writes to the same
+// operation. After each step:
 //
 // - each derived table, as apply wrote it, equals its rule recomputed over the rows not revoked;
 // - a group keeps its partition for good, emptied or not, and is registered once;
 // - with nothing changed since, there is no derived write.
 //
-// Base rows are changed in their table directly: the write pipeline does not yet write a table a
-// derived rule reads. Each sample runs in one transaction rolled back at its end.
+// Each sample runs in one transaction rolled back at its end. The cases where apply refuses a
+// tampered derived write change base rows in their table directly and append by hand.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,12 +28,14 @@ import {
   eventsOf,
   loadRsql,
   type NewEvent,
-  type PreparedOperation,
   type Query,
+  readBufferOf,
+  readEvents,
+  readTail,
   type Tx,
 } from "@fluxvita/saveslot-kernel";
 import { derivedSchema, fc, propRuns, rule, TABLES } from "@fluxvita/saveslot-kernel/rsql-testing";
-import { createSlotEvents, SLOT } from "@fluxvita/saveslot-kernel/testing";
+import { createSlotEvents, SLOT, writeInTx } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PgliteBackend, type PgliteTenantStore } from "./backend.ts";
 
@@ -287,81 +289,162 @@ const derivedEvents = (writes: readonly DerivedWrite[]): NewEvent[] =>
 
 const ROLLBACK = new Error("rolled back");
 
+/** A derived write as the log keeps it. */
+interface Logged {
+  readonly table: string;
+  readonly partition: string;
+  readonly emptied: boolean;
+  readonly key: unknown[] | undefined;
+}
+/** One step through the pipeline: its derived writes, and the receipt's derived changes. */
+interface Stepped {
+  readonly writes: readonly Logged[];
+  readonly derived: readonly { readonly table: string; readonly field: string }[];
+}
+
+/** A step's cells as a write request's values (`distance` a quantity in km). */
+const values = (cells: Readonly<Record<string, Cell>>) =>
+  Object.fromEntries(
+    Object.entries(cells).map(([id, v]) => {
+      const f = RUNS.fields.find((x) => x.id === id) as (typeof RUNS.fields)[number];
+      return [f.name, f.type === "quantity" && v !== null ? { value: v, unit: "km" } : v];
+    }),
+  );
+
 /**
- * Runs the steps in one transaction, rolled back at the end; after each, the derived writes are
- * appended and applied and the tables checked. Returns every step's writes.
+ * Runs the steps through the write pipeline in one transaction, rolled back at the end; after each,
+ * the derived tables are checked against their rules. A step the pipeline cannot take (an update
+ * of a revoked row, a restore of a row not revoked) is skipped. Returns every step's derived writes.
  */
-async function run(steps: readonly Step[]): Promise<DerivedWrite[][]> {
-  const all: DerivedWrite[][] = [];
+async function run(steps: readonly Step[]): Promise<Stepped[]> {
+  const all: Stepped[] = [];
+  readBufferOf(store).take();
   try {
     await store.write(async (tx) => {
-      let inserted = 0;
-      let next = 0;
+      let ids = 0;
+      let partitions = 0;
+      const rows: { id: string; ver: string; revoked?: number }[] = [];
       const partitionOf = new Map<string, string>();
+      const keyed = new Set<string>();
+      const newId = (kind: "row" | "entity" | "source" | "item" | "partition") =>
+        kind === "partition"
+          ? `p_${String(++partitions).padStart(16, "0")}`
+          : `${{ row: "r_", entity: "e_", source: "s_", item: "pi_" }[kind]}${String(++ids).padStart(kind === "row" || kind === "entity" ? 26 : 16, "0")}`;
       for (const [i, s] of steps.entries()) {
-        const row = await base(tx, s, inserted);
-        if (s.k === "insert") inserted++;
-        const opened: PreparedOperation = await appendOperation(tx, {
-          actor: USER as never,
-          now: nextNow(),
-          events: [head(row ?? rowId(0))],
-        });
-        await applyEvents(tx, eventsOf(opened));
-        const changes = row === undefined ? [] : [{ table: "t1" as const, row, fields: [] }];
-        const writes = await derivedWrites({
-          query: queryIn(tx),
-          schema,
-          changes,
-          newPartitionId: () => `p_${String(++next).padStart(16, "0")}` as const,
-          readPos: opened.op,
-        });
-        if (writes.length > 0) {
-          const more = await continueOperation(tx, opened, derivedEvents(writes));
-          await applyEvents(tx, eventsOf(more));
+        const where = `step ${i} ${JSON.stringify(s)}`;
+        const r = s.k === "insert" ? undefined : rows[s.row % Math.max(rows.length, 1)];
+        let op: unknown;
+        if (s.k === "insert") op = { intent: "insert", table: "runs", set: values(s.cells) };
+        else if (r === undefined) op = undefined;
+        else if (s.k === "update" && r.revoked === undefined && Object.keys(s.cells).length > 0)
+          op = { intent: "update", table: "runs", row: r.id, ver: r.ver, set: values(s.cells) };
+        else if (s.k === "revoke" && r.revoked === undefined)
+          op = { intent: "revoke", table: "runs", row: r.id, ver: r.ver };
+        else if (s.k === "restore" && r.revoked !== undefined)
+          op = { table: "runs", row: r.id, revert: { undo: r.revoked } };
+        if (op === undefined) {
+          all.push({ writes: [], derived: [] });
+          continue;
         }
-        all.push(writes);
+        const receipt = (await writeInTx(tx, {
+          actor: USER as never,
+          task: null,
+          now: `2026-11-10T07:${String(i).padStart(2, "0")}:00.000Z` as never,
+          windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+          visibility: { kind: "all" },
+          params: { sv: 1, idempotency_key: `step-${i}`, ops: [op] },
+          newId,
+          reads: readBufferOf(store),
+        })) as unknown as {
+          seq: number;
+          status: string;
+          ops: { target: { row: string }; ver: string }[];
+          derived: { table: string; field: string }[];
+        };
+        expect(receipt.status, where).toBe("saved");
+        const ver = receipt.ops[0]?.ver as string;
+        if (s.k === "insert") rows.push({ id: receipt.ops[0]?.target.row as string, ver });
+        else if (r !== undefined) {
+          r.ver = ver;
+          if (s.k === "revoke") r.revoked = receipt.seq;
+          else if (s.k === "restore") delete r.revoked;
+        }
+        const op$ = receipt.seq;
+        const events = await readEvents(tx, op$, (await readTail(tx))?.seq ?? op$);
+        const own = events.filter((e) => Number(e.header["op"]) === op$);
+        const present = (e: (typeof own)[number], path: string) => {
+          const b = e.blocks.get(path);
+          return b?.state === "present" ? b.value : undefined;
+        };
+        const derivedEvents = own.filter((e) => e.header["type"] === "write.derived");
+        const lastBase = own.filter((e) => e.header["type"] !== "write.derived").at(-1);
+        const writes: Logged[] = derivedEvents.map((e) => {
+          const t = present(e, "target") as { table: string; partition: string; emptied?: boolean };
+          const key = present(e, "key") as { values: unknown[] } | undefined;
+          return {
+            table: t.table,
+            partition: t.partition,
+            emptied: t.emptied === true,
+            key: key?.values,
+          };
+        });
+        all.push({ writes, derived: receipt.derived });
         // Each derived row written carries the operation as its ver; each derived write has one
-        // derived_reads row per base table read, at its read_pos.
+        // derived_reads row per base table read, at the last event before the derived writes.
         for (const w of writes) {
-          const l = derivedLayout(derivedOf(w.target.table as TableId));
+          const l = derivedLayout(derivedOf(w.table as TableId));
           const v = await tx.query<{ ver: unknown }>(
             `SELECT ver FROM "${l.table}" WHERE partition_id = $1`,
-            [w.target.partition],
+            [w.partition],
           );
-          expect(v.rows.map((x) => Number(x.ver))).toEqual(w.target.emptied ? [] : [opened.op]);
+          expect(
+            v.rows.map((x) => Number(x.ver)),
+            where,
+          ).toEqual(w.emptied ? [] : [op$]);
         }
-        if (writes.length > 0) {
-          const dr = await tx.query<{
-            base_table_id: string;
-            partition_id: string;
-            read_pos: unknown;
-          }>(
-            `SELECT d.base_table_id, d.partition_id, d.read_pos FROM derived_reads d
-             JOIN events e ON e.seq = d.derived_seq WHERE e.op = $1 ORDER BY d.derived_seq`,
-            [opened.op],
-          );
-          expect(dr.rows.map((x) => [x.base_table_id, x.partition_id, Number(x.read_pos)])).toEqual(
-            writes.map((w) => ["t1", w.target.partition, opened.op]),
-          );
-        }
-        const where = `step ${i} ${JSON.stringify(s)}`;
+        const dr = await tx.query<{
+          base_table_id: string;
+          partition_id: string;
+          read_pos: unknown;
+        }>(
+          `SELECT d.base_table_id, d.partition_id, d.read_pos FROM derived_reads d
+           JOIN events e ON e.seq = d.derived_seq WHERE e.op = $1 ORDER BY d.derived_seq`,
+          [op$],
+        );
+        expect(
+          dr.rows.map((x) => [x.base_table_id, x.partition_id, Number(x.read_pos)]),
+          where,
+        ).toEqual(writes.map((w) => ["t1", w.partition, Number(lastBase?.header["seq"])]));
         for (const [id] of RULES) {
           const { got, want } = await compare(tx, id);
           expect(got, `${where} ${id}`).toEqual(want);
         }
-        for (const w of writes) {
-          const k = `${w.target.table} ${JSON.stringify(w.groupKey)}`;
+        // A group keeps its partition for good; the key block comes with its first write only.
+        const mapping = await tx.query<{
+          derived_table_id: string;
+          group_key: string;
+          partition_id: string;
+        }>("SELECT derived_table_id, group_key, partition_id FROM partitions");
+        for (const m of mapping.rows) {
+          const k = `${m.derived_table_id} ${m.group_key}`;
           const before = partitionOf.get(k);
-          if (before !== undefined) expect(w.target.partition, where).toBe(before);
-          partitionOf.set(k, w.target.partition);
-          expect(w.key !== undefined, where).toBe(before === undefined);
+          if (before !== undefined) expect(m.partition_id, where).toBe(before);
+          partitionOf.set(k, m.partition_id);
         }
+        expect(mapping.rows.length, where).toBe(partitionOf.size);
+        for (const e of events.filter((x) => x.header["type"] === "write.derived")) {
+          const t = present(e, "target") as { table: string; partition: string };
+          const k = `${t.table} ${t.partition}`;
+          expect(present(e, "key") !== undefined, where).toBe(!keyed.has(k));
+          keyed.add(k);
+        }
+        // With nothing changed since, there is no derived write.
         const again = await derivedWrites({
           query: queryIn(tx),
           schema,
-          changes: [{ table: "t1", row: rowId(0), fields: [] }],
+          changes: rows.map((x) => ({ table: "t1" as const, row: x.id as never, fields: [] })),
           newPartitionId: () => "p_ZZZZZZZZZZZZZZZZ",
-          readPos: opened.op,
+          readPos: (await readTail(tx))?.seq as never,
         });
         expect(again, where).toEqual([]);
       }
@@ -373,7 +456,7 @@ async function run(steps: readonly Step[]): Promise<DerivedWrite[][]> {
   return all;
 }
 
-describe("derived writes, appended and applied, keep each derived table equal to its rule", () => {
+describe("writes through the pipeline keep each derived table equal to its rule", () => {
   it("random inserts, updates, revokes and restores", async () => {
     await fc.assert(
       fc.asyncProperty(fc.array(step, { minLength: 1, maxLength: 8 }), async (steps) => {
@@ -388,15 +471,16 @@ const ins = (c: Record<string, Cell>): Step => ({
   k: "insert",
   cells: { f1: "2026-11-02", f2: "1", ...c },
 });
-const shape = (id: TableId) => (ws: readonly DerivedWrite[]) =>
-  ws
-    .filter((w) => w.target.table === id)
-    .map((w) => ({
-      partition: w.target.partition,
-      emptied: w.target.emptied,
-      key: w.key?.values,
-      changed: w.changes.map((c) => c.field),
-    }));
+const shape = (id: TableId) => (st: Stepped) =>
+  st.writes
+    .filter((w) => w.table === id)
+    .map((w) => ({ partition: w.partition, emptied: w.emptied, key: w.key }));
+/** The receipt's changed fields of a derived table, by name (`derived_<id>`). */
+const changed = (id: TableId) => (st: Stepped) =>
+  st.derived
+    .filter((d) => d.table === `health.derived_${id}`)
+    .map((d) => d.field)
+    .sort();
 const P = (n: number) => `p_${String(n).padStart(16, "0")}`;
 
 describe("fixed cases", () => {
@@ -409,16 +493,24 @@ describe("fixed cases", () => {
       { k: "revoke", row: 1 },
       ins({ f1: "2026-11-04", f2: "1" }),
     ]);
-    const weekly = ws.map(shape("t9"));
-    expect(weekly).toEqual([
-      [{ partition: P(1), emptied: false, key: ["2026-11-02"], changed: ["f1", "f2", "f3"] }],
-      [{ partition: P(1), emptied: false, key: undefined, changed: ["f2", "f3"] }],
+    expect(ws.map(shape("t9"))).toEqual([
+      [{ partition: P(1), emptied: false, key: ["2026-11-02"] }],
+      [{ partition: P(1), emptied: false, key: undefined }],
       // feeling is not read by this rule's results: no write for t9.
       [],
-      [{ partition: P(1), emptied: false, key: undefined, changed: ["f2", "f3"] }],
-      [{ partition: P(1), emptied: true, key: undefined, changed: ["f1", "f2", "f3"] }],
+      [{ partition: P(1), emptied: false, key: undefined }],
+      [{ partition: P(1), emptied: true, key: undefined }],
       // The group comes back under its partition, without a key block.
-      [{ partition: P(1), emptied: false, key: undefined, changed: ["f1", "f2", "f3"] }],
+      [{ partition: P(1), emptied: false, key: undefined }],
+    ]);
+    // The receipt lists the changed fields, not the group key's.
+    expect(ws.map(changed("t9"))).toEqual([
+      ["n", "total"],
+      ["n", "total"],
+      [],
+      ["n", "total"],
+      ["n", "total"],
+      ["n", "total"],
     ]);
   });
 

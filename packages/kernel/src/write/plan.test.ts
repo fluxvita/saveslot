@@ -2,8 +2,7 @@
 // refresh derived tables (K5), the visibility check point, and today in the slot's time zone.
 
 import { describe, expect, it } from "vitest";
-import { COMPILED_V1 } from "../apply/slot.fixture.ts";
-import { refreshesDerived, tableShape, todayIn, writable } from "./plan.ts";
+import { tableShape, todayIn, writable } from "./plan.ts";
 
 const field = (id: string, extra: Record<string, unknown> = {}) => ({
   id,
@@ -38,36 +37,6 @@ describe("tableShape", () => {
     });
     expect(tableShape({ ...t, time: { type: "none" } } as never).kind).toBe("timeless");
     expect(tableShape({ ...t, time: { type: "event", field: "f1" } } as never).kind).toBe("event");
-  });
-});
-
-describe("refreshesDerived", () => {
-  const derived = (dependency: string, table = "t1") => ({
-    id: "t9",
-    name: "d",
-    kind: "derived",
-    description: "d",
-    physical: { table: "t_t9_v1" },
-    fields: [],
-    rule: {
-      id: "r1",
-      version: 1,
-      rsql: "rsql@1",
-      sql: "SELECT 1",
-      time_dependency: dependency,
-      depends_on: [{ table, field: "f1" }],
-      scope: { kind: "tenant" },
-    },
-  });
-  const with_ = (...tables: unknown[]) => ({ ...COMPILED_V1, tables }) as never;
-  it("only when a kept rule reads the table", () => {
-    expect(refreshesDerived(with_(derived("bucketed")), "t1" as never)).toBe(true);
-    expect(refreshesDerived(with_(derived("none")), "t1" as never)).toBe(true);
-    // Computed at read time: nothing kept, nothing to refresh.
-    expect(refreshesDerived(with_(derived("now")), "t1" as never)).toBe(false);
-    // A derived table reading another table.
-    expect(refreshesDerived(with_(derived("bucketed", "t2")), "t1" as never)).toBe(false);
-    expect(refreshesDerived(with_(), "t1" as never)).toBe(false);
   });
 });
 

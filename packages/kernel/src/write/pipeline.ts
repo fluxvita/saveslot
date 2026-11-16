@@ -33,13 +33,14 @@ import {
   type JcsValue,
   type JsonValue,
   type OpNumber,
+  type PartitionId,
   type PrincipalId,
   type RawFieldValue,
   type RowId,
   type Seq,
   type TableId,
 } from "@fluxvita/saveslot-contract-core";
-import { ApplyError, applyEvents, eventsOf } from "../apply/index.ts";
+import { ApplyError } from "../apply/index.ts";
 import { lastRead, type ReadBuffer, type ReadId } from "../audit/index.ts";
 import {
   awaitingImpact,
@@ -60,7 +61,7 @@ import {
   type Unit,
   unitEntries,
 } from "../judge/index.ts";
-import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
+import { type NewEvent, readTail } from "../log/index.ts";
 import { contentBlocks, type ItemContents, openItemsOn, writerHadRead } from "../pending/index.ts";
 import {
   checkSvCompatibility,
@@ -73,6 +74,7 @@ import {
 } from "../request/index.ts";
 import type { Tx } from "../store/ports.ts";
 import { type IntervalSet, meet, WHOLE } from "../time/index.ts";
+import { appendWithDerived } from "./derive-step.ts";
 import { WriteError } from "./errors.ts";
 import {
   type EntityKeyText,
@@ -84,7 +86,7 @@ import {
   keyText,
   keyToken,
 } from "./keys.ts";
-import { refreshesDerived, tableShape, todayIn, verOfRow, writable } from "./plan.ts";
+import { tableShape, todayIn, verOfRow, writable } from "./plan.ts";
 import {
   type Fallback,
   readSlots,
@@ -97,7 +99,7 @@ import {
   svFromWrite,
   verFromWrite,
 } from "./reads.ts";
-import { readReceipt, type WriteReceipt } from "./receipt.ts";
+import { readReceipt, type WriteReceipt, withDerived } from "./receipt.ts";
 import { decodeRecords, encodeOp, type RowContext, type StoredEvent } from "./record.ts";
 import { findRequest, requestKeyOf } from "./request-key.ts";
 import { evidenceSource } from "./sources.ts";
@@ -117,7 +119,7 @@ export interface WriteInput {
   readonly visibility: { readonly kind: string };
   readonly params: unknown;
   /** New identifiers (01-objects «标识的写法»), from the caller. */
-  readonly newId: (kind: "row" | "entity" | "source" | "item") => string;
+  readonly newId: (kind: "row" | "entity" | "source" | "item" | "partition") => string;
   /** The open store's buffered reads: the fallback looks there before the stored ones. */
   readonly reads: ReadBuffer;
 }
@@ -661,16 +663,6 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     return replay;
   }
 
-  // Derived tables reading a written table are refreshed in the same transaction (K5): not yet.
-  for (const o of req.ops) {
-    if (refreshesDerived(slot.compiled, o.table)) {
-      throw new WriteError("internal", "writing a table a derived rule reads is not implemented", {
-        reason: "not_implemented",
-        param: `ops/${o.index}/table`,
-      });
-    }
-  }
-
   // `sv`: given, or from the caller's own latest write on the slot.
   let sv = req.sv;
   let svBasis: "explicit" | "fallback" = "explicit";
@@ -1069,16 +1061,17 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       ...headBlocks,
     },
   };
-  const prepared = await appendOperation(tx, {
-    actor,
-    now: now as never,
-    events: [head, ...sources, ...opEvents],
-  });
-  if (prepared.op !== op || prepared.events.at(-1)?.seq !== next - 1) {
-    throw new WriteError("internal", "the operation's numbers are not as planned");
-  }
+  // Appended and applied; the derived tables its base changes reach refreshed in the same
+  // transaction (K5).
+  let step: Awaited<ReturnType<typeof appendWithDerived>>;
   try {
-    await applyEvents(tx, eventsOf(prepared));
+    step = await appendWithDerived(tx, {
+      actor,
+      now,
+      events: [head, ...sources, ...opEvents],
+      schema: slot.compiled,
+      newPartitionId: () => input.newId("partition") as PartitionId,
+    });
   } catch (e) {
     // The events do not fit the state they are applied to: an internal error, without their content.
     if (e instanceof ApplyError) {
@@ -1089,12 +1082,21 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     }
     throw e;
   }
-  const receipt = (await readReceipt(tx, op, {
-    compiled: slot.compiled,
-    slotName: slot.name,
-    restoreCount: restore,
-    replayed: false,
-  })) as WriteReceipt;
+  const prepared = step.prepared;
+  if (prepared.op !== op || prepared.events.at(-1)?.seq !== next - 1) {
+    throw new WriteError("internal", "the operation's numbers are not as planned");
+  }
+  const receipt = withDerived(
+    (await readReceipt(tx, op, {
+      compiled: slot.compiled,
+      slotName: slot.name,
+      restoreCount: restore,
+      replayed: false,
+    })) as WriteReceipt,
+    step.derived,
+    slot.compiled,
+    slot.name,
+  );
   const ops = receipt.ops.map((r, i) => {
     const keys = keysShown.get(i);
     return keys !== undefined && r.created_entity ? { ...r, existing_keys: keys } : r;

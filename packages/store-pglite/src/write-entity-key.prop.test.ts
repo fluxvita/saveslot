@@ -291,10 +291,10 @@ describe.each(TABLES)("writing by entity_key: $table", (t: Keyed) => {
         let ids = 0;
         let minute = 0;
         let requests = 0;
-        const newId = (kind: "row" | "entity" | "source" | "item") => {
+        const newId = (kind: "row" | "entity" | "source" | "item" | "partition") => {
           ids++;
           const n = String(ids).padStart(kind === "row" || kind === "entity" ? 26 : 16, "0");
-          return `${{ row: "r_", entity: "e_", source: "s_", item: "pi_" }[kind]}${n}`;
+          return `${{ row: "r_", entity: "e_", source: "s_", item: "pi_", partition: "p_" }[kind]}${n}`;
         };
         await createTenant(
           store,

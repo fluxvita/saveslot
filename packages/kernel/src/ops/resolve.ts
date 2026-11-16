@@ -16,8 +16,8 @@ import { createOpsContext } from "./context.ts";
 import { flushReads } from "./flush-reads.ts";
 import { newReadId, randomCrockford } from "./ids.ts";
 
-const PREFIX = { row: "r_", entity: "e_", source: "s_", item: "pi_" } as const;
-const LENGTH = { row: 26, entity: 26, source: 16, item: 16 } as const;
+const PREFIX = { row: "r_", entity: "e_", source: "s_", item: "pi_", partition: "p_" } as const;
+const LENGTH = { row: 26, entity: 26, source: 16, item: 16, partition: 16 } as const;
 
 /** Resolves the pending item `params` names (a `ResolveParams` as the caller sent it). */
 export async function resolve(

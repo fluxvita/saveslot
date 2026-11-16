@@ -21,8 +21,8 @@ export interface QueryResult<R> {
  * A read-only transaction. On PGlite it shares the single queue with writes.
  *
  * A statement the database refuses throws an error carrying the SQLSTATE as a string property
- * `sqlState` (every backend gives it): the kernel tells a data error from others by it alone
- * (`isDataError`).
+ * `sqlState` (every backend gives it): the kernel tells a data error (class 22) from others by it
+ * alone (`sqlStateOf`).
  */
 export interface ReadTx {
   query<R = Record<string, unknown>>(
@@ -69,9 +69,3 @@ export function sqlStateOf(e: unknown): string | undefined {
   const s = (e as { sqlState?: unknown }).sqlState;
   return typeof s === "string" ? s : undefined;
 }
-
-/**
- * Whether a statement failed on the data (SQLSTATE class 22: a value out of range, a division by
- * zero, a malformed date): a rule's evaluation meeting data it cannot compute, not a defect.
- */
-export const isDataError = (e: unknown): boolean => sqlStateOf(e)?.startsWith("22") === true;
