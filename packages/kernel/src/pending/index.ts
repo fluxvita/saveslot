@@ -184,3 +184,5 @@ export async function writerHadRead(
   );
   return Number(r.rows[0]?.n ?? 0) > 0;
 }
+
+export * from "./detail.ts";

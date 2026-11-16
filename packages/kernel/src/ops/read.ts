@@ -1,4 +1,4 @@
-// The read operations `query`, `history`, `catalog` and `reads.list` (docs/zh-CN/spec/04-contract-types.md §4.2, §4.3, §4.5, §8.3): the call context and the
+// The read operations `query`, `history`, `catalog`, `pending` and `reads.list` (docs/zh-CN/spec/04-contract-types.md §4.2, §4.3, §4.5, §4.8, §8.3): the call context and the
 // parameters into `read`, in one read transaction of the tenant store; the read is recorded in the
 // store's read buffer once it succeeded (02-architecture §7 «read_log 的持久性»).
 
@@ -8,6 +8,7 @@ import {
   type CatalogResult,
   catalogInTx,
   historyInTx,
+  pendingInTx,
   type QueryReadResult,
   queryInTx,
   type ReadsListResult,
@@ -81,6 +82,26 @@ export async function catalog(
 ): Promise<CatalogResult> {
   const { result, entry } = await store.read((tx) =>
     catalogInTx(tx, {
+      actor: ctx.actor,
+      task: ctx.task,
+      now: ctx.now,
+      visibility: ctx.visibility,
+      params,
+      read: newReadId(),
+    }),
+  );
+  readBufferOf(store).record(entry);
+  return result;
+}
+
+/** Reads `params` (a `PendingParams`) as `ctx.actor`: the pending items, or one item's detail. */
+export async function pending(
+  store: TenantStore,
+  ctx: OpsContext,
+  params: unknown,
+): Promise<Record<string, unknown>> {
+  const { result, entry } = await store.read((tx) =>
+    pendingInTx(tx, {
       actor: ctx.actor,
       task: ctx.task,
       now: ctx.now,

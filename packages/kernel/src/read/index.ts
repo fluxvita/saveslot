@@ -16,6 +16,7 @@ export {
   historyTarget,
 } from "./history.ts";
 export { historyInTx } from "./history-op.ts";
+export { type PendingInput, pendingInTx } from "./pending.ts";
 export { fingerprint, type QueryInput, type QueryOutput, queryInTx } from "./query.ts";
 export { type ReadsListResult, readsListInTx } from "./reads-list.ts";
 export type { Visibility } from "./slots.ts";

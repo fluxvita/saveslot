@@ -108,7 +108,9 @@ type RecordPoint = Seq | Instant;
 
 /** 业务时间区间，左闭右开。 */
 interface Interval {
-  valid_from: BizTime;
+  /** null 只出现在事项区间（ItemTarget.spans）里、表示整段时间：此时 valid_to 也是 null，且 spans 只有这一段
+   *  （整实体撤销成为候选）。读取结果里的行与段、标记里的事项各段总有起点。 */
+  valid_from: BizTime | null;
   valid_to: BizTime | null;        // null = 一直延续
   valid_to_inclusive?: DateStr;    // 只在 date 粒度且 valid_to 非 null 时给：区间里的最后一天
 }
@@ -142,7 +144,7 @@ type UntrustedText = string;
 |---|---|---|
 | 时刻 | RFC 3339，可带偏移 | UTC，固定毫秒精度，以 `Z` 结尾 |
 | 带时区的时刻 `zoned_datetime` | 一个字符串（带偏移与时区名） | `{"instant": <时刻>, "zone": <IANA 时区名>}` |
-| 业务时间区间 | `{valid_from, valid_to}`，开口终点是 `null`；`date` 粒度另给 `valid_to_inclusive` | `{"from", "to"}`，开口终点是缺省 |
+| 业务时间区间 | `{valid_from, valid_to}`，开口终点是 `null`；`date` 粒度另给 `valid_to_inclusive`。整段时间（只在事项区间里）：`{valid_from: null, valid_to: null}` | `{"from", "to"}`，开口终点是缺省。整段时间：`{}`（`scope_valid` 唯一没有 `from` 的写法） |
 | 整数、小数、数量、日期、布尔、枚举、文本 | 两边相同（整数与小数都是十进制字符串） | 同左 |
 | "存在"（这一行 / 这段是否存在） | 在字段名的位置上写 `"*"`：`fields` 的键、`unit` 与标记里的字段数组 | `"existence"`；事项 `target` 的 `unit` 写 `["existence"]` |
 | 删除的逐行结果 | `result` | `outcome`（`results/<k>/target`），取值相同 |
@@ -961,7 +963,7 @@ type ItemResolution =
   | { executed: true; seq: Seq; at: Instant; reason: TombstoneReason };
 
 /** 事项的目标。unit = 冲突单元里的字段；["*"] = 这一行 / 这段是否存在。 */
-interface ItemTarget extends TargetRef { unit?: Array<FieldName | "*">; spans?: Interval[] }   // spans：状态类表上事项区间的各段，按起点升序、互不相接
+interface ItemTarget extends TargetRef { unit?: Array<FieldName | "*">; spans?: Interval[] }   // spans：状态类表上事项区间的各段，按起点升序、互不相接；整段时间是唯一一段 {valid_from: null, valid_to: null}
 
 type ItemReason =
   | "overwrites_change_point"       // awaiting_confirmation：抹掉已记录的变化点（含跨空洞填值）
@@ -1002,7 +1004,7 @@ interface AwaitingDetail extends ItemBase {
   /** 提议的内容，三种之一：set 是字段值；set: null 是撤销；提议是一次回退时不给 set，给 revert（成因 undo_includes_later）。
    *  回退会写回什么不在这里列：会被回掉的写入见 impact.reverted，回到的值执行后见回执。 */
   proposal: { seq: Seq; actor: Actor; intent: Intent; set?: Values | null; revert?: { undo: Seq; include_later?: boolean }; valid?: Interval };
-  current: { values?: Values; spans?: Span[] };
+  current: { values?: Values; spans?: Span[] };   // 按事项版本的操作号读这一行，范围同 ConflictDetail.effective
   impact: AwaitingImpact;
 }
 
@@ -1027,15 +1029,17 @@ interface FlaggedDetail extends ItemBase {
 interface ConflictDetail extends ItemBase {
   type: "conflict";
   target: ItemTarget;
-  /** 当前生效方。状态类表上冲突区间内的生效值可以由几次写入分段给出：spans 每段带给出它的写入；
-   *  段内没有任何写入给出状态时（从未写过的无值段）不给 seq、actor；撤销留下的空洞给那次撤销。
-   *  顶层 seq / actor 是这些段里操作号最大的那次（事件类表与无时间表只有一个）。顶层总有值：冲突的成立要求合并基之后有改变生效值的写入，
-   *  所以冲突区间里至少有一段由写入给出。 */
-  effective: { seq: Seq; actor: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean };
+  /** 当前生效方：按事项版本的操作号读这一行当时的状态，限定在事项的各段与冲突单元的字段上（单元是"存在"时给整行的值）。
+   *  状态类表上冲突区间内的生效值可以由几次写入分段给出：spans 每段带给出它的写入；
+   *  段内没有任何写入给出状态时（从未写过的无值段）values 为 null，不给 seq、actor；撤销留下的空洞 values 为 null，给那次撤销。
+   *  顶层 seq / actor 是这些段里操作号最大的那次（事件类表与无时间表只有一个）；一段都没有写入给出时不给。
+   *  撤销被撤回之后"由谁给出"两种表不同：事件类表、无时间表上是那次撤回（它让这一行重新存在）；
+   *  状态类表上是原来给出这一段值的写入（撤回只让那些值重新生效）。 */
+  effective: { seq?: Seq; actor?: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean };
   candidates: Candidate[];
   /** 成因是 restored_candidate 时：候选原来所在的那个事项。 */
   related_item?: ItemId;
-  /** take_previous 会回到的样子：合并基（各候选所带 ver 中最早的那个版本）上的值。 */
+  /** take_previous 会回到的样子：合并基（各候选所带 ver 中最早的那个版本）上的值，按合并基的操作号读这一行，范围同 effective。 */
   previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
   /** take_previous 会回掉的写入：合并基之后在这个冲突单元上生效过的全部写入。 */
   reverted_by_previous: Array<{ seq: Seq; actor: Actor }>;
