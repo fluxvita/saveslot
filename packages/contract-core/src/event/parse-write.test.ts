@@ -893,6 +893,10 @@ describe("scope_valid: the item's interval as its spans (§5.8)", () => {
     expect(scope([span("2026-11-01T00:00:00.000Z", "2026-11-01T06:00:00.000Z")])).toEqual([]);
   });
 
+  it("accepts the whole time as [{}]", () => {
+    expect(scope([{}])).toEqual([]);
+  });
+
   it.each([
     ["none", [], "scope_valid.spans: at least one span"],
     [
@@ -920,7 +924,41 @@ describe("scope_valid: the item's interval as its spans (§5.8)", () => {
       [span("2026-11-01", "2026-11-03"), span("2026-11-05T00:00:00.000Z")],
       "scope_valid: spans of one granularity",
     ],
+    [
+      "open at the start with an end",
+      [{ to: "2026-11-03" }],
+      "scope_valid.spans[0]: missing key from",
+    ],
+    [
+      "open at the start before another span",
+      [{}, span("2026-11-05", "2026-11-07")],
+      "scope_valid.spans[0]: missing key from",
+    ],
+    [
+      "open at the start after the first",
+      [span("2026-11-01", "2026-11-03"), {}],
+      "scope_valid.spans[1]: missing key from",
+    ],
   ])("refuses spans %s", (_, spans, issue) => {
     expect(scope(spans)).toContain(issue);
+  });
+});
+
+describe("impact: a gap filled, apart from a value cleared to null (§5.8)", () => {
+  const impact = (v: unknown) => issues(parse(withBlock(S("item.created"), "impact/0", v)));
+  const seg = { kind: "overwritten_segment", field: "f3", deps };
+
+  it("accepts a gap with or without the revoke that left it, and a null value with its write", () => {
+    expect(impact({ ...seg, value: null, gap: true })).toEqual([]);
+    expect(impact({ ...seg, value: null, gap: true, op: 21 })).toEqual([]);
+    expect(impact({ ...seg, value: null, op: 21 })).toEqual([]);
+  });
+
+  it.each([
+    ["a null value without its write", { ...seg, value: null }, "impact/0: op"],
+    ["a gap with a value", { ...seg, value: "30", gap: true, op: 21 }, "impact/0: gap"],
+    ["a gap marked false", { ...seg, value: null, gap: false, op: 21 }, "impact/0: gap"],
+  ])("refuses %s", (_, v, issue) => {
+    expect(impact(v)).toContain(issue);
   });
 });

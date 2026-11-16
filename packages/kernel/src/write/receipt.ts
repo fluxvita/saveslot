@@ -450,18 +450,19 @@ export async function readReceipt(
     /** What carrying out an item would change, from its impact entries (`only`: some of them). */
     const impactOf = (blocks: readonly Blocks[]): Impact => {
       const segs = blocks.filter((b) => b["kind"] === "overwritten_segment");
-      // A stretch without a value is a gap filled (04-contract-types `filled_gaps`).
+      // A gap (a stretch without a value) is filled (04-contract-types `filled_gaps`); a value
+      // cleared to null is overwritten like any other.
       const overwritten = segs
-        .filter((b) => b["value"] !== null && b["value"] !== undefined)
+        .filter((b) => b["gap"] !== true)
         .map((b) => ({
           field: name(b["field"] as string),
           ...(b["valid"] !== undefined ? { valid: iv(spanIn(b["valid"] as never)) } : {}),
-          value: b["value"] as FieldValue,
+          value: (b["value"] ?? null) as FieldValue,
           seq: b["op"] as number,
           actor: actors.get(b["op"] as number) ?? "",
         }));
       const filled = segs
-        .filter((b) => b["value"] === null || b["value"] === undefined)
+        .filter((b) => b["gap"] === true)
         .map((b) => ({
           ...(b["valid"] !== undefined ? { valid: iv(spanIn(b["valid"] as never)) } : {}),
           ...(typeof b["op"] === "number" ? { revoked_by: b["op"] as number } : {}),

@@ -5,7 +5,7 @@
 // Entry blocks are registered by position, removed ones too (a removed data block still stands
 // where it was, §1.1). `item.merged` and `item.refreshed` give some groups whole: the item's
 // earlier entries of those groups stop counting, and the flag's spans follow the new `scope_valid`
-// (none given: an empty group, no spans).
+// (none given: an empty group, no spans; the whole time: no spans either).
 
 import { canonicalize, type JsonValue, type Seq } from "@fluxvita/saveslot-contract-core";
 import { ApplyError, type Change, type EntryRef } from "./model.ts";
@@ -42,11 +42,12 @@ function entries(item: string, seq: Seq, paths: readonly string[], from: number)
     .map((path, i) => ({ item, n: from + i, seq, path }));
 }
 
-/** The flag's spans: those of `scope_valid`, as JCS. */
+/** The flag's spans: those of `scope_valid`, as JCS; the whole time (`[{}]`) is none. */
 function spans(v: JsonValue | undefined): string | null {
   if (v === undefined || v === null || typeof v !== "object" || Array.isArray(v)) return null;
   const s = (v as Obj)["spans"];
-  return Array.isArray(s) ? canonicalize(s) : null;
+  const whole = Array.isArray(s) && s.length === 1 && canonicalize(s[0] ?? null) === "{}";
+  return Array.isArray(s) && !whole ? canonicalize(s) : null;
 }
 
 export function planItem(

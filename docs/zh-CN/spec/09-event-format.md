@@ -1089,7 +1089,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | path | 种类 | 内容 | 来源 |
 |---|---|---|---|
 | `target` | 元 | 见下 | — |
-| `scope_valid` | 数 | 状态类表：事项覆盖的业务时间区间，逐段给出 `{"spans": [{"from": …, "to": …}, …], "deps": […]}`。只有这一种形状，一段时也是长度为 1 的 `spans`；各段按起点升序、互不相交也不相接（相接的合成一段）、粒度一致（都按日或都按时刻），每段 `from` 早于 `to`，`to` 可缺（开口）只能出现在最后一段。不取各段的外包：标记、"改到"的判断与执行都按 `spans` 逐段走 | `deps`：各候选或提议的那几项贡献 |
+| `scope_valid` | 数 | 状态类表：事项覆盖的业务时间区间，逐段给出 `{"spans": [{"from": …, "to": …}, …], "deps": […]}`。只有这一种形状，一段时也是长度为 1 的 `spans`；各段按起点升序、互不相交也不相接（相接的合成一段）、粒度一致（都按日或都按时刻），每段 `from` 早于 `to`，`to` 可缺（开口）只能出现在最后一段。整段时间写成 `[{}]`（例如整实体撤销成为候选），这是唯一没有 `from` 的写法：起点开口的区间与任何一段并起来都是整段时间，与任何一段相交都取那一段的起点，所以不会出现只缺 `from` 的段。并入与相交的判断把开口的起点当作负无穷、开口的终点当作正无穷。整段时间也明写出来，不用"没给 `scope_valid`"表示：在 `item.merged`、`item.refreshed` 里没给有别的读法（零块即空组）。落账进标记时，整段时间不存区间。不取各段的外包：标记、"改到"的判断与执行都按 `spans` 逐段走 | `deps`：各候选或提议的那几项贡献 |
 | `current/<k>` | 数 | 当前生效值的一段：`{"field": "f3", "value": …, "valid": {…}, "op": <写下它的操作号>, "deps": […]}`。`valid` 只在状态类表上有，本表 `proposed`、`previous` 与 `impact` 的 `overwritten_segment` 同样 | `deps` |
 | `candidates/<k>` | 数 | 一个候选（一次写入在这个冲突单元上的全部候选项），见下 | `deps` |
 | `proposed/<k>` | 数 | 待确认的提议在一个字段上的值：`{"field": …, "value": …, "valid": {…}, "deps": […]}` | `deps` |
@@ -1172,7 +1172,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `conflict`：`take_previous` 会回掉的写入 | `{"kind": "reverted_write", "op": <操作号>, "deps": […]}` |
 | `conflict`：候选若生效会属高影响时，它会覆盖的段 | `{"kind": "overwritten_segment", …}`。只在把这个候选的各项放到当前状态之上生效会抹掉当前的变化点时列（与写入判高影响 ① 同一个判法，逐个候选判；只有状态类表有变化点）；`deps` 另含该候选的那几项，读的一方据此分出是哪个候选的 |
 
-`overwritten_segment` 覆盖的是无值的段（会被填上的无值区间）时，`value` 为 `null`，`op` 是留下它的那次撤销，没有撤销留下它时不给 `op`；契约里它进 `filled_gaps`。
+`overwritten_segment` 覆盖的是无值的段（会被填上的无值区间）时带 `"gap": true`，`value` 为 `null`，`op` 是留下它的那次撤销，没有撤销留下它时不给 `op`；契约里它进 `filled_gaps`。被显式清空成 `null` 的字段值是一个值，不是无值的段：它不带 `gap`，`op` 是清空它的那次写入，契约里进 `overwritten`。不带 `gap` 的块必有 `op`。
 
 `apply`：`pending_items` 加一行（状态未决，事项版本 = 本操作号）；`pending_entries` 登记各条目块的位置；按事项类型设标记：`conflict` → `disputed`（带事项、`unit` 里的字段、区间），`awaiting_confirmation` → `awaiting`（同上），`flagged` → `flagged`。
 

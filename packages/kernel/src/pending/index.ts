@@ -42,6 +42,8 @@ export type ImpactBlock =
       readonly field: string;
       readonly valid?: { readonly from: string | null; readonly to: string | null };
       readonly value: unknown;
+      /** A stretch without a value (a gap filled), apart from a value cleared to null. */
+      readonly gap?: true;
       readonly op?: number;
       readonly deps: readonly EntryRef[];
     }
@@ -80,7 +82,8 @@ export interface ItemContents {
 /** The entry blocks of an item event, by path. */
 export function contentBlocks(c: ItemContents): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  // The item's interval as its spans (canonical: by start, apart), never a hull of them.
+  // The item's interval as its spans (canonical: by start, apart), never a hull of them; the whole
+  // time (a candidate revoking the whole entity) is `[{}]`.
   if (c.scope !== undefined && c.scope.valid.length > 0) {
     out["scope_valid"] = {
       spans: c.scope.valid.map(spanOut),
@@ -131,6 +134,7 @@ export function contentBlocks(c: ItemContents): Record<string, unknown> {
             field: e.field,
             ...(e.valid !== undefined ? { valid: spanOut(e.valid) } : {}),
             value: e.value ?? null,
+            ...(e.gap === true ? { gap: true } : {}),
             ...(e.op !== undefined ? { op: e.op } : {}),
             deps: e.deps.map(refOut),
           };

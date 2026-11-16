@@ -747,10 +747,11 @@ export type ItemCreatedTarget =
 
 /**
  * `scope_valid` (data, state tables): the item's business time interval as its spans, by start,
- * apart (neither overlapping nor touching), only the last one open; with `deps`.
+ * apart (neither overlapping nor touching), only the last one open; the whole time is `[{}]`,
+ * the one span without a start. With `deps`.
  */
 export interface ScopeValidBlock {
-  readonly spans: readonly [BizInterval, ...BizInterval[]];
+  readonly spans: readonly [BizInterval, ...BizInterval[]] | readonly [Record<string, never>];
   readonly deps: Deps;
 }
 
@@ -822,7 +823,12 @@ export type ImpactBlock =
       readonly field: FieldId;
       readonly valid?: BizInterval;
       readonly value: FieldValue;
-      /** The write that gave the stretch; on a stretch without a value, the revoke, if one did. */
+      /**
+       * A stretch without a value (a gap filled; `value` null), apart from a value cleared to null
+       * (§5.8).
+       */
+      readonly gap?: true;
+      /** The write that gave the stretch; on a gap, the revoke that left it, if one did. */
       readonly op?: OpNumber;
       readonly deps: Deps;
     }

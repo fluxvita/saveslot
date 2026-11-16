@@ -1359,3 +1359,177 @@ describe("a candidate's by and effective: the write that gave what it met (04-co
     T,
   );
 });
+
+/** An entity on the state table from 11-01, with `set`. */
+const entityWith = async (set: Record<string, unknown>) => {
+  const e = await send({
+    sv: 1,
+    ops: [{ intent: "insert", table: "entities", valid_from: "2026-11-01", set }],
+  });
+  return { e, entity: e.ops[0]?.target.entity as string };
+};
+const on = (entity: string, op: Record<string, unknown>, actor = USER) =>
+  send({ sv: 1, ops: [{ table: "entities", entity, ...op }] }, { actor });
+const blocksOf = (blocks: Record<string, unknown> | undefined, prefix: string) =>
+  Object.entries(blocks ?? {})
+    .filter(([p]) => p.startsWith(`${prefix}/`))
+    .map(([, v]) => v as Record<string, unknown>);
+const partsOf = (r: { ops: readonly { fields: Record<string, unknown> }[] }, field: string) =>
+  (r.ops[0]?.fields[field] ?? []) as readonly Record<string, unknown>[];
+const iv = (from: string, to: string, incl: string) => ({
+  valid_from: from,
+  valid_to: to,
+  valid_to_inclusive: incl,
+});
+
+describe("a value cleared to null and a gap (09-event-format §5.8 `impact`)", () => {
+  it(
+    "a stale write over a value cleared to null: the cleared stretch is overwritten, named by the write that cleared it, not a gap",
+    async () => {
+      // b = x, c = 1; another connection clears c from 11-10; a stale c = 2 on [11-05, 11-20)
+      // would erase the change point at 11-10.
+      const { e, entity } = await entityWith({ b: "x", c: "1" });
+      const clear = await on(
+        entity,
+        { intent: "update", ver: verAt(e), valid_from: "2026-11-10", set: { c: null } },
+        OTHER,
+      );
+      const stale = await on(entity, {
+        intent: "update",
+        ver: verAt(e),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-20",
+        set: { c: "2" },
+      });
+      const [created] = await ofType(stale.seq, "item.created");
+      const segs = blocksOf(created?.blocks, "impact").filter(
+        (b) => b["kind"] === "overwritten_segment",
+      );
+      expect(segs).toContainEqual(
+        expect.objectContaining({
+          field: "f3",
+          value: null,
+          op: clear.seq,
+          valid: { from: "2026-11-10", to: "2026-11-20" },
+        }),
+      );
+      expect(segs.filter((b) => "gap" in b)).toEqual([]);
+      const part = partsOf(stale, "c").find((p) => p["result"] === "candidate");
+      expect(part?.["impact"]).toEqual({
+        overwritten: expect.arrayContaining([
+          {
+            field: "c",
+            valid: iv("2026-11-10", "2026-11-20", "2026-11-19"),
+            value: null,
+            seq: clear.seq,
+            actor: OTHER,
+          },
+        ]),
+      });
+    },
+    T,
+  );
+
+  it(
+    "a write filling a stretch a revoke left without a value: a gap, named by the revoke",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x" });
+      const v = await on(
+        entity,
+        { intent: "revoke", ver: verAt(e), valid_from: "2026-11-10", valid_to: "2026-11-15" },
+        OTHER,
+      );
+      const w = await on(entity, {
+        intent: "update",
+        ver: verAt(v),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-20",
+        set: { b: "y" },
+      });
+      expect(w.pending[0]?.type).toBe("awaiting_confirmation");
+      const [created] = await ofType(w.seq, "item.created");
+      const gaps = blocksOf(created?.blocks, "impact").filter((b) => b["gap"] === true);
+      expect(gaps).toEqual([
+        expect.objectContaining({
+          kind: "overwritten_segment",
+          field: "f2",
+          value: null,
+          gap: true,
+          op: v.seq,
+          valid: { from: "2026-11-10", to: "2026-11-15" },
+        }),
+      ]);
+      const impact = partsOf(w, "b").find((p) => p["result"] === "awaiting")?.["impact"] as {
+        overwritten?: { value: unknown }[];
+        filled_gaps?: unknown[];
+      };
+      expect(impact.filled_gaps).toEqual([
+        { valid: iv("2026-11-10", "2026-11-15", "2026-11-14"), revoked_by: v.seq },
+      ]);
+      expect(impact.overwritten?.map((o) => o.value)).not.toContain(null);
+    },
+    T,
+  );
+});
+
+describe("a stale revoke of the whole entity on a state table (09-event-format §5.8 `scope_valid`)", () => {
+  it(
+    "a stale revoke of the whole entity: an item over the whole time, spans [{}], a flag without spans; later writes reach it",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x" });
+      const y = await on(entity, { intent: "update", ver: verAt(e), set: { b: "y" } }, OTHER);
+      const stale = await on(entity, { intent: "revoke", ver: verAt(e) });
+      const item = stale.pending[0]?.id as string;
+      expect(stale.pending[0]?.type).toBe("conflict");
+      const [created] = await ofType(stale.seq, "item.created");
+      expect(created?.blocks["scope_valid"]).toMatchObject({ spans: [{}] });
+      expect(await flagSpans(item)).toBeNull();
+      // A later write by a connection that had not read it reaches it anywhere in time.
+      const later = await on(
+        entity,
+        { intent: "update", ver: verAt(y), valid_from: "2026-12-01", set: { b: "z" } },
+        OTHER,
+      );
+      const [refreshed] = await ofType(later.seq, "item.refreshed");
+      expect(refreshed?.blocks["target"]).toMatchObject({ item });
+      expect(refreshed?.blocks["scope_valid"]).toMatchObject({ spans: [{}] });
+      expect(await flagSpans(item)).toBeNull();
+    },
+    T,
+  );
+
+  it(
+    "an item with an interval joined by a stale revoke of the whole entity: its interval becomes the whole time",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x" });
+      const v = await on(
+        entity,
+        { intent: "revoke", ver: verAt(e), valid_from: "2026-11-05", valid_to: "2026-11-07" },
+        OTHER,
+      );
+      const stale = await on(entity, {
+        intent: "update",
+        ver: verAt(e),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-07",
+        set: { b: "y" },
+      });
+      const item = stale.pending[0]?.id as string;
+      expect(await flagSpans(item)).toEqual([{ from: "2026-11-05", to: "2026-11-07" }]);
+      const whole = await on(entity, { intent: "revoke", ver: verAt(e) });
+      const [merged] = await ofType(whole.seq, "item.merged");
+      expect(merged?.blocks["target"]).toMatchObject({ item });
+      expect(merged?.blocks["scope_valid"]).toMatchObject({ spans: [{}] });
+      expect(await flagSpans(item)).toBeNull();
+      const later = await on(
+        entity,
+        { intent: "update", ver: verAt(v), valid_from: "2026-12-01", set: { b: "z" } },
+        OTHER,
+      );
+      const [refreshed] = await ofType(later.seq, "item.refreshed");
+      expect(refreshed?.blocks["target"]).toMatchObject({ item });
+      expect(refreshed?.blocks["scope_valid"]).toMatchObject({ spans: [{}] });
+    },
+    T,
+  );
+});

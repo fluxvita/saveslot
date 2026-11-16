@@ -50,7 +50,12 @@ export type ImpactEntry =
       readonly field: FieldId;
       readonly valid?: Interval;
       readonly value: FieldValue;
-      /** The write that gave the stretch; on a stretch without a value, the revoke, if one did. */
+      /**
+       * A stretch without a value: a gap the write fills. A value cleared to null is a value, not a
+       * gap (09 §5.8).
+       */
+      readonly gap?: true;
+      /** The write that gave the stretch; on a gap, the revoke that left it, if one did. */
       readonly op?: OpNumber;
       readonly deps: readonly ItemRef[];
     }
@@ -213,6 +218,8 @@ function segmentsOf(state: RowState, x: Parameters<typeof overwrittenBy>[1], at:
       field: o.field,
       ...(state.isState ? { valid: v } : {}),
       value: was.kind === "value" ? was.value : null,
+      // A stretch without a value is a gap filled; a value cleared to null is a value.
+      ...(was.kind === "no_value" ? { gap: true as const } : {}),
       ...(was.op !== undefined ? { op: was.op } : {}),
       deps: uniq(o.deps),
     }));
@@ -288,7 +295,8 @@ export function proposalImpact(
 export function awaitingImpact(state: RowState, j: Judgement): ImpactEntry[] {
   const out: ImpactEntry[] = [];
   for (const o of j.overwritten) {
-    // A stretch without a value is a gap the write fills (04-contract-types `filled_gaps`).
+    // A stretch without a value is a gap the write fills (04-contract-types `filled_gaps`); a
+    // value cleared to null is overwritten like any other.
     if (o.was.kind !== "value" && o.was.kind !== "no_value") continue;
     const was = o.was;
     for (const v of o.valid) {
@@ -297,6 +305,7 @@ export function awaitingImpact(state: RowState, j: Judgement): ImpactEntry[] {
         field: o.field,
         ...(state.isState ? { valid: v } : {}),
         value: was.kind === "value" ? was.value : null,
+        ...(was.kind === "no_value" ? { gap: true as const } : {}),
         ...(was.op !== undefined ? { op: was.op } : {}),
         deps: uniq(o.deps),
       });

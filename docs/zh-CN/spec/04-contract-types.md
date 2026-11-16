@@ -146,7 +146,7 @@ type UntrustedText = string;
 | 整数、小数、数量、日期、布尔、枚举、文本 | 两边相同（整数与小数都是十进制字符串） | 同左 |
 | "存在"（这一行 / 这段是否存在） | 在字段名的位置上写 `"*"`：`fields` 的键、`unit` 与标记里的字段数组 | `"existence"`；事项 `target` 的 `unit` 写 `["existence"]` |
 | 删除的逐行结果 | `result` | `outcome`（`results/<k>/target`），取值相同 |
-| 执行后会改掉的段（事项的影响） | `impact.overwritten`（被覆盖的段）与 `impact.filled_gaps`（被填掉的无值区间） | `impact/<k>` 的 `overwritten_segment`：被覆盖的是无值区间（`value` 为空）的段，在契约里进 `filled_gaps`；其余进 `overwritten` |
+| 执行后会改掉的段（事项的影响） | `impact.overwritten`（被覆盖的段）与 `impact.filled_gaps`（被填掉的无值区间） | `impact/<k>` 的 `overwritten_segment`：带 `gap` 的段（无值区间）在契约里进 `filled_gaps`；其余（含值被清空成 `null` 的段）进 `overwritten` |
 | 疑似重复命中的行 | `FlaggedDetail.related`（命中的那组键值另在 `matched_values`） | `matched`（`write.base` 的 `duplicate`、`item.created` 的 `matched/<k>`） |
 
 ### 1.5 目标

@@ -470,7 +470,8 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
   },
   /**
    * The item's interval as its spans: at least one, by start, neither overlapping nor touching
-   * (touching ones are one span), of one granularity, only the last one open.
+   * (touching ones are one span), of one granularity, only the last one open. The whole time is
+   * `[{}]`, the one span without a start.
    */
   ScopeValid(v, at, issues) {
     if (!keys(v, at, ["spans", "deps"], [], issues)) return;
@@ -479,6 +480,9 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
       issues.push(`${at}.spans: at least one span`);
     } else {
       spans.forEach((s, i) => {
+        // The whole time, `[{}]`, is the one span without a start: an open start meets every
+        // span, so it comes with no end and no other span.
+        if (i === 0 && spans.length === 1 && isObject(s) && Object.keys(s).length === 0) return;
         interval(s, `${at}.spans[${i}]`, issues);
         const prev = i > 0 ? spans[i - 1] : undefined;
         // One granularity: every span by date, or every one by instant.
@@ -572,11 +576,13 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
   Impact(v, at, issues) {
     const kind = isObject(v) ? v["kind"] : undefined;
     if (kind === "overwritten_segment") {
-      // A stretch without a value (a gap filled) has no op unless a revoke left it.
-      if (!keys(v, at, ["kind", "field", "value", "deps"], ["valid", "op"], issues)) return;
+      // A stretch without a value (a gap filled: `gap`, value null) has no op unless a revoke left
+      // it; any other stretch, a value cleared to null among them, names the write that gave it.
+      if (!keys(v, at, ["kind", "field", "value", "deps"], ["valid", "op", "gap"], issues)) return;
       check(id("field", v["field"]), at, "field", issues);
+      if ("gap" in v) check(v["gap"] === true && v["value"] === null, at, "gap", issues);
       if ("op" in v) check(int(v["op"]), at, "op", issues);
-      check("op" in v || v["value"] === null, at, "op", issues);
+      check("op" in v || "gap" in v, at, "op", issues);
       value(v["value"], `${at}.value`, issues);
       if ("valid" in v) interval(v["valid"], `${at}.valid`, issues);
       deps(v["deps"], `${at}.deps`, issues);
