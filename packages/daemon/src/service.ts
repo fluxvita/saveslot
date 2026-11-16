@@ -27,11 +27,17 @@ import { join } from "node:path";
 import type { HealthBody, LocalListener } from "@fluxvita/saveslot-server";
 import { listenLocal } from "@fluxvita/saveslot-server";
 import {
+  ControlFileError,
+  Credentials,
+  CredentialsCorrupt,
+  checkLocalHome,
   closeLocalTenant,
   flushLocalReads,
   type LocalTenant,
   openLocalTenant,
   probeLocalTenant,
+  pruneCredentials,
+  removeStaleTemps,
 } from "@fluxvita/saveslot-service";
 import {
   type DirLockHandle,
@@ -75,6 +81,8 @@ export interface RunningService {
   readonly exited: Promise<Exited>;
   /** @internal For tests: the open tenant, while there is one. */
   readonly tenant: LocalTenant | undefined;
+  /** @internal The local credentials, read once the tenant is open. */
+  readonly credentials: Credentials | undefined;
 }
 
 /** Paths under the home (06-cli §3 «分步做»; 02-architecture §7). */
@@ -111,6 +119,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   let state: ServiceState = "starting";
   let reason: string | undefined;
   let tenant: LocalTenant | undefined;
+  let credentials: Credentials | undefined;
   let listener: LocalListener | undefined;
   let lock: DirLockHandle | undefined;
   let probe: NodeJS.Timeout | undefined;
@@ -136,6 +145,9 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     exited,
     get tenant() {
       return tenant;
+    },
+    get credentials() {
+      return credentials;
     },
   };
 
@@ -241,6 +253,27 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         state = "failed";
         reason = r.failure;
         say("failed", { reason: r.failure });
+        return;
+      }
+      // The credentials (02-architecture §5): owned by this user, 0600 in a 0700 directory, of
+      // their form; hashes of principals that do not exist or no longer authenticate go.
+      try {
+        // Holding the home's lock: what a write killed before its rename left goes first.
+        removeStaleTemps([join(o.home, "control"), join(o.home, "credentials")]);
+        await checkLocalHome(o.home);
+        credentials = await Credentials.load(o.home);
+        const dropped = await pruneCredentials(r.tenant, credentials);
+        if (dropped > 0) say("credentials_pruned", { count: dropped });
+      } catch (e) {
+        await closeLocalTenant(r.tenant).catch(() => {});
+        state = "failed";
+        reason =
+          e instanceof ControlFileError
+            ? "credentials_permissions"
+            : e instanceof CredentialsCorrupt
+              ? "credentials_corrupt"
+              : codeOf(e);
+        say("failed", { reason });
         return;
       }
       tenant = r.tenant;

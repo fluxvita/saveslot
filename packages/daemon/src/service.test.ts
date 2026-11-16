@@ -7,12 +7,16 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { request } from "node:http";
@@ -41,6 +45,11 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 function home(): string {
   const h = join(root, String(n++));
   cpSync(template, h, { recursive: true });
+  // A copy makes its directories with the default mode: the home and its control files are set
+  // back as init makes them (directories 0700, files 0600).
+  chmodSync(h, 0o700);
+  chmodSync(join(h, "control"), 0o700);
+  for (const f of ["credentials.json", "tenant.json"]) chmodSync(join(h, "control", f), 0o600);
   return h;
 }
 
@@ -198,6 +207,68 @@ describe("the service in process", () => {
     const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
     expect([s.state, s.reason]).toEqual(["failed", "tenant_directory_corrupt"]);
     await s.stop();
+  });
+
+  it("does not serve with credentials open to others, or not of their form", async () => {
+    const cases: [string, (h: string) => void][] = [
+      ["credentials_permissions", (h) => chmodSync(join(h, "control", "credentials.json"), 0o644)],
+      ["credentials_permissions", (h) => chmodSync(join(h, "control"), 0o755)],
+      ["credentials_permissions", (h) => chmodSync(h, 0o777)],
+      [
+        "credentials_permissions",
+        (h) => {
+          mkdirSync(join(h, "credentials"), { mode: 0o777 });
+          chmodSync(join(h, "credentials"), 0o777);
+        },
+      ],
+      [
+        "credentials_permissions",
+        (h) => {
+          mkdirSync(join(h, "credentials"), { mode: 0o700 });
+          writeFileSync(join(h, "credentials", "session"), "x\n", { mode: 0o644 });
+        },
+      ],
+      [
+        "credentials_permissions",
+        (h) => {
+          // The credentials a link to a file elsewhere, itself private.
+          const real = join(h, "elsewhere.json");
+          renameSync(join(h, "control", "credentials.json"), real);
+          symlinkSync(real, join(h, "control", "credentials.json"));
+        },
+      ],
+      [
+        "credentials_corrupt",
+        (h) => writeFileSync(join(h, "control", "credentials.json"), "{}", { mode: 0o600 }),
+      ],
+    ];
+    for (const [reason, spoil] of cases) {
+      const h = home();
+      spoil(h);
+      const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
+      expect([s.state, s.reason]).toEqual(["failed", reason]);
+      await s.stop();
+    }
+  });
+
+  it("removes the temporary files a killed write left in control/ and credentials/", async () => {
+    const h = home();
+    mkdirSync(join(h, "credentials"), { mode: 0o700 });
+    const stale = [
+      join(h, "control", `.saveslot-${"a".repeat(32)}.tmp`),
+      join(h, "credentials", `.saveslot-${"b".repeat(32)}.tmp`),
+    ];
+    for (const f of stale) writeFileSync(f, "left behind\n", { mode: 0o600 });
+    const other = join(h, "control", "keep.tmp");
+    writeFileSync(other, "not ours\n", { mode: 0o600 });
+    const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
+    try {
+      expect(s.state).toBe("ready");
+      expect(stale.map((f) => existsSync(f))).toEqual([false, false]);
+      expect(existsSync(other)).toBe(true);
+    } finally {
+      await s.stop();
+    }
   });
 
   it("does not serve an empty tenant storage", async () => {

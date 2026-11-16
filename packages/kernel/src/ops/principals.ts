@@ -7,6 +7,7 @@
 
 import {
   type ConnectionId,
+  isId,
   type JsonValue,
   type PrincipalVia,
   SCOPES,
@@ -42,6 +43,11 @@ export interface IssueConnectionParams {
   readonly via: PrincipalVia;
   /** The OAuth client identifier: exactly when `via` is `oauth`. */
   readonly client?: string;
+  /**
+   * The connection's ID, when the service layer chose it first (to record the token's hash before
+   * the registration commits). Absent: a new one.
+   */
+  readonly id?: ConnectionId;
 }
 
 /** A connection instance as `principals` holds it. */
@@ -191,7 +197,10 @@ export async function issueConnection(
     const scopes = scopesOf(params.scopes);
     const slots = await slotsOf(tx, ctx, params.slots);
     if (await nameTaken(tx, params.name)) throw duplicateName();
-    const id = newConnectionId();
+    const id = params.id ?? newConnectionId();
+    if (!isId("connection", id) || (await principal(tx, id)) !== undefined) {
+      throw new OpsError("internal", "the connection ID given is not a new connection ID");
+    }
     await commit(tx, ctx, actor, {
       type: "principal.registered",
       blocks: {

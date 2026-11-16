@@ -160,6 +160,28 @@ export async function openLocalTenant(o: {
   }
 }
 
+/** The context of an operation the local user session calls, with the idempotency windows given. */
+export function localUserContext(
+  t: LocalTenant,
+  o: {
+    readonly now: string;
+    readonly task?: string | null;
+    readonly windows?: { readonly requestKey: number; readonly idempotencyKey: number };
+  },
+): OpsContext {
+  return createOpsContext({
+    tenant: t.tenant,
+    actor: t.user,
+    trigger: null,
+    task: o.task ?? null,
+    visibility: { kind: "all" },
+    idempotency_window: o.windows?.requestKey ?? 86_400_000,
+    idempotency_key_window: o.windows?.idempotencyKey ?? 86_400_000,
+    now: o.now,
+    confirmation: null,
+  });
+}
+
 /** The context of a local internal operation: `system`, the task's name, the time given. */
 function systemContext(t: LocalTenant, trigger: InternalOperation, now: string): OpsContext {
   return createOpsContext({

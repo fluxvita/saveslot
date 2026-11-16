@@ -1,0 +1,19 @@
+# Secret scanning (the `secrets` CI job runs gitleaks with this file): its default rules, and the
+# saveslot tokens (docs/zh-CN/spec/04-contract.md §12): a prefix and 43 base64url characters.
+# No word boundary on either side: a token glued to other characters (after an escaped `\n`, a
+# `%20`, `SAVESLOT_`, or before `_backup`) is still a token. RE2 syntax, no lookaround.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "saveslot-connection-token"
+description = "saveslot connection instance token"
+regex = '''slt_[A-Za-z0-9_-]{43}'''
+keywords = ["slt_"]
+
+[[rules]]
+id = "saveslot-session-token"
+description = "saveslot user session token"
+regex = '''sls_[A-Za-z0-9_-]{43}'''
+keywords = ["sls_"]

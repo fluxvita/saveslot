@@ -326,6 +326,22 @@ describe("connections.list and log.verify (04-contract §17)", () => {
   });
 });
 
+describe("connections.issue with an ID the caller chose", () => {
+  it("takes the ID the caller chose; refuses one in use or of another form", async () => {
+    const id = `ci_${"6".repeat(26)}`;
+    expect(
+      await issueConnection(store, ctx(USER, 9), { name: "chosen", via: "token", id: id as never }),
+    ).toMatchObject({ id, name: "chosen" });
+    for (const bad of [id, desk, `ci_${"6".repeat(25)}`, USER]) {
+      expect(
+        await refusal(
+          issueConnection(store, ctx(USER, 9), { name: `x${bad}`, via: "token", id: bad as never }),
+        ),
+      ).toEqual({ code: "internal" });
+    }
+  });
+});
+
 // ---- K12 ---------------------------------------------------------------------------------------
 
 /** Every row of every materialized table, in a fixed order. */
@@ -381,7 +397,8 @@ describe("K12: replaying the log from an empty storage gives the same state", ()
 
   it("every materialized table and the current tenant ID are equal", async () => {
     const live = await store.read(materialized);
-    expect(live["principals"]).toHaveLength(4);
+    // The user, system, and the three connections issued above.
+    expect(live["principals"]).toHaveLength(5);
     expect(await replica.read(materialized)).toEqual(live);
   });
 

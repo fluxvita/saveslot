@@ -1,5 +1,6 @@
-// A local home for tests, as `saveslot init` will make it (06-cli §3 «分步做»): the home and
-// `control/` at 0700, the tenant storage with its genesis event, `control/tenant.json`. No anchor
+// A local home for tests, as `saveslot init` makes it (06-cli §3 «分步做»): the home and
+// `control/` at 0700, the tenant storage with its genesis event, `control/credentials.json`,
+// `control/tenant.json`. No anchor
 // file: a tenant never written reads as the empty anchor. Fictional IDs.
 // Exported as `@fluxvita/saveslot-service/testing`; tests only.
 
@@ -13,7 +14,9 @@ import {
   type StorageBackend,
   type TenantStore,
 } from "@fluxvita/saveslot-kernel";
+import { Credentials } from "./credentials.ts";
 import { controlDir, type LocalTenant, tenantFile } from "./local-tenant.ts";
+import { newToken, tokenHash } from "./tokens.ts";
 
 export const TEST_TENANT = `tn_${"8".repeat(26)}` as const;
 export const TEST_USER = `u_${"1".repeat(26)}` as const;
@@ -41,6 +44,8 @@ export async function createLocalHome(home: string, backend: StorageBackend): Pr
   } finally {
     await store.close();
   }
+  // A session no test holds the token of: the service reads its credentials when it starts.
+  Credentials.create(home, tokenHash(newToken("session")));
   await writeFile(
     tenantFile(home),
     `${JSON.stringify({ format: 1, user: TEST_USER, tenant: TEST_TENANT })}\n`,
