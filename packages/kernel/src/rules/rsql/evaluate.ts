@@ -285,7 +285,7 @@ export function roundDecimalText(
 }
 
 /** A result cell decoded as the field's value (09 §1.3). */
-function decodeValue(f: CompiledDerivedField, v: unknown): FieldValue {
+export function decodeValue(f: CompiledDerivedField, v: unknown): FieldValue {
   if (v === null || v === undefined) return null;
   switch (f.type) {
     case "boolean":

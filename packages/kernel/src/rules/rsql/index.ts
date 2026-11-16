@@ -8,6 +8,13 @@ export {
   type DerivedRuleResult,
   type RuleDetail,
 } from "./derived.ts";
+export {
+  type DerivedLayout,
+  decodeDerivedRow,
+  derivedLayout,
+  derivedRowsQuery,
+  type StoredDerivedRow,
+} from "./derived-table.ts";
 export type { RuleDetailCode, SqlReason } from "./errors.ts";
 export {
   type DerivedRow,

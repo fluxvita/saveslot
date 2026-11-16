@@ -174,7 +174,8 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     check(id("rule", v["rule"]), at, "rule", issues);
     check(int(v["rule_version"]) && v["rule_version"] >= 1, at, "rule_version", issues);
     check(id("partition", v["partition"]), at, "partition", issues);
-    // The seq of the last event before it in its operation: a member event, after its head.
+    // The seq of the last event of its operation before the derived refresh began (the same for
+    // every derived write of the operation): a member event, after its head.
     check(int(v["read_pos"]) && v["read_pos"] >= 1, at, "read_pos", issues);
     list(
       v["reads"],

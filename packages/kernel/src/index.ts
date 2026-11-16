@@ -1,5 +1,6 @@
 export * from "./apply/index.ts";
 export * from "./audit/index.ts";
+export * from "./derive/index.ts";
 export * from "./judge/index.ts";
 export * from "./log/index.ts";
 export * from "./ops/index.ts";
