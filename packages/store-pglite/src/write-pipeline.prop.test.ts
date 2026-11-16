@@ -343,7 +343,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     await main?.close();
   }, 120_000);
 
-  const seen = { samples: 0, skipped: 0, steps: 0, pending: 0, decisions: 0 };
+  const seen = { samples: 0, skipped: 0, steps: 0, pending: 0, decisions: 0, overrun: 0 };
   const byKind: Record<string, number> = {};
 
   /** One judged scenario through the pipeline, every check below; counts decisions in `byKind`. */
@@ -448,7 +448,15 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       const o = step.op;
       const want = expected[k] as LoggedEvent[];
       const head = want[0]?.seq as number;
-      for (let tail = (await store.read(readTail))?.seq ?? 0; tail < head - 1; tail++) {
+      // The step's numbers were taken by the step before (its refreshes and supersessions, which
+      // the record mapping does not number, ran into them): the scenario's numbering cannot hold
+      // this sample from here on. The steps compared so far stand; the rest is skipped.
+      const start = (await store.read(readTail))?.seq ?? 0;
+      if (start >= head) {
+        seen.overrun++;
+        return;
+      }
+      for (let tail = start; tail < head - 1; tail++) {
         await run([filler]);
       }
       const now = "now" in step.input ? (step.input.now as string) : "2026-11-05";
@@ -552,6 +560,9 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     );
     if (process.env["JUDGE_STATS"]) console.log(schema.kind, JSON.stringify({ ...seen, byKind }));
     expect(seen.samples).toBeGreaterThan(RUNS / 3);
+    // Overruns cut samples short: they must stay rare. Five rounds of 40 a table gave one in 200
+    // (a mean of 0.2 a run); more than a tenth of the runs has odds of about 3e-6.
+    expect(seen.overrun).toBeLessThanOrEqual(RUNS / 10);
     expect(seen.pending).toBeGreaterThan(0);
     atRandom.decisions += seen.decisions;
   });
