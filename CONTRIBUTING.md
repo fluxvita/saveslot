@@ -8,7 +8,7 @@ The full contributor guide is currently in Chinese: [`docs/zh-CN/guide/12-contri
 
 1. Create a branch from `main`. If you cannot push branches to the repository, fork it and create the branch in your fork.
 2. Open a merge request against `main` (from your fork, if you used one) and fill in the template. Its title is a Conventional Commit and becomes the squash commit's subject; CI checks the title (`feat`, `fix`, `docs`, `test`, `build`, `ci`, `chore`, `refactor`, `perf`, `revert`, `style`; scope in lower case).
-3. To be merged, CI must pass, every review thread must be resolved, and a maintainer must approve it.
+3. To be merged, the merge request's pipeline (quick checks: title, sign-off, secrets, forbidden terms) must pass, `pnpm check` must pass on the head (you run it before pushing and paste the result in the description; the maintainer runs it again on the head to be merged), every review thread must be resolved, and a maintainer must approve it.
 4. A maintainer merges it with squash.
 
 ## Conventions
@@ -20,7 +20,7 @@ The full contributor guide is currently in Chinese: [`docs/zh-CN/guide/12-contri
 - **Spec first.** A change in behavior updates the spec (`docs/zh-CN/spec/`) in the same merge request; changes that affect how readers understand the system also update the guide (`docs/zh-CN/guide/`). Incompatible changes to the event format, the kernel invariants or the operation contract start with a decision record in `docs/zh-CN/process/decisions/` that is reviewed before the spec and code change.
 - **Research ownership.** Technical research belongs in `docs/zh-CN/research/`. Competitor analysis, market and product snapshots, product positioning, pricing and commercial strategy belong in the internal repository, not here. Split mixed reports without maintaining synchronized copies; public design conclusions must be independently supported in this repository, not by internal research. Keep existing technical reports in place and annotate superseded advice or unverified claims during the pre-publication review, without rewriting their conclusions or deleting history.
 - **Never commit** secrets, internal addresses, or personal information unrelated to the project.
-- Run `pnpm check` locally (type check, lint, tests, dependency rules, doc links, JSON examples). CI runs the same scripts.
+- Run `pnpm check` locally on the head you push (type check, lint, tests, dependency rules, doc links, JSON examples) and paste the result in the merge request. CI runs the same scripts after a merge, nightly and when a phase is finished, not on merge requests. When the default branch fails, it is fixed first and merges wait.
 
 ## Where to talk
 

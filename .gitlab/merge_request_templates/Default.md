@@ -24,7 +24,7 @@ Closes #
 
 <!-- Paste the tail of the output. Say plainly what was not actually run (for example steps that need root or another machine). -->
 
-- [ ] `pnpm check` passes locally
+- [ ] `pnpm check` passes locally on the head of this request (paste the result above: the merge request's pipeline does not run it)
 - [ ] Every commit is signed off by its author (`pnpm dco`)
 
 ## Review focus

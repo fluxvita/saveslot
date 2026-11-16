@@ -38,7 +38,7 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 
 - Node ≥ 24, TypeScript strict mode, ESM only.
 - pnpm workspace; Vitest for tests, fast-check for property tests; Biome for formatting and lint; tsup for bundling; Changesets for versioning.
-- Run `pnpm check` before committing (type check, lint, tests, dependency rules, doc links, JSON examples). CI runs the same scripts; do not bypass them.
+- Run `pnpm check` on the head before pushing (type check, lint, tests, dependency rules, doc links, JSON examples) and put the result in the merge request; do not bypass it. The merge request's pipeline runs quick checks only; CI runs `pnpm check` after a merge, nightly and when a phase is finished. When the default branch fails, fix it first; merges wait.
 
 ## Commits
 

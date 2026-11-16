@@ -1,17 +1,41 @@
 # CI only calls scripts from the repository (package.json), so the checks stay the same when the
 # project moves to another CI platform. See docs/zh-CN/spec/02-architecture.md §11.
+#
+# The full check (`pnpm check`) is not run on merge requests: the author runs it on the head before
+# pushing and puts the result in the description, and the reviewer runs it again on the head to be
+# merged. CI runs it after a merge, every night, and when a phase is finished (a pipeline started by
+# hand on the default branch). Merge requests get the quick checks only.
+#
+#   merge request:          secrets, forbidden-terms, mr-title, dco
+#   default branch, push:   secrets, forbidden-terms, check (node:24)
+#   schedule (nightly):     check, check-latest, prop-soak
+#   by hand (web, api) on the default branch: check, check-latest, prop-soak, secrets, forbidden-terms
 
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-# The jobs of merge requests and of the default branch; a scheduled pipeline runs only prop-soak.
-.not-scheduled:
+# On merge requests, pushes to the default branch and by hand; not on the schedule.
+.quick:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - when: on_success
+
+# After a merge (a push to the default branch), on the schedule and by hand; not on merge requests.
+.after-merge:
+  rules:
+    - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+      when: never
+    - if: $CI_PIPELINE_SOURCE =~ /^(push|schedule|web|api)$/
+
+# On the schedule and by hand only.
+.full-only:
+  rules:
+    - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+      when: never
+    - if: $CI_PIPELINE_SOURCE =~ /^(schedule|web|api)$/
 
 .pnpm:
   cache:
@@ -24,26 +48,30 @@ workflow:
     - pnpm install --frozen-lockfile
 
 # `pnpm check`: type check, lint, unit and property tests, dependency rules, doc links, JSON examples.
-check:
-  extends: [.not-scheduled, .pnpm]
-  # Runs take about 1.5 minutes. A hard bound from outside the test process: test-level limits
-  # cannot preempt synchronous code, so a stalled run would otherwise hold the runner until the
-  # project's default job timeout.
+# Runs take about 4–5 minutes. The timeout is a hard bound from outside the test process: test-level
+# limits cannot preempt synchronous code, so a stalled run would otherwise hold the runner until the
+# project's default job timeout.
+.check:
+  extends: [.pnpm]
   timeout: 20 minutes
-  parallel:
-    matrix:
-      - NODE_IMAGE: ["node:24", "node:latest"]
-  image: $NODE_IMAGE
   script:
     - pnpm check
 
-# Scheduled only (the schedule is set on the default branch): every property test file, round
-# after round, each run with a fresh random seed, for about 50 minutes. A failed run leaves its
-# seed, replay path and counterexample in soak/failures.md and its whole output beside it.
+# On the lowest supported Node: after every merge, nightly and by hand.
+check:
+  extends: [.check, .after-merge]
+  image: node:24
+
+# On the latest Node: nightly and by hand.
+check-latest:
+  extends: [.check, .full-only]
+  image: node:latest
+
+# Nightly and by hand (on the default branch): every property test file, round after round, each
+# run with a fresh random seed, for about 50 minutes. A failed run leaves its seed, replay path and
+# counterexample in soak/failures.md and its whole output beside it.
 prop-soak:
-  extends: [.pnpm]
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule"
+  extends: [.pnpm, .full-only]
   image: node:24
   timeout: 60 minutes
   variables:
@@ -78,7 +106,7 @@ mr-title:
 # messages or title (the list is the masked variable SAVESLOT_FORBIDDEN_TERMS_B64; output names
 # terms by index only); code and the spec cite spec sections, not ruling numbers.
 forbidden-terms:
-  extends: [.not-scheduled]
+  extends: [.quick]
   image: node:24
   variables:
     GIT_DEPTH: 0
@@ -87,7 +115,7 @@ forbidden-terms:
 
 # No secrets in the commits of a merge request, or anywhere in the history of the default branch.
 secrets:
-  extends: [.not-scheduled]
+  extends: [.quick]
   image:
     name: zricethezav/gitleaks:v8.30.1
     entrypoint: [""]

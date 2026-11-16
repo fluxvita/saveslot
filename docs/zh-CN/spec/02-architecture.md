@@ -622,10 +622,11 @@ schema 里由 Agent 写的说明与别名、写入回执里列出的已有的键
 | `reference`（私有，不发布） | 参考求值器（见下「测试矩阵」）：按定义写的删除重放与回掉，只作测试对照 | contract-core。不依赖 `kernel`；只有测试文件可以导入它 |
 
 - **依赖方向**：`contract-core ← kernel ← service ← server ← daemon`；`kernel` 不依赖任何传输方式、不依赖 `service` 与 `contract`；适配器不能绕过 `service` 调内核。
-  包级与模块级（§4）的依赖规则都在 CI 里强制。
+  包级与模块级（§4）的依赖规则都写进 `pnpm check`，合并前必须通过（见下「CI 只调脚本」）。
 - **包的命名**：npm 组织 `@fluxvita`。对外安装的包是 `@fluxvita/saveslot`，即上表的入口包（`bin` 是 `saveslot`）；其余各包叫 `@fluxvita/saveslot-<包名>`（`@fluxvita/saveslot-kernel`、`@fluxvita/saveslot-contract-core`……）。仓库是 `fluxvita/saveslot`。
 - **工具链**：Node 最低 24，写进 `engines`，CI 跑 24 与当前最新版；TypeScript 严格模式，只发 ESM；pnpm workspace；测试用 Vitest，性质测试用 fast-check；格式化与 lint 用 Biome；模块依赖规则用 dependency-cruiser；各包用 `tsc`（项目引用）出类型与 JS，CLI 用 tsup 打包；版本与变更记录用 Changesets，1.0 之前用 0.x，事件格式版本独立于包版本。具体版本号在搭脚手架时取当时的稳定版并锁定，不写进规格。
 - **CI 只调脚本**：检查项写成根 `package.json` 里的脚本——类型检查、lint、单测、性质测试、依赖规则、文档链接检查、文档里 JSON 例子可解析——CI 配置只负责调用它们（汇总脚本叫 `check`，本地 `pnpm check` 跑的是同一组），所以换 CI 平台不用重写检查逻辑。
+- **什么时候跑全套**：合并请求的流水线只跑快检查（标题、签名、密钥、禁用词）。`pnpm check` 由作者在推之前对要推的头跑，结果贴进合并请求；审查者合并前在要合并的头上再跑一遍。CI 在合并后、每晚和阶段完工时（在主分支上手动触发）跑全套。主分支变红时先修，暂停合并。
 
 ### 测试矩阵
 
