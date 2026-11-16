@@ -321,9 +321,17 @@ export function send(
   res.end(text);
 }
 
+/**
+ * The contract's error object: its detail, then its code and message, which no key of the detail
+ * can take the place of.
+ */
+export function errorBody(e: ContractError): Record<string, unknown> {
+  return { ...e.detail, code: e.code, message: e.message };
+}
+
 export function sendError(req: IncomingMessage, res: ServerResponse, e: ContractError): number {
   const status = HTTP_STATUS[e.code];
-  send(req, res, status, { error: { code: e.code, message: e.message, ...e.detail } });
+  send(req, res, status, { error: errorBody(e) });
   return status;
 }
 

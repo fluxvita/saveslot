@@ -32,7 +32,9 @@ export const OPERATIONS = {
   history: { scope: "saveslot.read", paged: true },
   pending: { scope: "saveslot.read", paged: true },
   write: { scope: "saveslot.write", write: true },
-  // This version's decisions (conflict and awaiting items) are `saveslot.write`'s.
+  // This version's decisions (conflict and awaiting items) are `saveslot.write`'s. The scope of a
+  // decision goes by the item's type (04-contract §6: schema changes `saveslot.schema`, deletions
+  // `saveslot.delete`); it is told apart here once items of those types exist.
   resolve: { scope: "saveslot.write", write: true },
   schema_draft: { scope: "saveslot.schema", write: true },
   "connections.issue": { scope: "user_session" },

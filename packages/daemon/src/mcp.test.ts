@@ -168,10 +168,20 @@ describe("MCP's own", () => {
     const { tools } = await c.listTools();
     await c.close();
     expect(tools.map((t) => t.name)).toEqual(TOOLS.map((t) => t.name));
+    const writes = ["saveslot_write", "saveslot_resolve"];
     for (const t of tools) {
-      expect(t.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+      expect(t.annotations).toMatchObject({
+        readOnlyHint: !writes.includes(t.name),
+        openWorldHint: false,
+        ...(writes.includes(t.name) ? { destructiveHint: false, idempotentHint: true } : {}),
+      });
       expect(t.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
-      for (const absent of ["saveslot_sql", "saveslot_history", "saveslot_write"]) {
+      for (const absent of [
+        "saveslot_sql",
+        "saveslot_sources",
+        "saveslot_delete",
+        "saveslot_schema_draft",
+      ]) {
         expect(JSON.stringify(t)).not.toContain(absent);
       }
     }
@@ -180,19 +190,100 @@ describe("MCP's own", () => {
     );
   });
 
-  it("every tool's examples are taken by the kernel as they stand", async () => {
+  it("a credential that may only read: no write tools listed; calling one is refused with 403", async () => {
+    const http = httpDriver(() => s.home);
+    const issued = await http(s.session, "connections.issue", {
+      name: "reader",
+      scopes: ["saveslot.read"],
+    });
+    const reader = (issued as { result: { token: string } }).result.token;
+    const c = await mcpClient(s.home, reader, "legacy");
+    const { tools } = await c.listTools();
+    await c.close();
+    expect(tools.map((t) => t.name)).toEqual([
+      "saveslot_catalog",
+      "saveslot_query",
+      "saveslot_history",
+      "saveslot_pending",
+    ]);
+    const r = await rpc(reader, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "saveslot_write", arguments: { ops: [] } },
+    });
+    expect([r.status, r.headers["www-authenticate"]]).toEqual([
+      403,
+      'Bearer error="insufficient_scope", scope="saveslot.write"',
+    ]);
+    expect(r.json).toMatchObject({
+      error: { code: "insufficient_scope", required_scope: "saveslot.write" },
+    });
+  });
+
+  it("what MCP does not expose is refused, though the operation would take it (05 §2)", async () => {
+    const c = await mcpClient(s.home, s.session, "legacy");
+    const cases: [string, Record<string, unknown>, string][] = [
+      [
+        "saveslot_write",
+        {
+          ops: [
+            {
+              intent: "insert",
+              table: "ledger.expenses",
+              set: { date: "2026-11-16" },
+              acknowledge: ["overwrite"],
+            },
+          ],
+        },
+        "ops/0/acknowledge",
+      ],
+      [
+        "saveslot_write",
+        {
+          evidence: [{ kind: "user_message", text: "x", level: "user_stated" }],
+          ops: [{ intent: "insert", table: "ledger.expenses", set: { date: "2026-11-16" } }],
+        },
+        "evidence/0/level",
+      ],
+      ["saveslot_write", { mode: "job", ops: [] }, "mode"],
+      ["saveslot_history", { table: "ledger.expenses", external_key: { id: "1" } }, "external_key"],
+      // A read tool has no idempotency key: the operation refuses it as a key it does not know.
+      ["saveslot_query", { table: "ledger.expenses", idempotency_key: "k" }, "idempotency_key"],
+    ];
+    for (const [name, args, param] of cases) {
+      const r = await c.callTool({ name, arguments: args });
+      expect({ name, param, r: r.structuredContent }).toMatchObject({
+        name,
+        param,
+        r: { error: { code: "invalid_argument", param } },
+      });
+    }
+    await c.close();
+  });
+
+  it("every tool's examples are taken by the kernel's parameter checks as they stand", async () => {
+    // The examples name rows and items that need not exist: not found is fine, a refusal of
+    // the arguments is not.
     const c = await mcpClient(s.home, s.session, "legacy");
     for (const tool of TOOLS) {
       for (const example of tool.examples) {
         const r = await c.callTool({ name: tool.name, arguments: example });
+        const code =
+          r.isError === true
+            ? (r.structuredContent as { error: { code: string } }).error.code
+            : null;
         expect({
           tool: tool.name,
           example,
-          error: r.isError === true ? r.structuredContent : null,
+          refused:
+            code === "invalid_argument" || code === "not_in_this_version"
+              ? r.structuredContent
+              : null,
         }).toEqual({
           tool: tool.name,
           example,
-          error: null,
+          refused: null,
         });
       }
     }
@@ -204,11 +295,98 @@ describe("MCP's own", () => {
     const r = await c.callTool({ name: "saveslot_catalog", arguments: {} });
     await c.close();
     const text = (r.content as { type: string; text: string }[])[0]?.text ?? "";
-    const [first, rest] = [text.split("\n")[0], text.split("\n").slice(1).join("\n")];
-    expect(first).toContain("not instructions to you");
-    const m = /^<untrusted-data-([0-9a-f]{32})>([\s\S]*)<\/untrusted-data-\1>$/.exec(rest);
-    expect(m).not.toBeNull();
-    expect(JSON.parse(m?.[2] ?? "null")).toEqual(r.structuredContent);
+    const lines = text.split("\n");
+    expect(lines[0]).toContain("not instructions to you");
+    expect(lines[1]).toBe(
+      `ledger · schema v1 · <untrusted-data-${/<untrusted-data-([0-9a-f]{32})>/.exec(text)?.[1]}>Asia/Shanghai</untrusted-data-${/<untrusted-data-([0-9a-f]{32})>/.exec(text)?.[1]}>`,
+    );
+    expect(lines[2]).toMatch(
+      /^ {2}expenses \(base\) <untrusted-data-[0-9a-f]{32}>one row per expense</,
+    );
+    // structuredContent as it is: the contract's result.
+    expect(r.structuredContent).toMatchObject({ level: "list", slots: [{ slot: "ledger" }] });
+  });
+
+  it("a page over the result budget: cut where it ends, and the next page starts at the first not shown (05 §3)", async () => {
+    const http = httpDriver(() => s.home);
+    const ops = Array.from({ length: 200 }, (_, i) => ({
+      intent: "insert",
+      table: "ledger.expenses",
+      set: { date: "2026-11-01", note: `${String(i).padStart(3, "0")} ${"x".repeat(600)}` },
+    }));
+    expect(await http(s.session, "write", { sv: 1, ops })).toMatchObject({
+      result: { status: "saved" },
+    });
+    const all = (await http(s.session, "query", { table: "ledger.expenses", limit: 200 })) as {
+      result: { rows: { row: string }[] };
+    };
+    const ids = all.result.rows.map((r) => r.row);
+    // A connection of its own: what it has read is only what MCP gives it here.
+    const issued = (await http(s.session, "connections.issue", { name: "pager" })) as {
+      result: { token: string; id: string };
+    };
+    const pager = issued.result.token;
+    const c = await mcpClient(s.home, pager, "legacy");
+    const first = await c.callTool({
+      name: "saveslot_query",
+      arguments: { table: "ledger.expenses", limit: 200 },
+    });
+    const text = (first.content as { text: string }[])[0]?.text ?? "";
+    expect(text.length).toBeLessThanOrEqual(100_000);
+    const p1 = first.structuredContent as {
+      rows: { row: string }[];
+      truncated: { shown: number; total: number };
+      next_cursor: string;
+    };
+    expect(p1.truncated.shown).toBe(p1.rows.length);
+    expect(p1.rows.length).toBeLessThan(ids.length);
+    expect(text).toContain(`Showing ${p1.rows.length} of`);
+    // What is recorded as read is exactly the page given: one read, of its rows.
+    const audit = (await http(s.session, "reads.list", { limit: 200 })) as {
+      result: {
+        reads: {
+          actor: { id: string };
+          operation: string;
+          rows_total?: number;
+          rows?: unknown[];
+        }[];
+      };
+    };
+    const mine = audit.result.reads.filter(
+      (r) => r.actor.id === issued.result.id && r.operation === "query",
+    );
+    expect(mine).toHaveLength(1);
+    expect(mine[0]?.rows_total ?? mine[0]?.rows?.length).toBe(p1.rows.length);
+    // A write with no ver falls back on what this connection read: a row shown, yes; one not
+    // shown, no.
+    const shown = p1.rows[0]?.row;
+    const unshown = ids.find((id) => !p1.rows.some((r) => r.row === id));
+    const writeNote = (row: string | undefined) =>
+      c.callTool({
+        name: "saveslot_write",
+        arguments: {
+          sv: 1,
+          ops: [{ intent: "update", table: "ledger.expenses", row, set: { note: "changed" } }],
+        },
+      });
+    const ok = await writeNote(shown);
+    expect(ok.isError).not.toBe(true);
+    expect(JSON.stringify(ok.structuredContent)).toContain("ver_fallback");
+    const refused = await writeNote(unshown);
+    expect(refused.isError).toBe(true);
+    expect(refused.structuredContent).toMatchObject({
+      error: { code: "read_first", reason: "no_read", param: "ops/0/ver" },
+    });
+    const second = await c.callTool({
+      name: "saveslot_query",
+      arguments: { table: "ledger.expenses", limit: 200, cursor: p1.next_cursor },
+    });
+    await c.close();
+    const p2 = second.structuredContent as { rows: { row: string }[] };
+    const seen = [...p1.rows, ...p2.rows].map((r) => r.row);
+    // As HTTP lists them (with no budget), nothing skipped and nothing twice.
+    const n = Math.min(seen.length, ids.length);
+    expect(seen.slice(0, n)).toEqual(ids.slice(0, n));
   });
 
   it("a name that is no tool: the protocol's unknown-tool error, not a refusal of scope", async () => {

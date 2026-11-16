@@ -6,9 +6,11 @@
 import {
   type ConnectionRecord,
   catalog,
+  type Fit,
   history,
   listConnections,
   logVerify,
+  NothingKept,
   pending,
   query,
   readsList,
@@ -87,20 +89,33 @@ export async function runOperation(o: {
   readonly call: KernelCall;
   /** Where not-implemented paths and internal errors are reported (no request content). */
   readonly warn: (event: string, fields: Readonly<Record<string, string>>) => void;
+  /**
+   * For a read: how much of the result, as the contract gives it, the caller keeps (the kernel's
+   * `Fit`). What is recorded as read is what is kept; keeping none is `too_large`
+   * (`result_budget`), with nothing recorded.
+   */
+  readonly fit?: (result: unknown) => number | undefined;
 }): Promise<unknown> {
   const { ctx, params } = o.call;
   const store = o.tenant.store;
+  const caller = o.fit;
+  // The kernel's result as the contract gives it (its next page as a signed handle), for the
+  // caller to measure.
+  const fit: Fit | undefined =
+    caller === undefined
+      ? undefined
+      : (r) => caller(contractResult(r, o.cursors, ctx.actor, ctx.now));
   try {
     const result = await (async (): Promise<unknown> => {
       switch (o.operation) {
         case "catalog":
-          return catalog(store, ctx, params);
+          return catalog(store, ctx, params, fit);
         case "query":
-          return query(store, ctx, params);
+          return query(store, ctx, params, fit);
         case "history":
-          return history(store, ctx, params);
+          return history(store, ctx, params, fit);
         case "pending":
-          return pending(store, ctx, params);
+          return pending(store, ctx, params, fit);
         case "write":
           return write(store, ctx, params);
         case "resolve":
@@ -177,6 +192,12 @@ export async function runOperation(o: {
     })();
     return contractResult(result, o.cursors, ctx.actor, ctx.now);
   } catch (e) {
+    if (e instanceof NothingKept) {
+      throw new ContractError("too_large", "the result is larger than a result may be", {
+        reason: "result_budget",
+        narrow_by: [],
+      });
+    }
     throw contractError(e, o.warn);
   }
 }

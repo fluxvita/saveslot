@@ -33,10 +33,19 @@ import {
   ProtocolErrorCode,
   Server,
 } from "@modelcontextprotocol/server";
-import { type Api, type ApiContext, header, readBytes, send, sendError } from "../api.ts";
+import {
+  type Api,
+  type ApiContext,
+  errorBody,
+  header,
+  readBytes,
+  send,
+  sendError,
+} from "../api.ts";
 import { HTTP_STATUS } from "../status.ts";
-import { wrapWhole } from "./boundary.ts";
-import { describe, TOOLS, type ToolName, toolsFor } from "./tools.ts";
+import { BUDGET, budgetFor, plain } from "./budget.ts";
+import { renderError, renderResult } from "./render.ts";
+import { describe, TOOLS, type Tool, type ToolName, toolsFor } from "./tools.ts";
 
 /** How long a `server/discover` result may be cached (05 §11; 08-open-questions). */
 const DISCOVER_TTL_MS = 5 * 60_000;
@@ -76,7 +85,13 @@ export function createMcpAdapter(o: { readonly version: () => string }): McpAdap
   return { handler };
 }
 
-/** The server one request is served by: the tools of its credential. */
+/**
+ * The server one request is served by: the tools of its credential, and no other. This is what
+ * keeps a credential to its tools. `missingScope` reads the same body before the SDK does, but only
+ * to choose between a 403 and the protocol's error: should the two ever read a body differently, a
+ * tool outside the credential's list is still no tool here, and is never run. So this registers
+ * only the credential's tools, never all of them behind that check.
+ */
 function serverFor(caller: Caller, version: string): Server {
   const listed = toolsFor(caller.principal);
   const names = new Set<ToolName>(listed.map((t) => t.name));
@@ -102,7 +117,7 @@ function serverFor(caller: Caller, version: string): Server {
       // here a name is no tool at all: the protocol's error, not the contract's (05 §3).
       throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Unknown tool");
     }
-    return call(caller, tool.operation, request.params.arguments ?? {});
+    return call(caller, tool, request.params.arguments ?? {});
   });
   return server;
 }
@@ -110,10 +125,22 @@ function serverFor(caller: Caller, version: string): Server {
 /** Calls the tool's operation: the result, or the contract's error as an error result. */
 async function call(
   { principal, ctx }: Caller,
-  operation: (typeof TOOLS)[number]["operation"],
+  tool: Tool,
   args: Readonly<Record<string, unknown>>,
 ): Promise<CallToolResult> {
+  const { operation } = tool;
   try {
+    // What MCP does not expose (05 §2) is refused here: the operation itself would take it.
+    const withheld =
+      Object.keys(args).find((k) => Object.hasOwn(tool.withheld, k)) ?? tool.refuse?.(args);
+    if (withheld !== undefined) {
+      throw new ContractError("invalid_argument", "not a parameter of this tool", {
+        reason: "malformed",
+        param: withheld,
+      });
+    }
+    // As on HTTP, the key goes with the call, not in the parameters; an operation that takes
+    // none (a read) refuses it.
     const { task, idempotency_key: idempotencyKey, ...params } = args;
     for (const [param, v] of [
       ["task", task],
@@ -126,35 +153,40 @@ async function call(
         });
       }
     }
-    const kernel = kernelCall({
-      principal,
-      tenant: ctx.tenant,
-      operation,
-      body: params,
-      ...(typeof task === "string" ? { task } : {}),
-      ...(typeof idempotencyKey === "string" ? { idempotencyKey } : {}),
-      now: ctx.now(),
-      windows: ctx.windows,
-      cursors: ctx.cursors,
-    });
-    const result = (await runOperation({
-      tenant: ctx.tenant,
-      credentials: ctx.credentials,
-      cursors: ctx.cursors,
-      operation,
-      call: kernel,
-      warn: ctx.warn,
-    })) as Record<string, unknown>;
+    // Within the result budget (05 §3): a read is kept to what fits, and recorded so.
+    const budget = budgetFor(tool.name, BUDGET);
+    const run = async (body: Record<string, unknown>) =>
+      (await runOperation({
+        tenant: ctx.tenant,
+        credentials: ctx.credentials,
+        cursors: ctx.cursors,
+        operation,
+        call: kernelCall({
+          principal,
+          tenant: ctx.tenant,
+          operation,
+          body,
+          ...(typeof task === "string" ? { task } : {}),
+          ...(typeof idempotencyKey === "string" ? { idempotencyKey } : {}),
+          now: ctx.now(),
+          windows: ctx.windows,
+          cursors: ctx.cursors,
+        }),
+        warn: ctx.warn,
+        fit: budget.fit,
+      })) as Record<string, unknown>;
+    // Plain JSON from here on: the text and structuredContent are of the same plain value.
+    const result = budget.finish(plain(await run(params)));
     return {
-      content: [{ type: "text", text: wrapWhole(JSON.stringify(result)) }],
+      content: [{ type: "text", text: renderResult(tool.name, result) }],
       structuredContent: result,
     };
   } catch (e) {
     const x = contractError(e, ctx.warn);
-    const error = { code: x.code, message: x.message, ...x.detail };
+    const error = errorBody(x);
     return {
       isError: true,
-      content: [{ type: "text", text: wrapWhole(JSON.stringify({ error })) }],
+      content: [{ type: "text", text: renderError(error) }],
       structuredContent: { error },
     };
   }

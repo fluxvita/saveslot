@@ -6,7 +6,18 @@
 import type { Operation, Principal, Scope } from "@fluxvita/saveslot-service";
 import type { JSONObject } from "@modelcontextprotocol/server";
 import type { ToolName } from "./names.ts";
-import { CATALOG, COMMON, compose, QUERY, type Text } from "./texts.ts";
+import {
+  CATALOG,
+  COMMON,
+  compose,
+  HISTORY,
+  IDEMPOTENCY_KEY,
+  PENDING,
+  QUERY,
+  RESOLVE,
+  type Text,
+  WRITE,
+} from "./texts.ts";
 
 export type { ToolName };
 
@@ -28,6 +39,10 @@ export interface Tool {
   readonly params: Readonly<Record<string, Param>>;
   /** The operation's parameters MCP does not expose (05 §2), with why. */
   readonly withheld: Readonly<Record<string, string>>;
+  /** Alternatives the arguments must match exactly one of (`history` by `mode`: 05 §2). */
+  readonly oneOf?: readonly JsonSchema[];
+  /** A field inside the arguments MCP does not expose (05 §2), as the path to it, if one is there. */
+  readonly refuse?: (args: Readonly<Record<string, unknown>>) => string | undefined;
   readonly annotations: {
     readonly readOnlyHint: boolean;
     readonly destructiveHint?: boolean;
@@ -48,6 +63,92 @@ const cursor: Param = { schema: str, text: COMMON.cursor };
 
 /** 04-contract-types §4.3 `WhereOp`. */
 const WHERE_OPS = ["=", "!=", "<", "<=", ">", ">=", "in", "contains", "is_null"];
+
+/** An evidence segment (04-contract-types §2), without `level`: MCP does not expose it (05 §2). */
+const SEGMENT: JsonSchema = {
+  type: "object",
+  properties: {
+    kind: { enum: ["user_message", "agent_note", "tool_result", "file_ref", "source_ref"] },
+    text: str,
+    stated_at: str,
+    name: str,
+    mime: str,
+    size: { type: "integer", minimum: 0 },
+    sha256: str,
+    origin: str,
+    excerpt: str,
+    id: str,
+  },
+  required: ["kind"],
+  additionalProperties: false,
+};
+
+/** Field name (or `valid`) → indexes of evidence segments. */
+const BY_FIELD: JsonSchema = {
+  type: "object",
+  additionalProperties: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 1 },
+};
+
+const keyValues: JsonSchema = { type: "object" };
+
+/** A premise (04-contract-types §5.1 `PremiseRef`). */
+const PREMISE: JsonSchema = {
+  type: "object",
+  properties: {
+    table: str,
+    row: str,
+    entity: str,
+    entity_key: keyValues,
+    fields: names,
+    ver: str,
+    valid_at: str,
+    valid_during: {
+      type: "array",
+      prefixItems: [str, { type: ["string", "null"] }],
+      minItems: 2,
+      maxItems: 2,
+    },
+  },
+  required: ["table"],
+  additionalProperties: false,
+};
+
+/** A write op (04-contract-types §5.1 `WriteOp`), without `acknowledge` (05 §2). */
+const WRITE_OP: JsonSchema = {
+  type: "object",
+  properties: {
+    intent: { enum: ["insert", "update", "correct", "revoke"] },
+    table: str,
+    row: str,
+    entity: str,
+    entity_key: keyValues,
+    external_key: keyValues,
+    as: str,
+    ver: str,
+    set: { type: "object" },
+    revert: {
+      type: "object",
+      properties: { undo: { type: "integer", minimum: 1 }, include_later: bool },
+      required: ["undo"],
+      additionalProperties: false,
+    },
+    valid_from: str,
+    valid_to: str,
+    evidence: { type: "array", items: SEGMENT },
+    evidence_refs: { type: "array", items: { type: "integer", minimum: 0 } },
+    evidence_by_field: BY_FIELD,
+    premises: { type: "array", items: PREMISE },
+  },
+  required: ["table"],
+  additionalProperties: false,
+};
+
+/** The index of an evidence segment that carries `level`, if any. */
+function levelIn(evidence: unknown): number | undefined {
+  if (!Array.isArray(evidence)) return undefined;
+  const i = evidence.findIndex((e) => e !== null && typeof e === "object" && "level" in e);
+  return i < 0 ? undefined : i;
+}
 
 /** The tools of this version, in the order they are listed. */
 export const TOOLS: readonly Tool[] = [
@@ -139,12 +240,231 @@ export const TOOLS: readonly Tool[] = [
       },
     ],
   },
+  {
+    name: "saveslot_history",
+    operation: "history",
+    scope: "saveslot.read",
+    description: HISTORY.description,
+    params: {
+      mode: { schema: { enum: ["timeline", "as_of", "changes"] }, text: HISTORY.params.mode },
+      table: { schema: str, text: HISTORY.params.table, required: true },
+      row: { schema: str, text: HISTORY.params.row },
+      entity: { schema: str, text: HISTORY.params.entity },
+      entity_key: { schema: { type: "object" }, text: HISTORY.params.entity_key },
+      expand_sources: { schema: bool, text: HISTORY.params.expand_sources },
+      as_of: {
+        schema: {
+          oneOf: [
+            { type: "integer", minimum: 1 },
+            str,
+            {
+              type: "object",
+              properties: { read: str },
+              required: ["read"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: { task: str },
+              required: ["task"],
+              additionalProperties: false,
+            },
+          ],
+        },
+        text: HISTORY.params.as_of,
+      },
+      valid_at: { schema: str, text: HISTORY.params.valid_at },
+      detail: { schema: { enum: ["concise", "detailed"] }, text: COMMON.detail },
+      since: {
+        schema: { oneOf: [{ type: "integer", minimum: 0 }, str] },
+        text: HISTORY.params.since,
+      },
+      until: {
+        schema: { oneOf: [{ type: "integer", minimum: 0 }, str] },
+        text: HISTORY.params.until,
+      },
+      limit: { schema: limit(200), text: COMMON.limit },
+      cursor,
+      task,
+    },
+    withheld: {
+      external_key: "a read takes no source key (04-contract-types §1.5)",
+      key: "05 §9.1 gives history no derived-row target",
+    },
+    oneOf: [
+      {
+        properties: { mode: { const: "timeline" } },
+        not: {
+          anyOf: ["as_of", "valid_at", "detail", "since", "until"].map((p) => ({ required: [p] })),
+        },
+      },
+      {
+        properties: { mode: { const: "as_of" } },
+        required: ["mode", "as_of"],
+        not: { anyOf: ["expand_sources", "since", "until"].map((p) => ({ required: [p] })) },
+      },
+      {
+        properties: { mode: { const: "changes" } },
+        required: ["mode", "since"],
+        not: {
+          anyOf: ["expand_sources", "as_of", "valid_at", "detail"].map((p) => ({ required: [p] })),
+        },
+      },
+    ],
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    examples: [
+      { table: "ledger.expenses", row: `r_${"1".repeat(26)}` },
+      { mode: "as_of", table: "expenses", row: `r_${"1".repeat(26)}`, as_of: 1 },
+    ],
+  },
+  {
+    name: "saveslot_pending",
+    operation: "pending",
+    scope: "saveslot.read",
+    description: PENDING.description,
+    params: {
+      id: { schema: str, text: PENDING.params.id },
+      slot: { schema: str, text: PENDING.params.slot },
+      type: {
+        schema: {
+          enum: ["conflict", "awaiting_confirmation", "flagged", "schema_change", "deletion"],
+        },
+        text: PENDING.params.type,
+      },
+      status: {
+        schema: { enum: ["open", "resolved", "superseded", "all"] },
+        text: PENDING.params.status,
+      },
+      limit: { schema: limit(200), text: COMMON.limit },
+      cursor,
+      task,
+    },
+    withheld: {},
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    examples: [{}, { slot: "ledger", status: "all", limit: 5 }, { id: `pi_${"1".repeat(16)}` }],
+  },
+  {
+    name: "saveslot_write",
+    operation: "write",
+    scope: "saveslot.write",
+    description: WRITE.description,
+    params: {
+      sv: { schema: { type: "integer", minimum: 1 }, text: WRITE.params.sv },
+      evidence: { schema: { type: "array", items: SEGMENT }, text: WRITE.params.evidence },
+      ops: {
+        schema: { type: "array", minItems: 1, items: WRITE_OP },
+        text: WRITE.params.ops,
+        required: true,
+      },
+      idempotency_key: { schema: str, text: IDEMPOTENCY_KEY },
+      task,
+    },
+    withheld: { mode: "jobs are not in this version (04-contract-types §0.2)" },
+    refuse: (args) => {
+      const ops = Array.isArray(args["ops"]) ? (args["ops"] as unknown[]) : [];
+      for (const [i, op] of ops.entries()) {
+        if (op !== null && typeof op === "object" && "acknowledge" in op) {
+          return `ops/${i}/acknowledge`;
+        }
+        const at = levelIn((op as { evidence?: unknown } | null)?.evidence);
+        if (at !== undefined) return `ops/${i}/evidence/${at}/level`;
+      }
+      const at = levelIn(args["evidence"]);
+      return at !== undefined ? `evidence/${at}/level` : undefined;
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    examples: [
+      {
+        sv: 1,
+        evidence: [{ kind: "user_message", text: "tea, 11-16" }],
+        ops: [
+          { intent: "insert", table: "ledger.expenses", set: { date: "2026-11-16", note: "tea" } },
+        ],
+        task: "examples",
+      },
+    ],
+  },
+  {
+    name: "saveslot_resolve",
+    operation: "resolve",
+    // The service's rule for resolve (04-contract §6 gives a scope per decision).
+    scope: "saveslot.write",
+    description: RESOLVE.description,
+    params: {
+      id: { schema: str, text: RESOLVE.params.id, required: true },
+      decision: {
+        schema: {
+          enum: [
+            "keep_effective",
+            "take_candidate",
+            "take_previous",
+            "confirm",
+            "reject",
+            "keep",
+            "revoke",
+            "cancel",
+          ],
+        },
+        text: RESOLVE.params.decision,
+        required: true,
+      },
+      item_ver: { schema: str, text: RESOLVE.params.item_ver },
+      candidate: { schema: { type: "integer", minimum: 0 }, text: RESOLVE.params.candidate },
+      note: { schema: str, text: RESOLVE.params.note },
+      evidence: { schema: { type: "array", items: SEGMENT }, text: RESOLVE.params.evidence },
+      evidence_by_field: { schema: BY_FIELD, text: RESOLVE.params.evidence_by_field },
+      idempotency_key: { schema: str, text: IDEMPOTENCY_KEY },
+      task,
+    },
+    withheld: {
+      diff_upto: "migration differences are not in this version (04-contract-types §0.2)",
+      rows: "migration differences are not in this version (04-contract-types §0.2)",
+    },
+    refuse: (args) => {
+      const at = levelIn(args["evidence"]);
+      return at !== undefined ? `evidence/${at}/level` : undefined;
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    examples: [
+      { id: `pi_${"1".repeat(16)}`, decision: "confirm", item_ver: `iv_${"1".repeat(16)}.1.0` },
+    ],
+  },
 ];
 
 /** The tools listed to `principal`. */
 export function toolsFor(principal: Principal): readonly Tool[] {
   return TOOLS.filter((t) => principal.scopes.includes(t.scope));
 }
+
+/**
+ * What `structuredContent` may be (05 §3): the operation's result, the contract's error, or an
+ * elicitation's outcome. The result's own shape is not spelled out here: the contract's types are
+ * not yet a schema this package can take.
+ */
+export const OUTPUT_SCHEMA: JsonSchema = {
+  type: "object",
+  anyOf: [
+    {
+      required: ["error"],
+      properties: { error: { type: "object", required: ["code"], properties: { code: str } } },
+    },
+    {
+      required: ["elicitation", "executed"],
+      properties: { elicitation: { enum: ["declined", "cancelled"] }, executed: bool },
+    },
+    { not: { anyOf: [{ required: ["error"] }, { required: ["elicitation"] }] } },
+  ],
+};
 
 /** A tool as `tools/list` gives it to a credential whose tools are `listed`. */
 export function describe(tool: Tool, listed: ReadonlySet<ToolName>) {
@@ -161,8 +481,10 @@ export function describe(tool: Tool, listed: ReadonlySet<ToolName>) {
       type: "object" as const,
       properties,
       ...(required.length > 0 ? { required } : {}),
+      ...(tool.oneOf !== undefined ? { oneOf: [...tool.oneOf] } : {}),
       additionalProperties: false,
     },
+    outputSchema: OUTPUT_SCHEMA,
     annotations: tool.annotations,
   };
 }
