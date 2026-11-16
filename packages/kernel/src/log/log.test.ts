@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { canonicalize, GENESIS_PREV_HASH, type Instant } from "@fluxvita/saveslot-contract-core";
 import { describe, expect, it } from "vitest";
 import {
+  buildContinuation,
   buildOperation,
   LogAppendError,
   type LogTail,
@@ -278,6 +279,74 @@ describe("building an operation", () => {
     });
     it("now that is not an instant", () => {
       refuse(tail, { ...w, now: "2026-11-10" as Instant });
+    });
+  });
+});
+
+// --- continuing an operation ---------------------------------------------------------------
+
+describe("continuing an operation (09-event-format §4.1: all the events one transaction appends)", () => {
+  /** A member event of the write's slot. */
+  const source = (v: string): NewEvent => ({
+    type: "source.recorded",
+    slot: SLOT,
+    blocks: { target: { kind: "api_call" }, request: { f2: v } },
+  });
+
+  it("member events after the operation's last: seq on, op the head's seq, the operation's actor and at; verify passes", () => {
+    const [g, w] = chain(
+      () => genesis(),
+      () => write(t("04:10")),
+    );
+    if (g === undefined || w === undefined) throw new Error("no operations");
+    const c1 = buildContinuation(tailOf(w), w, [source("a"), source("b")]);
+    // A second continuation chains to the first one's last event.
+    const c2 = buildContinuation(tailOf(c1), c1, [source("c")]);
+    expect([c1.op, c1.at, c2.op, c2.at]).toEqual([w.op, w.at, w.op, w.at]);
+    const evs = [...c1.events, ...c2.events];
+    expect(evs.map((e) => e.seq)).toEqual([5, 6, 7]);
+    const headers = evs.map((e) => JSON.parse(e.header) as Record<string, unknown>);
+    expect(headers.map((h) => h["op"])).toEqual([2, 2, 2]);
+    expect(evs.map((e) => e.op)).toEqual([2, 2, 2]);
+    expect(headers.map((h) => [h["actor"], h["at"], h["slot"]])).toEqual(
+      evs.map(() => [CONN, t("04:10"), SLOT]),
+    );
+    expect(headers.map((h) => h["prev_hash"])).toEqual([
+      w.events[2]?.hash,
+      evs[0]?.hash,
+      evs[1]?.hash,
+    ]);
+    expect(verify(rows([g, w, c1, c2]))).toMatchObject({ events: 7, chain: { intact: true } });
+    // The next operation chains to the continuation's last event.
+    const next = buildOperation(tailOf(c2), write(t("04:20"), "50"));
+    expect(next.op).toBe(8);
+    expect(verify(rows([g, w, c1, c2, next]))).toMatchObject({ chain: { intact: true } });
+  });
+
+  describe("refused", () => {
+    const [, w, next] = chain(
+      () => genesis(),
+      () => write(t("04:10")),
+      () => write(t("04:20"), "50"),
+    );
+    if (w === undefined || next === undefined) throw new Error("no operations");
+    const refused = (tail: LogTail | undefined, events: NewEvent[]) =>
+      expect(() => buildContinuation(tail, w, events)).toThrow(LogAppendError);
+
+    it("another operation came after it, or the log is empty", () => {
+      refused(tailOf(next), [source("a")]);
+      refused(undefined, [source("a")]);
+    });
+    it("no events", () => {
+      refused(tailOf(w), []);
+    });
+    it("a head event, or a tenant-level one", () => {
+      const head = write(t("04:10")).events[0] as NewEvent;
+      refused(tailOf(w), [head]);
+      refused(tailOf(w), genesis().events as NewEvent[]);
+    });
+    it("a member event in another slot than the head event", () => {
+      refused(tailOf(w), [{ ...source("a"), slot: `sl_${"5".repeat(16)}` }]);
     });
   });
 });

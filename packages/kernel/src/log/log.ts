@@ -8,8 +8,10 @@
 import type { Hash, Instant, JsonValue, Seq } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
 import {
+  buildContinuation,
   buildOperation,
   type LogTail,
+  type NewEvent,
   type NewOperation,
   type PreparedOperation,
 } from "./build.ts";
@@ -42,6 +44,26 @@ export async function readTail(tx: ReadTx): Promise<LogTail | undefined> {
  */
 export async function appendOperation(tx: Tx, input: NewOperation): Promise<PreparedOperation> {
   const prepared = buildOperation(await readTail(tx), input);
+  await insertEvents(tx, prepared);
+  return prepared;
+}
+
+/**
+ * Appends more events to an operation this transaction appended, still the end of the log
+ * (LogAppendError if another operation came after it): `appended` is what its last append or
+ * continuation returned. Returns the new events only, for `apply`.
+ */
+export async function continueOperation(
+  tx: Tx,
+  appended: PreparedOperation,
+  events: readonly NewEvent[],
+): Promise<PreparedOperation> {
+  const prepared = buildContinuation(await readTail(tx), appended, events);
+  await insertEvents(tx, prepared);
+  return prepared;
+}
+
+async function insertEvents(tx: Tx, prepared: PreparedOperation): Promise<void> {
   for (const e of prepared.events) {
     await tx.query(
       `INSERT INTO events (seq, header, header_hash, type, actor, at, op, slot,
@@ -70,7 +92,6 @@ export async function appendOperation(tx: Tx, input: NewOperation): Promise<Prep
       ]);
     }
   }
-  return prepared;
 }
 
 /** A content block as read back (09 §3.3): present, or removed by a tombstone. */

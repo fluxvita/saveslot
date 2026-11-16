@@ -9,6 +9,7 @@ import { join } from "node:path";
 import {
   appendOperation,
   clearBlocks,
+  continueOperation,
   LogAppendError,
   type NewOperation,
   readEvents,
@@ -209,6 +210,63 @@ describe("the log on PGlite", () => {
         { seq: 5, path: "ctx" },
         { seq: 7, path: "target" },
       ]);
+    },
+    T,
+  );
+});
+
+describe("continuing an operation on PGlite", () => {
+  let fresh: PgliteTenantStore;
+  beforeAll(async () => {
+    const root = mkdtempSync(join(tmpdir(), "saveslot-log-continue-"));
+    roots.push(root);
+    fresh = await new PgliteBackend().open(
+      { kind: "pglite", dir: join(root, "tenant") },
+      { create: true },
+    );
+    await fresh.write((tx) => appendOperation(tx, genesis));
+  }, T);
+  afterAll(async () => {
+    await fresh?.close();
+  }, T);
+  const source = (v: string) => ({
+    type: "source.recorded" as const,
+    slot: SLOT,
+    blocks: { target: { kind: "api_call" }, request: { f2: v } },
+  });
+
+  it(
+    "in the transaction that appended it: the events follow its last, op and at its own; verify passes",
+    async () => {
+      const c = await fresh.write(async (tx) => {
+        const w = await appendOperation(tx, write(t("04:10"), "45"));
+        return continueOperation(tx, w, [source("45")]);
+      });
+      expect([c.op, c.at, c.events.map((e) => e.seq)]).toEqual([2, t("04:10"), [5]]);
+      const [e] = await fresh.read((tx) => readEvents(tx, 5, 5));
+      expect([e?.header["op"], e?.header["at"], e?.header["actor"]]).toEqual([2, t("04:10"), CONN]);
+      expect(await fresh.read((tx) => verifyLog(tx))).toMatchObject({
+        events: 5,
+        chain: { intact: true },
+        checksum_mismatch: [],
+        index_mismatch: [],
+      });
+    },
+    T,
+  );
+
+  it(
+    "another operation appended after it: refused, nothing inserted",
+    async () => {
+      const tails = await fresh.write(async (tx) => {
+        const w = await appendOperation(tx, write(t("04:20"), "50"));
+        await appendOperation(tx, write(t("04:20"), "55"));
+        const before = (await readTail(tx))?.seq;
+        await expect(continueOperation(tx, w, [source("50")])).rejects.toThrow(LogAppendError);
+        return [before, (await readTail(tx))?.seq];
+      });
+      expect(tails).toEqual([11, 11]);
+      expect(await fresh.read((tx) => verifyLog(tx))).toMatchObject({ chain: { intact: true } });
     },
     T,
   );

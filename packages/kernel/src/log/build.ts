@@ -249,6 +249,96 @@ export function recordedAt(now: Instant, tail: LogTail | undefined): Instant {
   return tail !== undefined && tail.at > now ? tail.at : now;
 }
 
+/**
+ * Builds more events of an operation already appended, on top of `tail` (09-event-format §4.1: an
+ * operation is all the events one transaction appends). `appended` is what the last append or
+ * continuation of that operation returned; `tail` must still be its last event, so no other
+ * operation came after it. The events are member events: `op` the operation number, the same
+ * `actor`, `at` and slot. Returns only the new events, under the same `op` and `at`. Throws
+ * LogAppendError on a defect.
+ */
+export function buildContinuation(
+  tail: LogTail | undefined,
+  appended: PreparedOperation,
+  events: readonly NewEvent[],
+): PreparedOperation {
+  const last = appended.events[appended.events.length - 1];
+  const first = appended.events[0];
+  if (last === undefined || first === undefined) {
+    throw new LogAppendError("an operation has at least one event");
+  }
+  if (events.length === 0) throw new LogAppendError("a continuation has at least one event");
+  if (tail === undefined || tail.seq !== last.seq || tail.hash !== last.hash) {
+    throw new LogAppendError(
+      `the operation ${appended.op} is no longer the end of the log: another came after it`,
+    );
+  }
+  events.forEach((e, k) => {
+    const i = last.seq - appended.op + 1 + k;
+    if (["tenant.genesis", "tenant.restored", "tenant.imported"].includes(e.type)) {
+      throw new LogAppendError(`${e.type} is an operation of its own`);
+    }
+    checkHeader(e, i, first.actor);
+    if ((e.slot ?? null) !== first.slot) {
+      throw new LogAppendError(`event ${i} (${e.type}): slot differs from the head event's`);
+    }
+  });
+  let seq = last.seq + 1;
+  let prev: Hash = last.hash;
+  const out = events.map((e, k) => {
+    const prepared = prepareEvent(e, last.seq - appended.op + 1 + k, {
+      seq,
+      actor: first.actor,
+      at: appended.at,
+      prev,
+      op: appended.op,
+    });
+    prev = prepared.hash;
+    seq += 1;
+    return prepared;
+  });
+  return { op: appended.op, at: appended.at, events: out };
+}
+
+/** One event's header, its JCS text and hash, index columns and blocks. */
+function prepareEvent(
+  e: NewEvent,
+  i: number,
+  at: { seq: Seq; actor: PrincipalId; at: Instant; prev: Hash; op: Seq },
+): PreparedEvent {
+  const blocks = prepareBlocks(e, i);
+  const header: Record<string, JcsValue | undefined> = {
+    seq: at.seq,
+    v: 1,
+    type: e.type,
+    actor: at.actor,
+    at: at.at,
+    prev_hash: at.prev,
+    op: i === 0 ? undefined : at.op,
+    slot: e.slot,
+    trigger: e.trigger,
+  };
+  for (const f of EXTRA_FIELDS) header[f] = e[f];
+  for (const k of Object.keys(header)) {
+    if (!BASE_FIELDS.has(k as HeaderField) && !(EXTRA_FIELDS as readonly string[]).includes(k)) {
+      throw new LogAppendError(`unknown header field ${k}`);
+    }
+  }
+  const { text, hash } = encode(header);
+  return {
+    seq: at.seq,
+    header: text,
+    hash,
+    type: e.type,
+    actor: at.actor,
+    at: at.at,
+    op: at.op,
+    slot: e.slot ?? null,
+    target: targetIndex(e.blocks["target"]),
+    blocks,
+  };
+}
+
 /** Builds the events of one operation on top of `tail`. Throws LogAppendError on a defect. */
 export function buildOperation(tail: LogTail | undefined, input: NewOperation): PreparedOperation {
   const [first] = input.events;
@@ -293,38 +383,8 @@ export function buildOperation(tail: LogTail | undefined, input: NewOperation): 
   const op = seq;
   let prev: Hash = tail?.hash ?? GENESIS_PREV_HASH;
   const events: PreparedEvent[] = input.events.map((e, i) => {
-    const blocks = prepareBlocks(e, i);
-    const header: Record<string, JcsValue | undefined> = {
-      seq,
-      v: 1,
-      type: e.type,
-      actor: input.actor,
-      at,
-      prev_hash: prev,
-      op: i === 0 ? undefined : op,
-      slot: e.slot,
-      trigger: e.trigger,
-    };
-    for (const f of EXTRA_FIELDS) header[f] = e[f];
-    for (const k of Object.keys(header)) {
-      if (!BASE_FIELDS.has(k as HeaderField) && !(EXTRA_FIELDS as readonly string[]).includes(k)) {
-        throw new LogAppendError(`unknown header field ${k}`);
-      }
-    }
-    const { text, hash } = encode(header);
-    const prepared: PreparedEvent = {
-      seq,
-      header: text,
-      hash,
-      type: e.type,
-      actor: input.actor,
-      at,
-      op,
-      slot: e.slot ?? null,
-      target: targetIndex(e.blocks["target"]),
-      blocks,
-    };
-    prev = hash;
+    const prepared = prepareEvent(e, i, { seq, actor: input.actor, at, prev, op });
+    prev = prepared.hash;
     seq += 1;
     return prepared;
   });
