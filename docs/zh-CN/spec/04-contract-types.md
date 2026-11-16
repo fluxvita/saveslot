@@ -164,10 +164,10 @@ interface Target {
   /** 来源键：事件类表、无时间表，schema 声明了 external_key 时，给出全部键字段的值：{"origin": "band_app", "external_id": "m-2"}。
    *  只用于写入；读操作的参数不收它，给了报 invalid_argument。 */
   external_key?: Record<FieldName, Value>;
-  key?: Record<FieldName, Value>;          // 派生表的分组键：{"month": "2026-11-01"}。只读
+  key?: Record<FieldName, Value>;          // 派生表的分组键：{"month": "2026-11-01"}；不分组的整体聚合：空对象 {}。只读
 }
 
-/** 结果里的行标识：服务端总是给出 ID；有自然键 / 来源键 / 分组键时一并给出。 */
+/** 结果里的行标识：服务端总是给出 ID；有自然键 / 来源键 / 分组键时一并给出。派生行只给 key（分组键；不分组的整体聚合是空对象 {}）。 */
 interface TargetRef {
   table: TableName;
   row?: RowId;
@@ -1765,6 +1765,7 @@ type Warning =
                                                                                                      // 物理删除后 saveslot 不记得这个键，连接器再同步同一条记录时会作为新行重新出现。rows 最多 50 行
   | { code: "single_field_external_key"; table: TableName }                                          // schema_draft：来源键只有一个字段，多个来源系统写这张表时 ID 可能相撞
   | { code: "group_key_free_text"; table: TableName }                                                // schema_draft：派生表的分组键来自自由文本字段，删除时随分组一起清除
+  | { code: "input_marks_unavailable"; table: TableName }                                           // query 读派生表：输入上的标记（input_marks）这一版没有汇总；缺省不等于输入上没有标记
   | { code: "job_items_appended"; op: number; job: JobId };                                          // @later
 
 /** 与本次调用相关的提示，最多 3 条。每一种都只按调用方的可见范围计算：范围外的 slot 不出现在任何提示里。 */
@@ -2021,7 +2022,7 @@ type ValidationDetailCode =
 
 | `code` | `reason` | 其余附带字段 |
 |---|---|---|
-| `invalid_argument` | `missing` / `malformed` / `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target`（`undo` 的目标是插入或首次创建、从没生效过的候选或待确认写入，或 schema 切换的操作号）/ `event_table_valid_at` / `no_value_now`（状态类表上不带区间的纠错，"现在"那一点该字段无值）/ `no_time_table` / `not_state_table` / `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `derived_table`（`history` 的 `changes` 以派生表为目标）/ `pending_deletion_source` / `cross_slot`（预览的源数据跨 slot；前提指向别的 slot 里可见的表；写入的各 op 落在不同的 slot。靠 `param` 区分是哪一种）/ `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots`（签发时 `slots` 是空数组）/ `duplicate_name`（`connections.issue`、`update`：连接实例重名）/ `tenant_not_empty`（导入的目标租户不是空的）/ 按来源键写入：`insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / 写入的前提：`premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` | `param`；`candidates?: string[]`（`ambiguous_table` 的候选表名）；`candidate_required` 时 `candidate_choices: Array<{ index: number; seq: Seq; actor: Actor }>`（事项的各候选：下标、所在写入、写入者）；`example?: object`（该模式或该参数完整的正确示例）；`duplicate_external_key` 时 `ops: number[]`（同键的两个 op 的下标）；`external_key_in_use` 时 `deletions?: ItemId[]`（键被冻结：冻结它的全部删除）或 `holder?: RowId`（占着它的未撤销的行）；`external_key_not_transferable`、`external_key_transferred` 时 `holder: RowId`（占着或现在持有这个键的行） |
+| `invalid_argument` | `missing` / `malformed` / `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target`（`undo` 的目标是插入或首次创建、从没生效过的候选或待确认写入，或 schema 切换的操作号）/ `event_table_valid_at` / `no_value_now`（状态类表上不带区间的纠错，"现在"那一点该字段无值）/ `no_time_table` / `not_state_table` / `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `derived_table`（`history` 的 `changes` 以派生表为目标；`query` 在派生表上给了 `valid_at` / `valid_during`）/ `pending_deletion_source` / `cross_slot`（预览的源数据跨 slot；前提指向别的 slot 里可见的表；写入的各 op 落在不同的 slot。靠 `param` 区分是哪一种）/ `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots`（签发时 `slots` 是空数组）/ `duplicate_name`（`connections.issue`、`update`：连接实例重名）/ `tenant_not_empty`（导入的目标租户不是空的）/ 按来源键写入：`insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / 写入的前提：`premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` | `param`；`candidates?: string[]`（`ambiguous_table` 的候选表名）；`candidate_required` 时 `candidate_choices: Array<{ index: number; seq: Seq; actor: Actor }>`（事项的各候选：下标、所在写入、写入者）；`example?: object`（该模式或该参数完整的正确示例）；`duplicate_external_key` 时 `ops: number[]`（同键的两个 op 的下标）；`external_key_in_use` 时 `deletions?: ItemId[]`（键被冻结：冻结它的全部删除）或 `holder?: RowId`（占着它的未撤销的行）；`external_key_not_transferable`、`external_key_transferred` 时 `holder: RowId`（占着或现在持有这个键的行） |
 | `unknown_table` / `unknown_field` | — | `name`、`nearest: string[]`（只取可见的名字，最多 3 个；别名与 `name` 按 `keymatch@1` 的折叠比较后相同的对象，其名字排在最前；其余按折叠之后的编辑距离从小到大，相同时按名字的 `C` 排序） |
 | `not_found` | `row` / `entity` / `item` / `source` / `draft` / `connection` / `read` / `slot` | `deletions?: ItemId[]`（被宽限期内的删除整行去掉时：全部碰到它的贡献的待执行删除，按操作号排序；不回显内容）；`sources?: Array<{id, state: "unknown" \| "pending_deletion" \| "removed", deletion?}>` |
 | `revoked` | — | `target: TargetRef`、`revoked_by: Seq`（用 `revert: {undo}` 恢复） |
@@ -2040,7 +2041,7 @@ type ValidationDetailCode =
 | `unauthenticated` | `missing` / `invalid` / `revoked` / `expired` | — |
 | `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"`（`all_slots`：限定了 slot 范围的凭证新建 slot） |
 | `rate_limited` | `quota` / `busy`（同一租户已有一次对拍或导入在跑） | `retry_after` |
-| `handle_expired` | `expired` / `restored` / `executed` | `deletion?: ItemId`（已执行过的 `dc_`） |
+| `handle_expired` | `expired` / `restored` / `executed` / `derived_changed`（翻页期间派生表被刷新过，从首页重读） | `deletion?: ItemId`（已执行过的 `dc_`） |
 | `not_in_this_version` | `parameter` / `value` / `operation` / `table_written`（只对从未被写入的表放开的改动用在写入过的表上） | `param?`、`value?`、`operation?` |
 | `unavailable` | `busy` / `restoring` / `importing` / `reconciling` / `starting` | `retry_after?` |
 | `internal` | — | `incident: string`（供排查的编号，不含内容） |

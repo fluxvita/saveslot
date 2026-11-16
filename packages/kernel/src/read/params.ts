@@ -107,7 +107,7 @@ export interface QueryPlan {
   readonly warnings: readonly ReadWarning[];
 }
 
-const KEYS = new Set([
+export const QUERY_KEYS: ReadonlySet<string> = new Set([
   "table",
   "where",
   "order",
@@ -125,16 +125,16 @@ const KEYS = new Set([
 ]);
 export const DEFAULT_LIMIT = 20;
 export const MAX_LIMIT = 200;
-const MAX_TASK_CHARS = 256;
+export const MAX_TASK_CHARS = 256;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it finds
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+export const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 export function kindOf(t: CompiledBaseTable): TableKind {
   return t.time.type === "state" ? "state" : t.time.type === "event" ? "event" : "timeless";
 }
 
 /** A field by name, without case; `unknown_field` with the nearest names (aliases first). */
-function fieldNamed(t: CompiledBaseTable, name: unknown, param: string): CompiledBaseField {
+export function fieldNamed(t: CompiledBaseTable, name: unknown, param: string): CompiledBaseField {
   if (typeof name !== "string" || name === "") throw invalid("malformed", param);
   const f = t.fields.find((x) => fold(x.name) === fold(name));
   if (f === undefined) {
@@ -150,7 +150,7 @@ function fieldNamed(t: CompiledBaseTable, name: unknown, param: string): Compile
   return f;
 }
 
-const bool = (o: Obj, key: string, dflt: boolean): boolean => {
+export const bool = (o: Obj, key: string, dflt: boolean): boolean => {
   if (!has(o, key)) return dflt;
   const v = get(o, key);
   if (typeof v !== "boolean") throw invalid("malformed", key);
@@ -306,7 +306,7 @@ function literal(
   }
 }
 
-function condition(
+export function condition(
   t: CompiledBaseTable,
   c: unknown,
   param: string,
@@ -368,7 +368,7 @@ export function queryPlan(
   named: NamedTable,
   input: { readonly now: Instant; readonly task: string | null },
 ): QueryPlan {
-  for (const k of keysOf(params)) if (!KEYS.has(k)) throw invalid("malformed", k);
+  for (const k of keysOf(params)) if (!QUERY_KEYS.has(k)) throw invalid("malformed", k);
   if (named.table.kind === "derived") throw notImplemented("table", "reading a derived table");
   const t = named.table;
   const kind = kindOf(t);

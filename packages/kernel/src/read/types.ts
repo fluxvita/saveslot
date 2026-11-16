@@ -48,6 +48,8 @@ export interface TargetRef {
   readonly row?: RowId;
   readonly entity?: EntityId;
   readonly entity_key?: Values;
+  /** A derived row's group key by field name; `{}` for a whole aggregate. */
+  readonly key?: Values;
 }
 
 export interface Interval {
@@ -93,7 +95,9 @@ export type ReadWarning =
       readonly from: string;
       readonly to: DateStr;
     }
-  | { readonly code: "timezone_assumed"; readonly param: string; readonly timezone: string };
+  | { readonly code: "timezone_assumed"; readonly param: string; readonly timezone: string }
+  /** query of a derived table: the input marks are not summed in this version. */
+  | { readonly code: "input_marks_unavailable"; readonly table: string };
 
 /** §4.3 `QueryReadResult`. */
 export interface QueryReadResult {

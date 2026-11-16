@@ -5,12 +5,14 @@
 // versions of the page (one per entity on state tables), the fingerprint of the query without any
 // value, the business time read, and the `ver` / `sv` it counts as having read for the fallback.
 
-import type { Instant, JsonValue, PrincipalId, TableId } from "@fluxvita/saveslot-contract-core";
+import type { Instant, JsonValue, TableId } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
-import type { ReadEntry, ReadId, ReadRow } from "../audit/index.ts";
+import type { ReadEntry, ReadRow } from "../audit/index.ts";
 import { get, has, isObj, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { queryDerived } from "./derived.ts";
 import { type QueryPlan, queryPlan } from "./params.ts";
+import type { QueryInput, QueryOutput } from "./query-io.ts";
 import {
   cmpKeys,
   decodePosition,
@@ -22,28 +24,11 @@ import {
   shownRows,
 } from "./rows.ts";
 import { logPosition, restoreCount, rowFacts, selectRows } from "./select.ts";
-import { resolveTable, type Visibility, visibleSlots } from "./slots.ts";
+import { resolveTable, visibleSlots } from "./slots.ts";
 import { invalid, type QueryReadResult } from "./types.ts";
 import { rowFactsAsOf, selectRowsAsOf } from "./versions.ts";
 
-export interface QueryInput {
-  readonly actor: PrincipalId;
-  /** The context's task; the parameters' own `task` takes its place when given. */
-  readonly task: string | null;
-  readonly now: Instant;
-  readonly visibility: Visibility;
-  readonly params: unknown;
-  /** The ID the read is recorded under. */
-  readonly read: ReadId;
-  /** Tests only: read the state after this operation, as a later page does. */
-  readonly asOf?: number;
-}
-
-export interface QueryOutput {
-  readonly result: QueryReadResult;
-  /** The read to record. */
-  readonly entry: ReadEntry;
-}
+export type { QueryInput, QueryOutput };
 
 /** The structural fingerprint of a query: IDs and operators, every value as `"?"`. */
 export function fingerprint(plan: QueryPlan, params: Obj): string {
@@ -73,6 +58,7 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
   if (!isObj(params)) throw invalid("malformed", "");
   const slots = await visibleSlots(tx, input.visibility);
   const named = resolveTable(get(params, "table"), "table", slots);
+  if (named.table.kind === "derived") return queryDerived(tx, input, params, named);
   const first = queryPlan(params, named, { now: input.now, task: input.task });
   const restore = await restoreCount(tx);
   const latest = await logPosition(tx);

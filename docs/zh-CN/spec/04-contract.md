@@ -80,7 +80,7 @@
 
 - **单位**：连接实例。凭用户会话调用时是这个用户会话（它的所有调用共用一份"最近读到"）；给人用的外化面应显式带回版本、不靠兜底。
 - **`task`**：带了 `task` 的调用只认同一 `task` 下的读取；没带 `task` 的调用只认没带 `task` 的读取。读过但 `task` 不同时，`read_first` 的 `reason` 是 `task_mismatch`。
-- **什么算读到 `ver`**：逐行读——`query`、`history` 的 `timeline` 返回的当前版本；以及本连接实例自己的写入回执里**已生效**的 `ver`。`sql`、聚合类读取、按时刻读到的历史版本不算；回执里 `candidate` 结果附的 `current_ver` 不算。
+- **什么算读到 `ver`**：逐行读——`query`、`history` 的 `timeline` 返回的当前版本；以及本连接实例自己的写入回执里**已生效**的 `ver`。`sql`、聚合类读取、按时刻读到的历史版本不算；回执里 `candidate` 结果附的 `current_ver` 不算。派生行的 `ver` 不能用于写入，读派生表不登记行版本，只算读到 `sv`。
 - **什么算读到 `item_ver`**：查看该事项的详情；`resolve` 报 `confirmation_mismatch` 时附带的 `current`，它就是该事项此刻的详情，等同于查看详情；或本次写入 / 删除 / 草稿提交**新生成**了该事项、且回执给出了它的全部内容（data-model「待处理事项 · 事项 ID 与事项版本」）。只列出事项 ID 的地方不算；回执里标了 `merged` 或 `refreshed` 的不算，要先看详情。
 - **什么算读到 `sv`**：本连接实例对该 slot 的任何一次读取，含 `catalog`。带回的 `sv` 落后时不一概拒绝，只拒绝写到不兼容变化的字段（`schema_incompatible`）。
 - **前提里的 `ver`**（`ops[i].premises[j].ver`，5.1）与写入目标的 `ver` 同一套规则：应带回，没带时兜底，提醒是 `premise_ver_fallback`；无可兜底报 `read_first`。
@@ -139,6 +139,7 @@
   - `valid_at` 与 `valid_during` 同时给：`invalid_argument`（`mutually_exclusive`）。
 - **事件类表**没有生效区间：传 `valid_at` 报 `invalid_argument`（`event_table_valid_at`），`example` 给出改写成 `valid_during` 或 `where` 的写法。`valid_during` 按发生时间字段筛选；字段是 `zoned_datetime` 而区间给的是日期时，按 slot 时区的自然日。
 - **无时间表**传 `valid_at` / `valid_during`：`invalid_argument`（`no_time_table`）。
+- **派生表**没有业务时间：传 `valid_at` / `valid_during` 报 `invalid_argument`（`derived_table`）；按周、按月分桶的派生表用 `where` 筛分组键。
 - **`as_of: S`** = 操作号不大于 S 的全部操作都已完整生效时的状态；给时刻时换成不晚于它的最后一个操作号，未来的时刻等于最新。`as_of` 不带 `valid_at` 读状态类实体，返回当时所知的全部段。`changes` 的 `since` 不含、`until` 含。
 - `sql` 里出现 `FOR SYSTEM_TIME` 报 `sql_rejected`（`system_time`），附 `use: "history"`。不带时间限定读状态类表 = 包含求值时刻（`at`，不传时为入口时刻）的那一段。
 
@@ -682,7 +683,7 @@
 | 翻页 | `cur_` | 签名，绑定查询条件 + 首页的操作号 + 恢复次数 | 1 小时 | `handle_expired`，重新查询 |
 | 作业、抽取租约（后续） | `jb_`、`ls_` | 稳定 ID；签名 | 作业结束后 30 天；15 分钟 | `not_found`；`lease_expired` |
 
-- 翻页固定在首页的操作号：翻页期间的新写入不会造成漏行、重行；换条件即失效。后续各页按首页那一刻的记录状态（与首页的求值时刻）给出行与值；标记是读取当时的（未决事项没有历史），行怎么切分不受标记影响。首页之后有恢复或导入的，后续页报 `handle_expired`（`restored`）。句柄绑定的是查询条件，不含 `limit`：页与页之间可以换每页条数。
+- 翻页固定在首页的操作号：翻页期间的新写入不会造成漏行、重行；换条件即失效。后续各页按首页那一刻的记录状态（与首页的求值时刻）给出行与值；标记是读取当时的（未决事项没有历史），行怎么切分不受标记影响。首页之后有恢复或导入的，后续页报 `handle_expired`（`restored`）。派生表没有按时刻的状态：首页之后这张派生表被刷新过，后续页报 `handle_expired`（`derived_changed`），从首页重读；没被刷新过的，读到的与首页那一刻相同。句柄绑定的是查询条件，不含 `limit`：页与页之间可以换每页条数。
 - **恢复备份或导入之后**：`ver`、`item_ver`、`dc_`、`cur_` 都带租户恢复次数。恢复与导入都让恢复次数加 1，之前签发的一律对不上。**恢复点**是最近那次恢复的 `restored_to`（`tenant.restored`），或导入的 `imported_upto`（`tenant.imported`）。
   - `ver`：恢复次数**恰好比当前小 1**、且操作号不超过恢复点的，按它自己的操作号判定冲突；其余的（操作号在恢复点之后，或恢复次数更旧），以恢复点为它读到的位置，按冲突判据比较恢复点之后的写入。前提里的 `ver` 同此。
     - 理由：恢复点及以前的事件在两条时间线里逐字节相同，按原操作号判不会错，还能多查出恢复点之前的并发改动；恢复点之后的那段可能已经丢失，只能保守处理。恢复次数差 2 及以上时，中间那次恢复之前的时间线是否与现在一致无从判断，所以不放宽。
@@ -700,7 +701,7 @@
 | `unauthenticated` | 凭证缺失（`missing`）、无效（`invalid`）、已吊销（`revoked`）、过期（`expired`） |
 | `insufficient_scope` | 凭证没有所需 scope（含 `resolve` 用了当前凭证不可用的处理方式）；连接实例调用只给用户会话的管理类操作（`required_scope: "user_session"`）；限定了 slot 范围的凭证新建 slot（`required_scope: "all_slots"`，缺 scope 时先报缺 scope） |
 | `rate_limited` | 限流或配额（`quota`）；同一租户已有一次对拍或导入在跑（`busy`） |
-| `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`） |
+| `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`） |
 | `not_in_this_version` | 调用了本版本不实现的参数、取值或操作。`reason` 说明是哪一种，附是哪个；schema 草稿里只对从未被写入的表放开的改动用在写入过的表上时，`reason` 是 `table_written` |
 | `unavailable` | 暂时不能处理：写入排队或加锁超时（`busy`）、租户正在走恢复流程（`restoring`）、租户正在导入（`importing`）、对拍进入比较阶段而排队超时（`reconciling`）、服务刚启动还在补跑到期任务（`starting`）。可重试时附 `retry_after` |
 | `internal` | 服务端内部错误。附 `incident`（供排查的编号，不含用户内容） |

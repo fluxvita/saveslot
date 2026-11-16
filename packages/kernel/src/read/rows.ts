@@ -346,7 +346,7 @@ export function cmpText(a: string, b: string): number {
   return x.length === y.length ? 0 : x.length < y.length ? -1 : 1;
 }
 
-function keyType(f: CompiledBaseField): KeyType {
+export function keyType(f: CompiledBaseField): KeyType {
   switch (f.type) {
     case "integer":
     case "decimal":
@@ -362,7 +362,7 @@ function keyType(f: CompiledBaseField): KeyType {
   }
 }
 
-function keyValue(v: FieldValue | undefined): string | boolean | null {
+export function keyValue(v: FieldValue | undefined): string | boolean | null {
   if (v === null || v === undefined) return null;
   if (typeof v === "boolean" || typeof v === "string") return v;
   if ("instant" in v) return v.instant;

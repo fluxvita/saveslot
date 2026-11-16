@@ -107,7 +107,7 @@ export function decode(f: CompiledBaseField, cells: readonly unknown[]): FieldVa
   }
 }
 
-class Params {
+export class Params {
   readonly list: (string | number | boolean | null)[] = [];
   add(v: string | number | boolean | null, cast = ""): string {
     this.list.push(v);
@@ -144,7 +144,7 @@ function compareSql(col: string, type: string, op: string, lit: Literal, p: Para
 }
 
 /** A condition on a field (those on valid_from / valid_to apply after merging: ./rows.ts). */
-function conditionSql(c: Condition, p: Params): string {
+export function conditionSql(c: Condition, p: Params): string {
   if (typeof c.column === "string") throw new ReadError("internal", "an interval condition in SQL");
   const col = column(c.column);
   const type = c.column.type;
