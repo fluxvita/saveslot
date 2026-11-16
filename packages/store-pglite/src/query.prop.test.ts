@@ -325,6 +325,39 @@ const EXAMPLES = {
     decisions: [],
   },
 };
+/**
+ * A row or entity the scenario's only write never put in effect (stale on an empty target, so it
+ * left no cell): history knows no such target, as_of is not_found (04-contract §10 `history`).
+ */
+const UNWRITTEN = {
+  state: {
+    ops: [
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 20,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+        fields: { f3: { value: "1", sources: ["S4"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+    ],
+    decisions: [],
+  },
+  timeless: {
+    ops: [
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 20,
+        fields: { f3: { value: "1", sources: ["S4"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+    ],
+    decisions: [],
+  },
+};
 const EXAMPLE_READS = [
   { kind: "valid_at", a: 4, b: undefined, fields: "all", clip: false, coalesce: false },
 ];
@@ -580,6 +613,36 @@ describe.each([
             now: "2026-11-10T04:00:00.000Z",
             confirmation: null,
           });
+          // A target no write ever put in effect has no cell in the version table: history knows no
+          // such target, so as_of at every step is not_found (and nothing else is compared).
+          const versions = isState ? "t_t2_v1__ver" : "t_t1_v1__ver";
+          const known = (
+            await store.read((tx) =>
+              tx.query(`SELECT 1 FROM ${versions} WHERE row_id = $1 LIMIT 1`, [
+                isState ? ENTITY : ROW,
+              ]),
+            )
+          ).rows.length;
+          if (known === 0) {
+            const which = isState ? "entity" : "row";
+            for (const op of opsSeen) {
+              const e = await history(store, ctx, {
+                table: isState ? "entities" : "rows",
+                [which]: isState ? ENTITY : ROW,
+                mode: "as_of",
+                as_of: op,
+              }).then(
+                () => undefined,
+                (x: { code?: string; detail?: unknown }) => ({ code: x.code, detail: x.detail }),
+              );
+              expect({ op, e }).toEqual({
+                op,
+                e: { code: "not_found", detail: { reason: which, param: which } },
+              });
+            }
+            reach("as_of not_found");
+            return;
+          }
           for (const [k, op] of opsSeen.entries()) {
             const v = JSON.parse(JSON.stringify(view((steps[k] as (typeof steps)[number]).state)));
             type AsOfRow = {
@@ -647,7 +710,10 @@ describe.each([
       {
         numRuns: RUNS,
         ...(SEED !== undefined ? { seed: SEED } : {}),
-        examples: [[EXAMPLES[isState ? "state" : "timeless"], [], EXAMPLE_READS] as never],
+        examples: [
+          [EXAMPLES[isState ? "state" : "timeless"], [], EXAMPLE_READS] as never,
+          [UNWRITTEN[isState ? "state" : "timeless"], [], EXAMPLE_READS] as never,
+        ],
       },
     );
     // The examples run; random samples are seldom skipped (events colliding in seq).
@@ -662,8 +728,9 @@ describe.each([
           "during: nothing",
           "several segments",
           "inner gap",
+          "as_of not_found",
         ]
-      : ["row", "revoked row", "as_of marks"];
+      : ["row", "revoked row", "as_of marks", "as_of not_found"];
     for (const n of needed)
       expect({ n, reached: (reached[n] ?? 0) > 0 }).toEqual({ n, reached: true });
   });
