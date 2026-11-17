@@ -21,7 +21,7 @@ import type {
   SlotId,
   TableId,
 } from "@fluxvita/saveslot-contract-core";
-import { canonicalize } from "@fluxvita/saveslot-contract-core";
+import { canonicalize, SELFCHECK_TASK } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry, ReadId } from "../audit/index.ts";
 import { fold, get, has, isDenseArray, isObj, keysOf, type Obj } from "../request/index.ts";
 import { filledDocument } from "../schema/index.ts";
@@ -386,6 +386,8 @@ export async function catalogInTx(
     at: input.now,
     pos: latest as never,
     operation: "catalog",
+    // The self-check of a newly issued connection: by the task alone, as reported (06-cli §3.2).
+    ...(task === SELFCHECK_TASK ? { selfcheck: true as const } : {}),
     ...(shown.length === 1 && one !== undefined ? { slot: one.slot, sv: one.sv } : {}),
     // The level and the opaque IDs read, no names (04-write-and-read «读取记录里记什么形状»).
     shape: canonicalize({

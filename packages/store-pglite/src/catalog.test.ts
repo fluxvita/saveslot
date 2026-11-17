@@ -10,7 +10,10 @@ import {
   createOpsContext,
   createTenant,
   eventsOf,
+  flushReads,
+  query,
   readBufferOf,
+  readsList,
   write,
 } from "@fluxvita/saveslot-kernel";
 import { createSlotEvents, SLOT } from "@fluxvita/saveslot-kernel/testing";
@@ -21,6 +24,8 @@ const T = 120_000;
 const TENANT = `tn_${"8".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}`;
 const OTHER = `ci_${"2".repeat(26)}`;
+/** The task of `saveslot connect`'s self-check, as 06-cli §3 step 7 spells it. */
+const SELFCHECK_TASK = "saveslot-connect-selfcheck";
 
 /** The document the slot is created from, as a caller would submit it. */
 const DOCUMENT = {
@@ -78,12 +83,14 @@ const DOCUMENT = {
 
 let s: ReusableStore;
 let minute = 0;
-const ctx = (o: { actor?: string; visibility?: unknown } = {}) =>
+const ctx = (
+  o: { actor?: string; visibility?: unknown; task?: string; trigger?: "flushReads" } = {},
+) =>
   createOpsContext({
     tenant: TENANT,
-    actor: o.actor ?? USER,
-    trigger: null,
-    task: null,
+    actor: o.trigger !== undefined ? "system" : (o.actor ?? USER),
+    trigger: o.trigger ?? null,
+    task: o.task ?? null,
     visibility: o.visibility ?? { kind: "all" },
     idempotency_window: 600_000,
     idempotency_key_window: 86_400_000,
@@ -417,6 +424,55 @@ describe("parameters and the read", () => {
       }),
     ]);
   });
+
+  it("marks a catalog read under the self-check task, by the task alone", async () => {
+    await c({ level: "list" }, { actor: OTHER, task: SELFCHECK_TASK });
+    await c({ level: "list" }, { task: SELFCHECK_TASK });
+    await c({ level: "list", task: SELFCHECK_TASK }, { actor: OTHER });
+    const marked = readBufferOf(s.store).take();
+    expect(marked.map((e) => [e.actor, e.task, e.selfcheck])).toEqual([
+      [OTHER, SELFCHECK_TASK, true],
+      [USER, SELFCHECK_TASK, true],
+      [OTHER, SELFCHECK_TASK, true],
+    ]);
+  });
+
+  it("does not mark a catalog read under another task, nor another read under the task", async () => {
+    await c({ level: "list" }, { actor: OTHER });
+    await c({ level: "list" }, { actor: OTHER, task: `${SELFCHECK_TASK}-2` });
+    await c({ level: "list" }, { actor: OTHER, task: SELFCHECK_TASK.toUpperCase() });
+    await query(s.store, ctx({ actor: OTHER, task: SELFCHECK_TASK }), { table: "settings" });
+    const entries = readBufferOf(s.store).take();
+    expect(entries.map((e) => e.operation)).toEqual(["catalog", "catalog", "catalog", "query"]);
+    for (const e of entries) expect(e).not.toHaveProperty("selfcheck");
+  });
+
+  it.each([false, true])(
+    "gives the mark back in reads.list (reads written: %s)",
+    async (flushed) => {
+      await c({ level: "list" }, { actor: OTHER, task: SELFCHECK_TASK });
+      await c({ level: "list" }, { actor: OTHER, task: "other" });
+      await query(s.store, ctx({ actor: OTHER, task: SELFCHECK_TASK }), { table: "settings" });
+      if (flushed) {
+        await flushReads(s.store, ctx({ trigger: "flushReads" }));
+        expect(readBufferOf(s.store).size).toBe(0);
+      }
+      const r = await readsList(s.store, ctx(), { limit: 200 });
+      const got = r.reads.map((x) => ({
+        operation: x.operation,
+        task: x.task,
+        selfcheck: Object.hasOwn(x, "selfcheck") ? x.selfcheck : "absent",
+      }));
+      expect(got).toEqual(
+        expect.arrayContaining([
+          { operation: "catalog", task: SELFCHECK_TASK, selfcheck: true },
+          { operation: "catalog", task: "other", selfcheck: "absent" },
+          { operation: "query", task: SELFCHECK_TASK, selfcheck: "absent" },
+        ]),
+      );
+      expect(got).toHaveLength(3);
+    },
+  );
 
   it.each(["schema", "table"])(
     "is what a write without sv falls back to (%s level)",
