@@ -288,9 +288,13 @@ describe("instants and dates within 0001–9999", () => {
       // Read in the slot's zone (Asia/Shanghai): 0000-12-31T16:00Z.
       "0001-01-01T00:00:00",
       "9999-12-31T23:59:59-05:00[America/New_York]",
+      // Within range in UTC, but 10000-01-01 on the wall clock of the zone it is recorded in
+      // (the slot's, Asia/Shanghai, none being written): 10-types-and-units.
+      "9999-12-31T16:00:00Z",
+      "9999-12-31T23:59:59.999Z",
     ])
       expect(codeOf(normalize(insertExpense({ at: v }))), v).toEqual(["out_of_range"]);
-    expect(normalize(insertExpense({ at: "9999-12-31T23:59:59.999Z" })).ok).toBe(true);
+    expect(normalize(insertExpense({ at: "9999-12-31T15:59:59.999Z" })).ok).toBe(true);
     expect(normalize(insertExpense({ at: "0001-01-01T00:00:00Z" })).ok).toBe(true);
   });
 

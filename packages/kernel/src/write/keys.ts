@@ -24,7 +24,7 @@ import {
 } from "@fluxvita/saveslot-contract-core";
 import type { NormalizedField } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { offsetAt } from "../time/index.ts";
+import { zonedText } from "../time/index.ts";
 
 export type EntityKey = Readonly<Record<FieldId, NormalizedField>>;
 export type KeyValues = Readonly<Record<FieldId, FieldValue>>;
@@ -89,31 +89,11 @@ export async function keyOf(
   return (await tableKeys(tx, t)).get(entity);
 }
 
-const pad = (n: number, w = 2) => String(Math.abs(n)).padStart(w, "0");
-
-/**
- * A zoned date-time as a caller writes it (04-contract-types `ZonedDateTime`, RFC 9557): the local
- * time in its zone, with the offset and the zone's name, so it can be written back as it is.
- */
-function zonedText(instant: string, zone: string): string {
-  const at = Date.parse(instant);
-  const offset = offsetAt(at, zone);
-  const local = new Date(at + offset);
-  const ms = local.getUTCMilliseconds();
-  const sign = offset < 0 ? "-" : "+";
-  const minutes = Math.abs(offset) / 60_000;
-  return (
-    `${pad(local.getUTCFullYear(), 4)}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}` +
-    `T${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}:${pad(local.getUTCSeconds())}` +
-    `${ms > 0 ? `.${pad(ms, 3)}` : ""}${sign}${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}` +
-    `[${zone}]`
-  );
-}
-
 /** A key value as text a caller can write back. */
 function valueText(v: FieldValue): string {
   if (v === null) return "";
   if (typeof v === "boolean") return String(v);
+  // As every value goes out (../time `zonedText`): written back, it names the same instant.
   if (typeof v === "object" && "instant" in v) return zonedText(v.instant, v.zone);
   if (typeof v === "object" && "unit" in v) return `${v.value} ${v.unit}`;
   return String(v);

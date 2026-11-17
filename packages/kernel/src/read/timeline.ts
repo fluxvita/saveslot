@@ -15,6 +15,7 @@ import type { ReadEntry } from "../audit/index.ts";
 import { actorsNow } from "../pending/index.ts";
 import { get, has, isObj, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { valueOut } from "../time/index.ts";
 import {
   type HistoryInput,
   type HistoryOutput,
@@ -416,8 +417,8 @@ export async function timelineInTx(
         result: status,
         ...(noValue ? { no_value: true as const } : {}),
         ...(uncovered ? { uncovered: true as const } : {}),
-        ...(prior !== undefined ? { before: prior } : {}),
-        ...(hasValue ? { after: body["value"] as FieldValue } : {}),
+        ...(prior !== undefined ? { before: valueOut(prior) } : {}),
+        ...(hasValue ? { after: valueOut(body["value"] as FieldValue) } : {}),
         ...(valid !== undefined ? { valid: intervalOf(valid.from, valid.to, date) } : {}),
         ...(block.removed ? { removed: true as const } : {}),
         ...(fieldId === "existence"

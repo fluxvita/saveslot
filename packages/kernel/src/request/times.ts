@@ -8,7 +8,7 @@
 
 import type { DateStr, Instant } from "@fluxvita/saveslot-contract-core";
 import { isDate } from "@fluxvita/saveslot-contract-core";
-import { localToInstant, offsetAt, zoneName } from "../time/index.ts";
+import { instantsAt, localToInstant, offsetAt, offsetToMinute, zoneName } from "../time/index.ts";
 
 const DATE_TIME =
   /^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|z|[+-]\d{2}:\d{2})?(?:\[([^\]!=\s]+)\])?$/;
@@ -45,7 +45,8 @@ const MALFORMED = { ok: false, why: "malformed" } as const;
  * Date-time text: with an offset, read as written; without one, in the bracketed zone if given,
  * else in `defaultZone`. `malformed` when it is not of the form, not a calendar time, finer than a
  * millisecond, has an offset outside RFC 3339's hours 00–23 and minutes 00–59, names a zone that is
- * not accepted, or has an offset that disagrees with its zone.
+ * not accepted, or has an offset that is not its zone's at that wall-clock time, rounded to the
+ * minute.
  */
 export function parseDateTime(s: string, defaultZone: string, allowZone: boolean): ParsedDateTime {
   const m = DATE_TIME.exec(s);
@@ -75,9 +76,23 @@ export function parseDateTime(s: string, defaultZone: string, allowZone: boolean
       if (oh > 23 || om > 59) return MALFORMED;
       offsetMs = (off.startsWith("-") ? -1 : 1) * (oh * 60 + om) * 60_000;
     }
-    epochMs = local - offsetMs;
-    // RFC 9557: an offset that disagrees with the zone's own offset at that instant is inconsistent.
-    if (zone !== undefined && offsetAt(epochMs, zone) !== offsetMs) return MALFORMED;
+    // `Z` says the instant is UTC and the local offset unknown (RFC 9557): with a zone, that UTC
+    // instant in that zone, nothing to agree with. Any written offset, `+00:00` too, must agree.
+    if (zone === undefined || off === "Z" || off === "z") {
+      epochMs = local - offsetMs;
+    } else {
+      // With a zone, the offset must be the zone's own offset at that wall-clock time, exactly or
+      // rounded to the minute as a zoned date-time is written (04-contract-types §1.3): the instant
+      // is then the zone's, to the second. Of two at that wall-clock time (a clock going back), the
+      // one whose offset is exactly the one written, else the one it rounds to. Otherwise the
+      // offset disagrees with the zone (RFC 9557): refused.
+      const candidates = instantsAt(local, zone);
+      const at =
+        candidates.find((t) => offsetAt(t, zone) === offsetMs) ??
+        candidates.find((t) => offsetToMinute(offsetAt(t, zone)) === offsetMs);
+      if (at === undefined) return MALFORMED;
+      epochMs = at;
+    }
   }
   if (!instantInRange(epochMs)) return { ok: false, why: "out_of_range" };
   return { ok: true, epochMs, assumed: off === undefined && zone === undefined, zone, zoneText };

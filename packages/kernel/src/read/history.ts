@@ -37,6 +37,7 @@ import {
   parseDateTime,
 } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { valueOut } from "../time/index.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 import { bizPoint, kindOf, type TableKind } from "./params.ts";
 import { cmpText, correctedWithin, type KeySpec } from "./rows.ts";
@@ -192,16 +193,22 @@ export async function historyTarget(
     const k = keysOf(v).find((x) => fold(x) === fold(f.name)) as string;
     const r = normalizeValue(f, get(v, k), { op: 0, name: f.name, zone: named.slot.timezone });
     if (!r.ok) throw invalid("malformed", `entity_key/${k}`);
-    // Key fields are text-like or numbers; compare their cells as text of the stored value.
-    const cells = await tx.query<{ row_id: string; v: string | null }>(
-      `SELECT DISTINCT row_id, ${selectOf(f)[0]} AS v FROM ${versions} WHERE field_id = $1`,
+    // Compare each stored key value, decoded from all its columns (a zoned date-time has two: the
+    // instant and the zone), with the one given.
+    const columns = selectOf(f);
+    const cells = await tx.query<Record<string, string | null>>(
+      `SELECT DISTINCT row_id, ${columns.map((c, i) => `${c} AS v${i}`).join(", ")}
+         FROM ${versions} WHERE field_id = $1`,
       [f.id],
     );
     const want = canonicalize(r.value as JsonValue);
     const hit = new Set(
       cells.rows
-        .filter((c) => c.v !== null && canonicalize(decode(f, [c.v]) as JsonValue) === want)
-        .map((c) => c.row_id),
+        .filter((c) => {
+          const vs = columns.map((_, i) => c[`v${i}`]);
+          return vs[0] !== null && canonicalize(decode(f, vs) as JsonValue) === want;
+        })
+        .map((c) => c["row_id"] as string),
     );
     ids = ids === undefined ? hit : new Set([...ids].filter((x) => hit.has(x)));
   }
@@ -436,8 +443,8 @@ async function svAsOf(tx: ReadTx, slot: string, s: number, current: number): Pro
 }
 
 const byName = (t: CompiledBaseTable, values: Readonly<Record<string, FieldValue>>): Values => {
-  const out: Record<string, FieldValue> = Object.create(null);
-  for (const f of t.fields) out[f.name] = values[f.id] ?? null;
+  const out: Record<string, Values[string]> = Object.create(null);
+  for (const f of t.fields) out[f.name] = valueOut(values[f.id] ?? null);
   return out;
 };
 

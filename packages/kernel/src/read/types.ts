@@ -7,7 +7,6 @@ import type {
   EntityId,
   EVENT_DECISIONS,
   FieldStatus,
-  FieldValue,
   ItemId,
   RowId,
   Seq,
@@ -17,6 +16,7 @@ import type {
   VersionIntent,
 } from "@fluxvita/saveslot-contract-core";
 import { echoName, echoPath } from "../request/index.ts";
+import type { ValueOut } from "../time/index.ts";
 
 /** A refused read: the contract's error code and its details (`reason`, `param`, …). */
 export class ReadError extends Error {
@@ -45,7 +45,8 @@ export const notImplemented = (param: string, what: string) =>
     param,
   });
 
-export type Values = Readonly<Record<string, FieldValue>>;
+/** Field values as the contract gives them (a zoned date-time as text: ../time `valueOut`). */
+export type Values = Readonly<Record<string, ValueOut>>;
 
 /** §1.5 `TargetRef`. */
 export interface TargetRef {
@@ -176,8 +177,8 @@ export interface TimelineField {
   readonly result: FieldStatus | "dropped";
   readonly no_value?: true;
   readonly uncovered?: true;
-  readonly before?: FieldValue;
-  readonly after?: FieldValue;
+  readonly before?: ValueOut;
+  readonly after?: ValueOut;
   readonly valid?: Interval;
   readonly removed?: true;
   readonly sources?: {

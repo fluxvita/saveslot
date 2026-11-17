@@ -6,6 +6,7 @@
 // The callers say how an operation's actor and an interval are written (`Naming`), so the same
 // functions serve both.
 
+import type { FieldValue } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
 
 export type Blocks = Readonly<Record<string, unknown>>;
@@ -172,6 +173,8 @@ export interface Naming<A> {
   readonly field: (id: string) => string;
   readonly interval: (s: Span) => Record<string, unknown>;
   readonly actor: (principal: string) => A;
+  /** A field value as the caller gives it (a zoned date-time as text, 04-contract-types §1.4). */
+  readonly value: (v: FieldValue) => unknown;
   readonly isState: boolean;
 }
 
@@ -187,7 +190,7 @@ export function impactOut<A>(e: ItemEntries, n: Naming<A>, blocks: readonly Bloc
     .map((b) => ({
       field: n.field(b["field"] as string),
       ...(b["valid"] !== undefined ? { valid: n.interval(spanIn(b["valid"])) } : {}),
-      value: b["value"] ?? null,
+      value: n.value((b["value"] ?? null) as FieldValue),
       seq: b["op"] as number,
       actor: actorAt(e, n, b["op"] as number),
     }));
@@ -230,7 +233,7 @@ const valuesOf = <A>(n: Naming<A>, blocks: readonly Blocks[]) =>
   Object.fromEntries(
     blocks
       .filter((b) => b["field"] !== "existence")
-      .map((b) => [n.field(b["field"] as string), b["value"] ?? null]),
+      .map((b) => [n.field(b["field"] as string), n.value((b["value"] ?? null) as FieldValue)]),
   );
 
 /** The candidates (`ConflictDetail.candidates`), by index. */
@@ -264,7 +267,10 @@ export function candidatesOut<A>(e: ItemEntries, n: Naming<A>) {
         ...(valued.length > 0
           ? {
               values: Object.fromEntries(
-                valued.map((x) => [n.field(x.field as string), x.value ?? null]),
+                valued.map((x) => [
+                  n.field(x.field as string),
+                  n.value((x.value ?? null) as FieldValue),
+                ]),
               ),
             }
           : {}),

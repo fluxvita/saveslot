@@ -9,6 +9,8 @@ import {
   createOpsContext,
   createTenant,
   eventsOf,
+  history,
+  query,
   readBufferOf,
   readEvents,
   readTail,
@@ -683,6 +685,56 @@ describe("keys that are not text", () => {
       );
       expect(again.refused).toBeUndefined();
       expect(again.ops[0]?.target.entity).toBe(a.ops[0]?.target.entity);
+    },
+    T,
+  );
+
+  it(
+    "a zoned key whose zone's offset has seconds: existing_keys gives the receipt's text, which writes back",
+    async () => {
+      // Africa/Monrovia before 1972: -00:44:30, written -00:45 (04-contract-types §1.3).
+      const text = "1971-06-01T11:15:30-00:45[Africa/Monrovia]";
+      const a = await one(booking(text, "7"));
+      expect((a.ops[0]?.target as { entity_key?: unknown } | undefined)?.entity_key).toEqual({
+        at: text,
+        deposit: { value: "7", unit: "CNY" },
+      });
+      const b = await one(booking("1971-06-02T11:15:30-00:45[Africa/Monrovia]", "7"));
+      const shown = ((b.ops[0]?.existing_keys ?? []) as { at: string }[]).find((k) =>
+        k.at.startsWith("1971-06-01"),
+      );
+      expect(shown?.at).toBe(text);
+      const again = await one(booking(shown?.at as string, "7", { ver: a.ops[0]?.ver }));
+      expect(again.refused).toBeUndefined();
+      expect(again.ops[0]?.target.entity).toBe(a.ops[0]?.target.entity);
+    },
+    T,
+  );
+
+  it(
+    "the key query gives finds the entity's history, a zoned field among its fields",
+    async () => {
+      const a = await one(booking("1971-06-01T11:15:30-00:45[Africa/Monrovia]", "8"));
+      const ctx = createOpsContext({
+        tenant: TENANT,
+        actor: USER,
+        trigger: null,
+        task: null,
+        visibility: { kind: "all" },
+        idempotency_key_window: 86_400_000,
+        idempotency_window: 600_000,
+        now: "2026-11-06T00:00:00.000Z",
+        confirmation: null,
+      });
+      const row = (await query(s.store, ctx, { table: "bookings" })).rows.find(
+        (x) => x.entity === a.ops[0]?.target.entity,
+      );
+      expect(row?.entity_key?.["at"]).toBe("1971-06-01T11:15:30-00:45[Africa/Monrovia]");
+      const h = (await history(s.store, ctx, {
+        table: "bookings",
+        entity_key: row?.entity_key,
+      })) as unknown as { target: { entity: string } };
+      expect(h.target.entity).toBe(a.ops[0]?.target.entity);
     },
     T,
   );

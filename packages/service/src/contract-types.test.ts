@@ -37,16 +37,6 @@ type Each<T> = T extends { readonly result: infer R }
 /** `T` with every array, tuple and property mutable (a mapped type keeps a tuple a tuple). */
 type Mutable<T> = T extends object ? Each<{ -readonly [K in keyof T]: Mutable<T[K]> }> : T;
 
-/** A `zoned_datetime` value as the log and the kernel hold it (09-event-format §1.3). */
-type ZonedObject = { readonly instant: string; readonly zone: string };
-
-/** As `Mutable`, with a `zoned_datetime` value as the contract writes it, a string. */
-type Zoned<T> = T extends ZonedObject
-  ? string
-  : T extends object
-    ? Each<{ -readonly [K in keyof T]: Zoned<T[K]> }>
-    : T;
-
 /** What the service gives for a kernel call: its result, `next_position` signed into `next_cursor`. */
 type Out<F extends (...a: never[]) => unknown> =
   Awaited<ReturnType<F>> extends infer T
@@ -97,35 +87,24 @@ export const checks = [
   fits<C.LogVerifyResult>(as<Mutable<Out<typeof logVerify>>>()),
   fits<C.Connection>(as<Mutable<ReturnType<typeof connectionOut>>>()),
 
-  // With a zoned_datetime value written as the contract writes it.
-  fits<C.QueryResult>(as<Zoned<Out<typeof query>>>()),
-  fits<C.HistoryResult>(as<Zoned<Out<typeof history>>>()),
-  fits<WriteWV<true, true>>(as<Zoned<Out<typeof write>>>()),
-  fits<ResolveWV<true, true>>(as<Zoned<Out<typeof resolve>>>()),
-
-  // The second request: zoned_datetime values out as RFC 9557 strings.
-  // @ts-expect-error a zoned_datetime value is an object, not the contract's string
   fits<C.QueryResult>(as<Mutable<Out<typeof query>>>()),
-  // @ts-expect-error a zoned_datetime value is an object, not the contract's string
   fits<C.HistoryResult>(as<Mutable<Out<typeof history>>>()),
-  // @ts-expect-error a zoned_datetime value is an object, not the contract's string
   fits<WriteWV<true, true>>(as<Mutable<Out<typeof write>>>()),
-  // @ts-expect-error a zoned_datetime value is an object, not the contract's string
   fits<ResolveWV<true, true>>(as<Mutable<Out<typeof resolve>>>()),
 
   // The third request: the receipt's candidate and awaiting fields given only when present.
   // @ts-expect-error candidate and awaiting fields the contract requires are optional
-  fits<WriteWV<false, true>>(as<Zoned<Out<typeof write>>>()),
+  fits<WriteWV<false, true>>(as<Mutable<Out<typeof write>>>()),
   // @ts-expect-error candidate and awaiting fields the contract requires are optional
-  fits<ResolveWV<false, true>>(as<Zoned<Out<typeof resolve>>>()),
+  fits<ResolveWV<false, true>>(as<Mutable<Out<typeof resolve>>>()),
   // The third request: a state table's part given without its interval (a noop part).
   // @ts-expect-error a state table's part may have no interval
-  fits<WriteWV<true, false>>(as<Zoned<Out<typeof write>>>()),
+  fits<WriteWV<true, false>>(as<Mutable<Out<typeof write>>>()),
   // @ts-expect-error a state table's part may have no interval
-  fits<ResolveWV<true, false>>(as<Zoned<Out<typeof resolve>>>()),
+  fits<ResolveWV<true, false>>(as<Mutable<Out<typeof resolve>>>()),
   // The third request: pending's result has no type of its own yet.
   // @ts-expect-error pending's result is a record of unknowns
-  fits<C.PendingResult>(as<Zoned<Out<typeof pending>>>()),
+  fits<C.PendingResult>(as<Mutable<Out<typeof pending>>>()),
 
   // Every code of the contract's is one the service can give.
   fits<(typeof ERROR_CODES)[number]>(as<C.ErrorCode>()),

@@ -9,6 +9,8 @@ import {
   createTenant,
   eventsOf,
   flushReads,
+  history,
+  pending,
   query,
   readBufferOf,
   write,
@@ -301,7 +303,7 @@ describe("event tables", () => {
         pieces: "2",
         rate: "0.5",
         paid: true,
-        at: { instant: "2026-11-01T04:00:00.000Z", zone: "Asia/Shanghai" },
+        at: "2026-11-01T12:00:00+08:00[Asia/Shanghai]",
       },
       marks: { corrected: true },
     });
@@ -374,6 +376,14 @@ describe("conditions", () => {
       ]),
     ).toEqual([r1]);
     expect(await rows([{ field: "rate", op: "=", value: "0.50" }])).toEqual([r1]);
+    // A condition's value is only compared, never stored: no wall-clock year check (10000-01-01
+    // in the slot's Asia/Shanghai), only the instant's range in UTC.
+    expect(
+      await rows([
+        { field: "at", op: "<", value: "9999-12-31T23:59:59Z" },
+        { field: "pieces", op: "=", value: 2 },
+      ]),
+    ).toEqual([r1]);
   });
 
   it("refuses an operator for the type, a wrong value, a zoned field given a date", async () => {
@@ -1327,4 +1337,133 @@ describe("the read recorded", () => {
       createOpsContext({ ...ctx(), actor: "system", trigger: "flushReads" }),
     );
   });
+});
+
+describe("zoned_datetime values out as RFC 9557 text, and back in (04-contract-types §1.3)", () => {
+  const TEXTS = [
+    "2026-11-11T09:00:00.250-05:00[America/New_York]",
+    // The hour America/New_York goes back: one wall-clock time, two instants.
+    "2026-11-01T01:30:00-04:00[America/New_York]",
+    "2026-11-01T01:30:00-05:00[America/New_York]",
+    // An offset with seconds (-00:44:30, -00:45 written) and the ends of the range.
+    "1971-06-01T11:15:30-00:45[Africa/Monrovia]",
+    "0001-01-01T08:05:43+08:06[Asia/Shanghai]",
+    "9999-12-31T23:59:59.999+08:00[Asia/Shanghai]",
+  ];
+
+  it(
+    "written, read and written again: the same text, the same value (noop); the replay gives it too",
+    async () => {
+      for (const [i, text] of TEXTS.entries()) {
+        const params = {
+          ...ins("spend", { date: "2026-11-20", at: text }),
+          idempotency_key: `z-${i}`,
+        };
+        const a = await w1(params);
+        expect(a.ops[0]?.fields["at"], text).toEqual({ result: "applied", after: text });
+        const again = await w1(params);
+        expect(again.replayed).toBe(true);
+        expect(again.ops[0]?.fields["at"], text).toEqual({ result: "applied", after: text });
+        const row = target(a).row as string;
+        const read = (await q({ table: "spend", limit: 200 })).rows.find((x) => x.row === row);
+        expect(read?.values["at"], text).toBe(text);
+        const back = await w1({
+          ops: [
+            {
+              intent: "update",
+              table: "spend",
+              row,
+              ver: a.ops[0]?.ver,
+              set: { at: read?.values["at"] },
+            },
+          ],
+        });
+        expect(back.ops[0]?.fields["at"], text).toEqual({ result: "noop" });
+      }
+    },
+    T,
+  );
+
+  it(
+    "written with the zone only, the offset only, or an alias: read back and written again, a noop",
+    async () => {
+      for (const [written, read] of [
+        ["2026-11-10T12:31:00[Asia/Shanghai]", "2026-11-10T12:31:00+08:00[Asia/Shanghai]"],
+        // The offset only: the slot's zone (Asia/Shanghai) is recorded.
+        ["2026-11-10T13:31:00+09:00", "2026-11-10T12:31:00+08:00[Asia/Shanghai]"],
+        // An alias the runtime maps to another name: kept as written (10-types-and-units).
+        ["2026-11-09T23:31:00-05:00[US/Eastern]", "2026-11-09T23:31:00-05:00[US/Eastern]"],
+      ] as const) {
+        const a = await w1(ins("spend", { date: "2026-11-22", at: written }));
+        const row = target(a).row as string;
+        const got = (await q({ table: "spend", limit: 200 })).rows.find((x) => x.row === row);
+        expect(got?.values["at"], written).toBe(read);
+        const back = await w1({
+          ops: [{ intent: "update", table: "spend", row, ver: a.ops[0]?.ver, set: { at: read } }],
+        });
+        expect(back.ops[0]?.fields["at"], written).toEqual({ result: "noop" });
+      }
+    },
+    T,
+  );
+
+  it(
+    "a conflict on one: the receipt's effective and merge base, and the item's details, as text",
+    async () => {
+      const first = "2026-11-10T12:31:00+08:00[Asia/Shanghai]";
+      const theirs = "2026-11-10T13:00:00+08:00[Asia/Shanghai]";
+      const a = await w1(ins("spend", { date: "2026-11-21", at: first }));
+      const row = target(a).row as string;
+      const b = await w1({
+        ops: [{ intent: "update", table: "spend", row, ver: a.ops[0]?.ver, set: { at: theirs } }],
+      });
+      expect(b.ops[0]?.fields["at"]).toEqual({ result: "applied", after: theirs });
+      // The row's timeline gives the value before and after as text too.
+      const tl = (await history(s.store, ctx({ now: NOW }), {
+        table: "spend",
+        row,
+      })) as unknown as {
+        entries: { seq: number; fields: Record<string, { before?: unknown; after?: unknown }> }[];
+      };
+      expect(tl.entries.find((e) => e.seq === b.seq)?.fields["at"]).toMatchObject({
+        before: first,
+        after: theirs,
+      });
+      const conflicting = {
+        ops: [
+          {
+            intent: "update",
+            table: "spend",
+            row,
+            ver: a.ops[0]?.ver,
+            set: { at: "2026-11-10T14:00:00+08:00[Asia/Shanghai]" },
+          },
+        ],
+        idempotency_key: "z-conflict",
+      };
+      const c = await w1(conflicting);
+      // Replayed from the log: the same op results, effective and merge base as text too.
+      const replay = await w1(conflicting);
+      expect(replay.replayed).toBe(true);
+      expect(replay.ops).toEqual(c.ops);
+      const part = c.ops[0]?.fields["at"] as {
+        result: string;
+        item: string;
+        effective: unknown;
+        previous: { values: Record<string, unknown> };
+      };
+      expect(part.result).toBe("candidate");
+      expect(part.effective).toBe(theirs);
+      expect(part.previous.values["at"]).toBe(first);
+      const detail = (await pending(s.store, ctx({ now: NOW }), { id: part.item })) as unknown as {
+        effective: { values: Record<string, unknown> };
+        previous: { values: Record<string, unknown> };
+        candidates: { values: Record<string, unknown> }[];
+      };
+      expect(detail.effective.values["at"]).toBe(theirs);
+      expect(detail.previous.values["at"]).toBe(first);
+      expect(detail.candidates[0]?.values["at"]).toBe("2026-11-10T14:00:00+08:00[Asia/Shanghai]");
+    },
+    T,
+  );
 });

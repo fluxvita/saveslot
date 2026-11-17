@@ -41,6 +41,7 @@ import {
   RuleEvaluationError,
 } from "../rules/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { valueOut } from "../time/index.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 import {
   bool,
@@ -236,9 +237,9 @@ export async function queryDerived(
   const items = res.rows.map((r) => {
     const d = decodeDerivedRow(t, r);
     const values: Record<string, Values[string]> = Object.create(null);
-    for (const f of fields) values[f.name] = d.values[f.id] ?? null;
+    for (const f of fields) values[f.name] = valueOut(d.values[f.id] ?? null);
     const key: Record<string, Values[string]> = Object.create(null);
-    for (const f of keyFields) key[f.name] = d.values[f.id] ?? null;
+    for (const f of keyFields) key[f.name] = valueOut(d.values[f.id] ?? null);
     const row: Row = { table: qualified, key, ver: `v${d.ver}.${restore}`, values };
     const keys = [
       ...order.map((o) => keyValue(d.values[o.field.id])),

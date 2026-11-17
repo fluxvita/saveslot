@@ -28,6 +28,7 @@ import {
 } from "../pending/index.ts";
 import { fold, get, has, isObj, keysOf } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { valueOut, valuesOut } from "../time/index.ts";
 import { taskOf } from "./history.ts";
 import { type Piece, piecesOver, rowCellsAsOf, rowOf } from "./item-state.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
@@ -121,6 +122,7 @@ function namingOf(
       ...(byDate && s.to !== null ? { valid_to_inclusive: dayBefore(s.to) } : {}),
     }),
     actor: (p) => who.get(p) ?? { kind: p === "system" ? "system" : "user", id: p, name: p },
+    value: valueOut,
   };
 }
 
@@ -365,7 +367,7 @@ async function sideOf(tx: ReadTx, e: ItemEntries, n: Naming<Actor>, table: Table
 
 const pieceOut = (n: Naming<Actor>, p: Piece) => ({
   ...n.interval({ from: p.from, to: p.to }),
-  values: p.values,
+  values: p.values === null ? null : valuesOut(p.values),
 });
 
 async function conflictOf(
@@ -398,7 +400,7 @@ async function conflictOf(
     const r = now.row;
     effective = {
       ...(r.op !== undefined ? { seq: r.op, actor: now.who.get(r.op) } : {}),
-      ...(r.values !== undefined ? { values: r.values } : {}),
+      ...(r.values !== undefined ? { values: valuesOut(r.values) } : {}),
       exists: r.exists,
     };
   }
@@ -419,7 +421,7 @@ async function conflictOf(
       : {
           seq: e.mergeBase,
           exists: base.row.exists,
-          ...(base.row.values !== undefined ? { values: base.row.values } : {}),
+          ...(base.row.values !== undefined ? { values: valuesOut(base.row.values) } : {}),
         };
   return {
     effective,
@@ -481,5 +483,5 @@ async function awaitingOf(
 /** The awaiting item's current side (`AwaitingDetail.current`): the row as of the item's version. */
 function currentOf(n: Naming<Actor>, side: Awaited<ReturnType<typeof sideOf>>) {
   if (side.kind === "state") return { spans: side.pieces.map((p) => pieceOut(n, p)) };
-  return side.row.values !== undefined ? { values: side.row.values } : {};
+  return side.row.values !== undefined ? { values: valuesOut(side.row.values) } : {};
 }

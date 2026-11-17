@@ -488,7 +488,7 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
         }
         return { value: null, raw: null };
       }
-      const r = normalizeValue(f, v, { op: p.index, name: f.name, zone });
+      const r = normalizeValue(f, v, { op: p.index, name: f.name, zone, kept: true });
       if (!r.ok) {
         details.push(r.detail);
         return undefined;

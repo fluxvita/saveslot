@@ -43,7 +43,7 @@ import {
 } from "../pending/index.ts";
 import type { WriteWarning } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { type Interval as Stretch, WHOLE } from "../time/index.ts";
+import { type Interval as Stretch, type ValueOut, valueOut, WHOLE } from "../time/index.ts";
 import { type EntityKeyText, keyFields, keyOf } from "./keys.ts";
 import { tableShape } from "./plan.ts";
 import { rowEvents } from "./reads.ts";
@@ -53,21 +53,21 @@ export type FieldResultCode = "applied" | "candidate" | "awaiting" | "corroborat
 
 export interface FieldResult {
   readonly result: FieldResultCode;
-  readonly after?: FieldValue;
+  readonly after?: ValueOut;
   readonly no_value?: true;
   readonly uncovered?: true;
   /** Candidate or awaiting: the pending item. */
   readonly item?: ItemId;
   /** Candidate: the value in effect, the row's version, who gave it, the merge base's state. */
-  readonly effective?: FieldValue;
+  readonly effective?: ValueOut;
   readonly current_ver?: string;
   readonly by?: { readonly seq: number; readonly actor: Actor };
   readonly previous?: {
     readonly seq: number;
     readonly exists: boolean;
-    readonly values?: Readonly<Record<string, FieldValue>>;
+    readonly values?: Readonly<Record<string, ValueOut>>;
     readonly spans?: readonly (Interval & {
-      readonly values: Readonly<Record<string, FieldValue>> | null;
+      readonly values: Readonly<Record<string, ValueOut>> | null;
     })[];
   };
   /** Awaiting, or a candidate taking which would be high impact: what carrying it out would change. */
@@ -95,7 +95,7 @@ export interface Impact {
   readonly overwritten?: readonly {
     readonly field: string;
     readonly valid?: Interval;
-    readonly value: FieldValue;
+    readonly value: ValueOut;
     readonly seq: number;
     readonly actor: Actor;
   }[];
@@ -113,7 +113,7 @@ export interface OpReceipt {
     readonly row?: RowId;
     readonly entity?: EntityId;
     /** An op by `entity_key`: the entity's key, by field name (04-contract-types `TargetRef`). */
-    readonly entity_key?: Readonly<Record<string, FieldValue>>;
+    readonly entity_key?: Readonly<Record<string, ValueOut>>;
   };
   readonly intent: Intent;
   readonly ver?: string;
@@ -158,10 +158,10 @@ export interface PendingRef {
 export interface DerivedChange {
   /** Qualified: `slot.table`. */
   readonly table: string;
-  readonly key: Readonly<Record<string, FieldValue>>;
+  readonly key: Readonly<Record<string, ValueOut>>;
   readonly field: string;
-  readonly before: FieldValue;
-  readonly after: FieldValue;
+  readonly before: ValueOut;
+  readonly after: ValueOut;
 }
 
 /** At most this many derived changes in a receipt (04-contract §5.4). */
@@ -185,9 +185,9 @@ export function withDerived(
     if (t === undefined || t.kind !== "derived") continue;
     const nameOf = (id: string) => t.fields.find((f) => f.id === id)?.name ?? id;
     const keyIds = t.rule.scope.kind === "tenant" ? [] : t.rule.scope.key;
-    const key: Record<string, FieldValue> = Object.create(null);
+    const key: Record<string, ValueOut> = Object.create(null);
     keyIds.forEach((id, i) => {
-      key[nameOf(id)] = w.groupKey[i] ?? null;
+      key[nameOf(id)] = valueOut(w.groupKey[i] ?? null);
     });
     for (const c of w.changes) {
       // The group key's fields are the row's key, given in `key`: not a change of their own.
@@ -196,8 +196,8 @@ export function withDerived(
         table: `${slotName}.${t.name}`,
         key,
         field: nameOf(c.field),
-        before: c.before,
-        after: c.after,
+        before: valueOut(c.before),
+        after: valueOut(c.after),
       });
     }
   }
@@ -487,6 +487,7 @@ export async function readReceipt(
       field: name,
       interval: (v) => iv(v) as unknown as Record<string, unknown>,
       actor: actorOut,
+      value: valueOut,
       isState,
     };
     /** What carrying out an item would change, from (some of) its impact entries. */
@@ -529,7 +530,7 @@ export async function readReceipt(
         // The value the `by` write gave (the whole picture is the item's ConflictDetail).
         // The value the `by` write gave (none when it is a revoke); the whole picture is the item's
         // ConflictDetail.
-        effective: given?.value ?? null,
+        effective: valueOut(given?.value ?? null),
         ...(rowVer !== undefined ? { current_ver: rowVer } : {}),
         ...(top !== undefined ? { by: { seq: top, actor: actorOut(actors.get(top) ?? "") } } : {}),
         ...(x.mergeBase !== undefined
@@ -546,7 +547,9 @@ export async function readReceipt(
                           values:
                             b["value"] === null
                               ? null
-                              : Object.fromEntries([[name(target), b["value"] as FieldValue]]),
+                              : Object.fromEntries([
+                                  [name(target), valueOut(b["value"] as FieldValue)],
+                                ]),
                         })),
                     }
                   : onExistence
@@ -555,7 +558,10 @@ export async function readReceipt(
                         seq: x.mergeBase,
                         exists: true,
                         values: Object.fromEntries(
-                          prev.map((b) => [name(b["field"] as string), b["value"] as FieldValue]),
+                          prev.map((b) => [
+                            name(b["field"] as string),
+                            valueOut(b["value"] as FieldValue),
+                          ]),
                         ),
                       },
             }
@@ -603,7 +609,7 @@ export async function readReceipt(
           item === undefined ? {} : itemDetails(item, block.status, target, event, part);
         add(m !== null ? name(target) : "*", {
           result: block.status,
-          ...("value" in block ? { after: block.value as FieldValue } : {}),
+          ...("value" in block ? { after: valueOut(block.value as FieldValue) } : {}),
           ...(block.no_value ? { no_value: true as const } : {}),
           ...(block.uncovered ? { uncovered: true as const } : {}),
           ...(item !== undefined ? { item } : {}),
@@ -663,7 +669,7 @@ export async function readReceipt(
         ...(key !== undefined
           ? {
               entity_key: Object.fromEntries(
-                keyFields(table).map((f) => [f.name, key[f.id] ?? null]),
+                keyFields(table).map((f) => [f.name, valueOut(key[f.id] ?? null)]),
               ),
             }
           : {}),

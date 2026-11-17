@@ -18,6 +18,7 @@ import type {
 } from "@fluxvita/saveslot-contract-core";
 import { isDate, isId } from "@fluxvita/saveslot-contract-core";
 import { unitCandidates, unitOf } from "../schema/index.ts";
+import { localYear, zonedText } from "../time/index.ts";
 import {
   canonical,
   compare,
@@ -59,6 +60,11 @@ export interface ValueContext {
   /** The field's name in the current version (details and warnings name fields). */
   readonly name: string;
   readonly zone: string;
+  /**
+   * The value is to be stored (a write), not only compared (a condition, a key looked up): it must
+   * then also be one that can be written out and read back (a zoned date-time, below).
+   */
+  readonly kept?: true;
 }
 
 /** Normalizes one value for `f`. `null` (clearing) is handled by the caller. */
@@ -107,6 +113,17 @@ export function normalizeValue(f: CompiledBaseField, v: unknown, c: ValueContext
       const p = parseDateTime(v, c.zone, true);
       if (!p.ok) return fail(p.why === "out_of_range" ? "out_of_range" : "type_mismatch");
       const instant = instantText(p.epochMs);
+      if (c.kept) {
+        // A stored value is written back out on its zone's wall clock (04-contract-types §1.3): a
+        // year there outside 0001–9999 is out of range (10-types-and-units), and so is an instant
+        // its text cannot name, which reads back as another (seconds where a clock went back by
+        // less than a minute, the offset rounded): what is stored can always be written back.
+        const zone = p.zone ?? c.zone;
+        const year = localYear(p.epochMs, zone);
+        if (year < 1 || year > 9999) return fail("out_of_range");
+        const back = parseDateTime(zonedText(instant, zone), zone, true);
+        if (!back.ok || back.epochMs !== p.epochMs) return fail("out_of_range");
+      }
       const warnings: WriteWarning[] =
         p.zone === undefined
           ? [{ code: "timezone_assumed", op: c.op, field: c.name, timezone: c.zone }]

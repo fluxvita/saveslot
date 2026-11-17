@@ -27,6 +27,7 @@ import {
   type Rational,
   rationalOf,
 } from "../request/index.ts";
+import { valueOut } from "../time/index.ts";
 import { intervalOf } from "./interval.ts";
 import type { QueryPlan } from "./params.ts";
 import type { Flag, RowFacts, SelectedRow, Span } from "./select.ts";
@@ -331,14 +332,14 @@ export function shownRows(
   return segs.map(({ r, marks }) => {
     const ver = facts.ver.get(r.id);
     if (ver === undefined) throw new ReadError("internal", `no version of ${r.id}`);
-    const values: Record<string, FieldValue> = Object.create(null);
-    for (const f of plan.fields) values[f.name] = r.values[f.id] ?? null;
+    const values: Record<string, Values[string]> = Object.create(null);
+    for (const f of plan.fields) values[f.name] = valueOut(r.values[f.id] ?? null);
     let entityKey: Values | undefined;
     if (t.time.type === "state" && t.entity_key !== undefined) {
-      const k: Record<string, FieldValue> = Object.create(null);
+      const k: Record<string, Values[string]> = Object.create(null);
       for (const id of t.entity_key) {
         const f = byId.get(id) as CompiledBaseField;
-        k[f.name] = r.values[id] ?? null;
+        k[f.name] = valueOut(r.values[id] ?? null);
       }
       entityKey = k;
     }
