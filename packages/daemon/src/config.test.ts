@@ -258,24 +258,31 @@ describe("the configuration of a home", () => {
     }
   });
 
-  it("a refused file in the foreground: exit 5; the log line names keys, never values", async () => {
-    const marker = "zq-value-8113";
-    writeFileSync(configFile(home), `mcp.autostart = "${marker}"\nzz = 1\n`);
-    const written: string[] = [];
-    const spy = vi.spyOn(process.stderr, "write").mockImplementation((c) => {
-      written.push(String(c));
-      return true;
+  for (const tty of [false, true]) {
+    it(`a refused file in the foreground, stderr ${tty ? "a terminal" : "the log"}: exit 5; known keys by name, unknown ones counted, no value`, async () => {
+      const marker = "zq-value-8113";
+      writeFileSync(configFile(home), `mcp.autostart = "${marker}"\nzz_user_key = 1\n`);
+      const written: string[] = [];
+      const spy = vi.spyOn(process.stderr, "write").mockImplementation((c) => {
+        written.push(String(c));
+        return true;
+      });
+      const was = process.stderr.isTTY;
+      process.stderr.isTTY = tty;
+      try {
+        expect(await main(["--home", home])).toBe(5);
+      } finally {
+        process.stderr.isTTY = was;
+        spy.mockRestore();
+        rmSync(configFile(home));
+      }
+      const text = written.join("");
+      expect(text).toMatch(/^\S+ config_invalid keys=mcp\.autostart unknown_keys=1\n/);
+      expect(text).not.toContain(marker);
+      // The texts, which name every key, only to a terminal.
+      expect(text.includes(TEXTS.configInvalid)).toBe(tty);
+      expect(text.includes("zz_user_key")).toBe(tty);
+      expect(existsSync(pidFile(home))).toBe(false);
     });
-    try {
-      expect(await main(["--home", home])).toBe(5);
-    } finally {
-      spy.mockRestore();
-      rmSync(configFile(home));
-    }
-    const text = written.join("");
-    expect(text).toMatch(/^\S+ config_invalid keys=mcp\.autostart,zz\n/);
-    expect(text).toContain(TEXTS.configInvalid);
-    expect(text).not.toContain(marker);
-    expect(existsSync(pidFile(home))).toBe(false);
-  });
+  }
 });

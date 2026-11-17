@@ -21,5 +21,8 @@
     "@fluxvita/saveslot-cli": "workspace:*",
     "@fluxvita/saveslot-daemon": "workspace:*"
   },
-  "private": true
+  "private": true,
+  "bin": {
+    "saveslot": "./dist/bin.js"
+  }
 }

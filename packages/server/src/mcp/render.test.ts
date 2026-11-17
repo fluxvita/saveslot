@@ -8,6 +8,12 @@
 //   - the elements 05 §6 requires are there; errors give their details, count the rest, and show
 //     the message inside the boundary; a renderer's failure gives JSON as written.
 
+import {
+  INPUT_MARK_KEYS,
+  type InputMarkKey,
+  MARK_KEYS,
+  type MarkKey,
+} from "@fluxvita/saveslot-contract";
 import { describe, expect, it } from "vitest";
 import { renderError, renderResult, renderStrict } from "./render.ts";
 import { ERRORS, SAMPLES } from "./samples.fixture.ts";
@@ -410,5 +416,72 @@ describe("what 05 §6 asks for", () => {
   it("a shape no renderer knows, or a renderer's failure: JSON as written", () => {
     const x = renderResult("saveslot_query", { rows: "not rows" } as never);
     expect(x.split("\n")[1]).toMatch(/^<untrusted-data-[0-9a-f]{32}>\{/);
+  });
+});
+
+describe("every mark of the contract has a text (05 §4.2)", () => {
+  const item = "pi_8VEZWJ3J7BMKMXTV";
+  const ref = { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" };
+  const actor = { kind: "connection", id: `ci_${"1".repeat(26)}`, name: "MacBook · Codex" };
+  const premise = {
+    premise: ref,
+    seen: "v7.0",
+    reason: "update",
+    since: 10,
+    fields: ["note"],
+    declared: { seq: 7, actor },
+  };
+  // One value of each mark: a key of the contract's without one here does not compile.
+  const MARK: Record<MarkKey, unknown> = {
+    disputed: [{ item, fields: ["amount"] }],
+    awaiting: [{ item, fields: ["note"], proposed: { note: "dinner" } }],
+    flagged: [{ item, reason: "duplicate_keys", related: ref }],
+    corrected: true,
+    revoked: { seq: 12 },
+    possibly_affected: { reason: "correct" },
+    partially_deleted: true,
+    pending_deletion: { item },
+    dangling_ref: [{ field: "note", state: "deleted" }],
+    premise_changed: [premise],
+    premise_changed_total: 11,
+    computed_at_read: true,
+  };
+  const INPUT: Record<InputMarkKey, unknown> = {
+    disputed: 1,
+    awaiting: 1,
+    flagged: 1,
+    premise_changed: 1,
+    items: [item],
+  };
+  const q = sample("query");
+  // The sample's row without the marks it has: each mark is then the only difference.
+  const { marks: _m, input_marks: _i, ...row } = (q.result["rows"] as R[])[0] as R;
+  const rendered = (r: R) =>
+    renderResult(q.tool, { ...q.result, rows: [r] }).replace(/untrusted-data-[0-9a-f]{32}/g, "N");
+
+  it.each([...MARK_KEYS])("%s", (k) => {
+    // premise_changed_total comes with the premises it counts past.
+    const others = k === "premise_changed_total" ? { premise_changed: MARK.premise_changed } : {};
+    expect(rendered({ ...row, marks: { ...others, [k]: MARK[k] } })).not.toBe(
+      rendered({ ...row, ...(k === "premise_changed_total" ? { marks: others } : {}) }),
+    );
+  });
+
+  const none = { disputed: 0, awaiting: 0, flagged: 0, premise_changed: 0, items: [] };
+  const shown = (k: InputMarkKey) => {
+    // Items come with the counts of the marks they are on.
+    const base = k === "items" ? { ...none, disputed: 1 } : none;
+    return (
+      rendered({ ...row, input_marks: { ...base, [k]: INPUT[k] } }) !==
+      rendered({ ...row, input_marks: base })
+    );
+  };
+  it.each(INPUT_MARK_KEYS.filter((k) => k !== "items"))("input_marks.%s", (k) => {
+    expect(shown(k)).toBe(true);
+  });
+  // Not shown yet: the open items among a derived row's inputs. When they are, this fails, and
+  // goes into the list above.
+  it.fails("input_marks.items", () => {
+    expect(shown("items")).toBe(true);
   });
 });

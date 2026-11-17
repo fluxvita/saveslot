@@ -49,13 +49,19 @@ export async function main(argv: readonly string[]): Promise<number> {
     options = await foregroundOptions(home);
   } catch (e) {
     if (!(e instanceof ConfigInvalid)) throw e;
-    // In the background this is the service's log: the keys, never a value.
-    const keys = e.problems.flatMap((p) => ("key" in p ? [p.key] : []));
-    process.stderr.write(
-      `${new Date().toISOString()} config_invalid${keys.length > 0 ? ` keys=${keys.join(",")}` : ""}\n`,
+    // In the background stderr is the service's log: the known keys by name, how many unknown
+    // ones (their names are the user's), never a value. The texts go to a terminal only.
+    const known = e.problems.flatMap((p) =>
+      "key" in p && p.kind !== "unknown_key" ? [p.key] : [],
     );
-    for (const line of [TEXTS.configInvalid, ...e.problems.map(TEXTS.configProblem)]) {
-      process.stderr.write(`${line}\n`);
+    const unknown = e.problems.filter((p) => p.kind === "unknown_key").length;
+    process.stderr.write(
+      `${new Date().toISOString()} config_invalid${known.length > 0 ? ` keys=${known.join(",")}` : ""}${unknown > 0 ? ` unknown_keys=${unknown}` : ""}\n`,
+    );
+    if (process.stderr.isTTY === true) {
+      for (const line of [TEXTS.configInvalid, ...e.problems.map(TEXTS.configProblem)]) {
+        process.stderr.write(`${line}\n`);
+      }
     }
     return 5;
   }

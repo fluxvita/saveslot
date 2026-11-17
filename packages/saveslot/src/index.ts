@@ -1,2 +1,4 @@
-// Placeholder entry point. The package's contents are added in later merge requests.
-export {};
+// The `saveslot` entry package (02-architecture §11): the executable dispatches to `daemon` and
+// `cli` (./dispatch.ts).
+
+export { dispatch } from "./dispatch.ts";

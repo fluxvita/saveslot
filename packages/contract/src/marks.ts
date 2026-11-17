@@ -75,3 +75,42 @@ export interface InputMarks {
   /** Open items involved, in ID string order, at most 10. */
   items: ItemId[];
 }
+
+/** Whether two key sets are the same: a type error otherwise. */
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+/**
+ * Every key of `Marks`, in the order of 04-contract-types §3: what a renderer must show a text for.
+ * A key added to `Marks` and not here, or the other way round, fails to compile.
+ */
+export const MARK_KEYS = [
+  "disputed",
+  "awaiting",
+  "flagged",
+  "corrected",
+  "revoked",
+  "possibly_affected",
+  "partially_deleted",
+  "pending_deletion",
+  "dangling_ref",
+  "premise_changed",
+  "premise_changed_total",
+  "computed_at_read",
+] as const;
+/** A key of `Marks`. */
+export type MarkKey = (typeof MARK_KEYS)[number];
+const marksExhaustive: Same<MarkKey, keyof Marks> = true;
+
+/** Every key of `InputMarks`, in the order of 04-contract-types §3. Same check as `MARK_KEYS`. */
+export const INPUT_MARK_KEYS = [
+  "disputed",
+  "awaiting",
+  "flagged",
+  "premise_changed",
+  "items",
+] as const;
+/** A key of `InputMarks`. */
+export type InputMarkKey = (typeof INPUT_MARK_KEYS)[number];
+const inputMarksExhaustive: Same<InputMarkKey, keyof InputMarks> = true;
+void marksExhaustive;
+void inputMarksExhaustive;

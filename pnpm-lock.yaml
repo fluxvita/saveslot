@@ -205,6 +205,10 @@ importers:
       '@fluxvita/saveslot-client':
         specifier: workspace:*
         version: link:../client
+    devDependencies:
+      fast-check:
+        specifier: 4.10.2
+        version: 4.10.2
 
   packages/client:
     dependencies:
