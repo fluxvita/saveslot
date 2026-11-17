@@ -121,7 +121,8 @@ const isShaped = (v: string) =>
   SHAPES.name.test(v) ||
   SHAPES.number.test(v) ||
   SHAPES.code.test(v) ||
-  isTime(v);
+  isTime(v) ||
+  isLocal(v);
 
 function shaped(ok: boolean, what: string, v: string): Part {
   if (!ok) throw new Error(`not of the shape of ${what}`);
@@ -146,6 +147,18 @@ export const num = (v: string | number): Part => {
 };
 /** A date or a moment. */
 export const time = (v: string): Part => shaped(isTime(mustString(v)), "a moment", v);
+
+const LOCAL = /^([0-9]{4})-([0-9]{2})-([0-9]{2}) ([0-9]{2}):([0-9]{2})$/;
+
+/** A wall-clock time the service worked out from a recorded moment (05 §4.1): `YYYY-MM-DD HH:mm`. */
+function isLocal(v: string): boolean {
+  const m = LOCAL.exec(v);
+  return m !== null && isTime(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}Z`);
+}
+
+/** A moment as the slot's wall clock shows it, as the service wrote it. */
+export const localTime = (v: string): Part =>
+  shaped(isLocal(mustString(v)), "a wall-clock time", v);
 /**
  * A code of the contract's, from `allowed`: a constant set in the source where it is made, never
  * one built from a result.

@@ -128,6 +128,8 @@ export interface AsOfResult {
   /** `recorded_at` absent before any operation (`seq` 0). */
   readonly as_of: { readonly seq: Seq; readonly recorded_at?: string };
   readonly sv: number;
+  /** The slot's time zone: the moments of the result are shown in it (05-surfaces §4.1). */
+  readonly timezone: string;
   readonly total: number;
   readonly next_position?: string;
   readonly rows: readonly Row[];
@@ -188,6 +190,8 @@ export interface TimelineResult {
   readonly mode: "timeline";
   readonly target: TargetRef;
   readonly sv: number;
+  /** The slot's time zone: the moments of the result are shown in it (05-surfaces §4.1). */
+  readonly timezone: string;
   readonly ver: string;
   readonly total: number;
   readonly next_position?: string;

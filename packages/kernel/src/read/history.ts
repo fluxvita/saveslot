@@ -654,6 +654,7 @@ export async function asOfInTx(
       ...(point.at !== undefined && point.seq > 0 ? { recorded_at: point.at } : {}),
     },
     sv: await svAsOf(tx, target.named.slot.slot, point.seq, target.named.slot.sv),
+    timezone: target.named.slot.timezone,
     total: rows.length,
     ...(page.next !== undefined ? { next_position: page.next } : {}),
     rows: page.page,

@@ -645,6 +645,7 @@ interface CompositionParams extends CommonParams, Target {   // @later
 interface TimelineResult extends CommonResult, PageResult {
   mode: "timeline";
   target: TargetRef; sv: Sv;
+  timezone: string;              // slot 的时区（同 catalog 的 timezone）：结果里的时刻按它显示
   /** 当前版本。只有它能用于写入；返回它算一次逐行读。 */
   ver: Ver;
   entries: TimelineEntry[];      // 新的在前
@@ -691,6 +692,7 @@ interface AsOfResult extends CommonResult, PageResult {
   mode: "as_of";
   as_of: { seq: Seq; recorded_at?: Instant };   // 早于第一条操作：seq 为 0，不带 recorded_at
   sv: Sv;                        // 当时的 schema 版本，值按它解释
+  timezone: string;              // slot 现在的时区（同 catalog 的 timezone）：结果里的时刻按它显示
   rows: Row[];                   // ver 是 HistoricalVer，historical: true；目标当时不存在则为空
   other_reads?: Array<{ read: ReadId; seq: Seq; at: Instant }>;   // as_of: {task} 时：同一任务对这个目标的其余读取
 }
@@ -717,7 +719,7 @@ interface ChangesResult extends CommonResult, PageResult {
 ```
 ```json
 {
-  "mode": "timeline", "target": { "table": "ledger.expenses", "row": "r_01JC8Z…" }, "sv": 1, "ver": "v25.0", "total": 2,
+  "mode": "timeline", "target": { "table": "ledger.expenses", "row": "r_01JC8Z…" }, "sv": 1, "timezone": "Asia/Shanghai", "ver": "v25.0", "total": 2,
   "entries": [
     { "seq": 25, "recorded_at": "2026-11-10T12:41:07+08:00",
       "actor": { "kind": "connection", "id": "ci_01A…", "name": "MacBook · Claude Code" }, "intent": "correct",

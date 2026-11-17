@@ -20,6 +20,7 @@ import {
   id,
   join,
   type Line,
+  localTime,
   name,
   num,
   type Part,
@@ -71,6 +72,33 @@ const keysOf = (m: ReadonlyMap<string, unknown>): ReadonlySet<string> => new Set
 const idOf = (x: unknown): Part => as(String(x ?? ""), id);
 /** A moment the service recorded; untrusted when it is not one. */
 const timeOf = (x: unknown): Part => as(String(x ?? ""), time);
+/**
+ * A moment the service recorded, as the slot's wall clock shows it (05 §4.1: `YYYY-MM-DD HH:mm`
+ * in the slot's time zone); as recorded when the zone or the moment is not one this can read.
+ */
+function inZone(x: unknown, zone: unknown): Part {
+  const at = typeof x === "string" ? Date.parse(x) : Number.NaN;
+  if (typeof zone !== "string" || Number.isNaN(at)) return timeOf(x);
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(at);
+    const get = (k: string) => parts.find((p) => p.type === k)?.value ?? "";
+    return as(
+      `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`,
+      localTime,
+    );
+  } catch {
+    return timeOf(x);
+  }
+}
+
 /** An operation number. */
 const op = (x: unknown): Part[] =>
   t`#${int(x) !== undefined ? num(int(x) as number) : untrusted(String(x))}`;
@@ -487,7 +515,7 @@ function history(r: R): Line[] {
     const at = obj(r["as_of"]);
     const rows = arr(r["rows"]);
     return [
-      t`As of ${op(at["seq"])} (${timeOf(at["recorded_at"])}) · schema v${count(r["sv"])}`,
+      t`As of ${op(at["seq"])} (${inZone(at["recorded_at"], r["timezone"])}) · schema v${count(r["sv"])}`,
       ...(rows.length > 0 ? rowsOf(rows, true) : [t`It did not exist yet.`]),
       ...pageOf(r, rows.length, () => t`rows`),
     ];
@@ -506,7 +534,7 @@ function history(r: R): Line[] {
       return t`${fieldOf(f)} ${change}${resultOf(c["result"])}${sourcesOf(c["sources"])}`;
     });
     out.push(
-      t`${op(x["seq"])} ${timeOf(x["recorded_at"])} ${codeIn(x["intent"], INTENTS)}  ${actorOf(x["actor"])}  ${join(fields, t`; `)}`,
+      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${codeIn(x["intent"], INTENTS)}  ${actorOf(x["actor"])}  ${join(fields, t`; `)}`,
     );
   }
   const reads = arr(r["reads"]);
@@ -516,7 +544,7 @@ function history(r: R): Line[] {
         reads.map((x) => {
           const rd = obj(x);
           const task = rd["task"] !== undefined ? t` · task ${untrusted(String(rd["task"]))}` : [];
-          return t`${idOf(rd["read"])} (${op(rd["seq"])}) · ${actorOf(rd["actor"])}${task} · ${timeOf(rd["at"])}`;
+          return t`${idOf(rd["read"])} (${op(rd["seq"])}) · ${actorOf(rd["actor"])}${task} · ${inZone(rd["at"], r["timezone"])}`;
         }),
         t`; `,
       )}`,

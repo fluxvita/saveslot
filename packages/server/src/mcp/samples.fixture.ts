@@ -248,6 +248,7 @@ export const SAMPLES: Readonly<
     tool: "saveslot_history",
     result: {
       mode: "timeline",
+      timezone: "Asia/Shanghai",
       target: {
         table: "ledger.expenses",
         row: "r_4KWKRM296X61WJ89DY5XJNVA4P",
@@ -410,6 +411,7 @@ export const SAMPLES: Readonly<
     tool: "saveslot_history",
     result: {
       mode: "as_of",
+      timezone: "Asia/Shanghai",
       as_of: {
         seq: 7,
         recorded_at: "2026-11-16T14:00:43.139Z",

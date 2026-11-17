@@ -308,10 +308,19 @@ describe("what 05 §6 asks for", () => {
     expect(x).toContain("current ver=v10.0");
     expect(x).toMatch(
       new RegExp(
-        `#10 2026-11-16T14:00:43\\.176Z correct  ${B}u_SHB4YXDGYB8V7P0REQDCX8SGT4${E}  amount 45 ${B}CNY${E} → 54 ${B}CNY${E}  source s_17WYXZYX5QZH0HZ1 \\(correction\\)`,
+        `#10 2026-11-16 22:00 correct  ${B}u_SHB4YXDGYB8V7P0REQDCX8SGT4${E}  amount 45 ${B}CNY${E} → 54 ${B}CNY${E}  source s_17WYXZYX5QZH0HZ1 \\(correction\\)`,
       ),
     );
     expect(x).toContain("(candidate, not in effect)");
+  });
+
+  it("history's moments in the slot's time zone; as recorded when it has none or an unknown one", () => {
+    const h = ALL["history"] as Sample;
+    expect(renderResult(h.tool, h.result)).toContain("#13 2026-11-16 22:00 update");
+    const none = { ...h.result, timezone: undefined };
+    expect(renderResult(h.tool, none)).toContain("#13 2026-11-16T14:00:43.198Z update");
+    const unknown = { ...h.result, timezone: "Not/AZone" };
+    expect(renderResult(h.tool, unknown)).toContain("#13 2026-11-16T14:00:43.198Z update");
   });
 
   it("history as of: the point, and historical versions not for writing", () => {

@@ -507,6 +507,7 @@ export async function timelineInTx(
       ...(target.kind === "state" ? { entity: target.id as never } : { row: target.id as never }),
     },
     sv: target.named.slot.sv,
+    timezone: target.named.slot.timezone,
     ver: `v${ver}.${restore}`,
     total: entries.length,
     ...(next !== undefined ? { next_position: next } : {}),

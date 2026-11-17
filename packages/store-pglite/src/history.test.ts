@@ -205,6 +205,8 @@ describe("timeline", () => {
       mode: "timeline",
       target: { table: "ledger.spend", row },
       sv: 1,
+      // The slot's time zone, for the moments in the result (05-surfaces §4.1).
+      timezone: "Asia/Shanghai",
       ver: `v${ops["revoke"]}.0`,
       total: 4,
     });
@@ -358,6 +360,7 @@ describe("as_of", () => {
     const r = await h({ table: "spend", row, mode: "as_of", as_of: "2026-11-05T03:02:30Z" });
     expect(r["as_of"]).toEqual({ seq: ops["update"], recorded_at: "2026-11-05T03:02:00.000Z" });
     expect(r["sv"]).toBe(1);
+    expect(r["timezone"]).toBe("Asia/Shanghai");
   });
 
   it("gives a state entity's segments then, at a point if asked", async () => {

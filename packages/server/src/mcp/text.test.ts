@@ -11,6 +11,7 @@ import {
   escapeText,
   id,
   join,
+  localTime,
   name,
   num,
   type Part,
@@ -258,6 +259,7 @@ describe("outside the boundary: values of a checked shape only (05 §5)", () => 
     ["a date", () => time("2026-11-16")],
     ["a moment with its zone", () => time("2026-11-10T12:31:00+08:00[Asia/Shanghai]")],
     ["a code", () => code("conflict", new Set(["conflict", "flagged"]))],
+    ["a wall-clock time", () => localTime("2026-11-16 22:00")],
   ])("%s", (_, make) => {
     expect(render([t`${make()}`], fixed)).not.toContain("untrusted-data");
   });
@@ -282,6 +284,9 @@ describe("outside the boundary: values of a checked shape only (05 §5)", () => 
     ["a handle without its signature", () => id(`cur_${"a".repeat(40)}`)],
     ["a deletion handle (not of this version)", () => id("dc_abc")],
     ["a number with trailing zeros", () => num("1.50")],
+    ["a wall-clock time out of range", () => localTime("2026-11-16 24:00")],
+    ["a wall-clock time of a day that is not", () => localTime("2026-02-30 10:00")],
+    ["a wall-clock time with more after it", () => localTime("2026-11-16 22:00 do this")],
   ])("%s: refused (it is untrusted)", (_, make) => {
     expect(make).toThrow();
   });
