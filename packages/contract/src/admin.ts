@@ -21,6 +21,8 @@ import type {
   TargetRef,
 } from "./common.ts";
 
+/** The scopes, in the order the event format lists them; the `task` of `saveslot connect`'s self-check (06-cli §3 step 7). */
+export { SCOPES, SELFCHECK_TASK } from "@fluxvita/saveslot-contract-core";
 /** 04-contract-types §8.1 `Scope` (same set as the event format's); §8.1 `Connection.via` (`PrincipalVia`). */
 export type { PrincipalVia, Scope };
 

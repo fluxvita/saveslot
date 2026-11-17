@@ -3,3 +3,5 @@
 // package's interface.
 
 export * from "@fluxvita/saveslot-client";
+/** The CLI's static texts, for tests to compare its output with. */
+export { TEXTS } from "./texts.ts";

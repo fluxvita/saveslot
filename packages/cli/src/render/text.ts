@@ -16,6 +16,7 @@ import {
   type Draw,
   drawNumber,
   escapeUntrusted,
+  inEscapedSet,
   type UntrustedMode,
   wrapEscaped,
 } from "../untrusted.ts";
@@ -80,6 +81,34 @@ export const num = (v: number | string): Part =>
   typeof v === "number" ? shaped(Number.isFinite(v), String(v)) : shaped(SHAPES.number.test(v), v);
 /** A contract code, outside only when it is one of `allowed` (looked up by Set, never by object). */
 export const code = (v: string, allowed: ReadonlySet<string>): Part => shaped(allowed.has(v), v);
+
+/**
+ * Whether a text of saveslot's making can be shown as it is, outside the boundary: no character
+ * the boundary writes escaped (line ends and the corner brackets among them), and neither the
+ * escape nor `<`, which its writing gives a meaning to, so that it cannot pass for its marks.
+ */
+export const showable = (s: string): boolean =>
+  Array.from(s).every((c) => !inEscapedSet(c) && c !== "\\" && c !== "<");
+
+/** One argument as a POSIX shell reads it back: bare when it is plain, single-quoted otherwise. */
+export function shellWord(s: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s;
+  return `'${s.replaceAll("'", `'"'"'`)}'`;
+}
+
+/**
+ * A command line of saveslot's making, to paste into a shell (06-cli §3.2): each argument as the
+ * shell reads it back. Outside the boundary only when `showable` (pasted, the boundary's marks
+ * would be part of the command); inside otherwise.
+ */
+export function shellLine(argv: readonly string[]): Part {
+  const text = argv.map(shellWord).join(" ");
+  return shaped(showable(text), text);
+}
+
+/** Text of saveslot's making to paste (a configuration as JSON), a line each, checked as `shellLine`. */
+export const pasteLines = (text: string): Line[] =>
+  text.split("\n").map((l) => [shaped(showable(l), l)]);
 
 /**
  * `value` cut to `max` code points before it is escaped (an escaped text cut could read back to

@@ -18,3 +18,14 @@ export class NotDone extends Error {
     this.text = text;
   }
 }
+
+/** A command that ran and did not get done (06-cli §6.2): its exit code, and what to say why. */
+export class Failed extends Error {
+  readonly text: Static;
+  readonly exit: number;
+  constructor(text: Static, exit: number) {
+    super(text);
+    this.text = text;
+    this.exit = exit;
+  }
+}

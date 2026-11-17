@@ -799,6 +799,27 @@ describe("pending resolve", () => {
     expect(r.err).toContain(TEXTS.changedSince);
   });
 
+  it("changed under every one of three questions: its own words, not done (8)", async () => {
+    const mismatch = (v: string) => ({
+      error: { code: "confirmation_mismatch", message: "changed", current: awaiting(v) },
+    });
+    queue(
+      [awaiting("iv_A1B2C3D4E5F6G7H8.4.0")],
+      [
+        [409, mismatch("iv_A1B2C3D4E5F6G7H8.5.0")],
+        [409, mismatch("iv_A1B2C3D4E5F6G7H8.6.0")],
+        [409, mismatch("iv_A1B2C3D4E5F6G7H8.7.0")],
+      ],
+    );
+    seen.length = 0;
+    bodies.length = 0;
+    const r = await cli(["pending", "resolve", ID, "confirm"], { answers: ["y", "y", "y"] });
+    expect(r.code).toBe(8);
+    expect(posts()).toHaveLength(3);
+    expect(r.err.endsWith(`${TEXTS.keptChanging}\n`)).toBe(true);
+    expect(r.err).not.toContain(`${TEXTS.declined}\n`);
+  });
+
   it("--item-ver older than the item: said so, and the version shown is the one sent", async () => {
     queue([awaiting("iv_A1B2C3D4E5F6G7H8.6.0")], [[200, resolved("iv_A1B2C3D4E5F6G7H8.7.0")]]);
     bodies.length = 0;

@@ -56,7 +56,13 @@ export function exitOf(errorCode: string, reason: unknown): number {
 }
 
 /** What the command says on stderr for an error, and its exit code; never a token or a path. */
-export function describeError(e: unknown): { readonly lines: Line[]; readonly exit: number } {
+export function describeError(
+  e: unknown,
+  o: {
+    /** false: no general next step (the caller says its own; the code's is not about this). */
+    readonly nextStep?: boolean;
+  } = {},
+): { readonly lines: Line[]; readonly exit: number } {
   if (e instanceof ContractCallError) {
     const reason = Object.hasOwn(e.body, "reason") ? e.body["reason"] : undefined;
     const message = Object.hasOwn(e.body, "message") ? e.body["message"] : undefined;
@@ -101,7 +107,7 @@ export function describeError(e: unknown): { readonly lines: Line[]; readonly ex
         t`  --candidate ${typeof x["index"] === "number" ? num(x["index"]) : untrusted(String(x["index"]))} (#${typeof x["seq"] === "number" ? num(x["seq"]) : untrusted(String(x["seq"]))})`,
       );
     }
-    const hint = TEXTS.nextStep.get(e.code as ErrorCode);
+    const hint = o.nextStep === false ? undefined : TEXTS.nextStep.get(e.code as ErrorCode);
     if (hint !== undefined) lines.push(t`  ${words(hint)}`);
     return { lines, exit: exitOf(e.code, reason) };
   }

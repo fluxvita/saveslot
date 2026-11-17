@@ -131,7 +131,7 @@ $ saveslot slot create health --template running --timezone Asia/Shanghai
 $ saveslot connect claude-code --name "MacBook · Claude Code"
 已签发连接实例 MacBook · Claude Code（ci_01JF…）· scope saveslot.read saveslot.write
 自检通过：用新令牌读到 1 个 slot
-令牌只显示这一次。把下面这条命令贴进终端（或重跑本命令并加 --apply）：
+令牌只显示这一次。把下面这条命令贴进终端：
   claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<连接实例令牌> -- /usr/local/bin/saveslot mcp
 可选：saveslot snippet claude-code（建议放进宿主自定义指令的一段文字）
 ```
@@ -285,16 +285,22 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 
 - **宿主命令的写法**：服务名在前，`-e` / `--env` 在后，再接 `--` 与可执行文件。添加命令一律写**用户级**：saveslot 的数据按人不按项目，接入应当对这个用户的所有项目生效；Claude Code 的添加命令默认写"当前项目"这一档，所以显式带 `--scope user`，别的宿主有同类选项的同样处理。`vscode`（`code --add-mcp`）写到哪一处配置、同名时的行为都没有核实，实测之后再加入适配表。
 - **没有添加命令的宿主**（`cursor`、`claude-desktop`）只能手动粘贴，是第 1 节设计要求的已知例外。
-- **令牌只显示一次**：控制面只存哈希；丢了就吊销重签。`--apply` 时由 CLI 执行上表里宿主自己的添加命令，令牌不落进 CLI 的任何文件——**但会落在别处**：贴进终端的命令进了 shell 历史；`--apply` 执行宿主命令时令牌在进程参数里，执行期间本机其他用户能用 `ps` 看到；最后它住在宿主的配置文件里。只用 unix socket 时这些暴露对别的系统用户无害（他们连不上套接字），打开回环 TCP 后就不是了（第 8.1 节）。各宿主命令的确切写法由 CLI 的宿主适配表维护，实现时逐个实测。
+- **令牌只显示一次**：控制面只存哈希；丢了就吊销重签。`--apply` 时由 CLI 执行上表里宿主自己的添加命令，令牌不落进 CLI 的任何文件——**但会落在别处**：贴进终端的命令进了 shell 历史；`--apply` 执行宿主命令时令牌在进程参数里，执行期间本机其他用户能用 `ps` 看到；最后它住在宿主的配置文件里。`--apply` 执行成功时不再显示令牌：打印"已添加到 <宿主>"与执行的那条命令，令牌的位置写成 `<令牌>`（连接实例的 ID、名字与 scope 在签发那一行）；`--json` 的输出不变，仍是签发结果（含令牌）。"令牌只显示这一次"这句提示写到标准错误（`--json` 时也是），标准输出里只有要粘贴的东西。只用 unix socket 时这些暴露对别的系统用户无害（他们连不上套接字），打开回环 TCP 后就不是了（第 8.1 节）。各宿主命令的确切写法由 CLI 的宿主适配表维护，实现时逐个实测。
 - **命令写绝对路径**：宿主启动 `saveslot mcp` 时的 PATH 未必包含 npm 全局目录（图形界面启动的宿主、用版本管理器切换 Node 的环境），所以生成的命令一律用 `saveslot` 可执行文件的绝对路径；`saveslot doctor` 经宿主自己的查看命令检查条目里的路径是否还在。
 - **`--scope` 的写法**：不给时是 `saveslot.read saveslot.write`。两种写法，不能混用：
   - 增减式：`--scope +schema`、`--scope +delete`（在默认上加）、`--scope -write`（从默认里去掉；只读就是 `--scope -write`）；可重复或用逗号连写（`--scope +schema,+delete`）。
   - 完整式：`--scope read,write,schema`，列出的就是全部。
   - 名字可以省略 `saveslot.` 前缀。**每个连接实例都必须有 `saveslot.read`**：`-read`、或完整式里不含 `read`，是用法错误（退出码 2），不发请求。
   - 第一版 scope 签发后不能改，要改就吊销后重签（[`04-contract.md`](04-contract.md)「调用方：凭证与 scope」）。
+- **签发之前先查的**（任一不行就不签发，退出码 1）：
+  - 入口路径（上一条）存在、可执行，并且能原样显示。
+  - 将要输出的每一种形式都能原样显示、不落进不可信边界：宿主的命令行、配置片段的每一行（JSON 编码之后，例如路径里的 `"` 会变成带转义的 `\"`）、`http` 的套接字路径。落进边界的输出贴出来不能用，令牌却已经显示了。
+  - `--apply`：宿主的可执行文件由 CLI 自己在 `PATH` 里找（只看绝对路径的条目，取第一个可执行文件），找不到就不签发；执行的、显示的都是找到的那个绝对路径，成功与失败都写出来。
 - **签发之后的失败**：
-  - 自检失败（用新令牌调 `catalog` 不通）：CLI 立即吊销刚签发的连接实例，不显示令牌，退出码 1，并写明自检报的错误。
-  - `--apply` 执行宿主命令失败：连接实例保留，照常打印那条命令让人自己执行，退出码 1；标准错误写明宿主命令的退出状态。
+  - 服务给的令牌形状不对（或没有）：按自检失败处理。
+  - 自检失败（用新令牌调 `catalog` 不通）：CLI 立即吊销刚签发的连接实例，不显示令牌，退出码 1，并写明自检报的错误；被吊销的名字仍然占用，提示换一个名字再 connect。
+  - 标准输出写不出去（被关闭）：令牌只在这份输出里，CLI 尽力吊销刚签发的连接实例，退出码 1；`--apply` 已经成功时不吊销（令牌在宿主那里）。
+  - `--apply` 执行宿主命令失败（非零退出、被信号终止、系统执行不了这个文件、60 秒内没结束）：连接实例保留，打印完整的那条命令（含令牌）让人自己执行，退出码 1；标准错误写明是哪一种。超时时宿主连同它启动的进程一起停掉（它在自己的进程组里）。宿主不经 shell 执行，它自己的输出读出后丢弃，不转给用户（它可能回显收到的参数）。
 - **`--slots` 的写法**：slot 名的逗号列表，不给 = 全部（含以后新建的）。给了的每个都必须存在（否则 `not_found`（`slot`）），不能为空。限定了范围的连接实例只看得到这几个 slot，不能新建 slot，之后别人新建的 slot 也不纳入；范围签发后不能改，要改就吊销后重签（[`04-contract.md`](04-contract.md)「调用方：凭证与 scope」）。自检的那次 `catalog` 照常做，它只会看到范围内的 slot。
 - **名字建议写"设备 · 宿主"**，它会出现在历史、事项发起者与读取审计里。
 - **连接器取得凭证**：连接器（定时把外部系统的数据搬进 saveslot 的程序，不是 saveslot 的一部分）用 `saveslot connect http --name "手环 · 连接器" --slots health` 取得一个只碰它负责的 slot 的静态令牌，经 HTTP 写入（[`05-surfaces.md`](05-surfaces.md) 第 13 节）。
@@ -449,10 +455,10 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 | 命令 | 契约操作 | 关键参数 | 输出要点 | 出现于 |
 |---|---|---|---|---|
-| `saveslot connect <宿主>` | `connections.issue` + 一次 `catalog` 自检 | `--name`、`--scope`、`--slots`、`--apply` | 连接实例 ID、scope、slot 范围、令牌（只此一次）、宿主命令；末尾提示 `saveslot snippet` | P1（`--slots` P5） |
+| `saveslot connect <宿主>` | `connections.issue` + 一次 `catalog` 自检 | `--name`、`--scope`、`--slots`、`--apply` | 连接实例 ID、scope、slot 范围、令牌（只此一次；`--apply` 成功时不显示）、宿主命令；末尾提示 `saveslot snippet` | P1（`--slots` P5） |
 | `saveslot connections list` | `connections.list` | — | 名字、ID、scope、slot 范围（"全部"或 slot 名列表）、签发时间、是否已吊销或已停用 | P1（范围一列 P5） |
 | `saveslot connections rename <名字或 ID> <新名字>` | `connections.update` | — | 新旧名字；历史里的 actor 不变，只是显示名变 | P6 |
-| `saveslot connections revoke <名字或 ID>` | `connections.revoke` | `--yes` | 吊销时刻；之后该令牌的请求一律拒绝 | P1 |
+| `saveslot connections revoke <名字或 ID>` | `connections.revoke` | `--yes` | 吊销时刻；之后该令牌的请求一律拒绝。先在全部连接实例里按 ID 精确匹配，没有才按名字；按名字匹配到不止一个时拒绝（退出码 2）并列出它们的 ID | P1 |
 | `saveslot snippet [<宿主>]` | 无（打印 CLI 自带的文案，不连 saveslot 服务） | `--lang en\|zh-CN` | 建议贴进宿主自定义指令的文案与该宿主的放置位置（3.4） | P1（文案初稿；按评测结果在 P6 定稿） |
 
 ### 4.5 待处理事项
@@ -617,7 +623,7 @@ runs r_01JC… 整行删除：date 只来自这句话
 |---|---|---|
 | 0 | 完成（含重放、`outcome: pending` 这类"已记下但未生效"——看输出） | — |
 | 1 | CLI 或 saveslot 服务内部错误；接入没有完成 | `internal`；`saveslot connect` 的自检失败（已吊销刚签发的连接实例）或 `--apply` 执行宿主命令失败（**保留**连接实例，命令已打印给人自己执行）；`saveslot setup` 有宿主失败（宿主命令失败时**吊销**刚签发的连接实例，因为令牌没有显示给任何人）、初始化失败、服务与 CLI 版本不一致 |
-| 2 | 命令用法错误（CLI 自己发现的） | — |
+| 2 | 命令用法错误（CLI 自己发现的） | 例如只取一个值的选项给了两次（不按"最后一个算数"）；`connections revoke` 的名字对应不止一个连接实例 |
 | 3 | 要先重读 / 内容已变 | `read_first`、`confirmation_mismatch`、`item_closed`、`preview_outdated`、`handle_expired`、`draft_outdated`、`schema_incompatible` |
 | 4 | 找不到 | `not_found`、`unknown_table`、`unknown_field` |
 | 5 | 请求被拒 | `saveslot init` 遇到已初始化的目录或正在运行的服务（什么都不改）、`saveslot start` 遇到未初始化的目录；`config.toml` 不合法（`saveslot start` 在派生进程之前、前台启动与 `saveslot config get` 都这样拒绝，见 4.2）；`invalid_argument`、`validation_failed`、`field_unmatched`、`sql_rejected`、`sql_timeout`、`too_large`、`derived_readonly`、`revoked`、`not_in_this_version`、`import_rejected`、`rate_limited`（`quota`）、`referenced`（后续）、`lease_expired`（后续） |
@@ -687,13 +693,15 @@ CLI 与 `saveslot mcp` 只用 home 下固定的套接字路径（`run/saveslot.s
 
   | 地方 | `connect` 后粘贴 | `connect --apply` | `setup` |
   |---|---|---|---|
-  | 终端上的显示（回滚缓冲） | 是 | 是 | **否** |
+  | 终端上的显示（回滚缓冲） | 是 | 仅在失败时 | **否** |
   | shell 历史 | 是 | 否 | **否** |
   | 宿主添加命令的进程参数（执行期间本机其他用户可见） | 是 | 是 | 是 |
   | 宿主的配置文件 | 是 | 是 | 是 |
   | CLI 自己的任何文件 | 否 | 否 | 否 |
 
   回环 TCP 关着时别的系统用户拿到它也连不上（他们连不上套接字）；打开回环 TCP 之前先确认这些地方没有外泄，有疑问就吊销重签。服务器模式下宿主走 OAuth，这条路上没有静态令牌。
+
+  `--apply` 执行宿主命令时，宿主继承 CLI 的整个环境：宿主是用户自己的工具，需要它的环境（`PATH`、`HOME` 等）。`SAVESLOT_TOKEN` 不会被带过去：设了它，`connect` 本身就被拒（签发只能用用户会话）。
 
 ### 8.3 只有用户会话能做的操作
 

@@ -18,17 +18,42 @@ import {
   type AsOfResult,
   type CatalogTables,
   type Client,
+  type Connection,
   ContractCallError,
   createClient,
   ITEM_STATUSES,
   ITEM_TYPES,
   type PendingDetailResult,
   resolveCredential,
+  SELFCHECK_TASK,
   type TimelineResult,
   TransportError,
 } from "@fluxvita/saveslot-client";
+import {
+  APPLIES,
+  addCommand,
+  entryMayGo,
+  entryPath,
+  HOSTS,
+  type Host,
+  onPath,
+  parseScopes,
+  runHostCommand,
+} from "./connect.ts";
 import { describeError } from "./errors.ts";
 import { logVerified, readsList, verifyFound } from "./render/admin.ts";
+import {
+  alreadyLines,
+  appliedLines,
+  connectionLine,
+  connectionsList,
+  hostSetup,
+  revokedLines,
+  selfcheckLine,
+  setupShowable,
+  snippetHint,
+  snippetLines,
+} from "./render/connections.ts";
 import { pendingDetail, pendingList, resolveResult } from "./render/pending.ts";
 import { asOfResult, queryResult, timelineResult } from "./render/reads.ts";
 import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
@@ -64,6 +89,11 @@ const OWN_OPTIONS = {
   "as-of-read": { type: "string" },
   key: { type: "string", multiple: true },
   sources: { type: "boolean" },
+  name: { type: "string" },
+  scope: { type: "string", multiple: true },
+  slots: { type: "string" },
+  apply: { type: "boolean" },
+  lang: { type: "string" },
 } as const;
 type OwnValue = string | string[] | boolean;
 
@@ -75,11 +105,12 @@ const ownList = (o: Options, k: string): string[] =>
 const ownFlag = (o: Options, k: string): boolean => o.own[k] === true;
 
 import { jsonText } from "./untrusted.ts";
-import { NotDone, UsageError } from "./usage.ts";
+import { Failed, NotDone, UsageError } from "./usage.ts";
 import { type FieldInfo, foldName, parseCondition, parseConditionsJson } from "./where.ts";
 
 export interface CliIO {
-  readonly out: (text: string) => void;
+  /** Writes to stdout; a promise of false when it could not be written (stdout closed). */
+  readonly out: (text: string) => unknown;
   readonly err: (text: string) => void;
   /** Whether stdout and stderr are terminals. */
   readonly stdoutIsTTY: boolean;
@@ -88,6 +119,10 @@ export interface CliIO {
   readonly stdinIsTTY?: boolean;
   /** Writes `prompt` to stderr and reads one line from stdin; undefined when stdin ends. */
   readonly ask?: (prompt: string) => Promise<string | undefined>;
+  /** The path this program was started by, absolute, links kept (`connect` puts it in commands). */
+  readonly entry?: string;
+  /** Tests only: how long `connect --apply` lets the host's command run (60 s otherwise). */
+  readonly hostTimeoutMs?: number;
 }
 
 interface Options {
@@ -105,7 +140,12 @@ interface Options {
 /** What a command gives: a result to write, as text and as JSON, and its exit code (default 0). */
 interface Output {
   readonly json: unknown;
+  /** Nothing on stdout when there are none (and no --json). */
   readonly lines: Line[];
+  /** Lines for stderr, written before stdout's. */
+  readonly errLines?: Line[];
+  /** When stdout could not be written: what to do about it, and what to say on stderr then. */
+  readonly unwritten?: () => Promise<Line[]>;
   readonly exit?: number;
 }
 
@@ -184,19 +224,42 @@ async function documentFor(o: Options): Promise<{ doc: Record<string, unknown>; 
 
 /** Every table of `slot`, from the list level, page after page (at most 200 a page). */
 async function tablesOf(c: Client, slot: string): Promise<string[]> {
-  const out: string[] = [];
-  let cursor: string | undefined;
-  do {
+  return everyPage(async (cursor) => {
     const page = await c.catalog({
       level: "list",
       slot,
       limit: 200,
       ...(cursor !== undefined ? { cursor } : {}),
     });
-    out.push(...page.slots.flatMap((x) => x.tables.map((tb) => tb.table)));
-    cursor = page.next_cursor;
-  } while (cursor !== undefined);
-  return out;
+    return {
+      items: page.slots.flatMap((x) => x.tables.map((tb) => tb.table)),
+      next: page.next_cursor,
+    };
+  });
+}
+
+/** The most pages a command reads to have every item (200 a page). */
+export const MAX_PAGES = 1000;
+
+/**
+ * Every item, page after page, until a page has no next cursor. Stopped, as an error (1), at
+ * `MAX_PAGES` pages or at a cursor given twice: either way the pages would not end.
+ */
+export async function everyPage<T>(
+  page: (cursor: string | undefined) => Promise<{ items: readonly T[]; next?: string | undefined }>,
+): Promise<T[]> {
+  const out: T[] = [];
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  for (let n = 0; n < MAX_PAGES; n++) {
+    const p = await page(cursor);
+    out.push(...p.items);
+    if (p.next === undefined) return out;
+    if (cursors.has(p.next)) throw new Failed(TEXTS.pagesRepeat, 1);
+    cursors.add(p.next);
+    cursor = p.next;
+  }
+  throw new Failed(TEXTS.pagesTooMany, 1);
 }
 
 /** A table's fields by folded name, with their type and unit, from its catalog. */
@@ -374,10 +437,228 @@ async function resolveCommand(
       say([[words(TEXTS.changedSince)]]);
     }
   }
-  throw new NotDone(TEXTS.declined);
+  throw new NotDone(TEXTS.keptChanging);
 }
 
+/** Every connection instance, revoked and disabled ones too, page after page (200 a page). */
+async function allConnections(c: Client): Promise<Connection[]> {
+  return everyPage(async (cursor) => {
+    const page = await c.connections.list({
+      include_revoked: true,
+      limit: 200,
+      ...(cursor !== undefined ? { cursor } : {}),
+    });
+    return { items: page.connections, next: page.next_cursor };
+  });
+}
+
+/**
+ * `saveslot connect <host>` (06 §3.2): issue, self-check with the new token, then the host's setup
+ * with the token in it, on stdout, once; with `--apply`, the host's command run as well. The token
+ * is in this function's memory and in what it writes to stdout (and in the host command's
+ * arguments): never on stderr, never in an error.
+ */
+async function connectCommand(
+  o: Options,
+  client: () => Promise<Client>,
+  io: CliIO,
+  env: Env,
+): Promise<Output> {
+  const [hostName, ...extra] = o.args;
+  if (
+    hostName === undefined ||
+    extra.length > 0 ||
+    !(HOSTS as readonly string[]).includes(hostName)
+  )
+    throw new UsageError(TEXTS.connectArgs);
+  const host = hostName as Host;
+  const connectionName = ownString(o, "name");
+  if (connectionName === undefined || connectionName.trim() === "")
+    throw new UsageError(TEXTS.nameMissing);
+  if (ownString(o, "slots") !== undefined) throw new UsageError(TEXTS.slotsNotYet);
+  const apply = ownFlag(o, "apply");
+  if (apply && !APPLIES.has(host)) throw new UsageError(TEXTS.applyNotHere);
+  const scopes = parseScopes(ownList(o, "scope"));
+  // The path the host starts saveslot by: checked before anything is issued.
+  const entry = host === "http" ? "" : await entryPath(io.entry);
+  const notes: Line[] = entryMayGo(entry) ? [[words(TEXTS.entryMayGo)]] : [];
+  // `--apply`: the host's executable, found on PATH before anything is issued; run and shown by
+  // that absolute path, so that what is shown is what ran.
+  const exe = apply
+    ? await onPath((addCommand(host, "", entry) as string[])[0] as string, env["PATH"])
+    : undefined;
+  if (apply && exe === undefined) throw new Failed(TEXTS.applyNotFound, 1);
+  if (!setupShowable(host, entry, socketOf(o), exe)) throw new Failed(TEXTS.setupUnshowable, 1);
+
+  const session = await client();
+  const issued = await session.connections.issue({
+    name: connectionName,
+    ...(scopes !== undefined ? { scopes } : {}),
+  });
+  const { token, ...connection } = issued;
+  /** Revokes the new connection instance, as far as it can: whether it did. */
+  const revoke = async () => {
+    try {
+      await session.connections.revoke({ id: connection.id });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  /** Issued and not usable: revoked, the token not shown, why said without it; 1. */
+  const failed = async (why: Line[], error: unknown): Promise<Output> => {
+    const revoked = await revoke();
+    return {
+      json: { error, connection: { id: connection.id, name: connection.name, revoked } },
+      lines: [],
+      errLines: [
+        ...notes,
+        ...why,
+        t`  ${connectionLine(connection)}`,
+        [words(revoked ? TEXTS.selfcheckRevoked : TEXTS.selfcheckNotRevoked)],
+      ],
+      exit: 1,
+    };
+  };
+  // A token of the shape the service gives, or none is shown (nor put into a command).
+  if (typeof token !== "string" || !/^slt_[A-Za-z0-9_-]{43}$/.test(token)) {
+    return failed([[words(TEXTS.tokenMalformed)]], {
+      code: "internal",
+      message: "token_malformed",
+    });
+  }
+
+  // The self-check: the new token reads the catalog, marked as the self-check (06 §3 step 7).
+  let slots: number;
+  let more: boolean;
+  try {
+    const own = createClient({ socketPath: socketOf(o), token });
+    const r = await own.catalog({ level: "list", limit: 200, task: SELFCHECK_TASK });
+    slots = r.slots.length;
+    more = r.next_cursor !== undefined;
+  } catch (e) {
+    // The new token was refused: the general next step (about SAVESLOT_TOKEN) is not this one's.
+    return failed(
+      [[words(TEXTS.selfcheckFailed)], ...describeError(e, { nextStep: false }).lines],
+      e instanceof ContractCallError ? e.body : { code: "internal" },
+    );
+  }
+  // The token's only copy is in the output: lost with it, the instance is no one's.
+  const lost = async (): Promise<Line[]> =>
+    (await revoke())
+      ? [[words(TEXTS.outputLostRevoked)], t`  ${connectionLine(connection)}`]
+      : [[words(TEXTS.selfcheckNotRevoked)], t`  ${connectionLine(connection)}`];
+
+  const head: Line[] = [
+    t`${words(TEXTS.issued)} ${connectionLine(connection)}`,
+    selfcheckLine(slots, more),
+  ];
+  const selfcheck = { slots, ...(more ? { more: true } : {}) };
+  if (!apply) {
+    return {
+      json: { ...issued, selfcheck },
+      lines: [...head, ...hostSetup(host, token, entry, socketOf(o)), ...snippetHint(host)],
+      errLines: [...notes, [words(TEXTS.tokenOnce)]],
+      unwritten: lost,
+    };
+  }
+  const [, ...args] = addCommand(host, token, entry) as string[];
+  const ran = await runHostCommand([exe as string, ...args], env, io.hostTimeoutMs);
+  const ok = ran.kind === "done";
+  const why =
+    ran.kind === "exit"
+      ? TEXTS.applyExit(ran.code)
+      : ran.kind === "signal"
+        ? TEXTS.applySignal
+        : ran.kind === "not_found"
+          ? TEXTS.applyGone
+          : ran.kind === "cannot_run"
+            ? TEXTS.applyCannotRun
+            : TEXTS.applyTimeout;
+  return {
+    json: { ...issued, selfcheck, applied: ok },
+    lines: [...head, ...appliedLines(host, token, entry, exe as string, ok), ...snippetHint(host)],
+    // Run, the host has the token, and the output has it only with --json; failed, the output is
+    // where it is.
+    errLines: ok
+      ? notes
+      : [...notes, [words(why)], [words(TEXTS.applyKept)], [words(TEXTS.tokenOnce)]],
+    ...(ok ? {} : { unwritten: lost }),
+    exit: ok ? 0 : 1,
+  };
+}
+
+/** `saveslot connections revoke <name or ID>` (06 §4.9): asked first, unless `--yes`. */
+async function revokeCommand(
+  o: Options,
+  client: () => Promise<Client>,
+  io: CliIO,
+  env: Env,
+): Promise<Output> {
+  const [which, ...extra] = o.args;
+  if (which === undefined || extra.length > 0) throw new UsageError(TEXTS.revokeArgs);
+  const c = await client();
+  // By ID over the whole list first; by name only when no ID is it. A name can look like another
+  // instance's ID, and two instances can share a name: that one is not guessed at.
+  const all = await allConnections(c);
+  const named = all.filter((x) => x.name === which);
+  const found = all.find((x) => x.id === which) ?? (named.length === 1 ? named[0] : undefined);
+  if (found === undefined && named.length > 1) {
+    return {
+      json: { error: { code: "ambiguous_name", ids: named.map((x) => x.id) } },
+      lines: [],
+      errLines: [[words(TEXTS.nameAmbiguous)], ...named.map((x) => t`  ${connectionLine(x)}`)],
+      exit: 2,
+    };
+  }
+  if (found === undefined) throw new Failed(TEXTS.connectionNotFound, 4);
+  if (found.state !== undefined) return { json: found, lines: alreadyLines(found) };
+  if (!ownFlag(o, "yes")) {
+    if (io.stdinIsTTY !== true || io.ask === undefined) throw new NotDone(TEXTS.revokeNoTerminal);
+    const prompt = render(
+      [t`${words(TEXTS.revokeAsk)} ${connectionLine(found)}? [y/N] `],
+      boundaryFor(io.stderrIsTTY, o.tags, env),
+    );
+    const answer = await io.ask(prompt);
+    if (!/^(y|yes)$/i.test((answer ?? "").trim())) throw new NotDone(TEXTS.declined);
+  }
+  const r = await c.connections.revoke({ id: found.id });
+  return { json: r, lines: revokedLines(r) };
+}
+
+const socketOf = (o: Options) => join(o.home, "run", "saveslot.sock");
+
 const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
+  [
+    "connect",
+    command(["name", "scope", "slots", "apply"], connectCommand, undefined, TEXTS.connectUnknown),
+  ],
+  [
+    "connections list",
+    command([], async (o, client) => {
+      if (o.args.length > 0) throw new UsageError(TEXTS.connectionsListArgs);
+      const r = await (await client()).connections.list({
+        include_revoked: true,
+        ...(o.limit !== undefined ? { limit: o.limit } : {}),
+        ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
+      });
+      return { json: r, lines: connectionsList(r) };
+    }),
+  ],
+  ["connections revoke", command(["yes"], revokeCommand, undefined, TEXTS.revokeUnknown)],
+  [
+    "snippet",
+    command(["lang"], async (o) => {
+      const [host, ...extra] = o.args;
+      if (extra.length > 0 || (host !== undefined && !TEXTS.snippetPlace.has(host)))
+        throw new UsageError(TEXTS.snippetArgs);
+      const lang = ownString(o, "lang") ?? "en";
+      if (lang !== "en" && lang !== "zh-CN") throw new UsageError(TEXTS.langBad);
+      const lines = snippetLines(host, lang);
+      const snippet = (TEXTS.snippet.get(lang) ?? []).join("\n");
+      return { json: { snippet, ...(host !== undefined ? { host } : {}) }, lines };
+    }),
+  ],
   ["pending", pendingListCommand],
   ["pending list", pendingListCommand],
   [
@@ -631,13 +912,35 @@ function boundaryFor(isTTY: boolean, tags: Options["tags"], env: Env): Boundary 
 
 type Env = Readonly<Record<string, string | undefined>>;
 
+/**
+ * `--scope -write` as 06 §3.2 writes it: a value that begins with `-` is taken for an option by the
+ * parser, so `--scope` and such a value are joined (`--scope=-write`) first.
+ */
+function scopeValuesJoined(argv: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i] as string;
+    const next = argv[i + 1];
+    if (a === "--") {
+      out.push(...argv.slice(i));
+      break;
+    }
+    if (a === "--scope" && next !== undefined && next.startsWith("-") && next !== "--") {
+      out.push(`--scope=${next}`);
+      i++;
+    } else out.push(a);
+  }
+  return out;
+}
+
 /** Runs one command line (without the program name); resolves with its exit code. */
 export async function run(argv: readonly string[], env: Env, io: CliIO): Promise<number> {
   let values: Record<string, string | string[] | boolean | undefined>;
   let positionals: string[];
+  let tokens: ReturnType<typeof parseArgs>["tokens"];
   try {
-    ({ values, positionals } = parseArgs({
-      args: [...argv],
+    ({ values, positionals, tokens } = parseArgs({
+      args: scopeValuesJoined(argv),
       options: {
         json: { type: "boolean" },
         limit: { type: "string" },
@@ -651,6 +954,7 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
       },
       strict: true,
       allowPositionals: true,
+      tokens: true,
     }));
   } catch (e) {
     // The message echoes the arguments, the user's text: written as untrusted.
@@ -688,6 +992,14 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
     io.err(`${TEXTS.unknownCommand}\n`);
     return 2;
   }
+  // A command's option of one value given twice is not taken as the last one given (06 §6.2).
+  for (const [k, spec] of Object.entries(OWN_OPTIONS)) {
+    if (spec.type !== "string" || "multiple" in spec) continue;
+    if ((tokens ?? []).filter((x) => x.kind === "option" && x.name === k).length > 1) {
+      io.err(`${TEXTS.usageError(TEXTS.optionTwice)}\n`);
+      return 2;
+    }
+  }
   const own: Record<string, OwnValue> = {};
   for (const k of Object.keys(OWN_OPTIONS)) {
     const v = values[k];
@@ -711,18 +1023,23 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
   };
   const client = async () => {
     const credential = await resolveCredential({ home: o.home, env });
-    return createClient({
-      socketPath: join(o.home, "run", "saveslot.sock"),
-      token: credential.token,
-    });
+    return createClient({ socketPath: socketOf(o), token: credential.token });
   };
   try {
     const r = await found.run(o, client, io, env);
-    io.out(
-      o.json
-        ? `${jsonText(r.json)}\n`
-        : `${render(r.lines, boundaryFor(io.stdoutIsTTY, o.tags, env))}\n`,
-    );
+    if (r.errLines !== undefined && r.errLines.length > 0) {
+      io.err(`${render(r.errLines, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`);
+    }
+    const text = o.json
+      ? `${jsonText(r.json)}\n`
+      : r.lines.length > 0
+        ? `${render(r.lines, boundaryFor(io.stdoutIsTTY, o.tags, env))}\n`
+        : undefined;
+    if (text !== undefined && (await io.out(text)) === false) {
+      const said: Line[] = [[words(TEXTS.outputLost)], ...((await r.unwritten?.()) ?? [])];
+      io.err(`${render(said, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`);
+      return 1;
+    }
     return r.exit ?? 0;
   } catch (e) {
     if (e instanceof UsageError) {
@@ -732,6 +1049,10 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
     if (e instanceof NotDone) {
       io.err(`${e.text}\n`);
       return 8;
+    }
+    if (e instanceof Failed) {
+      io.err(`${e.text}\n`);
+      return e.exit;
     }
     const d = describeError(e);
     const hint = e instanceof ContractCallError ? found.hint?.(e, o) : undefined;
