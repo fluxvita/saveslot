@@ -22,6 +22,9 @@ export const TEXTS = {
       "  slot list                 the slots and their tables",
       "  slot show <slot> [table…]  a slot's tables: fields, rule, rows",
       "  slot create <name> --template <template> | --file <schema.json> [--timezone <zone>]",
+      "  query <table> [--where 'field<op>value']… [--where-json <json>] [--order f[:desc]] [--fields a,b]",
+      "        quote a condition with < or > in it, or the shell takes it as a redirection",
+      "  history <table> <row or entity> | --key field=value … [--as-of <#seq or moment>] [--sources]",
       "  schema templates          the schema templates this saveslot ships",
       "",
       "  init | start | stop | status | config get | mcp   the local service",
@@ -91,6 +94,9 @@ export const TEXTS = {
   // slot create
   created: s("Created slot"),
   tables: s("tables"),
+  timezoneRefused: s(
+    "The --timezone given is not a time zone the service knows: give a zone name such as Asia/Shanghai or UTC.",
+  ),
   timezoneChosen: s("time zone: this computer's, as no --timezone was given:"),
   awaitingConfirmation: s("awaiting confirmation; see saveslot pending show"),
   createNeedsOne: s("give one of --template <template> and --file <schema.json>"),
@@ -100,6 +106,32 @@ export const TEXTS = {
   optionNotHere: s("that option is not one of this command's"),
   slotShowMissing: s("give the slot: saveslot slot show <slot> [table…]"),
   detail: s("  at"),
+
+  // query and history (06 §4.7)
+  queryTableMissing: s("give the table: saveslot query <table> [--where 'field>value']…"),
+  orderBad: s("--order takes a field, with :asc or :desc after it if wanted"),
+  validDuringBad: s("--valid-during takes <from>,<to>; leave <to> out for an open end"),
+  detailBad: s("--detail takes concise or detailed"),
+  historyTarget: s(
+    "give the table and a row (r_…) or an entity (e_…), or a state table's --key field=value instead",
+  ),
+  keyBad: s("--key takes field=value"),
+  asOfBoth: s("give one of --as-of and --as-of-read"),
+  asOfOnly: s("--valid-at and --detail are for --as-of / --as-of-read"),
+
+  whereNoField: (n: number) => s(`--where number ${n} does not begin with a field name`),
+  whereNoOperator: (n: number, at: number) =>
+    s(
+      `--where number ${n} has no operator at character ${at}: one of = != < <= > >= (in, contains and is_null go in --where-json)`,
+    ),
+  whereNoValue: (n: number) => s(`--where number ${n} has no value after its operator`),
+  whereBadString: (n: number) => s(`--where number ${n}: a value in quotes is a JSON string`),
+  whereNotNumber: (n: number) => s(`--where number ${n}: the field takes a number`),
+  whereUnitMissing: (n: number) =>
+    s(`--where number ${n}: the field is a quantity; write its unit after the number (5km)`),
+  whereNotBoolean: (n: number) => s(`--where number ${n}: the field takes true or false`),
+  whereJsonBad: (n: number) =>
+    s(`--where-json number ${n} is not a JSON condition object, or an array of them`),
 
   // schema templates
   templates: new Map<string, Static>([

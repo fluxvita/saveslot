@@ -59,6 +59,7 @@ export {
   TABLE_KINDS,
   TIME_DEPENDENCIES,
   TIME_TYPES,
+  VERSION_INTENTS,
 } from "@fluxvita/saveslot-contract-core";
 
 /**

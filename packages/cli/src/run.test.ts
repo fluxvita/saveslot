@@ -181,8 +181,18 @@ function catalogOf(names: readonly string[]) {
   return (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "", "http://x");
     if (url.pathname === "/v1/slots/health") {
-      const tables = names.map((n) => ({ table: n, kind: "base", description: "d" }));
-      json(res, 200, { level: "list", total: names.length, slots: [{ ...LIST.slots[0], tables }] });
+      // Pages of `limit` tables (50 when not given), the cursor carrying where the next starts.
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      const from = Number(/^cur_(\d+)\./.exec(url.searchParams.get("cursor") ?? "")?.[1] ?? "0");
+      const page = names.slice(from, from + limit);
+      const tables = page.map((n) => ({ table: n, kind: "base", description: "d" }));
+      const more = from + limit < names.length;
+      json(res, 200, {
+        level: "list",
+        total: names.length,
+        slots: [{ ...LIST.slots[0], tables }],
+        ...(more ? { next_cursor: `cur_${from + limit}.${"A".repeat(43)}` } : {}),
+      });
       return;
     }
     const one = /^\/v1\/slots\/health\/tables\/(\w+)$/.exec(url.pathname)?.[1];
@@ -199,7 +209,7 @@ describe("slot show", () => {
     const r = await cli(["slot", "show", "health", "--json"]);
     expect(r.code).toBe(0);
     const urls = seen.map((x) => x.url ?? "");
-    expect(urls[0]).toBe("/v1/slots/health");
+    expect(urls[0]).toBe("/v1/slots/health?limit=200");
     // Twelve tables: ten, then two, each a call for several tables of the slot.
     expect(urls.slice(1).map((u) => new URL(u, "http://x").pathname)).toEqual([
       "/v1/slots/health/tables",
@@ -212,6 +222,19 @@ describe("slot show", () => {
     expect(JSON.parse(r.out).tables.map((x: { table: string }) => x.table)).toEqual(
       names.map((n) => `health.${n}`),
     );
+  });
+
+  it("a slot whose tables fill more than one page of the list: every page taken", async () => {
+    const names = Array.from({ length: 450 }, (_, i) => `t${i}`);
+    answer = catalogOf(names);
+    seen.length = 0;
+    const r = await cli(["slot", "show", "health", "--json"]);
+    expect(r.code).toBe(0);
+    const lists = seen
+      .map((x) => new URL(x.url ?? "", "http://x"))
+      .filter((u) => u.pathname === "/v1/slots/health");
+    expect(lists).toHaveLength(3);
+    expect(JSON.parse(r.out).tables).toHaveLength(450);
   });
 
   it("tables named: those only, qualified by the slot; --tables adds to them", async () => {
@@ -296,6 +319,35 @@ describe("slot create", () => {
     expect((bodies[0] as { document: { timezone: string } }).document.timezone).toBe("UTC");
   });
 
+  it("a --timezone the service refuses: the error says it was the one given, and what it takes", async () => {
+    answer = (_, res) =>
+      json(res, 400, {
+        error: {
+          code: "validation_failed",
+          reason: "schema",
+          message: "the document does not compile",
+          details: [{ code: "timezone_unknown", path: "timezone" }],
+        },
+      });
+    const given = await cli([
+      "slot",
+      "create",
+      "mine",
+      "--template",
+      "running",
+      "--timezone",
+      "Mars/Olympus",
+    ]);
+    expect(given.code).toBe(5);
+    expect(given.err).toContain(TEXTS.timezoneRefused);
+    // Not the command line's time zone (a file's own): no such line.
+    const file = join(root, "tz.json");
+    writeFileSync(file, JSON.stringify({ timezone: "Mars/Olympus", tables: [] }));
+    const fromFile = await cli(["slot", "create", "mine", "--file", file]);
+    expect(fromFile.code).toBe(5);
+    expect(fromFile.err).not.toContain(TEXTS.timezoneRefused);
+  });
+
   it("a compile failure: each detail with where it is", async () => {
     answer = (_, res) =>
       json(res, 400, {
@@ -331,6 +383,213 @@ describe("slot create", () => {
     expect(r.code).toBe(2);
     expect(r.err).toBe(`${TEXTS.usageError(text)}\n`);
     expect(seen).toHaveLength(0);
+  });
+});
+
+describe("query", () => {
+  const RESULT = { table: "ledger.expenses", slot: "ledger", sv: 1, total: 0, rows: [] };
+  /** The stand-in: the table's catalog (for --where), and the query. */
+  const answering = () => {
+    answer = (req, res) => {
+      if (req.method === "GET") {
+        json(res, 200, {
+          level: "table",
+          tables: [
+            {
+              ...TABLE("ledger.expenses"),
+              fields: [
+                { name: "amount", type: "quantity", unit: "CNY", description: "d" },
+                { name: "n", type: "integer", description: "d" },
+                { name: "note", type: "text", description: "d" },
+              ],
+            },
+          ],
+        });
+        return;
+      }
+      json(res, 200, RESULT);
+    };
+  };
+
+  it("--where by the fields' types, read from the catalog first; --where-json after them", async () => {
+    answering();
+    seen.length = 0;
+    bodies.length = 0;
+    const r = await cli([
+      "query",
+      "expenses",
+      "--where",
+      "amount>50CNY",
+      "--where",
+      "n = 007",
+      "--where-json",
+      '{"field":"note","op":"contains","value":"x"}',
+      "--order",
+      "n:desc",
+      "--fields",
+      "amount, n",
+      "--valid-during",
+      "2026-11-01,",
+      "--detail",
+      "detailed",
+      "--include-revoked",
+      "--limit",
+      "5",
+    ]);
+    expect(r.code).toBe(0);
+    expect(seen.map((x) => `${x.method} ${x.url}`)).toEqual([
+      "GET /v1/tables/expenses",
+      "POST /v1/query",
+    ]);
+    expect(bodies[1]).toEqual({
+      table: "expenses",
+      where: [
+        { field: "amount", op: ">", value: { value: "50", unit: "CNY" } },
+        { field: "n", op: "=", value: "7" },
+        { field: "note", op: "contains", value: "x" },
+      ],
+      order: [{ field: "n", dir: "desc" }],
+      fields: ["amount", "n"],
+      valid_during: ["2026-11-01", null],
+      include_revoked: true,
+      detail: "detailed",
+      limit: 5,
+    });
+  });
+
+  it("no --where: no catalog read", async () => {
+    answering();
+    seen.length = 0;
+    expect((await cli(["query", "expenses"])).code).toBe(0);
+    expect(seen.map((x) => x.method)).toEqual(["POST"]);
+  });
+
+  it.each([
+    [["query"], TEXTS.queryTableMissing],
+    [["query", "a", "b"], TEXTS.queryTableMissing],
+    [["query", "t", "--order", "n:sideways"], TEXTS.orderBad],
+    [["query", "t", "--valid-during", ",2026-11-01"], TEXTS.validDuringBad],
+    [["query", "t", "--detail", "full"], TEXTS.detailBad],
+    [["query", "t", "--where-json", "nope"], TEXTS.whereJsonBad(1)],
+    [["query", "t", "--sources"], TEXTS.optionNotHere],
+  ])("%j: 2", async (argv, text) => {
+    answering();
+    const r = await cli(argv);
+    expect(r.code).toBe(2);
+    expect(r.err).toBe(`${TEXTS.usageError(text)}\n`);
+  });
+
+  it("a --where the catalog's types refuse: 2, after reading the catalog only", async () => {
+    answering();
+    seen.length = 0;
+    const r = await cli(["query", "expenses", "--where", "amount>50"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toBe(`${TEXTS.usageError(TEXTS.whereUnitMissing(1))}\n`);
+    expect(seen.map((x) => x.method)).toEqual(["GET"]);
+  });
+});
+
+describe("history", () => {
+  const TIMELINE = {
+    mode: "timeline",
+    target: { table: "t" },
+    sv: 1,
+    timezone: "UTC",
+    ver: "v1.0",
+    total: 0,
+    entries: [],
+  };
+  const AS_OF = { mode: "as_of", as_of: { seq: 3 }, sv: 1, timezone: "UTC", total: 0, rows: [] };
+  const answering = () => {
+    answer = (req, res) => {
+      if (req.method === "GET") {
+        json(res, 200, {
+          level: "table",
+          tables: [
+            {
+              ...TABLE("plan.budgets"),
+              fields: [{ name: "category", type: "text", description: "d" }],
+            },
+          ],
+        });
+        return;
+      }
+      json(
+        res,
+        200,
+        (bodies[bodies.length - 1] as { mode?: string }).mode === "as_of" ? AS_OF : TIMELINE,
+      );
+    };
+  };
+  const row = "r_4KWKRM296X61WJ89DY5XJNVA4P";
+
+  it.each([
+    [["history", "expenses", row], { table: "expenses", row, mode: "timeline" }],
+    [
+      ["history", "expenses", row, "--sources"],
+      { table: "expenses", row, mode: "timeline", expand_sources: true },
+    ],
+    [
+      ["history", "budgets", "e_4KWKRM296X61WJ89DY5XJNVA4P"],
+      { table: "budgets", entity: "e_4KWKRM296X61WJ89DY5XJNVA4P", mode: "timeline" },
+    ],
+    [
+      ["history", "expenses", row, "--as-of", "12"],
+      { table: "expenses", row, mode: "as_of", as_of: 12 },
+    ],
+    [
+      ["history", "expenses", row, "--as-of", "2026-11-10T00:00:00Z", "--detail", "detailed"],
+      { table: "expenses", row, mode: "as_of", as_of: "2026-11-10T00:00:00Z", detail: "detailed" },
+    ],
+    [
+      ["history", "expenses", row, "--as-of-read", "rd_VE4MY5TRXJHK2HQ7"],
+      { table: "expenses", row, mode: "as_of", as_of: { read: "rd_VE4MY5TRXJHK2HQ7" } },
+    ],
+  ])("%j", async (argv, body) => {
+    answering();
+    bodies.length = 0;
+    const r = await cli(argv);
+    expect(r.code).toBe(0);
+    expect(bodies[bodies.length - 1]).toEqual(body);
+  });
+
+  it("--key: the entity by its key, the value by the field's type from the catalog", async () => {
+    answering();
+    bodies.length = 0;
+    seen.length = 0;
+    const r = await cli([
+      "history",
+      "budgets",
+      "--key",
+      "category=food",
+      "--as-of",
+      "5",
+      "--valid-at",
+      "2026-11-02",
+    ]);
+    expect(r.code).toBe(0);
+    expect(seen.map((x) => x.method)).toEqual(["GET", "POST"]);
+    expect(bodies[1]).toEqual({
+      table: "budgets",
+      entity_key: { category: "food" },
+      mode: "as_of",
+      as_of: 5,
+      valid_at: "2026-11-02",
+    });
+  });
+
+  it.each([
+    [["history", "t"], TEXTS.historyTarget],
+    [["history", "t", "nope"], TEXTS.historyTarget],
+    [["history", "t", row, "--key", "a=b"], TEXTS.historyTarget],
+    [["history", "t", "--key", "nokey"], TEXTS.keyBad],
+    [["history", "t", row, "--as-of", "3", "--as-of-read", "rd_x"], TEXTS.asOfBoth],
+    [["history", "t", row, "--valid-at", "2026-11-01"], TEXTS.asOfOnly],
+  ])("%j: 2", async (argv, text) => {
+    answering();
+    const r = await cli(argv);
+    expect(r.code).toBe(2);
+    expect(r.err).toBe(`${TEXTS.usageError(text)}\n`);
   });
 });
 

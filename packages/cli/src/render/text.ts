@@ -72,6 +72,9 @@ export const name = (v: string): Part => shaped(SHAPES.name.test(v), v);
 export const table = (v: string): Part => shaped(SHAPES.table.test(v), v);
 export const time = (v: string): Part =>
   shaped(SHAPES.time.test(v) && !Number.isNaN(Date.parse(v)), v);
+/** A moment as a wall clock shows it, `YYYY-MM-DD HH:mm`: made from a recorded moment here. */
+export const localTime = (v: string): Part =>
+  shaped(/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$/.test(v), v);
 /** A number: a JSON number as written, or canonical decimal text. */
 export const num = (v: number | string): Part =>
   typeof v === "number" ? shaped(Number.isFinite(v), String(v)) : shaped(SHAPES.number.test(v), v);

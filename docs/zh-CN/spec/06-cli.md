@@ -485,7 +485,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `saveslot history changes <表>` | `history`（`changes`） | `--since`、`--until` | 一段记录时间内的变化 | P2 |
 | `saveslot sources [list / search <词> / get <s_…>]` | `sources` | `--slot`、`--kind`、`--from` / `--to` | 源数据列表或原文；已删除的只给墓碑信息 | P2 |
 
-`--where` 的简写只是把 `字段 运算符 值` 拆成契约的 `{field, op, value}`；带单位的量把单位写在数值后面（`'distance>5km'`），没写单位报用法错误；其余不支持的写法同样报用法错误；复杂条件用 `--where-json`。CLI 的读取与 Agent 的一样记入 read_log，actor 是用户；设了 `SAVESLOT_TOKEN` 时是该连接实例。
+`--where` 的简写只是把 `字段 运算符 值` 拆成契约的 `{field, op, value}`；带单位的量把单位写在数值后面（`'distance>5km'`），没写单位报用法错误；其余不支持的写法同样报用法错误；复杂条件用 `--where-json`（一个条件对象或条件数组，可与 `--where` 同给，合并成一个列表）。值按字段类型给：整数与小数照写（按十进制文本发送，不限位数），布尔写 `true` / `false`，其余照原样作字符串；字段类型取自这张表的 `catalog`（只在带 `--where` 时多读这一次）。含 `<`、`>` 的条件要加引号，否则会被 shell 当成重定向。`--valid-during` 写成 `<起>,<止>`，止留空表示开放；`history --as-of` 给操作号或时刻，`--as-of-read` 给读取 ID。CLI 的读取与 Agent 的一样记入 read_log，actor 是用户；设了 `SAVESLOT_TOKEN` 时是该连接实例。
 
 ### 4.8 审计、导出、导入、校验
 

@@ -15,22 +15,52 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  type AsOfResult,
   type CatalogTables,
   type Client,
   ContractCallError,
   createClient,
   resolveCredential,
+  type TimelineResult,
 } from "@fluxvita/saveslot-client";
 import { describeError } from "./errors.ts";
+import { asOfResult, queryResult, timelineResult } from "./render/reads.ts";
 import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
 import { type Boundary, type Line, render, t, untrusted, words } from "./render/text.ts";
 import { TEMPLATES } from "./templates.ts";
 import { type Static, TEXTS } from "./texts.ts";
 
 /** The options some commands have; any other command given one is a usage error. */
-const OWN_OPTIONS = ["template", "file", "timezone", "tables"] as const;
+const OWN_OPTIONS = {
+  template: { type: "string" },
+  file: { type: "string" },
+  timezone: { type: "string" },
+  tables: { type: "string" },
+  where: { type: "string", multiple: true },
+  "where-json": { type: "string", multiple: true },
+  order: { type: "string", multiple: true },
+  fields: { type: "string" },
+  "valid-at": { type: "string" },
+  "valid-during": { type: "string" },
+  "include-revoked": { type: "boolean" },
+  detail: { type: "string" },
+  "as-of": { type: "string" },
+  "as-of-read": { type: "string" },
+  key: { type: "string", multiple: true },
+  sources: { type: "boolean" },
+} as const;
+type OwnValue = string | string[] | boolean;
+
+/** A command's own option: a string; repeated ones as a list; flags as true. */
+const ownString = (o: Options, k: string): string | undefined =>
+  typeof o.own[k] === "string" ? (o.own[k] as string) : undefined;
+const ownList = (o: Options, k: string): string[] =>
+  Array.isArray(o.own[k]) ? (o.own[k] as string[]) : [];
+const ownFlag = (o: Options, k: string): boolean => o.own[k] === true;
 
 import { jsonText } from "./untrusted.ts";
+import { UsageError } from "./usage.ts";
+import { type FieldInfo, parseCondition, parseConditionsJson } from "./where.ts";
 
 export interface CliIO {
   readonly out: (text: string) => void;
@@ -49,16 +79,7 @@ interface Options {
   /** The positionals after the command's words. */
   readonly args: readonly string[];
   /** The command's own options, as given. */
-  readonly own: Readonly<Record<string, string | undefined>>;
-}
-
-/** A command line the command cannot take: exit 2, with its static text. */
-class UsageError extends Error {
-  readonly text: Static;
-  constructor(text: Static) {
-    super(text);
-    this.text = text;
-  }
+  readonly own: Readonly<Record<string, OwnValue | undefined>>;
 }
 
 /** What a command gives: a result to write, as text and as JSON. */
@@ -71,15 +92,32 @@ interface Command {
   /** The options of this command besides the global ones (string-valued). */
   readonly options: readonly string[];
   readonly run: (o: Options, client: () => Promise<Client>) => Promise<Output>;
+  /** A line to add to an error this command knows the cause of, from its own options. */
+  readonly hint?: (e: ContractCallError, o: Options) => Static | undefined;
 }
-const command = (options: readonly string[], run: Command["run"]): Command => ({ options, run });
+const command = (
+  options: readonly string[],
+  run: Command["run"],
+  hint?: Command["hint"],
+): Command => ({ options, run, ...(hint !== undefined ? { hint } : {}) });
+
+/** Whether an error's details point at `path` in the document. */
+function detailAt(e: ContractCallError, path: string): boolean {
+  const details = Object.hasOwn(e.body, "details") ? e.body["details"] : undefined;
+  return (
+    Array.isArray(details) &&
+    details.some(
+      (d) => typeof d === "object" && d !== null && (d as { path?: unknown }).path === path,
+    )
+  );
+}
 
 /** The schema document `slot create` submits: a template's or a file's, named and timed. */
 async function documentFor(o: Options): Promise<{ doc: Record<string, unknown>; chosen?: string }> {
   const slot = o.args[0];
   if (slot === undefined || o.args.length > 1) throw new UsageError(TEXTS.slotNameMissing);
-  const template = o.own["template"];
-  const file = o.own["file"];
+  const template = ownString(o, "template");
+  const file = ownString(o, "file");
   if ((template === undefined) === (file === undefined)) throw new UsageError(TEXTS.createNeedsOne);
   let doc: Record<string, unknown>;
   if (template !== undefined) {
@@ -101,7 +139,7 @@ async function documentFor(o: Options): Promise<{ doc: Record<string, unknown>; 
   // The name is the command line's; a new slot has no base version (06 §3 step 4).
   doc["slot"] = slot;
   doc["base_version"] = null;
-  const given = o.own["timezone"];
+  const given = ownString(o, "timezone");
   if (given !== undefined) {
     doc["timezone"] = given;
     return { doc };
@@ -115,14 +153,191 @@ async function documentFor(o: Options): Promise<{ doc: Record<string, unknown>; 
   return { doc };
 }
 
+/** Every table of `slot`, from the list level, page after page (at most 200 a page). */
+async function tablesOf(c: Client, slot: string): Promise<string[]> {
+  const out: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await c.catalog({
+      level: "list",
+      slot,
+      limit: 200,
+      ...(cursor !== undefined ? { cursor } : {}),
+    });
+    out.push(...page.slots.flatMap((x) => x.tables.map((tb) => tb.table)));
+    cursor = page.next_cursor;
+  } while (cursor !== undefined);
+  return out;
+}
+
+/** A table's fields by name, with their type and unit, from its catalog. */
+async function fieldsOf(c: Client, tableName: string): Promise<Map<string, FieldInfo>> {
+  const r = await c.catalog({ level: "table", tables: [tableName] });
+  return new Map(
+    (r.tables[0]?.fields ?? []).map((f) => [
+      f.name,
+      { type: f.type, ...(f.unit !== undefined ? { unit: f.unit } : {}) },
+    ]),
+  );
+}
+
+/** `--key field=value` (repeatable): a state table's entity key, each value by its field's type. */
+function entityKey(o: Options, fields: ReadonlyMap<string, FieldInfo>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  ownList(o, "key").forEach((k, i) => {
+    const eq = k.indexOf("=");
+    if (eq <= 0) throw new UsageError(TEXTS.keyBad);
+    const c = parseCondition(`${k.slice(0, eq)}=${k.slice(eq + 1)}`, fields, i + 1);
+    out[c.field] = c.value;
+  });
+  return out;
+}
+
 const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   [
-    "slot create",
-    command(["template", "file", "timezone"], async (o, client) => {
-      const { doc, chosen } = await documentFor(o);
-      const r = await (await client()).schemaDraft({ document: doc });
-      return { json: r, lines: slotCreated(r, chosen) };
+    "query",
+    command(
+      [
+        "where",
+        "where-json",
+        "order",
+        "fields",
+        "valid-at",
+        "valid-during",
+        "include-revoked",
+        "detail",
+      ],
+      async (o, client) => {
+        const [tableName, ...extra] = o.args;
+        if (tableName === undefined || extra.length > 0)
+          throw new UsageError(TEXTS.queryTableMissing);
+        const c = await client();
+        const wheres = ownList(o, "where");
+        // The fields' types make the values (06 §4.7): one catalog read, only with --where.
+        const fields =
+          wheres.length > 0 ? await fieldsOf(c, tableName) : new Map<string, FieldInfo>();
+        const where = [
+          ...wheres.map((w, i) => parseCondition(w, fields, i + 1)),
+          ...parseConditionsJson(ownList(o, "where-json")),
+        ];
+        const order = ownList(o, "order").map((x) => {
+          const m = /^([A-Za-z][A-Za-z0-9_]{0,62})(?::(asc|desc))?$/.exec(x.trim());
+          if (m === null) throw new UsageError(TEXTS.orderBad);
+          return {
+            field: m[1] as string,
+            ...(m[2] !== undefined ? { dir: m[2] as "asc" | "desc" } : {}),
+          };
+        });
+        const fieldsShown = (ownString(o, "fields") ?? "")
+          .split(",")
+          .map((x) => x.trim())
+          .filter((x) => x !== "");
+        const during = ownString(o, "valid-during");
+        let validDuring: [string, string | null] | undefined;
+        if (during !== undefined) {
+          const [from, to, ...more] = during.split(",").map((x) => x.trim());
+          if (from === undefined || from === "" || more.length > 0)
+            throw new UsageError(TEXTS.validDuringBad);
+          validDuring = [from, to === undefined || to === "" ? null : to];
+        }
+        const detail = ownString(o, "detail");
+        if (detail !== undefined && detail !== "concise" && detail !== "detailed") {
+          throw new UsageError(TEXTS.detailBad);
+        }
+        const validAt = ownString(o, "valid-at");
+        const r = await c.query({
+          table: tableName,
+          ...(where.length > 0 ? { where: where as never } : {}),
+          ...(order.length > 0 ? { order } : {}),
+          ...(fieldsShown.length > 0 ? { fields: fieldsShown } : {}),
+          ...(validAt !== undefined ? { valid_at: validAt } : {}),
+          ...(validDuring !== undefined ? { valid_during: validDuring } : {}),
+          ...(ownFlag(o, "include-revoked") ? { include_revoked: true } : {}),
+          ...(detail !== undefined ? { detail } : {}),
+          ...(o.limit !== undefined ? { limit: o.limit } : {}),
+          ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
+        });
+        return { json: r, lines: queryResult(r) };
+      },
+    ),
+  ],
+  [
+    "history",
+    command(["as-of", "as-of-read", "valid-at", "key", "sources", "detail"], async (o, client) => {
+      const [tableName, ref, ...extra] = o.args;
+      const keys = ownList(o, "key");
+      if (
+        tableName === undefined ||
+        extra.length > 0 ||
+        (ref === undefined) === (keys.length === 0)
+      ) {
+        throw new UsageError(TEXTS.historyTarget);
+      }
+      const c = await client();
+      let target: Record<string, unknown>;
+      if (ref !== undefined) {
+        if (/^r_/.test(ref)) target = { row: ref };
+        else if (/^e_/.test(ref)) target = { entity: ref };
+        else throw new UsageError(TEXTS.historyTarget);
+      } else {
+        target = { entity_key: entityKey(o, await fieldsOf(c, tableName)) };
+      }
+      const asOf = ownString(o, "as-of");
+      const asOfRead = ownString(o, "as-of-read");
+      if (asOf !== undefined && asOfRead !== undefined) throw new UsageError(TEXTS.asOfBoth);
+      const validAt = ownString(o, "valid-at");
+      const detail = ownString(o, "detail");
+      if (detail !== undefined && detail !== "concise" && detail !== "detailed") {
+        throw new UsageError(TEXTS.detailBad);
+      }
+      const page = {
+        ...(o.limit !== undefined ? { limit: o.limit } : {}),
+        ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
+      };
+      if (asOf !== undefined || asOfRead !== undefined) {
+        const point =
+          asOfRead !== undefined
+            ? { read: asOfRead }
+            : /^[0-9]{1,15}$/.test(asOf as string)
+              ? Number(asOf)
+              : (asOf as string);
+        const r = await c.history({
+          table: tableName,
+          ...target,
+          mode: "as_of",
+          as_of: point,
+          ...(validAt !== undefined ? { valid_at: validAt } : {}),
+          ...(detail !== undefined ? { detail } : {}),
+          ...page,
+        } as never);
+        return { json: r, lines: asOfResult(r as unknown as AsOfResult) };
+      }
+      if (validAt !== undefined || detail !== undefined) throw new UsageError(TEXTS.asOfOnly);
+      const r = await c.history({
+        table: tableName,
+        ...target,
+        mode: "timeline",
+        ...(ownFlag(o, "sources") ? { expand_sources: true } : {}),
+        ...page,
+      } as never);
+      return { json: r, lines: timelineResult(r as TimelineResult) };
     }),
+  ],
+  [
+    "slot create",
+    command(
+      ["template", "file", "timezone"],
+      async (o, client) => {
+        const { doc, chosen } = await documentFor(o);
+        const r = await (await client()).schemaDraft({ document: doc });
+        return { json: r, lines: slotCreated(r, chosen) };
+      },
+      // The time zone the command line gave, refused: say so, and what it takes.
+      (e, o) =>
+        ownString(o, "timezone") !== undefined && detailAt(e, "timezone")
+          ? TEXTS.timezoneRefused
+          : undefined,
+    ),
   ],
   [
     "slot show",
@@ -131,16 +346,11 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
       if (slot === undefined) throw new UsageError(TEXTS.slotShowMissing);
       const listed = [
         ...named,
-        ...(o.own["tables"] ?? "").split(",").filter((x) => x.trim() !== ""),
+        ...(ownString(o, "tables") ?? "").split(",").filter((x) => x.trim() !== ""),
       ].map((x) => x.trim());
       const c = await client();
       // No tables named: every table of the slot, as the list gives them.
-      const tables =
-        listed.length > 0
-          ? listed
-          : (await c.catalog({ level: "list", slot })).slots.flatMap((x) =>
-              x.tables.map((tb) => tb.table),
-            );
+      const tables = listed.length > 0 ? listed : await tablesOf(c, slot);
       const qualified = tables.map((x) => (x.includes(".") ? x : `${slot}.${x}`));
       // The table level takes at most 10 tables a call (04-contract-types §4.2).
       const parts: CatalogTables[] = [];
@@ -194,7 +404,7 @@ type Env = Readonly<Record<string, string | undefined>>;
 
 /** Runs one command line (without the program name); resolves with its exit code. */
 export async function run(argv: readonly string[], env: Env, io: CliIO): Promise<number> {
-  let values: Record<string, string | boolean | undefined>;
+  let values: Record<string, string | string[] | boolean | undefined>;
   let positionals: string[];
   try {
     ({ values, positionals } = parseArgs({
@@ -208,10 +418,7 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
         home: { type: "string" },
         help: { type: "boolean", short: "h" },
         // The commands' own options, checked against the command below.
-        template: { type: "string" },
-        file: { type: "string" },
-        timezone: { type: "string" },
-        tables: { type: "string" },
+        ...OWN_OPTIONS,
       },
       strict: true,
       allowPositionals: true,
@@ -244,20 +451,23 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
     }
     limit = Number(l);
   }
-  const found = COMMANDS.get(positionals.slice(0, 2).join(" "));
+  // A command of two words (`slot list`), or of one (`query <table>`).
+  const two = COMMANDS.get(positionals.slice(0, 2).join(" "));
+  const found = two ?? COMMANDS.get(positionals[0] ?? "");
+  const words_ = two !== undefined ? 2 : 1;
   if (found === undefined) {
     io.err(`${TEXTS.unknownCommand}\n`);
     return 2;
   }
-  const own: Record<string, string | undefined> = {};
-  for (const k of OWN_OPTIONS) {
+  const own: Record<string, OwnValue> = {};
+  for (const k of Object.keys(OWN_OPTIONS)) {
     const v = values[k];
     if (v === undefined) continue;
     if (!found.options.includes(k)) {
       io.err(`${TEXTS.usageError(TEXTS.optionNotHere)}\n`);
       return 2;
     }
-    own[k] = String(v);
+    own[k] = v as OwnValue;
   }
   const o: Options = {
     json: values["json"] === true,
@@ -267,7 +477,7 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
     home: resolve(
       typeof values["home"] === "string" ? values["home"] : join(homedir(), ".saveslot"),
     ),
-    args: positionals.slice(2),
+    args: positionals.slice(words_),
     own,
   };
   const client = async () => {
@@ -291,6 +501,8 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
       return 2;
     }
     const d = describeError(e);
+    const hint = e instanceof ContractCallError ? found.hint?.(e, o) : undefined;
+    if (hint !== undefined) d.lines.push(t`  ${words(hint)}`);
     if (o.json && e instanceof ContractCallError) io.out(`${jsonText({ error: e.body })}\n`);
     io.err(`${render(d.lines, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`);
     return d.exit;
