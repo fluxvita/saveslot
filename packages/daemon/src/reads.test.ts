@@ -19,8 +19,8 @@ import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture
 const root = mkdtempSync(join(tmpdir(), "saveslot-reads-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-async function open(home: string, dataDir: string): Promise<LocalTenant> {
-  const r = await openLocalTenant({ home, dataDir, backend: testBackend() });
+async function open(home: string): Promise<LocalTenant> {
+  const r = await openLocalTenant({ home, backend: testBackend() });
   if (!r.ok) throw new Error(r.failure);
   return r.tenant;
 }
@@ -28,8 +28,8 @@ async function open(home: string, dataDir: string): Promise<LocalTenant> {
 describe("the local tenant's reads", () => {
   it("are written by flushLocalReads, and by closing the tenant", async () => {
     const home = join(root, "h");
-    const dataDir = await createLocalHome(home, testBackend());
-    const t = await open(home, dataDir);
+    await createLocalHome(home, testBackend());
+    const t = await open(home);
     const r1 = recordTestRead(t);
     const r2 = recordTestRead(t);
     expect(await flushLocalReads(t)).toBe(2);
@@ -38,7 +38,7 @@ describe("the local tenant's reads", () => {
     const r3 = recordTestRead(t);
     expect(await closeLocalTenant(t)).toEqual({});
 
-    const again = await open(home, dataDir);
+    const again = await open(home);
     try {
       expect(await writtenReads(again.store)).toEqual([r1, r2, r3]);
     } finally {

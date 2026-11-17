@@ -3,7 +3,7 @@
 // signal, and what the background log holds.
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sessionFile } from "@fluxvita/saveslot-service";
@@ -142,6 +142,21 @@ describe("start, status, stop", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it("status gives the data directory the home records", async () => {
+    const h = await initialized();
+    const data = join(root, `data-${n++}`);
+    renameSync(join(h, "data"), data);
+    const directory = join(h, "control", "tenant.json");
+    writeFileSync(
+      directory,
+      `${JSON.stringify({ ...JSON.parse(readFileSync(directory, "utf8")), data_dir: data })}\n`,
+    );
+    expect((await run("start", h)).code).toBe(0);
+    const st = await run("status", h);
+    expect(st.code).toBe(0);
+    expect(st.out).toContain(`data      ${data}\n`);
   });
 
   it("start refuses a home not initialized (5)", async () => {

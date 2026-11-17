@@ -370,6 +370,51 @@ describe("the service in process", () => {
     await s.stop();
   });
 
+  it("opens the data directory init recorded; that directory gone, it stops and makes nothing", async () => {
+    const h = join(root, `elsewhere-${n++}`);
+    const data = join(root, `data-${n++}`);
+    await initLocalHome({
+      home: h,
+      dataDir: data,
+      backend: testBackend(),
+      lock: osFileLock,
+      now: new Date().toISOString(),
+    });
+    expect(JSON.parse(readFileSync(join(h, "control", "tenant.json"), "utf8")).data_dir).toBe(data);
+    expect(existsSync(join(h, "data"))).toBe(false);
+
+    const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
+    expect(s.state).toBe("ready");
+    await s.stop();
+
+    const moved = `${data}-moved`;
+    renameSync(data, moved);
+    const gone = await runService({ home: h, version: "t", signals: false, log: () => {} });
+    expect([gone.state, gone.reason]).toEqual(["failed", "store_not_found"]);
+    await gone.stop();
+    expect(existsSync(data)).toBe(false);
+    expect(existsSync(join(h, "data"))).toBe(false);
+
+    // A relative data directory is refused before the home is made.
+    const relative = join(root, `relative-${n++}`);
+    await expect(
+      initLocalHome({
+        home: relative,
+        dataDir: "data",
+        backend: testBackend(),
+        lock: osFileLock,
+        now: new Date().toISOString(),
+      }),
+    ).rejects.toThrow(TypeError);
+    expect(existsSync(relative)).toBe(false);
+
+    // Back in its place, it serves again.
+    renameSync(moved, data);
+    const back = await runService({ home: h, version: "t", signals: false, log: () => {} });
+    expect(back.state).toBe("ready");
+    await back.stop();
+  });
+
   it("reports the store's own refusal: the data directory held by another opener", async () => {
     const h = home();
     const other = await testBackend().open({ kind: "pglite", dir: join(h, "data") }, {});

@@ -31,9 +31,20 @@ async function code(p: Promise<unknown>): Promise<string> {
 }
 
 describe("readTenantDirectory", () => {
-  it("reads the user and the tenant", async () => {
+  it("reads the user and the tenant; the data directory is <home>/data", async () => {
     const h = home(JSON.stringify({ format: 1, user: USER, tenant: TENANT }));
-    expect(await readTenantDirectory(h)).toEqual({ user: USER, tenant: TENANT });
+    expect(await readTenantDirectory(h)).toEqual({
+      user: USER,
+      tenant: TENANT,
+      dataDir: join(h, "data"),
+    });
+  });
+
+  it("reads a data directory recorded as an absolute path", async () => {
+    const h = home(
+      JSON.stringify({ format: 1, user: USER, tenant: TENANT, data_dir: "/x/y data" }),
+    );
+    expect((await readTenantDirectory(h)).dataDir).toBe("/x/y data");
   });
 
   it("reports a home without the file as not initialized", async () => {
@@ -56,6 +67,14 @@ describe("readTenantDirectory", () => {
     ],
     ["a user ID that is no ID", JSON.stringify({ format: 1, user: "u_x", tenant: TENANT })],
     ["a number for the tenant", JSON.stringify({ format: 1, user: USER, tenant: 1 })],
+    ...(["data", "./data", "", "~/data"] as const).map((d): [string, string] => [
+      `a relative data directory ${JSON.stringify(d)}`,
+      JSON.stringify({ format: 1, user: USER, tenant: TENANT, data_dir: d }),
+    ]),
+    ...([1, null, ["/x"], { path: "/x" }] as const).map((d): [string, string] => [
+      `a data directory that is no string (${JSON.stringify(d)})`,
+      JSON.stringify({ format: 1, user: USER, tenant: TENANT, data_dir: d }),
+    ]),
   ])("refuses %s as corrupt", async (_, text) => {
     expect(await code(readTenantDirectory(home(text)))).toBe("tenant_directory_corrupt");
   });

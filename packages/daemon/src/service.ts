@@ -53,8 +53,6 @@ export type ServiceState = "starting" | "ready" | "stopping" | "stopped" | "fail
 export interface RunServiceOptions {
   /** The service's home (`~/.saveslot` by default in `main`). */
   readonly home: string;
-  /** The tenant's data directory; `<home>/data` when not given. */
-  readonly dataDir?: string;
   readonly version: string;
   /** Stop on SIGTERM and SIGINT (default true). */
   readonly signals?: boolean;
@@ -261,7 +259,6 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     try {
       const r = await openLocalTenant({
         home: o.home,
-        dataDir: o.dataDir ?? join(o.home, "data"),
         backend: new PgliteBackend(),
       });
       if (stopping !== undefined) {

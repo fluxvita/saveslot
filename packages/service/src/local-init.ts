@@ -11,7 +11,7 @@
 // stops working at once.
 
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import {
   createOpsContext,
   createTenant,
@@ -85,7 +85,10 @@ export async function checkLocalHome(home: string): Promise<void> {
   await checkModeIfPresent(sessionFile(home), 0o600);
 }
 
-/** Initializes `home`; the data directory defaults to `<home>/data`. */
+/**
+ * Initializes `home`. The data directory defaults to `<home>/data`; another one must be an absolute
+ * path and is recorded in `control/tenant.json` as `data_dir`, where the service opens it.
+ */
 export async function initLocalHome(o: {
   readonly home: string;
   readonly dataDir?: string;
@@ -93,6 +96,9 @@ export async function initLocalHome(o: {
   readonly lock: HomeLock;
   readonly now: string;
 }): Promise<{ readonly tenant: string; readonly user: string; readonly dataDir: string }> {
+  if (o.dataDir !== undefined && !isAbsolute(o.dataDir)) {
+    throw new TypeError("the data directory must be an absolute path");
+  }
   return underHomeLock(o.home, o.lock, async () => {
     await ensureDir(controlDir(o.home));
     await ensureDir(credentialsDir(o.home));
@@ -124,7 +130,13 @@ export async function initLocalHome(o: {
     const token = newToken("session");
     writePrivate(sessionFile(o.home), `${token}\n`);
     Credentials.create(o.home, tokenHash(token));
-    writePrivate(tenantFile(o.home), `${JSON.stringify({ format: 1, user, tenant })}\n`);
+    const directory = {
+      format: 1,
+      user,
+      tenant,
+      ...(dataDir !== join(o.home, "data") ? { data_dir: dataDir } : {}),
+    };
+    writePrivate(tenantFile(o.home), `${JSON.stringify(directory)}\n`);
     return { tenant, user, dataDir };
   });
 }

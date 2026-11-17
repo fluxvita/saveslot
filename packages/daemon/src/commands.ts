@@ -311,6 +311,11 @@ export async function status(home: string, io: CommandIO): Promise<number> {
     return 7;
   }
   const pending = h.state === "ready" ? await pendingCount(home) : undefined;
+  // The data directory the home records (the one the service opened); unknown when unreadable.
+  const data = await readTenantDirectory(home).then(
+    (d) => d.dataDir,
+    () => undefined,
+  );
   io.out(
     TEXTS.status({
       state: h.state,
@@ -320,8 +325,7 @@ export async function status(home: string, io: CommandIO): Promise<number> {
       pid: h.pid,
       since: h.since,
       home,
-      // The default place; reads the data directory the home records once it can record one.
-      data: join(home, "data"),
+      data,
       socket,
       pending,
     }),

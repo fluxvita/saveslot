@@ -66,11 +66,7 @@ async function refusal(p: Promise<unknown>): Promise<unknown> {
 }
 const sessionToken = () => readFileSync(sessionFile(home), "utf8").trim();
 async function open(): Promise<void> {
-  const r = await openLocalTenant({
-    home,
-    dataDir: join(home, "data"),
-    backend: testBackend(),
-  });
+  const r = await openLocalTenant({ home, backend: testBackend() });
   if (!r.ok) throw new Error(r.failure);
   t = r.tenant;
   creds = await CredentialsClass.load(home);

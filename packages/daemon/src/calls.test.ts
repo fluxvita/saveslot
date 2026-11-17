@@ -77,11 +77,7 @@ async function call(
 
 beforeAll(async () => {
   await initLocalHome({ home, backend: testBackend(), lock: osFileLock, now: NOW });
-  const r = await openLocalTenant({
-    home,
-    dataDir: join(home, "data"),
-    backend: testBackend(),
-  });
+  const r = await openLocalTenant({ home, backend: testBackend() });
   if (!r.ok) throw new Error(r.failure);
   t = r.tenant;
   credentials = await Credentials.load(home);

@@ -18,9 +18,9 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 describe("opening the local tenant", () => {
   it("loads the restricted SQL parser before the tenant serves", async () => {
     const home = join(root, "h");
-    const dataDir = await createLocalHome(home, testBackend());
+    await createLocalHome(home, testBackend());
     expect(isRsqlLoaded()).toBe(false);
-    const r = await openLocalTenant({ home, dataDir, backend: testBackend() });
+    const r = await openLocalTenant({ home, backend: testBackend() });
     if (!r.ok) throw new Error(r.failure);
     try {
       expect(isRsqlLoaded()).toBe(true);

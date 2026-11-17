@@ -48,7 +48,7 @@ export const TEXTS = {
     readonly pid: number;
     readonly since: string;
     readonly home: string;
-    readonly data: string;
+    readonly data: string | undefined;
     readonly socket: string;
     readonly pending: number | undefined;
   }) =>
@@ -57,7 +57,7 @@ export const TEXTS = {
       `  version   ${s.version} (this saveslot: ${s.mine})`,
       `  pid       ${s.pid}, since ${s.since}`,
       `  home      ${s.home}`,
-      `  data      ${s.data}`,
+      `  data      ${s.data ?? "unknown"}`,
       `  socket    ${s.socket}`,
       `  pending   ${s.pending === undefined ? "unknown" : s.pending}`,
     ].join("\n"),

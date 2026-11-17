@@ -13,7 +13,7 @@
 // database's Wasm instance in a long-running process is what the process model avoids (§7).
 
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type {
   AnchorStore,
   OpenTenantStop,
@@ -43,10 +43,12 @@ export const controlDir = (home: string): string => join(home, "control");
 export const tenantFile = (home: string): string => join(controlDir(home), "tenant.json");
 export const anchorFile = (home: string): string => join(controlDir(home), "anchor.json");
 
-/** The local tenant directory: the one user and their tenant. */
+/** The local tenant directory: the one user, their tenant, and where its storage is. */
 export interface TenantDirectory {
   readonly user: UserId;
   readonly tenant: TenantId;
+  /** The tenant's data directory, an absolute path; `<home>/data` when the file names none. */
+  readonly dataDir: string;
 }
 
 /** Why the local tenant cannot be opened or cannot serve. Stable codes, no paths, no user data. */
@@ -69,8 +71,9 @@ export class LocalTenantError extends Error {
 }
 
 /**
- * Reads `control/tenant.json`: `{"format": 1, "user": "u_…", "tenant": "tn_…"}`, exactly these
- * keys. The file is written by `saveslot init` (not in this package yet).
+ * Reads `control/tenant.json`: `{"format": 1, "user": "u_…", "tenant": "tn_…"}` and, when the data
+ * directory is not `<home>/data`, `"data_dir"` with its absolute path; no other keys. A relative
+ * or non-string `data_dir` is a corrupt directory, not a path to resolve against anything.
  */
 export async function readTenantDirectory(home: string): Promise<TenantDirectory> {
   let text: string;
@@ -92,13 +95,17 @@ export async function readTenantDirectory(home: string): Promise<TenantDirectory
   }
   if (v === null || typeof v !== "object" || Array.isArray(v)) throw corrupt();
   const o = v as Record<string, unknown>;
-  const keys = Object.keys(o).sort();
+  const keys = Object.keys(o)
+    .filter((k) => k !== "data_dir")
+    .sort();
   if (keys.join(",") !== "format,tenant,user" || o["format"] !== 1) throw corrupt();
+  const dataDir = Object.hasOwn(o, "data_dir") ? o["data_dir"] : join(home, "data");
+  if (typeof dataDir !== "string" || !isAbsolute(dataDir)) throw corrupt();
   const user = o["user"];
   const tenant = o["tenant"];
   if (typeof user !== "string" || !USER_ID.test(user)) throw corrupt();
   if (typeof tenant !== "string" || !TENANT_ID.test(tenant)) throw corrupt();
-  return { user: user as UserId, tenant: tenant as TenantId };
+  return { user: user as UserId, tenant: tenant as TenantId, dataDir };
 }
 
 /** The open local tenant. */
@@ -115,12 +122,15 @@ export type OpenLocalTenantResult =
   | { readonly ok: false; readonly failure: LocalTenantFailure };
 
 /**
- * Opens the local tenant and decides whether it serves. Errors of the storage itself (locked,
- * another format version, durability not applied) are thrown as the backend throws them.
+ * Opens the local tenant, in the data directory the tenant directory records, and decides whether
+ * it serves. The storage is opened without `create`: a data directory that is gone, or holds no
+ * storage, stops the service (`store_not_found`, thrown as the backend throws it) and nothing is
+ * made in its place; storage without the tenant's genesis stops it as `tenant_empty`. Other errors
+ * of the storage itself (locked, another format version, durability not applied) are thrown as
+ * the backend throws them.
  */
 export async function openLocalTenant(o: {
   readonly home: string;
-  readonly dataDir: string;
   readonly backend: StorageBackend;
 }): Promise<OpenLocalTenantResult> {
   let dir: TenantDirectory;
@@ -131,7 +141,7 @@ export async function openLocalTenant(o: {
     throw e;
   }
   const anchor = openFileAnchorStore(anchorFile(o.home));
-  const store = await o.backend.open({ kind: "pglite", dir: o.dataDir }, {});
+  const store = await o.backend.open({ kind: "pglite", dir: dir.dataDir }, {});
   try {
     const [tail, a] = await Promise.all([
       store.read((tx) => readTail(tx)),
