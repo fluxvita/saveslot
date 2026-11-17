@@ -402,27 +402,30 @@ async function conflictOf(
       exists: r.exists,
     };
   }
-  let previous: Record<string, unknown> | undefined;
-  if (e.mergeBase !== undefined) {
-    const base = await sideOf(tx, e, n, table, e.mergeBase);
-    previous =
-      base.kind === "state"
-        ? {
-            seq: e.mergeBase,
-            exists: base.pieces.some((p) => p.values !== null),
-            spans: base.pieces.map((p) => pieceOut(n, p)),
-          }
-        : {
-            seq: e.mergeBase,
-            exists: base.row.exists,
-            ...(base.row.values !== undefined ? { values: base.row.values } : {}),
-          };
+  // A conflict item always has a merge base (09-event-format: `merge_base_op` on every conflict
+  // item event), so `previous` is always given. The merge base is a `ver` a candidate brought, a
+  // version of the row; `exists` is false where the row was revoked there.
+  if (e.mergeBase === undefined) {
+    throw new ReadError("internal", "a conflict item without a merge base");
   }
+  const base = await sideOf(tx, e, n, table, e.mergeBase);
+  const previous =
+    base.kind === "state"
+      ? {
+          seq: e.mergeBase,
+          exists: base.pieces.some((p) => p.values !== null),
+          spans: base.pieces.map((p) => pieceOut(n, p)),
+        }
+      : {
+          seq: e.mergeBase,
+          exists: base.row.exists,
+          ...(base.row.values !== undefined ? { values: base.row.values } : {}),
+        };
   return {
     effective,
     candidates,
     ...(e.relatedItem !== undefined ? { related_item: e.relatedItem } : {}),
-    ...(previous !== undefined ? { previous } : {}),
+    previous,
     reverted_by_previous: e.impact
       .filter((b) => b["kind"] === "reverted_write")
       .map((b) => ({

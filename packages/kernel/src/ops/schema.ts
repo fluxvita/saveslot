@@ -22,7 +22,12 @@ import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import { ApplyError, applyEvents, eventsOf } from "../apply/index.ts";
 import { appendOperation, type NewEvent } from "../log/index.ts";
 import { evaluationRefusal, loadRsql, RULESET_VERSION } from "../rules/index.ts";
-import { compileNewSlot, DEFAULT_SLOT_POLICY, filledDocument } from "../schema/index.ts";
+import {
+  type CompileWarning,
+  compileNewSlot,
+  DEFAULT_SLOT_POLICY,
+  filledDocument,
+} from "../schema/index.ts";
 import type { ReadTx, TenantStore } from "../store/ports.ts";
 import { todayIn } from "../write/index.ts";
 import type { OpsContext, Visibility } from "./context.ts";
@@ -55,7 +60,8 @@ export interface SchemaDraftReceipt {
   readonly outcome: "applied";
   readonly sv: 1;
   readonly replayed?: true;
-  readonly warnings?: readonly { readonly code: string; readonly path: string }[];
+  /** 04-contract-types §7 `Warning`: the code and the table it is about. */
+  readonly warnings?: readonly { readonly code: string; readonly table: string }[];
 }
 
 /**
@@ -133,7 +139,7 @@ function receiptOf(
   document: JsonValue,
   compiled: CompiledSchema,
   changes: readonly Record<string, unknown>[],
-  warnings: readonly { code: string; path: string }[],
+  warnings: readonly CompileWarning[],
   replayed: boolean,
 ): SchemaDraftReceipt {
   const name = (id: unknown) => compiled.tables.find((t) => t.id === id)?.name ?? id;
@@ -152,7 +158,9 @@ function receiptOf(
     outcome: "applied",
     sv: 1,
     ...(replayed ? { replayed: true as const } : {}),
-    ...(warnings.length > 0 ? { warnings } : {}),
+    ...(warnings.length > 0
+      ? { warnings: warnings.map((w) => ({ code: w.code, table: w.table })) }
+      : {}),
   };
 }
 

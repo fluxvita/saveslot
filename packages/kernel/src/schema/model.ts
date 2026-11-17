@@ -65,12 +65,16 @@ export type CompileError =
 export type CompileWarning =
   | {
       readonly code: "single_field_external_key";
+      /** The table's name: what `schema_draft` gives (04-contract-types §7 `Warning`). */
+      readonly table: string;
       /** Position of the table's `external_key`. */
       readonly path: string;
     }
   | {
       /** A derived table's group key comes from free text: it goes with the group when deleted (06 «派生行身份»). */
       readonly code: "group_key_free_text";
+      /** The derived table's name: what `schema_draft` gives (04-contract-types §7 `Warning`). */
+      readonly table: string;
       /** Position of the derived table's `rule`. */
       readonly path: string;
     };

@@ -9,13 +9,7 @@
 // before the operation: the version table's cell that the operation closed there. Not in this
 // version: `premises` (P2), `affected` (derived changes come with `derive`), literal hits (P2).
 
-import type {
-  BizPoint,
-  FieldValue,
-  ItemId,
-  JsonValue,
-  TableId,
-} from "@fluxvita/saveslot-contract-core";
+import type { FieldValue, ItemId, JsonValue, TableId } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry } from "../audit/index.ts";
 import { get, has, isObj, type Obj } from "../request/index.ts";
@@ -27,12 +21,12 @@ import {
   type Target,
   taskOf,
 } from "./history.ts";
+import { intervalOf } from "./interval.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 import type { KeySpec } from "./rows.ts";
 import { decode, INSTANT_TEXT, logPosition, physical, restoreCount, selectOf } from "./select.ts";
 import {
   type Actor,
-  type Interval,
   invalid,
   ReadError,
   type SourceRef,
@@ -40,6 +34,12 @@ import {
   type TimelineField,
   type TimelineResult,
 } from "./types.ts";
+
+/** An item's or entry's business time while it is worked out: `[from, to)`, `to` null when open. */
+interface Span {
+  readonly from: string;
+  readonly to: string | null;
+}
 
 type Blocks = Readonly<Record<string, { body: JsonValue | undefined; removed: boolean }>>;
 
@@ -358,6 +358,7 @@ export async function timelineInTx(
   );
   const fieldName = new Map(t.fields.map((f) => [f.id as string, f.name]));
   const state = t.time.type === "state";
+  const date = t.time.type === "state" && t.time.granularity === "date";
   const entries: TimelineEntry[] = events.map((e) => {
     const head = (e.blocks["target"]?.body ?? {}) as Record<string, unknown>;
     const intent = String(head["intent"] ?? "");
@@ -379,10 +380,10 @@ export async function timelineInTx(
     const fields: Record<string, TimelineField[]> = Object.create(null);
     let from: string | null | undefined;
     let to: string | null | undefined;
-    const widen = (v: Interval | undefined) => {
+    const widen = (v: Span | undefined) => {
       if (v === undefined) return;
       if (from === undefined || (from !== null && v.from < from)) from = v.from;
-      const end = v.to ?? null;
+      const end = v.to;
       if (to === undefined || (to !== null && (end === null || end > to))) to = end;
     };
     const paths = Object.keys(e.blocks).sort((a, b) => {
@@ -405,7 +406,7 @@ export async function timelineInTx(
       const latest = rows[0];
       const status = latest?.status ?? String(body["status"] ?? "");
       // The item's interval: the latest given (source table), else the span block.
-      let valid: Interval | undefined;
+      let valid: Span | undefined;
       if (state) {
         const span = e.blocks[`span/${fieldId}/${k}`]?.body as Record<string, unknown> | undefined;
         const sv = (span?.["valid"] ?? span?.["seen_valid"]) as
@@ -413,9 +414,7 @@ export async function timelineInTx(
           | undefined;
         const vf = latest?.valid_from ?? sv?.from;
         const vt = latest !== undefined ? latest.valid_to : (sv?.to ?? null);
-        if (vf !== undefined && vf !== null)
-          valid =
-            vt === null ? { from: vf as BizPoint } : { from: vf as BizPoint, to: vt as BizPoint };
+        if (vf !== undefined && vf !== null) valid = { from: vf, to: vt ?? null };
       }
       widen(valid);
       const noValue = body["no_value"] === true;
@@ -434,7 +433,7 @@ export async function timelineInTx(
         ...(uncovered ? { uncovered: true as const } : {}),
         ...(prior !== undefined ? { before: prior } : {}),
         ...(hasValue ? { after: body["value"] as FieldValue } : {}),
-        ...(valid !== undefined ? { valid } : {}),
+        ...(valid !== undefined ? { valid: intervalOf(valid.from, valid.to, date) } : {}),
         ...(block.removed ? { removed: true as const } : {}),
         ...(fieldId === "existence"
           ? {}
@@ -453,12 +452,7 @@ export async function timelineInTx(
       intent,
       ...(via !== undefined ? { via } : {}),
       ...(state && from !== undefined && from !== null
-        ? {
-            valid:
-              to === undefined || to === null
-                ? { from: from as BizPoint }
-                : { from: from as BizPoint, to: to as BizPoint },
-          }
+        ? { valid: intervalOf(from, to, date) }
         : {}),
       fields: shown,
     };

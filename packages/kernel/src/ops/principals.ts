@@ -53,7 +53,8 @@ export interface IssueConnectionParams {
 /** A connection instance as `principals` holds it. */
 export interface ConnectionRecord {
   readonly id: ConnectionId;
-  readonly name: string | null;
+  /** Always given: a connection is registered with a name (09 §5.3), deletion does not take it. */
+  readonly name: string;
   readonly scopes: readonly Scope[];
   /** Absent: all slots. */
   readonly slots?: readonly SlotId[];
@@ -85,6 +86,9 @@ interface Row {
 }
 
 function record(r: Row): ConnectionRecord {
+  // The column is shared with the user and system rows, which have no name; a connection's is
+  // its registration's `name` block, which privacy deletion does not take (09 §5.3).
+  if (r.name === null) throw new OpsError("internal", "a connection without a name");
   return {
     id: r.id as ConnectionId,
     name: r.name,

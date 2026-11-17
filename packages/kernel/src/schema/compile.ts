@@ -266,13 +266,13 @@ export function compileNewSlot(input: CompileNewSlotInput): CompileResult {
   const warnings: CompileWarning[] = doc.tables.flatMap((t): CompileWarning[] => {
     if (t.kind === "base") {
       return t.external_key?.length === 1
-        ? [{ code: "single_field_external_key", path: `${t.path}/external_key` }]
+        ? [{ code: "single_field_external_key", table: t.name, path: `${t.path}/external_key` }]
         : [];
     }
     const scope = compiledDerived.get(t)?.rule.scope;
     // 06 «派生行身份»: a group key from free text goes with the group when deleted.
     return scope?.kind === "group" && scope.key_from_free_text
-      ? [{ code: "group_key_free_text", path: `${t.path}/rule` }]
+      ? [{ code: "group_key_free_text", table: t.name, path: `${t.path}/rule` }]
       : [];
   });
   return { ok: true, compiled, changes, outcome: "applied", targetVersion: 1, warnings };

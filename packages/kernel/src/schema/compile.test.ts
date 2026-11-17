@@ -213,7 +213,11 @@ describe("the compiled definition", () => {
     const one = ok(compile(edit((d) => (d.tables[3].external_key = ["key"]))));
     expect(one.compiled.tables[3]).toMatchObject({ external_key: ["f1"] });
     expect(one.warnings).toEqual([
-      { code: "single_field_external_key", path: "tables/3/external_key" },
+      {
+        code: "single_field_external_key",
+        table: "settings",
+        path: "tables/3/external_key",
+      },
     ]);
     expect(eventIssues(one)).toEqual([]);
     const two = ok(

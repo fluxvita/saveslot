@@ -52,9 +52,14 @@ export interface TargetRef {
   readonly key?: Values;
 }
 
+/**
+ * §1 `Interval`: a business time interval of a read result, `[valid_from, valid_to)`. `valid_to`
+ * null: open. `valid_to_inclusive`: on date-grained tables, the last day of an interval that ends.
+ */
 export interface Interval {
-  readonly from: BizPoint;
-  readonly to?: BizPoint;
+  readonly valid_from: BizPoint;
+  readonly valid_to: BizPoint | null;
+  readonly valid_to_inclusive?: DateStr;
 }
 
 /** §3 `Marks`, the part this version gives. */

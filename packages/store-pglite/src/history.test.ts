@@ -283,19 +283,21 @@ describe("timeline", () => {
     const r = await h({ table: "budgets", entity });
     const entries = r["entries"] as unknown as Record<string, unknown>[];
     expect(entries[0]).toMatchObject({ seq: undo, via: { undo: ops["raise"] } });
+    // Intervals as read results give them (04-contract-types §1 `Interval`), not the event
+    // format's `{from, to}`.
+    const valid = {
+      valid_from: "2026-11-10",
+      valid_to: "2026-11-20",
+      valid_to_inclusive: "2026-11-19",
+    };
     expect(entries[1]).toMatchObject({
       seq: ops["raise"],
       intent: "update",
-      valid: { from: "2026-11-10", to: "2026-11-20" },
-      fields: {
-        amount: {
-          result: "applied",
-          before: "100",
-          after: "150",
-          valid: { from: "2026-11-10", to: "2026-11-20" },
-        },
-      },
+      fields: { amount: { result: "applied", before: "100", after: "150" } },
     });
+    expect(entries[1]?.["valid"]).toEqual(valid);
+    const fields = entries[1]?.["fields"] as Record<string, { valid?: unknown }> | undefined;
+    expect(fields?.["amount"]?.valid).toEqual(valid);
   });
 
   it("lists the reads of the row's versions, and counts as reading it", async () => {

@@ -237,6 +237,24 @@ describe("connections", () => {
   });
 });
 
+describe("a connection's name", () => {
+  it("is always a string; a connection row without one is an internal error, not a null name", async () => {
+    // The connection issued above, its name cleared for this test only and put back after it.
+    const name = (await listConnections(store, ctx(USER, 10))).connections.find(
+      (x) => x.id === desk,
+    )?.name;
+    expect(typeof name).toBe("string");
+    const setName = (n: string | null) =>
+      store.write((tx) => tx.query("UPDATE principals SET name = $1 WHERE id = $2", [n, desk]));
+    await setName(null);
+    try {
+      expect(await refusal(listConnections(store, ctx(USER, 10)))).toEqual({ code: "internal" });
+    } finally {
+      await setName(name as string);
+    }
+  });
+});
+
 describe("connections.list and log.verify (04-contract §17)", () => {
   it("lists the active connections in the order they were registered, without any token", async () => {
     const r = await listConnections(store, ctx(USER, 10));

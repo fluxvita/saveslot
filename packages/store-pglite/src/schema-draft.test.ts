@@ -432,3 +432,31 @@ describe("refusals", () => {
     T,
   );
 });
+
+describe("warnings", () => {
+  it(
+    "name the table they are about, not a position in the document (04-contract-types §7 `Warning`)",
+    async () => {
+      const document = structuredClone(DOCUMENT) as unknown as {
+        tables: Record<string, unknown>[];
+      };
+      document.tables.push({
+        name: "notes_by_text",
+        kind: "derived",
+        description: "expenses by their note",
+        rule: {
+          sql: "SELECT note AS k, count(*) AS n FROM expenses GROUP BY 1",
+          time_dependency: "none",
+        },
+        fields: [
+          { name: "k", description: "the note" },
+          { name: "n", description: "how many" },
+        ],
+      });
+      const r = await draft({ document });
+      // An external key is not applied in this version, so its warning cannot be reached here.
+      expect(r.warnings).toEqual([{ code: "group_key_free_text", table: "notes_by_text" }]);
+    },
+    T,
+  );
+});

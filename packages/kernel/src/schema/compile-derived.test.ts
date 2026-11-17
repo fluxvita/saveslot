@@ -244,7 +244,9 @@ describe("the compiled derived table", () => {
         withRule("SELECT feeling AS k, count(*) AS n FROM runs GROUP BY 1", [f("k"), f("n")]),
       ),
     );
-    expect(r.warnings).toEqual([{ code: "group_key_free_text", path: "tables/2/rule" }]);
+    expect(r.warnings).toEqual([
+      { code: "group_key_free_text", table: "extra", path: "tables/2/rule" },
+    ]);
     expect(r.compiled.tables[2]?.kind === "derived" && r.compiled.tables[2].rule.scope).toEqual({
       kind: "group",
       key: ["f1"],

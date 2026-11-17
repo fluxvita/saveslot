@@ -683,7 +683,17 @@ describe("marks from open items", () => {
       (await q({ table: "budgets", ...params })).rows
         .filter((x) => x.entity === entityA)
         .map((x) => [x.valid_from, x.valid_to, x.marks?.disputed ?? null]);
-    const d = (from: string, to: string) => [{ item, fields: ["category"], spans: [{ from, to }] }];
+    // Spans as read results give intervals (04-contract-types §1 `Interval`), not the event
+    // format's `{from, to}`; the table is date-grained, so each has its last day.
+    const last = (to: string) =>
+      new Date(Date.parse(`${to}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+    const d = (from: string, to: string) => [
+      {
+        item,
+        fields: ["category"],
+        spans: [{ valid_from: from, valid_to: to, valid_to_inclusive: last(to) }],
+      },
+    ];
     // The user's rent on [11-12, 11-16) splits the item's days: each segment within them carries
     // the item with its spans cut to the segment; those outside carry nothing.
     expect(await marksOf({ valid_during: ["2026-11-01", null], coalesce: false })).toEqual([

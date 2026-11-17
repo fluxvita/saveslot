@@ -14,6 +14,7 @@ import type {
   CompiledBaseField,
   DateStr,
   FieldValue,
+  ItemId,
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize, isDate, isInstant } from "@fluxvita/saveslot-contract-core";
 import {
@@ -26,9 +27,10 @@ import {
   type Rational,
   rationalOf,
 } from "../request/index.ts";
+import { intervalOf } from "./interval.ts";
 import type { QueryPlan } from "./params.ts";
 import type { Flag, RowFacts, SelectedRow, Span } from "./select.ts";
-import { type Interval, invalid, type Marks, ReadError, type Row, type Values } from "./types.ts";
+import { invalid, type Marks, ReadError, type Row, type Values } from "./types.ts";
 import { meetsCondition } from "./versions.ts";
 
 // --- marks ---------------------------------------------------------------------------------------
@@ -43,6 +45,37 @@ export function spansMeet(
   return spans.some((s) => (s.to === null || s.to > from) && (to === null || s.from < to));
 }
 
+/** A mark's span while rows are cut and merged: `[from, to)`, `to` absent when open. */
+interface MarkSpan {
+  readonly from: BizPoint;
+  readonly to?: BizPoint;
+}
+interface WorkMark {
+  readonly item: ItemId;
+  readonly fields: readonly string[];
+  readonly spans?: readonly MarkSpan[];
+}
+/** `Marks` with their spans as `MarkSpan`s, until the rows are shown. */
+type WorkMarks = Omit<Marks, "disputed" | "awaiting"> & {
+  readonly disputed?: readonly WorkMark[];
+  readonly awaiting?: readonly WorkMark[];
+};
+
+/** The marks as shown: each span an `Interval` (04-contract-types §3 `Marks`). */
+function shownMarks(m: WorkMarks | undefined, byDate: boolean): Marks | undefined {
+  if (m === undefined) return undefined;
+  const out = (xs?: readonly WorkMark[]) =>
+    xs?.map(({ spans, ...x }) =>
+      spans === undefined ? x : { ...x, spans: spans.map((y) => intervalOf(y.from, y.to, byDate)) },
+    );
+  const { disputed, awaiting, ...rest } = m;
+  return {
+    ...rest,
+    ...(disputed !== undefined ? { disputed: out(disputed) } : {}),
+    ...(awaiting !== undefined ? { awaiting: out(awaiting) } : {}),
+  } as Marks;
+}
+
 /**
  * A flag's business time as the marks give it (04-contract-types §3: `spans`): the item's spans
  * within the row's interval `[from, to)`, cut to it, adjacent ones joined; undefined on a row
@@ -52,7 +85,7 @@ function markSpans(
   spans: readonly Span[] | undefined,
   from: string | undefined,
   to: string | null | undefined,
-): Interval[] | undefined {
+): MarkSpan[] | undefined {
   if (spans === undefined) return undefined;
   const lo = from;
   const hi = to ?? null;
@@ -80,13 +113,17 @@ function markSpans(
 }
 
 /** A mark's spans as `Span`s, to cut again. */
-const asSpans = (xs: readonly Interval[]): Span[] =>
+const asSpans = (xs: readonly MarkSpan[]): Span[] =>
   xs.map((x) => ({ from: x.from, to: x.to ?? null }));
 
 /** The item marks of a row with their spans cut to the row's interval `[from, to)`. */
-function cutMarks(m: Marks | undefined, from: string, to: string | null): Marks | undefined {
+function cutMarks(
+  m: WorkMarks | undefined,
+  from: string,
+  to: string | null,
+): WorkMarks | undefined {
   if (m === undefined) return undefined;
-  const cut = <T extends { spans?: readonly Interval[] }>(xs?: readonly T[]) => {
+  const cut = <T extends { spans?: readonly MarkSpan[] }>(xs?: readonly T[]) => {
     const kept = (xs ?? []).flatMap((x) => {
       if (x.spans === undefined) return [x];
       const spans = markSpans(asSpans(x.spans), from, to) ?? [];
@@ -97,7 +134,7 @@ function cutMarks(m: Marks | undefined, from: string, to: string | null): Marks 
   const { disputed: _d, awaiting: _a, ...rest } = m;
   const disputed = cut(m.disputed);
   const awaiting = cut(m.awaiting);
-  const out: Marks = {
+  const out: WorkMarks = {
     ...rest,
     ...(disputed !== undefined ? { disputed } : {}),
     ...(awaiting !== undefined ? { awaiting } : {}),
@@ -122,13 +159,13 @@ export function correctedWithin(
   );
 }
 
-function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): Marks | undefined {
+function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): WorkMarks | undefined {
   const t = plan.table;
   const name = new Map(t.fields.map((f) => [f.id as string, f.name]));
   const read = new Set<string>(plan.fields.map((f) => f.id));
   const out: {
-    disputed?: { item: never; fields: string[]; spans?: Interval[] }[];
-    awaiting?: { item: never; fields: string[]; spans?: Interval[] }[];
+    disputed?: { item: never; fields: string[]; spans?: MarkSpan[] }[];
+    awaiting?: { item: never; fields: string[]; spans?: MarkSpan[] }[];
     flagged?: { item: never; reason: "duplicate_keys" }[];
     corrected?: true;
     revoked?: { seq: never };
@@ -162,17 +199,17 @@ function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): Marks | unde
   }
   const revokedBy = facts.revokedBy.get(r.id);
   if (r.revoked && revokedBy !== undefined) out.revoked = { seq: revokedBy as never };
-  return Object.keys(out).length === 0 ? undefined : (out as Marks);
+  return Object.keys(out).length === 0 ? undefined : (out as WorkMarks);
 }
 
 /**
  * The marks of a merged row: each item's mark once, its spans those of the segments together
  * (the item's spans within the merged row), `corrected` when any segment's is.
  */
-function unionMarks(a: Marks | undefined, b: Marks | undefined): Marks | undefined {
+function unionMarks(a: WorkMarks | undefined, b: WorkMarks | undefined): WorkMarks | undefined {
   if (a === undefined) return b;
   if (b === undefined) return a;
-  const items = <T extends { item: string; spans?: readonly Interval[] }>(
+  const items = <T extends { item: string; spans?: readonly MarkSpan[] }>(
     x?: readonly T[],
     y?: readonly T[],
   ) => {
@@ -239,7 +276,7 @@ export function shownRows(
   const t = plan.table;
   const qualified = `${plan.named.slot.name}.${t.name}`;
   const state = plan.kind === "state";
-  type Seg = { r: SelectedRow; marks: Marks | undefined };
+  type Seg = { r: SelectedRow; marks: WorkMarks | undefined };
   let segs: Seg[] = selected.map((r) => ({ r, marks: marksOf(plan, r, facts) }));
 
   if (state && plan.time.kind === "during") {
@@ -320,7 +357,7 @@ export function shownRows(
               : {}),
           }
         : {}),
-      ...(marks !== undefined ? { marks } : {}),
+      ...(marks !== undefined ? { marks: shownMarks(marks, date) as Marks } : {}),
     };
     return { row, id: r.id, ver, values: r.values };
   });
