@@ -246,7 +246,7 @@ async function rowAwaiting() {
   return { a, x, y, c, row };
 }
 
-/** Actor objects as their IDs: the receipt names actors by ID. */
+/** Actor objects as their IDs, where a case names principals by ID only. */
 const ids = (v: unknown): unknown =>
   Array.isArray(v)
     ? v.map(ids)
@@ -261,7 +261,7 @@ type Part = {
   item?: string;
   after?: unknown;
   effective?: unknown;
-  by?: { seq: number; actor: string };
+  by?: { seq: number; actor: unknown };
   previous?: unknown;
   impact?: unknown;
   valid?: { valid_from: string | null; valid_to: string | null };
@@ -294,7 +294,8 @@ async function agrees(r: Receipt, kind: "conflict" | "awaiting_confirmation") {
   const ref = r.pending.find((x) => x.type === kind);
   expect(ref?.item_ver).toBeDefined();
   const id = ref?.id as string;
-  const d = ids(await p({ id })) as Record<string, unknown>;
+  // Nothing renamed or revoked since: the receipt's actors as of its write are the detail's now.
+  const d = (await p({ id })) as Record<string, unknown>;
   expect(d["item_ver"]).toBe(ref?.item_ver);
   const parts = partsOf(r, id);
   expect(parts.length).toBeGreaterThan(0);
@@ -321,7 +322,7 @@ async function agrees(r: Receipt, kind: "conflict" | "awaiting_confirmation") {
   }
   const eff = d["effective"] as {
     seq: number;
-    actor: string;
+    actor: unknown;
     values?: Record<string, unknown>;
     spans?: { seq?: number; values: Record<string, unknown> | null }[];
   };

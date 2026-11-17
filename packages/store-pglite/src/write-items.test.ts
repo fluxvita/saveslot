@@ -26,6 +26,11 @@ const T = 60_000;
 const TENANT = `tn_${"8".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}`;
 const OTHER = `ci_${"2".repeat(26)}`;
+/**
+ * A principal as a receipt names it (04-contract-types §1.6): the tenant's user and a connection
+ * these cases never register have no name in the log, so their ID stands in, as the reads give it.
+ */
+const asActor = (id: string) => ({ kind: "user", id, name: id });
 const fields = [
   { id: "f2", name: "b", type: "text", required: true, description: "b" },
   { id: "f3", name: "c", type: "text", description: "c" },
@@ -535,7 +540,7 @@ describe("the entries an item is opened with", () => {
             },
             value: "y",
             seq: y.seq,
-            actor: USER,
+            actor: asActor(USER),
           },
         ],
       });
@@ -955,7 +960,7 @@ describe("items on existence", () => {
       expect(stale.ops[0]?.fields["*"]).toMatchObject({
         result: "candidate",
         effective: null,
-        by: { seq: b.seq, actor: OTHER },
+        by: { seq: b.seq, actor: asActor(OTHER) },
         previous: { seq: a.seq, exists: true },
       });
       // Revoked by OTHER, then the revoke undone: the row has a value again, reached each time.
@@ -1334,7 +1339,7 @@ describe("a candidate's by and effective: the write that gave what it met (04-co
     const part = (z.ops[0]?.fields["b"] ?? []) as readonly {
       result: string;
       effective?: unknown;
-      by?: { seq: number; actor: string };
+      by?: { seq: number; actor: unknown };
     }[];
     return { y, v, z, candidate: part.find((x) => x.result === "candidate") };
   };
@@ -1343,7 +1348,10 @@ describe("a candidate's by and effective: the write that gave what it met (04-co
     "on existence, the latest giver a revoke: by is the revoke, effective none, and query reads no row there",
     async () => {
       const { v, candidate } = await scenario(true);
-      expect(candidate).toMatchObject({ effective: null, by: { seq: v?.seq, actor: OTHER } });
+      expect(candidate).toMatchObject({
+        effective: null,
+        by: { seq: v?.seq, actor: asActor(OTHER) },
+      });
       expect(await readAt("2026-11-06")).toEqual([]);
     },
     T,
@@ -1353,7 +1361,10 @@ describe("a candidate's by and effective: the write that gave what it met (04-co
     "the latest giver a write: by is that write, effective its value, as query reads it there",
     async () => {
       const { y, candidate } = await scenario(false);
-      expect(candidate).toMatchObject({ effective: "y", by: { seq: y.seq, actor: OTHER } });
+      expect(candidate).toMatchObject({
+        effective: "y",
+        by: { seq: y.seq, actor: asActor(OTHER) },
+      });
       expect(await readAt("2026-11-12")).toEqual([candidate?.effective]);
     },
     T,
@@ -1422,7 +1433,7 @@ describe("a value cleared to null and a gap (09-event-format §5.8 `impact`)", (
             valid: iv("2026-11-10", "2026-11-20", "2026-11-19"),
             value: null,
             seq: clear.seq,
-            actor: OTHER,
+            actor: asActor(OTHER),
           },
         ]),
       });

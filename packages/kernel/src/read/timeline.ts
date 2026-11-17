@@ -12,6 +12,7 @@
 import type { FieldValue, ItemId, JsonValue, TableId } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry } from "../audit/index.ts";
+import { actorsNow } from "../pending/index.ts";
 import { get, has, isObj, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import {
@@ -85,27 +86,8 @@ async function baseEvents(tx: ReadTx, table: string, id: string): Promise<BaseEv
   }));
 }
 
-/** The principals by ID, as `Actor`. */
-export async function actors(tx: ReadTx, ids: readonly string[]): Promise<Map<string, Actor>> {
-  const out = new Map<string, Actor>();
-  const unique = [...new Set(ids)];
-  if (unique.length === 0) return out;
-  const r = await tx.query<{ id: string; kind: string; name: string | null; state: string }>(
-    "SELECT id, kind, name, state FROM principals WHERE id = ANY($1)",
-    [unique] as never,
-  );
-  for (const p of r.rows) {
-    out.set(p.id, {
-      kind: p.kind as Actor["kind"],
-      id: p.id,
-      name: p.name ?? p.id,
-      ...(p.state === "revoked" || p.state === "disabled" ? { state: p.state } : {}),
-    });
-  }
-  for (const id of unique)
-    if (!out.has(id)) out.set(id, { kind: id === "system" ? "system" : "user", id, name: id });
-  return out;
-}
+/** The principals by ID, as `Actor`, as they are now (the reads' side of 04-contract-types §1.6). */
+export const actors = actorsNow;
 
 type SourceRow = {
   event_seq: unknown;

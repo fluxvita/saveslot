@@ -1,3 +1,4 @@
+export * from "./actors.ts";
 export * from "./build.ts";
 export * from "./encode.ts";
 export * from "./log.ts";

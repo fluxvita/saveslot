@@ -22,6 +22,7 @@ import type {
 } from "@fluxvita/saveslot-contract-core";
 import type { DerivedWrite } from "../derive/index.ts";
 import { type Limit, type RowState, stateFromRecord } from "../judge/index.ts";
+import { type ActorAsOf, actorsAsOf } from "../log/index.ts";
 import {
   type Blocks,
   candidateImpactBlocks,
@@ -50,7 +51,7 @@ export interface FieldResult {
   /** Candidate: the value in effect, the row's version, who gave it, the merge base's state. */
   readonly effective?: FieldValue;
   readonly current_ver?: string;
-  readonly by?: { readonly seq: number; readonly actor: string };
+  readonly by?: { readonly seq: number; readonly actor: Actor };
   readonly previous?: {
     readonly seq: number;
     readonly exists: boolean;
@@ -73,6 +74,12 @@ export interface Interval {
   readonly valid_to_inclusive?: string;
 }
 
+/**
+ * 04-contract-types §1.6 `Actor`, as of the receipt's own operation: a later rename or revocation
+ * does not change a receipt, first or replayed.
+ */
+export type Actor = ActorAsOf;
+
 /** 04-contract-types `AwaitingImpact`. */
 export interface Impact {
   readonly overwritten?: readonly {
@@ -80,12 +87,12 @@ export interface Impact {
     readonly valid?: Interval;
     readonly value: FieldValue;
     readonly seq: number;
-    readonly actor: string;
+    readonly actor: Actor;
   }[];
   readonly filled_gaps?: readonly { readonly valid?: Interval; readonly revoked_by?: number }[];
   readonly reverted?: readonly {
     readonly seq: number;
-    readonly actor: string;
+    readonly actor: Actor;
     readonly fields: readonly string[];
   }[];
 }
@@ -110,9 +117,14 @@ export interface OpReceipt {
   readonly fields: Readonly<Record<string, FieldResult | readonly FieldResult[]>>;
   readonly undo?: {
     readonly of: OpNumber;
-    readonly skipped_superseded: readonly { readonly field: string; readonly by: OpNumber }[];
+    readonly skipped_superseded: readonly {
+      readonly field: string;
+      readonly by: OpNumber;
+      readonly actor: Actor;
+    }[];
     readonly reverted_later?: readonly {
       readonly seq: OpNumber;
+      readonly actor: Actor;
       readonly fields: readonly string[];
     }[];
   };
@@ -375,6 +387,15 @@ export async function readReceipt(
   ];
   // The items' entries as of this operation, read as the pending details read them.
   const entries = await itemEntries(tx, itemIds, op);
+  // Every principal the receipt names, as of this operation (04-contract-types §1.6): the same
+  // whether the write answers now or a replay rebuilds its receipt later.
+  const who = new Map<string, Actor>();
+  const named = async (principals: Iterable<string>) => {
+    const missing = [...new Set(principals)].filter((p) => !who.has(p));
+    for (const [p, a] of await actorsAsOf(tx, missing, op)) who.set(p, a);
+  };
+  const actorOut = (p: string): Actor => who.get(p) ?? { kind: "user", id: p, name: p };
+  await named([...entries.values()].flatMap((x) => [...x.actorOfOp.values()]));
   // The writers of what may be a candidate's `by` (read below, from the row as judged).
   const actors = new Map<number, string>();
   // Which pending item each candidate or awaiting part went to.
@@ -443,13 +464,14 @@ export async function readReceipt(
       // The writers of whatever may be `by`.
       const missing = [...new Set(judged.items.map((y) => y.op))].filter((n) => !actors.has(n));
       for (const [n, a] of await actorsOf(tx, missing)) actors.set(n, a);
+      await named(actors.values());
     }
 
     /** How the receipt writes field names, intervals and actors (as the pending details do). */
-    const naming: Naming<string> = {
+    const naming: Naming<Actor> = {
       field: name,
       interval: (v) => iv(v) as unknown as Record<string, unknown>,
-      actor: (a) => a,
+      actor: actorOut,
       isState,
     };
     /** What carrying out an item would change, from (some of) its impact entries. */
@@ -494,7 +516,7 @@ export async function readReceipt(
         // ConflictDetail.
         effective: given?.value ?? null,
         ...(rowVer !== undefined ? { current_ver: rowVer } : {}),
-        ...(top !== undefined ? { by: { seq: top, actor: actors.get(top) ?? "" } } : {}),
+        ...(top !== undefined ? { by: { seq: top, actor: actorOut(actors.get(top) ?? "") } } : {}),
         ...(x.mergeBase !== undefined
           ? {
               previous:
@@ -593,15 +615,24 @@ export async function readReceipt(
         s.add(x.field !== undefined ? name(x.field) : "*");
         byOp.set(n, s);
       }
+      const skipped = rv.skipped ?? [];
+      const undoActors = await actorsOf(tx, [...skipped.map((s) => s.by_op), ...byOp.keys()]);
+      await named(undoActors.values());
+      const actorOfOp = (n: number) => actorOut(undoActors.get(n) ?? "");
       undo = {
         of: revert.undo_op,
-        skipped_superseded: (rv.skipped ?? []).map((s) => ({
+        skipped_superseded: skipped.map((s) => ({
           field: s.field !== undefined ? name(s.field) : "*",
           by: s.by_op,
+          actor: actorOfOp(s.by_op),
         })),
         ...(byOp.size > 0
           ? {
-              reverted_later: [...byOp].map(([seq, fs]) => ({ seq, fields: [...fs].sort() })),
+              reverted_later: [...byOp].map(([seq, fs]) => ({
+                seq,
+                actor: actorOfOp(seq),
+                fields: [...fs].sort(),
+              })),
             }
           : {}),
       };

@@ -32,6 +32,7 @@ import { lastRead, type ReadId } from "../audit/index.ts";
 import type { DerivedWrite } from "../derive/index.ts";
 import { JudgeError, type JudgeInput, judgeOp, reaches, type Unit } from "../judge/index.ts";
 import { type NewEvent, readTail } from "../log/index.ts";
+import { actorsNow } from "../pending/index.ts";
 import { normalizeResolve, type ResolveDecision } from "../request/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
 import { appendWithDerived } from "./derive-step.ts";
@@ -326,13 +327,15 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
       was.decision === req.decision &&
       (req.decision !== "take_candidate" || (named !== undefined && named === was.candidate));
     if (same) return readResolution(tx, done.op, { slot, restoreCount: restore, replayed: true });
+    // Who resolved it as they are now: an error's details are read, not a receipt (04-contract-types §1.6).
+    const who = (await actorsNow(tx, [done.actor])).get(done.actor);
     throw new WriteError("item_closed", "the item was resolved another way", {
       reason: "resolved",
       resolution: {
         decision: was.decision,
         ...(was.candidate !== undefined ? { candidate: was.candidate } : {}),
         seq: done.op,
-        actor: done.actor,
+        actor: who,
       },
     });
   }
@@ -436,13 +439,18 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
         [tracked.cands] as never,
       );
       const by = new Map(ops.rows.map((x) => [Number(x.seq), x]));
+      // The writers as they are now, as the item's details give them (04-contract-types §1.6).
+      const who = await actorsNow(
+        tx,
+        ops.rows.map((x) => x.actor),
+      );
       throw new WriteError("invalid_argument", "several candidates: name one", {
         reason: "candidate_required",
         param: "candidate",
         candidate_choices: tracked.cands.map((e, index) => ({
           index,
           seq: Number(by.get(e)?.op ?? e),
-          actor: by.get(e)?.actor ?? "",
+          actor: who.get(by.get(e)?.actor ?? ""),
         })),
       });
     }

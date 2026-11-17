@@ -5,6 +5,7 @@
 // values through. The judged scenarios through the pipeline are write-pipeline.prop.test.ts.
 
 import {
+  actorsAsOf,
   appendOperation,
   applyEvents,
   confirmationHash,
@@ -13,12 +14,16 @@ import {
   entryChecksums,
   eventsOf,
   flushReads,
+  issueConnection,
   readBufferOf,
   readEvents,
   readTail,
+  renameConnection,
+  revokeConnection,
   write,
 } from "@fluxvita/saveslot-kernel";
 import {
+  actorsNow,
   COMPILED_V1,
   createSlotEvents,
   resolveInTx,
@@ -32,6 +37,11 @@ const T = 60_000;
 const TENANT = `tn_${"8".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}`;
 const OTHER = `ci_${"2".repeat(26)}`;
+/**
+ * A principal as a receipt names it (04-contract-types §1.6): the tenant's user and a connection
+ * these cases never register have no name in the log, so their ID stands in, as the reads give it.
+ */
+const asActor = (id: string) => ({ kind: "user", id, name: id });
 const fields = [
   { id: "f2", name: "b", type: "text", required: true, description: "b" },
   { id: "f3", name: "c", type: "text", description: "c" },
@@ -431,7 +441,7 @@ describe("the main path", () => {
                   item,
                   effective: "y",
                   current_ver: `v${y.seq}.0`,
-                  by: { seq: y.seq, actor: USER },
+                  by: { seq: y.seq, actor: asActor(USER) },
                   previous: { seq: a.seq, exists: true, values: { b: "x" } },
                 },
               },
@@ -1534,6 +1544,318 @@ describe("ver: a new version when a cell changes, its value or where it comes fr
         { field: "existence", from: null, to: null, source: await baseOf(t2.seq) },
       ]);
       expect(await update(row, { b: "4" }, t2.ver)).toMatchObject({ status: "saved" });
+    },
+    T,
+  );
+});
+
+describe("a receipt names principals as of its own operation (04-contract-types §1.6)", () => {
+  const ops = (second: number) =>
+    createOpsContext({
+      tenant: TENANT,
+      actor: USER,
+      trigger: null,
+      task: null,
+      visibility: { kind: "all" },
+      idempotency_key_window: 86_400_000,
+      idempotency_window: 600_000,
+      now: `2026-11-05T00:00:${String(second).padStart(2, "0")}.000Z`,
+      confirmation: null,
+    });
+  const DESK = "Desk · Host";
+  const LAPTOP = "Laptop · Host";
+  const connection = (id: string, name: string, state?: "revoked") => ({
+    kind: "connection",
+    id,
+    name,
+    ...(state !== undefined ? { state } : {}),
+  });
+  const register = async (name = DESK, id?: string) =>
+    (
+      await issueConnection(s.store, ops(40), {
+        name,
+        via: "token",
+        ...(id ? { id: id as never } : {}),
+      })
+    ).id;
+  const rename = (id: string, name = LAPTOP) =>
+    renameConnection(s.store, ops(41), { id: id as never, name });
+  const revoke = (id: string) => revokeConnection(s.store, ops(42), { id: id as never });
+
+  /** A row the connection changed last, and a request that writes it from the older version. */
+  const stale = async (d: string, initial = "x") => {
+    const a = await insertRow(initial);
+    const row = rowAt(a);
+    const theirs = await update(row, { b: "theirs" }, verAt(a), { actor: d });
+    const mine = (b: string) => ({
+      sv: 1,
+      ops: [{ intent: "update", table: "rows", row, ver: verAt(a), set: { b } }],
+    });
+    return { theirs, mine };
+  };
+  const byOf = (r: { ops: readonly { fields: Record<string, unknown> }[] }) =>
+    (r.ops[0]?.fields["b"] as { by?: unknown } | undefined)?.by;
+
+  /**
+   * The replay is the first receipt byte for byte, but for what a replay gives differently by
+   * design: `replayed`, and each pending item's state now in place of its version
+   * (04-contract-types §5.1 `PendingRef`).
+   */
+  const sameAsFirst = (first: object, again: object) => {
+    const { replayed, pending: p2, ...rest } = again as Record<string, unknown>;
+    const { pending: p1, ...firstRest } = first as Record<string, unknown>;
+    expect(replayed).toBe(true);
+    expect(JSON.stringify(rest)).toBe(JSON.stringify(firstRest));
+    const refs = (p: unknown) =>
+      (p as { id: string; type: string; reason: string }[]).map(({ id, type, reason }) => ({
+        id,
+        type,
+        reason,
+      }));
+    expect(refs(p2)).toEqual(refs(p1));
+  };
+
+  for (const [what, after] of [
+    ["renamed", rename],
+    ["revoked", revoke],
+  ] as const) {
+    it(
+      `${what} after the write: the replay gives the name and state the first receipt gave`,
+      async () => {
+        const d = await register();
+        const { theirs, mine } = await stale(d);
+        const params = { ...mine("mine"), idempotency_key: "k-1" };
+        const first = await send(params);
+        expect(byOf(first)).toEqual({ seq: theirs.seq, actor: connection(d, DESK) });
+        await after(d);
+        sameAsFirst(first, await send(params));
+      },
+      T,
+    );
+  }
+
+  it(
+    "a write after the rename gives the new name, and after the revocation the state too",
+    async () => {
+      const d = await register();
+      const { theirs, mine } = await stale(d);
+      await rename(d);
+      expect(byOf(await send(mine("one")))).toEqual({
+        seq: theirs.seq,
+        actor: connection(d, LAPTOP),
+      });
+      await revoke(d);
+      expect(byOf(await send(mine("two")))).toEqual({
+        seq: theirs.seq,
+        actor: connection(d, LAPTOP, "revoked"),
+      });
+    },
+    T,
+  );
+
+  it(
+    "an undo: the actor of each later write it takes back, in the impact and in undo; replayed the same after a rename",
+    async () => {
+      const d = await register();
+      const a = await insertRow("1");
+      const row = rowAt(a);
+      const x = await update(row, { b: "2" }, verAt(a));
+      const y = await update(row, { b: "3" }, verAt(x), { actor: d });
+      const params = {
+        sv: 1,
+        ops: [{ table: "rows", row, revert: { undo: x.seq, include_later: true } }],
+        idempotency_key: "k-2",
+      };
+      const first = await send(params);
+      const later = { seq: y.seq, actor: connection(d, DESK), fields: ["b"] };
+      expect(first.ops[0]).toEqual({
+        target: { table: "ledger.rows", row },
+        intent: "update",
+        ver: verAt(y),
+        fields: {
+          b: {
+            result: "awaiting",
+            after: "1",
+            item: first.pending[0]?.id,
+            impact: { reverted: [later] },
+          },
+        },
+        undo: { of: x.seq, skipped_superseded: [], reverted_later: [later] },
+      });
+      await rename(d);
+      sameAsFirst(first, await send(params));
+    },
+    T,
+  );
+
+  it(
+    "an undo: the actor of the write that superseded a field it skips; replayed the same after a rename",
+    async () => {
+      const d = await register();
+      const a = await insertRow("p");
+      const row = rowAt(a);
+      const c = await send({
+        sv: 1,
+        ops: [{ intent: "correct", table: "rows", row, ver: verAt(a), set: { b: "q" } }],
+      });
+      const later = await update(row, { b: "r" }, verAt(c), { actor: d });
+      const params = {
+        sv: 1,
+        ops: [{ table: "rows", row, revert: { undo: c.seq } }],
+        idempotency_key: "k-3",
+      };
+      const first = await send(params);
+      expect(first.ops[0]).toEqual({
+        target: { table: "ledger.rows", row },
+        intent: "correct",
+        ver: verAt(later),
+        fields: {},
+        undo: {
+          of: c.seq,
+          skipped_superseded: [{ field: "b", by: later.seq, actor: connection(d, DESK) }],
+        },
+      });
+      await rename(d);
+      sameAsFirst(first, await send(params));
+    },
+    T,
+  );
+
+  it(
+    "two connections, renamed in turn and one revoked: each receipt and its replay name each as of that write",
+    async () => {
+      const PHONE = "Phone · Host";
+      const TABLET = "Tablet · Host";
+      const desk = await register();
+      const phone = await register(PHONE);
+      const one = await stale(desk);
+      const two = await stale(phone, "x2");
+      const both = (key: string, b: string) => ({
+        sv: 1,
+        ops: [...one.mine(b).ops, ...two.mine(b).ops],
+        idempotency_key: key,
+      });
+      const bys = (r: { ops: readonly { fields: Record<string, unknown> }[] }) =>
+        r.ops.map((o) => (o.fields["b"] as { by?: unknown } | undefined)?.by);
+      await rename(desk);
+      const w1 = await send(both("k-4", "m1"));
+      expect(bys(w1)).toEqual([
+        { seq: one.theirs.seq, actor: connection(desk, LAPTOP) },
+        { seq: two.theirs.seq, actor: connection(phone, PHONE) },
+      ]);
+      await rename(phone, TABLET);
+      await revoke(desk);
+      const w2 = await send(both("k-5", "m2"));
+      expect(bys(w2)).toEqual([
+        { seq: one.theirs.seq, actor: connection(desk, LAPTOP, "revoked") },
+        { seq: two.theirs.seq, actor: connection(phone, TABLET) },
+      ]);
+      await rename(desk, "Old · Host");
+      await revoke(phone);
+      sameAsFirst(w1, await send(both("k-4", "m1")));
+      sameAsFirst(w2, await send(both("k-5", "m2")));
+    },
+    T,
+  );
+
+  it(
+    "a principal the log had not registered by the write, and system: named as the reads named them then; registered later, the replay is unchanged",
+    async () => {
+      const late = `ci_${"5".repeat(26)}`;
+      const byLate = await stale(late);
+      const params = { ...byLate.mine("m"), idempotency_key: "k-6" };
+      const reads = await s.store.read((tx) => actorsNow(tx, [late, "system"]));
+      const first = await send(params);
+      expect(byOf(first)).toEqual({
+        seq: byLate.theirs.seq,
+        actor: { kind: "user", id: late, name: late },
+      });
+      expect((byOf(first) as { actor: unknown }).actor).toEqual(reads.get(late));
+      // A caller cannot write as system, so no receipt here names it: the function, at this write.
+      const asOf = await s.store.read((tx) => actorsAsOf(tx, ["system"], first.seq as number));
+      expect(asOf.get("system")).toEqual({ kind: "system", id: "system", name: "system" });
+      expect(asOf.get("system")).toEqual(reads.get("system"));
+      await register(DESK, late);
+      expect((await s.store.read((tx) => actorsNow(tx, [late]))).get(late)).toEqual(
+        connection(late, DESK),
+      );
+      sameAsFirst(first, await send(params));
+    },
+    T,
+  );
+
+  it(
+    "a state table: what an awaiting change overwrites names its writer; replayed the same after a rename",
+    async () => {
+      const desk = await register();
+      const e = await send({
+        sv: 1,
+        ops: [{ intent: "insert", table: "entities", valid_from: "2026-11-01", set: { b: "x" } }],
+      });
+      const entity = e.ops[0]?.target.entity as string;
+      const y = await send(
+        {
+          sv: 1,
+          ops: [
+            {
+              intent: "update",
+              table: "entities",
+              entity,
+              ver: verAt(e),
+              valid_from: "2026-11-10",
+              set: { b: "y" },
+            },
+          ],
+        },
+        { actor: desk },
+      );
+      const params = {
+        sv: 1,
+        ops: [
+          {
+            intent: "update",
+            table: "entities",
+            entity,
+            ver: verAt(y),
+            valid_from: "2026-11-01",
+            valid_to: "2026-11-20",
+            set: { b: "z" },
+          },
+        ],
+        idempotency_key: "k-7",
+      };
+      const first = await send(params);
+      const parts = first.ops[0]?.fields["b"] as readonly { impact?: unknown }[];
+      expect(parts.map((x) => x.impact)).toEqual([
+        {
+          overwritten: [
+            {
+              field: "b",
+              valid: {
+                valid_from: "2026-11-01",
+                valid_to: "2026-11-10",
+                valid_to_inclusive: "2026-11-09",
+              },
+              value: "x",
+              seq: e.seq,
+              actor: asActor(USER),
+            },
+            {
+              field: "b",
+              valid: {
+                valid_from: "2026-11-10",
+                valid_to: "2026-11-20",
+                valid_to_inclusive: "2026-11-19",
+              },
+              value: "y",
+              seq: y.seq,
+              actor: connection(desk, DESK),
+            },
+          ],
+        },
+      ]);
+      await rename(desk);
+      sameAsFirst(first, await send(params));
     },
     T,
   );

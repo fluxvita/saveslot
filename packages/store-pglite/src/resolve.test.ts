@@ -9,12 +9,15 @@ import {
   createTenant,
   entryChecksums,
   eventsOf,
+  issueConnection,
   pending as pending$,
   type ResolveReceipt,
   readBufferOf,
   readEvents,
   readTail,
+  renameConnection,
   resolve as resolve$,
+  revokeConnection,
   WriteError,
 } from "@fluxvita/saveslot-kernel";
 import {
@@ -530,8 +533,8 @@ describe("the order of the checks (04-contract `resolve`)", () => {
         refused: "invalid_argument",
         reason: "candidate_required",
         candidate_choices: [
-          { index: 0, seq: c.seq, actor: USER },
-          { index: 1, seq: d.seq, actor: OTHER },
+          { index: 0, seq: c.seq, actor: { kind: "user", id: USER, name: USER } },
+          { index: 1, seq: d.seq, actor: { kind: "user", id: OTHER, name: OTHER } },
         ],
       });
       expect(
@@ -1050,6 +1053,81 @@ describe("confirmation_mismatch gives the item as it is now (04-contract-types �
         current: { id: item, item_ver: `iv_${item.slice(3)}.${c.seq}.1` },
       });
       expect(err["current"]).toEqual(await pending$(s.store, ctxOf(USER), { id: item }));
+    },
+    T,
+  );
+});
+
+describe("an error's details name principals as they are now (04-contract-types §1.6)", () => {
+  const ops = (second: number) =>
+    createOpsContext({
+      tenant: TENANT,
+      actor: USER,
+      trigger: null,
+      task: null,
+      visibility: { kind: "all" },
+      idempotency_key_window: 86_400_000,
+      idempotency_window: 600_000,
+      now: `2026-11-05T00:00:${String(second).padStart(2, "0")}.000Z`,
+      confirmation: null,
+    });
+  const register = async () =>
+    (await issueConnection(s.store, ops(40), { name: "Desk · Host", via: "token" })).id;
+  const rename = (id: string) =>
+    renameConnection(s.store, ops(41), { id: id as never, name: "Laptop · Host" });
+  const revoke = (id: string) => revokeConnection(s.store, ops(42), { id: id as never });
+
+  it(
+    "candidate_required: each candidate's writer, renamed since the write",
+    async () => {
+      const desk = await register();
+      const a = await send({ sv: 1, ops: [{ intent: "insert", table: "rows", set: { b: "9" } }] });
+      const row = rowAt(a);
+      await update(row, { b: "9.5" }, verAt(a));
+      const c = await update(row, { b: "10" }, verAt(a), { actor: desk });
+      const item = c.pending[0]?.id as string;
+      const d = await update(row, { b: "12" }, verAt(a));
+      await rename(desk);
+      const ver = `iv_${item.slice(3)}.${d.seq}.0`;
+      expect(await resolve({ id: item, decision: "take_candidate", item_ver: ver })).toEqual({
+        refused: "invalid_argument",
+        reason: "candidate_required",
+        param: "candidate",
+        candidate_choices: [
+          { index: 0, seq: c.seq, actor: { kind: "connection", id: desk, name: "Laptop · Host" } },
+          { index: 1, seq: d.seq, actor: { kind: "user", id: USER, name: USER } },
+        ],
+      });
+    },
+    T,
+  );
+
+  it(
+    "item_closed: who resolved it, renamed and then revoked since",
+    async () => {
+      const desk = await register();
+      const { c, item } = await disputed();
+      // The decision's operation: the next position (keep_effective triggers no write).
+      const op = ((await s.store.read(readTail))?.seq ?? 0) + 1;
+      await resolve(
+        { id: item, decision: "keep_effective", item_ver: verOfItem(c, item) },
+        { actor: desk },
+      );
+      const again = () =>
+        resolve({ id: item, decision: "take_previous", item_ver: verOfItem(c, item) });
+      const closed = (actor: Record<string, unknown>) => ({
+        refused: "item_closed",
+        reason: "resolved",
+        resolution: { decision: "keep_effective", seq: op, actor },
+      });
+      await rename(desk);
+      expect(await again()).toEqual(
+        closed({ kind: "connection", id: desk, name: "Laptop · Host" }),
+      );
+      await revoke(desk);
+      expect(await again()).toEqual(
+        closed({ kind: "connection", id: desk, name: "Laptop · Host", state: "revoked" }),
+      );
     },
     T,
   );
