@@ -11,7 +11,7 @@
 // stops working at once.
 
 import { mkdir } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import {
   createOpsContext,
   createTenant,
@@ -107,7 +107,8 @@ export async function initLocalHome(o: {
     }
     const tenant = `tn_${randomCrockford(26)}`;
     const user = `u_${randomCrockford(26)}`;
-    const dataDir = o.dataDir ?? join(o.home, "data");
+    // Normalized, so that the default written another way (a trailing slash, `..`) is not recorded.
+    const dataDir = resolve(o.dataDir ?? join(o.home, "data"));
     const store = await o.backend.open({ kind: "pglite", dir: dataDir }, { create: true });
     try {
       await createTenant(
@@ -134,7 +135,7 @@ export async function initLocalHome(o: {
       format: 1,
       user,
       tenant,
-      ...(dataDir !== join(o.home, "data") ? { data_dir: dataDir } : {}),
+      ...(dataDir !== resolve(o.home, "data") ? { data_dir: dataDir } : {}),
     };
     writePrivate(tenantFile(o.home), `${JSON.stringify(directory)}\n`);
     return { tenant, user, dataDir };

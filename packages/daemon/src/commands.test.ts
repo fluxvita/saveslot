@@ -3,7 +3,16 @@
 // signal, and what the background log holds.
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sessionFile } from "@fluxvita/saveslot-service";
@@ -82,8 +91,48 @@ describe("init", () => {
   });
 
   it("an unknown option is a usage error (2)", async () => {
-    const r = await run("init", join(root, "x"), "--data-dir", "/tmp/elsewhere");
+    const r = await run("init", join(root, "x"), "--nope");
     expect(r.code).toBe(2);
+  });
+
+  const recorded = (h: string) =>
+    JSON.parse(readFileSync(join(h, "control", "tenant.json"), "utf8")).data_dir as unknown;
+
+  it("--data-dir puts the data elsewhere, normalized, and the service opens it there", async () => {
+    const h = join(root, String(n++));
+    const data = join(root, `data-${n++}`);
+    // Written with `..` and a trailing slash; recorded as the plain absolute path.
+    const written = `${root}/a/../${data.slice(root.length + 1)}/`;
+    const r = await run("init", h, "--data-dir", written);
+    expect(r.code).toBe(0);
+    expect(recorded(h)).toBe(data);
+    expect(existsSync(join(h, "data"))).toBe(false);
+    expect((await run("start", h)).code).toBe(0);
+    expect((await run("status", h)).out).toContain(`data      ${data}\n`);
+  });
+
+  it("--data-dir resolves a relative directory against the current one; the default written another way is not recorded", async () => {
+    const cwd = process.cwd();
+    const h = join(root, String(n++));
+    try {
+      process.chdir(root);
+      expect((await run("init", h, "--data-dir", `rel-${n}`)).code).toBe(0);
+    } finally {
+      process.chdir(cwd);
+    }
+    // The current directory as the process sees it (on macOS the temporary folder is a link).
+    expect(recorded(h)).toBe(join(realpathSync(root), `rel-${n}`));
+
+    const d = join(root, String(n++));
+    expect((await run("init", d, "--data-dir", `${join(d, "data")}/`)).code).toBe(0);
+    expect(recorded(d)).toBeUndefined();
+  });
+
+  it("--data-dir with --rotate-session, or empty, is a usage error (2) and makes nothing", async () => {
+    const h = join(root, String(n++));
+    expect((await run("init", h, "--data-dir", "/tmp/x", "--rotate-session")).code).toBe(2);
+    expect((await run("init", h, "--data-dir", "")).code).toBe(2);
+    expect(existsSync(h)).toBe(false);
   });
 });
 

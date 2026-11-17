@@ -2,7 +2,7 @@
 // and its steps 2–3, §4.1, §6.2). They manage the local service process; none is a contract
 // operation. The entry package dispatches to `serviceCommand`.
 //
-// - `init [--rotate-session]`: the only command that opens the storage itself, under the home's
+// - `init [--data-dir <dir>] [--rotate-session]`: the only command that opens the storage itself, under the home's
 //   lock; refused (exit 5, nothing changed) on a home initialized already or while the service
 //   runs.
 // - `start [--foreground]`: in the background, a detached process of this package's entry, its
@@ -117,7 +117,16 @@ function binPath(): string {
   return fileURLToPath(new URL(`./bin${extname(self)}`, import.meta.url));
 }
 
-export async function init(home: string, rotate: boolean, io: CommandIO): Promise<number> {
+/**
+ * `init`. `dataDir`, when given, is absolute and normalized already (the command line resolves it
+ * against the current directory).
+ */
+export async function init(
+  home: string,
+  o: { readonly rotate: boolean; readonly dataDir?: string },
+  io: CommandIO,
+): Promise<number> {
+  const rotate = o.rotate;
   try {
     if (rotate) {
       await rotateSession(home, osFileLock);
@@ -126,6 +135,7 @@ export async function init(home: string, rotate: boolean, io: CommandIO): Promis
     }
     const r = await initLocalHome({
       home,
+      ...(o.dataDir !== undefined ? { dataDir: o.dataDir } : {}),
       backend: new PgliteBackend(),
       lock: osFileLock,
       now: new Date().toISOString(),
@@ -345,7 +355,9 @@ export async function serviceCommand(
       args: [...argv],
       options: {
         home: { type: "string" },
-        ...(name === "init" ? { "rotate-session": { type: "boolean" } } : {}),
+        ...(name === "init"
+          ? { "rotate-session": { type: "boolean" }, "data-dir": { type: "string" } }
+          : {}),
         ...(name === "start" ? { foreground: { type: "boolean" } } : {}),
       },
       strict: true,
@@ -359,8 +371,26 @@ export async function serviceCommand(
     typeof values["home"] === "string" ? values["home"] : join(homedir(), ".saveslot"),
   );
   switch (name) {
-    case "init":
-      return init(home, values["rotate-session"] === true, io);
+    case "init": {
+      const dataDir = values["data-dir"];
+      if (typeof dataDir === "string" && values["rotate-session"] === true) {
+        io.err(TEXTS.usage("--data-dir is only for a new home, not with --rotate-session"));
+        return 2;
+      }
+      if (dataDir === "") {
+        io.err(TEXTS.usage("--data-dir needs a directory"));
+        return 2;
+      }
+      return init(
+        home,
+        {
+          rotate: values["rotate-session"] === true,
+          // Relative to the current directory, normalized: what the home records is this path.
+          ...(typeof dataDir === "string" ? { dataDir: resolve(dataDir) } : {}),
+        },
+        io,
+      );
+    }
     case "start":
       return values["foreground"] === true ? main(["--home", home]) : start(home, io);
     case "stop":

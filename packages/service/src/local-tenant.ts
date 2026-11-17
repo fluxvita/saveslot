@@ -13,7 +13,7 @@
 // database's Wasm instance in a long-running process is what the process model avoids (§7).
 
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type {
   AnchorStore,
   OpenTenantStop,
@@ -99,7 +99,8 @@ export async function readTenantDirectory(home: string): Promise<TenantDirectory
     .filter((k) => k !== "data_dir")
     .sort();
   if (keys.join(",") !== "format,tenant,user" || o["format"] !== 1) throw corrupt();
-  const dataDir = Object.hasOwn(o, "data_dir") ? o["data_dir"] : join(home, "data");
+  // The default is resolved, so that a relative `home` gives an absolute path, not "corrupt".
+  const dataDir = Object.hasOwn(o, "data_dir") ? o["data_dir"] : resolve(home, "data");
   if (typeof dataDir !== "string" || !isAbsolute(dataDir)) throw corrupt();
   const user = o["user"];
   const tenant = o["tenant"];

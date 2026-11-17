@@ -3,7 +3,7 @@
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { LocalTenantError, readTenantDirectory, tenantFile } from "./local-tenant.ts";
 
@@ -38,6 +38,12 @@ describe("readTenantDirectory", () => {
       tenant: TENANT,
       dataDir: join(h, "data"),
     });
+  });
+
+  it("gives an absolute default data directory for a home given relative", async () => {
+    const h = home(JSON.stringify({ format: 1, user: USER, tenant: TENANT }));
+    const rel = relative(process.cwd(), h);
+    expect((await readTenantDirectory(rel)).dataDir).toBe(join(h, "data"));
   });
 
   it("reads a data directory recorded as an absolute path", async () => {
