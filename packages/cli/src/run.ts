@@ -10,20 +10,26 @@
 // - The socket: the home's, `run/saveslot.sock` (06 §8.1); no variable or option changes it.
 // - Human text on stdout; errors, with the next step, on stderr (06 §6.3).
 
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  type CatalogTables,
   type Client,
   ContractCallError,
   createClient,
   resolveCredential,
 } from "@fluxvita/saveslot-client";
 import { describeError } from "./errors.ts";
-import { catalogList, schemaTemplates } from "./render/results.ts";
+import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
 import { type Boundary, type Line, render, t, untrusted, words } from "./render/text.ts";
 import { TEMPLATES } from "./templates.ts";
-import { TEXTS } from "./texts.ts";
+import { type Static, TEXTS } from "./texts.ts";
+
+/** The options some commands have; any other command given one is a usage error. */
+const OWN_OPTIONS = ["template", "file", "timezone", "tables"] as const;
+
 import { jsonText } from "./untrusted.ts";
 
 export interface CliIO {
@@ -40,6 +46,19 @@ interface Options {
   readonly cursor: string | undefined;
   readonly tags: "auto" | "always" | "never";
   readonly home: string;
+  /** The positionals after the command's words. */
+  readonly args: readonly string[];
+  /** The command's own options, as given. */
+  readonly own: Readonly<Record<string, string | undefined>>;
+}
+
+/** A command line the command cannot take: exit 2, with its static text. */
+class UsageError extends Error {
+  readonly text: Static;
+  constructor(text: Static) {
+    super(text);
+    this.text = text;
+  }
 }
 
 /** What a command gives: a result to write, as text and as JSON. */
@@ -48,26 +67,116 @@ interface Output {
   readonly lines: Line[];
 }
 
-type Command = (o: Options, client: () => Promise<Client>) => Promise<Output>;
+interface Command {
+  /** The options of this command besides the global ones (string-valued). */
+  readonly options: readonly string[];
+  readonly run: (o: Options, client: () => Promise<Client>) => Promise<Output>;
+}
+const command = (options: readonly string[], run: Command["run"]): Command => ({ options, run });
+
+/** The schema document `slot create` submits: a template's or a file's, named and timed. */
+async function documentFor(o: Options): Promise<{ doc: Record<string, unknown>; chosen?: string }> {
+  const slot = o.args[0];
+  if (slot === undefined || o.args.length > 1) throw new UsageError(TEXTS.slotNameMissing);
+  const template = o.own["template"];
+  const file = o.own["file"];
+  if ((template === undefined) === (file === undefined)) throw new UsageError(TEXTS.createNeedsOne);
+  let doc: Record<string, unknown>;
+  if (template !== undefined) {
+    const t = TEMPLATES.get(template);
+    if (t === undefined) throw new UsageError(TEXTS.templateUnknown);
+    doc = structuredClone(t.document) as Record<string, unknown>;
+  } else {
+    let v: unknown;
+    try {
+      v = JSON.parse(await readFile(resolve(file as string), "utf8"));
+    } catch {
+      throw new UsageError(TEXTS.fileUnreadable);
+    }
+    if (typeof v !== "object" || v === null || Array.isArray(v)) {
+      throw new UsageError(TEXTS.fileUnreadable);
+    }
+    doc = v as Record<string, unknown>;
+  }
+  // The name is the command line's; a new slot has no base version (06 §3 step 4).
+  doc["slot"] = slot;
+  doc["base_version"] = null;
+  const given = o.own["timezone"];
+  if (given !== undefined) {
+    doc["timezone"] = given;
+    return { doc };
+  }
+  // A template without --timezone: this computer's (06 §3.1); a file keeps its own.
+  if (template !== undefined) {
+    const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    doc["timezone"] = local;
+    return { doc, chosen: local };
+  }
+  return { doc };
+}
 
 const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   [
+    "slot create",
+    command(["template", "file", "timezone"], async (o, client) => {
+      const { doc, chosen } = await documentFor(o);
+      const r = await (await client()).schemaDraft({ document: doc });
+      return { json: r, lines: slotCreated(r, chosen) };
+    }),
+  ],
+  [
+    "slot show",
+    command(["tables"], async (o, client) => {
+      const [slot, ...named] = o.args;
+      if (slot === undefined) throw new UsageError(TEXTS.slotShowMissing);
+      const listed = [
+        ...named,
+        ...(o.own["tables"] ?? "").split(",").filter((x) => x.trim() !== ""),
+      ].map((x) => x.trim());
+      const c = await client();
+      // No tables named: every table of the slot, as the list gives them.
+      const tables =
+        listed.length > 0
+          ? listed
+          : (await c.catalog({ level: "list", slot })).slots.flatMap((x) =>
+              x.tables.map((tb) => tb.table),
+            );
+      const qualified = tables.map((x) => (x.includes(".") ? x : `${slot}.${x}`));
+      // The table level takes at most 10 tables a call (04-contract-types §4.2).
+      const parts: CatalogTables[] = [];
+      for (let i = 0; i < qualified.length; i += 10) {
+        parts.push(await c.catalog({ level: "table", tables: qualified.slice(i, i + 10) }));
+      }
+      const r: CatalogTables = {
+        level: "table",
+        tables: parts.flatMap((x) => x.tables),
+        ...(parts.some((x) => x.warnings !== undefined)
+          ? { warnings: parts.flatMap((x) => x.warnings ?? []) }
+          : {}),
+        ...(parts.some((x) => x.notices !== undefined)
+          ? { notices: parts.flatMap((x) => x.notices ?? []) }
+          : {}),
+      };
+      return { json: r, lines: catalogTables(r) };
+    }),
+  ],
+  [
     "slot list",
-    async (o, client) => {
+    command([], async (o, client) => {
       const r = await (await client()).catalog({
         level: "list",
         ...(o.limit !== undefined ? { limit: o.limit } : {}),
         ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
       });
       return { json: r, lines: catalogList(r) };
-    },
+    }),
   ],
   [
     "schema templates",
-    async () => ({
+    command([], async () => ({
       json: { templates: [...TEMPLATES.keys()] },
       lines: schemaTemplates(),
-    }),
+    })),
   ],
 ]);
 
@@ -98,6 +207,11 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
         profile: { type: "string" },
         home: { type: "string" },
         help: { type: "boolean", short: "h" },
+        // The commands' own options, checked against the command below.
+        template: { type: "string" },
+        file: { type: "string" },
+        timezone: { type: "string" },
+        tables: { type: "string" },
       },
       strict: true,
       allowPositionals: true,
@@ -130,10 +244,20 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
     }
     limit = Number(l);
   }
-  const command = COMMANDS.get(positionals.join(" "));
-  if (command === undefined) {
+  const found = COMMANDS.get(positionals.slice(0, 2).join(" "));
+  if (found === undefined) {
     io.err(`${TEXTS.unknownCommand}\n`);
     return 2;
+  }
+  const own: Record<string, string | undefined> = {};
+  for (const k of OWN_OPTIONS) {
+    const v = values[k];
+    if (v === undefined) continue;
+    if (!found.options.includes(k)) {
+      io.err(`${TEXTS.usageError(TEXTS.optionNotHere)}\n`);
+      return 2;
+    }
+    own[k] = String(v);
   }
   const o: Options = {
     json: values["json"] === true,
@@ -143,6 +267,8 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
     home: resolve(
       typeof values["home"] === "string" ? values["home"] : join(homedir(), ".saveslot"),
     ),
+    args: positionals.slice(2),
+    own,
   };
   const client = async () => {
     const credential = await resolveCredential({ home: o.home, env });
@@ -152,7 +278,7 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
     });
   };
   try {
-    const r = await command(o, client);
+    const r = await found.run(o, client);
     io.out(
       o.json
         ? `${jsonText(r.json)}\n`
@@ -160,6 +286,10 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
     );
     return 0;
   } catch (e) {
+    if (e instanceof UsageError) {
+      io.err(`${TEXTS.usageError(e.text)}\n`);
+      return 2;
+    }
     const d = describeError(e);
     if (o.json && e instanceof ContractCallError) io.out(`${jsonText({ error: e.body })}\n`);
     io.err(`${render(d.lines, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`);

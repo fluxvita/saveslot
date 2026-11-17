@@ -20,12 +20,19 @@ import {
   wrapEscaped,
 } from "../untrusted.ts";
 
-export type Part =
+declare const madeHere: unique symbol;
+/**
+ * A part of a text. Only this file makes one (the brand's key is a symbol of this module alone):
+ * an object written elsewhere with the same fields is no Part, so nothing can stand as saveslot's
+ * own words without going through `words`, `t` or a shape check.
+ */
+export type Part = (
   | { readonly kind: "own"; readonly text: string }
-  | { readonly kind: "untrusted"; readonly text: string };
+  | { readonly kind: "untrusted"; readonly text: string }
+) & { readonly [madeHere]: true };
 export type Line = readonly Part[];
 
-const own = (text: string): Part => ({ kind: "own", text });
+const own = (text: string): Part => ({ kind: "own", text }) as Part;
 /**
  * saveslot's own static wording: a `Static` text, which only ../texts.ts can make. A string made
  * at run time cannot be passed here (it is no `Static`): it goes in with `untrusted`, or through a
@@ -33,7 +40,7 @@ const own = (text: string): Part => ({ kind: "own", text });
  */
 export const words = (text: Static): Part => own(text);
 /** A value from outside saveslot's own wording: written inside the boundary. */
-export const untrusted = (text: string): Part => ({ kind: "untrusted", text });
+export const untrusted = (text: string): Part => ({ kind: "untrusted", text }) as Part;
 
 const CROCKFORD = "[0-9A-HJKMNP-TV-Z]";
 const SEQ = "(?:0|[1-9][0-9]{0,15})";

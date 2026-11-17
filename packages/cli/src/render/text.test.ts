@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { TEXTS } from "../texts.ts";
-import { cut, id, name, render, t, untrusted, words } from "./text.ts";
+import { cut, id, type Line, name, render, t, untrusted, words } from "./text.ts";
 
 const cp = (...points: number[]) => String.fromCodePoint(...points);
 
@@ -14,6 +14,13 @@ describe("saveslot's own words", () => {
     // @ts-expect-error a runtime string is no Static text
     words(fromOutside);
     expect(render([[words(TEXTS.warning)]], { kind: "plain" })).toBe("warning");
+  });
+
+  it("a part cannot be written by hand: an object with the same fields does not type-check", () => {
+    const fromOutside: string = ["user", "text"].join(" ");
+    // @ts-expect-error a Part is made in render/text.ts only
+    const forged: Line = [{ kind: "own", text: fromOutside }];
+    expect(forged).toHaveLength(1);
   });
 
   it("a shape that does not fit goes inside", () => {

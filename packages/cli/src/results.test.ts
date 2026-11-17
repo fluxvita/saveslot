@@ -3,10 +3,10 @@
 // attacker would use, is found inside the boundary only and escaped.
 
 import { readFileSync } from "node:fs";
-import type { CatalogList } from "@fluxvita/saveslot-client";
+import type { CatalogList, CatalogTables, SchemaDraftResult } from "@fluxvita/saveslot-client";
 import { describe, expect, it } from "vitest";
-import { catalogList, schemaTemplates } from "./render/results.ts";
-import { type Boundary, render } from "./render/text.ts";
+import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
+import { type Boundary, type Line, render } from "./render/text.ts";
 import { TEMPLATES } from "./templates.ts";
 import { TEXTS } from "./texts.ts";
 
@@ -160,3 +160,152 @@ describe("every string of a result goes inside, escaped", () => {
     }
   });
 });
+
+const TABLES: CatalogTables = {
+  level: "table",
+  tables: [
+    {
+      table: "health.runs",
+      slot: "health",
+      sv: 1,
+      timezone: "Asia/Shanghai",
+      kind: "base",
+      description: "each run",
+      time: { type: "event", field: "date" },
+      fields: [
+        { name: "date", type: "date", description: "the day", required: true },
+        {
+          name: "distance",
+          type: "quantity",
+          unit: "km",
+          description: "how far",
+          precision: { scale: 6, rounding: "half_up" },
+          aliases: ["km run"],
+        },
+      ],
+      profile: { rows: 12, time_range: { from: "2026-11-01", to: "2026-11-11" } },
+    },
+    {
+      table: "health.weekly_mileage",
+      slot: "health",
+      sv: 1,
+      timezone: "Asia/Shanghai",
+      kind: "derived",
+      description: "per week",
+      fields: [{ name: "total", type: "quantity", unit: "km", description: "the total" }],
+      rule: {
+        id: "rule-1",
+        version: 1,
+        sql: "SELECT 1",
+        time_dependency: "bucketed",
+        depends_on: ["runs.distance"],
+      },
+    },
+    {
+      table: "plan.budgets",
+      slot: "plan",
+      sv: 2,
+      timezone: "UTC",
+      kind: "base",
+      description: "budgets",
+      time: { type: "state", granularity: "date" },
+      entity_key: ["category"],
+      fields: [{ name: "category", type: "text", description: "the category" }],
+    },
+  ],
+} as never;
+
+const CREATED: SchemaDraftResult = {
+  draft: "d_8VEZWJ3J7BMKMXTV",
+  slot: "health",
+  slot_id: "sl_8VEZWJ3J7BMKMXTV",
+  target_sv: 1,
+  sv: 1,
+  document: { slot: "health", tables: [{ name: "runs" }, { name: "weekly_mileage" }] },
+  changes: [],
+  impact: {},
+  outcome: "applied",
+} as never;
+
+describe("slot show (06 §4.3)", () => {
+  it("each table: its kind and time, its fields, the rule of a derived one, the rows", () => {
+    expect(render(catalogTables(TABLES), terminal).split("\n")).toEqual([
+      "health · schema v1 · 「Asia/Shanghai」",
+      "health.runs (base · event, by date)  「each run」",
+      "  date  date · required  「the day」",
+      "  distance  quantity 「km」 6 decimal places  「how far」",
+      "  rows: 12 · 「2026-11-01」 – 「2026-11-11」",
+      "health · schema v1 · 「Asia/Shanghai」",
+      `health.weekly_mileage (${TEXTS.derived})  「per week」`,
+      "  total  quantity 「km」  「the total」",
+      "  rule (bucketed): 「SELECT 1」",
+      "plan · schema v2 · 「UTC」",
+      "plan.budgets (base · state, by date)  「budgets」",
+      "  category  text  「the category」",
+    ]);
+  });
+});
+
+describe("slot create (06 §4.3)", () => {
+  it("the slot, its version and tables; the time zone when the command chose it", () => {
+    expect(render(slotCreated(CREATED, "Europe/Berlin"), terminal).split("\n")).toEqual([
+      "Created slot health · schema v1 · 2 tables (runs, weekly_mileage)",
+      `${TEXTS.timezoneChosen} 「Europe/Berlin」`,
+    ]);
+    expect(render(slotCreated(CREATED, undefined), terminal).split("\n")).toHaveLength(1);
+  });
+});
+
+/** What a renderer leaves out on purpose, by the path of a string in its result. */
+type Omitted = (path: readonly (string | number | object)[]) => boolean;
+const last = (path: readonly (string | number | object)[]) =>
+  String(path.findLast((x) => typeof x === "string"));
+
+const RENDERERS: [string, unknown, (r: never) => Line[], Omitted][] = [
+  [
+    "slot show",
+    TABLES,
+    catalogTables,
+    (p) =>
+      ["level", "kind", "aliases", "id", "depends_on", "entity_key", "rounding"].includes(
+        last(p),
+      ) ||
+      (p.includes("time") && last(p) === "type"),
+  ],
+  [
+    "slot create",
+    CREATED,
+    (r: SchemaDraftResult) => slotCreated(r, "Europe/Berlin"),
+    (p) =>
+      ["draft", "slot_id", "outcome"].includes(last(p)) ||
+      (p[0] === "document" && last(p) !== "name"),
+  ],
+];
+
+describe.each(RENDERERS)(
+  "every string of %s's result goes inside, escaped",
+  (_, sample, renderer, omitted) => {
+    it.each(strings(sample).map((p, i) => [JSON.stringify(p), p, i] as const))("%s", (_, p, i) => {
+      const r = replaced(sample, p as never, PAYLOAD(i));
+      for (const b of [terminal, { kind: "tagged" } as Boundary]) {
+        let text: string;
+        try {
+          text = render(renderer(r as never), b);
+        } catch {
+          continue; // a shape the renderer cannot read at all (a key replaced): nothing written
+        }
+        expect(text).not.toContain(String.fromCodePoint(0x1b));
+        expect(text).not.toContain(String.fromCodePoint(0x202e));
+        const isKey = typeof p[p.length - 1] === "object";
+        if (!isKey && !omitted(p)) expect(text).toContain(`P${i}X`);
+        if (text.includes(`P${i}X`)) {
+          const outside =
+            b.kind === "terminal"
+              ? text.replace(/「[^「」]*」/g, "")
+              : text.replace(/<untrusted-data-([0-9a-f]{32})>[\s\S]*?<\/untrusted-data-\1>/g, "");
+          expect(outside).not.toContain(`P${i}X`);
+        }
+      }
+    });
+  },
+);

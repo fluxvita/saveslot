@@ -51,6 +51,16 @@ import type { Decision, SourceLevel } from "./pending.ts";
 import type { MigrationStatus, SchemaDocument, SlotPolicy } from "./schema.ts";
 import type { DerivedChange, OpResult, SourceKind, TimelineResultCode } from "./write.ts";
 
+/** The value sets of the types below, for a client that writes them (the CLI's renderers). */
+export {
+  COMPILE_OUTCOMES,
+  FIELD_TYPES,
+  GRANULARITIES,
+  TABLE_KINDS,
+  TIME_DEPENDENCIES,
+  TIME_TYPES,
+} from "@fluxvita/saveslot-contract-core";
+
 /**
  * 04-contract-types §4.2 `FieldType`, `Rounding`, table `kind` (`TableKind`), time `granularity`,
  * rule `time_dependency`, `ref.target`; §4.1 `literal` (`LiteralResult`); §5.1 `VersionIntent`:

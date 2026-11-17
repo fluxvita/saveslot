@@ -20,6 +20,8 @@ export const TEXTS = {
       "usage: saveslot <command> [options]",
       "",
       "  slot list                 the slots and their tables",
+      "  slot show <slot> [table…]  a slot's tables: fields, rule, rows",
+      "  slot create <name> --template <template> | --file <schema.json> [--timezone <zone>]",
       "  schema templates          the schema templates this saveslot ships",
       "",
       "  init | start | stop | status | config get | mcp   the local service",
@@ -76,6 +78,28 @@ export const TEXTS = {
   migrating: s("migrating"),
   more: s("more:"),
   shownOf: (shown: number, total: number) => s(`${shown} of ${total} shown`),
+
+  // slot show
+  eventBy: s("base · event, by"),
+  stateBy: s("base · state, by"),
+  noTime: s("base · no time"),
+  decimals: s(" decimal places"),
+  required: s("required"),
+  rule: s("rule"),
+  rows: s("rows:"),
+
+  // slot create
+  created: s("Created slot"),
+  tables: s("tables"),
+  timezoneChosen: s("time zone: this computer's, as no --timezone was given:"),
+  awaitingConfirmation: s("awaiting confirmation; see saveslot pending show"),
+  createNeedsOne: s("give one of --template <template> and --file <schema.json>"),
+  templateUnknown: s("not a template of this saveslot; see saveslot schema templates"),
+  fileUnreadable: s("the --file cannot be read, or is not a JSON object"),
+  slotNameMissing: s("give the slot's name: saveslot slot create <name>"),
+  optionNotHere: s("that option is not one of this command's"),
+  slotShowMissing: s("give the slot: saveslot slot show <slot> [table…]"),
+  detail: s("  at"),
 
   // schema templates
   templates: new Map<string, Static>([

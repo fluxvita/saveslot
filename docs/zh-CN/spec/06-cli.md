@@ -158,7 +158,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 
 ### 3.1 起步 schema：随 CLI 打包的模板
 
-- **第一版的做法**：CLI 包里带几份写好的 schema 文档（上面列出的三份），就是普通的用户 schema，格式完全按 [`03-data-model/07-schema-evolution.md`](03-data-model/07-schema-evolution.md)「schema 文档格式」，不用 `extends` / `compatibility`。`saveslot slot create --template` 把模板里的 slot 名、时区换成命令行给的值，作为草稿提交。
+- **第一版的做法**：CLI 包里带几份写好的 schema 文档（上面列出的三份），就是普通的用户 schema，格式完全按 [`03-data-model/07-schema-evolution.md`](03-data-model/07-schema-evolution.md)「schema 文档格式」，不用 `extends` / `compatibility`。`saveslot slot create --template` 把模板里的 slot 名、时区换成命令行给的值，作为草稿提交；没给 `--timezone` 时取本机时区（运行时给出的时区名），并在输出里写明是这样取的。用 `--file` 时 slot 名同样取命令行给的名字，时区保留文件里的值，给了 `--timezone` 则以它为准。
 - **建完就归用户**：slot 与模板之后没有任何联系，CLI 升级换了模板也不影响已建的 slot；要改结构走 schema 变更（P4）。
 - **为什么随包带、不从网上取**：离线可用、内容随 CLI 版本固定、不引入"远程 schema 来源"这个提示注入面（open-questions「社区 Schema + SKILL 的安全」）。
 - **不用模板时**：`saveslot slot create <名字> --file schema.json`，文件可以是让 Agent 起草后保存的；也可以给某个 Agent 勾选 `saveslot.schema`，让它经 `saveslot_schema_draft` 直接建 slot。

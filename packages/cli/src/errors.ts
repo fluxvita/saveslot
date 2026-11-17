@@ -9,8 +9,9 @@ import {
   ERROR_CODES,
   type ErrorCode,
   TransportError,
+  VALIDATION_DETAIL_CODES,
 } from "@fluxvita/saveslot-client";
-import { code, type Line, t, untrusted, words } from "./render/text.ts";
+import { code, join, type Line, num, t, untrusted, words } from "./render/text.ts";
 import { TEXTS } from "./texts.ts";
 
 /** 06 §6.2, by contract code; `rate_limited` by its reason. A code not here exits 5. */
@@ -44,6 +45,7 @@ export const EXIT_BY_CODE: ReadonlyMap<ErrorCode, number> = new Map<ErrorCode, n
 
 /** The contract's codes, for writing a code outside the boundary. */
 const CODES: ReadonlySet<string> = new Set<string>(ERROR_CODES);
+const DETAIL_CODES: ReadonlySet<string> = new Set<string>(VALIDATION_DETAIL_CODES);
 
 /** The exit code of a contract error: §6.2; `rate_limited` with reason `busy` is 7. */
 export function exitOf(errorCode: string, reason: unknown): number {
@@ -64,6 +66,22 @@ export function describeError(e: unknown): { readonly lines: Line[]; readonly ex
         ...(typeof message === "string" ? t`: ${untrusted(message)}` : []),
       ],
     ];
+    // Each detail (a compile failure's positions among them, 06 §4.3 slot create): its code, and
+    // where it is.
+    const details = Object.hasOwn(e.body, "details") ? e.body["details"] : undefined;
+    for (const d of Array.isArray(details) ? details : []) {
+      const x = (typeof d === "object" && d !== null ? d : {}) as Record<string, unknown>;
+      const where = (["path", "table", "field", "line"] as const)
+        .filter((k) => x[k] !== undefined)
+        .map(
+          (k) =>
+            t`${untrusted(k)} ${typeof x[k] === "number" ? num(x[k] as number) : untrusted(String(x[k]))}`,
+        );
+      lines.push([
+        ...t`  ${code(String(x["code"] ?? ""), DETAIL_CODES)}`,
+        ...(where.length > 0 ? t`${words(TEXTS.detail)} ${join(where, t`, `)}` : []),
+      ]);
+    }
     const hint = TEXTS.nextStep.get(e.code as ErrorCode);
     if (hint !== undefined) lines.push(t`  ${words(hint)}`);
     return { lines, exit: exitOf(e.code, reason) };
