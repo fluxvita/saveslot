@@ -4,7 +4,7 @@
 // the official SDK client over stdio in both protocol eras.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1190,6 +1190,53 @@ describe("the bridge as a process", () => {
     },
     T,
   );
+});
+
+describe("mcp.autostart off, on a home where a start would succeed", () => {
+  const root = mkdtempSync(join(tmpdir(), "saveslot-bridge-noauto-"));
+  const home = join(root, "home");
+  beforeAll(async () => {
+    await initLocalHome({
+      home,
+      backend: testBackend(),
+      lock: osFileLock,
+      now: new Date().toISOString(),
+    });
+  }, T);
+  afterAll(async () => {
+    await stop(home, { out: () => {}, err: () => {} });
+    rmSync(root, { recursive: true, force: true });
+  }, T);
+
+  for (const [what, file, event] of [
+    ["off", "[mcp]\nautostart = false\n", undefined],
+    ["a config.toml start would refuse", "mcp.autostart = 1\n", "saveslot mcp: config_invalid"],
+  ] as const) {
+    it(
+      `${what}: the bridge runs, each request gets -32000, no service is started`,
+      async () => {
+        writeFileSync(join(home, "config.toml"), file);
+        const b = spawnBridge(home, { SAVESLOT_TOKEN: UNKNOWN_TOKEN });
+        b.child.stdin?.write('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+        b.child.stdin?.write('{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n');
+        b.child.stdin?.end();
+        const e = await b.exited;
+        expect(e.code).toBe(0);
+        expect(b.lines.map((l) => JSON.parse(l))).toMatchObject([
+          { id: 1, error: { code: -32000 } },
+          { id: 2, error: { code: -32000 } },
+        ]);
+        const err = b.err();
+        expect(err).not.toContain("autostart");
+        if (event !== undefined) expect(err).toContain(event);
+        // Nothing was started: no pid file, no service log, nobody on the socket.
+        expect(existsSync(join(home, "run", "saveslot.pid"))).toBe(false);
+        expect(existsSync(join(home, "run", "saveslot.log"))).toBe(false);
+        expect(await health(socketFile(home))).toBeUndefined();
+      },
+      T,
+    );
+  }
 });
 
 /** The official client over stdio, the bridge spawned as a host spawns it. */

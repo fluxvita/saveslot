@@ -7,7 +7,9 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { runService } from "./service.ts";
+import { ConfigInvalid, readConfig } from "./config.ts";
+import { type RunServiceOptions, runService } from "./service.ts";
+import { TEXTS } from "./texts.ts";
 
 /** This package's version: what `GET /health` reports and `saveslot start` compares. */
 export function daemonVersion(): string {
@@ -15,6 +17,16 @@ export function daemonVersion(): string {
     version: string;
   };
   return pkg.version;
+}
+
+/** What the foreground service runs with: the home's configuration; throws `ConfigInvalid`. */
+export async function foregroundOptions(home: string): Promise<RunServiceOptions> {
+  const config = await readConfig(home);
+  return {
+    home,
+    version: daemonVersion(),
+    readsFlushMs: config.readsFlushSeconds * 1000,
+  };
 }
 
 /** Runs the service in the foreground; resolves with the exit code once it has stopped. */
@@ -32,9 +44,21 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 2;
   }
   const home = resolve(values.home ?? join(homedir(), ".saveslot"));
-  const service = await runService({
-    home,
-    version: daemonVersion(),
-  });
+  let options: RunServiceOptions;
+  try {
+    options = await foregroundOptions(home);
+  } catch (e) {
+    if (!(e instanceof ConfigInvalid)) throw e;
+    // In the background this is the service's log: the keys, never a value.
+    const keys = e.problems.flatMap((p) => ("key" in p ? [p.key] : []));
+    process.stderr.write(
+      `${new Date().toISOString()} config_invalid${keys.length > 0 ? ` keys=${keys.join(",")}` : ""}\n`,
+    );
+    for (const line of [TEXTS.configInvalid, ...e.problems.map(TEXTS.configProblem)]) {
+      process.stderr.write(`${line}\n`);
+    }
+    return 5;
+  }
+  const service = await runService(options);
   return (await service.exited).code;
 }

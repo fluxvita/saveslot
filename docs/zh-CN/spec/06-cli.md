@@ -119,7 +119,6 @@ $ saveslot init
   data/          PGlite 数据目录（一个租户；已写入租户创世，登记用户主体与 system）
   control/       控制面（文件）：凭证哈希、租户目录、锚点（删除登记、seq 高水位、恢复次数）、句柄签名密钥
   credentials/   用户会话令牌（0600）
-  config.toml    监听方式、数值策略
   run/           saveslot 服务运行时（0700）：saveslot.lock（服务进程一级的锁）、saveslot.pid、saveslot.sock、saveslot.log（后台运行时服务的日志，0600，追加写；只记事件名与原因码，不含路径、令牌与用户数据）
 $ saveslot start
 saveslot 服务已在后台启动 · pid 4211 · 监听 ~/.saveslot/run/saveslot.sock · 数据 ~/.saveslot/data
@@ -432,7 +431,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 |---|---|---|---|---|
 | `saveslot login` / `saveslot logout` | 服务器模式的用户会话 | `--server <URL>`（自部署的地址，默认我们的云服务）、`--device` | 登录的账户、令牌存放位置 | P5 |
 | `saveslot profile list` / `use` | 切换连接目标 | — | 当前 profile 与地址 | P5 |
-| `saveslot config get` / `set` | 本地 saveslot 服务的配置（监听方式、端口、数值策略）。数值策略的键：`read_log.retention_days`（读取记录保留期，默认 180，不能低于 30）、`read_log.flush_seconds`（落盘间隔，默认 5）、`read_log.coarse_threshold`（改记表级记录的阈值，默认 1000）、`high_water.events` 与 `high_water.seconds`（高水位推进间隔，默认 1000 条事件或 60 秒）。低于内核下限的值被拒绝。自部署的服务器模式用同名的配置项 | 键、值 | 改后是否需要重启 | P1（只读），P6（可写） |
+| `saveslot config get` / `set` | 本地 saveslot 服务的配置，文件是 home 下的 `config.toml`（可选：`saveslot init` 不生成它，没有这个文件时每个键取默认值）。数值策略的键都是正整数：`read_log.retention_days`（读取记录保留期，默认 180，不能低于 30）、`read_log.flush_seconds`（落盘间隔，默认 5，不能低于 1、不能超过 2147483）、`read_log.coarse_threshold`（改记表级记录的阈值，默认 1000，不能低于 1）、`high_water.events` 与 `high_water.seconds`（高水位推进间隔，默认 1000 条事件或 60 秒，都不能低于 1）。另有 `http.loopback`（回环 TCP，默认 `false`）与 `mcp.autostart`（`saveslot mcp` 自动拉起服务，默认 `true`），都是布尔值。文件不是 UTF-8 或合法的 TOML、有不认识的键、有这一版还没有用到的键、值的类型不对或超出范围时，saveslot 服务拒绝启动，指出是哪个键、为什么（不认识 / 这一版不支持 / 值的类型与范围），不回落到默认值；文案只含键名、行号与范围，不含文件里的值。`config get` 列出每个键的生效值与来源（默认 / `config.toml`），这一版还没有用到的键也列出，标明"这一版未启用"。自部署的服务器模式用同名的配置项 | 键、值 | 改后是否需要重启 | P1（只读），P6（可写） |
 
 ### 4.3 slot 与 schema
 
@@ -621,7 +620,7 @@ runs r_01JC… 整行删除：date 只来自这句话
 | 2 | 命令用法错误（CLI 自己发现的） | — |
 | 3 | 要先重读 / 内容已变 | `read_first`、`confirmation_mismatch`、`item_closed`、`preview_outdated`、`handle_expired`、`draft_outdated`、`schema_incompatible` |
 | 4 | 找不到 | `not_found`、`unknown_table`、`unknown_field` |
-| 5 | 请求被拒 | `saveslot init` 遇到已初始化的目录或正在运行的服务（什么都不改）、`saveslot start` 遇到未初始化的目录；`invalid_argument`、`validation_failed`、`field_unmatched`、`sql_rejected`、`sql_timeout`、`too_large`、`derived_readonly`、`revoked`、`not_in_this_version`、`import_rejected`、`rate_limited`（`quota`）、`referenced`（后续）、`lease_expired`（后续） |
+| 5 | 请求被拒 | `saveslot init` 遇到已初始化的目录或正在运行的服务（什么都不改）、`saveslot start` 遇到未初始化的目录；`config.toml` 不合法（`saveslot start` 在派生进程之前、前台启动与 `saveslot config get` 都这样拒绝，见 4.2）；`invalid_argument`、`validation_failed`、`field_unmatched`、`sql_rejected`、`sql_timeout`、`too_large`、`derived_readonly`、`revoked`、`not_in_this_version`、`import_rejected`、`rate_limited`（`quota`）、`referenced`（后续）、`lease_expired`（后续） |
 | 6 | 凭证或权限 | 未登录、凭证文件权限过宽、`unauthenticated`（令牌无效、已吊销、会话过期）、`insufficient_scope`；`saveslot mcp` 的 `SAVESLOT_TOKEN` 没设、为空或不是连接实例令牌（含用户会话令牌） |
 | 7 | 连不上或暂时不可用（稍后重试） | saveslot 服务未运行（`saveslot stop` 例外：没在运行时退出码 0）；`saveslot stop` 时 `/health` 报的 pid 与 `run/saveslot.pid` 不一致，或 `/health` 不应答而 `run/saveslot.lock` 被占着（都不发信号）；`saveslot start` 等不到就绪（进程仍在运行）、套接字不可达、`unavailable`（忙、恢复中、导入中、对拍中、启动中）、`rate_limited`（`busy`）；`saveslot start` 或 `saveslot setup` 启动服务失败，或另一个 `setup` 正在运行 |
 | 8 | 未执行 | 人在提示中拒绝（含 `saveslot setup` 第 5 步的拒绝：什么都没签发）；非交互式缺 `--yes` 或绑定令牌；`export --encrypt` 没有终端、也没给口令文件或文件描述符 |
@@ -676,7 +675,7 @@ P1 结束时 CLI 已能完成第 3 节的整条上手流程，含 `saveslot setu
 | 每个请求都要令牌（连接实例或用户会话），套接字权限不代替认证。唯一的例外是 `GET /health`：不涉及任何主体与数据，`saveslot start` 比较版本、`saveslot mcp` 判断服务是否已起来都要用它；响应只有 `state`（`starting` / `ready` / `stopping` / `failed`）、`version`、`pid`、`since`，`failed` 时另带一个不含路径与用户数据的原因码。其余路径没带令牌回 401（`unauthenticated`，同 [`05-surfaces.md`](05-surfaces.md) 第 14 节） | 区分主体、限定 scope：每个 Agent 只能做它的连接实例被授予的事，读写各自留痕。它不是对同权限程序的防护——够得着套接字的程序一般也读得到凭证文件（8.3） |
 | 本地模式不提供绑定到非回环地址的配置 | 误配置把个人数据暴露到网络；跨设备用服务器模式（我们的云服务，或自部署——那是另一套带 OAuth 的启动方式，不是给本机模式开一个端口） |
 
-CLI 与 `saveslot mcp` 只认配置里的套接字路径，不接受从环境变量改成任意 URL 的本地连接，少一种被误配置引到别处的可能；这不是防护——同权限的程序照样能改 `config.toml`。
+CLI 与 `saveslot mcp` 只用 home 下固定的套接字路径（`run/saveslot.sock`），不接受从环境变量或参数改成别的地址，少一种被误配置引到别处的可能；这不是防护——同权限的程序照样能改 home 下的文件。
 
 ### 8.2 凭证文件
 

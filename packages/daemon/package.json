@@ -21,7 +21,8 @@
     "@fluxvita/saveslot-server": "workspace:*",
     "@fluxvita/saveslot-service": "workspace:*",
     "@fluxvita/saveslot-store-pglite": "workspace:*",
-    "@fluxvita/saveslot-store-postgres": "workspace:*"
+    "@fluxvita/saveslot-store-postgres": "workspace:*",
+    "smol-toml": "1.9.1"
   },
   "private": true,
   "devDependencies": {

@@ -1,4 +1,4 @@
-// The service commands `init`, `start`, `stop` and `status` (docs/zh-CN/spec/06-cli.md §3 «分步做»
+// The service commands `init`, `start`, `stop`, `status` and `config` (docs/zh-CN/spec/06-cli.md §3 «分步做»
 // and its steps 2–3, §4.1, §6.2). They manage the local service process; none is a contract
 // operation. The entry package dispatches to `serviceCommand`.
 //
@@ -9,12 +9,15 @@
 //   log appended to `run/saveslot.log` (0600); waits for `GET /health` to say ready. A service
 //   running already: same version, nothing to do; another version, exit 1 (it is not restarted:
 //   a host may be connected). Failing to start: the process is stopped, exit 7.
+//   config.toml is read and checked first (./config.ts): refused, exit 5 and no process spawned.
 // - `stop`: signals only a process it has verified. `/health` answering: SIGTERM to the pid of the
 //   pid file only when `/health` names that same pid, then waits for that process to exit; another
 //   pid: no signal, exit 7. `/health` not answering: the home's lock not held means nothing runs (a
 //   pid file left is removed, exit 0); held (starting, or stuck): no signal, exit 7.
 // - `status`: what `/health` says, the paths, and the number of pending items (`pending`, as the
 //   user session).
+// - `config get [<key>]`: each key's value in effect and its source (default or config.toml);
+//   a key no part of this version uses is listed as such. `config set` is not in this version.
 //
 // The lock is probed only when `/health` does not answer, and once after the stopped process has
 // exited: a probe takes the lock for a moment, and a service starting in that moment (one an MCP
@@ -45,6 +48,7 @@ import {
   sessionFile,
 } from "@fluxvita/saveslot-service";
 import { osFileLock, PgliteBackend, PgliteStoreError } from "@fluxvita/saveslot-store-pglite";
+import { type Config, ConfigInvalid, type ConfigKey, KEYS, readConfig } from "./config.ts";
 import { health, localRequest } from "./local-request.ts";
 import { daemonVersion, main } from "./main.ts";
 import { runBridge } from "./mcp-bridge.ts";
@@ -236,6 +240,9 @@ async function startService(home: string, io: CommandIO): Promise<number> {
     }
   }
 
+  // Refused here, before a process is spawned: the reason goes to the user, not to the log.
+  if ((await checkedConfig(home, io)) === undefined) return 5;
+
   await mkdir(runDir(home), { recursive: true, mode: 0o700 });
   const log = openSync(logFile(home), "a", 0o600);
   let child: ReturnType<typeof spawn>;
@@ -383,15 +390,55 @@ export async function status(home: string, io: CommandIO): Promise<number> {
   return h.state === "ready" ? 0 : 7;
 }
 
+/** The home's configuration, or undefined after saying on stderr why the file is refused. */
+async function checkedConfig(home: string, io: CommandIO): Promise<Config | undefined> {
+  try {
+    return await readConfig(home);
+  } catch (e) {
+    if (!(e instanceof ConfigInvalid)) throw e;
+    io.err(TEXTS.configInvalid);
+    for (const p of e.problems) io.err(TEXTS.configProblem(p));
+    return undefined;
+  }
+}
+
+/** `config get [<key>]`: every key's value in effect and where it comes from (06 §4.2). */
+export async function configCommand(
+  home: string,
+  args: readonly string[],
+  io: CommandIO,
+): Promise<number> {
+  const [verb, key, ...rest] = args;
+  if (verb === "set") {
+    io.err(TEXTS.configSetNotYet);
+    return 2;
+  }
+  if (verb !== "get" || rest.length > 0) {
+    io.err(TEXTS.usage("saveslot config get [<key>]"));
+    return 2;
+  }
+  if (key !== undefined && !KEYS.has(key as ConfigKey)) {
+    io.err(TEXTS.configUnknownKey(key));
+    return 2;
+  }
+  const config = await checkedConfig(home, io);
+  if (config === undefined) return 5;
+  for (const e of config.entries) {
+    if (key === undefined || e.key === key) io.out(TEXTS.configEntry(e));
+  }
+  return 0;
+}
+
 /** The service command `name` with its arguments; resolves with the exit code. */
 export async function serviceCommand(
-  name: "init" | "start" | "stop" | "status" | "mcp",
+  name: "init" | "start" | "stop" | "status" | "config" | "mcp",
   argv: readonly string[],
   io: CommandIO,
 ): Promise<number> {
   let values: Record<string, string | boolean | undefined>;
+  let positionals: string[];
   try {
-    ({ values } = parseArgs({
+    ({ values, positionals } = parseArgs({
       args: [...argv],
       options: {
         home: { type: "string" },
@@ -401,7 +448,7 @@ export async function serviceCommand(
         ...(name === "start" ? { foreground: { type: "boolean" } } : {}),
       },
       strict: true,
-      allowPositionals: false,
+      allowPositionals: name === "config",
     }));
   } catch (e) {
     io.err(TEXTS.usage((e as Error).message));
@@ -437,6 +484,8 @@ export async function serviceCommand(
       return stop(home, io);
     case "status":
       return status(home, io);
+    case "config":
+      return configCommand(home, positionals, io);
     case "mcp":
       return mcpCommand(home, io);
   }
@@ -445,7 +494,8 @@ export async function serviceCommand(
 /**
  * `saveslot mcp` on this process's stdin and stdout (see ./mcp-bridge.ts). stderr gets the
  * bridge's event lines only: the service it starts writes nothing there, its texts are dropped
- * (they may hold the home's path) and its exit code is what the bridge logs. SIGTERM and SIGINT
+ * (they may hold the home's path) and its exit code is what the bridge logs. The service is
+ * started only with `mcp.autostart` on (its default). SIGTERM and SIGINT
  * exit at once, without waiting for what is in flight: that is how a host ends a session; so does
  * stdout breaking (exit 0 for EPIPE, 1 otherwise).
  */
@@ -453,13 +503,20 @@ export async function mcpCommand(home: string, io: CommandIO): Promise<number> {
   const quit = () => process.exit(0);
   process.once("SIGTERM", quit);
   process.once("SIGINT", quit);
+  // `mcp.autostart` (06-cli §3 step 3, §4.2). A config.toml start would refuse, or one that cannot
+  // be read: no start is tried; it is said by a code, and the bridge runs all the same.
+  let autostart = false;
+  try {
+    autostart = (await readConfig(home)).mcpAutostart;
+  } catch (e) {
+    io.err(TEXTS.mcpEvent(e instanceof ConfigInvalid ? "config_invalid" : "config_unreadable"));
+  }
   const code = await runBridge({
     token: process.env["SAVESLOT_TOKEN"],
     stdin: process.stdin,
     stdout: process.stdout,
     log: io.err,
-    // The configuration (`mcp.autostart`) is not read yet: on, its default (06-cli §3 step 3).
-    autostart: true,
+    autostart,
     startService: () => start(home, { out: () => {}, err: () => {} }),
     version: daemonVersion(),
     socketPath: socketFile(home),

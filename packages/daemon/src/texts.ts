@@ -1,6 +1,8 @@
 // Every static text the service commands print (docs/zh-CN/spec/06-cli.md §3, §4.1, §6.3), here
 // and nowhere else. No text holds a token or user data; paths are the user's own home.
 
+import type { ConfigEntry, ConfigProblem } from "./config.ts";
+
 export const TEXTS = {
   initDone: (home: string) =>
     [
@@ -64,6 +66,34 @@ export const TEXTS = {
       `  pending   ${s.pending === undefined ? "unknown" : s.pending}`,
     ].join("\n"),
   usage: (message: string) => `error: ${message}`,
+
+  // The configuration (`config.toml`): keys, lines and limits, never a value from the file.
+  configInvalid: "error: config.toml under the home is not valid; nothing was started.",
+  configProblem: (p: ConfigProblem): string => {
+    switch (p.kind) {
+      case "not_utf8":
+        return "  the file is not UTF-8";
+      case "not_toml":
+        return p.line !== undefined
+          ? `  the file is not valid TOML (line ${p.line})`
+          : "  the file is not valid TOML";
+      case "unknown_key":
+        return `  ${p.key}: not a key saveslot knows`;
+      case "unsupported_key":
+        return `  ${p.key}: not supported in this version; remove it to use the default`;
+      case "not_integer":
+        return `  ${p.key}: must be a whole number, at least ${p.min}`;
+      case "out_of_range":
+        return `  ${p.key}: must be at least ${p.min} and at most ${p.max}`;
+      case "not_boolean":
+        return `  ${p.key}: must be true or false`;
+    }
+  },
+  configEntry: (e: ConfigEntry): string =>
+    `${e.key} = ${e.value}  (${e.source === "file" ? "config.toml" : "default"}${e.used ? "" : "; not in use in this version"})`,
+  configSetNotYet:
+    "error: saveslot config set is not in this version; edit config.toml under the home, then restart the service.",
+  configUnknownKey: (key: string) => `error: ${key} is not a key saveslot knows`,
 
   // `saveslot mcp`: stderr gets event names and reason codes only; the error texts go to the host
   // in JSON-RPC errors. None holds a token, a path, or anything of a request or an answer.

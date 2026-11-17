@@ -297,7 +297,8 @@ saveslot 只执行宿主自己提供的添加命令（`claude mcp add`、`codex 
 | `data/` | 数据目录：这个用户的全部数据。初始化时已写入日志的第一条事件 |
 | `control/` | 控制面，是几个文件：凭证的哈希、租户目录、登记存储（删除登记、最高序号、恢复次数、"恢复进行中"与"导入进行中"标记）、句柄签名密钥 |
 | `credentials/` | 用户会话的令牌，只有当前系统用户可读 |
-| `config.toml` | 配置，用 `saveslot config get / set` 读写。读取记录的保留期、落盘间隔这类数值也在这里（如 `read_log.retention_days`） |
+
+配置文件 `config.toml` 不由 `init` 生成：没有它时每一项都取默认值；要改就在 `~/.saveslot/` 下自己建这个文件，用 `saveslot config get` 查看每一项现在的值与来源。读取记录的落盘间隔这类数值在这里（如 `read_log.flush_seconds`）。文件里有写错的地方时服务不启动，并指出是哪一项。
 
 数据目录不要放在 iCloud Drive、Dropbox 这类同步盘里，同步软件会在 saveslot 不知情时改动文件；saveslot 检测到时会警告。
 
