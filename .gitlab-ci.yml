@@ -20,6 +20,12 @@
 # user, not as root: root reads and writes whatever the permission bits say, so the tests of files
 # and directories this user cannot read would otherwise be skipped. Only installing pnpm itself
 # needs root.
+#
+# A runner reuses its build directory between jobs, so a job that runs as root can find the checkout
+# still owned by `node`; git then refuses it ("dubious ownership"). The jobs that run git as root
+# (dco, forbidden-terms, secrets) mark the checkout as safe first, and the jobs that give it to
+# `node` give it back to root when they end. The first is what makes it hold: an after_script
+# does not run when a job is cancelled or killed by its timeout.
 
 workflow:
   rules:
@@ -64,6 +70,13 @@ workflow:
     - uid="$(runuser -u node -- id -u)"; echo "running as uid $uid"; test "$uid" != 0
     - runuser -u node -- pnpm config set store-dir .pnpm-store
     - runuser -u node -- pnpm install --frozen-lockfile
+  after_script:
+    - chown -R 0:0 "$CI_PROJECT_DIR"
+
+# For the jobs that run git as root: the checkout may be another user's (see the top of this file).
+.git-as-root:
+  before_script:
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
 
 # `pnpm check`: type check, lint, unit and property tests, dependency rules, doc links, JSON examples.
 # Runs take about 4–5 minutes. The timeout is a hard bound from outside the test process: test-level
@@ -106,6 +119,7 @@ prop-soak:
 
 # Every commit in a merge request is signed off by its author (DCO).
 dco:
+  extends: [.git-as-root]
   image: node:24
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -126,7 +140,7 @@ mr-title:
 # messages or title (the list is the masked variable SAVESLOT_FORBIDDEN_TERMS_B64; output names
 # terms by index only); code and the spec cite spec sections, not ruling numbers.
 forbidden-terms:
-  extends: [.quick]
+  extends: [.quick, .git-as-root]
   image: node:24
   variables:
     GIT_DEPTH: 0
@@ -135,7 +149,7 @@ forbidden-terms:
 
 # No secrets in the commits of a merge request, or anywhere in the history of the default branch.
 secrets:
-  extends: [.quick]
+  extends: [.quick, .git-as-root]
   image:
     name: zricethezav/gitleaks:v8.30.1
     entrypoint: [""]
