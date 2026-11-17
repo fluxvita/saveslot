@@ -75,7 +75,15 @@ export interface ItemTarget extends TargetRef {
 
 /** 04-contract-types §4.8 `ItemResolution`: resolved by a decision, or a deletion executed on expiry. */
 export type ItemResolution =
-  | { decision: Decision; seq: Seq; at: Instant; actor: Actor; note?: UntrustedText }
+  | {
+      decision: Decision;
+      /** take_candidate: the index of the candidate taken in the item's `candidates[]`. */
+      candidate?: number;
+      seq: Seq;
+      at: Instant;
+      actor: Actor;
+      note?: UntrustedText;
+    }
   | { executed: true; seq: Seq; at: Instant; reason: TombstoneReason };
 
 /** 04-contract-types §4.8 `PendingParams`. With `id` it is a detail read. */

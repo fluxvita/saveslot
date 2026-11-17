@@ -14,9 +14,9 @@ import type { CompiledBaseTable, Instant, PrincipalId } from "@fluxvita/saveslot
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry, ReadId } from "../audit/index.ts";
 import {
-  type Blocks,
   candidateImpactBlocks,
   candidatesOut,
+  closingOf,
   type ItemEntries,
   impactOut,
   itemEntries,
@@ -305,7 +305,7 @@ async function detailOf(
     opened_at: x.opened_at,
     opened_by: n.actor(x.opened_by),
     decisions: open ? [...(DECISIONS[x.type] ?? [])] : [],
-    ...closed.out(n),
+    ...closed.out(n.actor),
     target: { ...targetRef(x, place, n), ...targetOut(e, n) },
   };
   const result =
@@ -475,49 +475,6 @@ async function awaitingOf(
     },
     current: currentOf(n, await sideOf(tx, e, n, table, versionOp)),
     impact: impactOut(e, n, e.impact),
-  };
-}
-
-/** How an item closed: its resolution or what superseded it. */
-async function closingOf(tx: ReadTx, id: string) {
-  const r = await tx.query<{ type: string; op: unknown; at: string; actor: string; body: string }>(
-    `SELECT e.type, e.op, h.at, h.actor, c.body FROM events e
-     JOIN events h ON h.seq = e.op
-     JOIN content c ON c.seq = e.seq AND c.path = 'target' AND c.body IS NOT NULL
-     WHERE e.type IN ('item.resolved', 'item.superseded') AND (c.body::jsonb ->> 'item') = $1
-     ORDER BY e.seq DESC LIMIT 1`,
-    [id],
-  );
-  const x = r.rows[0];
-  const target = x === undefined ? undefined : (JSON.parse(x.body) as Blocks);
-  let by: number | undefined;
-  if (x?.type === "item.superseded" && typeof target?.["by_event"] === "number") {
-    const b = await tx.query<{ op: unknown }>("SELECT op FROM events WHERE seq = $1", [
-      target["by_event"],
-    ]);
-    by = b.rows[0] === undefined ? undefined : Number(b.rows[0].op);
-  }
-  return {
-    principals: x?.type === "item.resolved" ? [x.actor] : [],
-    out: (n: Naming<Actor>) =>
-      x === undefined || target === undefined
-        ? {}
-        : x.type === "item.resolved"
-          ? {
-              resolution: {
-                decision: target["decision"],
-                seq: Number(x.op),
-                at: x.at,
-                actor: n.actor(x.actor),
-              },
-            }
-          : {
-              superseded: {
-                reason: target["reason"],
-                ...(by !== undefined ? { by } : {}),
-                at: x.at,
-              },
-            },
   };
 }
 

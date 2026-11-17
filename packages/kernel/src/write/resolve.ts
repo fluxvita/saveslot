@@ -32,7 +32,7 @@ import { lastRead, type ReadId } from "../audit/index.ts";
 import type { DerivedWrite } from "../derive/index.ts";
 import { JudgeError, type JudgeInput, judgeOp, reaches, type Unit } from "../judge/index.ts";
 import { type NewEvent, readTail } from "../log/index.ts";
-import { actorsNow } from "../pending/index.ts";
+import { actorsNow, closingOf } from "../pending/index.ts";
 import { normalizeResolve, type ResolveDecision } from "../request/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
 import { appendWithDerived } from "./derive-step.ts";
@@ -143,6 +143,20 @@ async function candidateCount(tx: ReadTx, item: string): Promise<number> {
     [item],
   );
   return Number(r.rows[0]?.n ?? 0);
+}
+
+/**
+ * item_closed (04-contract-types §9): how the item closed, in the shape its details give, the
+ * principal named as they are now (an error's details are read, not a receipt: §1.6).
+ */
+async function closed(tx: ReadTx, item: string, message: string): Promise<WriteError> {
+  const c = await closingOf(tx, item);
+  const who = await actorsNow(tx, c.principals);
+  const out = c.out((p) => who.get(p));
+  return new WriteError("item_closed", message, {
+    reason: "resolution" in out ? "resolved" : "superseded",
+    ...out,
+  });
 }
 
 /** The `target` block and the operation of the item's latest event of type `type`. */
@@ -327,29 +341,9 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
       was.decision === req.decision &&
       (req.decision !== "take_candidate" || (named !== undefined && named === was.candidate));
     if (same) return readResolution(tx, done.op, { slot, restoreCount: restore, replayed: true });
-    // Who resolved it as they are now: an error's details are read, not a receipt (04-contract-types §1.6).
-    const who = (await actorsNow(tx, [done.actor])).get(done.actor);
-    throw new WriteError("item_closed", "the item was resolved another way", {
-      reason: "resolved",
-      resolution: {
-        decision: was.decision,
-        ...(was.candidate !== undefined ? { candidate: was.candidate } : {}),
-        seq: done.op,
-        actor: who,
-      },
-    });
+    throw await closed(tx, item.id, "the item was resolved another way");
   }
-  if (item.state !== "open") {
-    const gone = await itemEvent(tx, item.id, "item.superseded");
-    const t = gone?.target as { reason?: string; by_event?: number } | undefined;
-    throw new WriteError("item_closed", "the item was superseded", {
-      reason: "superseded",
-      superseded: {
-        reason: t?.reason ?? "overwritten",
-        ...(gone !== undefined ? { seq: gone.op } : {}),
-      },
-    });
-  }
+  if (item.state !== "open") throw await closed(tx, item.id, "the item was superseded");
 
   // The decision fits the item's type.
   if (!(DECISIONS_OF[item.type] ?? []).includes(req.decision)) {

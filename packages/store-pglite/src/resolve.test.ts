@@ -250,6 +250,23 @@ const bOf = async (row: string) =>
   ).rows[0]?.f_f2;
 const verOfItem = (r: { pending: readonly { id: string; item_ver?: string }[] }, id: string) =>
   r.pending.find((p) => p.id === id)?.item_ver as string;
+/** An item's details, read by the user (04-contract-types §4.8). */
+const detailOf = async (id: string) =>
+  (await pending$(
+    s.store,
+    createOpsContext({
+      tenant: TENANT,
+      actor: USER,
+      trigger: null,
+      task: null,
+      visibility: { kind: "all" },
+      idempotency_key_window: 86_400_000,
+      idempotency_window: 600_000,
+      now: now(),
+      confirmation: null,
+    }),
+    { id },
+  )) as unknown as Record<string, unknown>;
 const flagsOf = async (item: string) =>
   (await s.store.read((tx) => tx.query("SELECT flag FROM flags WHERE item_id = $1", [item]))).rows;
 
@@ -442,15 +459,14 @@ describe("the order of the checks (04-contract `resolve`)", () => {
     async () => {
       const { b, c, row, item } = await disputed();
       // The writer had its receipt with the item: a write reaching it supersedes it.
-      await update(row, { b: "11" }, verAt(b));
+      const by = await update(row, { b: "11" }, verAt(b));
       expect((await itemRow(item))?.state).toBe("superseded");
+      // The shape the item's details give (04-contract-types §9 item_closed, §4.8).
+      const superseded = (await detailOf(item))["superseded"];
+      expect(superseded).toEqual({ reason: "overwritten", by: by.seq, at: expect.any(String) });
       expect(
         await resolve({ id: item, decision: "keep_effective", item_ver: verOfItem(c, item) }),
-      ).toMatchObject({
-        refused: "item_closed",
-        reason: "superseded",
-        superseded: { reason: "overwritten" },
-      });
+      ).toEqual({ refused: "item_closed", reason: "superseded", superseded });
     },
     T,
   );
@@ -1058,6 +1074,45 @@ describe("confirmation_mismatch gives the item as it is now (04-contract-types �
   );
 });
 
+describe("how a resolved item closed: its details and item_closed give the same resolution", () => {
+  it(
+    "take_candidate: the candidate taken, by its index in the item's candidates; seq and at",
+    async () => {
+      const { a, c, row, item } = await disputed();
+      const d = await update(row, { b: "12" }, verAt(a), { actor: OTHER });
+      const ver = `iv_${item.slice(3)}.${d.seq}.0`;
+      const r = await resolve({
+        id: item,
+        decision: "take_candidate",
+        item_ver: ver,
+        candidate: 1,
+      });
+      const detail = await detailOf(item);
+      const resolution = detail["resolution"] as { candidate: number; at: string };
+      expect(resolution).toEqual({
+        decision: "take_candidate",
+        candidate: 1,
+        seq: r.write?.seq,
+        at: expect.any(String),
+        actor: { kind: "user", id: USER, name: USER },
+      });
+      // The index names the candidate taken among the item's candidates as they were then.
+      const candidates = detail["candidates"] as { index: number; seq: number }[];
+      expect(candidates.map((x) => [x.index, x.seq])).toEqual([
+        [0, c.seq],
+        [1, d.seq],
+      ]);
+      expect(candidates[resolution.candidate]?.seq).toBe(d.seq);
+      expect(await resolve({ id: item, decision: "keep_effective", item_ver: ver })).toEqual({
+        refused: "item_closed",
+        reason: "resolved",
+        resolution,
+      });
+    },
+    T,
+  );
+});
+
 describe("an error's details name principals as they are now (04-contract-types §1.6)", () => {
   const ops = (second: number) =>
     createOpsContext({
@@ -1113,12 +1168,13 @@ describe("an error's details name principals as they are now (04-contract-types 
         { id: item, decision: "keep_effective", item_ver: verOfItem(c, item) },
         { actor: desk },
       );
+      const at = ((await detailOf(item))["resolution"] as { at: string }).at;
       const again = () =>
         resolve({ id: item, decision: "take_previous", item_ver: verOfItem(c, item) });
       const closed = (actor: Record<string, unknown>) => ({
         refused: "item_closed",
         reason: "resolved",
-        resolution: { decision: "keep_effective", seq: op, actor },
+        resolution: { decision: "keep_effective", seq: op, at, actor },
       });
       await rename(desk);
       expect(await again()).toEqual(

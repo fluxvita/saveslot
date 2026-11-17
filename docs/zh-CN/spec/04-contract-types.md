@@ -962,10 +962,10 @@ interface ItemBase {
 }
 
 /** 事项怎么解决的，两支：
- *  按处理方式解决（resolve）；
+ *  按处理方式解决（resolve）：decision 为 take_candidate 时 candidate 是所取候选在该事项 candidates[] 里的下标（事项解决之后 candidates[] 不再变，下标指的就是这一组里的那一个）；
  *  deletion 事项到期执行（物理删除）：seq 是墓碑事件的 seq（它是一次 system 操作的头事件），actor 恒为 system，不给。"执行"不是调用方可选的处理方式，不进 Decision。 */
 type ItemResolution =
-  | { decision: Decision; seq: Seq; at: Instant; actor: Actor; note?: UntrustedText }
+  | { decision: Decision; candidate?: number; seq: Seq; at: Instant; actor: Actor; note?: UntrustedText }
   | { executed: true; seq: Seq; at: Instant; reason: TombstoneReason };
 
 /** 事项的目标。unit = 冲突单元里的字段；["*"] = 这一行 / 这段是否存在。 */
