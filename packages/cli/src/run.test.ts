@@ -28,6 +28,8 @@ const LIST = {
 const root = mkdtempSync(join(tmpdir(), "saveslot-cli-"));
 const home = join(root, "home");
 const seen: IncomingMessage[] = [];
+/** The questions the command asked, in order. */
+const asked: string[] = [];
 /** The bodies of the requests, in order, as JSON. */
 const bodies: unknown[] = [];
 let answer: (req: IncomingMessage, res: ServerResponse) => void;
@@ -57,7 +59,12 @@ const json = (res: ServerResponse, status: number, v: unknown) =>
 
 async function cli(
   argv: string[],
-  o: { env?: Record<string, string | undefined>; tty?: boolean } = {},
+  o: {
+    env?: Record<string, string | undefined>;
+    tty?: boolean;
+    answers?: string[];
+    stdinIsTTY?: boolean;
+  } = {},
 ) {
   let out = "";
   let err = "";
@@ -70,6 +77,11 @@ async function cli(
     },
     stdoutIsTTY: o.tty ?? false,
     stderrIsTTY: o.tty ?? false,
+    stdinIsTTY: o.stdinIsTTY ?? o.answers !== undefined,
+    ask: async (prompt) => {
+      asked.push(prompt);
+      return o.answers?.shift();
+    },
   });
   return { code, out, err };
 }
@@ -696,6 +708,361 @@ describe("pending, reads, verify", () => {
     expect(r.code).toBe(2);
     expect(r.err).toBe(`${TEXTS.usageError(text)}\n`);
     expect(seen).toHaveLength(0);
+  });
+});
+
+describe("pending resolve", () => {
+  const ID = "pi_8VEZWJ3J7BMKMXTV";
+  const actor = { kind: "user", id: `u_${"2".repeat(26)}` };
+  const awaiting = (iv: string, status = "open") => ({
+    id: ID,
+    item_ver: iv,
+    type: "awaiting_confirmation",
+    status,
+    slot: "ledger",
+    target: { table: "ledger.budgets", entity: "e_4KWKRM296X61WJ89DY5XJNVA4P" },
+    reason: "overwrites_change_point",
+    opened_at: "2026-11-10T18:02:00.000Z",
+    opened_by: actor,
+    decisions: status === "open" ? ["confirm", "reject"] : [],
+    proposal: { seq: 4, actor, intent: "update", set: { amount: { value: "3", unit: "CNY" } } },
+    current: { values: { amount: { value: "4", unit: "CNY" } } },
+    impact: {},
+  });
+  const resolved = (iv: string) => ({
+    id: ID,
+    type: "awaiting_confirmation",
+    decision: "confirm",
+    item_ver: iv,
+    status: "resolved",
+  });
+  /** The stand-in: each GET of the item and each POST of a resolution answered from a queue. */
+  const queue = (gets: unknown[], posts: [number, unknown][]) => {
+    answer = (req, res) => {
+      if (req.method === "GET") json(res, 200, gets.shift());
+      else {
+        const [status, body] = posts.shift() as [number, unknown];
+        json(res, status, body);
+      }
+    };
+  };
+  const posts = () =>
+    seen
+      .map((x, i) => [x, bodies[i]] as const)
+      .filter(([x]) => x.method === "POST")
+      .map(([, b]) => b);
+
+  it("asked: the item read and shown, then resolved with the version of that read", async () => {
+    queue([awaiting("iv_A1B2C3D4E5F6G7H8.4.0")], [[200, resolved("iv_A1B2C3D4E5F6G7H8.5.0")]]);
+    seen.length = 0;
+    bodies.length = 0;
+    asked.length = 0;
+    const r = await cli(["pending", "resolve", ID, "confirm", "--note", "fine"], {
+      answers: ["y"],
+    });
+    expect(r.code).toBe(0);
+    expect(seen.map((x) => `${x.method} ${x.url}`)).toEqual([
+      `GET /v1/pending/${ID}`,
+      `POST /v1/pending/${ID}/resolution`,
+    ]);
+    expect(posts()).toEqual([
+      { decision: "confirm", item_ver: "iv_A1B2C3D4E5F6G7H8.4.0", note: "fine" },
+    ]);
+    expect(r.err).toContain("proposed: update amount 3");
+    expect(asked).toEqual([`confirm ${ID}? [y/N] `]);
+    expect(r.out).toContain(`${ID} resolved: confirm · version iv_A1B2C3D4E5F6G7H8.5.0`);
+  });
+
+  it("changed between the question and the answer: shown again, asked again, sent with the new version", async () => {
+    const mismatch = {
+      error: {
+        code: "confirmation_mismatch",
+        message: "changed",
+        current: awaiting("iv_A1B2C3D4E5F6G7H8.6.0"),
+      },
+    };
+    queue(
+      [awaiting("iv_A1B2C3D4E5F6G7H8.4.0")],
+      [
+        [409, mismatch],
+        [200, resolved("iv_A1B2C3D4E5F6G7H8.7.0")],
+      ],
+    );
+    seen.length = 0;
+    bodies.length = 0;
+    const r = await cli(["pending", "resolve", ID, "confirm"], { answers: ["y", "y"] });
+    expect(r.code).toBe(0);
+    expect(posts().map((b) => (b as { item_ver: string }).item_ver)).toEqual([
+      "iv_A1B2C3D4E5F6G7H8.4.0",
+      "iv_A1B2C3D4E5F6G7H8.6.0",
+    ]);
+    expect(r.err).toContain(TEXTS.changedSince);
+  });
+
+  it("--item-ver older than the item: said so, and the version shown is the one sent", async () => {
+    queue([awaiting("iv_A1B2C3D4E5F6G7H8.6.0")], [[200, resolved("iv_A1B2C3D4E5F6G7H8.7.0")]]);
+    bodies.length = 0;
+    seen.length = 0;
+    const r = await cli(
+      ["pending", "resolve", ID, "confirm", "--item-ver", "iv_A1B2C3D4E5F6G7H8.4.0"],
+      { answers: ["y"] },
+    );
+    expect(r.code).toBe(0);
+    expect(r.err).toContain(TEXTS.changedSince);
+    expect((posts()[0] as { item_ver: string }).item_ver).toBe("iv_A1B2C3D4E5F6G7H8.6.0");
+  });
+
+  it("declined, or stdin ends: not done (8), nothing sent", async () => {
+    for (const answers of [["n"], [""], []]) {
+      queue([awaiting("iv_A1B2C3D4E5F6G7H8.4.0")], []);
+      seen.length = 0;
+      const r = await cli(["pending", "resolve", ID, "confirm"], { answers });
+      expect(r.code).toBe(8);
+      expect(seen.map((x) => x.method)).toEqual(["GET"]);
+    }
+  });
+
+  it("no terminal and no --yes: not done (8), nothing asked or read", async () => {
+    seen.length = 0;
+    asked.length = 0;
+    const r = await cli(["pending", "resolve", ID, "confirm"], { stdinIsTTY: false });
+    expect(r.code).toBe(8);
+    expect(r.err).toBe(`${TEXTS.noTerminal}\n`);
+    expect(seen).toHaveLength(0);
+    expect(asked).toHaveLength(0);
+  });
+
+  it("--yes: the --item-ver given, as it is, the item not read; without it, not done (8)", async () => {
+    queue([], [[200, resolved("iv_A1B2C3D4E5F6G7H8.5.0")]]);
+    seen.length = 0;
+    bodies.length = 0;
+    const r = await cli([
+      "pending",
+      "resolve",
+      ID,
+      "confirm",
+      "--yes",
+      "--item-ver",
+      "iv_A1B2C3D4E5F6G7H8.4.0",
+    ]);
+    expect(r.code).toBe(0);
+    expect(seen.map((x) => x.method)).toEqual(["POST"]);
+    expect(posts()).toEqual([{ decision: "confirm", item_ver: "iv_A1B2C3D4E5F6G7H8.4.0" }]);
+    seen.length = 0;
+    const none = await cli(["pending", "resolve", ID, "confirm", "--yes"]);
+    expect(none.code).toBe(8);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("an item closed already: said how, 3, nothing sent", async () => {
+    const closed = {
+      ...awaiting("iv_A1B2C3D4E5F6G7H8.5.0", "resolved"),
+      resolution: { decision: "reject", seq: 9, at: "2026-11-10T19:00:00.000Z", actor },
+    };
+    queue([closed], []);
+    seen.length = 0;
+    const r = await cli(["pending", "resolve", ID, "confirm"], { answers: ["y"] });
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("resolved: reject (#9");
+    expect(seen.map((x) => x.method)).toEqual(["GET"]);
+  });
+
+  it("a conflict, take_candidate, several candidates: asked which (a wrong answer asked again)", async () => {
+    const conflict = {
+      ...awaiting("iv_A1B2C3D4E5F6G7H8.4.0"),
+      type: "conflict",
+      reason: "stale_write",
+      decisions: ["keep_effective", "take_candidate", "take_previous"],
+      effective: { seq: 3, actor, values: { amount: { value: "4", unit: "CNY" } }, exists: true },
+      candidates: [
+        {
+          index: 0,
+          seq: 4,
+          actor,
+          intent: "update",
+          ver: "v3.0",
+          values: { amount: { value: "5", unit: "CNY" } },
+          cause: "stale_write",
+        },
+        {
+          index: 1,
+          seq: 5,
+          actor,
+          intent: "update",
+          ver: "v3.0",
+          values: { amount: { value: "6", unit: "CNY" } },
+          cause: "stale_write",
+        },
+      ],
+      previous: { seq: 2, exists: true, values: { amount: { value: "1", unit: "CNY" } } },
+      reverted_by_previous: [],
+    };
+    queue(
+      [conflict],
+      [
+        [
+          200,
+          { ...resolved("iv_A1B2C3D4E5F6G7H8.5.0"), type: "conflict", decision: "take_candidate" },
+        ],
+      ],
+    );
+    bodies.length = 0;
+    seen.length = 0;
+    asked.length = 0;
+    const r = await cli(["pending", "resolve", ID, "take_candidate"], { answers: ["7", "1", "y"] });
+    expect(r.code).toBe(0);
+    expect(asked).toEqual([
+      `${TEXTS.candidateNumber} (0, 1): `,
+      `${TEXTS.candidateNumber} (0, 1): `,
+      `take_candidate ${ID}? [y/N] `,
+    ]);
+    expect((posts()[0] as { candidate: number }).candidate).toBe(1);
+  });
+
+  it("--yes and a conflict with candidates unnamed: the service's refusal, the candidates listed, 2", async () => {
+    queue(
+      [],
+      [
+        [
+          400,
+          {
+            error: {
+              code: "invalid_argument",
+              reason: "candidate_required",
+              message: "name one",
+              candidate_choices: [
+                { index: 0, seq: 4, actor },
+                { index: 1, seq: 5, actor },
+              ],
+            },
+          },
+        ],
+      ],
+    );
+    const r = await cli([
+      "pending",
+      "resolve",
+      ID,
+      "take_candidate",
+      "--yes",
+      "--item-ver",
+      "iv_A1B2C3D4E5F6G7H8.4.0",
+    ]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("  --candidate 0 (#4)");
+    expect(r.err).toContain("  --candidate 1 (#5)");
+  });
+
+  it("a replay: already resolved so, nothing new, 0", async () => {
+    queue([], [[200, { ...resolved("iv_A1B2C3D4E5F6G7H8.5.0"), replayed: true }]]);
+    const r = await cli([
+      "pending",
+      "resolve",
+      ID,
+      "confirm",
+      "--yes",
+      "--item-ver",
+      "iv_A1B2C3D4E5F6G7H8.4.0",
+    ]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`${ID} was already resolved as confirm; nothing new was recorded`);
+  });
+
+  it("a mismatch with --yes: 3, and the version the item is at now", async () => {
+    queue(
+      [],
+      [
+        [
+          409,
+          {
+            error: {
+              code: "confirmation_mismatch",
+              message: "changed",
+              current: awaiting("iv_A1B2C3D4E5F6G7H8.6.0"),
+            },
+          },
+        ],
+      ],
+    );
+    const r = await cli([
+      "pending",
+      "resolve",
+      ID,
+      "confirm",
+      "--yes",
+      "--item-ver",
+      "iv_A1B2C3D4E5F6G7H8.4.0",
+    ]);
+    expect(r.code).toBe(3);
+    expect(r.err).toContain(`${TEXTS.itemVersionNow} iv_A1B2C3D4E5F6G7H8.6.0`);
+  });
+
+  it("the connection broken after the request went: where to see whether it took effect", async () => {
+    answer = (req) => req.socket.destroy();
+    const r = await cli([
+      "pending",
+      "resolve",
+      ID,
+      "confirm",
+      "--yes",
+      "--item-ver",
+      "iv_A1B2C3D4E5F6G7H8.4.0",
+    ]);
+    expect(r.code).toBe(7);
+    expect(r.err).toContain(TEXTS.unknownOutcome);
+  });
+
+  it("--evidence-json: segments, or the object form, sent with the decision", async () => {
+    const file = join(root, "evidence.json");
+    writeFileSync(file, JSON.stringify([{ kind: "user_message", text: "yes, 3000" }]));
+    queue([], [[200, resolved("iv_A1B2C3D4E5F6G7H8.5.0")]]);
+    bodies.length = 0;
+    seen.length = 0;
+    await cli([
+      "pending",
+      "resolve",
+      ID,
+      "confirm",
+      "--yes",
+      "--item-ver",
+      "iv_A1B2C3D4E5F6G7H8.4.0",
+      "--evidence-json",
+      file,
+    ]);
+    expect(posts()).toEqual([
+      {
+        decision: "confirm",
+        item_ver: "iv_A1B2C3D4E5F6G7H8.4.0",
+        evidence: [{ kind: "user_message", text: "yes, 3000" }],
+      },
+    ]);
+  });
+
+  it.each([
+    [["pending", "resolve", ID], TEXTS.resolveArgs],
+    [["pending", "resolve", "pi_short", "confirm"], TEXTS.resolveArgs],
+    [["pending", "resolve", `${ID}\u001b[2J`, "confirm"], TEXTS.resolveArgs],
+    [["pending", "resolve", ID, "keep"], TEXTS.decisionNotYet],
+    [["pending", "resolve", ID, "cancel"], TEXTS.decisionNotYet],
+    [["pending", "resolve", ID, "take_candidate", "--candidate", "x"], TEXTS.candidateBad],
+    [
+      ["pending", "resolve", ID, "confirm", "--evidence-json", "/nonexistent.json"],
+      TEXTS.evidenceBad,
+    ],
+  ])("%j: 2", async (argv, text) => {
+    seen.length = 0;
+    const r = await cli(argv, { answers: ["y"] });
+    expect(r.code).toBe(2);
+    expect(r.err).toBe(`${TEXTS.usageError(text)}\n`);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("an item of a kind this version does not resolve (flagged): 2 after reading it, nothing sent", async () => {
+    queue([{ ...awaiting("iv_A1B2C3D4E5F6G7H8.4.0"), type: "flagged" }], []);
+    seen.length = 0;
+    const r = await cli(["pending", "resolve", ID, "confirm"], { answers: ["y"] });
+    expect(r.code).toBe(2);
+    expect(seen.map((x) => x.method)).toEqual(["GET"]);
   });
 });
 

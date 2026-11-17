@@ -14,6 +14,7 @@ import {
   ITEM_TYPES,
   type PendingDetailResult,
   type PendingListResult,
+  type ResolveResult,
   SUPERSEDED_REASONS,
   VERSION_INTENTS,
 } from "@fluxvita/saveslot-client";
@@ -229,5 +230,37 @@ export function pendingDetail(r: PendingDetailResult, now: Date): Line[] {
   }
   const decisions = arr(x["decisions"]).map((d) => [codeOf(d, DECISION)]);
   if (decisions.length > 0) out.push(t`  choices: ${join(decisions, t` / `)}`);
+  return [...out, ...warningsAndNotices(r)];
+}
+
+/**
+ * `saveslot pending resolve` (06 §5.2): the decision and the item's new version; what the write it
+ * triggered did (its operation, the derived values that changed, the items it opened or
+ * superseded). A replay says that nothing new was recorded.
+ */
+export function resolveResult(r: ResolveResult): Line[] {
+  const x = r as unknown as R;
+  if (x["replayed"] === true) {
+    return [
+      t`${idOf(x["id"])} was already resolved as ${codeOf(x["decision"], DECISION)}; nothing new was recorded`,
+      ...warningsAndNotices(r),
+    ];
+  }
+  const out: Line[] = [
+    t`${idOf(x["id"])} resolved: ${codeOf(x["decision"], DECISION)} · version ${idOf(x["item_ver"])}`,
+  ];
+  const w = obj(x["write"]);
+  if (w["seq"] !== undefined) {
+    out.push(t`  written as ${op(w["seq"])} (${num(arr(w["ops"]).length)} ops)`);
+    const derived = arr(w["derived"]);
+    if (derived.length > 0)
+      out.push(t`  derived values changed: ${num(int(w["derived_total"]) ?? derived.length)}`);
+    for (const p of arr(w["pending"]))
+      out.push(t`  opened ${idOf(obj(p)["item"] ?? obj(p)["id"])}`);
+    for (const sup of arr(w["superseded"])) {
+      const q = obj(sup);
+      out.push(t`  superseded ${idOf(q["item"])} (${codeOf(q["reason"], SUPERSEDED)})`);
+    }
+  }
   return [...out, ...warningsAndNotices(r)];
 }

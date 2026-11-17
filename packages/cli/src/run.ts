@@ -22,12 +22,14 @@ import {
   createClient,
   ITEM_STATUSES,
   ITEM_TYPES,
+  type PendingDetailResult,
   resolveCredential,
   type TimelineResult,
+  TransportError,
 } from "@fluxvita/saveslot-client";
 import { describeError } from "./errors.ts";
 import { logVerified, readsList, verifyFound } from "./render/admin.ts";
-import { pendingDetail, pendingList } from "./render/pending.ts";
+import { pendingDetail, pendingList, resolveResult } from "./render/pending.ts";
 import { asOfResult, queryResult, timelineResult } from "./render/reads.ts";
 import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
 import { type Boundary, type Line, render, t, untrusted, words } from "./render/text.ts";
@@ -42,6 +44,11 @@ const OWN_OPTIONS = {
   tables: { type: "string" },
   where: { type: "string", multiple: true },
   "where-json": { type: "string", multiple: true },
+  candidate: { type: "string" },
+  "item-ver": { type: "string" },
+  note: { type: "string" },
+  "evidence-json": { type: "string" },
+  yes: { type: "boolean" },
   slot: { type: "string" },
   type: { type: "string" },
   status: { type: "string" },
@@ -68,7 +75,7 @@ const ownList = (o: Options, k: string): string[] =>
 const ownFlag = (o: Options, k: string): boolean => o.own[k] === true;
 
 import { jsonText } from "./untrusted.ts";
-import { UsageError } from "./usage.ts";
+import { NotDone, UsageError } from "./usage.ts";
 import { type FieldInfo, foldName, parseCondition, parseConditionsJson } from "./where.ts";
 
 export interface CliIO {
@@ -77,6 +84,10 @@ export interface CliIO {
   /** Whether stdout and stderr are terminals. */
   readonly stdoutIsTTY: boolean;
   readonly stderrIsTTY: boolean;
+  /** Whether stdin is a terminal: only then does a command ask (06 §5.4). */
+  readonly stdinIsTTY?: boolean;
+  /** Writes `prompt` to stderr and reads one line from stdin; undefined when stdin ends. */
+  readonly ask?: (prompt: string) => Promise<string | undefined>;
 }
 
 interface Options {
@@ -101,7 +112,9 @@ interface Output {
 interface Command {
   /** The options of this command besides the global ones (string-valued). */
   readonly options: readonly string[];
-  readonly run: (o: Options, client: () => Promise<Client>) => Promise<Output>;
+  readonly run: (o: Options, client: () => Promise<Client>, io: CliIO, env: Env) => Promise<Output>;
+  /** What to say when the connection broke after the request went: where to see what happened. */
+  readonly whenBroken?: Static;
   /** A line to add to an error this command knows the cause of, from its own options. */
   readonly hint?: (e: ContractCallError, o: Options) => Static | undefined;
 }
@@ -109,7 +122,13 @@ const command = (
   options: readonly string[],
   run: Command["run"],
   hint?: Command["hint"],
-): Command => ({ options, run, ...(hint !== undefined ? { hint } : {}) });
+  whenBroken?: Static,
+): Command => ({
+  options,
+  run,
+  ...(hint !== undefined ? { hint } : {}),
+  ...(whenBroken !== undefined ? { whenBroken } : {}),
+});
 
 /** Whether an error's details point at `path` in the document. */
 function detailAt(e: ContractCallError, path: string): boolean {
@@ -240,9 +259,136 @@ function sinceOf(text: string, now: Date): string {
   return text;
 }
 
+/** The decisions this version resolves, and the kind of item each is for (06 §7: P1). */
+const DECISIONS_NOW: ReadonlyMap<string, string> = new Map([
+  ["confirm", "awaiting_confirmation"],
+  ["reject", "awaiting_confirmation"],
+  ["keep_effective", "conflict"],
+  ["take_candidate", "conflict"],
+  ["take_previous", "conflict"],
+]);
+
+/** `--evidence-json <file>`: evidence segments, or `{evidence, evidence_by_field}` (04-contract-types §5.2). */
+async function evidenceOf(file: string | undefined): Promise<Record<string, unknown>> {
+  if (file === undefined) return {};
+  let v: unknown;
+  try {
+    v = JSON.parse(await readFile(resolve(file), "utf8"));
+  } catch {
+    throw new UsageError(TEXTS.evidenceBad);
+  }
+  if (Array.isArray(v)) return { evidence: v };
+  if (typeof v !== "object" || v === null) throw new UsageError(TEXTS.evidenceBad);
+  const o = v as Record<string, unknown>;
+  if (Object.keys(o).some((k) => k !== "evidence" && k !== "evidence_by_field")) {
+    throw new UsageError(TEXTS.evidenceBad);
+  }
+  return o;
+}
+
+/**
+ * `saveslot pending resolve <pi_…> <decision>` (06 §5.2, §5.4). Asked on a terminal: the item is
+ * read, shown, and the decision sent with the version of that very read (never the version the
+ * service would fall back to). With --yes: the --item-ver given, the item not read. Not a
+ * terminal and no --yes: not done (8).
+ */
+async function resolveCommand(
+  o: Options,
+  client: () => Promise<Client>,
+  io: CliIO,
+  env: Env,
+): Promise<Output> {
+  const [pid, decision, ...extra] = o.args;
+  // The ID goes into the question as it is: only an ID of its exact shape is taken.
+  if (
+    pid === undefined ||
+    decision === undefined ||
+    extra.length > 0 ||
+    !/^pi_[0-9A-HJKMNP-TV-Z]{16}$/.test(pid)
+  ) {
+    throw new UsageError(TEXTS.resolveArgs);
+  }
+  if (!DECISIONS_NOW.has(decision)) throw new UsageError(TEXTS.decisionNotYet);
+  const candidateText = ownString(o, "candidate");
+  if (candidateText !== undefined && !/^[0-9]{1,6}$/.test(candidateText)) {
+    throw new UsageError(TEXTS.candidateBad);
+  }
+  let candidate = candidateText !== undefined ? Number(candidateText) : undefined;
+  const given = ownString(o, "item-ver");
+  const note = ownString(o, "note");
+  const evidence = await evidenceOf(ownString(o, "evidence-json"));
+  const id = pid as `pi_${string}`;
+  const send = async (itemVer: string | undefined) =>
+    (await client()).resolve({
+      id,
+      decision: decision as never,
+      ...(itemVer !== undefined ? { item_ver: itemVer as never } : {}),
+      ...(candidate !== undefined ? { candidate } : {}),
+      ...(note !== undefined ? { note } : {}),
+      ...evidence,
+    });
+  if (ownFlag(o, "yes")) {
+    if (given === undefined) throw new NotDone(TEXTS.yesNeedsItemVer);
+    const r = await send(given);
+    return { json: r, lines: resolveResult(r) };
+  }
+  if (io.stdinIsTTY !== true || io.ask === undefined) throw new NotDone(TEXTS.noTerminal);
+  const ask = io.ask;
+  const say = (lines: Line[]) =>
+    io.err(`${render(lines, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`);
+  // A version that changed under the question is shown again and asked again, a few times.
+  let shown: PendingDetailResult | undefined;
+  for (let round = 0; round < 3; round++) {
+    const detail = shown ?? (await (await client()).pending({ id }));
+    shown = undefined;
+    const d = detail as unknown as Record<string, unknown>;
+    if (d["status"] !== "open") {
+      say([...pendingDetail(detail, new Date()), [words(TEXTS.closed)]]);
+      return { json: detail, lines: [], exit: 3 };
+    }
+    if (d["type"] !== DECISIONS_NOW.get(decision)) throw new UsageError(TEXTS.itemTypeNotYet);
+    say(pendingDetail(detail, new Date()));
+    if (given !== undefined && given !== d["item_ver"] && round === 0)
+      say([[words(TEXTS.changedSince)]]);
+    if (decision === "take_candidate" && candidate === undefined) {
+      const indexes = (Array.isArray(d["candidates"]) ? d["candidates"] : []).map(
+        (c) => (c as { index: number }).index,
+      );
+      if (indexes.length === 1) candidate = indexes[0];
+      while (candidate === undefined) {
+        const a = (await ask(`${TEXTS.candidateNumber} (${indexes.join(", ")}): `))?.trim();
+        if (a === undefined) throw new NotDone(TEXTS.declined);
+        if (/^[0-9]{1,6}$/.test(a) && indexes.includes(Number(a))) candidate = Number(a);
+      }
+    }
+    const answer = await ask(`${decision} ${id}? [y/N] `);
+    if (!/^(y|yes)$/i.test((answer ?? "").trim())) throw new NotDone(TEXTS.declined);
+    try {
+      const r = await send(String(d["item_ver"]));
+      return { json: r, lines: resolveResult(r) };
+    } catch (e) {
+      // Changed between the question and the answer: the new content is shown, and asked again.
+      if (!(e instanceof ContractCallError) || e.code !== "confirmation_mismatch") throw e;
+      const current = e.body["current"];
+      if (typeof current === "object" && current !== null) shown = current as PendingDetailResult;
+      say([[words(TEXTS.changedSince)]]);
+    }
+  }
+  throw new NotDone(TEXTS.declined);
+}
+
 const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   ["pending", pendingListCommand],
   ["pending list", pendingListCommand],
+  [
+    "pending resolve",
+    command(
+      ["candidate", "item-ver", "note", "evidence-json", "yes"],
+      resolveCommand,
+      undefined,
+      TEXTS.unknownOutcome,
+    ),
+  ],
   [
     "pending show",
     command([], async (o, client) => {
@@ -571,7 +717,7 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
     });
   };
   try {
-    const r = await found.run(o, client);
+    const r = await found.run(o, client, io, env);
     io.out(
       o.json
         ? `${jsonText(r.json)}\n`
@@ -583,9 +729,17 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
       io.err(`${TEXTS.usageError(e.text)}\n`);
       return 2;
     }
+    if (e instanceof NotDone) {
+      io.err(`${e.text}\n`);
+      return 8;
+    }
     const d = describeError(e);
     const hint = e instanceof ContractCallError ? found.hint?.(e, o) : undefined;
     if (hint !== undefined) d.lines.push(t`  ${words(hint)}`);
+    // The request went and the answer did not come: say where to see whether it took effect.
+    if (e instanceof TransportError && e.code === "broken" && found.whenBroken !== undefined) {
+      d.lines.push(t`  ${words(found.whenBroken)}`);
+    }
     if (o.json && e instanceof ContractCallError) io.out(`${jsonText({ error: e.body })}\n`);
     io.err(`${render(d.lines, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`);
     return d.exit;

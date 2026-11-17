@@ -27,6 +27,7 @@ export const TEXTS = {
       "  history <table> <row or entity> | --key field=value … [--as-of <#seq or moment>] [--sources]",
       "  pending [list] [--slot s] [--type t] [--status open|resolved|superseded|all]",
       "  pending show <pi_…>",
+      "  pending resolve <pi_…> <decision> [--candidate n] [--note text] [--yes --item-ver iv_…]",
       "  reads [--connection <name or ID>] [--since 10m]",
       "  verify                    check the log: chain, checksums, index, gaps",
       "  schema templates          the schema templates this saveslot ships",
@@ -110,6 +111,33 @@ export const TEXTS = {
   optionNotHere: s("that option is not one of this command's"),
   slotShowMissing: s("give the slot: saveslot slot show <slot> [table…]"),
   detail: s("  at"),
+
+  // pending resolve (06 §5.2, §5.4)
+  itemVersionNow: s("the item's version now:"),
+  resolveArgs: s("give the item and the decision: saveslot pending resolve <pi_…> <decision>"),
+  decisionNotYet: s(
+    "that decision is not in this version: confirm and reject (a change awaiting confirmation), keep_effective, take_candidate and take_previous (a conflict)",
+  ),
+  itemTypeNotYet: s(
+    "this kind of item is not resolved by this version of the CLI (a flagged item comes in a later version, a schema change too)",
+  ),
+  yesNeedsItemVer: s(
+    "--yes resolves without showing the item: give the version that was shown with --item-ver (saveslot pending show <pi_…> --json has it)",
+  ),
+  noTerminal: s(
+    "not run: stdin is no terminal to ask on. Read the item with saveslot pending show <pi_…> --json, then run this again with --yes and --item-ver",
+  ),
+  closed: s("the item is closed already; nothing was done"),
+  changedSince: s("the item changed since the version given; this is what it is now"),
+  declined: s("not done"),
+  candidateNumber: s("which candidate? give its number"),
+  candidateBad: s("--candidate takes a candidate's number, as pending show lists them"),
+  evidenceBad: s(
+    "--evidence-json takes a file of JSON: evidence segments, or {evidence, evidence_by_field}",
+  ),
+  unknownOutcome: s(
+    "the connection broke before the answer: it is not known whether the decision was recorded. See saveslot pending show <pi_…>",
+  ),
 
   // pending, reads, verify (06 §4.5, §4.8)
   pendingListArgs: s("saveslot pending [list] takes options only: --slot, --type, --status"),

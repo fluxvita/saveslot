@@ -9,3 +9,12 @@ export class UsageError extends Error {
     this.text = text;
   }
 }
+
+/** A command that did not do what it would (06-cli §6.2: exit 8): declined, or no one to ask. */
+export class NotDone extends Error {
+  readonly text: Static;
+  constructor(text: Static) {
+    super(text);
+    this.text = text;
+  }
+}

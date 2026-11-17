@@ -11,7 +11,7 @@ import {
   TransportError,
   VALIDATION_DETAIL_CODES,
 } from "@fluxvita/saveslot-client";
-import { code, join, type Line, num, t, untrusted, words } from "./render/text.ts";
+import { code, id, join, type Line, num, t, untrusted, words } from "./render/text.ts";
 import { TEXTS } from "./texts.ts";
 
 /** 06 §6.2, by contract code; `rate_limited` by its reason. A code not here exits 5. */
@@ -50,6 +50,8 @@ const DETAIL_CODES: ReadonlySet<string> = new Set<string>(VALIDATION_DETAIL_CODE
 /** The exit code of a contract error: §6.2; `rate_limited` with reason `busy` is 7. */
 export function exitOf(errorCode: string, reason: unknown): number {
   if (errorCode === "rate_limited" && reason === "busy") return 7;
+  // A conflict with several candidates and none named: a usage error (06 §5.2).
+  if (errorCode === "invalid_argument" && reason === "candidate_required") return 2;
   return EXIT_BY_CODE.get(errorCode as ErrorCode) ?? 5;
 }
 
@@ -81,6 +83,23 @@ export function describeError(e: unknown): { readonly lines: Line[]; readonly ex
         ...t`  ${code(String(x["code"] ?? ""), DETAIL_CODES)}`,
         ...(where.length > 0 ? t`${words(TEXTS.detail)} ${join(where, t`, `)}` : []),
       ]);
+    }
+    // The item's version now, for one that changed since it was read (06 §5.2).
+    const current = Object.hasOwn(e.body, "current") ? e.body["current"] : undefined;
+    if (typeof current === "object" && current !== null && Object.hasOwn(current, "item_ver")) {
+      lines.push(
+        t`  ${words(TEXTS.itemVersionNow)} ${id(String((current as { item_ver: unknown }).item_ver))}`,
+      );
+    }
+    // The candidates to name with --candidate.
+    const choices = Object.hasOwn(e.body, "candidate_choices")
+      ? e.body["candidate_choices"]
+      : undefined;
+    for (const c of Array.isArray(choices) ? choices : []) {
+      const x = (typeof c === "object" && c !== null ? c : {}) as Record<string, unknown>;
+      lines.push(
+        t`  --candidate ${typeof x["index"] === "number" ? num(x["index"]) : untrusted(String(x["index"]))} (#${typeof x["seq"] === "number" ? num(x["seq"]) : untrusted(String(x["seq"]))})`,
+      );
     }
     const hint = TEXTS.nextStep.get(e.code as ErrorCode);
     if (hint !== undefined) lines.push(t`  ${words(hint)}`);
