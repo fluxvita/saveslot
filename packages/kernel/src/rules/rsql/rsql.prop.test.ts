@@ -19,7 +19,14 @@ import {
   ruleShape,
 } from "./derived.ts";
 import { loadRsql } from "./load.ts";
-import { FORMS, generatedRule, Hits, propRuns, rule } from "./rsql-testing.fixture.ts";
+import {
+  FORMS,
+  type GeneratedRule,
+  generatedRule,
+  Hits,
+  propRuns,
+  rule,
+} from "./rsql-testing.fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 50_000, markInterruptAsFailure: true });
@@ -37,7 +44,33 @@ function outcome(r: DerivedRuleResult): string {
   return `${d.code}${d.sql_reason !== undefined ? `/${d.sql_reason}` : ""}`;
 }
 
+/** Compiles `g`; when it compiles, checks it as property 1 says and gives back its bound text. */
+function compiledReadsBack(g: GeneratedRule): string | undefined {
+  const input = rule(g.sql, g.fields, g.timeDependency);
+  const r = compileDerivedRule(input);
+  if (readsNoField(r)) return undefined;
+  if (!r.ok) throw new Error(`${g.sql}\n→ ${JSON.stringify(r.error)}`);
+  expect(r.rule.time_dependency).toBe(g.timeDependency);
+  const bound = { ...input, sql: r.rule.sql };
+  const written = ruleShape(input, "names");
+  expect(written).toBeDefined();
+  expect(ruleShape(bound, "ids"), `${g.sql}\n→ ${r.rule.sql}`).toBe(written);
+  expect(checkBoundRule(bound)).toEqual(r);
+  return r.rule.sql;
+}
+
 describe("rules of this version's subset", () => {
+  it("reach each form whose type PostgreSQL resolves differently by a fixed rule, which reads back", () => {
+    for (const f of FORMS) {
+      const bound = compiledReadsBack(f.example);
+      expect({ form: f.name, bound }).toEqual({ form: f.name, bound: expect.any(String) });
+      expect({ form: f.name, reached: f.reached(f.example.sql, bound as string) }).toEqual({
+        form: f.name,
+        reached: true,
+      });
+    }
+  });
+
   it("compile, with the generator's time dependency, and their bound text reads back as the same rule", () => {
     const hits = new Hits(0.9);
     const reached = new Map<string, number>();
@@ -45,19 +78,11 @@ describe("rules of this version's subset", () => {
       fc.property(
         generatedRule,
         hits.track((g) => {
-          const input = rule(g.sql, g.fields, g.timeDependency);
-          const r = compileDerivedRule(input);
-          if (readsNoField(r)) return;
-          if (!r.ok) throw new Error(`${g.sql}\n→ ${JSON.stringify(r.error)}`);
+          const bound = compiledReadsBack(g);
+          if (bound === undefined) return;
           hits.hit();
-          expect(r.rule.time_dependency).toBe(g.timeDependency);
-          const bound = { ...input, sql: r.rule.sql };
-          const written = ruleShape(input, "names");
-          expect(written).toBeDefined();
-          expect(ruleShape(bound, "ids"), `${g.sql}\n→ ${r.rule.sql}`).toBe(written);
-          expect(checkBoundRule(bound)).toEqual(r);
           for (const f of FORMS) {
-            if (f.reached(g.sql, r.rule.sql)) reached.set(f.name, (reached.get(f.name) ?? 0) + 1);
+            if (f.reached(g.sql, bound)) reached.set(f.name, (reached.get(f.name) ?? 0) + 1);
           }
         }),
       ),
@@ -70,11 +95,14 @@ describe("rules of this version's subset", () => {
           "\n",
         ),
       );
-    // Every form whose type PostgreSQL resolves differently is reached in 2% of the rules at least.
+    // Each form is checked by its fixed rule above; here only that the generator still draws every
+    // form at all. The rarest form is in about 4.9% of the rules (measured on 20,000), so with at
+    // least 540 rules compiled (90% of 600) a form missing entirely while the generator is sound
+    // has a probability of about 0.951^540 ≈ 2e-12; for all forms together, about 3e-12.
     for (const f of FORMS) {
-      expect({ form: f.name, share: (reached.get(f.name) ?? 0) / hits.hits >= 0.02 }).toEqual({
+      expect({ form: f.name, reached: (reached.get(f.name) ?? 0) > 0 }).toEqual({
         form: f.name,
-        share: true,
+        reached: true,
       });
     }
   });

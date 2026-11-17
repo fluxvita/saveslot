@@ -7,7 +7,7 @@
 // differently from a plain reading (11 «类型»): numeric-only functions, sums of integers, 32-bit
 // values (integer constants, length, strpos, date − date), constants in 32-bit-only positions
 // (substr, left, right, split_part, round's digits, date ± days), and NULLs given a type by what is
-// beside them. FORMS names them, so a test can require each to be reached in a minimum share.
+// beside them. FORMS names them, each with a fixed rule that reaches it.
 
 import fc from "fast-check";
 
@@ -342,32 +342,82 @@ export const generatedRule: fc.Arbitrary<GeneratedRule> = fc
       });
   });
 
+/** A rule of one aggregate output `a0` over `runs`, with no time dependency. */
+const one = (agg: string): GeneratedRule => ({
+  sql: `SELECT ${agg} AS a0 FROM runs`,
+  fields: ["a0"],
+  timeDependency: "none",
+});
+
 /**
  * The forms whose types PostgreSQL resolves differently from a plain reading, by what the rule as
- * written (`sql`) or its bound text (`bound`) shows.
+ * written (`sql`) or its bound text (`bound`) shows; each with a fixed rule that reaches it, so
+ * that every form is checked on every run whatever the generator draws.
  */
 export const FORMS: readonly {
   readonly name: string;
   readonly reached: (sql: string, bound: string) => boolean;
+  readonly example: GeneratedRule;
 }[] = [
-  { name: "round", reached: (s) => /\bround\(/i.test(s) },
-  { name: "trunc", reached: (s) => /\btrunc\(/i.test(s) },
-  { name: "floor", reached: (s) => /\bfloor\(/i.test(s) },
-  { name: "ceil", reached: (s) => /\bceil\(/i.test(s) },
-  { name: "sign", reached: (s) => /\bsign\(/i.test(s) },
-  { name: "sum of integers", reached: (_, b) => b.includes("CAST(sum(") },
-  { name: "integer constant", reached: (_, b) => /CAST\(-?\d+ AS bigint\)/.test(b) },
-  { name: "length", reached: (_, b) => b.includes("CAST(length(") },
-  { name: "strpos", reached: (_, b) => b.includes("CAST(strpos(") },
-  { name: "date - date", reached: (_, b) => /CAST\(\("t1"\."f1" - /.test(b) },
-  { name: "substr", reached: (_, b) => b.includes("substr(") },
-  { name: "left", reached: (_, b) => b.includes("left(") },
-  { name: "right", reached: (_, b) => b.includes("right(") },
-  { name: "split_part", reached: (_, b) => b.includes("split_part(") },
+  { name: "round", reached: (s) => /\bround\(/i.test(s), example: one("max(round(pace))") },
+  {
+    name: "trunc",
+    reached: (s) => /\btrunc\(/i.test(s),
+    example: one("max(trunc(laps::numeric))"),
+  },
+  { name: "floor", reached: (s) => /\bfloor\(/i.test(s), example: one("max(floor(pace))") },
+  { name: "ceil", reached: (s) => /\bceil\(/i.test(s), example: one("max(ceil(pace))") },
+  { name: "sign", reached: (s) => /\bsign\(/i.test(s), example: one("max(sign(pace))") },
+  {
+    name: "sum of integers",
+    reached: (_, b) => b.includes("CAST(sum("),
+    example: one("sum(laps)"),
+  },
+  {
+    name: "integer constant",
+    reached: (_, b) => /CAST\(-?\d+ AS bigint\)/.test(b),
+    example: one("count(*) FILTER (WHERE laps IS DISTINCT FROM 3)"),
+  },
+  {
+    name: "length",
+    reached: (_, b) => b.includes("CAST(length("),
+    example: one("max(length(feeling))"),
+  },
+  {
+    name: "strpos",
+    reached: (_, b) => b.includes("CAST(strpos("),
+    example: one("max(strpos(feeling, 'a'))"),
+  },
+  {
+    name: "date - date",
+    reached: (_, b) => /CAST\(\("t1"\."f1" - /.test(b),
+    example: one("min(date - DATE '2026-01-01')"),
+  },
+  {
+    name: "substr",
+    reached: (_, b) => b.includes("substr("),
+    example: one("max(substr(feeling, 2))"),
+  },
+  { name: "left", reached: (_, b) => b.includes("left("), example: one("max(left(feeling, -1))") },
+  {
+    name: "right",
+    reached: (_, b) => b.includes("right("),
+    example: one("max(right(feeling, 3))"),
+  },
+  {
+    name: "split_part",
+    reached: (_, b) => b.includes("split_part("),
+    example: one("max(split_part(feeling, ',', 2))"),
+  },
   {
     name: "date ± days",
     reached: (_, b) => /"t1"\."f1" [+-] -?\d+\)|\(-?\d+ \+ "t1"\."f1"\)/.test(b),
+    example: one("max(date + 1)"),
   },
   // A NULL value, not an IS [NOT] NULL test.
-  { name: "NULL", reached: (_, b) => /(?<!IS |IS NOT )NULL\b/.test(b) },
+  {
+    name: "NULL",
+    reached: (_, b) => /(?<!IS |IS NOT )NULL\b/.test(b),
+    example: one("count(*) FILTER (WHERE feeling = NULL)"),
+  },
 ];

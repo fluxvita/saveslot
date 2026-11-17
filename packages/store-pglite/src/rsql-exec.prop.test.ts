@@ -12,8 +12,8 @@
 //    division by zero (rewritten to NULL with the physical text, not done here), 64-bit and numeric
 //    overflow, a date out of range.
 //
-// The generator reaches each form whose type PostgreSQL resolves differently from a plain reading
-// in a minimum share of rules. The bound text is run as printed (tables "t1", columns "f1"…), with
+// Each form whose type PostgreSQL resolves differently from a plain reading is run by its fixed rule
+// (FORMS) every time; the generated rules must still reach every form. The bound text is run as printed (tables "t1", columns "f1"…), with
 // saveslot_date / saveslot_today / saveslot_now standing in as SQL functions: the rewriting to
 // physical names and columns comes with derived evaluation.
 
@@ -27,6 +27,7 @@ import {
 import {
   FORMS,
   fc,
+  type GeneratedRule,
   generatedRule,
   propRuns,
   rule,
@@ -112,49 +113,78 @@ async function run(schema: string, sql: string) {
 
 const errorCode = (e: unknown) => (e as { code?: unknown }).code;
 
+type Compiled = DerivedRuleResult & { ok: true };
+
+/**
+ * Runs the bound text of `r` (compiled from `sql`): on empty tables it must plan with the inferred
+ * types, on the edge rows evaluate with only data-dependent errors. False when planning itself
+ * stopped on a data-dependent error (a constant folded when planning): no types to check then.
+ */
+async function runsAsInferred(sql: string, r: Compiled): Promise<boolean> {
+  const bound = r.rule.sql;
+  const where = `${sql}\n→ ${bound}`;
+  let fields: readonly { name: string; dataTypeID: number }[];
+  try {
+    fields = (await run("s_empty", bound)).fields;
+  } catch (e) {
+    if (DATA_ERRORS.has(String(errorCode(e)))) return false;
+    throw new Error(`${where}\n→ ${String(errorCode(e))} ${(e as Error).message}`);
+  }
+  expect(
+    fields.map((f) => [f.name, f.dataTypeID]),
+    where,
+  ).toEqual(
+    fields.map((f) => {
+      const field = r.fields[Number(f.name.slice(1)) - 1];
+      return [f.name, OID[field?.type ?? ""]];
+    }),
+  );
+  try {
+    await run("s_edge", bound);
+  } catch (e) {
+    if (!DATA_ERRORS.has(String(errorCode(e))))
+      throw new Error(`${where}\n→ ${String(errorCode(e))} ${(e as Error).message}`);
+  }
+  return true;
+}
+
+const compile = (g: GeneratedRule) => compileDerivedRule(rule(g.sql, g.fields, g.timeDependency));
+
 describe("bound rules on PGlite", () => {
+  it("each form's fixed rule plans with the inferred types and evaluates on edge rows", async () => {
+    for (const f of FORMS) {
+      const r = compile(f.example);
+      expect({ form: f.name, ok: r.ok }).toEqual({ form: f.name, ok: true });
+      const c = r as Compiled;
+      expect({ form: f.name, reached: f.reached(f.example.sql, c.rule.sql) }).toEqual({
+        form: f.name,
+        reached: true,
+      });
+      expect({ form: f.name, typesChecked: await runsAsInferred(f.example.sql, c) }).toEqual({
+        form: f.name,
+        typesChecked: true,
+      });
+    }
+  });
+
   it("plan with the inferred types, and evaluate on edge rows with only data-dependent errors", async () => {
     let checked = 0;
     const reached = new Map<string, number>();
-    const samples: { sql: string; r: DerivedRuleResult & { ok: true } }[] = [];
+    const samples: { sql: string; r: Compiled }[] = [];
     // Compile first (synchronous), then run each on PGlite.
     fc.assert(
       fc.property(generatedRule, (g) => {
-        const r = compileDerivedRule(rule(g.sql, g.fields, g.timeDependency));
+        const r = compile(g);
         if (r.ok) samples.push({ sql: g.sql, r });
       }),
       { numRuns: propRuns(300) },
     );
     expect(samples.length).toBeGreaterThan(0);
     for (const { sql, r } of samples) {
-      const bound = r.rule.sql;
-      const where = `${sql}\n→ ${bound}`;
-      let fields: readonly { name: string; dataTypeID: number }[];
-      try {
-        fields = (await run("s_empty", bound)).fields;
-      } catch (e) {
-        // A constant folded when planning may still overflow: no types to check then.
-        if (DATA_ERRORS.has(String(errorCode(e)))) continue;
-        throw new Error(`${where}\n→ ${String(errorCode(e))} ${(e as Error).message}`);
-      }
+      if (!(await runsAsInferred(sql, r))) continue;
       checked++;
-      expect(
-        fields.map((f) => [f.name, f.dataTypeID]),
-        where,
-      ).toEqual(
-        fields.map((f) => {
-          const field = r.fields[Number(f.name.slice(1)) - 1];
-          return [f.name, OID[field?.type ?? ""]];
-        }),
-      );
-      try {
-        await run("s_edge", bound);
-      } catch (e) {
-        if (!DATA_ERRORS.has(String(errorCode(e))))
-          throw new Error(`${where}\n→ ${String(errorCode(e))} ${(e as Error).message}`);
-      }
       for (const f of FORMS) {
-        if (f.reached(sql, bound)) reached.set(f.name, (reached.get(f.name) ?? 0) + 1);
+        if (f.reached(sql, r.rule.sql)) reached.set(f.name, (reached.get(f.name) ?? 0) + 1);
       }
     }
     // Rules whose types were checked: nearly all compiled ones.
@@ -166,10 +196,14 @@ describe("bound rules on PGlite", () => {
             "\n",
           ),
       );
+    // Each form is run by its fixed rule above; here only that the generator still draws every form
+    // at all. The rarest form is in about 4.9% of the rules (measured on 20,000), and all 300 rules
+    // compile, so a form missing entirely while the generator is sound has a probability of about
+    // 0.951^300 ≈ 3e-7; for all forms together, about 6e-7 (at 270 checked rules, 3e-6).
     for (const f of FORMS) {
-      expect({ form: f.name, share: (reached.get(f.name) ?? 0) / checked >= 0.02 }).toEqual({
+      expect({ form: f.name, reached: (reached.get(f.name) ?? 0) > 0 }).toEqual({
         form: f.name,
-        share: true,
+        reached: true,
       });
     }
   });
