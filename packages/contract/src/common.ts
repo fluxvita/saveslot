@@ -67,7 +67,11 @@ export type RecordPoint = Seq | Instant;
 
 /** 04-contract-types §1.3 `Interval`: business time interval, left-closed, right-open. */
 export interface Interval {
-  /** `null` only in item spans, for the whole time line (then `valid_to` is `null` too). */
+  /**
+   * `null` only for the whole time line (then `valid_to` is `null` too): in item spans, and in a
+   * write receipt's part over the whole time (a whole revoke, its undo, a candidate of an undo with
+   * include_later).
+   */
   valid_from: BizTime | null;
   /** `null` = continues. */
   valid_to: BizTime | null;

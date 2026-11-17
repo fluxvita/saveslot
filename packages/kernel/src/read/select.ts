@@ -13,6 +13,7 @@ import type {
   ItemId,
 } from "@fluxvita/saveslot-contract-core";
 import { canonical, rationalOf } from "../request/index.ts";
+import { column, INSTANT_TEXT, physical, selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { containsPoint, pointWithin } from "../time/index.ts";
 import type { Condition, Literal, QueryPlan } from "./params.ts";
@@ -60,34 +61,8 @@ export interface Flag {
   readonly spans: readonly Span[] | undefined;
 }
 
-export const INSTANT_TEXT = `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`;
-
-/** The physical names, checked by shape: they go into SQL as identifiers. */
-export function physical(t: CompiledBaseTable): { business: string; versions: string } {
-  const name = t.physical.table;
-  if (!new RegExp(`^t_${t.id}_v[1-9][0-9]{0,8}$`).test(name) || !/^t[1-9][0-9]{0,8}$/.test(t.id))
-    throw new ReadError("internal", `not a physical table name: ${JSON.stringify(name)}`);
-  return { business: `"${name}"`, versions: `"${name}__ver"` };
-}
-
-export const column = (f: CompiledBaseField): string => {
-  if (!/^f[1-9][0-9]{0,8}$/.test(f.id))
-    throw new ReadError("internal", `not a field ID: ${JSON.stringify(f.id)}`);
-  return `"f_${f.id}"`;
-};
-
-/** A field's columns as text the reader decodes (instants in the event format's UTC form). */
-export function selectOf(f: CompiledBaseField): string[] {
-  const c = column(f);
-  switch (f.type) {
-    case "zoned_datetime":
-      return [`to_char(${c}, ${INSTANT_TEXT})`, `"f_${f.id}__zone"`];
-    case "boolean":
-      return [c];
-    default:
-      return [`${c}::text`];
-  }
-}
+// The physical layout lives with the store (../store/layout.ts); reads use it from here too.
+export { column, INSTANT_TEXT, physical, selectOf };
 
 export function decode(f: CompiledBaseField, cells: readonly unknown[]): FieldValue {
   const [v, zone] = cells;

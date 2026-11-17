@@ -19,7 +19,6 @@ import type {
   EntityId,
   EVENT_DECISIONS,
   EVENT_ITEM_TYPES,
-  FieldId,
   FieldValue,
   Intent,
   ItemCreatedReason,
@@ -30,7 +29,6 @@ import type {
 } from "@fluxvita/saveslot-contract-core";
 import type { ReadId } from "../audit/index.ts";
 import type { DerivedWrite } from "../derive/index.ts";
-import { type Limit, type RowState, stateFromRecord } from "../judge/index.ts";
 import { type ActorAsOf, actorsAsOf } from "../log/index.ts";
 import {
   type Blocks,
@@ -39,19 +37,25 @@ import {
   impactOut,
   itemEntries,
   itemVer,
+  latestGiver,
   type Naming,
+  opOfCell,
+  piecesOver,
+  type RowCell,
+  rowCellsAt,
+  rowOf,
 } from "../pending/index.ts";
 import type { WriteWarning } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { type Interval as Stretch, type ValueOut, valueOut, WHOLE } from "../time/index.ts";
+import { type ValueOut, valueOut } from "../time/index.ts";
+import { WriteError } from "./errors.ts";
 import { type EntityKeyText, keyFields, keyOf } from "./keys.ts";
-import { tableShape } from "./plan.ts";
-import { rowEvents } from "./reads.ts";
-import { decodeRecords, type RowContext, type StoredEvent } from "./record.ts";
+import type { StoredEvent } from "./record.ts";
 
 export type FieldResultCode = "applied" | "candidate" | "awaiting" | "corroborated" | "noop";
 
-export interface FieldResult {
+/** A field's result as the receipt assembles it, every key optional; `fieldResult` checks it. */
+interface PartDraft {
   readonly result: FieldResultCode;
   readonly after?: ValueOut;
   readonly no_value?: true;
@@ -74,6 +78,70 @@ export interface FieldResult {
   readonly impact?: Impact;
   /** State tables: the interval of this part. */
   readonly valid?: Interval;
+}
+
+type Previous = NonNullable<PartDraft["previous"]>;
+
+/** 04-contract-types §5.1 `FieldResult`: by its result, with what each result must give. */
+export type FieldResult =
+  | {
+      readonly result: "applied";
+      readonly after?: ValueOut;
+      readonly no_value?: true;
+      readonly uncovered?: true;
+      readonly valid?: Interval;
+    }
+  | { readonly result: "corroborated"; readonly valid?: Interval }
+  | { readonly result: "noop" }
+  | {
+      readonly result: "candidate";
+      readonly after?: ValueOut;
+      readonly item: ItemId;
+      readonly effective: ValueOut;
+      readonly current_ver: string;
+      /** None when no stretch of the candidate's part was given its state by an operation. */
+      readonly by?: { readonly seq: number; readonly actor: Actor };
+      readonly previous: Previous;
+      readonly impact?: Impact;
+      readonly valid?: Interval;
+    }
+  | {
+      readonly result: "awaiting";
+      readonly after?: ValueOut;
+      readonly item: ItemId;
+      readonly impact: Impact;
+      readonly valid?: Interval;
+    };
+
+/** A part of a state table's field: its interval, but for a noop part, which has none. */
+export type StatePart =
+  | Extract<FieldResult, { result: "noop" }>
+  | (Exclude<FieldResult, { result: "noop" }> & { readonly valid: Interval });
+
+/** What each result must give (04-contract-types §5.1). */
+const MUST: ReadonlyMap<string, readonly (keyof PartDraft)[]> = new Map([
+  ["candidate", ["item", "effective", "current_ver", "previous"]],
+  ["awaiting", ["item", "impact"]],
+]);
+
+/**
+ * A part as the contract has it. A candidate or awaiting part without what it must give, or a
+ * state table's part (other than noop) without its interval, is the log and the receipt
+ * disagreeing: an internal error, not a receipt with a hole in it.
+ */
+function fieldResult(d: PartDraft, isState: boolean): FieldResult {
+  const missing = (MUST.get(d.result) ?? []).filter((k) => d[k] === undefined);
+  if (isState && d.result !== "noop" && d.valid === undefined) missing.push("valid");
+  if (missing.length > 0) {
+    throw new WriteError(
+      "internal",
+      `a ${d.result} part without ${missing.join(", ")} in a write's receipt`,
+      {
+        reason: "inconsistent",
+      },
+    );
+  }
+  return d as FieldResult;
 }
 
 /** A business time interval as the contract gives it (04-contract-types `Interval`). */
@@ -124,7 +192,7 @@ export interface OpReceipt {
    * and a replay leaves them out.
    */
   readonly existing_keys?: readonly EntityKeyText[];
-  readonly fields: Readonly<Record<string, FieldResult | readonly FieldResult[]>>;
+  readonly fields: Readonly<Record<string, FieldResult | readonly StatePart[]>>;
   readonly undo?: {
     readonly of: OpNumber;
     readonly skipped_superseded: readonly {
@@ -295,39 +363,40 @@ async function operationEvents(tx: ReadTx, op: OpNumber): Promise<StoredEvent[]>
 }
 
 /**
- * Who gave a candidate's target its state on the candidate's part, as of operation `op`
- * (04-contract-types `FieldResult.by`): stretch by stretch, the write whose value is in effect, or
- * on a stretch without a value the revoke that left it; stretches no write ever gave a state are
- * left out. The latest of them, with the value it gave the field (none: a revoke, or the row's
- * existence as the target).
+ * Who gave what a candidate met (04-contract-types `FieldResult.by`), as the item's details say it
+ * (../pending/cells.ts), from the cells as this request left them: stretch by stretch over
+ * the candidate's part, the latest giver; with the value it gave the target field (none: the
+ * stretch is a revoke's hole or without a value, or the target is the row's existence). Undefined
+ * when no stretch of the part had a giver (never written there).
  */
-function givenBy(
-  state: RowState,
+async function givenBy(
+  tx: ReadTx,
+  table: CompiledBaseTable,
+  cells: readonly RowCell[],
+  unit: readonly string[],
+  part: Span | undefined,
   target: string,
-  part: Stretch,
-  op: OpNumber,
-): { readonly op: OpNumber; readonly value: FieldValue } | undefined {
-  const at: Limit = { upTo: op };
-  const defining = state.table.valued.length > 0 ? state.table.valued : state.table.fields;
-  let top: { op: OpNumber; value: FieldValue } | undefined;
-  const offer = (by: OpNumber, value: FieldValue) => {
-    if (top === undefined || by > top.op) top = { op: by, value };
-  };
-  for (const seg of state.isState ? state.piecesIn([part]) : [WHOLE]) {
-    // Without a value there: the revoke that left the hole, if one did.
-    const hole = defining.map((f) => state.fieldState(f, seg, at)).find((x) => x.kind === "hole");
-    if (hole !== undefined && hole.kind === "hole") {
-      offer(hole.by.op, null);
-      continue;
-    }
-    if (state.isState && !state.hasValue(seg, at)) continue;
-    const fields = target === "existence" ? defining : [target as FieldId];
-    for (const f of fields) {
-      const x = state.fieldState(f, seg, at);
-      if (x.kind === "value") offer(x.by.op, target === "existence" ? null : x.value);
-    }
+): Promise<{ readonly op: OpNumber; readonly value: FieldValue } | undefined> {
+  const pieces = part !== undefined ? piecesOver(table, cells, [part], unit) : [rowOf(cells, unit)];
+  const giver = latestGiver(pieces);
+  if (giver === undefined) return undefined;
+  const op = opOfCell(giver) as OpNumber;
+  const piece = pieces.find((p) => p.giver === giver);
+  const cell =
+    piece === undefined || piece.revoked || piece.noValue || target === "existence"
+      ? undefined
+      : piece.cells.find((c) => c.field_id === target);
+  if (cell === undefined || cell.src_event === null || cell.src_field === null) {
+    return { op, value: null };
   }
-  return top;
+  // The value the cell's contribution gave, as the log has it.
+  const r = await tx.query<{ body: string | null }>(
+    "SELECT body FROM content WHERE seq = $1 AND path = $2",
+    [Number(cell.src_event), `fields/${cell.src_field}/${cell.src_k ?? 0}`],
+  );
+  const body = r.rows[0]?.body;
+  const value = body == null ? null : ((JSON.parse(body) as { value?: FieldValue }).value ?? null);
+  return { op, value };
 }
 
 /** The row's version (01-objects «版本标记») as of operation `op`. */
@@ -460,27 +529,16 @@ export async function readReceipt(
       ? bases[i]
       : bases.find((b) => (b.blocks["target"] as { op_index: number }).op_index === i);
     // By field name, built as entries: a name like `__proto__` stays a key of its own.
-    const fields = new Map<string, FieldResult | FieldResult[]>();
+    const fields = new Map<string, FieldResult | StatePart[]>();
     const rowVer = await verAsOf(tx, table, rowId, op, o.restoreCount);
-    // The row as the operation judged it, for who gave what a candidate met: read once, and only
-    // when the op has a candidate.
-    let judged: RowState | undefined;
-    if (
+    // The row's cells as this request left them, for who gave what a candidate met (as the item's
+    // details read them, ../pending/cells.ts; the same moment as `effective`, `current_ver` and the
+    // item's contents, 01-objects «不过期»): read once, and only when the op has a candidate.
+    const before =
       base !== undefined &&
       Object.values(base.blocks).some((b) => (b as { status?: string })?.status === "candidate")
-    ) {
-      const ctx: RowContext = {
-        table: table.id,
-        target: isState ? { entity: rowId as never } : { row: rowId as never },
-        shape: tableShape(table),
-        granularity: table.time.type === "state" ? table.time.granularity : "date",
-      };
-      judged = stateFromRecord(ctx.shape, decodeRecords(ctx, await rowEvents(tx, table.id, rowId)));
-      // The writers of whatever may be `by`.
-      const missing = [...new Set(judged.items.map((y) => y.op))].filter((n) => !actors.has(n));
-      for (const [n, a] of await actorsOf(tx, missing)) actors.set(n, a);
-      await named(actors.values());
-    }
+        ? await rowCellsAt(tx, table, rowId, op)
+        : undefined;
 
     /** How the receipt writes field names, intervals and actors (as the pending details do). */
     const naming: Naming<Actor> = {
@@ -495,13 +553,13 @@ export async function readReceipt(
       impactOut(x, naming, blocks) as unknown as Impact;
 
     /** A candidate's or awaiting part's details, from its item's latest entries (09 §5.8). */
-    const itemDetails = (
+    const itemDetails = async (
       item: string,
       status: string,
       target: string,
       event: number,
       part: Span,
-    ): Partial<FieldResult> => {
+    ): Promise<Partial<PartDraft>> => {
       const x = entries.get(item);
       if (x === undefined) return {};
       const on = (b: Blocks) =>
@@ -512,13 +570,17 @@ export async function readReceipt(
         x.current.some((b) => b["field"] === "existence") ||
         x.previous.some((b) => b["field"] === "existence");
       const prev = x.previous.filter((b) => on(b));
-      // Who gave what the candidate met, and its value, from the row as judged (not the entries'
-      // deps, which also hold what cut a stretch's ends, the candidate itself among them).
+      // Who gave what the candidate met, and its value (not the entries' deps, which also hold what
+      // cut a stretch's ends, the candidate itself among them).
       const given =
-        judged === undefined
+        before === undefined
           ? undefined
-          : givenBy(judged, target, isState ? (part as unknown as Stretch) : WHOLE, op);
+          : await givenBy(tx, table, before, x.unit, isState ? part : undefined, target);
       const top = given?.op;
+      if (top !== undefined && !actors.has(top)) {
+        for (const [n, a] of await actorsOf(tx, [top])) actors.set(n, a);
+        await named(actors.values());
+      }
       const exists = (bs: readonly Blocks[]) =>
         onExistence
           ? bs.some((b) => b["field"] === "existence" && b["revoked"] !== true)
@@ -527,9 +589,8 @@ export async function readReceipt(
             : true;
       const impact = impactOf(x, candidateImpactBlocks(x, event));
       return {
-        // The value the `by` write gave (the whole picture is the item's ConflictDetail).
-        // The value the `by` write gave (none when it is a revoke); the whole picture is the item's
-        // ConflictDetail.
+        // The target field's value on the `by` stretch (none when it has no value, `by` is a
+        // revoke, or the target is existence); the whole picture is the item's ConflictDetail.
         effective: valueOut(given?.value ?? null),
         ...(rowVer !== undefined ? { current_ver: rowVer } : {}),
         ...(top !== undefined ? { by: { seq: top, actor: actorOut(actors.get(top) ?? "") } } : {}),
@@ -569,14 +630,15 @@ export async function readReceipt(
         ...(Object.keys(impact).length > 0 ? { impact } : {}),
       };
     };
-    const add = (key: string, r: FieldResult) => {
+    const add = (key: string, d: PartDraft) => {
+      const r = fieldResult(d, isState);
       if (r.result === "candidate" || r.result === "awaiting") pendingStatus = true;
       if (!isState) {
         fields.set(key, r);
         return;
       }
       const prev = fields.get(key);
-      fields.set(key, [...(Array.isArray(prev) ? prev : []), r]);
+      fields.set(key, [...(Array.isArray(prev) ? (prev as StatePart[]) : []), r as StatePart]);
     };
     if (base !== undefined) {
       const b = base.blocks;
@@ -591,6 +653,8 @@ export async function readReceipt(
           value?: FieldValue;
           no_value?: true;
           uncovered?: true;
+          /** An existence item: `whole` has no span (09 §5.7). */
+          scope?: "whole" | "interval";
         };
         const target = m !== null ? (m[1] as string) : "existence";
         const k = Number(m !== null ? m[2] : (ex as RegExpExecArray)[1]);
@@ -606,7 +670,7 @@ export async function readReceipt(
               : undefined;
         const part: Span = isState ? spanIn(at) : { from: null, to: null };
         const details =
-          item === undefined ? {} : itemDetails(item, block.status, target, event, part);
+          item === undefined ? {} : await itemDetails(item, block.status, target, event, part);
         add(m !== null ? name(target) : "*", {
           result: block.status,
           ...("value" in block ? { after: valueOut(block.value as FieldValue) } : {}),
@@ -614,7 +678,12 @@ export async function readReceipt(
           ...(block.uncovered ? { uncovered: true as const } : {}),
           ...(item !== undefined ? { item } : {}),
           ...details,
-          ...(isState && at !== undefined ? { valid: iv(spanIn(at)) } : {}),
+          // State tables: each part's interval. A revoke of the whole entity has no span: its part
+          // is the whole time (04-contract-types §1.3 `Interval`, both ends null); any other part
+          // without one is left without, and refused as such above.
+          ...(isState && (at !== undefined || block.scope === "whole")
+            ? { valid: iv(spanIn(at)) }
+            : {}),
         });
       }
     }

@@ -135,11 +135,12 @@ export type FieldResult =
       result: "candidate";
       item: ItemId;
       valid?: Interval;
-      /** Current effective value. */
+      /** The field's value on the `by` stretch (null: no value there, a revoke, or existence). */
       effective: Value | null;
       /** Current effective version; does not count as a read. */
       current_ver: Ver;
-      by: { seq: Seq; actor: Actor };
+      /** As this request left the row; none when no stretch of the part had a giver. */
+      by?: { seq: Seq; actor: Actor };
       previous: ConflictDetail["previous"];
       impact?: AwaitingImpact;
     }
@@ -188,7 +189,15 @@ export interface OpResult {
   /** With `created_entity`: similar existing keys, at most 5. */
   similar_keys?: Array<{ key: EntityKeyText; match: "fold" | "affix" | "edit"; revoked?: true }>;
   /** Per field (`"*"` for existence); on state tables an array of interval results. */
-  fields?: Record<FieldName | "*", FieldResult | Array<FieldResult & { valid: Interval }>>;
+  fields?: Record<
+    FieldName | "*",
+    | FieldResult
+    | Array<
+        // A noop part has no interval: it only says the field did not change (the log keeps no span).
+        | Extract<FieldResult, { result: "noop" }>
+        | (Exclude<FieldResult, { result: "noop" }> & { valid: Interval })
+      >
+  >;
   /** State tables: the interval each field resolved to. */
   resolved?: Record<FieldName | "*", ResolvedInterval>;
   undo?: {

@@ -50,36 +50,6 @@ type Out<F extends (...a: never[]) => unknown> =
 const fits = <B>(_: B) => true;
 const as = <A>() => undefined as unknown as A;
 
-/**
- * The write receipt as the contract writes it, with two differences the third request settles
- * left open on demand (`write/receipt.ts`): `W`, the candidate and awaiting fields the kernel gives
- * only when it has them; `V`, a state table's part without its interval (a `noop` part, a part with
- * no span). Each assertion below opens what it is not about, so a marker covers one difference.
- */
-type Partly<T, K extends PropertyKey> = Omit<T, K> & Partial<Pick<T, Extract<keyof T, K>>>;
-type FieldResultW<W extends boolean> = W extends false
-  ? C.FieldResult
-  : C.FieldResult extends infer F
-    ? F extends { result: "candidate" }
-      ? Partly<F, "item" | "effective" | "current_ver" | "by" | "previous">
-      : F extends { result: "awaiting" }
-        ? Partly<F, "item" | "impact">
-        : F
-    : never;
-type OpWV<W extends boolean, V extends boolean> = Omit<C.OpResult, "fields"> & {
-  fields?: Record<
-    string,
-    | FieldResultW<W>
-    | (FieldResultW<W> & (V extends false ? { valid: C.Interval } : { valid?: C.Interval }))[]
-  >;
-};
-type WriteWV<W extends boolean, V extends boolean> = Omit<C.WriteResult, "ops"> & {
-  ops: OpWV<W, V>[];
-};
-type ResolveWV<W extends boolean, V extends boolean> = Omit<C.ResolveResult, "write"> & {
-  write?: Omit<NonNullable<C.ResolveResult["write"]>, "ops"> & { ops: OpWV<W, V>[] };
-};
-
 export const checks = [
   fits<C.CatalogResult>(as<Mutable<Out<typeof catalog>>>()),
   fits<C.SchemaDraftResult>(as<Mutable<Out<typeof schemaDraft>>>()),
@@ -89,19 +59,9 @@ export const checks = [
 
   fits<C.QueryResult>(as<Mutable<Out<typeof query>>>()),
   fits<C.HistoryResult>(as<Mutable<Out<typeof history>>>()),
-  fits<WriteWV<true, true>>(as<Mutable<Out<typeof write>>>()),
-  fits<ResolveWV<true, true>>(as<Mutable<Out<typeof resolve>>>()),
+  fits<C.WriteResult>(as<Mutable<Out<typeof write>>>()),
+  fits<C.ResolveResult>(as<Mutable<Out<typeof resolve>>>()),
 
-  // The third request: the receipt's candidate and awaiting fields given only when present.
-  // @ts-expect-error candidate and awaiting fields the contract requires are optional
-  fits<WriteWV<false, true>>(as<Mutable<Out<typeof write>>>()),
-  // @ts-expect-error candidate and awaiting fields the contract requires are optional
-  fits<ResolveWV<false, true>>(as<Mutable<Out<typeof resolve>>>()),
-  // The third request: a state table's part given without its interval (a noop part).
-  // @ts-expect-error a state table's part may have no interval
-  fits<WriteWV<true, false>>(as<Mutable<Out<typeof write>>>()),
-  // @ts-expect-error a state table's part may have no interval
-  fits<ResolveWV<true, false>>(as<Mutable<Out<typeof resolve>>>()),
   // The third request: pending's result has no type of its own yet.
   // @ts-expect-error pending's result is a record of unknowns
   fits<C.PendingResult>(as<Mutable<Out<typeof pending>>>()),

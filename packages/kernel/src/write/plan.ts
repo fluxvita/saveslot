@@ -3,6 +3,7 @@
 
 import type { CompiledBaseTable, FieldId } from "@fluxvita/saveslot-contract-core";
 import type { TableShape } from "../judge/index.ts";
+import { valuedFields } from "../pending/index.ts";
 
 /** The table as `judge` sees it (judge/model.ts `TableShape`). */
 export function tableShape(t: CompiledBaseTable): TableShape {
@@ -11,16 +12,11 @@ export function tableShape(t: CompiledBaseTable): TableShape {
     kind: t.time.type === "state" ? "state" : t.time.type === "event" ? "event" : "timeless",
     fields: t.fields.map((f) => f.id),
     // "Has a value" is judged on the required fields without a constant backfill (05-time «无值区间»).
-    valued: t.fields
-      .filter((f) => f.required === true && !(f.backfill !== undefined && isConst(f.backfill)))
-      .map((f) => f.id),
+    valued: valuedFields(t),
     required,
     groups: (t.together ?? []).map((g) => [...g] as FieldId[]),
   };
 }
-
-const isConst = (b: unknown) =>
-  b !== null && typeof b === "object" && Object.hasOwn(b as object, "const");
 
 /**
  * Whether the caller may write `table` of `slot`. The first version always passes every slot and

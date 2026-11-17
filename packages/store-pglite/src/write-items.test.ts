@@ -9,6 +9,7 @@ import {
   createOpsContext,
   createTenant,
   eventsOf,
+  pending as pending$,
   readBufferOf,
   readEvents,
   readTail,
@@ -75,6 +76,18 @@ const COMPILED = {
       physical: { table: "t_t4_v1" },
       fields,
     },
+    {
+      id: "t5",
+      name: "loose",
+      kind: "base",
+      description: "entities over time, no field required",
+      time: { type: "state", granularity: "date" },
+      physical: { table: "t_t5_v1" },
+      fields: [
+        { id: "f2", name: "b", type: "text", description: "b" },
+        { id: "f3", name: "c", type: "text", description: "c" },
+      ],
+    },
   ],
 };
 const CHANGES = [
@@ -83,6 +96,7 @@ const CHANGES = [
   { target: { table: "t2" }, change: "add_table" },
   { target: { table: "t3" }, change: "add_table" },
   { target: { table: "t4" }, change: "add_table" },
+  { target: { table: "t5" }, change: "add_table" },
 ].map((c) => ({
   ...c,
   class: "create",
@@ -1540,6 +1554,463 @@ describe("a stale revoke of the whole entity on a state table (09-event-format �
       const [refreshed] = await ofType(later.seq, "item.refreshed");
       expect(refreshed?.blocks["target"]).toMatchObject({ item });
       expect(refreshed?.blocks["scope_valid"]).toMatchObject({ spans: [{}] });
+    },
+    T,
+  );
+});
+
+describe("who gave what a candidate met: the receipt's by and the item's effective agree", () => {
+  const from = "2026-11-05";
+  const stale = (entity: string, ver: string) =>
+    on(entity, { intent: "update", ver, valid_from: from, valid_to: "open", set: { c: "z" } });
+  const revoke = (entity: string, ver: string) =>
+    on(entity, { intent: "revoke", ver, valid_from: from, valid_to: "open" }, OTHER);
+  const undo = (entity: string, of: number, ver: string) =>
+    on(entity, { revert: { undo: of }, ver, acknowledge: ["overwrite"] }, OTHER);
+  /** The item's details read now, by the user. */
+  const detailOf = async (id: string) =>
+    (await pending$(
+      s.store,
+      createOpsContext({
+        tenant: TENANT,
+        actor: USER,
+        trigger: null,
+        task: null,
+        visibility: { kind: "all" },
+        idempotency_key_window: 86_400_000,
+        idempotency_window: 600_000,
+        now: now(),
+        confirmation: null,
+      }),
+      { id },
+    )) as unknown as {
+      effective: { seq?: number; actor?: unknown; spans: { seq?: number; actor?: unknown }[] };
+    };
+  /** The candidate's by, the item's top seq and each span's: one operation, `seq` by `actor`. */
+  const agree = async (z: Awaited<ReturnType<typeof send>>, seq: number, actor: string) => {
+    const part = partsOf(z, "c").find((p) => p["result"] === "candidate") as Record<
+      string,
+      unknown
+    >;
+    expect(part, "a candidate").toBeDefined();
+    const by = { seq, actor: asActor(actor) };
+    expect(part["by"]).toEqual(by);
+    const d = await detailOf(part["item"] as string);
+    expect({ seq: d.effective.seq, actor: d.effective.actor }).toEqual(by);
+    expect(d.effective.spans.map((x) => ({ seq: x.seq, actor: x.actor }))).toEqual(
+      d.effective.spans.map(() => by),
+    );
+  };
+  /** An entity with b only before `from`, and b filled from `from` on: undoing the fill empties it. */
+  const filled = async () => {
+    const e = await send({
+      sv: 1,
+      ops: [
+        {
+          intent: "insert",
+          table: "entities",
+          valid_from: "2026-11-01",
+          valid_to: from,
+          set: { b: "x" },
+        },
+      ],
+    });
+    const entity = e.ops[0]?.target.entity as string;
+    const fill = await on(entity, {
+      intent: "update",
+      ver: verAt(e),
+      valid_from: from,
+      valid_to: "open",
+      set: { b: "x2" },
+    });
+    return { entity, fill };
+  };
+
+  it(
+    "a revoke's hole: the revoke",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x", c: "m" });
+      const r = await revoke(entity, verAt(e));
+      await agree(await stale(entity, verAt(e)), r.seq, OTHER);
+    },
+    T,
+  );
+
+  it(
+    "an undo's hole (a required field's fill undone): the undo",
+    async () => {
+      const { entity, fill } = await filled();
+      const u = await undo(entity, fill.seq, verAt(fill));
+      expect(u.status).toBe("saved");
+      await agree(await stale(entity, verAt(fill)), u.seq, OTHER);
+    },
+    T,
+  );
+
+  it(
+    "a revoke undone: the hole filled again, by the write that gave the values",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x", c: "m" });
+      const r = await revoke(entity, verAt(e));
+      const back = await undo(entity, r.seq, verAt(r));
+      expect(back.status).toBe("saved");
+      await agree(await stale(entity, verAt(r)), e.seq, USER);
+    },
+    T,
+  );
+
+  it(
+    "the same fill undone twice: the first undo, the second changing no cell",
+    async () => {
+      const { entity, fill } = await filled();
+      const u1 = await undo(entity, fill.seq, verAt(fill));
+      const u2 = await undo(entity, fill.seq, verAt(u1));
+      expect(verAt(u2)).toBe(verAt(u1));
+      await agree(await stale(entity, verAt(fill)), u1.seq, OTHER);
+    },
+    T,
+  );
+
+  it(
+    "a revoke inside a revoke's hole: the later revoke",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x", c: "m" });
+      const r1 = await revoke(entity, verAt(e));
+      const r2 = await revoke(entity, verAt(r1));
+      expect(verAt(r2)).not.toBe(verAt(r1));
+      await agree(await stale(entity, verAt(e)), r2.seq, OTHER);
+    },
+    T,
+  );
+
+  it(
+    "the field never written there, the entity given a value again: no by, and no seq in the details",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x" });
+      const r = await revoke(entity, verAt(e));
+      const refill = await on(
+        entity,
+        { intent: "update", ver: verAt(r), valid_from: from, valid_to: "open", set: { b: "y" } },
+        OTHER,
+      );
+      expect(refill.ops[0]?.fields["b"]).toMatchObject([{ result: "applied" }]);
+      const z = await stale(entity, verAt(r));
+      const part = partsOf(z, "c").find((p) => p["result"] === "candidate") as Record<
+        string,
+        unknown
+      >;
+      expect(part).toBeDefined();
+      expect(part).not.toHaveProperty("by");
+      expect(part["effective"]).toBeNull();
+      const d = await detailOf(part["item"] as string);
+      expect(d.effective).not.toHaveProperty("seq");
+      expect(d.effective.spans.map((x) => x.seq)).toEqual(d.effective.spans.map(() => undefined));
+    },
+    T,
+  );
+
+  it(
+    "a part over stretches given by different writes: the latest of them",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x", c: "m" });
+      const one = await on(
+        entity,
+        {
+          intent: "update",
+          ver: verAt(e),
+          valid_from: "2026-11-05",
+          valid_to: "2026-11-10",
+          set: { c: "n" },
+        },
+        OTHER,
+      );
+      const two = await on(entity, {
+        intent: "update",
+        ver: verAt(one),
+        valid_from: "2026-11-10",
+        valid_to: "open",
+        set: { c: "o" },
+      });
+      // From the insert's version over [11-05, ∞): two stretches, given by one and two.
+      const z = await stale(entity, verAt(e));
+      const part = partsOf(z, "c").find((p) => p["result"] === "candidate") as Record<
+        string,
+        unknown
+      >;
+      expect(part["by"]).toEqual({ seq: two.seq, actor: asActor(USER) });
+      expect(part["effective"]).toBe("o");
+      const d = await detailOf(part["item"] as string);
+      expect({ seq: d.effective.seq, actor: d.effective.actor }).toEqual(part["by"]);
+      expect(d.effective.spans.map((x) => x.seq)).toEqual([one.seq, two.seq]);
+    },
+    T,
+  );
+
+  it(
+    "a part never written anywhere: a candidate without by, the details without seq",
+    async () => {
+      // The entity is only [11-10, 11-15); a revoke from 11-05 on and its undo leave [11-15, ∞)
+      // never written; a write there from the insert's version meets what changed since.
+      const e = await send({
+        sv: 1,
+        ops: [
+          {
+            intent: "insert",
+            table: "entities",
+            valid_from: "2026-11-10",
+            valid_to: "2026-11-15",
+            set: { b: "x" },
+          },
+        ],
+      });
+      const entity = e.ops[0]?.target.entity as string;
+      const r = await revoke(entity, verAt(e));
+      await undo(entity, r.seq, verAt(r));
+      const z = await on(entity, {
+        intent: "update",
+        ver: verAt(e),
+        valid_from: "2026-11-15",
+        valid_to: "2026-11-20",
+        set: { c: "z" },
+      });
+      const part = partsOf(z, "c").find((p) => p["result"] === "candidate") as Record<
+        string,
+        unknown
+      >;
+      expect(part, "a candidate").toBeDefined();
+      expect(part).not.toHaveProperty("by");
+      const d = await detailOf(part["item"] as string);
+      expect(d.effective).not.toHaveProperty("seq");
+    },
+    T,
+  );
+
+  it(
+    "a later op of the same request writes the unit: by is that write, effective its value",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x" });
+      const c1 = await on(
+        entity,
+        {
+          intent: "update",
+          ver: verAt(e),
+          valid_from: "2026-11-05",
+          valid_to: "2026-11-10",
+          set: { c: "c1" },
+        },
+        OTHER,
+      );
+      // From the insert's version, b and c over [11-01, ∞): c stale, c1 met on [11-05, 11-10).
+      const z = await on(entity, {
+        intent: "update",
+        ver: verAt(e),
+        valid_from: "2026-11-01",
+        valid_to: "open",
+        set: { b: "q", c: "z" },
+      });
+      const part = partsOf(z, "c").find((p) => p["result"] === "candidate") as Record<
+        string,
+        unknown
+      >;
+      expect(part["by"]).toEqual({ seq: c1.seq, actor: asActor(OTHER) });
+      expect(part["effective"]).toBe("c1");
+      const d = await detailOf(part["item"] as string);
+      expect(d.effective.seq).toBe(c1.seq);
+    },
+    T,
+  );
+
+  it(
+    "a part on existence: the latest giver of any field (the unit is every field)",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x", c: "m" });
+      const c2 = await on(entity, { intent: "update", ver: verAt(e), set: { c: "c2" } }, OTHER);
+      const z = await on(entity, { intent: "revoke", ver: verAt(e) });
+      const part = (
+        z.ops[0]?.fields["*"] as unknown as Record<string, unknown>[] | undefined
+      )?.find((p) => p["result"] === "candidate") as Record<string, unknown>;
+      expect(part["by"]).toEqual({ seq: c2.seq, actor: asActor(OTHER) });
+      const d = await detailOf(part["item"] as string);
+      expect(d.effective.seq).toBe(c2.seq);
+    },
+    T,
+  );
+
+  it(
+    "a timeless row whose revoke was undone: the undo, as its existence cell says",
+    async () => {
+      const a = await send({ sv: 1, ops: [{ intent: "insert", table: "rows", set: { b: "1" } }] });
+      const row = rowAt(a);
+      const v = await send(
+        { sv: 1, ops: [{ intent: "revoke", table: "rows", row, ver: verAt(a) }] },
+        {
+          actor: OTHER,
+        },
+      );
+      const u = await send(
+        { sv: 1, ops: [{ table: "rows", row, revert: { undo: v.seq }, ver: verAt(v) }] },
+        { actor: OTHER },
+      );
+      expect(u.status).toBe("saved");
+      const z = await send({
+        sv: 1,
+        ops: [{ intent: "update", table: "rows", row, ver: verAt(a), set: { b: "2" } }],
+      });
+      const part = z.ops[0]?.fields["b"] as unknown as Record<string, unknown>;
+      expect(part["result"]).toBe("candidate");
+      expect(part["by"]).toEqual({ seq: u.seq, actor: asActor(OTHER) });
+      const d = await detailOf(part["item"] as string);
+      expect(d.effective.seq).toBe(u.seq);
+    },
+    T,
+  );
+
+  it(
+    "an undo of a whole revoke with an intent: the whole time, not an error",
+    async () => {
+      for (const intent of ["update", "correct"]) {
+        const { e, entity } = await entityWith({ b: intent });
+        const r = await on(entity, { intent: "revoke", ver: verAt(e) }, OTHER);
+        const u = await send(
+          {
+            sv: 1,
+            ops: [
+              {
+                table: "entities",
+                entity,
+                intent,
+                revert: { undo: r.seq },
+                ver: verAt(r),
+                acknowledge: ["overwrite"],
+              },
+            ],
+            idempotency_key: `k-undo-${intent}`,
+          },
+          { actor: OTHER },
+        );
+        expect((u as { refused?: string }).refused, intent).toBeUndefined();
+        expect(u.ops[0]?.fields["*"], intent).toEqual([
+          { result: "applied", valid: { valid_from: null, valid_to: null } },
+        ]);
+      }
+    },
+    T,
+  );
+
+  it(
+    "a table with no required field: a stretch no field has a value on is without a value",
+    async () => {
+      // loose: b over [11-01, 11-10); OTHER clears b there, leaving no field with a value, the
+      // empty cell given by that clearing write.
+      const a = await send({
+        sv: 1,
+        ops: [
+          {
+            intent: "insert",
+            table: "loose",
+            valid_from: "2026-11-01",
+            valid_to: "2026-11-10",
+            set: { b: "x" },
+          },
+        ],
+      });
+      const entity = a.ops[0]?.target.entity as string;
+      const r = await send(
+        {
+          sv: 1,
+          ops: [
+            {
+              table: "loose",
+              entity,
+              intent: "update",
+              ver: verAt(a),
+              valid_from: "2026-11-01",
+              valid_to: "2026-11-10",
+              set: { b: null },
+            },
+          ],
+        },
+        { actor: OTHER },
+      );
+      expect((r as { refused?: string }).refused ?? r.status).toBe("saved");
+      // A revoke from before the clearing meets it on existence.
+      const z = await on(entity, { table: "loose", intent: "revoke", ver: verAt(a) });
+      const part = (
+        z.ops[0]?.fields["*"] as unknown as Record<string, unknown>[] | undefined
+      )?.find((p) => p["result"] === "candidate") as Record<string, unknown>;
+      expect(part["by"]).toEqual({ seq: r.seq, actor: asActor(OTHER) });
+      expect(part["effective"]).toBeNull();
+      const d = await detailOf(part["item"] as string);
+      expect(d.effective).toMatchObject({ seq: r.seq, exists: false });
+      expect(d.effective.spans.map((x) => (x as { values?: unknown }).values)).toEqual(
+        d.effective.spans.map(() => null),
+      );
+    },
+    T,
+  );
+
+  it(
+    "the replay gives the by the first receipt gave",
+    async () => {
+      const { entity, fill } = await filled();
+      const u = await undo(entity, fill.seq, verAt(fill));
+      const params = {
+        sv: 1,
+        ops: [
+          {
+            table: "entities",
+            entity,
+            intent: "update",
+            ver: verAt(fill),
+            valid_from: from,
+            valid_to: "open",
+            set: { c: "z" },
+          },
+        ],
+        idempotency_key: "k-by",
+      };
+      const first = await send(params);
+      const again = await send(params);
+      expect(again.replayed).toBe(true);
+      expect(partsOf(again, "c")).toEqual(partsOf(first, "c"));
+      expect(
+        (partsOf(first, "c").find((p) => p["result"] === "candidate") as Record<string, unknown>)[
+          "by"
+        ],
+      ).toEqual({ seq: u.seq, actor: asActor(OTHER) });
+    },
+    T,
+  );
+});
+
+describe("a revoke of the whole entity: its part on a state table is the whole time", () => {
+  const WHOLE_TIME = { valid_from: null, valid_to: null };
+  it(
+    "applied and as a candidate, each with the whole time; the replay gives the same",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x" });
+      const later = await on(entity, { intent: "update", ver: verAt(e), set: { b: "y" } });
+      const params = (ver: string, key: string) => ({
+        sv: 1,
+        ops: [{ table: "entities", entity, intent: "revoke", ver }],
+        idempotency_key: key,
+      });
+      // From the old version: a candidate over the whole time.
+      const stale = await send(params(verAt(e), "k-whole-1"));
+      expect(stale.ops[0]?.fields["*"]).toEqual([
+        expect.objectContaining({ result: "candidate", valid: WHOLE_TIME }),
+      ]);
+      // From the current one: applied over the whole time.
+      const applied = await send(params(verAt(later), "k-whole-2"));
+      expect(applied.ops[0]?.fields["*"]).toEqual([{ result: "applied", valid: WHOLE_TIME }]);
+      for (const [r, key] of [
+        [stale, "k-whole-1"],
+        [applied, "k-whole-2"],
+      ] as const) {
+        const again = await send(params(key === "k-whole-1" ? verAt(e) : verAt(later), key));
+        expect(again.replayed).toBe(true);
+        expect(again.ops).toEqual(r.ops);
+      }
     },
     T,
   );

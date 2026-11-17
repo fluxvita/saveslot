@@ -186,5 +186,6 @@ export async function writerHadRead(
 }
 
 export * from "./actors.ts";
+export * from "./cells.ts";
 export * from "./closing.ts";
 export * from "./detail.ts";

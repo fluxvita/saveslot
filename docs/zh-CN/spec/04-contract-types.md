@@ -119,8 +119,10 @@ type RecordPoint = Seq | Instant;
 
 /** 业务时间区间，左闭右开。 */
 interface Interval {
-  /** null 只出现在事项区间（ItemTarget.spans）里、表示整段时间：此时 valid_to 也是 null，且 spans 只有这一段
-   *  （整实体撤销成为候选）。读取结果里的行与段、标记里的事项各段总有起点。 */
+  /** null 只出现在两处、表示整段时间：事项区间（ItemTarget.spans，整实体撤销成为候选时 spans 只有这一段），以及
+   *  写入回执里状态类表上作用于整段时间的那一段：整体撤销（不带区间的 revoke），整体撤销的 undo（op 的 intent 可以是
+   *  update 或 correct），以及 include_later 一并回掉、成为候选的整段（applied 与 candidate 都是）；此时 valid_to 也是 null。
+   *  读取结果里的行与段、标记里的事项各段总有起点。 */
   valid_from: BizTime | null;
   valid_to: BizTime | null;        // null = 一直延续
   valid_to_inclusive?: DateStr;    // 只在 date 粒度且 valid_to 非 null 时给：区间里的最后一天
@@ -155,7 +157,7 @@ type UntrustedText = string;
 |---|---|---|
 | 时刻 | RFC 3339，可带偏移 | UTC，固定毫秒精度，以 `Z` 结尾 |
 | 带时区的时刻 `zoned_datetime` | 一个字符串（带偏移与时区名） | `{"instant": <时刻>, "zone": <IANA 时区名>}` |
-| 业务时间区间 | `{valid_from, valid_to}`，开口终点是 `null`；`date` 粒度另给 `valid_to_inclusive`。整段时间（只在事项区间里）：`{valid_from: null, valid_to: null}` | `{"from", "to"}`，开口终点是缺省。整段时间：`{}`（`scope_valid` 唯一没有 `from` 的写法） |
+| 业务时间区间 | `{valid_from, valid_to}`，开口终点是 `null`；`date` 粒度另给 `valid_to_inclusive`。整段时间（只在事项区间与回执里作用于整段时间的那一段：整体撤销、它的 undo、include_later 一并回掉的候选）：`{valid_from: null, valid_to: null}` | `{"from", "to"}`，开口终点是缺省。整段时间：`{}`（`scope_valid` 唯一没有 `from` 的写法） |
 | 整数、小数、数量、日期、布尔、枚举、文本 | 两边相同（整数与小数都是十进制字符串） | 同左 |
 | "存在"（这一行 / 这段是否存在） | 在字段名的位置上写 `"*"`：`fields` 的键、`unit` 与标记里的字段数组 | `"existence"`；事项 `target` 的 `unit` 写 `["existence"]` |
 | 删除的逐行结果 | `result` | `outcome`（`results/<k>/target`），取值相同 |
@@ -1049,10 +1051,13 @@ interface ConflictDetail extends ItemBase {
   target: ItemTarget;
   /** 当前生效方：按事项版本的操作号读这一行当时的状态，限定在事项的各段与冲突单元的字段上（单元是"存在"时给整行的值）。
    *  状态类表上冲突区间内的生效值可以由几次写入分段给出：spans 每段带给出它的写入；
-   *  段内没有任何写入给出状态时（从未写过的无值段）values 为 null，不给 seq、actor；撤销留下的空洞 values 为 null，给那次撤销。
-   *  顶层 seq / actor 是这些段里操作号最大的那次（事件类表与无时间表只有一个）；一段都没有写入给出时不给。
+   *  values 为 null 只用于实体在这一段没有值：从未写过的段不给 seq、actor；有操作让它没值的（撤销留下的空洞，undo 的写回、清空写入或
+   *  take_previous 的写回让必填字段没值；没有必填字段的表上是所有字段都没值），给让这一格没有值的那次操作——以版本表的格为准，
+   *  同一段上已经没值之后再来的回掉不改变它。实体有值而单元字段在这一段从没写过的，是字段为空不是空洞：values 里这个字段为 null，
+   *  这个字段不给出 seq。
+   *  顶层 seq / actor 是这些段里操作号最大的那次（事件类表与无时间表只有一个）；一段都没有操作给出时不给。
    *  撤销被撤回之后"由谁给出"两种表不同：事件类表、无时间表上是那次撤回（它让这一行重新存在）；
-   *  状态类表上是原来给出这一段值的写入（撤回只让那些值重新生效）。 */
+   *  状态类表上是原来给出这一段值的写入（撤回只让那些值重新生效）。不对称来自版本表：撤回撤销在事件类表、无时间表上给"存在"记一格，在状态类表上不记；这里照格走，不另求一致。 */
   effective: { seq?: Seq; actor?: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean };
   candidates: Candidate[];
   /** 成因是 restored_candidate 时：候选原来所在的那个事项。 */
@@ -1259,10 +1264,14 @@ interface OpResult {
   similar_keys?: Array<{ key: EntityKeyText; match: "fold" | "affix" | "edit"; revoked?: true }>;
   /** 逐字段结果。revoke、以及目标是"存在"时键为 "*"。undo 时被跳过的部分不在这里，在 undo.skipped_superseded。
    *  事件类表、无时间表：每个字段一个结果。
-   *  状态类表：每个字段是按区间排好的数组，每段各有结果与区间（通常只有一段；多段的情形：undo / take_previous 写回几段不同的旧值，
+   *  状态类表：每个字段是按区间排好的数组，每段各有结果与区间（noop 的那一段除外：它只说这个字段这次没有变化，日志只记字段、不记区间）
+   *  （通常只有一段；多段的情形：undo / take_previous 写回几段不同的旧值，
    *  佐证的区间里一部分仍同值、一部分已被别人改掉）。
    *  按来源键的 op 在 outcome 为 unchanged、skipped 时不给；重申与清除前提的 op 可以为空。 */
-  fields?: Record<FieldName | "*", FieldResult | Array<FieldResult & { valid: Interval }>>;
+  fields?: Record<
+    FieldName | "*",
+    FieldResult | Array<Extract<FieldResult, { result: "noop" }> | (Exclude<FieldResult, { result: "noop" }> & { valid: Interval })>
+  >;
   /** 状态类表：每个字段解析出的区间。一个字段有几项时是它们的整体范围，逐项的区间在 fields 的数组里。 */
   resolved?: Record<FieldName | "*", ResolvedInterval>;
   undo?: {
@@ -1303,7 +1312,7 @@ type FieldResult =
       valid?: Interval;          // 候选的区间
       effective: Value | null;   // 当前生效值
       current_ver: Ver;          // 当前生效版本。不算读到，不参与兜底
-      by: { seq: Seq; actor: Actor };            // 是谁的哪次写入改过它：候选区间里各段给出状态的写入（空洞处是留下它的那次撤销；从未写过的段不算）中操作号最大的那次（同 ConflictDetail.effective）；effective 就是这次写入在这个字段上给的值，by 是撤销时 effective 为 null；各段的全貌见 ConflictDetail.effective.spans
+      by?: { seq: Seq; actor: Actor };           // 是谁的哪次写入改过它，按这次请求结束时的现状（与 effective、current_ver 同一时刻）：候选区间里各段给出状态的操作（有出处的格——值，或被清空——的来源；没值处是让这一格没有值的那次操作——撤销、undo 的写回、清空写入或 take_previous 的写回，以格为准；从未写过的段不算；一段都不算时不给）中操作号最大的那次（同 ConflictDetail.effective）；effective 是 by 所在那一段（by 给出了几段时取时间上最早的一段）上这个字段现在的值：冲突单元只有这个字段时就是 by 那次写入给的值，单元含多个字段（如"存在"）时 by 是单元里最晚的给出者，effective 仍是这个字段的值，两者可以出自不同的写入；那一段没值、by 是撤销或单元是"存在"本身时 effective 为 null；各段的全貌见 ConflictDetail.effective.spans
       previous: ConflictDetail["previous"];
       impact?: AwaitingImpact }                  // 候选若生效会属高影响时
   | { result: "awaiting"; item: ItemId; impact: AwaitingImpact }
