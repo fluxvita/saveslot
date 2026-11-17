@@ -49,6 +49,7 @@ import {
 } from "./pipeline.ts";
 import { tableShape, todayIn, writable } from "./plan.ts";
 import { readSlots, readUnderAnotherTask, restoreCount, type SlotRow } from "./reads.ts";
+import type { PendingRef } from "./receipt.ts";
 import { itemVer, readReceipt, type WriteReceipt, withDerived } from "./receipt.ts";
 import { encodeResolution, type RowContext } from "./record.ts";
 import { findRequest, requestKeyOf } from "./request-key.ts";
@@ -56,8 +57,8 @@ import { evidenceSource } from "./sources.ts";
 
 /** A decision's result (04-contract-types §5.2 `ResolveResult`). */
 export interface ResolveReceipt {
-  readonly id: string;
-  readonly type: string;
+  readonly id: ItemId;
+  readonly type: ItemType;
   readonly decision: ResolveDecision;
   /** The item's version after the decision. */
   readonly item_ver: string;
@@ -91,10 +92,13 @@ const LATER: Readonly<Record<string, readonly ResolveDecision[]>> = {
   schema_change: ["confirm", "reject"],
 };
 
+/** An item's type (09-event-format §5.8). */
+type ItemType = PendingRef["type"];
+
 /** A pending item as `pending_items` keeps it. */
 interface ItemRow {
   readonly id: ItemId;
-  readonly type: string;
+  readonly type: ItemType;
   readonly slot: string | null;
   readonly table: string | null;
   readonly row: string | null;
@@ -123,7 +127,7 @@ async function itemRow(tx: ReadTx, id: string): Promise<ItemRow | undefined> {
     ? undefined
     : {
         id: x.id as ItemId,
-        type: x.type,
+        type: x.type as ItemType,
         slot: x.slot_id,
         table: x.target_table,
         row: x.target_row,

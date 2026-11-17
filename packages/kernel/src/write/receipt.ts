@@ -15,11 +15,20 @@
 import type {
   CompiledBaseTable,
   CompiledSchema,
+  DateStr,
   EntityId,
+  EVENT_DECISIONS,
+  EVENT_ITEM_TYPES,
   FieldId,
   FieldValue,
+  Intent,
+  ItemCreatedReason,
+  ItemId,
   OpNumber,
+  RowId,
+  SupersededReason,
 } from "@fluxvita/saveslot-contract-core";
+import type { ReadId } from "../audit/index.ts";
 import type { DerivedWrite } from "../derive/index.ts";
 import { type Limit, type RowState, stateFromRecord } from "../judge/index.ts";
 import { type ActorAsOf, actorsAsOf } from "../log/index.ts";
@@ -32,6 +41,7 @@ import {
   itemVer,
   type Naming,
 } from "../pending/index.ts";
+import type { WriteWarning } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { type Interval as Stretch, WHOLE } from "../time/index.ts";
 import { type EntityKeyText, keyFields, keyOf } from "./keys.ts";
@@ -47,7 +57,7 @@ export interface FieldResult {
   readonly no_value?: true;
   readonly uncovered?: true;
   /** Candidate or awaiting: the pending item. */
-  readonly item?: string;
+  readonly item?: ItemId;
   /** Candidate: the value in effect, the row's version, who gave it, the merge base's state. */
   readonly effective?: FieldValue;
   readonly current_ver?: string;
@@ -71,7 +81,7 @@ export interface Interval {
   readonly valid_from: string | null;
   readonly valid_to: string | null;
   /** Date granularity, with an end: the interval's last day. */
-  readonly valid_to_inclusive?: string;
+  readonly valid_to_inclusive?: DateStr;
 }
 
 /**
@@ -100,12 +110,12 @@ export interface Impact {
 export interface OpReceipt {
   readonly target: {
     readonly table: string;
-    readonly row?: string;
-    readonly entity?: string;
+    readonly row?: RowId;
+    readonly entity?: EntityId;
     /** An op by `entity_key`: the entity's key, by field name (04-contract-types `TargetRef`). */
     readonly entity_key?: Readonly<Record<string, FieldValue>>;
   };
-  readonly intent: string;
+  readonly intent: Intent;
   readonly ver?: string;
   readonly created_entity?: true;
   /**
@@ -131,17 +141,17 @@ export interface OpReceipt {
 }
 
 export interface PendingRef {
-  readonly id: string;
-  readonly type: string;
-  readonly reason: string;
+  readonly id: ItemId;
+  readonly type: (typeof EVENT_ITEM_TYPES)[number];
+  readonly reason: ItemCreatedReason;
   /** Opened by this write, its contents given whole: its version (counts as read). */
   readonly item_ver?: string;
   readonly merged?: true;
   /** An open item whose contents this write changed: refreshed, still open. */
   readonly refreshed?: true;
   /** Replays only: the item's state now, and its decision when resolved. */
-  readonly state?: string;
-  readonly decision?: string;
+  readonly state?: "open" | "resolved" | "superseded";
+  readonly decision?: (typeof EVENT_DECISIONS)[number];
 }
 
 /** 04-contract-types `DerivedChange`: one field of one derived row this write changed. */
@@ -194,6 +204,15 @@ export function withDerived(
   return { ...receipt, derived: all.slice(0, DERIVED_SHOWN), derived_total: all.length };
 }
 
+/** Where a fallback `ver` / `sv` came from (04-contract-types §7 `FallbackOrigin`). */
+export type FallbackOrigin = { readonly read: ReadId } | { readonly from_write: number };
+
+/** A warning of the receipt: normalization's, or a `ver` / `sv` taken by fallback (04-contract §2). */
+export type ReceiptWarning =
+  | WriteWarning
+  | ({ readonly code: "ver_fallback"; readonly op: number; readonly ver: string } & FallbackOrigin)
+  | ({ readonly code: "sv_fallback"; readonly sv: number } & FallbackOrigin);
+
 export interface WriteReceipt {
   readonly status: "saved" | "pending";
   readonly sv: number;
@@ -208,18 +227,14 @@ export interface WriteReceipt {
   readonly derived_total: number;
   readonly pending: readonly PendingRef[];
   readonly superseded: readonly {
-    readonly item: string;
-    readonly type: string;
-    readonly reason: string;
+    readonly item: ItemId;
+    readonly type: (typeof EVENT_ITEM_TYPES)[number];
+    readonly reason: SupersededReason;
   }[];
   readonly replayed?: true;
   /** A replay's parts the log cannot give back (04-contract §14 «重放返回什么»). */
   readonly omitted?: readonly ("existing_keys" | "derived_values")[];
-  readonly warnings?: readonly {
-    readonly code: string;
-    readonly op?: number;
-    readonly field?: string;
-  }[];
+  readonly warnings?: readonly ReceiptWarning[];
 }
 
 type Span = { readonly from: string | null; readonly to: string | null };
@@ -232,8 +247,8 @@ const overlaps = (a: Span, b: Span) =>
   (b.to === null || a.from === null || a.from < b.to);
 
 /** The day before a date (`YYYY-MM-DD`). */
-const dayBefore = (d: string) =>
-  new Date(Date.parse(`${d}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+const dayBefore = (d: string): DateStr =>
+  new Date(Date.parse(`${d}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10) as DateStr;
 
 /** A span as the contract's interval: `valid_to_inclusive` on date tables with an end. */
 function intervalOut(v: Span, byDate: boolean): Interval {
@@ -399,9 +414,9 @@ export async function readReceipt(
   // The writers of what may be a candidate's `by` (read below, from the row as judged).
   const actors = new Map<number, string>();
   // Which pending item each candidate or awaiting part went to.
-  const itemOf = new Map<string, string>();
+  const itemOf = new Map<string, ItemId>();
   for (const e of itemEvents) {
-    const t = e.blocks["target"] as { item: string; type?: string; origin_event: number };
+    const t = e.blocks["target"] as { item: ItemId; type?: string; origin_event: number };
     for (const [p, c] of Object.entries(e.blocks)) {
       if (!p.startsWith("candidates/")) continue;
       const cand = c as {
@@ -429,7 +444,7 @@ export async function readReceipt(
       table: string;
       row?: string;
       entity?: string;
-      intent: string;
+      intent: Intent;
       ver?: { op: number };
       by_entity_key?: true;
       created?: true;
@@ -644,7 +659,7 @@ export async function readReceipt(
     ops.push({
       target: {
         table: `${o.slotName}.${table.name}`,
-        ...(isState ? { entity: rowId } : { row: rowId }),
+        ...(isState ? { entity: rowId as EntityId } : { row: rowId as RowId }),
         ...(key !== undefined
           ? {
               entity_key: Object.fromEntries(
@@ -669,15 +684,20 @@ export async function readReceipt(
   ];
   const info = new Map<
     string,
-    { state: string; decision: string | null; type: string; reason: string | null }
+    {
+      state: NonNullable<PendingRef["state"]>;
+      decision: NonNullable<PendingRef["decision"]> | null;
+      type: PendingRef["type"];
+      reason: PendingRef["reason"] | null;
+    }
   >();
   if (touched.length > 0) {
     const r = await tx.query<{
-      id: string;
-      state: string;
-      decision: string | null;
-      type: string;
-      reason: string | null;
+      id: ItemId;
+      state: NonNullable<PendingRef["state"]>;
+      decision: NonNullable<PendingRef["decision"]> | null;
+      type: PendingRef["type"];
+      reason: PendingRef["reason"] | null;
     }>(
       `SELECT p.id, p.state, p.decision, p.type,
          (SELECT c.body::jsonb ->> 'reason' FROM events e JOIN content c ON c.seq = e.seq AND c.path = 'target'
@@ -688,8 +708,8 @@ export async function readReceipt(
     for (const x of r.rows) info.set(x.id, x);
   }
   const pending: PendingRef[] = [];
-  const superseded: { item: string; type: string; reason: string }[] = [];
-  for (const id of touched) {
+  const superseded: WriteReceipt["superseded"][number][] = [];
+  for (const id of touched as ItemId[]) {
     const x = info.get(id);
     const mine = [...itemEvents, ...settled].filter(
       (e) => (e.blocks["target"] as { item: string }).item === id,
@@ -700,7 +720,7 @@ export async function readReceipt(
       superseded.push({
         item: id,
         type: x?.type ?? "conflict",
-        reason: (gone.blocks["target"] as { reason?: string }).reason ?? "overwritten",
+        reason: (gone.blocks["target"] as { reason?: SupersededReason }).reason ?? "overwritten",
       });
       continue;
     }

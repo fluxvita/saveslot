@@ -13,13 +13,18 @@
 import type {
   CompiledBaseField,
   CompiledDerivedTable,
+  CompiledPrecision,
   CompiledSchema,
   CompiledTable,
+  FieldType,
   Instant,
   JsonValue,
+  PolicyBlock,
   PrincipalId,
+  RefTarget,
   SlotId,
   TableId,
+  TimeDependency,
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize, SELFCHECK_TASK } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry, ReadId } from "../audit/index.ts";
@@ -75,14 +80,39 @@ export interface CatalogTable {
   readonly external_key?: readonly string[];
   readonly duplicate_keys?: readonly (readonly string[])[];
   readonly together?: readonly (readonly string[])[];
-  readonly fields: readonly Record<string, unknown>[];
+  readonly fields: readonly CatalogField[];
   readonly rule?: {
     readonly id: string;
     readonly version: number;
     readonly sql: string;
-    readonly time_dependency: string;
+    readonly time_dependency: TimeDependency;
     readonly depends_on: readonly string[];
   };
+}
+
+/** One field of a catalog table (04-contract-types §4.2 `CatalogField`). */
+export interface CatalogField {
+  readonly name: string;
+  readonly type: FieldType;
+  readonly description: string;
+  readonly required?: true;
+  readonly unit?: string;
+  readonly min?: string;
+  readonly max?: string;
+  readonly values?: readonly string[];
+  readonly ref?: { readonly table: string; readonly target: RefTarget };
+  readonly precision?: CompiledPrecision;
+}
+
+/** A slot's policy in effect (04-contract-types §8.2 `SlotPolicy`), names for IDs. */
+export interface SlotPolicy
+  extends Pick<PolicyBlock, "policy_version" | "effective_value_rule" | "rank" | "auto_apply"> {
+  readonly slot: string;
+  readonly high_impact?: readonly Obj[];
+  readonly user_session_only?: readonly unknown[];
+  readonly set_by: Actor;
+  readonly set_at: string;
+  readonly seq: number;
 }
 
 export interface CatalogTablesResult {
@@ -95,7 +125,7 @@ export interface CatalogSchemaResult {
   readonly slot: string;
   readonly sv: number;
   readonly document: Record<string, unknown>;
-  readonly policy: Record<string, unknown>;
+  readonly policy: SlotPolicy;
 }
 
 export type CatalogResult = CatalogListResult | CatalogTablesResult | CatalogSchemaResult;
@@ -149,7 +179,7 @@ function tableOf(slot: VisibleSlot, t: CompiledTable, sql: string | undefined): 
   const name = (tableId: string, fieldId: string) =>
     all.find((x) => x.id === tableId)?.fields.find((f) => f.id === fieldId)?.name ?? fieldId;
   const own = (fieldId: string) => name(t.id, fieldId);
-  const field = (f: CompiledTable["fields"][number]): Record<string, unknown> => {
+  const field = (f: CompiledTable["fields"][number]): CatalogField => {
     const b = f as CompiledBaseField & {
       required?: true;
       min?: string;
@@ -234,7 +264,7 @@ function ruleTexts(document: JsonValue, compiled: CompiledSchema): Map<string, s
 }
 
 /** The slot's policy in effect (04-contract-types §8.2), names for IDs. */
-async function policyOf(tx: ReadTx, slot: VisibleSlot): Promise<Record<string, unknown>> {
+async function policyOf(tx: ReadTx, slot: VisibleSlot): Promise<SlotPolicy> {
   const r = await tx.query<{ seq: unknown; at: string; actor: string; body: string | null }>(
     `SELECT e.seq, e.at, e.actor, c.body FROM slots s
      JOIN events e ON e.seq = s.policy_seq
@@ -245,7 +275,7 @@ async function policyOf(tx: ReadTx, slot: VisibleSlot): Promise<Record<string, u
   const [row] = r.rows;
   if (row === undefined || row.body === null)
     throw new ReadError("internal", "the slot's policy is missing");
-  const p = JSON.parse(row.body) as Record<string, unknown>;
+  const p = JSON.parse(row.body) as PolicyBlock & Record<string, unknown>;
   const actor = (await actors(tx, [row.actor])).get(row.actor) as Actor;
   const op = await tx.query<{ op: unknown }>("SELECT op FROM events WHERE seq = $1", [
     Number(row.seq),
@@ -255,10 +285,10 @@ async function policyOf(tx: ReadTx, slot: VisibleSlot): Promise<Record<string, u
   const only = Array.isArray(p["user_session_only"]) ? (p["user_session_only"] as unknown[]) : [];
   return {
     slot: slot.name,
-    policy_version: p["policy_version"],
-    effective_value_rule: p["effective_value_rule"],
-    rank: p["rank"],
-    auto_apply: p["auto_apply"],
+    policy_version: p.policy_version,
+    effective_value_rule: p.effective_value_rule,
+    rank: p.rank,
+    auto_apply: p.auto_apply,
     ...(high.length > 0
       ? { high_impact: high.map((h) => ({ ...h, table: tableName(get(h, "table")) })) }
       : {}),

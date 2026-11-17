@@ -14,7 +14,6 @@
 
 import type {
   Instant,
-  JsonValue,
   OpNumber,
   PrincipalId,
   Seq,
@@ -39,6 +38,12 @@ export const READ_OPERATIONS = [
   "deletion_preview",
 ] as const;
 export type ReadOperation = (typeof READ_OPERATIONS)[number];
+
+/** The business time a read asked about: a point, or a stretch with an open end as `null`. */
+export type ReadValid = {
+  readonly at?: string;
+  readonly during?: readonly [string, string | null];
+};
 
 /** A version read: (operation number, restore count). */
 export interface ReadVersion {
@@ -86,7 +91,8 @@ export interface ReadEntry {
   /** Structural fingerprint: no caller values (04-write-and-read «读取记录里记什么形状»). */
   readonly shape?: string;
   /** The business time condition: the only caller-given value kept. */
-  readonly valid?: JsonValue;
+  /** The business time the read asked about (04-contract-types §8.3 `ReadRecord.valid`). */
+  readonly valid?: ReadValid;
   /** A source read in full. */
   readonly source?: SourceId;
   /** Rows read with their versions: one per entity on state tables. */

@@ -7,7 +7,7 @@
 
 import type { Instant, JsonValue, TableId } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
-import type { ReadEntry, ReadRow } from "../audit/index.ts";
+import type { ReadEntry, ReadRow, ReadValid } from "../audit/index.ts";
 import { get, has, isObj, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { queryDerived } from "./derived.ts";
@@ -47,7 +47,7 @@ export function fingerprint(plan: QueryPlan, params: Obj): string {
 }
 
 /** The business time a read is recorded with (state tables always: "now" is a point too). */
-function validRead(plan: QueryPlan): JsonValue | undefined {
+function validRead(plan: QueryPlan): ReadValid | undefined {
   if (plan.time.kind === "during") return { during: [plan.time.from, plan.time.to] };
   if (plan.kind === "state") return { at: plan.time.point };
   return undefined;

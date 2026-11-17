@@ -41,8 +41,8 @@ async function slotNames(
   };
 }
 
-/** 04-contract-types §8.1 `Connection`. */
-function connectionOut(c: ConnectionRecord, names: Map<string, string>) {
+/** A connection as the contract gives it (04-contract-types §8.1 `Connection`). */
+export function connectionOut(c: ConnectionRecord, names: Map<string, string>) {
   return {
     id: c.id,
     name: c.name,

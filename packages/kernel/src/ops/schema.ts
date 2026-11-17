@@ -17,7 +17,13 @@
 // the write side.
 
 import { createHash } from "node:crypto";
-import type { CompiledSchema, JsonValue } from "@fluxvita/saveslot-contract-core";
+import type {
+  CompiledSchema,
+  DraftId,
+  JsonValue,
+  SchemaChangeRecord,
+  SlotId,
+} from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import { ApplyError, applyEvents, eventsOf } from "../apply/index.ts";
 import { appendOperation, type NewEvent } from "../log/index.ts";
@@ -45,13 +51,21 @@ export class SchemaDraftError extends Error {
   }
 }
 
+/** 04-contract-types §5.3 `SchemaChange`: the logged change record, its target by names. */
+export interface SchemaChange extends Omit<SchemaChangeRecord, "target"> {
+  readonly target:
+    | { readonly slot: true }
+    | { readonly table: string; readonly field?: string; readonly rule?: true };
+}
+
 export interface SchemaDraftReceipt {
-  readonly draft: string;
+  readonly draft: DraftId;
   readonly slot: string;
-  readonly slot_id: string;
+  readonly slot_id: SlotId;
   readonly target_sv: 1;
-  readonly document: JsonValue;
-  readonly changes: readonly Record<string, unknown>[];
+  /** The document with IDs and inferences filled in (04-contract-types §5.3 `SchemaDocument`). */
+  readonly document: Readonly<Record<string, unknown>>;
+  readonly changes: readonly SchemaChange[];
   readonly impact: {
     readonly rows_affected: 0;
     readonly derived_changed: readonly never[];
@@ -61,7 +75,7 @@ export interface SchemaDraftReceipt {
   readonly sv: 1;
   readonly replayed?: true;
   /** 04-contract-types §7 `Warning`: the code and the table it is about. */
-  readonly warnings?: readonly { readonly code: string; readonly table: string }[];
+  readonly warnings?: readonly ReturnType<typeof compiledWarnings>[number][];
 }
 
 /**
@@ -100,7 +114,7 @@ function tag(params: Record<string, unknown>, key: string): string | undefined {
 
 const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 const newSlotId = (): `sl_${string}` => `sl_${randomCrockford(16)}`;
-const newDraftId = () => `d_${randomCrockford(16)}`;
+const newDraftId = (): DraftId => `d_${randomCrockford(16)}`;
 
 /** The highest number of an ID like `t12` / `r3` among `ids`. */
 const highest = (ids: readonly string[], prefix: string) =>
@@ -135,25 +149,25 @@ async function numbering(tx: ReadTx) {
 
 /** The receipt of a slot's creation, from what was logged (the same for a write and a replay). */
 function receiptOf(
-  draft: string,
+  draft: DraftId,
   document: JsonValue,
   compiled: CompiledSchema,
-  changes: readonly Record<string, unknown>[],
+  changes: readonly SchemaChangeRecord[],
   replayed: boolean,
 ): SchemaDraftReceipt {
   const warnings = compiledWarnings(compiled);
-  const name = (id: unknown) => compiled.tables.find((t) => t.id === id)?.name ?? id;
+  const name = (id: string) => compiled.tables.find((t) => t.id === id)?.name ?? id;
   return {
     draft,
     slot: compiled.name,
     slot_id: compiled.slot,
     target_sv: 1,
-    document: filledDocument(document, compiled) as JsonValue,
+    document: filledDocument(document, compiled),
     // Names for IDs (09 §5.5: the event's `changes` hold IDs).
-    changes: changes.map((c) => {
-      const t = c["target"] as Record<string, unknown>;
-      return { ...c, target: own(t, "table") ? { ...t, table: name(t["table"]) } : t };
-    }),
+    changes: changes.map((c) => ({
+      ...c,
+      target: "table" in c.target ? { ...c.target, table: name(c.target.table) } : c.target,
+    })),
     impact: { rows_affected: 0, derived_changed: [], consumers: [] },
     outcome: "applied",
     sv: 1,
@@ -173,10 +187,12 @@ async function replay(tx: ReadTx, op: number): Promise<SchemaDraftReceipt> {
     const x = r.rows.find((y) => y.type === type && y.path === path);
     return x?.body == null ? undefined : (JSON.parse(x.body) as JsonValue);
   };
-  const target = block("schema.draft_submitted", "target") as { draft_id: string } | undefined;
+  const target = block("schema.draft_submitted", "target") as { draft_id: DraftId } | undefined;
   const document = block("schema.draft_submitted", "draft");
   const compiled = block("schema.compiled", "compiled") as unknown as CompiledSchema | undefined;
-  const changes = block("schema.compiled", "changes") as Record<string, unknown>[] | undefined;
+  const changes = block("schema.compiled", "changes") as unknown as
+    | SchemaChangeRecord[]
+    | undefined;
   if (
     target === undefined ||
     document === undefined ||
@@ -345,12 +361,6 @@ export async function schemaDraft(
         });
       throw e;
     }
-    return receiptOf(
-      draft,
-      document as JsonValue,
-      compiled,
-      result.changes as unknown as Record<string, unknown>[],
-      false,
-    );
+    return receiptOf(draft, document as JsonValue, compiled, result.changes, false);
   });
 }

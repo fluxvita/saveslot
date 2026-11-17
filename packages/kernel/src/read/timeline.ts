@@ -309,10 +309,10 @@ export async function timelineInTx(
     const removed = s.state === "removed";
     const text = texts.get(seq);
     return {
-      id: s.id,
-      kind: s.kind,
+      id: s.id as SourceRef["id"],
+      kind: s.kind as SourceRef["kind"],
       ...(correction ? { correction: true as const } : {}),
-      ...(s.level !== null ? { level: s.level } : {}),
+      ...(s.level !== null ? { level: s.level as NonNullable<SourceRef["level"]> } : {}),
       ...(text !== undefined && !removed ? { text } : {}),
       ...(removed ? { removed: true as const } : {}),
     };
@@ -343,14 +343,17 @@ export async function timelineInTx(
   const date = t.time.type === "state" && t.time.granularity === "date";
   const entries: TimelineEntry[] = events.map((e) => {
     const head = (e.blocks["target"]?.body ?? {}) as Record<string, unknown>;
-    const intent = String(head["intent"] ?? "");
+    const intent = String(head["intent"] ?? "") as TimelineEntry["intent"];
     const correction = intent === "correct";
     const revert = e.blocks["revert"]?.body as Record<string, unknown> | undefined;
     const via: TimelineEntry["via"] =
       head["cause"] === "resolve"
         ? {
             resolve: head["item"] as ItemId,
-            decision: decisions.get(head["item"] as string) ?? "",
+            decision: (decisions.get(head["item"] as string) ?? "") as Extract<
+              NonNullable<TimelineEntry["via"]>,
+              { decision: unknown }
+            >["decision"],
           }
         : revert !== undefined && typeof revert["before_op"] === "number"
           ? { undo: revert["before_op"] as never }
@@ -386,7 +389,7 @@ export async function timelineInTx(
       const body = (block.body ?? {}) as Record<string, unknown>;
       const rows = items.get(itemKey(e.seq, fieldId, k)) ?? [];
       const latest = rows[0];
-      const status = latest?.status ?? String(body["status"] ?? "");
+      const status = (latest?.status ?? String(body["status"] ?? "")) as TimelineField["result"];
       // The item's interval: the latest given (source table), else the span block.
       let valid: Span | undefined;
       if (state) {

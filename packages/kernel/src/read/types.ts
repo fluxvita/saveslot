@@ -5,10 +5,16 @@ import type {
   BizPoint,
   DateStr,
   EntityId,
+  EVENT_DECISIONS,
+  FieldStatus,
   FieldValue,
   ItemId,
   RowId,
   Seq,
+  SourceId,
+  SourceKind,
+  SourceLevel,
+  VersionIntent,
 } from "@fluxvita/saveslot-contract-core";
 import { echoName, echoPath } from "../request/index.ts";
 
@@ -155,10 +161,10 @@ export interface Actor {
 
 /** §4.5 `SourceRef`. */
 export interface SourceRef {
-  readonly id: string;
-  readonly kind: string;
+  readonly id: SourceId;
+  readonly kind: SourceKind;
   readonly correction?: true;
-  readonly level?: string;
+  readonly level?: SourceLevel;
   readonly literal?: "hit" | "miss" | "na";
   readonly text?: string;
   readonly removed?: true;
@@ -166,7 +172,8 @@ export interface SourceRef {
 
 /** §4.5 `TimelineField`. */
 export interface TimelineField {
-  readonly result: string;
+  /** §5.1 `TimelineResultCode`. */
+  readonly result: FieldStatus | "dropped";
   readonly no_value?: true;
   readonly uncovered?: true;
   readonly before?: FieldValue;
@@ -184,8 +191,10 @@ export interface TimelineEntry {
   readonly seq: Seq;
   readonly recorded_at: string;
   readonly actor: Actor;
-  readonly intent: string;
-  readonly via?: { readonly resolve: ItemId; readonly decision: string } | { readonly undo: Seq };
+  readonly intent: VersionIntent;
+  readonly via?:
+    | { readonly resolve: ItemId; readonly decision: (typeof EVENT_DECISIONS)[number] }
+    | { readonly undo: Seq };
   readonly valid?: Interval;
   readonly fields: Readonly<Record<string, TimelineField | readonly TimelineField[]>>;
 }

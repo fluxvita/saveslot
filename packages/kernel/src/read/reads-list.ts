@@ -3,9 +3,9 @@
 // versions read (at most 50 a read, with the count), tables recorded at table level, the business
 // time asked. Versions, never values. The ops layer writes the buffered reads first.
 
-import type { JsonValue } from "@fluxvita/saveslot-contract-core";
+import type { EntityId, RowId, SourceId } from "@fluxvita/saveslot-contract-core";
 import { isId } from "@fluxvita/saveslot-contract-core";
-import type { ReadEntry } from "../audit/index.ts";
+import type { ReadEntry, ReadOperation, ReadValid } from "../audit/index.ts";
 import { fold, get, has, instantText, isObj, keysOf, parseDateTime } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
@@ -26,19 +26,19 @@ export interface ReadsListResult {
     readonly at: string;
     readonly actor: Actor;
     readonly task?: string;
-    readonly operation: string;
+    readonly operation: ReadOperation;
     readonly selfcheck?: true;
     readonly slot?: string;
     readonly sv?: number;
     readonly table?: string;
     readonly rows?: readonly {
-      readonly target: { readonly table: string; readonly row?: string; readonly entity?: string };
+      readonly target: { readonly table: string; readonly row?: RowId; readonly entity?: EntityId };
       readonly seq: number;
     }[];
     readonly rows_total?: number;
     readonly coarse?: readonly { readonly table: string; readonly pos: number }[];
-    readonly valid?: JsonValue;
-    readonly source?: string;
+    readonly valid?: ReadValid;
+    readonly source?: SourceId;
   }[];
 }
 
@@ -158,7 +158,7 @@ export async function readsListInTx(
       ...(x["slot_id"] !== null ? { slot: x["slot_id"] as never } : {}),
       ...(x["sv"] !== null ? { sv: Number(x["sv"]) } : {}),
       ...(x["table_id"] !== null ? { table: x["table_id"] as never } : {}),
-      ...(x["valid"] !== null ? { valid: JSON.parse(String(x["valid"])) as JsonValue } : {}),
+      ...(x["valid"] !== null ? { valid: JSON.parse(String(x["valid"])) as ReadValid } : {}),
       ...(x["source_id"] !== null ? { source: x["source_id"] as never } : {}),
       rows: mine
         .filter((r) => r.target !== null)
@@ -249,7 +249,9 @@ export async function readsListInTx(
               rows: shown.map((r) => ({
                 target: {
                   table: tn(r.table),
-                  ...(r.target.startsWith("e_") ? { entity: r.target } : { row: r.target }),
+                  ...(r.target.startsWith("e_")
+                    ? { entity: r.target as EntityId }
+                    : { row: r.target as RowId }),
                 },
                 seq: Number(r.ver?.op ?? 0),
               })),

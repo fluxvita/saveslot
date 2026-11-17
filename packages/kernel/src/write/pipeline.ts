@@ -41,7 +41,7 @@ import {
   type TableId,
 } from "@fluxvita/saveslot-contract-core";
 import { ApplyError } from "../apply/index.ts";
-import { lastRead, type ReadBuffer, type ReadId } from "../audit/index.ts";
+import { lastRead, type ReadBuffer } from "../audit/index.ts";
 import {
   awaitingImpact,
   conflictImpact,
@@ -70,7 +70,6 @@ import {
   normalizeWrite,
   type RequestError,
   resolveWriteSlot,
-  type WriteWarning,
 } from "../request/index.ts";
 import type { Tx } from "../store/ports.ts";
 import { type IntervalSet, meet, WHOLE } from "../time/index.ts";
@@ -99,6 +98,7 @@ import {
   svFromWrite,
   verFromWrite,
 } from "./reads.ts";
+import type { FallbackOrigin, ReceiptWarning } from "./receipt.ts";
 import { readReceipt, type WriteReceipt, withDerived } from "./receipt.ts";
 import { decodeRecords, encodeOp, type RowContext, type StoredEvent } from "./record.ts";
 import { findRequest, requestKeyOf } from "./request-key.ts";
@@ -126,14 +126,7 @@ export interface WriteInput {
 
 export const RULESET = 1;
 
-/** Where a `ver` or `sv` taken by fallback came from: a read, or the caller's own write. */
-export type FallbackOrigin = { readonly read: ReadId } | { readonly from_write: number };
-
-/** A warning of the receipt: normalization's, or a `ver` / `sv` taken by fallback (04-contract §2). */
-export type ReceiptWarning =
-  | WriteWarning
-  | ({ readonly code: "ver_fallback"; readonly op: number; readonly ver: string } & FallbackOrigin)
-  | ({ readonly code: "sv_fallback"; readonly sv: number } & FallbackOrigin);
+export type { FallbackOrigin, ReceiptWarning };
 
 /**
  * The version a request left out (04-contract §2 «兜底»): the latest this connection read, under
