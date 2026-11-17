@@ -13,6 +13,9 @@ import { health } from "./local-request.ts";
 import { lockDir, runDir, runService, socketFile } from "./service.ts";
 import { TEXTS } from "./texts.ts";
 
+/** Running as root, whom the permission bits do not bind (see the case that uses it). */
+const AS_ROOT = process.getuid?.() === 0;
+
 const T = 120_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -94,7 +97,8 @@ describe("start on a home it cannot use: a code and an exit, never a throw or a 
     T,
   );
 
-  it(
+  // Root reads control/ whatever its mode: this case is of a user the bits bind, skipped as root.
+  it.skipIf(AS_ROOT)(
     "control/ cannot be read",
     async () => {
       const home = await freshHome();

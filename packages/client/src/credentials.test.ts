@@ -8,6 +8,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CredentialError, resolveCredential, sessionFile } from "./credentials.ts";
 
+/** Running as root, whom the permission bits do not bind (see the cases that use it). */
+const AS_ROOT = process.getuid?.() === 0;
+
 // A hook run right after the session file is opened, to change what is at its path then.
 const hooks = vi.hoisted(() => ({ afterOpen: undefined as (() => Promise<void>) | undefined }));
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -170,13 +173,18 @@ describe("the session file", () => {
     expect(await refusal()).toBe("permissions");
   });
 
-  it.each([0o200, 0o000])("is refused when this user cannot read it (%o)", async (mode) => {
-    await initHome();
-    await chmod(sessionFile(home), mode);
-    expect(await refusal()).toBe("permissions");
-  });
+  // Root reads and searches whatever the mode bits say: these cases are of a user they bind, and
+  // are skipped when run as root (as in a container).
+  it.skipIf(AS_ROOT).each([0o200, 0o000])(
+    "is refused when this user cannot read it (%o)",
+    async (mode) => {
+      await initHome();
+      await chmod(sessionFile(home), mode);
+      expect(await refusal()).toBe("permissions");
+    },
+  );
 
-  it.each([
+  it.skipIf(AS_ROOT).each([
     ["credentials/", () => join(home, "credentials")],
     ["the home", () => home],
   ])("is refused when %s cannot be searched (0000)", async (_, dir) => {
