@@ -20,8 +20,11 @@
 // exited: a probe takes the lock for a moment, and a service starting in that moment (one an MCP
 // bridge starts, 06-cli §3 step 3) fails with `store_locked`. What is left of that window: a
 // service starting just when `stop` or `status` finds no answer on the socket, or just after the
-// process `stop` waited for has exited. Such a start fails and is not retried by `start`; the
-// bridge that started it starts it again on its next request.
+// process `stop` waited for has exited. Such a start fails and is not retried.
+//
+// `start` itself probes the lock once, after the process it spawned has exited without `/health`
+// answering: held, another process is starting (a second start, or a bridge, at the same moment),
+// and that one is waited for; the probe fails at once then, and takes nothing from it.
 
 import { spawn } from "node:child_process";
 import { closeSync, fchmodSync, openSync } from "node:fs";
@@ -44,6 +47,7 @@ import {
 import { osFileLock, PgliteBackend, PgliteStoreError } from "@fluxvita/saveslot-store-pglite";
 import { health, localRequest } from "./local-request.ts";
 import { daemonVersion, main } from "./main.ts";
+import { runBridge } from "./mcp-bridge.ts";
 import { lockDir, pidFile, runDir, socketFile } from "./service.ts";
 import { TEXTS } from "./texts.ts";
 
@@ -175,7 +179,34 @@ async function waitReady(
   return "timeout";
 }
 
+/**
+ * `start`. What it cannot do for the file system's sake (a home that is a file, a directory that
+ * cannot be read, `run/` that is a file) is a failure to start, exit 7, said by a code without a
+ * path; it does not throw.
+ */
 export async function start(home: string, io: CommandIO): Promise<number> {
+  try {
+    return await startService(home, io);
+  } catch (e) {
+    io.err(TEXTS.startHomeUnusable(failureCode(e)));
+    return 7;
+  }
+}
+
+/** A stable code for what went wrong: a home's, a file system's, or `internal`; never a path. */
+function failureCode(e: unknown): string {
+  if (e instanceof LocalTenantError) return e.code;
+  const code = (e as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === "string" && /^E[A-Z]+$/.test(code) ? code.toLowerCase() : "internal";
+}
+
+/** The environment the service is spawned with: this one without `SAVESLOT_TOKEN`. */
+function serviceEnv(): NodeJS.ProcessEnv {
+  const { SAVESLOT_TOKEN: _, ...env } = process.env;
+  return env;
+}
+
+async function startService(home: string, io: CommandIO): Promise<number> {
   try {
     await readTenantDirectory(home);
   } catch (e) {
@@ -213,9 +244,11 @@ export async function start(home: string, io: CommandIO): Promise<number> {
     const bin = binPath();
     // Run from the sources (development, tests): the workspace packages by their source entries.
     const conditions = bin.endsWith(".ts") ? ["--conditions=source"] : [];
+    // A bridge runs with a connection's token; the service takes no token and keeps none.
     child = spawn(process.execPath, [...conditions, bin, "--home", home], {
       detached: true,
       stdio: ["ignore", log, log],
+      env: serviceEnv(),
     });
   } finally {
     closeSync(log);
@@ -226,7 +259,14 @@ export async function start(home: string, io: CommandIO): Promise<number> {
   });
   child.unref();
 
-  const h = await waitReady(socket, () => exited);
+  let h = await waitReady(socket, () => exited);
+  let other: number | undefined;
+  if (h === "exited" && (await lockHeld(home))) {
+    // Ours lost the home's lock to a process starting meanwhile (another start, a bridge): that
+    // one is not listening yet; it is waited for as ours would have been.
+    other = await readPid(home);
+    h = await waitReady(socket, () => false);
+  }
   if (typeof h === "object" && h.state === "ready") {
     // Another start may have won the home's lock: then it is that process that answers.
     if (h.version !== mine) {
@@ -244,7 +284,7 @@ export async function start(home: string, io: CommandIO): Promise<number> {
   }
   if (h === "timeout") {
     // Not killed: it may be recovering (02-architecture §8), which takes as long as it takes.
-    io.err(TEXTS.startTimedOut(child.pid as number));
+    io.err(TEXTS.startTimedOut(other ?? (child.pid as number)));
     return 7;
   }
   io.err(TEXTS.startFailed("exited"));
@@ -345,7 +385,7 @@ export async function status(home: string, io: CommandIO): Promise<number> {
 
 /** The service command `name` with its arguments; resolves with the exit code. */
 export async function serviceCommand(
-  name: "init" | "start" | "stop" | "status",
+  name: "init" | "start" | "stop" | "status" | "mcp",
   argv: readonly string[],
   io: CommandIO,
 ): Promise<number> {
@@ -397,5 +437,35 @@ export async function serviceCommand(
       return stop(home, io);
     case "status":
       return status(home, io);
+    case "mcp":
+      return mcpCommand(home, io);
   }
+}
+
+/**
+ * `saveslot mcp` on this process's stdin and stdout (see ./mcp-bridge.ts). stderr gets the
+ * bridge's event lines only: the service it starts writes nothing there, its texts are dropped
+ * (they may hold the home's path) and its exit code is what the bridge logs. SIGTERM and SIGINT
+ * exit at once, without waiting for what is in flight: that is how a host ends a session; so does
+ * stdout breaking (exit 0 for EPIPE, 1 otherwise).
+ */
+export async function mcpCommand(home: string, io: CommandIO): Promise<number> {
+  const quit = () => process.exit(0);
+  process.once("SIGTERM", quit);
+  process.once("SIGINT", quit);
+  const code = await runBridge({
+    token: process.env["SAVESLOT_TOKEN"],
+    stdin: process.stdin,
+    stdout: process.stdout,
+    log: io.err,
+    // The configuration (`mcp.autostart`) is not read yet: on, its default (06-cli §3 step 3).
+    autostart: true,
+    startService: () => start(home, { out: () => {}, err: () => {} }),
+    version: daemonVersion(),
+    socketPath: socketFile(home),
+    // Nothing can be written any more: what is left (a start being waited for) is not waited for.
+    onStdoutBroken: (c) => process.exit(c),
+  });
+  process.stdin.destroy();
+  return code;
 }

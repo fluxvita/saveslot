@@ -25,6 +25,8 @@ export const TEXTS = {
     `error: the running saveslot service is version ${running}, this saveslot is ${mine}. Run saveslot stop, then start again.`,
   startFailed: (reason: string) =>
     `error: the saveslot service did not start (${reason}). The service log is in run/saveslot.log under the home.`,
+  startHomeUnusable: (code: string) =>
+    `error: the saveslot service was not started: the home cannot be used (${code}). Check that it is a directory you can read and write, with run/ a directory in it.`,
   startTimedOut: (pid: number) =>
     `error: the saveslot service did not become ready in time; its process ${pid} is still running (it may be recovering). Check later with saveslot status; the service log is in run/saveslot.log under the home.`,
   notRunning: "saveslot service is not running.",
@@ -62,4 +64,27 @@ export const TEXTS = {
       `  pending   ${s.pending === undefined ? "unknown" : s.pending}`,
     ].join("\n"),
   usage: (message: string) => `error: ${message}`,
+
+  // `saveslot mcp`: stderr gets event names and reason codes only; the error texts go to the host
+  // in JSON-RPC errors. None holds a token, a path, or anything of a request or an answer.
+  mcpNoToken:
+    "saveslot mcp: no_token: SAVESLOT_TOKEN must be a connection instance token (slt_…). Issue one with saveslot connect.",
+  mcpEvent: (event: string) => `saveslot mcp: ${event}`,
+  mcpVersionMismatch:
+    "saveslot mcp: version_mismatch: the running saveslot service is another version; restart it (saveslot stop, then saveslot start).",
+  mcpNotRunning:
+    "saveslot service is not running. Start it with saveslot start; the host starts it again when it reconnects.",
+  mcpUnavailable:
+    "saveslot service is not available right now (starting or stopping). Try again shortly.",
+  mcpServiceFailed:
+    "saveslot service failed to start. See saveslot status; the service log is in run/saveslot.log under the home.",
+  mcpTimedOut: "saveslot service did not answer in time.",
+  mcpInternal: "saveslot mcp could not pass on the service's answer.",
+  mcpRefused: (code: "unauthenticated" | "insufficient_scope") =>
+    code === "unauthenticated"
+      ? "unauthenticated: the token is not valid (revoked, or not this saveslot's). Issue a new one with saveslot connect and update the host."
+      : "insufficient_scope: this connection instance has no scope for that. Issue one with the scope needed with saveslot connect.",
+  mcpParseError: "Parse error: the line is not JSON.",
+  mcpInvalidRequest: "Invalid Request: a line is a JSON-RPC object or a batch.",
+  mcpLineTooLong: "Invalid Request: the line is longer than 1 MiB.",
 } as const;

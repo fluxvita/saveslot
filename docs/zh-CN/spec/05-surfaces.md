@@ -800,6 +800,26 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 - **缓存范围不跨凭证共享**：`instructions` 按凭证生成（scope、slot 范围、slot 名），`server/discover` 的结果必须声明为只对这个凭证有效的缓存范围，不得用 `public` 一类可以跨用户共享的取值。2026-07-28 的可缓存结果带 `ttlMs` 与 `cacheScope`：`server/discover` 的结果给 `ttlMs: 300000`、`cacheScope: "private"`；`tools/list` 同样是 `cacheScope: "private"`。
 - 服务器模式下 `/mcp` 的每个请求都要凭证，不存在不带凭证的匿名版本。
 
+**本机的 stdio 桥**（`saveslot mcp`，[`06-cli.md`](06-cli.md) §3 第 3 步、§4.1）：宿主按 stdio 启动它，它把消息转发到本机 saveslot 服务的 `/mcp`，自己不实现协议。
+
+- 一行一条 JSON-RPC 消息，每行至多 1 MiB（同 `/mcp` 的请求体上限）。每条消息一次 `POST /mcp`；应答（JSON，或 SSE 的每个事件；没有数据的事件跳过）按每条消息一行写回标准输出。批量原样转发。标准输出只有 JSON-RPC；标准错误只有事件名与原因码，不含令牌、请求与应答的任何内容。
+- 背压：在途至多 8 个请求；saveslot 服务没就绪时排队至多 64 条或 8 MiB；宿主不读标准输出（写不进去）时不再发新请求。超过这些都暂停读标准输入，不在桥里无界堆积。标准输出被关掉时放弃在途的请求，立即退出。
+- 协议版本：2026-07-28 版在 stdio 上不用请求头，版本写在每个请求的 `params._meta` 里，而 `/mcp` 要求 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与它一致。桥按官方 SDK 的 HTTP 传输的同一规则，从请求体推出这三个头：`Mcp-Name` 取 `tools/call`、`prompts/get` 的 `name`，`resources/read` 的 `uri`；不能原样作头值时，照 SDK 写成 `=?base64?…?=`。2025-11-25 版在 `initialize` 之后的每个请求都带协商出的版本。`Mcp-Param-*`（工具在输入 schema 里用 `x-mcp-header` 声明的参数头）不实现，saveslot 的工具不声明它。
+- 除通知以外的每条消息都得到应答，包括 saveslot 服务会拒绝的消息（如带 id 而没有合法 method 的）；批量只要不全是通知也一样。出错时回 JSON-RPC 错误，id 原样（读不出时、批量时为 null）；通知不回：
+
+  | 情形 | `code` | `data.code` |
+  |---|---|---|
+  | 401 | -32001 | `unauthenticated` |
+  | 403 | -32003 | `insufficient_scope` |
+  | 503（启动中、停止中）、连不上 saveslot 服务 | -32000 | — |
+  | 单个转发请求超过桥的总时限（10 分钟）仍没有应答 | -32603 | — |
+  | 应答不是 JSON-RPC、超过大小上限、其他状态码 | -32603 | — |
+  | 一次转发结束，应答里没有回答这个 id 的（如 202、SSE 里只有通知） | -32603 | — |
+
+  403 的 `data` 另带服务给出的 `required_scope`。`/mcp` 自己回的 JSON-RPC 错误照转，只在它没给 id 时补上请求的 id，批量不补；回答别的 id 的应答照转，不拦。
+- saveslot 服务只在桥启动时拉起一次（`mcp.autostart`），用的是 `saveslot start` 的同一段实现；拉起失败（含 home 不可用）时每个请求得到 -32000，桥不退出。两个桥同时拉起时只有一个服务进程拿到 home 的锁，另一个等它就绪后照常转发。拉起的服务进程不继承 `SAVESLOT_TOKEN`。中途停掉后，之后的请求得到 -32000，宿主重新连接时才会再次拉起。`mcp.autostart` 关着而服务没在运行时，桥照常启动，每个请求得到 -32000，不退出。
+- 令牌只取 `SAVESLOT_TOKEN`，必须是连接实例令牌；没设、为空、是用户会话令牌或别的形式时，退出码 6，不读标准输入。
+
 ## 12. eval 任务（定稿前用来调工具描述与参数）
 
 下面是各组的一句话概要；夹具、脚本、断言、通过线与阶段以 [`10-evals.md`](10-evals.md) 为准。

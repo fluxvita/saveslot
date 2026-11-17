@@ -3,4 +3,5 @@
 export * from "./commands.ts";
 export * from "./local-request.ts";
 export * from "./main.ts";
+export * from "./mcp-bridge.ts";
 export * from "./service.ts";

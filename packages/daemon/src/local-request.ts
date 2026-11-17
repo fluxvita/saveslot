@@ -14,7 +14,12 @@ export interface LocalAnswer {
 
 /** The service could not be asked: no socket, nobody listening, the connection cut, no answer in time. */
 export class LocalUnreachable extends Error {
-  override readonly name = "LocalUnreachable";
+  override readonly name: string = "LocalUnreachable";
+}
+
+/** The service answered, past the size an answer may have: cut off and refused. */
+export class LocalAnswerTooLarge extends LocalUnreachable {
+  override readonly name: string = "LocalAnswerTooLarge";
 }
 
 /** Answers past this size are cut off and refused. */
@@ -27,13 +32,21 @@ export function localRequest(o: {
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: Buffer;
   readonly timeoutMs?: number;
+  /** Aborting it gives up on the request: the connection is closed and the call is unreachable. */
+  readonly signal?: AbortSignal;
+  /** The largest answer taken, in bytes (default 64 MiB). */
+  readonly maxBytes?: number;
 }): Promise<LocalAnswer> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const fail = () => {
+    const fail = (tooLarge = false) => {
       if (settled) return;
       settled = true;
-      reject(new LocalUnreachable("the saveslot service could not be reached"));
+      reject(
+        tooLarge
+          ? new LocalAnswerTooLarge("the saveslot service's answer is too large")
+          : new LocalUnreachable("the saveslot service could not be reached"),
+      );
     };
     const req = request(
       {
@@ -51,15 +64,15 @@ export function localRequest(o: {
         let size = 0;
         res.on("data", (c: Buffer) => {
           size += c.length;
-          if (size > MAX_BYTES) {
+          if (size > (o.maxBytes ?? MAX_BYTES)) {
+            fail(true);
             res.destroy();
-            fail();
             return;
           }
           chunks.push(c);
         });
-        res.on("error", fail);
-        res.on("aborted", fail);
+        res.on("error", () => fail());
+        res.on("aborted", () => fail());
         res.on("end", () => {
           if (settled) return;
           settled = true;
@@ -75,7 +88,18 @@ export function localRequest(o: {
       req.destroy();
       fail();
     });
-    req.on("error", fail);
+    req.on("error", () => fail());
+    if (o.signal !== undefined) {
+      if (o.signal.aborted) {
+        req.destroy();
+        fail();
+        return;
+      }
+      o.signal.addEventListener("abort", () => {
+        req.destroy();
+        fail();
+      });
+    }
     if (o.body !== undefined) req.write(o.body);
     req.end();
   });
