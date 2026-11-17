@@ -94,6 +94,16 @@ describe("the client against the local service", () => {
       .toBeGreaterThan(0);
   });
 
+  it("sends a task in Chinese as UTF-8, and the service records it as given", async () => {
+    const task = "整理账单 · 十一月";
+    await client.catalog({ task });
+    await expect
+      .poll(async () => (await client.readsList({ of_task: task })).reads.map((r) => r.task), {
+        timeout: 15_000,
+      })
+      .toContain(task);
+  });
+
   it("issues, lists, renames and revokes a connection", async () => {
     const issued = await client.connections.issue({ name: "e2e · host" });
     expect(issued.token).toMatch(/^slt_/);

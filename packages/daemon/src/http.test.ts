@@ -12,7 +12,7 @@ import { osFileLock } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { contractSuite } from "./contract-suite.fixture.ts";
-import { httpDriver, httpRequest, type Reply } from "./http-driver.fixture.ts";
+import { httpDriver, httpRequest, type Reply, utf8Header } from "./http-driver.fixture.ts";
 import { type RunningService, runService, socketFile } from "./service.ts";
 
 const T = 60_000;
@@ -162,6 +162,65 @@ describe("HTTP's own", () => {
       body: JSON.stringify({ id: `pi_${"2".repeat(16)}`, decision: "keep_effective" }),
     });
     expect([id.status, err(id)["param"]]).toEqual([400, "id"]);
+  });
+
+  it("task and idempotency key are UTF-8 bytes: decoded, then checked as the contract checks them", async () => {
+    const query = (task: string) =>
+      http({
+        method: "POST",
+        path: "/v1/query",
+        token: session,
+        headers: { "x-task-id": task },
+        body: JSON.stringify({ table: "ledger.expenses", limit: 1 }),
+      });
+    const refused = async (task: string, reason?: string) => {
+      const r = await query(task);
+      expect([r.status, err(r)["code"], err(r)["param"]]).toEqual([
+        400,
+        "invalid_argument",
+        "task",
+      ]);
+      if (reason !== undefined) expect(err(r)["reason"]).toBe(reason);
+    };
+    // 256 code points of three bytes each pass; 257 do not: the limit counts the decoded text.
+    expect((await query(utf8Header("账".repeat(256)))).status).toBe(200);
+    await refused(utf8Header("账".repeat(257)));
+    // A control character that is one only once decoded (U+0085 is C2 85).
+    await refused(utf8Header("a\u0085b"));
+    // Bytes that are not UTF-8.
+    await refused("\xff\xfe", "malformed");
+    await refused("\xe8\xb4", "malformed");
+
+    // A task read back as it was given.
+    const task = `整理账单 ${Date.now()}`;
+    expect((await query(utf8Header(task))).status).toBe(200);
+    const reads = JSON.parse(
+      (await http({ method: "GET", path: "/v1/reads?limit=200", token: session })).body,
+    ) as { reads: { task?: string }[] };
+    expect(reads.reads.map((x) => x.task)).toContain(task);
+  });
+
+  it("an idempotency key in Chinese: the same key again is a replay", async () => {
+    const write = () =>
+      http({
+        method: "POST",
+        path: "/v1/writes",
+        token: session,
+        // 200 code points, 600 bytes: within the limit only as decoded text.
+        headers: { "idempotency-key": utf8Header("记一笔午饭".repeat(40)) },
+        body: JSON.stringify({
+          sv: 1,
+          ops: [{ intent: "insert", table: "ledger.expenses", set: { date: "2026-11-16" } }],
+        }),
+      });
+    const first = await write();
+    const again = await write();
+    expect([first.status, again.status]).toEqual([200, 200]);
+    const a = JSON.parse(first.body) as { replayed?: true; ops: { target: unknown }[] };
+    const b = JSON.parse(again.body) as { replayed?: true; ops: { target: unknown }[] };
+    expect(a.replayed).toBeUndefined();
+    expect(b.replayed).toBe(true);
+    expect(b.ops[0]?.target).toEqual(a.ops[0]?.target);
   });
 
   it("every route of this version reaches its operation; every later one is 501", async () => {

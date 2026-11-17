@@ -165,14 +165,14 @@ describe("parameters that cannot go on the route as given", () => {
   });
 
   it.each([
-    ["a task beyond Latin-1", { task: "整理账单" }],
-    ["a task in Latin-1 but not ASCII", { task: "café" }],
     ["a task with a control character", { task: "a\tb" }],
     ["a task with a line end", { task: "a\nb" }],
+    ["a task with DEL", { task: "a\u007fb" }],
+    ["a task with a lone surrogate", { task: "a\ud800b" }],
     ["a task with a space at the start", { task: " t" }],
     ["a task with a space at the end", { task: "t " }],
     ["a task that is no string", { task: 1 }],
-    ["an idempotency key beyond Latin-1", { idempotency_key: "键" }],
+    ["an idempotency key with a lone surrogate", { idempotency_key: "\udc00" }],
     ["an idempotency key with a space at the end", { idempotency_key: "k " }],
     ["an idempotency key that is no string", { idempotency_key: 1 }],
   ])("%s", async (_, extra) => {
@@ -180,6 +180,13 @@ describe("parameters that cannot go on the route as given", () => {
     await refused(() =>
       client.resolve({ id: PI, decision: "confirm", item_ver: "iv_1", ...extra } as never),
     );
+  });
+
+  it("a token not of a token's form, nothing sent", async () => {
+    for (const token of ["", "a b", "tok\n", "令牌", "x\u007f"]) {
+      const bad = createClient({ socketPath, token });
+      await refused(() => bad.catalog({}), /token's form/);
+    }
   });
 
   it("connections.revoke with anything besides its id", async () => {
@@ -193,6 +200,31 @@ describe("parameters that cannot go on the route as given", () => {
     expect(
       req(await sent(() => client.query({ table: "health.runs", task: "tidy the bills" }))),
     ).toMatchObject({ task: "tidy the bills" });
+  });
+
+  it("task and idempotency key go as their UTF-8 bytes", async () => {
+    // Node gives a header's bytes one character each: taken back as bytes, they are the UTF-8.
+    const bytes = (h: string | string[] | undefined) =>
+      Buffer.from(h as string, "latin1").toString("utf8");
+    for (const [task, key] of [
+      ["整理账单", "记一笔·午饭"],
+      ["café", "naïve"],
+      ["a\u0085b", "😀"],
+    ] as const) {
+      const s = await sent(() =>
+        client.resolve({
+          id: PI,
+          decision: "confirm",
+          item_ver: "iv_1",
+          task,
+          idempotency_key: key,
+        }),
+      );
+      expect([bytes(s.headers["x-task-id"]), bytes(s.headers["idempotency-key"])]).toEqual([
+        task,
+        key,
+      ]);
+    }
   });
 });
 

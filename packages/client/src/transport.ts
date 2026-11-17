@@ -105,19 +105,31 @@ export function encode(s: string): string {
 }
 
 /**
- * A header value as given, or a usage error. Only printable ASCII goes: node:http sends other
- * characters as Latin-1 or throws on them, so a header could not carry them as written; and no
- * space at either end, which HTTP strips, changing the value on the way.
+ * `X-Task-Id` or `Idempotency-Key` as it goes on the wire, or a usage error. The value is sent as
+ * its UTF-8 bytes (05-surfaces §13): node writes a header value one byte per character, so the
+ * bytes are handed over as one character each. Refused: what is no string; what is not
+ * well-formed (a lone surrogate would be sent as U+FFFD); C0 control characters and DEL, which a
+ * header cannot carry; a space at either end, which HTTP strips, changing the value on the way.
+ * The contract's own checks (length, control characters) are the service's.
  */
-function headerValue(name: string, v: unknown): string {
+function textHeaderValue(name: string, v: unknown): string {
   if (typeof v !== "string") throw new ClientUsageError(`${name} must be a string`);
-  if (!/^[\x20-\x7e]*$/.test(v)) {
-    throw new ClientUsageError(
-      `${name} holds characters other than printable ASCII, which this client cannot send in a header`,
-    );
+  if (!v.isWellFormed()) {
+    throw new ClientUsageError(`${name} holds a lone surrogate and cannot be encoded`);
+  }
+  if ([...v].some((c) => (c.codePointAt(0) as number) < 0x20 || c === "\u007f")) {
+    throw new ClientUsageError(`${name} holds a control character, which a header cannot carry`);
   }
   if (/^ | $/.test(v)) {
     throw new ClientUsageError(`${name} begins or ends with a space, which HTTP would strip`);
+  }
+  return Buffer.from(v, "utf8").toString("latin1");
+}
+
+/** The token: printable ASCII without spaces, as a token's form is; anything else a usage error. */
+function tokenValue(v: unknown): string {
+  if (typeof v !== "string" || !/^[\x21-\x7e]+$/.test(v)) {
+    throw new ClientUsageError("the token is not of a token's form");
   }
   return v;
 }
@@ -150,10 +162,10 @@ function prepare(o: RequestOptions): {
     body = Buffer.from(text, "utf8");
   }
   const headers: Record<string, string> = { accept: "application/json" };
-  if (o.token !== undefined) headers["authorization"] = `Bearer ${o.token}`;
-  if (o.task !== undefined) headers["x-task-id"] = headerValue("task", o.task);
+  if (o.token !== undefined) headers["authorization"] = `Bearer ${tokenValue(o.token)}`;
+  if (o.task !== undefined) headers["x-task-id"] = textHeaderValue("task", o.task);
   if (o.idempotencyKey !== undefined) {
-    headers["idempotency-key"] = headerValue("idempotency_key", o.idempotencyKey);
+    headers["idempotency-key"] = textHeaderValue("idempotency_key", o.idempotencyKey);
   }
   if (body !== undefined) {
     headers["content-type"] = "application/json";

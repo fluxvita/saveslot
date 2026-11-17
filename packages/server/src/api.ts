@@ -12,7 +12,9 @@
 //   4. the body (POST, PATCH): JSON, at most 1 MiB, read as it arrives and cut off past the limit
 //      (413 `too_large`); GET takes its parameters from the query string, by the contract's names,
 //      `limit` a number, `include_revoked` a boolean, `tables` a comma-separated list;
-//   5. the operation; its result 200, its error by the contract code's status.
+//   5. `X-Task-Id` and `Idempotency-Key`: their bytes decoded as UTF-8, 400 `invalid_argument`
+//      (`malformed`) when they are not well-formed;
+//   6. the operation; its result 200, its error by the contract code's status.
 //
 // Logged per request: method, route name, status, milliseconds. Never a header, a path parameter,
 // the query string, a request body or a response body.
@@ -340,6 +342,27 @@ export const header = (req: IncomingMessage, name: string): string | undefined =
   return Array.isArray(v) ? undefined : v;
 };
 
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/**
+ * A header whose value is text, `X-Task-Id` or `Idempotency-Key` (05-surfaces §13): its bytes are
+ * UTF-8. Node reads a header's bytes one character each (Latin-1); they are taken back as bytes
+ * and decoded, and bytes that are not well-formed UTF-8 are refused. The contract's checks of the
+ * value (04-contract-types §1.7) are the operation's, on the decoded text.
+ */
+export function textHeader(req: IncomingMessage, name: string, param: string): string | undefined {
+  const v = header(req, name);
+  if (v === undefined) return undefined;
+  try {
+    return UTF8.decode(Buffer.from(v, "latin1"));
+  } catch {
+    throw new ContractError("invalid_argument", `${param} is not UTF-8`, {
+      reason: "malformed",
+      param,
+    });
+  }
+}
+
 /**
  * Handles `req` when it is a `/v1/` request: true when it did (the response is sent or being
  * sent), false for any other path.
@@ -436,8 +459,8 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
         body = await readBody(req);
       }
       const params = r.params !== undefined ? r.params(parts, query, body) : r.body ? body : query;
-      const task = header(req, "x-task-id");
-      const idempotencyKey = header(req, "idempotency-key");
+      const task = textHeader(req, "x-task-id", "task");
+      const idempotencyKey = textHeader(req, "idempotency-key", "idempotency_key");
       const now = ctx.now();
       const call = kernelCall({
         principal: who,

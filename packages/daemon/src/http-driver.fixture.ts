@@ -52,6 +52,9 @@ export function httpRequest(
   });
 }
 
+/** A header value as its UTF-8 bytes, one character each, as node sends them (05-surfaces §13). */
+export const utf8Header = (v: string): string => Buffer.from(v, "utf8").toString("latin1");
+
 const query = (p: Record<string, unknown>) => {
   const s = new URLSearchParams();
   for (const [k, v] of Object.entries(p)) s.set(k, Array.isArray(v) ? v.join(",") : String(v));
@@ -64,8 +67,10 @@ export const httpDriver =
   (home: () => string): Driver =>
   async (credential, operation: Operation, params, o = {}) => {
     const headers: Record<string, string> = {
-      ...(o.task !== undefined ? { "x-task-id": o.task } : {}),
-      ...(o.idempotencyKey !== undefined ? { "idempotency-key": o.idempotencyKey } : {}),
+      ...(o.task !== undefined ? { "x-task-id": utf8Header(o.task) } : {}),
+      ...(o.idempotencyKey !== undefined
+        ? { "idempotency-key": utf8Header(o.idempotencyKey) }
+        : {}),
     };
     const { id, ...rest } = params as { id?: string } & Record<string, unknown>;
     const at: Record<Operation, { method: string; path: string; body?: true }> = {

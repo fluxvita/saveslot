@@ -836,6 +836,8 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
   | `Prefer: respond-async`（后续） | `mode: "job"` | |
 
   **`task` 与 `idempotency_key` 在 HTTP 上只经请求头传**：请求体里出现这两个键报 `invalid_argument`。
+
+  **这两个头的值是 UTF-8 字节，不做百分号编码**：`task` 可以是任意良构的 Unicode（如"整理账单"），客户端把它按 UTF-8 编码后原样作为头的值发送。服务端按 UTF-8 解码，字节不是良构的 UTF-8 时报 `invalid_argument`（`malformed`）；长度、控制字符等契约的校验作用在解码后的文本上，幂等键也按解码后的文本比较。客户端不得发送首尾带空白的值：HTTP 会去掉首尾空白，值在路上就变了，而服务端看不到被去掉的部分。
 - **GET 端点的参数走查询字符串**，名字与契约参数相同；数组用逗号分隔（`tables=a,b`）；时间按 RFC 3339，`+` 要百分号编码。结构复杂的读操作（`query`、`sql`、`history`、删除预览）用 POST 传请求体。
 - 表名在路径里拆成两段：`/v1/slots/{slot}/tables/{table}`；在凭证的可见范围内不重名时可用 `/v1/tables/{table}`。路径参数按 RFC 3986 百分号编码。
 - 不按结果预算截断，只按 `limit` 分页；`sql` 支持 `cursor`。第 2 节表里 MCP 收窄的字段在 HTTP 全部开放。
