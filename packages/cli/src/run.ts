@@ -20,10 +20,14 @@ import {
   type Client,
   ContractCallError,
   createClient,
+  ITEM_STATUSES,
+  ITEM_TYPES,
   resolveCredential,
   type TimelineResult,
 } from "@fluxvita/saveslot-client";
 import { describeError } from "./errors.ts";
+import { logVerified, readsList, verifyFound } from "./render/admin.ts";
+import { pendingDetail, pendingList } from "./render/pending.ts";
 import { asOfResult, queryResult, timelineResult } from "./render/reads.ts";
 import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
 import { type Boundary, type Line, render, t, untrusted, words } from "./render/text.ts";
@@ -38,6 +42,11 @@ const OWN_OPTIONS = {
   tables: { type: "string" },
   where: { type: "string", multiple: true },
   "where-json": { type: "string", multiple: true },
+  slot: { type: "string" },
+  type: { type: "string" },
+  status: { type: "string" },
+  connection: { type: "string" },
+  since: { type: "string" },
   order: { type: "string", multiple: true },
   fields: { type: "string" },
   "valid-at": { type: "string" },
@@ -60,7 +69,7 @@ const ownFlag = (o: Options, k: string): boolean => o.own[k] === true;
 
 import { jsonText } from "./untrusted.ts";
 import { UsageError } from "./usage.ts";
-import { type FieldInfo, parseCondition, parseConditionsJson } from "./where.ts";
+import { type FieldInfo, foldName, parseCondition, parseConditionsJson } from "./where.ts";
 
 export interface CliIO {
   readonly out: (text: string) => void;
@@ -82,10 +91,11 @@ interface Options {
   readonly own: Readonly<Record<string, OwnValue | undefined>>;
 }
 
-/** What a command gives: a result to write, as text and as JSON. */
+/** What a command gives: a result to write, as text and as JSON, and its exit code (default 0). */
 interface Output {
   readonly json: unknown;
   readonly lines: Line[];
+  readonly exit?: number;
 }
 
 interface Command {
@@ -170,12 +180,12 @@ async function tablesOf(c: Client, slot: string): Promise<string[]> {
   return out;
 }
 
-/** A table's fields by name, with their type and unit, from its catalog. */
+/** A table's fields by folded name, with their type and unit, from its catalog. */
 async function fieldsOf(c: Client, tableName: string): Promise<Map<string, FieldInfo>> {
   const r = await c.catalog({ level: "table", tables: [tableName] });
   return new Map(
     (r.tables[0]?.fields ?? []).map((f) => [
-      f.name,
+      foldName(f.name),
       { type: f.type, ...(f.unit !== undefined ? { unit: f.unit } : {}) },
     ]),
   );
@@ -193,7 +203,80 @@ function entityKey(o: Options, fields: ReadonlyMap<string, FieldInfo>): Record<s
   return out;
 }
 
+/** `saveslot pending [list]` (06 §4.5): the open items by default, oldest first. */
+const pendingListCommand = command(["slot", "type", "status"], async (o, client) => {
+  if (o.args.length > 0) throw new UsageError(TEXTS.pendingListArgs);
+  const type = ownString(o, "type");
+  if (type !== undefined && !ITEM_TYPES.includes(type as never))
+    throw new UsageError(TEXTS.pendingTypeBad);
+  const status = ownString(o, "status");
+  if (status !== undefined && status !== "all" && !ITEM_STATUSES.includes(status as never)) {
+    throw new UsageError(TEXTS.pendingStatusBad);
+  }
+  const slot = ownString(o, "slot");
+  const r = await (await client()).pending({
+    ...(slot !== undefined ? { slot } : {}),
+    ...(type !== undefined ? { type: type as never } : {}),
+    ...(status !== undefined ? { status: status as never } : {}),
+    ...(o.limit !== undefined ? { limit: o.limit } : {}),
+    ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
+  });
+  return { json: r, lines: pendingList(r, new Date()) };
+});
+
+/** `--since`: a moment, or how long ago (`10m`, `2h`, `1d`, `30s`). */
+function sinceOf(text: string, now: Date): string {
+  const m = /^([0-9]{1,9})(s|m|h|d)$/.exec(text.trim());
+  if (m !== null) {
+    const unit = new Map([
+      ["s", 1_000],
+      ["m", 60_000],
+      ["h", 3_600_000],
+      ["d", 86_400_000],
+    ]).get(m[2] as string) as number;
+    return new Date(now.getTime() - Number(m[1]) * unit).toISOString();
+  }
+  if (Number.isNaN(Date.parse(text))) throw new UsageError(TEXTS.sinceBad);
+  return text;
+}
+
 const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
+  ["pending", pendingListCommand],
+  ["pending list", pendingListCommand],
+  [
+    "pending show",
+    command([], async (o, client) => {
+      const [id, ...extra] = o.args;
+      if (id === undefined || extra.length > 0 || !/^pi_/.test(id))
+        throw new UsageError(TEXTS.pendingShowArgs);
+      const r = await (await client()).pending({ id: id as `pi_${string}` });
+      return { json: r, lines: pendingDetail(r, new Date()) };
+    }),
+  ],
+  [
+    "reads",
+    command(["connection", "since"], async (o, client) => {
+      if (o.args.length > 0) throw new UsageError(TEXTS.readsArgs);
+      const connection = ownString(o, "connection");
+      const since = ownString(o, "since");
+      const r = await (await client()).readsList({
+        ...(connection !== undefined ? { connection } : {}),
+        ...(since !== undefined ? { since: sinceOf(since, new Date()) } : {}),
+        ...(o.limit !== undefined ? { limit: o.limit } : {}),
+        ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
+      });
+      return { json: r, lines: readsList(r) };
+    }),
+  ],
+  [
+    "verify",
+    command([], async (o, client) => {
+      if (o.args.length > 0) throw new UsageError(TEXTS.verifyArgs);
+      const r = await (await client()).logVerify();
+      // Problems found: 9 (06 §6.2), with the result written all the same.
+      return { json: r, lines: logVerified(r), exit: verifyFound(r) ? 9 : 0 };
+    }),
+  ],
   [
     "query",
     command(
@@ -494,7 +577,7 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
         ? `${jsonText(r.json)}\n`
         : `${render(r.lines, boundaryFor(io.stdoutIsTTY, o.tags, env))}\n`,
     );
-    return 0;
+    return r.exit ?? 0;
   } catch (e) {
     if (e instanceof UsageError) {
       io.err(`${TEXTS.usageError(e.text)}\n`);

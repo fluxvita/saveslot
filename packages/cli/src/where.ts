@@ -7,7 +7,8 @@
 //   matches, with or without spaces around it; the value is the rest, trimmed. A value beginning
 //   with `"` is a JSON string (to keep spaces at its ends, or to write escapes). Nothing else is
 //   the shorthand's: `in`, `contains`, `is_null` and anything complex go in `--where-json`.
-// - The value is made by the field's type, from the table's catalog: integer and decimal as
+// - The value is made by the field's type, from the table's catalog (the field found as the service
+//   finds it, without regard to ASCII case): integer and decimal as
 //   canonical decimal text (no limit on size; the service judges the type), a quantity as
 //   `{value, unit}` with its unit written after the number (`5km`, `5 km`; no unit is a usage
 //   error), a boolean as `true` / `false`; every other type, and a field the catalog does not
@@ -34,6 +35,13 @@ const OPERATORS: ReadonlyMap<string, string> = new Map([
 ]);
 const FIELD = /^[A-Za-z][A-Za-z0-9_]{0,62}/;
 const DECIMAL = /^[+-]?[0-9]+(?:\.[0-9]+)?$/;
+
+/**
+ * A name as the service matches it: ASCII letters folded to lower case, nothing else (04-contract
+ * §1: names are unique and resolved without regard to ASCII case). The map of a table's fields is
+ * keyed so, and looked up so; the condition keeps the name as written.
+ */
+export const foldName = (n: string): string => n.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
 /** A field's type and unit, as the table's catalog gives them. */
 export interface FieldInfo {
@@ -97,7 +105,11 @@ export function parseCondition(
     if (typeof v !== "string") throw new UsageError(TEXTS.whereBadString(which));
     raw = v;
   }
-  return { field, op: OPERATORS.get(op) as string, value: valueFor(raw, fields.get(field), which) };
+  return {
+    field,
+    op: OPERATORS.get(op) as string,
+    value: valueFor(raw, fields.get(foldName(field)), which),
+  };
 }
 
 /** The `--where-json` options: each one condition object or an array of them. */

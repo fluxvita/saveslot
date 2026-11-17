@@ -5,7 +5,13 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { TEXTS } from "./texts.ts";
 import { UsageError } from "./usage.ts";
-import { canonicalDecimal, type FieldInfo, parseCondition, parseConditionsJson } from "./where.ts";
+import {
+  canonicalDecimal,
+  type FieldInfo,
+  foldName,
+  parseCondition,
+  parseConditionsJson,
+} from "./where.ts";
 
 const FIELDS: ReadonlyMap<string, FieldInfo> = new Map<string, FieldInfo>([
   ["distance", { type: "quantity", unit: "km" }],
@@ -62,6 +68,23 @@ describe("the shorthand", () => {
     ["valid_from>=2026-11-01", { field: "valid_from", op: ">=", value: "2026-11-01" }],
   ])("%s", (text, condition) => {
     expect(parse(text)).toEqual(condition);
+  });
+
+  it("a field written in another ASCII case: found as the service finds it, its type used", () => {
+    // The map is keyed by the folded name, as run.ts builds it from the catalog.
+    const folded = new Map([...FIELDS].map(([k, v]) => [k.toLowerCase(), v] as const));
+    const p = (text: string) => parseCondition(text, folded, 1);
+    expect(p("Distance>5km")).toEqual({
+      field: "Distance",
+      op: ">",
+      value: { value: "5", unit: "km" },
+    });
+    expect(p("DONE = true")).toEqual({ field: "DONE", op: "=", value: true });
+    expect(refused(() => p("DISTANCE>5"))).toBe(TEXTS.whereUnitMissing(1));
+    // ASCII letters only, as the service folds: an upper-case letter beyond ASCII stays.
+    expect(foldName(`Ab_C1${String.fromCodePoint(0xc9)}`)).toBe(
+      `ab_c1${String.fromCodePoint(0xc9)}`,
+    );
   });
 
   it("integers and decimals as canonical decimal text, of any size", () => {

@@ -401,6 +401,7 @@ describe("query", () => {
                 { name: "amount", type: "quantity", unit: "CNY", description: "d" },
                 { name: "n", type: "integer", description: "d" },
                 { name: "note", type: "text", description: "d" },
+                { name: "Paid", type: "boolean", description: "d" },
               ],
             },
           ],
@@ -455,6 +456,18 @@ describe("query", () => {
       detail: "detailed",
       limit: 5,
     });
+  });
+
+  it("a field in another ASCII case: its type found all the same (a quantity, a boolean)", async () => {
+    answering();
+    bodies.length = 0;
+    const r = await cli(["query", "expenses", "--where", "AMOUNT>50CNY", "--where", "paid=true"]);
+    expect(r.code).toBe(0);
+    // The catalog has `amount` and `Paid`: each found from the other case.
+    expect((bodies[1] as { where: unknown }).where).toEqual([
+      { field: "AMOUNT", op: ">", value: { value: "50", unit: "CNY" } },
+      { field: "paid", op: "=", value: true },
+    ]);
   });
 
   it("no --where: no catalog read", async () => {
@@ -590,6 +603,99 @@ describe("history", () => {
     const r = await cli(argv);
     expect(r.code).toBe(2);
     expect(r.err).toBe(`${TEXTS.usageError(text)}\n`);
+  });
+});
+
+describe("pending, reads, verify", () => {
+  const VERIFY = {
+    events: 3,
+    chain: { intact: true },
+    checksum_mismatch: [],
+    index_mismatch: [],
+    removed: 0,
+    gaps: [],
+  };
+  const answering = (verify: unknown = VERIFY) => {
+    answer = (req, res) => {
+      const u = new URL(req.url ?? "", "http://x");
+      if (u.pathname === "/v1/pending") json(res, 200, { total: 0, items: [] });
+      else if (u.pathname.startsWith("/v1/pending/"))
+        json(res, 404, { error: { code: "not_found", message: "no such item" } });
+      else if (u.pathname === "/v1/reads")
+        json(res, 200, { covered_since: "2026-01-01T00:00:00.000Z", total: 0, reads: [] });
+      else json(res, 200, verify);
+    };
+  };
+
+  it("pending and pending list: the list, with the filters as asked", async () => {
+    answering();
+    seen.length = 0;
+    expect((await cli(["pending"])).code).toBe(0);
+    expect(
+      (await cli(["pending", "list", "--slot", "ledger", "--type", "conflict", "--status", "all"]))
+        .code,
+    ).toBe(0);
+    const u = new URL(seen[1]?.url ?? "", "http://x");
+    expect(seen[0]?.url).toBe("/v1/pending");
+    expect([...u.searchParams]).toEqual([
+      ["slot", "ledger"],
+      ["type", "conflict"],
+      ["status", "all"],
+    ]);
+  });
+
+  it("pending show <pi_…>: the item's route; not found is 4", async () => {
+    answering();
+    seen.length = 0;
+    const r = await cli(["pending", "show", "pi_8VEZWJ3J7BMKMXTV"]);
+    expect(seen[0]?.url).toBe("/v1/pending/pi_8VEZWJ3J7BMKMXTV");
+    expect(r.code).toBe(4);
+  });
+
+  it("reads --since 10m: a moment ten minutes ago; --connection as given", async () => {
+    answering();
+    seen.length = 0;
+    const before = Date.now();
+    expect((await cli(["reads", "--since", "10m", "--connection", "MacBook · Codex"])).code).toBe(
+      0,
+    );
+    const u = new URL(seen[0]?.url ?? "", "http://x");
+    expect(u.searchParams.get("connection")).toBe("MacBook · Codex");
+    const since = Date.parse(u.searchParams.get("since") ?? "");
+    expect(before - 600_000 - since).toBeLessThanOrEqual(0);
+    expect(Date.now() - 600_000 - since).toBeGreaterThanOrEqual(0);
+    seen.length = 0;
+    expect((await cli(["reads", "--since", "2026-11-10T00:00:00Z"])).code).toBe(0);
+    expect(new URL(seen[0]?.url ?? "", "http://x").searchParams.get("since")).toBe(
+      "2026-11-10T00:00:00Z",
+    );
+  });
+
+  it("verify: 0 when all is well, 9 when it finds a problem (the result written all the same)", async () => {
+    answering();
+    expect((await cli(["verify"])).code).toBe(0);
+    answering({ ...VERIFY, chain: { intact: false, broken_at: 2 } });
+    const bad = await cli(["verify"]);
+    expect(bad.code).toBe(9);
+    expect(bad.out).toContain("problems found");
+  });
+
+  it.each([
+    [["pending", "list", "extra"], TEXTS.pendingListArgs],
+    [["pending", "--type", "nope"], TEXTS.pendingTypeBad],
+    [["pending", "--status", "closed"], TEXTS.pendingStatusBad],
+    [["pending", "show"], TEXTS.pendingShowArgs],
+    [["pending", "show", "r_1"], TEXTS.pendingShowArgs],
+    [["reads", "--since", "yesterday"], TEXTS.sinceBad],
+    [["reads", "x"], TEXTS.readsArgs],
+    [["verify", "x"], TEXTS.verifyArgs],
+  ])("%j: 2", async (argv, text) => {
+    answering();
+    seen.length = 0;
+    const r = await cli(argv);
+    expect(r.code).toBe(2);
+    expect(r.err).toBe(`${TEXTS.usageError(text)}\n`);
+    expect(seen).toHaveLength(0);
   });
 });
 

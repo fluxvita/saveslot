@@ -37,6 +37,13 @@ import type {
 } from "./common.ts";
 import type { MigrationStatus, SchemaChange, SchemaImpact } from "./schema.ts";
 
+/** The value sets of an item's reasons and causes (the event format's), for a client that shows them. */
+export {
+  CANDIDATE_CAUSES,
+  DELETION_ORIGINS,
+  ITEM_CREATED_REASONS,
+  SUPERSEDED_REASONS,
+} from "@fluxvita/saveslot-contract-core";
 /**
  * 04-contract-types §4.8 `SupersededReason`, §5.1 `Intent`, §2 `SourceLevel`, §4.6
  * `TombstoneReason`: the event format's sets are the contract's without the `@later` values.

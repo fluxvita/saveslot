@@ -26,33 +26,34 @@ import {
   untrusted,
 } from "./text.ts";
 
-type R = Readonly<Record<string, unknown>>;
-const isObj = (x: unknown): x is R => typeof x === "object" && x !== null && !Array.isArray(x);
-const obj = (x: unknown): R => (isObj(x) ? x : {});
-const arr = (x: unknown): readonly unknown[] => (Array.isArray(x) ? x : []);
-const str = (x: unknown): string | undefined => (typeof x === "string" ? x : undefined);
-const int = (x: unknown): number | undefined =>
+export type R = Readonly<Record<string, unknown>>;
+export const isObj = (x: unknown): x is R =>
+  typeof x === "object" && x !== null && !Array.isArray(x);
+export const obj = (x: unknown): R => (isObj(x) ? x : {});
+export const arr = (x: unknown): readonly unknown[] => (Array.isArray(x) ? x : []);
+export const str = (x: unknown): string | undefined => (typeof x === "string" ? x : undefined);
+export const int = (x: unknown): number | undefined =>
   typeof x === "number" && Number.isInteger(x) ? x : undefined;
 
 /** An ID or version the service made; inside when it is not one. */
-const idOf = (x: unknown): Part => id(String(x ?? ""));
+export const idOf = (x: unknown): Part => id(String(x ?? ""));
 /** An operation number. */
-const op = (x: unknown): Part[] =>
+export const op = (x: unknown): Part[] =>
   t`#${int(x) !== undefined ? num(int(x) as number) : untrusted(String(x))}`;
 /** A count or a version number. */
-const count = (x: unknown): Part =>
+export const count = (x: unknown): Part =>
   int(x) !== undefined ? num(int(x) as number) : untrusted(String(x));
 /** A table's name: checked by its shape. */
 const tableOf = (x: unknown): Part => table(String(x ?? ""));
 /** A field name; `*` is a row's being there. */
-const fieldOf = (x: unknown): Part[] =>
+export const fieldOf = (x: unknown): Part[] =>
   x === "*" ? t`whether it exists` : [name(String(x ?? ""))];
 
 /**
  * A moment the service recorded, as the slot's wall clock shows it (`YYYY-MM-DD HH:mm`, as MCP
  * shows it, 05 §4.1); as recorded when the zone or the moment is not one this can read.
  */
-function inZone(x: unknown, zone: unknown): Part {
+export function inZone(x: unknown, zone: unknown): Part {
   const at = typeof x === "string" ? Date.parse(x) : Number.NaN;
   if (typeof zone !== "string" || Number.isNaN(at)) return time(String(x ?? ""));
   try {
@@ -75,7 +76,7 @@ function inZone(x: unknown, zone: unknown): Part {
 }
 
 /** Who did something: the system, or the name it was given (inside), and its state. */
-function actorOf(x: unknown): Part[] {
+export function actorOf(x: unknown): Part[] {
   const a = obj(x);
   if (a["kind"] === "system") return t`system`;
   const label = str(a["name"]) ?? str(a["id"]) ?? "";
@@ -90,7 +91,7 @@ const BOOLEANS: ReadonlySet<string> = new Set(["true", "false"]);
  * A field's value: JSON's numbers, booleans and null, and a quantity's number, outside the
  * boundary; every string inside, whatever it looks like (an RFC 9557 moment included).
  */
-function fieldValue(v: unknown): Part[] {
+export function fieldValue(v: unknown): Part[] {
   if (v === null || v === undefined) return t`—`;
   if (typeof v === "boolean") return [code(String(v), BOOLEANS)];
   if (typeof v === "number") return [num(v)];
@@ -103,14 +104,14 @@ function fieldValue(v: unknown): Part[] {
 }
 
 /** Values with their fields: `field value, field value`. */
-const namedValues = (values: unknown): Part[] =>
+export const namedValues = (values: unknown): Part[] =>
   join(
     Object.entries(obj(values)).map(([f, v]) => t`${fieldOf(f)} ${fieldValue(v)}`),
     t`, `,
   );
 
 /** A period of business time (05 §4.1): the dates and moments are values, inside. */
-function periodOf(x: unknown): Part[] {
+export function periodOf(x: unknown): Part[] {
   const p = obj(x);
   const from = p["valid_from"];
   const to = p["valid_to"];
@@ -123,7 +124,7 @@ function periodOf(x: unknown): Part[] {
 }
 
 /** A row's or entity's reference: its table and ID. */
-function targetOf(x: unknown): Part[] {
+export function targetOf(x: unknown): Part[] {
   const r = obj(x);
   const ref = r["row"] ?? r["entity"];
   return ref !== undefined ? t`${tableOf(r["table"])} ${idOf(ref)}` : [tableOf(r["table"])];

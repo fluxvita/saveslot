@@ -25,6 +25,10 @@ export const TEXTS = {
       "  query <table> [--where 'field<op>value']… [--where-json <json>] [--order f[:desc]] [--fields a,b]",
       "        quote a condition with < or > in it, or the shell takes it as a redirection",
       "  history <table> <row or entity> | --key field=value … [--as-of <#seq or moment>] [--sources]",
+      "  pending [list] [--slot s] [--type t] [--status open|resolved|superseded|all]",
+      "  pending show <pi_…>",
+      "  reads [--connection <name or ID>] [--since 10m]",
+      "  verify                    check the log: chain, checksums, index, gaps",
       "  schema templates          the schema templates this saveslot ships",
       "",
       "  init | start | stop | status | config get | mcp   the local service",
@@ -106,6 +110,17 @@ export const TEXTS = {
   optionNotHere: s("that option is not one of this command's"),
   slotShowMissing: s("give the slot: saveslot slot show <slot> [table…]"),
   detail: s("  at"),
+
+  // pending, reads, verify (06 §4.5, §4.8)
+  pendingListArgs: s("saveslot pending [list] takes options only: --slot, --type, --status"),
+  pendingShowArgs: s("give the item: saveslot pending show <pi_…>"),
+  pendingTypeBad: s(
+    "--type takes conflict, awaiting_confirmation, flagged, schema_change or deletion",
+  ),
+  pendingStatusBad: s("--status takes open, resolved, superseded or all"),
+  readsArgs: s("saveslot reads takes options only: --connection, --since"),
+  sinceBad: s("--since takes a moment (RFC 3339) or how long ago: 30s, 10m, 2h, 1d"),
+  verifyArgs: s("saveslot verify takes no arguments"),
 
   // query and history (06 §4.7)
   queryTableMissing: s("give the table: saveslot query <table> [--where 'field>value']…"),
