@@ -23,7 +23,7 @@ import { ApplyError, applyEvents, eventsOf } from "../apply/index.ts";
 import { appendOperation, type NewEvent } from "../log/index.ts";
 import { evaluationRefusal, loadRsql, RULESET_VERSION } from "../rules/index.ts";
 import {
-  type CompileWarning,
+  compiledWarnings,
   compileNewSlot,
   DEFAULT_SLOT_POLICY,
   filledDocument,
@@ -139,9 +139,9 @@ function receiptOf(
   document: JsonValue,
   compiled: CompiledSchema,
   changes: readonly Record<string, unknown>[],
-  warnings: readonly CompileWarning[],
   replayed: boolean,
 ): SchemaDraftReceipt {
+  const warnings = compiledWarnings(compiled);
   const name = (id: unknown) => compiled.tables.find((t) => t.id === id)?.name ?? id;
   return {
     draft,
@@ -158,9 +158,7 @@ function receiptOf(
     outcome: "applied",
     sv: 1,
     ...(replayed ? { replayed: true as const } : {}),
-    ...(warnings.length > 0
-      ? { warnings: warnings.map((w) => ({ code: w.code, table: w.table })) }
-      : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 
@@ -186,7 +184,7 @@ async function replay(tx: ReadTx, op: number): Promise<SchemaDraftReceipt> {
     changes === undefined
   )
     throw new SchemaDraftError("internal", "the slot's creation is not in the log as written");
-  return receiptOf(target.draft_id, document, compiled, changes, [], true);
+  return receiptOf(target.draft_id, document, compiled, changes, true);
 }
 
 export async function schemaDraft(
@@ -352,7 +350,6 @@ export async function schemaDraft(
       document as JsonValue,
       compiled,
       result.changes as unknown as Record<string, unknown>[],
-      result.warnings,
       false,
     );
   });

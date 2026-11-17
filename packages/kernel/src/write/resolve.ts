@@ -153,6 +153,12 @@ async function closed(tx: ReadTx, item: string, message: string): Promise<WriteE
   const c = await closingOf(tx, item);
   const who = await actorsNow(tx, c.principals);
   const out = c.out((p) => who.get(p));
+  // A closed item always has the event that closed it; without one, its state and the log disagree.
+  if (!("resolution" in out) && !("superseded" in out)) {
+    return new WriteError("internal", "a closed item without the event that closed it", {
+      reason: "inconsistent",
+    });
+  }
   return new WriteError("item_closed", message, {
     reason: "resolution" in out ? "resolved" : "superseded",
     ...out,

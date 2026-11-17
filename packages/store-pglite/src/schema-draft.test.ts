@@ -456,6 +456,11 @@ describe("warnings", () => {
       const r = await draft({ document });
       // An external key is not applied in this version, so its warning cannot be reached here.
       expect(r.warnings).toEqual([{ code: "group_key_free_text", table: "notes_by_text" }]);
+      // A replay rebuilds them from the compiled schema in the log, as the first receipt gave them.
+      const { replayed, ...again } = await draft({ document });
+      expect(replayed).toBe(true);
+      expect(again.warnings).toEqual(r.warnings);
+      expect(again).toEqual(r);
     },
     T,
   );

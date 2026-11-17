@@ -263,17 +263,36 @@ export function compileNewSlot(input: CompileNewSlotInput): CompileResult {
     })),
   ] as unknown as ChangesBlock;
 
-  const warnings: CompileWarning[] = doc.tables.flatMap((t): CompileWarning[] => {
+  // From the compiled schema, so a replay rebuilding the receipt from the log gives the same; the
+  // document adds where each one is (`path`).
+  const pathOf = new Map(
+    doc.tables.map((t) => [t.name, `${t.path}/${t.kind === "base" ? "external_key" : "rule"}`]),
+  );
+  const warnings: CompileWarning[] = compiledWarnings(compiled).map((w) => ({
+    ...w,
+    path: pathOf.get(w.table) as string,
+  }));
+  return { ok: true, compiled, changes, outcome: "applied", targetVersion: 1, warnings };
+}
+
+/**
+ * The warnings a slot's compiled schema gives (04-contract-types §7 `Warning`, by table name), in
+ * table order: a base table keyed by one field from outside, and a derived table whose group key
+ * comes from free text (06 «派生行身份»: it goes with the group when deleted). A function of the
+ * compiled schema only, which the log keeps.
+ */
+export function compiledWarnings(
+  compiled: CompiledSchema,
+): { readonly code: CompileWarning["code"]; readonly table: string }[] {
+  return compiled.tables.flatMap((t): { code: CompileWarning["code"]; table: string }[] => {
     if (t.kind === "base") {
       return t.external_key?.length === 1
-        ? [{ code: "single_field_external_key", table: t.name, path: `${t.path}/external_key` }]
+        ? [{ code: "single_field_external_key", table: t.name }]
         : [];
     }
-    const scope = compiledDerived.get(t)?.rule.scope;
-    // 06 «派生行身份»: a group key from free text goes with the group when deleted.
-    return scope?.kind === "group" && scope.key_from_free_text
-      ? [{ code: "group_key_free_text", table: t.name, path: `${t.path}/rule` }]
+    const scope = t.rule.scope;
+    return scope.kind === "group" && scope.key_from_free_text
+      ? [{ code: "group_key_free_text", table: t.name }]
       : [];
   });
-  return { ok: true, compiled, changes, outcome: "applied", targetVersion: 1, warnings };
 }
