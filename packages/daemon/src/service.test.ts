@@ -295,47 +295,60 @@ describe("the service in process", () => {
     await s.stop();
   });
 
-  it("does not serve with credentials open to others, or not of their form", async () => {
-    const cases: [string, (h: string) => void][] = [
-      ["credentials_permissions", (h) => chmodSync(join(h, "control", "credentials.json"), 0o644)],
-      ["credentials_permissions", (h) => chmodSync(join(h, "control"), 0o755)],
-      ["credentials_permissions", (h) => chmodSync(h, 0o777)],
-      [
-        "credentials_permissions",
-        (h) => {
-          mkdirSync(join(h, "credentials"), { mode: 0o777 });
-          chmodSync(join(h, "credentials"), 0o777);
-        },
-      ],
-      [
-        "credentials_permissions",
-        (h) => {
-          mkdirSync(join(h, "credentials"), { mode: 0o700 });
-          writeFileSync(join(h, "credentials", "session"), "x\n", { mode: 0o644 });
-        },
-      ],
-      [
-        "credentials_permissions",
-        (h) => {
-          // The credentials a link to a file elsewhere, itself private.
-          const real = join(h, "elsewhere.json");
-          renameSync(join(h, "control", "credentials.json"), real);
-          symlinkSync(real, join(h, "control", "credentials.json"));
-        },
-      ],
-      [
-        "credentials_corrupt",
-        (h) => writeFileSync(join(h, "control", "credentials.json"), "{}", { mode: 0o600 }),
-      ],
-    ];
-    for (const [reason, spoil] of cases) {
+  // One case each (each its own copy of the template home): together they took half the test
+  // time limit, and a full run in parallel went past it.
+  const credentialCases: [string, string, (h: string) => void][] = [
+    [
+      "credentials.json readable by others",
+      "credentials_permissions",
+      (h) => chmodSync(join(h, "control", "credentials.json"), 0o644),
+    ],
+    [
+      "control/ open to others",
+      "credentials_permissions",
+      (h) => chmodSync(join(h, "control"), 0o755),
+    ],
+    ["the home open to others", "credentials_permissions", (h) => chmodSync(h, 0o777)],
+    [
+      "credentials/ open to others",
+      "credentials_permissions",
+      (h) => {
+        mkdirSync(join(h, "credentials"), { mode: 0o777 });
+        chmodSync(join(h, "credentials"), 0o777);
+      },
+    ],
+    [
+      "the session file readable by others",
+      "credentials_permissions",
+      (h) => {
+        mkdirSync(join(h, "credentials"), { mode: 0o700 });
+        writeFileSync(join(h, "credentials", "session"), "x\n", { mode: 0o644 });
+      },
+    ],
+    [
+      "credentials.json a link to a file elsewhere, itself private",
+      "credentials_permissions",
+      (h) => {
+        const real = join(h, "elsewhere.json");
+        renameSync(join(h, "control", "credentials.json"), real);
+        symlinkSync(real, join(h, "control", "credentials.json"));
+      },
+    ],
+    [
+      "credentials.json not of its form",
+      "credentials_corrupt",
+      (h) => writeFileSync(join(h, "control", "credentials.json"), "{}", { mode: 0o600 }),
+    ],
+  ];
+  for (const [what, reason, spoil] of credentialCases) {
+    it(`does not serve with credentials open to others, or not of their form: ${what}`, async () => {
       const h = home();
       spoil(h);
       const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
       expect([s.state, s.reason]).toEqual(["failed", reason]);
       await s.stop();
-    }
-  });
+    });
+  }
 
   it("removes the temporary files a killed write left in control/ and credentials/", async () => {
     const h = home();
