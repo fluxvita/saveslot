@@ -15,6 +15,10 @@
 // pipeline's. In some samples the steps share a task, so a writer's own receipt of an item makes
 // it read and a reached item is superseded unless joined or refreshed since; in the others each
 // step has its own, and reached items are refreshed.
+//
+// Each step carries its `ver` explicitly, the latest version of the row at or before the op the
+// scenario names. Which steps give versions comes from the same judged state the pipeline is given
+// (testing/version.fixture.ts), not from a second source.
 import {
   appendOperation,
   applyEvents,
@@ -25,7 +29,6 @@ import {
   readBufferOf,
   readEvents,
   readTail,
-  view,
 } from "@fluxvita/saveslot-kernel";
 import {
   asInThisPhase,
@@ -51,6 +54,7 @@ import { EVENT, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
+import { seenAsVersions, versionsOf } from "./testing/version.fixture.ts";
 
 vi.setConfig({ testTimeout: 600_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 550_000, markInterruptAsFailure: true });
@@ -210,23 +214,6 @@ function requestOf(o: Op, i: number, isState: boolean): unknown {
   };
 }
 
-/**
- * What a row's version is about: its view without the stretches of a field no contribution gives
- * (value null, no `by`), and without a field left with none. The view lists such a stretch once
- * the field has any item, a candidate included, while the row itself, and its version table, did
- * not change.
- */
-function asVersion(state: Parameters<typeof view>[0]): string {
-  const v = view(state);
-  const fields = Object.fromEntries(
-    Object.entries(v.fields).flatMap(([f, xs]) => {
-      const given = (xs ?? []).filter((x) => x.value !== null || x.by !== undefined);
-      return given.length > 0 ? [[f, given]] : [];
-    }),
-  );
-  return JSON.stringify({ ...v, fields });
-}
-
 const both = [
   ["state", STATE, true],
   ["event", EVENT, false],
@@ -325,29 +312,13 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
           seen.skipped++;
           return;
         }
-        // Each `ver` the latest version of the row at or before it (as in write-pipeline.prop).
-        const first = judged(schema, sent, []);
-        const versions = first.steps
-          .filter((x, k) => {
-            const before = k === 0 ? undefined : asVersion((first.steps[k - 1] as typeof x).state);
-            return asVersion(x.state) !== before;
-          })
-          .map((x) => x.op.op);
-        const toVersion = (s: number) => versions.filter((v) => v <= s).at(-1);
-        if (
-          sent.some(
-            (o, i) =>
-              i > 0 && "seen" in o && o.seen !== undefined && toVersion(o.seen) === undefined,
-          )
-        ) {
+        // Each `ver` the latest version of the row at or before the op it names
+        // (version.fixture.ts).
+        const ops = seenAsVersions(sent, (x) => judged(schema, x, []).steps);
+        if (ops === undefined) {
           seen.skipped++;
           return;
         }
-        const ops = sent.map((o, i) =>
-          i > 0 && "seen" in o && o.seen !== undefined
-            ? ({ ...o, seen: toVersion(o.seen) } as Op)
-            : o,
-        );
         // A sample that opens an item ends with a write reaching it: the current version, over
         // the whole time on a state table, acknowledged. Random steps reach an open item rarely;
         // this makes every such sample check a reach (superseded or refreshed, by its task).
@@ -365,7 +336,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
             kind: "write",
             op,
             event: op + 2,
-            seen: versions.filter((v) => v <= last).at(-1) ?? last,
+            seen: versionsOf(judgedOnce.steps).at(-1) ?? last,
             ...(isState
               ? { valid: { from: { mode: "given", value: "2026-01-01" }, to: { mode: "open" } } }
               : {}),

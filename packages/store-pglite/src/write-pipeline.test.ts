@@ -18,7 +18,13 @@ import {
   readTail,
   write,
 } from "@fluxvita/saveslot-kernel";
-import { COMPILED_V1, createSlotEvents, SLOT, writeInTx } from "@fluxvita/saveslot-kernel/testing";
+import {
+  COMPILED_V1,
+  createSlotEvents,
+  resolveInTx,
+  SLOT,
+  writeInTx,
+} from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
@@ -1347,6 +1353,187 @@ describe("ver: the version a receipt gives is one a later write may bring back (
         ],
       });
       expect(again).not.toHaveProperty("refused");
+    },
+    T,
+  );
+});
+
+describe("ver: a new version when a cell changes, its value or where it comes from (04-contract §2 `ver`; 02-architecture §8 版本表)", () => {
+  // Each step below takes effect where what is shown is already what it writes. Whether it gives a
+  // new version depends only on the version table: a revoke inside a span already revoked gives
+  // the existence cells there a new source (this revoke); a restore on a table without time adds
+  // an existence cell whose source is that restore. An undo writing back what an earlier undo
+  // already wrote back, or a take_previous on a state table restoring what is in effect, leaves
+  // every cell as it was (same value, same source): the version stays the one before.
+  const E = (entity: string) => ({ table: "entities", entity });
+  const ack = { acknowledge: ["overwrite"] };
+  type VerTable = "t_t1_v1" | "t_t2_v1";
+  /** Every cell of a version table, as rows. */
+  const cells = (table: "t_t2_v1") =>
+    s.store.read(
+      async (tx) =>
+        (
+          await tx.query(
+            `SELECT field_id, valid_from::text AS f, valid_to::text AS t, rec_from, rec_to,
+             src_event, src_field, src_k, revoked FROM ${table}__ver
+             ORDER BY row_id, field_id, valid_from, rec_from`,
+          )
+        ).rows,
+    );
+  /** The cells an operation opened: field, business interval, source event. */
+  const openedBy = async (op: number, table: VerTable) =>
+    (
+      await s.store.read((tx) =>
+        tx.query<{ field_id: string; f: string | null; t: string | null; src_event: unknown }>(
+          // A table without time has no business interval in its version table.
+          table === "t_t2_v1"
+            ? `SELECT field_id, valid_from::text AS f, valid_to::text AS t, src_event
+               FROM ${table}__ver WHERE rec_from = $1 ORDER BY field_id, valid_from`
+            : `SELECT field_id, NULL AS f, NULL AS t, src_event
+               FROM ${table}__ver WHERE rec_from = $1 ORDER BY field_id`,
+          [op],
+        ),
+      )
+    ).rows.map((r) => ({ field: r.field_id, from: r.f, to: r.t, source: Number(r.src_event) }));
+  /** The seq of an operation's `write.base`. */
+  const baseOf = async (op: number) =>
+    (await eventsOfOp(op)).find((e) => e.type === "write.base")?.seq as number;
+  /** Resolves an item through the pipeline. */
+  const resolve = (params: unknown) =>
+    s.store.write((tx) =>
+      resolveInTx(tx, {
+        actor: USER as never,
+        task: null,
+        now: now(),
+        windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+        visibility: { kind: "all" },
+        params,
+        newId,
+        reads: readBufferOf(s.store),
+      }),
+    );
+  /** The only pending item a receipt lists, taken back to before the conflict: its write. */
+  const takePrevious = async (r: { pending: readonly { id: string; item_ver?: string }[] }) => {
+    expect(r.pending).toHaveLength(1);
+    const item = r.pending[0] as { id: string; item_ver?: string };
+    const x = await resolve({ id: item.id, decision: "take_previous", item_ver: item.item_ver });
+    if (x.write === undefined) throw new Error("take_previous wrote nothing");
+    return { seq: x.write.seq, ver: x.write.ops[0]?.ver as string };
+  };
+  const putEntity = (entity: string, ver: string, b: string) =>
+    send({
+      sv: 1,
+      ops: [
+        {
+          ...E(entity),
+          intent: "update",
+          ver,
+          valid_from: "2026-11-03",
+          valid_to: "2026-11-05",
+          ...ack,
+          set: { b },
+        },
+      ],
+    });
+  const newEntity = async () => {
+    const e = await send({
+      sv: 1,
+      ops: [{ intent: "insert", table: "entities", valid_from: "2026-10-01", set: { b: "1" } }],
+    });
+    return { e, entity: e.ops[0]?.target.entity as string };
+  };
+  const revokeEntity = (entity: string, ver: string, valid_to: string) =>
+    send({
+      sv: 1,
+      ops: [{ ...E(entity), intent: "revoke", ver, valid_from: "2026-11-01", valid_to }],
+    });
+
+  it(
+    "a revoke inside a span already revoked: the existence cells come from it, a new version",
+    async () => {
+      const { e, entity } = await newEntity();
+      const r1 = await revokeEntity(entity, verAt(e), "2026-11-07");
+      const r2 = await revokeEntity(entity, verAt(r1), "2026-11-03");
+      expect(r2.ops[0]?.fields["*"]).toMatchObject([{ result: "applied" }]);
+      expect(verAt(r2)).toBe(`v${r2.seq}.0`);
+      // [11-01, 11-03) now comes from the second revoke; the rest of the first revoke's span is
+      // cut there and keeps its source.
+      expect(await openedBy(r2.seq, "t_t2_v1")).toEqual([
+        { field: "existence", from: "2026-11-01", to: "2026-11-03", source: await baseOf(r2.seq) },
+        { field: "existence", from: "2026-11-03", to: "2026-11-07", source: await baseOf(r1.seq) },
+      ]);
+      expect(await putEntity(entity, verAt(r2), "2")).toMatchObject({ status: "saved" });
+    },
+    T,
+  );
+
+  it(
+    "an undo writing back what an earlier undo of the same write did: every cell as it was, the version before",
+    async () => {
+      const { e, entity } = await newEntity();
+      const r = await revokeEntity(entity, verAt(e), "2026-11-07");
+      const fill = await putEntity(entity, verAt(r), "3");
+      expect(fill.status).toBe("saved");
+      const undo = (ver: string) =>
+        send({ sv: 1, ops: [{ ...E(entity), ver, ...ack, revert: { undo: fill.seq } }] });
+      const u1 = await undo(verAt(fill));
+      const before = await cells("t_t2_v1");
+      const u2 = await undo(verAt(u1));
+      expect(u2.ops[0]?.fields["b"]).toMatchObject([{ result: "applied", uncovered: true }]);
+      expect(await cells("t_t2_v1")).toEqual(before);
+      expect(verAt(u2)).toBe(verAt(u1));
+      expect(await putEntity(entity, verAt(u2), "4")).toMatchObject({ status: "saved" });
+    },
+    T,
+  );
+
+  it(
+    "a take_previous restoring what is in effect, on a state table: every cell as it was, the version before",
+    async () => {
+      const { e, entity } = await newEntity();
+      await revokeEntity(entity, verAt(e), "2026-11-07");
+      // Two stale fills of the revoked span, each taken back to before it: the second restores
+      // what the first already restored.
+      const stale = (b: string) =>
+        send({
+          sv: 1,
+          ops: [
+            {
+              ...E(entity),
+              intent: "update",
+              ver: verAt(e),
+              valid_from: "2026-11-03",
+              valid_to: "2026-11-05",
+              set: { b },
+            },
+          ],
+        });
+      const t1 = await takePrevious(await stale("2"));
+      const second = await stale("3");
+      const before = await cells("t_t2_v1");
+      const t2 = await takePrevious(second);
+      expect(await cells("t_t2_v1")).toEqual(before);
+      expect(t2.ver).toBe(t1.ver);
+      expect(await putEntity(entity, t2.ver, "4")).toMatchObject({ status: "saved" });
+    },
+    T,
+  );
+
+  it(
+    "a take_previous restoring what is in effect, on a table without time: a new existence cell from it, a new version",
+    async () => {
+      const a = await insertRow("1");
+      const row = rowAt(a);
+      await send({ sv: 1, ops: [{ intent: "revoke", table: "rows", row, ver: verAt(a) }] });
+      const stale = (set: Record<string, string>) =>
+        send({ sv: 1, ops: [{ intent: "update", table: "rows", row, ver: verAt(a), set }] });
+      await takePrevious(await stale({ c: "2" }));
+      const t2 = await takePrevious(await stale({ b: "3" }));
+      expect(t2.ver).toBe(`v${t2.seq}.0`);
+      expect(await openedBy(t2.seq, "t_t1_v1")).toEqual([
+        { field: "existence", from: null, to: null, source: await baseOf(t2.seq) },
+      ]);
+      expect(await update(row, { b: "4" }, t2.ver)).toMatchObject({ status: "saved" });
     },
     T,
   );

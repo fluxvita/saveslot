@@ -9,6 +9,14 @@
 //
 // Every write and revoke carries its `ver` explicitly here (the scenario judged the same way): the
 // `ver` taken from the caller's own earlier writes is a fallback of its own, with fixed cases.
+//
+// What is checked here is the pipeline: how a request maps to a judged op, the events it appends,
+// the versions it gives. The judgement is its given input (`judgeOp`, compared with the reference
+// evaluator in the kernel's reference.prop.test.ts), and so is "which steps give a new version"
+// (testing/version.fixture.ts): it comes from the same judged state, not from a second source.
+// The reference evaluator gives states, not items and their sources, so the steps where what is
+// shown stays the same but where it comes from changes have no check independent of judge; fixed
+// cases in write-pipeline.test.ts cover them on the store.
 
 import type { TenantStore } from "@fluxvita/saveslot-kernel";
 import {
@@ -21,7 +29,6 @@ import {
   readBufferOf,
   readEvents,
   readTail,
-  view,
 } from "@fluxvita/saveslot-kernel";
 import {
   asInThisPhase,
@@ -43,6 +50,7 @@ import { EVENT, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
+import { seenAsVersions } from "./testing/version.fixture.ts";
 
 vi.setConfig({ testTimeout: 600_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 550_000, markInterruptAsFailure: true });
@@ -265,22 +273,6 @@ function comparable(e: LoggedEvent, items: Map<string, string>): unknown {
   return { type: e.type, seq: e.seq, blocks };
 }
 
-/**
- * What a row's version is about: its view without the stretches of a field no contribution gives
- * (value null, no `by`). The view lists such a stretch once the field has any item, a candidate
- * included, while the row itself, and its version table, did not change.
- */
-function asVersion(state: Parameters<typeof view>[0]): string {
-  const v = view(state);
-  const fields = Object.fromEntries(
-    Object.entries(v.fields).flatMap(([f, xs]) => {
-      const given = (xs ?? []).filter((x) => x.value !== null || x.by !== undefined);
-      return given.length > 0 ? [[f, given]] : [];
-    }),
-  );
-  return JSON.stringify({ ...v, fields });
-}
-
 const both = [
   ["state", STATE, true],
   ["event", EVENT, false],
@@ -382,28 +374,12 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       seen.skipped++;
       return;
     }
-    // A `ver` names a version of the row (04-contract `ver`): an operation after which the
-    // row changed. Each `ver` becomes the latest version at or before it: the row is the same
-    // there, so the scenario judges the same. None before the row was made: skipped.
-    const first = judged(schema, sent, decisions, numbering);
-    const versions = first.steps
-      .filter((x, k) => {
-        const before = k === 0 ? undefined : asVersion((first.steps[k - 1] as typeof x).state);
-        return asVersion(x.state) !== before;
-      })
-      .map((x) => x.op.op);
-    const toVersion = (s: number) => versions.filter((v) => v <= s).at(-1);
-    if (
-      sent.some(
-        (o, i) => i > 0 && "seen" in o && o.seen !== undefined && toVersion(o.seen) === undefined,
-      )
-    ) {
+    // Each `ver` the latest version of the row at or before the op it names (version.fixture.ts).
+    const ops = seenAsVersions(sent, (x) => judged(schema, x, decisions, numbering).steps);
+    if (ops === undefined) {
       seen.skipped++;
       return;
     }
-    const ops = sent.map((o, i) =>
-      i > 0 && "seen" in o && o.seen !== undefined ? ({ ...o, seen: toVersion(o.seen) } as Op) : o,
-    );
     const { steps } = judged(schema, ops, decisions, numbering);
     const ctx = {
       table: (isState ? "t2" : "t1") as never,
@@ -566,6 +542,83 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     expect(seen.pending).toBeGreaterThan(0);
     atRandom.decisions += seen.decisions;
   });
+
+  it.runIf(isState)(
+    "a `ver` on a step that only changed where cells come from: fixed scenarios",
+    async () => {
+      const g = (value: string) => ({ mode: "given", value });
+      const span = (from: string, to?: string) => ({
+        valid: { from: g(from), to: to === undefined ? { mode: "open" } : g(to) },
+      });
+      const write = (op: number, seen: number | undefined, valid: object, value: string): Op =>
+        ({
+          kind: "write",
+          op,
+          event: op + 1,
+          ...(seen !== undefined ? { seen } : {}),
+          ...valid,
+          fields: { f2: { value, sources: [`S${op}`] } },
+          acknowledge: ["overwrite"],
+        }) as Op;
+      const revoke = (op: number, seen: number, valid: object): Op =>
+        ({ kind: "revoke", op, event: op + 1, seen, ...valid, validSources: [`S${op}`] }) as Op;
+      const undo = (op: number, target: number, seen?: number, includeLater?: true): Op =>
+        ({
+          kind: "undo",
+          op,
+          event: op + 1,
+          target,
+          ...(seen !== undefined ? { seen } : {}),
+          ...(includeLater ? { includeLater } : {}),
+          acknowledge: ["overwrite"],
+        }) as Op;
+      const scenarios: [string, Op[]][] = [
+        // A revoke inside a span already revoked gives a version (the span now comes from it); the
+        // write after it sees exactly that version.
+        [
+          "a revoke inside a revoked span, then a write seeing it",
+          [
+            write(10, 0, span("2026-10-01"), "1"),
+            revoke(20, 10, span("2026-11-01", "2026-11-07")),
+            revoke(30, 20, span("2026-11-01", "2026-11-03")),
+            write(40, 30, span("2026-11-01", "2026-11-03"), "2"),
+          ],
+        ],
+        // Undo #90 sees #80, which gives no version: sent seeing #60, it awaits confirmation instead
+        // of taking effect, and gives no version; the write after it, seeing #90, is sent seeing #60.
+        [
+          "an earlier `ver` mapped changes which later steps give versions",
+          [
+            write(10, 0, span("2026-10-01"), "1"),
+            revoke(20, 10, span("2026-11-03", "2026-11-09")),
+            write(30, 29, span("2026-11-05", "2026-11-07"), "5"),
+            undo(40, 30, 30),
+            undo(50, 20, 40),
+            write(60, 50, span("2026-11-03", "2026-11-05"), "6"),
+            undo(70, 50, 60),
+            undo(80, 30, undefined, true),
+            undo(90, 60, 80),
+            write(100, 90, span("2026-11-09", "2026-11-11"), "3"),
+          ],
+        ],
+      ];
+      for (const [name, ops] of scenarios) {
+        const before = { ...seen };
+        await checkSample(ops, []);
+        expect({
+          name,
+          sampled: seen.samples - before.samples,
+          skipped: seen.skipped - before.skipped,
+          steps: seen.steps - before.steps,
+        }).toEqual({
+          name,
+          sampled: 1,
+          skipped: 0,
+          steps: ops.length,
+        });
+      }
+    },
+  );
 
   it("each decision through resolve: one fixed scenario each", async () => {
     for (const [kind, ops] of fixed(isState)) {
