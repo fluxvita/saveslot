@@ -37,7 +37,8 @@ import {
 import { derivedSchema, fc, propRuns, rule, TABLES } from "@fluxvita/saveslot-kernel/rsql-testing";
 import { createSlotEvents, SLOT, writeInTx } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { PgliteBackend, type PgliteTenantStore } from "./backend.ts";
+import type { PgliteTenantStore } from "./backend.ts";
+import { testBackend } from "./testing/test-backend.fixture.ts";
 
 vi.setConfig({ testTimeout: 300_000 });
 
@@ -101,10 +102,7 @@ beforeAll(async () => {
     tables: [...base.tables.filter((t) => t.kind === "base"), ...derived],
   } as Schema;
   root = mkdtempSync(join(tmpdir(), "saveslot-derive-"));
-  store = await new PgliteBackend().open(
-    { kind: "pglite", dir: join(root, "tenant") },
-    { create: true },
-  );
+  store = await testBackend().open({ kind: "pglite", dir: join(root, "tenant") }, { create: true });
   await createTenant(
     store,
     createOpsContext({

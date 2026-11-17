@@ -32,7 +32,8 @@ import {
 import type { LogEntry, TableSchema } from "@fluxvita/saveslot-reference";
 import { EVENT, STATE } from "@fluxvita/saveslot-reference/testing";
 import { afterAll, describe, expect, it } from "vitest";
-import { PgliteBackend, type PgliteTenantStore } from "./backend.ts";
+import type { PgliteTenantStore } from "./backend.ts";
+import { testBackend } from "./testing/test-backend.fixture.ts";
 
 const T = 60_000;
 const TENANT = `tn_${"8".repeat(26)}`;
@@ -105,7 +106,7 @@ async function applied(schema: TableSchema, ops: LogEntry[]) {
   const isState = schema.kind === "state";
   const root = mkdtempSync(join(tmpdir(), "saveslot-apply-revoke-"));
   roots.push(root);
-  const store = await new PgliteBackend().open(
+  const store = await testBackend().open(
     { kind: "pglite", dir: join(root, "tenant") },
     { create: true },
   );

@@ -12,14 +12,15 @@ import {
   openLocalTenant,
 } from "@fluxvita/saveslot-service";
 import { createLocalHome, recordTestRead, writtenReads } from "@fluxvita/saveslot-service/testing";
-import { PgliteBackend } from "@fluxvita/saveslot-store-pglite";
+
 import { afterAll, describe, expect, it } from "vitest";
+import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 
 const root = mkdtempSync(join(tmpdir(), "saveslot-reads-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 async function open(home: string, dataDir: string): Promise<LocalTenant> {
-  const r = await openLocalTenant({ home, dataDir, backend: new PgliteBackend() });
+  const r = await openLocalTenant({ home, dataDir, backend: testBackend() });
   if (!r.ok) throw new Error(r.failure);
   return r.tenant;
 }
@@ -27,7 +28,7 @@ async function open(home: string, dataDir: string): Promise<LocalTenant> {
 describe("the local tenant's reads", () => {
   it("are written by flushLocalReads, and by closing the tenant", async () => {
     const home = join(root, "h");
-    const dataDir = await createLocalHome(home, new PgliteBackend());
+    const dataDir = await createLocalHome(home, testBackend());
     const t = await open(home, dataDir);
     const r1 = recordTestRead(t);
     const r2 = recordTestRead(t);

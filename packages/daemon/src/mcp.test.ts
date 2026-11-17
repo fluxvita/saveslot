@@ -8,8 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TOOLS } from "@fluxvita/saveslot-server";
 import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
-import { osFileLock, PgliteBackend } from "@fluxvita/saveslot-store-pglite";
+import { osFileLock } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { contractSuite, LEDGER } from "./contract-suite.fixture.ts";
 import { httpDriver, httpRequest } from "./http-driver.fixture.ts";
 import { type Era, MCP_OPERATIONS, mcpClient, mcpDriver } from "./mcp-driver.fixture.ts";
@@ -25,7 +26,7 @@ function serviceFixture(prefix: string) {
   beforeAll(async () => {
     await initLocalHome({
       home: s.home,
-      backend: new PgliteBackend(),
+      backend: testBackend(),
       lock: osFileLock,
       now: new Date().toISOString(),
     });

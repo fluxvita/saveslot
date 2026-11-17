@@ -8,7 +8,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KERNEL_TABLES, type ReadTx } from "@fluxvita/saveslot-kernel";
-import { PgliteBackend, type PgliteTenantStore } from "../backend.ts";
+import type { PgliteTenantStore } from "../backend.ts";
+import { testBackend } from "./test-backend.fixture.ts";
 
 const KERNEL = new Set(KERNEL_TABLES.map((t) => t.name));
 
@@ -37,7 +38,7 @@ export interface ReusableStore {
 
 export async function openReusable(prefix: string): Promise<ReusableStore> {
   const root = mkdtempSync(join(tmpdir(), prefix));
-  const store = await new PgliteBackend().open(
+  const store = await testBackend().open(
     { kind: "pglite", dir: join(root, "tenant") },
     { create: true },
   );

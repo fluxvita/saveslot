@@ -2,14 +2,14 @@
 // on stdout. With "hold", it keeps the store open until stdin closes.
 //   node --conditions=source open-store.fixture.ts <dir> [hold]
 
-import { PgliteBackend } from "../backend.ts";
 import { PgliteStoreError } from "../errors.ts";
+import { testBackend } from "./test-backend.fixture.ts";
 
 const [dir, mode] = process.argv.slice(2);
 if (!dir) throw new Error("usage: open-store.fixture.ts <dir> [hold]");
 
 try {
-  const store = await new PgliteBackend().open({ kind: "pglite", dir }, { create: true });
+  const store = await testBackend().open({ kind: "pglite", dir }, { create: true });
   process.stdout.write(`${JSON.stringify({ opened: true, epoch: store.epoch })}\n`);
   if (mode === "hold") {
     process.stdin.resume();

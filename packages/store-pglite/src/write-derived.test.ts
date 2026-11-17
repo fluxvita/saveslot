@@ -32,8 +32,8 @@ import {
   writeInTx,
 } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { PgliteBackend } from "./backend.ts";
 import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
+import { testBackend } from "./testing/test-backend.fixture.ts";
 
 const T = 120_000;
 const TENANT = `tn_${"8".repeat(26)}`;
@@ -762,7 +762,7 @@ describe("the log replayed from an empty storage gives every table again", () =>
 
       const root = mkdtempSync(join(tmpdir(), "saveslot-write-derived-replica-"));
       roots.push(root);
-      const replica = await new PgliteBackend().open(
+      const replica = await testBackend().open(
         { kind: "pglite", dir: join(root, "tenant") },
         { create: true },
       );

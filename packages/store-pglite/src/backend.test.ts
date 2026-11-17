@@ -11,6 +11,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { PgliteBackend, type PgliteTenantStore } from "./backend.ts";
 import { PgliteStoreError } from "./errors.ts";
 import type { DirLock } from "./lock.ts";
+import { testBackend } from "./testing/test-backend.fixture.ts";
 
 const roots: string[] = [];
 function tenantDir(): string {
@@ -23,7 +24,7 @@ afterAll(() => {
   for (const r of roots) rmSync(r, { recursive: true, force: true });
 }, 120_000);
 
-const backend = new PgliteBackend();
+const backend = testBackend();
 const ref = (dir: string) => ({ kind: "pglite", dir }) as const;
 
 async function withStore<T>(dir: string, f: (s: PgliteTenantStore) => Promise<T>): Promise<T> {
@@ -290,7 +291,7 @@ describe("ownership epoch", () => {
     async () => {
       // A lock that never refuses stands in for a lost lock.
       const noLock: DirLock = { name: "none", acquire: async () => ({ release: async () => {} }) };
-      const unlocked = new PgliteBackend({ lock: noLock });
+      const unlocked = testBackend({ lock: noLock });
       const dir = tenantDir();
       const stale = await unlocked.open(ref(dir), { create: true });
       await stale.write((tx) => tx.exec("CREATE TABLE t (who TEXT)"));
@@ -338,6 +339,30 @@ describe("durability configuration", () => {
         await walSyncs(new PgliteBackend({ durability: "host-fsync" })),
       ).toBeGreaterThanOrEqual(commits);
       expect(await walSyncs(new PgliteBackend({ durability: "pglite-default" }))).toBe(0);
+    },
+    T,
+  );
+
+  it(
+    'uses "host-fsync" when no durability is given (tests open their stores with another one)',
+    async () => {
+      const s = await new PgliteBackend().open(ref(tenantDir()), { create: true });
+      try {
+        const settings = await s.read((tx) =>
+          tx.query<{ name: string; setting: string }>(
+            "SELECT name, setting FROM pg_settings WHERE name IN ('fsync', 'wal_sync_method') ORDER BY name",
+          ),
+        );
+        expect(settings.rows).toEqual([
+          { name: "fsync", setting: "on" },
+          { name: "wal_sync_method", setting: "fsync" },
+        ]);
+        const before = await s.hostSyncStats();
+        await s.write((tx) => tx.exec("CREATE TABLE t (n INT)"));
+        expect((await s.hostSyncStats()).wal).toBeGreaterThan(before.wal);
+      } finally {
+        await s.close();
+      }
     },
     T,
   );

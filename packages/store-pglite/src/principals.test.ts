@@ -23,7 +23,8 @@ import {
   verifyLog,
 } from "@fluxvita/saveslot-kernel";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PgliteBackend, type PgliteTenantStore } from "./backend.ts";
+import type { PgliteTenantStore } from "./backend.ts";
+import { testBackend } from "./testing/test-backend.fixture.ts";
 
 const TENANT = `tn_${"8".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}`;
@@ -49,7 +50,7 @@ const roots: string[] = [];
 const open = async (name: string) => {
   const root = mkdtempSync(join(tmpdir(), `saveslot-${name}-`));
   roots.push(root);
-  return new PgliteBackend().open({ kind: "pglite", dir: join(root, "tenant") }, { create: true });
+  return testBackend().open({ kind: "pglite", dir: join(root, "tenant") }, { create: true });
 };
 
 const refusal = async (p: Promise<unknown>) => {

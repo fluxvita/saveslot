@@ -10,6 +10,11 @@
 #   default branch, push:   secrets, forbidden-terms, check (node:24)
 #   schedule (nightly):     check, check-latest, prop-soak
 #   by hand (web, api) on the default branch: check, check-latest, prop-soak, secrets, forbidden-terms
+#
+# Tests open their stores without passing fsync to the host, unless SAVESLOT_TEST_DURABILITY is
+# "host-fsync" (packages/store-pglite/src/testing/test-backend.fixture.ts). The check on a push runs
+# what the author and the reviewer ran locally; the nightly and by-hand checks set the variable, so
+# that the whole suite also runs on the real fsync path.
 
 workflow:
   rules:
@@ -24,11 +29,15 @@ workflow:
     - when: on_success
 
 # After a merge (a push to the default branch), on the schedule and by hand; not on merge requests.
+# Tests use host fsync on the schedule and by hand only.
 .after-merge:
   rules:
     - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
       when: never
-    - if: $CI_PIPELINE_SOURCE =~ /^(push|schedule|web|api)$/
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE =~ /^(schedule|web|api)$/
+      variables:
+        SAVESLOT_TEST_DURABILITY: host-fsync
 
 # On the schedule and by hand only.
 .full-only:
@@ -57,15 +66,17 @@ workflow:
   script:
     - pnpm check
 
-# On the lowest supported Node: after every merge, nightly and by hand.
+# On the lowest supported Node: after every merge, nightly and by hand (with host fsync).
 check:
   extends: [.check, .after-merge]
   image: node:24
 
-# On the latest Node: nightly and by hand.
+# On the latest Node: nightly and by hand (with host fsync).
 check-latest:
   extends: [.check, .full-only]
   image: node:latest
+  variables:
+    SAVESLOT_TEST_DURABILITY: host-fsync
 
 # Nightly and by hand (on the default branch): every property test file, round after round, each
 # run with a fresh random seed, for about 50 minutes. A failed run leaves its seed, replay path and

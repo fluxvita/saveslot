@@ -23,8 +23,9 @@ import {
   sessionFile,
 } from "@fluxvita/saveslot-service";
 import { recordTestRead } from "@fluxvita/saveslot-service/testing";
-import { osFileLock, PgliteBackend } from "@fluxvita/saveslot-store-pglite";
+import { osFileLock } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 
 const T = 60_000;
 const root = mkdtempSync(join(tmpdir(), "saveslot-calls-"));
@@ -75,11 +76,11 @@ async function call(
 }
 
 beforeAll(async () => {
-  await initLocalHome({ home, backend: new PgliteBackend(), lock: osFileLock, now: NOW });
+  await initLocalHome({ home, backend: testBackend(), lock: osFileLock, now: NOW });
   const r = await openLocalTenant({
     home,
     dataDir: join(home, "data"),
-    backend: new PgliteBackend(),
+    backend: testBackend(),
   });
   if (!r.ok) throw new Error(r.failure);
   t = r.tenant;

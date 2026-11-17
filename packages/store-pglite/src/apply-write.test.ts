@@ -26,7 +26,8 @@ import {
   SLOT,
 } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PgliteBackend, type PgliteTenantStore } from "./backend.ts";
+import type { PgliteTenantStore } from "./backend.ts";
+import { testBackend } from "./testing/test-backend.fixture.ts";
 
 const T = 60_000;
 const TENANT = `tn_${"8".repeat(26)}`;
@@ -136,10 +137,7 @@ async function at(evs: LoggedEvent[]) {
 
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), "saveslot-apply-request-"));
-  store = await new PgliteBackend().open(
-    { kind: "pglite", dir: join(root, "tenant") },
-    { create: true },
-  );
+  store = await testBackend().open({ kind: "pglite", dir: join(root, "tenant") }, { create: true });
   await createTenant(
     store,
     createOpsContext({

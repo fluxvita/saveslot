@@ -24,8 +24,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
 import { anchorFileText, createLocalHome } from "@fluxvita/saveslot-service/testing";
-import { osFileLock, PgliteBackend, type PgliteTenantStore } from "@fluxvita/saveslot-store-pglite";
+import { osFileLock, type PgliteTenantStore } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { LEDGER } from "./contract-suite.fixture.ts";
 import { httpDriver } from "./http-driver.fixture.ts";
 import { main } from "./main.ts";
@@ -39,7 +40,7 @@ const template = join(root, "t");
 let n = 0;
 
 beforeAll(async () => {
-  await createLocalHome(template, new PgliteBackend());
+  await createLocalHome(template, testBackend());
 });
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -162,7 +163,7 @@ describe("the service process", () => {
     const h = join(root, `crash-${n++}`);
     await initLocalHome({
       home: h,
-      backend: new PgliteBackend(),
+      backend: testBackend(),
       lock: osFileLock,
       now: new Date().toISOString(),
     });
@@ -271,7 +272,7 @@ describe("the service in process", () => {
     const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
     expect([s.state, s.reason]).toEqual(["failed", reason]);
     // The tenant's storage was closed again: another opener can take it.
-    const store = await new PgliteBackend().open({ kind: "pglite", dir: join(h, "data") }, {});
+    const store = await testBackend().open({ kind: "pglite", dir: join(h, "data") }, {});
     await store.close();
     await s.stop();
     expect(await s.exited).toEqual({ code: 0 });
@@ -359,7 +360,7 @@ describe("the service in process", () => {
   it("does not serve an empty tenant storage", async () => {
     const h = join(root, String(n++));
     cpSync(join(template, "control"), join(h, "control"), { recursive: true });
-    const created = await new PgliteBackend().open(
+    const created = await testBackend().open(
       { kind: "pglite", dir: join(h, "data") },
       { create: true },
     );
@@ -371,7 +372,7 @@ describe("the service in process", () => {
 
   it("reports the store's own refusal: the data directory held by another opener", async () => {
     const h = home();
-    const other = await new PgliteBackend().open({ kind: "pglite", dir: join(h, "data") }, {});
+    const other = await testBackend().open({ kind: "pglite", dir: join(h, "data") }, {});
     try {
       const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
       expect([s.state, s.reason]).toEqual(["failed", "store_locked"]);
@@ -403,11 +404,33 @@ describe("the service in process", () => {
     expect(await await exited).toEqual({ code: 0 });
     const homeLock = await osFileLock.acquire(lockDir(h));
     await homeLock.release();
-    const store = await new PgliteBackend().open({ kind: "pglite", dir: join(h, "data") }, {});
+    const store = await testBackend().open({ kind: "pglite", dir: join(h, "data") }, {});
     await store.close();
     expect(existsSync(socketFile(h))).toBe(false);
     expect(existsSync(pidFile(h))).toBe(false);
     await started;
+  });
+
+  it("opens the tenant with fsync passed to the host (the backend's default, not the tests')", async () => {
+    const s = await runService({ home: home(), version: "t", signals: false, log: () => {} });
+    try {
+      expect(s.state).toBe("ready");
+      const store = s.tenant?.store as PgliteTenantStore | undefined;
+      if (store === undefined) throw new Error("no open tenant");
+      const settings = await store.read((tx) =>
+        tx.query<{ name: string; setting: string }>(
+          "SELECT name, setting FROM pg_settings WHERE name IN ('fsync', 'wal_sync_method') ORDER BY name",
+        ),
+      );
+      expect(settings.rows).toEqual([
+        { name: "fsync", setting: "on" },
+        { name: "wal_sync_method", setting: "fsync" },
+      ]);
+      // Opening commits the ownership epoch; with "host-fsync" that commit reached the host.
+      expect((await store.hostSyncStats()).wal).toBeGreaterThan(0);
+    } finally {
+      await s.stop();
+    }
   });
 
   it("fails and exits 1 when the DB Worker dies, without reopening the database", async () => {

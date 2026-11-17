@@ -27,7 +27,7 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import { derivedSchema, rule } from "@fluxvita/saveslot-kernel/rsql-testing";
 import { createSlotEvents, SLOT } from "@fluxvita/saveslot-kernel/testing";
-import { PgliteBackend } from "../backend.ts";
+import { testBackend } from "./test-backend.fixture.ts";
 
 type CompiledSchema = ReturnType<typeof derivedSchema>;
 
@@ -114,7 +114,7 @@ async function setup(): Promise<unknown> {
     ),
   );
   const schema = { ...base, slot: SLOT } as CompiledSchema;
-  const store = await new PgliteBackend().open({ kind: "pglite", dir }, { create: true });
+  const store = await testBackend().open({ kind: "pglite", dir }, { create: true });
   try {
     await createTenant(store, ctx("2026-11-10T04:00:00.000Z"));
     const change = (target: Record<string, unknown>, kind: string) => ({
@@ -158,7 +158,7 @@ const outcome = async (f: () => Promise<unknown>): Promise<unknown> => {
 
 async function serve(): Promise<unknown> {
   const before = isRsqlLoaded();
-  const store = await new PgliteBackend().open({ kind: "pglite", dir }, {});
+  const store = await testBackend().open({ kind: "pglite", dir }, {});
   try {
     const tail = await store.read((tx) => readTail(tx));
     const decision = await openTenant({ logEnd: tail?.seq ?? (0 as never), highWater: 0 });
@@ -187,7 +187,7 @@ async function serve(): Promise<unknown> {
           'SELECT row_id, CAST("f_f1" AS text) AS "f_f1", CAST("f_f2" AS text) AS "f_f2" FROM "t_t1_v1"',
         ),
       );
-      const replica = await new PgliteBackend().open(
+      const replica = await testBackend().open(
         { kind: "pglite", dir: emptyDir as string },
         { create: true },
       );

@@ -17,7 +17,8 @@ import {
   verifyLog,
 } from "@fluxvita/saveslot-kernel";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PgliteBackend, type PgliteTenantStore } from "./backend.ts";
+import type { PgliteTenantStore } from "./backend.ts";
+import { testBackend } from "./testing/test-backend.fixture.ts";
 
 const USER = `u_${"1".repeat(26)}` as const;
 const CONN = `ci_${"2".repeat(26)}` as const;
@@ -85,10 +86,7 @@ const T = 60_000;
 beforeAll(async () => {
   const root = mkdtempSync(join(tmpdir(), "saveslot-log-"));
   roots.push(root);
-  store = await new PgliteBackend().open(
-    { kind: "pglite", dir: join(root, "tenant") },
-    { create: true },
-  );
+  store = await testBackend().open({ kind: "pglite", dir: join(root, "tenant") }, { create: true });
   await store.write((tx) => appendOperation(tx, genesis));
   await store.write((tx) => appendOperation(tx, write(t("04:10"), "45")));
   await store.write((tx) => appendOperation(tx, write(t("04:05"), "50")));
@@ -220,7 +218,7 @@ describe("continuing an operation on PGlite", () => {
   beforeAll(async () => {
     const root = mkdtempSync(join(tmpdir(), "saveslot-log-continue-"));
     roots.push(root);
-    fresh = await new PgliteBackend().open(
+    fresh = await testBackend().open(
       { kind: "pglite", dir: join(root, "tenant") },
       { create: true },
     );

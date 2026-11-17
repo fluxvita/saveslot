@@ -27,7 +27,8 @@ import {
 import { derivedSchema, rule } from "@fluxvita/saveslot-kernel/rsql-testing";
 import { createSlotEvents, queryInTx, SLOT } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PgliteBackend, type PgliteTenantStore } from "./backend.ts";
+import type { PgliteTenantStore } from "./backend.ts";
+import { testBackend } from "./testing/test-backend.fixture.ts";
 
 const TENANT = `tn_${"8".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}`;
@@ -113,10 +114,7 @@ beforeAll(async () => {
     tables: [...base.tables.filter((t) => t.kind === "base"), ...derived],
   } as Schema;
   root = mkdtempSync(join(tmpdir(), "saveslot-read-derived-"));
-  store = await new PgliteBackend().open(
-    { kind: "pglite", dir: join(root, "tenant") },
-    { create: true },
-  );
+  store = await testBackend().open({ kind: "pglite", dir: join(root, "tenant") }, { create: true });
   await createTenant(
     store,
     createOpsContext({

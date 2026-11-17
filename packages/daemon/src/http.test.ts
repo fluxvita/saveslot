@@ -8,8 +8,9 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
-import { osFileLock, PgliteBackend } from "@fluxvita/saveslot-store-pglite";
+import { osFileLock } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { contractSuite } from "./contract-suite.fixture.ts";
 import { httpDriver, httpRequest, type Reply } from "./http-driver.fixture.ts";
 import { type RunningService, runService, socketFile } from "./service.ts";
@@ -28,7 +29,7 @@ const driver = httpDriver(() => home);
 beforeAll(async () => {
   await initLocalHome({
     home,
-    backend: new PgliteBackend(),
+    backend: testBackend(),
     lock: osFileLock,
     now: new Date().toISOString(),
   });
@@ -269,7 +270,7 @@ describe("HTTP's own", () => {
       const h2 = join(root, "starting");
       await initLocalHome({
         home: h2,
-        backend: new PgliteBackend(),
+        backend: testBackend(),
         lock: osFileLock,
         now: new Date().toISOString(),
       });
