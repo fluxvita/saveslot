@@ -414,7 +414,8 @@ interface CatalogTables extends CommonResult {
     kind: "base" | "derived";
     description: UntrustedText;
     aliases?: UntrustedText[];                   // 表的别名，至多 8 个；不参与名字解析
-    time: { type: "none" } | { type: "event"; field: FieldName } | { type: "state"; granularity: "date" | "instant" };
+    /** 派生表不给：三种取值都不适用于派生表。 */
+    time?: { type: "none" } | { type: "event"; field: FieldName } | { type: "state"; granularity: "date" | "instant" };
     entity_key?: FieldName[];
     external_key?: FieldName[];                  // 来源键的键字段（事件类表、无时间表）
     duplicate_keys?: FieldName[][];
@@ -1013,8 +1014,9 @@ interface AwaitingDetail extends ItemBase {
 
 /** 执行后会改掉什么。在事项版本的绑定范围内。 */
 interface AwaitingImpact {
-  overwritten?: Array<{ field: FieldName; valid: Interval; value: Value; seq: Seq; actor: Actor }>;   // 会被覆盖的段
-  filled_gaps?: Array<{ valid: Interval; revoked_by?: Seq }>;                                          // 会被填掉的无值区间（只列在这里）
+  /** 这两项的 valid 只在状态类表上给：事件类表与无时间表的行没有区间。 */
+  overwritten?: Array<{ field: FieldName; valid?: Interval; value: Value; seq: Seq; actor: Actor }>;  // 会被覆盖的段
+  filled_gaps?: Array<{ valid?: Interval; revoked_by?: Seq }>;                                         // 会被填掉的无值区间（只列在这里）
   reverted?: Array<{ seq: Seq; actor: Actor; fields: FieldName[] }>;                                   // 会被回掉的后来写入
   referrers?: TargetRef[];                                                                             // 仍引用该行的行
 }
@@ -1879,7 +1881,8 @@ interface ReadsListResult extends PageResult {
     read: ReadId; at: Instant; actor: Actor; task?: string;
     operation: "query" | "sql" | "history" | "sources" | "catalog" | "pending" | "deletion_preview";
     selfcheck?: true;            // 签发连接实例时的自检
-    slot: SlotName; sv: Sv; table?: TableName;
+    /** 只在这次读取落在一个 slot 上时给。 */
+    slot?: SlotName; sv?: Sv; table?: TableName;
     /** 读到的行与版本。只给版本，不给值。最多 50 条，另给总数。 */
     rows?: Array<{ target: TargetRef; seq: Seq }>;
     rows_total?: number;
@@ -1955,6 +1958,8 @@ interface ErrorEnvelope { error: ErrorObject }
 
 interface ErrorObject {
   code: ErrorCode;
+  /** 一句给人看的说明。是不可信文本（05-surfaces 第 5 节）：可能带出调用方传入的内容；程序按 code 与 reason 判断，不解析它。 */
+  message?: string;
   /** 细分原因。取值见下表。 */
   reason?: string;
   /** 出问题的参数：JSON 指针式的路径，如 "ops/0/valid_to"。 */
@@ -2027,13 +2032,13 @@ type ValidationDetailCode =
 |---|---|---|
 | `invalid_argument` | `missing` / `malformed` / `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target`（`undo` 的目标是插入或首次创建、从没生效过的候选或待确认写入，或 schema 切换的操作号）/ `event_table_valid_at` / `no_value_now`（状态类表上不带区间的纠错，"现在"那一点该字段无值）/ `no_time_table` / `not_state_table` / `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `derived_table`（`history` 的 `changes` 以派生表为目标；`query` 在派生表上给了 `valid_at` / `valid_during`）/ `pending_deletion_source` / `cross_slot`（预览的源数据跨 slot；前提指向别的 slot 里可见的表；写入的各 op 落在不同的 slot。靠 `param` 区分是哪一种）/ `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots`（签发时 `slots` 是空数组）/ `duplicate_name`（`connections.issue`、`update`：连接实例重名）/ `tenant_not_empty`（导入的目标租户不是空的）/ 按来源键写入：`insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / 写入的前提：`premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` | `param`；`candidates?: string[]`（`ambiguous_table` 的候选表名）；`candidate_required` 时 `candidate_choices: Array<{ index: number; seq: Seq; actor: Actor }>`（事项的各候选：下标、所在写入、写入者）；`example?: object`（该模式或该参数完整的正确示例）；`duplicate_external_key` 时 `ops: number[]`（同键的两个 op 的下标）；`external_key_in_use` 时 `deletions?: ItemId[]`（键被冻结：冻结它的全部删除）或 `holder?: RowId`（占着它的未撤销的行）；`external_key_not_transferable`、`external_key_transferred` 时 `holder: RowId`（占着或现在持有这个键的行） |
 | `unknown_table` / `unknown_field` | — | `name`、`nearest: string[]`（只取可见的名字，最多 3 个；别名与 `name` 按 `keymatch@1` 的折叠比较后相同的对象，其名字排在最前；其余按折叠之后的编辑距离从小到大，相同时按名字的 `C` 排序） |
-| `not_found` | `row` / `entity` / `item` / `source` / `draft` / `connection` / `read` / `slot` | `deletions?: ItemId[]`（被宽限期内的删除整行去掉时：全部碰到它的贡献的待执行删除，按操作号排序；不回显内容）；`sources?: Array<{id, state: "unknown" \| "pending_deletion" \| "removed", deletion?}>` |
+| `not_found` | `row` / `entity` / `item` / `source` / `draft` / `connection` / `read` / `slot` / `route`（HTTP：没有这个端点） | `deletions?: ItemId[]`（被宽限期内的删除整行去掉时：全部碰到它的贡献的待执行删除，按操作号排序；不回显内容）；`sources?: Array<{id, state: "unknown" \| "pending_deletion" \| "removed", deletion?}>` |
 | `revoked` | — | `target: TargetRef`、`revoked_by: Seq`（用 `revert: {undo}` 恢复） |
 | `derived_readonly` | — | `table`、`base_tables: TableName[]` |
 | `validation_failed` | `write` / `schema` | `details[]`、`current_sv?`（`write` 的明细码含 `rule_eval_failed` 与 `migrate_failed`：迁移进行中带旧 `sv` 的写入对新版求值失败，拒绝这次写入而不是让切换失败） |
 | `read_first` | `no_read` / `task_mismatch` | `target: "row" \| "item" \| "slot" \| "table"`、`ref?: TargetRef \| ItemId \| SlotName`；`task_mismatch` 时 `read_task`、`task` |
 | `schema_incompatible` | — | `current_sv`、`changed_fields: Array<{field, change}>`（`field` 是 `"*"` 时表示整张表：这张表经 `restructure_unused` 改过结构） |
-| `too_large` | `evidence_segment` / `request` / `admission` / `result_budget` / `premise_entries` / `premise_fan_in` | `limit_bytes?`、`actual_bytes?`；`admission` 时 `estimated_rows`、`suggested_batch`（第一版整条规则重算，代价不随请求大小变化，准入不拒绝、不报 `admission`；按受影响分区估算之后启用）；`result_budget` 时 `narrow_by: string[]`；`premise_fan_in` 时 `target: TargetRef`、`count`（目标当前被多少条有效声明指向）。这些原因都发生在落账之前；已经落账的操作回执超预算时不报错，截短并带 `omitted[]` |
+| `too_large` | `evidence_segment` / `request` / `request_body`（HTTP：请求体超过服务能接收的上限）/ `admission` / `result_budget` / `premise_entries` / `premise_fan_in` | `limit_bytes?`、`actual_bytes?`；`admission` 时 `estimated_rows`、`suggested_batch`（第一版整条规则重算，代价不随请求大小变化，准入不拒绝、不报 `admission`；按受影响分区估算之后启用）；`result_budget` 时 `narrow_by: string[]`；`premise_fan_in` 时 `target: TargetRef`、`count`（目标当前被多少条有效声明指向）。这些原因都发生在落账之前；已经落账的操作回执超预算时不报错，截短并带 `omitted[]` |
 | `sql_rejected` | `syntax`（语法错误，文本不是良构的 Unicode）/ `not_select` / `function` / `node` / `system_time` / `unknown_name` / `type`（类型或单位不合）/ `limit`（超出上限）/ `runtime`（求值出错，如 64 位整数溢出） | `line`、`node`（不暴露物理名）、`use?: "history"` |
 | `sql_timeout` | — | `elapsed_ms` |
 | `draft_outdated` | `base_version` / `migrating` / `table_written`（确认时，草稿所改结构的那张表已被写入）/ `migrate_failed`（确认时，`migrate` 对试跑之后的新写入求值失败） | `current_sv`；`migrating` 时 `migration: MigrationStatus` |
@@ -2045,7 +2050,7 @@ type ValidationDetailCode =
 | `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"`（`all_slots`：限定了 slot 范围的凭证新建 slot） |
 | `rate_limited` | `quota` / `busy`（同一租户已有一次对拍或导入在跑） | `retry_after` |
 | `handle_expired` | `expired` / `restored` / `executed` / `derived_changed`（翻页期间派生表被刷新过，从首页重读） | `deletion?: ItemId`（已执行过的 `dc_`） |
-| `not_in_this_version` | `parameter` / `value` / `operation` / `table_written`（只对从未被写入的表放开的改动用在写入过的表上） | `param?`、`value?`、`operation?` |
+| `not_in_this_version` | `parameter` / `value` / `operation` / `table_written`（只对从未被写入的表放开的改动用在写入过的表上）/ `not_implemented`（这一版的实现还走不到的情形：参数本身合法，不是留给后续版本的参数） | `param?`、`value?`、`operation?` |
 | `unavailable` | `busy` / `restoring` / `importing` / `reconciling` / `starting` | `retry_after?` |
 | `internal` | — | `incident: string`（供排查的编号，不含内容） |
 | `import_rejected` | `unsupported_format` / `not_from_start` / `segment_order` / `chain_broken` / `checksum_mismatch` / `incomplete` / `replay_failed` | `seq?`、`path?`（只给位置，不回显内容） |
