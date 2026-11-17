@@ -15,6 +15,11 @@
 # "host-fsync" (packages/store-pglite/src/testing/test-backend.fixture.ts). The check on a push runs
 # what the author and the reviewer ran locally; the nightly and by-hand checks set the variable, so
 # that the whole suite also runs on the real fsync path.
+#
+# The jobs that install the workspace (check, check-latest, prop-soak) run it as the image's `node`
+# user, not as root: root reads and writes whatever the permission bits say, so the tests of files
+# and directories this user cannot read would otherwise be skipped. Only installing pnpm itself
+# needs root.
 
 workflow:
   rules:
@@ -46,6 +51,8 @@ workflow:
       when: never
     - if: $CI_PIPELINE_SOURCE =~ /^(schedule|web|api)$/
 
+# Everything after installing pnpm runs as `node`. The checkout and the restored cache (.pnpm-store)
+# are given to it first, so that it can write both and the cache is reused, not refilled each run.
 .pnpm:
   cache:
     key:
@@ -53,8 +60,10 @@ workflow:
     paths: [.pnpm-store]
   before_script:
     - npm install --global pnpm@12.14.0
-    - pnpm config set store-dir .pnpm-store
-    - pnpm install --frozen-lockfile
+    - chown -R node:node "$CI_PROJECT_DIR"
+    - uid="$(runuser -u node -- id -u)"; echo "running as uid $uid"; test "$uid" != 0
+    - runuser -u node -- pnpm config set store-dir .pnpm-store
+    - runuser -u node -- pnpm install --frozen-lockfile
 
 # `pnpm check`: type check, lint, unit and property tests, dependency rules, doc links, JSON examples.
 # Runs take about 4–5 minutes. The timeout is a hard bound from outside the test process: test-level
@@ -64,7 +73,7 @@ workflow:
   extends: [.pnpm]
   timeout: 20 minutes
   script:
-    - pnpm check
+    - runuser -u node -- env SAVESLOT_TEST_DURABILITY="${SAVESLOT_TEST_DURABILITY:-}" pnpm check
 
 # On the lowest supported Node: after every merge, nightly and by hand (with host fsync).
 check:
@@ -89,7 +98,7 @@ prop-soak:
     SOAK_MINUTES: "50"
     SOAK_RUN_MINUTES: "15"
   script:
-    - pnpm test:prop:soak
+    - runuser -u node -- env SAVESLOT_TEST_DURABILITY="${SAVESLOT_TEST_DURABILITY:-}" SOAK_MINUTES="$SOAK_MINUTES" SOAK_RUN_MINUTES="$SOAK_RUN_MINUTES" pnpm test:prop:soak
   artifacts:
     when: always
     expire_in: 30 days
