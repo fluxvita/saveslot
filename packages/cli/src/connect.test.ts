@@ -272,10 +272,13 @@ describe("connect: issued, self-checked, the token on stdout once", () => {
 
 describe("connect --apply against the stand-in: the host's executable found on PATH first", () => {
   const PATH = { PATH: hostDir };
-  const host = (body: string, shebang = true) =>
-    writeFileSync(join(hostDir, "claude"), `${shebang ? "#!/bin/sh\n" : ""}${body}\n`, {
-      mode: 0o755,
-    });
+  const host = (body: string, interpreter = "/bin/sh") =>
+    writeFileSync(join(hostDir, "claude"), `#!${interpreter}\n${body}\n`, { mode: 0o755 });
+  /**
+   * An interpreter the system cannot execute (0644): the host, executable itself and so found on
+   * PATH, fails with EACCES on Linux and macOS alike (execve(2): "a script or ELF interpreter").
+   */
+  const notExecutable = join(root, "interpreter-0644");
   const ran = `  ${join(hostDir, "claude")} mcp add saveslot --scope user -e SAVESLOT_TOKEN=${NEW} -- ${entry} mcp\n`;
 
   it("what is shown is what ran: the file onPath found, not another the system would", async () => {
@@ -319,14 +322,15 @@ describe("connect --apply against the stand-in: the host's executable found on P
   });
 
   it.each([
-    ["killed by a signal", "kill -9 $$", true, undefined, TEXTS.applySignal],
-    ["too long", "/bin/sleep 30", true, 300, TEXTS.applyTimeout],
-    ["a file the system cannot execute", "echo hi", false, undefined, TEXTS.applyCannotRun],
-    ["exits 3", "exit 3", true, undefined, TEXTS.applyExit(3)],
+    ["killed by a signal", "kill -9 $$", "/bin/sh", undefined, TEXTS.applySignal],
+    ["too long", "/bin/sleep 30", "/bin/sh", 300, TEXTS.applyTimeout],
+    ["a file the system cannot execute", "exit 0", notExecutable, undefined, TEXTS.applyCannotRun],
+    ["exits 3", "exit 3", "/bin/sh", undefined, TEXTS.applyExit(3)],
   ])(
     "%s: kept, the whole command by its path, why on stderr, 1",
-    async (_, body, shebang, timeout, why) => {
-      host(body, shebang);
+    async (_, body, interpreter, timeout, why) => {
+      writeFileSync(notExecutable, "#!/bin/sh\n", { mode: 0o644 });
+      host(body, interpreter);
       service();
       const r = await cli(["connect", "claude-code", "--name", "a", "--apply"], {
         env: PATH,
@@ -743,15 +747,33 @@ describe("runHostCommand and onPath", () => {
     expect(Date.now() - t0).toBeLessThan(5_000);
   });
 
-  it("a file the system cannot execute (no #!, or a directory): cannot run, never a throw", async () => {
-    const plain = join(hostDir, "no-shebang");
-    writeFileSync(plain, "echo hi\n", { mode: 0o755 });
+  it("a file the system cannot execute (0644, a directory, an interpreter 0644): cannot run, never a throw", async () => {
+    // EACCES on Linux and macOS alike.
+    const plain = join(hostDir, "mode-0644");
+    writeFileSync(plain, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
     expect(await runHostCommand([plain], {})).toEqual({ kind: "cannot_run" });
-    const binary = join(hostDir, "not-a-binary");
-    writeFileSync(binary, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0, 0, 0]), { mode: 0o755 });
-    expect(await runHostCommand([binary], {})).toEqual({ kind: "cannot_run" });
     mkdirSync(join(hostDir, "a-dir"), { recursive: true, mode: 0o755 });
     expect(await runHostCommand([join(hostDir, "a-dir")], {})).toEqual({ kind: "cannot_run" });
+    const interpreter = join(hostDir, "interpreter-0644");
+    writeFileSync(interpreter, "#!/bin/sh\n", { mode: 0o644 });
+    const script = join(hostDir, "by-interpreter-0644");
+    writeFileSync(script, `#!${interpreter}\nexit 0\n`, { mode: 0o755 });
+    expect(await runHostCommand([script], {})).toEqual({ kind: "cannot_run" });
+  });
+
+  it("an executable file without #!: as each platform runs it", async () => {
+    const plain = join(hostDir, "no-shebang");
+    writeFileSync(plain, "exit 7\n", { mode: 0o755 });
+    const r = await runHostCommand([plain], {});
+    if (process.platform === "linux") {
+      // libuv spawns by fork and glibc's execvp, which runs a file execve(2) refuses with ENOEXEC
+      // by /bin/sh: the file runs as a shell script, and exits 7.
+      expect(r).toEqual({ kind: "exit", code: 7 });
+    } else {
+      // macOS: libuv spawns by posix_spawn, which refuses it (ENOEXEC): it cannot run.
+      expect(process.platform).toBe("darwin");
+      expect(r).toEqual({ kind: "cannot_run" });
+    }
   });
 
   it("too long with a child of its own holding the pipes: the whole group killed, back at once", async () => {
