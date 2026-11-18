@@ -20,6 +20,11 @@ export interface HealthBody {
   readonly since: string;
   /** With `failed`: a stable code. */
   readonly reason?: string;
+  /**
+   * The home's single-writer lock: held by the answering process, which takes it before it listens
+   * (02-architecture §7). Given by the local service.
+   */
+  readonly writer_lock?: "held";
 }
 
 export interface LocalListener {

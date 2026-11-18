@@ -164,6 +164,9 @@ export const TEXTS = {
   orderBad: s("--order takes a field, with :asc or :desc after it if wanted"),
   validDuringBad: s("--valid-during takes <from>,<to>; leave <to> out for an open end"),
   detailBad: s("--detail takes concise or detailed"),
+  detailedNotYet: s(
+    "--detail detailed comes in a later version (with premises); leave it out for the rows as they are",
+  ),
   historyTarget: s(
     "give the table and a row (r_…) or an entity (e_…), or a state table's --key field=value instead",
   ),

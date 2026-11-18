@@ -1,5 +1,5 @@
 // Administrative operations (docs/zh-CN/spec/04-contract-types.md §8): `connections.*` (§8.1),
-// `reads.list` (§8.3) and `log.verify` (§8.4). They take a user session and are HTTP only; they
+// `reads.list` (§8.3), `log.verify` (§8.4) and `log.end` (§8.5). They take a user session and are HTTP only; they
 // have no `CommonParams` and, except where the spec says so, no `CommonResult`.
 
 import type { PrincipalVia, Scope } from "@fluxvita/saveslot-contract-core";
@@ -169,3 +169,12 @@ export interface LogVerifyResult {
   /** Seq gaps a restore left; `restore` is the restore event's seq. */
   gaps: Array<{ after: number; before: number; restore: number }>;
 }
+
+// ---------------------------------------------------------------------------------------------
+// §8.5 `log.end` (no parameters)
+
+/**
+ * 04-contract-types §8.5 `LogEndResult`: the newest event's seq and recorded time, as the log
+ * records it (the same `Instant` as every recorded time); null for a log with no event.
+ */
+export type LogEndResult = { seq: Seq; recorded_at: Instant } | null;

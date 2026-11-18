@@ -628,6 +628,12 @@ async function revokeCommand(
 
 const socketOf = (o: Options) => join(o.home, "run", "saveslot.sock");
 
+/** `--detail detailed` refused (P2, with premises): what to do instead (06 §4.7). */
+const detailNotYet: Command["hint"] = (e, o) =>
+  e.code === "not_in_this_version" && ownString(o, "detail") === "detailed"
+    ? TEXTS.detailedNotYet
+    : undefined;
+
 const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   [
     "connect",
@@ -769,69 +775,74 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
         });
         return { json: r, lines: queryResult(r) };
       },
+      detailNotYet,
     ),
   ],
   [
     "history",
-    command(["as-of", "as-of-read", "valid-at", "key", "sources", "detail"], async (o, client) => {
-      const [tableName, ref, ...extra] = o.args;
-      const keys = ownList(o, "key");
-      if (
-        tableName === undefined ||
-        extra.length > 0 ||
-        (ref === undefined) === (keys.length === 0)
-      ) {
-        throw new UsageError(TEXTS.historyTarget);
-      }
-      const c = await client();
-      let target: Record<string, unknown>;
-      if (ref !== undefined) {
-        if (/^r_/.test(ref)) target = { row: ref };
-        else if (/^e_/.test(ref)) target = { entity: ref };
-        else throw new UsageError(TEXTS.historyTarget);
-      } else {
-        target = { entity_key: entityKey(o, await fieldsOf(c, tableName)) };
-      }
-      const asOf = ownString(o, "as-of");
-      const asOfRead = ownString(o, "as-of-read");
-      if (asOf !== undefined && asOfRead !== undefined) throw new UsageError(TEXTS.asOfBoth);
-      const validAt = ownString(o, "valid-at");
-      const detail = ownString(o, "detail");
-      if (detail !== undefined && detail !== "concise" && detail !== "detailed") {
-        throw new UsageError(TEXTS.detailBad);
-      }
-      const page = {
-        ...(o.limit !== undefined ? { limit: o.limit } : {}),
-        ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
-      };
-      if (asOf !== undefined || asOfRead !== undefined) {
-        const point =
-          asOfRead !== undefined
-            ? { read: asOfRead }
-            : /^[0-9]{1,15}$/.test(asOf as string)
-              ? Number(asOf)
-              : (asOf as string);
+    command(
+      ["as-of", "as-of-read", "valid-at", "key", "sources", "detail"],
+      async (o, client) => {
+        const [tableName, ref, ...extra] = o.args;
+        const keys = ownList(o, "key");
+        if (
+          tableName === undefined ||
+          extra.length > 0 ||
+          (ref === undefined) === (keys.length === 0)
+        ) {
+          throw new UsageError(TEXTS.historyTarget);
+        }
+        const c = await client();
+        let target: Record<string, unknown>;
+        if (ref !== undefined) {
+          if (/^r_/.test(ref)) target = { row: ref };
+          else if (/^e_/.test(ref)) target = { entity: ref };
+          else throw new UsageError(TEXTS.historyTarget);
+        } else {
+          target = { entity_key: entityKey(o, await fieldsOf(c, tableName)) };
+        }
+        const asOf = ownString(o, "as-of");
+        const asOfRead = ownString(o, "as-of-read");
+        if (asOf !== undefined && asOfRead !== undefined) throw new UsageError(TEXTS.asOfBoth);
+        const validAt = ownString(o, "valid-at");
+        const detail = ownString(o, "detail");
+        if (detail !== undefined && detail !== "concise" && detail !== "detailed") {
+          throw new UsageError(TEXTS.detailBad);
+        }
+        const page = {
+          ...(o.limit !== undefined ? { limit: o.limit } : {}),
+          ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
+        };
+        if (asOf !== undefined || asOfRead !== undefined) {
+          const point =
+            asOfRead !== undefined
+              ? { read: asOfRead }
+              : /^[0-9]{1,15}$/.test(asOf as string)
+                ? Number(asOf)
+                : (asOf as string);
+          const r = await c.history({
+            table: tableName,
+            ...target,
+            mode: "as_of",
+            as_of: point,
+            ...(validAt !== undefined ? { valid_at: validAt } : {}),
+            ...(detail !== undefined ? { detail } : {}),
+            ...page,
+          } as never);
+          return { json: r, lines: asOfResult(r as unknown as AsOfResult) };
+        }
+        if (validAt !== undefined || detail !== undefined) throw new UsageError(TEXTS.asOfOnly);
         const r = await c.history({
           table: tableName,
           ...target,
-          mode: "as_of",
-          as_of: point,
-          ...(validAt !== undefined ? { valid_at: validAt } : {}),
-          ...(detail !== undefined ? { detail } : {}),
+          mode: "timeline",
+          ...(ownFlag(o, "sources") ? { expand_sources: true } : {}),
           ...page,
         } as never);
-        return { json: r, lines: asOfResult(r as unknown as AsOfResult) };
-      }
-      if (validAt !== undefined || detail !== undefined) throw new UsageError(TEXTS.asOfOnly);
-      const r = await c.history({
-        table: tableName,
-        ...target,
-        mode: "timeline",
-        ...(ownFlag(o, "sources") ? { expand_sources: true } : {}),
-        ...page,
-      } as never);
-      return { json: r, lines: timelineResult(r as TimelineResult) };
-    }),
+        return { json: r, lines: timelineResult(r as TimelineResult) };
+      },
+      detailNotYet,
+    ),
   ],
   [
     "slot create",

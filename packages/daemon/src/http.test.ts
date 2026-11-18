@@ -277,6 +277,7 @@ describe("HTTP's own", () => {
       ["DELETE", `/v1/connections/${issued.id}`, undefined, 200],
       ["GET", "/v1/reads", undefined, 200],
       ["GET", "/v1/log/verify", undefined, 200],
+      ["GET", "/v1/log/end", undefined, 200],
     ];
     for (const [method, path, body, status] of ours) {
       const r = await http({

@@ -1973,6 +1973,15 @@ interface ExportHeader {
 
 ---
 
+### 8.5 `log.end`
+
+只给用户会话，没有参数。日志末端：最新一条事件的 `seq` 与记录时刻；`recorded_at` 与契约里其他记录时刻同一格式。`saveslot status` 用它对照本机时钟（architecture §8：本机时钟比日志末端早 5 分钟以上时提醒）。
+
+```ts
+/** 日志里一条事件都没有时为 null。 */
+type LogEndResult = { seq: Seq; recorded_at: Instant } | null;
+```
+
 ## 9. 错误
 
 ```ts

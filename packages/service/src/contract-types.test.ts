@@ -11,6 +11,7 @@ import type * as C from "@fluxvita/saveslot-contract";
 import type {
   catalog,
   history,
+  logEnd,
   logVerify,
   pending,
   query,
@@ -55,6 +56,8 @@ export const checks = [
   fits<C.SchemaDraftResult>(as<Mutable<Out<typeof schemaDraft>>>()),
   fits<C.ReadsListResult>(as<Mutable<Out<typeof readsList>>>()),
   fits<C.LogVerifyResult>(as<Mutable<Out<typeof logVerify>>>()),
+  // Null for an empty log: no paging handle to sign, so the kernel's result as it is.
+  fits<C.LogEndResult>(as<Awaited<ReturnType<typeof logEnd>>>()),
   fits<C.Connection>(as<Mutable<ReturnType<typeof connectionOut>>>()),
 
   fits<C.QueryResult>(as<Mutable<Out<typeof query>>>()),

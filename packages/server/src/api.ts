@@ -170,6 +170,7 @@ const ROUTES: readonly Route[] = [
   }),
   route("GET", "/v1/reads", "reads", { operation: "reads.list" }),
   route("GET", "/v1/log/verify", "log_verify", { operation: "log.verify" }),
+  route("GET", "/v1/log/end", "log_end", { operation: "log.end" }),
   // Later versions.
   route("POST", "/v1/sql", "sql"),
   route("GET", "/v1/sources", "sources"),

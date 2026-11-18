@@ -55,15 +55,25 @@ export const TEXTS = {
     readonly data: string | undefined;
     readonly socket: string;
     readonly pending: number | undefined;
+    readonly lock: boolean;
+    /** How far this computer's clock is behind the log's end, when it is by more than the limit. */
+    readonly behindMs: number | undefined;
+    readonly logEnd: string | undefined;
   }) =>
     [
       `saveslot service: ${s.state}${s.reason !== undefined ? ` (${s.reason})` : ""}`,
       `  version   ${s.version} (this saveslot: ${s.mine})`,
       `  pid       ${s.pid}, since ${s.since}`,
+      ...(s.lock ? [`  lock      the home's single-writer lock, held by pid ${s.pid}`] : []),
       `  home      ${s.home}`,
       `  data      ${s.data ?? "unknown"}`,
       `  socket    ${s.socket}`,
       `  pending   ${s.pending === undefined ? "unknown" : s.pending}`,
+      ...(s.behindMs !== undefined
+        ? [
+            `warning: this computer's clock is ${Math.floor(s.behindMs / 60_000)} minutes behind the log's last record (${s.logEnd}). New events are recorded at that time until the clock catches up; check the system clock.`,
+          ]
+        : []),
     ].join("\n"),
   usage: (message: string) => `error: ${message}`,
 

@@ -115,7 +115,7 @@ describe("the service process", () => {
     const h = home();
     const a = start(h);
     const ready = await until(h, ["ready"]);
-    expect(Object.keys(ready).sort()).toEqual(["pid", "since", "state", "version"]);
+    expect(Object.keys(ready).sort()).toEqual(["pid", "since", "state", "version", "writer_lock"]);
     expect(ready).toMatchObject({ state: "ready", pid: a.proc.pid, version: "0.0.0" });
     expect(readFileSync(pidFile(h), "utf8")).toBe(`${a.proc.pid}\n`);
     expect(statSync(join(h, "run")).mode & 0o777).toBe(0o700);
@@ -512,6 +512,47 @@ describe("the service in process", () => {
     expect(existsSync(pidFile(h))).toBe(false);
     const again = await osFileLock.acquire(lockDir(h));
     await again.release();
+  });
+
+  it("/health says the writer lock is held; log.end gives the newest event's seq and recorded time", async () => {
+    const h = join(root, `log-end-${n++}`);
+    const genesis = "2026-11-18T08:00:00.000Z";
+    await initLocalHome({ home: h, backend: testBackend(), lock: osFileLock, now: genesis });
+    const session = readFileSync(sessionFile(h), "utf8").trim();
+    // Later records at a clock set ahead: the log's end moves to that time.
+    const at = "2030-01-01T00:00:00.000Z";
+    const s = await runService({
+      home: h,
+      version: "t",
+      signals: false,
+      clock: () => at,
+      log: () => {},
+    });
+    try {
+      const body = (await health(h))?.body;
+      expect(body).toMatchObject({ state: "ready", writer_lock: "held" });
+      expect(Object.keys(body ?? {}).sort()).toEqual([
+        "pid",
+        "since",
+        "state",
+        "version",
+        "writer_lock",
+      ]);
+      const call = httpDriver(() => h);
+      expect(await call(session, "log.end", {} as never)).toEqual({
+        result: { seq: 1, recorded_at: genesis },
+      });
+      expect(
+        await call(session, "schema_draft", { document: { ...LEDGER, slot: "ledger" } } as never),
+      ).toMatchObject({ result: { outcome: "applied" } });
+      const end = (await call(session, "log.end", {} as never)) as {
+        result: { seq: number; recorded_at: string };
+      };
+      expect(end.result.recorded_at).toBe(at);
+      expect(end.result.seq).toBeGreaterThan(1);
+    } finally {
+      await s.stop();
+    }
   });
 
   it("main refuses unknown arguments", async () => {

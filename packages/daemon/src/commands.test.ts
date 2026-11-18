@@ -4,7 +4,9 @@
 
 import { spawn } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -13,16 +15,26 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sessionFile } from "@fluxvita/saveslot-service";
+import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
 import { osFileLock } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { type CommandIO, logFile, looksSynced, serviceCommand } from "./commands.ts";
+import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
+import {
+  CLOCK_BEHIND_MS,
+  type CommandIO,
+  clockBehind,
+  logFile,
+  looksSynced,
+  serviceCommand,
+  status,
+} from "./commands.ts";
 import { LEDGER } from "./contract-suite.fixture.ts";
 import { httpRequest } from "./http-driver.fixture.ts";
 import { health } from "./local-request.ts";
-import { lockDir, pidFile, socketFile } from "./service.ts";
+import { lockDir, pidFile, runService, socketFile } from "./service.ts";
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
@@ -136,6 +148,119 @@ describe("init", () => {
   });
 });
 
+describe("status: the clock against the log's end (log.end, with the user session)", () => {
+  const END = "2026-11-18T12:00:00.000Z";
+  const at = (ms: number) => Date.parse(END) + ms;
+  const quietIO = () => {
+    const out: string[] = [];
+    return { out, io: { out: (l: string) => out.push(l), err: () => {} } satisfies CommandIO };
+  };
+
+  it("clockBehind: exactly the limit, none; a second more, a warning; after the end or no end, none", () => {
+    expect(CLOCK_BEHIND_MS).toBe(5 * 60_000);
+    expect(clockBehind(END, at(-CLOCK_BEHIND_MS))).toBeUndefined();
+    expect(clockBehind(END, at(-CLOCK_BEHIND_MS - 1_000))).toBe(CLOCK_BEHIND_MS + 1_000);
+    expect(clockBehind(END, at(60_000))).toBeUndefined();
+    expect(clockBehind(undefined, at(-3_600_000))).toBeUndefined();
+    expect(clockBehind("not a time", at(-3_600_000))).toBeUndefined();
+  });
+
+  /** A home with a session file whose socket answers /health and /v1/log/end as given. */
+  async function standIn(logEnd: { status: number; body?: unknown }, session = true) {
+    const h = join(root, String(n++));
+    mkdirSync(join(h, "run"), { recursive: true, mode: 0o700 });
+    if (session) {
+      mkdirSync(join(h, "credentials"), { recursive: true, mode: 0o700 });
+      chmodSync(h, 0o700);
+      writeFileSync(sessionFile(h), `sls_${"s".repeat(43)}\n`, { mode: 0o600 });
+    }
+    const asked: string[] = [];
+    const server = createServer((req, res) => {
+      asked.push(`${req.url} ${req.headers["authorization"] ?? ""}`);
+      if (req.url === "/health") {
+        return res.writeHead(200, { "content-type": "application/json" }).end(
+          JSON.stringify({
+            state: "ready",
+            version: "0.0.0",
+            pid: 4242,
+            since: "2026-11-18T00:00:00Z",
+            writer_lock: "held",
+          }),
+        );
+      }
+      if (req.url === "/v1/log/end") {
+        return res
+          .writeHead(logEnd.status, { "content-type": "application/json" })
+          .end(JSON.stringify(logEnd.body ?? { error: { code: "unauthenticated" } }));
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((r) => server.listen(socketFile(h), r));
+    return { h, asked, close: () => new Promise((r) => server.close(r)) };
+  }
+
+  it.each([
+    [
+      "5 minutes and a second behind: a warning",
+      { status: 200, body: { seq: 9, recorded_at: END } },
+      true,
+      -CLOCK_BEHIND_MS - 1_000,
+      "5 minutes behind",
+    ],
+    [
+      "exactly 5 minutes behind: none",
+      { status: 200, body: { seq: 9, recorded_at: END } },
+      true,
+      -CLOCK_BEHIND_MS,
+      undefined,
+    ],
+    ["the log is empty (null): none", { status: 200, body: null }, true, -3_600_000, undefined],
+    ["the session refused: none, no error", { status: 401 }, true, -3_600_000, undefined],
+    [
+      "no session to read: none, no error",
+      { status: 200, body: { seq: 9, recorded_at: END } },
+      false,
+      -3_600_000,
+      undefined,
+    ],
+  ])("%s", async (_, logEnd, session, offset, said) => {
+    const s = await standIn(logEnd, session);
+    try {
+      const q = quietIO();
+      expect(await status(s.h, q.io, { now: () => at(offset) })).toBe(0);
+      const out = q.out.join("\n");
+      expect(out).toContain("lock      the home's single-writer lock, held by pid 4242");
+      if (said === undefined) expect(out).not.toContain("warning");
+      else
+        expect(out).toContain(
+          `warning: this computer's clock is ${said} the log's last record (${END})`,
+        );
+      // Asked with the session, as the pending count is.
+      if (session) expect(s.asked).toContain(`/v1/log/end Bearer sls_${"s".repeat(43)}`);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("against the service: the log's end is the genesis's recorded time; a clock behind it, warned", async () => {
+    const h = join(root, String(n++));
+    await initLocalHome({ home: h, backend: testBackend(), lock: osFileLock, now: END });
+    const svc = await runService({ home: h, version: "0.0.0", signals: false, log: () => {} });
+    try {
+      const behind = quietIO();
+      expect(await status(h, behind.io, { now: () => at(-10 * 60_000) })).toBe(0);
+      expect(behind.out.join("\n")).toContain(
+        `warning: this computer's clock is 10 minutes behind the log's last record (${END})`,
+      );
+      const after = quietIO();
+      expect(await status(h, after.io, { now: () => at(60_000) })).toBe(0);
+      expect(after.out.join("\n")).not.toContain("warning");
+    } finally {
+      await svc.stop();
+    }
+  });
+});
+
 describe("start, status, stop", () => {
   it("starts in the background, says so again, stops; stop again finds nothing running", async () => {
     const h = await initialized();
@@ -156,6 +281,8 @@ describe("start, status, stop", () => {
     expect(st.code).toBe(0);
     expect(st.out).toContain("ready");
     expect(st.out).toContain("pending   0");
+    expect(st.out).toContain(`  lock      the home's single-writer lock, held by pid ${pid}\n`);
+    expect(st.out).not.toContain("warning");
 
     const stopped = await run("stop", h);
     expect(stopped.code).toBe(0);

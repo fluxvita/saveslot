@@ -5,7 +5,7 @@
 // Covered: common types (§1), evidence (§2), marks (§3), the read row, `catalog`, `query` and
 // `history` (§4.1–§4.3, §4.5), `pending` (§4.8), `resolve` (§5.2) with the `write` result shapes
 // it reuses (§5.1), `schema_draft` (§5.3), warnings and notices (§7), `connections.*`,
-// `reads.list` and `log.verify` (§8.1, §8.3, §8.4), and errors (§9). Not yet covered: `sql`,
+// `reads.list`, `log.verify` and `log.end` (§8.1, §8.3, §8.4, §8.5), and errors (§9). Not yet covered: `sql`,
 // `sources`, `deletion_preview`, `write` parameters, `delete`, jobs, `policy.set`, export / import
 // and `log.reconcile`.
 //

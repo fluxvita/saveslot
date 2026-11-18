@@ -417,7 +417,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `saveslot setup` | 一条命令完成上手：编排初始化、启动、建 slot、接入宿主（3.3） | `--template`（可重复）、`--timezone`、`--host`（可重复）、`--scope`、`--yes`、`--profile`（服务器模式） | 每一步"已有 / 本次完成 / 失败"；每个宿主的连接实例与是否已接入；末尾提示 `saveslot snippet` | P1（`--profile` P5） |
 | `saveslot init` | 建目录、写租户创世、生成用户会话令牌 | `--data-dir`、`--rotate-session` | 各目录与权限；同步盘警告 | P1 |
 | `saveslot start` / `saveslot stop` | 启动 / 停止 saveslot 服务 | `--foreground`、`--restored`（数据目录刚从备份恢复：先走恢复流程；P3） | pid、监听地址；走了恢复流程时写明补删了几项；`stop` 时有宽限期内的删除就提醒"到期时若 saveslot 没在运行，物理删除在下次启动时执行" | P1（`--restored` P3） |
-| `saveslot status` | 进程状态 + 概况 | — | 版本、数据目录、监听、单写者锁、启动时补跑了哪些到期任务；待处理事项数（经 `pending`）；逾期未物理删除的删除；提醒：系统时钟比日志末端的记录时刻早 5 分钟以上、行数超过舒适线或实测线的表 | P1（删除相关 P3；规模提醒随 P2 的目录概况） |
+| `saveslot status` | 进程状态 + 概况 | — | 版本、数据目录、监听、单写者锁（经 `/health` 的 `writer_lock`）、启动时补跑了哪些到期任务；待处理事项数（经 `pending`）；逾期未物理删除的删除；提醒：系统时钟比日志末端的记录时刻早 5 分钟以上（日志末端经 `log.end`，与待处理数一样带用户会话；取不到时这一条不出，也不报错）、行数超过舒适线或实测线的表 | P1（删除相关 P3；规模提醒随 P2 的目录概况） |
 | `saveslot mcp` | 给 MCP 宿主的 stdio 桥 | 令牌取环境变量 `SAVESLOT_TOKEN` | 不给人看；固定连本地；saveslot 服务未运行时先拉起（细节见 [`05-surfaces.md`](05-surfaces.md) §11「本机的 stdio 桥」） | P1 |
 | `saveslot service install` / `uninstall` | 开机自启 | — | 写入的系统服务位置 | P6 |
 | `saveslot doctor` | 逐项自检（第 3 节第 7 步） | — | 每项通过 / 不通过 / 提醒，不通过的附修法；提醒（时钟落后、数据规模）不算不通过 | P6 |
@@ -485,9 +485,9 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 | 命令 | 契约操作 | 关键参数 | 输出要点 | 出现于 |
 |---|---|---|---|---|
-| `saveslot query <表>` | `query` | `--where 'distance>5km'`（可重复）、`--order`、`--fields`、`--valid-at` / `--valid-during`、`--include-revoked`、`--detail` | 同 MCP `saveslot_query` 的行文本：`ver`、值、全部标记（含"前提已变"）；`--detail detailed` 另列每行当前的前提声明 | P1 |
+| `saveslot query <表>` | `query` | `--where 'distance>5km'`（可重复）、`--order`、`--fields`、`--valid-at` / `--valid-during`、`--include-revoked`、`--detail` | 同 MCP `saveslot_query` 的行文本：`ver`、值、全部标记（含"前提已变"）；`--detail detailed` 另列每行当前的前提声明 | P1（`--detail detailed` P2，随前提声明：P1 里服务回 `not_in_this_version`，CLI 按通用错误输出） |
 | `saveslot sql '<SELECT …>'` | `sql` | `--param`、`--max-rows`、`--at` | 紧凑表格；头部汇总标记 | P2 |
-| `saveslot history <表> <行或实体>` | `history`（`timeline` / `as_of`） | `--as-of <操作号/时刻>`、`--as-of-read <rd_…>`（按那次读取还原）、`--valid-at`（状态类表）、`--key <字段>=<值>`（状态类表按 `entity_key` 定位，代替实体 ID，可重复）、`--sources`（展开原文） | 每个版本：`#seq`、时间、写入者、意图、前后值、来源、声明的前提（重申与清除各一条）；读过它的读取 | P1 |
+| `saveslot history <表> <行或实体>` | `history`（`timeline` / `as_of`） | `--as-of <操作号/时刻>`、`--as-of-read <rd_…>`（按那次读取还原）、`--valid-at`（状态类表）、`--key <字段>=<值>`（状态类表按 `entity_key` 定位，代替实体 ID，可重复）、`--sources`（展开原文） | 每个版本：`#seq`、时间、写入者、意图、前后值、来源、声明的前提（重申与清除各一条）；读过它的读取 | P1（`--detail detailed` P2，同 `query`） |
 | `saveslot history changes <表>` | `history`（`changes`） | `--since`、`--until` | 一段记录时间内的变化 | P2 |
 | `saveslot sources [list / search <词> / get <s_…>]` | `sources` | `--slot`、`--kind`、`--from` / `--to` | 源数据列表或原文；已删除的只给墓碑信息 | P2 |
 
@@ -678,7 +678,7 @@ P1 结束时 CLI 已能完成第 3 节的整条上手流程，含 `saveslot setu
 |---|---|
 | 只在 unix socket 上监听，目录 0700、套接字 0600 | 别的系统用户、网络上的任何人 |
 | 回环 TCP 默认关；打开时只绑回环地址，校验 `Host` / `Origin` | 局域网访问；网页经 DNS 重绑定访问。**打开后本机其他系统用户也能连上**，对他们只剩令牌一道防线 |
-| 每个请求都要令牌（连接实例或用户会话），套接字权限不代替认证。唯一的例外是 `GET /health`：不涉及任何主体与数据，`saveslot start` 比较版本、`saveslot mcp` 判断服务是否已起来都要用它；响应只有 `state`（`starting` / `ready` / `stopping` / `failed`）、`version`、`pid`、`since`，`failed` 时另带一个不含路径与用户数据的原因码。其余路径没带令牌回 401（`unauthenticated`，同 [`05-surfaces.md`](05-surfaces.md) 第 14 节） | 区分主体、限定 scope：每个 Agent 只能做它的连接实例被授予的事，读写各自留痕。它不是对同权限程序的防护——够得着套接字的程序一般也读得到凭证文件（8.3） |
+| 每个请求都要令牌（连接实例或用户会话），套接字权限不代替认证。唯一的例外是 `GET /health`：不涉及任何主体与数据，`saveslot start` 比较版本、`saveslot mcp` 判断服务是否已起来都要用它；响应只有 `state`（`starting` / `ready` / `stopping` / `failed`）、`version`、`pid`、`since`，`failed` 时另带一个不含路径与用户数据的原因码；本地服务另带 `writer_lock: "held"`：应答的进程在监听之前已取得 home 的单写者锁（`saveslot status` 据此写单写者锁一行），只此一个值，不带路径或别的。日志末端的记录时刻属于数据的活动信息，不放进 `/health`，`saveslot status` 经带用户会话的请求取得（与待处理数同一处）。其余路径没带令牌回 401（`unauthenticated`，同 [`05-surfaces.md`](05-surfaces.md) 第 14 节） | 区分主体、限定 scope：每个 Agent 只能做它的连接实例被授予的事，读写各自留痕。它不是对同权限程序的防护——够得着套接字的程序一般也读得到凭证文件（8.3） |
 | 本地模式不提供绑定到非回环地址的配置 | 误配置把个人数据暴露到网络；跨设备用服务器模式（我们的云服务，或自部署——那是另一套带 OAuth 的启动方式，不是给本机模式开一个端口） |
 
 CLI 与 `saveslot mcp` 只用 home 下固定的套接字路径（`run/saveslot.sock`），不接受从环境变量或参数改成别的地址，少一种被误配置引到别处的可能；这不是防护——同权限的程序照样能改 home 下的文件。
@@ -711,6 +711,7 @@ CLI 与 `saveslot mcp` 只用 home 下固定的套接字路径（`run/saveslot.s
 | `policy.set`（后续） | — | 策略决定哪些改动不经确认就生效，相当于改确认规则 |
 | `reads.list` | `reads` | 审计的对象正是各个连接实例；被审计方不该能读全部审计 |
 | `log.verify`、对拍 | `verify` | 面向运维，读日志全量；对 Agent 没有用处 |
+| `log.end` | `status`（时钟提醒） | 面向运维；最后一次写入的时刻属于数据的活动信息，不给连接实例 |
 | `export` | `export` | 一次拿走全部数据与源数据原文，绕开"按需读、逐次留痕"；带走数据是用户的权利，不是 Agent 的 |
 | `import` | `import` | 用一份导出整个替换一个空租户的内容，并停用导入前的全部主体；它决定这个租户里有什么、谁的凭证还有效 |
 

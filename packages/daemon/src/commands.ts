@@ -336,7 +336,11 @@ export async function stop(home: string, io: CommandIO): Promise<number> {
 }
 
 /** The number of open pending items, as the user session sees them; undefined when not to be had. */
-async function pendingCount(home: string): Promise<number | undefined> {
+/**
+ * A request with the home's user session, its answer as JSON; undefined when there is no session
+ * to read, the service does not answer, or the answer is no 200 of JSON. Never throws.
+ */
+async function withSession(home: string, path: string): Promise<unknown> {
   let token: string | undefined;
   try {
     token = (await readPrivate(sessionFile(home)))?.trim();
@@ -348,19 +352,50 @@ async function pendingCount(home: string): Promise<number | undefined> {
     const a = await localRequest({
       socketPath: socketFile(home),
       method: "GET",
-      path: "/v1/pending?limit=1",
+      path,
       headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       timeoutMs: 10_000,
     });
     if (a.status !== 200) return undefined;
-    const v = JSON.parse(a.body.toString("utf8")) as Record<string, unknown>;
-    return typeof v["total"] === "number" ? v["total"] : undefined;
+    return JSON.parse(a.body.toString("utf8")) as unknown;
   } catch {
     return undefined;
   }
 }
 
-export async function status(home: string, io: CommandIO): Promise<number> {
+async function pendingCount(home: string): Promise<number | undefined> {
+  const v = await withSession(home, "/v1/pending?limit=1");
+  const total =
+    typeof v === "object" && v !== null ? (v as Record<string, unknown>)["total"] : undefined;
+  return typeof total === "number" ? total : undefined;
+}
+
+/** The recorded time of the log's newest event (`log.end`); undefined when not to be had. */
+async function logEndAt(home: string): Promise<string | undefined> {
+  const v = await withSession(home, "/v1/log/end");
+  const at =
+    typeof v === "object" && v !== null ? (v as Record<string, unknown>)["recorded_at"] : undefined;
+  return typeof at === "string" ? at : undefined;
+}
+
+/** How far the clock may be behind the log's end before `status` warns (02-architecture §8). */
+export const CLOCK_BEHIND_MS = 5 * 60_000;
+
+/**
+ * How far `now` is behind the log's end, when by more than `CLOCK_BEHIND_MS` (02-architecture §8);
+ * undefined otherwise, or when the end is not a time.
+ */
+export function clockBehind(logEnd: string | undefined, now: number): number | undefined {
+  const end = logEnd !== undefined ? Date.parse(logEnd) : Number.NaN;
+  if (Number.isNaN(end)) return undefined;
+  return end - now > CLOCK_BEHIND_MS ? end - now : undefined;
+}
+
+export async function status(
+  home: string,
+  io: CommandIO,
+  o: { readonly now?: () => number } = {},
+): Promise<number> {
   const socket = socketFile(home);
   const h = await health(socket);
   if (h === undefined) {
@@ -373,8 +408,15 @@ export async function status(home: string, io: CommandIO): Promise<number> {
     (d) => d.dataDir,
     () => undefined,
   );
+  // The clock behind the log's end by more than 5 minutes (02-architecture §8): said, not refused.
+  // The end comes with the user session (`log.end`), not from /health; none to be had, no line.
+  const logEnd = h.state === "ready" ? await logEndAt(home) : undefined;
+  const behindMs = clockBehind(logEnd, (o.now ?? Date.now)());
   io.out(
     TEXTS.status({
+      lock: h.writer_lock === "held",
+      behindMs,
+      logEnd,
       state: h.state,
       reason: h.reason,
       version: h.version,

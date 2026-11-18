@@ -87,6 +87,7 @@ export const httpDriver =
       "connections.revoke": { method: "DELETE", path: `/v1/connections/${id}` },
       "reads.list": { method: "GET", path: "/v1/reads" },
       "log.verify": { method: "GET", path: "/v1/log/verify" },
+      "log.end": { method: "GET", path: "/v1/log/end" },
     };
     const r = at[operation];
     const inPath = ["pending", "resolve", "connections.update", "connections.revoke"].includes(

@@ -924,6 +924,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 | `PUT /v1/slots/{slot}/policy`（后续） | `policy.set` | 请求体 | 用户会话 |
 | `GET /v1/reads` | `reads.list` | `connection`、`slot`、`table`、`of_task`（只列带这个任务标识的读取）、`since`、`until`、`limit`、`cursor` | 用户会话 |
 | `GET /v1/log/verify` | `log.verify` | — | 用户会话 |
+| `GET /v1/log/end` | `log.end` | — | 用户会话 |
 | `POST /v1/log/reconcile` | `log.reconcile`：同步返回，耗时随日志大小增长 | — | 用户会话 |
 | `GET /v1/export` | `export` | `after_seq`、`include_pending_deletion` | 用户会话 |
 | `POST /v1/import` | `import`：把一份导出装进一个空租户；同步返回 | 请求体是导出文件的 NDJSON，`Content-Type: application/x-ndjson`，流式上传；按 `after` 续传切出的几段按顺序接在同一个请求体里 | 用户会话 |

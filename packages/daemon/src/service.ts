@@ -246,6 +246,8 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       pid: process.pid,
       since,
       ...(state === "failed" && reason !== undefined ? { reason } : {}),
+      // Taken above, before listening: whoever answers here holds it.
+      writer_lock: "held",
     }),
   });
   if (o.signals !== false) {

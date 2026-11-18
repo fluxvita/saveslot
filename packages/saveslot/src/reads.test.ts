@@ -5,7 +5,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { request, resolveCredential } from "@fluxvita/saveslot-cli/testing";
+import { request, resolveCredential, TEXTS } from "@fluxvita/saveslot-cli/testing";
 import { type CommandIO, serviceCommand, socketFile } from "@fluxvita/saveslot-daemon";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { dispatch } from "./dispatch.ts";
@@ -154,6 +154,21 @@ describe("saveslot query", () => {
     expect(r.code).toBe(0);
     const j = JSON.parse(r.out) as { rows: { row: string }[] };
     expect(j.rows.map((x) => x.row)).toEqual([first]);
+  });
+
+  it("--detail detailed: not in this version (P2, with premises); the service's refusal said plainly, 5", async () => {
+    for (const argv of [
+      ["query", "food.meals", "--detail", "detailed"],
+      ["history", "food.meals", first, "--as-of", "1", "--detail", "detailed"],
+    ]) {
+      const r = await saveslot(...argv);
+      expect(r.code).toBe(5);
+      expect(r.out).toBe("");
+      expect(r.err).toMatch(/^error not_in_this_version /);
+      expect(r.err).toContain("detail: detailed");
+      // Then what to do instead, as the CLI's own words.
+      expect(r.err.trim().split("\n")).toEqual([expect.any(String), `  ${TEXTS.detailedNotYet}`]);
+    }
   });
 
   it("a quantity --where with no unit: a usage error before any query", async () => {

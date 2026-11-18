@@ -300,7 +300,7 @@ describe("pending and resolve", () => {
 });
 
 describe("administration", () => {
-  it("connections.* and reads.list and log.verify by their routes", async () => {
+  it("connections.* and reads.list, log.verify and log.end by their routes", async () => {
     expect(
       req(
         await sent(() =>
@@ -342,6 +342,10 @@ describe("administration", () => {
     expect(req(await sent(() => client.logVerify()))).toMatchObject({
       method: "GET",
       url: "/v1/log/verify",
+    });
+    expect(req(await sent(() => client.logEnd()))).toMatchObject({
+      method: "GET",
+      url: "/v1/log/end",
     });
   });
 

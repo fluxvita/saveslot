@@ -32,6 +32,7 @@ import type {
   ConnectionsUpdateResult,
   HistoryParams,
   HistoryResult,
+  LogEndResult,
   LogVerifyResult,
   PendingDetailResult,
   PendingListResult,
@@ -127,6 +128,7 @@ export interface Client {
   };
   readsList(p?: ReadsListParams): Promise<ReadsListResult>;
   logVerify(): Promise<LogVerifyResult>;
+  logEnd(): Promise<LogEndResult>;
 }
 
 export function createClient(o: ClientOptions): Client {
@@ -238,6 +240,7 @@ export function createClient(o: ClientOptions): Client {
     },
     readsList: async (p = {}) => get("/v1/reads", p) as Promise<ReadsListResult>,
     logVerify: async () => get("/v1/log/verify") as Promise<LogVerifyResult>,
+    logEnd: async () => get("/v1/log/end") as Promise<LogEndResult>,
   };
 }
 

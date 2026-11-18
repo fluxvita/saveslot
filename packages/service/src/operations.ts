@@ -9,6 +9,7 @@ import {
   type Fit,
   history,
   listConnections,
+  logEnd,
   logVerify,
   NothingKept,
   pending,
@@ -127,6 +128,9 @@ export async function runOperation(o: {
         case "log.verify":
           keysOnly(params, []);
           return logVerify(store, ctx);
+        case "log.end":
+          keysOnly(params, []);
+          return logEnd(store, ctx);
         case "connections.list": {
           const r = await listConnections(store, ctx, params as never);
           const names = (await slotNames(o.tenant)).name;

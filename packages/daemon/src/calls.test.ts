@@ -179,6 +179,20 @@ describe("connections in the contract's shape, and who may call what", () => {
     expect(await call(user, "log.verify", {})).toMatchObject({ chain: { intact: true } });
   });
 
+  it("log.end for the user session: the newest event; a connection is refused; no parameters", async () => {
+    const end = await call(user, "log.end", {});
+    expect(end).toEqual({ seq: expect.any(Number), recorded_at: NOW });
+    const issued = await call(user, "connections.issue", { name: "log-end reader" });
+    const reader = await principal(issued["token"] as string);
+    expect(await call(reader, "log.end", {})).toEqual({
+      refused: "insufficient_scope",
+      required_scope: "user_session",
+    });
+    expect(await call(user, "log.end", { since: 1 })).toMatchObject({
+      refused: "invalid_argument",
+    });
+  });
+
   it("no path not implemented and no internal error was met", () => {
     expect(warnings).toEqual([]);
   });
