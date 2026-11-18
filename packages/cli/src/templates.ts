@@ -218,3 +218,30 @@ export const TEMPLATES: ReadonlyMap<string, Template> = new Map<string, Template
     },
   ],
 ]);
+
+/**
+ * A template's document for a new slot named `slot` (06 §3 step 4): no base version, the time zone
+ * given, or this computer's (then `chosen` says which). Undefined for a name that is no template.
+ */
+export function templateDocument(
+  name: string,
+  slot: string,
+  timezone?: string,
+): { readonly doc: Record<string, unknown>; readonly chosen?: string } | undefined {
+  const t = TEMPLATES.get(name);
+  if (t === undefined) return undefined;
+  const doc = structuredClone(t.document) as Record<string, unknown>;
+  doc["slot"] = slot;
+  doc["base_version"] = null;
+  if (timezone !== undefined) {
+    doc["timezone"] = timezone;
+    return { doc };
+  }
+  const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  doc["timezone"] = local;
+  return { doc, chosen: local };
+}
+
+/** The slot a template makes when its slot is not named (`setup`): the one its document names. */
+export const templateSlot = (name: string): string | undefined =>
+  TEMPLATES.get(name)?.document["slot"] as string | undefined;

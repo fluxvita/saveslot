@@ -90,26 +90,28 @@ $ npm install -g @fluxvita/saveslot    # 一个包装好 CLI 与 saveslot 服务
 $ saveslot setup
 [1/5] 已创建 ~/.saveslot（0700）
 [2/5] saveslot 服务已在后台启动 · pid 4211
-[3/5] 用哪个模板建第一个 slot？（空格选择，回车确认；可以不选）
-      [x] running   跑步记录 → slot health
-      [ ] spending  日常支出 → slot ledger
-      [ ] budget    预算 → slot plan
+[3/5] 用哪个模板建第一个 slot？
+        1 [x] running   跑步记录 → slot health
+        2 [ ] spending  日常支出 → slot ledger
+        3 [ ] budget    预算 → slot plan
+      输入编号切换选中与否，直接回车确认：
       已建 slot health · schema v1 · 2 张表（runs、weekly_mileage）
 [4/5] 接入哪些宿主？
-      [x] Claude Code（claude 2.x，/usr/local/bin/claude）
-      [x] Codex（codex 0.x，/opt/homebrew/bin/codex）
-      [ ] Cursor（没有添加命令，需要手动粘贴配置：saveslot connect cursor）
+        1 [x] Claude Code（claude 2.x）
+        2 [x] Codex（codex 0.x）
+        3 [ ] Cursor（没有添加命令，需要手动粘贴配置：saveslot connect cursor）
+      输入编号切换选中与否，直接回车确认：
 [5/5] 将为每个宿主签发一个连接实例（scope saveslot.read saveslot.write），并执行：
-        claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
-        codex mcp add saveslot --env SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
+        /usr/local/bin/claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
+        /opt/homebrew/bin/codex mcp add saveslot --env SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
       执行以上 2 条命令？[Y/n]
-      Claude Code：已签发 MacBook · Claude Code（ci_01JF…）· 自检通过 · 已接入
-      Codex：已签发 MacBook · Codex（ci_01JG…）· 自检通过 · 已接入
+Claude Code：已接入 · MacBook · Claude Code（ci_01JF…）
+Codex：已接入 · MacBook · Codex（ci_01JG…）
 完成。在宿主里输入 /saveslot:overview，或问一句"saveslot 里有什么"。
 可选：saveslot snippet claude-code（建议放进宿主自定义指令的一段文字）
 ```
 
-宿主命令的确切写法由 CLI 的宿主适配表维护（3.2），**实现时逐个实测**。
+宿主命令的确切写法由 CLI 的宿主适配表维护（3.2），**实现时逐个实测**。选择用编号切换的文本提示（输入编号切换某一项，直接回车确认），不进终端的原始模式、不加依赖；用方向键与空格勾选的样子留到桌面打包时再做。执行的宿主命令写的是在 `PATH` 里找到的绝对路径（3.2）。
 
 **分步做**（`setup` 调用的就是这几条命令；评测与脚本继续用它们）：
 
@@ -323,19 +325,23 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 
 **各项细则**：
 
-1. **怎么发现本机装了哪些宿主**：在 `PATH` 里找到适配表（3.2）记的可执行文件、并成功运行它的版本命令（5 秒超时）。只运行宿主的可执行文件，不读宿主的配置文件。没有添加命令的宿主（只有应用、没有命令行的）按"配置目录是否存在"判断，只看路径存在与否，不读内容。发现不了的宿主不出现在列表里，用户仍可用 `saveslot connect <宿主>` 单独接。
-2. **多个宿主时怎么选**：交互式下是一个多选列表。有添加命令且已发现的宿主默认勾选；没有添加命令的宿主列出但不勾选，并写明要手动粘贴。**每个宿主一个连接实例**，名字默认"<主机名> · <宿主显示名>"；不让多个宿主共用一个连接实例，否则"谁读过、谁写的"分不开。
+0. **在哪里能跑**：只在 macOS 与 Linux 上（第一版本地只支持这两个）；在 Windows 上说明不支持，什么都不做，退出码 2。设了 `SAVESLOT_TOKEN` 时也什么都不做，退出码 6：签发连接实例要用户会话。
+1. **怎么发现本机装了哪些宿主**：在 `PATH` 里找到适配表（3.2）记的可执行文件、并成功运行它的版本命令（5 秒超时）。只运行宿主的可执行文件，不读宿主的配置文件。没有添加命令的宿主（只有应用、没有命令行的）按"配置目录是否存在"判断，只看路径存在与否，不读内容：Cursor 看 `~/.cursor`；Claude 桌面端在 macOS 看 `~/Library/Application Support/Claude`，在 Linux 看 `~/.config/Claude`。发现不了的宿主不出现在列表里，用户仍可用 `saveslot connect <宿主>` 单独接。
+2. **多个宿主时怎么选**：交互式下是一个编号列表，输入编号切换选中与否，直接回车确认。有添加命令且已发现的宿主默认勾选；没有添加命令的宿主列出但不给编号（选不上），写明 `setup` 不接它、要用 `saveslot connect <宿主>` 手动配置。**每个宿主一个连接实例**，名字默认"<主机名> · <宿主显示名>"：主机名取第一段（`MacBook-Pro.local` 取 `MacBook-Pro`），最多 64 个码点（按码点截，不切开代理对）；主机名为空时名字只用宿主显示名；不让多个宿主共用一个连接实例，否则"谁读过、谁写的"分不开。
 3. **同意只问一次、默认执行**：第 5 步把全部宿主命令一起展示，令牌的位置写成 `<令牌>`，回答一次；直接回车是"执行"。**先同意、后签发**：用户拒绝时不签发任何连接实例、不动任何宿主，退出码 8，并提示"之后可用 saveslot connect <宿主> 单独接入"。
 4. **scope 与 slot 范围**：scope 默认 `saveslot.read saveslot.write`，`--scope` 可改，写法同 `saveslot connect`，对本次接入的所有宿主生效；要给各宿主不同的 scope，用 `saveslot connect` 分别接。`setup` 只签发 slot 范围为全部的连接实例，没有 `--slots`：它面向第一次上手，限定范围是有意的选择，用 `saveslot connect --slots` 单独做。
 5. **宿主的添加命令写用户级**，写法照 3.2（服务名在前，`-e` / `--env` 在后，再接 `--` 与可执行文件）；确切写法由适配表维护，实现时逐个实测。
-6. **非交互环境**（标准输入不是终端）：
+6. **非交互环境**（标准输入不是终端，或提问所写的标准错误不是终端——`saveslot setup 2>log` 时人看不到问题，回车不能算同意）：
    - 没给 `--yes`：什么都不执行，把将要做的步骤写到标准错误，退出码 8（与 5.4 一致）。这时还没有签发任何连接实例，写出的宿主命令里令牌的位置同样写成 `<令牌>`。
    - 给了 `--yes`：选择全部来自参数——`--template <模板>`（可重复；slot 名取模板的默认名）、`--timezone`、`--host <宿主>`（可重复）、`--scope`。**没给的选择按"不做"处理**：没给 `--template` 就不建 slot，没给 `--host` 就不接任何宿主；不猜，也不取"全部已发现的宿主"。没有人看着的时候，少做比多做安全。
    - `--host` 指向没有添加命令的宿主：用法错误，退出码 2。那条路要把令牌显示出来，不该发生在没有人看的地方。
    - 这些参数在交互式下也可以给，给了的那一项不再提问。
-7. **重复运行是安全的**：每一步先看状态再决定做不做（上表最右一列）。"宿主里已有 saveslot 条目"用宿主自己的查看命令判断（Claude Code 的 `claude mcp get saveslot`；Codex 的 `codex mcp list`）。所以第二次运行只会补上没做完的步骤、接上新装的宿主，不会重复签发，也不会撞上"同名已存在"的报错。要换掉一个已有的接入：先用宿主的移除命令去掉条目、`saveslot connections revoke` 吊销旧的连接实例，再运行一次。
-   - **宿主里有条目，不等于接入有效**：令牌不保存，`setup` 无法从条目反查它用的是哪个连接实例。按"已有条目"跳过时，同时看 `saveslot connections list` 里有没有名为"<主机名> · <宿主显示名>"且未吊销的连接实例。有：汇总记为"已有"。没有：汇总记为"未确认"，写明"宿主里有 saveslot 条目，但没有找到对应的有效连接实例；如已失效，先 claude mcp remove saveslot 再重跑"（命令按宿主换）。"未确认"不改变退出码。
-   - **同时只能有一个 `setup` 在运行**：`setup` 开始时在 `~/.saveslot/run/` 下取一把独占锁，到结束才放；拿不到时什么都不做，退出码 7，提示"另一个 saveslot setup 正在运行"。否则两个终端会同时看到"没有 slot""没有条目"，各自去建、去签发，再各自报失败。
+   - `--host` 与 `--template` 里重复的值只算一次（保持首次出现的次序），不报错；`--timezone` 只用于 `--template` 建的 slot，单独给是用法错误，退出码 2。
+   - 建 slot 与 `saveslot slot create --template` 同一段：时区不合法时报同样的错误与提示，退出码按那个错误。
+7. **重复运行是安全的**：每一步先看状态再决定做不做（上表最右一列）。"宿主里已有 saveslot 条目"用宿主自己的查看命令判断（Claude Code 的 `claude mcp get saveslot`；Codex 的 `codex mcp get saveslot`）。所以第二次运行只会补上没做完的步骤、接上新装的宿主，不会重复签发，也不会撞上"同名已存在"的报错。要换掉一个已有的接入：先用宿主的移除命令去掉条目、`saveslot connections revoke` 吊销旧的连接实例，再运行一次。
+   - **宿主里有条目，不等于接入有效**：令牌不保存，`setup` 无法从条目反查它用的是哪个连接实例。按"已有条目"跳过时，先看条目里有没有这个 saveslot 的绝对路径：查看命令的标准输出与标准错误都看，先去掉终端转义序列（CSI、OSC 与单个 ESC），每条流最多读 1 MiB；路径两侧紧挨着的字符都不是路径字符（字母、数字、`.`、`_`、`-`、`/`、`~`、`+`、`@`），或者路径就在开头或结尾，才算"有"（`…/saveslot-old`、`…/saveslot+x`、`…/saveslot@2`、`…/saveslot~`、`/opt/usr/local/bin/saveslot`、`~/usr/local/bin/saveslot` 都不算；路径前后是括号、逗号、颜色码都算）。宿主换一种写法写路径（解析过的符号链接、`~`、加引号或转义）时看不出来，要等拿到真宿主的输出再定。看不到路径：记为"未确认"（`path_not_seen`），写明"没能确认它指向这个 saveslot；宿主里用着正常就不用管，否则移除后重跑"，并给出宿主的移除命令。看到路径：再看 `saveslot connections list` 里这个宿主的、未吊销的连接实例，分两档。第一档是名字正好等于 `setup` 在当前主机名下会起的名字（"<主机名> · <宿主显示名>"，可带序号）的：恰好一个，汇总记为"已有"并给出它；不止一个，仍记为"已有"，但**不指认**其中哪一个（令牌不保存，也不为了判断去读查看输出里的令牌），列出全部这些实例（ID、名字、最后一次自检之外的读取，没有就写明），由用户吊销不用的。没有第一档、只有第二档的——名字等于宿主显示名、或以" · <宿主显示名>"结尾（可带序号），也就是在别的主机名下签的（主机名会变：macOS 按网络给机器改名），或用户自己这样起的：不指认，记为"未确认"（`instance_unsure`），列出这些实例，写明"宿主里用着正常就不用管，否则移除后重跑"，给出宿主的移除命令，不新签发。两档都没有：记为"未确认"（`no_instance`），写明"宿主里有 saveslot 条目，但没有找到对应的有效连接实例"，给出宿主的移除命令。"未确认"不改变退出码。
+   - **添加之后不靠路径定成败**：添加之前查过没有条目、添加命令成功、之后查到有条目，就是接上了，记为"本次完成"（`done`）；条目里看不到路径只多写一行说明（宿主各有各的写法）。"添加成功、条目却指向别的路径"只可能发生在添加之前就有条目时，而那时根本不会去添加。之后查不到条目是失败（第 8 条）。
+   - **同时只能有一个 `setup` 在运行**：`setup` 开始时（初始化之前；`~/.saveslot/` 与 `run/` 不存在就先以 0700 建出来）在 `~/.saveslot/run/setup/` 下取一把独占锁，与 saveslot 服务的锁分开，到结束才放；拿不到时什么都不做，退出码 7，提示"另一个 saveslot setup 正在运行"。否则两个终端会同时看到"没有 slot""没有条目"，各自去建、去签发，再各自报失败。
 8. **失败在中途时的状态与恢复**：
 
    | 失败在哪 | 留下什么 | 怎么恢复 |
@@ -346,13 +352,17 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
    | 签发 | 该宿主没有连接实例 | 这个宿主记为失败，继续下一个宿主 |
    | 自检 | 无：刚签发的连接实例立即吊销（同 `connect`） | 同上 |
    | 宿主的添加命令失败 | **无：刚签发的连接实例立即吊销** | 标准错误写明宿主命令的退出状态；继续下一个宿主；重跑会重试这个宿主 |
-   | 宿主命令成功，第 7 步核对没有通过（如查看命令找不到条目，或条目指向的路径不对） | 连接实例保留（宿主可能已经在用它） | 汇总标"已执行宿主命令，但核对没有通过"，写明核对看到了什么；这个宿主记为失败 |
-   | 进程在"签发之后、宿主命令之前"被杀 | 一个没人持有令牌的连接实例 | 重跑时不自动吊销（同名的连接实例也可能是用户自己签发、正在别处使用的）；新签发的名字后加序号（吊销或停用的连接实例名仍然占用，同名不能再签发），并在汇总里列出"同名的旧连接实例 ci_…，签发后没有自检之外的读取，可用 saveslot connections revoke 吊销" |
+   | 宿主命令成功，之后查看命令查不到条目（或查看没有结束） | 连接实例保留（宿主可能已经在用它） | 汇总写明"宿主命令执行了，但查看命令里没有名为 saveslot 的条目"，并给出撤回的两条命令：宿主的移除命令与 `saveslot connections revoke <ID>`；这个宿主记为失败（`no_entry`；查看没有结束时是 `lookup_failed`） |
+   | 宿主的查看命令没有结束（5 秒） | 该宿主没有连接实例 | 这个宿主记为失败（`lookup_failed`），继续下一个宿主 |
+   | 收到 SIGINT / SIGTERM / SIGHUP（终端关了）/ SIGQUIT | 正在执行的宿主命令（添加、`--version`、查看）连同它的进程组被杀，等服务就绪的那段也不再等；刚签发而宿主命令没有成功的连接实例尽力吊销，这个宿主照常记进结果（`interrupted`，带它的实例与吊销后的状态）；发现宿主时（`--version`）被打断，没探测完的宿主不记进结果，也不说它没找到 | 标准错误写一行"被要求停止"与已经做到哪一步，不写结尾的"完成"；按信号的惯例退出（129 / 130 / 131 / 143，即 128 加信号编号）。收到信号之后出的别的错误照它自己的原因报，退出码也按它 |
+   | 某一问处输入结束 | 那一问之前做完的步骤 | 标准错误写明已经做了什么（已初始化、服务在运行、建了哪个 slot、接上了哪些宿主），退出码 8 |
+   | 初始化：home 无法照原样使用——已存在且权限不是 0700（例如用户自己 `mkdir ~/.saveslot`）、是符号链接、是文件、属于别的用户，或还不存在而上面最近的已有目录当前用户写不了；home 里已有的 `control/`、`credentials/`、`run/` 是符号链接、是文件、属于别的用户或权限不是 0700 | 不变：在 home 里建任何东西（含 `setup` 的锁所在的 `run/`）之前就先查 | 写明路径、原因与对应的修法：权限不对给 `chmod 700 <路径>`，并写明目录里是空的还是已有几项（已有东西时也可以用 `--home` 换个位置）；符号链接要用 `--home` 给出它指向的目录；文件挡路要移开（写明挡路的是哪一个，如 `run`）；上级写不了要自己建好 home（0700）或换个位置；`control/` 一类子目录权限不对给 `chmod 700 <它的路径>`。退出码 1，`--json` 是 `{"initialized": "failed"}`；单独的 `saveslot init` 同样如此 |
+   | 进程在"签发之后、宿主命令之前"被杀 | 一个没人持有令牌的连接实例 | 重跑时不自动吊销（同名的连接实例也可能是用户自己签发、正在别处使用的）；新签发的名字后加序号（吊销或停用的连接实例名仍然占用，同名不能再签发），并在汇总里列出这个宿主的旧连接实例（同第 7 条，不看主机名那一段）："旧连接实例 ci_…，签发后没有自检之外的读取，可用 saveslot connections revoke 吊销" |
 
-   任何宿主失败时，最后的退出码是 1；汇总逐步写明"已有 / 本次完成 / 失败"。宿主命令失败时吊销而不是保留，与 `saveslot connect --apply` 不同：`connect` 会把命令（含令牌）打印出来让人自己执行，`setup` 不显示令牌，留着一个没人拿到令牌的连接实例没有用处。
+   任何宿主失败时，最后的退出码是 1；汇总逐步写明"已有 / 本次完成 / 失败"。宿主命令失败时，它的退出状态（或被信号终止、执行不了、超时）写到标准错误，文本与 `--json` 两种输出都写。从 npx 的缓存启动时与 `connect` 一样提醒路径可能失效。宿主命令失败时吊销而不是保留，与 `saveslot connect --apply` 不同：`connect` 会把命令（含令牌）打印出来让人自己执行，`setup` 不显示令牌，留着一个没人拿到令牌的连接实例没有用处。
 9. **令牌经过的地方**：只在 CLI 进程的内存、宿主命令执行期间的进程参数、宿主的配置文件里；不显示在终端上，不进 shell 历史（对照表见 8.2）。`--json` 的输出里没有令牌；非交互式下没给 `--yes` 时写到标准错误的步骤里也没有（那时还没有签发）。
 10. **不代放 3.4 的文案**，只在末尾提示一行"可选：saveslot snippet <宿主>"。
-11. **与现有命令的关系**：`init`、`start`、`slot create`、`connect`、`connections …` 全部保留、行为不变；`connect` 的默认仍是打印，`--apply` 才执行。评测与脚本继续用单条命令。`setup` 不安装开机自启（`saveslot mcp` 的自动拉起已经保证宿主能用），只在汇总里提示 `saveslot service install`。
+11. **与现有命令的关系**：`init`、`start`、`slot create`、`connect`、`connections …` 全部保留、行为不变；`connect` 的默认仍是打印，`--apply` 才执行。评测与脚本继续用单条命令。`setup` 不安装开机自启（`saveslot mcp` 的自动拉起已经保证宿主能用）；汇总里提示 `saveslot service install` 随该命令（P6）一起加。
 12. **`--json`**：见 6.1。
 13. **服务器模式**：`saveslot setup --profile <名字>` 的步骤换成——没有登录就先走 `saveslot login`；没有 slot 时按模板建；对选中的宿主执行远程形式的添加命令（3.2）。这条路上**没有令牌**：凭证由宿主自己走 OAuth 取得，授权页上的"授权"就是那一次同意。
 
@@ -575,7 +585,7 @@ pi_9B… 待确认 · marketing.budgets 推广 · 已挂 3 小时 · 版本 iv_7
 - **冲突事项有多个候选而没给 `--candidate`**：交互式下列出候选（下标、值、写入者）让人选；非交互式是用法错误，退出码 2，输出里列出候选的下标。
 - **契约规定不按 `item_ver` 绑定的处理照契约走**：`deletion` 的 `cancel` 不核对（5.3）；`migration_diff` 的 `accept_all` 带展示时的 `diff_upto`（`--yes` 时必须给 `--diff-upto`，随 P4b）。
 - **内容变了**（`confirmation_mismatch`）：交互式时渲染错误里附带的当前内容，说明"自你查看以后内容已变"，重新提问；非交互式时不自动重试，退出码 3，输出新的 `item_ver`。
-- **已关闭**（`item_closed`）：说明已按什么处理、或被哪次写入取代，退出码 3；同一处理方式重发得到重放结果时，写"该事项已于 … 按 confirm 解决，本次没有新的改动"，退出码 0。
+- **已关闭**（`item_closed`）：说明已按什么处理、或被哪次写入取代，退出码 3（写法同事项详情：谁、哪种处理方式、`take_candidate` 取的是第几个候选、解决时带的备注；备注是调用者写的文本，放在不可信边界内）；同一处理方式重发得到重放结果时，写"该事项已于 … 按 confirm 解决，本次没有新的改动"，退出码 0。
 - `--note` 记进日志（`UntrustedText`，可随删除清除）；人写的理由放这里。
 
 ### 5.3 删除：预览 → 确认 → 撤回
@@ -614,7 +624,7 @@ runs r_01JC… 整行删除：date 只来自这句话
 ### 6.1 人读文本与 `--json`
 
 - **人读文本**（默认）：由 CLI 渲染器按契约字段生成。标记写法同 MCP（[`05-surfaces.md`](05-surfaces.md) 4.2「标记」、4.3「提醒与提示」），渲染器测试同样检查每个契约标记都出现在文本里；`notices[]` 写在末尾；`warnings[]` 全部渲染（含 `multi_segment_unmapped`，人可以据此回头补证据映射）。`saveslot pending show` 对 `flagged` 事项列出命中的行与命中的那一组键；读结果里 `dangling_ref` 标记照 MCP 的写法渲染。提示里的下一步写成 CLI 命令，不写 `saveslot_` 工具名。
-- **`--json`**：标准输出只有一个 JSON 值——契约的结构化结果，与 HTTP 回执同一形状，CLI 不改名、不删字段；`export` 例外，是 NDJSON 流。报错时输出契约的 `{"error": {...}}`。组合命令输出最后一个契约操作的结果（`pending resolve` 是 `resolve` 的，`delete --source` 是 `delete` 的）；`connect` 输出 `connections.issue` 的结果，另加 `selfcheck` 字段；`setup` 输出一个对象，列出每一步的结果与每个宿主的连接实例 ID、名字、是否已接入（"已有 / 本次完成 / 未确认 / 失败"），不含令牌。脚本必须看 `status` 等字段，不能只看退出码（同 HTTP 的规定）。
+- **`--json`**：标准输出只有一个 JSON 值——契约的结构化结果，与 HTTP 回执同一形状，CLI 不改名、不删字段；`export` 例外，是 NDJSON 流。报错时输出契约的 `{"error": {...}}`；CLI 自己发现的错误（如 `connections revoke` 的名字对应不止一个连接实例时的 `ambiguous_name`）也用同一个外形，那时的 `code` 是 CLI 自己的，不在契约的错误码里。组合命令输出最后一个契约操作的结果（`pending resolve` 是 `resolve` 的，`delete --source` 是 `delete` 的）；`connect` 输出 `connections.issue` 的结果，另加 `selfcheck` 字段；`setup` 输出一个对象，不含令牌：`initialized`（`existing` / `done` / `failed`；初始化失败时对象只有这一项）、`service`（`ready` / `failed`；启动失败时对象到此为止，退出码按 `start`）、`slots`（`[{template, slot}]`）、`slot_failed`（建 slot 失败时才有，是那个模板的名字；这时 `hosts` 是空数组，退出码按建 slot 的错误）、`hosts`（按参数或列表的次序，每项 `{host, state, reason?, connection?, connections?}`）。`state` 六个值：`existing`、`done`、`unconfirmed`、`failed`、`manual`（列出了但没有添加命令）、`not_found`（`--host` 给了但没找到）。`failed` 与 `unconfirmed` 带 `reason`，是稳定的码：`failed` 的是 `command_failed`、`command_signal`、`command_timeout`、`cannot_run`、`interrupted`、`no_entry`、`self_check_failed`、`issue_failed`、`lookup_failed`、`unshowable`；`unconfirmed` 的是 `path_not_seen`、`instance_unsure`、`no_instance`（§3.3 第 7 条）。别的状态不带 `reason`（`not_found` 本身就是原因）。`connection` 是 `{id, name, state}`，`state` 为 `live` 或 `revoked`；宿主已有条目而第一档的有效实例不止一个时（`existing`），或只有第二档的实例时（`unconfirmed` / `instance_unsure`），不给 `connection`，给 `connections`（`[{id, name, last_read}]`，`last_read` 是最后一次自检之外的读取时刻或 null）。中途停下时另带 `stopped`（`declined`、`input_ended`、`interrupted`）。脚本必须看 `status` 等字段，不能只看退出码（同 HTTP 的规定）。
 - 交互式提示、进度、"令牌只显示一次"这类话写标准错误，`--json` 时标准输出保持可解析。
 
 ### 6.2 退出码
@@ -631,6 +641,7 @@ runs r_01JC… 整行删除：date 只来自这句话
 | 7 | 连不上或暂时不可用（稍后重试） | saveslot 服务未运行（`saveslot stop` 例外：没在运行时退出码 0）；`saveslot stop` 时 `/health` 报的 pid 与 `run/saveslot.pid` 不一致，或 `/health` 不应答而 `run/saveslot.lock` 被占着（都不发信号）；`saveslot start` 等不到就绪（进程仍在运行）、套接字不可达、`unavailable`（忙、恢复中、导入中、对拍中、启动中）、`rate_limited`（`busy`）；`saveslot start` 或 `saveslot setup` 启动服务失败，或另一个 `setup` 正在运行 |
 | 8 | 未执行 | 人在提示中拒绝（含 `saveslot setup` 第 5 步的拒绝：什么都没签发）；非交互式缺 `--yes` 或绑定令牌；`export --encrypt` 没有终端、也没给口令文件或文件描述符 |
 | 9 | 校验发现问题 | `saveslot verify` 报断裂 / 不符，`saveslot verify --replay` 报不一致，`saveslot doctor` 有不通过项（只有提醒时不给 9） |
+| 129 / 130 / 131 / 143 | 被信号停下（128 加信号编号：SIGHUP / SIGINT / SIGQUIT / SIGTERM） | `saveslot setup` 收到这四个信号之一时收尾后按此退出（§3.3 第 8 条） |
 
 退出码只分大类，权威信息是 `--json` 里的 `error.code`；契约以后新增的错误码归入 1 以外最接近的一类，未知的按 5 处理。
 
@@ -642,6 +653,13 @@ runs r_01JC… 整行删除：date 只来自这句话
 错误 confirmation_mismatch：pi_9B… 自你查看以后内容已变
   现在的提议：11-02 起改为 3500 CNY（一直延续）
   重新查看：saveslot pending show pi_9B…
+```
+
+校验类错误的 `details` 逐条一行：明细的 `code`，再写它在哪里——`op`、`path`、`table`、`field`、`line` 中给了的那些（键是 CLI 自己的字样，值放在不可信边界内），带 `valid` 的（判定时发现的 `required_in_gap`）再写那一段区间，写法同读结果里的区间（起点开口、整段时间都照那里写）。例如：
+
+```
+error validation_failed (「write」): 「the write falls where the entity has no value」
+  required_in_gap  at op 0, table 「plan.budgets」, field 「amount」, valid 「2026-11-05」 to 「2026-11-06」 (inclusive)
 ```
 
 ### 6.4 不可信文本在终端里

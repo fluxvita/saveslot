@@ -187,6 +187,6 @@ describe("the templates, end to end", () => {
     const r = await saveslot("slot", "create", "_bad", "--template", "running");
     expect(r.code).toBe(5);
     expect(r.err).toMatch(/^error validation_failed/);
-    expect(r.err).toMatch(/reserved_name {2}at 「path」/);
+    expect(r.err).toMatch(/reserved_name {2}at path /);
   });
 });

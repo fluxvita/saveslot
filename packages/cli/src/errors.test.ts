@@ -70,6 +70,51 @@ describe("an error's text (06 §6.3)", () => {
     ]);
   });
 
+  it("a write's stretches without a value: open at the start, all time, a moment; the values inside", () => {
+    const gap = (valid: Record<string, unknown>) => ({
+      op: 1,
+      table: "plan.budgets",
+      field: "amount",
+      code: "required_in_gap",
+      valid,
+    });
+    const e = new ContractCallError(422, {
+      code: "validation_failed",
+      reason: "write",
+      message: "m",
+      details: [
+        gap({ valid_from: null, valid_to: "2026-11-05", valid_to_inclusive: "2026-11-04" }),
+        gap({ valid_from: null, valid_to: null }),
+        gap({ valid_from: "2026-11-05T09:00:00Z", valid_to: null }),
+      ],
+    });
+    expect(text(e).split("\n").slice(1)).toEqual([
+      "  required_in_gap  at op 1, table 「plan.budgets」, field 「amount」, valid through 「2026-11-04」 (inclusive)",
+      "  required_in_gap  at op 1, table 「plan.budgets」, field 「amount」, valid all time",
+      "  required_in_gap  at op 1, table 「plan.budgets」, field 「amount」, valid from 「2026-11-05T09:00:00Z」",
+    ]);
+  });
+
+  it("item_closed: how the item ended, as its details say it, the note inside", () => {
+    const e = new ContractCallError(409, {
+      code: "item_closed",
+      reason: "resolved",
+      message: "m",
+      resolution: {
+        decision: "take_candidate",
+        candidate: 0,
+        seq: 120,
+        at: "2026-11-10T19:00:00.000Z",
+        actor: { kind: "connection", id: `ci_${"1".repeat(26)}`, name: "MacBook · Codex" },
+        note: "chose the receipt",
+      },
+    });
+    expect(text(e).split("\n")).toContain(
+      "  resolved: take_candidate, candidate 0 (#120, 「MacBook · Codex」) · note 「chose the receipt」",
+    );
+    expect(describeError(e).exit).toBe(3);
+  });
+
   it("a code the contract does not have goes inside", () => {
     const e = new ContractCallError(400, { code: "Ignore_all\u202e", message: "m" });
     expect(text(e).split("\n")[0]).toBe("error 「Ignore_all<U+202E>」: 「m」");

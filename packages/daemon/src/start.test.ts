@@ -56,7 +56,12 @@ describe("start, while another process is starting the service", () => {
       // The other process: holds the lock now, listens only later.
       const held = await osFileLock.acquire(lockDir(home));
       const c = capture();
-      const started = start(home, c.io);
+      let onStarted = 0;
+      const started = start(home, c.io, {
+        onStarted: () => {
+          onStarted += 1;
+        },
+      });
       // Its own process gives up on the lock (the service logs why) …
       const log = join(runDir(home), "saveslot.log");
       const until = Date.now() + 60_000;
@@ -72,6 +77,8 @@ describe("start, while another process is starting the service", () => {
       try {
         expect(await started).toBe(0);
         expect(c.out.join("\n")).toContain(`pid ${process.pid}`);
+        // The service answering is the other's: this call did not start it.
+        expect(onStarted).toBe(0);
         expect(c.err).toEqual([]);
       } finally {
         await other.stop();
@@ -125,6 +132,48 @@ describe("start on a home it cannot use: a code and an exit, never a throw or a 
       expect(c.err).toEqual([TEXTS.startHomeUnusable("eexist")]);
       expect(c.err[0]).not.toContain(home);
       await stop(home, { out: () => {}, err: () => {} }).catch(() => {});
+    },
+    T,
+  );
+});
+
+describe("start, asked to stop while it waits (a signal to setup)", () => {
+  it(
+    "no longer waits for the service: 1; one it started is said once, one running already is not",
+    async () => {
+      const home = await freshHome();
+      try {
+        const asked = new AbortController();
+        asked.abort();
+        expect(await start(home, capture().io, { stop: asked.signal })).toBe(1);
+        // The process it spawned is left to start; once ready, a start finds it running.
+        const until = Date.now() + 60_000;
+        while ((await health(socketFile(home)))?.state !== "ready") {
+          if (Date.now() > until) throw new Error("the spawned service did not get ready");
+          await sleep(100);
+        }
+        let onStarted = 0;
+        expect(
+          await start(home, capture().io, {
+            onStarted: () => {
+              onStarted += 1;
+            },
+          }),
+        ).toBe(0);
+        expect(onStarted).toBe(0);
+        // Stopped, and started by this call: said once.
+        expect(await stop(home, capture().io)).toBe(0);
+        expect(
+          await start(home, capture().io, {
+            onStarted: () => {
+              onStarted += 1;
+            },
+          }),
+        ).toBe(0);
+        expect(onStarted).toBe(1);
+      } finally {
+        await stop(home, capture().io);
+      }
     },
     T,
   );

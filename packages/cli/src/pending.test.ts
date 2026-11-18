@@ -152,6 +152,26 @@ describe("pending (06 §5.1)", () => {
     expect(lines.at(-1)).toBe("  choices: keep_effective / take_candidate / take_previous");
   });
 
+  it("a conflict resolved by taking a candidate: which candidate, and the note inside the boundary", () => {
+    const resolved = {
+      ...AWAITING,
+      status: "resolved",
+      decisions: [],
+      resolution: {
+        decision: "take_candidate",
+        candidate: 1,
+        seq: 111,
+        at: "2026-11-10T19:00:00.000Z",
+        actor,
+        note: `the newer one${String.fromCodePoint(0x1b)}[2J`,
+      },
+    };
+    const lines = render(pendingDetail(resolved as never, NOW), terminal).split("\n");
+    expect(lines).toContain(
+      "  resolved: take_candidate, candidate 1 (#111, 「MacBook · Codex」) · note 「the newer one\\x1b[2J」",
+    );
+  });
+
   it("resolved and superseded items say how they closed; no choices left", () => {
     const resolved = {
       ...AWAITING,

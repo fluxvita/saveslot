@@ -11,36 +11,37 @@
 // - Human text on stdout; errors, with the next step, on stderr (06 §6.3).
 
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   type AsOfResult,
   type CatalogTables,
   type Client,
-  type Connection,
   ContractCallError,
   createClient,
   ITEM_STATUSES,
   ITEM_TYPES,
   type PendingDetailResult,
   resolveCredential,
-  SELFCHECK_TASK,
   type TimelineResult,
   TransportError,
 } from "@fluxvita/saveslot-client";
 import {
   APPLIES,
   addCommand,
+  appliedWhy,
   entryMayGo,
   entryPath,
   HOSTS,
   type Host,
+  issueAndAdd,
+  issueChecked,
   onPath,
   parseScopes,
-  runHostCommand,
+  revokeQuietly,
 } from "./connect.ts";
-import { describeError } from "./errors.ts";
+import { describeError, timezoneHint } from "./errors.ts";
 import { logVerified, readsList, verifyFound } from "./render/admin.ts";
 import {
   alreadyLines,
@@ -58,12 +59,12 @@ import { pendingDetail, pendingList, resolveResult } from "./render/pending.ts";
 import { asOfResult, queryResult, timelineResult } from "./render/reads.ts";
 import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
 import { type Boundary, type Line, render, t, untrusted, words } from "./render/text.ts";
-import { TEMPLATES } from "./templates.ts";
+import { TEMPLATES, templateDocument } from "./templates.ts";
 import { type Static, TEXTS } from "./texts.ts";
 
 /** The options some commands have; any other command given one is a usage error. */
 const OWN_OPTIONS = {
-  template: { type: "string" },
+  template: { type: "string", multiple: true },
   file: { type: "string" },
   timezone: { type: "string" },
   tables: { type: "string" },
@@ -94,6 +95,7 @@ const OWN_OPTIONS = {
   slots: { type: "string" },
   apply: { type: "boolean" },
   lang: { type: "string" },
+  host: { type: "string", multiple: true },
 } as const;
 type OwnValue = string | string[] | boolean;
 
@@ -104,6 +106,8 @@ const ownList = (o: Options, k: string): string[] =>
   Array.isArray(o.own[k]) ? (o.own[k] as string[]) : [];
 const ownFlag = (o: Options, k: string): boolean => o.own[k] === true;
 
+import { allConnections, everyPage } from "./pages.ts";
+import { type SetupServices, STOP_SIGNALS, type StopSignal, setup } from "./setup.ts";
 import { jsonText } from "./untrusted.ts";
 import { Failed, NotDone, UsageError } from "./usage.ts";
 import { type FieldInfo, foldName, parseCondition, parseConditionsJson } from "./where.ts";
@@ -123,6 +127,14 @@ export interface CliIO {
   readonly entry?: string;
   /** Tests only: how long `connect --apply` lets the host's command run (60 s otherwise). */
   readonly hostTimeoutMs?: number;
+  /** Tests only: how long `setup` lets a host's version and look-up commands run (5 s otherwise). */
+  readonly probeTimeoutMs?: number;
+  /** Tests only: the platform `setup` takes this one for. */
+  readonly platform?: NodeJS.Platform;
+  /** Tests only: this computer's name, as `setup` names instances after it. */
+  readonly hostname?: string;
+  /** Tests only: how `setup` hears of SIGINT and SIGTERM (the process's own otherwise). */
+  readonly watchSignals?: (on: (signal: StopSignal) => void) => () => void;
 }
 
 interface Options {
@@ -135,6 +147,8 @@ interface Options {
   readonly args: readonly string[];
   /** The command's own options, as given. */
   readonly own: Readonly<Record<string, OwnValue | undefined>>;
+  /** The service's side, for `setup` (the entry package hands it in). */
+  readonly services: SetupServices | undefined;
 }
 
 /** What a command gives: a result to write, as text and as JSON, and its exit code (default 0). */
@@ -170,55 +184,37 @@ const command = (
   ...(whenBroken !== undefined ? { whenBroken } : {}),
 });
 
-/** Whether an error's details point at `path` in the document. */
-function detailAt(e: ContractCallError, path: string): boolean {
-  const details = Object.hasOwn(e.body, "details") ? e.body["details"] : undefined;
-  return (
-    Array.isArray(details) &&
-    details.some(
-      (d) => typeof d === "object" && d !== null && (d as { path?: unknown }).path === path,
-    )
-  );
-}
-
 /** The schema document `slot create` submits: a template's or a file's, named and timed. */
 async function documentFor(o: Options): Promise<{ doc: Record<string, unknown>; chosen?: string }> {
   const slot = o.args[0];
   if (slot === undefined || o.args.length > 1) throw new UsageError(TEXTS.slotNameMissing);
-  const template = ownString(o, "template");
+  const templates = ownList(o, "template");
+  // Repeatable for `setup`; one template makes one slot here.
+  if (templates.length > 1) throw new UsageError(TEXTS.optionTwice);
+  const template = templates[0];
   const file = ownString(o, "file");
   if ((template === undefined) === (file === undefined)) throw new UsageError(TEXTS.createNeedsOne);
-  let doc: Record<string, unknown>;
+  const given = ownString(o, "timezone");
   if (template !== undefined) {
-    const t = TEMPLATES.get(template);
-    if (t === undefined) throw new UsageError(TEXTS.templateUnknown);
-    doc = structuredClone(t.document) as Record<string, unknown>;
-  } else {
-    let v: unknown;
-    try {
-      v = JSON.parse(await readFile(resolve(file as string), "utf8"));
-    } catch {
-      throw new UsageError(TEXTS.fileUnreadable);
-    }
-    if (typeof v !== "object" || v === null || Array.isArray(v)) {
-      throw new UsageError(TEXTS.fileUnreadable);
-    }
-    doc = v as Record<string, unknown>;
+    const made = templateDocument(template, slot, given);
+    if (made === undefined) throw new UsageError(TEXTS.templateUnknown);
+    return made;
   }
-  // The name is the command line's; a new slot has no base version (06 §3 step 4).
+  let v: unknown;
+  try {
+    v = JSON.parse(await readFile(resolve(file as string), "utf8"));
+  } catch {
+    throw new UsageError(TEXTS.fileUnreadable);
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    throw new UsageError(TEXTS.fileUnreadable);
+  }
+  const doc = v as Record<string, unknown>;
+  // The name is the command line's; a new slot has no base version (06 §3 step 4); a file keeps
+  // its own time zone unless one is given.
   doc["slot"] = slot;
   doc["base_version"] = null;
-  const given = ownString(o, "timezone");
-  if (given !== undefined) {
-    doc["timezone"] = given;
-    return { doc };
-  }
-  // A template without --timezone: this computer's (06 §3.1); a file keeps its own.
-  if (template !== undefined) {
-    const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    doc["timezone"] = local;
-    return { doc, chosen: local };
-  }
+  if (given !== undefined) doc["timezone"] = given;
   return { doc };
 }
 
@@ -236,30 +232,6 @@ async function tablesOf(c: Client, slot: string): Promise<string[]> {
       next: page.next_cursor,
     };
   });
-}
-
-/** The most pages a command reads to have every item (200 a page). */
-export const MAX_PAGES = 1000;
-
-/**
- * Every item, page after page, until a page has no next cursor. Stopped, as an error (1), at
- * `MAX_PAGES` pages or at a cursor given twice: either way the pages would not end.
- */
-export async function everyPage<T>(
-  page: (cursor: string | undefined) => Promise<{ items: readonly T[]; next?: string | undefined }>,
-): Promise<T[]> {
-  const out: T[] = [];
-  const cursors = new Set<string>();
-  let cursor: string | undefined;
-  for (let n = 0; n < MAX_PAGES; n++) {
-    const p = await page(cursor);
-    out.push(...p.items);
-    if (p.next === undefined) return out;
-    if (cursors.has(p.next)) throw new Failed(TEXTS.pagesRepeat, 1);
-    cursors.add(p.next);
-    cursor = p.next;
-  }
-  throw new Failed(TEXTS.pagesTooMany, 1);
 }
 
 /** A table's fields by folded name, with their type and unit, from its catalog. */
@@ -440,18 +412,6 @@ async function resolveCommand(
   throw new NotDone(TEXTS.keptChanging);
 }
 
-/** Every connection instance, revoked and disabled ones too, page after page (200 a page). */
-async function allConnections(c: Client): Promise<Connection[]> {
-  return everyPage(async (cursor) => {
-    const page = await c.connections.list({
-      include_revoked: true,
-      limit: 200,
-      ...(cursor !== undefined ? { cursor } : {}),
-    });
-    return { items: page.connections, next: page.next_cursor };
-  });
-}
-
 /**
  * `saveslot connect <host>` (06 §3.2): issue, self-check with the new token, then the host's setup
  * with the token in it, on stdout, once; with `--apply`, the host's command run as well. The token
@@ -491,58 +451,52 @@ async function connectCommand(
   if (!setupShowable(host, entry, socketOf(o), exe)) throw new Failed(TEXTS.setupUnshowable, 1);
 
   const session = await client();
-  const issued = await session.connections.issue({
-    name: connectionName,
-    ...(scopes !== undefined ? { scopes } : {}),
-  });
-  const { token, ...connection } = issued;
-  /** Revokes the new connection instance, as far as it can: whether it did. */
-  const revoke = async () => {
-    try {
-      await session.connections.revoke({ id: connection.id });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  /** Issued and not usable: revoked, the token not shown, why said without it; 1. */
-  const failed = async (why: Line[], error: unknown): Promise<Output> => {
-    const revoked = await revoke();
+  const params = { name: connectionName, ...(scopes !== undefined ? { scopes } : {}) };
+  // With --apply, the one way a host is given an instance (as `setup` does); else issued only.
+  const added = apply
+    ? await issueAndAdd({
+        session,
+        socketPath: socketOf(o),
+        params,
+        host,
+        exe: exe as string,
+        entry,
+        env,
+        timeoutMs: io.hostTimeoutMs,
+      })
+    : undefined;
+  const checked = added?.checked ?? (await issueChecked(session, socketOf(o), params));
+  const { connection } = checked;
+  if (checked.kind !== "ready") {
+    // Issued and not usable: revoked, the token not shown, why said without it; 1.
+    const e = checked.error;
+    const why =
+      checked.kind === "malformed"
+        ? [[words(TEXTS.tokenMalformed)]]
+        : // The new token was refused: the general next step (about SAVESLOT_TOKEN) is not this one's.
+          [[words(TEXTS.selfcheckFailed)], ...describeError(e, { nextStep: false }).lines];
     return {
-      json: { error, connection: { id: connection.id, name: connection.name, revoked } },
+      json: {
+        error:
+          checked.kind === "malformed"
+            ? { code: "internal", message: "token_malformed" }
+            : e instanceof ContractCallError
+              ? e.body
+              : { code: "internal" },
+        connection: { id: connection.id, name: connection.name, revoked: checked.revoked },
+      },
       lines: [],
       errLines: [
         ...notes,
         ...why,
         t`  ${connectionLine(connection)}`,
-        [words(revoked ? TEXTS.selfcheckRevoked : TEXTS.selfcheckNotRevoked)],
+        [words(checked.revoked ? TEXTS.selfcheckRevoked : TEXTS.selfcheckNotRevoked)],
       ],
       exit: 1,
     };
-  };
-  // A token of the shape the service gives, or none is shown (nor put into a command).
-  if (typeof token !== "string" || !/^slt_[A-Za-z0-9_-]{43}$/.test(token)) {
-    return failed([[words(TEXTS.tokenMalformed)]], {
-      code: "internal",
-      message: "token_malformed",
-    });
   }
-
-  // The self-check: the new token reads the catalog, marked as the self-check (06 §3 step 7).
-  let slots: number;
-  let more: boolean;
-  try {
-    const own = createClient({ socketPath: socketOf(o), token });
-    const r = await own.catalog({ level: "list", limit: 200, task: SELFCHECK_TASK });
-    slots = r.slots.length;
-    more = r.next_cursor !== undefined;
-  } catch (e) {
-    // The new token was refused: the general next step (about SAVESLOT_TOKEN) is not this one's.
-    return failed(
-      [[words(TEXTS.selfcheckFailed)], ...describeError(e, { nextStep: false }).lines],
-      e instanceof ContractCallError ? e.body : { code: "internal" },
-    );
-  }
+  const { token, slots, more, issued } = checked;
+  const revoke = () => revokeQuietly(session, connection.id);
   // The token's only copy is in the output: lost with it, the instance is no one's.
   const lost = async (): Promise<Line[]> =>
     (await revoke())
@@ -562,19 +516,9 @@ async function connectCommand(
       unwritten: lost,
     };
   }
-  const [, ...args] = addCommand(host, token, entry) as string[];
-  const ran = await runHostCommand([exe as string, ...args], env, io.hostTimeoutMs);
+  const ran = (added as Extract<typeof added, { kind: "ran" }>).ran;
   const ok = ran.kind === "done";
-  const why =
-    ran.kind === "exit"
-      ? TEXTS.applyExit(ran.code)
-      : ran.kind === "signal"
-        ? TEXTS.applySignal
-        : ran.kind === "not_found"
-          ? TEXTS.applyGone
-          : ran.kind === "cannot_run"
-            ? TEXTS.applyCannotRun
-            : TEXTS.applyTimeout;
+  const why = appliedWhy(ran);
   return {
     json: { ...issued, selfcheck, applied: ok },
     lines: [...head, ...appliedLines(host, token, entry, exe as string, ok), ...snippetHint(host)],
@@ -628,6 +572,56 @@ async function revokeCommand(
 
 const socketOf = (o: Options) => join(o.home, "run", "saveslot.sock");
 
+/**
+ * SIGINT, SIGTERM, SIGHUP (the terminal closed) and SIGQUIT to `on` while `setup` runs, in place of
+ * ending the process at once: it then stops cleanly (06 §3.3 item 8).
+ */
+function watchProcessSignals(on: (signal: StopSignal) => void): () => void {
+  const handlers = STOP_SIGNALS.map((sig) => [sig, () => on(sig)] as const);
+  for (const [sig, h] of handlers) process.on(sig, h);
+  return () => {
+    for (const [sig, h] of handlers) process.off(sig, h);
+  };
+}
+
+/** `saveslot setup` (06 §3.3): ./setup.ts, with the command line and this process. */
+async function setupCommand(
+  o: Options,
+  client: () => Promise<Client>,
+  io: CliIO,
+  env: Env,
+): Promise<Output> {
+  if (o.args.length > 0) throw new UsageError(TEXTS.setupArgs);
+  if (o.services === undefined) throw new Failed(TEXTS.setupNotHere, 2);
+  const r = await setup({
+    home: o.home,
+    socket: socketOf(o),
+    json: o.json,
+    yes: ownFlag(o, "yes"),
+    templates: ownList(o, "template"),
+    timezone: ownString(o, "timezone"),
+    hosts: ownList(o, "host"),
+    scopes: ownList(o, "scope"),
+    env,
+    // Asked only where someone sees the questions: stdin, and stderr where they are written.
+    stdinTerminal: io.stdinIsTTY === true && io.ask !== undefined,
+    stderrTerminal: io.stderrIsTTY,
+    ask: io.ask,
+    entry: io.entry,
+    platform: io.platform ?? process.platform,
+    hostname: io.hostname ?? (hostname().split(".")[0] as string),
+    probeTimeoutMs: io.probeTimeoutMs,
+    hostTimeoutMs: io.hostTimeoutMs,
+    say: (lines) => io.out(`${render(lines, boundaryFor(io.stdoutIsTTY, o.tags, env))}\n`),
+    sayErr: (lines) => io.err(`${render(lines, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`),
+    passOn: { out: (l) => io.out(`${l}\n`), err: (l) => io.err(`${l}\n`) },
+    client,
+    services: o.services,
+    watchSignals: io.watchSignals ?? watchProcessSignals,
+  });
+  return { json: r.json, lines: r.lines, errLines: r.errLines, exit: r.exit };
+}
+
 /** `--detail detailed` refused (P2, with premises): what to do instead (06 §4.7). */
 const detailNotYet: Command["hint"] = (e, o) =>
   e.code === "not_in_this_version" && ownString(o, "detail") === "detailed"
@@ -635,6 +629,7 @@ const detailNotYet: Command["hint"] = (e, o) =>
     : undefined;
 
 const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
+  ["setup", command(["template", "timezone", "host", "scope", "yes"], setupCommand)],
   [
     "connect",
     command(["name", "scope", "slots", "apply"], connectCommand, undefined, TEXTS.connectUnknown),
@@ -854,10 +849,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
         return { json: r, lines: slotCreated(r, chosen) };
       },
       // The time zone the command line gave, refused: say so, and what it takes.
-      (e, o) =>
-        ownString(o, "timezone") !== undefined && detailAt(e, "timezone")
-          ? TEXTS.timezoneRefused
-          : undefined,
+      (e, o) => timezoneHint(e, ownString(o, "timezone") !== undefined),
     ),
   ],
   [
@@ -945,7 +937,12 @@ function scopeValuesJoined(argv: readonly string[]): string[] {
 }
 
 /** Runs one command line (without the program name); resolves with its exit code. */
-export async function run(argv: readonly string[], env: Env, io: CliIO): Promise<number> {
+export async function run(
+  argv: readonly string[],
+  env: Env,
+  io: CliIO,
+  services?: SetupServices,
+): Promise<number> {
   let values: Record<string, string | string[] | boolean | undefined>;
   let positionals: string[];
   let tokens: ReturnType<typeof parseArgs>["tokens"];
@@ -1031,6 +1028,7 @@ export async function run(argv: readonly string[], env: Env, io: CliIO): Promise
     ),
     args: positionals.slice(words_),
     own,
+    services,
   };
   const client = async () => {
     const credential = await resolveCredential({ home: o.home, env });

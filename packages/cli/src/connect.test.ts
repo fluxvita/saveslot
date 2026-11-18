@@ -10,9 +10,18 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { HOST_TIMEOUT_MS, onPath, parseScopes, runHostCommand } from "./connect.ts";
+import {
+  HOST_TIMEOUT_MS,
+  hostEntry,
+  hostOutput,
+  hostVersion,
+  onPath,
+  parseScopes,
+  runHostCommand,
+} from "./connect.ts";
+import { MAX_PAGES } from "./pages.ts";
 import { shellWord } from "./render/text.ts";
-import { MAX_PAGES, run } from "./run.ts";
+import { run } from "./run.ts";
 import { TEXTS } from "./texts.ts";
 
 const SESSION = `sls_${"S".repeat(43)}`;
@@ -813,6 +822,38 @@ describe("runHostCommand and onPath", () => {
     expect(r.stdout.trim()).toBe(JSON.stringify({ kind: "done" }));
     expect(Date.now() - t0).toBeLessThan(30_000);
   }, 60_000);
+
+  it("hostOutput: all of what it wrote before it exited, on each stream, up to 1 MiB each", async () => {
+    const some = script("prints", "head -c 50000 /dev/zero | tr '\\0' a; exit 0");
+    const r = await hostOutput([some], {});
+    expect(r.applied).toEqual({ kind: "done" });
+    expect(r.out).toBe("a".repeat(50000));
+    // Exited before what it started wrote: still all of it (stdout ends when the last writer goes).
+    const late = script("late", "(/bin/sleep 0.3; echo late) & exit 0");
+    expect((await hostOutput([late], {})).out).toBe("late\n");
+    const much = script(
+      "prints-much",
+      "head -c 1200000 /dev/zero | tr '\\0' b; head -c 70000 /dev/zero | tr '\\0' e >&2; exit 4",
+    );
+    const m = await hostOutput([much], {});
+    expect(m.applied).toEqual({ kind: "exit", code: 4 });
+    expect(m.out).toBe("b".repeat(1024 * 1024));
+    expect(m.err).toBe("e".repeat(70000));
+  });
+
+  it("hostVersion and hostEntry: the first line, cut; yes, no, or not ended", async () => {
+    expect(await hostVersion(script("v", `echo "tool ${"9".repeat(100)}"; echo second`), {})).toBe(
+      `tool ${"9".repeat(75)}`,
+    );
+    expect(await hostVersion(script("v-fails", "echo x; exit 1"), {})).toBeUndefined();
+    // Both streams: what is on stdout, then what is on stderr.
+    expect(await hostEntry(script("has", 'echo "$@"; echo also >&2'), {})).toEqual({
+      kind: "yes",
+      out: "mcp get saveslot\n\nalso\n",
+    });
+    expect(await hostEntry(script("has-not", "exit 1"), {})).toEqual({ kind: "no" });
+    expect(await hostEntry(script("hangs", "/bin/sleep 30"), {}, 300)).toEqual({ kind: "unknown" });
+  });
 
   it("much on both pipes: read and dropped, no stall", async () => {
     const host = script(

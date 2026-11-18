@@ -39,6 +39,7 @@ import { parseArgs } from "node:util";
 import type { HealthBody } from "@fluxvita/saveslot-server";
 import {
   AlreadyInitialized,
+  ControlFileError,
   initLocalHome,
   LocalTenantError,
   readPrivate,
@@ -53,6 +54,7 @@ import { health, localRequest } from "./local-request.ts";
 import { daemonVersion, main } from "./main.ts";
 import { runBridge } from "./mcp-bridge.ts";
 import { lockDir, pidFile, runDir, socketFile } from "./service.ts";
+import { homeProblem } from "./setup-support.ts";
 import { TEXTS } from "./texts.ts";
 
 export interface CommandIO {
@@ -135,6 +137,14 @@ export async function init(
   io: CommandIO,
 ): Promise<number> {
   const rotate = o.rotate;
+  if (!rotate) {
+    // The home as it is, before anything is made in it: what is wrong, and how to put it right.
+    const problem = await homeProblem(home);
+    if (problem !== undefined) {
+      io.err(problem);
+      return 1;
+    }
+  }
   try {
     if (rotate) {
       await rotateSession(home, osFileLock);
@@ -164,6 +174,16 @@ export async function init(
       io.err(TEXTS.notInitialized(home));
       return 5;
     }
+    // A home it cannot make or use as it is: the path and why, and how to put it right; 1.
+    if (e instanceof ControlFileError) {
+      io.err(TEXTS.initMode(e.path, e.message.replace(`${e.path} `, "")));
+      return 1;
+    }
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EEXIST" || code === "ENOTDIR" || code === "EACCES" || code === "EPERM") {
+      io.err(TEXTS.initInTheWay((e as NodeJS.ErrnoException).path ?? home, code));
+      return 1;
+    }
     throw e;
   }
 }
@@ -172,9 +192,12 @@ export async function init(
 async function waitReady(
   socket: string,
   exited: () => boolean,
-): Promise<HealthBody | "exited" | "timeout"> {
+  stop?: AbortSignal,
+): Promise<HealthBody | "exited" | "timeout" | "stopped"> {
   const until = Date.now() + WAIT_MS;
   while (Date.now() < until) {
+    // Asked to stop (a signal to `setup`): no longer waited for; the process is left to start.
+    if (stop?.aborted === true) return "stopped";
     const h = await health(socket, 2000);
     if (h !== undefined && (h.state === "ready" || h.state === "failed")) return h;
     if (h === undefined && exited()) return "exited";
@@ -188,9 +211,18 @@ async function waitReady(
  * cannot be read, `run/` that is a file) is a failure to start, exit 7, said by a code without a
  * path; it does not throw.
  */
-export async function start(home: string, io: CommandIO): Promise<number> {
+export async function start(
+  home: string,
+  io: CommandIO,
+  o: {
+    /** Aborted: no longer waited for (the caller is stopping); 1. */
+    readonly stop?: AbortSignal;
+    /** Called when this call started the service (not one that was running already). */
+    readonly onStarted?: () => void;
+  } = {},
+): Promise<number> {
   try {
-    return await startService(home, io);
+    return await startService(home, io, o);
   } catch (e) {
     io.err(TEXTS.startHomeUnusable(failureCode(e)));
     return 7;
@@ -210,7 +242,11 @@ function serviceEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-async function startService(home: string, io: CommandIO): Promise<number> {
+async function startService(
+  home: string,
+  io: CommandIO,
+  o: { readonly stop?: AbortSignal; readonly onStarted?: () => void },
+): Promise<number> {
   try {
     await readTenantDirectory(home);
   } catch (e) {
@@ -224,7 +260,8 @@ async function startService(home: string, io: CommandIO): Promise<number> {
   const mine = daemonVersion();
   const running = await health(socket);
   if (running !== undefined && running.state !== "failed") {
-    const h = running.state === "ready" ? running : await waitReady(socket, () => false);
+    const h = running.state === "ready" ? running : await waitReady(socket, () => false, o.stop);
+    if (h === "stopped") return 1;
     if (typeof h === "object" && h.state === "ready") {
       if (h.version !== mine) {
         io.err(TEXTS.versionMismatch(h.version, mine));
@@ -266,20 +303,22 @@ async function startService(home: string, io: CommandIO): Promise<number> {
   });
   child.unref();
 
-  let h = await waitReady(socket, () => exited);
+  let h = await waitReady(socket, () => exited, o.stop);
   let other: number | undefined;
   if (h === "exited" && (await lockHeld(home))) {
     // Ours lost the home's lock to a process starting meanwhile (another start, a bridge): that
     // one is not listening yet; it is waited for as ours would have been.
     other = await readPid(home);
-    h = await waitReady(socket, () => false);
+    h = await waitReady(socket, () => false, o.stop);
   }
+  if (h === "stopped") return 1;
   if (typeof h === "object" && h.state === "ready") {
     // Another start may have won the home's lock: then it is that process that answers.
     if (h.version !== mine) {
       io.err(TEXTS.versionMismatch(h.version, mine));
       return 1;
     }
+    if (h.pid === child.pid) o.onStarted?.();
     io.out(h.pid === child.pid ? TEXTS.started(h.pid, socket) : TEXTS.alreadyRunning(h.pid));
     return 0;
   }
@@ -416,7 +455,9 @@ export async function status(
     TEXTS.status({
       lock: h.writer_lock === "held",
       behindMs,
-      logEnd,
+      // The time as parsed, written again: not the string as the service sent it.
+      logEnd:
+        behindMs !== undefined ? new Date(Date.parse(logEnd as string)).toISOString() : undefined,
       state: h.state,
       reason: h.reason,
       version: h.version,

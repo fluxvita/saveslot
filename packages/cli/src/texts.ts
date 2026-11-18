@@ -14,6 +14,14 @@ const s = (text: string): Static => text as Static;
 /** Spaces to line things up: their number is the renderer's, the text is spaces only. */
 export const gap = (n: number): Static => s(" ".repeat(Math.max(0, Math.trunc(n))));
 
+/** The hosts' display names: the one place they are written. */
+const HOST_NAMES: ReadonlyMap<string, string> = new Map([
+  ["claude-code", "Claude Code"],
+  ["codex", "Codex"],
+  ["cursor", "Cursor"],
+  ["claude-desktop", "Claude Desktop"],
+]);
+
 export const TEXTS = {
   usage: s(
     [
@@ -30,6 +38,8 @@ export const TEXTS = {
       "  pending resolve <pi_…> <decision> [--candidate n] [--note text] [--yes --item-ver iv_…]",
       "  reads [--connection <name or ID>] [--since 10m]",
       "  verify                    check the log: chain, checksums, index, gaps",
+      "  setup [--template t]… [--host claude-code|codex]… [--scope …] [--timezone z] [--yes]",
+      "                            first use: init, start, a slot, and the hosts found",
       "  connect <host> --name <name> [--scope +schema | -write | read,write…] [--apply]",
       "        hosts: claude-code, codex, cursor, claude-desktop, generic, http",
       "  connections list          the connection instances, revoked ones too",
@@ -117,6 +127,9 @@ export const TEXTS = {
   optionNotHere: s("that option is not one of this command's"),
   slotShowMissing: s("give the slot: saveslot slot show <slot> [table…]"),
   detail: s("  at"),
+  detailValid: s("valid"),
+  /** A detail's key, as the contract names it (04-contract-types §9 ValidationDetail). */
+  detailKey: (k: "op" | "path" | "table" | "field" | "line") => s(k),
 
   // pending resolve (06 §5.2, §5.4)
   itemVersionNow: s("the item's version now:"),
@@ -240,6 +253,7 @@ export const TEXTS = {
   applyCannotRun: s(
     "error: the host's command could not be run: the file is not one this system can execute",
   ),
+  applyInterrupted: s("error: the host's command was stopped: saveslot was asked to stop"),
   applyTimeout: s("error: the host's command did not finish in 60 seconds and was stopped"),
   applyKept: s(
     "the connection instance is kept: the command above holds its token. If it is not used, revoke it with saveslot connections revoke",
@@ -397,6 +411,116 @@ export const TEXTS = {
       },
     ],
   ]),
+
+  // setup (06 §3.3)
+  setupArgs: s("saveslot setup takes options only: --template, --timezone, --host, --scope, --yes"),
+  setupNotHere: s("error: saveslot setup is for macOS and Linux in this version"),
+  setupHostBad: s(
+    "--host takes claude-code or codex: a host with a command to add saveslot (for the others, saveslot connect <host>)",
+  ),
+  setupNeedsSession: s(
+    "error: saveslot setup runs as the user session: unset SAVESLOT_TOKEN and run it again",
+  ),
+  setupHomeInTheWay: s(
+    "error: the home cannot be used as it is (move away what is in the way, then run setup again):",
+  ),
+  setupBusy: s("error: another saveslot setup is running on this home; nothing was done"),
+  setupNoTerminalErr: s(
+    "not run: stderr is no terminal, so the questions would not be seen. Give --yes, with --template and --host for what to set up (one not given is not done)",
+  ),
+  setupNoTerminal: s(
+    "not run: stdin is no terminal to ask on. Give --yes, with --template and --host for what to set up (one not given is not done)",
+  ),
+  setupWouldDo: s("saveslot setup would:"),
+  planInit: s("  initialize the home"),
+  planStart: s("  start the service, or check the running one is of this version"),
+  planSlot: s("make a slot from the template"),
+  planNoSlot: s("  make no slot (no --template)"),
+  planHost: s("add saveslot to"),
+  planNoHost: s("  add saveslot to no host (no --host)"),
+  planIssue: s(
+    "A connection instance will be issued for each host, and the host's command run (scope",
+  ),
+  runThese: (n: number) => s(`Run ${n === 1 ? "this command" : `these ${n} commands`}? [Y/n] `),
+  setupDeclined: s(
+    "not done: nothing was issued, and no host was changed. Later, saveslot connect <host> adds one host",
+  ),
+  chooseNumbers: s("numbers to switch on or off, Enter when done: "),
+  chooseAgain: s("give the numbers of the list, separated by spaces"),
+  chooseTemplates: s("Which templates to make the first slots from?"),
+  chooseHosts: s("Which hosts to add saveslot to?"),
+  stepInit: s("initializing the home"),
+  stepInitialized: s("the home is initialized already"),
+  setupInitFailed: s("error: the home could not be initialized; see what saveslot init said above"),
+  stepStart: s("the service"),
+  stepSlotsThere: s("there are slots already: none made"),
+  stepNoSlot: s("no slot made"),
+  stepSlotMade: s("made from the template"),
+  stepHosts: s("the hosts on this computer"),
+  stepAdd: s("adding saveslot to the hosts"),
+  setupDone: s('Done. In a host, ask "what is in saveslot?"'),
+  stepNoHosts: s("no host found on this computer: saveslot connect <host> adds one"),
+  hostDisplay: (host: string) => s(HOST_NAMES.get(host) ?? host),
+  hostManual: (host: string) =>
+    s(
+      `not added by setup (no command to add saveslot): set it up by hand with saveslot connect ${host}`,
+    ),
+  hostNotFound: s("not found on PATH (or its --version did not answer)"),
+  hostLookupFailed: s("its own look-up (mcp get saveslot) did not end; nothing done"),
+  unconfirmedNoInstance: s(
+    "the host has an entry named saveslot, but no live connection instance of its name was found",
+  ),
+  unconfirmedPathNotSeen: s(
+    "the host has an entry named saveslot, but it could not be confirmed to point at this saveslot. If saveslot works in the host, leave it; if not, remove it and run setup again:",
+  ),
+  unconfirmedInstanceUnsure: s(
+    "the host has an entry named saveslot, but no live connection instance is named as setup names this host's on this computer; the ones below are named like it (another computer name, or named so by hand), and which one the host holds is not known. If saveslot works in the host, leave it; if not, remove it and run setup again:",
+  ),
+  pathNotSeenAfter: s(
+    "added; its look-up does not show this saveslot's path as written here (hosts write paths their own ways)",
+  ),
+  replaceEntry: s(
+    "if it is not this saveslot's, or no longer works: remove it with the command below, then run setup again",
+  ),
+  existingSeveral: s(
+    "more than one live connection instance has this host's name; which one the host holds is not known (tokens are not kept). Revoke the ones not in use:",
+  ),
+  lastRead: s("last read"),
+  noReads: s("no reads besides its self-check"),
+  hostState: (state: string) =>
+    s(
+      state === "existing"
+        ? "added already"
+        : state === "done"
+          ? "added"
+          : state === "unconfirmed"
+            ? "an entry there, not confirmed"
+            : state === "manual"
+              ? "not added: no command to add saveslot"
+              : state === "not_found"
+                ? "not found"
+                : "failed",
+    ),
+  issueFailed: s("the connection instance could not be issued"),
+  setupRevoked: s("the connection instance was revoked: no one has its token"),
+  staleInstance: s(
+    "an older instance of this name, with no reads besides its self-check (revoke it with saveslot connections revoke):",
+  ),
+  entryNotChecked: s(
+    "the host's command succeeded, but saveslot was asked to stop before its entry was checked; the connection instance is kept (the host may be using it). If saveslot does not work in the host, undo it:",
+  ),
+  entryNotSeen: s(
+    "the host's command ran, but its look-up shows no entry named saveslot; the connection instance is kept (the host may be using it). To undo:",
+  ),
+  timezoneNeedsTemplate: s("--timezone is for the slots made from --template; give --template too"),
+  setupInputEnded: s("not done: the input ended before the answer"),
+  setupInterrupted: (signal: string) => s(`stopped: saveslot was asked to stop (${signal})`),
+  doneSoFar: s("done so far:"),
+  doneInitialized: s("  the home initialized"),
+  doneService: s("  the service running"),
+  doneSlot: s("  a slot made from the template"),
+  doneHost: s("  saveslot added to"),
+  doneNothing: s("  nothing"),
 
   // schema templates
   templates: new Map<string, Static>([

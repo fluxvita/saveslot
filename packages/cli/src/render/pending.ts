@@ -209,14 +209,28 @@ export function pendingDetail(r: PendingDetailResult, now: Date): Line[] {
     );
     for (const st of arr(x["states"])) out.push(t`    ${untrusted(JSON.stringify(st))}`);
   }
+  out.push(...closedLines(x));
+  const decisions = arr(x["decisions"]).map((d) => [codeOf(d, DECISION)]);
+  if (decisions.length > 0) out.push(t`  choices: ${join(decisions, t` / `)}`);
+  return [...out, ...warningsAndNotices(r)];
+}
+
+/**
+ * How a closed item ended (04-contract-types §4.8 ItemResolution): resolved by whom, with which
+ * decision, the candidate taken (its index, as --candidate names it) and the note the decision was
+ * given (the caller's text, inside the boundary); or executed; or superseded. In an item's details
+ * and in the `item_closed` error, whose `resolution` and `superseded` have the same shape.
+ */
+export function closedLines(x: R): Line[] {
+  const out: Line[] = [];
   const res = x["resolution"];
   if (isObj(res)) {
     if (res["executed"] === true) {
       out.push(t`  executed at ${op(res["seq"])}, ${time(String(res["at"] ?? ""))}`);
     } else {
       const note = res["note"] !== undefined ? t` · note ${untrusted(String(res["note"]))}` : [];
-      const cand =
-        int(res["candidate"]) !== undefined ? t` ${num(int(res["candidate"]) as number)}` : [];
+      const n = int(res["candidate"]);
+      const cand = n !== undefined ? t`, candidate ${num(n)}` : [];
       out.push(
         t`  resolved: ${codeOf(res["decision"], DECISION)}${cand} (${op(res["seq"])}, ${actorOf(res["actor"])})${note}`,
       );
@@ -228,9 +242,7 @@ export function pendingDetail(r: PendingDetailResult, now: Date): Line[] {
       t`  superseded: ${codeOf(sup["reason"], SUPERSEDED)}${sup["by"] !== undefined ? t` by ${op(sup["by"])}` : []}`,
     );
   }
-  const decisions = arr(x["decisions"]).map((d) => [codeOf(d, DECISION)]);
-  if (decisions.length > 0) out.push(t`  choices: ${join(decisions, t` / `)}`);
-  return [...out, ...warningsAndNotices(r)];
+  return out;
 }
 
 /**

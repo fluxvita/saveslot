@@ -11,6 +11,8 @@ import {
   TransportError,
   VALIDATION_DETAIL_CODES,
 } from "@fluxvita/saveslot-client";
+import { closedLines } from "./render/pending.ts";
+import { periodOf, type R } from "./render/reads.ts";
 import { code, id, join, type Line, num, t, untrusted, words } from "./render/text.ts";
 import { TEXTS } from "./texts.ts";
 
@@ -74,17 +76,22 @@ export function describeError(
         ...(typeof message === "string" ? t`: ${untrusted(message)}` : []),
       ],
     ];
-    // Each detail (a compile failure's positions among them, 06 §4.3 slot create): its code, and
-    // where it is.
+    // Each detail (a compile failure's positions among them, 06 §4.3 slot create; a write's fields
+    // without a value, by op, table, field and stretch, 04-contract-types §9): its code, and where
+    // it is. The stretch is written as reads write periods (open at the start, or all time).
     const details = Object.hasOwn(e.body, "details") ? e.body["details"] : undefined;
     for (const d of Array.isArray(details) ? details : []) {
       const x = (typeof d === "object" && d !== null ? d : {}) as Record<string, unknown>;
-      const where = (["path", "table", "field", "line"] as const)
+      // The keys are the CLI's own words; their values come from the service, inside the boundary.
+      const where = (["op", "path", "table", "field", "line"] as const)
         .filter((k) => x[k] !== undefined)
         .map(
           (k) =>
-            t`${untrusted(k)} ${typeof x[k] === "number" ? num(x[k] as number) : untrusted(String(x[k]))}`,
+            t`${words(TEXTS.detailKey(k))} ${typeof x[k] === "number" ? num(x[k] as number) : untrusted(String(x[k]))}`,
         );
+      if (typeof x["valid"] === "object" && x["valid"] !== null) {
+        where.push(t`${words(TEXTS.detailValid)} ${periodOf(x["valid"])}`);
+      }
       lines.push([
         ...t`  ${code(String(x["code"] ?? ""), DETAIL_CODES)}`,
         ...(where.length > 0 ? t`${words(TEXTS.detail)} ${join(where, t`, `)}` : []),
@@ -97,6 +104,8 @@ export function describeError(
         t`  ${words(TEXTS.itemVersionNow)} ${id(String((current as { item_ver: unknown }).item_ver))}`,
       );
     }
+    // An item closed already: how it ended, as its details say it (04-contract-types §9).
+    if (e.code === "item_closed") lines.push(...closedLines(e.body as R));
     // The candidates to name with --candidate.
     const choices = Object.hasOwn(e.body, "candidate_choices")
       ? e.body["candidate_choices"]
@@ -124,4 +133,25 @@ export function describeError(
     return { lines: [t`error: ${untrusted(e.message)}`], exit: 2 };
   }
   return { lines: [[words(TEXTS.internal)]], exit: 1 };
+}
+
+/** Whether an error's details point at `path` in the document. */
+function detailAt(e: ContractCallError, path: string): boolean {
+  const details = Object.hasOwn(e.body, "details") ? e.body["details"] : undefined;
+  return (
+    Array.isArray(details) &&
+    details.some(
+      (d) => typeof d === "object" && d !== null && (d as { path?: unknown }).path === path,
+    )
+  );
+}
+
+/**
+ * A slot's time zone refused when the command line gave one (`slot create`, `setup`): what it
+ * takes. Undefined for any other error.
+ */
+export function timezoneHint(e: unknown, given: boolean) {
+  return given && e instanceof ContractCallError && detailAt(e, "timezone")
+    ? TEXTS.timezoneRefused
+    : undefined;
 }

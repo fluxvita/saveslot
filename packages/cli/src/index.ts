@@ -2,3 +2,4 @@
 // ones, which the `daemon` package has; the `saveslot` entry package dispatches between the two.
 
 export { type CliIO, run } from "./run.ts";
+export type { LineIO, SetupServices } from "./setup.ts";

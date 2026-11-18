@@ -20,6 +20,30 @@ export const TEXTS = {
   serviceRunningForInit:
     "error: the saveslot service is running on this home; nothing was changed. Stop it first: saveslot stop",
   notInitialized: (home: string) => `error: ${home} is not initialized. Run: saveslot init`,
+  initHomeMode: (path: string, mode: string, entries: number | undefined) =>
+    `error: ${path} cannot be saveslot's home as it is: its mode is ${mode}, and saveslot's home must be 0700 (only you can read it). ${
+      entries === 0
+        ? `It is empty: chmod 700 ${path}, or remove it and let saveslot make it.`
+        : entries === undefined
+          ? `chmod 700 ${path} if it is meant to be saveslot's home.`
+          : `It already holds ${entries} ${entries === 1 ? "entry" : "entries"}: if it is meant to be saveslot's home, chmod 700 ${path}; if not, give another path with --home.`
+    } Then run the command again.`,
+  initLink: (path: string) =>
+    `error: ${path} is a symbolic link; saveslot's home is a directory of its own. Give the directory it points to with --home, or put a directory in the link's place, then run the command again.`,
+  initParent: (path: string, above: string) =>
+    `error: ${path} cannot be made: ${above} is not a directory this user can write. Make ${path} yourself (mode 0700), or give another path with --home, then run the command again.`,
+  initAboveLink: (path: string, above: string, why: string) =>
+    `error: ${path} cannot be made: ${above} is a symbolic link that ${why}. Point it at a directory or remove it, or give another path with --home, then run the command again.`,
+  initOtherUser: (path: string) =>
+    `error: ${path} belongs to another user; saveslot's home is yours alone. Give another path with --home, then run the command again.`,
+  initMode: (path: string, why: string) =>
+    `error: ${path} cannot be used as it is: ${why}. saveslot makes its directories 0700 and its files 0600, all its own: put it right (chmod), then run the command again.`,
+  initInTheWay: (path: string, code: string) =>
+    `error: ${path} is in the way (${code}): saveslot makes a directory there. Move it away, then run the command again.`,
+  initSubLink: (path: string) =>
+    `error: ${path} is a symbolic link; saveslot keeps a directory of its own there. Put a directory in the link's place (or remove the link), then run the command again.`,
+  initSubMode: (path: string, mode: string) =>
+    `error: ${path} has mode ${mode}; saveslot keeps it 0700 (only you can read it): chmod 700 ${path}, then run the command again.`,
   started: (pid: number, socket: string) =>
     `saveslot service started in the background · pid ${pid} · listening on ${socket}`,
   alreadyRunning: (pid: number) => `saveslot service is running already · pid ${pid}`,

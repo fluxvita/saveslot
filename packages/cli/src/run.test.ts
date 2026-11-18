@@ -376,8 +376,9 @@ describe("slot create", () => {
     expect(r.code).toBe(5);
     const lines = r.err.replace(/untrusted-data-[0-9a-f]{32}/g, "U").split("\n");
     expect(lines.slice(1, 3)).toEqual([
-      "  reserved_name  at <U>path</U> <U>tables/0/fields/1</U>",
-      "  rule_sql_rejected  at <U>table</U> <U>w</U>, <U>line</U> 3",
+      // The keys are the CLI's words; the values, the service's, are inside the boundary.
+      "  reserved_name  at path <U>tables/0/fields/1</U>",
+      "  rule_sql_rejected  at table <U>w</U>, line 3",
     ]);
   });
 

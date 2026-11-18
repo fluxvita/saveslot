@@ -214,6 +214,20 @@ describe("status: the clock against the log's end (log.end, with the user sessio
       -CLOCK_BEHIND_MS,
       undefined,
     ],
+    [
+      "an end written with an offset: the time as parsed, written again in UTC",
+      { status: 200, body: { seq: 9, recorded_at: "2026-11-18T20:00:00+08:00" } },
+      true,
+      -10 * 60_000,
+      "10 minutes behind",
+    ],
+    [
+      "an end written as RFC 2822 (V8 takes it): the time as parsed, written again in UTC",
+      { status: 200, body: { seq: 9, recorded_at: "Wed, 18 Nov 2026 12:00:00 GMT" } },
+      true,
+      -10 * 60_000,
+      "10 minutes behind",
+    ],
     ["the log is empty (null): none", { status: 200, body: null }, true, -3_600_000, undefined],
     ["the session refused: none, no error", { status: 401 }, true, -3_600_000, undefined],
     [
@@ -235,6 +249,9 @@ describe("status: the clock against the log's end (log.end, with the user sessio
         expect(out).toContain(
           `warning: this computer's clock is ${said} the log's last record (${END})`,
         );
+      // Nothing of the service's string is written as it came.
+      expect(out).not.toContain("+08:00");
+      expect(out).not.toContain("GMT");
       // Asked with the session, as the pending count is.
       if (session) expect(s.asked).toContain(`/v1/log/end Bearer sls_${"s".repeat(43)}`);
     } finally {

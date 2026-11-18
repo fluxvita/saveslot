@@ -3,5 +3,8 @@
 // package's interface.
 
 export * from "@fluxvita/saveslot-client";
+/** How the commands say an error, for tests that compare it with a real service's refusal. */
+export { describeError } from "./errors.ts";
+export { render } from "./render/text.ts";
 /** The CLI's static texts, for tests to compare its output with. */
 export { TEXTS } from "./texts.ts";
