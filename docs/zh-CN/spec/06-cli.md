@@ -291,6 +291,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 - **没有添加命令的宿主**（`cursor`、`claude-desktop`）只能手动粘贴，是第 1 节设计要求的已知例外。
 - **令牌只显示一次**：控制面只存哈希；丢了就吊销重签。`--apply` 时由 CLI 执行上表里宿主自己的添加命令，令牌不落进 CLI 的任何文件——**但会落在别处**：贴进终端的命令进了 shell 历史；`--apply` 执行宿主命令时令牌在进程参数里，执行期间本机其他用户能用 `ps` 看到；最后它住在宿主的配置文件里。`--apply` 执行成功时不再显示令牌：打印"已添加到 <宿主>"与执行的那条命令，令牌的位置写成 `<令牌>`（连接实例的 ID、名字与 scope 在签发那一行）；`--json` 的输出不变，仍是签发结果（含令牌）。"令牌只显示这一次"这句提示写到标准错误（`--json` 时也是），标准输出里只有要粘贴的东西。只用 unix socket 时这些暴露对别的系统用户无害（他们连不上套接字），打开回环 TCP 后就不是了（第 8.1 节）。各宿主命令的确切写法由 CLI 的宿主适配表维护，实现时逐个实测。
 - **命令写绝对路径**：宿主启动 `saveslot mcp` 时的 PATH 未必包含 npm 全局目录（图形界面启动的宿主、用版本管理器切换 Node 的环境），所以生成的命令一律用 `saveslot` 可执行文件的绝对路径；`saveslot doctor` 经宿主自己的查看命令检查条目里的路径是否还在。
+- **入口文件可以直接执行**：宿主拿到的是入口文件的路径，由它直接执行，所以入口文件首行是 `#!/usr/bin/env node`，并带执行位；构建在编译之后给它设执行位，入口不以这一行开头时构建失败。从源码检出运行：`pnpm install && pnpm build` 之后入口是 `packages/saveslot/dist/bin.js`，直接执行它（`packages/saveslot/dist/bin.js setup`），或用 `node packages/saveslot/dist/bin.js setup`；两种写法登记给宿主的都是这个文件的绝对路径。
 - **`--scope` 的写法**：不给时是 `saveslot.read saveslot.write`。两种写法，不能混用：
   - 增减式：`--scope +schema`、`--scope +delete`（在默认上加）、`--scope -write`（从默认里去掉；只读就是 `--scope -write`）；可重复或用逗号连写（`--scope +schema,+delete`）。
   - 完整式：`--scope read,write,schema`，列出的就是全部。

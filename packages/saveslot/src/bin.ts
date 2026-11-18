@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // The `saveslot` executable: the command line to `dispatch`, the exit code back. A question is
 // written to stderr and its answer read from stdin, a line at a time (./ask.ts).
 import { lineAsker } from "./ask.ts";
