@@ -16,7 +16,9 @@ const SAMPLES = JSON.parse(
 
 /** The text with the boundary's number, drawn anew for each result, made one fixed value. */
 const fixed = (s: string) => s.replace(/untrusted-data-[0-9a-f]{32}/g, "untrusted-data-N");
-const text = (tool: ToolName, result: R) => fixed(renderStrict(tool, result));
+/** A fixed "now", for how long an item has been open. */
+const NOW = new Date("2026-11-18T15:00:00Z");
+const text = (tool: ToolName, result: R) => fixed(renderStrict(tool, result, NOW));
 
 describe("derived values and impacts as text (golden)", () => {
   it.each(Object.keys(SAMPLES))("%s", async (name) => {

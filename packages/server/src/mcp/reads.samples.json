@@ -1,0 +1,1197 @@
+{
+  "pending-list": {
+    "tool": "saveslot_pending",
+    "result": {
+      "total": 4,
+      "items": [
+        {
+          "id": "pi_SANGZFYX0QFX6QV0",
+          "type": "awaiting_confirmation",
+          "status": "open",
+          "slot": "plan",
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_PCNDRTPDVM2QF7B3K14H0EN3W8",
+            "unit": ["amount"],
+            "spans": [
+              {
+                "valid_from": "2026-11-03",
+                "valid_to": null
+              }
+            ]
+          },
+          "reason": "overwrites_change_point",
+          "opened_at": "2026-11-18T12:39:27.087Z",
+          "opened_by": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        },
+        {
+          "id": "pi_47G7WJXFA1PQC58N",
+          "type": "conflict",
+          "status": "open",
+          "slot": "plan",
+          "target": {
+            "table": "plan.expenses",
+            "row": "r_FW103YV2NYWERJMC947XWH3NWH",
+            "unit": ["note"]
+          },
+          "reason": "stale_write",
+          "opened_at": "2026-11-18T12:39:27.139Z",
+          "opened_by": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        },
+        {
+          "id": "pi_SAFF6RBB802V71BZ",
+          "type": "conflict",
+          "status": "open",
+          "slot": "plan",
+          "target": {
+            "table": "plan.expenses",
+            "row": "r_Q1X4BK6NR6AFD1AQQ3PHP7HCPJ",
+            "unit": ["note"]
+          },
+          "reason": "stale_write",
+          "opened_at": "2026-11-18T12:39:27.176Z",
+          "opened_by": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        },
+        {
+          "id": "pi_SYCGGKE1CVJXGB7D",
+          "type": "conflict",
+          "status": "superseded",
+          "slot": "plan",
+          "target": {
+            "table": "plan.expenses",
+            "row": "r_J89SBNGMPVP0Z6Y2SXM2PCWB9F",
+            "unit": ["note"]
+          },
+          "reason": "stale_write",
+          "opened_at": "2026-11-18T12:39:27.238Z",
+          "opened_by": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        }
+      ]
+    }
+  },
+  "pending-awaiting-current": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_SANGZFYX0QFX6QV0",
+      "type": "awaiting_confirmation",
+      "item_ver": "iv_SANGZFYX0QFX6QV0.27.0",
+      "status": "open",
+      "slot": "plan",
+      "reason": "overwrites_change_point",
+      "opened_at": "2026-11-18T12:39:27.087Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+        "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+      },
+      "decisions": ["confirm", "reject"],
+      "target": {
+        "table": "plan.budgets",
+        "entity": "e_PCNDRTPDVM2QF7B3K14H0EN3W8",
+        "unit": ["amount"],
+        "spans": [
+          {
+            "valid_from": "2026-11-03",
+            "valid_to": null
+          }
+        ]
+      },
+      "proposal": {
+        "seq": 27,
+        "actor": {
+          "kind": "user",
+          "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+          "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+        },
+        "intent": "update",
+        "set": {
+          "amount": {
+            "unit": "CNY",
+            "value": "600"
+          }
+        },
+        "valid": {
+          "valid_from": "2026-11-03",
+          "valid_to": null
+        }
+      },
+      "current": {
+        "spans": [
+          {
+            "valid_from": "2026-11-03",
+            "valid_to": "2026-11-10",
+            "valid_to_inclusive": "2026-11-09",
+            "values": {
+              "amount": {
+                "value": "500",
+                "unit": "CNY"
+              }
+            }
+          },
+          {
+            "valid_from": "2026-11-10",
+            "valid_to": null,
+            "values": {
+              "amount": {
+                "value": "700",
+                "unit": "CNY"
+              }
+            }
+          }
+        ]
+      },
+      "impact": {
+        "overwritten": [
+          {
+            "field": "amount",
+            "valid": {
+              "valid_from": "2026-11-03",
+              "valid_to": "2026-11-10",
+              "valid_to_inclusive": "2026-11-09"
+            },
+            "value": {
+              "unit": "CNY",
+              "value": "500"
+            },
+            "seq": 21,
+            "actor": {
+              "kind": "user",
+              "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+              "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+            }
+          },
+          {
+            "field": "amount",
+            "valid": {
+              "valid_from": "2026-11-10",
+              "valid_to": null
+            },
+            "value": {
+              "unit": "CNY",
+              "value": "700"
+            },
+            "seq": 24,
+            "actor": {
+              "kind": "user",
+              "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+              "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "pending-conflict-open": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_47G7WJXFA1PQC58N",
+      "type": "conflict",
+      "item_ver": "iv_47G7WJXFA1PQC58N.37.0",
+      "status": "open",
+      "slot": "plan",
+      "reason": "stale_write",
+      "opened_at": "2026-11-18T12:39:27.139Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+        "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+      },
+      "decisions": ["keep_effective", "take_candidate", "take_previous"],
+      "target": {
+        "table": "plan.expenses",
+        "row": "r_FW103YV2NYWERJMC947XWH3NWH",
+        "unit": ["note"]
+      },
+      "effective": {
+        "seq": 34,
+        "actor": {
+          "kind": "user",
+          "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+          "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+        },
+        "values": {
+          "note": "dinner"
+        },
+        "exists": true
+      },
+      "candidates": [
+        {
+          "index": 0,
+          "seq": 37,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "ver": "v31.0",
+          "values": {
+            "note": "supper"
+          },
+          "cause": "stale_write"
+        }
+      ],
+      "previous": {
+        "seq": 31,
+        "exists": true,
+        "values": {
+          "note": "lunch"
+        }
+      },
+      "reverted_by_previous": [
+        {
+          "seq": 34,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        }
+      ]
+    }
+  },
+  "pending-conflict-no-row": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_SAFF6RBB802V71BZ",
+      "type": "conflict",
+      "item_ver": "iv_SAFF6RBB802V71BZ.77.0",
+      "status": "open",
+      "slot": "plan",
+      "reason": "stale_write",
+      "opened_at": "2026-11-18T12:39:27.176Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+        "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+      },
+      "decisions": ["keep_effective", "take_candidate", "take_previous"],
+      "target": {
+        "table": "plan.expenses",
+        "row": "r_Q1X4BK6NR6AFD1AQQ3PHP7HCPJ",
+        "unit": ["note"]
+      },
+      "effective": {
+        "seq": 77,
+        "actor": {
+          "kind": "user",
+          "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+          "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+        },
+        "exists": false
+      },
+      "candidates": [
+        {
+          "index": 0,
+          "seq": 47,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "ver": "v41.0",
+          "values": {
+            "note": "metro"
+          },
+          "cause": "stale_write"
+        }
+      ],
+      "previous": {
+        "seq": 41,
+        "exists": true,
+        "values": {
+          "note": "taxi"
+        }
+      },
+      "reverted_by_previous": [
+        {
+          "seq": 44,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        }
+      ]
+    }
+  },
+  "pending-conflict-resolved": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_47G7WJXFA1PQC58N",
+      "type": "conflict",
+      "item_ver": "iv_47G7WJXFA1PQC58N.37.0",
+      "status": "resolved",
+      "slot": "plan",
+      "reason": "stale_write",
+      "opened_at": "2026-11-18T12:39:27.139Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+        "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+      },
+      "decisions": [],
+      "resolution": {
+        "decision": "take_candidate",
+        "candidate": 0,
+        "seq": 74,
+        "at": "2026-11-18T12:39:27.307Z",
+        "actor": {
+          "kind": "user",
+          "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+          "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+        }
+      },
+      "target": {
+        "table": "plan.expenses",
+        "row": "r_FW103YV2NYWERJMC947XWH3NWH",
+        "unit": ["note"]
+      },
+      "effective": {
+        "seq": 34,
+        "actor": {
+          "kind": "user",
+          "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+          "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+        },
+        "values": {
+          "note": "dinner"
+        },
+        "exists": true
+      },
+      "candidates": [
+        {
+          "index": 0,
+          "seq": 37,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "ver": "v31.0",
+          "values": {
+            "note": "supper"
+          },
+          "cause": "stale_write"
+        }
+      ],
+      "previous": {
+        "seq": 31,
+        "exists": true,
+        "values": {
+          "note": "lunch"
+        }
+      },
+      "reverted_by_previous": [
+        {
+          "seq": 34,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        }
+      ]
+    }
+  },
+  "pending-conflict-superseded": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_SYCGGKE1CVJXGB7D",
+      "type": "conflict",
+      "item_ver": "iv_SYCGGKE1CVJXGB7D.70.0",
+      "status": "superseded",
+      "slot": "plan",
+      "reason": "stale_write",
+      "opened_at": "2026-11-18T12:39:27.238Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+        "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+      },
+      "decisions": [],
+      "superseded": {
+        "reason": "overwritten",
+        "by": 70,
+        "at": "2026-11-18T12:39:27.261Z"
+      },
+      "target": {
+        "table": "plan.expenses",
+        "row": "r_J89SBNGMPVP0Z6Y2SXM2PCWB9F",
+        "unit": ["note"]
+      },
+      "effective": {
+        "seq": 70,
+        "actor": {
+          "kind": "user",
+          "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+          "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+        },
+        "values": {
+          "note": "walk"
+        },
+        "exists": true
+      },
+      "candidates": [
+        {
+          "index": 0,
+          "seq": 66,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "ver": "v60.0",
+          "values": {
+            "note": "metro"
+          },
+          "cause": "stale_write"
+        }
+      ],
+      "previous": {
+        "seq": 60,
+        "exists": true,
+        "values": {
+          "note": "taxi"
+        }
+      },
+      "reverted_by_previous": [
+        {
+          "seq": 63,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        }
+      ]
+    }
+  },
+  "history-timeline-via": {
+    "tool": "saveslot_history",
+    "result": {
+      "mode": "timeline",
+      "target": {
+        "table": "plan.expenses",
+        "row": "r_FW103YV2NYWERJMC947XWH3NWH"
+      },
+      "sv": 1,
+      "timezone": "Asia/Shanghai",
+      "ver": "v74.0",
+      "total": 5,
+      "entries": [
+        {
+          "seq": 81,
+          "recorded_at": "2026-11-18T12:39:27.351Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "via": {
+            "undo": 34
+          },
+          "fields": {}
+        },
+        {
+          "seq": 74,
+          "recorded_at": "2026-11-18T12:39:27.307Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "via": {
+            "resolve": "pi_47G7WJXFA1PQC58N",
+            "decision": "take_candidate"
+          },
+          "fields": {
+            "note": {
+              "result": "applied",
+              "before": "dinner",
+              "after": "supper",
+              "sources": {
+                "value": [],
+                "operation": []
+              }
+            }
+          }
+        },
+        {
+          "seq": 37,
+          "recorded_at": "2026-11-18T12:39:27.139Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "fields": {
+            "note": {
+              "result": "candidate",
+              "after": "supper",
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_JVWYS50NFABZYFP1",
+                    "kind": "user_message",
+                    "level": "user_stated"
+                  }
+                ],
+                "operation": []
+              }
+            }
+          }
+        },
+        {
+          "seq": 34,
+          "recorded_at": "2026-11-18T12:39:27.126Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "fields": {
+            "note": {
+              "result": "applied",
+              "before": "lunch",
+              "after": "dinner",
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_V58GSJPE5T0TJ3BC",
+                    "kind": "user_message",
+                    "level": "user_stated"
+                  }
+                ],
+                "operation": []
+              }
+            }
+          }
+        },
+        {
+          "seq": 31,
+          "recorded_at": "2026-11-18T12:39:27.108Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "insert",
+          "fields": {
+            "date": {
+              "result": "applied",
+              "after": "2026-11-10",
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_2ES8SVYN9R8QX08H",
+                    "kind": "user_message",
+                    "level": "user_stated"
+                  }
+                ],
+                "operation": []
+              }
+            },
+            "kind": {
+              "result": "applied",
+              "after": "food",
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_2ES8SVYN9R8QX08H",
+                    "kind": "user_message",
+                    "level": "user_stated"
+                  }
+                ],
+                "operation": []
+              }
+            },
+            "note": {
+              "result": "applied",
+              "after": "lunch",
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_2ES8SVYN9R8QX08H",
+                    "kind": "user_message",
+                    "level": "user_stated"
+                  }
+                ],
+                "operation": []
+              }
+            }
+          }
+        }
+      ],
+      "reads": [
+        {
+          "read": "rd_88Q1HVA6A8YK41GC",
+          "seq": 74,
+          "at": "2026-11-18T12:39:27.349Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "task": "u"
+        },
+        {
+          "read": "rd_HGN6ZSFWN0XDNHYQ",
+          "seq": 34,
+          "at": "2026-11-18T12:39:27.258Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "task": "s"
+        }
+      ]
+    }
+  },
+  "history-timeline-state": {
+    "tool": "saveslot_history",
+    "result": {
+      "mode": "timeline",
+      "target": {
+        "table": "plan.budgets",
+        "entity": "e_RA2ZPB5ZXRW16YEFMN2EEQAZ81"
+      },
+      "sv": 1,
+      "timezone": "Asia/Shanghai",
+      "ver": "v57.0",
+      "total": 3,
+      "entries": [
+        {
+          "seq": 57,
+          "recorded_at": "2026-11-18T12:39:27.209Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "valid": {
+            "valid_from": "2026-11-02",
+            "valid_to": "2026-11-10",
+            "valid_to_inclusive": "2026-11-09"
+          },
+          "fields": {
+            "amount": {
+              "result": "applied",
+              "before": {
+                "value": "3000",
+                "unit": "CNY"
+              },
+              "after": {
+                "unit": "CNY",
+                "value": "3500"
+              },
+              "valid": {
+                "valid_from": "2026-11-02",
+                "valid_to": "2026-11-10",
+                "valid_to_inclusive": "2026-11-09"
+              },
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_RSQ69SZPRNFCTM49",
+                    "kind": "user_message",
+                    "level": "user_stated"
+                  }
+                ],
+                "operation": []
+              }
+            }
+          }
+        },
+        {
+          "seq": 54,
+          "recorded_at": "2026-11-18T12:39:27.199Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "valid": {
+            "valid_from": "2026-11-10",
+            "valid_to": null
+          },
+          "fields": {
+            "amount": {
+              "result": "applied",
+              "before": {
+                "value": "3000",
+                "unit": "CNY"
+              },
+              "after": {
+                "unit": "CNY",
+                "value": "4000"
+              },
+              "valid": {
+                "valid_from": "2026-11-10",
+                "valid_to": null
+              },
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_MRMJQRW32BMF3C4H",
+                    "kind": "user_message",
+                    "level": "user_stated"
+                  }
+                ],
+                "operation": []
+              }
+            }
+          }
+        },
+        {
+          "seq": 51,
+          "recorded_at": "2026-11-18T12:39:27.189Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "valid": {
+            "valid_from": "2026-11-02",
+            "valid_to": null
+          },
+          "fields": {
+            "category": {
+              "result": "applied",
+              "after": "rent",
+              "valid": {
+                "valid_from": "2026-11-02",
+                "valid_to": null
+              },
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_HTQ5Z9J9RR59AHAF",
+                    "kind": "user_message",
+                    "level": "user_stated"
+                  }
+                ],
+                "operation": []
+              }
+            },
+            "amount": {
+              "result": "applied",
+              "after": {
+                "unit": "CNY",
+                "value": "3000"
+              },
+              "valid": {
+                "valid_from": "2026-11-02",
+                "valid_to": null
+              },
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_HTQ5Z9J9RR59AHAF",
+                    "kind": "user_message",
+                    "level": "user_stated"
+                  }
+                ],
+                "operation": []
+              }
+            }
+          }
+        }
+      ],
+      "reads": [
+        {
+          "read": "rd_M79NAX5M82FD5N6C",
+          "seq": 57,
+          "at": "2026-11-18T12:39:27.373Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        }
+      ]
+    }
+  },
+  "query-state": {
+    "tool": "saveslot_query",
+    "result": {
+      "table": "plan.budgets",
+      "slot": "plan",
+      "sv": 1,
+      "total": 3,
+      "rows": [
+        {
+          "table": "plan.budgets",
+          "entity": "e_F41MB6HGQWX51Z4KEHNFA5YCKW",
+          "entity_key": {
+            "category": "food"
+          },
+          "ver": "v18.0",
+          "values": {
+            "category": "food",
+            "amount": {
+              "value": "4000",
+              "unit": "CNY"
+            }
+          },
+          "valid_from": "2026-11-10",
+          "valid_to": null
+        },
+        {
+          "table": "plan.budgets",
+          "entity": "e_PCNDRTPDVM2QF7B3K14H0EN3W8",
+          "entity_key": {
+            "category": "travel"
+          },
+          "ver": "v24.0",
+          "values": {
+            "category": "travel",
+            "amount": {
+              "value": "700",
+              "unit": "CNY"
+            }
+          },
+          "valid_from": "2026-11-10",
+          "valid_to": null,
+          "marks": {
+            "awaiting": [
+              {
+                "item": "pi_SANGZFYX0QFX6QV0",
+                "fields": ["amount"],
+                "spans": [
+                  {
+                    "valid_from": "2026-11-10",
+                    "valid_to": null
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "table": "plan.budgets",
+          "entity": "e_RA2ZPB5ZXRW16YEFMN2EEQAZ81",
+          "entity_key": {
+            "category": "rent"
+          },
+          "ver": "v57.0",
+          "values": {
+            "category": "rent",
+            "amount": {
+              "value": "4000",
+              "unit": "CNY"
+            }
+          },
+          "valid_from": "2026-11-10",
+          "valid_to": null
+        }
+      ]
+    }
+  },
+  "query-event": {
+    "tool": "saveslot_query",
+    "result": {
+      "table": "plan.expenses",
+      "slot": "plan",
+      "sv": 1,
+      "total": 2,
+      "rows": [
+        {
+          "table": "plan.expenses",
+          "row": "r_J89SBNGMPVP0Z6Y2SXM2PCWB9F",
+          "ver": "v70.0",
+          "values": {
+            "date": "2026-11-12",
+            "amount": null,
+            "currency_note": null,
+            "kind": "transport",
+            "note": "walk"
+          }
+        },
+        {
+          "table": "plan.expenses",
+          "row": "r_FW103YV2NYWERJMC947XWH3NWH",
+          "ver": "v74.0",
+          "values": {
+            "date": "2026-11-10",
+            "amount": null,
+            "currency_note": null,
+            "kind": "food",
+            "note": "supper"
+          }
+        }
+      ]
+    }
+  },
+  "catalog-list": {
+    "tool": "saveslot_catalog",
+    "result": {
+      "level": "list",
+      "total": 4,
+      "slots": [
+        {
+          "slot": "health",
+          "slot_id": "sl_N0Y2J4R2V5H71NHY",
+          "sv": 1,
+          "timezone": "Asia/Shanghai",
+          "tables": [
+            {
+              "table": "runs",
+              "kind": "base",
+              "description": "每次跑步一行"
+            },
+            {
+              "table": "weekly_mileage",
+              "kind": "derived",
+              "description": "每周跑量与记录覆盖，周一起算。某一周没有行表示那一周没有任何跑步记录"
+            }
+          ]
+        },
+        {
+          "slot": "plan",
+          "slot_id": "sl_E7T6BPBDK8YYJ16V",
+          "sv": 1,
+          "timezone": "Asia/Shanghai",
+          "tables": [
+            {
+              "table": "budgets",
+              "kind": "base",
+              "description": "monthly budget by category"
+            },
+            {
+              "table": "expenses",
+              "kind": "base",
+              "description": "one row per expense"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "catalog-table-state-event": {
+    "tool": "saveslot_catalog",
+    "result": {
+      "level": "table",
+      "tables": [
+        {
+          "table": "budgets",
+          "slot": "plan",
+          "sv": 1,
+          "timezone": "Asia/Shanghai",
+          "kind": "base",
+          "description": "monthly budget by category",
+          "fields": [
+            {
+              "name": "category",
+              "type": "text",
+              "description": "the category",
+              "required": true
+            },
+            {
+              "name": "amount",
+              "type": "quantity",
+              "description": "budget",
+              "required": true,
+              "unit": "CNY",
+              "min": "0",
+              "precision": {
+                "scale": 2,
+                "rounding": "half_up"
+              }
+            }
+          ],
+          "time": {
+            "type": "state",
+            "granularity": "date"
+          },
+          "entity_key": ["category"]
+        },
+        {
+          "table": "expenses",
+          "slot": "plan",
+          "sv": 1,
+          "timezone": "Asia/Shanghai",
+          "kind": "base",
+          "description": "one row per expense",
+          "fields": [
+            {
+              "name": "date",
+              "type": "date",
+              "description": "the day",
+              "required": true
+            },
+            {
+              "name": "amount",
+              "type": "quantity",
+              "description": "how much",
+              "unit": "CNY",
+              "min": "0",
+              "max": "100000",
+              "precision": {
+                "scale": 2,
+                "rounding": "half_up"
+              }
+            },
+            {
+              "name": "currency_note",
+              "type": "text",
+              "description": "a note on the amount"
+            },
+            {
+              "name": "kind",
+              "type": "enum",
+              "description": "what kind",
+              "values": ["food", "transport"]
+            },
+            {
+              "name": "note",
+              "type": "text",
+              "description": "what for"
+            }
+          ],
+          "time": {
+            "type": "event",
+            "field": "date"
+          },
+          "together": [["amount", "currency_note"]]
+        }
+      ]
+    }
+  },
+  "catalog-table-derived": {
+    "tool": "saveslot_catalog",
+    "result": {
+      "level": "table",
+      "tables": [
+        {
+          "table": "runs",
+          "slot": "health",
+          "sv": 1,
+          "timezone": "Asia/Shanghai",
+          "kind": "base",
+          "description": "每次跑步一行",
+          "fields": [
+            {
+              "name": "date",
+              "type": "date",
+              "description": "跑步当天（slot 时区的自然日）",
+              "required": true
+            },
+            {
+              "name": "distance",
+              "type": "quantity",
+              "description": "距离",
+              "required": true,
+              "unit": "km",
+              "min": "0",
+              "precision": {
+                "scale": 6,
+                "rounding": "half_up"
+              }
+            },
+            {
+              "name": "duration",
+              "type": "quantity",
+              "description": "用时",
+              "unit": "min",
+              "min": "0",
+              "precision": {
+                "scale": 6,
+                "rounding": "half_up"
+              }
+            },
+            {
+              "name": "feeling",
+              "type": "text",
+              "description": "跑后感受，用户原话"
+            }
+          ],
+          "time": {
+            "type": "event",
+            "field": "date"
+          },
+          "duplicate_keys": [["date", "distance"]]
+        },
+        {
+          "table": "weekly_mileage",
+          "slot": "health",
+          "sv": 1,
+          "timezone": "Asia/Shanghai",
+          "kind": "derived",
+          "description": "每周跑量与记录覆盖，周一起算。某一周没有行表示那一周没有任何跑步记录",
+          "fields": [
+            {
+              "name": "week_start",
+              "type": "date",
+              "description": "该周周一"
+            },
+            {
+              "name": "total_distance",
+              "type": "quantity",
+              "description": "该周总距离（km）；只含已记录的跑步",
+              "unit": "km",
+              "precision": {
+                "scale": 6,
+                "rounding": "half_up"
+              }
+            },
+            {
+              "name": "run_count",
+              "type": "integer",
+              "description": "该周跑步次数"
+            },
+            {
+              "name": "days_recorded",
+              "type": "integer",
+              "description": "该周有跑步记录的天数（一周 7 天；不是每天都该跑，少于 7 不代表漏记）"
+            },
+            {
+              "name": "first_date",
+              "type": "date",
+              "description": "该周第一条记录的日期"
+            },
+            {
+              "name": "last_date",
+              "type": "date",
+              "description": "该周最后一条记录的日期"
+            }
+          ],
+          "rule": {
+            "id": "r1",
+            "version": 1,
+            "sql": "SELECT date_trunc('week', date::timestamp)::date AS week_start, sum(distance) AS total_distance, count(*) AS run_count, count(DISTINCT date) AS days_recorded, min(date) AS first_date, max(date) AS last_date FROM runs GROUP BY 1",
+            "time_dependency": "bucketed",
+            "depends_on": ["runs.date", "runs.distance"]
+          }
+        }
+      ]
+    }
+  }
+}

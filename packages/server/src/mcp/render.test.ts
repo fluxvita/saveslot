@@ -375,7 +375,15 @@ describe("what 05 §6 asks for", () => {
     expect(d).toContain("version iv_8VEZWJ3J7BMKMXTV.13.0");
     expect(d).toMatch(new RegExp(`In effect: amount 54 ${B}CNY${E} \\(#10`));
     expect(d).toMatch(new RegExp(`Candidate 0: amount 50 ${B}CNY${E} \\(#13`));
-    expect(d).toContain("Choices: keep_effective / take_candidate / take_previous");
+    // Each decision with what it would do (05 §6 `saveslot_pending`: 可选).
+    expect(d).toContain(
+      [
+        "  Choices:",
+        "    keep_effective: keep the value in effect (above)",
+        "    take_candidate: put candidate 0 in effect",
+        "    take_previous: go back to the value at #7 (amount 45 ",
+      ].join("\n"),
+    );
   });
 
   it("pending: a resolved item says which candidate was taken, by the index it is listed with", () => {

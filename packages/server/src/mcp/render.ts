@@ -25,6 +25,9 @@ import {
   ITEM_CREATED_REASONS,
   ITEM_STATUSES,
   type PremiseReason,
+  REF_TARGETS,
+  ROUNDINGS,
+  SUPERSEDED_REASONS,
   VALIDATION_DETAIL_CODES,
   VERSION_INTENTS,
   type Warning,
@@ -319,6 +322,8 @@ function rowLine(row: R, historical = false, first = true): Line[] {
     head.push(...t` ver=${idOf(row["ver"])}`);
     if (historical) head.push(...t` (a historical version, not for writing)`);
   }
+  // A state table's entity by its key, on the entity's first stretch; a derived row's group key.
+  if (first && isObj(row["entity_key"])) head.push(...t` ${namedValues(row["entity_key"])}`);
   if (row["key"] !== undefined) head.push(...t` ${namedValues(row["key"])}`);
   const cells: Part[][] = [];
   if (Object.hasOwn(row, "valid_from")) cells.push(periodOf(row));
@@ -462,6 +467,38 @@ const GRANULARITIES: ReadonlySet<string> = new Set<string>(CONTRACT_GRANULARITIE
 const tablesIn = (r: R) =>
   arr(r["slots"]).reduce<number>((n, s) => n + arr(obj(s)["tables"]).length, 0);
 
+const ROUNDING: ReadonlySet<string> = new Set<string>(ROUNDINGS);
+const REF_TARGET: ReadonlySet<string> = new Set<string>(REF_TARGETS);
+
+/**
+ * One field of a catalog table (05 §6 `saveslot_catalog` `table`): its name, type, unit, places
+ * and rounding, description, whether required, its range, its values, what it refers to.
+ */
+function catalogField(fd: R): Line {
+  const unit = fd["unit"] !== undefined ? t` ${untrusted(String(fd["unit"]))}` : [];
+  const p = obj(fd["precision"]);
+  const scale = int(p["scale"]);
+  const rounding = p["rounding"] !== undefined ? t` (${codeIn(p["rounding"], ROUNDING)})` : [];
+  const decimals = scale !== undefined ? t` ${num(scale)} decimal places${rounding}` : [];
+  const required = fd["required"] === true ? t` · required` : [];
+  // Bounds as the schema gives them: decimal strings, shown as numbers when they are numbers.
+  const min = fd["min"] !== undefined ? t` · ≥ ${as(String(fd["min"]), num)}` : [];
+  const max = fd["max"] !== undefined ? t` · ≤ ${as(String(fd["max"]), num)}` : [];
+  const values = arr(fd["values"]);
+  const oneOf =
+    values.length > 0
+      ? t` · one of ${join(
+          values.map((v) => [untrusted(String(v))]),
+          t`, `,
+        )}`
+      : [];
+  const ref = obj(fd["ref"]);
+  const refers = isObj(fd["ref"])
+    ? t` · refers to ${tableOf(ref["table"])} (${codeIn(ref["target"], REF_TARGET)})`
+    : [];
+  return t`  ${fieldOf(fd["name"])}  ${codeIn(fd["type"], FIELD_TYPES)}${unit}${decimals}  ${stored(String(fd["description"] ?? ""))}${required}${min}${max}${oneOf}${refers}`;
+}
+
 function catalog(r: R): Line[] | { json: true; lead: Line[] } {
   need(
     (r["level"] === "schema" && isObj(r["document"])) ||
@@ -492,16 +529,27 @@ function catalog(r: R): Line[] | { json: true; lead: Line[] } {
       out.push(
         t`${tableOf(tb["slot"])} · schema v${count(tb["sv"])} · ${untrusted(String(tb["timezone"] ?? ""))}`,
       );
-      out.push(t`${tableOf(tb["table"])} (${kind}) ${stored(String(tb["description"] ?? ""))}`);
-      for (const f of arr(tb["fields"])) {
-        const fd = obj(f);
-        const unit = fd["unit"] !== undefined ? t` ${untrusted(String(fd["unit"]))}` : [];
-        const scale = int(obj(fd["precision"])["scale"]);
-        const decimals = scale !== undefined ? t` ${num(scale)} decimal places` : [];
-        const required = fd["required"] === true ? t` · required` : [];
-        out.push(
-          t`  ${fieldOf(fd["name"])}  ${codeIn(fd["type"], FIELD_TYPES)}${unit}${decimals}  ${stored(String(fd["description"] ?? ""))}${required}`,
-        );
+      // A derived table's rule: its ID and version, and the base fields it depends on.
+      const rule = obj(tb["rule"]);
+      const ruled = isObj(tb["rule"])
+        ? t` · rule ${as(String(rule["id"] ?? ""), name)} v${count(rule["version"])}${
+            arr(rule["depends_on"]).length > 0
+              ? t` · depends on ${join(arr(rule["depends_on"]).map(tableOf), t`, `)}`
+              : []
+          }`
+        : [];
+      out.push(
+        t`${tableOf(tb["table"])} (${kind}) ${stored(String(tb["description"] ?? ""))}${ruled}`,
+      );
+      const key = arr(tb["entity_key"]);
+      if (key.length > 0) out.push(t`  entity key: ${join(key.map(fieldOf), t`, `)}`);
+      for (const f of arr(tb["fields"])) out.push(catalogField(obj(f)));
+      // What the table declares, as declared: no claim that anything is checked against it.
+      for (const g of arr(tb["duplicate_keys"])) {
+        out.push(t`  duplicate keys declared: ${join(arr(g).map(fieldOf), t` + `)}`);
+      }
+      for (const g of arr(tb["together"])) {
+        out.push(t`  field group (one conflict unit): ${join(arr(g).map(fieldOf), t` + `)}`);
       }
     }
     return out;
@@ -534,11 +582,25 @@ function catalog(r: R): Line[] | { json: true; lead: Line[] } {
 
 // --- query and history --------------------------------------------------------------------------
 
+/**
+ * The entity a page of a state table's rows is all of, by its key (05 §6 `saveslot_query`: 实体);
+ * undefined when the page holds more than one entity, or rows without one. The business range the
+ * read asked for is not in the result, so the first line does not say it.
+ */
+function oneEntity(rows: readonly unknown[]): unknown {
+  const entities = new Set(rows.map((x) => obj(x)["entity"]));
+  const first = obj(rows[0]);
+  return entities.size === 1 && first["entity"] !== undefined && isObj(first["entity_key"])
+    ? first["entity_key"]
+    : undefined;
+}
+
 function query(r: R): Line[] {
   need(Array.isArray(r["rows"]) && typeof r["table"] === "string");
   const rows = arr(r["rows"]);
+  const entity = oneEntity(rows);
   return [
-    t`${tableOf(r["table"])} · ${tableOf(r["slot"])} schema v${count(r["sv"])} · ${ofTotal(rows.length, r["total"])} rows`,
+    t`${tableOf(r["table"])} · ${tableOf(r["slot"])} schema v${count(r["sv"])}${entity !== undefined ? t` · entity ${namedValues(entity)}` : []} · ${ofTotal(rows.length, r["total"])} rows`,
     ...rowsOf(rows),
     ...pageOf(r, rows.length, () => t`rows`),
   ];
@@ -568,6 +630,21 @@ function sourcesOf(x: unknown): Part[] {
   }
   for (const v of arr(s["operation"])) parts.push(t`operation ${idOf(obj(v)["id"])}`);
   return parts.length > 0 ? t`  source ${join(parts, t`; `)}` : [];
+}
+
+/**
+ * How a write came about, when not by a plain write (05 §6 `saveslot_history`: 由 resolve、撤回触发的
+ * 写明来由): resolving an item with a decision, or undoing an operation. Any other shape is shown as
+ * written, inside the boundary.
+ */
+function viaOf(x: unknown): Part[] {
+  if (x === undefined) return [];
+  const v = obj(x);
+  if (Object.hasOwn(v, "resolve") && Object.keys(v).length === 2 && Object.hasOwn(v, "decision")) {
+    return t`, resolving ${idOf(v["resolve"])} with ${codeIn(v["decision"], DECISIONS)}`;
+  }
+  if (Object.hasOwn(v, "undo") && Object.keys(v).length === 1) return t`, undoing ${op(v["undo"])}`;
+  return t`, by ${stored(JSON.stringify(x))}`;
 }
 
 function history(r: R): Line[] {
@@ -604,7 +681,7 @@ function history(r: R): Line[] {
     // The widest interval of the write (05 §4.3), on state tables.
     const period = isObj(x["valid"]) ? t` (${periodOf(x["valid"])})` : [];
     out.push(
-      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${codeIn(x["intent"], INTENTS)}${period}  ${actorOf(x["actor"])}  ${join(fields, t`; `)}`,
+      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${codeIn(x["intent"], INTENTS)}${viaOf(x["via"])}${period}  ${actorOf(x["actor"])}  ${fields.length > 0 ? join(fields, t`; `) : t`no change`}`,
     );
   }
   const reads = arr(r["reads"]);
@@ -711,23 +788,126 @@ function proposalOf(x: unknown): Part[] {
   return t`${what}${period} (${op(p["seq"])}, ${actorOf(p["actor"])}, ${codeIn(p["intent"], INTENTS)})`;
 }
 
-function pending(r: R): Line[] {
+/**
+ * How long an item has been open (05 §6 `saveslot_pending`: 已挂多久): whole minutes, hours, or
+ * days from 48 hours on; as recorded when the moment is not one this can read.
+ */
+function openFor(opened: unknown, now: Date): Part[] {
+  const at = typeof opened === "string" ? Date.parse(opened) : Number.NaN;
+  if (Number.isNaN(at)) return [timeOf(opened)];
+  const minutes = Math.max(0, Math.floor((now.getTime() - at) / 60_000));
+  if (minutes < 60) return t`${num(minutes)} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return t`${num(hours)} h`;
+  return t`${num(Math.floor(hours / 24))} d`;
+}
+
+/**
+ * A side of an item (its effective side, the merge base, an awaiting item's current values): a
+ * state table's by stretch, each with the write that gave it when the stretch says so; other
+ * tables' by field. `no row` when it does not exist; `no value` for a stretch without one.
+ */
+function sideOf(x: R): Part[] {
+  if (x["exists"] === false) return t`no row`;
+  const spans = arr(x["spans"]);
+  if (spans.length > 0) {
+    return join(
+      spans.map((sp) => {
+        const s = obj(sp);
+        const values = s["values"] === null ? t`no value` : namedValues(s["values"]);
+        const by = s["seq"] !== undefined ? t` (${op(s["seq"])}, ${actorOf(s["actor"])})` : [];
+        return t`${periodOf(s)} ${values}${by}`;
+      }),
+      t`; `,
+    );
+  }
+  const values = namedValues(x["values"]);
+  return values.length > 0 ? values : t`no value`;
+}
+
+/** Whether a side gives the write behind it by stretch rather than as a whole. */
+const byStretch = (x: R): boolean => arr(x["spans"]).some((sp) => obj(sp)["seq"] !== undefined);
+
+const SUPERSEDED: ReadonlySet<string> = new Set<string>(SUPERSEDED_REASONS);
+
+/**
+ * What each of a conflict's decisions would do (05 §6 `saveslot_pending`: 可选), for the decisions
+ * this credential has; what take_previous would undo is listed once, above. Any other decision is
+ * named by its code.
+ */
+function conflictChoices(r: R): Line[] {
+  const candidates = arr(r["candidates"]).map((c) => obj(c)["index"]);
+  const prev = obj(r["previous"]);
+  const undoes = arr(r["reverted_by_previous"]).length > 0 ? t`; see what it would undo above` : [];
+  const out: Line[] = [];
+  for (const d of arr(r["decisions"])) {
+    if (d === "keep_effective") out.push(t`    keep_effective: keep the value in effect (above)`);
+    else if (d === "take_candidate") {
+      // With one candidate the parameter can be left out (05 §9.1 `candidate`).
+      if (candidates.length === 1) {
+        out.push(t`    take_candidate: put candidate ${count(candidates[0])} in effect`);
+      } else {
+        for (const k of candidates) {
+          out.push(
+            t`    take_candidate candidate=${count(k)}: put candidate ${count(k)} in effect`,
+          );
+        }
+      }
+    } else if (d === "take_previous") {
+      out.push(
+        t`    take_previous: go back to the value at ${op(prev["seq"])} (${sideOf(prev)})${undoes}`,
+      );
+    } else out.push(t`    ${codeIn(d, DECISIONS)}`);
+  }
+  return out;
+}
+
+/**
+ * How a closed item ended (04-contract-types §4.8): the decision that resolved it, which candidate,
+ * by whom and when, with the note given; or what superseded it, by which operation and when.
+ */
+function closedLines(r: R): Line[] {
+  const out: Line[] = [];
+  if (isObj(r["resolution"])) {
+    const res = obj(r["resolution"]);
+    const note = res["note"] !== undefined ? t` · note ${stored(String(res["note"]))}` : [];
+    // take_candidate: which candidate, by the index the candidates above are listed with.
+    const which = res["candidate"] !== undefined ? t` ${count(res["candidate"])}` : [];
+    const at = res["at"] !== undefined ? t`, ${timeOf(res["at"])}` : [];
+    out.push(
+      t`  Resolved: ${codeIn(res["decision"], DECISIONS)}${which} (${op(res["seq"])}, ${actorOf(res["actor"])}${at})${note}`,
+    );
+  }
+  if (isObj(r["superseded"])) {
+    const sup = obj(r["superseded"]);
+    const by = sup["by"] !== undefined ? t` by ${op(sup["by"])}` : [];
+    const at = sup["at"] !== undefined ? t` (${timeOf(sup["at"])})` : [];
+    out.push(t`  Superseded: ${codeIn(sup["reason"], SUPERSEDED)}${by}${at}`);
+  }
+  return out;
+}
+
+function pending(r: R, now: Date): Line[] {
   need(typeof r["id"] === "string" || Array.isArray(r["items"]));
+  // The moments are as the service recorded them (UTC): a pending result does not give the slot's
+  // time zone (05 §4.1 asks for it), and a second read only to learn it is not worth it.
   if (r["id"] !== undefined) {
     const out: Line[] = [
-      t`${idOf(r["id"])} ${codeIn(r["type"], ITEM_TYPES)} · ${itemTarget(r["target"])}${reasonOf(r["reason"])} · ${codeIn(r["status"], ITEM_STATUS)} · opened ${timeOf(r["opened_at"])} by ${actorOf(r["opened_by"])}${r["item_ver"] !== undefined ? t` · version ${idOf(r["item_ver"])}` : []}`,
+      t`${idOf(r["id"])} ${codeIn(r["type"], ITEM_TYPES)} · ${itemTarget(r["target"])}${reasonOf(r["reason"])} · ${codeIn(r["status"], ITEM_STATUS)} · opened ${openFor(r["opened_at"], now)} ago (${timeOf(r["opened_at"])}) by ${actorOf(r["opened_by"])}${r["item_ver"] !== undefined ? t` · version ${idOf(r["item_ver"])}` : []}`,
     ];
     if (isObj(r["effective"])) {
       const e = r["effective"];
-      out.push(
-        t`  In effect: ${e["exists"] === false ? t`no row` : namedValues(e["values"])} (${op(e["seq"])}, ${actorOf(e["actor"])})`,
-      );
+      // By stretch, each stretch names its write; otherwise the side's own.
+      const by = byStretch(e) ? [] : t` (${op(e["seq"])}, ${actorOf(e["actor"])})`;
+      out.push(t`  In effect: ${sideOf(e)}${by}`);
     }
     const candidateImpact = obj(r["candidate_impact"]);
     for (const c of arr(r["candidates"])) {
       const x = obj(c);
+      const what = x["values"] !== undefined ? namedValues(x["values"]) : t`revoke`;
+      const period = isObj(x["valid"]) ? t` ${periodOf(x["valid"])}` : [];
       out.push(
-        t`  Candidate ${count(x["index"])}: ${namedValues(x["values"])} (${op(x["seq"])}, ${actorOf(x["actor"])}, ${codeIn(x["intent"], INTENTS)})`,
+        t`  Candidate ${count(x["index"])}: ${what}${period} (${op(x["seq"])}, ${actorOf(x["actor"])}, ${codeIn(x["intent"], INTENTS)})`,
       );
       // Taking it would be high impact: what it would change.
       const im = own(candidateImpact, String(x["index"]));
@@ -737,9 +917,7 @@ function pending(r: R): Line[] {
     }
     if (isObj(r["previous"])) {
       const p = r["previous"];
-      out.push(
-        t`  Before: ${p["exists"] === false ? t`no row` : namedValues(p["values"])} (${op(p["seq"])})`,
-      );
+      out.push(t`  Before (${op(p["seq"])}): ${sideOf(p)}`);
     }
     const reverted = arr(r["reverted_by_previous"]);
     if (reverted.length > 0) {
@@ -751,29 +929,38 @@ function pending(r: R): Line[] {
       );
     }
     if (isObj(r["proposal"])) out.push(t`  Proposed: ${proposalOf(r["proposal"])}`);
+    if (isObj(r["current"])) out.push(t`  In effect now: ${sideOf(r["current"])}`);
     if (isObj(r["impact"])) {
       out.push(t`  Carrying it out would:`, ...impactLines(r["impact"], "    "));
       if (r["status"] === "open") out.push(t`  Not in effect; the value in effect is unchanged.`);
     }
-    if (isObj(r["resolution"])) {
-      const res = obj(r["resolution"]);
-      const note = res["note"] !== undefined ? t` · note ${stored(String(res["note"]))}` : [];
-      // take_candidate: which candidate, by the index the candidates above are listed with.
-      const which = res["candidate"] !== undefined ? t` ${count(res["candidate"])}` : [];
-      out.push(
-        t`  Resolved: ${codeIn(res["decision"], DECISIONS)}${which} (${op(res["seq"])}, ${actorOf(res["actor"])})${note}`,
-      );
+    out.push(...closedLines(r));
+    const decisions = arr(r["decisions"]);
+    if (decisions.length > 0) {
+      if (r["type"] === "conflict") out.push(t`  Choices:`, ...conflictChoices(r));
+      else
+        out.push(
+          t`  Choices: ${join(
+            decisions.map((d) => [codeIn(d, DECISIONS)]),
+            t` / `,
+          )}`,
+        );
     }
-    const decisions = arr(r["decisions"]).map((d) => codeIn(d, DECISIONS));
-    if (decisions.length > 0) out.push(t`  Choices: ${join(decisions, t` / `)}`);
     return [...out, ...remindersOf(r)];
   }
   const items = arr(r["items"]);
-  const out: Line[] = [t`${ofTotal(items.length, r["total"])} pending items`];
+  // One slot on the page: it heads the list (05 §6 `saveslot_pending`).
+  const slots = new Set(items.map((i) => obj(i)["slot"]));
+  const slot = slots.size === 1 && items.length > 0 ? t`${tableOf(obj(items[0])["slot"])} · ` : [];
+  const out: Line[] = [t`${slot}${ofTotal(items.length, r["total"])} pending items`];
   for (const i of items) {
     const x = obj(i);
+    const status =
+      x["status"] !== undefined && x["status"] !== "open"
+        ? t` · ${codeIn(x["status"], ITEM_STATUS)}`
+        : [];
     out.push(
-      t`${idOf(x["id"])} ${codeIn(x["type"], ITEM_TYPES)} · ${itemTarget(x["target"])}${reasonOf(x["reason"])} · opened ${timeOf(x["opened_at"])}${x["overdue"] === true ? t` · overdue, not yet deleted; will be retried` : []}`,
+      t`${idOf(x["id"])} ${codeIn(x["type"], ITEM_TYPES)} · ${itemTarget(x["target"])}${reasonOf(x["reason"])}${status} · opened ${openFor(x["opened_at"], now)} ago${x["overdue"] === true ? t` · overdue, not yet deleted; will be retried` : []}`,
     );
   }
   return [...out, ...pageOf(r, items.length, () => t`items`), ...remindersOf(r)];
@@ -1130,10 +1317,8 @@ function resolve(r: R): Line[] {
   return [head, ...replayed, ...receipt, ...remindersOf(r)];
 }
 
-const RENDER: ReadonlyMap<ToolName, (r: R) => Line[] | { json: true; lead: Line[] }> = new Map<
-  ToolName,
-  (r: R) => Line[] | { json: true; lead: Line[] }
->([
+type Renderer = (r: R, now: Date) => Line[] | { json: true; lead: Line[] };
+const RENDER: ReadonlyMap<ToolName, Renderer> = new Map<ToolName, Renderer>([
   ["saveslot_catalog", catalog],
   ["saveslot_query", query],
   ["saveslot_history", history],
@@ -1152,17 +1337,17 @@ function asPlain(v: unknown, otherwise: unknown): unknown {
 }
 
 /** A tool's result as text by its renderer; throws on a shape the renderer does not know. */
-export function renderStrict(tool: ToolName, result: R): string {
+export function renderStrict(tool: ToolName, result: R, now: Date = new Date()): string {
   const f = RENDER.get(tool);
   if (f === undefined) throw new Error("no renderer");
-  const out = f(result);
+  const out = f(result, now);
   return Array.isArray(out) ? render(out) : renderJson(out.lead, result);
 }
 
 /** A tool's result as text; JSON as written when its renderer cannot give it. */
-export function renderResult(tool: ToolName, result: R): string {
+export function renderResult(tool: ToolName, result: R, now: Date = new Date()): string {
   try {
-    return renderStrict(tool, result);
+    return renderStrict(tool, result, now);
   } catch {
     // A shape the renderer did not expect, or a renderer's fault: the whole of it inside the
     // boundary instead.
