@@ -4,6 +4,7 @@ export * from "./derive/index.ts";
 export * from "./judge/index.ts";
 export * from "./log/index.ts";
 export * from "./ops/index.ts";
+export type { DecisionResolution } from "./pending/closing.ts";
 export {
   type AsOfResult,
   type CatalogResult,

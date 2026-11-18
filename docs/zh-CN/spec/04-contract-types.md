@@ -1464,7 +1464,7 @@ interface ResolveParams extends WriteCommonParams, Omit<EvidenceOnOp, "evidence_
   /** 只用于 conflict 的 take_candidate：采纳哪一个候选（它的下标 index）。只有一个候选时可省略。 */
   candidate?: number;
   /** 备注。带了 note 时，解决请求本身存为一条 api_call 源数据（不论是否触发写入、是否另带了证据），
-   *  解决事件以操作来源引用它；事项详情的 resolution.note 从它回显。它经普通的隐私删除（删这条源数据）清除。 */
+   *  解决事件以操作来源引用它；事项详情与 item_closed 错误详情里的 resolution.note 都从它回显。它经普通的隐私删除（删这条源数据）清除，清除之后 resolution 不再带 note。 */
   note?: UntrustedText;
   diff_upto?: number;            // @later：migration_diff 的 accept_all
   rows?: { accept?: RowId[]; reject?: RowId[]; set?: Record<RowId, Values> };   // @later：migration_diff 的逐行处理

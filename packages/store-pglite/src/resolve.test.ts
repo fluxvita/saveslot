@@ -5,6 +5,7 @@
 import {
   appendOperation,
   applyEvents,
+  clearBlocks,
   createOpsContext,
   createTenant,
   entryChecksums,
@@ -626,6 +627,62 @@ describe("more on the checks", () => {
         status: "resolved",
         warnings: [{ code: "item_ver_fallback", item_ver: `iv_${item.slice(3)}.${w.seq}.0` }],
       });
+    },
+    T,
+  );
+});
+
+describe("the note a decision was given, in its resolution (04-contract-types §4.8 ItemResolution.note)", () => {
+  const decide = async (note?: string) => {
+    const { c, item } = await disputed();
+    const r = await resolve({
+      id: item,
+      decision: "keep_effective",
+      item_ver: verOfItem(c, item),
+      ...(note !== undefined ? { note } : {}),
+    });
+    expect(r.status).toBe("resolved");
+    return { item, op: Number(r.item_ver.split(".")[1]) };
+  };
+  /** The resolution as the item's details and as item_closed (another decision) give it. */
+  const resolutions = async (item: string) => [
+    ((await detailOf(item)) as { resolution?: unknown }).resolution,
+    ((await resolve({ id: item, decision: "take_previous" })) as { resolution?: unknown })
+      .resolution,
+  ];
+
+  it(
+    "with a note: the details and item_closed give it back; without: neither has one",
+    async () => {
+      const noted = await decide("the later one");
+      for (const r of await resolutions(noted.item))
+        expect(r).toMatchObject({ decision: "keep_effective", note: "the later one" });
+      const bare = await decide();
+      for (const r of await resolutions(bare.item)) {
+        expect(r).toMatchObject({ decision: "keep_effective" });
+        expect(r).not.toHaveProperty("note");
+      }
+    },
+    T,
+  );
+
+  it(
+    "its source deleted: the note is gone from the resolution, the rest stays",
+    async () => {
+      const { item, op } = await decide("to be forgotten");
+      const [call] = (await ofType(op, "source.recorded")).filter(
+        (e) => (e.blocks["target"] as { kind: string }).kind === "api_call",
+      );
+      // As a deletion clears it: the request block of the api_call source.
+      await s.store.write(async (tx) => {
+        await clearBlocks(tx, (await readTail(tx))?.seq ?? 0, [
+          { seq: call?.seq as number, path: "request" },
+        ]);
+      });
+      for (const r of await resolutions(item)) {
+        expect(r).toMatchObject({ decision: "keep_effective", seq: op });
+        expect(r).not.toHaveProperty("note");
+      }
     },
     T,
   );

@@ -10,6 +10,7 @@
 import type * as C from "@fluxvita/saveslot-contract";
 import type {
   catalog,
+  DecisionResolution,
   history,
   logEnd,
   logVerify,
@@ -72,6 +73,13 @@ export const checks = [
   // The third request: pending's result has no type of its own yet.
   // @ts-expect-error pending's result is a record of unknowns
   fits<C.PendingResult>(as<Mutable<Out<typeof pending>>>()),
+
+  // How a decision closed an item, as the details and item_closed give it (note included), and
+  // no key the contract does not have.
+  fits<C.ItemResolution>(as<Mutable<DecisionResolution<C.Actor>>>()),
+  fits<never>(
+    as<ExtraKeys<DecisionResolution<C.Actor>, Extract<C.ItemResolution, { decision: unknown }>>>(),
+  ),
 
   // A write's validation details, the judgement's `required_in_gap` among them; and no key the
   // contract does not have (an extra optional key is assignable, so it is checked on its own).
