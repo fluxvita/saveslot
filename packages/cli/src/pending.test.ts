@@ -9,7 +9,7 @@ import type {
 } from "@fluxvita/saveslot-client";
 import { describe, expect, it } from "vitest";
 import { logVerified, readsList, verifyFound } from "./render/admin.ts";
-import { openFor, pendingDetail, pendingList } from "./render/pending.ts";
+import { openFor, pendingDetail, pendingList, resolveResult } from "./render/pending.ts";
 import { type Boundary, type Line, render } from "./render/text.ts";
 
 const cp = (...points: number[]) => String.fromCodePoint(...points);
@@ -136,7 +136,7 @@ describe("pending (06 §5.1)", () => {
       ],
       candidate_impact: { "0": AWAITING.impact },
       previous: { seq: 90, exists: true, values: { amount: { value: "2000", unit: "CNY" } } },
-      reverted_by_previous: [{ seq: 103, actor }],
+      reverted_by_previous: [{ seq: 103, actor, fields: ["amount"] }],
     };
     const lines = render(pendingDetail(conflict as never, NOW), terminal).split("\n");
     expect(lines).toContain("  in effect: amount 4000 「CNY」 (#103, 「MacBook · Codex」)");
@@ -148,8 +148,28 @@ describe("pending (06 §5.1)", () => {
       "      overwritten: amount from 「2026-11-10」 4000 「CNY」 (#103, 「MacBook · Codex」)",
     );
     expect(lines).toContain("  before both: amount 2000 「CNY」 (#90)");
-    expect(lines).toContain("  take_previous would undo: #103 (「MacBook · Codex」)");
+    expect(lines).toContain("  take_previous would undo: #103 (「MacBook · Codex」) amount");
     expect(lines.at(-1)).toBe("  choices: keep_effective / take_candidate / take_previous");
+  });
+
+  it("a take_previous receipt: the writes it undid, as the details listed them", () => {
+    const lines = render(
+      resolveResult({
+        id: "pi_8VEZWJ3J7BMKMXTV",
+        type: "conflict",
+        decision: "take_previous",
+        item_ver: "iv_8VEZWJ3J7BMKMXTV.110.0",
+        status: "resolved",
+        reverted_by_previous: [
+          { seq: 103, actor, fields: ["amount"] },
+          { seq: 107, actor, fields: ["note", "tag"] },
+        ],
+      } as never),
+      terminal,
+    ).split("\n");
+    expect(lines).toContain(
+      "  undid: #103 (「MacBook · Codex」) amount; #107 (「MacBook · Codex」) note, tag",
+    );
   });
 
   it("a conflict resolved by taking a candidate: which candidate, and the note inside the boundary", () => {

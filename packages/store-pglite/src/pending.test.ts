@@ -532,7 +532,7 @@ describe("the detail", () => {
           },
         ],
         previous: { seq: a.seq, exists: true, values: { b: "9" } },
-        reverted_by_previous: [{ seq: b.seq, actor: OTHER }],
+        reverted_by_previous: [{ seq: b.seq, actor: OTHER, fields: ["b"] }],
       });
     },
     T,

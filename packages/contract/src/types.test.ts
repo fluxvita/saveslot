@@ -189,7 +189,11 @@ const conflictDetail = {
   ],
   previous: { seq: 29, exists: true, values: { amount: { value: "30", unit: "CNY" } } },
   reverted_by_previous: [
-    { seq: 33, actor: { kind: "connection", id: "ci_01B…", name: "MacBook · Codex" } },
+    {
+      seq: 33,
+      actor: { kind: "connection", id: "ci_01B…", name: "MacBook · Codex" },
+      fields: ["amount"],
+    },
   ],
 } satisfies PendingDetailResult;
 

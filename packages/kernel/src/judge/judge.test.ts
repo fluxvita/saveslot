@@ -1647,12 +1647,14 @@ describe("take_candidate", () => {
 
   it("a stretch without a value is not the same value: the candidate is written there", () => {
     // f3 is x on #31's whole interval underneath, but undoing #16 left [11-01, 11-03) without a
-    // value (f2 none): taking #31 on existence writes f3 there too, with f2 carried.
+    // value (f2 none): taking #31 on existence writes f3 there too, with f2 carried. The undo hides
+    // #18's f3 there (the stretch left without a value, high impact ④): it awaits, and is confirmed.
     const { js } = run(STATE, [
       write({ op: 10, seen: 0, valid: span("11-03", "open"), fields: { f2: "1" } }),
       write({ op: 15, valid: span("11-01", "11-03"), fields: { f2: "2" }, ack: true }),
       write({ op: 18, valid: span("11-01", "open"), fields: { f3: "x" }, ack: true }),
       undo(22, 15, { seen: 18, ack: true }),
+      { kind: "confirm", op: 23, index: 0, event: 24, ruleset: 1, target: 23 },
       revoke(25, span("11-05", "11-07") as RevokeInput["valid"], 22),
       write({
         op: 30,
@@ -1664,7 +1666,7 @@ describe("take_candidate", () => {
       undo(35, 25),
       take(40, "existence", [31], 31),
     ]);
-    expect(items(js[5] as Judgement).map((x) => [x.status, x.valid])).toEqual([
+    expect(items(js[6] as Judgement).map((x) => [x.status, x.valid])).toEqual([
       ["candidate", iv("11-01", "11-03")],
       ["corroborated", iv("11-03", "11-05")],
       ["candidate", iv("11-05", "11-07")],

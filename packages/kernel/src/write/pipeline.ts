@@ -47,6 +47,7 @@ import {
   conflictImpact,
   emptyState,
   type GapEntry,
+  type ImpactEntry,
   type ItemRef,
   JudgeError,
   type JudgeInput,
@@ -478,7 +479,12 @@ function itemContents(state: RowState, t: TrackedItem, at: Limit): ItemContents 
       ...scopeBlock,
       current,
       previous: unitEntries(state, t.unit, scope, { upTo: t.mergeBase }, t.refs),
-      impact: conflictImpact(state, t.unit, scope, t.mergeBase, t.refs, at),
+      impact: withHiddenByPrevious(
+        state,
+        conflictImpact(state, t.unit, scope, t.mergeBase, t.refs, at),
+        t,
+        at,
+      ),
     };
   }
   return {
@@ -581,6 +587,58 @@ export function revertEntriesNow(
     undo: entriesOf(undoNow(state, t, { upTo })),
     confirm: entriesOf(confirmNow(state, t, upTo)),
   };
+}
+
+/**
+ * A conflict item's impact with what `take_previous` would also take away: the writes after the
+ * merge base, outside its unit, whose values go with a stretch it leaves without a value (the
+ * merge base had none there). They are the take_previous judged now hides (high impact ④'s
+ * hiding; a decision does not await). Listed with the writes it takes back, one entry an operation.
+ */
+function withHiddenByPrevious(
+  state: RowState,
+  impact: readonly ImpactEntry[],
+  t: TrackedItem,
+  at: Limit,
+): ImpactEntry[] {
+  const op = (at.upTo + 1) as OpNumber;
+  let hides: readonly ItemRef[] = [];
+  try {
+    hides = judgeOp(state, {
+      kind: "take_previous",
+      op,
+      index: 0,
+      event: (op + 1) as Seq,
+      ruleset: RULESET,
+      unit: t.unit,
+      candidates: t.cands,
+    }).judgement.hides;
+  } catch (e) {
+    if (!(e instanceof JudgeError)) throw e;
+  }
+  if (hides.length === 0) return [...impact];
+  const opOf = (r: ItemRef) =>
+    state.items.find((x) => x.event === r.event && x.target === r.target && x.k === r.k)?.op;
+  const out = [...impact];
+  for (const r of hides) {
+    const at_ = opOf(r);
+    if (at_ === undefined) continue;
+    const i = out.findIndex((e) => e.kind === "reverted_write" && e.op === at_);
+    if (i < 0) out.push({ kind: "reverted_write", op: at_, deps: [r] });
+    else {
+      const e = out[i] as Extract<ImpactEntry, { kind: "reverted_write" }>;
+      out[i] = { ...e, deps: [...e.deps, r] };
+    }
+  }
+  // Reverted writes in order of their operations, after the overwritten segments.
+  return [
+    ...out.filter((e) => e.kind !== "reverted_write"),
+    ...out
+      .filter(
+        (e): e is Extract<ImpactEntry, { kind: "reverted_write" }> => e.kind === "reverted_write",
+      )
+      .sort((a, b) => a.op - b.op),
+  ];
 }
 
 /** The intent of the undone operation's last `write.base` on the row (01-objects). */

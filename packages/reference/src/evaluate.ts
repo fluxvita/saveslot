@@ -1116,8 +1116,10 @@ class Replay {
       record,
       { asOf: rec.mergeBase },
       kItems,
-      // A take_previous takes effect directly. It never hides a later field write: its record
-      // lists the field writes of the same stretch (09 §5.7).
+      // A take_previous takes effect directly: it is a person's decision, made on the item's
+      // details, which list what it takes back and what it hides (a field outside its unit written
+      // after the merge base, over a stretch it leaves without a value). It writes no revoke back:
+      // its record lists the field writes of its unit (09 §5.7).
       () => "applied",
     );
   }
@@ -1409,26 +1411,41 @@ class Replay {
 
     // Step 4: a revert that is not in effect registers nothing and writes nothing back.
     const laterInRange = zai.some((r) => isLater(r) && !isEmpty(scope.get(r) ?? []));
-    // A write-back revoke hiding a later field write (05-time «高影响写入» ④, undo only: a
-    // take_previous lists the field writes of the same stretch): a field item in effect, not under
-    // R, after the undone operation and before n, whose interval meets the revoke's beyond what
-    // earlier reverts registered. A hidden corroboration: a warning.
+    // Write-backs hiding a later field write (05-time «高影响写入» ④): a field item in effect, not
+    // under R, after the undone operation (or the merge base) and before n, over a stretch the
+    // write-backs take from it beyond what earlier reverts registered. They take it where they
+    // write a revoke back (undo only: a take_previous lists the field writes of its unit), and
+    // where the entity had a value before them and has none once they are written (05-time
+    // «无值区间»): the item's value goes with the stretch's. The second is found by writing them:
+    // every elementary segment's "has a value" before and after, the write-backs then taken out.
+    // A hidden corroboration: a warning.
     const lower = "before" in pos ? pos.before : pos.asOf;
+    let emptied: Iv[] = [];
+    if (this.isState) {
+      const segs = this.segments(fresh.map((w) => w.valid));
+      const valuedBefore = segs.map((s) => this.hasValue(s, n - 1));
+      apply();
+      emptied = segs.filter((s, i) => valuedBefore[i] === true && !this.hasValue(s, n));
+      rollback();
+    }
+    const under = (x: Item, area: IvSet) =>
+      !isEmpty(subtract(intersect(area, x.valid), this.registeredSet(x, n)));
+    const revokedBack: IvSet = union(
+      ...fresh
+        .filter((w) => "before" in pos && w.target === "existence" && w.content.kind === "revoke")
+        .map((w) => w.valid),
+    );
     const hidden = (status: Status) =>
-      fresh.some(
-        (w) =>
-          w.target === "existence" &&
-          w.content.kind === "revoke" &&
-          this.items.some(
-            (x) =>
-              x.target !== "existence" &&
-              x.status === status &&
-              (x.content.kind === "value" || x.content.kind === "noValue") &&
-              !entries.has(etKey(x.event, x.target)) &&
-              x.op > lower &&
-              x.op < n &&
-              !isEmpty(subtract(intersect(w.valid, x.valid), this.registeredSet(x, n))),
-          ),
+      this.items.some(
+        (x) =>
+          x.target !== "existence" &&
+          x.status === status &&
+          (x.content.kind === "value" || x.content.kind === "noValue") &&
+          !entries.has(etKey(x.event, x.target)) &&
+          x.op > lower &&
+          x.op < n &&
+          // A no-value item gives no value to lose with the stretch's.
+          (under(x, revokedBack) || (x.content.kind === "value" && under(x, normalize(emptied)))),
       );
     const verdict = decide(zai, apply, rollback, laterInRange, hidden("applied"));
     if (verdict === "revoked") {

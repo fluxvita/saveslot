@@ -187,6 +187,32 @@ export interface Naming<A, V = unknown, I = Record<string, unknown>> {
 const actorAt = <A, V, I>(e: ItemEntries, n: Naming<A, V, I>, op: number) =>
   n.actor(e.actorOfOp.get(op) ?? "");
 
+/**
+ * The writes an item's carrying out would take back or hide, from its `reverted_write` impact
+ * entries: each operation, its writer and the fields it loses (their names; "*": existence). One
+ * shape for an awaiting item's `impact.reverted`, a conflict item's `reverted_by_previous` and a
+ * take_previous's receipt (04-contract-types §4.8, §5.2).
+ */
+export function revertedOut<A, V, I>(
+  e: ItemEntries,
+  n: Naming<A, V, I>,
+  blocks: readonly Blocks[],
+) {
+  return blocks
+    .filter((b) => b["kind"] === "reverted_write")
+    .map((b) => ({
+      seq: b["op"] as number,
+      actor: actorAt(e, n, b["op"] as number),
+      fields: [
+        ...new Set(
+          ((b["deps"] ?? []) as { field?: string }[]).map((d) =>
+            d.field !== undefined ? n.field(d.field) : "*",
+          ),
+        ),
+      ].sort(),
+    }));
+}
+
 /** What carrying an item out would change (04-contract-types `AwaitingImpact`), from impact entries. */
 export function impactOut<A, V, I>(e: ItemEntries, n: Naming<A, V, I>, blocks: readonly Blocks[]) {
   const segs = blocks.filter((b) => b["kind"] === "overwritten_segment");
@@ -207,19 +233,7 @@ export function impactOut<A, V, I>(e: ItemEntries, n: Naming<A, V, I>, blocks: r
       ...(b["valid"] !== undefined ? { valid: n.interval(spanIn(b["valid"])) } : {}),
       ...(typeof b["op"] === "number" ? { revoked_by: b["op"] as number } : {}),
     }));
-  const reverted = blocks
-    .filter((b) => b["kind"] === "reverted_write")
-    .map((b) => ({
-      seq: b["op"] as number,
-      actor: actorAt(e, n, b["op"] as number),
-      fields: [
-        ...new Set(
-          ((b["deps"] ?? []) as { field?: string }[]).map((d) =>
-            d.field !== undefined ? n.field(d.field) : "*",
-          ),
-        ),
-      ].sort(),
-    }));
+  const reverted = revertedOut(e, n, blocks);
   return {
     ...(overwritten.length > 0 ? { overwritten } : {}),
     ...(filled.length > 0 ? { filled_gaps: filled } : {}),

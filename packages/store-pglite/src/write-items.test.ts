@@ -677,6 +677,8 @@ describe("the entries an item is opened with", () => {
           ],
         });
       // b fills [11-05, ∞); c is written there after it; undoing b's fill leaves c alone in a gap.
+      // That hides c's value (high impact ④: the stretch left without a value): the undo awaits,
+      // naming c's write, and is confirmed.
       const b = await put({ b: "x2" }, "2026-11-05", verAt(e));
       const c = await put({ c: "m" }, "2026-11-05", verAt(b));
       const u = await send({
@@ -691,7 +693,28 @@ describe("the entries an item is opened with", () => {
           },
         ],
       });
-      expect(u.status).toBe("saved");
+      expect(u.status).toBe("pending");
+      expect(u.pending[0]).toMatchObject({
+        type: "awaiting_confirmation",
+        reason: "undo_hides_later",
+      });
+      expect(
+        (
+          partsOf(u, "b")[0]?.["impact"] as { reverted?: { seq: number }[] } | undefined
+        )?.reverted?.map((x) => x.seq),
+      ).toEqual([c.seq]);
+      await s.store.write((tx) =>
+        resolveInTx(tx, {
+          actor: USER as never,
+          task: null,
+          now: now(),
+          windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+          visibility: { kind: "all" },
+          params: { id: u.pending[0]?.id, decision: "confirm", item_ver: u.pending[0]?.item_ver },
+          newId,
+          reads: readBufferOf(s.store),
+        }),
+      );
       // A stale write on c over the gap: a candidate whose interval has no value now.
       const z = await put({ c: "z" }, "2026-11-05", verAt(b));
       const [created] = await ofType(z.seq, "item.created");
@@ -3613,6 +3636,266 @@ describe("a timeless table with no required field: a row stands on a non-empty v
           { valid: [{ from: null, to: null }], value: null, by: { event: 4, target: "f2", k: 0 } },
         ],
       });
+    },
+    T,
+  );
+});
+
+describe("a write-back leaving a stretch without a value hides a later write of another field (05-time «高影响写入» ④)", () => {
+  // bX over [10-25, 11-01) and b0 over [11-10, 11-20); b1 fills the hole between; another
+  // principal writes c = c4 over all of it (one value: no change point of its own). A write-back
+  // of b without a value over [11-01, 11-10) erases none of b's change points (bX | none | b0),
+  // yet c's value there would go with the stretch's.
+  const THIRD = `ci_${"3".repeat(26)}`;
+  const detailOf = async (id: string) =>
+    (await pending$(
+      s.store,
+      createOpsContext({
+        tenant: TENANT,
+        actor: THIRD,
+        trigger: null,
+        task: null,
+        visibility: { kind: "all" },
+        idempotency_key_window: 86_400_000,
+        idempotency_window: 600_000,
+        now: now(),
+        confirmation: null,
+      }),
+      { id },
+    )) as unknown as Record<string, unknown>;
+  const decide = async (params: Record<string, unknown>, actor = USER) => {
+    try {
+      return (await s.store.write((tx) =>
+        resolveInTx(tx, {
+          actor: actor as never,
+          task: null,
+          now: now(),
+          windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+          visibility: { kind: "all" },
+          params,
+          newId,
+          reads: readBufferOf(s.store),
+        }),
+      )) as unknown as Record<string, unknown>;
+    } catch (e) {
+      const x = e as { code?: string; detail?: Record<string, unknown> };
+      if (x.code === undefined) throw e;
+      return { refused: x.code, ...(x.detail ?? {}) };
+    }
+  };
+  /** The history up to c4, on `table`; the entity, the fill and c4's write. */
+  const filled = async (table: string) => {
+    const put = (op: Record<string, unknown>, actor = USER) =>
+      send({ sv: 1, ops: [{ table, ...op }] }, { actor });
+    const a = await put({
+      intent: "insert",
+      valid_from: "2026-10-25",
+      valid_to: "2026-11-01",
+      set: { b: `bX-${table}` },
+    });
+    const e = a.ops[0]?.target.entity as string;
+    const b0 = await put({
+      entity: e,
+      intent: "update",
+      ver: verAt(a),
+      valid_from: "2026-11-10",
+      valid_to: "2026-11-20",
+      set: { b: "b0" },
+      acknowledge: ["overwrite"],
+    });
+    const b1 = await put({
+      entity: e,
+      intent: "update",
+      ver: verAt(b0),
+      valid_from: "2026-11-01",
+      valid_to: "2026-11-10",
+      set: { b: "b1" },
+      acknowledge: ["overwrite"],
+    });
+    const c4 = await put(
+      {
+        entity: e,
+        intent: "update",
+        ver: verAt(b1),
+        valid_from: "2026-10-25",
+        valid_to: "2026-11-20",
+        set: { c: "c4" },
+      },
+      OTHER,
+    );
+    return { put, e, b0, b1, c4 };
+  };
+  const cOver = async (table: string, entity: string, day: string) =>
+    (
+      await s.store.read((tx) =>
+        queryInTx(tx, {
+          actor: USER as never,
+          task: null,
+          now: "2026-11-05T12:00:00.000Z" as never,
+          visibility: { kind: "all" },
+          params: { table, valid_at: day },
+          read: "rd_0000000000000000" as never,
+        }),
+      )
+    ).result.rows
+      .filter((x) => (x as { entity?: string }).entity === entity)
+      .map((x) => (x as { values: Record<string, unknown> }).values["c"]);
+
+  it(
+    "undo: it awaits confirmation, naming the hidden write; confirmed, it is carried out as listed",
+    async () => {
+      const { put, e, b1, c4 } = await filled("entities");
+      const u = await put({ entity: e, revert: { undo: b1.seq }, ver: verAt(c4) });
+      expect(u.status).toBe("pending");
+      expect(u.pending[0]).toMatchObject({
+        type: "awaiting_confirmation",
+        reason: "undo_hides_later",
+      });
+      const listed = { seq: c4.seq, actor: asActor(OTHER), fields: ["c"] };
+      expect(partsOf(u, "b")[0]?.["impact"]).toEqual({ reverted: [listed] });
+      const d = await detailOf(u.pending[0]?.id as string);
+      expect(d["impact"]).toEqual({ reverted: [listed] });
+      // Not in effect yet: c is still there.
+      expect(await cOver("entities", e, "2026-11-05")).toEqual(["c4"]);
+      // Confirmed: carried out, with no second confirmation asked for.
+      const done = await decide({
+        id: u.pending[0]?.id,
+        decision: "confirm",
+        item_ver: u.pending[0]?.item_ver,
+      });
+      expect(done["status"]).toBe("resolved");
+      expect((done["write"] as { pending: unknown[] }).pending).toEqual([]);
+      expect(await cOver("entities", e, "2026-11-05")).toEqual([]);
+    },
+    T,
+  );
+
+  it(
+    "undo on a table with no required field: c holds the stretch's value, nothing is hidden",
+    async () => {
+      const { put, e, b1, c4 } = await filled("loose");
+      const u = await put({ entity: e, revert: { undo: b1.seq }, ver: verAt(c4) });
+      expect(u.status).toBe("saved");
+      expect(await cOver("loose", e, "2026-11-05")).toEqual(["c4"]);
+    },
+    T,
+  );
+
+  it(
+    "take_previous back to a hole: the item lists the hidden write, refreshes when it comes, and the receipt lists it",
+    async () => {
+      const { put, e, b0, b1 } = await filled("entities");
+      // A stale write of b from before the fill: a conflict item whose merge base had a hole there
+      // (c4 came before the item here; the case below has it come after).
+      const b2 = await put(
+        {
+          entity: e,
+          intent: "update",
+          ver: verAt(b0),
+          valid_from: "2026-11-01",
+          valid_to: "2026-11-10",
+          set: { b: "b2" },
+        },
+        THIRD,
+      );
+      const item = (b2.pending as readonly { id: string; type: string }[]).find(
+        (q) => q.type === "conflict",
+      )?.id as string;
+      const d = await detailOf(item);
+      const seqs = (d["reverted_by_previous"] as { seq: number }[]).map((x) => x.seq);
+      expect(seqs).toContain(b1.seq);
+      expect(seqs.length).toBe(2);
+      const r = await decide({ id: item, decision: "take_previous", item_ver: d["item_ver"] });
+      expect(r["status"]).toBe("resolved");
+      expect(r["reverted_by_previous"]).toEqual(d["reverted_by_previous"]);
+      // The same request again: the same list, read from the log, not judged again.
+      const again = await decide({ id: item, decision: "take_previous", item_ver: d["item_ver"] });
+      expect(again["replayed"]).toBe(true);
+      expect(again["reverted_by_previous"]).toEqual(r["reverted_by_previous"]);
+      expect(await cOver("entities", e, "2026-11-05")).toEqual([]);
+    },
+    T,
+  );
+
+  it(
+    "take_previous, the hidden write coming after the item: it refreshes, and an older item version is refused",
+    async () => {
+      const put = (op: Record<string, unknown>, actor = USER) =>
+        send({ sv: 1, ops: [{ table: "entities", ...op }] }, { actor });
+      const a = await put({
+        intent: "insert",
+        valid_from: "2026-10-25",
+        valid_to: "2026-11-01",
+        set: { b: "bX" },
+      });
+      const e = a.ops[0]?.target.entity as string;
+      const b0 = await put({
+        entity: e,
+        intent: "update",
+        ver: verAt(a),
+        valid_from: "2026-11-10",
+        valid_to: "2026-11-20",
+        set: { b: "b0" },
+        acknowledge: ["overwrite"],
+      });
+      const b1 = await put({
+        entity: e,
+        intent: "update",
+        ver: verAt(b0),
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-10",
+        set: { b: "b1" },
+        acknowledge: ["overwrite"],
+      });
+      const b2 = await put(
+        {
+          entity: e,
+          intent: "update",
+          ver: verAt(b0),
+          valid_from: "2026-11-01",
+          valid_to: "2026-11-10",
+          set: { b: "b2" },
+        },
+        OTHER,
+      );
+      const item = (b2.pending as readonly { id: string; type: string }[]).find(
+        (q) => q.type === "conflict",
+      )?.id as string;
+      const before = await detailOf(item);
+      expect((before["reverted_by_previous"] as { seq: number }[]).map((x) => x.seq)).toEqual([
+        b1.seq,
+      ]);
+      // c written after the item, over its stretch: what take_previous would take changes.
+      const c4 = await put(
+        {
+          entity: e,
+          intent: "update",
+          ver: verAt(b1),
+          valid_from: "2026-10-25",
+          valid_to: "2026-11-20",
+          set: { c: "c4" },
+        },
+        THIRD,
+      );
+      expect(c4.pending).toEqual([
+        expect.objectContaining({ id: item, type: "conflict", refreshed: true }),
+      ]);
+      const after = await detailOf(item);
+      expect(after["item_ver"]).not.toBe(before["item_ver"]);
+      // Each with the fields it loses: b taken back, c hidden with the stretch's value.
+      expect(
+        (after["reverted_by_previous"] as { seq: number; fields: string[] }[]).map((x) => [
+          x.seq,
+          x.fields,
+        ]),
+      ).toEqual([
+        [b1.seq, ["b"]],
+        [c4.seq, ["c"]],
+      ]);
+      // Decided on the details read before: refused, the item changed.
+      expect(
+        await decide({ id: item, decision: "take_previous", item_ver: before["item_ver"] }),
+      ).toMatchObject({ refused: "confirmation_mismatch", reason: "changed" });
     },
     T,
   );

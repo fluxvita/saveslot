@@ -35,6 +35,7 @@ import {
   itemVer,
   type Naming,
   proposalOut,
+  revertedOut,
   type Span,
   targetOut,
 } from "../pending/index.ts";
@@ -469,12 +470,7 @@ async function conflictOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versio
     candidates,
     ...(e.relatedItem !== undefined ? { related_item: e.relatedItem } : {}),
     previous,
-    reverted_by_previous: e.impact
-      .filter((b) => b["kind"] === "reverted_write")
-      .map((b) => ({
-        seq: b["op"] as number,
-        actor: n.actor(e.actorOfOp.get(b["op"] as number) ?? ""),
-      })),
+    reverted_by_previous: revertedOut(e, n, e.impact),
     ...(impacts.length > 0 ? { candidate_impact: Object.fromEntries(impacts) } : {}),
   };
 }

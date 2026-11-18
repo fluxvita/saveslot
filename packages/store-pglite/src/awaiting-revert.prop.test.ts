@@ -5,14 +5,14 @@
 // - the item's interval comes from its confirmation judged now and its impact from its undo judged
 //   again now (the confirmation does not judge high impact ①): the two list the same entries;
 // - the confirmation's write covers exactly the item's spans (state tables);
-// - a write later than the one taken back that the confirmation takes back or hides is listed in
-//   the item's impact, and each one listed is taken back or hidden. On a state table: it loses
-//   its cells within the spans (unless the impact lists that stretch as overwritten: the stretch
-//   left without a value); on an event or timeless table, where a revoke changes only existence:
-//   it loses its cells, or the confirmation revokes the row.
+// - a write later than the one taken back that the confirmation takes back or hides is named in
+//   the item's impact, and each one listed is taken back or hidden. On a state table: a write
+//   that loses its cells within the spans is named, in `reverted` or as the write of a stretch
+//   `overwritten`; on an event or timeless table, where a revoke changes only existence: it loses
+//   its cells, or the confirmation revokes the row.
 // An item that has nothing left to do is closed (`nothing_to_revert`): it can then be neither
 // confirmed nor rejected. Each table's histories start from fixed ones that widen, narrow or empty
-// an item (every run reaches those), each then replayed from the log into an empty store: the
+// an item, or hide another field's write as a stretch loses its value (every run reaches those), each then replayed from the log into an empty store: the
 // items, flags and tables are the same; random ones follow. Reads are by a third principal, which
 // never writes: a writer that had read an item would supersede it instead of refreshing it.
 // `PROP_SEED` fixes the seed, `PROP_RUNS` the histories per table.
@@ -68,9 +68,10 @@ const RUNS = Number(process.env["PROP_RUNS"] ?? 60);
  * not by table or history): what each is, and what fixes it. Remove a kind once fixed.
  */
 const KNOWN = {
-  /** State tables. Fixed in part by hiding through a lost value (high impact ④: another field's
-   * later write hidden as the stretch goes back to no value); the rest by a complete impact. */
-  lost_unlisted: "lost its cells within the spans, not listed in the impact",
+  /** State tables: a later revoke whose existence cells within the spans go, the stretch keeping
+   * a value, not named in the impact. Fixed by a complete impact. */
+  revoke_lost_unlisted:
+    "a revoke lost its existence cells within the spans, not named in the impact",
   /** Event and timeless tables: the confirmation restores the row over a later revoke or undo.
    * Fixed by a complete impact. */
   hidden_unlisted: "was taken back or hidden, not listed in the impact",
@@ -243,7 +244,12 @@ const meets = (a: Iv, b: Iv) => startsBefore(a.from, b.to) && startsBefore(b.fro
 const meetsAny = (a: Iv, xs: readonly Iv[]) => xs.some((b) => meets(a, b));
 
 /** A cell still open: the operation that gave it, and its stretch (the whole time off the time line). */
-type Cell = { readonly op: number | null; readonly iv: Iv; readonly revoked: boolean };
+type Cell = {
+  readonly op: number | null;
+  readonly field: string;
+  readonly iv: Iv;
+  readonly revoked: boolean;
+};
 async function cellsOf(table: TableName, id: string): Promise<Cell[]> {
   const t = TABLES[table];
   const time =
@@ -251,14 +257,21 @@ async function cellsOf(table: TableName, id: string): Promise<Cell[]> {
       ? "v.valid_from::text AS vf, v.valid_to::text AS vt"
       : "NULL AS vf, NULL AS vt";
   const r = await s.store.read((tx) =>
-    tx.query<{ vf: string | null; vt: string | null; op: unknown; revoked: boolean | null }>(
-      `SELECT ${time}, v.revoked, (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS op
+    tx.query<{
+      vf: string | null;
+      vt: string | null;
+      op: unknown;
+      field_id: string;
+      revoked: boolean | null;
+    }>(
+      `SELECT ${time}, v.field_id, v.revoked, (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS op
        FROM "t_${t.id}_v1__ver" v WHERE v.row_id = $1 AND v.rec_to IS NULL`,
       [id],
     ),
   );
   return r.rows.map((x) => ({
     op: x.op == null ? null : Number(x.op),
+    field: x.field_id,
     iv: { from: x.vf, to: x.vt },
     revoked: x.revoked === true,
   }));
@@ -384,6 +397,40 @@ const LATER: readonly Step[] = [
   { confirm: 4 },
 ];
 
+/**
+ * An undo whose write-back leaves a stretch without a value (b, required, filled a hole there),
+ * hiding a later write of another field that has the same value on both sides of the stretch and
+ * no change point of its own: c goes with the stretch, and the impact names that write.
+ */
+const HIDDEN: readonly Step[] = [
+  {
+    actor: USER,
+    op: { intent: "insert", valid_from: "2026-11-01", valid_to: "2026-11-05", set: { b: "b0" } },
+  },
+  {
+    actor: OTHER,
+    op: {
+      intent: "update",
+      ver: "$0",
+      valid_from: "2026-11-05",
+      valid_to: "2026-11-10",
+      set: { b: "b1" },
+    },
+  },
+  {
+    actor: USER,
+    op: {
+      intent: "update",
+      ver: "$1",
+      valid_from: "2026-11-01",
+      valid_to: "2026-11-10",
+      set: { c: "c2" },
+    },
+  },
+  { actor: OTHER, op: { revert: { undo: "$1" }, ver: "$2" } },
+  { confirm: 3 },
+];
+
 /** The log replayed into it: the items, flags and tables must come out the same (K12). */
 let replica: ReusableStore;
 
@@ -455,7 +502,7 @@ describe.each(Object.keys(TABLES) as TableName[])(
         };
         const fixed =
           table === "entities"
-            ? [WIDENED, NARROWED, EMPTIED]
+            ? [WIDENED, NARROWED, EMPTIED, HIDDEN]
             : table === "rows"
               ? [LATER]
               : [NARROWED];
@@ -539,9 +586,9 @@ describe.each(Object.keys(TABLES) as TableName[])(
             const listed = new Set<number>(
               ((d.impact?.reverted ?? []) as Any[]).map((x) => x.seq as number),
             );
-            /** The stretches the impact says would be overwritten (high impact ①). */
-            const overwritten = ((d.impact?.overwritten ?? []) as Any[]).map((x) =>
-              x.valid === undefined ? { from: null, to: null } : ivOf(x.valid),
+            /** The writes the impact names as overwritten (high impact ①). */
+            const overwrittenBy = new Set<number>(
+              ((d.impact?.overwritten ?? []) as Any[]).map((x) => x.seq as number),
             );
             // The item's interval comes from its confirmation judged now, its impact from its undo
             // judged again now: the two list the same revert entries.
@@ -604,23 +651,26 @@ describe.each(Object.keys(TABLES) as TableName[])(
             const afterCells = await cellsOf(table, id as string);
             const inArea = (cs: readonly Cell[], op: number) =>
               cs.some((x) => x.op === op && meetsAny(x.iv, area));
+            const fieldCellsOf = (op: number) =>
+              beforeCells.some(
+                (x) => x.op === op && x.field !== "existence" && meetsAny(x.iv, area),
+              );
             const later = [...new Set(beforeCells.map((x) => x.op))].filter(
               (op): op is number => op !== null && op > at.undone,
             );
             if (state) {
               for (const op of later) {
                 const gone = inArea(beforeCells, op) && !inArea(afterCells, op);
-                // A write whose stretch the impact lists as overwritten (its change points go,
-                // the stretch left without a value) need not be listed as taken back as well.
-                const under = beforeCells
-                  .filter((x) => x.op === op && meetsAny(x.iv, area))
-                  .every((x) => meetsAny(x.iv, overwritten));
-                if (gone && !listed.has(op) && !(overwritten.length > 0 && under))
-                  knownFault(
-                    "lost_unlisted",
-                    op,
-                    `\nBEFORE ${J(beforeCells)}\nAFTER ${J(afterCells)}`,
-                  );
+                // A later write that loses its cells within the spans is named in the impact: as
+                // taken back or hidden (`reverted`), or as overwritten (its `seq`).
+                if (gone && listed.has(op) && fieldCellsOf(op))
+                  reach("a later field write named and gone");
+                if (!gone || listed.has(op) || overwrittenBy.has(op)) continue;
+                const lost = beforeCells.filter((x) => x.op === op && meetsAny(x.iv, area));
+                const more = `\nBEFORE ${J(beforeCells)}\nAFTER ${J(afterCells)}`;
+                if (lost.every((x) => x.field === "existence" && x.revoked))
+                  knownFault("revoke_lost_unlisted", op, more);
+                else fault(`#${op} lost its cells within the spans, not named in the impact`, more);
               }
               for (const op of listed) {
                 if (inArea(afterCells, op))
@@ -732,6 +782,8 @@ describe.each(Object.keys(TABLES) as TableName[])(
             reached["confirmed after a refresh changed the spans"] ?? 0,
           ).toBeGreaterThanOrEqual(2);
           expect(reached["closed: nothing to revert"] ?? 0).toBeGreaterThanOrEqual(1);
+          // HIDDEN: a later write of another field, hidden as the stretch loses its value, named.
+          expect(reached["a later field write named and gone"] ?? 0).toBeGreaterThanOrEqual(1);
         }
         expect(reached["fixed: no open item to confirm"] ?? 0).toBeLessThanOrEqual(
           table === "entities" ? 1 : 0,

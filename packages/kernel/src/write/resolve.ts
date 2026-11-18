@@ -31,8 +31,8 @@ import { ApplyError, confirmationHash, entryChecksums } from "../apply/index.ts"
 import { lastRead, type ReadId } from "../audit/index.ts";
 import type { DerivedWrite } from "../derive/index.ts";
 import { JudgeError, type JudgeInput, judgeOp, reaches, type Unit } from "../judge/index.ts";
-import { type NewEvent, readTail } from "../log/index.ts";
-import { actorsNow, closingOf } from "../pending/index.ts";
+import { type ActorAsOf as Actor, actorsAsOf, type NewEvent, readTail } from "../log/index.ts";
+import { actorsNow, closingOf, itemEntries, revertedOut } from "../pending/index.ts";
 import { normalizeResolve, type ResolveDecision } from "../request/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
 import { appendWithDerived } from "./derive-step.ts";
@@ -69,6 +69,15 @@ export interface ResolveReceipt {
     WriteReceipt,
     "seq" | "sv" | "ops" | "derived" | "derived_total" | "pending" | "superseded" | "omitted"
   >;
+  /**
+   * `take_previous`: the writes it took back or hid, as the item's details listed them at the
+   * version the decision bound (04-contract-types §4.8 `reverted_by_previous`).
+   */
+  readonly reverted_by_previous?: readonly {
+    readonly seq: number;
+    readonly actor: Actor;
+    readonly fields: readonly string[];
+  }[];
   readonly replayed?: true;
   readonly warnings?: readonly ResolveWarning[];
 }
@@ -256,8 +265,31 @@ async function readResolution(
   if (h === undefined || h.type !== "item.resolved" || h.body === null) {
     throw new WriteError("internal", "the operation is not a decision", { reason: "inconsistent" });
   }
-  const t = JSON.parse(h.body) as { item: ItemId; decision: ResolveDecision };
+  const t = JSON.parse(h.body) as { item: ItemId; decision: ResolveDecision; item_op?: number };
   const item = await itemRow(tx, t.item);
+  // take_previous: what the item's details listed it would take back, at the version the decision
+  // bound (its contents are in the log: a replay reads the same, nothing judged again).
+  let previous: { seq: number; actor: Actor; fields: string[] }[] | undefined;
+  if (t.decision === "take_previous" && t.item_op !== undefined && item?.table != null) {
+    const e = (await itemEntries(tx, [t.item], t.item_op)).get(t.item);
+    if (e !== undefined) {
+      const table = o.slot.compiled.tables.find((x) => x.id === item.table);
+      const writers = [...e.actorOfOp.values()];
+      const names = await actorsAsOf(tx, [...new Set(writers)], op);
+      // As the details name them (pending `revertedOut`), with the writers as of this operation.
+      previous = revertedOut(
+        e,
+        {
+          field: (id) => table?.fields.find((f) => f.id === id)?.name ?? id,
+          interval: () => ({}),
+          actor: (p): Actor => names.get(p) ?? { kind: "user", id: p, name: p },
+          value: (v) => v,
+          isState: true,
+        },
+        e.impact,
+      );
+    }
+  }
   const read = await readReceipt(tx, op, {
     compiled: o.slot.compiled,
     slotName: o.slot.name,
@@ -288,6 +320,7 @@ async function readResolution(
           },
         }
       : {}),
+    ...(previous !== undefined ? { reverted_by_previous: previous } : {}),
     ...(o.replayed ? { replayed: true as const } : {}),
   };
 }

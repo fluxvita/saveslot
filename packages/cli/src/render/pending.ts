@@ -179,12 +179,7 @@ export function pendingDetail(r: PendingDetailResult, now: Date): Line[] {
     out.push(t`  before both: ${sideOf(prev)} (${op(prev["seq"])})`);
     const reverted = arr(x["reverted_by_previous"]);
     if (reverted.length > 0) {
-      out.push(
-        t`  take_previous would undo: ${join(
-          reverted.map((w) => t`${op(obj(w)["seq"])} (${actorOf(obj(w)["actor"])})`),
-          t`, `,
-        )}`,
-      );
+      out.push(t`  take_previous would undo: ${join(reverted.map(revertedWrite), t`; `)}`);
     }
   }
   if (type === "flagged") {
@@ -245,6 +240,13 @@ export function closedLines(x: R): Line[] {
   return out;
 }
 
+/** A write take_previous takes back or hides: its operation, its writer and the fields it loses. */
+const revertedWrite = (w: unknown): Part[] => {
+  const x = obj(w);
+  const fields = arr(x["fields"]);
+  return t`${op(x["seq"])} (${actorOf(x["actor"])})${fields.length > 0 ? t` ${join(fields.map(fieldOf), t`, `)}` : []}`;
+};
+
 /**
  * `saveslot pending resolve` (06 §5.2): the decision and the item's new version; what the write it
  * triggered did (its operation, the derived values that changed, the items it opened or
@@ -273,6 +275,11 @@ export function resolveResult(r: ResolveResult): Line[] {
       const q = obj(sup);
       out.push(t`  superseded ${idOf(q["item"])} (${codeOf(q["reason"], SUPERSEDED)})`);
     }
+  }
+  // take_previous: the writes it took back or hid, as the item's details listed them.
+  const reverted = arr(x["reverted_by_previous"]);
+  if (reverted.length > 0) {
+    out.push(t`  undid: ${join(reverted.map(revertedWrite), t`; `)}`);
   }
   return [...out, ...warningsAndNotices(r)];
 }

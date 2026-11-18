@@ -404,29 +404,44 @@ export function judgeRevertOf(
     }
   }
 
-  // High impact ④: a `later` entry with a non-empty range; a write-back revoke hiding a later
-  // field write in effect (undo only; a hidden corroboration is a warning).
+  // High impact ④: a `later` entry with a non-empty range; a later field write in effect that the
+  // write-backs hide (a hidden corroboration is a warning). They hide it where they write a revoke
+  // back over it (undo only: a take_previous lists the same stretch's writes of its unit), or where
+  // they leave the entity without a value it had (05-time «无值区间»; a required field written back
+  // without one): its value goes with the stretch's, though it is not in the record.
   const takesBack = [
     ...new Set(
       c.zai.filter((y) => c.isLater(y) && !isNothing(c.scope.get(y) ?? [])).map((y) => y.op),
     ),
   ].sort((a, b) => a - b);
+  const written = state.isState ? state.with(c.asWritten, c.regs) : undefined;
+  /**
+   * Where `x`, beyond what earlier reverts registered, has a value before and none after. Only an
+   * item that gives a value (a clear included) loses one: a no-value item gives none to lose.
+   */
+  const losesValue = (x: Item) =>
+    written !== undefined &&
+    x.content.kind === "value" &&
+    written
+      .piecesIn(minus(x.valid, state.registeredSet(x, c.cur)))
+      .some((seg) => state.hasValue(seg, c.cur) && !written.hasValue(seg, afterAt));
   const hidden = (status: "applied" | "corroborated") =>
     state.items.filter(
       (x) =>
-        "before" in pos &&
         state.sees(x, c.cur) &&
         x.target !== "existence" &&
         x.status === status &&
         (x.content.kind === "value" || x.content.kind === "no_value") &&
         !c.inR(x) &&
         x.op > lower &&
-        c.asWritten.some(
-          (w) =>
-            w.target === "existence" &&
-            w.content.kind === "revoke" &&
-            !isNothing(minus(meet(w.valid, x.valid), state.registeredSet(x, c.cur))),
-        ),
+        (("before" in pos &&
+          c.asWritten.some(
+            (w) =>
+              w.target === "existence" &&
+              w.content.kind === "revoke" &&
+              !isNothing(minus(meet(w.valid, x.valid), state.registeredSet(x, c.cur))),
+          )) ||
+          losesValue(x)),
     );
   const hides = hidden("applied").map(refOf);
 

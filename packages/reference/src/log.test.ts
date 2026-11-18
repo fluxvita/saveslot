@@ -2437,3 +2437,66 @@ describe("a write-back revoke that hides a later field write is high-impact ④"
     expect(tl(ev)).toEqual(['[10-01, 11-05) "5"', '[11-15, inf) "5"']);
   });
 });
+
+describe("a write-back leaving a stretch without a value hides a later write of another field (05-time «高影响写入» ④)", () => {
+  const sp = (from: string, to: string) => ({
+    from: { mode: "given" as const, value: d(from) },
+    to: { mode: "given" as const, value: d(to) },
+  });
+  /**
+   * f2 is bX over [10-25, 11-01) and b0 over [11-10, 11-20); #5 fills the hole between with b1;
+   * #7, another principal, writes f3 = c4 over all of it (one value: no change point of its own).
+   * Undoing #5 writes f2 back without a value over [11-01, 11-10): both of f2's change points stay
+   * (bX | none | b0), so it erases none, yet f3's value there goes with the stretch's.
+   */
+  const log = (): LogEntry[] => [
+    {
+      kind: "write",
+      op: 1,
+      event: 2,
+      valid: sp("10-25", "11-01"),
+      fields: { f2: { value: "bX", sources: ["S1"] } },
+    },
+    {
+      kind: "write",
+      op: 3,
+      event: 4,
+      seen: 1,
+      acknowledge: ["overwrite"],
+      valid: sp("11-10", "11-20"),
+      fields: { f2: { value: "b0", sources: ["S2"] } },
+    },
+    {
+      kind: "write",
+      op: 5,
+      event: 6,
+      seen: 3,
+      acknowledge: ["overwrite"],
+      valid: sp("11-01", "11-10"),
+      fields: { f2: { value: "b1", sources: ["S3"] } },
+    },
+    {
+      kind: "write",
+      op: 7,
+      event: 8,
+      seen: 5,
+      valid: sp("10-25", "11-20"),
+      fields: { f3: { value: "c4", sources: ["S4"] } },
+    },
+    { kind: "undo", op: 9, event: 10, target: 5, seen: 7 },
+  ];
+
+  it("with a required field: the undo awaits confirmation", () => {
+    const ev = evaluateLog(STATE, log()).final;
+    expect(ev.reverts.find((r) => r.op === 9)?.status).toBe("awaiting");
+    // Not in effect: f3 keeps its value over the whole stretch.
+    expect(tl(ev, "f3")).toEqual(['[10-25, 11-20) "c4"']);
+  });
+
+  it("with no required field: f3 keeps the stretch's value, the undo takes effect", () => {
+    const LOOSE: TableSchema = { kind: "state", required: [] };
+    const ev = evaluateLog(LOOSE, log()).final;
+    expect(ev.reverts.find((r) => r.op === 9)?.status).toBe("applied");
+    expect(tl(ev, "f3")).toEqual(['[10-25, 11-20) "c4"']);
+  });
+});
