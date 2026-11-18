@@ -335,7 +335,15 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     await main?.close();
   }, 120_000);
 
-  const seen = { samples: 0, skipped: 0, steps: 0, pending: 0, decisions: 0, overrun: 0 };
+  const seen = {
+    samples: 0,
+    skipped: 0,
+    steps: 0,
+    pending: 0,
+    decisions: 0,
+    overrun: 0,
+    closed: 0,
+  };
   const byKind: Record<string, number> = {};
 
   /** One judged scenario through the pipeline, every check below; counts decisions in `byKind`. */
@@ -390,6 +398,10 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     const expected = eventsOfSteps(ctx, steps, (after, n) => after + 1 + n);
     await main.reset();
     const store = main.store;
+    // The read buffer belongs to the store, not to what `reset` empties: reads an earlier sample
+    // left in it (the same items, entity, actor and tasks every sample) would count as this
+    // sample's, and whether a writer had read an item decides how it is closed.
+    readBufferOf(store).take();
     expect(await store.read(snapshot)).toEqual(main.blank);
     const run = (events: NewEvent[]) =>
       store.write(async (tx) => {
@@ -459,6 +471,55 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
             ).rows[0]?.v,
           ),
         );
+        // A confirmation judge finds nothing to write back for (every entry covered by later
+        // writes, `skipped`): the pipeline closed the item as nothing_to_revert in the transaction
+        // of the write that left it so (04-write-and-read «撤回某次写入（undo）»), which the record
+        // mapping does not model. The confirmation is refused as item_closed, closed by the op that
+        // covers the entries; the step appends nothing. Any other refusal still fails.
+        const r0 = step.judgement.record;
+        if (
+          o.kind === "confirm" &&
+          r0.kind === "confirm" &&
+          r0.revert !== undefined &&
+          r0.items.length === 0
+        ) {
+          const params = { id, decision: "confirm", item_ver: `iv_${id.slice(3)}.${version}.0` };
+          const refused = await store
+            .write((tx) =>
+              resolveInTx(tx, {
+                actor: USER as never,
+                task: `step-${k}`,
+                now: `${now}T04:00:00.000Z`,
+                windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+                visibility: { kind: "all" },
+                params,
+                reads: readBufferOf(store),
+                newId,
+              }),
+            )
+            .then(
+              () => undefined,
+              (e: unknown) => e as { code?: string; detail?: Record<string, unknown> },
+            );
+          const by = refused?.detail?.["superseded"] as
+            | { reason?: string; by?: number }
+            | undefined;
+          expect({
+            step: k,
+            code: refused?.code,
+            reason: by?.reason,
+            byCoveringOp: r0.revert.skipped.some((x) => x.byOp === by?.by),
+          }).toEqual({
+            step: k,
+            code: "item_closed",
+            reason: "nothing_to_revert",
+            byCoveringOp: true,
+          });
+          expect({ step: k, events: await logged(store, head) }).toEqual({ step: k, events: [] });
+          seen.closed++;
+          seen.steps++;
+          continue;
+        }
         const r = await store.write((tx) =>
           resolveInTx(tx, {
             actor: USER as never,
@@ -617,6 +678,82 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
           steps: ops.length,
         });
       }
+    },
+  );
+
+  it.runIf(isState)(
+    "a confirmation with nothing left to write back: the item was closed by the covering write",
+    async () => {
+      // An undo of the restore (#70) awaits, hiding #60; the revoke #80 then covers its only entry,
+      // so confirming it writes nothing back: the pipeline closed it as nothing_to_revert at #80.
+      const g = (value: string) => ({ mode: "given", value });
+      const span = (from: string, to?: string) => ({
+        valid: { from: g(from), to: to === undefined ? { mode: "open" } : g(to) },
+      });
+      const ops = [
+        {
+          kind: "write",
+          op: 10,
+          event: 12,
+          ...span("2026-10-01"),
+          fields: { f2: { value: "1", sources: ["S10"] } },
+          acknowledge: ["overwrite"],
+        },
+        {
+          kind: "revoke",
+          op: 20,
+          event: 22,
+          seen: 10,
+          ...span("2026-11-01", "2026-11-07"),
+          validSources: ["S20"],
+        },
+        {
+          kind: "write",
+          op: 30,
+          event: 32,
+          seen: 20,
+          ...span("2026-11-03", "2026-11-05"),
+          fields: { f2: { value: "5", sources: ["S30"] } },
+          acknowledge: ["overwrite"],
+        },
+        { kind: "undo", op: 40, event: 42, target: 30, seen: 30, acknowledge: ["overwrite"] },
+        { kind: "undo", op: 50, event: 52, target: 20, seen: 40, acknowledge: ["overwrite"] },
+        {
+          kind: "write",
+          op: 60,
+          event: 62,
+          seen: 50,
+          ...span("2026-11-01", "2026-11-03"),
+          fields: { f2: { value: "6", sources: ["S60"] } },
+          acknowledge: ["overwrite"],
+        },
+        { kind: "undo", op: 70, event: 72, target: 50 },
+        {
+          kind: "revoke",
+          op: 80,
+          event: 82,
+          seen: 60,
+          ...span("2026-11-01", "2026-11-07"),
+          validSources: ["S1"],
+        },
+        {
+          kind: "write",
+          op: 90,
+          event: 92,
+          seen: 80,
+          ...span("2026-11-01"),
+          fields: { f2: { value: "1", sources: ["S1"] } },
+          acknowledge: ["overwrite"],
+        },
+      ] as unknown as Op[];
+      const before = { ...seen };
+      // The confirmation of the one open item, inserted after #80.
+      await checkSample(ops, [{ after: 7, pick: 0, kind: "confirm", flag: 0, focus: false }]);
+      expect({
+        sampled: seen.samples - before.samples,
+        closed: seen.closed - before.closed,
+        steps: seen.steps - before.steps,
+      }).toEqual({ sampled: 1, closed: 1, steps: ops.length + 1 });
     },
   );
 
