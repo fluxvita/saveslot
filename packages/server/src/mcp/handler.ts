@@ -24,6 +24,7 @@ import {
   kernelCall,
   type Principal,
   runOperation,
+  slotList,
 } from "@fluxvita/saveslot-service";
 import {
   type CallToolResult,
@@ -44,6 +45,8 @@ import {
 } from "../api.ts";
 import { HTTP_STATUS } from "../status.ts";
 import { BUDGET, budgetFor, plain } from "./budget.ts";
+import { instructionsFor } from "./instructions.ts";
+import { promptGet, promptList } from "./prompts.ts";
 import { renderError, renderResult } from "./render.ts";
 import { describe, TOOLS, type Tool, type ToolName, toolsFor } from "./tools.ts";
 
@@ -66,6 +69,21 @@ export function sdkHeaders(headers: IncomingMessage["headers"]): Headers {
 interface Caller {
   readonly principal: Principal;
   readonly ctx: ApiContext;
+  /**
+   * The request is (or holds) an `initialize` or a `server/discover`, the only results that give
+   * `instructions` (05 §11): only then are the slots read to make them.
+   */
+  readonly handshake: boolean;
+}
+
+/** The methods whose results carry `instructions` (05 §11). */
+const HANDSHAKES: ReadonlySet<unknown> = new Set(["initialize", "server/discover"]);
+
+/** Whether a request body is, or holds, a message of a method that gives `instructions`. */
+export function isHandshake(body: unknown): boolean {
+  return (Array.isArray(body) ? body : [body]).some((m) =>
+    HANDSHAKES.has((m as { method?: unknown } | null | undefined)?.method),
+  );
 }
 
 export interface McpAdapter {
@@ -92,20 +110,38 @@ export function createMcpAdapter(o: { readonly version: () => string }): McpAdap
  * tool outside the credential's list is still no tool here, and is never run. So this registers
  * only the credential's tools, never all of them behind that check.
  */
-function serverFor(caller: Caller, version: string): Server {
-  const listed = toolsFor(caller.principal);
+async function serverFor(caller: Caller, version: string): Promise<Server> {
+  const { principal, ctx } = caller;
+  const listed = toolsFor(principal);
   const names = new Set<ToolName>(listed.map((t) => t.name));
+  const scoped = principal.visibility.kind === "scoped";
+  // The slots it sees, by name and table count: read outside any operation, so no read is
+  // recorded (05 §9 «slot 清单» 7, §10.1 rule 1).
+  const slots = () => slotList(ctx.tenant, principal.visibility);
+  const instructions = caller.handshake
+    ? instructionsFor(names, await slots(), { scoped })
+    : undefined;
   const server = new Server(
     { name: "saveslot", version },
     {
-      // The tool list of a credential does not change while it is used (05 §1).
-      capabilities: { tools: { listChanged: false } },
+      // The tool and prompt lists of a credential do not change while it is used (05 §1, §10.1).
+      capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
+      ...(instructions !== undefined ? { instructions } : {}),
       // What a credential is listed is its own: never cached across credentials (05 §11).
       cacheHints: {
         "server/discover": { ttlMs: DISCOVER_TTL_MS, cacheScope: "private" },
         "tools/list": { cacheScope: "private" },
+        "prompts/list": { cacheScope: "private" },
       },
     },
+  );
+  server.setRequestHandler("prompts/list", async () => promptList(names));
+  server.setRequestHandler("prompts/get", async (request) =>
+    promptGet(request.params.name, request.params.arguments ?? {}, {
+      tools: names,
+      scoped,
+      slotNames: async () => new Set((await slots()).map((s) => s.name)),
+    }),
   );
   server.setRequestHandler("tools/list", async () => ({
     tools: listed.map((t) => describe(t, names)),
@@ -303,7 +339,9 @@ export function handleMcp(
             token: "",
             clientId: who.actor,
             scopes: [...who.scopes],
-            extra: { caller: { principal: who, ctx } satisfies Caller },
+            extra: {
+              caller: { principal: who, ctx, handshake: isHandshake(parsed) } satisfies Caller,
+            },
           },
           ...(parsed !== undefined ? { parsedBody: parsed } : {}),
         },

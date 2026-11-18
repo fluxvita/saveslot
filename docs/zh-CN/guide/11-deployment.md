@@ -84,7 +84,7 @@ Agent 调用工具后收到的是一段文本。它长什么样，前面有三�
 |---|---|---|
 | 服务级说明（MCP 里叫 `instructions`） | 模型；宿主连上 saveslot 时取得 | saveslot 是什么；用户问到自己的记录时先查再答；用户说出属于某张表的新事实、或指出记错了时写入，提问、假设、闲聊时不写；回执写着"待确认"时先告诉用户；最后列出这位用户的 slot 名和每个 slot 有几张表 |
 | 每个工具的描述 | 模型 | 这个工具什么时候用、什么时候改用别的 |
-| 快捷入口（MCP 里叫 prompts） | 人：宿主通常显示成斜杠命令，如 `/saveslot:overview` | 三个：看一下有什么（`overview`）、逐项处理待处理事项（`pending`）、开始记录一类新的事情（`track`） |
+| 快捷入口（MCP 里叫 prompts） | 人：宿主通常显示成斜杠命令，如 Claude Code 里菜单显示 `/saveslot:overview`，直接输入是 `/mcp__saveslot__overview` | 三个：看一下有什么（`overview`）、逐项处理待处理事项（`pending`）、开始记录一类新的事情（`track`） |
 
 几点要知道：
 
@@ -251,7 +251,7 @@ $ saveslot setup
       执行以上 2 条命令？[Y/n]
       Claude Code：已签发 MacBook · Claude Code · 自检通过 · 已接入
       Codex：已签发 MacBook · Codex · 自检通过 · 已接入
-完成。在宿主里输入 /saveslot:overview，或问一句"saveslot 里有什么"。
+完成。在 Claude Code 里输入 /mcp__saveslot__overview（斜杠菜单里显示为 /saveslot:overview）；在任何宿主里也可以问一句"saveslot 里有什么"。
 ```
 
 （宿主命令的确切写法以实现时的实测为准。）
@@ -332,7 +332,7 @@ $ saveslot connect claude-code --name "MacBook · Claude Code"
 $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 ```
 
-看到一条自检之外的读取记录，才说明 Agent 确实经这个连接实例连上了。在宿主里输入 `/saveslot:overview` 也一样：它会让 Agent 去读目录，产生一次这样的读取。
+看到一条自检之外的读取记录，才说明 Agent 确实经这个连接实例连上了。在 Claude Code 里输入 `/mcp__saveslot__overview` 也一样：它会让 Agent 去读目录，产生一次这样的读取。
 
 出了问题，先跑 `saveslot doctor`。它逐项检查：服务在运行、套接字和凭证文件的权限、数据目录不在同步盘里、单写者锁、版本一致、有没有逾期没物理删除的删除、各宿主里 saveslot 的条目指向的可执行文件还在不在（用宿主自己的查看命令，不读它的配置文件）。每项结果是"通过 / 不通过 / 提醒"。两项只给提醒、不算不通过：系统时钟比日志末端落后 5 分钟以上；**数据规模**，列出行数超过舒适线或实测线的表，以及事件总数、数据目录大小、最近一次打开数据的耗时，和实测范围对照（第 10 章第 5 节"关于数据量与日志的大小"）。
 

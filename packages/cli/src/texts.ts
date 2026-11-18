@@ -458,7 +458,9 @@ export const TEXTS = {
   stepSlotMade: s("made from the template"),
   stepHosts: s("the hosts on this computer"),
   stepAdd: s("adding saveslot to the hosts"),
-  setupDone: s('Done. In a host, ask "what is in saveslot?"'),
+  setupDone: s(
+    'Done. In Claude Code, type /mcp__saveslot__overview (shown as /saveslot:overview in the / menu); in any host, you can ask "what is in saveslot?"',
+  ),
   stepNoHosts: s("no host found on this computer: saveslot connect <host> adds one"),
   hostDisplay: (host: string) => s(HOST_NAMES.get(host) ?? host),
   hostManual: (host: string) =>

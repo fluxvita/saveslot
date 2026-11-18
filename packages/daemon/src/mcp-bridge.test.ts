@@ -999,6 +999,53 @@ describe("the bridge against a real service", () => {
     T,
   );
 
+  it("prompts, in each era: forwarded as they are, prompts/get with its name in the header (2026-07-28)", async () => {
+    const token = await issue(s.home, s.session, "prompts", ["saveslot.read", "saveslot.write"]);
+    const b = bridge(token);
+    const envelope = {
+      [META]: MODERN,
+      "io.modelcontextprotocol/clientInfo": { name: "t", version: "0" },
+      "io.modelcontextprotocol/clientCapabilities": {},
+    };
+    b.send({ jsonrpc: "2.0", id: "l1", method: "prompts/list", params: {} });
+    b.send({
+      jsonrpc: "2.0",
+      id: "g1",
+      method: "prompts/get",
+      params: { name: "overview", arguments: {} },
+    });
+    b.send({
+      jsonrpc: "2.0",
+      id: "g2",
+      method: "prompts/get",
+      params: { name: "pending", arguments: {}, _meta: envelope },
+    });
+    // A prompt this credential is not listed: the service's own error, passed on with its id.
+    b.send({
+      jsonrpc: "2.0",
+      id: "g3",
+      method: "prompts/get",
+      params: { name: "track", arguments: {}, _meta: envelope },
+    });
+    b.stdin.end();
+    expect(await b.exit).toBe(0);
+    const out = new Map(
+      b.lines
+        .map((l) => JSON.parse(l) as { id: string; result?: unknown; error?: unknown })
+        .map((o) => [o.id, o]),
+    );
+    expect(out.get("l1")?.result).toMatchObject({
+      prompts: [{ name: "overview" }, { name: "pending" }],
+    });
+    for (const id of ["g1", "g2"]) {
+      expect(out.get(id)?.result).toMatchObject({
+        messages: [{ role: "user", content: { type: "text" } }],
+      });
+    }
+    expect(out.get("g3")?.error).toMatchObject({ code: -32602 });
+    expect(b.err.join("\n")).not.toContain("overview");
+  });
+
   it("a batch to the real service: each answer on a line of its own", async () => {
     const token = await issue(s.home, s.session, "batch", ["saveslot.read"]);
     const b = bridge(token);

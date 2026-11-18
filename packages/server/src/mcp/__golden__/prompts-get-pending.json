@@ -1,0 +1,12 @@
+{
+  "description": "Go through the pending items one at a time; I decide what happens to each.",
+  "messages": [
+    {
+      "role": "user",
+      "content": {
+        "type": "text",
+        "text": "List all pending items with saveslot_pending, starting with the one waiting longest, and show me each one's detail one at a time (the current value, the proposal or candidates, what it would change). For each, wait for me to say how to resolve it before calling saveslot_resolve; do not resolve any I have not decided on."
+      }
+    }
+  ]
+}

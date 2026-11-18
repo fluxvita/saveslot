@@ -15,7 +15,7 @@
   - 不计入的：安装 saveslot 本身；人第一次登录自己的账户（服务器模式的 `saveslot login`，一次之后不再出现）；宿主自己要求的重启。可选增强（3.4 的自定义指令）也不在此列：接入不依赖它们。
   - 做不到时如实列出：某个宿主没有添加命令、只能手动粘贴配置的，是这条要求的已知例外（3.2）。
   - 理由：接入的每一步手动操作都会筛掉一部分人，而这些步骤里没有一步需要人的判断——人要判断的只有"接不接、给多大权限"。把人的参与收敛到选择与同意，同时也是安全上的改进：同意的对象是一份完整的、写明了的清单。
-- **上手一条线**：`npm install -g @fluxvita/saveslot` → `saveslot setup` → 在宿主里问一句（或输入 `/saveslot:overview`）。`setup` 只编排现有命令（3.3）；分步做是 `saveslot init` → `saveslot start` → `saveslot slot create health --template running` → `saveslot connect claude-code` → 把打印出的那条命令贴进终端 → 在宿主里问一句 → `saveslot reads` 看到自检之外的那次读取。
+- **上手一条线**：`npm install -g @fluxvita/saveslot` → `saveslot setup` → 在宿主里问一句（Claude Code 里也可以输入 `/mcp__saveslot__overview`）。`setup` 只编排现有命令（3.3）；分步做是 `saveslot init` → `saveslot start` → `saveslot slot create health --template running` → `saveslot connect claude-code` → 把打印出的那条命令贴进终端 → 在宿主里问一句 → `saveslot reads` 看到自检之外的那次读取。
 - **确认显式绑定内容**：CLI 处理事项时总是带上它刚展示给人的那份 `item_ver`，删除总是带上展示过的那份预览的 `dc_`；非交互式（`--yes`）允许，但必须显式给出这个绑定令牌，否则拒绝执行。契约规定不按 `item_ver` 绑定的两种处理除外（撤回删除不核对；`migration_diff` 的 `accept_all` 绑定 `diff_upto`），见第 5 节。
 
 ## 2. 定位与边界
@@ -107,7 +107,7 @@ $ saveslot setup
       执行以上 2 条命令？[Y/n]
 Claude Code：已接入 · MacBook · Claude Code（ci_01JF…）
 Codex：已接入 · MacBook · Codex（ci_01JG…）
-完成。在宿主里输入 /saveslot:overview，或问一句"saveslot 里有什么"。
+完成。在 Claude Code 里输入 /mcp__saveslot__overview（斜杠菜单里显示为 /saveslot:overview）；在任何宿主里也可以问一句"saveslot 里有什么"。
 可选：saveslot snippet claude-code（建议放进宿主自定义指令的一段文字）
 ```
 
@@ -284,6 +284,8 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 | `claude-desktop` | 没有添加命令：打印配置片段，由人粘贴 | 否 |
 | `generic` | 通用 JSON：`{"command": "<saveslot 的绝对路径>", "args": ["mcp"], "env": {"SAVESLOT_TOKEN": "<令牌>"}}` | 否 |
 | `http` | 不生成宿主配置，只打印令牌与套接字路径（给脚本与连接器用；`curl --unix-socket` 可直接调） | 否 |
+
+宿主怎么呈现 saveslot 的 prompts（[`05-surfaces.md`](05-surfaces.md) 10.1）：Claude Code 的斜杠菜单显示为 `/saveslot:overview`，直接输入的写法是 `/mcp__saveslot__overview`，参数按空白切开；Cursor 的文档写着支持 prompts，没有写调用的写法（未核实）；Codex 未见文档支持 prompts。`setup` 结尾的提示只写 Claude Code 的写法，其余宿主让用户直接问一句。
 
 - **宿主命令的写法**：服务名在前，`-e` / `--env` 在后，再接 `--` 与可执行文件。添加命令一律写**用户级**：saveslot 的数据按人不按项目，接入应当对这个用户的所有项目生效；Claude Code 的添加命令默认写"当前项目"这一档，所以显式带 `--scope user`，别的宿主有同类选项的同样处理。`vscode`（`code --add-mcp`）写到哪一处配置、同名时的行为都没有核实，实测之后再加入适配表。
 - **没有添加命令的宿主**（`cursor`、`claude-desktop`）只能手动粘贴，是第 1 节设计要求的已知例外。

@@ -1,0 +1,73 @@
+{
+  "default": {
+    "prompts": [
+      {
+        "name": "overview",
+        "description": "See what is in my saveslot.",
+        "arguments": []
+      },
+      {
+        "name": "pending",
+        "description": "Go through the pending items one at a time; I decide what happens to each.",
+        "arguments": [
+          {
+            "name": "slot",
+            "description": "A slot name. Leave it out for the items of all slots.",
+            "required": false
+          }
+        ]
+      }
+    ]
+  },
+  "readOnly": {
+    "prompts": [
+      {
+        "name": "overview",
+        "description": "See what is in my saveslot.",
+        "arguments": []
+      },
+      {
+        "name": "pending",
+        "description": "Go through the pending items one at a time; I decide what happens to each.",
+        "arguments": [
+          {
+            "name": "slot",
+            "description": "A slot name. Leave it out for the items of all slots.",
+            "required": false
+          }
+        ]
+      }
+    ]
+  },
+  "every": {
+    "prompts": [
+      {
+        "name": "overview",
+        "description": "See what is in my saveslot.",
+        "arguments": []
+      },
+      {
+        "name": "pending",
+        "description": "Go through the pending items one at a time; I decide what happens to each.",
+        "arguments": [
+          {
+            "name": "slot",
+            "description": "A slot name. Leave it out for the items of all slots.",
+            "required": false
+          }
+        ]
+      },
+      {
+        "name": "track",
+        "description": "Start recording a new kind of thing.",
+        "arguments": [
+          {
+            "name": "what",
+            "description": "What you want to start recording, in your own words (at most 200 characters). Leave it out to be asked.",
+            "required": false
+          }
+        ]
+      }
+    ]
+  }
+}
