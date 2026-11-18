@@ -116,10 +116,14 @@ function impactOf(x: unknown, deep: boolean): Line[] {
   return out;
 }
 
-/** A side's values over its spans, or its values; `no row` when it does not exist. */
+/**
+ * A side's values over its spans, or its values. On a state table a stretch without a value is all
+ * there is to a revoke (05-time): `no value` there, never `no row`. `no row` when an event or
+ * timeless table's row does not exist.
+ */
 function sideOf(x: R): Part[] {
-  if (x["exists"] === false) return t`no row`;
   const spans = arr(x["spans"]);
+  if (x["exists"] === false && spans.length === 0) return t`no row`;
   if (spans.length > 0) {
     return join(
       spans.map((sp) => {

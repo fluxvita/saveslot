@@ -152,6 +152,43 @@ describe("pending (06 §5.1)", () => {
     expect(lines.at(-1)).toBe("  choices: keep_effective / take_candidate / take_previous");
   });
 
+  it("before both: a state table's stretch without a value is no value; an event or timeless row that did not exist, no row", () => {
+    const conflict = (target: unknown, previous: unknown) => ({
+      ...AWAITING,
+      type: "conflict",
+      reason: "stale_write",
+      target,
+      decisions: ["keep_effective", "take_candidate", "take_previous"],
+      effective: { seq: 103, actor, values: { b: "b1" }, exists: true },
+      candidates: [],
+      previous,
+      reverted_by_previous: [{ seq: 103, actor, fields: ["b"] }],
+    });
+    const lines = (x: unknown) => render(pendingDetail(x as never, NOW), terminal).split("\n");
+    const state = conflict(
+      { table: "ledger.entities", entity: "e_4KWKRM296X61WJ89DY5XJNVA4P", unit: ["b"] },
+      {
+        seq: 90,
+        exists: false,
+        spans: [
+          {
+            valid_from: "2026-11-01",
+            valid_to: "2026-11-10",
+            valid_to_inclusive: "2026-11-09",
+            values: null,
+          },
+        ],
+      },
+    );
+    expect(lines(state).find((l) => l.startsWith("  before both:"))).toMatch(/no value \(#90\)$/);
+    expect(lines(state).join("\n")).not.toContain("no row");
+    const timeless = conflict(
+      { table: "ledger.rows", row: "r_4KWKRM296X61WJ89DY5XJNVA4P", unit: ["b"] },
+      { seq: 90, exists: false },
+    );
+    expect(lines(timeless)).toContain("  before both: no row (#90)");
+  });
+
   it("a take_previous receipt: the writes it undid, as the details listed them", () => {
     const lines = render(
       resolveResult({
