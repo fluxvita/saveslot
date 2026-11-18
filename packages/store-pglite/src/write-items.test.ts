@@ -9,6 +9,7 @@ import {
   createOpsContext,
   createTenant,
   eventsOf,
+  history,
   pending as pending$,
   readBufferOf,
   readEvents,
@@ -2011,6 +2012,389 @@ describe("a revoke of the whole entity: its part on a state table is the whole t
         expect(again.replayed).toBe(true);
         expect(again.ops).toEqual(r.ops);
       }
+    },
+    T,
+  );
+});
+
+describe("intervals open at the start, and the whole time, in the log (09 §5.7, §5.8)", () => {
+  const ctxNow = () =>
+    createOpsContext({
+      tenant: TENANT,
+      actor: USER,
+      trigger: null,
+      task: null,
+      visibility: { kind: "all" },
+      idempotency_key_window: 86_400_000,
+      idempotency_window: 600_000,
+      now: now(),
+      confirmation: null,
+    });
+  const WHOLE = { valid_from: null, valid_to: null };
+
+  it(
+    "a whole revoke from an older version where another revoked the whole entity: a candidate over the whole time",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x" });
+      const theirs = await on(entity, { intent: "revoke", ver: verAt(e) }, OTHER);
+      const params = {
+        sv: 1,
+        ops: [{ table: "entities", entity, intent: "revoke", ver: verAt(e) }],
+        idempotency_key: "k-whole-whole",
+      };
+      const z = await send(params);
+      expect(z.ops[0]?.fields["*"]).toEqual([
+        expect.objectContaining({
+          result: "candidate",
+          effective: null,
+          by: { seq: theirs.seq, actor: asActor(OTHER) },
+        }),
+      ]);
+      // The item's entries: the whole time as `{}`, the item's interval as `[{}]`.
+      const [created] = await ofType(z.seq, "item.created");
+      expect(created?.blocks["scope_valid"]).toMatchObject({ spans: [{}] });
+      expect(created?.blocks["current/0"]).toMatchObject({
+        field: "existence",
+        revoked: true,
+        op: theirs.seq,
+        valid: {},
+      });
+      // Read out: the whole time is both ends null.
+      const item = (z.ops[0]?.fields["*"] as unknown as { item: string }[] | undefined)?.[0]
+        ?.item as string;
+      const d = (await pending$(s.store, ctxNow(), { id: item })) as unknown as {
+        target: { spans: unknown[] };
+        effective: { seq: number; spans: unknown[]; exists: boolean };
+      };
+      expect(d.target.spans).toEqual([WHOLE]);
+      expect(d.effective).toMatchObject({ seq: theirs.seq, exists: false });
+      // The revoke's cells lie where the entity had items (from 11-01); before that, never written.
+      expect(d.effective.spans).toEqual([
+        {
+          valid_from: null,
+          valid_to: "2026-11-01",
+          valid_to_inclusive: "2026-10-31",
+          values: null,
+        },
+        {
+          valid_from: "2026-11-01",
+          valid_to: null,
+          values: null,
+          seq: theirs.seq,
+          actor: asActor(OTHER),
+        },
+      ]);
+      const again = await send(params);
+      expect(again.replayed).toBe(true);
+      expect(again.ops).toEqual(z.ops);
+    },
+    T,
+  );
+
+  it(
+    "an interval revoke, a whole revoke, the whole revoke undone: write-backs open at the start and at the end",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x" });
+      const r1 = await on(entity, {
+        intent: "revoke",
+        ver: verAt(e),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-10",
+      });
+      const r2 = await on(entity, { intent: "revoke", ver: verAt(r1) });
+      const params = {
+        sv: 1,
+        ops: [
+          {
+            table: "entities",
+            entity,
+            revert: { undo: r2.seq },
+            ver: verAt(r2),
+            acknowledge: ["overwrite"],
+          },
+        ],
+        idempotency_key: "k-undo-whole",
+      };
+      const u = await send(params);
+      expect(u.status).toBe("saved");
+      expect(u.ops[0]?.fields["*"]).toEqual([
+        {
+          result: "applied",
+          valid: { valid_from: null, valid_to: "2026-11-05", valid_to_inclusive: "2026-11-04" },
+        },
+        {
+          result: "applied",
+          valid: {
+            valid_from: "2026-11-05",
+            valid_to: "2026-11-10",
+            valid_to_inclusive: "2026-11-09",
+          },
+        },
+        { result: "applied", valid: { valid_from: "2026-11-10", valid_to: null } },
+      ]);
+      // In the log: `{to}` open at the start, `{from}` open at the end.
+      const [base] = await ofType(u.seq, "write.base");
+      expect(base?.blocks["span/existence/0"]).toMatchObject({ valid: { to: "2026-11-05" } });
+      expect(base?.blocks["span/existence/2"]).toMatchObject({ valid: { from: "2026-11-10" } });
+      // The entity has its value again but on r1's stretch, and takes later writes.
+      const rows = (
+        await s.store.read((tx) =>
+          tx.query<{ f: string; t: string | null }>(
+            `SELECT valid_from::text AS f, valid_to::text AS t FROM "t_t2_v1"
+             WHERE entity_id = $1 ORDER BY valid_from`,
+            [entity],
+          ),
+        )
+      ).rows.map((r) => [r.f, r.t]);
+      expect(rows).toEqual([
+        ["2026-11-01", "2026-11-05"],
+        ["2026-11-10", null],
+      ]);
+      // The row's timeline gives the undo's write-back open at the start as the contract does.
+      const tl = (await history(s.store, ctxNow(), { table: "entities", entity })) as unknown as {
+        entries: { seq: number; fields: Record<string, { valid?: unknown }[]> }[];
+      };
+      const undone = tl.entries.find((x) => x.seq === u.seq) as
+        | { valid?: unknown; fields: Record<string, { valid?: unknown }[]> }
+        | undefined;
+      // The entry's interval is the widest of its parts: open at both ends here.
+      expect(undone?.valid).toEqual(WHOLE);
+      expect(undone?.fields["*"]?.[0]?.valid).toEqual({
+        valid_from: null,
+        valid_to: "2026-11-05",
+        valid_to_inclusive: "2026-11-04",
+      });
+      const later = await on(entity, {
+        intent: "update",
+        ver: verAt(u),
+        valid_from: "2026-11-12",
+        valid_to: "open",
+        set: { c: "after" },
+      });
+      expect((later as { refused?: string }).refused ?? later.status).toBe("saved");
+      const again = await send(params);
+      expect(again.replayed).toBe(true);
+      expect(again.ops).toEqual(u.ops);
+    },
+    T,
+  );
+  it(
+    "the caller's whole revoke is scope whole without a span; its undo's write-back is the whole time with deps",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x" });
+      const r = await on(entity, { intent: "revoke", ver: verAt(e) });
+      const [rb] = await ofType(r.seq, "write.base");
+      expect(rb?.blocks["existence/0"]).toEqual({ status: "applied", scope: "whole" });
+      expect(rb?.blocks).not.toHaveProperty("span/existence/0");
+      const u = await on(entity, {
+        revert: { undo: r.seq },
+        ver: verAt(r),
+        acknowledge: ["overwrite"],
+      });
+      expect(u.ops[0]?.fields["*"]).toEqual([{ result: "applied", valid: WHOLE }]);
+      // The write-back has its deps, which only a span block carries: an interval, `{}` (09 §5.7).
+      const [ub] = await ofType(u.seq, "write.base");
+      expect(ub?.blocks["existence/0"]).toEqual({
+        status: "applied",
+        scope: "interval",
+        restored: true,
+      });
+      expect(ub?.blocks["span/existence/0"]).toEqual({
+        valid: {},
+        deps: [expect.objectContaining({ existence: 0 })],
+      });
+      // The timeline gives both the whole time, as their receipts do.
+      const tl = (await history(s.store, ctxNow(), { table: "entities", entity })) as unknown as {
+        entries: { seq: number; valid?: unknown; fields: Record<string, { valid?: unknown }> }[];
+      };
+      for (const seq of [r.seq, u.seq]) {
+        const x = tl.entries.find((y) => y.seq === seq);
+        expect({ seq, entry: x?.valid, part: x?.fields["*"]?.valid }).toEqual({
+          seq,
+          entry: WHOLE,
+          part: WHOLE,
+        });
+      }
+    },
+    T,
+  );
+
+  it(
+    "a candidate's whole revoke in the timeline: the whole time, as in its receipt",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x" });
+      await on(
+        entity,
+        { intent: "update", ver: verAt(e), valid_from: "2026-11-05", set: { b: "y" } },
+        OTHER,
+      );
+      const z = await on(entity, { intent: "revoke", ver: verAt(e) });
+      expect(z.ops[0]?.fields["*"]).toEqual([
+        expect.objectContaining({ result: "candidate", valid: WHOLE }),
+      ]);
+      const tl = (await history(s.store, ctxNow(), { table: "entities", entity })) as unknown as {
+        entries: { seq: number; valid?: unknown; fields: Record<string, { valid?: unknown }> }[];
+      };
+      const x = tl.entries.find((y) => y.seq === z.seq);
+      expect({ entry: x?.valid, part: x?.fields["*"]?.valid }).toEqual({
+        entry: WHOLE,
+        part: WHOLE,
+      });
+    },
+    T,
+  );
+
+  it(
+    "segments joined in a read: their marks' touching spans are one span",
+    async () => {
+      const { e, entity } = await entityWith({ b: "x" });
+      // b is y from 11-10 on; c changes at 11-15, so the entity has two segments there.
+      const y = await on(
+        entity,
+        { intent: "update", ver: verAt(e), valid_from: "2026-11-10", set: { b: "y" } },
+        OTHER,
+      );
+      await on(
+        entity,
+        { intent: "update", ver: verAt(y), valid_from: "2026-11-15", set: { c: "m" } },
+        OTHER,
+      );
+      // A write of b from before y: a candidate on b over [11-10, ∞), marked on both segments.
+      const z = await on(entity, {
+        intent: "update",
+        ver: verAt(e),
+        valid_from: "2026-11-10",
+        set: { b: "z" },
+      });
+      const item = z.pending?.[0]?.id as string;
+      // Reading b only, the two segments are one row; its mark is the item's one span.
+      const rows = await rowsOf(entity, { valid_during: ["2026-10-01", null], fields: ["b"] });
+      const row = rows.find((r) => r.valid_from === "2026-11-10");
+      expect(row?.valid_to).toBeNull();
+      expect((row?.marks as { disputed?: unknown } | undefined)?.disputed).toEqual([
+        { item, fields: ["b"], spans: [{ valid_from: "2026-11-10", valid_to: null }] },
+      ]);
+    },
+    T,
+  );
+
+  /** An entity, its whole revoke undone with an intent, an interval revoke cutting the undo's
+   * write-back, and that undo undone by another principal: an awaiting item whose first span is
+   * open at the start. */
+  const undoneUndo = async (insert: Record<string, unknown>) => {
+    const put = (o: Record<string, unknown>, actor = USER) =>
+      send({ sv: 1, ops: [{ table: "entities", ...o }] }, { actor });
+    const e = await send({ sv: 1, ops: [{ intent: "insert", table: "entities", ...insert }] });
+    const entity = e.ops[0]?.target.entity as string;
+    const r = await put({ entity, intent: "revoke", ver: verAt(e) });
+    const u = await put({
+      entity,
+      intent: "correct",
+      revert: { undo: r.seq },
+      ver: verAt(r),
+      acknowledge: ["overwrite"],
+    });
+    const cut = await put({
+      entity,
+      intent: "revoke",
+      ver: verAt(u),
+      valid_from: "2026-11-05",
+      valid_to: "2026-11-10",
+    });
+    const z = await put(
+      { entity, revert: { undo: u.seq }, ver: verAt(u), acknowledge: ["overwrite"] },
+      OTHER,
+    );
+    return { entity, cut, z, put };
+  };
+  const rowsOf = async (entity: string, params: Record<string, unknown>) =>
+    (
+      await s.store.read((tx) =>
+        queryInTx(tx, {
+          actor: USER as never,
+          task: null,
+          now: "2026-11-05T12:00:00.000Z" as never,
+          visibility: { kind: "all" },
+          params: { table: "entities", ...params },
+          read: "rd_0000000000000000" as never,
+        }),
+      )
+    ).result.rows.filter((x) => (x as { entity?: string }).entity === entity) as unknown as {
+      valid_from: string;
+      valid_to: string | null;
+      marks?: { awaiting?: { item: string; spans?: unknown[] }[] };
+    }[];
+
+  it(
+    "an undo of a whole revoke's undo, cut by an interval revoke: an item whose first span is open at the start",
+    async () => {
+      const { entity, z } = await undoneUndo({ valid_from: "2026-11-10", set: { b: "b0" } });
+      const item = z.pending?.[0]?.id as string;
+      expect(z.ops[0]?.fields["*"]).toEqual([
+        {
+          result: "awaiting",
+          item,
+          impact: {},
+          valid: { valid_from: null, valid_to: "2026-11-05", valid_to_inclusive: "2026-11-04" },
+        },
+        {
+          result: "awaiting",
+          item,
+          impact: {},
+          valid: { valid_from: "2026-11-10", valid_to: null },
+        },
+      ]);
+      // In the log: the first span of the item's interval open at the start (09 §5.8).
+      const [created] = await ofType(z.seq, "item.created");
+      expect(created?.blocks["scope_valid"]).toMatchObject({
+        spans: [{ to: "2026-11-05" }, { from: "2026-11-10" }],
+      });
+      expect(await flagSpans(item)).toEqual([{ to: "2026-11-05" }, { from: "2026-11-10" }]);
+      const d = (await pending$(s.store, ctxNow(), { id: item })) as unknown as {
+        target: { spans: unknown[] };
+      };
+      expect(d.target.spans).toEqual([
+        { valid_from: null, valid_to: "2026-11-05", valid_to_inclusive: "2026-11-04" },
+        { valid_from: "2026-11-10", valid_to: null },
+      ]);
+      // The row (from 11-10 on) is marked over its part of the item: from its start.
+      const [row] = await rowsOf(entity, { valid_at: "2026-11-12" });
+      expect(row?.marks?.awaiting).toEqual([
+        { item, fields: ["*"], spans: [{ valid_from: "2026-11-10", valid_to: null }] },
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "a row across the end of an item's span open at the start: its mark cut to the row",
+    async () => {
+      const { entity, cut, z, put } = await undoneUndo({
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-20",
+        set: { b: "b0" },
+      });
+      const item = z.pending?.[0]?.id as string;
+      // The hole between the item's spans filled again: one row [11-01, 11-20) across 11-05.
+      const back = await put({
+        entity,
+        revert: { undo: cut.seq },
+        ver: verAt(z),
+        acknowledge: ["overwrite"],
+      });
+      expect(back.status).toBe("saved");
+      const rows = await rowsOf(entity, { valid_during: ["2026-10-01", null] });
+      expect(rows.map((r) => [r.valid_from, r.valid_to])).toEqual([["2026-11-01", "2026-11-20"]]);
+      expect(rows[0]?.marks?.awaiting).toEqual([
+        {
+          item,
+          fields: ["*"],
+          spans: [
+            { valid_from: "2026-11-01", valid_to: "2026-11-05", valid_to_inclusive: "2026-11-04" },
+            { valid_from: "2026-11-10", valid_to: "2026-11-20", valid_to_inclusive: "2026-11-19" },
+          ],
+        },
+      ]);
     },
     T,
   );

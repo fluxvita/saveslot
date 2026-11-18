@@ -179,7 +179,11 @@ function periodOf(x: unknown): Part[] {
   const from = p["valid_from"];
   const to = p["valid_to"];
   const last = p["valid_to_inclusive"];
-  if (from === null || from === undefined) return t`all time`;
+  if (from === null || from === undefined) {
+    // Open at the start too: a write-back taking back a revoke of the whole time (09 §1.2).
+    if (to === null || to === undefined) return t`all time`;
+    return last !== undefined ? t`through ${timeOf(last)} (inclusive)` : t`until ${timeOf(to)}`;
+  }
   if (to === null || to === undefined) return t`from ${timeOf(from)}`;
   if (last !== undefined) return t`${timeOf(from)} to ${timeOf(last)} (inclusive)`;
   return t`${timeOf(from)} until ${timeOf(to)}`;

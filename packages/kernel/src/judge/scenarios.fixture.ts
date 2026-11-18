@@ -448,6 +448,39 @@ const twoFieldsSkeleton = (state: boolean) =>
     return toOps(tail, state, head);
   });
 
+/**
+ * Whole revokes on a state table (09 §5.7 span, §5.8 entries: the whole time `{}`, a start left
+ * open `{to}`): an interval revoke, a revoke of the whole entity and its undo, whose write-backs
+ * are the whole time cut by the interval revoke; or a whole revoke from an older version meeting
+ * another whole revoke, a candidate over the whole time. Random steps follow.
+ */
+const wholeSkeleton = fc
+  .tuple(fc.nat({ max: 3 }), fc.boolean(), fc.array(writeStep, { maxLength: 3 }))
+  .map(([a, undoIt, tail]) => {
+    const head: Op[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { ...span(0, null), from: { mode: "given", value: "2026-10-01" as BizPoint } },
+        fields: { f2: { value: "1", sources: ["S10"] } },
+        acknowledge: ["overwrite"],
+      },
+      ...(undoIt
+        ? ([
+            { kind: "revoke", op: 20, event: 21, seen: 10, valid: span(a, a + 2) },
+            { kind: "revoke", op: 30, event: 31, seen: 20 },
+            { kind: "undo", op: 40, event: 41, target: 30, seen: 30, acknowledge: ["overwrite"] },
+          ] as Op[])
+        : ([
+            { kind: "revoke", op: 20, event: 21, seen: 10 },
+            { kind: "revoke", op: 30, event: 31, seen: 10 },
+          ] as Op[])),
+    ];
+    return toOps(tail, true, head);
+  });
+
 export const scenario = (state: boolean) =>
   fc
     .record({
@@ -462,6 +495,7 @@ export const scenario = (state: boolean) =>
             { weight: 1, arbitrary: splitSkeleton },
             { weight: 1, arbitrary: refusedTakeSkeleton(true) },
             { weight: 1, arbitrary: twoFieldsSkeleton(true) },
+            { weight: 1, arbitrary: wholeSkeleton },
           )
         : fc.oneof(
             { weight: 2, arbitrary: fc.constant(null) },

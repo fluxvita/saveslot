@@ -43,12 +43,21 @@ export function spansMeet(
   to: string | null,
 ): boolean {
   if (spans === undefined) return true;
-  return spans.some((s) => (s.to === null || s.to > from) && (to === null || s.from < to));
+  return spans.some(
+    (s) => (s.to === null || s.to > from) && (to === null || startsBefore(s.from, to)),
+  );
 }
 
-/** A mark's span while rows are cut and merged: `[from, to)`, `to` absent when open. */
+/** Whether a span starting at `from` (null: open at the start, before every point) starts before `to`. */
+const startsBefore = (from: string | null, to: string): boolean => from === null || from < to;
+
+/** Spans by start, one open at the start first. */
+const byStart = (a: { from: string | null }, b: { from: string | null }): number =>
+  a.from === null ? (b.from === null ? 0 : -1) : b.from === null ? 1 : cmpText(a.from, b.from);
+
+/** A mark's span while rows are cut and merged: `[from, to)`, either end absent when open. */
 interface MarkSpan {
-  readonly from: BizPoint;
+  readonly from?: BizPoint;
   readonly to?: BizPoint;
 }
 interface WorkMark {
@@ -67,7 +76,9 @@ function shownMarks(m: WorkMarks | undefined, byDate: boolean): Marks | undefine
   if (m === undefined) return undefined;
   const out = (xs?: readonly WorkMark[]) =>
     xs?.map(({ spans, ...x }) =>
-      spans === undefined ? x : { ...x, spans: spans.map((y) => intervalOf(y.from, y.to, byDate)) },
+      spans === undefined
+        ? x
+        : { ...x, spans: spans.map((y) => intervalOf(y.from ?? null, y.to, byDate)) },
     );
   const { disputed, awaiting, ...rest } = m;
   return {
@@ -92,30 +103,35 @@ function markSpans(
   const hi = to ?? null;
   const cut = spans
     .filter(
-      (s) => lo === undefined || ((s.to === null || s.to > lo) && (hi === null || s.from < hi)),
+      (s) =>
+        lo === undefined ||
+        ((s.to === null || s.to > lo) && (hi === null || startsBefore(s.from, hi))),
     )
     .map((s) => ({
-      from: lo === undefined || s.from > lo ? s.from : lo,
+      // Cut to the row: a start before the row's (or open) becomes the row's.
+      from: lo === undefined || (s.from !== null && s.from > lo) ? s.from : lo,
       to: hi === null ? s.to : s.to === null || s.to > hi ? hi : s.to,
     }))
-    .sort((a, b) => cmpText(a.from, b.from));
-  const out: { from: string; to: string | null }[] = [];
+    .sort(byStart);
+  const out: { from: string | null; to: string | null }[] = [];
   for (const s of cut) {
     const last = out.at(-1);
-    if (last !== undefined && last.to !== null && last.to >= s.from) {
+    // Overlapping or touching: one span. An open start meets every span before it.
+    if (last !== undefined && last.to !== null && (s.from === null || last.to >= s.from)) {
       if (s.to === null || s.to > last.to) last.to = s.to;
+    } else if (last !== undefined && last.to === null) {
+      // The last span already runs on: it takes this one in.
     } else out.push({ ...s });
   }
-  return out.map((s) =>
-    s.to === null
-      ? { from: s.from as BizPoint }
-      : { from: s.from as BizPoint, to: s.to as BizPoint },
-  );
+  return out.map((s) => ({
+    ...(s.from !== null ? { from: s.from as BizPoint } : {}),
+    ...(s.to !== null ? { to: s.to as BizPoint } : {}),
+  }));
 }
 
 /** A mark's spans as `Span`s, to cut again. */
 const asSpans = (xs: readonly MarkSpan[]): Span[] =>
-  xs.map((x) => ({ from: x.from, to: x.to ?? null }));
+  xs.map((x) => ({ from: x.from ?? null, to: x.to ?? null }));
 
 /** The item marks of a row with their spans cut to the row's interval `[from, to)`. */
 function cutMarks(

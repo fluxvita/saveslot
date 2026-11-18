@@ -16,7 +16,7 @@
 // (some including later writes, some with an intent), decisions on conflict items, by two
 // principals; the last request writes from an older version, sometimes with a second op on the same
 // row. Every write along the way is checked too: a part on a state table has its interval, and
-// nothing is refused as internal or throws, but for the known failures counted below. Tables: a
+// nothing is refused as internal or throws. Tables: a
 // timeless one, state ones with one and two required fields, one with none, one by the instant.
 // `PROP_SEED` fixes the seed, `PROP_RUNS` the histories per table.
 
@@ -105,18 +105,6 @@ const now = () => new Date(Date.UTC(2026, 10, 6) + ++tick * 50).toISOString();
 const newId = (kind: "row" | "entity" | "source" | "item" | "partition") =>
   `${{ row: "r_", entity: "e_", source: "s_", item: "pi_", partition: "p_" }[kind]}${String(++ids).padStart(kind === "row" || kind === "entity" ? 26 : 16, "0")}`;
 const J = (x: unknown) => JSON.stringify(x);
-
-/**
- * Kernel failures of one family public operations reach, fixed by a request of its own: a whole
- * revoke, an undo of one, an undo of that undo and so on (with an intent or include_later or not).
- * Counted, not failed, until it lands, and only in the two shapes they have (that request takes
- * these out):
- * - invalid: a write of the family refused as internal with reason invalid (it could not be
- *   applied);
- * - span: an undo of the family throwing in record.ts (one interval per item, with a start).
- */
-const KNOWN_THROWN = /an item has one interval with a start/;
-type Known = "invalid" | "span";
 
 // biome-ignore lint/suspicious/noExplicitAny: receipts and refusals are read as plain JSON here.
 type Any = any;
@@ -371,7 +359,8 @@ describe.each(Object.keys(TABLES) as TableName[])(
         const required = t.fields.filter((f) => "required" in f).map((f) => f.name as string);
         const optional = names.filter((n) => !required.includes(n));
         const faults: string[] = [];
-        const known: Record<Known, number> = { invalid: 0, span: 0 };
+        /** Candidates on items whose first span is open at the start (09 §5.8 `scope_valid`). */
+        let openStart = 0;
         let candidates = 0;
         /** Candidates of the last request's second op. */
         let later = 0;
@@ -402,19 +391,8 @@ describe.each(Object.keys(TABLES) as TableName[])(
           const id = (e.ops[0].target.entity ?? e.ops[0].target.row) as string;
           const vers: string[] = [e.ops[0].ver];
           const seqs: number[] = [e.seq];
-          /** The whole revokes and the undos down a chain from one (the known failures' family). */
-          const family = new Set<number>();
           /** Who made each operation, by its number. */
           const madeBy = new Map<number, string>([[e.seq, USER]]);
-          /** A failure of the family in one of its known shapes; anything else is a fault. */
-          const knownOf = (res: Any, inFamily: boolean): Known | undefined =>
-            !inFamily
-              ? undefined
-              : res.refused === "internal" && res.reason === "invalid"
-                ? "invalid"
-                : res.thrown !== undefined && KNOWN_THROWN.test(res.thrown)
-                  ? "span"
-                  : undefined;
           let cur = e.ops[0].ver as string;
           /** A state table's parts carry their interval (but a noop's). */
           const partsHaveIntervals = (res: Any, who: string) => {
@@ -461,11 +439,7 @@ describe.each(Object.keys(TABLES) as TableName[])(
               `#${res.seq ?? "-"} ${actor === USER ? "USER" : "OTHER"} ${J(op)} -> ${res.thrown ?? res.refused ?? res.status}`,
             );
             ops++;
-            const whole = op.intent === "revoke" && !("valid_from" in op);
-            const inFamily = whole || ("revert" in op && family.has(undone));
-            const kn = knownOf(res, inFamily);
-            if (kn !== undefined) known[kn]++;
-            else if (res.thrown !== undefined) fault(`a write threw: ${res.thrown}`);
+            if (res.thrown !== undefined) fault(`a write threw: ${res.thrown}`);
             else if (res.refused === "internal")
               fault(`a write was refused as internal: ${J(res)}`);
             partsHaveIntervals(res, "a write");
@@ -476,7 +450,6 @@ describe.each(Object.keys(TABLES) as TableName[])(
             if (res.seq !== undefined && res.ops !== undefined) {
               seqs.push(res.seq);
               madeBy.set(res.seq, actor);
-              if (inFamily) family.add(res.seq);
             }
             const item = (res.pending ?? []).find((q: Any) => q.type === "conflict");
             if (item !== undefined && r() < 0.5) {
@@ -550,16 +523,13 @@ describe.each(Object.keys(TABLES) as TableName[])(
           log.push(
             `#${z.seq ?? "-"} LAST ${J(params.ops)} -> ${z.thrown ?? z.refused ?? z.status}`,
           );
-          const wholeLast = last.intent === "revoke" && !("valid_from" in last);
           if (z.thrown !== undefined) {
             fault(`the last write threw: ${z.thrown}`);
             continue;
           }
           if (z.seq !== undefined) madeBy.set(z.seq, actor);
           if (z.refused !== undefined) {
-            const kn = knownOf(z, wholeLast);
-            if (kn !== undefined) known[kn]++;
-            else if (z.refused === "internal") fault("the last write was refused as internal");
+            if (z.refused === "internal") fault("the last write was refused as internal");
             continue;
           }
           partsHaveIntervals(z, "the last write");
@@ -574,6 +544,9 @@ describe.each(Object.keys(TABLES) as TableName[])(
                 candidates++;
                 if (i > 0) later++;
                 const d = (await pending(s.store, ctx(), { id: p.item })) as Any;
+                const first = d.target.spans?.[0];
+                if (first !== undefined && first.valid_from === null && first.valid_to !== null)
+                  openStart++;
                 const unit = (d.target.unit as string[]).map((u) =>
                   u === "*" ? "existence" : (t.fields.find((f) => f.name === u)?.id as string),
                 );
@@ -645,7 +618,7 @@ describe.each(Object.keys(TABLES) as TableName[])(
           }
         }
         console.log(
-          `${table}: seed ${SEED}, ${RUNS} histories, ${ops} writes, ${candidates} candidates (${later} of a second op), known ${J(known)}, ${faults.length} faults`,
+          `${table}: seed ${SEED}, ${RUNS} histories, ${ops} writes, ${candidates} candidates (${later} of a second op), ${openStart} on items open at the start, ${faults.length} faults`,
         );
         expect(faults.slice(0, 3)).toEqual([]);
         expect(candidates).toBeGreaterThan(RUNS / 4);

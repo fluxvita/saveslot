@@ -12,7 +12,7 @@ import {
   type TimelineResult,
 } from "@fluxvita/saveslot-client";
 import { describe, expect, it } from "vitest";
-import { asOfResult, queryResult, timelineResult } from "./render/reads.ts";
+import { asOfResult, periodOf, queryResult, timelineResult } from "./render/reads.ts";
 import { type Boundary, type Line, render } from "./render/text.ts";
 
 const cp = (...points: number[]) => String.fromCodePoint(...points);
@@ -169,6 +169,18 @@ describe("history (06 §4.7)", () => {
       "#10 2026-11-10 12:31 insert  「me」  amount 45 「CNY」  source s_8VEZWJ3J7BMKMXTV 「lunch was 45」",
       "read by: rd_VE4MY5TRXJHK2HQ7 (#11) · 「MacBook · Codex」 · task 「weekly」 · 2026-11-10 13:00",
     ]);
+  });
+
+  it("a period open at the start (a whole revoke undone): until its end, not all time", () => {
+    const shown = (valid: unknown) => render([periodOf(valid)], terminal);
+    expect(shown({ valid_from: null, valid_to: null })).toBe("all time");
+    expect(
+      shown({ valid_from: null, valid_to: "2026-11-05", valid_to_inclusive: "2026-11-04" }),
+    ).toBe("through 「2026-11-04」 (inclusive)");
+    expect(shown({ valid_from: null, valid_to: "2026-11-05T00:00:00Z" })).toBe(
+      "until 「2026-11-05T00:00:00Z」",
+    );
+    expect(shown({ valid_from: "2026-11-10", valid_to: null })).toBe("from 「2026-11-10」");
   });
 
   it("as of a point: the rows then, marked as not for writing", () => {

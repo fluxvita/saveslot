@@ -119,10 +119,12 @@ type RecordPoint = Seq | Instant;
 
 /** 业务时间区间，左闭右开。 */
 interface Interval {
-  /** null 只出现在两处、表示整段时间：事项区间（ItemTarget.spans，整实体撤销成为候选时 spans 只有这一段），以及
+  /** null 表示起点开口，只出现在：事项区间（ItemTarget.spans）与详情各段里的整段时间（此时 valid_to 也是 null，
+   *  整实体撤销成为候选），以及事项区间的第一段、详情的段起点开口时（整段时间上的写回被别的项切开之后）；
    *  写入回执里状态类表上作用于整段时间的那一段：整体撤销（不带区间的 revoke），整体撤销的 undo（op 的 intent 可以是
-   *  update 或 correct），以及 include_later 一并回掉、成为候选的整段（applied 与 candidate 都是）；此时 valid_to 也是 null。
-   *  读取结果里的行与段、标记里的事项各段总有起点。 */
+   *  update 或 correct），以及 include_later 一并回掉、成为候选的整段（applied 与 candidate 都是），此时 valid_to 也是 null；
+   *  写入回执与 timeline 里回掉一次整体撤销的写回段（被别的项切开时起点开口）。
+   *  读取结果里的行总有起点；标记里的事项各段按行的区间切过，事项第一段起点开口时取行的起点，所以也总有起点。 */
   valid_from: BizTime | null;
   valid_to: BizTime | null;        // null = 一直延续
   valid_to_inclusive?: DateStr;    // 只在 date 粒度且 valid_to 非 null 时给：区间里的最后一天
@@ -157,7 +159,7 @@ type UntrustedText = string;
 |---|---|---|
 | 时刻 | RFC 3339，可带偏移 | UTC，固定毫秒精度，以 `Z` 结尾 |
 | 带时区的时刻 `zoned_datetime` | 一个字符串（带偏移与时区名） | `{"instant": <时刻>, "zone": <IANA 时区名>}` |
-| 业务时间区间 | `{valid_from, valid_to}`，开口终点是 `null`；`date` 粒度另给 `valid_to_inclusive`。整段时间（只在事项区间与回执里作用于整段时间的那一段：整体撤销、它的 undo、include_later 一并回掉的候选）：`{valid_from: null, valid_to: null}` | `{"from", "to"}`，开口终点是缺省。整段时间：`{}`（`scope_valid` 唯一没有 `from` 的写法） |
+| 业务时间区间 | `{valid_from, valid_to}`，开口的一端是 `null`；`date` 粒度另给 `valid_to_inclusive`。整段时间（事项区间与回执里作用于整段时间的那一段：整体撤销、它的 undo、include_later 一并回掉的候选）：`{valid_from: null, valid_to: null}`；起点开口（回掉一次整体撤销的写回段）：`valid_from` 为 `null` | `{"from", "to"}`，开口的一端缺省：`{"to"}` 起点开口，`{"from"}` 终点开口，`{}` 整段时间（`scope_valid` 的整段时间写 `[{}]`；见 09 §1.2） |
 | 整数、小数、数量、日期、布尔、枚举、文本 | 两边相同（整数与小数都是十进制字符串） | 同左 |
 | "存在"（这一行 / 这段是否存在） | 在字段名的位置上写 `"*"`：`fields` 的键、`unit` 与标记里的字段数组 | `"existence"`；事项 `target` 的 `unit` 写 `["existence"]` |
 | 删除的逐行结果 | `result` | `outcome`（`results/<k>/target`），取值相同 |
@@ -982,7 +984,7 @@ type ItemResolution =
   | { executed: true; seq: Seq; at: Instant; reason: TombstoneReason };
 
 /** 事项的目标。unit = 冲突单元里的字段；["*"] = 这一行 / 这段是否存在。 */
-interface ItemTarget extends TargetRef { unit?: Array<FieldName | "*">; spans?: Interval[] }   // spans：状态类表上事项区间的各段，按起点升序、互不相接；整段时间是唯一一段 {valid_from: null, valid_to: null}
+interface ItemTarget extends TargetRef { unit?: Array<FieldName | "*">; spans?: Interval[] }   // spans：状态类表上事项区间的各段，按起点升序、互不相接；只有第一段可以起点开口（valid_from 为 null），整段时间是唯一一段 {valid_from: null, valid_to: null}
 
 type ItemReason =
   | "overwrites_change_point"       // awaiting_confirmation：抹掉已记录的变化点（含跨空洞填值）

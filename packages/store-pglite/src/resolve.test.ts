@@ -1188,3 +1188,40 @@ describe("an error's details name principals as they are now (04-contract-types 
     T,
   );
 });
+
+describe("a log the decoder cannot read back: the write is an internal error, not a bare exception", () => {
+  it(
+    "a decision the decoder does not know, on the row written next",
+    async () => {
+      const { b, c, row, item } = await disputed();
+      await resolve({ id: item, decision: "keep_effective", item_ver: verOfItem(c, item) });
+      const resolved = Number(
+        (
+          await s.store.read((tx) =>
+            tx.query<{ seq: unknown }>(
+              "SELECT seq FROM events WHERE type = 'item.resolved' ORDER BY seq DESC LIMIT 1",
+            ),
+          )
+        ).rows[0]?.seq,
+      );
+      // Tamper with the log behind the checksums' back: the decision becomes one no decoder knows.
+      await s.store.write((tx) =>
+        tx.query("UPDATE content SET body = $2 WHERE seq = $1 AND path = 'target'", [
+          resolved,
+          JSON.stringify({
+            item,
+            decision: "bogus",
+            item_op: c.seq,
+            restore_count: 0,
+            via: "call",
+          }),
+        ]),
+      );
+      expect(await update(row, { b: "11" }, verAt(b))).toEqual({
+        refused: "internal",
+        reason: "inconsistent",
+      });
+    },
+    T,
+  );
+});

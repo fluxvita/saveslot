@@ -76,7 +76,10 @@ export interface Span extends Interval {
 /** 04-contract-types §4.8 `ItemTarget`. `unit`: fields of the conflict unit, `["*"]` = existence. */
 export interface ItemTarget extends TargetRef {
   unit?: Array<FieldName | "*">;
-  /** Spans of the item on a state table, ascending, not touching. */
+  /**
+   * Spans of the item on a state table, ascending, not touching; only the first may be open at the
+   * start (`valid_from` null), and the whole time is the one span with both ends null.
+   */
   spans?: Interval[];
 }
 

@@ -664,6 +664,50 @@ describe("parseEvent: a write's blocks, value by value", () => {
       "take.items[0]: unknown key later",
     ],
     ["item.created", "target", { unit: undefined }, "target: unit"],
+    // open at the start: on existence only (§1.2); a field's spans and entries have a start
+    [
+      "write.base",
+      "span/f3/0",
+      { valid: { to: "2026-11-09" } },
+      "span/f3/0.valid: missing key from",
+    ],
+    [
+      "write.base",
+      "span/f4/0",
+      { seen_valid: { to: "2026-11-09" } },
+      "span/f4/0.seen_valid: missing key from",
+    ],
+    [
+      "item.created",
+      "current/0",
+      { valid: { to: "2026-11-09" } },
+      "current/0.valid: missing key from",
+    ],
+    [
+      "item.created",
+      "previous/0",
+      { valid: { to: "2026-11-09" } },
+      "previous/0.valid: missing key from",
+    ],
+    [
+      "item.created",
+      "impact/0",
+      { valid: { to: "2026-11-09" } },
+      "impact/0.valid: missing key from",
+    ],
+    [
+      "item.created",
+      "candidates/0",
+      { items: [{ field: "f3", k: 0, value: "32", valid: { to: "2026-11-09" } }] },
+      "candidates/0.items[0].valid: missing key from",
+    ],
+    [
+      "item.created (awaiting, on existence)",
+      "proposed/0",
+      { valid: { to: "2026-11-09" } },
+      "proposed/0.valid: missing key from",
+    ],
+    ["write.base", "span/f3/0", { valid: {} }, "span/f3/0.valid: missing key from"],
     // intervals, values, references
     [
       "write.base",
@@ -994,6 +1038,33 @@ it("parseEvent: an awaiting item may be for an undo hiding later writes", () => 
   expect(parse(s)).toEqual({ ok: true, type: "item.created" });
 });
 
+describe("open at the start: existence's spans and entries (§1.2)", () => {
+  it("accepts an existence span, an existence candidate item and an existence entry open at the start", () => {
+    const open = { to: "2026-11-03" };
+    expect(issues(parse(patched("write.base", "span/existence/0", { valid: open })))).toEqual([]);
+    expect(
+      issues(
+        parse(
+          patched("item.created (awaiting, on existence)", "candidates/0", {
+            items: [{ existence: 0, valid: open }],
+          }),
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      issues(
+        parse(
+          withBlock(S("item.created"), "current/1", {
+            field: "existence",
+            valid: open,
+            deps,
+          }),
+        ),
+      ),
+    ).toEqual([]);
+  });
+});
+
 describe("scope_valid: the item's interval as its spans (§5.8)", () => {
   const scope = (spans: unknown) =>
     issues(parse(withBlock(S("item.created"), "scope_valid", { spans, deps })));
@@ -1006,6 +1077,14 @@ describe("scope_valid: the item's interval as its spans (§5.8)", () => {
 
   it("accepts the whole time as [{}]", () => {
     expect(scope([{}])).toEqual([]);
+  });
+
+  it("accepts the first span open at the start, alone or before others", () => {
+    expect(scope([{ to: "2026-11-03" }])).toEqual([]);
+    expect(scope([{ to: "2026-11-03" }, span("2026-11-05")])).toEqual([]);
+    expect(scope([{ to: "2026-11-01T06:00:00.000Z" }, span("2026-11-02T00:00:00.000Z")])).toEqual(
+      [],
+    );
   });
 
   it.each([
@@ -1036,19 +1115,39 @@ describe("scope_valid: the item's interval as its spans (§5.8)", () => {
       "scope_valid: spans of one granularity",
     ],
     [
-      "open at the start with an end",
-      [{ to: "2026-11-03" }],
-      "scope_valid.spans[0]: missing key from",
-    ],
-    [
-      "open at the start before another span",
+      "the whole time before another span",
       [{}, span("2026-11-05", "2026-11-07")],
-      "scope_valid.spans[0]: missing key from",
+      "scope_valid: the whole time alone",
     ],
     [
       "open at the start after the first",
+      [span("2026-11-01", "2026-11-03"), { to: "2026-11-07" }],
+      "scope_valid.spans[1]: missing key from",
+    ],
+    [
+      "the whole time after the first",
       [span("2026-11-01", "2026-11-03"), {}],
       "scope_valid.spans[1]: missing key from",
+    ],
+    [
+      "open at the start overlapping the next",
+      [{ to: "2026-11-05" }, span("2026-11-03", "2026-11-07")],
+      "scope_valid: spans by start, apart",
+    ],
+    [
+      "open at the start touching the next",
+      [{ to: "2026-11-05" }, span("2026-11-05", "2026-11-07")],
+      "scope_valid: spans by start, apart",
+    ],
+    [
+      "open at the start, dates and instants mixed",
+      [{ to: "2026-11-03" }, span("2026-11-05T00:00:00.000Z")],
+      "scope_valid: spans of one granularity",
+    ],
+    [
+      "open at both ends with another span",
+      [{}, span("2026-11-05")],
+      "scope_valid: the whole time alone",
     ],
   ])("refuses spans %s", (_, spans, issue) => {
     expect(scope(spans)).toContain(issue);

@@ -13,10 +13,14 @@ export function dayBefore(d: string): DateStr {
 }
 
 /** `[from, to)` as an `Interval`; `byDate`: the table's granularity is date. */
-export function intervalOf(from: string, to: string | null | undefined, byDate: boolean): Interval {
+export function intervalOf(
+  from: string | null,
+  to: string | null | undefined,
+  byDate: boolean,
+): Interval {
   const end = to ?? null;
   return {
-    valid_from: from as BizPoint,
+    valid_from: from as BizPoint | null,
     valid_to: end as BizPoint | null,
     ...(byDate && end !== null ? { valid_to_inclusive: dayBefore(end) } : {}),
   };

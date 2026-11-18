@@ -64,7 +64,8 @@ export interface TargetRef {
  * null: open. `valid_to_inclusive`: on date-grained tables, the last day of an interval that ends.
  */
 export interface Interval {
-  readonly valid_from: BizPoint;
+  /** Null: open at the start (a write-back taking back a revoke of the whole time, 09 §5.7). */
+  readonly valid_from: BizPoint | null;
   readonly valid_to: BizPoint | null;
   readonly valid_to_inclusive?: DateStr;
 }

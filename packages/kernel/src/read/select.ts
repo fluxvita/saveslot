@@ -46,8 +46,9 @@ export interface RowFacts {
 }
 
 /** A business time span `[from, to)`; `to` null: it runs on. */
+/** A flag's span: `from` null where the item's first span is open at the start (09 §5.8). */
 export interface Span {
-  readonly from: string;
+  readonly from: string | null;
   readonly to: string | null;
 }
 
@@ -301,12 +302,13 @@ async function readFlags(
       item: x.item_id as ItemId,
       itemType: x.type,
       fields: x.fields === null ? ["existence"] : (JSON.parse(x.fields) as string[]),
-      // The item's spans, JCS (state tables); none on event and timeless tables.
+      // The item's spans, JCS (state tables); none on event and timeless tables. The first one
+      // may be open at the start (`{to}`); the whole time is no spans at all.
       spans:
         x.spans === null
           ? undefined
-          : (JSON.parse(x.spans) as { from: string; to?: string }[]).map((y) => ({
-              from: y.from,
+          : (JSON.parse(x.spans) as { from?: string; to?: string }[]).map((y) => ({
+              from: y.from ?? null,
               to: y.to ?? null,
             })),
     },

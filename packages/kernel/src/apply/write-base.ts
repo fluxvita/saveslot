@@ -73,7 +73,8 @@ const spanOf = (v: JsonValue): IntervalSet => {
   const s = v as Obj;
   const x = (s["valid"] ?? s["seen_valid"]) as Obj | undefined;
   if (x === undefined) return [WHOLE];
-  return interval(x["from"] as never, (x["to"] as never) ?? null);
+  // A missing end is open, the start too (09 §5.7: a write-back taking back a whole revoke).
+  return interval((x["from"] as never) ?? null, (x["to"] as never) ?? null);
 };
 
 /** Stops apply: the event does not fit the state it is applied to. */

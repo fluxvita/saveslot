@@ -419,6 +419,52 @@ describe("what 05 §6 asks for", () => {
   });
 });
 
+describe("a period open at the start (09 §1.2: a whole revoke undone)", () => {
+  it("is until its end, not all time", () => {
+    const text = renderResult("saveslot_write", {
+      status: "saved",
+      sv: 1,
+      seq: 16,
+      ops: [
+        {
+          target: { table: "ledger.budgets", entity: "e_4KWKRM296X61WJ89DY5XJNVA4P" },
+          intent: "update",
+          ver: "v16.0",
+          fields: {
+            "*": [
+              {
+                result: "applied",
+                valid: {
+                  valid_from: null,
+                  valid_to: "2026-11-05",
+                  valid_to_inclusive: "2026-11-04",
+                },
+              },
+              {
+                result: "applied",
+                valid: {
+                  valid_from: "2026-11-05",
+                  valid_to: "2026-11-10",
+                  valid_to_inclusive: "2026-11-09",
+                },
+              },
+              { result: "applied", valid: { valid_from: "2026-11-10", valid_to: null } },
+            ],
+          },
+          undo: { of: 13, skipped_superseded: [] },
+        },
+      ],
+      derived: [],
+      derived_total: 0,
+      pending: [],
+      superseded: [],
+    });
+    expect(text.split("\n")[1]).toBe(
+      "ledger.budgets e_4KWKRM296X61WJ89DY5XJNVA4P update: whether it exists through 2026-11-04 (inclusive) —; whether it exists 2026-11-05 to 2026-11-09 (inclusive) —; whether it exists from 2026-11-10 — (ver=v16.0)",
+    );
+  });
+});
+
 describe("every mark of the contract has a text (05 §4.2)", () => {
   const item = "pi_8VEZWJ3J7BMKMXTV";
   const ref = { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" };

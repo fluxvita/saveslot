@@ -53,6 +53,24 @@ export function interval(v: Json, at: string, issues: Issues): void {
   }
 }
 
+/**
+ * An interval on existence as a contribution's span or an item's entry writes it (§1.2, §5.7, §5.8):
+ * a missing end is open, `{to}` open at the start (a write-back that takes back a revoke of the
+ * whole time, cut by another item), `{}` the whole time. Both ends given: one granularity, `to`
+ * after `from`. A field's spans and entries always have a start (`interval`).
+ */
+export function openInterval(v: Json, at: string, issues: Issues): void {
+  if (!keys(v, at, [], ["from", "to"], issues)) return;
+  if ("from" in v) check(point(v["from"]), at, "from", issues);
+  if ("to" in v) check(point(v["to"]), at, "to", issues);
+  const from = v["from"];
+  const to = v["to"];
+  if (point(from) && point(to)) {
+    check(isDate(from) === isDate(to), at, "from and to of one granularity", issues);
+    check(from < to, at, "to after from", issues);
+  }
+}
+
 /** A field value (§1.3); `raw`: as the caller gave it (`ops/<i>/set`), else normalized. */
 export function value(v: Json, at: string, issues: Issues, raw = false): void {
   if (v === null || str(v) || typeof v === "boolean") return;
@@ -154,14 +172,14 @@ export const slotCtx =
 function existenceEntry(v: Record<string, unknown>, at: string, issues: string[]): void {
   if (!("revoked" in v)) {
     if (!keys(v, at, ["field", "deps"], ["valid"], issues)) return;
-    if ("valid" in v) interval(v["valid"], `${at}.valid`, issues);
+    if ("valid" in v) openInterval(v["valid"], `${at}.valid`, issues);
     deps(v["deps"], `${at}.deps`, issues);
     return;
   }
   if (!keys(v, at, ["field", "revoked", "op", "deps"], ["valid"], issues)) return;
   check(v["revoked"] === true, at, "revoked", issues);
   check(int(v["op"]), at, "op", issues);
-  if ("valid" in v) interval(v["valid"], `${at}.valid`, issues);
+  if ("valid" in v) openInterval(v["valid"], `${at}.valid`, issues);
   deps(v["deps"], `${at}.deps`, issues);
 }
 
@@ -401,6 +419,7 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     const which = isObject(v) ? ["valid", "seen_valid"].filter((k) => k in v) : [];
     check(which.length === 1, at, "exactly one of valid and seen_valid", issues);
     if (!keys(v, at, which.slice(0, 1), ["deps"], issues)) return;
+    // A field's span always has a start: only existence takes back a revoke of the whole time (§1.2).
     if (which[0] !== undefined) interval(v[which[0]], `${at}.${which[0]}`, issues);
     if ("deps" in v) deps(v["deps"], `${at}.deps`, issues);
   },
@@ -418,7 +437,7 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
   },
   ExistenceSpan(v, at, issues) {
     if (!keys(v, at, ["valid"], ["deps"], issues)) return;
-    interval(v["valid"], `${at}.valid`, issues);
+    openInterval(v["valid"], `${at}.valid`, issues);
     if ("deps" in v) deps(v["deps"], `${at}.deps`, issues);
   },
   SourceSeqList(v, at, issues) {
@@ -515,8 +534,9 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
   },
   /**
    * The item's interval as its spans: at least one, by start, neither overlapping nor touching
-   * (touching ones are one span), of one granularity, only the last one open. The whole time is
-   * `[{}]`, the one span without a start.
+   * (touching ones are one span), of one granularity; only the first one may be open at the start
+   * (`{to}`, a write-back over the whole time cut by another item), only the last one at the end.
+   * The whole time is `[{}]`, both the first span and the last.
    */
   ScopeValid(v, at, issues) {
     if (!keys(v, at, ["spans", "deps"], [], issues)) return;
@@ -524,22 +544,33 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     if (!Array.isArray(spans) || spans.length === 0) {
       issues.push(`${at}.spans: at least one span`);
     } else {
+      /** A span's one point that tells its granularity: its start, or its end when open there. */
+      const pointOf = (s: Json) =>
+        isObject(s)
+          ? point(s["from"])
+            ? s["from"]
+            : point(s["to"])
+              ? s["to"]
+              : undefined
+          : undefined;
       spans.forEach((s, i) => {
-        // The whole time, `[{}]`, is the one span without a start: an open start meets every
-        // span, so it comes with no end and no other span.
-        if (i === 0 && spans.length === 1 && isObject(s) && Object.keys(s).length === 0) return;
-        interval(s, `${at}.spans[${i}]`, issues);
-        const prev = i > 0 ? spans[i - 1] : undefined;
-        // One granularity: every span by date, or every one by instant.
-        const first = spans[0];
-        if (i > 0 && isObject(first) && isObject(s) && point(first["from"]) && point(s["from"])) {
-          check(
-            isDate(first["from"]) === isDate(s["from"]),
-            at,
-            "spans of one granularity",
-            issues,
-          );
+        const where = `${at}.spans[${i}]`;
+        if (i === 0) {
+          openInterval(s, where, issues);
+          // Open at both ends: the whole time, which meets every other span.
+          if (isObject(s) && !("from" in s) && !("to" in s)) {
+            check(spans.length === 1, at, "the whole time alone", issues);
+          }
+        } else {
+          interval(s, where, issues);
         }
+        // One granularity: every span by date, or every one by instant.
+        const first = pointOf(spans[0]);
+        const here = pointOf(s);
+        if (i > 0 && first !== undefined && here !== undefined) {
+          check(isDate(first) === isDate(here), at, "spans of one granularity", issues);
+        }
+        const prev = i > 0 ? spans[i - 1] : undefined;
         if (isObject(prev)) {
           check("to" in prev, at, "only the last span open", issues);
           if (isObject(s) && "to" in prev && point(prev["to"]) && point(s["from"])) {
@@ -580,13 +611,14 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
         if (isObject(e) && "existence" in e) {
           if (!keys(e, a, ["existence"], ["valid"], is)) return;
           check(int(e["existence"]), a, "existence", is);
+          if ("valid" in e) openInterval(e["valid"], `${a}.valid`, is);
         } else {
           if (!keys(e, a, ["field", "k", "value"], ["valid"], is)) return;
           check(id("field", e["field"]), a, "field", is);
           check(int(e["k"]), a, "k", is);
           value(e["value"], `${a}.value`, is);
+          if ("valid" in e) interval(e["valid"], `${a}.valid`, is);
         }
-        if ("valid" in e) interval(e["valid"], `${a}.valid`, is);
       },
       true,
     );

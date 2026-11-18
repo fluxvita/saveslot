@@ -39,7 +39,8 @@ import {
 
 /** An item's or entry's business time while it is worked out: `[from, to)`, `to` null when open. */
 interface Span {
-  readonly from: string;
+  /** Null: open at the start (09 §5.7). */
+  readonly from: string | null;
   readonly to: string | null;
 }
 
@@ -211,6 +212,8 @@ export async function timelineInTx(
             | { valid?: { from?: string; to?: string } }
             | undefined;
           const v = span?.valid;
+          // A span without `from` is taken as not covering: only fields are read here, and a
+          // field's span always has a start (09 §1.2). An open start would cover every point.
           if (v?.from === undefined || v.from > from || (v.to !== undefined && from >= v.to))
             continue;
         }
@@ -368,7 +371,10 @@ export async function timelineInTx(
     let to: string | null | undefined;
     const widen = (v: Span | undefined) => {
       if (v === undefined) return;
-      if (from === undefined || (from !== null && v.from < from)) from = v.from;
+      // `v.from === null` after a start: not reached now (a part open at the start is always
+      // existence's k = 0, the first path taken), kept so the widest stays right in any order.
+      if (from === undefined || (from !== null && (v.from === null || v.from < from)))
+        from = v.from;
       const end = v.to;
       if (to === undefined || (to !== null && (end === null || end > to))) to = end;
     };
@@ -398,9 +404,14 @@ export async function timelineInTx(
         const sv = (span?.["valid"] ?? span?.["seen_valid"]) as
           | { from?: string; to?: string }
           | undefined;
-        const vf = latest?.valid_from ?? sv?.from;
+        const vf = latest !== undefined ? latest.valid_from : (sv?.from ?? null);
         const vt = latest !== undefined ? latest.valid_to : (sv?.to ?? null);
-        if (vf !== undefined && vf !== null) valid = { from: vf, to: vt ?? null };
+        // A missing start is open (09 §5.7); a part with no span at all has none to give, but for
+        // the caller's revoke of the whole entity (scope whole, applied or not): the whole time,
+        // as its receipt gives it.
+        if (latest !== undefined || sv !== undefined) valid = { from: vf ?? null, to: vt ?? null };
+        else if (fieldId === "existence" && body["scope"] === "whole")
+          valid = { from: null, to: null };
       }
       widen(valid);
       const noValue = body["no_value"] === true;
@@ -437,9 +448,8 @@ export async function timelineInTx(
       actor: who.get(e.actor) as Actor,
       intent,
       ...(via !== undefined ? { via } : {}),
-      ...(state && from !== undefined && from !== null
-        ? { valid: intervalOf(from, to, date) }
-        : {}),
+      // The write's widest interval (04-contract-types §4.3): open at the start when a part is.
+      ...(state && from !== undefined ? { valid: intervalOf(from, to, date) } : {}),
       fields: shown,
     };
   });

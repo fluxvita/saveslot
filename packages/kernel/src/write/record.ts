@@ -58,6 +58,7 @@ import type {
 } from "../judge/index.ts";
 import { uniqueRefs } from "../judge/index.ts";
 import { type Interval, WHOLE } from "../time/index.ts";
+import { WriteError } from "./errors.ts";
 
 type Blocks = Record<string, unknown>;
 
@@ -90,12 +91,16 @@ function refIn(r: unknown): ItemRef {
     : { event: x.event, target: "existence", k: x.existence ?? 0 };
 }
 
-function spanOut(v: readonly Interval[]): { from: string; to?: string } {
+/**
+ * An item's interval as its span block writes it (09 §5.7): a missing end is open, so a write-back
+ * taking back a revoke of the whole time, cut by another item, can be `{to}`. One interval per item.
+ */
+function spanOut(v: readonly Interval[]): { from?: string; to?: string } {
   const [x] = v;
-  if (v.length !== 1 || x === undefined || x.from === null) {
-    throw new Error("an item has one interval with a start (09 §5.7 span)");
+  if (v.length !== 1 || x === undefined) {
+    throw inconsistent("an item has one interval (09 §5.7 span)");
   }
-  return { from: x.from, ...(x.to !== null ? { to: x.to } : {}) };
+  return { ...(x.from !== null ? { from: x.from } : {}), ...(x.to !== null ? { to: x.to } : {}) };
 }
 
 /** An existence item over the whole row or entity (a revoke without an interval). */
@@ -103,9 +108,16 @@ const isWhole = (v: readonly Interval[]) =>
   v.length === 1 && v[0]?.from === null && v[0]?.to === null;
 
 function spanIn(v: unknown): Interval[] {
-  const x = v as { from: string; to?: string };
-  return [{ from: x.from, to: x.to ?? null }] as Interval[];
+  const x = v as { from?: string; to?: string };
+  return [{ from: x.from ?? null, to: x.to ?? null }] as Interval[];
 }
+
+/**
+ * The log and what is encoded from it or decoded into it disagree: an internal error, as a write
+ * error so that the caller gets one (not a bare exception), its message kept.
+ */
+const inconsistent = (message: string) =>
+  new WriteError("internal", message, { reason: "inconsistent" });
 
 const entryOut = (e: { event: Seq; target: Target }) =>
   e.target === "existence"
@@ -228,8 +240,10 @@ function itemsOut(
   const isState = ctx.shape.kind === "state";
   for (const x of items) {
     if (x.target === "existence") {
-      // A revoke of the whole entity on a state table is `whole` too (09 §5.7): no span.
-      const interval = isState && !isWhole(x.valid);
+      // A revoke of the whole entity on a state table is `whole` too (09 §5.7): no span. A
+      // write-back over the whole time (an undo's restore) has deps, which only a span block
+      // carries: it is an interval, the whole time written `{}`.
+      const interval = isState && (!isWhole(x.valid) || x.deps.length > 0);
       out[`existence/${x.k}`] = {
         status: x.status,
         scope: interval ? "interval" : "whole",
@@ -279,14 +293,14 @@ export function encodeOp(
 ): EncodedOp {
   const r = j.record;
   if (r.kind !== "write" && r.kind !== "revoke" && r.kind !== "undo") {
-    throw new Error("encodeOp encodes the ops of a request");
+    throw inconsistent("encodeOp encodes the ops of a request");
   }
   const i = r.index;
   const head: Blocks = {};
   const seen = { op: r.op, seen: r.seen ?? r.op - 1, seenExplicit: r.seenExplicit ?? false };
   // An insert has no `ver` (09 §5.7): it saw the state just before it, not explicitly.
   if (e.intent === "insert" && (seen.seen !== r.op - 1 || seen.seenExplicit)) {
-    throw new Error("an insert has no ver: it sees the state just before it");
+    throw inconsistent("an insert has no ver: it sees the state just before it");
   }
   // Creating by key is a creation too: no `ver` (09 §5.7: 新增时没有 ver).
   const creates = e.byEntityKey === true && e.created === true;
@@ -306,7 +320,7 @@ export function encodeOp(
       if (noop.includes(f)) continue;
       // The value as the caller gave it (09 §1.3), never the canonical one in its place.
       if (e.raw === undefined || !Object.hasOwn(e.raw, f)) {
-        throw new Error(`the raw value of ${f} is needed (ops/<i>/set)`);
+        throw inconsistent(`the raw value of ${f} is needed (ops/<i>/set)`);
       }
       head[`ops/${i}/set/${f}`] = e.raw[f] ?? null;
     }
@@ -356,7 +370,7 @@ export function encodeOp(
   const versions = { ruleset_version: e.versions.ruleset, policy_version: e.versions.policy };
   j.conflicts.forEach((c, n) => {
     const to = e.conflictItems?.[n];
-    if (to === undefined) throw new Error("a conflict needs its pending item");
+    if (to === undefined) throw inconsistent("a conflict needs its pending item");
     const mine = c.items.map((ref) =>
       r.items.find((y) => y.target === ref.target && y.k === ref.k),
     );
@@ -419,7 +433,7 @@ export function encodeOp(
   const awaiting = r.items.filter((x) => x.status === "awaiting");
   if (awaiting.length > 0) {
     if (e.awaitingItem === undefined)
-      throw new Error("a write of high impact needs its pending item");
+      throw inconsistent("a write of high impact needs its pending item");
     const onExistence = awaiting.some((x) => x.target === "existence");
     const fields = [...new Set(awaiting.map((x) => x.target))].sort();
     items.push({
@@ -482,7 +496,7 @@ export function encodeResolution(
       : r.kind === "take_candidate" || r.kind === "take_previous"
         ? r.kind
         : undefined;
-  if (decision === undefined) throw new Error("encodeResolution encodes decisions");
+  if (decision === undefined) throw inconsistent("encodeResolution encodes decisions");
   const target: Blocks = {
     item: e.item,
     decision,
@@ -580,7 +594,7 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
     const regives =
       x.header.type === "item.refreshed" && Object.keys(b).some((p) => p.startsWith("candidates/"));
     if (!DECODED_TYPES.has(x.header.type) || regives) {
-      throw new Error(`decodeRecords does not handle ${x.header.type} (seq ${x.header.seq})`);
+      throw inconsistent(`decodeRecords does not handle ${x.header.type} (seq ${x.header.seq})`);
     }
     if (x.header.type === "write.head") heads.set(x.header.seq, b);
     if (x.header.type === "item.resolved") resolutions.set(opOf(x), x);
@@ -710,8 +724,9 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
     if (x.header.type === "item.resolved") {
       const t = b["target"] as { item: ItemId; decision: string };
       const it = items.get(t.item);
-      if (it === undefined) throw new Error(`no pending item ${t.item}`);
-      if (!DECISIONS.has(t.decision)) throw new Error(`decision ${t.decision} is not decoded here`);
+      if (it === undefined) throw inconsistent(`no pending item ${t.item}`);
+      if (!DECISIONS.has(t.decision))
+        throw inconsistent(`decision ${t.decision} is not decoded here`);
       const base = { op, index: 0, event: x.header.seq, ruleset };
       if (t.decision === "reject") records.push({ ...base, kind: "reject", target: it.origin });
       if (t.decision === "keep_effective") {
@@ -738,7 +753,8 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
       const res = resolutions.get(op);
       const t = res?.blocks["target"] as { item: ItemId; decision: string } | undefined;
       const it = t === undefined ? undefined : items.get(t.item);
-      if (t === undefined || it === undefined) throw new Error("a resolve write without its item");
+      if (t === undefined || it === undefined)
+        throw inconsistent("a resolve write without its item");
       const candidates = it.candidates.map((c) => c.event);
       if (t.decision === "confirm") {
         const rv = b["revert"] as
@@ -785,7 +801,7 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
           items: recItems,
         };
         records.push(rec);
-      } else throw new Error(`a ${t.decision} writes nothing (seq ${x.header.seq})`);
+      } else throw inconsistent(`a ${t.decision} writes nothing (seq ${x.header.seq})`);
       continue;
     }
 

@@ -567,8 +567,8 @@ export interface LiteralBlock {
  * `seen_valid` instead of `valid`.
  */
 export type SpanBlock =
-  | { readonly valid: BizInterval; readonly seen_valid?: never; readonly deps?: Deps }
-  | { readonly seen_valid: BizInterval; readonly valid?: never; readonly deps?: Deps };
+  | { readonly valid: OpenBizInterval; readonly seen_valid?: never; readonly deps?: Deps }
+  | { readonly seen_valid: OpenBizInterval; readonly valid?: never; readonly deps?: Deps };
 
 /** `existence/<k>` (meta): one contribution item to "existence". */
 export interface ExistenceItemBlock {
@@ -580,7 +580,7 @@ export interface ExistenceItemBlock {
 
 /** `span/existence/<k>` (data): the interval of an `interval`-scoped existence item. */
 export interface ExistenceSpanBlock {
-  readonly valid: BizInterval;
+  readonly valid: OpenBizInterval;
   readonly deps?: Deps;
 }
 
@@ -747,11 +747,11 @@ export type ItemCreatedTarget =
 
 /**
  * `scope_valid` (data, state tables): the item's business time interval as its spans, by start,
- * apart (neither overlapping nor touching), only the last one open; the whole time is `[{}]`,
- * the one span without a start. With `deps`.
+ * apart (neither overlapping nor touching); only the first may be open at the start, only the last
+ * at the end; the whole time is `[{}]`. With `deps`.
  */
 export interface ScopeValidBlock {
-  readonly spans: readonly [BizInterval, ...BizInterval[]] | readonly [Record<string, never>];
+  readonly spans: readonly [OpenBizInterval, ...BizInterval[]] | readonly [Record<string, never>];
   readonly deps: Deps;
 }
 
@@ -769,17 +769,17 @@ export type RevokedEntryBlock =
   | {
       readonly field: "existence";
       readonly revoked: true;
-      readonly valid?: BizInterval;
+      readonly valid?: OpenBizInterval;
       readonly op: OpNumber;
       readonly deps: Deps;
     }
-  | { readonly field: "existence"; readonly valid?: BizInterval; readonly deps: Deps };
+  | { readonly field: "existence"; readonly valid?: OpenBizInterval; readonly deps: Deps };
 
 export type CurrentEntryBlock =
   | {
       readonly field: FieldId;
       readonly value: FieldValue;
-      readonly valid?: BizInterval;
+      readonly valid?: OpenBizInterval;
       readonly op: OpNumber;
       readonly deps: Deps;
     }
@@ -791,9 +791,9 @@ export type CandidateItem =
       readonly field: FieldId;
       readonly k: Index;
       readonly value: FieldValue;
-      readonly valid?: BizInterval;
+      readonly valid?: OpenBizInterval;
     }
-  | { readonly existence: Index; readonly valid?: BizInterval };
+  | { readonly existence: Index; readonly valid?: OpenBizInterval };
 
 /** `candidates/<k>` (data): all candidate items of one write in this conflict unit. */
 export interface CandidateBlock {
@@ -809,7 +809,7 @@ export interface CandidateBlock {
 export interface FieldEntryBlock {
   readonly field: FieldId;
   readonly value: FieldValue;
-  readonly valid?: BizInterval;
+  readonly valid?: OpenBizInterval;
   readonly deps: Deps;
 }
 
@@ -821,7 +821,7 @@ export type ImpactBlock =
   | {
       readonly kind: "overwritten_segment";
       readonly field: FieldId;
-      readonly valid?: BizInterval;
+      readonly valid?: OpenBizInterval;
       readonly value: FieldValue;
       /**
        * A stretch without a value (a gap filled; `value` null), apart from a value cleared to null

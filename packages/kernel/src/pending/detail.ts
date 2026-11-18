@@ -247,6 +247,10 @@ export function candidatesOut<A>(e: ItemEntries, n: Naming<A>) {
       const items = (c["items"] ?? []) as { field?: string; value?: unknown; valid?: unknown }[];
       const valued = items.filter((x) => x.field !== undefined);
       const spans = items.filter((x) => x.valid !== undefined).map((x) => spanIn(x.valid));
+      // The hull's start drops a null start. Not reached wrong: a field's items always have a
+      // start (09 §1.2), and an existence item is the caller's revoke, its own interval or the
+      // whole time `{}`, alone in the candidate, whose null start the fallback gives anyway. An
+      // existence item open at the start among others would need this read as open.
       const from =
         spans
           .map((s) => s.from)
@@ -284,6 +288,7 @@ export function candidatesOut<A>(e: ItemEntries, n: Naming<A>) {
 export function proposalOut<A>(e: ItemEntries, n: Naming<A>) {
   const existence = e.unit.includes("existence");
   const spans = e.proposed.filter((b) => b["valid"] !== undefined).map((b) => spanIn(b["valid"]));
+  // As above: a proposed entry is a field's, which always has a start (09 §1.2).
   const from =
     spans
       .map((s) => s.from)
