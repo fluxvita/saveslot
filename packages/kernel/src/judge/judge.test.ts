@@ -24,6 +24,14 @@ const STATE: TableShape = {
   groups: [],
 };
 const EVENT: TableShape = { ...STATE, kind: "event" };
+/** Two required fields, f2 and f4: a gap lacks both. */
+const TWO_REQUIRED: TableShape = {
+  kind: "state",
+  fields: ["f2", "f3", "f4"],
+  valued: ["f2", "f4"],
+  required: ["f2", "f4"],
+  groups: [],
+};
 /** One conflict group {a, b}: a is f4 (required), b is f5. */
 const GROUPED: TableShape = {
   kind: "state",
@@ -316,6 +324,25 @@ describe("05-time «无值区间»", () => {
     expect(() =>
       judgeOp(state, write({ op: 30, valid: span("10-12", "10-15"), fields: { f3: "x" } })),
     ).toThrow(expect.objectContaining({ reason: "validation_failed" }));
+  });
+
+  it("every required field the write leaves out is reported, each over the gap", () => {
+    const { state } = run(TWO_REQUIRED, [
+      write({ op: 10, seen: 0, valid: span("11-05", "open"), fields: { f2: "1", f4: "a" } }),
+    ]);
+    expect(() =>
+      judgeOp(state, write({ op: 30, valid: span("11-01", "11-07"), fields: { f3: "x" } })),
+    ).toThrow(
+      expect.objectContaining({
+        reason: "validation_failed",
+        detail: {
+          gaps: [
+            { field: "f2", valid: iv("11-01", "11-05") },
+            { field: "f4", valid: iv("11-01", "11-05") },
+          ],
+        },
+      }),
+    );
   });
 });
 
@@ -847,14 +874,18 @@ describe("review cases", () => {
     ]);
   });
 
-  it("an interval whose end is not after its start is validation_failed", () => {
+  it("an interval whose end is not after its start is malformed, at valid_to", () => {
     const { state } = run(STATE, BUDGET);
+    const malformed = expect.objectContaining({
+      reason: "invalid_argument",
+      detail: { reason: "malformed", param: "valid_to" },
+    });
     expect(() =>
       judgeOp(state, write({ op: 30, valid: span("11-05", "11-05"), fields: { f2: "1" } })),
-    ).toThrow(expect.objectContaining({ reason: "validation_failed" }));
+    ).toThrow(malformed);
     expect(() =>
       judgeOp(state, revoke(30, span("11-05", "11-03") as RevokeInput["valid"])),
-    ).toThrow(expect.objectContaining({ reason: "validation_failed" }));
+    ).toThrow(malformed);
   });
 });
 
@@ -1665,7 +1696,7 @@ describe("take_candidate", () => {
     expect(() => judgeOp(state.state, take(40, ["f3"], [31], 31))).toThrow(
       expect.objectContaining({
         reason: "validation_failed",
-        detail: { missing: ["f2"], valid: iv("11-01", "11-05") },
+        detail: { gaps: [{ field: "f2", valid: iv("11-01", "11-05") }] },
       }),
     );
   });
@@ -1902,7 +1933,26 @@ describe("take_candidate", () => {
       expect(() => judgeOp(state, take(40, "existence", [31], 31))).toThrow(
         expect.objectContaining({
           reason: "validation_failed",
-          detail: expect.objectContaining({ reason: "required_in_gap" }),
+          detail: { gaps: [{ field: "f2", valid: iv("11-01", "11-05") }] },
+        }),
+      );
+    });
+
+    it("state table: every required field neither the candidate nor the merge base gives is reported", () => {
+      const { state } = run(TWO_REQUIRED, [
+        write({ op: 10, seen: 0, valid: span("11-05", "open"), fields: { f2: "1", f4: "a" } }),
+        revoke(20, span("11-05", "11-09") as RevokeInput["valid"], 10),
+        write({ op: 30, seen: 10, valid: span("11-01", "11-07"), fields: { f3: "x" } }),
+      ]);
+      expect(() => judgeOp(state, take(40, "existence", [31], 31))).toThrow(
+        expect.objectContaining({
+          reason: "validation_failed",
+          detail: {
+            gaps: [
+              { field: "f2", valid: iv("11-01", "11-05") },
+              { field: "f4", valid: iv("11-01", "11-05") },
+            ],
+          },
         }),
       );
     });

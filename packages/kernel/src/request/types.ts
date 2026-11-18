@@ -176,7 +176,10 @@ export interface NormalizedWrite {
 
 /** A detail of `validation_failed` (04-contract-types §9, the write group). */
 export interface WriteValidationDetail {
-  readonly op: number;
+  /** The op; none where the request has no ops (a decision's triggered write). */
+  readonly op?: number;
+  /** The table's name: given with `required_in_gap`. */
+  readonly table?: string;
   readonly field?: string;
   readonly code:
     | "type_mismatch"
@@ -186,8 +189,15 @@ export interface WriteValidationDetail {
     | "out_of_range"
     | "enum_value"
     | "required_missing"
+    | "required_in_gap"
     | "ref_not_found"
     | "malformed";
+  /** `required_in_gap`: the stretch the field has no value over. */
+  readonly valid?: {
+    readonly valid_from: string | null;
+    readonly valid_to: string | null;
+    readonly valid_to_inclusive?: DateStr;
+  };
   readonly allowed_units?: readonly string[];
   readonly allowed_values?: readonly string[];
   readonly min?: string;

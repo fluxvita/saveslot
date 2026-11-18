@@ -509,7 +509,8 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
   try {
     judged = judgeOp(work.state, judgeInput);
   } catch (e) {
-    if (e instanceof JudgeError) throw judgeFailure(e, 0);
+    // A decision has no ops: its triggered write's failures name no op and no `ops/…` parameter.
+    if (e instanceof JudgeError) throw judgeFailure(e, { slot: slot.name, table });
     throw e;
   }
   const j = judged.judgement;

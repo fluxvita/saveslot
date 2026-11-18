@@ -55,10 +55,12 @@ export function resolve(
   }
   const from = p.from.mode === "given" ? p.from.value : now;
   if (p.to.mode === "given") {
+    // Both ends given and in order is checked with the request; an end given with the start
+    // "now" (left out) can still be no later than it: a malformed interval too (04-contract-types §9).
     if (p.to.value <= from) {
-      throw new JudgeError("validation_failed", "the end of the interval is not after its start", {
-        from,
-        to: p.to.value,
+      throw new JudgeError("invalid_argument", "the end of the interval is not after its start", {
+        reason: "malformed",
+        param: "valid_to",
       });
     }
     return { valid: interval(from, p.to.value), defaultEnd: false, from, deps: [] };

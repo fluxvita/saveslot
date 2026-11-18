@@ -430,7 +430,7 @@ function checkGaps(state: RowState, w: WriteInput, applied: readonly Draft[], cu
 
 /**
  * The parts taking effect that fall where the entity has no value must give every required field
- * (05-time «无值区间»): `validation_failed` with the missing fields and where, otherwise.
+ * (05-time «无值区间»): `validation_failed` otherwise, with each missing field and where (`gaps`).
  */
 export function checkGapsOf(
   state: RowState,
@@ -440,15 +440,20 @@ export function checkGapsOf(
 ): void {
   const missing = state.table.required.filter((f) => !given.includes(f));
   if (missing.length === 0) return;
-  for (const d of applied) {
-    const gap = canonical(state.piecesIn(d.valid).filter((s) => !state.hasValue(s, curAt)));
-    if (!isNothing(gap)) {
-      throw new JudgeError("validation_failed", "the write falls where the entity has no value", {
-        missing,
-        valid: gap,
-      });
-    }
-  }
+  const gap = canonical(
+    applied.flatMap((d) => state.piecesIn(d.valid).filter((s) => !state.hasValue(s, curAt))),
+  );
+  if (isNothing(gap)) return;
+  const gaps: GapEntry[] = missing.map((field) => ({ field, valid: gap }));
+  throw new JudgeError("validation_failed", "the write falls where the entity has no value", {
+    gaps,
+  });
+}
+
+/** A required field without a value over `valid` (`validation_failed`, `required_in_gap`). */
+export interface GapEntry {
+  readonly field: FieldId;
+  readonly valid: IntervalSet;
 }
 
 /**

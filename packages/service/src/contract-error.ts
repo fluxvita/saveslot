@@ -158,10 +158,15 @@ export function contractError(
     if (e.code !== "internal") return new ContractError(e.code as ErrorCode, e.message, detail);
   }
   const incident = newIncident();
+  // The error it was caused by, if any: by name and code too (an internal error raised over
+  // another, e.g. a detail that could not be read for a mismatch).
+  const cause = e instanceof Error ? e.cause : undefined;
   warn("internal", {
     incident,
     error: e instanceof Error ? e.name : typeof e,
     ...(isKernelError(e) ? { code: e.code } : {}),
+    ...(cause instanceof Error ? { cause: cause.name } : {}),
+    ...(isKernelError(cause) ? { cause_code: cause.code } : {}),
   });
   return new ContractError("internal", "internal error", { incident });
 }

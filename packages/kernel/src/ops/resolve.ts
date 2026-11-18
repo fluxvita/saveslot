@@ -46,15 +46,30 @@ export async function resolve(
     } catch (e) {
       if (!(e instanceof WriteError) || e.code !== "confirmation_mismatch") throw e;
       // The item as it is now, as the pending detail gives it, under the request's task.
+      // Not reached failing: a mismatch comes after the decision is checked against the item's
+      // type (conflict and awaiting items only, which the detail reads) and after the item is found
+      // writable (all visible, so the detail finds it). Failing anyway is the store at odds with
+      // itself: internal, the detail's error its cause, not a stub nor an unrelated error.
       const p = params as { id: string; task?: unknown };
-      const { result, entry } = await pendingInTx(tx, {
-        actor: ctx.actor,
-        task: typeof p.task === "string" ? p.task : ctx.task,
-        now: ctx.now,
-        visibility: ctx.visibility,
-        params: { id: p.id },
-        read: newReadId(),
-      });
+      let read: Awaited<ReturnType<typeof pendingInTx>>;
+      try {
+        read = await pendingInTx(tx, {
+          actor: ctx.actor,
+          task: typeof p.task === "string" ? p.task : ctx.task,
+          now: ctx.now,
+          visibility: ctx.visibility,
+          params: { id: p.id },
+          read: newReadId(),
+        });
+      } catch (cause) {
+        throw new WriteError(
+          "internal",
+          "the item's detail could not be read for the mismatch",
+          { reason: "inconsistent" },
+          { cause },
+        );
+      }
+      const { result, entry } = read;
       reads.record(entry);
       throw new WriteError(e.code, e.message, { ...e.detail, current: result });
     }

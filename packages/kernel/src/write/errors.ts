@@ -5,8 +5,13 @@ export class WriteError extends Error {
   override readonly name = "WriteError";
   readonly code: string;
   readonly detail: Readonly<Record<string, unknown>>;
-  constructor(code: string, message: string, detail: Record<string, unknown> = {}) {
-    super(message);
+  constructor(
+    code: string,
+    message: string,
+    detail: Record<string, unknown> = {},
+    options?: { readonly cause?: unknown },
+  ) {
+    super(message, options);
     this.code = code;
     this.detail = detail;
   }

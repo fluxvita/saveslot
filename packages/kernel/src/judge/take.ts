@@ -25,7 +25,7 @@ import type { ItemRef, RecordedItem, RevertEntry, TakeCandidateInput } from "./m
 import { uniqueRefs } from "./resolve.ts";
 import { candidatesOf, coveredSince, mergeBaseOf } from "./revert.ts";
 import { type Item, type Limit, type RowState, refOf, valueToken } from "./state.ts";
-import { checkGapsOf, type Draft, numbered } from "./write.ts";
+import { checkGapsOf, type Draft, type GapEntry, numbered } from "./write.ts";
 
 export interface TakeOutcome {
   readonly items: readonly RecordedItem[];
@@ -118,7 +118,7 @@ export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): Take
     });
   }
   if (t.unit === "existence" && state.isState) {
-    drafts.push(...carriedRequired(state, t, taken, targets, mergeBase, cur));
+    drafts.push(...carriedRequired(state, taken, targets, mergeBase, cur));
   }
   return { items: numbered(drafts), mergeBase, cover };
 }
@@ -135,7 +135,6 @@ export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): Take
  */
 function carriedRequired(
   state: RowState,
-  t: TakeCandidateInput,
   taken: readonly Item[],
   targets: readonly FieldId[],
   mergeBase: OpNumber,
@@ -146,6 +145,17 @@ function carriedRequired(
   if (isNothing(gap)) return [];
   const at: Limit = { upTo: mergeBase };
   const out: Draft[] = [];
+  // Every required field and stretch without a value to carry, reported together.
+  const lacking: GapEntry[] = [];
+  for (const f of state.table.required.filter((r) => !targets.includes(r))) {
+    const none = state.piecesIn(gap).filter((s) => state.fieldState(f, s, at).kind !== "value");
+    if (none.length > 0) lacking.push({ field: f, valid: canonical(none) });
+  }
+  if (lacking.length > 0) {
+    throw new JudgeError("validation_failed", "a required field has no value to carry", {
+      gaps: lacking,
+    });
+  }
   for (const f of state.table.required.filter((r) => !targets.includes(r))) {
     let run: { valid: Interval[]; by: Item } | undefined;
     const flush = () => {
@@ -164,13 +174,8 @@ function carriedRequired(
     };
     for (const s of state.piecesIn(gap)) {
       const st = state.fieldState(f, s, at);
-      if (st.kind !== "value") {
-        throw new JudgeError("validation_failed", "a required field has no value to carry", {
-          reason: "required_in_gap",
-          field: f,
-          take: t.take,
-        });
-      }
+      // Every stretch has a value to carry: checked above.
+      if (st.kind !== "value") continue;
       const last = run?.valid[run.valid.length - 1];
       if (run !== undefined && run.by === st.by && last !== undefined && last.to === s.from) {
         run.valid.push(s);

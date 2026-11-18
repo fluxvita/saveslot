@@ -18,6 +18,7 @@ import type {
   readsList,
   resolve,
   schemaDraft,
+  WriteValidationDetail,
   write,
 } from "@fluxvita/saveslot-kernel";
 import { describe, expect, it } from "vitest";
@@ -47,6 +48,9 @@ type Out<F extends (...a: never[]) => unknown> =
       : never
     : never;
 
+/** The keys of `A` that `B` does not have: `never` when `A`'s are a subset of `B`'s. */
+type ExtraKeys<A, B> = Exclude<keyof A, keyof B>;
+
 /** `A` assignable to `B`. */
 const fits = <B>(_: B) => true;
 const as = <A>() => undefined as unknown as A;
@@ -68,6 +72,11 @@ export const checks = [
   // The third request: pending's result has no type of its own yet.
   // @ts-expect-error pending's result is a record of unknowns
   fits<C.PendingResult>(as<Mutable<Out<typeof pending>>>()),
+
+  // A write's validation details, the judgement's `required_in_gap` among them; and no key the
+  // contract does not have (an extra optional key is assignable, so it is checked on its own).
+  fits<C.ValidationDetail>(as<Mutable<WriteValidationDetail>>()),
+  fits<never>(as<ExtraKeys<WriteValidationDetail, C.ValidationDetail>>()),
 
   // Every code of the contract's is one the service can give.
   fits<(typeof ERROR_CODES)[number]>(as<C.ErrorCode>()),

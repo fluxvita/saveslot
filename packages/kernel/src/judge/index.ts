@@ -21,3 +21,4 @@ export {
 export type * from "./model.ts";
 export { uniqueRefs } from "./resolve.ts";
 export { EVERYTHING, type Limit, type RowState } from "./state.ts";
+export type { GapEntry } from "./write.ts";

@@ -407,6 +407,21 @@ const EXAMPLE_PAGES = [
   true,
 ];
 
+/**
+ * Budgets read a row a page, with an entity revoked whole and then written between pages: the
+ * write falls where it has no value without its required category (validation_failed write), in
+ * every run, not only when a seed draws it.
+ */
+const EXAMPLE_GAP = [
+  EXAMPLE_DATA,
+  [{ table: "budgets", valid_during: ["2026-11-01", null], clip: false, coalesce: true }, 1],
+  [
+    { kind: "revoke", i: 0, row: EXAMPLE_DATA.rows[0] },
+    { kind: "update", i: 0, row: EXAMPLE_DATA.rows[0] },
+  ],
+  true,
+];
+
 let s: ReusableStore;
 beforeAll(async () => {
   s = await openReusable("saveslot-query-pages-");
@@ -769,7 +784,7 @@ describe("query's two paths and its pages", () => {
           expect(unmarked(pages.flatMap((p) => p.rows))).toEqual(unmarked(whole.rows));
         },
       ),
-      { numRuns: RUNS, ...seeded, examples: [EXAMPLE_PAGES as never] },
+      { numRuns: RUNS, ...seeded, examples: [EXAMPLE_PAGES as never, EXAMPLE_GAP as never] },
     );
     // The example pages; the random samples mostly do (half have no condition).
     expect(paged).toBeGreaterThanOrEqual(1 + Math.floor(RUNS / 10));
@@ -778,12 +793,15 @@ describe("query's two paths and its pages", () => {
     // An undo needs an earlier write on the same target in the same sample: rarer.
     for (const k of ["update", "insert", "revoke", "undo", "correct"])
       expect({ k, done: (done[k] ?? 0) >= 1 }).toEqual({ k, done: true });
-    // Refusals only of the kinds the state explains.
+    // Refusals only of the kinds the state explains, each with its reason as the contract gives
+    // it (04-contract-types §9).
     for (const k of Object.keys(refusedWrites))
       expect(k).toMatch(
-        // revoked: a write to a revoked row; validation_failed: a required field missing in a
-        // state entity's gap; invalid_argument: an undo of a write no longer undoable.
-        /: (revoked|validation_failed|invalid_argument( [a-z_]+)?)$/,
+        // revoked: a write to a revoked row; validation_failed write: a required field missing in
+        // a state entity's gap; invalid_argument: an undo of a write no longer undoable.
+        /: (revoked|validation_failed write|invalid_argument( [a-z_]+)?)$/,
       );
+    // The gap refusal is in every run (EXAMPLE_GAP).
+    expect(refusedWrites["update: validation_failed write"] ?? 0).toBeGreaterThanOrEqual(1);
   });
 });

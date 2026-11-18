@@ -965,6 +965,133 @@ describe("the other items on the row (01-objects «不过期»)", () => {
   );
 });
 
+describe("a decision's write without a required field where the entity has no value (04-contract-types §9)", () => {
+  it(
+    "taking a candidate on existence over a stretch without a value: validation_failed, no op and no param",
+    async () => {
+      const put = (o: Record<string, unknown>, actor = USER) =>
+        send({ sv: 1, ops: [{ table: "entities", ...o }] }, { actor });
+      const e = await send({
+        sv: 1,
+        ops: [{ intent: "insert", table: "entities", valid_from: "2026-11-05", set: { b: "1" } }],
+      });
+      const entity = e.ops[0]?.target.entity as string;
+      await put(
+        {
+          entity,
+          intent: "revoke",
+          ver: verAt(e),
+          valid_from: "2026-11-05",
+          valid_to: "2026-11-09",
+        },
+        OTHER,
+      );
+      const z = await put({
+        entity,
+        intent: "update",
+        ver: verAt(e),
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-07",
+        set: { c: "x" },
+      });
+      const item = z.pending?.[0]?.id as string;
+      // A decision has no ops: the detail names the table, not an op, and there is no `param`.
+      expect(
+        await resolve({ id: item, decision: "take_candidate", item_ver: verOfItem(z, item) }),
+      ).toEqual({
+        refused: "validation_failed",
+        reason: "write",
+        details: [
+          {
+            table: "ledger.entities",
+            field: "b",
+            code: "required_in_gap",
+            valid: {
+              valid_from: "2026-11-01",
+              valid_to: "2026-11-05",
+              valid_to_inclusive: "2026-11-04",
+            },
+          },
+        ],
+      });
+      expect((await itemRow(item))?.state).toBe("open");
+    },
+    T,
+  );
+
+  it(
+    "taking a candidate on a field into two stretches revoked since: one detail per stretch",
+    async () => {
+      const put = (o: Record<string, unknown>, actor = USER) =>
+        send({ sv: 1, ops: [{ table: "entities", ...o }] }, { actor });
+      const e = await send({
+        sv: 1,
+        ops: [{ intent: "insert", table: "entities", valid_from: "2026-11-01", set: { b: "1" } }],
+      });
+      const entity = e.ops[0]?.target.entity as string;
+      const c = (v: string) => ({
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-07",
+        set: { c: v },
+      });
+      await put({ entity, intent: "update", ver: verAt(e), ...c("m") });
+      const z = await put({ entity, intent: "update", ver: verAt(e), ...c("x") }, OTHER);
+      const item = z.pending?.[0]?.id as string;
+      // Two holes in the candidate's interval: the candidate's c would fall where b has no value.
+      const r1 = await put({
+        entity,
+        intent: "revoke",
+        ver: verAt(z),
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-03",
+      });
+      await put({
+        entity,
+        intent: "revoke",
+        ver: verAt(r1),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-06",
+      });
+      const d = (await detailOf(item)) as { item_ver: string; target: { unit: string[] } };
+      expect(d.target.unit).toEqual(["c"]);
+      const gap = (from: string, to: string, last: string) => ({
+        table: "ledger.entities",
+        field: "b",
+        code: "required_in_gap",
+        valid: { valid_from: from, valid_to: to, valid_to_inclusive: last },
+      });
+      expect(await resolve({ id: item, decision: "take_candidate", item_ver: d.item_ver })).toEqual(
+        {
+          refused: "validation_failed",
+          reason: "write",
+          details: [
+            gap("2026-11-01", "2026-11-03", "2026-11-02"),
+            gap("2026-11-05", "2026-11-06", "2026-11-05"),
+          ],
+        },
+      );
+    },
+    T,
+  );
+
+  it(
+    "taking a candidate on a row revoked since: revoked, no param (a decision has no ops)",
+    async () => {
+      const { b, row, item } = await disputed();
+      // By another principal, who had not read the item: it is refreshed, not superseded.
+      const v = await send(
+        { sv: 1, ops: [{ intent: "revoke", table: "rows", row, ver: verAt(b) }] },
+        { actor: OTHER },
+      );
+      const d = (await detailOf(item)) as { item_ver: string };
+      expect(await resolve({ id: item, decision: "take_candidate", item_ver: d.item_ver })).toEqual(
+        { refused: "revoked", ops: [v.seq] },
+      );
+    },
+    T,
+  );
+});
+
 describe("confirmation_mismatch gives the item as it is now (04-contract-types §9 `current`)", () => {
   const ctxOf = (actor: string) =>
     createOpsContext({
@@ -987,13 +1114,21 @@ describe("confirmation_mismatch gives the item as it is now (04-contract-types �
     }
     throw new Error("not refused");
   };
+  /** The reads a call recorded: exactly the ones in the buffer since it was emptied, put back. */
+  const recordedBy = async (p: Promise<unknown>) => {
+    readBufferOf(s.store).take();
+    const err = await refusal(p);
+    const reads = readBufferOf(s.store).take();
+    readBufferOf(s.store).restore(reads);
+    return { err, reads };
+  };
 
   it(
     "the contents changed: current is the pending detail, word for word, item_ver included; it counts as read",
     async () => {
       const { b, c, row, item } = await disputed();
       await update(row, { b: "9.6" }, verAt(b), { actor: OTHER });
-      const err = await refusal(
+      const { err, reads } = await recordedBy(
         resolve$(s.store, ctxOf(USER), {
           id: item,
           decision: "keep_effective",
@@ -1001,6 +1136,8 @@ describe("confirmation_mismatch gives the item as it is now (04-contract-types �
         }),
       );
       expect(err).toMatchObject({ code: "confirmation_mismatch", reason: "changed" });
+      // Exactly one read: the item's detail, by the caller.
+      expect(reads).toEqual([expect.objectContaining({ actor: USER, operation: "pending" })]);
       const detail = await pending$(s.store, ctxOf(USER), { id: item });
       expect(err["current"]).toEqual(detail);
       // Read through the mismatch: left out, the item version is the one current gave.
@@ -1056,13 +1193,14 @@ describe("confirmation_mismatch gives the item as it is now (04-contract-types �
           ],
         });
       });
-      const err = await refusal(
+      const { err, reads } = await recordedBy(
         resolve$(s.store, ctxOf(USER), {
           id: item,
           decision: "keep_effective",
           item_ver: verOfItem(c, item),
         }),
       );
+      expect(reads).toEqual([expect.objectContaining({ actor: USER, operation: "pending" })]);
       expect(err).toMatchObject({
         code: "confirmation_mismatch",
         reason: "restored",

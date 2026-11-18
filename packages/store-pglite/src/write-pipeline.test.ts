@@ -997,6 +997,87 @@ describe("refusals: nothing is written", () => {
   );
 
   it(
+    "a gap's details name the table as the receipt does: another slot has a table of the same name",
+    async () => {
+      // A second slot with a table "entities" too: the bare name is ambiguous_table if sent back.
+      await s.store.write(async (tx) => {
+        const op = await appendOperation(tx, {
+          actor: USER as never,
+          now: "2026-11-05T00:00:40.000Z" as never,
+          // The fixture's events are for the first slot and draft: the same, for a second one.
+          events: JSON.parse(
+            JSON.stringify(
+              createSlotEvents({
+                compiled: {
+                  ...COMPILED,
+                  slot: `sl_${"5".repeat(16)}`,
+                  name: "home",
+                  tables: [
+                    {
+                      id: "t9",
+                      name: "entities",
+                      kind: "base",
+                      description: "entities at home",
+                      time: { type: "state", granularity: "date" },
+                      physical: { table: "t_t9_v1" },
+                      fields,
+                    },
+                  ],
+                } as never,
+                changes: [
+                  { target: { slot: true }, change: "create_slot" },
+                  { target: { table: "t9" }, change: "add_table" },
+                ].map((c) => ({
+                  ...c,
+                  class: "create",
+                  compatible_with_old_writes: true,
+                  destructive: false,
+                  auto: true,
+                })) as never,
+              }),
+            )
+              .replaceAll(SLOT, `sl_${"5".repeat(16)}`)
+              .replaceAll(`d_${"1".repeat(16)}`, `d_${"5".repeat(16)}`),
+          ),
+        });
+        await applyEvents(tx, eventsOf(op));
+      });
+      const e = await send({
+        sv: 1,
+        ops: [
+          {
+            intent: "insert",
+            table: "ledger.entities",
+            valid_from: "2026-11-01",
+            valid_to: "2026-11-03",
+            set: { b: "x" },
+          },
+        ],
+      });
+      expect(e.ops[0]?.target.table).toBe("ledger.entities");
+      const op = {
+        intent: "update",
+        entity: e.ops[0]?.target.entity,
+        ver: e.ops[0]?.ver,
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-07",
+        set: { c: "y" },
+      };
+      const r = await send({ sv: 1, ops: [{ table: "ledger.entities", ...op }] });
+      expect(r).toMatchObject({
+        refused: "validation_failed",
+        details: [{ table: "ledger.entities", field: "b", code: "required_in_gap" }],
+      });
+      // The bare name would not do: it names a table in each slot.
+      expect(await send({ sv: 1, ops: [{ table: "entities", ...op }] })).toMatchObject({
+        refused: "invalid_argument",
+        reason: "ambiguous_table",
+      });
+    },
+    T,
+  );
+
+  it(
     "judge's refusals: undoing the creation, a revoked row, a gap without its required field",
     async () => {
       const a = await insertRow();
@@ -1042,9 +1123,68 @@ describe("refusals: nothing is written", () => {
         },
         {
           refused: "validation_failed",
-          param: "ops/0",
-          missing: ["f2"],
-          valid: [{ from: "2026-11-05", to: "2026-11-07" }],
+          reason: "write",
+          details: [
+            {
+              op: 0,
+              table: "ledger.entities",
+              field: "b",
+              code: "required_in_gap",
+              valid: {
+                valid_from: "2026-11-05",
+                valid_to: "2026-11-07",
+                valid_to_inclusive: "2026-11-06",
+              },
+            },
+          ],
+        },
+      );
+      // Only an end, before today (the start): malformed at valid_to (04-contract-types §9).
+      await refused(
+        {
+          sv: 1,
+          ops: [
+            {
+              intent: "update",
+              table: "entities",
+              entity: e.ops[0]?.target.entity,
+              ver: e.ops[0]?.ver,
+              valid_to: "2026-11-03",
+              set: { b: "y" },
+            },
+          ],
+        },
+        { refused: "invalid_argument", reason: "malformed", param: "ops/0/valid_to" },
+      );
+      // One detail per stretch without a value: before the entity and after it.
+      await refused(
+        {
+          sv: 1,
+          ops: [
+            {
+              intent: "update",
+              table: "entities",
+              entity: e.ops[0]?.target.entity,
+              ver: e.ops[0]?.ver,
+              valid_from: "2026-10-30",
+              valid_to: "2026-11-05",
+              set: { c: "y" },
+            },
+          ],
+        },
+        {
+          refused: "validation_failed",
+          reason: "write",
+          details: [
+            ["2026-10-30", "2026-11-01", "2026-10-31"],
+            ["2026-11-03", "2026-11-05", "2026-11-04"],
+          ].map(([from, to, last]) => ({
+            op: 0,
+            table: "ledger.entities",
+            field: "b",
+            code: "required_in_gap",
+            valid: { valid_from: from, valid_to: to, valid_to_inclusive: last },
+          })),
         },
       );
     },

@@ -46,6 +46,7 @@ import {
   awaitingImpact,
   conflictImpact,
   emptyState,
+  type GapEntry,
   type ItemRef,
   JudgeError,
   type JudgeInput,
@@ -70,6 +71,7 @@ import {
   normalizeWrite,
   type RequestError,
   resolveWriteSlot,
+  type WriteValidationDetail,
 } from "../request/index.ts";
 import type { Tx } from "../store/ports.ts";
 import { type IntervalSet, meet, WHOLE } from "../time/index.ts";
@@ -99,7 +101,13 @@ import {
   verFromWrite,
 } from "./reads.ts";
 import type { FallbackOrigin, ReceiptWarning } from "./receipt.ts";
-import { readReceipt, type WriteReceipt, withDerived } from "./receipt.ts";
+import {
+  intervalOut,
+  qualifiedTable,
+  readReceipt,
+  type WriteReceipt,
+  withDerived,
+} from "./receipt.ts";
 import { decodeRecords, encodeOp, type RowContext, type StoredEvent } from "./record.ts";
 import { findRequest, requestKeyOf } from "./request-key.ts";
 import { evidenceSource } from "./sources.ts";
@@ -453,18 +461,59 @@ function undoneIntent(events: readonly StoredEvent[], undone: OpNumber): Normali
   return (last?.intent ?? "update") as NormalizedOp["intent"];
 }
 
-export function judgeFailure(e: JudgeError, index: number): WriteError {
-  const param = `ops/${index}`;
+/**
+ * Where a judgement failed, for its error: the op of the write (none in a resolve, whose request has
+ * no ops) and the table, whose field names and granularity the error is written in.
+ */
+export interface FailedAt {
+  readonly index?: number;
+  readonly slot: string;
+  readonly table: CompiledBaseTable;
+}
+
+/** A judgement's failure as the contract's error (04-contract-types §9). */
+export function judgeFailure(e: JudgeError, at: FailedAt): WriteError {
+  const param = at.index !== undefined ? `ops/${at.index}` : undefined;
   switch (e.reason) {
-    case "invalid_argument":
-      return new WriteError("invalid_argument", e.message, { param, ...e.detail });
+    case "invalid_argument": {
+      // `param` in the detail: the op's parameter it names.
+      const { param: sub, ...rest } = e.detail as { param?: unknown };
+      const where =
+        param === undefined ? undefined : typeof sub === "string" ? `${param}/${sub}` : param;
+      return new WriteError("invalid_argument", e.message, {
+        ...(where !== undefined ? { param: where } : {}),
+        ...rest,
+      });
+    }
     case "validation_failed":
-      return new WriteError("validation_failed", e.message, { param, ...e.detail });
+      return new WriteError("validation_failed", e.message, {
+        reason: "write",
+        details: gapDetails((e.detail as { gaps?: readonly GapEntry[] }).gaps ?? [], at),
+      });
     case "revoked":
-      return new WriteError("revoked", e.message, { param, ...e.detail });
+      return new WriteError("revoked", e.message, {
+        ...(param !== undefined ? { param } : {}),
+        ...e.detail,
+      });
     default:
-      return new WriteError("internal", e.message, { param });
+      return new WriteError("internal", e.message, param !== undefined ? { param } : {});
   }
+}
+
+/** One `required_in_gap` detail per field and stretch: the field's name, the stretch's interval. */
+function gapDetails(gaps: readonly GapEntry[], at: FailedAt): WriteValidationDetail[] {
+  const t = at.table;
+  const byDate = t.time.type === "state" && t.time.granularity === "date";
+  const name = (f: string) => t.fields.find((x) => x.id === f)?.name ?? f;
+  return gaps.flatMap((g) =>
+    g.valid.map((v) => ({
+      ...(at.index !== undefined ? { op: at.index } : {}),
+      table: qualifiedTable(at.slot, t),
+      field: name(g.field),
+      code: "required_in_gap" as const,
+      valid: intervalOut(v, byDate),
+    })),
+  );
 }
 
 /** The raw values a write gave, as the head event records them (09 §1.3). */
@@ -875,7 +924,9 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     try {
       judged = judgeOp(work.state, judgeInput);
     } catch (e) {
-      if (e instanceof JudgeError) throw judgeFailure(e, o.index);
+      if (e instanceof JudgeError) {
+        throw judgeFailure(e, { index: o.index, slot: slot.name, table: tableOf(o.table) });
+      }
       throw e;
     }
     const j = judged.judgement;

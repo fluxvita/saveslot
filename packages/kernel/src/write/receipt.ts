@@ -261,7 +261,7 @@ export function withDerived(
       // The group key's fields are the row's key, given in `key`: not a change of their own.
       if (keyIds.includes(c.field)) continue;
       all.push({
-        table: `${slotName}.${t.name}`,
+        table: qualifiedTable(slotName, t),
         key,
         field: nameOf(c.field),
         before: valueOut(c.before),
@@ -318,8 +318,12 @@ const overlaps = (a: Span, b: Span) =>
 const dayBefore = (d: string): DateStr =>
   new Date(Date.parse(`${d}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10) as DateStr;
 
+/** A table as receipts and errors name it: `slot.table`, never the bare name another slot may share. */
+export const qualifiedTable = (slot: string, table: { readonly name: string }): string =>
+  `${slot}.${table.name}`;
+
 /** A span as the contract's interval: `valid_to_inclusive` on date tables with an end. */
-function intervalOut(v: Span, byDate: boolean): Interval {
+export function intervalOut(v: Span, byDate: boolean): Interval {
   return {
     valid_from: v.from,
     valid_to: v.to,
@@ -733,7 +737,7 @@ export async function readReceipt(
     const key = t.by_entity_key ? await keyOf(tx, table, rowId as EntityId) : undefined;
     ops.push({
       target: {
-        table: `${o.slotName}.${table.name}`,
+        table: qualifiedTable(o.slotName, table),
         ...(isState ? { entity: rowId as EntityId } : { row: rowId as RowId }),
         ...(key !== undefined
           ? {

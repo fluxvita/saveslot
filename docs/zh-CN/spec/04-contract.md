@@ -171,7 +171,7 @@
   - 同一个 `set` 里按不分大小写是同一字段的两个键：`invalid_argument`（`malformed`，`param` 指到第二种写法）；`entity_key` 里同样，`param` 指到那个键。
   - `acknowledge`、`evidence_refs` 里的重复项：`invalid_argument`（`malformed`，`param` 指到第二次出现的那一项）。
   - 限定名 `slot.table` 的 slot 不是本请求所在的 slot：`invalid_argument`（`cross_slot`）。
-  - 状态类表上 `valid_from` 不早于 `valid_to`：`invalid_argument`（`malformed`，`param` 为 `valid_to`）。
+  - 状态类表上 `valid_from` 不早于 `valid_to`：`invalid_argument`（`malformed`，`param` 为 `valid_to`）。两端都给时在这一步；只给 `valid_to`、起点按"现在"（slot 时区下的那一天或那一刻）算时，在判定这个 op 时才知道，排在 `not_found`、`read_first` 之后，同样报 `invalid_argument`（`malformed`，`param` 为 `ops/<i>/valid_to`）。
   - `ref` 写临时名 `"@p1"`：第一版没有 `as`，请求里不会有绑定它的 op，报 `validation_failed`（`ref_not_found`）。
   - 证据段 `source_ref`：第一版不开放，`not_in_this_version`（`parameter`，`param` 指到那一段）。
 - **`valid_from` / `valid_to` 只用于状态类表**；用在别的表上报 `invalid_argument`（`not_state_table`）。实体的键字段不随业务时间变化：带区间的写入里出现 `entity_key` 的键字段且值与实体的键不同，报 `invalid_argument`（`key_field_changed`）。

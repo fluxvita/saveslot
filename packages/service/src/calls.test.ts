@@ -290,8 +290,13 @@ describe("contractError", () => {
     override readonly name = "WriteError";
     readonly code: string;
     readonly detail: Record<string, unknown>;
-    constructor(code: string, message: string, detail: Record<string, unknown> = {}) {
-      super(message);
+    constructor(
+      code: string,
+      message: string,
+      detail: Record<string, unknown> = {},
+      options?: { cause?: unknown },
+    ) {
+      super(message, options);
       this.code = code;
       this.detail = detail;
     }
@@ -328,6 +333,30 @@ describe("contractError", () => {
     expect(warnings.at(-1)).toEqual([
       "not_implemented",
       { error: "WriteError", param: "ops/0/table" },
+    ]);
+  });
+
+  it("an internal error over another: the incident only, the other one logged by name and code", () => {
+    const e = contractError(
+      new WriteError(
+        "internal",
+        "the item's detail could not be read for the mismatch",
+        { reason: "inconsistent" },
+        { cause: new WriteError("not_found", "SECRET-MESSAGE", { reason: "item", param: "id" }) },
+      ),
+      warn,
+    );
+    expect(e.code).toBe("internal");
+    expect(Object.keys(e.detail)).toEqual(["incident"]);
+    expect(warnings.at(-1)).toEqual([
+      "internal",
+      {
+        incident: e.detail["incident"],
+        error: "WriteError",
+        code: "internal",
+        cause: "WriteError",
+        cause_code: "not_found",
+      },
     ]);
   });
 
