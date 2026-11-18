@@ -67,55 +67,44 @@ const cursor: Param = { schema: str, text: COMMON.cursor };
 const WHERE_OPS = ["=", "!=", "<", "<=", ">", ">=", "in", "contains", "is_null"];
 
 /** An evidence segment (04-contract-types §2), without `level`: MCP does not expose it (05 §2). */
+// Which fields go with which kind is said in each field's description, not by a `oneOf` per
+// kind: a host may flatten or refuse alternatives inside an array's items. `source_ref` (and its
+// `id`) is not taken in this version (05 §9 «这一版不出现的句子»).
+const fileRefOnly = (what: string) => `${what} \`file_ref\` only.`;
 const SEGMENT: JsonSchema = {
   type: "object",
   properties: {
-    kind: { enum: ["user_message", "agent_note", "tool_result", "file_ref", "source_ref"] },
-    text: str,
-    stated_at: str,
-    name: str,
-    mime: str,
-    size: { type: "integer", minimum: 0 },
-    sha256: str,
-    origin: str,
-    excerpt: str,
-    id: str,
+    kind: { enum: ["user_message", "agent_note", "tool_result", "file_ref"] },
+    text: {
+      ...str,
+      description:
+        "Required for `user_message`, `agent_note` and `tool_result`; not with `file_ref`.",
+    },
+    stated_at: {
+      ...str,
+      description: "Any kind: when the words were said, a moment with its offset.",
+    },
+    name: { ...str, description: fileRefOnly("The file's name. Required, and for") },
+    mime: { ...str, description: fileRefOnly("Its media type. Required, and for") },
+    size: {
+      type: "integer",
+      minimum: 0,
+      description: fileRefOnly("Its size in bytes. Required, and for"),
+    },
+    sha256: { ...str, description: fileRefOnly("Its SHA-256, 64 hex digits. Required, and for") },
+    origin: { ...str, description: fileRefOnly("Where it came from. Optional, and for") },
+    excerpt: { ...str, description: fileRefOnly("The part of it that matters. Optional, and for") },
   },
   required: ["kind"],
   additionalProperties: false,
 };
 
-/** Field name (or `valid`) → indexes of evidence segments. */
-const BY_FIELD: JsonSchema = {
-  type: "object",
-  additionalProperties: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 1 },
-};
-
 const keyValues: JsonSchema = { type: "object" };
 
-/** A premise (04-contract-types §5.1 `PremiseRef`). */
-const PREMISE: JsonSchema = {
-  type: "object",
-  properties: {
-    table: str,
-    row: str,
-    entity: str,
-    entity_key: keyValues,
-    fields: names,
-    ver: str,
-    valid_at: str,
-    valid_during: {
-      type: "array",
-      prefixItems: [str, { type: ["string", "null"] }],
-      minItems: 2,
-      maxItems: 2,
-    },
-  },
-  required: ["table"],
-  additionalProperties: false,
-};
-
-/** A write op (04-contract-types §5.1 `WriteOp`), without `acknowledge` (05 §2). */
+/**
+ * A write op (04-contract-types §5.1 `WriteOp`), without `acknowledge` (05 §2), and without what
+ * this version does not take.
+ */
 const WRITE_OP: JsonSchema = {
   type: "object",
   properties: {
@@ -124,8 +113,6 @@ const WRITE_OP: JsonSchema = {
     row: str,
     entity: str,
     entity_key: keyValues,
-    external_key: keyValues,
-    as: str,
     ver: str,
     set: { type: "object" },
     revert: {
@@ -136,10 +123,9 @@ const WRITE_OP: JsonSchema = {
     },
     valid_from: str,
     valid_to: str,
-    evidence: { type: "array", items: SEGMENT },
+    // `external_key`, `as`, an op's own `evidence`, `evidence_by_field` and `premises` are not
+    // taken in this version, and not listed (05 §9 «这一版不出现的句子»).
     evidence_refs: { type: "array", items: { type: "integer", minimum: 0 } },
-    evidence_by_field: BY_FIELD,
-    premises: { type: "array", items: PREMISE },
   },
   required: ["table"],
   additionalProperties: false,
@@ -162,7 +148,6 @@ export const TOOLS: readonly Tool[] = [
     params: {
       level: { schema: { enum: ["list", "table", "schema"] }, text: CATALOG.params.level },
       slot: { schema: str, text: CATALOG.params.slot },
-      draft: { schema: str, text: CATALOG.params.draft },
       tables: {
         schema: { ...names, minItems: 1, maxItems: 10 },
         text: CATALOG.params.tables,
@@ -171,7 +156,9 @@ export const TOOLS: readonly Tool[] = [
       cursor,
       task,
     },
-    withheld: {},
+    withheld: {
+      draft: "reading a draft comes with changing a slot's schema (07-scope-v1 P4)",
+    },
     annotations: { readOnlyHint: true, openWorldHint: false },
     examples: [{}, { level: "list", limit: 10 }, { level: "table", tables: ["ledger.expenses"] }],
   },
@@ -221,7 +208,7 @@ export const TOOLS: readonly Tool[] = [
       coalesce: { schema: bool, text: QUERY.params.coalesce },
       at: { schema: str, text: QUERY.params.at },
       include_revoked: { schema: bool, text: QUERY.params.include_revoked },
-      detail: { schema: { enum: ["concise", "detailed"] }, text: COMMON.detail },
+      detail: { schema: { enum: ["concise"] }, text: COMMON.detail },
       limit: { schema: limit(200), text: COMMON.limit },
       cursor,
       task,
@@ -248,7 +235,7 @@ export const TOOLS: readonly Tool[] = [
     scope: "saveslot.read",
     description: HISTORY.description,
     params: {
-      mode: { schema: { enum: ["timeline", "as_of", "changes"] }, text: HISTORY.params.mode },
+      mode: { schema: { enum: ["timeline", "as_of"] }, text: HISTORY.params.mode },
       table: { schema: str, text: HISTORY.params.table, required: true },
       row: { schema: str, text: HISTORY.params.row },
       entity: { schema: str, text: HISTORY.params.entity },
@@ -276,15 +263,7 @@ export const TOOLS: readonly Tool[] = [
         text: HISTORY.params.as_of,
       },
       valid_at: { schema: str, text: HISTORY.params.valid_at },
-      detail: { schema: { enum: ["concise", "detailed"] }, text: COMMON.detail },
-      since: {
-        schema: { oneOf: [{ type: "integer", minimum: 0 }, str] },
-        text: HISTORY.params.since,
-      },
-      until: {
-        schema: { oneOf: [{ type: "integer", minimum: 0 }, str] },
-        text: HISTORY.params.until,
-      },
+      detail: { schema: { enum: ["concise"] }, text: COMMON.detail },
       limit: { schema: limit(200), text: COMMON.limit },
       cursor,
       task,
@@ -292,25 +271,18 @@ export const TOOLS: readonly Tool[] = [
     withheld: {
       external_key: "a read takes no source key (04-contract-types §1.5)",
       key: "05 §9.1 gives history no derived-row target",
+      since: "only with mode `changes`, not in this version (07-scope-v1 P2)",
+      until: "only with mode `changes`, not in this version (07-scope-v1 P2)",
     },
     oneOf: [
       {
         properties: { mode: { const: "timeline" } },
-        not: {
-          anyOf: ["as_of", "valid_at", "detail", "since", "until"].map((p) => ({ required: [p] })),
-        },
+        not: { anyOf: ["as_of", "valid_at", "detail"].map((p) => ({ required: [p] })) },
       },
       {
         properties: { mode: { const: "as_of" } },
         required: ["mode", "as_of"],
-        not: { anyOf: ["expand_sources", "since", "until"].map((p) => ({ required: [p] })) },
-      },
-      {
-        properties: { mode: { const: "changes" } },
-        required: ["mode", "since"],
-        not: {
-          anyOf: ["expand_sources", "as_of", "valid_at", "detail"].map((p) => ({ required: [p] })),
-        },
+        not: { anyOf: ["expand_sources"].map((p) => ({ required: [p] })) },
       },
     ],
     annotations: { readOnlyHint: true, openWorldHint: false },
@@ -401,16 +373,9 @@ export const TOOLS: readonly Tool[] = [
       id: { schema: str, text: RESOLVE.params.id, required: true },
       decision: {
         schema: {
-          enum: [
-            "keep_effective",
-            "take_candidate",
-            "take_previous",
-            "confirm",
-            "reject",
-            "keep",
-            "revoke",
-            "cancel",
-          ],
+          // This version's items are conflicts and changes awaiting confirmation; the other
+          // decisions come with flagged items (P2), deletions (P3) and schema changes (P4).
+          enum: ["keep_effective", "take_candidate", "take_previous", "confirm", "reject"],
         },
         text: RESOLVE.params.decision,
         required: true,
@@ -419,11 +384,11 @@ export const TOOLS: readonly Tool[] = [
       candidate: { schema: { type: "integer", minimum: 0 }, text: RESOLVE.params.candidate },
       note: { schema: str, text: RESOLVE.params.note },
       evidence: { schema: { type: "array", items: SEGMENT }, text: RESOLVE.params.evidence },
-      evidence_by_field: { schema: BY_FIELD, text: RESOLVE.params.evidence_by_field },
       idempotency_key: { schema: str, text: IDEMPOTENCY_KEY },
       task,
     },
     withheld: {
+      evidence_by_field: "not taken in this version (07-scope-v1 P2)",
       diff_upto: "migration differences are not in this version (04-contract-types §0.2)",
       rows: "migration differences are not in this version (04-contract-types §0.2)",
     },

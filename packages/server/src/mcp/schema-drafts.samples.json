@@ -467,5 +467,80 @@
       "code": "validation_failed",
       "message": "the document does not compile"
     }
+  },
+  "schema-draft-sql-outside-rule": {
+    "error": {
+      "reason": "malformed",
+      "param": "tables/1/sql",
+      "code": "invalid_argument",
+      "message": "tables/1/sql: malformed"
+    }
+  },
+  "schema-draft-rule-not-an-object": {
+    "error": {
+      "reason": "malformed",
+      "param": "tables/1/rule",
+      "code": "invalid_argument",
+      "message": "tables/1/rule: malformed"
+    }
+  },
+  "schema-draft-no-time-dependency": {
+    "error": {
+      "reason": "missing",
+      "param": "tables/1/rule/time_dependency",
+      "code": "invalid_argument",
+      "message": "tables/1/rule/time_dependency: missing"
+    }
+  },
+  "schema-draft-bad-time-dependency": {
+    "error": {
+      "reason": "malformed",
+      "param": "tables/1/rule/time_dependency",
+      "code": "invalid_argument",
+      "message": "tables/1/rule/time_dependency: malformed"
+    }
+  },
+  "schema-draft-derived-field-type": {
+    "error": {
+      "reason": "schema",
+      "details": [
+        {
+          "path": "tables/1/fields/0/type",
+          "code": "key_not_applicable"
+        },
+        {
+          "path": "tables/1/fields/1/type",
+          "code": "key_not_applicable"
+        }
+      ],
+      "code": "validation_failed",
+      "message": "the document does not compile"
+    }
+  },
+  "schema-draft-unknown-type": {
+    "error": {
+      "reason": "schema",
+      "details": [
+        {
+          "path": "tables/0/fields/2/type",
+          "code": "unknown_type"
+        }
+      ],
+      "code": "validation_failed",
+      "message": "the document does not compile"
+    }
+  },
+  "schema-draft-time-field-optional": {
+    "error": {
+      "reason": "schema",
+      "details": [
+        {
+          "path": "tables/0/time/field",
+          "code": "key_not_applicable"
+        }
+      ],
+      "code": "validation_failed",
+      "message": "the document does not compile"
+    }
   }
 }

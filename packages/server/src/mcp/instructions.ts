@@ -79,7 +79,7 @@ export function instructionsFor(
   o: { readonly scoped: boolean },
 ): string {
   const range = o.scoped ? "scoped" : "all";
-  const lines = INSTRUCTIONS.lines.map((l) => compose(l, tools, range)).filter((l) => l !== "");
+  const lines = INSTRUCTIONS.lines.map((l) => compose(l, tools, { range })).filter((l) => l !== "");
   const list = slotList(slots, { scoped: o.scoped, schema: tools.has("saveslot_schema_draft") });
   return [...lines, list].join("\n");
 }

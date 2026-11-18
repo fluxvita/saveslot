@@ -133,8 +133,8 @@ group("each tool's parameters are its operation's", () => {
     expect(await ok({ mode: "as_of", table: "t", row: r })).toBe(false);
     expect(await ok({ mode: "as_of", table: "t", row: r, as_of: { task: "x" } })).toBe(true);
     expect(await ok({ mode: "as_of", table: "t", row: r, as_of: 3, until: 4 })).toBe(false);
-    expect(await ok({ mode: "changes", table: "t", since: "my_last_read" })).toBe(true);
-    expect(await ok({ mode: "changes", table: "t", since: 1, detail: "concise" })).toBe(false);
+    // `changes` is not in this version: neither the mode nor its parameters are listed.
+    expect(await ok({ mode: "changes", table: "t", since: "my_last_read" })).toBe(false);
     expect(await ok({ mode: "composition", table: "t" })).toBe(false);
   });
 

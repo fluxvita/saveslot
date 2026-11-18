@@ -4,14 +4,20 @@
 //
 // A sentence that points to another tool is a `Piece` with `needs`: it appears only when that
 // tool is in the credential's tool list (05 §9 «按 scope 出现的句子»), so the text is still static,
-// one reviewed version per set of tools. No text here holds anything a caller wrote.
+// one reviewed version per set of tools. A sentence about what this version's kernel refuses is a
+// `Piece` with `later`, the phase it comes with: it does not appear in this version (05 §9 «这一版
+// 不出现的句子»), and stays here to be let in then. No text here holds anything a caller wrote.
 
 import { FIELD_TYPES } from "@fluxvita/saveslot-contract";
 import type { ToolName } from "./names.ts";
 
+/** A later phase of 07-scope-v1, in which what a `later` piece speaks of is open. */
+export type Phase = "P2" | "P3" | "P4";
+
 /**
  * A sentence; or one that appears only when the tools it points to are all listed (`needs`), or
- * only when a tool is not (`without`: what stands in for a sentence of that tool's).
+ * only when a tool is not (`without`: what stands in for a sentence of that tool's); or one about
+ * what comes with a later phase (`later`), which this version leaves out.
  */
 export type Piece =
   | string
@@ -30,25 +36,37 @@ export type Piece =
       readonly without: ToolName | readonly ToolName[];
       /** And, if given, all of these are. */
       readonly needs?: ToolName | readonly ToolName[];
+    }
+  | {
+      readonly text: string;
+      readonly later: Phase;
+      readonly needs?: ToolName | readonly ToolName[];
     };
 
 /** A static text: its pieces, joined with a space. */
 export type Text = readonly Piece[];
 
-/** The text for a credential whose tool list is `tools`, and slot range `range` when it matters. */
+/**
+ * The text for a credential whose tool list is `tools`, and slot range `range` when it matters.
+ * `later: true` lets the later pieces in, only to check that the text still reads when they are.
+ */
 export function compose(
   text: Text,
   tools: ReadonlySet<ToolName>,
-  range?: "all" | "scoped",
+  o: { readonly range?: "all" | "scoped"; readonly later?: boolean } = {},
 ): string {
   return text
-    .filter((p) => shown(p, tools, range))
+    .filter((p) => shown(p, tools, o))
     .map((p) => (typeof p === "string" ? p : p.text))
     .join(" ");
 }
 
 /** Whether a piece appears for a credential whose tool list is `tools`. */
-function shown(p: Piece, tools: ReadonlySet<ToolName>, range?: "all" | "scoped"): boolean {
+function shown(
+  p: Piece,
+  tools: ReadonlySet<ToolName>,
+  o: { readonly range?: "all" | "scoped"; readonly later?: boolean },
+): boolean {
   if (typeof p === "string") return true;
   const all = (x: ToolName | readonly ToolName[]): readonly ToolName[] =>
     typeof x === "string" ? [x] : x;
@@ -58,7 +76,9 @@ function shown(p: Piece, tools: ReadonlySet<ToolName>, range?: "all" | "scoped")
       (p.needs === undefined || all(p.needs).every((n) => tools.has(n)))
     );
   }
-  if (p.range !== undefined && p.range !== range) return false;
+  if ("later" in p && o.later !== true) return false;
+  if ("range" in p && p.range !== undefined && p.range !== o.range) return false;
+  if (p.needs === undefined) return true;
   return (typeof p.needs === "string" ? [p.needs] : p.needs).every((n) => tools.has(n));
 }
 
@@ -76,7 +96,11 @@ export const COMMON = {
     "The `next_cursor` of the previous page, passed back unchanged for the next page. Never construct one; do not pass it again after changing the request.",
   ],
   detail: [
-    "`concise` (default) or `detailed`. The default is enough; use `detailed` only when you need the full source and mark details.",
+    "`concise` (default).",
+    {
+      text: "Or `detailed`: the default is enough; use `detailed` only when you need the full source and mark details.",
+      later: "P2",
+    },
   ],
 } as const satisfies Record<string, Text>;
 
@@ -85,7 +109,10 @@ export const CATALOG = {
     "See which slots, tables and fields this user's saveslot has.",
     "Use it when the user asks about their own records and you do not yet know which tables there are, or are unsure of a table name, field name or unit; there is no need to call it again when you already looked in this conversation and have not been told of a schema update since.",
     'Start with the default `list` for the overview, then `level: "table"` for the fields, units, relations and data overview of a few tables.',
-    "Tables and fields may have aliases: what the user calls them, for matching the user's words to a table; requests use the names, never the aliases.",
+    {
+      text: "Tables and fields may have aliases: what the user calls them, for matching the user's words to a table; requests use the names, never the aliases.",
+      later: "P2",
+    },
     "It does not return the data itself.",
     { text: "To read the data, use saveslot_query.", needs: "saveslot_query" },
   ],
@@ -94,9 +121,6 @@ export const CATALOG = {
       "`list` (default): which slots and tables there are. `table`: the fields, units and overview of some tables. `schema`: the full schema document of one slot, as JSON.",
     ],
     slot: ["A slot name. Required with `schema`. With `list`, only this slot is listed."],
-    draft: [
-      "Only with `schema`: a draft ID (`d_…`), to get that draft's document with its IDs filled in instead of the current version. A draft in any state can be read.",
-    ],
     tables: [
       "Required with `table`: 1 to 10 table names, written as `ledger.expenses`, or `expenses` alone when no other slot you can see has a table of that name. Names, not aliases.",
     ],
@@ -108,7 +132,7 @@ export const QUERY = {
   description: [
     "Read data by table, conditions, order and count, optionally by business time (`valid_at` / `valid_during`).",
     "Use it when the user asks about records in a table (a day, a period, a category); also read a row with it before changing that row.",
-    "It returns each row's `ver`: bring it back when you change that row. The marks in the result give a row's state (disputed, awaiting confirmation, premise changed, and so on).",
+    "It returns each row's `ver`: bring it back when you change that row. The marks in the result give a row's state (disputed, awaiting confirmation, and so on).",
     { text: "For aggregates and joins, use saveslot_sql.", needs: "saveslot_sql" },
     {
       text: "To see how a row came to be as it is, use saveslot_history.",
@@ -155,7 +179,11 @@ export const QUERY = {
 
 export const HISTORY = {
   description: [
-    "See how something came to be as it is now: every change, who made it, what the evidence was, which records it was based on, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`); what changed in a period (`changes`).",
+    "See how something came to be as it is now: every change, who made it, what the evidence was, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`).",
+    {
+      text: "Which records a change was based on is in `timeline` too; what changed in a period, in `changes`.",
+      later: "P2",
+    },
     {
       text: "For the current values only, use saveslot_query.",
       needs: "saveslot_query",
@@ -163,11 +191,13 @@ export const HISTORY = {
   ],
   params: {
     mode: [
-      "`timeline` (default): how one row came, step by step, to be as it is. `as_of`: what saveslot knew at a past moment. `changes`: what changed in a period.",
+      "`timeline` (default): how one row came, step by step, to be as it is. `as_of`: what saveslot knew at a past moment.",
+      { text: "`changes`: what changed in a period.", later: "P2" },
     ],
     table: ["The table name."],
     row: [
-      "Which row (event tables and tables without time). With `timeline` and `as_of`, give one of `row`, `entity` or `entity_key`; with `changes`, none means the whole table.",
+      "Which row (event tables and tables without time). Give one of `row`, `entity` or `entity_key`.",
+      { text: "With `changes`, none of them means the whole table.", later: "P2" },
     ],
     entity: ["Which entity of a state table (`e_…`)."],
     entity_key: [
@@ -180,16 +210,15 @@ export const HISTORY = {
     valid_at: [
       "Only with `as_of`, for state tables: also a day of business time. Without it, every period known back then.",
     ],
-    since: [
-      'Required with `changes`: from after which point (not included): an operation number, a moment, or `"my_last_read"` (after this connection last read the table; `read_first` if it never has).',
-    ],
-    until: ["Only with `changes`: up to which point (included). Default: the latest."],
   },
 } as const satisfies { description: Text; params: Record<string, Text> };
 
 export const PENDING = {
   description: [
-    "List the pending items (conflicts, changes awaiting confirmation, flagged records, schema changes, deletions that can still be undone), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version.",
+    "List the pending items (conflicts, and changes awaiting confirmation), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version.",
+    { text: "Records flagged as possible duplicates are pending items too.", later: "P2" },
+    { text: "Deletions that can still be undone are pending items too.", later: "P3" },
+    { text: "Schema changes awaiting confirmation are pending items too.", later: "P4" },
   ],
   params: {
     id: [
@@ -197,7 +226,10 @@ export const PENDING = {
     ],
     slot: ["Only the items of this slot."],
     type: [
-      "Only one type: `conflict`, `awaiting_confirmation`, `flagged`, `schema_change` or `deletion`.",
+      "Only one type: `conflict` or `awaiting_confirmation`.",
+      { text: "Also `flagged`.", later: "P2" },
+      { text: "Also `deletion`.", later: "P3" },
+      { text: "Also `schema_change`.", later: "P4" },
     ],
     status: ["`open` (default, not resolved yet), `resolved`, `superseded` or `all`."],
   },
@@ -207,12 +239,29 @@ export const WRITE = {
   description: [
     "Write one or more records to base tables (one slot, one transaction).",
     'Use it when the user tells you a new fact that belongs to a table ("I ran 5 km today"), when something has changed, or when the user says something was recorded wrongly; not when the user is asking, supposing or chatting.',
-    "The intent is one of four: `insert` a new record; `update` when something changed or more is known; `correct` when the recorded value was wrong in the first place (this finds the tasks that read the wrong value); `revoke` when the record should not exist (its history is kept).",
-    "When changing an existing row, bring back the `ver` and `sv` you read. Put the user's own words in `evidence` (`kind: user_message`); to make the words evidence for a value that did not change, name it in `evidence_by_field`. To clear an optional field, write `null`. Write table and field names as saveslot_catalog gives them; aliases are no substitute for names. Derived tables are read-only: write to their source tables. Do not write each reading a device produces (heart rate, glucose): record a summary of each activity or day.",
+    "The intent is one of four: `insert` a new record; `update` when something changed or more is known; `correct` when the recorded value was wrong in the first place; `revoke` when the record should not exist (its history is kept).",
+    { text: "A `correct` also finds the tasks that read the wrong value.", later: "P2" },
+    "When changing an existing row, bring back the `ver` and `sv` you read. Put the user's own words in `evidence` (`kind: user_message`).",
+    {
+      text: "To make the words evidence for a value that did not change, name it in `evidence_by_field`.",
+      later: "P2",
+    },
+    "To clear an optional field, write `null`. Write table and field names as saveslot_catalog gives them.",
+    { text: "Aliases are no substitute for names.", later: "P2" },
+    "Derived tables are read-only: write to their source tables. Do not write each reading a device produces (heart rate, glucose): record a summary of each activity or day.",
+    "A moment with its zone, such as `2026-11-12T09:30:53+08:00[Asia/Shanghai]`, is recorded as given; with an offset only (`+08:00`) it is taken in the slot's time zone and the receipt notes it; an object such as `{instant, zone}` is refused.",
     "`replayed: true` in the receipt means this was a repeat and nothing new was written; when a record with the same content really happened again, write it with a different `idempotency_key`.",
-    'Periods of state tables are `[valid_from, valid_to)`, the end not included: for "until 11-20 (included)" pass `valid_to: "2026-11-21"`. Without an end, only up to the next recorded change; the receipt says nothing after it was touched. Writing by `entity_key` creates the entity when it does not exist; the receipt lists the keys the table already has, and marks those written alike. `revoke` without a period revokes the whole entity, with a period it leaves that period without a value. For "undo that change" or "put it back as it was", use `revert: {undo: <the #n of that write>}`: it undoes only what of that write is still in effect; what others changed since is skipped and listed in the receipt.',
-    "When the table declares a source key and your records come from another system, you can use `external_key` instead of `row`: give every key field, with intent `update` and no `ver`; a record already there is compared with what was last delivered, one not there is added. A record that did not change leaves nothing; a record the user revoked is skipped, not written back.",
-    'When what you write was decided from other records in saveslot (tasks planned by a release date, a budget set from an income), you can list those records and the `ver` you read in `premises`. If they change later, this row carries "premise changed" for anyone who reads it, naming the record and the operation; its values are not changed. When you read a row with "premise changed" and it needs adjusting, change it as usual with new `premises`; when it still holds, an `update` with `premises` and no `set` says so; `premises: []` clears them. When the reason is a retroactive change or a changed plan, read the premise at the business time the mark gives: a read without a time returns the current period only. List only the records really used, not everything read; when what you used is a derived value, list the base record it sums up. When this write becomes a candidate or awaits confirmation, it declares premises only for the fields it writes; `premises: []` still clears the whole row.',
+    'Periods of state tables are `[valid_from, valid_to)`, the end not included: for "until 11-20 (included)" pass `valid_to: "2026-11-21"`. Without an end, only up to the next recorded change; the receipt says nothing after it was touched. Writing by `entity_key` creates the entity when it does not exist; the receipt lists the keys the table already has.',
+    { text: "It also marks the keys written alike.", later: "P2" },
+    '`revoke` without a period revokes the whole entity, with a period it leaves that period without a value. For "undo that change" or "put it back as it was", use `revert: {undo: <the #n of that write>}`: it undoes only what of that write is still in effect; what others changed since is skipped and listed in the receipt.',
+    {
+      text: "When the table declares a source key and your records come from another system, you can use `external_key` instead of `row`: give every key field, with intent `update` and no `ver`; a record already there is compared with what was last delivered, one not there is added. A record that did not change leaves nothing; a record the user revoked is skipped, not written back.",
+      later: "P2",
+    },
+    {
+      text: 'When what you write was decided from other records in saveslot (tasks planned by a release date, a budget set from an income), you can list those records and the `ver` you read in `premises`. If they change later, this row carries "premise changed" for anyone who reads it, naming the record and the operation; its values are not changed. When you read a row with "premise changed" and it needs adjusting, change it as usual with new `premises`; when it still holds, an `update` with `premises` and no `set` says so; `premises: []` clears them. When the reason is a retroactive change or a changed plan, read the premise at the business time the mark gives: a read without a time returns the current period only. List only the records really used, not everything read; when what you used is a derived value, list the base record it sums up. When this write becomes a candidate or awaits confirmation, it declares premises only for the fields it writes; `premises: []` still clears the whole row.',
+      later: "P2",
+    },
     "A write that would overwrite recorded changes does not take effect at once: the receipt lists what would be overwritten, and the pending item. Writing never deletes the original words.",
     {
       text: "To delete what the user said, preview it with `deletion_preview` of saveslot_sources, then use saveslot_delete.",
@@ -225,30 +274,51 @@ export const WRITE = {
       "The schema version you got when reading data or the catalog, passed back unchanged. Without it, saveslot uses the one you last read.",
     ],
     evidence: [
-      'The evidence for this write, an array. The user\'s words: `{kind: "user_message", text}`, the words themselves, not rewritten or summarized. A tool result: `tool_result`; your own inference: `agent_note`; a file: `file_ref`; a source already stored: `{kind: "source_ref", id}`. These segments are shared by the ops.',
+      'The evidence for this write, an array. The user\'s words: `{kind: "user_message", text}`, the words themselves, not rewritten or summarized. A tool result: `{kind: "tool_result", text}`; your own inference: `{kind: "agent_note", text}`; a file: `{kind: "file_ref", name, mime, size, sha256}`, with `origin` and `excerpt` if you have them (these six fields are for `file_ref` only, and `text` is not). Any kind may have `stated_at`, when the words were said, with its offset. These segments are shared by the ops.',
+      { text: 'A source already stored: `{kind: "source_ref", id}`.', later: "P2" },
     ],
     ops: [
-      'One or more operations on one slot, in order; all succeed or none does. Each: `intent`; `table`; `row` (`r_…`, an existing row of an event table or a table without time), or `entity` / `entity_key` (a state table); `ver` as read; `set` (field name → value; a value with a unit as `{value, unit}`; `null` clears an optional field); for state tables `valid_from` (included) and `valid_to` (not included; `next_change` by default, or `open`); `revert: {undo: n, include_later?}` instead of `set`; `external_key`; `as` (a temporary name for a new row, used later in the request as `"@p1"`); `evidence`, `evidence_refs` (indexes into the request\'s `evidence`) and `evidence_by_field` (field name → evidence indexes; `valid` for the period); `premises` (`[{table, row or entity or entity_key, fields, ver}]`). Tell "it changed" (`update`) from "it was wrong" (`correct`).',
+      'One or more operations on one slot, in order; all succeed or none does. Each: `intent`; `table`; `row` (`r_…`, an existing row of an event table or a table without time), or `entity` / `entity_key` (a state table); `ver` as read; `set` (field name → value; a value with a unit as `{value, unit}`; `null` clears an optional field); for state tables `valid_from` (included) and `valid_to` (not included; `next_change` by default, or `open`); `revert: {undo: n, include_later?}` instead of `set`; `evidence_refs` (indexes into the request\'s `evidence`). Tell "it changed" (`update`) from "it was wrong" (`correct`).',
+      { text: "`external_key`: the record's key in the system it comes from.", later: "P2" },
+      {
+        text: '`as`: a temporary name for a new row, used later in the request as `"@p1"`.',
+        later: "P2",
+      },
+      {
+        text: "`evidence`: the op's own segments; `evidence_by_field`: field name → evidence indexes (`valid` for the period).",
+        later: "P2",
+      },
+      {
+        text: "`premises`: `[{table, row or entity or entity_key, fields, ver}]`.",
+        later: "P2",
+      },
     ],
   },
 } as const satisfies { description: Text; params: Record<string, Text> };
 
 export const RESOLVE = {
   description: [
-    "Resolve one pending item (a conflict, a change awaiting confirmation, a flagged record, a schema change, undoing a deletion).",
+    "Resolve one pending item (a conflict, or a change awaiting confirmation).",
+    { text: "Flagged records are resolved here too.", later: "P2" },
+    { text: "Undoing a deletion is done here too.", later: "P3" },
+    { text: "Schema changes awaiting confirmation are resolved here too.", later: "P4" },
     {
       text: "The ways an item can be resolved are given in its detail from saveslot_pending and in the receipts.",
       needs: "saveslot_pending",
     },
-    "Before a resolution with a large effect (confirming a change, a schema change), tell the user the detail and get their agreement.",
+    "Before a resolution with a large effect (confirming a change), tell the user the detail and get their agreement.",
   ],
   params: {
     id: ["The item ID (`pi_…`), from a receipt or saveslot_pending."],
     decision: [
-      "How to resolve it, only one of those its detail lists: a conflict `keep_effective` / `take_candidate` / `take_previous`; a change awaiting confirmation or a schema change `confirm` / `reject`; a flagged record `keep` / `revoke`; undoing a deletion `cancel`.",
+      "How to resolve it, only one of those its detail lists: a conflict `keep_effective` / `take_candidate` / `take_previous`; a change awaiting confirmation `confirm` / `reject`.",
+      { text: "A flagged record `keep` / `revoke`.", later: "P2" },
+      { text: "Undoing a deletion `cancel`.", later: "P3" },
+      { text: "A schema change `confirm` / `reject`.", later: "P4" },
     ],
     item_ver: [
-      "The `iv_…` of the item's detail or of a receipt, passed back unchanged: if the item changed since you looked, the call is refused with the latest content. Not needed to undo a deletion.",
+      "The `iv_…` of the item's detail or of a receipt, passed back unchanged: if the item changed since you looked, the call is refused with the latest content.",
+      { text: "Not needed to undo a deletion.", later: "P3" },
     ],
     candidate: [
       "Only with `take_candidate`, required when there are several: which candidate (its index in the detail, from 0).",
@@ -256,9 +326,6 @@ export const RESOLVE = {
     note: ["A note on why. It is stored as a source and can be deleted later like any other."],
     evidence: [
       'The evidence for this resolution (such as the user saying "the later one is right"): an array; the user\'s words as `{kind: "user_message", text}`, the words themselves.',
-    ],
-    evidence_by_field: [
-      "Field name → indexes into `evidence` (from 0): which field comes from which segment.",
     ],
   },
 } as const satisfies { description: Text; params: Record<string, Text> };
@@ -281,6 +348,7 @@ export const SCHEMA_DRAFT = {
       "The complete schema document of the new slot: `slot` (its name: ASCII letters, digits and underscores, starting with a letter), `base_version: null`, `timezone` (an IANA name such as Asia/Shanghai), and `tables`.",
       'Each table has a `name`, `kind: "base"`, a `description`, a `time` and `fields`. `time` is `{type: "event", field}` for one row per happening, where `field` names one of its fields of type `date` or `zoned_datetime` with `required: true`; `{type: "state", granularity: "date"}` for a value that holds over time, optionally with an `entity_key` (the names of required fields that identify one thing, such as a category); or `{type: "none"}`.',
       `Each field has a \`name\`, a \`type\` (one of ${FIELD_TYPES.map((x) => `\`${x}\``).join(", ")}), a \`description\`, and \`required: true\` when it must always be given; a \`quantity\` has a \`unit\`, an \`enum\` its \`values\`, a \`ref\` its \`ref: {table, target}\` (\`target\` is \`row\`, or \`entity\` for a state table).`,
+      'A derived table is computed from a base table of the slot and is read-only: it has `kind: "derived"`, a `name`, a `description`, a `rule` and `fields`, and no `time`. `rule` is `{sql, time_dependency}`: `sql` is one SELECT over one base table of the slot, by its name, with each column it gives named by `AS <field name>`; `time_dependency` is `"bucketed"` when it groups rows by a date (a `date` field, or `date_trunc` of one) and `"none"` otherwise. Its fields have a `name` and a `description` only: their types and units come from the rule.',
       "At least one base table; at most 100 tables and 200 fields in a table.",
       "Names and descriptions are what every agent of this user will read: do not put the user's private words in them.",
     ],

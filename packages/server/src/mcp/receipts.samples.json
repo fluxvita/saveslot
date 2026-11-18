@@ -505,5 +505,1044 @@
         }
       ]
     }
+  },
+  "write-warnings-46-same": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 7,
+      "ops": [
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_G4K39ZY01AW144EJ27XEN93J5M"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-01T08:00:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_9JXNDWT9H7V462516E48RNPAKT"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-02T08:01:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_BAW1B7ZAG4MNS120937A0TZRZK"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-03T08:02:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_B27S61E7GGTK4Z2CV51KNA7PV3"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-04T08:03:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_P4KKP6HGJNH8T1X2RBFCK9P75A"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-05T08:04:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_7X11318FD2MCEA51S6903WETEQ"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-06T08:05:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_4T29764PVQRCYJ5YXJ6K5E2H7A"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-07T08:06:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_1RFPX69P1SMS32QE3VB1NCJNDM"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-08T08:07:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_PX6TCV92531R8E1BE1XG43N8RW"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-09T08:08:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_PNPKG6JPYH29WJ8R9MP7Q4502A"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-10T08:09:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_05D11FHRC8T810K4HC5QSQFR4G"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-11T08:10:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_Q4MXV0ZMG2V4S2HKXY4XGE5P8E"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-12T08:11:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_N8ECT32J4MKBHVEX3S3CRN863S"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-13T08:12:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_85PYYN5YTRAWQZ51AYX4JN8WCW"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-14T08:13:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_D6PA4XZQ5KKENT0PHQ135HFX4B"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-15T08:14:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_NZKEBPTXWS87G2ACTWQYD2478P"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-16T08:15:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_P5TH2NQ2RNTBH6VRCN01CFRZR3"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-17T08:16:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_D86NXBX0FD78WXV896YM7432HV"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-18T08:17:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_TTZZN2RE7GNB3PGE0QH559EW3T"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-19T08:18:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_WXB7JE07T5CFS9JENVZBADFEGJ"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-20T08:19:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_4H18BMBWCNSVENC86EPHSDTET6"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-21T08:20:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_AJ3B1CJK2TCGYQDZ9D9NEWCX1F"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-22T08:21:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_KBWF2ZQP5FYT66CKWDPTHF0G90"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-23T08:22:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_GCHM4TNZD0VB5CHFSNP9HQ8B58"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-24T08:23:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_Z78W408ZAH0QV7M753KKTB6BF2"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-25T08:24:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_ZE50A5VTCJN7CP4YE7E6QADDV5"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-26T08:25:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_RYTZ4BRFWVTKD9QW1JZDZ536A2"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-27T08:26:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_NJKPQ2W553S1TWGTMV2C30HJDC"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-28T08:27:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_03QK9MWH56HVJ3VJ25AV1FDJ31"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-01T08:28:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_2WDKN2QS88N04E4XS6FACERVWV"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-02T08:29:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_QGAFZYE1MR7BXV9N3TMGYYPVHT"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-03T08:30:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_DCRBF5ASTN5Y93TSM1WQ49SC8X"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-04T08:31:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_J3DY3S0Z8B3PZDMR27ADNYCDRX"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-05T08:32:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_B11AHK3CP7JW4FNPT1V4DJBM0D"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-06T08:33:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_JXK84DK5WEZ3K18GV6Q4B13NY8"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-07T08:34:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_075549KMYG7K1Y9PAWKGVDHC6K"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-08T08:35:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_MN9K0JBW7AJJH9W8Q8ND19CCRJ"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-09T08:36:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_EZM56Q97XEZ69BKFHZ7BCKTHF0"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-10T08:37:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_Q6CSR53E9X5ZVFAENDSD789AT8"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-11T08:38:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_VXZHK2YFM6J8NYD149ZVCA4QS4"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-12T08:39:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_FNJQXWY46K0SDKTB7BSWKQ539W"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-13T08:40:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_29989RNQ8PRMG67E99WXA4J1M6"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-14T08:41:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_KBM34K8SRG1Z6MDZVZHT8SR5KT"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-15T08:42:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_AMJ6ZSFCZC9CEXH8V9G1XA8QR8"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-16T08:43:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_7DT50XPNPRPDPGSPJ3CS6080JZ"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-17T08:44:00+08:00[Asia/Shanghai]"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_0XPRP6268AV37KWR9C0RXWZB2V"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-18T08:45:00+08:00[Asia/Shanghai]"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "warnings": [
+        {
+          "code": "timezone_assumed",
+          "op": 0,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 1,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 2,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 3,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 4,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 5,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 6,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 7,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 8,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 9,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 10,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 11,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 12,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 13,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 14,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 15,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 16,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 17,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 18,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 19,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 20,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 21,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 22,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 23,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 24,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 25,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 26,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 27,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 28,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 29,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 30,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 31,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 32,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 33,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 34,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 35,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 36,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 37,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 38,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 39,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 40,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 41,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 42,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 43,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 44,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "timezone_assumed",
+          "op": 45,
+          "field": "measured_at",
+          "timezone": "Asia/Shanghai"
+        }
+      ]
+    }
+  },
+  "write-warnings-rounded-differ": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 55,
+      "ops": [
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_292R4B37NJM2N23QW0N77SA0KA"
+          },
+          "intent": "insert",
+          "ver": "v55.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-10T07:00:00+08:00[Asia/Shanghai]"
+            },
+            "weight": {
+              "result": "applied",
+              "after": {
+                "unit": "kg",
+                "value": "70.1"
+              }
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_TM48Y717C2Q8Z7B7RW9PWSSMTE"
+          },
+          "intent": "insert",
+          "ver": "v55.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-11T07:00:00+08:00[Asia/Shanghai]"
+            },
+            "weight": {
+              "result": "applied",
+              "after": {
+                "unit": "kg",
+                "value": "70.3"
+              }
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "vitals.readings",
+            "row": "r_2ZQZD7DYXWHW8FXG4DFZ88PJ2E"
+          },
+          "intent": "insert",
+          "ver": "v55.0",
+          "fields": {
+            "measured_at": {
+              "result": "applied",
+              "after": "2026-11-12T07:00:00+08:00[Asia/Shanghai]"
+            },
+            "weight": {
+              "result": "applied",
+              "after": {
+                "unit": "kg",
+                "value": "70.3"
+              }
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "warnings": [
+        {
+          "code": "rounded",
+          "op": 0,
+          "field": "weight",
+          "from": "70.12",
+          "to": "70.1",
+          "scale": 1
+        },
+        {
+          "code": "rounded",
+          "op": 1,
+          "field": "weight",
+          "from": "70.26",
+          "to": "70.3",
+          "scale": 1
+        },
+        {
+          "code": "rounded",
+          "op": 2,
+          "field": "weight",
+          "from": "70.34",
+          "to": "70.3",
+          "scale": 1
+        }
+      ]
+    }
   }
 }

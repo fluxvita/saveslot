@@ -29,6 +29,7 @@ import {
   ROUNDINGS,
   SQL_REASONS,
   SUPERSEDED_REASONS,
+  TIME_DEPENDENCIES,
   VALIDATION_DETAIL_CODES,
   VERSION_INTENTS,
   type Warning,
@@ -438,19 +439,60 @@ function warningDetail(w: R): Part[] | undefined {
   return undefined;
 }
 
-/** Warnings and notices (05 §4.3): one line each; notices at most 3. */
+/** The ops a merged warning names at most; the rest are counted. */
+const OPS_NAMED = 5;
+
+/**
+ * Warnings and notices (05 §4.3): one line each; notices at most 3. Warnings of one code on one
+ * field (or none) are one line, with how many and which ops: a long write would otherwise give a
+ * line for each op. The line gives their detail when it is the same for all of them; otherwise the
+ * code's own sentence and the field, so that no one warning's values stand for the others'.
+ */
 function remindersOf(r: R): Line[] {
   const out: Line[] = [];
-  for (const w of arr(r["warnings"])) {
-    const c = obj(w)["code"];
+  const groups = new Map<string, R[]>();
+  for (const w of arr(r["warnings"]).map(obj)) {
     // multi_segment_unmapped stays in the structured result only (05 §4.3).
-    if (c === "multi_segment_unmapped") continue;
-    const text = warningDetail(obj(w)) ?? said(WARNINGS, c);
-    const at = int(obj(w)["op"]);
+    if (w["code"] === "multi_segment_unmapped") continue;
+    const k = JSON.stringify([String(w["code"]), w["field"] ?? null]);
+    groups.set(k, [...(groups.get(k) ?? []), w]);
+  }
+  for (const ws of groups.values()) {
+    const first = ws[0] as R;
+    const c = first["code"];
+    const known = said(WARNINGS, c) !== undefined;
+    if (!known) {
+      for (const _ of ws) out.push(t`Note: ${untrusted(String(c))}`);
+      continue;
+    }
+    if (ws.length === 1) {
+      const at = int(first["op"]);
+      const text = warningDetail(first) ?? (said(WARNINGS, c) as Part[]);
+      out.push(
+        t`Note (${codeIn(c, keysOf(WARNINGS))}${at !== undefined ? t`, op ${num(at)}` : []}): ${text}`,
+      );
+      continue;
+    }
+    // The same detail for all of them, as each would be drawn: drawn once.
+    const drawn = ws.map((w) => {
+      const d = warningDetail(w);
+      // Each drawing has a boundary number of its own: compared without it.
+      return d === undefined
+        ? undefined
+        : render([d]).replace(/untrusted-data-[0-9a-f]{32}/g, "untrusted-data");
+    });
+    const same = drawn[0] !== undefined && drawn.every((d) => d === drawn[0]);
+    const text = same
+      ? (warningDetail(first) as Part[])
+      : first["field"] !== undefined
+        ? t`${fieldOf(first["field"])}: ${said(WARNINGS, c) as Part[]}`
+        : (said(WARNINGS, c) as Part[]);
+    const ops = ws.map((w) => int(w["op"])).filter((n): n is number => n !== undefined);
+    const named = ops.slice(0, OPS_NAMED).map((n) => [num(n)]);
+    const more = ops.length > OPS_NAMED ? t` and ${num(ops.length - OPS_NAMED)} more` : [];
+    const which = ops.length > 0 ? t`: ${join(named, t`, `)}${more}` : [];
     out.push(
-      text !== undefined
-        ? t`Note (${codeIn(c, keysOf(WARNINGS))}${at !== undefined ? t`, op ${num(at)}` : []}): ${text}`
-        : t`Note: ${untrusted(String(c))}`,
+      t`Note (${codeIn(c, keysOf(WARNINGS))}, ${num(ws.length)} times${ops.length > 0 ? t`, ops` : []}${which}): ${text}`,
     );
   }
   for (const n of arr(r["notices"]).slice(0, 3)) {
@@ -522,7 +564,9 @@ function catalog(r: R): Line[] | { json: true; lead: Line[] } {
     return {
       json: true,
       lead: [
-        t`${tableOf(r["slot"])} · schema v${count(r["sv"])}: the full schema document and the slot's policy (read-only), as JSON. To change the schema, edit the document and submit it without the tags.`,
+        // Changing a slot comes with 07-scope-v1 P4; then this line goes on: "To change the
+        // schema, edit the document and submit it without the tags." (05 §9 «这一版不出现的句子»)
+        t`${tableOf(r["slot"])} · schema v${count(r["sv"])}: the full schema document and the slot's policy (read-only), as JSON.`,
       ],
     };
   }
@@ -1497,6 +1541,61 @@ function pathOf(x: unknown): Part[] {
   );
 }
 
+/** Values as a list of the service's codes. */
+const listOf = (xs: readonly string[]): Part[] =>
+  join(
+    xs.map((x) => [code(x, new Set(xs))]),
+    t`, `,
+  );
+
+/**
+ * What a schema draft's detail means for the document, where the detail does not say it itself
+ * (05 §7): the allowed values the service gives, or else, for the codes and positions below, our
+ * own words. Nothing of the document is in them.
+ */
+function detailGuide(x: R): Line[] {
+  const path = String(x["path"] ?? "");
+  const allowed = arr(x["allowed_values"]).map(String);
+  if (allowed.length > 0) {
+    return [
+      t`    allowed: ${join(
+        allowed.map((v) => [untrusted(v)]),
+        t`, `,
+      )}`,
+    ];
+  }
+  if (x["code"] === "unknown_type")
+    return [t`    a field's type is one of ${listOf(CONTRACT_FIELD_TYPES)}`];
+  if (x["code"] === "key_not_applicable" && /^tables\/[0-9]+\/time\/field$/.test(path)) {
+    return [
+      t`    an event table's time field is one of its fields, of type date or zoned_datetime, with required: true`,
+    ];
+  }
+  if (x["code"] === "key_not_applicable" && /^tables\/[0-9]+\/fields\/[0-9]+\/type$/.test(path)) {
+    return [
+      t`    a derived table's fields take their types from the rule: leave type out (or give decimal)`,
+    ];
+  }
+  return [];
+}
+
+/**
+ * What a refused parameter of a schema draft should look like (05 §7), by where it is: a derived
+ * table's rule and its time dependency. Our own words; the values from the contract.
+ */
+function paramGuide(error: R): Line[] {
+  const param = String(error["param"] ?? "");
+  if (/^tables\/[0-9]+\/(rule|sql)$/.test(param) || /^tables\/[0-9]+\/rule\/sql$/.test(param)) {
+    return [
+      t`A derived table's rule is {sql, time_dependency}: sql is one SELECT over one base table of the slot, each column named by AS <field name>.`,
+    ];
+  }
+  if (/^tables\/[0-9]+\/rule\/time_dependency$/.test(param)) {
+    return [t`A rule's time_dependency is one of ${listOf(TIME_DEPENDENCIES)}.`];
+  }
+  return [];
+}
+
 /** The details shown of a refusal; the rest are counted. */
 const DETAILS_SHOWN = 20;
 
@@ -1545,6 +1644,7 @@ function errorLines(error: R): Line[] {
     if (x["suggestion"] !== undefined) {
       lines.push(t`    suggestion: ${stored(String(x["suggestion"]))}`);
     }
+    lines.push(...detailGuide(x));
   }
   if (details.length > DETAILS_SHOWN) {
     lines.push(t`  and ${num(details.length - DETAILS_SHOWN)} more`);
@@ -1572,6 +1672,7 @@ function errorLines(error: R): Line[] {
   if (error["incident"] !== undefined) {
     lines.push(t`Incident ${untrusted(String(error["incident"]))}`);
   }
+  lines.push(...paramGuide(error));
   const next = said(NEXT, c);
   if (next !== undefined) lines.push(next);
   return lines;

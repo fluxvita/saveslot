@@ -4,7 +4,9 @@
 // their message): a new slot with an event, a state, a timeless and a derived table, the same
 // request replayed, a document that does not compile, tags left in a description, a connection
 // whose range is not every slot, a rule's SQL refused with its reason and a fix, too many tables,
-// and no table. Update the golden files with
+// no table; and what a derived table's document gets wrong: `sql` outside the rule, a rule that is
+// not an object, a time dependency missing or not one, a type on a derived field, an unknown
+// type, an event table's time field not required. Update the golden files with
 // `pnpm exec vitest run packages/server/src/mcp/schema-drafts.test.ts -u`.
 
 import { readFileSync } from "node:fs";
@@ -61,6 +63,17 @@ describe("schema drafts as text: what the samples do not show", () => {
     expect(() =>
       renderStrict("saveslot_schema_draft", { ...created, outcome: "pending" }),
     ).toThrow();
+  });
+
+  it("allowed values the service gives are drawn instead of our own list", () => {
+    const error = {
+      code: "validation_failed",
+      reason: "schema",
+      details: [{ path: "tables/0/fields/2/type", code: "unknown_type", allowed_values: ["text"] }],
+    };
+    const text = fixed(renderError(error));
+    expect(text).toContain("    allowed: <untrusted-data-N>text</untrusted-data-N>");
+    expect(text).not.toContain("a field's type is one of");
   });
 
   it("a path's segment that is no name or number is inside the boundary", () => {

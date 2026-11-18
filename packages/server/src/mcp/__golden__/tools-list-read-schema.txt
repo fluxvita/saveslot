@@ -1,7 +1,7 @@
 [
   {
     "name": "saveslot_catalog",
-    "description": "See which slots, tables and fields this user's saveslot has. Use it when the user asks about their own records and you do not yet know which tables there are, or are unsure of a table name, field name or unit; there is no need to call it again when you already looked in this conversation and have not been told of a schema update since. Start with the default `list` for the overview, then `level: \"table\"` for the fields, units, relations and data overview of a few tables. Tables and fields may have aliases: what the user calls them, for matching the user's words to a table; requests use the names, never the aliases. It does not return the data itself. To read the data, use saveslot_query.",
+    "description": "See which slots, tables and fields this user's saveslot has. Use it when the user asks about their own records and you do not yet know which tables there are, or are unsure of a table name, field name or unit; there is no need to call it again when you already looked in this conversation and have not been told of a schema update since. Start with the default `list` for the overview, then `level: \"table\"` for the fields, units, relations and data overview of a few tables. It does not return the data itself. To read the data, use saveslot_query.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -16,10 +16,6 @@
         "slot": {
           "type": "string",
           "description": "A slot name. Required with `schema`. With `list`, only this slot is listed."
-        },
-        "draft": {
-          "type": "string",
-          "description": "Only with `schema`: a draft ID (`d_…`), to get that draft's document with its IDs filled in instead of the current version. A draft in any state can be read."
         },
         "tables": {
           "type": "array",
@@ -110,7 +106,7 @@
   },
   {
     "name": "saveslot_query",
-    "description": "Read data by table, conditions, order and count, optionally by business time (`valid_at` / `valid_during`). Use it when the user asks about records in a table (a day, a period, a category); also read a row with it before changing that row. It returns each row's `ver`: bring it back when you change that row. The marks in the result give a row's state (disputed, awaiting confirmation, premise changed, and so on). To see how a row came to be as it is, use saveslot_history.",
+    "description": "Read data by table, conditions, order and count, optionally by business time (`valid_at` / `valid_during`). Use it when the user asks about records in a table (a day, a period, a category); also read a row with it before changing that row. It returns each row's `ver`: bring it back when you change that row. The marks in the result give a row's state (disputed, awaiting confirmation, and so on). To see how a row came to be as it is, use saveslot_history.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -217,10 +213,9 @@
         },
         "detail": {
           "enum": [
-            "concise",
-            "detailed"
+            "concise"
           ],
-          "description": "`concise` (default) or `detailed`. The default is enough; use `detailed` only when you need the full source and mark details."
+          "description": "`concise` (default)."
         },
         "limit": {
           "type": "integer",
@@ -305,17 +300,16 @@
   },
   {
     "name": "saveslot_history",
-    "description": "See how something came to be as it is now: every change, who made it, what the evidence was, which records it was based on, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`); what changed in a period (`changes`). For the current values only, use saveslot_query.",
+    "description": "See how something came to be as it is now: every change, who made it, what the evidence was, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`). For the current values only, use saveslot_query.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "mode": {
           "enum": [
             "timeline",
-            "as_of",
-            "changes"
+            "as_of"
           ],
-          "description": "`timeline` (default): how one row came, step by step, to be as it is. `as_of`: what saveslot knew at a past moment. `changes`: what changed in a period."
+          "description": "`timeline` (default): how one row came, step by step, to be as it is. `as_of`: what saveslot knew at a past moment."
         },
         "table": {
           "type": "string",
@@ -323,7 +317,7 @@
         },
         "row": {
           "type": "string",
-          "description": "Which row (event tables and tables without time). With `timeline` and `as_of`, give one of `row`, `entity` or `entity_key`; with `changes`, none means the whole table."
+          "description": "Which row (event tables and tables without time). Give one of `row`, `entity` or `entity_key`."
         },
         "entity": {
           "type": "string",
@@ -379,34 +373,9 @@
         },
         "detail": {
           "enum": [
-            "concise",
-            "detailed"
+            "concise"
           ],
-          "description": "`concise` (default) or `detailed`. The default is enough; use `detailed` only when you need the full source and mark details."
-        },
-        "since": {
-          "oneOf": [
-            {
-              "type": "integer",
-              "minimum": 0
-            },
-            {
-              "type": "string"
-            }
-          ],
-          "description": "Required with `changes`: from after which point (not included): an operation number, a moment, or `\"my_last_read\"` (after this connection last read the table; `read_first` if it never has)."
-        },
-        "until": {
-          "oneOf": [
-            {
-              "type": "integer",
-              "minimum": 0
-            },
-            {
-              "type": "string"
-            }
-          ],
-          "description": "Only with `changes`: up to which point (included). Default: the latest."
+          "description": "`concise` (default)."
         },
         "limit": {
           "type": "integer",
@@ -449,16 +418,6 @@
                 "required": [
                   "detail"
                 ]
-              },
-              {
-                "required": [
-                  "since"
-                ]
-              },
-              {
-                "required": [
-                  "until"
-                ]
               }
             ]
           }
@@ -478,51 +437,6 @@
               {
                 "required": [
                   "expand_sources"
-                ]
-              },
-              {
-                "required": [
-                  "since"
-                ]
-              },
-              {
-                "required": [
-                  "until"
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "properties": {
-            "mode": {
-              "const": "changes"
-            }
-          },
-          "required": [
-            "mode",
-            "since"
-          ],
-          "not": {
-            "anyOf": [
-              {
-                "required": [
-                  "expand_sources"
-                ]
-              },
-              {
-                "required": [
-                  "as_of"
-                ]
-              },
-              {
-                "required": [
-                  "valid_at"
-                ]
-              },
-              {
-                "required": [
-                  "detail"
                 ]
               }
             ]
@@ -594,7 +508,7 @@
   },
   {
     "name": "saveslot_pending",
-    "description": "List the pending items (conflicts, changes awaiting confirmation, flagged records, schema changes, deletions that can still be undone), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version.",
+    "description": "List the pending items (conflicts, and changes awaiting confirmation), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -614,7 +528,7 @@
             "schema_change",
             "deletion"
           ],
-          "description": "Only one type: `conflict`, `awaiting_confirmation`, `flagged`, `schema_change` or `deletion`."
+          "description": "Only one type: `conflict` or `awaiting_confirmation`."
         },
         "status": {
           "enum": [
@@ -711,7 +625,7 @@
       "properties": {
         "document": {
           "type": "object",
-          "description": "The complete schema document of the new slot: `slot` (its name: ASCII letters, digits and underscores, starting with a letter), `base_version: null`, `timezone` (an IANA name such as Asia/Shanghai), and `tables`. Each table has a `name`, `kind: \"base\"`, a `description`, a `time` and `fields`. `time` is `{type: \"event\", field}` for one row per happening, where `field` names one of its fields of type `date` or `zoned_datetime` with `required: true`; `{type: \"state\", granularity: \"date\"}` for a value that holds over time, optionally with an `entity_key` (the names of required fields that identify one thing, such as a category); or `{type: \"none\"}`. Each field has a `name`, a `type` (one of `text`, `integer`, `decimal`, `boolean`, `enum`, `date`, `zoned_datetime`, `quantity`, `ref`), a `description`, and `required: true` when it must always be given; a `quantity` has a `unit`, an `enum` its `values`, a `ref` its `ref: {table, target}` (`target` is `row`, or `entity` for a state table). At least one base table; at most 100 tables and 200 fields in a table. Names and descriptions are what every agent of this user will read: do not put the user's private words in them."
+          "description": "The complete schema document of the new slot: `slot` (its name: ASCII letters, digits and underscores, starting with a letter), `base_version: null`, `timezone` (an IANA name such as Asia/Shanghai), and `tables`. Each table has a `name`, `kind: \"base\"`, a `description`, a `time` and `fields`. `time` is `{type: \"event\", field}` for one row per happening, where `field` names one of its fields of type `date` or `zoned_datetime` with `required: true`; `{type: \"state\", granularity: \"date\"}` for a value that holds over time, optionally with an `entity_key` (the names of required fields that identify one thing, such as a category); or `{type: \"none\"}`. Each field has a `name`, a `type` (one of `text`, `integer`, `decimal`, `boolean`, `enum`, `date`, `zoned_datetime`, `quantity`, `ref`), a `description`, and `required: true` when it must always be given; a `quantity` has a `unit`, an `enum` its `values`, a `ref` its `ref: {table, target}` (`target` is `row`, or `entity` for a state table). A derived table is computed from a base table of the slot and is read-only: it has `kind: \"derived\"`, a `name`, a `description`, a `rule` and `fields`, and no `time`. `rule` is `{sql, time_dependency}`: `sql` is one SELECT over one base table of the slot, by its name, with each column it gives named by `AS <field name>`; `time_dependency` is `\"bucketed\"` when it groups rows by a date (a `date` field, or `date_trunc` of one) and `\"none\"` otherwise. Its fields have a `name` and a `description` only: their types and units come from the rule. At least one base table; at most 100 tables and 200 fields in a table. Names and descriptions are what every agent of this user will read: do not put the user's private words in them."
         },
         "idempotency_key": {
           "type": "string",
