@@ -38,6 +38,13 @@ export interface NormalizeWriteInput {
   readonly currentSv: number;
   /** What changed incompatibly since a version: a request at that version may not write it. */
   readonly changedSince: (sv: number) => ChangedFields;
+  /**
+   * The slots in the caller's range with their tables in range (04-contract «名字只在可见范围内
+   * 解析»): a table named in another slot is `cross_slot` only when that slot and table are in
+   * range, `unknown_table` otherwise. Left out, no range is known: a table named in another slot
+   * is `cross_slot`.
+   */
+  readonly inRange?: readonly { readonly name: string; readonly tables: readonly string[] }[];
 }
 
 /**

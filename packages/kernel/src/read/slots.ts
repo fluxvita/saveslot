@@ -3,29 +3,19 @@
 // qualified `slot.table` or bare when one visible slot has it; unknown names with the nearest
 // visible ones (aliases first, 04-contract-types §9).
 
-import type {
-  CompiledSchema,
-  CompiledTable,
-  SlotId,
-  TableId,
-} from "@fluxvita/saveslot-contract-core";
-import { fold, nearest, splitTableName } from "../request/index.ts";
+import type { CompiledSchema, CompiledTable, SlotId } from "@fluxvita/saveslot-contract-core";
+import {
+  FieldVisibilityNotImplemented,
+  fold,
+  nearest,
+  splitTableName,
+  type Visibility,
+  visibleTables,
+} from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { invalid, ReadError } from "./types.ts";
 
-/** The call context's visibility (02-architecture §4 «`ops` 的调用上下文»). */
-export type Visibility =
-  | { readonly kind: "all" }
-  | {
-      readonly kind: "scoped";
-      readonly slots: readonly {
-        readonly slot: SlotId;
-        readonly tables?: readonly {
-          readonly table: TableId;
-          readonly fields?: readonly string[];
-        }[];
-      }[];
-    };
+export type { Visibility };
 
 export interface VisibleSlot {
   readonly slot: SlotId;
@@ -51,22 +41,18 @@ export async function visibleSlots(tx: ReadTx, visibility: Visibility): Promise<
      JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
      ORDER BY s.id`,
   );
-  const scoped =
-    visibility.kind === "scoped" ? new Map(visibility.slots.map((s) => [s.slot, s])) : undefined;
   const out: VisibleSlot[] = [];
   for (const x of r.rows) {
     if (x.body === null) continue;
-    const scope = scoped?.get(x.id as SlotId);
-    if (scoped !== undefined && scope === undefined) continue;
     const compiled = JSON.parse(x.body) as CompiledSchema;
-    let tables: readonly CompiledTable[] = compiled.tables;
-    if (scope?.tables !== undefined) {
-      if (scope.tables.some((t) => t.fields !== undefined)) {
-        throw new ReadError("internal", "visibility by field is not implemented");
-      }
-      const ids = new Set(scope.tables.map((t) => t.table));
-      tables = tables.filter((t) => ids.has(t.id));
+    let tables: readonly CompiledTable[] | undefined;
+    try {
+      tables = visibleTables(visibility, x.id as SlotId, compiled.tables);
+    } catch (e) {
+      if (e instanceof FieldVisibilityNotImplemented) throw new ReadError("internal", e.message);
+      throw e;
     }
+    if (tables === undefined) continue;
     out.push({
       slot: x.id as SlotId,
       name: x.name,

@@ -5,13 +5,16 @@
 
 import type {
   CompiledSchema,
+  CompiledTable,
   ItemId,
   JsonValue,
   OpNumber,
   Seq,
   SlotId,
 } from "@fluxvita/saveslot-contract-core";
+import { FieldVisibilityNotImplemented, type Visibility, visibleTables } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { WriteError } from "./errors.ts";
 import type { StoredEvent } from "./record.ts";
 
 export interface SlotRow {
@@ -21,6 +24,32 @@ export interface SlotRow {
   readonly sv: number;
   readonly policyVersion: number;
   readonly compiled: CompiledSchema;
+}
+
+/** A slot the caller can see, with the tables of it in range. */
+export interface SeenSlot extends SlotRow {
+  readonly tables: readonly CompiledTable[];
+}
+
+/**
+ * The slots with a current definition the caller can see (04-contract §12), each with its tables
+ * in range: a write resolves names within these only, as a read does.
+ */
+export async function visibleSlotRows(tx: ReadTx, visibility: Visibility): Promise<SeenSlot[]> {
+  const out: SeenSlot[] = [];
+  for (const s of await readSlots(tx)) {
+    let tables: readonly CompiledTable[] | undefined;
+    try {
+      tables = visibleTables(visibility, s.slot, s.compiled.tables);
+    } catch (e) {
+      if (e instanceof FieldVisibilityNotImplemented) {
+        throw new WriteError("internal", e.message, { reason: "not_implemented" });
+      }
+      throw e;
+    }
+    if (tables !== undefined) out.push({ ...s, tables });
+  }
+  return out;
 }
 
 /** The slots with a current definition. */

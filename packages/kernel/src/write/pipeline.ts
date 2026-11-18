@@ -72,6 +72,7 @@ import {
   normalizeWrite,
   type RequestError,
   resolveWriteSlot,
+  type Visibility,
   type WriteValidationDetail,
 } from "../request/index.ts";
 import type { Tx } from "../store/ports.ts";
@@ -91,15 +92,15 @@ import {
 import { tableShape, todayIn, verOfRow, writable } from "./plan.ts";
 import {
   type Fallback,
-  readSlots,
   readUnderAnotherTask,
   restoreCount,
   rowEvents,
   rowTable,
   rowVersions,
-  type SlotRow,
+  type SeenSlot,
   svFromWrite,
   verFromWrite,
+  visibleSlotRows,
 } from "./reads.ts";
 import type { FallbackOrigin, ReceiptWarning } from "./receipt.ts";
 import {
@@ -811,19 +812,31 @@ export async function settleItems(
 /** Writes the request in `tx`; returns its receipt, or the original one for a repeated request. */
 export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt> {
   const { actor, now } = input;
-  const slots = await readSlots(tx);
+  // Names resolve within what the caller can see (04-contract «名字只在可见范围内解析»): a slot,
+  // table or field out of range is answered as one that does not exist, with the nearest names
+  // and the candidates taken from what is visible only.
+  const visible = await visibleSlotRows(tx, input.visibility as Visibility);
   const which = resolveWriteSlot(
     input.params,
-    slots.map((s) => ({ name: s.name, tables: s.compiled.tables.map((t) => t.name) })),
+    visible.map((s) => ({ name: s.name, tables: s.tables.map((t) => t.name) })),
   );
   if (!which.ok) throw requestFailure(which.error);
-  const slot = slots.find((s) => s.name === which.slot) as SlotRow;
+  const slot = visible.find((s) => s.name === which.slot) as SeenSlot;
+  // A visible table this credential cannot write (a credential scoped to some slots: writing in
+  // range comes later, 07-scope-v1), before the request is normalized: that it cannot write comes
+  // before what is wrong in the ops. The table is visible, so this tells nothing out of range.
+  if (!writable(input.visibility, slot.slot)) {
+    throw new WriteError("insufficient_scope", "writing needs every slot in range", {
+      required_scope: "all_slots",
+    });
+  }
   const today = todayIn(now, slot.timezone);
   // One schema version in this phase: nothing changed incompatibly since any version.
   const changedSince = () => new Map();
   const normalized = normalizeWrite({
     params: input.params,
-    compiled: slot.compiled,
+    compiled: { ...slot.compiled, tables: slot.tables },
+    inRange: visible.map((s) => ({ name: s.name, tables: s.tables.map((t) => t.name) })),
     currentSv: slot.sv,
     changedSince,
   });
@@ -832,11 +845,6 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   const task = req.task ?? input.task;
   const tableOf = (id: TableId) =>
     slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as CompiledBaseTable;
-  for (const o of req.ops) {
-    if (!writable(input.visibility, slot.slot, o.table)) {
-      throw new WriteError("unknown_table", "no such table", { param: `ops/${o.index}/table` });
-    }
-  }
   const restore = await restoreCount(tx);
   const warnings: ReceiptWarning[] = [...req.warnings];
 

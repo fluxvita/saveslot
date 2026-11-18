@@ -504,7 +504,7 @@ expenses r_01JC… 整行删除：date、category 只来自这句话
 | `item_closed` | 说明当前状态："pi_… 已于 … 按 keep_effective 解决" / "pi_… 已被 #63 取代（该字段已被改过）" / "这项删除的撤回期已过"（已执行的写"这项删除已于 … 执行，不能撤回"） |
 | `preview_outdated` | "预览之后又有写入改到了删除范围，影响已变"，给出新预览与新的 `dc_`，请把新范围告诉用户后再删 |
 | `handle_expired` | 给出重新获取的方法；已执行过的删除确认附删除 ID |
-| `insufficient_scope` | 需要哪个 scope；需要用户会话的写"这项操作只能由用户本人在命令行里做"；`all_slots`："新建 slot 需要能访问全部 slot 的连接；这个连接只能访问指定的几个 slot" |
+| `insufficient_scope` | 需要哪个 scope；需要用户会话的写"这项操作只能由用户本人在命令行里做"；`all_slots`："这项操作需要能访问全部 slot 的连接；这个连接只能访问指定的几个 slot" |
 | `rate_limited` | 多久后重试 |
 | `not_in_this_version` | "这个版本不支持 mode: job"，有替代做法时写出（"请拆成多批提交"）；`table_written`："budgets 已有写入，改时间类型只在从未写入的表上支持" |
 | `unavailable` | 按 `reason`：`busy` → "saveslot 正忙，N 秒后重试"；`restoring` → "数据正在恢复，暂时不能访问"；`reconciling` → "正在做一致性检查，写入暂时排队，稍后重试"；`starting` → "saveslot 正在启动"；`importing` → "数据正在导入，暂时不能访问" |

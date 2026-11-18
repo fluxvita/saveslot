@@ -40,3 +40,8 @@ export {
 export { instantText, type ParsedDateTime, parseDateTime, validDate } from "./times.ts";
 export type * from "./types.ts";
 export { normalizeValue, type ValueResult } from "./values.ts";
+export {
+  FieldVisibilityNotImplemented,
+  type Visibility,
+  visibleTables,
+} from "./visibility.ts";

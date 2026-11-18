@@ -259,12 +259,13 @@ export function evidence(v: unknown): EvidenceSegment[] {
 interface Tables {
   readonly byName: ReadonlyMap<string, CompiledTable>;
   readonly slot: string;
+  readonly inRange: NormalizeWriteInput["inRange"];
 }
 
 function tablesOf(input: NormalizeWriteInput): Tables {
   const byName = new Map<string, CompiledTable>();
   for (const t of input.compiled.tables) byName.set(fold(t.name), t);
-  return { byName, slot: input.compiled.name };
+  return { byName, slot: input.compiled.name, inRange: input.inRange };
 }
 
 function baseTable(
@@ -276,7 +277,17 @@ function baseTable(
   if (typeof v !== "string" || v === "")
     return invalid(v === undefined ? "missing" : "malformed", at);
   const [slot, name] = splitTableName(v);
-  if (slot !== undefined && fold(slot) !== fold(t.slot)) return invalid("cross_slot", at);
+  if (slot !== undefined && fold(slot) !== fold(t.slot)) {
+    // A table of another slot: cross_slot only when it is in range, else it is a name that is not
+    // there for this caller (04-contract-types §9 `cross_slot`; 04-contract «不存在与不可见报同一个
+    // 错误»). Not reached for now: an op's table was resolved with the request's slot before
+    // (`resolveWriteSlot`), and the premises that name tables are not taken in this version.
+    if (t.inRange === undefined) return invalid("cross_slot", at);
+    const other = t.inRange.find((x) => fold(x.name) === fold(slot));
+    if (other?.tables.some((x) => fold(x) === fold(name))) return invalid("cross_slot", at);
+    const named = t.inRange.flatMap((x) => x.tables.map((y) => ({ name: `${x.name}.${y}` })));
+    return refuse({ code: "unknown_table", param: at, name: v, nearest: nearest(v, named) });
+  }
   const table = t.byName.get(fold(name));
   if (table === undefined) {
     return refuse({ code: "unknown_table", param: at, name: v, nearest: nearest(name, compiled) });

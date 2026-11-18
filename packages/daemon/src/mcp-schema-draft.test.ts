@@ -227,7 +227,9 @@ describe("saveslot_schema_draft: a new slot (P1)", () => {
     for (const r of [fresh, taken]) {
       expect(r.isError).toBe(true);
       expect(errorOf(r)).toMatchObject({ code: "insufficient_scope" });
-      expect(textOf(r)).toContain("Creating a slot needs a connection whose range is every slot.");
+      expect(textOf(r)).toContain(
+        "This needs a connection whose range is every slot; this connection reaches only some of them.",
+      );
     }
     expect(textOf(fresh)).toBe(textOf(taken));
   });

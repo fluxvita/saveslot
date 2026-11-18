@@ -2084,7 +2084,7 @@ type ValidationDetailCode =
 | `item_closed` | `resolved` / `superseded` / `expired` | `resolution?` / `superseded?`（形状同事项详情）；`expired`（`deletion` 的宽限期已过）：已执行给 `resolution`（执行一支），尚未执行给 `expires_at` |
 | `preview_outdated` | — | `preview: DeletionPreviewResult`（含新的 `dc_`） |
 | `unauthenticated` | `missing` / `invalid` / `revoked` / `expired` | — |
-| `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"`（`all_slots`：限定了 slot 范围的凭证新建 slot） |
+| `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"`（`all_slots`：这项操作需要范围为全部 slot 的凭证——限定了 slot 范围的凭证新建 slot；第一版里限定了 slot 范围的凭证写入范围内的表，见 [`07-scope-v1.md`](07-scope-v1.md)。只对可见的目标报，不泄露范围外的东西） |
 | `rate_limited` | `quota` / `busy`（同一租户已有一次对拍或导入在跑） | `retry_after` |
 | `handle_expired` | `expired` / `restored` / `executed` / `derived_changed`（翻页期间派生表被刷新过，从首页重读） | `deletion?: ItemId`（已执行过的 `dc_`） |
 | `not_in_this_version` | `parameter` / `value` / `operation` / `table_written`（只对从未被写入的表放开的改动用在写入过的表上）/ `not_implemented`（这一版的实现还走不到的情形：参数本身合法，不是留给后续版本的参数） | `param?`、`value?`、`operation?` |

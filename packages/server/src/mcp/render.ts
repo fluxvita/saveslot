@@ -1656,7 +1656,9 @@ function errorLines(error: R): Line[] {
     );
   }
   if (error["required_scope"] === "all_slots") {
-    lines.push(t`Creating a slot needs a connection whose range is every slot.`);
+    lines.push(
+      t`This needs a connection whose range is every slot; this connection reaches only some of them.`,
+    );
   } else if (error["required_scope"] !== undefined) {
     lines.push(t`Needs: ${untrusted(String(error["required_scope"]))}`);
   }

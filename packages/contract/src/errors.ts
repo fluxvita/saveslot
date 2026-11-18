@@ -150,6 +150,8 @@ export interface ErrorDetails {
   preview?: Record<string, unknown>;
 
   // insufficient_scope
+  /** `user_session`: only the user's own session; `all_slots`: a credential whose range is every
+   * slot (creating a slot; in the first version, a scoped credential writing in range). */
   required_scope?: Scope | "user_session" | "all_slots";
 
   // handle_expired

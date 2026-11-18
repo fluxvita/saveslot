@@ -26,7 +26,7 @@ export function tableShape(t: CompiledBaseTable): TableShape {
  * table (`visibility: all`); scoped visibility is not implemented, and this is where it will be
  * decided (04-write-and-read «可见范围»).
  */
-export function writable(visibility: { readonly kind: string }, _slot: string, _table: string) {
+export function writable(visibility: { readonly kind: string }, _slot: string, _table?: string) {
   return visibility.kind === "all";
 }
 
