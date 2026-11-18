@@ -110,7 +110,7 @@ const count = (x: unknown): Part =>
 function tableOf(x: unknown): Part[] {
   const s = String(x ?? "");
   const parts = s.split(".");
-  if (parts.length <= 2 && parts.every((p) => /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(p))) {
+  if (parts.length <= 2 && parts.every((p) => /^[A-Za-z][A-Za-z0-9_]{0,62}$/.test(p))) {
     return join(
       parts.map((p) => name(p)),
       t`.`,
@@ -280,7 +280,10 @@ function inputMarksOf(x: unknown): Part[] {
     const n = int(own(x, k));
     if (n !== undefined && n > 0) counts.push(t`${num(n)} ${label()}`);
   }
-  return counts.length > 0 ? t`⚠ among its inputs: ${join(counts, t`, `)}` : [];
+  // The open items among them, by ID (at most 10, 04-contract-types §3 `InputMarks`).
+  const items = arr(own(x, "items"));
+  const listed = items.length > 0 ? t` (${join(items.map(idOf), t`, `)})` : [];
+  return counts.length > 0 ? t`⚠ among its inputs: ${join(counts, t`, `)}${listed}` : [];
 }
 
 /** One row of a read (05 §6 `saveslot_query`). */
@@ -530,15 +533,24 @@ function history(r: R): Line[] {
   ];
   for (const e of entries) {
     const x = obj(e);
-    const fields = Object.entries(obj(x["fields"])).map(([f, v]) => {
-      const c = obj(v);
-      const change = Object.hasOwn(c, "before")
-        ? t`${fieldValue(c["before"])} → ${fieldValue(c["after"])}`
-        : fieldValue(c["after"]);
-      return t`${fieldOf(f)} ${change}${resultOf(c["result"])}${sourcesOf(c["sources"])}`;
-    });
+    // A field changed over several stretches of a state table is an array: one part per stretch.
+    const fields = Object.entries(obj(x["fields"])).map(([f, v]) =>
+      join(
+        (Array.isArray(v) ? v : [v]).map((p) => {
+          const c = obj(p);
+          const change = Object.hasOwn(c, "before")
+            ? t`${fieldValue(c["before"])} → ${fieldValue(c["after"])}`
+            : fieldValue(c["after"]);
+          const period = isObj(c["valid"]) ? t` (${periodOf(c["valid"])})` : [];
+          return t`${fieldOf(f)} ${change}${period}${resultOf(c["result"])}${sourcesOf(c["sources"])}`;
+        }),
+        t`; `,
+      ),
+    );
+    // The widest interval of the write (05 §4.3), on state tables.
+    const period = isObj(x["valid"]) ? t` (${periodOf(x["valid"])})` : [];
     out.push(
-      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${codeIn(x["intent"], INTENTS)}  ${actorOf(x["actor"])}  ${join(fields, t`; `)}`,
+      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${codeIn(x["intent"], INTENTS)}${period}  ${actorOf(x["actor"])}  ${join(fields, t`; `)}`,
     );
   }
   const reads = arr(r["reads"]);
@@ -638,8 +650,10 @@ function pending(r: R): Line[] {
     if (isObj(r["resolution"])) {
       const res = obj(r["resolution"]);
       const note = res["note"] !== undefined ? t` · note ${stored(String(res["note"]))}` : [];
+      // take_candidate: which candidate, by the index the candidates above are listed with.
+      const which = res["candidate"] !== undefined ? t` ${count(res["candidate"])}` : [];
       out.push(
-        t`  Resolved: ${codeIn(res["decision"], DECISIONS)} (${op(res["seq"])}, ${actorOf(res["actor"])})${note}`,
+        t`  Resolved: ${codeIn(res["decision"], DECISIONS)}${which} (${op(res["seq"])}, ${actorOf(res["actor"])})${note}`,
       );
     }
     const decisions = arr(r["decisions"]).map((d) => codeIn(d, DECISIONS));

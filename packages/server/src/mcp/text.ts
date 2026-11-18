@@ -80,8 +80,9 @@ const SHAPES = {
   ),
   // A paging handle as the service signs it.
   handle: /^cur_[A-Za-z0-9_-]{1,1024}\.[A-Za-z0-9_-]{43}$/,
-  // Slot, table and field names of this version.
-  name: /^[A-Za-z][A-Za-z0-9_]{0,63}$/,
+  // Slot, table and field names: a letter, then letters, digits and underscores, 63 at most
+  // (07-schema-evolution «名字»).
+  name: /^[A-Za-z][A-Za-z0-9_]{0,62}$/,
   // Canonical decimal text.
   number: /^-?(?:0|[1-9][0-9]{0,30})(?:\.[0-9]{0,29}[1-9])?$/,
   // A code of the contract's (and from the set allowed where it is made).

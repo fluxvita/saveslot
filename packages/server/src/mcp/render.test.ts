@@ -320,6 +320,38 @@ describe("what 05 §6 asks for", () => {
     expect(x).toContain("(candidate, not in effect)");
   });
 
+  it("history: a field over several stretches, each part with its period; the write's interval", () => {
+    const h = sample("history");
+    const entry = (h.result["entries"] as R[])[0] as R;
+    const part = (from: string, to: string | null, last: string | undefined, v: string) => ({
+      result: "applied",
+      before: "1",
+      after: v,
+      valid: { valid_from: from, valid_to: to, ...(last ? { valid_to_inclusive: last } : {}) },
+    });
+    const x = renderResult(h.tool, {
+      ...h.result,
+      target: { table: "ledger.budgets", entity: "e_4KWKRM296X61WJ89DY5XJNVA4P" },
+      entries: [
+        {
+          ...entry,
+          valid: { valid_from: "2026-11-01", valid_to: null },
+          fields: {
+            amount: [
+              part("2026-11-01", "2026-11-05", "2026-11-04", "2"),
+              part("2026-11-10", null, undefined, "3"),
+            ],
+          },
+        },
+      ],
+    }).replace(/untrusted-data-[0-9a-f]{32}/g, "N");
+    expect(x).toContain("update (from 2026-11-01)");
+    expect(x).toContain("2026-11-01 to 2026-11-04 (inclusive)");
+    expect(x).toContain("from 2026-11-10");
+    expect(x).not.toContain("whether it exists");
+    expect(x.match(/<N>1<\/N> → <N>[23]<\/N>/g)).toHaveLength(2);
+  });
+
   it("history's moments in the slot's time zone; as recorded when it has none or an unknown one", () => {
     const h = ALL["history"] as Sample;
     expect(renderResult(h.tool, h.result)).toContain("#13 2026-11-16 22:00 update");
@@ -344,6 +376,22 @@ describe("what 05 §6 asks for", () => {
     expect(d).toMatch(new RegExp(`In effect: amount 54 ${B}CNY${E} \\(#10`));
     expect(d).toMatch(new RegExp(`Candidate 0: amount 50 ${B}CNY${E} \\(#13`));
     expect(d).toContain("Choices: keep_effective / take_candidate / take_previous");
+  });
+
+  it("pending: a resolved item says which candidate was taken, by the index it is listed with", () => {
+    const s = sample("pending_detail");
+    const resolved = (resolution: R) =>
+      renderResult(s.tool, { ...s.result, status: "resolved", resolution }).replace(
+        /untrusted-data-[0-9a-f]{32}/g,
+        "N",
+      );
+    const at = { seq: 20, at: "2026-11-16T14:00:43.300Z", actor: s.result["opened_by"] };
+    expect(resolved({ decision: "take_candidate", candidate: 0, ...at })).toContain(
+      "Resolved: take_candidate 0 (#20",
+    );
+    expect(resolved({ decision: "keep_effective", ...at })).toContain(
+      "Resolved: keep_effective (#20",
+    );
   });
 
   it("write: status, schema version, operation number; each op's target, intent, fields, new ver", () => {
@@ -522,12 +570,7 @@ describe("every mark of the contract has a text (05 §4.2)", () => {
       rendered({ ...row, input_marks: base })
     );
   };
-  it.each(INPUT_MARK_KEYS.filter((k) => k !== "items"))("input_marks.%s", (k) => {
+  it.each([...INPUT_MARK_KEYS])("input_marks.%s", (k) => {
     expect(shown(k)).toBe(true);
-  });
-  // Not shown yet: the open items among a derived row's inputs. When they are, this fails, and
-  // goes into the list above.
-  it.fails("input_marks.items", () => {
-    expect(shown("items")).toBe(true);
   });
 });

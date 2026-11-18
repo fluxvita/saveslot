@@ -3,10 +3,10 @@
 // typed UntrustedText is missing here, so the list cannot fall behind the contract by hand.
 //
 // Field values are untrusted by their type, not by a field of their own: a `text` value is
-// UntrustedText (04-contract-types §1.4 `Value`). A result does not carry its fields' types, so a
-// string value is shown as untrusted unless it has the shape of an ID, a moment or a number
-// (`fieldValue` in render.ts); a test puts a payload in every string of a result and finds it inside
-// the boundary only (render.test.ts).
+// UntrustedText (04-contract-types §1.4 `Value`). A result does not carry its fields' types, so
+// every string value is shown as untrusted, whatever its shape, and a quantity's unit with it;
+// numbers and booleans are not text (`fieldValue` in render.ts). A test puts a payload in every
+// string of a result and finds it inside the boundary only (render.test.ts).
 
 import type { ToolName } from "./names.ts";
 
