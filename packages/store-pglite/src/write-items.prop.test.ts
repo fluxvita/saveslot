@@ -64,6 +64,128 @@ fc.configureGlobal({ interruptAfterTimeLimit: 550_000, markInterruptAsFailure: t
 const RUNS = propRuns(60);
 const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
 
+/** The nightly batch's first counterexample (state table): an undo awaits, a revoke then narrows it. */
+const EXAMPLE_NARROWED = [
+  {
+    kind: "write",
+    op: 10,
+    event: 11,
+    seen: 0,
+    valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+    fields: { f2: { value: "1", sources: ["S10"] } },
+    acknowledge: ["overwrite"],
+  },
+  {
+    kind: "revoke",
+    op: 20,
+    event: 21,
+    seen: 10,
+    valid: {
+      from: { mode: "given", value: "2026-11-01" },
+      to: { mode: "given", value: "2026-11-07" },
+    },
+    validSources: ["S20"],
+  },
+  {
+    kind: "write",
+    op: 30,
+    event: 31,
+    seen: 20,
+    valid: {
+      from: { mode: "given", value: "2026-11-03" },
+      to: { mode: "given", value: "2026-11-05" },
+    },
+    fields: { f2: { value: "5", sources: ["S30"] } },
+    acknowledge: ["overwrite"],
+  },
+  { kind: "undo", op: 40, event: 41, target: 30, seen: 30, acknowledge: ["overwrite"] },
+  { kind: "undo", op: 50, event: 51, target: 20, seen: 40, acknowledge: ["overwrite"] },
+  {
+    kind: "write",
+    op: 60,
+    event: 61,
+    seen: 50,
+    valid: {
+      from: { mode: "given", value: "2026-11-01" },
+      to: { mode: "given", value: "2026-11-03" },
+    },
+    fields: { f2: { value: "6", sources: ["S60"] } },
+    acknowledge: ["overwrite"],
+  },
+  { kind: "undo", op: 70, event: 71, target: 50 },
+  {
+    kind: "revoke",
+    op: 80,
+    event: 81,
+    seen: 70,
+    valid: {
+      from: { mode: "given", value: "2026-11-03" },
+      to: { mode: "given", value: "2026-11-05" },
+    },
+    validSources: ["S1"],
+  },
+] as unknown as Op[];
+/** The second: an undo awaits, and a write then narrows its interval before its entries are checked. */
+const EXAMPLE_REFRESHED = [
+  {
+    kind: "write",
+    op: 10,
+    event: 11,
+    seen: 0,
+    valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+    fields: { f2: { value: "9", sources: ["S2"] } },
+  },
+  {
+    kind: "write",
+    op: 20,
+    event: 21,
+    seen: 10,
+    valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+    fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+  },
+  {
+    kind: "write",
+    op: 30,
+    event: 31,
+    seen: 20,
+    valid: {
+      from: { mode: "given", value: "2026-11-03" },
+      to: { mode: "given", value: "2026-11-05" },
+    },
+    fields: { f2: { value: "1", sources: ["S4"], explicit: false } },
+    acknowledge: ["overwrite"],
+  },
+  { kind: "undo", op: 40, event: 41, target: 20, includeLater: false },
+  {
+    kind: "write",
+    op: 50,
+    event: 51,
+    seen: 40,
+    valid: {
+      from: { mode: "given", value: "2026-11-01" },
+      to: { mode: "given", value: "2026-11-03" },
+    },
+    fields: { f2: { value: "3", sources: ["S1"], explicit: false } },
+  },
+  {
+    kind: "write",
+    op: 60,
+    event: 61,
+    seen: 50,
+    valid: {
+      from: { mode: "given", value: "2026-11-01" },
+      to: { mode: "given", value: "2026-11-03" },
+    },
+    fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+  },
+] as unknown as Op[];
+
+/** An event table sample for the four modes: two writes to one row. */
+const EXAMPLE_EVENT = [
+  { kind: "write", op: 10, event: 11, seen: 0, fields: { f2: { value: "1", sources: ["S10"] } } },
+  { kind: "write", op: 20, event: 21, seen: 10, fields: { f2: { value: "2", sources: ["S20"] } } },
+] as unknown as Op[];
+
 const TENANT = `tn_${"8".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}`;
 const ROW = `r_${"6".repeat(26)}`;
@@ -245,6 +367,11 @@ interface Tracked {
   scope: Span[];
   mergeBase: number;
   readonly type: "conflict" | "awaiting_confirmation";
+  /**
+   * An awaiting undo: the event of the undo. Its interval follows the state (04-write-and-read
+   * «撤回某次写入（undo）»): what confirming it would write back now, from the reference evaluator.
+   */
+  readonly origin?: number;
 }
 
 const unitKey = (u: readonly string[]) => [...u].sort().join(",");
@@ -270,7 +397,6 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
   }, 120_000);
 
   it("item entries and refreshes as the reference evaluator gives them", async () => {
-    let drawn = 0;
     const seen = {
       samples: 0,
       skipped: 0,
@@ -278,400 +404,475 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       reached: 0,
       unreached: 0,
       inside: 0,
+      revertRefreshed: 0,
       outside: 0,
       superseded: 0,
       refreshed: 0,
       joined: 0,
     };
+    /** Samples by mode: `reach` (ends with a write reaching the items) and `oneTask`. */
+    const modes: Record<string, number> = {};
     await fc.assert(
-      fc.asyncProperty(scenario(isState), async ({ ops: all }) => {
-        // By the sample's number, not by chance: every second sample ends with a write reaching
-        // the items it opens; two in four run under one task (reached items superseded), the
-        // others a task a step (refreshed).
-        const nth = drawn++;
-        const reach = nth % 2 === 1;
-        const oneTask = nth % 4 < 2;
-        const cut = all.findIndex(
-          (o) => o.kind !== "write" && o.kind !== "revoke" && o.kind !== "undo",
-        );
-        const raw = cut < 0 ? all : all.slice(0, cut);
-        if (raw.length < 2 || raw[0]?.op !== 10) {
-          seen.skipped++;
-          return;
-        }
-        const sent = raw.map(asSent);
-        if (
-          sent.some(
-            (o) =>
-              o.kind === "write" &&
-              Object.entries(o.fields).every(
-                ([f, x]) => x === undefined || o.noop?.includes(f as never),
-              ),
-          )
-        ) {
-          seen.skipped++;
-          return;
-        }
-        // Each `ver` the latest version of the row at or before the op it names
-        // (version.fixture.ts).
-        const ops = seenAsVersions(sent, (x) => judged(schema, x, []).steps);
-        if (ops === undefined) {
-          seen.skipped++;
-          return;
-        }
-        // A sample that opens an item ends with a write reaching it: the current version, over
-        // the whole time on a state table, acknowledged. Random steps reach an open item rarely;
-        // this makes every such sample check a reach (superseded or refreshed, by its task).
-        const judgedOnce = judged(schema, ops, []);
-        const opens = judgedOnce.steps.some(
-          (x) =>
-            x.judgement.conflicts.length > 0 ||
-            ("items" in x.judgement.record &&
-              x.judgement.record.items.some((y) => y.status === "awaiting")),
-        );
-        const last = judgedOnce.steps.at(-1)?.op.op ?? 0;
-        if (opens && reach) {
-          const op = last + 10;
-          ops.push({
-            kind: "write",
-            op,
-            event: op + 2,
-            seen: versionsOf(judgedOnce.steps).at(-1) ?? last,
-            ...(isState
-              ? { valid: { from: { mode: "given", value: "2026-01-01" }, to: { mode: "open" } } }
-              : {}),
-            fields: { f2: { value: "reached", sources: [`S${op}`] } },
-            acknowledge: ["overwrite"],
-          } as unknown as Op);
-        }
-        const { steps } = opens && reach ? judged(schema, ops, []) : judgedOnce;
-        await main.reset();
-        const store = main.store;
-        const run = (events: NewEvent[]) =>
-          store.write(async (tx) => {
-            const op = await appendOperation(tx, {
-              actor: USER as never,
-              now: at() as never,
-              events,
-            });
-            await applyEvents(tx, eventsOf(op));
-          });
-        await createTenant(
-          store,
-          createOpsContext({
-            tenant: TENANT,
-            actor: USER,
-            trigger: null,
-            task: null,
-            visibility: { kind: "all" },
-            idempotency_key_window: 86_400_000,
-            idempotency_window: 600_000,
-            now: "2026-11-04T00:00:00.000Z",
-            confirmation: null,
-          }),
-        );
-        await run(createSlotEvents({ compiled: COMPILED as never, changes: CHANGES as never }));
-        seen.samples++;
-        let items = 0;
-        let model = 0;
-        let fillers = 9_000_000;
-        const tracked = new Map<string, Tracked>();
-        const refAt = (n: number) =>
-          evaluateLog(
-            schema,
-            steps.filter((x) => x.op.op <= n).map((x) => x.op),
-          ).final;
-        let before = refAt(0);
-        for (const [k, step] of steps.entries()) {
-          const o = step.op;
-          // Up to the step's operation number in one operation: a filler head and sources.
-          const tail = (await store.read(readTail))?.seq ?? 0;
-          if (tail < o.op - 1) {
-            await run([
-              filler,
-              ...Array.from(
-                { length: o.op - 2 - tail },
-                (): NewEvent => ({
-                  type: "source.recorded",
-                  slot: SLOT,
-                  blocks: {
-                    target: {
-                      source_id: `s_${String(++fillers).padStart(16, "0")}`,
-                      kind: "agent_note",
-                      level: "agent_inferred",
-                    },
-                    text: { text: "filler" },
-                  },
-                }),
-              ),
-            ]);
+      fc.asyncProperty(
+        scenario(isState),
+        fc.boolean(),
+        fc.boolean(),
+        async ({ ops: all }, reach, oneTask) => {
+          // Part of the sample, so that a counterexample replays alone and shrinks with its mode:
+          // `reach`, the sample ends with a write reaching the items it opens; `oneTask`, every step
+          // runs under one task (reached items superseded), else a task a step (refreshed). Each of
+          // the four is a fixed example below, so every run has them.
+          const mode = `${reach ? "reach" : "no reach"}, ${oneTask ? "one task" : "a task a step"}`;
+          modes[mode] = (modes[mode] ?? 0) + 1;
+          const cut = all.findIndex(
+            (o) => o.kind !== "write" && o.kind !== "revoke" && o.kind !== "undo",
+          );
+          const raw = cut < 0 ? all : all.slice(0, cut);
+          if (raw.length < 2 || raw[0]?.op !== 10) {
+            seen.skipped++;
+            return;
           }
-          const now = "now" in step.input ? (step.input.now as string) : "2026-11-05";
-          await store.write((tx) =>
-            writeInTx(tx, {
-              actor: USER as never,
-              // One task for every step in some samples: a step's own receipt of an item counts as
-              // read by the later steps (an item reached at the version it was opened with is
-              // superseded). A task a step in the others: reached items are refreshed.
-              task: oneTask ? "shared" : `step-${k}`,
-              now: `${now}T04:00:00.000Z`,
-              windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+          const sent = raw.map(asSent);
+          if (
+            sent.some(
+              (o) =>
+                o.kind === "write" &&
+                Object.entries(o.fields).every(
+                  ([f, x]) => x === undefined || o.noop?.includes(f as never),
+                ),
+            )
+          ) {
+            seen.skipped++;
+            return;
+          }
+          // Each `ver` the latest version of the row at or before the op it names
+          // (version.fixture.ts).
+          const ops = seenAsVersions(sent, (x) => judged(schema, x, []).steps);
+          if (ops === undefined) {
+            seen.skipped++;
+            return;
+          }
+          // A sample that opens an item ends with a write reaching it: the current version, over
+          // the whole time on a state table, acknowledged. Random steps reach an open item rarely;
+          // this makes every such sample check a reach (superseded or refreshed, by its task).
+          const judgedOnce = judged(schema, ops, []);
+          const opens = judgedOnce.steps.some(
+            (x) =>
+              x.judgement.conflicts.length > 0 ||
+              ("items" in x.judgement.record &&
+                x.judgement.record.items.some((y) => y.status === "awaiting")),
+          );
+          const last = judgedOnce.steps.at(-1)?.op.op ?? 0;
+          if (opens && reach) {
+            const op = last + 10;
+            ops.push({
+              kind: "write",
+              op,
+              event: op + 2,
+              seen: versionsOf(judgedOnce.steps).at(-1) ?? last,
+              ...(isState
+                ? { valid: { from: { mode: "given", value: "2026-01-01" }, to: { mode: "open" } } }
+                : {}),
+              fields: { f2: { value: "reached", sources: [`S${op}`] } },
+              acknowledge: ["overwrite"],
+            } as unknown as Op);
+          }
+          const { steps } = opens && reach ? judged(schema, ops, []) : judgedOnce;
+          await main.reset();
+          const store = main.store;
+          // The read buffer belongs to the store, not to what `reset` empties: reads an earlier sample
+          // left in it (the same items, entity and actor every sample) would count as this sample's,
+          // and whether a writer had read an item decides whether it is superseded or refreshed.
+          readBufferOf(store).take();
+          const run = (events: NewEvent[]) =>
+            store.write(async (tx) => {
+              const op = await appendOperation(tx, {
+                actor: USER as never,
+                now: at() as never,
+                events,
+              });
+              await applyEvents(tx, eventsOf(op));
+            });
+          await createTenant(
+            store,
+            createOpsContext({
+              tenant: TENANT,
+              actor: USER,
+              trigger: null,
+              task: null,
               visibility: { kind: "all" },
-              // Under one task the scenarios repeat requests word for word, which would be resends:
-              // a key of the step's own keeps each a request of its own.
-              params: {
-                ...(requestOf(o, o.op === 100 ? 0 : 1, isState) as object),
-                ...(oneTask ? { idempotency_key: `step-${k}` } : {}),
-              },
-              reads: readBufferOf(store),
-              newId: (kind) =>
-                kind === "row"
-                  ? ROW
-                  : kind === "entity"
-                    ? ENTITY
-                    : kind === "item"
-                      ? `pi_${String(++items).padStart(16, "0")}`
-                      : `s_${String(o.op).padStart(16, "0")}`,
+              idempotency_key_window: 86_400_000,
+              idempotency_window: 600_000,
+              now: "2026-11-04T00:00:00.000Z",
+              confirmation: null,
             }),
           );
-          const evs = await store.read(async (tx) =>
-            (await readEvents(tx, o.op, (await readTail(tx))?.seq ?? o.op)).map((e) => ({
-              type: e.header["type"] as string,
-              seq: Number(e.header["seq"]),
-              blocks: Object.fromEntries(
-                [...e.blocks].flatMap(([p, b]) => (b.state === "present" ? [[p, b.value]] : [])),
-              ) as Record<string, unknown>,
-            })),
-          );
-          const after = refAt(o.op);
-          const stretches = (blocks: Record<string, unknown>, prefix: string) =>
-            Object.entries(blocks)
-              .filter(([p]) => p.startsWith(`${prefix}/`))
-              .map(([, v]) => {
-                const y = v as { field: string; value?: unknown; revoked?: true; valid?: Span };
-                return y.valid === undefined ? y : { ...y, valid: spanIn(y.valid) };
-              });
+          await run(createSlotEvents({ compiled: COMPILED as never, changes: CHANGES as never }));
+          seen.samples++;
+          let items = 0;
+          let model = 0;
+          let fillers = 9_000_000;
+          const tracked = new Map<string, Tracked>();
+          const refAt = (n: number) =>
+            evaluateLog(
+              schema,
+              steps.filter((x) => x.op.op <= n).map((x) => x.op),
+            ).final;
+          /** What confirming the awaiting undo of event `origin` would write back after op `n`. */
+          const CONFIRM = 99_999_990;
+          const revertScope = (n: number, origin: number): Span[] => {
+            if (!isState) return [WHOLE_SPAN];
+            const log = [
+              ...steps.filter((x) => x.op.op <= n).map((x) => x.op),
+              { kind: "confirm", op: CONFIRM, event: CONFIRM + 1, target: origin } as unknown as Op,
+            ];
+            const written = evaluateLog(schema, log).final.items.filter((x) => x.op === CONFIRM);
+            return written.length === 0
+              ? []
+              : (union(...written.map((x) => x.valid as unknown as Iv[])) as unknown as Span[]);
+          };
+          let before = refAt(0);
+          for (const [k, step] of steps.entries()) {
+            const o = step.op;
+            // Up to the step's operation number in one operation: a filler head and sources.
+            const tail = (await store.read(readTail))?.seq ?? 0;
+            if (tail < o.op - 1) {
+              await run([
+                filler,
+                ...Array.from(
+                  { length: o.op - 2 - tail },
+                  (): NewEvent => ({
+                    type: "source.recorded",
+                    slot: SLOT,
+                    blocks: {
+                      target: {
+                        source_id: `s_${String(++fillers).padStart(16, "0")}`,
+                        kind: "agent_note",
+                        level: "agent_inferred",
+                      },
+                      text: { text: "filler" },
+                    },
+                  }),
+                ),
+              ]);
+            }
+            const now = "now" in step.input ? (step.input.now as string) : "2026-11-05";
+            await store.write((tx) =>
+              writeInTx(tx, {
+                actor: USER as never,
+                // One task for every step in some samples: a step's own receipt of an item counts as
+                // read by the later steps (an item reached at the version it was opened with is
+                // superseded). A task a step in the others: reached items are refreshed.
+                task: oneTask ? "shared" : `step-${k}`,
+                now: `${now}T04:00:00.000Z`,
+                windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+                visibility: { kind: "all" },
+                // Under one task the scenarios repeat requests word for word, which would be resends:
+                // a key of the step's own keeps each a request of its own.
+                params: {
+                  ...(requestOf(o, o.op === 100 ? 0 : 1, isState) as object),
+                  ...(oneTask ? { idempotency_key: `step-${k}` } : {}),
+                },
+                reads: readBufferOf(store),
+                newId: (kind) =>
+                  kind === "row"
+                    ? ROW
+                    : kind === "entity"
+                      ? ENTITY
+                      : kind === "item"
+                        ? `pi_${String(++items).padStart(16, "0")}`
+                        : `s_${String(o.op).padStart(16, "0")}`,
+              }),
+            );
+            const evs = await store.read(async (tx) =>
+              (await readEvents(tx, o.op, (await readTail(tx))?.seq ?? o.op)).map((e) => ({
+                type: e.header["type"] as string,
+                seq: Number(e.header["seq"]),
+                blocks: Object.fromEntries(
+                  [...e.blocks].flatMap(([p, b]) => (b.state === "present" ? [[p, b.value]] : [])),
+                ) as Record<string, unknown>,
+              })),
+            );
+            const after = refAt(o.op);
+            const stretches = (blocks: Record<string, unknown>, prefix: string) =>
+              Object.entries(blocks)
+                .filter(([p]) => p.startsWith(`${prefix}/`))
+                .map(([, v]) => {
+                  const y = v as { field: string; value?: unknown; revoked?: true; valid?: Span };
+                  return y.valid === undefined ? y : { ...y, valid: spanIn(y.valid) };
+                });
 
-          // "改到": the open items before this step, against the reference before and after it. A
-          // refresh for changed entries (`entries_changed`) is not one.
-          const reachedNow = new Set(
-            evs
-              .filter(
-                (e) =>
-                  e.type === "item.superseded" ||
-                  (e.type === "item.refreshed" &&
-                    (e.blocks["target"] as { cause: string }).cause === "target_overwritten"),
-              )
-              .map((e) => (e.blocks["target"] as { item: string }).item),
-          );
-          seen.superseded += evs.filter((e) => e.type === "item.superseded").length;
-          seen.refreshed +=
-            reachedNow.size - evs.filter((e) => e.type === "item.superseded").length;
-          const written =
-            "items" in step.judgement.record
-              ? step.judgement.record.items.filter((x) => x.status === "applied")
-              : [];
-          for (const [id, t] of tracked) {
-            const fields = t.unit[0] === "existence" ? ["f2"] : t.unit;
-            const segs = isState
-              ? segmentsIn(t.scope, [
-                  before.gaps,
-                  after.gaps,
-                  ...fields.flatMap((f) =>
-                    [...(before.fields[f as never] ?? []), ...(after.fields[f as never] ?? [])].map(
-                      (x) => x.valid,
+            // "改到": the open items before this step, against the reference before and after it. A
+            // refresh for changed entries (`entries_changed`) is not one.
+            const reachedNow = new Set(
+              evs
+                .filter(
+                  (e) =>
+                    e.type === "item.superseded" ||
+                    (e.type === "item.refreshed" &&
+                      (e.blocks["target"] as { cause: string }).cause === "target_overwritten"),
+                )
+                .map((e) => (e.blocks["target"] as { item: string }).item),
+            );
+            seen.superseded += evs.filter((e) => e.type === "item.superseded").length;
+            seen.refreshed +=
+              reachedNow.size - evs.filter((e) => e.type === "item.superseded").length;
+            const written =
+              "items" in step.judgement.record
+                ? step.judgement.record.items.filter((x) => x.status === "applied")
+                : [];
+            // An awaiting undo's interval after this step; the step reaches it where it changes
+            // the interval before it or the one after it (a write that empties it still reaches it).
+            const scopeAfter = new Map<string, Span[]>();
+            for (const [id, t] of tracked) {
+              if (t.origin !== undefined) scopeAfter.set(id, revertScope(o.op, t.origin));
+            }
+            for (const [id, t] of tracked) {
+              const fields = t.unit[0] === "existence" ? ["f2"] : t.unit;
+              const area =
+                t.origin === undefined || !isState
+                  ? t.scope
+                  : (union(
+                      ...([...t.scope, ...(scopeAfter.get(id) ?? [])] as Iv[]).map((x) => [x]),
+                    ) as unknown as Span[]);
+              const segs = isState
+                ? segmentsIn(area, [
+                    before.gaps,
+                    after.gaps,
+                    ...fields.flatMap((f) =>
+                      [
+                        ...(before.fields[f as never] ?? []),
+                        ...(after.fields[f as never] ?? []),
+                      ].map((x) => x.valid),
+                    ),
+                  ])
+                : [WHOLE_SPAN as Iv];
+              // On the unit "existence" only having a value or not counts (the conflict unit).
+              const gone = (tok: string) => tok === "no value" || tok === "no row";
+              const changed =
+                t.unit[0] === "existence"
+                  ? segs.some(
+                      (g) =>
+                        gone(refToken(before, "f2", g, isState)) !==
+                        gone(refToken(after, "f2", g, isState)),
+                    )
+                  : fields.some((f) =>
+                      segs.some(
+                        (g) => refToken(before, f, g, isState) !== refToken(after, f, g, isState),
+                      ),
+                    );
+              expect({ step: k, item: id, reached: reachedNow.has(id) }).toEqual({
+                step: k,
+                item: id,
+                reached: changed,
+              });
+              if (changed) seen.reached++;
+              else seen.unreached++;
+              const inside =
+                !isState ||
+                written.some((x) =>
+                  (x.valid as unknown as Span[]).some((v) =>
+                    area.some(
+                      (s) =>
+                        (s.to === null || v.from === null || v.from < s.to) &&
+                        (v.to === null || s.from === null || s.from < v.to),
                     ),
                   ),
-                ])
-              : [WHOLE_SPAN as Iv];
-            // On the unit "existence" only having a value or not counts (the conflict unit).
-            const gone = (tok: string) => tok === "no value" || tok === "no row";
-            const changed =
-              t.unit[0] === "existence"
-                ? segs.some(
-                    (g) =>
-                      gone(refToken(before, "f2", g, isState)) !==
-                      gone(refToken(after, "f2", g, isState)),
-                  )
-                : fields.some((f) =>
-                    segs.some(
-                      (g) => refToken(before, f, g, isState) !== refToken(after, f, g, isState),
-                    ),
-                  );
-            expect({ step: k, item: id, reached: reachedNow.has(id) }).toEqual({
-              step: k,
-              item: id,
-              reached: changed,
-            });
-            if (changed) seen.reached++;
-            else seen.unreached++;
-            const inside =
-              !isState ||
-              written.some((x) =>
-                (x.valid as unknown as Span[]).some((v) =>
-                  t.scope.some(
-                    (s) =>
-                      (s.to === null || v.from === null || v.from < s.to) &&
-                      (v.to === null || s.from === null || s.from < v.to),
-                  ),
+                );
+              if (inside) seen.inside++;
+              else seen.outside++;
+            }
+            for (const [id, sc] of scopeAfter) {
+              const t = tracked.get(id);
+              if (t !== undefined) t.scope = sc;
+            }
+            // The items as worked out here from the step's judgement: each conflict joins the open
+            // conflict item of its unit whose interval meets its candidate items', the earliest of
+            // several, or opens one; a write awaiting confirmation opens one. Opened in this order,
+            // the pipeline numbers them the same way.
+            const recordItems = "items" in step.judgement.record ? step.judgement.record.items : [];
+            const spansOf = (xs: readonly { valid: unknown }[]): Span[] =>
+              isState
+                ? (union(...xs.map((x) => x.valid as Iv[])) as unknown as Span[])
+                : [WHOLE_SPAN];
+            const expected = new Map<string, Tracked>();
+            for (const c of step.judgement.conflicts) {
+              const unit = c.unit === "existence" ? ["existence"] : [...c.unit.fields].sort();
+              const mine = spansOf(
+                recordItems.filter((x) =>
+                  c.items.some((r) => r.target === x.target && r.k === x.k),
                 ),
               );
-            if (inside) seen.inside++;
-            else seen.outside++;
-          }
-          // The items as worked out here from the step's judgement: each conflict joins the open
-          // conflict item of its unit whose interval meets its candidate items', the earliest of
-          // several, or opens one; a write awaiting confirmation opens one. Opened in this order,
-          // the pipeline numbers them the same way.
-          const recordItems = "items" in step.judgement.record ? step.judgement.record.items : [];
-          const spansOf = (xs: readonly { valid: unknown }[]): Span[] =>
-            isState
-              ? (union(...xs.map((x) => x.valid as Iv[])) as unknown as Span[])
-              : [WHOLE_SPAN];
-          const expected = new Map<string, Tracked>();
-          for (const c of step.judgement.conflicts) {
-            const unit = c.unit === "existence" ? ["existence"] : [...c.unit.fields].sort();
-            const mine = spansOf(
-              recordItems.filter((x) => c.items.some((r) => r.target === x.target && r.k === x.k)),
-            );
-            const seenOp = ("seen" in o ? (o.seen as number | undefined) : undefined) ?? o.op - 1;
-            const prior = [...tracked].find(
-              ([, t]) =>
-                t.type === "conflict" &&
-                unitKey(t.unit) === unitKey(unit) &&
-                (!isState || meets(t.scope, mine)),
-            );
-            if (prior !== undefined) {
-              const [id, t] = prior;
-              t.scope = isState
-                ? (union(...([...t.scope, ...mine] as Iv[]).map((x) => [x])) as unknown as Span[])
-                : [WHOLE_SPAN];
-              t.mergeBase = Math.min(t.mergeBase, seenOp);
-              expected.set(id, t);
-              seen.joined++;
-            } else {
+              const seenOp = ("seen" in o ? (o.seen as number | undefined) : undefined) ?? o.op - 1;
+              const prior = [...tracked].find(
+                ([, t]) =>
+                  t.type === "conflict" &&
+                  unitKey(t.unit) === unitKey(unit) &&
+                  (!isState || meets(t.scope, mine)),
+              );
+              if (prior !== undefined) {
+                const [id, t] = prior;
+                t.scope = isState
+                  ? (union(...([...t.scope, ...mine] as Iv[]).map((x) => [x])) as unknown as Span[])
+                  : [WHOLE_SPAN];
+                t.mergeBase = Math.min(t.mergeBase, seenOp);
+                expected.set(id, t);
+                seen.joined++;
+              } else {
+                const id = `pi_${String(++model).padStart(16, "0")}`;
+                const t: Tracked = { unit, scope: mine, mergeBase: seenOp, type: "conflict" };
+                tracked.set(id, t);
+                expected.set(id, t);
+              }
+            }
+            const proposal = recordItems.filter((x) => x.status === "awaiting");
+            if (proposal.length > 0) {
               const id = `pi_${String(++model).padStart(16, "0")}`;
-              const t: Tracked = { unit, scope: mine, mergeBase: seenOp, type: "conflict" };
+              const unit = proposal.some((x) => x.target === "existence")
+                ? ["existence"]
+                : [...new Set(proposal.map((x) => x.target as string))].sort();
+              const t: Tracked = {
+                unit,
+                scope: spansOf(proposal),
+                mergeBase: 0,
+                type: "awaiting_confirmation",
+                ...(o.kind === "undo" ? { origin: o.event } : {}),
+              };
               tracked.set(id, t);
               expected.set(id, t);
             }
-          }
-          const proposal = recordItems.filter((x) => x.status === "awaiting");
-          if (proposal.length > 0) {
-            const id = `pi_${String(++model).padStart(16, "0")}`;
-            const unit = proposal.some((x) => x.target === "existence")
-              ? ["existence"]
-              : [...new Set(proposal.map((x) => x.target as string))].sort();
-            const t: Tracked = {
-              unit,
-              scope: spansOf(proposal),
-              mergeBase: 0,
-              type: "awaiting_confirmation",
-            };
-            tracked.set(id, t);
-            expected.set(id, t);
-          }
-          for (const e of evs) {
-            const t = e.blocks["target"] as
-              | { item: string; unit?: string[]; merge_base_op?: number; type?: string }
-              | undefined;
-            if (t === undefined) continue;
-            if (e.type === "item.superseded") tracked.delete(t.item);
-            if (e.type === "item.created" || e.type === "item.merged") {
-              // Unit, interval and merge base as worked out here.
-              const x = expected.get(t.item);
-              expect({ step: k, item: t.item, known: x !== undefined }).toEqual({
-                step: k,
-                item: t.item,
-                known: true,
-              });
-              if (x === undefined) continue;
-              if (e.type === "item.created") {
-                expect({ step: k, unit: t.unit }).toEqual({ step: k, unit: x.unit });
-              }
-              if (x.type === "conflict") {
-                expect({ step: k, item: t.item, base: t.merge_base_op }).toEqual({
+            for (const e of evs) {
+              const t = e.blocks["target"] as
+                | { item: string; unit?: string[]; merge_base_op?: number; type?: string }
+                | undefined;
+              if (t === undefined) continue;
+              if (e.type === "item.superseded") tracked.delete(t.item);
+              if (e.type === "item.created" || e.type === "item.merged") {
+                // Unit, interval and merge base as worked out here.
+                const x = expected.get(t.item);
+                expect({ step: k, item: t.item, known: x !== undefined }).toEqual({
                   step: k,
                   item: t.item,
-                  base: x.mergeBase,
+                  known: true,
                 });
+                if (x === undefined) continue;
+                if (e.type === "item.created") {
+                  expect({ step: k, unit: t.unit }).toEqual({ step: k, unit: x.unit });
+                }
+                if (x.type === "conflict") {
+                  expect({ step: k, item: t.item, base: t.merge_base_op }).toEqual({
+                    step: k,
+                    item: t.item,
+                    base: x.mergeBase,
+                  });
+                }
+                if (isState) {
+                  const sv = e.blocks["scope_valid"] as { spans: Span[] } | undefined;
+                  expect({ step: k, item: t.item, spans: (sv?.spans ?? []).map(spanIn) }).toEqual({
+                    step: k,
+                    item: t.item,
+                    spans: x.scope.map(spanIn),
+                  });
+                }
               }
-              if (isState) {
+              const x = tracked.get(t.item);
+              if (x === undefined) continue;
+              // An awaiting undo refreshed: its interval is what confirming it writes back now.
+              if (isState && e.type === "item.refreshed" && x.origin !== undefined) {
                 const sv = e.blocks["scope_valid"] as { spans: Span[] } | undefined;
                 expect({ step: k, item: t.item, spans: (sv?.spans ?? []).map(spanIn) }).toEqual({
                   step: k,
                   item: t.item,
                   spans: x.scope.map(spanIn),
                 });
+                seen.revertRefreshed++;
               }
-            }
-            const x = tracked.get(t.item);
-            if (x === undefined) continue;
-            // current/<k> and previous/<k> against the reference after the step and at the merge base.
-            const check = (prefix: "current" | "previous", ref: Evaluation) => {
-              const entries = stretches(e.blocks, prefix);
-              if (
-                entries.length === 0 &&
-                !(prefix in e.blocks) &&
-                e.type === "item.merged" &&
-                prefix === "current"
-              )
-                return;
-              const fields = x.unit[0] === "existence" ? ["existence"] : x.unit;
-              for (const f of fields) {
-                const mine = entries.filter((y) => y.field === f);
-                const segs = isState
-                  ? segmentsIn(x.scope, [
-                      ref.gaps,
-                      ...mine.map((y) => [y.valid ?? WHOLE_SPAN]),
-                      ...(f === "existence"
-                        ? []
-                        : (ref.fields[f as never] ?? []).map((y) => y.valid)),
-                    ])
-                  : [WHOLE_SPAN as Iv];
-                for (const g of segs) {
-                  const entry = mine.find((y) => covers([(y.valid ?? WHOLE_SPAN) as Iv], g));
-                  if (f === "existence") {
-                    // A revoked stretch has no value; a stretch with a value has one.
-                    if (entry !== undefined) {
-                      const gone = ["no value", "no row"].includes(refToken(ref, "f2", g, isState));
-                      expect({ step: k, prefix, g, revoked: entry.revoked === true }).toEqual({
-                        step: k,
-                        prefix,
-                        g,
-                        revoked: gone,
-                      });
+              // current/<k> and previous/<k> against the reference after the step and at the merge base.
+              const check = (prefix: "current" | "previous", ref: Evaluation) => {
+                const entries = stretches(e.blocks, prefix);
+                if (
+                  entries.length === 0 &&
+                  !(prefix in e.blocks) &&
+                  e.type === "item.merged" &&
+                  prefix === "current"
+                )
+                  return;
+                const fields = x.unit[0] === "existence" ? ["existence"] : x.unit;
+                for (const f of fields) {
+                  const mine = entries.filter((y) => y.field === f);
+                  const segs = isState
+                    ? segmentsIn(x.scope, [
+                        ref.gaps,
+                        ...mine.map((y) => [y.valid ?? WHOLE_SPAN]),
+                        ...(f === "existence"
+                          ? []
+                          : (ref.fields[f as never] ?? []).map((y) => y.valid)),
+                      ])
+                    : [WHOLE_SPAN as Iv];
+                  for (const g of segs) {
+                    const entry = mine.find((y) => covers([(y.valid ?? WHOLE_SPAN) as Iv], g));
+                    if (f === "existence") {
+                      // A revoked stretch has no value; a stretch with a value has one.
+                      if (entry !== undefined) {
+                        const gone = ["no value", "no row"].includes(
+                          refToken(ref, "f2", g, isState),
+                        );
+                        expect({ step: k, prefix, g, revoked: entry.revoked === true }).toEqual({
+                          step: k,
+                          prefix,
+                          g,
+                          revoked: gone,
+                        });
+                      }
+                      continue;
                     }
-                    continue;
+                    const tok = refToken(ref, f, g, isState);
+                    const mineTok =
+                      entry === undefined ? "absent" : JSON.stringify(entry.value ?? null);
+                    // No entry: no write ever gave the field a state there (current), or no value at all.
+                    const want =
+                      tok === "no value" || tok === "no row" || tok === "null"
+                        ? ["absent", "null"]
+                        : [tok];
+                    expect({
+                      step: k,
+                      prefix,
+                      f,
+                      g,
+                      entry: want.includes(mineTok) ? "ok" : mineTok,
+                    }).toEqual({ step: k, prefix, f, g, entry: "ok" });
                   }
-                  const tok = refToken(ref, f, g, isState);
-                  const mineTok =
-                    entry === undefined ? "absent" : JSON.stringify(entry.value ?? null);
-                  // No entry: no write ever gave the field a state there (current), or no value at all.
-                  const want =
-                    tok === "no value" || tok === "no row" || tok === "null"
-                      ? ["absent", "null"]
-                      : [tok];
-                  expect({
-                    step: k,
-                    prefix,
-                    f,
-                    g,
-                    entry: want.includes(mineTok) ? "ok" : mineTok,
-                  }).toEqual({ step: k, prefix, f, g, entry: "ok" });
                 }
-              }
-              seen.entries++;
-            };
-            if (e.type === "item.created" || e.type === "item.refreshed") check("current", after);
-            if (e.type !== "item.superseded" && x.unit[0] !== undefined)
-              check("previous", refAt(x.mergeBase));
+                seen.entries++;
+              };
+              if (e.type === "item.created" || e.type === "item.refreshed") check("current", after);
+              if (e.type !== "item.superseded" && x.unit[0] !== undefined)
+                check("previous", refAt(x.mergeBase));
+            }
+            before = after;
           }
-          before = after;
-        }
-      }),
+        },
+      ),
       {
         numRuns: RUNS,
+        // Every run: the four modes, on a history whose undo awaits and whose interval then
+        // narrows (the nightly batch's first counterexample, on a state table), and the second
+        // counterexample, where a refresh narrows the interval of an undo before a check of its
+        // entries. Both failed while the interval stayed the proposal's.
+        examples: isState
+          ? [
+              [{ ops: EXAMPLE_NARROWED, decisions: [] }, true, false],
+              [{ ops: EXAMPLE_NARROWED, decisions: [] }, true, true],
+              [{ ops: EXAMPLE_NARROWED, decisions: [] }, false, false],
+              [{ ops: EXAMPLE_NARROWED, decisions: [] }, false, true],
+              [{ ops: EXAMPLE_REFRESHED, decisions: [] }, true, false],
+            ]
+          : [
+              [{ ops: EXAMPLE_EVENT, decisions: [] }, true, false],
+              [{ ops: EXAMPLE_EVENT, decisions: [] }, true, true],
+              [{ ops: EXAMPLE_EVENT, decisions: [] }, false, false],
+              [{ ops: EXAMPLE_EVENT, decisions: [] }, false, true],
+            ],
         ...(SEED !== undefined ? { seed: SEED } : {}),
         ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
       },
@@ -680,6 +881,14 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     // 100, too few for a guard that never fails.
     // The cases each sample must reach are built in (above); these only guard against a generator
     // gone degenerate as a whole.
+    if (process.env["JUDGE_STATS"]) console.log(schema.kind, JSON.stringify({ ...seen, modes }));
+    // The four modes, every run (the fixed examples).
+    expect(Object.keys(modes).sort()).toEqual([
+      "no reach, a task a step",
+      "no reach, one task",
+      "reach, a task a step",
+      "reach, one task",
+    ]);
     expect(seen.samples).toBeGreaterThan(RUNS / 3);
     expect({
       reached: seen.reached > 0,
