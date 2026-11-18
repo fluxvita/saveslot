@@ -550,10 +550,12 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
     src_event: unknown;
     src_field: string | null;
     src_k: number | null;
+    no_value: boolean | null;
     rec_from: unknown;
   }>(
     `SELECT field_id, ${isState ? asText("valid_from", instant) : "NULL"} AS valid_from,
-       ${isState ? asText("valid_to", instant) : "NULL"} AS valid_to, src_event, src_field, src_k, rec_from
+       ${isState ? asText("valid_to", instant) : "NULL"} AS valid_to, src_event, src_field, src_k,
+       no_value, rec_from
      FROM "${name}__ver" WHERE row_id = $1 AND rec_to IS NULL`,
     [rowId],
   );
@@ -565,6 +567,7 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
       c.src_event === null
         ? null
         : { event: Number(c.src_event), target: c.src_field as never, k: c.src_k as number },
+    no_value: c.no_value === true,
     rec_from: Number(c.rec_from),
   }));
   const count = await tx.query<{ n: unknown }>(

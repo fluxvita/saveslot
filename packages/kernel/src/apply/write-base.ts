@@ -43,6 +43,8 @@ export interface OpenCell {
   readonly valid_from: string | null;
   readonly valid_to: string | null;
   readonly src: ItemKey | null;
+  /** The cell says the entity has no value there (a state table's field cell). */
+  readonly no_value: boolean;
   readonly rec_from: Seq;
 }
 
@@ -253,8 +255,15 @@ function fieldColumns(t: CompiledBaseTable): string[] {
   );
 }
 
-const cellKey = (field: string, from: string | null, to: string | null, src: ItemKey | null) =>
-  JSON.stringify([field, from, to, src === null ? null : [src.event, src.target, src.k]]);
+/** A cell's identity: what it covers, who gave it, and whether it says the entity has no value. */
+const cellKey = (
+  field: string,
+  from: string | null,
+  to: string | null,
+  src: ItemKey | null,
+  noValue: boolean,
+) =>
+  JSON.stringify([field, from, to, src === null ? null : [src.event, src.target, src.k], noValue]);
 
 export function planWriteBase(seq: Seq, op: Seq, present: Obj, input: WriteBaseInput): Change[] {
   const target = present["target"] as Obj;
@@ -357,12 +366,12 @@ export function planWriteBase(seq: Seq, op: Seq, present: Obj, input: WriteBaseI
   // a current cell not open yet is opened at this operation.
   const now = new Map(
     settled.cells.map((c) => [
-      cellKey(c.field, c.valid?.from ?? null, c.valid?.to ?? null, c.by),
+      cellKey(c.field, c.valid?.from ?? null, c.valid?.to ?? null, c.by, c.noValue === true),
       c,
     ]),
   );
   const open = new Map(
-    input.openCells.map((c) => [cellKey(c.field, c.valid_from, c.valid_to, c.src), c]),
+    input.openCells.map((c) => [cellKey(c.field, c.valid_from, c.valid_to, c.src, c.no_value), c]),
   );
   const close = [...open].filter(([k]) => !now.has(k)).map(([, c]) => c);
   const added = [...now].filter(([k]) => !open.has(k)).map(([, c]) => c);
@@ -384,6 +393,7 @@ export function planWriteBase(seq: Seq, op: Seq, present: Obj, input: WriteBaseI
       "src_field",
       "src_k",
       "revoked",
+      "no_value",
       ...cols,
     ],
     rows: added.map((c: Cell) => [
@@ -396,6 +406,7 @@ export function planWriteBase(seq: Seq, op: Seq, present: Obj, input: WriteBaseI
       c.by?.target ?? null,
       c.by?.k ?? null,
       c.revoked === true ? true : null,
+      c.noValue === true ? true : null,
       ...shape.fields.flatMap((f) =>
         f === c.field ? columnValues(t, f, c.value) : columnValues(t, f, null),
       ),

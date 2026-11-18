@@ -135,6 +135,7 @@ describe("baseTableDdl: the physical tables of a base table", () => {
         '  src_field TEXT COLLATE "C",',
         "  src_k INTEGER,",
         "  revoked BOOLEAN,",
+        "  no_value BOOLEAN,",
         '  "f_f1" TEXT COLLATE "C",',
         '  "f_f2" BIGINT,',
         "  PRIMARY KEY (row_id, field_id, valid_from, rec_from)",

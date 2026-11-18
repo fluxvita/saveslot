@@ -5,9 +5,12 @@
 // from the cells read with SQL, by the spec's sentences, not by the kernel's function:
 // - a stretch the unit's fields have cells on: the write the latest of those cells comes from, with
 //   the cells' values;
-// - a stretch without a value (05-time «无值区间»: a field that decides "has a value" without a
-//   valued cell; on a table with no required field, no field with one): the revoke whose existence
-//   cell is there, or the operation that gave the empty cells (an undo's write-back, a clearing);
+// - a stretch without a value (05-time «无值区间»: no field contribution in effect there, a clear
+//   counting as one; in the cells, no field cell not marked `no_value`): the latest of the revoke
+//   whose existence cell is there and the operations that gave `no_value` cells (an undo's
+//   write-back). On a
+//   table with required fields this is also checked against the older reading (a required field
+//   without a valued cell), stretch by stretch: the two must agree there;
 // - any other stretch (never written there) gives none, and a part with none has no `by`.
 // The receipt's `effective` is the target field's value on the earliest stretch its `by` gave
 // (null on existence). The cells are those the request left (01-objects «不过期»: the receipt's
@@ -186,6 +189,8 @@ type Cell = {
   vf: string | null;
   vt: string | null;
   revoked: boolean;
+  /** `__ver.no_value`: a state table's field cell saying the entity has no value there. */
+  noValue: boolean;
   op: number | null;
   value: string | null;
 };
@@ -216,6 +221,7 @@ async function cellsOf(table: TableName, id: string): Promise<Cell[]> {
       vf: x["vf"] as string | null,
       vt: x["vt"] as string | null,
       revoked: x["revoked"] === true,
+      noValue: x["no_value"] === true,
       op: x["src_op"] == null ? null : Number(x["src_op"]),
       value: v == null ? null : String(v),
     };
@@ -237,13 +243,12 @@ function stretchesOf(
   unit: readonly string[],
   from: string | null,
   to: string | null,
+  disagree: (what: string) => void,
 ): Stretch[] {
   const t = TABLES[table];
   const all = t.fields.map((f) => f.id as string);
   const fields = unit.includes("existence") ? all : unit;
   const required = t.fields.filter((f) => "required" in f).map((f) => f.id as string);
-  // Without a required field, a stretch has no value when no field has one.
-  const valued = required.length > 0 ? required : all;
   const latest = (cs: readonly Cell[]) =>
     cs.reduce<number | null>(
       (m, c) => (c.op !== null && (m === null || c.op > m) ? c.op : m),
@@ -279,18 +284,32 @@ function stretchesOf(
     );
     const revoke = revokeOf(here);
     if (revoke !== undefined) {
-      out.push({ from: a, to: z, op: revoke.op, values: null });
-      continue;
-    }
-    const empty = valued.filter((f) => !here.some((c) => c.field === f && c.value !== null));
-    const none = required.length > 0 ? empty.length > 0 : empty.length === all.length;
-    if (none) {
+      // The later of the revoke and a no_value cell beside it: what left it without a value last.
       out.push({
         from: a,
         to: z,
-        op: latest(here.filter((c) => empty.includes(c.field))),
+        op: latest([revoke, ...here.filter((c) => c.noValue)]),
         values: null,
       });
+      continue;
+    }
+    // Has a value: a field cell not marked no_value (a cleared or never written field's cell
+    // where the entity has a value is one); none: only no_value cells, the giver the latest.
+    const none = !here.some((c) => c.field !== "existence" && !c.noValue);
+    const giver = latest(here.filter((c) => c.noValue));
+    if (required.length > 0) {
+      // A required field cannot be cleared: here the older reading must give the same.
+      const empty = required.filter((f) => !here.some((c) => c.field === f && c.value !== null));
+      const old = empty.length > 0;
+      const oldGiver = latest(here.filter((c) => empty.includes(c.field)));
+      if (old !== none || (none && oldGiver !== giver)) {
+        disagree(
+          `\n[${a}, ${z}): no_value says ${none ? `none by ${giver}` : "a value"}, required fields ${old ? `none by ${oldGiver}` : "a value"}; cells ${J(here)}`,
+        );
+      }
+    }
+    if (none) {
+      out.push({ from: a, to: z, op: giver, values: null });
       continue;
     }
     // The row has a value here: its unit's values, an unwritten field among them as null (no
@@ -552,7 +571,9 @@ describe.each(Object.keys(TABLES) as TableName[])(
                 );
                 const from = state ? (p.valid.valid_from as string | null) : null;
                 const to = state ? (p.valid.valid_to as string | null) : null;
-                const want = stretchesOf(table, cells, unit, from, to);
+                const disagree = (m: string) =>
+                  fault("no_value and the required fields read a stretch differently", m);
+                const want = stretchesOf(table, cells, unit, from, to, disagree);
                 const top = topOf(want);
                 const more = `\nOP ${i} PART ${name} ${J(p)}\nDETAIL ${J(d.effective)} target ${J(d.target)}\nCELLS ${J(cells)}\nEXPECTED ${J(want)}`;
                 if ((p.by?.seq ?? null) !== top)
@@ -597,7 +618,7 @@ describe.each(Object.keys(TABLES) as TableName[])(
                   // Over the item's spans: the top seq and its actor, and whether any stretch has
                   // a value (both ways).
                   const overItem = ((d.target.spans ?? []) as Any[]).flatMap((x) =>
-                    stretchesOf(table, cells, unit, x.valid_from, x.valid_to),
+                    stretchesOf(table, cells, unit, x.valid_from, x.valid_to, disagree),
                   );
                   const itemTop = topOf(overItem);
                   if ((d.effective.seq ?? null) !== itemTop)

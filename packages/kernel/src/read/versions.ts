@@ -5,8 +5,8 @@
 //
 // The state as of S is rebuilt from the cells in effect then (`rec_from ≤ S < rec_to`), the way
 // apply builds the business table from its cells: a state entity has a value on a piece of business
-// time where every required field has a value (any field, when none is required) and no revoke is
-// in effect, pieces with the same values running together; an event or timeless row exists when it
+// time where a field cell there is not marked no_value (apply writes every field's cell where it has
+// one, a cleared or never written field included, 05-time «无值区间»), pieces with the same values running together; an event or timeless row exists when it
 // has cells, revoked when a revoke is in effect. The business time and the conditions are then
 // evaluated here, operator by operator as ./select.ts writes them in SQL for the first page:
 // - `=`, `<`, `<=`, `>`, `>=`, `in`, `contains`: an empty value matches none; `!=` matches it;
@@ -43,6 +43,8 @@ export type RowCell = {
   vt: string | null;
   rec_from: unknown;
   revoked: boolean | null;
+  /** A field cell saying the entity has no value there (`__ver.no_value`). */
+  no_value: boolean | null;
 } & Record<string, unknown>;
 
 type Cell = RowCell & { row_id: string };
@@ -58,7 +60,7 @@ async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, s: number): Promise<C
     : "NULL AS vf, NULL AS vt";
   const cols = t.fields.flatMap((f) => selectOf(f).map((x, i) => `${x} AS c_${f.id}_${i}`));
   const r = await tx.query<Cell>(
-    `SELECT row_id, field_id, ${interval}, rec_from, revoked, ${cols.join(", ")} FROM ${versions}
+    `SELECT row_id, field_id, ${interval}, rec_from, revoked, no_value, ${cols.join(", ")} FROM ${versions}
      WHERE rec_from <= $1 AND (rec_to IS NULL OR rec_to > $1)`,
     [s],
   );
@@ -84,7 +86,6 @@ export function segmentsOf(
     if (c.vt !== null) points.add(c.vt);
   }
   const sorted = [...points].sort();
-  const required = t.fields.filter((f) => f.required === true);
   const out: { from: string; to: string | null; values: Record<string, FieldValue> }[] = [];
   for (let i = 0; i < sorted.length; i++) {
     const from = sorted[i] as string;
@@ -98,10 +99,10 @@ export function segmentsOf(
       const c = here.find((x) => x.field_id === f.id);
       values[f.id] = c === undefined ? null : cellValue(f, c);
     }
-    const valued =
-      required.length > 0
-        ? required.every((f) => here.some((c) => c.field_id === f.id) && values[f.id] !== null)
-        : t.fields.some((f) => values[f.id] !== null);
+    // The entity has a value here when a field cell says so: apply writes every field's cell, not
+    // marked no_value, where it has one (a clear and a field never written included), and only
+    // no_value cells or a revoke's where it has none (05-time «无值区间»).
+    const valued = here.some((c) => c.field_id !== "existence" && c.no_value !== true);
     if (!valued) continue;
     const last = out.at(-1);
     if (

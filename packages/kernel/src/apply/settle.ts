@@ -86,6 +86,11 @@ export interface Cell {
   readonly value: FieldValue;
   /** Existence cells: the row is revoked. */
   readonly revoked?: true;
+  /**
+   * State tables' field cells where the entity has no value: the no-value item that left the field
+   * so. A field empty where the entity has a value (cleared, or never written) is not one.
+   */
+  readonly noValue?: true;
   /** The item giving it; none for an empty field the entity has no item on. */
   readonly by: ItemKey | null;
 }
@@ -136,6 +141,7 @@ function pushCell(cells: Cell[], c: Cell & { valid: Interval }): void {
     last.valid.to === c.valid.from &&
     valueKey(last.value) === valueKey(c.value) &&
     last.revoked === c.revoked &&
+    last.noValue === c.noValue &&
     JSON.stringify(last.by) === JSON.stringify(c.by)
   ) {
     cells[i] = { ...last, valid: { from: last.valid.from, to: c.valid.to } };
@@ -170,7 +176,7 @@ function settleState(table: SettleTable, items: readonly SettleItem[]): Settled 
       for (const f of table.required.length > 0 ? table.required : table.fields) {
         const x = governing.get(f);
         if (x?.content.kind === "no_value")
-          pushCell(cells, { field: f, valid: piece, value: null, by: keyOf(x) });
+          pushCell(cells, { field: f, valid: piece, value: null, noValue: true, by: keyOf(x) });
         if (x?.content.kind === "revoke" && (revoke === undefined || x.event > revoke.event))
           revoke = x;
       }

@@ -116,6 +116,14 @@ async function open(p: OpenParams): Promise<OpenResult> {
     if (!Number.isInteger(formatVersion) || formatVersion < 1) {
       throw new WorkerError("not_a_store", "the storage has no valid storage format version");
     }
+    // An older format is a store from development (no data has been published in one): not
+    // migrated, refused with what to do.
+    if (formatVersion < p.supportedFormat) {
+      throw new WorkerError(
+        "format_too_old",
+        `storage format ${formatVersion} is a development format older than ${p.supportedFormat}; initialize the store anew with this version`,
+      );
+    }
     if (formatVersion > p.supportedFormat) {
       throw new WorkerError(
         "format_too_new",

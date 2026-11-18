@@ -243,6 +243,29 @@ describe("opening", () => {
     },
     T,
   );
+
+  it(
+    "refuses a store of an older, development format: initialize it anew",
+    async () => {
+      const dir = tenantDir();
+      await withStore(dir, (s) =>
+        s.write((tx) =>
+          tx.query("UPDATE meta SET value = $1 WHERE key = $2", [
+            String(STORAGE_FORMAT_VERSION - 1),
+            META_KEYS.storageFormat,
+          ]),
+        ),
+      );
+      const e = await backend.open(ref(dir), {}).then(
+        () => undefined,
+        (x: unknown) => x as { code?: string; message?: string },
+      );
+      expect(e?.code).toBe("format_too_old");
+      expect(e?.message).toContain("initialize the store anew");
+      expect(await codeOf(backend.open(ref(dir), {}))).toBe("format_too_old");
+    },
+    T,
+  );
 });
 
 describe("ownership epoch", () => {

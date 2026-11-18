@@ -27,6 +27,7 @@ import type {
   RowId,
   SupersededReason,
 } from "@fluxvita/saveslot-contract-core";
+import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import type { ReadId } from "../audit/index.ts";
 import type { DerivedWrite } from "../derive/index.ts";
 import { type ActorAsOf, actorsAsOf } from "../log/index.ts";
@@ -45,9 +46,21 @@ import {
   rowCellsAt,
   rowOf,
 } from "../pending/index.ts";
-import type { WriteWarning } from "../request/index.ts";
+import { decodeColumns, type WriteWarning } from "../request/index.ts";
+import { selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { type ValueOut, valueOut } from "../time/index.ts";
+
+/**
+ * A field value as a receipt gives it: an object value (a quantity) with its keys in the order the
+ * log keeps them (JCS), whether it was read from an event's block or from a version cell's columns,
+ * so that one receipt does not write the same value two ways.
+ */
+function valueIn(v: FieldValue): ValueOut {
+  if (v === null || typeof v !== "object" || "instant" in v) return valueOut(v);
+  return valueOut(JSON.parse(canonicalize(v as never)) as FieldValue);
+}
+
 import { WriteError } from "./errors.ts";
 import { type EntityKeyText, keyFields, keyOf } from "./keys.ts";
 import type { StoredEvent } from "./record.ts";
@@ -255,7 +268,7 @@ export function withDerived(
     const keyIds = t.rule.scope.kind === "tenant" ? [] : t.rule.scope.key;
     const key: Record<string, ValueOut> = Object.create(null);
     keyIds.forEach((id, i) => {
-      key[nameOf(id)] = valueOut(w.groupKey[i] ?? null);
+      key[nameOf(id)] = valueIn(w.groupKey[i] ?? null);
     });
     for (const c of w.changes) {
       // The group key's fields are the row's key, given in `key`: not a change of their own.
@@ -264,8 +277,8 @@ export function withDerived(
         table: qualifiedTable(slotName, t),
         key,
         field: nameOf(c.field),
-        before: valueOut(c.before),
-        after: valueOut(c.after),
+        before: valueIn(c.before),
+        after: valueIn(c.after),
       });
     }
   }
@@ -373,14 +386,13 @@ async function operationEvents(tx: ReadTx, op: OpNumber): Promise<StoredEvent[]>
  * stretch is a revoke's hole or without a value, or the target is the row's existence). Undefined
  * when no stretch of the part had a giver (never written there).
  */
-async function givenBy(
-  tx: ReadTx,
+function givenBy(
   table: CompiledBaseTable,
   cells: readonly RowCell[],
   unit: readonly string[],
   part: Span | undefined,
   target: string,
-): Promise<{ readonly op: OpNumber; readonly value: FieldValue } | undefined> {
+): { readonly op: OpNumber; readonly value: FieldValue } | undefined {
   const pieces = part !== undefined ? piecesOver(table, cells, [part], unit) : [rowOf(cells, unit)];
   const giver = latestGiver(pieces);
   if (giver === undefined) return undefined;
@@ -393,13 +405,16 @@ async function givenBy(
   if (cell === undefined || cell.src_event === null || cell.src_field === null) {
     return { op, value: null };
   }
-  // The value the cell's contribution gave, as the log has it.
-  const r = await tx.query<{ body: string | null }>(
-    "SELECT body FROM content WHERE seq = $1 AND path = $2",
-    [Number(cell.src_event), `fields/${cell.src_field}/${cell.src_k ?? 0}`],
-  );
-  const body = r.rows[0]?.body;
-  const value = body == null ? null : ((JSON.parse(body) as { value?: FieldValue }).value ?? null);
+  // The value the cell holds, as the details read it: still there when the contribution's source
+  // is deleted later (the content block, not the version table, is what a deletion clears).
+  const f = table.fields.find((x) => x.id === target);
+  const value =
+    f === undefined
+      ? null
+      : decodeColumns(
+          f,
+          selectOf(f).map((_, i) => cell[`c_${f.id}_${i}`]),
+        );
   return { op, value };
 }
 
@@ -549,7 +564,7 @@ export async function readReceipt(
       field: name,
       interval: (v) => iv(v) as unknown as Record<string, unknown>,
       actor: actorOut,
-      value: valueOut,
+      value: valueIn,
       isState,
     };
     /** What carrying out an item would change, from (some of) its impact entries. */
@@ -579,7 +594,7 @@ export async function readReceipt(
       const given =
         before === undefined
           ? undefined
-          : await givenBy(tx, table, before, x.unit, isState ? part : undefined, target);
+          : givenBy(table, before, x.unit, isState ? part : undefined, target);
       const top = given?.op;
       if (top !== undefined && !actors.has(top)) {
         for (const [n, a] of await actorsOf(tx, [top])) actors.set(n, a);
@@ -595,7 +610,7 @@ export async function readReceipt(
       return {
         // The target field's value on the `by` stretch (none when it has no value, `by` is a
         // revoke, or the target is existence); the whole picture is the item's ConflictDetail.
-        effective: valueOut(given?.value ?? null),
+        effective: valueIn(given?.value ?? null),
         ...(rowVer !== undefined ? { current_ver: rowVer } : {}),
         ...(top !== undefined ? { by: { seq: top, actor: actorOut(actors.get(top) ?? "") } } : {}),
         ...(x.mergeBase !== undefined
@@ -613,7 +628,7 @@ export async function readReceipt(
                             b["value"] === null
                               ? null
                               : Object.fromEntries([
-                                  [name(target), valueOut(b["value"] as FieldValue)],
+                                  [name(target), valueIn(b["value"] as FieldValue)],
                                 ]),
                         })),
                     }
@@ -625,7 +640,7 @@ export async function readReceipt(
                         values: Object.fromEntries(
                           prev.map((b) => [
                             name(b["field"] as string),
-                            valueOut(b["value"] as FieldValue),
+                            valueIn(b["value"] as FieldValue),
                           ]),
                         ),
                       },
@@ -677,7 +692,7 @@ export async function readReceipt(
           item === undefined ? {} : await itemDetails(item, block.status, target, event, part);
         add(m !== null ? name(target) : "*", {
           result: block.status,
-          ...("value" in block ? { after: valueOut(block.value as FieldValue) } : {}),
+          ...("value" in block ? { after: valueIn(block.value as FieldValue) } : {}),
           ...(block.no_value ? { no_value: true as const } : {}),
           ...(block.uncovered ? { uncovered: true as const } : {}),
           ...(item !== undefined ? { item } : {}),
@@ -742,7 +757,7 @@ export async function readReceipt(
         ...(key !== undefined
           ? {
               entity_key: Object.fromEntries(
-                keyFields(table).map((f) => [f.name, valueOut(key[f.id] ?? null)]),
+                keyFields(table).map((f) => [f.name, valueIn(key[f.id] ?? null)]),
               ),
             }
           : {}),

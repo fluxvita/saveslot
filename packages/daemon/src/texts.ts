@@ -51,6 +51,11 @@ export const TEXTS = {
     `error: the running saveslot service is version ${running}, this saveslot is ${mine}. Run saveslot stop, then start again.`,
   startFailed: (reason: string) =>
     `error: the saveslot service did not start (${reason}). The service log is in run/saveslot.log under the home.`,
+  /** The store is of another storage format (02-architecture §8 «格式版本检查»): what to do. */
+  startFormatTooOld:
+    "error: the saveslot service did not start (format_too_old): the store was made by a development version of saveslot, in a storage format this one does not open and does not migrate. Initialize a new home with this version.",
+  startFormatTooNew:
+    "error: the saveslot service did not start (format_too_new): the store was made by a newer saveslot. Upgrade saveslot to open it.",
   startHomeUnusable: (code: string) =>
     `error: the saveslot service was not started: the home cannot be used (${code}). Check that it is a directory you can read and write, with run/ a directory in it.`,
   startTimedOut: (pid: number) =>

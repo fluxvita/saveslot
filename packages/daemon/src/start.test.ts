@@ -137,6 +137,43 @@ describe("start on a home it cannot use: a code and an exit, never a throw or a 
   );
 });
 
+describe("start on a store of another storage format: what to do, said and logged", () => {
+  /**
+   * The home's store with its storage format version set to `v` (02-architecture §8; `meta`'s
+   * `storage_format`). This saveslot's format is 2: 1 is an older, development one, 3 a newer one.
+   */
+  async function withFormat(home: string, v: number) {
+    const store = await testBackend().open({ kind: "pglite", dir: join(home, "data") }, {});
+    try {
+      await store.write((tx) =>
+        tx.query("UPDATE meta SET value = $1 WHERE key = $2", [String(v), "storage_format"]),
+      );
+    } finally {
+      await store.close();
+    }
+  }
+
+  for (const [label, v, text, said] of [
+    ["an older, development format", 1, TEXTS.startFormatTooOld, "initialize the store anew"],
+    ["a newer format", 3, TEXTS.startFormatTooNew, "newer"],
+  ] as const) {
+    it(
+      `a store of ${label}: exit 7, the text for it, and the backend's words in the log`,
+      async () => {
+        const home = await freshHome();
+        await withFormat(home, v);
+        const c = capture();
+        expect(await start(home, c.io)).toBe(7);
+        expect(c.err).toEqual([text]);
+        const log = readFileSync(join(runDir(home), "saveslot.log"), "utf8");
+        expect(log).toContain(said);
+        await stop(home, { out: () => {}, err: () => {} }).catch(() => {});
+      },
+      T,
+    );
+  }
+});
+
 describe("start, asked to stop while it waits (a signal to setup)", () => {
   it(
     "no longer waits for the service: 1; one it started is said once, one running already is not",

@@ -19,7 +19,11 @@
 // - Columns holding user content (or values computed from it) are marked "content" in comments:
 //   physical deletion must clear them.
 
-export const STORAGE_FORMAT_VERSION = 1;
+/**
+ * The storage format. 2: the version table's `no_value` column (a state entity without a value on a
+ * stretch, told apart from an empty field). An older store is refused, not migrated.
+ */
+export const STORAGE_FORMAT_VERSION = 2;
 
 /** Where a table's state comes from (§3 "日志是唯一事实来源"). */
 export type StateClass = "fact" | "materialized" | "local";

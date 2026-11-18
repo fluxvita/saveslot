@@ -12,7 +12,7 @@ import type {
   FieldValue,
   ItemId,
 } from "@fluxvita/saveslot-contract-core";
-import { canonical, rationalOf } from "../request/index.ts";
+import { decodeColumns as decode } from "../request/index.ts";
 import { column, INSTANT_TEXT, physical, selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { containsPoint, pointWithin } from "../time/index.ts";
@@ -62,26 +62,9 @@ export interface Flag {
   readonly spans: readonly Span[] | undefined;
 }
 
+// A field's columns decoded (../request `decodeColumns`): the same for reads and receipts.
 // The physical layout lives with the store (../store/layout.ts); reads use it from here too.
-export { column, INSTANT_TEXT, physical, selectOf };
-
-export function decode(f: CompiledBaseField, cells: readonly unknown[]): FieldValue {
-  const [v, zone] = cells;
-  if (v === null || v === undefined) return null;
-  switch (f.type) {
-    case "boolean":
-      return v as boolean;
-    case "integer":
-    case "decimal":
-      return canonical(rationalOf(String(v)));
-    case "quantity":
-      return { value: canonical(rationalOf(String(v))), unit: f.unit.code };
-    case "zoned_datetime":
-      return { instant: String(v) as never, zone: String(zone) };
-    default:
-      return String(v);
-  }
-}
+export { column, decode, INSTANT_TEXT, physical, selectOf };
 
 export class Params {
   readonly list: (string | number | boolean | null)[] = [];

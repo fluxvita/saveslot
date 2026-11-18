@@ -93,7 +93,11 @@ export function baseTableDdl(t: CompiledBaseTable): string {
     "src_event BIGINT", // the contribution that gave the value: event, field, item
     `src_field ${T}`,
     "src_k INTEGER",
-    "revoked BOOLEAN", // existence cells
+    "revoked BOOLEAN", // existence cells: the row is revoked (by a revoke)
+    // State tables' field cells: the entity has no value on this stretch, and this cell names the
+    // operation that left it so (a no-value write-back). Not set on a field merely empty where the
+    // entity has a value (a clear, a field never written): 05-time «无值区间».
+    "no_value BOOLEAN",
     ...fields,
     `PRIMARY KEY (row_id, field_id, ${state ? "valid_from, " : ""}rec_from)`,
   ];

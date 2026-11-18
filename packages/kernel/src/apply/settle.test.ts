@@ -123,9 +123,16 @@ describe("settle: a state table", () => {
     ];
     const cells = settle(STATE, items).cells;
     expect(cells.filter((c) => c.value === null)).toEqual([
+      // Where the entity has a value, f3 is empty: not a no-value cell.
       { field: "f3", valid: { from: d("11-01"), to: d("11-03") }, value: null, by: by(20, "f3") },
-      // In the gap only the cell saying why: f3's value is not kept there.
-      { field: "f2", valid: { from: d("11-05"), to: d("11-07") }, value: null, by: by(30) },
+      // In the gap only the cell saying why, marked so: f3's value is not kept there.
+      {
+        field: "f2",
+        valid: { from: d("11-05"), to: d("11-07") },
+        value: null,
+        noValue: true,
+        by: by(30),
+      },
     ]);
     expect(cells.some((c) => c.field === "f3" && c.valid?.from === d("11-05"))).toBe(false);
   });

@@ -8,6 +8,10 @@
 // 2. Pages hold to the first page: with writes between pages (values changed, rows inserted,
 //    revoked, a revoke undone), the pages put together are the whole result as the first page saw
 //    it, no row repeated or dropped (marks aside: they are those at each read).
+//
+// A state table with no required field (`marks`) is written with clears too: a stretch whose only
+// contribution is a clear has a value, every field empty (05-time «无值区间»), on both paths and on
+// every page. Every run has one (the fixed examples).
 
 import {
   appendOperation,
@@ -82,6 +86,18 @@ const COMPILED = {
       ],
     },
     {
+      id: "t4",
+      name: "marks",
+      kind: "base",
+      description: "by the day, no field required",
+      time: { type: "state", granularity: "date" },
+      physical: { table: "t_t4_v1" },
+      fields: [
+        { id: "f1", name: "x", type: "text", description: "a mark" },
+        { id: "f2", name: "y", type: "integer", description: "a count" },
+      ],
+    },
+    {
       id: "t3",
       name: "notes",
       kind: "base",
@@ -146,6 +162,14 @@ const segment = fc.record({
   from: fc.nat({ max: DAYS.length - 2 }),
   len: fc.option(fc.integer({ min: 1, max: 3 }), { nil: undefined }),
 });
+/** A write on `marks`: values from small pools, or a clear of both fields over its interval. */
+const markSegment = fc.record({
+  x: pick([null, "p", "q"]),
+  y: pick([null, 1, 2]),
+  clear: fc.boolean(),
+  from: fc.nat({ max: DAYS.length - 2 }),
+  len: fc.option(fc.integer({ min: 1, max: 3 }), { nil: undefined }),
+});
 const KEYS = ["a", "b", "a_b", "%", "Café"];
 const NS = [null, 0, 1, 7];
 const noteRow = fc.record({ key: pick(KEYS), n: pick(NS) });
@@ -156,6 +180,10 @@ const data = fc.record({
   entities: fc.array(fc.array(segment, { minLength: 1, maxLength: 3 }), {
     minLength: 1,
     maxLength: 3,
+  }),
+  marks: fc.array(fc.array(markSegment, { minLength: 1, maxLength: 3 }), {
+    minLength: 1,
+    maxLength: 2,
   }),
 });
 
@@ -273,6 +301,27 @@ const budgetQuery = fc.record({
   limit: fc.integer({ min: 1, max: 2 }),
 });
 
+const marksQuery = fc.record({
+  kind: pick(["now", "valid_at", "during"]),
+  a: fc.nat({ max: DAYS.length - 1 }),
+  b: fc.option(fc.nat({ max: DAYS.length - 1 }), { nil: undefined }),
+  fields: pick(["all", "x", "y"]),
+  clip: fc.boolean(),
+  coalesce: fc.boolean(),
+  where: fc.option(
+    fc.oneof(
+      fc.record({
+        field: fc.constant("y"),
+        op: pick(["=", "!=", ">=", "is_null"]),
+        v: pick([1, 2]),
+      }),
+      fc.record({ field: fc.constant("x"), op: pick(["=", "!=", "is_null"]), v: pick(["p", "q"]) }),
+    ),
+    { nil: undefined },
+  ),
+  limit: fc.integer({ min: 1, max: 2 }),
+});
+
 function condition(c: {
   field: string;
   op: string;
@@ -343,6 +392,15 @@ const EXAMPLE_DATA = {
     ],
     [{ category: "rent", amount: 50, from: 1, len: undefined }],
   ],
+  // An entity with x over [11-01, 11-03), then both fields cleared over [11-05, 11-12): that
+  // stretch's only contribution is the clear, so it has a value with every field empty (and comes
+  // after the first, so that a page of one row reads it from the version table).
+  marks: [
+    [
+      { x: "p", y: null, clear: false, from: 0, len: 1 },
+      { x: null, y: null, clear: true, from: 2, len: 2 },
+    ],
+  ],
 };
 const c = (field: string, op: string, value: unknown) => ({ field, op, value });
 /** Each operator at least twice with rows, and each kind of query the first property counts. */
@@ -391,6 +449,9 @@ const EXAMPLE_QUERIES: Record<string, unknown>[] = [
   { table: "budgets", order: [{ field: "amount", dir: "desc" }] },
   { table: "budgets", order: [{ field: "category", dir: "asc" }] },
   { table: "notes", order: [{ field: "key", dir: "asc" }], include_revoked: false },
+  { table: "marks", valid_during: ["2026-11-01", null], clip: false, coalesce: true },
+  { table: "marks", valid_at: "2026-11-08" },
+  { table: "marks", valid_during: ["2026-11-01", null], where: [c("y", "is_null", true)] },
 ];
 /** Unconditioned pages of one row, with each kind of write between them; the undo undoes the update. */
 const EXAMPLE_PAGES = [
@@ -422,6 +483,17 @@ const EXAMPLE_GAP = [
   true,
 ];
 
+/**
+ * Marks read a row a page, no write between pages: the cleared stretch is one of the rows (the
+ * second page on is read from the version table), in every run.
+ */
+const EXAMPLE_CLEARED = [
+  EXAMPLE_DATA,
+  [{ table: "marks", valid_during: ["2026-11-01", null], clip: false, coalesce: true }, 1],
+  [],
+  true,
+];
+
 let s: ReusableStore;
 beforeAll(async () => {
   s = await openReusable("saveslot-query-pages-");
@@ -450,9 +522,18 @@ type Data = {
   rows: Record<string, unknown>[];
   revoke: number[];
   entities: { category: string; amount: number | null; from: number; len?: number }[][];
+  marks: {
+    x: string | null;
+    y: number | null;
+    clear: boolean;
+    from: number;
+    len?: number;
+  }[][];
 };
 /** A fresh store with the drawn rows and entities; the row and entity IDs. */
-async function dataOf(d: Data): Promise<{ rows: string[]; entities: string[]; notes: string[] }> {
+async function dataOf(
+  d: Data,
+): Promise<{ rows: string[]; entities: string[]; notes: string[]; marks: string[] }> {
   await s.reset();
   minute = 0;
   await createTenant(
@@ -512,6 +593,33 @@ async function dataOf(d: Data): Promise<{ rows: string[]; entities: string[]; no
     }
     entities.push(entity as string);
   }
+  const marks: string[] = [];
+  for (const segs of d.marks) {
+    let entity: string | undefined;
+    for (const seg of segs) {
+      const valid_from = DAYS[seg.from] as string;
+      const to =
+        seg.len === undefined ? undefined : DAYS[Math.min(seg.from + seg.len, DAYS.length - 1)];
+      // A clear sets both fields empty; otherwise the drawn values, an empty one left out (x
+      // when both are, so that the write has something to set).
+      const set = seg.clear
+        ? { x: null, y: null }
+        : seg.x === null && seg.y === null
+          ? { x: "p" }
+          : { ...(seg.x !== null ? { x: seg.x } : {}), ...(seg.y !== null ? { y: seg.y } : {}) };
+      const op = {
+        intent: entity === undefined ? "insert" : "update",
+        table: "marks",
+        ...(entity === undefined ? {} : { entity }),
+        set,
+        valid_from,
+        ...(to !== undefined && to > valid_from ? { valid_to: to } : {}),
+      };
+      const r = await w({ ops: [op] });
+      entity ??= r.ops[0]?.target.entity as string;
+    }
+    marks.push(entity as string);
+  }
   const notes: string[] = [];
   for (const n of d.notes) {
     const set = n.n === null ? { key: n.key } : { key: n.key, n: n.n };
@@ -520,7 +628,7 @@ async function dataOf(d: Data): Promise<{ rows: string[]; entities: string[]; no
     );
   }
   if (notes.length > 1) await w({ ops: [{ intent: "revoke", table: "notes", row: notes[0] }] });
-  return { rows, entities, notes };
+  return { rows, entities, notes, marks };
 }
 
 const toParams = {
@@ -556,6 +664,30 @@ const toParams = {
       ...(x.order !== undefined ? { order: [x.order] } : {}),
       ...(a !== undefined ? { valid_during: [a, b] } : {}),
       include_revoked: x.include_revoked,
+    };
+  },
+  marks(x: {
+    kind: string;
+    a: number;
+    b?: number;
+    fields: string;
+    clip: boolean;
+    coalesce: boolean;
+    where?: { field: string; op: string; v: unknown };
+  }): Record<string, unknown> | undefined {
+    const a = DAYS[x.a] as string;
+    const b = x.b === undefined || x.b <= x.a ? null : (DAYS[x.b] as string);
+    const where = x.where === undefined ? undefined : condition(x.where);
+    if (x.where !== undefined && where === undefined) return undefined;
+    return {
+      table: "marks",
+      ...(x.fields === "all" ? {} : { fields: [x.fields] }),
+      ...(x.kind === "valid_at"
+        ? { valid_at: a }
+        : x.kind === "during"
+          ? { valid_during: [a, b], clip: x.clip, coalesce: x.coalesce }
+          : {}),
+      ...(where !== undefined ? { where: [where] } : {}),
     };
   },
   budgets(x: {
@@ -611,6 +743,10 @@ async function bothPaths(params: Record<string, unknown>) {
   return { first: await run(false), later: await run(true) };
 }
 
+/** A row with every field empty: on `marks`, a stretch whose only contribution is a clear. */
+const onlyEmpty = (r: { values?: Record<string, unknown> }) =>
+  r.values !== undefined && Object.values(r.values).every((v) => v === null);
+
 const queryOf = (params: Record<string, unknown>) =>
   query(
     s.store,
@@ -642,6 +778,7 @@ describe("query's two paths and its pages", () => {
             spendQuery.map((x) => toParams.spend(x as never)),
             budgetQuery.map((x) => toParams.budgets(x as never)),
             notesQuery.map((x) => toParams.notes(x as never)),
+            marksQuery.map((x) => toParams.marks(x as never)),
           ),
           { minLength: 8, maxLength: 12 },
         ),
@@ -667,6 +804,8 @@ describe("query's two paths and its pages", () => {
               reach("merged by fields read");
             if (params["include_revoked"] === true && first.rows.some((r) => r.marks?.revoked))
               reach("revoked rows");
+            if (params["table"] === "marks" && first.rows.some(onlyEmpty))
+              reach("marks: all empty");
           }
         },
       ),
@@ -689,12 +828,15 @@ describe("query's two paths and its pages", () => {
       "revoked rows",
       "budgets ordered",
       "notes: rows",
+      "marks: rows",
+      "marks: all empty",
     ])
       expect({ k, reached: (reached[k] ?? 0) >= 1 }).toEqual({ k, reached: true });
   });
 
   it("pages put together are the whole result as the first page saw it, with writes between them", async () => {
     let paged = 0;
+    let pagedEmpty = 0;
     const done: Record<string, number> = {};
     const refusedWrites: Record<string, number> = {};
     await fc.assert(
@@ -704,6 +846,7 @@ describe("query's two paths and its pages", () => {
           spendQuery.map((x) => [toParams.spend(x as never), x.limit] as const),
           budgetQuery.map((x) => [toParams.budgets(x as never), x.limit] as const),
           notesQuery.map((x) => [toParams.notes(x as never), x.limit] as const),
+          marksQuery.map((x) => [toParams.marks(x as never), x.limit] as const),
         ),
         fc.array(
           fc.record({
@@ -731,7 +874,11 @@ describe("query's two paths and its pages", () => {
               const table = params["table"] as string;
               const row = ids.rows[x.i % ids.rows.length] as string;
               const note = ids.notes[x.i % ids.notes.length] as string;
-              const entity = ids.entities[x.i % ids.entities.length] as string;
+              const entity = (
+                table === "marks"
+                  ? ids.marks[x.i % ids.marks.length]
+                  : ids.entities[x.i % ids.entities.length]
+              ) as string;
               const target =
                 table === "spend" ? { row } : table === "notes" ? { row: note } : { entity };
               const set = Object.fromEntries(Object.entries(x.row).filter(([, v]) => v !== null));
@@ -740,7 +887,13 @@ describe("query's two paths and its pages", () => {
                   ? { set: { note: x.row.note, pieces: x.row.pieces } }
                   : table === "notes"
                     ? { set: { n: x.i % 9 } }
-                    : { set: { amount: 900 + (x.i % 9) }, valid_from: DAYS[x.i % DAYS.length] };
+                    : table === "marks"
+                      ? // Half of them clears.
+                        {
+                          set: x.i % 2 === 0 ? { y: null } : { y: x.i % 9 },
+                          valid_from: DAYS[x.i % DAYS.length],
+                        }
+                      : { set: { amount: 900 + (x.i % 9) }, valid_from: DAYS[x.i % DAYS.length] };
               const op =
                 x.kind === "insert"
                   ? table === "notes"
@@ -776,6 +929,7 @@ describe("query's two paths and its pages", () => {
             pages.push(await queryOf({ ...params, limit, position: pages.at(-1)?.next_position }));
           }
           if (pages.length > 1) paged++;
+          if (pages.length > 1 && pages.slice(1).some((p) => p.rows.some(onlyEmpty))) pagedEmpty++;
           for (const p of pages) expect(p.total).toBe(whole.total);
           // Rows and values as the first page saw them; marks are those at each read (04-contract
           // §15): an item a write between pages settles is no longer marked on a later page.
@@ -784,10 +938,16 @@ describe("query's two paths and its pages", () => {
           expect(unmarked(pages.flatMap((p) => p.rows))).toEqual(unmarked(whole.rows));
         },
       ),
-      { numRuns: RUNS, ...seeded, examples: [EXAMPLE_PAGES as never, EXAMPLE_GAP as never] },
+      {
+        numRuns: RUNS,
+        ...seeded,
+        examples: [EXAMPLE_PAGES as never, EXAMPLE_GAP as never, EXAMPLE_CLEARED as never],
+      },
     );
     // The example pages; the random samples mostly do (half have no condition).
     expect(paged).toBeGreaterThanOrEqual(1 + Math.floor(RUNS / 10));
+    // A stretch only cleared, read on a later page (EXAMPLE_CLEARED).
+    expect(pagedEmpty).toBeGreaterThanOrEqual(1);
     if (process.env["JUDGE_STATS"]) console.log(JSON.stringify({ done, refusedWrites }));
     // Each kind of write between pages took effect in some samples.
     // An undo needs an earlier write on the same target in the same sample: rarer.

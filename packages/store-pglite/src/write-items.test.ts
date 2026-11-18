@@ -19,6 +19,7 @@ import {
   COMPILED_V1,
   createSlotEvents,
   queryInTx,
+  resolveInTx,
   writeInTx,
 } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -89,6 +90,26 @@ const COMPILED = {
         { id: "f3", name: "c", type: "text", description: "c" },
       ],
     },
+    {
+      id: "t6",
+      name: "gauges",
+      kind: "base",
+      description: "a quantity and a moment over time",
+      time: { type: "state", granularity: "date" },
+      physical: { table: "t_t6_v1" },
+      fields: [
+        {
+          id: "f2",
+          name: "amount",
+          type: "quantity",
+          required: true,
+          description: "how far",
+          unit: { code: "km", dimension: "length", to_base: "1000" },
+          precision: { scale: 2, rounding: "half_up" },
+        },
+        { id: "f3", name: "at", type: "zoned_datetime", description: "when" },
+      ],
+    },
   ],
 };
 const CHANGES = [
@@ -98,6 +119,7 @@ const CHANGES = [
   { target: { table: "t3" }, change: "add_table" },
   { target: { table: "t4" }, change: "add_table" },
   { target: { table: "t5" }, change: "add_table" },
+  { target: { table: "t6" }, change: "add_table" },
 ].map((c) => ({
   ...c,
   class: "create",
@@ -1899,10 +1921,11 @@ describe("who gave what a candidate met: the receipt's by and the item's effecti
   );
 
   it(
-    "a table with no required field: a stretch no field has a value on is without a value",
+    "a table with no required field: a stretch whose only contribution is a clear has a value, empty",
     async () => {
-      // loose: b over [11-01, 11-10); OTHER clears b there, leaving no field with a value, the
-      // empty cell given by that clearing write.
+      // loose: b over [11-01, 11-10); OTHER clears b there. A clear is a contribution in effect
+      // (05-time «无值区间»): the entity still has a value there, every field empty, given by the
+      // clearing write.
       const a = await send({
         sv: 1,
         ops: [
@@ -1942,10 +1965,17 @@ describe("who gave what a candidate met: the receipt's by and the item's effecti
       expect(part["by"]).toEqual({ seq: r.seq, actor: asActor(OTHER) });
       expect(part["effective"]).toBeNull();
       const d = await detailOf(part["item"] as string);
-      expect(d.effective).toMatchObject({ seq: r.seq, exists: false });
-      expect(d.effective.spans.map((x) => (x as { values?: unknown }).values)).toEqual(
-        d.effective.spans.map(() => null),
-      );
+      expect(d.effective).toMatchObject({ seq: r.seq, exists: true });
+      expect(
+        d.effective.spans.map((x) => {
+          const y = x as { valid_from: unknown; values?: unknown; seq?: unknown };
+          return [y.valid_from, y.values, y.seq];
+        }),
+      ).toEqual([
+        [null, null, undefined],
+        ["2026-11-01", { b: null, c: null }, r.seq],
+        ["2026-11-10", null, undefined],
+      ]);
     },
     T,
   );
@@ -2395,6 +2425,434 @@ describe("intervals open at the start, and the whole time, in the log (09 §5.7,
           ],
         },
       ]);
+    },
+    T,
+  );
+});
+
+describe("a state table with no required field: a clear is a contribution (05-time «无值区间»)", () => {
+  const loose = (op: Record<string, unknown>, actor = USER) =>
+    send({ sv: 1, ops: [{ table: "loose", ...op }] }, { actor });
+  const entityOf = (r: { ops: readonly { target: { entity?: string } }[] }) =>
+    r.ops[0]?.target.entity as string;
+  /** `query` on loose: the business table's path, or the version table's as of the latest op. */
+  const queryLoose = (params: Record<string, unknown>, asOf?: boolean) =>
+    s.store.read(async (tx) => {
+      const latest = Number(
+        (await tx.query<{ op: unknown }>("SELECT max(op) AS op FROM events")).rows[0]?.op,
+      );
+      return (
+        await queryInTx(tx, {
+          actor: USER as never,
+          task: null,
+          now: "2026-11-05T12:00:00.000Z" as never,
+          visibility: { kind: "all" },
+          params: { table: "loose", ...params },
+          read: "rd_0000000000000000" as never,
+          ...(asOf === true ? { asOf: latest } : {}),
+        })
+      ).result as unknown as {
+        rows: Record<string, unknown>[];
+        total: number;
+        next_position?: string;
+      };
+    });
+  const detailOf = async (id: string) =>
+    (await pending$(
+      s.store,
+      createOpsContext({
+        tenant: TENANT,
+        actor: `ci_${"3".repeat(26)}`,
+        trigger: null,
+        task: null,
+        visibility: { kind: "all" },
+        idempotency_key_window: 86_400_000,
+        idempotency_window: 600_000,
+        now: now(),
+        confirmation: null,
+      }),
+      { id },
+    )) as unknown as { effective: Record<string, unknown> };
+
+  const asAt = (r: Record<string, unknown>) => [r["valid_from"], r["values"]];
+  const bothAt = async (params: Record<string, unknown>) => {
+    const first = await queryLoose(params);
+    const later = await queryLoose(params, true);
+    expect(later.rows).toEqual(first.rows);
+    return first.rows;
+  };
+
+  it(
+    "a stretch only cleared is a row on every page, whatever the page size",
+    async () => {
+      // Two other entities first; then one with b over [11-10, 11-15), its c cleared over
+      // [11-01, 11-05): that stretch's only contribution is the clear.
+      await loose({ intent: "insert", valid_from: "2026-11-01", set: { b: "o1" } });
+      await loose({ intent: "insert", valid_from: "2026-11-01", set: { b: "o2" } });
+      const a = await loose({
+        intent: "insert",
+        valid_from: "2026-11-10",
+        valid_to: "2026-11-15",
+        set: { b: "b0" },
+      });
+      await loose({
+        intent: "update",
+        entity: entityOf(a),
+        ver: verAt(a),
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-05",
+        set: { c: null },
+      });
+      const P = { valid_during: ["2026-10-01", null], clip: false, coalesce: true };
+      const whole = await queryLoose({ ...P, limit: 200 });
+      expect(whole.rows.map(asAt)).toEqual([
+        ["2026-11-01", { b: "o1", c: null }],
+        ["2026-11-01", { b: "o2", c: null }],
+        ["2026-11-01", { b: null, c: null }],
+        ["2026-11-10", { b: "b0", c: null }],
+      ]);
+      expect((await queryLoose({ ...P, limit: 200 }, true)).rows).toEqual(whole.rows);
+      for (const limit of [1, 2]) {
+        const pages = [await queryLoose({ ...P, limit })];
+        while (pages.at(-1)?.next_position !== undefined)
+          pages.push(await queryLoose({ ...P, limit, position: pages.at(-1)?.next_position }));
+        expect({ limit, rows: pages.flatMap((x) => x.rows) }).toEqual({ limit, rows: whole.rows });
+      }
+    },
+    T,
+  );
+
+  it(
+    "b and c written on a stretch, then undone: no value there, given by the undo",
+    async () => {
+      const a = await loose({ intent: "insert", valid_from: "2026-11-10", set: { b: "x" } });
+      const e = entityOf(a);
+      const w2 = await loose({
+        intent: "update",
+        entity: e,
+        ver: verAt(a),
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-05",
+        set: { b: "y", c: "z" },
+      });
+      // Taking away both change points of the stretch awaits a confirmation (05-time, high
+      // impact ①): confirmed, the undo writes the stretch back without a value.
+      const u = await loose({ entity: e, revert: { undo: w2.seq }, ver: verAt(w2) }, OTHER);
+      expect(u.pending[0]?.type).toBe("awaiting_confirmation");
+      const conf = (await s.store.write((tx) =>
+        resolveInTx(tx, {
+          actor: OTHER as never,
+          task: null,
+          now: now(),
+          windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+          visibility: { kind: "all" },
+          params: { id: u.pending[0]?.id, decision: "confirm", item_ver: u.pending[0]?.item_ver },
+          newId,
+          reads: readBufferOf(s.store),
+        }),
+      )) as unknown as { write: { seq: number } };
+      const by = { seq: conf.write.seq, actor: asActor(OTHER) };
+      expect(await bothAt({ valid_at: "2026-11-02" })).toEqual([]);
+      // A write from before the undo meets the stretch: its by and the details name the undo.
+      const z = await loose({
+        intent: "update",
+        entity: e,
+        ver: verAt(w2),
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-05",
+        set: { c: "q" },
+      });
+      const part = partsOf(z, "c").find((p) => p["result"] === "candidate") as Record<
+        string,
+        unknown
+      >;
+      expect(part["by"]).toEqual(by);
+      const d = await detailOf(part["item"] as string);
+      expect(d.effective).toMatchObject({ ...by, exists: false });
+      expect(d.effective["spans"]).toEqual([
+        { ...iv("2026-11-01", "2026-11-05", "2026-11-04"), values: null, ...by },
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "a clear, then a revoke over it: no value again, on both paths",
+    async () => {
+      const a = await loose({
+        intent: "insert",
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-10",
+        set: { b: "x" },
+      });
+      const e = entityOf(a);
+      const c = await loose({
+        intent: "update",
+        entity: e,
+        ver: verAt(a),
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-10",
+        set: { b: null },
+      });
+      expect((await bothAt({ valid_at: "2026-11-03" })).map(asAt)).toEqual([
+        ["2026-11-01", { b: null, c: null }],
+      ]);
+      await loose({
+        intent: "revoke",
+        entity: e,
+        ver: verAt(c),
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-10",
+      });
+      expect(await bothAt({ valid_at: "2026-11-03" })).toEqual([]);
+    },
+    T,
+  );
+});
+
+describe("a stretch both revoked and left without a value by a later undo (04-contract-types §5.1 by)", () => {
+  it(
+    "the giver is the later of the two: the undo that took the value away",
+    async () => {
+      // loose: b over [11-15, 11-20); revoked from 11-01, then revoked again by another principal;
+      // c written over [11-15, 11-20) (the stretch has a value again, {b: null, c: c4}); undoing
+      // the first revoke with what came after awaits, and is confirmed: c is written back without
+      // a value there, while the second revoke still holds it.
+      const lo = (op: Record<string, unknown>, actor = USER) =>
+        send({ sv: 1, ops: [{ table: "loose", ...op }] }, { actor });
+      const a = await lo({
+        intent: "insert",
+        valid_from: "2026-11-15",
+        valid_to: "2026-11-20",
+        set: { b: "b7" },
+      });
+      const e = a.ops[0]?.target.entity as string;
+      const whole = { valid_from: "2026-11-01", valid_to: "open" };
+      const r1 = await lo({ entity: e, intent: "revoke", ver: verAt(a), ...whole });
+      const r2 = await lo({ entity: e, intent: "revoke", ver: verAt(r1), ...whole }, OTHER);
+      const w = await lo({
+        entity: e,
+        intent: "update",
+        ver: verAt(r2),
+        valid_from: "2026-11-15",
+        valid_to: "2026-11-20",
+        set: { c: "c4" },
+      });
+      const u = await lo({
+        entity: e,
+        revert: { undo: r1.seq, include_later: true },
+        ver: verAt(w),
+      });
+      expect(u.pending?.[0]?.type).toBe("awaiting_confirmation");
+      const conf = (await s.store.write((tx) =>
+        resolveInTx(tx, {
+          actor: OTHER as never,
+          task: null,
+          now: now(),
+          windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+          visibility: { kind: "all" },
+          params: {
+            id: u.pending?.[0]?.id,
+            decision: "confirm",
+            item_ver: u.pending?.[0]?.item_ver,
+          },
+          newId,
+          reads: readBufferOf(s.store),
+        }),
+      )) as unknown as { write: { seq: number } };
+      // Both cells on the stretch: the existence one revoked by the second revoke, c's without a
+      // value by the confirmation.
+      const cells = await s.store.read((tx) =>
+        tx.query<{
+          field_id: string;
+          revoked: boolean | null;
+          no_value: boolean | null;
+          op: unknown;
+        }>(
+          `SELECT field_id, revoked, no_value, (SELECT op FROM events e WHERE e.seq = v.src_event) AS op
+           FROM t_t5_v1__ver v WHERE row_id = $1 AND rec_to IS NULL ORDER BY field_id`,
+          [e],
+        ),
+      );
+      expect(cells.rows.map((x) => [x.field_id, x.revoked, x.no_value, Number(x.op)])).toEqual([
+        ["existence", true, null, r2.seq],
+        ["f3", null, true, conf.write.seq],
+      ]);
+      // A write from the second revoke's version meets the stretch: by is the confirmation.
+      const z = await lo({
+        entity: e,
+        intent: "update",
+        ver: verAt(r2),
+        valid_from: "2026-11-15",
+        valid_to: "2026-11-20",
+        set: { c: "zz" },
+      });
+      const part = partsOf(z, "c").find((p) => p["result"] === "candidate") as Record<
+        string,
+        unknown
+      >;
+      const by = { seq: conf.write.seq, actor: asActor(OTHER) };
+      expect(part["by"]).toEqual(by);
+      const d = (await pending$(
+        s.store,
+        createOpsContext({
+          tenant: TENANT,
+          actor: `ci_${"3".repeat(26)}`,
+          trigger: null,
+          task: null,
+          visibility: { kind: "all" },
+          idempotency_key_window: 86_400_000,
+          idempotency_window: 600_000,
+          now: now(),
+          confirmation: null,
+        }),
+        { id: part["item"] as string },
+      )) as unknown as { effective: Record<string, unknown> };
+      expect(d.effective).toMatchObject({ ...by, exists: false });
+    },
+    T,
+  );
+});
+
+describe("no_value is part of a version cell (02-architecture §8)", () => {
+  const lo = (op: Record<string, unknown>, actor = USER) =>
+    send({ sv: 1, ops: [{ table: "loose", ...op }] }, { actor });
+  /** The entity at a point, by the business table and by the version table (later pages). */
+  const at = async (entity: string, day: string) => {
+    const read = (asOf: boolean) =>
+      s.store.read(async (tx) => {
+        const latest = Number(
+          (await tx.query<{ op: unknown }>("SELECT max(op) AS op FROM events")).rows[0]?.op,
+        );
+        return (
+          await queryInTx(tx, {
+            actor: USER as never,
+            task: null,
+            now: "2026-11-05T12:00:00.000Z" as never,
+            visibility: { kind: "all" },
+            params: { table: "loose", valid_at: day },
+            read: "rd_0000000000000000" as never,
+            ...(asOf ? { asOf: latest } : {}),
+          })
+        ).result.rows
+          .filter((x) => (x as { entity?: string }).entity === entity)
+          .map((x) => (x as { values: unknown }).values);
+      });
+    const first = await read(false);
+    expect(await read(true)).toEqual(first);
+    return first;
+  };
+  /** b over [11-01, 11-10) where the entity had nothing (it is made over [11-15, 11-20)), and c. */
+  const written = async (cTo: string) => {
+    const a = await lo({
+      intent: "insert",
+      valid_from: "2026-11-15",
+      valid_to: "2026-11-20",
+      set: { b: "x" },
+    });
+    const e = a.ops[0]?.target.entity as string;
+    const b = await lo({
+      entity: e,
+      intent: "update",
+      ver: verAt(a),
+      valid_from: "2026-11-01",
+      valid_to: "2026-11-10",
+      set: { b: "y" },
+      acknowledge: ["overwrite"],
+    });
+    const c = await lo({
+      entity: e,
+      intent: "update",
+      ver: verAt(b),
+      valid_from: "2026-11-01",
+      valid_to: cTo,
+      set: { c: "z" },
+    });
+    // b undone: written back without a value over [11-01, 11-10).
+    const u = await lo({
+      entity: e,
+      revert: { undo: b.seq },
+      ver: verAt(c),
+      acknowledge: ["overwrite"],
+    });
+    return { e, c, u };
+  };
+
+  it(
+    "two touching cells the same but for no_value stay two: one stretch with a value, one without",
+    async () => {
+      // c over [11-01, 11-05) only: b's write-back cell is a field empty there, and says the
+      // entity has no value over [11-05, 11-10); same value, same giver, side by side.
+      const { e } = await written("2026-11-05");
+      expect(await at(e, "2026-11-03")).toEqual([{ b: null, c: "z" }]);
+      expect(await at(e, "2026-11-07")).toEqual([]);
+    },
+    T,
+  );
+
+  it(
+    "a cell that turns from an empty field into no value is closed and opened again",
+    async () => {
+      // c over all of [11-01, 11-10): b's write-back cell is an empty field over the whole
+      // stretch. Undoing c leaves the entity no value there: the same cell (field, interval,
+      // giver) now says no value.
+      const { e, c, u } = await written("2026-11-10");
+      expect(await at(e, "2026-11-03")).toEqual([{ b: null, c: "z" }]);
+      await lo({ entity: e, revert: { undo: c.seq }, ver: verAt(u), acknowledge: ["overwrite"] });
+      expect(await at(e, "2026-11-03")).toEqual([]);
+    },
+    T,
+  );
+});
+
+describe("a candidate's effective, decoded from the cell's columns as the write gave it (04-contract-types §5.1)", () => {
+  const ga = (op: Record<string, unknown>, actor = USER) =>
+    send({ sv: 1, ops: [{ table: "gauges", ...op }] }, { actor });
+  const afterOf = (r: { ops: readonly { fields: Record<string, unknown> }[] }, field: string) =>
+    ((r.ops[0]?.fields[field] ?? []) as Record<string, unknown>[])[0]?.["after"];
+
+  it(
+    "a quantity and a zoned date-time: the effective is the after of the write that gave it, key for key",
+    async () => {
+      const a = await ga({
+        intent: "insert",
+        valid_from: "2026-11-01",
+        set: { amount: { value: "5", unit: "km" }, at: "2026-11-01T12:00:00+08:00[Asia/Shanghai]" },
+      });
+      const e = a.ops[0]?.target.entity as string;
+      const w = await ga({
+        entity: e,
+        intent: "update",
+        ver: verAt(a),
+        valid_from: "2026-11-05",
+        set: {
+          amount: { value: "7.25", unit: "km" },
+          at: "2026-11-05T09:30:00+01:00[Europe/Paris]",
+        },
+      });
+      // From the insert's version, each field met over [11-05, …): a candidate, effective w's.
+      for (const [field, value] of [
+        ["amount", { value: "9", unit: "km" }],
+        ["at", "2026-11-06T10:00:00+09:00[Asia/Tokyo]"],
+      ] as const) {
+        const z = await ga(
+          {
+            entity: e,
+            intent: "update",
+            ver: verAt(a),
+            valid_from: "2026-11-05",
+            set: { [field]: value },
+          },
+          OTHER,
+        );
+        const part = partsOf(z, field).find((p) => p["result"] === "candidate") as Record<
+          string,
+          unknown
+        >;
+        expect(part["by"]).toEqual({ seq: w.seq, actor: asActor(USER) });
+        // The same JSON text: the value and the order of its keys.
+        expect(JSON.stringify(part["effective"])).toBe(JSON.stringify(afterOf(w, field)));
+      }
     },
     T,
   );

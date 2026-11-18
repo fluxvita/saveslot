@@ -325,7 +325,13 @@ async function startService(
   if (typeof h === "object") {
     // Failed: the process holds the lock while it lives; stopped so that the next start can run.
     if (h.pid === child.pid) child.kill("SIGTERM");
-    io.err(TEXTS.startFailed(h.reason ?? "failed"));
+    io.err(
+      h.reason === "format_too_old"
+        ? TEXTS.startFormatTooOld
+        : h.reason === "format_too_new"
+          ? TEXTS.startFormatTooNew
+          : TEXTS.startFailed(h.reason ?? "failed"),
+    );
     return 7;
   }
   if (h === "timeout") {

@@ -20,6 +20,8 @@ export type RowCell = {
   readonly vf: string | null;
   readonly vt: string | null;
   readonly revoked: boolean | null;
+  /** A state table's field cell saying the entity has no value there (`__ver.no_value`). */
+  readonly no_value: boolean | null;
   /** The operation of the contribution that gave the cell (`src_event`'s); none: no write did. */
   readonly src_op: unknown;
   readonly src_event: unknown;
@@ -50,7 +52,7 @@ export async function rowCellsAt(
   // A cell's record start is when it was last cut, not who wrote its value: the operation of the
   // contribution that gave it (`src_event`) is (02-architecture §8, the version table).
   const r = await tx.query<RowCell>(
-    `SELECT v.field_id, ${interval}, v.revoked, v.src_event, v.src_field, v.src_k,
+    `SELECT v.field_id, ${interval}, v.revoked, v.no_value, v.src_event, v.src_field, v.src_k,
        (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS src_op,
        ${cols.join(", ")} FROM ${versions} v
      WHERE v.row_id = $1 AND v.rec_from <= $2 AND (v.rec_to IS NULL OR v.rec_to > $2)`,
@@ -63,13 +65,14 @@ export async function rowCellsAt(
 export const opOfCell = (c: RowCell): number | undefined =>
   c.src_op === null || c.src_op === undefined ? undefined : Number(c.src_op);
 
-/** Whether a field's cell holds a value (its first column is not null). */
-export const cellHasValue = (c: RowCell): boolean => c[`c_${c.field_id}_0`] != null;
-
 /**
  * The fields whose values together decide whether a state entity has a value at a point
  * (03-data-model/05-time «无值区间»): the required ones without a constant backfill; none: any
- * field's value does. The judgement takes them from here too (../write `tableShape`).
+ * field's value does. The judgement takes them from here (../write `tableShape`); the readers of
+ * the version table below do not: they read the cells apply wrote (`no_value`), and apply's settle
+ * counts every required field, a constant backfill's included. The two differ only on a required
+ * field with a constant backfill, which this version's schema cannot create (a new slot's document
+ * refuses `backfill`); they are to be made one, the spec's way, with schema evolution.
  */
 export function valuedFields(t: CompiledBaseTable): FieldId[] {
   const isConst = (b: unknown) =>
@@ -122,11 +125,6 @@ export function piecesOver(
   unit: readonly string[],
 ): Piece[] {
   const fields = fieldsOf(t, unit);
-  // The fields that decide "has a value": the required ones; with none, any field's value does
-  // (05-time «无值区间»), so a stretch is without one where no field has a value.
-  const required = valuedFields(t);
-  const valued = required.length > 0 ? required : t.fields.map((f) => f.id as string);
-  const anyField = required.length === 0;
   const out: Piece[] = [];
   for (const s of spans) {
     const points = new Set<string>();
@@ -141,7 +139,7 @@ export function piecesOver(
       const from = cuts[i] ?? null;
       const to = cuts[i + 1] ?? null;
       const here = cells.filter((c) => covers(c, from, to));
-      const piece = pieceOf(here, from, to, fields, valued, anyField);
+      const piece = pieceOf(here, from, to, fields);
       const last = out.at(-1);
       if (
         last !== undefined &&
@@ -166,22 +164,25 @@ function pieceOf(
   from: string | null,
   to: string | null,
   fields: readonly string[],
-  valued: readonly string[],
-  anyField: boolean,
 ): Piece {
+  // Revoked here: no value. The giver is what left it so last, the revoke or a no_value cell beside
+  // it, whichever operation is later. Both are there on a table with no required field when a
+  // confirmed undo writes a field back without a value over a stretch another revoke still holds:
+  // the stretch had a value until that undo, and a writer that read as far as the revoke has not
+  // seen what the undo did (04-contract-types §5.1 `by`).
   const revoke = here.find((c) => c.field_id === "existence" && c.revoked === true);
   if (revoke !== undefined) {
-    return { from, to, cells: here, revoked: true, noValue: false, ...given(revoke) };
+    const giver = latestOf([revoke, ...here.filter((c) => c.no_value === true)]);
+    return { from, to, cells: here, revoked: true, noValue: false, ...given(giver) };
   }
-  // No value there: a field that decides it has no value. The giver is what left those fields
-  // without one (their empty cells' contributions: an undo's write-back); none if never written.
-  const empty = valued.filter((f) => {
-    const c = here.find((x) => x.field_id === f);
-    return c === undefined || !cellHasValue(c);
-  });
-  // Required fields: any of them without a value. None required: every field without one.
-  if (anyField ? empty.length === valued.length : empty.length > 0) {
-    const giver = latestOf(here.filter((c) => empty.includes(c.field_id)));
+  // (On a required field with a constant backfill this follows settle, not `valuedFields`: see
+  // there.)
+  // The entity has a value where a field cell is not marked no_value: apply writes every field's
+  // cell where it has one, a cleared or never written field included (05-time «无值区间», a clear
+  // is a contribution); where it has none, only the no_value cells of what left it so (an undo's
+  // write-back), the giver; none at all where it was never written.
+  if (!here.some((c) => c.field_id !== "existence" && c.no_value !== true)) {
+    const giver = latestOf(here.filter((c) => c.no_value === true));
     return { from, to, cells: here, revoked: false, noValue: true, ...given(giver) };
   }
   const giver = latestOf(here.filter((c) => fields.includes(c.field_id)));

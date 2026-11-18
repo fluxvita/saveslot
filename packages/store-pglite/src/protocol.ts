@@ -70,6 +70,7 @@ export type ErrorCode =
   | "store_not_found"
   | "not_a_store"
   | "format_too_new"
+  | "format_too_old"
   | "bad_encoding"
   | "durability_not_applied"
   | "ownership_lost"

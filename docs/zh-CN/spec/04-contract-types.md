@@ -1054,7 +1054,7 @@ interface ConflictDetail extends ItemBase {
   /** 当前生效方：按事项版本的操作号读这一行当时的状态，限定在事项的各段与冲突单元的字段上（单元是"存在"时给整行的值）。
    *  状态类表上冲突区间内的生效值可以由几次写入分段给出：spans 每段带给出它的写入；
    *  values 为 null 只用于实体在这一段没有值：从未写过的段不给 seq、actor；有操作让它没值的（撤销留下的空洞，undo 的写回、清空写入或
-   *  take_previous 的写回让必填字段没值；没有必填字段的表上是所有字段都没值），给让这一格没有值的那次操作——以版本表的格为准，
+   *  take_previous 的写回让必填字段没值；没有必填字段的表上是没有任何字段在这一段有生效的写入——清空也算写入，只被清空过的一段有值、字段为空），给让这一格没有值的那次操作（同一段上撤销与 undo 的无值写回都在时，取操作号大的那次：这一段在它之前是有值的）——以版本表的格为准，
    *  同一段上已经没值之后再来的回掉不改变它。实体有值而单元字段在这一段从没写过的，是字段为空不是空洞：values 里这个字段为 null，
    *  这个字段不给出 seq。
    *  顶层 seq / actor 是这些段里操作号最大的那次（事件类表与无时间表只有一个）；一段都没有操作给出时不给。
@@ -1314,7 +1314,7 @@ type FieldResult =
       valid?: Interval;          // 候选的区间
       effective: Value | null;   // 当前生效值
       current_ver: Ver;          // 当前生效版本。不算读到，不参与兜底
-      by?: { seq: Seq; actor: Actor };           // 是谁的哪次写入改过它，按这次请求结束时的现状（与 effective、current_ver 同一时刻）：候选区间里各段给出状态的操作（有出处的格——值，或被清空——的来源；没值处是让这一格没有值的那次操作——撤销、undo 的写回、清空写入或 take_previous 的写回，以格为准；从未写过的段不算；一段都不算时不给）中操作号最大的那次（同 ConflictDetail.effective）；effective 是 by 所在那一段（by 给出了几段时取时间上最早的一段）上这个字段现在的值：冲突单元只有这个字段时就是 by 那次写入给的值，单元含多个字段（如"存在"）时 by 是单元里最晚的给出者，effective 仍是这个字段的值，两者可以出自不同的写入；那一段没值、by 是撤销或单元是"存在"本身时 effective 为 null；各段的全貌见 ConflictDetail.effective.spans
+      by?: { seq: Seq; actor: Actor };           // 是谁的哪次写入改过它，按这次请求结束时的现状（与 effective、current_ver 同一时刻）：候选区间里各段给出状态的操作（有出处的格——值，或被清空——的来源；没值处是让这一格没有值的那次操作——撤销、undo 的写回、清空写入或 take_previous 的写回，以格为准，同一段上撤销与无值写回都在时取操作号大的那次；从未写过的段不算；一段都不算时不给）中操作号最大的那次（同 ConflictDetail.effective）；effective 是 by 所在那一段（by 给出了几段时取时间上最早的一段）上这个字段现在的值：冲突单元只有这个字段时就是 by 那次写入给的值，单元含多个字段（如"存在"）时 by 是单元里最晚的给出者，effective 仍是这个字段的值，两者可以出自不同的写入；那一段没值、by 是撤销或单元是"存在"本身时 effective 为 null；各段的全貌见 ConflictDetail.effective.spans
       previous: ConflictDetail["previous"];
       impact?: AwaitingImpact }                  // 候选若生效会属高影响时
   | { result: "awaiting"; item: ItemId; impact: AwaitingImpact }

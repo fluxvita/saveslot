@@ -59,6 +59,7 @@ const cell = (
   valid_from: d(from),
   valid_to: to === null ? null : d(to),
   src: src === null ? null : { event: src[0], target: "f2", k: src[1] },
+  no_value: false,
   rec_from: rec,
 });
 const OPEN = [
@@ -204,8 +205,9 @@ describe("the plan of a write.base", () => {
       op: 30,
       close: [{ field: "f2", valid_from: d("11-02"), rec_from: 20 }],
       rows: [
-        [ENTITY, "f2", d("11-02"), d("11-10"), 30, "update", 31, "f2", 0, null, "5000", null],
-        [ENTITY, "f2", d("11-10"), d("11-20"), 30, "update", 31, "f2", 1, null, "4000", null],
+        // revoked, no_value: neither.
+        [ENTITY, "f2", d("11-02"), d("11-10"), 30, "update", 31, "f2", 0, null, null, "5000", null],
+        [ENTITY, "f2", d("11-10"), d("11-20"), 30, "update", 31, "f2", 1, null, null, "4000", null],
       ],
     });
     expect(changes[4]).toEqual({ kind: "counts_add", table_id: "t2", delta: -1 });

@@ -307,7 +307,12 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       if (stopping !== undefined) return;
       state = "failed";
       reason = codeOf(e);
-      say("failed", { reason });
+      // A store of another format: the log also keeps what the backend says to do (its own text,
+      // which holds no user data).
+      const format =
+        e instanceof PgliteStoreError &&
+        (e.code === "format_too_old" || e.code === "format_too_new");
+      say("failed", { reason, ...(format ? { message: e.message } : {}) });
       return;
     }
     state = "ready";

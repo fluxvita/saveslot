@@ -12,6 +12,9 @@ export function tableShape(t: CompiledBaseTable): TableShape {
     kind: t.time.type === "state" ? "state" : t.time.type === "event" ? "event" : "timeless",
     fields: t.fields.map((f) => f.id),
     // "Has a value" is judged on the required fields without a constant backfill (05-time «无值区间»).
+    // Apply's settle, and the readers of the version table after it, count every required field:
+    // the two differ only on a required field with a constant backfill, which this version's schema
+    // cannot create; to be made one with schema evolution (../pending `valuedFields`).
     valued: valuedFields(t),
     required,
     groups: (t.together ?? []).map((g) => [...g] as FieldId[]),
