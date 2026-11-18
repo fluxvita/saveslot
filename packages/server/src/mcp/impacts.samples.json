@@ -988,5 +988,308 @@
         }
       ]
     }
+  },
+  "pending-awaiting-undo-later": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_0000000000000005",
+      "item_ver": "iv_0000000000000005.16.0",
+      "status": "open",
+      "slot": "ledger",
+      "reason": "undo_includes_later",
+      "opened_at": "2026-11-05T00:04:00.000Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_11111111111111111111111111",
+        "name": "u_11111111111111111111111111"
+      },
+      "decisions": ["confirm", "reject"],
+      "target": {
+        "table": "ledger.entities",
+        "entity": "e_00000000000000000000000001",
+        "unit": ["*"],
+        "spans": [
+          {
+            "valid_from": "2026-11-05",
+            "valid_to": "2026-11-10",
+            "valid_to_inclusive": "2026-11-09"
+          }
+        ]
+      },
+      "type": "awaiting_confirmation",
+      "proposal": {
+        "seq": 16,
+        "actor": {
+          "kind": "user",
+          "id": "u_11111111111111111111111111",
+          "name": "u_11111111111111111111111111"
+        },
+        "intent": "revoke",
+        "revert": {
+          "undo": 10,
+          "include_later": true
+        }
+      },
+      "current": {
+        "spans": [
+          {
+            "valid_from": "2026-11-05",
+            "valid_to": "2026-11-10",
+            "valid_to_inclusive": "2026-11-09",
+            "values": {
+              "b": "b0",
+              "c": null,
+              "__proto__": null
+            }
+          }
+        ]
+      },
+      "impact": {
+        "reverted": [
+          {
+            "seq": 13,
+            "actor": {
+              "kind": "user",
+              "id": "u_11111111111111111111111111",
+              "name": "u_11111111111111111111111111"
+            },
+            "fields": ["*"]
+          }
+        ]
+      }
+    }
+  },
+  "pending-awaiting-undo-nothing-changes": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_0000000000000005",
+      "item_ver": "iv_0000000000000005.20.0",
+      "status": "open",
+      "slot": "ledger",
+      "reason": "undo_includes_later",
+      "opened_at": "2026-11-05T00:04:00.000Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_11111111111111111111111111",
+        "name": "u_11111111111111111111111111"
+      },
+      "decisions": ["confirm", "reject"],
+      "target": {
+        "table": "ledger.entities",
+        "entity": "e_00000000000000000000000001",
+        "unit": ["*"],
+        "spans": [
+          {
+            "valid_from": "2026-11-05",
+            "valid_to": "2026-11-10",
+            "valid_to_inclusive": "2026-11-09"
+          }
+        ]
+      },
+      "type": "awaiting_confirmation",
+      "proposal": {
+        "seq": 16,
+        "actor": {
+          "kind": "user",
+          "id": "u_11111111111111111111111111",
+          "name": "u_11111111111111111111111111"
+        },
+        "intent": "revoke",
+        "revert": {
+          "undo": 10,
+          "include_later": true
+        }
+      },
+      "current": {
+        "spans": [
+          {
+            "valid_from": "2026-11-05",
+            "valid_to": "2026-11-10",
+            "valid_to_inclusive": "2026-11-09",
+            "values": null
+          }
+        ]
+      },
+      "impact": {}
+    }
+  },
+  "pending-conflict-take-previous-fields": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_0000000000000014",
+      "item_ver": "iv_0000000000000014.39.0",
+      "status": "open",
+      "slot": "ledger",
+      "reason": "stale_write",
+      "opened_at": "2026-11-05T00:13:00.000Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "ci_33333333333333333333333333",
+        "name": "ci_33333333333333333333333333"
+      },
+      "decisions": ["keep_effective", "take_candidate", "take_previous"],
+      "target": {
+        "table": "ledger.entities",
+        "entity": "e_00000000000000000000000009",
+        "unit": ["b"],
+        "spans": [
+          {
+            "valid_from": "2026-11-01",
+            "valid_to": "2026-11-10",
+            "valid_to_inclusive": "2026-11-09"
+          }
+        ]
+      },
+      "type": "conflict",
+      "effective": {
+        "seq": 33,
+        "actor": {
+          "kind": "user",
+          "id": "u_11111111111111111111111111",
+          "name": "u_11111111111111111111111111"
+        },
+        "spans": [
+          {
+            "valid_from": "2026-11-01",
+            "valid_to": "2026-11-10",
+            "valid_to_inclusive": "2026-11-09",
+            "values": {
+              "b": "b1"
+            },
+            "seq": 33,
+            "actor": {
+              "kind": "user",
+              "id": "u_11111111111111111111111111",
+              "name": "u_11111111111111111111111111"
+            }
+          }
+        ],
+        "exists": true
+      },
+      "candidates": [
+        {
+          "index": 0,
+          "seq": 39,
+          "actor": {
+            "kind": "user",
+            "id": "ci_33333333333333333333333333",
+            "name": "ci_33333333333333333333333333"
+          },
+          "intent": "update",
+          "ver": "v30.0",
+          "values": {
+            "b": "b2"
+          },
+          "valid": {
+            "valid_from": "2026-11-01",
+            "valid_to": "2026-11-10",
+            "valid_to_inclusive": "2026-11-09"
+          },
+          "cause": "stale_write"
+        }
+      ],
+      "previous": {
+        "seq": 30,
+        "exists": false,
+        "spans": [
+          {
+            "valid_from": "2026-11-01",
+            "valid_to": "2026-11-10",
+            "valid_to_inclusive": "2026-11-09",
+            "values": null
+          }
+        ]
+      },
+      "reverted_by_previous": [
+        {
+          "seq": 33,
+          "actor": {
+            "kind": "user",
+            "id": "u_11111111111111111111111111",
+            "name": "u_11111111111111111111111111"
+          },
+          "fields": ["b"]
+        },
+        {
+          "seq": 36,
+          "actor": {
+            "kind": "user",
+            "id": "ci_22222222222222222222222222",
+            "name": "ci_22222222222222222222222222"
+          },
+          "fields": ["c"]
+        }
+      ]
+    }
+  },
+  "write-awaiting-undo-later": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "pending",
+      "sv": 1,
+      "seq": 16,
+      "ops": [
+        {
+          "target": {
+            "table": "ledger.entities",
+            "entity": "e_00000000000000000000000001"
+          },
+          "intent": "revoke",
+          "ver": "v13.0",
+          "fields": {
+            "*": [
+              {
+                "result": "awaiting",
+                "item": "pi_0000000000000005",
+                "impact": {
+                  "reverted": [
+                    {
+                      "seq": 13,
+                      "actor": {
+                        "kind": "user",
+                        "id": "u_11111111111111111111111111",
+                        "name": "u_11111111111111111111111111"
+                      },
+                      "fields": ["*"]
+                    }
+                  ]
+                },
+                "valid": {
+                  "valid_from": "2026-11-05",
+                  "valid_to": "2026-11-10",
+                  "valid_to_inclusive": "2026-11-09"
+                }
+              }
+            ]
+          },
+          "undo": {
+            "of": 10,
+            "skipped_superseded": [],
+            "reverted_later": [
+              {
+                "seq": 13,
+                "actor": {
+                  "kind": "user",
+                  "id": "u_11111111111111111111111111",
+                  "name": "u_11111111111111111111111111"
+                },
+                "fields": ["*"]
+              }
+            ]
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [
+        {
+          "id": "pi_0000000000000005",
+          "type": "awaiting_confirmation",
+          "reason": "undo_includes_later",
+          "item_ver": "iv_0000000000000005.16.0"
+        }
+      ],
+      "superseded": []
+    }
   }
 }

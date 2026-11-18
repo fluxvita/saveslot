@@ -1544,5 +1544,66 @@
         }
       ]
     }
+  },
+  "resolve-take-previous": {
+    "tool": "saveslot_resolve",
+    "result": {
+      "id": "pi_0000000000000014",
+      "type": "conflict",
+      "decision": "take_previous",
+      "item_ver": "iv_0000000000000014.43.0",
+      "status": "resolved",
+      "write": {
+        "seq": 43,
+        "sv": 1,
+        "ops": [
+          {
+            "target": {
+              "table": "ledger.entities",
+              "entity": "e_00000000000000000000000009"
+            },
+            "intent": "update",
+            "ver": "v43.0",
+            "fields": {
+              "b": [
+                {
+                  "result": "applied",
+                  "no_value": true,
+                  "valid": {
+                    "valid_from": "2026-11-01",
+                    "valid_to": "2026-11-10",
+                    "valid_to_inclusive": "2026-11-09"
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "derived": [],
+        "derived_total": 0,
+        "pending": [],
+        "superseded": []
+      },
+      "reverted_by_previous": [
+        {
+          "seq": 33,
+          "actor": {
+            "kind": "user",
+            "id": "u_11111111111111111111111111",
+            "name": "u_11111111111111111111111111"
+          },
+          "fields": ["b"]
+        },
+        {
+          "seq": 36,
+          "actor": {
+            "kind": "user",
+            "id": "ci_22222222222222222222222222",
+            "name": "ci_22222222222222222222222222"
+          },
+          "fields": ["c"]
+        }
+      ]
+    }
   }
 }

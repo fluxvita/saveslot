@@ -818,6 +818,23 @@ function impactLines(x: unknown, pad: string): Line[] {
   return out;
 }
 
+/**
+ * The head of an impact: "Carrying it out would:" over its lines. With nothing listed, an undo
+ * says that confirming it records the undo and changes no value read now; anything else says
+ * nothing more.
+ */
+function impactHead(lines: Line[], isUndo: boolean): Line[] {
+  if (lines.length > 0) return [t`  Carrying it out would:`, ...lines];
+  return isUndo ? [t`  Confirming it records this undo; no value read now changes.`] : [];
+}
+
+/** A write take_previous takes back or hides: its operation, its writer and the fields it loses. */
+const revertedWrite = (w: unknown): Part[] => {
+  const x = obj(w);
+  const fields = arr(x["fields"]);
+  return t`${op(x["seq"])} (${actorOf(x["actor"])})${fields.length > 0 ? t`: ${join(fields.map(fieldOf), t`, `)}` : []}`;
+};
+
 /** Spaces before a line's text: saveslot's own. */
 function padded(pad: string): Part[] {
   if (pad === "    ") return t`    `;
@@ -854,11 +871,13 @@ function openFor(opened: unknown, now: Date): Part[] {
 /**
  * A side of an item (its effective side, the merge base, an awaiting item's current values): a
  * state table's by stretch, each with the write that gave it when the stretch says so; other
- * tables' by field. `no row` when it does not exist; `no value` for a stretch without one.
+ * tables' by field. `no value` for a stretch without one: on a state table a stretch without a value
+ * is all there is to a revoke (05-time), so the entity is never `no row` there. `no row` when an
+ * event or timeless table's row does not exist.
  */
 function sideOf(x: R): Part[] {
-  if (x["exists"] === false) return t`no row`;
   const spans = arr(x["spans"]);
+  if (x["exists"] === false && spans.length === 0) return t`no row`;
   if (spans.length > 0) {
     return join(
       spans.map((sp) => {
@@ -970,17 +989,13 @@ function pending(r: R, now: Date): Line[] {
     }
     const reverted = arr(r["reverted_by_previous"]);
     if (reverted.length > 0) {
-      out.push(
-        t`  take_previous would undo: ${join(
-          reverted.map((x) => t`${op(obj(x)["seq"])} (${actorOf(obj(x)["actor"])})`),
-          t`, `,
-        )}`,
-      );
+      out.push(t`  take_previous would undo: ${join(reverted.map(revertedWrite), t`; `)}`);
     }
     if (isObj(r["proposal"])) out.push(t`  Proposed: ${proposalOf(r["proposal"])}`);
     if (isObj(r["current"])) out.push(t`  In effect now: ${sideOf(r["current"])}`);
     if (isObj(r["impact"])) {
-      out.push(t`  Carrying it out would:`, ...impactLines(r["impact"], "    "));
+      const isUndo = isObj(obj(r["proposal"])["revert"]);
+      out.push(...impactHead(impactLines(r["impact"], "    "), isUndo));
       if (r["status"] === "open") out.push(t`  Not in effect; the value in effect is unchanged.`);
     }
     out.push(...closedLines(r));
@@ -1092,7 +1107,7 @@ function candidateLines(f: string, c: R, at: number, r: R): Line[] {
  * effect until the user agrees and it is confirmed. One block per item of an op: the item's impact
  * is the op's, given on each of its parts.
  */
-function awaitingLines(parts: readonly { f: string; c: R }[], r: R): Line[] {
+function awaitingLines(parts: readonly { f: string; c: R }[], r: R, isUndo: boolean): Line[] {
   const first = parts[0];
   if (first === undefined) return [];
   const item = first.c["item"];
@@ -1108,9 +1123,19 @@ function awaitingLines(parts: readonly { f: string; c: R }[], r: R): Line[] {
     }),
     t`; `,
   );
+  const lines = impactLines(first.c["impact"], "    ");
+  const head =
+    lines.length > 0
+      ? [
+          t`  ${what}: awaits confirmation in ${idOf(item)}${version}. Carrying it out would:`,
+          ...lines,
+        ]
+      : [
+          t`  ${what}: awaits confirmation in ${idOf(item)}${version}.`,
+          ...(isUndo ? [t`  Confirming it records this undo; no value read now changes.`] : []),
+        ];
   return [
-    t`  ${what}: awaits confirmation in ${idOf(item)}${version}. Carrying it out would:`,
-    ...impactLines(first.c["impact"], "    "),
+    ...head,
     t`  Not in effect; the value in effect is unchanged. Tell the user the above first; once they agree: saveslot_resolve ${idOf(item)} confirm (or reject).`,
   ];
 }
@@ -1188,7 +1213,7 @@ function receiptOps(r: R): Line[] {
         }
       }
     }
-    for (const parts of awaiting.values()) out.push(...awaitingLines(parts, r));
+    for (const parts of awaiting.values()) out.push(...awaitingLines(parts, r, undo !== undefined));
     if (undo !== undefined) out.push(...undoLines(undo, awaiting.size > 0));
   }
   const more = int(r["ops_omitted"]);
@@ -1365,7 +1390,10 @@ function resolve(r: R): Line[] {
       ? [t`This item was already resolved this way; nothing new was changed.`]
       : [];
   const receipt = isObj(r["write"]) ? [...receiptOps(r["write"]), ...receiptTail(r["write"])] : [];
-  return [head, ...replayed, ...receipt, ...remindersOf(r)];
+  // take_previous: the writes it took back or hid, as the item's details listed them.
+  const reverted = arr(r["reverted_by_previous"]);
+  const undid = reverted.length > 0 ? [t`Undid: ${join(reverted.map(revertedWrite), t`; `)}`] : [];
+  return [head, ...replayed, ...undid, ...receipt, ...remindersOf(r)];
 }
 
 /** The changes a new slot's receipt says by its tables already (05 §6 `saveslot_schema_draft`). */

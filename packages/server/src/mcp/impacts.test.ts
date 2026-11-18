@@ -49,6 +49,48 @@ describe("derived values and impacts: what the samples do not show", () => {
     );
   });
 
+  it("a change awaiting confirmation that is not an undo, with nothing in its impact: no heading over nothing", async () => {
+    const detail = {
+      ...(SAMPLES["pending-awaiting-overwrite"] as { result: R }).result,
+      impact: {},
+    };
+    await expect(`${text("saveslot_pending", detail)}\n`).toMatchFileSnapshot(
+      "./__golden__/pending-awaiting-empty-impact.txt",
+    );
+  });
+
+  it("an undo awaiting confirmation in a receipt, with nothing in its impact: confirming changes no value read now", () => {
+    const base = (SAMPLES["write-awaiting-undo-later"] as { result: R }).result;
+    const ops = (base["ops"] as R[]).map((o) => ({
+      ...o,
+      fields: Object.fromEntries(
+        Object.entries(o["fields"] as R).map(([f, v]) => [
+          f,
+          (Array.isArray(v) ? v : [v]).map((c: R) =>
+            c["result"] === "awaiting" ? { ...c, impact: {} } : c,
+          ),
+        ]),
+      ),
+    }));
+    const lines = text("saveslot_write", { ...base, ops }).split("\n");
+    expect(lines.some((l) => l.includes("Carrying it out would:"))).toBe(false);
+    expect(lines).toContain("  Confirming it records this undo; no value read now changes.");
+  });
+
+  it("a merge base where an event or timeless table's row did not exist: no row, as before", () => {
+    const base = (SAMPLES["pending-conflict-take-previous-fields"] as { result: R }).result;
+    const target = { table: "ledger.rows", row: "r_00000000000000000000000009", unit: ["b"] };
+    const lines = text("saveslot_pending", {
+      ...base,
+      target,
+      previous: { seq: 30, exists: false },
+    }).split("\n");
+    expect(lines).toContain("  Before (#30): no row");
+    expect(lines).toContain(
+      "    take_previous: go back to the value at #30 (no row); see what it would undo above",
+    );
+  });
+
   it("more derived changes than listed; a replay's derived writes without values", () => {
     const base = (SAMPLES["write-derived-correct"] as { result: R }).result;
     expect(text("saveslot_write", { ...base, derived_total: 7 })).toContain(
