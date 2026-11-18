@@ -26,4 +26,4 @@ export {
   type LoggedEvent,
 } from "./write/log.fixture.ts";
 export { type WriteInput, writeInTx } from "./write/pipeline.ts";
-export { resolveInTx } from "./write/resolve.ts";
+export { resolveInTx, revertEntriesOf } from "./write/resolve.ts";

@@ -14,6 +14,7 @@ import {
   readBufferOf,
   readEvents,
   readTail,
+  resolve as resolve$,
 } from "@fluxvita/saveslot-kernel";
 import {
   COMPILED_V1,
@@ -476,14 +477,18 @@ describe("an awaiting item kept in the log", () => {
         OTHER,
       );
       expect(await ofType(outside.seq, "item.refreshed")).toEqual([]);
+      // Revoked inside, the later writes are hidden already and the stretch is revoked: undoing the
+      // restore would write nothing and hide nothing more. The item is closed, superseded by that
+      // revoke (04-write-and-read «撤回某次写入（undo）»), not refreshed.
       const inside = await op({ intent: "revoke", ...span }, verAt(outside), OTHER);
-      expect(
-        (await ofType(inside.seq, "item.refreshed")).map(
-          (x) => (x.blocks["target"] as { item: string }).item,
-        ),
-      ).toEqual([item]);
-      // Revoked inside, the later writes are hidden already: undoing the restore hides nothing more.
-      expect((await impactOf(inside.seq)).filter((b) => b.kind === "reverted_write")).toEqual([]);
+      expect(await ofType(inside.seq, "item.refreshed")).toEqual([]);
+      const [closed] = await ofType(inside.seq, "item.superseded");
+      expect(closed?.blocks["target"]).toEqual({
+        item,
+        reason: "nothing_to_revert",
+        by_event: expect.any(Number),
+      });
+      expect((await itemRow(item))?.state).toBe("superseded");
     },
     T,
   );
@@ -2413,17 +2418,22 @@ describe("intervals open at the start, and the whole time, in the log (09 §5.7,
   it(
     "a row across the end of an item's span open at the start: its mark cut to the row",
     async () => {
-      const { entity, cut, z, put } = await undoneUndo({
+      const { entity, z, put } = await undoneUndo({
         valid_from: "2026-11-01",
         valid_to: "2026-11-20",
         set: { b: "b0" },
       });
       const item = z.pending?.[0]?.id as string;
-      // The hole between the item's spans filled again: one row [11-01, 11-20) across 11-05.
+      // The hole between the item's spans filled with the same value by a write of its own (not an
+      // undo of the revoke, which would widen what confirming the item does): one row
+      // [11-01, 11-20) across 11-05, the item's spans as they were.
       const back = await put({
         entity,
-        revert: { undo: cut.seq },
+        intent: "update",
         ver: verAt(z),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-10",
+        set: { b: "b0" },
         acknowledge: ["overwrite"],
       });
       expect(back.status).toBe("saved");
@@ -2867,6 +2877,672 @@ describe("a candidate's effective, decoded from the cell's columns as the write 
         // The same JSON text: the value and the order of its keys.
         expect(JSON.stringify(part["effective"])).toBe(JSON.stringify(afterOf(w, field)));
       }
+    },
+    T,
+  );
+});
+
+describe("a revert proposal awaiting confirmation: what it shows is what confirming it does (05-time «高影响写入»)", () => {
+  // Reads by a third principal: a principal that read the item and then writes supersedes it
+  // (01-objects «不过期»), and these cases are about refreshing it.
+  const THIRD = `ci_${"3".repeat(26)}`;
+  /** A principal that writes without having read the item. */
+  const FOURTH = `ci_${"4".repeat(26)}`;
+  const ctxOf = (actor: string) =>
+    createOpsContext({
+      tenant: TENANT,
+      actor,
+      trigger: null,
+      task: null,
+      visibility: { kind: "all" },
+      idempotency_key_window: 86_400_000,
+      idempotency_window: 600_000,
+      now: now(),
+      confirmation: null,
+    });
+  const put = (op: Record<string, unknown>, actor = USER) =>
+    send({ sv: 1, ops: [{ table: "entities", ...op }] }, { actor });
+  type Detail = {
+    item_ver: string;
+    status: string;
+    target: { spans?: Record<string, unknown>[] };
+    impact?: { reverted?: { seq: number }[]; overwritten?: unknown[] };
+    superseded?: { reason: string; by: number };
+  };
+  const detail = async (id: string) =>
+    (await pending$(s.store, ctxOf(THIRD), { id })) as unknown as Detail;
+  const decide = async (params: Record<string, unknown>) => {
+    try {
+      return (await s.store.write((tx) =>
+        resolveInTx(tx, {
+          actor: OTHER as never,
+          task: null,
+          now: now(),
+          windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+          visibility: { kind: "all" },
+          params,
+          newId,
+          reads: readBufferOf(s.store),
+        }),
+      )) as unknown as Record<string, unknown>;
+    } catch (e) {
+      const x = e as { code?: string; detail?: Record<string, unknown> };
+      if (x.code === undefined) throw e;
+      return { refused: x.code, ...(x.detail ?? {}) };
+    }
+  };
+  /** The parts of `*` (or a field) the confirmation's write gave, as intervals. */
+  const written = (r: Record<string, unknown>, field = "*") =>
+    (
+      ((r["write"] as { ops: { fields: Record<string, unknown> }[] }).ops[0]?.fields[field] ??
+        []) as { valid?: unknown }[]
+    ).map((p) => p.valid);
+  const marksOf = async (entity: string) =>
+    (
+      await s.store.read((tx) =>
+        queryInTx(tx, {
+          actor: THIRD as never,
+          task: null,
+          now: "2026-11-05T12:00:00.000Z" as never,
+          visibility: { kind: "all" },
+          params: { table: "entities", valid_during: ["2026-10-01", null], clip: false },
+          read: "rd_0000000000000000" as never,
+        }),
+      )
+    ).result.rows
+      .filter((x) => (x as { entity?: string }).entity === entity)
+      .map((x) => {
+        const y = x as unknown as {
+          valid_from: string;
+          valid_to: string | null;
+          marks?: { awaiting?: { spans?: unknown[] }[] };
+        };
+        const a = y.marks?.awaiting?.[0];
+        return [y.valid_from, y.valid_to, a === undefined ? "none" : (a.spans ?? "whole")];
+      });
+  const span = (from: string | null, to: string | null, incl?: string) => ({
+    valid_from: from,
+    valid_to: to,
+    ...(incl !== undefined ? { valid_to_inclusive: incl } : {}),
+  });
+
+  it(
+    "widened by a refresh: the item, its flag and the confirmation all say the whole time",
+    async () => {
+      // An entity over [11-01, 11-20); revoked whole and the revoke undone; an interval revoke
+      // [11-05, 11-10); another principal undoes the undo: awaiting, two spans either side.
+      const a = await put({
+        intent: "insert",
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-20",
+        set: { b: "b0" },
+      });
+      const e = a.ops[0]?.target.entity as string;
+      const w = await put({ entity: e, intent: "revoke", ver: verAt(a) });
+      const c = await put({ entity: e, intent: "correct", revert: { undo: w.seq }, ver: verAt(w) });
+      const r = await put({
+        entity: e,
+        intent: "revoke",
+        ver: verAt(c),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-10",
+      });
+      const u = await put(
+        { entity: e, intent: "correct", revert: { undo: c.seq }, ver: verAt(r) },
+        OTHER,
+      );
+      const item = u.pending?.[0]?.id as string;
+      const proposed = await detail(item);
+      expect(proposed.target.spans).toEqual([
+        span(null, "2026-11-05", "2026-11-04"),
+        span("2026-11-10", null),
+      ]);
+      // The interval revoke undone: confirming now would revoke the whole time.
+      const x = await put({ entity: e, revert: { undo: r.seq }, ver: verAt(r) });
+      const widened = await detail(item);
+      expect(widened.target.spans).toEqual([span(null, null)]);
+      expect(widened.item_ver).not.toBe(proposed.item_ver);
+      expect(await marksOf(e)).toEqual([["2026-11-01", "2026-11-20", "whole"]]);
+      // The old item version is no longer current: confirmation_mismatch, its current the details
+      // with the new spans (through the operation, which reads them).
+      const mismatch = await resolve$(s.store, ctxOf(OTHER), {
+        id: item,
+        decision: "confirm",
+        item_ver: proposed.item_ver,
+      }).then(
+        () => undefined,
+        (err: unknown) => err as { code?: string; detail?: { current?: Detail } },
+      );
+      expect(mismatch?.code).toBe("confirmation_mismatch");
+      expect(mismatch?.detail?.current).toMatchObject({
+        item_ver: widened.item_ver,
+        target: { spans: [span(null, null)] },
+      });
+      // A later write elsewhere: listed in the impact, and taken back by the confirmation.
+      const y = await put({
+        entity: e,
+        intent: "update",
+        ver: verAt(x),
+        valid_from: "2026-10-20",
+        valid_to: "2026-10-25",
+        set: { b: "early" },
+      });
+      const before = await detail(item);
+      expect(before.target.spans).toEqual([span(null, null)]);
+      expect(before.impact?.reverted?.map((q) => q.seq)).toEqual([y.seq]);
+      const done = await decide({ id: item, decision: "confirm", item_ver: before.item_ver });
+      expect(written(done)).toEqual(before.target.spans);
+      expect(await marksOf(e)).toEqual([]);
+    },
+    T,
+  );
+
+  it(
+    "narrowed by a refresh: the flag leaves what it no longer covers, the confirmation writes the rest",
+    async () => {
+      // b0 over [11-01, 11-20); b1 over [11-05, 11-15); undoing that awaits (two change points
+      // go). Another principal then corrects [11-05, 11-10): only [11-10, 11-15) is left to undo.
+      const a = await put({
+        intent: "insert",
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-20",
+        set: { b: "b0" },
+      });
+      const e = a.ops[0]?.target.entity as string;
+      const b1 = await put({
+        entity: e,
+        intent: "update",
+        ver: verAt(a),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-15",
+        set: { b: "b1" },
+      });
+      const u = await put({ entity: e, revert: { undo: b1.seq }, ver: verAt(b1) }, OTHER);
+      const item = u.pending?.[0]?.id as string;
+      expect((await detail(item)).target.spans).toEqual([
+        span("2026-11-05", "2026-11-15", "2026-11-14"),
+      ]);
+      await put(
+        {
+          entity: e,
+          intent: "correct",
+          ver: verAt(b1),
+          valid_from: "2026-11-05",
+          valid_to: "2026-11-10",
+          set: { b: "b3" },
+        },
+        FOURTH,
+      );
+      const narrowed = await detail(item);
+      expect(narrowed.target.spans).toEqual([span("2026-11-10", "2026-11-15", "2026-11-14")]);
+      expect(await marksOf(e)).toEqual([
+        ["2026-11-01", "2026-11-05", "none"],
+        ["2026-11-05", "2026-11-10", "none"],
+        ["2026-11-10", "2026-11-15", [span("2026-11-10", "2026-11-15", "2026-11-14")]],
+        ["2026-11-15", "2026-11-20", "none"],
+      ]);
+      const done = await decide({ id: item, decision: "confirm", item_ver: narrowed.item_ver });
+      expect(written(done, "b")).toEqual(narrowed.target.spans);
+    },
+    T,
+  );
+
+  it(
+    "nothing left to revert: closed as superseded by the write that left it so, in its transaction",
+    async () => {
+      const a = await put({ intent: "insert", valid_from: "2026-11-01", set: { b: "b0" } });
+      const e = a.ops[0]?.target.entity as string;
+      const b1 = await put({
+        entity: e,
+        intent: "update",
+        ver: verAt(a),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-10",
+        set: { b: "b1" },
+      });
+      const u = await put({ entity: e, revert: { undo: b1.seq }, ver: verAt(b1) });
+      const item = u.pending?.[0]?.id as string;
+      const proposed = await detail(item);
+      // Another principal corrects all of [11-05, 11-10): nothing of b1 is left in effect.
+      const c = await put(
+        {
+          entity: e,
+          intent: "correct",
+          ver: verAt(b1),
+          valid_from: "2026-11-05",
+          valid_to: "2026-11-10",
+          set: { b: "b3" },
+        },
+        FOURTH,
+      );
+      expect(c.superseded).toEqual([
+        expect.objectContaining({ item, reason: "nothing_to_revert" }),
+      ]);
+      const closed = await detail(item);
+      expect(closed.status).toBe("superseded");
+      expect(closed.superseded).toMatchObject({ reason: "nothing_to_revert", by: c.seq });
+      // The proposal and the spans it had stay in the details, as history.
+      expect(closed.target.spans).toEqual(proposed.target.spans);
+      expect(await marksOf(e)).toEqual([
+        ["2026-11-01", "2026-11-05", "none"],
+        ["2026-11-05", "2026-11-10", "none"],
+        ["2026-11-10", null, "none"],
+      ]);
+      // Neither confirmed nor rejected now: item_closed, with the closing.
+      for (const decision of ["confirm", "reject"]) {
+        expect(await decide({ id: item, decision, item_ver: proposed.item_ver })).toMatchObject({
+          refused: "item_closed",
+          reason: "superseded",
+        });
+      }
+      // A later write that gives the undo something to do again does not bring it back.
+      await put({ entity: e, revert: { undo: c.seq }, ver: verAt(c), acknowledge: ["overwrite"] });
+      expect((await detail(item)).status).toBe("superseded");
+    },
+    T,
+  );
+
+  it(
+    "a high impact write awaiting confirmation keeps the interval it proposed",
+    async () => {
+      // b0 over [11-01, 11-20), b1 over [11-05, 11-10); a write of b2 over [11-01, 11-20) would
+      // take away those change points: it awaits, proposing [11-01, 11-20).
+      const a = await put({
+        intent: "insert",
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-20",
+        set: { b: "b0" },
+      });
+      const e = a.ops[0]?.target.entity as string;
+      const b1 = await put({
+        entity: e,
+        intent: "update",
+        ver: verAt(a),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-10",
+        set: { b: "b1" },
+      });
+      const p = await put({
+        entity: e,
+        intent: "update",
+        ver: verAt(b1),
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-20",
+        set: { b: "b2" },
+      });
+      const item = p.pending?.[0]?.id as string;
+      expect(p.pending?.[0]?.type).toBe("awaiting_confirmation");
+      const proposed = await detail(item);
+      // A write inside the interval refreshes the item; its interval stays the proposal's.
+      await put(
+        {
+          entity: e,
+          intent: "update",
+          ver: verAt(b1),
+          valid_from: "2026-11-12",
+          valid_to: "2026-11-14",
+          set: { b: "b4" },
+        },
+        THIRD,
+      );
+      const refreshed = await detail(item);
+      expect(refreshed.item_ver).not.toBe(proposed.item_ver);
+      expect(refreshed.target.spans).toEqual(proposed.target.spans);
+    },
+    T,
+  );
+
+  /**
+   * A timeless row restored, revoked and restored again by undos, b written, and another principal's
+   * undo of the last restore awaiting (it would revoke the row again and hide b); then the row is
+   * revoked: confirming would write nothing back, and b is hidden by the revoke, not the proposal.
+   */
+  const rowRevokedUnderProposal = async () => {
+    const putRow = (op: Record<string, unknown>, actor = USER) =>
+      send({ sv: 1, ops: [{ table: "rows", ...op }] }, { actor });
+    const e = await putRow({ intent: "insert", set: { b: "b0", c: "c0" } });
+    const row = e.ops[0]?.target.row as string;
+    const r1 = await putRow({ row, intent: "revoke", ver: verAt(e) });
+    const u1 = await putRow(
+      {
+        row,
+        revert: { undo: r1.seq, include_later: true },
+        ver: verAt(r1),
+        acknowledge: ["overwrite"],
+      },
+      OTHER,
+    );
+    const u2 = await putRow({ row, revert: { undo: u1.seq }, ver: verAt(u1) });
+    const u3 = await putRow({
+      row,
+      revert: { undo: u2.seq },
+      ver: verAt(u2),
+      acknowledge: ["overwrite"],
+    });
+    const w = await putRow({ row, intent: "update", ver: verAt(u3), set: { b: "b6" } });
+    const p = await putRow({ row, revert: { undo: u3.seq }, ver: verAt(w) }, OTHER);
+    const item = p.pending?.[0]?.id as string;
+    const proposed = await detail(item);
+    expect(proposed.impact?.reverted?.map((x) => x.seq)).toEqual([w.seq]);
+    const rv = await putRow({ row, intent: "revoke", ver: verAt(w) });
+    return { item, proposed, rv };
+  };
+
+  it(
+    "a timeless row revoked under an awaiting undo that would hide a later write: nothing left to revert",
+    async () => {
+      const { item, proposed, rv } = await rowRevokedUnderProposal();
+      // The item closes in the revoke's transaction.
+      expect(rv.superseded).toEqual([
+        expect.objectContaining({ item, reason: "nothing_to_revert" }),
+      ]);
+      expect(rv.pending).toEqual([]);
+      const closed = await detail(item);
+      expect(closed.status).toBe("superseded");
+      expect(closed.superseded).toMatchObject({ reason: "nothing_to_revert", by: rv.seq });
+      for (const decision of ["confirm", "reject"]) {
+        expect(await decide({ id: item, decision, item_ver: proposed.item_ver })).toMatchObject({
+          refused: "item_closed",
+          reason: "superseded",
+        });
+      }
+    },
+    T,
+  );
+
+  it(
+    "confirming a revert proposal that would write nothing, still open in a log without its closing, is refused",
+    async () => {
+      const { item, rv } = await rowRevokedUnderProposal();
+      // The same log without the item.superseded that closed it (the last event of the revoke):
+      // replayed, the item is open while confirming it would write nothing back.
+      const log = await s.store.read(async (tx) => ({
+        events: (await tx.query("SELECT * FROM events ORDER BY seq")).rows,
+        content: (await tx.query("SELECT * FROM content ORDER BY seq, path")).rows,
+      }));
+      const closing = log.events.filter(
+        (x) => (x as { type: string }).type === "item.superseded",
+      ) as { seq: unknown; op: unknown }[];
+      expect(closing.map((x) => Number(x.op))).toEqual([rv.seq]);
+      const drop = Number(closing[0]?.seq);
+      expect(drop).toBe(Number((log.events.at(-1) as { seq: unknown }).seq));
+      await s.reset();
+      await s.store.write(async (tx) => {
+        for (const [name, list] of [
+          ["events", log.events],
+          ["content", log.content],
+        ] as const) {
+          for (const r of list) {
+            if (Number((r as { seq: unknown }).seq) === drop) continue;
+            const cols = Object.keys(r as object);
+            await tx.query(
+              `INSERT INTO ${name} (${cols.join(", ")}) VALUES (${cols.map((_, n) => `$${n + 1}`).join(", ")})`,
+              Object.values(r as object) as never,
+            );
+          }
+        }
+        const last = (await readTail(tx))?.seq ?? 0;
+        await applyEvents(tx, await readEvents(tx, 1, last));
+      });
+      const open = await detail(item);
+      expect(open.status).toBe("open");
+      const tail = await s.store.read(async (tx) => (await readTail(tx))?.seq);
+      expect(
+        await decide({ id: item, decision: "confirm", item_ver: open.item_ver }),
+      ).toMatchObject({ refused: "internal", reason: "inconsistent" });
+      // Nothing was written.
+      expect(await s.store.read(async (tx) => (await readTail(tx))?.seq)).toBe(tail);
+    },
+    T,
+  );
+
+  /**
+   * b0 over [11-01, 11-05), OTHER's b1 over [11-05, 11-10), and OTHER's undo of it awaiting (it
+   * would leave [11-05, 11-10) without a value, taking away a change point: high impact).
+   */
+  const proposalOverC = async () => {
+    const a = await put({
+      intent: "insert",
+      valid_from: "2026-11-01",
+      valid_to: "2026-11-05",
+      set: { b: "b0" },
+    });
+    const e = a.ops[0]?.target.entity as string;
+    const w = await put(
+      {
+        entity: e,
+        intent: "update",
+        ver: verAt(a),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-10",
+        set: { b: "b1" },
+      },
+      OTHER,
+    );
+    const p = await put({ entity: e, revert: { undo: w.seq }, ver: verAt(w) }, OTHER);
+    const item = p.pending?.[0]?.id as string;
+    expect(p.pending?.[0]?.type).toBe("awaiting_confirmation");
+    return { e, w, item };
+  };
+  /** The `by_event` of the item's `item.superseded`, and the `write.base` events of an operation. */
+  const supersededBy = async (item: string) =>
+    s.store.read(async (tx) => {
+      const r = await tx.query<{ body: string }>(
+        `SELECT c.body FROM content c JOIN events e ON e.seq = c.seq
+         WHERE e.type = 'item.superseded' AND c.path = 'target'`,
+      );
+      const t = r.rows.map((x) => JSON.parse(x.body)).find((x) => x.item === item);
+      return Number(t?.by_event);
+    });
+  const basesOf = async (op: number) =>
+    s.store.read(async (tx) =>
+      (
+        await tx.query<{ seq: unknown }>(
+          "SELECT seq FROM events WHERE op = $1 AND type = 'write.base' ORDER BY seq",
+          [op],
+        )
+      ).rows.map((x) => Number(x.seq)),
+    );
+
+  it(
+    "a writer that had read a revert proposal and leaves it nothing to do supersedes it as overwritten",
+    async () => {
+      const { e, w, item } = await proposalOverC();
+      await pending$(s.store, ctxOf(USER), { id: item });
+      const u = await put({
+        entity: e,
+        revert: { undo: w.seq },
+        ver: verAt(w),
+        acknowledge: ["overwrite"],
+      });
+      expect(u.status).toBe("saved");
+      expect(u.superseded).toEqual([expect.objectContaining({ item, reason: "overwritten" })]);
+      expect((await detail(item)).superseded).toMatchObject({ reason: "overwritten", by: u.seq });
+    },
+    T,
+  );
+
+  it(
+    "the proposer, who has read its own proposal, leaving it nothing to do supersedes it as overwritten",
+    async () => {
+      const { e, w, item } = await proposalOverC();
+      const c = await put(
+        {
+          entity: e,
+          intent: "correct",
+          ver: verAt(w),
+          valid_from: "2026-11-05",
+          valid_to: "2026-11-10",
+          set: { b: "b3" },
+        },
+        OTHER,
+      );
+      expect(c.superseded).toEqual([expect.objectContaining({ item, reason: "overwritten" })]);
+    },
+    T,
+  );
+
+  it(
+    "a writer that had read a revert proposal and widens it, writing outside its interval, supersedes it",
+    async () => {
+      // b0 over [11-01, 11-20); OTHER's b1 over [11-05, 11-15); USER revokes [11-10, 11-15); OTHER's
+      // undo of b1 awaits over [11-05, 11-10).
+      const a = await put({
+        intent: "insert",
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-20",
+        set: { b: "b0" },
+      });
+      const e = a.ops[0]?.target.entity as string;
+      const w = await put(
+        {
+          entity: e,
+          intent: "update",
+          ver: verAt(a),
+          valid_from: "2026-11-05",
+          valid_to: "2026-11-15",
+          set: { b: "b1" },
+        },
+        OTHER,
+      );
+      const rv = await put({
+        entity: e,
+        intent: "revoke",
+        ver: verAt(w),
+        valid_from: "2026-11-10",
+        valid_to: "2026-11-15",
+      });
+      const p = await put({ entity: e, revert: { undo: w.seq }, ver: verAt(rv) }, OTHER);
+      const item = p.pending?.[0]?.id as string;
+      expect((await detail(item)).target.spans).toEqual([
+        span("2026-11-05", "2026-11-10", "2026-11-09"),
+      ]);
+      await pending$(s.store, ctxOf(USER), { id: item });
+      // USER undoes its revoke: b1 is back on [11-10, 11-15), which the proposal would now undo too.
+      const u = await put({
+        entity: e,
+        revert: { undo: rv.seq },
+        ver: verAt(rv),
+        acknowledge: ["overwrite"],
+      });
+      expect(u.status).toBe("saved");
+      expect(u.superseded).toEqual([expect.objectContaining({ item, reason: "overwritten" })]);
+    },
+    T,
+  );
+
+  it(
+    "a high impact write awaiting confirmation is refreshed, not closed, by a write that reaches it",
+    async () => {
+      // b0 over [11-01, 11-20), b1 over [11-05, 11-10); b2 over [11-01, 11-20) awaits (it would take
+      // away those change points). The closing of a revert proposal with nothing to do is not for it.
+      const a = await put({
+        intent: "insert",
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-20",
+        set: { b: "b0" },
+      });
+      const e = a.ops[0]?.target.entity as string;
+      const b1 = await put({
+        entity: e,
+        intent: "update",
+        ver: verAt(a),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-10",
+        set: { b: "b1" },
+      });
+      const p = await put({
+        entity: e,
+        intent: "update",
+        ver: verAt(b1),
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-20",
+        set: { b: "b2" },
+      });
+      const item = p.pending?.[0]?.id as string;
+      expect(p.pending?.[0]?.type).toBe("awaiting_confirmation");
+      const w = await put(
+        {
+          entity: e,
+          intent: "correct",
+          ver: verAt(b1),
+          valid_from: "2026-11-12",
+          valid_to: "2026-11-14",
+          set: { b: "b4" },
+        },
+        FOURTH,
+      );
+      expect(w.superseded).toEqual([]);
+      expect(w.pending).toEqual([expect.objectContaining({ id: item, refreshed: true })]);
+      expect((await detail(item)).status).toBe("open");
+    },
+    T,
+  );
+
+  it(
+    "a revert proposal's scope_valid depends on its own items and on those of what it takes back",
+    async () => {
+      const { w, item } = await proposalOverC();
+      const [wBase] = await basesOf(w.seq);
+      const deps = await s.store.read(async (tx) => {
+        const r = await tx.query<{ body: string }>(
+          `SELECT c.body FROM content c JOIN events e ON e.seq = c.seq
+           WHERE e.type = 'item.created' AND c.path = 'scope_valid'`,
+        );
+        const created = await tx.query<{ body: string }>(
+          `SELECT c.body FROM content c JOIN events e ON e.seq = c.seq
+           WHERE e.type = 'item.created' AND c.path = 'target'`,
+        );
+        const at = created.rows.findIndex((x) => JSON.parse(x.body).item === item);
+        return (JSON.parse(r.rows[at]?.body ?? "{}").deps ?? []) as { event: number }[];
+      });
+      const events = new Set(deps.map((d) => Number(d.event)));
+      // b1's item (taken back) and the proposal's own.
+      expect(events.has(wBase as number)).toBe(true);
+      expect([...events].some((x) => x > (wBase as number))).toBe(true);
+    },
+    T,
+  );
+
+  it(
+    "a request whose first op leaves a revert proposal nothing to do: a later op still reaches it",
+    async () => {
+      const { e, w, item } = await proposalOverC();
+      await pending$(s.store, ctxOf(USER), { id: item });
+      // The first op takes all of b1 away; the second writes inside the interval the item had as
+      // the request began, which the first op emptied.
+      const r = await send(
+        {
+          sv: 1,
+          ops: [
+            {
+              table: "entities",
+              entity: e,
+              intent: "correct",
+              ver: verAt(w),
+              valid_from: "2026-11-05",
+              valid_to: "2026-11-10",
+              set: { b: "b3" },
+            },
+            {
+              table: "entities",
+              entity: e,
+              intent: "correct",
+              ver: verAt(w),
+              valid_from: "2026-11-06",
+              valid_to: "2026-11-07",
+              set: { b: "b4" },
+            },
+          ],
+        },
+        { actor: USER },
+      );
+      expect(r.status).toBe("saved");
+      expect(r.superseded).toEqual([expect.objectContaining({ item, reason: "overwritten" })]);
+      // The last write that reached it is the second op's.
+      const bases = await basesOf(r.seq);
+      expect(bases).toHaveLength(2);
+      expect(await supersededBy(item)).toBe(bases[1]);
     },
     T,
   );

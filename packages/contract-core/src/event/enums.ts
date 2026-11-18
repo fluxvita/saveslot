@@ -128,6 +128,7 @@ export const SUPERSEDED_REASONS = [
   "draft_replaced",
   "deletion_cancelled",
   "matched_changed",
+  "nothing_to_revert",
 ] as const;
 export type SupersededReason = (typeof SUPERSEDED_REASONS)[number];
 

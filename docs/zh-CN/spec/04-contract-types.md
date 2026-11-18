@@ -1009,6 +1009,7 @@ type SupersededReason =
   | "deleted"                  // 目标、候选的全部值来源或成因被隐私删除
   | "deletion_cancelled"       // 因删除而生成的待确认事项，在删除撤回后不再成立
   | "matched_changed"          // flagged：被比中的行被撤销或改动（不看写入方读没读过事项）
+  | "nothing_to_revert"        // awaiting_confirmation（提议是 undo）：按当前状态重判后已没有要写回、要遮住或回掉的
   | "evidence_deleted"         // @later
   | "migration_failed";        // @later
 

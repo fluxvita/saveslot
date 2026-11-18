@@ -177,6 +177,29 @@ export function scopeOf(state: RowState, refs: readonly ItemRef[]): IntervalSet 
   return canonical(state.items.filter((x) => keys.has(refKey(refOf(x)))).flatMap((x) => x.valid));
 }
 
+/**
+ * What confirming a revert proposal would do, from the judgement of that confirmation on the state
+ * now (09 §5.8 `scope_valid`): the union of its write-backs' intervals; the contributions that come
+ * from, the proposal's items and those of every entry it takes back (the interval depends on what
+ * they are now). Empty when it would write nothing.
+ */
+export function revertScope(
+  state: RowState,
+  j: Judgement,
+  proposal: readonly ItemRef[],
+): { readonly valid: IntervalSet; readonly deps: ItemRef[] } {
+  const r = j.record;
+  const entries = r.kind === "confirm" ? (r.revert?.entries ?? []) : [];
+  const items = r.kind === "confirm" ? r.items : [];
+  const taken = state.items
+    .filter((x) => entries.some((e) => e.event === x.event && e.target === x.target))
+    .map(refOf);
+  return {
+    valid: canonical(items.flatMap((x) => x.valid)),
+    deps: uniq([...proposal, ...taken]),
+  };
+}
+
 const fieldsOf = (state: RowState, unit: Unit): readonly FieldId[] =>
   unit === "existence" ? state.table.fields : unit.fields;
 

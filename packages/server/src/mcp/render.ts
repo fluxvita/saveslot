@@ -1231,7 +1231,9 @@ function receiptTail(r: R): Line[] {
   }
   for (const s of arr(r["superseded"])) {
     const x = obj(s);
-    out.push(t`Superseded: ${idOf(x["item"])} ${codeIn(x["type"], ITEM_TYPES)}`);
+    // Why each was closed (04-contract-types §4.8 `SupersededReason`), as the item's details say it.
+    const why = x["reason"] !== undefined ? t` · ${codeIn(x["reason"], SUPERSEDED)}` : [];
+    out.push(t`Superseded: ${idOf(x["item"])} ${codeIn(x["type"], ITEM_TYPES)}${why}`);
   }
   if (isObj(r["affected_reads"])) {
     out.push(t`Earlier reads used the old value: ${stored(JSON.stringify(r["affected_reads"]))}`);

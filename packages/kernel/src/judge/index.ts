@@ -6,6 +6,7 @@ export {
   type ImpactEntry,
   proposalImpact,
   reaches,
+  revertScope,
   scopeOf,
   type UnitEntry,
   unitEntries,

@@ -438,6 +438,22 @@ describe("what 05 §6 asks for", () => {
     expect(text("write_replay").split("\n")[1]).toContain("nothing new was recorded");
   });
 
+  it("an item a write superseded: its type and why", () => {
+    expect(text("write_everything")).toContain(
+      "Superseded: pi_8VEZWJ3J7BMKMXTV conflict · overwritten",
+    );
+    const w = SAMPLES["write_conflict"] as Sample;
+    const closed = renderResult("saveslot_write", {
+      ...w.result,
+      superseded: [
+        { item: "pi_8VEZWJ3J7BMKMXTV", type: "awaiting_confirmation", reason: "nothing_to_revert" },
+      ],
+    } as R);
+    expect(closed).toContain(
+      "Superseded: pi_8VEZWJ3J7BMKMXTV awaiting_confirmation · nothing_to_revert",
+    );
+  });
+
   it("errors: what was refused, the nearest names, the details, the message inside, the next step", () => {
     const u = renderError(ERRORS["error_unknown_table"] as R);
     expect(u).toContain("Refused: unknown_table · parameter");

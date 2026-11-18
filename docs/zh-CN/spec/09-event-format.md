@@ -1089,7 +1089,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | path | 种类 | 内容 | 来源 |
 |---|---|---|---|
 | `target` | 元 | 见下 | — |
-| `scope_valid` | 数 | 状态类表：事项覆盖的业务时间区间，逐段给出 `{"spans": [{"from": …, "to": …}, …], "deps": […]}`。只有这一种形状，一段时也是长度为 1 的 `spans`；各段按起点升序、互不相交也不相接（相接的合成一段）、粒度一致（都按日或都按时刻）；只有第一段可以缺 `from`（起点开口，例如整段时间上的写回被别的项切开后、回掉它的事项覆盖的那一段），只有最后一段可以缺 `to`（开口）；两端都给时 `from` 早于 `to`。整段时间写成 `[{}]`（例如整实体撤销成为候选），它既是第一段也是最后一段，不与别的段并列。并入与相交的判断把开口的起点当作负无穷、开口的终点当作正无穷。整段时间也明写出来，不用"没给 `scope_valid`"表示：在 `item.merged`、`item.refreshed` 里没给有别的读法（零块即空组）。落账进标记时，整段时间不存区间。不取各段的外包：标记、"改到"的判断与执行都按 `spans` 逐段走 | `deps`：各候选或提议的那几项贡献 |
+| `scope_valid` | 数 | 状态类表：事项覆盖的业务时间区间，逐段给出 `{"spans": [{"from": …, "to": …}, …], "deps": […]}`。只有这一种形状，一段时也是长度为 1 的 `spans`；各段按起点升序、互不相交也不相接（相接的合成一段）、粒度一致（都按日或都按时刻）；只有第一段可以缺 `from`（起点开口，例如整段时间上的写回被别的项切开后、回掉它的事项覆盖的那一段），只有最后一段可以缺 `to`（开口）；两端都给时 `from` 早于 `to`。整段时间写成 `[{}]`（例如整实体撤销成为候选），它既是第一段也是最后一段，不与别的段并列。并入与相交的判断把开口的起点当作负无穷、开口的终点当作正无穷。整段时间也明写出来，不用"没给 `scope_valid`"表示：在 `item.merged`、`item.refreshed` 里没给有别的读法（零块即空组）。落账进标记时，整段时间不存区间。不取各段的外包：标记、"改到"的判断与执行都按 `spans` 逐段走。**回退类的待确认事项（提议是一次 `undo`）**：`spans` 是按当前状态判定这次确认会写回的各项区间之并，即确认时实际写的区间，随刷新重算 | `deps`：各候选或提议的那几项贡献；回退类的待确认事项另加这次判定列出的回退条目所对应的贡献（范围取决于它们现在的样子） |
 | `current/<k>` | 数 | 当前生效值的一段：`{"field": "f3", "value": …, "valid": {…}, "op": <写下它的操作号>, "deps": […]}`。`valid` 只在状态类表上有，本表 `proposed`、`previous` 与 `impact` 的 `overwritten_segment` 同样；"存在"的条目整段时间写 `{}`、起点开口写 `{"to": …}`（§1.2，例如"存在"事项里整实体撤销留下的那一段），字段的条目总有 `from` | `deps` |
 | `candidates/<k>` | 数 | 一个候选（一次写入在这个冲突单元上的全部候选项），见下 | `deps` |
 | `proposed/<k>` | 数 | 待确认的提议在一个字段上的值：`{"field": …, "value": …, "valid": {…}, "deps": […]}` | `deps` |
@@ -1206,6 +1206,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 - `cause` 为 `entries_restored`：撤回一次删除之后，事项当初被去掉的候选放回来。`restored_candidates` 只列**整条被去掉过**的候选的下标（与 `dropped_candidates` 对称）；候选当初只少了一部分项、撤回后那些项回来的，下标不进 `restored_candidates`，本事件用同一下标重新给出含全部项的 `candidates/<k>`。本事件的 `candidates/<k>` 按撤回后的状态重新给出它们（以本事件为准，不读回原来的块）；此时没有 `by_event`。
 - 撤回删除时事项**已经解决**的，不产生 `item.refreshed`，原事项的解决不动。放回来的候选按撤回时的当前状态重新判定，由撤回事件逐项重述：与当前生效值同值的项，按普通规则成为 `dropped`（没指证据）或 `corroborated`（指了证据）；否则仍是 `candidate`。只要还有一项是 `candidate`，随后一条 `item.created`（成因 `restored_candidate`）为这个候选另开事项，新事项里它的 `items` 只含仍是候选的那几项。回执的 `rejudged` 按候选给一条：还有项是候选记 `reopened`；否则有项成了佐证记 `corroborated`，全部成了 `dropped` 记 `dropped`。
 - `target` 各键的出现条件：`dropped_candidates` 只随 `entries_deleted`、`restored_candidates` 只随 `entries_restored`，出现时非空；`by_event` 在 `entries_deleted`、`entries_restored` 时没有，其余成因必有；`writer_had_read` 在 `target_overwritten`（恒为 `false`）与 `references_changed` 时必有，其余成因没有；`merge_base_op` 对每种成因都可缺，给出时是刷新后的合并基。
+- **回退类的待确认事项**（提议是一次 `undo`）：刷新时按当前状态重新判定，`scope_valid` 取这次确认会写回的区间（与确认时的判定相同），`impact/*` 取同一次 `undo` 按当前状态重判的结果（确认的判定不算高影响 ①，列不出会被覆盖的段）；两次判定列出的回退条目相同。两组块各列各自的 `deps`：`scope_valid` 的出自确认的判定，`impact/*` 的出自 `undo` 的重判。只有 `deps` 变了，内容也算变了：事项刷新、版本换新（与确认哈希把 `deps` 算在内一致）。重判之后既没有要写回的项、也没有要遮住或回掉的写入时，不刷新，改发 `item.superseded`（`nothing_to_revert`）。写入方读过事项时照旧是 `overwritten`：那种情形本来就不刷新，也就没有要替代的刷新。
 - `apply`：事项版本换成本操作号。
 
 #### `item.superseded`
@@ -1216,7 +1217,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 |---|---|---|
 | `target` | 元 | `{"item": "pi_…", "reason": <取代原因，§6.6>, "by_event": <seq>, "writer_had_read": <布尔>}` |
 
-`by_event` 是取代它的事件的 `seq`：`overwritten` 时是那条 `write.base`，`schema_switched` 时是 `schema.switched`，`deleted` / `deletion_cancelled` 时是删除确认或撤回的头事件，`draft_replaced` 时是 `schema.superseded`。`matched_changed` 时是改到比中的两行之一的那条 `write.base`。`writer_had_read` 只在 `reason` 为 `overwritten` 时有；`flagged` 事项不带它。
+`by_event` 是取代它的事件的 `seq`：`overwritten` 时是那条 `write.base`，`schema_switched` 时是 `schema.switched`，`deleted` / `deletion_cancelled` 时是删除确认或撤回的头事件，`draft_replaced` 时是 `schema.superseded`。`matched_changed` 时是改到比中的两行之一的那条 `write.base`。`nothing_to_revert` 时是让它没事可做的那条 `write.base`（改到它的那条，或这次请求在这一行上最后一条）。`writer_had_read` 只在 `reason` 为 `overwritten` 时有；`flagged` 事项不带它。
 
 `apply`：事项状态置为已被取代；撤掉对应标记；事项版本换成本操作号。
 
@@ -1608,6 +1609,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `draft_replaced` | `schema_change` 事项对应的草稿被新草稿取代 |
 | `deletion_cancelled` | 因删除而生成的待确认事项，在删除撤回后不再成立 |
 | `matched_changed` | `flagged` 事项比中的两行里任何一行被撤销或改动，疑似重复不再成立 |
+| `nothing_to_revert` | 回退类的待确认事项按当前状态重判之后，已没有要写回的段、也没有要遮住或回掉的写入 |
 
 保留值：`evidence_deleted`、`migration_failed`。
 

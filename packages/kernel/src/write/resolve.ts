@@ -41,9 +41,10 @@ import {
   judgeFailure,
   loadRow,
   RULESET,
+  reachScope,
   readFirst,
   requestFailure,
-  scopeFor,
+  revertEntriesNow,
   settleItems,
   type WriteInput,
 } from "./pipeline.ts";
@@ -514,6 +515,15 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     throw e;
   }
   const j = judged.judgement;
+  // Confirming a revert proposal that would write nothing is not reached: an item whose undo, judged
+  // again, has nothing to write back and nothing to hide is closed by the write that leaves it so,
+  // in that write's transaction (../write/pipeline.ts `nothingToRevert`; 04-write-and-read
+  // «撤回某次写入（undo）»). Refused rather than recorded as an empty write.
+  if (j.record.kind === "confirm" && j.record.revert !== undefined && j.record.items.length === 0) {
+    throw new WriteError("internal", "an awaiting undo with nothing to revert is still open", {
+      reason: "inconsistent",
+    });
+  }
   work.state = judged.state;
   // The intent the triggered write carries on (09 §6.1 «意图»): the taken candidate's write, the
   // proposal's, or for `take_previous` the write of the latest entry its revert takes back.
@@ -574,7 +584,8 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     const before = { upTo: (op - 1) as OpNumber, request: { op, below: 0 } };
     const after = { upTo: (op - 1) as OpNumber, request: { op, below: 1 } };
     for (const t of work.items) {
-      if (reaches(work.state, before, after, t.unit, scopeFor(work.state, t))) t.reachedBy = event;
+      if (reaches(work.state, before, after, t.unit, reachScope(work.state, t)))
+        t.reachedBy = event;
     }
   }
   await settleItems(tx, [work], {
@@ -632,4 +643,38 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     derived: step.derived,
   });
   return warnings.length > 0 ? { ...out, warnings } : out;
+}
+
+/**
+ * Testing: for an open awaiting revert proposal, the revert entries its undo judged again now and
+ * its confirmation judged now list (pipeline.ts `revertEntriesNow`); undefined for another item.
+ */
+export async function revertEntriesOf(
+  tx: Tx,
+  id: string,
+): Promise<ReturnType<typeof revertEntriesNow> | undefined> {
+  const item = await itemRow(tx, id);
+  if (item === undefined || item.state !== "open" || item.row === null || item.table === null)
+    return undefined;
+  const slot = (await readSlots(tx)).find((x) => x.slot === item.slot);
+  const table = slot?.compiled.tables.find((t) => t.id === item.table && t.kind === "base") as
+    | CompiledBaseTable
+    | undefined;
+  if (table === undefined) return undefined;
+  const shape = tableShape(table);
+  const isState = shape.kind === "state";
+  const work = await loadRow(
+    tx,
+    {
+      table: table.id as TableId,
+      target: isState ? { entity: item.row as EntityId } : { row: item.row as RowId },
+      shape,
+      granularity: table.time.type === "state" ? table.time.granularity : "date",
+    },
+    "id",
+  );
+  const tracked = work.items.find((x) => x.item === item.id);
+  if (tracked === undefined) return undefined;
+  const upTo = ((await readTail(tx))?.seq ?? 0) as OpNumber;
+  return revertEntriesNow(work.state, tracked, upTo);
 }

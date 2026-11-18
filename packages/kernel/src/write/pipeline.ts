@@ -56,6 +56,7 @@ import {
   proposalImpact,
   type RowState,
   reaches,
+  revertScope,
   scopeOf,
   stateFromRecord,
   type TableShape,
@@ -74,7 +75,7 @@ import {
   type WriteValidationDetail,
 } from "../request/index.ts";
 import type { Tx } from "../store/ports.ts";
-import { type IntervalSet, meet, WHOLE } from "../time/index.ts";
+import { type IntervalSet, meet, unionOf, WHOLE } from "../time/index.ts";
 import { appendWithDerived } from "./derive-step.ts";
 import { WriteError } from "./errors.ts";
 import {
@@ -213,6 +214,12 @@ export interface TrackedItem {
   mergedHere: boolean;
   /** The last `write.base` of this request that reached it (01-objects «不过期»: 改到). */
   reachedBy?: Seq;
+  /**
+   * State tables, an item open when the request began: its interval then. A write reaches the item
+   * where it changes this interval or the one after it (`reachScope`), so a request that leaves a
+   * revert proposal nothing to do still reaches it.
+   */
+  scopeAtStart?: IntervalSet;
   /** Its entry groups as the log holds them before this request, by path. */
   readonly stored: Readonly<Record<string, unknown>>;
   /** Awaiting items: the writes its proposal would take back, as last given. */
@@ -347,7 +354,10 @@ function trackedItems(
 /**
  * Whether the writer had read the item's version as the request began (01-objects «不过期»): its
  * own receipt gave it whole when its write opened the item, or it read it (the version it last
- * read, under the same task, is the item's then, with the restore count now).
+ * read, under the same task, is the item's then, with the restore count now). The item's current
+ * version: a proposer whose proposal was refreshed since by another's write, and who has not read
+ * the refreshed version, has not read it (a write of theirs that empties it closes it as
+ * nothing_to_revert, not overwritten).
  */
 export async function hadRead(
   tx: Tx,
@@ -381,9 +391,61 @@ function withProposals(state: RowState, items: TrackedItem[]): TrackedItem[] {
   return items;
 }
 
-/** The interval of a tracked item: its candidates' or proposal's items (state tables). */
+/**
+ * The judgement confirming an awaiting revert proposal (an `undo`) would make on the state now: the
+ * same the confirmation makes (the revert listed again as of then, 04-write-and-read «撤回某次写入
+ * （undo）»), so that the item shows what confirming it does (05-time «高影响写入»). Undefined for any
+ * other item, or where the confirmation would be refused now.
+ */
+function confirmNow(state: RowState, t: TrackedItem, upTo?: OpNumber): Judgement | undefined {
+  if (t.type !== "awaiting_confirmation") return undefined;
+  const opened = state.records.find((r) => r.event === t.origin);
+  if (opened?.kind !== "undo") return undefined;
+  const last = Math.max(upTo ?? 0, ...state.records.map((r) => r.op));
+  const op = (last + 1) as OpNumber;
+  try {
+    return judgeOp(state, {
+      kind: "confirm",
+      op,
+      index: 0,
+      event: (op + 1) as Seq,
+      ruleset: RULESET,
+      target: t.origin,
+    }).judgement;
+  } catch (e) {
+    if (!(e instanceof JudgeError)) throw e;
+    return undefined;
+  }
+}
+
+/**
+ * The interval of a tracked item (state tables): its candidates' or proposal's items; for a revert
+ * proposal, what confirming it would write now (the interval follows the state, as the impact does).
+ * The interval is the confirmation's judgement, so that confirming writes exactly it; the impact is
+ * the undo judged again (`awaitingImpactNow`), not that same judgement, because a confirmation does
+ * not judge high impact (it does not say what would be overwritten, ①). The two list the same revert
+ * entries (awaiting-revert.prop checks it).
+ */
 export function scopeFor(state: RowState, t: TrackedItem): IntervalSet {
-  return state.isState ? scopeOf(state, t.refs) : [WHOLE];
+  if (!state.isState) return [WHOLE];
+  const now = confirmNow(state, t);
+  return now !== undefined ? revertScope(state, now, t.refs).valid : scopeOf(state, t.refs);
+}
+
+/**
+ * Where a write of the request reaches an item (01-objects «不过期»: 改到): its interval as the
+ * request began together with its interval now. A revert proposal's interval follows the state, so
+ * each half guards one way it moves:
+ * - the interval as the request began: a write that leaves the proposal nothing to do empties it;
+ *   judged on the interval after the write alone, the write (or a later op of the same request)
+ *   would not reach it, and a writer that had read the item would not supersede it;
+ * - the interval now: a write outside the interval that widens it (say the undo of a revoke under
+ *   it) changes what confirming it does; judged on the interval as the request began alone, the
+ *   write would not reach it either.
+ */
+export function reachScope(state: RowState, t: TrackedItem): IntervalSet {
+  const now = scopeFor(state, t);
+  return t.scopeAtStart === undefined ? now : unionOf(t.scopeAtStart, now);
 }
 
 /**
@@ -393,6 +455,20 @@ export function scopeFor(state: RowState, t: TrackedItem): IntervalSet {
  * while they are in effect).
  */
 function itemContents(state: RowState, t: TrackedItem, at: Limit): ItemContents {
+  // A revert proposal: its interval from the judgement of its confirmation now, so that confirming
+  // writes the interval shown; its impact, as before, from the same undo judged again now (that
+  // judgement also says what it would overwrite, high impact ①, which a confirmation does not
+  // judge).
+  const now = confirmNow(state, t, at.upTo);
+  if (now !== undefined) {
+    const revert = revertScope(state, now, t.refs);
+    return {
+      ...(state.isState ? { scope: revert } : {}),
+      current: unitEntries(state, t.unit, state.isState ? revert.valid : [WHOLE], at, t.refs),
+      proposed: proposedOf(state, t),
+      impact: awaitingImpactNow(state, t, at),
+    };
+  }
   const scope = scopeFor(state, t);
   const scopeBlock = state.isState ? { scope: { valid: scope, deps: t.refs } } : {};
   const current = unitEntries(state, t.unit, scope, at, t.refs);
@@ -404,7 +480,17 @@ function itemContents(state: RowState, t: TrackedItem, at: Limit): ItemContents 
       impact: conflictImpact(state, t.unit, scope, t.mergeBase, t.refs, at),
     };
   }
-  const proposed = t.refs.flatMap((r) => {
+  return {
+    ...scopeBlock,
+    current,
+    proposed: proposedOf(state, t),
+    impact: awaitingImpactNow(state, t, at),
+  };
+}
+
+/** An awaiting item's proposal entries: each value its items give, a span of their interval each. */
+function proposedOf(state: RowState, t: TrackedItem) {
+  return t.refs.flatMap((r) => {
     const x = state.items.find((y) => y.event === r.event && y.target === r.target && y.k === r.k);
     if (x === undefined || x.target === "existence" || x.content.kind !== "value") return [];
     const value = x.content.value;
@@ -417,41 +503,83 @@ function itemContents(state: RowState, t: TrackedItem, at: Limit): ItemContents 
       deps: [r],
     }));
   });
-  return {
-    ...scopeBlock,
-    current,
-    proposed,
-    impact: awaitingImpactNow(state, t, at),
-  };
 }
 
 /**
  * An awaiting item's impact as of `at`. A proposal that is an `undo` is judged again on the state
  * now, the same undo of the same operation: what it would take back or hide is the judge's, the
  * writes after it included (high impact ④). Any other proposal: what it would overwrite now.
+ *
+ * An `undo` the judge refuses now (say the row was revoked since) has an empty impact, never the
+ * impact listed when it was proposed: that one may name writes it no longer touches, and an item
+ * with nothing to write back and nothing listed is closed (`nothingToRevert`). This rests on the
+ * confirmation then writing nothing back too. awaiting-revert.prop counts the items where the undo
+ * is refused while the confirmation writes something: such items are known (a confirmation that
+ * changes nothing that can be read, over a row revoked before and after), and which of the two
+ * judgements is right there is open.
  */
 function awaitingImpactNow(state: RowState, t: TrackedItem, at: Limit) {
+  if (!isUndoProposal(state, t)) return proposalImpact(state, t.refs, t.reverted, at);
+  const again = undoNow(state, t, at);
+  return again !== undefined ? awaitingImpact(state, again) : [];
+}
+
+/** Whether a tracked item is an awaiting `undo` (a revert proposal). */
+function isUndoProposal(state: RowState, t: TrackedItem): boolean {
+  if (t.type !== "awaiting_confirmation") return false;
   const opened = state.records.find((r) => r.event === t.origin);
-  if (opened?.kind === "undo" && opened.revert.before !== undefined) {
-    const op = (at.upTo + 1) as OpNumber;
-    try {
-      const again = judgeOp(state, {
-        kind: "undo",
-        op,
-        index: 0,
-        event: (op + 1) as Seq,
-        ruleset: RULESET,
-        seen: at.upTo,
-        seenExplicit: true,
-        target: opened.revert.before,
-        ...(opened.includeLater ? { includeLater: true } : {}),
-      });
-      return awaitingImpact(state, again.judgement);
-    } catch (e) {
-      if (!(e instanceof JudgeError)) throw e;
-    }
+  return opened?.kind === "undo" && opened.revert.before !== undefined;
+}
+
+/**
+ * An awaiting undo judged again on the state now, as an undo of the same operation (its impact:
+ * what it would take back, hide, and overwrite, high impact ①–④). Undefined for any other item, or
+ * where the undo would be refused now.
+ */
+function undoNow(state: RowState, t: TrackedItem, at: Limit): Judgement | undefined {
+  const opened = state.records.find((r) => r.event === t.origin);
+  if (opened?.kind !== "undo" || opened.revert.before === undefined) return undefined;
+  const op = (at.upTo + 1) as OpNumber;
+  try {
+    return judgeOp(state, {
+      kind: "undo",
+      op,
+      index: 0,
+      event: (op + 1) as Seq,
+      ruleset: RULESET,
+      seen: at.upTo,
+      seenExplicit: true,
+      target: opened.revert.before,
+      ...(opened.includeLater ? { includeLater: true } : {}),
+    }).judgement;
+  } catch (e) {
+    if (!(e instanceof JudgeError)) throw e;
+    return undefined;
   }
-  return proposalImpact(state, t.refs, t.reverted, at);
+}
+
+/**
+ * Testing: an awaiting revert proposal's undo judged again now and its confirmation judged now,
+ * the revert entries each lists (null where it would be refused). The item shows its impact from
+ * the first and its interval from the second; the two must list the same entries.
+ */
+export function revertEntriesNow(
+  state: RowState,
+  t: TrackedItem,
+  upTo: OpNumber,
+): { readonly undo: readonly unknown[] | null; readonly confirm: readonly unknown[] | null } {
+  const entriesOf = (j: Judgement | undefined) => {
+    const r = j?.record;
+    return r === undefined
+      ? null
+      : r.kind === "undo" || r.kind === "confirm"
+        ? (r.revert?.entries ?? [])
+        : null;
+  };
+  return {
+    undo: entriesOf(undoNow(state, t, { upTo })),
+    confirm: entriesOf(confirmNow(state, t, upTo)),
+  };
 }
 
 /** The intent of the undone operation's last `write.base` on the row (01-objects). */
@@ -555,17 +683,38 @@ export async function loadRow(tx: Tx, ctx: RowContext, param: string): Promise<R
       param,
     });
   }
-  return {
-    ctx,
-    events,
+  const items = withProposals(
     state,
-    createdHere: false,
-    items: withProposals(
-      state,
-      trackedItems(events, new Map(open.map((x) => [x.id, x.versionOp as OpNumber]))),
-    ),
-  };
+    trackedItems(events, new Map(open.map((x) => [x.id, x.versionOp as OpNumber]))),
+  );
+  if (state.isState) for (const t of items) t.scopeAtStart = scopeFor(state, t);
+  return { ctx, events, state, createdHere: false, items };
 }
+
+/**
+ * A revert proposal that, judged again on the state now, has nothing to write back and no write to
+ * hide (04-write-and-read «撤回某次写入（undo）»): in place of refreshing it, it is closed,
+ * superseded by the write that left it so. It then can no longer be confirmed or rejected, and does
+ * not come back when a later write gives it something to do again. A writer that had read the item
+ * supersedes it as overwritten instead: that closes it without a refresh, so there is no refresh to
+ * take the place of.
+ */
+function nothingToRevert(state: RowState, t: TrackedItem, upTo: OpNumber): boolean {
+  const now = confirmNow(state, t, upTo);
+  return (
+    now !== undefined &&
+    now.record.kind === "confirm" &&
+    now.record.items.length === 0 &&
+    awaitingImpactNow(state, t, { upTo }).length === 0
+  );
+}
+
+/** The `item.superseded` closing a revert proposal with nothing left to do. */
+const closedEmpty = (slot: NonNullable<NewEvent["slot"]>, item: ItemId, by: Seq): NewEvent => ({
+  type: "item.superseded",
+  slot,
+  blocks: { target: { item, reason: "nothing_to_revert", by_event: by } } as never,
+});
 
 /**
  * The pending items as of the request's end (01-objects «不过期»; 09 §5.8 «一次请求里的事项内容»):
@@ -614,6 +763,9 @@ export async function settleItems(
             } as never,
           });
           work.items.splice(work.items.indexOf(t), 1);
+        } else if (nothingToRevert(work.state, t, atEnd.upTo)) {
+          o.events.push(closedEmpty(o.slot, t.item, t.reachedBy));
+          work.items.splice(work.items.indexOf(t), 1);
         } else {
           o.events.push({
             type: "item.refreshed",
@@ -636,6 +788,12 @@ export async function settleItems(
       // A join of this request gave the item's contents with it (item.merged): nothing more.
       if (t.mergedHere) continue;
       if (canonicalize(t.stored as never) === canonicalize(blocks as never)) continue;
+      if (nothingToRevert(work.state, t, atEnd.upTo)) {
+        o.events.push(closedEmpty(o.slot, t.item, work.lastBase));
+        work.items.splice(work.items.indexOf(t), 1);
+        added++;
+        continue;
+      }
       o.events.push({
         type: "item.refreshed",
         slot: o.slot,
@@ -1031,7 +1189,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         // Op by op: what this op changed, from just before it to just after it.
         const before: Limit = { upTo: (op - 1) as OpNumber, request: { op, below: o.index } };
         const after: Limit = { upTo: (op - 1) as OpNumber, request: { op, below: o.index + 1 } };
-        if (!t.here && reaches(work.state, before, after, t.unit, scopeFor(work.state, t))) {
+        if (!t.here && reaches(work.state, before, after, t.unit, reachScope(work.state, t))) {
           t.reachedBy = baseSeq;
         }
       }
