@@ -10,11 +10,13 @@ import {
   CATALOG,
   COMMON,
   compose,
+  DRAFT_IDEMPOTENCY_KEY,
   HISTORY,
   IDEMPOTENCY_KEY,
   PENDING,
   QUERY,
   RESOLVE,
+  SCHEMA_DRAFT,
   type Text,
   WRITE,
 } from "./texts.ts";
@@ -437,6 +439,48 @@ export const TOOLS: readonly Tool[] = [
     },
     examples: [
       { id: `pi_${"1".repeat(16)}`, decision: "confirm", item_ver: `iv_${"1".repeat(16)}.1.0` },
+    ],
+  },
+  {
+    name: "saveslot_schema_draft",
+    operation: "schema_draft",
+    scope: "saveslot.schema",
+    description: SCHEMA_DRAFT.description,
+    params: {
+      document: { schema: { type: "object" }, text: SCHEMA_DRAFT.params.document, required: true },
+      idempotency_key: { schema: str, text: DRAFT_IDEMPOTENCY_KEY },
+      task,
+    },
+    withheld: {},
+    // 05 §8: a draft is not destructive; submitting the same one again gives the same receipt.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    // The shape of a document only: its names say they are an example, not a table to copy.
+    examples: [
+      {
+        document: {
+          slot: "example_slot",
+          base_version: null,
+          timezone: "UTC",
+          tables: [
+            {
+              name: "example_table",
+              kind: "base",
+              description: "an example: one row per happening",
+              time: { type: "event", field: "day" },
+              fields: [
+                { name: "day", type: "date", required: true, description: "the day it happened" },
+                { name: "what", type: "text", required: true, description: "what happened" },
+              ],
+            },
+          ],
+        },
+        task: "examples",
+      },
     ],
   },
 ];

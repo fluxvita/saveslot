@@ -224,7 +224,7 @@ function table(t: DocTable, doc: DocSlot, out: Findings): void {
   const at = t.path;
   const byName = fieldsByName(t);
   if (t.keys.has("rule")) out.add(`${at}/rule`, "key_not_applicable");
-  if (t.fields.length === 0) out.add(`${at}/fields`, "out_of_bounds");
+  if (t.fields.length === 0) out.add(`${at}/fields`, "out_of_bounds", { min: "1" });
   const seen = new Set<string>();
   for (const f of t.fields) field(f, doc, seen, out);
 
@@ -300,7 +300,7 @@ function derivedTable(t: DocDerivedTable, out: Findings): void {
   const at = t.path;
   for (const k of BASE_TABLE_KEYS) if (t.keys.has(k)) out.add(`${at}/${k}`, "key_not_applicable");
   if (t.keys.has("external_key")) out.add(`${at}/external_key`, "external_key_table_kind");
-  if (t.fields.length === 0) out.add(`${at}/fields`, "out_of_bounds");
+  if (t.fields.length === 0) out.add(`${at}/fields`, "out_of_bounds", { min: "1" });
   const seen = new Set<string>();
   for (const f of t.fields) {
     const p = f.path;
@@ -325,14 +325,40 @@ function derivedTable(t: DocDerivedTable, out: Findings): void {
   }
 }
 
+/**
+ * How large a slot may be (values for now, 08-open-questions «接口的数值与细则»): slots in a
+ * tenant, tables in a slot (base and derived together), fields in a table. Past them a document
+ * is refused at once, before it is compiled or stored: a larger one took the one write transaction
+ * for seconds and then failed in the store.
+ */
+export const SLOTS_MAX = 100;
+export const TABLES_MAX = 100;
+export const FIELDS_MAX = 200;
+
 /** Every finding of the document, in document order. Empty when it compiles. */
 export function validate(doc: DocSlot, existingSlotNames: readonly string[]): SchemaDetail[] {
   const out = new Findings();
   if (!NAME.test(doc.slot)) out.add("slot", "reserved_name");
   if (existingSlotNames.some((n) => fold(n) === fold(doc.slot))) out.add("slot", "duplicate_name");
+  if (existingSlotNames.length >= SLOTS_MAX) {
+    out.add("slot", "out_of_bounds", { max: String(SLOTS_MAX) });
+  }
   if (!isTimeZone(doc.timezone)) out.add("timezone", "timezone_unknown");
+  if (doc.tables.length > TABLES_MAX) {
+    out.add("tables", "out_of_bounds", { max: String(TABLES_MAX) });
+    // Each table past the bound is not looked at: the document is refused already.
+    return out.list;
+  }
+  // A slot holds something to write to: at least one base table.
+  if (!doc.tables.some((t) => t.kind !== "derived")) {
+    out.add("tables", "out_of_bounds", { min: "1" });
+  }
   const seen = new Set<string>();
   for (const t of doc.tables) {
+    if (t.fields.length > FIELDS_MAX) {
+      out.add(`${t.path}/fields`, "out_of_bounds", { max: String(FIELDS_MAX) });
+      continue;
+    }
     if (!NAME.test(t.name)) out.add(`${t.path}/name`, "reserved_name");
     if (seen.has(fold(t.name))) out.add(`${t.path}/name`, "duplicate_name");
     seen.add(fold(t.name));

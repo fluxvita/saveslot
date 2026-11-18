@@ -6,10 +6,12 @@
 //     skipped. The result says `truncated: {shown, total}`; structuredContent is that page too.
 //   - A result of a read that is no page, over the budget: `too_large` (`result_budget`), with how
 //     to ask for less. Nothing was recorded but the read; reading less is the way.
-//   - A receipt (write, resolve): the operation took effect, so it is never refused for its size.
-//     It keeps its operation number, each op's target and new ver, and the items made; it loses
-//     each field's result first, then the later entries of its lists, and says what it lost in
-//     `omitted`.
+//   - A receipt (write, resolve, schema_draft): the operation took effect, so it is never refused
+//     for its size. A write's keeps its operation number, each op's target and new ver, and the
+//     items made; it loses each field's result first, then the later entries of its lists. A
+//     schema draft's keeps the slot, its version and the draft; it loses the list of changes
+//     first, then the document with its IDs filled in, its text within the budget and its
+//     structure within STRUCTURED_BYTES. Each says what it lost in `omitted`.
 
 import { ContractError } from "@fluxvita/saveslot-service";
 import type { ToolName } from "./names.ts";
@@ -195,12 +197,37 @@ const fitsCut = (tool: ToolName, r: R, budget: number) => within(tool, r, budget
  * page, or of which no entry fits, is too large); `finish` for the result given back, which
  * marks a page cut as truncated and shortens a receipt.
  */
+/** The tools whose results are receipts: never refused for their size, shortened (05 §3). */
+const RECEIPTS: ReadonlySet<ToolName> = new Set([
+  "saveslot_write",
+  "saveslot_resolve",
+  "saveslot_schema_draft",
+]);
+
+/**
+ * A schema draft's receipt shortened (05 §3): its changes go first, then the document with its IDs
+ * filled in; the slot, its version and the draft stay. Its text within `budget`, its structure
+ * within STRUCTURED_BYTES.
+ */
+function shortenDraft(r: R, budget: number): R {
+  const ok = (x: R) => bytes(x) <= STRUCTURED_BYTES && fits("saveslot_schema_draft", x, budget);
+  const omitted = new Set<string>(Array.isArray(r["omitted"]) ? (r["omitted"] as string[]) : []);
+  const done = (x: R): R => ({ ...x, omitted: [...omitted] });
+  let out: R = { ...r, changes: [] };
+  omitted.add("changes");
+  if (ok(done(out))) return done(out);
+  const { document: _, ...rest } = out;
+  out = rest;
+  omitted.add("document");
+  return done(out);
+}
+
 export function budgetFor(tool: ToolName, budget: number) {
   let cutAt: { readonly shown: number; readonly total: number } | undefined;
   const fit = (raw: unknown): number | undefined => {
     const result = plain(raw);
     // A receipt is never refused for its size: finish shortens it.
-    if (tool === "saveslot_write" || tool === "saveslot_resolve") return undefined;
+    if (RECEIPTS.has(tool)) return undefined;
     if (within(tool, result, budget)) return undefined;
     const list = listOf(tool, result);
     if (list === undefined) throw tooLarge(tool, result, false);
@@ -225,6 +252,9 @@ export function budgetFor(tool: ToolName, budget: number) {
     return keep;
   };
   const finish = (result: R): R => {
+    if (tool === "saveslot_schema_draft") {
+      return within(tool, result, budget) ? result : shortenDraft(result, budget);
+    }
     if (tool === "saveslot_write" || tool === "saveslot_resolve") {
       return fits(tool, result, budget) ? result : shorten(tool, result, budget);
     }

@@ -1821,7 +1821,7 @@ type Scope = "saveslot.read" | "saveslot.write" | "saveslot.schema" | "saveslot.
 interface ConnectionsIssueParams {
   /** 建议写成"设备 · Agent"。同一用户下不重名，重名报 invalid_argument（duplicate_name，param: "name"）；按存下的字符串逐码点比较，不折叠大小写；已吊销、已停用的连接实例的名字仍然占用（历史里同一个名字只指一个主体）。 */
   name: string;
-  /** 必须包含 saveslot.read。默认 ["saveslot.read", "saveslot.write"]。 */
+  /** 必须包含 saveslot.read。默认 ["saveslot.read", "saveslot.write", "saveslot.schema"]：能读写、能新建 slot，不能删除。 */
   scopes?: Scope[];
   /** slot 范围：slot 名或 slot_id 的数组。不给 = 全部（含以后新建的）。给了：每个都必须存在（否则 not_found / slot），不能是空数组（invalid_argument / empty_slots）。
    *  签发后不能改。 */

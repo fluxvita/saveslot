@@ -23,6 +23,7 @@ import {
   APPLIES,
   appliedReason,
   appliedWhy,
+  createsSlots,
   DEFAULT_SCOPES,
   entryHolds,
   entryMayGo,
@@ -37,6 +38,7 @@ import {
   revokeQuietly,
   SETUP_HOSTS,
   type SetupHost,
+  writes,
 } from "./connect.ts";
 import { describeError, timezoneHint } from "./errors.ts";
 import { allConnections } from "./pages.ts";
@@ -338,7 +340,12 @@ export async function setup(given: SetupInput): Promise<SetupOutput> {
   });
   try {
     const exit = await steps(i, scopes, report, stop.signal);
-    return { json: jsonOf(report), lines: summary(report, true), errLines: [], exit };
+    // A host given an instance that cannot create slots: how to let it (05 §1, 06 §3.2).
+    const hint =
+      report.hosts.some((h) => h.state === "done") && !createsSlots(scopes)
+        ? [[words(TEXTS.noSchemaHint(writes(scopes)))]]
+        : [];
+    return { json: jsonOf(report), lines: [...summary(report, true), ...hint], errLines: [], exit };
   } catch (e) {
     // Stopped by a signal only where the stop is the signal's; another error says its own cause.
     const s =

@@ -109,7 +109,7 @@ describe("connections", () => {
     expect(c).toEqual({
       id: desk,
       name: "desk",
-      scopes: ["saveslot.read", "saveslot.write"],
+      scopes: ["saveslot.read", "saveslot.write", "saveslot.schema"],
       via: "token",
       state: "active",
       registered_seq: 2,

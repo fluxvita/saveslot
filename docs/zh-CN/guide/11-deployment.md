@@ -58,7 +58,7 @@ Agent 经 **MCP** 连 saveslot（第 1 章介绍过：Agent 调用外部工具�
 | `saveslot_pending`      | 读     | 列出待处理事项，看某一项的详情                                    |
 | `saveslot_write`        | 写     | 写入：新增、变更、纠错、撤销                                     |
 | `saveslot_resolve`      | 写     | 处理一个待处理事项                                          |
-| `saveslot_schema_draft` | 写     | 提交 schema 草稿（建 slot、改表结构）                             |
+| `saveslot_schema_draft` | 写     | 提交 schema 草稿（建 slot、改表结构；第一版先开建 slot）                 |
 | `saveslot_delete`       | 写     | 执行一次已预览的删除                                         |
 
 完整设计里还有两个与"重新抽取"有关的工具，随那部分功能后做。
@@ -142,7 +142,7 @@ $ saveslot connect http --name "手环 · 连接器" --slots health
 | 一条命令完成上手：初始化、启动、建第一个 slot、接入本机装着的 Agent | `saveslot setup` |
 | 分步：初始化、启动、停止本机服务，看状态 | `saveslot init`、`saveslot start`、`saveslot stop`、`saveslot status` |
 | 逐项自检（服务、权限、同步盘、各宿主里的条目、数据规模） | `saveslot doctor` |
-| 建 slot | `saveslot slot create` |
+| 建 slot | `saveslot slot create`；也可以让 Agent 经 `saveslot_schema_draft` 起草、你同意后建（默认签发的连接实例就能这样做） |
 | 给 Agent 签发、查看、吊销凭证 | `saveslot connect`、`saveslot connections list / revoke` |
 | 打印建议放进宿主自定义指令的文案 | `saveslot snippet` |
 | 处理待处理事项 | `saveslot pending`、`saveslot pending show`、`saveslot pending resolve` |
@@ -186,7 +186,7 @@ $ saveslot connect http --name "手环 · 连接器" --slots health
 
 命令行签发时用 `--scope` 调整。两种写法，不能混用：
 
-- 在默认（读 + 写）上增减：`--scope +schema`、`--scope +delete`、`--scope -write`。只读的连接实例就是 `--scope -write`。
+- 在默认（读 + 写 + 新建 slot）上增减：`--scope +delete`、`--scope -schema`、`--scope -write`。不让 Agent 建 slot 就是 `--scope -schema`，只读的连接实例就是 `--scope -write,-schema`。scope 在签发时定下：之前签发的连接实例要获得建 slot 的能力，重新 `connect`。
 - 完整列出：`--scope read,write,schema`，列出的就是全部。
 
 去掉读权限是用法错误：没有读权限的连接实例什么都做不了，也没法先读再写。

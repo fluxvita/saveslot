@@ -79,6 +79,26 @@ export async function visibleSlots(tx: ReadTx, visibility: Visibility): Promise<
   return out;
 }
 
+/**
+ * Who created each slot, by the kind of principal behind its first event (the draft that created
+ * it): `user`, `connection` or `system`; a slot not found is left out. The first event of a slot
+ * is its creation and never changes, whatever is done to the slot later.
+ */
+export async function slotCreators(
+  tx: ReadTx,
+  slots: readonly SlotId[],
+): Promise<Map<SlotId, string>> {
+  const out = new Map<SlotId, string>();
+  if (slots.length === 0) return out;
+  const r = await tx.query<{ slot: string; kind: string }>(
+    `SELECT e.slot, p.kind FROM events e JOIN principals p ON p.id = e.actor
+     WHERE e.seq IN (SELECT MIN(seq) FROM events WHERE slot = ANY($1) GROUP BY slot)`,
+    [[...slots]] as never,
+  );
+  for (const x of r.rows) out.set(x.slot as SlotId, x.kind);
+  return out;
+}
+
 export interface NamedTable {
   readonly slot: VisibleSlot;
   readonly table: CompiledTable;

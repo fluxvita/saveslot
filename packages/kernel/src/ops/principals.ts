@@ -69,7 +69,11 @@ export interface ConnectionRecord {
   readonly revoked_at?: string;
 }
 
-const DEFAULT_SCOPES: readonly Scope[] = ["saveslot.read", "saveslot.write"];
+/**
+ * The scopes of a connection instance issued without any (04-contract-types §8.1): read, write
+ * and creating slots. Deleting is never in the default.
+ */
+const DEFAULT_SCOPES: readonly Scope[] = ["saveslot.read", "saveslot.write", "saveslot.schema"];
 
 interface Row {
   id: string;

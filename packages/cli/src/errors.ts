@@ -92,10 +92,24 @@ export function describeError(
       if (typeof x["valid"] === "object" && x["valid"] !== null) {
         where.push(t`${words(TEXTS.detailValid)} ${periodOf(x["valid"])}`);
       }
+      // The bound passed, as the MCP text gives it too.
+      const n = (v: unknown) =>
+        typeof v === "string" && /^(0|[1-9][0-9]{0,8})$/.test(v)
+          ? num(Number(v))
+          : untrusted(String(v));
+      const bound = [
+        ...(x["max"] !== undefined ? [t`${words(TEXTS.detailMax)} ${n(x["max"])}`] : []),
+        ...(x["min"] !== undefined ? [t`${words(TEXTS.detailMin)} ${n(x["min"])}`] : []),
+      ];
       lines.push([
         ...t`  ${code(String(x["code"] ?? ""), DETAIL_CODES)}`,
+        ...(bound.length > 0 ? t` (${join(bound, t`, `)})` : []),
         ...(where.length > 0 ? t`${words(TEXTS.detail)} ${join(where, t`, `)}` : []),
       ]);
+      // As many slots as the tenant may have: there is no way yet to make room.
+      if (x["code"] === "out_of_bounds" && x["path"] === "slot" && x["max"] !== undefined) {
+        lines.push(t`  ${words(TEXTS.slotsFull)}`);
+      }
     }
     // The item's version now, for one that changed since it was read (06 §5.2).
     const current = Object.hasOwn(e.body, "current") ? e.body["current"] : undefined;

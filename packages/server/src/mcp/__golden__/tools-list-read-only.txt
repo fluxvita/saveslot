@@ -1,0 +1,706 @@
+[
+  {
+    "name": "saveslot_catalog",
+    "description": "See which slots, tables and fields this user's saveslot has. Use it when the user asks about their own records and you do not yet know which tables there are, or are unsure of a table name, field name or unit; there is no need to call it again when you already looked in this conversation and have not been told of a schema update since. Start with the default `list` for the overview, then `level: \"table\"` for the fields, units, relations and data overview of a few tables. Tables and fields may have aliases: what the user calls them, for matching the user's words to a table; requests use the names, never the aliases. It does not return the data itself. To read the data, use saveslot_query.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "enum": [
+            "list",
+            "table",
+            "schema"
+          ],
+          "description": "`list` (default): which slots and tables there are. `table`: the fields, units and overview of some tables. `schema`: the full schema document of one slot, as JSON."
+        },
+        "slot": {
+          "type": "string",
+          "description": "A slot name. Required with `schema`. With `list`, only this slot is listed."
+        },
+        "draft": {
+          "type": "string",
+          "description": "Only with `schema`: a draft ID (`d_…`), to get that draft's document with its IDs filled in instead of the current version. A draft in any state can be read."
+        },
+        "tables": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 10,
+          "description": "Required with `table`: 1 to 10 table names, written as `ledger.expenses`, or `expenses` alone when no other slot you can see has a table of that name. Names, not aliases."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "description": "Only with `list`: how many tables to return. Default 50, at most 200."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "The `next_cursor` of the previous page, passed back unchanged for the next page. Never construct one; do not pass it again after changing the request."
+        },
+        "task": {
+          "type": "string",
+          "description": "A short label for this task (such as `weekly-review`): use the same value for the reads and writes of one task, so that saveslot can match the versions you read with your later writes. Never put the user's words or data in it."
+        }
+      },
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "anyOf": [
+        {
+          "required": [
+            "error"
+          ],
+          "properties": {
+            "error": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "elicitation",
+            "executed"
+          ],
+          "properties": {
+            "elicitation": {
+              "enum": [
+                "declined",
+                "cancelled"
+              ]
+            },
+            "executed": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "error"
+                ]
+              },
+              {
+                "required": [
+                  "elicitation"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "saveslot_query",
+    "description": "Read data by table, conditions, order and count, optionally by business time (`valid_at` / `valid_during`). Use it when the user asks about records in a table (a day, a period, a category); also read a row with it before changing that row. It returns each row's `ver`: bring it back when you change that row. The marks in the result give a row's state (disputed, awaiting confirmation, premise changed, and so on). To see how a row came to be as it is, use saveslot_history.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string",
+          "description": "The table to read. One table at a time."
+        },
+        "where": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "op": {
+                "enum": [
+                  "=",
+                  "!=",
+                  "<",
+                  "<=",
+                  ">",
+                  ">=",
+                  "in",
+                  "contains",
+                  "is_null"
+                ]
+              },
+              "value": {}
+            },
+            "required": [
+              "field",
+              "op"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Conditions, all of which must hold: `{field, op, value}`. For a field with a unit, write `value` as `{value, unit}`. For an \"or\", use `in`."
+        },
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "dir": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              }
+            },
+            "required": [
+              "field"
+            ],
+            "additionalProperties": false
+          },
+          "description": "The order: `[{field, dir}]`. Without it, the default order of the table's kind (event tables: most recent first)."
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Only these fields. Without it, all fields."
+        },
+        "valid_at": {
+          "type": "string",
+          "description": "Only for state tables: the value on a day (or at a moment) of business time, such as \"the budget on 11-03\". Without it, now. This is not \"what was recorded back then\". For that, use `as_of` of saveslot_history."
+        },
+        "valid_during": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "A business time interval `[from, to)`: the end is not included; `null` as the end means from then on. State tables: every segment that overlaps it. Event tables: filtered by when they happened. Give this or `valid_at`, not both."
+        },
+        "clip": {
+          "type": "boolean",
+          "description": "With `valid_during`: `true` cuts the segments returned at the ends of the interval. Default: not cut."
+        },
+        "coalesce": {
+          "type": "boolean",
+          "description": "With `valid_during`: by default `true`, merging adjacent segments whose selected fields have the same values. Pass `false` to see every boundary where something changed."
+        },
+        "at": {
+          "type": "string",
+          "description": "The evaluation moment: which moment counts as \"today\"; it affects only derived values that depend on today. Normally not given."
+        },
+        "include_revoked": {
+          "type": "boolean",
+          "description": "`true` also returns revoked rows (marked as revoked). Default: they are not returned."
+        },
+        "detail": {
+          "enum": [
+            "concise",
+            "detailed"
+          ],
+          "description": "`concise` (default) or `detailed`. The default is enough; use `detailed` only when you need the full source and mark details."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "description": "How many to return. Default 20, at most 200."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "The `next_cursor` of the previous page, passed back unchanged for the next page. Never construct one; do not pass it again after changing the request."
+        },
+        "task": {
+          "type": "string",
+          "description": "A short label for this task (such as `weekly-review`): use the same value for the reads and writes of one task, so that saveslot can match the versions you read with your later writes. Never put the user's words or data in it."
+        }
+      },
+      "required": [
+        "table"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "anyOf": [
+        {
+          "required": [
+            "error"
+          ],
+          "properties": {
+            "error": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "elicitation",
+            "executed"
+          ],
+          "properties": {
+            "elicitation": {
+              "enum": [
+                "declined",
+                "cancelled"
+              ]
+            },
+            "executed": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "error"
+                ]
+              },
+              {
+                "required": [
+                  "elicitation"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "saveslot_history",
+    "description": "See how something came to be as it is now: every change, who made it, what the evidence was, which records it was based on, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`); what changed in a period (`changes`). For the current values only, use saveslot_query.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "timeline",
+            "as_of",
+            "changes"
+          ],
+          "description": "`timeline` (default): how one row came, step by step, to be as it is. `as_of`: what saveslot knew at a past moment. `changes`: what changed in a period."
+        },
+        "table": {
+          "type": "string",
+          "description": "The table name."
+        },
+        "row": {
+          "type": "string",
+          "description": "Which row (event tables and tables without time). With `timeline` and `as_of`, give one of `row`, `entity` or `entity_key`; with `changes`, none means the whole table."
+        },
+        "entity": {
+          "type": "string",
+          "description": "Which entity of a state table (`e_…`)."
+        },
+        "entity_key": {
+          "type": "object",
+          "description": "Which entity of a state table by its natural key, such as `{\"category\": \"food\"}`."
+        },
+        "expand_sources": {
+          "type": "boolean",
+          "description": "Only with `timeline`: `true` adds the evidence text of each change."
+        },
+        "as_of": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "read": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "read"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "task": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "description": "Required with `as_of`: a point in record time: an operation number (the #n of `timeline`), a moment, or `{read: …}` / `{task: …}` (what a read or a task saw back then). This is \"what was recorded back then\", not a business date."
+        },
+        "valid_at": {
+          "type": "string",
+          "description": "Only with `as_of`, for state tables: also a day of business time. Without it, every period known back then."
+        },
+        "detail": {
+          "enum": [
+            "concise",
+            "detailed"
+          ],
+          "description": "`concise` (default) or `detailed`. The default is enough; use `detailed` only when you need the full source and mark details."
+        },
+        "since": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Required with `changes`: from after which point (not included): an operation number, a moment, or `\"my_last_read\"` (after this connection last read the table; `read_first` if it never has)."
+        },
+        "until": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Only with `changes`: up to which point (included). Default: the latest."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "description": "How many to return. Default 20, at most 200."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "The `next_cursor` of the previous page, passed back unchanged for the next page. Never construct one; do not pass it again after changing the request."
+        },
+        "task": {
+          "type": "string",
+          "description": "A short label for this task (such as `weekly-review`): use the same value for the reads and writes of one task, so that saveslot can match the versions you read with your later writes. Never put the user's words or data in it."
+        }
+      },
+      "required": [
+        "table"
+      ],
+      "oneOf": [
+        {
+          "properties": {
+            "mode": {
+              "const": "timeline"
+            }
+          },
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "as_of"
+                ]
+              },
+              {
+                "required": [
+                  "valid_at"
+                ]
+              },
+              {
+                "required": [
+                  "detail"
+                ]
+              },
+              {
+                "required": [
+                  "since"
+                ]
+              },
+              {
+                "required": [
+                  "until"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "as_of"
+            }
+          },
+          "required": [
+            "mode",
+            "as_of"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "expand_sources"
+                ]
+              },
+              {
+                "required": [
+                  "since"
+                ]
+              },
+              {
+                "required": [
+                  "until"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "changes"
+            }
+          },
+          "required": [
+            "mode",
+            "since"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "expand_sources"
+                ]
+              },
+              {
+                "required": [
+                  "as_of"
+                ]
+              },
+              {
+                "required": [
+                  "valid_at"
+                ]
+              },
+              {
+                "required": [
+                  "detail"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "anyOf": [
+        {
+          "required": [
+            "error"
+          ],
+          "properties": {
+            "error": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "elicitation",
+            "executed"
+          ],
+          "properties": {
+            "elicitation": {
+              "enum": [
+                "declined",
+                "cancelled"
+              ]
+            },
+            "executed": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "error"
+                ]
+              },
+              {
+                "required": [
+                  "elicitation"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "saveslot_pending",
+    "description": "List the pending items (conflicts, changes awaiting confirmation, flagged records, schema changes, deletions that can still be undone), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "An item ID: its detail (the current value, the candidates, the ways it can be resolved, `item_ver`). Without it, the list. Look at the detail before resolving an item."
+        },
+        "slot": {
+          "type": "string",
+          "description": "Only the items of this slot."
+        },
+        "type": {
+          "enum": [
+            "conflict",
+            "awaiting_confirmation",
+            "flagged",
+            "schema_change",
+            "deletion"
+          ],
+          "description": "Only one type: `conflict`, `awaiting_confirmation`, `flagged`, `schema_change` or `deletion`."
+        },
+        "status": {
+          "enum": [
+            "open",
+            "resolved",
+            "superseded",
+            "all"
+          ],
+          "description": "`open` (default, not resolved yet), `resolved`, `superseded` or `all`."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "description": "How many to return. Default 20, at most 200."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "The `next_cursor` of the previous page, passed back unchanged for the next page. Never construct one; do not pass it again after changing the request."
+        },
+        "task": {
+          "type": "string",
+          "description": "A short label for this task (such as `weekly-review`): use the same value for the reads and writes of one task, so that saveslot can match the versions you read with your later writes. Never put the user's words or data in it."
+        }
+      },
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "anyOf": [
+        {
+          "required": [
+            "error"
+          ],
+          "properties": {
+            "error": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "elicitation",
+            "executed"
+          ],
+          "properties": {
+            "elicitation": {
+              "enum": [
+                "declined",
+                "cancelled"
+              ]
+            },
+            "executed": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "error"
+                ]
+              },
+              {
+                "required": [
+                  "elicitation"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  }
+]

@@ -16,6 +16,17 @@
             "required": false
           }
         ]
+      },
+      {
+        "name": "track",
+        "description": "Start recording a new kind of thing.",
+        "arguments": [
+          {
+            "name": "what",
+            "description": "What you want to start recording, in your own words (at most 200 characters). Leave it out to be asked.",
+            "required": false
+          }
+        ]
       }
     ]
   },

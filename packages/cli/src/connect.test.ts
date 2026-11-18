@@ -30,7 +30,7 @@ const ID = "ci_01JF0000000000000000000000";
 const ISSUED = {
   id: ID,
   name: "MacBook · Claude Code",
-  scopes: ["saveslot.read", "saveslot.write"],
+  scopes: ["saveslot.read", "saveslot.write", "saveslot.schema"],
   via: "token",
   created_at: "2026-11-18T10:00:00Z",
   token: NEW,
@@ -162,6 +162,9 @@ describe("connect: issued, self-checked, the token on stdout once", () => {
     );
     expect(r.out).toContain(`${TEXTS.selfcheckPassed} 1 ${TEXTS.selfcheckSlots}`);
     expect(r.out).toContain(TEXTS.snippetHint("claude-code"));
+    // The default instance can create slots: no hint of how to let it.
+    expect(r.out).not.toContain(TEXTS.noSchemaHint(true));
+    expect(r.out).not.toContain("cannot create a slot");
     expect(r.err).toBe(`${TEXTS.tokenOnce}\n`);
   });
 
@@ -176,9 +179,21 @@ describe("connect: issued, self-checked, the token on stdout once", () => {
 
   it("--scope: changes to the default or the whole set, sent in SCOPES order", async () => {
     service();
-    await cli(["connect", "http", "--name", "a", "--scope", "+delete,+schema"]);
-    await cli(["connect", "http", "--name", "a", "--scope", "-write", "--scope", "+schema"]);
-    await cli(["connect", "http", "--name", "a", "--scope", "saveslot.read"]);
+    const outs = [
+      await cli(["connect", "http", "--name", "a", "--scope", "+delete,+schema"]),
+      await cli(["connect", "http", "--name", "a", "--scope", "-write", "--scope", "+schema"]),
+      await cli(["connect", "http", "--name", "a", "--scope", "saveslot.read"]),
+      await cli(["connect", "http", "--name", "a", "--scope", "-schema"]),
+    ].map((r) =>
+      r.out.includes(TEXTS.noSchemaHint(true))
+        ? "read and write"
+        : r.out.includes(TEXTS.noSchemaHint(false))
+          ? "read"
+          : "none",
+    );
+    // With saveslot.schema the instance can create slots: no hint. Without it, the hint says
+    // what the instance can do.
+    expect(outs).toEqual(["none", "none", "read", "read and write"]);
     expect(seen.filter((x) => x.method === "POST").map((x) => x.body)).toEqual([
       {
         name: "a",
@@ -186,6 +201,7 @@ describe("connect: issued, self-checked, the token on stdout once", () => {
       },
       { name: "a", scopes: ["saveslot.read", "saveslot.schema"] },
       { name: "a", scopes: ["saveslot.read"] },
+      { name: "a", scopes: ["saveslot.read", "saveslot.write"] },
     ]);
   });
 
@@ -687,7 +703,8 @@ describe("connect: the issue itself", () => {
 describe("parseScopes and shellWord", () => {
   it("parseScopes: not given is the service's default; each form as 06 §3.2 writes it", () => {
     expect(parseScopes([])).toBeUndefined();
-    expect(parseScopes(["-write"])).toEqual(["saveslot.read"]);
+    expect(parseScopes(["-write"])).toEqual(["saveslot.read", "saveslot.schema"]);
+    expect(parseScopes(["-schema"])).toEqual(["saveslot.read", "saveslot.write"]);
     expect(parseScopes(["+schema", "-write,+write"])).toEqual([
       "saveslot.read",
       "saveslot.write",

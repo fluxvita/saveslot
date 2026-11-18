@@ -5,7 +5,7 @@
       "role": "user",
       "content": {
         "type": "text",
-        "text": "I want to start recording: my sleep. Check with saveslot_catalog whether one of the existing tables fits; if none does, draft a schema (tables, fields, units) to show me, and submit it with saveslot_schema_draft once I agree."
+        "text": "I want to start recording: my sleep. Check with saveslot_catalog whether one of the existing tables fits; if none does, draft a schema (tables, fields, units) to show me, and submit it with saveslot_schema_draft only after I agree."
       }
     }
   ]

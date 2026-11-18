@@ -5,7 +5,7 @@
       "role": "user",
       "content": {
         "type": "text",
-        "text": "I want to start recording: my sleep. Check with saveslot_catalog whether one of the tables this connection can see fits; if none does, draft a new table (fields, units) in a slot it can see to show me, and submit it with saveslot_schema_draft once I agree; if there is no slot it can use, tell me."
+        "text": "I want to start recording: my sleep. Check with saveslot_catalog whether one of the tables this connection can see fits; if none does, tell me: only a connection that can see every slot can create a slot."
       }
     }
   ]

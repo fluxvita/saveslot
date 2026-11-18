@@ -171,8 +171,11 @@ async function connections(home: string) {
       stderrIsTTY: false,
     },
   );
-  return (JSON.parse(out) as { connections: { id: string; name: string; state?: string }[] })
-    .connections;
+  return (
+    JSON.parse(out) as {
+      connections: { id: string; name: string; state?: string; scopes: string[] }[];
+    }
+  ).connections;
 }
 
 /** The token a stand-in host was given, from its entry. */
@@ -229,6 +232,10 @@ describe("setup on a terminal, from nothing", () => {
     expect(`${r.out}${r.err}`).not.toMatch(TOKEN);
     expect(r.out).toContain("Claude Code: added · 「testhost · Claude Code」");
     expect(r.out).toContain("Codex: added · 「testhost · Codex」");
+    // What the user agreed to: the default scopes, all three of them, before anything is issued.
+    expect(r.err).toContain("(scope saveslot.read saveslot.write saveslot.schema)");
+    // The default instance can create slots: no hint of how to let it.
+    expect(r.out).not.toContain("cannot create a slot");
     const list = await connections(home);
     expect(list.map((c) => c.name).sort()).toEqual(["testhost · Claude Code", "testhost · Codex"]);
     for (const h of ["claude", "codex"]) expect(await works(home, tokenOf(h))).toBe(true);
@@ -329,6 +336,28 @@ describe("setup without a terminal", () => {
     expect(r.out).toContain(TEXTS.stepNoSlot);
     expect((await connections(home)).map((c) => c.name)).toEqual(["testhost · Codex"]);
     expect(existsSync(join(hosts, "claude.entry"))).toBe(false);
+  });
+
+  it("--scope -schema: the instance cannot create slots, and the summary says how to let it", async () => {
+    freshHosts();
+    const home = newHome();
+    const r = await setup(home, ["--yes", "--host", "codex", "--scope", "-schema"], {
+      terminal: false,
+    });
+    expect(r.code).toBe(0);
+    expect((await connections(home)).map((c) => c.scopes)).toEqual([
+      ["saveslot.read", "saveslot.write"],
+    ]);
+    expect(r.out).toContain(TEXTS.noSchemaHint(true));
+  });
+
+  it("--scope -schema and no host: nothing issued, so no hint", async () => {
+    freshHosts();
+    const home = newHome();
+    const r = await setup(home, ["--yes", "--scope", "-schema"], { terminal: false });
+    expect(r.code).toBe(0);
+    expect(await connections(home)).toEqual([]);
+    expect(r.out).not.toContain("cannot create a slot");
   });
 
   it("--json: one value, each host and its instance, no token", async () => {

@@ -516,3 +516,85 @@ describe("findings", () => {
     );
   });
 });
+
+describe("how large a slot may be (08-open-questions «接口的数值与细则»)", () => {
+  const errorDetails = (r: ReturnType<typeof compile>) =>
+    (
+      errorOf(r) as unknown as {
+        details: { path: string; code: string; min?: string; max?: string }[];
+      }
+    ).details;
+  /** A base table without time, references or keys. */
+  const plain = (name: string) => ({
+    name,
+    kind: "base",
+    description: "a table",
+    time: { type: "none" },
+    fields: [{ name: "note", type: "text", description: "a note" }],
+  });
+  /** The document with `n` tables: its own, then plain ones; or `n` plain ones when fewer. */
+  const tables = (n: number) =>
+    edit((d) => {
+      const own = d.tables.length <= n ? d.tables : [];
+      d.tables = [
+        ...own,
+        ...Array.from({ length: n - own.length }, (_, i) => plain(`t${i}`)),
+      ] as typeof d.tables;
+    });
+  /** The document with `n` fields in its first table: its own, then optional texts. */
+  const fields = (n: number) =>
+    edit((d) => {
+      const own = d.tables[0].fields;
+      const more = Array.from({ length: n - own.length }, (_, i) => ({
+        name: `f${i}`,
+        type: "text",
+        description: "a field",
+      }));
+      d.tables[0].fields = [...own, ...more];
+    });
+
+  it("at most 100 tables in a slot: 100 compile, 101 do not, said with the bound", () => {
+    accepts(tables(100));
+    expect(errorDetails(compile(tables(101)))).toEqual([
+      { path: "tables", code: "out_of_bounds", max: "100" },
+    ]);
+  });
+
+  it("at most 200 fields in a table: 200 compile, 201 do not, said with the bound", () => {
+    accepts(fields(200));
+    expect(errorDetails(compile(fields(201)))).toEqual([
+      { path: "tables/0/fields", code: "out_of_bounds", max: "200" },
+    ]);
+  });
+
+  it("at most 100 slots in a tenant: the 100th compiles, the 101st does not", () => {
+    const names = (n: number) => Array.from({ length: n }, (_, i) => `s${i}`);
+    accepts(
+      edit(() => {}),
+      { existingSlotNames: names(99) },
+    );
+    expect(
+      errorDetails(
+        compile(
+          edit(() => {}),
+          { existingSlotNames: names(100) },
+        ),
+      ),
+    ).toEqual([{ path: "slot", code: "out_of_bounds", max: "100" }]);
+  });
+
+  it("at least one field in a table, said with the bound as the others are", () => {
+    expect(errorDetails(compile(edit((d) => (d.tables[0].fields = []))))).toContainEqual({
+      path: "tables/0/fields",
+      code: "out_of_bounds",
+      min: "1",
+    });
+  });
+
+  it("at least one base table: one compiles, none does not", () => {
+    accepts(tables(1));
+    expect(errorDetails(compile(edit((d) => (d.tables = []))))).toEqual([
+      { path: "tables", code: "out_of_bounds", min: "1" },
+    ]);
+  });
+});

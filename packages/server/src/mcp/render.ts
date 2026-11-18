@@ -27,6 +27,7 @@ import {
   type PremiseReason,
   REF_TARGETS,
   ROUNDINGS,
+  SQL_REASONS,
   SUPERSEDED_REASONS,
   VALIDATION_DETAIL_CODES,
   VERSION_INTENTS,
@@ -463,6 +464,18 @@ const GRANULARITIES: ReadonlySet<string> = new Set<string>(CONTRACT_GRANULARITIE
 
 // --- catalog -----------------------------------------------------------------------------------
 
+/** A table's kind and time type, as a catalog or a schema document gives them. */
+function tableKind(tb: R): Part[] {
+  const tm = obj(tb["time"]);
+  return tb["kind"] === "derived"
+    ? t`derived · read-only`
+    : tm["type"] === "event"
+      ? t`base · event, by ${fieldOf(tm["field"])}`
+      : tm["type"] === "state"
+        ? t`base · state, by ${codeIn(tm["granularity"], GRANULARITIES)}`
+        : t`base · no time`;
+}
+
 /** The tables of a catalog's list page. */
 const tablesIn = (r: R) =>
   arr(r["slots"]).reduce<number>((n, s) => n + arr(obj(s)["tables"]).length, 0);
@@ -517,15 +530,7 @@ function catalog(r: R): Line[] | { json: true; lead: Line[] } {
     const out: Line[] = [];
     for (const x of arr(r["tables"])) {
       const tb = obj(x);
-      const tm = obj(tb["time"]);
-      const kind =
-        tb["kind"] === "derived"
-          ? t`derived · read-only`
-          : tm["type"] === "event"
-            ? t`base · event, by ${fieldOf(tm["field"])}`
-            : tm["type"] === "state"
-              ? t`base · state, by ${codeIn(tm["granularity"], GRANULARITIES)}`
-              : t`base · no time`;
+      const kind = tableKind(tb);
       out.push(
         t`${tableOf(tb["slot"])} · schema v${count(tb["sv"])} · ${untrusted(String(tb["timezone"] ?? ""))}`,
       );
@@ -1319,6 +1324,60 @@ function resolve(r: R): Line[] {
   return [head, ...replayed, ...receipt, ...remindersOf(r)];
 }
 
+/** The changes a new slot's receipt says by its tables already (05 §6 `saveslot_schema_draft`). */
+const SAID_BY_TABLES: ReadonlySet<unknown> = new Set([
+  "create_slot",
+  "add_table",
+  "add_derived_table",
+]);
+
+/**
+ * A schema draft's receipt (05 §6 `saveslot_schema_draft`): in this version always a new slot, in
+ * effect at once. What was created: each table with its kind and time type, its entity key, and
+ * each field's name, type and unit, so that the model can tell the user what there is now. The
+ * descriptions are the caller's own and are not repeated; a change of a kind this version does not
+ * make is shown as written, inside the boundary.
+ */
+function schemaDraft(r: R): Line[] {
+  const omitted = arr(r["omitted"]);
+  need(
+    r["outcome"] === "applied" &&
+      (isObj(r["document"]) || omitted.includes("document")) &&
+      typeof r["draft"] === "string",
+  );
+  const out: Line[] = [];
+  if (r["replayed"] === true) {
+    out.push(t`This is the receipt of an earlier identical request; nothing new was recorded.`);
+  }
+  out.push(
+    t`Created · slot ${tableOf(r["slot"])} · schema v${count(r["sv"])} · draft ${idOf(r["draft"])}`,
+  );
+  for (const x of arr(obj(r["document"])["tables"])) {
+    const tb = obj(x);
+    const fields = arr(tb["fields"]).map((f) => {
+      const fd = obj(f);
+      const unit = fd["unit"] !== undefined ? t` ${untrusted(String(fd["unit"]))}` : [];
+      return t`${fieldOf(fd["name"])} ${codeIn(fd["type"], FIELD_TYPES)}${unit}`;
+    });
+    out.push(t`${tableOf(tb["name"])} (${tableKind(tb)}): ${join(fields, t`, `)}`);
+    const key = arr(tb["entity_key"]);
+    if (key.length > 0) out.push(t`  entity key: ${join(key.map(fieldOf), t`, `)}`);
+  }
+  for (const c of arr(r["changes"])) {
+    if (!SAID_BY_TABLES.has(obj(c)["change"])) out.push(t`Change: ${stored(JSON.stringify(c))}`);
+  }
+  if (omitted.includes("document")) {
+    out.push(
+      t`Its tables and fields are left out of this receipt to fit: saveslot_catalog with level "table" shows them.`,
+    );
+  }
+  out.push(t`Write to its base tables with sv ${count(r["sv"])}.`);
+  // Shortened to fit the budget (05 §3): the slot was created all the same.
+  const shortened =
+    omitted.length > 0 ? [t`The receipt was shortened to fit; the slot was created.`] : [];
+  return [...out, ...remindersOf(r), ...shortened];
+}
+
 type Renderer = (r: R, now: Date) => Line[] | { json: true; lead: Line[] };
 const RENDER: ReadonlyMap<ToolName, Renderer> = new Map<ToolName, Renderer>([
   ["saveslot_catalog", catalog],
@@ -1327,6 +1386,7 @@ const RENDER: ReadonlyMap<ToolName, Renderer> = new Map<ToolName, Renderer>([
   ["saveslot_pending", pending],
   ["saveslot_write", write],
   ["saveslot_resolve", resolve],
+  ["saveslot_schema_draft", schemaDraft],
 ]);
 
 /** A value as plain JSON for a fallback, which must not fail: what JSON cannot hold is dropped. */
@@ -1404,6 +1464,9 @@ const ERROR_REASONS: ReadonlySet<string> = new Set([
   "revoked",
 ]);
 
+/** Why a rule's SQL was refused (04-contract-types §9 `SqlReason`). */
+const SQL_REASON: ReadonlySet<string> = new Set<string>(SQL_REASONS);
+
 /** The codes of a validation's details: the contract's (04-contract-types §9), as the CLI shows them. */
 const DETAIL_CODES: ReadonlySet<string> = new Set<string>(VALIDATION_DETAIL_CODES);
 
@@ -1420,6 +1483,19 @@ const NARROW: ReadonlyMap<string, () => Part[]> = new Map([
   ["type", () => t`one type of item at a time (type)`],
   ["level", () => t`level "table" for the tables you need, instead of the whole document`],
 ]);
+
+/**
+ * Where in the request a detail is (a JSON pointer's segments, `tables/0/fields/2/unit`): its
+ * numbers and names as they are, any other segment (a key the caller wrote) inside the boundary.
+ */
+function pathOf(x: unknown): Part[] {
+  return join(
+    String(x ?? "")
+      .split("/")
+      .map((seg) => (/^(0|[1-9][0-9]{0,8})$/.test(seg) ? [num(Number(seg))] : [as(seg, name)])),
+    t`/`,
+  );
+}
 
 /** The details shown of a refusal; the rest are counted. */
 const DETAILS_SHOWN = 20;
@@ -1443,16 +1519,45 @@ function errorLines(error: R): Line[] {
   const details = arr(error["details"]);
   for (const d of details.slice(0, DETAILS_SHOWN)) {
     const x = obj(d);
+    // What the detail says of how to put it right (04-contract-types §9 ValidationDetail): the
+    // bound passed, the units meant, a rule's line, why its SQL was refused, and a fix.
+    const units = arr(x["allowed_units"]);
+    const how = [
+      ...(x["max"] !== undefined ? [t`at most ${as(String(x["max"]), num)}`] : []),
+      ...(x["min"] !== undefined ? [t`at least ${as(String(x["min"]), num)}`] : []),
+      ...(units.length > 0
+        ? [
+            t`units meant: ${join(
+              units.map((u) => [untrusted(String(u))]),
+              t`, `,
+            )}`,
+          ]
+        : []),
+      ...(x["line"] !== undefined ? [t`line ${count(x["line"])}`] : []),
+      ...(x["sql_reason"] !== undefined ? [t`${codeIn(x["sql_reason"], SQL_REASON)}`] : []),
+    ];
     lines.push(
       // Whatever the detail gives of where (04-contract-types §9 ValidationDetail): the op, the
       // table, the field, the stretch.
-      t`  ${x["op"] !== undefined ? t`op ${count(x["op"])} ` : []}${x["table"] !== undefined ? t`${tableOf(x["table"])} ` : []}${x["field"] !== undefined ? t`${fieldOf(x["field"])}: ` : []}${codeIn(x["code"], DETAIL_CODES)}${x["valid"] !== undefined ? t`, ${periodOf(x["valid"])}` : []}`,
+      t`  ${x["op"] !== undefined ? t`op ${count(x["op"])} ` : []}${x["path"] !== undefined ? t`${pathOf(x["path"])}: ` : []}${x["table"] !== undefined ? t`${tableOf(x["table"])} ` : []}${x["field"] !== undefined ? t`${fieldOf(x["field"])}: ` : []}${codeIn(x["code"], DETAIL_CODES)}${x["valid"] !== undefined ? t`, ${periodOf(x["valid"])}` : []}${how.length > 0 ? t` (${join(how, t`; `)})` : []}`,
     );
+    // A fix the service worked out from what the caller wrote: inside the boundary.
+    if (x["suggestion"] !== undefined) {
+      lines.push(t`    suggestion: ${stored(String(x["suggestion"]))}`);
+    }
   }
   if (details.length > DETAILS_SHOWN) {
     lines.push(t`  and ${num(details.length - DETAILS_SHOWN)} more`);
   }
-  if (error["required_scope"] !== undefined) {
+  // Tags left in a description, as a schema document read back holds them (05 §5).
+  if (details.some((d) => obj(d)["code"] === "untrusted_marker")) {
+    lines.push(
+      t`A description still holds the tags a result puts around stored data: remove them and submit the document again.`,
+    );
+  }
+  if (error["required_scope"] === "all_slots") {
+    lines.push(t`Creating a slot needs a connection whose range is every slot.`);
+  } else if (error["required_scope"] !== undefined) {
     lines.push(t`Needs: ${untrusted(String(error["required_scope"]))}`);
   }
   const narrow = arr(error["narrow_by"]);

@@ -515,7 +515,7 @@
   | `entity_key_not_required` | `entity_key` 列出的字段不是必填字段 |
   | `unknown_reference` | 文档里按名字指向的东西不存在：`time.field`、`entity_key`、`external_key`、`together`、`duplicate_keys` 里的字段名，`ref.table` 里的表名 |
   | `key_not_applicable` | 键或它的取值用在不适用的类型或表上：`min` / `max` 不在 `integer`、`decimal`、`quantity` 上，`values` 不在 `enum` 上，`unit` 不在 `quantity` 上，`scale` / `rounding` 不在 `decimal`、`quantity` 上，`ref` 不在 `ref` 字段上；`entity_key` 不在状态类表上，`duplicate_keys` 在状态类表上；`time.field` 指的字段不是必填的 `date` 或 `zoned_datetime`；`ref.target` 是 `row` 而目标是状态类表，或是 `entity` 而目标不是状态类表；`ref.table` 指向派生表（`ref` 只在基础表之间）；派生表上写了 `time`、`entity_key`、`together`、`duplicate_keys`，基础表上写了 `rule`；派生字段上写了 `required`、`min`、`max`、`values`、`ref`，写了不是 `decimal` 的 `type`，或在 `decimal` 上写了 `unit` |
-  | `out_of_bounds` | 取值越界：`min` 大于 `max`；`min` / `max` 超出类型的范围（`integer` 是 64 位有符号整数，`decimal`、`quantity` 的整数部分至多 18 位）；`scale` 不在 0–12；表没有字段；枚举没有取值或超过 200 个，枚举值为空或超过 64 个字符；说明超过 500 个字符；`entity_key` 为空，`external_key` 不是 1–4 个字段，`together` 的一组少于两个字段，`duplicate_keys` 的一组为空。长度按码点数 |
+  | `out_of_bounds` | 取值越界：`min` 大于 `max`；`min` / `max` 超出类型的范围（`integer` 是 64 位有符号整数，`decimal`、`quantity` 的整数部分至多 18 位）；`scale` 不在 0–12；表没有字段；slot 没有基础表（明细带 `min: "1"`）；租户的 slot、slot 的表（基础表与派生表合计）、表的字段超过上限（明细带 `max`；上限是临时值，见 open-questions「接口的数值与细则」）；枚举没有取值或超过 200 个，枚举值为空或超过 64 个字符；说明超过 500 个字符；`entity_key` 为空，`external_key` 不是 1–4 个字段，`together` 的一组少于两个字段，`duplicate_keys` 的一组为空。长度按码点数 |
   | `duplicate_entry` | 同一个列表里重复的项：枚举值重复（区分大小写）；`entity_key`、`external_key`、`together`、`duplicate_keys` 的一组里同一字段出现两次；一个字段进了两个 `together` 组。名字相撞是 `duplicate_name` |
   | `timezone_unknown` | slot 的 `timezone` 不是认得的时区名：不是 `UTC` 或"区域/地点"的写法（如偏移量 `+08:00`、没有 `/` 的短名 `CST`），或不在所用的时区库里 |
 

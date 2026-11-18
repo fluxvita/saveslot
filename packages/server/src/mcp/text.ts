@@ -419,6 +419,19 @@ const partNote = (of: number) =>
  * the whole text in its tags only; when there is untrusted data, the fixed line first.
  */
 export function render(lines: readonly Line[], draw?: Draw): string {
+  const { text, tags } = renderParts(lines, draw);
+  return tags > 0 ? `${UNTRUSTED_NOTICE}\n${text}` : text;
+}
+
+/**
+ * Lines as text without the first line about the tags: for a part of a text that says it already
+ * (the server's `instructions`, whose lines include it, 05 §9). One boundary number for all of it.
+ */
+export function renderWithin(lines: readonly Line[], draw?: Draw): string {
+  return renderParts(lines, draw).text;
+}
+
+function renderParts(lines: readonly Line[], draw?: Draw): { text: string; tags: number } {
   const parts = readParts(lines);
   check(parts);
   const tags = parts.reduce((k, l) => k + l.filter((p) => p.kind === "untrusted").length, 0);
@@ -438,8 +451,7 @@ export function render(lines: readonly Line[], draw?: Draw): string {
           .join(""),
       )
       .join("\n");
-  const text = build(numberFor(build, tags, draw));
-  return tags > 0 ? `${UNTRUSTED_NOTICE}\n${text}` : text;
+  return { text: build(numberFor(build, tags, draw)), tags };
 }
 
 /** JSON as written (05 §5): the whole of it inside one boundary, with `lead` before it. */

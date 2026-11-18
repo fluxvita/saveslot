@@ -142,7 +142,7 @@ describe("connect, then the host reads, then reads shows it", () => {
     expect(r.code).toBe(0);
     expect(r.out).toMatch(
       new RegExp(
-        `「MacBook · Claude Code」  ${id}  saveslot.read saveslot.write  ${TEXTS.allSlots}  ${TEXTS.issuedAt} 20`,
+        `「MacBook · Claude Code」  ${id}  saveslot.read saveslot.write saveslot.schema  ${TEXTS.allSlots}  ${TEXTS.issuedAt} 20`,
       ),
     );
     expect(r.out).not.toMatch(TOKEN);
@@ -161,7 +161,7 @@ describe("connect, then the host reads, then reads shows it", () => {
     });
     expect(r.code).toBe(0);
     expect(r.asked).toEqual([
-      `${TEXTS.revokeAsk} 「MacBook · Claude Code」 (${id}) · ${TEXTS.scopeWord} saveslot.read saveslot.write? [y/N] `,
+      `${TEXTS.revokeAsk} 「MacBook · Claude Code」 (${id}) · ${TEXTS.scopeWord} saveslot.read saveslot.write saveslot.schema? [y/N] `,
     ]);
     expect(r.out).toContain(TEXTS.revokedNow);
     expect(await catalogWith(token)).not.toBe("ok");

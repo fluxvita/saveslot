@@ -4,6 +4,7 @@
 // refused as too large; a receipt never refused, shortened, keeping what it must; a result that
 // fits left as it is.
 
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { budgetFor } from "./budget.ts";
 import type { ToolName } from "./names.ts";
@@ -366,5 +367,66 @@ describe("every untrusted part shown in part past its limit", () => {
     const text = renderResult("saveslot_catalog", long);
     expect(text).toContain("1 strings below show their first 2000 characters only");
     expect(text.length).toBeLessThan(6000);
+  });
+});
+
+describe("a schema draft's receipt over the budget (05 §3)", () => {
+  const created = (
+    JSON.parse(
+      readFileSync(new URL("./schema-drafts.samples.json", import.meta.url), "utf8"),
+    ) as Record<string, { result: R }>
+  )["schema-draft-created"]?.result as R;
+  /** The receipt of a slot of `tables` tables of `fields` fields each. */
+  const big = (tables: number, fields: number): R => {
+    const doc = created["document"] as R;
+    const t0 = (doc["tables"] as R[])[0] as R;
+    const f0 = (t0["fields"] as R[])[1] as R;
+    const ts = Array.from({ length: tables }, (_, i) => ({
+      ...t0,
+      name: `table_${i}`,
+      description: "d".repeat(200),
+      fields: Array.from({ length: fields }, (_, k) => ({
+        ...f0,
+        name: `field_${k}`,
+        description: "e".repeat(200),
+      })),
+    }));
+    const changes = ts.map((t) => ({ target: { table: t.name }, change: "add_table" }));
+    return { ...created, document: { ...doc, tables: ts }, changes };
+  };
+
+  it("100 tables of 100 fields: within the budget, its changes and document left out, said so", () => {
+    const b = budgetFor("saveslot_schema_draft", 100_000);
+    const r = big(100, 100);
+    expect(b.fit(r)).toBeUndefined();
+    const out = b.finish(r);
+    const text = renderResult("saveslot_schema_draft", out);
+    expect(text.length).toBeLessThanOrEqual(100_000);
+    expect(out).toMatchObject({ slot: created["slot"], sv: 1, draft: created["draft"] });
+    expect(out["omitted"]).toEqual(["changes", "document"]);
+    expect(text).toContain("The receipt was shortened to fit; the slot was created.");
+    expect(text).toContain('saveslot_catalog with level "table" shows them');
+    expect(text).not.toContain('"json"');
+  });
+
+  it("60 tables of 300 fields: the structured result within its limit too", () => {
+    const out = budgetFor("saveslot_schema_draft", 100_000).finish(big(60, 300));
+    expect(Buffer.byteLength(JSON.stringify(out))).toBeLessThanOrEqual(1024 * 1024);
+    expect(out["omitted"]).toContain("document");
+  });
+
+  it("a little over: only its changes go", () => {
+    const r = big(3, 3);
+    const budget = renderResult("saveslot_schema_draft", { ...r, changes: [] }).length + 200;
+    const out = budgetFor("saveslot_schema_draft", budget).finish({
+      ...r,
+      changes: Array.from({ length: 200 }, () => ({ change: "drop_field", class: "x" })),
+    });
+    expect(out["omitted"]).toEqual(["changes"]);
+    expect(out["document"]).toEqual(r["document"]);
+  });
+
+  it("one that fits is left as it is", () => {
+    expect(budgetFor("saveslot_schema_draft", 100_000).finish(created)).toBe(created);
   });
 });

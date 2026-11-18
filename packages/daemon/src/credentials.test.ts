@@ -150,7 +150,7 @@ describe("connection tokens", () => {
     expect(await auth(`Bearer ${token}`)).toEqual({
       kind: "connection",
       actor: id,
-      scopes: ["saveslot.read", "saveslot.write"],
+      scopes: ["saveslot.read", "saveslot.write", "saveslot.schema"],
       visibility: { kind: "all" },
     });
     expect((await CredentialsClass.load(home)).principals()).toEqual([id]);

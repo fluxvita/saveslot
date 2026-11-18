@@ -13,6 +13,7 @@ export {
   ReadError,
   type ReadsListResult,
   type Row,
+  slotCreators,
   type TimelineResult,
   type VisibleSlot,
   visibleSlots,

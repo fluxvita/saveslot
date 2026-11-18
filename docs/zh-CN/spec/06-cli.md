@@ -101,7 +101,7 @@ $ saveslot setup
         2 [x] Codex（codex 0.x）
         3 [ ] Cursor（没有添加命令，需要手动粘贴配置：saveslot connect cursor）
       输入编号切换选中与否，直接回车确认：
-[5/5] 将为每个宿主签发一个连接实例（scope saveslot.read saveslot.write），并执行：
+[5/5] 将为每个宿主签发一个连接实例（scope saveslot.read saveslot.write saveslot.schema），并执行：
         /usr/local/bin/claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
         /opt/homebrew/bin/codex mcp add saveslot --env SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
       执行以上 2 条命令？[Y/n]
@@ -131,7 +131,7 @@ spending  日常支出：expenses（事件类，CNY）+ monthly_total（派生�
 $ saveslot slot create health --template running --timezone Asia/Shanghai
 已建 slot health · schema v1 · 2 张表（runs、weekly_mileage）
 $ saveslot connect claude-code --name "MacBook · Claude Code"
-已签发连接实例 MacBook · Claude Code（ci_01JF…）· scope saveslot.read saveslot.write
+已签发连接实例 MacBook · Claude Code（ci_01JF…）· scope saveslot.read saveslot.write saveslot.schema
 自检通过：用新令牌读到 1 个 slot
 令牌只显示这一次。把下面这条命令贴进终端：
   claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<连接实例令牌> -- /usr/local/bin/saveslot mcp
@@ -153,10 +153,10 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 1. **安装**：第一版发一个 npm 包，含 CLI 与 saveslot 服务；独立可执行文件与桌面安装包等实验 6（桌面打包）的结论（[`07-scope-v1.md`](07-scope-v1.md)「实现顺序」）。
 2. **初始化**：`saveslot init` 是唯一直接打开存储的命令，saveslot 服务在运行时拒绝执行。数据目录可用 `--data-dir` 另放（相对路径按当前目录解析，记下的是规范化后的绝对路径；不能与 `--rotate-session` 同用），落在 iCloud Drive、Dropbox 一类同步盘里时给出警告（[`02-architecture.md`](02-architecture.md) §7）；另放的位置记在 `control/tenant.json` 里，saveslot 服务启动时只按记下的位置打开数据目录，那里不存在或没有租户创世就拒绝启动，绝不在那里或别处新建一个空库（数据目录被挪走、没挂上的盘，都不该悄悄换成一份空数据）。`control/` 下是几个文件：`credentials.json`（令牌的哈希、用户会话）、`tenant.json`（租户目录）、`anchor.json`（锚点存储：删除登记、`seq` 高水位、恢复次数、"恢复进行中"与"导入进行中"标记）、`keys/`（句柄签名密钥）；每次写入都是"写临时文件 → 落盘 → 改名覆盖"，只有 saveslot 服务进程写（[`02-architecture.md`](02-architecture.md) §5、§8）。锚点不在数据目录里；但默认布局下两者同在 `~/.saveslot/`，系统级备份通常一起恢复，这时 saveslot 补不了也发现不了。只有用 `--data-dir` 把数据目录另放、且只恢复了数据目录时，才能按登记补删：用 `saveslot start --restored` 启动，服务先走恢复流程再对外服务；恢复流程中途被打断时，下次启动不管带没带 `--restored` 都会接着做完再对外服务（[`02-architecture.md`](02-architecture.md) §8；[`03-data-model/03-deletion.md`](03-data-model/03-deletion.md)「删除之后」）。
 3. **启动 / 停止 / 自启**：`saveslot start` 后台启动（`--foreground` 前台，看日志用）；`saveslot stop` 先把 read_log 缓冲落盘、排空写队列再退出；它只对核对过的进程发信号：`GET /health` 应答、且报的 pid 与 `run/saveslot.pid` 一致时，对这个进程发 SIGTERM，等它退出；`/health` 不应答时才看 `run/saveslot.lock`——没被占着就是没在运行，残留的 pid 文件不算数，被占着（启动中或卡住）就不发信号（[`02-architecture.md`](02-architecture.md) §7）。探锁要短暂取一下锁，正在启动的服务恰在这一刻取锁会失败，所以 `stop` 与 `status` 都先问 `/health`，有应答就不探锁。`saveslot start` 等 60 秒仍没就绪时不停掉那个进程（它可能在走恢复流程），报错里写明它的 pid 仍在运行、稍后用 `saveslot status` 查看。开机自启 `saveslot service install`（macOS launchd 用户级代理，Linux systemd 用户服务）。宿主启动 `saveslot mcp` 时若 saveslot 服务没在运行，`saveslot mcp` 先把它拉起来——两个宿主同时拉起时，后到的发现套接字已在就直接连上，单写者锁兜底保证不会有两个进程写数据；这样装好自启之前，宿主照样能用。自动拉起默认打开，配置 `mcp.autostart = false` 可关；`saveslot stop` 时提示"MCP 宿主重新连接时会再次启动，彻底停用请关掉自动拉起或移除宿主里的 saveslot"。`saveslot mcp` 固定连本地 saveslot 服务，不随 `--profile` / `saveslot profile use` 变（云服务不经它，宿主直接走远程 MCP）。
-4. **建第一个 slot**：`saveslot slot create` 就是 `schema_draft`（`base_version: null`），新建 slot 编译通过即生效、返回 `sv: 1`（[`04-contract.md`](04-contract.md)「`schema_draft`」）；建 slot 同时由内核写一条默认 slot 策略事件。
+4. **建第一个 slot**：`saveslot slot create` 就是 `schema_draft`（`base_version: null`），新建 slot 编译通过即生效、返回 `sv: 1`（[`04-contract.md`](04-contract.md)「`schema_draft`」）；建 slot 同时由内核写一条默认 slot 策略事件。带 `saveslot.schema`、范围为全部的连接实例也可以让 Agent 经 MCP 的 `saveslot_schema_draft` 建 slot，走的是同一个操作（[`05-surfaces.md`](05-surfaces.md) 第 9 节）。
 5. **起步 schema 从哪来**：见第 3.1 节。
 6. **签发并接入宿主**：见第 3.2 节。
-7. **验证连通**：`saveslot connect` 用新令牌做一次 `catalog`（带固定的 `task: "saveslot-connect-selfcheck"`，`saveslot reads` 里标"自检"；`task` 是自报的，这个标记只为区分，不是保证），证明令牌、scope 与 saveslot 服务都通；宿主那一侧是否真的用上了，以 `saveslot reads` 里出现该连接实例**自检之外**的读取为准。`saveslot doctor` 逐项检查：saveslot 服务在运行、套接字权限、凭证文件权限、数据目录不在同步盘、单写者锁持有者、版本一致、有没有逾期未物理删除的删除、各宿主里的 saveslot 条目指向的可执行文件路径是否还在（经宿主自己的查看命令，如 `claude mcp get saveslot`；没有查看命令的宿主不查、写明"未检查"，不读它的配置文件）；另有两项结果是"提醒"：系统时钟比日志末端的记录时刻早 5 分钟以上，以及**数据规模**——行数超过舒适线或实测线的表（表名、行数、级别），与租户一级的事件总数、数据目录大小、最近一次冷启动耗时（对照 architecture「容量边界与实测数值」的实测范围）。每项结果是"通过 / 不通过 / 提醒"之一；提醒不算不通过，不影响退出码。
+7. **验证连通**：`saveslot connect` 用新令牌做一次 `catalog`（带固定的 `task: "saveslot-connect-selfcheck"`，`saveslot reads` 里标"自检"；`task` 是自报的，这个标记只为区分，不是保证），证明令牌、scope 与 saveslot 服务都通；宿主那一侧是否真的用上了，以 `saveslot reads` 里出现该连接实例**自检之外**的读取为准。签发的连接实例没有 `saveslot.schema` 时（显式去掉了它），输出另写一句"Agent 经这个连接实例能读写已有的表（只读的实例写"能读"），但不能新建 slot；要让它建，重新接时让 scope 里有 schema（不带 `--scope -schema`，或在 `--scope` 的完整列表里写上 schema）"；`setup` 的汇总里，本次接上了宿主而发出的连接实例没有 `saveslot.schema` 时，末尾写同一句；没有接上任何宿主、什么都没签发时不写。`saveslot doctor` 逐项检查：saveslot 服务在运行、套接字权限、凭证文件权限、数据目录不在同步盘、单写者锁持有者、版本一致、有没有逾期未物理删除的删除、各宿主里的 saveslot 条目指向的可执行文件路径是否还在（经宿主自己的查看命令，如 `claude mcp get saveslot`；没有查看命令的宿主不查、写明"未检查"，不读它的配置文件）；另有两项结果是"提醒"：系统时钟比日志末端的记录时刻早 5 分钟以上，以及**数据规模**——行数超过舒适线或实测线的表（表名、行数、级别），与租户一级的事件总数、数据目录大小、最近一次冷启动耗时（对照 architecture「容量边界与实测数值」的实测范围）。每项结果是"通过 / 不通过 / 提醒"之一；提醒不算不通过，不影响退出码。
 
 ### 3.1 起步 schema：随 CLI 打包的模板
 
@@ -292,8 +292,8 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 - **令牌只显示一次**：控制面只存哈希；丢了就吊销重签。`--apply` 时由 CLI 执行上表里宿主自己的添加命令，令牌不落进 CLI 的任何文件——**但会落在别处**：贴进终端的命令进了 shell 历史；`--apply` 执行宿主命令时令牌在进程参数里，执行期间本机其他用户能用 `ps` 看到；最后它住在宿主的配置文件里。`--apply` 执行成功时不再显示令牌：打印"已添加到 <宿主>"与执行的那条命令，令牌的位置写成 `<令牌>`（连接实例的 ID、名字与 scope 在签发那一行）；`--json` 的输出不变，仍是签发结果（含令牌）。"令牌只显示这一次"这句提示写到标准错误（`--json` 时也是），标准输出里只有要粘贴的东西。只用 unix socket 时这些暴露对别的系统用户无害（他们连不上套接字），打开回环 TCP 后就不是了（第 8.1 节）。各宿主命令的确切写法由 CLI 的宿主适配表维护，实现时逐个实测。
 - **命令写绝对路径**：宿主启动 `saveslot mcp` 时的 PATH 未必包含 npm 全局目录（图形界面启动的宿主、用版本管理器切换 Node 的环境），所以生成的命令一律用 `saveslot` 可执行文件的绝对路径；`saveslot doctor` 经宿主自己的查看命令检查条目里的路径是否还在。
 - **入口文件可以直接执行**：宿主拿到的是入口文件的路径，由它直接执行，所以入口文件首行是 `#!/usr/bin/env node`，并带执行位；构建在编译之后给它设执行位，入口不以这一行开头时构建失败。从源码检出运行：`pnpm install && pnpm build` 之后入口是 `packages/saveslot/dist/bin.js`，直接执行它（`packages/saveslot/dist/bin.js setup`），或用 `node packages/saveslot/dist/bin.js setup`；两种写法登记给宿主的都是这个文件的绝对路径。
-- **`--scope` 的写法**：不给时是 `saveslot.read saveslot.write`。两种写法，不能混用：
-  - 增减式：`--scope +schema`、`--scope +delete`（在默认上加）、`--scope -write`（从默认里去掉；只读就是 `--scope -write`）；可重复或用逗号连写（`--scope +schema,+delete`）。
+- **`--scope` 的写法**：不给时是 `saveslot.read saveslot.write saveslot.schema`（读写，并能让 Agent 经 `saveslot_schema_draft` 新建 slot；不能删除，MCP 上也没有删 slot 的入口）。scope 在签发时定下，之后不变：之前签发的、没有 `saveslot.schema` 的连接实例要获得建 slot 的能力，重新 `connect`。两种写法，不能混用：
+  - 增减式：`--scope +delete`（在默认上加）、`--scope -schema`、`--scope -write`（从默认里去掉；不让 Agent 建 slot 就是 `--scope -schema`，只读就是 `--scope -write,-schema`）；可重复或用逗号连写（`--scope +delete,-schema`）。`+schema` 已在默认里，仍是合法写法。
   - 完整式：`--scope read,write,schema`，列出的就是全部。
   - 名字可以省略 `saveslot.` 前缀。**每个连接实例都必须有 `saveslot.read`**：`-read`、或完整式里不含 `read`，是用法错误（退出码 2），不发请求。
   - 第一版 scope 签发后不能改，要改就吊销后重签（[`04-contract.md`](04-contract.md)「调用方：凭证与 scope」）。
@@ -332,7 +332,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 1. **怎么发现本机装了哪些宿主**：在 `PATH` 里找到适配表（3.2）记的可执行文件、并成功运行它的版本命令（5 秒超时）。只运行宿主的可执行文件，不读宿主的配置文件。没有添加命令的宿主（只有应用、没有命令行的）按"配置目录是否存在"判断，只看路径存在与否，不读内容：Cursor 看 `~/.cursor`；Claude 桌面端在 macOS 看 `~/Library/Application Support/Claude`，在 Linux 看 `~/.config/Claude`。发现不了的宿主不出现在列表里，用户仍可用 `saveslot connect <宿主>` 单独接。
 2. **多个宿主时怎么选**：交互式下是一个编号列表，输入编号切换选中与否，直接回车确认。有添加命令且已发现的宿主默认勾选；没有添加命令的宿主列出但不给编号（选不上），写明 `setup` 不接它、要用 `saveslot connect <宿主>` 手动配置。**每个宿主一个连接实例**，名字默认"<主机名> · <宿主显示名>"：主机名取第一段（`MacBook-Pro.local` 取 `MacBook-Pro`），最多 64 个码点（按码点截，不切开代理对）；主机名为空时名字只用宿主显示名；不让多个宿主共用一个连接实例，否则"谁读过、谁写的"分不开。
 3. **同意只问一次、默认执行**：第 5 步把全部宿主命令一起展示，令牌的位置写成 `<令牌>`，回答一次；直接回车是"执行"。**先同意、后签发**：用户拒绝时不签发任何连接实例、不动任何宿主，退出码 8，并提示"之后可用 saveslot connect <宿主> 单独接入"。
-4. **scope 与 slot 范围**：scope 默认 `saveslot.read saveslot.write`，`--scope` 可改，写法同 `saveslot connect`，对本次接入的所有宿主生效；要给各宿主不同的 scope，用 `saveslot connect` 分别接。`setup` 只签发 slot 范围为全部的连接实例，没有 `--slots`：它面向第一次上手，限定范围是有意的选择，用 `saveslot connect --slots` 单独做。
+4. **scope 与 slot 范围**：scope 默认 `saveslot.read saveslot.write saveslot.schema`，同意屏上如实列出这三项，`--scope` 可改，写法同 `saveslot connect`，对本次接入的所有宿主生效；要给各宿主不同的 scope，用 `saveslot connect` 分别接。`setup` 只签发 slot 范围为全部的连接实例，没有 `--slots`：它面向第一次上手，限定范围是有意的选择，用 `saveslot connect --slots` 单独做。
 5. **宿主的添加命令写用户级**，写法照 3.2（服务名在前，`-e` / `--env` 在后，再接 `--` 与可执行文件）；确切写法由适配表维护，实现时逐个实测。
 6. **非交互环境**（标准输入不是终端，或提问所写的标准错误不是终端——`saveslot setup 2>log` 时人看不到问题，回车不能算同意）：
    - 没给 `--yes`：什么都不执行，把将要做的步骤写到标准错误，退出码 8（与 5.4 一致）。这时还没有签发任何连接实例，写出的宿主命令里令牌的位置同样写成 `<令牌>`。
@@ -658,7 +658,7 @@ runs r_01JC… 整行删除：date 只来自这句话
   重新查看：saveslot pending show pi_9B…
 ```
 
-校验类错误的 `details` 逐条一行：明细的 `code`，再写它在哪里——`op`、`path`、`table`、`field`、`line` 中给了的那些（键是 CLI 自己的字样，值放在不可信边界内），带 `valid` 的（判定时发现的 `required_in_gap`）再写那一段区间，写法同读结果里的区间（起点开口、整段时间都照那里写）。例如：
+校验类错误的 `details` 逐条一行：明细的 `code`（带 `max` / `min` 的在码后写"至多 N""至少 N"，与 MCP 的文本一致），再写它在哪里——`op`、`path`、`table`、`field`、`line` 中给了的那些（键是 CLI 自己的字样，值放在不可信边界内），带 `valid` 的（判定时发现的 `required_in_gap`）再写那一段区间，写法同读结果里的区间（起点开口、整段时间都照那里写）。slot 数已到上限（`path` 为 `slot` 的 `out_of_bounds`）时另起一行写明这一版没有移除 slot 的命令。例如：
 
 ```
 error validation_failed (「write」): 「the write falls where the entity has no value」

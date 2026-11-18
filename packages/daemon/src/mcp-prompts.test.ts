@@ -2,8 +2,7 @@
 // «服务器的 instructions», §10.1, §11): what each credential is given, in each protocol era,
 // through the official client; that a `slot` argument outside the credential's range is answered
 // as one that does not exist; and that neither the instructions nor a prompt records a read. The
-// text of each version (and `track`, whose tool this version does not list) is in the server
-// package's golden files.
+// text of each version is in the server package's golden files.
 
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -79,20 +78,17 @@ for (const era of ["legacy", "modern"] as const satisfies readonly Era[]) {
     it("every scope: the paragraphs of the tools listed, the slots it sees by name; the prompts capability", async () => {
       const { c, instructions, capabilities } = await connect(token.all, era);
       const listed = await c.listPrompts();
-      const track = await c.getPrompt({ name: "track", arguments: {} }).then(
-        () => "given",
-        (e: Error) => e.message,
-      );
+      const track = await c.getPrompt({ name: "track", arguments: { what: "my sleep" } });
       await c.close();
       expect(capabilities?.prompts).toEqual({ listChanged: false });
       expect(instructions).toContain("When to write:");
-      // Neither saveslot_schema_draft nor saveslot_delete is listed in this version: nothing
-      // points to them, and track is not listed.
-      expect(instructions).not.toContain("saveslot_schema_draft");
+      // saveslot_schema_draft is listed (it creates slots); saveslot_delete is not in this
+      // version: nothing points to it.
+      expect(instructions).toContain("submit it with saveslot_schema_draft only after they agree");
       expect(instructions).not.toContain("Before deleting,");
       expect(instructions.endsWith("health: 1 table\nledger: 1 table")).toBe(true);
-      expect(listed.prompts.map((p) => p.name)).toEqual(["overview", "pending"]);
-      expect(track).toContain("Unknown prompt");
+      expect(listed.prompts.map((p) => p.name)).toEqual(["overview", "pending", "track"]);
+      expect(textOf(track)).toContain("draft a schema (tables, fields, units) to show me");
     });
 
     it("read only: the read-only paragraph, no writing; overview and pending, no track", async () => {

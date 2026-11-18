@@ -42,6 +42,9 @@ export interface SchemaDetail {
   readonly code: SchemaDetailCode;
   /** `unit_unknown`: codes of `units@1` the text may have meant; may be empty. */
   readonly allowed_units?: readonly string[];
+  /** `out_of_bounds` of a count: the bound passed (as the contract's `ValidationDetail` gives it). */
+  readonly min?: string;
+  readonly max?: string;
   /** A rule's details: the line in its SQL, the reason, a fix when one can be given. */
   readonly line?: number;
   readonly sql_reason?: SqlReason;

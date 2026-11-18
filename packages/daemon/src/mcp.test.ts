@@ -169,7 +169,7 @@ describe("MCP's own", () => {
     const { tools } = await c.listTools();
     await c.close();
     expect(tools.map((t) => t.name)).toEqual(TOOLS.map((t) => t.name));
-    const writes = ["saveslot_write", "saveslot_resolve"];
+    const writes = ["saveslot_write", "saveslot_resolve", "saveslot_schema_draft"];
     for (const t of tools) {
       expect(t.annotations).toMatchObject({
         readOnlyHint: !writes.includes(t.name),
@@ -177,12 +177,7 @@ describe("MCP's own", () => {
         ...(writes.includes(t.name) ? { destructiveHint: false, idempotentHint: true } : {}),
       });
       expect(t.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
-      for (const absent of [
-        "saveslot_sql",
-        "saveslot_sources",
-        "saveslot_delete",
-        "saveslot_schema_draft",
-      ]) {
+      for (const absent of ["saveslot_sql", "saveslot_sources", "saveslot_delete"]) {
         expect(JSON.stringify(t)).not.toContain(absent);
       }
     }
@@ -263,9 +258,9 @@ describe("MCP's own", () => {
     await c.close();
   });
 
-  it("every tool's examples are taken by the kernel's parameter checks as they stand", async () => {
-    // The examples name rows and items that need not exist: not found is fine, a refusal of
-    // the arguments is not.
+  it("every tool's examples are taken as they stand", async () => {
+    // The examples name rows and items that need not exist: not found is fine; any other refusal
+    // (of the arguments, of the values, of this version) is not.
     const c = await mcpClient(s.home, s.session, "legacy");
     for (const tool of TOOLS) {
       for (const example of tool.examples) {
@@ -277,10 +272,7 @@ describe("MCP's own", () => {
         expect({
           tool: tool.name,
           example,
-          refused:
-            code === "invalid_argument" || code === "not_in_this_version"
-              ? r.structuredContent
-              : null,
+          refused: code !== null && code !== "not_found" ? r.structuredContent : null,
         }).toEqual({
           tool: tool.name,
           example,
@@ -293,7 +285,8 @@ describe("MCP's own", () => {
 
   it("a result's text: stored data inside the untrusted boundary; structuredContent as it is", async () => {
     const c = await mcpClient(s.home, s.session, "legacy");
-    const r = await c.callTool({ name: "saveslot_catalog", arguments: {} });
+    // One slot: the examples of saveslot_schema_draft create another.
+    const r = await c.callTool({ name: "saveslot_catalog", arguments: { slot: "ledger" } });
     await c.close();
     const text = (r.content as { type: string; text: string }[])[0]?.text ?? "";
     const lines = text.split("\n");

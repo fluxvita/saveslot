@@ -90,7 +90,19 @@ export const SNIPPET_HOSTS = [
 export type SnippetHost = (typeof SNIPPET_HOSTS)[number];
 
 /** The scopes of an instance when none are given (06 §3.2): the service's default too. */
-export const DEFAULT_SCOPES: readonly Scope[] = ["saveslot.read", "saveslot.write"];
+export const DEFAULT_SCOPES: readonly Scope[] = [
+  "saveslot.read",
+  "saveslot.write",
+  "saveslot.schema",
+];
+
+/** Whether an instance of these scopes (`undefined`: the default) can create slots over MCP. */
+export const createsSlots = (scopes: readonly Scope[] | undefined): boolean =>
+  (scopes ?? DEFAULT_SCOPES).includes("saveslot.schema");
+
+/** Whether an instance of these scopes (`undefined`: the default) can write. */
+export const writes = (scopes: readonly Scope[] | undefined): boolean =>
+  (scopes ?? DEFAULT_SCOPES).includes("saveslot.write");
 
 /** A scope as the command line names it, with or without `saveslot.`; undefined if none. */
 function scopeNamed(s: string): Scope | undefined {

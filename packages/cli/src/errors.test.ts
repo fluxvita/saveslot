@@ -12,6 +12,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { describeError, EXIT_BY_CODE, exitOf } from "./errors.ts";
 import { render } from "./render/text.ts";
+import { TEXTS } from "./texts.ts";
 
 const SPEC = readFileSync(new URL("../../../docs/zh-CN/spec/06-cli.md", import.meta.url), "utf8");
 const TABLE = SPEC.slice(SPEC.indexOf("### 6.2 退出码"), SPEC.indexOf("### 6.3"));
@@ -68,6 +69,27 @@ describe("an error's text (06 §6.3)", () => {
       'error unknown_table: 「unknown table "x\\x1b[2J"」',
       "  See the tables with saveslot slot list.",
     ]);
+  });
+
+  it("a bound passed is said; as many slots as the tenant may have, with no way yet to make room", () => {
+    const e = new ContractCallError(400, {
+      code: "validation_failed",
+      reason: "schema",
+      message: "the document does not compile",
+      details: [
+        { path: "slot", code: "out_of_bounds", max: "100" },
+        { path: "tables/0/fields", code: "out_of_bounds", min: "1" },
+      ],
+    });
+    const lines = text(e).split("\n");
+    expect(lines).toContain(
+      `  out_of_bounds (${TEXTS.detailMax} 100)${TEXTS.detail} path 「slot」`,
+    );
+    expect(lines).toContain(`  ${TEXTS.slotsFull}`);
+    expect(lines).toContain(
+      `  out_of_bounds (${TEXTS.detailMin} 1)${TEXTS.detail} path 「tables/0/fields」`,
+    );
+    expect(lines.filter((l) => l === `  ${TEXTS.slotsFull}`)).toHaveLength(1);
   });
 
   it("a write's stretches without a value: open at the start, all time, a moment; the values inside", () => {

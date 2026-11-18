@@ -6,6 +6,7 @@
 // tool is in the credential's tool list (05 §9 «按 scope 出现的句子»), so the text is still static,
 // one reviewed version per set of tools. No text here holds anything a caller wrote.
 
+import { FIELD_TYPES } from "@fluxvita/saveslot-contract";
 import type { ToolName } from "./names.ts";
 
 /**
@@ -14,24 +15,50 @@ import type { ToolName } from "./names.ts";
  */
 export type Piece =
   | string
-  | { readonly text: string; readonly needs: ToolName | readonly ToolName[] }
-  | { readonly text: string; readonly without: ToolName };
+  | {
+      readonly text: string;
+      readonly needs: ToolName | readonly ToolName[];
+      /**
+       * Only for a credential whose slot range is every slot (`all`) or some (`scoped`); a text
+       * composed without a range (tool descriptions, the same for every range) leaves it out.
+       */
+      readonly range?: "all" | "scoped";
+    }
+  | {
+      readonly text: string;
+      /** None of these tools is listed. */
+      readonly without: ToolName | readonly ToolName[];
+      /** And, if given, all of these are. */
+      readonly needs?: ToolName | readonly ToolName[];
+    };
 
 /** A static text: its pieces, joined with a space. */
 export type Text = readonly Piece[];
 
-/** The text for a credential whose tool list is `tools`. */
-export function compose(text: Text, tools: ReadonlySet<ToolName>): string {
+/** The text for a credential whose tool list is `tools`, and slot range `range` when it matters. */
+export function compose(
+  text: Text,
+  tools: ReadonlySet<ToolName>,
+  range?: "all" | "scoped",
+): string {
   return text
-    .filter((p) => shown(p, tools))
+    .filter((p) => shown(p, tools, range))
     .map((p) => (typeof p === "string" ? p : p.text))
     .join(" ");
 }
 
 /** Whether a piece appears for a credential whose tool list is `tools`. */
-function shown(p: Piece, tools: ReadonlySet<ToolName>): boolean {
+function shown(p: Piece, tools: ReadonlySet<ToolName>, range?: "all" | "scoped"): boolean {
   if (typeof p === "string") return true;
-  if ("without" in p) return !tools.has(p.without);
+  const all = (x: ToolName | readonly ToolName[]): readonly ToolName[] =>
+    typeof x === "string" ? [x] : x;
+  if ("without" in p) {
+    return (
+      !all(p.without).some((n) => tools.has(n)) &&
+      (p.needs === undefined || all(p.needs).every((n) => tools.has(n)))
+    );
+  }
+  if (p.range !== undefined && p.range !== range) return false;
   return (typeof p.needs === "string" ? [p.needs] : p.needs).every((n) => tools.has(n));
 }
 
@@ -64,7 +91,7 @@ export const CATALOG = {
   ],
   params: {
     level: [
-      "`list` (default): which slots and tables there are. `table`: the fields, units and overview of some tables. `schema`: the full schema document of one slot, only for changing the schema.",
+      "`list` (default): which slots and tables there are. `table`: the fields, units and overview of some tables. `schema`: the full schema document of one slot, as JSON.",
     ],
     slot: ["A slot name. Required with `schema`. With `list`, only this slot is listed."],
     draft: [
@@ -237,6 +264,34 @@ export const RESOLVE = {
 } as const satisfies { description: Text; params: Record<string, Text> };
 
 /** `idempotency_key` of the write tools (05 §9.1). */
+export const SCHEMA_DRAFT = {
+  description: [
+    "Create a new slot from a schema document: its tables, their fields and units.",
+    "Show the user the draft (each table, its fields and units) and submit it only after they agree to it: a new slot takes effect as soon as it compiles, and nothing asks them to confirm it afterwards.",
+    "Use it when the user wants to start recording a kind of thing that none of their tables fits; look with saveslot_catalog first, and when a slot for it exists already, use that slot instead of creating another.",
+    "In this version it only creates slots: it cannot change an existing slot (a document whose base_version is not null is refused), and only a connection that can see every slot can create one.",
+    "Fields with a unit take a code from the unit vocabulary, such as km, min or CNY.",
+    {
+      text: "The receipt gives the new slot's schema version, sv 1, to write with saveslot_write.",
+      needs: "saveslot_write",
+    },
+  ],
+  params: {
+    document: [
+      "The complete schema document of the new slot: `slot` (its name: ASCII letters, digits and underscores, starting with a letter), `base_version: null`, `timezone` (an IANA name such as Asia/Shanghai), and `tables`.",
+      'Each table has a `name`, `kind: "base"`, a `description`, a `time` and `fields`. `time` is `{type: "event", field}` for one row per happening, where `field` names one of its fields of type `date` or `zoned_datetime` with `required: true`; `{type: "state", granularity: "date"}` for a value that holds over time, optionally with an `entity_key` (the names of required fields that identify one thing, such as a category); or `{type: "none"}`.',
+      `Each field has a \`name\`, a \`type\` (one of ${FIELD_TYPES.map((x) => `\`${x}\``).join(", ")}), a \`description\`, and \`required: true\` when it must always be given; a \`quantity\` has a \`unit\`, an \`enum\` its \`values\`, a \`ref\` its \`ref: {table, target}\` (\`target\` is \`row\`, or \`entity\` for a state table).`,
+      "At least one base table; at most 100 tables and 200 fields in a table.",
+      "Names and descriptions are what every agent of this user will read: do not put the user's private words in them.",
+    ],
+  },
+} as const satisfies { description: Text; params: Record<string, Text> };
+
+/** `idempotency_key` of saveslot_schema_draft: what a repeat of a slot's creation gives. */
+export const DRAFT_IDEMPOTENCY_KEY: Text = [
+  "Normally not given: the same document submitted again in the same task gives the receipt of the first. With a key, the same key and document give that receipt again; the same key with another document is refused.",
+];
+
 export const IDEMPOTENCY_KEY: Text = [
   "Normally not given: a repeat with the same content is recognized as the same write. When a record with the same content really happened again, write it with a new value. The same value with different content is refused.",
 ];
@@ -260,8 +315,16 @@ export const INSTRUCTIONS = {
         needs: "saveslot_write",
       },
       {
-        text: "When they agree to start recording that kind of thing, you may draft a new table to show them, and submit it with saveslot_schema_draft once they agree.",
-        needs: ["saveslot_write", "saveslot_schema_draft"],
+        // The one gate before a slot is created: given to every credential that can create one,
+        // whatever else it can do.
+        text: "When the user wants to start recording a kind of thing that none of their tables fits, you may draft a new slot (its tables, fields and units) to show them, and submit it with saveslot_schema_draft only after they agree: it takes effect at once, with no confirmation after it.",
+        needs: "saveslot_schema_draft",
+        range: "all",
+      },
+      {
+        text: "Only a connection that can see every slot can create a slot, and this one cannot: when none of the tables it can see fits, tell the user.",
+        needs: "saveslot_schema_draft",
+        range: "scoped",
       },
     ],
     [
@@ -271,7 +334,13 @@ export const INSTRUCTIONS = {
       },
       {
         text: "This connection can only read: when the user wants to record or change something, tell them they need a connection that can write.",
+        without: ["saveslot_write", "saveslot_schema_draft"],
+      },
+      {
+        // It cannot write to a table, but it can create a slot (the line above says how).
+        text: "This connection cannot write to the tables: when the user wants to record or change something in them, tell them they need a connection that can write.",
         without: "saveslot_write",
+        needs: "saveslot_schema_draft",
       },
     ],
     [
@@ -290,7 +359,7 @@ export const INSTRUCTIONS = {
   /** In place of the list when the credential sees no slot (05 §9 «slot 清单» 4). */
   noSlots: {
     schema:
-      "This user has no slots yet. When they want to start recording something, draft a schema to show them, and submit it with saveslot_schema_draft once they agree.",
+      "This user has no slots yet. When they want to start recording something, draft a schema to show them, and submit it with saveslot_schema_draft only after they agree: it takes effect at once.",
     noSchema:
       "This user has no slots yet; they make one on the command line with saveslot slot create.",
     scoped:
@@ -329,8 +398,10 @@ export const PROMPTS = {
       what === undefined
         ? "I want to start recording something new: first ask me what it is."
         : `I want to start recording: ${what}.`,
-    all: "Check with saveslot_catalog whether one of the existing tables fits; if none does, draft a schema (tables, fields, units) to show me, and submit it with saveslot_schema_draft once I agree.",
+    all: "Check with saveslot_catalog whether one of the existing tables fits; if none does, draft a schema (tables, fields, units) to show me, and submit it with saveslot_schema_draft only after I agree.",
+    // While existing slots cannot be changed, a connection that does not see every slot cannot
+    // add a table anywhere (05 §10.1 notes the wording for when they can).
     scoped:
-      "Check with saveslot_catalog whether one of the tables this connection can see fits; if none does, draft a new table (fields, units) in a slot it can see to show me, and submit it with saveslot_schema_draft once I agree; if there is no slot it can use, tell me.",
+      "Check with saveslot_catalog whether one of the tables this connection can see fits; if none does, tell me: only a connection that can see every slot can create a slot.",
   },
 } as const;

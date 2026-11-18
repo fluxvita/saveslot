@@ -33,7 +33,7 @@ export type { PrincipalVia, Scope };
 export interface ConnectionsIssueParams {
   /** Suggested "device · agent"; unique per user, revoked names included. */
   name: string;
-  /** Must include `saveslot.read`. Default `["saveslot.read", "saveslot.write"]`. */
+  /** Must include `saveslot.read`. Default `["saveslot.read", "saveslot.write", "saveslot.schema"]`. */
   scopes?: Scope[];
   /** Slot names or IDs; absent = all slots, including later ones. Not empty. */
   slots?: SlotName[];

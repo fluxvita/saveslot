@@ -128,6 +128,12 @@ export const TEXTS = {
   slotShowMissing: s("give the slot: saveslot slot show <slot> [table…]"),
   detail: s("  at"),
   detailValid: s("valid"),
+  /** The bound a count passed (04-contract-types §9 ValidationDetail `max`, `min`). */
+  detailMax: s("at most"),
+  detailMin: s("at least"),
+  // When the tenant has as many slots as it may. Once removing an empty slot is in, point to the
+  // command that does it instead.
+  slotsFull: s("this version has no command to remove a slot"),
   /** A detail's key, as the contract names it (04-contract-types §9 ValidationDetail). */
   detailKey: (k: "op" | "path" | "table" | "field" | "line") => s(k),
 
@@ -258,6 +264,12 @@ export const TEXTS = {
   applyKept: s(
     "the connection instance is kept: the command above holds its token. If it is not used, revoke it with saveslot connections revoke",
   ),
+  // When the instance has no saveslot.schema (06 §3.2): the agent cannot create a slot over MCP.
+  // By what the instance can do: read and write, or read only.
+  noSchemaHint: (write: boolean) =>
+    s(
+      `the agent can ${write ? "read and write" : "read"} the existing tables through this connection instance, but cannot create a slot; to let it, connect again with schema among the scopes (without --scope -schema, or with schema in the --scope list)`,
+    ),
   snippetHint: (host: string) =>
     s(`optional: saveslot snippet ${host} (text to put in the host's custom instructions)`),
   selfcheckFailed: s("error: the self-check failed: the new token could not read the catalog"),

@@ -22,6 +22,6 @@ export { type PendingInput, type PendingReadResult, pendingInTx } from "./pendin
 export { fingerprint, type QueryInput, type QueryOutput, queryInTx } from "./query.ts";
 export { type ReadsListResult, readsListInTx } from "./reads-list.ts";
 export { logPosition, restoreCount } from "./select.ts";
-export { type Visibility, type VisibleSlot, visibleSlots } from "./slots.ts";
+export { slotCreators, type Visibility, type VisibleSlot, visibleSlots } from "./slots.ts";
 export { timelineInTx } from "./timeline.ts";
 export * from "./types.ts";

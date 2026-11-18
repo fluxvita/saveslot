@@ -232,11 +232,13 @@ describe("the compiled definition", () => {
     expect(two.warnings).toEqual([]);
   });
 
-  it("accepts a slot without tables", () => {
-    const r = ok(compile(edit((d) => (d.tables = []))));
-    expect(r.compiled.tables).toEqual([]);
-    expect(r.changes).toEqual([CHANGES_V1[0]]);
-    expect(eventIssues(r)).toEqual([]);
+  it("refuses a slot without tables: it would have nothing to write to", () => {
+    const r = compile(edit((d) => (d.tables = [])));
+    expect(r.ok).toBe(false);
+    expect(errorOf(r)).toEqual({
+      code: "validation_failed",
+      details: [{ path: "tables", code: "out_of_bounds", min: "1" }],
+    });
   });
 });
 

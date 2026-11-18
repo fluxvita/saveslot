@@ -31,6 +31,7 @@ import {
   APPLIES,
   addCommand,
   appliedWhy,
+  createsSlots,
   entryMayGo,
   entryPath,
   HOSTS,
@@ -40,6 +41,7 @@ import {
   onPath,
   parseScopes,
   revokeQuietly,
+  writes,
 } from "./connect.ts";
 import { describeError, timezoneHint } from "./errors.ts";
 import { logVerified, readsList, verifyFound } from "./render/admin.ts";
@@ -506,6 +508,7 @@ async function connectCommand(
   const head: Line[] = [
     t`${words(TEXTS.issued)} ${connectionLine(connection)}`,
     selfcheckLine(slots, more),
+    ...(createsSlots(scopes) ? [] : [[words(TEXTS.noSchemaHint(writes(scopes)))]]),
   ];
   const selfcheck = { slots, ...(more ? { more: true } : {}) };
   if (!apply) {
