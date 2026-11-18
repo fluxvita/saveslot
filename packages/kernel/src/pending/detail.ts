@@ -6,7 +6,7 @@
 // The callers say how an operation's actor and an interval are written (`Naming`), so the same
 // functions serve both.
 
-import type { FieldValue } from "@fluxvita/saveslot-contract-core";
+import type { CandidateCause, FieldValue, Intent, ItemId } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
 
 export type Blocks = Readonly<Record<string, unknown>>;
@@ -34,7 +34,7 @@ export interface ItemEntries {
   /** Field IDs, or `existence`. */
   readonly unit: readonly string[];
   readonly originEvent?: number;
-  readonly relatedItem?: string;
+  readonly relatedItem?: ItemId;
   readonly mergeBase?: number;
   readonly scope: readonly Span[];
   readonly current: readonly Blocks[];
@@ -108,7 +108,9 @@ export async function itemEntries(
         row: ((t["row"] ?? t["entity"]) as string | undefined) ?? null,
         unit: (t["unit"] as string[] | undefined) ?? [],
         ...(typeof t["origin_event"] === "number" ? { originEvent: t["origin_event"] } : {}),
-        ...(typeof t["related_item"] === "string" ? { relatedItem: t["related_item"] } : {}),
+        ...(typeof t["related_item"] === "string"
+          ? { relatedItem: t["related_item"] as ItemId }
+          : {}),
         scope: [],
         current: [],
         previous: [],
@@ -169,19 +171,24 @@ export async function itemEntries(
 }
 
 /** How a caller writes names, intervals and actors. */
-export interface Naming<A> {
+/**
+ * How a caller writes names, intervals, actors and values: `A` an actor, `V` a value, `I` an
+ * interval as the caller's results give them.
+ */
+export interface Naming<A, V = unknown, I = Record<string, unknown>> {
   readonly field: (id: string) => string;
-  readonly interval: (s: Span) => Record<string, unknown>;
+  readonly interval: (s: Span) => I;
   readonly actor: (principal: string) => A;
   /** A field value as the caller gives it (a zoned date-time as text, 04-contract-types §1.4). */
-  readonly value: (v: FieldValue) => unknown;
+  readonly value: (v: FieldValue) => V;
   readonly isState: boolean;
 }
 
-const actorAt = <A>(e: ItemEntries, n: Naming<A>, op: number) => n.actor(e.actorOfOp.get(op) ?? "");
+const actorAt = <A, V, I>(e: ItemEntries, n: Naming<A, V, I>, op: number) =>
+  n.actor(e.actorOfOp.get(op) ?? "");
 
 /** What carrying an item out would change (04-contract-types `AwaitingImpact`), from impact entries. */
-export function impactOut<A>(e: ItemEntries, n: Naming<A>, blocks: readonly Blocks[]) {
+export function impactOut<A, V, I>(e: ItemEntries, n: Naming<A, V, I>, blocks: readonly Blocks[]) {
   const segs = blocks.filter((b) => b["kind"] === "overwritten_segment");
   // A gap (a stretch without a value, `gap: true`) is filled (`filled_gaps`); a value, cleared to
   // null included, is overwritten (09 §5.8 `impact/<k>`).
@@ -229,7 +236,7 @@ export function candidateImpactBlocks(e: ItemEntries, event: number): Blocks[] {
   );
 }
 
-const valuesOf = <A>(n: Naming<A>, blocks: readonly Blocks[]) =>
+const valuesOf = <A, V, I>(n: Naming<A, V, I>, blocks: readonly Blocks[]): Record<string, V> =>
   Object.fromEntries(
     blocks
       .filter((b) => b["field"] !== "existence")
@@ -237,7 +244,7 @@ const valuesOf = <A>(n: Naming<A>, blocks: readonly Blocks[]) =>
   );
 
 /** The candidates (`ConflictDetail.candidates`), by index. */
-export function candidatesOut<A>(e: ItemEntries, n: Naming<A>) {
+export function candidatesOut<A, V, I>(e: ItemEntries, n: Naming<A, V, I>) {
   return [...e.candidates]
     .sort(([a], [b]) => a - b)
     .map(([index, c]) => {
@@ -266,7 +273,7 @@ export function candidatesOut<A>(e: ItemEntries, n: Naming<A>) {
         index,
         seq: op,
         actor: actorAt(e, n, op),
-        intent: c["intent"] as string,
+        intent: c["intent"] as Intent,
         ver: `v${seen.op}.${seen.restore_count}`,
         ...(valued.length > 0
           ? {
@@ -275,17 +282,17 @@ export function candidatesOut<A>(e: ItemEntries, n: Naming<A>) {
                   n.field(x.field as string),
                   n.value((x.value ?? null) as FieldValue),
                 ]),
-              ),
+              ) as Record<string, V>,
             }
           : {}),
         ...(n.isState && spans.length > 0 ? { valid: n.interval({ from, to }) } : {}),
-        cause: c["cause"] as string,
+        cause: c["cause"] as CandidateCause,
       };
     });
 }
 
 /** The proposed side of an awaiting item (`AwaitingDetail.proposal`, without `seq`, `actor`, `intent`). */
-export function proposalOut<A>(e: ItemEntries, n: Naming<A>) {
+export function proposalOut<A, V, I>(e: ItemEntries, n: Naming<A, V, I>) {
   const existence = e.unit.includes("existence");
   const spans = e.proposed.filter((b) => b["valid"] !== undefined).map((b) => spanIn(b["valid"]));
   // As above: a proposed entry is a field's, which always has a start (09 §1.2).
@@ -307,7 +314,7 @@ export function proposalOut<A>(e: ItemEntries, n: Naming<A>) {
 }
 
 /** The item's target (`ItemTarget`): the unit's field names ("*" for existence) and its spans. */
-export function targetOut<A>(e: ItemEntries, n: Naming<A>) {
+export function targetOut<A, V, I>(e: ItemEntries, n: Naming<A, V, I>) {
   return {
     unit: e.unit.map((f) => (f === "existence" ? "*" : n.field(f))),
     ...(n.isState && e.scope.length > 0 ? { spans: e.scope.map((s) => n.interval(s)) } : {}),

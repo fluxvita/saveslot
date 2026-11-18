@@ -1201,7 +1201,9 @@ describe("confirmation_mismatch gives the item as it is now (04-contract-types Â
       const r = await resolve$(s.store, ctxOf(USER), { id: item, decision: "keep_effective" });
       expect(r).toMatchObject({
         status: "resolved",
-        warnings: [{ code: "item_ver_fallback", item_ver: detail["item_ver"] }],
+        warnings: [
+          { code: "item_ver_fallback", item_ver: (detail as { item_ver: string }).item_ver },
+        ],
       });
     },
     T,

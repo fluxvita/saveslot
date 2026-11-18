@@ -2,6 +2,7 @@
 // latest item.resolved or item.superseded event. The item's details and resolve's item_closed
 // refusal give the same shape from here; each names the principal its own way.
 
+import type { SupersededReason } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
 import type { Blocks } from "./detail.ts";
 
@@ -76,7 +77,7 @@ export async function closingOf(tx: ReadTx, id: string) {
             }
           : {
               superseded: {
-                reason: target["reason"],
+                reason: target["reason"] as SupersededReason,
                 ...(by !== undefined ? { by } : {}),
                 at: x.at,
               },

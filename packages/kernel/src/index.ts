@@ -8,6 +8,7 @@ export type { DecisionResolution } from "./pending/closing.ts";
 export {
   type AsOfResult,
   type CatalogResult,
+  type PendingReadResult,
   type QueryReadResult,
   ReadError,
   type ReadsListResult,

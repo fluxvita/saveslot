@@ -9,6 +9,7 @@ import {
   type CatalogResult,
   catalogInTx,
   historyInTx,
+  type PendingReadResult,
   pendingInTx,
   type QueryReadResult,
   queryInTx,
@@ -175,7 +176,7 @@ export async function pending(
   ctx: OpsContext,
   params: unknown,
   fit?: Fit,
-): Promise<Record<string, unknown>> {
+): Promise<PendingReadResult> {
   const { result, entry } = await measured(
     store,
     params,

@@ -70,8 +70,6 @@ export const checks = [
   fits<C.WriteResult>(as<Mutable<Out<typeof write>>>()),
   fits<C.ResolveResult>(as<Mutable<Out<typeof resolve>>>()),
 
-  // The third request: pending's result has no type of its own yet.
-  // @ts-expect-error pending's result is a record of unknowns
   fits<C.PendingResult>(as<Mutable<Out<typeof pending>>>()),
 
   // How a decision closed an item, as the details and item_closed give it (note included), and

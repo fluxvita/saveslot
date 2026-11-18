@@ -10,7 +10,19 @@
 // `schema_change` (P4) items are not opened yet, so their detail is not implemented; `deletion`
 // items and migration jobs come later.
 
-import type { CompiledBaseTable, Instant, PrincipalId } from "@fluxvita/saveslot-contract-core";
+import type {
+  CompiledBaseTable,
+  DateStr,
+  EntityId,
+  EventDecision,
+  EventItemType,
+  Instant,
+  Intent,
+  ItemCreatedReason,
+  ItemId,
+  PrincipalId,
+  RowId,
+} from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry, ReadId } from "../audit/index.ts";
 import {
@@ -28,7 +40,7 @@ import {
 } from "../pending/index.ts";
 import { fold, get, has, isObj, keysOf } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { valueOut, valuesOut } from "../time/index.ts";
+import { type ValueOut, valueOut, valuesOut } from "../time/index.ts";
 import { taskOf } from "./history.ts";
 import { type Piece, piecesOver, rowCellsAsOf, rowOf } from "./item-state.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
@@ -61,23 +73,23 @@ const DETAIL_KEYS = new Set(["id", "task"]);
 const ITEM_ID = /^pi_[0-9A-HJKMNP-TV-Z]{16}$/;
 const JOB_ID = /^jb_/;
 
-const DECISIONS: Readonly<Record<string, readonly string[]>> = {
+const DECISIONS: Readonly<Record<string, readonly EventDecision[]>> = {
   conflict: ["keep_effective", "take_candidate", "take_previous"],
   awaiting_confirmation: ["confirm", "reject"],
 };
 
 type ItemRow = {
-  id: string;
-  type: string;
+  id: ItemId;
+  type: EventItemType;
   slot_id: string | null;
   target_table: string | null;
   target_row: string | null;
-  state: string;
+  state: "open" | "resolved" | "superseded";
   version_op: unknown;
   opened_op: unknown;
   opened_at: string;
   opened_by: string;
-  reason: string | null;
+  reason: ItemCreatedReason | null;
 };
 
 const ITEMS = `SELECT p.id, p.type, p.slot_id, p.target_table, p.target_row, p.state, p.version_op,
@@ -100,13 +112,23 @@ function placeOf(
   return table === undefined ? undefined : { slot, table };
 }
 
-const dayBefore = (d: string) =>
-  new Date(Date.parse(`${d}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+const dayBefore = (d: string): DateStr =>
+  new Date(Date.parse(`${d}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10) as DateStr;
+
+/** An item's interval (04-contract-types `Interval`): the whole time has both ends null. */
+export interface ItemInterval {
+  readonly valid_from: string | null;
+  readonly valid_to: string | null;
+  readonly valid_to_inclusive?: DateStr;
+}
+
+/** How the details write names, intervals, actors and values. */
+type N = Naming<Actor, ValueOut, ItemInterval>;
 
 function namingOf(
   table: VisibleSlot["tables"][number] | undefined,
   who: ReadonlyMap<string, Actor>,
-): Naming<Actor> {
+): N {
   const isState = table !== undefined && table.kind === "base" && table.time.type === "state";
   const byDate =
     table !== undefined &&
@@ -116,7 +138,7 @@ function namingOf(
   return {
     isState,
     field: (id) => table?.fields.find((f) => f.id === id)?.name ?? id,
-    interval: (s: Span) => ({
+    interval: (s: Span): ItemInterval => ({
       valid_from: s.from,
       valid_to: s.to,
       ...(byDate && s.to !== null ? { valid_to_inclusive: dayBefore(s.to) } : {}),
@@ -126,15 +148,23 @@ function namingOf(
   };
 }
 
+/** An item's reason: every item event gives one (09-event-format §5.8 `item.created`). */
+function reasonOf(x: ItemRow): ItemCreatedReason {
+  if (x.reason === null) throw new ReadError("internal", `item ${x.id} without its reason`);
+  return x.reason;
+}
+
 function targetRef(
   x: ItemRow,
   place: { slot: VisibleSlot; table: VisibleSlot["tables"][number] | undefined },
-  n: Naming<Actor>,
+  n: N,
 ) {
   const table = place.table;
+  // An item with a target table always names its row (09-event-format §5.8 `target`).
+  if (x.target_row === null) throw new ReadError("internal", `item ${x.id} without its row`);
   return {
     table: `${place.slot.name}.${table?.name ?? ""}`,
-    ...(n.isState ? { entity: x.target_row } : { row: x.target_row }),
+    ...(n.isState ? { entity: x.target_row as EntityId } : { row: x.target_row as RowId }),
   };
 }
 
@@ -148,7 +178,7 @@ async function whoOf(tx: ReadTx, rows: readonly ItemRow[], entries: Iterable<Ite
 export async function pendingInTx(
   tx: ReadTx,
   input: PendingInput,
-): Promise<{ readonly result: Record<string, unknown>; readonly entry: ReadEntry }> {
+): Promise<{ readonly result: PendingReadResult; readonly entry: ReadEntry }> {
   const params = input.params;
   if (!isObj(params)) throw invalid("malformed", "");
   const detail = has(params, "id");
@@ -247,7 +277,7 @@ async function listOf(
       ...(x.target_table !== null
         ? { target: { ...targetRef(x, place, n), ...(e !== undefined ? targetOut(e, n) : {}) } }
         : {}),
-      reason: x.reason,
+      reason: reasonOf(x),
       opened_at: x.opened_at,
       opened_by: n.actor(x.opened_by),
     };
@@ -299,11 +329,10 @@ async function detailOf(
   const open = x.state === "open";
   const common = {
     id: x.id,
-    type: x.type,
     item_ver: itemVer(x.id, versionOp, restore),
     status: x.state,
     slot: place.slot.name,
-    reason: x.reason,
+    reason: reasonOf(x),
     opened_at: x.opened_at,
     opened_by: n.actor(x.opened_by),
     decisions: open ? [...(DECISIONS[x.type] ?? [])] : [],
@@ -312,8 +341,16 @@ async function detailOf(
   };
   const result =
     x.type === "conflict"
-      ? { ...common, ...(await conflictOf(tx, e, n, place.table, versionOp)) }
-      : { ...common, ...(await awaitingOf(tx, e, n, place.table, versionOp)) };
+      ? {
+          ...common,
+          type: "conflict" as const,
+          ...(await conflictOf(tx, e, n, place.table, versionOp)),
+        }
+      : {
+          ...common,
+          type: "awaiting_confirmation" as const,
+          ...(await awaitingOf(tx, e, n, place.table, versionOp)),
+        };
   const entry: ReadEntry = {
     ...base,
     pos: latest as never,
@@ -349,7 +386,7 @@ async function actorsOfOps(tx: ReadTx, ops: readonly number[]): Promise<Map<numb
  * The row behind the item as of operation `op`, limited to its spans and unit (./item-state.ts):
  * state tables by piece, each with the write that gave it; event and timeless tables whole.
  */
-async function sideOf(tx: ReadTx, e: ItemEntries, n: Naming<Actor>, table: Table, op: number) {
+async function sideOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, op: number) {
   const t = table as CompiledBaseTable;
   const cells = await rowCellsAsOf(tx, t, e.row as string, op);
   if (n.isState) {
@@ -365,18 +402,12 @@ async function sideOf(tx: ReadTx, e: ItemEntries, n: Naming<Actor>, table: Table
   return { kind: "row" as const, row, who };
 }
 
-const pieceOut = (n: Naming<Actor>, p: Piece) => ({
+const pieceOut = (n: N, p: Piece) => ({
   ...n.interval({ from: p.from, to: p.to }),
   values: p.values === null ? null : valuesOut(p.values),
 });
 
-async function conflictOf(
-  tx: ReadTx,
-  e: ItemEntries,
-  n: Naming<Actor>,
-  table: Table,
-  versionOp: number,
-) {
+async function conflictOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versionOp: number) {
   const candidates = candidatesOut(e, n);
   const impacts = candidates.flatMap((c) => {
     const event = e.candidates.get(c.index)?.["event"] as number;
@@ -385,21 +416,31 @@ async function conflictOf(
   });
   // The side in effect as of the item's version; the merge base's as of its operation.
   const now = await sideOf(tx, e, n, table, versionOp);
-  let effective: Record<string, unknown>;
+  let effective: {
+    readonly seq?: number;
+    readonly actor?: Actor;
+    readonly values?: Record<string, ValueOut>;
+    readonly spans?: readonly (ItemInterval & {
+      readonly values: Record<string, ValueOut> | null;
+      readonly seq?: number;
+      readonly actor?: Actor;
+    })[];
+    readonly exists: boolean;
+  };
   if (now.kind === "state") {
     const top = Math.max(0, ...now.pieces.map((p) => p.op ?? 0));
     effective = {
-      ...(top > 0 ? { seq: top, actor: now.who.get(top) } : {}),
+      ...(top > 0 ? { seq: top, actor: now.who.get(top) as Actor } : {}),
       spans: now.pieces.map((p) => ({
         ...pieceOut(n, p),
-        ...(p.op !== undefined ? { seq: p.op, actor: now.who.get(p.op) } : {}),
+        ...(p.op !== undefined ? { seq: p.op, actor: now.who.get(p.op) as Actor } : {}),
       })),
       exists: now.pieces.some((p) => p.values !== null),
     };
   } else {
     const r = now.row;
     effective = {
-      ...(r.op !== undefined ? { seq: r.op, actor: now.who.get(r.op) } : {}),
+      ...(r.op !== undefined ? { seq: r.op, actor: now.who.get(r.op) as Actor } : {}),
       ...(r.values !== undefined ? { values: valuesOut(r.values) } : {}),
       exists: r.exists,
     };
@@ -438,13 +479,7 @@ async function conflictOf(
   };
 }
 
-async function awaitingOf(
-  tx: ReadTx,
-  e: ItemEntries,
-  n: Naming<Actor>,
-  table: Table,
-  versionOp: number,
-) {
+async function awaitingOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versionOp: number) {
   // The write that proposed it: its operation, actor, intent, and a revert's target.
   const origin = e.originEvent as number;
   const op = e.opOfEvent.get(origin) ?? origin;
@@ -452,7 +487,11 @@ async function awaitingOf(
     "SELECT body FROM content WHERE seq = $1 AND path = 'target' AND body IS NOT NULL",
     [origin],
   );
-  const target = JSON.parse(t.rows[0]?.body ?? "{}") as { intent?: string; op_index?: number };
+  const target = JSON.parse(t.rows[0]?.body ?? "{}") as { intent?: Intent; op_index?: number };
+  // The proposing write's target always names its intent (09-event-format §5.5 `write.base`).
+  if (target.intent === undefined) {
+    throw new ReadError("internal", `the write proposing item ${e.id} without its intent`);
+  }
   const rv = await tx.query<{ body: string }>(
     "SELECT body FROM content WHERE seq = $1 AND path = $2 AND body IS NOT NULL",
     [op, `ops/${target.op_index ?? 0}/revert`],
@@ -465,7 +504,7 @@ async function awaitingOf(
     proposal: {
       seq: op,
       actor: n.actor(e.actorOfOp.get(op) ?? ""),
-      intent: target.intent ?? "",
+      intent: target.intent,
       ...(revert !== undefined
         ? {
             revert: {
@@ -481,7 +520,12 @@ async function awaitingOf(
 }
 
 /** The awaiting item's current side (`AwaitingDetail.current`): the row as of the item's version. */
-function currentOf(n: Naming<Actor>, side: Awaited<ReturnType<typeof sideOf>>) {
+function currentOf(n: N, side: Awaited<ReturnType<typeof sideOf>>) {
   if (side.kind === "state") return { spans: side.pieces.map((p) => pieceOut(n, p)) };
   return side.row.values !== undefined ? { values: valuesOut(side.row.values) } : {};
 }
+
+/** `pending`'s result (04-contract-types §4.8): a page of items, or one item's details. */
+export type PendingReadResult =
+  | Awaited<ReturnType<typeof listOf>>["result"]
+  | Awaited<ReturnType<typeof detailOf>>["result"];
