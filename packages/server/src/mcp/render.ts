@@ -387,6 +387,51 @@ const WARNINGS = textsBy<Exclude<Warning["code"], "multi_segment_unmapped">>({
     t`a derived table groups by a free-text field: deleting it clears the whole group`,
 });
 
+/** Where a fallback version came from (04-contract-types §7 `FallbackOrigin`). */
+function originOf(w: R): Part[] {
+  if (w["read"] !== undefined) return t`the one you last read (${idOf(w["read"])})`;
+  if (w["from_write"] !== undefined) return t`the one your receipt of ${op(w["from_write"])} gave`;
+  return t`the one your own last write gave`;
+}
+
+/**
+ * A warning with what it carries (05 §4.3), for the codes this version gives; undefined for the
+ * others, which are said by WARNINGS alone.
+ */
+function warningDetail(w: R): Part[] | undefined {
+  const c = w["code"];
+  if (c === "unit_converted") {
+    const from = obj(w["from"]);
+    const to = obj(w["to"]);
+    return t`${fieldOf(w["field"])} converted: ${fieldValue({ value: from["value"], unit: from["unit"] })} → ${fieldValue({ value: to["value"], unit: to["unit"] })}`;
+  }
+  if (c === "rounded") {
+    return t`${fieldOf(w["field"])} rounded to ${count(w["scale"])} decimal places: ${as(String(w["from"] ?? ""), num)} → ${as(String(w["to"] ?? ""), num)}`;
+  }
+  if (c === "timezone_assumed") {
+    const where =
+      w["field"] !== undefined
+        ? t`${fieldOf(w["field"])}: `
+        : w["param"] !== undefined
+          ? t`${untrusted(String(w["param"]))}: `
+          : [];
+    return t`${where}a moment without a time zone was taken in ${untrusted(String(w["timezone"] ?? ""))}`;
+  }
+  if (c === "time_truncated") {
+    return t`${untrusted(String(w["param"] ?? ""))}: the table records by day; ${timeOf(w["from"])} was taken as ${timeOf(w["to"])}`;
+  }
+  if (c === "ver_fallback") {
+    return t`no ver was given; ${idOf(w["ver"])} was used, ${originOf(w)}`;
+  }
+  if (c === "sv_fallback") {
+    return t`no sv was given; schema v${count(w["sv"])} was used, ${originOf(w)}`;
+  }
+  if (c === "item_ver_fallback") {
+    return t`no item_ver was given; ${idOf(w["item_ver"])} was used, ${originOf(w)}`;
+  }
+  return undefined;
+}
+
 /** Warnings and notices (05 §4.3): one line each; notices at most 3. */
 function remindersOf(r: R): Line[] {
   const out: Line[] = [];
@@ -394,7 +439,7 @@ function remindersOf(r: R): Line[] {
     const c = obj(w)["code"];
     // multi_segment_unmapped stays in the structured result only (05 §4.3).
     if (c === "multi_segment_unmapped") continue;
-    const text = said(WARNINGS, c);
+    const text = warningDetail(obj(w)) ?? said(WARNINGS, c);
     const at = int(obj(w)["op"]);
     out.push(
       text !== undefined
@@ -661,13 +706,10 @@ function fieldResult(f: string, x: unknown): Part[] {
   const c = obj(x);
   const period = isObj(c["valid"]) ? t` ${periodOf(c["valid"])}` : [];
   const result = str(c["result"]) ?? "applied";
-  if (result === "candidate" || result === "awaiting") {
-    const by = obj(c["by"]);
-    const now =
-      c["effective"] !== undefined
-        ? t`; in effect is ${fieldValue(c["effective"])}${by["seq"] !== undefined ? t` (${op(by["seq"])}${c["current_ver"] !== undefined ? t`, ver=${idOf(c["current_ver"])}` : []})` : []}`
-        : [];
-    return t`${fieldOf(f)}${period} not in effect: yours (${fieldValue(c["after"])}) ${result === "candidate" ? t`is a candidate` : t`awaits confirmation`} in ${idOf(c["item"])}${now}`;
+  if (result === "candidate") return t`${fieldOf(f)}${period} not in effect (see below)`;
+  if (result === "awaiting") {
+    // What carrying it out would change is the item's impact (A: the impact block).
+    return t`${fieldOf(f)}${period} not in effect: yours (${fieldValue(c["after"])}) awaits confirmation in ${idOf(c["item"])}`;
   }
   if (result === "corroborated")
     return t`${fieldOf(f)}${period} unchanged; this was added as its evidence`;
@@ -676,9 +718,77 @@ function fieldResult(f: string, x: unknown): Part[] {
   return t`${fieldOf(f)}${period} ${before}${fieldValue(c["after"])}`;
 }
 
+/** The conflict item's decisions (05 §6 `saveslot_write`: 处理). */
+const CONFLICT_DECISIONS = ["keep_effective", "take_candidate", "take_previous"] as const;
+
+/**
+ * A field that became a candidate (05 §6 `saveslot_write`): its value at the version the write
+ * gave (the merge base: what the caller read only if it gave the version it read), the value in
+ * effect and who gave it, the item and its version, and how to resolve it. With a fallback `ver`,
+ * which version that was and where it came from.
+ */
+function candidateLines(f: string, c: R, at: number, r: R): Line[] {
+  const prev = obj(c["previous"]);
+  const by = obj(c["by"]);
+  const fallback = arr(r["warnings"])
+    .map(obj)
+    .find((w) => w["code"] === "ver_fallback" && int(w["op"]) === at);
+  const given =
+    fallback !== undefined
+      ? t`at the version used (${idOf(fallback["ver"])}, ${originOf(fallback)}, ${op(prev["seq"])})`
+      : t`at the version you gave (${op(prev["seq"])})`;
+  const values = obj(prev["values"]);
+  const then =
+    prev["exists"] === false
+      ? t`the row did not exist`
+      : Object.hasOwn(values, f)
+        ? t`it was ${fieldValue(values[f])}`
+        : t`it had no value`;
+  const who = by["seq"] !== undefined ? t` (${op(by["seq"])}, ${actorOf(by["actor"])})` : [];
+  const item = c["item"];
+  const ref = arr(r["pending"])
+    .map(obj)
+    .find((p) => p["id"] === item);
+  const version = ref?.["item_ver"] !== undefined ? t` (version ${idOf(ref["item_ver"])})` : [];
+  return [
+    t`  ${fieldOf(f)}: ${given} ${then}; now it is ${fieldValue(c["effective"])}${who}, ver=${idOf(c["current_ver"])}. Your value ${fieldValue(c["after"])} is a candidate in conflict item ${idOf(item)}${version}; the value in effect stays ${fieldValue(c["effective"])}.`,
+    t`  To resolve: saveslot_resolve ${idOf(item)} (${join(
+      CONFLICT_DECISIONS.map((d) => [code(d, DECISIONS)]),
+      t` / `,
+    )})`,
+  ];
+}
+
+/** An undo's parts not undone, and the later writes undone with it (05 §6 `saveslot_write`). */
+function undoLines(u: R): Line[] {
+  const out: Line[] = [];
+  for (const s of arr(u["skipped_superseded"])) {
+    const x = obj(s);
+    out.push(
+      t`  skipped ${fieldOf(x["field"])}: changed since by ${op(x["by"])} (${actorOf(x["actor"])}), no longer what ${op(u["of"])} wrote; to undo it too, write the undo again with include_later: true (it will await confirmation)`,
+    );
+  }
+  for (const l of arr(u["reverted_later"])) {
+    const x = obj(l);
+    out.push(
+      t`  also undoes ${op(x["seq"])} (${actorOf(x["actor"])}): ${join(arr(x["fields"]).map(fieldOf), t`, `)}`,
+    );
+  }
+  return out;
+}
+
+/** An entity key as given back (04-contract-types `EntityKeyText`): its text, or by field. */
+const keyText = (k: unknown): Part[] =>
+  isObj(k)
+    ? join(
+        Object.entries(k).map(([f, v]) => t`${fieldOf(f)} ${untrusted(String(v))}`),
+        t`, `,
+      )
+    : [untrusted(String(k))];
+
 function receiptOps(r: R): Line[] {
   const out: Line[] = [];
-  for (const o of arr(r["ops"])) {
+  for (const [at, o] of arr(r["ops"]).entries()) {
     const x = obj(o);
     if (!Object.hasOwn(x, "target")) {
       out.push(t`op ${count(x["op_index"])}: not recorded then (unchanged or skipped)`);
@@ -698,9 +808,21 @@ function receiptOps(r: R): Line[] {
       what = fields.length > 0 ? join(fields, t`; `) : t`no change`;
     }
     const created = x["created_entity"] === true ? t` · new entity` : [];
+    const undo = isObj(x["undo"]) ? x["undo"] : undefined;
+    const undoes = undo !== undefined ? t` (undoes ${op(undo["of"])})` : [];
     out.push(
-      t`${targetOf(x["target"])} ${codeIn(x["intent"], INTENTS)}: ${what}${x["ver"] !== undefined ? t` (ver=${idOf(x["ver"])})` : []}${created}`,
+      t`${targetOf(x["target"])} ${codeIn(x["intent"], INTENTS)}${undoes}: ${what}${x["ver"] !== undefined ? t` (ver=${idOf(x["ver"])})` : []}${created}`,
     );
+    // A new entity by its key: the keys the table had, so that a key written wrong shows.
+    const keys = arr(x["existing_keys"]);
+    if (keys.length > 0)
+      out.push(t`  Keys already in the table: ${join(keys.map(keyText), t`; `)}`);
+    for (const [f, v] of Object.entries(obj(x["fields"]))) {
+      for (const one of Array.isArray(v) ? v : [v]) {
+        if (obj(one)["result"] === "candidate") out.push(...candidateLines(f, obj(one), at, r));
+      }
+    }
+    if (undo !== undefined) out.push(...undoLines(undo));
   }
   const more = int(r["ops_omitted"]);
   if (more !== undefined && more > 0) {
@@ -714,6 +836,18 @@ function receiptTail(r: R): Line[] {
   for (const d of arr(r["derived"])) out.push(t`Derived: ${stored(JSON.stringify(d))}`);
   for (const p of arr(r["pending"])) {
     const x = obj(p);
+    if (x["merged"] === true) {
+      out.push(
+        t`Merged into ${idOf(x["id"])} (it holds other writes' candidates too); look at it with saveslot_pending ${idOf(x["id"])} first.`,
+      );
+      continue;
+    }
+    if (x["refreshed"] === true) {
+      out.push(
+        t`Your write changed the target of an open item ${idOf(x["id"])}; it is still open; look at it with saveslot_pending ${idOf(x["id"])} first.`,
+      );
+      continue;
+    }
     out.push(
       t`Pending: ${idOf(x["id"])} ${codeIn(x["type"], ITEM_TYPES)}${x["item_ver"] !== undefined ? t` (version ${idOf(x["item_ver"])})` : []}. Before resolving a change with a large effect, tell the user and get their agreement; then saveslot_resolve.`,
     );
@@ -757,9 +891,34 @@ const STATUSES: ReadonlySet<string> = new Set(
   Object.keys({ saved: true, pending: true } satisfies Record<WriteResult["status"], true>),
 );
 
+/** The field results of a receipt's ops, every part. */
+const resultsOf = (r: R): string[] =>
+  arr(r["ops"]).flatMap((o) =>
+    Object.values(obj(obj(o)["fields"])).flatMap((v) =>
+      (Array.isArray(v) ? v : [v]).map((p) => String(obj(p)["result"] ?? "applied")),
+    ),
+  );
+
+/** How a receipt's write stands (05 §6 `saveslot_write`, the first line). */
+function statusOf(r: R): Part[] {
+  if (r["status"] !== "pending") return t`Saved`;
+  const results = resultsOf(r);
+  if (results.includes("awaiting")) return t`Recorded, awaiting confirmation`;
+  return results.some((x) => x === "applied" || x === "corroborated")
+    ? t`Recorded, partly not in effect`
+    : t`Recorded, not in effect`;
+}
+
+/** The slot of a receipt, from its targets' qualified table names (`slot.table`). */
+function slotOf(r: R): Part[] {
+  const table = str(obj(obj(arr(r["ops"])[0])["target"])["table"]);
+  const slot = table?.includes(".") === true ? table.split(".")[0] : undefined;
+  return slot !== undefined ? t`${as(slot, name)} ` : [];
+}
+
 function write(r: R): Line[] {
   need(Array.isArray(r["ops"]) && STATUSES.has(String(r["status"])));
-  const status = r["status"] === "pending" ? t`Recorded, not all in effect` : t`Saved`;
+  const status = statusOf(r);
   const seq = r["seq"] !== undefined ? t` · ${op(r["seq"])}` : t` · nothing recorded`;
   const out: Line[] = [];
   if (r["replayed"] === true) {
@@ -772,7 +931,7 @@ function write(r: R): Line[] {
       t`The original write was deleted (${idOf(r["original_deleted"]["deletion"])}); it was not written again.`,
     );
   }
-  out.push(t`${status} · schema v${count(r["sv"])}${seq}`);
+  out.push(t`${status} · ${slotOf(r)}schema v${count(r["sv"])}${seq}`);
   return [...out, ...receiptOps(r), ...receiptTail(r)];
 }
 

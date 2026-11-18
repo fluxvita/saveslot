@@ -392,13 +392,13 @@ runs r_01JC… 纠错：distance 15 km → 5 km（ver=v57.0）
 之前有 1 次读取用了旧值（saveslot_history 可查看；只统计 2026-05-14 之后的读取，不含对派生值的读取）
 ```
 
-成为候选时写清：你读到的是什么、当前是什么、是谁改的、候选记在哪个事项、当前生效值不变。
+成为候选时写清：在你给的版本上它是什么、当前是什么、是谁在哪次写入里改的、候选记在哪个事项、当前生效值不变，以及怎么处理。只说"在你给的版本上"：回执里的旧值是调用方所给 `ver` 那一版的值（合并基），它是不是调用方真正读到的，取决于调用方有没有如实带上读到的 `ver`；`ver` 是兜底得来的（`ver_fallback`）时，写明用的是哪个版本、取自哪次读取或哪张回执。回执里没有改动的时刻，所以只写操作号与写入者。
 
 ```
 已记下，未生效 · health schema v2 · #58
-runs r_01JC… 变更：distance 版本对不上——你读到的是 15 km，当前是 5 km（#57，2026-11-06 由 MacBook · Codex 纠错，ver=v57.0）
-你的写入（6 km）已记为候选，冲突事项 pi_7C…（版本 iv_2d…）；当前生效值仍是 5 km
-处理：saveslot_resolve pi_7C…（keep_effective / take_candidate / take_previous）
+runs r_01JC… 变更：distance 未生效
+  distance：在你给的版本（#41）上它是 15 km；现在是 5 km（#57，MacBook · Codex），ver=v57.0。你的值 6 km 已记为候选，冲突事项 pi_7C…（版本 iv_2d…）；当前生效值仍是 5 km
+  处理：saveslot_resolve pi_7C…（keep_effective / take_candidate / take_previous）
 ```
 
 一个 op 部分生效、部分成为候选时：

@@ -396,7 +396,7 @@ describe("what 05 §6 asks for", () => {
 
   it("write: status, schema version, operation number; each op's target, intent, fields, new ver", () => {
     const x = text("write_insert");
-    expect(x).toContain("Saved · schema v1 · #7");
+    expect(x).toContain("Saved · ledger schema v1 · #7");
     expect(x).toMatch(
       new RegExp(
         `ledger\\.expenses r_4KWKRM296X61WJ89DY5XJNVA4P insert: date ${B}2026-11-10${E}; note ${B}lunch${E}; amount 45 ${B}CNY${E} \\(ver=v7\\.0\\)`,
@@ -406,11 +406,15 @@ describe("what 05 §6 asks for", () => {
 
   it("write that became a candidate: yours, what is in effect, the item; and to resolve it", () => {
     const x = text("write_conflict");
-    expect(x).toContain("Recorded, not all in effect · schema v1 · #13");
+    expect(x).toContain("Recorded, not in effect · ledger schema v1 · #13");
+    expect(x).toContain("amount not in effect (see below)");
     expect(x).toMatch(
       new RegExp(
-        `amount not in effect: yours \\(50 ${B}CNY${E}\\) is a candidate in pi_8VEZWJ3J7BMKMXTV; in effect is 54 ${B}CNY${E} \\(#10, ver=v10\\.0\\)`,
+        `amount: at the version you gave \\(#7\\) it was 45 ${B}CNY${E}; now it is 54 ${B}CNY${E} \\(#10, .*\\), ver=v10\\.0\\. Your value 50 ${B}CNY${E} is a candidate in conflict item pi_8VEZWJ3J7BMKMXTV \\(version iv_8VEZWJ3J7BMKMXTV\\.13\\.0\\); the value in effect stays 54 ${B}CNY${E}\\.`,
       ),
+    );
+    expect(x).toContain(
+      "  To resolve: saveslot_resolve pi_8VEZWJ3J7BMKMXTV (keep_effective / take_candidate / take_previous)",
     );
     expect(x).toContain("Pending: pi_8VEZWJ3J7BMKMXTV conflict (version iv_8VEZWJ3J7BMKMXTV.13.0)");
   });
@@ -537,7 +541,7 @@ describe("a period open at the start (09 §1.2: a whole revoke undone)", () => {
       superseded: [],
     });
     expect(text.split("\n")[1]).toBe(
-      "ledger.budgets e_4KWKRM296X61WJ89DY5XJNVA4P update: whether it exists through 2026-11-04 (inclusive) —; whether it exists 2026-11-05 to 2026-11-09 (inclusive) —; whether it exists from 2026-11-10 — (ver=v16.0)",
+      "ledger.budgets e_4KWKRM296X61WJ89DY5XJNVA4P update (undoes #13): whether it exists through 2026-11-04 (inclusive) —; whether it exists 2026-11-05 to 2026-11-09 (inclusive) —; whether it exists from 2026-11-10 — (ver=v16.0)",
     );
   });
 });

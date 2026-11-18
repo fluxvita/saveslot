@@ -248,12 +248,12 @@ Agent 忘了带 `ver` 时，saveslot 用这个连接实例最近一次读到这�
 
 ```
 已记下，未生效 · ledger schema v1 · #37
-expenses r_01JD… 纠错：amount 版本对不上——你读到的是 30 CNY，当前是 35 CNY（#33，2026-11-10 由 MacBook · Codex 纠错，ver=v33.0）
-你的写入（32 CNY）已记为候选，冲突事项 pi_7C…（版本 iv_2d…）；当前生效值仍是 35 CNY
-处理：saveslot_resolve pi_7C…（keep_effective / take_candidate / take_previous）
+expenses r_01JD… 纠错：amount 未生效
+  amount：在你给的版本（#30）上它是 30 CNY；现在是 35 CNY（#33，MacBook · Codex），ver=v33.0。你的值 32 CNY 已记为候选，冲突事项 pi_7C…（版本 iv_2d…）；当前生效值仍是 35 CNY
+  处理：saveslot_resolve pi_7C…（keep_effective / take_candidate / take_previous）
 ```
 
-它把四件事说全了：你读到的是什么、当前是什么、是谁在哪次写入里改的、你的值记在了哪个事项里。A 此刻正在和用户对话，可以马上把情况告诉用户。
+它把四件事说全了：在 A 给的版本上是什么、当前是什么、是谁在哪次写入里改的、A 的值记在了哪个事项里。（"A 给的版本"就是 A 读到的版本，前提是 A 如实带上了读到的 ver。）A 此刻正在和用户对话，可以马上把情况告诉用户。
 
 **为什么这样设计。** saveslot 不能假设有办法主动通知用户，也不能假设用户会及时回应。所以冲突被做成一种**持久的状态**，而不是一次性的报错：
 

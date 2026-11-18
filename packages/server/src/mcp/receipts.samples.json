@@ -1,0 +1,509 @@
+{
+  "write-saved-rounded-zone": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 7,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.expenses",
+            "row": "r_7C3R1QHT0ADJGQVQTAFJGV4EAV"
+          },
+          "intent": "insert",
+          "ver": "v7.0",
+          "fields": {
+            "date": {
+              "result": "applied",
+              "after": "2026-11-10"
+            },
+            "at": {
+              "result": "applied",
+              "after": "2026-11-10T12:00:00+08:00[Asia/Shanghai]"
+            },
+            "amount": {
+              "result": "applied",
+              "after": {
+                "unit": "CNY",
+                "value": "45.68"
+              }
+            },
+            "note": {
+              "result": "applied",
+              "after": "lunch"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "warnings": [
+        {
+          "code": "timezone_assumed",
+          "op": 0,
+          "field": "at",
+          "timezone": "Asia/Shanghai"
+        },
+        {
+          "code": "rounded",
+          "op": 0,
+          "field": "amount",
+          "from": "45.678",
+          "to": "45.68",
+          "scale": 2
+        }
+      ]
+    }
+  },
+  "write-unit-converted": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 10,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.runs",
+            "row": "r_V8JK715FGVBAR4BFP6KBMST41Z"
+          },
+          "intent": "insert",
+          "ver": "v10.0",
+          "fields": {
+            "date": {
+              "result": "applied",
+              "after": "2026-11-10"
+            },
+            "distance": {
+              "result": "applied",
+              "after": {
+                "unit": "km",
+                "value": "4.83"
+              }
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "warnings": [
+        {
+          "code": "unit_converted",
+          "op": 0,
+          "field": "distance",
+          "from": {
+            "value": "3",
+            "unit": "mi"
+          },
+          "to": {
+            "value": "4.83",
+            "unit": "km"
+          }
+        }
+      ]
+    }
+  },
+  "write-new-entity-time-truncated": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 13,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_SH5TZ91A7MB0S0RNHBR5KYPXS5",
+            "entity_key": {
+              "category": "food"
+            }
+          },
+          "intent": "update",
+          "ver": "v13.0",
+          "created_entity": true,
+          "fields": {
+            "category": [
+              {
+                "result": "applied",
+                "after": "food",
+                "valid": {
+                  "valid_from": "2026-11-01",
+                  "valid_to": null
+                }
+              }
+            ],
+            "amount": [
+              {
+                "result": "applied",
+                "after": {
+                  "unit": "CNY",
+                  "value": "3000"
+                },
+                "valid": {
+                  "valid_from": "2026-11-01",
+                  "valid_to": null
+                }
+              }
+            ]
+          },
+          "existing_keys": []
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "warnings": [
+        {
+          "code": "time_truncated",
+          "op": 0,
+          "param": "ops/0/valid_from",
+          "from": "2026-11-01T02:00:00.000Z",
+          "to": "2026-11-01"
+        }
+      ]
+    }
+  },
+  "write-new-entity-existing-keys": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 16,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_CWPAW87XGQV9G29MVG1NZ130JS",
+            "entity_key": {
+              "category": "travel"
+            }
+          },
+          "intent": "update",
+          "ver": "v16.0",
+          "created_entity": true,
+          "fields": {
+            "category": [
+              {
+                "result": "applied",
+                "after": "travel",
+                "valid": {
+                  "valid_from": "2026-11-01",
+                  "valid_to": null
+                }
+              }
+            ],
+            "amount": [
+              {
+                "result": "applied",
+                "after": {
+                  "unit": "CNY",
+                  "value": "500"
+                },
+                "valid": {
+                  "valid_from": "2026-11-01",
+                  "valid_to": null
+                }
+              }
+            ]
+          },
+          "existing_keys": ["food"]
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": []
+    }
+  },
+  "write-partly-candidate": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "pending",
+      "sv": 1,
+      "seq": 28,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.expenses",
+            "row": "r_7C3R1QHT0ADJGQVQTAFJGV4EAV"
+          },
+          "intent": "update",
+          "ver": "v28.0",
+          "fields": {
+            "amount": {
+              "result": "applied",
+              "after": {
+                "unit": "CNY",
+                "value": "50"
+              }
+            },
+            "note": {
+              "result": "candidate",
+              "after": "supper",
+              "item": "pi_N2934AW8J0N7FG5X",
+              "effective": "dinner",
+              "current_ver": "v28.0",
+              "by": {
+                "seq": 25,
+                "actor": {
+                  "kind": "user",
+                  "id": "u_YGEAVZA4KGXYZJZ2M8F93HZGJ4",
+                  "name": "u_YGEAVZA4KGXYZJZ2M8F93HZGJ4"
+                }
+              },
+              "previous": {
+                "seq": 7,
+                "exists": true,
+                "values": {
+                  "note": "lunch"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [
+        {
+          "id": "pi_N2934AW8J0N7FG5X",
+          "type": "conflict",
+          "reason": "stale_write",
+          "item_ver": "iv_N2934AW8J0N7FG5X.28.0"
+        }
+      ],
+      "superseded": []
+    }
+  },
+  "write-candidate-merged": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "pending",
+      "sv": 1,
+      "seq": 32,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.expenses",
+            "row": "r_7C3R1QHT0ADJGQVQTAFJGV4EAV"
+          },
+          "intent": "update",
+          "ver": "v28.0",
+          "fields": {
+            "note": {
+              "result": "candidate",
+              "after": "brunch",
+              "item": "pi_N2934AW8J0N7FG5X",
+              "effective": "dinner",
+              "current_ver": "v28.0",
+              "by": {
+                "seq": 25,
+                "actor": {
+                  "kind": "user",
+                  "id": "u_YGEAVZA4KGXYZJZ2M8F93HZGJ4",
+                  "name": "u_YGEAVZA4KGXYZJZ2M8F93HZGJ4"
+                }
+              },
+              "previous": {
+                "seq": 7,
+                "exists": true,
+                "values": {
+                  "note": "lunch"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [
+        {
+          "id": "pi_N2934AW8J0N7FG5X",
+          "type": "conflict",
+          "reason": "stale_write",
+          "merged": true
+        }
+      ],
+      "superseded": []
+    }
+  },
+  "write-undo-skipped": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 45,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.runs",
+            "row": "r_T317NH686KNXQCTJ50C6GHVT06"
+          },
+          "intent": "update",
+          "ver": "v42.0",
+          "fields": {},
+          "undo": {
+            "of": 39,
+            "skipped_superseded": [
+              {
+                "field": "distance",
+                "by": 42,
+                "actor": {
+                  "kind": "user",
+                  "id": "u_YGEAVZA4KGXYZJZ2M8F93HZGJ4",
+                  "name": "u_YGEAVZA4KGXYZJZ2M8F93HZGJ4"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": []
+    }
+  },
+  "write-undo-include-later": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "pending",
+      "sv": 1,
+      "seq": 48,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.runs",
+            "row": "r_T317NH686KNXQCTJ50C6GHVT06"
+          },
+          "intent": "update",
+          "ver": "v42.0",
+          "fields": {
+            "distance": {
+              "result": "awaiting",
+              "after": {
+                "unit": "km",
+                "value": "5"
+              },
+              "item": "pi_W51EDP76W2RCP7EX",
+              "impact": {
+                "reverted": [
+                  {
+                    "seq": 42,
+                    "actor": {
+                      "kind": "user",
+                      "id": "u_YGEAVZA4KGXYZJZ2M8F93HZGJ4",
+                      "name": "u_YGEAVZA4KGXYZJZ2M8F93HZGJ4"
+                    },
+                    "fields": ["distance"]
+                  }
+                ]
+              }
+            }
+          },
+          "undo": {
+            "of": 39,
+            "skipped_superseded": [],
+            "reverted_later": [
+              {
+                "seq": 42,
+                "actor": {
+                  "kind": "user",
+                  "id": "u_YGEAVZA4KGXYZJZ2M8F93HZGJ4",
+                  "name": "u_YGEAVZA4KGXYZJZ2M8F93HZGJ4"
+                },
+                "fields": ["distance"]
+              }
+            ]
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [
+        {
+          "id": "pi_W51EDP76W2RCP7EX",
+          "type": "awaiting_confirmation",
+          "reason": "undo_includes_later",
+          "item_ver": "iv_W51EDP76W2RCP7EX.48.0"
+        }
+      ],
+      "superseded": []
+    }
+  },
+  "write-fallback-refreshed": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 52,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.runs",
+            "row": "r_T317NH686KNXQCTJ50C6GHVT06"
+          },
+          "intent": "update",
+          "ver": "v52.0",
+          "fields": {
+            "distance": {
+              "result": "applied",
+              "after": {
+                "unit": "km",
+                "value": "8"
+              }
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [
+        {
+          "id": "pi_W51EDP76W2RCP7EX",
+          "type": "awaiting_confirmation",
+          "reason": "undo_includes_later",
+          "refreshed": true
+        }
+      ],
+      "superseded": [],
+      "warnings": [
+        {
+          "code": "sv_fallback",
+          "sv": 1,
+          "read": "rd_1BRT90H2T4EHY3X0"
+        },
+        {
+          "code": "ver_fallback",
+          "op": 0,
+          "ver": "v42.0",
+          "read": "rd_1BRT90H2T4EHY3X0"
+        }
+      ]
+    }
+  },
+  "resolve-item-ver-fallback": {
+    "tool": "saveslot_resolve",
+    "result": {
+      "id": "pi_N2934AW8J0N7FG5X",
+      "type": "conflict",
+      "decision": "keep_effective",
+      "item_ver": "iv_N2934AW8J0N7FG5X.56.0",
+      "status": "resolved",
+      "warnings": [
+        {
+          "code": "item_ver_fallback",
+          "item_ver": "iv_N2934AW8J0N7FG5X.32.0",
+          "read": "rd_9PSSAVGXM9N4SBQE"
+        }
+      ]
+    }
+  }
+}

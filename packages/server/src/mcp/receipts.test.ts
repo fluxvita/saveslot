@@ -1,0 +1,30 @@
+// Write and resolve receipts as text (05-surfaces §6 `saveslot_write`, `saveslot_resolve`, §4.3),
+// against golden files. The receipts are what a running service gave back (receipts.samples.json,
+// taken from a real service): a rounded amount and a moment without a zone, a unit converted, a
+// new entity (a moment cut to the day; the keys the table had), a write partly a candidate, one
+// merged into an open item, an undo with a part changed since and one with the later writes, a
+// fallback ver and sv with an item refreshed, and a resolution with a fallback item_ver. Update
+// the golden files with `pnpm exec vitest run packages/server/src/mcp/receipts.test.ts -u`.
+
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import type { ToolName } from "./names.ts";
+import { renderStrict } from "./render.ts";
+
+type R = Record<string, unknown>;
+const SAMPLES = JSON.parse(
+  readFileSync(new URL("./receipts.samples.json", import.meta.url), "utf8"),
+) as Record<string, { tool: ToolName; result: R }>;
+
+/** The text with the boundary's number, drawn anew for each result, made one fixed value. */
+const fixed = (s: string) => s.replace(/untrusted-data-[0-9a-f]{32}/g, "untrusted-data-N");
+
+describe("receipts as text (golden)", () => {
+  it.each(Object.keys(SAMPLES))("%s", async (name) => {
+    const { tool, result } = SAMPLES[name] as { tool: ToolName; result: R };
+    // The renderer, not its JSON fallback: a shape it does not know fails here.
+    await expect(`${fixed(renderStrict(tool, result))}\n`).toMatchFileSnapshot(
+      `./__golden__/${name}.txt`,
+    );
+  });
+});
