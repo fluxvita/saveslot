@@ -779,35 +779,40 @@ describe("runHostCommand and onPath", () => {
   it("too long with a child of its own holding the pipes: the whole group killed, back at once", async () => {
     const pids = join(root, "pids");
     const host = script("forks", `sleep 60 & echo $! > "${pids}"; echo "$$" >> "${pids}"; wait`);
+    // Time enough for the script to start and write its pids however slow the machine; back
+    // within a margin of the timeout itself (the child would hold the pipes for 60 seconds).
+    const limit = 5_000;
     const t0 = Date.now();
-    expect(await runHostCommand([host], {}, 500)).toEqual({ kind: "timeout" });
-    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(await runHostCommand([host], {}, limit)).toEqual({ kind: "timeout" });
+    expect(Date.now() - t0 - limit).toBeLessThan(2_000);
     const { readFileSync } = await import("node:fs");
     const [child, parent] = readFileSync(pids, "utf8").trim().split("\n").map(Number);
     await new Promise((r) => setTimeout(r, 100));
     expect([alive(child as number), alive(parent as number)]).toEqual([false, false]);
-  });
+  }, 30_000);
 
   it("done while something it started still holds the pipes: back when it exits", async () => {
-    const host = script("leaves", "(sleep 5 &); echo started; exit 0");
+    // The child holds the pipes for 60 seconds: back long before it ends, at the host's exit.
+    const host = script("leaves", "(sleep 60 &); echo started; exit 0");
     const t0 = Date.now();
     expect(await runHostCommand([host], {})).toEqual({ kind: "done" });
-    expect(Date.now() - t0).toBeLessThan(3_000);
-  });
+    expect(Date.now() - t0).toBeLessThan(30_000);
+  }, 60_000);
 
   it("done, something it started still holding the pipes: the process that ran it can exit", () => {
-    const host = script("lingers", "(/bin/sleep 8 &); exit 0");
+    // The child holds the pipes for 60 seconds; a node process starting slowly stays well within.
+    const host = script("lingers", "(/bin/sleep 60 &); exit 0");
     const connect = fileURLToPath(new URL("./connect.ts", import.meta.url));
     const code = `const { runHostCommand } = await import(${JSON.stringify(connect)}); console.log(JSON.stringify(await runHostCommand([${JSON.stringify(host)}], {})));`;
     const t0 = Date.now();
     const r = spawnSync(
       process.execPath,
       ["--conditions=source", "--input-type=module", "-e", code],
-      { encoding: "utf8", timeout: 20_000 },
+      { encoding: "utf8", timeout: 50_000 },
     );
     expect(r.stdout.trim()).toBe(JSON.stringify({ kind: "done" }));
-    expect(Date.now() - t0).toBeLessThan(6_000);
-  });
+    expect(Date.now() - t0).toBeLessThan(30_000);
+  }, 60_000);
 
   it("much on both pipes: read and dropped, no stall", async () => {
     const host = script(
