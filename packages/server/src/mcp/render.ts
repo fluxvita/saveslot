@@ -641,6 +641,76 @@ function itemTarget(x: unknown): Part[] {
   return t`${targetOf(tg)}${unit.length > 0 ? t` ${join(unit.map(fieldOf), t`, `)}` : []}`;
 }
 
+/**
+ * What carrying out an item would change (04-contract-types `AwaitingImpact`; 05 §6
+ * `saveslot_pending`, `saveslot_write`): the stretches it would overwrite, the gaps it would fill,
+ * the writes it would undo; one line each, indented by `pad`. In a receipt's awaiting or candidate
+ * part, an item's detail, and a conflict's candidates alike. A kind this version does not know is
+ * still shown, as written, inside the boundary.
+ */
+function impactLines(x: unknown, pad: string): Line[] {
+  const im = obj(x);
+  const out: Line[] = [];
+  const indent = (l: Part[]): Line => [...padded(pad), ...l];
+  const seen = new Set<string>();
+  const once = (k: string, v: unknown) => {
+    const key = `${k} ${JSON.stringify(v)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  };
+  for (const o of arr(own(im, "overwritten"))) {
+    const e = obj(o);
+    if (!once("overwritten", e)) continue;
+    const period = isObj(e["valid"]) ? t`${periodOf(e["valid"])}: ` : [];
+    out.push(
+      indent(
+        t`overwrite ${period}${fieldOf(e["field"])} ${fieldValue(e["value"])} (${op(e["seq"])}, ${actorOf(e["actor"])})`,
+      ),
+    );
+  }
+  for (const g of arr(own(im, "filled_gaps"))) {
+    const e = obj(g);
+    if (!once("filled_gaps", e)) continue;
+    const period = isObj(e["valid"]) ? periodOf(e["valid"]) : t`the whole time`;
+    const why = e["revoked_by"] !== undefined ? t` (revoked by ${op(e["revoked_by"])})` : [];
+    out.push(indent(t`fill ${period}, which has no value${why}`));
+  }
+  for (const v of arr(own(im, "reverted"))) {
+    const e = obj(v);
+    if (!once("reverted", e)) continue;
+    out.push(
+      indent(
+        t`undo ${op(e["seq"])} (${actorOf(e["actor"])}): ${join(arr(e["fields"]).map(fieldOf), t`, `)}`,
+      ),
+    );
+  }
+  for (const [k, v] of Object.entries(im)) {
+    if (k === "overwritten" || k === "filled_gaps" || k === "reverted") continue;
+    out.push(indent(t`${untrusted(k)}: ${stored(JSON.stringify(v))}`));
+  }
+  return out;
+}
+
+/** Spaces before a line's text: saveslot's own. */
+function padded(pad: string): Part[] {
+  if (pad === "    ") return t`    `;
+  if (pad === "      ") return t`      `;
+  return t`  `;
+}
+
+/** The proposal of an awaiting item (04-contract-types §4.8 `proposal`): what it would write. */
+function proposalOf(x: unknown): Part[] {
+  const p = obj(x);
+  const what = isObj(p["revert"])
+    ? t`undo ${op(obj(p["revert"])["undo"])}`
+    : p["set"] !== undefined
+      ? namedValues(p["set"])
+      : t`revoke`;
+  const period = isObj(p["valid"]) ? t` ${periodOf(p["valid"])}` : [];
+  return t`${what}${period} (${op(p["seq"])}, ${actorOf(p["actor"])}, ${codeIn(p["intent"], INTENTS)})`;
+}
+
 function pending(r: R): Line[] {
   need(typeof r["id"] === "string" || Array.isArray(r["items"]));
   if (r["id"] !== undefined) {
@@ -653,11 +723,17 @@ function pending(r: R): Line[] {
         t`  In effect: ${e["exists"] === false ? t`no row` : namedValues(e["values"])} (${op(e["seq"])}, ${actorOf(e["actor"])})`,
       );
     }
+    const candidateImpact = obj(r["candidate_impact"]);
     for (const c of arr(r["candidates"])) {
       const x = obj(c);
       out.push(
         t`  Candidate ${count(x["index"])}: ${namedValues(x["values"])} (${op(x["seq"])}, ${actorOf(x["actor"])}, ${codeIn(x["intent"], INTENTS)})`,
       );
+      // Taking it would be high impact: what it would change.
+      const im = own(candidateImpact, String(x["index"]));
+      if (isObj(im)) {
+        out.push(t`    Taking candidate ${count(x["index"])} would:`, ...impactLines(im, "      "));
+      }
     }
     if (isObj(r["previous"])) {
       const p = r["previous"];
@@ -674,7 +750,11 @@ function pending(r: R): Line[] {
         )}`,
       );
     }
-    if (isObj(r["impact"])) out.push(t`  Impact: ${stored(JSON.stringify(r["impact"]))}`);
+    if (isObj(r["proposal"])) out.push(t`  Proposed: ${proposalOf(r["proposal"])}`);
+    if (isObj(r["impact"])) {
+      out.push(t`  Carrying it out would:`, ...impactLines(r["impact"], "    "));
+      if (r["status"] === "open") out.push(t`  Not in effect; the value in effect is unchanged.`);
+    }
     if (isObj(r["resolution"])) {
       const res = obj(r["resolution"]);
       const note = res["note"] !== undefined ? t` · note ${stored(String(res["note"]))}` : [];
@@ -707,10 +787,7 @@ function fieldResult(f: string, x: unknown): Part[] {
   const period = isObj(c["valid"]) ? t` ${periodOf(c["valid"])}` : [];
   const result = str(c["result"]) ?? "applied";
   if (result === "candidate") return t`${fieldOf(f)}${period} not in effect (see below)`;
-  if (result === "awaiting") {
-    // What carrying it out would change is the item's impact (A: the impact block).
-    return t`${fieldOf(f)}${period} not in effect: yours (${fieldValue(c["after"])}) awaits confirmation in ${idOf(c["item"])}`;
-  }
+  if (result === "awaiting") return t`${fieldOf(f)}${period} awaits confirmation (see below)`;
   if (result === "corroborated")
     return t`${fieldOf(f)}${period} unchanged; this was added as its evidence`;
   if (result === "noop") return [];
@@ -738,20 +815,34 @@ function candidateLines(f: string, c: R, at: number, r: R): Line[] {
       ? t`at the version used (${idOf(fallback["ver"])}, ${originOf(fallback)}, ${op(prev["seq"])})`
       : t`at the version you gave (${op(prev["seq"])})`;
   const values = obj(prev["values"]);
+  // A state table gives the merge base by stretch: each stretch's value of this field.
+  const spans = arr(prev["spans"])
+    .map(obj)
+    .map((sp) => {
+      const v = obj(sp["values"]);
+      return t`${periodOf(sp)} ${Object.hasOwn(v, f) ? fieldValue(v[f]) : t`no value`}`;
+    });
   const then =
     prev["exists"] === false
       ? t`the row did not exist`
-      : Object.hasOwn(values, f)
-        ? t`it was ${fieldValue(values[f])}`
-        : t`it had no value`;
+      : spans.length > 0
+        ? t`it was ${join(spans, t`; `)}`
+        : Object.hasOwn(values, f)
+          ? t`it was ${fieldValue(values[f])}`
+          : t`it had no value`;
   const who = by["seq"] !== undefined ? t` (${op(by["seq"])}, ${actorOf(by["actor"])})` : [];
   const item = c["item"];
   const ref = arr(r["pending"])
     .map(obj)
     .find((p) => p["id"] === item);
   const version = ref?.["item_ver"] !== undefined ? t` (version ${idOf(ref["item_ver"])})` : [];
+  // Taking it would be high impact: what it would change.
+  const taking = isObj(c["impact"])
+    ? [t`  Taking your value would:`, ...impactLines(c["impact"], "    ")]
+    : [];
   return [
     t`  ${fieldOf(f)}: ${given} ${then}; now it is ${fieldValue(c["effective"])}${who}, ver=${idOf(c["current_ver"])}. Your value ${fieldValue(c["after"])} is a candidate in conflict item ${idOf(item)}${version}; the value in effect stays ${fieldValue(c["effective"])}.`,
+    ...taking,
     t`  To resolve: saveslot_resolve ${idOf(item)} (${join(
       CONFLICT_DECISIONS.map((d) => [code(d, DECISIONS)]),
       t` / `,
@@ -759,8 +850,40 @@ function candidateLines(f: string, c: R, at: number, r: R): Line[] {
   ];
 }
 
-/** An undo's parts not undone, and the later writes undone with it (05 §6 `saveslot_write`). */
-function undoLines(u: R): Line[] {
+/**
+ * A write awaiting confirmation (05 §6 `saveslot_write`: 高影响写入进待确认时): the parts that
+ * await, the item and its version, what carrying it out would change, and that it is not in
+ * effect until the user agrees and it is confirmed. One block per item of an op: the item's impact
+ * is the op's, given on each of its parts.
+ */
+function awaitingLines(parts: readonly { f: string; c: R }[], r: R): Line[] {
+  const first = parts[0];
+  if (first === undefined) return [];
+  const item = first.c["item"];
+  const ref = arr(r["pending"])
+    .map(obj)
+    .find((p) => p["id"] === item);
+  const version = ref?.["item_ver"] !== undefined ? t` (version ${idOf(ref["item_ver"])})` : [];
+  const what = join(
+    parts.map(({ f, c }) => {
+      const period = isObj(c["valid"]) ? t` ${periodOf(c["valid"])}` : [];
+      const value = Object.hasOwn(c, "after") ? t` ${fieldValue(c["after"])}` : t` no value`;
+      return t`${fieldOf(f)}${period}${value}`;
+    }),
+    t`; `,
+  );
+  return [
+    t`  ${what}: awaits confirmation in ${idOf(item)}${version}. Carrying it out would:`,
+    ...impactLines(first.c["impact"], "    "),
+    t`  Not in effect; the value in effect is unchanged. Tell the user the above first; once they agree: saveslot_resolve ${idOf(item)} confirm (or reject).`,
+  ];
+}
+
+/**
+ * An undo's parts not undone, and the later writes undone with it (05 §6 `saveslot_write`). Those
+ * later writes are left out when the op awaits confirmation: its impact lists them already.
+ */
+function undoLines(u: R, awaiting: boolean): Line[] {
   const out: Line[] = [];
   for (const s of arr(u["skipped_superseded"])) {
     const x = obj(s);
@@ -768,7 +891,7 @@ function undoLines(u: R): Line[] {
       t`  skipped ${fieldOf(x["field"])}: changed since by ${op(x["by"])} (${actorOf(x["actor"])}), no longer what ${op(u["of"])} wrote; to undo it too, write the undo again with include_later: true (it will await confirmation)`,
     );
   }
-  for (const l of arr(u["reverted_later"])) {
+  for (const l of awaiting ? [] : arr(u["reverted_later"])) {
     const x = obj(l);
     out.push(
       t`  also undoes ${op(x["seq"])} (${actorOf(x["actor"])}): ${join(arr(x["fields"]).map(fieldOf), t`, `)}`,
@@ -817,12 +940,20 @@ function receiptOps(r: R): Line[] {
     const keys = arr(x["existing_keys"]);
     if (keys.length > 0)
       out.push(t`  Keys already in the table: ${join(keys.map(keyText), t`; `)}`);
+    const awaiting = new Map<unknown, { f: string; c: R }[]>();
     for (const [f, v] of Object.entries(obj(x["fields"]))) {
       for (const one of Array.isArray(v) ? v : [v]) {
-        if (obj(one)["result"] === "candidate") out.push(...candidateLines(f, obj(one), at, r));
+        const c = obj(one);
+        if (c["result"] === "candidate") out.push(...candidateLines(f, c, at, r));
+        if (c["result"] === "awaiting") {
+          const list = awaiting.get(c["item"]) ?? [];
+          list.push({ f, c });
+          awaiting.set(c["item"], list);
+        }
       }
     }
-    if (undo !== undefined) out.push(...undoLines(undo));
+    for (const parts of awaiting.values()) out.push(...awaitingLines(parts, r));
+    if (undo !== undefined) out.push(...undoLines(undo, awaiting.size > 0));
   }
   const more = int(r["ops_omitted"]);
   if (more !== undefined && more > 0) {
@@ -831,9 +962,60 @@ function receiptOps(r: R): Line[] {
   return out;
 }
 
-function receiptTail(r: R): Line[] {
+/**
+ * The derived values a write changed (04-contract-types `DerivedChange`; 05 §6 `saveslot_write`):
+ * one line per derived row (its table and group key), each field it changed before and after.
+ */
+function derivedLines(r: R): Line[] {
+  const rows = new Map<string, { table: unknown; key: unknown; fields: Part[][] }>();
+  const changes = arr(r["derived"]);
+  for (const d of changes) {
+    const x = obj(d);
+    const id = `${String(x["table"])} ${JSON.stringify(x["key"] ?? null)}`;
+    const row = rows.get(id) ?? { table: x["table"], key: x["key"], fields: [] };
+    const before =
+      x["before"] === null || x["before"] === undefined ? t`—` : fieldValue(x["before"]);
+    row.fields.push(t`${fieldOf(x["field"])} ${before} → ${fieldValue(x["after"])}`);
+    rows.set(id, row);
+  }
   const out: Line[] = [];
-  for (const d of arr(r["derived"])) out.push(t`Derived: ${stored(JSON.stringify(d))}`);
+  for (const row of rows.values()) {
+    const key = Object.entries(obj(row.key));
+    const keyed = key.length > 0 ? t` (${namedValues(row.key)})` : [];
+    out.push(t`Derived: ${tableOf(row.table)}${keyed}: ${join(row.fields, t`; `)}`);
+  }
+  const total = int(r["derived_total"]);
+  if (r["replayed"] === true) {
+    if (total !== undefined && total > 0) {
+      out.push(
+        t`Derived: ${num(total)} derived rows were written; a replay does not give their values.`,
+      );
+    }
+  } else if (total !== undefined && total > changes.length) {
+    out.push(
+      t`${num(total - changes.length)} more derived changes are not listed in this receipt.`,
+    );
+  }
+  return out;
+}
+
+/** The items a receipt's op lines already name with their version and next step. */
+function itemsSaid(r: R): Set<unknown> {
+  const said = new Set<unknown>();
+  for (const o of arr(r["ops"])) {
+    for (const v of Object.values(obj(obj(o)["fields"]))) {
+      for (const p of Array.isArray(v) ? v : [v]) {
+        const c = obj(p);
+        if (c["result"] === "candidate" || c["result"] === "awaiting") said.add(c["item"]);
+      }
+    }
+  }
+  return said;
+}
+
+function receiptTail(r: R): Line[] {
+  const out: Line[] = [...derivedLines(r)];
+  const said = itemsSaid(r);
   for (const p of arr(r["pending"])) {
     const x = obj(p);
     if (x["merged"] === true) {
@@ -848,6 +1030,8 @@ function receiptTail(r: R): Line[] {
       );
       continue;
     }
+    // Said above with its version and what to do: not again.
+    if (said.has(x["id"])) continue;
     out.push(
       t`Pending: ${idOf(x["id"])} ${codeIn(x["type"], ITEM_TYPES)}${x["item_ver"] !== undefined ? t` (version ${idOf(x["item_ver"])})` : []}. Before resolving a change with a large effect, tell the user and get their agreement; then saveslot_resolve.`,
     );

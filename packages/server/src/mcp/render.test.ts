@@ -416,7 +416,8 @@ describe("what 05 §6 asks for", () => {
     expect(x).toContain(
       "  To resolve: saveslot_resolve pi_8VEZWJ3J7BMKMXTV (keep_effective / take_candidate / take_previous)",
     );
-    expect(x).toContain("Pending: pi_8VEZWJ3J7BMKMXTV conflict (version iv_8VEZWJ3J7BMKMXTV.13.0)");
+    // The item and its version are said on the candidate's line: no general line for it again.
+    expect(x).not.toContain("Pending: pi_8VEZWJ3J7BMKMXTV");
   });
 
   it("write of a state table: the period; a new entity", () => {

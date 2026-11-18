@@ -3,4 +3,3 @@ Recorded, partly not in effect · plan schema v1 · #28
 plan.expenses r_7C3R1QHT0ADJGQVQTAFJGV4EAV update: amount 50 <untrusted-data-N>CNY</untrusted-data-N>; note not in effect (see below) (ver=v28.0)
   note: at the version you gave (#7) it was <untrusted-data-N>lunch</untrusted-data-N>; now it is <untrusted-data-N>dinner</untrusted-data-N> (#25, <untrusted-data-N>u_YGEAVZA4KGXYZJZ2M8F93HZGJ4</untrusted-data-N>), ver=v28.0. Your value <untrusted-data-N>supper</untrusted-data-N> is a candidate in conflict item pi_N2934AW8J0N7FG5X (version iv_N2934AW8J0N7FG5X.28.0); the value in effect stays <untrusted-data-N>dinner</untrusted-data-N>.
   To resolve: saveslot_resolve pi_N2934AW8J0N7FG5X (keep_effective / take_candidate / take_previous)
-Pending: pi_N2934AW8J0N7FG5X conflict (version iv_N2934AW8J0N7FG5X.28.0). Before resolving a change with a large effect, tell the user and get their agreement; then saveslot_resolve.
