@@ -20,6 +20,8 @@ const T = 120_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const roots: string[] = [];
+// Each home holds a store (some 40 MB in a thousand files) and the removal is synchronous: under the
+// load of the whole suite it can take longer than the default hook timeout.
 afterAll(() => {
   for (const r of roots) {
     try {
@@ -27,7 +29,7 @@ afterAll(() => {
     } catch {}
     rmSync(r, { recursive: true, force: true });
   }
-});
+}, T);
 
 async function freshHome(): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), "saveslot-start-"));

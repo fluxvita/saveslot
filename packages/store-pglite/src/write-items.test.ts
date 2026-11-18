@@ -22,6 +22,7 @@ import {
   resolveInTx,
   writeInTx,
 } from "@fluxvita/saveslot-kernel/testing";
+import { evaluateLog } from "@fluxvita/saveslot-reference";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
@@ -110,6 +111,18 @@ const COMPILED = {
         { id: "f3", name: "at", type: "zoned_datetime", description: "when" },
       ],
     },
+    {
+      id: "t7",
+      name: "free",
+      kind: "base",
+      description: "timeless, no field required",
+      time: { type: "none" },
+      physical: { table: "t_t7_v1" },
+      fields: [
+        { id: "f2", name: "b", type: "text", description: "b" },
+        { id: "f3", name: "c", type: "text", description: "c" },
+      ],
+    },
   ],
 };
 const CHANGES = [
@@ -120,6 +133,7 @@ const CHANGES = [
   { target: { table: "t4" }, change: "add_table" },
   { target: { table: "t5" }, change: "add_table" },
   { target: { table: "t6" }, change: "add_table" },
+  { target: { table: "t7" }, change: "add_table" },
 ].map((c) => ({
   ...c,
   class: "create",
@@ -2853,6 +2867,76 @@ describe("a candidate's effective, decoded from the cell's columns as the write 
         // The same JSON text: the value and the order of its keys.
         expect(JSON.stringify(part["effective"])).toBe(JSON.stringify(afterOf(w, field)));
       }
+    },
+    T,
+  );
+});
+
+describe("a timeless table with no required field: a row stands on a non-empty value (03-deletion «重放规则»)", () => {
+  const free = (op: Record<string, unknown>) => send({ sv: 1, ops: [{ table: "free", ...op }] });
+  const eventCount = async () =>
+    Number(
+      (await s.store.read((tx) => tx.query<{ n: unknown }>("SELECT count(*) AS n FROM events")))
+        .rows[0]?.n,
+    );
+
+  it(
+    "an insert of only empty values is refused, and nothing is recorded",
+    async () => {
+      const before = await eventCount();
+      const r = await free({ intent: "insert", set: { b: null, c: null } });
+      expect(r).toMatchObject({
+        refused: "validation_failed",
+        reason: "write",
+        details: [{ op: 0, table: "ledger.free", code: "empty_row" }],
+      });
+      // No operation number, no write.base, no source data.
+      expect(await eventCount()).toBe(before);
+    },
+    T,
+  );
+
+  it(
+    "a write, then a clear of its only value: the row stays, every field empty, as the reference evaluator has it",
+    async () => {
+      const a = await free({ intent: "insert", set: { b: "x" } });
+      const row = rowAt(a);
+      const c = await free({ intent: "update", row, ver: verAt(a), set: { b: null } });
+      expect(c.status).toBe("saved");
+      const business = await s.store.read((tx) =>
+        tx.query("SELECT revoked, f_f2, f_f3 FROM t_t7_v1 WHERE row_id = $1", [row]),
+      );
+      expect(business.rows).toEqual([{ revoked: false, f_f2: null, f_f3: null }]);
+      // The cell of b is the clear's.
+      const cell = await s.store.read((tx) =>
+        tx.query<{ op: unknown }>(
+          `SELECT (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS op FROM t_t7_v1__ver v
+           WHERE row_id = $1 AND field_id = 'f2' AND rec_to IS NULL`,
+          [row],
+        ),
+      );
+      expect(cell.rows.map((x) => Number(x.op))).toEqual([c.seq]);
+      // The row is still written to: the clear's ver is current.
+      expect((await free({ intent: "update", row, ver: verAt(c), set: { c: "y" } })).status).toBe(
+        "saved",
+      );
+      // The reference evaluator on the same two writes: the row exists, b empty, given by the clear.
+      const ref = evaluateLog({ kind: "timeless", required: [] }, [
+        { kind: "write", op: 1, event: 2, fields: { f2: { value: "x", sources: ["s1"] } } },
+        {
+          kind: "write",
+          op: 3,
+          event: 4,
+          seen: 1,
+          fields: { f2: { value: null, sources: ["s2"] } },
+        },
+      ] as never).final;
+      expect({ exists: ref.exists, f2: ref.fields["f2" as never] }).toEqual({
+        exists: true,
+        f2: [
+          { valid: [{ from: null, to: null }], value: null, by: { event: 4, target: "f2", k: 0 } },
+        ],
+      });
     },
     T,
   );

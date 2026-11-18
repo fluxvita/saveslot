@@ -4,7 +4,10 @@
 // boundary; what stands outside is the renderer's wording and what passes a shape check.
 
 import {
+  type AffectedReason,
   type AsOfResult,
+  type FieldResultCode,
+  type PremiseReason,
   type QueryResult,
   type TimelineResult,
   VERSION_INTENTS,
@@ -138,21 +141,27 @@ export function targetOf(x: unknown): Part[] {
 
 const said = (m: ReadonlyMap<string, () => Part[]>, x: unknown): Part[] | undefined =>
   typeof x === "string" ? m.get(x)?.() : undefined;
+/**
+ * A table of texts by the contract's codes: written as an object `satisfies Record<Code, …>`, so a
+ * code the contract adds or drops fails to compile here (no hand-kept list falls behind).
+ */
+const textsBy = <K extends string>(o: Record<K, () => Part[]>): ReadonlyMap<string, () => Part[]> =>
+  new Map(Object.entries(o) as [string, () => Part[]][]);
 
-const AFFECTED: ReadonlyMap<string, () => Part[]> = new Map([
-  ["correct", () => t`! a value read was corrected since`],
-  ["revoke", () => t`! a record in a value read was revoked since`],
-  ["retroactive", () => t`! the value at the business time read was changed afterwards`],
-  ["plan_changed", () => t`! the future arrangement read has changed`],
-]);
-const PREMISE_VERB: ReadonlyMap<string, () => Part[]> = new Map([
-  ["correct", () => t`corrected`],
-  ["update", () => t`changed`],
-  ["revoke", () => t`revoked`],
-  ["retroactive", () => t`changed retroactively`],
-  ["plan_changed", () => t`changed for what comes after`],
-  ["deleted", () => t`deleted`],
-]);
+const AFFECTED = textsBy<AffectedReason>({
+  correct: () => t`! a value read was corrected since`,
+  revoke: () => t`! a record in a value read was revoked since`,
+  retroactive: () => t`! the value at the business time read was changed afterwards`,
+  plan_changed: () => t`! the future arrangement read has changed`,
+});
+const PREMISE_VERB = textsBy<PremiseReason>({
+  correct: () => t`corrected`,
+  update: () => t`changed`,
+  revoke: () => t`revoked`,
+  retroactive: () => t`changed retroactively`,
+  plan_changed: () => t`changed for what comes after`,
+  deleted: () => t`deleted`,
+});
 
 /**
  * A row's marks (05 §4.2), on its line; premises changed, each on a line of its own. The next
@@ -300,13 +309,13 @@ export function queryResult(r: QueryResult): Line[] {
 
 const INTENTS: ReadonlySet<string> = new Set<string>(VERSION_INTENTS);
 
-const RESULT: ReadonlyMap<string, () => Part[]> = new Map([
-  ["applied", () => t``],
-  ["candidate", () => t` (candidate, not in effect)`],
-  ["awaiting", () => t` (awaiting confirmation, not in effect)`],
-  ["corroborated", () => t` (unchanged; added as evidence)`],
-  ["noop", () => t` (unchanged)`],
-]);
+const RESULT = textsBy<FieldResultCode>({
+  applied: () => t``,
+  candidate: () => t` (candidate, not in effect)`,
+  awaiting: () => t` (awaiting confirmation, not in effect)`,
+  corroborated: () => t` (unchanged; added as evidence)`,
+  noop: () => t` (unchanged)`,
+});
 const resultOf = (x: unknown): Part[] =>
   said(RESULT, x ?? "applied") ?? t` (${untrusted(String(x))})`;
 

@@ -440,6 +440,35 @@ describe("what 05 §6 asks for", () => {
     expect(many).toContain("and 5 more");
   });
 
+  it("a validation detail shows where it is: the op, the table, the field, the stretch", () => {
+    const empty = renderError({
+      code: "validation_failed",
+      reason: "write",
+      details: [{ op: 0, table: "ledger.free", code: "empty_row" }],
+    });
+    expect(empty).toContain("\n  op 0 ledger.free empty_row\n");
+    const gap = renderError({
+      code: "validation_failed",
+      reason: "write",
+      details: [
+        {
+          op: 1,
+          table: "home.pets",
+          field: "name",
+          code: "required_in_gap",
+          valid: {
+            valid_from: "2026-11-01",
+            valid_to: "2026-11-05",
+            valid_to_inclusive: "2026-11-04",
+          },
+        },
+      ],
+    });
+    expect(gap).toContain(
+      "\n  op 1 home.pets name: required_in_gap, 2026-11-01 to 2026-11-04 (inclusive)\n",
+    );
+  });
+
   it("an error whose code is a name of an object's prototype still has its text", () => {
     for (const c of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
       const x = renderError({ code: c, reason: c, details: [{ code: c }], narrow_by: [c] });

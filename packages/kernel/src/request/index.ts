@@ -13,7 +13,15 @@ export {
   type Rational,
   rationalOf,
 } from "./decimal.ts";
-export { echoName, echoPath, fold, type Named, nearest, splitTableName } from "./names.ts";
+export {
+  echoName,
+  echoPath,
+  fold,
+  type Named,
+  nearest,
+  qualifiedTable,
+  splitTableName,
+} from "./names.ts";
 export {
   checkSvCompatibility,
   normalizeWrite,

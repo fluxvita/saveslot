@@ -89,6 +89,18 @@ export const COMPILED: CompiledSchema = {
       fields: [{ id: "f1", name: "key", type: "text", required: true, description: "a key" }],
     },
     {
+      id: "t7",
+      name: "kv",
+      kind: "base",
+      description: "timeless, no field required",
+      time: { type: "none" },
+      physical: { table: "t_t7_v1" },
+      fields: [
+        { id: "f1", name: "text", type: "text", description: "the label" },
+        { id: "f2", name: "rank", type: "integer", description: "its rank" },
+      ],
+    },
+    {
       id: "t5",
       name: "runs",
       kind: "base",

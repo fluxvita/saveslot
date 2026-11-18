@@ -2013,6 +2013,7 @@ interface ValidationDetail {
   code: ValidationDetailCode;
   line?: number;                 // 规则 SQL 的行
   valid?: Interval;              // required_in_gap：缺字段的那段区间
+  // table：required_in_gap 与 empty_row 给出，写法同回执的 slot.table
   allowed_units?: string[]; allowed_values?: string[]; min?: string; max?: string;
   rows?: number; samples?: TargetRef[];   // backfill_required：违反的行数与样例
   referenced_by?: string[];      // still_referenced：依赖它的对象在 schema 文档里的位置（同 path 的写法）
@@ -2038,6 +2039,7 @@ type ValidationDetailCode =
   | "type_mismatch" | "unit_missing" | "unit_unknown" | "unit_dimension" | "out_of_range"
   | "enum_value" | "required_missing" | "required_in_gap" | "ref_not_found" | "ref_wrong_table"
   | "malformed"                     // 十进制原文不符合 JSON 数字语法（04-contract 第 1 节「值的编码」）
+  | "empty_row"                     // 事件类表或无时间表上的 insert 没有给任何字段非空的值：清空不能单独撑起一行，这一行不会存在（带 op 与 table）
   // schema 编译
   | "reserved_name" | "duplicate_name" | "description_missing" | "unknown_type"
   | "entity_key_not_required" | "cross_slot_ref"

@@ -58,7 +58,7 @@
   - **调用方交来的十进制原文**（`decimal`、`integer` 的值，`quantity` 的 `value`）：字符串与 JSON 数字用同一套语法，即 JSON 数字的语法 `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`，可带指数。不接受前导零（`01`）、正号（`+1`）、`.5`、`1.`、`NaN`、`Infinity`，报 `validation_failed`（`malformed`）。原文至多 100 个字符，超过的同样报 `malformed`，在解析之前判。原始值因此只有一种文法。
   - `integer` 字段收到带小数部分的值（`"1.5"` 或 `1.5`）：不论写成字符串还是数字，都报 `validation_failed`（`type_mismatch`）。
   - `quantity`、`decimal` 的小数位数超过字段的 `scale` 时，按字段的 `rounding` 舍入后落账，`warnings` 给 `rounded`（data-model「精度与舍入」）。例外：换算过单位的 `quantity` 只给 `unit_converted`（`to` 是换算并舍入后的值），不另给 `rounded`——换算后的精确值未必是有限小数，`rounded` 的 `from` 写不出来。
-  - **清空**：值写 `null` 是清空一个可选字段，它是一次有来源的贡献；必填字段不能清空，报 `validation_failed`（`required_missing`）。
+  - **清空**：值写 `null` 是清空一个可选字段，它是一次有来源的贡献；必填字段不能清空，报 `validation_failed`（`required_missing`）。事件类表、无时间表上清空不能单独撑起一行（data-model「删除 · 重放规则」的「行 / 实体的存在」）：没有必填字段的表上，`insert` 没有给任何字段非空的值，报 `validation_failed`（`empty_row`，明细带 `op` 与 `table`），什么都不落账。只看这个 op 自己给的值，同一请求里后面的 op 补不上它。`update` / `correct` 把一行剩下的值都清空不拒绝：行靠早先非空的贡献仍然存在，各字段为空。状态类表上清空本身就算有值（data-model「时间 · 无值区间」），不适用这一条。
   - `quantity` 必须带 `unit`，缺了报 `validation_failed`（`unit_missing`）；单位取自固定的单位词表，不在词表里报 `unit_unknown`，量纲与字段不同（含货币不同）报 `unit_dimension`；同量纲的单位自动换算到字段声明的单位，`warnings` 给 `unit_converted`。
   - 值的 JSON 类型与字段声明的类型不符（如给 `integer` 字段一个对象或布尔）：`validation_failed`（`type_mismatch`）。`enum` 字段的值不在声明的取值里：`validation_failed`（`enum_value`，附 `allowed_values`）。
   - `zoned_datetime` 缺时区时按 slot 时区，`warnings` 给 `timezone_assumed`。时区写成 `[UTC]` 或 `[区域/地点]`，且须是运行时认得的名字，与 slot 时区同一条规则（data-model「schema 文档格式」）；`PRC`、`EST`、`+08:00` 这类写法、与时区不符的偏移，报 `validation_failed`（`type_mismatch`）。时区名与运行时的规范名只差大小写时，规范化后的值用规范名的写法，原始值照调用方写的记（data-model「同值判据」）。

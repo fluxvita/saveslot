@@ -46,7 +46,7 @@ import {
   rowCellsAt,
   rowOf,
 } from "../pending/index.ts";
-import { decodeColumns, type WriteWarning } from "../request/index.ts";
+import { decodeColumns, qualifiedTable, type WriteWarning } from "../request/index.ts";
 import { selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { type ValueOut, valueOut } from "../time/index.ts";
@@ -331,9 +331,8 @@ const overlaps = (a: Span, b: Span) =>
 const dayBefore = (d: string): DateStr =>
   new Date(Date.parse(`${d}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10) as DateStr;
 
-/** A table as receipts and errors name it: `slot.table`, never the bare name another slot may share. */
-export const qualifiedTable = (slot: string, table: { readonly name: string }): string =>
-  `${slot}.${table.name}`;
+// How receipts and errors name a table (`slot.table`): shared with the request's checks.
+export { qualifiedTable };
 
 /** A span as the contract's interval: `valid_to_inclusive` on date tables with an end. */
 export function intervalOut(v: Span, byDate: boolean): Interval {

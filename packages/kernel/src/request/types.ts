@@ -178,7 +178,7 @@ export interface NormalizedWrite {
 export interface WriteValidationDetail {
   /** The op; none where the request has no ops (a decision's triggered write). */
   readonly op?: number;
-  /** The table's name: given with `required_in_gap`. */
+  /** The table's name, `slot.table`: given with `required_in_gap` and `empty_row`. */
   readonly table?: string;
   readonly field?: string;
   readonly code:
@@ -191,6 +191,7 @@ export interface WriteValidationDetail {
     | "required_missing"
     | "required_in_gap"
     | "ref_not_found"
+    | "empty_row"
     | "malformed";
   /** `required_in_gap`: the stretch the field has no value over. */
   readonly valid?: {

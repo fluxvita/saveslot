@@ -13,6 +13,23 @@
 // and `__proto__` among them. A result whose shape a renderer does not know, and a renderer that
 // fails, give JSON as written instead: a call always has its text.
 
+import {
+  type AffectedReason,
+  DECISIONS as CONTRACT_DECISIONS,
+  FIELD_TYPES as CONTRACT_FIELD_TYPES,
+  GRANULARITIES as CONTRACT_GRANULARITIES,
+  ITEM_TYPES as CONTRACT_ITEM_TYPES,
+  DELETION_ORIGINS,
+  type ErrorCode,
+  type FieldResultCode,
+  ITEM_CREATED_REASONS,
+  ITEM_STATUSES,
+  type PremiseReason,
+  VALIDATION_DETAIL_CODES,
+  VERSION_INTENTS,
+  type Warning,
+  type WriteResult,
+} from "@fluxvita/saveslot-contract";
 import type { ToolName } from "./names.ts";
 import {
   code,
@@ -67,6 +84,12 @@ const said = (table: ReadonlyMap<string, () => Part[]>, x: unknown): Part[] | un
 };
 
 const keysOf = (m: ReadonlyMap<string, unknown>): ReadonlySet<string> => new Set(m.keys());
+/**
+ * A table of texts by the contract's codes: written as an object `satisfies Record<Code, …>`, so a
+ * code the contract adds or drops fails to compile here (no hand-kept list falls behind).
+ */
+const textsBy = <K extends string>(o: Record<K, () => Part[]>): ReadonlyMap<string, () => Part[]> =>
+  new Map(Object.entries(o) as [string, () => Part[]][]);
 
 /** An ID the service made; untrusted when it is not one. */
 const idOf = (x: unknown): Part => as(String(x ?? ""), id);
@@ -196,20 +219,20 @@ function targetOf(x: unknown): Part[] {
   return ref !== undefined ? t`${tableOf(r["table"])} ${idOf(ref)}` : tableOf(r["table"]);
 }
 
-const AFFECTED: ReadonlyMap<string, () => Part[]> = new Map([
-  ["correct", () => t`⚠ a value you read was corrected since`],
-  ["revoke", () => t`⚠ a record in a value you read was revoked since`],
-  ["retroactive", () => t`⚠ the value at the business time you read was changed afterwards`],
-  ["plan_changed", () => t`⚠ the future arrangement you read has changed`],
-]);
-const PREMISE_VERB: ReadonlyMap<string, () => Part[]> = new Map([
-  ["correct", () => t`corrected`],
-  ["update", () => t`changed`],
-  ["revoke", () => t`revoked`],
-  ["retroactive", () => t`changed retroactively`],
-  ["plan_changed", () => t`changed for what comes after`],
-  ["deleted", () => t`deleted`],
-]);
+const AFFECTED = textsBy<AffectedReason>({
+  correct: () => t`⚠ a value you read was corrected since`,
+  revoke: () => t`⚠ a record in a value you read was revoked since`,
+  retroactive: () => t`⚠ the value at the business time you read was changed afterwards`,
+  plan_changed: () => t`⚠ the future arrangement you read has changed`,
+});
+const PREMISE_VERB = textsBy<PremiseReason>({
+  correct: () => t`corrected`,
+  update: () => t`changed`,
+  revoke: () => t`revoked`,
+  retroactive: () => t`changed retroactively`,
+  plan_changed: () => t`changed for what comes after`,
+  deleted: () => t`deleted`,
+});
 
 /** A row's marks (05 §4.2), on its line; premises changed, each on a line of its own. */
 function marksOf(m: unknown): { inline: Part[][]; below: Line[] } {
@@ -336,30 +359,33 @@ function pageOf(r: R, shown: number, unit: () => Part[]): Line[] {
   ];
 }
 
-const WARNINGS: ReadonlyMap<string, () => Part[]> = new Map([
-  ["unit_converted", () => t`converted to the field's unit`],
-  ["rounded", () => t`rounded to the field's precision`],
-  ["timezone_assumed", () => t`a moment without a zone was taken in the slot's time zone`],
-  ["time_truncated", () => t`the time was cut to the table's granularity`],
-  ["ver_fallback", () => t`no ver was given: the one you last read was used`],
-  ["sv_fallback", () => t`no sv was given: the one you last read was used`],
-  ["item_ver_fallback", () => t`no item_ver was given: the one you last read was used`],
-  ["renamed", () => t`a field was renamed`],
-  ["overwrote_corroborated", () => t`a value corroborated by other evidence was overwritten`],
-  ["pending_deletion_on_target", () => t`the row has a deletion that can still be undone`],
-  ["clock_behind_log", () => t`this machine's clock is behind the log; the log's time was used`],
-  [
-    "evidence_unreferenced",
-    () => t`an evidence segment is used by no op: stored, but the source of no value`,
-  ],
-  ["evidence_not_stored", () => t`nothing was recorded, and the evidence was not stored`],
-  ["premise_ver_fallback", () => t`a premise without ver: the one you last read was used`],
-  [
-    "premise_already_changed",
-    () => t`a premise had changed since you read it; the row carries "premise changed"`,
-  ],
-  ["external_key_skipped", () => t`some ops were skipped`],
-]);
+// multi_segment_unmapped stays in the structured result only (05 §4.3): no text.
+const WARNINGS = textsBy<Exclude<Warning["code"], "multi_segment_unmapped">>({
+  unit_converted: () => t`converted to the field's unit`,
+  rounded: () => t`rounded to the field's precision`,
+  timezone_assumed: () => t`a moment without a zone was taken in the slot's time zone`,
+  time_truncated: () => t`the time was cut to the table's granularity`,
+  ver_fallback: () => t`no ver was given: the one you last read was used`,
+  sv_fallback: () => t`no sv was given: the one you last read was used`,
+  item_ver_fallback: () => t`no item_ver was given: the one you last read was used`,
+  renamed: () => t`a field was renamed`,
+  overwrote_corroborated: () => t`a value corroborated by other evidence was overwritten`,
+  pending_deletion_on_target: () => t`the row has a deletion that can still be undone`,
+  clock_behind_log: () => t`this machine's clock is behind the log; the log's time was used`,
+  evidence_unreferenced: () =>
+    t`an evidence segment is used by no op: stored, but the source of no value`,
+  evidence_not_stored: () => t`nothing was recorded, and the evidence was not stored`,
+  premise_ver_fallback: () => t`a premise without ver: the one you last read was used`,
+  premise_already_changed: () =>
+    t`a premise had changed since you read it; the row carries "premise changed"`,
+  external_key_skipped: () => t`some ops were skipped`,
+  external_key_resync: () =>
+    t`rows lose their source key: a connector syncing the same record again adds another row`,
+  single_field_external_key: () =>
+    t`the source key has one field: IDs from several source systems may collide`,
+  group_key_free_text: () =>
+    t`a derived table groups by a free-text field: deleting it clears the whole group`,
+});
 
 /** Warnings and notices (05 §4.3): one line each; notices at most 3. */
 function remindersOf(r: R): Line[] {
@@ -382,18 +408,8 @@ function remindersOf(r: R): Line[] {
   return out;
 }
 
-const FIELD_TYPES: ReadonlySet<string> = new Set([
-  "text",
-  "integer",
-  "decimal",
-  "boolean",
-  "enum",
-  "date",
-  "zoned_datetime",
-  "quantity",
-  "ref",
-]);
-const GRANULARITIES: ReadonlySet<string> = new Set(["date", "instant"]);
+const FIELD_TYPES: ReadonlySet<string> = new Set<string>(CONTRACT_FIELD_TYPES);
+const GRANULARITIES: ReadonlySet<string> = new Set<string>(CONTRACT_GRANULARITIES);
 
 // --- catalog -----------------------------------------------------------------------------------
 
@@ -483,23 +499,16 @@ function query(r: R): Line[] {
   ];
 }
 
-const INTENTS: ReadonlySet<string> = new Set([
-  "insert",
-  "update",
-  "correct",
-  "revoke",
-  "deletion",
-  "deletion_cancelled",
-  "schema_switch",
-]);
+/** A version's intent (04-contract-types §5.1 `VersionIntent`). */
+const INTENTS: ReadonlySet<string> = new Set<string>(VERSION_INTENTS);
 
-const RESULT: ReadonlyMap<string, () => Part[]> = new Map([
-  ["applied", () => t``],
-  ["candidate", () => t` (candidate, not in effect)`],
-  ["awaiting", () => t` (awaiting confirmation, not in effect)`],
-  ["corroborated", () => t` (unchanged; added as evidence)`],
-  ["noop", () => t` (unchanged)`],
-]);
+const RESULT = textsBy<FieldResultCode>({
+  applied: () => t``,
+  candidate: () => t` (candidate, not in effect)`,
+  awaiting: () => t` (awaiting confirmation, not in effect)`,
+  corroborated: () => t` (unchanged; added as evidence)`,
+  noop: () => t` (unchanged)`,
+});
 const resultOf = (x: unknown): Part[] =>
   said(RESULT, x ?? "applied") ?? t` (${untrusted(String(x))})`;
 
@@ -571,40 +580,14 @@ function history(r: R): Line[] {
 
 // --- pending ------------------------------------------------------------------------------------
 
-const ITEM_TYPES: ReadonlySet<string> = new Set([
-  "conflict",
-  "awaiting_confirmation",
-  "flagged",
-  "schema_change",
-  "deletion",
+const ITEM_TYPES: ReadonlySet<string> = new Set<string>(CONTRACT_ITEM_TYPES);
+/** 04-contract-types §4.8 `ItemReason`: the reasons an item is opened with, and a deletion's origins. */
+const ITEM_REASONS: ReadonlySet<string> = new Set<string>([
+  ...ITEM_CREATED_REASONS,
+  ...DELETION_ORIGINS,
 ]);
-const ITEM_REASONS: ReadonlySet<string> = new Set([
-  "overwrites_change_point",
-  "referenced_row",
-  "undo_includes_later",
-  "undo_hides_later",
-  "conflict_cleared_by_deletion",
-  "policy_high_impact",
-  "duplicate_keys",
-  "stale_write",
-  "restored_candidate",
-  "schema_change",
-  "request",
-  "restored_unconfirmed",
-  "restored_pending",
-  "restored_executed",
-]);
-const ITEM_STATUS: ReadonlySet<string> = new Set(["open", "resolved", "superseded"]);
-const DECISIONS: ReadonlySet<string> = new Set([
-  "keep_effective",
-  "take_candidate",
-  "take_previous",
-  "confirm",
-  "reject",
-  "keep",
-  "revoke",
-  "cancel",
-]);
+const ITEM_STATUS: ReadonlySet<string> = new Set<string>(ITEM_STATUSES);
+const DECISIONS: ReadonlySet<string> = new Set<string>(CONTRACT_DECISIONS);
 const reasonOf = (x: unknown): Part[] => (x === undefined ? [] : t` · ${codeIn(x, ITEM_REASONS)}`);
 
 function itemTarget(x: unknown): Part[] {
@@ -770,7 +753,9 @@ function shortened(r: R): Line[] {
       ];
 }
 
-const STATUSES: ReadonlySet<string> = new Set(["saved", "pending"]);
+const STATUSES: ReadonlySet<string> = new Set(
+  Object.keys({ saved: true, pending: true } satisfies Record<WriteResult["status"], true>),
+);
 
 function write(r: R): Line[] {
   need(Array.isArray(r["ops"]) && STATUSES.has(String(r["status"])));
@@ -844,28 +829,26 @@ export function renderResult(tool: ToolName, result: R): string {
 
 // --- errors -------------------------------------------------------------------------------------
 
-const NEXT: ReadonlyMap<string, () => Part[]> = new Map([
-  ["invalid_argument", () => t`Check the parameter named, and send the request again.`],
-  ["unknown_table", () => t`Use saveslot_catalog to see the tables.`],
-  ["unknown_field", () => t`Use saveslot_catalog with level "table" to see the fields.`],
-  [
-    "not_found",
-    () =>
+/** The next step by error code (05 §7): the contract's codes only, not every one has a step. */
+const NEXT: ReadonlyMap<string, () => Part[]> = new Map(
+  Object.entries({
+    invalid_argument: () => t`Check the parameter named, and send the request again.`,
+    unknown_table: () => t`Use saveslot_catalog to see the tables.`,
+    unknown_field: () => t`Use saveslot_catalog with level "table" to see the fields.`,
+    not_found: () =>
       t`It may have been deleted, or be out of this connection's range; locate it again with saveslot_query.`,
-  ],
-  ["revoked", () => t`To restore it, use revert: {undo: n} with the operation that revoked it.`],
-  ["derived_readonly", () => t`Derived tables are read-only: write to their source tables.`],
-  ["validation_failed", () => t`Correct the values named, and send the request again.`],
-  [
-    "insufficient_scope",
-    () => t`This connection may not do this; the user can use a connection that may.`,
-  ],
-  ["not_in_this_version", () => t`This is not in this version of saveslot.`],
-  ["too_large", () => t`Ask for less.`],
-  ["unavailable", () => t`saveslot is not ready; try again shortly.`],
-  ["internal", () => t`An error inside saveslot; the incident is logged.`],
-  ["read_first", () => t`Read the row first (saveslot_query), then write with the ver you read.`],
-]);
+    revoked: () => t`To restore it, use revert: {undo: n} with the operation that revoked it.`,
+    derived_readonly: () => t`Derived tables are read-only: write to their source tables.`,
+    validation_failed: () => t`Correct the values named, and send the request again.`,
+    insufficient_scope: () =>
+      t`This connection may not do this; the user can use a connection that may.`,
+    not_in_this_version: () => t`This is not in this version of saveslot.`,
+    too_large: () => t`Ask for less.`,
+    unavailable: () => t`saveslot is not ready; try again shortly.`,
+    internal: () => t`An error inside saveslot; the incident is logged.`,
+    read_first: () => t`Read the row first (saveslot_query), then write with the ver you read.`,
+  } satisfies Partial<Record<ErrorCode, () => Part[]>>) as [string, () => Part[]][],
+);
 
 /** The reasons of the contract's errors this version gives (04-contract-types §9). */
 const ERROR_REASONS: ReadonlySet<string> = new Set([
@@ -891,16 +874,8 @@ const ERROR_REASONS: ReadonlySet<string> = new Set([
   "revoked",
 ]);
 
-/** The codes of a validation's details this version gives. */
-const DETAIL_CODES: ReadonlySet<string> = new Set([
-  "type_mismatch",
-  "required_missing",
-  "out_of_range",
-  "unknown_enum",
-  "description_missing",
-  "duplicate_name",
-  "untrusted_marker",
-]);
+/** The codes of a validation's details: the contract's (04-contract-types §9), as the CLI shows them. */
+const DETAIL_CODES: ReadonlySet<string> = new Set<string>(VALIDATION_DETAIL_CODES);
 
 /** How to ask for less, by the parameter to change (05 §7 `too_large`, `result_budget`). */
 const NARROW: ReadonlyMap<string, () => Part[]> = new Map([
@@ -939,7 +914,9 @@ function errorLines(error: R): Line[] {
   for (const d of details.slice(0, DETAILS_SHOWN)) {
     const x = obj(d);
     lines.push(
-      t`  ${x["op"] !== undefined ? t`op ${count(x["op"])} ` : []}${x["field"] !== undefined ? t`${fieldOf(x["field"])}: ` : []}${codeIn(x["code"], DETAIL_CODES)}`,
+      // Whatever the detail gives of where (04-contract-types §9 ValidationDetail): the op, the
+      // table, the field, the stretch.
+      t`  ${x["op"] !== undefined ? t`op ${count(x["op"])} ` : []}${x["table"] !== undefined ? t`${tableOf(x["table"])} ` : []}${x["field"] !== undefined ? t`${fieldOf(x["field"])}: ` : []}${codeIn(x["code"], DETAIL_CODES)}${x["valid"] !== undefined ? t`, ${periodOf(x["valid"])}` : []}`,
     );
   }
   if (details.length > DETAILS_SHOWN) {

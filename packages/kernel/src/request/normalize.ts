@@ -31,7 +31,7 @@ import type {
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize, isId } from "@fluxvita/saveslot-contract-core";
 import { dateInZone, nextDay, startOfDay } from "../time/index.ts";
-import { echoName, echoPath, fold, nearest, splitTableName } from "./names.ts";
+import { echoName, echoPath, fold, nearest, qualifiedTable, splitTableName } from "./names.ts";
 import { isJsonNumber } from "./number.ts";
 import { get, has, isDenseArray, isObj, keysOf, type Obj } from "./own.ts";
 import { instantText, parseDateTime, validDate } from "./times.ts";
@@ -521,6 +521,26 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
         for (const f of p.table.fields) {
           if (f.required === true && !given.has(f.id))
             details.push({ op: p.index, field: f.name, code: "required_missing" });
+        }
+        // An event or timeless row stands only on a field with a non-empty value: a clear alone
+        // does not keep one (03-data-model/03-deletion «重放规则», existence), so an insert giving
+        // none would leave nothing, its row ID of no use (04-contract «写入»). Only the set counts:
+        // this version's fields have no defaults, and a constant backfill only fills existing rows;
+        // a default, once there is one, counts here too. Each insert stands alone: no later op of
+        // the request can name the row it would make (no `as` binding in this version). On a state
+        // table a clear is a value (05-time «无值区间»), so this does not apply there. A table with
+        // a required field has `required_missing` for such an insert already (an event table always
+        // has one, its time field), so this is said only where no field is required.
+        if (
+          p.table.time.type !== "state" &&
+          !p.table.fields.some((f) => f.required === true) &&
+          p.set.every(([, , v]) => v === null)
+        ) {
+          details.push({
+            op: p.index,
+            table: qualifiedTable(input.compiled.name, p.table),
+            code: "empty_row",
+          });
         }
       }
     }

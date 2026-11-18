@@ -459,6 +459,47 @@ describe("values (04-contract §1; 10 «字段类型与取值范围», «精度�
       { op: 2, field: "date", code: "required_missing" },
     ]);
   });
+
+  it("an insert on a table with no required field gives some field a non-empty value: empty_row", () => {
+    // Timeless, nothing required: an insert of only empty values would make no row (a clear does
+    // not keep one, 03-deletion «重放规则»). Said with the op and the table, among the others.
+    const r = normalize({
+      ops: [
+        { intent: "insert", table: "kv", set: { text: null } },
+        { intent: "insert", table: "kv", set: { text: null, rank: null } },
+        { intent: "insert", table: "expenses", set: { date: null, note: "n" } },
+      ],
+    });
+    expect(details(r)).toEqual([
+      { op: 0, table: "ledger.kv", code: "empty_row" },
+      { op: 1, table: "ledger.kv", code: "empty_row" },
+      { op: 2, field: "date", code: "required_missing" },
+      { op: 2, field: "amount", code: "required_missing" },
+    ]);
+    // One non-empty value is enough; an empty one beside it is a clear of that field.
+    expect(normalize(op({ intent: "insert", table: "kv", set: { text: null, rank: 2 } })).ok).toBe(
+      true,
+    );
+    // An update clearing every field it names is not refused: the row stands on what it had.
+    expect(normalize(op({ intent: "update", table: "kv", row: ROW, set: { text: null } })).ok).toBe(
+      true,
+    );
+    // A state table: a clear is a value there (05-time «无值区间»).
+    expect(
+      normalize(
+        op({
+          intent: "insert",
+          table: "rooms",
+          valid_from: "2026-11-01T00:00:00Z",
+          set: { guest: null },
+        }),
+      ).ok,
+    ).toBe(true);
+    // A malformed value is not an empty one: only its own detail.
+    expect(details(normalize(op({ intent: "insert", table: "kv", set: { rank: "x" } })))).toEqual([
+      { op: 0, field: "rank", code: "malformed" },
+    ]);
+  });
 });
 
 describe("plain numbers, number text and the request key (04-contract §1, §14)", () => {

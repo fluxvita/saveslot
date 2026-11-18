@@ -16,6 +16,8 @@ export const VALIDATION_DETAIL_CODES = [
   "required_in_gap",
   "ref_not_found",
   "ref_wrong_table",
+  // an event or timeless insert giving no field a non-empty value: the row would not exist
+  "empty_row",
   "malformed",
   // schema compilation
   "reserved_name",

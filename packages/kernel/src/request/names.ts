@@ -70,3 +70,7 @@ export function echoName(s: string): string {
 
 /** A parameter path as an error echoes it: each segment at most `ECHO_CHARS` code points. */
 export const echoPath = (path: string): string => path.split("/").map(echoName).join("/");
+
+/** A table as receipts and errors name it: `slot.table`, never the bare name another slot may share. */
+export const qualifiedTable = (slot: string, table: { readonly name: string }): string =>
+  `${slot}.${table.name}`;
