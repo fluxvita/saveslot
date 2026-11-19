@@ -1302,6 +1302,13 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       restoreCount: restore,
       sv,
       sources: sourcesOf(o),
+      // A revoke over an interval records the interval's sources (`valid_sources`, 09 §5.7): all
+      // the op's evidence, or its api_call, so that the interval can be traced to the words it came
+      // from when they are deleted. A write without the block rests its interval on all its
+      // evidence.
+      ...(o.kind === "revoke" && o.valid !== undefined && o.valid !== "corrected_span"
+        ? { validSources: sourcesOf(o) }
+        : {}),
       // An undo writes back no value of its own: the request's evidence (or its api_call) is the
       // operation's source (09 §5.2 `undo`: only `target`, `op_sources` and `revert`).
       ...(o.kind === "undo" ? { opSources: sourcesOf(o) } : {}),

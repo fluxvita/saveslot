@@ -265,6 +265,10 @@ function comparable(e: LoggedEvent, items: Map<string, string>): unknown {
   if (e.type === "write.base" && Array.isArray(blocks["op_sources"])) {
     blocks["op_sources"] = (blocks["op_sources"] as unknown[]).map(() => "S");
   }
+  // An interval revoke's interval sources likewise.
+  if (e.type === "write.base" && Array.isArray(blocks["valid_sources"])) {
+    blocks["valid_sources"] = (blocks["valid_sources"] as unknown[]).map(() => "S");
+  }
   // A decision's request-level blocks are the pipeline's; its item version is checked apart (the
   // record mapping does not know of refreshes).
   if (e.type === "item.resolved") {

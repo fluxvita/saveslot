@@ -45,6 +45,13 @@ export function asInThisPhase(o: Op, i: number): Op {
   return { ...o, fields };
 }
 
+/** A revoke over an interval records its interval's sources (`valid_sources`): all its evidence. */
+function intervalSources(input: JudgeInput, sources: readonly number[]) {
+  return input.kind === "revoke" && input.valid !== undefined
+    ? { validSources: sources as never }
+    : {};
+}
+
 /** The raw values of a write: in these scenarios, as the caller would give them, the same text. */
 function rawOf(input: JudgeInput): Partial<Record<FieldId, RawFieldValue>> {
   if (input.kind !== "write") return {};
@@ -142,6 +149,7 @@ export function eventsOfSteps(
         ...(j.created ? { created: true as const } : {}),
         sv: 1,
         sources: [r.op],
+        ...intervalSources(s.input, [r.op]),
         // An undo's operation source (09 §5.2): the request's evidence or its api_call.
         ...(r.kind === "undo" ? { opSources: [r.op] } : {}),
         raw: rawOf(s.input),
@@ -249,6 +257,7 @@ export function eventsOfRequest(
       ...(j.created ? { created: true as const } : {}),
       sv: 1,
       sources: [input.op],
+      ...intervalSources(input, [input.op]),
       raw: rawOf(input),
       restoreCount: 0,
       versions: { ruleset: 1, policy: 1 },

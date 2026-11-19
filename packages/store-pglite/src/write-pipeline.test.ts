@@ -2174,3 +2174,72 @@ describe("the write path's error details (04-contract-types §9)", () => {
     T,
   );
 });
+
+describe("a revoke over an interval records where its interval comes from (09 §5.7 valid_sources)", () => {
+  const entity = async () => {
+    const e = await send({
+      sv: 1,
+      ops: [{ intent: "insert", table: "entities", valid_from: "2026-11-01", set: { b: "x" } }],
+    });
+    return { id: e.ops[0]?.target.entity as string, ver: e.ops[0]?.ver as string };
+  };
+  const revoke = (id: string, ver: string, more: Record<string, unknown> = {}) => ({
+    intent: "revoke",
+    table: "entities",
+    entity: id,
+    ver,
+    ...more,
+  });
+  /** The base event of an operation, and its operation's sources (seq and kind). */
+  const written = async (op: number) => {
+    const events = await eventsOfOp(op);
+    const base = events.find((e) => e.type === "write.base");
+    const sources = events
+      .filter((e) => e.type === "source.recorded")
+      .map((e) => ({ seq: e.seq, kind: (e.blocks["target"] as { kind: string }).kind }));
+    return { base, sources };
+  };
+
+  it(
+    "with evidence: the op's evidence",
+    async () => {
+      const e = await entity();
+      const r = await send({
+        sv: 1,
+        evidence: [{ kind: "user_message", text: "the 25th to the 28th do not count" }],
+        ops: [revoke(e.id, e.ver, { valid_from: "2026-11-25", valid_to: "2026-11-28" })],
+      });
+      const { base, sources } = await written(r.seq);
+      expect(sources).toEqual([{ seq: r.seq + 1, kind: "user_message" }]);
+      expect(base?.blocks["valid_sources"]).toEqual([r.seq + 1]);
+    },
+    T,
+  );
+
+  it(
+    "without evidence: the op's api_call",
+    async () => {
+      const e = await entity();
+      const r = await send({
+        sv: 1,
+        ops: [revoke(e.id, e.ver, { valid_from: "2026-11-25", valid_to: "2026-11-28" })],
+      });
+      const { base, sources } = await written(r.seq);
+      expect(sources).toEqual([{ seq: r.seq + 1, kind: "api_call" }]);
+      expect(base?.blocks["valid_sources"]).toEqual([r.seq + 1]);
+    },
+    T,
+  );
+
+  it(
+    "a revoke of the whole entity has no interval, and no valid_sources",
+    async () => {
+      const e = await entity();
+      const r = await send({ sv: 1, ops: [revoke(e.id, e.ver)] });
+      const { base } = await written(r.seq);
+      expect(base).toBeDefined();
+      expect(base?.blocks["valid_sources"]).toBeUndefined();
+    },
+    T,
+  );
+});
