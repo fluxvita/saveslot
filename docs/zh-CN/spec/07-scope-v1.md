@@ -159,7 +159,7 @@
 | 读取审计 `reads.list`、连接实例管理 | contract §17 | 做 | — | 成本低，"谁读过"是对外承诺 | K10 | P1 |
 | 限流与配额 | architecture §5 | 简化 | 云服务只做按租户的简单限流；配额后续 | — | — | P5 |
 | MCP 工具 | surfaces §1 | 简化 | 第一版开 10 个：`saveslot_catalog`、`saveslot_query`、`saveslot_sql`、`saveslot_history`、`saveslot_sources`（含 `deletion_preview`）、`saveslot_pending`、`saveslot_write`、`saveslot_resolve`、`saveslot_schema_draft`、`saveslot_delete`；`saveslot_extract_claim` / `saveslot_extract_submit` 随抽取作业 | 工具按 eval 逐步开放 | — | P1–P4 |
-| MCP 文本渲染、不可信边界、标记必出现在文本、`outputSchema` + `structuredContent` 双轨 | surfaces §3–§7 | 做 | — | 标记是结构化字段，渲染器测试保证（architecture §6） | — | P1 |
+| MCP 文本渲染、不可信边界、标记必出现在文本、工具结果只有文本（不给 `structuredContent`） | surfaces §3–§7 | 做 | — | 标记是结构化字段，渲染器测试保证（architecture §6） | — | P1 |
 | MCP 的服务级说明 `instructions`：按凭证的 scope 生成，写适用条件，末尾列出 slot 名与每个 slot 的表数（不列表名） | surfaces §9、§11 | 做 | — | MCP 只能保证 Agent"能"读写；适用条件放在 MCP 自己的文本里才随接入自动到位 | — | P1 |
 | MCP prompts：`overview`、`pending`、`track`（代码里的固定模板，不读任何已存数据） | surfaces §10 | 做 | — | 人能直接点到的入口，补"第一版没有 App"；固定模板、代价小，P1 的上手流程要用；属于增强，缺了流程照样走通 | — | P1 |
 | 宿主自定义指令的建议文案（`saveslot snippet` 打印文案与各宿主的放置位置，由用户自己放） | 06-cli 第 3 节；surfaces §10 | 做 | — | 可选增强；评测的附加变体用它 | — | P1（初稿）、P6（定稿） |

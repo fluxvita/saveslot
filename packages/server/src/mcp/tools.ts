@@ -455,26 +455,6 @@ export function toolsFor(principal: Principal): readonly Tool[] {
   return TOOLS.filter((t) => principal.scopes.includes(t.scope));
 }
 
-/**
- * What `structuredContent` may be (05 §3): the operation's result, the contract's error, or an
- * elicitation's outcome. The result's own shape is not spelled out here: the contract's types are
- * not yet a schema this package can take.
- */
-export const OUTPUT_SCHEMA: JsonSchema = {
-  type: "object",
-  anyOf: [
-    {
-      required: ["error"],
-      properties: { error: { type: "object", required: ["code"], properties: { code: str } } },
-    },
-    {
-      required: ["elicitation", "executed"],
-      properties: { elicitation: { enum: ["declined", "cancelled"] }, executed: bool },
-    },
-    { not: { anyOf: [{ required: ["error"] }, { required: ["elicitation"] }] } },
-  ],
-};
-
 /** A tool as `tools/list` gives it to a credential whose tools are `listed`. */
 export function describe(tool: Tool, listed: ReadonlySet<ToolName>) {
   const properties: Record<string, JsonSchema> = {};
@@ -493,7 +473,6 @@ export function describe(tool: Tool, listed: ReadonlySet<ToolName>) {
       ...(tool.oneOf !== undefined ? { oneOf: [...tool.oneOf] } : {}),
       additionalProperties: false,
     },
-    outputSchema: OUTPUT_SCHEMA,
     annotations: tool.annotations,
   };
 }

@@ -33,10 +33,10 @@
 //   recorded no later than the clock's start (`eval_clock_refused`), so that it is never turned on
 //   over a user's data, nor behind the log's end, where every event would be recorded at that end.
 
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, fchmodSync, openSync, rmSync, writeSync } from "node:fs";
 import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { HealthBody, LocalListener } from "@fluxvita/saveslot-server";
+import type { HealthBody, LocalListener, ToolResultSeen } from "@fluxvita/saveslot-server";
 import { listenLocal } from "@fluxvita/saveslot-server";
 import {
   ControlFileError,
@@ -62,6 +62,7 @@ import {
   PgliteBackend,
   PgliteStoreError,
 } from "@fluxvita/saveslot-store-pglite";
+import { redactTokens } from "./mcp-record.ts";
 
 export type ServiceState = "starting" | "ready" | "stopping" | "stopped" | "failed";
 
@@ -84,6 +85,11 @@ export interface RunServiceOptions {
    * §11). See the top of this file for the rules it starts by.
    */
   readonly evalClock?: string;
+  /**
+   * Each MCP tool call's contract result as it ended (tests). Given only in code; never from the
+   * command line, configuration or the environment.
+   */
+  readonly onToolResult?: (seen: ToolResultSeen) => void;
   /** Where log lines go (default stderr). */
   readonly log?: (line: string) => void;
   /** Called once the service listens, before the tenant is opened (state `starting`). */
@@ -114,6 +120,14 @@ export const runDir = (home: string): string => join(home, "run");
 export const lockDir = runDir;
 export const pidFile = (home: string): string => join(runDir(home), "saveslot.pid");
 export const socketFile = (home: string): string => join(runDir(home), "saveslot.sock");
+/**
+ * The evaluation results (02-architecture §11): with the test clock, each MCP tool call's
+ * connection instance, tool, arguments and contract result, one JSON line each; new at each start
+ * (what was at the path removed, a link not followed, then made exclusively), 0600, tokens written
+ * as `slt_REDACTED` / `sls_REDACTED`. Host and model get the text only.
+ */
+export const evalResultsFile = (home: string): string => join(runDir(home), "eval-results.jsonl");
+
 /** The mark of a home an evaluation run has used (`--eval-clock`); never in the log. */
 export const evalMarkFile = (home: string): string => join(controlDir(home), "eval.json");
 
@@ -171,6 +185,30 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   let lock: DirLockHandle | undefined;
   let probe: NodeJS.Timeout | undefined;
   let readsFlush: NodeJS.Timeout | undefined;
+  /** The evaluation results' file, open while the service runs on the test clock. */
+  let evalResults: number | undefined;
+  const onToolResult = (seen: ToolResultSeen) => {
+    o.onToolResult?.(seen);
+    if (evalResults === undefined) return;
+    const line = {
+      t: now(),
+      connection: seen.principal.kind === "connection" ? seen.principal.actor : null,
+      tool: seen.tool,
+      arguments: seen.arguments,
+      result: seen.result,
+    };
+    try {
+      writeSync(evalResults, `${redactTokens(JSON.stringify(line))}\n`);
+    } catch {
+      // A hole in the results is worse than a run that visibly ends.
+      closeSync(evalResults);
+      evalResults = undefined;
+      state = "failed";
+      reason = "eval_results_failed";
+      say("failed", { reason });
+      void stop(1);
+    }
+  };
   /** Settles once opening the tenant has settled, the storage closed again if stopped meanwhile. */
   let opening: Promise<void> | undefined;
   let resolveExited!: (e: Exited) => void;
@@ -205,6 +243,10 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       say("stopping");
       if (probe !== undefined) clearInterval(probe);
       if (readsFlush !== undefined) clearInterval(readsFlush);
+      if (evalResults !== undefined) {
+        closeSync(evalResults);
+        evalResults = undefined;
+      }
       if (o.signals !== false) {
         process.off("SIGTERM", onSignal);
         process.off("SIGINT", onSignal);
@@ -292,6 +334,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
                     },
                   }
                 : {}),
+              onToolResult,
               warn: (event, fields) => say(event, fields),
             }
           : undefined,
@@ -367,6 +410,11 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
             evalMarkFile(o.home),
             `${JSON.stringify({ eval_clock: new Date(evalStart).toISOString() })}\n`,
           );
+          // New at this start: whatever is at the path goes first (a link is removed, not
+          // followed), then the file is made exclusively.
+          rmSync(evalResultsFile(o.home), { force: true });
+          evalResults = openSync(evalResultsFile(o.home), "wx", 0o600);
+          fchmodSync(evalResults, 0o600);
         }
       } catch (e) {
         await closeLocalTenant(r.tenant).catch(() => {});

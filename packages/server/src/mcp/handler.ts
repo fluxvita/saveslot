@@ -165,6 +165,9 @@ async function call(
   args: Readonly<Record<string, unknown>>,
 ): Promise<CallToolResult> {
   const { operation } = tool;
+  let outcome:
+    | { readonly result: Record<string, unknown> }
+    | { readonly error: Record<string, unknown> };
   try {
     // What MCP does not expose (05 §2) is refused here: the operation itself would take it.
     const withheld =
@@ -211,22 +214,31 @@ async function call(
         warn: ctx.warn,
         fit: budget.fit,
       })) as Record<string, unknown>;
-    // Plain JSON from here on: the text and structuredContent are of the same plain value.
-    const result = budget.finish(plain(await run(params)));
-    return {
-      // "Opened 5 h ago" by the service's clock (the test clock, when there is one).
-      content: [{ type: "text", text: renderResult(tool.name, result, new Date(ctx.now())) }],
-      structuredContent: result,
-    };
+    outcome = { result: budget.finish(plain(await run(params))) };
   } catch (e) {
-    const x = contractError(e, ctx.warn);
-    const error = errorBody(x);
-    return {
-      isError: true,
-      content: [{ type: "text", text: renderError(error) }],
-      structuredContent: { error },
-    };
+    outcome = { error: errorBody(contractError(e, ctx.warn)) };
   }
+  // Told once, after the call, outside it: an observer that fails changes nothing of the answer
+  // (a write that took effect is not reported as an error), and is not told twice.
+  try {
+    ctx.onToolResult?.({
+      principal,
+      tool: tool.name,
+      arguments: args,
+      result: "result" in outcome ? outcome.result : { error: outcome.error },
+    });
+  } catch {
+    ctx.warn("tool_result_observer_failed", {});
+  }
+  if ("error" in outcome) {
+    return { isError: true, content: [{ type: "text", text: renderError(outcome.error) }] };
+  }
+  // The text only, inside the untrusted boundary (05 §3, §5): no structuredContent, whose
+  // strings a host would give the model as they are, with no boundary.
+  // "Opened 5 h ago" by the service's clock (the test clock, when there is one).
+  return {
+    content: [{ type: "text", text: renderResult(tool.name, outcome.result, new Date(ctx.now())) }],
+  };
 }
 
 /**

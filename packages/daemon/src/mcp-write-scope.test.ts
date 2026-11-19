@@ -41,7 +41,7 @@ const doc = (slot: string, table: string, fields: string[]) => ({
   ],
 });
 
-type CallResult = { isError?: boolean; content: unknown; structuredContent?: unknown };
+type CallResult = { isError?: boolean; content: unknown };
 const textOf = (r: CallResult) =>
   ((r.content as { type: string; text: string }[])[0]?.text ?? "").replace(
     /untrusted-data-[0-9a-f]{32}/g,

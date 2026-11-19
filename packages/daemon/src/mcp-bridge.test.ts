@@ -1218,7 +1218,8 @@ describe("the bridge against a real service", () => {
       // The service took the bridge's token: the call was served.
       const out = io.lines.map((l) => JSON.parse(l) as Record<string, unknown>);
       const called = out.find((o) => o["id"] === 2) as { result: Record<string, unknown> };
-      expect(called.result["structuredContent"]).toBeDefined();
+      // A tool result is text only (05 §3).
+      expect(Object.keys(called.result)).toEqual(["content"]);
 
       expect(statSync(file).mode & 0o777).toBe(0o600);
       const text = readFileSync(file, "utf8");
@@ -1249,7 +1250,7 @@ describe("the bridge against a real service", () => {
       const recorded = msgs.find((m) => m.dir === "out" && m.msg["id"] === 2)?.msg as {
         result: Record<string, unknown>;
       };
-      expect(recorded.result["structuredContent"]).toEqual(called.result["structuredContent"]);
+      expect(recorded.result).toEqual(called.result);
       const asked = msgs.find((m) => m.dir === "in" && m.msg["id"] === 2)?.msg as {
         params: { arguments: { task: string } };
       };

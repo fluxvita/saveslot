@@ -366,7 +366,7 @@ function pageOf(r: R, shown: number, unit: () => Part[]): Line[] {
   ];
 }
 
-// multi_segment_unmapped stays in the structured result only (05 §4.3): no text.
+// multi_segment_unmapped is not drawn over MCP (05 §4.3): HTTP and the CLI give it.
 const WARNINGS = textsBy<Exclude<Warning["code"], "multi_segment_unmapped">>({
   unit_converted: () => t`converted to the field's unit`,
   rounded: () => t`rounded to the field's precision`,
@@ -452,7 +452,7 @@ function remindersOf(r: R): Line[] {
   const out: Line[] = [];
   const groups = new Map<string, R[]>();
   for (const w of arr(r["warnings"]).map(obj)) {
-    // multi_segment_unmapped stays in the structured result only (05 §4.3).
+    // multi_segment_unmapped is not drawn over MCP (05 §4.3).
     if (w["code"] === "multi_segment_unmapped") continue;
     const k = JSON.stringify([String(w["code"]), w["field"] ?? null]);
     groups.set(k, [...(groups.get(k) ?? []), w]);

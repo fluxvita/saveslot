@@ -16,6 +16,8 @@
 //   state/<when>/….json        what the user session reads after the fixture and after each step
 //   records/<key>/             `saveslot mcp --record` for connection <key>: a new file per
 //                              session (the host starts the bridge anew), the latest one last
+//   calls.jsonl                each tool call the agents made, paired with its contract result
+//                              from the service's evaluation results (./pair.ts)
 // `--fixture-only` stops after the fixture (and its state), without running the steps.
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -29,6 +31,7 @@ import { osFileLock, PgliteBackend } from "@fluxvita/saveslot-store-pglite";
 import { parse } from "yaml";
 // The templates as the CLI ships them (06-cli §3.1); not part of its exports.
 import { templateDocument } from "../../packages/cli/src/templates.ts";
+import { pairCalls } from "./pair.ts";
 
 type Obj = Record<string, unknown>;
 
@@ -386,6 +389,11 @@ for (const [i, step] of v.steps.entries()) {
 }
 rl.close();
 await snapshot(session, "final");
+// The agents' tool calls with their contract results: the text the agent got is in the record,
+// the result an assertion matches in the service's evaluation results.
+const paired = pairCalls(dir);
 say("");
 say(`All steps done. State read back under ${join(dir, "state")}.`);
+say(`${paired.paired} tool calls paired in ${join(dir, "calls.jsonl")}.`);
+for (const p of paired.problems) say(`pairing: ${p}`);
 say(`Stop the service: saveslot stop --home ${home}`);

@@ -1,7 +1,8 @@
 // The MCP call record (docs/zh-CN/spec/02-architecture.md §11 «评测对实现的要求»; 06-cli §4.1):
 // `saveslot mcp --record <file>`, for evaluations only. The bridge writes every message it reads
 // from the host and every message it writes back, in order, so that the run's whole tool call
-// sequence (arguments and structured results) is kept even when the host does not export it.
+// sequence (the arguments sent and the text given back) is kept even when the host does not
+// export it. The contract result of each call is the service's evaluation results' (service.ts).
 //
 // - The file is new: made with O_EXCL at 0600; one that exists is refused, never appended to.
 //   Given a directory, each bridge makes its own file there, named by when it started and its

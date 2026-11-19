@@ -1,14 +1,43 @@
 // The MCP adapter as the contract suite's driver: the official client over the service's socket,
-// speaking either protocol era, calling an operation's tool (05-surfaces §1) and reading the
-// outcome from `structuredContent` (05 §3). A refusal at the transport (401, 403: 05 §1, §3) is
-// read from the response's body, the contract's error as on HTTP.
+// speaking either protocol era, calling an operation's tool (05-surfaces §1). A tool result is
+// text only (05 §3): the outcome is the contract result the service saw the call end with
+// (`onToolResult`, given to the service in code), and every result is checked to carry no
+// structuredContent. A refusal at the transport (401, 403: 05 §1, §3) is read from the
+// response's body, the contract's error as on HTTP.
 
 import { request } from "node:http";
-import { TOOLS } from "@fluxvita/saveslot-server";
+import { TOOLS, type ToolResultSeen } from "@fluxvita/saveslot-server";
 import type { Operation } from "@fluxvita/saveslot-service";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { Driver, Outcome } from "./contract-suite.fixture.ts";
 import { socketFile } from "./service.ts";
+
+/**
+ * What a service saw its tool calls end with, in order: give `onToolResult` to `runService`;
+ * `last()` is the contract result of the call that ended last.
+ */
+export function observer() {
+  const seen: ToolResultSeen[] = [];
+  return {
+    seen,
+    onToolResult: (x: ToolResultSeen) => {
+      seen.push(x);
+    },
+    last: (): Record<string, unknown> => {
+      const x = seen.at(-1);
+      if (x === undefined) throw new Error("no tool call has ended");
+      return x.result as Record<string, unknown>;
+    },
+  };
+}
+
+/** A tool result as MCP gives it: text only, never a structuredContent (05 §3). */
+export function textOnly(r: Record<string, unknown>): string {
+  if (Object.hasOwn(r, "structuredContent")) throw new Error("a tool result has structuredContent");
+  const content = r["content"] as { type: string; text: string }[];
+  if (content.length !== 1 || content[0]?.type !== "text") throw new Error("not one text");
+  return content[0].text;
+}
 
 /** The protocol era a client speaks: 2025-11-25 by `initialize`, 2026-07-28 by `server/discover`. */
 export type Era = "legacy" | "modern";
@@ -93,7 +122,7 @@ const toolOf = (operation: Operation) => {
 
 /** The contract's operations over MCP, on the service in `home()`. */
 export const mcpDriver =
-  (home: () => string, era: Era): Driver =>
+  (home: () => string, era: Era, obs: { readonly seen: readonly ToolResultSeen[] }): Driver =>
   async (credential, operation, params, o = {}) => {
     let last: Sent | undefined;
     const refused = (): Outcome | undefined => {
@@ -107,6 +136,7 @@ export const mcpDriver =
       client = await mcpClient(home(), credential, era, (r) => {
         last = r;
       });
+      const before = obs.seen.length;
       const r = await client.callTool({
         name: toolOf(operation),
         arguments: {
@@ -115,7 +145,14 @@ export const mcpDriver =
           ...(o.idempotencyKey !== undefined ? { idempotency_key: o.idempotencyKey } : {}),
         },
       });
-      const content = r.structuredContent as Record<string, unknown>;
+      textOnly(r);
+      // This call's own result: exactly one more seen, of this tool, with these arguments. A
+      // path that did not report would otherwise hand on the result of the call before.
+      const seen = obs.seen.slice(before);
+      if (seen.length !== 1 || seen[0]?.tool !== toolOf(operation)) {
+        throw new Error(`${toolOf(operation)}: ${seen.length} results seen for one call`);
+      }
+      const content = seen[0].result as Record<string, unknown>;
       if (r.isError === true) {
         const { message: _, ...error } = content["error"] as Record<string, unknown>;
         return { error } as Outcome;

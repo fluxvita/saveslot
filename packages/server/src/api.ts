@@ -29,6 +29,7 @@ import {
   kernelCall,
   type LocalTenant,
   type Operation,
+  type Principal,
   runOperation,
 } from "@fluxvita/saveslot-service";
 import { HTTP_STATUS } from "./status.ts";
@@ -46,8 +47,22 @@ export interface ApiContext {
    * route that moves it does not exist.
    */
   readonly evalClock?: { readonly advance: (ms: number) => string };
+  /**
+   * Each MCP tool call's contract result, as the call ended (the result, or `{error}`): for the
+   * tests and the evaluation log. Given only in code: never from the command line, configuration
+   * or the environment. The tool result itself carries text only (05-surfaces §3).
+   */
+  readonly onToolResult?: (seen: ToolResultSeen) => void;
   /** Not-implemented paths and internal errors (no request content). */
   readonly warn: (event: string, fields: Readonly<Record<string, string>>) => void;
+}
+
+/** One MCP tool call, as the service saw it end. */
+export interface ToolResultSeen {
+  readonly principal: Principal;
+  readonly tool: string;
+  readonly arguments: Readonly<Record<string, unknown>>;
+  readonly result: Readonly<Record<string, unknown>>;
 }
 
 export interface Api {

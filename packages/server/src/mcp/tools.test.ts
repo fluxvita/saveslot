@@ -10,9 +10,8 @@ import { fromJsonSchema, type JsonSchemaType } from "@modelcontextprotocol/serve
 import { expect, describe as group, it } from "vitest";
 import { boundaryNumber } from "./boundary.ts";
 import { missingScope, sdkHeaders } from "./handler.ts";
-import { ERRORS, SAMPLES } from "./samples.fixture.ts";
 import { compose } from "./texts.ts";
-import { describe, OUTPUT_SCHEMA, TOOLS, type ToolName, toolsFor } from "./tools.ts";
+import { describe, TOOLS, type ToolName, toolsFor } from "./tools.ts";
 import { UNTRUSTED_FIELDS } from "./untrusted-fields.ts";
 
 const SPEC = readFileSync(
@@ -312,22 +311,25 @@ group("UntrustedText (04-contract-types §1.4)", () => {
   });
 });
 
-group("outputSchema (05 §3)", () => {
-  const schema = fromJsonSchema(OUTPUT_SCHEMA as unknown as JsonSchemaType);
-  const ok = async (v: unknown) => (await schema["~standard"].validate(v)).issues === undefined;
-
-  it("every tool gives it", () => {
-    for (const tool of TOOLS) expect(describe(tool, new Set()).outputSchema).toEqual(OUTPUT_SCHEMA);
-  });
-
-  it("takes each result, each error and an elicitation's outcome", async () => {
-    for (const { result } of Object.values(SAMPLES)) expect(await ok(result)).toBe(true);
-    for (const error of Object.values(ERRORS)) expect(await ok({ error })).toBe(true);
-    expect(await ok({ elicitation: "declined", executed: false })).toBe(true);
-  });
-
-  it("refuses an error without its code, and an elicitation's outcome half given", async () => {
-    expect(await ok({ error: { message: "x" } })).toBe(false);
-    expect(await ok({ elicitation: "declined" })).toBe(false);
+group("no outputSchema (05 §3)", () => {
+  it("no tool declares one, for any set of scopes: a tool result is text only", () => {
+    const scopes = [
+      "saveslot.read",
+      "saveslot.write",
+      "saveslot.schema",
+      "saveslot.delete",
+    ] as const;
+    for (let mask = 0; mask < 1 << scopes.length; mask++) {
+      const listed = new Set(TOOLS.map((t) => t.name));
+      const principal = {
+        kind: "connection",
+        actor: `ci_${"0".repeat(26)}`,
+        scopes: scopes.filter((_, i) => (mask & (1 << i)) !== 0),
+        visibility: { kind: "all" },
+      } as unknown as Principal;
+      for (const tool of toolsFor(principal)) {
+        expect(Object.keys(describe(tool, listed))).not.toContain("outputSchema");
+      }
+    }
   });
 });

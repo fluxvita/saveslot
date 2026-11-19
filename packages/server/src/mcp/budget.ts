@@ -3,15 +3,15 @@
 //   - A page of a list (query's rows, history's entries or rows, pending items, the catalog's
 //     tables): as many as fit are shown, and the cut is the page's end: the operation is called
 //     again for that many, so that the next page starts at the first not shown and nothing is
-//     skipped. The result says `truncated: {shown, total}`; structuredContent is that page too.
+//     skipped. The result says `truncated: {shown, total}`.
 //   - A result of a read that is no page, over the budget: `too_large` (`result_budget`), with how
 //     to ask for less. Nothing was recorded but the read; reading less is the way.
 //   - A receipt (write, resolve, schema_draft): the operation took effect, so it is never refused
 //     for its size. A write's keeps its operation number, each op's target and new ver, and the
 //     items made; it loses each field's result first, then the later entries of its lists. A
 //     schema draft's keeps the slot, its version and the draft; it loses the list of changes
-//     first, then the document with its IDs filled in, its text within the budget and its
-//     structure within STRUCTURED_BYTES. Each says what it lost in `omitted`.
+//     first, then the document with its IDs filled in, its text within the budget. Each says
+//     what it lost in `omitted`.
 
 import { ContractError } from "@fluxvita/saveslot-service";
 import type { ToolName } from "./names.ts";
@@ -19,15 +19,6 @@ import { renderResult } from "./render.ts";
 
 /** The budget of a result's text, in characters (05 §3). */
 export const BUDGET = 100_000;
-
-/**
- * The most a page's structuredContent may hold, serialized, in bytes (05 §3; a value for now,
- * 08-open-questions). The text shows a long value in part; the structured result holds it whole,
- * so a page is also cut where this ends.
- */
-export const STRUCTURED_BYTES = 1024 * 1024;
-
-const bytes = (r: R) => Buffer.byteLength(JSON.stringify(r), "utf8");
 
 /** The room the line giving the next page's handle takes: a handle is at most 1,024 characters. */
 const HANDLE_ROOM = 1_200;
@@ -68,9 +59,8 @@ function cut(tool: ToolName, r: R, list: string, k: number): R {
 
 const fits = (tool: ToolName, r: R, budget: number) => renderResult(tool, r).length <= budget;
 
-/** A read result within both: its text within `budget`, its structure within the bytes. */
-const within = (tool: ToolName, r: R, budget: number) =>
-  bytes(r) <= STRUCTURED_BYTES && fits(tool, r, budget);
+/** A read result within the budget: its text. */
+const within = (tool: ToolName, r: R, budget: number) => fits(tool, r, budget);
 
 /** The lists a receipt may cut, and the objects whose lists it may cut (05 §3). */
 const LISTS = ["derived", "superseded", "warnings"] as const;
@@ -206,11 +196,10 @@ const RECEIPTS: ReadonlySet<ToolName> = new Set([
 
 /**
  * A schema draft's receipt shortened (05 §3): its changes go first, then the document with its IDs
- * filled in; the slot, its version and the draft stay. Its text within `budget`, its structure
- * within STRUCTURED_BYTES.
+ * filled in; the slot, its version and the draft stay. Its text within `budget`.
  */
 function shortenDraft(r: R, budget: number): R {
-  const ok = (x: R) => bytes(x) <= STRUCTURED_BYTES && fits("saveslot_schema_draft", x, budget);
+  const ok = (x: R) => fits("saveslot_schema_draft", x, budget);
   const omitted = new Set<string>(Array.isArray(r["omitted"]) ? (r["omitted"] as string[]) : []);
   const done = (x: R): R => ({ ...x, omitted: [...omitted] });
   let out: R = { ...r, changes: [] };

@@ -13,7 +13,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { contractSuite, LEDGER } from "./contract-suite.fixture.ts";
 import { httpDriver, httpRequest } from "./http-driver.fixture.ts";
-import { type Era, MCP_OPERATIONS, mcpClient, mcpDriver } from "./mcp-driver.fixture.ts";
+import {
+  type Era,
+  MCP_OPERATIONS,
+  mcpClient,
+  mcpDriver,
+  observer,
+  textOnly,
+} from "./mcp-driver.fixture.ts";
 import { type RunningService, runService } from "./service.ts";
 
 const T = 60_000;
@@ -21,7 +28,7 @@ const T = 60_000;
 /** A service on a fresh home: its home, its user session, its log. */
 function serviceFixture(prefix: string) {
   const root = mkdtempSync(join(tmpdir(), prefix));
-  const s = { home: join(root, "home"), session: "", lines: [] as string[] };
+  const s = { home: join(root, "home"), session: "", lines: [] as string[], obs: observer() };
   let service: RunningService | undefined;
   beforeAll(async () => {
     await initLocalHome({
@@ -36,6 +43,7 @@ function serviceFixture(prefix: string) {
       version: "t",
       signals: false,
       log: (l) => s.lines.push(l),
+      onToolResult: s.obs.onToolResult,
     });
     expect(service.state).toBe("ready");
   }, T);
@@ -50,7 +58,7 @@ for (const era of ["legacy", "modern"] as const satisfies readonly Era[]) {
   describe(`the contract over MCP (${era === "legacy" ? "2025-11-25" : "2026-07-28"})`, () => {
     const s = serviceFixture(`saveslot-mcp-${era}-`);
     contractSuite(() => ({
-      driver: mcpDriver(() => s.home, era),
+      driver: mcpDriver(() => s.home, era, s.obs),
       session: s.session,
       surface: MCP_OPERATIONS,
       admin: httpDriver(() => s.home),
@@ -141,7 +149,8 @@ describe("MCP's own", () => {
     for (const era of ["legacy", "modern"] as const) {
       const c = await mcpClient(s.home, s.session, era);
       const r = await c.callTool({ name: "saveslot_catalog", arguments: {} });
-      expect(JSON.stringify(r.structuredContent)).toContain("ledger");
+      expect(textOnly(r)).toContain("ledger");
+      expect(JSON.stringify(s.obs.last())).toContain("ledger");
       await c.close();
     }
   });
@@ -249,7 +258,8 @@ describe("MCP's own", () => {
     ];
     for (const [name, args, param] of cases) {
       const r = await c.callTool({ name, arguments: args });
-      expect({ name, param, r: r.structuredContent }).toMatchObject({
+      textOnly(r);
+      expect({ name, param, r: s.obs.last() }).toMatchObject({
         name,
         param,
         r: { error: { code: "invalid_argument", param } },
@@ -265,14 +275,13 @@ describe("MCP's own", () => {
     for (const tool of TOOLS) {
       for (const example of tool.examples) {
         const r = await c.callTool({ name: tool.name, arguments: example });
-        const code =
-          r.isError === true
-            ? (r.structuredContent as { error: { code: string } }).error.code
-            : null;
+        textOnly(r);
+        const seen = s.obs.last();
+        const code = r.isError === true ? (seen as { error: { code: string } }).error.code : null;
         expect({
           tool: tool.name,
           example,
-          refused: code !== null && code !== "not_found" ? r.structuredContent : null,
+          refused: code !== null && code !== "not_found" ? seen : null,
         }).toEqual({
           tool: tool.name,
           example,
@@ -283,7 +292,7 @@ describe("MCP's own", () => {
     await c.close();
   });
 
-  it("a result's text: stored data inside the untrusted boundary; structuredContent as it is", async () => {
+  it("a result is its text only: stored data inside the untrusted boundary, no structuredContent", async () => {
     const c = await mcpClient(s.home, s.session, "legacy");
     // One slot: the examples of saveslot_schema_draft create another.
     const r = await c.callTool({ name: "saveslot_catalog", arguments: { slot: "ledger" } });
@@ -297,8 +306,9 @@ describe("MCP's own", () => {
     expect(lines[2]).toMatch(
       /^ {2}expenses \(base\) <untrusted-data-[0-9a-f]{32}>one row per expense</,
     );
-    // structuredContent as it is: the contract's result.
-    expect(r.structuredContent).toMatchObject({ level: "list", slots: [{ slot: "ledger" }] });
+    // No structured result beside it: the contract's result is the service's alone.
+    expect(Object.keys(r).sort()).toEqual(["content"]);
+    expect(s.obs.last()).toMatchObject({ level: "list", slots: [{ slot: "ledger" }] });
   });
 
   it("a page over the result budget: cut where it ends, and the next page starts at the first not shown (05 §3)", {
@@ -329,7 +339,8 @@ describe("MCP's own", () => {
     });
     const text = (first.content as { text: string }[])[0]?.text ?? "";
     expect(text.length).toBeLessThanOrEqual(100_000);
-    const p1 = first.structuredContent as {
+    textOnly(first);
+    const p1 = s.obs.last() as {
       rows: { row: string }[];
       truncated: { shown: number; total: number };
       next_cursor: string;
@@ -367,18 +378,19 @@ describe("MCP's own", () => {
       });
     const ok = await writeNote(shown);
     expect(ok.isError).not.toBe(true);
-    expect(JSON.stringify(ok.structuredContent)).toContain("ver_fallback");
+    expect(JSON.stringify(s.obs.last())).toContain("ver_fallback");
     const refused = await writeNote(unshown);
     expect(refused.isError).toBe(true);
-    expect(refused.structuredContent).toMatchObject({
+    expect(s.obs.last()).toMatchObject({
       error: { code: "read_first", reason: "no_read", param: "ops/0/ver" },
     });
     const second = await c.callTool({
       name: "saveslot_query",
       arguments: { table: "ledger.expenses", limit: 200, cursor: p1.next_cursor },
     });
+    textOnly(second);
+    const p2 = s.obs.last() as { rows: { row: string }[] };
     await c.close();
-    const p2 = second.structuredContent as { rows: { row: string }[] };
     const seen = [...p1.rows, ...p2.rows].map((r) => r.row);
     // As HTTP lists them (with no budget), nothing skipped and nothing twice.
     const n = Math.min(seen.length, ids.length);
@@ -396,12 +408,108 @@ describe("MCP's own", () => {
     expect(r.json["error"]).toMatchObject({ code: -32602 });
   });
 
-  it("a contract error: isError, the contract's error in structuredContent", async () => {
+  it("tools/list declares no outputSchema, for the user session and for a read-only connection", async () => {
+    const http = httpDriver(() => s.home);
+    const reader = (
+      (await http(s.session, "connections.issue", {
+        name: "list reader",
+        scopes: ["saveslot.read"],
+      })) as { result: { token: string } }
+    ).result.token;
+    for (const credential of [s.session, reader]) {
+      for (const era of ["legacy", "modern"] as const) {
+        const c = await mcpClient(s.home, credential, era);
+        const { tools } = await c.listTools();
+        await c.close();
+        expect(tools.length).toBeGreaterThan(0);
+        for (const t of tools) expect(Object.keys(t)).not.toContain("outputSchema");
+      }
+    }
+  });
+
+  it("stored text that holds instructions and a forged end tag reaches the model only inside the numbered boundary", async () => {
+    // Right-to-left override and zero-width space too: shown as escapes, never as they are.
+    const rlo = String.fromCodePoint(0x202e);
+    const zwsp = String.fromCodePoint(0x200b);
+    const stored = `${readFileSync(new URL("./untrusted-note.fixture.txt", import.meta.url), "utf8").trim()} ${rlo}reversed${zwsp}joined`;
+    const marker = "ignore all previous instructions";
+    expect(stored).toContain(marker);
+    expect(stored).toContain("</untrusted-data>");
+    const http = httpDriver(() => s.home);
+    expect(
+      await http(s.session, "write", {
+        sv: 1,
+        evidence: [{ kind: "user_message", text: "a note" }],
+        ops: [
+          { intent: "insert", table: "ledger.expenses", set: { date: "2026-10-02", note: stored } },
+        ],
+      }),
+    ).toMatchObject({ result: { status: "saved" } });
+    const call = {
+      name: "saveslot_query",
+      arguments: {
+        table: "ledger.expenses",
+        where: [{ field: "date", op: "=", value: "2026-10-02" }],
+      },
+    };
+    const answers = [
+      await httpRequest(s.home, {
+        method: "POST",
+        path: "/mcp",
+        token: s.session,
+        headers: { accept: ACCEPT, "mcp-protocol-version": "2025-11-25" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: call }),
+      }),
+      await httpRequest(s.home, {
+        method: "POST",
+        path: "/mcp",
+        token: s.session,
+        headers: {
+          accept: ACCEPT,
+          "mcp-protocol-version": "2026-07-28",
+          "mcp-method": "tools/call",
+          "mcp-name": "saveslot_query",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { ...call, _meta: ENVELOPE },
+        }),
+      }),
+    ];
+    for (const a of answers) {
+      expect(a.status).toBe(200);
+      // The whole answer as it went out: the text is the one place the stored words are.
+      expect(a.body.split(marker)).toHaveLength(2);
+      const data = /^data: (.*)$/m.exec(a.body)?.[1] ?? a.body;
+      const result = (JSON.parse(data) as { result: Record<string, unknown> }).result;
+      expect(result).not.toHaveProperty("structuredContent");
+      const text = (result["content"] as { text: string }[])[0]?.text ?? "";
+      const n = /<untrusted-data-([0-9a-f]{32})>/.exec(text)?.[1] as string;
+      const at = text.indexOf(marker);
+      const open = text.lastIndexOf(`<untrusted-data-${n}>`, at);
+      const closeBefore = text.lastIndexOf(`</untrusted-data-${n}>`, at);
+      const closeAfter = text.indexOf(`</untrusted-data-${n}>`, at);
+      // Inside a boundary that is open where it stands, and closed after it ...
+      expect(open).toBeGreaterThan(closeBefore);
+      expect(closeAfter).toBeGreaterThan(at);
+      // ... after the forged end tag too: that one names no number and closes nothing.
+      expect(text.slice(at, closeAfter)).toContain("</untrusted-data>");
+      expect(text.slice(at, closeAfter)).toContain("End of data.");
+      // The invisible ones: not in the answer as they are; written as escapes inside the boundary.
+      expect(a.body.includes(rlo) || a.body.includes(zwsp)).toBe(false);
+      expect(text.slice(at, closeAfter)).toContain("\\u{202E}reversed\\u{200B}joined");
+    }
+  });
+
+  it("a contract error: isError, its code in the text, no structuredContent", async () => {
     const c = await mcpClient(s.home, s.session, "legacy");
     const r = await c.callTool({ name: "saveslot_query", arguments: { table: "nowhere" } });
     await c.close();
     expect(r.isError).toBe(true);
-    expect(r.structuredContent).toMatchObject({ error: { code: "unknown_table" } });
+    expect(textOnly(r)).toContain("unknown_table");
+    expect(s.obs.last()).toMatchObject({ error: { code: "unknown_table" } });
   });
 
   it("no credential, or one that is not good: 401 with the challenge, as on HTTP", async () => {
@@ -445,4 +553,58 @@ describe("MCP's own", () => {
       expect({ secret, found: all.includes(secret) }).toEqual({ secret, found: false });
     }
   });
+});
+
+describe("an observer of tool results that fails", () => {
+  it(
+    "changes nothing of the answer: a write that took effect is reported as such, and told once",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "saveslot-mcp-observer-"));
+      const home = join(root, "home");
+      await initLocalHome({
+        home,
+        backend: testBackend(),
+        lock: osFileLock,
+        now: new Date().toISOString(),
+      });
+      const session = readFileSync(sessionFile(home), "utf8").trim();
+      let told = 0;
+      const lines: string[] = [];
+      const service = await runService({
+        home,
+        version: "t",
+        signals: false,
+        log: (l) => lines.push(l),
+        onToolResult: () => {
+          told++;
+          throw new Error("observer down");
+        },
+      });
+      try {
+        const http = httpDriver(() => home);
+        await http(session, "schema_draft", { document: LEDGER });
+        const c = await mcpClient(home, session, "legacy");
+        const r = (await c.callTool({
+          name: "saveslot_write",
+          arguments: {
+            sv: 1,
+            ops: [{ intent: "insert", table: "ledger.expenses", set: { date: "2026-11-10" } }],
+          },
+        })) as Record<string, unknown>;
+        await c.close();
+        expect(r["isError"]).not.toBe(true);
+        expect(textOnly(r)).not.toContain("incident");
+        expect(told).toBe(1);
+        expect(lines.some((l) => l.includes("tool_result_observer_failed"))).toBe(true);
+        const rows = (await http(session, "query", { table: "ledger.expenses" })) as {
+          result: { rows: unknown[] };
+        };
+        expect(rows.result.rows).toHaveLength(1);
+      } finally {
+        await service.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    T,
+  );
 });

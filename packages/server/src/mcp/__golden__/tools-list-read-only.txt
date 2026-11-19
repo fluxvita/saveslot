@@ -43,62 +43,6 @@
       },
       "additionalProperties": false
     },
-    "outputSchema": {
-      "type": "object",
-      "anyOf": [
-        {
-          "required": [
-            "error"
-          ],
-          "properties": {
-            "error": {
-              "type": "object",
-              "required": [
-                "code"
-              ],
-              "properties": {
-                "code": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        },
-        {
-          "required": [
-            "elicitation",
-            "executed"
-          ],
-          "properties": {
-            "elicitation": {
-              "enum": [
-                "declined",
-                "cancelled"
-              ]
-            },
-            "executed": {
-              "type": "boolean"
-            }
-          }
-        },
-        {
-          "not": {
-            "anyOf": [
-              {
-                "required": [
-                  "error"
-                ]
-              },
-              {
-                "required": [
-                  "elicitation"
-                ]
-              }
-            ]
-          }
-        }
-      ]
-    },
     "annotations": {
       "readOnlyHint": true,
       "openWorldHint": false
@@ -236,62 +180,6 @@
         "table"
       ],
       "additionalProperties": false
-    },
-    "outputSchema": {
-      "type": "object",
-      "anyOf": [
-        {
-          "required": [
-            "error"
-          ],
-          "properties": {
-            "error": {
-              "type": "object",
-              "required": [
-                "code"
-              ],
-              "properties": {
-                "code": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        },
-        {
-          "required": [
-            "elicitation",
-            "executed"
-          ],
-          "properties": {
-            "elicitation": {
-              "enum": [
-                "declined",
-                "cancelled"
-              ]
-            },
-            "executed": {
-              "type": "boolean"
-            }
-          }
-        },
-        {
-          "not": {
-            "anyOf": [
-              {
-                "required": [
-                  "error"
-                ]
-              },
-              {
-                "required": [
-                  "elicitation"
-                ]
-              }
-            ]
-          }
-        }
-      ]
     },
     "annotations": {
       "readOnlyHint": true,
@@ -445,62 +333,6 @@
       ],
       "additionalProperties": false
     },
-    "outputSchema": {
-      "type": "object",
-      "anyOf": [
-        {
-          "required": [
-            "error"
-          ],
-          "properties": {
-            "error": {
-              "type": "object",
-              "required": [
-                "code"
-              ],
-              "properties": {
-                "code": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        },
-        {
-          "required": [
-            "elicitation",
-            "executed"
-          ],
-          "properties": {
-            "elicitation": {
-              "enum": [
-                "declined",
-                "cancelled"
-              ]
-            },
-            "executed": {
-              "type": "boolean"
-            }
-          }
-        },
-        {
-          "not": {
-            "anyOf": [
-              {
-                "required": [
-                  "error"
-                ]
-              },
-              {
-                "required": [
-                  "elicitation"
-                ]
-              }
-            ]
-          }
-        }
-      ]
-    },
     "annotations": {
       "readOnlyHint": true,
       "openWorldHint": false
@@ -555,62 +387,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "outputSchema": {
-      "type": "object",
-      "anyOf": [
-        {
-          "required": [
-            "error"
-          ],
-          "properties": {
-            "error": {
-              "type": "object",
-              "required": [
-                "code"
-              ],
-              "properties": {
-                "code": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        },
-        {
-          "required": [
-            "elicitation",
-            "executed"
-          ],
-          "properties": {
-            "elicitation": {
-              "enum": [
-                "declined",
-                "cancelled"
-              ]
-            },
-            "executed": {
-              "type": "boolean"
-            }
-          }
-        },
-        {
-          "not": {
-            "anyOf": [
-              {
-                "required": [
-                  "error"
-                ]
-              },
-              {
-                "required": [
-                  "elicitation"
-                ]
-              }
-            ]
-          }
-        }
-      ]
     },
     "annotations": {
       "readOnlyHint": true,

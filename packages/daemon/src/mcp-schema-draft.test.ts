@@ -14,7 +14,7 @@ import { osFileLock } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { httpDriver, httpRequest } from "./http-driver.fixture.ts";
-import { mcpClient } from "./mcp-driver.fixture.ts";
+import { mcpClient, observer, textOnly } from "./mcp-driver.fixture.ts";
 import { type RunningService, runService } from "./service.ts";
 
 const T = 60_000;
@@ -70,7 +70,13 @@ beforeAll(async () => {
     now: new Date().toISOString(),
   });
   session = readFileSync(sessionFile(home), "utf8").trim();
-  service = await runService({ home, version: "t", signals: false, log: () => {} });
+  service = await runService({
+    home,
+    version: "t",
+    signals: false,
+    log: () => {},
+    onToolResult: obs.onToolResult,
+  });
   const maker = await issue({
     name: "maker",
     scopes: ["saveslot.read", "saveslot.write", "saveslot.schema"],
@@ -85,20 +91,27 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 }, T);
 
-type CallResult = { isError?: boolean; content: unknown; structuredContent?: unknown };
+/** A tool result as MCP gives it (text only), and the contract result the service saw. */
+type CallResult = { isError?: boolean; content: unknown; seen?: Record<string, unknown> };
+const obs = observer();
 const textOf = (r: CallResult) =>
   ((r.content as { type: string; text: string }[])[0]?.text ?? "").replace(
     /untrusted-data-[0-9a-f]{32}/g,
     "untrusted-data-N",
   );
 const errorOf = (r: CallResult) =>
-  (r.structuredContent as { error?: Record<string, unknown> } | undefined)?.error;
+  (r.seen as { error?: Record<string, unknown> } | undefined)?.error;
 
 /** Calls saveslot_schema_draft as `credential`. */
 async function draft(credential: string, args: Record<string, unknown>): Promise<CallResult> {
   const c = await mcpClient(home, credential, "legacy");
   try {
-    return (await c.callTool({ name: "saveslot_schema_draft", arguments: args })) as CallResult;
+    const r = (await c.callTool({ name: "saveslot_schema_draft", arguments: args })) as Record<
+      string,
+      unknown
+    >;
+    textOnly(r);
+    return { ...(r as CallResult), seen: obs.last() };
   } finally {
     await c.close();
   }
@@ -114,6 +127,7 @@ describe("saveslot_schema_draft: a new slot (P1)", () => {
       name: "saveslot_schema_draft",
       arguments: { document: doc("diet"), task: "start-diet" },
     })) as CallResult;
+    const createdSeen = obs.last();
     const catalog = (await c.callTool({ name: "saveslot_catalog", arguments: {} })) as CallResult;
     const written = (await c.callTool({
       name: "saveslot_write",
@@ -135,7 +149,7 @@ describe("saveslot_schema_draft: a new slot (P1)", () => {
     expect(prompts).toContain("track");
     expect(tools).toContain("saveslot_schema_draft");
     expect(created.isError).not.toBe(true);
-    expect(created.structuredContent).toMatchObject({ outcome: "applied", slot: "diet", sv: 1 });
+    expect(createdSeen).toMatchObject({ outcome: "applied", slot: "diet", sv: 1 });
     const lines = textOf(created).split("\n");
     expect(lines).toContain(
       "meals (base · event, by date): date date, what text, energy quantity <untrusted-data-N>kcal</untrusted-data-N>",
@@ -265,14 +279,12 @@ describe("saveslot_schema_draft: a new slot (P1)", () => {
     const first = await draft(token.maker, { document: doc("sleep"), task: "a" });
     const again = await draft(token.maker, { document: doc("sleep"), task: "a" });
     expect(first.isError).not.toBe(true);
-    expect(again.structuredContent).toMatchObject({ replayed: true });
+    expect(again.seen).toMatchObject({ replayed: true });
     // After the line that says what the tags hold (05 §5).
     expect(textOf(again).split("\n")[1]).toBe(
       "This is the receipt of an earlier identical request; nothing new was recorded.",
     );
-    expect(textOf(again)).toContain(
-      `draft ${(first.structuredContent as { draft: string }).draft}`,
-    );
+    expect(textOf(again)).toContain(`draft ${(first.seen as { draft: string }).draft}`);
 
     const otherTask = await draft(token.maker, { document: doc("sleep"), task: "b" });
     expect(errorOf(otherTask)).toMatchObject({ code: "validation_failed" });
@@ -281,9 +293,9 @@ describe("saveslot_schema_draft: a new slot (P1)", () => {
     const keyed = await draft(token.maker, { document: doc("steps"), idempotency_key: "k1" });
     const keyedAgain = await draft(token.maker, { document: doc("steps"), idempotency_key: "k1" });
     expect(keyed.isError).not.toBe(true);
-    expect(keyedAgain.structuredContent).toMatchObject({
+    expect(keyedAgain.seen).toMatchObject({
       replayed: true,
-      draft: (keyed.structuredContent as { draft: string }).draft,
+      draft: (keyed.seen as { draft: string }).draft,
     });
 
     const reused = await draft(token.maker, { document: doc("water"), idempotency_key: "k1" });

@@ -2,7 +2,17 @@
 // with `evalClock` takes every "now" from it, moves it forward on `POST /v1/eval/clock`, shows it
 // in /health and `saveslot status`, and marks its home so that the home serves one run only.
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
@@ -13,7 +23,7 @@ import { serviceCommand, status } from "./commands.ts";
 import { LEDGER } from "./contract-suite.fixture.ts";
 import { httpDriver, httpRequest } from "./http-driver.fixture.ts";
 import { mcpClient } from "./mcp-driver.fixture.ts";
-import { evalMarkFile, runService } from "./service.ts";
+import { evalMarkFile, evalResultsFile, runService } from "./service.ts";
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
@@ -202,6 +212,78 @@ describe("the test clock", () => {
     }
   });
 
+  it("writes each MCP tool call's contract result to the evaluation results, without a token; the tool result itself is text", async () => {
+    const { home, session } = await newHome();
+    const s = await run(home, START);
+    try {
+      const call = httpDriver(() => home);
+      await call(session, "schema_draft", { document: { ...LEDGER, slot: "ledger" } } as never);
+      const issued = (await call(session, "connections.issue", {
+        name: "Eval A",
+        scopes: ["saveslot.read", "saveslot.write"],
+      } as never)) as { result: { token: string; id: string } };
+      const token = issued.result.token;
+      const pasted = `slt_${"P".repeat(43)}`;
+      const client = await mcpClient(home, token, "legacy");
+      try {
+        const r = (await client.callTool({
+          name: "saveslot_query",
+          arguments: { table: "ledger.expenses", task: pasted },
+        })) as Record<string, unknown>;
+        expect(r).not.toHaveProperty("structuredContent");
+        const refused = (await client.callTool({
+          name: "saveslot_query",
+          arguments: { table: "nowhere" },
+        })) as Record<string, unknown>;
+        expect(refused["isError"]).toBe(true);
+      } finally {
+        await client.close();
+      }
+      const file = evalResultsFile(home);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      const text = readFileSync(file, "utf8");
+      for (const secret of [token, pasted, session]) expect(text).not.toContain(secret);
+      const lines = text
+        .trimEnd()
+        .split("\n")
+        .map((l) => JSON.parse(l) as Record<string, unknown>);
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toMatchObject({
+        connection: issued.result.id,
+        tool: "saveslot_query",
+        arguments: { table: "ledger.expenses", task: "slt_REDACTED" },
+        result: { table: "ledger.expenses", rows: [] },
+      });
+      expect(Date.parse(String(lines[0]?.["t"])) - START_MS).toBeLessThan(60_000);
+      expect(lines[1]).toMatchObject({
+        tool: "saveslot_query",
+        result: { error: { code: "unknown_table" } },
+      });
+    } finally {
+      await s.stop();
+    }
+  });
+
+  it("makes the evaluation results anew at the start: a link left at the path is removed, not followed", async () => {
+    const { home } = await newHome();
+    const outside = join(root, `outside-${n++}.txt`);
+    writeFileSync(outside, "kept\n");
+    mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 });
+    symlinkSync(outside, evalResultsFile(home));
+    const s = await run(home, START);
+    try {
+      expect(s.state).toBe("ready");
+      expect(readFileSync(outside, "utf8")).toBe("kept\n");
+      const st = lstatSync(evalResultsFile(home));
+      expect(st.isSymbolicLink()).toBe(false);
+      expect(st.isFile()).toBe(true);
+      expect(st.mode & 0o777).toBe(0o600);
+      expect(st.size).toBe(0);
+    } finally {
+      await s.stop();
+    }
+  });
+
   it("does not exist without --eval-clock: no route, nothing in /health or status", async () => {
     const { home, session } = await newHome();
     const s = await run(home);
@@ -212,6 +294,7 @@ describe("the test clock", () => {
       await status(home, { out: (l) => out.push(l), err: () => {} });
       expect(out.join("\n")).not.toContain("eval clock");
       expect(existsSync(evalMarkFile(home))).toBe(false);
+      expect(existsSync(evalResultsFile(home))).toBe(false);
     } finally {
       await s.stop();
     }

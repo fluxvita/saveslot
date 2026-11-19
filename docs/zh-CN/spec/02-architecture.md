@@ -280,7 +280,7 @@ slot 策略的结构里为"某类操作只接受用户会话的确认"留了位�
 - **契约分两层**（成文见 [`04-contract.md`](04-contract.md) 的两部分；MCP 与 HTTP 各自的规则见 [`05-surfaces.md`](05-surfaces.md)）：
   - `contract-core`：数据的形状——值的编码、证据、标记、意图、领域错误（`validation_failed`、`schema_incompatible`、`derived_readonly` 等）。内核依赖它；
   - `contract`：对外的封装——外化面专用的字段与错误（`idempotency_key`、`cursor`、签名句柄、`insufficient_scope`、`rate_limited`）。服务层与外化面依赖它。
-- **`ops` 的签名在内核里手写**，由 `contract-core` 的类型约束；`contract` 由它们生成 HTTP 的 OpenAPI、MCP 的 `inputSchema` / `outputSchema`、将来 SDK 的接口。
+- **`ops` 的签名在内核里手写**，由 `contract-core` 的类型约束；`contract` 由它们生成 HTTP 的 OpenAPI、MCP 的 `inputSchema`、将来 SDK 的接口。
   这样对外契约加错误码、加分页参数，不改内核。
 - **标记是结构化字段**：`disputed`、`awaiting`、`stale` 等在契约里是字段，不是渲染出来的文字；外化面的渲染器**必须**把它们输出到文本（MCP）或保留在结构里（SDK），由渲染器测试保证。
 - **版本互相独立**：
@@ -731,7 +731,7 @@ schema 里由 Agent 写的说明与别名、写入回执里列出的已有的键
 |---|---|---|
 | 测试时钟 | saveslot 服务能以给定的固定时刻启动，并在运行中被拨快。只换"入口取的当前时刻"的来源，内核不变（内核本来就不读时钟） | `daemon` 的启动参数 `--eval-clock`（`saveslot start` 同名参数传给它）；调度器用同一个时钟；拨快经本地套接字上用户会话的 `POST /v1/eval/clock`；规则见 [`06-cli.md`](06-cli.md) §3 第 3 步 |
 | 步骤间快照 | 运行器能在两个步骤之间凭用户会话查询状态（行的值与 `ver`、事项、来源、读取记录） | 不需要新接口：用户会话的 `query`、`history`、`pending`、`sources`、`reads.list` |
-| 调用记录 | 运行器拿到完整的工具调用序列（参数与结构化结果）。宿主不提供时，由 `saveslot mcp` 转发层记录 | `saveslot mcp --record <文件>`：只在评测时开的记录开关，格式见 [`05-surfaces.md`](05-surfaces.md) §11 |
+| 调用记录 | 运行器拿到完整的工具调用序列：参数与宿主拿到的文字来自调用记录，契约结果来自服务端的评测结果日志。宿主不提供时，由 `saveslot mcp` 转发层记录 | `saveslot mcp --record <文件>`：只在评测时开的记录开关，格式见 [`05-surfaces.md`](05-surfaces.md) §11。MCP 的工具结果只有文本（[`05-surfaces.md`](05-surfaces.md) §3），宿主与模型拿到的也只有文本；结构化结果来自服务端的评测结果日志：以测试时钟运行时，服务把每次工具调用的连接实例、工具、参数与契约结果写进 `run/eval-results.jsonl`（每次启动新建：那个路径上已有的东西先删掉、是链接就删链接本身，再以独占方式新建；0600，不含令牌） |
 | 确定性的种子数据 | 种子写入带显式的 `idempotency_key`，重装夹具得到相同的逻辑状态（行 ID、序号可以不同） | 评测运行器；不需要内核配合 |
 
 ## 12. 扩展点

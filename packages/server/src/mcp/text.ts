@@ -397,8 +397,8 @@ function numberFor(build: (n: string) => string, boundaries: number, draw?: Draw
 
 /**
  * How much of one untrusted part, or of one string in JSON as written, the text shows (05 §3):
- * past it, the first part only, and a note of the service's saying how long the whole is, which
- * is in the structured result.
+ * past it, the first part only, and a note of the service's saying how long the whole is and
+ * that over MCP no more of it can be read: the whole is read through the CLI or HTTP.
  */
 export const SHOWN_CHARS = 2_000;
 
@@ -412,7 +412,7 @@ function shown(s: string): { text: string; of?: number } {
 
 /** The note after a part shown in part: the service's words, and one number. */
 const partNote = (of: number) =>
-  ` [the text shows the first ${SHOWN_CHARS} of ${of} characters; the whole value is in the structured result]`;
+  ` [the first ${SHOWN_CHARS} of ${of} characters; this version reads no more of it over MCP: the whole value is read through the saveslot CLI or HTTP]`;
 
 /**
  * The text of a result: its lines, the untrusted parts inside a boundary whose number occurs in
@@ -474,7 +474,7 @@ export function renderJson(lead: readonly Line[], json: unknown, draw?: Draw): s
       parts.push([
         {
           kind: "static",
-          text: `${n} strings below show their first ${SHOWN_CHARS} characters only; the whole values are in the structured result.`,
+          text: `${n} strings below show their first ${SHOWN_CHARS} characters only; this version reads no more of them over MCP: the whole values are read through the saveslot CLI or HTTP.`,
         },
       ]);
     }

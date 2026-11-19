@@ -257,9 +257,9 @@ describe("a value too long for the text", () => {
     const text = renderResult("saveslot_query", out);
     expect(text.length).toBeLessThanOrEqual(100_000);
     expect(text).toContain(
-      "[the text shows the first 2000 of 13000 characters; the whole value is in the structured result] (fields can leave this column out)",
+      "[the first 2000 of 13000 characters; this version reads no more of it over MCP: the whole value is read through the saveslot CLI or HTTP] (fields can leave this column out)",
     );
-    // structuredContent keeps the value whole.
+    // The stored value is not cut: only the text shows part of it.
     expect((((out["rows"] as R[])[1] ?? {})["values"] as R)["note"]).toHaveLength(13_000);
   });
 });
@@ -311,46 +311,6 @@ describe("the least receipt says only what it saw (05 §3)", () => {
   });
 });
 
-describe("the structured result's own limit (05 §3)", () => {
-  it("a page is cut where its structured result reaches 1 MiB, though its text is short", async () => {
-    const q = sample("query");
-    const row = (q["rows"] as R[])[0] as R;
-    const big = (i: number) => ({
-      ...row,
-      row: rowId(i),
-      values: { ...(row["values"] as R), note: "z".repeat(300_000) },
-    });
-    const full = {
-      ...q,
-      total: 10,
-      rows: Array.from({ length: 10 }, (_, i) => big(i)),
-      next_cursor: CURSOR,
-    };
-    const out = await fit("saveslot_query", full, 100_000, async (limit) => ({
-      ...q,
-      total: 10,
-      rows: Array.from({ length: limit }, (_, i) => big(i)),
-      next_cursor: CURSOR,
-    }));
-    expect(Buffer.byteLength(JSON.stringify(out))).toBeLessThanOrEqual(1024 * 1024);
-    expect((out["rows"] as unknown[]).length).toBeGreaterThan(0);
-    expect((out["rows"] as unknown[]).length).toBeLessThan(10);
-  });
-
-  it("one row over 1 MiB on its own: too large, read fewer fields", async () => {
-    const q = sample("query");
-    const row = (q["rows"] as R[])[0] as R;
-    const one = { ...q, rows: [{ ...row, values: { note: "z".repeat(1_100_000) } }] };
-    const e = await fit("saveslot_query", one, 100_000, async () => ({})).catch(
-      (x: { code: string; detail: R }) => x,
-    );
-    expect(e).toMatchObject({
-      code: "too_large",
-      detail: { reason: "result_budget", narrow_by: ["fields"] },
-    });
-  });
-});
-
 describe("every untrusted part shown in part past its limit", () => {
   it("a writer's name of 60000 characters", () => {
     const h = sample("history");
@@ -361,7 +321,7 @@ describe("every untrusted part shown in part past its limit", () => {
     const text = renderResult("saveslot_history", { ...h, entries });
     expect(text.length).toBeLessThan(10_000);
     expect(text).toContain(
-      "[the text shows the first 2000 of 60000 characters; the whole value is in the structured result]",
+      "[the first 2000 of 60000 characters; this version reads no more of it over MCP: the whole value is read through the saveslot CLI or HTTP]",
     );
   });
 
@@ -414,9 +374,9 @@ describe("a schema draft's receipt over the budget (05 §3)", () => {
     expect(text).not.toContain('"json"');
   });
 
-  it("60 tables of 300 fields: the structured result within its limit too", () => {
+  it("60 tables of 300 fields: the document left out, the text within the budget", () => {
     const out = budgetFor("saveslot_schema_draft", 100_000).finish(big(60, 300));
-    expect(Buffer.byteLength(JSON.stringify(out))).toBeLessThanOrEqual(1024 * 1024);
+    expect(renderResult("saveslot_schema_draft", out).length).toBeLessThanOrEqual(100_000);
     expect(out["omitted"]).toContain("document");
   });
 
