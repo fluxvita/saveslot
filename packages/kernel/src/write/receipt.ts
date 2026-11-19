@@ -30,6 +30,7 @@ import type {
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import type { ReadId } from "../audit/index.ts";
 import type { DerivedWrite } from "../derive/index.ts";
+import { EVERYTHING, stateFromRecord } from "../judge/index.ts";
 import { type ActorAsOf, actorsAsOf } from "../log/index.ts";
 import {
   type Blocks,
@@ -49,7 +50,7 @@ import {
 import { decodeColumns, qualifiedTable, type WriteWarning } from "../request/index.ts";
 import { selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { type ValueOut, valueOut } from "../time/index.ts";
+import { canonical, type IntervalSet, minus, type ValueOut, valueOut } from "../time/index.ts";
 
 /**
  * A field value as a receipt gives it: an object value (a quantity) with its keys in the order the
@@ -63,7 +64,9 @@ function valueIn(v: FieldValue): ValueOut {
 
 import { WriteError } from "./errors.ts";
 import { type EntityKeyText, keyFields, keyOf } from "./keys.ts";
-import type { StoredEvent } from "./record.ts";
+import { tableShape } from "./plan.ts";
+import { rowEvents } from "./reads.ts";
+import { decodeRecords, type StoredEvent } from "./record.ts";
 
 export type FieldResultCode = "applied" | "candidate" | "awaiting" | "corroborated" | "noop";
 
@@ -447,10 +450,12 @@ interface RawValid {
  * A state-table op's `resolved` (04-contract §4 «next_change 逐字段解析»), from the log: how the
  * interval was given (the head's raw `valid`), what each field's items came to (their spans, as a
  * whole), the stretch at a default end (the row right after the operation), and the stretches
- * without a value the write filled: where the entity had none right before the operation under an
+ * without a value the write filled: where the entity had none right before this op under an
  * applied part, however it came to have none (before its first stretch, after an explicit end, a
- * revoke's hole; 05-time «无值区间»), read as the item details read "no value" (`piecesOver`). An
- * entity this op created had none to fill: no `filled`. None for a field without items
+ * revoke's hole; 05-time «无值区间»). "Right before this op" is the row rebuilt from its events
+ * before this op's `write.base`: the earlier ops of the same request count as applied, which the
+ * version table cannot tell (it keeps the row as the whole operation left it). An entity this op
+ * created had none to fill: no `filled`. None for a field without items
  * (a no-op: the log keeps only its name); none at all without the raw interval (an undo, whose
  * interval comes from its write-backs; or the block deleted). "*" (existence) has no
  * `next_change`: a value of existence is not defined.
@@ -461,6 +466,8 @@ async function resolvedOf(
     readonly table: CompiledBaseTable;
     readonly rowId: string;
     readonly op: OpNumber;
+    /** This op's `write.base`: the row right before it is rebuilt from the events before it. */
+    readonly baseSeq: number;
     readonly valid: RawValid | undefined;
     readonly blocks: Blocks;
     readonly name: (f: string) => string;
@@ -490,7 +497,7 @@ async function resolvedOf(
   }
   if (byTarget.size === 0) return undefined;
   const after = await rowCellsAt(tx, o.table, o.rowId, o.op);
-  const before = await rowCellsAt(tx, o.table, o.rowId, o.op - 1);
+  const valuedBefore = o.created ? [] : await valuedBeforeSeq(tx, o.table, o.rowId, o.baseSeq);
   const out: Record<string, ResolvedInterval> = {};
   for (const [target, xs] of byTarget) {
     const from = xs.some((x) => x.span.from === null)
@@ -525,17 +532,13 @@ async function resolvedOf(
       next = { at: to, value: valueIn(value) };
     }
     const applied = xs.filter((x) => x.applied).map((x) => x.span);
-    const holes =
+    const filled: Span[] =
       target === "existence" || applied.length === 0 || o.created
         ? []
-        : piecesOver(o.table, before, applied, [target]).filter((p) => p.revoked || p.noValue);
-    const filled: Span[] = [];
-    for (const h of holes) {
-      const last = filled.at(-1);
-      if (last !== undefined && last.to === h.from)
-        filled[filled.length - 1] = { ...last, to: h.to };
-      else filled.push({ from: h.from, to: h.to });
-    }
+        : minus(canonical(applied as readonly Span[] as IntervalSet), valuedBefore).map((h) => ({
+            from: h.from,
+            to: h.to,
+          }));
     out[target === "existence" ? "*" : o.name(target)] = {
       ...r,
       ...(next !== undefined ? { next_change: next } : {}),
@@ -543,6 +546,29 @@ async function resolvedOf(
     };
   }
   return out;
+}
+
+/**
+ * Where a state entity has a value (05-time «无值区间») right before the event `seq`: the row
+ * rebuilt from its events before it, as a write rebuilds it to judge (`loadRow`).
+ */
+async function valuedBeforeSeq(
+  tx: ReadTx,
+  table: CompiledBaseTable,
+  entity: string,
+  seq: number,
+): Promise<IntervalSet> {
+  const events = (await rowEvents(tx, table.id, entity)).filter((e) => e.header.seq < seq);
+  const granularity = table.time.type === "state" ? table.time.granularity : "date";
+  const shape = tableShape(table);
+  const state = stateFromRecord(
+    shape,
+    decodeRecords(
+      { table: table.id, target: { entity: entity as EntityId }, shape, granularity },
+      events,
+    ),
+  );
+  return canonical(state.pieces().filter((p) => state.hasValue(p, EVERYTHING)));
 }
 
 /** The row's version (01-objects «版本标记») as of operation `op`. */
@@ -908,6 +934,7 @@ export async function readReceipt(
             table,
             rowId,
             op,
+            baseSeq: base.header.seq,
             valid: head[`ops/${i}/valid`] as RawValid | undefined,
             blocks: base.blocks,
             name,

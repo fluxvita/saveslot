@@ -1332,8 +1332,9 @@ interface ResolvedInterval extends Interval {
   to_as: "given" | "next_change" | "open" | "corrected_span";
   /** to_as: next_change 且终点不是"一直延续"时：终点处开始的那一段，没有改动。 */
   next_change?: { at: BizTime; value: Value | null };
-  /** 这次写入填上的无值区间：生效的部分里，写之前实体在那里没有值的段，不论是怎么没有值的（实体第一段之前、显式终点之后、撤销留下的洞，
-   *  data-model「时间 · 无值区间」），相邻的合成一段。这次写入新建的实体不给（写之前它还不存在）。
+  /** 这次写入填上的无值区间：生效的部分里，这个 op 之前实体在那里没有值的段，不论是怎么没有值的（实体第一段之前、显式终点之后、撤销留下的洞，
+   *  data-model「时间 · 无值区间」），相邻的合成一段。"这个 op 之前"含同一请求里排在它前面的 op：它们已经生效的部分照常算——
+   *  前面的 op 给了值的地方不算填上，前面的 op 撤销出的洞算。这个 op 新建的实体不给（此前它还不存在）；前面的 op 新建的照常给。
    *  只列已经生效、已经填上的段：待确认与候选的部分还没填上，不给；它们确认后会填掉什么见 impact.filled_gaps。 */
   filled?: Interval[];
 }

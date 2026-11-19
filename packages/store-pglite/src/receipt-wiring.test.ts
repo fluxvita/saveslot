@@ -71,6 +71,21 @@ beforeEach(async () => {
           time: { type: "state", granularity: "date" },
           fields: [field("b", true), field("c")],
         },
+        {
+          name: "keyed",
+          kind: "base",
+          description: "entities written by key",
+          time: { type: "state", granularity: "date" },
+          fields: [field("k", true), field("b", true), field("c")],
+          entity_key: ["k"],
+        },
+        {
+          name: "moments",
+          kind: "base",
+          description: "entities on instants",
+          time: { type: "state", granularity: "instant" },
+          fields: [field("b", true), field("c")],
+        },
       ],
     },
   } as never);
@@ -707,6 +722,188 @@ describe("resolved.filled: every stretch without a value the write fills, howeve
       expect(w.ops[0].fields.b[0].impact.filled_gaps).toEqual(gap);
       const d = (await pending(s.store, ctxOf(USER), { id: w.pending[0].id } as never)) as Any;
       expect(d.impact.filled_gaps).toEqual(gap);
+    },
+    T,
+  );
+
+  // One request, several ops on one entity: the ops before an op in the same request count as
+  // applied (04-contract §4 «无值区间»). The version table keeps only the row the whole operation
+  // left, so these are the cases a reading of it right before the operation gets wrong.
+  const many = (ops: Record<string, unknown>[]): Promise<Any> =>
+    write(s.store, ctxOf(USER), { sv: 1, ops } as never);
+
+  it(
+    "an entity an earlier op of the request created: a value where that op gave one, a gap after it",
+    async () => {
+      // op 0 creates the entity, b0 on [11-05, 11-10). op 1 writes c on [11-07, 11-09): the entity
+      // has a value there (op 0's), nothing is filled. op 2 writes b on [11-12, 11-15), after op
+      // 0's explicit end: no value there, filled (op 2 did not create the entity: it fills).
+      const r = await many([
+        {
+          table: "keyed",
+          intent: "update",
+          entity_key: { k: "x" },
+          valid_from: "2026-11-05",
+          valid_to: "2026-11-10",
+          set: { b: "b0" },
+        },
+        {
+          table: "keyed",
+          intent: "update",
+          entity_key: { k: "x" },
+          valid_from: "2026-11-07",
+          valid_to: "2026-11-09",
+          set: { c: "c1" },
+        },
+        {
+          table: "keyed",
+          intent: "update",
+          entity_key: { k: "x" },
+          valid_from: "2026-11-12",
+          valid_to: "2026-11-15",
+          set: { b: "b1" },
+        },
+      ]);
+      expect(r.status).toBe("saved");
+      expect(r.ops[0].created_entity).toBe(true);
+      expect(r.ops[1].target.entity).toBe(r.ops[0].target.entity);
+      expect(r.ops[1].resolved).toEqual({
+        c: { ...span("2026-11-07", "2026-11-09"), from_as: "given", to_as: "given" },
+      });
+      expect(r.ops[2].resolved.b.filled).toEqual([span("2026-11-12", "2026-11-15")]);
+      expect(r.ops[2].resolved.k.filled).toEqual([span("2026-11-12", "2026-11-15")]);
+    },
+    T,
+  );
+
+  it(
+    "a gap an earlier op of the request filled: no longer a gap; the stretch after its end still is",
+    async () => {
+      // b0 on [11-01, 11-05) only. op 0 fills [11-08, 11-12) with b1. op 1 writes c on [11-09,
+      // 11-11), inside what op 0 filled: nothing. op 2 writes b on [11-12, 11-15), right after op
+      // 0's explicit end: [11-12, 11-15) had no value, filled.
+      const e = await put("entities", {
+        intent: "insert",
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-05",
+        set: { b: "b0" },
+      });
+      const entity = entityOf(e);
+      const r = await many([
+        {
+          table: "entities",
+          entity,
+          intent: "update",
+          ver: verAt(e),
+          valid_from: "2026-11-08",
+          valid_to: "2026-11-12",
+          set: { b: "b1" },
+        },
+        {
+          table: "entities",
+          entity,
+          intent: "update",
+          valid_from: "2026-11-09",
+          valid_to: "2026-11-11",
+          set: { c: "c1" },
+        },
+        {
+          table: "entities",
+          entity,
+          intent: "update",
+          valid_from: "2026-11-12",
+          valid_to: "2026-11-15",
+          set: { b: "b2" },
+        },
+      ]);
+      expect(r.status).toBe("saved");
+      expect(r.ops[0].resolved.b.filled).toEqual([span("2026-11-08", "2026-11-12")]);
+      expect(r.ops[1].resolved.c).not.toHaveProperty("filled");
+      expect(r.ops[2].resolved.b.filled).toEqual([span("2026-11-12", "2026-11-15")]);
+    },
+    T,
+  );
+
+  it(
+    "a hole an earlier op of the request left: filled",
+    async () => {
+      // b0 from 11-01 on. op 0 revokes [11-03, 11-05); op 1 writes b there: it fills the hole op 0
+      // left, though the entity had a value there before the request.
+      const e = await put("entities", {
+        intent: "insert",
+        valid_from: "2026-11-01",
+        set: { b: "b0" },
+      });
+      const entity = entityOf(e);
+      const r = await many([
+        {
+          table: "entities",
+          entity,
+          intent: "revoke",
+          ver: verAt(e),
+          valid_from: "2026-11-03",
+          valid_to: "2026-11-05",
+        },
+        {
+          table: "entities",
+          entity,
+          intent: "update",
+          valid_from: "2026-11-03",
+          valid_to: "2026-11-05",
+          set: { b: "b1" },
+        },
+      ]);
+      expect(r.status).toBe("saved");
+      expect(r.ops[1].resolved.b.filled).toEqual([span("2026-11-03", "2026-11-05")]);
+    },
+    T,
+  );
+
+  it(
+    "on an instant table: next_change and filled write instants as the interval does",
+    async () => {
+      // Instants given with an offset come out in UTC with milliseconds (04-contract-types «时刻»):
+      // the interval, next_change's at and filled alike.
+      const e = await put("moments", {
+        intent: "insert",
+        valid_from: "2026-11-05T00:00:00+08:00",
+        set: { b: "b0" },
+      });
+      const later = await put("moments", {
+        entity: entityOf(e),
+        intent: "update",
+        ver: verAt(e),
+        valid_from: "2026-11-10T08:30:00+08:00",
+        set: { b: "b1" },
+      });
+      const w = await put("moments", {
+        entity: entityOf(e),
+        intent: "update",
+        ver: verAt(later),
+        valid_from: "2026-11-06T10:00:00+08:00",
+        set: { b: "b2" },
+      });
+      expect(resolvedOf(w)).toEqual({
+        b: {
+          valid_from: "2026-11-06T02:00:00.000Z",
+          valid_to: "2026-11-10T00:30:00.000Z",
+          from_as: "given",
+          to_as: "next_change",
+          next_change: { at: "2026-11-10T00:30:00.000Z", value: "b1" },
+        },
+      });
+      // Before the entity's first stretch (11-05 00:00 +08:00 = 11-04 16:00 Z): filled.
+      const x = await put("moments", {
+        entity: entityOf(e),
+        intent: "update",
+        ver: verAt(w),
+        valid_from: "2026-11-04T12:00:00+08:00",
+        valid_to: "2026-11-05T00:00:00+08:00",
+        set: { b: "b3" },
+      });
+      expect(resolvedOf(x)?.["b"]?.filled).toEqual([
+        { valid_from: "2026-11-04T04:00:00.000Z", valid_to: "2026-11-04T16:00:00.000Z" },
+      ]);
     },
     T,
   );
