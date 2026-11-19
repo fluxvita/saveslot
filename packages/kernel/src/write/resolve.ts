@@ -33,7 +33,7 @@ import type { DerivedWrite } from "../derive/index.ts";
 import { JudgeError, type JudgeInput, judgeOp, reaches, type Unit } from "../judge/index.ts";
 import { type ActorAsOf as Actor, actorsAsOf, type NewEvent, readTail } from "../log/index.ts";
 import { actorsNow, closingOf, itemEntries, revertedOut } from "../pending/index.ts";
-import { normalizeResolve, type ResolveDecision } from "../request/index.ts";
+import { normalizeResolve, type ResolveDecision, type Visibility } from "../request/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
 import { appendWithDerived } from "./derive-step.ts";
 import { WriteError } from "./errors.ts";
@@ -49,10 +49,17 @@ import {
   type WriteInput,
 } from "./pipeline.ts";
 import { tableShape, todayIn, writable } from "./plan.ts";
-import { readSlots, readUnderAnotherTask, restoreCount, type SlotRow } from "./reads.ts";
+import {
+  readSlots,
+  readUnderAnotherTask,
+  restoreCount,
+  type SlotRow,
+  visibleSlotRows,
+} from "./reads.ts";
 import type { PendingRef } from "./receipt.ts";
 import { itemVer, readReceipt, type WriteReceipt, withDerived } from "./receipt.ts";
 import { encodeResolution, type RowContext } from "./record.ts";
+import { givenItems, refProblems, tableInRange } from "./refs.ts";
 import { findRequest, requestKeyOf } from "./request-key.ts";
 import { evidenceSource } from "./sources.ts";
 
@@ -561,6 +568,28 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     throw e;
   }
   const j = judged.judgement;
+  // The ref fields the decision's write gives (a taken candidate, a confirmed write): their targets
+  // now, as a write's (refs.ts). Refused, the item stays as it is.
+  const refs = await refProblems(tx, {
+    slot: slot.name,
+    table,
+    tableOf: (id) =>
+      slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as
+        | CompiledBaseTable
+        | undefined,
+    items: givenItems(j.record),
+    known: (id) =>
+      id === item.row ? { table: table.id as TableId, state: work.state } : undefined,
+    visible: tableInRange(await visibleSlotRows(tx, input.visibility as Visibility)),
+    stored: new Map(),
+    at: { upTo: (op - 1) as OpNumber },
+  });
+  if (refs.length > 0) {
+    throw new WriteError("validation_failed", "a ref field's target is not there", {
+      reason: "write",
+      details: refs,
+    });
+  }
   // Confirming a revert proposal that would write nothing is not reached: an item whose undo, judged
   // again, has nothing to write back and nothing to hide is closed by the write that leaves it so,
   // in that write's transaction (../write/pipeline.ts `nothingToRevert`; 04-write-and-read

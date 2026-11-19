@@ -111,6 +111,7 @@ import {
   withDerived,
 } from "./receipt.ts";
 import { decodeRecords, encodeOp, type RowContext, type StoredEvent } from "./record.ts";
+import { givenItems, refProblems, type StoredTargets, tableInRange } from "./refs.ts";
 import { findRequest, requestKeyOf } from "./request-key.ts";
 import { evidenceSource } from "./sources.ts";
 
@@ -974,6 +975,8 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       : [(op + 1 + o.index) as Seq];
 
   const rows = new Map<string, RowWork>();
+  // The ref targets this request reads from the store (step 5), read once.
+  const storedTargets: StoredTargets = new Map();
   const headBlocks: Record<string, JsonValue> = {};
   const opEvents: NewEvent[] = [];
   const noopNames = new Map<number, string[]>();
@@ -1162,6 +1165,30 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       throw e;
     }
     const j = judged.judgement;
+    // Step 5, the ref fields this op writes: their targets as of the ops before it.
+    const refs = await refProblems(tx, {
+      index: o.index,
+      slot: slot.name,
+      table,
+      tableOf: (id) =>
+        slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as
+          | CompiledBaseTable
+          | undefined,
+      items: givenItems(j.record),
+      known: (id) => {
+        const w = rows.get(id);
+        return w === undefined ? undefined : { table: w.ctx.table, state: w.state };
+      },
+      visible: tableInRange(visible),
+      stored: storedTargets,
+      at: { upTo: (op - 1) as OpNumber, request: { op, below: o.index } },
+    });
+    if (refs.length > 0) {
+      throw new WriteError("validation_failed", "a ref field's target is not there", {
+        reason: "write",
+        details: refs,
+      });
+    }
     work.state = judged.state;
     // Conflicts join the open item of the same unit whose interval meets theirs, the earliest of
     // several (01-objects «目标与合并»); one meeting none opens an item.

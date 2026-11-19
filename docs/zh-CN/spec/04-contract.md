@@ -231,7 +231,7 @@
 
 - **默认只撤回仍然生效的部分**；已被后来的写入覆盖的部分跳过：它们不出现在逐字段结果里，由 `undo.skipped_superseded` 逐项列出（字段、区间、覆盖它的写入）。
 - **`include_later: true`** 连后来的写入一起回掉，一律按高影响进待确认。此时待确认事项的 `proposal` 不带 `set`，带 `revert: {undo, include_later}`（`set` 留给字段值与撤销两种提议，`set: null` 专指提议撤销）；会被回掉的后来写入列在 `impact.reverted` 里，回到的值在确认执行后的回执里给出。读结果的 `awaiting` 标记相应带 `proposed_revert`，不带 `proposed`。
-- **`undo` 不做版本冲突判定，`ver` 可以不带**：调用方点名了要撤回的那次写入，默认只撤回它仍然生效的部分，别人在它之后写的值不会被动。它仍要过依赖状态的校验（行已撤销报 `revoked`）与高影响判定。撤回一次带区间的撤销（恢复那段的值）不算高影响。
+- **`undo` 不做版本冲突判定，`ver` 可以不带**：调用方点名了要撤回的那次写入，默认只撤回它仍然生效的部分，别人在它之后写的值不会被动。它仍要过依赖状态的校验（行已撤销报 `revoked`；写回的 `ref` 值同样校验目标，目标已撤销报 `validation_failed`（`ref_not_found`），整次回退不生效）与高影响判定。撤回一次带区间的撤销（恢复那段的值）不算高影响。
 - 目标是插入或首次创建：`invalid_argument`（`undo_target`），提示用 `revoke`。目标是从没生效过的候选或待确认写入：同一错误，提示用 `resolve`。目标是 schema 切换的操作号（常量 `backfill` 补值的那一条）：同一错误，提示提交新的 schema 草稿。目标在这一行 / 实体上没有可撤回的改动（只做了同值佐证、全是无操作等）：同一错误。目标是撤销、系统裁定、由 `resolve` 触发的写入时可以撤回。
 - n 不是这一行 / 实体的写入：`invalid_argument`（`not_this_target`）；目标内容已删除：`invalid_argument`（`content_deleted`）。
 
@@ -474,6 +474,7 @@
 3. 按第 6 节核对绑定的内容；对不上 → `confirmation_mismatch`，附 `current`：该事项此刻的详情（含新的 `item_ver`），与同一时刻查看详情所得相同，算读到（第 2 节）。
 4. `schema_change` 的 `confirm`：在同一个事务里重新判断。草稿里凡按"从未被写入"编译的改动（只对从未被写入的表放开的结构改动，以及归入 `restructure_unused` 的各项，见 `schema_draft` 一节），所在的表在确认时已被写入，一律报 `draft_outdated`（`table_written`）；草稿带 `migrate` 时，对试跑之后的新写入（迁移期间带旧 `sv` 的写入）重新求值，有失败的报 `draft_outdated`（`migrate_failed`）。两种都不产生任何事件，事项保持未决；调用方 `reject` 这份草稿，或提交新草稿取代它。
 
+- **触发的写入同样过 `ref` 目标的校验**（data-model「写入 ref 字段时」）：采纳候选、回到合并基、确认待确认写入（含确认一次撤回）时，这次将要生效的 `ref` 值按处理时的状态校验，不过报 `validation_failed`（`ref_not_found` / `ref_wrong_table`），明细不带 `op`、带 `table` 与 `field`；不产生任何事件，事项保持未决。
 - `take_candidate` 在事项有多个候选时必须给 `candidate`（详情里候选的 `index`；下标在事项生命周期内不复用），否则 `invalid_argument`（`candidate_required`，附候选 `candidate_choices`：每个候选的下标、所在写入的操作号与写入者）。
 - `evidence` 与 `note`：`resolve` 没有请求级证据，证据只有 `evidence` 与 `evidence_by_field`，不收 `evidence_refs`；`evidence_by_field` 的下标数的就是本次的 `evidence` 数组，处理触发写入时按字段指明那次写入的证据。`evidence` 每段存为一条源数据；带了 `note`、或处理会触发写入而没带证据时，解决请求本身（含 `note`）另存一条 `api_call`。**不触发写入的处理方式（`keep_effective`、`reject`、`keep`、schema 的确认与拒绝）同样如此**，所以 `note` 总有地方落、总能被隐私删除清掉。它们只是操作来源；事项详情的 `resolution.note` 从这条源数据回显，源数据被删后不再回显。既没带证据也没带 `note`、又不触发写入的解决不产生源数据。
 - 结果：触发了写入时带 `write`（形状同写入回执的对应部分，含 `premise_affected`）；`schema_change` 的 `confirm` 带 `schema`（是否已切换、新 `sv`，或迁移状态）；`deletion` 的 `cancel` 带 `cancelled`（受影响行的新 `ver`、退回原状态的写入、恢复的事项、保持"已被取代"的事项、因已被当作基线而不退回的写入、前提的变化 `premise_affected`）。

@@ -207,6 +207,7 @@ export interface WriteValidationDetail {
     | "required_missing"
     | "required_in_gap"
     | "ref_not_found"
+    | "ref_wrong_table"
     | "empty_row"
     | "malformed";
   /** `type_mismatch`: a valid value of the field's type, as `set` takes it (not the one given). */
