@@ -254,6 +254,145 @@ const EXAMPLE_REWRITTEN = [
   },
 ] as unknown as Op[];
 
+/**
+ * The undo of a write awaits over [11-03, 11-05); a later write of the same value over [11-03,
+ * 11-07) covers what the undo would take back, so the undo has nothing left to revert and its
+ * item closes: the write reaches it though what a reader sees there stays the same (CI's
+ * counterexample, seed -909928846).
+ */
+const EXAMPLE_EMPTIED = [
+  {
+    kind: "write",
+    op: 10,
+    event: 11,
+    seen: 0,
+    valid: {
+      from: {
+        mode: "given",
+        value: "2026-10-01",
+      },
+      to: {
+        mode: "open",
+      },
+    },
+    fields: {
+      f2: {
+        value: "1",
+        sources: ["S10"],
+      },
+    },
+    acknowledge: ["overwrite"],
+  },
+  {
+    kind: "revoke",
+    op: 20,
+    event: 21,
+    seen: 10,
+    valid: {
+      from: {
+        mode: "given",
+        value: "2026-11-01",
+      },
+      to: {
+        mode: "given",
+        value: "2026-11-07",
+      },
+    },
+    validSources: ["S20"],
+  },
+  {
+    kind: "write",
+    op: 30,
+    event: 31,
+    seen: 20,
+    valid: {
+      from: {
+        mode: "given",
+        value: "2026-11-03",
+      },
+      to: {
+        mode: "given",
+        value: "2026-11-05",
+      },
+    },
+    fields: {
+      f2: {
+        value: "5",
+        sources: ["S30"],
+      },
+    },
+    acknowledge: ["overwrite"],
+  },
+  {
+    kind: "undo",
+    op: 40,
+    event: 41,
+    target: 30,
+    acknowledge: ["overwrite"],
+  },
+  {
+    kind: "undo",
+    op: 50,
+    event: 51,
+    target: 20,
+    seen: 40,
+    acknowledge: ["overwrite"],
+  },
+  {
+    kind: "write",
+    op: 60,
+    event: 61,
+    seen: 50,
+    valid: {
+      from: {
+        mode: "given",
+        value: "2026-11-01",
+      },
+      to: {
+        mode: "given",
+        value: "2026-11-03",
+      },
+    },
+    fields: {
+      f2: {
+        value: "6",
+        sources: ["S60"],
+      },
+    },
+    acknowledge: ["overwrite"],
+  },
+  {
+    kind: "undo",
+    op: 70,
+    event: 71,
+    target: 50,
+  },
+  {
+    kind: "write",
+    op: 80,
+    event: 81,
+    seen: 70,
+    valid: {
+      from: {
+        mode: "given",
+        value: "2026-11-03",
+      },
+      to: {
+        mode: "given",
+        value: "2026-11-07",
+      },
+    },
+    fields: {
+      f2: {
+        value: "5",
+        sources: ["S1"],
+        explicit: false,
+      },
+    },
+    acknowledge: ["overwrite"],
+  },
+] as unknown as Op[];
+
 /** An event table sample for the four modes: two writes to one row. */
 const EXAMPLE_EVENT = [
   { kind: "write", op: 10, event: 11, seen: 0, fields: { f2: { value: "1", sources: ["S10"] } } },
@@ -723,7 +862,15 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
                 : [WHOLE_SPAN as Iv];
               // On the unit "existence" only having a value or not counts (the conflict unit).
               const gone = (tok: string) => tok === "no value" || tok === "no row";
-              const changed =
+              // A step that empties an awaiting undo's interval reaches it, whether or not what a reader
+              // sees there changes (a later write of the same value over what the undo would take
+              // back): confirming it would do nothing now, and the item closes.
+              const emptied =
+                t.origin !== undefined &&
+                isState &&
+                t.scope.length > 0 &&
+                (scopeAfter.get(id) ?? []).length === 0;
+              const valueChanged =
                 t.unit[0] === "existence"
                   ? segs.some(
                       (g) =>
@@ -735,6 +882,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
                         (g) => refToken(before, f, g, isState) !== refToken(after, f, g, isState),
                       ),
                     );
+              const changed = emptied || valueChanged;
               expect({ step: k, item: id, reached: reachedNow.has(id) }).toEqual({
                 step: k,
                 item: id,
@@ -941,6 +1089,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
               [{ ops: EXAMPLE_NARROWED, decisions: [] }, false, true],
               [{ ops: EXAMPLE_REFRESHED, decisions: [] }, true, false],
               [{ ops: EXAMPLE_REWRITTEN, decisions: [] }, true, false],
+              [{ ops: EXAMPLE_EMPTIED, decisions: [] }, false, false],
             ]
           : [
               [{ ops: EXAMPLE_EVENT, decisions: [] }, true, false],
