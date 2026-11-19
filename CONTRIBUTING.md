@@ -24,6 +24,18 @@ The full contributor guide is currently in Chinese: [`docs/zh-CN/guide/12-contri
 - **Golden files.** Some texts a model reads (the MCP server's `instructions`, the prompts) are pinned in files under a `__golden__/` directory beside their tests. When you change such a text on purpose, update them with `pnpm exec vitest run <test file> -u` and commit the changed files with the change; reviewers read their diff as the change in wording. With `CI` set (as in CI), a golden file that differs or is missing fails the test; none is written.
 - Run `pnpm check` locally on the head you push (type check, lint, tests, dependency rules, doc links, JSON examples) and paste the result in the merge request. CI runs the same scripts after merges and nightly, not on merge requests. A failure on the default branch is fixed with priority.
 
+## Running the tests
+
+- **A run's temporary directory.** Each run of the tests (`pnpm test`, `pnpm check`, `pnpm exec vitest run …`) makes a directory `/tmp/sst-XXXXXX` and points `TMPDIR` into it; the tests make their homes and stores there. When the run ends the directory is removed, whatever the tests left in it is listed, and a process a test left running is stopped and fails the run. What a killed run left is cleared by the next run. To look at what a failed test left, set `SAVESLOT_TEST_KEEP_TMP=1`: the directory is kept and its path printed (the processes are stopped all the same); remove it yourself afterwards.
+- **The tests on PostgreSQL.** `pnpm check` runs the tests on PGlite. `pnpm test:postgres` runs the kernel's tests on a real store, and the PostgreSQL backend's own, on a PostgreSQL server; without one, the backend's own tests are skipped in `pnpm check`. Run it when a change touches the storage port, a backend, or SQL the kernel sends:
+
+  ```sh
+  SAVESLOT_TEST_POSTGRES_URL=postgres://user[:password]@host[:port]/postgres pnpm test:postgres
+  ```
+
+  It fails at once when the variable is not set. Arguments after the script's name go to Vitest (a file, `-t <name>`).
+- **Preparing a local PostgreSQL.** The server must be PostgreSQL 18, and the user in the URL must be allowed to create databases. Any installation does, for example Homebrew (`brew install postgresql@18 && brew services start postgresql@18`, then `postgres://$USER@localhost/postgres`) or a container (`docker run -d -e POSTGRES_PASSWORD=test -p 5432:5432 postgres:18`, then `postgres://postgres:test@localhost/postgres`). Each store a test opens is a database of its own, named `sst_h<machine>_r<run>_…`; a run drops its databases when it ends, and those a killed run left on the same machine are dropped by the next run. `<machine>` is a mark made the first time the tests run on a machine and kept in `~/.local/state/saveslot-tests/machine` (under `$XDG_STATE_HOME` when that is set); it is what tells two machines' databases apart on a shared server, so do not copy that file to another machine. Use a server you can afford to fill with such databases, not one that holds data.
+
 ## Where to talk
 
 - Bugs, tasks and research: Issues, using the matching template.

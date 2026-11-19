@@ -22,6 +22,18 @@
 - **golden 文件**：模型读的一部分文字（MCP 服务的 `instructions`、prompts）固定在测试旁边的 `__golden__/` 目录里。有意改这些文字时，用 `pnpm exec vitest run <测试文件> -u` 更新，与改动一起提交；评审看这些文件的 diff 就是看措辞的变化。设了 `CI`（CI 里就是这样）时，golden 文件不一致或缺失都会让测试失败，不会写出新的。
 - 在要推的头上本地跑 `pnpm check`（类型检查、lint、测试、依赖规则、文档链接、JSON 例子），结果贴进合并请求。CI 跑的是同一组脚本，但在合并之后与每晚跑，不在合并请求上跑。主分支变红时优先修。
 
+## 跑测试
+
+- **一次运行的临时目录**：每跑一次测试（`pnpm test`、`pnpm check`、`pnpm exec vitest run …`）会建一个目录 `/tmp/sst-XXXXXX`，并把 `TMPDIR` 指到它里面；测试的 home 与数据目录都建在那里。运行结束时删掉这个目录，测试没删干净的东西会列出来；测试留下没停的进程会被停掉，并让这次运行失败。被强杀的运行留下的，由下一次运行开头清掉。想看失败的测试留下了什么，设 `SAVESLOT_TEST_KEEP_TMP=1`：目录保留并打印路径（进程照样会被停掉），看完自己删。
+- **在 PostgreSQL 上跑测试**：`pnpm check` 里的测试跑在 PGlite 上。`pnpm test:postgres` 把内核在真实存储上的测试、连同 PostgreSQL 后端自己的测试，放到一台 PostgreSQL 服务器上跑；没有服务器时，后端自己的测试在 `pnpm check` 里是跳过的。改动涉及存储接口、某个后端或内核发出的 SQL 时跑它：
+
+  ```sh
+  SAVESLOT_TEST_POSTGRES_URL=postgres://user[:password]@host[:port]/postgres pnpm test:postgres
+  ```
+
+  没设这个变量会立刻失败。脚本名后面的参数原样交给 Vitest（某个文件、`-t <名字>`）。
+- **准备本地的 PostgreSQL**：服务器必须是 PostgreSQL 18，URL 里的用户要有建库权限。怎么装都行，比如 Homebrew（`brew install postgresql@18 && brew services start postgresql@18`，URL 用 `postgres://$USER@localhost/postgres`）或容器（`docker run -d -e POSTGRES_PASSWORD=test -p 5432:5432 postgres:18`，URL 用 `postgres://postgres:test@localhost/postgres`）。测试每开一个库就是一个单独的 database，名字形如 `sst_h<机器>_r<运行>_…`；一次运行结束时删掉它建的，同一台机器上被强杀的运行留下的由下一次运行删掉。`<机器>` 是一台机器第一次跑测试时生成的标记，存在 `~/.local/state/saveslot-tests/machine`（设了 `$XDG_STATE_HOME` 时在它下面）；共用一台服务器时靠它分清各台机器的库，所以不要把这个文件拷到别的机器上。请用一台可以随便建删这类 database 的服务器，不要用存着数据的。
+
 ## 在哪讨论
 
 - 缺陷、任务与调研：Issues，选对应的模板。

@@ -1,13 +1,22 @@
 // The test backend: PGlite by default; PostgreSQL in its place when the run asks for it, with a
 // database standing for each directory.
 
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { PgliteBackend, PgliteStoreError } from "@fluxvita/saveslot-store-pglite";
 import { DATABASE_NAME, PostgresTenantStore } from "@fluxvita/saveslot-store-postgres";
 import { afterAll, describe, expect, it } from "vitest";
-import { cellFromEnv, sqlOn } from "../../store-postgres/src/testing/server.fixture.ts";
+import {
+  cellFromEnv,
+  machineMark,
+  PREFIX_ENV,
+  runPrefix,
+  sqlOn,
+  staleDatabases,
+  testDatabase,
+  thisRunPrefix,
+} from "../../store-postgres/src/testing/server.fixture.ts";
 import { databaseOf, TEST_BACKEND, testBackend } from "./index.fixture.ts";
 
 const root = mkdtempSync(join(tmpdir(), "saveslot-test-backend-"));
@@ -19,6 +28,108 @@ describe("the database that stands for a directory", () => {
     expect(a).toMatch(DATABASE_NAME);
     expect(databaseOf(join(root, "x", "..", "a"))).toBe(a);
     expect(databaseOf(join(root, "b"))).not.toBe(a);
+  });
+});
+
+describe("the test databases a starting run drops: those its own machine's gone runs left", () => {
+  // Names only: no server, and nothing made on one. dropStaleDatabases lists the server's
+  // databases and drops what this gives, at the start of every run with a server.
+  const here = "0a1b2c3d";
+  const there = "4e5f6a7b";
+  const gone = "sst-gone01";
+  const running = "sst-live01";
+  const runThere = (run: string) => run === running;
+  const names = [
+    `${runPrefix(gone, here)}a`,
+    `${runPrefix(gone, here)}b`,
+    `${runPrefix(running, here)}a`,
+    `${runPrefix(gone, there)}a`,
+    `${runPrefix(running, there)}a`,
+    // Not of a run as test-tmp makes them, nor of a test at all.
+    `${runPrefix("elsewhere", here)}a`,
+    `sst_r${Buffer.from(gone).toString("hex")}_a`,
+    "postgres",
+    "tenant_one",
+  ];
+
+  it("drops this machine's runs that are gone, every database of each, and nothing else", () => {
+    expect(staleDatabases(names, here, runThere)).toEqual([
+      `${runPrefix(gone, here)}a`,
+      `${runPrefix(gone, here)}b`,
+    ]);
+  });
+
+  it("leaves another machine's alone, whether its run directory is found here or not", () => {
+    expect(staleDatabases(names, there, () => true)).toEqual([]);
+    expect(staleDatabases(names, there, () => false)).toEqual([
+      `${runPrefix(gone, there)}a`,
+      `${runPrefix(running, there)}a`,
+    ]);
+    expect(staleDatabases(names, here, () => false)).not.toContain(`${runPrefix(gone, there)}a`);
+  });
+});
+
+describe("a machine's mark", () => {
+  it("is made the first time, 8 hex digits in a file of the user's own; then read back the same", () => {
+    const file = join(root, "state", "saveslot-tests", "machine");
+    const mark = machineMark(file);
+    expect(mark).toMatch(/^[0-9a-f]{8}$/);
+    expect(readFileSync(file, "utf8")).toBe(`${mark}\n`);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(machineMark(file)).toBe(mark);
+  });
+
+  it("two machines (two files) have two marks", () => {
+    expect(machineMark(join(root, "one", "machine"))).not.toBe(
+      machineMark(join(root, "two", "machine")),
+    );
+  });
+
+  it("a file that does not hold one is refused, with what to do", () => {
+    const file = join(root, "bad-machine");
+    writeFileSync(file, "my-laptop\n");
+    expect(() => machineMark(file)).toThrow(
+      `${file} does not hold a machine mark (8 hex digits): remove it, and the next run makes one`,
+    );
+  });
+});
+
+describe("this run's prefix: worked out once, by the run's global setup", () => {
+  it("is handed to this process, and is this run's on this machine", () => {
+    const prefix = process.env[PREFIX_ENV] as string;
+    expect(prefix).toBe(runPrefix(basename(dirname(tmpdir())), machineMark()));
+    expect(thisRunPrefix()).toBe(prefix);
+    expect(testDatabase("x")).toBe(`${prefix}x`);
+  });
+
+  it("a database is named with it whatever the mark's source says later: the prefix the run's end drops by", () => {
+    const prefix = thisRunPrefix();
+    const before = process.env["SAVESLOT_TEST_MACHINE_FILE"];
+    // The mark's source changes under the run (a host name that changed, a file replaced).
+    const other = join(root, "changed", "machine");
+    machineMark(other);
+    writeFileSync(other, "ffffffff\n");
+    process.env["SAVESLOT_TEST_MACHINE_FILE"] = other;
+    try {
+      expect(machineMark()).toBe("ffffffff");
+      expect(prefix).not.toContain("ffffffff");
+      // What a test makes, and what the run's end looks for.
+      expect(testDatabase("y").startsWith(prefix)).toBe(true);
+      expect(thisRunPrefix()).toBe(prefix);
+    } finally {
+      if (before === undefined) delete process.env["SAVESLOT_TEST_MACHINE_FILE"];
+      else process.env["SAVESLOT_TEST_MACHINE_FILE"] = before;
+    }
+  });
+
+  it("without the setup's prefix, a name is refused rather than worked out again", () => {
+    const prefix = process.env[PREFIX_ENV];
+    delete process.env[PREFIX_ENV];
+    try {
+      expect(() => testDatabase("z")).toThrow(`${PREFIX_ENV} is not set`);
+    } finally {
+      process.env[PREFIX_ENV] = prefix;
+    }
   });
 });
 

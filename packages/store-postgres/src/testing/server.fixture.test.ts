@@ -34,10 +34,11 @@ describe("dropping a run's test databases", () => {
     expect(s.most()).toBe(DROPS_AT_ONCE);
   });
 
-  it("a drop that fails does not stop the others", async () => {
+  it("a drop that fails does not stop the others, and the first failure is given back", async () => {
     const names = ["sst_x_a", "sst_x_b", "sst_x_c"];
     const s = standIn(1, ["sst_x_a"]);
-    await expect(dropDatabases(CELL, names, s.run)).resolves.toBeUndefined();
+    const error = await dropDatabases(CELL, names, s.run);
+    expect(error?.message).toBe("refused");
     expect(s.seen.map((x) => x.text)).toHaveLength(3);
   });
 

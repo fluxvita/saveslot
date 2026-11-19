@@ -19,7 +19,7 @@
 # them.
 #
 # Tests open their stores without passing fsync to the host, unless SAVESLOT_TEST_DURABILITY is
-# "host-fsync" (packages/store-pglite/src/testing/test-backend.fixture.ts). The check on a push runs
+# "host-fsync" (packages/test-backend/src/index.fixture.ts). The check on a push runs
 # what the author and the reviewer ran locally; the nightly and by-hand checks set the variable, so
 # that the whole suite also runs on the real fsync path.
 #

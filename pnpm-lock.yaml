@@ -343,9 +343,6 @@ importers:
       '@fluxvita/saveslot-reference':
         specifier: workspace:*
         version: link:../reference
-      '@fluxvita/saveslot-test-backend':
-        specifier: workspace:*
-        version: link:../test-backend
       fast-check:
         specifier: 4.10.2
         version: 4.10.2
