@@ -227,8 +227,17 @@ export function impactOut<A, V, I>(e: ItemEntries, n: Naming<A, V, I>, blocks: r
       seq: b["op"] as number,
       actor: actorAt(e, n, b["op"] as number),
     }));
+  // One gap per stretch and revoke: the entries are per field (a write of two fields over one gap
+  // gives two), a filled gap is the stretch's (04-contract-types `AwaitingImpact.filled_gaps`).
+  const gapKeys = new Set<string>();
   const filled = segs
     .filter((b) => b["gap"] === true)
+    .filter((b) => {
+      const key = JSON.stringify([b["valid"] ?? null, b["op"] ?? null]);
+      if (gapKeys.has(key)) return false;
+      gapKeys.add(key);
+      return true;
+    })
     .map((b) => ({
       ...(b["valid"] !== undefined ? { valid: n.interval(spanIn(b["valid"])) } : {}),
       ...(typeof b["op"] === "number" ? { revoked_by: b["op"] as number } : {}),

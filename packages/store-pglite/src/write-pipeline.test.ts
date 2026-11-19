@@ -374,6 +374,11 @@ describe("the main path", () => {
             { result: "applied", after: "x", valid: { valid_from: "2026-11-01", valid_to: null } },
           ],
         },
+        // The start given; the end not given, so by default to the next change (04-contract §4);
+        // a new entity has none after 11-01: lasting, and no next_change.
+        resolved: {
+          b: { valid_from: "2026-11-01", valid_to: null, from_as: "given", to_as: "next_change" },
+        },
       });
       const r = await send({
         sv: 1,

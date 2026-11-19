@@ -258,7 +258,6 @@ export const WRITE_OMITTED = [
   "affected_reads",
   "derived_values",
   "before_values",
-  "noop_segments",
   "skipped_spans",
   "deleted_content",
   "unrecorded_ops",

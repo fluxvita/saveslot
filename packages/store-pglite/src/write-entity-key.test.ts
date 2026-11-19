@@ -246,6 +246,22 @@ describe("locating by key", () => {
               },
             ],
           },
+          // Each field: the start given (10-01); the end not given, so by default to the next
+          // change (04-contract §4); the entity is new, with none after it: lasting, no next_change.
+          resolved: {
+            category: {
+              valid_from: "2026-10-01",
+              valid_to: null,
+              from_as: "given",
+              to_as: "next_change",
+            },
+            amount: {
+              valid_from: "2026-10-01",
+              valid_to: null,
+              from_as: "given",
+              to_as: "next_change",
+            },
+          },
         },
       ]);
       const head = await headOf(r.seq);

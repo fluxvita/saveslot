@@ -1232,12 +1232,12 @@ interface WriteResult extends CommonResult {
   replayed?: true;
   /** 回执里省略的部分。两种情形会出现：
    *  replayed：按日志重建不出的——affected_reads；derived_values（派生值的改前改后值）；before_values（改前值所出自的贡献已被删除）；
-   *    noop_segments（状态类表上无操作段的区间与解析结果，日志里只留字段名）；skipped_spans（undo 跳过的部分的区间）；
+   *    skipped_spans（undo 跳过的部分的区间）；
    *    deleted_content（这次写入自己的内容已被删除的部分）；unrecorded_ops（没进事件的按来源键 op：unchanged、skipped）；
    *    existing_keys（existing_keys 与 similar_keys：由写入那一刻的状态算出，不进事件）。
    *  回执超出外化面的结果预算：写入已生效，不报错，截短并列明——field_results、derived_values、affected_reads、lists（各列表的后几条，含 premise_affected.rows）。
    *  调用方需要时自己读（history / query）。 */
-  omitted?: Array<"affected_reads" | "derived_values" | "before_values" | "noop_segments" | "skipped_spans" | "deleted_content"
+  omitted?: Array<"affected_reads" | "derived_values" | "before_values" | "skipped_spans" | "deleted_content"
                   | "unrecorded_ops" | "existing_keys" | "field_results" | "lists">;
   original_deleted?: { deletion: ItemId };   // 重放命中的原写入已被删除：没有重新写入，不回显内容
   job?: JobId;                   // @later
@@ -1322,13 +1322,19 @@ type FieldResult =
   | { result: "awaiting"; item: ItemId; impact: AwaitingImpact }
   | { result: "applied_by_rule"; item: ItemId; before: Value; after: Value };   // @later
 
+/** 回执 resolved 里一个字段的解析结果，首次回执与重放按日志给出同样的内容（写入头的原始传参与基础写入里各项的区间）。
+ *  不给的情形：无操作的字段（日志里只留字段名，没有区间）；undo 的 op（区间由写回求出，不是从传参解析出来的，整个 op 没有 resolved）；
+ *  原始传参已被隐私删除的 op（整个 op 没有，列在 deleted_content 下）。
+ *  "*"（撤销的"存在"）给 from_as、to_as 与区间，不给 next_change：Value 对"存在"没有定义。 */
 interface ResolvedInterval extends Interval {
   /** 调用方是怎么给起点、终点的（与事件格式的 mode 同名）。corrected_span = correct 且两端都没传：包含"现在"、以挡点为界的那一段。 */
   from_as: "given" | "now" | "corrected_span";
   to_as: "given" | "next_change" | "open" | "corrected_span";
   /** to_as: next_change 且终点不是"一直延续"时：终点处开始的那一段，没有改动。 */
   next_change?: { at: BizTime; value: Value | null };
-  /** 这次写入填上的无值区间。 */
+  /** 这次写入填上的无值区间：生效的部分里，写之前实体在那里没有值的段，不论是怎么没有值的（实体第一段之前、显式终点之后、撤销留下的洞，
+   *  data-model「时间 · 无值区间」），相邻的合成一段。这次写入新建的实体不给（写之前它还不存在）。
+   *  只列已经生效、已经填上的段：待确认与候选的部分还没填上，不给；它们确认后会填掉什么见 impact.filled_gaps。 */
   filled?: Interval[];
 }
 

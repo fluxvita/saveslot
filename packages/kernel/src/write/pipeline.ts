@@ -1360,5 +1360,18 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     return keys !== undefined && r.created_entity ? { ...r, existing_keys: keys } : r;
   });
   const out = keysShown.size > 0 ? { ...receipt, ops } : receipt;
+  // Request-level evidence no op cites (an op naming none cites every segment): stored as sources
+  // all the same, the source of no value (04-write-and-read «证据»).
+  const cited = new Set(req.ops.flatMap((o) => o.evidenceRefs ?? req.evidence.map((_, k) => k)));
+  const uncited = req.evidence.map((_, k) => k).filter((k) => !cited.has(k));
+  if (uncited.length > 0) warnings.push({ code: "evidence_unreferenced", evidence: uncited });
+  // The recorded time was held at the log's end (02-architecture §7 «记录时刻»): the entry's clock
+  // is behind it. Whole seconds, rounded up, so that a clock behind at all never reads 0.
+  if (prepared.at !== now) {
+    warnings.push({
+      code: "clock_behind_log",
+      behind_seconds: Math.ceil((Date.parse(prepared.at) - Date.parse(now)) / 1000),
+    });
+  }
   return warnings.length > 0 ? { ...out, warnings } : out;
 }

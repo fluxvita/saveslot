@@ -9,7 +9,7 @@
 // part's `impact`), `undo.of` with what was skipped and what later writes were taken back, and the
 // pending items the write opened, joined, refreshed or superseded, each once; an entity created
 // by key gets `existing_keys` from the pipeline (not in the log: a replay lists it in `omitted`).
-// Not given yet: `before`, `overwritten`, `merged` (auto-merged fields), `resolved`; derived
+// Not given yet: `before`, `overwritten`, `resolved`; derived
 // changes, affected reads and premises. They come with the read path and derived refresh.
 
 import type {
@@ -70,6 +70,8 @@ export type FieldResultCode = "applied" | "candidate" | "awaiting" | "corroborat
 /** A field's result as the receipt assembles it, every key optional; `fieldResult` checks it. */
 interface PartDraft {
   readonly result: FieldResultCode;
+  /** Applied: the carried `ver` was not the row's version, and nothing conflicted (merged). */
+  readonly merged?: true;
   readonly after?: ValueOut;
   readonly no_value?: true;
   readonly uncovered?: true;
@@ -99,6 +101,8 @@ type Previous = NonNullable<PartDraft["previous"]>;
 export type FieldResult =
   | {
       readonly result: "applied";
+      /** The carried `ver` was not the row's version, but no one changed this part since: merged. */
+      readonly merged?: true;
       readonly after?: ValueOut;
       readonly no_value?: true;
       readonly uncovered?: true;
@@ -157,6 +161,16 @@ function fieldResult(d: PartDraft, isState: boolean): FieldResult {
   return d as FieldResult;
 }
 
+/** 04-contract-types §5.1 `ResolvedInterval`: how a state table's field interval was given and came out. */
+export interface ResolvedInterval extends Interval {
+  readonly from_as: "given" | "now" | "corrected_span";
+  readonly to_as: "given" | "next_change" | "open" | "corrected_span";
+  /** to_as `next_change` with an end: the stretch starting at the end, which the write left. */
+  readonly next_change?: { readonly at: string; readonly value: ValueOut };
+  /** The stretches without a value the write filled. */
+  readonly filled?: readonly Interval[];
+}
+
 /** A business time interval as the contract gives it (04-contract-types `Interval`). */
 export interface Interval {
   readonly valid_from: string | null;
@@ -206,6 +220,8 @@ export interface OpReceipt {
    */
   readonly existing_keys?: readonly EntityKeyText[];
   readonly fields: Readonly<Record<string, FieldResult | readonly StatePart[]>>;
+  /** State tables: the interval each field resolved to (04-contract-types §5.1 `ResolvedInterval`). */
+  readonly resolved?: Readonly<Record<string, ResolvedInterval>>;
   readonly undo?: {
     readonly of: OpNumber;
     readonly skipped_superseded: readonly {
@@ -292,7 +308,11 @@ export type FallbackOrigin = { readonly read: ReadId } | { readonly from_write: 
 export type ReceiptWarning =
   | WriteWarning
   | ({ readonly code: "ver_fallback"; readonly op: number; readonly ver: string } & FallbackOrigin)
-  | ({ readonly code: "sv_fallback"; readonly sv: number } & FallbackOrigin);
+  | ({ readonly code: "sv_fallback"; readonly sv: number } & FallbackOrigin)
+  /** The entry's time was earlier than the log's end, which was recorded instead. */
+  | { readonly code: "clock_behind_log"; readonly behind_seconds: number }
+  /** Request-level evidence segments no op cites: stored as sources, the source of no value. */
+  | { readonly code: "evidence_unreferenced"; readonly evidence: readonly number[] };
 
 export interface WriteReceipt {
   readonly status: "saved" | "pending";
@@ -417,6 +437,114 @@ function givenBy(
   return { op, value };
 }
 
+/** `ops/<i>/valid` (09 §5.7): how the caller gave the interval. */
+interface RawValid {
+  readonly from: { readonly mode: ResolvedInterval["from_as"] };
+  readonly to: { readonly mode: ResolvedInterval["to_as"] };
+}
+
+/**
+ * A state-table op's `resolved` (04-contract §4 «next_change 逐字段解析»), from the log: how the
+ * interval was given (the head's raw `valid`), what each field's items came to (their spans, as a
+ * whole), the stretch at a default end (the row right after the operation), and the stretches
+ * without a value the write filled: where the entity had none right before the operation under an
+ * applied part, however it came to have none (before its first stretch, after an explicit end, a
+ * revoke's hole; 05-time «无值区间»), read as the item details read "no value" (`piecesOver`). An
+ * entity this op created had none to fill: no `filled`. None for a field without items
+ * (a no-op: the log keeps only its name); none at all without the raw interval (an undo, whose
+ * interval comes from its write-backs; or the block deleted). "*" (existence) has no
+ * `next_change`: a value of existence is not defined.
+ */
+async function resolvedOf(
+  tx: ReadTx,
+  o: {
+    readonly table: CompiledBaseTable;
+    readonly rowId: string;
+    readonly op: OpNumber;
+    readonly valid: RawValid | undefined;
+    readonly blocks: Blocks;
+    readonly name: (f: string) => string;
+    readonly byDate: boolean;
+    /** This op created the entity (its `write.base` target): nothing was there to fill. */
+    readonly created: boolean;
+  },
+): Promise<Record<string, ResolvedInterval> | undefined> {
+  if (o.valid === undefined) return undefined;
+  const byTarget = new Map<string, { span: Span; applied: boolean }[]>();
+  for (const [p, b] of Object.entries(o.blocks)) {
+    const m = /^span\/(f\d+|existence)\/(\d+)$/.exec(p);
+    if (m === null) continue;
+    const target = m[1] as string;
+    const sp = b as {
+      valid?: { from: string; to?: string };
+      seen_valid?: { from: string; to?: string };
+    };
+    const at = sp.valid ?? sp.seen_valid;
+    if (at === undefined) continue;
+    const item = o.blocks[
+      target === "existence" ? `existence/${m[2]}` : `fields/${target}/${m[2]}`
+    ] as { status?: string } | undefined;
+    const xs = byTarget.get(target) ?? [];
+    xs.push({ span: spanIn(at), applied: item?.status === "applied" });
+    byTarget.set(target, xs);
+  }
+  if (byTarget.size === 0) return undefined;
+  const after = await rowCellsAt(tx, o.table, o.rowId, o.op);
+  const before = await rowCellsAt(tx, o.table, o.rowId, o.op - 1);
+  const out: Record<string, ResolvedInterval> = {};
+  for (const [target, xs] of byTarget) {
+    const from = xs.some((x) => x.span.from === null)
+      ? null
+      : (xs.map((x) => x.span.from as string).sort()[0] ?? null);
+    const to = xs.some((x) => x.span.to === null)
+      ? null
+      : (xs
+          .map((x) => x.span.to as string)
+          .sort()
+          .at(-1) ?? null);
+    const r: ResolvedInterval = {
+      ...intervalOut({ from, to }, o.byDate),
+      from_as: o.valid.from.mode,
+      to_as: o.valid.to.mode,
+    };
+    let next: ResolvedInterval["next_change"];
+    if (target !== "existence" && o.valid.to.mode === "next_change" && to !== null) {
+      const piece = piecesOver(o.table, after, [{ from: to, to: null }], [target])[0];
+      const cell =
+        piece === undefined || piece.revoked || piece.noValue
+          ? undefined
+          : piece.cells.find((c) => c.field_id === target);
+      const f = o.table.fields.find((x) => x.id === target);
+      const value =
+        cell === undefined || f === undefined
+          ? null
+          : decodeColumns(
+              f,
+              selectOf(f).map((_, i) => cell[`c_${f.id}_${i}`]),
+            );
+      next = { at: to, value: valueIn(value) };
+    }
+    const applied = xs.filter((x) => x.applied).map((x) => x.span);
+    const holes =
+      target === "existence" || applied.length === 0 || o.created
+        ? []
+        : piecesOver(o.table, before, applied, [target]).filter((p) => p.revoked || p.noValue);
+    const filled: Span[] = [];
+    for (const h of holes) {
+      const last = filled.at(-1);
+      if (last !== undefined && last.to === h.from)
+        filled[filled.length - 1] = { ...last, to: h.to };
+      else filled.push({ from: h.from, to: h.to });
+    }
+    out[target === "existence" ? "*" : o.name(target)] = {
+      ...r,
+      ...(next !== undefined ? { next_change: next } : {}),
+      ...(filled.length > 0 ? { filled: filled.map((x) => intervalOut(x, o.byDate)) } : {}),
+    };
+  }
+  return out;
+}
+
 /** The row's version (01-objects «版本标记») as of operation `op`. */
 async function verAsOf(
   tx: ReadTx,
@@ -432,6 +560,25 @@ async function verAsOf(
   );
   const v = r.rows[0]?.v;
   return v === null || v === undefined ? undefined : `v${Number(v)}.${restoreCount}`;
+}
+
+/**
+ * The row's version just before operation `op`: the last operation before it that changed the
+ * row (its version table's cells), as an operation number.
+ */
+async function verBefore(
+  tx: ReadTx,
+  table: CompiledBaseTable,
+  row: string,
+  op: OpNumber,
+): Promise<number | undefined> {
+  const r = await tx.query<{ v: unknown }>(
+    `SELECT max(rec_from) AS v FROM "${table.physical.table}__ver"
+     WHERE row_id = $1 AND rec_from < $2 AND intent <> 'schema_switch'`,
+    [row, op],
+  );
+  const v = r.rows[0]?.v;
+  return v === null || v === undefined ? undefined : Number(v);
 }
 
 /** The operation numbers of events, and the actors of operations. */
@@ -549,6 +696,15 @@ export async function readReceipt(
     // By field name, built as entries: a name like `__proto__` stays a key of its own.
     const fields = new Map<string, FieldResult | StatePart[]>();
     const rowVer = await verAsOf(tx, table, rowId, op, o.restoreCount);
+    // The op carried (or was given) a version older than the row's when it was written: what of it
+    // applied met no conflict, and is merged (04-contract §5.4 «判定与回执», 「applied」).
+    // Not for a revert, whose later writes are judged otherwise, nor a decision's write (no ver).
+    const seen = t.ver?.op;
+    const stale =
+      !resolved &&
+      seen !== undefined &&
+      head[`ops/${i}/revert`] === undefined &&
+      ((await verBefore(tx, table, rowId, op)) ?? seen) > seen;
     // The row's cells as this request left them, for who gave what a candidate met (as the item's
     // details read them, ../pending/cells.ts; the same moment as `effective`, `current_ver` and the
     // item's contents, 01-objects «不过期»): read once, and only when the op has a candidate.
@@ -691,6 +847,7 @@ export async function readReceipt(
           item === undefined ? {} : await itemDetails(item, block.status, target, event, part);
         add(m !== null ? name(target) : "*", {
           result: block.status,
+          ...(block.status === "applied" && stale ? { merged: true as const } : {}),
           ...("value" in block ? { after: valueIn(block.value as FieldValue) } : {}),
           ...(block.no_value ? { no_value: true as const } : {}),
           ...(block.uncovered ? { uncovered: true as const } : {}),
@@ -745,6 +902,19 @@ export async function readReceipt(
           : {}),
       };
     }
+    const resolvedFields =
+      isState && base !== undefined && revert === undefined
+        ? await resolvedOf(tx, {
+            table,
+            rowId,
+            op,
+            valid: head[`ops/${i}/valid`] as RawValid | undefined,
+            blocks: base.blocks,
+            name,
+            byDate,
+            created: (base.blocks["target"] as { created?: true }).created === true,
+          })
+        : undefined;
     const created = (base?.blocks["target"] as { created?: true } | undefined)?.created === true;
     const ver = rowVer;
     // The key of an entity located or created by key, from the event that created it.
@@ -765,6 +935,7 @@ export async function readReceipt(
       ...(ver !== undefined ? { ver } : {}),
       ...(created && isState ? { created_entity: true as const } : {}),
       fields: Object.fromEntries(fields),
+      ...(resolvedFields !== undefined ? { resolved: resolvedFields } : {}),
       ...(undo !== undefined ? { undo } : {}),
     });
   }
