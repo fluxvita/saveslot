@@ -5,6 +5,8 @@
 
 export { withConfirmations } from "./apply/confirmation.fixture.ts";
 export * from "./apply/slot.fixture.ts";
+// One judgement on a state, for a test asking what a decision would do now.
+export { judgeOp } from "./judge/index.ts";
 export {
   type Decision,
   type Judged,

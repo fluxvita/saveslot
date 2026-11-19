@@ -37,7 +37,9 @@ import {
   type Decision,
   eventsOfSteps,
   FIRST_OP,
+  type Judged,
   judged,
+  judgeOp,
   type LoggedEvent,
   resolveInTx,
   SLOT,
@@ -284,6 +286,54 @@ const both = [
 ] as const;
 
 /** What the random samples reached, over both tables (the last test checks it). */
+/** A confirm or reject as judged here: the awaiting write it decides on. */
+interface DecisionInput {
+  readonly op: number;
+  readonly event: number;
+  readonly ruleset: number;
+  readonly target: number;
+}
+
+/**
+ * Whether an awaiting undo has nothing left to do on `state` (09 §5.8: no part to write back, and
+ * no write to hide or take back), with what its confirmation would skip; undefined while it has
+ * something, or for a proposal that is no undo. Judged as the spec says: a confirmation now, and
+ * the same undo judged again now.
+ */
+function nothingLeft(
+  state: Judged["before"],
+  d: DecisionInput,
+): { readonly skipped: readonly { readonly byOp: number }[] } | undefined {
+  const opened = state.records.find((r) => r.event === d.target);
+  if (opened?.kind !== "undo" || opened.revert.before === undefined) return undefined;
+  const base = { op: d.op, index: 0, event: d.event, ruleset: d.ruleset };
+  // A judgement judge refuses: a refused confirmation has not nothing to do; an undo refused now
+  // has nothing it would hide or take back.
+  const tryJudge = (input: unknown) => {
+    try {
+      return judgeOp(state, input as never).judgement;
+    } catch (e) {
+      if ((e as Error).name !== "JudgeError") throw e;
+      return undefined;
+    }
+  };
+  const confirm = tryJudge({ ...base, kind: "confirm", target: d.target })?.record;
+  if (confirm?.kind !== "confirm" || confirm.revert === undefined) return undefined;
+  if (confirm.items.length > 0) return undefined;
+  const again = tryJudge({
+    ...base,
+    kind: "undo",
+    seen: d.op - 1,
+    seenExplicit: true,
+    target: opened.revert.before,
+    ...(opened.includeLater ? { includeLater: true } : {}),
+  });
+  if (again !== undefined && (again.takesBack.length > 0 || again.hides.length > 0)) {
+    return undefined;
+  }
+  return { skipped: confirm.revert.skipped };
+}
+
 const atRandom = { decisions: 0 };
 
 /**
@@ -481,14 +531,17 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         // of the write that left it so (04-write-and-read «撤回某次写入（undo）»), which the record
         // mapping does not model. The confirmation is refused as item_closed, closed by the op that
         // covers the entries; the step appends nothing. Any other refusal still fails.
-        const r0 = step.judgement.record;
-        if (
-          o.kind === "confirm" &&
-          r0.kind === "confirm" &&
-          r0.revert !== undefined &&
-          r0.items.length === 0
-        ) {
-          const params = { id, decision: "confirm", item_ver: `iv_${id.slice(3)}.${version}.0` };
+        // Whether the item is still open is the spec's test, judged on the state before the step,
+        // the same for a confirm and a reject (09 §5.8 `item.refreshed`): an awaiting undo with
+        // nothing left to write back, and nothing to hide or take back, was closed as
+        // nothing_to_revert by the write that left it so. A reject's own record says nothing of
+        // it, so both ask what a confirmation and the undo would do now.
+        const left =
+          o.kind === "confirm" || o.kind === "reject"
+            ? nothingLeft(step.before, step.input as unknown as DecisionInput)
+            : undefined;
+        if (left !== undefined) {
+          const params = { id, decision: o.kind, item_ver: `iv_${id.slice(3)}.${version}.0` };
           const refused = await store
             .write((tx) =>
               resolveInTx(tx, {
@@ -513,7 +566,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
             step: k,
             code: refused?.code,
             reason: by?.reason,
-            byCoveringOp: r0.revert.skipped.some((x) => x.byOp === by?.by),
+            byCoveringOp: left.skipped.some((x) => x.byOp === by?.by),
           }).toEqual({
             step: k,
             code: "item_closed",
@@ -759,6 +812,100 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         closed: seen.closed - before.closed,
         steps: seen.steps - before.steps,
       }).toEqual({ sampled: 1, closed: 1, steps: ops.length + 1 });
+    },
+  );
+
+  it.runIf(isState)(
+    "a rejection of an item the covering write closed: refused as item_closed, nothing appended",
+    async () => {
+      // The counterexample of a random sample, as a fixed case: #40 (seen #10) is a candidate;
+      // #70 undoes #50; #80 writes 1 back over 11-01..11-07, which leaves the awaiting undo's
+      // proposal nothing to write back, so the pipeline closed the item as nothing_to_revert at #80.
+      // A reject then is refused as a confirm is: the item is no longer open.
+      const g = (value: string) => ({ mode: "given", value });
+      const span = (from: string, to?: string) => ({
+        valid: { from: g(from), to: to === undefined ? { mode: "open" } : g(to) },
+      });
+      const write = (op: number, value: string, source: string, more: object) => ({
+        kind: "write",
+        op,
+        event: op + 1,
+        fields: { f2: { value, sources: [source] } },
+        ...more,
+      });
+      const ack = { acknowledge: ["overwrite"] };
+      const ops = [
+        write(10, "1", "S10", { seen: 0, ...span("2026-10-01"), ...ack }),
+        write(20, "2", "S20", { seen: 10, ...span("2026-11-01", "2026-11-07"), ...ack }),
+        write(30, "3", "S30", { seen: 20, ...span("2026-11-03", "2026-11-09"), ...ack }),
+        write(40, "4", "S40", { seen: 10, ...span("2026-11-01", "2026-11-05") }),
+        write(50, "5", "S50", span("2026-11-03", "2026-11-07")),
+        {
+          kind: "write",
+          op: 60,
+          event: 61,
+          seen: 50,
+          valid: { from: g("2026-11-01"), to: { mode: "next_change" } },
+          fields: { f2: { value: "1", sources: ["S5"], explicit: false } },
+          ...ack,
+        },
+        { kind: "undo", op: 70, event: 71, target: 50, includeLater: false, ...ack },
+        {
+          kind: "write",
+          op: 80,
+          event: 81,
+          seen: 70,
+          ...span("2026-11-01", "2026-11-07"),
+          fields: { f2: { value: "1", sources: ["S2"], explicit: false } },
+          ...ack,
+        },
+      ] as unknown as Op[];
+      const before = { ...seen };
+      // The rejection of the one awaiting item, inserted after #80.
+      await checkSample(ops, [{ after: 7, pick: 0, kind: "reject", flag: 0, focus: false }]);
+      expect({
+        sampled: seen.samples - before.samples,
+        closed: seen.closed - before.closed,
+      }).toEqual({ sampled: 1, closed: 1 });
+      // Closed so, the item answers a confirm and a reject the same: item_closed, with the same
+      // reason and the write that closed it.
+      const store = main.store;
+      const closedItem = (
+        await store.read((tx) =>
+          tx.query<{ id: string; v: unknown }>(
+            "SELECT id, version_op AS v FROM pending_items WHERE state = 'superseded'",
+          ),
+        )
+      ).rows;
+      expect(closedItem).toHaveLength(1);
+      const { id, v } = closedItem[0] as { id: string; v: unknown };
+      const answer = (decision: string) =>
+        store
+          .write((tx) =>
+            resolveInTx(tx, {
+              actor: USER as never,
+              task: `again-${decision}`,
+              now: "2026-11-06T04:00:00.000Z",
+              windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+              visibility: { kind: "all" },
+              params: { id, decision, item_ver: `iv_${id.slice(3)}.${Number(v)}.0` },
+              reads: readBufferOf(store),
+              newId: () => "x",
+            }),
+          )
+          .then(
+            () => undefined,
+            (e: { code?: string; detail?: Record<string, unknown> }) => ({
+              code: e.code,
+              detail: e.detail,
+            }),
+          );
+      const onConfirm = await answer("confirm");
+      expect(onConfirm).toMatchObject({
+        code: "item_closed",
+        detail: { reason: "superseded", superseded: { reason: "nothing_to_revert", by: 80 } },
+      });
+      expect(await answer("reject")).toEqual(onConfirm);
     },
   );
 
