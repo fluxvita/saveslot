@@ -210,6 +210,8 @@ export interface WriteValidationDetail {
   readonly allowed_values?: readonly string[];
   readonly min?: string;
   readonly max?: string;
+  /** A fix worked out from what was written (04-contract-types §9 ValidationDetail). */
+  readonly suggestion?: string;
 }
 
 /** The error of a refused request, of the contract's ErrorObject shape (04-contract-types §9). */

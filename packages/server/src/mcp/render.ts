@@ -699,6 +699,19 @@ function viaOf(x: unknown): Part[] {
   return t`, by ${stored(JSON.stringify(x))}`;
 }
 
+/**
+ * An entry's intent and how it came about. An undo records the caller's intent, or the undone
+ * write's when the caller gave none (09-event-format), so "revoke" alone could read as a revoke
+ * where the row came back: an undo leads with what it undoes, and says the intent is as recorded.
+ */
+function intentOf(x: R): Part[] {
+  const v = obj(x["via"]);
+  if (Object.hasOwn(v, "undo") && Object.keys(v).length === 1) {
+    return t`undo of ${op(v["undo"])} (recorded as ${codeIn(x["intent"], INTENTS)})`;
+  }
+  return t`${codeIn(x["intent"], INTENTS)}${viaOf(x["via"])}`;
+}
+
 function history(r: R): Line[] {
   need(Array.isArray(r["entries"]) || (r["mode"] === "as_of" && Array.isArray(r["rows"])));
   if (r["mode"] === "as_of") {
@@ -733,7 +746,7 @@ function history(r: R): Line[] {
     // The widest interval of the write (05 §4.3), on state tables.
     const period = isObj(x["valid"]) ? t` (${periodOf(x["valid"])})` : [];
     out.push(
-      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${codeIn(x["intent"], INTENTS)}${viaOf(x["via"])}${period}  ${actorOf(x["actor"])}  ${fields.length > 0 ? join(fields, t`; `) : t`no change`}`,
+      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${intentOf(x)}${period}  ${actorOf(x["actor"])}  ${fields.length > 0 ? join(fields, t`; `) : t`no change`}`,
     );
   }
   const reads = arr(r["reads"]);
@@ -1094,6 +1107,20 @@ function candidateLines(f: string, c: R, at: number, r: R): Line[] {
   const taking = isObj(c["impact"])
     ? [t`  Taking your value would:`, ...impactLines(c["impact"], "    ")]
     : [];
+  // A revoke that became a candidate on the whole row (`*`): the unit is the row's existence and
+  // `effective` is null by the contract (04-contract-types FieldResult), which is not "no value".
+  // The row existed at the version given (a revoke of a row that did not exist is no candidate)
+  // and was changed since by another write, not revoked (a second revoke would be the same value).
+  if (f === "*" && (c["after"] === null || c["after"] === undefined) && prev["exists"] !== false) {
+    return [
+      t`  The whole row: ${given} it existed; it has been changed since${who}, ver=${idOf(c["current_ver"])}, and still exists. Your revoke is a candidate in conflict item ${idOf(item)}${version}; the row stays as it is. saveslot_pending ${idOf(item)} shows its values in effect.`,
+      ...taking,
+      t`  To resolve: saveslot_resolve ${idOf(item)} (${join(
+        CONFLICT_DECISIONS.map((d) => [code(d, DECISIONS)]),
+        t` / `,
+      )})`,
+    ];
+  }
   return [
     t`  ${fieldOf(f)}: ${given} ${then}; now it is ${fieldValue(c["effective"])}${who}, ver=${idOf(c["current_ver"])}. Your value ${fieldValue(c["after"])} is a candidate in conflict item ${idOf(item)}${version}; the value in effect stays ${fieldValue(c["effective"])}.`,
     ...taking,
@@ -1512,6 +1539,8 @@ const NEXT: ReadonlyMap<string, () => Part[]> = new Map(
     unavailable: () => t`saveslot is not ready; try again shortly.`,
     internal: () => t`An error inside saveslot; the incident is logged.`,
     read_first: () => t`Read the row first (saveslot_query), then write with the ver you read.`,
+    confirmation_mismatch: () =>
+      t`The item changed after you read it (its current content is above): tell the user what changed, and resolve it with the new item_ver only once they decide again.`,
   } satisfies Partial<Record<ErrorCode, () => Part[]>>) as [string, () => Part[]][],
 );
 
@@ -1537,6 +1566,8 @@ const ERROR_REASONS: ReadonlySet<string> = new Set([
   "idempotency_key_reuse",
   "invalid",
   "revoked",
+  "ambiguous_table",
+  "insert_with_entity_key",
 ]);
 
 /** Why a rule's SQL was refused (04-contract-types §9 `SqlReason`). */
@@ -1624,13 +1655,32 @@ function paramGuide(error: R): Line[] {
   if (/^tables\/[0-9]+\/rule\/time_dependency$/.test(param)) {
     return [t`A rule's time_dependency is one of ${listOf(TIME_DEPENDENCIES)}.`];
   }
+  if (/^tables\/[0-9]+\/rule\/[^/]+$/.test(param)) {
+    return [
+      t`A derived table's rule takes only sql and time_dependency; the rows it groups by and the range it covers are in the SQL.`,
+    ];
+  }
   return [];
 }
 
 /** The details shown of a refusal; the rest are counted. */
 const DETAILS_SHOWN = 20;
 
-function errorLines(error: R): Line[] {
+/** What to do about an `invalid_argument`, by its reason, where the reason alone does not say. */
+const REASON_NEXT: ReadonlyMap<string, () => Part[]> = new Map([
+  [
+    "insert_with_entity_key",
+    () =>
+      t`This table has an entity key: a new entity is written with intent "update" and its entity_key, which creates it; insert is not used here.`,
+  ],
+  [
+    "ambiguous_table",
+    () =>
+      t`More than one slot has a table of this name: write it as slot.table, one of the candidates.`,
+  ],
+]);
+
+function errorLines(error: R, now: Date): Line[] {
   const c = error["code"];
   const lines: Line[] = [
     t`Refused: ${codeIn(c, keysOf(NEXT))}${error["reason"] !== undefined ? t` (${codeIn(error["reason"], ERROR_REASONS)})` : []}${error["param"] !== undefined ? t` · parameter ${untrusted(String(error["param"]))}` : []}`,
@@ -1645,6 +1695,24 @@ function errorLines(error: R): Line[] {
         t`, `,
       )}`,
     );
+  }
+  const candidates = arr(error["candidates"]);
+  if (candidates.length > 0) {
+    lines.push(
+      t`Candidates: ${join(
+        candidates.map((n) => tableOf(n)),
+        t`, `,
+      )}`,
+    );
+  }
+  // A complete correct example the service gives (04-contract-types §9): it may hold the
+  // caller's names, so inside the boundary.
+  if (isObj(error["example"])) {
+    lines.push(t`Example: ${stored(JSON.stringify(error["example"]))}`);
+  }
+  // confirmation_mismatch: the item as it is now, with its new item_ver (05 §7).
+  if (isObj(error["current"])) {
+    lines.push(t`The item now:`, ...pending(error["current"], now).map((l) => t`  ${l}`));
   }
   const details = arr(error["details"]);
   for (const d of details.slice(0, DETAILS_SHOWN)) {
@@ -1706,6 +1774,8 @@ function errorLines(error: R): Line[] {
     lines.push(t`Incident ${untrusted(String(error["incident"]))}`);
   }
   lines.push(...paramGuide(error));
+  const why = c === "invalid_argument" ? said(REASON_NEXT, error["reason"]) : undefined;
+  if (why !== undefined) lines.push(why);
   const next = c === "read_first" ? readFirstNext(error) : said(NEXT, c);
   if (next !== undefined) lines.push(next);
   return lines;
@@ -1734,9 +1804,9 @@ function readFirstNext(error: R): Part[] {
 }
 
 /** A contract error as text (05 §7): what was refused, and the next step; never no text. */
-export function renderError(error: R): string {
+export function renderError(error: R, now: Date = new Date()): string {
   try {
-    return render(errorLines(error));
+    return render(errorLines(error, now));
   } catch {
     return renderJson([], asPlain({ error }, { error: { code: "internal" } }));
   }

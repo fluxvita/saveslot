@@ -67,6 +67,25 @@ export interface ValueContext {
   readonly kept?: true;
 }
 
+/**
+ * The string a zoned date-time written as an object (`{instant, zone}`, the shape it is read back
+ * in elsewhere) is to be written as: `2026-11-12T09:30:00+08:00[Asia/Shanghai]`. Undefined when
+ * the object does not name an instant, or names a zone this saveslot does not know.
+ */
+function zonedSuggestion(v: unknown, zone: string): string | undefined {
+  if (!isObj(v)) return undefined;
+  const instant = get(v, "instant");
+  const named = get(v, "zone");
+  if (typeof instant !== "string") return undefined;
+  const p = parseDateTime(instant, zone, true);
+  if (!p.ok) return undefined;
+  try {
+    return zonedText(instantText(p.epochMs), typeof named === "string" ? named : (p.zone ?? zone));
+  } catch {
+    return undefined;
+  }
+}
+
 /** Normalizes one value for `f`. `null` (clearing) is handled by the caller. */
 export function normalizeValue(f: CompiledBaseField, v: unknown, c: ValueContext): ValueResult {
   const fail = (
@@ -109,7 +128,10 @@ export function normalizeValue(f: CompiledBaseField, v: unknown, c: ValueContext
       return ok(v, v);
     }
     case "zoned_datetime": {
-      if (typeof v !== "string") return fail("type_mismatch");
+      if (typeof v !== "string") {
+        const fix = zonedSuggestion(v, c.zone);
+        return fail("type_mismatch", fix === undefined ? {} : { suggestion: fix });
+      }
       const p = parseDateTime(v, c.zone, true);
       if (!p.ok) return fail(p.why === "out_of_range" ? "out_of_range" : "type_mismatch");
       const instant = instantText(p.epochMs);

@@ -92,6 +92,23 @@ describe("an error's text (06 §6.3)", () => {
     expect(lines.filter((l) => l === `  ${TEXTS.slotsFull}`)).toHaveLength(1);
   });
 
+  it("a rule's SQL refused: why, and the suggestion, without --json", () => {
+    const e = new ContractCallError(422, {
+      code: "validation_failed",
+      reason: "schema",
+      message: "the document does not compile",
+      details: [
+        { path: "tables/1/rule/sql", code: "rule_sql_rejected", sql_reason: "type", line: 1 },
+        { path: "tables/0/fields/0/type", code: "type_mismatch", suggestion: "zoned_datetime" },
+      ],
+    });
+    const lines = text(e).split("\n");
+    expect(lines).toContain(
+      `  rule_sql_rejected (${TEXTS.detailSqlReason} 「type」)${TEXTS.detail} path 「tables/1/rule/sql」, line 1`,
+    );
+    expect(lines).toContain(`    ${TEXTS.detailSuggestion} 「zoned_datetime」`);
+  });
+
   it("a write's stretches without a value: open at the start, all time, a moment; the values inside", () => {
     const gap = (valid: Record<string, unknown>) => ({
       op: 1,

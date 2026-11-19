@@ -507,6 +507,86 @@ describe("what 05 §6 asks for", () => {
     );
   });
 
+  it("an invalid_argument shows the candidates and example the service gives, and what to do (05 §7)", () => {
+    const amb = renderError({
+      code: "invalid_argument",
+      reason: "ambiguous_table",
+      param: "ops/0/table",
+      candidates: ["health.runs", "sandbox.runs"],
+    });
+    expect(amb).toContain("Refused: invalid_argument (ambiguous_table)");
+    expect(amb).toContain("Candidates: health.runs, sandbox.runs");
+    expect(amb).toContain("write it as slot.table");
+    const key = renderError({
+      code: "invalid_argument",
+      reason: "insert_with_entity_key",
+      param: "ops/0/table",
+    });
+    expect(key).toContain('a new entity is written with intent "update" and its entity_key');
+    const ex = renderError({
+      code: "invalid_argument",
+      reason: "malformed",
+      param: "valid_during",
+      example: { valid_during: { from: "2026-11-01" } },
+    });
+    expect(ex).toMatch(new RegExp(`Example: ${B}\\{"valid_during"`));
+    const rule = renderError({
+      code: "invalid_argument",
+      reason: "malformed",
+      param: "tables/1/rule/scope",
+    });
+    expect(rule).toContain("A derived table's rule takes only sql and time_dependency");
+  });
+
+  it("confirmation_mismatch: the item as it is now, and to ask the user again (05 §7)", () => {
+    const text = renderError(
+      {
+        code: "confirmation_mismatch",
+        current: {
+          id: "pi_8VEZWJ3J7BMKMXTV",
+          type: "conflict",
+          status: "open",
+          item_ver: "iv_2",
+          opened_at: "2026-11-05T00:00:00.000Z",
+          opened_by: "u_SHB4YXDGYB8V7P0REQDCX8SGT4",
+          target: { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" },
+          decisions: ["keep_effective", "take_candidate"],
+        },
+      },
+      new Date("2026-11-05T01:00:00.000Z"),
+    );
+    expect(text).toContain("The item now:");
+    expect(text).toMatch(new RegExp(`version (${B})?iv_2`));
+    expect(text).toContain("tell the user what changed");
+  });
+
+  it("a revoke that became a whole-row candidate says the row still exists, not that it has no value", () => {
+    const w = SAMPLES["write_conflict"] as Sample;
+    const op0 = (w.result["ops"] as R[])[0] as R;
+    const amount = (op0["fields"] as R)["amount"] as R;
+    const text = renderResult("saveslot_write", {
+      ...w.result,
+      ops: [
+        { ...op0, intent: "revoke", fields: { "*": { ...amount, after: null, effective: null } } },
+      ],
+    } as R);
+    expect(text).toContain("The whole row: at the version you gave (#7) it existed");
+    expect(text).toContain("Your revoke is a candidate in conflict item pi_8VEZWJ3J7BMKMXTV");
+    expect(text).not.toContain("<no value>");
+    // Only that case: a whole-row candidate with a value, or on a row that did not exist at the
+    // version given, keeps the field-by-field line.
+    for (const star of [
+      { ...amount, effective: null },
+      { ...amount, after: null, effective: null, previous: { seq: 7, exists: false } },
+    ]) {
+      const other = renderResult("saveslot_write", {
+        ...w.result,
+        ops: [{ ...op0, fields: { "*": star } }],
+      } as R);
+      expect(other).not.toContain("The whole row:");
+    }
+  });
+
   it("a validation detail shows where it is: the op, the table, the field, the stretch", () => {
     const empty = renderError({
       code: "validation_failed",

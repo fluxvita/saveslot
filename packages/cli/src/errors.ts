@@ -100,12 +100,20 @@ export function describeError(
       const bound = [
         ...(x["max"] !== undefined ? [t`${words(TEXTS.detailMax)} ${n(x["max"])}`] : []),
         ...(x["min"] !== undefined ? [t`${words(TEXTS.detailMin)} ${n(x["min"])}`] : []),
+        // Why a rule's SQL was refused, as the MCP text gives it (05 §7): the contract's code.
+        ...(typeof x["sql_reason"] === "string"
+          ? [t`${words(TEXTS.detailSqlReason)} ${untrusted(x["sql_reason"])}`]
+          : []),
       ];
       lines.push([
         ...t`  ${code(String(x["code"] ?? ""), DETAIL_CODES)}`,
         ...(bound.length > 0 ? t` (${join(bound, t`, `)})` : []),
         ...(where.length > 0 ? t`${words(TEXTS.detail)} ${join(where, t`, `)}` : []),
       ]);
+      // A fix the service worked out from what the caller wrote: inside the boundary.
+      if (typeof x["suggestion"] === "string") {
+        lines.push(t`    ${words(TEXTS.detailSuggestion)} ${untrusted(x["suggestion"])}`);
+      }
       // As many slots as the tenant may have: there is no way yet to make room.
       if (x["code"] === "out_of_bounds" && x["path"] === "slot" && x["max"] !== undefined) {
         lines.push(t`  ${words(TEXTS.slotsFull)}`);

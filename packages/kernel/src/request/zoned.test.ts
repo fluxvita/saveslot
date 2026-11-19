@@ -120,6 +120,36 @@ describe("a zoned date-time as the contract writes it (04-contract-types §1.3 `
     );
   });
 
+  it("an object {instant, zone} is refused with the string to write instead", () => {
+    const field = { id: "f1", name: "at", type: "zoned_datetime", description: "when" } as never;
+    const write = (v: unknown) =>
+      normalizeValue(field, v, { op: 0, name: "at", zone: "Asia/Shanghai", kept: true });
+    expect(write({ instant: "2026-11-10T04:31:00Z", zone: "Asia/Tokyo" })).toEqual({
+      ok: false,
+      detail: {
+        op: 0,
+        field: "at",
+        code: "type_mismatch",
+        suggestion: "2026-11-10T13:31:00+09:00[Asia/Tokyo]",
+      },
+    });
+    // No zone named: the slot's.
+    expect(write({ instant: "2026-11-10T04:31:00Z" })).toMatchObject({
+      detail: { suggestion: "2026-11-10T12:31:00+08:00[Asia/Shanghai]" },
+    });
+    // Nothing to work from: no suggestion.
+    for (const v of [
+      42,
+      { at: "x" },
+      { instant: "soon" },
+      { instant: "2026-11-10T04:31:00Z", zone: "Mars/Base" },
+    ])
+      expect(write(v), JSON.stringify(v)).toEqual({
+        ok: false,
+        detail: { op: 0, field: "at", code: "type_mismatch" },
+      });
+  });
+
   it("Z with a zone: that UTC instant, in that zone; an offset of zero must still agree", () => {
     for (const z of ["Z", "z"]) {
       const p = parseDateTime(`2026-11-10T04:31:00${z}[Asia/Shanghai]`, "UTC", true);

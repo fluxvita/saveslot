@@ -2058,7 +2058,7 @@ interface ValidationDetail {
   referenced_by?: string[];      // still_referenced：依赖它的对象在 schema 文档里的位置（同 path 的写法）
   /** rule_sql_rejected、nondeterministic_function、unit_inference_failed、migrate_failed、rule_eval_failed：细分原因，与 sql_rejected 的 reason 同一套取值。 */
   sql_reason?: "syntax" | "not_select" | "function" | "node" | "system_time" | "unknown_name" | "type" | "limit" | "runtime";
-  suggestion?: string;           // 机器可用的改法：如替换后的 SQL 片段
+  suggestion?: string;           // 机器可用的改法：如替换后的 SQL 片段；写入时 zoned_datetime 写成对象 {instant, zone?} 的 type_mismatch，给出应写的字符串（2026-11-12T09:30:00+08:00[Asia/Shanghai]，没写 zone 用 slot 的时区）
 }
 
 type ErrorCode =

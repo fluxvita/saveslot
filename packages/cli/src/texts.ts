@@ -132,6 +132,10 @@ export const TEXTS = {
   /** The bound a count passed (04-contract-types §9 ValidationDetail `max`, `min`). */
   detailMax: s("at most"),
   detailMin: s("at least"),
+  /** Why a rule's SQL was refused (04-contract-types §9 ValidationDetail `sql_reason`). */
+  detailSqlReason: s("SQL refused as"),
+  /** A fix the service worked out (ValidationDetail `suggestion`). */
+  detailSuggestion: s("suggestion:"),
   // When the tenant has as many slots as it may: an empty slot can be removed to make room.
   slotsFull: s("to make room, remove an empty slot: saveslot slot remove <slot>"),
   /** A detail's key, as the contract names it (04-contract-types §9 ValidationDetail). */

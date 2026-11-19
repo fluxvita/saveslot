@@ -231,7 +231,10 @@ async function call(
     ctx.warn("tool_result_observer_failed", {});
   }
   if ("error" in outcome) {
-    return { isError: true, content: [{ type: "text", text: renderError(outcome.error) }] };
+    return {
+      isError: true,
+      content: [{ type: "text", text: renderError(outcome.error, new Date(ctx.now())) }],
+    };
   }
   // The text only, inside the untrusted boundary (05 §3, §5): no structuredContent, whose
   // strings a host would give the model as they are, with no boundary.
