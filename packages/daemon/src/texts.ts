@@ -3,6 +3,13 @@
 
 import type { ConfigEntry, ConfigProblem } from "./config.ts";
 
+/**
+ * A call sent with no answer back (05-surfaces §11; the request key, 04-contract §14): what to do
+ * when whether it was carried out is not known.
+ */
+const UNKNOWN_OUTCOME =
+  "whether the call was carried out is not known. Sending the same call again, as it was, is safe: a write already carried out is answered as a replay, not done twice. If the call had an idempotency_key, send it with that same value; do not make up a new one.";
+
 export const TEXTS = {
   initDone: (home: string) =>
     [
@@ -157,13 +164,20 @@ export const TEXTS = {
   mcpEvent: (event: string) => `saveslot mcp: ${event}`,
   mcpVersionMismatch:
     "saveslot mcp: version_mismatch: the running saveslot service is another version; restart it (saveslot stop, then saveslot start).",
-  mcpNotRunning:
-    "saveslot service is not running. Start it with saveslot start; the host starts it again when it reconnects.",
+  /** The call did not reach the service: nothing of it was written. */
+  mcpNotDelivered: (autostart: boolean) =>
+    `saveslot service is not running; this call did not reach it, and nothing was written. ${
+      autostart
+        ? "Start it with saveslot start; the host starts it again when it reconnects."
+        : "Start it with saveslot start (automatic start is off: mcp.autostart = false)."
+    }`,
+  /** The connection was cut after the call was sent: whether it took effect is not known. */
+  mcpOutcomeUnknown: `The connection to the saveslot service was lost after the call was sent: ${UNKNOWN_OUTCOME} Check saveslot status if this repeats.`,
   mcpUnavailable:
     "saveslot service is not available right now (starting or stopping). Try again shortly.",
   mcpServiceFailed:
     "saveslot service failed to start. See saveslot status; the service log is in run/saveslot.log under the home.",
-  mcpTimedOut: "saveslot service did not answer in time.",
+  mcpTimedOut: `saveslot service did not answer in time: ${UNKNOWN_OUTCOME}`,
   mcpInternal: "saveslot mcp could not pass on the service's answer.",
   mcpRefused: (code: "unauthenticated" | "insufficient_scope") =>
     code === "unauthenticated"

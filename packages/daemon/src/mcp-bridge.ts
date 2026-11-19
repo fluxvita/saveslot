@@ -25,7 +25,11 @@
 //   answer is read whole before it is written.
 // - Errors, for a request (a message with a method and an id; the id is echoed with its type) and
 //   for a batch holding one (id null): 401 -32001, 403 -32003, both with the contract's code and
-//   the next step; 503, or the service not reachable, -32000, and the service is not started again
+//   the next step; 503 -32000; the service not reachable -32000 with `data.code`: `not_delivered`
+//   when no connection was made (nothing of the call was written; the words follow autostart),
+//   `outcome_unknown` when the connection was cut after the call was sent (sending the same call
+//   again as it was is a replay: same content, or the same idempotency key if it had one); the
+//   service is not started again
 //   (only once, when the bridge starts); no answer within 10 minutes, another status, or an answer
 //   that is not JSON-RPC -32603. A JSON-RPC error the service answers with (the SDK's own on a 400)
 //   is passed on as it is; only an id it could not give (null or none) becomes the request's, and
@@ -414,7 +418,14 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
       // The service answered: it runs; the answer is what is wrong.
       if (e instanceof LocalAnswerTooLarge)
         return fail("answer_too_large", -32603, TEXTS.mcpInternal);
-      if (e instanceof LocalUnreachable) return fail("unreachable", -32000, TEXTS.mcpNotRunning);
+      if (e instanceof LocalUnreachable) {
+        // Not connected: the call surely did not reach the service. Cut after: not known.
+        return e.connected
+          ? fail("connection_lost", -32000, TEXTS.mcpOutcomeUnknown, { code: "outcome_unknown" })
+          : fail("unreachable", -32000, TEXTS.mcpNotDelivered(o.autostart), {
+              code: "not_delivered",
+            });
+      }
       return fail("request_failed", -32603, TEXTS.mcpInternal);
     } finally {
       clearTimeout(timer);

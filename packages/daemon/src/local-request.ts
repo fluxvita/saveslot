@@ -12,9 +12,18 @@ export interface LocalAnswer {
   readonly body: Buffer;
 }
 
-/** The service could not be asked: no socket, nobody listening, the connection cut, no answer in time. */
+/**
+ * The service could not be asked: no socket, nobody listening, the connection cut, no answer in
+ * time. `connected`: whether the connection was made, so the request may have reached the service
+ * (cut or timed out after); otherwise it surely did not.
+ */
 export class LocalUnreachable extends Error {
   override readonly name: string = "LocalUnreachable";
+  readonly connected: boolean;
+  constructor(message: string, connected = false) {
+    super(message);
+    this.connected = connected;
+  }
 }
 
 /** The service answered, past the size an answer may have: cut off and refused. */
@@ -39,13 +48,14 @@ export function localRequest(o: {
 }): Promise<LocalAnswer> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let connected = false;
     const fail = (tooLarge = false) => {
       if (settled) return;
       settled = true;
       reject(
         tooLarge
-          ? new LocalAnswerTooLarge("the saveslot service's answer is too large")
-          : new LocalUnreachable("the saveslot service could not be reached"),
+          ? new LocalAnswerTooLarge("the saveslot service's answer is too large", true)
+          : new LocalUnreachable("the saveslot service could not be reached", connected),
       );
     };
     const req = request(
@@ -84,6 +94,11 @@ export function localRequest(o: {
         });
       },
     );
+    // Connected: from here on what was sent may have reached the service.
+    req.on("socket", (s) => {
+      if (!s.connecting) connected = true;
+      else s.once("connect", () => (connected = true));
+    });
     req.on("timeout", () => {
       req.destroy();
       fail();

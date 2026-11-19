@@ -596,13 +596,20 @@ describe("the bridge against a stand-in service", () => {
     expect(b.lines).toHaveLength(10);
   });
 
-  it("no answer in time: -32603 to that id", async () => {
+  it("no answer in time: -32603 to that id; whether it was carried out is not known, a resend as it was is safe", async () => {
     s.answer = () => {};
     const b = bridge({ forwardTimeoutMs: 200 });
     b.send({ jsonrpc: "2.0", id: "slow", method: "tools/list" });
     b.stdin.end();
     expect(await b.exit).toBe(0);
-    expect(JSON.parse(b.lines[0] as string)).toMatchObject({ id: "slow", error: { code: -32603 } });
+    expect(JSON.parse(b.lines[0] as string)).toMatchObject({
+      id: "slow",
+      error: { code: -32603, message: TEXTS.mcpTimedOut },
+    });
+    // The same words as a connection cut after the call was sent: the call surely went out.
+    expect(TEXTS.mcpTimedOut).toContain("is not known");
+    expect(TEXTS.mcpTimedOut).toContain("as it was, is safe");
+    expect(TEXTS.mcpOutcomeUnknown).toContain("as it was, is safe");
     expect(b.err).toContain("saveslot mcp: timeout");
   });
 
@@ -1651,5 +1658,99 @@ describe("two hosts start the service at once", () => {
       expect((await health(socketFile(home)))?.pid).toBe(h?.pid);
     },
     2 * T,
+  );
+});
+
+describe("every request answered with an error of its own id when the call cannot be served", () => {
+  const s = standIn();
+  const real = serviceFixture("saveslot-bridge-answered-");
+  const calls = [1, 2, 3].map((id) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "tools/call",
+    params: { name: "saveslot_catalog", arguments: {} },
+  }));
+  /** Runs a bridge over `socketPath`, sends the calls, and gives each id's one answer. */
+  async function answers(o: { socketPath: string; token?: string; autostart?: boolean }) {
+    const io = bridgeStreams();
+    const exit = runBridge({
+      token: o.token ?? UNKNOWN_TOKEN,
+      stdin: io.stdin,
+      stdout: io.stdout,
+      log: io.log,
+      autostart: o.autostart ?? false,
+      startService: async () => 7,
+      version: "t",
+      socketPath: o.socketPath,
+    });
+    io.stdin.end(calls.map((c) => `${JSON.stringify(c)}\n`).join(""));
+    expect(await exit).toBe(0);
+    const out = io.lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    // One answer per id, each an error (never a null, never no answer), for that id.
+    expect(out.map((m) => m["id"]).sort()).toEqual([1, 2, 3]);
+    for (const m of out) {
+      expect(m).not.toHaveProperty("result");
+      expect(m["error"]).toEqual(expect.objectContaining({ code: expect.any(Number) }));
+    }
+    return { out: out.map((m) => m["error"] as Record<string, unknown>), err: io.err };
+  }
+
+  it("the service not running: -32000, not_delivered, nothing written; the words follow autostart", async () => {
+    for (const autostart of [false, true]) {
+      const { out } = await answers({ socketPath: join(s.home, "nobody.sock"), autostart });
+      for (const e of out) {
+        expect(e).toEqual({
+          code: -32000,
+          message: TEXTS.mcpNotDelivered(autostart),
+          data: { code: "not_delivered" },
+        });
+      }
+    }
+    expect(TEXTS.mcpNotDelivered(false)).not.toContain("starts it again");
+  });
+
+  it("the service not serving yet (503): -32000, not available, try again", async () => {
+    // Its /health ready to the bridge's first look, its /mcp still 503: a service half up, or
+    // going down. (A service that says `starting` is waited for before the input is read.)
+    s.answer = (_, res) => json(res, 503, { error: { code: "unavailable", reason: "starting" } });
+    const { out } = await answers({ socketPath: s.socketPath });
+    for (const e of out) expect(e).toEqual({ code: -32000, message: TEXTS.mcpUnavailable });
+  });
+
+  it("the connection cut after the call was sent: -32000, outcome_unknown, a resend with the same key is safe", async () => {
+    s.answer = (_, res) => {
+      res.socket?.destroy();
+    };
+    const { out, err } = await answers({ socketPath: s.socketPath });
+    for (const e of out) {
+      expect(e).toEqual({
+        code: -32000,
+        message: TEXTS.mcpOutcomeUnknown,
+        data: { code: "outcome_unknown" },
+      });
+    }
+    expect(err).toContain(TEXTS.mcpEvent("connection_lost"));
+  });
+
+  it(
+    "a revoked token: -32001, unauthenticated, reconnect",
+    async () => {
+      const token = await issue(real.home, real.session, "revoked", ["saveslot.read"]);
+      const id = (
+        (await httpDriver(() => real.home)(real.session, "connections.list", {})) as {
+          result: { connections: { id: string; name: string }[] };
+        }
+      ).result.connections.find((c) => c.name === "revoked")?.id as string;
+      await httpDriver(() => real.home)(real.session, "connections.revoke", { id });
+      const { out } = await answers({ socketPath: socketFile(real.home), token });
+      for (const e of out) {
+        expect(e).toEqual({
+          code: -32001,
+          message: TEXTS.mcpRefused("unauthenticated"),
+          data: { code: "unauthenticated" },
+        });
+      }
+    },
+    T,
   );
 });
