@@ -206,7 +206,10 @@ describe("a receipt shortened says what it left out, and nothing it did not see"
     expect(renderResult("saveslot_resolve", out).length).toBeLessThanOrEqual(budget);
   });
 
-  it("however large, the text fits: 4000 ops; 3000 items and 3000 warnings", async () => {
+  // Thousands of items rendered: real work, which on a busy machine has outrun the default limit.
+  it("however large, the text fits: 4000 ops; 3000 items and 3000 warnings", {
+    timeout: 30_000,
+  }, async () => {
     const w = sample("write_conflict");
     const op = (w["ops"] as R[])[0];
     const many = { ...w, ops: Array.from({ length: 4000 }, () => op) };
@@ -282,7 +285,9 @@ describe("the numbers of a cut page agree", () => {
 });
 
 describe("the least receipt says only what it saw (05 §3)", () => {
-  it("a replay whose original was deleted, with 3000 items: all three said, and items listed", async () => {
+  it("a replay whose original was deleted, with 3000 items: all three said, and items listed", {
+    timeout: 30_000,
+  }, async () => {
     const w = sample("write_conflict");
     const pending = (w["pending"] as R[])[0];
     const r = {

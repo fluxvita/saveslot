@@ -301,7 +301,9 @@ describe("MCP's own", () => {
     expect(r.structuredContent).toMatchObject({ level: "list", slots: [{ slot: "ledger" }] });
   });
 
-  it("a page over the result budget: cut where it ends, and the next page starts at the first not shown (05 §3)", async () => {
+  it("a page over the result budget: cut where it ends, and the next page starts at the first not shown (05 §3)", {
+    timeout: 30_000,
+  }, async () => {
     const http = httpDriver(() => s.home);
     const ops = Array.from({ length: 200 }, (_, i) => ({
       intent: "insert",

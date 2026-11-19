@@ -10,7 +10,8 @@ beforeAll(async () => {
   db = await PGlite.create();
   for (const s of SESSION_SETTINGS) await db.exec(s);
   await db.exec(formatV1Ddl());
-});
+  // Starting a database is real work: on a busy machine it has outrun the default limit.
+}, 60_000);
 
 afterAll(async () => {
   await db.close();
