@@ -9,6 +9,9 @@
 // stopped and said, what the tests left in it is said, and the directory is removed. A run that was
 // killed outright is cleared by the next run's setup.
 //
+// A run that ends normally and had to stop a process fails, whatever its tests said: the test that
+// started the process is to stop it. What is merely left in the directory is said, not failed on.
+//
 // The directory is under /tmp, not the system's own temporary directory: a home's socket is a
 // file under it, and a socket's path has a limit of about 100 bytes, which macOS's per-user
 // temporary directory (some 50 bytes by itself) leaves little of.
@@ -116,9 +119,12 @@ export function stopProcessesUnder(dir: string, graceMs = 5_000): Proc[] {
 let run: string | undefined;
 let before: string | undefined;
 
-/** Ends the run's directory: its processes stopped and said, what is left in it said, then removed. */
-function clear(): void {
-  if (run === undefined) return;
+/**
+ * Ends the run's directory: its processes stopped and said, what is left in it said, then removed.
+ * Returns the processes it had to stop.
+ */
+function clear(): Proc[] {
+  if (run === undefined) return [];
   const dir = run;
   run = undefined;
   if (before === undefined) delete process.env["TMPDIR"];
@@ -134,9 +140,10 @@ function clear(): void {
   }
   if (process.env["SAVESLOT_TEST_KEEP_TMP"] === "1") {
     console.error(`test-tmp: kept ${dir} (SAVESLOT_TEST_KEEP_TMP=1)`);
-    return;
+    return procs;
   }
   rmSync(dir, { recursive: true, force: true });
+  return procs;
 }
 
 export function setup(): void {
@@ -159,6 +166,18 @@ export function setup(): void {
   if (process.listenerCount("SIGHUP") === 0) process.once("SIGHUP", () => process.exit(129));
 }
 
+/**
+ * The run's normal end. A process still running then was left by a test that should have stopped
+ * it: the run fails, having stopped it. (An interrupted run leaves its processes by being
+ * interrupted; those are stopped at the exit, and nothing is made of it.)
+ */
 export function teardown(): void {
-  clear();
+  const left = clear();
+  if (left.length > 0) {
+    throw new Error(
+      `${left.length} process(es) a test left running had to be stopped at the end of the run: ${left
+        .map((p) => p.pid)
+        .join(", ")}. The test that started each must stop it.`,
+    );
+  }
 }

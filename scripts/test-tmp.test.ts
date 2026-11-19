@@ -1,10 +1,10 @@
 // Tests for the run's temporary directory (./test-tmp.ts): which processes and which directories
 // it takes for its own to clear, and that it leaves the others.
 
-import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { processesUnder, RUN_PREFIX, staleRuns, stopProcessesUnder } from "./test-tmp.ts";
 
@@ -123,4 +123,45 @@ describe("stopping the processes under a directory", () => {
   it("finds nothing under a directory nothing was started from", () => {
     expect(stopProcessesUnder(scratch())).toEqual([]);
   });
+});
+
+describe("how a run ends", () => {
+  const REPO = resolve(import.meta.dirname, "..");
+
+  /** A run of one case beside this file, with the repository's global setup. */
+  function runCase(name: string, env: Record<string, string> = {}) {
+    const r = spawnSync(
+      process.execPath,
+      [
+        join(REPO, "node_modules/vitest/vitest.mjs"),
+        "run",
+        "--config",
+        "scripts/test-tmp-cases/vitest.config.ts",
+        `scripts/test-tmp-cases/${name}.case.ts`,
+      ],
+      // TMPDIR as this run has it: the inner run makes a directory of its own all the same.
+      { cwd: REPO, encoding: "utf8", env: { ...process.env, ...env }, timeout: 120_000 },
+    );
+    return { status: r.status, out: `${r.stdout}\n${r.stderr}` };
+  }
+
+  it("a process a test left running: stopped, named, and the run fails though its tests passed", async () => {
+    const pidFile = join(scratch(), "pid");
+    const r = runCase("left-process", { LEFT_PID_FILE: pidFile });
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    pids.push(pid);
+    expect(r.out).toContain("1 passed");
+    expect(r.out).toContain(`test-tmp: stopped a process a test left running: ${pid} `);
+    expect(r.out).toContain("1 process(es) a test left running had to be stopped");
+    expect(r.status).toBe(1);
+    expect(await gone(pid)).toBe(true);
+  }, 150_000);
+
+  it("a directory a test left, and no process: said, and the run passes", () => {
+    const r = runCase("clean");
+    expect(r.out).toContain("1 passed");
+    expect(r.out).toMatch(/test-tmp: 1 entries the tests did not remove: left-dir-\w+/);
+    expect(r.out).not.toContain("had to be stopped");
+    expect(r.status).toBe(0);
+  }, 150_000);
 });
