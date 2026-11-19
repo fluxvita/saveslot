@@ -295,6 +295,13 @@ describe("reads (06 §4.8)", () => {
     ]);
   });
 
+  it("a page of them says it is the latest ones, not all there are", () => {
+    const r = { ...READS, next_cursor: "h_1" } as never;
+    expect(render(readsList(r), terminal).split("\n")[0]).toBe(
+      "the latest 2 reads (more on the next page) · kept since 2026-05-14T00:00:00.000Z",
+    );
+  });
+
   it("a task that only says it is the self-check is not marked", () => {
     const r = { ...READS, reads: [{ ...READS.reads[0], selfcheck: undefined }] } as never;
     expect(render(readsList(r), terminal)).not.toContain("self-check (saveslot connect)");

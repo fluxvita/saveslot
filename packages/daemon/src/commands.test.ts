@@ -102,6 +102,16 @@ describe("init", () => {
     expect(looksSynced("/home/a/Dropboxes/s")).toBe(false);
   });
 
+  it("--help: what the command does, exit 0, nothing done", async () => {
+    for (const c of ["init", "start", "stop", "status"] as const) {
+      const h = join(root, `help-${c}`);
+      const r = await run(c, h, "--help");
+      expect(r.code, c).toBe(0);
+      expect(r.out, c).toContain(`usage: saveslot ${c}`);
+      expect(existsSync(h), c).toBe(false);
+    }
+  });
+
   it("an unknown option is a usage error (2)", async () => {
     const r = await run("init", join(root, "x"), "--nope");
     expect(r.code).toBe(2);

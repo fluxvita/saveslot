@@ -110,6 +110,17 @@ export const TEXTS = {
         : []),
     ].join("\n"),
   usage: (message: string) => `error: ${message}`,
+  /** `--help` of each service command (06 §4.1, §4.2): what it does and its options. */
+  commandHelp: {
+    init: "usage: saveslot init [--data-dir <dir>] [--rotate-session]\n  create the saveslot home (the service's files and the user session); --rotate-session issues a new session token",
+    start:
+      "usage: saveslot start [--foreground]\n  start the local saveslot service in the background (--foreground: in this terminal)",
+    stop: "usage: saveslot stop\n  stop the local saveslot service; an MCP host that connects again starts it again",
+    status:
+      "usage: saveslot status\n  whether the local saveslot service runs, its version, home, socket and open pending items",
+    config: "usage: saveslot config get [<key>]\n  every setting in effect and where it comes from",
+    mcp: "usage: saveslot mcp [--record <dir>]\n  the stdio bridge an MCP host runs; needs SAVESLOT_TOKEN (a token from saveslot connect)",
+  },
 
   // The configuration (`config.toml`): keys, lines and limits, never a value from the file.
   configInvalid: "error: config.toml under the home is not valid; nothing was started.",

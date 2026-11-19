@@ -16,8 +16,10 @@ const OPERATIONS: ReadonlySet<string> = new Set<string>(READ_OPERATIONS);
 export function readsList(r: ReadsListResult): Line[] {
   const x = r as unknown as R;
   const reads = arr(x["reads"]);
+  // A page of them: say it is the latest ones, not all there are.
+  const more = str(x["next_cursor"]) !== undefined;
   const out: Line[] = [
-    t`${num(reads.length)} reads · kept since ${time(String(x["covered_since"] ?? ""))}`,
+    t`${more ? t`the latest ${num(reads.length)} reads (more on the next page)` : t`${num(reads.length)} reads`} · kept since ${time(String(x["covered_since"] ?? ""))}`,
   ];
   for (const rd of reads) {
     const e = obj(rd);

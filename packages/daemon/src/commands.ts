@@ -542,6 +542,7 @@ export async function serviceCommand(
       args: [...argv],
       options: {
         home: { type: "string" },
+        help: { type: "boolean", short: "h" },
         ...(name === "init"
           ? { "rotate-session": { type: "boolean" }, "data-dir": { type: "string" } }
           : {}),
@@ -556,6 +557,10 @@ export async function serviceCommand(
   } catch (e) {
     io.err(TEXTS.usage((e as Error).message));
     return 2;
+  }
+  if (values["help"] === true) {
+    io.out(TEXTS.commandHelp[name]);
+    return 0;
   }
   const home = resolve(
     typeof values["home"] === "string" ? values["home"] : join(homedir(), ".saveslot"),
