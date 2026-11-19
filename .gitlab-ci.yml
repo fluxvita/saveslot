@@ -8,23 +8,25 @@
 #
 #   merge request:          secrets, forbidden-terms, mr-title, dco
 #   default branch, push:   secrets, forbidden-terms, check (node:24); all interruptible
-#   schedule (nightly):     check, check-latest, prop-soak
-#   by hand (web, api) on the default branch: check, check-latest, prop-soak, secrets, forbidden-terms
+#   schedule (nightly):     check, check-latest, prop-soak, test-postgres
+#   by hand (web, api) on the default branch: check, check-latest, prop-soak, test-postgres, secrets,
+#                           forbidden-terms
 #
-# The heavy jobs (check, check-latest, prop-soak) run one at a time in the whole project
-# (`resource_group: saveslot-heavy`), so that a runner taking two jobs at once keeps the other slot
-# for the quick checks; the nightly ones run one after another. On the default branch only the
-# latest push runs to the end: a push's jobs are interruptible, so a newer push cancels them.
+# The heavy jobs (check, check-latest, prop-soak, test-postgres) run one at a time in the whole
+# project (`resource_group: saveslot-heavy`), so that a runner taking two jobs at once keeps the
+# other slot for the quick checks; the nightly ones run one after another. On the default branch
+# only the latest push runs to the end: a push's jobs are interruptible, so a newer push cancels
+# them.
 #
 # Tests open their stores without passing fsync to the host, unless SAVESLOT_TEST_DURABILITY is
 # "host-fsync" (packages/store-pglite/src/testing/test-backend.fixture.ts). The check on a push runs
 # what the author and the reviewer ran locally; the nightly and by-hand checks set the variable, so
 # that the whole suite also runs on the real fsync path.
 #
-# The jobs that install the workspace (check, check-latest, prop-soak) run it as the image's `node`
-# user, not as root: root reads and writes whatever the permission bits say, so the tests of files
-# and directories this user cannot read would otherwise be skipped. Only installing pnpm itself
-# needs root.
+# The jobs that install the workspace (check, check-latest, prop-soak, test-postgres) run it as the
+# image's `node` user, not as root: root reads and writes whatever the permission bits say, so the
+# tests of files and directories this user cannot read would otherwise be skipped. Only installing
+# pnpm itself needs root.
 #
 # A runner reuses its build directory between jobs, so a job that runs as root can find the checkout
 # still owned by `node`; git then refuses it ("dubious ownership"). The jobs that run git as root
@@ -129,6 +131,32 @@ prop-soak:
     when: always
     expire_in: 30 days
     paths: [soak/]
+
+# Nightly and by hand (on the default branch): the kernel's tests on a real store, the PostgreSQL
+# backend's own and the replay across the two backends, on a PostgreSQL server
+# (docs/zh-CN/spec/02-architecture.md §11 «测试矩阵»: both backends). `pnpm check` has no server and
+# skips what needs one; here nothing may be skipped for want of it: the script fails without the
+# variable, and a test that needs the server fails when it is not there.
+#
+# The server is a service of the job, so each run has its own and it is gone with the job. Its
+# minor version is fixed: a new one is taken by changing it here, and seen in the run that follows.
+# The cluster is made with the encoding and the locale the backend gives each tenant's database
+# (§8); the backend does not rely on it, and names both itself when it creates a database. Nothing
+# but this job can reach the server, so it asks for no password.
+test-postgres:
+  extends: [.pnpm, .full-only]
+  image: node:24
+  services:
+    - name: postgres:18.7
+      alias: postgres
+  resource_group: saveslot-heavy
+  timeout: 20 minutes
+  variables:
+    POSTGRES_HOST_AUTH_METHOD: trust
+    POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8 --locale=C
+    SAVESLOT_TEST_POSTGRES_URL: postgres://postgres@postgres:5432/postgres
+  script:
+    - runuser -u node -- env SAVESLOT_TEST_POSTGRES_URL="$SAVESLOT_TEST_POSTGRES_URL" pnpm test:postgres
 
 # Every commit in a merge request is signed off by its author (DCO).
 dco:
