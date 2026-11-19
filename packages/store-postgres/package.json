@@ -18,7 +18,12 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@fluxvita/saveslot-kernel": "workspace:*"
+    "@fluxvita/saveslot-kernel": "workspace:*",
+    "pg": "8.23.1"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.16",
+    "@types/pg": "8.23.1"
+  }
 }
