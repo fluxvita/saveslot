@@ -18,6 +18,11 @@
 # only the latest push runs to the end: a push's jobs are interruptible, so a newer push cancels
 # them.
 #
+# A pipeline on the schedule or by hand is never cancelled by a newer commit, whether its jobs have
+# started or still wait for the resource group (`workflow`: `auto_cancel: on_new_commit: none`).
+# The project cancels redundant pipelines, and that cancels jobs not yet started whatever their
+# `interruptible` says: without it, a merge while the nightly jobs waited cancelled them all.
+#
 # Tests open their stores without passing fsync to the host, unless SAVESLOT_TEST_DURABILITY is
 # "host-fsync" (packages/test-backend/src/index.fixture.ts). The check on a push runs
 # what the author and the reviewer ran locally; the nightly and by-hand checks set the variable, so
@@ -37,6 +42,9 @@
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(schedule|web|api)$/
+      auto_cancel:
+        on_new_commit: none
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 # On merge requests, pushes to the default branch and by hand; not on the schedule. On a push to the
