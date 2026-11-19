@@ -3,8 +3,11 @@
 // taken from a real service): a rounded amount and a moment without a zone, a unit converted, a
 // new entity (a moment cut to the day; the keys the table had), a write partly a candidate, one
 // merged into an open item, an undo with a part changed since and one with the later writes, a
-// fallback ver and sv with an item refreshed, a resolution with a fallback item_ver, and a
-// take_previous with the writes it undid. Update the golden files with
+// fallback ver and sv with an item refreshed, a resolution with a fallback item_ver, a
+// take_previous with the writes it undid; on state tables, how each field's interval resolved (an
+// unchanged next change, a start taken as now, a correction's stretch, a stretch without a value
+// filled, ending or lasting); an applied part merged; evidence no op cites; a clock behind the log;
+// and the pending_items notice. Update the golden files with
 // `pnpm exec vitest run packages/server/src/mcp/receipts.test.ts -u`.
 
 import { readFileSync } from "node:fs";
@@ -17,6 +20,8 @@ const SAMPLES = JSON.parse(
   readFileSync(new URL("./receipts.samples.json", import.meta.url), "utf8"),
 ) as Record<string, { tool: ToolName; result: R }>;
 
+/** A fixed "now", for how long a notice's oldest item has been open. */
+const NOW = new Date("2026-11-05T05:00:00Z");
 /** The text with the boundary's number, drawn anew for each result, made one fixed value. */
 const fixed = (s: string) => s.replace(/untrusted-data-[0-9a-f]{32}/g, "untrusted-data-N");
 
@@ -24,7 +29,7 @@ describe("receipts as text (golden)", () => {
   it.each(Object.keys(SAMPLES))("%s", async (name) => {
     const { tool, result } = SAMPLES[name] as { tool: ToolName; result: R };
     // The renderer, not its JSON fallback: a shape it does not know fails here.
-    await expect(`${fixed(renderStrict(tool, result))}\n`).toMatchFileSnapshot(
+    await expect(`${fixed(renderStrict(tool, result, NOW))}\n`).toMatchFileSnapshot(
       `./__golden__/${name}.txt`,
     );
   });

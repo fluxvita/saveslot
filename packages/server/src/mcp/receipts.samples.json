@@ -1605,5 +1605,534 @@
         }
       ]
     }
+  },
+  "write-resolved-next-change": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 14,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_NT7QT9B5XKHA7AD3G773X02TQW"
+          },
+          "intent": "update",
+          "ver": "v14.0",
+          "fields": {
+            "amount": [
+              {
+                "result": "applied",
+                "after": {
+                  "unit": "CNY",
+                  "value": "3000"
+                },
+                "valid": {
+                  "valid_from": "2026-11-02",
+                  "valid_to": "2026-11-10",
+                  "valid_to_inclusive": "2026-11-09"
+                }
+              }
+            ]
+          },
+          "resolved": {
+            "amount": {
+              "valid_from": "2026-11-02",
+              "valid_to": "2026-11-10",
+              "valid_to_inclusive": "2026-11-09",
+              "from_as": "given",
+              "to_as": "next_change",
+              "next_change": {
+                "at": "2026-11-10",
+                "value": {
+                  "unit": "CNY",
+                  "value": "4000"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": []
+    }
+  },
+  "write-resolved-from-now": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 20,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_6F5BAA87QC2WA9CK2GHEV1190Y"
+          },
+          "intent": "update",
+          "ver": "v20.0",
+          "fields": {
+            "amount": [
+              {
+                "result": "applied",
+                "after": {
+                  "unit": "CNY",
+                  "value": "8200"
+                },
+                "valid": {
+                  "valid_from": "2026-11-05",
+                  "valid_to": null
+                }
+              }
+            ],
+            "owner": [
+              {
+                "result": "applied",
+                "after": "Lin",
+                "valid": {
+                  "valid_from": "2026-11-05",
+                  "valid_to": null
+                }
+              }
+            ]
+          },
+          "resolved": {
+            "amount": {
+              "valid_from": "2026-11-05",
+              "valid_to": null,
+              "from_as": "now",
+              "to_as": "next_change"
+            },
+            "owner": {
+              "valid_from": "2026-11-05",
+              "valid_to": null,
+              "from_as": "now",
+              "to_as": "next_change"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": []
+    }
+  },
+  "write-resolved-corrected": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 29,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_ZCJVZ66H0948A1JBMMQYVGZZ60"
+          },
+          "intent": "correct",
+          "ver": "v29.0",
+          "fields": {
+            "amount": [
+              {
+                "result": "applied",
+                "after": {
+                  "unit": "CNY",
+                  "value": "1300"
+                },
+                "valid": {
+                  "valid_from": "2026-11-01",
+                  "valid_to": "2026-11-10",
+                  "valid_to_inclusive": "2026-11-09"
+                }
+              }
+            ]
+          },
+          "resolved": {
+            "amount": {
+              "valid_from": "2026-11-01",
+              "valid_to": "2026-11-10",
+              "valid_to_inclusive": "2026-11-09",
+              "from_as": "corrected_span",
+              "to_as": "corrected_span"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": []
+    }
+  },
+  "write-resolved-exact-fill": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 48,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_64RC2WKPRV70B49WWJR8S1T51J"
+          },
+          "intent": "update",
+          "ver": "v48.0",
+          "fields": {
+            "category": [
+              {
+                "result": "applied",
+                "after": "hardware",
+                "valid": {
+                  "valid_from": "2026-11-05",
+                  "valid_to": "2026-11-10",
+                  "valid_to_inclusive": "2026-11-09"
+                }
+              }
+            ],
+            "amount": [
+              {
+                "result": "applied",
+                "after": {
+                  "unit": "CNY",
+                  "value": "650"
+                },
+                "valid": {
+                  "valid_from": "2026-11-05",
+                  "valid_to": "2026-11-10",
+                  "valid_to_inclusive": "2026-11-09"
+                }
+              }
+            ]
+          },
+          "resolved": {
+            "category": {
+              "valid_from": "2026-11-05",
+              "valid_to": "2026-11-10",
+              "valid_to_inclusive": "2026-11-09",
+              "from_as": "given",
+              "to_as": "given",
+              "filled": [
+                {
+                  "valid_from": "2026-11-05",
+                  "valid_to": "2026-11-10",
+                  "valid_to_inclusive": "2026-11-09"
+                }
+              ]
+            },
+            "amount": {
+              "valid_from": "2026-11-05",
+              "valid_to": "2026-11-10",
+              "valid_to_inclusive": "2026-11-09",
+              "from_as": "given",
+              "to_as": "given",
+              "filled": [
+                {
+                  "valid_from": "2026-11-05",
+                  "valid_to": "2026-11-10",
+                  "valid_to_inclusive": "2026-11-09"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "notices": [
+        {
+          "code": "pending_items",
+          "slot": "plan",
+          "count": 1,
+          "oldest_opened_at": "2026-11-05T04:11:00.000Z"
+        }
+      ]
+    }
+  },
+  "write-resolved-open-filled": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 54,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_2YE0AXQ6M5714040EYMG5BXH9M"
+          },
+          "intent": "update",
+          "ver": "v54.0",
+          "fields": {
+            "category": [
+              {
+                "result": "applied",
+                "after": "gifts",
+                "valid": {
+                  "valid_from": "2026-11-20",
+                  "valid_to": null
+                }
+              }
+            ],
+            "amount": [
+              {
+                "result": "applied",
+                "after": {
+                  "unit": "CNY",
+                  "value": "250"
+                },
+                "valid": {
+                  "valid_from": "2026-11-20",
+                  "valid_to": null
+                }
+              }
+            ]
+          },
+          "resolved": {
+            "category": {
+              "valid_from": "2026-11-20",
+              "valid_to": null,
+              "from_as": "given",
+              "to_as": "open",
+              "filled": [
+                {
+                  "valid_from": "2026-11-20",
+                  "valid_to": null
+                }
+              ]
+            },
+            "amount": {
+              "valid_from": "2026-11-20",
+              "valid_to": null,
+              "from_as": "given",
+              "to_as": "open",
+              "filled": [
+                {
+                  "valid_from": "2026-11-20",
+                  "valid_to": null
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "notices": [
+        {
+          "code": "pending_items",
+          "slot": "plan",
+          "count": 1,
+          "oldest_opened_at": "2026-11-05T04:11:00.000Z"
+        }
+      ]
+    }
+  },
+  "write-merged": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "pending",
+      "sv": 1,
+      "seq": 63,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_DHNFVZ2BX4J9KV94YCK22CVZ9X"
+          },
+          "intent": "update",
+          "ver": "v63.0",
+          "fields": {
+            "amount": [
+              {
+                "result": "applied",
+                "merged": true,
+                "after": {
+                  "unit": "CNY",
+                  "value": "2100"
+                },
+                "valid": {
+                  "valid_from": "2026-11-05",
+                  "valid_to": null
+                }
+              }
+            ],
+            "owner": [
+              {
+                "result": "candidate",
+                "after": "Cy",
+                "item": "pi_082HP83ACKJKVEAR",
+                "effective": "Bo",
+                "current_ver": "v63.0",
+                "by": {
+                  "seq": 60,
+                  "actor": {
+                    "kind": "connection",
+                    "id": "ci_YD1WFXY4D5GX52XGC3YDN51V9Z",
+                    "name": "writer"
+                  }
+                },
+                "previous": {
+                  "seq": 57,
+                  "exists": true,
+                  "spans": [
+                    {
+                      "valid_from": "2026-11-05",
+                      "valid_to": null,
+                      "values": {
+                        "owner": "Ana"
+                      }
+                    }
+                  ]
+                },
+                "valid": {
+                  "valid_from": "2026-11-05",
+                  "valid_to": null
+                }
+              }
+            ]
+          },
+          "resolved": {
+            "amount": {
+              "valid_from": "2026-11-05",
+              "valid_to": null,
+              "from_as": "now",
+              "to_as": "next_change"
+            },
+            "owner": {
+              "valid_from": "2026-11-05",
+              "valid_to": null,
+              "from_as": "now",
+              "to_as": "next_change"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [
+        {
+          "id": "pi_082HP83ACKJKVEAR",
+          "type": "conflict",
+          "reason": "stale_write",
+          "item_ver": "iv_082HP83ACKJKVEAR.63.0"
+        }
+      ],
+      "superseded": [],
+      "notices": [
+        {
+          "code": "pending_items",
+          "slot": "plan",
+          "count": 2,
+          "oldest_opened_at": "2026-11-05T04:11:00.000Z"
+        }
+      ]
+    }
+  },
+  "write-evidence-unreferenced": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 73,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.notes",
+            "row": "r_R47PZWVV2YJJWZG1407Y551V85"
+          },
+          "intent": "insert",
+          "ver": "v73.0",
+          "fields": {
+            "text": {
+              "result": "applied",
+              "after": "one"
+            }
+          }
+        },
+        {
+          "target": {
+            "table": "plan.notes",
+            "row": "r_1PYEHJRHGSFBYRYNNA42TMM15E"
+          },
+          "intent": "insert",
+          "ver": "v73.0",
+          "fields": {
+            "text": {
+              "result": "applied",
+              "after": "two"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "warnings": [
+        {
+          "code": "evidence_unreferenced",
+          "evidence": [1, 2]
+        }
+      ],
+      "notices": [
+        {
+          "code": "pending_items",
+          "slot": "plan",
+          "count": 2,
+          "oldest_opened_at": "2026-11-05T04:11:00.000Z"
+        }
+      ]
+    }
+  },
+  "write-clock-behind": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 79,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.notes",
+            "row": "r_NAYEQTTFV4G365BERQ9GFJFPH9"
+          },
+          "intent": "insert",
+          "ver": "v79.0",
+          "fields": {
+            "text": {
+              "result": "applied",
+              "after": "late"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "warnings": [
+        {
+          "code": "clock_behind_log",
+          "behind_seconds": 6120
+        }
+      ],
+      "notices": [
+        {
+          "code": "pending_items",
+          "slot": "plan",
+          "count": 2,
+          "oldest_opened_at": "2026-11-05T04:11:00.000Z"
+        }
+      ]
+    }
   }
 }

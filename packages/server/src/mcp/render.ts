@@ -436,7 +436,37 @@ function warningDetail(w: R): Part[] | undefined {
   if (c === "item_ver_fallback") {
     return t`no item_ver was given; ${idOf(w["item_ver"])} was used, ${originOf(w)}`;
   }
+  if (c === "clock_behind_log") {
+    return t`this machine's clock is ${behindBy(w["behind_seconds"])} behind the log's end; the time recorded is the log's end`;
+  }
+  if (c === "evidence_unreferenced") {
+    const segments = arr(w["evidence"]).map((i) => [count(i)]);
+    return segments.length === 1
+      ? t`evidence segment ${join(segments, t`, `)} is cited by no op: stored as source data, but no value comes from it`
+      : t`evidence segments ${join(segments, t`, `)} are cited by no op: stored as source data, but no value comes from them`;
+  }
   return undefined;
+}
+
+/** How far behind (04-contract-types §7 `clock_behind_log`): seconds, minutes or hours, rounded. */
+function behindBy(x: unknown): Part[] {
+  const s = int(x);
+  if (s === undefined) return [untrusted(String(x))];
+  if (s < 60) return t`${num(s)} s`;
+  if (s < 2 * 3600) return t`${num(Math.round(s / 60))} min`;
+  return t`${num(Math.round(s / 3600))} h`;
+}
+
+/**
+ * A notice (05 §4.3): `pending_items` as a sentence; the codes this version does not give are
+ * shown as written, inside the boundary.
+ */
+function noticeLine(n: R, now: Date): Line {
+  if (n["code"] === "pending_items") {
+    const items = int(n["count"]) === 1 ? t`1 pending item` : t`${count(n["count"])} pending items`;
+    return t`Notice: ${tableOf(n["slot"])} has ${items}, the oldest open for ${openFor(n["oldest_opened_at"], now)} (saveslot_pending shows them)`;
+  }
+  return t`Notice: ${untrusted(JSON.stringify(n))}`;
 }
 
 /** The ops a merged warning names at most; the rest are counted. */
@@ -448,7 +478,7 @@ const OPS_NAMED = 5;
  * line for each op. The line gives their detail when it is the same for all of them; otherwise the
  * code's own sentence and the field, so that no one warning's values stand for the others'.
  */
-function remindersOf(r: R): Line[] {
+function remindersOf(r: R, now: Date): Line[] {
   const out: Line[] = [];
   const groups = new Map<string, R[]>();
   for (const w of arr(r["warnings"]).map(obj)) {
@@ -495,9 +525,7 @@ function remindersOf(r: R): Line[] {
       t`Note (${codeIn(c, keysOf(WARNINGS))}, ${num(ws.length)} times${ops.length > 0 ? t`, ops` : []}${which}): ${text}`,
     );
   }
-  for (const n of arr(r["notices"]).slice(0, 3)) {
-    out.push(t`Notice: ${untrusted(JSON.stringify(n))}`);
-  }
+  for (const n of arr(r["notices"]).slice(0, 3)) out.push(noticeLine(obj(n), now));
   return out;
 }
 
@@ -554,7 +582,7 @@ function catalogField(fd: R): Line {
   return t`  ${fieldOf(fd["name"])}  ${codeIn(fd["type"], FIELD_TYPES)}${unit}${decimals}  ${stored(String(fd["description"] ?? ""))}${required}${min}${max}${oneOf}${refers}`;
 }
 
-function catalog(r: R): Line[] | { json: true; lead: Line[] } {
+function catalog(r: R, now: Date): Line[] | { json: true; lead: Line[] } {
   need(
     (r["level"] === "schema" && isObj(r["document"])) ||
       (r["level"] === "table" && Array.isArray(r["tables"])) ||
@@ -604,7 +632,7 @@ function catalog(r: R): Line[] | { json: true; lead: Line[] } {
         out.push(t`  field group (one conflict unit): ${join(arr(g).map(fieldOf), t` + `)}`);
       }
     }
-    return out;
+    return [...out, ...remindersOf(r, now)];
   }
   const out: Line[] = [];
   for (const s of arr(r["slots"])) {
@@ -629,7 +657,7 @@ function catalog(r: R): Line[] | { json: true; lead: Line[] } {
     }
   }
   if (out.length === 0) out.push(t`No slots yet.`);
-  return [...out, ...pageOf(r, tablesIn(r), () => t`tables`)];
+  return [...out, ...pageOf(r, tablesIn(r), () => t`tables`), ...remindersOf(r, now)];
 }
 
 // --- query and history --------------------------------------------------------------------------
@@ -647,7 +675,7 @@ function oneEntity(rows: readonly unknown[]): unknown {
     : undefined;
 }
 
-function query(r: R): Line[] {
+function query(r: R, now: Date): Line[] {
   need(Array.isArray(r["rows"]) && typeof r["table"] === "string");
   const rows = arr(r["rows"]);
   const entity = oneEntity(rows);
@@ -655,6 +683,7 @@ function query(r: R): Line[] {
     t`${tableOf(r["table"])} · ${tableOf(r["slot"])} schema v${count(r["sv"])}${entity !== undefined ? t` · entity ${namedValues(entity)}` : []} · ${ofTotal(rows.length, r["total"])} rows`,
     ...rowsOf(rows),
     ...pageOf(r, rows.length, () => t`rows`),
+    ...remindersOf(r, now),
   ];
 }
 
@@ -712,7 +741,7 @@ function intentOf(x: R): Part[] {
   return t`${codeIn(x["intent"], INTENTS)}${viaOf(x["via"])}`;
 }
 
-function history(r: R): Line[] {
+function history(r: R, now: Date): Line[] {
   need(Array.isArray(r["entries"]) || (r["mode"] === "as_of" && Array.isArray(r["rows"])));
   if (r["mode"] === "as_of") {
     const at = obj(r["as_of"]);
@@ -721,6 +750,7 @@ function history(r: R): Line[] {
       t`As of ${op(at["seq"])} (${inZone(at["recorded_at"], r["timezone"])}) · schema v${count(r["sv"])}`,
       ...(rows.length > 0 ? rowsOf(rows, true) : [t`It did not exist yet.`]),
       ...pageOf(r, rows.length, () => t`rows`),
+      ...remindersOf(r, now),
     ];
   }
   const entries = arr(r["entries"]);
@@ -762,7 +792,7 @@ function history(r: R): Line[] {
       )}`,
     );
   }
-  return [...out, ...pageOf(r, entries.length, () => t`changes`)];
+  return [...out, ...pageOf(r, entries.length, () => t`changes`), ...remindersOf(r, now)];
 }
 
 // --- pending ------------------------------------------------------------------------------------
@@ -1026,7 +1056,7 @@ function pending(r: R, now: Date): Line[] {
           )}`,
         );
     }
-    return [...out, ...remindersOf(r)];
+    return [...out, ...remindersOf(r, now)];
   }
   const items = arr(r["items"]);
   // One slot on the page: it heads the list (05 §6 `saveslot_pending`).
@@ -1043,7 +1073,7 @@ function pending(r: R, now: Date): Line[] {
       t`${idOf(x["id"])} ${codeIn(x["type"], ITEM_TYPES)} · ${itemTarget(x["target"])}${reasonOf(x["reason"])}${status} · opened ${openFor(x["opened_at"], now)} ago${x["overdue"] === true ? t` · overdue, not yet deleted; will be retried` : []}`,
     );
   }
-  return [...out, ...pageOf(r, items.length, () => t`items`), ...remindersOf(r)];
+  return [...out, ...pageOf(r, items.length, () => t`items`), ...remindersOf(r, now)];
 }
 
 // --- write and resolve ---------------------------------------------------------------------------
@@ -1059,7 +1089,10 @@ function fieldResult(f: string, x: unknown): Part[] {
     return t`${fieldOf(f)}${period} unchanged; this was added as its evidence`;
   if (result === "noop") return [];
   const before = Object.hasOwn(c, "before") ? t`${fieldValue(c["before"])} → ` : [];
-  return t`${fieldOf(f)}${period} ${before}${fieldValue(c["after"])}`;
+  // A stale ver, this field untouched since (04-contract §5.4 `applied`).
+  const merged =
+    c["merged"] === true ? t` (nobody changed this field since the version you gave: merged)` : [];
+  return t`${fieldOf(f)}${period} ${before}${fieldValue(c["after"])}${merged}`;
 }
 
 /** The conflict item's decisions (05 §6 `saveslot_write`: 处理). */
@@ -1200,6 +1233,48 @@ const keyText = (k: unknown): Part[] =>
       )
     : [untrusted(String(k))];
 
+/**
+ * How each field of a state-table write resolved (04-contract §5.2 «next_change 逐字段解析»; 05 §6
+ * `saveslot_write`), beyond the interval its parts already show: a start taken as now, a
+ * correction's stretch, the stretches without a value it filled, and the unchanged value where a
+ * default end met the next change. Fields whose line would read the same share it.
+ */
+function resolvedLines(x: R): Line[] {
+  const lines = new Map<string, { fields: string[]; text: Part[] }>();
+  const add = (f: string, text: Part[]) => {
+    // Each drawing has a boundary number of its own: compared without it.
+    const k = render([text]).replace(/untrusted-data-[0-9a-f]{32}/g, "untrusted-data");
+    const line = lines.get(k) ?? { fields: [], text };
+    line.fields.push(f);
+    lines.set(k, line);
+  };
+  for (const [f, v] of Object.entries(obj(x["resolved"]))) {
+    const ri = obj(v);
+    if (ri["from_as"] === "now") {
+      add(f, t`start taken as now (${timeOf(ri["valid_from"])}): no valid_from was given`);
+    }
+    if (ri["from_as"] === "corrected_span" || ri["to_as"] === "corrected_span") {
+      add(f, t`the correction applies to the stretch it corrects`);
+    }
+    const filled = arr(ri["filled"]);
+    if (filled.length > 0) {
+      add(f, t`fills ${join(filled.map(periodOf), t`; `)}, which had no value`);
+    }
+    if (isObj(ri["next_change"])) {
+      const next = ri["next_change"];
+      add(
+        f,
+        next["value"] === null
+          ? t`from ${timeOf(next["at"])} on it still has no value, unchanged`
+          : t`from ${timeOf(next["at"])} on it is still ${fieldValue(next["value"])}, unchanged`,
+      );
+    }
+  }
+  return [...lines.values()].map(
+    ({ fields, text }) => t`  ${join(fields.map(fieldOf), t`, `)}: ${text}`,
+  );
+}
+
 function receiptOps(r: R): Line[] {
   const out: Line[] = [];
   for (const [at, o] of arr(r["ops"]).entries()) {
@@ -1231,6 +1306,7 @@ function receiptOps(r: R): Line[] {
     const keys = arr(x["existing_keys"]);
     if (keys.length > 0)
       out.push(t`  Keys already in the table: ${join(keys.map(keyText), t`; `)}`);
+    out.push(...resolvedLines(x));
     const awaiting = new Map<unknown, { f: string; c: R }[]>();
     for (const [f, v] of Object.entries(obj(x["fields"]))) {
       for (const one of Array.isArray(v) ? v : [v]) {
@@ -1304,7 +1380,7 @@ function itemsSaid(r: R): Set<unknown> {
   return said;
 }
 
-function receiptTail(r: R): Line[] {
+function receiptTail(r: R, now: Date): Line[] {
   const out: Line[] = [...derivedLines(r)];
   const said = itemsSaid(r);
   for (const p of arr(r["pending"])) {
@@ -1345,7 +1421,7 @@ function receiptTail(r: R): Line[] {
   if (isObj(r["premise_affected"])) {
     out.push(t`Rows whose premises changed: ${stored(JSON.stringify(r["premise_affected"]))}`);
   }
-  return [...out, ...remindersOf(r), ...shortened(r)];
+  return [...out, ...remindersOf(r, now), ...shortened(r)];
 }
 
 /** A receipt shortened to fit the budget says so (05 §3), and only what its status says. */
@@ -1393,7 +1469,7 @@ function slotOf(r: R): Part[] {
   return slot !== undefined ? t`${as(slot, name)} ` : [];
 }
 
-function write(r: R): Line[] {
+function write(r: R, now: Date): Line[] {
   need(Array.isArray(r["ops"]) && STATUSES.has(String(r["status"])));
   const status = statusOf(r);
   const seq = r["seq"] !== undefined ? t` · ${op(r["seq"])}` : t` · nothing recorded`;
@@ -1409,21 +1485,23 @@ function write(r: R): Line[] {
     );
   }
   out.push(t`${status} · ${slotOf(r)}schema v${count(r["sv"])}${seq}`);
-  return [...out, ...receiptOps(r), ...receiptTail(r)];
+  return [...out, ...receiptOps(r), ...receiptTail(r, now)];
 }
 
-function resolve(r: R): Line[] {
+function resolve(r: R, now: Date): Line[] {
   need(typeof r["id"] === "string" && typeof r["decision"] === "string");
   const head = t`${idOf(r["id"])} ${codeIn(r["type"], ITEM_TYPES)}: ${codeIn(r["decision"], DECISIONS)} · ${codeIn(r["status"], ITEM_STATUS)}${r["item_ver"] !== undefined ? t` · version ${idOf(r["item_ver"])}` : []}`;
   const replayed =
     r["replayed"] === true
       ? [t`This item was already resolved this way; nothing new was changed.`]
       : [];
-  const receipt = isObj(r["write"]) ? [...receiptOps(r["write"]), ...receiptTail(r["write"])] : [];
+  const receipt = isObj(r["write"])
+    ? [...receiptOps(r["write"]), ...receiptTail(r["write"], now)]
+    : [];
   // take_previous: the writes it took back or hid, as the item's details listed them.
   const reverted = arr(r["reverted_by_previous"]);
   const undid = reverted.length > 0 ? [t`Undid: ${join(reverted.map(revertedWrite), t`; `)}`] : [];
-  return [head, ...replayed, ...undid, ...receipt, ...remindersOf(r)];
+  return [head, ...replayed, ...undid, ...receipt, ...remindersOf(r, now)];
 }
 
 /** The changes a new slot's receipt says by its tables already (05 §6 `saveslot_schema_draft`). */
@@ -1440,7 +1518,7 @@ const SAID_BY_TABLES: ReadonlySet<unknown> = new Set([
  * descriptions are the caller's own and are not repeated; a change of a kind this version does not
  * make is shown as written, inside the boundary.
  */
-function schemaDraft(r: R): Line[] {
+function schemaDraft(r: R, now: Date): Line[] {
   const omitted = arr(r["omitted"]);
   need(
     r["outcome"] === "applied" &&
@@ -1477,7 +1555,7 @@ function schemaDraft(r: R): Line[] {
   // Shortened to fit the budget (05 §3): the slot was created all the same.
   const shortened =
     omitted.length > 0 ? [t`The receipt was shortened to fit; the slot was created.`] : [];
-  return [...out, ...remindersOf(r), ...shortened];
+  return [...out, ...remindersOf(r, now), ...shortened];
 }
 
 type Renderer = (r: R, now: Date) => Line[] | { json: true; lead: Line[] };

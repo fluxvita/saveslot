@@ -1193,5 +1193,119 @@
         }
       ]
     }
+  },
+  "query-notices": {
+    "tool": "saveslot_query",
+    "result": {
+      "table": "plan.budgets",
+      "slot": "plan",
+      "sv": 1,
+      "total": 5,
+      "rows": [
+        {
+          "table": "plan.budgets",
+          "entity": "e_64RC2WKPRV70B49WWJR8S1T51J",
+          "ver": "v48.0",
+          "values": {
+            "category": "hardware",
+            "amount": {
+              "value": "650",
+              "unit": "CNY"
+            },
+            "owner": null
+          },
+          "valid_from": "2026-11-05",
+          "valid_to": "2026-11-10",
+          "valid_to_inclusive": "2026-11-09"
+        },
+        {
+          "table": "plan.budgets",
+          "entity": "e_6F5BAA87QC2WA9CK2GHEV1190Y",
+          "ver": "v20.0",
+          "values": {
+            "category": "rent",
+            "amount": {
+              "value": "8200",
+              "unit": "CNY"
+            },
+            "owner": "Lin"
+          },
+          "valid_from": "2026-11-05",
+          "valid_to": null
+        },
+        {
+          "table": "plan.budgets",
+          "entity": "e_DHNFVZ2BX4J9KV94YCK22CVZ9X",
+          "ver": "v63.0",
+          "values": {
+            "category": "food",
+            "amount": {
+              "value": "2100",
+              "unit": "CNY"
+            },
+            "owner": "Bo"
+          },
+          "valid_from": "2026-11-05",
+          "valid_to": null,
+          "marks": {
+            "disputed": [
+              {
+                "item": "pi_082HP83ACKJKVEAR",
+                "fields": ["owner"],
+                "spans": [
+                  {
+                    "valid_from": "2026-11-05",
+                    "valid_to": null
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "table": "plan.budgets",
+          "entity": "e_NT7QT9B5XKHA7AD3G773X02TQW",
+          "ver": "v14.0",
+          "values": {
+            "category": "promo",
+            "amount": {
+              "value": "3000",
+              "unit": "CNY"
+            },
+            "owner": null
+          },
+          "valid_from": "2026-11-02",
+          "valid_to": "2026-11-10",
+          "valid_to_inclusive": "2026-11-09"
+        },
+        {
+          "table": "plan.budgets",
+          "entity": "e_ZCJVZ66H0948A1JBMMQYVGZZ60",
+          "ver": "v29.0",
+          "values": {
+            "category": "travel",
+            "amount": {
+              "value": "1300",
+              "unit": "CNY"
+            },
+            "owner": null
+          },
+          "valid_from": "2026-11-01",
+          "valid_to": "2026-11-10",
+          "valid_to_inclusive": "2026-11-09",
+          "marks": {
+            "corrected": true
+          }
+        }
+      ],
+      "notices": [
+        {
+          "code": "pending_items",
+          "slot": "plan",
+          "count": 2,
+          "oldest_opened_at": "2026-11-05T04:11:00.000Z"
+        }
+      ]
+    }
   }
 }

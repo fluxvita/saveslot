@@ -8,6 +8,7 @@
 //   - the elements 05 §6 requires are there; errors give their details, count the rest, and show
 //     the message inside the boundary; a renderer's failure gives JSON as written.
 
+import { readFileSync } from "node:fs";
 import {
   INPUT_MARK_KEYS,
   type InputMarkKey,
@@ -120,9 +121,35 @@ const MORE: Record<string, Sample> = (() => {
   };
 })();
 
+/** Real receipts and reads with the receipt fields and the notices (the golden files' samples). */
+const TAKEN: Record<string, Sample> = (() => {
+  const of = (file: string) =>
+    JSON.parse(readFileSync(new URL(file, import.meta.url), "utf8")) as Record<string, Sample>;
+  const receipts = of("./receipts.samples.json");
+  const reads = of("./reads.samples.json");
+  const pick = (from: Record<string, Sample>, k: string): [string, Sample] => {
+    const s = from[k];
+    if (s === undefined) throw new Error(k);
+    return [k, structuredClone(s)];
+  };
+  return Object.fromEntries([
+    ...[
+      "write-resolved-next-change",
+      "write-resolved-from-now",
+      "write-resolved-corrected",
+      "write-resolved-exact-fill",
+      "write-merged",
+      "write-evidence-unreferenced",
+      "write-clock-behind",
+    ].map((k) => pick(receipts, k)),
+    pick(reads, "query-notices"),
+  ]);
+})();
+
 const ALL: Record<string, Sample> = {
   ...Object.fromEntries(Object.keys(SAMPLES).map((k) => [k, sample(k)])),
   ...MORE,
+  ...TAKEN,
 };
 
 /**
@@ -145,10 +172,11 @@ const OUTSIDE = new RegExp(
 
 /**
  * Where a user's data is: never on the list above, whatever its key is called (a field may be
- * named id, at, value, table, ver). Only a quantity's number there may stand outside.
+ * named id, at, value, table, ver). Only a quantity's number there may stand outside, and the ends
+ * of the merge base's stretches (business time, as the service gives it).
  */
 const DATA =
-  /(^|\.)(values|key|proposed)\.|(^|\.)fields\.[^.]+\.(after|before|effective)(\.|$)|(^|\.)(effective|previous)\./;
+  /(^|\.)(values|key|proposed)\.|(^|\.)next_change\.value(\.|$)|(^|\.)fields\.[^.]+\.(after|before|effective)(\.|$)|(^|\.)effective\.|(^|\.)previous\.(?!spans\.\d+\.valid_(from|to|to_inclusive)$)/;
 const QUANTITY_NUMBER = /\.value$/;
 
 /** Every path to a string, and to a key, in `v`. */
