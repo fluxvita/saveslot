@@ -362,10 +362,16 @@ describe("decimal text length", () => {
     expect(codeOf(run({ pace: jsonNumber(long) }))).toEqual(["malformed"]);
     expect(codeOf(run({ laps: `${"0".repeat(0)}1${"0".repeat(100)}` }))).toEqual(["malformed"]);
     expect(codeOf(run({ distance: { value: long, unit: "km" } }))).toEqual(["malformed"]);
-    // Long random digits stay fast: refused before parsing.
-    const started = performance.now();
-    expect(codeOf(run({ pace: `1.${"7".repeat(100_000)}` }))).toEqual(["malformed"]);
-    expect(performance.now() - started).toBeLessThan(100);
+    // Long random digits stay fast: refused before parsing. The fastest of a few: one of them
+    // may meet a pause that is the machine's, not the refusal's.
+    const huge = `1.${"7".repeat(100_000)}`;
+    const times: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const started = performance.now();
+      expect(codeOf(run({ pace: huge }))).toEqual(["malformed"]);
+      times.push(performance.now() - started);
+    }
+    expect(Math.min(...times)).toBeLessThan(100);
   });
 });
 

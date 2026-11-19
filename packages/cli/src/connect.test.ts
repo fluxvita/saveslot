@@ -813,7 +813,9 @@ describe("runHostCommand and onPath", () => {
     expect(Date.now() - t0 - limit).toBeLessThan(2_000);
     const { readFileSync } = await import("node:fs");
     const [child, parent] = readFileSync(pids, "utf8").trim().split("\n").map(Number);
-    await new Promise((r) => setTimeout(r, 100));
+    // Killed, both: a moment for the system to take them away, however long that moment is.
+    const gone = () => !alive(child as number) && !alive(parent as number);
+    for (let i = 0; i < 100 && !gone(); i++) await new Promise((r) => setTimeout(r, 50));
     expect([alive(child as number), alive(parent as number)]).toEqual([false, false]);
   }, 30_000);
 

@@ -217,6 +217,8 @@ function standIn() {
     home: root,
     socketPath,
     seen: [] as Seen[],
+    /** How many times `/health` was asked. */
+    healthAsked: 0,
     health: { state: "ready", version: "t", pid: 1, since: "2026-11-17T00:00:00Z" } as Record<
       string,
       unknown
@@ -232,6 +234,7 @@ function standIn() {
       req.on("data", (c: Buffer) => chunks.push(c));
       req.on("end", () => {
         if (req.url === "/health") {
+          s.healthAsked++;
           res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(s.health));
           return;
         }
@@ -244,6 +247,7 @@ function standIn() {
   });
   afterEach(() => {
     s.seen.length = 0;
+    s.healthAsked = 0;
     s.health = { state: "ready", version: "t", pid: 1, since: "2026-11-17T00:00:00Z" };
     s.answer = (_, res) => {
       res.writeHead(202).end();
@@ -1428,7 +1432,8 @@ describe("the bridge as a process", () => {
     async () => {
       s.health = { ...s.health, state: "starting" }; // the bridge would wait up to a minute
       const b = spawnBridge(s.home, { SAVESLOT_TOKEN: token });
-      await sleep(1500); // started, and waiting on /health
+      // Started, and waiting on /health: it has asked, and was told "starting".
+      await until(() => s.healthAsked > 0, 30_000);
       b.child.stdout?.destroy();
       const sent = Date.now();
       // A line the bridge answers at once (not JSON), so that it writes and finds stdout gone.
