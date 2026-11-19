@@ -241,34 +241,86 @@ describe("entryHolds: the path with no path character either side, escapes taken
     ["then @2", `Command: ${P}@2\n`, P, false],
     ["then ~ (a backup)", `Command: ${P}~\n`, P, false],
     ["empty output", "", P, false],
-    // Shown another way by the host: not seen. Decided when real hosts' output is had (P1 list).
+    // Shown another way: not seen. Real hosts print the path as it was added (no link resolved,
+    // no ~, no quoting or escaping; Claude Code 2.1.327 and Codex 0.167.2, issue #29), so these
+    // shapes stay not seen.
     [
-      "(later) path with a space, shell-quoted with a backslash",
+      "(not a real host shape) path with a space, shell-quoted with a backslash",
       "Command: /Users/a\\ b/bin/saveslot\n",
       "/Users/a b/bin/saveslot",
       false,
     ],
     [
-      "(later) path with a quote, JSON-escaped",
+      "(not a real host shape) path with a quote, JSON-escaped",
       '"command": "/tmp/a\\"b/saveslot"',
       '/tmp/a"b/saveslot',
       false,
     ],
     [
-      "(later) a symbolic link resolved",
+      "(not a real host shape) a symbolic link resolved",
       "Command: /opt/homebrew/Cellar/x/bin/saveslot\n",
       P,
       false,
     ],
-    ["(later) ~ for the home", "Command: ~/bin/saveslot\n", "/Users/u/bin/saveslot", false],
     [
-      "(later) NFC written, NFD shown",
+      "(not a real host shape) ~ for the home",
+      "Command: ~/bin/saveslot\n",
+      "/Users/u/bin/saveslot",
+      false,
+    ],
+    [
+      "(not checked on a real host) NFC written, NFD shown",
       `Command: /Users/jose${String.fromCodePoint(0x301)}/bin/saveslot\n`,
       `/Users/jos${String.fromCodePoint(0xe9)}/bin/saveslot`,
       false,
     ],
   ])("%s", (_, out, path, holds) => {
     expect(entryHolds(out, path)).toBe(holds);
+  });
+  // What `claude mcp get` / `codex mcp get` print for an entry, through a pipe with NO_COLOR=1
+  // (issue #29). Claude's look-up starts the server; a status line comes first, with a non-ASCII
+  // mark that NO_COLOR keeps.
+  const claudeGet = (path: string) =>
+    [
+      "saveslot:",
+      "  Scope: User config (available in all your projects)",
+      "  Status: \u2718 Failed to connect",
+      `  Issue: ENOENT: no such file or directory, posix_spawn '${path}'`,
+      "  Type: stdio",
+      `  Command: ${path}`,
+      "  Args: mcp",
+      "  Environment:",
+      `    SAVESLOT_TOKEN=slt_${"A".repeat(43)}`,
+      "",
+      "To remove this server, run: claude mcp remove saveslot -s user",
+      "",
+    ].join("\n");
+  const codexGet = (path: string) =>
+    [
+      "saveslot",
+      "  enabled: true",
+      "  transport: stdio",
+      `  command: ${path}`,
+      "  args: mcp",
+      "  cwd: -",
+      "  env: SAVESLOT_TOKEN=*****",
+      "  remove: codex mcp remove saveslot",
+      "",
+    ].join("\n");
+  it.each([
+    [
+      "Claude Code, a path through a symbolic link, kept as given",
+      claudeGet,
+      "/tmp/ss-link/bin/saveslot",
+    ],
+    ["Claude Code, a path with a space, unquoted", claudeGet, "/tmp/ss sample/bin/saveslot"],
+    ["Codex, a path through a symbolic link, kept as given", codexGet, "/tmp/ss-link/bin/saveslot"],
+    ["Codex, a path with a space, unquoted", codexGet, "/tmp/ss sample/bin/saveslot"],
+  ])("real host output: %s", (_, shown, path) => {
+    // The output plus an empty stderr, as hostEntry hands it over.
+    expect(entryHolds(`${shown(path)}\n`, path)).toBe(true);
+    expect(entryHolds(`${shown(path)}\n`, "/usr/local/bin/saveslot")).toBe(false);
+    expect(entryHolds(`${shown(`${path}-old`)}\n`, path)).toBe(false);
   });
   it("an empty path holds nowhere; an OSC escape around the path is taken out", () => {
     expect(entryHolds("anything", "")).toBe(false);

@@ -436,6 +436,10 @@ export async function hostVersion(
  * Whether the host has an entry named `saveslot` (its own look-up command, `mcp get saveslot`):
  * `yes` with what the command printed (looked at by the caller, never shown: it may hold the
  * token), `no` when it ends with another status, `unknown` when it does not end at all.
+ * Checked on real hosts (Claude Code 2.1.327, Codex 0.167.2): both exit 1 with nothing on stdout
+ * when there is no entry. Claude's look-up also starts the server to show its status, and still
+ * exits 0 when that fails, so `yes` says an entry exists, not that it works; Claude prints the
+ * token in plain text, Codex masks it.
  */
 export async function hostEntry(
   exe: string,
@@ -497,8 +501,9 @@ const PATH_CHAR = /[A-Za-z0-9._\-/~+@]/;
  * whatever its format: escape sequences taken out, then the path with no path character (a letter,
  * a digit, `.`, `_`, `-`, `/`, `~`, `+` or `@`) right before or after it. So `/usr/local/bin/saveslot-old` and
  * `/opt/usr/local/bin/saveslot` are not `/usr/local/bin/saveslot`; `(…)`, `…,` and colours around
- * it are. A path the host shows another way (a link resolved, `~`, quoted or escaped) is not seen:
- * that waits for real hosts' output. The only place that reads that output.
+ * it are. A path the host shows another way (a link resolved, `~`, quoted or escaped) is not seen;
+ * real hosts do not (Claude Code 2.1.327 and Codex 0.167.2 print it as added, spaces unquoted).
+ * The only place that reads that output.
  */
 export function entryHolds(output: string, path: string): boolean {
   if (path === "") return false;
