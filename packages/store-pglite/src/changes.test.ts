@@ -1280,10 +1280,10 @@ describe("the parameters of a mode", () => {
         reason: "not_state_table",
       },
     );
-    // A row of another table is no row of this one: not found, as for timeline.
-    expect(
-      await refused({ mode: "changes", table: "runs", row: run2.replace(/.$/, "0"), since: 0 }),
-    ).toMatchObject({
+    // An ID that names no row of this table: not found, as for timeline. Its last character is
+    // changed to one it is not, so it never comes out equal to the row it was made from.
+    const other = run2.slice(0, -1) + (run2.endsWith("0") ? "1" : "0");
+    expect(await refused({ mode: "changes", table: "runs", row: other, since: 0 })).toMatchObject({
       code: "not_found",
     });
   });
