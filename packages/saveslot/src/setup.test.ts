@@ -5,8 +5,10 @@
 // the `saveslot` executable itself.
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -104,6 +106,52 @@ function newHome(o: { shared?: boolean } = {}): string {
   return h;
 }
 
+/** A home as `saveslot init` leaves it, made once (beforeAll) and never used itself. */
+const template = join(root, "template");
+
+/** Every entry under `dir` with its mode: "<path from dir> <d|f> <mode>". */
+function entries(dir: string, from = dir): string[] {
+  return readdirSync(dir)
+    .sort()
+    .flatMap((n) => {
+      const p = join(dir, n);
+      const s = statSync(p);
+      const line = `${p.slice(from.length + 1)} ${s.isDirectory() ? "d" : "f"} ${(s.mode & 0o777).toString(8)}`;
+      return s.isDirectory() ? [line, ...entries(p, from)] : [line];
+    });
+}
+
+/**
+ * A home of its own that is initialized already: a copy of the template, with each entry's mode
+ * set back as init made it (a copy makes its directories with the default mode). For the cases
+ * whose subject is not how a home is made: making one costs over a second, a copy a tenth of one.
+ * The cases about a new home, about init's own result, and those that run the executable make
+ * theirs with `newHome`, and setup initializes it.
+ */
+function initializedHome(): string {
+  const h = newHome();
+  cpSync(template, h, { recursive: true });
+  chmodSync(h, statSync(template).mode & 0o777);
+  for (const line of entries(template)) {
+    const [path, , mode] = line.split(" ") as [string, string, string];
+    chmodSync(join(h, path), Number.parseInt(mode, 8));
+  }
+  return h;
+}
+
+/** Every file under `dir` by its bytes, with every entry's mode. */
+function digest(dir: string): string {
+  const h = createHash("sha256");
+  for (const line of entries(dir)) {
+    h.update(`${line}\n`);
+    const [path, kind] = line.split(" ") as [string, string];
+    if (kind === "f") h.update(readFileSync(join(dir, path)));
+  }
+  return h.digest("hex");
+}
+/** The template as init left it (beforeAll): no case may change it. */
+let templateDigest = "";
+
 const stopService = (h: string) =>
   serviceCommand("stop", ["--home", h], quiet).then(
     () => {},
@@ -197,10 +245,13 @@ const works = async (home: string, token: string) => {
   }
 };
 
-beforeAll(() => {
+beforeAll(async () => {
   mkdirSync(join(root, "bin"));
   mkdirSync(join(root, "user-home"));
   writeFileSync(entry, "#!/bin/sh\n", { mode: 0o755 });
+  // The product's own init, and nothing after it: no service was started on the template.
+  expect(await serviceCommand("init", ["--home", template], quiet)).toBe(0);
+  templateDigest = digest(template);
 });
 afterEach(async () => {
   const made = caseHomes;
@@ -211,6 +262,38 @@ afterAll(async () => {
   // Each was stopped already; this is for a case cut short before its afterEach.
   for (const h of homes) await stopService(h);
   rmSync(root, { recursive: true, force: true });
+});
+
+describe("an initialized home: a copy of the template", () => {
+  it("has init's entries, modes and bytes; a mode that differs is seen, and setup refuses the home", async () => {
+    const home = initializedHome();
+    expect(statSync(home).mode & 0o777).toBe(0o700);
+    expect(entries(home)).toEqual(entries(template));
+    expect(digest(home)).toBe(templateDigest);
+    // As a plain copy leaves it (directories of the default mode), it is not what init made.
+    const copied = newHome();
+    cpSync(template, copied, { recursive: true });
+    chmodSync(copied, 0o700);
+    chmodSync(join(copied, "control"), 0o755);
+    expect(digest(copied)).not.toBe(templateDigest);
+    const r = await setup(copied, ["--yes", "--json"], { terminal: false });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain(`chmod 700 ${join(copied, "control")}`);
+  });
+
+  it("two of them are two homes: what setup does in one is not in the other, nor in the template", async () => {
+    freshHosts();
+    const a = initializedHome();
+    const b = initializedHome();
+    expect((await setup(a, ["--yes", "--host", "codex"], { terminal: false })).code).toBe(0);
+    expect((await setup(b, ["--yes"], { terminal: false })).code).toBe(0);
+    expect((await connections(a)).map((c) => c.name)).toEqual(["testhost · Codex"]);
+    expect(await connections(b)).toEqual([]);
+    // The token of a's instance is no credential of b's service.
+    expect(await works(a, tokenOf("codex"))).toBe(true);
+    expect(await works(b, tokenOf("codex"))).toBe(false);
+    expect(digest(template)).toBe(templateDigest);
+  });
 });
 
 describe("setup on a terminal, from nothing", () => {
@@ -287,7 +370,7 @@ describe("setup on a terminal, from nothing", () => {
 describe("setup: an instance of the name, active, and no entry in the host", () => {
   it("issued under a numbered name; the older one named in the summary, not revoked", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     expect((await setup(home, ["--yes"], { terminal: false })).code).toBe(0);
     let out = "";
     await dispatch(
@@ -330,7 +413,7 @@ describe("setup without a terminal", () => {
 
   it("--yes with --host and no --template: no slot made, that host only", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "codex"], { terminal: false });
     expect(r.code).toBe(0);
     expect(r.out).toContain(TEXTS.stepNoSlot);
@@ -340,7 +423,7 @@ describe("setup without a terminal", () => {
 
   it("--scope -schema: the instance cannot create slots, and the summary says how to let it", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "codex", "--scope", "-schema"], {
       terminal: false,
     });
@@ -353,7 +436,7 @@ describe("setup without a terminal", () => {
 
   it("--scope -schema and no host: nothing issued, so no hint", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--scope", "-schema"], { terminal: false });
     expect(r.code).toBe(0);
     expect(await connections(home)).toEqual([]);
@@ -362,7 +445,7 @@ describe("setup without a terminal", () => {
 
   it("--json: one value, each host and its instance, no token", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(
       home,
       ["--yes", "--host", "claude-code", "--template", "budget", "--json"],
@@ -421,7 +504,7 @@ describe("setup: the host's command fails; the instance revoked (no one has its 
     ["is a file the system cannot execute", "noexec", TEXTS.applyCannotRun],
   ])("it %s: failed, revoked, no token anywhere; 1", async (_, mode, why) => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "codex"], {
       terminal: false,
       env: { ADD_MODE: mode },
@@ -440,7 +523,7 @@ describe("setup: the host's command fails; the instance revoked (no one has its 
   it("ran, and its look-up shows an entry without this path as written: added, with a note", async () => {
     // No entry before, the command done, an entry after: added. Hosts write paths their own ways.
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "codex", "--json"], {
       terminal: false,
       env: { ADD_MODE: "otherpath" },
@@ -458,7 +541,7 @@ describe("setup: the host's command fails; the instance revoked (no one has its 
 
   it("ran, but its look-up does not show the entry: failed, the instance kept", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "codex"], {
       terminal: false,
       env: { ADD_MODE: "noentry" },
@@ -472,7 +555,7 @@ describe("setup: the host's command fails; the instance revoked (no one has its 
 describe("setup: the defects the review found", () => {
   it("--host given twice (and --template): once each; one instance, one add", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(
       home,
       [
@@ -496,7 +579,7 @@ describe("setup: the defects the review found", () => {
 
   it("an entry and more than one live instance of its name: none picked, each listed with its reads", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     expect((await setup(home, ["--yes", "--host", "codex"], { terminal: false })).code).toBe(0);
     // The entry removed, twice re-added: three live instances; the host holds the third's token.
     for (let k = 0; k < 2; k++) {
@@ -565,7 +648,7 @@ describe("setup: --json, and a host failing on the way", () => {
 
   it("the service does not start: the same object, service failed, nothing after it", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     expect((await setup(home, ["--yes"], { terminal: false })).code).toBe(0);
     await serviceCommand("stop", ["--home", home], quiet);
     writeFileSync(join(home, "config.toml"), "nonsense = 1\n");
@@ -583,7 +666,7 @@ describe("setup: an entry there, and what it holds", () => {
   it("run again with the entry not showing this path (another, or saveslot-old): not confirmed, 0", async () => {
     for (const mode of ["otherpath", "oldpath"]) {
       freshHosts();
-      const home = newHome();
+      const home = initializedHome();
       const first = await setup(home, ["--yes", "--host", "codex"], {
         terminal: false,
         env: { ADD_MODE: mode },
@@ -602,7 +685,7 @@ describe("setup: an entry there, and what it holds", () => {
 
   it("ran, the look-up shows no entry: what to run to undo it, the instance's ID in it", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "claude-code"], {
       terminal: false,
       env: { ADD_MODE: "noentry" },
@@ -615,7 +698,7 @@ describe("setup: an entry there, and what it holds", () => {
 
   it("the look-up after the add does not end: failed (lookup_failed), the instance kept", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "codex", "--json"], {
       terminal: false,
       // What is tested is the limit: 3 s, time for --version however slow; the look-up hangs 30 s.
@@ -630,7 +713,7 @@ describe("setup: an entry there, and what it holds", () => {
 
   it("the look-up does not end: failed (lookup_failed), nothing issued", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "codex", "--json"], {
       terminal: false,
       // The default limit (5 s): time for --version to answer however slow the machine; the
@@ -666,7 +749,7 @@ describe("setup: what it is given, and what it says", () => {
     ["none", "", "Codex"],
   ])("the computer's name: %s", async (_, hostname, named) => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     expect(
       (await setup(home, ["--yes", "--host", "codex"], { terminal: false, hostname })).code,
     ).toBe(0);
@@ -675,7 +758,7 @@ describe("setup: what it is given, and what it says", () => {
 
   it("a host without an add command is listed, not numbered", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     mkdirSync(join(root, "user-home", ".cursor"), { recursive: true });
     try {
       const r = await setup(home, ["--template", "budget"], { answers: ["", "n"] });
@@ -704,7 +787,7 @@ describe("setup: what it is given, and what it says", () => {
 
   it("started from npx's cache: the note on stderr", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const npx = join(root, "_npx", "a1", "saveslot");
     mkdirSync(join(root, "_npx", "a1"), { recursive: true });
     writeFileSync(npx, "#!/bin/sh\n", { mode: 0o755 });
@@ -750,7 +833,7 @@ describe("setup: asked to stop while a host's command runs", () => {
     },
   ) {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     let fire: ((s: "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT") => void) | undefined;
     const running = setup(home, ["--yes", "--host", "codex", "--host", "claude-code", ...args], {
       terminal: false,
@@ -871,7 +954,7 @@ describe("setup: asked to stop while a host's command runs", () => {
 describe("setup: its own instances, whatever the computer is called now", () => {
   it("the hostname changed (macOS names it after the network): the entry's instance is still its own", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     expect(
       (await setup(home, ["--yes", "--host", "codex"], { terminal: false, hostname: "mac-a" }))
         .code,
@@ -923,7 +1006,7 @@ describe("setup: its own instances, whatever the computer is called now", () => 
 
   it("setup's own revoked, only the user's left, named like the host's: not taken for the host's", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     expect((await setup(home, ["--yes", "--host", "codex"], { terminal: false })).code).toBe(0);
     const own = (await connections(home))[0]?.id as string;
     await dispatch(
@@ -947,7 +1030,7 @@ describe("setup: its own instances, whatever the computer is called now", () => 
 
   it("setup's own and one named like it: setup's own is the one named", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     expect((await setup(home, ["--yes", "--host", "codex"], { terminal: false })).code).toBe(0);
     await userInstance(home, "anything · Codex");
     const r = await setup(home, ["--yes", "--host", "codex", "--json"], { terminal: false });
@@ -1047,7 +1130,7 @@ describe("setup: --json when a step fails, and what was done", () => {
 
   it("the service running already: done so far does not say it was started", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     expect((await setup(home, ["--yes"], { terminal: false })).code).toBe(0);
     rmSync(join(hosts, "codex"));
     rmSync(join(hosts, "claude"));
@@ -1131,6 +1214,10 @@ describe("the saveslot executable", () => {
 });
 
 describe("afterwards", () => {
+  it("the template is as init left it: every case had a copy", () => {
+    expect(digest(template)).toBe(templateDigest);
+  });
+
   it("no file under any home holds a token any host was given (nor a 12-character piece of one)", () => {
     freshHosts();
     expect(tokens.size).toBeGreaterThan(5);
@@ -1156,7 +1243,7 @@ describe("afterwards", () => {
 describe("setup: more of what it is given", () => {
   it("--yes and no --host: no host added, though both are found", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--json"], { terminal: false });
     expect(r.code).toBe(0);
     expect(JSON.parse(r.out).hosts).toEqual([]);
@@ -1165,7 +1252,7 @@ describe("setup: more of what it is given", () => {
 
   it("--scope and two --template: the instance's scopes; a slot from each", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(
       home,
       [
@@ -1209,7 +1296,7 @@ describe("setup: more of what it is given", () => {
 
   it("the host's file gone between the look-up and the add: failed, revoked", async () => {
     freshHosts();
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "codex", "--json"], {
       terminal: false,
       env: { ADD_MODE: "vanish" },
@@ -1223,7 +1310,7 @@ describe("setup: more of what it is given", () => {
   it("--host for a host not found: not_found, with no reason; 1", async () => {
     freshHosts();
     rmSync(join(hosts, "claude"));
-    const home = newHome();
+    const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "claude-code", "--json"], { terminal: false });
     expect(r.code).toBe(1);
     expect(JSON.parse(r.out).hosts).toEqual([{ host: "claude-code", state: "not_found" }]);
