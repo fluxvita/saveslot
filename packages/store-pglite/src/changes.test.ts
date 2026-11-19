@@ -347,6 +347,41 @@ describe("the changes of an event table", () => {
     expect(first["target"]).toEqual({ table: "health.runs", row: run });
   });
 
+  it("counts existence and fields apart: a field written and the row revoked by one request gives both", async () => {
+    await w({ ops: [{ intent: "update", table: "runs", row: run2, set: { feeling: "ok" } }] });
+    const both = await w({
+      ops: [
+        { intent: "update", table: "runs", row: run2, set: { feeling: "gone" } },
+        { intent: "revoke", table: "runs", row: run2 },
+      ],
+    });
+    const r = await h({ table: "runs", row: run2, since: both.seq - 1 });
+    const fields = (changes(r)[0] as { fields: Record<string, unknown> }).fields;
+    expect(fields).toEqual({
+      "*": { before: true, after: false },
+      feeling: { before: "ok", after: "gone" },
+    });
+    expect(Object.keys(fields)).toEqual(["*", "feeling"]);
+  });
+
+  it("gives the values a row comes back with when the revoke is undone together with an update", async () => {
+    await w({ ops: [{ intent: "update", table: "runs", row: run2, set: { feeling: "fine" } }] });
+    const revoke = await w({ ops: [{ intent: "revoke", table: "runs", row: run2 }] });
+    const back = await w({
+      ops: [
+        { table: "runs", row: run2, revert: { undo: revoke.seq } },
+        { intent: "update", table: "runs", row: run2, set: { feeling: "new" } },
+      ],
+    });
+    const r = await h({ table: "runs", row: run2, since: back.seq - 1 });
+    const fields = (changes(r)[0] as { fields: Record<string, unknown> }).fields;
+    expect(fields).toEqual({
+      "*": { before: false, after: true },
+      feeling: { before: "fine", after: "new" },
+    });
+    expect(Object.keys(fields)).toEqual(["*", "feeling"]);
+  });
+
   it("takes the operation's net change: a row written twice by one request is one entry", async () => {
     const both = await w({
       ops: [

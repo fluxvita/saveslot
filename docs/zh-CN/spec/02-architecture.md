@@ -183,14 +183,15 @@ slot 策略的结构里为"某类操作只接受用户会话的确认"留了位�
 | L1 | `flags` 数据标记 | `disputed`、`awaiting`、`flagged`、`stale`、`pending_extraction` 的存取；由 `apply` 写、各读路径读。`corrected`、`dangling_ref`、`partially_deleted`、`premise_changed` 不存，由 `read` 读时现算 | store | `stale`、`pending_extraction` 后续 |
 | L2 | `rules` 规则引擎 | 受限 SQL 解析与白名单（清单见 data-model「受限 SQL」）、名字到物理名的改写、可见范围改写、依赖分析与重算范围、派生刷新的计算、准入估算、查询执行；当前规则版本与认识的规则版本集合 | store | 有 |
 | L2 | `time` 时间 | 表的时间类型、区间的基本运算、`valid_at` / `valid_during` / `as_of` 的查询改写 | store | 有 |
-| L3 | `judge` 判定 | **纯函数，不读存储、不产生事件。** 输入是一行或一个实体的写入序列（含原始传参、哪些贡献仍在）与 slot 策略，输出是每次写入的判定结果与最终状态：同值（无操作的字段在删除重放里保持无操作）、冲突交集、默认终点的解析、状态段拆分、高影响、行与实体的存在、首次创建标记、合并基与事项的影响、回掉的范围与取值位置上的值（权威定义见 data-model「回掉的权威定义」）、删除重放后各项的重述、生效值规则、前提状态的变化（给定值实际变了的格子与相交的声明，算出哪些声明转为已变、转回没变、改指）。按输入给出的规则版本判定 | time | 有 |
-| L3 | `derive` 派生生成 | 给定一批基础改动，算出受影响的派生分区，生成派生写入事件并返回，由调用方交给 `apply` | rules、log | 有 |
+| L2 | `delta` 值的差异 | **同值判据只有一份实现**（`sameValue`，只收规范化之后的值）；按版本位置从版本表取一个目标的状态（`stateAt`）；比较同一目标的两个状态，给出哪些字段、哪些业务时间区间的值变了、只换了出处项或没变（`targetDelta`，状态类表按两侧段边界合并后逐小段判，只重新切段不算变化）。读取的 `changes` 与写入的"前提"共用 | store | 有 |
+| L3 | `judge` 判定 | **纯函数，不读存储、不产生事件。** 输入是一行或一个实体的写入序列（含原始传参、哪些贡献仍在）与 slot 策略，输出是每次写入的判定结果与最终状态：同值（无操作的字段在删除重放里保持无操作）、冲突交集、默认终点的解析、状态段拆分、高影响、行与实体的存在、首次创建标记、合并基与事项的影响、回掉的范围与取值位置上的值（权威定义见 data-model「回掉的权威定义」）、删除重放后各项的重述、生效值规则、前提状态的变化（给定值实际变了的格子与相交的声明，算出哪些声明转为已变、转回没变、改指）。按输入给出的规则版本判定 | time、delta | 有 |
+| L3 | `derive` 派生生成 | 给定一批基础改动，算出受影响的派生分区，生成派生写入事件并返回，由调用方交给 `apply` | rules、log、delta | 有 |
 | L3 | `apply` 落账 | 事件 → 物化状态的唯一实现；维护 §8 的全部 (b) 类表（含键索引 `external_keys` 与前提的 `premise_decls`、`premise_edges`）；状态类表按事件里记下的区间赋值后规范化分段；按回退记录登记"已被回掉"、为不带内容的写回项从来源表取露出的值；物理删除时清空内容块与各版本物理表里的对应内容 | store、log、flags、rules、time | 有 |
 | L4 | `schema` schema 与迁移 | 文档解析与字段匹配、编译、变更分类与预览、迁移状态机、后台构建 / 追平 / 切换、数据目录；返回"要生成或取代的事项"，由 `ops` 落账 | store、log、audit、rules、time、apply、derive | 抽取相关的出口后续 |
 | L4 | `request` 写入请求 | **纯函数，不读存储。** 写入请求的形状、名字、类型、单位与范围的校验（判定顺序第 1 步），值的规范化（单位换算、按精度舍入、规范的十进制与时刻写法）与原始写法，区间参数的解析，请求所在的 slot，请求键的规范化内容 | schema、time | 有 |
 | L4 | `pending` 待处理事项 | 事项的生成、合并、刷新与取代；解决时按事项类型核对绑定的内容；只生成事件，不执行解决动作。合并基与影响这类机械判定的结果由调用方（`ops`、`write`、`delete`）先调 `judge` 算好交给它，它不依赖 `judge` | store、log、apply | `migration_diff` 后续 |
-| L5 | `write` 写入管线 | 调 `request` 校验与规范化、证据存为源数据、`ver` / `sv` 检查与兜底、请求键查重、按来源键定位（查键索引）并取出逐字段的同步基线、前提的校验与兜底、取出目标行的现状交给 `judge`、生成写入事件、调 `derive`、疑似重复与字面命中的判定；生成前提变化事件（经 `store` 读 `premise_decls`、`premise_edges` 与版本表，调 `judge`） | store、log、audit、rules、time、judge、apply、derive、schema、pending、request | 有 |
-| L5 | `read` 读取 | 简单查询、受限 SQL、历史与按时刻读、源数据列出与搜索、标记汇总（含前提标记的现算）、纠错影响查询、读取记入 `audit`；查询参数里的名字、值与业务时间按 `request` 的同一套规则解析与规范化 | store、audit、flags、rules、time、schema、pending、request | 派生值构成后续 |
+| L5 | `write` 写入管线 | 调 `request` 校验与规范化、证据存为源数据、`ver` / `sv` 检查与兜底、请求键查重、按来源键定位（查键索引）并取出逐字段的同步基线、前提的校验与兜底、取出目标行的现状交给 `judge`、生成写入事件、调 `derive`、疑似重复与字面命中的判定；生成前提变化事件（经 `store` 读 `premise_decls`、`premise_edges` 与版本表，调 `judge`） | store、log、audit、rules、time、judge、apply、derive、schema、pending、request、delta | 有 |
+| L5 | `read` 读取 | 简单查询、受限 SQL、历史与按时刻读、源数据列出与搜索、标记汇总（含前提标记的现算）、纠错影响查询、读取记入 `audit`；查询参数里的名字、值与业务时间按 `request` 的同一套规则解析与规范化 | store、audit、flags、rules、time、schema、pending、request、delta | 派生值构成后续 |
 | L5 | `delete` 删除 | 影响计算（沿值来源）、取出受影响行的全部写入交给 `judge` 重放、生成删除生命周期事件与前提变化事件、调 `derive`；返回"要写进锚点存储的内容" | store、log、rules、time、judge、apply、derive、schema、pending | 删除证据、按行删除后续 |
 | L6 | `jobs` 作业 | 大写入作业、抽取作业 | write、schema、pending、apply | 后续 |
 | L6 | `sync` 同步 | 节点间日志同步 | log、write、apply | 不实现 |

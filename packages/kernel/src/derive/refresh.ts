@@ -34,6 +34,7 @@ import {
   type Seq,
   type TableId,
 } from "@fluxvita/saveslot-contract-core";
+import { sameValue } from "../delta/index.ts";
 import {
   decodeDerivedRow,
   derivedRowsQuery,
@@ -88,8 +89,6 @@ export interface DerivedWritesInput {
 }
 
 const keyText = (values: readonly FieldValue[]) => canonicalize(values as unknown as JcsValue);
-const same = (a: FieldValue, b: FieldValue) =>
-  canonicalize(a as unknown as JcsValue) === canonicalize(b as unknown as JcsValue);
 
 /** The group key of a stored row, in the rule's key order. */
 function keyOf(t: CompiledDerivedTable, values: Readonly<Record<FieldId, FieldValue>>) {
@@ -192,7 +191,7 @@ async function refreshTable(
       }))
       // Only the fields whose value differs: a new row's before is null, so a field it leaves null
       // is not listed.
-      .filter((x) => !same(x.before, x.after));
+      .filter((x) => !sameValue(x.before, x.after));
     // The same result: no write (06: results that did not change are not passed on).
     if (before !== undefined && changes.length === 0) continue;
     writes.push({
@@ -211,7 +210,7 @@ async function refreshTable(
       changes: t.fields
         .map((f) => ({ field: f.id, before: row.values[f.id] ?? null, after: null }))
         // Only the fields whose value differs: a field that was null stays null.
-        .filter((x) => !same(x.before, x.after)),
+        .filter((x) => !sameValue(x.before, x.after)),
     });
   }
   // Within a rule, by partition ID (09 §4.2 step 6).

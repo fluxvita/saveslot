@@ -5,6 +5,8 @@
 
 export { withConfirmations } from "./apply/confirmation.fixture.ts";
 export * from "./apply/slot.fixture.ts";
+// The states of a target at a version position, and their comparison.
+export { stateAt, targetDelta } from "./delta/index.ts";
 // One judgement on a state, for a test asking what a decision would do now.
 export { judgeOp } from "./judge/index.ts";
 export {
@@ -19,6 +21,7 @@ export { actorsNow, itemEntries } from "./pending/index.ts";
 // `query` in a transaction, with the hook to read the state after an operation as a later page
 // does (tests compare it with the first page's path).
 export { type QueryInput, queryInTx } from "./read/query.ts";
+export { decodeColumns } from "./request/index.ts";
 export * from "./store/anchor-conformance.fixture.ts";
 export {
   asInThisPhase,

@@ -4,15 +4,14 @@
 //
 // Items are never removed: the state as of an earlier position is the items written up to it.
 
-import {
-  type BizPoint,
-  canonicalize,
-  type FieldId,
-  type FieldValue,
-  type JcsValue,
-  type OpNumber,
-  type Seq,
+import type {
+  BizPoint,
+  FieldId,
+  FieldValue,
+  OpNumber,
+  Seq,
 } from "@fluxvita/saveslot-contract-core";
+import { valueText } from "../delta/index.ts";
 import { givenEnds } from "../time/given-ends.ts";
 import {
   bounds,
@@ -86,7 +85,7 @@ export const effective = (s: ItemStatus): boolean => s === "applied" || s === "c
 
 /** A field's state on a stretch, as a token comparable for equality. */
 export const NO_VALUE = "no_value";
-export const valueToken = (v: FieldValue): string => `v:${canonicalize(v as JcsValue)}`;
+export const valueToken = (v: FieldValue): string => `v:${valueText(v)}`;
 
 export type FieldState =
   | { readonly kind: "value"; readonly value: FieldValue; readonly by: Item }

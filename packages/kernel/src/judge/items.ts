@@ -11,11 +11,12 @@
 //   interval: the conflict criterion's "改到" (candidates and awaiting parts change nothing).
 
 import type { FieldId, FieldValue, OpNumber } from "@fluxvita/saveslot-contract-core";
+import { sameValue } from "../delta/index.ts";
 import { canonical, type Interval, type IntervalSet, WHOLE } from "../time/index.ts";
 import type { ItemRef, Judgement, Unit } from "./model.ts";
 import { changedResults } from "./result.ts";
 import { undoResult } from "./revert.ts";
-import { effective, type Limit, type RowState, refKey, refOf, valueToken } from "./state.ts";
+import { effective, type Limit, type RowState, refKey, refOf } from "./state.ts";
 import { overwrittenBy } from "./write.ts";
 
 /** One stretch of a unit on the item's interval (09 §5.8 `current/<k>`, `previous/<k>`). */
@@ -148,7 +149,7 @@ export function unitEntries(
       if (
         last !== undefined &&
         last.valid.to === seg.from &&
-        valueToken(last.value) === valueToken(run.value) &&
+        sameValue(last.value, run.value) &&
         (last.by === undefined
           ? run.by === undefined
           : run.by !== undefined && refKey(last.by) === refKey(run.by))

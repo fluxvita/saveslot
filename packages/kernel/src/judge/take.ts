@@ -12,6 +12,7 @@
 // are recorded for a deletion's replay; they register nothing.
 
 import type { FieldId, OpNumber } from "@fluxvita/saveslot-contract-core";
+import { sameValue } from "../delta/index.ts";
 import {
   canonical,
   type Interval,
@@ -81,7 +82,7 @@ export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): Take
     const carried = uniqueRefs(
       k
         .filter(
-          (x) => x.target === f && x.content.kind === "value" && valueToken(x.content.value) === v,
+          (x) => x.target === f && x.content.kind === "value" && sameValue(x.content.value, value),
         )
         .map(refOf),
     );

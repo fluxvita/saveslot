@@ -3,6 +3,7 @@
 // «冲突判据» «撤销与并发修改»).
 
 import type { BizPoint, FieldId, OpNumber } from "@fluxvita/saveslot-contract-core";
+import { sameValue } from "../delta/index.ts";
 import {
   canonical,
   type Interval,
@@ -530,10 +531,9 @@ function coveredCorroborations(
   for (const d of applied) {
     if (d.target === "existence" || d.content.kind !== "value") continue;
     const f = d.target;
-    const v = valueToken(d.content.value);
     for (const c of state.items) {
       if (c.status !== "corroborated" || c.target !== f || !state.sees(c, curAt)) continue;
-      if (c.content.kind !== "value" || valueToken(c.content.value) === v) continue;
+      if (c.content.kind !== "value" || sameValue(c.content.value, d.content.value)) continue;
       const cv = valueToken(c.content.value);
       const hit = canonical(
         state.piecesIn(meet(d.valid, c.valid)).filter((s) => state.token(f, s, curAt) === cv),

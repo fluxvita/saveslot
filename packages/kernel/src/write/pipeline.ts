@@ -30,7 +30,6 @@ import {
   type FieldId,
   type FieldValue,
   type ItemId,
-  type JcsValue,
   type JsonValue,
   type OpNumber,
   type PartitionId,
@@ -42,6 +41,7 @@ import {
 } from "@fluxvita/saveslot-contract-core";
 import { ApplyError, internalDetailOf } from "../apply/index.ts";
 import { lastRead, type ReadBuffer } from "../audit/index.ts";
+import { sameValue } from "../delta/index.ts";
 import {
   awaitingImpact,
   conflictImpact,
@@ -728,8 +728,6 @@ const valuesOf = (key: Readonly<Record<FieldId, NormalizedField>>) =>
     FieldId,
     FieldValue
   >;
-const sameValue = (a: FieldValue, b: FieldValue | undefined) =>
-  b !== undefined && canonicalize(a as JcsValue) === canonicalize(b as JcsValue);
 
 /** How many keys a receipt lists for an entity created by key (04-contract §5.1). */
 const EXISTING_KEYS = 10;
@@ -1151,7 +1149,8 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
             param,
           });
         }
-        if (!sameValue(given.value, own[f.id])) {
+        const held = own[f.id];
+        if (held === undefined || !sameValue(given.value, held)) {
           const at = o.named.find((n) => n.field === f.id && n.param.startsWith(`${param}/set/`));
           throw new WriteError("invalid_argument", "a key field cannot change", {
             reason: "key_field_changed",

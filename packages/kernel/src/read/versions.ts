@@ -19,9 +19,8 @@ import type {
   CompiledBaseField,
   CompiledBaseTable,
   FieldValue,
-  JsonValue,
 } from "@fluxvita/saveslot-contract-core";
-import { canonicalize } from "@fluxvita/saveslot-contract-core";
+import { segmentsOf as segmentsFrom } from "../delta/index.ts";
 import { compare, rationalOf } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import type { Condition, Literal, QueryPlan } from "./params.ts";
@@ -72,48 +71,18 @@ const cellValue = (f: CompiledBaseField, c: RowCell): FieldValue =>
     f,
     selectOf(f).map((_, i) => c[`c_${f.id}_${i}`]),
   );
-const same = (a: FieldValue | undefined, b: FieldValue | undefined) =>
-  canonicalize((a ?? null) as JsonValue) === canonicalize((b ?? null) as JsonValue);
 
 /** A state entity's segments from its cells: where it has a value, equal pieces run together. */
 export function segmentsOf(
   t: CompiledBaseTable,
   cells: readonly RowCell[],
 ): { from: string; to: string | null; values: Record<string, FieldValue> }[] {
-  const points = new Set<string>();
-  for (const c of cells) {
-    if (c.vf !== null) points.add(c.vf);
-    if (c.vt !== null) points.add(c.vt);
-  }
-  const sorted = [...points].sort();
-  const out: { from: string; to: string | null; values: Record<string, FieldValue> }[] = [];
-  for (let i = 0; i < sorted.length; i++) {
-    const from = sorted[i] as string;
-    const to = sorted[i + 1] ?? null;
-    const here = cells.filter(
-      (c) => (c.vf as string) <= from && (c.vt === null || (to !== null && to <= c.vt)),
-    );
-    if (here.some((c) => c.field_id === "existence" && c.revoked === true)) continue;
-    const values: Record<string, FieldValue> = Object.create(null);
-    for (const f of t.fields) {
-      const c = here.find((x) => x.field_id === f.id);
-      values[f.id] = c === undefined ? null : cellValue(f, c);
-    }
-    // The entity has a value here when a field cell says so: apply writes every field's cell, not
-    // marked no_value, where it has one (a clear and a field never written included), and only
-    // no_value cells or a revoke's where it has none (05-time «无值区间»).
-    const valued = here.some((c) => c.field_id !== "existence" && c.no_value !== true);
-    if (!valued) continue;
-    const last = out.at(-1);
-    if (
-      last !== undefined &&
-      last.to === from &&
-      t.fields.every((f) => same(last.values[f.id], values[f.id]))
-    )
-      out[out.length - 1] = { ...last, to };
-    else out.push({ from, to, values });
-  }
-  return out;
+  // The sources `delta` can carry per segment are not read here: every source is empty.
+  return segmentsFrom(t, cells, { decode }).map((s) => ({
+    from: s.from,
+    to: s.to,
+    values: s.values as Record<string, FieldValue>,
+  }));
 }
 
 // --- conditions, evaluated here -------------------------------------------------------------------

@@ -19,7 +19,6 @@
 // `my_last_read` starts after it.
 
 import type {
-  CompiledBaseField,
   CompiledBaseTable,
   FieldValue,
   JsonValue,
@@ -28,6 +27,7 @@ import type {
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import type { ReadBuffer, ReadEntry } from "../audit/index.ts";
+import { stateFromCells, targetDelta } from "../delta/index.ts";
 import { actorsNow } from "../pending/index.ts";
 import { get, has, isJsonNumber, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
@@ -53,7 +53,7 @@ import {
   invalid,
   ReadError,
 } from "./types.ts";
-import { type RowCell, segmentsOf } from "./versions.ts";
+import type { RowCell } from "./versions.ts";
 
 type Cell = RowCell & {
   row_id: string;
@@ -61,12 +61,6 @@ type Cell = RowCell & {
   intent: string;
   src_event: unknown;
 };
-
-type Segment = ReturnType<typeof segmentsOf>[number];
-type Piece = { from: string | null; to: string | null; before: FieldValue; after: FieldValue };
-
-const same = (a: FieldValue | undefined, b: FieldValue | undefined): boolean =>
-  canonicalize((a ?? null) as JsonValue) === canonicalize((b ?? null) as JsonValue);
 
 const effective = (c: Cell, s: number): boolean =>
   Number(c.rec_from) <= s && (c.rec_to === null || Number(c.rec_to) > s);
@@ -156,37 +150,6 @@ async function lastReadOf(
 /** `since` and `until` as the caller gave them, for the position's identity. */
 const givenOf = (v: unknown): JsonValue =>
   typeof v === "number" || typeof v === "string" ? v : isJsonNumber(v) ? Number(v.text) : null;
-
-/** What a state table's field was before an operation and what it is after, by stretch. */
-function stretches(
-  fieldId: string,
-  before: readonly Segment[],
-  after: readonly Segment[],
-  points: readonly string[],
-): Piece[] {
-  const out: Piece[] = [];
-  const at = (segs: readonly Segment[], from: string): FieldValue =>
-    segs.find((s) => s.from <= from && (s.to === null || from < s.to))?.values[fieldId] ?? null;
-  for (const [i, from] of points.entries()) {
-    const b = at(before, from);
-    const a = at(after, from);
-    if (same(b, a)) continue;
-    const to = points[i + 1] ?? null;
-    const last = out.at(-1);
-    if (last !== undefined && last.to === from && same(last.before, b) && same(last.after, a))
-      last.to = to;
-    else out.push({ from, to, before: b, after: a });
-  }
-  return out;
-}
-
-/** The business time points of the segments: where one may start or end. */
-const pointsOf = (
-  ...lists: readonly (readonly { from: string; to: string | null }[])[]
-): string[] =>
-  [
-    ...new Set(lists.flatMap((l) => l.flatMap((s) => (s.to === null ? [s.from] : [s.from, s.to])))),
-  ].sort();
 
 /** `history` with `mode: "changes"`. */
 export async function changesInTx(
@@ -280,11 +243,6 @@ export async function changesInTx(
     }
   }
 
-  const cellValue = (f: CompiledBaseField, c: Cell): FieldValue =>
-    decode(
-      f,
-      selectOf(f).map((_, i) => c[`c_${f.id}_${i}`]),
-    );
   const open = (v: string | null): string | null =>
     v === "-infinity" || v === "infinity" ? null : v;
   const valid = (from: string | null, to: string | null): Interval =>
@@ -313,68 +271,57 @@ export async function changesInTx(
       const fields: Change["fields"] = Object.create(null);
       const asOf = (s: number) => cells.filter((c) => effective(c, s));
       const [before, after] = [asOf(op - 1), asOf(op)];
-      // Whether the row exists: a revoke, or its taking back.
+      const options = { decode } as const;
+      // `delta` counts existence (a revoke, or its taking back) and the fields apart.
+      const delta = new Map(
+        targetDelta(stateFromCells(t, before, options), stateFromCells(t, after, options)).flatMap(
+          (d) => (d.comparable ? [[d.field, d] as const] : []),
+        ),
+      );
+      const existence = delta.get("existence");
       if (!state) {
-        const [b, a] = [
-          before.some((c) => c.field_id === "existence" && c.revoked === true),
-          after.some((c) => c.field_id === "existence" && c.revoked === true),
-        ];
-        if (b !== a) fields["*"] = { before: !b, after: !a };
-      } else {
-        const [b, a] = [
-          before.filter((c) => c.field_id === "existence" && c.revoked === true),
-          after.filter((c) => c.field_id === "existence" && c.revoked === true),
-        ];
-        const lists = [
-          b.map((c) => ({ from: c.vf ?? "", to: c.vt })),
-          a.map((c) => ({ from: c.vf ?? "", to: c.vt })),
-        ] as const;
-        const points = pointsOf(...lists);
-        const within = (xs: readonly { from: string; to: string | null }[], p: string) =>
-          xs.some((x) => x.from <= p && (x.to === null || p < x.to));
-        const out: { from: string; to: string | null; was: boolean; is: boolean }[] = [];
-        for (const [i, from] of points.entries()) {
-          const [was, is] = [within(lists[0], from), within(lists[1], from)];
-          if (was === is) continue;
-          const to = points[i + 1] ?? null;
-          const last = out.at(-1);
-          if (last !== undefined && last.to === from && last.was === was) last.to = to;
-          else out.push({ from, to, was, is });
+        // A creation (`absent` to `live`) is not a `*` (04-contract §10).
+        if (
+          existence !== undefined &&
+          !(existence.before === undefined && existence.after === true)
+        )
+          fields["*"] = {
+            before: (existence.before ?? true) as boolean,
+            after: existence.after as boolean,
+          };
+        for (const f of t.fields) {
+          const d = delta.get(f.id);
+          if (d?.change === "value") fields[f.name] = changed(d.before ?? null, d.after ?? null);
         }
-        if (out.length > 0)
-          fields["*"] = out.map((p) => ({
-            before: !p.was,
-            after: !p.is,
+      } else {
+        // A state table's: by stretch.
+        // The stretches revoked or taken back, not those a write gave a value (a creation);
+        // neighbours that read the same run together.
+        const gone: { before: boolean; after: boolean; from: string; to: string | null }[] = [];
+        for (const p of existence?.stretches ?? []) {
+          if (p.before === undefined && p.after === true) continue;
+          const [before, after] = [(p.before ?? true) as boolean, p.after as boolean];
+          const last = gone.at(-1);
+          if (
+            last !== undefined &&
+            last.to === p.from &&
+            last.before === before &&
+            last.after === after
+          )
+            last.to = p.to;
+          else gone.push({ before, after, from: p.from, to: p.to });
+        }
+        if (gone.length > 0)
+          fields["*"] = gone.map((p) => ({
+            before: p.before,
+            after: p.after,
             valid: valid(p.from, p.to),
           }));
-      }
-      if (!state) {
-        const cellOf = (cs: readonly Cell[], f: CompiledBaseField): FieldValue => {
-          const c = cs.find((x) => x.field_id === f.id);
-          return c === undefined ? null : cellValue(f, c);
-        };
         for (const f of t.fields) {
-          const [b, a] = [cellOf(before, f), cellOf(after, f)];
-          if (!same(b, a)) fields[f.name] = changed(b, a);
-        }
-      } else {
-        // A revoke's stretches are `*`'s: the fields are read as they were written.
-        const [bs, as] = [
-          segmentsOf(
-            t,
-            before.filter((c) => c.field_id !== "existence"),
-          ),
-          segmentsOf(
-            t,
-            after.filter((c) => c.field_id !== "existence"),
-          ),
-        ];
-        const points = pointsOf(bs, as);
-        for (const f of t.fields) {
-          const pieces = stretches(f.id, bs, as, points);
-          if (pieces.length > 0)
-            fields[f.name] = pieces.map((p) => ({
-              ...changed(p.before, p.after),
+          const stretches = delta.get(f.id)?.stretches;
+          if (stretches !== undefined && stretches.length > 0)
+            fields[f.name] = stretches.map((p) => ({
+              ...changed(p.before ?? null, p.after ?? null),
               valid: valid(p.from, p.to),
             }));
         }
