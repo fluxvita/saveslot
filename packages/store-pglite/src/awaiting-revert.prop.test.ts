@@ -5,23 +5,19 @@
 // - the item's interval comes from its confirmation judged now and its impact from its undo judged
 //   again now (the confirmation does not judge high impact ①): the two list the same entries;
 // - the confirmation's write covers exactly the item's spans (state tables);
-// - a write later than the one taken back that the confirmation takes back or hides is named in
-//   the item's impact, and each one listed is taken back or hidden. On a state table: a write
-//   that loses its cells within the spans is named, in `reverted` or as the write of a stretch
-//   `overwritten`; on an event or timeless table, where a revoke changes only existence: it loses
-//   its cells, or the confirmation revokes the row.
+// - the item's impact names exactly the later writes whose result a reader sees changes once it
+//   is confirmed, each with the fields whose result changes (a revoke as "*"), worked out here
+//   from the cells before and after: piece by piece and field by field, the value, or on a state
+//   table that the stretch has none (a revoke and a gap alike), or on an event or timeless table
+//   that the row is revoked; a write giving a result that changes is named, in the undo's record
+//   or not, and one whose contribution goes while the result stays the same is not.
 // An item that has nothing left to do is closed (`nothing_to_revert`): it can then be neither
 // confirmed nor rejected. Each table's histories start from fixed ones that widen, narrow or empty
-// an item, or hide another field's write as a stretch loses its value (every run reaches those), each then replayed from the log into an empty store: the
+// an item, or hide another field's write as a stretch loses its value (every run reaches those),
+// each then replayed from the log into an empty store: the
 // items, flags and tables are the same; random ones follow. Reads are by a third principal, which
 // never writes: a writer that had read an item would supersede it instead of refreshing it.
 // `PROP_SEED` fixes the seed, `PROP_RUNS` the histories per table.
-//
-// Exempted for now (`KNOWN` below): five kinds of fault on the impact are known, each with the
-// change that fixes it; they are counted and the shortest history of each is printed, without
-// failing. The checks themselves are unchanged. Once the impact is complete, every kind is removed
-// from `KNOWN` and fails again; anything else fails as before (the interval, cells outside it, any
-// internal or thrown error, other revert entries).
 //
 // Reads here are by a third principal that never writes, so two guarantees are not this test's but
 // the fixed cases' in write-items.test.ts: an awaiting undo that its undo, judged again, can no
@@ -62,38 +58,6 @@ const SEED =
     ? Date.now() % 1_000_000
     : Number(process.env["PROP_SEED"]);
 const RUNS = Number(process.env["PROP_RUNS"] ?? 60);
-
-/**
- * Faults on the impact known and exempted for now, by kind (matched by the check that finds them,
- * not by table or history): what each is, and what fixes it. Remove a kind once fixed.
- */
-const KNOWN = {
-  /** State tables: a later revoke whose existence cells within the spans go, the stretch keeping
-   * a value, not named in the impact. Fixed by a complete impact. */
-  revoke_lost_unlisted:
-    "a revoke lost its existence cells within the spans, not named in the impact",
-  /** Event and timeless tables: the confirmation restores the row over a later revoke or undo.
-   * Fixed by a complete impact. */
-  hidden_unlisted: "was taken back or hidden, not listed in the impact",
-  /** Event and timeless tables: listed though the confirmation leaves it. Fixed by a complete
-   * impact. */
-  listed_untouched: "is listed in the impact and neither taken back nor hidden",
-  /** State tables: listed though it keeps cells within the spans. Fixed by a complete impact. */
-  listed_still_gives: "is listed in the impact and still gives cells within the spans",
-  /**
-   * The undo judged again is refused while the confirmation writes back: the refresh of the item
-   * and the two judgements disagree on whether the undo can be judged now (the impact lists writes
-   * while confirming changes nothing that can be read). Fixed by a complete impact, which starts by
-   * answering which of the two is right. Shortest known history (`rows`): insert {b, c}; OTHER
-   * revokes; OTHER undoes the revoke (`include_later`); USER updates b three times; USER undoes
-   * OTHER's undo → awaiting (A); OTHER updates {b, c}; USER undoes OTHER's undo again, with
-   * `include_later` → awaiting (B), listing the four updates; OTHER revokes → A closes as
-   * nothing_to_revert, B is refreshed and stays open, listing the revoke too; the undo judged again
-   * is refused, the confirmation writes `*` applied over a row revoked before and after.
-   */
-  undo_refused_confirm_writes: "the undo judged again is refused, and the confirmation wrote back",
-} as const;
-type KnownKind = keyof typeof KNOWN;
 
 const text = (id: string, name: string, required?: true) => ({
   id,
@@ -219,9 +183,6 @@ async function fresh() {
 /** A stretch of business time: null ends are open. */
 type Iv = { readonly from: string | null; readonly to: string | null };
 const ivOf = (x: Any): Iv => ({ from: x?.valid_from ?? null, to: x?.valid_to ?? null });
-/** A start before an end: a null start is open (−∞), a null end open (+∞). */
-const startsBefore = (from: string | null, to: string | null) =>
-  from === null || to === null || from < to;
 /** Sorted, touching and overlapping stretches joined. */
 function merged(xs: readonly Iv[]): Iv[] {
   const sorted = [...xs].sort((a, b) =>
@@ -239,9 +200,6 @@ function merged(xs: readonly Iv[]): Iv[] {
   }
   return out;
 }
-/** Two half-open stretches share some time. */
-const meets = (a: Iv, b: Iv) => startsBefore(a.from, b.to) && startsBefore(b.from, a.to);
-const meetsAny = (a: Iv, xs: readonly Iv[]) => xs.some((b) => meets(a, b));
 
 /** A cell still open: the operation that gave it, and its stretch (the whole time off the time line). */
 type Cell = {
@@ -249,6 +207,13 @@ type Cell = {
   readonly field: string;
   readonly iv: Iv;
   readonly revoked: boolean;
+  /**
+   * The cell gives no value: the stretch has none and this cell says who left it so (02-architecture
+   * §8), or the cell is a write-back of "no value", which reads empty as a field never written does
+   * and gives no result (04-write-and-read «撤回某次写入（undo）»: listed by what a reader sees).
+   */
+  readonly noValue: boolean;
+  readonly value: unknown;
 };
 async function cellsOf(table: TableName, id: string): Promise<Cell[]> {
   const t = TABLES[table];
@@ -263,8 +228,16 @@ async function cellsOf(table: TableName, id: string): Promise<Cell[]> {
       op: unknown;
       field_id: string;
       revoked: boolean | null;
+      no_value: boolean | null;
+      f_f2: unknown;
+      f_f3: unknown;
+      no_value_item: boolean | null;
     }>(
-      `SELECT ${time}, v.field_id, v.revoked, (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS op
+      `SELECT ${time}, v.field_id, v.revoked, v.no_value, v.f_f2, v.f_f3,
+         (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS op,
+         EXISTS (SELECT 1 FROM content c WHERE c.seq = v.src_event
+                 AND c.path = 'fields/' || v.field_id || '/' || v.src_k::text
+                 AND c.body LIKE '%"no_value":true%') AS no_value_item
        FROM "t_${t.id}_v1__ver" v WHERE v.row_id = $1 AND v.rec_to IS NULL`,
       [id],
     ),
@@ -274,7 +247,90 @@ async function cellsOf(table: TableName, id: string): Promise<Cell[]> {
     field: x.field_id,
     iv: { from: x.vf, to: x.vt },
     revoked: x.revoked === true,
+    // The cell's own item is a write-back of "no value": on a state table the stretch may still have
+    // a value (another field's), and a timeless row keeps no no-value flag on its cells at all.
+    noValue: x.no_value === true || x.no_value_item === true,
+    value: x.field_id === "f2" ? x.f_f2 : x.field_id === "f3" ? x.f_f3 : null,
   }));
+}
+
+const FIELD_NAMES: Readonly<Record<string, string>> = { f2: "b", f3: "c" };
+
+/** The pieces of the timeline the cells of `sets` cut it into (state tables). */
+function piecesOf(sets: readonly (readonly Cell[])[]): Iv[] {
+  const points = [
+    ...new Set(
+      sets
+        .flat()
+        .flatMap((c) => [c.iv.from, c.iv.to])
+        .filter((x): x is string => x !== null),
+    ),
+  ].sort();
+  const ends = [null, ...points, null];
+  return ends.slice(0, -1).map((from, i) => ({ from, to: ends[i + 1] ?? null }));
+}
+const covers = (c: Cell, g: Iv) =>
+  (c.iv.from === null || (g.from !== null && c.iv.from <= g.from)) &&
+  (c.iv.to === null || (g.to !== null && g.to <= c.iv.to));
+
+/**
+ * What a reader sees of a field on a piece, from the cells, and the cells that give it. State
+ * tables: a stretch has a value when some field cell there is not a no-value cell; without one,
+ * every field reads "no value" (a revoke and a gap alike), given by the revoke cells there. Event
+ * and timeless tables: a revoked row reads "revoked", given by its revoke cell; else the value.
+ */
+function readOf(state: boolean, cells: readonly Cell[], g: Iv, f: string) {
+  const here = cells.filter((c) => covers(c, g));
+  const cell = here.find((c) => c.field === f);
+  if (state) {
+    const valued = here.some((c) => c.field !== "existence" && !c.noValue);
+    if (!valued) {
+      return {
+        token: "no value",
+        givers: here.filter((c) => c.field === "existence" && c.revoked),
+        hole: true,
+      };
+    }
+    return {
+      token: cell === undefined || cell.noValue ? "none" : J(cell.value),
+      givers: cell && !cell.noValue ? [cell] : [],
+      hole: false,
+    };
+  }
+  const revoke = here.find((c) => c.field === "existence" && c.revoked);
+  if (revoke !== undefined) return { token: "revoked", givers: [revoke], hole: true };
+  if (cell === undefined || cell.noValue) return { token: "none", givers: [], hole: false };
+  return { token: J(cell.value), givers: [cell], hole: false };
+}
+
+/**
+ * The later writes whose result a reader sees changes from `before` to `after`, with the fields
+ * (or "*" for a revoke) of each: the cells giving a result that changes.
+ */
+function changedWrites(
+  state: boolean,
+  before: readonly Cell[],
+  after: readonly Cell[],
+  since: number,
+  owner: (op: number) => number,
+): Map<number, string[]> {
+  const out = new Map<number, Set<string>>();
+  const pieces = state ? piecesOf([before, after]) : [{ from: null, to: null }];
+  for (const g of pieces) {
+    for (const f of ["f2", "f3"]) {
+      const was = readOf(state, before, g, f);
+      if (was.token === readOf(state, after, g, f).token) continue;
+      for (const c of was.givers) {
+        if (c.op === null) continue;
+        const op = owner(c.op);
+        if (op <= since) continue;
+        const xs = out.get(op) ?? new Set<string>();
+        xs.add(c.field === "existence" ? "*" : (FIELD_NAMES[c.field] as string));
+        out.set(op, xs);
+      }
+    }
+  }
+  return new Map([...out].map(([op, xs]) => [op, [...xs].sort()]));
 }
 
 function rng(seed: number) {
@@ -492,10 +548,6 @@ describe.each(Object.keys(TABLES) as TableName[])(
         const key = state ? "entity" : "row";
         const span = (vf: string, vt: string) => (state ? { valid_from: vf, valid_to: vt } : {});
         const faults: string[] = [];
-        /** The known faults: how many of each kind, and the shortest history of each. */
-        const known: Partial<
-          Record<KnownKind, { count: number; shortest: string; steps: number }>
-        > = {};
         const reached: Record<string, number> = {};
         const reach = (k: string) => {
           reached[k] = (reached[k] ?? 0) + 1;
@@ -512,17 +564,13 @@ describe.each(Object.keys(TABLES) as TableName[])(
           const log: string[] = [];
           const fault = (what: string, more = "") =>
             faults.push(`${what} [history ${h}]\n${log.join("\n")}${more}`);
-          const knownFault = (kind: KnownKind, op: number, more: string) => {
-            const k = known[kind];
-            const text = `#${op} ${KNOWN[kind]} [history ${h}]\n${log.join("\n")}${more}`;
-            if (k === undefined) known[kind] = { count: 1, shortest: text, steps: log.length };
-            else {
-              k.count++;
-              if (log.length < k.steps) Object.assign(k, { shortest: text, steps: log.length });
-            }
-          };
           /** The items opened by undos: what they take back, and their spans when opened. */
-          const open = new Map<string, { undone: number; spans: Iv[] | undefined }>();
+          const open = new Map<
+            string,
+            { undone: number; proposal: number; spans: Iv[] | undefined }
+          >();
+          /** A confirmation's operation, and the undo it confirms. */
+          const confirmed = new Map<number, number>();
           const seqs: number[] = [];
           const vers: string[] = [];
           let id: string | undefined;
@@ -552,6 +600,7 @@ describe.each(Object.keys(TABLES) as TableName[])(
               const d = await detailOf(q.id);
               open.set(q.id, {
                 undone: undo,
+                proposal: res.seq,
                 spans: state ? ((d.target.spans ?? []) as Any[]).map(ivOf) : undefined,
               });
             }
@@ -582,19 +631,13 @@ describe.each(Object.keys(TABLES) as TableName[])(
               return;
             }
             const spans = state ? merged(((d.target.spans ?? []) as Any[]).map(ivOf)) : undefined;
-            const area = spans ?? [{ from: null, to: null }];
             const listed = new Set<number>(
               ((d.impact?.reverted ?? []) as Any[]).map((x) => x.seq as number),
-            );
-            /** The writes the impact names as overwritten (high impact ①). */
-            const overwrittenBy = new Set<number>(
-              ((d.impact?.overwritten ?? []) as Any[]).map((x) => x.seq as number),
             );
             // The item's interval comes from its confirmation judged now, its impact from its undo
             // judged again now: the two list the same revert entries.
             const both = await s.store.write((tx) => revertEntriesOf(tx, item));
-            // The undo refused when judged again (its impact then empty) while the confirmation
-            // would write something: the impact would name nothing of what is written back.
+            // The undo refused when judged again while the confirmation lists entries.
             const undoRefused = both !== undefined && both.undo === null && both.confirm !== null;
             if (both?.undo != null && both.confirm != null) {
               const key = (xs: readonly unknown[]) => J(xs.map((x) => J(x)).sort());
@@ -622,17 +665,12 @@ describe.each(Object.keys(TABLES) as TableName[])(
               return;
             }
             reach("confirmed");
-            if (undoRefused) {
-              const wrote = Object.values((c.write?.ops?.[0]?.fields ?? {}) as Record<string, Any>)
-                .flatMap((g) => (Array.isArray(g) ? g : [g]) as Any[])
-                .filter((p) => p.result !== "noop");
-              if (wrote.length > 0)
-                knownFault(
-                  "undo_refused_confirm_writes",
-                  Number(c.write?.seq),
-                  `\nIMPACT ${J(d.impact ?? {})}\nWRITE ${J(c.write)}`,
-                );
-            }
+            confirmed.set(c.write?.seq as number, at.proposal);
+            // An undo refused when judged again (its impact empty) while the confirmation writes
+            // back is not a fault in itself: a write-back over a row revoked before and after
+            // changes nothing a reader sees. What would be is checked below: the impact names the
+            // writes whose result changes, whatever the undo judged again says.
+            if (undoRefused) reach("undo refused, confirmation writes back");
             if (state && at.spans !== undefined && J(merged(at.spans)) !== J(spans))
               reach("confirmed after a refresh changed the spans");
             // What the confirmation wrote: every part of every field and existence.
@@ -647,56 +685,33 @@ describe.each(Object.keys(TABLES) as TableName[])(
                   `\nSPANS ${J(spans)}\nWROTE ${J(merged(parts))}\nWRITE ${J(c.write)}`,
                 );
             }
-            // Later writes losing their cells within the spans are the ones the impact lists.
+            // The later writes whose result a reader sees changes are exactly those the impact
+            // names, each with the fields whose result changes (04-write-and-read «撤回某次写入
+            // （undo）»): worked out here from the cells before and after the confirmation.
             const afterCells = await cellsOf(table, id as string);
-            const inArea = (cs: readonly Cell[], op: number) =>
-              cs.some((x) => x.op === op && meetsAny(x.iv, area));
-            const fieldCellsOf = (op: number) =>
-              beforeCells.some(
-                (x) => x.op === op && x.field !== "existence" && meetsAny(x.iv, area),
-              );
-            const later = [...new Set(beforeCells.map((x) => x.op))].filter(
-              (op): op is number => op !== null && op > at.undone,
+            const want = changedWrites(
+              state,
+              beforeCells,
+              afterCells,
+              at.undone,
+              // The confirmation of the undo being undone is part of that operation, not a later
+              // write; any other confirmation is a write of its own.
+              (op) => (confirmed.get(op) === at.undone ? at.undone : op),
             );
-            if (state) {
-              for (const op of later) {
-                const gone = inArea(beforeCells, op) && !inArea(afterCells, op);
-                // A later write that loses its cells within the spans is named in the impact: as
-                // taken back or hidden (`reverted`), or as overwritten (its `seq`).
-                if (gone && listed.has(op) && fieldCellsOf(op))
-                  reach("a later field write named and gone");
-                if (!gone || listed.has(op) || overwrittenBy.has(op)) continue;
-                const lost = beforeCells.filter((x) => x.op === op && meetsAny(x.iv, area));
-                const more = `\nBEFORE ${J(beforeCells)}\nAFTER ${J(afterCells)}`;
-                if (lost.every((x) => x.field === "existence" && x.revoked))
-                  knownFault("revoke_lost_unlisted", op, more);
-                else fault(`#${op} lost its cells within the spans, not named in the impact`, more);
-              }
-              for (const op of listed) {
-                if (inArea(afterCells, op))
-                  knownFault("listed_still_gives", op, `\nAFTER ${J(afterCells)}`);
-              }
-            } else {
-              // An event or timeless row: a revoke changes only existence, the values stay on the
-              // row (04-write-and-read). A later write is taken back when its cells go, hidden when
-              // the confirmation revokes the row; either way the impact lists it.
-              const hiddenAll =
-                afterCells.some((x) => x.revoked) && !beforeCells.some((x) => x.revoked);
-              const has = (cs: readonly Cell[], op: number) => cs.some((x) => x.op === op);
-              for (const op of later) {
-                const lost = has(beforeCells, op) && (!has(afterCells, op) || hiddenAll);
-                if (lost && !listed.has(op))
-                  knownFault(
-                    "hidden_unlisted",
-                    op,
-                    `\nBEFORE ${J(beforeCells)}\nAFTER ${J(afterCells)}`,
-                  );
-              }
-              for (const op of listed) {
-                if (has(afterCells, op) && !hiddenAll)
-                  knownFault("listed_untouched", op, `\nAFTER ${J(afterCells)}`);
-              }
-            }
+            const got = new Map<number, string[]>(
+              ((d.impact?.reverted ?? []) as Any[]).map((x) => [
+                x.seq as number,
+                [...(x.fields as string[])].sort(),
+              ]),
+            );
+            const sorted = (m: Map<number, string[]>) => J([...m].sort(([a], [b]) => a - b));
+            if (sorted(want) !== sorted(got))
+              fault(
+                "the impact names other writes than those whose result changes",
+                `\nWANT ${sorted(want)}\nGOT ${sorted(got)}\nBEFORE ${J(beforeCells)}\nAFTER ${J(afterCells)}`,
+              );
+            else if ([...want.values()].some((xs) => xs.some((x) => x !== "*")))
+              reach("a later field write named and gone");
           };
 
           if (h < fixed.length) {
@@ -771,8 +786,6 @@ describe.each(Object.keys(TABLES) as TableName[])(
         console.log(
           `${table}: seed ${SEED}, ${RUNS} histories, ${J(reached)}, ${faults.length} faults`,
         );
-        for (const [kind, k] of Object.entries(known))
-          console.log(`${table}: known (${kind}) ${k.count}; the shortest:\n${k.shortest}`);
         expect(faults.slice(0, 3)).toEqual([]);
         expect(reached["confirmed"] ?? 0).toBeGreaterThan(0);
         if (table === "entities") {

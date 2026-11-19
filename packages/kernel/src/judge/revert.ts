@@ -73,6 +73,31 @@ interface Revert {
   readonly k: readonly Item[] | null;
 }
 
+/**
+ * An undo's write-backs applied, from its record (the op, its entries and the undone operation):
+ * the row before it (at `at`) and after it (at `afterAt`), for what a reader would see once it
+ * takes effect. The record's own entries, not judged again.
+ */
+export function undoResult(
+  state: RowState,
+  r: { readonly op: OpNumber; readonly index: number; readonly event: Seq },
+  revert: { readonly entries: readonly RevertEntry[]; readonly before: OpNumber },
+): { readonly after: RowState; readonly at: Limit; readonly afterAt: Limit } {
+  const c = compute(state, {
+    n: r.op,
+    index: r.index,
+    event: r.event,
+    entries: revert.entries,
+    pos: { before: revert.before },
+    k: null,
+  });
+  return {
+    after: state.with(c.asWritten, c.regs),
+    at: c.cur,
+    afterAt: { upTo: r.op - 1, request: { op: r.op, below: r.index + 1 } },
+  };
+}
+
 /** The pseudocode's steps 1–3 and 5–8 on the state now; step 4 is the caller's. */
 function compute(state: RowState, r: Revert) {
   const cur: Limit = { upTo: r.n - 1, request: { op: r.n, below: r.index } };

@@ -394,6 +394,21 @@ function withProposals(state: RowState, items: TrackedItem[]): TrackedItem[] {
 }
 
 /**
+ * The number of an operation judged on the state now but not written (a confirmation or an undo
+ * judged again for an item's contents): after every operation and every event of the row, with
+ * its event right after it. An operation's events follow its number (head, sources, base), so one
+ * past the last operation can be an existing event: registrations, kept by event, would then take
+ * the judged write-backs for that event's items.
+ */
+function hypotheticalOp(state: RowState, upTo: number): OpNumber {
+  return (Math.max(
+    upTo,
+    ...state.records.map((r) => Math.max(r.op, r.event)),
+    ...state.items.map((x) => x.event),
+  ) + 1) as OpNumber;
+}
+
+/**
  * The judgement confirming an awaiting revert proposal (an `undo`) would make on the state now: the
  * same the confirmation makes (the revert listed again as of then, 04-write-and-read «撤回某次写入
  * （undo）»), so that the item shows what confirming it does (05-time «高影响写入»). Undefined for any
@@ -403,8 +418,7 @@ function confirmNow(state: RowState, t: TrackedItem, upTo?: OpNumber): Judgement
   if (t.type !== "awaiting_confirmation") return undefined;
   const opened = state.records.find((r) => r.event === t.origin);
   if (opened?.kind !== "undo") return undefined;
-  const last = Math.max(upTo ?? 0, ...state.records.map((r) => r.op));
-  const op = (last + 1) as OpNumber;
+  const op = hypotheticalOp(state, upTo ?? 0);
   try {
     return judgeOp(state, {
       kind: "confirm",
@@ -524,11 +538,17 @@ function proposedOf(state: RowState, t: TrackedItem) {
  * is refused while the confirmation writes something: such items are known (a confirmation that
  * changes nothing that can be read, over a row revoked before and after), and which of the two
  * judgements is right there is open.
+ *
+ * Where the undo judged again is accepted, its write-backs are the ones confirming now writes, so
+ * the impact compares what a reader sees before and after the confirmation (04-write-and-read «撤回
+ * 某次写入（undo）»): both are numbered after every event of the row (`hypotheticalOp`), both list
+ * the revert as of now from the same operation (`undoEntries` of the record's `before`, which the
+ * undo resolved when written), and the write-backs depend on the entries and that numbering alone.
  */
 function awaitingImpactNow(state: RowState, t: TrackedItem, at: Limit) {
   if (!isUndoProposal(state, t)) return proposalImpact(state, t.refs, t.reverted, at);
   const again = undoNow(state, t, at);
-  return again !== undefined ? awaitingImpact(state, again) : [];
+  return again === undefined ? [] : awaitingImpact(state, again);
 }
 
 /** Whether a tracked item is an awaiting `undo` (a revert proposal). */
@@ -546,7 +566,7 @@ function isUndoProposal(state: RowState, t: TrackedItem): boolean {
 function undoNow(state: RowState, t: TrackedItem, at: Limit): Judgement | undefined {
   const opened = state.records.find((r) => r.event === t.origin);
   if (opened?.kind !== "undo" || opened.revert.before === undefined) return undefined;
-  const op = (at.upTo + 1) as OpNumber;
+  const op = hypotheticalOp(state, at.upTo);
   try {
     return judgeOp(state, {
       kind: "undo",
@@ -601,7 +621,7 @@ function withHiddenByPrevious(
   t: TrackedItem,
   at: Limit,
 ): ImpactEntry[] {
-  const op = (at.upTo + 1) as OpNumber;
+  const op = hypotheticalOp(state, at.upTo);
   let hides: readonly ItemRef[] = [];
   try {
     hides = judgeOp(state, {

@@ -708,6 +708,9 @@ export async function revertEntriesOf(
   );
   const tracked = work.items.find((x) => x.item === item.id);
   if (tracked === undefined) return undefined;
-  const upTo = ((await readTail(tx))?.seq ?? 0) as OpNumber;
+  // The last operation's number, as the pipeline judges a refresh (`upTo` is an operation number;
+  // the tail's seq is an event's, past it by the operation's other events).
+  const last = await tx.query<{ op: unknown }>("SELECT max(op) AS op FROM events");
+  const upTo = Number(last.rows[0]?.op ?? 0) as OpNumber;
   return revertEntriesNow(work.state, tracked, upTo);
 }

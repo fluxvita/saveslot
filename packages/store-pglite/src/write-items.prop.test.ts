@@ -180,6 +180,80 @@ const EXAMPLE_REFRESHED = [
   },
 ] as unknown as Op[];
 
+/**
+ * A counterexample of a main-line run before the model followed the interval: an undo awaits, a
+ * write over [11-01, ∞) and a revoke over [11-05, 11-07) narrow it, and the closing write reaches it.
+ */
+const EXAMPLE_REWRITTEN = [
+  {
+    kind: "write",
+    op: 10,
+    event: 11,
+    seen: 0,
+    valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+    fields: { f2: { value: "1", sources: ["S10"] } },
+    acknowledge: ["overwrite"],
+  },
+  {
+    kind: "revoke",
+    op: 20,
+    event: 21,
+    seen: 10,
+    valid: {
+      from: { mode: "given", value: "2026-11-01" },
+      to: { mode: "given", value: "2026-11-07" },
+    },
+    validSources: ["S20"],
+  },
+  {
+    kind: "write",
+    op: 30,
+    event: 31,
+    seen: 20,
+    valid: {
+      from: { mode: "given", value: "2026-11-03" },
+      to: { mode: "given", value: "2026-11-05" },
+    },
+    fields: { f2: { value: "5", sources: ["S30"] } },
+    acknowledge: ["overwrite"],
+  },
+  { kind: "undo", op: 40, event: 41, target: 30, seen: 30, acknowledge: ["overwrite"] },
+  { kind: "undo", op: 50, event: 51, target: 20, seen: 40, acknowledge: ["overwrite"] },
+  {
+    kind: "write",
+    op: 60,
+    event: 61,
+    seen: 50,
+    valid: {
+      from: { mode: "given", value: "2026-11-01" },
+      to: { mode: "given", value: "2026-11-03" },
+    },
+    fields: { f2: { value: "6", sources: ["S60"] } },
+    acknowledge: ["overwrite"],
+  },
+  { kind: "undo", op: 70, event: 71, target: 50 },
+  {
+    kind: "write",
+    op: 80,
+    event: 81,
+    seen: 40,
+    valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+    fields: { f2: { value: "1", sources: ["S4"], explicit: false } },
+    acknowledge: ["overwrite"],
+  },
+  {
+    kind: "revoke",
+    op: 90,
+    event: 91,
+    seen: 80,
+    valid: {
+      from: { mode: "given", value: "2026-11-05" },
+      to: { mode: "given", value: "2026-11-07" },
+    },
+    validSources: ["S1"],
+  },
+] as unknown as Op[];
+
 /** An event table sample for the four modes: two writes to one row. */
 const EXAMPLE_EVENT = [
   { kind: "write", op: 10, event: 11, seen: 0, fields: { f2: { value: "1", sources: ["S10"] } } },
@@ -866,6 +940,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
               [{ ops: EXAMPLE_NARROWED, decisions: [] }, false, false],
               [{ ops: EXAMPLE_NARROWED, decisions: [] }, false, true],
               [{ ops: EXAMPLE_REFRESHED, decisions: [] }, true, false],
+              [{ ops: EXAMPLE_REWRITTEN, decisions: [] }, true, false],
             ]
           : [
               [{ ops: EXAMPLE_EVENT, decisions: [] }, true, false],

@@ -21,6 +21,7 @@ import {
   createSlotEvents,
   queryInTx,
   resolveInTx,
+  revertEntriesOf,
   writeInTx,
 } from "@fluxvita/saveslot-kernel/testing";
 import { evaluateLog } from "@fluxvita/saveslot-reference";
@@ -463,13 +464,15 @@ describe("an awaiting item kept in the log", () => {
           .filter(([p]) => p.startsWith("impact/"))
           .map(([, b]) => b as { kind: string; op?: number });
       // A later write in the stretch: undoing the restore would hide it too. It changes no value
-      // on existence, so it reaches nothing; the impact, judged again, now names it as well.
+      // on existence, so it reaches nothing; the impact, judged again, now names it. It names it
+      // alone: w's value there was overwritten by x, so no result a reader sees comes from w, and
+      // confirming changes none of w's (the impact lists the writes whose result changes).
       const x = await op({ intent: "update", ...span, set: { c: "later still" } }, verAt(w), OTHER);
       const [changed] = await ofType(x.seq, "item.refreshed");
       expect(changed?.blocks["target"]).toMatchObject({ item, cause: "entries_changed" });
       expect(
         (await impactOf(x.seq)).filter((b) => b.kind === "reverted_write").map((b) => b.op),
-      ).toEqual([w.seq, x.seq]);
+      ).toEqual([x.seq]);
       // Another request, outside the interval: not reached. Then one revoking inside it: reached.
       const outside = await op(
         { intent: "revoke", valid_from: "2026-11-10", valid_to: "2026-11-12" },
@@ -3269,6 +3272,53 @@ describe("a revert proposal awaiting confirmation: what it shows is what confirm
           reason: "superseded",
         });
       }
+    },
+    T,
+  );
+
+  it(
+    "a row revoked again under an awaiting undo of a restore: refused as an undo, nothing named, nothing a reader sees changes",
+    async () => {
+      // The undo awaits, taking back a restore with include_later; another principal then revokes
+      // the row. Judged again now (numbered after every event of the row), the undo is refused:
+      // it would write a revoke on a revoked row. Its confirmation still lists the restore it takes
+      // back and writes a revoke back, over a row revoked before and after: the impact names
+      // nothing, and the item stays open (it has a write-back).
+      const putRow = (op: Record<string, unknown>, actor = USER) =>
+        send({ sv: 1, ops: [{ table: "rows", ...op }] }, { actor });
+      const e = await putRow({ intent: "insert", set: { b: "b0", c: "c0" } });
+      const row = e.ops[0]?.target.row as string;
+      const r1 = await putRow({ row, intent: "revoke", ver: verAt(e) }, OTHER);
+      const u1 = await putRow(
+        { row, revert: { undo: r1.seq, include_later: true }, ver: verAt(r1) },
+        OTHER,
+      );
+      let ver = verAt(u1);
+      for (const b of ["b3", "b4", "b5"])
+        ver = verAt(await putRow({ row, intent: "update", ver, set: { b } }));
+      await putRow({ row, revert: { undo: u1.seq }, ver });
+      const w = await putRow({ row, intent: "update", ver, set: { b: "b7", c: "c7" } }, OTHER);
+      const p = await putRow({ row, revert: { undo: u1.seq, include_later: true }, ver: verAt(w) });
+      const item = p.pending?.[0]?.id as string;
+      expect(p.pending?.[0]?.type).toBe("awaiting_confirmation");
+      await putRow({ row, intent: "revoke", ver: verAt(w) }, OTHER);
+      const d = await detail(item);
+      expect(d.status).toBe("open");
+      expect(d.impact?.reverted ?? []).toEqual([]);
+      const both = await s.store.write((tx) => revertEntriesOf(tx, item));
+      expect(both?.undo).toBeNull();
+      expect(both?.confirm).not.toEqual([]);
+      const revoked = async () =>
+        (
+          await s.store.read((tx) =>
+            tx.query<{ revoked: boolean }>("SELECT revoked FROM t_t1_v1 WHERE row_id = $1", [row]),
+          )
+        ).rows.map((x) => x.revoked);
+      expect(await revoked()).toEqual([true]);
+      expect(await decide({ id: item, decision: "confirm", item_ver: d.item_ver })).toMatchObject({
+        status: "resolved",
+      });
+      expect(await revoked()).toEqual([true]);
     },
     T,
   );

@@ -13,6 +13,8 @@
 import type { FieldId, FieldValue, OpNumber } from "@fluxvita/saveslot-contract-core";
 import { canonical, type Interval, type IntervalSet, meet, WHOLE } from "../time/index.ts";
 import type { ItemRef, Judgement, Unit } from "./model.ts";
+import { changedResults } from "./result.ts";
+import { undoResult } from "./revert.ts";
 import { effective, type Limit, type RowState, refKey, refOf, valueToken } from "./state.ts";
 import { overwrittenBy } from "./write.ts";
 
@@ -334,15 +336,19 @@ export function awaitingImpact(state: RowState, j: Judgement): ImpactEntry[] {
       });
     }
   }
-  const later = new Map<OpNumber, ItemRef[]>();
-  for (const op of j.takesBack) later.set(op, later.get(op) ?? []);
-  for (const r of j.hides) {
-    const x = state.items.find((y) => refKey(refOf(y)) === refKey(r));
-    if (x !== undefined) later.set(x.op, [...(later.get(x.op) ?? []), r]);
-  }
+  // The later writes whose result a reader would see change once the revert takes effect, in the
+  // undo's record or not (04-write-and-read «撤回某次写入（undo）»): taken back, hidden, or given
+  // up as the write-backs cover them. A write whose contribution is taken back while the result
+  // stays the same is not listed; its items are the ones whose result changes.
+  // What confirming does is the undo's own write-backs: an item refreshed judges the undo again
+  // now (`awaitingImpactNow`), and that lists the revert as the confirmation would, with the same
+  // write-backs (both list it as of the state now, numbered after every event of the row).
+  const rec = j.record;
+  if (rec.kind !== "undo" || rec.revert.before === undefined) return out;
+  const r = undoResult(state, rec, { entries: rec.revert.entries, before: rec.revert.before });
+  const later = changedResults(state, r.at, r.after, r.afterAt, rec.revert.before);
   for (const [op, deps] of [...later].sort(([a], [b]) => a - b)) {
-    const own = state.items.filter((x) => x.op === op && effective(x.status)).map(refOf);
-    out.push({ kind: "reverted_write", op, deps: uniq([...deps, ...own]) });
+    out.push({ kind: "reverted_write", op, deps: uniq(deps) });
   }
   return out;
 }

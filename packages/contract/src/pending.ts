@@ -147,8 +147,12 @@ export interface AwaitingImpact {
   overwritten?: Array<{ field: FieldName; valid?: Interval; value: Value; seq: Seq; actor: Actor }>;
   /** Gaps without a value that would be filled; `valid` on state tables only. */
   filled_gaps?: Array<{ valid?: Interval; revoked_by?: Seq }>;
-  /** Later writes that would be reverted. */
-  reverted?: Array<{ seq: Seq; actor: Actor; fields: FieldName[] }>;
+  /**
+   * The later writes whose result a reader would see change once confirmed, in the revert's record
+   * or not (03-data-model/04-write-and-read «撤回某次写入（undo）»): each with the fields whose
+   * result changes, "*" for a revoke. An entry says at least part of that write's result changes.
+   */
+  reverted?: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;
   /** Rows still referencing the row. */
   referrers?: TargetRef[];
 }
@@ -217,7 +221,7 @@ export interface ConflictDetail extends ItemBase {
   /** What `take_previous` returns to: the merge base. */
   previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
   /** Writes `take_previous` would revert. */
-  reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: FieldName[] }>;
+  reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;
   /** Keyed by candidate index: what a high-impact candidate would overwrite. */
   candidate_impact?: Record<string, AwaitingImpact>;
 }

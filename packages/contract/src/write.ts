@@ -336,7 +336,7 @@ export interface ResolveResult extends CommonResult {
    * `take_previous`: the writes it took back or hid, as the item's details listed them at the version
    * the decision bound (`ConflictDetail.reverted_by_previous`).
    */
-  reverted_by_previous?: Array<{ seq: Seq; actor: Actor; fields: FieldName[] }>;
+  reverted_by_previous?: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;
   /** schema_change `confirm`. */
   schema?: { switched: boolean; sv?: Sv; migration?: MigrationStatus };
   /** deletion `cancel`. */

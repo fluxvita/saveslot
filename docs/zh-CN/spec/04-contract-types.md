@@ -1035,7 +1035,7 @@ interface AwaitingImpact {
   /** 这两项的 valid 只在状态类表上给：事件类表与无时间表的行没有区间。 */
   overwritten?: Array<{ field: FieldName; valid?: Interval; value: Value; seq: Seq; actor: Actor }>;  // 会被覆盖的段
   filled_gaps?: Array<{ valid?: Interval; revoked_by?: Seq }>;                                         // 会被填掉的无值区间（只列在这里）
-  reverted?: Array<{ seq: Seq; actor: Actor; fields: FieldName[] }>;                                   // 会被回掉的后来写入
+  reverted?: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;                        // 确认后读到的结果会变的后来写入，不论在不在回退记录里（write-and-read「撤回某次写入」）；fields：结果会变的字段，"*" 是撤销；一条表示至少有一部分会变
   referrers?: TargetRef[];                                                                             // 仍引用该行的行
 }
 
@@ -1069,7 +1069,7 @@ interface ConflictDetail extends ItemBase {
   previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
   /** take_previous 会回掉的写入：合并基之后在这个冲突单元上生效过的全部写入；以及单元外、合并基之后在事项区间里给出值、
    *  会随 take_previous 让这一段回到无值而失去值的写入（合并基处这一段是无值时，见「时间 · 高影响写入」④ 的第三种成因）。 */
-  reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: FieldName[] }>;   // fields：这次写入会失去值的字段（"*" 是存在），与 AwaitingImpact.reverted 同形
+  reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;   // fields：这次写入会失去值的字段（"*" 是存在），与 AwaitingImpact.reverted 同形
   /** 候选若生效会属高影响时：会被覆盖的内容。take_candidate 就是对它的确认。 */
   candidate_impact?: Record<string /* 候选的下标 */, AwaitingImpact>;
 }

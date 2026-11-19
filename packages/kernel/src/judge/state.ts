@@ -342,7 +342,14 @@ export class RowState {
     return this.table.fields.some((f) => this.fieldState(f, seg, at).kind === "value");
   }
 
-  /** A field's value as the judgements compare it: "no value" wherever the entity has none. */
+  /**
+   * A field's value as the judgements compare it, which is also its result as a reader sees it
+   * (the impact compares these, judge/result.ts). State tables: the value, or "no value" wherever
+   * the entity has none, whether a revoke or a gap leaves it so (05-time «状态类表上的撤销»: a
+   * revoke is a write of "no value here", with no revoked state of its own; reads give the two the
+   * same), so a revoke on a state table is never a result of its own. Event and timeless tables:
+   * the value, or "hole" where the row is revoked, a state of the row.
+   */
   token(f: FieldId, seg: Interval, at: Limit): string {
     if (this.isState && !this.hasValue(seg, at)) return NO_VALUE;
     const s = this.fieldState(f, seg, at);
