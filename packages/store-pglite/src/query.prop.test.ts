@@ -25,7 +25,7 @@ import {
   view,
 } from "@fluxvita/saveslot-kernel";
 import {
-  asInThisPhase,
+  asWritten,
   COMPILED_V1,
   createSlotEvents,
   type Decision,
@@ -400,7 +400,7 @@ describe.each([
         async ({ ops, decisions: some }, more, reads) => {
           seen.samples++;
           thisSample = new Set();
-          const { steps } = judged(schema, ops.map(asInThisPhase), [...some, ...more]);
+          const { steps } = judged(schema, ops.map(asWritten), [...some, ...more]);
           const perStep = eventsOfSteps(
             {
               table: (isState ? "t2" : "t1") as never,

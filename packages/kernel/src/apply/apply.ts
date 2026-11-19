@@ -23,6 +23,7 @@
 // deletion.
 
 import {
+  type BizPoint,
   type CompiledBaseTable,
   type CompiledSchema,
   canonicalize,
@@ -32,9 +33,11 @@ import {
   type Seq,
 } from "@fluxvita/saveslot-contract-core";
 import type { BlockState, PreparedOperation } from "../log/index.ts";
+import { readEvents } from "../log/log.ts";
 import { type DerivedRow, evaluateRule, evaluating, RuleEvaluationError } from "../rules/index.ts";
 import { isKnownRulesetVersion } from "../rules/version.ts";
 import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
+import type { ValidParam } from "../time/index.ts";
 import { confirmationHash, entryChecksums } from "./confirmation.ts";
 import { canonicalKeyFault, type DerivedInput, planDerived } from "./derived.ts";
 import { type ItemInput, planItem } from "./items.ts";
@@ -599,6 +602,7 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
     "SELECT table_id FROM row_origins WHERE row_id = $1",
     [rowId],
   );
+  const written = await writtenInterval(tx, ev, p, table);
   return {
     table,
     items,
@@ -606,8 +610,60 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
     count: Number(count.rows[0]?.n ?? 0),
     sv,
     rowTable: origin.rows[0]?.table_id ?? null,
+    ...(written !== undefined ? { written } : {}),
   };
 }
+
+/**
+ * A caller's write or revoke on a state table (05-time «佐证端点»): its interval as written (the
+ * head's `ops/<i>/valid`) and "now" (its `ctx`, `today` or `now` by the table's granularity), as
+ * judge reads them. Undefined for any other `write.base`: a revert's write-backs (it has
+ * `revert`), a decision's write (its head is no `write.head`), or a table without time; and when
+ * the block is not there to read: no explicit ends then, never "now" in their place.
+ *
+ * The head is read and parsed as apply reads any event: a block present, or removed by a
+ * tombstone. A caller's write on a state table always has the block (09 §5.7; the write pipeline
+ * checks it when encoding); it is not there when a deletion removed it, or, on import, when it is
+ * a pending deletion's placeholder. A revoke without bounds has none, and is read as judge reads it.
+ */
+async function writtenInterval(
+  tx: ReadTx,
+  ev: ApplyEvent,
+  p: Parsed,
+  table: CompiledBaseTable,
+): Promise<{ valid: ValidParam | undefined; now: BizPoint } | undefined> {
+  // The conditions are judge's (judge/state.ts, the items of a record: explicit ends only for a
+  // write or a revoke). In this version they decide nothing: only a caller's write gives a
+  // corroboration (a revert's write-backs and a decision's items never are one), so mutating
+  // them changes no row; they are kept so that both read the log the same way.
+  if (table.time.type !== "state" || p.present["revert"] !== undefined) return undefined;
+  const index = (p.present["target"] as Obj)["op_index"];
+  if (typeof index !== "number") return undefined;
+  const op = Number(ev.header["op"]);
+  const stored = (await readEvents(tx, op, op))[0];
+  if (stored === undefined || stored.header["type"] !== "write.head") return undefined;
+  const head = parsed(stored);
+  const ctx = head.present["ctx"] as { now: string; today: string };
+  const path = `ops/${index}/valid`;
+  const block = stored.blocks.get(path);
+  if (block === undefined) {
+    const t = head.present[`ops/${index}/target`] as Obj | undefined;
+    return t?.["intent"] === "revoke" ? { valid: undefined, now: nowOf(table, ctx) } : undefined;
+  }
+  if (block.state !== "present") return undefined;
+  const raw = block.value as { from: { mode: string }; to: { mode: string } };
+  // `corrected_span` is written with both ends' mode so (09 §5.7).
+  const valid =
+    raw.from.mode === "corrected_span"
+      ? ("corrected_span" as const)
+      : (raw as unknown as Exclude<ValidParam, "corrected_span">);
+  return { valid, now: nowOf(table, ctx) };
+}
+
+const nowOf = (table: CompiledBaseTable, ctx: { now: string; today: string }) =>
+  ((table.time as { granularity?: string }).granularity === "date"
+    ? ctx.today
+    : ctx.now) as BizPoint;
 
 // --- writing -----------------------------------------------------------------------------------
 

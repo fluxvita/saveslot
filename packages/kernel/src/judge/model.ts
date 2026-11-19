@@ -16,7 +16,7 @@ import type {
   OpNumber,
   Seq,
 } from "@fluxvita/saveslot-contract-core";
-import type { IntervalSet } from "../time/index.ts";
+import type { FromParam, IntervalSet, ToParam, ValidParam } from "../time/index.ts";
 
 /** A field, or the row's or entity's existence. */
 export type Target = FieldId | "existence";
@@ -56,9 +56,7 @@ export interface TableShape {
 // ---------------------------------------------------------------------------------------------
 // Raw parameters (09 §5.7 `ops/<i>/valid`; 05-time «写状态：参数与默认»).
 
-export type { FromParam, ToParam, ValidParam } from "../request/types.ts";
-
-import type { FromParam, ToParam, ValidParam } from "../request/types.ts";
+export type { FromParam, ToParam, ValidParam } from "../time/index.ts";
 
 /** The conflict unit of an item or a pending item: a group of fields, or existence. */
 export type Unit = { readonly fields: readonly FieldId[] } | "existence";

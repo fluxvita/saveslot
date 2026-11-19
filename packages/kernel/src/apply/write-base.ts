@@ -14,6 +14,7 @@
 // revert registers only when its write takes effect (not while awaiting confirmation).
 
 import {
+  type BizPoint,
   type CompiledBaseTable,
   canonicalize,
   type FieldId,
@@ -22,7 +23,15 @@ import {
   type Seq,
 } from "@fluxvita/saveslot-contract-core";
 import type { SqlValue } from "../store/ports.ts";
-import { type Interval, type IntervalSet, interval, WHOLE } from "../time/index.ts";
+import { givenEnds } from "../time/given-ends.ts";
+import {
+  bounds,
+  type Interval,
+  type IntervalSet,
+  interval,
+  type ValidParam,
+  WHOLE,
+} from "../time/index.ts";
 import { ApplyError, type Change } from "./model.ts";
 import {
   type Cell,
@@ -60,6 +69,13 @@ export interface WriteBaseInput {
   readonly sv: number;
   /** The table the row or entity was created in (`row_origins`), if it was. */
   readonly rowTable: string | null;
+  /**
+   * A caller's write or revoke on a state table: its interval as written (the head's
+   * `ops/<i>/valid`, absent when not given) and "now" (the head's `ctx`, `today` or `now` by the
+   * table's granularity), for its corroborations' ends. Absent for any other write: a decision's,
+   * a revert's write-backs have no explicit ends.
+   */
+  readonly written?: { readonly valid: ValidParam | undefined; readonly now: BizPoint };
 }
 
 /** What settle needs of a compiled base table. */
@@ -113,15 +129,6 @@ function itemsOf(seq: Seq, present: Obj, shape: SettleTable): SettleItem[] {
       if (v === undefined) throw inconsistent(seq, `${path} has no span/${target}/${k}`);
       return spanOf(v);
     };
-    if (status === "corroborated" && isState) {
-      // Its explicit endpoints (`corroboration_ends`, 02-architecture §8) come from the head
-      // event's interval; no write produces a corroboration in this phase.
-      throw new ApplyError(
-        "not_implemented",
-        seq,
-        `${path}: corroborations on a state table are not applied yet`,
-      );
-    }
     if (f !== null) {
       const content: SettleContent =
         "value" in b
@@ -153,6 +160,36 @@ function itemsOf(seq: Seq, present: Obj, shape: SettleTable): SettleItem[] {
   return items;
 }
 
+/**
+ * A corroboration's explicit endpoints (05-time «佐证端点»): the start of its operation's interval,
+ * given or "now", and its end only when given, those of them that bound the item's interval; a
+ * default end never. A function of the item's interval, the interval as written and "now" alone,
+ * so that a deletion restating the item can work it out again from the restated item.
+ */
+export function corroborationEnds(
+  valid: IntervalSet,
+  written: ValidParam | undefined,
+  now: BizPoint,
+): BizPoint[] {
+  return givenEnds(written, now).filter((p) => bounds(valid, p));
+}
+
+/**
+ * The `corroboration_ends` of a source table row (02-architecture §8 `base_sources`): written once
+ * for a corroboration on a state table (an empty list where its write gave no explicit end), and
+ * left as it is by later events (whether an end still counts is judged when an interval is
+ * resolved). Null for any other item.
+ */
+function corroborationEndsOf(
+  x: SettleItem,
+  isState: boolean,
+  written: WriteBaseInput["written"],
+): string | null {
+  if (!isState || x.status !== "corroborated") return null;
+  const ends = written === undefined ? [] : corroborationEnds(x.valid, written.valid, written.now);
+  return canonicalize(ends as JsonValue);
+}
+
 const sameKey = (a: ItemKey, b: ItemKey) =>
   a.event === b.event && a.target === b.target && a.k === b.k;
 
@@ -170,7 +207,13 @@ const regsJson = (rs: readonly Registration[]) =>
   );
 
 /** The source table rows of a new item: one per source; one without a source otherwise. */
-function sourceRows(seq: Seq, rowId: string, x: SettleItem, present: Obj): SqlValue[][] {
+function sourceRows(
+  seq: Seq,
+  rowId: string,
+  x: SettleItem,
+  present: Obj,
+  corroborationEnds: string | null,
+): SqlValue[][] {
   const status = x.status;
   const { from, to } = ends(x.valid);
   const common = (
@@ -193,6 +236,7 @@ function sourceRows(seq: Seq, rowId: string, x: SettleItem, present: Obj): SqlVa
     from,
     to,
     status === "corroborated",
+    corroborationEnds,
     "[]",
   ];
   const sources = (x.target === "existence" ? undefined : present[`sources/${x.target}/${x.k}`]) as
@@ -236,6 +280,7 @@ const BASE_SOURCE_COLUMNS = [
   "valid_from",
   "valid_to",
   "corroborated",
+  "corroboration_ends",
   "reverted",
 ];
 
@@ -333,7 +378,9 @@ export function planWriteBase(seq: Seq, op: Seq, present: Obj, input: WriteBaseI
       kind: "rows_insert",
       table: "base_sources",
       columns: BASE_SOURCE_COLUMNS,
-      rows: mine.flatMap((x) => sourceRows(seq, rowId, x, present)),
+      rows: mine.flatMap((x) =>
+        sourceRows(seq, rowId, x, present, corroborationEndsOf(x, isState, input.written)),
+      ),
     });
   }
   // The first creation (09 §5.7 `target.created`): the latest one given wins.

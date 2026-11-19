@@ -2,7 +2,6 @@
 // `write`, §7 warnings, §9 errors; 03-data-model/04-write-and-read.md «判定顺序» step 1).
 
 import type {
-  BizPoint,
   CompiledSchema,
   DateStr,
   EntityId,
@@ -20,15 +19,10 @@ import type {
 
 // --- business time parameters (05-time «写状态：参数与默认»; the judge takes the same shapes) -------
 
-export type FromParam =
-  | { readonly mode: "given"; readonly value: BizPoint }
-  | { readonly mode: "now" };
-export type ToParam =
-  | { readonly mode: "given"; readonly value: BizPoint }
-  | { readonly mode: "open" }
-  | { readonly mode: "next_change" };
-/** `corrected_span`: intent correct with neither end given. */
-export type ValidParam = { readonly from: FromParam; readonly to: ToParam } | "corrected_span";
+// The parameters themselves are time's: the request takes them, judge and apply read them.
+import type { FromParam, ToParam, ValidParam } from "../time/index.ts";
+
+export type { FromParam, ToParam, ValidParam };
 
 // --- input ------------------------------------------------------------------------------------
 

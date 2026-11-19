@@ -29,8 +29,8 @@ export {
   type VisibleSlot,
   visibleSlots,
 } from "./read/index.ts";
-// The business time parameter types (FromParam, ToParam, ValidParam) are request's; judge takes the
-// same ones and re-exports them, so they come out through judge.
+// The business time parameter types (FromParam, ToParam, ValidParam) are time's (request and judge
+// re-export them); they come out through time.
 export {
   type ChangedFields,
   checkSvCompatibility,

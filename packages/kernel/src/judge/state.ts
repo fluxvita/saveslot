@@ -13,6 +13,7 @@ import {
   type OpNumber,
   type Seq,
 } from "@fluxvita/saveslot-contract-core";
+import { givenEnds } from "../time/given-ends.ts";
 import {
   bounds,
   canonical,
@@ -34,7 +35,6 @@ import type {
   TableShape,
   Target,
   Unit,
-  ValidParam,
 } from "./model.ts";
 
 /** An item with what the judgements read from the raw parameters of its write. */
@@ -92,14 +92,6 @@ export type FieldState =
   | { readonly kind: "value"; readonly value: FieldValue; readonly by: Item }
   | { readonly kind: "none" }
   | { readonly kind: "hole"; readonly by: Item };
-
-/** The start and the explicit end of raw parameters, as resolved with "now". */
-export function givenEnds(valid: ValidParam | undefined, now: BizPoint): BizPoint[] {
-  if (valid === undefined) return [now];
-  if (valid === "corrected_span") return [];
-  const from = valid.from.mode === "given" ? valid.from.value : now;
-  return valid.to.mode === "given" ? [from, valid.to.value] : [from];
-}
 
 function itemsOf(records: readonly OpRecord[]): Item[] {
   const out: Item[] = [];

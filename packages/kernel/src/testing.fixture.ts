@@ -22,9 +22,11 @@ export { type QueryInput, queryInTx } from "./read/query.ts";
 export * from "./store/anchor-conformance.fixture.ts";
 export {
   asInThisPhase,
+  asWritten,
   eventsOfRequest,
   eventsOfSteps,
   FIRST_OP,
+  judgeStateFromLog,
   type LoggedEvent,
 } from "./write/log.fixture.ts";
 export { type WriteInput, writeInTx } from "./write/pipeline.ts";

@@ -328,6 +328,9 @@ export function encodeOp(
   }
   if ((input.kind === "write" || input.kind === "revoke") && input.valid !== undefined) {
     head[`ops/${i}/valid`] = validOut(input.valid);
+  } else if (input.kind === "write" && ctx.shape.kind === "state") {
+    // A caller's write on a state table always has it (09 §5.7): apply reads its explicit ends.
+    throw inconsistent(`a write to a state table has ops/${i}/valid`);
   }
   if (input.kind === "undo") {
     head[`ops/${i}/revert`] = { undo_op: input.target, include_later: input.includeLater === true };

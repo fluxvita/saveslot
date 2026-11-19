@@ -10,7 +10,7 @@ import { interval } from "../time/index.ts";
 import { ApplyError, type ApplyEvent, eventsOf, planEvent } from "./apply.ts";
 import type { SettleItem } from "./settle.ts";
 import { SLOT } from "./slot.fixture.ts";
-import type { OpenCell, WriteBaseInput } from "./write-base.ts";
+import { corroborationEnds, type OpenCell, type WriteBaseInput } from "./write-base.ts";
 
 const USER = `u_${"1".repeat(26)}` as const;
 const ENTITY = `e_${"7".repeat(26)}`;
@@ -165,6 +165,7 @@ describe("the plan of a write.base", () => {
           d("11-02"),
           d("11-10"),
           false,
+          null,
           "[]",
         ],
         [
@@ -183,6 +184,7 @@ describe("the plan of a write.base", () => {
           d("11-10"),
           d("11-20"),
           false,
+          null,
           "[]",
         ],
       ],
@@ -465,12 +467,69 @@ describe("a write.base that does not fit the row stops apply, decided in the pla
     );
   });
 
-  it("a corroboration on a state table is not applied yet", () => {
-    const ev = edit((b) =>
-      b.set("fields/f2/0", present({ status: "corroborated", value: "5000" })),
+  it("a corroboration on a state table: its explicit ends that bound its interval, written once", () => {
+    // A caller's write (no revert) corroborating 5000 over [11-02, 11-10), applied 4000 over
+    // [11-10, 11-20). The operation's explicit ends are 11-02 and 11-15.
+    const ev = edit((b) => {
+      b.delete("revert");
+      b.set("fields/f2/0", present({ status: "corroborated", value: "5000" }));
+    });
+    const rowsOf = (input: WriteBaseInput) => {
+      const insert = planEvent(ev, { writeBase: input }).find((c) => c.kind === "rows_insert") as {
+        columns: readonly string[];
+        rows: readonly (readonly unknown[])[];
+      };
+      const at = (name: string) => insert.columns.indexOf(name);
+      return insert.rows.map((r) => ({
+        field: r[at("field_id")],
+        k: r[at("k")],
+        corroborated: r[at("corroborated")],
+        ends: r[at("corroboration_ends")],
+      }));
+    };
+    const given = (from: string, to: string) => ({
+      valid: {
+        from: { mode: "given" as const, value: d(from) },
+        to: { mode: "given" as const, value: d(to) },
+      },
+      now: d("11-10"),
+    });
+    // Only an end that bounds the item counts: 11-02 does, 11-15 is inside no item's ends.
+    expect(rowsOf({ ...INPUT, written: given("11-02", "11-15") })).toEqual([
+      { field: "f2", k: 0, corroborated: true, ends: '["2026-11-02"]' },
+      { field: "f2", k: 1, corroborated: false, ends: null },
+    ]);
+    // Both ends bounding it: both.
+    expect(rowsOf({ ...INPUT, written: given("11-02", "11-10") })[0]?.ends).toBe(
+      '["2026-11-02","2026-11-10"]',
     );
-    expect(why(ev)).toBe(
-      "not_implemented: fields/f2/0: corroborations on a state table are not applied yet",
-    );
+    // No explicit end given to this write (a decision's, a revert's): none.
+    expect(rowsOf(INPUT)[0]?.ends).toBe("[]");
+  });
+});
+
+describe("a corroboration's explicit endpoints (05-time «佐证端点»)", () => {
+  const NOW_DAY = d("11-05");
+  const given = { mode: "given" as const, value: d("11-05") };
+  it("the start given or now, the end only given; those that bound the item", () => {
+    // No interval given: from now, to the next change. The start is now; no explicit end.
+    expect(corroborationEnds(iv("11-05"), undefined, NOW_DAY)).toEqual([NOW_DAY]);
+    // A start given, a default end: the start only.
+    expect(
+      corroborationEnds(
+        iv("11-05", "11-20"),
+        { from: given, to: { mode: "next_change" } },
+        NOW_DAY,
+      ),
+    ).toEqual([d("11-05")]);
+    // Both given: both, where they bound the item; an end inside it does not.
+    const both = { from: given, to: { mode: "given" as const, value: d("11-20") } };
+    expect(corroborationEnds(iv("11-05", "11-20"), both, NOW_DAY)).toEqual([
+      d("11-05"),
+      d("11-20"),
+    ]);
+    expect(corroborationEnds(iv("11-10", "11-20"), both, NOW_DAY)).toEqual([d("11-20")]);
+    // A correction's span is resolved, not given: no explicit end.
+    expect(corroborationEnds(iv("11-05", "11-20"), "corrected_span", NOW_DAY)).toEqual([]);
   });
 });

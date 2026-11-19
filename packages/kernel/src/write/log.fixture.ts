@@ -5,10 +5,14 @@
 
 import type { FieldId, ItemId, RawFieldValue } from "@fluxvita/saveslot-contract-core";
 import type { Op } from "@fluxvita/saveslot-reference";
+import { stateFromRecord } from "../judge/judge.ts";
 import type { JudgeInput, Judgement, Unit } from "../judge/model.ts";
 import type { Judged } from "../judge/scenarios.fixture.ts";
+import type { RowState } from "../judge/state.ts";
+import type { ReadTx } from "../store/ports.ts";
 import { canonical, type IntervalSet, meet, WHOLE } from "../time/index.ts";
-import { encodeOp, encodeResolution, type RowContext } from "./record.ts";
+import { rowEvents } from "./reads.ts";
+import { decodeRecords, encodeOp, encodeResolution, type RowContext } from "./record.ts";
 
 /** The operation of the scenarios' first write: the insert that makes the row or entity. */
 export const FIRST_OP = 10;
@@ -43,6 +47,17 @@ export function asInThisPhase(o: Op, i: number): Op {
     return { ...rest, fields };
   }
   return { ...o, fields };
+}
+
+/**
+ * The ops as written, their explicit fields kept: corroborations, for the tests that apply the
+ * record mapping's events directly (the write pipeline takes `evidence_by_field` later). The
+ * first write makes the row or entity, with no `ver`.
+ */
+export function asWritten(o: Op, i: number): Op {
+  if (o.kind !== "write" || i !== 0) return o;
+  const { seen: _, ...rest } = o;
+  return rest;
 }
 
 /** A revoke over an interval records its interval's sources (`valid_sources`): all its evidence. */
@@ -240,6 +255,8 @@ export function eventsOfRequest(
   inputs: readonly JudgeInput[],
   judgements: readonly Judgement[],
   intent: "insert" | "update",
+  /** Each op's sources (evidence `seq`s); by default the op's own number. */
+  sources?: readonly number[],
 ): LoggedEvent[] {
   const head: Record<string, unknown> = {};
   const bases: LoggedEvent[] = [];
@@ -256,8 +273,8 @@ export function eventsOfRequest(
       intent,
       ...(j.created ? { created: true as const } : {}),
       sv: 1,
-      sources: [input.op],
-      ...intervalSources(input, [input.op]),
+      sources: sources ?? [input.op],
+      ...intervalSources(input, sources ?? [input.op]),
       raw: rawOf(input),
       restoreCount: 0,
       versions: { ruleset: 1, policy: 1 },
@@ -268,15 +285,17 @@ export function eventsOfRequest(
     }
   });
   const first = inputs[0] as JudgeInput;
-  const now = "now" in first ? (first.now as string) : "2026-11-05";
+  // A state table by the instant gives "now" as an instant; by the day, or no time, a date.
+  const given = "now" in first ? (first.now as string) : "2026-11-05";
+  const now = given.includes("T") ? given : `${given}T00:00:00.000Z`;
   return [
     {
       type: "write.head",
       seq: first.op,
       blocks: {
         ctx: {
-          now: `${now}T00:00:00.000Z`,
-          today: now,
+          now,
+          today: now.slice(0, 10),
           ruleset_version: 1,
           policy_version: 1,
           literal_checker: "literal@1",
@@ -287,4 +306,13 @@ export function eventsOfRequest(
     },
     ...bases,
   ];
+}
+
+/**
+ * The row's state as judge rebuilds it from the stored log: the write pipeline's reading
+ * (`rowEvents`, `decodeRecords`), not apply's. Tests hold what apply wrote against it.
+ */
+export async function judgeStateFromLog(tx: ReadTx, ctx: RowContext): Promise<RowState> {
+  const id = "entity" in ctx.target ? ctx.target.entity : ctx.target.row;
+  return stateFromRecord(ctx.shape, decodeRecords(ctx, await rowEvents(tx, ctx.table, id)));
 }

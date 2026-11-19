@@ -5,9 +5,10 @@
 // what judge's view and the reference evaluator give (the values, the items giving them, the gaps,
 // existence); the business table's field values must be the cells' (an event or timeless table's
 // row also when revoked); the source table's "reverted" registrations must be judge's, item by
-// item; and `ver` must move exactly when the version table changed. At the end the version table
-// read as of every earlier operation gives that step's state, and replaying the whole log into an
-// empty storage gives the same tables (K12).
+// item; `ver` must move exactly when the version table changed; and each corroboration's ends in
+// the source table must be judge's, judge reading the log as the write pipeline does. At the end
+// the version table read as of every earlier operation gives that step's state, and replaying the
+// whole log into an empty storage gives the same tables (K12).
 
 import {
   appendOperation,
@@ -23,12 +24,13 @@ import {
   view,
 } from "@fluxvita/saveslot-kernel";
 import {
-  asInThisPhase,
+  asWritten,
   COMPILED_V1,
   createSlotEvents,
   type Decision,
   eventsOfSteps,
   judged,
+  judgeStateFromLog,
   SLOT,
   scenario,
   shape,
@@ -531,6 +533,29 @@ function fixed(isState: boolean): [string, Op[]][] {
     ["take_previous", [...conflict, resolve("take_previous")]],
     ["confirm", [...awaiting, { kind: "confirm", op: 43, event: 44, target: 41 } as Op]],
     ["reject", [...awaiting, { kind: "reject", op: 43, event: 44, target: 41 } as Op]],
+    // The same value restated with evidence pointed at, from the version it saw: a corroboration,
+    // with both ends given on the state table.
+    [
+      "corroborated",
+      [
+        write(10, "1"),
+        {
+          kind: "write",
+          op: 20,
+          event: 21,
+          seen: 10,
+          ...(isState
+            ? {
+                valid: {
+                  from: { mode: "given", value: "2026-11-01" },
+                  to: { mode: "given", value: "2026-11-05" },
+                },
+              }
+            : {}),
+          fields: { f2: { value: "1", sources: ["S20"], explicit: true } },
+        } as Op,
+      ],
+    ],
   ];
 }
 
@@ -555,8 +580,12 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
   const hits: Record<string, number> = {};
 
   /** One judged scenario through storage, every check below; counts what it reached in `hits`. */
-  const checkSample = async (ops: readonly Op[], decisions: readonly Decision[]) => {
-    const { steps } = judged(schema, ops.map(asInThisPhase), decisions);
+  const checkSample = async (
+    ops: readonly Op[],
+    decisions: readonly Decision[],
+    replayAlways = false,
+  ) => {
+    const { steps } = judged(schema, ops.map(asWritten), decisions);
     const ctx = {
       table: (isState ? "t2" : "t1") as never,
       target: isState ? { entity: ENTITY as never } : { row: ROW as never },
@@ -717,6 +746,42 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         if (state.regs.size > 0) sample.add("registered");
         seen.steps++;
       }
+      // The corroboration ends apply wrote (02 §8 `base_sources.corroboration_ends`) are judge's
+      // `explicitEnds` of the item, judge reading the same log as the write pipeline does (not
+      // apply's reading): on a state table a corroboration's start and explicit end that bound
+      // it, the same on every source's row; null for any other item, and on a table without time.
+      {
+        const id = isState ? ENTITY : ROW;
+        const fromLog = await store.read((tx) => judgeStateFromLog(tx, ctx));
+        const want = new Map(
+          fromLog.items.map((x) => [
+            `${x.event}/${x.target}/${x.k}`,
+            isState && x.status === "corroborated" ? JSON.stringify(x.explicitEnds) : null,
+          ]),
+        );
+        const rows = await store.read((tx) =>
+          tx.query<{ event_seq: unknown; field_id: string; k: number; ends: string | null }>(
+            `SELECT event_seq, field_id, k, corroboration_ends AS ends FROM base_sources
+             WHERE row_id = $1 ORDER BY event_seq, field_id COLLATE "C", k, n`,
+            [id],
+          ),
+        );
+        const stored = new Set<string>();
+        for (const r of rows.rows) {
+          const key = `${Number(r.event_seq)}/${r.field_id}/${r.k}`;
+          stored.add(key);
+          expect({ key, judged: want.has(key), ends: r.ends }).toEqual({
+            key,
+            judged: true,
+            ends: want.get(key),
+          });
+        }
+        for (const x of fromLog.items.filter((y) => y.status === "corroborated")) {
+          expect(stored).toContain(`${x.event}/${x.target}/${x.k}`);
+          sample.add("corroborated");
+          if (isState && x.explicitEnds.length > 0) sample.add("corroboration ends");
+        }
+      }
       for (const h of sample) hits[h] = (hits[h] ?? 0) + 1;
       // The version table as of every earlier operation.
       for (const s of steps) {
@@ -730,7 +795,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       }
       // K12: replaying the whole log into an empty storage gives the same tables (every fourth
       // sample: the replay costs as much as the sample, and checks the same apply each time).
-      if (seen.samples % 4 === 1) {
+      if (replayAlways || seen.samples % 4 === 1) {
         expect(await replayed(store, replica)).toEqual(await store.read(everything));
         seen.replayed++;
       }
@@ -775,10 +840,10 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     },
   );
 
-  it("each kind of decision reaches storage: one fixed scenario each", async () => {
+  it("each kind of decision reaches storage: one fixed scenario each, each replayed", async () => {
     for (const [kind, ops] of fixed(isState)) {
       const before = hits[kind] ?? 0;
-      await checkSample(ops, []);
+      await checkSample(ops, [], true);
       expect({ kind, reached: (hits[kind] ?? 0) > before }).toEqual({ kind, reached: true });
     }
   });
