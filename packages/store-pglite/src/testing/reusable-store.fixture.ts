@@ -7,7 +7,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { KERNEL_TABLES, type ReadTx } from "@fluxvita/saveslot-kernel";
+import { KERNEL_TABLES, type ReadTx, type TenantStore } from "@fluxvita/saveslot-kernel";
 import type { PgliteTenantStore } from "../backend.ts";
 import { testBackend } from "./test-backend.fixture.ts";
 
@@ -27,21 +27,21 @@ export async function snapshot(tx: ReadTx): Promise<Record<string, string[]>> {
   return out;
 }
 
-export interface ReusableStore {
-  readonly store: PgliteTenantStore;
+/** A store that can be emptied back to the state it was in when this was made of it. */
+export interface Reusable<S extends TenantStore> {
+  readonly store: S;
   /** Empties the store back to the state it was opened in. */
   reset(): Promise<void>;
   /** The state it was opened in (every table's rows). */
   readonly blank: Record<string, string[]>;
+}
+
+export interface ReusableStore extends Reusable<PgliteTenantStore> {
   close(): Promise<void>;
 }
 
-export async function openReusable(prefix: string): Promise<ReusableStore> {
-  const root = mkdtempSync(join(tmpdir(), prefix));
-  const store = await testBackend().open(
-    { kind: "pglite", dir: join(root, "tenant") },
-    { create: true },
-  );
+/** Makes a store just opened reusable, on either backend; closing it stays with who opened it. */
+export async function reusable<S extends TenantStore>(store: S): Promise<Reusable<S>> {
   const meta = await store.read((tx) =>
     tx.query<{ key: string; value: string }>("SELECT key, value FROM meta"),
   );
@@ -65,6 +65,17 @@ export async function openReusable(prefix: string): Promise<ReusableStore> {
           await tx.query("INSERT INTO meta (key, value) VALUES ($1, $2)", [r.key, r.value]);
         }
       }),
+  };
+}
+
+export async function openReusable(prefix: string): Promise<ReusableStore> {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  const store = await testBackend().open(
+    { kind: "pglite", dir: join(root, "tenant") },
+    { create: true },
+  );
+  return {
+    ...(await reusable(store)),
     close: async () => {
       await store.close();
       rmSync(root, { recursive: true, force: true });
