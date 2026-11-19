@@ -1300,6 +1300,45 @@ describe("reads: the fallback looks at the last read first; a write flushes the 
   );
 
   it(
+    "the connect self-check's read is not a read under another task: no_read, not task_mismatch",
+    async () => {
+      // `saveslot connect` reads the catalog with the new token under this task (contract-core
+      // SELFCHECK_TASK; 06-cli §3 step 7); the agent's first write without sv has read nothing.
+      read([{ kind: "sv", target: SLOT, op: 1 }], {
+        actor: OTHER,
+        task: "saveslot-connect-selfcheck",
+      });
+      await flushReads(
+        s.store,
+        createOpsContext({
+          tenant: TENANT,
+          actor: "system",
+          trigger: "flushReads",
+          task: null,
+          visibility: { kind: "all" },
+          idempotency_key_window: 86_400_000,
+          idempotency_window: 600_000,
+          now: now(),
+          confirmation: null,
+        }),
+      );
+      expect(
+        await send(
+          { ops: [{ intent: "insert", table: "rows", set: { b: "x" } }] },
+          { actor: OTHER, task: "log-spending" },
+        ),
+      ).toEqual({
+        refused: "read_first",
+        reason: "no_read",
+        target: "slot",
+        ref: "ledger",
+        param: "sv",
+      });
+    },
+    T,
+  );
+
+  it(
     "the ops entry writes the buffered reads first: they stay even when the write is refused",
     async () => {
       const r1 = read([{ kind: "sv", target: SLOT, op: 1 }]);

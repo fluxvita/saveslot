@@ -1703,9 +1703,31 @@ function errorLines(error: R): Line[] {
     lines.push(t`Incident ${untrusted(String(error["incident"]))}`);
   }
   lines.push(...paramGuide(error));
-  const next = said(NEXT, c);
+  const next = c === "read_first" ? readFirstNext(error) : said(NEXT, c);
   if (next !== undefined) lines.push(next);
   return lines;
+}
+
+/**
+ * The next step of a `read_first` (05 §7): by what is to be read and why the fallback found
+ * nothing. A task name is the caller's own text: inside the boundary.
+ */
+function readFirstNext(error: R): Part[] {
+  const target = error["target"];
+  if (error["reason"] === "task_mismatch") {
+    const taskOf = (x: unknown): Part[] =>
+      typeof x === "string" ? t`task ${untrusted(x)}` : t`no task`;
+    const pass = target === "slot" ? t`sv` : target === "item" ? t`item_ver` : t`ver`;
+    return t`It was read under ${taskOf(error["read_task"])}; this call has ${taskOf(error["task"])}. A left-out ${pass} is taken only from a read under the same task: pass ${pass}, or use the same task.`;
+  }
+  if (target === "slot") {
+    return t`Pass sv (the slot's schema version, from saveslot_catalog), or read the slot once with saveslot_catalog or saveslot_query.`;
+  }
+  if (target === "item") {
+    return t`Look at the item first with saveslot_pending, then send it again with the item_ver you read.`;
+  }
+  if (target === "table") return t`Read the table first with saveslot_query.`;
+  return t`Read the row first (saveslot_query), then write with the ver you read.`;
 }
 
 /** A contract error as text (05 §7): what was refused, and the next step; never no text. */

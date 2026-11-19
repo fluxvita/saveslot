@@ -469,6 +469,44 @@ describe("what 05 §6 asks for", () => {
     expect(many).toContain("and 5 more");
   });
 
+  it("read_first: the next step by what to read and why (05 §7)", () => {
+    const slot = renderError({
+      code: "read_first",
+      reason: "no_read",
+      target: "slot",
+      ref: "ledger",
+      param: "sv",
+    });
+    expect(slot).toContain("Pass sv (the slot's schema version, from saveslot_catalog)");
+    expect(slot).not.toContain("Read the row first");
+    const row = renderError({
+      code: "read_first",
+      reason: "no_read",
+      target: "row",
+      param: "ops/0/ver",
+    });
+    expect(row).toContain("Read the row first (saveslot_query), then write with the ver you read.");
+    const item = renderError({
+      code: "read_first",
+      reason: "no_read",
+      target: "item",
+      ref: "pi_1",
+    });
+    expect(item).toContain("Look at the item first with saveslot_pending");
+    const other = renderError({
+      code: "read_first",
+      reason: "task_mismatch",
+      target: "slot",
+      ref: "ledger",
+      read_task: "t-1",
+      task: null,
+    });
+    expect(other).toMatch(new RegExp(`It was read under task ${B}t-1`));
+    expect(other).toContain(
+      "this call has no task. A left-out sv is taken only from a read under the same task: pass sv, or use the same task.",
+    );
+  });
+
   it("a validation detail shows where it is: the op, the table, the field, the stretch", () => {
     const empty = renderError({
       code: "validation_failed",

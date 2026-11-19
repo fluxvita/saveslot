@@ -12,6 +12,7 @@ import type {
   Seq,
   SlotId,
 } from "@fluxvita/saveslot-contract-core";
+import { SELFCHECK_TASK } from "@fluxvita/saveslot-contract-core";
 import { FieldVisibilityNotImplemented, type Visibility, visibleTables } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { WriteError } from "./errors.ts";
@@ -237,7 +238,9 @@ export async function svFromWrite(
 /**
  * A read of the target by `actor` under another task than `task` (or without one when it has
  * one), for `read_first`'s `task_mismatch`. The buffered reads were written at the start of the
- * write operation, so the stored ones are all there are.
+ * write operation, so the stored ones are all there are. The `catalog` that `saveslot connect`
+ * makes with a new token (`SELFCHECK_TASK`) is not the agent's read (06-cli §3 step 7): it does
+ * not count, so a connection's first write without a read is `no_read`.
  */
 export async function readUnderAnotherTask(
   tx: ReadTx,
@@ -247,8 +250,8 @@ export async function readUnderAnotherTask(
   target: string,
 ): Promise<{ readonly task: string | null } | undefined> {
   const r = await tx.query<{ task: string }>(
-    "SELECT task FROM last_read WHERE actor = $1 AND kind = $2 AND target = $3 AND task <> $4 LIMIT 1",
-    [actor, kind, target, task ?? ""],
+    "SELECT task FROM last_read WHERE actor = $1 AND kind = $2 AND target = $3 AND task <> $4 AND task <> $5 LIMIT 1",
+    [actor, kind, target, task ?? "", SELFCHECK_TASK],
   );
   const x = r.rows[0];
   return x === undefined ? undefined : { task: x.task === "" ? null : x.task };
