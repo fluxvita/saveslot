@@ -45,7 +45,7 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 - Conventional Commits, scoped by package or doc area: `feat(kernel): …`, `fix(cli): …`, `docs(spec): …`.
 - Every commit needs a `Signed-off-by` from a person (DCO). The sign-off is that person's certification, not yours: add it (`git commit -s`, with their name and email as the commit author) only when the person you work for has asked you to commit the change on their behalf. Never sign off on your own, and never sign off as a tool.
 - Do not add trailers that attribute a commit to an AI tool (such as `Co-authored-by` for an assistant).
-- Changes reach `main` only through merge requests, which a maintainer squash-merges. Once a branch is pushed, add commits at its end; do not rebase or force-push it: the maintainer rebases it when merging.
+- Changes reach `main` only through merge requests, which a maintainer squash-merges. Once a branch is pushed, add commits at its end; do not rebase or force-push it: the maintainer rebases it when merging. When the branch conflicts with `main`, or `pnpm check` no longer passes once `main` is merged in, merge `main` into the end of the branch (a merge commit whose message lists the conflicting files and how each was resolved), run `pnpm check` on that head and push; the maintainer does not resolve conflicts on a contributor's branch.
 - Before pushing to a branch you pushed earlier, check that it still exists on the remote (`git ls-remote origin refs/heads/<branch>`): its merge request may have been merged and the branch deleted, and a push would create it again.
 - Split unrelated changes into separate commits. Commit only when asked.
 

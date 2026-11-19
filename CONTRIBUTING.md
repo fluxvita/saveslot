@@ -8,8 +8,9 @@ The full contributor guide is currently in Chinese: [`docs/zh-CN/guide/12-contri
 
 1. Create a branch from `main`. If you cannot push branches to the repository, fork it and create the branch in your fork.
 2. Open a merge request against `main` (from your fork, if you used one) and fill in the template. Its title is a Conventional Commit and becomes the squash commit's subject; CI checks the title (`feat`, `fix`, `docs`, `test`, `build`, `ci`, `chore`, `refactor`, `perf`, `revert`, `style`; scope in lower case).
-3. To be merged, the merge request's pipeline (quick checks: title, sign-off, secrets, forbidden terms) must pass, `pnpm check` must pass on the head (you run it before pushing and paste the result in the description; the maintainer may run it again on the head to be merged, depending on the risk of the change), every review thread must be resolved, and a maintainer must approve it.
-4. A maintainer merges it with squash.
+3. Once the branch is pushed, add commits at its end; do not rebase or force-push it, so that what was reviewed stays as it was. A branch that is only behind `main` needs nothing from you: the maintainer rebases it when merging. When it conflicts with `main`, or `pnpm check` no longer passes once `main` is merged in, merge `main` into the end of your branch yourself (a signed-off merge commit whose message lists the conflicting files and how each was resolved), run `pnpm check` on that head and push. The maintainer does not resolve conflicts on your branch.
+4. To be merged, the merge request's pipeline (quick checks: title, sign-off, secrets, forbidden terms) must pass, `pnpm check` must pass on the head (you run it before pushing and paste the result in the description; the maintainer may run it again on the head to be merged, depending on the risk of the change), every review thread must be resolved, and a maintainer must approve it.
+5. A maintainer merges it with squash.
 
 ## Conventions
 
