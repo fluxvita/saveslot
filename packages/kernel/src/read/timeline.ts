@@ -273,6 +273,27 @@ export async function timelineInTx(
     const ops = e.blocks["op_sources"]?.body;
     if (Array.isArray(ops)) for (const s of ops) sourceSeqs.add(Number(s));
   }
+  // A write a resolve triggered has no evidence of its own: the resolution's (the `item.resolved`
+  // head of the same operation, 09 §5.8 `op_sources`) is its operation's source.
+  const resolveSources = new Map<number, number[]>();
+  const resolveOps = events
+    .filter((e) => {
+      const head = e.blocks["target"]?.body as unknown;
+      return isObj(head) && get(head, "cause") === "resolve";
+    })
+    .map((e) => e.op);
+  if (resolveOps.length > 0) {
+    const r = await tx.query<{ op: unknown; body: string | null }>(
+      `SELECT e.op, c.body FROM events e JOIN content c ON c.seq = e.seq AND c.path = 'op_sources'
+       WHERE e.type = 'item.resolved' AND e.op = ANY($1)`,
+      [resolveOps] as never,
+    );
+    for (const x of r.rows) {
+      const seqs = x.body === null ? [] : (JSON.parse(x.body) as unknown[]).map(Number);
+      resolveSources.set(Number(x.op), seqs);
+      for (const s of seqs) sourceSeqs.add(s);
+    }
+  }
   const sourceRows = new Map<
     number,
     { id: string; kind: string; level: string | null; state: string }
@@ -363,7 +384,12 @@ export async function timelineInTx(
           ? { undo: revert["before_op"] as never }
           : undefined;
     const opBody = e.blocks["op_sources"]?.body;
-    const opSources = (Array.isArray(opBody) ? (opBody as number[]) : [])
+    const opSeqs = Array.isArray(opBody)
+      ? (opBody as number[])
+      : head["cause"] === "resolve"
+        ? (resolveSources.get(e.op) ?? [])
+        : [];
+    const opSources = opSeqs
       .map((s) => ref(Number(s), false))
       .filter((x): x is SourceRef => x !== undefined);
     const fields: Record<string, TimelineField[]> = Object.create(null);

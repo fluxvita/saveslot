@@ -258,6 +258,11 @@ function comparable(e: LoggedEvent, items: Map<string, string>): unknown {
   if (e.type === "write.head") {
     for (const k of ["ctx", "request", "task", "request_key", "idempotency"]) delete blocks[k];
   }
+  // An undo's operation sources are source seqs, the pipeline's like the others: only that there
+  // are some is compared.
+  if (e.type === "write.base" && Array.isArray(blocks["op_sources"])) {
+    blocks["op_sources"] = (blocks["op_sources"] as unknown[]).map(() => "S");
+  }
   // A decision's request-level blocks are the pipeline's; its item version is checked apart (the
   // record mapping does not know of refreshes).
   if (e.type === "item.resolved") {

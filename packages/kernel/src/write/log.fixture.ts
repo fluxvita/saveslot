@@ -142,6 +142,8 @@ export function eventsOfSteps(
         ...(j.created ? { created: true as const } : {}),
         sv: 1,
         sources: [r.op],
+        // An undo's operation source (09 §5.2): the request's evidence or its api_call.
+        ...(r.kind === "undo" ? { opSources: [r.op] } : {}),
         raw: rawOf(s.input),
         restoreCount: 0,
         conflictItems,

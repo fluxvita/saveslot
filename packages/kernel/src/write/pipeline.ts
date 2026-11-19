@@ -1219,6 +1219,9 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       restoreCount: restore,
       sv,
       sources: sourcesOf(o),
+      // An undo writes back no value of its own: the request's evidence (or its api_call) is the
+      // operation's source (09 §5.2 `undo`: only `target`, `op_sources` and `revert`).
+      ...(o.kind === "undo" ? { opSources: sourcesOf(o) } : {}),
       conflictItems,
       ...(awaitingItem !== undefined ? { awaitingItem } : {}),
       versions: { ruleset: RULESET, policy: slot.policyVersion },

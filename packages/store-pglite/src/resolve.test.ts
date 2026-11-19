@@ -10,6 +10,7 @@ import {
   createTenant,
   entryChecksums,
   eventsOf,
+  history as history$,
   issueConnection,
   pending as pending$,
   type ResolveReceipt,
@@ -328,6 +329,43 @@ describe("the decisions of this version (04-contract §6)", () => {
       expect(src?.blocks["target"]).toMatchObject({ kind: "api_call" });
       expect((await ofType(op, "item.resolved"))[0]?.blocks["op_sources"]).toEqual([src?.seq]);
       expect(JSON.stringify(await bOf(row))).toContain("10");
+    },
+    T,
+  );
+
+  it(
+    "the triggered write's history shows the resolution's evidence as its operation's source",
+    async () => {
+      const { c, row, item } = await disputed();
+      const r = await resolve({
+        id: item,
+        decision: "take_candidate",
+        item_ver: verOfItem(c, item),
+        evidence: [{ kind: "user_message", text: "the 10 is right" }],
+      });
+      const h = (await history$(
+        s.store,
+        createOpsContext({
+          tenant: TENANT,
+          actor: USER,
+          trigger: null,
+          task: null,
+          visibility: { kind: "all" },
+          idempotency_key_window: 86_400_000,
+          idempotency_window: 600_000,
+          now: now(),
+          confirmation: null,
+        }),
+        { table: "rows", row, expand_sources: true },
+      )) as unknown as { entries: Record<string, unknown>[] };
+      const first = h.entries[0];
+      expect(first).toMatchObject({
+        seq: r.write?.seq,
+        via: { resolve: item, decision: "take_candidate" },
+      });
+      expect(first?.["fields"]).toMatchObject({
+        b: { sources: { operation: [{ kind: "user_message", text: "the 10 is right" }] } },
+      });
     },
     T,
   );

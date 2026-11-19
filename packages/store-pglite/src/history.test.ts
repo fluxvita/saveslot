@@ -277,6 +277,26 @@ describe("timeline", () => {
     expect(p2).not.toHaveProperty("next_position");
   });
 
+  it("an undo's evidence is its operation's source (09 §5.2 undo: op_sources)", async () => {
+    const undo = (
+      await w({
+        evidence: [{ kind: "user_message", text: "that raise was a mistake, put it back" }],
+        ops: [{ table: "budgets", entity, revert: { undo: ops["raise"] } }],
+      })
+    ).seq;
+    const r = await h({ table: "budgets", entity, expand_sources: true });
+    const first = (r["entries"] as unknown as Record<string, unknown>[])[0];
+    expect(first).toMatchObject({ seq: undo, via: { undo: ops["raise"] } });
+    // An undo writes back values it did not state: the evidence is the operation's source.
+    expect(first?.["fields"]).toMatchObject({
+      amount: {
+        sources: {
+          operation: [{ kind: "user_message", text: "that raise was a mistake, put it back" }],
+        },
+      },
+    });
+  });
+
   it("gives a state entity's items with their intervals, and an undo by what it undid", async () => {
     const undo = (await w({ ops: [{ table: "budgets", entity, revert: { undo: ops["raise"] } }] }))
       .seq;
