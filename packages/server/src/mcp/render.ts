@@ -593,9 +593,12 @@ function catalog(r: R): Line[] | { json: true; lead: Line[] } {
       const key = arr(tb["entity_key"]);
       if (key.length > 0) out.push(t`  entity key: ${join(key.map(fieldOf), t`, `)}`);
       for (const f of arr(tb["fields"])) out.push(catalogField(obj(f)));
-      // What the table declares, as declared: no claim that anything is checked against it.
+      // What the table declares, as declared, and that this version does not check it (the
+      // check, `flagged`, comes with P2: 07-scope-v1). Drop the parenthesis when it does.
       for (const g of arr(tb["duplicate_keys"])) {
-        out.push(t`  duplicate keys declared: ${join(arr(g).map(fieldOf), t` + `)}`);
+        out.push(
+          t`  duplicate keys declared: ${join(arr(g).map(fieldOf), t` + `)} (not checked in this version: a second row with the same values is saved and not flagged)`,
+        );
       }
       for (const g of arr(tb["together"])) {
         out.push(t`  field group (one conflict unit): ${join(arr(g).map(fieldOf), t` + `)}`);

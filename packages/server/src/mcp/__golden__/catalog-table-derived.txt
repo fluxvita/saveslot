@@ -5,7 +5,7 @@ runs (base · event, by date) <untrusted-data-N>每次跑步一行</untrusted-da
   distance  quantity <untrusted-data-N>km</untrusted-data-N> 6 decimal places (half_up)  <untrusted-data-N>距离</untrusted-data-N> · required · ≥ 0
   duration  quantity <untrusted-data-N>min</untrusted-data-N> 6 decimal places (half_up)  <untrusted-data-N>用时</untrusted-data-N> · ≥ 0
   feeling  text  <untrusted-data-N>跑后感受，用户原话</untrusted-data-N>
-  duplicate keys declared: date + distance
+  duplicate keys declared: date + distance (not checked in this version: a second row with the same values is saved and not flagged)
 health · schema v1 · <untrusted-data-N>Asia/Shanghai</untrusted-data-N>
 weekly_mileage (derived · read-only) <untrusted-data-N>每周跑量与记录覆盖，周一起算。某一周没有行表示那一周没有任何跑步记录</untrusted-data-N> · rule r1 v1 · depends on runs.date, runs.distance
   week_start  date  <untrusted-data-N>该周周一</untrusted-data-N>
