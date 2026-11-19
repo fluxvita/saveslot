@@ -245,6 +245,25 @@ describe("the test clock", () => {
     await after.stop();
   });
 
+  it("is refused behind the log's end: a home made on the system clock, the test clock earlier", async () => {
+    // As `saveslot init` makes a home: its genesis at this computer's time, later than START.
+    const home = join(root, String(n++));
+    await initLocalHome({
+      home,
+      backend: testBackend(),
+      lock: osFileLock,
+      now: new Date().toISOString(),
+    });
+    const s = await run(home, START);
+    expect([s.state, s.reason]).toEqual(["failed", "eval_clock_refused"]);
+    await s.stop();
+    expect(existsSync(evalMarkFile(home))).toBe(false);
+    // A start at or after the genesis is taken.
+    const later = await run(home, new Date(Date.now() + HOUR).toISOString());
+    expect(later.state).toBe("ready");
+    await later.stop();
+  });
+
   it("takes only an RFC 3339 moment with its offset", async () => {
     const { home } = await newHome();
     for (const bad of ["2026-11-10", "2026-11-10T09:00:00", "tomorrow"]) {

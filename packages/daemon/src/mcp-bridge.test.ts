@@ -8,6 +8,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -1253,6 +1254,42 @@ describe("the bridge against a real service", () => {
     },
     T,
   );
+
+  it("--record <directory>: each bridge its own new file there, by start and process", async () => {
+    const token = await issue(s.home, s.session, "recorded-dir", ["saveslot.read"]);
+    const dir = join(s.home, "..", `records-${Date.now()}`);
+    mkdirSync(dir, { mode: 0o700 });
+    const once = async () => {
+      const io = bridgeStreams();
+      const exit = runBridge({
+        token,
+        stdin: io.stdin,
+        stdout: io.stdout,
+        log: io.log,
+        autostart: false,
+        startService: async () => 7,
+        version: "t",
+        socketPath: socketFile(s.home),
+        record: dir,
+      });
+      io.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })}\n`);
+      io.stdin.end();
+      expect(await exit).toBe(0);
+      // Started in another millisecond: another name.
+      await sleep(5);
+    };
+    await once();
+    await once();
+    const files = readdirSync(dir).sort();
+    expect(files).toHaveLength(2);
+    for (const f of files) {
+      expect(f).toMatch(new RegExp(`^record-\\d{8}T\\d{9}Z-${process.pid}\\.jsonl$`));
+      expect(statSync(join(dir, f)).mode & 0o777).toBe(0o600);
+      const lines = readFileSync(join(dir, f), "utf8").trimEnd().split("\n");
+      expect(JSON.parse(lines[0] as string)).toEqual({ record: 1, saveslot: "t" });
+      expect(lines.map((l) => JSON.parse(l)["dir"]).filter(Boolean)).toEqual(["in", "out"]);
+    }
+  });
 
   it("--record over a file that exists: refused, the file left as it was; nothing read", async () => {
     const token = await issue(s.home, s.session, "recorded-twice", ["saveslot.read"]);

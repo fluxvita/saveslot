@@ -4,6 +4,9 @@
 // sequence (arguments and structured results) is kept even when the host does not export it.
 //
 // - The file is new: made with O_EXCL at 0600; one that exists is refused, never appended to.
+//   Given a directory, each bridge makes its own file there, named by when it started and its
+//   process (`record-20261110T010000123Z-4242.jsonl`): a host's configuration names the directory
+//   once, and every session it starts keeps its own record.
 // - JSON Lines. The first line `{"record":1,"saveslot":<version>}`; once the protocol version is
 //   known (the `initialize` answer, or the first request whose envelope names it), one line
 //   `{"protocol":<version>}`; then one line per message: `{"t":<when, the system clock>,
@@ -15,7 +18,8 @@
 // - Every line is written synchronously; a write that fails throws, and the bridge stops: a record
 //   with a hole in it is worse than a run that visibly broke.
 
-import { closeSync, openSync, writeSync } from "node:fs";
+import { closeSync, openSync, statSync, writeSync } from "node:fs";
+import { join } from "node:path";
 
 /** A credential of either form, as it may appear inside a message. */
 const TOKENS = /\b(slt|sls)_[A-Za-z0-9_-]{16,}/g;
@@ -31,9 +35,21 @@ export interface CallRecord {
   close(): void;
 }
 
-/** Opens a new record at `path`; throws (`EEXIST` when it exists) when it cannot. */
+/** A new record's file in the directory `dir`: when the bridge started, and its process. */
+export const recordFileIn = (dir: string, at: Date, pid: number): string =>
+  join(dir, `record-${at.toISOString().replace(/[-:.]/g, "")}-${pid}.jsonl`);
+
+/**
+ * Opens a new record at `path`, or in it when it is a directory; throws (`EEXIST` when the file
+ * exists) when it cannot.
+ */
 export function openRecord(path: string, version: string): CallRecord {
-  const fd = openSync(path, "wx", 0o600);
+  let isDir = false;
+  try {
+    isDir = statSync(path).isDirectory();
+  } catch {}
+  const file = isDir ? recordFileIn(path, new Date(), process.pid) : path;
+  const fd = openSync(file, "wx", 0o600);
   let closed = false;
   let protocolSaid = false;
   const line = (v: unknown) => {

@@ -40,9 +40,10 @@
 //   header included), never a path but the socket's.
 // - stdin closed: what is queued and in flight is finished, then exit 0. stdout closed (EPIPE):
 //   exit at once. SIGTERM / SIGINT are the command's (`mcpCommand`): exit at once.
-// - `--record <file>` (evaluations only, ./mcp-record.ts): every message read and written goes to
-//   the record too, the one place a request's content is written; a file that exists is refused
-//   (exit 1, `record_exists`), a write that fails ends the bridge (exit 1, `record_failed`).
+// - `--record <file or directory>` (evaluations only, ./mcp-record.ts): every message read and
+//   written goes to the record too, the one place a request's content is written; in a directory,
+//   a new file per bridge; a file that exists is refused (exit 1, `record_exists`), a write that
+//   fails ends the bridge (exit 1, `record_failed`).
 
 import type { Readable, Writable } from "node:stream";
 import { type HealthBody, MAX_BODY_BYTES } from "@fluxvita/saveslot-server";
@@ -241,7 +242,10 @@ export interface BridgeOptions {
    * flight has been given up on; the command exits the process here.
    */
   readonly onStdoutBroken?: (code: number) => void;
-  /** `--record`: the call record's file, new (evaluations only); a record itself, for tests. */
+  /**
+   * `--record`: the call record's file, new, or a directory to make one in (evaluations only); a
+   * record itself, for tests.
+   */
   readonly record?: string | CallRecord;
   /** For tests. */
   readonly forwardTimeoutMs?: number;

@@ -58,4 +58,4 @@ assert:
       text: "不得：`saveslot_delete`。"
   state:
     - level: H
-      text: "`lunch` 已撤销（带 `include_revoked` 查得到，`marks.revoked`）；`sources` 里 `s_lunch_1`、`s_lunch_2` 都还在、原文可读；`monthly_total` 2026-11 是 30。"
+      text: "`lunch` 已撤销（带 `include_revoked` 查得到，`marks.revoked`）；`sources` 里 `s_lunch_1`、`s_lunch_2` 都还在、原文可读；`monthly_total` 2026-11 是 30。P1 里 `sources` 未实现，用 `history` 核对两次写入的来源原文仍可读；P2 起按 `sources` 判。"

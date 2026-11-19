@@ -14,7 +14,8 @@
 //                              connection instances (no tokens), the system prompt, what was bound
 //   calls/NN-….json            every call the runner made: what it sent and what came back
 //   state/<when>/….json        what the user session reads after the fixture and after each step
-//   record-<key>-<step>.jsonl  where each agent session's `saveslot mcp --record` writes
+//   records/<key>/             `saveslot mcp --record` for connection <key>: a new file per
+//                              session (the host starts the bridge anew), the latest one last
 // `--fixture-only` stops after the fixture (and its state), without running the steps.
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -345,16 +346,26 @@ if (fixtureOnly) {
 say("");
 say("System prompt to add (10-evals §2.2), as it is:");
 say(prompt);
+// One MCP server per agent connection, set up once: each session the host starts records into
+// its own new file in the connection's directory.
+const agents = [...new Set(v.steps.flatMap((s) => ("agent" in s ? [s.agent] : [])))];
+for (const key of agents) {
+  const records = join(dir, "records", key);
+  mkdirSync(records, { recursive: true, mode: 0o700 });
+  say("");
+  say(`The host's saveslot MCP server for ${key}, set up once before the first step:`);
+  say(
+    `  SAVESLOT_TOKEN=<tokens.json: ${key}> ${process.execPath} --conditions=source ${BIN} mcp --home ${home} --record ${records}`,
+  );
+}
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 for (const [i, step] of v.steps.entries()) {
   const n = i + 1;
   say("");
   if ("agent" in step) {
     if (step.new_session === true) {
-      const record = join(dir, `record-${step.agent}-${n}.jsonl`);
-      say(`Step ${n}: a NEW session of the host, as ${step.agent}. Its saveslot MCP server:`);
       say(
-        `  SAVESLOT_TOKEN=<tokens.json: ${step.agent}> ${process.execPath} --conditions=source ${BIN} mcp --home ${home} --record ${record}`,
+        `Step ${n}: a NEW session of the host, as ${step.agent}. Its calls are recorded in ${join(dir, "records", step.agent)}, the latest file.`,
       );
     } else {
       say(`Step ${n}: the same session as before, as ${step.agent}.`);

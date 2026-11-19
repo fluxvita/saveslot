@@ -29,8 +29,9 @@
 // One evaluation run is one process, so the home is marked (`control/eval.json`) the first time:
 // - a marked home starts with no test clock never (`eval_dir_refused`; `saveslot mcp`'s autostart
 //   included), and with one never again (`eval_dir_refused`): a run whose service stopped is void;
-// - an unmarked home starts with one only while its log holds nothing but the tenant's genesis
-//   (`eval_clock_refused`), so that it is never turned on over a user's data.
+// - an unmarked home starts with one only while its log holds nothing but the tenant's genesis,
+//   recorded no later than the clock's start (`eval_clock_refused`), so that it is never turned on
+//   over a user's data, nor behind the log's end, where every event would be recorded at that end.
 
 import { existsSync } from "node:fs";
 import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -48,7 +49,7 @@ import {
   controlDir,
   flushLocalReads,
   type LocalTenant,
-  localLogIsNew,
+  localLogEnd,
   openLocalTenant,
   probeLocalTenant,
   pruneCredentials,
@@ -354,8 +355,14 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         if (dropped > 0) say("credentials_pruned", { count: dropped });
         cursors = await CursorKeys.open(o.home, now());
         if (evalStart !== undefined) {
-          // Only over a log that holds nothing but the tenant's genesis; then the home is marked.
-          if (!(await localLogIsNew(r.tenant))) throw new EvalClockRefused();
+          // Only over a log that holds nothing but the tenant's genesis, recorded no later than
+          // the clock's start: a clock behind the log's end would record every event at that end
+          // (02-architecture §8), and the test clock would show in nothing the log keeps. Then
+          // the home is marked.
+          const end = await localLogEnd(r.tenant);
+          if (end === undefined || end.seq !== 1 || Date.parse(end.at) > evalStart) {
+            throw new EvalClockRefused();
+          }
           writePrivate(
             evalMarkFile(o.home),
             `${JSON.stringify({ eval_clock: new Date(evalStart).toISOString() })}\n`,

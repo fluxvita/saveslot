@@ -599,7 +599,7 @@ quality:
 - **调用**：
   - H 必须：`saveslot_write`，`intent: "revoke"`，目标 `lunch`，带读到的 `ver`。
   - S 不得：`saveslot_delete`。
-- **状态**：H `lunch` 已撤销（带 `include_revoked` 查得到，`marks.revoked`）；`sources` 里 `s_lunch_1`、`s_lunch_2` 都还在、原文可读；`monthly_total` 2026-11 是 30。
+- **状态**：H `lunch` 已撤销（带 `include_revoked` 查得到，`marks.revoked`）；`sources` 里 `s_lunch_1`、`s_lunch_2` 都还在、原文可读；`monthly_total` 2026-11 是 30。P1 里 `sources` 未实现，用 `history` 核对两次写入的来源原文仍可读；P2 起按 `sources` 判。
 - **常见失败**：走了隐私删除——描述：`saveslot_delete` 的描述没把"数据记错了用撤销"说清。P1 里 A 没有 `saveslot.delete`，工具列表里没有 `saveslot_delete`，这条 S 断言自然成立；P3 起夹具给上 `saveslot.delete` 后重跑。
 
 ### 6b 删掉一句话，整行会消失
