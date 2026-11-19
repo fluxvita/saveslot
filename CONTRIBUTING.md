@@ -8,7 +8,7 @@ The full contributor guide is currently in Chinese: [`docs/zh-CN/guide/12-contri
 
 1. Create a branch from `main`. If you cannot push branches to the repository, fork it and create the branch in your fork.
 2. Open a merge request against `main` (from your fork, if you used one) and fill in the template. Its title is a Conventional Commit and becomes the squash commit's subject; CI checks the title (`feat`, `fix`, `docs`, `test`, `build`, `ci`, `chore`, `refactor`, `perf`, `revert`, `style`; scope in lower case).
-3. To be merged, the merge request's pipeline (quick checks: title, sign-off, secrets, forbidden terms) must pass, `pnpm check` must pass on the head (you run it before pushing and paste the result in the description; the maintainer runs it again on the head to be merged), every review thread must be resolved, and a maintainer must approve it.
+3. To be merged, the merge request's pipeline (quick checks: title, sign-off, secrets, forbidden terms) must pass, `pnpm check` must pass on the head (you run it before pushing and paste the result in the description; the maintainer may run it again on the head to be merged, depending on the risk of the change), every review thread must be resolved, and a maintainer must approve it.
 4. A maintainer merges it with squash.
 
 ## Conventions
@@ -21,7 +21,7 @@ The full contributor guide is currently in Chinese: [`docs/zh-CN/guide/12-contri
 - **Research ownership.** Technical research belongs in `docs/zh-CN/research/`. Competitor analysis, market and product snapshots, product positioning, pricing and commercial strategy belong in the internal repository, not here. Split mixed reports without maintaining synchronized copies; public design conclusions must be independently supported in this repository, not by internal research. Keep existing technical reports in place and annotate superseded advice or unverified claims during the pre-publication review, without rewriting their conclusions or deleting history.
 - **Never commit** secrets, internal addresses, or personal information unrelated to the project.
 - **Golden files.** Some texts a model reads (the MCP server's `instructions`, the prompts) are pinned in files under a `__golden__/` directory beside their tests. When you change such a text on purpose, update them with `pnpm exec vitest run <test file> -u` and commit the changed files with the change; reviewers read their diff as the change in wording. With `CI` set (as in CI), a golden file that differs or is missing fails the test; none is written.
-- Run `pnpm check` locally on the head you push (type check, lint, tests, dependency rules, doc links, JSON examples) and paste the result in the merge request. CI runs the same scripts after a merge, nightly and when a phase is finished, not on merge requests. When the default branch fails, it is fixed first and merges wait.
+- Run `pnpm check` locally on the head you push (type check, lint, tests, dependency rules, doc links, JSON examples) and paste the result in the merge request. CI runs the same scripts after merges and nightly, not on merge requests. A failure on the default branch is fixed with priority.
 
 ## Where to talk
 

@@ -37,15 +37,16 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 ## Toolchain
 
 - Node ≥ 24, TypeScript strict mode, ESM only.
-- pnpm workspace; Vitest for tests, fast-check for property tests; Biome for formatting and lint; tsup for bundling; Changesets for versioning.
-- Run `pnpm check` on the head before pushing (type check, lint, tests, dependency rules, doc links, JSON examples) and put the result in the merge request; do not bypass it. The merge request's pipeline runs quick checks only; CI runs `pnpm check` after a merge, nightly and when a phase is finished. When the default branch fails, fix it first; merges wait.
+- pnpm workspace; Vitest for tests, fast-check for property tests; Biome for formatting and lint; Changesets for versioning.
+- Run `pnpm check` on the head before every push (type check, lint, tests, dependency rules, doc links, JSON examples) and put the result in the merge request; do not bypass it. The merge request's pipeline runs quick checks only; CI runs the full check after merges and nightly, and a maintainer runs it again before merging when the change is risky. A failure on the default branch is fixed with priority.
 
 ## Commits
 
 - Conventional Commits, scoped by package or doc area: `feat(kernel): …`, `fix(cli): …`, `docs(spec): …`.
 - Every commit needs a `Signed-off-by` from a person (DCO). The sign-off is that person's certification, not yours: add it (`git commit -s`, with their name and email as the commit author) only when the person you work for has asked you to commit the change on their behalf. Never sign off on your own, and never sign off as a tool.
 - Do not add trailers that attribute a commit to an AI tool (such as `Co-authored-by` for an assistant).
-- Follow the maintainers' current workflow for reaching `main`. Once merge requests are required, changes reach `main` only through them.
+- Changes reach `main` only through merge requests, which a maintainer squash-merges. Once a branch is pushed, add commits at its end; do not rebase or force-push it: the maintainer rebases it when merging.
+- Before pushing to a branch you pushed earlier, check that it still exists on the remote (`git ls-remote origin refs/heads/<branch>`): its merge request may have been merged and the branch deleted, and a push would create it again.
 - Split unrelated changes into separate commits. Commit only when asked.
 
 ## Tests
@@ -53,3 +54,5 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 - To fix a bug, first write a test that reproduces it.
 - Changes touching replay, deletion or revert must also pass the comparison tests against the reference evaluator (the authoritative definition is in [`docs/zh-CN/spec/03-data-model/03-deletion.md`](docs/zh-CN/spec/03-data-model/03-deletion.md)).
 - Do not loosen assertions or change examples in the spec to make tests pass. When an example and the implementation disagree, find out which one is right first.
+- Cases a property test must cover are built deterministically; a minimum hit rate only guards against the generator degrading as a whole. Turn every counterexample into a fixed case.
+- Save the full output of a test run to a file before filtering it. Report a failure, even one that did not repeat, with its seed, path and counterexample; do not rerun until green.
