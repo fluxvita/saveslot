@@ -18,6 +18,7 @@ import { osFileLock } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { init, start, status, stop } from "./commands.ts";
+import { homeTemplate } from "./home-copy.fixture.ts";
 import { health } from "./local-request.ts";
 import { lastFailureFile, lockDir, runDir, runService, socketFile } from "./service.ts";
 import { TEXTS } from "./texts.ts";
@@ -40,17 +41,22 @@ afterAll(() => {
   }
 }, T);
 
-async function freshHome(): Promise<string> {
-  const root = mkdtempSync(join(tmpdir(), "saveslot-start-"));
-  roots.push(root);
-  const home = join(root, "home");
-  await initLocalHome({
+/** A home as `saveslot init` makes it, made once; each case takes a copy (home-copy.fixture.ts). */
+const templateRoot = mkdtempSync(join(tmpdir(), "saveslot-start-"));
+roots.push(templateRoot);
+const template = homeTemplate(join(templateRoot, "home"), (home) =>
+  initLocalHome({
     home,
     backend: testBackend(),
     lock: osFileLock,
     now: new Date().toISOString(),
-  });
-  return home;
+  }),
+);
+
+async function freshHome(): Promise<string> {
+  const root = mkdtempSync(join(tmpdir(), "saveslot-start-"));
+  roots.push(root);
+  return template.copy(join(root, "home"));
 }
 
 function capture() {

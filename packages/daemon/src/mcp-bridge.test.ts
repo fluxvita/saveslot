@@ -26,6 +26,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { stop } from "./commands.ts";
+import { homeTemplate } from "./home-copy.fixture.ts";
 import { httpDriver } from "./http-driver.fixture.ts";
 import { health } from "./local-request.ts";
 import {
@@ -974,6 +975,18 @@ describe("the bridge against a stand-in service", () => {
   });
 });
 
+/** A home as init makes it, made once for the file; each fixture takes a copy (home-copy.fixture.ts). */
+const templateRoot = mkdtempSync(join(tmpdir(), "saveslot-bridge-template-"));
+const template = homeTemplate(join(templateRoot, "home"), (home) =>
+  initLocalHome({
+    home,
+    backend: testBackend(),
+    lock: osFileLock,
+    now: new Date().toISOString(),
+  }),
+);
+afterAll(() => rmSync(templateRoot, { recursive: true, force: true }));
+
 /** A service on a fresh home, in this process. */
 function serviceFixture(prefix: string) {
   const root = mkdtempSync(join(tmpdir(), prefix));
@@ -983,12 +996,7 @@ function serviceFixture(prefix: string) {
     service: undefined as RunningService | undefined,
   };
   beforeAll(async () => {
-    await initLocalHome({
-      home: s.home,
-      backend: testBackend(),
-      lock: osFileLock,
-      now: new Date().toISOString(),
-    });
+    await template.copy(s.home);
     s.session = readFileSync(sessionFile(s.home), "utf8").trim();
     s.service = await runService({ home: s.home, version: "t", signals: false, log: () => {} });
   }, T);
@@ -1472,12 +1480,7 @@ describe("mcp.autostart off, on a home where a start would succeed", () => {
   const root = mkdtempSync(join(tmpdir(), "saveslot-bridge-noauto-"));
   const home = join(root, "home");
   beforeAll(async () => {
-    await initLocalHome({
-      home,
-      backend: testBackend(),
-      lock: osFileLock,
-      now: new Date().toISOString(),
-    });
+    await template.copy(home);
   }, T);
   afterAll(async () => {
     await stop(home, { out: () => {}, err: () => {} });
@@ -1571,12 +1574,7 @@ describe("two hosts start the service at once", () => {
   const home = join(root, "home");
   let session = "";
   beforeAll(async () => {
-    await initLocalHome({
-      home,
-      backend: testBackend(),
-      lock: osFileLock,
-      now: new Date().toISOString(),
-    });
+    await template.copy(home);
     session = readFileSync(sessionFile(home), "utf8").trim();
   }, T);
   afterAll(async () => {

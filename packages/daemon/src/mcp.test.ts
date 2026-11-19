@@ -12,6 +12,7 @@ import { osFileLock } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { contractSuite, LEDGER } from "./contract-suite.fixture.ts";
+import { homeTemplate } from "./home-copy.fixture.ts";
 import { httpDriver, httpRequest } from "./http-driver.fixture.ts";
 import {
   type Era,
@@ -25,18 +26,25 @@ import { type RunningService, runService } from "./service.ts";
 
 const T = 60_000;
 
+/** A home as init makes it, made once for the file; each fixture takes a copy (home-copy.fixture.ts). */
+const templateRoot = mkdtempSync(join(tmpdir(), "saveslot-mcp-template-"));
+const template = homeTemplate(join(templateRoot, "home"), (home) =>
+  initLocalHome({
+    home,
+    backend: testBackend(),
+    lock: osFileLock,
+    now: new Date().toISOString(),
+  }),
+);
+afterAll(() => rmSync(templateRoot, { recursive: true, force: true }));
+
 /** A service on a fresh home: its home, its user session, its log. */
 function serviceFixture(prefix: string) {
   const root = mkdtempSync(join(tmpdir(), prefix));
   const s = { home: join(root, "home"), session: "", lines: [] as string[], obs: observer() };
   let service: RunningService | undefined;
   beforeAll(async () => {
-    await initLocalHome({
-      home: s.home,
-      backend: testBackend(),
-      lock: osFileLock,
-      now: new Date().toISOString(),
-    });
+    await template.copy(s.home);
     s.session = readFileSync(sessionFile(s.home), "utf8").trim();
     service = await runService({
       home: s.home,
@@ -561,12 +569,7 @@ describe("an observer of tool results that fails", () => {
     async () => {
       const root = mkdtempSync(join(tmpdir(), "saveslot-mcp-observer-"));
       const home = join(root, "home");
-      await initLocalHome({
-        home,
-        backend: testBackend(),
-        lock: osFileLock,
-        now: new Date().toISOString(),
-      });
+      await template.copy(home);
       const session = readFileSync(sessionFile(home), "utf8").trim();
       let told = 0;
       const lines: string[] = [];

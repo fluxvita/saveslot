@@ -21,6 +21,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { serviceCommand, status } from "./commands.ts";
 import { LEDGER } from "./contract-suite.fixture.ts";
+import { homeTemplate } from "./home-copy.fixture.ts";
 import { httpDriver, httpRequest } from "./http-driver.fixture.ts";
 import { mcpClient } from "./mcp-driver.fixture.ts";
 import { evalMarkFile, evalResultsFile, runService } from "./service.ts";
@@ -35,15 +36,19 @@ const START = "2026-11-10T09:00:00+08:00";
 const START_MS = Date.parse(START);
 const HOUR = 3_600_000;
 
-/** A new home, as `saveslot init` makes it; with its user session. */
-async function newHome(): Promise<{ home: string; session: string }> {
-  const home = join(root, String(n++));
-  await initLocalHome({
+/** A home as `saveslot init` makes it, made once; each case takes a copy (home-copy.fixture.ts). */
+const template = homeTemplate(join(root, "template"), (home) =>
+  initLocalHome({
     home,
     backend: testBackend(),
     lock: osFileLock,
     now: "2026-11-01T00:00:00.000Z",
-  });
+  }),
+);
+
+/** A home of its own, as `saveslot init` makes it; with its user session. */
+async function newHome(): Promise<{ home: string; session: string }> {
+  const home = await template.copy(join(root, String(n++)));
   return { home, session: readFileSync(sessionFile(home), "utf8").trim() };
 }
 

@@ -32,6 +32,7 @@ import {
   status,
 } from "./commands.ts";
 import { LEDGER } from "./contract-suite.fixture.ts";
+import { homeTemplate } from "./home-copy.fixture.ts";
 import { httpRequest } from "./http-driver.fixture.ts";
 import { health } from "./local-request.ts";
 import { lockDir, pidFile, runService, socketFile } from "./service.ts";
@@ -63,6 +64,12 @@ async function initialized(): Promise<string> {
   expect(r.code).toBe(0);
   return h;
 }
+
+/** A home the `init` command made, once; the cases that are not about init take a copy. */
+const template = homeTemplate(join(root, "template"), async (home) => {
+  expect((await run("init", home)).code).toBe(0);
+});
+const copied = () => template.copy(join(root, String(n++)));
 
 const alive = (pid: number) => {
   try {
@@ -290,7 +297,7 @@ describe("status: the clock against the log's end (log.end, with the user sessio
 
 describe("start, status, stop", () => {
   it("starts in the background, says so again, stops; stop again finds nothing running", async () => {
-    const h = await initialized();
+    const h = await copied();
     const first = await run("start", h);
     expect(first.code).toBe(0);
     const ready = await health(socketFile(h));
@@ -324,7 +331,7 @@ describe("start, status, stop", () => {
   });
 
   it("with the service answering, status takes no lock, and stop takes it only after the process exited", async () => {
-    const h = await initialized();
+    const h = await copied();
     expect((await run("start", h)).code).toBe(0);
     const pid = (await health(socketFile(h)))?.pid as number;
     // Each time the lock is taken: whether the service process was still there.
@@ -348,7 +355,7 @@ describe("start, status, stop", () => {
   });
 
   it("status gives the data directory the home records", async () => {
-    const h = await initialized();
+    const h = await copied();
     const data = join(root, `data-${n++}`);
     renameSync(join(h, "data"), data);
     const directory = join(h, "control", "tenant.json");
@@ -369,7 +376,7 @@ describe("start, status, stop", () => {
   });
 
   it("stop removes a pid file left when the lock is free", async () => {
-    const h = await initialized();
+    const h = await copied();
     writeFileSync(pidFile(h), "999999\n");
     const r = await run("stop", h);
     expect(r.code).toBe(0);
@@ -377,7 +384,7 @@ describe("start, status, stop", () => {
   });
 
   it("stop sends no signal when the lock is held and the service does not answer (7)", async () => {
-    const h = await initialized();
+    const h = await copied();
     const bystander = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"]);
     try {
       const lock = await osFileLock.acquire(lockDir(h));
@@ -396,7 +403,7 @@ describe("start, status, stop", () => {
   });
 
   it("stop sends no signal when the pid file names another process than the one answering (7)", async () => {
-    const h = await initialized();
+    const h = await copied();
     expect((await run("start", h)).code).toBe(0);
     const bystander = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"]);
     try {
@@ -415,7 +422,7 @@ describe("start, status, stop", () => {
 
 describe("the background log", () => {
   it("is 0600 and holds no token and no written value", async () => {
-    const h = await initialized();
+    const h = await copied();
     const token = readFileSync(sessionFile(h), "utf8").trim();
     expect((await run("start", h)).code).toBe(0);
     const value = "zebra-4711-written-value";
