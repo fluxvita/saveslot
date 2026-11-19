@@ -15,6 +15,7 @@ import {
   pending,
   query,
   readsList,
+  removeSlot,
   renameConnection,
   resolve,
   schemaDraft,
@@ -48,8 +49,15 @@ export function connectionOut(c: ConnectionRecord, names: Map<string, string>) {
     id: c.id,
     name: c.name,
     scopes: c.scopes,
+    // The range as it is now: a removed slot is left out (process/decisions/remove-empty-slot.md
+    // §5), so a range of only removed slots lists none; that is still a range, never "all".
     ...(c.slots !== undefined
-      ? { slots: c.slots.map((id) => ({ slot: names.get(id) ?? id, slot_id: id })) }
+      ? {
+          slots: c.slots.flatMap((id) => {
+            const name = names.get(id);
+            return name === undefined ? [] : [{ slot: name, slot_id: id }];
+          }),
+        }
       : {}),
     via: c.via,
     ...(c.client !== undefined ? { client: c.client } : {}),
@@ -182,6 +190,9 @@ export async function runOperation(o: {
           const c = await renameConnection(store, ctx, params as never);
           return connectionOut(c, (await slotNames(o.tenant)).name);
         }
+        case "slots.remove":
+          keysOnly(params, ["slot_id"]);
+          return removeSlot(store, ctx, params as never);
         case "connections.revoke": {
           keysOnly(params, ["id"]);
           text(params, "id");

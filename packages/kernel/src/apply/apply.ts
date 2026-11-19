@@ -39,7 +39,7 @@ import { confirmationHash, entryChecksums } from "./confirmation.ts";
 import { canonicalKeyFault, type DerivedInput, planDerived } from "./derived.ts";
 import { type ItemInput, planItem } from "./items.ts";
 import { ApplyError, type BlockDepRow, type Change, type PrincipalRow } from "./model.ts";
-import { planSchema, type SlotInput, type SwitchInput } from "./schema.ts";
+import { planSchema, type RemoveInput, type SlotInput, type SwitchInput } from "./schema.ts";
 import type { SettleItem } from "./settle.ts";
 import { type OpenCell, planWriteBase, storedValid, type WriteBaseInput } from "./write-base.ts";
 
@@ -59,6 +59,7 @@ export interface ApplyEvent {
 export interface PlanInputs {
   readonly switchTo?: SwitchInput;
   readonly slot?: SlotInput;
+  readonly remove?: RemoveInput;
   readonly item?: ItemInput;
   readonly writeBase?: WriteBaseInput;
   readonly derived?: DerivedInput;
@@ -347,6 +348,24 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
     return {
       ...(switchTo !== undefined ? { switchTo } : {}),
       ...(slot !== undefined ? { slot } : {}),
+    };
+  }
+  if (p.type === "slot.removed") {
+    // The slot as it is, and its current version's compiled definition.
+    const r = await tx.query<{ current_sv: unknown; body: string | null }>(
+      `SELECT s.current_sv, c.body FROM slots s
+       LEFT JOIN schema_versions v ON v.slot_id = s.id AND v.sv = s.current_sv
+       LEFT JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
+       WHERE s.id = $1`,
+      [ev.header["slot"] as string],
+    );
+    const row = r.rows[0];
+    if (row === undefined) return {};
+    return {
+      remove: {
+        currentSv: row.current_sv === null ? null : Number(row.current_sv),
+        compiled: row.body === null ? undefined : (JSON.parse(row.body) as CompiledSchema),
+      },
     };
   }
   if (p.type === "write.base") return { writeBase: await readRow(tx, ev, p) };
@@ -696,6 +715,13 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
         "INSERT INTO catalog (table_id, sv, slot_id, structure) VALUES ($1, $2, $3, $4)",
         [c.table_id, c.sv, c.slot, c.structure],
       );
+      return;
+    case "slot_remove":
+      for (const t of c.tables) {
+        await tx.query("DELETE FROM counts WHERE table_id = $1", [t]);
+      }
+      await tx.query("DELETE FROM catalog WHERE slot_id = $1", [c.slot]);
+      await one(tx, seq, "DELETE FROM slots WHERE id = $1", [c.slot], `no slot ${c.slot}`);
       return;
     case "counts_init":
       await tx.query("INSERT INTO counts (table_id, partition_key, row_count) VALUES ($1, '', 0)", [

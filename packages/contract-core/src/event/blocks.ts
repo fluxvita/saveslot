@@ -171,7 +171,10 @@ export interface SlotCtxBlock extends SlotCtxBase {
   readonly literal_checker?: never;
 }
 
-/** `ctx` (meta) of `principal.*`: no slot, so no `today` and no `policy_version`. */
+/**
+ * `ctx` (meta) of `principal.*` and `slot.removed`: no judgement in a slot, so no `today` and no
+ * `policy_version`.
+ */
 export interface PrincipalCtxBlock {
   readonly now: Instant;
   readonly ruleset_version: VersionNumber;
@@ -264,6 +267,17 @@ export interface PrincipalNameBlock {
 
 // =============================================================================================
 // §5.4 slot policy
+
+/** `slot.removed` `target` (meta): the slot removed, and its current version then. */
+export interface SlotRemovedTargetBlock {
+  readonly slot_id: SlotId;
+  readonly sv: number;
+}
+
+/** `slot.removed` `name` (data): the user-given slot name when it was removed. */
+export interface SlotNameBlock {
+  readonly name: string;
+}
 
 /**
  * `slot.policy_set` `policy` (meta).
@@ -1094,6 +1108,8 @@ export interface BlockShapes {
   PrincipalRef: PrincipalRefBlock;
   PrincipalName: PrincipalNameBlock;
   Policy: PolicyBlock;
+  SlotRemovedTarget: SlotRemovedTargetBlock;
+  SlotName: SlotNameBlock;
   DraftSubmittedTarget: DraftSubmittedTarget;
   Draft: DraftBlock;
   CompiledTarget: CompiledTarget;

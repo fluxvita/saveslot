@@ -7,6 +7,9 @@ export interface OpsErrorDetail {
   readonly reason?: string;
   readonly param?: string;
   readonly required_scope?: string;
+  /** `slot_not_empty` for an open schema change item only: why, and which item. */
+  readonly cause?: string;
+  readonly item?: string;
 }
 
 export class OpsError extends Error {

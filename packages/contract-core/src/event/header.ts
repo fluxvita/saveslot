@@ -97,6 +97,9 @@ export type PrincipalRevokedHeader = CallerHead<"principal.revoked", UserId> & T
  */
 export type SlotPolicySetHeader = Member<"slot.policy_set"> & InSlot;
 
+/** Removing an empty slot (§5.4): a head event by a user principal, in the slot removed. */
+export type SlotRemovedHeader = CallerHead<"slot.removed", UserId> & InSlot;
+
 // --- §5.5 schema ------------------------------------------------------------------------------
 
 export type SchemaDraftSubmittedHeader = CallerHead<"schema.draft_submitted"> & InSlot;
@@ -147,6 +150,7 @@ export interface EventHeaders {
   "principal.renamed": PrincipalRenamedHeader;
   "principal.revoked": PrincipalRevokedHeader;
   "slot.policy_set": SlotPolicySetHeader;
+  "slot.removed": SlotRemovedHeader;
   "schema.draft_submitted": SchemaDraftSubmittedHeader;
   "schema.compiled": SchemaCompiledHeader;
   "schema.confirmed": SchemaConfirmedHeader;
@@ -230,6 +234,7 @@ export const HEADER_RULES = {
   "principal.renamed": { head: "head", actor: "user", slot: false, triggers: [], extra: [] },
   "principal.revoked": { head: "head", actor: "user", slot: false, triggers: [], extra: [] },
   "slot.policy_set": { head: "member", actor: "any", slot: true, triggers: [], extra: [] },
+  "slot.removed": { head: "head", actor: "user", slot: true, triggers: [], extra: [] },
   "schema.draft_submitted": { head: "head", actor: "caller", slot: true, triggers: [], extra: [] },
   "schema.compiled": { head: "member", actor: "any", slot: true, triggers: [], extra: [] },
   "schema.confirmed": { head: "member", actor: "any", slot: true, triggers: [], extra: [] },

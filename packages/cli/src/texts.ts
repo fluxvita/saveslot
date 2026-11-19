@@ -30,6 +30,7 @@ export const TEXTS = {
       "  slot list                 the slots and their tables",
       "  slot show <slot> [table…]  a slot's tables: fields, rule, rows",
       "  slot create <name> --template <template> | --file <schema.json> [--timezone <zone>]",
+      "  slot remove <slot or sl_…> [--yes]   an empty slot: one nothing was ever written to",
       "  query <table> [--where 'field<op>value']… [--where-json <json>] [--order f[:desc]] [--fields a,b]",
       "        quote a condition with < or > in it, or the shell takes it as a redirection",
       "  history <table> <row or entity> | --key field=value … [--as-of <#seq or moment>] [--sources]",
@@ -131,9 +132,8 @@ export const TEXTS = {
   /** The bound a count passed (04-contract-types §9 ValidationDetail `max`, `min`). */
   detailMax: s("at most"),
   detailMin: s("at least"),
-  // When the tenant has as many slots as it may. Once removing an empty slot is in, point to the
-  // command that does it instead.
-  slotsFull: s("this version has no command to remove a slot"),
+  // When the tenant has as many slots as it may: an empty slot can be removed to make room.
+  slotsFull: s("to make room, remove an empty slot: saveslot slot remove <slot>"),
   /** A detail's key, as the contract names it (04-contract-types §9 ValidationDetail). */
   detailKey: (k: "op" | "path" | "table" | "field" | "line") => s(k),
 
@@ -292,6 +292,7 @@ export const TEXTS = {
   connectionsListArgs: s("saveslot connections list takes no arguments"),
   connectionsCount: s("connection instance(s)"),
   allSlots: s("all slots"),
+  noSlotsLeft: s("no slots (every slot in its range was removed)"),
   issuedAt: s("issued"),
   revokedAt: s("revoked"),
   disabled: s("disabled by an import"),
@@ -300,6 +301,19 @@ export const TEXTS = {
     "error: no connection instance of that name or ID. See saveslot connections list",
   ),
   revokeAsk: s("revoke"),
+  // slot remove (06 §4)
+  slotRemoveArgs: s("give the slot: saveslot slot remove <name or sl_…>"),
+  slotNotFound: s("error: no slot of that name or ID. See saveslot slot list"),
+  slotRemoveAsk: s("remove the empty slot"),
+  slotRemoveNoTerminal: s(
+    "not run: stdin is no terminal to ask on. Run this again with --yes to remove without asking",
+  ),
+  slotRemovedNow: s(
+    "is removed; its name can be used again, and a slot created under it is another slot",
+  ),
+  slotRemoveUnknown: s(
+    "the connection broke before the answer: it is not known whether the slot was removed. See saveslot slot list",
+  ),
   nameAmbiguous: s(
     "error: more than one connection instance has that name; give the ID of the one to revoke:",
   ),

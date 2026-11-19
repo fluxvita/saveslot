@@ -41,6 +41,7 @@ export const OPERATIONS = {
   "connections.list": { scope: "user_session", paged: true },
   "connections.update": { scope: "user_session" },
   "connections.revoke": { scope: "user_session" },
+  "slots.remove": { scope: "user_session" },
   "reads.list": { scope: "user_session", paged: true },
   "log.verify": { scope: "user_session" },
   "log.end": { scope: "user_session" },

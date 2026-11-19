@@ -1017,3 +1017,103 @@ describe("connections revoke: which one, and paging that would not end", () => {
     expect(r.err).toBe(`${TEXTS.pagesRepeat}\n`);
   });
 });
+
+describe("slot remove: the name resolved to its ID, the removal sent by ID", () => {
+  const ID = `sl_${"4".repeat(16)}`;
+  const OTHER = `sl_${"5".repeat(16)}`;
+  const slot = (slot_id: string, name: string) => ({
+    slot: name,
+    slot_id,
+    sv: 1,
+    timezone: "UTC",
+    tables: [],
+  });
+  function slots(list: unknown[]) {
+    answer = (req, res) => {
+      if (req.method === "GET" && req.url?.startsWith("/v1/slots")) {
+        return json(res, 200, { level: "list", slots: list });
+      }
+      if (req.method === "DELETE" && req.url?.startsWith("/v1/slots/")) {
+        const id = req.url.split("/").pop() as string;
+        return json(res, 200, {
+          slot_id: id,
+          name: "spare",
+          sv: 1,
+          removed_at: "2026-11-19T10:00:00Z",
+        });
+      }
+      json(res, 404, { error: { code: "not_found", message: "no route" } });
+    };
+  }
+  const removed = () =>
+    seen.filter((x) => x.method === "DELETE").map((x) => x.url.split("/").pop());
+
+  it("by name: the slot's ID is sent, and the result names both", async () => {
+    slots([slot(OTHER, "home"), slot(ID, "spare")]);
+    const r = await cli(["slot", "remove", "spare", "--yes"]);
+    expect(r.code).toBe(0);
+    expect(removed()).toEqual([ID]);
+    expect(r.out).toContain("spare");
+    expect(r.out).toContain(ID);
+  });
+
+  it("by ID: that slot", async () => {
+    slots([slot(OTHER, "home"), slot(ID, "spare")]);
+    const r = await cli(["slot", "remove", ID, "--yes"]);
+    expect(r.code).toBe(0);
+    expect(removed()).toEqual([ID]);
+  });
+
+  it("a slot of no such name or ID: refused (4), nothing removed", async () => {
+    slots([slot(OTHER, "home")]);
+    const r = await cli(["slot", "remove", "spare", "--yes"]);
+    expect(r.code).toBe(4);
+    expect(r.err).toContain(TEXTS.slotNotFound);
+    expect(removed()).toEqual([]);
+  });
+
+  it("without --yes and no terminal to ask on: not run, nothing removed", async () => {
+    slots([slot(ID, "spare")]);
+    const r = await cli(["slot", "remove", "spare"]);
+    expect(r.code).not.toBe(0);
+    expect(r.err).toContain(TEXTS.slotRemoveNoTerminal);
+    expect(removed()).toEqual([]);
+  });
+});
+
+describe("connections list: a range of removed slots is no slots, never all slots", () => {
+  it("no range: all slots; a range now empty: no slots; a range: its slots", async () => {
+    const conn = (id: string, name: string, more: object = {}) => ({
+      id,
+      name,
+      scopes: ["saveslot.read"],
+      via: "token",
+      created_at: "2026-11-18T10:00:00Z",
+      ...more,
+    });
+    answer = (req, res) => {
+      if (req.method === "GET" && req.url?.startsWith("/v1/connections")) {
+        return json(res, 200, {
+          connections: [
+            conn("ci_01JF00000000000000000000AA", "everywhere"),
+            conn("ci_01JF00000000000000000000BB", "gone", { slots: [] }),
+            conn("ci_01JF00000000000000000000CC", "athome", {
+              slots: [{ slot: "home", slot_id: `sl_${"4".repeat(16)}` }],
+            }),
+          ],
+        });
+      }
+      json(res, 404, { error: { code: "not_found", message: "no route" } });
+    };
+    const r = await cli(["connections", "list"]);
+    expect(r.code).toBe(0);
+    const line = (name: string) => r.out.split("\n").find((l) => l.includes(name)) ?? "";
+    const all = TEXTS.allSlots.toString();
+    const none = TEXTS.noSlotsLeft.toString();
+    expect(line("everywhere")).toContain(all);
+    expect(line("gone")).toContain(none);
+    expect(line("gone")).not.toContain(all);
+    expect(line("athome")).toContain("home");
+    expect(line("athome")).not.toContain(all);
+  });
+});

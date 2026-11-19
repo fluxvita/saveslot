@@ -85,6 +85,7 @@ export const httpDriver =
       "connections.list": { method: "GET", path: "/v1/connections" },
       "connections.update": { method: "PATCH", path: `/v1/connections/${id}`, body: true },
       "connections.revoke": { method: "DELETE", path: `/v1/connections/${id}` },
+      "slots.remove": { method: "DELETE", path: `/v1/slots/${String(rest["slot_id"])}` },
       "reads.list": { method: "GET", path: "/v1/reads" },
       "log.verify": { method: "GET", path: "/v1/log/verify" },
       "log.end": { method: "GET", path: "/v1/log/end" },
@@ -93,7 +94,13 @@ export const httpDriver =
     const inPath = ["pending", "resolve", "connections.update", "connections.revoke"].includes(
       operation,
     );
-    const p = inPath ? rest : (params as Record<string, unknown>);
+    const { slot_id: _slot, ...withoutSlot } = rest;
+    const p =
+      operation === "slots.remove"
+        ? withoutSlot
+        : inPath
+          ? rest
+          : (params as Record<string, unknown>);
     const reply = await httpRequest(home(), {
       method: r.method,
       path: r.body ? r.path : `${r.path}${query(p)}`,

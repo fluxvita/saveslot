@@ -5,7 +5,7 @@
 ## 1. 改了什么
 
 1. **新操作 `slots.remove`**：移除一个空的 slot。只给用户会话，MCP 不提供。**只按 `slot_id` 移除，不收名字**：名字可以重用（第 4 节），按名字的移除一旦被重发、或被脚本发了两次，就会删掉后来同名新建的那个 slot。HTTP 是 `DELETE /v1/slots/{slot}`，这里只收 `sl_…`，给的是名字时报 `invalid_argument` 并指路；CLI 是 `saveslot slot remove <名字>`，先把名字解析成 `slot_id`，在确认屏上显示它，再按 `slot_id` 发。不收 `Idempotency-Key`：同一个 `slot_id` 再移除一次，返回第一次的结果。
-2. **新事件类型 `slot.removed`**：头事件，actor 是用户，带 `slot`；`target` 是 `{slot_id, name, sv}`（移除时的名字与当前版本）。
+2. **新事件类型 `slot.removed`**：头事件，actor 是用户，带 `slot`；`target`（元数据块）是 `{slot_id, sv}`（移除时的当前版本），移除时的名字放在数据块 `name` 里：名字是用户起的，元数据块里不放用户内容（同 `principal.registered` 的 `name`）。
 3. **"空"的判法**（第 3 节）：在同一个写事务里按日志判、落账。不空的拒绝，错误是 `invalid_argument`、reason `slot_not_empty`、param `slot`，说明里写明有记录的 slot 的删除留到以后的版本；只因结构变更事项未结而拒绝时，`details` 给出这个原因与事项 ID。
 4. **apply**：删 `slots` 行、这个 slot 的 `catalog` 与 `counts` 行，DROP 它的物理表（基础表、`__ver` 表与索引、派生表）。DROP 不影响别的 slot：派生规则与 `ref` 字段都不跨 slot（[`../../spec/03-data-model/11-restricted-sql.md`](../../spec/03-data-model/11-restricted-sql.md)，指向别的 slot 报 `cross_slot_ref`），别的 slot 的表与规则不依赖这些表。保留 `schema_versions`、建它那次操作的请求键（第 4 节）、读取记录（`read_log`、`read_log_rows`、`last_read`）与 `principals`。
 5. **有记录的 slot 整个删除不在这里**：仍按 positioning 里规划的 `deletion_preview` → `delete` 那条路，留到以后。

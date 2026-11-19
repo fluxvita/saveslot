@@ -47,6 +47,13 @@ export const LEDGER = {
   ],
 };
 
+/** A slot to remove: another table name than the ledger's, so that table names stay unique. */
+const SPARE = {
+  ...LEDGER,
+  slot: "spare",
+  tables: [{ ...LEDGER.tables[0], name: "jottings", description: "one row per note" }],
+};
+
 /**
  * The contract cases, in order, on a fresh tenant: `session` is the user session's token; the
  * suite issues the connections it needs.
@@ -159,6 +166,70 @@ export function contractSuite(
     result(await driver(session, "connections.revoke", { id: readerId }));
     expect(await driver(reader, "catalog", {})).toEqual({
       error: expect.objectContaining({ code: "unauthenticated", reason: "revoked" }),
+    });
+  });
+
+  it("an empty slot removed by its ID: a connection whose range was only it sees nothing, nor a slot created later under its name", async () => {
+    const { session } = get();
+    const driver = call;
+    const spare = result(await driver(session, "schema_draft", { document: SPARE }));
+    const id = spare["slot_id"] as string;
+    const only = result(
+      await driver(session, "connections.issue", { name: "spare-only", slots: ["spare"] }),
+    );
+    const token = only["token"] as string;
+    const names = async (credential: string) =>
+      (result(await driver(credential, "catalog", {}))["slots"] as { slot: string }[]).map(
+        (x) => x.slot,
+      );
+    const writeSpare = () =>
+      driver(token, "write", {
+        sv: 1,
+        ops: [{ intent: "insert", table: "spare.jottings", set: { date: "2026-11-16" } }],
+      });
+    expect(await names(token)).toEqual(["spare"]);
+    // By name: refused (names can be reused); by a credential that is not the user's: refused; a
+    // slot with records: refused.
+    expect(await driver(session, "slots.remove", { slot_id: "spare" })).toEqual({
+      error: expect.objectContaining({ code: "invalid_argument", param: "slot_id" }),
+    });
+    expect(await driver(writer, "slots.remove", { slot_id: id })).toEqual({
+      error: expect.objectContaining({
+        code: "insufficient_scope",
+        required_scope: "user_session",
+      }),
+    });
+    const ledger = (
+      result(await driver(session, "catalog", {}))["slots"] as Record<string, unknown>[]
+    ).find((x) => x["slot"] === "ledger") as Record<string, unknown>;
+    expect(await driver(session, "slots.remove", { slot_id: ledger["slot_id"] })).toEqual({
+      error: expect.objectContaining({ code: "invalid_argument", reason: "slot_not_empty" }),
+    });
+
+    const removed = result(await driver(session, "slots.remove", { slot_id: id }));
+    expect(removed).toMatchObject({ slot_id: id, name: "spare", sv: 1 });
+    expect(result(await driver(session, "slots.remove", { slot_id: id }))).toEqual(removed);
+    // The connection's range lists no slot now, and it sees none: never every slot.
+    const listed = result(await driver(session, "connections.list", {}))["connections"] as Record<
+      string,
+      unknown
+    >[];
+    expect(listed.find((c) => c["name"] === "spare-only")?.["slots"]).toEqual([]);
+    expect(await names(token)).toEqual([]);
+    expect(await writeSpare()).toEqual({
+      error: expect.objectContaining({ code: "unknown_table" }),
+    });
+    // A slot created under the same name is another slot: the connection does not see it.
+    const later = result(
+      await driver(session, "schema_draft", {
+        document: { ...SPARE, timezone: "UTC" },
+      }),
+    );
+    expect(later["slot_id"]).not.toBe(id);
+    expect(await names(session)).toEqual(["ledger", "spare"]);
+    expect(await names(token)).toEqual([]);
+    expect(await writeSpare()).toEqual({
+      error: expect.objectContaining({ code: "unknown_table" }),
     });
   });
 

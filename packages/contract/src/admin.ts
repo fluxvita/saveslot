@@ -1,5 +1,5 @@
 // Administrative operations (docs/zh-CN/spec/04-contract-types.md §8): `connections.*` (§8.1),
-// `reads.list` (§8.3), `log.verify` (§8.4) and `log.end` (§8.5). They take a user session and are HTTP only; they
+// `reads.list` (§8.3), `log.verify` (§8.4), `log.end` (§8.5) and `slots.remove` (§8.6). They take a user session and are HTTP only; they
 // have no `CommonParams` and, except where the spec says so, no `CommonResult`.
 
 import type { PrincipalVia, Scope } from "@fluxvita/saveslot-contract-core";
@@ -92,6 +92,22 @@ export type ConnectionsUpdateResult = Connection;
 
 /** 04-contract-types §8.1 `ConnectionsRevokeResult`: `state` is `revoked`; repeating returns the same. */
 export type ConnectionsRevokeResult = Connection;
+
+// ---------------------------------------------------------------------------------------------
+// §8.6 `slots.remove`
+
+/** 04-contract-types §8.6 `SlotsRemoveParams`: the slot's ID only, never its name. */
+export interface SlotsRemoveParams {
+  slot_id: SlotId;
+}
+
+/** 04-contract-types §8.6 `SlotsRemoveResult`: the slot as it was removed; repeating returns the same. */
+export interface SlotsRemoveResult {
+  slot_id: SlotId;
+  name: SlotName;
+  sv: Sv;
+  removed_at: Instant;
+}
 
 // ---------------------------------------------------------------------------------------------
 // §8.3 `reads.list`

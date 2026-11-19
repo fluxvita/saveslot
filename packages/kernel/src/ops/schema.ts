@@ -116,6 +116,21 @@ const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex
 const newSlotId = (): `sl_${string}` => `sl_${randomCrockford(16)}`;
 const newDraftId = (): DraftId => `d_${randomCrockford(16)}`;
 
+/**
+ * A slot ID never used in the tenant: not a slot's now, nor a removed slot's (its versions stay,
+ * process/decisions/remove-empty-slot.md §4), so that the log's events of a slot always mean it.
+ */
+async function unusedSlotId(tx: ReadTx): Promise<`sl_${string}`> {
+  for (;;) {
+    const id = newSlotId();
+    const r = await tx.query(
+      `SELECT 1 FROM slots WHERE id = $1 UNION ALL SELECT 1 FROM schema_versions WHERE slot_id = $1`,
+      [id],
+    );
+    if (r.rows.length === 0) return id;
+  }
+}
+
 /** The highest number of an ID like `t12` / `r3` among `ids`. */
 const highest = (ids: readonly string[], prefix: string) =>
   Math.max(
@@ -265,7 +280,7 @@ export async function schemaDraft(
       return replay(tx, Number(hit.op));
     }
 
-    const slotId = newSlotId();
+    const slotId = await unusedSlotId(tx);
     const result = compileNewSlot({ document, slotId: slotId as never, ...(await numbering(tx)) });
     if (!result.ok) {
       const e = result.error;

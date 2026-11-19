@@ -55,6 +55,11 @@ const revoked = {
   blocks: { ctx, principal: { principal: CONN } },
 };
 
+const slotRemoved = {
+  header: { ...head("slot.removed", 9), slot: SLOT_A },
+  blocks: { ctx, target: { slot_id: SLOT_A, sv: 1 }, name: { name: "home" } },
+};
+
 type Sample = { header: Record<string, unknown>; blocks: Record<string, unknown> };
 const parse = (s: Sample, removed: string[] = []): ParseResult =>
   parseEvent(s.header, s.blocks, removed);
@@ -79,6 +84,7 @@ describe("parseEvent: valid events", () => {
     ["principal.registered", registered],
     ["principal.renamed", renamed],
     ["principal.revoked", revoked],
+    ["slot.removed", slotRemoved],
   ] as const)("accepts %s", (type, s) => {
     expect(parse(s)).toEqual({ ok: true, type });
   });
@@ -128,6 +134,8 @@ describe("parseEvent: valid events", () => {
         "RejectedTarget",
         "SchemaSupersededTarget",
         "SlotCtx",
+        "SlotName",
+        "SlotRemovedTarget",
         "SwitchedTable",
         "SwitchedTarget",
         // a write's events (parse-write.test.ts)
@@ -192,6 +200,24 @@ describe("parseEvent: removed blocks (§1.1)", () => {
   it("still checks the shape of a present block that is also listed as removed", () => {
     const s = withBlock(renamed, "name", { name: 3 });
     expect(issues(parse(s, ["name"]))).toEqual(["name: both present and removed", "name: name"]);
+  });
+});
+
+describe("parseEvent: slot.removed (§5.4)", () => {
+  it.each([
+    ["by a connection", withHeader(slotRemoved, { actor: CONN })],
+    ["without a slot", { ...slotRemoved, header: without(slotRemoved.header, "slot") }],
+    ["as a member", withHeader(slotRemoved, { op: 9 })],
+    ["with a request key", withBlock(slotRemoved, "request_key", { key: "k" })],
+    ["with a judging ctx", withBlock(slotRemoved, "ctx", { ...ctx, today: "2026-11-10" })],
+    [
+      "with a name in the target",
+      withBlock(slotRemoved, "target", { slot_id: SLOT_A, sv: 1, name: "home" }),
+    ],
+    ["with a version 0", withBlock(slotRemoved, "target", { slot_id: SLOT_A, sv: 0 })],
+    ["without the name", { ...slotRemoved, blocks: without(slotRemoved.blocks, "name") }],
+  ] as const)("refuses one %s", (_, s) => {
+    expect(issues(parse(s as Sample))).not.toEqual([]);
   });
 });
 

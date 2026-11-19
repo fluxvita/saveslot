@@ -406,9 +406,9 @@
 | 键 | 含义 |
 |---|---|
 | `now` | 调用上下文里的当前时刻（入口取的，可能早于事件头的 `at`） |
-| `today` | `now` 在该 slot 时区下的日期。没有 slot 的操作（`principal.*`）缺省不写 |
+| `today` | `now` 在该 slot 时区下的日期。没有 slot 的操作（`principal.*`）与不做判定的 `slot.removed` 缺省不写 |
 | `ruleset_version` | 这次操作做机械判定时用的规则版本（内核的整数版本号）。不做判定的操作也照记当时内核的版本。内核不认识的版本：`apply` 停止（§1.6） |
-| `policy_version` | 这次操作判定时该 slot 的策略版本。没有 slot 的操作（`principal.*`）缺省不写；新建 slot 的 `schema.draft_submitted` 记同一操作里初始策略的版本 |
+| `policy_version` | 这次操作判定时该 slot 的策略版本。没有 slot 的操作（`principal.*`）与 `slot.removed` 缺省不写；新建 slot 的 `schema.draft_submitted` 记同一操作里初始策略的版本 |
 | `literal_checker` | 字面命中核对器的版本（含同义表版本）。只有 `write.head` 与触发写入的 `item.resolved` 有。内核不认识的版本：`apply` 停止（§1.6） |
 
 删除重放时，每次旧写入按它自己的头事件记下的 `ruleset_version` 与 `policy_version` 重算。
@@ -507,7 +507,7 @@
 
 `apply`：维护 `principals`（种类、名称、scope、slot 范围、状态）。状态由事件得出：`principal.revoked` 之后是已吊销（`revoked`）；`tenant.imported` 把它之前登记的主体置为已停用（`disabled`，§5.2）；都没有的是有效的。令牌本身不在日志里，在控制面。
 
-### 5.4 slot 策略
+### 5.4 slot 策略与移除
 
 #### `slot.policy_set`
 
@@ -539,6 +539,17 @@
 | `user_session_only` | 只接受用户会话确认的处理方式：`[{"type": <事项类型>, "decision": <处理方式>}]`。第一版恒为空；非空同上，是保留的形状 |
 
 `apply`：更新 `slots` 的当前策略指针。
+
+#### `slot.removed`
+
+移除一个空的 slot（契约 `slots.remove`）。头事件，`actor` 是发起移除的用户主体；事件头的 `slot` 是被移除的 slot。带 §5.1 的 `ctx`，只有 `now` 与 `ruleset_version`（不做判定）；**不带 `task`、`request_key`、`idempotency`**：`slots.remove` 没有这些参数，按 `slot_id` 再移除一次返回第一次的结果，不记事件。
+
+| path | 种类 | 内容 |
+|---|---|---|
+| `target` | 元 | `{"slot_id": <slot ID>, "sv": <移除时的当前版本>}`。`slot_id` 与事件头的 `slot` 相同 |
+| `name` | 数 | `{"name": <移除时的 slot 名>}`。用户起的名字。来源：无，不在隐私删除的级联范围内（同 `principal.registered` 的 `name`） |
+
+只有空的 slot 才能移除，是否为空在写入时按日志判定（契约 §17），`apply` 不再判。`apply`：删 `slots` 行、这个 slot 的数据目录（`catalog`）与行数计数（`counts`），DROP 它当前版本的物理表（基础表与它的版本表、派生表）。**保留** schema 版本表里它的各版本：表号与 `slot_id` 不再使用（新 slot 的表号按 schema 版本表里已有的最大号往后排，新 `slot_id` 与其中出现过的查重）；保留建它那次操作的请求键（窗口内重发那次 `schema_draft` 返回原回执，不会再建一个）；`principals` 不变（连接实例的 slot 范围里留着这个 ID，读取与鉴权时滤掉）；读取记录不变。`target.slot_id` 与事件头不符、这个 slot 不存在或当前版本不是 `target.sv` 时，`apply` 停止。
 
 ### 5.5 schema 生命周期
 
@@ -1465,6 +1476,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 |---|---|
 | `write`、`resolve`、`schema_draft`、`delete`、撤回删除 | 是（上文） |
 | 签发、改名、吊销连接实例 | 是（`principal.*`） |
+| 移除空 slot | 是（`slot.removed`）；再移除一次已移除的 slot：否 |
 | 导入到空租户 | 是：导入的事件原样追加，之后一条 `tenant.imported`，再为每一项占位的待删除项各补一条墓碑（§5.2） |
 | 被拒的请求（校验失败、`read_first`、`insufficient_scope`、编译失败、确认时表已被写入的 `resolve`……） | 否。被拒的写入不产生事件，也不做去重 |
 | 全部字段都是无操作的写入 | `write.head` 与 `source.recorded`；没有 `write.base` |
@@ -1481,9 +1493,9 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | 主体登记（含 scope、slot 范围、状态） | `tenant.genesis` 的 `user`、`system`；`principal.*`；`tenant.imported` 的 `user` 与停用 |
 | 当前恢复次数 | 最近一条 `tenant.restored` 或 `tenant.imported` 的 `restore_count`（都没有则为 0） |
 | 当前租户 ID | 最近一条 `tenant.genesis` 或 `tenant.imported` 的 `tenant` |
-| slot、当前版本指针、当前策略 | `schema.compiled` 的 `compiled`；`schema.switched` 的 `target`；`slot.policy_set` |
-| schema 版本表、迁移状态、数据目录的结构部分 | `schema.*` |
-| 业务表当前版本、版本表、行数计数 | `write.base` 的 `target`、`fields/*/*`（`applied`）、`existence/*`；`write.base` 的 `span/*/*`、`span/existence/*`；`deletion.confirmed` / `deletion.cancelled` 的 `results/*`、`restated/*`；`schema.switched`（按 `compiled` 转换旧版写入）；`deletion.executed`（清空） |
+| slot、当前版本指针、当前策略 | `schema.compiled` 的 `compiled`；`schema.switched` 的 `target`；`slot.policy_set`；`slot.removed`（删去） |
+| schema 版本表、迁移状态、数据目录的结构部分 | `schema.*`；`slot.removed`（删去它的数据目录，schema 版本表保留） |
+| 业务表当前版本、版本表、行数计数 | `write.base` 的 `target`、`fields/*/*`（`applied`）、`existence/*`；`write.base` 的 `span/*/*`、`span/existence/*`；`deletion.confirmed` / `deletion.cancelled` 的 `results/*`、`restated/*`；`schema.switched`（按 `compiled` 转换旧版写入）；`deletion.executed`（清空）；`slot.removed`（删去物理表与计数） |
 | 来源表（含每项贡献的当前区间、首次创建的登记、佐证端点） | `write.base` 的 `fields/*/*` 与 `existence/*` 的 `status`、`span/*/*`、`span/existence/*`、`sources/*/*`、`valid_sources`、`op_sources`、`target.created`、`revert`（"已被回掉"的登记）；`write.head` 的 `ops/<i>/valid`（判别显式终点）、`ops/<i>/target.by_external_key`（哪些贡献是同步贡献，供同步基线）；`deletion.*` 的 `restated/*`、`recreated/*`；`schema.switched`（按 `compiled` 转换旧版各项，登记常量 `backfill` 补出的贡献） |
 | 块依赖索引 | 各数据块的 `deps` 与 `sources/*/*`、`results/*`、`restated/*` 里的 `carried` |
 | 派生表、分组映射、派生读集 | `write.derived`；`schema.switched`（按新规则重建） |
@@ -1521,6 +1533,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `tenant.imported` | 导入到空租户 |
 | `principal.registered`、`principal.renamed`、`principal.revoked` | 主体 |
 | `slot.policy_set` | slot 策略 |
+| `slot.removed` | 移除空 slot |
 | `schema.draft_submitted`、`schema.compiled`、`schema.confirmed`、`schema.rejected`、`schema.superseded`、`schema.migration_started`、`schema.switched`、`schema.migration_failed` | schema 生命周期 |
 | `source.recorded` | 源数据 |
 | `write.head`、`write.base`、`write.derived` | 写入 |

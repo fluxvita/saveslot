@@ -605,7 +605,7 @@ ledger: 2 张表
 
 **`saveslot_schema_draft`**：用一份 schema 文档新建 slot（表、字段与单位）。先把草稿（每张表、它的字段与单位）给用户看，他同意后才提交：新 slot 编译通过即生效，之后没有任何确认。用户想开始记录一类事情、而他现有的表都不合适时用它；先用 `saveslot_catalog` 看，已有合适的 slot 就直接用，不再新建。只能新建 slot，不能改已有的 slot（`base_version` 不为 `null` 的文档会被拒），也只有范围为全部 slot 的连接能新建。带单位的字段用单位词表里的代码（如 `km`、`min`、`CNY`）。〔有 saveslot.write〕回执给出新 slot 的 schema 版本 `sv: 1`，供 `saveslot_write` 使用。
 
-**已知的限制**：每个租户至多 100 个 slot（open-questions「接口的数值与细则」），而这一版没有移除 slot 的入口；一个被注入的默认连接可以不经确认把名额建满，之后用户自己也建不了 slot，只能等移除 slot 的入口补上。连接建的 slot 在日志里有写入者，可以据此吊销那个连接。
+**已知的限制**：每个租户至多 100 个 slot（open-questions「接口的数值与细则」）；一个被注入的默认连接可以不经确认把名额建满。空的 slot 用户可以移除（`saveslot slot remove`，契约 `slots.remove`，不进 MCP），腾出名额；连接建了 slot 又写进了记录的，这一版移除不了。连接建的 slot 在日志里有写入者，可以据此吊销那个连接。
 
 新建 slot 没有待确认这一道，"先给用户看、同意后才提交"是唯一的闸，改措辞时这一句要保持比别的句子重，`instructions` 里对应的那句同样。改已有 slot 开放（07-scope-v1 P4）后，描述改为：提交 schema 草稿（新建 slot，或在 `saveslot_catalog` 取回的完整文档上修改）。返回编译结果、每项改动的类别与影响预览；新建 slot 直接生效；不改动已有数据的小改动（加表、加可选字段、改说明与别名、没人在用的改名、放宽约束）按 slot 策略自动生效，其余生成待确认事项。表还没写过数据时，可以直接改它的时间类型、键与引用。带单位的字段用单位词表里的代码（如 `km`、`min`、`CNY`）。新提交的草稿会取代尚未确认的旧草稿。
 
@@ -932,6 +932,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 | `GET /v1/connections` | `connections.list`（每项带 slot 范围） | `include_revoked`（`true` 时已吊销与已停用的都列出）、`limit`、`cursor` | 用户会话 |
 | `PATCH /v1/connections/{id}` | `connections.update` | 请求体 `{name}` | 用户会话 |
 | `DELETE /v1/connections/{id}` | `connections.revoke` | — | 用户会话 |
+| `DELETE /v1/slots/{slot_id}` | `slots.remove` | —（路径里只收 `sl_…`；给名字报 `invalid_argument`） | 用户会话 |
 | `GET /v1/slots/{slot}/policy` | `policy.get` | — | `saveslot.read` |
 | `PUT /v1/slots/{slot}/policy`（后续） | `policy.set` | 请求体 | 用户会话 |
 | `GET /v1/reads` | `reads.list` | `connection`、`slot`、`table`、`of_task`（只列带这个任务标识的读取）、`since`、`until`、`limit`、`cursor` | 用户会话 |

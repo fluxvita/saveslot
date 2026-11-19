@@ -1,7 +1,7 @@
 // Reading every page of a list (06-cli §6.1: 200 a page), with a bound, for the commands that need
 // the whole of one: the tables of a slot, every connection instance.
 
-import type { Client, Connection } from "@fluxvita/saveslot-client";
+import type { CatalogList, Client, Connection } from "@fluxvita/saveslot-client";
 import { TEXTS } from "./texts.ts";
 import { Failed } from "./usage.ts";
 
@@ -27,6 +27,18 @@ export async function everyPage<T>(
     cursor = p.next;
   }
   throw new Failed(TEXTS.pagesTooMany, 1);
+}
+
+/** Every slot the session sees, over all pages of the catalog's list. */
+export async function allSlots(c: Client): Promise<CatalogList["slots"]> {
+  return everyPage(async (cursor) => {
+    const page = await c.catalog({
+      level: "list",
+      limit: 100,
+      ...(cursor !== undefined ? { cursor } : {}),
+    });
+    return { items: (page as CatalogList).slots, next: page.next_cursor };
+  });
 }
 
 /** Every connection instance, revoked and disabled ones too, page after page (200 a page). */

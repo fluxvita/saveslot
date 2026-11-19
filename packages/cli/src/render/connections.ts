@@ -112,14 +112,17 @@ export function connectionsList(r: unknown): Line[] {
   const out: Line[] = [t`${num(cs.length)} ${words(TEXTS.connectionsCount)}`];
   for (const c of cs) {
     const e = obj(c);
+    // No range given: every slot. A range given is a range even when empty: every slot in it was
+    // removed, and the connection sees none (04-contract-types §8.1 `Connection.slots`).
     const slots = arr(e["slots"]);
-    const range =
-      slots.length > 0
-        ? join(
+    const range = !Object.hasOwn(e, "slots")
+      ? [words(TEXTS.allSlots)]
+      : slots.length === 0
+        ? [words(TEXTS.noSlotsLeft)]
+        : join(
             slots.map((s) => [name(String(obj(s)["slot"] ?? ""))]),
             t`,`,
-          )
-        : [words(TEXTS.allSlots)];
+          );
     const state =
       e["state"] === "revoked"
         ? t`  ${words(TEXTS.revokedAt)} ${time(String(e["revoked_at"] ?? ""))}`
@@ -139,6 +142,13 @@ export function connectionsList(r: unknown): Line[] {
 export function revokedLines(c: Connection): Line[] {
   return [
     t`${untrusted(String(c.name))} (${id(String(c.id))}) ${words(TEXTS.revokedAt)} ${time(String(c.revoked_at ?? ""))}: ${words(TEXTS.revokedNow)}`,
+  ];
+}
+
+/** `saveslot slot remove`: the slot removed, by name and ID. */
+export function slotRemovedLines(r: { name: unknown; slot_id: unknown }): Line[] {
+  return [
+    t`${untrusted(String(r.name))} (${id(String(r.slot_id))}) ${words(TEXTS.slotRemovedNow)}`,
   ];
 }
 

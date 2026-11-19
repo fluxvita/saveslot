@@ -46,6 +46,8 @@ import type {
   ResolveResult,
   SchemaDraftParams,
   SchemaDraftResult,
+  SlotsRemoveParams,
+  SlotsRemoveResult,
   TimelineParams,
   TimelineResult,
 } from "@fluxvita/saveslot-contract";
@@ -125,6 +127,10 @@ export interface Client {
     list(p?: ConnectionsListParams): Promise<ConnectionsListResult>;
     update(p: ConnectionsUpdateParams): Promise<ConnectionsUpdateResult>;
     revoke(p: ConnectionsRevokeParams): Promise<ConnectionsRevokeResult>;
+  };
+  readonly slots: {
+    /** Removes an empty slot, by its ID only (04-contract §17). */
+    remove(p: SlotsRemoveParams): Promise<SlotsRemoveResult>;
   };
   readsList(p?: ReadsListParams): Promise<ReadsListResult>;
   logVerify(): Promise<LogVerifyResult>;
@@ -236,6 +242,19 @@ export function createClient(o: ClientOptions): Client {
           method: "DELETE",
           path: `/v1/connections/${seg(id)}`,
         }) as Promise<Connection>;
+      },
+    },
+    slots: {
+      remove: async (p) => {
+        const { slot_id, ...rest } = p;
+        const extra = Object.keys(rest);
+        if (extra.length > 0) {
+          throw new ClientUsageError(`slots.remove takes only slot_id, not ${extra.join(", ")}`);
+        }
+        return send({
+          method: "DELETE",
+          path: `/v1/slots/${seg(slot_id)}`,
+        }) as Promise<SlotsRemoveResult>;
       },
     },
     readsList: async (p = {}) => get("/v1/reads", p) as Promise<ReadsListResult>,

@@ -156,6 +156,13 @@ const ROUTES: readonly Route[] = [
     parts: ["slot"],
     params: ([slot], q) => ({ ...q, level: "list", slot }),
   }),
+  // Removing an empty slot, by its ID: a name there is refused (04-contract §17), since names can
+  // be reused. The part has a slot name's form, which an ID has too.
+  route("DELETE", "/v1/slots/{}", "slot_remove", {
+    operation: "slots.remove",
+    parts: ["slot"],
+    params: ([slot], q) => ({ ...q, slot_id: slot }),
+  }),
   route("GET", "/v1/slots/{}/schema", "slot_schema", {
     operation: "catalog",
     parts: ["slot"],

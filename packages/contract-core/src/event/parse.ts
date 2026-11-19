@@ -94,6 +94,16 @@ const SHAPES: Partial<Record<string, ShapeChecker>> = {
     if (!keys(v, at, ["name"], [], issues)) return;
     check(str(v["name"]), at, "name", issues);
   },
+  // §5.4 slot.removed: the slot's ID and its version then; the name a data block.
+  SlotRemovedTarget(v, at, issues) {
+    if (!keys(v, at, ["slot_id", "sv"], [], issues)) return;
+    check(str(v["slot_id"]) && isId("slot", v["slot_id"]), at, "slot_id", issues);
+    check(isEventInteger(v["sv"]) && (v["sv"] as number) >= 1, at, "sv", issues);
+  },
+  SlotName(v, at, issues) {
+    if (!keys(v, at, ["name"], [], issues)) return;
+    check(str(v["name"]), at, "name", issues);
+  },
   // §5.4, §5.5, §7
   ...SCHEMA_SHAPES,
   // §5.6–§5.8

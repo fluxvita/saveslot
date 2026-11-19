@@ -14,5 +14,6 @@ export * from "./principals.ts";
 export * from "./read.ts";
 export * from "./resolve.ts";
 export * from "./schema.ts";
+export * from "./slots.ts";
 export * from "./tenant.ts";
 export * from "./write.ts";

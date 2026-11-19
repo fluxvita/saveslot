@@ -21,7 +21,7 @@ import {
   type JsonValue,
   type Seq,
 } from "@fluxvita/saveslot-contract-core";
-import { evaluationRefusal } from "../rules/index.ts";
+import { derivedLayout, evaluationRefusal } from "../rules/index.ts";
 import { isKnownRsqlVersion } from "../rules/version.ts";
 import { derivedTableDdl } from "./derived.ts";
 import { ApplyError, type Change } from "./model.ts";
@@ -174,6 +174,32 @@ export interface SwitchInput {
   readonly compiled: CompiledSchema;
 }
 
+/** The slot a `slot.removed` removes, as it is, read by the caller. */
+export interface RemoveInput {
+  readonly currentSv: number | null;
+  /** The current version's compiled definition: its physical tables are dropped. */
+  readonly compiled: CompiledSchema | undefined;
+}
+
+/**
+ * Drops the physical tables of a version (09 §5.4 `slot.removed`): a base table with its version
+ * table (its index goes with it), a derived table. Names are checked as when they were created.
+ */
+function dropDdl(c: CompiledSchema): string {
+  return c.tables
+    .flatMap((t) => {
+      if (t.kind === "derived") return [`DROP TABLE "${derivedLayout(t).table}";`];
+      const name = t.physical.table;
+      if (
+        !new RegExp(`^t_${t.id}_v[1-9][0-9]{0,8}$`).test(name) ||
+        !/^t[1-9][0-9]{0,8}$/.test(t.id)
+      )
+        throw new Error(`not a physical table name: ${JSON.stringify(name)}`);
+      return [`DROP TABLE "${name}__ver";`, `DROP TABLE "${name}";`];
+    })
+    .join("\n");
+}
+
 /** The slot a switch is in, and the table IDs already used in the tenant, read by the caller. */
 export interface SlotInput {
   readonly currentSv: number | null;
@@ -186,7 +212,11 @@ export function planSchema(
   seq: Seq,
   slot: string | undefined,
   block: (path: string) => Obj,
-  input: { readonly switchTo?: SwitchInput; readonly slot?: SlotInput },
+  input: {
+    readonly switchTo?: SwitchInput;
+    readonly slot?: SlotInput;
+    readonly remove?: RemoveInput;
+  },
 ): Change[] | undefined {
   const notYet = (what: string) =>
     new ApplyError("not_implemented", seq, `${what} is not applied yet`);
@@ -219,6 +249,22 @@ export function planSchema(
           policy_version: block("policy")["policy_version"] as number,
         },
       ];
+    // §5.4: an empty slot removed. Whether it is empty was decided when it was written; apply
+    // takes the slot away: its row, catalog and counts, and its physical tables. Its versions
+    // stay (table numbers and slot IDs are not used again), and so do request keys.
+    case "slot.removed": {
+      const t = block("target");
+      const inconsistent = (what: string) => new ApplyError("inconsistent", seq, what);
+      if (t["slot_id"] !== slot) throw inconsistent(`target ${String(t["slot_id"])} in ${slot}`);
+      const r = input.remove;
+      if (r === undefined) throw inconsistent(`no slot ${String(slot)}`);
+      if (r.currentSv !== t["sv"] || r.compiled === undefined)
+        throw inconsistent(`slot ${String(slot)} is not at version ${String(t["sv"])}`);
+      return [
+        { kind: "ddl", sql: dropDdl(r.compiled) },
+        { kind: "slot_remove", slot: slot as string, tables: r.compiled.tables.map((x) => x.id) },
+      ];
+    }
     // §5.5: build the version's new physical tables, point the slot at it.
     case "schema.switched": {
       const t = block("target");

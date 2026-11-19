@@ -19,6 +19,7 @@ export const EVENT_TYPES = [
   "principal.renamed",
   "principal.revoked",
   "slot.policy_set",
+  "slot.removed",
   "schema.draft_submitted",
   "schema.compiled",
   "schema.confirmed",

@@ -127,6 +127,8 @@ export type Change =
       readonly structure: string;
     }
   | { readonly kind: "counts_init"; readonly table_id: string }
+  /** An empty slot removed (09 §5.4 `slot.removed`): its row, catalog and counts; not its versions. */
+  | { readonly kind: "slot_remove"; readonly slot: string; readonly tables: readonly string[] }
   /** The slot's current version becomes `sv` (its first: this phase only creates slots). */
   | {
       readonly kind: "version_switch";

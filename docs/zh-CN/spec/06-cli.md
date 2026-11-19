@@ -459,6 +459,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 |---|---|---|---|---|
 | `saveslot slot list` | `catalog`（`level: list`） | — | slot → 表名、一句话说明、派生表标"只读" | P1 |
 | `saveslot slot show <slot> [表…]` | `catalog`（`level: table`） | `--tables` | 字段、类型、单位、说明、规则原文、数据概况（同 MCP `saveslot_catalog` 的文本） | P1 |
+| `saveslot slot remove <slot 名或 sl_…>` | `slots.remove` | `--yes` | 移除的 slot 名与 ID；名字之后可以重用。先在全部 slot 里按 ID 精确匹配，没有才按名字；把名字解析成 `slot_id` 后在确认屏上显示，再按 `slot_id` 发（名字可以重用，按名字发的重试可能删掉同名新建的 slot）。没有终端可问、又没给 `--yes` 时不执行。有记录的 slot 拒绝（`slot_not_empty`） | P1 |
 | `saveslot schema templates` | 无（列 CLI 自带的模板） | — | 模板名、包含的表 | P1 |
 | `saveslot slot create <名字>` | `schema_draft`（`base_version: null`） | `--template` / `--file`、`--timezone` | 编译结果、回填的表 / 字段 ID、`sv: 1`；编译失败逐条列出位置 | P1 |
 | `saveslot schema get <slot>` | `catalog`（`level: schema`） | `-o <文件>` | 完整 schema 文档（已填 `base_version`），可直接改了提交 | P4 |
@@ -470,7 +471,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | 命令 | 契约操作 | 关键参数 | 输出要点 | 出现于 |
 |---|---|---|---|---|
 | `saveslot connect <宿主>` | `connections.issue` + 一次 `catalog` 自检 | `--name`、`--scope`、`--slots`、`--apply` | 连接实例 ID、scope、slot 范围、令牌（只此一次；`--apply` 成功时不显示）、宿主命令；末尾提示 `saveslot snippet` | P1（`--slots` P5） |
-| `saveslot connections list` | `connections.list` | — | 名字、ID、scope、slot 范围（"全部"或 slot 名列表）、签发时间、是否已吊销或已停用 | P1（范围一列 P5） |
+| `saveslot connections list` | `connections.list` | — | 名字、ID、scope、slot 范围（"全部"、slot 名列表，或范围里的 slot 都已移除时写明"没有 slot"——不是"全部"）、签发时间、是否已吊销或已停用 | P1（范围一列 P5） |
 | `saveslot connections rename <名字或 ID> <新名字>` | `connections.update` | — | 新旧名字；历史里的 actor 不变，只是显示名变 | P6 |
 | `saveslot connections revoke <名字或 ID>` | `connections.revoke` | `--yes` | 吊销时刻；之后该令牌的请求一律拒绝。先在全部连接实例里按 ID 精确匹配，没有才按名字；按名字匹配到不止一个时拒绝（退出码 2）并列出它们的 ID | P1 |
 | `saveslot snippet [<宿主>]` | 无（打印 CLI 自带的文案，不连 saveslot 服务） | `--lang en\|zh-CN` | 建议贴进宿主自定义指令的文案与该宿主的放置位置（3.4） | P1（文案初稿；按评测结果在 P6 定稿） |
@@ -659,7 +660,7 @@ runs r_01JC… 整行删除：date 只来自这句话
   重新查看：saveslot pending show pi_9B…
 ```
 
-校验类错误的 `details` 逐条一行：明细的 `code`（带 `max` / `min` 的在码后写"至多 N""至少 N"，与 MCP 的文本一致），再写它在哪里——`op`、`path`、`table`、`field`、`line` 中给了的那些（键是 CLI 自己的字样，值放在不可信边界内），带 `valid` 的（判定时发现的 `required_in_gap`）再写那一段区间，写法同读结果里的区间（起点开口、整段时间都照那里写）。slot 数已到上限（`path` 为 `slot` 的 `out_of_bounds`）时另起一行写明这一版没有移除 slot 的命令。例如：
+校验类错误的 `details` 逐条一行：明细的 `code`（带 `max` / `min` 的在码后写"至多 N""至少 N"，与 MCP 的文本一致），再写它在哪里——`op`、`path`、`table`、`field`、`line` 中给了的那些（键是 CLI 自己的字样，值放在不可信边界内），带 `valid` 的（判定时发现的 `required_in_gap`）再写那一段区间，写法同读结果里的区间（起点开口、整段时间都照那里写）。slot 数已到上限（`path` 为 `slot` 的 `out_of_bounds`）时另起一行，指向移除空 slot 的命令（`saveslot slot remove`）。例如：
 
 ```
 error validation_failed (「write」): 「the write falls where the entity has no value」
@@ -730,6 +731,7 @@ CLI 与 `saveslot mcp` 只用 home 下固定的套接字路径（`run/saveslot.s
 | 操作 | CLI 命令 | 为什么不给连接实例 |
 |---|---|---|
 | `connections.issue` / `update` / `revoke` | `connect`、`connections …` | 能签发凭证的 Agent 就能给自己任意 scope，scope 失去意义；吊销是人收回权限的唯一手段 |
+| `slots.remove` | `slot remove` | 移除一个 slot 决定这个租户里有哪些 slot、名额给谁；Agent 建错的空 slot 由用户收拾 |
 | `policy.set`（后续） | — | 策略决定哪些改动不经确认就生效，相当于改确认规则 |
 | `reads.list` | `reads` | 审计的对象正是各个连接实例；被审计方不该能读全部审计 |
 | `log.verify`、对拍 | `verify` | 面向运维，读日志全量；对 Agent 没有用处 |

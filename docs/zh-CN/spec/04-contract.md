@@ -29,7 +29,7 @@
 | `schema_draft` | 写 | `saveslot.schema` | 提交 schema 草稿，返回编译结果与影响预览 | 做（无重新抽取） |
 | `delete` | 写（不可逆） | `saveslot.delete` | 执行一次已预览的删除 | 做 |
 | `extract_claim` / `extract_submit` | 写 | `saveslot.read` + `saveslot.write` | 领取、提交抽取工作项 | 后续 |
-| 管理类（第 17 节） | 读 / 写 | 用户会话¹ | 连接实例、slot 策略、读取审计、日志校验、对拍、导出、导入到空租户 | 做（`policy.set` 后续） |
+| 管理类（第 17 节） | 读 / 写 | 用户会话¹ | 连接实例、移除空 slot、slot 策略、读取审计、日志校验、对拍、导出、导入到空租户 | 做（`policy.set` 后续） |
 
 ¹ `policy.get` 例外：任何有 `saveslot.read` 的凭证都可以调用。
 
@@ -719,6 +719,7 @@
 |---|---|
 | `connections.issue` | 签发连接实例：名字、scope、slot 范围（`slots`：slot 名或 `slot_id` 的数组，不给 = 全部；每个都必须存在且可见，否则 `not_found`（`slot`）；空数组报 `invalid_argument`（`empty_slots`））。结果里的令牌只返回这一次，saveslot 只存它的哈希 |
 | `connections.list` / `update` / `revoke` | 列出（含每个连接实例的 slot 范围；`include_revoked: true` 时已吊销与已停用的都列出）、改名、吊销。`update` 只能改名；吊销立即生效，重复吊销返回同一结果：吊销已吊销或已停用的连接实例不记事件，返回它的当前状态（已停用的仍是 `disabled`）。签发、改名、吊销都记为日志事件 |
+| `slots.remove` | 移除一个空的 slot。**只收 `slot_id`，不收名字**（`invalid_argument`，`param: "slot_id"`）：名字在 slot 移除后可以重用，按名字的移除一旦重发，会删掉后来同名新建的那个 slot；CLI 先把名字解析成 `slot_id`、在确认屏上显示，再按 ID 发。"空"按日志判：这个 slot 名下除结构（`schema.*`）与策略（`slot.policy_set`）外没有任何事件（结构变更事项的 `item.*` 也不算），在同一个写事务里判定并记下 `slot.removed`；不空报 `invalid_argument`（`slot_not_empty`）；判据与各事件类型的归类见 [`../process/decisions/remove-empty-slot.md`](../process/decisions/remove-empty-slot.md)，与表级的"从未被写入"并排见 data-model「schema 演进」。结构变更事项还开着时同样报 `slot_not_empty`，`details` 带原因与事项 ID。不存在的 `slot_id` 报 `not_found`（`slot`）。不收 `Idempotency-Key`：已移除的 slot 再移除一次，返回第一次的结果、不记事件。移除之后：名字可以重用，用同一个名字新建的是另一个 slot（另一个 `slot_id`），连接实例的 slot 范围、读取记录不会指到它；范围只剩已移除 slot 的连接实例什么都看不到（范围为空不等于不限 slot），`connections.list` 里它的 `slots` 是空数组；读取记录照旧保留，列出时查不到名字的写原始 `slot_id`，按名字过滤一个已移除的 slot 报 `not_found` |
 | `policy.get` | slot 策略：策略版本（`policy_version`）、冲突期间的生效值规则（`effective_value_rule`）、来源级别的秩表（第一版只记不用）、哪些 schema 改动自动生效。任何有 `saveslot.read` 的凭证可调用；slot 须在它的可见范围内，否则 `not_found`（`slot`） |
 | `policy.set`（后续） | 修改 slot 策略 |
 | `reads.list` | 读取审计：哪个连接实例在什么时候读了哪些数据（含对源数据原文的读取）。只给版本，不给值；每条带 `task`；结果写明读取记录保留到哪一刻（没有清理时是租户创建的时刻）。`since` 含、`until` 不含；`slot` 或 `table` 不存在报 `not_found`。一次读取在某张表上读到的行版本数超过阈值（初值 1,000，多见于受限 SQL 的聚合）时，这张表不逐行列，列在 `coarse` 里：只有表与这次读取所见状态的位置（data-model「读取记录」） |
@@ -728,4 +729,4 @@
 | `export` | 导出全部日志事件，NDJSON：第一行是清单，之后每行一条事件，形状以 [`09-event-format.md`](09-event-format.md) 第 8 节为准，可在任何后端经 `apply` 重放。宽限期内待删除的内容默认换成占位，`include_pending_deletion: true` 才包含；`after_seq` 从某个位置之后续传（清单里记为 `after`）。读取记录不在导出里 |
 | `import` | 导入到空租户：把一份导出装进一个空租户（日志里只有创世事件，锚点里没有删除登记、恢复记录与进行中的恢复或导入）。逐事件原样追加并交给 `apply` 重放，追加一条 `tenant.imported`，恢复次数加 1；导入前登记的主体一律停用（第 12 节），凭证由用户在目标处重新签发。整体要么完成、要么目标租户保持为空；期间这个租户的其他请求报 `unavailable`（`importing`）。导出里待删除内容的占位在导入时立即补墓碑，那些删除在目标处不可撤回。读取记录、控制面的内容（凭证、授权、签名密钥、源头的删除登记）、外部文件带不过来，结果如实列出。错误：`invalid_argument`（`tenant_not_empty`）、`import_rejected`、`rate_limited`（`busy`）、`too_large`。合并导入、迁移流程不在第一版 |
 
-整个 slot 删除第一版不做（positioning「后续规划」）。
+有记录的 slot 整个删除第一版不做（positioning「后续规划」）；空的 slot 用 `slots.remove` 移除。

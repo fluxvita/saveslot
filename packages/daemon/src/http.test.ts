@@ -255,6 +255,8 @@ describe("HTTP's own", () => {
       ["GET", "/v1/slots", undefined, 200],
       ["GET", "/v1/slots/ledger", undefined, 200],
       ["GET", "/v1/slots/ledger/schema", undefined, 200],
+      // No such slot: the operation answers (404 not_found, slot), not the router.
+      ["DELETE", `/v1/slots/sl_${"9".repeat(16)}`, undefined, 404],
       ["GET", "/v1/slots/ledger/tables?tables=expenses", undefined, 200],
       ["GET", "/v1/slots/ledger/tables/expenses", undefined, 200],
       ["GET", "/v1/tables/expenses", undefined, 200],

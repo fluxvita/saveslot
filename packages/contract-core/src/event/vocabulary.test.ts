@@ -56,6 +56,7 @@ const SPEC_PATHS: ReadonlyArray<readonly [string, string, "meta" | "data"]> = [
   ["principal.registered", "ctx", "meta"],
   ["principal.renamed", "ctx", "meta"],
   ["principal.revoked", "ctx", "meta"],
+  ["slot.removed", "ctx", "meta"],
   ["item.resolved", "task", "data"],
   ["item.resolved", "request_key", "data"],
   ["item.resolved", "idempotency", "data"],
@@ -83,6 +84,8 @@ const SPEC_PATHS: ReadonlyArray<readonly [string, string, "meta" | "data"]> = [
   ["principal.revoked", "principal", "meta"],
   // §5.4
   ["slot.policy_set", "policy", "meta"],
+  ["slot.removed", "target", "meta"],
+  ["slot.removed", "name", "data"],
   // §5.5
   ["schema.draft_submitted", "target", "meta"],
   ["schema.draft_submitted", "draft", "data"],

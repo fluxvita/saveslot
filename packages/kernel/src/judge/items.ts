@@ -202,9 +202,6 @@ export function revertScope(
   };
 }
 
-const _fieldsOf = (state: RowState, unit: Unit): readonly FieldId[] =>
-  unit === "existence" ? state.table.fields : unit.fields;
-
 /**
  * A conflict item's impact (09 §5.8): the stretches a candidate would overwrite (what is in effect
  * where its items lie), and the later writes whose result a reader would see change if the item

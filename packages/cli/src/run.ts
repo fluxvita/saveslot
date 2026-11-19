@@ -54,13 +54,14 @@ import {
   revokedLines,
   selfcheckLine,
   setupShowable,
+  slotRemovedLines,
   snippetHint,
   snippetLines,
 } from "./render/connections.ts";
 import { pendingDetail, pendingList, resolveResult } from "./render/pending.ts";
 import { asOfResult, queryResult, timelineResult } from "./render/reads.ts";
 import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
-import { type Boundary, type Line, render, t, untrusted, words } from "./render/text.ts";
+import { type Boundary, id, type Line, render, t, untrusted, words } from "./render/text.ts";
 import { TEMPLATES, templateDocument } from "./templates.ts";
 import { type Static, TEXTS } from "./texts.ts";
 
@@ -108,7 +109,7 @@ const ownList = (o: Options, k: string): string[] =>
   Array.isArray(o.own[k]) ? (o.own[k] as string[]) : [];
 const ownFlag = (o: Options, k: string): boolean => o.own[k] === true;
 
-import { allConnections, everyPage } from "./pages.ts";
+import { allConnections, allSlots, everyPage } from "./pages.ts";
 import { type SetupServices, STOP_SIGNALS, type StopSignal, setup } from "./setup.ts";
 import { jsonText } from "./untrusted.ts";
 import { Failed, NotDone, UsageError } from "./usage.ts";
@@ -573,6 +574,40 @@ async function revokeCommand(
   return { json: r, lines: revokedLines(r) };
 }
 
+/**
+ * `saveslot slot remove <name or ID>` (06 §4): an empty slot, asked first unless `--yes`. The name
+ * is resolved to the slot's ID here, shown on the question, and the removal is sent by ID: a name
+ * can be used again once its slot is removed (04-contract §17).
+ */
+async function slotRemoveCommand(
+  o: Options,
+  client: () => Promise<Client>,
+  io: CliIO,
+  env: Env,
+): Promise<Output> {
+  const [which, ...extra] = o.args;
+  if (which === undefined || extra.length > 0) throw new UsageError(TEXTS.slotRemoveArgs);
+  const c = await client();
+  const all = await allSlots(c);
+  // By ID first; by name only when no ID is it (names are unique among the slots there are).
+  const found = all.find((x) => x.slot_id === which) ?? all.find((x) => x.slot === which);
+  if (found === undefined) throw new Failed(TEXTS.slotNotFound, 4);
+  if (!ownFlag(o, "yes")) {
+    if (io.stdinIsTTY !== true || io.ask === undefined)
+      throw new NotDone(TEXTS.slotRemoveNoTerminal);
+    const prompt = render(
+      [
+        t`${words(TEXTS.slotRemoveAsk)} ${untrusted(String(found.slot))} (${id(found.slot_id)})? [y/N] `,
+      ],
+      boundaryFor(io.stderrIsTTY, o.tags, env),
+    );
+    const answer = await io.ask(prompt);
+    if (!/^(y|yes)$/i.test((answer ?? "").trim())) throw new NotDone(TEXTS.declined);
+  }
+  const r = await c.slots.remove({ slot_id: found.slot_id });
+  return { json: r, lines: slotRemovedLines(r) };
+}
+
 const socketOf = (o: Options) => join(o.home, "run", "saveslot.sock");
 
 /**
@@ -855,6 +890,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
       (e, o) => timezoneHint(e, ownString(o, "timezone") !== undefined),
     ),
   ],
+  ["slot remove", command(["yes"], slotRemoveCommand, undefined, TEXTS.slotRemoveUnknown)],
   [
     "slot show",
     command(["tables"], async (o, client) => {

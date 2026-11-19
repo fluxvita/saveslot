@@ -75,6 +75,11 @@ export const VOCABULARY = {
   ],
   // §5.4: as a member event (the head event form is reserved), so no `ctx`.
   "slot.policy_set": [{ path: "policy", kind: "meta", shape: "Policy", always: true }],
+  "slot.removed": [
+    { path: "ctx", kind: "meta", shape: "PrincipalCtx", always: true },
+    { path: "target", kind: "meta", shape: "SlotRemovedTarget", always: true },
+    { path: "name", kind: "data", shape: "SlotName", always: true },
+  ],
   // §5.5
   "schema.draft_submitted": [
     { path: "ctx", kind: "meta", shape: "SlotCtx", always: true },
