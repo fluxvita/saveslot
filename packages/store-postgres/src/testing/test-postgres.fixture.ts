@@ -8,32 +8,20 @@
 // SAVESLOT_TEST_POSTGRES_REQUIRED=1 its absence is an error instead, so that a job meant to run
 // them cannot pass by skipping them.
 
-import { userInfo } from "node:os";
 import type { SqlValue } from "@fluxvita/saveslot-kernel";
 import { afterAll } from "vitest";
 import { PostgresBackend } from "../backend.ts";
-import { Connection, type PostgresCell, type Result } from "../connection.ts";
+import type { PostgresCell } from "../connection.ts";
+import { cellFromEnv, sqlOn, testDatabase } from "./server.fixture.ts";
+
+export { cellOf } from "./server.fixture.ts";
 
 export const CELL = "test";
 
-/** The cell a test URL names. */
-export function cellOf(url: string): PostgresCell {
-  const u = new URL(url);
-  const user = decodeURIComponent(u.username) || u.searchParams.get("user") || userInfo().username;
-  const database = u.pathname.replace(/^\//, "");
-  return {
-    host: u.searchParams.get("host") ?? (decodeURIComponent(u.hostname) || "localhost"),
-    user,
-    ...(u.port !== "" ? { port: Number(u.port) } : {}),
-    ...(u.password !== "" ? { password: decodeURIComponent(u.password) } : {}),
-    ...(database !== "" ? { maintenanceDatabase: database } : {}),
-  };
-}
-
 /** The cell to test against, or undefined when none is given (said once, on stderr). */
 export function testCell(): PostgresCell | undefined {
-  const url = process.env["SAVESLOT_TEST_POSTGRES_URL"];
-  if (url !== undefined && url !== "") return cellOf(url);
+  const cell = cellFromEnv();
+  if (cell !== undefined) return cell;
   if (process.env["SAVESLOT_TEST_POSTGRES_REQUIRED"] === "1") {
     throw new Error("SAVESLOT_TEST_POSTGRES_REQUIRED=1, but SAVESLOT_TEST_POSTGRES_URL is not set");
   }
@@ -55,19 +43,8 @@ export function testPostgres(given: PostgresCell | undefined) {
   const made: string[] = [];
   const maintenance = cell.maintenanceDatabase ?? "postgres";
 
-  /** Runs statements on `database` over a connection of its own. */
-  async function sql(
-    database: string,
-    text: string,
-    params?: readonly SqlValue[],
-  ): Promise<Result> {
-    const c = await Connection.connect(cell, database);
-    try {
-      return await c.run(text, params);
-    } finally {
-      await c.end();
-    }
-  }
+  const sql = (database: string, text: string, params?: readonly SqlValue[]) =>
+    sqlOn(cell, database, text, params);
 
   afterAll(async () => {
     for (const name of made) {
@@ -80,7 +57,7 @@ export function testPostgres(given: PostgresCell | undefined) {
     backend: new PostgresBackend({ cells: { [CELL]: cell } }),
     /** A name no database has yet; whatever is made under it is dropped at the end. */
     name(): string {
-      const n = `sst_${process.pid}_${Date.now().toString(36)}_${serial++}`;
+      const n = testDatabase(`${process.pid}_${serial++}`);
       made.push(n);
       return n;
     },

@@ -1,0 +1,21 @@
+{
+  "name": "@fluxvita/saveslot-test-backend",
+  "version": "0.0.0",
+  "description": "The storage backend the tests open their stores with: PGlite, or PostgreSQL in its place when a run asks for it. Tests only.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.fixture.ts"
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@fluxvita/saveslot-kernel": "workspace:*",
+    "@fluxvita/saveslot-store-pglite": "workspace:*",
+    "@fluxvita/saveslot-store-postgres": "workspace:*"
+  },
+  "private": true
+}

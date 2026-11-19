@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PostgresTenantStore } from "./backend.ts";
 import { PostgresStoreError } from "./errors.ts";
 import { testCell, testPostgres } from "./testing/test-postgres.fixture.ts";
-import { affectedRows, parameter, parseArray } from "./values.ts";
+import { affectedRows, arrayText, parameter, parseArray } from "./values.ts";
 
 const T = 60_000;
 
@@ -45,15 +45,30 @@ describe("the parts that need no server", () => {
     ]);
   });
 
-  it("a parameter: bytes as bytes over the same memory, every other value by its text", () => {
+  it("a parameter: bytes as bytes over the same memory, nothing as NULL, every other value by its text", () => {
     expect(parameter(null)).toBeNull();
+    expect(parameter(undefined)).toBeNull();
     expect(parameter("x")).toBe("x");
     expect(parameter(7)).toBe("7");
     expect(parameter(2n ** 62n)).toBe("4611686018427387904");
     expect(parameter(true)).toBe("true");
+    expect(parameter(new Date("2026-11-18T01:02:03.004Z"))).toBe("2026-11-18T01:02:03.004Z");
     const bytes = new Uint8Array([0, 1, 2, 255]).subarray(1, 3);
     const sent = parameter(bytes) as Buffer;
     expect([...sent]).toEqual([1, 2]);
+  });
+
+  it("an array parameter: its text, every element quoted and escaped, an absent one null", () => {
+    expect(arrayText([])).toBe("{}");
+    expect(arrayText([1, 2n, "3"])).toBe('{"1","2","3"}');
+    expect(arrayText(["a b", 'c"d', "e\\f", "", "NULL", "x,y", "{z}"])).toBe(
+      '{"a b","c\\"d","e\\\\f","","NULL","x,y","{z}"}',
+    );
+    expect(arrayText([null, undefined, "n"])).toBe('{null,null,"n"}');
+    expect(arrayText([[1, 2], [3]])).toBe('{{"1","2"},{"3"}}');
+    expect(arrayText([true, false])).toBe('{"true","false"}');
+    expect(arrayText([new Uint8Array([1, 255])])).toBe('{"\\\\x01ff"}');
+    expect(parameter(["a", "b"])).toBe('{"a","b"}');
   });
 
   it("rows changed: the count of a command that changes rows, 0 of any other", () => {
@@ -326,6 +341,28 @@ describe.skipIf(cell === undefined)("the same values as PGlite", () => {
       await same("SELECT $1::text AS n, $2::text AS b, $3::text AS big", [42, false, -(2n ** 62n)]);
       await same("SELECT $1::int8 AS v", ["9007199254740993"]);
       await same("SELECT $1::bytea AS v", [new Uint8Array(0)]);
+      // Arrays, which the kernel passes though the port's type does not name them.
+      const arr = (v: unknown) => v as SqlValue;
+      await same("SELECT $1::int8[] AS a, $2::text[] AS t, $3::int8[] AS e", [
+        arr([1, 2, 9007199254740993n]),
+        arr(["a b", 'c"d', "e\\f", "", "NULL", "x,y", "{z}", "中😀"]),
+        arr([]),
+      ]);
+      await same("SELECT g FROM generate_series(1, 6) g WHERE g = ANY($1) ORDER BY g", [
+        arr([2, 4, 9]),
+      ]);
+      await same("SELECT v FROM (VALUES ('a'), ('b'), ('c')) t(v) WHERE v = ANY($1) ORDER BY v", [
+        arr(["c", "a", "zz"]),
+      ]);
+      await same("SELECT $1::text[] AS t, $2::int4[] AS n, $3::boolean[] AS b", [
+        arr([null, "x", undefined]),
+        arr([
+          [1, 2],
+          [3, 4],
+        ]),
+        arr([true, false]),
+      ]);
+      await same("SELECT $1::text AS nothing", [arr(undefined)]);
     },
     T,
   );

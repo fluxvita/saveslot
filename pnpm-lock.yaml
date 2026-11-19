@@ -340,6 +340,9 @@ importers:
       '@fluxvita/saveslot-reference':
         specifier: workspace:*
         version: link:../reference
+      '@fluxvita/saveslot-test-backend':
+        specifier: workspace:*
+        version: link:../test-backend
       fast-check:
         specifier: 4.10.2
         version: 4.10.2
@@ -359,6 +362,18 @@ importers:
       '@types/pg':
         specifier: 8.23.1
         version: 8.23.1
+
+  packages/test-backend:
+    dependencies:
+      '@fluxvita/saveslot-kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@fluxvita/saveslot-store-pglite':
+        specifier: workspace:*
+        version: link:../store-pglite
+      '@fluxvita/saveslot-store-postgres':
+        specifier: workspace:*
+        version: link:../store-postgres
 
 packages:
 

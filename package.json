@@ -16,6 +16,7 @@
     "test:unit": "vitest run --exclude '**/*.prop.test.ts'",
     "test:prop": "vitest run --passWithNoTests '.prop.test.ts'",
     "test:prop:soak": "node scripts/soak-props.ts",
+    "test:postgres": "node scripts/test-postgres.ts",
     "deps": "depcruise packages --config .dependency-cruiser.cjs",
     "docs:links": "node scripts/check-doc-links.ts",
     "docs:json": "node scripts/check-json-examples.ts",

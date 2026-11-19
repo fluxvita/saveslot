@@ -18,10 +18,12 @@ const PACKAGE_DEPS = {
   cli: ["client"],
   saveslot: ["cli", "daemon"],
   reference: ["contract-core"],
+  // The backend tests open their stores with: either of the two (§11 «测试矩阵»).
+  "test-backend": ["kernel", "store-pglite", "store-postgres"],
 };
 
 /** Test-only packages: any test file may import them, no other file may. */
-const TEST_ONLY_PACKAGES = ["reference"];
+const TEST_ONLY_PACKAGES = ["reference", "test-backend"];
 /** Test files, and the fixtures only tests import. */
 const TEST_FILE = "\\.(test|fixture)\\.ts$";
 

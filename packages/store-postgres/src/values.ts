@@ -164,12 +164,43 @@ export function parsers(arrays: readonly ArrayType[]): (oid: number) => Parser {
   return (oid) => all.get(oid) ?? text;
 }
 
-/** A parameter as the driver is to send it: bytes as bytes, every other value by its text. */
-export function parameter(
-  v: string | number | bigint | boolean | null | Uint8Array,
-): string | Buffer | null {
-  if (v === null) return null;
+const hex = (v: Uint8Array): string =>
+  `\\x${Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString("hex")}`;
+
+/** An element of an array parameter as text; null for one that is absent. */
+function elementText(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (v instanceof Uint8Array) return hex(v);
+  if (v instanceof Date) return v.toISOString();
+  return typeof v === "string" ? v : String(v);
+}
+
+/**
+ * An array as PostgreSQL's array text, as PGlite writes one: every element quoted, `\` and `"`
+ * escaped, an absent element `null`, a nested array a level of its own.
+ */
+export function arrayText(v: readonly unknown[]): string {
+  if (v.length === 0) return "{}";
+  const parts = v.map((x) => {
+    if (Array.isArray(x)) return arrayText(x);
+    const text = elementText(x);
+    return text === null ? "null" : `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  });
+  return `{${parts.join(",")}}`;
+}
+
+/**
+ * A parameter as the driver is to send it: bytes as bytes, an array as its text, an instant as
+ * ISO text, every other value by its text; nothing (`undefined`) as NULL.
+ *
+ * The port's `SqlValue` has no array in it, and the kernel passes arrays all the same
+ * (`= ANY($1)`): PGlite takes them, so this backend does.
+ */
+export function parameter(v: unknown): string | Buffer | null {
+  if (v === null || v === undefined) return null;
   if (v instanceof Uint8Array) return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
+  if (Array.isArray(v)) return arrayText(v);
+  if (v instanceof Date) return v.toISOString();
   return typeof v === "string" ? v : String(v);
 }
 
