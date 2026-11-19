@@ -7,9 +7,14 @@
 # hand on the default branch). Merge requests get the quick checks only.
 #
 #   merge request:          secrets, forbidden-terms, mr-title, dco
-#   default branch, push:   secrets, forbidden-terms, check (node:24)
+#   default branch, push:   secrets, forbidden-terms, check (node:24); all interruptible
 #   schedule (nightly):     check, check-latest, prop-soak
 #   by hand (web, api) on the default branch: check, check-latest, prop-soak, secrets, forbidden-terms
+#
+# The heavy jobs (check, check-latest, prop-soak) run one at a time in the whole project
+# (`resource_group: saveslot-heavy`), so that a runner taking two jobs at once keeps the other slot
+# for the quick checks; the nightly ones run one after another. On the default branch only the
+# latest push runs to the end: a push's jobs are interruptible, so a newer push cancels them.
 #
 # Tests open their stores without passing fsync to the host, unless SAVESLOT_TEST_DURABILITY is
 # "host-fsync" (packages/store-pglite/src/testing/test-backend.fixture.ts). The check on a push runs
@@ -32,20 +37,25 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-# On merge requests, pushes to the default branch and by hand; not on the schedule.
+# On merge requests, pushes to the default branch and by hand; not on the schedule. On a push to the
+# default branch interruptible: a newer push cancels them.
 .quick:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      interruptible: true
     - when: on_success
 
 # After a merge (a push to the default branch), on the schedule and by hand; not on merge requests.
-# Tests use host fsync on the schedule and by hand only.
+# Tests use host fsync on the schedule and by hand only. After a push interruptible: a newer push
+# cancels it; on the schedule and by hand it runs to the end.
 .after-merge:
   rules:
     - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
       when: never
     - if: $CI_PIPELINE_SOURCE == "push"
+      interruptible: true
     - if: $CI_PIPELINE_SOURCE =~ /^(schedule|web|api)$/
       variables:
         SAVESLOT_TEST_DURABILITY: host-fsync
@@ -81,9 +91,11 @@ workflow:
 # `pnpm check`: type check, lint, unit and property tests, dependency rules, doc links, JSON examples.
 # Runs take about 10 minutes on a fast runner and about 20 on a slow one. The timeout is a hard bound
 # from outside the test process: test-level limits cannot preempt synchronous code, so a stalled run
-# would otherwise hold the runner until the project's default job timeout.
+# would otherwise hold the runner until the project's default job timeout. One heavy job at a time
+# in the project: the time spent waiting for the group is not counted in the timeout.
 .check:
   extends: [.pnpm]
+  resource_group: saveslot-heavy
   timeout: 40 minutes
   script:
     - runuser -u node -- env SAVESLOT_TEST_DURABILITY="${SAVESLOT_TEST_DURABILITY:-}" pnpm check
@@ -106,6 +118,7 @@ check-latest:
 prop-soak:
   extends: [.pnpm, .full-only]
   image: node:24
+  resource_group: saveslot-heavy
   timeout: 60 minutes
   variables:
     SOAK_MINUTES: "50"
