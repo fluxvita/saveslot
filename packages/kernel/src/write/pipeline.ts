@@ -47,7 +47,6 @@ import {
   conflictImpact,
   emptyState,
   type GapEntry,
-  type ImpactEntry,
   type ItemRef,
   JudgeError,
   type JudgeInput,
@@ -493,12 +492,7 @@ function itemContents(state: RowState, t: TrackedItem, at: Limit): ItemContents 
       ...scopeBlock,
       current,
       previous: unitEntries(state, t.unit, scope, { upTo: t.mergeBase }, t.refs),
-      impact: withHiddenByPrevious(
-        state,
-        conflictImpact(state, t.unit, scope, t.mergeBase, t.refs, at),
-        t,
-        at,
-      ),
+      impact: conflictImpact(state, t.mergeBase, t.refs, at, previousNow(state, t, at)),
     };
   }
   return {
@@ -610,21 +604,18 @@ export function revertEntriesNow(
 }
 
 /**
- * A conflict item's impact with what `take_previous` would also take away: the writes after the
- * merge base, outside its unit, whose values go with a stretch it leaves without a value (the
- * merge base had none there). They are the take_previous judged now hides (high impact ④'s
- * hiding; a decision does not await). Listed with the writes it takes back, one entry an operation.
+ * The row a conflict item's `take_previous`, judged now without being written, would leave, and
+ * where to read it and the row now: for the writes whose result it would change (its impact). Not
+ * given where it cannot be judged now.
  */
-function withHiddenByPrevious(
+function previousNow(
   state: RowState,
-  impact: readonly ImpactEntry[],
   t: TrackedItem,
   at: Limit,
-): ImpactEntry[] {
+): { readonly state: RowState; readonly at: Limit; readonly afterAt: Limit } | undefined {
   const op = hypotheticalOp(state, at.upTo);
-  let hides: readonly ItemRef[] = [];
   try {
-    hides = judgeOp(state, {
+    const out = judgeOp(state, {
       kind: "take_previous",
       op,
       index: 0,
@@ -632,33 +623,12 @@ function withHiddenByPrevious(
       ruleset: RULESET,
       unit: t.unit,
       candidates: t.cands,
-    }).judgement.hides;
+    });
+    return { state: out.state, at: { upTo: (op - 1) as OpNumber }, afterAt: { upTo: op } };
   } catch (e) {
     if (!(e instanceof JudgeError)) throw e;
+    return undefined;
   }
-  if (hides.length === 0) return [...impact];
-  const opOf = (r: ItemRef) =>
-    state.items.find((x) => x.event === r.event && x.target === r.target && x.k === r.k)?.op;
-  const out = [...impact];
-  for (const r of hides) {
-    const at_ = opOf(r);
-    if (at_ === undefined) continue;
-    const i = out.findIndex((e) => e.kind === "reverted_write" && e.op === at_);
-    if (i < 0) out.push({ kind: "reverted_write", op: at_, deps: [r] });
-    else {
-      const e = out[i] as Extract<ImpactEntry, { kind: "reverted_write" }>;
-      out[i] = { ...e, deps: [...e.deps, r] };
-    }
-  }
-  // Reverted writes in order of their operations, after the overwritten segments.
-  return [
-    ...out.filter((e) => e.kind !== "reverted_write"),
-    ...out
-      .filter(
-        (e): e is Extract<ImpactEntry, { kind: "reverted_write" }> => e.kind === "reverted_write",
-      )
-      .sort((a, b) => a.op - b.op),
-  ];
 }
 
 /** The intent of the undone operation's last `write.base` on the row (01-objects). */

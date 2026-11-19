@@ -1069,7 +1069,7 @@ interface ConflictDetail extends ItemBase {
   previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
   /** take_previous 会回掉的写入：合并基之后在这个冲突单元上生效过的全部写入；以及单元外、合并基之后在事项区间里给出值、
    *  会随 take_previous 让这一段回到无值而失去值的写入（合并基处这一段是无值时，见「时间 · 高影响写入」④ 的第三种成因）。 */
-  reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;   // fields：这次写入会失去值的字段（"*" 是存在），与 AwaitingImpact.reverted 同形
+  reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;   // 此刻回到合并基会让读到的结果变的、晚于合并基的写入；口径同 AwaitingImpact.reverted（write-and-read「撤回某次写入」按读得到的结果判那一条），同形
   /** 候选若生效会属高影响时：会被覆盖的内容。take_candidate 就是对它的确认。 */
   candidate_impact?: Record<string /* 候选的下标 */, AwaitingImpact>;
 }
@@ -1481,7 +1481,7 @@ interface ResolveResult extends CommonResult {
   /** 处理触发了写入时：形状同写入回执的对应部分。 */
   write?: Pick<WriteResult, "seq" | "sv" | "ops" | "derived" | "derived_total" | "pending" | "superseded" | "affected_reads" | "premise_affected" | "omitted">;
   /** take_previous：它回掉的写入，照这次决定所确认的事项版本里 ConflictDetail.reverted_by_previous 列的（重放回执读同一份，不按当前状态重算）。 */
-  reverted_by_previous?: Array<{ seq: Seq; actor: Actor; fields: FieldName[] }>;
+  reverted_by_previous?: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;
   /** schema_change 的 confirm。 */
   schema?: { switched: boolean; sv?: Sv; migration?: MigrationStatus };
   /** deletion 的 cancel。 */

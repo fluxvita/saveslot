@@ -8,12 +8,14 @@ import {
   createTenant,
   pending,
   query,
+  readBufferOf,
   resolve,
   schemaDraft,
   write,
 } from "@fluxvita/saveslot-kernel";
+import { resolveInTx } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
+import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
 
 const T = 120_000;
 const TENANT = `tn_${"9".repeat(26)}`;
@@ -610,6 +612,230 @@ describe("the impact of an awaiting undo, by what a reader sees", () => {
       expect(((b4.pending ?? []) as Any[]).find((q) => q.id === item)?.refreshed).toBe(true);
       const d = await detail(item);
       expect(((d.reverted_by_previous ?? []) as Any[]).map((x) => x.seq)).not.toContain(c.seq);
+    },
+    T,
+  );
+});
+
+describe("a decision made in a transaction that is then rolled back", () => {
+  it(
+    "leaves the store and the read buffer as they were, while the transaction itself sees it",
+    async () => {
+      // A conflict item: b1 over [11-05, 11-10), then another principal's b2 there from before it.
+      const e = await put("entities", {
+        intent: "insert",
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-10",
+        set: { b: "b0" },
+      });
+      const entity = e.ops[0].target.entity as string;
+      const span = { valid_from: "2026-11-05", valid_to: "2026-11-10" };
+      await put("entities", { entity, intent: "update", ver: verAt(e), ...span, set: { b: "b1" } });
+      const b2 = await put(
+        "entities",
+        { entity, intent: "update", ver: verAt(e), ...span, set: { b: "b2" } },
+        OTHER,
+      );
+      const item = (b2.pending as Any[]).find((q) => q.type === "conflict")?.id as string;
+      const d = await detail(item);
+      const buffer = readBufferOf(s.store);
+      const size = buffer.size;
+      const before = await s.store.read(snapshot);
+      const ROLLBACK = new Error("roll back");
+      let seen: unknown;
+      const thrown = await s.store
+        .write(async (tx) => {
+          const r = await resolveInTx(tx, {
+            actor: THIRD as never,
+            task: null,
+            now: "2026-11-05T05:00:00.000Z" as never,
+            windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+            visibility: { kind: "all" },
+            params: { id: item, decision: "take_previous", item_ver: d.item_ver },
+            newId: (kind: string) => `${kind === "item" ? "pi_" : "s_"}${"9".repeat(16)}`,
+            reads: buffer,
+          } as never);
+          seen = [
+            (r as Any).status,
+            (
+              await tx.query<{ state: string }>("SELECT state FROM pending_items WHERE id = $1", [
+                item,
+              ])
+            ).rows[0]?.state,
+          ];
+          throw ROLLBACK;
+        })
+        .catch((x: unknown) => x);
+      expect(thrown).toBe(ROLLBACK);
+      // Inside: decided.
+      expect(seen).toEqual(["resolved", "resolved"]);
+      // Afterwards: nothing of it, in the store or in the read buffer.
+      expect(await s.store.read(snapshot)).toEqual(before);
+      expect(buffer.size).toBe(size);
+      expect((await detail(item)).status).toBe("open");
+    },
+    T,
+  );
+});
+
+describe("a conflict item's reverted_by_previous, by what a reader sees", () => {
+  /**
+   * b0 over [11-01, 11-10); USER writes b1 over [11-05, 11-10); another principal writes b2 there
+   * from before b1: a candidate, opening a conflict item whose merge base has b0 on that stretch.
+   */
+  async function conflictOverB0() {
+    const e = await put("entities", {
+      intent: "insert",
+      valid_from: "2026-11-01",
+      valid_to: "2026-11-10",
+      set: { b: "b0" },
+    });
+    const entity = e.ops[0].target.entity as string;
+    const span = { valid_from: "2026-11-05", valid_to: "2026-11-10" };
+    const b1 = await put("entities", {
+      entity,
+      intent: "update",
+      ver: verAt(e),
+      ...span,
+      set: { b: "b1" },
+    });
+    const b2 = await put(
+      "entities",
+      { entity, intent: "update", ver: verAt(e), ...span, set: { b: "b2" } },
+      OTHER,
+    );
+    const item = (b2.pending as Any[]).find((q) => q.type === "conflict")?.id as string;
+    expect(item).toMatch(/^pi_/);
+    return { entity, span, b1, item };
+  }
+
+  it(
+    "a later write that puts the merge base's value back: taking the merge base changes nothing there, nothing is listed",
+    async () => {
+      const { entity, span, b1, item } = await conflictOverB0();
+      expect(named({ impact: { reverted: (await detail(item)).reverted_by_previous } })).toEqual([
+        { seq: b1.seq, fields: ["b"] },
+      ]);
+      const back = await put(
+        "entities",
+        {
+          entity,
+          intent: "update",
+          ver: verAt(b1),
+          ...span,
+          set: { b: "b0" },
+          acknowledge: ["overwrite"],
+        },
+        FOURTH,
+      );
+      expect(back.status).toBe("saved");
+      expect((await detail(item)).reverted_by_previous).toEqual([]);
+    },
+    T,
+  );
+
+  it(
+    "a later revoke of the stretch: taking the merge base leaves it (covered), so it is not listed",
+    async () => {
+      // The revoke covers b1 there: a take_previous takes back no more than is in effect, so it
+      // writes nothing back on that stretch, which keeps reading "no value".
+      const { entity, span, b1, item } = await conflictOverB0();
+      const v = await put(
+        "entities",
+        { entity, intent: "revoke", ver: verAt(b1), ...span },
+        FOURTH,
+      );
+      expect(v.status).toBe("saved");
+      expect((await detail(item)).reverted_by_previous).toEqual([]);
+    },
+    T,
+  );
+
+  it(
+    "a conflict on existence: taking the merge base lifts the revoke in effect, which is listed",
+    async () => {
+      // b0 over [11-01, 11-10); USER revokes [11-05, 11-10); another principal revokes it from
+      // before: a candidate on existence. The merge base has b0 there: taking it lifts USER's
+      // revoke, and the stretch reads b0 again.
+      const e = await put("entities", {
+        intent: "insert",
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-10",
+        set: { b: "b0" },
+      });
+      const entity = e.ops[0].target.entity as string;
+      const span = { valid_from: "2026-11-05", valid_to: "2026-11-10" };
+      const v = await put("entities", { entity, intent: "revoke", ver: verAt(e), ...span });
+      const w = await put("entities", { entity, intent: "revoke", ver: verAt(e), ...span }, OTHER);
+      const item = (w.pending as Any[] | undefined)?.find((q) => q.type === "conflict")
+        ?.id as string;
+      expect(item).toMatch(/^pi_/);
+      expect(named({ impact: { reverted: (await detail(item)).reverted_by_previous } })).toEqual([
+        { seq: v.seq, fields: ["*"] },
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "only writes after the merge base are listed: one before it whose result changes too is not",
+    async () => {
+      // b0 over [11-01, 11-05); USER fills [11-05, 11-10) with b1 and writes c1 there; USER undoes
+      // the fill (awaiting: it would hide c1) and it is confirmed: the stretch has no value. USER
+      // fills it again with b5 (c1 shows again), and another principal writes b6 there from before
+      // b5: a conflict item whose merge base is that confirmation. Taking the merge base leaves the
+      // stretch without a value again: b5's result changes and so does c1's, but c1 was written
+      // before the merge base; only b5 is listed.
+      const e = await put("entities", {
+        intent: "insert",
+        valid_from: "2026-11-01",
+        valid_to: "2026-11-05",
+        set: { b: "b0" },
+      });
+      const entity = e.ops[0].target.entity as string;
+      const span = { valid_from: "2026-11-05", valid_to: "2026-11-10" };
+      const b1 = await put("entities", {
+        entity,
+        intent: "update",
+        ver: verAt(e),
+        ...span,
+        set: { b: "b1" },
+      });
+      const c1 = await put("entities", {
+        entity,
+        intent: "update",
+        ver: verAt(b1),
+        ...span,
+        set: { c: "c1" },
+      });
+      const u = await put("entities", { entity, revert: { undo: b1.seq }, ver: verAt(c1) });
+      const awaiting = u.pending?.[0]?.id as string;
+      expect(u.pending?.[0]?.type).toBe("awaiting_confirmation");
+      const ok = (await resolve(s.store, ctxOf(THIRD), {
+        id: awaiting,
+        decision: "confirm",
+        item_ver: (await detail(awaiting)).item_ver,
+      } as never)) as Any;
+      expect(ok.status).toBe("resolved");
+      const base = ok.write.ops[0].ver as string;
+      const b5 = await put("entities", {
+        entity,
+        intent: "update",
+        ver: base,
+        ...span,
+        set: { b: "b5" },
+      });
+      const b6 = await put(
+        "entities",
+        { entity, intent: "update", ver: base, ...span, set: { b: "b6" } },
+        OTHER,
+      );
+      const item = (b6.pending as Any[] | undefined)?.find((q) => q.type === "conflict")
+        ?.id as string;
+      expect(item).toMatch(/^pi_/);
+      expect(named({ impact: { reverted: (await detail(item)).reverted_by_previous } })).toEqual([
+        { seq: b5.seq, fields: ["b"] },
+      ]);
     },
     T,
   );

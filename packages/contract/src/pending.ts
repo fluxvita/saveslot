@@ -220,7 +220,11 @@ export interface ConflictDetail extends ItemBase {
   related_item?: ItemId;
   /** What `take_previous` returns to: the merge base. */
   previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
-  /** Writes `take_previous` would revert. */
+  /**
+   * The writes after the merge base whose result a reader would see change if `take_previous` were
+   * decided now, by the rule `AwaitingImpact.reverted` follows (03-data-model/04-write-and-read
+   * «撤回某次写入（undo）»): each with the fields whose result changes, "*" for a revoke.
+   */
   reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;
   /** Keyed by candidate index: what a high-impact candidate would overwrite. */
   candidate_impact?: Record<string, AwaitingImpact>;

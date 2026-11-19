@@ -34,6 +34,7 @@ import {
   createTenant,
   eventsOf,
   pending,
+  type ReadTx,
   readBufferOf,
   readEvents,
   readTail,
@@ -215,13 +216,14 @@ type Cell = {
   readonly noValue: boolean;
   readonly value: unknown;
 };
-async function cellsOf(table: TableName, id: string): Promise<Cell[]> {
+async function cellsOf(table: TableName, id: string, inTx?: ReadTx): Promise<Cell[]> {
   const t = TABLES[table];
   const time =
     t.kind === "state"
       ? "v.valid_from::text AS vf, v.valid_to::text AS vt"
       : "NULL AS vf, NULL AS vt";
-  const r = await s.store.read((tx) =>
+  const run = <X>(f: (tx: ReadTx) => Promise<X>) => (inTx ? f(inTx) : s.store.read(f));
+  const r = await run((tx) =>
     tx.query<{
       vf: string | null;
       vt: string | null;
@@ -360,7 +362,9 @@ const IVS: readonly [string, string][] = [
  */
 type Step =
   | { readonly actor: string; readonly op: Record<string, unknown> }
-  | { readonly confirm: number };
+  | { readonly confirm: number }
+  /** take_previous on a copy, on the conflict item the step `previous` opened. */
+  | { readonly previous: number };
 /** The A history of the reproduction: an undo of a whole revoke's undo widened by a refresh. */
 const WIDENED: readonly Step[] = [
   {
@@ -487,6 +491,100 @@ const HIDDEN: readonly Step[] = [
   { confirm: 3 },
 ];
 
+/** A conflict item whose merge base has no value on a stretch: going back hides c written there. */
+const PREVIOUS_HIDES: readonly Step[] = [
+  {
+    actor: USER,
+    op: { intent: "insert", valid_from: "2026-11-01", valid_to: "2026-11-05", set: { b: "b0" } },
+  },
+  {
+    actor: USER,
+    op: {
+      intent: "update",
+      ver: "$0",
+      valid_from: "2026-11-05",
+      valid_to: "2026-11-10",
+      set: { b: "b1" },
+    },
+  },
+  {
+    actor: OTHER,
+    op: {
+      intent: "update",
+      ver: "$1",
+      valid_from: "2026-11-05",
+      valid_to: "2026-11-10",
+      set: { c: "c3" },
+    },
+  },
+  {
+    actor: OTHER,
+    op: {
+      intent: "update",
+      ver: "$0",
+      valid_from: "2026-11-05",
+      valid_to: "2026-11-10",
+      set: { b: "b2" },
+    },
+  },
+  { previous: 3 },
+];
+/** A later write puts the merge base's value back: going back changes nothing there. */
+const PREVIOUS_SAME: readonly Step[] = [
+  {
+    actor: USER,
+    op: { intent: "insert", valid_from: "2026-11-01", valid_to: "2026-11-10", set: { b: "b0" } },
+  },
+  {
+    actor: USER,
+    op: {
+      intent: "update",
+      ver: "$0",
+      valid_from: "2026-11-05",
+      valid_to: "2026-11-10",
+      set: { b: "b1" },
+    },
+  },
+  {
+    actor: OTHER,
+    op: {
+      intent: "update",
+      ver: "$0",
+      valid_from: "2026-11-05",
+      valid_to: "2026-11-10",
+      set: { b: "b2" },
+    },
+  },
+  {
+    actor: USER,
+    op: {
+      intent: "update",
+      ver: "$1",
+      valid_from: "2026-11-05",
+      valid_to: "2026-11-10",
+      set: { b: "b0" },
+      acknowledge: ["overwrite"],
+    },
+  },
+  { previous: 2 },
+];
+/** A conflict on existence: going back lifts the revoke in effect. */
+const PREVIOUS_EXISTENCE: readonly Step[] = [
+  {
+    actor: USER,
+    op: { intent: "insert", valid_from: "2026-11-01", valid_to: "2026-11-10", set: { b: "b0" } },
+  },
+  {
+    actor: USER,
+    op: { intent: "revoke", ver: "$0", valid_from: "2026-11-05", valid_to: "2026-11-10" },
+  },
+  {
+    actor: OTHER,
+    op: { intent: "revoke", ver: "$0", valid_from: "2026-11-05", valid_to: "2026-11-10" },
+  },
+  { previous: 2 },
+];
+
 /** The log replayed into it: the items, flags and tables must come out the same (K12). */
 let replica: ReusableStore;
 
@@ -554,7 +652,15 @@ describe.each(Object.keys(TABLES) as TableName[])(
         };
         const fixed =
           table === "entities"
-            ? [WIDENED, NARROWED, EMPTIED, HIDDEN]
+            ? [
+                WIDENED,
+                NARROWED,
+                EMPTIED,
+                HIDDEN,
+                PREVIOUS_HIDES,
+                PREVIOUS_SAME,
+                PREVIOUS_EXISTENCE,
+              ]
             : table === "rows"
               ? [LATER]
               : [NARROWED];
@@ -604,6 +710,11 @@ describe.each(Object.keys(TABLES) as TableName[])(
                 spans: state ? ((d.target.spans ?? []) as Any[]).map(ivOf) : undefined,
               });
             }
+            if (h >= fixed.length) {
+              for (const q of (res.pending ?? []) as Any[]) {
+                if (q.type === "conflict" && r() < 0.4) await previousOnCopy(q.id);
+              }
+            }
             for (const x of (res.superseded ?? []) as Any[]) {
               if (!open.has(x.item)) continue;
               if (x.reason === "nothing_to_revert") {
@@ -620,6 +731,67 @@ describe.each(Object.keys(TABLES) as TableName[])(
               open.delete(x.item);
             }
             return res;
+          };
+
+          /**
+           * take_previous on a conflict item, decided in a transaction that is then rolled back (it
+           * leaves the store and the read buffer as they were: write-impact.test.ts): the writes it
+           * lists in reverted_by_previous are exactly the later writes whose result a reader sees
+           * change, worked out from the cells before and after, since the merge base.
+           */
+          const previousOnCopy = async (item: string) => {
+            const d = await detailOf(item);
+            if (d.type !== "conflict" || d.status !== "open") return;
+            const since = d.previous.seq as number;
+            const before = await cellsOf(table, id as string);
+            const ROLLBACK = new Error("roll back");
+            let after: Cell[] = [];
+            let refused: Any;
+            await s.store
+              .write(async (tx) => {
+                try {
+                  await resolveInTx(tx, {
+                    actor: THIRD as never,
+                    task: null,
+                    now: now(),
+                    windows,
+                    visibility: { kind: "all" },
+                    params: { id: item, decision: "take_previous", item_ver: d.item_ver },
+                    newId,
+                    reads: readBufferOf(s.store),
+                  });
+                } catch (e) {
+                  refused = e;
+                  throw ROLLBACK;
+                }
+                after = await cellsOf(table, id as string, tx);
+                throw ROLLBACK;
+              })
+              .catch((e: unknown) => {
+                if (e !== ROLLBACK) throw e;
+              });
+            log.push(`#- THIRD take_previous on a copy ${item} -> ${refused?.code ?? "resolved"}`);
+            if (refused !== undefined) {
+              if (refused.code === undefined || refused.code === "internal")
+                fault(`take_previous refused: ${String(refused.message ?? refused)}`);
+              else reach(`take_previous refused: ${refused.code}`);
+              return;
+            }
+            reach("take_previous on a copy");
+            const want = changedWrites(state, before, after, since, (op) => op);
+            const got = new Map<number, string[]>(
+              ((d.reverted_by_previous ?? []) as Any[]).map((x) => [
+                x.seq as number,
+                [...(x.fields as string[])].sort(),
+              ]),
+            );
+            const sorted = (m: Map<number, string[]>) => J([...m].sort(([a], [b]) => a - b));
+            if (sorted(want) !== sorted(got))
+              fault(
+                "reverted_by_previous names other writes than those whose result changes",
+                `\nWANT ${sorted(want)}\nGOT ${sorted(got)}\nBEFORE ${J(before)}\nAFTER ${J(after)}`,
+              );
+            else if (want.size > 0) reach("take_previous: writes named");
           };
 
           const confirm = async (item: string) => {
@@ -721,6 +893,13 @@ describe.each(Object.keys(TABLES) as TableName[])(
             const ref = (v: unknown, of: (n: number) => unknown) =>
               typeof v === "string" && v.startsWith("$") ? of(Number(v.slice(1))) : v;
             for (const step of steps) {
+              if ("previous" in step) {
+                const ids = opened[step.previous] ?? [];
+                if (ids.length === 0) reach("fixed: no item for take_previous");
+                for (const item of ids) await previousOnCopy(item);
+                opened.push([]);
+                continue;
+              }
               if ("confirm" in step) {
                 const item = opened[step.confirm]?.[0];
                 if (item === undefined) reach("fixed: no open item to confirm");
@@ -795,6 +974,9 @@ describe.each(Object.keys(TABLES) as TableName[])(
             reached["confirmed after a refresh changed the spans"] ?? 0,
           ).toBeGreaterThanOrEqual(2);
           expect(reached["closed: nothing to revert"] ?? 0).toBeGreaterThanOrEqual(1);
+          // The three fixed take_previous histories, every run.
+          expect(reached["take_previous on a copy"] ?? 0).toBeGreaterThanOrEqual(3);
+          expect(reached["take_previous: writes named"] ?? 0).toBeGreaterThanOrEqual(2);
           // HIDDEN: a later write of another field, hidden as the stretch loses its value, named.
           expect(reached["a later field write named and gone"] ?? 0).toBeGreaterThanOrEqual(1);
         }

@@ -11,7 +11,7 @@
 //   interval: the conflict criterion's "改到" (candidates and awaiting parts change nothing).
 
 import type { FieldId, FieldValue, OpNumber } from "@fluxvita/saveslot-contract-core";
-import { canonical, type Interval, type IntervalSet, meet, WHOLE } from "../time/index.ts";
+import { canonical, type Interval, type IntervalSet, WHOLE } from "../time/index.ts";
 import type { ItemRef, Judgement, Unit } from "./model.ts";
 import { changedResults } from "./result.ts";
 import { undoResult } from "./revert.ts";
@@ -202,34 +202,30 @@ export function revertScope(
   };
 }
 
-const fieldsOf = (state: RowState, unit: Unit): readonly FieldId[] =>
+const _fieldsOf = (state: RowState, unit: Unit): readonly FieldId[] =>
   unit === "existence" ? state.table.fields : unit.fields;
 
 /**
- * A conflict item's impact (09 §5.8): the writes `take_previous` would take back (every operation
- * after the merge base with an item in effect on the unit within the interval), and the stretches
- * a candidate would overwrite (what is in effect where its items lie).
+ * A conflict item's impact (09 §5.8): the stretches a candidate would overwrite (what is in effect
+ * where its items lie), and the later writes whose result a reader would see change if the item
+ * went back to its merge base (`take_previous`; 03-data-model/04-write-and-read «撤回某次写入
+ * （undo）», the impact by what a reader sees): the row with that take_previous judged now, `after`,
+ * against the row now, the writes after the merge base, in its unit or not. No `after` (the
+ * take_previous cannot be judged now): none listed.
  */
 export function conflictImpact(
   state: RowState,
-  unit: Unit,
-  scope: IntervalSet,
   mergeBase: OpNumber,
   candidateRefs: readonly ItemRef[],
   at: Limit,
+  after?: { readonly state: RowState; readonly at: Limit; readonly afterAt: Limit },
 ): ImpactEntry[] {
-  const fields = new Set<string>(fieldsOf(state, unit));
-  const area = state.isState ? scope : [WHOLE];
-  const byOp = new Map<OpNumber, ItemRef[]>();
-  for (const x of state.items) {
-    if (!effective(x.status) || !state.sees(x, at) || x.op <= mergeBase) continue;
-    if (!(fields.has(x.target) || (unit === "existence" && x.target === "existence"))) continue;
-    if (state.isState && meet(x.valid, area).length === 0) continue;
-    byOp.set(x.op, [...(byOp.get(x.op) ?? []), refOf(x)]);
-  }
-  const reverted: ImpactEntry[] = [...byOp]
-    .sort(([a], [b]) => a - b)
-    .map(([op, deps]) => ({ kind: "reverted_write", op, deps: uniq(deps) }));
+  const reverted: ImpactEntry[] =
+    after === undefined
+      ? []
+      : [...changedResults(state, after.at, after.state, after.afterAt, mergeBase)]
+          .sort(([a], [b]) => a - b)
+          .map(([op, deps]) => ({ kind: "reverted_write", op, deps: uniq(deps) }));
   return [...candidateImpact(state, candidateRefs, at), ...reverted];
 }
 
