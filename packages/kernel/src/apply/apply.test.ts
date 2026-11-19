@@ -1,7 +1,7 @@
 import type { JsonValue } from "@fluxvita/saveslot-contract-core";
 import { describe, expect, it } from "vitest";
 import { type BlockState, buildOperation, type NewOperation } from "../log/index.ts";
-import { ApplyError, type ApplyEvent, eventsOf, planEvent } from "./apply.ts";
+import { ApplyError, type ApplyEvent, eventsOf, internalDetailOf, planEvent } from "./apply.ts";
 
 const TENANT = `tn_${"8".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}` as const;
@@ -170,5 +170,21 @@ describe("apply stops, never skips", () => {
     expect(reason({ ...ev, header })).toBe(
       "not_implemented @10: apply stopped at seq 10: apply of tenant.restored is not implemented yet",
     );
+  });
+});
+
+describe("the internal error of a stop", () => {
+  it("is not_implemented as such, any other stop inconsistent, apply's reason kept beside it", () => {
+    // The two reasons the kernel gives `internal` (contract-core KERNEL_OUTER_ERROR_REASONS): the
+    // service layer gives the first as not_in_this_version and the other as an incident only.
+    const of = (r: ApplyError["reason"]) => internalDetailOf(new ApplyError(r, 7 as never, "x"));
+    expect(of("not_implemented")).toEqual({
+      reason: "not_implemented",
+      apply_reason: "not_implemented",
+      seq: 7,
+    });
+    for (const r of ["invalid", "unsupported", "unknown_version", "inconsistent"] as const) {
+      expect(of(r)).toEqual({ reason: "inconsistent", apply_reason: r, seq: 7 });
+    }
   });
 });

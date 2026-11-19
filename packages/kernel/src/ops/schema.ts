@@ -21,11 +21,14 @@ import type {
   CompiledSchema,
   DraftId,
   JsonValue,
+  KernelErrorCode,
+  KernelErrorDetail,
+  KernelErrorReason,
   SchemaChangeRecord,
   SlotId,
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
-import { ApplyError, applyEvents, eventsOf } from "../apply/index.ts";
+import { ApplyError, applyEvents, eventsOf, internalDetailOf } from "../apply/index.ts";
 import { appendOperation, type NewEvent } from "../log/index.ts";
 import { evaluationRefusal, loadRsql, RULESET_VERSION } from "../rules/index.ts";
 import {
@@ -40,11 +43,11 @@ import type { OpsContext, Visibility } from "./context.ts";
 import { randomCrockford } from "./ids.ts";
 
 /** An error of `schema_draft`, by contract error code (04-contract-types §9). */
-export class SchemaDraftError extends Error {
+export class SchemaDraftError<C extends KernelErrorCode = KernelErrorCode> extends Error {
   override readonly name = "SchemaDraftError";
-  readonly code: string;
-  readonly detail: Readonly<Record<string, unknown>>;
-  constructor(code: string, message: string, detail: Record<string, unknown> = {}) {
+  readonly code: C;
+  readonly detail: KernelErrorDetail<C>;
+  constructor(code: C, message: string, detail: KernelErrorDetail<C> = {}) {
     super(message);
     this.code = code;
     this.detail = detail;
@@ -94,7 +97,7 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
 const own = (o: object, k: string) => Object.hasOwn(o, k);
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
-const invalid = (reason: string, param: string) =>
+const invalid = (reason: KernelErrorReason<"invalid_argument">, param: string) =>
   new SchemaDraftError("invalid_argument", `${param}: ${reason}`, { reason, param });
 
 /** `task` / `idempotency_key`: as the write takes them (at most 256 characters, no control characters). */
@@ -371,9 +374,11 @@ export async function schemaDraft(
       await applyEvents(tx, eventsOf(op));
     } catch (e) {
       if (e instanceof ApplyError)
-        throw new SchemaDraftError("internal", "the slot could not be applied", {
-          reason: e.reason,
-        });
+        throw new SchemaDraftError(
+          "internal",
+          "the slot could not be applied",
+          internalDetailOf(e),
+        );
       throw e;
     }
     return receiptOf(draft, document as JsonValue, compiled, result.changes, false);

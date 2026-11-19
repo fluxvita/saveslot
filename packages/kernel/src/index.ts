@@ -1,3 +1,10 @@
+// The codes and reasons the kernel's errors carry (contract-core, 04-contract-types §9).
+export {
+  KERNEL_OUTER_ERROR_REASONS,
+  type KernelErrorCode,
+  type KernelErrorDetail,
+  type KernelErrorReason,
+} from "@fluxvita/saveslot-contract-core";
 export * from "./apply/index.ts";
 export * from "./audit/index.ts";
 export * from "./derive/index.ts";

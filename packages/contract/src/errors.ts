@@ -1,7 +1,11 @@
 // Errors (docs/zh-CN/spec/04-contract-types.md §9). On HTTP an error is the `ErrorEnvelope`
 // `{"error": {...}}` with a status code by `code` (docs/zh-CN/spec/05-surfaces.md §13, §14).
 
-import type { SchemaChangeCode, Scope } from "@fluxvita/saveslot-contract-core";
+import {
+  DOMAIN_ERROR_REASONS,
+  type SchemaChangeCode,
+  type Scope,
+} from "@fluxvita/saveslot-contract-core";
 import type {
   Actor,
   FieldName,
@@ -19,38 +23,39 @@ import type { ItemBase, ItemDetail, ItemResolution } from "./pending.ts";
 import type { MigrationStatus } from "./schema.ts";
 import type { ValidationDetail } from "./validation.ts";
 
-/** 04-contract-types §9 `ErrorCode`. */
-export const ERROR_CODES = [
-  // domain errors
-  "invalid_argument",
-  "unknown_table",
-  "unknown_field",
-  "not_found",
-  "revoked",
-  "derived_readonly",
-  "validation_failed",
-  "read_first",
-  "schema_incompatible",
-  "too_large",
-  "sql_rejected",
-  "sql_timeout",
-  "draft_outdated",
-  "field_unmatched",
-  "confirmation_mismatch",
-  "item_closed",
-  "preview_outdated",
-  // outer errors
-  "unauthenticated",
-  "insufficient_scope",
-  "rate_limited",
-  "handle_expired",
-  "not_in_this_version",
-  "unavailable",
-  "internal",
-  "import_rejected",
-] as const;
-/** 04-contract-types §9 `ErrorCode`. */
-export type ErrorCode = (typeof ERROR_CODES)[number];
+/**
+ * 04-contract-types §9: the outer error codes (the surfaces' own; 02-architecture §11) and the
+ * reasons each gives (none: `[]`). The domain codes' are contract-core's.
+ */
+export const OUTER_ERROR_REASONS = {
+  unauthenticated: ["missing", "invalid", "revoked", "expired"],
+  insufficient_scope: [],
+  rate_limited: ["quota", "busy"],
+  handle_expired: ["expired", "restored", "executed", "derived_changed"],
+  not_in_this_version: ["parameter", "value", "operation", "table_written", "not_implemented"],
+  unavailable: ["busy", "restoring", "importing", "reconciling", "starting"],
+  internal: [],
+  import_rejected: [
+    "unsupported_format",
+    "not_from_start",
+    "segment_order",
+    "chain_broken",
+    "checksum_mismatch",
+    "incomplete",
+    "replay_failed",
+  ],
+} as const satisfies Record<string, readonly string[]>;
+
+/** 04-contract-types §9: every error code this version gives, with its reasons. */
+export const ERROR_REASONS = { ...DOMAIN_ERROR_REASONS, ...OUTER_ERROR_REASONS } as const;
+
+/** 04-contract-types §9 `ErrorCode` (the `@later` codes left out). */
+export const ERROR_CODES = Object.keys(ERROR_REASONS) as ErrorCode[];
+/** 04-contract-types §9 `ErrorCode` (the `@later` codes left out). */
+export type ErrorCode = keyof typeof ERROR_REASONS;
+
+/** The reasons an error of code `C` may give (04-contract-types §9, the "reason" column). */
+export type ErrorReason<C extends ErrorCode = ErrorCode> = (typeof ERROR_REASONS)[C][number];
 
 /**
  * 04-contract-types §9 the extra fields of an error, per code (the "其余附带字段" column), all
@@ -98,10 +103,10 @@ export interface ErrorDetails {
 
   // read_first
   ref?: TargetRef | ItemId | SlotName;
-  /** `task_mismatch`. */
-  read_task?: string;
-  /** `task_mismatch`. */
-  task?: string;
+  /** `task_mismatch`: the task of the read found; `null`: that read had none. */
+  read_task?: string | null;
+  /** `task_mismatch`: this call's task; `null`: it has none. */
+  task?: string | null;
 
   // schema_incompatible
   /** `field: "*"`: the whole table was restructured. */
@@ -179,8 +184,8 @@ export interface ErrorObject extends ErrorDetails {
    * programs go by `code` and `reason` and do not parse it.
    */
   message?: string;
-  /** Finer reason; values per code in §9. */
-  reason?: string;
+  /** Finer reason; values per code in §9 (`ERROR_REASONS`). */
+  reason?: ErrorReason;
   /** The offending parameter as a JSON-pointer-like path: `"ops/0/valid_to"`. */
   param?: string;
   /** Validation errors: one item each. */

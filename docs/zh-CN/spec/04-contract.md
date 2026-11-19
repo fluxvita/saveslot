@@ -167,7 +167,7 @@
   - 请求里的对象只认自身的键；值为 `undefined` 的键当作没写（经 JSON 传来的请求不会有，嵌入调用时会有）；数组有空位报 `invalid_argument`（`malformed`）。不认识的参数键报 `invalid_argument`（`malformed`）。
   - 一次超过 1,000 个 op：`too_large`（`request`，附 `limit`；临时值，open-questions「接口的数值与细则」）。
   - `task`、`idempotency_key` 为空、超过 256 个字符（按码点数）、不是良构的 Unicode 或含控制字符：`invalid_argument`（`malformed`）。
-  - 状态类表上给 `row`：`invalid_argument`（`malformed`）。
+  - 状态类表上给 `row`：`invalid_argument`（`state_table`）。
   - 同一个 `set` 里按不分大小写是同一字段的两个键：`invalid_argument`（`malformed`，`param` 指到第二种写法）；`entity_key` 里同样，`param` 指到那个键。
   - `acknowledge`、`evidence_refs` 里的重复项：`invalid_argument`（`malformed`，`param` 指到第二次出现的那一项）。
   - 限定名 `slot.table` 的 slot 不是本请求所在的 slot：`invalid_argument`（`cross_slot`）。
@@ -722,7 +722,7 @@
 | `slots.remove` | 移除一个空的 slot。**只收 `slot_id`，不收名字**（`invalid_argument`，`param: "slot_id"`）：名字在 slot 移除后可以重用，按名字的移除一旦重发，会删掉后来同名新建的那个 slot；CLI 先把名字解析成 `slot_id`、在确认屏上显示，再按 ID 发。"空"按日志判：这个 slot 名下除结构（`schema.*`）与策略（`slot.policy_set`）外没有任何事件（结构变更事项的 `item.*` 也不算），在同一个写事务里判定并记下 `slot.removed`；不空报 `invalid_argument`（`slot_not_empty`）；判据与各事件类型的归类见 [`../process/decisions/remove-empty-slot.md`](../process/decisions/remove-empty-slot.md)，与表级的"从未被写入"并排见 data-model「schema 演进」。结构变更事项还开着时同样报 `slot_not_empty`，`details` 带原因与事项 ID。不存在的 `slot_id` 报 `not_found`（`slot`）。不收 `Idempotency-Key`：已移除的 slot 再移除一次，返回第一次的结果、不记事件。移除之后：名字可以重用，用同一个名字新建的是另一个 slot（另一个 `slot_id`），连接实例的 slot 范围、读取记录不会指到它；范围只剩已移除 slot 的连接实例什么都看不到（范围为空不等于不限 slot），`connections.list` 里它的 `slots` 是空数组；读取记录照旧保留，列出时查不到名字的写原始 `slot_id`，按名字过滤一个已移除的 slot 报 `not_found` |
 | `policy.get` | slot 策略：策略版本（`policy_version`）、冲突期间的生效值规则（`effective_value_rule`）、来源级别的秩表（第一版只记不用）、哪些 schema 改动自动生效。任何有 `saveslot.read` 的凭证可调用；slot 须在它的可见范围内，否则 `not_found`（`slot`） |
 | `policy.set`（后续） | 修改 slot 策略 |
-| `reads.list` | 读取审计：哪个连接实例在什么时候读了哪些数据（含对源数据原文的读取）。只给版本，不给值；每条带 `task`；结果写明读取记录保留到哪一刻（没有清理时是租户创建的时刻）。`since` 含、`until` 不含；`slot` 或 `table` 不存在报 `not_found`。一次读取在某张表上读到的行版本数超过阈值（初值 1,000，多见于受限 SQL 的聚合）时，这张表不逐行列，列在 `coarse` 里：只有表与这次读取所见状态的位置（data-model「读取记录」） |
+| `reads.list` | 读取审计：哪个连接实例在什么时候读了哪些数据（含对源数据原文的读取）。只给版本，不给值；每条带 `task`；结果写明读取记录保留到哪一刻（没有清理时是租户创建的时刻）。`since` 含、`until` 不含；`slot` 不存在报 `not_found`（`slot`），`table` 不存在报 `unknown_table`（同别处按名字指表：带 `name` 与 `nearest`，给的是 `slot.table` 就列带 slot 的名字，只给表名就列表名）。一次读取在某张表上读到的行版本数超过阈值（初值 1,000，多见于受限 SQL 的聚合）时，这张表不逐行列，列在 `coarse` 里：只有表与这次读取所见状态的位置（data-model「读取记录」） |
 | `log.verify` | 校验日志：事件总数、事件头链完整与否（或自哪一条起断裂）、内容校验和不符的位置、索引列与事件头不符的位置（不算断裂）、已按删除移除的数量、恢复留下的序号空档（不算断裂） |
 | `log.end` | 日志末端：最新一条事件的 `seq` 与记录时刻（日志为空时为 null）。只读、不带参数；`saveslot status` 用它对照本机时钟 |
 | `log.reconcile` | 对拍：把日志从空存储重放到一份临时存储，与线上的逻辑表逐表比较（范围见 architecture §11）。同步返回，日志大时耗时长；只有最后的比较阶段让该租户的写入排队。同一租户同时只跑一个，再次调用报 `rate_limited`（`busy`）。结果只给表 / 行 / 字段的 ID，不回显值。**它查不出 `delete` 自己算错的结果**（architecture §11「记录与重算一致」） |

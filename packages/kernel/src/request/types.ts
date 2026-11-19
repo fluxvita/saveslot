@@ -9,6 +9,7 @@ import type {
   FieldId,
   FieldValue,
   Instant,
+  KernelErrorReason,
   OpNumber,
   RawFieldValue,
   RowId,
@@ -218,7 +219,7 @@ export interface WriteValidationDetail {
 export type RequestError =
   | {
       readonly code: "invalid_argument";
-      readonly reason: string;
+      readonly reason: KernelErrorReason<"invalid_argument">;
       readonly param: string;
       readonly candidates?: readonly string[];
       readonly example?: Readonly<Record<string, unknown>>;

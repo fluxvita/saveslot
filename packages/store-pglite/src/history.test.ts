@@ -1341,14 +1341,25 @@ describe("reads.list", () => {
     expect([page.reads[0]?.read, next.reads[0]?.read]).toEqual(all.reads.map((x) => x.read));
   });
 
-  it("refuses an unknown table like an unknown slot; until excludes its instant; limit at most 200", async () => {
-    expect(
-      await readsList(s.store, ctx(), { table: "nope" }).catch(
-        (e: { code?: string; detail?: unknown }) => ({ code: e.code, detail: e.detail }),
-      ),
-    ).toMatchObject({
+  it("refuses an unknown table as wherever a table is named; until excludes its instant; limit at most 200", async () => {
+    // unknown_table with the nearest names (04-contract-types §9), bare for a bare name and
+    // qualified for a qualified one; an unknown slot stays not_found.
+    const refusal = (params: Record<string, unknown>) =>
+      readsList(s.store, ctx(), params).catch((e: { code?: string; detail?: unknown }) => ({
+        code: e.code,
+        detail: e.detail,
+      }));
+    expect(await refusal({ table: "spnd" })).toEqual({
+      code: "unknown_table",
+      detail: { param: "table", name: "spnd", nearest: ["spend", "budgets"] },
+    });
+    expect(await refusal({ table: "ledger.spnd" })).toEqual({
+      code: "unknown_table",
+      detail: { param: "table", name: "ledger.spnd", nearest: ["ledger.spend", "ledger.budgets"] },
+    });
+    expect(await refusal({ slot: "nope" })).toMatchObject({
       code: "not_found",
-      detail: { param: "table" },
+      detail: { reason: "slot", param: "slot" },
     });
     await query(s.store, ctx({ actor: OTHER, now: "2026-11-05T04:00:00.000Z" }), {
       table: "budgets",

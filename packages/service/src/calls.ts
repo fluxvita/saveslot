@@ -10,6 +10,7 @@
 // - Paging: the body's `cursor` is verified and given to the kernel as its `position`; a result's
 //   `next_position` goes back as a signed `next_cursor`. A body naming `position` is refused.
 
+import type { ErrorReason } from "@fluxvita/saveslot-contract";
 import { createOpsContext, type OpsContext } from "@fluxvita/saveslot-kernel";
 import type { Principal, Scope } from "./auth.ts";
 import { ContractError } from "./contract-error.ts";
@@ -54,7 +55,7 @@ export interface KernelCall {
   readonly params: Readonly<Record<string, unknown>>;
 }
 
-const invalid = (param: string, reason = "malformed") =>
+const invalid = (param: string, reason: ErrorReason<"invalid_argument"> = "malformed") =>
   new ContractError("invalid_argument", `${param} is not accepted here`, { reason, param });
 
 /** Makes a surface's call into a kernel call; throws a ContractError when it may not be made. */

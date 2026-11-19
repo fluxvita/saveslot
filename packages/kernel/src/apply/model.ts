@@ -27,6 +27,18 @@ export class ApplyError extends Error {
   }
 }
 
+/**
+ * The detail of the `internal` error a caller raises when apply stops: `not_implemented` as such
+ * (the service layer gives it as `not_in_this_version`), any other stop as `inconsistent`, apply's
+ * own reason kept beside it for the logs. An `internal` error's detail never reaches a surface.
+ */
+export const internalDetailOf = (e: ApplyError) =>
+  ({
+    reason: e.reason === "not_implemented" ? "not_implemented" : "inconsistent",
+    apply_reason: e.reason,
+    seq: e.seq,
+  }) as const;
+
 /** A row of `principals`, as apply writes it. JSON columns hold JCS text. */
 export interface PrincipalRow {
   readonly id: string;

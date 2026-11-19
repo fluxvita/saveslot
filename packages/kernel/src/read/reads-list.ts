@@ -6,7 +6,16 @@
 import type { EntityId, RowId, SourceId } from "@fluxvita/saveslot-contract-core";
 import { isId } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry, ReadOperation, ReadValid } from "../audit/index.ts";
-import { fold, get, has, instantText, isObj, keysOf, parseDateTime } from "../request/index.ts";
+import {
+  fold,
+  get,
+  has,
+  instantText,
+  isObj,
+  keysOf,
+  nearest,
+  parseDateTime,
+} from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 import type { KeySpec } from "./rows.ts";
@@ -129,9 +138,22 @@ export async function readsListInTx(
             })
             .map(([id]) => id),
         );
-  // A table no slot has is one that does not exist, as for `slot`.
-  if (tableIds !== undefined && tableIds.size === 0)
-    throw new ReadError("not_found", "no such table", { reason: "table", param: "table" });
+  // A table no slot has: `unknown_table`, with the nearest names, as wherever a table is named
+  // (04-contract-types §9): qualified names for a qualified one, bare names for a bare one.
+  if (tableFilter !== undefined && tableIds !== undefined && tableIds.size === 0) {
+    const qualified = tableFilter.includes(".");
+    const names = [
+      ...new Set([...tableName.values()].map((n) => (qualified ? n : n.slice(n.indexOf(".") + 1)))),
+    ];
+    throw new ReadError("unknown_table", `unknown table ${JSON.stringify(tableFilter)}`, {
+      param: "table",
+      name: tableFilter,
+      nearest: nearest(
+        tableFilter,
+        names.map((name) => ({ name })),
+      ),
+    });
+  }
 
   // Every read written, by its number.
   const written = await tx.query<Record<string, unknown>>("SELECT * FROM read_log ORDER BY n");

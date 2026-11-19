@@ -828,7 +828,7 @@ describe("refusals of the request's shape", () => {
     [
       "a row on a state table",
       { intent: "update", table: "accounts", row: ROW, set: { limit: 1 } },
-      { reason: "malformed", param: "ops/0/row" },
+      { reason: "state_table", param: "ops/0/row" },
     ],
     [
       "an entity on an event table",

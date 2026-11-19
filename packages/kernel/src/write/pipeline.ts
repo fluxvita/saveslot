@@ -40,7 +40,7 @@ import {
   type Seq,
   type TableId,
 } from "@fluxvita/saveslot-contract-core";
-import { ApplyError } from "../apply/index.ts";
+import { ApplyError, internalDetailOf } from "../apply/index.ts";
 import { lastRead, type ReadBuffer } from "../audit/index.ts";
 import {
   awaitingImpact,
@@ -168,7 +168,9 @@ async function fallback(
 }
 
 export function requestFailure(e: RequestError): WriteError {
-  return new WriteError(e.code, `the request is refused: ${e.code}`, { ...e });
+  // The code is the error's own; the detail is the rest.
+  const { code, ...detail } = e;
+  return new WriteError(code, `the request is refused: ${code}`, detail as never);
 }
 
 /** `read_first` (04-contract-types §9): what to read first, and why the fallback found nothing. */
@@ -1007,12 +1009,6 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         keyOfCreated.set(byKey, { table: table.id, key });
       }
     }
-    if ((o.target.kind === "row" && isState) || (o.target.kind === "entity" && !isState)) {
-      throw new WriteError("invalid_argument", "row on a state table, or entity on another", {
-        reason: "target_kind",
-        param,
-      });
-    }
     const isNew = o.target.kind === "new" || createsByKey;
     const id =
       byKey ??
@@ -1336,10 +1332,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   } catch (e) {
     // The events do not fit the state they are applied to: an internal error, without their content.
     if (e instanceof ApplyError) {
-      throw new WriteError("internal", "the write could not be applied", {
-        reason: e.reason,
-        seq: e.seq,
-      });
+      throw new WriteError("internal", "the write could not be applied", internalDetailOf(e));
     }
     throw e;
   }

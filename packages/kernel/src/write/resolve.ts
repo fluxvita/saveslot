@@ -27,7 +27,7 @@ import type {
   Seq,
   TableId,
 } from "@fluxvita/saveslot-contract-core";
-import { ApplyError, confirmationHash, entryChecksums } from "../apply/index.ts";
+import { ApplyError, confirmationHash, entryChecksums, internalDetailOf } from "../apply/index.ts";
 import { lastRead, type ReadId } from "../audit/index.ts";
 import type { DerivedWrite } from "../derive/index.ts";
 import { JudgeError, type JudgeInput, judgeOp, reaches, type Unit } from "../judge/index.ts";
@@ -659,10 +659,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     });
   } catch (e) {
     if (e instanceof ApplyError) {
-      throw new WriteError("internal", "the decision could not be applied", {
-        reason: e.reason,
-        seq: e.seq,
-      });
+      throw new WriteError("internal", "the decision could not be applied", internalDetailOf(e));
     }
     throw e;
   }

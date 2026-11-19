@@ -8,6 +8,7 @@ import {
   CredentialError,
   ERROR_CODES,
   type ErrorCode,
+  type ErrorReason,
   TransportError,
   VALIDATION_DETAIL_CODES,
 } from "@fluxvita/saveslot-client";
@@ -49,11 +50,15 @@ export const EXIT_BY_CODE: ReadonlyMap<ErrorCode, number> = new Map<ErrorCode, n
 const CODES: ReadonlySet<string> = new Set<string>(ERROR_CODES);
 const DETAIL_CODES: ReadonlySet<string> = new Set<string>(VALIDATION_DETAIL_CODES);
 
+// The reasons the exit code goes by, checked against the contract's table at compile time.
+const BUSY: ErrorReason<"rate_limited"> = "busy";
+const CANDIDATE_REQUIRED: ErrorReason<"invalid_argument"> = "candidate_required";
+
 /** The exit code of a contract error: §6.2; `rate_limited` with reason `busy` is 7. */
 export function exitOf(errorCode: string, reason: unknown): number {
-  if (errorCode === "rate_limited" && reason === "busy") return 7;
+  if (errorCode === "rate_limited" && reason === BUSY) return 7;
   // A conflict with several candidates and none named: a usage error (06 §5.2).
-  if (errorCode === "invalid_argument" && reason === "candidate_required") return 2;
+  if (errorCode === "invalid_argument" && reason === CANDIDATE_REQUIRED) return 2;
   return EXIT_BY_CODE.get(errorCode as ErrorCode) ?? 5;
 }
 

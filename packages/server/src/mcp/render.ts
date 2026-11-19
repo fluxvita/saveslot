@@ -20,6 +20,7 @@ import {
   GRANULARITIES as CONTRACT_GRANULARITIES,
   ITEM_TYPES as CONTRACT_ITEM_TYPES,
   DELETION_ORIGINS,
+  ERROR_REASONS,
   type ErrorCode,
   type FieldResultCode,
   ITEM_CREATED_REASONS,
@@ -1622,31 +1623,8 @@ const NEXT: ReadonlyMap<string, () => Part[]> = new Map(
   } satisfies Partial<Record<ErrorCode, () => Part[]>>) as [string, () => Part[]][],
 );
 
-/** The reasons of the contract's errors this version gives (04-contract-types §9). */
-const ERROR_REASONS: ReadonlySet<string> = new Set([
-  "malformed",
-  "missing",
-  "mutually_exclusive",
-  "not_implemented",
-  "parameter",
-  "operation",
-  "value",
-  "slot",
-  "draft",
-  "route",
-  "cursor",
-  "request_body",
-  "result_budget",
-  "starting",
-  "no_read",
-  "schema",
-  "write",
-  "idempotency_key_reuse",
-  "invalid",
-  "revoked",
-  "ambiguous_table",
-  "insert_with_entity_key",
-]);
+/** The reasons of the contract's errors this version gives (04-contract-types §9), every code's. */
+const REASONS: ReadonlySet<string> = new Set<string>(Object.values(ERROR_REASONS).flat());
 
 /** Why a rule's SQL was refused (04-contract-types §9 `SqlReason`). */
 const SQL_REASON: ReadonlySet<string> = new Set<string>(SQL_REASONS);
@@ -1761,7 +1739,7 @@ const REASON_NEXT: ReadonlyMap<string, () => Part[]> = new Map([
 function errorLines(error: R, now: Date): Line[] {
   const c = error["code"];
   const lines: Line[] = [
-    t`Refused: ${codeIn(c, keysOf(NEXT))}${error["reason"] !== undefined ? t` (${codeIn(error["reason"], ERROR_REASONS)})` : []}${error["param"] !== undefined ? t` · parameter ${untrusted(String(error["param"]))}` : []}`,
+    t`Refused: ${codeIn(c, keysOf(NEXT))}${error["reason"] !== undefined ? t` (${codeIn(error["reason"], REASONS)})` : []}${error["param"] !== undefined ? t` · parameter ${untrusted(String(error["param"]))}` : []}`,
   ];
   if (error["message"] !== undefined) lines.push(t`Message: ${stored(String(error["message"]))}`);
   if (error["name"] !== undefined) lines.push(t`Not found: ${untrusted(String(error["name"]))}`);

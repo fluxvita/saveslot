@@ -9,47 +9,37 @@
 //   (a random reference for the logs), the kernel's message and detail kept out of the response.
 
 import { randomBytes } from "node:crypto";
+import { ERROR_CODES, type ErrorCode, type ErrorReason } from "@fluxvita/saveslot-contract";
+import type { KERNEL_OUTER_ERROR_REASONS } from "@fluxvita/saveslot-kernel";
 
-/** The contract's error codes (04-contract-types §9 `ErrorCode`). */
-export const ERROR_CODES = [
-  "invalid_argument",
-  "unknown_table",
-  "unknown_field",
-  "not_found",
-  "revoked",
-  "derived_readonly",
-  "validation_failed",
-  "read_first",
-  "schema_incompatible",
-  "too_large",
-  "sql_rejected",
-  "sql_timeout",
-  "draft_outdated",
-  "field_unmatched",
-  "confirmation_mismatch",
-  "item_closed",
-  "preview_outdated",
-  "referenced",
-  "lease_expired",
-  "unauthenticated",
-  "insufficient_scope",
-  "rate_limited",
-  "handle_expired",
-  "not_in_this_version",
-  "unavailable",
-  "internal",
-  "import_rejected",
-] as const;
-export type ErrorCode = (typeof ERROR_CODES)[number];
+// The outer codes the kernel raises are the contract's, with the contract's reasons, but for
+// `internal`: its reasons (`not_implemented`, `inconsistent`) are the kernel's own, and are never
+// passed on (see `contractError`). Checked at compile time: a reason the kernel gives that the
+// contract does not list makes `true` below unassignable.
+type KernelOuter = typeof KERNEL_OUTER_ERROR_REASONS;
+const kernelOuterIsTheContracts: {
+  readonly [C in Exclude<keyof KernelOuter, "internal">]: C extends ErrorCode
+    ? KernelOuter[C][number] extends ErrorReason<C>
+      ? true
+      : false
+    : false;
+} = { not_in_this_version: true, handle_expired: true, insufficient_scope: true };
+void kernelOuterIsTheContracts;
+
+export type { ErrorCode };
 
 const KNOWN: ReadonlySet<string> = new Set(ERROR_CODES);
 
 /** An error as the contract gives it: a code and its detail (no stack, no internal message). */
-export class ContractError extends Error {
+export class ContractError<C extends ErrorCode = ErrorCode> extends Error {
   override readonly name = "ContractError";
-  readonly code: ErrorCode;
-  readonly detail: Readonly<Record<string, unknown>>;
-  constructor(code: ErrorCode, message: string, detail: Record<string, unknown> = {}) {
+  readonly code: C;
+  readonly detail: { readonly reason?: ErrorReason<C> } & Readonly<Record<string, unknown>>;
+  constructor(
+    code: C,
+    message: string,
+    detail: { readonly reason?: ErrorReason<C> } & Record<string, unknown> = {},
+  ) {
     super(message);
     this.code = code;
     this.detail = detail;

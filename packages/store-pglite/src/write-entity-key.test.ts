@@ -756,6 +756,36 @@ describe("keys that are not text", () => {
   );
 
   it(
+    "a key no entity holds: not_found of an entity, at entity_key",
+    async () => {
+      // Located by key, the target is still an entity (04-contract-types §9 `not_found`).
+      await one(booking("2026-11-05T10:00:00+08:00[Asia/Shanghai]", "5"));
+      const ctx = createOpsContext({
+        tenant: TENANT,
+        actor: USER,
+        trigger: null,
+        task: null,
+        visibility: { kind: "all" },
+        idempotency_key_window: 86_400_000,
+        idempotency_window: 600_000,
+        now: "2026-11-06T00:00:00.000Z",
+        confirmation: null,
+      });
+      const none = {
+        at: "2026-11-05T10:00:00+08:00[Asia/Shanghai]",
+        deposit: { value: "999", unit: "CNY" },
+      };
+      await expect(
+        history(s.store, ctx, { table: "bookings", entity_key: none }),
+      ).rejects.toMatchObject({
+        code: "not_found",
+        detail: { reason: "entity", param: "entity_key" },
+      });
+    },
+    T,
+  );
+
+  it(
     "the same instant in another zone is another key",
     async () => {
       const a = await one(booking("2026-11-05T10:00:00+08:00[Asia/Shanghai]", "5"));

@@ -12,6 +12,7 @@ import type {
   catalog,
   DecisionResolution,
   history,
+  KernelErrorCode,
   logEnd,
   logVerify,
   pending,
@@ -23,7 +24,6 @@ import type {
   write,
 } from "@fluxvita/saveslot-kernel";
 import { describe, expect, it } from "vitest";
-import type { ERROR_CODES } from "./contract-error.ts";
 import type { connectionOut } from "./operations.ts";
 
 /**
@@ -84,11 +84,8 @@ export const checks = [
   fits<C.ValidationDetail>(as<Mutable<WriteValidationDetail>>()),
   fits<never>(as<ExtraKeys<WriteValidationDetail, C.ValidationDetail>>()),
 
-  // Every code of the contract's is one the service can give.
-  fits<(typeof ERROR_CODES)[number]>(as<C.ErrorCode>()),
-  // The fourth request: one list of error codes, the contract's.
-  // @ts-expect-error the service's list has two codes of later versions (referenced, lease_expired)
-  fits<C.ErrorCode>(as<(typeof ERROR_CODES)[number]>()),
+  // One list of error codes, the contract's: every code a kernel error may carry is one of them.
+  fits<C.ErrorCode>(as<KernelErrorCode>()),
 ];
 
 describe("the service's results against the contract's types", () => {

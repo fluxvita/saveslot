@@ -8,6 +8,9 @@ import type {
   EVENT_DECISIONS,
   FieldStatus,
   ItemId,
+  KernelErrorCode,
+  KernelErrorDetail,
+  KernelErrorReason,
   RowId,
   Seq,
   SourceId,
@@ -19,12 +22,12 @@ import { echoName, echoPath } from "../request/index.ts";
 import type { ValueOut } from "../time/index.ts";
 
 /** A refused read: the contract's error code and its details (`reason`, `param`, …). */
-export class ReadError extends Error {
+export class ReadError<C extends KernelErrorCode = KernelErrorCode> extends Error {
   override readonly name = "ReadError";
-  readonly code: string;
-  readonly detail: Readonly<Record<string, unknown>>;
+  readonly code: C;
+  readonly detail: KernelErrorDetail<C>;
   /** The echoed names and paths in `detail` are cut to `ECHO_CHARS` code points each. */
-  constructor(code: string, message: string, detail: Record<string, unknown> = {}) {
+  constructor(code: C, message: string, detail: KernelErrorDetail<C> = {}) {
     super(echoName(message));
     this.code = code;
     this.detail = {
@@ -35,8 +38,11 @@ export class ReadError extends Error {
   }
 }
 
-export const invalid = (reason: string, param: string, extra: Record<string, unknown> = {}) =>
-  new ReadError("invalid_argument", `${param}: ${reason}`, { reason, param, ...extra });
+export const invalid = (
+  reason: KernelErrorReason<"invalid_argument">,
+  param: string,
+  extra: Record<string, unknown> = {},
+) => new ReadError("invalid_argument", `${param}: ${reason}`, { reason, param, ...extra });
 
 /** Not built yet in this version of the kernel (an internal error to the caller). */
 export const notImplemented = (param: string, what: string) =>

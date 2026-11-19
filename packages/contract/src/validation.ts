@@ -51,19 +51,9 @@ export const VALIDATION_DETAIL_CODES = [
 export type ValidationDetailCode = (typeof VALIDATION_DETAIL_CODES)[number];
 
 /** 04-contract-types §9 `ValidationDetail.sql_reason`; the same values as `sql_rejected`'s `reason`. */
-export const SQL_REASONS = [
-  "syntax",
-  "not_select",
-  "function",
-  "node",
-  "system_time",
-  "unknown_name",
-  "type",
-  "limit",
-  "runtime",
-] as const;
-/** 04-contract-types §9 `ValidationDetail.sql_reason`. */
-export type SqlReason = (typeof SQL_REASONS)[number];
+import type { SqlReason } from "@fluxvita/saveslot-contract-core";
+
+export { SQL_REASONS, type SqlReason } from "@fluxvita/saveslot-contract-core";
 
 /** 04-contract-types §9 `ValidationDetail`: one item of a validation error. */
 export interface ValidationDetail {

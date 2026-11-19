@@ -655,7 +655,7 @@ function readOp(
     if (first === undefined) return invalid("missing", `${at}/${state ? "entity" : "row"}`);
     const v = get(o, first);
     if (first === "row") {
-      if (state) invalid("malformed", `${at}/row`);
+      if (state) invalid("state_table", `${at}/row`);
       if (typeof v !== "string" || !isId("row", v)) invalid("malformed", `${at}/row`);
       target = { kind: "row", row: v as string };
     } else if (first === "entity") {

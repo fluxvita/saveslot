@@ -154,8 +154,12 @@ export async function historyTarget(
   const { versions } = physical(t);
   const known = async (id: string) =>
     (await tx.query(`SELECT 1 FROM ${versions} WHERE row_id = $1 LIMIT 1`, [id])).rows.length > 0;
+  // Located by key, the target is still an entity (04-contract-types §9 `not_found`).
   const notFound = () =>
-    new ReadError("not_found", `no such ${first}`, { reason: first, param: first });
+    new ReadError("not_found", `no such ${first}`, {
+      reason: first === "entity_key" ? "entity" : first,
+      param: first,
+    });
   if (first === "row") {
     if (kind === "state") throw invalid("malformed", "row");
     if (typeof v !== "string" || !/^r_[0-9A-HJKMNP-TV-Z]{26}$/.test(v))

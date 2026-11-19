@@ -2,6 +2,7 @@
 // format v1 types (docs/zh-CN/spec/09-event-format.md), the JCS encoder and the task identifiers
 // the contract gives a meaning to.
 
+export * from "./errors.ts";
 export * from "./event/blocks.ts";
 export * from "./event/compiled.ts";
 export * from "./event/enums.ts";

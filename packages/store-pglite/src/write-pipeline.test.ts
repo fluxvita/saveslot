@@ -955,7 +955,6 @@ describe("refusals: nothing is written", () => {
         { sv: 1, ops: [{ intent: "insert", table: "nope", set: { b: "x" } }] },
         {
           refused: "unknown_table",
-          code: "unknown_table",
           param: "ops/0/table",
           name: "nope",
           nearest: ["notes", "rows", "entities"],
@@ -963,7 +962,7 @@ describe("refusals: nothing is written", () => {
       );
       await refused(
         { sv: 2, ops: [{ intent: "insert", table: "rows", set: { b: "x" } }] },
-        { refused: "invalid_argument", code: "invalid_argument", reason: "malformed", param: "sv" },
+        { refused: "invalid_argument", reason: "malformed", param: "sv" },
       );
     },
     T,
