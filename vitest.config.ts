@@ -15,5 +15,7 @@ export default defineConfig({
   },
   test: {
     include: ["packages/*/src/**/*.test.ts", "scripts/**/*.test.ts"],
+    // A temporary directory of the run's own, cleared when the run ends (scripts/test-tmp.ts).
+    globalSetup: ["scripts/test-tmp.ts"],
   },
 });
