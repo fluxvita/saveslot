@@ -61,7 +61,7 @@ import { itemVer, readReceipt, type WriteReceipt, withDerived } from "./receipt.
 import { encodeResolution, type RowContext } from "./record.ts";
 import { givenItems, refProblems, tableInRange } from "./refs.ts";
 import { findRequest, requestKeyOf } from "./request-key.ts";
-import { evidenceSource } from "./sources.ts";
+import { evidenceSource, placeEvidence } from "./sources.ts";
 
 /** A decision's result (04-contract-types §5.2 `ResolveResult`). */
 export interface ResolveReceipt {
@@ -534,11 +534,26 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
   // Sources (09 §4.3): each evidence segment, then the request itself as an `api_call` when it
   // has a note, or when it triggers a write and has no evidence. The triggered write's own items
   // take the evidence as their value sources, or else the `api_call`.
-  const nEvidence = req.evidence.length;
-  const apiCall = req.note !== undefined || (triggers && nEvidence === 0);
-  const nSources = nEvidence + (apiCall ? 1 : 0);
-  const sourceSeqs = Array.from({ length: nSources }, (_, k) => (op + 1 + k) as Seq);
-  const valueSources = nEvidence > 0 ? sourceSeqs.slice(0, nEvidence) : sourceSeqs;
+  // A `source_ref` segment is the source it names, with no event of its own (04-contract §3).
+  const evidence = await placeEvidence(
+    tx,
+    req.evidence.map((segment, k) => ({ segment, param: `evidence/${k}` })),
+    {
+      slot: slot.slot,
+      visibleSlots: new Set(
+        (await visibleSlotRows(tx, input.visibility as Visibility)).map((s) => s.slot),
+      ),
+    },
+  );
+  const evidenceSeqs = [...new Set(evidence.seqsFrom(op + 1))];
+  const apiCall = req.note !== undefined || (triggers && req.evidence.length === 0);
+  const apiCallSeq = (op + 1 + evidence.fresh.length) as Seq;
+  const nSources = evidence.fresh.length + (apiCall ? 1 : 0);
+  const sourceSeqs = [...evidenceSeqs, ...(apiCall ? [apiCallSeq] : [])];
+  // The value sources of the triggered write's own values. Not used in this version: the items of a
+  // decision's write are carried (their sources the carried items'); a value of the decision's own
+  // comes with migration_diff's `set` (later).
+  const valueSources = req.evidence.length > 0 ? evidenceSeqs : sourceSeqs;
   const event = (op + 1 + nSources) as Seq;
   const base = { op, index: 0, event, ruleset: RULESET };
   const unit = tracked.unit as Unit;
@@ -622,9 +637,14 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
   });
 
   // The events: the decision, its sources, the write it triggers, then the other items on the row.
-  const evidenceIds = req.evidence.map(() => input.newId("source"));
+  const freshIds = evidence.fresh.map(() => input.newId("source"));
+  // Each segment by its source's ID: a new one's, or the one a `source_ref` names.
+  let freshAt = 0;
+  const evidenceIds = req.evidence.map((ev) =>
+    ev.kind === "source_ref" ? ev.id : (freshIds[freshAt++] as string),
+  );
   const sources: NewEvent[] = [
-    ...req.evidence.map((ev, k) => evidenceSource(ev, slot.slot, evidenceIds[k] as string)),
+    ...evidence.fresh.map((ev, k) => evidenceSource(ev, slot.slot, freshIds[k] as string)),
     ...(apiCall
       ? [
           {

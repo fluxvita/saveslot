@@ -81,6 +81,7 @@ export const DOMAIN_ERROR_REASONS = {
     "evidence_segment",
     "request",
     "ops",
+    "evidence_segments",
     "request_body",
     "admission",
     "result_budget",

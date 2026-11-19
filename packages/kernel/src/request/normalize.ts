@@ -27,6 +27,7 @@ import type {
   DateStr,
   FieldId,
   Instant,
+  SourceId,
   TableId,
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize, isId } from "@fluxvita/saveslot-contract-core";
@@ -58,6 +59,8 @@ export const MAX_OPS = 1000;
 export const MAX_TAG_CHARS = 256;
 export const EVIDENCE_SEGMENT_BYTES = 32 * 1024;
 export const EVIDENCE_REQUEST_BYTES = 256 * 1024;
+/** Evidence segments a request may have, the request's and every op's, `source_ref` ones too. */
+export const MAX_EVIDENCE_SEGMENTS = 1000;
 /** `file_ref` text lengths in characters (code points): name, mime, origin. */
 export const FILE_REF_CHARS = { name: 256, mime: 256, origin: 2048 } as const;
 
@@ -137,21 +140,36 @@ const OP_KEYS = new Set([
   "evidence_by_field",
 ]);
 /** Op keys this version does not take, in the order they are reported. */
-const OP_NOT_YET = ["premises", "external_key", "as", "evidence", "evidence_by_field"];
+const OP_NOT_YET = ["premises", "external_key", "as", "evidence_by_field"];
 const INTENTS: ReadonlySet<string> = new Set(["insert", "update", "correct", "revoke"]);
 const VER = /^v([1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
 // --- evidence (04-contract §3) ------------------------------------------------------------------
 
-export function evidence(v: unknown): EvidenceSegment[] {
-  if (v === undefined) return [];
-  if (!isDenseArray(v)) return invalid("malformed", "evidence");
+/**
+ * Evidence segments in one place (the request's `evidence`, or an op's own at `ops/i/evidence`),
+ * with the bytes they count toward the request's limit. The total is checked by the caller.
+ */
+export function segmentsAt(
+  v: unknown,
+  base: string,
+): { readonly segments: EvidenceSegment[]; readonly bytes: number } {
+  if (v === undefined) return { segments: [], bytes: 0 };
+  if (!isDenseArray(v)) return invalid("malformed", base);
   let total = 0;
   const segments = v.map((s, k): EvidenceSegment => {
-    const at = `evidence/${k}`;
+    const at = `${base}/${k}`;
     if (!isObj(s)) return invalid("malformed", at);
     const kind = get(s, "kind");
-    if (kind === "source_ref") return notYet(at);
+    if (kind === "source_ref") {
+      // An existing source of the slot, by ID: no text of its own, nothing counted.
+      for (const key of keysOf(s))
+        if (key !== "kind" && key !== "id") invalid("malformed", `${at}/${key}`);
+      if (!has(s, "id")) return invalid("missing", `${at}/id`);
+      const id = get(s, "id");
+      if (typeof id !== "string" || !isId("source", id)) return invalid("malformed", `${at}/id`);
+      return { kind, id: id as SourceId };
+    }
     // Evidence text: well-formed, no NUL (PostgreSQL text cannot hold it). `short` texts have a
     // length limit and no control characters.
     const text = (key: string, required: boolean, short?: number): string | undefined => {
@@ -242,6 +260,23 @@ export function evidence(v: unknown): EvidenceSegment[] {
     }
     return invalid(has(s, "kind") ? "malformed" : "missing", `${at}/kind`);
   });
+  return { segments, bytes: total };
+}
+
+/**
+ * The request's evidence against its limits (04-contract §3): at most 1,000 segments, the
+ * request's and every op's (a `source_ref` counts: it has no bytes), then 256 KB over them all.
+ */
+function checkEvidenceTotal(total: number, count: number): void {
+  if (count > MAX_EVIDENCE_SEGMENTS) {
+    refuse({
+      code: "too_large",
+      reason: "evidence_segments",
+      param: "evidence",
+      limit: MAX_EVIDENCE_SEGMENTS,
+      actual: count,
+    });
+  }
   if (total > EVIDENCE_REQUEST_BYTES) {
     refuse({
       code: "too_large",
@@ -251,6 +286,12 @@ export function evidence(v: unknown): EvidenceSegment[] {
       actual_bytes: total,
     });
   }
+}
+
+/** A request's evidence in one place, its total checked (`resolve`: no op of its own). */
+export function evidence(v: unknown): EvidenceSegment[] {
+  const { segments, bytes } = segmentsAt(v, "evidence");
+  checkEvidenceTotal(bytes, segments.length);
   return segments;
 }
 
@@ -439,6 +480,7 @@ interface PendingOp {
   readonly undo: { target: number; includeLater: boolean } | undefined;
   readonly acknowledge: "overwrite"[];
   readonly evidenceRefs: number[] | undefined;
+  readonly evidence?: EvidenceSegment[];
   readonly named: NamedField[];
 }
 
@@ -461,7 +503,9 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
     sv = intOf(get(params, "sv"));
     if (sv === undefined || sv < 1 || sv > input.currentSv) invalid("malformed", "sv");
   }
-  const segments = evidence(get(params, "evidence"));
+  const top = segmentsAt(get(params, "evidence"), "evidence");
+  const segments = top.segments;
+  const evidenceBytes = { n: top.bytes };
   if (!has(params, "ops")) invalid("missing", "ops");
   const rawOps = get(params, "ops");
   if (!isDenseArray(rawOps) || rawOps.length === 0) return invalid("malformed", "ops");
@@ -479,7 +523,12 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
   const zone = input.compiled.timezone;
   const warnings: WriteWarning[] = [];
   const pending = rawOps.map((o, i) =>
-    readOp(o, i, tables, input, segments.length, zone, warnings),
+    readOp(o, i, tables, input, segments.length, zone, warnings, evidenceBytes),
+  );
+  // The request's evidence, its own and every op's, against one set of limits.
+  checkEvidenceTotal(
+    evidenceBytes.n,
+    segments.length + pending.reduce((n, p) => n + (p.evidence?.length ?? 0), 0),
   );
 
   // sv compatibility: a request at an older version may not write fields changed since. Without
@@ -573,6 +622,7 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
       ...(p.undo !== undefined ? { undo: p.undo } : {}),
       acknowledge: p.acknowledge,
       ...(p.evidenceRefs !== undefined ? { evidenceRefs: p.evidenceRefs } : {}),
+      ...(p.evidence !== undefined ? { evidence: p.evidence } : {}),
       named: p.named,
     };
   });
@@ -625,6 +675,7 @@ function readOp(
   segmentCount: number,
   zone: string,
   warnings: WriteWarning[],
+  evidenceBytes: { n: number },
 ): PendingOp {
   const at = `ops/${i}`;
   if (!isObj(o)) return invalid("malformed", at);
@@ -788,6 +839,16 @@ function readOp(
         return invalid("index_out_of_range", `${at}/evidence_refs/${k}`);
       evidenceRefs.push(n);
     }
+    // An empty array is as if not given (04-contract §3): a caller filling in optional fields
+    // writes `[]` for "nothing to say", not "cite none of them".
+    if (evidenceRefs.length === 0) evidenceRefs = undefined;
+  }
+  // The op's own segments (04-contract §3): only this op's. Empty: as if not given.
+  let ownEvidence: EvidenceSegment[] | undefined;
+  if (has(o, "evidence")) {
+    const own = segmentsAt(get(o, "evidence"), `${at}/evidence`);
+    if (own.segments.length > 0) ownEvidence = own.segments;
+    evidenceBytes.n += own.bytes;
   }
   const named: NamedField[] = [
     ...(set ?? []).map(([f, k]) => ({ field: f.id, name: f.name, param: `${at}/set/${k}` })),
@@ -810,6 +871,7 @@ function readOp(
     undo,
     acknowledge,
     evidenceRefs,
+    ...(ownEvidence !== undefined ? { evidence: ownEvidence } : {}),
     named,
   };
 }

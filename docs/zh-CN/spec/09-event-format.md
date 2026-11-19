@@ -385,7 +385,7 @@
 | `request_key` | 数 | `{"key": <字符串>}` | 服务端由"连接实例 + 任务 + 规范化请求"算出的请求键。规范化请求含各条前提解析后的所见版本（含兜底取得的）；写入目标兜底补上的 `ver` 不在其内 |
 | `idempotency` | 数 | `{"key": <字符串>, "fingerprint": <哈希>}` | 调用方显式给的幂等键，与请求内容的指纹（按整个请求体算） |
 
-`task`、`request_key`、`idempotency` 只出现在调用方发起的头事件里。它们的来源：这次操作的全部证据（本操作的全部 `source.recorded` 事件与被 `source_ref` 引用的源数据）。其中任何一条被隐私删除，这三个块随之删除。宽限期内 `request_key` 与 `idempotency` 仍参与查重。同一个头事件里 `request_key` 与 `idempotency` 至多出现一个：调用方给了显式幂等键就只记 `idempotency`。
+`task`、`request_key`、`idempotency` 只出现在调用方发起的头事件里。它们的来源：本操作的全部 `source.recorded` 事件，与被 `source_ref` 引用、并出现在本操作事件里的源数据（某个进了事件的 op 的 `sources/<字段ID>/<k>`、`valid_sources` 或 `op_sources` 列着它）。其中任何一条被隐私删除，这三个块随之删除。没被任何进了事件的 op 用到的 `source_ref` 段不在其内：本操作没有记下对它的引用，请求里只有那条源数据的 ID，删掉它之后本操作里没有它的残留。宽限期内 `request_key` 与 `idempotency` 仍参与查重。同一个头事件里 `request_key` 与 `idempotency` 至多出现一个：调用方给了显式幂等键就只记 `idempotency`。
 
 **只含按来源键 op 的 `write` 不记 `request_key`**：来源键本身让重发幂等（同样的内容再交一遍，结果是 `unchanged`），服务端不为这种请求算请求键。调用方给了显式幂等键、且请求产生了事件时，照旧记 `idempotency`；请求没产生事件时什么都不记。含普通 op 的请求照旧记 `request_key`。
 

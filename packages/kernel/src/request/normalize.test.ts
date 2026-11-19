@@ -1020,7 +1020,6 @@ describe("refusals of the request's shape", () => {
     ["premises", { premises: [] }, "ops/0/premises"],
     ["external_key", { external_key: { k: "1" } }, "ops/0/external_key"],
     ["as", { as: "p1" }, "ops/0/as"],
-    ["an op's own evidence", { evidence: [{ kind: "user_message", text: "x" }] }, "ops/0/evidence"],
     ["evidence_by_field", { evidence_by_field: { note: [0] } }, "ops/0/evidence_by_field"],
     ["revert.to", { revert: { to: 3, fields: ["note"] }, set: undefined }, "ops/0/revert/to"],
   ])("%s is not in this version", (_, extra, param) => {
@@ -1287,9 +1286,19 @@ describe("evidence (04-contract §3)", () => {
       { code: "not_in_this_version", reason: "value", param: "evidence/0/level" },
     ],
     [
-      "source_ref",
+      "a source_ref whose id is no source ID",
       [{ kind: "source_ref", id: "s_x" }],
-      { code: "not_in_this_version", reason: "parameter", param: "evidence/0" },
+      { code: "invalid_argument", reason: "malformed", param: "evidence/0/id" },
+    ],
+    [
+      "a source_ref without id",
+      [{ kind: "source_ref" }],
+      { code: "invalid_argument", reason: "missing", param: "evidence/0/id" },
+    ],
+    [
+      "a source_ref with a key of a text segment",
+      [{ kind: "source_ref", id: `s_${"1".repeat(16)}`, level: "user_stated" }],
+      { code: "invalid_argument", reason: "malformed", param: "evidence/0/level" },
     ],
     [
       "a file_ref without size",
@@ -1338,5 +1347,108 @@ describe("evidence (04-contract §3)", () => {
       sha256: "a".repeat(64),
     };
     expect(ev(Array.from({ length: 200 }, () => big)).ok).toBe(true);
+  });
+});
+
+describe("an op's own evidence (04-contract §3)", () => {
+  const SOURCE = `s_${"1".repeat(16)}`;
+  const own = (evidence: unknown, more: Record<string, unknown> = {}) =>
+    normalize(
+      op({ intent: "update", table: "expenses", row: ROW, set: { note: "x" }, evidence }, more),
+    );
+
+  it("is the op's, beside the request's; a source_ref is taken as it is", () => {
+    const r = own(
+      [
+        { kind: "user_message", text: "it was x" },
+        { kind: "source_ref", id: SOURCE },
+      ],
+      {
+        evidence: [{ kind: "agent_note", text: "noted" }],
+      },
+    );
+    expect(onlyOp(r).evidence).toEqual([
+      { kind: "user_message", text: "it was x" },
+      { kind: "source_ref", id: SOURCE },
+    ]);
+    expect(r.ok && r.request.evidence).toEqual([{ kind: "agent_note", text: "noted" }]);
+  });
+
+  it.each<[string, unknown, Record<string, unknown>]>([
+    [
+      "external_authority",
+      [{ kind: "agent_note", text: "x", level: "external_authority" }],
+      { code: "not_in_this_version", reason: "value", param: "ops/0/evidence/0/level" },
+    ],
+    [
+      "a segment over 32 KB",
+      [{ kind: "agent_note", text: "说".repeat(11_000) }],
+      {
+        code: "too_large",
+        reason: "evidence_segment",
+        param: "ops/0/evidence/0/text",
+        limit_bytes: 32_768,
+        actual_bytes: 33_000,
+      },
+    ],
+    [
+      "not an array",
+      { kind: "agent_note", text: "x" },
+      { code: "invalid_argument", reason: "malformed", param: "ops/0/evidence" },
+    ],
+  ])("refuses %s, at the op's segment", (_, evidence, error) => {
+    expect(errorOf(own(evidence))).toEqual(error);
+  });
+
+  it("counts toward the request's 256 KB with the request's own", () => {
+    // 8 segments of 30,000 bytes in the request, one more in the op: 270,000 bytes in all.
+    const seg = { kind: "agent_note", text: "x".repeat(30_000) };
+    const r = own([seg], { evidence: Array.from({ length: 8 }, () => seg) });
+    expect(errorOf(r)).toEqual({
+      code: "too_large",
+      reason: "request",
+      param: "evidence",
+      limit_bytes: 262_144,
+      actual_bytes: 270_000,
+    });
+    // Without the op's segment, the request's alone is within the limit.
+    expect(
+      normalize(
+        op(
+          { intent: "update", table: "expenses", row: ROW, set: { note: "x" } },
+          {
+            evidence: Array.from({ length: 8 }, () => seg),
+          },
+        ),
+      ).ok,
+    ).toBe(true);
+  });
+});
+
+describe("the number of evidence segments (04-contract §3: at most 1,000 a request)", () => {
+  const ref = (k: number) => ({ kind: "source_ref", id: `s_${String(k).padStart(16, "0")}` });
+  const refs = (n: number, from = 0) => Array.from({ length: n }, (_, k) => ref(from + k));
+  const upd = { intent: "update", table: "expenses", row: ROW, set: { note: "x" } };
+
+  it("exactly 1,000, the request's and an op's together: taken", () => {
+    const r = normalize(op({ ...upd, evidence: refs(1) }, { evidence: refs(999, 1) }));
+    expect(r.ok).toBe(true);
+  });
+
+  it("1,001: too_large, evidence_segments, with no byte counted (source_ref segments)", () => {
+    expect(
+      errorOf(normalize(op({ ...upd, evidence: refs(2) }, { evidence: refs(999, 2) }))),
+    ).toEqual({
+      code: "too_large",
+      reason: "evidence_segments",
+      param: "evidence",
+      limit: 1000,
+      actual: 1001,
+    });
+    // The request's alone, too.
+    expect(errorOf(normalize(op(upd, { evidence: refs(1001) })))).toMatchObject({
+      reason: "evidence_segments",
+      actual: 1001,
+    });
   });
 });

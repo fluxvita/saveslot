@@ -494,7 +494,7 @@ expenses r_01JC… 整行删除：date、category 只来自这句话
 | `validation_failed` | 按 `details[]` 逐条：第几个 op、哪个字段、允许的单位 / 范围；`required_in_gap`："2026-10-10 至 2026-10-19（含）这段没有值，要写这一段需同时给出 amount；或把区间缩短到有值的部分"；编译失败指出规则第几行、改法（如"`date_trunc(text, date)` 结果随时区变化，请写成 `date_trunc('week', date::timestamp)::date`"）；`reserved_name`："名字只用字母、数字与下划线，字母开头，至多 63 个字符；字段名不能是 valid、valid_from、valid_to、row_id、entity_id"；`untrusted_marker`："说明里带着 <untrusted-data-…> 标签，请去掉后重新提交"；`alias_invalid`：指出哪个对象的第几个别名、违反了哪一条（如"别名 spend 与仍可按旧名解析的表 expenses 的旧名相同"） |
 | `read_first` | `no_read`："请先用 saveslot_query 读取该行"（事项："请先用 saveslot_pending 查看 pi_…"；没带 `sv`："请先用 saveslot_catalog 或 saveslot_query 读一次该 slot"；`history` 的 `changes` 用 `since: "my_last_read"` 而没读过这张表（`target` 是 `table`）："请先用 saveslot_query 读取这张表"）；`task_mismatch`："你在 task X 下读过该行；本次 task 为 Y，兜底只认同一任务，请带上 ver=… 或使用相同的 task"（`target` 是 `table`，即 `changes` 的 `"my_last_read"`：这次调用没有 `ver`，写"在 task X 下读过这张表；本次 task 为 Y；`my_last_read` 只认同一任务下的读取：请使用相同的 task，或给 `since` 一个操作号或时刻"）|
 | `schema_incompatible` | 说明变了什么，建议用 `saveslot_catalog` 重读 |
-| `too_large` | `admission`："影响约 N 行，请拆成每批 ≤ K 行"；`evidence_segment` / `request`：给出上限与实际大小，建议改用 file_ref 加摘录；`ops`："一次最多 1,000 个 op，请拆成几次写入"；`result_budget`：给出缩小的办法（如"请用 tables 指定少几张表"）；`premise_entries`："一个 op 最多声明 16 条前提，只列真正用到的记录"；`premise_fan_in`："r_… 已被 1000 条前提指向，不能再声明以它为前提" |
+| `too_large` | `admission`："影响约 N 行，请拆成每批 ≤ K 行"；`evidence_segment` / `request`：给出上限与实际大小，建议改用 file_ref 加摘录；`ops`："一次最多 1,000 个 op，请拆成几次写入"；`evidence_segments`："一次最多 1,000 段证据，请拆成几次写入，或合并引用同一条源数据的段"；`result_budget`：给出缩小的办法（如"请用 tables 指定少几张表"）；`premise_entries`："一个 op 最多声明 16 条前提，只列真正用到的记录"；`premise_fan_in`："r_… 已被 1000 条前提指向，不能再声明以它为前提" |
 | `sql_rejected` | 指出第几行哪个节点 / 函数不在白名单里（白名单见 data-model [「受限 SQL」](03-data-model/11-restricted-sql.md)）；不暴露物理名；`unknown_name`：凭证范围外的表与不存在的表报同一句话，报错里不出现范围外的名字；`FOR SYSTEM_TIME` 时指向 `saveslot_history` |
 | `sql_timeout` | 建议加条件或缩小时间范围 |
 | `draft_outdated` | `base_version`：给出当前版本，"请用 saveslot_catalog level=schema 取回最新文档后重新修改"；`migrating`："ledger 正在迁移到 v2（进度 120 / 2300），完成后再提交"；`table_written`："budgets 在草稿提交之后有了写入，这份草稿里按"从未被写入"编译的改动不能再确认；请 reject 它，或提交新的草稿" |
@@ -714,7 +714,7 @@ ledger: 2 张表
 | `ops[].valid_from` | | 只用于状态类表：从哪天（哪一刻）起，含。不传 = 现在。用户说了起始日期就要传 |
 | `ops[].valid_to` | | 只用于状态类表：到哪为止，**不含**——用户说"到 11-20（含）"时传 `2026-11-21`。默认 `next_change`（只管到下一个已记录的变化，那个变化保持不动；"从 11-02 起改成 3000"就不传）；`open` 表示一直延续：之后有已记录的变化时会盖掉它们，这次写入进待确认；之后没有已记录的变化时直接生效 |
 | `ops[].evidence` | | 〔P2 起〕只属于这个 op 的证据段，写法同顶层的 `evidence` |
-| `ops[].evidence_refs` | | 这个 op 用到顶层 `evidence` 里的哪几段（下标，从 0 起）。它和 `ops[].evidence` 都不给时，表示顶层的全部段都是它的证据 |
+| `ops[].evidence_refs` | | 这个 op 用到顶层 `evidence` 里的哪几段（下标，从 0 起）。它和 `ops[].evidence` 都不给时，表示顶层的全部段都是它的证据。给空数组 `[]` 与不给相同 |
 | `ops[].evidence_by_field` | | 〔P2 起〕字段名 → 证据下标数组：哪个字段出自哪段话。下标先数这个 op 自己的段，再数它引用的顶层段；状态类表的起止日期用键 `valid`。**重申一个没变的值、想让这句话也成为它的证据时必须用它指明**，否则值没变的字段不会记下新证据 |
 | `ops[].premises` | | 〔P2 起〕这次写的内容是根据哪些已有记录定的：`[{table, row 或 entity 或 entity_key, fields, ver}]`。`ver` 是读那条记录时拿到的，原样带回；`fields` 是用到的字段，说不准就不给。状态类表可加 `valid_at` 或 `valid_during` 指明用到的是哪段时间的值；不给时，这一行自己有日期或时间就取它，没有就是从现在起。`[]` 表示清掉这一行的前提。**这不是 `evidence`**：`evidence` 放用户的话与工具结果，`premises` 指向 saveslot 里的记录 |
 

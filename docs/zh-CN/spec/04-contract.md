@@ -102,14 +102,14 @@
 | （saveslot 生成）`api_call` | 没带证据时的请求本身。`write`：每个在事件里留下了东西的 op 各存一条，只含该 op（贡献、前提的声明、重申、清除都算留下了东西）；无操作字段的值不记；没进事件的按来源键 op（`unchanged`、`skipped`，5.1）不存。`resolve`：带了 `note`、或会触发写入而没带证据时，连同 `note` 存一条。只出现在源数据里，调用方不能传 | `agent_inferred` |
 
 - **“纠错”是标注，不是种类**：一条源数据被某次意图为 `correct` 的写入用作值来源时，读结果里带 `correction: true`（types 4.6）；它由写入意图得出，不改变这条源数据的种类与来源级别。
-- **必填**：三种文本段的 `text` 必填且非空；`file_ref` 的 `name`、`mime`、`size`、`sha256` 必填，`origin`、`excerpt` 可选；`source_ref` 的 `id` 必填，引用宽限期内待删除的源数据报 `invalid_argument`（`pending_deletion_source`）。
-- **大小**（初值，open-questions「接口的数值与细则」）：单段 32 KB，单次请求 256 KB；**按 UTF-8 字节数，只算 `text` 与 `excerpt`**。超出报 `too_large`（`evidence_segment` / `request`）。大文本只交 `file_ref` 加摘录。`file_ref` 的 `name`、`mime` 各至多 256 个字符、`origin` 至多 2048 个字符（按码点数），不含控制字符。
+- **必填**：三种文本段的 `text` 必填且非空；`file_ref` 的 `name`、`mime`、`size`、`sha256` 必填，`origin`、`excerpt` 可选；`source_ref` 的 `id` 必填，引用宽限期内待删除的源数据报 `invalid_argument`（`pending_deletion_source`）；被引用的必须是调用方交来的源数据，`api_call` 类的不能被引用，报 `invalid_argument`（`malformed`）；引用别的 slot 里可见的源数据报 `invalid_argument`（`cross_slot`），不存在或不可见的报 `not_found`（`source`）。
+- **大小**（初值，open-questions「接口的数值与细则」）：单段 32 KB，单次请求 256 KB；**按 UTF-8 字节数，只算 `text` 与 `excerpt`**。超出报 `too_large`（`evidence_segment` / `request`）。一次请求至多 1,000 段（请求级与全部内联段合计，`source_ref` 段也算），超出报 `too_large`（`evidence_segments`，附 `limit` 与 `actual`，都是段数），与字节上限同一步检查。大文本只交 `file_ref` 加摘录。`file_ref` 的 `name`、`mime` 各至多 256 个字符、`origin` 至多 2048 个字符（按码点数），不含控制字符。
 - **证据文本**（`text`、`excerpt` 与 `file_ref` 的各项文本）须是良构的 Unicode、不含 NUL；不符合的、超长的报 `invalid_argument`（`malformed`，`param` 指到那一项）。
 - **声明级别**：段上的 `level` 覆盖按 `kind` 推出的默认值；`external_authority` 第一版不开放，声明它报 `not_in_this_version`。级别只在字面命中时参与冲突裁决（data-model「来源级别」）。
   - 将来开放 `external_authority` 时，能否声明它由连接实例被授予的权限决定：只能由用户会话在签发时授予，写入方不能自报，别的连接实例不能转授；授予记在主体登记事件里。没被授予而声明了它，整个请求被拒，不降级成 `agent_inferred`——降级会让写入方误以为自己的值带着权威级别。
 - **陈述时间**：段上可选的 `stated_at`，这句话是什么时候说的；不给就是未知。只记录，第一版不参与任何判定。
 - **段放在哪**：请求级 `evidence`（多个 op 共用），或写在 op 里（`ops[i].evidence`，只属于这个 op）。op 引用请求级的段用 `ops[i].evidence_refs`（下标数组）。
-- **op 可见的段** = 它的内联段，加上 `evidence_refs` 列出的请求级段；两者都没给时，引用全部请求级段。
+- **op 可见的段** = 它的内联段，加上 `evidence_refs` 列出的请求级段；两者都没给时，引用全部请求级段。**空数组与不给相同**：请求级的 `evidence: []`、`ops[i].evidence: []`、`ops[i].evidence_refs: []` 都按没给处理（补全可选参数时填的 `[]` 是"没什么要说的"，不是"一段都不引用"）。
 - **按字段指明**：`ops[i].evidence_by_field`，字段名 → 下标数组。下标数的是这个 op 可见的段：**先数内联段，再按 `evidence_refs` 的顺序数请求级段**。键 `valid` 指状态类表区间参数的出处。下标越界报 `invalid_argument`（`index_out_of_range`）；映射到空数组报 `invalid_argument`（`empty_mapping`）。
 - **一个字段引用多段时，这几段同时需要**（含不给映射的默认；规则见 data-model「删除 · 来源」）。带多段又没给字段映射时，`warnings` 给 `multi_segment_unmapped`。
 - **值没变的字段只有按字段显式指向证据时才算佐证**；没指的是无操作（第 5 节）。
@@ -173,7 +173,6 @@
   - 限定名 `slot.table` 的 slot 不是本请求所在的 slot：`invalid_argument`（`cross_slot`）。
   - 状态类表上 `valid_from` 不早于 `valid_to`：`invalid_argument`（`malformed`，`param` 为 `valid_to`）。两端都给时在这一步；只给 `valid_to`、起点按"现在"（slot 时区下的那一天或那一刻）算时，在判定这个 op 时才知道，排在 `not_found`、`read_first` 之后，同样报 `invalid_argument`（`malformed`，`param` 为 `ops/<i>/valid_to`）。
   - `ref` 写临时名 `"@p1"`：第一版没有 `as`，请求里不会有绑定它的 op，报 `validation_failed`（`ref_not_found`）。
-  - 证据段 `source_ref`：第一版不开放，`not_in_this_version`（`parameter`，`param` 指到那一段）。
 - **`valid_from` / `valid_to` 只用于状态类表**；用在别的表上报 `invalid_argument`（`not_state_table`）。实体的键字段不随业务时间变化：带区间的写入里出现 `entity_key` 的键字段且值与实体的键不同，报 `invalid_argument`（`key_field_changed`）。
 - **同一请求里多个 op 作用于同一行 / 实体**：后面的 op 看得到前面 op 的结果。对本请求里新建的行 / 实体，后面的 op 不需要 `ver`；对请求之前已存在的，各 op 带的 `ver` 都表示"请求开始时所见的版本"，冲突判定只比请求之外的写入。各 op 独立判定：一个 op 成了候选，不影响其他 op 生效。同一行 / 实体只得一个新 `ver`。
 - **`acknowledge: ["overwrite"]`**：已与用户确认覆盖类的高影响，直接生效。**只在这个 op 显式带了当前 `ver` 时有效**，否则照常进待确认（data-model「写状态」）。哪些外化面开放见 surfaces。
@@ -237,7 +236,7 @@
 
 ### 5.4 判定与回执
 
-**判定顺序**（data-model「写入请求」）：与状态无关的校验（`sv`、类型、单位、参数的格式与互斥）→ 请求键查重 → 同值 → `ver` 与冲突 → 对将要生效的部分做依赖状态的校验（含 `ref` 目标与前提）→ 高影响 → 疑似重复。按来源键的 op 先由内核按键定位，同值与冲突两步换成三方比较的输入（5.1）。
+**判定顺序**（data-model「写入请求」）：与状态无关的校验（`sv`、类型、单位、参数的格式与互斥）→ 请求键查重；没命中时核对证据里 `source_ref` 引用的源数据（整个请求一次，排在 `sv` / `ver` 的兜底与 `read_first` 之前）→ 同值 → `ver` 与冲突 → 对将要生效的部分做依赖状态的校验（含 `ref` 目标与前提）→ 高影响 → 疑似重复。按来源键的 op 先由内核按键定位，同值与冲突两步换成三方比较的输入（5.1）。
 
 **逐字段结果**（types 的 `FieldResult`）：
 

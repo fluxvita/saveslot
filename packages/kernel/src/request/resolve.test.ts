@@ -72,6 +72,24 @@ describe("normalizeResolve", () => {
       { id: ID, decision: "reject", note: "x".repeat(32 * 1024 + 1) },
       { code: "too_large", param: "note" },
     ],
+    [
+      "more than 1,000 evidence segments",
+      {
+        id: ID,
+        decision: "reject",
+        evidence: Array.from({ length: 1001 }, (_, k) => ({
+          kind: "source_ref",
+          id: `s_${String(k).padStart(16, "0")}`,
+        })),
+      },
+      {
+        code: "too_large",
+        reason: "evidence_segments",
+        param: "evidence",
+        limit: 1000,
+        actual: 1001,
+      },
+    ],
   ])("refuses %s", (_, params, error) => {
     expect(refused(params)).toMatchObject(error);
   });

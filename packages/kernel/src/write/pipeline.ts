@@ -113,7 +113,7 @@ import {
 import { decodeRecords, encodeOp, type RowContext, type StoredEvent } from "./record.ts";
 import { givenItems, refProblems, type StoredTargets, tableInRange } from "./refs.ts";
 import { findRequest, requestKeyOf } from "./request-key.ts";
-import { evidenceSource } from "./sources.ts";
+import { evidenceSource, placeEvidence } from "./sources.ts";
 
 export { WriteError };
 
@@ -943,6 +943,23 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     return replay;
   }
 
+  // Step 2½, the sources the evidence names (04-contract §5.4): a request naming a source it may
+  // not is refused before anything of its ops is judged. A replay returned above as it was.
+  // The segments are numbered once the operation is: the request's, then each op's own, right
+  // after it (09 §4.2); a `source_ref` is the source it names.
+  const evidence = await placeEvidence(
+    tx,
+    [
+      ...req.evidence.map((segment, k) => ({ segment, param: `evidence/${k}` })),
+      ...req.ops.flatMap((o) =>
+        (o.evidence ?? []).map((segment, k) => ({
+          segment,
+          param: `ops/${o.index}/evidence/${k}`,
+        })),
+      ),
+    ],
+    { slot: slot.slot, visibleSlots: new Set(visible.map((s) => s.slot)) },
+  );
   // `sv`: given, or from the caller's own latest write on the slot.
   let sv = req.sv;
   let svBasis: "explicit" | "fallback" = "explicit";
@@ -965,14 +982,35 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   }
 
   const op = (((await readTail(tx))?.seq ?? 0) + 1) as OpNumber;
-  const nSources = req.evidence.length > 0 ? req.evidence.length : req.ops.length;
+  const evidenceSeqs = evidence.seqsFrom(op + 1);
+  // Then an `api_call` for each op with no evidence at all (none of its own, none in the request).
+  const requestSeqs = evidenceSeqs.slice(0, req.evidence.length);
+  const ownSeqs = new Map<number, readonly Seq[]>();
+  let placedAt = req.evidence.length;
+  for (const o of req.ops) {
+    const n = o.evidence?.length ?? 0;
+    ownSeqs.set(o.index, evidenceSeqs.slice(placedAt, placedAt + n));
+    placedAt += n;
+  }
+  const apiCallOps = req.evidence.length > 0 ? [] : req.ops.filter((o) => o.evidence === undefined);
+  const apiCallSeq = new Map(
+    apiCallOps.map((o, k) => [o.index, (op + 1 + evidence.fresh.length + k) as Seq]),
+  );
+  const nSources = evidence.fresh.length + apiCallOps.length;
   let next = op + 1 + nSources;
-  // An op's value sources: the evidence segments it cites (all of them when it names none), or
-  // its own `api_call` source.
-  const sourcesOf = (o: NormalizedOp): Seq[] =>
-    req.evidence.length > 0
-      ? (o.evidenceRefs ?? req.evidence.map((_, k) => k)).map((k) => (op + 1 + k) as Seq)
-      : [(op + 1 + o.index) as Seq];
+  // An op's value sources: its own segments, and the request's it cites (all of them when it names
+  // none and has none of its own); or its `api_call` source.
+  const sourcesOf = (o: NormalizedOp): Seq[] => {
+    const api = apiCallSeq.get(o.index);
+    if (api !== undefined) return [api];
+    const cited =
+      o.evidenceRefs !== undefined
+        ? o.evidenceRefs.map((k) => requestSeqs[k] as Seq)
+        : o.evidence !== undefined
+          ? []
+          : requestSeqs;
+    return [...new Set([...(ownSeqs.get(o.index) ?? []), ...cited])];
+  };
 
   const rows = new Map<string, RowWork>();
   // The ref targets this request reads from the store (step 5), read once.
@@ -1319,36 +1357,36 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   // Sources: the request's evidence, or each op's request as an `api_call` (04-write-and-read
   // «不变量：每次写入都有源数据»), without the values of its no-op fields.
   const rawOps = (input.params as { ops: JsonValue[] }).ops;
-  const sources: NewEvent[] =
-    req.evidence.length > 0
-      ? req.evidence.map((ev) => evidenceSource(ev, slot.slot, input.newId("source")))
-      : req.ops.map((o) => {
-          const raw = rawOps[o.index] as Record<string, JsonValue>;
-          const noop = noopNames.get(o.index) ?? [];
-          const set = raw["set"] as Record<string, JsonValue> | undefined;
-          const request: Record<string, JsonValue> = { ...raw };
-          // A key field a write by key took from `entity_key` is not in `set`: nothing to strip.
-          const stripped = set === undefined ? [] : noop.filter((n) => Object.hasOwn(set, n));
-          if (set !== undefined && stripped.length > 0) {
-            request["set"] = Object.fromEntries(
-              Object.entries(set).filter(([n]) => !stripped.includes(n)),
-            );
-            request["noop"] = stripped;
-          }
-          return {
-            type: "source.recorded",
-            slot: slot.slot,
-            blocks: {
-              target: {
-                source_id: input.newId("source"),
-                kind: "api_call",
-                level: "agent_inferred",
-                op_index: o.index,
-              },
-              request,
-            },
-          };
-        });
+  const sources: NewEvent[] = [
+    ...evidence.fresh.map((ev) => evidenceSource(ev, slot.slot, input.newId("source"))),
+    ...apiCallOps.map((o): NewEvent => {
+      const raw = rawOps[o.index] as Record<string, JsonValue>;
+      const noop = noopNames.get(o.index) ?? [];
+      const set = raw["set"] as Record<string, JsonValue> | undefined;
+      const request: Record<string, JsonValue> = { ...raw };
+      // A key field a write by key took from `entity_key` is not in `set`: nothing to strip.
+      const stripped = set === undefined ? [] : noop.filter((n) => Object.hasOwn(set, n));
+      if (set !== undefined && stripped.length > 0) {
+        request["set"] = Object.fromEntries(
+          Object.entries(set).filter(([n]) => !stripped.includes(n)),
+        );
+        request["noop"] = stripped;
+      }
+      return {
+        type: "source.recorded",
+        slot: slot.slot,
+        blocks: {
+          target: {
+            source_id: input.newId("source"),
+            kind: "api_call",
+            level: "agent_inferred",
+            op_index: o.index,
+          },
+          request,
+        },
+      };
+    }),
+  ];
 
   const head: NewEvent = {
     type: "write.head",
@@ -1407,7 +1445,11 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   const out = keysShown.size > 0 ? { ...receipt, ops } : receipt;
   // Request-level evidence no op cites (an op naming none cites every segment): stored as sources
   // all the same, the source of no value (04-write-and-read «证据»).
-  const cited = new Set(req.ops.flatMap((o) => o.evidenceRefs ?? req.evidence.map((_, k) => k)));
+  const cited = new Set(
+    req.ops.flatMap(
+      (o) => o.evidenceRefs ?? (o.evidence !== undefined ? [] : req.evidence.map((_, k) => k)),
+    ),
+  );
   const uncited = req.evidence.map((_, k) => k).filter((k) => !cited.has(k));
   if (uncited.length > 0) warnings.push({ code: "evidence_unreferenced", evidence: uncited });
   // The recorded time was held at the log's end (02-architecture §7 «记录时刻»): the entry's clock

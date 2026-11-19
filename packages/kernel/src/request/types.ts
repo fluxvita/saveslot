@@ -14,6 +14,7 @@ import type {
   RawFieldValue,
   RowId,
   SchemaChangeCode,
+  SourceId,
   TableId,
 } from "@fluxvita/saveslot-contract-core";
 
@@ -101,8 +102,13 @@ export interface NormalizedOp {
   readonly undo?: { readonly target: OpNumber; readonly includeLater: boolean };
   /** As the caller wrote it: the values given, each known (`["overwrite"]` today). */
   readonly acknowledge: readonly "overwrite"[];
-  /** Request-level evidence segments this op refers to; absent = all of them. */
+  /**
+   * Request-level evidence segments this op refers to; absent = all of them, unless the op has
+   * segments of its own (then none: 04-contract §3).
+   */
   readonly evidenceRefs?: readonly number[];
+  /** The op's own evidence segments (`ops[i].evidence`). */
+  readonly evidence?: readonly EvidenceSegment[];
   /**
    * The fields the op names in `set`, then `entity_key`: field ID, its current name, and its path
    * in the request (for checkSvCompatibility).
@@ -131,6 +137,11 @@ export type EvidenceSegment =
       readonly excerpt?: string;
       readonly level?: "user_stated" | "agent_inferred";
       readonly stated_at?: Instant;
+    }
+  | {
+      /** An existing source of the slot, by ID: not copied, no new source (04-contract §3). */
+      readonly kind: "source_ref";
+      readonly id: SourceId;
     };
 
 /** Warnings normalization gives (04-contract-types §7), by op and field name. */
@@ -269,12 +280,12 @@ export type RequestError =
     }
   | {
       readonly code: "too_large";
-      readonly reason: "evidence_segment" | "request" | "ops";
+      readonly reason: "evidence_segment" | "request" | "ops" | "evidence_segments";
       readonly param: string;
       /** `evidence_segment`, `request`: the evidence's size in bytes. */
       readonly limit_bytes?: number;
       readonly actual_bytes?: number;
-      /** `ops`: how many ops a request may have, and how many it had. */
+      /** `ops`, `evidence_segments`: how many a request may have, and how many it had. */
       readonly limit?: number;
       readonly actual?: number;
     };
