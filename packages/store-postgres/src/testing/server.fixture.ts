@@ -63,13 +63,35 @@ export function runPrefix(): string {
 /** A name for a test database of this run; `rest` is lower-case letters, digits and `_`. */
 export const testDatabase = (rest: string): string => `${runPrefix()}${rest}`;
 
-async function drop(cell: PostgresCell, names: readonly string[]): Promise<void> {
+/**
+ * At most this many drops at once: each holds a connection of its own while it waits. As many as
+ * a test file makes, so that a file's drops wait for the same checkpoints; two runs on one server
+ * stay well within PostgreSQL's default of 100 connections.
+ */
+export const DROPS_AT_ONCE = 32;
+
+/**
+ * Drops the databases `names` of the cell, several at once. A DROP DATABASE waits for a
+ * checkpoint, and drops waiting at the same time share one: one after another, N drops wait for N
+ * checkpoints in turn, behind those of every other file doing the same. One that fails is let go:
+ * what it leaves is dropped by the run's end, or by the next run. `run` is how a statement is run
+ * (`sqlOn`; another in this fixture's own tests).
+ */
+export async function dropDatabases(
+  cell: PostgresCell,
+  names: readonly string[],
+  run: typeof sqlOn = sqlOn,
+): Promise<void> {
   const maintenance = cell.maintenanceDatabase ?? "postgres";
-  for (const name of names) {
-    await sqlOn(cell, maintenance, `DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`).catch(
-      () => {},
-    );
-  }
+  const left = [...names];
+  const dropping = async () => {
+    for (let name = left.shift(); name !== undefined; name = left.shift()) {
+      await run(cell, maintenance, `DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`).catch(
+        () => {},
+      );
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(DROPS_AT_ONCE, left.length) }, dropping));
 }
 
 async function testDatabases(cell: PostgresCell): Promise<string[]> {
@@ -88,7 +110,7 @@ export async function dropRunDatabases(
   prefix: string = runPrefix(),
 ): Promise<string[]> {
   const mine = (await testDatabases(cell)).filter((n) => n.startsWith(prefix));
-  await drop(cell, mine);
+  await dropDatabases(cell, mine);
   return mine;
 }
 
@@ -104,6 +126,6 @@ export async function dropStaleDatabases(cell: PostgresCell): Promise<string[]> 
     const run = Buffer.from(m[1] as string, "hex").toString();
     return /^sst-\w+$/.test(run) && !existsSync(join(base, run));
   });
-  await drop(cell, stale);
+  await dropDatabases(cell, stale);
   return stale;
 }

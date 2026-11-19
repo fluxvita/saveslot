@@ -12,7 +12,7 @@ import type { SqlValue } from "@fluxvita/saveslot-kernel";
 import { afterAll } from "vitest";
 import { PostgresBackend } from "../backend.ts";
 import type { PostgresCell } from "../connection.ts";
-import { cellFromEnv, sqlOn, testDatabase } from "./server.fixture.ts";
+import { cellFromEnv, dropDatabases, sqlOn, testDatabase } from "./server.fixture.ts";
 
 export { cellOf } from "./server.fixture.ts";
 
@@ -46,11 +46,7 @@ export function testPostgres(given: PostgresCell | undefined) {
   const sql = (database: string, text: string, params?: readonly SqlValue[]) =>
     sqlOn(cell, database, text, params);
 
-  afterAll(async () => {
-    for (const name of made) {
-      await sql(maintenance, `DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`).catch(() => {});
-    }
-  }, 60_000);
+  afterAll(() => dropDatabases(cell, made), 60_000);
 
   return {
     cell,
