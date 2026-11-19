@@ -661,12 +661,16 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         // the operation changed the row's version table (opened or closed a cell, outside
         // `schema_switch`). An item put into effect that leaves what is in effect as it was
         // (a repeated undo; a write-back a later item still covers) changes neither. Checked
-        // where the row has cells before or after: judged scenarios also write to a row never
-        // created (a non-required field only, or a revoke with no field item under it),
-        // which a real write cannot reach (`not_found`), and such a row has no cells at all.
+        // once the row has been created: judged scenarios also write to a row never created (a
+        // non-required field only, a revoke, an undo of that revoke), which a real write cannot
+        // reach (`not_found`; nor can an undo take a row back to never created: the first
+        // creation cannot be undone). Such a row has no version to speak of: a revoke gives it
+        // cells, and an undo of the revoke closes them all and opens none, so `ver` stays.
         const recordOp = (steps[k] as (typeof steps)[number]).judgement.record.op;
         const vt = await store.read((tx) => versionTable(tx, isState, id, recordOp));
-        if (vt.before || vt.after) {
+        const createdSoFar = steps.slice(0, k + 1).some((x) => x.judgement.created);
+        if (!createdSoFar && vt.changed) sample.add("uncreated row changed");
+        if (createdSoFar) {
           expect({ step: k, changed: vt.changed, ver: vt.ver === recordOp }).toEqual({
             step: k,
             changed: vt.changed,
@@ -751,6 +755,25 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       atRandom[k] = (atRandom[k] ?? 0) + (hits[k] ?? 0);
     }
   });
+
+  // On an event table only: on a state table judge refuses the write of f3 alone (the entity has
+  // no value there), and a revoke where the entity has none gives no cells, so nothing changes.
+  it.runIf(!isState)(
+    "a row never created, revoked, the revoke undone: storage, judge and the reference agree; no version to check",
+    async () => {
+      // Only a non-required field written: the row is never created, and has no cells. The
+      // revoke gives it cells; the undo of the revoke closes them all and opens none. Every check
+      // but `ver` runs on each step, and the version table did change on a row with no version.
+      const ops = [
+        { kind: "write", op: 20, event: 21, fields: { f3: { value: "1", sources: ["S20"] } } },
+        { kind: "revoke", op: 30, event: 31, seen: 20 },
+        { kind: "undo", op: 40, event: 41, target: 30, seen: 30 },
+      ] as Op[];
+      const before = hits["uncreated row changed"] ?? 0;
+      await checkSample(ops, []);
+      expect((hits["uncreated row changed"] ?? 0) > before).toBe(true);
+    },
+  );
 
   it("each kind of decision reaches storage: one fixed scenario each", async () => {
     for (const [kind, ops] of fixed(isState)) {
