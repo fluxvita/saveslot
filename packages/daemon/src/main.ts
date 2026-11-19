@@ -20,22 +20,27 @@ export function daemonVersion(): string {
 }
 
 /** What the foreground service runs with: the home's configuration; throws `ConfigInvalid`. */
-export async function foregroundOptions(home: string): Promise<RunServiceOptions> {
+export async function foregroundOptions(
+  home: string,
+  evalClock?: string,
+): Promise<RunServiceOptions> {
   const config = await readConfig(home);
   return {
     home,
     version: daemonVersion(),
     readsFlushMs: config.readsFlushSeconds * 1000,
+    ...(evalClock !== undefined ? { evalClock } : {}),
   };
 }
 
 /** Runs the service in the foreground; resolves with the exit code once it has stopped. */
 export async function main(argv: readonly string[]): Promise<number> {
-  let values: { home?: string | undefined };
+  let values: { home?: string | undefined; "eval-clock"?: string | undefined };
   try {
     ({ values } = parseArgs({
       args: [...argv],
-      options: { home: { type: "string" } },
+      // `--eval-clock`: the test clock, for evaluations only (02-architecture §11).
+      options: { home: { type: "string" }, "eval-clock": { type: "string" } },
       strict: true,
       allowPositionals: false,
     }));
@@ -46,7 +51,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const home = resolve(values.home ?? join(homedir(), ".saveslot"));
   let options: RunServiceOptions;
   try {
-    options = await foregroundOptions(home);
+    options = await foregroundOptions(home, values["eval-clock"]);
   } catch (e) {
     if (!(e instanceof ConfigInvalid)) throw e;
     // In the background stderr is the service's log: the known keys by name, how many unknown

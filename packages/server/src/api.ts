@@ -40,6 +40,12 @@ export interface ApiContext {
   readonly cursors: CursorKeys;
   readonly windows: { readonly requestKey: number; readonly idempotencyKey: number };
   readonly now: () => string;
+  /**
+   * The test clock, only when the service was started with one (02-architecture §11 «评测对实现的
+   * 要求»): moves it forward by a number of milliseconds and gives the new moment. Absent, the
+   * route that moves it does not exist.
+   */
+  readonly evalClock?: { readonly advance: (ms: number) => string };
   /** Not-implemented paths and internal errors (no request content). */
   readonly warn: (event: string, fields: Readonly<Record<string, string>>) => void;
 }
@@ -49,6 +55,29 @@ export interface Api {
   readonly ready: () => ApiContext | undefined;
   /** One line per request: method, route name, status, milliseconds. */
   readonly log: (fields: Readonly<Record<string, string | number>>) => void;
+}
+
+/** The test clock's route: only when the service was started with one; otherwise no such route. */
+export const EVAL_CLOCK_PATH = "/v1/eval/clock";
+
+/** An ISO 8601 duration of days, hours, minutes and seconds (`P1D`, `PT2H30M`), forward only. */
+const DURATION = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d{1,3})?)S)?)?$/;
+
+/** `advance` in milliseconds: a duration above zero, or `invalid_argument`. */
+export function durationMs(v: unknown): number {
+  const m = typeof v === "string" && !v.endsWith("T") ? DURATION.exec(v) : null;
+  const ms =
+    m === null
+      ? 0
+      : ((Number(m[1] ?? 0) * 24 + Number(m[2] ?? 0)) * 60 + Number(m[3] ?? 0)) * 60_000 +
+        Math.round(Number(m[4] ?? 0) * 1000);
+  if (!(ms > 0)) {
+    throw new ContractError("invalid_argument", "advance is a duration forward, such as PT2H", {
+      reason: "malformed",
+      param: "advance",
+    });
+  }
+  return ms;
 }
 
 /** How long a connection closed before its request arrived whole is kept for the response to be read. */
@@ -407,6 +436,22 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
           },
         );
         finish(status);
+        return;
+      }
+      if (
+        ctx.evalClock !== undefined &&
+        url.pathname === EVAL_CLOCK_PATH &&
+        req.method === "POST"
+      ) {
+        name = "eval_clock";
+        if (who.kind !== "user") {
+          throw new ContractError("insufficient_scope", "only the user session moves the clock", {
+            required_scope: "user_session",
+          });
+        }
+        const ms = durationMs((await readBody(req))["advance"]);
+        send(req, res, 200, { now: ctx.evalClock.advance(ms) });
+        finish(200);
         return;
       }
       let parts: string[] = [];

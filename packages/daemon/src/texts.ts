@@ -80,6 +80,8 @@ export const TEXTS = {
     readonly mine: string;
     readonly pid: number;
     readonly since: string;
+    /** The test clock's moment, when the service runs on one. */
+    readonly evalClock?: string;
     readonly home: string;
     readonly data: string | undefined;
     readonly socket: string;
@@ -90,6 +92,9 @@ export const TEXTS = {
     readonly logEnd: string | undefined;
   }) =>
     [
+      ...(s.evalClock !== undefined
+        ? [`eval clock: ${s.evalClock} (not the system clock: an evaluation run)`]
+        : []),
       `saveslot service: ${s.state}${s.reason !== undefined ? ` (${s.reason})` : ""}`,
       `  version   ${s.version} (this saveslot: ${s.mine})`,
       `  pid       ${s.pid}, since ${s.since}`,

@@ -53,7 +53,7 @@ import { type Config, ConfigInvalid, type ConfigKey, KEYS, readConfig } from "./
 import { health, localRequest } from "./local-request.ts";
 import { daemonVersion, main } from "./main.ts";
 import { runBridge } from "./mcp-bridge.ts";
-import { lockDir, pidFile, runDir, socketFile } from "./service.ts";
+import { evalClockStart, lockDir, pidFile, runDir, socketFile } from "./service.ts";
 import { homeProblem } from "./setup-support.ts";
 import { TEXTS } from "./texts.ts";
 
@@ -219,6 +219,8 @@ export async function start(
     readonly stop?: AbortSignal;
     /** Called when this call started the service (not one that was running already). */
     readonly onStarted?: () => void;
+    /** `--eval-clock`: the test clock's starting moment, passed on to the service (evaluations). */
+    readonly evalClock?: string;
   } = {},
 ): Promise<number> {
   try {
@@ -245,7 +247,11 @@ function serviceEnv(): NodeJS.ProcessEnv {
 async function startService(
   home: string,
   io: CommandIO,
-  o: { readonly stop?: AbortSignal; readonly onStarted?: () => void },
+  o: {
+    readonly stop?: AbortSignal;
+    readonly onStarted?: () => void;
+    readonly evalClock?: string;
+  },
 ): Promise<number> {
   try {
     await readTenantDirectory(home);
@@ -289,7 +295,8 @@ async function startService(
     // Run from the sources (development, tests): the workspace packages by their source entries.
     const conditions = bin.endsWith(".ts") ? ["--conditions=source"] : [];
     // A bridge runs with a connection's token; the service takes no token and keeps none.
-    child = spawn(process.execPath, [...conditions, bin, "--home", home], {
+    const evalClock = o.evalClock !== undefined ? ["--eval-clock", o.evalClock] : [];
+    child = spawn(process.execPath, [...conditions, bin, "--home", home, ...evalClock], {
       detached: true,
       stdio: ["ignore", log, log],
       env: serviceEnv(),
@@ -456,7 +463,10 @@ export async function status(
   // The clock behind the log's end by more than 5 minutes (02-architecture §8): said, not refused.
   // The end comes with the user session (`log.end`), not from /health; none to be had, no line.
   const logEnd = h.state === "ready" ? await logEndAt(home) : undefined;
-  const behindMs = clockBehind(logEnd, (o.now ?? Date.now)());
+  // Under the test clock, behind is measured from its moment, not this computer's.
+  const clockNow =
+    h.eval_clock !== undefined ? Date.parse(h.eval_clock.now) : (o.now ?? Date.now)();
+  const behindMs = clockBehind(logEnd, clockNow);
   io.out(
     TEXTS.status({
       lock: h.writer_lock === "held",
@@ -470,6 +480,7 @@ export async function status(
       mine: daemonVersion(),
       pid: h.pid,
       since: h.since,
+      ...(h.eval_clock !== undefined ? { evalClock: h.eval_clock.now } : {}),
       home,
       data,
       socket,
@@ -534,7 +545,10 @@ export async function serviceCommand(
         ...(name === "init"
           ? { "rotate-session": { type: "boolean" }, "data-dir": { type: "string" } }
           : {}),
-        ...(name === "start" ? { foreground: { type: "boolean" } } : {}),
+        ...(name === "start"
+          ? { foreground: { type: "boolean" }, "eval-clock": { type: "string" } }
+          : {}),
+        ...(name === "mcp" ? { record: { type: "string" } } : {}),
       },
       strict: true,
       allowPositionals: name === "config",
@@ -567,16 +581,31 @@ export async function serviceCommand(
         io,
       );
     }
-    case "start":
-      return values["foreground"] === true ? main(["--home", home]) : start(home, io);
+    case "start": {
+      const evalClock = values["eval-clock"];
+      if (typeof evalClock === "string" && evalClockStart(evalClock) === undefined) {
+        io.err(TEXTS.usage("--eval-clock needs an RFC 3339 moment with its offset"));
+        return 2;
+      }
+      const clock = typeof evalClock === "string" ? ["--eval-clock", evalClock] : [];
+      return values["foreground"] === true
+        ? main(["--home", home, ...clock])
+        : start(home, io, typeof evalClock === "string" ? { evalClock } : {});
+    }
     case "stop":
       return stop(home, io);
     case "status":
       return status(home, io);
     case "config":
       return configCommand(home, positionals, io);
-    case "mcp":
-      return mcpCommand(home, io);
+    case "mcp": {
+      const record = values["record"];
+      if (record === "") {
+        io.err(TEXTS.usage("--record needs a file"));
+        return 2;
+      }
+      return mcpCommand(home, io, typeof record === "string" ? resolve(record) : undefined);
+    }
   }
 }
 
@@ -588,7 +617,7 @@ export async function serviceCommand(
  * exit at once, without waiting for what is in flight: that is how a host ends a session; so does
  * stdout breaking (exit 0 for EPIPE, 1 otherwise).
  */
-export async function mcpCommand(home: string, io: CommandIO): Promise<number> {
+export async function mcpCommand(home: string, io: CommandIO, record?: string): Promise<number> {
   const quit = () => process.exit(0);
   process.once("SIGTERM", quit);
   process.once("SIGINT", quit);
@@ -609,6 +638,7 @@ export async function mcpCommand(home: string, io: CommandIO): Promise<number> {
     startService: () => start(home, { out: () => {}, err: () => {} }),
     version: daemonVersion(),
     socketPath: socketFile(home),
+    ...(record !== undefined ? { record } : {}),
     // Nothing can be written any more: what is left (a start being waited for) is not waited for.
     onStdoutBroken: (c) => process.exit(c),
   });

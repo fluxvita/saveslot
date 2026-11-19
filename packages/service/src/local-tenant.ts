@@ -208,6 +208,12 @@ function systemContext(t: LocalTenant, trigger: InternalOperation, now: string):
   });
 }
 
+/** Whether the tenant's log holds nothing but its genesis (what `init` writes): a new home. */
+export async function localLogIsNew(t: LocalTenant): Promise<boolean> {
+  const tail = await t.store.read((tx) => readTail(tx));
+  return tail !== undefined && tail.seq === 1;
+}
+
 /** Writes the tenant's buffered reads (the internal operation `flushReads`); how many were written. */
 export async function flushLocalReads(
   t: LocalTenant,

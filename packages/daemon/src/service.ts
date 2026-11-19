@@ -21,7 +21,18 @@
 // remove the socket and pid files, release the lock.
 //
 // Log lines go to stderr, one per line, with no user data and no paths.
+//
+// The test clock (02-architecture §11 «评测对实现的要求»; 06-cli §3 «分步做»): `evalClock`, the
+// moment to start at, given only by `--eval-clock`. Every "now" the process takes for the tenant
+// (requests, the reads it writes, closing, the MCP text) is that moment plus the real time since
+// the start, plus what `POST /v1/eval/clock` moved it forward by; log lines keep the system time.
+// One evaluation run is one process, so the home is marked (`control/eval.json`) the first time:
+// - a marked home starts with no test clock never (`eval_dir_refused`; `saveslot mcp`'s autostart
+//   included), and with one never again (`eval_dir_refused`): a run whose service stopped is void;
+// - an unmarked home starts with one only while its log holds nothing but the tenant's genesis
+//   (`eval_clock_refused`), so that it is never turned on over a user's data.
 
+import { existsSync } from "node:fs";
 import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { HealthBody, LocalListener } from "@fluxvita/saveslot-server";
@@ -34,12 +45,15 @@ import {
   CursorKeysCorrupt,
   checkLocalHome,
   closeLocalTenant,
+  controlDir,
   flushLocalReads,
   type LocalTenant,
+  localLogIsNew,
   openLocalTenant,
   probeLocalTenant,
   pruneCredentials,
   removeStaleTemps,
+  writePrivate,
 } from "@fluxvita/saveslot-service";
 import {
   type DirLockHandle,
@@ -64,6 +78,11 @@ export interface RunServiceOptions {
   readonly requestKeyWindowMs?: number;
   /** The clock (tests). */
   readonly clock?: () => string;
+  /**
+   * The test clock's starting moment, RFC 3339 (`--eval-clock`): evaluations only (02-architecture
+   * §11). See the top of this file for the rules it starts by.
+   */
+  readonly evalClock?: string;
   /** Where log lines go (default stderr). */
   readonly log?: (line: string) => void;
   /** Called once the service listens, before the tenant is opened (state `starting`). */
@@ -94,6 +113,20 @@ export const runDir = (home: string): string => join(home, "run");
 export const lockDir = runDir;
 export const pidFile = (home: string): string => join(runDir(home), "saveslot.pid");
 export const socketFile = (home: string): string => join(runDir(home), "saveslot.sock");
+/** The mark of a home an evaluation run has used (`--eval-clock`); never in the log. */
+export const evalMarkFile = (home: string): string => join(controlDir(home), "eval.json");
+
+/** An RFC 3339 moment with its offset (`2026-11-10T09:00:00+08:00`, `…Z`). */
+const MOMENT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+
+/** `--eval-clock`'s value as milliseconds, or undefined when it is not an RFC 3339 moment. */
+export function evalClockStart(v: string): number | undefined {
+  const ms = MOMENT.test(v) ? Date.parse(v) : Number.NaN;
+  return Number.isNaN(ms) ? undefined : ms;
+}
+
+/** The test clock asked for over a log that holds more than the tenant's genesis. */
+class EvalClockRefused extends Error {}
 
 /** A stable code for a failure: the store's own code, or a generic one. Never a message. */
 function codeOf(e: unknown): string {
@@ -120,6 +153,14 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       ].join(" "),
     );
   const since = new Date().toISOString();
+  // The test clock: its start, the real time it started at, and how far it was moved forward.
+  const evalStart = o.evalClock !== undefined ? evalClockStart(o.evalClock) : undefined;
+  const evalBegan = Date.now();
+  let evalAhead = 0;
+  const evalNow = () =>
+    new Date((evalStart as number) + (Date.now() - evalBegan) + evalAhead).toISOString();
+  const now: () => string =
+    o.clock ?? (evalStart !== undefined ? evalNow : () => new Date().toISOString());
   let state: ServiceState = "starting";
   let reason: string | undefined;
   let tenant: LocalTenant | undefined;
@@ -175,7 +216,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         const t = tenant;
         tenant = undefined;
         try {
-          const r = await closeLocalTenant(t);
+          const r = await closeLocalTenant(t, now());
           if (r.readsError !== undefined) say("reads_not_flushed", { code: codeOf(r.readsError) });
           if (r.highWaterError !== undefined)
             say("high_water_not_advanced", { code: codeOf(r.highWaterError) });
@@ -207,6 +248,9 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   } catch {
     return giveUp("not_initialized");
   }
+  if (o.evalClock !== undefined && evalStart === undefined) return giveUp("eval_clock_invalid");
+  // A home an evaluation run has used: never again, with the test clock or without.
+  if (existsSync(evalMarkFile(o.home))) return giveUp("eval_dir_refused");
   await mkdir(runDir(o.home), { recursive: true, mode: 0o700 });
   await chmod(runDir(o.home), 0o700);
   try {
@@ -234,7 +278,19 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
               credentials,
               cursors,
               windows: { requestKey: o.requestKeyWindowMs ?? 600_000, idempotencyKey: 86_400_000 },
-              now: o.clock ?? (() => new Date().toISOString()),
+              now,
+              ...(evalStart !== undefined
+                ? {
+                    evalClock: {
+                      advance: (ms: number) => {
+                        evalAhead += ms;
+                        const at = now();
+                        say("eval_clock_advanced", { ms, now: at });
+                        return at;
+                      },
+                    },
+                  }
+                : {}),
               warn: (event, fields) => say(event, fields),
             }
           : undefined,
@@ -248,6 +304,14 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       ...(state === "failed" && reason !== undefined ? { reason } : {}),
       // Taken above, before listening: whoever answers here holds it.
       writer_lock: "held",
+      ...(evalStart !== undefined
+        ? {
+            eval_clock: {
+              now: now(),
+              started_at: new Date(evalStart).toISOString(),
+            },
+          }
+        : {}),
     }),
   });
   if (o.signals !== false) {
@@ -255,6 +319,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     process.on("SIGINT", onSignal);
   }
   say("listening", { pid: process.pid, version: o.version });
+  if (evalStart !== undefined) say("eval_clock", { start: new Date(evalStart).toISOString() });
   o.onListening?.(handle);
 
   opening = (async () => {
@@ -287,18 +352,28 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         credentials = await Credentials.load(o.home);
         const dropped = await pruneCredentials(r.tenant, credentials);
         if (dropped > 0) say("credentials_pruned", { count: dropped });
-        cursors = await CursorKeys.open(o.home);
+        cursors = await CursorKeys.open(o.home, now());
+        if (evalStart !== undefined) {
+          // Only over a log that holds nothing but the tenant's genesis; then the home is marked.
+          if (!(await localLogIsNew(r.tenant))) throw new EvalClockRefused();
+          writePrivate(
+            evalMarkFile(o.home),
+            `${JSON.stringify({ eval_clock: new Date(evalStart).toISOString() })}\n`,
+          );
+        }
       } catch (e) {
         await closeLocalTenant(r.tenant).catch(() => {});
         state = "failed";
         reason =
-          e instanceof ControlFileError
-            ? "credentials_permissions"
-            : e instanceof CredentialsCorrupt
-              ? "credentials_corrupt"
-              : e instanceof CursorKeysCorrupt
-                ? "cursor_keys_corrupt"
-                : codeOf(e);
+          e instanceof EvalClockRefused
+            ? "eval_clock_refused"
+            : e instanceof ControlFileError
+              ? "credentials_permissions"
+              : e instanceof CredentialsCorrupt
+                ? "credentials_corrupt"
+                : e instanceof CursorKeysCorrupt
+                  ? "cursor_keys_corrupt"
+                  : codeOf(e);
         say("failed", { reason });
         return;
       }
@@ -344,7 +419,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       // One flush at a time; a failed one leaves the reads buffered for the next (§7).
       if (t === undefined || state !== "ready" || flushing) return;
       flushing = true;
-      flushLocalReads(t).then(
+      flushLocalReads(t, now()).then(
         () => {
           flushing = false;
         },

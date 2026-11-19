@@ -4,7 +4,15 @@
 // the official SDK client over stdio in both protocol eras.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -287,6 +295,71 @@ describe("the bridge against a stand-in service", () => {
       { jsonrpc: "2.0", method: "notifications/progress", params: { p: 1 } },
       { jsonrpc: "2.0", id: 3, result: { x: "a\nb" } },
     ]);
+  });
+
+  it("--record: a 2026-07-28 request's envelope gives the protocol line", async () => {
+    s.answer = (seen, res) => {
+      const m = JSON.parse(seen.body.toString("utf8")) as { id: number };
+      json(res, 200, { jsonrpc: "2.0", id: m.id, result: {} });
+    };
+    const lines: string[] = [];
+    const record = {
+      message: (dir: "in" | "out", line: string) => lines.push(`${dir} ${line}`),
+      protocol: (v: string) => lines.push(`protocol ${v}`),
+      close: () => {},
+    };
+    const io = bridgeStreams();
+    const exit = runBridge({
+      token: UNKNOWN_TOKEN,
+      stdin: io.stdin,
+      stdout: io.stdout,
+      log: io.log,
+      autostart: false,
+      startService: async () => 7,
+      version: "t",
+      socketPath: s.socketPath,
+      record,
+    });
+    io.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { _meta: { [META]: MODERN } } })}\n`,
+    );
+    io.stdin.end();
+    expect(await exit).toBe(0);
+    expect(lines.map((l) => l.split(" ")[0])).toEqual(["in", "protocol", "out"]);
+    expect(lines[1]).toBe(`protocol ${MODERN}`);
+  });
+
+  it("--record: a write that fails ends the bridge, exit 1, record_failed", async () => {
+    s.answer = (seen, res) => {
+      const m = JSON.parse(seen.body.toString("utf8")) as { id: number };
+      json(res, 200, { jsonrpc: "2.0", id: m.id, result: {} });
+    };
+    let n = 0;
+    const record = {
+      message: () => {
+        n++;
+        if (n === 2) throw new Error("ENOSPC");
+      },
+      protocol: () => {},
+      close: () => {},
+    };
+    const io = bridgeStreams();
+    const exit = runBridge({
+      token: UNKNOWN_TOKEN,
+      stdin: io.stdin,
+      stdout: io.stdout,
+      log: io.log,
+      autostart: false,
+      startService: async () => 7,
+      version: "t",
+      socketPath: s.socketPath,
+      record,
+    });
+    io.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })}\n`);
+    expect(await exit).toBe(1);
+    expect(io.err).toContain(TEXTS.mcpEvent("record_failed"));
+    // The answer whose record failed is not written either.
+    expect(io.lines).toEqual([]);
   });
 
   it("a notification: forwarded, nothing written", async () => {
@@ -1094,6 +1167,112 @@ describe("the bridge against a real service", () => {
       },
     });
     expect(b.err.join("\n")).not.toContain(reader);
+  });
+
+  it(
+    "--record: every message in and out, the protocol once agreed, no token; the token still used",
+    async () => {
+      const token = await issue(s.home, s.session, "recorded", ["saveslot.read", "saveslot.write"]);
+      const file = join(s.home, "..", `record-${Date.now()}.jsonl`);
+      // Tokens of both forms written into a message by the host: kept out of the record too.
+      const pasted = `slt_${"B".repeat(43)}`;
+      const session = `sls_${"C".repeat(43)}`;
+      const io = bridgeStreams();
+      const exit = runBridge({
+        token,
+        stdin: io.stdin,
+        stdout: io.stdout,
+        log: io.log,
+        autostart: false,
+        startService: async () => 7,
+        version: "t",
+        socketPath: socketFile(s.home),
+        record: file,
+      });
+      const send = (v: unknown) => io.stdin.write(`${JSON.stringify(v)}\n`);
+      send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "h", version: "0" },
+        },
+      });
+      await until(() => io.lines.length === 1);
+      send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      send({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "saveslot_catalog", arguments: { task: `${pasted} ${session}` } },
+      });
+      io.stdin.end();
+      expect(await exit).toBe(0);
+      // The service took the bridge's token: the call was served.
+      const out = io.lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+      const called = out.find((o) => o["id"] === 2) as { result: Record<string, unknown> };
+      expect(called.result["structuredContent"]).toBeDefined();
+
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      const text = readFileSync(file, "utf8");
+      for (const secret of [token, pasted, session]) expect(text).not.toContain(secret);
+      const lines = text
+        .trimEnd()
+        .split("\n")
+        .map((l) => JSON.parse(l) as Record<string, unknown>);
+      expect(lines[0]).toEqual({ record: 1, saveslot: "t" });
+      expect(lines.filter((l) => "protocol" in l)).toEqual([{ protocol: "2025-11-25" }]);
+      const msgs = lines.filter((l) => "dir" in l) as {
+        t: string;
+        dir: string;
+        msg: Record<string, unknown>;
+      }[];
+      // In order: what came in and what went out, each as it was.
+      expect(msgs.map((m) => [m.dir, m.msg["id"] ?? m.msg["method"]])).toEqual([
+        ["in", 1],
+        ["out", 1],
+        ["in", "notifications/initialized"],
+        ["in", 2],
+        ["out", 2],
+      ]);
+      // The protocol line comes after the answer that agreed it.
+      expect(lines.findIndex((l) => "protocol" in l)).toBeGreaterThan(
+        lines.findIndex((l) => l["dir"] === "out"),
+      );
+      const recorded = msgs.find((m) => m.dir === "out" && m.msg["id"] === 2)?.msg as {
+        result: Record<string, unknown>;
+      };
+      expect(recorded.result["structuredContent"]).toEqual(called.result["structuredContent"]);
+      const asked = msgs.find((m) => m.dir === "in" && m.msg["id"] === 2)?.msg as {
+        params: { arguments: { task: string } };
+      };
+      expect(asked.params.arguments.task).toBe("slt_REDACTED sls_REDACTED");
+      for (const m of msgs) expect(Number.isNaN(Date.parse(m.t))).toBe(false);
+    },
+    T,
+  );
+
+  it("--record over a file that exists: refused, the file left as it was; nothing read", async () => {
+    const token = await issue(s.home, s.session, "recorded-twice", ["saveslot.read"]);
+    const file = join(s.home, "..", `record-exists-${Date.now()}.jsonl`);
+    writeFileSync(file, "earlier\n");
+    const io = bridgeStreams();
+    const code = await runBridge({
+      token,
+      stdin: io.stdin,
+      stdout: io.stdout,
+      log: io.log,
+      autostart: false,
+      startService: async () => 7,
+      version: "t",
+      socketPath: socketFile(s.home),
+      record: file,
+    });
+    expect(code).toBe(1);
+    expect(io.err).toEqual([TEXTS.mcpEvent("record_exists")]);
+    expect(readFileSync(file, "utf8")).toBe("earlier\n");
   });
 });
 

@@ -40,6 +40,9 @@
 //   header included), never a path but the socket's.
 // - stdin closed: what is queued and in flight is finished, then exit 0. stdout closed (EPIPE):
 //   exit at once. SIGTERM / SIGINT are the command's (`mcpCommand`): exit at once.
+// - `--record <file>` (evaluations only, ./mcp-record.ts): every message read and written goes to
+//   the record too, the one place a request's content is written; a file that exists is refused
+//   (exit 1, `record_exists`), a write that fails ends the bridge (exit 1, `record_failed`).
 
 import type { Readable, Writable } from "node:stream";
 import { type HealthBody, MAX_BODY_BYTES } from "@fluxvita/saveslot-server";
@@ -50,6 +53,7 @@ import {
   LocalUnreachable,
   localRequest,
 } from "./local-request.ts";
+import { type CallRecord, openRecord } from "./mcp-record.ts";
 import { TEXTS } from "./texts.ts";
 
 /** At most this many `POST /mcp` at once. */
@@ -237,6 +241,8 @@ export interface BridgeOptions {
    * flight has been given up on; the command exits the process here.
    */
   readonly onStdoutBroken?: (code: number) => void;
+  /** `--record`: the call record's file, new (evaluations only); a record itself, for tests. */
+  readonly record?: string | CallRecord;
   /** For tests. */
   readonly forwardTimeoutMs?: number;
   readonly maxAnswerBytes?: number;
@@ -250,6 +256,20 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
   }
   const token = o.token;
   const timeoutMs = o.forwardTimeoutMs ?? FORWARD_TIMEOUT_MS;
+  let record: CallRecord | undefined;
+  if (typeof o.record === "object") record = o.record;
+  else if (o.record !== undefined) {
+    try {
+      record = openRecord(o.record, o.version);
+    } catch (e) {
+      o.log(
+        TEXTS.mcpEvent(
+          (e as NodeJS.ErrnoException).code === "EEXIST" ? "record_exists" : "record_failed",
+        ),
+      );
+      return 1;
+    }
+  }
 
   let finish: (code: number) => void = () => {};
   const done = new Promise<number>((r) => {
@@ -261,6 +281,9 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
   const end = (code: number) => {
     if (finished) return;
     finished = true;
+    try {
+      record?.close();
+    } catch {}
     o.stdin.pause();
     o.stdin.removeAllListeners("data");
     for (const a of aborts) a.abort();
@@ -270,8 +293,21 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
   // Output backpressure: while stdout takes no more, no new forward starts and stdin is paused;
   // what is in flight (at most MAX_IN_FLIGHT answers) is all that can wait to be written.
   let outputBlocked = false;
+  /** Keeps `what` in the record; a write that fails ends the bridge. */
+  const keep = (what: (r: CallRecord) => void): boolean => {
+    if (record === undefined) return true;
+    try {
+      what(record);
+      return true;
+    } catch {
+      o.log(TEXTS.mcpEvent("record_failed"));
+      end(1);
+      return false;
+    }
+  };
   const write = (line: string) => {
     if (finished) return;
+    if (!keep((r) => r.message("out", line))) return;
     if (!o.stdout.write(`${line}\n`) && !outputBlocked) {
       outputBlocked = true;
       flowControl();
@@ -340,6 +376,8 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
     };
 
     const derived = standardHeaders(message);
+    const enveloped = derived["mcp-protocol-version"];
+    if (enveloped !== undefined && !keep((r) => r.protocol(enveloped))) return;
     const headers: Record<string, string> = {
       accept: "application/json, text/event-stream",
       "content-type": "application/json",
@@ -427,6 +465,7 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
       ? values.length > 0
       : values.some((v) => answers(v, id));
     for (const v of values) {
+      let agreed: string | undefined;
       if (
         isObject(message) &&
         message["method"] === "initialize" &&
@@ -436,8 +475,12 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
         PLAIN_HEADER.test(v["result"]["protocolVersion"])
       ) {
         negotiated = v["result"]["protocolVersion"];
+        agreed = negotiated;
       }
       write(JSON.stringify(v));
+      // The record says the agreed version after the answer that agreed it.
+      const said = agreed;
+      if (said !== undefined && !keep((r) => r.protocol(said))) return;
     }
     if (owed && !answered) fail("unanswered", -32603, TEXTS.mcpInternal);
   };
@@ -449,6 +492,7 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
   const takeLine = (raw: Buffer) => {
     const line = raw.length > 0 && raw[raw.length - 1] === 0x0d ? raw.subarray(0, -1) : raw;
     if (line.toString("utf8").trim() === "") return;
+    if (!keep((r) => r.message("in", line.toString("utf8")))) return;
     let v: unknown;
     try {
       v = JSON.parse(line.toString("utf8"));

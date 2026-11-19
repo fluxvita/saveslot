@@ -25,6 +25,11 @@ export interface HealthBody {
    * (02-architecture §7). Given by the local service.
    */
   readonly writer_lock?: "held";
+  /**
+   * The test clock (02-architecture §11 «评测对实现的要求»), only when the service was started with
+   * one: its current moment and the moment it started at. Never present in normal operation.
+   */
+  readonly eval_clock?: { readonly now: string; readonly started_at: string };
 }
 
 export interface LocalListener {

@@ -214,7 +214,8 @@ async function call(
     // Plain JSON from here on: the text and structuredContent are of the same plain value.
     const result = budget.finish(plain(await run(params)));
     return {
-      content: [{ type: "text", text: renderResult(tool.name, result) }],
+      // "Opened 5 h ago" by the service's clock (the test clock, when there is one).
+      content: [{ type: "text", text: renderResult(tool.name, result, new Date(ctx.now())) }],
       structuredContent: result,
     };
   } catch (e) {
