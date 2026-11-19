@@ -35,7 +35,7 @@ import {
 import { decimalText } from "./number.ts";
 import { get, has, isObj, keysOf } from "./own.ts";
 import { instantText, parseDateTime, validDate } from "./times.ts";
-import type { WriteValidationDetail, WriteWarning } from "./types.ts";
+import type { ExampleValue, WriteValidationDetail, WriteWarning } from "./types.ts";
 
 /** 10 «字段类型与取值范围»: a decimal's integer part has at most 18 digits. */
 const DECIMAL_INTEGER_DIGITS = 18;
@@ -86,12 +86,88 @@ function zonedSuggestion(v: unknown, zone: string): string | undefined {
   }
 }
 
+/**
+ * A valid value of `f`'s type, as `set` takes it, for `type_mismatch` (04-contract-types §9
+ * `ValidationDetail.example`): within the field's bounds, of its unit and its declared values; a
+ * zoned date-time names its zone, in the slot's zone `zone`. It does not depend on what was given.
+ * None when no value is (a decimal whose bounds hold no value of its scale).
+ */
+export function exampleOf(f: CompiledBaseField, zone: string): ExampleValue | undefined {
+  switch (f.type) {
+    case "text":
+      return "text";
+    case "enum":
+      return f.values[0] ?? "";
+    case "boolean":
+      return true;
+    case "date":
+      return "2026-11-12";
+    case "zoned_datetime":
+      return zonedText("2026-11-12T01:30:00.000Z", zone);
+    case "ref":
+      return `${f.ref.target === "entity" ? "e_" : "r_"}${"0".repeat(26)}`;
+    case "integer": {
+      const n = f.min ?? f.max ?? "1";
+      return Number.isSafeInteger(Number(n)) ? Number(n) : n;
+    }
+    case "decimal":
+      return decimalExample(f);
+    case "quantity": {
+      const value = decimalExample(f);
+      return value === undefined ? undefined : { value, unit: f.unit.code };
+    }
+  }
+}
+
+/**
+ * A decimal's example: written at its scale, so that rounding leaves it as it is, and within its
+ * bounds once rounded (a bound may have more places than the scale: `min` is taken up to the
+ * scale, `max` down). The lower bound, else the upper, else 1; none when the two meet no value.
+ */
+function decimalExample(f: {
+  readonly min?: string;
+  readonly max?: string;
+  readonly precision: { readonly scale: number };
+}): string | undefined {
+  const at = f.precision.scale;
+  const lo = f.min === undefined ? undefined : toScale(rationalOf(f.min), at, "up");
+  const hi = f.max === undefined ? undefined : toScale(rationalOf(f.max), at, "down");
+  if (lo !== undefined && hi !== undefined && compare(lo, hi) > 0) return undefined;
+  const pick = lo ?? hi;
+  return pick === undefined ? "1" : canonical(pick);
+}
+
+/** `a` at `scale` places, taken toward +∞ (`up`) or −∞ (`down`). */
+function toScale(a: Rational, scale: number, way: "up" | "down"): Rational {
+  const unit = 10n ** BigInt(scale);
+  const n = a.num * unit;
+  let q = n / a.den;
+  // BigInt division truncates toward zero.
+  if (n % a.den !== 0n) {
+    if (way === "up" && n > 0n) q += 1n;
+    if (way === "down" && n < 0n) q -= 1n;
+  }
+  return divide({ num: q, den: 1n }, { num: unit, den: 1n });
+}
+
+const exampleField = (example: ExampleValue | undefined) =>
+  example === undefined ? {} : { example };
+
 /** Normalizes one value for `f`. `null` (clearing) is handled by the caller. */
 export function normalizeValue(f: CompiledBaseField, v: unknown, c: ValueContext): ValueResult {
   const fail = (
     code: WriteValidationDetail["code"],
     extra: Omit<WriteValidationDetail, "op" | "field" | "code"> = {},
-  ): ValueResult => ({ ok: false, detail: { op: c.op, field: c.name, code, ...extra } });
+  ): ValueResult => ({
+    ok: false,
+    detail: {
+      op: c.op,
+      field: c.name,
+      code,
+      ...extra,
+      ...(code === "type_mismatch" ? exampleField(exampleOf(f, c.zone)) : {}),
+    },
+  });
   const ok = (
     value: FieldValue,
     raw: RawFieldValue,

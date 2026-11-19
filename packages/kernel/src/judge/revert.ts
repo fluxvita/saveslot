@@ -358,19 +358,29 @@ export function judgeUndo(state: RowState, u: UndoInput): RevertOutcome & { befo
   const m = undoneOp(state, u.target);
   const targets = state.records.filter((x) => x.op === m);
   if (targets.length === 0) {
-    throw new JudgeError("invalid_argument", "not a write of this row", { undo_target: u.target });
+    // A schema switch's operation (its constant backfill) is `undo_target` by the contract, but is
+    // not in the row's records, so it lands here: not reached in this version; to handle when
+    // schema changes come (P4).
+    throw new JudgeError("invalid_argument", "not a write of this row", {
+      reason: "not_this_target",
+      param: "revert/undo",
+    });
   }
   // The first creation cannot be undone: revoke instead (04-write-and-read «第 n 次写入是什么»).
   const created = state.records.find((x) => x.kind === "write" && createdBy(state, x.event));
   if (created !== undefined && created.op === m) {
     throw new JudgeError("invalid_argument", "the first creation cannot be undone; revoke it", {
-      undo_target: u.target,
+      reason: "undo_target",
+      param: "revert/undo",
     });
   }
   // Nothing applied on this row (a candidate, an awaiting write, only corroborations or no-ops,
   // a revert with no write-back): no change to undo.
   if (!state.items.some((x) => x.op === m && x.status === "applied")) {
-    throw new JudgeError("invalid_argument", "no change to undo", { undo_target: u.target });
+    throw new JudgeError("invalid_argument", "no change to undo", {
+      reason: "undo_target",
+      param: "revert/undo",
+    });
   }
   const entries = undoEntries(state, m, u.includeLater === true, u.op, u.index);
   return { ...judgeRevertOf(state, u, entries, { before: m }, null, true), before: m };

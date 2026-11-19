@@ -80,6 +80,7 @@ export const DOMAIN_ERROR_REASONS = {
   too_large: [
     "evidence_segment",
     "request",
+    "ops",
     "request_body",
     "admission",
     "result_budget",

@@ -21,8 +21,9 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@fluxvita/saveslot-kernel": "workspace:*",
-    "@fluxvita/saveslot-contract": "workspace:*"
+    "@fluxvita/saveslot-contract": "workspace:*",
+    "@fluxvita/saveslot-contract-core": "workspace:*",
+    "@fluxvita/saveslot-kernel": "workspace:*"
   },
   "private": true
 }

@@ -985,7 +985,7 @@ describe("refusals: nothing is written", () => {
             },
           ],
         },
-        { refused: "not_found", param: "ops/0" },
+        { refused: "not_found", reason: "row", param: "ops/0" },
       );
       await refused(
         {
@@ -994,7 +994,7 @@ describe("refusals: nothing is written", () => {
             { intent: "update", table: "notes", row: rowAt(a), ver: verAt(a), set: { b: "y" } },
           ],
         },
-        { refused: "not_found", param: "ops/0" },
+        { refused: "not_found", reason: "row", param: "ops/0" },
       );
     },
     T,
@@ -1088,7 +1088,7 @@ describe("refusals: nothing is written", () => {
       const row = rowAt(a);
       await refused(
         { sv: 1, ops: [{ table: "rows", row, revert: { undo: a.seq } }] },
-        { refused: "invalid_argument", param: "ops/0", undo_target: a.seq },
+        { refused: "invalid_argument", reason: "undo_target", param: "ops/0/revert/undo" },
       );
       const v = await send({
         sv: 1,
@@ -1096,7 +1096,12 @@ describe("refusals: nothing is written", () => {
       });
       await refused(
         { sv: 1, ops: [{ intent: "update", table: "rows", row, ver: verAt(v), set: { b: "y" } }] },
-        { refused: "revoked", param: "ops/0", ops: [v.seq] },
+        {
+          refused: "revoked",
+          param: "ops/0",
+          target: { table: "ledger.rows", row },
+          revoked_by: v.seq,
+        },
       );
       const e = await send({
         sv: 1,
@@ -2039,6 +2044,132 @@ describe("a receipt names principals as of its own operation (04-contract-types 
       ]);
       await rename(desk);
       sameAsFirst(first, await send(params));
+    },
+    T,
+  );
+});
+
+describe("the write path's error details (04-contract-types §9)", () => {
+  const refused = async (params: unknown, expected: Record<string, unknown>) => {
+    const before = await tail();
+    expect(await send(params)).toEqual(expected);
+    expect(await tail()).toBe(before);
+  };
+
+  it(
+    "undo naming another row's write: invalid_argument, not_this_target, at revert/undo",
+    async () => {
+      const a = await insertRow("x");
+      const b = await insertRow("y");
+      await refused(
+        { sv: 1, ops: [{ table: "rows", row: rowAt(b), revert: { undo: a.seq } }] },
+        { refused: "invalid_argument", reason: "not_this_target", param: "ops/0/revert/undo" },
+      );
+    },
+    T,
+  );
+
+  it(
+    "undo of a candidate that never took effect: invalid_argument, undo_target",
+    async () => {
+      const a = await insertRow("x");
+      await update(rowAt(a), { b: "y" }, verAt(a));
+      // Written over a version no longer current: a candidate, nothing applied on the row.
+      const stale = await update(rowAt(a), { b: "z" }, verAt(a));
+      expect(stale.ops[0]?.fields["b"]).toMatchObject({ result: "candidate" });
+      await refused(
+        { sv: 1, ops: [{ table: "rows", row: rowAt(a), revert: { undo: stale.seq } }] },
+        { refused: "invalid_argument", reason: "undo_target", param: "ops/0/revert/undo" },
+      );
+    },
+    T,
+  );
+
+  it(
+    "a correction without an interval where the field has no value now: no_value_now, at the field",
+    async () => {
+      const e = await send({
+        sv: 1,
+        ops: [
+          {
+            intent: "insert",
+            table: "entities",
+            valid_from: "2026-11-01",
+            valid_to: "2026-11-03",
+            set: { b: "x" },
+          },
+        ],
+      });
+      await refused(
+        {
+          sv: 1,
+          ops: [
+            {
+              intent: "correct",
+              table: "entities",
+              entity: e.ops[0]?.target.entity,
+              ver: e.ops[0]?.ver,
+              set: { c: "y" },
+            },
+          ],
+        },
+        { refused: "invalid_argument", reason: "no_value_now", param: "ops/0/set/c" },
+      );
+    },
+    T,
+  );
+
+  it(
+    "revoked, the revoke undone, revoked again: revoked_by is the second revoke",
+    async () => {
+      const a = await insertRow("x");
+      const row = rowAt(a);
+      const first = await send({
+        sv: 1,
+        ops: [{ intent: "revoke", table: "rows", row, ver: verAt(a) }],
+      });
+      const undone = await send({
+        sv: 1,
+        ops: [{ table: "rows", row, revert: { undo: first.seq } }],
+      });
+      const second = await send({
+        sv: 1,
+        ops: [{ intent: "revoke", table: "rows", row, ver: verAt(undone) }],
+      });
+      await refused(
+        {
+          sv: 1,
+          ops: [{ intent: "update", table: "rows", row, ver: verAt(second), set: { b: "y" } }],
+        },
+        {
+          refused: "revoked",
+          param: "ops/0",
+          target: { table: "ledger.rows", row },
+          revoked_by: second.seq,
+        },
+      );
+    },
+    T,
+  );
+
+  it(
+    "an entity that does not exist: not_found, entity",
+    async () => {
+      await refused(
+        {
+          sv: 1,
+          ops: [
+            {
+              intent: "update",
+              table: "entities",
+              entity: `e_${"3".repeat(26)}`,
+              ver: "v1.0",
+              set: { b: "y" },
+            },
+          ],
+        },
+        { refused: "not_found", reason: "entity", param: "ops/0" },
+      );
     },
     T,
   );

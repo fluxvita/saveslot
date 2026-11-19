@@ -429,7 +429,7 @@ describe("locating by key", () => {
     async () => {
       expect(
         await one({ intent: "revoke", table: "budgets", entity_key: { category: "none" } }),
-      ).toMatchObject({ refused: "not_found", param: "ops/0/entity_key" });
+      ).toEqual({ refused: "not_found", reason: "entity", param: "ops/0/entity_key" });
       expect(await entities("t2")).toBe(0);
     },
     T,

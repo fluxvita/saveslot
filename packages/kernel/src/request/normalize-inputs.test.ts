@@ -425,7 +425,14 @@ describe("number edges", () => {
   it("converts a quantity with more integer digits than a decimal holds, then checks bounds", () => {
     // 1e20 mm = 1e14 km: parsed (21 digits), converted, then above the field's max.
     expect(details(run({ distance: { value: "1e20", unit: "mm" } }))).toEqual([
-      { op: 0, field: "distance", code: "out_of_range", min: "0", max: "1000" },
+      {
+        op: 0,
+        table: "ledger.runs",
+        field: "distance",
+        code: "out_of_range",
+        min: "0",
+        max: "1000",
+      },
     ]);
   });
 });

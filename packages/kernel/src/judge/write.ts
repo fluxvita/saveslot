@@ -142,6 +142,7 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
     const res = resolve(state, w.valid, f, seenAt, w.now);
     if (res === null) {
       throw new JudgeError("invalid_argument", "the field has no value at now; give an interval", {
+        reason: "no_value_now",
         field: f,
       });
     }

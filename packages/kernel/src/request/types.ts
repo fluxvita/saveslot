@@ -182,11 +182,19 @@ export interface NormalizedWrite {
   };
 }
 
+/** A value as a write's `set` gives it (04-contract-types §1.4 `Value`): `type_mismatch`'s example. */
+export type ExampleValue =
+  | string
+  | number
+  | boolean
+  | { readonly value: string; readonly unit: string }
+  | null;
+
 /** A detail of `validation_failed` (04-contract-types §9, the write group). */
 export interface WriteValidationDetail {
   /** The op; none where the request has no ops (a decision's triggered write). */
   readonly op?: number;
-  /** The table's name, `slot.table`: given with `required_in_gap` and `empty_row`. */
+  /** The table's name, `slot.table`: the op's table, given with every detail of a write. */
   readonly table?: string;
   readonly field?: string;
   readonly code:
@@ -201,6 +209,8 @@ export interface WriteValidationDetail {
     | "ref_not_found"
     | "empty_row"
     | "malformed";
+  /** `type_mismatch`: a valid value of the field's type, as `set` takes it (not the one given). */
+  readonly example?: ExampleValue;
   /** `required_in_gap`: the stretch the field has no value over. */
   readonly valid?: {
     readonly valid_from: string | null;
@@ -258,11 +268,14 @@ export type RequestError =
     }
   | {
       readonly code: "too_large";
-      readonly reason: "evidence_segment" | "request";
+      readonly reason: "evidence_segment" | "request" | "ops";
       readonly param: string;
+      /** `evidence_segment`, `request`: the evidence's size in bytes. */
       readonly limit_bytes?: number;
       readonly actual_bytes?: number;
+      /** `ops`: how many ops a request may have, and how many it had. */
       readonly limit?: number;
+      readonly actual?: number;
     };
 
 export type NormalizeWriteResult =

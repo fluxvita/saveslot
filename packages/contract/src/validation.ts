@@ -1,7 +1,7 @@
 // Validation details of errors (docs/zh-CN/spec/04-contract-types.md §9 `ValidationDetail`).
 // Separate from errors.ts because schema results (`SchemaImpact.trial`) use the detail codes too.
 
-import type { FieldName, Interval, TableName, TargetRef } from "./common.ts";
+import type { FieldName, Interval, TableName, TargetRef, Value } from "./common.ts";
 
 /** 04-contract-types §9 `ValidationDetailCode`. */
 export const VALIDATION_DETAIL_CODES = [
@@ -73,6 +73,11 @@ export interface ValidationDetail {
   /** `out_of_bounds`: the bounds that apply to the value at `path`. */
   min?: string;
   max?: string;
+  /**
+   * `type_mismatch`: a valid value of the field's type, written as in the ops' `set`; independent
+   * of the value given (`suggestion` is the fix for that value). Both may be given.
+   */
+  example?: Value;
   /** `key_not_applicable` on an event table's `time/field`: the field is not required. Only there. */
   reason?: "not_required";
   /** `backfill_required`: number of violating rows. */

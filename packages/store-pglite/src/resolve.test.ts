@@ -461,10 +461,9 @@ describe("the order of the checks (04-contract `resolve`)", () => {
   it(
     "no such item: not_found",
     async () => {
-      expect(
-        await resolve({ id: `pi_${"9".repeat(16)}`, decision: "keep_effective" }),
-      ).toMatchObject({
+      expect(await resolve({ id: `pi_${"9".repeat(16)}`, decision: "keep_effective" })).toEqual({
         refused: "not_found",
+        reason: "item",
         param: "id",
       });
     },
@@ -1180,7 +1179,7 @@ describe("a decision's write without a required field where the entity has no va
       );
       const d = (await detailOf(item)) as { item_ver: string };
       expect(await resolve({ id: item, decision: "take_candidate", item_ver: d.item_ver })).toEqual(
-        { refused: "revoked", ops: [v.seq] },
+        { refused: "revoked", target: { table: "ledger.rows", row }, revoked_by: v.seq },
       );
     },
     T,

@@ -22,19 +22,19 @@ describe("numbers", () => {
     expect(run({ laps: 100 }).ok).toBe(true);
     expect(run({ laps: "0" }).ok).toBe(true);
     expect(detailsOf(run({ laps: 101 }))).toEqual([
-      { op: 0, field: "laps", code: "out_of_range", min: "0", max: "100" },
+      { op: 0, table: "ledger.runs", field: "laps", code: "out_of_range", min: "0", max: "100" },
     ]);
     expect(detailsOf(run({ laps: "-1" }))).toEqual([
-      { op: 0, field: "laps", code: "out_of_range", min: "0", max: "100" },
+      { op: 0, table: "ledger.runs", field: "laps", code: "out_of_range", min: "0", max: "100" },
     ]);
   });
 
   it("refuses a quantity past 18 integer digits when only a min bounds it", () => {
     expect(detailsOf(upd({ amount: { value: "1e18", unit: "CNY" } }))).toEqual([
-      { op: 0, field: "amount", code: "out_of_range" },
+      { op: 0, table: "ledger.expenses", field: "amount", code: "out_of_range" },
     ]);
     expect(detailsOf(upd({ amount: { value: "999999999999999999.999", unit: "CNY" } }))).toEqual([
-      { op: 0, field: "amount", code: "out_of_range" },
+      { op: 0, table: "ledger.expenses", field: "amount", code: "out_of_range" },
     ]);
     expect(upd({ amount: { value: "999999999999999999.994", unit: "CNY" } }).ok).toBe(true);
   });
@@ -44,12 +44,20 @@ describe("numbers", () => {
     [{ value: "1e99", unit: "CNY" }, "out_of_range"],
     [{ value: "1", unit: 5 }, "type_mismatch"],
   ])("refuses the quantity %j", (v, code) => {
-    expect(detailsOf(upd({ amount: v }))).toEqual([{ op: 0, field: "amount", code }]);
+    expect(detailsOf(upd({ amount: v }))).toEqual([
+      {
+        op: 0,
+        table: "ledger.expenses",
+        field: "amount",
+        code,
+        ...(code === "type_mismatch" ? { example: { value: "0", unit: "CNY" } } : {}),
+      },
+    ]);
   });
 
   it("an exponent past 2^53: too large up, a value rounding to zero down", () => {
     expect(detailsOf(upd({ rate: "1e99999999999999999999" }))).toEqual([
-      { op: 0, field: "rate", code: "out_of_range" },
+      { op: 0, table: "ledger.expenses", field: "rate", code: "out_of_range" },
     ]);
     const tiny = upd({ rate: "1e-99999999999999999999" });
     expect(onlyOp(tiny).fields).toEqual({ f6: { value: "0", raw: "1e-99999999999999999999" } });
@@ -64,7 +72,13 @@ describe("numbers", () => {
 
   it("enum takes strings only", () => {
     expect(detailsOf(upd({ category: 1 }))).toEqual([
-      { op: 0, field: "category", code: "type_mismatch" },
+      {
+        op: 0,
+        table: "ledger.expenses",
+        field: "category",
+        code: "type_mismatch",
+        example: "food",
+      },
     ]);
   });
 
@@ -137,10 +151,22 @@ describe("time text", () => {
       f8: { value: { instant: "2026-11-10T04:31:00.500Z" } },
     });
     expect(detailsOf(upd({ at: "2026-11-10T24:00:00Z" }))).toEqual([
-      { op: 0, field: "at", code: "type_mismatch" },
+      {
+        op: 0,
+        table: "ledger.expenses",
+        field: "at",
+        code: "type_mismatch",
+        example: "2026-11-12T09:30:00+08:00[Asia/Shanghai]",
+      },
     ]);
     expect(detailsOf(upd({ at: "2026-11-10T12:60:00Z" }))).toEqual([
-      { op: 0, field: "at", code: "type_mismatch" },
+      {
+        op: 0,
+        table: "ledger.expenses",
+        field: "at",
+        code: "type_mismatch",
+        example: "2026-11-12T09:30:00+08:00[Asia/Shanghai]",
+      },
     ]);
     const r = normalize({
       ops: [

@@ -321,6 +321,9 @@ importers:
       '@fluxvita/saveslot-contract':
         specifier: workspace:*
         version: link:../contract
+      '@fluxvita/saveslot-contract-core':
+        specifier: workspace:*
+        version: link:../contract-core
       '@fluxvita/saveslot-kernel':
         specifier: workspace:*
         version: link:../kernel

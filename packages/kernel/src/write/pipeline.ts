@@ -648,6 +648,8 @@ export interface FailedAt {
   readonly index?: number;
   readonly slot: string;
   readonly table: CompiledBaseTable;
+  /** The row or entity judged (`revoked` names it). */
+  readonly id: string;
 }
 
 /** A judgement's failure as the contract's error (04-contract-types §9). */
@@ -655,12 +657,18 @@ export function judgeFailure(e: JudgeError, at: FailedAt): WriteError {
   const param = at.index !== undefined ? `ops/${at.index}` : undefined;
   switch (e.reason) {
     case "invalid_argument": {
-      // `param` in the detail: the op's parameter it names.
-      const { param: sub, ...rest } = e.detail as { param?: unknown };
-      const where =
-        param === undefined ? undefined : typeof sub === "string" ? `${param}/${sub}` : param;
+      // `param` in the detail: the op's parameter it names; `field`: the field of `set` it names
+      // (`no_value_now`), by its name. A decision's write has no ops: the field is given by name
+      // instead. Never by its ID: a field not found is left out.
+      const { param: given, field, ...rest } = e.detail as { param?: unknown; field?: unknown };
+      const name =
+        typeof field === "string" ? at.table.fields.find((x) => x.id === field)?.name : undefined;
+      const sub =
+        typeof given === "string" ? given : name !== undefined ? `set/${name}` : undefined;
+      const where = param === undefined ? undefined : sub !== undefined ? `${param}/${sub}` : param;
       return new WriteError("invalid_argument", e.message, {
         ...(where !== undefined ? { param: where } : {}),
+        ...(param === undefined && name !== undefined ? { field: name } : {}),
         ...rest,
       });
     }
@@ -669,11 +677,21 @@ export function judgeFailure(e: JudgeError, at: FailedAt): WriteError {
         reason: "write",
         details: gapDetails((e.detail as { gaps?: readonly GapEntry[] }).gaps ?? [], at),
       });
-    case "revoked":
+    case "revoked": {
+      // The revoke keeping the row revoked now: the latest of those in effect, as a field's state
+      // takes the latest item (RowState.fieldState; `filled_gaps.revoked_by` likewise). Every
+      // sequence of writes tried leaves one in effect: revoking a revoked row is refused, and an
+      // undo of a revoke registers it (revoked, undone, revoked again: only the second is in
+      // effect, write-pipeline.test.ts). Taking the earliest instead passes every test for that
+      // reason; the latest is what a revoke still in effect after another would need.
+      const ops = (e.detail as { ops?: readonly number[] }).ops ?? [];
+      const isState = at.table.time.type === "state";
       return new WriteError("revoked", e.message, {
         ...(param !== undefined ? { param } : {}),
-        ...e.detail,
+        target: { table: qualifiedTable(at.slot, at.table), [isState ? "entity" : "row"]: at.id },
+        ...(ops.length > 0 ? { revoked_by: Math.max(...ops) } : {}),
       });
+    }
     default:
       return new WriteError("internal", e.message, param !== undefined ? { param } : {});
   }
@@ -723,7 +741,10 @@ const EXISTING_KEYS = 10;
 export async function loadRow(tx: Tx, ctx: RowContext, param: string): Promise<RowWork> {
   const id = ("row" in ctx.target ? ctx.target.row : ctx.target.entity) as string;
   if ((await rowTable(tx, id)) !== ctx.table) {
-    throw new WriteError("not_found", "no such row or entity", { param });
+    throw new WriteError("not_found", "no such row or entity", {
+      reason: "row" in ctx.target ? "row" : "entity",
+      param,
+    });
   }
   const events = await rowEvents(tx, ctx.table, id);
   const state = stateFromRecord(ctx.shape, decodeRecords(ctx, events));
@@ -991,6 +1012,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         // Revoking or undoing by a key no entity holds has nothing to act on.
         if (o.kind !== "write") {
           throw new WriteError("not_found", "no entity holds this key", {
+            reason: "entity",
             param: `${param}/entity_key`,
           });
         }
@@ -1135,7 +1157,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       judged = judgeOp(work.state, judgeInput);
     } catch (e) {
       if (e instanceof JudgeError) {
-        throw judgeFailure(e, { index: o.index, slot: slot.name, table: tableOf(o.table) });
+        throw judgeFailure(e, { index: o.index, slot: slot.name, table: tableOf(o.table), id });
       }
       throw e;
     }

@@ -116,7 +116,10 @@ export async function readsListInTx(
     );
     const hit = p.rows.find((x) => x.id === connection || x.name === connection);
     if (hit === undefined)
-      throw new ReadError("not_found", "no such connection", { param: "connection" });
+      throw new ReadError("not_found", "no such connection", {
+        reason: "connection",
+        param: "connection",
+      });
     actorFilter = hit.id;
   }
   const slotFilter = text("slot");

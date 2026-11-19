@@ -1361,6 +1361,10 @@ describe("reads.list", () => {
       code: "not_found",
       detail: { reason: "slot", param: "slot" },
     });
+    expect(await refusal({ connection: "nope" })).toEqual({
+      code: "not_found",
+      detail: { reason: "connection", param: "connection" },
+    });
     await query(s.store, ctx({ actor: OTHER, now: "2026-11-05T04:00:00.000Z" }), {
       table: "budgets",
     });

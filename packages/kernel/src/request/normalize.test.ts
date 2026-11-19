@@ -8,6 +8,19 @@ import { jsonNumber, keepNumberText } from "./number.ts";
 import { ENTITY, errorOf, insertExpense, normalize, onlyOp, ROW } from "./requests.fixture.ts";
 import type { ChangedFields } from "./types.ts";
 
+/** `type_mismatch`'s example of each field of the expenses table, as written there (`set`). */
+const EXAMPLE: Record<string, unknown> = {
+  note: "text",
+  pieces: 1,
+  paid: true,
+  date: "2026-11-12",
+  at: "2026-11-12T09:30:00+08:00[Asia/Shanghai]",
+  account: `e_${"0".repeat(26)}`,
+  amount: { value: "0", unit: "CNY" },
+  category: "food",
+  rate: "1",
+};
+
 const op = (o: Record<string, unknown>, more: Record<string, unknown> = {}) => ({
   ops: [o],
   ...more,
@@ -400,7 +413,15 @@ describe("values (04-contract §1; 10 «字段类型与取值范围», «精度�
       details(
         normalize(op({ intent: "update", table: "expenses", row: ROW, set: { [field]: v } })),
       ),
-    ).toEqual([{ op: 0, field, ...detail }]);
+    ).toEqual([
+      {
+        op: 0,
+        table: "ledger.expenses",
+        field,
+        ...detail,
+        ...(detail["code"] === "type_mismatch" ? { example: EXAMPLE[field] } : {}),
+      },
+    ]);
   });
 
   it("checks bounds on the rounded and converted value", () => {
@@ -420,13 +441,27 @@ describe("values (04-contract §1; 10 «字段类型与取值范围», «精度�
       ).ok,
     ).toBe(true);
     expect(d({ value: "1000.005", unit: "km" })).toEqual([
-      { op: 0, field: "distance", code: "out_of_range", min: "0", max: "1000" },
+      {
+        op: 0,
+        table: "ledger.runs",
+        field: "distance",
+        code: "out_of_range",
+        min: "0",
+        max: "1000",
+      },
     ]);
     expect(d({ value: "621.38", unit: "mi" })).toEqual([
-      { op: 0, field: "distance", code: "out_of_range", min: "0", max: "1000" },
+      {
+        op: 0,
+        table: "ledger.runs",
+        field: "distance",
+        code: "out_of_range",
+        min: "0",
+        max: "1000",
+      },
     ]);
     expect(d({ value: "1", unit: "kg" })).toEqual([
-      { op: 0, field: "distance", code: "unit_dimension" },
+      { op: 0, table: "ledger.runs", field: "distance", code: "unit_dimension" },
     ]);
     // 99.5004 rounds to 99.5 at scale 3: within the max.
     expect(
@@ -440,7 +475,9 @@ describe("values (04-contract §1; 10 «字段类型与取值范围», «精度�
           op({ intent: "insert", table: "runs", set: { date: "2026-11-10", pace: "99.5005" } }),
         ),
       ),
-    ).toEqual([{ op: 0, field: "pace", code: "out_of_range", min: "-5", max: "99.5" }]);
+    ).toEqual([
+      { op: 0, table: "ledger.runs", field: "pace", code: "out_of_range", min: "-5", max: "99.5" },
+    ]);
   });
 
   it("collects every value problem of the request into one validation_failed", () => {
@@ -452,11 +489,17 @@ describe("values (04-contract §1; 10 «字段类型与取值范围», «精度�
       ],
     });
     expect(details(r)).toEqual([
-      { op: 0, field: "pieces", code: "malformed" },
-      { op: 0, field: "paid", code: "type_mismatch" },
-      { op: 1, field: "date", code: "required_missing" },
-      { op: 1, field: "amount", code: "required_missing" },
-      { op: 2, field: "date", code: "required_missing" },
+      { op: 0, table: "ledger.expenses", field: "pieces", code: "malformed" },
+      {
+        op: 0,
+        table: "ledger.expenses",
+        field: "paid",
+        code: "type_mismatch",
+        example: EXAMPLE["paid"],
+      },
+      { op: 1, table: "ledger.expenses", field: "date", code: "required_missing" },
+      { op: 1, table: "ledger.expenses", field: "amount", code: "required_missing" },
+      { op: 2, table: "ledger.expenses", field: "date", code: "required_missing" },
     ]);
   });
 
@@ -473,8 +516,8 @@ describe("values (04-contract §1; 10 «字段类型与取值范围», «精度�
     expect(details(r)).toEqual([
       { op: 0, table: "ledger.kv", code: "empty_row" },
       { op: 1, table: "ledger.kv", code: "empty_row" },
-      { op: 2, field: "date", code: "required_missing" },
-      { op: 2, field: "amount", code: "required_missing" },
+      { op: 2, table: "ledger.expenses", field: "date", code: "required_missing" },
+      { op: 2, table: "ledger.expenses", field: "amount", code: "required_missing" },
     ]);
     // One non-empty value is enough; an empty one beside it is a clear of that field.
     expect(normalize(op({ intent: "insert", table: "kv", set: { text: null, rank: 2 } })).ok).toBe(
@@ -497,7 +540,7 @@ describe("values (04-contract §1; 10 «字段类型与取值范围», «精度�
     ).toBe(true);
     // A malformed value is not an empty one: only its own detail.
     expect(details(normalize(op({ intent: "insert", table: "kv", set: { rank: "x" } })))).toEqual([
-      { op: 0, field: "rank", code: "malformed" },
+      { op: 0, table: "ledger.kv", field: "rank", code: "malformed" },
     ]);
   });
 });
@@ -542,7 +585,15 @@ describe("plain numbers, number text and the request key (04-contract §1, §14)
           op({ intent: "update", table: "expenses", row: ROW, set: { rate: { text: "1" } } }),
         ),
       ),
-    ).toEqual([{ op: 0, field: "rate", code: "type_mismatch" }]);
+    ).toEqual([
+      {
+        op: 0,
+        table: "ledger.expenses",
+        field: "rate",
+        code: "type_mismatch",
+        example: EXAMPLE["rate"],
+      },
+    ]);
     expect(() => jsonNumber("1.")).toThrow();
   });
 });
@@ -754,13 +805,20 @@ describe("refusals of the request's shape", () => {
     expect(errorOf(normalize(params))).toEqual(error);
   });
 
+  it("takes exactly 1,000 ops", () => {
+    const ops = Array.from({ length: 1000 }, () => insertExpense()["ops"]);
+    const r = normalize({ ops: ops.flat() });
+    expect(r.ok && r.request.ops.length).toBe(1000);
+  });
+
   it("refuses more than 1,000 ops", () => {
     const ops = Array.from({ length: 1001 }, () => insertExpense()["ops"]);
     expect(errorOf(normalize({ ops: ops.flat() }))).toEqual({
       code: "too_large",
-      reason: "request",
+      reason: "ops",
       param: "ops",
       limit: 1000,
+      actual: 1001,
     });
   });
 

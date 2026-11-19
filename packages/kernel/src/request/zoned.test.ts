@@ -131,6 +131,8 @@ describe("a zoned date-time as the contract writes it (04-contract-types §1.3 `
         field: "at",
         code: "type_mismatch",
         suggestion: "2026-11-10T13:31:00+09:00[Asia/Tokyo]",
+        // The type's example stays in the slot's zone: it does not depend on the value given.
+        example: "2026-11-12T09:30:00+08:00[Asia/Shanghai]",
       },
     });
     // No zone named: the slot's.
@@ -146,7 +148,12 @@ describe("a zoned date-time as the contract writes it (04-contract-types §1.3 `
     ])
       expect(write(v), JSON.stringify(v)).toEqual({
         ok: false,
-        detail: { op: 0, field: "at", code: "type_mismatch" },
+        detail: {
+          op: 0,
+          field: "at",
+          code: "type_mismatch",
+          example: "2026-11-12T09:30:00+08:00[Asia/Shanghai]",
+        },
       });
   });
 

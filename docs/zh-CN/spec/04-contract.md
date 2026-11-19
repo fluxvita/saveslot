@@ -165,7 +165,7 @@
 - **与状态无关的参数校验**（判定顺序第 1 步）：带回的 `sv` 大于当前版本报 `invalid_argument`（`malformed`，`param` 为 `sv`）；`ver` 写成历史版本（`h41.0`）或别的写法报 `invalid_argument`（`malformed`）；`entity_key` 用在非状态类表上报 `invalid_argument`（`not_state_table`），状态类表没声明自然键报 `malformed`，键字段缺了报 `missing`、多了报 `malformed`（`param` 指到那个键）；写派生表报 `derived_readonly`。
 - **其余与状态无关的原因码**（同属判定顺序第 1 步；`param` 都指到出问题的那一项）：
   - 请求里的对象只认自身的键；值为 `undefined` 的键当作没写（经 JSON 传来的请求不会有，嵌入调用时会有）；数组有空位报 `invalid_argument`（`malformed`）。不认识的参数键报 `invalid_argument`（`malformed`）。
-  - 一次超过 1,000 个 op：`too_large`（`request`，附 `limit`；临时值，open-questions「接口的数值与细则」）。
+  - 一次超过 1,000 个 op：`too_large`（`ops`，附 `limit` 与 `actual`，都是 op 个数；临时值，open-questions「接口的数值与细则」）。
   - `task`、`idempotency_key` 为空、超过 256 个字符（按码点数）、不是良构的 Unicode 或含控制字符：`invalid_argument`（`malformed`）。
   - 状态类表上给 `row`：`invalid_argument`（`state_table`）。
   - 同一个 `set` 里按不分大小写是同一字段的两个键：`invalid_argument`（`malformed`，`param` 指到第二种写法）；`entity_key` 里同样，`param` 指到那个键。
@@ -232,7 +232,7 @@
 - **默认只撤回仍然生效的部分**；已被后来的写入覆盖的部分跳过：它们不出现在逐字段结果里，由 `undo.skipped_superseded` 逐项列出（字段、区间、覆盖它的写入）。
 - **`include_later: true`** 连后来的写入一起回掉，一律按高影响进待确认。此时待确认事项的 `proposal` 不带 `set`，带 `revert: {undo, include_later}`（`set` 留给字段值与撤销两种提议，`set: null` 专指提议撤销）；会被回掉的后来写入列在 `impact.reverted` 里，回到的值在确认执行后的回执里给出。读结果的 `awaiting` 标记相应带 `proposed_revert`，不带 `proposed`。
 - **`undo` 不做版本冲突判定，`ver` 可以不带**：调用方点名了要撤回的那次写入，默认只撤回它仍然生效的部分，别人在它之后写的值不会被动。它仍要过依赖状态的校验（行已撤销报 `revoked`）与高影响判定。撤回一次带区间的撤销（恢复那段的值）不算高影响。
-- 目标是插入或首次创建：`invalid_argument`（`undo_target`），提示用 `revoke`。目标是从没生效过的候选或待确认写入：同一错误，提示用 `resolve`。目标是 schema 切换的操作号（常量 `backfill` 补值的那一条）：同一错误，提示提交新的 schema 草稿。目标是撤销、系统裁定、由 `resolve` 触发的写入时可以撤回。
+- 目标是插入或首次创建：`invalid_argument`（`undo_target`），提示用 `revoke`。目标是从没生效过的候选或待确认写入：同一错误，提示用 `resolve`。目标是 schema 切换的操作号（常量 `backfill` 补值的那一条）：同一错误，提示提交新的 schema 草稿。目标在这一行 / 实体上没有可撤回的改动（只做了同值佐证、全是无操作等）：同一错误。目标是撤销、系统裁定、由 `resolve` 触发的写入时可以撤回。
 - n 不是这一行 / 实体的写入：`invalid_argument`（`not_this_target`）；目标内容已删除：`invalid_argument`（`content_deleted`）。
 
 ### 5.4 判定与回执

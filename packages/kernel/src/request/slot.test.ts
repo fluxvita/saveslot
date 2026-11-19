@@ -44,7 +44,7 @@ describe("resolveWriteSlot", () => {
   });
 
   it("refuses unknown tables and slots, with the nearest names", () => {
-    expect(resolveWriteSlot(req("expense"), SLOTS)).toMatchObject({
+    expect(resolveWriteSlot(req("expense"), SLOTS)).toEqual({
       ok: false,
       error: {
         code: "unknown_table",
@@ -53,13 +53,23 @@ describe("resolveWriteSlot", () => {
         nearest: ["expenses", "notes", "runs"],
       },
     });
-    expect(resolveWriteSlot(req("work.notes"), SLOTS)).toMatchObject({
+    expect(resolveWriteSlot(req("work.notes"), SLOTS)).toEqual({
       ok: false,
-      error: { code: "unknown_table", param: "ops/0/table", name: "work.notes" },
+      error: {
+        code: "unknown_table",
+        param: "ops/0/table",
+        name: "work.notes",
+        nearest: ["Notes.notes", "health.runs", "health.budgets"],
+      },
     });
-    expect(resolveWriteSlot(req("ledger.runs"), SLOTS)).toMatchObject({
+    expect(resolveWriteSlot(req("ledger.runs"), SLOTS)).toEqual({
       ok: false,
-      error: { code: "unknown_table", param: "ops/0/table" },
+      error: {
+        code: "unknown_table",
+        param: "ops/0/table",
+        name: "ledger.runs",
+        nearest: ["health.runs", "ledger.Budgets", "ledger.expenses"],
+      },
     });
     expect(resolveWriteSlot(req("constructor"), SLOTS)).toMatchObject({
       error: { code: "unknown_table" },

@@ -359,11 +359,14 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     item.table !== null &&
     writable(input.visibility, slot.slot, item.table);
   if (hit !== undefined) {
-    if (!visible) throw new WriteError("not_found", "no such item", { param: "id" });
+    // Not reached in this version: a hit is a decision taken on this item, which has a table, and
+    // every slot is writable (`writable`). Kept for scoped visibility, as the check below.
+    if (!visible)
+      throw new WriteError("not_found", "no such item", { reason: "item", param: "id" });
     return readResolution(tx, hit, { slot, restoreCount: restore, replayed: true });
   }
   if (!visible || item.row === null || item.table === null) {
-    throw new WriteError("not_found", "no such item", { param: "id" });
+    throw new WriteError("not_found", "no such item", { reason: "item", param: "id" });
   }
 
   // A closed item: the same decision again is a repeat, any other is refused.
@@ -391,8 +394,13 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
 
   // The decision fits the item's type.
   if (!(DECISIONS_OF[item.type] ?? []).includes(req.decision)) {
+    // Not reached in this version: no schema_change item is opened (see LATER).
     if ((LATER[item.type] ?? []).includes(req.decision)) {
-      throw new WriteError("not_in_this_version", "not in this version", { param: "decision" });
+      throw new WriteError("not_in_this_version", "not in this version", {
+        reason: "value",
+        param: "decision",
+        value: req.decision,
+      });
     }
     throw new WriteError("invalid_argument", "the item does not take this decision", {
       reason: "malformed",
@@ -544,7 +552,12 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     judged = judgeOp(work.state, judgeInput);
   } catch (e) {
     // A decision has no ops: its triggered write's failures name no op and no `ops/…` parameter.
-    if (e instanceof JudgeError) throw judgeFailure(e, { slot: slot.name, table });
+    // `no_value_now` (a correction without an interval, no value "now") is not reached here in
+    // this version: a taken candidate keeps the interval its write resolved, it is not resolved
+    // again at "now", so a gap there is `required_in_gap`. judgeFailure gives its field by name.
+    if (e instanceof JudgeError) {
+      throw judgeFailure(e, { slot: slot.name, table, id: item.row as string });
+    }
     throw e;
   }
   const j = judged.judgement;

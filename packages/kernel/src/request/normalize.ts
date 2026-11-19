@@ -466,7 +466,13 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
   const rawOps = get(params, "ops");
   if (!isDenseArray(rawOps) || rawOps.length === 0) return invalid("malformed", "ops");
   if (rawOps.length > MAX_OPS) {
-    refuse({ code: "too_large", reason: "request", param: "ops", limit: MAX_OPS });
+    refuse({
+      code: "too_large",
+      reason: "ops",
+      param: "ops",
+      limit: MAX_OPS,
+      actual: rawOps.length,
+    });
   }
 
   const tables = tablesOf(input);
@@ -571,7 +577,21 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
     };
   });
   if (details.length > 0) {
-    return { ok: false, error: { code: "validation_failed", reason: "write", details } };
+    // Every detail names its op's table, as judge's (`required_in_gap`) do (04-contract-types §9
+    // `ValidationDetail.table`).
+    const tableAt = new Map(
+      pending.map((p) => [p.index, qualifiedTable(input.compiled.name, p.table)]),
+    );
+    const named = details.map((d) => {
+      const { op, table, ...rest } = d;
+      const t = table ?? (op !== undefined ? tableAt.get(op) : undefined);
+      return {
+        ...(op !== undefined ? { op } : {}),
+        ...(t !== undefined ? { table: t } : {}),
+        ...rest,
+      };
+    });
+    return { ok: false, error: { code: "validation_failed", reason: "write", details: named } };
   }
 
   const content = requestContent(params);
