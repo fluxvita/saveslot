@@ -107,7 +107,11 @@ describe("HTTP's own", () => {
     const r = await http({ method: "GET", path: "/v1/nowhere", token: session });
     expect([r.status, err(r)["code"], err(r)["reason"]]).toEqual([404, "not_found", "route"]);
     const later = await http({ method: "POST", path: "/v1/sql", token: session, body: "{}" });
-    expect([later.status, err(later)["code"]]).toEqual([501, "not_in_this_version"]);
+    // The whole error: a route of a later version is the operation's, not a parameter's.
+    expect([later.status, err(later)]).toEqual([
+      501,
+      { code: "not_in_this_version", reason: "operation", message: "not in this version" },
+    ]);
   });
 
   it("the body: JSON only, at most 1 MiB, cut off past it; parameters not in the query string too", async () => {
