@@ -189,6 +189,10 @@ class Printer {
         const body = e.star ? "*" : `${e.distinct ? "DISTINCT " : ""}${arg()}`;
         return `${e.name}(${body})${e.filter !== undefined ? ` FILTER (WHERE ${p(e.filter)})` : ""}`;
       }
+      case "param":
+      case "sublink":
+      case "win":
+        throw new Error("not in a derived rule");
     }
   }
 

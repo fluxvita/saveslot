@@ -1,17 +1,10 @@
 // Why a derived rule is refused (docs/zh-CN/spec/03-data-model/11-restricted-sql.md «拒绝时报什么»,
 // derived rule column). Thrown inside the compiler at the first problem, turned into the result there.
 
+import type { SqlReason } from "@fluxvita/saveslot-contract-core";
+
 /** Reasons, the same values as `sql_rejected`'s (04-contract-types `ValidationDetail.sql_reason`). */
-export type SqlReason =
-  | "syntax"
-  | "not_select"
-  | "function"
-  | "node"
-  | "system_time"
-  | "unknown_name"
-  | "type"
-  | "limit"
-  | "runtime";
+export type { SqlReason };
 
 export type RuleDetailCode =
   | "rule_sql_rejected"
@@ -29,11 +22,18 @@ export type RsqlStop =
       /** For people: what is wrong, by logical names and node or function names only. */
       readonly message: string;
       readonly suggestion?: string;
+      /** The node, function or logical name the problem is at (never a physical name). */
+      readonly node?: string;
     }
   /** Outermost level not an aggregate (06 «刷新范围与写入准入»). */
   | { readonly kind: "not_in_this_version"; readonly loc?: number; readonly message: string }
   /** In the whitelist, not compiled by this kernel yet. */
   | { readonly kind: "not_implemented"; readonly loc?: number; readonly message: string };
+
+/** Where restricted SQL is written: a `sql` query (S) or a derived rule (D); the wording follows. */
+export type Place = "S" | "D";
+
+const placeName = (p: Place): string => (p === "S" ? "a sql query" : "a derived rule");
 
 export class RsqlError extends Error {
   readonly stop: RsqlStop;
@@ -50,6 +50,7 @@ export function reject(
   loc: number | undefined,
   message: string,
   suggestion?: string,
+  node?: string,
 ): never {
   throw new RsqlError({
     kind: "rejected",
@@ -58,12 +59,20 @@ export function reject(
     ...(loc !== undefined ? { loc } : {}),
     message,
     ...(suggestion !== undefined ? { suggestion } : {}),
+    ...(node !== undefined ? { node } : {}),
   });
 }
 
 /** Node or form not in the whitelist. */
-export const refuseNode = (loc: number | undefined, what: string): never =>
-  reject("rule_sql_rejected", "node", loc, `${what} is not allowed in a derived rule`);
+export const refuseNode = (loc: number | undefined, what: string, place: Place = "D"): never =>
+  reject(
+    "rule_sql_rejected",
+    "node",
+    loc,
+    `${what} is not allowed in ${placeName(place)}`,
+    undefined,
+    what,
+  );
 
 /** Refused only because the result is not determined (11 «确定性»). */
 export const refuseNondeterministic = (
@@ -71,6 +80,7 @@ export const refuseNondeterministic = (
   reason: "function" | "node",
   what: string,
   suggestion?: string,
+  node?: string,
 ): never =>
   reject(
     "nondeterministic_function",
@@ -78,12 +88,13 @@ export const refuseNondeterministic = (
     loc,
     `${what}: its result is not determined by the data`,
     suggestion,
+    node ?? what,
   );
 
-export const notYet = (loc: number | undefined, what: string): never => {
+export const notYet = (loc: number | undefined, what: string, place: Place = "D"): never => {
   throw new RsqlError({
     kind: "not_implemented",
     ...(loc !== undefined ? { loc } : {}),
-    message: `${what} in a derived rule is not compiled yet`,
+    message: `${what} in ${placeName(place)} is not compiled yet`,
   });
 };
