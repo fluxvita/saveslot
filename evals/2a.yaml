@@ -1,0 +1,122 @@
+id: 2a
+title: 纠正一条记录
+stage: P1
+clock: "2026-11-10T09:00:00+08:00"
+
+fixture:
+  slots:
+    - name: health
+      template: running
+      timezone: Asia/Shanghai
+  connections:
+    - key: A
+      name: "MacBook · Claude Code"
+      scopes: [saveslot.read, saveslot.write]
+    - key: seed
+      name: "种子数据"
+      scopes: [saveslot.read, saveslot.write]
+  seed:
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天跑了 7 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-10-28", distance: { value: "7", unit: km } }
+      bind: { run_1028: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "跑了 8 公里，50 分钟，很轻松" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set:
+              {
+                date: "2026-11-01",
+                distance: { value: "8", unit: km },
+                duration: { value: "50", unit: min },
+                feeling: "很轻松",
+              }
+      bind: { run_1101: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天跑了 15 公里，腿有点酸" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-03", distance: { value: "15", unit: km }, feeling: "腿有点酸" }
+      bind: { run_1103: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天 6 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-05", distance: { value: "6", unit: km } }
+      bind: { run_1105: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "周日跑了 10 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-08", distance: { value: "10", unit: km } }
+      bind: { run_1108: "ops[0].target.row" }
+
+steps:
+  - agent: A
+    new_session: true
+    user: "11-03 那次记错了，是 5 公里"
+
+assert:
+  calls:
+    - level: H
+      must:
+        tool: saveslot_write
+        args:
+          "ops[0].intent": correct
+          "ops[0].row": $run_1103
+          "ops[0].ver": { from_read: true }
+          "ops[0].set.distance": { quantity: { value: 5, unit: km } }
+        result:
+          status: saved
+          warnings: { lacks_code: ver_fallback }
+    - level: H
+      must_not:
+        tool: saveslot_write
+        args: { "ops[*].intent": { in: [insert, revoke] } }
+    - level: H
+      text: "必须：写入之前有一次返回了 `run_1103` 的逐行读（`saveslot_query`，或 `saveslot_history` 的时间线）。"
+    - level: H
+      text: '必须：`saveslot_write` 的证据里有一段 `user_message`，文本包含"5 公里"。'
+  state:
+    - level: H
+      query: { table: health.runs, where: { date: "2026-11-03" } }
+      expect:
+        count: 1
+        rows:
+          - values: { distance: { quantity: { value: 5, unit: km } } }
+            marks: { has: [corrected] }
+    - level: H
+      timeline: { table: health.runs, row: $run_1103 }
+      expect:
+        last:
+          intent: correct
+          actor: A
+          fields: [distance]
+          value_source_text_contains: { distance: "5 公里" }
+    - level: H
+      query: { table: health.weekly_mileage, where: { week_start: "2026-11-02" } }
+      expect: { rows: [{ values: { total_distance: { quantity: { value: 21, unit: km } } } }] }
+    - level: H
+      text: "`ops_since_seed`：恰好一次写入，意图 `correct`。"
+  reply:
+    - level: R
+      mentions: [{ value: 5, unit: [km, 公里, 千米] }]
+    - level: R
+      rubric: "告诉了用户该周跑量随之变化（从 31 公里变为 21 公里），或给出了变化后的周跑量"

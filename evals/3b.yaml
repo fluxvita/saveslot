@@ -1,0 +1,79 @@
+id: 3b
+title: 冲突 · 不同字段（自动合并）
+stage: P1
+clock: "2026-11-10T18:00:00+08:00"
+
+fixture:
+  slots:
+    - name: ledger
+      template: spending
+      timezone: Asia/Shanghai
+  connections:
+    - key: A
+      name: "MacBook · Claude Code"
+      scopes: [saveslot.read, saveslot.write]
+    - key: B
+      name: "MacBook · Codex"
+      scopes: [saveslot.read, saveslot.write]
+  seed:
+    - as: A
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天午饭花了 45 元" }]
+        ops:
+          - intent: insert
+            table: ledger.expenses
+            set: { date: "2026-11-10", category: 餐饮, amount: { value: "45", unit: CNY } }
+      bind: { lunch: "ops[0].target.row", lunch_ver: "ops[0].ver" }
+    - as: A
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "不对，午饭是 54 元" }]
+        ops:
+          - intent: correct
+            table: ledger.expenses
+            row: $lunch
+            ver: $lunch_ver
+            set: { amount: { value: "54", unit: CNY } }
+    - as: B
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "打车花了 30 元" }]
+        ops:
+          - intent: insert
+            table: ledger.expenses
+            set: { date: "2026-11-10", category: 交通, amount: { value: "30", unit: CNY } }
+      bind: { taxi: "ops[0].target.row" }
+
+steps:
+  - agent: A
+    new_session: true
+    user: "今天打车那笔记的是多少？"
+  - script:
+      - as: B
+        op: query
+        params: { table: ledger.expenses, where: [{ field: category, op: "=", value: 交通 }] }
+        bind: { taxi_ver_b: "rows[0].ver" }
+      - as: B
+        op: write
+        params:
+          evidence: [{ kind: user_message, text: "打车是去机场" }]
+          ops:
+            - intent: update
+              table: ledger.expenses
+              row: $taxi
+              ver: $taxi_ver_b
+              set: { note: "去机场" }
+  - agent: A
+    user: "打车是 32 元，帮我改一下"
+
+assert:
+  calls:
+    - level: H
+      text: '必须：第 3 步的 `saveslot_write` 结果 `status: "saved"`，`ops[0].fields.amount.result: "applied"`。'
+  state:
+    - level: H
+      text: '`taxi` 的 amount 32 CNY、note "去机场"；`pending` 里没有未决的 `conflict` 事项。'
+  reply:
+    - level: R
+      rubric: "告诉用户已改成 32 元；没有把这次修改说成冲突或失败"

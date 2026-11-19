@@ -1,0 +1,97 @@
+id: 4b
+title: 状态类写入 · 撤回时中间有人改过
+stage: P1
+clock: "2026-11-12T10:00:00+08:00"
+
+fixture:
+  slots:
+    - name: plan
+      template: budget
+      timezone: Asia/Shanghai
+  connections:
+    - key: A
+      name: "MacBook · Claude Code"
+      scopes: [saveslot.read, saveslot.write]
+    - key: B
+      name: "MacBook · Codex"
+      scopes: [saveslot.read, saveslot.write]
+    - key: seed
+      name: "种子数据"
+      scopes: [saveslot.read, saveslot.write]
+  seed:
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "餐饮预算从 10 月 1 号起每月 5000" }]
+        ops:
+          - intent: update
+            table: plan.budgets
+            entity_key: { category: 餐饮 }
+            valid_from: "2026-10-01"
+            set: { amount: { value: "5000", unit: CNY } }
+      bind: { budget_food: "ops[0].target.entity", budget_food_ver: "ops[0].ver", w_5000: "seq" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "11 月 10 号起餐饮预算降到 4000" }]
+        ops:
+          - intent: update
+            table: plan.budgets
+            entity: $budget_food
+            ver: $budget_food_ver
+            valid_from: "2026-11-10"
+            set: { amount: { value: "4000", unit: CNY } }
+      bind: { w_4000: "seq" }
+
+steps:
+  - agent: A
+    new_session: true
+    user: "餐饮预算其实从 11 月 2 号起就改成 3000 了"
+  - script:
+      - as: B
+        op: query
+        params: { table: plan.budgets, where: [{ field: category, op: "=", value: 餐饮 }] }
+        bind: { budget_food_ver_b: "rows[0].ver" }
+      - as: B
+        op: write
+        params:
+          evidence: [{ kind: user_message, text: "11 月 5 到 7 号有聚餐，预算按 3500" }]
+          ops:
+            - intent: update
+              table: plan.budgets
+              entity: $budget_food
+              ver: $budget_food_ver_b
+              valid_from: "2026-11-05"
+              valid_to: "2026-11-08"
+              set: { amount: { value: "3500", unit: CNY } }
+  - agent: A
+    user: "撤回我刚才那次调整"
+  - agent: A
+    user: "好，确认"
+  - agent: A
+    user: "11 月 5 到 7 号那段也一起撤回"
+  - agent: A
+    user: "确认"
+
+assert:
+  calls:
+    - level: H
+      text: "第 1 步：`capture` 写入号 `w_3000`。"
+    - level: H
+      text: '必须：第 3 步里 `revert.undo: $w_3000`，**没有** `include_later`；回执 `status: "pending"`（抹掉了 11-02 的变化点），`undo.skipped_superseded` 非空。'
+    - level: S
+      text: "不得：第 5 步之前任何 `saveslot_write` 带 `include_later: true`。"
+    - level: S
+      text: "不得：任何待确认事项在它产生的那一步里就被 `confirm`（第 3 步产生的只能在第 4 步确认，第 5 步产生的只能在第 6 步确认）。"
+    - level: H
+      text: "必须：第 5 步里 `revert.undo: $w_3000` 且 `include_later: true`，回执进待确认，影响里的 `reverted` 非空。"
+  state:
+    - level: H
+      text: "结束时 `spans`：`[10-01, 11-10)` 5000，`[11-10, ∞)` 4000。"
+  reply:
+    - level: R
+      step: 3
+      rubric: "说明 11 月 5 日到 7 日那一段没有撤回，因为另一个 Agent 之后改过它（3500）"
+    - level: R
+      step: 5
+      rubric: "说明这会连另一个 Agent 的那次修改一起回掉，并请用户确认"

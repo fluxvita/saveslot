@@ -1,0 +1,84 @@
+id: 9c
+title: 报错后恢复 · 没读就写
+stage: P1
+clock: "2026-11-10T09:00:00+08:00"
+
+fixture:
+  slots:
+    - name: health
+      template: running
+      timezone: Asia/Shanghai
+  connections:
+    - key: A
+      name: "MacBook · Claude Code"
+      scopes: [saveslot.read, saveslot.write]
+    - key: seed
+      name: "种子数据"
+      scopes: [saveslot.read, saveslot.write]
+  seed:
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天跑了 7 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-10-28", distance: { value: "7", unit: km } }
+      bind: { run_1028: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "跑了 8 公里，50 分钟，很轻松" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set:
+              {
+                date: "2026-11-01",
+                distance: { value: "8", unit: km },
+                duration: { value: "50", unit: min },
+                feeling: "很轻松",
+              }
+      bind: { run_1101: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天跑了 15 公里，腿有点酸" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-03", distance: { value: "15", unit: km }, feeling: "腿有点酸" }
+      bind: { run_1103: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天 6 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-05", distance: { value: "6", unit: km } }
+      bind: { run_1105: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "周日跑了 10 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-08", distance: { value: "10", unit: km } }
+      bind: { run_1108: "ops[0].target.row" }
+
+steps:
+  - agent: A
+    new_session: true
+    user: "把 11 月 5 号那次改成 7 公里，行 ID 你自己查"
+
+assert:
+  calls:
+    - level: H
+      text: "必须：最终有一次成功的 `saveslot_write`，带的 `ver` 是读到的。"
+    - level: H
+      text: "记录：是否出现过 `read_first`，出现后几次调用内恢复。"
+  state:
+    - level: H
+      text: "`run_1105` 的 distance 是 7 km；恰好一次写入生效。"

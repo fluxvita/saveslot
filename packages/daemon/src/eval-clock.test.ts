@@ -12,6 +12,7 @@ import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture
 import { serviceCommand, status } from "./commands.ts";
 import { LEDGER } from "./contract-suite.fixture.ts";
 import { httpDriver, httpRequest } from "./http-driver.fixture.ts";
+import { mcpClient } from "./mcp-driver.fixture.ts";
 import { evalMarkFile, runService } from "./service.ts";
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -144,6 +145,58 @@ describe("the test clock", () => {
       expect(out.join("\n").split("\n")[0]).toMatch(
         /^eval clock: 2026-11-10T03:00:\d\d\.\d{3}Z \(not the system clock: an evaluation run\)$/,
       );
+    } finally {
+      await s.stop();
+    }
+  });
+
+  it("the MCP text says how long an item has been open by the test clock", async () => {
+    const { home, session } = await newHome();
+    const s = await run(home, START);
+    try {
+      const call = httpDriver(() => home);
+      await call(session, "schema_draft", { document: { ...LEDGER, slot: "ledger" } } as never);
+      const issue = async (name: string) =>
+        (
+          (await call(session, "connections.issue", {
+            name,
+            scopes: ["saveslot.read", "saveslot.write"],
+          } as never)) as { result: { token: string } }
+        ).result.token;
+      const a = await issue("Eval A");
+      const b = await issue("Eval B");
+      const put = (token: string, op: Record<string, unknown>) =>
+        call(token, "write", {
+          sv: 1,
+          ops: [{ table: "ledger.expenses", ...op }],
+        } as never) as Promise<{
+          result: {
+            status: string;
+            ops: { target: { row: string }; ver: string }[];
+            pending: { id: string }[];
+          };
+        }>;
+      const first = await put(a, { intent: "insert", set: { date: "2026-11-10", note: "a" } });
+      const row = first.result.ops[0]?.target.row as string;
+      const ver = first.result.ops[0]?.ver as string;
+      await put(b, { intent: "update", row, ver, set: { note: "b" } });
+      // A writes over what it read: a conflict item, opened now (by the test clock).
+      const stale = await put(a, { intent: "update", row, ver, set: { note: "c" } });
+      expect(stale.result.status).toBe("pending");
+      const item = stale.result.pending[0]?.id as string;
+      expect((await advance(home, session, { advance: "PT2H" })).status).toBe(200);
+      const client = await mcpClient(home, a, "legacy");
+      try {
+        const r = (await client.callTool({
+          name: "saveslot_pending",
+          arguments: { id: item },
+        })) as {
+          content: { type: string; text: string }[];
+        };
+        expect(r.content[0]?.text).toMatch(/ opened 2 h ago \(/);
+      } finally {
+        await client.close();
+      }
     } finally {
       await s.stop();
     }

@@ -1,0 +1,16 @@
+{
+  "name": "@fluxvita/saveslot-evals",
+  "version": "0.0.0",
+  "description": "The evaluation variants (docs/zh-CN/spec/10-evals.md) and the runner that installs their fixtures. Not published.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@fluxvita/saveslot-service": "workspace:*",
+    "@fluxvita/saveslot-store-pglite": "workspace:*",
+    "yaml": "2.9.1"
+  }
+}

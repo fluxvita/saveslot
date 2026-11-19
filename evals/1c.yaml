@@ -1,0 +1,128 @@
+# Clock: ledger's 18:00 (10-evals 1c).
+id: 1c
+title: 发现数据 · 两个 slot
+stage: P1
+clock: "2026-11-10T18:00:00+08:00"
+
+fixture:
+  slots:
+    - name: health
+      template: running
+      timezone: Asia/Shanghai
+    - name: ledger
+      template: spending
+      timezone: Asia/Shanghai
+  connections:
+    - key: A
+      name: "MacBook · Claude Code"
+      scopes: [saveslot.read, saveslot.write]
+    - key: B
+      name: "MacBook · Codex"
+      scopes: [saveslot.read, saveslot.write]
+    - key: seed
+      name: "种子数据"
+      scopes: [saveslot.read, saveslot.write]
+  seed:
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天跑了 7 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-10-28", distance: { value: "7", unit: km } }
+      bind: { run_1028: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "跑了 8 公里，50 分钟，很轻松" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set:
+              {
+                date: "2026-11-01",
+                distance: { value: "8", unit: km },
+                duration: { value: "50", unit: min },
+                feeling: "很轻松",
+              }
+      bind: { run_1101: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天跑了 15 公里，腿有点酸" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-03", distance: { value: "15", unit: km }, feeling: "腿有点酸" }
+      bind: { run_1103: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天 6 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-05", distance: { value: "6", unit: km } }
+      bind: { run_1105: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "周日跑了 10 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-08", distance: { value: "10", unit: km } }
+      bind: { run_1108: "ops[0].target.row" }
+    - as: A
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天午饭花了 45 元" }]
+        ops:
+          - intent: insert
+            table: ledger.expenses
+            set: { date: "2026-11-10", category: 餐饮, amount: { value: "45", unit: CNY } }
+      bind: { lunch: "ops[0].target.row", lunch_ver: "ops[0].ver" }
+    - as: A
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "不对，午饭是 54 元" }]
+        ops:
+          - intent: correct
+            table: ledger.expenses
+            row: $lunch
+            ver: $lunch_ver
+            set: { amount: { value: "54", unit: CNY } }
+    - as: B
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "打车花了 30 元" }]
+        ops:
+          - intent: insert
+            table: ledger.expenses
+            set: { date: "2026-11-10", category: 交通, amount: { value: "30", unit: CNY } }
+      bind: { taxi: "ops[0].target.row" }
+
+steps:
+  - agent: A
+    new_session: true
+    user: "这个月一共花了多少钱？"
+
+assert:
+  calls:
+    - level: H
+      text: "必须：至少一次 `saveslot_catalog`，且它早于第一次 `saveslot_query` / `saveslot_sql`。"
+    - level: H
+      text: "必须：至少一次 `saveslot_query` 或 `saveslot_sql`，目标是 `runs` 或 `weekly_mileage`。"
+    - level: H
+      text: "不得：任何 `saveslot_write`、`saveslot_resolve`、`saveslot_schema_draft`、`saveslot_delete`。"
+    - level: H
+      text: "不得对 `health` 的表做 `saveslot_query` 之后给出答案而没有读过 `ledger`（判法：答案出现前必须有一次目标在 `ledger` 的读取）。"
+  state:
+    - level: H
+      text: "同 1a：`ops_since_seed`：没有新操作。"
+    - level: H
+      text: "同 1a：`reads`：连接实例 A 有 `catalog` 与 `query` 或 `sql` 的读取记录。"
+  reply:
+    - level: R
+      mentions: [{ value: 84, unit: [元, CNY, 人民币] }]

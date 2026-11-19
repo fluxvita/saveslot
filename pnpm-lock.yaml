@@ -188,6 +188,18 @@ importers:
         specifier: 5.1.0
         version: 5.1.0(@types/node@24.19.2)(vite@8.3.8(@types/node@24.19.2)(yaml@2.9.1))
 
+  evals:
+    dependencies:
+      '@fluxvita/saveslot-service':
+        specifier: workspace:*
+        version: link:../packages/service
+      '@fluxvita/saveslot-store-pglite':
+        specifier: workspace:*
+        version: link:../packages/store-pglite
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
+
   experiments:
     dependencies:
       '@electric-sql/pglite':

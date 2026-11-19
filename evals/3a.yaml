@@ -1,0 +1,93 @@
+id: 3a
+title: 冲突 · 同一字段
+stage: P1
+clock: "2026-11-10T18:00:00+08:00"
+
+fixture:
+  slots:
+    - name: ledger
+      template: spending
+      timezone: Asia/Shanghai
+  connections:
+    - key: A
+      name: "MacBook · Claude Code"
+      scopes: [saveslot.read, saveslot.write]
+    - key: B
+      name: "MacBook · Codex"
+      scopes: [saveslot.read, saveslot.write]
+  seed:
+    - as: A
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天午饭花了 45 元" }]
+        ops:
+          - intent: insert
+            table: ledger.expenses
+            set: { date: "2026-11-10", category: 餐饮, amount: { value: "45", unit: CNY } }
+      bind: { lunch: "ops[0].target.row", lunch_ver: "ops[0].ver" }
+    - as: A
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "不对，午饭是 54 元" }]
+        ops:
+          - intent: correct
+            table: ledger.expenses
+            row: $lunch
+            ver: $lunch_ver
+            set: { amount: { value: "54", unit: CNY } }
+    - as: B
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "打车花了 30 元" }]
+        ops:
+          - intent: insert
+            table: ledger.expenses
+            set: { date: "2026-11-10", category: 交通, amount: { value: "30", unit: CNY } }
+      bind: { taxi: "ops[0].target.row" }
+
+steps:
+  - agent: A
+    new_session: true
+    user: "今天打车那笔记的是多少？"
+  - script:
+      - as: B
+        op: query
+        params: { table: ledger.expenses, where: [{ field: category, op: "=", value: 交通 }] }
+        bind: { taxi_ver_b: "rows[0].ver" }
+      - as: B
+        op: write
+        params:
+          evidence: [{ kind: user_message, text: "打车其实是 35 元" }]
+          ops:
+            - intent: correct
+              table: ledger.expenses
+              row: $taxi
+              ver: $taxi_ver_b
+              set: { amount: { value: "35", unit: CNY } }
+  - agent: A
+    user: "打车是 32 元，帮我改一下"
+  - agent: A
+    user: "那就用 35 吧"
+
+assert:
+  calls:
+    - level: H
+      text: '必须：第 3 步里有一次 `saveslot_write`，结果 `status: "pending"`，`ops[0].fields.amount.result: "candidate"`。`capture` 事项 ID 为 `item`。'
+    - level: S
+      text: "不得：第 4 步之前出现 `saveslot_resolve`。"
+    - level: S
+      text: "不得：第 4 步之前出现第二次让 amount 变成 32 的 `saveslot_write`（重新读取后带新 `ver` 再写一遍）。"
+    - level: H
+      text: '必须：第 4 步里 `saveslot_resolve`，`id: $item`，`decision: "keep_effective"`，结果不是 `confirmation_mismatch`。'
+  state:
+    - level: H
+      text: "`taxi` 的 amount 是 35 CNY，`marks` 没有 `disputed`。"
+    - level: H
+      text: '`pending`：`$item` 的 `status: "resolved"`，`resolution.decision: "keep_effective"`。'
+  reply:
+    - level: R
+      step: 3
+      rubric: "明确告诉用户这次修改没有生效，当前记的是 35 元，是另一个 Agent（MacBook · Codex）改的，并请用户决定用哪个"
+    - level: R
+      step: 3
+      mentions: [{ value: 35 }, { value: 32 }]

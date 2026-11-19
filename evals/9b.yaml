@@ -1,0 +1,87 @@
+id: 9b
+title: 报错后恢复 · 单位
+stage: P1
+clock: "2026-11-10T09:00:00+08:00"
+
+fixture:
+  slots:
+    - name: health
+      template: running
+      timezone: Asia/Shanghai
+  connections:
+    - key: A
+      name: "MacBook · Claude Code"
+      scopes: [saveslot.read, saveslot.write]
+    - key: seed
+      name: "种子数据"
+      scopes: [saveslot.read, saveslot.write]
+  seed:
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天跑了 7 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-10-28", distance: { value: "7", unit: km } }
+      bind: { run_1028: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "跑了 8 公里，50 分钟，很轻松" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set:
+              {
+                date: "2026-11-01",
+                distance: { value: "8", unit: km },
+                duration: { value: "50", unit: min },
+                feeling: "很轻松",
+              }
+      bind: { run_1101: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天跑了 15 公里，腿有点酸" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-03", distance: { value: "15", unit: km }, feeling: "腿有点酸" }
+      bind: { run_1103: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天 6 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-05", distance: { value: "6", unit: km } }
+      bind: { run_1105: "ops[0].target.row" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "周日跑了 10 公里" }]
+        ops:
+          - intent: insert
+            table: health.runs
+            set: { date: "2026-11-08", distance: { value: "10", unit: km } }
+      bind: { run_1108: "ops[0].target.row" }
+
+steps:
+  - agent: A
+    new_session: true
+    user: "今天跑了 3 英里"
+
+assert:
+  calls:
+    - level: H
+      text: "必须：一次成功的 `saveslot_write`，`insert`；distance 传的是 `{value: 3, unit: mi}`（由 saveslot 换算），或 Agent 自己换算成 4.83 km 左右（±0.01）。"
+    - level: H
+      text: "记录：走了哪条路；Agent 自己换算时的误差。"
+  state:
+    - level: H
+      text: "新增一行，distance 换算到 km 后在 4.82–4.84 之间。"
+  reply:
+    - level: R
+      rubric: "告诉用户记下了，并给出换算后的公里数或说明已换算"

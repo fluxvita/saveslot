@@ -2,3 +2,5 @@ packages:
   - packages/*
   # Experiment harnesses: private, not one of the packages in 02-architecture §11.
   - experiments
+  # The evaluation variants and their fixture runner (docs/zh-CN/spec/10-evals.md): private.
+  - evals

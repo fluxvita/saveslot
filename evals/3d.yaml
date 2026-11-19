@@ -1,0 +1,100 @@
+id: 3d
+title: 冲突 · 读到有争议的值
+stage: P1
+clock: "2026-11-10T18:00:00+08:00"
+
+fixture:
+  slots:
+    - name: ledger
+      template: spending
+      timezone: Asia/Shanghai
+  connections:
+    - key: A
+      name: "MacBook · Claude Code"
+      scopes: [saveslot.read, saveslot.write]
+    - key: B
+      name: "MacBook · Codex"
+      scopes: [saveslot.read, saveslot.write]
+    - key: C
+      name: "iPhone · 快捷指令"
+      scopes: [saveslot.read, saveslot.write]
+  seed:
+    - as: A
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天午饭花了 45 元" }]
+        ops:
+          - intent: insert
+            table: ledger.expenses
+            set: { date: "2026-11-10", category: 餐饮, amount: { value: "45", unit: CNY } }
+      bind: { lunch: "ops[0].target.row", lunch_ver: "ops[0].ver" }
+    - as: A
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "不对，午饭是 54 元" }]
+        ops:
+          - intent: correct
+            table: ledger.expenses
+            row: $lunch
+            ver: $lunch_ver
+            set: { amount: { value: "54", unit: CNY } }
+    - as: B
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "打车花了 30 元" }]
+        ops:
+          - intent: insert
+            table: ledger.expenses
+            set: { date: "2026-11-10", category: 交通, amount: { value: "30", unit: CNY } }
+      bind: { taxi: "ops[0].target.row" }
+    - as: A
+      op: query
+      params: { table: ledger.expenses, where: [{ field: category, op: "=", value: 交通 }] }
+      bind: { taxi_ver_a: "rows[0].ver" }
+    - as: B
+      op: query
+      params: { table: ledger.expenses, where: [{ field: category, op: "=", value: 交通 }] }
+      bind: { taxi_ver_b: "rows[0].ver" }
+    - as: B
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "打车其实是 35 元" }]
+        ops:
+          - intent: correct
+            table: ledger.expenses
+            row: $taxi
+            ver: $taxi_ver_b
+            set: { amount: { value: "35", unit: CNY } }
+    - as: A
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "打车是 32 元" }]
+        ops:
+          - intent: correct
+            table: ledger.expenses
+            row: $taxi
+            ver: $taxi_ver_a
+            set: { amount: { value: "32", unit: CNY } }
+      bind: { item: "pending[0].id" }
+
+steps:
+  - agent: C
+    new_session: true
+    user: "打车那笔其实是 36 元，改一下"
+
+assert:
+  calls:
+    - level: H
+      text: "必须：写入之前读过 `taxi`（读结果里带着 `disputed`）。"
+    - level: H
+      text: '必须：一次 `saveslot_write` 把 amount 改成 36 且 `status: "saved"`，或一次 `saveslot_resolve` 处理了 `$item`。'
+    - level: H
+      text: "可接受的两条路——甲：先看事项详情（`saveslot_pending`，`id: $item`），再写入或处理。写入后事项被取代。乙：没看详情直接写入。回执里 `pending` 有 `refreshed: true`，事项保持未决。"
+  state:
+    - level: H
+      text: '（二选一成立）甲：amount 36；`$item` 的 `status: "superseded"`，`superseded.reason: "overwritten"`。乙：amount 36；`$item` 仍 `open`，`effective` 是 36，候选里仍有 32。'
+  reply:
+    - level: R
+      rubric: "告诉了用户这笔记录上原本有一处未解决的分歧（另有人提出过 32 元）"
+    - level: R
+      text: '走乙路的还要："说明这处分歧仍未解决"。'

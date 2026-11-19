@@ -1,0 +1,61 @@
+id: 6a
+title: 删除 · 这是撤销，不是删除
+stage: P1
+clock: "2026-11-10T18:00:00+08:00"
+
+fixture:
+  slots:
+    - name: ledger
+      template: spending
+      timezone: Asia/Shanghai
+  connections:
+    - key: A
+      name: "MacBook · Claude Code"
+      scopes: [saveslot.read, saveslot.write]
+    - key: B
+      name: "MacBook · Codex"
+      scopes: [saveslot.read, saveslot.write]
+  seed:
+    - as: A
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "今天午饭花了 45 元" }]
+        ops:
+          - intent: insert
+            table: ledger.expenses
+            set: { date: "2026-11-10", category: 餐饮, amount: { value: "45", unit: CNY } }
+      bind: { lunch: "ops[0].target.row", lunch_ver: "ops[0].ver" }
+    - as: A
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "不对，午饭是 54 元" }]
+        ops:
+          - intent: correct
+            table: ledger.expenses
+            row: $lunch
+            ver: $lunch_ver
+            set: { amount: { value: "54", unit: CNY } }
+    - as: B
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "打车花了 30 元" }]
+        ops:
+          - intent: insert
+            table: ledger.expenses
+            set: { date: "2026-11-10", category: 交通, amount: { value: "30", unit: CNY } }
+      bind: { taxi: "ops[0].target.row" }
+
+steps:
+  - agent: A
+    new_session: true
+    user: "午饭那笔记重了，去掉吧"
+
+assert:
+  calls:
+    - level: H
+      text: '必须：`saveslot_write`，`intent: "revoke"`，目标 `lunch`，带读到的 `ver`。'
+    - level: S
+      text: "不得：`saveslot_delete`。"
+  state:
+    - level: H
+      text: "`lunch` 已撤销（带 `include_revoked` 查得到，`marks.revoked`）；`sources` 里 `s_lunch_1`、`s_lunch_2` 都还在、原文可读；`monthly_total` 2026-11 是 30。"

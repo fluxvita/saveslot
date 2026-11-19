@@ -1,0 +1,81 @@
+id: 4a
+title: 状态类写入 · 默认终点，再撤回
+stage: P1
+clock: "2026-11-12T10:00:00+08:00"
+
+fixture:
+  slots:
+    - name: plan
+      template: budget
+      timezone: Asia/Shanghai
+  connections:
+    - key: A
+      name: "MacBook · Claude Code"
+      scopes: [saveslot.read, saveslot.write]
+    - key: B
+      name: "MacBook · Codex"
+      scopes: [saveslot.read, saveslot.write]
+    - key: seed
+      name: "种子数据"
+      scopes: [saveslot.read, saveslot.write]
+  seed:
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "餐饮预算从 10 月 1 号起每月 5000" }]
+        ops:
+          - intent: update
+            table: plan.budgets
+            entity_key: { category: 餐饮 }
+            valid_from: "2026-10-01"
+            set: { amount: { value: "5000", unit: CNY } }
+      bind: { budget_food: "ops[0].target.entity", budget_food_ver: "ops[0].ver", w_5000: "seq" }
+    - as: seed
+      op: write
+      params:
+        evidence: [{ kind: user_message, text: "11 月 10 号起餐饮预算降到 4000" }]
+        ops:
+          - intent: update
+            table: plan.budgets
+            entity: $budget_food
+            ver: $budget_food_ver
+            valid_from: "2026-11-10"
+            set: { amount: { value: "4000", unit: CNY } }
+      bind: { w_4000: "seq" }
+
+steps:
+  - agent: A
+    new_session: true
+    user: "餐饮预算其实从 11 月 2 号起就改成 3000 了"
+  - agent: A
+    user: "撤回刚才那次调整"
+  - agent: A
+    user: "确认，撤回吧"
+
+assert:
+  calls:
+    - level: H
+      text: '必须：第 1 步里 `saveslot_write`，目标是餐饮预算（`entity` 或 `entity_key`），`valid_from: "2026-11-02"`，`valid_to` 没传或是 `"next_change"`，amount 3000。`capture` 回执的 `seq` 为 `w_3000`。'
+    - level: H
+      text: '不得：第 1 步里 `valid_to: "open"` 或晚于 2026-11-10 的日期。'
+    - level: H
+      text: '必须：第 2 步里 `saveslot_write`，`revert.undo: $w_3000`，没有 `include_later`；结果 `status: "pending"`，`ops[0].fields.amount` 的各段 `result` 都是 `"awaiting"`（状态类表的逐字段结果是按段的数组）。`capture` 事项为 `item`。'
+    - level: S
+      text: '不得：第 3 步之前出现 `saveslot_resolve`（`decision: "confirm"`）。'
+    - level: H
+      text: '必须：第 3 步里 `saveslot_resolve`，`id: $item`，`decision: "confirm"`。'
+  state:
+    - level: H
+      after_step: 1
+      text: "`spans`：`[10-01, 11-02)` 5000，`[11-02, 11-10)` 3000，`[11-10, ∞)` 4000。"
+    - level: H
+      text: "结束时 `spans`：`[10-01, 11-10)` 5000，`[11-10, ∞)` 4000。"
+    - level: H
+      text: '`pending`：`$item` 已解决，`decision: "confirm"`。'
+  reply:
+    - level: R
+      step: 1
+      rubric: "告诉用户 11 月 2 日到 11 月 9 日改成了 3000，并说明 11 月 10 日起仍是 4000、没有改动"
+    - level: R
+      step: 2
+      rubric: "告诉用户撤回还没有生效，说明撤回后 11 月 2 日到 9 日会回到 5000，并请用户确认"
