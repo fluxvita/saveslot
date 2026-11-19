@@ -3,4 +3,4 @@ Recorded, awaiting confirmation · ledger schema v1 · #16
 ledger.entities e_00000000000000000000000001 revoke (undoes #10): whether it exists 2026-11-05 to 2026-11-09 (inclusive) awaits confirmation (see below) (ver=v13.0)
   whether it exists 2026-11-05 to 2026-11-09 (inclusive) no value: awaits confirmation in pi_0000000000000005 (version iv_0000000000000005.16.0). Carrying it out would:
     undo #13 (<untrusted-data-N>u_11111111111111111111111111</untrusted-data-N>): whether it exists
-  Not in effect; the value in effect is unchanged. Tell the user the above first; once they agree: saveslot_resolve pi_0000000000000005 confirm (or reject).
+  Not in effect; the value in effect is unchanged. Tell the user the above in this reply and ask them; what they said before this item appeared is not agreement to it. Once they agree: saveslot_resolve pi_0000000000000005 confirm (or reject).

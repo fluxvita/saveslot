@@ -255,7 +255,7 @@ export const WRITE = {
     "Derived tables are read-only: write to their source tables. Do not write each reading a device produces (heart rate, glucose): record a summary of each activity or day.",
     "A moment with its zone, such as `2026-11-12T09:30:53+08:00[Asia/Shanghai]`, is recorded as given; with an offset only (`+08:00`) it is taken in the slot's time zone and the receipt notes it; an object such as `{instant, zone}` is refused.",
     "`replayed: true` in the receipt means this was a repeat and nothing new was written; when a record with the same content really happened again, write it with a different `idempotency_key`.",
-    'Periods of state tables are `[valid_from, valid_to)`, the end not included: for "until 11-20 (included)" pass `valid_to: "2026-11-21"`. Without an end, only up to the next recorded change; the receipt says nothing after it was touched. Writing by `entity_key` creates the entity when it does not exist; the receipt lists the keys the table already has.',
+    'Periods of state tables are `[valid_from, valid_to)`, the end not included: for "until 11-20 (included)" pass `valid_to: "2026-11-21"`. Without an end, only up to the next recorded change; the receipt says nothing after it was touched. So for "from 11-02 the budget is 3000" pass `valid_from: "2026-11-02"` and no `valid_to`: a change recorded for 11-10 stays. `valid_to: "open"` carries the value on with no end: when there are recorded changes after it, it would overwrite them, and then it does not take effect until the user confirms it; with none after it, it takes effect at once. Writing by `entity_key` creates the entity when it does not exist; the receipt lists the keys the table already has.',
     { text: "It also marks the keys written alike.", later: "P2" },
     '`revoke` without a period revokes the whole entity, with a period it leaves that period without a value. For "undo that change" or "put it back as it was", use `revert: {undo: <the #n of that write>}`: it undoes only what of that write is still in effect; what others changed since is skipped and listed in the receipt.',
     {
@@ -266,7 +266,7 @@ export const WRITE = {
       text: 'When what you write was decided from other records in saveslot (tasks planned by a release date, a budget set from an income), you can list those records and the `ver` you read in `premises`. If they change later, this row carries "premise changed" for anyone who reads it, naming the record and the operation; its values are not changed. When you read a row with "premise changed" and it needs adjusting, change it as usual with new `premises`; when it still holds, an `update` with `premises` and no `set` says so; `premises: []` clears them. When the reason is a retroactive change or a changed plan, read the premise at the business time the mark gives: a read without a time returns the current period only. List only the records really used, not everything read; when what you used is a derived value, list the base record it sums up. When this write becomes a candidate or awaits confirmation, it declares premises only for the fields it writes; `premises: []` still clears the whole row.',
       later: "P2",
     },
-    "A write that would overwrite recorded changes does not take effect at once: the receipt lists what would be overwritten, and the pending item. Writing never deletes the original words.",
+    "A write that would overwrite recorded changes does not take effect at once: the receipt lists what would be overwritten, and the pending item. Tell the user that list in this same reply and ask them; confirm it with saveslot_resolve only after they say yes to it. What they said before the item appeared is not agreement to it. Writing never deletes the original words.",
     {
       text: "To delete what the user said, preview it with `deletion_preview` of saveslot_sources, then use saveslot_delete.",
       needs: "saveslot_delete",
@@ -300,6 +300,44 @@ export const WRITE = {
   },
 } as const satisfies { description: Text; params: Record<string, Text> };
 
+/**
+ * What each field of a write op is (05 §9, the `ops[]` rows): what this version takes. The fields
+ * of later versions are not listed (05 §9 «这一版不出现的句子»).
+ */
+export const WRITE_OP_FIELDS = {
+  intent: [
+    'Required without `revert`. `insert` a new record; `update` when something changed or more is known; `correct` when the recorded value was wrong in the first place; `revoke` when the record should not exist. Tell "it changed" (`update`) from "it was recorded wrongly" (`correct`).',
+  ],
+  table: [
+    "Required. The table's name as saveslot_catalog gives it. A derived table cannot be written: write its source table.",
+  ],
+  row: [
+    "For an existing row of an event table or a table without time: its ID (`r_…`), from a read. Not with `insert`.",
+  ],
+  entity: ["For an existing entity of a state table (or give `entity_key`): its ID (`e_…`)."],
+  entity_key: [
+    'Instead of `entity`: the entity\'s natural key, such as `{"category": "food"}`; an entity not there is created. Use intent `update`. A key written wrong creates a new entity: the receipt lists the keys the table already has.',
+  ],
+  ver: [
+    "When changing an existing row: the `ver` you read for it, passed back unchanged; saveslot uses it to find changes others made since. Without it, the version you last read is used. Not for a row created in this request.",
+  ],
+  set: [
+    "Required except with `revoke` and `revert`. Field name → value, only the fields to change; a value with a unit as `{value, unit}`; `null` clears an optional field.",
+  ],
+  revert: [
+    "Instead of `set`: `{undo: n}` undoes what of write #n (from its receipt or a timeline) is still in effect. What others changed since is skipped; `include_later: true` undoes that too, only when the user asks for it.",
+  ],
+  valid_from: [
+    "State tables only: from which day or moment, included. Not given: now. Pass it whenever the user says when it starts.",
+  ],
+  valid_to: [
+    'State tables only: up to which day or moment, not included ("until 11-20 (included)" is `2026-11-21`). Not given (`next_change`, the default): only up to the next recorded change, which stays as it is; leave it out for "from 11-02 it is 3000". `"open"`: carries on with no end; when that would overwrite changes recorded after it, the write does not take effect until the user confirms it (with none after it, it takes effect at once).',
+  ],
+  evidence_refs: [
+    "Which segments of the request's `evidence` this op uses (indexes, from 0). Not given: all of them.",
+  ],
+} as const satisfies Record<string, Text>;
+
 export const RESOLVE = {
   description: [
     "Resolve one pending item (a conflict, or a change awaiting confirmation).",
@@ -310,7 +348,7 @@ export const RESOLVE = {
       text: "The ways an item can be resolved are given in its detail from saveslot_pending and in the receipts.",
       needs: "saveslot_pending",
     },
-    "Before a resolution with a large effect (confirming a change), tell the user the detail and get their agreement.",
+    "Before a resolution with a large effect (confirming a change), tell the user the detail and ask them; resolve it only after they say yes to that. What they said before the item appeared is not agreement to it.",
   ],
   params: {
     id: ["The item ID (`pi_…`), from a receipt or saveslot_pending."],
@@ -401,7 +439,7 @@ export const INSTRUCTIONS = {
     ],
     [
       {
-        text: 'Writing it right: read a record before changing it, and pass back the `ver` and `sv` you read. When a receipt says "pending confirmation", tell the user what it is and get their agreement before going on.',
+        text: 'Writing it right: read a record before changing it, and pass back the `ver` and `sv` you read. When a receipt says "pending confirmation", tell the user what it is in that same reply and get their agreement before going on; what they said before it appeared is not agreement to it.',
         needs: "saveslot_write",
       },
       {

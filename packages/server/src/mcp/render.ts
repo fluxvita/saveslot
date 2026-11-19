@@ -1201,7 +1201,7 @@ function awaitingLines(parts: readonly { f: string; c: R }[], r: R, isUndo: bool
         ];
   return [
     ...head,
-    t`  Not in effect; the value in effect is unchanged. Tell the user the above first; once they agree: saveslot_resolve ${idOf(item)} confirm (or reject).`,
+    t`  Not in effect; the value in effect is unchanged. Tell the user the above in this reply and ask them; what they said before this item appeared is not agreement to it. Once they agree: saveslot_resolve ${idOf(item)} confirm (or reject).`,
   ];
 }
 

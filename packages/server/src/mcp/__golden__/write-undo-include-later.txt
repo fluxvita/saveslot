@@ -3,4 +3,4 @@ Recorded, awaiting confirmation · plan schema v1 · #48
 plan.runs r_T317NH686KNXQCTJ50C6GHVT06 update (undoes #39): distance awaits confirmation (see below) (ver=v42.0)
   distance 5 <untrusted-data-N>km</untrusted-data-N>: awaits confirmation in pi_W51EDP76W2RCP7EX (version iv_W51EDP76W2RCP7EX.48.0). Carrying it out would:
     undo #42 (<untrusted-data-N>u_YGEAVZA4KGXYZJZ2M8F93HZGJ4</untrusted-data-N>): distance
-  Not in effect; the value in effect is unchanged. Tell the user the above first; once they agree: saveslot_resolve pi_W51EDP76W2RCP7EX confirm (or reject).
+  Not in effect; the value in effect is unchanged. Tell the user the above in this reply and ask them; what they said before this item appeared is not agreement to it. Once they agree: saveslot_resolve pi_W51EDP76W2RCP7EX confirm (or reject).

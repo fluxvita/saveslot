@@ -19,6 +19,7 @@ import {
   SCHEMA_DRAFT,
   type Text,
   WRITE,
+  WRITE_OP_FIELDS,
 } from "./texts.ts";
 
 export type { ToolName };
@@ -30,6 +31,8 @@ interface Param {
   readonly schema: JsonSchema;
   readonly text: Text;
   readonly required?: true;
+  /** An array of objects: the description of each field of its items (`ops[]`: 05 §9). */
+  readonly fields?: Readonly<Record<string, Text>>;
 }
 
 export interface Tool {
@@ -328,6 +331,7 @@ export const TOOLS: readonly Tool[] = [
       ops: {
         schema: { type: "array", minItems: 1, items: WRITE_OP },
         text: WRITE.params.ops,
+        fields: WRITE_OP_FIELDS,
         required: true,
       },
       idempotency_key: { schema: str, text: IDEMPOTENCY_KEY },
@@ -455,12 +459,36 @@ export function toolsFor(principal: Principal): readonly Tool[] {
   return TOOLS.filter((t) => principal.scopes.includes(t.scope));
 }
 
+/**
+ * An array's schema with each field of its items described: every field the items have must have
+ * a text, and every text a field, so that a field added later is not left without one.
+ */
+function withFields(
+  schema: JsonSchema,
+  fields: Readonly<Record<string, Text>> | undefined,
+  listed: ReadonlySet<ToolName>,
+): JsonSchema {
+  if (fields === undefined) return schema;
+  const items = schema["items"] as JsonSchema;
+  const props = items["properties"] as Record<string, JsonSchema>;
+  const names = Object.keys(props);
+  if (names.length !== Object.keys(fields).length || names.some((n) => !Object.hasOwn(fields, n)))
+    throw new Error(`the fields described are not the items' fields: ${names.join(", ")}`);
+  const described: Record<string, JsonSchema> = {};
+  for (const n of names)
+    described[n] = { ...props[n], description: compose(fields[n] as Text, listed) };
+  return { ...schema, items: { ...items, properties: described } };
+}
+
 /** A tool as `tools/list` gives it to a credential whose tools are `listed`. */
 export function describe(tool: Tool, listed: ReadonlySet<ToolName>) {
   const properties: Record<string, JsonSchema> = {};
   const required: string[] = [];
   for (const [name, p] of Object.entries(tool.params)) {
-    properties[name] = { ...p.schema, description: compose(p.text, listed) };
+    properties[name] = {
+      ...withFields(p.schema, p.fields, listed),
+      description: compose(p.text, listed),
+    };
     if (p.required) required.push(name);
   }
   return {
