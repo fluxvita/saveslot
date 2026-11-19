@@ -491,7 +491,7 @@ expenses r_01JC… 整行删除：date、category 只来自这句话
 | `not_found` | 被宽限期内的删除去掉的："该行已被删除（pi_…，可撤回）"，不回显内容；`slot`："没有名为 sleep 的 slot；有哪些 slot 用 saveslot_catalog 查看"；前提的目标找不到时指出是第几个 op 的第几条前提；其余建议用 `saveslot_query` 重新定位。凭证范围外的 ID 与 slot 和不存在的报同一句话 |
 | `revoked` | "这一行已在 #63 撤销；要恢复它，用 revert: {undo: 63}" |
 | `derived_readonly` | "weekly_mileage 是派生表，只读；请写入基础表 runs" |
-| `validation_failed` | 按 `details[]` 逐条：第几个 op、哪个字段、允许的单位 / 范围；`required_in_gap`："2026-10-10 至 2026-10-19（含）这段没有值，要写这一段需同时给出 amount；或把区间缩短到有值的部分"；编译失败指出规则第几行、改法（如"`date_trunc(text, date)` 结果随时区变化，请写成 `date_trunc('week', date::timestamp)::date`"）；`reserved_name`："字段名不能以 _ 开头，也不能是 valid、valid_from、valid_to"；`untrusted_marker`："说明里带着 <untrusted-data-…> 标签，请去掉后重新提交"；`alias_invalid`：指出哪个对象的第几个别名、违反了哪一条（如"别名 spend 与仍可按旧名解析的表 expenses 的旧名相同"） |
+| `validation_failed` | 按 `details[]` 逐条：第几个 op、哪个字段、允许的单位 / 范围；`required_in_gap`："2026-10-10 至 2026-10-19（含）这段没有值，要写这一段需同时给出 amount；或把区间缩短到有值的部分"；编译失败指出规则第几行、改法（如"`date_trunc(text, date)` 结果随时区变化，请写成 `date_trunc('week', date::timestamp)::date`"）；`reserved_name`："名字只用字母、数字与下划线，字母开头，至多 63 个字符；字段名不能是 valid、valid_from、valid_to、row_id、entity_id"；`untrusted_marker`："说明里带着 <untrusted-data-…> 标签，请去掉后重新提交"；`alias_invalid`：指出哪个对象的第几个别名、违反了哪一条（如"别名 spend 与仍可按旧名解析的表 expenses 的旧名相同"） |
 | `read_first` | `no_read`："请先用 saveslot_query 读取该行"（事项："请先用 saveslot_pending 查看 pi_…"；没带 `sv`："请先用 saveslot_catalog 或 saveslot_query 读一次该 slot"）；`task_mismatch`："你在 task X 下读过该行；本次 task 为 Y，兜底只认同一任务，请带上 ver=… 或使用相同的 task" |
 | `schema_incompatible` | 说明变了什么，建议用 `saveslot_catalog` 重读 |
 | `too_large` | `admission`："影响约 N 行，请拆成每批 ≤ K 行"；`evidence_segment` / `request`：给出上限与实际大小，建议改用 file_ref 加摘录；`result_budget`：给出缩小的办法（如"请用 tables 指定少几张表"）；`premise_entries`："一个 op 最多声明 16 条前提，只列真正用到的记录"；`premise_fan_in`："r_… 已被 1000 条前提指向，不能再声明以它为前提" |
@@ -873,7 +873,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 
   **这两个头的值是 UTF-8 字节，不做百分号编码**：`task` 可以是任意良构的 Unicode（如"整理账单"），客户端把它按 UTF-8 编码后原样作为头的值发送。服务端按 UTF-8 解码，字节不是良构的 UTF-8 时报 `invalid_argument`（`malformed`）；长度、控制字符等契约的校验作用在解码后的文本上，幂等键也按解码后的文本比较。客户端不得发送首尾带空白的值：HTTP 会去掉首尾空白，值在路上就变了，而服务端看不到被去掉的部分。
 - **GET 端点的参数走查询字符串**，名字与契约参数相同；数组用逗号分隔（`tables=a,b`）；时间按 RFC 3339，`+` 要百分号编码。结构复杂的读操作（`query`、`sql`、`history`、删除预览）用 POST 传请求体。
-- 表名在路径里拆成两段：`/v1/slots/{slot}/tables/{table}`；在凭证的可见范围内不重名时可用 `/v1/tables/{table}`。路径参数按 RFC 3986 百分号编码。
+- 表名在路径里拆成两段：`/v1/slots/{slot}/tables/{table}`；在凭证的可见范围内不重名时可用 `/v1/tables/{table}`。单段路由收到带 slot 的名字（`slot.table`）时报 `invalid_argument`（`malformed`，`param: "table"`），两段都合名字的写法时 `example` 给出两段路径（`{"path": "/v1/slots/<slot>/tables/<table>"}`）。路径参数按 RFC 3986 百分号编码。
 - 不按结果预算截断，只按 `limit` 分页；`sql` 支持 `cursor`。第 2 节表里 MCP 收窄的字段在 HTTP 全部开放。
 - **脚本必须看回执的 `status`**：`pending` 是成功的状态码，但含义不是"已生效"。
 
@@ -911,7 +911,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 |---|---|
 | `invalid_argument` | 400 |
 | `unauthenticated` | 401，带 `WWW-Authenticate`（见下） |
-| `insufficient_scope` | 403，带 `WWW-Authenticate: Bearer error="insufficient_scope", scope="…"` |
+| `insufficient_scope` | 403，带 `WWW-Authenticate: Bearer error="insufficient_scope", scope="…"`；`required_scope` 不是 scope（`user_session`、`all_slots`）时不带 `scope` |
 | `unknown_table` / `unknown_field`、`not_found` | 404 |
 | `derived_readonly`、`revoked`、`read_first`、`schema_incompatible`、`draft_outdated`、`confirmation_mismatch`、`item_closed`、`preview_outdated`、`referenced` | 409 |
 | `handle_expired`、`lease_expired` | 410 |

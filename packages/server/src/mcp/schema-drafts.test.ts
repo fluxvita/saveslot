@@ -83,6 +83,21 @@ describe("schema drafts as text: what the samples do not show", () => {
     );
   });
 
+  it("reserved_name says what a name may be, whichever way it is wrong", () => {
+    const error = {
+      code: "validation_failed",
+      reason: "schema",
+      details: [
+        { path: "slot", code: "reserved_name" },
+        { path: "tables/0/fields/1/name", code: "reserved_name" },
+      ],
+    };
+    const text = fixed(renderError(error));
+    const guide =
+      "    a name is letters, digits and underscores, a letter first, at most 63; a field is not named valid, valid_from, valid_to, row_id or entity_id";
+    expect(text.split("\n").filter((l) => l === guide)).toHaveLength(2);
+  });
+
   it("a path's segment that is no name or number is inside the boundary", () => {
     const error = {
       code: "validation_failed",

@@ -280,9 +280,16 @@ describe("field types and their keys", () => {
     expect(unknown("公里")).toEqual([
       { path: "tables/0/fields/2/unit", code: "unit_unknown", allowed_units: ["km"] },
     ]);
-    // "cup" would suggest CUP (Cuban peso) by case.
+    // "cup" would suggest CUP (Cuban peso) by case; a plural is not read as a currency's code.
     expect(unknown("cups")).toEqual([
       { path: "tables/0/fields/2/unit", code: "unit_unknown", allowed_units: [] },
+    ]);
+    // A plural and a full spelling.
+    expect(unknown("kcals")).toEqual([
+      { path: "tables/0/fields/2/unit", code: "unit_unknown", allowed_units: ["kcal"] },
+    ]);
+    expect(unknown("kilometers")).toEqual([
+      { path: "tables/0/fields/2/unit", code: "unit_unknown", allowed_units: ["km"] },
     ]);
     // Months and years are not units; codes without a minor unit are left out.
     for (const unit of ["mo", "XAU", "XDR", "XXX", "dL"]) {

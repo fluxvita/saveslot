@@ -1682,6 +1682,12 @@ function detailGuide(x: R): Line[] {
   const allowed = arr(x["allowed_values"]);
   if (allowed.length > 0) lines.push(t`    allowed: ${allowedOf(allowed)}`);
   if (x["reason"] === "not_required") lines.push(t`    the field it names needs required: true`);
+  // A name not of a name's form and a reserved name are one code (03-data-model/10 «名字»).
+  if (x["code"] === "reserved_name") {
+    lines.push(
+      t`    a name is letters, digits and underscores, a letter first, at most 63; a field is not named valid, valid_from, valid_to, row_id or entity_id`,
+    );
+  }
   const path = String(x["path"] ?? "");
   if (x["code"] === "key_not_applicable" && /^tables\/[0-9]+\/fields\/[0-9]+\/type$/.test(path)) {
     lines.push(t`    a derived table's fields take their types from the rule: leave type out`);

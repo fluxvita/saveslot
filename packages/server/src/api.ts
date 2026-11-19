@@ -20,6 +20,7 @@
 // the query string, a request body or a response body.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { SCOPES } from "@fluxvita/saveslot-contract";
 import {
   authenticate,
   ContractError,
@@ -112,6 +113,9 @@ const PART_FORM: Readonly<Record<Exclude<Part, "any">, RegExp>> = {
   // An item (`pi_`) or a connection (`ci_`): 01-objects «标识的写法».
   id: /^(pi_[0-9A-HJKMNP-TV-Z]{16}|ci_[0-9A-HJKMNP-TV-Z]{26})$/,
 };
+
+/** A table name with its slot, `slot.table`, each part of a name's form. */
+const QUALIFIED_TABLE = /^([A-Za-z0-9_]{1,64})\.([A-Za-z0-9_]{1,64})$/;
 
 interface Route {
   readonly method: string;
@@ -383,9 +387,28 @@ export function errorBody(e: ContractError): Record<string, unknown> {
   return { ...e.detail, code: e.code, message: e.message };
 }
 
+const SCOPE_SET: ReadonlySet<string> = new Set<string>(SCOPES);
+
+/**
+ * The challenge of a 403 (05-surfaces §14, RFC 6750 §3.1): `scope` only when what is needed is a
+ * scope; a user session or a range of every slot is not one a client can ask for.
+ */
+function insufficientScopeChallenge(e: ContractError): string {
+  const needed = e.detail["required_scope"];
+  return typeof needed === "string" && SCOPE_SET.has(needed)
+    ? `Bearer error="insufficient_scope", scope="${needed}"`
+    : 'Bearer error="insufficient_scope"';
+}
+
 export function sendError(req: IncomingMessage, res: ServerResponse, e: ContractError): number {
   const status = HTTP_STATUS[e.code];
-  send(req, res, status, { error: errorBody(e) });
+  send(
+    req,
+    res,
+    status,
+    { error: errorBody(e) },
+    e.code === "insufficient_scope" ? { "www-authenticate": insufficientScopeChallenge(e) } : {},
+  );
   return status;
 }
 
@@ -501,6 +524,20 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
         throw new ContractError("not_in_this_version", "not in this version", {
           reason: "operation",
         });
+      }
+      // A table named with its slot on the one-part route: refused, pointing at the two-part
+      // route (05-surfaces §14). The names go into the example only when they are names.
+      if (r.name === "table" && (parts[0] ?? "").includes(".")) {
+        const m = QUALIFIED_TABLE.exec(parts[0] ?? "");
+        throw new ContractError(
+          "invalid_argument",
+          "a table with its slot is read at /v1/slots/{slot}/tables/{table}",
+          {
+            reason: "malformed",
+            param: "table",
+            ...(m !== null ? { example: { path: `/v1/slots/${m[1]}/tables/${m[2]}` } } : {}),
+          },
+        );
       }
       // Each part of the path of its form, or refused before it reaches anything.
       (r.parts ?? []).forEach((kind, i) => {

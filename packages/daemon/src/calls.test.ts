@@ -175,6 +175,66 @@ describe("connections in the contract's shape, and who may call what", () => {
     });
   });
 
+  it("the slots of a connection: by name without ASCII case or by slot_id, each once; anything else not_found alike", async () => {
+    const document = {
+      slot: "Ledger",
+      base_version: null,
+      timezone: "UTC",
+      tables: [
+        {
+          name: "expenses",
+          kind: "base",
+          description: "one row per expense",
+          time: { type: "none" },
+          fields: [{ name: "note", type: "text", description: "what for" }],
+        },
+      ],
+    };
+    const created = await call(user, "schema_draft", { document });
+    const id = String(created["slot_id"]);
+    expect(id).toMatch(/^sl_/);
+    const range = async (name: string, slots: string[]) =>
+      (await call(user, "connections.issue", { name, slots }))["slots"];
+    const ledger = [{ slot: "Ledger", slot_id: id }];
+    expect(await range("by-name", ["Ledger"])).toEqual(ledger);
+    expect(await range("by-folded-name", ["lEDGEr"])).toEqual(ledger);
+    expect(await range("by-id", [id])).toEqual(ledger);
+    expect(await range("by-both", ["ledger", id, "LEDGER"])).toEqual(ledger);
+    // An ID of no slot and a name of none: the same answer, message and all.
+    const refusal = async (slots: string[]) => {
+      try {
+        await runOperation({
+          tenant: t,
+          credentials,
+          cursors,
+          operation: "connections.issue",
+          call: kernelCall({
+            principal: user,
+            tenant: t,
+            operation: "connections.issue",
+            body: { name: "none", slots },
+            now: NOW,
+            windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+            cursors,
+          }),
+          warn: () => {},
+        });
+        return undefined;
+      } catch (e) {
+        if (!(e instanceof ContractError)) throw e;
+        return { code: e.code, message: e.message, detail: e.detail };
+      }
+    };
+    const byName = await refusal(["ledgers"]);
+    expect(byName).toEqual({
+      code: "not_found",
+      message: "no such slot",
+      detail: { reason: "slot", param: "slots" },
+    });
+    expect(await refusal([`sl_${"0".repeat(16)}`])).toEqual(byName);
+    expect(await refusal([id.toLowerCase()])).toEqual(byName);
+  });
+
   it("log.verify for the user session", async () => {
     expect(await call(user, "log.verify", {})).toMatchObject({ chain: { intact: true } });
   });

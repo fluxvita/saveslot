@@ -47,7 +47,7 @@
 - **行**：事件类表、无时间表用 `row`；状态类表用 `entity` 或 `entity_key`（schema 声明的自然键）；派生表用 `key`（分组键，只读；saveslot 内部换成不透明的 `partition_id`）。除 `table` 外恰好给一个。事件类表、无时间表声明了来源键时，写入还可以用 `external_key` 定位（5.1）；读操作的参数不收 `external_key`，给了报 `invalid_argument`。结果里服务端总是给出 ID，有自然键 / 分组键 / 来源键时一并给出。
 - **值与元字段分层**：读结果里字段的值放在每行的 `values` 下，行标识、`ver`、区间、标记在行对象上。用户字段名因此不会和元字段撞名。
 - **名字不分 ASCII 大小写唯一**：slot 名、表名、字段名在各自的作用域内按 ASCII 大小写不敏感判断唯一（`Expenses` 与 `expenses` 不能并存）；请求与受限 SQL 里的名字解析同样不分大小写。
-- **保留名**：schema 里的表名、字段名**不得以 `_` 开头**，字段名**不得是 `valid`、`valid_from`、`valid_to`、`row_id`、`entity_id`**；违反时 schema 编译报 `validation_failed`（`reserved_name`）。
+- **名字与保留名**：slot 名、表名、字段名只用字母、数字与下划线，字母开头，至多 63 个字符（所以**不得以 `_` 开头**）；字段名**不得是 `valid`、`valid_from`、`valid_to`、`row_id`、`entity_id`**。写法不合规与用了保留名都报 `validation_failed`（`reserved_name`），见 data-model「字段类型与取值范围」。
   - `row_id`、`entity_id` 是受限 SQL 里每张表都有的系统列（data-model「[受限 SQL](03-data-model/11-restricted-sql.md)」）。
   - `valid`、`valid_from`、`valid_to` 这三个名字在 `evidence_by_field`（`valid`）与 `query` 的 `where`（`valid_from` / `valid_to`）里和字段名共用一个命名空间。
   - `_` 前缀留给将来的元字段：以后在这类共用命名空间里新增名字，一律以 `_` 开头，不需要迁移已有的 schema。
@@ -717,7 +717,7 @@
 
 | 操作 | 做什么 |
 |---|---|
-| `connections.issue` | 签发连接实例：名字、scope、slot 范围（`slots`：slot 名或 `slot_id` 的数组，不给 = 全部；每个都必须存在且可见，否则 `not_found`（`slot`）；空数组报 `invalid_argument`（`empty_slots`））。结果里的令牌只返回这一次，saveslot 只存它的哈希 |
+| `connections.issue` | 签发连接实例：名字、scope、slot 范围（`slots`：slot 名或 `slot_id` 的数组，不给 = 全部；名字不分 ASCII 大小写，同一个 slot 列了几次只记一次；每个都必须存在且可见，否则 `not_found`（`slot`），按名字与按 ID 找不到的应答相同；空数组报 `invalid_argument`（`empty_slots`））。结果里的令牌只返回这一次，saveslot 只存它的哈希 |
 | `connections.list` / `update` / `revoke` | 列出（含每个连接实例的 slot 范围；`include_revoked: true` 时已吊销与已停用的都列出）、改名、吊销。`update` 只能改名；吊销立即生效，重复吊销返回同一结果：吊销已吊销或已停用的连接实例不记事件，返回它的当前状态（已停用的仍是 `disabled`）。签发、改名、吊销都记为日志事件 |
 | `slots.remove` | 移除一个空的 slot。**只收 `slot_id`，不收名字**（`invalid_argument`，`param: "slot_id"`）：名字在 slot 移除后可以重用，按名字的移除一旦重发，会删掉后来同名新建的那个 slot；CLI 先把名字解析成 `slot_id`、在确认屏上显示，再按 ID 发。"空"按日志判：这个 slot 名下除结构（`schema.*`）与策略（`slot.policy_set`）外没有任何事件（结构变更事项的 `item.*` 也不算），在同一个写事务里判定并记下 `slot.removed`；不空报 `invalid_argument`（`slot_not_empty`）；判据与各事件类型的归类见 [`../process/decisions/remove-empty-slot.md`](../process/decisions/remove-empty-slot.md)，与表级的"从未被写入"并排见 data-model「schema 演进」。结构变更事项还开着时同样报 `slot_not_empty`，`details` 带原因与事项 ID。不存在的 `slot_id` 报 `not_found`（`slot`）。不收 `Idempotency-Key`：已移除的 slot 再移除一次，返回第一次的结果、不记事件。移除之后：名字可以重用，用同一个名字新建的是另一个 slot（另一个 `slot_id`），连接实例的 slot 范围、读取记录不会指到它；范围只剩已移除 slot 的连接实例什么都看不到（范围为空不等于不限 slot），`connections.list` 里它的 `slots` 是空数组；读取记录照旧保留，列出时查不到名字的写原始 `slot_id`，按名字过滤一个已移除的 slot 报 `not_found` |
 | `policy.get` | slot 策略：策略版本（`policy_version`）、冲突期间的生效值规则（`effective_value_rule`）、来源级别的秩表（第一版只记不用）、哪些 schema 改动自动生效。任何有 `saveslot.read` 的凭证可调用；slot 须在它的可见范围内，否则 `not_found`（`slot`） |

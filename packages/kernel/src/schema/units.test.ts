@@ -64,6 +64,31 @@ describe("units@1", () => {
     expect(unitCandidates(" bpm ")).toEqual(["/min"]);
     expect(unitCandidates("斤")).toEqual([]);
   });
+
+  it("suggests codes for a plural and for a full spelling; nothing by letters off", () => {
+    // A plural.
+    expect(unitCandidates("kcals")).toEqual(["kcal"]);
+    expect(unitCandidates("mls")).toEqual(["mL"]);
+    // A full spelling, and its plural, in either case.
+    expect(unitCandidates("kilometers")).toEqual(["km"]);
+    expect(unitCandidates("Litres")).toEqual(["L"]);
+    expect(unitCandidates("KILOCALORIE")).toEqual(["kcal"]);
+    expect(unitCandidates("calories")).toEqual(["cal", "kcal"]);
+    // A code in another case is not taken apart as a plural.
+    expect(unitCandidates("MS")).toEqual(["ms"]);
+    expect(unitCandidates("KG")).toEqual(["kg"]);
+    // One or two letters off is another unit, not a slip: never suggested.
+    expect(unitCandidates("ml")).toEqual(["mL"]);
+    expect(unitCandidates("mgs")).toEqual(["mg"]);
+    // A currency's code by case comes first (KGS, the Kyrgyz som), and a plural is not read as one.
+    expect(unitCandidates("kgs")).toEqual(["KGS"]);
+    expect(unitCandidates("cups")).toEqual([]);
+    expect(unitCandidates("grams")).toEqual(["g"]);
+    expect(unitCandidates("kilometr")).toEqual([]);
+    // Nothing near: empty.
+    expect(unitCandidates("furlongs")).toEqual([]);
+    expect(unitCandidates("s")).toEqual(["s"]);
+  });
 });
 
 describe("the currency table", () => {

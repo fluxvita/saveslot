@@ -11,7 +11,7 @@ import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
 import { osFileLock } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
-import { contractSuite } from "./contract-suite.fixture.ts";
+import { contractSuite, LEDGER } from "./contract-suite.fixture.ts";
 import { httpDriver, httpRequest, type Reply, utf8Header } from "./http-driver.fixture.ts";
 import { type RunningService, runService, socketFile } from "./service.ts";
 
@@ -72,6 +72,37 @@ describe("HTTP's own", () => {
     expect((await http({ method: "GET", path: "/v1/nowhere" })).status).toBe(401);
   });
 
+  it("403 with WWW-Authenticate: insufficient_scope, with scope only when a scope is what is needed", async () => {
+    const issue = async (name: string, more: Record<string, unknown>) => {
+      const r = await driver(session, "connections.issue", { name, ...more });
+      if (!("result" in r)) throw new Error(JSON.stringify(r.error));
+      return String(r.result["token"]);
+    };
+    const reader = await issue("403-reader", { scopes: ["saveslot.read"] });
+    const scoped = await issue("403-scoped", {
+      scopes: ["saveslot.read", "saveslot.schema"],
+      slots: ["ledger"],
+    });
+    const challenge = async (o: Parameters<typeof http>[0]) => {
+      const r = await http(o);
+      return [r.status, err(r)["required_scope"], r.headers["www-authenticate"]];
+    };
+    // A scope the credential lacks: the scope to ask for.
+    expect(
+      await challenge({ method: "POST", path: "/v1/writes", token: reader, body: "{}" }),
+    ).toEqual([403, "saveslot.write", 'Bearer error="insufficient_scope", scope="saveslot.write"']);
+    // Every slot in range, or the user session: not a scope, so none is named.
+    const draft = JSON.stringify({ document: { ...LEDGER, slot: "elsewhere" } });
+    expect(
+      await challenge({ method: "POST", path: "/v1/drafts", token: scoped, body: draft }),
+    ).toEqual([403, "all_slots", 'Bearer error="insufficient_scope"']);
+    expect(await challenge({ method: "GET", path: "/v1/connections", token: reader })).toEqual([
+      403,
+      "user_session",
+      'Bearer error="insufficient_scope"',
+    ]);
+  });
+
   it("an unknown route is 404 (route); a route of a later version is 501", async () => {
     const r = await http({ method: "GET", path: "/v1/nowhere", token: session });
     expect([r.status, err(r)["code"], err(r)["reason"]]).toEqual([404, "not_found", "route"]);
@@ -117,6 +148,30 @@ describe("HTTP's own", () => {
     });
     expect(table.status).toBe(200);
     expect(table.body).toContain("expenses");
+  });
+
+  it("a table with its slot on the one-part route: refused, with the two-part route", async () => {
+    const r = await http({ method: "GET", path: "/v1/tables/ledger.expenses", token: session });
+    expect([r.status, err(r)]).toEqual([
+      400,
+      {
+        code: "invalid_argument",
+        reason: "malformed",
+        param: "table",
+        message: "a table with its slot is read at /v1/slots/{slot}/tables/{table}",
+        example: { path: "/v1/slots/ledger/tables/expenses" },
+      },
+    ]);
+    // The two-part route the example gives is served.
+    const two = await http({
+      method: "GET",
+      path: "/v1/slots/ledger/tables/expenses",
+      token: session,
+    });
+    expect(two.status).toBe(200);
+    // Parts that are not names are not given back.
+    const odd = await http({ method: "GET", path: "/v1/tables/a%20b.c", token: session });
+    expect([odd.status, err(odd)["param"], err(odd)["example"]]).toEqual([400, "table", undefined]);
   });
 
   it("each path part of its form, or refused before it reaches anything", async () => {

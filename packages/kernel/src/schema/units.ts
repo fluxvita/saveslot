@@ -122,16 +122,72 @@ const SPELLINGS: Readonly<Record<string, readonly string[]>> = {
 const foldLatin = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
 /**
- * Codes to suggest for a unit that is not in `units@1` (10 «单位词表»: `unit_unknown` with the
- * candidates of the same kind): codes equal to it without case, and codes one of whose written
- * forms it is. Sorted; empty when nothing matches.
+ * Full English spellings, singular, for suggesting a code only (10 «词表外的单位»). Not written
+ * forms of `units@1`: a literal hit (10 «单位同义表») does not take them, so adding one changes no
+ * checker version.
+ */
+const SUGGEST_ONLY: Readonly<Record<string, readonly string[]>> = {
+  km: ["kilometer", "kilometre"],
+  m: ["metre"],
+  cm: ["centimeter", "centimetre"],
+  mm: ["millimeter", "millimetre"],
+  kg: ["kilogram", "kilogramme", "kilo"],
+  g: ["gram", "gramme"],
+  mg: ["milligram", "milligramme"],
+  ug: ["microgram", "microgramme"],
+  L: ["liter", "litre"],
+  mL: ["milliliter", "millilitre"],
+  oz: ["ounce"],
+  floz: ["fluid ounce"],
+  s: ["second"],
+  ms: ["millisecond"],
+  kcal: ["kilocalorie", "calorie"],
+  cal: ["calorie"],
+  kJ: ["kilojoule"],
+  J: ["joule"],
+  Cel: ["celsius"],
+  degF: ["fahrenheit"],
+  K: ["kelvin"],
+};
+
+/**
+ * The codes `text` (folded) names: a code without case, a written form, a full spelling. Without
+ * `currencies`, no currency's code by case: a word stripped of its plural is not one (`cups` is
+ * no Cuban peso).
+ */
+function named(t: string, currencies = true): Set<string> {
+  const out = new Set<string>();
+  for (const [code, unit] of UNITS) {
+    if (!currencies && unit.dimension.startsWith("currency:")) continue;
+    if (foldLatin(code) === t) out.add(code);
+  }
+  for (const table of [SPELLINGS, SUGGEST_ONLY]) {
+    for (const [code, forms] of Object.entries(table)) {
+      if (forms.some((f) => foldLatin(f) === t)) out.add(code);
+    }
+  }
+  return out;
+}
+
+/** The candidates given at most. */
+const CANDIDATES_MAX = 3;
+
+/**
+ * Codes to suggest for a unit that is not in `units@1` (10 «词表外的单位»): codes equal to it
+ * without case, codes one of whose written forms or full spellings it is; when none, the same for
+ * it without a plural `s` or `es` (`kcals`, `kilometers`), currencies' codes left out. Nothing by edit distance: unit codes are
+ * short, and one or two letters off is often another unit (`ml` and `mg`). Sorted, at most three;
+ * may be empty.
  */
 export function unitCandidates(text: string): string[] {
   const t = foldLatin(text.trim());
-  const out = new Set<string>();
-  for (const code of UNITS.keys()) if (foldLatin(code) === t) out.add(code);
-  for (const [code, forms] of Object.entries(SPELLINGS)) {
-    if (forms.some((f) => foldLatin(f) === t)) out.add(code);
+  let out = named(t);
+  if (out.size === 0) {
+    out = new Set(
+      [t.replace(/s$/, ""), t.replace(/es$/, "")]
+        .filter((x) => x !== t && x !== "")
+        .flatMap((x) => [...named(x, false)]),
+    );
   }
-  return [...out].sort();
+  return [...out].sort().slice(0, CANDIDATES_MAX);
 }

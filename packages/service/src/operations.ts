@@ -45,6 +45,9 @@ async function slotNames(
   };
 }
 
+/** ASCII case folding: names are unique without ASCII case (03-data-model/10 «名字»). */
+const foldAscii = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
 const strs = (xs: unknown): string[] =>
   Array.isArray(xs) ? xs.filter((x): x is string => typeof x === "string") : [];
 const field = (o: unknown, k: string): unknown =>
@@ -215,17 +218,25 @@ export async function runOperation(o: {
                 param: "slots",
               });
             }
-            const ids = (await slotNames(o.tenant)).id;
-            slots = given.map((n: string) => {
-              const id = ids.get(n);
-              if (id === undefined) {
-                throw new ContractError("not_found", "no such slot", {
-                  reason: "slot",
-                  param: "slots",
-                });
-              }
-              return id;
-            });
+            // Each a slot's ID or its name (04-contract «管理类操作»), names without ASCII case as
+            // they are unique; a slot given twice is listed once. Whatever names no slot, an ID or
+            // a name, gets the one answer.
+            const known = await slotNames(o.tenant);
+            const byName = new Map([...known.id].map(([name, id]) => [foldAscii(name), id]));
+            slots = [
+              ...new Set(
+                given.map((n: string) => {
+                  const id = known.name.has(n) ? n : byName.get(foldAscii(n));
+                  if (id === undefined) {
+                    throw new ContractError("not_found", "no such slot", {
+                      reason: "slot",
+                      param: "slots",
+                    });
+                  }
+                  return id;
+                }),
+              ),
+            ];
           }
           const r = await issueLocalConnection({
             tenant: o.tenant,
