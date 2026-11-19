@@ -226,3 +226,42 @@ export interface TimelineResult {
     readonly task?: string;
   }[];
 }
+
+/** §4.5 `ChangedField`. */
+export interface ChangedField {
+  readonly before?: ValueOut;
+  readonly after?: ValueOut;
+}
+
+/** §4.5 `ChangesResult.changes[]`: one operation's change to one row or entity. */
+export interface ChangeEntry {
+  readonly seq: Seq;
+  readonly recorded_at: string;
+  readonly actor: Actor;
+  readonly intent: VersionIntent;
+  readonly target: TargetRef;
+  /**
+   * Event and timeless tables: a field is one `ChangedField`. State tables: an array, a part per
+   * stretch of business time. `*`: whether the row exists (`before` / `after` are booleans, true
+   * for existing), given when a revoke or its taking back changes it.
+   */
+  readonly fields: Readonly<
+    Record<string, ChangedField | readonly (ChangedField & { readonly valid: Interval })[]>
+  >;
+}
+
+/** §4.5 `ChangesResult`. */
+export interface ChangesResult {
+  readonly mode: "changes";
+  /** The table, or the row or entity, asked about. */
+  readonly target: TargetRef;
+  /** The slot's time zone: the moments of the result are shown in it (05-surfaces §4.1). */
+  readonly timezone: string;
+  /** As resolved: the operations after `since` up to `until`. */
+  readonly since: Seq;
+  readonly until: Seq;
+  readonly total: number;
+  readonly next_position?: string;
+  /** Newest first. */
+  readonly changes: readonly ChangeEntry[];
+}

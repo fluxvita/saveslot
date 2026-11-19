@@ -414,6 +414,7 @@ export interface AsOfResult extends CommonResult, PageResult {
 
 /** 04-contract-types §4.5 `ChangedField`. */
 export interface ChangedField {
+  /** `*`: whether the row exists, true for existing. */
   before?: Value;
   after?: Value;
 }
@@ -421,8 +422,14 @@ export interface ChangedField {
 /** 04-contract-types §4.5 `ChangesResult`. */
 export interface ChangesResult extends CommonResult, PageResult {
   mode: "changes";
+  /** The table, or the row or entity, asked about. */
+  target: TargetRef;
+  /** The slot's time zone (as in `catalog`): the instants of the result are shown in it. */
+  timezone: string;
+  /** As resolved: the operations after `since` up to `until`. */
   since: Seq;
   until: Seq;
+  /** Newest first. */
   changes: Array<{
     seq: Seq;
     recorded_at: Instant;

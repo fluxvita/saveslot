@@ -619,6 +619,129 @@ describe("history", () => {
   });
 });
 
+describe("history changes", () => {
+  const CHANGES = {
+    mode: "changes",
+    target: { table: "expenses" },
+    timezone: "UTC",
+    since: 3,
+    until: 9,
+    total: 0,
+    changes: [],
+  };
+  const answering = () => {
+    answer = (req, res) => {
+      if (req.method === "GET") {
+        json(res, 200, {
+          level: "table",
+          tables: [
+            {
+              ...TABLE("plan.budgets"),
+              fields: [{ name: "category", type: "text", description: "d" }],
+            },
+          ],
+        });
+        return;
+      }
+      json(res, 200, CHANGES);
+    };
+  };
+  const row = "r_4KWKRM296X61WJ89DY5XJNVA4P";
+
+  it.each([
+    [
+      ["history", "changes", "expenses", "--since", "3"],
+      { table: "expenses", mode: "changes", since: 3 },
+    ],
+    [
+      ["history", "changes", "expenses", "--since", "my_last_read", "--limit", "5"],
+      { table: "expenses", mode: "changes", since: "my_last_read", limit: 5 },
+    ],
+    [
+      ["history", "changes", "expenses", row, "--since", "2026-11-10T00:00:00Z", "--until", "9"],
+      { table: "expenses", row, mode: "changes", since: "2026-11-10T00:00:00Z", until: 9 },
+    ],
+    [
+      ["history", "changes", "budgets", "e_4KWKRM296X61WJ89DY5XJNVA4P", "--since", "0"],
+      { table: "budgets", entity: "e_4KWKRM296X61WJ89DY5XJNVA4P", mode: "changes", since: 0 },
+    ],
+  ])("%j", async (argv, body) => {
+    answering();
+    bodies.length = 0;
+    const r = await cli(argv);
+    expect(r.code).toBe(0);
+    expect(bodies[bodies.length - 1]).toEqual(body);
+    expect(r.out).toContain("expenses · after #3 up to #9 · 0 changes");
+  });
+
+  it("--key: the entity by its key, the value by the field's type from the catalog", async () => {
+    answering();
+    bodies.length = 0;
+    seen.length = 0;
+    const r = await cli([
+      "history",
+      "changes",
+      "budgets",
+      "--key",
+      "category=food",
+      "--since",
+      "5",
+    ]);
+    expect(r.code).toBe(0);
+    expect(seen.map((x) => x.method)).toEqual(["GET", "POST"]);
+    expect(bodies[1]).toEqual({
+      table: "budgets",
+      entity_key: { category: "food" },
+      mode: "changes",
+      since: 5,
+    });
+  });
+
+  it("--json writes the result as the service gave it", async () => {
+    answering();
+    const r = await cli(["history", "changes", "expenses", "--since", "3", "--json"]);
+    expect(JSON.parse(r.out)).toEqual(CHANGES);
+  });
+
+  it.each([
+    [["history", "changes"], TEXTS.changesArgs],
+    [["history", "changes", "t"], TEXTS.changesSince],
+    [["history", "changes", "t", "nope", "--since", "1"], TEXTS.changesArgs],
+    [["history", "changes", "t", row, "--key", "a=b", "--since", "1"], TEXTS.changesArgs],
+    [["history", "changes", "t", "x", "y", "--since", "1"], TEXTS.changesArgs],
+    [["history", "changes", "t", "--key", "nokey", "--since", "1"], TEXTS.keyBad],
+  ])("%j: 2", async (argv, text) => {
+    answering();
+    const r = await cli(argv);
+    expect(r.code).toBe(2);
+    expect(r.err).toBe(`${TEXTS.usageError(text)}\n`);
+  });
+
+  it("my_last_read before any read: the service's read_first, and what to do", async () => {
+    answer = (_req, res) =>
+      json(res, 409, {
+        error: {
+          code: "read_first",
+          message: "read the table first",
+          reason: "no_read",
+          target: "table",
+          ref: { table: "plan.budgets" },
+          param: "since",
+        },
+      });
+    const r = await cli(["history", "changes", "budgets", "--since", "my_last_read"]);
+    expect(r.code).toBe(3);
+    expect(r.err).toContain(TEXTS.changesReadFirst);
+  });
+
+  it("--since and --until are not for the other commands", async () => {
+    answering();
+    const r = await cli(["history", "expenses", row, "--until", "3"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toBe(`${TEXTS.usageError(TEXTS.optionNotHere)}\n`);
+  });
+});
+
 describe("pending, reads, verify", () => {
   const VERIFY = {
     events: 3,

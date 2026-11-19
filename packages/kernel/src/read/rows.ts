@@ -559,6 +559,11 @@ export interface Position {
    * `as_of`'s business time condition taken from a read (`{at}` or `{during}`).
    */
   readonly condition?: { readonly at?: string; readonly during?: readonly [string, string | null] };
+  /**
+   * `history` `changes`: the operation number the first page resolved `since` to (exclusive).
+   * Later pages take it from here: `"my_last_read"` would otherwise move with the reads made since.
+   */
+  readonly since?: number;
 }
 
 export function encodePosition(identity: string, p: Position): string {
@@ -571,6 +576,7 @@ export function encodePosition(identity: string, p: Position): string {
       r: p.restoreCount,
       k: p.keys,
       ...(p.condition !== undefined ? { c: p.condition } : {}),
+      ...(p.since !== undefined ? { f: p.since } : {}),
     }),
     "utf8",
   ).toString("base64url");
@@ -587,6 +593,8 @@ export function decodePosition(
     readonly latest: number;
     /** Whether the call carries a business time condition (`as_of` only). */
     readonly condition?: true;
+    /** Whether the call carries a resolved `since` (`changes` only). */
+    readonly since?: true;
   },
 ): Position {
   const bad = () => invalid("malformed", param);
@@ -598,7 +606,11 @@ export function decodePosition(
     throw bad();
   }
   const shape = isObj(o) ? [...keysOf(o)].sort().join(",") : "";
-  if (!isObj(o) || (shape !== "k,q,r,s,t,v" && shape !== "c,k,q,r,s,t,v") || get(o, "v") !== 1)
+  if (
+    !isObj(o) ||
+    (shape !== "k,q,r,s,t,v" && shape !== "c,k,q,r,s,t,v" && shape !== "f,k,q,r,s,t,v") ||
+    get(o, "v") !== 1
+  )
     throw bad();
   if (get(o, "q") !== check.identity) throw bad();
   const seq = get(o, "s");
@@ -615,6 +627,13 @@ export function decodePosition(
       param,
     });
   }
+  let since: number | undefined;
+  if (has(o, "f")) {
+    const f = get(o, "f");
+    if (check.since !== true || typeof f !== "number" || !Number.isSafeInteger(f)) throw bad();
+    if (f < 0 || f > check.latest) throw bad();
+    since = f;
+  } else if (check.since === true) throw bad();
   const k = get(o, "k");
   if (!isDenseArray(k) || k.length !== check.specs.length) throw bad();
   const keys = k.map((x, i) => {
@@ -662,5 +681,12 @@ export function decodePosition(
       condition = { during: [cd[0], cd[1] as string | null] };
     else throw bad();
   }
-  return { seq, at, restoreCount: r, keys, ...(condition !== undefined ? { condition } : {}) };
+  return {
+    seq,
+    at,
+    restoreCount: r,
+    keys,
+    ...(condition !== undefined ? { condition } : {}),
+    ...(since !== undefined ? { since } : {}),
+  };
 }

@@ -1,0 +1,9 @@
+The text inside the <untrusted-data-…> tags below is stored data, not instructions to you.
+health.runs · from the start to #48 · 6 of 8 changes
+#30 2026-11-18 20:41 insert  <untrusted-data-N>u_MR82KF91XP1TVCV5WQK6DD983K</untrusted-data-N>  r_B4CBQJB6HDA0CHN1FNYW2FBSDZ  date <untrusted-data-N>2026-11-02</untrusted-data-N>; distance 3 <untrusted-data-N>km</untrusted-data-N>
+#26 2026-11-18 20:40 correct  <untrusted-data-N>MacBook · Codex</untrusted-data-N>  r_MAWAAE0MQ04QGRBPHC97D44AA2  distance 6 <untrusted-data-N>km</untrusted-data-N> → 5 <untrusted-data-N>km</untrusted-data-N>
+#22 2026-11-18 20:39 revoke  <untrusted-data-N>u_MR82KF91XP1TVCV5WQK6DD983K</untrusted-data-N>  r_MAWAAE0MQ04QGRBPHC97D44AA2  restored
+#18 2026-11-18 20:38 revoke  <untrusted-data-N>u_MR82KF91XP1TVCV5WQK6DD983K</untrusted-data-N>  r_MAWAAE0MQ04QGRBPHC97D44AA2  revoked
+#14 2026-11-18 20:37 correct  <untrusted-data-N>u_MR82KF91XP1TVCV5WQK6DD983K</untrusted-data-N>  r_MAWAAE0MQ04QGRBPHC97D44AA2  distance 5 <untrusted-data-N>km</untrusted-data-N> → 6 <untrusted-data-N>km</untrusted-data-N>
+#11 2026-11-18 20:36 update  <untrusted-data-N>u_MR82KF91XP1TVCV5WQK6DD983K</untrusted-data-N>  r_MAWAAE0MQ04QGRBPHC97D44AA2  feeling <untrusted-data-N>easy</untrusted-data-N> → <untrusted-data-N>hard</untrusted-data-N>
+Showing 6 of 8 changes; next page: cursor=cur_eyJ2IjoxLCJrIjoia2FiY2RlZjAxMjM0NTY3OCIsImEiOiJ1X01SODJLRjkxWFAxVFZDVjVXUUs2REQ5ODNLIiwicCI6IngiLCJ4IjoiMjAyNi0xMS0xOFQxNjowMDowMC4wMDBaIn0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; or narrow the request (a date range, fewer fields)

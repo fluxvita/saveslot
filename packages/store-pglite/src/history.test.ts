@@ -1272,11 +1272,6 @@ describe("refusals", () => {
       { code: "invalid_argument", reason: "malformed", param: "row" },
     ],
     [
-      "changes (not yet)",
-      { table: "spend", mode: "changes" },
-      { code: "internal", reason: "not_implemented", param: "mode" },
-    ],
-    [
       "composition",
       { table: "spend", mode: "composition" },
       { code: "not_in_this_version", reason: "value", param: "mode", value: "composition" },

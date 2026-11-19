@@ -6,6 +6,7 @@
 import {
   type AffectedReason,
   type AsOfResult,
+  type ChangesResult,
   type FieldResultCode,
   type PremiseReason,
   type QueryResult,
@@ -385,4 +386,42 @@ export function asOfResult(r: AsOfResult): Line[] {
     ...pageOf(r as unknown as R, rows.length, () => t`rows`),
     ...warningsAndNotices(r),
   ];
+}
+
+/**
+ * `saveslot history changes` (06 §4.7): the table, the range, then each change newest first: its
+ * operation, moment, intent, who, which row or entity, and what changed. A revoke or taking one
+ * back is `revoked` / `restored`.
+ */
+export function changesResult(r: ChangesResult): Line[] {
+  const x0 = r as unknown as R;
+  const list = arr(x0["changes"]);
+  const range =
+    x0["since"] === 0
+      ? t`from the start to ${op(x0["until"])}`
+      : t`after ${op(x0["since"])} up to ${op(x0["until"])}`;
+  const out: Line[] = [t`${targetOf(x0["target"])} · ${range} · ${num(list.length)} changes`];
+  if (list.length === 0 && x0["total"] === 0) out.push(t`no changes`);
+  for (const e of list) {
+    const x = obj(e);
+    const fields = Object.entries(obj(x["fields"])).map(([f, v]) =>
+      join(
+        (Array.isArray(v) ? v : [v]).map((c0) => {
+          const c = obj(c0);
+          const period = isObj(c["valid"]) ? t` (${periodOf(c["valid"])})` : [];
+          if (f === "*") return t`${c["before"] === true ? t`revoked` : t`restored`}${period}`;
+          const change = Object.hasOwn(c, "before")
+            ? t`${fieldValue(c["before"])} -> ${fieldValue(c["after"])}`
+            : fieldValue(c["after"]);
+          return t`${fieldOf(f)} ${change}${period}`;
+        }),
+        t`; `,
+      ),
+    );
+    const target = obj(x["target"]);
+    out.push(
+      t`${op(x["seq"])} ${inZone(x["recorded_at"], x0["timezone"])} ${code(String(x["intent"] ?? ""), INTENTS)}  ${actorOf(x["actor"])}  ${idOf(target["row"] ?? target["entity"])}  ${join(fields, t`; `)}`,
+    );
+  }
+  return [...out, ...pageOf(x0, list.length, () => t`changes`), ...warningsAndNotices(r)];
 }

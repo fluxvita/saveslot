@@ -17,6 +17,7 @@ import { parseArgs } from "node:util";
 import {
   type AsOfResult,
   type CatalogTables,
+  type ChangesResult,
   type Client,
   ContractCallError,
   createClient,
@@ -59,7 +60,7 @@ import {
   snippetLines,
 } from "./render/connections.ts";
 import { pendingDetail, pendingList, resolveResult } from "./render/pending.ts";
-import { asOfResult, queryResult, timelineResult } from "./render/reads.ts";
+import { asOfResult, changesResult, queryResult, timelineResult } from "./render/reads.ts";
 import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
 import { type Boundary, id, type Line, render, t, untrusted, words } from "./render/text.ts";
 import { TEMPLATES, templateDocument } from "./templates.ts";
@@ -83,6 +84,7 @@ const OWN_OPTIONS = {
   status: { type: "string" },
   connection: { type: "string" },
   since: { type: "string" },
+  until: { type: "string" },
   order: { type: "string", multiple: true },
   fields: { type: "string" },
   "valid-at": { type: "string" },
@@ -875,6 +877,46 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
         return { json: r, lines: timelineResult(r as TimelineResult) };
       },
       detailNotYet,
+    ),
+  ],
+  [
+    "history changes",
+    command(
+      ["since", "until", "key"],
+      async (o, client) => {
+        const [tableName, ref, ...extra] = o.args;
+        const keys = ownList(o, "key");
+        if (tableName === undefined || extra.length > 0 || (ref !== undefined && keys.length > 0))
+          throw new UsageError(TEXTS.changesArgs);
+        const since = ownString(o, "since");
+        if (since === undefined) throw new UsageError(TEXTS.changesSince);
+        const c = await client();
+        let target: Record<string, unknown> = {};
+        if (ref !== undefined) {
+          if (/^r_/.test(ref)) target = { row: ref };
+          else if (/^e_/.test(ref)) target = { entity: ref };
+          else throw new UsageError(TEXTS.changesArgs);
+        } else if (keys.length > 0) {
+          target = { entity_key: entityKey(o, await fieldsOf(c, tableName)) };
+        }
+        // An operation number as one; a moment, or `my_last_read`, as written (the service checks).
+        const point = (v: string) => (/^[0-9]{1,15}$/.test(v) ? Number(v) : v);
+        const until = ownString(o, "until");
+        const r = await c.history({
+          table: tableName,
+          ...target,
+          mode: "changes",
+          since: point(since),
+          ...(until !== undefined ? { until: point(until) } : {}),
+          ...(o.limit !== undefined ? { limit: o.limit } : {}),
+          ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
+        } as never);
+        return { json: r, lines: changesResult(r as unknown as ChangesResult) };
+      },
+      (e) =>
+        e.code === "read_first" && e.body["target"] === "table"
+          ? TEXTS.changesReadFirst
+          : undefined,
     ),
   ],
   [

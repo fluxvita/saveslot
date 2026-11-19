@@ -183,9 +183,9 @@ export const QUERY = {
 
 export const HISTORY = {
   description: [
-    "See how something came to be as it is now: every change, who made it, what the evidence was, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`).",
+    "See how something came to be as it is now: every change, who made it, what the evidence was, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`); what changed in a period (`changes`).",
     {
-      text: "Which records a change was based on is in `timeline` too; what changed in a period, in `changes`.",
+      text: "Which records a change was based on is in `timeline` too.",
       later: "P2",
     },
     {
@@ -195,13 +195,11 @@ export const HISTORY = {
   ],
   params: {
     mode: [
-      "`timeline` (default): how one row came, step by step, to be as it is. `as_of`: what saveslot knew at a past moment.",
-      { text: "`changes`: what changed in a period.", later: "P2" },
+      "`timeline` (default): how one row came, step by step, to be as it is. `as_of`: what saveslot knew at a past moment. `changes`: what changed in a period.",
     ],
     table: ["The table name."],
     row: [
-      "Which row (event tables and tables without time). Give one of `row`, `entity` or `entity_key`.",
-      { text: "With `changes`, none of them means the whole table.", later: "P2" },
+      "Which row (event tables and tables without time). Give one of `row`, `entity` or `entity_key`; with `changes`, none of them means the whole table.",
     ],
     entity: ["Which entity of a state table (`e_…`)."],
     entity_key: [
@@ -213,6 +211,12 @@ export const HISTORY = {
     ],
     valid_at: [
       "Only with `as_of`, for state tables: also a day of business time. Without it, every period known back then.",
+    ],
+    since: [
+      'Required with `changes`: where to start looking, not included: an operation number (the #n of `timeline`), a moment, or `"my_last_read"` (after this connection last read the table, under the same `task`). For a whole table only a read of the table counts (a `query`, or a `changes` of the whole table that was paged to its last page), not a look at one of its rows; for one row or entity a read of that row counts too. `"my_last_read"` is refused with `read_first` if there is no such read.',
+    ],
+    until: [
+      "Only with `changes`: where to stop looking, included: an operation number or a moment. Default: the latest.",
     ],
   },
 } as const satisfies { description: Text; params: Record<string, Text> };

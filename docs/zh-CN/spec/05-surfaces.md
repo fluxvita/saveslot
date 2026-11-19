@@ -304,7 +304,7 @@ runs r_01JC… · 截至 #41（2026-11-03 21:05）· schema v2
 r_01JC… ver=h41.0（历史版本，不可用于写入）| 2026-11-03 | 15 km
 ```
 
-`changes`：第一行写范围"#41 之后至 #57"；每次变化一行，写操作号、时刻、意图、写入者、目标、改了哪些字段的前后值。
+`changes`：第一行写表（给了行 / 实体时再写它的 ID）、范围"#41 之后至 #57"（`since` 是 0 时写"从头至 #57"）与变化条数；每次变化一行，写操作号、时刻、意图、写入者、目标、改了哪些字段的前后值，没有前值的只写后值；值消失的写 `前值 → —`。状态类表上字段的每一段后面括号里写它的业务时间区间。`*` 写成"撤销"（`before` 为 `true`）或"恢复"（`before` 为 `false`），带区间的写那段区间。没有变化写"没有变化"。
 
 ```
 runs · #41 之后至 #57 · 2 处变化
@@ -492,7 +492,7 @@ expenses r_01JC… 整行删除：date、category 只来自这句话
 | `revoked` | "这一行已在 #63 撤销；要恢复它，用 revert: {undo: 63}" |
 | `derived_readonly` | "weekly_mileage 是派生表，只读；请写入基础表 runs" |
 | `validation_failed` | 按 `details[]` 逐条：第几个 op、哪个字段、允许的单位 / 范围；`required_in_gap`："2026-10-10 至 2026-10-19（含）这段没有值，要写这一段需同时给出 amount；或把区间缩短到有值的部分"；编译失败指出规则第几行、改法（如"`date_trunc(text, date)` 结果随时区变化，请写成 `date_trunc('week', date::timestamp)::date`"）；`reserved_name`："名字只用字母、数字与下划线，字母开头，至多 63 个字符；字段名不能是 valid、valid_from、valid_to、row_id、entity_id"；`untrusted_marker`："说明里带着 <untrusted-data-…> 标签，请去掉后重新提交"；`alias_invalid`：指出哪个对象的第几个别名、违反了哪一条（如"别名 spend 与仍可按旧名解析的表 expenses 的旧名相同"） |
-| `read_first` | `no_read`："请先用 saveslot_query 读取该行"（事项："请先用 saveslot_pending 查看 pi_…"；没带 `sv`："请先用 saveslot_catalog 或 saveslot_query 读一次该 slot"）；`task_mismatch`："你在 task X 下读过该行；本次 task 为 Y，兜底只认同一任务，请带上 ver=… 或使用相同的 task" |
+| `read_first` | `no_read`："请先用 saveslot_query 读取该行"（事项："请先用 saveslot_pending 查看 pi_…"；没带 `sv`："请先用 saveslot_catalog 或 saveslot_query 读一次该 slot"；`history` 的 `changes` 用 `since: "my_last_read"` 而没读过这张表（`target` 是 `table`）："请先用 saveslot_query 读取这张表"）；`task_mismatch`："你在 task X 下读过该行；本次 task 为 Y，兜底只认同一任务，请带上 ver=… 或使用相同的 task"（`target` 是 `table`，即 `changes` 的 `"my_last_read"`：这次调用没有 `ver`，写"在 task X 下读过这张表；本次 task 为 Y；`my_last_read` 只认同一任务下的读取：请使用相同的 task，或给 `since` 一个操作号或时刻"）|
 | `schema_incompatible` | 说明变了什么，建议用 `saveslot_catalog` 重读 |
 | `too_large` | `admission`："影响约 N 行，请拆成每批 ≤ K 行"；`evidence_segment` / `request`：给出上限与实际大小，建议改用 file_ref 加摘录；`ops`："一次最多 1,000 个 op，请拆成几次写入"；`result_budget`：给出缩小的办法（如"请用 tables 指定少几张表"）；`premise_entries`："一个 op 最多声明 16 条前提，只列真正用到的记录"；`premise_fan_in`："r_… 已被 1000 条前提指向，不能再声明以它为前提" |
 | `sql_rejected` | 指出第几行哪个节点 / 函数不在白名单里（白名单见 data-model [「受限 SQL」](03-data-model/11-restricted-sql.md)）；不暴露物理名；`unknown_name`：凭证范围外的表与不存在的表报同一句话，报错里不出现范围外的名字；`FOR SYSTEM_TIME` 时指向 `saveslot_history` |
@@ -586,7 +586,7 @@ ledger: 2 张表
 
 **`saveslot_sql`**：只读 SQL（单条 SELECT），用于关联、聚合、时间窗口。表与字段用名字；不能用 `NOW()`，"今天"用 `at`。结果不带 `ver`，要改某一行先用 `saveslot_query` 读它。按记录时间回看用 `saveslot_history`。
 
-**`saveslot_history`**：查一样东西是怎么变成现在这样的：每次改动、谁改的、证据是什么、〔P2 起〕以哪些记录为前提、哪些任务读过（`timeline`）；某个过去时刻、或某次任务读取时 saveslot 知道的样子（`as_of`）；〔P2 起〕某段时间内的变化（`changes`）。只看当前的值用 `saveslot_query`。
+**`saveslot_history`**：查一样东西是怎么变成现在这样的：每次改动、谁改的、证据是什么、〔P2 起〕以哪些记录为前提、哪些任务读过（`timeline`）；某个过去时刻、或某次任务读取时 saveslot 知道的样子（`as_of`）；某段时间内的变化（`changes`）。只看当前的值用 `saveslot_query`。
 
 **`saveslot_sources`**：列出、搜索、读取源数据（用户原话、工具结果、文件引用），以及删除前的影响预览（`mode: "deletion_preview"`）。预览不删任何东西。〔有 saveslot.delete〕预览返回执行删除要用的 `dc_…`，交给 `saveslot_delete`。
 
@@ -664,14 +664,14 @@ ledger: 2 张表
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `mode` | | `timeline`（默认）：一行是怎么一步步变成现在这样的。`as_of`：某个过去时刻 saveslot 知道的样子。〔P2 起〕`changes`：一段时间里改了什么 |
+| `mode` | | `timeline`（默认）：一行是怎么一步步变成现在这样的。`as_of`：某个过去时刻 saveslot 知道的样子。`changes`：一段时间里改了什么 |
 | `table` | 是 | 表名 |
 | `row` / `entity` / `entity_key` | `timeline`、`as_of` 时给其中一个 | 看哪一行（事件类表、无时间表用 `row`）或哪个实体（状态类表用 `entity`，或按自然键 `entity_key`，如 `{"category": "餐饮"}`）。`changes` 不给就是整张表 |
 | `expand_sources` | | 只对 `timeline`：`true` 时附上每次改动的证据原文片段 |
 | `as_of` | `as_of` 时必填 | 记录时间上的一点：操作号（`timeline` 里的 #n）、时刻，或 `{read: …}` / `{task: …}`（某次读取、某个任务当时看到的）。**这是"当时记的是什么"，不是业务日期** |
 | `valid_at` | | 只对 `as_of`，状态类表：同时限定业务时间上的某一天。不给就返回当时所知的全部时间段 |
-| `since` | `changes` 时必填 | 〔P2 起〕从哪之后开始看（不含）：操作号、时刻，或 `"my_last_read"`（本连接上次读这张表之后）。没读过这张表时用 `"my_last_read"` 会报 `read_first` |
-| `until` | | 〔P2 起〕只对 `changes`：看到哪为止（含）。默认到最新 |
+| `since` | `changes` 时必填 | 从哪之后开始看（不含）：操作号、时刻，或 `"my_last_read"`（本连接上次读过之后：整张表的调用只认读过这张表的读取，只看过其中某一行不算；`changes` 要翻页时，读到最后一页才算读完）。没读过、或只在别的 `task` 下读过时用 `"my_last_read"` 会报 `read_first` |
+| `until` | | 只对 `changes`：看到哪为止（含）。默认到最新 |
 
 **`saveslot_sources`**
 

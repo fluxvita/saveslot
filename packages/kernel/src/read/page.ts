@@ -37,6 +37,7 @@ export function positionOf(
     readonly restoreCount: number;
     readonly latest: number;
     readonly condition?: true;
+    readonly since?: true;
   },
 ): Position | undefined {
   if (!has(params, "position")) return undefined;
@@ -61,6 +62,7 @@ export function pageAfter<T>(
     readonly restoreCount: number;
     readonly limit: number;
     readonly condition?: Position["condition"];
+    readonly since?: number;
   },
 ): { readonly page: T[]; readonly next?: string } {
   const after = o.position?.keys;
@@ -78,6 +80,7 @@ export function pageAfter<T>(
             restoreCount: o.restoreCount,
             keys: last.keys,
             ...(o.condition !== undefined ? { condition: o.condition } : {}),
+            ...(o.since !== undefined ? { since: o.since } : {}),
           }),
         }
       : {}),

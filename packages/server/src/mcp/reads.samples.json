@@ -1307,5 +1307,302 @@
         }
       ]
     }
+  },
+  "history-changes-event": {
+    "tool": "saveslot_history",
+    "result": {
+      "mode": "changes",
+      "target": {
+        "table": "health.runs"
+      },
+      "timezone": "Asia/Shanghai",
+      "since": 0,
+      "until": 48,
+      "total": 8,
+      "next_cursor": "cur_eyJ2IjoxLCJrIjoia2FiY2RlZjAxMjM0NTY3OCIsImEiOiJ1X01SODJLRjkxWFAxVFZDVjVXUUs2REQ5ODNLIiwicCI6IngiLCJ4IjoiMjAyNi0xMS0xOFQxNjowMDowMC4wMDBaIn0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "changes": [
+        {
+          "seq": 30,
+          "recorded_at": "2026-11-18T12:41:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "insert",
+          "target": {
+            "table": "health.runs",
+            "row": "r_B4CBQJB6HDA0CHN1FNYW2FBSDZ"
+          },
+          "fields": {
+            "date": {
+              "after": "2026-11-02"
+            },
+            "distance": {
+              "after": {
+                "value": "3",
+                "unit": "km"
+              }
+            }
+          }
+        },
+        {
+          "seq": 26,
+          "recorded_at": "2026-11-18T12:40:00.000Z",
+          "actor": {
+            "kind": "connection",
+            "id": "ci_7KQ2MZ4T9P1V8X3A5B6C0D2EFG",
+            "name": "MacBook · Codex"
+          },
+          "intent": "correct",
+          "target": {
+            "table": "health.runs",
+            "row": "r_MAWAAE0MQ04QGRBPHC97D44AA2"
+          },
+          "fields": {
+            "distance": {
+              "before": {
+                "value": "6",
+                "unit": "km"
+              },
+              "after": {
+                "value": "5",
+                "unit": "km"
+              }
+            }
+          }
+        },
+        {
+          "seq": 22,
+          "recorded_at": "2026-11-18T12:39:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "revoke",
+          "target": {
+            "table": "health.runs",
+            "row": "r_MAWAAE0MQ04QGRBPHC97D44AA2"
+          },
+          "fields": {
+            "*": {
+              "before": false,
+              "after": true
+            }
+          }
+        },
+        {
+          "seq": 18,
+          "recorded_at": "2026-11-18T12:38:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "revoke",
+          "target": {
+            "table": "health.runs",
+            "row": "r_MAWAAE0MQ04QGRBPHC97D44AA2"
+          },
+          "fields": {
+            "*": {
+              "before": true,
+              "after": false
+            }
+          }
+        },
+        {
+          "seq": 14,
+          "recorded_at": "2026-11-18T12:37:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "correct",
+          "target": {
+            "table": "health.runs",
+            "row": "r_MAWAAE0MQ04QGRBPHC97D44AA2"
+          },
+          "fields": {
+            "distance": {
+              "before": {
+                "value": "5",
+                "unit": "km"
+              },
+              "after": {
+                "value": "6",
+                "unit": "km"
+              }
+            }
+          }
+        },
+        {
+          "seq": 11,
+          "recorded_at": "2026-11-18T12:36:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "target": {
+            "table": "health.runs",
+            "row": "r_MAWAAE0MQ04QGRBPHC97D44AA2"
+          },
+          "fields": {
+            "feeling": {
+              "before": "easy",
+              "after": "hard"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "history-changes-state": {
+    "tool": "saveslot_history",
+    "result": {
+      "mode": "changes",
+      "target": {
+        "table": "plan.budgets"
+      },
+      "timezone": "Asia/Shanghai",
+      "since": 37,
+      "until": 59,
+      "total": 3,
+      "changes": [
+        {
+          "seq": 53,
+          "recorded_at": "2026-11-18T12:45:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "revoke",
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_K8SMX72SQ06DQTK274KJEFJHVV"
+          },
+          "fields": {
+            "*": [
+              {
+                "before": true,
+                "after": false,
+                "valid": {
+                  "valid_from": "2026-11-12",
+                  "valid_to": "2026-11-14",
+                  "valid_to_inclusive": "2026-11-13"
+                }
+              }
+            ],
+            "amount": [
+              {
+                "before": {
+                  "value": "120",
+                  "unit": "CNY"
+                },
+                "valid": {
+                  "valid_from": "2026-11-12",
+                  "valid_to": "2026-11-14",
+                  "valid_to_inclusive": "2026-11-13"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "seq": 44,
+          "recorded_at": "2026-11-18T12:44:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_57DRY3KMWFQ7XM31ZG94FQ3RSV"
+          },
+          "fields": {
+            "amount": [
+              {
+                "before": {
+                  "value": "100",
+                  "unit": "CNY"
+                },
+                "after": {
+                  "value": "120",
+                  "unit": "CNY"
+                },
+                "valid": {
+                  "valid_from": "2026-11-05",
+                  "valid_to": "2026-11-10",
+                  "valid_to_inclusive": "2026-11-09"
+                }
+              },
+              {
+                "before": {
+                  "value": "150",
+                  "unit": "CNY"
+                },
+                "after": {
+                  "value": "120",
+                  "unit": "CNY"
+                },
+                "valid": {
+                  "valid_from": "2026-11-10",
+                  "valid_to": "2026-11-15",
+                  "valid_to_inclusive": "2026-11-14"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "seq": 41,
+          "recorded_at": "2026-11-18T12:43:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "revoke",
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_K8SMX72SQ06DQTK274KJEFJHVV"
+          },
+          "fields": {
+            "*": [
+              {
+                "before": true,
+                "after": false,
+                "valid": {
+                  "valid_from": "2026-11-01",
+                  "valid_to": null
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "history-changes-empty": {
+    "tool": "saveslot_history",
+    "result": {
+      "mode": "changes",
+      "target": {
+        "table": "health.runs",
+        "row": "r_MAWAAE0MQ04QGRBPHC97D44AA2"
+      },
+      "timezone": "Asia/Shanghai",
+      "since": 30,
+      "until": 48,
+      "total": 0,
+      "changes": []
+    }
   }
 }

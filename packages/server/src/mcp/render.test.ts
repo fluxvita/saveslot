@@ -143,6 +143,8 @@ const TAKEN: Record<string, Sample> = (() => {
       "write-clock-behind",
     ].map((k) => pick(receipts, k)),
     pick(reads, "query-notices"),
+    pick(reads, "history-changes-event"),
+    pick(reads, "history-changes-state"),
   ]);
 })();
 
@@ -545,6 +547,24 @@ describe("what 05 §6 asks for", () => {
     expect(other).toContain(
       "this call has no task. A left-out sv is taken only from a read under the same task: pass sv, or use the same task.",
     );
+  });
+
+  it("a task_mismatch on a table names the way out of a my_last_read, not a ver (05 §7)", () => {
+    const text = renderError({
+      code: "read_first",
+      reason: "task_mismatch",
+      target: "table",
+      ref: { table: "health.runs" },
+      param: "since",
+      read_task: "A",
+      task: "B",
+    });
+    expect(text).toContain("Refused: read_first (task_mismatch)");
+    expect(text).toContain("this call has task");
+    expect(text).toContain(
+      'A "my_last_read" counts only a read under the same task: use the same task, or give since an operation number or a moment.',
+    );
+    expect(text).not.toContain("pass ver");
   });
 
   it("an invalid_argument shows the candidates and example the service gives, and what to do (05 §7)", () => {

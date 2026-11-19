@@ -28,7 +28,8 @@ type R = Record<string, unknown>;
 /** The list a tool's result is a page of, if it is one. */
 function listOf(tool: ToolName, r: R): string | undefined {
   if (tool === "saveslot_query") return "rows";
-  if (tool === "saveslot_history") return r["mode"] === "as_of" ? "rows" : "entries";
+  if (tool === "saveslot_history")
+    return r["mode"] === "as_of" ? "rows" : r["mode"] === "changes" ? "changes" : "entries";
   if (tool === "saveslot_pending" && r["id"] === undefined) return "items";
   if (tool === "saveslot_catalog" && r["level"] === "list") return "slots";
   return undefined;
@@ -159,7 +160,11 @@ function narrowBy(tool: ToolName, r: R, page: boolean): string[] {
     case "saveslot_query":
       return page ? ["fields"] : ["fields", "where", "valid_during", "limit"];
     case "saveslot_history":
-      return r["mode"] === "as_of" ? ["valid_at"] : ["expand_sources", "limit"];
+      return r["mode"] === "as_of"
+        ? ["valid_at"]
+        : r["mode"] === "changes"
+          ? ["limit"]
+          : ["expand_sources", "limit"];
     case "saveslot_catalog":
       return r["level"] === "schema" ? ["level"] : r["level"] === "table" ? ["tables"] : ["slot"];
     case "saveslot_pending":

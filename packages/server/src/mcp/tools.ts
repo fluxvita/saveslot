@@ -238,7 +238,7 @@ export const TOOLS: readonly Tool[] = [
     scope: "saveslot.read",
     description: HISTORY.description,
     params: {
-      mode: { schema: { enum: ["timeline", "as_of"] }, text: HISTORY.params.mode },
+      mode: { schema: { enum: ["timeline", "as_of", "changes"] }, text: HISTORY.params.mode },
       table: { schema: str, text: HISTORY.params.table, required: true },
       row: { schema: str, text: HISTORY.params.row },
       entity: { schema: str, text: HISTORY.params.entity },
@@ -266,6 +266,18 @@ export const TOOLS: readonly Tool[] = [
         text: HISTORY.params.as_of,
       },
       valid_at: { schema: str, text: HISTORY.params.valid_at },
+      since: {
+        schema: {
+          oneOf: [{ type: "integer", minimum: 0 }, str],
+        },
+        text: HISTORY.params.since,
+      },
+      until: {
+        schema: {
+          oneOf: [{ type: "integer", minimum: 0 }, str],
+        },
+        text: HISTORY.params.until,
+      },
       detail: { schema: { enum: ["concise"] }, text: COMMON.detail },
       limit: { schema: limit(200), text: COMMON.limit },
       cursor,
@@ -274,24 +286,35 @@ export const TOOLS: readonly Tool[] = [
     withheld: {
       external_key: "a read takes no source key (04-contract-types §1.5)",
       key: "05 §9.1 gives history no derived-row target",
-      since: "only with mode `changes`, not in this version (07-scope-v1 P2)",
-      until: "only with mode `changes`, not in this version (07-scope-v1 P2)",
     },
     oneOf: [
       {
         properties: { mode: { const: "timeline" } },
-        not: { anyOf: ["as_of", "valid_at", "detail"].map((p) => ({ required: [p] })) },
+        not: {
+          anyOf: ["as_of", "valid_at", "detail", "since", "until"].map((p) => ({ required: [p] })),
+        },
       },
       {
         properties: { mode: { const: "as_of" } },
         required: ["mode", "as_of"],
-        not: { anyOf: ["expand_sources"].map((p) => ({ required: [p] })) },
+        not: { anyOf: ["expand_sources", "since", "until"].map((p) => ({ required: [p] })) },
+      },
+      {
+        properties: { mode: { const: "changes" } },
+        required: ["mode", "since"],
+        not: {
+          anyOf: ["expand_sources", "as_of", "valid_at", "detail"].map((p) => ({
+            required: [p],
+          })),
+        },
       },
     ],
     annotations: { readOnlyHint: true, openWorldHint: false },
     examples: [
       { table: "ledger.expenses", row: `r_${"1".repeat(26)}` },
       { mode: "as_of", table: "expenses", row: `r_${"1".repeat(26)}`, as_of: 1 },
+      { mode: "changes", table: "ledger.expenses", since: 1 },
+      { mode: "changes", table: "expenses", since: 1, until: "2026-12-01T00:00:00Z", limit: 5 },
     ],
   },
   {

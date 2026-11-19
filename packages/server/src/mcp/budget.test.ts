@@ -113,6 +113,51 @@ describe("a page over the budget", () => {
   });
 });
 
+describe("a page of changes over the budget", () => {
+  const changes = (n: number, total: number): R => {
+    const h = JSON.parse(
+      readFileSync(new URL("./reads.samples.json", import.meta.url), "utf8"),
+    ) as Record<string, { result: R }>;
+    const r = (h["history-changes-event"] as { result: R }).result;
+    const one = (r["changes"] as R[])[0] as R;
+    return {
+      ...r,
+      total,
+      changes: Array.from({ length: n }, (_, i) => ({
+        ...one,
+        seq: 1000 - i,
+        fields: { note: { after: `note ${i} ${"x".repeat(200)}` } },
+      })),
+      next_cursor: CURSOR,
+    };
+  };
+
+  it("is cut where the budget ends, and asked for again for that many", async () => {
+    const budget = 3000;
+    const asked: number[] = [];
+    const out = await fit("saveslot_history", changes(50, 500), budget, async (limit) => {
+      asked.push(limit);
+      return changes(limit, 500);
+    });
+    const shown = asked[0] ?? 0;
+    expect(asked).toHaveLength(1);
+    expect(shown).toBeGreaterThan(0);
+    expect(shown).toBeLessThan(50);
+    expect((out["changes"] as unknown[]).length).toBe(shown);
+    expect(out["truncated"]).toEqual({ shown, total: 500 });
+    const text = renderResult("saveslot_history", out);
+    expect(text.length).toBeLessThanOrEqual(budget);
+    expect(text).toContain(`Showing ${shown} of 500 changes; next page: cursor=${CURSOR}`);
+  });
+
+  it("one change larger than the budget: too large, to ask with a smaller limit", async () => {
+    const error = await fit("saveslot_history", changes(3, 3), 100, async () => {
+      throw new Error("not asked for none");
+    }).catch((e: { detail: Record<string, unknown> }) => e);
+    expect(error).toMatchObject({ code: "too_large", detail: { narrow_by: ["limit"] } });
+  });
+});
+
 describe("too large: how to ask for less (05 §7)", () => {
   it("the error names the parameters, and its text says how, with no data", async () => {
     const error = await fit(

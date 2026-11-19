@@ -144,6 +144,40 @@ export function contractSuite(
     expect(w).toMatchObject({ status: "saved" });
   });
 
+  it("history changes: what changed in a period, paged; my_last_read needs a read of the table", async () => {
+    const driver = call;
+    const point = { mode: "changes", table: "ledger.expenses" };
+    // The reader read the table (a query) before the second write: that one is all that is new.
+    const mine = result(await driver(reader, "history", { ...point, since: "my_last_read" }));
+    expect(mine).toMatchObject({ mode: "changes", total: 1, target: { table: "ledger.expenses" } });
+    const notes = (r: Record<string, unknown>) =>
+      (r["changes"] as { intent: string; fields: { note?: { after: string } } }[]).map(
+        (c) => `${c.intent} ${c.fields.note?.after}`,
+      );
+    expect(notes(mine)).toEqual(["insert bus"]);
+    // The whole table from the start, a page at a time: newest first, the window kept.
+    const first = result(await driver(reader, "history", { ...point, since: 0, limit: 1 }));
+    expect(first).toMatchObject({ since: 0, total: 2 });
+    expect(notes(first)).toEqual(["insert bus"]);
+    const cursor = first["next_cursor"] as string;
+    expect(cursor).toMatch(/^cur_/);
+    const second = result(
+      await driver(reader, "history", { ...point, since: 0, limit: 1, cursor }),
+    );
+    expect(notes(second)).toEqual(["insert tea"]);
+    expect(second).not.toHaveProperty("next_cursor");
+    expect(second["until"]).toBe(first["until"]);
+    // The writer has written the table, never read it: read_first, the table to read.
+    expect(await driver(writer, "history", { ...point, since: "my_last_read" })).toEqual({
+      error: expect.objectContaining({
+        code: "read_first",
+        reason: "no_read",
+        target: "table",
+        param: "since",
+      }),
+    });
+  });
+
   it("what a credential may not do: insufficient_scope, with the scope needed", async () => {
     const driver = call;
     expect(await driver(reader, "write", { sv: 1, ops: [] })).toEqual({

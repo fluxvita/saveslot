@@ -129,11 +129,19 @@ group("each tool's parameters are its operation's", () => {
     const r = `r_${"1".repeat(26)}`;
     expect(await ok({ table: "t", row: r, expand_sources: true })).toBe(true);
     expect(await ok({ table: "t", row: r, since: 3 })).toBe(false);
+    expect(await ok({ table: "t", row: r, until: 3 })).toBe(false);
     expect(await ok({ mode: "as_of", table: "t", row: r })).toBe(false);
     expect(await ok({ mode: "as_of", table: "t", row: r, as_of: { task: "x" } })).toBe(true);
     expect(await ok({ mode: "as_of", table: "t", row: r, as_of: 3, until: 4 })).toBe(false);
-    // `changes` is not in this version: neither the mode nor its parameters are listed.
-    expect(await ok({ mode: "changes", table: "t", since: "my_last_read" })).toBe(false);
+    // `changes`: `since` required; with no target it is the whole table.
+    expect(await ok({ mode: "changes", table: "t", since: "my_last_read" })).toBe(true);
+    expect(
+      await ok({ mode: "changes", table: "t", row: r, since: 3, until: "2026-11-01T00:00:00Z" }),
+    ).toBe(true);
+    expect(await ok({ mode: "changes", table: "t" })).toBe(false);
+    expect(await ok({ mode: "changes", table: "t", since: 3, as_of: 3 })).toBe(false);
+    expect(await ok({ mode: "changes", table: "t", since: 3, expand_sources: true })).toBe(false);
+    expect(await ok({ mode: "changes", table: "t", since: 3, valid_at: "2026-11-01" })).toBe(false);
     expect(await ok({ mode: "composition", table: "t" })).toBe(false);
   });
 

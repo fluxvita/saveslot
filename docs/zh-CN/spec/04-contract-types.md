@@ -649,7 +649,7 @@ interface ChangesParams extends CommonParams, PageParams {
   mode: "changes";
   table: TableName;              // 基础表。派生表报 invalid_argument（derived_table）
   row?: RowId; entity?: EntityId; entity_key?: Record<FieldName, Value>;   // 不给目标 = 整张表
-  /** 不含。"my_last_read" = 本连接实例（带 task 时只认同一任务）对这张表最近一次读取的位置；没读过报 read_first。 */
+  /** 不含。必填。"my_last_read" = 本连接实例（带 task 时只认同一任务）上次读过的位置，按读取覆盖的范围认（整张表的调用只认覆盖这张表的读取）；没读过报 read_first（no_read），只在别的 task 下读过报 read_first（task_mismatch）。0 是从头看起。 */
   since: RecordPoint | "my_last_read";
   /** 含。默认最新。 */
   until?: RecordPoint;
@@ -715,16 +715,20 @@ interface AsOfResult extends CommonResult, PageResult {
   other_reads?: Array<{ read: ReadId; seq: Seq; at: Instant }>;   // as_of: {task} 时：同一任务对这个目标的其余读取
 }
 
+/** before / after 没有值时不给。"*"：布尔，true 表示存在。 */
 interface ChangedField { before?: Value; after?: Value }
 
 interface ChangesResult extends CommonResult, PageResult {
   mode: "changes";
-  since: Seq; until: Seq;
+  target: TargetRef;             // 表，或所看的行 / 实体
+  timezone: string;              // slot 的时区（同 catalog 的 timezone）：结果里的时刻按它显示
+  since: Seq; until: Seq;        // 解析出的操作号：之后（不含）至此（含）
+  /** 新的在前。一条是一次操作对一行 / 实体的改动。 */
   changes: Array<{
     seq: Seq; recorded_at: Instant; actor: Actor;
     intent: VersionIntent;       // 含 deletion、deletion_cancelled：由删除确认或撤回产生的版本
     target: TargetRef;
-    /** 事件类表、无时间表：每个字段一个对象。状态类表：每个字段是按区间排好的数组，每段各有区间（与 timeline 的 TimelineField[] 同形）。 */
+    /** 只列值实际变了的字段。事件类表、无时间表：每个字段一个对象。状态类表：每个字段是按区间排好的数组，每段各有区间（与 timeline 的 TimelineField[] 同形）。"*" 是这一行 / 这一段是否存在，撤销或撤销的撤回改变它时给。 */
     fields: Record<FieldName | "*", ChangedField | Array<ChangedField & { valid: Interval }>>;
   }>;
 }

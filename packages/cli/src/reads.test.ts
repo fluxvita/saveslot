@@ -4,6 +4,7 @@
 
 import {
   type AsOfResult,
+  type ChangesResult,
   INPUT_MARK_KEYS,
   type InputMarkKey,
   MARK_KEYS,
@@ -12,7 +13,13 @@ import {
   type TimelineResult,
 } from "@fluxvita/saveslot-client";
 import { describe, expect, it } from "vitest";
-import { asOfResult, periodOf, queryResult, timelineResult } from "./render/reads.ts";
+import {
+  asOfResult,
+  changesResult,
+  periodOf,
+  queryResult,
+  timelineResult,
+} from "./render/reads.ts";
 import { type Boundary, type Line, render } from "./render/text.ts";
 
 const cp = (...points: number[]) => String.fromCodePoint(...points);
@@ -200,6 +207,104 @@ describe("history (06 §4.7)", () => {
   });
 });
 
+const day = (from: string, to: string | null, last?: string) => ({
+  valid_from: from,
+  valid_to: to,
+  ...(last !== undefined ? { valid_to_inclusive: last } : {}),
+});
+const CHANGES: ChangesResult = {
+  mode: "changes",
+  target: { table: "plan.budgets" },
+  timezone: "Asia/Shanghai",
+  since: 41,
+  until: 57,
+  total: 3,
+  changes: [
+    {
+      seq: 57,
+      recorded_at: "2026-11-10T06:00:00.000Z",
+      actor,
+      intent: "update",
+      target: { table: "plan.budgets", entity: "e_RA2ZPB5ZXRW16YEFMN2EEQAZ81" },
+      fields: {
+        amount: [
+          {
+            before: { value: "100", unit: "CNY" },
+            after: { value: "150", unit: "CNY" },
+            valid: day("2026-11-10", "2026-11-20", "2026-11-19"),
+          },
+          { before: { value: "120", unit: "CNY" }, valid: day("2026-11-20", null) },
+        ],
+        category: [{ after: "food", valid: day("2026-11-10", null) }],
+      },
+    },
+    {
+      seq: 49,
+      recorded_at: "2026-11-09T04:31:00.000Z",
+      actor: { kind: "user", id: `u_${"2".repeat(26)}`, name: "me" },
+      intent: "revoke",
+      target: { table: "plan.budgets", entity: "e_RA2ZPB5ZXRW16YEFMN2EEQAZ81" },
+      fields: { "*": [{ before: true, after: false, valid: day("2026-11-12", "2026-11-14") }] },
+    },
+    {
+      seq: 45,
+      recorded_at: "2026-11-08T04:31:00.000Z",
+      actor,
+      intent: "revoke",
+      target: { table: "plan.budgets", entity: "e_RA2ZPB5ZXRW16YEFMN2EEQAZ81" },
+      fields: { "*": [{ before: false, after: true, valid: day("2026-11-12", "2026-11-14") }] },
+    },
+  ],
+} as never;
+
+describe("history changes (06 §4.7)", () => {
+  it("the range, then each change newest first: its stretches of business time, revoke, restore", () => {
+    expect(render(changesResult(CHANGES), terminal).split("\n")).toEqual([
+      "plan.budgets · after #41 up to #57 · 3 changes",
+      "#57 2026-11-10 14:00 update  「MacBook · Codex」  e_RA2ZPB5ZXRW16YEFMN2EEQAZ81  amount 100 「CNY」 -> 150 「CNY」 (「2026-11-10」 to 「2026-11-19」 (inclusive)); amount 120 「CNY」 -> — (from 「2026-11-20」); category 「food」 (from 「2026-11-10」)",
+      "#49 2026-11-09 12:31 revoke  「me」  e_RA2ZPB5ZXRW16YEFMN2EEQAZ81  revoked (「2026-11-12」 until 「2026-11-14」)",
+      "#45 2026-11-08 12:31 revoke  「MacBook · Codex」  e_RA2ZPB5ZXRW16YEFMN2EEQAZ81  restored (「2026-11-12」 until 「2026-11-14」)",
+    ]);
+  });
+
+  it("an event table's fields are objects; a quantity's number is outside, its unit inside", () => {
+    const one = {
+      ...CHANGES,
+      target: { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" },
+      total: 1,
+      changes: [
+        {
+          seq: 12,
+          recorded_at: "2026-11-10T06:00:00.000Z",
+          actor,
+          intent: "correct",
+          target: { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" },
+          fields: {
+            amount: { before: { value: "45", unit: "CNY" }, after: { value: "54", unit: "CNY" } },
+            note: { before: "12345" },
+          },
+        },
+      ],
+    };
+    expect(render(changesResult(one as never), terminal).split("\n")).toEqual([
+      "ledger.expenses r_4KWKRM296X61WJ89DY5XJNVA4P · after #41 up to #57 · 1 changes",
+      "#12 2026-11-10 14:00 correct  「MacBook · Codex」  r_4KWKRM296X61WJ89DY5XJNVA4P  amount 45 「CNY」 -> 54 「CNY」; note 「12345」 -> —",
+    ]);
+  });
+
+  it("from the start when `since` is 0; nothing changed says so; a page: the next as an option", () => {
+    const none = { ...CHANGES, since: 0, total: 0, changes: [] };
+    expect(render(changesResult(none as never), terminal).split("\n")).toEqual([
+      "plan.budgets · from the start to #57 · 0 changes",
+      "no changes",
+    ]);
+    const cursor = `cur_abc.${"A".repeat(43)}`;
+    const text = render(changesResult({ ...CHANGES, total: 9, next_cursor: cursor }), terminal);
+    expect(text).toContain("3 of 9 changes shown");
+    expect(text).toContain(`next page: the same command with --cursor ${cursor}`);
+  });
+});
+
 /** Every string of `v` (keys too), with its path. */
 function strings(
   v: unknown,
@@ -252,6 +357,16 @@ const RESULTS: [
     (p) =>
       ["mode", "timezone", "kind", "id", "result"].includes(last(p)) ||
       (last(p) === "sv" && p.length === 1),
+  ],
+  [
+    "changes",
+    CHANGES,
+    changesResult,
+    // What the service made, or shown as a word: not the stuff of the fields' values.
+    (p) =>
+      ["mode", "timezone", "kind", "id", "table", "entity", "intent"].includes(last(p)) ||
+      p.includes("valid") ||
+      p.includes("target"),
   ],
 ];
 

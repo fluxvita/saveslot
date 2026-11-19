@@ -8,6 +8,7 @@ export {
   type CatalogTablesResult,
   catalogInTx,
 } from "./catalog.ts";
+export { changesInTx } from "./changes.ts";
 export {
   asOfInTx,
   type HistoryInput,

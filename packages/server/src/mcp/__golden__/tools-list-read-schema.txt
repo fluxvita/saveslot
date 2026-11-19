@@ -188,16 +188,17 @@
   },
   {
     "name": "saveslot_history",
-    "description": "See how something came to be as it is now: every change, who made it, what the evidence was, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`). For the current values only, use saveslot_query.",
+    "description": "See how something came to be as it is now: every change, who made it, what the evidence was, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`); what changed in a period (`changes`). For the current values only, use saveslot_query.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "mode": {
           "enum": [
             "timeline",
-            "as_of"
+            "as_of",
+            "changes"
           ],
-          "description": "`timeline` (default): how one row came, step by step, to be as it is. `as_of`: what saveslot knew at a past moment."
+          "description": "`timeline` (default): how one row came, step by step, to be as it is. `as_of`: what saveslot knew at a past moment. `changes`: what changed in a period."
         },
         "table": {
           "type": "string",
@@ -205,7 +206,7 @@
         },
         "row": {
           "type": "string",
-          "description": "Which row (event tables and tables without time). Give one of `row`, `entity` or `entity_key`."
+          "description": "Which row (event tables and tables without time). Give one of `row`, `entity` or `entity_key`; with `changes`, none of them means the whole table."
         },
         "entity": {
           "type": "string",
@@ -259,6 +260,30 @@
           "type": "string",
           "description": "Only with `as_of`, for state tables: also a day of business time. Without it, every period known back then."
         },
+        "since": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Required with `changes`: where to start looking, not included: an operation number (the #n of `timeline`), a moment, or `\"my_last_read\"` (after this connection last read the table, under the same `task`). For a whole table only a read of the table counts (a `query`, or a `changes` of the whole table that was paged to its last page), not a look at one of its rows; for one row or entity a read of that row counts too. `\"my_last_read\"` is refused with `read_first` if there is no such read."
+        },
+        "until": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Only with `changes`: where to stop looking, included: an operation number or a moment. Default: the latest."
+        },
         "detail": {
           "enum": [
             "concise"
@@ -306,6 +331,16 @@
                 "required": [
                   "detail"
                 ]
+              },
+              {
+                "required": [
+                  "since"
+                ]
+              },
+              {
+                "required": [
+                  "until"
+                ]
               }
             ]
           }
@@ -325,6 +360,51 @@
               {
                 "required": [
                   "expand_sources"
+                ]
+              },
+              {
+                "required": [
+                  "since"
+                ]
+              },
+              {
+                "required": [
+                  "until"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "changes"
+            }
+          },
+          "required": [
+            "mode",
+            "since"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "expand_sources"
+                ]
+              },
+              {
+                "required": [
+                  "as_of"
+                ]
+              },
+              {
+                "required": [
+                  "valid_at"
+                ]
+              },
+              {
+                "required": [
+                  "detail"
                 ]
               }
             ]

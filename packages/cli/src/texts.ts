@@ -34,6 +34,7 @@ export const TEXTS = {
       "  query <table> [--where 'field<op>value']… [--where-json <json>] [--order f[:desc]] [--fields a,b]",
       "        quote a condition with < or > in it, or the shell takes it as a redirection",
       "  history <table> <row or entity> | --key field=value … [--as-of <#seq or moment>] [--sources]",
+      "  history changes <table> [<row or entity> | --key field=value …] --since <#seq, moment or my_last_read> [--until <#seq or moment>]",
       "  pending [list] [--slot s] [--type t] [--status open|resolved|superseded|all]",
       "  pending show <pi_…>",
       "  pending resolve <pi_…> <decision> [--candidate n] [--note text] [--yes --item-ver iv_…]",
@@ -196,6 +197,15 @@ export const TEXTS = {
   keyBad: s("--key takes field=value"),
   asOfBoth: s("give one of --as-of and --as-of-read"),
   asOfOnly: s("--valid-at and --detail are for --as-of / --as-of-read"),
+  changesArgs: s(
+    "give the table, and if wanted a row (r_…) or an entity (e_…), or a state table's --key field=value instead: saveslot history changes <table> --since <point>",
+  ),
+  changesSince: s(
+    "--since is needed: an operation number, a moment, or my_last_read (since this connection last read the table)",
+  ),
+  changesReadFirst: s(
+    "my_last_read needs a read of the table by this connection (under the same task): read it first, with saveslot query <table>",
+  ),
 
   whereNoField: (n: number) => s(`--where number ${n} does not begin with a field name`),
   whereNoOperator: (n: number, at: number) =>

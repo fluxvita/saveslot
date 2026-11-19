@@ -199,3 +199,130 @@ describe("saveslot history", () => {
     expect(lines[1]).toContain("cost 45 「CNY」");
   });
 });
+
+describe("saveslot history changes", () => {
+  it("a window of operations: the table's changes newest first, the range in the first line", async () => {
+    const r = await saveslot("history", "changes", "food.meals", "--since", String(firstSeq));
+    expect(r.code).toBe(0);
+    const lines = r.out.trim().split("\n");
+    expect(lines[0]).toMatch(
+      new RegExp(`^food\\.meals · after #${firstSeq} up to #\\d+ · 2 changes$`),
+    );
+    expect(lines[1]).toMatch(/ correct {2}「u_\w+」 {2}r_\w+ {2}cost 45 「CNY」 -> 54 「CNY」$/);
+    expect(lines[2]).toMatch(/ insert {2}「u_\w+」 {2}r_\w+ {2}at 「\S+」; cost 80 「CNY」$/);
+  });
+
+  it("one row, from the start; --json is the contract's result", async () => {
+    const r = await saveslot("history", "changes", "food.meals", first, "--since", "0", "--json");
+    expect(r.code).toBe(0);
+    const j = JSON.parse(r.out) as {
+      mode: string;
+      since: number;
+      total: number;
+      target: { row: string };
+      changes: { intent: string }[];
+    };
+    expect(j).toMatchObject({ mode: "changes", since: 0, total: 2, target: { row: first } });
+    expect(j.changes.map((c) => c.intent)).toEqual(["correct", "insert"]);
+  });
+
+  it("my_last_read: the changes since the user's last read of the table; the call is a read too", async () => {
+    expect((await saveslot("query", "food.meals")).code).toBe(0);
+    await write({
+      sv: 1,
+      evidence: [{ kind: "user_message", text: "snack 9" }],
+      ops: [
+        {
+          intent: "insert",
+          table: "meals",
+          set: {
+            at: "2026-11-11T16:00:00+08:00[Asia/Shanghai]",
+            cost: { value: "9", unit: "CNY" },
+          },
+        },
+      ],
+    });
+    const since = await saveslot("history", "changes", "food.meals", "--since", "my_last_read");
+    expect(since.code).toBe(0);
+    const lines = since.out.trim().split("\n");
+    expect(lines[0]).toMatch(/ · 1 changes$/);
+    expect(lines[1]).toMatch(/ insert {2}「u_\w+」 {2}r_\w+ {2}at 「\S+」; cost 9 「CNY」$/);
+    // The call above read the table up to its end: nothing since.
+    const none = await saveslot("history", "changes", "food.meals", "--since", "my_last_read");
+    expect(none.code).toBe(0);
+    expect(none.out).toContain("0 changes");
+    expect(none.out).toContain("no changes");
+  });
+
+  it("a usage error before any call", async () => {
+    const r = await saveslot("history", "changes", "food.meals");
+    expect(r.code).toBe(2);
+  });
+});
+
+describe("a table named changes", () => {
+  // `history changes` is a subcommand: with a table that is itself named `changes`, the table's
+  // timeline is asked for by its qualified name (06-cli §4.7).
+  let row = "";
+  beforeAll(async () => {
+    const file = join(root, "changes.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        timezone: "UTC",
+        tables: [
+          {
+            name: "changes",
+            kind: "base",
+            description: "a table that is named like the mode",
+            time: { type: "event", field: "at" },
+            fields: [
+              { name: "at", type: "zoned_datetime", required: true, description: "when" },
+              { name: "note", type: "text", description: "what" },
+            ],
+          },
+        ],
+      }),
+    );
+    expect((await saveslot("slot", "create", "log", "--file", file)).code).toBe(0);
+    const w = (await write({
+      sv: 1,
+      evidence: [{ kind: "user_message", text: "a note" }],
+      ops: [
+        {
+          intent: "insert",
+          table: "log.changes",
+          set: { at: "2026-11-10T12:00:00+00:00[UTC]", note: "n" },
+        },
+      ],
+    })) as { ops: { target: { row: string } }[] };
+    row = w.ops[0]?.target.row as string;
+  });
+
+  it("the timeline of a row of it, by the qualified name", async () => {
+    const r = await saveslot("history", "log.changes", row);
+    expect(r.code).toBe(0);
+    expect(r.out.trim().split("\n")[0]).toMatch(
+      /^log\.changes r_\w+ · current ver=v\d+\.0 · 1 changes$/,
+    );
+  });
+
+  it("the changes of the table, named as the second word after the subcommand", async () => {
+    for (const name of ["changes", "log.changes"]) {
+      const r = await saveslot("history", "changes", name, "--since", "0");
+      expect(r.code).toBe(0);
+      expect(r.out.trim().split("\n")[0]).toMatch(
+        /^log\.changes · from the start to #\d+ · 1 changes$/,
+      );
+    }
+  });
+
+  it("`history changes <row>` is the subcommand with the row as the table: refused", async () => {
+    const r = await saveslot("history", "changes", row);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain(TEXTS.changesSince);
+    const withSince = await saveslot("history", "changes", row, "--since", "0");
+    expect(withSince.code).toBe(4);
+    expect(withSince.err).toContain("unknown_table");
+  });
+});

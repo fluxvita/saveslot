@@ -7,6 +7,7 @@ import { readBufferOf } from "../audit/index.ts";
 import {
   type AsOfResult,
   type CatalogResult,
+  type ChangesResult,
   catalogInTx,
   historyInTx,
   type PendingReadResult,
@@ -100,13 +101,13 @@ export async function query(
   return result;
 }
 
-/** Reads `params` (a `HistoryParams`) as `ctx.actor`: `timeline` or `as_of`. */
+/** Reads `params` (a `HistoryParams`) as `ctx.actor`: `timeline`, `as_of` or `changes`. */
 export async function history(
   store: TenantStore,
   ctx: OpsContext,
   params: unknown,
   fit?: Fit,
-): Promise<TimelineResult | AsOfResult> {
+): Promise<TimelineResult | AsOfResult | ChangesResult> {
   const reads = readBufferOf(store);
   const { result, entry } = await measured(
     store,
@@ -121,7 +122,12 @@ export async function history(
         read: newReadId(),
         reads,
       }),
-    (r) => ("entries" in r ? length(r.entries) : length((r as { rows?: unknown }).rows)),
+    (r) =>
+      "entries" in r
+        ? length(r.entries)
+        : "changes" in r
+          ? length(r.changes)
+          : length((r as { rows?: unknown }).rows),
     fit,
   );
   reads.record(entry);

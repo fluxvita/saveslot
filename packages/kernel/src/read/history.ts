@@ -78,18 +78,18 @@ const COMMON = ["table", "row", "entity", "entity_key", "mode", "limit", "positi
 const KEYS: Readonly<Record<string, readonly string[]>> = {
   timeline: [...COMMON, "expand_sources"],
   as_of: [...COMMON, "as_of", "valid_at", "detail"],
+  changes: [...COMMON, "since", "until"],
 };
 const ALL_MODE_KEYS = new Set(["expand_sources", "as_of", "valid_at", "detail", "since", "until"]);
 const MAX_TASK_CHARS = 256;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it finds
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
-export type HistoryMode = "timeline" | "as_of";
+export type HistoryMode = "timeline" | "as_of" | "changes";
 
 /** The mode, and the parameters checked against it (`mode_mismatch` with the mode's example). */
 export function historyMode(params: Obj, table: string): HistoryMode {
   const mode = has(params, "mode") ? get(params, "mode") : "timeline";
-  if (mode === "changes") throw notImplemented("mode", "history mode changes");
   if (mode === "composition")
     // The value is one of the contract's modes, never the caller's own text (04-contract-types §9).
     throw new ReadError("not_in_this_version", "history mode composition", {
@@ -97,7 +97,8 @@ export function historyMode(params: Obj, table: string): HistoryMode {
       param: "mode",
       value: "composition",
     });
-  if (mode !== "timeline" && mode !== "as_of") throw invalid("malformed", "mode");
+  if (mode !== "timeline" && mode !== "as_of" && mode !== "changes")
+    throw invalid("malformed", "mode");
   const allowed = new Set(KEYS[mode]);
   for (const k of keysOf(params)) {
     if (allowed.has(k)) continue;
@@ -106,7 +107,9 @@ export function historyMode(params: Obj, table: string): HistoryMode {
         example:
           mode === "as_of"
             ? { table, row: "r_…", mode: "as_of", as_of: 25 }
-            : { table, row: "r_…" },
+            : mode === "changes"
+              ? { table, mode: "changes", since: 25 }
+              : { table, row: "r_…" },
       });
     }
     throw invalid("malformed", k);
@@ -137,21 +140,46 @@ export interface Target {
   readonly id: string;
 }
 
+/** `changes` without a target: the whole table. */
+export type TableTarget = Omit<Target, "id"> & { readonly id?: undefined };
+
 /** The target (04-contract-types §1.5): exactly one of `row`, `entity`, `entity_key`. */
 export async function historyTarget(
   tx: ReadTx,
   params: Obj,
   visibility: Visibility,
-): Promise<Target> {
+): Promise<Target>;
+/**
+ * `changes` (04-contract.md §10 `history`): the target, or none: the whole table, which must be
+ * in the visible range like any table. A derived table is `derived_table`.
+ */
+export async function historyTarget(
+  tx: ReadTx,
+  params: Obj,
+  visibility: Visibility,
+  mode: "changes",
+): Promise<Target | TableTarget>;
+export async function historyTarget(
+  tx: ReadTx,
+  params: Obj,
+  visibility: Visibility,
+  mode?: "changes",
+): Promise<Target | TableTarget> {
   const slots = await visibleSlots(tx, visibility);
   const named = resolveTable(get(params, "table"), "table", slots);
-  if (named.table.kind === "derived") throw notImplemented("table", "history of a derived table");
+  if (named.table.kind === "derived") {
+    if (mode === "changes") throw invalid("derived_table", "table");
+    throw notImplemented("table", "history of a derived table");
+  }
   const t = named.table;
   const kind = kindOf(t);
   const given = (["row", "entity", "entity_key"] as const).filter((k) => has(params, k));
   const [first, second] = given;
   if (second !== undefined) throw invalid("mutually_exclusive", second);
-  if (first === undefined) throw invalid("missing", kind === "state" ? "entity" : "row");
+  if (first === undefined) {
+    if (mode === "changes") return { named, table: t, kind };
+    throw invalid("missing", kind === "state" ? "entity" : "row");
+  }
   const v = get(params, first);
   const { versions } = physical(t);
   const known = async (id: string) =>
@@ -350,10 +378,12 @@ export async function readsOfTarget(
 // --- as_of --------------------------------------------------------------------------------------
 
 /** The record point (04-contract §4 `as_of`): the latest operation numbered up to it. */
-async function recordPoint(
+export async function recordPoint(
   tx: ReadTx,
   v: unknown,
   param: string,
+  /** The least operation number taken: 1, or 0 where "from the start" is a point (`changes`). */
+  least = 1,
 ): Promise<{ seq: number; at: string }> {
   const n =
     typeof v === "number"
@@ -365,7 +395,7 @@ async function recordPoint(
           : NaN;
   let op: number;
   if (n !== undefined) {
-    if (!Number.isSafeInteger(n) || n < 1) throw invalid("malformed", param);
+    if (!Number.isSafeInteger(n) || n < least) throw invalid("malformed", param);
     const r = await tx.query<{ op: unknown }>("SELECT max(op) AS op FROM events WHERE op <= $1", [
       n,
     ]);

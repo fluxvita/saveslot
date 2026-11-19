@@ -744,6 +744,7 @@ function intentOf(x: R): Part[] {
 }
 
 function history(r: R, now: Date): Line[] {
+  if (r["mode"] === "changes") return changesOf(r, now);
   need(Array.isArray(r["entries"]) || (r["mode"] === "as_of" && Array.isArray(r["rows"])));
   if (r["mode"] === "as_of") {
     const at = obj(r["as_of"]);
@@ -795,6 +796,46 @@ function history(r: R, now: Date): Line[] {
     );
   }
   return [...out, ...pageOf(r, entries.length, () => t`changes`), ...remindersOf(r, now)];
+}
+
+/**
+ * `saveslot_history` with `mode: "changes"` (05 §6): the range, then each change on a line of its own,
+ * newest first: operation, moment, intent, who, which row, and the fields that changed with their
+ * values before and after. A revoke or taking one back is `revoked` / `restored`, not a value.
+ */
+function changesOf(r: R, now: Date): Line[] {
+  need(Array.isArray(r["changes"]) && typeof int(r["since"]) === "number");
+  const list = arr(r["changes"]);
+  const range =
+    r["since"] === 0
+      ? t`from the start to ${op(r["until"])}`
+      : t`after ${op(r["since"])} up to ${op(r["until"])}`;
+  const out: Line[] = [
+    t`${targetOf(r["target"])} · ${range} · ${ofTotal(list.length, r["total"])} changes`,
+  ];
+  if (list.length === 0 && r["total"] === 0) out.push(t`No changes.`);
+  for (const e of list) {
+    const x = obj(e);
+    const fields = Object.entries(obj(x["fields"])).map(([f, v]) =>
+      join(
+        (Array.isArray(v) ? v : [v]).map((p) => {
+          const c = obj(p);
+          const period = isObj(c["valid"]) ? t` (${periodOf(c["valid"])})` : [];
+          if (f === "*") return t`${c["before"] === true ? t`revoked` : t`restored`}${period}`;
+          const change = Object.hasOwn(c, "before")
+            ? t`${fieldValue(c["before"])} → ${fieldValue(c["after"])}`
+            : fieldValue(c["after"]);
+          return t`${fieldOf(f)} ${change}${period}`;
+        }),
+        t`; `,
+      ),
+    );
+    const target = obj(x["target"]);
+    out.push(
+      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${codeIn(x["intent"], INTENTS)}  ${actorOf(x["actor"])}  ${idOf(target["row"] ?? target["entity"])}  ${join(fields, t`; `)}`,
+    );
+  }
+  return [...out, ...pageOf(r, list.length, () => t`changes`), ...remindersOf(r, now)];
 }
 
 // --- pending ------------------------------------------------------------------------------------
@@ -1945,6 +1986,9 @@ function readFirstNext(error: R): Part[] {
   if (error["reason"] === "task_mismatch") {
     const taskOf = (x: unknown): Part[] =>
       typeof x === "string" ? t`task ${untrusted(x)}` : t`no task`;
+    if (target === "table") {
+      return t`It was read under ${taskOf(error["read_task"])}; this call has ${taskOf(error["task"])}. A "my_last_read" counts only a read under the same task: use the same task, or give since an operation number or a moment.`;
+    }
     const pass = target === "slot" ? t`sv` : target === "item" ? t`item_ver` : t`ver`;
     return t`It was read under ${taskOf(error["read_task"])}; this call has ${taskOf(error["task"])}. A left-out ${pass} is taken only from a read under the same task: pass ${pass}, or use the same task.`;
   }
