@@ -756,6 +756,30 @@ export const ERRORS: Readonly<Record<string, Record<string, unknown>>> = {
     ],
     message: "the request is refused: validation_failed",
   },
+  error_schema_bounds: {
+    code: "validation_failed",
+    reason: "schema",
+    details: [
+      { path: "tables/0/fields/2/type", code: "unknown_type", allowed_values: ["text", "integer"] },
+      {
+        path: "tables/0/time/field",
+        code: "key_not_applicable",
+        allowed_values: ["date", "zoned_datetime"],
+      },
+      { path: "tables/0/time/field", code: "key_not_applicable", reason: "not_required" },
+      { path: "tables/0/fields/3/max", code: "out_of_bounds", min: "1.5" },
+      { path: "tables/0/fields/4/values", code: "out_of_bounds", min: "1", max: "200" },
+    ],
+    message: "the document does not compile",
+  },
+  error_rule_form: {
+    code: "invalid_argument",
+    reason: "malformed",
+    param: "tables/1/rule/time_dependency",
+    example: { sql: "SELECT count(*) AS n FROM runs", time_dependency: "none" },
+    allowed_values: ["none", "bucketed"],
+    message: "tables/1/rule/time_dependency: malformed",
+  },
   write_state: {
     code: "invalid_argument",
     reason: "missing",

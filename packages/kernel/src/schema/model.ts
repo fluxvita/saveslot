@@ -42,9 +42,16 @@ export interface SchemaDetail {
   readonly code: SchemaDetailCode;
   /** `unit_unknown`: codes of `units@1` the text may have meant; may be empty. */
   readonly allowed_units?: readonly string[];
-  /** `out_of_bounds` of a count: the bound passed (as the contract's `ValidationDetail` gives it). */
+  /**
+   * `out_of_bounds`: the bounds that apply to the value at `path`, as decimal text: a count's or a
+   * length's, a type's range, `min` on a `max` smaller than the `min` given.
+   */
   readonly min?: string;
   readonly max?: string;
+  /** `unknown_type`, and `key_not_applicable` where the type is wrong: the types it may be. */
+  readonly allowed_values?: readonly string[];
+  /** `key_not_applicable` on an event table's `time/field`: the field is not required. */
+  readonly reason?: "not_required";
   /** A rule's details: the line in its SQL, the reason, a fix when one can be given. */
   readonly line?: number;
   readonly sql_reason?: SqlReason;
@@ -61,6 +68,10 @@ export type CompileError =
       readonly code: "invalid_argument";
       readonly reason: "missing" | "malformed";
       readonly param: string;
+      /** At a derived table's rule, its keys, or a `sql` on the table: what a rule looks like. */
+      readonly example?: Readonly<Record<string, string>>;
+      /** At a rule's `time_dependency`: the values this version takes. */
+      readonly allowed_values?: readonly string[];
     }
   /** In v1, but not compiled yet: changing a slot, aliases, rule forms not compiled yet. Not for callers to see as such. */
   | { readonly code: "not_implemented"; readonly what: string; readonly param: string };

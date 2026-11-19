@@ -14,6 +14,7 @@
 // - derived tables: 07 «文档结构» 派生表 row (rule, field declarations); keys only base tables or
 //   base fields take: 04-contract «schema_draft» (key_not_applicable, external_key_table_kind)
 
+import { FIELD_TYPES } from "@fluxvita/saveslot-contract-core";
 import type {
   DocDerivedTable,
   DocField,
@@ -49,6 +50,22 @@ const KEY_TYPES: Readonly<Record<string, readonly string[]>> = {
 
 const INT64_MIN = -(2n ** 63n);
 const INT64_MAX = 2n ** 63n - 1n;
+
+/**
+ * The bounds an `out_of_bounds` detail gives: those that apply to the value at its path, as decimal
+ * text (04-contract «schema_draft»). A decimal or quantity has at most 18 integer digits and at
+ * most 12 decimal places.
+ */
+const DECIMAL_BOUND = `${"9".repeat(18)}.${"9".repeat(12)}`;
+const TYPE_BOUNDS: ReadonlyMap<string, Partial<SchemaDetail>> = new Map([
+  ["integer", { min: String(INT64_MIN), max: String(INT64_MAX) }],
+  ["decimal", { min: `-${DECIMAL_BOUND}`, max: DECIMAL_BOUND }],
+  ["quantity", { min: `-${DECIMAL_BOUND}`, max: DECIMAL_BOUND }],
+]);
+const SCALE_BOUNDS = { min: "0", max: "12" };
+const DESCRIPTION_MAX = 500;
+/** The types an event table's time field may have. */
+const TIME_FIELD_TYPES = ["date", "zoned_datetime"];
 
 /** Compares two canonical decimals. */
 function compareDecimal(a: string, b: string): number {
@@ -95,7 +112,8 @@ function description(d: string | undefined, at: string, out: Findings): void {
   const p = `${at}/description`;
   if (d === undefined || d.trim() === "") out.add(p, "description_missing");
   else {
-    if (codePoints(d) > 500) out.add(p, "out_of_bounds");
+    if (codePoints(d) > DESCRIPTION_MAX)
+      out.add(p, "out_of_bounds", { max: String(DESCRIPTION_MAX) });
     if (MARKERS.some((m) => d.includes(m))) out.add(p, "untrusted_marker");
   }
 }
@@ -145,14 +163,14 @@ function field(f: DocField, doc: DocSlot, seen: Set<string>, out: Findings): voi
   seen.add(fold(f.name));
   description(f.description, at, out);
   if (!FIELD_TYPE_SET.has(f.type)) {
-    out.add(`${at}/type`, "unknown_type");
+    out.add(`${at}/type`, "unknown_type", { allowed_values: [...FIELD_TYPES] });
     return;
   }
   for (const [k, types] of Object.entries(KEY_TYPES)) {
     if (f.keys.has(k) && !types.includes(f.type)) out.add(`${at}/${k}`, "key_not_applicable");
   }
-  const numeric = f.type === "integer" || f.type === "decimal" || f.type === "quantity";
-  if (numeric) {
+  const bounds = TYPE_BOUNDS.get(f.type);
+  if (bounds !== undefined) {
     let inRange = true;
     for (const k of ["min", "max"] as const) {
       const v = f[k];
@@ -162,22 +180,25 @@ function field(f: DocField, doc: DocSlot, seen: Set<string>, out: Findings): voi
         f.type === "integer"
           ? !v.includes(".") && BigInt(v) >= INT64_MIN && BigInt(v) <= INT64_MAX
           : int.length <= 18;
-      if (!ok) out.add(`${at}/${k}`, "out_of_bounds");
+      if (!ok) out.add(`${at}/${k}`, "out_of_bounds", bounds);
       inRange &&= ok;
     }
-    // Compared only within the type's range: one finding on `max`, not two.
+    // Compared only within the type's range: one finding on `max`, not two. Its bound is the
+    // `min` given: the max is at least that.
     if (inRange && f.min !== undefined && f.max !== undefined && compareDecimal(f.min, f.max) > 0) {
-      out.add(`${at}/max`, "out_of_bounds");
+      out.add(`${at}/max`, "out_of_bounds", { min: f.min });
     }
   }
   if ((f.type === "decimal" || f.type === "quantity") && f.scale !== undefined) {
-    if (f.scale < 0 || f.scale > 12) out.add(`${at}/scale`, "out_of_bounds");
+    if (f.scale < 0 || f.scale > 12) out.add(`${at}/scale`, "out_of_bounds", SCALE_BOUNDS);
   }
   if (f.type === "enum" && f.values !== undefined) {
-    if (f.values.length === 0 || f.values.length > 200) out.add(`${at}/values`, "out_of_bounds");
+    if (f.values.length === 0 || f.values.length > 200)
+      out.add(`${at}/values`, "out_of_bounds", { min: "1", max: "200" });
     const vs = new Set<string>();
     f.values.forEach((v, i) => {
-      if (v === "" || codePoints(v) > 64) out.add(`${at}/values/${i}`, "out_of_bounds");
+      if (v === "" || codePoints(v) > 64)
+        out.add(`${at}/values/${i}`, "out_of_bounds", { min: "1", max: "64" });
       // Enum values are case-sensitive (10 type table).
       if (vs.has(v)) out.add(`${at}/values/${i}`, "duplicate_entry");
       vs.add(v);
@@ -232,8 +253,12 @@ function table(t: DocTable, doc: DocSlot, out: Findings): void {
     // The event time is a date or a zoned date-time, and every row has one.
     const f = byName.get(fold(t.time.field));
     if (f === undefined) out.add(`${at}/time/field`, "unknown_reference");
-    else if ((f.type !== "date" && f.type !== "zoned_datetime") || !f.required) {
-      out.add(`${at}/time/field`, "key_not_applicable");
+    else {
+      // Two findings when both are wrong: each says what to change.
+      if (!TIME_FIELD_TYPES.includes(f.type))
+        out.add(`${at}/time/field`, "key_not_applicable", { allowed_values: TIME_FIELD_TYPES });
+      if (!f.required)
+        out.add(`${at}/time/field`, "key_not_applicable", { reason: "not_required" });
     }
   }
   const state = t.time.type === "state";
@@ -242,7 +267,7 @@ function table(t: DocTable, doc: DocSlot, out: Findings): void {
     const p = `${at}/entity_key`;
     if (!state) out.add(p, "key_not_applicable");
     else {
-      if (t.entity_key.length === 0) out.add(p, "out_of_bounds");
+      if (t.entity_key.length === 0) out.add(p, "out_of_bounds", { min: "1" });
       names(t.entity_key, p, byName, out).forEach((f, i) => {
         if (f !== undefined && !f.required) out.add(`${p}/${i}`, "entity_key_not_required");
       });
@@ -254,7 +279,8 @@ function table(t: DocTable, doc: DocSlot, out: Findings): void {
     const p = `${at}/external_key`;
     if (state) out.add(p, "external_key_table_kind");
     else {
-      if (t.external_key.length === 0 || t.external_key.length > 4) out.add(p, "out_of_bounds");
+      if (t.external_key.length === 0 || t.external_key.length > 4)
+        out.add(p, "out_of_bounds", { min: "1", max: "4" });
       names(t.external_key, p, byName, out).forEach((f, i) => {
         if (f === undefined) return;
         if (!["text", "enum", "integer"].includes(f.type)) {
@@ -270,7 +296,7 @@ function table(t: DocTable, doc: DocSlot, out: Findings): void {
     const inGroup = new Set<string>();
     t.together.forEach((g, i) => {
       const p = `${at}/together/${i}`;
-      if (g.length < 2) out.add(p, "out_of_bounds");
+      if (g.length < 2) out.add(p, "out_of_bounds", { min: "2" });
       names(g, p, byName, out, inGroup);
     });
   }
@@ -280,7 +306,7 @@ function table(t: DocTable, doc: DocSlot, out: Findings): void {
     if (state) out.add(p, "key_not_applicable");
     else {
       t.duplicate_keys.forEach((g, i) => {
-        if (g.length === 0) out.add(`${p}/${i}`, "out_of_bounds");
+        if (g.length === 0) out.add(`${p}/${i}`, "out_of_bounds", { min: "1" });
         names(g, `${p}/${i}`, byName, out);
       });
     }
@@ -311,9 +337,11 @@ function derivedTable(t: DocDerivedTable, out: Findings): void {
     description(f.description, p, out);
     for (const k of BASE_FIELD_KEYS) if (f.keys.has(k)) out.add(`${p}/${k}`, "key_not_applicable");
     if (f.type !== undefined) {
-      if (!FIELD_TYPE_SET.has(f.type)) out.add(`${p}/type`, "unknown_type");
+      if (!FIELD_TYPE_SET.has(f.type))
+        out.add(`${p}/type`, "unknown_type", { allowed_values: [...FIELD_TYPES] });
       // Only a product or quotient of quantities is declared, as decimal (07 «文档结构»).
-      else if (f.type !== "decimal") out.add(`${p}/type`, "key_not_applicable");
+      else if (f.type !== "decimal")
+        out.add(`${p}/type`, "key_not_applicable", { allowed_values: ["decimal"] });
     }
     if (f.unit !== undefined) {
       if (f.type === "decimal") out.add(`${p}/unit`, "key_not_applicable");
@@ -321,7 +349,7 @@ function derivedTable(t: DocDerivedTable, out: Findings): void {
         out.add(`${p}/unit`, "unit_unknown", { allowed_units: unitCandidates(f.unit) });
     }
     if (f.scale !== undefined && (f.scale < 0 || f.scale > 12))
-      out.add(`${p}/scale`, "out_of_bounds");
+      out.add(`${p}/scale`, "out_of_bounds", SCALE_BOUNDS);
   }
 }
 

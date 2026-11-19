@@ -470,6 +470,10 @@
   },
   "schema-draft-sql-outside-rule": {
     "error": {
+      "example": {
+        "sql": "SELECT sum(distance) AS total_distance, count(*) AS run_count FROM runs",
+        "time_dependency": "none"
+      },
       "reason": "malformed",
       "param": "tables/1/sql",
       "code": "invalid_argument",
@@ -478,6 +482,10 @@
   },
   "schema-draft-rule-not-an-object": {
     "error": {
+      "example": {
+        "sql": "SELECT sum(distance) AS total_distance, count(*) AS run_count FROM runs",
+        "time_dependency": "none"
+      },
       "reason": "malformed",
       "param": "tables/1/rule",
       "code": "invalid_argument",
@@ -486,6 +494,11 @@
   },
   "schema-draft-no-time-dependency": {
     "error": {
+      "example": {
+        "sql": "SELECT sum(distance) AS total_distance, count(*) AS run_count FROM runs",
+        "time_dependency": "none"
+      },
+      "allowed_values": ["none", "bucketed"],
       "reason": "missing",
       "param": "tables/1/rule/time_dependency",
       "code": "invalid_argument",
@@ -494,6 +507,11 @@
   },
   "schema-draft-bad-time-dependency": {
     "error": {
+      "example": {
+        "sql": "SELECT sum(distance) AS total_distance, count(*) AS run_count FROM runs",
+        "time_dependency": "none"
+      },
+      "allowed_values": ["none", "bucketed"],
       "reason": "malformed",
       "param": "tables/1/rule/time_dependency",
       "code": "invalid_argument",
@@ -506,11 +524,13 @@
       "details": [
         {
           "path": "tables/1/fields/0/type",
-          "code": "key_not_applicable"
+          "code": "key_not_applicable",
+          "allowed_values": ["decimal"]
         },
         {
           "path": "tables/1/fields/1/type",
-          "code": "key_not_applicable"
+          "code": "key_not_applicable",
+          "allowed_values": ["decimal"]
         }
       ],
       "code": "validation_failed",
@@ -523,7 +543,18 @@
       "details": [
         {
           "path": "tables/0/fields/2/type",
-          "code": "unknown_type"
+          "code": "unknown_type",
+          "allowed_values": [
+            "text",
+            "integer",
+            "decimal",
+            "boolean",
+            "enum",
+            "date",
+            "zoned_datetime",
+            "quantity",
+            "ref"
+          ]
         }
       ],
       "code": "validation_failed",
@@ -536,7 +567,27 @@
       "details": [
         {
           "path": "tables/0/time/field",
-          "code": "key_not_applicable"
+          "code": "key_not_applicable",
+          "reason": "not_required"
+        }
+      ],
+      "code": "validation_failed",
+      "message": "the document does not compile"
+    }
+  },
+  "schema-draft-time-field-text": {
+    "error": {
+      "reason": "schema",
+      "details": [
+        {
+          "path": "tables/0/time/field",
+          "code": "key_not_applicable",
+          "allowed_values": ["date", "zoned_datetime"]
+        },
+        {
+          "path": "tables/0/time/field",
+          "code": "key_not_applicable",
+          "reason": "not_required"
         }
       ],
       "code": "validation_failed",

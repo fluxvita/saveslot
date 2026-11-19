@@ -97,8 +97,11 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
 const own = (o: object, k: string) => Object.hasOwn(o, k);
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
-const invalid = (reason: KernelErrorReason<"invalid_argument">, param: string) =>
-  new SchemaDraftError("invalid_argument", `${param}: ${reason}`, { reason, param });
+const invalid = (
+  reason: KernelErrorReason<"invalid_argument">,
+  param: string,
+  extra: Record<string, unknown> = {},
+) => new SchemaDraftError("invalid_argument", `${param}: ${reason}`, { ...extra, reason, param });
 
 /** `task` / `idempotency_key`: as the write takes them (at most 256 characters, no control characters). */
 function tag(params: Record<string, unknown>, key: string): string | undefined {
@@ -292,7 +295,10 @@ export async function schemaDraft(
           reason: "schema",
           details: e.details,
         });
-      if (e.code === "invalid_argument") throw invalid(e.reason, e.param);
+      if (e.code === "invalid_argument") {
+        const { code: _, reason, param, ...extra } = e;
+        throw invalid(reason, param, extra);
+      }
       if (e.code === "not_in_this_version")
         throw new SchemaDraftError("not_in_this_version", "not in this version", {
           reason: "parameter",

@@ -345,8 +345,10 @@ describe("tables", () => {
       edit((d) => (d.tables[0].time.field = "day")),
       "tables/0/time/field unknown_reference",
     );
+    // Of another type and not required: one finding for each.
     rejects(
       edit((d) => (d.tables[0].time.field = "note")),
+      "tables/0/time/field key_not_applicable",
       "tables/0/time/field key_not_applicable",
     );
     rejects(
@@ -510,6 +512,7 @@ describe("findings", () => {
       // The ref to `accounts` no longer finds it.
       "tables/0/fields/8/ref/table unknown_reference",
       "tables/0/time/field key_not_applicable",
+      "tables/0/time/field key_not_applicable",
       "tables/1/name duplicate_name",
       "tables/1/entity_key/0 entity_key_not_required",
       "tables/3/fields/0/type unknown_type",
@@ -596,5 +599,118 @@ describe("how large a slot may be (08-open-questions «接口的数值与细则�
     expect(errorDetails(compile(edit((d) => (d.tables = []))))).toEqual([
       { path: "tables", code: "out_of_bounds", min: "1" },
     ]);
+  });
+});
+
+describe("what a detail says besides its code (04-contract «schema_draft»)", () => {
+  /** The whole details of a document that does not compile. */
+  const full = (d: Doc) => {
+    const e = errorOf(compile(d));
+    if (e.code !== "validation_failed") throw new Error(JSON.stringify(e));
+    return e.details;
+  };
+  const DEC = `${"9".repeat(18)}.${"9".repeat(12)}`;
+  const INT = { min: "-9223372036854775808", max: "9223372036854775807" };
+  const oob = (path: string, bounds: { min?: string; max?: string }) => [
+    { path, code: "out_of_bounds", ...bounds },
+  ];
+
+  it("out_of_bounds gives the bounds that apply to the value at its path", () => {
+    expect(full(edit((d) => (d.tables[0].description = "x".repeat(501))))).toEqual(
+      oob("tables/0/description", { max: "500" }),
+    );
+    // A type's range: both ends, whichever end was passed.
+    expect(full(field(1, 1, { min: "-9223372036854775809" }))).toEqual(
+      oob("tables/1/fields/1/min", INT),
+    );
+    expect(full(field(1, 1, { max: "9223372036854775808" }))).toEqual(
+      oob("tables/1/fields/1/max", INT),
+    );
+    expect(full(field(0, 5, { max: "1000000000000000000" }))).toEqual(
+      oob("tables/0/fields/5/max", { min: `-${DEC}`, max: DEC }),
+    );
+    expect(full(field(0, 2, { min: "-1000000000000000000.1" }))).toEqual(
+      oob("tables/0/fields/2/min", { min: `-${DEC}`, max: DEC }),
+    );
+    // A max smaller than the min: on the max, the min given (canonical) as its lower bound.
+    expect(full(field(0, 5, { min: "1.510", max: "1.5" }))).toEqual(
+      oob("tables/0/fields/5/max", { min: "1.51" }),
+    );
+    expect(full(field(0, 5, { scale: 13 }))).toEqual(
+      oob("tables/0/fields/5/scale", { min: "0", max: "12" }),
+    );
+    expect(full(field(0, 1, { values: [] }))).toEqual(
+      oob("tables/0/fields/1/values", { min: "1", max: "200" }),
+    );
+    expect(full(field(0, 1, { values: Array.from({ length: 201 }, (_, i) => `v${i}`) }))).toEqual(
+      oob("tables/0/fields/1/values", { min: "1", max: "200" }),
+    );
+    expect(full(field(0, 1, { values: ["a", ""] }))).toEqual(
+      oob("tables/0/fields/1/values/1", { min: "1", max: "64" }),
+    );
+    expect(full(field(0, 1, { values: ["a".repeat(65)] }))).toEqual(
+      oob("tables/0/fields/1/values/0", { min: "1", max: "64" }),
+    );
+    expect(full(edit((d) => (d.tables[1].entity_key = [])))).toEqual(
+      oob("tables/1/entity_key", { min: "1" }),
+    );
+    const keyed = (keys: string[]) =>
+      edit((d) => {
+        delete d.tables[0].together;
+        d.tables[0].external_key = keys;
+      });
+    expect(full(keyed([]))).toEqual(oob("tables/0/external_key", { min: "1", max: "4" }));
+    expect(full(keyed(["note", "category", "pieces", "note2", "paid"]))).toEqual([
+      ...oob("tables/0/external_key", { min: "1", max: "4" }),
+      { path: "tables/0/external_key/3", code: "unknown_reference" },
+      { path: "tables/0/external_key/4", code: "external_key_field_type" },
+    ]);
+    expect(full(edit((d) => (d.tables[0].together = [["note"]])))).toEqual(
+      oob("tables/0/together/0", { min: "2" }),
+    );
+    expect(full(edit((d) => (d.tables[0].duplicate_keys = [[]])))).toEqual(
+      oob("tables/0/duplicate_keys/0", { min: "1" }),
+    );
+  });
+
+  it("unknown_type gives every field type", () => {
+    expect(full(field(0, 3, { type: "string" }))).toEqual([
+      {
+        path: "tables/0/fields/3/type",
+        code: "unknown_type",
+        allowed_values: [
+          "text",
+          "integer",
+          "decimal",
+          "boolean",
+          "enum",
+          "date",
+          "zoned_datetime",
+          "quantity",
+          "ref",
+        ],
+      },
+    ]);
+  });
+
+  it("the event time's field: the types it may have, or that it is not required, or both", () => {
+    const types = {
+      path: "tables/0/time/field",
+      code: "key_not_applicable",
+      allowed_values: ["date", "zoned_datetime"],
+    };
+    const required = {
+      path: "tables/0/time/field",
+      code: "key_not_applicable",
+      reason: "not_required",
+    };
+    const time = (name: string, more: (d: Doc) => void = () => {}) =>
+      edit((d) => {
+        d.tables[0].time.field = name;
+        more(d);
+      });
+    expect(full(time("pieces", (d) => (d.tables[0].fields[4].required = true)))).toEqual([types]);
+    expect(full(time("at"))).toEqual([required]);
+    expect(full(time("note"))).toEqual([types, required]);
   });
 });

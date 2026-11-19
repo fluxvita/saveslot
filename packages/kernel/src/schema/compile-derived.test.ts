@@ -271,26 +271,62 @@ describe("the compiled derived table", () => {
 });
 
 describe("the form of derived tables: invalid_argument", () => {
-  const malformed = (param: string) => ({ code: "invalid_argument", reason: "malformed", param });
-  const missing = (param: string) => ({ code: "invalid_argument", reason: "missing", param });
+  const malformed = (param: string, more = {}) => ({
+    code: "invalid_argument",
+    reason: "malformed",
+    param,
+    ...more,
+  });
+  const missing = (param: string, more = {}) => ({
+    code: "invalid_argument",
+    reason: "missing",
+    param,
+    ...more,
+  });
+  // At a rule, its keys, or a sql written on the table: what a rule looks like; at its time
+  // dependency also the values this version takes.
+  const example = {
+    example: {
+      sql: "SELECT sum(distance) AS total_distance, count(*) AS run_count FROM runs",
+      time_dependency: "none",
+    },
+  };
+  const dependency = { ...example, allowed_values: ["none", "bucketed"] };
 
   it.each<[string, (d: Doc) => void, object]>([
-    ["no rule", (d) => delete d.tables[1].rule, missing("tables/1/rule")],
+    ["no rule", (d) => delete d.tables[1].rule, missing("tables/1/rule", example)],
     ["no fields", (d) => delete d.tables[1].fields, missing("tables/1/fields")],
-    ["rule not an object", (d) => (d.tables[1].rule = "SELECT"), malformed("tables/1/rule")],
-    ["no rule.sql", (d) => delete d.tables[1].rule.sql, missing("tables/1/rule/sql")],
+    [
+      "rule not an object",
+      (d) => (d.tables[1].rule = "SELECT"),
+      malformed("tables/1/rule", example),
+    ],
+    ["no rule.sql", (d) => delete d.tables[1].rule.sql, missing("tables/1/rule/sql", example)],
     [
       "no rule.time_dependency",
       (d) => delete d.tables[1].rule.time_dependency,
-      missing("tables/1/rule/time_dependency"),
+      missing("tables/1/rule/time_dependency", dependency),
     ],
-    ["rule.sql not a string", (d) => (d.tables[1].rule.sql = 1), malformed("tables/1/rule/sql")],
+    [
+      "rule.sql not a string",
+      (d) => (d.tables[1].rule.sql = 1),
+      malformed("tables/1/rule/sql", example),
+    ],
     [
       "an unknown time_dependency",
       (d) => (d.tables[1].rule.time_dependency = "daily"),
-      malformed("tables/1/rule/time_dependency"),
+      malformed("tables/1/rule/time_dependency", dependency),
     ],
-    ["an unknown key in rule", (d) => (d.tables[1].rule.id = "r1"), malformed("tables/1/rule/id")],
+    [
+      "an unknown key in rule",
+      (d) => (d.tables[1].rule.id = "r1"),
+      malformed("tables/1/rule/id", example),
+    ],
+    [
+      "the rule's sql written on the table",
+      (d) => (d.tables[1].sql = "SELECT 1"),
+      malformed("tables/1/sql", example),
+    ],
     ["an unknown table key", (d) => (d.tables[1].bad = 1), malformed("tables/1/bad")],
     ["fields not an array", (d) => (d.tables[1].fields = {}), malformed("tables/1/fields")],
     ["a field not an object", (d) => (d.tables[1].fields[0] = "x"), malformed("tables/1/fields/0")],
@@ -326,6 +362,18 @@ describe("the form of derived tables: invalid_argument", () => {
     ],
   ])("%s", (_, change, error) => {
     expect(errorOf(compile(edit(change)))).toEqual(error);
+  });
+
+  it("the example a rule's form error gives compiles, with fields of its columns", () => {
+    const e = errorOf(compile(edit((d) => delete d.tables[1].rule))) as { example?: unknown };
+    ok(
+      compile(
+        edit((d) => {
+          d.tables[1].rule = e.example;
+          d.tables[1].fields = [d.tables[1].fields[1], d.tables[1].fields[2]];
+        }),
+      ),
+    );
   });
 
   it("aliases on a derived table or field: not compiled yet", () => {
@@ -458,6 +506,33 @@ describe("the rules of derived tables: validation_failed", () => {
     ],
   ])("%s", (_, change, expected) => {
     expect(details(compile(edit(change)))).toEqual(expected);
+  });
+
+  it("a derived field's type and scale: what they may be", () => {
+    const full = (d: Doc) => (errorOf(compile(d)) as { details?: unknown }).details;
+    expect(full(edit((d) => (d.tables[1].fields[1].type = "integer")))).toEqual([
+      { path: "tables/1/fields/1/type", code: "key_not_applicable", allowed_values: ["decimal"] },
+    ]);
+    expect(full(edit((d) => (d.tables[1].fields[1].type = "number")))).toEqual([
+      {
+        path: "tables/1/fields/1/type",
+        code: "unknown_type",
+        allowed_values: [
+          "text",
+          "integer",
+          "decimal",
+          "boolean",
+          "enum",
+          "date",
+          "zoned_datetime",
+          "quantity",
+          "ref",
+        ],
+      },
+    ]);
+    expect(full(edit((d) => (d.tables[1].fields[1].scale = -1)))).toEqual([
+      { path: "tables/1/fields/1/scale", code: "out_of_bounds", min: "0", max: "12" },
+    ]);
   });
 
   it("base-only keys on a derived field are reported whatever their value", () => {

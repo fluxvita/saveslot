@@ -6,7 +6,7 @@
 // whose range is not every slot, a rule's SQL refused with its reason and a fix, too many tables,
 // no table; and what a derived table's document gets wrong: `sql` outside the rule, a rule that is
 // not an object, a time dependency missing or not one, a type on a derived field, an unknown
-// type, an event table's time field not required. Update the golden files with
+// type, an event table's time field not required, or of another type and not required. Update the golden files with
 // `pnpm exec vitest run packages/server/src/mcp/schema-drafts.test.ts -u`.
 
 import { readFileSync } from "node:fs";
@@ -65,15 +65,22 @@ describe("schema drafts as text: what the samples do not show", () => {
     ).toThrow();
   });
 
-  it("allowed values the service gives are drawn instead of our own list", () => {
+  it("allowed values: the service's own codes as they are, anything else inside the boundary", () => {
     const error = {
       code: "validation_failed",
       reason: "schema",
-      details: [{ path: "tables/0/fields/2/type", code: "unknown_type", allowed_values: ["text"] }],
+      details: [
+        { path: "tables/0/fields/2/type", code: "unknown_type", allowed_values: ["text", "texts"] },
+      ],
     };
-    const text = fixed(renderError(error));
-    expect(text).toContain("    allowed: <untrusted-data-N>text</untrusted-data-N>");
-    expect(text).not.toContain("a field's type is one of");
+    expect(fixed(renderError(error))).toContain(
+      "    allowed: text, <untrusted-data-N>texts</untrusted-data-N>",
+    );
+    // A parameter's values, as a write's enum field gives them: the caller's words.
+    const param = { code: "invalid_argument", reason: "malformed", param: "where/0/value" };
+    expect(fixed(renderError({ ...param, allowed_values: ["food", "date"] }))).toContain(
+      "Allowed: <untrusted-data-N>food</untrusted-data-N>, date",
+    );
   });
 
   it("a path's segment that is no name or number is inside the boundary", () => {

@@ -1659,59 +1659,48 @@ function pathOf(x: unknown): Part[] {
   );
 }
 
-/** Values as a list of the service's codes. */
-const listOf = (xs: readonly string[]): Part[] =>
+/** Allowed values that are the service's own codes: field types, a rule's time dependencies. */
+const ALLOWED_CODES: ReadonlySet<string> = new Set<string>([
+  ...CONTRACT_FIELD_TYPES,
+  ...TIME_DEPENDENCIES,
+]);
+
+/** Allowed values as given: the service's own codes as they are, anything else inside the boundary. */
+const allowedOf = (xs: readonly unknown[]): Part[] =>
   join(
-    xs.map((x) => [code(x, new Set(xs))]),
+    xs.map((v) => [codeIn(v, ALLOWED_CODES)]),
     t`, `,
   );
 
 /**
- * What a schema draft's detail means for the document, where the detail does not say it itself
- * (05 §7): the allowed values the service gives, or else, for the codes and positions below, our
- * own words. Nothing of the document is in them.
+ * What a schema draft's detail says of how to put it right, beyond its code (04-contract
+ * «schema_draft»): the values the service allows, a time field that is not required; and, in our
+ * own words, that a derived field's type is usually left out. Nothing of the document is in them.
  */
 function detailGuide(x: R): Line[] {
+  const lines: Line[] = [];
+  const allowed = arr(x["allowed_values"]);
+  if (allowed.length > 0) lines.push(t`    allowed: ${allowedOf(allowed)}`);
+  if (x["reason"] === "not_required") lines.push(t`    the field it names needs required: true`);
   const path = String(x["path"] ?? "");
-  const allowed = arr(x["allowed_values"]).map(String);
-  if (allowed.length > 0) {
-    return [
-      t`    allowed: ${join(
-        allowed.map((v) => [untrusted(v)]),
-        t`, `,
-      )}`,
-    ];
-  }
-  if (x["code"] === "unknown_type")
-    return [t`    a field's type is one of ${listOf(CONTRACT_FIELD_TYPES)}`];
-  if (x["code"] === "key_not_applicable" && /^tables\/[0-9]+\/time\/field$/.test(path)) {
-    return [
-      t`    an event table's time field is one of its fields, of type date or zoned_datetime, with required: true`,
-    ];
-  }
   if (x["code"] === "key_not_applicable" && /^tables\/[0-9]+\/fields\/[0-9]+\/type$/.test(path)) {
-    return [
-      t`    a derived table's fields take their types from the rule: leave type out (or give decimal)`,
-    ];
+    lines.push(t`    a derived table's fields take their types from the rule: leave type out`);
   }
-  return [];
+  return lines;
 }
 
 /**
- * What a refused parameter of a schema draft should look like (05 §7), by where it is: a derived
- * table's rule and its time dependency. Our own words; the values from the contract.
+ * What a refused parameter of a schema draft should look like (05 §7), beyond the example and
+ * values the service gives: what a rule's SQL is, and that a rule has no other keys. Our own words.
  */
 function paramGuide(error: R): Line[] {
   const param = String(error["param"] ?? "");
-  if (/^tables\/[0-9]+\/(rule|sql)$/.test(param) || /^tables\/[0-9]+\/rule\/sql$/.test(param)) {
+  if (/^tables\/[0-9]+\/(?:rule|sql|rule\/sql)$/.test(param)) {
     return [
       t`A derived table's rule is {sql, time_dependency}: sql is one SELECT over one base table of the slot, each column named by AS <field name>.`,
     ];
   }
-  if (/^tables\/[0-9]+\/rule\/time_dependency$/.test(param)) {
-    return [t`A rule's time_dependency is one of ${listOf(TIME_DEPENDENCIES)}.`];
-  }
-  if (/^tables\/[0-9]+\/rule\/[^/]+$/.test(param)) {
+  if (/^tables\/[0-9]+\/rule\/(?!time_dependency$)[^/]+$/.test(param)) {
     return [
       t`A derived table's rule takes only sql and time_dependency; the rows it groups by and the range it covers are in the SQL.`,
     ];
@@ -1766,6 +1755,9 @@ function errorLines(error: R, now: Date): Line[] {
   if (isObj(error["example"])) {
     lines.push(t`Example: ${stored(JSON.stringify(error["example"]))}`);
   }
+  // The values a parameter of a few takes in this version (04-contract-types §9).
+  const allowed = arr(error["allowed_values"]);
+  if (allowed.length > 0) lines.push(t`Allowed: ${allowedOf(allowed)}`);
   // confirmation_mismatch: the item as it is now, with its new item_ver (05 §7).
   if (isObj(error["current"])) {
     lines.push(t`The item now:`, ...pending(error["current"], now).map((l) => t`  ${l}`));
@@ -1774,11 +1766,12 @@ function errorLines(error: R, now: Date): Line[] {
   for (const d of details.slice(0, DETAILS_SHOWN)) {
     const x = obj(d);
     // What the detail says of how to put it right (04-contract-types §9 ValidationDetail): the
-    // bound passed, the units meant, a rule's line, why its SQL was refused, and a fix.
+    // bounds, the units meant, a rule's line, why its SQL was refused, and a fix. A bound may be
+    // the caller's own (a max under the min given: the min), so inside the boundary.
     const units = arr(x["allowed_units"]);
     const how = [
-      ...(x["max"] !== undefined ? [t`at most ${as(String(x["max"]), num)}`] : []),
-      ...(x["min"] !== undefined ? [t`at least ${as(String(x["min"]), num)}`] : []),
+      ...(x["max"] !== undefined ? [t`at most ${untrusted(String(x["max"]))}`] : []),
+      ...(x["min"] !== undefined ? [t`at least ${untrusted(String(x["min"]))}`] : []),
       ...(units.length > 0
         ? [
             t`units meant: ${join(

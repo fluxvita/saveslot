@@ -167,6 +167,8 @@ const OUTSIDE = new RegExp(
     "(^|\\.)time\\.field$",
     "^id$",
     "(^|\\.)pending\\.\\d+\\.(id|item_ver)$",
+    // A detail's place in the schema document: its numbers and names as they are, the rest inside.
+    "^details\\.\\d+\\.path$",
   ].join("|"),
 );
 

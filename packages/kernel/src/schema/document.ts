@@ -292,6 +292,31 @@ function table(v: unknown, at: string): DocTable | DocDerivedTable {
   return out;
 }
 
+/**
+ * What a derived table's rule looks like (04-contract «schema_draft»): the `example` of a form
+ * error at a rule, at its keys, or at a `sql` written on the table instead of in its rule.
+ */
+const RULE_EXAMPLE = {
+  sql: "SELECT sum(distance) AS total_distance, count(*) AS run_count FROM runs",
+  time_dependency: "none",
+};
+/**
+ * The time dependencies a slot is created with in this version. "now" is left out: the entry
+ * refuses it as not_in_this_version (ops/schema.ts, through evaluationRefusal in
+ * rules/rsql/evaluate.ts); add it here when rules depending on today are taken.
+ */
+const TIME_DEPENDENCIES_TAKEN = ["none", "bucketed"];
+
+/** What a form error at `param` carries besides its reason: the rule's example, its values. */
+function formExtra(
+  param: string,
+): Pick<Extract<CompileError, { code: "invalid_argument" }>, "example" | "allowed_values"> {
+  if (/^tables\/[0-9]+\/rule\/time_dependency$/.test(param))
+    return { example: RULE_EXAMPLE, allowed_values: TIME_DEPENDENCIES_TAKEN };
+  if (/^tables\/[0-9]+\/(?:sql|rule(?:\/[^/]+)?)$/.test(param)) return { example: RULE_EXAMPLE };
+  return {};
+}
+
 /** Reads the document's form, or the first form error in document order. */
 export function readDocument(doc: Obj): DocSlot | CompileError {
   try {
@@ -307,7 +332,7 @@ export function readDocument(doc: Obj): DocSlot | CompileError {
     };
   } catch (e) {
     if (e instanceof FormError) {
-      return { code: "invalid_argument", reason: e.reason, param: e.param };
+      return { code: "invalid_argument", reason: e.reason, param: e.param, ...formExtra(e.param) };
     }
     throw e;
   }

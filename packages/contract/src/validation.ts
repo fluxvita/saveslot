@@ -70,8 +70,11 @@ export interface ValidationDetail {
   valid?: Interval;
   allowed_units?: string[];
   allowed_values?: string[];
+  /** `out_of_bounds`: the bounds that apply to the value at `path`. */
   min?: string;
   max?: string;
+  /** `key_not_applicable` on an event table's `time/field`: the field is not required. Only there. */
+  reason?: "not_required";
   /** `backfill_required`: number of violating rows. */
   rows?: number;
   /** `backfill_required`: sample rows. */

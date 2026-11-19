@@ -233,6 +233,37 @@ export function contractSuite(
     });
   });
 
+  it("a schema draft's refusals say what the value may be (04-contract «schema_draft»)", async () => {
+    const { session } = get();
+    const table = LEDGER.tables[0] as (typeof LEDGER.tables)[0];
+    const long = {
+      ...LEDGER,
+      slot: "bounds",
+      tables: [{ ...table, description: "x".repeat(501) }],
+    };
+    expect(await call(session, "schema_draft", { document: long })).toEqual({
+      error: expect.objectContaining({
+        code: "validation_failed",
+        details: [{ path: "tables/0/description", code: "out_of_bounds", max: "500" }],
+      }),
+    });
+    const rule = { sql: "SELECT count(*) AS n FROM expenses", time_dependency: "daily" };
+    const derived = { name: "counts", kind: "derived", description: "c", rule, fields: [] };
+    const dependency = { ...LEDGER, slot: "rules", tables: [table, derived] };
+    expect(await call(session, "schema_draft", { document: dependency })).toEqual({
+      error: expect.objectContaining({
+        code: "invalid_argument",
+        reason: "malformed",
+        param: "tables/1/rule/time_dependency",
+        example: {
+          sql: "SELECT sum(distance) AS total_distance, count(*) AS run_count FROM runs",
+          time_dependency: "none",
+        },
+        allowed_values: ["none", "bucketed"],
+      }),
+    });
+  });
+
   it("no credential, or one that is no token: unauthenticated", async () => {
     const driver = call;
     expect(await driver("", "catalog", {})).toEqual({
