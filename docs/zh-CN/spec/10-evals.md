@@ -325,7 +325,11 @@ quality:
 - **夹具**：`health` 与 `ledger` 都建，连接实例同 1a；时钟用 `ledger` 的 2026-11-10 18:00。
 - **脚本**：用户："这个月一共花了多少钱？"
 - **回复**：R `mentions` 84，单位 元 / CNY / 人民币。
-- **调用**：H 不得对 `health` 的表做 `saveslot_query` 之后给出答案而没有读过 `ledger`（判法：答案出现前必须有一次目标在 `ledger` 的读取）。
+- **调用**：
+  - H 必须：至少一次 `saveslot_catalog`，且它早于第一次 `saveslot_query` / `saveslot_sql`。
+  - H 必须：至少一次 `saveslot_query` 或 `saveslot_sql`，目标是 `ledger` 的表（`expenses` 或 `monthly_total`）。
+  - H 不得：任何 `saveslot_write`、`saveslot_resolve`、`saveslot_schema_draft`、`saveslot_delete`。
+  - H 不得对 `health` 的表做 `saveslot_query` 之后给出答案而没有读过 `ledger`（判法：答案出现前必须有一次目标在 `ledger` 的读取）。
 
 ### 1d 数据量大
 
@@ -816,7 +820,7 @@ quality:
 ### 9c 没读就写
 
 - **夹具**：`health`。
-- **脚本**：A 新会话，用户："把 11 月 5 号那次改成 7 公里，行 ID 你自己查"。
+- **脚本**：A 新会话，用户："11 月 5 号那次跑步记错了，6 公里应该是 7 公里"。只给出要改的那一行的内容，不提行 ID，也不暗示先去查。
 - **调用**：H 必须：最终有一次成功的 `saveslot_write`，带的 `ver` 是读到的。
 - **状态**：H `run_1105` 的 distance 是 7 km；恰好一次写入生效。
 - **记录**：是否出现过 `read_first`，出现后几次调用内恢复。

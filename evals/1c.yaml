@@ -113,7 +113,7 @@ assert:
     - level: H
       text: "必须：至少一次 `saveslot_catalog`，且它早于第一次 `saveslot_query` / `saveslot_sql`。"
     - level: H
-      text: "必须：至少一次 `saveslot_query` 或 `saveslot_sql`，目标是 `runs` 或 `weekly_mileage`。"
+      text: "必须：至少一次 `saveslot_query` 或 `saveslot_sql`，目标是 `ledger` 的表（`expenses` 或 `monthly_total`）。"
     - level: H
       text: "不得：任何 `saveslot_write`、`saveslot_resolve`、`saveslot_schema_draft`、`saveslot_delete`。"
     - level: H

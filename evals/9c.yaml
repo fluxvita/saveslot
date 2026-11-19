@@ -71,7 +71,7 @@ fixture:
 steps:
   - agent: A
     new_session: true
-    user: "把 11 月 5 号那次改成 7 公里，行 ID 你自己查"
+    user: "11 月 5 号那次跑步记错了，6 公里应该是 7 公里"
 
 assert:
   calls:
