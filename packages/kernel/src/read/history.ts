@@ -91,9 +91,11 @@ export function historyMode(params: Obj, table: string): HistoryMode {
   const mode = has(params, "mode") ? get(params, "mode") : "timeline";
   if (mode === "changes") throw notImplemented("mode", "history mode changes");
   if (mode === "composition")
+    // The value is one of the contract's modes, never the caller's own text (04-contract-types §9).
     throw new ReadError("not_in_this_version", "history mode composition", {
       reason: "value",
       param: "mode",
+      value: "composition",
     });
   if (mode !== "timeline" && mode !== "as_of") throw invalid("malformed", "mode");
   const allowed = new Set(KEYS[mode]);

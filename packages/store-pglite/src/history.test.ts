@@ -1279,7 +1279,7 @@ describe("refusals", () => {
     [
       "composition",
       { table: "spend", mode: "composition" },
-      { code: "not_in_this_version", reason: "value", param: "mode" },
+      { code: "not_in_this_version", reason: "value", param: "mode", value: "composition" },
     ],
     [
       "an unknown key",

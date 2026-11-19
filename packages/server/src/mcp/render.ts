@@ -23,6 +23,7 @@ import {
   ERROR_REASONS,
   type ErrorCode,
   type FieldResultCode,
+  HISTORY_MODES,
   ITEM_CREATED_REASONS,
   ITEM_STATUSES,
   type PremiseReason,
@@ -1609,6 +1610,9 @@ const NEXT: ReadonlyMap<string, () => Part[]> = new Map(
     not_found: () =>
       t`It may have been deleted, or be out of this connection's range; locate it again with saveslot_query.`,
     revoked: () => t`To restore it, use revert: {undo: n} with the operation that revoked it.`,
+    item_closed: () =>
+      t`The item is closed: there is nothing left to decide. Tell the user how it ended (above).`,
+    handle_expired: () => t`Read again from the first page, without cursor.`,
     derived_readonly: () => t`Derived tables are read-only: write to their source tables.`,
     validation_failed: () => t`Correct the values named, and send the request again.`,
     insufficient_scope: () =>
@@ -1616,7 +1620,8 @@ const NEXT: ReadonlyMap<string, () => Part[]> = new Map(
     not_in_this_version: () => t`This is not in this version of saveslot.`,
     too_large: () => t`Ask for less.`,
     unavailable: () => t`saveslot is not ready; try again shortly.`,
-    internal: () => t`An error inside saveslot; the incident is logged.`,
+    internal: () =>
+      t`An error inside saveslot (the incident is logged); whether this call took effect is not known: read the state it concerns before deciding whether to send it again.`,
     read_first: () => t`Read the row first (saveslot_query), then write with the ver you read.`,
     confirmation_mismatch: () =>
       t`The item changed after you read it (its current content is above): tell the user what changed, and resolve it with the new item_ver only once they decide again.`,
@@ -1688,6 +1693,15 @@ function detailGuide(x: R): Line[] {
       t`    a name is letters, digits and underscores, a letter first, at most 63; a field is not named valid, valid_from, valid_to, row_id or entity_id`,
     );
   }
+  // A ref field's value (03-data-model/04 «引用字段（ref）»).
+  if (x["code"] === "ref_not_found") {
+    lines.push(
+      t`    the row or entity it names is not there, is revoked, or is out of this connection's range: locate it with saveslot_query`,
+    );
+  }
+  if (x["code"] === "ref_wrong_table") {
+    lines.push(t`    it names a row of another table than the one the field refers to`);
+  }
   const path = String(x["path"] ?? "");
   if (x["code"] === "key_not_applicable" && /^tables\/[0-9]+\/fields\/[0-9]+\/type$/.test(path)) {
     lines.push(t`    a derived table's fields take their types from the rule: leave type out`);
@@ -1725,6 +1739,11 @@ const REASON_NEXT: ReadonlyMap<string, () => Part[]> = new Map([
       t`This table has an entity key: a new entity is written with intent "update" and its entity_key, which creates it; insert is not used here.`,
   ],
   [
+    "candidate_required",
+    () =>
+      t`This conflict has several candidates (listed above): ask the user which one, then send take_candidate again with candidate set to its index.`,
+  ],
+  [
     "ambiguous_table",
     () =>
       t`More than one slot has a table of this name: write it as slot.table, one of the candidates.`,
@@ -1756,6 +1775,29 @@ function errorLines(error: R, now: Date): Line[] {
       )}`,
     );
   }
+  // candidate_required: each candidate by its index, with its write and its writer (05 §7).
+  const choices = arr(error["candidate_choices"]);
+  if (choices.length > 0) {
+    lines.push(
+      t`Candidates: ${join(
+        choices.map((ch) => {
+          const x = obj(ch);
+          return t`${count(x["index"])} (${op(x["seq"])}, ${actorOf(x["actor"])})`;
+        }),
+        t` / `,
+      )}`,
+    );
+  }
+  // revoked: the row or entity (04-contract-types §9 `target`).
+  if (error["code"] === "revoked" && isObj(error["target"])) {
+    const tg = obj(error["target"]);
+    const which = tg["entity"] ?? tg["row"];
+    lines.push(
+      t`Revoked: ${tableOf(tg["table"])}${which !== undefined ? t` ${as(String(which), id)}` : []}`,
+    );
+  }
+  // item_closed: how it ended, as the item's details give it (04-contract-types §9).
+  if (error["code"] === "item_closed") lines.push(...closedLines(error));
   // A complete correct example the service gives (04-contract-types §9): it may hold the
   // caller's names, so inside the boundary.
   if (isObj(error["example"])) {
@@ -1831,9 +1873,67 @@ function errorLines(error: R, now: Date): Line[] {
   lines.push(...paramGuide(error));
   const why = c === "invalid_argument" ? said(REASON_NEXT, error["reason"]) : undefined;
   if (why !== undefined) lines.push(why);
-  const next = c === "read_first" ? readFirstNext(error) : said(NEXT, c);
+  const next = c === "read_first" ? readFirstNext(error) : (ownNext(error) ?? said(NEXT, c));
   if (next !== undefined) lines.push(next);
   return lines;
+}
+
+/**
+ * A refused value's parameter and the contract's values for it (04-contract-types §9: a value is
+ * given only when it is one of them): such a value is a code; any other stays inside the boundary.
+ */
+const NOT_TAKEN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["mode", new Set<string>(HISTORY_MODES)],
+]);
+
+/**
+ * The next step where the error's own fields say it (05 §7): the operation that revoked a row,
+ * a derived table's base tables, the bound a request passed, a slot not found, why a page handle
+ * no longer holds. Numbers as the service gives them; names as names, or inside the boundary.
+ */
+function ownNext(error: R): Part[] | undefined {
+  const c = error["code"];
+  const reason = error["reason"];
+  if (c === "revoked" && int(error["revoked_by"]) !== undefined) {
+    return t`It was revoked at ${op(error["revoked_by"])}; to restore it, use revert: {undo: ${count(error["revoked_by"])}}.`;
+  }
+  if (c === "derived_readonly" && error["table"] !== undefined) {
+    const bases = arr(error["base_tables"]);
+    return bases.length > 0
+      ? t`${tableOf(error["table"])} is a derived table, read-only: write to its base tables (${join(
+          bases.map((b) => tableOf(b)),
+          t`, `,
+        )}) instead.`
+      : t`${tableOf(error["table"])} is a derived table, read-only: write to its base tables instead.`;
+  }
+  if (c === "too_large" && reason === "ops" && int(error["limit"]) !== undefined) {
+    return t`At most ${count(error["limit"])} ops in one write (this one has ${count(error["actual"])}): split it into several writes.`;
+  }
+  if (
+    c === "too_large" &&
+    (reason === "evidence_segment" || reason === "request") &&
+    int(error["limit_bytes"]) !== undefined
+  ) {
+    const what = reason === "evidence_segment" ? t`one evidence segment` : t`a request's evidence`;
+    return t`At most ${count(error["limit_bytes"])} bytes in ${what} (this has ${count(error["actual_bytes"])}): give a long text as a file_ref with the part that matters as its excerpt.`;
+  }
+  if (c === "not_in_this_version" && reason === "value" && error["value"] !== undefined) {
+    const known = NOT_TAKEN_VALUES.get(String(error["param"] ?? ""));
+    const value =
+      known !== undefined ? codeIn(error["value"], known) : untrusted(String(error["value"]));
+    // The parameter as the header gives it: inside the boundary.
+    return t`This version of saveslot does not take ${untrusted(String(error["param"] ?? ""))}: ${value}.`;
+  }
+  if (c === "not_found" && reason === "slot") {
+    return t`No slot of that name in this connection's range; saveslot_catalog lists the slots.`;
+  }
+  if (c === "handle_expired" && reason === "derived_changed") {
+    return t`The derived table was refreshed since the first page: read again from the first page, without cursor.`;
+  }
+  if (c === "handle_expired" && reason === "expired") {
+    return t`The cursor has expired: run the query again from the first page, without cursor.`;
+  }
+  return undefined;
 }
 
 /**

@@ -772,6 +772,13 @@ export const ERRORS: Readonly<Record<string, Record<string, unknown>>> = {
     ],
     message: "the document does not compile",
   },
+  error_value_not_taken: {
+    code: "not_in_this_version",
+    reason: "value",
+    param: "mode",
+    value: "composition",
+    message: "history mode composition",
+  },
   error_rule_form: {
     code: "invalid_argument",
     reason: "malformed",

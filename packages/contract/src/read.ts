@@ -327,6 +327,16 @@ export interface ChangesParams extends CommonParams, PageParams {
 /** 04-contract-types §4.5 `HistoryParams`. */
 export type HistoryParams = TimelineParams | AsOfParams | ChangesParams;
 
+/**
+ * 04-contract-types §4.5: every `mode` of `history`, `composition` too (a later version's: §0.1,
+ * refused as `not_in_this_version`). A refusal names its mode from this list (§9).
+ */
+export const HISTORY_MODES = ["timeline", "as_of", "changes", "composition"] as const;
+// Every mode of this version's params is listed.
+const _modes: readonly (typeof HISTORY_MODES)[number][] = [] as NonNullable<
+  HistoryParams["mode"]
+>[];
+
 /** 04-contract-types §4.5 `SourceRef`. */
 export interface SourceRef {
   id: SourceId;

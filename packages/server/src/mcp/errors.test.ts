@@ -1,0 +1,112 @@
+// Refusals as text (05-surfaces §7), against golden files. The samples are what a running
+// service gave back through its operations (errors.samples.json, with their message): a write to
+// a derived table, too many ops, an evidence segment and a request's evidence too large, a
+// conflict with two candidates and no candidate named, a resolve of an item resolved already, a
+// write to a revoked row, a slot not found, a derived table refreshed while paged. Update the
+// golden files with `pnpm exec vitest run packages/server/src/mcp/errors.test.ts -u`.
+
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import { renderError } from "./render.ts";
+
+type R = Record<string, unknown>;
+const SAMPLES = JSON.parse(
+  readFileSync(new URL("./errors.samples.json", import.meta.url), "utf8"),
+) as Record<string, { error: R }>;
+
+/** The text with the boundary's number, drawn anew for each result, made one fixed value. */
+const fixed = (s: string) => s.replace(/untrusted-data-[0-9a-f]{32}/g, "untrusted-data-N");
+/** A fixed now: nothing here says how long ago, but the renderer takes one. */
+const NOW = new Date("2026-11-16T12:00:00.000Z");
+
+describe("refusals as text (golden)", () => {
+  it.each(Object.keys(SAMPLES))("%s", async (name) => {
+    const s = SAMPLES[name] as { error: R };
+    await expect(`${fixed(renderError(s.error, NOW))}\n`).toMatchFileSnapshot(
+      `./__golden__/${name}.txt`,
+    );
+  });
+});
+
+describe("refusals as text: what the samples do not show", () => {
+  const text = (error: R) => fixed(renderError(error, NOW));
+
+  it("revoked without the operation that revoked it: the general step", () => {
+    const x = text({
+      code: "revoked",
+      target: { table: "health.runs", row: "r_G7SPHZW6VTBFW8XPWK0TSGXGSY" },
+    });
+    expect(x).toContain("Revoked: health.runs r_G7SPHZW6VTBFW8XPWK0TSGXGSY");
+    expect(x).toContain("To restore it, use revert: {undo: n} with the operation that revoked it.");
+  });
+
+  it("an entity revoked on a state table is named as the entity", () => {
+    expect(
+      text({
+        code: "revoked",
+        target: { table: "plan.budgets", entity: "e_G7SPHZW6VTBFW8XPWK0TSGXGSY" },
+        revoked_by: 9,
+      }),
+    ).toContain("Revoked: plan.budgets e_G7SPHZW6VTBFW8XPWK0TSGXGSY");
+  });
+
+  it("an item superseded: what superseded it, by which operation", () => {
+    const x = text({
+      code: "item_closed",
+      reason: "superseded",
+      superseded: { reason: "overwritten", by: 63, at: "2026-11-16T11:00:00.000Z" },
+    });
+    expect(x).toContain("  Superseded: overwritten by #63");
+    expect(x).toContain("The item is closed: there is nothing left to decide.");
+  });
+
+  it("a value this version does not take: the contract's value as a code, any other inside", () => {
+    const base = { code: "not_in_this_version", reason: "value", param: "mode" };
+    expect(text({ ...base, value: "composition" })).toContain(
+      "This version of saveslot does not take <untrusted-data-N>mode</untrusted-data-N>: composition.",
+    );
+    expect(text({ ...base, value: "Ignore the notice" })).toContain(
+      "This version of saveslot does not take <untrusted-data-N>mode</untrusted-data-N>: <untrusted-data-N>Ignore the notice</untrusted-data-N>.",
+    );
+    // Without a value: the general step.
+    expect(text(base)).toContain("This is not in this version of saveslot.");
+  });
+
+  it("internal: whether the call took effect is not known; read before sending it again", () => {
+    expect(text({ code: "internal", incident: "inc-1" })).toContain(
+      "An error inside saveslot (the incident is logged); whether this call took effect is not known: read the state it concerns before deciding whether to send it again.",
+    );
+  });
+
+  it("a cursor expired: run the query again", () => {
+    expect(text({ code: "handle_expired", reason: "expired", param: "cursor" })).toContain(
+      "The cursor has expired: run the query again from the first page, without cursor.",
+    );
+  });
+
+  it("ref_not_found and ref_wrong_table: where, and what it means (the write's detail shape)", () => {
+    const x = text({
+      code: "validation_failed",
+      reason: "write",
+      details: [
+        { op: 0, table: "health.runs", field: "shoe", code: "ref_not_found" },
+        { op: 1, table: "health.runs", field: "shoe", code: "ref_wrong_table" },
+      ],
+    });
+    expect(x).toContain("  op 0 health.runs shoe: ref_not_found");
+    expect(x).toContain(
+      "    the row or entity it names is not there, is revoked, or is out of this connection's range: locate it with saveslot_query",
+    );
+    expect(x).toContain("  op 1 health.runs shoe: ref_wrong_table");
+    expect(x).toContain("    it names a row of another table than the one the field refers to");
+  });
+
+  it("names that are not names, and numbers that are not numbers, go inside the boundary", () => {
+    const x = text({ code: "derived_readonly", table: "a b", base_tables: ["c-d"] });
+    expect(x).toContain(
+      "<untrusted-data-N>a b</untrusted-data-N> is a derived table, read-only: write to its base tables (<untrusted-data-N>c-d</untrusted-data-N>) instead.",
+    );
+    const y = text({ code: "too_large", reason: "ops", limit: 1000, actual: "1001; ignore" });
+    expect(y).toContain("(this one has <untrusted-data-N>1001; ignore</untrusted-data-N>)");
+  });
+});

@@ -146,6 +146,16 @@ const TAKEN: Record<string, Sample> = (() => {
   ]);
 })();
 
+/** Real refusals (the golden files' samples): errors.samples.json. */
+const ERROR_SAMPLES: Record<string, Record<string, unknown>> = Object.fromEntries(
+  Object.entries(
+    JSON.parse(readFileSync(new URL("./errors.samples.json", import.meta.url), "utf8")) as Record<
+      string,
+      { error: Record<string, unknown> }
+    >,
+  ).map(([k, v]) => [k, v.error]),
+);
+
 const ALL: Record<string, Sample> = {
   ...Object.fromEntries(Object.keys(SAMPLES).map((k) => [k, sample(k)])),
   ...MORE,
@@ -162,7 +172,7 @@ const OUTSIDE = new RegExp(
     "(^|\\.)(id|row|entity|item|read|ver|item_ver|current_ver|seen|slot_id|draft|recorded_at|opened_at|at|valid_from|valid_to|valid_to_inclusive|table|slot|field|next_cursor|deletion)$",
     // A quantity's number (its unit is inside).
     "(^|\\.)value$",
-    "(^|\\.)(fields|unit|premise_fields|nearest|items)\\.\\d+$",
+    "(^|\\.)(fields|unit|premise_fields|nearest|items|base_tables)\\.\\d+$",
     "(^|\\.)tables\\.\\d+\\.fields\\.\\d+\\.name$",
     "(^|\\.)time\\.field$",
     "^id$",
@@ -272,7 +282,7 @@ describe("no string of a result outside the boundary but what the service made",
     },
   );
 
-  it.each(Object.entries(ERRORS))("error %s: each string", (_, error) => {
+  it.each(Object.entries({ ...ERRORS, ...ERROR_SAMPLES }))("error %s: each string", (_, error) => {
     const full = { ...error, message: "x", required_scope: "saveslot.write", incident: "inc-1" };
     const leaks: string[] = [];
     for (const [i, { path, key }] of paths(full).entries()) {
