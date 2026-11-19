@@ -16,6 +16,12 @@ export {
   historyTarget,
 } from "./history.ts";
 export { historyInTx } from "./history-op.ts";
+export {
+  MAX_NOTICES,
+  type NoticeRefs,
+  type PendingItemsNotice,
+  pendingItemsNotices,
+} from "./notices.ts";
 // Paging, for lists outside this module (the management operations).
 export { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 export { type PendingInput, type PendingReadResult, pendingInTx } from "./pending.ts";

@@ -12,7 +12,9 @@ import {
   logEnd,
   logVerify,
   NothingKept,
+  type NoticeRefs,
   pending,
+  pendingItemsNotices,
   query,
   readsList,
   removeSlot,
@@ -41,6 +43,63 @@ async function slotNames(
     name: new Map(r.rows.map((x) => [x.id, x.name])),
     id: new Map(r.rows.map((x) => [x.name, x.id])),
   };
+}
+
+const strs = (xs: unknown): string[] =>
+  Array.isArray(xs) ? xs.filter((x): x is string => typeof x === "string") : [];
+const field = (o: unknown, k: string): unknown =>
+  o !== null && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined;
+
+/**
+ * What a call involves, for its notices (04-contract §13: the slots the call is about): the
+ * catalog's slots, the table read or written, the item decided on. None for `pending` (it lists
+ * the items itself) and for the management operations (no notices).
+ */
+function noticeRefs(operation: Operation, params: Obj, result: unknown): NoticeRefs | undefined {
+  switch (operation) {
+    case "catalog": {
+      const level = field(result, "level");
+      if (level === "list")
+        return { slots: strs(arr(field(result, "slots")).map((x) => field(x, "slot"))) };
+      if (level === "table")
+        return { slots: strs(arr(field(result, "tables")).map((x) => field(x, "slot"))) };
+      return { slots: strs([field(result, "slot")]) };
+    }
+    case "query":
+    case "history":
+      return { tables: strs([params["table"]]) };
+    case "write":
+      return {
+        tables: strs(arr(field(result, "ops")).map((x) => field(field(x, "target"), "table"))),
+      };
+    case "resolve":
+      return { items: strs([params["id"]]) };
+    case "schema_draft":
+      return { slots: strs([field(result, "slot")]) };
+    default:
+      return undefined;
+  }
+}
+
+const arr = (xs: unknown): unknown[] => (Array.isArray(xs) ? xs : []);
+
+/**
+ * A result with its `pending_items` notices (04-contract-types §7), computed now: a replayed
+ * receipt's too. None when there are none; at most three (with any the result has).
+ */
+async function withNotices(
+  t: LocalTenant,
+  ctx: KernelCall["ctx"],
+  operation: Operation,
+  params: Obj,
+  result: unknown,
+): Promise<unknown> {
+  const refs = noticeRefs(operation, params, result);
+  if (refs === undefined || result === null || typeof result !== "object") return result;
+  const found = await pendingItemsNotices(t.store, ctx.visibility, refs);
+  if (found.length === 0) return result;
+  const had = arr(field(result, "notices"));
+  return { ...(result as Record<string, unknown>), notices: [...had, ...found].slice(0, 3) };
 }
 
 /** A connection as the contract gives it (04-contract-types §8.1 `Connection`). */
@@ -205,7 +264,12 @@ export async function runOperation(o: {
         }
       }
     })();
-    return contractResult(result, o.cursors, ctx.actor, ctx.now);
+    return contractResult(
+      await withNotices(o.tenant, ctx, o.operation, params, result),
+      o.cursors,
+      ctx.actor,
+      ctx.now,
+    );
   } catch (e) {
     if (e instanceof NothingKept) {
       throw new ContractError("too_large", "the result is larger than a result may be", {

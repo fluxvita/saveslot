@@ -79,7 +79,7 @@ const DECISIONS: Readonly<Record<string, readonly EventDecision[]>> = {
   awaiting_confirmation: ["confirm", "reject"],
 };
 
-type ItemRow = {
+export type ItemRow = {
   id: ItemId;
   type: EventItemType;
   slot_id: string | null;
@@ -93,7 +93,7 @@ type ItemRow = {
   reason: ItemCreatedReason | null;
 };
 
-const ITEMS = `SELECT p.id, p.type, p.slot_id, p.target_table, p.target_row, p.state, p.version_op,
+export const ITEMS = `SELECT p.id, p.type, p.slot_id, p.target_table, p.target_row, p.state, p.version_op,
     e.op AS opened_op, h.at AS opened_at, h.actor AS opened_by,
     c.body::jsonb ->> 'reason' AS reason
   FROM pending_items p
@@ -102,7 +102,7 @@ const ITEMS = `SELECT p.id, p.type, p.slot_id, p.target_table, p.target_row, p.s
   JOIN events h ON h.seq = e.op`;
 
 /** Where an item is, if it is within the visible range. */
-function placeOf(
+export function placeOf(
   x: ItemRow,
   slots: readonly VisibleSlot[],
 ): { slot: VisibleSlot; table: VisibleSlot["tables"][number] | undefined } | undefined {

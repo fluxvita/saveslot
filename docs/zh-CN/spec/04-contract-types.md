@@ -1809,7 +1809,8 @@ type Warning =
 
 /** 与本次调用相关的提示，最多 3 条。每一种都只按调用方的可见范围计算：范围外的 slot 不出现在任何提示里。 */
 type Notice =
-  | { code: "pending_items"; slot: SlotName; count: number; oldest_opened_at: Instant }
+  | { code: "pending_items"; slot: SlotName; count: number; oldest_opened_at: Instant }       // 本次调用涉及的 slot 里未决的事项：条数与最早一条的产生时刻。每个 slot 一条，count 为 0 的不给；
+                                                                                                     // 按 oldest_opened_at 从早到晚、同一时刻按 slot 名取前 3 条。pending 自己的结果不带（它本身就在列事项）
   | { code: "schema_updated"; slot: SlotName; from: Sv; to: Sv; changed: string[] }                  // 本连接实例上次读到的 sv 落后
   | { code: "migration_progress"; slot: SlotName; target_sv: Sv; done: number; total: number; item?: ItemId }
   | { code: "deletion_overdue"; slot: SlotName; item: ItemId }                                       // 已到期的删除尚未物理删除
