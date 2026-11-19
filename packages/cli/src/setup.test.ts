@@ -242,8 +242,8 @@ describe("entryHolds: the path with no path character either side, escapes taken
     ["then ~ (a backup)", `Command: ${P}~\n`, P, false],
     ["empty output", "", P, false],
     // Shown another way: not seen. Real hosts print the path as it was added (no link resolved,
-    // no ~, no quoting or escaping; Claude Code 2.1.327 and Codex 0.167.2, issue #29), so these
-    // shapes stay not seen.
+    // no ~, no quoting or escaping; sampled from Claude Code 2.1.327 and Codex 0.167.2 on macOS),
+    // so these shapes stay not seen.
     [
       "(not a real host shape) path with a space, shell-quoted with a backslash",
       "Command: /Users/a\\ b/bin/saveslot\n",
@@ -278,8 +278,8 @@ describe("entryHolds: the path with no path character either side, escapes taken
     expect(entryHolds(out, path)).toBe(holds);
   });
   // What `claude mcp get` / `codex mcp get` print for an entry, through a pipe with NO_COLOR=1
-  // (issue #29). Claude's look-up starts the server; a status line comes first, with a non-ASCII
-  // mark that NO_COLOR keeps.
+  // (sampled from Claude Code 2.1.327 and Codex 0.167.2 on macOS). Claude's look-up starts the
+  // server; a status line comes first, with a non-ASCII mark that NO_COLOR keeps.
   const claudeGet = (path: string) =>
     [
       "saveslot:",
