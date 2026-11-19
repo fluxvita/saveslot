@@ -486,6 +486,7 @@ interface AnchorStore {
 | `residue_progress`（残留清理做到哪条墓碑） | `ops` 内部操作 | 对全部墓碑重做一遍清理，操作幂等 | 有 |
 | 构建中的新版表 | `schema` | 从日志重建 | 有 |
 | 抽取租约 | `jobs` | 未交的工作项回池 | 后续 |
+| `run/last-failure.json`（本机服务上一次启动失败的原因码与时刻，主目录下，不在数据目录里；服务就绪后删掉） | `daemon` | `saveslot status` 少说一句"上次启动失败的原因"，别的都不受影响 | 有 |
 
 `audit` 只存取 `possibly_affected` 标记；"值恢复后撤掉标记"所需的历史值比较由 `read` 做，`ops` 在写入、删除确认、撤回之后调用。
 

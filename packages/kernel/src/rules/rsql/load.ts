@@ -21,9 +21,14 @@ let loading: Promise<void> | undefined;
 
 /** Loads the parser; resolves once it is ready. Safe to call again. */
 export function loadRsql(): Promise<void> {
-  loading ??= import("node:module")
-    .then(async ({ createRequire }) => {
-      const m = createRequire(import.meta.url)("libpg-query") as typeof import("libpg-query");
+  loading ??= Promise.all([import("node:module"), import("node:fs")])
+    .then(async ([{ createRequire }, { realpathSync }]) => {
+      // Loaded from its real path, not the link it is reached by: what it requires in turn is
+      // then looked up beside it, in the store the package manager keeps it in. A process started
+      // after one that was killed was seen to load it by the link, and not find its own
+      // dependency (@pgsql/types) from there.
+      const entry = realpathSync(createRequire(import.meta.url).resolve("libpg-query"));
+      const m = createRequire(entry)(entry) as typeof import("libpg-query");
       const missing = (["loadModule", "parseSync", "scanSync"] as const).filter(
         (k) => typeof m?.[k] !== "function",
       );

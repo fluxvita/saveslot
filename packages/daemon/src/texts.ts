@@ -80,6 +80,8 @@ export const TEXTS = {
     "A saveslot service holds the home again: one was started meanwhile (an MCP host connecting starts it). See saveslot status.",
   statusNotAnswering: "saveslot service: not answering (starting, or stuck)",
   statusNotRunning: "saveslot service: not running",
+  statusLastFailure: (reason: string, at: string) =>
+    `  the last start failed: ${reason} at ${at}. The service log is in run/saveslot.log under the home.`,
   status: (s: {
     readonly state: string;
     readonly reason: string | undefined;

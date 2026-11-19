@@ -53,7 +53,14 @@ import { type Config, ConfigInvalid, type ConfigKey, KEYS, readConfig } from "./
 import { health, localRequest } from "./local-request.ts";
 import { daemonVersion, main } from "./main.ts";
 import { runBridge } from "./mcp-bridge.ts";
-import { evalClockStart, lockDir, pidFile, runDir, socketFile } from "./service.ts";
+import {
+  evalClockStart,
+  lastFailureFile,
+  lockDir,
+  pidFile,
+  runDir,
+  socketFile,
+} from "./service.ts";
 import { homeProblem } from "./setup-support.ts";
 import { TEXTS } from "./texts.ts";
 
@@ -70,6 +77,8 @@ const WAIT_MS = 60_000;
 const POLL_MS = 100;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** How long `start` waits for a service it saw fail to exit, after asking it to stop. */
+const FAILED_EXIT_WAIT_MS = 10_000;
 
 /** Path segments of folders that sync services keep (06-cli §3 step 2; 02-architecture §7). */
 const SYNCED = [
@@ -296,7 +305,10 @@ async function startService(
     const conditions = bin.endsWith(".ts") ? ["--conditions=source"] : [];
     // A bridge runs with a connection's token; the service takes no token and keeps none.
     const evalClock = o.evalClock !== undefined ? ["--eval-clock", o.evalClock] : [];
-    child = spawn(process.execPath, [...conditions, bin, "--home", home, ...evalClock], {
+    // The service writes its own lines to the log and rotates it (./log-file.ts); the descriptor
+    // given as stdout and stderr keeps what Node itself writes on a crash.
+    const args = [...conditions, bin, "--home", home, "--log", logFile(home), ...evalClock];
+    child = spawn(process.execPath, args, {
       detached: true,
       stdio: ["ignore", log, log],
       env: serviceEnv(),
@@ -330,8 +342,13 @@ async function startService(
     return 0;
   }
   if (typeof h === "object") {
-    // Failed: the process holds the lock while it lives; stopped so that the next start can run.
-    if (h.pid === child.pid) child.kill("SIGTERM");
+    // Failed: the process holds the lock while it lives; stopped, and waited for (a bounded
+    // while), so that what comes next (`status`, another start) finds the home free.
+    if (h.pid === child.pid && !exited) {
+      const gone = new Promise<void>((r) => child.once("exit", () => r()));
+      child.kill("SIGTERM");
+      await Promise.race([gone, sleep(FAILED_EXIT_WAIT_MS)]);
+    }
     io.err(
       h.reason === "format_too_old"
         ? TEXTS.startFormatTooOld
@@ -339,7 +356,9 @@ async function startService(
           ? TEXTS.startFormatTooNew
           : TEXTS.startFailed(h.reason ?? "failed"),
     );
-    return 7;
+    // A store of another format is refused until something is done about it (06-cli §6.2: 5);
+    // any other failure of a started service may pass on a retry (7).
+    return h.reason === "format_too_old" || h.reason === "format_too_new" ? 5 : 7;
   }
   if (h === "timeout") {
     // Not killed: it may be recovering (02-architecture §8), which takes as long as it takes.
@@ -430,6 +449,19 @@ async function logEndAt(home: string): Promise<string | undefined> {
   return typeof at === "string" ? at : undefined;
 }
 
+/** The last start's failure as kept under run/, when it is of its form; undefined otherwise. */
+async function lastFailure(home: string): Promise<{ reason: string; at: string } | undefined> {
+  try {
+    const v = JSON.parse(await readFile(lastFailureFile(home), "utf8")) as Record<string, unknown>;
+    const { reason, at } = v;
+    if (typeof reason !== "string" || !/^[a-z0-9_]{1,64}$/.test(reason)) return undefined;
+    if (typeof at !== "string" || Number.isNaN(Date.parse(at))) return undefined;
+    return { reason, at: new Date(Date.parse(at)).toISOString() };
+  } catch {
+    return undefined;
+  }
+}
+
 /** How far the clock may be behind the log's end before `status` warns (02-architecture §8). */
 export const CLOCK_BEHIND_MS = 5 * 60_000;
 
@@ -451,7 +483,14 @@ export async function status(
   const socket = socketFile(home);
   const h = await health(socket);
   if (h === undefined) {
-    io.out((await lockHeld(home)) ? TEXTS.statusNotAnswering : TEXTS.statusNotRunning);
+    if (await lockHeld(home)) {
+      io.out(TEXTS.statusNotAnswering);
+      return 7;
+    }
+    io.out(TEXTS.statusNotRunning);
+    // Why the last start failed, when it did (02-architecture §8): a code and a time, as kept.
+    const last = await lastFailure(home);
+    if (last !== undefined) io.out(TEXTS.statusLastFailure(last.reason, last.at));
     return 7;
   }
   const pending = h.state === "ready" ? await pendingCount(home) : undefined;

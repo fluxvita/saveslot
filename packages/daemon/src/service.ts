@@ -121,6 +121,12 @@ export const lockDir = runDir;
 export const pidFile = (home: string): string => join(runDir(home), "saveslot.pid");
 export const socketFile = (home: string): string => join(runDir(home), "saveslot.sock");
 /**
+ * The last start's failure (02-architecture §8, local run state): `{at, reason}`, a stable code and
+ * the system time, nothing else; written when the service fails or does not start, removed once one
+ * is ready. Lost, `saveslot status` only says one line less.
+ */
+export const lastFailureFile = (home: string): string => join(runDir(home), "last-failure.json");
+/**
  * The evaluation results (02-architecture §11): with the test clock, each MCP tool call's
  * connection instance, tool, arguments and contract result, one JSON line each; new at each start
  * (what was at the path removed, a link not followed, then made exclusively), 0600, tokens written
@@ -159,14 +165,19 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     ((line: string) => {
       process.stderr.write(`${line}\n`);
     });
-  const say = (event: string, fields: Record<string, string | number> = {}) =>
-    log(
-      [
-        new Date().toISOString(),
-        event,
-        ...Object.entries(fields).map(([k, v]) => `${k}=${v}`),
-      ].join(" "),
-    );
+  const say = (event: string, fields: Record<string, string | number> = {}) => {
+    const at = new Date().toISOString();
+    log([at, event, ...Object.entries(fields).map(([k, v]) => `${k}=${v}`)].join(" "));
+    // A failure is kept for `status` once this process is gone; another process holding the home
+    // is not this start's failure. Best effort: no home or no run/ yet, nothing is kept.
+    if ((event === "failed" || event === "not_started") && fields["reason"] !== "already_running") {
+      writeFile(
+        lastFailureFile(o.home),
+        `${JSON.stringify({ at, reason: String(fields["reason"] ?? "internal") })}\n`,
+        { mode: 0o600 },
+      ).catch(() => {});
+    }
+  };
   const since = new Date().toISOString();
   // The test clock: its start, the real time it started at, and how far it was moved forward.
   const evalStart = o.evalClock !== undefined ? evalClockStart(o.evalClock) : undefined;
@@ -270,9 +281,11 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       await rm(socketFile(o.home), { force: true });
       await rm(pidFile(o.home), { force: true });
       await lock?.release();
+      // A service that failed exits non-zero, however it was stopped (`start` stops one it saw fail).
+      const exit = state === "failed" ? Math.max(code, 1) : code;
       if (state !== "failed") state = "stopped";
-      say("stopped", { code });
-      resolveExited(reason !== undefined && code !== 0 ? { code, reason } : { code });
+      say("stopped", { code: exit });
+      resolveExited(reason !== undefined && exit !== 0 ? { code: exit, reason } : { code: exit });
     })();
     return stopping;
   }
@@ -445,6 +458,8 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       say("failed", { reason, ...(format ? { message: e.message } : {}) });
       return;
     }
+    // Gone before the service says it is ready: whoever sees it ready finds no failure kept.
+    await rm(lastFailureFile(o.home), { force: true });
     state = "ready";
     say("ready");
     let probing = false;

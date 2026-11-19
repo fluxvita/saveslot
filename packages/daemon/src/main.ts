@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ConfigInvalid, readConfig } from "./config.ts";
+import { rotatingLog } from "./log-file.ts";
 import { type RunServiceOptions, runService } from "./service.ts";
 import { TEXTS } from "./texts.ts";
 
@@ -35,12 +36,21 @@ export async function foregroundOptions(
 
 /** Runs the service in the foreground; resolves with the exit code once it has stopped. */
 export async function main(argv: readonly string[]): Promise<number> {
-  let values: { home?: string | undefined; "eval-clock"?: string | undefined };
+  let values: {
+    home?: string | undefined;
+    "eval-clock"?: string | undefined;
+    log?: string | undefined;
+  };
   try {
     ({ values } = parseArgs({
       args: [...argv],
       // `--eval-clock`: the test clock, for evaluations only (02-architecture §11).
-      options: { home: { type: "string" }, "eval-clock": { type: "string" } },
+      // `--log`: the file the service writes its own lines to, rotating it (`saveslot start`).
+      options: {
+        home: { type: "string" },
+        "eval-clock": { type: "string" },
+        log: { type: "string" },
+      },
       strict: true,
       allowPositionals: false,
     }));
@@ -70,6 +80,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
     return 5;
   }
-  const service = await runService(options);
+  const log = values.log !== undefined ? { log: rotatingLog(resolve(values.log)) } : {};
+  const service = await runService({ ...options, ...log });
   return (await service.exited).code;
 }

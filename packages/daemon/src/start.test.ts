@@ -1,16 +1,25 @@
 // `saveslot start` (06-cli §3 step 3, §6.2) where it meets another process starting at the same
 // moment, and a home it cannot use: it waits for the other, and it never throws.
 
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initLocalHome } from "@fluxvita/saveslot-service";
 import { osFileLock } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
-import { start, stop } from "./commands.ts";
+import { init, start, status, stop } from "./commands.ts";
 import { health } from "./local-request.ts";
-import { lockDir, runDir, runService, socketFile } from "./service.ts";
+import { lastFailureFile, lockDir, runDir, runService, socketFile } from "./service.ts";
 import { TEXTS } from "./texts.ts";
 
 /** Running as root, whom the permission bits do not bind (see the case that uses it). */
@@ -160,12 +169,12 @@ describe("start on a store of another storage format: what to do, said and logge
     ["a newer format", 3, TEXTS.startFormatTooNew, "newer"],
   ] as const) {
     it(
-      `a store of ${label}: exit 7, the text for it, and the backend's words in the log`,
+      `a store of ${label}: exit 5, the text for it, and the backend's words in the log`,
       async () => {
         const home = await freshHome();
         await withFormat(home, v);
         const c = capture();
-        expect(await start(home, c.io)).toBe(7);
+        expect(await start(home, c.io)).toBe(5);
         expect(c.err).toEqual([text]);
         const log = readFileSync(join(runDir(home), "saveslot.log"), "utf8");
         expect(log).toContain(said);
@@ -210,6 +219,97 @@ describe("start, asked to stop while it waits (a signal to setup)", () => {
           }),
         ).toBe(0);
         expect(onStarted).toBe(1);
+      } finally {
+        await stop(home, capture().io);
+      }
+    },
+    T,
+  );
+});
+
+describe("status after a start that failed: why, until a start succeeds", () => {
+  it(
+    "the data directory gone: not running, the last start failed with its code and time; gone once one is ready",
+    async () => {
+      const home = await freshHome();
+      renameSync(join(home, "data"), join(home, "data.away"));
+      const c = capture();
+      expect(await start(home, c.io)).toBe(7);
+      const s = capture();
+      expect(await status(home, s.io)).toBe(7);
+      expect(s.out[0]).toBe(TEXTS.statusNotRunning);
+      expect(s.out[1]).toMatch(
+        /^ {2}the last start failed: store_not_found at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\. The service log is in run\/saveslot\.log under the home\.$/,
+      );
+      expect(statSync(lastFailureFile(home)).mode & 0o777).toBe(0o600);
+      // The failed service's exit is logged non-zero, though `start` stopped it.
+      const log = readFileSync(join(runDir(home), "saveslot.log"), "utf8");
+      expect(log).toMatch(/failed reason=store_not_found\n(.*\n)*.* stopped code=1\n/);
+      expect(log).not.toMatch(/stopped code=0/);
+
+      renameSync(join(home, "data.away"), join(home, "data"));
+      try {
+        expect(await start(home, capture().io)).toBe(0);
+        expect(existsSync(lastFailureFile(home))).toBe(false);
+      } finally {
+        await stop(home, capture().io);
+      }
+      const after = capture();
+      expect(await status(home, after.io)).toBe(7);
+      expect(after.out).toEqual([TEXTS.statusNotRunning]);
+    },
+    T,
+  );
+
+  it(
+    "another process holding the home is no failure of this start: nothing kept",
+    async () => {
+      const home = await freshHome();
+      const running = await runService({ home, version: "t", signals: false, log: () => {} });
+      try {
+        expect(running.state).toBe("ready");
+        const second = await runService({ home, version: "t", signals: false, log: () => {} });
+        expect(second.reason).toBe("already_running");
+        await new Promise((r) => setTimeout(r, 100));
+        expect(existsSync(lastFailureFile(home))).toBe(false);
+      } finally {
+        await running.stop();
+      }
+    },
+    T,
+  );
+});
+
+describe("start right after the service was killed", () => {
+  it(
+    "kill -9, then start at once on a home as `saveslot init` makes it: the service is ready, not failed",
+    async () => {
+      // Made as `saveslot init` makes it: the real backend, with fsync passed to the host.
+      const home = join(mkdtempSync(join(tmpdir(), "saveslot-killed-")), "home");
+      expect(await init(home, { rotate: false }, capture().io)).toBe(0);
+      expect(await start(home, capture().io)).toBe(0);
+      const pid = Number(readFileSync(join(runDir(home), "saveslot.pid"), "utf8").trim());
+      process.kill(pid, "SIGKILL");
+      // Gone: the lock is the kernel's to release, at once.
+      const until = Date.now() + 10_000;
+      while (Date.now() < until) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      const began = Date.now();
+      const c = capture();
+      const code = await start(home, c.io);
+      const took = Date.now() - began;
+      try {
+        expect({ code, err: c.err }).toEqual({ code: 0, err: [] });
+        // With fsync passed to the host, the store's recovery after a kill takes its time (seconds
+        // on macOS); what must not happen is a start that fails.
+        expect(took).toBeLessThan(60_000);
+        expect((await health(socketFile(home)))?.state).toBe("ready");
       } finally {
         await stop(home, capture().io);
       }

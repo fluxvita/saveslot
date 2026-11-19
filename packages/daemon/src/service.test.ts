@@ -249,7 +249,8 @@ describe("the service process", () => {
       pid: p.proc.pid,
     });
     p.proc.kill("SIGTERM");
-    expect(await p.exit).toEqual({ code: 0, signal: null });
+    // Stopped cleanly, and non-zero: the service had failed.
+    expect(await p.exit).toEqual({ code: 1, signal: null });
     expect(highWater(h)).toBe(5);
   });
 });
@@ -275,7 +276,8 @@ describe("the service in process", () => {
     const store = await testBackend().open({ kind: "pglite", dir: join(h, "data") }, {});
     await store.close();
     await s.stop();
-    expect(await s.exited).toEqual({ code: 0 });
+    // A service that failed exits non-zero, though it was stopped.
+    expect(await s.exited).toEqual({ code: 1, reason });
   });
 
   it("does not serve a home that was not initialized, or whose tenant directory is corrupt", async () => {

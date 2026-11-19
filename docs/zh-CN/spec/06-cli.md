@@ -121,7 +121,7 @@ $ saveslot init
   data/          PGlite 数据目录（一个租户；已写入租户创世，登记用户主体与 system）
   control/       控制面（文件）：凭证哈希、租户目录、锚点（删除登记、seq 高水位、恢复次数）、句柄签名密钥
   credentials/   用户会话令牌（0600）
-  run/           saveslot 服务运行时（0700）：saveslot.lock（服务进程一级的锁）、saveslot.pid、saveslot.sock、saveslot.log（后台运行时服务的日志，0600，追加写；只记事件名与原因码，不含路径、令牌与用户数据）
+  run/           saveslot 服务运行时（0700）：saveslot.lock（服务进程一级的锁）、saveslot.pid、saveslot.sock、last-failure.json（上一次启动失败的原因码与时刻，就绪后删掉）、saveslot.log（后台运行时服务的日志，0600，追加写；只记事件名与原因码，不含路径、令牌与用户数据。服务自己写这个文件，写完一行发现超过 10 MiB 就轮转：最旧的一份删掉，`saveslot.log.1` 改名为 `.2`，当前文件改名为 `.1`，再新开一个，最多留两份旧的；Node 崩溃时写到标准错误的内容进的是 `saveslot start` 交给进程的那个文件，轮转之后就是最新的那份旧文件）
 $ saveslot start
 saveslot 服务已在后台启动 · pid 4211 · 监听 ~/.saveslot/run/saveslot.sock · 数据 ~/.saveslot/data
 $ saveslot schema templates
@@ -431,7 +431,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `saveslot setup` | 一条命令完成上手：编排初始化、启动、建 slot、接入宿主（3.3） | `--template`（可重复）、`--timezone`、`--host`（可重复）、`--scope`、`--yes`、`--profile`（服务器模式） | 每一步"已有 / 本次完成 / 失败"；每个宿主的连接实例与是否已接入；末尾提示 `saveslot snippet` | P1（`--profile` P5） |
 | `saveslot init` | 建目录、写租户创世、生成用户会话令牌 | `--data-dir`、`--rotate-session` | 各目录与权限；同步盘警告 | P1 |
 | `saveslot start` / `saveslot stop` | 启动 / 停止 saveslot 服务 | `--foreground`、`--restored`（数据目录刚从备份恢复：先走恢复流程；P3）、`--eval-clock`（测试时钟，只用于评测，第 3 节第 3 步） | pid、监听地址；走了恢复流程时写明补删了几项；`stop` 时有宽限期内的删除就提醒"到期时若 saveslot 没在运行，物理删除在下次启动时执行" | P1（`--restored` P3） |
-| `saveslot status` | 进程状态 + 概况 | — | 版本、数据目录、监听、单写者锁（经 `/health` 的 `writer_lock`）、启动时补跑了哪些到期任务；待处理事项数（经 `pending`）；逾期未物理删除的删除；提醒：系统时钟比日志末端的记录时刻早 5 分钟以上（日志末端经 `log.end`，与待处理数一样带用户会话；取不到时这一条不出，也不报错）、行数超过舒适线或实测线的表；以测试时钟运行时，第一行写明测试时钟的当前时刻，时钟落后的提醒也按它算 | P1（删除相关 P3；规模提醒随 P2 的目录概况） |
+| `saveslot status` | 进程状态 + 概况 | — | 版本、数据目录、监听、单写者锁（经 `/health` 的 `writer_lock`）、启动时补跑了哪些到期任务；待处理事项数（经 `pending`）；逾期未物理删除的删除；提醒：系统时钟比日志末端的记录时刻早 5 分钟以上（日志末端经 `log.end`，与待处理数一样带用户会话；取不到时这一条不出，也不报错）、行数超过舒适线或实测线的表；服务没在运行而上一次启动失败了时，加一行写出失败的原因码与时刻（`run/last-failure.json`，服务就绪后删掉；只有原因码与时刻）；以测试时钟运行时，第一行写明测试时钟的当前时刻，时钟落后的提醒也按它算 | P1（删除相关 P3；规模提醒随 P2 的目录概况） |
 | `saveslot mcp` | 给 MCP 宿主的 stdio 桥 | 令牌取环境变量 `SAVESLOT_TOKEN`；`--record <文件>`（调用记录，只用于评测，[`05-surfaces.md`](05-surfaces.md) §11） | 不给人看；固定连本地；saveslot 服务未运行时先拉起（细节见 [`05-surfaces.md`](05-surfaces.md) §11「本机的 stdio 桥」） | P1 |
 | `saveslot service install` / `uninstall` | 开机自启 | — | 写入的系统服务位置 | P6 |
 | `saveslot doctor` | 逐项自检（第 3 节第 7 步） | — | 每项通过 / 不通过 / 提醒，不通过的附修法；提醒（时钟落后、数据规模）不算不通过 | P6 |
@@ -641,9 +641,9 @@ runs r_01JC… 整行删除：date 只来自这句话
 | 2 | 命令用法错误（CLI 自己发现的） | 例如只取一个值的选项给了两次（不按"最后一个算数"）；`connections revoke` 的名字对应不止一个连接实例 |
 | 3 | 要先重读 / 内容已变 | `read_first`、`confirmation_mismatch`、`item_closed`、`preview_outdated`、`handle_expired`、`draft_outdated`、`schema_incompatible` |
 | 4 | 找不到 | `not_found`、`unknown_table`、`unknown_field` |
-| 5 | 请求被拒 | `saveslot init` 遇到已初始化的目录或正在运行的服务（什么都不改）、`saveslot start` 遇到未初始化的目录；`config.toml` 不合法（`saveslot start` 在派生进程之前、前台启动与 `saveslot config get` 都这样拒绝，见 4.2）；`invalid_argument`、`validation_failed`、`field_unmatched`、`sql_rejected`、`sql_timeout`、`too_large`、`derived_readonly`、`revoked`、`not_in_this_version`、`import_rejected`、`rate_limited`（`quota`）、`referenced`（后续）、`lease_expired`（后续） |
+| 5 | 请求被拒 | `saveslot init` 遇到已初始化的目录或正在运行的服务（什么都不改）、`saveslot start` 遇到未初始化的目录，或服务起来之后发现存储格式过旧或过新（要先处理存储，重试没用）；`config.toml` 不合法（`saveslot start` 在派生进程之前、前台启动与 `saveslot config get` 都这样拒绝，见 4.2）；`invalid_argument`、`validation_failed`、`field_unmatched`、`sql_rejected`、`sql_timeout`、`too_large`、`derived_readonly`、`revoked`、`not_in_this_version`、`import_rejected`、`rate_limited`（`quota`）、`referenced`（后续）、`lease_expired`（后续） |
 | 6 | 凭证或权限 | 未登录、凭证文件权限过宽、`unauthenticated`（令牌无效、已吊销、会话过期）、`insufficient_scope`；`saveslot mcp` 的 `SAVESLOT_TOKEN` 没设、为空或不是连接实例令牌（含用户会话令牌） |
-| 7 | 连不上或暂时不可用（稍后重试） | saveslot 服务未运行（`saveslot stop` 例外：没在运行时退出码 0）；`saveslot stop` 时 `/health` 报的 pid 与 `run/saveslot.pid` 不一致，或 `/health` 不应答而 `run/saveslot.lock` 被占着（都不发信号）；`saveslot start` 等不到就绪（进程仍在运行）、套接字不可达、`unavailable`（忙、恢复中、导入中、对拍中、启动中）、`rate_limited`（`busy`）；`saveslot start` 或 `saveslot setup` 启动服务失败，或另一个 `setup` 正在运行 |
+| 7 | 连不上或暂时不可用（稍后重试） | saveslot 服务未运行（`saveslot stop` 例外：没在运行时退出码 0）；`saveslot stop` 时 `/health` 报的 pid 与 `run/saveslot.pid` 不一致，或 `/health` 不应答而 `run/saveslot.lock` 被占着（都不发信号）；`saveslot start` 等不到就绪（进程仍在运行）、服务起来之后自己失败（数据目录不在、内部错误等，原因见 `saveslot status` 与服务日志；格式过旧或过新除外，见 5）、套接字不可达、`unavailable`（忙、恢复中、导入中、对拍中、启动中）、`rate_limited`（`busy`）；`saveslot start` 或 `saveslot setup` 启动服务失败，或另一个 `setup` 正在运行 |
 | 8 | 未执行 | 人在提示中拒绝（含 `saveslot setup` 第 5 步的拒绝：什么都没签发）；非交互式缺 `--yes` 或绑定令牌；`export --encrypt` 没有终端、也没给口令文件或文件描述符 |
 | 9 | 校验发现问题 | `saveslot verify` 报断裂 / 不符，`saveslot verify --replay` 报不一致，`saveslot doctor` 有不通过项（只有提醒时不给 9） |
 | 129 / 130 / 131 / 143 | 被信号停下（128 加信号编号：SIGHUP / SIGINT / SIGQUIT / SIGTERM） | `saveslot setup` 收到这四个信号之一时收尾后按此退出（§3.3 第 8 条） |
