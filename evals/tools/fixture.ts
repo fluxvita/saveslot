@@ -3,7 +3,8 @@
 // instances, the seed calls in order (each write with its idempotency key), then the steps, in
 // order. A script step's calls and an `advance` are made here; an agent step is a person's: the
 // runner says what to say, on which connection, in which session, and waits. The assertions are
-// not judged here. Nothing goes through MCP or an agent.
+// not judged here, but a variant whose assertion levels are not S, H, R or N (./levels.ts) is
+// refused. Nothing goes through MCP or an agent.
 //
 //   node --conditions=source evals/tools/fixture.ts <variant.yaml> <run directory>
 //     [--fixture-only] [--today YYYY-MM-DD]
@@ -48,6 +49,7 @@ import { parse, stringify } from "yaml";
 import { templateDocument } from "../../packages/cli/src/templates.ts";
 import { anchored, cannotRunAnchored, nextAnchoredDays, usesAnchors } from "./anchors.ts";
 import { type RunnerArgs, runnerArgs } from "./args.ts";
+import { badLevels, LEVELS } from "./levels.ts";
 import { pairCalls } from "./pair.ts";
 import { prompt as askPerson } from "./prompt.ts";
 import { cannotRun, dayOf, nextRunDays, offsetHolds, shiftVariant, todayIn } from "./shift.ts";
@@ -102,6 +104,14 @@ const dir = resolve(dirArg);
 if (existsSync(dir)) fail(`${dir} exists: every run starts from a new directory`);
 const text = readFileSync(file, "utf8");
 const original = parse(text) as Variant;
+{
+  const bad = badLevels(original as unknown as Obj);
+  if (bad.length > 0) {
+    fail(
+      `each assertion's level is one of ${LEVELS.join(", ")} (10-evals §2.4); these are not:\n  ${bad.map((b) => `${b.path}: ${JSON.stringify(b.level) ?? "none"}`).join("\n  ")}`,
+    );
+  }
+}
 
 // --- the day it runs (./shift.ts) ----------------------------------------------------------------
 

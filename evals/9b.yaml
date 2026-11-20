@@ -77,7 +77,7 @@ assert:
   calls:
     - level: H
       text: "必须：一次成功的 `saveslot_write`，`insert`；distance 传的是 `{value: 3, unit: mi}`（由 saveslot 换算），或 Agent 自己换算成 4.83 km 左右（±0.01）。"
-    - level: H
+    - level: N
       text: "记录：走了哪条路；Agent 自己换算时的误差。"
   state:
     - level: H
