@@ -12,7 +12,9 @@
 // Not in this version: overdue physical deletions (there are no deletions yet; the check is not
 // shown at all, rather than always passing).
 
-import { access, constants, readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, constants, readdir, readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import {
   checkMode,
   credentialsDir,
@@ -23,7 +25,8 @@ import { autostartFile, jobProgram, type System } from "./autostart.ts";
 import { health } from "./local-request.ts";
 import { daemonVersion } from "./main.ts";
 import { clockBehind, looksSynced, withSession } from "./probes.ts";
-import { pidFile, runDir, socketFile } from "./service.ts";
+import { NODE_FLOOR_TEXT, nodeSupported } from "./runtime.ts";
+import { lastStartFile, pidFile, runDir, socketFile } from "./service.ts";
 import { TEXTS } from "./texts.ts";
 
 export type Verdict = "pass" | "fail" | "remind" | "skipped";
@@ -95,11 +98,55 @@ async function scaled(
   return out;
 }
 
+/** The bytes of the files under `dir`; undefined when it cannot be read. */
+async function sizeOf(dir: string): Promise<number | undefined> {
+  try {
+    let bytes = 0;
+    for (const e of await readdir(dir, { recursive: true, withFileTypes: true })) {
+      if (e.isFile()) bytes += (await stat(join(e.parentPath, e.name))).size;
+    }
+    return bytes;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The last start that became ready (./service.ts `lastStartFile`), when it is of its form. */
+async function lastStart(home: string): Promise<{ ms: number; at: string } | undefined> {
+  try {
+    const v = JSON.parse(await readFile(lastStartFile(home), "utf8")) as Record<string, unknown>;
+    if (typeof v["ms"] !== "number" || !Number.isSafeInteger(v["ms"]) || v["ms"] < 0)
+      return undefined;
+    if (typeof v["at"] !== "string" || Number.isNaN(Date.parse(v["at"]))) return undefined;
+    return { ms: v["ms"], at: new Date(Date.parse(v["at"])).toISOString() };
+  } catch {
+    return undefined;
+  }
+}
+
+/** What `node --version` says of the Node at `path` (`24.22.3`); undefined when it does not say. */
+function versionOf(path: string): Promise<string | undefined> {
+  return new Promise((done) => {
+    execFile(path, ["--version"], { timeout: 5_000, encoding: "utf8" }, (e, out) => {
+      const m = e === null ? /^v(\d+\.\d+\.\d+)\s*$/.exec(out) : null;
+      done(m?.[1]);
+    });
+  });
+}
+
 /** The checks, in order. */
+export interface DoctorOptions {
+  readonly now?: () => number;
+  /** Tests: the Node version taken for this one (`process.versions.node`). */
+  readonly node?: string;
+  /** The hosts' saveslot entries, from the CLI package (the entry package hands it in). */
+  readonly hosts?: () => Promise<readonly Finding[]>;
+}
+
 export async function findings(
   home: string,
   sys: System,
-  o: { readonly now?: () => number } = {},
+  o: DoctorOptions = {},
 ): Promise<Finding[]> {
   const out: Finding[] = [];
   const add = (f: Finding) => out.push(f);
@@ -192,6 +239,19 @@ export async function findings(
     add({ verdict: "pass", item: "data directory", says: data });
   }
 
+  // The Node this saveslot runs on: one `engines` allows.
+  const node = o.node ?? process.versions.node;
+  add(
+    nodeSupported(node)
+      ? { verdict: "pass", item: "runtime", says: `Node ${node}` }
+      : {
+          verdict: "fail",
+          item: "runtime",
+          says: TEXTS.doctorNodeOld(node, NODE_FLOOR_TEXT),
+          fix: TEXTS.doctorNodeFix(NODE_FLOOR_TEXT),
+        },
+  );
+
   // The service: answering, ready, this version, holding the lock.
   const h = await health(socketFile(home));
   if (h === undefined) {
@@ -248,27 +308,47 @@ export async function findings(
       )
         gone.push(p);
     }
+    // The Node it runs, when there: one `engines` allows (./runtime.ts).
+    const jobNode = gone.length === 0 ? job.paths[0] : undefined;
+    const jobVersion = jobNode !== undefined ? await versionOf(jobNode) : undefined;
     add(
-      gone.length === 0
-        ? { verdict: "pass", item: "start at login", says: job.file }
-        : {
+      gone.length > 0
+        ? {
             verdict: "fail",
             item: "start at login",
             says: TEXTS.doctorJobGone(job.file, gone),
             fix: "saveslot service install",
-          },
+          }
+        : jobVersion !== undefined && !nodeSupported(jobVersion)
+          ? {
+              verdict: "fail",
+              item: "start at login",
+              says: TEXTS.doctorJobNodeOld(
+                job.file,
+                jobNode as string,
+                jobVersion,
+                NODE_FLOOR_TEXT,
+              ),
+              fix: TEXTS.doctorJobNodeFix(NODE_FLOOR_TEXT),
+            }
+          : { verdict: "pass", item: "start at login", says: job.file },
     );
   } else if (autostartFile(sys) !== undefined) {
     // No job: nothing to check; said, so that its absence is not read as a pass.
     add({ verdict: "skipped", item: "start at login", says: TEXTS.doctorNoJob });
   }
 
+  // The hosts' entries: each host's own look-up.
+  if (o.hosts !== undefined) for (const f of await o.hosts()) add(f);
+
   // The reminders, from the service when it is ready.
   if (h?.state !== "ready") {
     add({ verdict: "skipped", item: "clock, data scale", says: TEXTS.doctorNeedsService });
     return out;
   }
-  const end = (await withSession(home, "/v1/log/end")) as { recorded_at?: unknown } | undefined;
+  const end = (await withSession(home, "/v1/log/end")) as
+    | { seq?: unknown; recorded_at?: unknown }
+    | undefined;
   const logEnd = typeof end?.recorded_at === "string" ? end.recorded_at : undefined;
   const now = h.eval_clock !== undefined ? Date.parse(h.eval_clock.now) : (o.now ?? Date.now)();
   const behind = clockBehind(logEnd, now);
@@ -281,6 +361,17 @@ export async function findings(
           says: TEXTS.doctorClockBehind(Math.floor(behind / 60_000)),
         },
   );
+  // The tenant as a whole (02-architecture «容量边界与实测数值»): the log's end, the data
+  // directory's size, the last cold start. Said, not judged: no line is drawn for them yet.
+  add({
+    verdict: "pass",
+    item: "data",
+    says: TEXTS.doctorData(
+      typeof end?.seq === "number" ? end.seq : undefined,
+      data !== undefined ? await sizeOf(data) : undefined,
+      await lastStart(home),
+    ),
+  });
   const tables = await scaled(home);
   if (tables === undefined) {
     add({ verdict: "skipped", item: "data scale", says: TEXTS.doctorScaleUnread });
@@ -303,7 +394,7 @@ export async function doctor(
   home: string,
   io: DoctorIO,
   sys: System,
-  o: { readonly now?: () => number } = {},
+  o: DoctorOptions = {},
 ): Promise<number> {
   const all = await findings(home, sys, o);
   for (const f of all) {

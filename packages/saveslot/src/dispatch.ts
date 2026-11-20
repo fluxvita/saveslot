@@ -2,7 +2,7 @@
 // it only dispatches. The service commands go to the `daemon` package, every other command to the
 // `cli` package; `setup`, which spans both, to the `cli` package with the `daemon` package's steps.
 
-import { type CliIO, run } from "@fluxvita/saveslot-cli";
+import { type CliIO, doctorHosts, run } from "@fluxvita/saveslot-cli";
 import {
   daemonVersion,
   homeProblem,
@@ -40,10 +40,13 @@ export function dispatch(
   }
   const [first, ...rest] = argv;
   if (first !== undefined && SERVICE.has(first as ServiceName)) {
-    return serviceCommand(first as ServiceName, rest, {
-      out: (l) => io.out(`${l}\n`),
-      err: (l) => io.err(`${l}\n`),
-    });
+    const cmdIO = { out: (l: string) => io.out(`${l}\n`), err: (l: string) => io.err(`${l}\n`) };
+    // doctor: the hosts' entries are the CLI's to look at (06 §3 step 7).
+    return first === "doctor"
+      ? serviceCommand("doctor", rest, cmdIO, undefined, {
+          hosts: () => doctorHosts({ env, entry: io.entry }),
+        })
+      : serviceCommand(first as ServiceName, rest, cmdIO);
   }
   // `setup` spans both: the service's steps are the daemon package's own code (06 §3.3).
   return run(argv, env, io, {

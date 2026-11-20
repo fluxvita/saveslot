@@ -75,6 +75,7 @@ import {
   PgliteStoreError,
 } from "@fluxvita/saveslot-store-pglite";
 import { redactTokens } from "./mcp-record.ts";
+import { nodeSupported } from "./runtime.ts";
 
 export type ServiceState = "starting" | "ready" | "stopping" | "stopped" | "failed";
 
@@ -145,6 +146,11 @@ export const socketFile = (home: string): string => join(runDir(home), "saveslot
  * is ready. Lost, `saveslot status` only says one line less.
  */
 export const lastFailureFile = (home: string): string => join(runDir(home), "last-failure.json");
+/**
+ * The last start that became ready: how long it took and when (0600; `saveslot doctor` reads it).
+ * Local running state only: lost or unreadable, doctor says there is no record.
+ */
+export const lastStartFile = (home: string): string => join(runDir(home), "last-start.json");
 /**
  * The evaluation results (02-architecture §11): with the test clock, each MCP tool call's
  * connection instance, tool, arguments and contract result, one JSON line each; new at each start
@@ -240,6 +246,7 @@ async function removeIfStill(path: string, id: FileId | undefined): Promise<void
  * the home's lock).
  */
 export async function runService(o: RunServiceOptions): Promise<RunningService> {
+  const begun = performance.now();
   const log =
     o.log ??
     ((line: string) => {
@@ -392,6 +399,11 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     resolveExited({ code: 1, reason: why });
     return handle;
   };
+
+  // The Node it runs on, and a warning below the floor (./runtime.ts): it starts all the same.
+  say("runtime", { node: process.versions.node });
+  if (!nodeSupported(process.versions.node))
+    say("runtime_below_floor", { node: process.versions.node });
 
   // The home must exist: `saveslot init` makes it.
   try {
@@ -583,6 +595,12 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     }
     // Gone before the service says it is ready: whoever sees it ready finds no failure kept.
     await rm(lastFailureFile(o.home), { force: true });
+    // How long this start took, from the call to ready; not written is no failure of the start.
+    await writeFile(
+      lastStartFile(o.home),
+      `${JSON.stringify({ ms: Math.round(performance.now() - begun), at: new Date().toISOString() })}\n`,
+      { mode: 0o600 },
+    ).catch(() => say("last_start_not_written", {}));
     state = "ready";
     served = true;
     say("ready");

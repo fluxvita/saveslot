@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initLocalHome } from "@fluxvita/saveslot-service";
 import { osFileLock } from "@fluxvita/saveslot-store-pglite";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import {
   AUTOSTART_LABEL,
@@ -31,6 +31,10 @@ import {
 import { autostartCommand, serviceCommand } from "./commands.ts";
 import { main, supervisedExit } from "./main.ts";
 import { lockDir } from "./service.ts";
+
+// Two of its homes hold a store (some 40 MB in a thousand files), removed synchronously at the
+// end: under the load of other runs that takes more than the default 10 seconds.
+vi.setConfig({ hookTimeout: 120_000 });
 
 const root = mkdtempSync(join(tmpdir(), "saveslot-autostart-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));

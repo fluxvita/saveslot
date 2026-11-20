@@ -648,6 +648,19 @@ export const TEXTS = {
     'Done. In Claude Code, type /mcp__saveslot__overview (shown as /saveslot:overview in the / menu); in any host, you can ask "what is in saveslot?"',
   ),
   stepNoHosts: s("no host found on this computer: saveslot connect <host> adds one"),
+  // `saveslot doctor`'s lines for the hosts (06 §3 step 7).
+  doctorHostNoLookup: s("not checked: it has no look-up command to ask"),
+  doctorHostNoEntry: s("no saveslot entry (saveslot setup or saveslot connect adds one)"),
+  doctorHostLookupHung: s("its look-up (mcp get saveslot) did not end in time; not checked"),
+  doctorHostSelfUnknown: s(
+    "not checked: this saveslot's own path cannot be told (run it by its absolute path, not through npx)",
+  ),
+  doctorHostOk: (path: string) => s(`its saveslot entry runs ${path}`),
+  doctorHostPathNotSeen: (path: string) =>
+    s(
+      `its saveslot entry does not show ${path}: it may run another saveslot, or one no longer there. If saveslot works in the host, leave it`,
+    ),
+  doctorHostFix: (remove: string) => s(`${remove}, then saveslot setup`),
   hostDisplay: (host: string) => s(HOST_NAMES.get(host) ?? host),
   hostManual: (host: string) =>
     s(

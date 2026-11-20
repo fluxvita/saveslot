@@ -2,18 +2,33 @@
 // 9 only for a failure. On homes made here, a start-at-login job of a system the test makes (no
 // launchctl, no systemctl), and a service run in this process.
 
-import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
 import { osFileLock } from "@fluxvita/saveslot-store-pglite";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { installAutostart, type System } from "./autostart.ts";
 import { doctor, type Finding, findings } from "./doctor.ts";
+import { homeTemplate } from "./home-copy.fixture.ts";
 import { daemonVersion } from "./main.ts";
+import { withSession } from "./probes.ts";
+import { NODE_FLOOR_TEXT, nodeSupported } from "./runtime.ts";
 import { runService } from "./service.ts";
 import { TEXTS } from "./texts.ts";
+
+// Each home holds a store (some 40 MB in a thousand files), removed synchronously at the end:
+// under the load of other runs that takes more than the default 10 seconds, as in start.test.ts.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
 
 const root = mkdtempSync(join(tmpdir(), "saveslot-doctor-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -25,17 +40,25 @@ function system(platform: NodeJS.Platform = "darwin"): System {
   return { platform, userHome, uid: 501, env: {}, run: async () => ({ code: 0 }) };
 }
 
-async function initialized(o: { dataDir?: string } = {}): Promise<string> {
-  const home = join(root, `h${++n}`);
-  await initLocalHome({
-    home,
-    backend: testBackend(),
-    lock: osFileLock,
-    now: new Date().toISOString(),
-    ...(o.dataDir !== undefined ? { dataDir: o.dataDir } : {}),
-  });
-  return home;
+/** A home as `saveslot init` makes it, made once; each case takes a copy (home-copy.fixture.ts). */
+const template = homeTemplate(join(root, "template"), (home) =>
+  initLocalHome({ home, backend: testBackend(), lock: osFileLock, now: new Date().toISOString() }),
+);
+
+/** An initialized home of the case's own: a copy of the template. */
+function initialized(): Promise<string> {
+  return template.copy(join(root, `h${++n}`));
 }
+
+/**
+ * One initialized home for the cases that only read it (no service started, nothing changed in
+ * it): made once, on first use.
+ */
+let sharedHome: Promise<string> | undefined;
+const shared = (): Promise<string> => {
+  sharedHome ??= initialized();
+  return sharedHome;
+};
 
 const by = (all: readonly Finding[], item: string) => all.filter((f) => f.item === item);
 const verdicts = (all: readonly Finding[]) =>
@@ -61,6 +84,7 @@ describe("doctor without a service", () => {
       credentials: "pass",
       "run directory": "pass",
       "data directory": "pass",
+      runtime: nodeSupported(process.versions.node) ? "pass" : "fail",
       service: "fail",
       "start at login": "skipped",
       "clock, data scale": "skipped",
@@ -92,9 +116,8 @@ describe("doctor without a service", () => {
   }, 60_000);
 
   it("the data directory moved away, or in a synced folder: fails", async () => {
-    const data = join(root, `d${++n}`);
-    const moved = await initialized({ dataDir: data });
-    renameSync(data, `${data}-moved`);
+    const moved = await initialized();
+    renameSync(join(moved, "data"), join(moved, "data-moved"));
     expect(by(await findings(moved, system()), "data directory")[0]).toMatchObject({
       verdict: "fail",
       fix: TEXTS.doctorDataMissingFix,
@@ -102,7 +125,14 @@ describe("doctor without a service", () => {
     const box = join(root, `s${++n}`, "Dropbox");
     mkdirSync(box, { recursive: true });
     const synced = join(box, "saveslot-data");
-    const home = await initialized({ dataDir: synced });
+    const home = await initialized();
+    // As `saveslot init --data-dir` records a data directory elsewhere (local-tenant.ts).
+    renameSync(join(home, "data"), synced);
+    const tenant = join(home, "control", "tenant.json");
+    writeFileSync(
+      tenant,
+      JSON.stringify({ ...JSON.parse(readFileSync(tenant, "utf8")), data_dir: synced }),
+    );
     expect(by(await findings(home, system()), "data directory")[0]).toMatchObject({
       verdict: "fail",
       fix: TEXTS.doctorSyncedFix,
@@ -130,29 +160,86 @@ describe("doctor without a service", () => {
     }
   }, 60_000);
 
+  it("the runtime: this Node passes; one below the floor fails, to upgrade", async () => {
+    const home = await shared();
+    expect(by(await findings(home, system()), "runtime")[0]?.verdict).toBe(
+      nodeSupported(process.versions.node) ? "pass" : "fail",
+    );
+    const old = by(await findings(home, system(), { node: "24.14.0" }), "runtime")[0];
+    expect(old).toMatchObject({ verdict: "fail", fix: TEXTS.doctorNodeFix(NODE_FLOOR_TEXT) });
+    expect(old?.says).toContain("Node 24.14.0");
+  }, 60_000);
+
+  it("a start-at-login job whose Node is below the floor: fails, to install Node and the job anew", async () => {
+    const home = await shared();
+    const sys = system("darwin");
+    const old = join(root, `old-node-${++n}`);
+    writeFileSync(old, "#!/bin/sh\necho v24.14.0\n", { mode: 0o755 });
+    const entry = join(root, `entry${n}.js`);
+    writeFileSync(entry, "");
+    await installAutostart(
+      { argv: [old, entry, "--home", home, "--supervised"], log: join(root, `log${n}`) },
+      { out: () => {}, err: () => {} },
+      sys,
+    );
+    const f = by(await findings(home, sys), "start at login")[0];
+    expect(f).toMatchObject({ verdict: "fail", fix: TEXTS.doctorJobNodeFix(NODE_FLOOR_TEXT) });
+    expect(f?.says).toContain("Node 24.14.0");
+  }, 60_000);
+
   it("a platform with no local service: no start-at-login line", async () => {
-    const home = await initialized();
+    const home = await shared();
     expect(by(await findings(home, system("win32")), "start at login")).toEqual([]);
+  }, 60_000);
+});
+
+describe("doctor's hosts, from the entry package", () => {
+  it("their lines come after the start at login, as given", async () => {
+    const home = await shared();
+    const all = await findings(home, system(), {
+      hosts: async () => [{ verdict: "remind", item: "host Codex", says: "x", fix: "y" }],
+    });
+    const items = all.map((f) => f.item);
+    expect(items.indexOf("host Codex")).toBe(items.indexOf("start at login") + 1);
   }, 60_000);
 });
 
 describe("doctor with the service", () => {
   it("ready, this version, holding the lock; the clock behind is a reminder, not a failure (0)", async () => {
     const home = await initialized();
-    const s = await runService({ home, version: daemonVersion(), signals: false, log: () => {} });
+    const lines: string[] = [];
+    const s = await runService({
+      home,
+      version: daemonVersion(),
+      signals: false,
+      log: (l) => lines.push(l),
+    });
     try {
+      // The start says the Node it runs on.
+      expect(lines.some((l) => l.endsWith(` runtime node=${process.versions.node}`))).toBe(true);
       const all = await findings(home, system());
       expect(verdicts(all)).toMatchObject({
         service: "pass",
         version: "pass",
         lock: "pass",
         clock: "pass",
+        data: "pass",
         "data scale": "pass",
       });
-      // The log's end 10 minutes ahead of this clock.
+      // The start just made is on record; once its record is gone, doctor says so.
+      expect(by(all, "data")[0]?.says).toMatch(
+        /^the log's end at #\d+; the data directory \d+\.\d MiB; the last cold start \d+\.\d s \(\d{4}-/,
+      );
+      rmSync(join(home, "run", "last-start.json"));
+      expect(by(await findings(home, system()), "data")[0]?.says).toContain(
+        "no record of a cold start",
+      );
+      // The log's end 10 minutes ahead of this clock. Taken from the home: a copy's last event
+      // is the template's, made before the case ran.
+      const end = (await withSession(home, "/v1/log/end")) as { recorded_at: string };
       const out: string[] = [];
       const code = await doctor(home, { out: (l) => out.push(l), err: () => {} }, system(), {
-        now: () => Date.now() - 10 * 60_000,
+        now: () => Date.parse(end.recorded_at) - 10 * 60_000,
       });
       expect(code).toBe(0);
       expect(out.join("\n")).toMatch(

@@ -64,7 +64,7 @@ import {
   setConfig,
   setValue,
 } from "./config.ts";
-import { doctor } from "./doctor.ts";
+import { type DoctorOptions, doctor } from "./doctor.ts";
 import { health } from "./local-request.ts";
 import { daemonVersion, main } from "./main.ts";
 import { runBridge } from "./mcp-bridge.ts";
@@ -568,6 +568,8 @@ export async function serviceCommand(
   io: CommandIO,
   /** Tests: the system `service` runs its commands on (never launchctl or systemctl in a test). */
   sys: System = realSystem(),
+  /** `doctor`: what the entry package adds (the hosts' entries, from the CLI package). */
+  more: DoctorOptions = {},
 ): Promise<number> {
   let values: Record<string, string | boolean | undefined>;
   let positionals: string[];
@@ -648,7 +650,7 @@ export async function serviceCommand(
     case "service":
       return autostartCommand(home, positionals, io, sys);
     case "doctor":
-      return doctor(home, io, sys);
+      return doctor(home, io, sys, more);
   }
 }
 

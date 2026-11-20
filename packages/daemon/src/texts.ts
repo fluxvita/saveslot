@@ -152,6 +152,9 @@ export const TEXTS = {
   doctorCredentialsFix: (home: string) =>
     `chmod 700 ${home}/credentials and chmod 600 ${home}/credentials/session; if the session file is gone: saveslot stop, then saveslot init --rotate-session`,
   doctorRunOk: "run/ 0700: the socket and the lock are this user's only",
+  doctorNodeOld: (node: string, floor: string) =>
+    `Node ${node} is below what saveslot needs (${floor}): JSON.parse there can misread an escaped object key`,
+  doctorNodeFix: (floor: string) => `install Node ${floor}, then run saveslot from it`,
   doctorNoTenantDirectory: "the home's tenant directory (control/tenant.json) cannot be read",
   doctorDataMissing: (dir: string) => `${dir}, the data directory the home records, is not there`,
   doctorDataMissingFix:
@@ -175,6 +178,10 @@ export const TEXTS = {
   doctorLockFix: "saveslot stop, then saveslot start",
   doctorJobGone: (file: string, gone: readonly string[]) =>
     `${file} runs ${gone.join(" and ")}, which ${gone.length === 1 ? "is" : "are"} not there (a Node or saveslot moved or removed)`,
+  doctorJobNodeOld: (file: string, node: string, version: string, floor: string) =>
+    `${file} runs ${node}, which is Node ${version}: below what saveslot needs (${floor})`,
+  doctorJobNodeFix: (floor: string) =>
+    `install Node ${floor}, then run saveslot service install with it to write the job anew`,
   doctorNoJob:
     "not installed (saveslot service install); an MCP host starts the service when it connects",
   doctorNeedsService: "not checked: the saveslot service is not ready",
@@ -182,6 +189,20 @@ export const TEXTS = {
   doctorClockBehind: (minutes: number) =>
     `this computer's clock is ${minutes} minutes behind the log's end; new events are recorded at the log's end until it catches up. Check the system clock`,
   doctorScaleUnread: "not checked: the catalog could not be read",
+  doctorData: (
+    seq: number | undefined,
+    bytes: number | undefined,
+    start: { ms: number; at: string } | undefined,
+  ) =>
+    [
+      seq !== undefined ? `the log's end at #${seq}` : "the log's end not to be had",
+      bytes !== undefined
+        ? `the data directory ${(bytes / 1024 / 1024).toFixed(1)} MiB`
+        : "the data directory's size not to be had",
+      start !== undefined
+        ? `the last cold start ${(start.ms / 1000).toFixed(1)} s (${start.at})`
+        : "no record of a cold start",
+    ].join("; "),
   doctorScaleOk: "every table within the comfortable line",
   doctorScale: (table: string, rows: number, level: string) =>
     `${table}: ${rows} rows, ${level === "beyond_tested" ? "beyond the largest size tested" : "over the comfortable line"}; saveslot is built for records at a person's pace: keep summaries, and the raw series where it comes from`,

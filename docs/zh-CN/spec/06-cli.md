@@ -434,7 +434,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `saveslot start` / `saveslot stop` | 启动 / 停止 saveslot 服务 | `--foreground`、`--restored`（数据目录刚从备份恢复：先走恢复流程；P3）、`--eval-clock`（测试时钟，只用于评测，第 3 节第 3 步） | pid、监听地址；走了恢复流程时写明补删了几项；`stop` 时有宽限期内的删除就提醒"到期时若 saveslot 没在运行，物理删除在下次启动时执行" | P1（`--restored` P3） |
 | `saveslot status` | 进程状态 + 概况 | — | 版本、数据目录、监听、单写者锁（经 `/health` 的 `writer_lock`）、启动时补跑了哪些到期任务；待处理事项数（经 `pending`）；逾期未物理删除的删除；提醒：系统时钟比日志末端的记录时刻早 5 分钟以上（日志末端经 `log.end`，与待处理数一样带用户会话；取不到时这一条不出，也不报错）、行数超过舒适线或实测线的表；服务没在运行而上一次启动失败了时，加一行写出失败的原因码与时刻（`run/last-failure.json`，服务就绪后删掉；只有原因码与时刻）；以测试时钟运行时，第一行写明测试时钟的当前时刻，时钟落后的提醒也按它算 | P1（删除相关 P3；规模提醒随 P2 的目录概况） |
 | `saveslot mcp` | 给 MCP 宿主的 stdio 桥 | 令牌取环境变量 `SAVESLOT_TOKEN`；`--record <文件>`（调用记录，只用于评测，[`05-surfaces.md`](05-surfaces.md) §11） | 不给人看；固定连本地；saveslot 服务未运行时先拉起（细节见 [`05-surfaces.md`](05-surfaces.md) §11「本机的 stdio 桥」） | P1 |
-| `saveslot service install` / `uninstall` | 开机自启 | — | 写入的系统服务位置 | P6 |
+| `saveslot service install` / `uninstall` | 开机自启 | — | 写入的系统服务位置。`saveslot doctor` 检查作业记的 Node 与 saveslot 入口还在不在、Node 版本够不够，不满足时给出重新 install 的命令 | P6 |
 | `saveslot doctor` | 逐项自检（第 3 节第 7 步） | — | 每项通过 / 不通过 / 提醒，不通过的附修法；提醒（时钟落后、数据规模）不算不通过 | P6 |
 
 **服务器自部署的运维命令**（P5；在服务器上跑，由 `daemon` 提供，不是契约操作；我们的云服务用的是同一组）：
