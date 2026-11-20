@@ -4,6 +4,7 @@
 
 import type {
   ChangesBlock,
+  ChangeTarget,
   CompiledSchema,
   FieldType,
   RefTarget,
@@ -35,7 +36,11 @@ export type SchemaDetailCode =
   // A derived table's rule (11-restricted-sql.md «拒绝时报什么», derived rule column).
   | "rule_sql_rejected"
   | "nondeterministic_function"
-  | "unit_inference_failed";
+  | "unit_inference_failed"
+  // A change to an existing slot (04-contract «schema_draft» 四个与数据有关的编译明细码).
+  | "still_referenced"
+  // A new table or field named what another of the same draft is renamed away from.
+  | "name_renamed_away";
 
 /** The rules of an alias (07 «schema 文档格式» 别名), in the order a finding takes the first broken. */
 export type AliasRule =
@@ -70,6 +75,11 @@ export interface SchemaDetail {
   readonly line?: number;
   readonly sql_reason?: SqlReason;
   readonly suggestion?: string;
+  /**
+   * `still_referenced`: what still depends on the table to drop, as positions in the document
+   * (`tables/1/fields/0`) or, for a table the draft does not list, as names (`runs.account`).
+   */
+  readonly referenced_by?: readonly string[];
 }
 
 export type CompileError =
@@ -89,6 +99,25 @@ export type CompileError =
     }
   /** In v1, but not compiled yet: changing a slot, rule forms not compiled yet. Not for callers to see as such. */
   | { readonly code: "not_implemented"; readonly what: string; readonly param: string };
+
+/** What compiling a change to an existing slot adds to the errors of a new slot's. */
+export type ChangeError =
+  | CompileError
+  /** A field of the slot's current version the draft neither matched nor drops (07 «字段匹配规则»). */
+  | {
+      readonly code: "field_unmatched";
+      readonly fields: readonly {
+        readonly table: string;
+        readonly id: string;
+        readonly name: string;
+      }[];
+    }
+  /** `base_version` is not the current version (04-contract «schema_draft»). */
+  | {
+      readonly code: "draft_outdated";
+      readonly reason: "base_version";
+      readonly current_sv: number;
+    };
 
 export type CompileWarning =
   | {
@@ -131,6 +160,33 @@ export type CompileResult =
       readonly warnings: readonly CompileWarning[];
     }
   | { readonly ok: false; readonly error: CompileError };
+
+export interface CompileChangeInput {
+  /** The draft as the caller gave it (parsed JSON), `base_version` the version it was written on. */
+  readonly document: unknown;
+  /** The definition of the slot's current version, which the draft's `slot` names. */
+  readonly current: CompiledSchema;
+  /** The names of the tenant's slots, this one included, for `duplicate_name`. */
+  readonly existingSlotNames: readonly string[];
+  /** The next table number free in the tenant: table IDs are unique in the tenant and never reused. */
+  readonly nextTableNumber: number;
+  /** The slot policy's `auto_apply` classes. */
+  readonly autoApply: readonly string[];
+  /** Whether nobody but the submitter uses the table or field (07 «改名自动生效的前提»). */
+  readonly unused: (target: ChangeTarget) => boolean;
+}
+
+export type CompileChangeResult =
+  | {
+      readonly ok: true;
+      readonly compiled: CompiledSchema;
+      readonly changes: ChangesBlock;
+      /** `applied` when every change is automatic under the policy, else `pending`. */
+      readonly outcome: "applied" | "pending";
+      readonly targetVersion: number;
+      readonly warnings: readonly CompileWarning[];
+    }
+  | { readonly ok: false; readonly error: ChangeError };
 
 // --- the document, after its form is checked ---------------------------------------------------
 

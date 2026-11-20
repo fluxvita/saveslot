@@ -594,6 +594,8 @@
 | `class` | 类别：`create`（新建 slot、新增表）/ `metadata` / `deterministic`。保留值：`reextract`。凡经 `restructure_unused` 生效的改动（从未被写入、没人在用的表上的改动，含表一级的结构改动与字段一级的 `drop_field`、`change_type`、`add_required_field`、`change_time_field` 等），一律记 `metadata`：这张表没有已有的值，也没有转换，`migrate` 不必给。`class` 记的是这次切换实际做了什么，不是改动码的固有属性。确认时这张表已被写入的，整份草稿不能确认（§4.5） |
 | `compatible_with_old_writes`、`destructive`、`auto` | 编译时的判定结果，照记。`target.outcome` 由各项的 `auto` 得出（全部为真才是 `applied`）；重放读记下的值，不按当时的策略重算 |
 
+`changes` 的次序与草稿的写法无关，同一份改动总是同一个次序：slot 一级的改动；然后现有的表按表 ID，每张表先表一级的改动、再按字段 ID 的字段改动；然后被删的表按表 ID；最后新增的表按分到的 ID。同一个目标上的几项按改动码在 [`04-contract-types.md`](04-contract-types.md) 5.3 `SchemaChangeCode` 里列出的次序。（表 ID、字段 ID 按数字部分比较。）
+
 每个 slot 的第一条 `schema.compiled` 总含一项 `create_slot`（上例的前两项是新建 slot 的情形，后两项是之后某次修改的情形，放在一起只为列全写法）。
 
 影响预览里的行数、试跑样例是提交时的估计，不进事件。

@@ -55,7 +55,7 @@ import { fold, refTable, validate } from "./validate.ts";
 const MAX_SHORT_NUMBER = 999_999_999;
 
 /** Field and table IDs by name, for the references inside the definition. */
-interface Ids {
+export interface Ids {
   readonly table: ReadonlyMap<DocTable | DocDerivedTable, TableId>;
   readonly field: (t: DocTable, name: string) => FieldId;
 }
@@ -92,7 +92,8 @@ function compileField(f: DocField, index: number, doc: DocSlot, ids: Ids): Compi
   return out as unknown as CompiledBaseField;
 }
 
-function compileTable(t: DocTable, doc: DocSlot, ids: Ids): CompiledBaseTable {
+/** `sv`: the version the table is built in; its physical name carries it (09 §7 physical). */
+export function compileTable(t: DocTable, doc: DocSlot, ids: Ids, sv = 1): CompiledBaseTable {
   const id = ids.table.get(t) as TableId;
   const ref = (name: string) => ids.field(t, name);
   const out: Record<string, unknown> = {
@@ -103,7 +104,7 @@ function compileTable(t: DocTable, doc: DocSlot, ids: Ids): CompiledBaseTable {
     ...(t.aliases !== undefined && t.aliases.length > 0 ? { aliases: [...t.aliases] } : {}),
     time: t.time.type === "event" ? { type: "event", field: ref(t.time.field) } : t.time,
     // A new physical table: `since` is this version and left out (09 §7 physical).
-    physical: { table: `t_${id}_v1` },
+    physical: { table: `t_${id}_v${sv}` },
     fields: t.fields.map((f, i) => compileField(f, i, doc, ids)),
   };
   if (t.entity_key !== undefined) out["entity_key"] = t.entity_key.map(ref);

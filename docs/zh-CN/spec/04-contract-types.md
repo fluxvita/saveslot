@@ -2068,7 +2068,7 @@ interface ValidationDetail {
   allowed_units?: string[]; allowed_values?: string[]; min?: string; max?: string;
   example?: Value;               // type_mismatch：这个字段类型的一个合法取值，照 ops 的 set 里的写法。与这次给的值无关；针对这次的值算出的改法是 suggestion，两者可以同时出现
   rows?: number; samples?: TargetRef[];   // backfill_required：违反的行数与样例
-  referenced_by?: string[];      // still_referenced：依赖它的对象在 schema 文档里的位置（同 path 的写法）
+  referenced_by?: string[];      // still_referenced：依赖方。草稿里列出了它时是它在文档里的位置（同 path 的写法）；没列出时是名字（表.字段，派生表给表名）
   reason?: "not_required"        // 只用于 key_not_applicable 落在事件类表的 time.field 上：它指的字段不是必填
     | "count" | "length" | "empty" | "control"
     | "surrounding_space" | "repeat" | "name";   // 只用于 alias_invalid：违反的是哪一条。count 超过 8 个、length 超过 64 个字符（两者都带 max）、empty 规范化后为空、control 含换行（含 U+2028、U+2029）或控制字符、surrounding_space 首尾是空白、repeat 与同一对象里排在前面的别名重复、name 与同一作用域里仍可解析的名字相同；一项同时违反几条时按这个顺序取第一条
@@ -2104,6 +2104,7 @@ type ValidationDetailCode =
   | "backfill_const_required"       // 新增必填字段、或把可选改成必填：一律必须给常量形式的 backfill（不看表里有没有行）
   | "backfill_both_forms"           // backfill 的常量形式与表达式形式同时给了
   | "still_referenced"              // 要删的表或字段仍被依赖（ref、规则、entity_key、external_key、time.field、duplicate_keys、together）
+  | "name_renamed_away"             // 新增的表或字段用了同一份草稿里另一项改掉的旧名：它指旧的那个还是新的，不猜
   | "external_key_table_kind"       // external_key 声明在状态类表或派生表上
   | "external_key_field_type"       // 来源键字段的类型不是 text、enum、integer
   | "external_key_existing_field"   // 写入过的表上加来源键，键字段不是同一份草稿新增的字段

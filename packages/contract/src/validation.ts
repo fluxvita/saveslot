@@ -35,6 +35,7 @@ export const VALIDATION_DETAIL_CODES = [
   "backfill_const_required",
   "backfill_both_forms",
   "still_referenced",
+  "name_renamed_away",
   "external_key_table_kind",
   "external_key_field_type",
   "external_key_existing_field",
@@ -96,7 +97,10 @@ export interface ValidationDetail {
   rows?: number;
   /** `backfill_required`: sample rows. */
   samples?: TargetRef[];
-  /** `still_referenced`: positions of the dependents in the schema document. */
+  /**
+   * `still_referenced`: the dependents, as positions in the schema document when the draft lists
+   * them, else as names (`table.field`; a derived table by its name).
+   */
   referenced_by?: string[];
   sql_reason?: SqlReason;
   /** A machine-usable fix, such as a replacement SQL fragment. */

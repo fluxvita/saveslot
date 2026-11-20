@@ -69,7 +69,7 @@ const DESCRIPTION_MAX = 500;
 const TIME_FIELD_TYPES = ["date", "zoned_datetime"];
 
 /** Compares two canonical decimals. */
-function compareDecimal(a: string, b: string): number {
+export function compareDecimal(a: string, b: string): number {
   const frac = (s: string) => s.split(".")[1]?.length ?? 0;
   const scale = Math.max(frac(a), frac(b));
   const big = (s: string) => {
