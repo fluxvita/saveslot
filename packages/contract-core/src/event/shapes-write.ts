@@ -1,10 +1,11 @@
 // Block shape checks of a write's events (docs/zh-CN/spec/09-event-format.md §5.6 `source.recorded`,
-// §5.7 `write.head`, `write.base` and `write.derived`, §5.8 the pending item events), shape by shape,
+// §5.7 `write.head`, `write.base` and `write.derived`, §5.8 the pending item events, §5.10
+// `premise.changed`), shape by shape,
 // as the types in ./blocks.ts give them. Shapes only: whether a field ID exists in the schema, or whether a
 // value fits the field's type, is the kernel's check.
 //
-// Not here yet, so still `unsupported`: the blocks of later phases (`refs`, `baseline`, the premise
-// blocks, `duplicate`, `matched`).
+// Not here yet, so still `unsupported`: the blocks of later phases (`refs`, `baseline`,
+// `duplicate`, `matched`).
 
 import { check, type Issues, isObject, type Json, keys, type ShapeChecker, str } from "./check.ts";
 import {
@@ -14,6 +15,9 @@ import {
   FIELD_STATUSES,
   INTENTS,
   LITERAL_RESULTS,
+  PREMISE_RANGES,
+  PREMISE_REASONS,
+  PREMISE_VER_BASES,
   REFRESH_CAUSES,
   SOURCE_KINDS,
   SOURCE_LEVELS,
@@ -325,6 +329,71 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
   },
   RawValue(v, at, issues) {
     value(v, at, issues, true);
+  },
+  // §5.7 `ops/<i>/premises/<j>`: a target, its fields (absent: the whole row), the version seen, the
+  // kind of business time and the state when written. A row (an event or timeless table) has no
+  // business time, so `whole`; an entity (a state table) never. A declaration that saw its premise
+  // already changed names the reason and the first op after the seen version that changed it.
+  Premise(v, at, issues) {
+    const opt = ["row", "entity", "fields", "reason", "since"];
+    if (!keys(v, at, ["table", "ver", "range", "state"], opt, issues)) return;
+    tableTarget(v, at, issues);
+    if ("fields" in v) WRITE_SHAPES["FieldIdList"]?.(v["fields"], `${at}.fields`, issues);
+    const ver = v["ver"];
+    if (keys(ver, `${at}.ver`, ["op", "restore_count", "basis"], [], issues)) {
+      check(int(ver["op"]), `${at}.ver`, "op", issues);
+      check(int(ver["restore_count"]), `${at}.ver`, "restore_count", issues);
+      check(oneOf(PREMISE_VER_BASES, ver["basis"]), `${at}.ver`, "basis", issues);
+    }
+    check(oneOf(PREMISE_RANGES, v["range"]), at, "range", issues);
+    if (oneOf(PREMISE_RANGES, v["range"]))
+      check((v["range"] === "whole") === "row" in v, at, "range whole exactly on a row", issues);
+    if (v["state"] === "current") {
+      check(
+        !("reason" in v) && !("since" in v),
+        at,
+        "reason or since on a current premise",
+        issues,
+      );
+    } else if (v["state"] === "changed") {
+      check(oneOf(PREMISE_REASONS, v["reason"]), at, "reason", issues);
+      check(int(v["since"]), at, "since", issues);
+      const seen = isObject(ver) ? ver["op"] : undefined;
+      if (int(v["since"]) && int(seen))
+        check(
+          (v["since"] as number) > (seen as number),
+          at,
+          "since after the version seen",
+          issues,
+        );
+    } else issues.push(`${at}: state`);
+  },
+  // §5.7 `ops/<i>/premise_valid/<j>`: a point or a stretch, aligned to the target's table; `deps`
+  // when it was taken from another contribution.
+  PremiseValid(v, at, issues) {
+    const which = isObject(v) && "at" in v ? "at" : "during";
+    if (!keys(v, at, [which], ["deps"], issues)) return;
+    if (which === "at") check(point(v["at"]), at, "at", issues);
+    else interval(v["during"], `${at}.during`, issues);
+    if ("deps" in v) list(v["deps"], `${at}.deps`, issues, contribution, true);
+  },
+  // §5.7 `ops/<i>/premise_covers`: absent when there are none, so never empty; each item once,
+  // an item being (event, field or existence, k) whatever order its keys are written in.
+  PremiseCovers(v, at, issues) {
+    list(v, at, issues, contribution, true);
+    if (Array.isArray(v)) {
+      const seen = v.map((x) =>
+        isObject(x)
+          ? "existence" in x
+            ? `${String(x["event"])}/existence/${String(x["existence"])}`
+            : `${String(x["event"])}/${String(x["field"])}/${String(x["k"])}`
+          : JSON.stringify(x),
+      );
+      check(new Set(seen).size === seen.length, at, "an item twice", issues);
+    }
+  },
+  PremisesCleared(v, at, issues) {
+    check(v === true, at, "premises_cleared", issues);
   },
   FieldIdList(v, at, issues) {
     // Absent when there are none (§5.7): never empty.
@@ -756,19 +825,68 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     if (!keys(v, at, ["hash"], [], issues)) return;
     check(str(v["hash"]) && isHash(v["hash"]), at, "hash", issues);
   },
+
+  // §5.10 premise.changed: a target whose value changed, the event that changed it, and the
+  // declarations that changed state. The three lists are absent when empty, and a block has at
+  // least one; a declaration is in one of them once.
+  PremiseTarget(v, at, issues) {
+    const lists = ["changed", "matched", "repointed"];
+    if (!keys(v, at, ["table", "by_event"], ["row", "entity", ...lists], issues)) return;
+    tableTarget(v, at, issues);
+    check(seq(v["by_event"]), at, "by_event", issues);
+    check(
+      lists.some((k) => k in v),
+      at,
+      "none of changed, matched, repointed",
+      issues,
+    );
+    const named: string[] = [];
+    for (const k of lists) {
+      if (!(k in v)) continue;
+      const extra = k === "changed" ? ["reason"] : [];
+      list(
+        v[k],
+        `${at}.${k}`,
+        issues,
+        (d, dat, dis) => {
+          if (!keys(d, dat, ["op", "i", "j", ...extra], [], dis)) return;
+          check(int(d["op"]), dat, "op", dis);
+          check(int(d["i"]), dat, "i", dis);
+          check(int(d["j"]), dat, "j", dis);
+          if (k === "changed") check(oneOf(PREMISE_REASONS, d["reason"]), dat, "reason", dis);
+          named.push(`${d["op"]}/${d["i"]}/${d["j"]}`);
+        },
+        true,
+      );
+    }
+    check(new Set(named).size === named.length, at, "a declaration twice", issues);
+  },
 };
 
 // --- rules between the blocks of one event ----------------------------------------------------
 
 /**
  * A rule between blocks of one event. `paths` holds the present blocks and the removed ones (a
- * removed data block counts as present, §1.1); `blocks` the present ones.
+ * removed data block counts as present, §1.1); `blocks` the present ones; `at` the event's `seq`
+ * and its operation number (a head's own `seq`), from a header already checked.
  */
 export type EventRule = (
   paths: ReadonlySet<string>,
   blocks: Readonly<Record<string, Json>>,
   issues: Issues,
+  at: { readonly seq: number; readonly op: number },
 ) => void;
+
+/** Indices `0 .. n-1` with none missing (§3.1 `<n>`): the indices present, sorted. */
+function noHoles(present: readonly number[], where: string, issues: Issues): void {
+  const sorted = [...new Set(present)].sort((a, b) => a - b);
+  check(
+    sorted.every((n, k) => n === k),
+    where,
+    "indices not from 0 without a gap",
+    issues,
+  );
+}
 
 /** §5.1: at most one of `request_key` and `idempotency`. */
 const oneRequestId: EventRule = (paths, _, issues) => {
@@ -781,6 +899,115 @@ const oneRequestId: EventRule = (paths, _, issues) => {
 };
 
 const TEXT_KINDS = ["user_message", "agent_note", "tool_result"];
+
+/** §5.7: how an op's premise blocks go together (see `write.head` below). */
+const premises: EventRule = (paths, blocks, issues, at) => {
+  const declared = new Set<string>();
+  const indices = new Map<string, number[]>();
+  // An op's declarations, by target: one item has one declaration in force for one target, so an op
+  // declaring two on one target would lose one (02-integrity «写入的前提»). The blocks hold the
+  // targets as resolved IDs.
+  const targets = new Map<string, string>();
+  // In op and declaration order, numerically ("premises/2" before "premises/10").
+  const num = (p: string) => (p.match(/\d+/g) ?? []).map(Number);
+  const order = [...paths].sort((x, y) => {
+    const [a, b] = [num(x), num(y)];
+    for (let k = 0; k < Math.min(a.length, b.length); k++)
+      if (a[k] !== b[k]) return (a[k] as number) - (b[k] as number);
+    return a.length - b.length || (x < y ? -1 : x > y ? 1 : 0);
+  });
+  for (const p of order) {
+    const decl = /^ops\/(\d+)\/premises\/(\d+)$/.exec(p);
+    if (decl !== null) {
+      const i = decl[1] as string;
+      declared.add(i);
+      indices.set(i, [...(indices.get(i) ?? []), Number(decl[2])]);
+      const b = blocks[p];
+      const op = blocks[`ops/${i}/target`];
+      if (isObject(b)) {
+        const t = `${i}:${String(b["table"])}/${String(b["row"] ?? b["entity"])}`;
+        const first = targets.get(t);
+        check(first === undefined, p, `the target of ${first ?? ""} again`, issues);
+        if (first === undefined) targets.set(t, p);
+        // Not the op's own target (02-integrity «能指向什么»: premise_self); both are resolved IDs.
+        if (isObject(op))
+          check(
+            !(
+              b["table"] === op["table"] &&
+              (b["row"] ?? b["entity"]) === (op["row"] ?? op["entity"])
+            ),
+            p,
+            "the op's own target",
+            issues,
+          );
+        // The version seen is before this operation, or this operation's own (a row created in
+        // this request); a premise changed when written changed after it, by this operation at
+        // the latest.
+        const ver = b["ver"];
+        if (isObject(ver) && int(ver["op"])) {
+          const seen = ver["op"] as number;
+          check(
+            ver["basis"] === "same_request" ? seen === at.op : seen >= 1 && seen < at.op,
+            p,
+            ver["basis"] === "same_request"
+              ? "a version of this request not this operation"
+              : "a version seen not before this operation",
+            issues,
+          );
+        }
+        if (int(b["since"]))
+          check((b["since"] as number) <= at.op, p, "since after this operation", issues);
+      }
+      const range = isObject(b) ? b["range"] : undefined;
+      const timed = range === "row_time" || range === "given";
+      const valid = `ops/${decl[1]}/premise_valid/${decl[2]}`;
+      if (range !== undefined)
+        check(
+          paths.has(valid) === timed,
+          p,
+          timed ? "premise_valid required" : "premise_valid only with row_time or given",
+          issues,
+        );
+    }
+    const valid = /^ops\/(\d+)\/premise_valid\/(\d+)$/.exec(p);
+    if (valid !== null)
+      check(paths.has(`ops/${valid[1]}/premises/${valid[2]}`), p, "no such premise", issues);
+  }
+  for (const [i, js] of indices) noHoles(js, `ops/${i}/premises`, issues);
+  for (const p of paths) {
+    const op = /^ops\/(\d+)\/(premise_covers|premises_cleared|premises\/\d+)$/.exec(p);
+    if (op === null) continue;
+    const i = op[1] as string;
+    const target = blocks[`ops/${i}/target`];
+    const intent = isObject(target) ? target["intent"] : undefined;
+    // An op with premise blocks has its target; premises are not taken on a revoke or a revert
+    // (09 §5.7), and a clearing is an `update` (02-integrity «哪些 op 可以带»).
+    check(paths.has(`ops/${i}/target`), p, "no ops target for it", issues);
+    // An op by external key takes no premises, nor a clearing (02-integrity «哪些 op 可以带»).
+    if (op[2] !== "premise_covers")
+      check(
+        !(isObject(target) && target["by_external_key"] === true),
+        p,
+        "premises on a write by external key",
+        issues,
+      );
+    if (op[2] === "premises_cleared") {
+      check(!paths.has(`ops/${i}/revert`), p, "premises with revert", issues);
+      check(!declared.has(i), p, "premises with premises_cleared", issues);
+      if (intent !== undefined) check(intent === "update", p, "a clearing not an update", issues);
+    } else if (op[2] === "premise_covers") {
+      check(
+        declared.has(i) || paths.has(`ops/${i}/premises_cleared`),
+        p,
+        "premise_covers without premises",
+        issues,
+      );
+    } else {
+      check(intent !== "revoke", p, "premises on a revoke", issues);
+      check(!paths.has(`ops/${i}/revert`), p, "premises with revert", issues);
+    }
+  }
+};
 
 export const WRITE_EVENT_RULES: Readonly<Record<string, EventRule>> = {
   // §5.7: an emptied partition has no result, so neither a key nor a checksum; a partition with a
@@ -805,9 +1032,12 @@ export const WRITE_EVENT_RULES: Readonly<Record<string, EventRule>> = {
     if (paths.has("file")) check(kind === "file_ref", "file", "kind", issues);
     if (paths.has("request")) check(kind === "api_call", "request", "kind", issues);
   },
-  // §5.7: the ops of the request are 0 .. op_count − 1.
-  "write.head"(paths, blocks, issues) {
-    oneRequestId(paths, blocks, issues);
+  // §5.7: the ops of the request are 0 .. op_count − 1. A declaration's business time is there
+  // exactly when its range is `row_time` or `given`; an op that clears has no declarations, and
+  // only an op with declarations or a clearing one covers further items.
+  "write.head"(paths, blocks, issues, at) {
+    oneRequestId(paths, blocks, issues, at);
+    premises(paths, blocks, issues, at);
     const r = blocks["request"];
     const count = isObject(r) && int(r["op_count"]) ? r["op_count"] : undefined;
     if (count === undefined) return;
@@ -867,4 +1097,50 @@ export const WRITE_EVENT_RULES: Readonly<Record<string, EventRule>> = {
     }
   },
   "item.resolved": oneRequestId,
+  // §5.10: one block per target, from 0 without a gap, and at least one (the event is there only
+  // on a change); a declaration changes state in one block; the declarations it names and the
+  // event that changed the target are before this event, in this operation at the latest.
+  "premise.changed"(paths, blocks, issues, at) {
+    check(paths.has("targets/0"), "event", "no target", issues);
+    noHoles(
+      [...paths].flatMap((p) => /^targets\/(\d+)$/.exec(p)?.slice(1).map(Number) ?? []),
+      "targets",
+      issues,
+    );
+    const seen = new Set<string>();
+    const decls = new Map<string, string>();
+    for (const p of [...paths].sort()) {
+      const b = blocks[p];
+      if (!isObject(b)) continue;
+      const t = `${b["table"]}/${b["row"] ?? b["entity"]}`;
+      check(!seen.has(t), p, "a target twice", issues);
+      seen.add(t);
+      // An event of this operation, before this one (§5.10).
+      if (int(b["by_event"])) {
+        const by = b["by_event"] as number;
+        check(by < at.seq, p, "by_event not before this event", issues);
+        check(by >= at.op, p, "by_event not of this operation", issues);
+      }
+      for (const k of ["changed", "matched", "repointed"]) {
+        const list = b[k];
+        if (!Array.isArray(list)) continue;
+        for (const d of list) {
+          if (!isObject(d)) continue;
+          if (int(d["op"])) {
+            check((d["op"] as number) <= at.op, p, "a declaration after this operation", issues);
+            check((d["op"] as number) >= 1, p, "a declaration of no operation", issues);
+          }
+          const id = `${String(d["op"])}/${String(d["i"])}/${String(d["j"])}`;
+          const first = decls.get(id);
+          check(
+            first === undefined || first === p,
+            p,
+            `a declaration of ${first ?? ""} again`,
+            issues,
+          );
+          if (first === undefined) decls.set(id, p);
+        }
+      }
+    }
+  },
 };

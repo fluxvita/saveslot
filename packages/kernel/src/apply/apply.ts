@@ -42,6 +42,13 @@ import { confirmationHash, entryChecksums } from "./confirmation.ts";
 import { canonicalKeyFault, type DerivedInput, planDerived } from "./derived.ts";
 import { type ItemInput, planItem } from "./items.ts";
 import { ApplyError, type BlockDepRow, type Change, type PrincipalRow } from "./model.ts";
+import {
+  type CoveredEvent,
+  type OpPremise,
+  planBasePremises,
+  planHeadPremises,
+  planPremiseChanged,
+} from "./premises.ts";
 import { planSchema, type RemoveInput, type SlotInput, type SwitchInput } from "./schema.ts";
 import type { SettleItem } from "./settle.ts";
 import { type OpenCell, planWriteBase, storedValid, type WriteBaseInput } from "./write-base.ts";
@@ -65,6 +72,10 @@ export interface PlanInputs {
   readonly remove?: RemoveInput;
   readonly item?: ItemInput;
   readonly writeBase?: WriteBaseInput;
+  /** A `write.base`'s op's premise declarations (§5.7), from `premise_decls`. */
+  readonly premises?: readonly OpPremise[];
+  /** A `write.head`'s `premise_covers`: the events they name, as the log has them. */
+  readonly covered?: ReadonlyMap<Seq, CoveredEvent>;
   readonly derived?: DerivedInput;
 }
 
@@ -146,7 +157,7 @@ export function planEvent(ev: ApplyEvent, inputs: PlanInputs = {}): Change[] {
     (type === "write.derived"
       ? planDerived(ev.seq, op, present, removedOf(ev), inputs.derived)
       : undefined) ??
-    planOther(type, ev.seq, slot, block, present);
+    planOther(type, ev.seq, op, slot, ev.header["actor"] as string, block, present, inputs);
   if (changes === undefined) {
     throw new ApplyError("not_implemented", ev.seq, `apply of ${type} is not implemented yet`);
   }
@@ -260,15 +271,21 @@ function planBase(
   if (inputs.writeBase === undefined) {
     throw new ApplyError("inconsistent", seq, "no table to write to");
   }
-  return planWriteBase(seq, op, present, inputs.writeBase);
+  return [
+    ...planWriteBase(seq, op, present, inputs.writeBase),
+    ...planBasePremises(seq, op, present, inputs.premises ?? []),
+  ];
 }
 
 function planOther(
   type: EventType,
   seq: Seq,
+  op: Seq,
   slot: string | undefined,
+  actor: string,
   block: (path: string) => Obj,
   present: Obj,
+  inputs: PlanInputs,
 ): Change[] | undefined {
   switch (type) {
     // §5.6: the source is registered. (Its full-text index comes with the read path.)
@@ -285,7 +302,7 @@ function planOther(
         },
       ];
     }
-    // §5.7: only its request key in this phase (added by the caller).
+    // §5.7: its premise declarations and what they cover; its request key is added by the caller.
     case "write.head": {
       // §5.7: writes located by an external key, and a key given to a row, change the key index
       // and the sync baseline, which this phase does not keep yet.
@@ -300,8 +317,10 @@ function planOther(
           );
         }
       }
-      return [];
+      return planHeadPremises(seq, actor, present, inputs.covered ?? new Map());
     }
+    case "premise.changed":
+      return planPremiseChanged(seq, op, present);
     default:
       return undefined;
   }
@@ -377,7 +396,65 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
       },
     };
   }
-  if (p.type === "write.base") return { writeBase: await readRow(tx, ev, p) };
+  if (p.type === "write.head") {
+    // The events `premise_covers` names: in the log already, a later event of this operation
+    // included (an operation's events are appended before any is applied).
+    const seqs = new Set<number>();
+    for (const [path, v] of Object.entries(p.present))
+      if (/^ops\/\d+\/premise_covers$/.test(path))
+        for (const r of v as readonly Obj[]) seqs.add(r["event"] as number);
+    if (seqs.size === 0) return {};
+    const list = [...seqs];
+    const params = list.map((_, k) => `$${k + 1}`).join(", ");
+    const evs = await tx.query<{
+      seq: unknown;
+      op: unknown;
+      type: string;
+      target_row: string | null;
+    }>(`SELECT seq, op, type, target_row FROM events WHERE seq IN (${params})`, list);
+    const blocks = await tx.query<{ seq: unknown; path: string; body: string | null }>(
+      `SELECT seq, path, body FROM content WHERE seq IN (${params})`,
+      list,
+    );
+    const covered = new Map<Seq, CoveredEvent>();
+    const paths = new Map<number, Set<string>>();
+    const opIndex = new Map<number, number>();
+    for (const b of blocks.rows) {
+      const n = Number(b.seq);
+      paths.set(n, (paths.get(n) ?? new Set<string>()).add(b.path));
+      if (b.path === "target" && b.body !== null) {
+        const i = (JSON.parse(b.body) as { op_index?: unknown }).op_index;
+        if (typeof i === "number") opIndex.set(n, i);
+      }
+    }
+    for (const e of evs.rows) {
+      const n = Number(e.seq);
+      covered.set(n as Seq, {
+        op: Number(e.op) as Seq,
+        type: e.type,
+        row: e.target_row,
+        opIndex: opIndex.get(n) ?? null,
+        items: paths.get(n) ?? new Set<string>(),
+      });
+    }
+    return { covered };
+  }
+  if (p.type === "write.base") {
+    const op = ev.header["op"] as Seq;
+    const i = (p.present["target"] as Obj)["op_index"];
+    const decls = await tx.query<{ decl_index: unknown; target_row: string }>(
+      `SELECT decl_index, target_row FROM premise_decls WHERE op = $1 AND op_index = $2
+       ORDER BY decl_index`,
+      [op, i as number],
+    );
+    return {
+      writeBase: await readRow(tx, ev, p),
+      premises: decls.rows.map((r) => ({
+        decl_index: Number(r.decl_index),
+        target_row: r.target_row,
+      })),
+    };
+  }
   if (p.type === "write.derived") {
     const derived = await readDerived(tx, ev, p);
     return derived === undefined ? {} : { derived };
@@ -954,6 +1031,44 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
            VALUES ($1, $2, $3, $4, $5)`,
           [r.derived_seq, r.base_table_id, r.partition_id, r.rule_version, r.read_pos],
         );
+      }
+      return;
+    case "premise_decls":
+      for (const r of c.rows) {
+        await insert(tx, "premise_decls", Object.keys(r), Object.values(r) as SqlValue[]);
+      }
+      return;
+    case "premise_edges":
+      // The latest declaration covering an item for a target is the one in force: latest by its
+      // op (operation, then op index), not by when its edge arrives. Edges do not arrive in that
+      // order: a request's `write.base` events come after its head, whose blocks are in path order
+      // ("ops/10" before "ops/2"). A clearing entry (`*`) is ordered the same way.
+      for (const r of c.rows) {
+        await tx.query(
+          `INSERT INTO premise_edges (item_event, field_id, k, target, decl_op, decl_op_index, decl_index)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (item_event, field_id, k, target) DO UPDATE
+             SET decl_op = excluded.decl_op, decl_op_index = excluded.decl_op_index,
+                 decl_index = excluded.decl_index
+             WHERE (excluded.decl_op, excluded.decl_op_index)
+                 > (premise_edges.decl_op, premise_edges.decl_op_index)`,
+          [r.item_event, r.field_id, r.k, r.target, r.decl_op, r.decl_op_index, r.decl_index],
+        );
+      }
+      return;
+    case "premise_state":
+      for (const r of c.rows) {
+        const u = await tx.query(
+          `UPDATE premise_decls SET state = $4, reason = $5, since = $6
+           WHERE op = $1 AND op_index = $2 AND decl_index = $3 RETURNING op`,
+          [r.op, r.op_index, r.decl_index, r.state, r.reason, r.since],
+        );
+        if (u.rows.length !== 1)
+          throw new ApplyError(
+            "inconsistent",
+            seq,
+            `premise.changed names a declaration not there: ${r.op}/${r.op_index}/${r.decl_index}`,
+          );
       }
       return;
     case "block_deps":

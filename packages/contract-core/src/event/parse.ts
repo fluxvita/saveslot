@@ -240,7 +240,11 @@ export function parseEvent(
   // Rules between the blocks of one event (§5.5–§5.8).
   if (Object.hasOwn(EVENT_RULES, type)) {
     const paths = new Set([...Object.keys(blocks), ...removedSet]);
-    EVENT_RULES[type]?.(paths, blocks, issues);
+    const h = header as Readonly<Record<string, Json>>;
+    EVENT_RULES[type]?.(paths, blocks, issues, {
+      seq: h["seq"] as number,
+      op: (h["op"] as number | undefined) ?? (h["seq"] as number),
+    });
   }
   for (const entry of VOCABULARY[type] as readonly VocabularyEntry[]) {
     if (entry.always && !(entry.path in blocks) && !removedSet.has(entry.path)) {

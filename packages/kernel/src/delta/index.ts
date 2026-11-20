@@ -1,4 +1,5 @@
 export { targetDelta } from "./delta.ts";
+export { type PremiseDiff, type PremiseScope, premiseDelta } from "./premise.ts";
 export { sameValue, valueText } from "./same-value.ts";
 export {
   type Decode,

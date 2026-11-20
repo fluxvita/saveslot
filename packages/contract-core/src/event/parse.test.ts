@@ -163,6 +163,11 @@ describe("parseEvent: valid events", () => {
         "Literal",
         "OpRevert",
         "OpTarget",
+        "Premise",
+        "PremiseCovers",
+        "PremiseTarget",
+        "PremiseValid",
+        "PremisesCleared",
         "RawValue",
         "RequestKey",
         "ResolveCtx",
@@ -383,17 +388,27 @@ describe("parseEvent: header", () => {
 });
 
 describe("parseEvent: shapes without a checker", () => {
-  // `premise.changed` is not checked yet.
+  // `write.base` `duplicate` is not checked yet (similar keys, P2).
   const derived = {
-    header: { ...head("premise.changed"), op: 25, slot: SLOT_A },
-    blocks: { "targets/0": {} },
+    header: { ...head("write.base"), op: 25, slot: SLOT_A },
+    blocks: {
+      target: {
+        table: "t1",
+        row: `r_${"6".repeat(26)}`,
+        intent: "insert",
+        sv: 1,
+        cause: "request",
+        op_index: 0,
+      },
+      duplicate: {},
+    },
   };
 
   it("reports a block whose shape has no checker as unsupported, not ok", () => {
     expect(parse(derived)).toEqual({
       ok: false,
       kind: "unsupported",
-      shapes: ["PremiseTarget"],
+      shapes: ["Duplicate"],
     });
   });
 

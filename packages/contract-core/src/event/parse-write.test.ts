@@ -1,4 +1,4 @@
-// Shape checks of a write's events (09-event-format §5.6–§5.8, `write.derived` in §5.7): a well-formed sample of every block
+// Shape checks of a write's events (09-event-format §5.6–§5.8, `write.derived` in §5.7, §5.10): a well-formed sample of every block
 // shape the checks cover, then, block by block, the negatives every checker must report (an unknown
 // key, each required key missing), and the rules a shape adds beyond its keys.
 
@@ -342,6 +342,76 @@ const SAMPLES: Record<string, Sample> = {
       checksum: { checksum: HASH },
     },
   },
+  "write.head (premises)": {
+    header: head("write.head", 25),
+    blocks: {
+      ctx: { ...ctx, literal_checker: "literal@1" },
+      request: { sv: 1, sv_basis: "explicit", op_count: 3 },
+      // An insert with two premises: a row's field, and an entity over a stretch it was given.
+      "ops/0/target": { table: "t1", row: ROW, intent: "insert", created: true },
+      "ops/0/set/f3": "plan",
+      "ops/0/premises/0": {
+        table: "t3",
+        row: ROW,
+        fields: ["f2"],
+        ver: { op: 21, restore_count: 0, basis: "explicit" },
+        range: "whole",
+        state: "current",
+      },
+      "ops/0/premises/1": {
+        table: "t2",
+        entity: ENTITY,
+        ver: { op: 22, restore_count: 0, basis: "fallback" },
+        range: "row_time",
+        state: "changed",
+        reason: "retroactive",
+        since: 24,
+      },
+      "ops/0/premise_valid/1": { during: { from: "2026-11-01", to: "2026-12-01" }, deps },
+      // A restatement: no set, a premise, the row's other items covered.
+      "ops/1/target": {
+        table: "t1",
+        row: ROW,
+        intent: "update",
+        ver: { op: 21, restore_count: 0, basis: "explicit" },
+      },
+      "ops/1/premises/0": {
+        table: "t2",
+        entity: ENTITY,
+        ver: { op: 22, restore_count: 0, basis: "explicit" },
+        range: "given",
+        state: "current",
+      },
+      "ops/1/premise_valid/0": { at: "2026-11-10" },
+      "ops/1/premise_covers": [
+        { event: 20, field: "f3", k: 0 },
+        { event: 20, existence: 0 },
+      ],
+      // A clearing.
+      "ops/2/target": {
+        table: "t1",
+        row: ROW,
+        intent: "update",
+        ver: { op: 21, restore_count: 0, basis: "explicit" },
+      },
+      "ops/2/premises_cleared": true,
+      "ops/2/premise_covers": [{ event: 20, field: "f3", k: 0 }],
+    },
+  },
+  "premise.changed": {
+    header: member("premise.changed", 44),
+    blocks: {
+      "targets/0": {
+        table: "t3",
+        row: ROW,
+        by_event: 27,
+        changed: [{ op: 20, i: 0, j: 0, reason: "update" }],
+        matched: [{ op: 23, i: 1, j: 0 }],
+        repointed: [{ op: 19, i: 0, j: 2 }],
+      },
+      "targets/1": { table: "t2", entity: ENTITY, by_event: 28, matched: [{ op: 23, i: 0, j: 1 }] },
+    },
+  },
   "write.derived emptied": {
     header: member("write.derived", 42),
     blocks: {
@@ -410,6 +480,11 @@ describe("parseEvent: a write's events", () => {
     "writer_had_read",
     "origin",
     "excerpt",
+    // A premise on the whole row has no fields; a premise target's block keeps one list at least.
+    "fields",
+    "changed",
+    "matched",
+    "repointed",
   ]);
   const cases = Object.entries(SAMPLES).flatMap(([name, s]) =>
     Object.entries(s.blocks).flatMap(([path, v]) =>
@@ -460,6 +535,96 @@ describe("parseEvent: a write's blocks, value by value", () => {
   const cases: [string, string, Record<string, unknown>, string][] = [
     // enums
     ["write.head", "ops/0/target", { intent: "upsert" }, "ops/0/target: intent"],
+    // premises (§5.7)
+    [
+      "write.head (premises)",
+      "ops/0/premises/0",
+      { range: "from_now" },
+      "ops/0/premises/0: range whole exactly on a row",
+    ],
+    [
+      "write.head (premises)",
+      "ops/0/premises/1",
+      { range: "whole" },
+      "ops/0/premises/1: range whole exactly on a row",
+    ],
+    ["write.head (premises)", "ops/0/premises/0", { range: "always" }, "ops/0/premises/0: range"],
+    ["write.head (premises)", "ops/0/premises/0", { state: "stale" }, "ops/0/premises/0: state"],
+    [
+      "write.head (premises)",
+      "ops/0/premises/0",
+      { ver: { op: 21, restore_count: 0, basis: "external_key" } },
+      "ops/0/premises/0.ver: basis",
+    ],
+    ["write.head (premises)", "ops/0/premises/0", { fields: [] }, "ops/0/premises/0.fields: empty"],
+    [
+      "write.head (premises)",
+      "ops/0/premises/0",
+      { fields: ["f2", "f2"] },
+      "ops/0/premises/0.fields: duplicate field",
+    ],
+    [
+      "write.head (premises)",
+      "ops/0/premises/0",
+      { reason: "update" },
+      "ops/0/premises/0: reason or since on a current premise",
+    ],
+    [
+      "write.head (premises)",
+      "ops/0/premises/1",
+      { reason: "schema_switched" },
+      "ops/0/premises/1: reason",
+    ],
+    [
+      "write.head (premises)",
+      "ops/0/premises/1",
+      { since: 22 },
+      "ops/0/premises/1: since after the version seen",
+    ],
+    [
+      "write.head (premises)",
+      "ops/0/premises/1",
+      { row: ROW },
+      "ops/0/premises/1: exactly one of row and entity",
+    ],
+    [
+      "write.head (premises)",
+      "ops/0/premise_valid/1",
+      { during: { from: "2026-12-01", to: "2026-11-01" } },
+      "ops/0/premise_valid/1.during: to after from",
+    ],
+    [
+      "write.head (premises)",
+      "ops/0/premise_valid/1",
+      { deps: [] },
+      "ops/0/premise_valid/1.deps: empty",
+    ],
+    [
+      "write.head (premises)",
+      "ops/1/premise_valid/0",
+      { at: "11/10" },
+      "ops/1/premise_valid/0: at",
+    ],
+    [
+      "premise.changed",
+      "targets/0",
+      { changed: [{ op: 20, i: 0, j: 0, reason: "schema_switched" }] },
+      "targets/0.changed[0]: reason",
+    ],
+    ["premise.changed", "targets/0", { matched: [] }, "targets/0.matched: empty"],
+    [
+      "premise.changed",
+      "targets/0",
+      { matched: [{ op: 20, i: 0, j: 0 }] },
+      "targets/0: a declaration twice",
+    ],
+    [
+      "premise.changed",
+      "targets/1",
+      { matched: undefined },
+      "targets/1: none of changed, matched, repointed",
+    ],
+    ["premise.changed", "targets/0", { by_event: 0 }, "targets/0: by_event"],
     [
       "write.head",
       "ops/0/target",
@@ -935,6 +1100,171 @@ describe("parseEvent: rules between the blocks of one write event", () => {
     expect(
       issues(parse(withBlock(head, "request", { sv: 1, sv_basis: "explicit", op_count: 1 }))),
     ).toContain("ops/1/target: op index not below op_count");
+  });
+
+  it("write.head: a premise's business time exactly with row_time or given; clearing has no premises; covers need either", () => {
+    const head = S("write.head (premises)");
+    expect(issues(parse(without(head, "ops/0/premise_valid/1")))).toContain(
+      "ops/0/premises/1: premise_valid required",
+    );
+    expect(issues(parse(withBlock(head, "ops/0/premise_valid/0", { at: "2026-11-10" })))).toContain(
+      "ops/0/premises/0: premise_valid only with row_time or given",
+    );
+    expect(issues(parse(withBlock(head, "ops/0/premise_valid/2", { at: "2026-11-10" })))).toContain(
+      "ops/0/premise_valid/2: no such premise",
+    );
+    const both = withBlock(head, "ops/2/premises/0", head.blocks["ops/0/premises/0"]);
+    expect(issues(parse(both))).toContain("ops/2/premises_cleared: premises with premises_cleared");
+    const covers = without(without(head, "ops/1/premises/0"), "ops/1/premise_valid/0");
+    expect(issues(parse(covers))).toContain(
+      "ops/1/premise_covers: premise_covers without premises",
+    );
+    // Two declarations of one op on one target: refused (one item, one declaration per target).
+    const again = withBlock(head, "ops/0/premises/2", {
+      ...(head.blocks["ops/0/premises/0"] as object),
+      fields: ["f3"],
+    });
+    expect(issues(parse(again))).toContain(
+      "ops/0/premises/2: the target of ops/0/premises/0 again",
+    );
+    // Named by order, not by the text of the paths.
+    const late = withBlock(head, "ops/0/premises/10", head.blocks["ops/0/premises/0"]);
+    expect(issues(parse(late))).toContain(
+      "ops/0/premises/10: the target of ops/0/premises/0 again",
+    );
+    // On different ops it is a later declaration taking over, not refused.
+    const otherOp = withBlock(head, "ops/1/premises/1", head.blocks["ops/0/premises/0"]);
+    expect(parse(otherOp)).toEqual({ ok: true, type: "write.head" });
+    // A clearing covers what it clears without declarations of its own.
+    expect(parse(head)).toEqual({ ok: true, type: "write.head" });
+  });
+
+  it("write.head: premise blocks on an op that cannot take them, or out of order", () => {
+    const head = S("write.head (premises)");
+    const decl = head.blocks["ops/0/premises/0"] as Record<string, unknown>;
+    // On a revoke, on a revert, and a clearing other than an update.
+    const revoke = withBlock(head, "ops/1/target", {
+      ...(head.blocks["ops/1/target"] as object),
+      intent: "revoke",
+    });
+    expect(issues(parse(revoke))).toContain("ops/1/premises/0: premises on a revoke");
+    const revert = withBlock(head, "ops/1/revert", { undo_op: 20, include_later: false });
+    expect(issues(parse(revert))).toContain("ops/1/premises/0: premises with revert");
+    const correct = withBlock(head, "ops/2/target", {
+      ...(head.blocks["ops/2/target"] as object),
+      intent: "correct",
+    });
+    expect(issues(parse(correct))).toContain("ops/2/premises_cleared: a clearing not an update");
+    // An op by external key: neither declarations nor a clearing.
+    const byKey = (i: number) =>
+      withBlock(head, `ops/${i}/target`, {
+        ...(head.blocks[`ops/${i}/target`] as object),
+        by_external_key: true,
+      });
+    expect(issues(parse(byKey(1)))).toContain(
+      "ops/1/premises/0: premises on a write by external key",
+    );
+    expect(issues(parse(byKey(2)))).toContain(
+      "ops/2/premises_cleared: premises on a write by external key",
+    );
+    // A clearing with a revert.
+    const clearRevert = withBlock(head, "ops/2/revert", { undo_op: 20, include_later: false });
+    expect(issues(parse(clearRevert))).toContain("ops/2/premises_cleared: premises with revert");
+    // The op's own target.
+    const self = withBlock(head, "ops/0/premises/0", { ...decl, table: "t1", row: ROW });
+    expect(issues(parse(self))).toContain("ops/0/premises/0: the op's own target");
+    // No ops/<i>/target.
+    const noTarget = without(head, "ops/2/target");
+    expect(issues(parse(noTarget))).toContain("ops/2/premises_cleared: no ops target for it");
+    // Indices with a gap.
+    const gap = without(without(head, "ops/1/premises/0"), "ops/1/premise_valid/0");
+    const gapped = withBlock(
+      withBlock(gap, "ops/1/premises/1", head.blocks["ops/1/premises/0"]),
+      "ops/1/premise_valid/1",
+      head.blocks["ops/1/premise_valid/0"],
+    );
+    expect(issues(parse(gapped))).toContain("ops/1/premises: indices not from 0 without a gap");
+    // Versions: none before 1, none at or after this operation (25) unless of this request;
+    // a version of this request is this operation's; since by this operation at the latest.
+    const ver = (v: object) => withBlock(head, "ops/0/premises/0", { ...decl, ver: v });
+    expect(issues(parse(ver({ op: 0, restore_count: 0, basis: "explicit" })))).toContain(
+      "ops/0/premises/0: a version seen not before this operation",
+    );
+    expect(issues(parse(ver({ op: 25, restore_count: 0, basis: "explicit" })))).toContain(
+      "ops/0/premises/0: a version seen not before this operation",
+    );
+    expect(issues(parse(ver({ op: 24, restore_count: 0, basis: "same_request" })))).toContain(
+      "ops/0/premises/0: a version of this request not this operation",
+    );
+    expect(parse(ver({ op: 25, restore_count: 0, basis: "same_request" }))).toEqual({
+      ok: true,
+      type: "write.head",
+    });
+    const since = withBlock(head, "ops/0/premises/1", {
+      ...(head.blocks["ops/0/premises/1"] as object),
+      since: 26,
+    });
+    expect(issues(parse(since))).toContain("ops/0/premises/1: since after this operation");
+    // An item twice in premise_covers, its keys in another order.
+    const covers = withBlock(head, "ops/1/premise_covers", [
+      { event: 20, field: "f3", k: 0 },
+      { k: 0, field: "f3", event: 20 },
+    ]);
+    expect(issues(parse(covers))).toContain("ops/1/premise_covers: an item twice");
+  });
+
+  it("premise.changed: targets from 0 without a gap, a declaration in one block, nothing after this event", () => {
+    const pc = S("premise.changed");
+    const gap = withBlock(without(pc, "targets/1"), "targets/2", pc.blocks["targets/1"]);
+    expect(issues(parse(gap))).toContain("targets: indices not from 0 without a gap");
+    // The declaration (23, 1, 0) of targets/0 named again in targets/1.
+    const twice = withBlock(pc, "targets/1", {
+      table: "t2",
+      entity: ENTITY,
+      by_event: 28,
+      changed: [{ op: 23, i: 1, j: 0, reason: "update" }],
+    });
+    expect(issues(parse(twice))).toContain("targets/1: a declaration of targets/0 again");
+    // The event is seq 44 of operation 25.
+    const later = withBlock(pc, "targets/1", {
+      table: "t2",
+      entity: ENTITY,
+      by_event: 44,
+      matched: [{ op: 26, i: 0, j: 1 }],
+    });
+    expect(issues(parse(later))).toEqual(
+      expect.arrayContaining([
+        "targets/1: by_event not before this event",
+        "targets/1: a declaration after this operation",
+      ]),
+    );
+    // by_event of an earlier operation (this one is 25), and a declaration of operation 0.
+    const earlier = withBlock(pc, "targets/1", {
+      table: "t2",
+      entity: ENTITY,
+      by_event: 3,
+      matched: [{ op: 0, i: 0, j: 1 }],
+    });
+    expect(issues(parse(earlier))).toEqual(
+      expect.arrayContaining([
+        "targets/1: by_event not of this operation",
+        "targets/1: a declaration of no operation",
+      ]),
+    );
+  });
+
+  it("premise.changed: one block for each target, at least one", () => {
+    const pc = S("premise.changed");
+    expect(issues(parse(without(without(pc, "targets/0"), "targets/1")))).toContain(
+      "event: no target",
+    );
+    const twice = withBlock(pc, "targets/1", {
+      table: "t3",
+      row: ROW,
+      by_event: 28,
+      matched: [{ op: 23, i: 0, j: 1 }],
+    });
+    expect(issues(parse(twice))).toContain("targets/1: a target twice");
   });
 
   it("item.resolved: at most one of request_key and idempotency", () => {

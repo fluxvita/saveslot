@@ -17,9 +17,11 @@
 //
 // A table compared while empty on both sides shows nothing. The fixed histories (`EVERY`) put rows
 // in every compared table this version's kernel writes, a conflict item and its resolution among
-// them, and check that they did. Five are empty on both sides and are named in `EMPTY`: deletions,
-// external keys, premises and migrations; the kernel does not write them yet, and each is to get
-// its steps here with the feature that writes it.
+// them, and check that they did. Three are empty on both sides and are named in `EMPTY`:
+// deletions, external keys and migrations; the kernel does not write them yet, and each is to get
+// its steps here with the feature that writes it. Premises are not taken by the write path yet
+// either: their steps append a head by hand (a restatement or a clearing on a run, covering the
+// items of its insert) and a `premise.changed`, so that `apply` fills both premise tables.
 //
 // Needs a PostgreSQL server (SAVESLOT_TEST_POSTGRES_URL); without one it is skipped, and says so.
 
@@ -34,6 +36,7 @@ import {
   eventsOf,
   KERNEL_TABLES,
   loadRsql,
+  type NewEvent,
   type ReadTx,
   readBufferOf,
   readEvents,
@@ -128,6 +131,19 @@ type Step =
       readonly decision: "keep_effective" | "take_candidate" | "take_previous";
     }
   | { readonly k: "shoe"; readonly model: string }
+  /**
+   * Run `n` restated on run `m` (or its premises cleared), covering the items of its insert; the
+   * earliest declaration so far marked changed. `wide`: a head of eleven ops, ops 2 and 10 both
+   * restating, so that the earlier op's edge arrives after the later one's (blocks go in path
+   * order). A head by hand: the write path does not take premises yet.
+   */
+  | {
+      readonly k: "premise";
+      readonly n: number;
+      readonly m: number;
+      readonly clear: boolean;
+      readonly wide: boolean;
+    }
   | {
       readonly k: "expense";
       readonly date: string;
@@ -257,6 +273,16 @@ const step: fc.Arbitrary<Step> = fc.oneof(
     }),
   },
   { weight: 1, arbitrary: fc.record({ k: fc.constant("room.revoke" as const), n: fc.nat(9) }) },
+  {
+    weight: 2,
+    arbitrary: fc.record({
+      k: fc.constant("premise" as const),
+      n: fc.nat(9),
+      m: fc.nat(9),
+      clear: fc.boolean(),
+      wide: fc.boolean(),
+    }),
+  },
 );
 
 interface Receipt {
@@ -324,7 +350,14 @@ async function write(store: TenantStore, schema: Schema, steps: readonly Step[])
     kind === "partition"
       ? `p_${String(++partitions).padStart(16, "0")}`
       : `${{ row: "r_", entity: "e_", source: "s_", item: "pi_" }[kind]}${String(++ids).padStart(kind === "row" || kind === "entity" ? 26 : 16, "0")}`;
-  const runs: { id: string; first: string; ver: string; revoked?: number }[] = [];
+  const runs: { id: string; first: string; ver: string; revoked?: number; op: number }[] = [];
+  const runsTable = schema.tables.find((t) => t.name === "runs") as Schema["tables"][number];
+  const RUNS_ID = runsTable.id;
+  const DISTANCE_ID = (runsTable.fields as readonly { id: string; name: string }[]).find(
+    (f) => f.name === "distance",
+  )?.id as string;
+  /** The premise declarations made so far, (op, i, j), the earliest first. */
+  const declared: { op: number; i: number; j: number; target: string; changed?: true }[] = [];
   /** The open items the stale updates made, with their item version. */
   const items: { id: string; ver: string }[] = [];
   const rooms: { id: string; ver: string; revoked?: boolean }[] = [];
@@ -334,6 +367,112 @@ async function write(store: TenantStore, schema: Schema, steps: readonly Step[])
   const at = <T>(xs: readonly T[], n: number) => xs[n % Math.max(xs.length, 1)];
 
   for (const [i, s] of steps.entries()) {
+    if (s.k === "premise") {
+      const hit = reached[s.k] ?? { saved: 0, not: 0 };
+      reached[s.k] = hit;
+      const dep = at(runs, s.n);
+      const on = at(runs, s.m);
+      if (dep === undefined || on === undefined || dep === on || dep.revoked !== undefined) {
+        hit.not++;
+        continue;
+      }
+      await store.write(async (tx) => {
+        const tail = (await readTail(tx))?.seq ?? 0;
+        const op = tail + 1;
+        const base = await tx.query<{ seq: unknown }>(
+          "SELECT seq FROM events WHERE type = 'write.base' AND op = $1 ORDER BY seq LIMIT 1",
+          [dep.op],
+        );
+        const event = Number(base.rows[0]?.seq);
+        const items = await tx.query<{ path: string }>(
+          "SELECT path FROM content WHERE seq = $1 AND path LIKE 'fields/%'",
+          [event],
+        );
+        const covers = items.rows.map((r) => {
+          const [, field, k] = r.path.split("/");
+          return { event, field: field as string, k: Number(k) };
+        });
+        const verOf = (v: string) => Number(/^v(\d+)\./.exec(v)?.[1]);
+        const wide = s.wide && !s.clear;
+        const restating = wide ? [2, 10] : [0];
+        /** Op `i` on the run: restating (or clearing) with its covers, or only its target. */
+        const opBlocks = (i: number, premised: boolean): Record<string, unknown> => ({
+          [`ops/${i}/target`]: {
+            table: RUNS_ID,
+            row: dep.id,
+            intent: "update",
+            ver: { op: verOf(dep.ver), restore_count: 0, basis: "explicit" },
+          },
+          ...(!premised
+            ? {}
+            : s.clear
+              ? { [`ops/${i}/premises_cleared`]: true }
+              : {
+                  [`ops/${i}/premises/0`]: {
+                    table: RUNS_ID,
+                    row: on.id,
+                    ...(s.m % 2 === 0 ? { fields: [DISTANCE_ID] } : {}),
+                    ver: { op: verOf(on.ver), restore_count: 0, basis: "explicit" },
+                    range: "whole",
+                    state: "current",
+                  },
+                }),
+          ...(premised && covers.length > 0 ? { [`ops/${i}/premise_covers`]: covers } : {}),
+        });
+        const head: NewEvent = {
+          type: "write.head",
+          slot: SLOT,
+          blocks: {
+            ctx: {
+              now: "2026-11-10T07:00:00.000Z",
+              today: "2026-11-10",
+              ruleset_version: 1,
+              policy_version: 1,
+              literal_checker: "literal@1",
+            },
+            request: { sv: 1, sv_basis: "explicit", op_count: wide ? 11 : 1 },
+            ...Object.assign({}, ...restating.map((i) => opBlocks(i, true))),
+            ...Object.assign(
+              {},
+              ...(wide ? [...Array(11).keys()].filter((i) => !restating.includes(i)) : []).map(
+                (i) => opBlocks(i, false),
+              ),
+            ),
+          },
+        };
+        const first = declared.find((d) => d.changed === undefined);
+        const changed: NewEvent[] =
+          first === undefined
+            ? []
+            : [
+                {
+                  type: "premise.changed",
+                  slot: SLOT,
+                  blocks: {
+                    // The declaration's premise target. No write in this operation changed it (the
+                    // change is made up, for apply to record): `by_event`, shown only and not
+                    // applied (§5.10), names the head, the one earlier event of the operation.
+                    "targets/0": {
+                      table: RUNS_ID,
+                      row: first.target,
+                      by_event: op,
+                      changed: [{ op: first.op, i: first.i, j: first.j, reason: "update" }],
+                    },
+                  },
+                },
+              ];
+        const appended = await appendOperation(tx, {
+          actor: USER as never,
+          now: `2026-11-10T07:${String(i).padStart(2, "0")}:30.000Z` as never,
+          events: [head, ...changed],
+        });
+        await applyEvents(tx, eventsOf(appended));
+        if (first !== undefined) first.changed = true;
+        if (!s.clear) for (const i of restating) declared.push({ op, i, j: 0, target: on.id });
+      });
+      hit.saved++;
+      continue;
+    }
     const run = s.k.startsWith("run.") ? at(runs, (s as { n: number }).n) : undefined;
     const item = s.k === "resolve" ? at(items, s.n) : undefined;
     const room = s.k.startsWith("room.") ? at(rooms, (s as { n: number }).n) : undefined;
@@ -469,7 +608,12 @@ async function write(store: TenantStore, schema: Schema, steps: readonly Step[])
     }
     const first = receipt.ops[0] as Receipt["ops"][number];
     if (s.k === "run")
-      runs.push({ id: first.target.row as string, first: first.ver, ver: first.ver });
+      runs.push({
+        id: first.target.row as string,
+        first: first.ver,
+        ver: first.ver,
+        op: receipt.seq,
+      });
     else if (s.k === "shoe") shoes.push(first.target.row as string);
     else if (s.k === "budget") budgets.set(s.category, { amount: s.amount, from: s.from });
     else if (s.k === "room") rooms.push({ id: first.target.entity as string, ver: first.ver });
@@ -574,7 +718,7 @@ async function compared(tx: ReadTx): Promise<Map<string, Compared>> {
 }
 
 /** The compared tables empty on both sides in the fixed histories: this kernel writes none of them. */
-const EMPTY = ["deletions", "external_keys", "migrations", "premise_decls", "premise_edges"];
+const EMPTY = ["deletions", "external_keys", "migrations"];
 
 const cell = testCell();
 const pg = testPostgres(cell);
@@ -715,6 +859,11 @@ describe.skipIf(cell === undefined)("a log replayed on the other backend", () =>
     { k: "room.update", n: 0, guest: null, from: "2026-11-10T08:30:00.250Z" },
     { k: "room", guest: "ok", from: "2026-11-06T10:00:00+08:00" },
     { k: "room.revoke", n: 1 },
+    // Run 1 rests on run 0's distance, run 0 on all of run 1 (the first marked changed); then
+    // run 1's premises are cleared.
+    { k: "premise", n: 1, m: 0, clear: false, wide: false },
+    { k: "premise", n: 0, m: 1, clear: false, wide: true },
+    { k: "premise", n: 1, m: 0, clear: true, wide: false },
   ];
   /** Every step saved, and rows in every compared table but those named in `EMPTY`. */
   const everySaved = ({ reached, want }: Awaited<ReturnType<typeof check>>) => {

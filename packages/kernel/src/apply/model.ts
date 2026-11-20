@@ -94,6 +94,49 @@ export interface BlockDepRow {
   readonly dep_kind: "deps" | "carried";
 }
 
+/** A row of `premise_decls`. JSON columns hold JCS text. */
+export interface PremiseDeclRow {
+  readonly op: Seq;
+  readonly op_index: number;
+  readonly decl_index: number;
+  readonly dep_table: string;
+  readonly dep_row: string;
+  readonly target_table: string;
+  readonly target_row: string;
+  readonly fields: string | null;
+  readonly range_kind: string;
+  readonly valid: string | null;
+  readonly seen_op: Seq;
+  readonly seen_restore_count: number;
+  readonly state: "current" | "changed";
+  readonly reason: string | null;
+  readonly since: Seq | null;
+  readonly declarer: string;
+}
+
+/** A row of `premise_edges`: on item (event, field or `existence`, k), the declaration in force for `target`. */
+export interface PremiseEdgeRow {
+  readonly item_event: Seq;
+  readonly field_id: string;
+  readonly k: number;
+  /** A premise target's row or entity ID; `*` for a clearing entry. */
+  readonly target: string;
+  readonly decl_op: Seq;
+  readonly decl_op_index: number;
+  /** Null for a clearing entry: it points at the clearing op. */
+  readonly decl_index: number | null;
+}
+
+/** A state change of one declaration (`premise.changed`). */
+export interface PremiseStateChange {
+  readonly op: Seq;
+  readonly op_index: number;
+  readonly decl_index: number;
+  readonly state: "current" | "changed";
+  readonly reason: string | null;
+  readonly since: Seq | null;
+}
+
 /** One change to the materialized state. */
 export type Change =
   | { readonly kind: "principal_insert"; readonly row: PrincipalRow }
@@ -254,4 +297,10 @@ export type Change =
       }[];
     }
   /** The block dependency index (§5.12): blocks → the contributions they depend on. */
-  | { readonly kind: "block_deps"; readonly rows: readonly BlockDepRow[] };
+  | { readonly kind: "block_deps"; readonly rows: readonly BlockDepRow[] }
+  /** Premise declarations (§5.7). */
+  | { readonly kind: "premise_decls"; readonly rows: readonly PremiseDeclRow[] }
+  /** Premise cover: an edge written over when it is there (§5.7 «覆盖»). */
+  | { readonly kind: "premise_edges"; readonly rows: readonly PremiseEdgeRow[] }
+  /** Declarations' states (§5.10). */
+  | { readonly kind: "premise_state"; readonly rows: readonly PremiseStateChange[] };
