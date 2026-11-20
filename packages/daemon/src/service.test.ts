@@ -10,6 +10,7 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -20,17 +21,25 @@ import {
   writeFileSync,
 } from "node:fs";
 import { request } from "node:http";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
+import {
+  Credentials,
+  initLocalHome,
+  newToken,
+  sessionFile,
+  tokenHash,
+} from "@fluxvita/saveslot-service";
 import { anchorFileText, createLocalHome } from "@fluxvita/saveslot-service/testing";
 import { osFileLock, type PgliteTenantStore } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
+import { serviceCommand } from "./commands.ts";
 import { LEDGER } from "./contract-suite.fixture.ts";
 import { httpDriver } from "./http-driver.fixture.ts";
 import { main } from "./main.ts";
-import { lockDir, pidFile, runService, socketFile } from "./service.ts";
+import { lastFailureFile, lockDir, pidFile, runService, socketFile } from "./service.ts";
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
@@ -45,9 +54,8 @@ beforeAll(async () => {
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-/** A copy of the template home. */
-function home(): string {
-  const h = join(root, String(n++));
+/** A copy of the template home, at `h` or a new path. */
+function home(h = join(root, String(n++))): string {
   cpSync(template, h, { recursive: true });
   // A copy makes its directories with the default mode: the home and its control files are set
   // back as init makes them (directories 0700, files 0600).
@@ -319,6 +327,103 @@ describe("the service in process", () => {
     const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
     expect([s.state, s.reason]).toEqual(["failed", "tenant_directory_corrupt"]);
     await s.stop();
+  });
+
+  it("its home moved away and another service at that path: losing the storage, it exits without removing or writing anything there", async () => {
+    // Someone moves the home of a running service away and makes a new home at the old path. The
+    // new service opens the storage at the same path; the old one finds it taken
+    // (ownership_lost) at its next write and exits. The files at the path are the new service's:
+    // the old one leaves them, and writes no failure there for `status` to show.
+    // Both homes are copies of one template: one tenant, and the session below in both, so that
+    // the old service, which checks a session against the credentials file at the home's path,
+    // takes the call made after the move.
+    const token = newToken("session");
+    const withSession = (at: string) => {
+      home(at);
+      Credentials.create(at, tokenHash(token));
+    };
+    const h = join(root, `moved-${n++}`);
+    withSession(h);
+    const quiet = { version: "t", signals: false, log: () => {} } as const;
+    const old = await runService({ home: h, ...quiet, probeMs: 50, readsFlushMs: 50 });
+    expect(old.state).toBe("ready");
+    const moved = `${h}-moved`;
+    renameSync(h, moved);
+    withSession(h);
+    const now = await runService({ home: h, ...quiet });
+    try {
+      expect(now.state).toBe("ready");
+      const socket = statSync(socketFile(h)).ino;
+      const pid = statSync(pidFile(h)).ino;
+      const anchorFile = join(h, "control", "anchor.json");
+      const anchorText = () => (existsSync(anchorFile) ? readFileSync(anchorFile, "utf8") : null);
+      const anchor = anchorText();
+      // A read through the old service's socket (it moved with its home): its record is
+      // flushed in a write, which finds the storage at the home's path taken.
+      await httpDriver(() => moved)(token, "catalog", {});
+      expect(await old.exited).toEqual({ code: 1, reason: "ownership_lost" });
+      expect(statSync(socketFile(h)).ino).toBe(socket);
+      expect(statSync(pidFile(h)).ino).toBe(pid);
+      expect(existsSync(lastFailureFile(h))).toBe(false);
+      expect(anchorText()).toBe(anchor);
+      // And the new service still answers there.
+      expect((await health(h))?.body).toMatchObject({ state: "ready" });
+    } finally {
+      await now.stop();
+    }
+    // Its own it removes, as before; `status` shows no failure of the old service.
+    expect(existsSync(socketFile(h))).toBe(false);
+    expect(existsSync(pidFile(h))).toBe(false);
+    expect(existsSync(lastFailureFile(h))).toBe(false);
+    let said = "";
+    const io = { out: (l: string) => (said += `${l}\n`), err: (l: string) => (said += `${l}\n`) };
+    await serviceCommand("status", ["--home", h], io);
+    expect(said).not.toContain("ownership_lost");
+  });
+
+  it("a socket left under a process's own name: removed at start when nothing answers on it, kept when something does", async () => {
+    const h = home();
+    const run = join(h, "run");
+    mkdirSync(run, { mode: 0o700 });
+    // A stale one: a socket file no process listens on (closing a listener unlinks only the
+    // path it was bound at, so the link stays).
+    const gone = createServer();
+    await new Promise<void>((r) => gone.listen(join(run, "x.sock"), r));
+    linkSync(join(run, "x.sock"), join(run, "99999.sock"));
+    await new Promise<void>((r) => gone.close(() => r()));
+    const live = createServer((c) => c.end());
+    await new Promise<void>((r) => live.listen(join(run, "88888.sock"), r));
+    try {
+      const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
+      expect(s.state).toBe("ready");
+      expect(existsSync(join(run, "99999.sock"))).toBe(false);
+      expect(existsSync(join(run, "88888.sock"))).toBe(true);
+      // Its own name is not left: the socket is at run/saveslot.sock only.
+      expect(existsSync(join(run, `${process.pid}.sock`))).toBe(false);
+      await s.stop();
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
+    }
+  });
+
+  it("a socket at the path that a live service answers on: not taken over, though the lock is free", async () => {
+    const h = home();
+    mkdirSync(join(h, "run"), { mode: 0o700 });
+    const other = createServer((c) => c.end());
+    await new Promise<void>((r) => other.listen(socketFile(h), r));
+    try {
+      const ino = statSync(socketFile(h)).ino;
+      const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
+      expect(await s.exited).toEqual({ code: 1, reason: "already_running" });
+      expect(statSync(socketFile(h)).ino).toBe(ino);
+      expect(existsSync(pidFile(h))).toBe(false);
+      expect(existsSync(lastFailureFile(h))).toBe(false);
+      // The lock was given back.
+      const again = await osFileLock.acquire(lockDir(h));
+      await again.release();
+    } finally {
+      await new Promise<void>((r) => other.close(() => r()));
+    }
   });
 
   // One case each (each its own copy of the template home): together they took half the test

@@ -34,7 +34,19 @@
 //   over a user's data, nor behind the log's end, where every event would be recorded at that end.
 
 import { closeSync, existsSync, fchmodSync, openSync, rmSync, writeSync } from "node:fs";
-import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  readdir,
+  rename,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { connect } from "node:net";
 import { join } from "node:path";
 import type { HealthBody, LocalListener, ToolResultSeen } from "@fluxvita/saveslot-server";
 import { listenLocal } from "@fluxvita/saveslot-server";
@@ -161,6 +173,67 @@ function codeOf(e: unknown): string {
   return e instanceof PgliteStoreError ? e.code : "internal";
 }
 
+/** A file as the file system tells it apart: one replaced at the same path is another. */
+interface FileId {
+  readonly dev: number;
+  readonly ino: number;
+}
+
+async function fileId(path: string): Promise<FileId | undefined> {
+  try {
+    const s = await lstat(path);
+    return { dev: s.dev, ino: s.ino };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a process accepts connections on the socket at `path`. */
+function answers(path: string): Promise<boolean> {
+  return new Promise((done) => {
+    const c = connect(path);
+    c.once("connect", () => {
+      c.destroy();
+      done(true);
+    });
+    c.once("error", () => done(false));
+  });
+}
+
+/**
+ * Links the socket bound at `bound` to `at`. Never replaces a socket there: one a live service
+ * answers on is kept (false); one no process answers on is removed first.
+ */
+async function linkSocket(bound: string, at: string): Promise<boolean> {
+  for (let tries = 0; ; tries++) {
+    try {
+      await link(bound, at);
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      if (tries > 0 || (await answers(at))) return false;
+      await rm(at, { force: true });
+    }
+  }
+}
+
+/** Removes each `<pid>.sock` in `dir` that no process answers on. */
+async function removeStaleBound(dir: string): Promise<void> {
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (!/^[0-9]+\.sock$/.test(name)) continue;
+    const path = join(dir, name);
+    if (!(await answers(path))) await rm(path, { force: true });
+  }
+}
+
+/** Removes `path` only while it is still the file `id` names; another file there is left. */
+async function removeIfStill(path: string, id: FileId | undefined): Promise<void> {
+  if (id === undefined) return;
+  const now = await fileId(path);
+  if (now !== undefined && now.dev === id.dev && now.ino === id.ino)
+    await rm(path, { force: true });
+}
+
 /**
  * Starts the service. Resolves once it listens (state `starting`, then `ready` or `failed`), or
  * with `exited` already settled when it could not start at all (no home, or another process holds
@@ -177,7 +250,13 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     log([at, event, ...Object.entries(fields).map(([k, v]) => `${k}=${v}`)].join(" "));
     // A failure is kept for `status` once this process is gone; another process holding the home
     // is not this start's failure. Best effort: no home or no run/ yet, nothing is kept.
-    if ((event === "failed" || event === "not_started") && fields["reason"] !== "already_running") {
+    // A service that lost the home's storage to another opener writes nothing into the home by
+    // path any more: the home at that path may be another service's now.
+    if (
+      (event === "failed" || event === "not_started") &&
+      fields["reason"] !== "already_running" &&
+      fields["reason"] !== "ownership_lost"
+    ) {
       writeFile(
         lastFailureFile(o.home),
         `${JSON.stringify({ at, reason: String(fields["reason"] ?? "internal") })}\n`,
@@ -202,6 +281,11 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   let listener: LocalListener | undefined;
   let lock: DirLockHandle | undefined;
   let probe: NodeJS.Timeout | undefined;
+  // The socket and pid files this process made, by device and inode. At its stop it removes them
+  // only while they are still these: if the home was moved away and another service now runs at
+  // the same path, the files there are that service's (02-architecture §7, the process lock).
+  let ownSocket: FileId | undefined;
+  let ownPid: FileId | undefined;
   let readsFlush: NodeJS.Timeout | undefined;
   /** The evaluation results' file, open while the service runs on the test clock. */
   let evalResults: number | undefined;
@@ -289,8 +373,8 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
           say("tenant_close_failed", { code: codeOf(e) });
         }
       }
-      await rm(socketFile(o.home), { force: true });
-      await rm(pidFile(o.home), { force: true });
+      await removeIfStill(socketFile(o.home), ownSocket);
+      await removeIfStill(pidFile(o.home), ownPid);
       await lock?.release();
       // A service that failed exits non-zero, however it was stopped (`start` stops one it saw fail).
       const exit = state === "failed" ? Math.max(code, 1) : code;
@@ -327,13 +411,24 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       return giveUp("already_running");
     throw e;
   }
-  const tmp = `${pidFile(o.home)}.tmp`;
-  await writeFile(tmp, `${process.pid}\n`, { mode: 0o600 });
-  await rename(tmp, pidFile(o.home));
-  // Holding the lock: no live process owns a socket file here.
-  await rm(socketFile(o.home), { force: true });
+  // A socket here that a live service answers on is that service's, though this process holds the
+  // lock (a home moved away and back, or one whose lock directory was replaced): never taken over.
+  if (await answers(socketFile(o.home))) {
+    await lock.release();
+    lock = undefined;
+    return giveUp("already_running");
+  }
+  // Sockets bound under a process's own name and never linked into place: left by a process that
+  // died while starting, if no process answers on them.
+  await removeStaleBound(runDir(o.home));
+  // Bound under a name of this process's own, then linked into place: closing a listener unlinks
+  // the path it was bound at, and that path must never be the one another service may hold by
+  // then. What closing unlinks is this name, which nothing else uses. A link, not a rename: a
+  // socket that appeared at the path meanwhile is never replaced.
+  const bound = join(runDir(o.home), `${process.pid}.sock`);
+  await rm(bound, { force: true });
   listener = await listenLocal({
-    socketPath: socketFile(o.home),
+    socketPath: bound,
     api: {
       ready: () =>
         state === "ready" &&
@@ -383,6 +478,22 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         : {}),
     }),
   });
+  if (!(await linkSocket(bound, socketFile(o.home)))) {
+    // Another service took the path between the check above and now: it keeps it, and its pid
+    // file, which this process has not written.
+    await listener.close().catch(() => {});
+    listener = undefined;
+    await lock.release();
+    lock = undefined;
+    return giveUp("already_running");
+  }
+  await unlink(bound).catch(() => {});
+  ownSocket = await fileId(socketFile(o.home));
+  // Written once the socket at the path is this process's: never over another service's.
+  const tmp = `${pidFile(o.home)}.tmp`;
+  await writeFile(tmp, `${process.pid}\n`, { mode: 0o600 });
+  await rename(tmp, pidFile(o.home));
+  ownPid = await fileId(pidFile(o.home));
   if (o.signals !== false) {
     process.on("SIGTERM", onSignal);
     process.on("SIGINT", onSignal);

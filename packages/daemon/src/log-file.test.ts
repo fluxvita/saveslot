@@ -1,7 +1,16 @@
 // The service's log file rotated past its size (06-cli §3 «分步做»): after a line that takes it
 // past the limit the file becomes `.1`, `.1` becomes `.2`, the oldest goes; each 0600.
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -44,5 +53,22 @@ describe("the service's log file", () => {
     write("next");
     expect(readFileSync(`${file}.1`, "utf8")).toBe(`${"y".repeat(2000)}next\n`);
     expect(readFileSync(file, "utf8")).toBe("");
+  });
+
+  it("moved away while written to: another file now at the path is not rotated, and the lines go on to the moved one", () => {
+    const dir = join(root, `${n++}`);
+    mkdirSync(dir);
+    const file = join(dir, "saveslot.log");
+    const write = rotatingLog(file, 300);
+    write("a".repeat(99));
+    renameSync(dir, `${dir}-moved`);
+    mkdirSync(dir);
+    writeFileSync(file, "the new home's log\n");
+    for (let i = 0; i < 5; i++) write("b".repeat(99));
+    expect(readFileSync(file, "utf8")).toBe("the new home's log\n");
+    expect(existsSync(`${file}.1`)).toBe(false);
+    const moved = readFileSync(join(`${dir}-moved`, "saveslot.log"), "utf8");
+    expect(moved.split("\n").filter((l) => l !== "")).toHaveLength(6);
+    expect(existsSync(join(`${dir}-moved`, "saveslot.log.1"))).toBe(false);
   });
 });

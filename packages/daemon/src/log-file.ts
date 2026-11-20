@@ -4,9 +4,11 @@
 // (`saveslot.log.1` → `saveslot.log.2`), the file becomes `saveslot.log.1`, and a new one is
 // opened. Rotation happens only here, after a line of the service's own: what Node writes to
 // stderr on a crash goes to the descriptor `saveslot start` gave the process, which after a
-// rotation is the newest kept copy.
+// rotation is the newest kept copy. A file at `path` that is no longer the one written to (the
+// home was moved away while the service ran, and another may be there now) is not rotated: the
+// lines go on to the open file, and nothing at the path is renamed or removed.
 
-import { closeSync, fstatSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 
 /** Rotate past this many bytes (06-cli §3; 08-open-questions). */
 export const LOG_MAX_BYTES = 10 * 1024 * 1024;
@@ -31,6 +33,13 @@ export function rotatingLog(
       return;
     }
     if (size < maxBytes) return;
+    try {
+      const mine = fstatSync(fd);
+      const there = lstatSync(path);
+      if (mine.dev !== there.dev || mine.ino !== there.ino) return;
+    } catch {
+      return;
+    }
     try {
       closeSync(fd);
       rmSync(`${path}.${keep}`, { force: true });
