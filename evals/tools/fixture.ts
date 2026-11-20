@@ -41,7 +41,6 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
 import { osFileLock, PgliteBackend } from "@fluxvita/saveslot-store-pglite";
 import { parse, stringify } from "yaml";
@@ -49,6 +48,7 @@ import { parse, stringify } from "yaml";
 import { templateDocument } from "../../packages/cli/src/templates.ts";
 import { anchored, cannotRunAnchored, nextAnchoredDays, usesAnchors } from "./anchors.ts";
 import { pairCalls } from "./pair.ts";
+import { prompt as askPerson } from "./prompt.ts";
 import { cannotRun, dayOf, nextRunDays, offsetHolds, shiftVariant, todayIn } from "./shift.ts";
 
 type Obj = Record<string, unknown>;
@@ -481,10 +481,15 @@ await initLocalHome({
   lock: osFileLock,
   now: new Date(v.clock).toISOString(),
 });
-saveslot(["start", "--home", home, "--eval-clock", v.clock]);
+// Every way out from here stops the service: an interrupt or a terminal closed, a failure, the
+// end, and anything unforeseen (the exit handler; spawnSync runs there). Marked started before
+// the start, so that a start cut short is stopped too (stopping a home with no service only
+// says so).
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
+  process.on(sig, () => fail("interrupted"));
+process.on("exit", () => stopService());
 started = true;
-// Ctrl-C while a step waits: the service is stopped before leaving.
-process.on("SIGINT", () => fail("interrupted"));
+saveslot(["start", "--home", home, "--eval-clock", v.clock]);
 const session = readFileSync(sessionFile(home), "utf8").trim();
 
 for (const s of v.fixture.slots) {
@@ -567,7 +572,8 @@ for (const key of agents) {
     `  SAVESLOT_TOKEN=<tokens.json: ${key}> ${process.execPath} --conditions=source ${BIN} mcp --home ${home} --record ${records}`,
   );
 }
-const rl = createInterface({ input: process.stdin, output: process.stdout });
+// Ctrl-C at a question is a key in the terminal, not a signal (./prompt.ts).
+const rl = askPerson(process.stdin, process.stdout, () => fail("interrupted"));
 for (const [i, step] of v.steps.entries()) {
   const n = i + 1;
   say("");
@@ -581,7 +587,7 @@ for (const [i, step] of v.steps.entries()) {
     }
     say("Say exactly this, then wait for the whole reply; do not add or correct anything:");
     say(`  ${step.user}`);
-    await rl.question("Press Enter once the agent has replied. ");
+    await rl.ask("Press Enter once the agent has replied. ");
   } else if ("script" in step) {
     for (const [j, c] of step.script.entries()) await call(c, `${v.id}-step-${n}-${j + 1}`);
     say(`Step ${n}: script step made (${step.script.length} calls).`);
