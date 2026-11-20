@@ -90,6 +90,11 @@ export interface RunServiceOptions {
    * command line, configuration or the environment.
    */
   readonly onToolResult?: (seen: ToolResultSeen) => void;
+  /**
+   * Tests only: how long an export waits for its reader before it cuts the connection (the
+   * kernel's EXPORT_STALL_MS otherwise). Given only in code.
+   */
+  readonly exportStallMs?: number;
   /** Where log lines go (default stderr). */
   readonly log?: (line: string) => void;
   /** Called once the service listens, before the tenant is opened (state `starting`). */
@@ -354,6 +359,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
                   }
                 : {}),
               onToolResult,
+              ...(o.exportStallMs !== undefined ? { exportStallMs: o.exportStallMs } : {}),
               warn: (event, fields) => say(event, fields),
             }
           : undefined,

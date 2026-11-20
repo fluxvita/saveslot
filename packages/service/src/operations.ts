@@ -6,6 +6,7 @@
 import {
   type ConnectionRecord,
   catalog,
+  exportLog,
   type Fit,
   history,
   listConnections,
@@ -201,6 +202,9 @@ export async function runOperation(o: {
         case "log.end":
           keysOnly(params, []);
           return logEnd(store, ctx);
+        case "export":
+          // Streamed: the server calls `runExport`.
+          throw new Error("export is not a one-answer operation");
         case "connections.list": {
           const r = await listConnections(store, ctx, params as never);
           const names = (await slotNames(o.tenant)).name;
@@ -291,3 +295,25 @@ export async function runOperation(o: {
     throw contractError(e, o.warn);
   }
 }
+
+/**
+ * Runs `export` (04-contract §17): the whole log as NDJSON lines through `sink`, first the
+ * manifest. Rejects with a ContractError; the lines already given are not taken back, so the
+ * caller must tell a rejection before the first line (an error answer) from one after it (the
+ * stream is cut off).
+ */
+export async function runExport(o: {
+  readonly tenant: LocalTenant;
+  readonly call: KernelCall;
+  readonly warn: (event: string, fields: Readonly<Record<string, string>>) => void;
+  readonly sink: (line: string) => Promise<void>;
+}): Promise<void> {
+  try {
+    await exportLog(o.tenant.store, o.call.ctx, o.call.params, o.sink);
+  } catch (e) {
+    throw contractError(e, o.warn);
+  }
+}
+
+/** How long an export waits for its reader before it gives the export up (the kernel's). */
+export { EXPORT_STALL_MS } from "@fluxvita/saveslot-kernel";

@@ -249,6 +249,26 @@ describe("the export file", () => {
   );
 
   it(
+    "a sink that fails stops the read at that line, and the store is free for the next write",
+    async () => {
+      let calls = 0;
+      const e = await store
+        .read((tx) =>
+          writeExport(tx, { exportedAt: EXPORTED_AT, includePendingDeletion: true }, async () => {
+            calls += 1;
+            if (calls === 3) throw new Error("the reader went away");
+          }),
+        )
+        .catch((x: unknown) => x);
+      expect((e as Error).message).toBe("the reader went away");
+      expect(calls).toBe(3); // the manifest, one event, the failing one: nothing more was read out
+      // No transaction left open: a write goes through at once.
+      await store.write((tx) => appendOperation(tx, write(t("11:00"), "99")));
+    },
+    T,
+  );
+
+  it(
     "in steps, a transaction each: the same lines as in one; a deletion confirmed between steps stops it",
     async () => {
       const whole = await exportLines({ includePendingDeletion: true });

@@ -3,6 +3,7 @@
 // contract's result, or as the contract's error.
 
 import { mkdtempSync, rmSync } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,6 +22,35 @@ const root = mkdtempSync(join(tmpdir(), "saveslot-e2e-"));
 const home = join(root, "home");
 const quiet: CommandIO = { out: () => {}, err: () => {} };
 let client: Client;
+let token = "";
+
+/** A write as the user session, over the socket (the CLI's client has no write). */
+function writeRow(set: Record<string, unknown>): Promise<number> {
+  const body = JSON.stringify({
+    sv: 1,
+    ops: [{ intent: "insert", table: "ledger.expenses", set }],
+  });
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        socketPath: socketFile(home),
+        method: "POST",
+        path: "/v1/writes",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode ?? 0));
+      },
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
+}
 
 /** The spending template of 06-cli §3.1, as a slot `ledger`. */
 const LEDGER = {
@@ -54,6 +84,7 @@ beforeAll(async () => {
   expect(await serviceCommand("start", ["--home", home], quiet)).toBe(0);
   const credential = await resolveCredential({ home, env: {} });
   expect(credential.kind).toBe("session");
+  token = credential.token;
   client = createClient({ socketPath: socketFile(home), token: credential.token });
 });
 afterAll(async () => {
@@ -126,5 +157,33 @@ describe("the client against the local service", () => {
     const t = await nowhere.logVerify().catch((x: unknown) => x);
     expect(t).toBeInstanceOf(TransportError);
     expect((t as TransportError).code).toBe("unreachable");
+  });
+
+  it("export: a reader that cancels after the first chunk leaves the tenant free at once", async () => {
+    // Enough events that the answer cannot all sit in the socket's buffers.
+    for (let i = 0; i < 80; i++) {
+      expect(
+        await writeRow({
+          date: "2026-11-18",
+          category: `c${i} ${"x".repeat(900)}`,
+          amount: { value: "1", unit: "CNY" },
+        }),
+      ).toBe(200);
+    }
+    const r = await client.export();
+    const reader = r.body.getReader();
+    expect((await reader.read()).done).toBe(false);
+    await reader.cancel();
+    // Before the fix the service's read transaction stayed open behind the unread answer, and on
+    // PGlite every later read and write of the tenant waited behind it.
+    const t0 = Date.now();
+    expect(
+      await writeRow({
+        date: "2026-11-19",
+        category: "after",
+        amount: { value: "2", unit: "CNY" },
+      }),
+    ).toBe(200);
+    expect(Date.now() - t0).toBeLessThan(5_000);
   });
 });

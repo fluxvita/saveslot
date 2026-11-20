@@ -89,6 +89,8 @@ export const httpDriver =
       "reads.list": { method: "GET", path: "/v1/reads" },
       "log.verify": { method: "GET", path: "/v1/log/verify" },
       "log.end": { method: "GET", path: "/v1/log/end" },
+      // A stream, not a JSON answer: the cases that use it read the body themselves.
+      export: { method: "GET", path: "/v1/export" },
     };
     const r = at[operation];
     const inPath = ["pending", "resolve", "connections.update", "connections.revoke"].includes(

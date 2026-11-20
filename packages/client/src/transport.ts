@@ -12,7 +12,7 @@
 // would send the token over TCP to localhost. The token goes in `Authorization` and nowhere else;
 // it is in no error message.
 
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, type IncomingMessage } from "node:http";
 import { isAbsolute } from "node:path";
 
 /** Parameters a call cannot put on the wire: refused before anything is sent. */
@@ -231,6 +231,101 @@ export async function request(o: RequestOptions): Promise<unknown> {
             typeof error === "object" &&
             !Array.isArray(error) &&
             Object.hasOwn(error, "code") &&
+            typeof (error as Record<string, unknown>)["code"] === "string"
+          ) {
+            fail(new ContractCallError(status, error as Record<string, unknown>));
+          } else {
+            fail(
+              new TransportError(
+                "bad_answer",
+                `an error answer without an error (${status})`,
+                status,
+              ),
+            );
+          }
+        });
+      },
+    );
+    const timer = setTimeout(() => {
+      fail(new TransportError("broken", "the service did not answer in time"));
+      req.destroy();
+    }, timeoutMs);
+    req.on("error", (e: NodeJS.ErrnoException) => {
+      fail(
+        e.code !== undefined && UNREACHABLE.has(e.code)
+          ? new TransportError(
+              "unreachable",
+              "the saveslot service is not running or not reachable",
+            )
+          : new TransportError("broken", "the connection to the saveslot service failed"),
+      );
+    });
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+/**
+ * Sends one request whose 2xx answer is a stream, not a JSON value (`export`): resolves at the
+ * answer's headers with the body still to be read. An error answer is read whole and thrown as
+ * `request` throws it. The time limit is for the headers only; the stream is the reader's, and a
+ * stream cut off comes out of it as a `TransportError` (`broken`). No size limit: the reader takes
+ * it as it comes.
+ */
+export async function requestStream(o: RequestOptions): Promise<IncomingMessage> {
+  const { headers, body, path, timeoutMs } = prepare(o);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (e: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    };
+    const req = httpRequest(
+      { socketPath: o.socketPath, method: o.method, path, headers },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        if (status >= 200 && status < 300) {
+          if (settled) {
+            res.destroy();
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          resolve(res);
+          return;
+        }
+        const chunks: Buffer[] = [];
+        let size = 0;
+        res.on("data", (c: Buffer) => {
+          size += c.length;
+          if (size > MAX_ANSWER_BYTES) {
+            fail(new TransportError("bad_answer", "the answer is too large", status));
+            res.destroy();
+            return;
+          }
+          chunks.push(c);
+        });
+        res.on("error", () => fail(new TransportError("broken", "the answer was cut off")));
+        res.on("end", () => {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          } catch {
+            fail(
+              new TransportError("bad_answer", `an answer that is not JSON (${status})`, status),
+            );
+            return;
+          }
+          const error =
+            parsed !== null && typeof parsed === "object" && Object.hasOwn(parsed, "error")
+              ? (parsed as { error: unknown }).error
+              : undefined;
+          if (
+            error !== null &&
+            typeof error === "object" &&
+            !Array.isArray(error) &&
             typeof (error as Record<string, unknown>)["code"] === "string"
           ) {
             fail(new ContractCallError(status, error as Record<string, unknown>));

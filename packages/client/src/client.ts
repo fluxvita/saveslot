@@ -12,6 +12,7 @@
 // success. Results come back as the contract's result types, errors as ContractCallError or
 // TransportError (./transport.ts); every error comes out of the returned promise.
 
+import type { IncomingMessage } from "node:http";
 import type {
   AsOfParams,
   AsOfResult,
@@ -30,6 +31,8 @@ import type {
   ConnectionsRevokeResult,
   ConnectionsUpdateParams,
   ConnectionsUpdateResult,
+  ExportHeader,
+  ExportParams,
   HistoryParams,
   HistoryResult,
   LogEndResult,
@@ -51,7 +54,14 @@ import type {
   TimelineParams,
   TimelineResult,
 } from "@fluxvita/saveslot-contract";
-import { ClientUsageError, encode, type RequestOptions, request } from "./transport.ts";
+import {
+  ClientUsageError,
+  encode,
+  type RequestOptions,
+  request,
+  requestStream,
+  TransportError,
+} from "./transport.ts";
 
 export interface ClientOptions {
   /** The service's socket, from the configuration (06-cli §8.1). */
@@ -135,6 +145,18 @@ export interface Client {
   readsList(p?: ReadsListParams): Promise<ReadsListResult>;
   logVerify(): Promise<LogVerifyResult>;
   logEnd(): Promise<LogEndResult>;
+  /**
+   * `export` (04-contract §17): the manifest, and the whole NDJSON (manifest line first) as a
+   * stream, checked as it is read: the lines are the manifest's count and the last event is its
+   * `upto`, or the stream fails with a `TransportError` (`broken`) at its end, so a file that was
+   * cut off is never taken for a whole one.
+   */
+  export(p?: ExportParams): Promise<ExportStream>;
+}
+
+export interface ExportStream {
+  readonly manifest: ExportHeader;
+  readonly body: ReadableStream<Uint8Array>;
 }
 
 export function createClient(o: ClientOptions): Client {
@@ -260,7 +282,152 @@ export function createClient(o: ClientOptions): Client {
     readsList: async (p = {}) => get("/v1/reads", p) as Promise<ReadsListResult>,
     logVerify: async () => get("/v1/log/verify") as Promise<LogVerifyResult>,
     logEnd: async () => get("/v1/log/end") as Promise<LogEndResult>,
+    export: async (p = {}) => {
+      const { rest, task } = split(p);
+      return exportStream(
+        await requestStream({
+          socketPath: o.socketPath,
+          token: o.token,
+          ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
+          method: "GET",
+          path: "/v1/export",
+          query: query(rest),
+          ...(task !== undefined ? { task } : {}),
+        }),
+        typeof rest["after_seq"] === "number" ? rest["after_seq"] : undefined,
+      );
+    },
   };
 }
 
 type Connection = ConnectionsUpdateResult;
+
+const broken = (why: string) =>
+  new TransportError("broken", `the export stream is not whole: ${why}`);
+
+/**
+ * The export answer as a checked stream. The first line is read and checked as the manifest
+ * (its `after` must be the `after_seq` asked for) before this resolves; the rest is passed on as
+ * it comes, each line parsed and checked: the events' `seq` follow one another from `after` + 1
+ * (a gap only where a `tenant.restored` explains it, its `restored_to` being the event before),
+ * and at the end their number and the last `seq` must be the manifest's (with no events, `upto`
+ * is `after`). Whenever the reader stops early (it cancels, or a check fails) the answer is
+ * destroyed, so the service stops reading the log.
+ */
+async function exportStream(
+  res: IncomingMessage,
+  askedAfter: number | undefined,
+): Promise<ExportStream> {
+  let done = false;
+  const stop = () => {
+    if (!done) res.destroy();
+    done = true;
+  };
+  const it = (res as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
+  let first = Buffer.alloc(0);
+  let manifest: ExportHeader;
+  let nl: number;
+  try {
+    // The manifest line: read until its line end.
+    for (;;) {
+      nl = first.indexOf(0x0a);
+      if (nl >= 0) break;
+      let n: IteratorResult<Buffer>;
+      try {
+        n = await it.next();
+      } catch {
+        throw new TransportError("broken", "the answer was cut off");
+      }
+      if (n.done) throw broken("it ends inside the manifest line");
+      first = Buffer.concat([first, n.value]);
+      if (first.length > 1 << 20) {
+        throw new TransportError("bad_answer", "the manifest line is too long");
+      }
+    }
+    try {
+      manifest = JSON.parse(first.subarray(0, nl).toString("utf8")) as ExportHeader;
+    } catch {
+      throw new TransportError("bad_answer", "the first line is not the manifest");
+    }
+    if (
+      manifest === null ||
+      typeof manifest !== "object" ||
+      manifest.saveslot_export !== 1 ||
+      !Number.isSafeInteger(manifest.events) ||
+      !Number.isSafeInteger(manifest.upto)
+    ) {
+      throw new TransportError("bad_answer", "the first line is not an export manifest");
+    }
+    if ((manifest.after ?? undefined) !== (askedAfter || undefined)) {
+      throw new TransportError("bad_answer", "the manifest's after is not the after_seq asked for");
+    }
+  } catch (e) {
+    stop();
+    throw e;
+  }
+  const after = manifest.after ?? 0;
+
+  async function* lines(): AsyncGenerator<Uint8Array> {
+    let events = 0;
+    let prev = after; // the seq of the last event line, or `after`
+    let tail = Buffer.alloc(0); // the bytes of the line in progress
+    const line = (bytes: Buffer) => {
+      let ev: { h?: { seq?: unknown; type?: unknown; restored_to?: unknown } };
+      try {
+        ev = JSON.parse(bytes.toString("utf8")) as typeof ev;
+      } catch {
+        throw broken(`line ${events + 2} is not JSON`);
+      }
+      const seq = ev?.h?.seq;
+      if (typeof seq !== "number") throw broken(`line ${events + 2} has no seq`);
+      const gapExplained = ev.h?.type === "tenant.restored" && ev.h.restored_to === prev;
+      if (seq !== prev + 1 && !(gapExplained && seq > prev)) {
+        throw broken(`event ${seq} does not follow ${prev}`);
+      }
+      prev = seq;
+      events += 1;
+    };
+    const take = (chunk: Buffer) => {
+      let at = 0;
+      for (;;) {
+        const i = chunk.indexOf(0x0a, at);
+        if (i < 0) break;
+        line(Buffer.concat([tail, chunk.subarray(at, i)]));
+        tail = Buffer.alloc(0);
+        at = i + 1;
+      }
+      tail = Buffer.concat([tail, chunk.subarray(at)]);
+    };
+    try {
+      yield first;
+      take(first.subarray(nl + 1));
+      for (;;) {
+        let n: IteratorResult<Buffer>;
+        try {
+          n = await it.next();
+        } catch {
+          throw new TransportError("broken", "the answer was cut off");
+        }
+        if (n.done) break;
+        take(n.value);
+        yield n.value;
+      }
+      if (tail.length > 0) throw broken("the last line has no end");
+      if (events !== manifest.events) {
+        throw broken(`${events} events, the manifest says ${manifest.events}`);
+      }
+      if (prev !== manifest.upto) {
+        throw broken(
+          events === 0
+            ? "no events, and upto is not after"
+            : "the last event is not the manifest's upto",
+        );
+      }
+      done = true;
+    } finally {
+      // Cancelled by the reader, or a check failed: let the service know at once.
+      stop();
+    }
+  }
+  return { manifest, body: ReadableStream.from(lines()) };
+}

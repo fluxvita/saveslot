@@ -11,7 +11,8 @@
 //      `not_in_this_version` (`operation`);
 //   4. the body (POST, PATCH): JSON, at most 1 MiB, read as it arrives and cut off past the limit
 //      (413 `too_large`); GET takes its parameters from the query string, by the contract's names,
-//      `limit` a number, `include_revoked` a boolean, `tables` a comma-separated list;
+//      `limit` and `after_seq` numbers, `include_revoked` and
+//      `include_pending_deletion` booleans, `tables` a comma-separated list;
 //   5. `X-Task-Id` and `Idempotency-Key`: their bytes decoded as UTF-8, 400 `invalid_argument`
 //      (`malformed`) when they are not well-formed;
 //   6. the operation; its result 200, its error by the contract code's status.
@@ -27,10 +28,13 @@ import {
   type Credentials,
   type CursorKeys,
   contractError,
+  EXPORT_STALL_MS,
+  type KernelCall,
   kernelCall,
   type LocalTenant,
   type Operation,
   type Principal,
+  runExport,
   runOperation,
 } from "@fluxvita/saveslot-service";
 import { HTTP_STATUS } from "./status.ts";
@@ -54,6 +58,11 @@ export interface ApiContext {
    * or the environment. The tool result itself carries text only (05-surfaces §3).
    */
   readonly onToolResult?: (seen: ToolResultSeen) => void;
+  /**
+   * Tests only: how long an export waits for its reader to take what was written before it cuts
+   * the connection (the kernel's EXPORT_STALL_MS otherwise).
+   */
+  readonly exportStallMs?: number;
   /** Not-implemented paths and internal errors (no request content). */
   readonly warn: (event: string, fields: Readonly<Record<string, string>>) => void;
 }
@@ -226,6 +235,7 @@ const ROUTES: readonly Route[] = [
   route("GET", "/v1/reads", "reads", { operation: "reads.list" }),
   route("GET", "/v1/log/verify", "log_verify", { operation: "log.verify" }),
   route("GET", "/v1/log/end", "log_end", { operation: "log.end" }),
+  route("GET", "/v1/export", "export", { operation: "export" }),
   // Later versions.
   route("POST", "/v1/sql", "sql"),
   route("GET", "/v1/sources", "sources"),
@@ -241,7 +251,6 @@ const ROUTES: readonly Route[] = [
   route("GET", "/v1/slots/{}/policy", "policy_get"),
   route("PUT", "/v1/slots/{}/policy", "policy_set"),
   route("POST", "/v1/log/reconcile", "log_reconcile"),
-  route("GET", "/v1/export", "export"),
   route("POST", "/v1/import", "import"),
 ];
 
@@ -260,9 +269,10 @@ function queryParams(search: URLSearchParams): Obj {
     }
     const v = all[0] as string;
     out[key] =
-      key === "limit" && /^(0|[1-9][0-9]{0,8})$/.test(v)
+      (key === "limit" || key === "after_seq") && /^(0|[1-9][0-9]{0,8})$/.test(v)
         ? Number(v)
-        : key === "include_revoked" && (v === "true" || v === "false")
+        : (key === "include_revoked" || key === "include_pending_deletion") &&
+            (v === "true" || v === "false")
           ? v === "true"
           : key === "tables"
             ? v.split(",")
@@ -578,6 +588,10 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
         windows: ctx.windows,
         cursors: ctx.cursors,
       });
+      if (r.operation === "export") {
+        await streamExport(api, req, res, { ctx, call, finish });
+        return;
+      }
       const result = await runOperation({
         tenant: ctx.tenant,
         credentials: ctx.credentials,
@@ -593,4 +607,74 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
     }
   })();
   return true;
+}
+
+/**
+ * `export`: the log's NDJSON, written as it is read (never held whole), in one chunked 200. A
+ * failure before the first line is an ordinary error answer. A failure after it cannot change the
+ * status already sent: the connection is cut, which the reader sees as a cut-off answer, and the
+ * manifest's counts let it tell. The caller going away stops the read: the next line's write
+ * throws inside the read transaction, which rolls back.
+ */
+async function streamExport(
+  _api: Api,
+  req: IncomingMessage,
+  res: ServerResponse,
+  o: {
+    readonly ctx: ApiContext;
+    readonly call: KernelCall;
+    readonly finish: (status: number) => void;
+  },
+): Promise<void> {
+  let started = false;
+  const gone = () => res.destroyed || res.writableEnded || req.destroyed;
+  try {
+    await runExport({
+      tenant: o.ctx.tenant,
+      call: o.call,
+      warn: o.ctx.warn,
+      sink: async (line) => {
+        if (gone()) throw new Error("the reader went away");
+        if (!started) {
+          started = true;
+          res.writeHead(200, {
+            "content-type": "application/x-ndjson",
+            "cache-control": "no-store",
+          });
+        }
+        if (!res.write(line)) {
+          // The reader has not taken what was written: wait for it, outside any transaction (the
+          // kernel opens one per step), but not for ever.
+          await new Promise<void>((resolve, reject) => {
+            const stall = setTimeout(() => {
+              cleanup();
+              reject(new Error("the reader stopped reading"));
+            }, o.ctx.exportStallMs ?? EXPORT_STALL_MS);
+            const onClose = () => {
+              cleanup();
+              reject(new Error("the reader went away"));
+            };
+            const onDrain = () => {
+              cleanup();
+              resolve();
+            };
+            const cleanup = () => {
+              clearTimeout(stall);
+              res.off("close", onClose);
+              res.off("drain", onDrain);
+            };
+            res.once("close", onClose);
+            res.once("drain", onDrain);
+          });
+        }
+      },
+    });
+    res.end();
+    o.finish(200);
+  } catch (e) {
+    if (!started) throw e;
+    // Cut off: no end chunk, so no reader takes the stream for whole.
+    res.destroy();
+    o.finish(200);
+  }
 }

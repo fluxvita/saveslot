@@ -364,6 +364,7 @@ describe("HTTP's own", () => {
       ["GET", "/v1/reads", undefined, 200],
       ["GET", "/v1/log/verify", undefined, 200],
       ["GET", "/v1/log/end", undefined, 200],
+      ["GET", "/v1/export", undefined, 200],
     ];
     for (const [method, path, body, status] of ours) {
       const r = await http({
@@ -395,7 +396,6 @@ describe("HTTP's own", () => {
       ["GET", "/v1/slots/ledger/policy"],
       ["PUT", "/v1/slots/ledger/policy"],
       ["POST", "/v1/log/reconcile"],
-      ["GET", "/v1/export"],
       ["POST", "/v1/import"],
     ];
     for (const [method, path] of later) {

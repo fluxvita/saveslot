@@ -194,3 +194,30 @@ export interface LogVerifyResult {
  * records it (the same `Instant` as every recorded time); null for a log with no event.
  */
 export type LogEndResult = { seq: Seq; recorded_at: Instant } | null;
+
+// ---------------------------------------------------------------------------------------------
+// §8.4 `export`
+
+/** 04-contract-types §8.4 `ExportParams`. */
+export interface ExportParams {
+  /** Continue after this event: the file holds the events with a greater `seq`. */
+  after_seq?: number;
+  /** Include the content of deletions in their grace period (default: placeholders). */
+  include_pending_deletion?: boolean;
+}
+
+/** 04-contract-types §8.4 `ExportHeader`: the first line of an export. */
+export interface ExportHeader {
+  saveslot_export: 1;
+  tenant_id: string;
+  event_format: number;
+  restore_count: number;
+  /** Continuation: the file holds only events with a `seq` greater than this. */
+  after?: number;
+  /** The `seq` of the file's last event. */
+  upto: number;
+  /** The number of events in the file. */
+  events: number;
+  exported_at: Instant;
+  pending_deletions: "placeholder" | "included";
+}
