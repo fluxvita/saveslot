@@ -188,7 +188,7 @@
   },
   {
     "name": "saveslot_history",
-    "description": "See how something came to be as it is now: every change, who made it, what the evidence was, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`); what changed in a period (`changes`). For the current values only, use saveslot_query.",
+    "description": "See how something came to be as it is now: every change, who made it, what the evidence was, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`); what changed in a period (`changes`). Use it when the user asks why a value is what it is, who changed it or what it was before, and to find the #n of a write to undo. For the current values only, use saveslot_query.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -420,7 +420,7 @@
   },
   {
     "name": "saveslot_pending",
-    "description": "List the pending items (conflicts, and changes awaiting confirmation), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version.",
+    "description": "List the pending items (conflicts, and changes awaiting confirmation), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version. Use it when a receipt or a read names a pending item, or the user asks what is waiting for them.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -475,7 +475,7 @@
   },
   {
     "name": "saveslot_schema_draft",
-    "description": "Create a new slot from a schema document: its tables, their fields and units. Show the user the draft (each table, its fields and units) and submit it only after they agree to it: a new slot takes effect as soon as it compiles, and nothing asks them to confirm it afterwards. Use it when the user wants to start recording a kind of thing that none of their tables fits; look with saveslot_catalog first, and when a slot for it exists already, use that slot instead of creating another. In this version it only creates slots: it cannot change an existing slot (a document whose base_version is not null is refused), and only a connection that can see every slot can create one. Fields with a unit take a code from the unit vocabulary, such as km, min or CNY.",
+    "description": "Create a new slot from a schema document: its tables, their fields and units. Show the user the draft (each table, its fields and units) and submit it only after they agree to it: a new slot takes effect as soon as it compiles, and nothing asks them to confirm it afterwards. Use it when the user wants to start recording a kind of thing that none of their tables fits; look with saveslot_catalog first, and when a slot for it exists already, use that slot instead of creating another. In this version it only creates slots: it cannot change an existing slot (a document whose base_version is not null is refused), and only a connection that can see every slot can create one. Fields with a unit take a code from the unit vocabulary, such as km, min or CNY. Returns the new slot's tables as compiled and its schema version, sv 1.",
     "inputSchema": {
       "type": "object",
       "properties": {

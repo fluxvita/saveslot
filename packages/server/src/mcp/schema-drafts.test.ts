@@ -55,7 +55,7 @@ describe("schema drafts as text: what the samples do not show", () => {
       ],
     };
     expect(text({ tool: "saveslot_schema_draft", result: { ...created, document } })).toContain(
-      "<untrusted-data-N>a b</untrusted-data-N> (base · no time): <untrusted-data-N>c-d</untrusted-data-N> text",
+      "<untrusted-data-N>a b</untrusted-data-N> (base · without time): <untrusted-data-N>c-d</untrusted-data-N> text",
     );
   });
 

@@ -3,6 +3,6 @@ Created · slot diet · schema v1 · draft d_46BEK7NN1HFCB4T9
 meals (base · event, by date): date date, what text, energy quantity <untrusted-data-N>kcal</untrusted-data-N>
 targets (base · state, by date): kind text, amount quantity <untrusted-data-N>kcal</untrusted-data-N>
   entity key: kind
-notes (base · no time): text text
+notes (base · without time): text text
 daily_energy (derived · read-only): date date, total quantity <untrusted-data-N>kcal</untrusted-data-N>
 Write to its base tables with sv 1.

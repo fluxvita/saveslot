@@ -387,9 +387,10 @@ const WARNINGS = textsBy<Exclude<Warning["code"], "multi_segment_unmapped">>({
   renamed: () => t`a field was renamed`,
   overwrote_corroborated: () => t`a value corroborated by other evidence was overwritten`,
   pending_deletion_on_target: () => t`the row has a deletion that can still be undone`,
-  clock_behind_log: () => t`this machine's clock is behind the log; the log's time was used`,
+  clock_behind_log: () =>
+    t`this machine's clock is behind the log's end; the time recorded is the log's end`,
   evidence_unreferenced: () =>
-    t`an evidence segment is used by no op: stored, but the source of no value`,
+    t`an evidence segment is cited by no op: stored as source data, but no value comes from it`,
   evidence_not_stored: () => t`nothing was recorded, and the evidence was not stored`,
   premise_ver_fallback: () => t`a premise without ver: the one you last read was used`,
   premise_already_changed: () =>
@@ -552,7 +553,7 @@ function tableKind(tb: R): Part[] {
       ? t`base · event, by ${fieldOf(tm["field"])}`
       : tm["type"] === "state"
         ? t`base · state, by ${codeIn(tm["granularity"], GRANULARITIES)}`
-        : t`base · no time`;
+        : t`base · without time`;
 }
 
 /** The tables of a catalog's list page. */

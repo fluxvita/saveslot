@@ -7,6 +7,9 @@
 // one reviewed version per set of tools. A sentence about what this version's kernel refuses is a
 // `Piece` with `later`, the phase it comes with: it does not appear in this version (05 §9 «这一版
 // 不出现的句子»), and stays here to be let in then. No text here holds anything a caller wrote.
+//
+// Words: the agent is told of "a connection" (its own, or one that can do more); the CLI and the
+// service commands, which speak to a person, say "connection instance" for the same thing.
 
 import { FIELD_TYPES } from "@fluxvita/saveslot-contract";
 import type { ToolName } from "./names.ts";
@@ -177,6 +180,7 @@ export const QUERY = {
 export const HISTORY = {
   description: [
     "See how something came to be as it is now: every change, who made it, what the evidence was, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`); what changed in a period (`changes`).",
+    "Use it when the user asks why a value is what it is, who changed it or what it was before, and to find the #n of a write to undo.",
     {
       text: "Which records a change was based on is in `timeline` too.",
       later: "P2",
@@ -217,6 +221,7 @@ export const HISTORY = {
 export const PENDING = {
   description: [
     "List the pending items (conflicts, and changes awaiting confirmation), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version.",
+    "Use it when a receipt or a read names a pending item, or the user asks what is waiting for them.",
     { text: "Records flagged as possible duplicates are pending items too.", later: "P2" },
     { text: "Deletions that can still be undone are pending items too.", later: "P3" },
     { text: "Schema changes awaiting confirmation are pending items too.", later: "P4" },
@@ -240,7 +245,7 @@ export const WRITE = {
   description: [
     "Write one or more records to base tables (one slot, one transaction).",
     'Use it when the user tells you a new fact that belongs to a table ("I ran 5 km today"), when something has changed, or when the user says something was recorded wrongly; not when the user is asking, supposing or chatting.',
-    "The intent is one of four: `insert` a new record; `update` when something changed or more is known; `correct` when the recorded value was wrong in the first place; `revoke` when the record should not exist (its history is kept).",
+    "The intent is one of four: `insert` a new record; `update` when something changed or more is known; `correct` when the value was recorded wrongly in the first place; `revoke` when the record should not exist (its history is kept).",
     { text: "A `correct` also finds the tasks that read the wrong value.", later: "P2" },
     "When changing an existing row, bring back the `ver` and `sv` you read. Put the user's own words in `evidence` (`kind: user_message`).",
     {
@@ -252,7 +257,7 @@ export const WRITE = {
     "Derived tables are read-only: write to their source tables. Do not write each reading a device produces (heart rate, glucose): record a summary of each activity or day.",
     "A moment with its zone, such as `2026-11-12T09:30:53+08:00[Asia/Shanghai]`, is recorded as given; with an offset only (`+08:00`) it is taken in the slot's time zone and the receipt notes it; an object such as `{instant, zone}` is refused.",
     "`replayed: true` in the receipt means this was a repeat and nothing new was written; when a record with the same content really happened again, write it with a different `idempotency_key`.",
-    'Periods of state tables are `[valid_from, valid_to)`, the end not included: for "until 11-20 (included)" pass `valid_to: "2026-11-21"`. Without an end, only up to the next recorded change; the receipt says nothing after it was touched. So for "from 11-02 the budget is 3000" pass `valid_from: "2026-11-02"` and no `valid_to`: a change recorded for 11-10 stays. `valid_to: "open"` carries the value on with no end: when there are recorded changes after it, it would overwrite them, and then it does not take effect until the user confirms it; with none after it, it takes effect at once. Writing by `entity_key` creates the entity when it does not exist; the receipt lists the keys the table already has.',
+    'Periods of state tables are `[valid_from, valid_to)`, the end not included; what a missing end and `"open"` mean is under `valid_to` in `ops`. Writing by `entity_key` creates the entity when it does not exist; the receipt lists the keys the table already has.',
     { text: "It also marks the keys written alike.", later: "P2" },
     '`revoke` without a period revokes the whole entity, with a period it leaves that period without a value. For "undo that change" or "put it back as it was", use `revert: {undo: <the #n of that write>}`: it undoes only what of that write is still in effect; what others changed since is skipped and listed in the receipt.',
     {
@@ -279,7 +284,7 @@ export const WRITE = {
       { text: 'A source already stored: `{kind: "source_ref", id}`.', later: "P2" },
     ],
     ops: [
-      'One or more operations on one slot, in order; all succeed or none does. Each: `intent`; `table`; `row` (`r_…`, an existing row of an event table or a table without time), or `entity` / `entity_key` (a state table); `ver` as read; `set` (field name → value; a value with a unit as `{value, unit}`; `null` clears an optional field); for state tables `valid_from` (included) and `valid_to` (not included; `next_change` by default, or `open`); `revert: {undo: n, include_later?}` instead of `set`; `evidence_refs` (indexes into the request\'s `evidence`). Tell "it changed" (`update`) from "it was wrong" (`correct`).',
+      'One or more operations on one slot, in order; all succeed or none does. Each: `intent`; `table`; `row` (`r_…`, an existing row of an event table or a table without time), or `entity` / `entity_key` (a state table); `ver` as read; `set` (field name → value; a value with a unit as `{value, unit}`; `null` clears an optional field); for state tables `valid_from` (included) and `valid_to` (not included; `next_change` by default, or `open`); `revert: {undo: n, include_later?}` instead of `set`; `evidence_refs` (indexes into the request\'s `evidence`). Tell "it changed" (`update`) from "it was recorded wrongly" (`correct`).',
       { text: "`external_key`: the record's key in the system it comes from.", later: "P2" },
       {
         text: '`as`: a temporary name for a new row, used later in the request as `"@p1"`.',
@@ -303,7 +308,7 @@ export const WRITE = {
  */
 export const WRITE_OP_FIELDS = {
   intent: [
-    'Required without `revert`. `insert` a new record; `update` when something changed or more is known; `correct` when the recorded value was wrong in the first place; `revoke` when the record should not exist. Tell "it changed" (`update`) from "it was recorded wrongly" (`correct`).',
+    'Required without `revert`. `insert` a new record; `update` when something changed or more is known; `correct` when the value was recorded wrongly in the first place; `revoke` when the record should not exist. Tell "it changed" (`update`) from "it was recorded wrongly" (`correct`).',
   ],
   table: [
     "Required. The table's name as saveslot_catalog gives it. A derived table cannot be written: write its source table.",
@@ -346,6 +351,7 @@ export const RESOLVE = {
       needs: "saveslot_pending",
     },
     "Before a resolution with a large effect (confirming a change), tell the user the detail and ask them; resolve it only after they say yes to that. What they said before the item appeared is not agreement to it.",
+    "Returns the item with the decision taken and its new version, and the writes the decision made, each row with its new `ver`.",
   ],
   params: {
     id: ["The item ID (`pi_…`), from a receipt or saveslot_pending."],
@@ -377,8 +383,9 @@ export const SCHEMA_DRAFT = {
     "Use it when the user wants to start recording a kind of thing that none of their tables fits; look with saveslot_catalog first, and when a slot for it exists already, use that slot instead of creating another.",
     "In this version it only creates slots: it cannot change an existing slot (a document whose base_version is not null is refused), and only a connection that can see every slot can create one.",
     "Fields with a unit take a code from the unit vocabulary, such as km, min or CNY.",
+    "Returns the new slot's tables as compiled and its schema version, sv 1.",
     {
-      text: "The receipt gives the new slot's schema version, sv 1, to write with saveslot_write.",
+      text: "Write to it with saveslot_write, with that sv.",
       needs: "saveslot_write",
     },
   ],
@@ -418,7 +425,7 @@ export const INSTRUCTIONS = {
     ],
     [
       {
-        text: "When to write: when the user states a new fact that belongs in one of the tables, asks you to record something, or says something was recorded wrong, use saveslot_write and put the user's own words in `evidence`. Do not write when the user is asking, supposing or chatting. When no table fits, tell the user first.",
+        text: "When to write: when the user states a new fact that belongs in one of the tables, asks you to record something, or says something was recorded wrongly, use saveslot_write and put the user's own words in `evidence`. Do not write when the user is asking, supposing or chatting. When no table fits, tell the user first.",
         needs: "saveslot_write",
       },
       {
@@ -436,7 +443,7 @@ export const INSTRUCTIONS = {
     ],
     [
       {
-        text: 'Writing it right: read a record before changing it, and pass back the `ver` and `sv` you read. When a receipt says "pending confirmation", tell the user what it is in that same reply and get their agreement before going on; what they said before it appeared is not agreement to it.',
+        text: 'Writing it right: read a record before changing it, and pass back the `ver` and `sv` you read. When a receipt says "awaiting confirmation", tell the user what it is in that same reply and get their agreement before going on; what they said before it appeared is not agreement to it.',
         needs: "saveslot_write",
       },
       {
