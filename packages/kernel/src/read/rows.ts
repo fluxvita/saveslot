@@ -16,7 +16,12 @@ import type {
   FieldValue,
   ItemId,
 } from "@fluxvita/saveslot-contract-core";
-import { canonicalize, isDate, isInstant } from "@fluxvita/saveslot-contract-core";
+import {
+  canonicalize,
+  isDate,
+  isInstant,
+  type PremiseReason,
+} from "@fluxvita/saveslot-contract-core";
 import {
   compare,
   get,
@@ -31,7 +36,14 @@ import { valueOut } from "../time/index.ts";
 import { intervalOf } from "./interval.ts";
 import type { QueryPlan } from "./params.ts";
 import type { Flag, RowFacts, SelectedRow, Span } from "./select.ts";
-import { invalid, type Marks, ReadError, type Row, type Values } from "./types.ts";
+import {
+  invalid,
+  type Marks,
+  type PremiseChangedMark,
+  ReadError,
+  type Row,
+  type Values,
+} from "./types.ts";
 import { meetsCondition } from "./versions.ts";
 
 // --- marks ---------------------------------------------------------------------------------------
@@ -65,10 +77,26 @@ interface WorkMark {
   readonly fields: readonly string[];
   readonly spans?: readonly MarkSpan[];
 }
-/** `Marks` with their spans as `MarkSpan`s, until the rows are shown. */
-type WorkMarks = Omit<Marks, "disputed" | "awaiting"> & {
+/**
+ * A changed premise on a row while rows are cut and merged: its declaration, and what it covers on
+ * the row (a field, on a stretch of a state table), until the rows are shown.
+ */
+interface WorkPremise {
+  readonly decl: string;
+  readonly covers: readonly {
+    readonly field: string;
+    readonly from: string | null;
+    readonly to: string | null;
+  }[];
+}
+/** `Marks` with their spans as `MarkSpan`s, and premises as `WorkPremise`s, until shown. */
+type WorkMarks = Omit<
+  Marks,
+  "disputed" | "awaiting" | "premise_changed" | "premise_changed_total"
+> & {
   readonly disputed?: readonly WorkMark[];
   readonly awaiting?: readonly WorkMark[];
+  readonly premise?: readonly WorkPremise[];
 };
 
 /** The marks as shown: each span an `Interval` (04-contract-types §3 `Marks`). */
@@ -80,7 +108,7 @@ function shownMarks(m: WorkMarks | undefined, byDate: boolean): Marks | undefine
         ? x
         : { ...x, spans: spans.map((y) => intervalOf(y.from ?? null, y.to, byDate)) },
     );
-  const { disputed, awaiting, ...rest } = m;
+  const { disputed, awaiting, premise: _p, ...rest } = m;
   return {
     ...rest,
     ...(disputed !== undefined ? { disputed: out(disputed) } : {}),
@@ -148,13 +176,19 @@ function cutMarks(
     });
     return kept.length === 0 ? undefined : kept;
   };
-  const { disputed: _d, awaiting: _a, ...rest } = m;
+  const { disputed: _d, awaiting: _a, premise: _p, ...rest } = m;
   const disputed = cut(m.disputed);
   const awaiting = cut(m.awaiting);
+  // A premise: what it covers on the cut row; none left, it goes.
+  const premise = (m.premise ?? []).flatMap((p) => {
+    const covers = p.covers.filter((c) => spansMeet([c], from, to));
+    return covers.length === 0 ? [] : [{ ...p, covers }];
+  });
   const out: WorkMarks = {
     ...rest,
     ...(disputed !== undefined ? { disputed } : {}),
     ...(awaiting !== undefined ? { awaiting } : {}),
+    ...(premise.length > 0 ? { premise } : {}),
   };
   return Object.keys(out).length === 0 ? undefined : out;
 }
@@ -216,7 +250,21 @@ function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): WorkMarks | 
   }
   const revokedBy = facts.revokedBy.get(r.id);
   if (r.revoked && revokedBy !== undefined) out.revoked = { seq: revokedBy as never };
-  return Object.keys(out).length === 0 ? undefined : (out as WorkMarks);
+  // Changed premises: those covering a value on this segment (02-integrity «标记出现在哪一行»);
+  // with `fields` given, only those covering a field read (04-contract §7).
+  const byDecl = new Map<string, WorkPremise["covers"][number][]>();
+  for (const c of facts.premises?.covers.get(r.id) ?? []) {
+    if (r.validFrom !== undefined && !spansMeet([c], r.validFrom, r.validTo ?? null)) continue;
+    const list = byDecl.get(c.decl) ?? [];
+    list.push({ field: c.field, from: c.from, to: c.to });
+    byDecl.set(c.decl, list);
+  }
+  const premise = [...byDecl]
+    .filter(([, cs]) => !plan.fieldsGiven || cs.some((c) => read.has(c.field)))
+    .map(([decl, covers]) => ({ decl, covers }));
+  return Object.keys(out).length === 0 && premise.length === 0
+    ? undefined
+    : ({ ...out, ...(premise.length > 0 ? { premise } : {}) } as WorkMarks);
 }
 
 /**
@@ -249,11 +297,87 @@ function unionMarks(a: WorkMarks | undefined, b: WorkMarks | undefined): WorkMar
   const disputed = items(a.disputed, b.disputed);
   const awaiting = items(a.awaiting, b.awaiting);
   const flagged = items(a.flagged, b.flagged);
+  const premise = new Map<string, WorkPremise>();
+  for (const p of [...(a.premise ?? []), ...(b.premise ?? [])]) {
+    const o = premise.get(p.decl);
+    premise.set(p.decl, o === undefined ? p : { ...o, covers: [...o.covers, ...p.covers] });
+  }
   return {
+    ...(premise.size > 0 ? { premise: [...premise.values()] } : {}),
     ...(disputed !== undefined ? { disputed } : {}),
     ...(awaiting !== undefined ? { awaiting } : {}),
     ...(flagged !== undefined ? { flagged } : {}),
     ...(a.corrected === true || b.corrected === true ? { corrected: true as const } : {}),
+  };
+}
+
+/**
+ * The changed premises of a row as shown (04-contract-types §3 `Marks.premise_changed`): the latest
+ * `since` first (of one `since`, the later declaration first), at most 10, the total when there
+ * are more. `fields` are this row's fields covered. A premise on a table the caller cannot see still
+ * shows, as what is of this row only (`hidden`, `since`, `fields`): that the row rests on something
+ * that changed matters to whoever reads it; which table, row and fields, and how, are not told.
+ */
+function shownPremises(
+  plan: QueryPlan,
+  facts: RowFacts,
+  list: readonly WorkPremise[],
+): Pick<Marks, "premise_changed" | "premise_changed_total"> {
+  const p = facts.premises;
+  if (p === undefined) return {};
+  const slot = plan.named.slot;
+  const visible = new Map(slot.tables.map((t) => [t.id as string, t]));
+  const marks: { order: readonly number[]; mark: PremiseChangedMark }[] = [];
+  for (const w of list) {
+    const d = p.decls.get(w.decl);
+    // Changed ones only (`premiseFacts` asks for no other; a changed one has both).
+    if (d === undefined || d.state !== "changed" || d.since === null || d.reason === null) continue;
+    const covered = new Set(w.covers.map((c) => c.field));
+    const fields = plan.table.fields.filter((f) => covered.has(f.id)).map((f) => f.name);
+    const reason = d.reason as PremiseReason;
+    const since = d.since as never;
+    const target = visible.get(d.targetTable);
+    const order = [d.since, d.op, -d.opIndex, -d.index];
+    if (target === undefined || target.kind !== "base") {
+      // Only what is of this row: that something it rests on changed, and since when (an operation
+      // number, as its own versions show); not how (`deleted` would tell of a deletion there).
+      marks.push({ order, mark: { hidden: true, since, fields } });
+      continue;
+    }
+    const names = new Map(target.fields.map((f) => [f.id as string, f.name]));
+    marks.push({
+      order,
+      mark: {
+        premise: {
+          table: `${slot.name}.${target.name}`,
+          ...(target.time.type === "state"
+            ? { entity: d.target as never }
+            : { row: d.target as never }),
+        },
+        ...(d.fields !== null ? { premise_fields: d.fields.map((f) => names.get(f) ?? f) } : {}),
+        seen: `v${d.seen.op}.${d.seen.restoreCount}`,
+        reason,
+        since,
+        fields,
+        declared: {
+          seq: d.op as never,
+          actor: p.actors.get(d.declarer) ?? { kind: "user", id: d.declarer, name: d.declarer },
+        },
+      },
+    });
+  }
+  if (marks.length === 0) return {};
+  // The latest since first; then the latest declaring operation; within it in op order.
+  marks.sort((a, b) => {
+    for (let i = 0; i < a.order.length; i++) {
+      const x = (b.order[i] as number) - (a.order[i] as number);
+      if (x !== 0) return x;
+    }
+    return 0;
+  });
+  return {
+    premise_changed: marks.slice(0, 10).map((x) => x.mark),
+    ...(marks.length > 10 ? { premise_changed_total: marks.length } : {}),
   };
 }
 
@@ -374,7 +498,13 @@ export function shownRows(
               : {}),
           }
         : {}),
-      ...(marks !== undefined ? { marks: shownMarks(marks, date) as Marks } : {}),
+      ...(() => {
+        const all: Marks = {
+          ...(shownMarks(marks, date) ?? {}),
+          ...(marks?.premise !== undefined ? shownPremises(plan, facts, marks.premise) : {}),
+        };
+        return Object.keys(all).length > 0 ? { marks: all } : {};
+      })(),
     };
     return { row, id: r.id, ver, values: r.values };
   });

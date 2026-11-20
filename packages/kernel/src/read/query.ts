@@ -23,7 +23,7 @@ import {
   type ShownRow,
   shownRows,
 } from "./rows.ts";
-import { logPosition, restoreCount, rowFacts, selectRows } from "./select.ts";
+import { logPosition, premiseFacts, restoreCount, rowFacts, selectRows } from "./select.ts";
 import { resolveTable, visibleSlots } from "./slots.ts";
 import { invalid, type QueryReadResult } from "./types.ts";
 import { rowFactsAsOf, selectRowsAsOf } from "./versions.ts";
@@ -82,10 +82,12 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
   const selected =
     asOf === undefined ? await selectRows(tx, plan) : await selectRowsAsOf(tx, plan, asOf);
   const ids = selected.map((r) => r.id);
-  const facts =
-    asOf === undefined
+  const facts = {
+    ...(asOf === undefined
       ? await rowFacts(tx, plan.table, ids)
-      : await rowFactsAsOf(tx, plan.table, ids, asOf);
+      : await rowFactsAsOf(tx, plan.table, ids, asOf)),
+    premises: await premiseFacts(tx, plan.table, ids, asOf),
+  };
   const rows: ShownRow[] = shownRows(plan, selected, facts, restore).map((s) => ({
     ...s,
     keys: rowKeys(plan, s),

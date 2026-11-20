@@ -322,7 +322,9 @@ interface Marks {
   /** 这一行的某个 ref 字段指向的行 / 实体已撤销，或已被隐私删除。引用方的值不变（保留 ID），只标出来；目标的撤销被 undo 后标记消失。 */
   dangling_ref?: Array<{ field: FieldName; state: "revoked" | "deleted" }>;
   /** 这一行当前的值所用到的前提后来变了（04-contract 5.1「写入的前提」）。值没有动；是否仍然成立由读方判断。
-   *  任何读取方都看得到。最多列 10 条，按 since 从新到旧；超出时另给 premise_changed_total。打标记、撤标记都不改这一行的 ver。 */
+   *  任何读取方都看得到。最多列 10 条，按 since 从新到旧；超出时另给 premise_changed_total。打标记、撤标记都不改这一行的 ver。
+   *  同一 since 的几条，后声明的在前。前提目标所在的表（或 slot）对读方不可见时是第二种形状：只有这一行自己的东西（被覆盖的字段与 since），
+   *  目标、声明的字段、所见版本、原因与表名都不给。 */
   premise_changed?: Array<{
     premise: TargetRef;            // 前提所在的行 / 实体
     premise_fields?: FieldName[];  // 声明的字段；没有 = 整行
@@ -331,6 +333,10 @@ interface Marks {
     since: Seq;                    // 使前提不同于所见值的那次操作（删除之后改指那次删除）
     fields: FieldName[];           // 本行里由这条声明覆盖的字段
     declared: { seq: Seq; actor: Actor };   // 哪次写入声明的
+  } | {
+    hidden: true;                  // 前提目标对读方不可见
+    since: Seq;
+    fields: FieldName[];           // 本行里由这条声明覆盖的字段
   }>;
   premise_changed_total?: number;  // premise_changed 超过 10 条时：总条数
   /** 派生行是读时算出的（规则依赖"现在"，或读状态类表而不带业务时间限定）：值随读取时刻而定，这一行不带 ver。 */

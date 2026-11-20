@@ -16,8 +16,14 @@ export const AFFECTED_REASONS = ["correct", "revoke", "retroactive", "plan_chang
 /** 04-contract-types §3 `AffectedReason`. */
 export type AffectedReason = (typeof AFFECTED_REASONS)[number];
 
-/** 04-contract-types §3 one entry of `Marks.premise_changed`. */
-export interface PremiseChangedMark {
+/**
+ * 04-contract-types §3 one entry of `Marks.premise_changed`: the premise and what it covers here,
+ * or, when its target's table cannot be seen, only what is of this row (`HiddenPremiseMark`).
+ */
+export type PremiseChangedMark = VisiblePremiseMark | HiddenPremiseMark;
+
+/** A changed premise whose target the reader can see. */
+export interface VisiblePremiseMark {
   /** The row / entity the premise is on. */
   premise: TargetRef;
   /** Declared fields; absent = the whole row. */
@@ -30,6 +36,18 @@ export interface PremiseChangedMark {
   /** Fields of this row the declaration covers. */
   fields: FieldName[];
   declared: { seq: Seq; actor: Actor };
+}
+
+/**
+ * A changed premise whose target's table (or slot) the reader cannot see: only what is of this row,
+ * that something it rests on changed and from which operation; not which table, row or fields, nor
+ * how it changed.
+ */
+export interface HiddenPremiseMark {
+  hidden: true;
+  since: Seq;
+  /** Fields of this row the declaration covers. */
+  fields: FieldName[];
 }
 
 /** 04-contract-types §3 `Marks`: given on a row of a read result only when it has any mark. */

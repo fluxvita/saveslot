@@ -11,6 +11,7 @@ import type {
   KernelErrorCode,
   KernelErrorDetail,
   KernelErrorReason,
+  PremiseReason,
   RowId,
   Seq,
   SourceId,
@@ -93,9 +94,35 @@ export interface Marks {
   readonly flagged?: readonly { readonly item: ItemId; readonly reason: "duplicate_keys" }[];
   readonly corrected?: true;
   readonly revoked?: { readonly seq: Seq };
+  /**
+   * The premises of the values read changed (04-contract §7): at most 10, the latest `since`
+   * first; `premise_changed_total` when there are more.
+   */
+  readonly premise_changed?: readonly PremiseChangedMark[];
+  readonly premise_changed_total?: number;
   /** A derived row computed when read (04-contract §7): its value follows the evaluation time; no `ver`. */
   readonly computed_at_read?: true;
 }
+
+/**
+ * §3 one entry of `Marks.premise_changed`. A premise whose target's table the caller cannot see
+ * gives only what is of this row: `hidden`, `since` and the fields covered.
+ */
+export type PremiseChangedMark =
+  | {
+      readonly premise: TargetRef;
+      readonly premise_fields?: readonly string[];
+      readonly seen: string;
+      readonly reason: PremiseReason;
+      readonly since: Seq;
+      readonly fields: readonly string[];
+      readonly declared: { readonly seq: Seq; readonly actor: Actor };
+    }
+  | {
+      readonly hidden: true;
+      readonly since: Seq;
+      readonly fields: readonly string[];
+    };
 
 /** §4.1 `Row`, without `detail` (not in this version yet). */
 export interface Row extends TargetRef {

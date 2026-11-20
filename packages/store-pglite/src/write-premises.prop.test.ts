@@ -27,6 +27,8 @@ import {
   COMPILED_V1,
   createSlotEvents,
   premiseFanInLimitForTests,
+  queryInTx,
+  resolveInTx,
   writeInTx,
 } from "@fluxvita/saveslot-kernel/testing";
 import fc from "fast-check";
@@ -165,6 +167,27 @@ async function send(params: unknown): Promise<Receipt & Record<string, unknown>>
     const x = e as { code?: string; detail?: Record<string, unknown> };
     if (x.code === undefined) throw e;
     return { refused: x.code, ...(x.detail ?? {}) } as never;
+  }
+}
+/** A decision through the pipeline; its write's receipt, if it wrote (none when refused). */
+async function decide(params: unknown): Promise<(Receipt & Record<string, unknown>) | undefined> {
+  try {
+    const r = (await s.store.write((tx) =>
+      resolveInTx(tx, {
+        actor: USER as never,
+        task: null,
+        now: now(),
+        windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+        visibility: { kind: "all" },
+        params,
+        newId,
+        reads: readBufferOf(s.store),
+      }),
+    )) as unknown as { write?: Receipt & Record<string, unknown> };
+    return r.write;
+  } catch (e) {
+    if ((e as { code?: string }).code === undefined) throw e;
+    return undefined;
   }
 }
 const ok = async (params: unknown): Promise<Receipt> => {
@@ -425,6 +448,179 @@ async function inForce(): Promise<Decl[]> {
 }
 
 /**
+ * The changed premises each task's values rest on, as the oracle reads them (02-integrity «标记出现在
+ * 哪一行»), by row: the givers of the task's cells in effect, carried references followed to their
+ * ends in the sources table; the declarations whose edge for their target is on one of those items,
+ * not voided by a later clearing entry (picked here as `inForce` picks them), changed. Neither
+ * the marks' code nor its queries. Tasks get no corroboration here (asserted): none to add.
+ */
+async function expectedMarks(carriedTo?: { n: number }): Promise<Map<string, string[]>> {
+  const { cells, sources, edges, decls, corroborated } = await s.store.read(async (tx) => ({
+    cells: (
+      await tx.query<{ row_id: string; field_id: string; e: unknown; f: string; k: unknown }>(
+        `SELECT row_id, field_id, src_event AS e, src_field AS f, src_k AS k FROM t_t2_v1__ver
+         WHERE rec_to IS NULL AND field_id <> 'existence' AND src_event IS NOT NULL`,
+      )
+    ).rows,
+    sources: (
+      await tx.query<{ e: unknown; f: string; k: unknown; ce: unknown; cf: string; ck: unknown }>(
+        `SELECT event_seq AS e, field_id AS f, k, carried_event AS ce, carried_field AS cf,
+                carried_k AS ck
+         FROM base_sources`,
+      )
+    ).rows,
+    edges: (
+      await tx.query<{
+        e: unknown;
+        f: string;
+        k: unknown;
+        target: string;
+        op: unknown;
+        i: unknown;
+        j: unknown;
+      }>(
+        `SELECT item_event AS e, field_id AS f, k, target, decl_op AS op, decl_op_index AS i,
+                decl_index AS j
+         FROM premise_edges`,
+      )
+    ).rows,
+    decls: (
+      await tx.query<{
+        op: unknown;
+        i: unknown;
+        j: unknown;
+        target: string;
+        state: string;
+        reason: string | null;
+        since: unknown;
+      }>(
+        `SELECT op, op_index AS i, decl_index AS j, target_row AS target, state, reason, since
+         FROM premise_decls`,
+      )
+    ).rows,
+    corroborated: Number(
+      (
+        await tx.query<{ n: unknown }>(
+          `SELECT count(*) AS n FROM base_sources b JOIN t_t2_v1__ver v ON v.row_id = b.row_id
+           WHERE b.status = 'corroborated'`,
+        )
+      ).rows[0]?.n,
+    ),
+  }));
+  expect(corroborated).toBe(0);
+  const key = (e: unknown, f: string, k: unknown) => `${e}/${f}/${k}`;
+  const carried = new Map<string, string[]>();
+  for (const x of sources) {
+    const from = key(x.e, x.f, x.k);
+    const list = carried.get(from) ?? [];
+    if (x.ce !== null) list.push(key(x.ce, x.cf, x.ck));
+    carried.set(from, list);
+  }
+  const ends = (item: string, seen = new Set<string>()): string[] => {
+    if (seen.has(item)) return [];
+    seen.add(item);
+    const next = carried.get(item) ?? [];
+    return next.length === 0 ? [item] : next.flatMap((n) => ends(n, seen));
+  };
+  const later = (a: readonly number[], b: readonly number[]) =>
+    (a[0] as number) > (b[0] as number) || (a[0] === b[0] && (a[1] as number) > (b[1] as number));
+  const cleared = new Map<string, number[]>();
+  for (const e of edges)
+    if (e.target === "*") cleared.set(key(e.e, e.f, e.k), [Number(e.op), Number(e.i)]);
+  const live = new Map<string, string[]>();
+  for (const e of edges) {
+    if (e.target === "*") continue;
+    const at = [Number(e.op), Number(e.i)];
+    const c = cleared.get(key(e.e, e.f, e.k));
+    if (c !== undefined && later(c, at)) continue;
+    const list = live.get(key(e.e, e.f, e.k)) ?? [];
+    list.push(`${e.op}/${e.i}/${e.j}`);
+    live.set(key(e.e, e.f, e.k), list);
+  }
+  const byKey = new Map(decls.map((d) => [`${d.op}/${d.i}/${d.j}`, d]));
+  const NAME: Record<string, string> = { f3: "title", f4: "due" };
+  const out = new Map<string, string[]>();
+  const rows = new Set(cells.map((c) => c.row_id));
+  for (const row of rows) {
+    const fields = new Map<string, Set<string>>();
+    // Declarations found on an item a write-back carries, not on the cell's own giver.
+    const carriedDecls = new Set<string>();
+    for (const c of cells.filter((x) => x.row_id === row))
+      for (const item of ends(key(c.e, c.f, c.k)))
+        for (const d of live.get(item) ?? []) {
+          const set = fields.get(d) ?? new Set<string>();
+          set.add(NAME[c.field_id] ?? c.field_id);
+          fields.set(d, set);
+          if (item !== key(c.e, c.f, c.k)) carriedDecls.add(d);
+        }
+    if (carriedTo !== undefined)
+      for (const d of carriedDecls) if (byKey.get(d)?.state === "changed") carriedTo.n++;
+    const marks = [...fields]
+      .flatMap(([d, fs]) => {
+        const x = byKey.get(d);
+        if (x === undefined || x.state !== "changed") return [];
+        return [
+          JSON.stringify([Number(x.op), x.target, Number(x.since), x.reason, [...fs].sort()]),
+        ];
+      })
+      .sort();
+    if (marks.length > 0) out.set(row, marks);
+  }
+  return out;
+}
+
+/** The changed premises each task carries as a query reads it, in `expectedMarks`'s terms. */
+async function readMarks(): Promise<Map<string, string[]>> {
+  const r = (await s.store.read((tx) =>
+    queryInTx(tx, {
+      actor: USER as never,
+      task: null,
+      now: now() as never,
+      visibility: { kind: "all" },
+      params: { table: "tasks", limit: 200 },
+      read: "rd_0000000000000000" as never,
+    }),
+  )) as unknown as {
+    result: {
+      rows: {
+        row: string;
+        marks?: {
+          premise_changed?: {
+            premise: { row?: string; entity?: string };
+            since: number;
+            reason: string;
+            fields: string[];
+            declared: { seq: number };
+          }[];
+          premise_changed_total?: number;
+        };
+      }[];
+    };
+  };
+  const out = new Map<string, string[]>();
+  for (const x of r.result.rows) {
+    const list = x.marks?.premise_changed;
+    if (list === undefined) continue;
+    expect(x.marks?.premise_changed_total).toBeUndefined();
+    out.set(
+      x.row,
+      list
+        .map((m) =>
+          JSON.stringify([
+            m.declared.seq,
+            m.premise.row ?? m.premise.entity,
+            m.since,
+            m.reason,
+            [...m.fields].sort(),
+          ]),
+        )
+        .sort(),
+    );
+  }
+  return out;
+}
+
+/**
  * What a declaration's state, reason and since are after operation `upTo`, by walking its target's
  * versions from the one it saw: current while the range holds the value seen, changed at the first
  * version after which it does not (that version's reason), current again when it holds it again.
@@ -460,7 +656,13 @@ type Step =
   | { k: "restate"; dep: number; r: number; back: number; fallback: boolean }
   | { k: "clear"; dep: number }
   /** The last restatement by the fallback, sent again as it was. */
-  | { k: "again" };
+  | { k: "again" }
+  /** A dependent row's own writes: from its version now, perhaps resting on a release. */
+  | { k: "taskEdit"; dep: number; title: number; r: number; on: boolean }
+  /** From its first version, resting on a release: a candidate when the title changed since, taken. */
+  | { k: "taskStale"; dep: number; title: number; r: number }
+  /** An undo of one of its earlier writes: held when it takes later ones back, confirmed. */
+  | { k: "taskUndo"; dep: number; pick: number };
 
 const step: fc.Arbitrary<Step> = fc.oneof(
   {
@@ -507,7 +709,36 @@ const step: fc.Arbitrary<Step> = fc.oneof(
   },
   { weight: 1, arbitrary: fc.record({ k: fc.constant("clear" as const), dep: fc.nat(5) }) },
   { weight: 4, arbitrary: fc.record({ k: fc.constant("again" as const) }) },
+  {
+    weight: 5,
+    arbitrary: fc.record({
+      k: fc.constant("taskEdit" as const),
+      dep: fc.nat(5),
+      title: fc.nat(2),
+      r: fc.nat(2),
+      on: fc.boolean(),
+    }),
+  },
+  {
+    weight: 2,
+    arbitrary: fc.record({
+      k: fc.constant("taskStale" as const),
+      dep: fc.nat(5),
+      title: fc.nat(2),
+      r: fc.nat(2),
+    }),
+  },
+  {
+    weight: 4,
+    arbitrary: fc.record({
+      k: fc.constant("taskUndo" as const),
+      dep: fc.nat(5),
+      pick: fc.nat(2),
+    }),
+  },
 );
+
+const TITLES = ["t", "u", "w"];
 
 const DATES = ["2026-12-01", "2026-11-20", "2026-12-15"];
 const NAMES = ["v2", "v2.1", "v3"];
@@ -528,9 +759,16 @@ describe("premises over random histories (in force: state, since, reason as the 
         // Restatements by the fallback sent again: replayed, or taken anew.
         replayed: 0,
         resent: 0,
+        // Task rows carrying a mark, summed over the operations.
+        marked: 0,
+        // Of them, a mark found through a carried reference (a candidate taken, a proposal
+        // confirmed, an undo's write-back).
+        viaCarried: 0,
+        // Decisions on items opened on dependent rows.
+        decided: 0,
       };
       await fc.assert(
-        fc.asyncProperty(fc.array(step, { minLength: 6, maxLength: 16 }), async (steps) => {
+        fc.asyncProperty(fc.array(step, { minLength: 6, maxLength: 24 }), async (steps) => {
           await s.reset();
           readBufferOf(s.store).take();
           ids = 0;
@@ -566,7 +804,52 @@ describe("premises over random histories (in force: state, since, reason as the 
               vers: [b.ops[0]?.ver as string],
             });
           }
-          const deps: { row: string; ver: string }[] = [];
+          const deps: { row: string; ver: string; first: string; ops: number[] }[] = [];
+          // One dependent row from the start, resting on the first release: the steps on
+          // dependent rows have one to work on at once.
+          {
+            const x = releases[0] as (typeof releases)[number];
+            const d = await ok({
+              ops: [
+                {
+                  intent: "insert",
+                  table: "tasks",
+                  set: { title: "t" },
+                  premises: [{ table: "releases", row: x.row, ver: x.vers.at(-1) }],
+                },
+              ],
+            });
+            deps.push({
+              row: d.ops[0]?.target.row as string,
+              ver: d.ops[0]?.ver as string,
+              first: d.ops[0]?.ver as string,
+              ops: [d.seq],
+            });
+          }
+          /**
+           * The item a write on a dependent row opened, decided at once (a candidate taken, a
+           * proposal confirmed): the decision's write, checked as the step's operation.
+           */
+          const decided = async (
+            w: object,
+            decision: "take_candidate" | "confirm",
+            dep: { ver: string; ops: number[] },
+          ) => {
+            const pending = (w as { pending?: { id: string; item_ver?: string }[] }).pending;
+            const it = (pending ?? []).find((x) => x.item_ver !== undefined);
+            if (it === undefined) return undefined;
+            const d = await decide({
+              id: it.id,
+              decision,
+              item_ver: it.item_ver,
+              idempotency_key: `decide-${it.id}`,
+            });
+            if (d === undefined) return undefined;
+            dep.ver = d.ops[0]?.ver as string;
+            dep.ops.push(d.seq);
+            stats.decided++;
+            return d;
+          };
           const done: number[] = [];
           // The restatements by the fallback sent so far, as sent; the last one, and its target.
           const sent = new Set<string>();
@@ -676,7 +959,12 @@ describe("premises over random histories (in force: state, since, reason as the 
                 ],
               });
               if (r["refused"] === undefined)
-                deps.push({ row: r.ops[0]?.target.row as string, ver: r.ops[0]?.ver as string });
+                deps.push({
+                  row: r.ops[0]?.target.row as string,
+                  ver: r.ops[0]?.ver as string,
+                  first: r.ops[0]?.ver as string,
+                  ops: [r.seq],
+                });
               if (r["refused"] === undefined && ver !== x.vers.at(-1)) stats.late++;
             } else if (st.k === "restate") {
               const dep = deps[st.dep % Math.max(1, deps.length)];
@@ -702,6 +990,47 @@ describe("premises over random histories (in force: state, since, reason as the 
             } else if (st.k === "again") {
               if (last === undefined) continue;
               r = await restated(last.body, last.release);
+            } else if (st.k === "taskEdit" || st.k === "taskStale") {
+              const i = st.dep % Math.max(1, deps.length);
+              const dep = deps[i];
+              if (dep === undefined) continue;
+              const x = releases[st.r] as (typeof releases)[number];
+              const on = st.k === "taskStale" || st.on;
+              r = await send({
+                ops: [
+                  {
+                    intent: "update",
+                    table: "tasks",
+                    row: dep.row,
+                    ver: st.k === "taskStale" ? dep.first : dep.ver,
+                    set: { title: TITLES[st.title] },
+                    ...(on
+                      ? { premises: [{ table: "releases", row: x.row, ver: x.vers.at(-1) }] }
+                      : {}),
+                  },
+                ],
+              });
+              if (r["refused"] === undefined) {
+                if ((r as { status?: string }).status !== "pending")
+                  dep.ver = r.ops[0]?.ver as string;
+                dep.ops.push(r.seq);
+                r = (await decided(r, "take_candidate", dep)) ?? r;
+              }
+            } else if (st.k === "taskUndo") {
+              const dep = deps[st.dep % Math.max(1, deps.length)];
+              // Its latest writes the likelier: an undo of one of the last three.
+              const target =
+                dep?.ops[
+                  (dep?.ops.length ?? 0) - 1 - (st.pick % Math.max(1, dep?.ops.length ?? 1))
+                ];
+              if (dep === undefined || target === undefined) continue;
+              r = await send({ ops: [{ table: "tasks", row: dep.row, revert: { undo: target } }] });
+              if (r["refused"] === undefined) {
+                if ((r as { status?: string }).status !== "pending")
+                  dep.ver = r.ops[0]?.ver as string;
+                dep.ops.push(r.seq);
+                r = (await decided(r, "confirm", dep)) ?? r;
+              }
             } else {
               const dep = deps[st.dep % Math.max(1, deps.length)];
               if (dep === undefined) continue;
@@ -743,6 +1072,15 @@ describe("premises over random histories (in force: state, since, reason as the 
               )
                 stats.matched++;
             }
+            // The marks a query reads on every task: what the oracle finds (as a sorted list).
+            const carried = { n: 0 };
+            const want = await expectedMarks(carried);
+            stats.viaCarried += carried.n;
+            expect({ after: r.seq, marks: Object.fromEntries(await readMarks()) }).toEqual({
+              after: r.seq,
+              marks: Object.fromEntries(want),
+            });
+            stats.marked += want.size;
           }
           stats.samples++;
         }),
@@ -758,6 +1096,7 @@ describe("premises over random histories (in force: state, since, reason as the 
       expect(stats.checked).toBeGreaterThan(stats.samples * 3);
       expect(stats.changed).toBeGreaterThan(0);
       expect(stats.late).toBeGreaterThan(0);
+      expect(stats.marked).toBeGreaterThan(0);
       const out = process.env["PREMISE_STATS"];
       if (out !== undefined)
         (await import("node:fs")).writeFileSync(out, `${JSON.stringify(stats)}\n`);

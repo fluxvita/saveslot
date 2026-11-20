@@ -12,12 +12,14 @@ import type {
   FieldValue,
   ItemId,
 } from "@fluxvita/saveslot-contract-core";
+import { type PremisesOn, premisesOn } from "../delta/index.ts";
+import { actorsNow } from "../pending/index.ts";
 import { decodeColumns as decode } from "../request/index.ts";
 import { column, INSTANT_TEXT, physical, selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { containsPoint, pointWithin } from "../time/index.ts";
 import type { Condition, Literal, QueryPlan } from "./params.ts";
-import { ReadError } from "./types.ts";
+import { type Actor, ReadError } from "./types.ts";
 
 /** A selected row: a row of an event or timeless table, or a segment of a state table's entity. */
 export interface SelectedRow {
@@ -43,6 +45,36 @@ export interface RowFacts {
     readonly { field: string; from: string; to: string | null }[]
   >;
   readonly flags: ReadonlyMap<string, readonly Flag[]>;
+  /** The changed premises the rows' values rest on (`premiseFacts`); absent: none asked for. */
+  readonly premises?: PremiseFacts;
+}
+
+/** The changed premises of rows, and their declarers by ID as named now. */
+export interface PremiseFacts extends PremisesOn {
+  readonly actors: ReadonlyMap<string, Actor>;
+}
+
+/**
+ * The changed premises the values of rows `ids` rest on (02-integrity «标记出现在哪一行»), on the
+ * cells in effect at operation `at` (a later page's position) or now; the declarations' state is
+ * always the one now.
+ */
+export async function premiseFacts(
+  tx: ReadTx,
+  t: CompiledBaseTable,
+  ids: readonly string[],
+  at?: number,
+): Promise<PremiseFacts> {
+  const p = await premisesOn(tx, t, ids, {
+    decode,
+    changed: true,
+    ...(at !== undefined ? { at } : {}),
+  });
+  const actors = await actorsNow(
+    tx,
+    [...p.decls.values()].map((d) => d.declarer),
+  );
+  return { ...p, actors };
 }
 
 /** A business time span `[from, to)`; `to` null: it runs on. */
