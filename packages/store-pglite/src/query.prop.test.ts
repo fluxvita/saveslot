@@ -368,18 +368,21 @@ const EXAMPLE_READS = [
   { kind: "valid_at", a: 4, b: undefined, fields: "all", clip: false, coalesce: false },
 ];
 
+// One store for the samples, for the whole file: the tables' groups run one after another, and each
+// sample empties it before using it (opening PGlite builds a database, seconds; emptying one takes
+// milliseconds).
+let main: ReusableStore;
+beforeAll(async () => {
+  main = await openReusable("saveslot-query-prop-");
+}, 120_000);
+afterAll(async () => {
+  await main?.close();
+}, 120_000);
+
 describe.each([
   ["state", STATE, true],
   ["timeless", EVENT, false],
 ] as const)("%s table", (_, schema: TableSchema, isState) => {
-  let main: ReusableStore;
-  beforeAll(async () => {
-    main = await openReusable("saveslot-query-prop-");
-  }, 120_000);
-  afterAll(async () => {
-    await main?.close();
-  }, 120_000);
-
   it("query gives judge's view at each step", async () => {
     // Samples, and those run (a scenario whose events would collide in seq is not).
     const seen = { samples: 0, run: 0 };

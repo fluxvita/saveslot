@@ -611,15 +611,18 @@ const meets = (a: readonly Span[], b: readonly Span[]) =>
 /** Samples, and items superseded or refreshed for being reached, over both tables. */
 const totals = { samples: 0, superseded: 0, refreshed: 0 };
 
-describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
-  let main: ReusableStore;
-  beforeAll(async () => {
-    main = await openReusable("saveslot-write-items-");
-  }, 120_000);
-  afterAll(async () => {
-    await main?.close();
-  }, 120_000);
+// One store for the samples, for the whole file: the tables' groups run one after another, and each
+// sample empties it before using it (opening PGlite builds a database, seconds; emptying one takes
+// milliseconds).
+let main: ReusableStore;
+beforeAll(async () => {
+  main = await openReusable("saveslot-write-items-");
+}, 120_000);
+afterAll(async () => {
+  await main?.close();
+}, 120_000);
 
+describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
   it("item entries and refreshes as the reference evaluator gives them", async () => {
     const seen = {
       samples: 0,
@@ -704,10 +707,6 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
           const { steps } = opens && reach ? judged(schema, ops, []) : judgedOnce;
           await main.reset();
           const store = main.store;
-          // The read buffer belongs to the store, not to what `reset` empties: reads an earlier sample
-          // left in it (the same items, entity and actor every sample) would count as this sample's,
-          // and whether a writer had read an item decides whether it is superseded or refreshed.
-          readBufferOf(store).take();
           const run = (events: NewEvent[]) =>
             store.write(async (tx) => {
               const op = await appendOperation(tx, {

@@ -486,15 +486,18 @@ function fixed(isState: boolean): [string, Op[]][] {
   ];
 }
 
-describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
-  let main: ReusableStore;
-  beforeAll(async () => {
-    main = await openReusable("saveslot-write-pipeline-");
-  }, 120_000);
-  afterAll(async () => {
-    await main?.close();
-  }, 120_000);
+// One store for the samples, for the whole file: the tables' groups run one after another, and each
+// sample empties it before using it (opening PGlite builds a database, seconds; emptying one takes
+// milliseconds).
+let main: ReusableStore;
+beforeAll(async () => {
+  main = await openReusable("saveslot-write-pipeline-");
+}, 120_000);
+afterAll(async () => {
+  await main?.close();
+}, 120_000);
 
+describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
   const seen = {
     samples: 0,
     skipped: 0,
@@ -559,10 +562,6 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     const expected = eventsOfSteps(ctx, steps, (after, n) => after + 1 + n);
     await main.reset();
     const store = main.store;
-    // The read buffer belongs to the store, not to what `reset` empties: reads an earlier sample
-    // left in it (the same items, entity, actor and tasks every sample) would count as this
-    // sample's, and whether a writer had read an item decides how it is closed.
-    readBufferOf(store).take();
     expect(await store.read(snapshot)).toEqual(main.blank);
     const run = (events: NewEvent[]) =>
       store.write(async (tx) => {

@@ -562,20 +562,21 @@ function fixed(isState: boolean): [string, Op[]][] {
 /** What the random samples reached, over both tables (the last test checks it). */
 const atRandom: Record<string, number> = {};
 
-describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
-  // One store for the samples and one to replay into, each emptied before use: opening PGlite
-  // builds a database (seconds), emptying one takes milliseconds.
-  let main: ReusableStore;
-  let replica: ReusableStore;
-  beforeAll(async () => {
-    main = await openReusable("saveslot-apply-write-");
-    replica = await openReusable("saveslot-apply-write-replica-");
-  }, 120_000);
-  afterAll(async () => {
-    await main?.close();
-    await replica?.close();
-  }, 120_000);
+// One store for the samples and one to replay into, for the whole file: the tables' groups run one
+// after another, and each sample empties what it uses before using it (opening PGlite builds a
+// database, seconds; emptying one takes milliseconds).
+let main: ReusableStore;
+let replica: ReusableStore;
+beforeAll(async () => {
+  main = await openReusable("saveslot-apply-write-");
+  replica = await openReusable("saveslot-apply-write-replica-");
+}, 120_000);
+afterAll(async () => {
+  await main?.close();
+  await replica?.close();
+}, 120_000);
 
+describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
   const seen = { samples: 0, skipped: 0, steps: 0, replayed: 0 };
   const hits: Record<string, number> = {};
 

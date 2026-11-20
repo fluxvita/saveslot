@@ -269,25 +269,27 @@ type Result = { ops?: OpReceipt[]; refused?: string; reason?: string; param?: st
 
 const opOf = (ver: string) => Number(ver.slice(1).split(".")[0]);
 
-describe.each(TABLES)("writing by entity_key: $table", (t: Keyed) => {
-  let main: ReusableStore;
-  let replica: ReusableStore;
-  beforeAll(async () => {
-    main = await openReusable("saveslot-entity-key-");
-    replica = await openReusable("saveslot-entity-key-replica-");
-  }, 120_000);
-  afterAll(async () => {
-    await main?.close();
-    await replica?.close();
-  }, 120_000);
+// One store for the samples and one to replay into, for the whole file: the tables' groups run one
+// after another, and each sample empties what it uses before using it (opening PGlite builds a
+// database, seconds; emptying one takes milliseconds).
+let main: ReusableStore;
+let replica: ReusableStore;
+beforeAll(async () => {
+  main = await openReusable("saveslot-entity-key-");
+  replica = await openReusable("saveslot-entity-key-replica-");
+}, 120_000);
+afterAll(async () => {
+  await main?.close();
+  await replica?.close();
+}, 120_000);
 
+describe.each(TABLES)("writing by entity_key: $table", (t: Keyed) => {
   it("ops go to the model's entity for their key, or create it; one entity a key", async () => {
     const seen = { samples: 0, created: 0, located: 0, changed: 0, replayed: 0 };
     await fc.assert(
       fc.asyncProperty(steps, async (sample) => {
         const store = main.store;
         await main.reset();
-        readBufferOf(store).take();
         let ids = 0;
         let minute = 0;
         let requests = 0;
