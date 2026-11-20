@@ -873,6 +873,8 @@ function summary(r: Report, finished: boolean): Line[] {
   for (const h of r.hosts) {
     if (h.state === "done" || h.state === "existing") out.push([words(TEXTS.snippetHint(h.host))]);
   }
+  // Setup does not install the start at login: the MCP bridge starts the service (06 §3.3 item 11).
+  if (finished && r.service === "ready") out.push([words(TEXTS.autostartHint)]);
   // "Done." only when setup ran to its end.
   if (
     finished &&

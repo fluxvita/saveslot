@@ -89,6 +89,13 @@ describe("saveslot", () => {
     });
   });
 
+  // Only a usage error: anything further would run launchctl or systemctl (./autostart.test.ts).
+  it("service is the daemon's", async () => {
+    const r = await saveslot("service", "restart");
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("saveslot service install | uninstall");
+  });
+
   it("schema templates, and a command that is neither's", async () => {
     expect((await saveslot("schema", "templates")).out).toMatch(/^running /);
     const r = await saveslot("nope");

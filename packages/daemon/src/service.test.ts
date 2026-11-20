@@ -272,6 +272,7 @@ describe("the service in process", () => {
     writeFileSync(join(h, "control", "anchor.json"), anchor);
     const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
     expect([s.state, s.reason]).toEqual(["failed", reason]);
+    expect(s.served).toBe(false);
     // The tenant's storage was closed again: another opener can take it.
     const store = await testBackend().open({ kind: "pglite", dir: join(h, "data") }, {});
     await store.close();
@@ -406,6 +407,8 @@ describe("the service in process", () => {
     renameSync(data, moved);
     const gone = await runService({ home: h, version: "t", signals: false, log: () => {} });
     expect([gone.state, gone.reason]).toEqual(["failed", "store_not_found"]);
+    // Failed before it served: under a start-at-login job it exits 0 (./main.ts `--supervised`).
+    expect([s.served, gone.served]).toEqual([true, false]);
     await gone.stop();
     expect(existsSync(data)).toBe(false);
     expect(existsSync(join(h, "data"))).toBe(false);
@@ -509,6 +512,8 @@ describe("the service in process", () => {
     await store.terminateWorker();
     expect(await s.exited).toEqual({ code: 1, reason: "worker_failed" });
     expect(s.state).toBe("failed");
+    // Failed while serving: the one failure a start-at-login job starts it again for.
+    expect(s.served).toBe(true);
     expect(lines.filter((l) => / ready$/.test(l))).toHaveLength(1);
     expect(existsSync(socketFile(h))).toBe(false);
     expect(existsSync(pidFile(h))).toBe(false);

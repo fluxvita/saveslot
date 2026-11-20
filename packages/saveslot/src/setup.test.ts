@@ -331,6 +331,8 @@ describe("setup on a terminal, from nothing", () => {
     expect(list.map((c) => c.name).sort()).toEqual(["testhost · Claude Code", "testhost · Codex"]);
     for (const h of ["claude", "codex"]) expect(await works(home, tokenOf(h))).toBe(true);
     expect(readFileSync(join(hosts, "claude.entry"), "utf8")).toContain(entry);
+    // The start at login is the user's to choose (06 §3.3 item 11).
+    expect(r.out).toContain(TEXTS.autostartHint);
   });
 
   it("run again: each step there already; nothing issued, nothing asked to run", async () => {

@@ -132,7 +132,29 @@ export const TEXTS = {
       "usage: saveslot status\n  whether the local saveslot service runs, its version, home, socket and open pending items",
     config: "usage: saveslot config get [<key>]\n  every setting in effect and where it comes from",
     mcp: "usage: saveslot mcp [--record <dir>]\n  the stdio bridge an MCP host runs; needs SAVESLOT_TOKEN (a token from saveslot connect)",
+    service:
+      "usage: saveslot service install | uninstall\n  start the saveslot service at login (macOS: a launchd agent; Linux: a systemd user service), or no longer",
   },
+
+  // `saveslot service install` / `uninstall` (06 §3 step 3, §4.1).
+  autostartUsage: "saveslot service install | uninstall",
+  autostartPlatform:
+    "error: the local saveslot service runs on macOS and Linux only; there is nothing to install here.",
+  autostartInstalled: (file: string, kind: "launchd" | "systemd") =>
+    [
+      `Installed ${file} (${kind === "launchd" ? "a launchd agent" : "a systemd user service"} of this user).`,
+      "The saveslot service now starts at login, and again if it fails while running; it was started now unless one runs already.",
+      "To remove it: saveslot service uninstall",
+    ].join("\n"),
+  autostartNotInstalled: (file: string) =>
+    `Nothing to remove: ${file} is not there; the saveslot service is not started at login.`,
+  autostartRemoved: (file: string) =>
+    [
+      `Removed ${file}. The saveslot service no longer starts at login; the one it had started was stopped.`,
+      "An MCP host that connects starts it again (mcp.autostart); saveslot start starts it by hand.",
+    ].join("\n"),
+  autostartFailed: (command: string, code: number | undefined) =>
+    `error: ${command} ${code === undefined ? "could not be run" : `ended with exit status ${code}`}; nothing was installed or removed.`,
 
   // The configuration (`config.toml`): keys, lines and limits, never a value from the file.
   configInvalid: "error: config.toml under the home is not valid; nothing was started.",

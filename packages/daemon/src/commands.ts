@@ -1,4 +1,4 @@
-// The service commands `init`, `start`, `stop`, `status` and `config` (docs/zh-CN/spec/06-cli.md §3 «分步做»
+// The service commands `init`, `start`, `stop`, `status`, `config` and `service` (docs/zh-CN/spec/06-cli.md §3 «分步做»
 // and its steps 2–3, §4.1, §6.2). They manage the local service process; none is a contract
 // operation. The entry package dispatches to `serviceCommand`.
 //
@@ -18,6 +18,8 @@
 //   user session).
 // - `config get [<key>]`: each key's value in effect and its source (default or config.toml);
 //   a key no part of this version uses is listed as such. `config set` is not in this version.
+// - `service install` / `uninstall`: starting the service at login (./autostart.ts); `install`
+//   needs an initialized home (exit 5), as `start` does.
 //
 // The lock is probed only when `/health` does not answer, and once after the stopped process has
 // exited: a probe takes the lock for a moment, and a service starting in that moment (one an MCP
@@ -49,6 +51,7 @@ import {
   sessionFile,
 } from "@fluxvita/saveslot-service";
 import { osFileLock, PgliteBackend, PgliteStoreError } from "@fluxvita/saveslot-store-pglite";
+import { installAutostart, type System, uninstallAutostart } from "./autostart.ts";
 import { type Config, ConfigInvalid, type ConfigKey, KEYS, readConfig } from "./config.ts";
 import { health, localRequest } from "./local-request.ts";
 import { daemonVersion, main } from "./main.ts";
@@ -570,9 +573,11 @@ export async function configCommand(
 
 /** The service command `name` with its arguments; resolves with the exit code. */
 export async function serviceCommand(
-  name: "init" | "start" | "stop" | "status" | "config" | "mcp",
+  name: "init" | "start" | "stop" | "status" | "config" | "mcp" | "service",
   argv: readonly string[],
   io: CommandIO,
+  /** Tests: the system `service` runs its commands on (never launchctl or systemctl in a test). */
+  sys: System = realSystem(),
 ): Promise<number> {
   let values: Record<string, string | boolean | undefined>;
   let positionals: string[];
@@ -591,7 +596,7 @@ export async function serviceCommand(
         ...(name === "mcp" ? { record: { type: "string" } } : {}),
       },
       strict: true,
-      allowPositionals: name === "config",
+      allowPositionals: name === "config" || name === "service",
     }));
   } catch (e) {
     io.err(TEXTS.usage((e as Error).message));
@@ -650,7 +655,66 @@ export async function serviceCommand(
       }
       return mcpCommand(home, io, typeof record === "string" ? resolve(record) : undefined);
     }
+    case "service":
+      return autostartCommand(home, positionals, io, sys);
   }
+}
+
+/** This process's system: the platform, the user, and commands run without a shell. */
+function realSystem(): System {
+  return {
+    platform: process.platform,
+    userHome: homedir(),
+    uid: process.getuid?.() ?? -1,
+    env: process.env,
+    run: (command, args) =>
+      new Promise((r) => {
+        const child = spawn(command, [...args], { stdio: "ignore" });
+        child.once("error", () => r({ code: undefined }));
+        child.once("exit", (code) => r({ code: code ?? undefined }));
+      }),
+  };
+}
+
+/** The service's command line as `start` spawns it, in the foreground and supervised. */
+function supervisedArgv(home: string): string[] {
+  const bin = binPath();
+  const conditions = bin.endsWith(".ts") ? ["--conditions=source"] : [];
+  return [
+    process.execPath,
+    ...conditions,
+    bin,
+    "--home",
+    home,
+    "--log",
+    logFile(home),
+    "--supervised",
+  ];
+}
+
+/** `service install` / `uninstall` (06 §4.1). */
+export async function autostartCommand(
+  home: string,
+  args: readonly string[],
+  io: CommandIO,
+  sys: System,
+): Promise<number> {
+  const [verb, ...rest] = args;
+  if ((verb !== "install" && verb !== "uninstall") || rest.length > 0) {
+    io.err(TEXTS.usage(TEXTS.autostartUsage));
+    return 2;
+  }
+  if (verb === "uninstall") return uninstallAutostart(io, sys);
+  try {
+    await readTenantDirectory(home);
+  } catch (e) {
+    if (e instanceof LocalTenantError && e.code === "not_initialized") {
+      io.err(TEXTS.notInitialized(home));
+      return 5;
+    }
+    throw e;
+  }
+  return installAutostart({ argv: supervisedArgv(home), log: logFile(home) }, io, sys);
 }
 
 /**

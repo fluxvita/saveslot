@@ -104,6 +104,8 @@ export interface Exited {
 
 export interface RunningService {
   readonly state: ServiceState;
+  /** Whether it was ever ready: what failed after that failed while serving (`--supervised`). */
+  readonly served: boolean;
   /** With `failed`: a stable code. */
   readonly reason: string | undefined;
   /** Stops the service; resolves when everything is released. */
@@ -223,6 +225,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   /** Settles once opening the tenant has settled, the storage closed again if stopped meanwhile. */
   let opening: Promise<void> | undefined;
   let resolveExited!: (e: Exited) => void;
+  let served = false;
   const exited = new Promise<Exited>((r) => {
     resolveExited = r;
   });
@@ -233,6 +236,9 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   const handle: RunningService = {
     get state() {
       return state;
+    },
+    get served() {
+      return served;
     },
     get reason() {
       return reason;
@@ -461,6 +467,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     // Gone before the service says it is ready: whoever sees it ready finds no failure kept.
     await rm(lastFailureFile(o.home), { force: true });
     state = "ready";
+    served = true;
     say("ready");
     let probing = false;
     probe = setInterval(() => {

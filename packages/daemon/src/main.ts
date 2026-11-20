@@ -1,7 +1,14 @@
 // The service's foreground entry: `--home <dir>` (default `~/.saveslot`); the data directory is the
 // one the home's tenant directory records. Runs until stopped and sets the process exit code (0
-// after a stop, 1 when it could not start or failed). Starting in the background, configuration
-// and the other service commands come with the `saveslot` entry package.
+// after a stop, 1 when it could not start or failed, 5 for a config.toml refused). Starting in the
+// background, configuration and the other service commands come with the `saveslot` entry package.
+//
+// `--supervised` (the job `saveslot service install` writes, ./autostart.ts): non-zero only for a
+// service that failed after it was ready, the one case the job starts it again (02-architecture
+// §7). One that failed before it served (config.toml refused, the home's lock held by another
+// process, a data directory not where the home records it, a store of another format, …) exits 0,
+// its reason in the log as before: the cause stays, and the job would start it again every few
+// seconds.
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -40,6 +47,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     home?: string | undefined;
     "eval-clock"?: string | undefined;
     log?: string | undefined;
+    supervised?: boolean | undefined;
   };
   try {
     ({ values } = parseArgs({
@@ -50,6 +58,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         home: { type: "string" },
         "eval-clock": { type: "string" },
         log: { type: "string" },
+        supervised: { type: "boolean" },
       },
       strict: true,
       allowPositionals: false,
@@ -78,9 +87,15 @@ export async function main(argv: readonly string[]): Promise<number> {
         process.stderr.write(`${line}\n`);
       }
     }
-    return 5;
+    return values.supervised === true ? 0 : 5;
   }
   const log = values.log !== undefined ? { log: rotatingLog(resolve(values.log)) } : {};
   const service = await runService({ ...options, ...log });
-  return (await service.exited).code;
+  const exited = await service.exited;
+  return supervisedExit(exited.code, service.served, values.supervised === true);
+}
+
+/** The exit code: as the service ended, or with `--supervised` 0 for one that never served. */
+export function supervisedExit(code: number, served: boolean, supervised: boolean): number {
+  return supervised && !served ? 0 : code;
 }

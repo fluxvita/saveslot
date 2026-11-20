@@ -53,6 +53,7 @@ export const TEXTS = {
       "  schema templates          the schema templates this saveslot ships",
       "",
       "  init | start | stop | status | config get | mcp   the local service",
+      "  service install | uninstall   start the saveslot service at login, or no longer",
       "",
       "options: --json  --limit <n>  --cursor <handle>  --untrusted-tags auto|always|never",
       "         --version (alone: this saveslot's version)  --help",
@@ -331,6 +332,9 @@ export const TEXTS = {
     s(
       `the agent can ${write ? "read and write" : "read"} the existing tables through this connection instance, but cannot create a slot; to let it, connect again with schema among the scopes (without --scope -schema, or with schema in the --scope list)`,
     ),
+  autostartHint: s(
+    "optional: saveslot service install (start the saveslot service at login; an MCP host starts it when it connects anyway)",
+  ),
   snippetHint: (host: string) =>
     s(`optional: saveslot snippet ${host} (text to put in the host's custom instructions)`),
   selfcheckFailed: s("error: the self-check failed: the new token could not read the catalog"),
