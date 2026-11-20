@@ -1794,9 +1794,9 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 清单：
 
 ```json
-{"saveslot_export": 1, "tenant_id": "tn_…", "event_format": 1, "restore_count": 0,
- "upto": 43, "events": 43,
- "exported_at": "2026-11-10T08:00:00.000Z", "pending_deletions": "placeholder"}
+{"event_format": 1, "events": 43, "exported_at": "2026-11-10T08:00:00.000Z",
+ "pending_deletions": "placeholder", "restore_count": 0, "saveslot_export": 1,
+ "tenant_id": "tn_…", "upto": 43}
 ```
 
 | 键 | 含义 |
@@ -1809,16 +1809,16 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `exported_at` | 导出时刻 |
 | `pending_deletions` | `placeholder`（默认：宽限期内待删除的块换成占位）/ `included`（用户会话显式要求包含） |
 
-事件行：
+事件行（每行按 JCS 序列化，键按字典序：`c` 在 `h` 之前；下面的例子为了易读分了行）：
 
 ```json
-{"h": {"actor": "ci_7HQ2…", "at": "2026-11-10T04:41:07.123Z", "op": 25, "prev_hash": "9f2c…e1",
-       "seq": 27, "slot": "sl_4KTZ…", "type": "write.base", "v": 1},
- "c": {"fields/f3/0": {"pending_deletion": 42},
+{"c": {"fields/f3/0": {"pending_deletion": 42},
        "literal/f3/0": {"pending_deletion": 42},
        "sources/f3/0": {"pending_deletion": 42},
-       "target": {"v": {"cause": "request", "intent": "correct", "op_index": 0, "row": "r_01JC8Z…", "sv": 1, "table": "t1"},
-                  "sum": "c20a…5d"}}}
+       "target": {"sum": "c20a…5d",
+                  "v": {"cause": "request", "intent": "correct", "op_index": 0, "row": "r_01JC8Z…", "sv": 1, "table": "t1"}}},
+ "h": {"actor": "ci_7HQ2…", "at": "2026-11-10T04:41:07.123Z", "op": 25, "prev_hash": "9f2c…e1",
+       "seq": 27, "slot": "sl_4KTZ…", "type": "write.base", "v": 1}}
 ```
 
 | 键 | 含义 |

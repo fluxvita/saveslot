@@ -2,7 +2,13 @@
 // header chain, content checksums, index columns, removals and restore gaps, in one read
 // transaction. `log.end` (§8.5): the newest event's seq and recorded time. For user sessions only.
 
-import { type LogVerifyResult, verifyLog } from "../log/index.ts";
+import {
+  type ExportParams,
+  type ExportSummary,
+  type LogVerifyResult,
+  verifyLog,
+  writeExport,
+} from "../log/index.ts";
 import type { TenantStore } from "../store/ports.ts";
 import type { OpsContext } from "./context.ts";
 import { begin } from "./management.ts";
@@ -31,5 +37,21 @@ export async function logEnd(store: TenantStore, ctx: OpsContext): Promise<LogEn
     );
     const last = r.rows[0];
     return last === undefined ? null : { seq: Number(last.seq), recorded_at: last.at };
+  });
+}
+
+/**
+ * `export` for a user session (04-contract §17; 04-contract-types §8.4): the whole log, not what
+ * a credential may see, written line by line through `sink` inside one read transaction.
+ */
+export async function exportLog(
+  store: TenantStore,
+  ctx: OpsContext,
+  params: Omit<ExportParams, "exportedAt">,
+  sink: (line: string) => Promise<void>,
+): Promise<ExportSummary> {
+  return store.read(async (tx) => {
+    await begin(tx, ctx);
+    return writeExport(tx, { ...params, exportedAt: ctx.now }, sink);
   });
 }
