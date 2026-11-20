@@ -237,13 +237,11 @@ const clean: fc.Arbitrary<string> = fc.constantFrom(...SCOPES).chain((s) => {
         ),
     );
   const scalar = small.map((n) => `SELECT (SELECT max(laps) FROM runs) + ${n}`);
-  const sub = fc
-    .tuple(select(true), fc.boolean())
-    .map(([q, cte]) =>
-      cte
-        ? `WITH c AS (${q.replace(/ ORDER BY .*$/, "")}) SELECT * FROM c`
-        : `SELECT * FROM (${q.replace(/ ORDER BY .*$/, "")}) AS z`,
-    );
+  const unordered = select(true).map((q) => q.replace(/ ORDER BY .*$/, ""));
+  const sub = unordered.map((q) => `SELECT * FROM (${q}) AS z`);
+  // A branch of its own, not half of `sub`'s: at half it came to about 4% of the statements, two
+  // deviations above the 3% the property test asks of each form (#75).
+  const cte = unordered.map((q) => `WITH c AS (${q}) SELECT * FROM c`);
   const setop = fc
     .tuple(numberQuery, fc.constantFrom("UNION", "UNION ALL", "INTERSECT", "EXCEPT"), numberQuery)
     .map(([a, o, b]) => `${a} ${o} ${b}`);
@@ -253,6 +251,7 @@ const clean: fc.Arbitrary<string> = fc.constantFrom(...SCOPES).chain((s) => {
     { weight: 2, arbitrary: windowed },
     scalar,
     sub,
+    cte,
     setop,
   );
 });
