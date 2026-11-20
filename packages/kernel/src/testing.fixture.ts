@@ -24,7 +24,6 @@ export { type QueryInput, queryInTx } from "./read/query.ts";
 export { decodeColumns } from "./request/index.ts";
 export * from "./store/anchor-conformance.fixture.ts";
 export {
-  asInThisPhase,
   asWritten,
   eventsOfRequest,
   eventsOfSteps,

@@ -20,7 +20,7 @@ import {
   readTail,
 } from "@fluxvita/saveslot-kernel";
 import {
-  asInThisPhase,
+  asWritten,
   COMPILED_V1,
   createSlotEvents,
   eventsOfSteps,
@@ -133,7 +133,7 @@ async function applied(schema: TableSchema, ops: LogEntry[]) {
     }),
   );
   await run(store, createSlotEvents({ compiled: COMPILED as never, changes: CHANGES as never }));
-  const { steps } = judged(schema, (ops as never[]).map(asInThisPhase), []);
+  const { steps } = judged(schema, (ops as never[]).map(asWritten), []);
   const ctx = {
     table: (isState ? "t2" : "t1") as never,
     target: isState ? { entity: ENTITY as never } : { row: ROW as never },

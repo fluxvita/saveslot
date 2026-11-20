@@ -41,7 +41,7 @@ function write(
   op: number,
   fields: Record<string, string>,
   from: string,
-  o: { seen?: number; index?: number; ack?: boolean } = {},
+  o: { seen?: number; index?: number; ack?: boolean; explicit?: readonly string[] } = {},
 ): JudgeInput {
   const index = o.index ?? 0;
   return {
@@ -55,7 +55,10 @@ function write(
     valid: { from: { mode: "given", value: d(from) }, to: { mode: "open" } },
     now: d("11-05"),
     fields: Object.fromEntries(
-      Object.entries(fields).map(([f, v]) => [f, { value: v }]),
+      Object.entries(fields).map(([f, v]) => [
+        f,
+        { value: v, ...(o.explicit?.includes(f) ? { explicit: true } : {}) },
+      ]),
     ) as Partial<Record<FieldId, { value: string }>>,
     ...(o.ack ? { acknowledge: true } : {}),
   };
@@ -92,6 +95,11 @@ function events(ctx: RowContext, inputs: readonly JudgeInput[]): StoredEvent[] {
       ...(j.created ? { created: true as const } : {}),
       sv: 1,
       sources: [input.op],
+      // The fields evidence was pointed at, in the table's order (`ops/<i>/explicit`).
+      explicit:
+        input.kind === "write"
+          ? ctx.shape.fields.filter((f) => input.fields[f]?.explicit === true)
+          : [],
       raw:
         input.kind === "write"
           ? Object.fromEntries(Object.entries(input.fields).map(([f, x]) => [f, x?.value ?? null]))
@@ -151,6 +159,69 @@ describe("the record mapping", () => {
     expect(head?.blocks["ops/0/noop"]).toEqual(["f5"]);
     expect(head?.blocks["ops/0/set/f5"]).toBeUndefined();
     expect(decodeRecords(ctx, evs)).toEqual(state.records);
+  });
+
+  it("explicit fields: in the head in the table's order (f2 before f10), read back in judge's", () => {
+    // The table lists f2 before f10; judge orders field IDs as strings, f10 first. Both pointed
+    // at: f2 the same value again (a corroboration), f10 a change.
+    const ctx = ctxOf({
+      kind: "state",
+      fields: ["f2", "f10"] as FieldId[],
+      valued: ["f2"] as FieldId[],
+      required: ["f2"] as FieldId[],
+      groups: [],
+    });
+    const inputs = [
+      write(10, { f2: "1", f10: "a" }, "10-01", {}),
+      write(20, { f2: "1", f10: "b" }, "10-01", { seen: 10, explicit: ["f10", "f2"] }),
+    ];
+    const { state } = replay(ctx.shape, inputs);
+    const r = state.records[1];
+    expect(r?.kind === "write" ? r.explicit : undefined).toEqual(["f10", "f2"]);
+    expect(r?.kind === "write" ? r.items.map((x) => [x.target, x.status]) : undefined).toEqual([
+      ["f10", "applied"],
+      ["f2", "corroborated"],
+    ]);
+    const evs = events(ctx, inputs);
+    const head = evs.find((e) => e.header.type === "write.head" && e.header.seq === 20);
+    expect(head?.blocks["ops/0/explicit"]).toEqual(["f2", "f10"]);
+    expect(head?.blocks["ops/0/noop"]).toBeUndefined();
+    expect(decodeRecords(ctx, evs)).toEqual(state.records);
+    // No field pointed at: no block, and an empty list read back.
+    const plain = events(ctx, [
+      inputs[0] as JudgeInput,
+      write(20, { f2: "1", f10: "b" }, "10-01", { seen: 10 }),
+    ]);
+    const head0 = plain.find((e) => e.header.type === "write.head" && e.header.seq === 20);
+    expect(head0?.blocks["ops/0/explicit"]).toBeUndefined();
+    expect(head0?.blocks["ops/0/noop"]).toEqual(["f2"]);
+    const back = decodeRecords(ctx, plain)[1];
+    expect(back?.kind === "write" ? back.explicit : undefined).toEqual([]);
+  });
+
+  it("a corroboration not in the explicit list: inconsistent (it would read back as a no-op)", () => {
+    const ctx = ctxOf({ ...GROUPED, groups: [] });
+    const inputs = [
+      write(10, { f4: "1" }, "10-01", {}),
+      write(20, { f4: "1" }, "10-01", { seen: 10, explicit: ["f4"] }),
+    ];
+    const { judgements } = replay(ctx.shape, inputs);
+    const j = judgements[1] as (typeof judgements)[number];
+    expect(j.record.kind === "write" ? j.record.items.map((x) => x.status) : []).toEqual([
+      "corroborated",
+    ]);
+    const encode = (explicit: FieldId[]) =>
+      encodeOp(ctx, inputs[1] as JudgeInput, j, {
+        intent: "update",
+        sv: 1,
+        sources: [20],
+        explicit,
+        raw: { f4: "1" },
+        restoreCount: 0,
+        versions: { ruleset: 1, policy: 1 },
+      });
+    expect(() => encode([])).toThrow(/not in ops\/0\/explicit/);
+    expect(encode(["f4" as FieldId]).head["ops/0/explicit"]).toEqual(["f4"]);
   });
 
   it("corrected_span: recorded as both ends corrected_span, read back as corrected_span", () => {

@@ -26,33 +26,16 @@ const itemId = (n: number): ItemId =>
 
 const unitKey = (u: Unit) => (u === "existence" ? "existence" : [...u.fields].sort().join(","));
 
-/**
- * The ops as this phase writes them. No `evidence_by_field`: a same-valued write is a no-op, never a
- * corroboration, and the format has no place yet for "this field's evidence was pointed at" (a
- * later phase).
- */
-export function asInThisPhase(o: Op, i: number): Op {
-  if (o.kind !== "write") return o;
-  const fields = Object.fromEntries(
-    Object.entries(o.fields).map(([f, x]) => {
-      if (x === undefined) return [f, x];
-      const { explicit: _, ...rest } = x;
-      return [f, rest];
-    }),
-  );
-  // The first write makes the row or entity: an insert sees the state just before it and has no
-  // `ver` (09 §5.7).
-  if (i === 0) {
-    const { seen: _, ...rest } = o;
-    return { ...rest, fields };
-  }
-  return { ...o, fields };
+/** The fields a write points evidence at (`ops/<i>/explicit`), in the table's order. */
+function explicitOf(ctx: RowContext, input: JudgeInput): FieldId[] {
+  if (input.kind !== "write") return [];
+  return ctx.shape.fields.filter((f) => input.fields[f]?.explicit === true);
 }
 
 /**
- * The ops as written, their explicit fields kept: corroborations, for the tests that apply the
- * record mapping's events directly (the write pipeline takes `evidence_by_field` later). The
- * first write makes the row or entity, with no `ver`.
+ * The ops as a request writes them: the first one an insert, with no `ver` (09 §5.7). A field
+ * marked explicit is one `evidence_by_field` points at (`ops/<i>/explicit`): the same value again
+ * is a corroboration.
  */
 export function asWritten(o: Op, i: number): Op {
   if (o.kind !== "write" || i !== 0) return o;
@@ -165,6 +148,7 @@ export function eventsOfSteps(
         sv: 1,
         sources: [r.op],
         ...intervalSources(s.input, [r.op]),
+        explicit: explicitOf(ctx, s.input),
         // An undo's operation source (09 §5.2): the request's evidence or its api_call.
         ...(r.kind === "undo" ? { opSources: [r.op] } : {}),
         raw: rawOf(s.input),
@@ -275,6 +259,7 @@ export function eventsOfRequest(
       sv: 1,
       sources: sources ?? [input.op],
       ...intervalSources(input, sources ?? [input.op]),
+      explicit: explicitOf(ctx, input),
       raw: rawOf(input),
       restoreCount: 0,
       versions: { ruleset: 1, policy: 1 },

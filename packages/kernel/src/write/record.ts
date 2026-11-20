@@ -8,8 +8,8 @@
 //
 // Two things the log does not keep, by design: the raw value of a field judged a no-op, and a write
 // whose fields were all no-ops (it has no `write.base` event, 04-write-and-read «一次写入的事件
-// 构成»); neither plays a part in later judgements. `explicit` (evidence pointed at per field) is
-// always empty: evidence_by_field is a later phase, and the format does not record it yet.
+// 构成»); neither plays a part in later judgements. `explicit` (the fields evidence_by_field points
+// at) is `ops/<i>/explicit`: every key, the same value or not, as judge was given it.
 //
 // Not produced here, and by whom:
 // - `write.head` `ctx`, `request`, `task`, `request_key` / `idempotency`, and `source.recorded`:
@@ -157,6 +157,10 @@ export interface OpEncoding {
   readonly sources: readonly Seq[];
   readonly validSources?: readonly Seq[];
   readonly opSources?: readonly Seq[];
+  /** By field, the sources `evidence_by_field` maps it to; a field not here has `sources`. */
+  readonly fieldSources?: Readonly<Partial<Record<FieldId, readonly Seq[]>>>;
+  /** The fields `evidence_by_field` points at, in the table's order (`ops/<i>/explicit`). */
+  readonly explicit?: readonly FieldId[];
   /**
    * The pending items the op's conflicts go to, by conflict: a new item, or an open one it joins,
    * with the index its candidate takes there (after the item's candidates so far, never reused)
@@ -235,6 +239,7 @@ function itemsOut(
   ctx: RowContext,
   items: readonly RecordedItem[],
   sources: readonly Seq[],
+  fieldSources?: Readonly<Partial<Record<FieldId, readonly Seq[]>>>,
 ): Blocks {
   const out: Blocks = {};
   const isState = ctx.shape.kind === "state";
@@ -269,7 +274,10 @@ function itemsOut(
       out[`sources/${at}`] =
         x.carried !== undefined && x.carried.length > 0
           ? x.carried.map((r) => ({ kind: "value", carried: refOut(r) }))
-          : sources.map((s) => ({ kind: "value", source: s }));
+          : (fieldSources?.[x.target as FieldId] ?? sources).map((s) => ({
+              kind: "value",
+              source: s,
+            }));
     }
     if (isState) {
       out[`span/${at}`] = {
@@ -325,6 +333,14 @@ export function encodeOp(
       head[`ops/${i}/set/${f}`] = e.raw[f] ?? null;
     }
     if (noop.length > 0) head[`ops/${i}/noop`] = [...noop];
+    if (e.explicit !== undefined && e.explicit.length > 0)
+      head[`ops/${i}/explicit`] = [...e.explicit];
+    // A corroboration is a field pointed at: one not in the list would read back as a no-op.
+    for (const x of r.kind === "write" ? r.items : []) {
+      if (x.status === "corroborated" && !(e.explicit ?? []).includes(x.target as FieldId)) {
+        throw inconsistent(`a corroboration of ${x.target} not in ops/${i}/explicit`);
+      }
+    }
   }
   if ((input.kind === "write" || input.kind === "revoke") && input.valid !== undefined) {
     head[`ops/${i}/valid`] = validOut(input.valid);
@@ -351,7 +367,7 @@ export function encodeOp(
       cause: "request",
       op_index: i,
     },
-    ...itemsOut(ctx, r.items, e.sources),
+    ...itemsOut(ctx, r.items, e.sources, e.fieldSources),
   };
   if (e.validSources !== undefined && e.validSources.length > 0)
     base["valid_sources"] = [...e.validSources];
@@ -844,9 +860,12 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
       ...(valid !== undefined ? { valid: validIn(valid) } : {}),
       now,
       ...(acknowledge && target.intent !== "revoke" ? { acknowledge: true as const } : {}),
-      // TODO(evidence_by_field): the fields whose evidence the caller pointed at; the format has
-      // no place for it yet (a later phase), so it is always empty.
-      explicit: [],
+      // The fields whose evidence the caller pointed at (`ops/<i>/explicit`), in judge's order
+      // (judge sorts the field IDs as strings; the head lists them in the table's order).
+      explicit: (target.intent === "revoke"
+        ? []
+        : ((head?.[`ops/${i}/explicit`] ?? []) as FieldId[])
+      ).toSorted(),
       items: recItems,
       noop: target.intent === "revoke" ? [] : ((head?.[`ops/${i}/noop`] ?? []) as FieldId[]),
       ack: acksIn(b),

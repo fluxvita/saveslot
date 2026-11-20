@@ -17,7 +17,7 @@ import { JudgeError } from "../judge/errors.ts";
 import { judgeOp, stateFromRecord } from "../judge/judge.ts";
 import type { OpRecord } from "../judge/model.ts";
 import { type Judged, judged, scenario, toInput } from "../judge/scenarios.fixture.ts";
-import { asInThisPhase, eventsOfSteps } from "./log.fixture.ts";
+import { asWritten, eventsOfSteps } from "./log.fixture.ts";
 import { decodeRecords, type RowContext, type StoredEvent } from "./record.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -85,7 +85,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     const seen: Record<string, number> = { samples: 0 };
     fc.assert(
       fc.property(scenario(isState), ({ ops, decisions }) => {
-        const { steps, refused } = judged(schema, ops.map(asInThisPhase), decisions);
+        const { steps, refused } = judged(schema, ops.map(asWritten), decisions);
         const events = eventsOf(ctx, steps);
         seen["samples"] = (seen["samples"] ?? 0) + 1;
         // Every event passes the strict parse of its type.

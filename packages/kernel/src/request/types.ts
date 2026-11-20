@@ -104,6 +104,15 @@ export interface NormalizedOp {
   /** The op's own evidence segments (`ops[i].evidence`). */
   readonly evidence?: readonly EvidenceSegment[];
   /**
+   * `ops[i].evidence_by_field`: by field, and for the interval (`valid`), the indices of the
+   * segments the op sees (its own first, then the request's it cites) the value comes from. A
+   * field mapped is explicit: the same value again is a corroboration, not a no-op.
+   */
+  readonly evidenceByField?: {
+    readonly fields: ReadonlyMap<FieldId, readonly number[]>;
+    readonly valid?: readonly number[];
+  };
+  /**
    * The fields the op names in `set`, then `entity_key`: field ID, its current name, and its path
    * in the request (for checkSvCompatibility).
    */

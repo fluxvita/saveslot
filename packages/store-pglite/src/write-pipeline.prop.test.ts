@@ -31,7 +31,7 @@ import {
   readTail,
 } from "@fluxvita/saveslot-kernel";
 import {
-  asInThisPhase,
+  asWritten,
   COMPILED_V1,
   createSlotEvents,
   type Decision,
@@ -128,10 +128,14 @@ const at = () => {
   return `2026-11-04T${String(minute % 24).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00.000Z`;
 };
 
-/** The scenario's ops as this test sends them: `ver` explicit, a write.base after one source. */
+/**
+ * The scenario's ops as this test sends them: `ver` explicit, a write.base after its sources (three
+ * segments for an op with explicit fields, else its api_call).
+ */
 function asSent(o: Op, i: number): Op {
-  const x = asInThisPhase(o, i);
-  const event = x.op + 2;
+  const x = asWritten(o, i);
+  const explicit = x.kind === "write" && Object.values(x.fields).some((f) => f?.explicit === true);
+  const event = x.op + 1 + (explicit ? 3 : 1);
   if (x.kind === "write" || x.kind === "revoke") {
     return i === 0 ? { ...x, event } : { ...x, event, seen: x.seen ?? x.op - 1 };
   }
@@ -178,8 +182,25 @@ function requestOf(o: Op, i: number, isState: boolean): unknown {
       .filter(([f, x]) => x !== undefined && !o.noop?.includes(f as never))
       .map(([f, x]) => [NAME[f] as string, x?.value ?? null]),
   );
+  // Explicit fields: three segments of evidence, each explicit field mapped to a subset of them
+  // (evidence_by_field); the op's other fields rest on all three. No explicit field: the op's
+  // api_call.
+  const explicit = Object.entries(o.fields)
+    .filter(([, x]) => x?.explicit === true)
+    .map(([f]) => f);
+  const pointed =
+    explicit.length > 0
+      ? {
+          evidence_by_field: Object.fromEntries(
+            explicit.map((f) => [NAME[f] as string, mappedOf(o.op, f)]),
+          ),
+        }
+      : {};
   return {
     sv: 1,
+    ...(explicit.length > 0
+      ? { evidence: [0, 1, 2].map((k) => ({ kind: "agent_note", text: `op ${o.op} #${k}` })) }
+      : {}),
     ops: [
       {
         intent: i === 0 ? "insert" : correct ? "correct" : "update",
@@ -189,6 +210,7 @@ function requestOf(o: Op, i: number, isState: boolean): unknown {
         ...ack,
         ...valid,
         set,
+        ...pointed,
       },
     ],
   };
@@ -246,10 +268,49 @@ function resolutionWithSource(e: LoggedEvent): LoggedEvent {
   return { ...e, blocks };
 }
 
-function comparable(e: LoggedEvent, items: Map<string, string>): unknown {
+/** The segments of the three an explicit field is mapped to: a non-empty subset, by op and field. */
+function mappedOf(op: number, field: string): number[] {
+  const mask = ((op * 5 + Number(field.slice(1)) * 3) % 7) + 1;
+  return [0, 1, 2].filter((k) => (mask >> k) & 1);
+}
+
+/**
+ * The record mapping's sources for what this test sends, as source seqs: a field mapped, its
+ * segments; any other value item of an op sending segments, all three; an op's api_call, its one.
+ * Segments and the api_call follow the head (09 §4.2).
+ */
+function withSources(events: readonly LoggedEvent[], o: Op, head: number): LoggedEvent[] {
+  const explicit =
+    o.kind === "write"
+      ? Object.entries(o.fields)
+          .filter(([, x]) => x?.explicit === true)
+          .map(([f]) => f)
+      : [];
+  return events.map((e) => {
+    if (e.type !== "write.base") return e;
+    const blocks: Record<string, unknown> = { ...e.blocks };
+    for (const [path, v] of Object.entries(e.blocks)) {
+      const m = /^sources\/(f[0-9]+)\/[0-9]+$/.exec(path);
+      if (m === null || !Array.isArray(v)) continue;
+      if (!(v as { source?: number }[]).every((x) => x.source !== undefined)) continue;
+      const segs =
+        explicit.length === 0
+          ? [0]
+          : explicit.includes(m[1] as string)
+            ? mappedOf(o.op, m[1] as string)
+            : [0, 1, 2];
+      blocks[path] = segs.map((k) => ({ kind: "value", source: head + 1 + k }));
+    }
+    return { ...e, blocks };
+  });
+}
+
+function comparable(e: LoggedEvent, items: Map<string, string>, head?: number): unknown {
   const text = JSON.stringify(e.blocks, (k, v) => {
     if (k === "intent") return undefined;
-    if (k === "source" && typeof v === "number") return "S";
+    // A value source by where its segment stands in the request (S0 first after the head).
+    if (k === "source" && typeof v === "number")
+      return head === undefined ? "S" : `S${v - head - 1}`;
     if (typeof v === "string" && /^pi_[0-9A-Z]{16}$/.test(v)) {
       if (!items.has(v)) items.set(v, `item${items.size}`);
       return items.get(v);
@@ -338,7 +399,7 @@ function nothingLeft(
   return { skipped: confirm.revert.skipped };
 }
 
-const atRandom = { decisions: 0 };
+const atRandom = { decisions: 0, corroborations: 0 };
 
 /**
  * A scenario for each decision, numbered as the pipeline appends (an op's event after its source):
@@ -402,6 +463,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     decisions: 0,
     overrun: 0,
     closed: 0,
+    corroborations: 0,
   };
   const byKind: Record<string, number> = {};
 
@@ -488,6 +550,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     await run(createSlotEvents({ compiled: COMPILED as never, changes: CHANGES as never }));
     seen.samples++;
     let items = 0;
+    let sources = 0;
     const realItems = new Map<string, string>();
     const expectedItems = new Map<string, string>();
     for (const [k, step] of steps.entries()) {
@@ -514,7 +577,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
             ? ENTITY
             : kind === "item"
               ? `pi_${String(++items).padStart(16, "0")}`
-              : `s_${String(head).padStart(16, "0")}`;
+              : `s_${String(head * 10 + ++sources).padStart(16, "0")}`;
       if (o.kind === "resolve" || o.kind === "confirm" || o.kind === "reject") {
         // The item the record mapping resolves, as the pipeline named it; its current version.
         const t = want[0]?.blocks["target"] as { item: string; candidate?: number };
@@ -631,10 +694,30 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         }),
       );
       const got = await logged(store, head);
-      expect({ step: k, events: got.map((e) => comparable(e, realItems)) }).toEqual({
+      expect({ step: k, events: got.map((e) => comparable(e, realItems, head)) }).toEqual({
         step: k,
-        events: want.map((e) => comparable(e, expectedItems)),
+        events: withSources(want, o, head).map((e) => comparable(e, expectedItems, head)),
       });
+      // multi_segment_unmapped: an op sending three segments warns of its fields with items that
+      // are not mapped, in the table's order.
+      if (o.kind === "write") {
+        const rec = step.judgement.record;
+        const mapped = Object.entries(o.fields)
+          .filter(([, x]) => x?.explicit === true)
+          .map(([f]) => f);
+        const withItems = new Set("items" in rec ? rec.items.map((x) => x.target as string) : []);
+        const unmapped = Object.keys(NAME).filter((f) => withItems.has(f) && !mapped.includes(f));
+        const got = (
+          (receipt as unknown as { warnings?: { code: string }[] }).warnings ?? []
+        ).filter((w) => w.code === "multi_segment_unmapped");
+        expect({ step: k, warned: got }).toEqual({
+          step: k,
+          warned:
+            mapped.length > 0 && unmapped.length > 0
+              ? [{ code: "multi_segment_unmapped", op: 0, fields: unmapped.map((f) => NAME[f]) }]
+              : [],
+        });
+      }
       // The receipt: pending exactly when some part is a candidate or awaiting.
       const r = step.judgement.record;
       const pending =
@@ -644,6 +727,8 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         status: pending ? "pending" : "saved",
       });
       if (pending) seen.pending++;
+      // A corroboration sent through the pipeline (`evidence_by_field`) and appended as encoded.
+      if ("items" in r && r.items.some((x) => x.status === "corroborated")) seen.corroborations++;
       seen.steps++;
     }
   };
@@ -664,6 +749,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     expect(seen.overrun).toBeLessThanOrEqual(RUNS / 10);
     expect(seen.pending).toBeGreaterThan(0);
     atRandom.decisions += seen.decisions;
+    atRandom.corroborations += seen.corroborations;
   });
 
   it.runIf(isState)(
@@ -927,4 +1013,10 @@ it("over both tables, the random samples send decisions through resolve", () => 
   // samples a table, 5 rounds gave 9 to 18 decisions over both tables (state 3 to 9, event 6 to
   // 12): at the least of them, the odds of none in a run are e^-9, about 1e-4.
   expect(atRandom.decisions).toBeGreaterThan(0);
+});
+
+it("over both tables, the random samples send corroborations through the pipeline", () => {
+  // Guards against a generator gone degenerate only (no explicit field sent, or none the same
+  // value): the corroborations' ends and covering are the fixed cases' (apply-corroboration).
+  expect(atRandom.corroborations).toBeGreaterThan(0);
 });

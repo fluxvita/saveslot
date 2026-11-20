@@ -25,6 +25,7 @@ import type {
   ItemId,
   OpNumber,
   RowId,
+  SourceId,
   SupersededReason,
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
@@ -315,7 +316,21 @@ export type ReceiptWarning =
   /** The entry's time was earlier than the log's end, which was recorded instead. */
   | { readonly code: "clock_behind_log"; readonly behind_seconds: number }
   /** Request-level evidence segments no op cites: stored as sources, the source of no value. */
-  | { readonly code: "evidence_unreferenced"; readonly evidence: readonly number[] };
+  | { readonly code: "evidence_unreferenced"; readonly evidence: readonly number[] }
+  /** An op seeing several segments gave these fields no mapping: each rests on all of them. */
+  | {
+      readonly code: "multi_segment_unmapped";
+      readonly op: number;
+      readonly fields: readonly string[];
+    }
+  /** A value in effect covered another's corroboration of a different value (05-time). */
+  | {
+      readonly code: "overwrote_corroborated";
+      readonly op: number;
+      readonly field: string;
+      readonly valid: Interval;
+      readonly sources: readonly SourceId[];
+    };
 
 export interface WriteReceipt {
   readonly status: "saved" | "pending";

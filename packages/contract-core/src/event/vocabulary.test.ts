@@ -112,6 +112,7 @@ const SPEC_PATHS: ReadonlyArray<readonly [string, string, "meta" | "data"]> = [
   ["write.head", "ops/0/target", "meta"],
   ["write.head", "ops/0/set/f3", "data"],
   ["write.head", "ops/0/noop", "meta"],
+  ["write.head", "ops/0/explicit", "meta"],
   ["write.head", "ops/0/valid", "data"],
   ["write.head", "ops/0/revert", "meta"],
   ["write.head", "ops/0/acknowledge", "meta"],

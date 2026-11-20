@@ -1020,7 +1020,6 @@ describe("refusals of the request's shape", () => {
     ["premises", { premises: [] }, "ops/0/premises"],
     ["external_key", { external_key: { k: "1" } }, "ops/0/external_key"],
     ["as", { as: "p1" }, "ops/0/as"],
-    ["evidence_by_field", { evidence_by_field: { note: [0] } }, "ops/0/evidence_by_field"],
     ["revert.to", { revert: { to: 3, fields: ["note"] }, set: undefined }, "ops/0/revert/to"],
   ])("%s is not in this version", (_, extra, param) => {
     const o = { intent: "update", table: "expenses", row: ROW, set: { note: "x" }, ...extra };
@@ -1422,6 +1421,254 @@ describe("an op's own evidence (04-contract §3)", () => {
         ),
       ).ok,
     ).toBe(true);
+  });
+});
+
+describe("evidence by field (04-contract §3)", () => {
+  const SOURCE = `s_${"1".repeat(16)}`;
+  const seg = (text: string) => ({ kind: "agent_note", text });
+  const upd = (more: Record<string, unknown>, set: Record<string, unknown> = { note: "x" }) => ({
+    intent: "update",
+    table: "expenses",
+    row: ROW,
+    set,
+    ...more,
+  });
+  const byField = (r: ReturnType<typeof normalize>) => {
+    const m = onlyOp(r).evidenceByField;
+    return m === undefined
+      ? undefined
+      : {
+          fields: Object.fromEntries(m.fields),
+          ...(m.valid !== undefined ? { valid: m.valid } : {}),
+        };
+  };
+
+  it("maps a field by name, case folded, to the indices of the segments it sees", () => {
+    const r = normalize(
+      op(upd({ evidence_by_field: { NOTE: [1], pieces: [0, 1] } }, { note: "x", pieces: 2 }), {
+        evidence: [seg("a"), seg("b")],
+      }),
+    );
+    expect(byField(r)).toEqual({ fields: { f4: [1], f5: [0, 1] } });
+  });
+
+  it("counts the op's own segments first, then the request's it cites", () => {
+    const r = (more: Record<string, unknown>, map: number[]) =>
+      normalize(
+        op(upd({ evidence: [seg("own")], evidence_by_field: { note: map }, ...more }), {
+          evidence: [seg("a"), seg("b"), seg("c")],
+        }),
+      );
+    // Own segment 0, then request segments 2 and 0 as cited: three seen.
+    expect(byField(r({ evidence_refs: [2, 0] }, [2]))).toEqual({ fields: { f4: [2] } });
+    expect(errorOf(r({ evidence_refs: [2, 0] }, [3]))).toEqual({
+      code: "invalid_argument",
+      reason: "index_out_of_range",
+      param: "ops/0/evidence_by_field/note/0",
+    });
+  });
+
+  it("an op with its own segments and no evidence_refs sees only its own", () => {
+    // The request's three segments are not cited: index 1 is out of range.
+    const r = (map: number[]) =>
+      normalize(
+        op(upd({ evidence: [seg("own")], evidence_by_field: { note: map } }), {
+          evidence: [seg("a"), seg("b"), seg("c")],
+        }),
+      );
+    expect(byField(r([0]))).toEqual({ fields: { f4: [0] } });
+    expect(errorOf(r([1]))).toEqual({
+      code: "invalid_argument",
+      reason: "index_out_of_range",
+      param: "ops/0/evidence_by_field/note/0",
+    });
+  });
+
+  it("an op with neither sees all the request's segments; a source_ref is a segment like any", () => {
+    const r = normalize(
+      op(upd({ evidence_by_field: { note: [1] } }), {
+        evidence: [seg("a"), { kind: "source_ref", id: SOURCE }],
+      }),
+    );
+    expect(byField(r)).toEqual({ fields: { f4: [1] } });
+  });
+
+  it("`valid` maps the interval of a write or a revoke on a state table", () => {
+    const acc = (o: Record<string, unknown>) =>
+      normalize(
+        op(
+          { table: "accounts", entity: ENTITY, valid_from: "2026-11-02", ...o },
+          {
+            evidence: [seg("a"), seg("b")],
+          },
+        ),
+      );
+    expect(
+      byField(
+        acc({ intent: "update", set: { limit: 5 }, evidence_by_field: { valid: [1], limit: [0] } }),
+      ),
+    ).toEqual({ fields: { f2: [0] }, valid: [1] });
+    expect(byField(acc({ intent: "revoke", evidence_by_field: { valid: [0] } }))).toEqual({
+      fields: {},
+      valid: [0],
+    });
+  });
+
+  it("an entity_key's key field can be mapped: it is a field the op gives", () => {
+    const r = normalize(
+      op(
+        {
+          intent: "update",
+          table: "accounts",
+          entity_key: { name: "Cash" },
+          set: { limit: 5 },
+          evidence_by_field: { name: [0] },
+        },
+        { evidence: [seg("a")] },
+      ),
+    );
+    expect(byField(r)).toEqual({ fields: { f1: [0] } });
+  });
+
+  it("an empty object is as if not given, on an undo too", () => {
+    expect(
+      byField(normalize(op(upd({ evidence_by_field: {} }), { evidence: [seg("a")] }))),
+    ).toBeUndefined();
+    const undo = normalize(
+      op(
+        { table: "expenses", row: ROW, revert: { undo: 3 }, evidence_by_field: {} },
+        { evidence: [seg("a")] },
+      ),
+    );
+    expect(undo.ok).toBe(true);
+    expect(byField(undo)).toBeUndefined();
+  });
+
+  it.each<[string, Record<string, unknown>, string]>([
+    [
+      "a revoke by entity_key, mapping its key field (a revoke maps only `valid`)",
+      {
+        intent: "revoke",
+        table: "accounts",
+        entity_key: { name: "Cash" },
+        valid_from: "2026-11-02",
+        evidence_by_field: { name: [0], valid: [0] },
+      },
+      "ops/0/evidence_by_field/name",
+    ],
+    [
+      "`valid` on a write giving no interval (from now to the next change)",
+      {
+        intent: "update",
+        table: "accounts",
+        entity: ENTITY,
+        set: { limit: 5 },
+        evidence_by_field: { valid: [0] },
+      },
+      "ops/0/evidence_by_field/valid",
+    ],
+    [
+      "`valid` on a revoke of the whole entity",
+      { intent: "revoke", table: "accounts", entity: ENTITY, evidence_by_field: { valid: [0] } },
+      "ops/0/evidence_by_field/valid",
+    ],
+  ])("refuses %s: malformed", (_, o, param) => {
+    expect(errorOf(normalize(op(o, { evidence: [seg("a")] })))).toEqual({
+      code: "invalid_argument",
+      reason: "malformed",
+      param,
+    });
+  });
+
+  it("`valid` with one end given: an end alone is an interval", () => {
+    const r = normalize(
+      op(
+        {
+          intent: "update",
+          table: "accounts",
+          entity: ENTITY,
+          set: { limit: 5 },
+          valid_to: "2026-11-20",
+          evidence_by_field: { valid: [0] },
+        },
+        { evidence: [seg("a")] },
+      ),
+    );
+    expect(byField(r)).toEqual({ fields: {}, valid: [0] });
+  });
+
+  it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+    [
+      "not an object",
+      upd({ evidence_by_field: [0] }),
+      { reason: "malformed", param: "ops/0/evidence_by_field" },
+    ],
+    [
+      "a mapping not an array",
+      upd({ evidence_by_field: { note: 0 } }),
+      { reason: "malformed", param: "ops/0/evidence_by_field/note" },
+    ],
+    [
+      "an empty mapping",
+      upd({ evidence_by_field: { note: [] } }),
+      { reason: "empty_mapping", param: "ops/0/evidence_by_field/note" },
+    ],
+    [
+      "an index not an integer",
+      upd({ evidence_by_field: { note: ["0"] } }),
+      { reason: "malformed", param: "ops/0/evidence_by_field/note/0" },
+    ],
+    [
+      "an index twice",
+      upd({ evidence_by_field: { note: [0, 0] } }),
+      { reason: "malformed", param: "ops/0/evidence_by_field/note/1" },
+    ],
+    [
+      "a negative index",
+      upd({ evidence_by_field: { note: [-1] } }),
+      { reason: "index_out_of_range", param: "ops/0/evidence_by_field/note/0" },
+    ],
+    [
+      "a field of the table this op gives no value",
+      upd({ evidence_by_field: { pieces: [0] } }),
+      { reason: "malformed", param: "ops/0/evidence_by_field/pieces" },
+    ],
+    [
+      "the same field twice, by case",
+      upd({ evidence_by_field: { note: [0], Note: [0] } }),
+      { reason: "malformed", param: "ops/0/evidence_by_field/Note" },
+    ],
+    [
+      "a field of a revoke (it gives no value)",
+      { intent: "revoke", table: "expenses", row: ROW, evidence_by_field: { note: [0] } },
+      { reason: "malformed", param: "ops/0/evidence_by_field/note" },
+    ],
+    [
+      "`valid` on a table without business time",
+      upd({ evidence_by_field: { valid: [0] } }),
+      { reason: "not_state_table", param: "ops/0/evidence_by_field/valid" },
+    ],
+    [
+      "an undo (it writes no value of its own)",
+      { table: "expenses", row: ROW, revert: { undo: 3 }, evidence_by_field: { note: [0] } },
+      { reason: "mutually_exclusive", param: "ops/0/evidence_by_field" },
+    ],
+  ])("refuses %s", (_, o, error) => {
+    expect(errorOf(normalize(op(o, { evidence: [seg("a")] })))).toEqual({
+      code: "invalid_argument",
+      ...error,
+    });
+  });
+
+  it("a name the table does not have: unknown_field, with the nearest names", () => {
+    expect(
+      errorOf(normalize(op(upd({ evidence_by_field: { nte: [0] } }), { evidence: [seg("a")] }))),
+    ).toMatchObject({
+      code: "unknown_field",
+      param: "ops/0/evidence_by_field/nte",
+      name: "nte",
+    });
   });
 });
 

@@ -31,7 +31,7 @@ import {
   readTail,
 } from "@fluxvita/saveslot-kernel";
 import {
-  asInThisPhase,
+  asWritten,
   COMPILED_V1,
   createSlotEvents,
   judged,
@@ -472,7 +472,7 @@ const at = () => {
  * refresh and supersede events a step may add), a write.base after one source, `ver` explicit.
  */
 function asSent(o: Op, i: number): Op {
-  const x = asInThisPhase(o, i);
+  const x = asWritten(o, i);
   const op = x.op * 10;
   const event = op + 2;
   const seen = "seen" in x && x.seen !== undefined ? x.seen * 10 : undefined;
@@ -533,8 +533,18 @@ function requestOf(o: Op, i: number, isState: boolean): unknown {
       .filter(([f, x]) => x !== undefined && !o.noop?.includes(f as never))
       .map(([f, x]) => [NAME[f] as string, x?.value ?? null]),
   );
+  // Explicit fields: one segment of evidence, pointed at for each (evidence_by_field). One source
+  // either way: the segment, or the op's api_call.
+  const explicit = Object.entries(o.fields)
+    .filter(([, x]) => x?.explicit === true)
+    .map(([f]) => NAME[f] as string);
+  const pointed =
+    explicit.length > 0
+      ? { evidence_by_field: Object.fromEntries(explicit.map((n) => [n, [0]])) }
+      : {};
   return {
     sv: 1,
+    ...(explicit.length > 0 ? { evidence: [{ kind: "agent_note", text: `op ${o.op}` }] } : {}),
     ops: [
       {
         intent: i === 0 ? "insert" : correct ? "correct" : "update",
@@ -544,6 +554,7 @@ function requestOf(o: Op, i: number, isState: boolean): unknown {
         ...ack,
         ...valid,
         set,
+        ...pointed,
       },
     ],
   };

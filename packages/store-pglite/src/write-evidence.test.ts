@@ -256,7 +256,8 @@ describe("an op's own evidence", () => {
       ]);
       // op 0: its own only (no evidence_refs); op 1: the request's; op 2: its own two.
       expect(await valueSourcesOfOp(op)).toEqual([[op + 2], [op + 1], [op + 3, op + 4]]);
-      expect(r.warnings ?? []).toEqual([]);
+      // op 2 sees two segments and maps none of its fields to them (evidence_by_field).
+      expect(r.warnings).toEqual([{ code: "multi_segment_unmapped", op: 2, fields: ["text"] }]);
     },
     T,
   );
@@ -285,7 +286,10 @@ describe("an op's own evidence", () => {
       });
       const op = r.seq;
       expect(await valueSourcesOfOp(op)).toEqual([[op + 3, op + 2]]);
-      expect(r.warnings).toEqual([{ code: "evidence_unreferenced", evidence: [0] }]);
+      expect(r.warnings).toEqual([
+        { code: "multi_segment_unmapped", op: 0, fields: ["text"] },
+        { code: "evidence_unreferenced", evidence: [0] },
+      ]);
     },
     T,
   );

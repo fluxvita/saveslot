@@ -5,10 +5,11 @@
 // written on PGlite and replayed on PostgreSQL, written on PostgreSQL and replayed on PGlite.
 //
 // The history is a slot with tables of every time type and derived tables over one of them, and
-// then requests that insert, change, revoke and restore rows and entities. Its values are chosen
-// for where two databases could differ: decimals that round, integers beyond 2^53, text outside
-// ASCII and outside the BMP, instants given with a zone's name around a clock change, and
-// aggregates (sum, avg, max, a week's start) the database works out in the derived writes.
+// then requests that insert, change, revoke and restore rows and entities, and corroborate a value
+// with evidence pointed at it. Its values are chosen for where two databases could differ:
+// decimals that round, integers beyond 2^53, text outside ASCII and outside the BMP, instants
+// given with a zone's name around a clock change, and aggregates (sum, avg, max, a week's start)
+// the database works out in the derived writes.
 //
 // What is compared is what each backend hands the kernel for `SELECT *`, so a value that one
 // backend parses differently from the other is a difference here too; and each table's columns by
@@ -140,6 +141,11 @@ type Step =
       readonly amount: string;
       readonly from: string;
     }
+  /**
+   * The amount a category's budget was last given, again, with evidence pointed at it
+   * (`evidence_by_field`), from that write's start to the next day: a corroboration, its ends given.
+   */
+  | { readonly k: "budget.corroborate"; readonly category: string }
   | { readonly k: "room"; readonly guest: string | null; readonly from: string }
   | {
       readonly k: "room.update";
@@ -224,6 +230,13 @@ const step: fc.Arbitrary<Step> = fc.oneof(
       category: fc.constantFrom("food", "书"),
       amount: fc.constantFrom("5000", "0.005", "0.015", "99999999999.99"),
       from: fc.constantFrom("2026-09-01", "2026-10-01", "2026-11-15"),
+    }),
+  },
+  {
+    weight: 2,
+    arbitrary: fc.record({
+      k: fc.constant("budget.corroborate" as const),
+      category: fc.constantFrom("food", "书"),
     }),
   },
   {
@@ -316,6 +329,8 @@ async function write(store: TenantStore, schema: Schema, steps: readonly Step[])
   const items: { id: string; ver: string }[] = [];
   const rooms: { id: string; ver: string; revoked?: boolean }[] = [];
   const shoes: string[] = [];
+  /** By category, the amount and start of the budget write saved last. */
+  const budgets = new Map<string, { amount: string; from: string }>();
   const at = <T>(xs: readonly T[], n: number) => xs[n % Math.max(xs.length, 1)];
 
   for (const [i, s] of steps.entries()) {
@@ -366,6 +381,24 @@ async function write(store: TenantStore, schema: Schema, steps: readonly Step[])
         set: { amount: { value: s.amount, unit: "CNY" } },
         valid_from: s.from,
       };
+    } else if (s.k === "budget.corroborate") {
+      // The last write's value holds over its start's day at least: a date table's next blocking
+      // point is a day after it or later.
+      const last = budgets.get(s.category);
+      if (last) {
+        const next = new Date(`${last.from}T00:00:00Z`);
+        next.setUTCDate(next.getUTCDate() + 1);
+        op = {
+          intent: "update",
+          table: "budgets",
+          entity_key: { category: s.category },
+          set: { amount: { value: last.amount, unit: "CNY" } },
+          valid_from: last.from,
+          valid_to: next.toISOString().slice(0, 10),
+          evidence: [{ kind: "user_message", text: `still ${last.amount}` }],
+          evidence_by_field: { amount: [0] },
+        };
+      }
     } else if (s.k === "room") {
       op = { intent: "insert", table: "rooms", valid_from: s.from, set: { guest: s.guest } };
     } else if (s.k === "room.update") {
@@ -438,6 +471,7 @@ async function write(store: TenantStore, schema: Schema, steps: readonly Step[])
     if (s.k === "run")
       runs.push({ id: first.target.row as string, first: first.ver, ver: first.ver });
     else if (s.k === "shoe") shoes.push(first.target.row as string);
+    else if (s.k === "budget") budgets.set(s.category, { amount: s.amount, from: s.from });
     else if (s.k === "room") rooms.push({ id: first.target.entity as string, ver: first.ver });
     else if (run) {
       run.ver = first.ver;
@@ -676,6 +710,7 @@ describe.skipIf(cell === undefined)("a log replayed on the other backend", () =>
     { k: "expense", date: "2026-10-31", category: "书", amount: "12.345", note: "" },
     { k: "budget", category: "书", amount: "0.015", from: "2026-10-01" },
     { k: "budget", category: "书", amount: "99999999999.99", from: "2026-11-15" },
+    { k: "budget.corroborate", category: "书" },
     { k: "room", guest: "ÀB a", from: "2026-11-05T00:00:00+08:00" },
     { k: "room.update", n: 0, guest: null, from: "2026-11-10T08:30:00.250Z" },
     { k: "room", guest: "ok", from: "2026-11-06T10:00:00+08:00" },
@@ -688,6 +723,13 @@ describe.skipIf(cell === undefined)("a log replayed on the other backend", () =>
     for (const k of kinds) expect({ [k]: reached[k]?.not }).toEqual({ [k]: 0 });
     const empty = [...want].filter(([, t]) => t.rows.length === 0).map(([name]) => name);
     expect(empty.sort()).toEqual([...EMPTY].sort());
+    // A corroboration with its explicit ends is among the source table's rows.
+    const corroborations = (want.get("base_sources")?.rows ?? [])
+      .map((r) => JSON.parse(r) as { corroborated: boolean; corroboration_ends: string | null })
+      .filter((r) => r.corroborated);
+    expect(corroborations.map((r) => r.corroboration_ends)).toEqual([
+      '["2026-11-15","2026-11-16"]',
+    ]);
   };
 
   it("every kind of step, written on PGlite and replayed on PostgreSQL", async () => {

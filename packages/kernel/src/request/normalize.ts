@@ -140,7 +140,7 @@ const OP_KEYS = new Set([
   "evidence_by_field",
 ]);
 /** Op keys this version does not take, in the order they are reported. */
-const OP_NOT_YET = ["premises", "external_key", "as", "evidence_by_field"];
+const OP_NOT_YET = ["premises", "external_key", "as"];
 const INTENTS: ReadonlySet<string> = new Set(["insert", "update", "correct", "revoke"]);
 const VER = /^v([1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
@@ -481,6 +481,10 @@ interface PendingOp {
   readonly acknowledge: "overwrite"[];
   readonly evidenceRefs: number[] | undefined;
   readonly evidence?: EvidenceSegment[];
+  readonly evidenceByField?: {
+    readonly fields: ReadonlyMap<FieldId, readonly number[]>;
+    readonly valid?: readonly number[];
+  };
   readonly named: NamedField[];
 }
 
@@ -623,6 +627,7 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
       acknowledge: p.acknowledge,
       ...(p.evidenceRefs !== undefined ? { evidenceRefs: p.evidenceRefs } : {}),
       ...(p.evidence !== undefined ? { evidence: p.evidence } : {}),
+      ...(p.evidenceByField !== undefined ? { evidenceByField: p.evidenceByField } : {}),
       named: p.named,
     };
   });
@@ -850,6 +855,58 @@ function readOp(
     if (own.segments.length > 0) ownEvidence = own.segments;
     evidenceBytes.n += own.bytes;
   }
+  // Evidence by field (04-contract §3): field name, or `valid` for the interval's, → indices into
+  // the segments the op sees (its own, then the request's it cites; all of them with neither).
+  let evidenceByField: PendingOp["evidenceByField"];
+  if (has(o, "evidence_by_field")) {
+    const base = `${at}/evidence_by_field`;
+    const m = get(o, "evidence_by_field");
+    if (!isObj(m)) return invalid("malformed", base);
+    // An undo writes no value of its own: nothing to point evidence at. An empty object is as if
+    // not given, here too.
+    if (kind === "undo" && keysOf(m).length > 0) invalid("mutually_exclusive", base);
+    const visible =
+      (ownEvidence?.length ?? 0) +
+      (evidenceRefs !== undefined
+        ? evidenceRefs.length
+        : ownEvidence !== undefined
+          ? 0
+          : segmentCount);
+    // The fields the op gives a value: in `set`, and a key in `entity_key` (a revoke gives none:
+    // its key names the entity, and only `valid` can be mapped).
+    const given = new Set<FieldId>([
+      ...(set ?? []).map(([f]) => f.id),
+      ...(target.kind === "entity_key" && kind !== "revoke"
+        ? target.entries.map(([f]) => f.id)
+        : []),
+    ]);
+    const fields = new Map<FieldId, number[]>();
+    let valid: number[] | undefined;
+    for (const k of keysOf(m)) {
+      const p = `${base}/${k}`;
+      if (k === "valid") {
+        if (!state) invalid("not_state_table", p);
+        // The interval's evidence: there must be an interval given (a whole revoke, or a write
+        // from now to the next change, gives none).
+        if (!has(o, "valid_from") && !has(o, "valid_to")) invalid("malformed", p);
+        valid = mappedIndices(get(m, k), p, visible);
+        continue;
+      }
+      const f = byName.get(fold(k));
+      if (f === undefined) {
+        refuse({ code: "unknown_field", param: p, name: k, nearest: nearest(k, table.fields) });
+        continue;
+      }
+      // A field this op gives no value (a revoke gives none): nothing to point at. The same field
+      // twice, by case: malformed at the second spelling.
+      if (!given.has(f.id) || fields.has(f.id)) invalid("malformed", p);
+      fields.set(f.id, mappedIndices(get(m, k), p, visible));
+    }
+    // An empty object is as if not given.
+    if (fields.size > 0 || valid !== undefined) {
+      evidenceByField = { fields, ...(valid !== undefined ? { valid } : {}) };
+    }
+  }
   const named: NamedField[] = [
     ...(set ?? []).map(([f, k]) => ({ field: f.id, name: f.name, param: `${at}/set/${k}` })),
     ...(target.kind === "entity_key" ? target.entries : []).map(([f, k]) => ({
@@ -872,8 +929,26 @@ function readOp(
     acknowledge,
     evidenceRefs,
     ...(ownEvidence !== undefined ? { evidence: ownEvidence } : {}),
+    ...(evidenceByField !== undefined ? { evidenceByField } : {}),
     named,
   };
+}
+
+/**
+ * The indices a field (or `valid`) is mapped to (04-contract §3): a non-empty array
+ * (`empty_mapping`), each an index of a segment the op sees (`index_out_of_range`), none twice.
+ */
+function mappedIndices(v: unknown, at: string, visible: number): number[] {
+  if (!isDenseArray(v)) return invalid("malformed", at);
+  if (v.length === 0) return invalid("empty_mapping", at);
+  const out: number[] = [];
+  for (const [k, x] of v.entries()) {
+    const n = intOf(x);
+    if (n === undefined || out.includes(n)) return invalid("malformed", `${at}/${k}`);
+    if (n < 0 || n >= visible) return invalid("index_out_of_range", `${at}/${k}`);
+    out.push(n);
+  }
+  return out;
 }
 
 // --- sv compatibility (04-contract §2; 04-contract-types §9 `schema_incompatible`) ---------------

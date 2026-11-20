@@ -37,6 +37,7 @@ import {
   type RawFieldValue,
   type RowId,
   type Seq,
+  type SourceId,
   type TableId,
 } from "@fluxvita/saveslot-contract-core";
 import { ApplyError, internalDetailOf } from "../apply/index.ts";
@@ -548,6 +549,45 @@ function awaitingImpactNow(state: RowState, t: TrackedItem, at: Limit) {
   return again === undefined ? [] : awaitingImpact(state, again);
 }
 
+/**
+ * The source IDs a contribution item rests on (09 §5.7 `sources/<field>/<k>`): its sources, or
+ * those of the item it carries, followed until given. Read from the log, so the operation that
+ * wrote the item must be appended already.
+ */
+async function sourceIdsOf(tx: Tx, ref: ItemRef): Promise<SourceId[]> {
+  const seqs = new Set<number>();
+  const seen = new Set<string>();
+  let todo: ItemRef[] = [ref];
+  while (todo.length > 0) {
+    const next: ItemRef[] = [];
+    for (const r of todo) {
+      const key = `${r.event}/${r.target}/${r.k}`;
+      if (seen.has(key) || r.target === "existence") continue;
+      seen.add(key);
+      const b = await tx.query<{ body: string | null }>(
+        "SELECT body FROM content WHERE seq = $1 AND path = $2",
+        [r.event, `sources/${r.target}/${r.k}`],
+      );
+      const body = b.rows[0]?.body;
+      if (body == null) continue;
+      for (const x of JSON.parse(body) as {
+        source?: number;
+        carried?: { event: number; field: string; k: number };
+      }[]) {
+        if (x.source !== undefined) seqs.add(x.source);
+        else if (x.carried !== undefined) next.push(refIn(x.carried));
+      }
+    }
+    todo = next;
+  }
+  if (seqs.size === 0) return [];
+  const r = await tx.query<{ source_id: SourceId }>(
+    "SELECT source_id FROM sources WHERE seq = ANY($1) ORDER BY seq",
+    [[...seqs]] as never,
+  );
+  return r.rows.map((x) => x.source_id);
+}
+
 /** Whether a tracked item is an awaiting `undo` (a revert proposal). */
 function isUndoProposal(state: RowState, t: TrackedItem): boolean {
   if (t.type !== "awaiting_confirmation") return false;
@@ -917,6 +957,16 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as CompiledBaseTable;
   const restore = await restoreCount(tx);
   const warnings: ReceiptWarning[] = [...req.warnings];
+  // Corroborations a value in effect covered (judge's `warnings`), turned into
+  // `overwrote_corroborated` once the operation is in the log: the corroboration may be this
+  // request's own.
+  const covered: {
+    readonly op: number;
+    readonly table: TableId;
+    readonly field: FieldId;
+    readonly valid: IntervalSet;
+    readonly corroboration: ItemRef;
+  }[] = [];
 
   // Step 2: the request key in its window.
   const rk = requestKeyOf(actor, task ?? null, req.requestKey);
@@ -998,16 +1048,25 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   let next = op + 1 + nSources;
   // An op's value sources: its own segments, and the request's it cites (all of them when it names
   // none and has none of its own); or its `api_call` source.
+  // The segments an op sees, in the order `evidence_by_field` counts them: its own, then the
+  // request's it cites.
+  const seenBy = (o: NormalizedOp): readonly Seq[] => [
+    ...(ownSeqs.get(o.index) ?? []),
+    ...(o.evidenceRefs !== undefined
+      ? o.evidenceRefs.map((k) => requestSeqs[k] as Seq)
+      : o.evidence !== undefined
+        ? []
+        : requestSeqs),
+  ];
   const sourcesOf = (o: NormalizedOp): Seq[] => {
     const api = apiCallSeq.get(o.index);
     if (api !== undefined) return [api];
-    const cited =
-      o.evidenceRefs !== undefined
-        ? o.evidenceRefs.map((k) => requestSeqs[k] as Seq)
-        : o.evidence !== undefined
-          ? []
-          : requestSeqs;
-    return [...new Set([...(ownSeqs.get(o.index) ?? []), ...cited])];
+    return [...new Set(seenBy(o))];
+  };
+  // The sources `evidence_by_field` maps a field (or the interval) to (04-contract §3).
+  const mappedTo = (o: NormalizedOp, indices: readonly number[]): Seq[] => {
+    const seen = seenBy(o);
+    return [...new Set(indices.map((k) => seen[k] as Seq))];
   };
 
   const rows = new Map<string, RowWork>();
@@ -1173,8 +1232,16 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
             kind: "write",
             ...(o.valid !== undefined ? { valid: o.valid } : {}),
             now: nowPoint,
+            // A field `evidence_by_field` points at is explicit: the same value again is a
+            // corroboration, not a no-op (04-contract §3).
             fields: Object.fromEntries(
-              Object.entries(fields ?? {}).map(([f, x]) => [f, { value: x?.value ?? null }]),
+              Object.entries(fields ?? {}).map(([f, x]) => [
+                f,
+                {
+                  value: x?.value ?? null,
+                  ...(o.evidenceByField?.fields.has(f as FieldId) ? { explicit: true } : {}),
+                },
+              ]),
             ),
             ...(ack ? { acknowledge: true } : {}),
           }
@@ -1227,6 +1294,22 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       });
     }
     work.state = judged.state;
+    for (const w of j.warnings) covered.push({ op: o.index, table: o.table, ...w });
+    // Several segments and fields with no mapping: each of them rests on all the segments
+    // (04-contract §3), a deletion of any one takes them.
+    if (o.kind === "write" && seenBy(o).length > 1) {
+      const given = new Set(("items" in j.record ? j.record.items : []).map((x) => x.target));
+      const unmapped = table.fields.filter(
+        (f) => given.has(f.id as FieldId) && !o.evidenceByField?.fields.has(f.id as FieldId),
+      );
+      if (unmapped.length > 0) {
+        warnings.push({
+          code: "multi_segment_unmapped",
+          op: o.index,
+          fields: unmapped.map((f) => f.name),
+        });
+      }
+    }
     // Conflicts join the open item of the same unit whose interval meets theirs, the earliest of
     // several (01-objects «目标与合并»); one meeting none opens an item.
     const conflictItems = j.conflicts.map((c) => {
@@ -1301,13 +1384,26 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       restoreCount: restore,
       sv,
       sources: sourcesOf(o),
-      // A revoke over an interval records the interval's sources (`valid_sources`, 09 §5.7): all
-      // the op's evidence, or its api_call, so that the interval can be traced to the words it came
-      // from when they are deleted. A write without the block rests its interval on all its
-      // evidence.
-      ...(o.kind === "revoke" && o.valid !== undefined && o.valid !== "corrected_span"
-        ? { validSources: sourcesOf(o) }
+      ...(o.evidenceByField !== undefined
+        ? {
+            fieldSources: Object.fromEntries(
+              [...o.evidenceByField.fields].map(([f, ks]) => [f, mappedTo(o, ks)]),
+            ),
+            // The fields pointed at, in the table's order (09 §5.2 `ops/<i>/explicit`).
+            explicit: table.fields
+              .map((f) => f.id as FieldId)
+              .filter((f) => o.evidenceByField?.fields.has(f)),
+          }
         : {}),
+      // The interval's sources (`valid_sources`, 09 §5.7): the evidence `evidence_by_field` maps
+      // its `valid` key to; otherwise, for a revoke over an interval, all the op's evidence (or its
+      // api_call), so that the interval can be traced to the words it came from when they are
+      // deleted. A write without the block rests its interval on all its evidence.
+      ...(o.evidenceByField?.valid !== undefined
+        ? { validSources: mappedTo(o, o.evidenceByField.valid) }
+        : o.kind === "revoke" && o.valid !== undefined && o.valid !== "corrected_span"
+          ? { validSources: sourcesOf(o) }
+          : {}),
       // An undo writes back no value of its own: the request's evidence (or its api_call) is the
       // operation's source (09 §5.2 `undo`: only `target`, `op_sources` and `revert`).
       ...(o.kind === "undo" ? { opSources: sourcesOf(o) } : {}),
@@ -1449,6 +1545,22 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     return keys !== undefined && r.created_entity ? { ...r, existing_keys: keys } : r;
   });
   const out = keysShown.size > 0 ? { ...receipt, ops } : receipt;
+  for (const c of covered) {
+    const t = tableOf(c.table);
+    const byDate = t.time.type === "state" && t.time.granularity === "date";
+    const name = t.fields.find((x) => x.id === c.field)?.name;
+    if (name === undefined) continue;
+    const sources = await sourceIdsOf(tx, c.corroboration);
+    for (const v of c.valid) {
+      warnings.push({
+        code: "overwrote_corroborated",
+        op: c.op,
+        field: name,
+        valid: intervalOut(v, byDate),
+        sources,
+      });
+    }
+  }
   // Request-level evidence no op cites (an op naming none cites every segment): stored as sources
   // all the same, the source of no value (04-write-and-read «证据»).
   const cited = new Set(

@@ -847,6 +847,9 @@ describe("parseEvent: a write's blocks, value by value", () => {
     expect(issues(parse(withBlock(S("write.head"), "ops/0/noop", [])))).toContain(
       "ops/0/noop: empty",
     );
+    expect(issues(parse(withBlock(S("write.head"), "ops/0/explicit", [])))).toContain(
+      "ops/0/explicit: empty",
+    );
     expect(issues(parse(withBlock(S("write.head"), "ops/0/named_fields", [])))).toContain(
       "ops/0/named_fields: empty",
     );
@@ -977,6 +980,9 @@ describe("parseEvent: lists of a write's blocks", () => {
     const base = SAMPLES["write.base"] as Sample;
     expect(issues(parse(withBlock(head, "ops/0/noop", ["f1", "f1"])))).toContain(
       "ops/0/noop: duplicate field",
+    );
+    expect(issues(parse(withBlock(head, "ops/0/explicit", ["f2", "f2"])))).toContain(
+      "ops/0/explicit: duplicate field",
     );
     expect(issues(parse(withBlock(head, "ops/0/acknowledge", ["merge"])))).toContain(
       "ops/0/acknowledge: acknowledge",

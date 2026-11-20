@@ -103,6 +103,14 @@ const opEnc = (input: JudgeInput, j: Judgement, extra: Record<string, unknown> =
   ...(j.created ? { created: true as const } : {}),
   sv: 1,
   sources: [input.op],
+  // The fields evidence was pointed at (`ops/<i>/explicit`): in the table's order, which for these
+  // tables' f2 and f3 is theirs as strings.
+  explicit:
+    input.kind === "write"
+      ? (Object.keys(input.fields) as FieldId[])
+          .filter((f) => input.fields[f]?.explicit === true)
+          .sort()
+      : [],
   raw:
     input.kind === "write"
       ? Object.fromEntries(Object.entries(input.fields).map(([f, x]) => [f, x?.value ?? null]))
@@ -442,8 +450,8 @@ const take = (
 
 describe("resolutions and what the scenarios do not reach", () => {
   it("a take written one item per stretch, with its item.resolved, through the events and back", () => {
-    // #41 is cut around a corroboration (evidence pointed at per field, a later phase) into two
-    // candidate stretches; #51 takes the second candidate of the item, #61 joined after #41.
+    // #41 is cut around a corroboration (evidence pointed at per field) into two candidate
+    // stretches; #51 takes the second candidate of the item, #61 joined after #41.
     const ctx = ctxOf("state");
     const inputs = [
       write(10, { f2: "1" }, { valid: given("10-01") }),
@@ -480,11 +488,8 @@ describe("resolutions and what the scenarios do not reach", () => {
         ok: parses(e.header.type, e.header.seq, e.header.op, e.blocks).ok,
       }).toEqual({ seq: e.header.seq, ok: true });
     }
-    // Back: every record the same, but for the per-field evidence the format does not keep yet.
-    const decoded = decodeRecords(ctx, evs);
-    expect(decoded.map((r) => (r.kind === "write" ? { ...r, explicit: [] } : r))).toEqual(
-      state.records.map((r) => (r.kind === "write" ? { ...r, explicit: [] } : r)),
-    );
+    // Back: every record the same, the fields evidence was pointed at included.
+    expect(decodeRecords(ctx, evs)).toEqual(state.records);
   });
 
   it("awaiting items: the cause and the unit, by what the proposal is and touches", () => {

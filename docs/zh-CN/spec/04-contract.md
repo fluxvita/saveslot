@@ -110,7 +110,7 @@
 - **陈述时间**：段上可选的 `stated_at`，这句话是什么时候说的；不给就是未知。只记录，第一版不参与任何判定。
 - **段放在哪**：请求级 `evidence`（多个 op 共用），或写在 op 里（`ops[i].evidence`，只属于这个 op）。op 引用请求级的段用 `ops[i].evidence_refs`（下标数组）。
 - **op 可见的段** = 它的内联段，加上 `evidence_refs` 列出的请求级段；两者都没给时，引用全部请求级段。**空数组与不给相同**：请求级的 `evidence: []`、`ops[i].evidence: []`、`ops[i].evidence_refs: []` 都按没给处理（补全可选参数时填的 `[]` 是"没什么要说的"，不是"一段都不引用"）。
-- **按字段指明**：`ops[i].evidence_by_field`，字段名 → 下标数组。下标数的是这个 op 可见的段：**先数内联段，再按 `evidence_refs` 的顺序数请求级段**。键 `valid` 指状态类表区间参数的出处。下标越界报 `invalid_argument`（`index_out_of_range`）；映射到空数组报 `invalid_argument`（`empty_mapping`）。
+- **按字段指明**：`ops[i].evidence_by_field`，字段名 → 下标数组。下标数的是这个 op 可见的段：**先数内联段，再按 `evidence_refs` 的顺序数请求级段**。键 `valid` 指状态类表区间参数的出处。下标越界报 `invalid_argument`（`index_out_of_range`）；映射到空数组报 `invalid_argument`（`empty_mapping`）；下标不是整数、或在同一数组里重复，报 `invalid_argument`（`malformed`，`evidence_refs` 同）。键是表里没有的字段名报 `unknown_field`（附相近的名字）；是表里有、但这个 op 没给值的字段（不在 `set` 里，也不是 `entity_key` 的键）报 `invalid_argument`（`malformed`）——撤销不给字段值，只能映射 `valid`。`valid` 只用于状态类表，否则报 `invalid_argument`（`not_state_table`）；这个 op 一个区间参数都没给时（整体撤销，或从现在到下一次变化的写入）没有区间可指，报 `invalid_argument`（`malformed`，`param` 指到这个键）。`undo` 不写自己的值，带非空的 `evidence_by_field` 报 `invalid_argument`（`mutually_exclusive`）。空对象等于没给。
 - **一个字段引用多段时，这几段同时需要**（含不给映射的默认；规则见 data-model「删除 · 来源」）。带多段又没给字段映射时，`warnings` 给 `multi_segment_unmapped`。
 - **值没变的字段只有按字段显式指向证据时才算佐证**；没指的是无操作（第 5 节）。
 
@@ -479,7 +479,7 @@
 
 - **触发的写入同样过 `ref` 目标的校验**（data-model「写入 ref 字段时」）：采纳候选、回到合并基、确认待确认写入（含确认一次撤回）时，这次将要生效的 `ref` 值按处理时的状态校验，不过报 `validation_failed`（`ref_not_found` / `ref_wrong_table`），明细不带 `op`、带 `table` 与 `field`；不产生任何事件，事项保持未决。
 - `take_candidate` 在事项有多个候选时必须给 `candidate`（详情里候选的 `index`；下标在事项生命周期内不复用），否则 `invalid_argument`（`candidate_required`，附候选 `candidate_choices`：每个候选的下标、所在写入的操作号与写入者）。
-- `evidence` 与 `note`：`resolve` 没有请求级证据，证据只有 `evidence` 与 `evidence_by_field`，不收 `evidence_refs`；`evidence_by_field` 的下标数的就是本次的 `evidence` 数组，处理触发写入时按字段指明那次写入的证据。`evidence` 每段存为一条源数据；带了 `note`、或处理会触发写入而没带证据时，解决请求本身（含 `note`）另存一条 `api_call`。**不触发写入的处理方式（`keep_effective`、`reject`、`keep`、schema 的确认与拒绝）同样如此**，所以 `note` 总有地方落、总能被隐私删除清掉。它们只是操作来源；事项详情的 `resolution.note` 从这条源数据回显，源数据被删后不再回显。既没带证据也没带 `note`、又不触发写入的解决不产生源数据。
+- `evidence` 与 `note`：`resolve` 没有请求级证据，证据只有 `evidence` 与 `evidence_by_field`，不收 `evidence_refs`；`evidence_by_field` 的下标数的就是本次的 `evidence` 数组，处理触发写入时按字段指明那次写入的证据（这一版不收，报 `not_in_this_version`：这一版各种处理方式触发的写入的项都是搬运来的，按字段指明证据改变不了它们的来源；`migration_diff` 的 `set` 带值时才用得上）。`evidence` 每段存为一条源数据；带了 `note`、或处理会触发写入而没带证据时，解决请求本身（含 `note`）另存一条 `api_call`。**不触发写入的处理方式（`keep_effective`、`reject`、`keep`、schema 的确认与拒绝）同样如此**，所以 `note` 总有地方落、总能被隐私删除清掉。它们只是操作来源；事项详情的 `resolution.note` 从这条源数据回显，源数据被删后不再回显。既没带证据也没带 `note`、又不触发写入的解决不产生源数据。
 - 结果：触发了写入时带 `write`（形状同写入回执的对应部分，含 `premise_affected`）；`schema_change` 的 `confirm` 带 `schema`（是否已切换、新 `sv`，或迁移状态）；`deletion` 的 `cancel` 带 `cancelled`（受影响行的新 `ver`、退回原状态的写入、恢复的事项、保持"已被取代"的事项、因已被当作基线而不退回的写入、前提的变化 `premise_affected`）。
 - **撤回时被重新判定的候选**（`cancelled.rejudged[]`）：删除曾从一个冲突事项里去掉某个候选，而那个事项在宽限期内已经被解决。撤回后候选回来，原事项的解决不动，候选按撤回时的当前值重新判定，一个候选一条：还有部分与当前值不同 → `reopened`，为它另开一个冲突事项（成因 `restored_candidate`，详情的 `related_item` 指回原事项；附新事项的 `id` 与 `item_ver`）；都与当前值相同、其中有指了证据的 → `corroborated`，成为佐证；都相同且没指证据 → `dropped`，不再是改动。后两种没有事项可处理，所以要在这里列出，调用方才知道那次写入最终没有生效。
 - **确认记录**另记 `via: "call" | "elicitation"`（`elicitation` 后续）：由外化面填写，调用方不能传，只作记录。

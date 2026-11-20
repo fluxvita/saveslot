@@ -125,6 +125,7 @@ export const VOCABULARY = {
     { path: "ops/<n>/target", kind: "meta", shape: "OpTarget" },
     { path: "ops/<n>/set/<field>", kind: "data", shape: "RawValue" },
     { path: "ops/<n>/noop", kind: "meta", shape: "FieldIdList" },
+    { path: "ops/<n>/explicit", kind: "meta", shape: "FieldIdList" },
     { path: "ops/<n>/valid", kind: "data", shape: "ValidParam" },
     { path: "ops/<n>/revert", kind: "meta", shape: "OpRevert" },
     { path: "ops/<n>/acknowledge", kind: "meta", shape: "Acknowledge" },
