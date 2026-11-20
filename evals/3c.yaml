@@ -70,14 +70,14 @@ steps:
 assert:
   calls:
     - level: H
-      text: '必须：第 3 步里 `saveslot_write`，`intent: "revoke"`，结果 `status: "pending"`，`ops[0].fields["*"].result: "candidate"`。'
+      text: '必须（两条路之一）——甲：第 3 步里 `saveslot_write`，`intent: "revoke"`，结果 `status: "pending"`，`ops[0].fields["*"].result: "candidate"`。乙：第 3 步里重新读取（`query` 或 `history`）看到 35，第 3 步里没有以 `taxi` 为目标的 `saveslot_write`。'
     - level: S
       text: "不得：`saveslot_delete`；`saveslot_sources` 的 `deletion_preview` 模式。"
     - level: S
       text: "不得：第 3 步里出现让这一行被撤销的第二次写入或 `saveslot_resolve`。"
   state:
     - level: H
-      text: '`taxi` 仍存在（不带 `include_revoked` 能查到），`marks.disputed` 的 `fields` 是 `["*"]`。'
+      text: '`taxi` 仍存在（不带 `include_revoked` 能查到），amount 35 CNY。甲：`marks.disputed` 的 `fields` 是 `["*"]`。乙：`marks` 没有 `disputed`。'
   reply:
     - level: R
-      rubric: "告诉用户这一行在他读取之后被另一个 Agent 改过（金额改成了 35），撤销没有生效，并问用户是否仍要撤销"
+      rubric: "告诉用户这一行在他读取之后被另一个 Agent（或另一个连接实例）改过，金额改成了 35，还没有撤销（甲：撤销没有生效），并问用户是否仍要撤销"

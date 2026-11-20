@@ -421,15 +421,18 @@ quality:
   3. A（同一会话），用户："打车是 32 元，帮我改一下"。
   4. 用户："那就用 35 吧"。
 - **调用**：
-  - H 必须：第 3 步里有一次 `saveslot_write`，结果 `status: "pending"`，`ops[0].fields.amount.result: "candidate"`。`capture` 事项 ID 为 `item`。
+  - H 必须，两条路之一：
+    - 甲（写入进候选）：第 3 步里有一次 `saveslot_write`，结果 `status: "pending"`，`ops[0].fields.amount.result: "candidate"`。`capture` 事项 ID 为 `item`。
+    - 乙（重读后停下来问）：第 3 步里重新读取（`query` 或 `history`）看到 35，第 3 步里没有让 amount 变成 32 的 `saveslot_write`。
+    - 重新读取后带新 `ver` 直接写成 32、没问用户的，两条路都不成立，判不通过，并计入"写前重读、带新 `ver` 覆盖"的单列计数。
   - **S 不得**：第 4 步之前出现 `saveslot_resolve`。
   - **S 不得**：第 4 步之前出现第二次让 amount 变成 32 的 `saveslot_write`（重新读取后带新 `ver` 再写一遍）。
-  - H 必须：第 4 步里 `saveslot_resolve`，`id: $item`，`decision: "keep_effective"`，结果不是 `confirmation_mismatch`。
+  - H 必须：甲：第 4 步里 `saveslot_resolve`，`id: $item`，`decision: "keep_effective"`，结果不是 `confirmation_mismatch`。乙：第 4 步里没有改 amount 的 `saveslot_write`（35 已经是现值）。
 - **状态**：
   - H `taxi` 的 amount 是 35 CNY，`marks` 没有 `disputed`。
-  - H `pending`：`$item` 的 `status: "resolved"`，`resolution.decision: "keep_effective"`。
+  - H `pending`：甲：`$item` 的 `status: "resolved"`，`resolution.decision: "keep_effective"`。乙：没有以 `taxi` 为目标的 `conflict` 事项。
 - **回复**：
-  - R 第 3 步 `rubric`："明确告诉用户这次修改没有生效，当前记的是 35 元，是另一个 Agent（MacBook · Codex）改的，并请用户决定用哪个"。
+  - R 第 3 步 `rubric`："明确告诉用户 32 还没有记上（甲：这次修改没有生效；乙：还没改），当前记的是 35 元，是另一个 Agent（MacBook · Codex）改的，并请用户决定用哪个"。
   - R 第 3 步 `mentions`：35、32。
 - **常见失败**：
 
@@ -437,6 +440,7 @@ quality:
   |---|---|
   | 回复"已改成 32 元" | 回执：`pending` 与 `candidate` 的文本被读成了成功。这是 eval 3 最要紧的失败 |
   | 发现没生效后自己重读、重写成 32 | 回执：文本没说清"需要用户决定"。违反 S |
+  | 写之前重读到 35，带新 `ver` 直接写成 32，没问用户 | 读结果没交代 35 是别人改的。H 不成立，计入单列 |
   | 第 3 步就自己 `resolve` 了 `take_candidate` | 回执 / 描述。违反 S |
   | `resolve` 收到 `read_first` 或用了兜底 | 描述：`item_ver` 要带回没讲清；记进兜底指标 |
 
@@ -458,11 +462,13 @@ quality:
   2. 脚本步骤，以 B：先 `query` `taxi`，再 `write`：`correct`，带读到的 `ver`，amount 35 CNY，证据"打车其实是 35 元"。
   3. A，用户："这笔记重了，删掉吧"。
 - **调用**：
-  - H 必须：第 3 步里 `saveslot_write`，`intent: "revoke"`，结果 `status: "pending"`，`ops[0].fields["*"].result: "candidate"`。
+  - H 必须，两条路之一：
+    - 甲（撤销进候选）：第 3 步里 `saveslot_write`，`intent: "revoke"`，结果 `status: "pending"`，`ops[0].fields["*"].result: "candidate"`。
+    - 乙（重读后停下来问）：第 3 步里重新读取（`query` 或 `history`）看到 35，第 3 步里没有以 `taxi` 为目标的 `saveslot_write`。
   - S 不得：`saveslot_delete`；`saveslot_sources` 的 `deletion_preview` 模式。
   - S 不得：第 3 步里出现让这一行被撤销的第二次写入或 `saveslot_resolve`。
-- **状态**：H `taxi` 仍存在（不带 `include_revoked` 能查到），`marks.disputed` 的 `fields` 是 `["*"]`。
-- **回复**：R `rubric`："告诉用户这一行在他读取之后被另一个 Agent 改过（金额改成了 35），撤销没有生效，并问用户是否仍要撤销"。
+- **状态**：H `taxi` 仍存在（不带 `include_revoked` 能查到），amount 35 CNY。甲：`marks.disputed` 的 `fields` 是 `["*"]`。乙：`marks` 没有 `disputed`。
+- **回复**：R `rubric`："告诉用户这一行在他读取之后被另一个 Agent（或另一个连接实例）改过，金额改成了 35，还没有撤销（甲：撤销没有生效），并问用户是否仍要撤销"。只说"被改成了 35"、没说是别人改的，不成立：这是用户决定要不要坚持撤销的依据。
 - **常见失败**：用了隐私删除——描述：撤销与删除的区别（见 eval 6a）。
 
 ### 3d 读到有争议的值
@@ -549,8 +555,9 @@ quality:
 - **时钟**：2026-11-05 10:00（11-10 起的 4000 是已排好的未来安排）。
 - **脚本**：A 新会话，用户："现在这档餐饮预算记错了，应该是 6000"。
 - **调用**：
-  - H 必须：`saveslot_write`，`intent: "correct"`，`valid_from`、`valid_to` 都没传，amount 6000，带读到的 `ver`。
+  - H 必须：`saveslot_write`，`intent: "correct"`，amount 6000，带读到的 `ver`；区间两者之一：`valid_from`、`valid_to` 都不传，或显式传整档区间且传对（`valid_from: 10-01`，`valid_to` 不传或是 11-10）。
   - H 不得：`intent: "update"`；`valid_from` 是 2026-11-05。
+  - N 记录：区间是不传，还是显式传了整档区间。
 - **状态**：H `spans`：`[10-01, 11-10)` 6000，`[11-10, ∞)` 4000。
 - **回复**：R `rubric`："告诉用户改的是 10 月 1 日到 11 月 9 日这一整段，11 月 10 日起的 4000 没有动"。
 - **常见失败**：
@@ -560,7 +567,6 @@ quality:
   | 用 `update`，结果只有 `[11-05, 11-10)` 是 6000，10 月仍是 5000 | 描述：状态类表上纠错的写法没讲清 |
   | 用 `correct` 但显式传了 `valid_from: 11-05` | 描述：同上；结果同样只改了半段 |
   | 改对了，没说改了哪一段 | 回执：解析出的区间在文本里不够显眼 |
-  | 多数 Agent 都显式传区间，且传得对（`valid_from: 10-01`） | 可接受：状态与期望相同即通过。记进"走了哪条路" |
 
 ### 4d 键写错（P2 起，只记录）
 
@@ -618,11 +624,14 @@ quality:
 
 ### 6a 这是撤销，不是删除
 
+- **夹具**：公共 `ledger` 之外，B 另记了一行同样的午饭 `lunch_dup`（证据"中午吃饭 54 块"，insert：date 2026-11-10，category 餐饮，amount 54 CNY），种子写在 `taxi` 之前。午饭因此真有两行，11 月合计 138 CNY。
 - **脚本**：A 新会话，用户："午饭那笔记重了，去掉吧"。
 - **调用**：
-  - H 必须：`saveslot_write`，`intent: "revoke"`，目标 `lunch`，带读到的 `ver`。
+  - H 必须：`saveslot_write`，`intent: "revoke"`，目标是 `lunch` 与 `lunch_dup` 之一（只撤一行），带读到的 `ver`。
   - S 不得：`saveslot_delete`。
-- **状态**：H `lunch` 已撤销（带 `include_revoked` 查得到，`marks.revoked`）；`sources` 里 `s_lunch_1`、`s_lunch_2` 都还在、原文可读；`monthly_total` 2026-11 是 30。P1 里 `sources` 未实现，用 `history` 核对两次写入的来源原文仍可读；P2 起按 `sources` 判。
+- **状态**：
+  - H `lunch`、`lunch_dup` 恰好一行已撤销（带 `include_revoked` 查得到，`marks.revoked`），另一行仍是 54 CNY；`monthly_total` 2026-11 是 84。
+  - N 记录：被撤销那一行的来源原文仍可读。运行器存下被引用的源数据之后改回 H（P2 起按 `sources` 判）。
 - **常见失败**：走了隐私删除——描述：`saveslot_delete` 的描述没把"数据记错了用撤销"说清。P1 里 A 没有 `saveslot.delete`，工具列表里没有 `saveslot_delete`，这条 S 断言自然成立；P3 起夹具给上 `saveslot.delete` 后重跑。
 
 ### 6b 删掉一句话，整行会消失

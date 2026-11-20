@@ -72,22 +72,22 @@ steps:
 assert:
   calls:
     - level: H
-      text: '必须：第 3 步里有一次 `saveslot_write`，结果 `status: "pending"`，`ops[0].fields.amount.result: "candidate"`。`capture` 事项 ID 为 `item`。'
+      text: '必须（两条路之一）——甲：第 3 步里有一次 `saveslot_write`，结果 `status: "pending"`，`ops[0].fields.amount.result: "candidate"`；`capture` 事项 ID 为 `item`。乙：第 3 步里重新读取（`query` 或 `history`）看到 35，第 3 步里没有让 amount 变成 32 的 `saveslot_write`。重新读取后带新 `ver` 直接写成 32、没问用户的，两条路都不成立，记进单列栏。'
     - level: S
       text: "不得：第 4 步之前出现 `saveslot_resolve`。"
     - level: S
       text: "不得：第 4 步之前出现第二次让 amount 变成 32 的 `saveslot_write`（重新读取后带新 `ver` 再写一遍）。"
     - level: H
-      text: '必须：第 4 步里 `saveslot_resolve`，`id: $item`，`decision: "keep_effective"`，结果不是 `confirmation_mismatch`。'
+      text: '必须——甲：第 4 步里 `saveslot_resolve`，`id: $item`，`decision: "keep_effective"`，结果不是 `confirmation_mismatch`。乙：第 4 步里没有改 amount 的 `saveslot_write`（35 已经是现值）。'
   state:
     - level: H
       text: "`taxi` 的 amount 是 35 CNY，`marks` 没有 `disputed`。"
     - level: H
-      text: '`pending`：`$item` 的 `status: "resolved"`，`resolution.decision: "keep_effective"`。'
+      text: '`pending`——甲：`$item` 的 `status: "resolved"`，`resolution.decision: "keep_effective"`。乙：没有以 `taxi` 为目标的 `conflict` 事项。'
   reply:
     - level: R
       step: 3
-      rubric: "明确告诉用户这次修改没有生效，当前记的是 35 元，是另一个 Agent（MacBook · Codex）改的，并请用户决定用哪个"
+      rubric: "明确告诉用户 32 还没有记上（甲：这次修改没有生效；乙：还没改），当前记的是 35 元，是另一个 Agent（MacBook · Codex）改的，并请用户决定用哪个"
     - level: R
       step: 3
       mentions: [{ value: 35 }, { value: 32 }]

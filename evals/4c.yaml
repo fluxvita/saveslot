@@ -51,11 +51,11 @@ steps:
 assert:
   calls:
     - level: H
-      text: '必须：`saveslot_write`，`intent: "correct"`，`valid_from`、`valid_to` 都没传，amount 6000，带读到的 `ver`。'
+      text: '必须：`saveslot_write`，`intent: "correct"`，amount 6000，带读到的 `ver`；区间两者之一：`valid_from`、`valid_to` 都不传，或显式传整档区间且传对（`valid_from: 2026-10-01`，`valid_to` 不传或是 2026-11-10）。'
     - level: H
       text: '不得：`intent: "update"`；`valid_from` 是 2026-11-05。'
-    - level: H
-      text: '可接受：多数 Agent 都显式传区间，且传得对（`valid_from: 10-01`）——状态与期望相同即通过。记进"走了哪条路"。'
+    - level: N
+      text: "记录：区间是不传，还是显式传了整档区间。"
   state:
     - level: H
       text: "`spans`：`[10-01, 11-10)` 6000，`[11-10, ∞)` 4000。"
