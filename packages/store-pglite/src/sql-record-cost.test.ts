@@ -4,8 +4,9 @@
 // in its WHERE, and a table that will be recorded whole anyway (it is referenced somewhere else
 // that cannot be read by row) gets no statement for any of its references. The inputs are the
 // review's: a table of 48 rows, a LIMIT of 1 on the query, and a product of the same table in a
-// subquery of its WHERE. On PostgreSQL the call has a deadline of 50 ms, which the statement of
-// the caller (about a millisecond) keeps and the statement of the record would not.
+// subquery of its WHERE. What is asserted is which statements the call gives the database, not
+// how long they take: a deadline met or missed says how fast the machine was (#70). The deadline
+// itself, also when the record finds it spent, is sql-timeout.test.ts's.
 
 import { loadRsql } from "@fluxvita/saveslot-kernel";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -41,36 +42,27 @@ describe("a level whose WHERE has a subquery", () => {
       "an IN subquery over a product",
       "SELECT 1 FROM spend s WHERE s.note IN (SELECT a.note FROM spend a, spend b, spend c) LIMIT 1",
     ],
-  ])(
-    "%s: no statement for the record, the table recorded whole, no timeout at 50 ms",
-    async (_n, sql) => {
-      const r = await runSql(s, { sql }, { timeoutMs: 50 });
-      expect(records(r.statements)).toEqual([]);
-      expect(r.entry.coarse).toEqual(["t1"]);
-      expect(r.entry.rows).toEqual([]);
-      expect(r.result.rows).toHaveLength(1);
-    },
-  );
+  ])("%s: no statement for the record, the table recorded whole", async (_n, sql) => {
+    const r = await runSql(s, { sql });
+    expect(records(r.statements)).toEqual([]);
+    expect(r.entry.coarse).toEqual(["t1"]);
+    expect(r.entry.rows).toEqual([]);
+    expect(r.result.rows).toHaveLength(1);
+  });
 
   it("is whole also when its table is referenced once only: the subquery is the cost", async () => {
-    const r = await runSql(
-      s,
-      {
-        sql: "SELECT 1 FROM spend s WHERE (SELECT count(*) FROM budgets a, budgets b, budgets c WHERE a.category <> s.note) >= 0 LIMIT 1",
-      },
-      { timeoutMs: 50 },
-    );
+    const r = await runSql(s, {
+      sql: "SELECT 1 FROM spend s WHERE (SELECT count(*) FROM budgets a, budgets b, budgets c WHERE a.category <> s.note) >= 0 LIMIT 1",
+    });
     expect(records(r.statements)).toEqual([]);
     expect([...r.entry.coarse].sort()).toEqual(["t1", "t3"]);
     expect(r.entry.rows).toEqual([]);
   });
 
   it("is recorded by row again when the subquery is in the output instead", async () => {
-    const r = await runSql(
-      s,
-      { sql: "SELECT (SELECT count(*) FROM budgets) AS n FROM spend WHERE note = 'lunch'" },
-      { timeoutMs: 50 },
-    );
+    const r = await runSql(s, {
+      sql: "SELECT (SELECT count(*) FROM budgets) AS n FROM spend WHERE note = 'lunch'",
+    });
     expect(records(r.statements)).toHaveLength(2);
     expect(r.entry.coarse).toEqual([]);
     expect(r.entry.rows.map((x) => x.table).sort()).toEqual(["t1", "t3"]);
