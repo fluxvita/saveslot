@@ -165,7 +165,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 - **建完就归用户**：slot 与模板之后没有任何联系，CLI 升级换了模板也不影响已建的 slot；要改结构走 schema 变更（P4）。
 - **为什么随包带、不从网上取**：离线可用、内容随 CLI 版本固定、不引入"远程 schema 来源"这个提示注入面（open-questions「社区 Schema + SKILL 的安全」）。
 - **不用模板时**：`saveslot slot create <名字> --file schema.json`，文件可以是让 Agent 起草后保存的；也可以给某个 Agent 勾选 `saveslot.schema`，让它经 `saveslot_schema_draft` 直接建 slot。
-- 官方 schema 的结构在 P4 前定（open-questions「官方 schema 的结构（`extends` / `compatibility`）」）；定下来以后，模板改为官方 schema 的 `extends` 形式，已用旧模板建的 slot 不受影响。除这三份之外的新模板（健康、营养等）在结构定下之后再写。
+- 官方 schema 第一版只在编译后的定义里留位、不实现（data-model「官方 schema 与用户 schema」；细则见 open-questions「官方 schema 的细则」）；实现之后，模板改为官方 schema 的 `extends` 形式，已用旧模板建的 slot 不受影响。除这三份之外的新模板（健康、营养等）在结构定下之后再写。
 
 **三份模板的内容。** 单位取自单位词表，精度不写、用默认值（货币按 ISO 4217 的最小单位位数，其余 6 位，舍入 `half_up`，见 data-model「字段类型、同值与单位」）。`slot` 与 `timezone` 由命令行的值替换。评测的夹具（[`10-evals.md`](10-evals.md)「公共夹具」）用的就是这三份。
 
@@ -263,7 +263,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 - `spending` 的疑似重复按"同一天、同一类别、同一金额"判；`running` 按"同一天、同一距离"判。命中只生成一个已标记事项，不拒绝写入。
 - **覆盖列**：按时间分桶的派生表带三列——`days_recorded`（桶里有记录的天数）、`first_date`、`last_date`（桶里最早、最晚一条记录的日期）。"这周跑了 21 公里"是完整的一周还是只记了四天，由读的一方按这三列判断：`days_recorded` 等于这个桶应有的天数是完整（应有几天是领域知识，写在字段说明里）；小于是部分，首末日期说明缺在头、尾还是中间，当前这个桶还没过完时，`last_date` 与今天的差距说明是"还没到"还是"没记"；没有这个桶的行是这段时间一条记录都没有（分组聚合对没有输入的桶不产生行）。规则里不引用"今天"，否则会变成读时计算、不能缓存。`budget` 没有派生表。所用的 `count(DISTINCT …)`、对 `date` 取 `min` / `max` 须在受限 SQL 的白名单里（data-model [「受限 SQL」](03-data-model/11-restricted-sql.md)）；"每天一行"的表直接用 `count(*)`。
 
-**之后的官方模板要遵守的设计约定**（健康、营养这类模板在官方 schema 的结构定下之后再写）：
+**之后的官方模板要遵守的设计约定**（健康、营养这类模板等官方 schema 实现之后再写）：
 
 1. **两种粒度，不设第三种**：每次活动一行（事件类表：一次跑步、一次睡眠、一餐）；每天一行（事件类表，按 `date`：当天的步数、静息心率、平均血糖、睡眠总时长）。
 2. **不建逐点读数的表。** 心率曲线、血糖曲线、GPS 轨迹留在产生它们的设备或服务里；saveslot 为每一行保留全部版本与来源，这些保证的代价随行数增长（positioning「场景判据」的适用范围）。

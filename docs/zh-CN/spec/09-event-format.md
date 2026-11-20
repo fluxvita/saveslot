@@ -243,7 +243,7 @@
 | `principal.registered`、`principal.renamed`、`principal.revoked` | 主体管理 |
 | `tenant.genesis`、`tenant.restored`、`tenant.imported` | 建租户、恢复、导入到空租户 |
 
-`premise.changed`（§5.10）不是头事件：它只作为写入、解决、删除确认、撤回删除这几种操作的一员出现。
+`premise.changed`（§5.10）不是头事件：它只作为写入、解决、删除确认、撤回删除、schema 切换（新版删除了前提声明所声明的字段时）这几种操作的一员出现。
 
 带元数据块 `ctx`（§5.1）的头事件：**调用方发起的全部头事件**（`write.head`、`item.resolved`、`deletion.confirmed`、`deletion.cancelled`、`schema.draft_submitted`、三种 `principal.*`；将来作头事件的 `slot.policy_set` 也带），以及 `system` 产生的 `deletion.confirmed`、`deletion.cancelled`。其余由系统生成的头事件（`tenant.genesis`、`tenant.restored`、`deletion.executed`、`schema.switched`、`schema.migration_failed`）不带。`tenant.imported` 虽由用户会话发起，但它与创世事件一样是建立租户状态的事件，不做判定、没有 slot，也不带。带了请求键的另有 `request_key` 块。
 
@@ -336,12 +336,14 @@
 2. `schema.superseded`：这个 slot 有一份尚未确认的旧草稿时，一条（连同旧草稿的 `schema_change` 事项的 `item.superseded`）。
 3. `schema.compiled`。
 4. 之后分两种：
-   - 自动生效（新建 slot，或按 slot 策略可自动生效）：`schema.confirmed` → 建 slot 时一条 `slot.policy_set`（初始策略）→ **不需要重建任何物理表**（`rebuilt_tables` 为空：只改目录的变更）或建 slot 时直接 `schema.switched`，否则 `schema.migration_started`。判据是物理形状变没变，与改动类别无关：加一个可选字段属于"只改元数据"类别，但要重建物理表，走 `schema.migration_started`。**新增一张表不算重建**：新表是空的，没有旧写入要转换，建表在切换的事务里完成，直接 `schema.switched`（`rebuilt_tables` 为空）。**从未被写入的表改结构同理**：这张表换一张新的物理表（编译后定义里的 `physical.since` 是本版），但日志里没有以它为目标的 `write.base`，没有旧写入要转换，同样在切换的事务里建表、直接 `schema.switched`，不列入 `rebuilt_tables`。
+   - 自动生效（新建 slot，或按 slot 策略可自动生效）：`schema.confirmed` → 建 slot 时一条 `slot.policy_set`（初始策略）→ **不需要重建任何物理表**（`rebuilt_tables` 为空：只改目录的变更）或建 slot 时直接 `schema.switched`（其后至多一条 `premise.changed`，见本节末），否则 `schema.migration_started`。判据是物理形状变没变，与改动类别无关：加一个可选字段属于"只改元数据"类别，但要重建物理表，走 `schema.migration_started`。**新增一张表不算重建**：新表是空的，没有旧写入要转换，建表在切换的事务里完成，直接 `schema.switched`（`rebuilt_tables` 为空）。**从未被写入的表改结构同理**：这张表换一张新的物理表（编译后定义里的 `physical.since` 是本版），但日志里没有以它为目标的 `write.base`，没有旧写入要转换，同样在切换的事务里建表、直接 `schema.switched`，不列入 `rebuilt_tables`。
    - 待确认：`item.created`（`schema_change` 事项）。
 
-**确认或拒绝**（`resolve`）：`item.resolved`（头）→ `schema.confirmed` 或 `schema.rejected` → 确认时接着是 `schema.switched`（不需要重建物理表）或 `schema.migration_started`。草稿里凡按"从未被写入"编译的改动（`class` 因此记 `metadata`、可以不给 `migrate` 的那些），所在的表在确认时已被写入的，`resolve` 一律被拒（`draft_outdated`，`table_written`），不产生任何事件，事项保持未决。确认时不按写入过的表重新编译：`schema.compiled` 里记下的、确认方看到的判定就是要执行的判定。
+**确认或拒绝**（`resolve`）：`item.resolved`（头）→ `schema.confirmed` 或 `schema.rejected` → 确认时接着是 `schema.switched`（不需要重建物理表；其后至多一条 `premise.changed`，见本节末）或 `schema.migration_started`。草稿里凡按"从未被写入"编译的改动（`class` 因此记 `metadata`、可以不给 `migrate` 的那些），所在的表在确认时已被写入的，`resolve` 一律被拒（`draft_outdated`，`table_written`），不产生任何事件，事项保持未决。确认时不按写入过的表重新编译：`schema.compiled` 里记下的、确认方看到的判定就是要执行的判定。
 
-**后台迁移结束**：`schema.switched`（头，`actor: "system"`，`trigger: "migration"`）→ 因切换被取代的事项各一条 `item.superseded`。失败则是 `schema.migration_failed`（头）。
+**后台迁移结束**：`schema.switched`（头，`actor: "system"`，`trigger: "migration"`）→ 因切换被取代的事项各一条 `item.superseded` → `premise.changed`（见下）。失败则是 `schema.migration_failed`（头）。
+
+**切换时的前提**：任何一次切换（不需要重建物理表的，以及后台迁移结束的）之后，新版删除了某条前提声明所声明的字段（含随表删除的字段）时，在 `schema.switched` 与它的 `item.superseded` 之后至多一条 `premise.changed`（§5.10）；没有这样的声明时不产生。
 
 后台构建新版表的过程不产生事件。
 
@@ -640,7 +642,7 @@
 - `tables/<表ID>` 用来核对，不用来生成：重放到本事件时，`apply` 按 `compiled` 里的定义把旧版的每条写入转换成新版形状、建好 `rebuilt_tables` 里的表，再与这一块比较；块已被删除时跳过核对。逐条转换是逐项的：旧写入在一个字段上的每一项变成新版同一字段上的一项，带值的项按 `migrate` 求值（更早一次切换补出的贡献同样转换，仍记在那次切换上），值为空（`"value": null`）、`no_value`、`uncovered` 的项不求值、原样带过去；状态、区间、来源、是否被回掉不变（[`03-data-model/07-schema-evolution.md`](03-data-model/07-schema-evolution.md)「确定性转换怎么重放」）。
 - 该表有任何一行的任何贡献被隐私删除时，这一块列入那次删除的位置列表。
 - **补值位置照记录，删除不改**：之后的删除不重述切换补值，也不追补常量。删除让某处字段变空时，它就是空的（`kept_fields_cleared`），即使那个字段是必填的。状态类表的补值段，`deps` 里的贡献被删时这一块列入那次删除的位置列表（§3.5），那一段补值随之不再存在；`deps` 里的贡献只是被重述时不列入，那一段补值照旧。
-- `apply`：建新版物理表（重放时；`compiled` 里 `physical.since` 等于本版的表都要建）；改 `slots` 的当前版本；旧版标为已退役；按新定义重建派生表；`counts` 按新版表重建；键索引 `external_keys` 按新版表重建（去掉了来源键的表，条目清空）。重建时保留"已让出"与"冻结"（连同冻结集合）：让出了键的已撤销行上仍留着键字段的值，按值重建会与持有者同键。前提的声明与状态不因切换而变，切换不产生 `premise.changed`。常量 `backfill` 补出的值**照 `backfill_rows/*` 与 `backfill/*` 的记录**登记为本事件的贡献（`base_sources` 里事件 `seq` 是本事件、另带行或实体 ID、种类是 schema 常量；版本表里出处是本事件、意图 `schema_switch`），不按重放到这里时的状态现算补在哪。`backfill/<表ID>/<字段ID>/<n>` 已被移除的那一段不登记：那一段补值不再存在。**实体或行在重放到这里时不存在，两种表的处理不同**：
+- `apply`：建新版物理表（重放时；`compiled` 里 `physical.since` 等于本版的表都要建）；改 `slots` 的当前版本；旧版标为已退役；按新定义重建派生表；`counts` 按新版表重建；键索引 `external_keys` 按新版表重建（去掉了来源键的表，条目清空）。重建时保留"已让出"与"冻结"（连同冻结集合）：让出了键的已撤销行上仍留着键字段的值，按值重建会与持有者同键。前提的声明与状态不因切换而变：出处项的（事件、字段 ID、下标）在转换前后相同，`premise_edges` 不转换；没有字段被删时切换不产生 `premise.changed`，有时见 §5.10。常量 `backfill` 补出的值**照 `backfill_rows/*` 与 `backfill/*` 的记录**登记为本事件的贡献（`base_sources` 里事件 `seq` 是本事件、另带行或实体 ID、种类是 schema 常量；版本表里出处是本事件、意图 `schema_switch`），不按重放到这里时的状态现算补在哪。`backfill/<表ID>/<字段ID>/<n>` 已被移除的那一段不登记：那一段补值不再存在。**实体或行在重放到这里时不存在，两种表的处理不同**：
   - 事件类表、无时间表：`backfill_rows/<表ID>/<字段ID>/<n>` 列出的行在重放到这里时不存在的，照记录登记进来源表（这一项贡献照样存在），业务表上没有这一行就不写；这一行之后由删除结果整行给出（§5.9「列哪些」里"存在"的给出者变了的行）。
   - 状态类表：`backfill/<表ID>/<字段ID>/<n>` 照记录登记、照记录落账，与实体在重放到这里时存不存在无关。实体当时不存在（创建它的贡献的区间块已被清掉、在原事件处没落账），就在业务表上建这一段，只含这个字段（同 §5.7 `write.base` 写到不存在的行或实体时"只含这次写入给出的字段"）；其余字段由之后的删除结果给出（被重述的项给出的段照「列哪些」列出，列出的实体都带 `results/<k>/existence`）。补值不改行或实体的 `ver`。之后的事件不引用这项贡献：值落回它时来源写 `schema_const` 条目（§5.7）。
 
@@ -1448,7 +1450,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 
 #### `premise.changed`
 
-一次操作让某些前提声明变了状态时，记下这些变化：由"没变"转为"已变"（打标记）、由"已变"转回"没变"（撤标记），以及删除时的改指。**不是头事件**，带 `op`；事件头的 `slot`、`actor`、`at` 同所属操作。一次操作至多一条，只在有变化时产生；在操作里排在全部 `write.base` 与事项事件之后、`write.derived` 之前（§4.2–§4.4）。产生它的操作只有四种：写入、`resolve` 触发的写入、删除确认、撤回删除。schema 切换不产生它。
+一次操作让某些前提声明变了状态时，记下这些变化：由"没变"转为"已变"（打标记）、由"已变"转回"没变"（撤标记），以及删除时的改指。**不是头事件**，带 `op`；事件头的 `slot`、`actor`、`at` 同所属操作。一次操作至多一条，只在有变化时产生；在操作里排在全部 `write.base` 与事项事件之后、`write.derived` 之前（§4.2–§4.4）。产生它的操作只有五种：写入、`resolve` 触发的写入、删除确认、撤回删除，以及 schema 切换（只在新版删除了某条声明所声明的字段时；见本节末）。
 
 判定在线上、在当时做一次：比较"现在的值"与"所见版本上的值"要读历史版本，而内容被物理删除之后重放读不到当时的值。所以变化写进事件，`apply` 照做，不自己比较（判据与检测步骤见 [`03-data-model/02-integrity-and-records.md`](03-data-model/02-integrity-and-records.md)「写入的前提」）。
 
@@ -1466,11 +1468,12 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | 键 | 含义 |
 |---|---|
 | `table`、`row` / `entity` | 前提目标 |
-| `by_event` | 使它变化的事件：本操作里那条 `write.base` 的 `seq`（几条都改到这个目标时取最早的那条；它不参与 `apply`，只供展示）；由删除引起时是 `deletion.confirmed` / `deletion.cancelled` 的 `seq` |
+| `by_event` | 使它变化的事件：本操作里那条 `write.base` 的 `seq`（几条都改到这个目标时取最早的那条；它不参与 `apply`，只供展示）；由删除引起时是 `deletion.confirmed` / `deletion.cancelled` 的 `seq`；由 schema 切换引起时是 `schema.switched` 的 `seq` |
 | `changed` | 由"没变"转为"已变"的声明。声明用（操作号 `op`，op 下标 `i`，声明下标 `j`）指明（§5.7）。`reason` 逐条给（状态类表上同一次写入对不同的声明可以是不同的原因），取值见 §6.8；`since` 就是本操作号，不另记 |
 | `matched` | 由"已变"转回"没变"的声明（现在的值又与所见的值相同，且所见版本上的值读得到） |
 | `repointed` | 只出现在删除确认与撤回删除里：保持"已变"、`since` 改为本操作号、`reason` 改为 `deleted` 的声明 |
 
+- **schema 切换里的 `premise.changed`**：新版删除了某条声明所声明的字段（含随表删除的字段）时，"没变"的声明转为"已变"，`reason` 是 `schema_switched`，`since` 是本操作号；`by_event` 是 `schema.switched` 的 `seq`；每个受影响的前提目标一块，只有 `changed`。已经是"已变"的声明不动（`since`、`reason` 保持）；声明了几个字段、只删其中一个的，这条声明同样转为"已变"；声明不扩成整行。切换本身不重判任何别的声明（不撤标记、不改指）：`migrate` 让值在新版里重新相等时，撤标记发生在之后下一次改到这个前提目标的操作里，照常规检测比较。标记里列的字段只列当前版本里还在的。
 - 三个键为空时不出现；每个前提目标一块，`k` 从 0 起。
 - **全是元数据**，第一版不随任何删除清除；它留下的信息见 §9.2。
 - `apply`：按 `changed` / `matched` / `repointed` 改 `premise_decls` 里对应声明的状态、原因与 `since`。别的什么都不做。
@@ -1645,7 +1648,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `ver.basis` | `explicit`、`fallback`、`same_request`、`external_key`（最后一个只在 `ops/<i>/target` 里，不在前提声明里） |
 | 前提声明的 `range` | `whole`、`from_now`、`row_time`、`given` |
 | 前提声明的 `state` | `current`、`changed` |
-| 前提的原因 `reason`（声明块与 `premise.changed` 的 `changed`） | `correct`、`update`、`revoke`、`retroactive`、`plan_changed`、`deleted` |
+| 前提的原因 `reason`（声明块与 `premise.changed` 的 `changed`） | `correct`、`update`、`revoke`、`retroactive`、`plan_changed`、`deleted`、`schema_switched` |
 | `valid` 的 `mode` | `given`、`now`、`open`、`next_change`、`corrected_span` |
 | `write.base` 的 `cause` | `request`、`resolve` |
 | `existence` 的 `scope` | `whole`、`interval` |
@@ -1929,7 +1932,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | scope 变更 | 新事件类型 `principal.scope_changed`；slot 范围随它一起改，不另设事件 |
 | 外部权威级别（`external_authority`） | `principal.registered` 的 `principal` 块加可选键，记这个连接实例是否被授予声明这一级别（授予只能由用户会话在签发时做）；源数据 `target.level` 启用保留值 `external_authority` |
 | 以派生行为前提 | `ops/<i>/premises/<j>` 的目标加可选键 `partition`；`premise.changed` 由派生写入触发 |
-| schema 切换对前提的影响 | 所声明的字段在新版里被删除时给声明标上的原因码 `schema_switched`（`premise.changed` 的 `reason` 新增取值） |
+| 官方 schema（`extends` / `compatibility`） | `compiled` 顶层加可选键 `extends`：`{"id", "version", "hash"}`（只记标识、版本与官方定义的内容哈希，定义全文已在 `tables` 里）；表与字段加可选键 `official`：`{"id"}`（官方给的稳定句柄，字段 ID 仍由 saveslot 分配）；`compatibility` 暂不留键，随升级流程一起加；改动码加 `declare_extends`（类别 `metadata`）。用到这些键的 `schema.compiled` 的 `v` 与 `compiler` 加一。草稿里出现 `extends` / `compatibility` 在实现之前整份报 `not_in_this_version` |
 | `elicitation` 确认 | 启用 `item.resolved` 的 `via` 的保留值 `elicitation`；用到它的 `item.resolved` 的 `v` 加一 |
 | 加密 | 存储里每个内容块留有可空的密钥标识；校验和改为对密文求时是存储格式的变化，不是事件格式的变化 |
 | 签名检查点、哈希树 | 新事件类型，定期对一段事件头做承诺；旧事件不追加 |

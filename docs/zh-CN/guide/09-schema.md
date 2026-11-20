@@ -14,7 +14,7 @@ saveslot 不内置任何领域。记账、健康、项目跟踪长什么样，�
 - **官方的**：saveslot 发布的精选 schema，同时是一份对外的约定：读预算的看板、算营养摄入的工具，可以认出"这个 slot 符合它"，按它的定义读数据（第 8 节）。
 - **社区的**：和一份给 Agent 看的使用说明一起发布（Agent 生态里把这种说明叫 SKILL：一段文字加可选的脚本，由 Agent 的宿主加载）。schema 定义数据长什么样，使用说明告诉 Agent 什么时候写、怎么用。
 
-> 随命令行工具打包的几份模板（跑步、预算、日常支出）**不是官方 schema**，就是普通的用户 schema：建 slot 时拷一份过去，建完 slot 就和模板没有关系了，命令行工具升级换了模板也不影响已建的 slot。官方 schema 的结构在 P4 之前定（第 8 节）。
+> 随命令行工具打包的几份模板（跑步、预算、日常支出）**不是官方 schema**，就是普通的用户 schema：建 slot 时拷一份过去，建完 slot 就和模板没有关系了，命令行工具升级换了模板也不影响已建的 slot。官方 schema 第一版只留位、不实现（第 8 节）。
 
 那本账的 schema 是这样的（就是日常支出模板的内容）：
 
@@ -406,7 +406,7 @@ saveslot 记着每次派生刷新读了哪些基础表、刷新的是哪个分�
 
 两种办法都要先有一份可识别的官方定义，还要能声明"这个 slot 符合它"。模板做不到这一点：它只是一次性的拷贝，建完就没有联系了。
 
-> 官方 schema 的结构（扩展用的 `extends`、兼容性声明 `compatibility`）**在 P4 之前定**，它是 P4 开工的前提之一；第一版实现到哪一步，届时一起定。在那之前，草稿里出现这两个键整份报 `not_in_this_version`，模板照旧是普通 schema，健康、营养这类新模板在结构定下之后再写。将来要往编译后的定义里加的东西，按事件格式允许的方式加（给已有的块加可选的键），不改动已有的事件。要回答的问题列在规格 [`../spec/08-open-questions.md`](../spec/08-open-questions.md)「官方 schema 的结构」。
+> 官方 schema 第一版**只留位、不实现**：编译后的定义里留了可选的 `extends`（声称符合哪份官方定义：标识、版本、内容哈希）与表、字段上的 `official`（官方给的稳定句柄，上层工具按它找字段），`compatibility` 不留键。草稿里出现 `extends` / `compatibility` 整份报 `not_in_this_version`，模板照旧是普通 schema，健康、营养这类新模板等实现之后再写。将来加实现只往编译后的定义里加可选的键，不改动已有的事件。还没回答的细则列在规格 [`../spec/08-open-questions.md`](../spec/08-open-questions.md)「官方 schema 的细则」。
 
 ## 规格对应
 
@@ -414,7 +414,7 @@ saveslot 记着每次派生刷新读了哪些基础表、刷新的是哪个分�
 |---|---|
 | 改动分类的完整表（含从未被写入的表上的改动）、原则、schema 文档格式与例子、别名、来源键、字段组、名字规则 | [`../spec/03-data-model/07-schema-evolution.md`](../spec/03-data-model/07-schema-evolution.md) |
 | 状态机、物理做法、抽取作业、官方 schema | [`../spec/03-data-model/08-schema-migration.md`](../spec/03-data-model/08-schema-migration.md) |
-| 官方 schema 的结构（未定） | [`../spec/08-open-questions.md`](../spec/08-open-questions.md)「官方 schema 的结构」 |
+| 官方 schema 的细则（未定） | [`../spec/08-open-questions.md`](../spec/08-open-questions.md)「官方 schema 的细则」 |
 | 字段类型、单位词表、精度与舍入 | [`../spec/03-data-model/10-types-and-units.md`](../spec/03-data-model/10-types-and-units.md) |
 | 默认 slot 策略 | [`../spec/03-data-model/01-objects.md`](../spec/03-data-model/01-objects.md)「slot 包含什么」 |
 | 派生规则、刷新范围、写入准入、时间依赖与覆盖列、数据目录 | [`../spec/03-data-model/06-derived.md`](../spec/03-data-model/06-derived.md) |

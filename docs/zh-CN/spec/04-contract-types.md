@@ -343,8 +343,9 @@ type FlaggedReason  = "duplicate_keys";
 type AffectedReason = "correct" | "revoke" | "retroactive" | "plan_changed" | "applied_by_rule" /* @later */;
 
 /** 前提变了的原因。correct、revoke、retroactive、plan_changed 与 AffectedReason 同名同义；update：前提被变更（事件类表、无时间表上的 update 也算）；
- *  deleted：隐私删除改掉了前提的值。一次写入在所声明的范围上同时有追溯与未来的部分时取 retroactive。 */
-type PremiseReason = "correct" | "update" | "revoke" | "retroactive" | "plan_changed" | "deleted";
+ *  deleted：隐私删除改掉了前提的值；schema_switched：schema 切换删掉了所声明的字段（含随表删除的字段）。
+ *  一次写入在所声明的范围上同时有追溯与未来的部分时取 retroactive。 */
+type PremiseReason = "correct" | "update" | "revoke" | "retroactive" | "plan_changed" | "deleted" | "schema_switched";
 
 /** 派生行没有自己的标记，带输入上的汇总：落进这个分区的基础行（规则 WHERE 之后的行；FILTER 不影响，HAVING 不涉及）里，
  *  在规则所依赖的字段上、或在这一行的"存在"上带标记的行数。同一行带同一种标记只算一次。四项都为 0 时也给。 */
@@ -1589,7 +1590,7 @@ interface SchemaChange {
   class: "create" | "metadata" | "deterministic" | "reextract";
   /** 带旧 sv、写到这个字段的写入是否还被接受。 */
   compatible_with_old_writes: boolean;
-  destructive: boolean;          // 会丢数据（删字段、收紧约束后置空等）。从未被写入的表上没有值可丢，为 false
+  destructive: boolean;          // 会丢数据（删表、删字段、收紧约束后置空等）。从未被写入的表上没有值可丢，为 false
   auto: boolean;                 // 按 slot 策略可自动生效（这一项改动所属的类别在 auto_apply 里）
 }
 
@@ -1609,6 +1610,7 @@ type SchemaChangeCode =
   | "loosen_constraint" | "tighten_constraint" | "change_precision"
   | "change_unit" | "change_dimension" | "change_type"
   | "change_ref"                    // 字段与 ref 互转、改 ref 的目标：只在这个字段所在的表从未被写入时做
+  | "declare_extends"               // 声明符合某份官方 schema（类别 metadata）  @later
   // 派生表
   | "change_rule"
   // 表、字段、派生字段的说明与别名

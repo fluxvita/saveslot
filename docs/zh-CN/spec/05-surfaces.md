@@ -110,7 +110,7 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
 | `partially_deleted` | `部分数据已删除` |
 | `pending_deletion` | `有一项可撤回的删除（pi_…）` |
 | `dangling_ref` | 按 `state`：`revoked` → `⚠ payee 指向的记录已撤销`；`deleted` → `⚠ payee 指向的记录已删除` |
-| `premise_changed` | `⚠ 前提已变：constraints r_01JF… 的 date（声明时所见 v40.0）在 #60 被变更；涉及本行 title、due、status`。"在 #n 被……"按 `reason`：`correct` → 被纠正；`update` → 被变更；`revoke` → 被撤销；`retroactive` → 被追溯修改（变的是 <区间> 的值；按这段业务时间读才看得到）；`plan_changed` → 改了之后的安排（<起点> 起；按这段业务时间读才看得到）；`deleted` → 被删除。声明没列字段时写"整行"。一行有多条时逐条一行，超过 10 条写总数 |
+| `premise_changed` | `⚠ 前提已变：constraints r_01JF… 的 date（声明时所见 v40.0）在 #60 被变更；涉及本行 title、due、status`。"在 #n 被……"按 `reason`：`correct` → 被纠正；`update` → 被变更；`revoke` → 被撤销；`retroactive` → 被追溯修改（变的是 <区间> 的值；按这段业务时间读才看得到）；`plan_changed` → 改了之后的安排（<起点> 起；按这段业务时间读才看得到）；`deleted` → 被删除；`schema_switched` 整句换成"…的 date 在 #n 的 schema 切换里被删除（依据的字段已不在当前版本）"。声明没列字段时写"整行"。一行有多条时逐条一行，超过 10 条写总数 |
 | 派生行的 `input_marks` | `⚠ 本值的输入里有 1 行已标记（pi_…）/ 1 行有争议 / 2 行的前提已变` |
 | 派生行的 `computed_at_read` | `按读取时刻算出，不带 ver` |
 | `truncated` | `显示 20 / 847 行；下一页 cursor=…；或缩小条件（如加日期范围）` |
@@ -797,7 +797,7 @@ MCP 的 prompts 是协议里唯一"由用户选择何时用"的东西。saveslot
 4. **名字不带 `saveslot_` 前缀**：宿主呈现时会加上服务名，再带前缀就重复了。Claude Code 在斜杠菜单里显示为 `/saveslot:overview`，用户直接输入的写法是 `/mcp__saveslot__overview`。若实测有宿主把 prompt 名放在不分服务的平面里，再加前缀。
 5. **属于增强**：第 11 节"只依赖 tools"不变。各宿主怎么呈现、是否支持，见 references-mcp 的客户端支持表；没有核实的宿主按"不支持"设计。
 
-**为什么是这三个、不做哪些**：`overview` 是接上之后的第一句话，同时就是连通性的验证（它会产生一次自检之外的读取）；`pending` 是人处理事项的入口，补"第一版没有 App"的缺；`track` 接住"saveslot 是空的，然后呢"。三个都不依赖用户有哪些表。不做"记一笔"（用户直接说那句话就是了）；不做"删除"（唯一不可逆的操作不该有一键入口）；不做"最近改了什么"（`saveslot_history` 的 `changes` 已能做，以后加是纯增量）。不让 schema 模板或 schema 文档自带领域 prompt：写死在 saveslot 里违背"语义内容来自用户、官方、社区"，由 schema 文档带出则是调用方撰写的文字进了用户消息的位置，是比说明字段更直接的提示注入面。官方 schema 的结构定下来以后，可以让官方模板带 prompt，由 saveslot 发布、不接受调用方撰写。
+**为什么是这三个、不做哪些**：`overview` 是接上之后的第一句话，同时就是连通性的验证（它会产生一次自检之外的读取）；`pending` 是人处理事项的入口，补"第一版没有 App"的缺；`track` 接住"saveslot 是空的，然后呢"。三个都不依赖用户有哪些表。不做"记一笔"（用户直接说那句话就是了）；不做"删除"（唯一不可逆的操作不该有一键入口）；不做"最近改了什么"（`saveslot_history` 的 `changes` 已能做，以后加是纯增量）。不让 schema 模板或 schema 文档自带领域 prompt：写死在 saveslot 里违背"语义内容来自用户、官方、社区"，由 schema 文档带出则是调用方撰写的文字进了用户消息的位置，是比说明字段更直接的提示注入面。官方 schema 实现以后，可以让官方模板带 prompt，由 saveslot 发布、不接受调用方撰写。
 
 ## 11. 协议与传输
 

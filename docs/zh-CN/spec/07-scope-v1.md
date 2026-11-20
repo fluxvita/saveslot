@@ -139,7 +139,7 @@
 | 抽取作业、`migration_diff`、`keep_rest_and_switch`、`abandon`、补抽 | data-model「抽取作业」；contract §6、§10 | 后续（第一版之后的第一个增量） | 事件格式里的"翻译结果""切换时未抽完的（行, 字段）列表"照样留位 | 机制最复杂、最依赖 eval 5 调参 | K11 中翻译结果的级联暂不适用 | — |
 | 退役表清理 | data-model「物理做法」 | 后续 | 退役表第一版一直保留 | 清理是一条新事件，纯增量 | — | — |
 | 从未被写入的表上改结构：改时间类型；增、删、改 `entity_key`；改 `granularity`；`base` 改 `derived`；`ref` 与其他类型互转、改 `ref` 的目标；来源键的增、删、换；没人在用时自动生效（`restructure_unused`），有别人读过则要确认、确认时重新判断 | data-model「改动分类与迁移手段」 | 做（表从未被写入时） | — | 建错表多半在写第一条数据之前发现，此时没有东西要迁移，表 ID 与字段 ID 不变 | K6（表一级的结构变化视为该表全部字段不兼容） | P4 |
-| 写入过的表上改时间类型、增删改 `entity_key`、改 `granularity`、`ref` 与其他类型互转、换一组来源键；`derived` 改 `base`（不论写没写过）；官方 schema 的 `extends` / `compatibility` | data-model「改动分类与迁移手段」；open-questions「官方 schema 的结构」 | 后续（草稿里出现这些改动整份报 `not_in_this_version`；官方 schema 的结构在 P4 前定，是否第一版实现届时定） | — | 有数据时没有通用的转换办法 | — | — |
+| 写入过的表上改时间类型、增删改 `entity_key`、改 `granularity`、`ref` 与其他类型互转、换一组来源键；`derived` 改 `base`（不论写没写过）；官方 schema 的 `extends` / `compatibility` | data-model「改动分类与迁移手段」；open-questions「官方 schema 的细则」 | 后续（草稿里出现这些改动整份报 `not_in_this_version`；官方 schema 第一版只在编译后的定义里留位） | — | 有数据时没有通用的转换办法 | — | — |
 | 受限 SQL：libpg_query 语法树白名单、物理名改写、可见范围改写 | K9；[data-model「受限 SQL」](03-data-model/11-restricted-sql.md)（白名单的清单）；architecture §3「权限在 SQL 上的执行」 | 做 | — | 派生规则与 `sql` 共用；可见范围接口第一版就留 | K9 照做 | P1（派生规则）、P2（`sql`） |
 | 可见范围 `visibility`：`all` 或 slot → 表 → 字段的白名单 | data-model「读取 · 可见范围」；architecture §4 | 简化 | 服务层按凭证传到 slot 一级（P5 之前恒传 `all`）；内核实现到 slot 与表两级（表一级只在测试里用），字段级后续 | 类型现在定，将来加表级、字段级的数据权限不改 `ops` 的签名 | — | P1（内核）、P5（按凭证传） |
 | PostgreSQL 上受限 SQL 单独只读连接 | open-questions | 后续 | 与写入共用一条连接、串行 | 用户量小，先不突破"每活跃租户一条连接" | — | — |
@@ -194,7 +194,7 @@
 | 实验的通过标准 | [`../process/decisions/pre-dev-w0-experiments.md`](../process/decisions/pre-dev-w0-experiments.md)；本节实验表 |
 | eval 规格与夹具（最迟 P1 中段前要有运行框架） | [`10-evals.md`](10-evals.md)：11 组评测及其变体（含 eval 10 写入的前提、eval 11 记录质量）、夹具与断言的文件格式、通过线；对实现的要求见 architecture §11「评测对实现的要求」 |
 
-另有两份方案交付物不挡 P1、挡 P4，在 P1–P3 期间并行写：官方 schema 的结构（`extends` / `compatibility`）与 schema 切换时前提怎么算，两者都在 open-questions「P4 前」。
+另有两份方案交付物不挡 P1、挡 P4：官方 schema 的结构（`extends` / `compatibility`）与 schema 切换时前提怎么算；都已定（[`../process/decisions/schema-change-p4.md`](../process/decisions/schema-change-p4.md)），官方 schema 的细则仍在 open-questions。
 
 各步的"解锁"列是该步结束时必须通过的 eval 变体（编号与通过线见 [`10-evals.md`](10-evals.md)；每一步都要把之前各步的变体重跑一遍）。实验与 P0、P1 并行；后面每步都在前一步之上纯增量地加。**编号不代表发布先后**：本机模式在 P1–P4 与 P6 之后先发，P5（服务器模式）随后。
 
