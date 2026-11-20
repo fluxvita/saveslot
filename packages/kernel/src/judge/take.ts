@@ -45,24 +45,22 @@ export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): Take
   const cover = coveredSince(state, t, mergeBase, k);
   const drafts: Draft[] = [];
 
-  // A revoke taken: it takes effect on its interval, unless there is nothing to revoke there.
+  // A revoke taken takes effect on its interval, also where there is already no value: as a
+  // revoke written over a revoked stretch, it writes its item. Whether there is a value there is
+  // not checked again in a deletion's replay, where later writes or deletions may change it
+  // (03-deletion «重放规则 · 人的决定»), so the item is written either way.
   const revokes = taken.filter((x) => x.target === "existence");
   if (revokes.length > 0) {
     const valid = canonical(revokes.flatMap((x) => x.valid));
-    const already = state.isState
-      ? state.piecesIn(valid).every((s) => !state.hasValue(s, cur))
-      : state.revoked(cur);
-    if (!already) {
-      // One item per stretch: an item has one interval (09 §5.7 `span/existence/<k>`).
-      for (const part of parts(valid)) {
-        drafts.push({
-          target: "existence",
-          status: "applied",
-          valid: part,
-          content: { kind: "revoke" },
-          deps: revokes.map(refOf),
-        });
-      }
+    // One item per stretch: an item has one interval (09 §5.7 `span/existence/<k>`).
+    for (const part of parts(valid)) {
+      drafts.push({
+        target: "existence",
+        status: "applied",
+        valid: part,
+        content: { kind: "revoke" },
+        deps: revokes.map(refOf),
+      });
     }
     return { items: numbered(drafts), mergeBase, cover };
   }

@@ -145,7 +145,40 @@ interface Recorded {
   readonly cancelled: Set<string>;
   readonly revertRecords: Map<OpNumber, RevertEntry[]>;
   readonly revertStatus: Map<OpNumber, RevertResult["status"]>;
-  readonly mergeBases: Map<OpNumber, { mergeBase: OpNumber; k: ItemRef[] }>;
+  /** An undo rejected because the row stays revoked (`revoked`), as judged when written. */
+  readonly revertRejectedRevoked: Set<OpNumber>;
+  /** A resolution's merge base, recorded when it was judged and not recomputed. */
+  readonly mergeBases: Map<OpNumber, { mergeBase: OpNumber }>;
+  /** take_candidate: the cover set O, listed like a take_previous record (09 §5.8 `take`). */
+  readonly coverSets: Map<OpNumber, RevertEntry[]>;
+  /**
+   * take_candidate on a field unit, state table: the revokes in effect over its range when it was
+   * judged, by (event, target), with their intervals then. The take filled those holes; in a
+   * replay a revoke outside O covers the take only beyond what is recorded here (deviation (2)).
+   * Bookkeeping here; the kernel records it with the resolution.
+   */
+  readonly takeFilled: Map<OpNumber, Map<string, IvSet>>;
+  /**
+   * A person's decision on items, by its operation (the kind is the operation's): for a conflict
+   * resolution the (event, target) of the item's candidates as they were when it was judged, on
+   * the history at that point (K: the taken ones and those it closed without taking); for a
+   * confirmation or rejection those of the write's items awaiting confirmation then. In every
+   * replay a decided (event, target) is as that decision recorded it (01-objects «处理之后事项不重开»).
+   */
+  readonly decidedItems: Map<OpNumber, Set<string>>;
+  /**
+   * take_candidate made while deletions were pending: the items in effect with those deletions
+   * cancelled that the pending deletions had removed, by (event, target), with their intervals
+   * then. Should a deletion be cancelled, what it brings back of these does not cover the take,
+   * within those intervals (a take is a write in the grace period, 03-deletion «撤回与宽限期»).
+   */
+  readonly takeRestorable: Map<OpNumber, Map<string, IvSet>>;
+  /**
+   * Candidate fields as first judged, by (event, field): whether the field's conflict met a revoke
+   * in effect over it. A write's candidates on a conflict unit belong to the item on existence when
+   * any field of the unit met one (09 §5.8, as judge records it); read as recorded in every replay.
+   */
+  readonly metRevoke: Map<string, boolean>;
   /** (event, field) judged a no-op at write time: stays a no-op in every replay. */
   readonly noops: Set<string>;
   /** (event, target) a cancellation kept in effect (`kept_effective`). */
@@ -168,7 +201,13 @@ function emptyRecorded(): Recorded {
     cancelled: new Set(),
     revertRecords: new Map(),
     revertStatus: new Map(),
+    revertRejectedRevoked: new Set(),
     mergeBases: new Map(),
+    coverSets: new Map(),
+    takeFilled: new Map(),
+    decidedItems: new Map(),
+    takeRestorable: new Map(),
+    metRevoke: new Map(),
     noops: new Set(),
     keptEffective: new Set(),
     keptSuperseded: new Set(),
@@ -211,18 +250,19 @@ class Replay {
   readonly reverts: RevertResult[] = [];
   readonly revertRecords = new Map<OpNumber, RevertEntry[]>();
   readonly revertStatus = new Map<OpNumber, RevertResult["status"]>();
-  readonly mergeBases = new Map<OpNumber, { mergeBase: OpNumber; k: ItemRef[] }>();
+  readonly rejectedRevoked = new Set<OpNumber>();
+  readonly mergeBases = new Map<OpNumber, { mergeBase: OpNumber }>();
+  readonly coverSets = new Map<OpNumber, RevertEntry[]>();
+  readonly takeFilled = new Map<OpNumber, Map<string, IvSet>>();
+  readonly decidedItems = new Map<OpNumber, Set<string>>();
+  /** Candidate fields judged in this replay: whether the conflict met a revoke (see `Recorded`). */
+  readonly metRevoke = new Map<string, boolean>();
   /** Resolutions rejected: a take_candidate of a modification with a required field nowhere. */
   readonly rejections: { op: OpNumber; reason: RejectionReason }[] = [];
   readonly noops = new Set<string>();
   readonly fieldIds: FieldId[];
-  /**
-   * Candidates a person's decision closed, by `<event>/<unit>`: a decision on one conflict unit's
-   * item closes the write's candidates in that unit only (01-objects «目标与合并»: a write that is a
-   * candidate in two units is two items, resolved apart). The unit "existence" covers every item
-   * of the write, as `candidatesOf` reads it.
-   */
-  readonly closedCandidates: Set<string>;
+  /** Conflict resolutions: what each closed is its recorded items (`Recorded.decidedItems`). */
+  readonly resolves: readonly ResolveOp[];
   readonly resolvedAwaiting: Set<Seq>;
   readonly opsByEvent: Map<Seq, Op>;
 
@@ -249,13 +289,7 @@ class Replay {
     // People's decisions are executed as recorded (03-deletion «两条原则», deviation one): a
     // candidate whose item a person resolved stays closed, an awaiting write a person confirmed
     // or rejected is not re-judged.
-    this.closedCandidates = new Set([
-      ...ops.flatMap((o) =>
-        o.kind === "resolve" ? o.candidates.map((c) => `${c}/${o.unit}`) : [],
-      ),
-      // Kept superseded through a deletion: the whole write, as before.
-      ...[...rec.keptSuperseded].map((e) => `${e}/existence`),
-    ]);
+    this.resolves = ops.filter((o): o is ResolveOp => o.kind === "resolve");
     this.resolvedAwaiting = new Set([
       ...ops.flatMap((o) => (o.kind === "confirm" || o.kind === "reject" ? [o.target] : [])),
       ...rec.keptSuperseded,
@@ -268,11 +302,63 @@ class Replay {
   }
 
   /** Whether a decision closed the candidate of write `event` on `target`. */
-  closedCandidate(event: Seq, target: Target): boolean {
-    return (
-      this.closedCandidates.has(`${event}/${target}`) ||
-      this.closedCandidates.has(`${event}/existence`)
+  /** Whether a person's confirmation or rejection recorded the awaiting item of `event` on `target`. */
+  listedByConfirmation(event: Seq, target: Target): boolean {
+    const key = etKey(event, target);
+    return this.ops.some(
+      (o) =>
+        (o.kind === "confirm" || o.kind === "reject") &&
+        (this.rec.decidedItems.get(o.op) ?? this.decidedItems.get(o.op))?.has(key),
     );
+  }
+
+  /** Whether a person's resolution recorded the candidate of write `event` on `target` in its item. */
+  listedByResolution(event: Seq, target: Target): boolean {
+    const key = etKey(event, target);
+    return this.resolves.some((o) =>
+      (this.rec.decidedItems.get(o.op) ?? this.decidedItems.get(o.op))?.has(key),
+    );
+  }
+
+  closedCandidate(event: Seq, target: Target): boolean {
+    if (this.rec.keptSuperseded.has(event)) return true;
+    const key = etKey(event, target);
+    return this.resolves.some((o) => {
+      const recorded = this.rec.decidedItems.get(o.op) ?? this.decidedItems.get(o.op);
+      if (recorded !== undefined) return recorded.has(key);
+      // Not judged yet in this evaluation: by its candidates and unit, until it records its items.
+      if (!o.candidates.includes(event)) return false;
+      return target === "existence" || this.onExistence(event, target)
+        ? o.unit === "existence"
+        : o.unit !== "existence" && inUnit(o.unit, target);
+    });
+  }
+  /** The conflict unit of field `f`: its group, or the field alone. */
+  unitOf(f: FieldId): readonly FieldId[] {
+    return this.schema.groups?.find((g) => g.includes(f)) ?? [f];
+  }
+
+  /**
+   * Whether the candidates of (event, field f) belong to the item on existence: some field of f's
+   * unit met a revoke when first judged (as recorded). A field never judged a candidate when
+   * written (awaiting then, a candidate only in a replay) has no record: its conflict in this
+   * replay decides. A candidate a person's resolution recorded belongs to that resolution's item
+   * first (03-deletion «重放规则 · 人的决定»): its conflict is not judged again in a replay, and
+   * what made it meet a revoke may be gone.
+   */
+  onExistence(event: Seq, f: Target): boolean {
+    if (f === "existence") return true;
+    for (const g of this.unitOf(f)) {
+      const key = etKey(event, g);
+      const by = this.resolves.find((o) =>
+        (this.rec.decidedItems.get(o.op) ?? this.decidedItems.get(o.op))?.has(key),
+      );
+      if (by !== undefined) return by.unit === "existence";
+    }
+    return this.unitOf(f).some((g) => {
+      const key = etKey(event, g);
+      return this.rec.metRevoke.get(key) ?? this.metRevoke.get(key) ?? false;
+    });
   }
 
   isDeleted(sources: readonly SourceKey[]): boolean {
@@ -568,9 +654,29 @@ class Replay {
     from: Point | null,
     seen: number,
     cur: number,
+    met?: { revoke: boolean },
   ): boolean {
+    let found = false;
+    // The conflict met a revoke when one of the conflicting operations has a revoke in effect over
+    // the part (as judge's conflict record has it).
+    const note = (op: number, part: IvSet) => {
+      found = true;
+      if (met !== undefined && !met.revoke) {
+        met.revoke = this.items.some(
+          (x) =>
+            x.op === op &&
+            x.status === "applied" &&
+            x.content.kind === "revoke" &&
+            !isEmpty(intersect(x.valid, part)),
+        );
+      }
+    };
     for (const l of this.changesSince(f, seen, cur)) {
-      if (!this.isState) return true;
+      if (!this.isState) {
+        note(l.op, [ALL]);
+        if (met === undefined) return true;
+        continue;
+      }
       const lItems = this.items.filter(
         (x) =>
           x.op === l.op && x.status === "applied" && (x.target === f || x.target === "existence"),
@@ -579,16 +685,21 @@ class Replay {
       if (defaultEnd && lField.length > 0 && lField.every((x) => x.defaultEnd)) {
         const lv = lField[0];
         if (lv !== undefined && lv.from === from && lv.content.kind === "value") {
-          if (tok(lv.content.value) !== value) return true;
+          if (tok(lv.content.value) !== value) {
+            note(l.op, seenValid);
+            if (met === undefined) return true;
+          }
         }
         continue;
       }
       const lValid = lItems.length > 0 ? union(...lItems.map((x) => x.valid)) : l.changed;
       const inter = intersect(seenValid, lValid);
-      for (const s of this.segments([inter])) {
-        if (covers(inter, s) && this.vis(f, s, cur) !== value) return true;
+      if (this.segments([inter]).some((s) => covers(inter, s) && this.vis(f, s, cur) !== value)) {
+        note(l.op, seenValid);
+        if (met === undefined) return true;
       }
     }
+    if (found) return true;
     // Deletion confirmations and cancellations are operations that change values too (conflict
     // criterion ②); L's interval is where they changed the unit's value.
     for (const changed of this.externalChanges(f, seen, cur)) {
@@ -676,7 +787,11 @@ class Replay {
         );
       for (const it of applied) {
         const r = this.recordedStatus(it.event, it.target, it.valid);
-        if (r === "awaiting" && this.resolvedAwaiting.has(o.event)) it.status = "awaiting";
+        if (
+          (r === "awaiting" && this.resolvedAwaiting.has(o.event)) ||
+          this.listedByConfirmation(it.event, it.target)
+        )
+          it.status = "awaiting";
         else if (hi && r !== "effective") it.status = "awaiting";
       }
     }
@@ -808,14 +923,27 @@ class Replay {
   ): void {
     const v = tok(input.value);
     const r = this.recordedStatus(o.event, f, seenValid);
+    const met = { revoke: false };
+    // A candidate a person's resolution listed stays the candidate it closed, whatever it was when
+    // written (candidate, or awaiting and made a candidate by a deletion) and whether or not the
+    // conflict is still there (01-objects «处理之后事项不重开»).
     let conflict =
-      r === "candidate" && this.closedCandidate(o.event, f)
+      (r === "candidate" && this.closedCandidate(o.event, f)) || this.listedByResolution(o.event, f)
         ? true
-        : this.conflicts(f, v, seenValid, defaultEnd, from, seen, cur);
+        : this.conflicts(f, v, seenValid, defaultEnd, from, seen, cur, met);
+    if (conflict) {
+      const key = etKey(o.event, f);
+      this.metRevoke.set(key, (this.metRevoke.get(key) ?? false) || met.revoke);
+    }
     if (r === "effective") conflict = false; // deviation two: what was in effect stays in effect
     // An awaiting write a person confirmed or rejected is a recorded decision (deviation one): it
     // stays awaiting for its confirmation to execute, and is not judged into a candidate.
     if (r === "awaiting" && this.resolvedAwaiting.has(o.event)) conflict = false;
+    // A resolution's record comes first: a write it listed is its closed candidate, also where a
+    // cancellation counted the write's awaiting item as superseded. Likewise a confirmation's or
+    // rejection's: the item it decided stays that awaiting item, whatever it was when written.
+    if (this.listedByResolution(o.event, f)) conflict = true;
+    else if (this.listedByConfirmation(o.event, f)) conflict = false;
     const content = { kind: "value" as const, value: input.value };
     if (conflict) {
       out.push({
@@ -872,7 +1000,11 @@ class Replay {
     }
     const r = this.recordedStatus(o.event, "existence", seenValid);
     let conflict = seen < cur && this.revokeConflicts(seenValid, seen, cur);
-    if (r === "candidate" && this.closedCandidate(o.event, "existence")) conflict = true;
+    if (
+      (r === "candidate" && this.closedCandidate(o.event, "existence")) ||
+      this.listedByResolution(o.event, "existence")
+    )
+      conflict = true;
     if (r === "effective") conflict = false;
     const base = {
       event: o.event,
@@ -984,7 +1116,15 @@ class Replay {
       : !this.items.some((x) => x.op === o.target && x.status === "applied") ||
         (creation !== undefined && this.opsByEvent.get(creation)?.op === o.target);
     if (rejected) {
-      this.reverts.push({ op: n, event: o.event, status: "rejected", record: [] });
+      // As recorded, with the reason it was rejected for when judged.
+      const revoked = this.rec.revertRejectedRevoked.has(n);
+      this.reverts.push({
+        op: n,
+        event: o.event,
+        status: "rejected",
+        ...(revoked ? { reason: "revoked" as const } : {}),
+        record: [],
+      });
       this.revertStatus.set(n, "rejected");
       this.revertRecords.set(n, []);
       return;
@@ -997,14 +1137,16 @@ class Replay {
       record,
       { before: o.target },
       null,
-      (inScope, apply, rollback, laterInRange, hides) => {
+      (inScope, apply, rollback, laterInRange, hides, currentRevoke) => {
         const recStatus = this.rec.revertStatus.get(n);
         if (recStatus === "applied") return "applied"; // deviation two
         if (recStatus === "awaiting" && this.resolvedAwaiting.has(o.event)) return "awaiting";
         // Event and timeless tables: an undo of a revoked row is rejected (`revoked`) when the row
         // is still revoked once it is written (04-write-and-read «撤回某次写入（undo）»). An undo of
         // the revoke itself, or one taking it back with `include_later` (④), leaves it existing.
-        if (!this.isState && this.revokedRow()) {
+        // An undo of a revoke in effect now is accepted even when another revoke keeps the row
+        // revoked: it registers what it takes back, so that revoke can be undone in turn.
+        if (!this.isState && !currentRevoke && this.revokedRow()) {
           apply();
           const still = this.revokedRow();
           rollback();
@@ -1022,8 +1164,22 @@ class Replay {
   }
 
   confirm(o: ConfirmOp): void {
-    if (o.kind === "reject") return;
     const target = this.opsByEvent.get(o.target);
+    // The items it decides: those awaiting when it is judged, recorded for every replay.
+    if (target?.kind !== "undo") {
+      const recorded = this.rec.decidedItems.get(o.op) ?? this.decidedItems.get(o.op);
+      if (recorded === undefined) {
+        this.decidedItems.set(
+          o.op,
+          new Set(
+            this.items
+              .filter((x) => x.event === o.target && x.status === "awaiting")
+              .map((x) => etKey(x.event, x.target)),
+          ),
+        );
+      }
+    }
+    if (o.kind === "reject") return;
     if (target?.kind === "undo") {
       if (this.revertStatus.get(target.op) !== "awaiting") return;
       // The confirmation lists its own record as of the confirmation (09 §5.8 `item.resolved`).
@@ -1033,7 +1189,11 @@ class Replay {
       this.revert(o.event, o.op, record, { before: m }, null, () => "applied");
       return;
     }
-    // Executes the proposal as recorded in the item (05-time «高影响写入»).
+    // Executes the proposal (05-time «高影响写入»): every item of the write awaiting now. The
+    // confirmation is of the write's high impact, not of the targets awaiting at that point: a
+    // target then in a conflict item stays a candidate while the conflict is there (the
+    // confirmation resolves no conflict), and once a deletion removes the conflict, the only gate
+    // left is the one this confirmation passed (03-deletion «重放规则 · 冲突消失之后»).
     const awaiting = this.items.filter((x) => x.event === o.target && x.status === "awaiting");
     this.push(
       awaiting.map((x) => ({
@@ -1047,19 +1207,162 @@ class Replay {
     );
   }
 
-  /** Items of the conflict item: the candidates of `events` on the unit (present, or same-valued). */
-  candidatesOf(events: readonly Seq[], unit: Target): Item[] {
-    return [...this.items, ...this.shadows].filter(
-      (x) =>
-        events.includes(x.event) &&
-        (unit === "existence" || x.target === unit) &&
-        (x.status === "candidate" || this.shadows.includes(x)),
+  /**
+   * K (03-deletion «回掉的权威定义» step 2; 01-objects «各处理方式的执行语义»): the items of the
+   * item's candidates, taken by the (event, target) the resolution recorded when it was judged —
+   * the candidates in the item at that point — that are candidates in this replay (or
+   * same-valued, still counted). Never by index, and never by the event as a whole: a target not
+   * in the item then (removed by a pending deletion, put back later into an item of its own) is
+   * not in K and not closed by it. When judged: the recorded candidate writes' items on the unit
+   * that are candidates; between an existence unit and a field unit, the recorded unit decides
+   * (a write's candidates on a unit are all in one item, on existence when the conflict met a
+   * revoke, 09 §5.8 `candidates/<k>`).
+   */
+  kOf(events: readonly Seq[], unit: ResolveOp["unit"], at: OpNumber): Item[] {
+    // A candidate when written that is the same as the value before it in this replay still
+    // counts (a shadow, in the pool with the status candidate, or a corroboration now): only
+    // being deleted takes it out.
+    const stillCandidate = (x: Item) =>
+      x.status === "candidate" ||
+      (x.status === "corroborated" &&
+        x.putBack === undefined &&
+        this.recordedStatus(x.event, x.target, x.valid) === "candidate");
+    const pool = [...this.items, ...this.shadows];
+    const recorded = this.rec.decidedItems.get(at) ?? this.decidedItems.get(at);
+    if (recorded !== undefined) {
+      return pool.filter((x) => recorded.has(etKey(x.event, x.target)) && stillCandidate(x));
+    }
+    // Judged now: the item's candidates as they are, recorded for every replay. A candidate put
+    // back by a later cancellation was not in the item then, so it is never in this K.
+    const k = pool.filter((x) => {
+      if (!events.includes(x.event)) return false;
+      // The item a candidate belongs to: existence for the revoke and for the fields of a unit
+      // that met a revoke; a field unit for the others on its fields (by the record).
+      const onExistence = this.onExistence(x.event, x.target);
+      if (unit === "existence" ? !onExistence : onExistence || !inUnit(unit, x.target))
+        return false;
+      return stillCandidate(x);
+    });
+    this.decidedItems.set(at, new Set(k.map((x) => etKey(x.event, x.target))));
+    return k;
+  }
+
+  /**
+   * The merge base and the cover set O of a take_candidate (09 §5.8 `take`): recorded when it is
+   * judged, then read from the record in every replay.
+   */
+  takeRecord(
+    o: ResolveOp,
+    k: Item[],
+  ): { mergeBase: OpNumber; cover: Set<string>; restorable: Map<string, IvSet> | undefined } {
+    const n = o.op;
+    let mb = this.rec.mergeBases.get(n) ?? this.mergeBases.get(n);
+    if (mb === undefined) {
+      mb = { mergeBase: this.mergeBaseOf(o.candidates) };
+      this.mergeBases.set(n, mb);
+      this.coverSets.set(n, this.takePreviousRecord(o, mb.mergeBase, k, n));
+    }
+    const listed = this.rec.coverSets.get(n) ?? this.coverSets.get(n) ?? [];
+    return {
+      mergeBase: mb.mergeBase,
+      cover: new Set(listed.map((e) => etKey(e.event, e.target))),
+      restorable: this.rec.takeRestorable.get(n),
+    };
+  }
+
+  /**
+   * The revokes a take_candidate on a field unit filled (see `Recorded.takeFilled`): recorded when
+   * it is judged, on the state of the history at that point, then read from the record.
+   */
+  filledBy(o: ResolveOp, taken: Item[]): Map<string, IvSet> {
+    const n = o.op;
+    const recorded = this.rec.takeFilled.get(n) ?? this.takeFilled.get(n);
+    if (recorded !== undefined) return recorded;
+    const out = new Map<string, IvSet>();
+    if (this.isState) {
+      const range = union(...taken.map((x) => x.valid));
+      for (const x of this.items) {
+        if (x.status !== "applied" || x.target !== "existence" || x.content.kind !== "revoke")
+          continue;
+        if (x.op >= n) continue;
+        const valid = subtract(x.valid, this.registeredSet(x, n));
+        if (isEmpty(intersect(valid, range))) continue;
+        const key = etKey(x.event, x.target);
+        out.set(key, union(out.get(key) ?? [], valid));
+      }
+    }
+    this.takeFilled.set(n, out);
+    return out;
+  }
+
+  /**
+   * Where writes outside the cover set cover what a take_candidate writes on `target`: a write in
+   * effect after the merge base and before the resolution, not in O, that supersedes an item of
+   * the kind taken there (step 3), less where an earlier revert registered it and where a later
+   * write in O supersedes it in turn. A revoke does not
+   * cover a taken field item: when the take is judged a revoke there is the ordinary check on the
+   * current state (a revoked event row: rejected; a state table: filling the hole), so covering
+   * would turn that judgement into a take that silently writes nothing.
+   */
+  coveredOutsideO(
+    rec: {
+      mergeBase: OpNumber;
+      cover: Set<string>;
+      filled?: Map<string, IvSet>;
+      restorable?: Map<string, IvSet> | undefined;
+    },
+    n: OpNumber,
+    taken: Item,
+  ): IvSet {
+    // A revoke and a field take (deviation (2)): on an event table a revoke is no value item and
+    // never covers a field take; on a state table it does not when the take is judged (the take
+    // fills the hole), and in a replay covers it only beyond the holes the take filled then.
+    const revokeOnField = (x: Item) => taken.target !== "existence" && x.target === "existence";
+    const judging = !this.rec.judged.has(n);
+    return union(
+      ...this.items
+        .filter(
+          (x) =>
+            x.status === "applied" &&
+            x.op > rec.mergeBase &&
+            x.op < n &&
+            !rec.cover.has(etKey(x.event, x.target)) &&
+            x.content.kind !== "uncovered" &&
+            !(revokeOnField(x) && (!this.isState || judging)) &&
+            // On an event table existence and field values do not cover each other: a taken
+            // revoke stops counting only where a restore outside O is in effect.
+            !(!this.isState && taken.target === "existence" && x.content.kind !== "restore") &&
+            supersedes(x, taken),
+        )
+        .map((x) => {
+          // Only where no later write in O supersedes it (step 3): a write outside O that a write
+          // in O covers in turn covers nothing, so the take does not uncover what O wrote.
+          const underO = this.items.filter(
+            (y) =>
+              y.status === "applied" &&
+              y.op > x.op &&
+              y.op < n &&
+              rec.cover.has(etKey(y.event, y.target)) &&
+              supersedes(y, x),
+          );
+          const filled = revokeOnField(x) ? (rec.filled?.get(etKey(x.event, x.target)) ?? []) : [];
+          // Removed by a deletion pending when the take was judged and back since: not covering.
+          const back = rec.restorable?.get(etKey(x.event, x.target)) ?? [];
+          return subtract(
+            subtract(subtract(subtract(x.valid, this.registeredSet(x, n)), filled), back),
+            union(...underO.map((y) => subtract(y.valid, this.registeredSet(y, n)))),
+          );
+        }),
     );
   }
 
   resolveItem(o: ResolveOp): void {
     const n = o.op;
-    if (o.decision === "keep_effective") return;
+    if (o.decision === "keep_effective") {
+      // It closes the item's candidates as they are (recorded); it writes nothing.
+      this.kOf(o.candidates, o.unit, o.op);
+      return;
+    }
     if (o.decision === "take_candidate" && o.unit === "existence") {
       this.takeExistence(o);
       return;
@@ -1068,83 +1371,20 @@ class Replay {
       if (o.take === undefined || o.unit === "existence") {
         throw new Error("take_candidate needs `take`");
       }
-      const f = o.unit;
-      const cands = this.candidatesOf(o.candidates, f);
-      const taken = cands.filter((x) => x.event === o.take);
-      const value = taken.find((x) => x.content.kind === "value")?.content;
-      // Same-valued candidates of the item are value sources too (03-deletion «搬运的值»).
-      const carried = value
-        ? cands.filter(
-            (x) =>
-              x.content.kind === "value" &&
-              tok(x.content.value) === tok(value.kind === "value" ? value.value : null),
-          )
-        : [];
-      // The interval: the union of the taken write's candidate items on the unit (all of them, a
-      // candidate being every item of the write there: 09 §5.8 `candidates/<k>`).
-      const giver = taken[0] ?? carried[0];
-      if (giver === undefined || giver.content.kind !== "value") return;
-      const valid = taken.length > 0 ? union(...taken.map((x) => x.valid)) : giver.valid;
-      const v = tok(giver.content.value);
-      const segs = this.segments([valid]).filter((s) => covers(valid, s));
-      if (segs.every((s) => this.vis(f, s, n - 1) === v)) return; // same value: not a contribution
-      // The checks on the current state an ordinary write passes, on what takes effect
-      // (04-write-and-read «判定顺序» step 5), when the take is judged: a revoked row cannot be
-      // written. A take that entered the log is a person's decision, executed as recorded in a
-      // replay (03-deletion «两条原则», deviation one).
-      const judging = !this.rec.judged.has(n);
-      if (judging && !this.isState && this.revokedRow()) {
-        this.reject(o, "revoked");
-        return;
-      }
-      // A state table: where the entity has no value, every required field must be given
-      // (05-time «无值区间»).
-      const req = this.schema.required.length > 0 ? this.schema.required : [];
-      if (
-        judging &&
-        this.isState &&
-        req.some((r) => r !== f) &&
-        segs.some((s) => !this.hasValue(s, n - 1))
-      ) {
-        this.reject(o, "missing_required");
-        return;
-      }
-      // One item per stretch: an item has one interval (09 §5.7 `span/<f>/<k>`).
-      this.push(
-        pieces(valid).map((part) => ({
-          event: o.event,
-          target: f,
-          k: 0,
-          op: n,
-          status: "applied" as const,
-          valid: part,
-          content: giver.content,
-          carried: carried.map(refOf),
-          explicitEnds: [],
-          defaultEnd: false,
-          from: null,
-        })),
-      );
+      this.takeCandidate(o, o.take, unitTargets(o.unit) as FieldId[]);
       return;
     }
     // take_previous: revert to the merge base (01-objects «各处理方式的执行语义»).
+    // K is taken by (event, unit) in every replay; the merge base and the record are recorded.
+    const kItems = this.kOf(o.candidates, o.unit, o.op);
     let rec = this.rec.mergeBases.get(n);
     if (rec === undefined) {
-      const cands = this.candidatesOf(o.candidates, o.unit);
-      const seens = o.candidates.map((e) => {
-        const c = this.opsByEvent.get(e);
-        return c !== undefined && (c.kind === "write" || c.kind === "revoke")
-          ? (c.seen ?? c.op - 1)
-          : (c?.op ?? 0);
-      });
-      const mergeBase = Math.min(...seens);
-      const record = this.takePreviousRecord(o, mergeBase, cands, n);
-      rec = { mergeBase, k: cands.filter((c) => !this.shadows.includes(c)).map(refOf) };
-      this.mergeBases.set(n, { mergeBase, k: rec.k as ItemRef[] });
-      this.revertRecords.set(n, record);
+      const mergeBase = this.mergeBaseOf(o.candidates);
+      this.revertRecords.set(n, this.takePreviousRecord(o, mergeBase, kItems, n));
+      rec = { mergeBase };
+      this.mergeBases.set(n, rec);
     }
     const record = this.rec.revertRecords.get(n) ?? this.revertRecords.get(n) ?? [];
-    const kItems = this.kItemsOf(rec.k);
     this.revert(
       o.event,
       n,
@@ -1180,6 +1420,102 @@ class Replay {
   }
 
   /**
+   * take_candidate on a field or field-group unit (01-objects «各处理方式的执行语义»; 03-deletion
+   * «搬运的值»). The merge base and the cover set O are recorded when it is judged. Per field of
+   * the unit, the taken value is written on the taken write's items in K; with none there (all
+   * deleted, or put back into an item of their own), on the items in K of the candidates with the
+   * same value on that field. Where a write in effect after the merge base and before the
+   * resolution, not in O, supersedes it, that write covers it and stays in effect. Value sources:
+   * every candidate in K with the same value on that field. In a replay the take is executed as
+   * recorded: the checks an ordinary write passes are made only when it is judged.
+   */
+  takeCandidate(o: ResolveOp, take: Seq, fields: readonly FieldId[]): void {
+    const n = o.op;
+    const k = this.kOf(o.candidates, o.unit, o.op);
+    const takenOp = this.opsByEvent.get(take);
+    // The take's range: the taken write's items in K; with none, the same-valued candidates'
+    // (where it lands, as below).
+    const own = k.filter((x) => x.event === take);
+    const sameValued = k.filter((x) => {
+      const input = takenOp?.kind === "write" ? takenOp.fields[x.target as FieldId] : undefined;
+      return (
+        input !== undefined &&
+        x.content.kind === "value" &&
+        tok(x.content.value) === tok(input.value)
+      );
+    });
+    const rec = {
+      ...this.takeRecord(o, k),
+      filled: this.filledBy(o, own.length > 0 ? own : sameValued),
+    };
+    const fresh: Item[] = [];
+    const written: IvSet[] = [];
+    for (const f of fields) {
+      const input = takenOp?.kind === "write" ? takenOp.fields[f] : undefined;
+      if (input === undefined) continue;
+      const v = tok(input.value);
+      const same = k.filter(
+        (x) => x.target === f && x.content.kind === "value" && tok(x.content.value) === v,
+      );
+      const own = same.filter((x) => x.event === take);
+      const giving = own.length > 0 ? own : same;
+      if (giving.length === 0) continue;
+      const covered = union(...giving.map((x) => this.coveredOutsideO(rec, n, x)));
+      const valid = subtract(union(...giving.map((x) => x.valid)), covered);
+      if (isEmpty(valid)) continue;
+      const segs = this.segments([valid]).filter((g) => covers(valid, g));
+      if (segs.every((g) => this.vis(f, g, n - 1) === v)) continue; // same value: no contribution
+      written.push(valid);
+      // One item per stretch: an item has one interval (09 §5.7 `span/<f>/<k>`).
+      for (const part of pieces(valid)) {
+        fresh.push({
+          event: o.event,
+          target: f,
+          k: 0,
+          op: n,
+          status: "applied",
+          valid: part,
+          content: { kind: "value", value: input.value },
+          carried: same.map(refOf),
+          explicitEnds: [],
+          defaultEnd: false,
+          from: null,
+        });
+      }
+    }
+    if (fresh.length === 0) return;
+    // The checks on the current state an ordinary write passes, on what takes effect
+    // (04-write-and-read «判定顺序» step 5), when the take is judged: a revoked row cannot be
+    // written; on a state table, where the entity has no value every required field must be given
+    // (05-time «无值区间»). A take that entered the log is a person's decision, executed as
+    // recorded in a replay (03-deletion «两条原则», deviation one): what it writes then lands by the
+    // ordinary rules, a stretch without every required field has no value.
+    const judging = !this.rec.judged.has(n);
+    if (judging && !this.isState && this.revokedRow()) {
+      this.reject(o, "revoked");
+      return;
+    }
+    const all = union(...written);
+    // The fields the taken write gives, not the unit's: a field of a group it does not give has no
+    // value written into the hole (as judge checks a take).
+    const given = fields.filter(
+      (f) => takenOp?.kind === "write" && takenOp.fields[f] !== undefined,
+    );
+    if (
+      judging &&
+      this.isState &&
+      this.schema.required.some((r) => !given.includes(r)) &&
+      this.segments([all])
+        .filter((g) => covers(all, g))
+        .some((g) => !this.hasValue(g, n - 1))
+    ) {
+      this.reject(o, "missing_required");
+      return;
+    }
+    this.push(fresh);
+  }
+
+  /**
    * take_candidate on an item whose unit is existence (09-references-conflict-sync «撤销与并发
    * 修改»; 01-objects «各处理方式的执行语义»). The candidate taken is a revoke: it takes effect on
    * its interval. It is a modification: its fields take effect on their intervals; on an event
@@ -1191,8 +1527,13 @@ class Replay {
   takeExistence(o: ResolveOp): void {
     const n = o.op;
     if (o.take === undefined) throw new Error("take_candidate needs `take`");
-    const cands = this.candidatesOf(o.candidates, "existence");
-    const taken = cands.filter((x) => x.event === o.take && !this.shadows.includes(x));
+    const cands = this.kOf(o.candidates, "existence", o.op);
+    const rec = this.takeRecord(o, cands);
+    // Where writes outside the cover set O cover a taken item, that write stays in effect.
+    const taken = cands
+      .filter((x) => x.event === o.take && !this.shadows.includes(x))
+      .map((x) => ({ ...x, valid: subtract(x.valid, this.coveredOutsideO(rec, n, x)) }))
+      .filter((x) => !isEmpty(x.valid));
     const base = {
       event: o.event,
       op: n,
@@ -1205,28 +1546,50 @@ class Replay {
     const revokes = taken.filter((x) => x.target === "existence");
     if (revokes.length > 0) {
       const valid = union(...revokes.map((x) => x.valid));
-      const already = this.isState
-        ? this.segments([valid])
-            .filter((s) => covers(valid, s))
-            .every((s) => !this.hasValue(s, n - 1))
-        : this.revokedRow();
-      if (!already) {
-        for (const part of pieces(valid)) {
-          fresh.push({
-            ...base,
-            target: "existence",
-            k: 0,
-            valid: part,
-            content: { kind: "revoke" },
-          });
-        }
+      // A taken revoke always writes its item over the taken range less what covers it, also
+      // where there is already no value then, as a revoke written over a revoked stretch: whether
+      // there is a value there is not checked again in a replay, where later writes or deletions
+      // may change it (03-deletion «重放规则 · 人的决定»).
+      for (const part of pieces(valid)) {
+        fresh.push({
+          ...base,
+          target: "existence",
+          k: 0,
+          valid: part,
+          content: { kind: "revoke" },
+        });
       }
       this.push(fresh);
       return;
     }
-    const targets = [...new Set(taken.map((x) => x.target))].sort() as FieldId[];
+    // Per field of the taken write in this item: its items in K; with none left (all deleted, or
+    // put back into an item of their own), the items in K of the candidates with the same value
+    // on that field take over (03-deletion «搬运的值»), as on a field unit.
+    const takenOp = this.opsByEvent.get(o.take);
+    const takenFields = (
+      takenOp?.kind === "write" ? (Object.keys(takenOp.fields) as FieldId[]) : []
+    ).filter((f) => this.onExistence(o.take as Seq, f));
+    const giving: Item[] = [];
+    for (const f of takenFields.sort()) {
+      const input = takenOp?.kind === "write" ? takenOp.fields[f] : undefined;
+      if (input === undefined) continue;
+      const v = tok(input.value);
+      const same = cands.filter(
+        (x) =>
+          x.target === f &&
+          x.content.kind === "value" &&
+          tok(x.content.value) === v &&
+          !this.shadows.includes(x),
+      );
+      const own = same.filter((x) => x.event === o.take);
+      for (const x of own.length > 0 ? own : same) {
+        const valid = subtract(x.valid, this.coveredOutsideO(rec, n, x));
+        if (!isEmpty(valid)) giving.push({ ...x, valid });
+      }
+    }
+    const targets = [...new Set(giving.map((x) => x.target))].sort() as FieldId[];
     for (const f of targets) {
-      const mine = taken.filter((x) => x.target === f && x.content.kind === "value");
+      const mine = giving.filter((x) => x.target === f && x.content.kind === "value");
       const first = mine[0];
       if (first === undefined || first.content.kind !== "value") continue;
       const value = first.content.value;
@@ -1249,7 +1612,8 @@ class Replay {
       }
     }
     if (!this.isState) {
-      if (this.revokedRow()) {
+      // Nothing of the take is left: it does not restore the row either.
+      if (giving.length > 0 && this.revokedRow()) {
         fresh.push({
           ...base,
           target: "existence",
@@ -1263,11 +1627,12 @@ class Replay {
     }
     // State tables: the required fields the candidate does not give, carried from the merge base
     // where the entity has no value inside the candidate's interval.
-    const scope = union(...taken.map((x) => x.valid));
+    if (giving.length === 0) return;
+    const scope = union(...giving.map((x) => x.valid));
     const gap = normalize(
       this.segments([scope]).filter((s) => covers(scope, s) && !this.hasValue(s, n - 1)),
     );
-    const mergeBase = this.mergeBaseOf(o.candidates);
+    const mergeBase = rec.mergeBase;
     const req = this.schema.required.length > 0 ? this.schema.required : [];
     for (const f of req.filter((r) => !targets.includes(r))) {
       let k = 0;
@@ -1287,8 +1652,15 @@ class Replay {
       for (const s of this.segments([gap]).filter((x) => covers(gap, x))) {
         const st = this.fieldState(f, s, mergeBase);
         if (st.kind !== "value") {
-          this.reject(o, "required_in_gap");
-          return;
+          // Checked when the take is judged; in a replay it is executed as recorded and where the
+          // merge base has no value now nothing is carried: the stretch lands by the existence
+          // rule (03-deletion «重放规则 · 人的决定»).
+          if (!this.rec.judged.has(n)) {
+            this.reject(o, "required_in_gap");
+            return;
+          }
+          flush();
+          continue;
         }
         const last = run?.valid[run.valid.length - 1];
         if (run !== undefined && run.by === st.by && last !== undefined && last.to === s.from) {
@@ -1315,23 +1687,13 @@ class Replay {
         x.op > mergeBase &&
         x.op < n &&
         effective(x.status) &&
-        (o.unit === "existence" || x.target === o.unit) &&
+        inUnit(o.unit, x.target) &&
         !isEmpty(intersect(x.valid, domain))
       ) {
         listed.set(etKey(x.event, x.target), { event: x.event, target: x.target });
       }
     }
     return [...listed.values()];
-  }
-
-  /** K present in the replay: not deleted; same-valued in the replay still counts (step 2). */
-  kItemsOf(k: readonly ItemRef[]): Item[] {
-    const kKeys = new Set(k.map(refKey));
-    const kEts = new Set(k.map((r) => etKey(r.event, r.target)));
-    return [...this.items, ...this.shadows].filter(
-      (x) =>
-        kKeys.has(refKey(x)) || (this.shadows.includes(x) && kEts.has(etKey(x.event, x.target))),
-    );
   }
 
   /** 03-deletion «回掉的权威定义», steps 1–8 (without `deps`). */
@@ -1347,6 +1709,7 @@ class Replay {
       rollback: () => void,
       laterInRange: boolean,
       hides: boolean,
+      currentRevoke: boolean,
     ) => RevertResult["status"] | "revoked",
   ): void {
     // Step 1: R' = every item of every (event, target) R lists, whatever its index (given at
@@ -1365,7 +1728,18 @@ class Replay {
         ? union(...zai.filter((r) => !isLater(r) && supersedes(x, r)).map((r) => r.valid))
         : kDomain;
 
-    // Step 3: ranges.
+    // Step 3: ranges. A revoke a take_candidate wrote supersedes an earlier revoke where it
+    // lies: a person's decision on the item, written even where there was no value (03-deletion
+    // «重放规则 · 人的决定»), so undoing the earlier revoke does not bring the row back under it.
+    // As the kernel: a take_candidate's revoke only. A revoke is never awaiting (a candidate or
+    // applied), so no confirmation writes one of its own; a confirmed undo's write-backs are the
+    // confirmation's, a take_previous writes back field writes only, keep_effective nothing.
+    const takenRevoke = (x: Item) => {
+      const o = this.opsByEvent.get(x.event);
+      return (
+        x.content.kind === "revoke" && o?.kind === "resolve" && o.decision === "take_candidate"
+      );
+    };
     const scope = new Map<Item, IvSet>();
     for (const r of zai) {
       const covering = this.items
@@ -1376,7 +1750,7 @@ class Replay {
             r.op < x.op &&
             x.op < n &&
             x.content.kind !== "uncovered" &&
-            supersedes(x, r),
+            (supersedes(x, r) || (r.content.kind === "revoke" && takenRevoke(x))),
         )
         .map((x) => intersect(subtract(x.valid, this.registeredSet(x, n)), r.valid));
       scope.set(r, intersect(subtract(r.valid, union(...covering)), domainOf(r)));
@@ -1482,10 +1856,20 @@ class Replay {
           // A no-value item gives no value to lose with the stretch's.
           (under(x, revokedBack) || (x.content.kind === "value" && under(x, normalize(emptied)))),
       );
-    const verdict = decide(zai, apply, rollback, laterInRange, hidden("applied"));
+    // The target is a revoke on existence in effect now: one of its items is not covered (step 3).
+    // Its own items only: a revoke an include_later takes back with it is not the target.
+    const currentRevoke = zai.some(
+      (r) =>
+        !isLater(r) &&
+        r.target === "existence" &&
+        r.content.kind === "revoke" &&
+        !isEmpty(scope.get(r) ?? []),
+    );
+    const verdict = decide(zai, apply, rollback, laterInRange, hidden("applied"), currentRevoke);
     if (verdict === "revoked") {
       this.reverts.push({ op: n, event, status: "rejected", reason: "revoked", record: [] });
       this.revertStatus.set(n, "rejected");
+      this.rejectedRevoked.add(n);
       this.revertRecords.set(n, []);
       return;
     }
@@ -1746,6 +2130,27 @@ class Replay {
       fields,
       items,
       reverts: this.reverts,
+      takeCandidates: this.ops.flatMap((o) => {
+        if (o.kind !== "resolve" || o.decision !== "take_candidate") return [];
+        const mb = this.rec.mergeBases.get(o.op) ?? this.mergeBases.get(o.op);
+        const cover = this.rec.coverSets.get(o.op) ?? this.coverSets.get(o.op);
+        return mb === undefined || cover === undefined
+          ? []
+          : [
+              {
+                op: o.op,
+                mergeBase: mb.mergeBase,
+                cover,
+                ...(this.rec.takeRestorable.has(o.op)
+                  ? {
+                      restorable: [...(this.rec.takeRestorable.get(o.op) ?? new Map())].map(
+                        ([key, valid]) => ({ key, valid }),
+                      ),
+                    }
+                  : {}),
+              },
+            ];
+      }),
       created: this.created(),
     };
   }
@@ -1790,8 +2195,19 @@ class Replay {
     if (record !== undefined) rec.revertRecords.set(o.op, record);
     const status = this.revertStatus.get(o.op);
     if (status !== undefined) rec.revertStatus.set(o.op, status);
+    if (this.rejectedRevoked.has(o.op)) rec.revertRejectedRevoked.add(o.op);
     const mb = this.mergeBases.get(o.op);
     if (mb !== undefined) rec.mergeBases.set(o.op, mb);
+    const cover = this.coverSets.get(o.op);
+    if (cover !== undefined) rec.coverSets.set(o.op, cover);
+    const filled = this.takeFilled.get(o.op);
+    if (filled !== undefined && !rec.takeFilled.has(o.op)) rec.takeFilled.set(o.op, filled);
+    const resolved = this.decidedItems.get(o.op);
+    if (resolved !== undefined && !rec.decidedItems.has(o.op)) rec.decidedItems.set(o.op, resolved);
+    // Candidate fields: recorded when first judged, never judged again.
+    for (const [key, met] of this.metRevoke) {
+      if (key.startsWith(`${o.event}/`) && !rec.metRevoke.has(key)) rec.metRevoke.set(key, met);
+    }
   }
 
   /**
@@ -1844,6 +2260,16 @@ class Replay {
   statusOf(event: Seq, target: Target): Status[] {
     return this.items.filter((x) => x.event === event && x.target === target).map((x) => x.status);
   }
+}
+
+/** The targets of a conflict unit: a field, the fields of a group, or existence. */
+function unitTargets(unit: ResolveOp["unit"]): readonly Target[] {
+  return typeof unit === "string" ? [unit] : unit;
+}
+
+/** Whether `target` is in a conflict unit; the unit "existence" covers every target. */
+function inUnit(unit: ResolveOp["unit"], target: Target): boolean {
+  return unit === "existence" || unitTargets(unit).includes(target);
 }
 
 /** Step 3, "x 取代 r". */
@@ -1931,6 +2357,12 @@ export function evaluateLog(
   options: {
     readonly forcedEffective?: readonly { event: Seq; target: Target }[];
     readonly forcedSuperseded?: readonly Seq[];
+    /**
+     * People's decisions on items as another evaluation of the same operations recorded them, by
+     * operation (`LogStep.decided`): the baseline executes them on these items, not on the items
+     * its own replay would find (a decision is as recorded in every replay).
+     */
+    readonly forcedDecided?: ReadonlyMap<OpNumber, readonly string[]>;
   } = {},
 ): LogEvaluation {
   const rec = emptyRecorded();
@@ -2080,6 +2512,37 @@ export function evaluateLog(
         continue;
       }
     }
+    // Nothing of the row or entity is left in the current replay (no item on any field or on
+    // existence), and pending deletions are not the cause: as never created in this log, a write
+    // to it by its ID is refused with the ordinary `not_found` (03-deletion «撤回与宽限期»). The
+    // model has one row or entity and no `entity_key`: a write once it had an item is a write by
+    // ID; before that it creates it (a write by `entity_key` would create a new entity instead).
+    if (
+      (e.kind === "write" || e.kind === "revoke" || e.kind === "undo") &&
+      steps.some((x) => !x.refused && x.state.items.some((i) => i.status !== "dropped")) &&
+      prevState.items.every((x) => x.status === "dropped")
+    ) {
+      steps.push({ entry: e, refused: true, state: prevState, notFound: [] });
+      continue;
+    }
+    // A take made while deletions are pending: what those deletions removed that is in effect
+    // without them (`Recorded.takeRestorable`), on the history at this point.
+    let restorable: Map<string, IvSet> | undefined;
+    if (e.kind === "resolve" && e.decision === "take_candidate" && pending.size > 0) {
+      const without = replay(new Set());
+      restorable = new Map();
+      for (const x of without.items) {
+        if (x.status !== "applied") continue;
+        const key = etKey(x.event, x.target);
+        const now = union(
+          ...prev.items
+            .filter((y) => etKey(y.event, y.target) === key && y.status === "applied")
+            .map((y) => y.valid),
+        );
+        const gone = subtract(x.valid, now);
+        if (!isEmpty(gone)) restorable.set(key, union(restorable.get(key) ?? [], gone));
+      }
+    }
     ops.push(e);
     const r = replay(deleted);
     // A resolution rejected when judged never enters the log, as a refused request.
@@ -2090,8 +2553,15 @@ export function evaluateLog(
       continue;
     }
     r.recordOp(e);
+    if (restorable !== undefined && restorable.size > 0) rec.takeRestorable.set(e.op, restorable);
     const state = r.result();
-    steps.push({ entry: e, refused: false, state });
+    const decided = rec.decidedItems.get(e.op);
+    steps.push({
+      entry: e,
+      refused: false,
+      state,
+      ...(decided !== undefined ? { decided: [...decided].sort() } : {}),
+    });
     prev = r;
     prevState = state;
   }
@@ -2101,9 +2571,11 @@ export function evaluateLog(
   // write-time judgements stay those of the log; only the final replay sees the forced sets.
   const forced = options.forcedEffective ?? [];
   const superseded = options.forcedSuperseded ?? [];
-  if (forced.length > 0 || superseded.length > 0) {
+  const decidedAs = options.forcedDecided ?? new Map<OpNumber, readonly string[]>();
+  if (forced.length > 0 || superseded.length > 0 || decidedAs.size > 0) {
     for (const x of forced) rec.keptEffective.add(etKey(x.event, x.target));
     for (const e of superseded) rec.keptSuperseded.add(e);
+    for (const [op, keys] of decidedAs) rec.decidedItems.set(op, new Set(keys));
     return { steps, final: replay(deletedNow()).result() };
   }
   return { steps, final: prevState };
@@ -2205,9 +2677,7 @@ function cancelDeletion(
     const sib = siblings(key, target);
     return grace.some(
       (y) =>
-        y.kind === "resolve" &&
-        (y.unit === target || y.unit === "existence") &&
-        y.candidates.some((c) => sib.includes(c)),
+        y.kind === "resolve" && inUnit(y.unit, target) && y.candidates.some((c) => sib.includes(c)),
     );
   };
 

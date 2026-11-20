@@ -325,6 +325,17 @@ describe("an undo on a revoked row of an event table", () => {
     expect(ev.exists).toBe(false);
   });
 
+  it("keeps its reason in a replay (a deletion after it)", () => {
+    const run = evaluateLog(EVENT, [
+      ...ops,
+      { kind: "undo", op: 40, event: 41, target: 20 },
+      { kind: "deletion", op: 50, id: "pi_1", sources: ["S1"] },
+    ]);
+    expect(run.final.reverts).toEqual([
+      { op: 40, event: 41, status: "rejected", reason: "revoked", record: [] },
+    ]);
+  });
+
   it("undoing the revoke is accepted", () => {
     const ev = evaluate(EVENT, [...ops, { kind: "undo", op: 40, event: 41, target: 30 }]);
     expect(ev.reverts[0]?.status).toBe("applied");

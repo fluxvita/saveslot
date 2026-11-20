@@ -466,16 +466,35 @@ export class RowState {
 
   /** Event and timeless tables: the operations whose revokes are in effect. */
   revokedBy(at: Limit): OpNumber[] {
-    return this.items
-      .filter(
-        (x) =>
-          x.status === "applied" &&
-          x.content.kind === "revoke" &&
-          this.sees(x, at) &&
-          !this.registeredOn(x, WHOLE, at) &&
-          !this.restoredSince(x, WHOLE, at),
-      )
-      .map((x) => x.op);
+    const live = (x: Item) =>
+      x.status === "applied" &&
+      x.content.kind === "revoke" &&
+      this.sees(x, at) &&
+      !this.registeredOn(x, WHOLE, at) &&
+      !this.restoredSince(x, WHOLE, at);
+    // A revoke a take_candidate wrote later supersedes an earlier one (as in an undo's range):
+    // the revoke to undo first is the later one, so the earlier one is not listed.
+    const takenLater = (x: Item) =>
+      this.items.some(
+        (y) =>
+          y.op > x.op &&
+          live(y) &&
+          this.records.some((o) => o.kind === "take_candidate" && o.event === y.event),
+      );
+    // A revoke a revert wrote back (an undo, a take_previous, a confirmed undo) is "back to before
+    // that operation": undoing it redoes what it took back, not the way to bring the row back. It
+    // is listed only when no other revoke is in effect.
+    const writtenBack = (x: Item) =>
+      this.records.some(
+        (o) =>
+          o.event === x.event &&
+          (o.kind === "undo" ||
+            o.kind === "take_previous" ||
+            (o.kind === "confirm" && o.revert !== undefined)),
+      );
+    const all = this.items.filter((x) => live(x) && !takenLater(x));
+    const own = all.filter((x) => !writtenBack(x));
+    return (own.length > 0 ? own : all).map((x) => x.op);
   }
 
   /**

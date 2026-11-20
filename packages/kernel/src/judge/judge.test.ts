@@ -1745,6 +1745,104 @@ describe("take_candidate", () => {
     );
   });
 
+  // A revoke taken takes effect on its interval also where there is already no value, as a revoke
+  // written over a revoked stretch (03-deletion «重放规则 · 人的决定»: a deletion's replay does not
+  // check again whether there was a value). Found by the comparison with the reference evaluator.
+  const takenRevoke = {
+    target: "existence",
+    k: 0,
+    status: "applied",
+    valid: iv(null),
+    revoke: true,
+  };
+
+  it("state table: a revoke taken where there is already no value still writes its item", () => {
+    // Seeds 339987929, 448443093. #21 revokes the whole entity; #31, on the version before it,
+    // meets that revoke: a candidate on existence.
+    const { state, js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      revoke(20, undefined, 10),
+      revoke(30, undefined, 10),
+      take(40, "existence", [31], 31),
+    ]);
+    expect(items(last(js))).toEqual([takenRevoke]);
+    expect(stretches(state, "f2")).toEqual([]);
+  });
+
+  // #24, the take of the revoke candidate #14, writes a revoke over #21's (R421). Undoing #20 while
+  // #24 covers it takes back nothing and the row stays revoked: `revoked`, by #23, the revoke to
+  // undo first. Undoing #23, the revoke in effect now, is accepted though #21 keeps the row
+  // revoked; it registers #24, so #20 can be undone in turn. Either order ends with the row back.
+  for (const table of [EVENT, { ...EVENT, kind: "timeless" as const }]) {
+    const base = (): JudgeInput[] => [
+      write({ op: 10, seen: 0, fields: { f2: "1", f3: "a" } }),
+      revoke(13, undefined, 2),
+      revoke(20, undefined, 10),
+      take(23, "existence", [14], 14),
+    ];
+
+    it(`${table.kind} table: undo the revoke a take covers (revoked by the take), the take, then the revoke`, () => {
+      const { state } = run(table, base());
+      expect(() => judgeOp(state, undo(30, 20))).toThrow(
+        expect.objectContaining({ reason: "revoked", detail: { ops: [23] } }),
+      );
+      const { state: after, js } = run(table, [...base(), undo(30, 23)]);
+      expect(last(js).record.kind).toBe("undo");
+      expect(after.revoked({ upTo: 30 })).toBe(true);
+      // The undo writes back what was there before #23, a revoke (03-deletion «回掉» ③, on
+      // existence); revoked_by leaves it out while #21 is in effect: undoing #30 would redo the
+      // take, not bring the row back.
+      expect(after.revokedBy({ upTo: 30 })).toEqual([20]);
+      const { state: back } = run(table, [...base(), undo(30, 23), undo(40, 20)]);
+      expect(back.revoked({ upTo: 40 })).toBe(false);
+    });
+
+    it(`${table.kind} table: undoing the take with include_later is not refused`, () => {
+      // Its own item is the revoke in effect; include_later does not change that.
+      const { state } = run(table, base());
+      expect(() => judgeOp(state, undo(30, 23, { later: true }))).not.toThrow();
+    });
+
+    it(`${table.kind} table: undo the take first, then the revoke: the row is back`, () => {
+      const { state } = run(table, [...base(), undo(30, 23), undo(40, 20)]);
+      expect(state.revoked({ upTo: 40 })).toBe(false);
+    });
+  }
+
+  it("event table: revoked_by lists a revoke an undo wrote back only when no other is in effect", () => {
+    // #21 revokes; #31 undoes it; #41 undoes #31, writing back a revoke: the only one in effect.
+    const { state } = run(EVENT, [
+      write({ op: 10, seen: 0, fields: { f2: "1" } }),
+      revoke(20, undefined, 10),
+      undo(30, 20),
+      undo(40, 30),
+    ]);
+    expect(state.revokedBy({ upTo: 40 })).toEqual([40]);
+    expect(() => judgeOp(state, undo(50, 30))).toThrow(
+      expect.objectContaining({ reason: "revoked", detail: { ops: [40] } }),
+    );
+    // Undoing the one listed brings the row back; so does undoing #20 again.
+    for (const target of [40, 20]) {
+      expect(judgeOp(state, undo(50, target)).state.revoked({ upTo: 50 }), String(target)).toBe(
+        false,
+      );
+    }
+  });
+
+  it("event table: a revoke taken on a row already revoked still writes its item", () => {
+    // Seeds 131933590, 550664432. #14, on the version before #11, meets #11: a candidate on
+    // existence; #21 revokes the row; taking #14 then finds it revoked.
+    const { state, js } = run(EVENT, [
+      write({ op: 10, seen: 0, fields: { f2: "1", f3: "a" } }),
+      revoke(13, undefined, 2),
+      revoke(20, undefined, 10),
+      take(23, "existence", [14], 14),
+    ]);
+    expect(items(js[1] as Judgement)).toEqual([{ ...takenRevoke, status: "candidate" }]);
+    expect(items(last(js))).toEqual([takenRevoke]);
+    expect(state.revoked({ upTo: 23 })).toBe(true);
+  });
+
   const resolveAs = (
     kind: "keep_effective" | "take_previous",
     op: number,
@@ -1987,10 +2085,12 @@ describe("take_candidate", () => {
       );
       const undone = run(EVENT, [...head, undo(50, 40)]);
       expect(view(undone.state).exists).toBe(false);
-      // The original revoke counts again (the restore is registered as reverted), and so does
-      // the revoke written back.
+      // The original revoke counts again (the restore is registered as reverted). The revoke the
+      // undo wrote back is in effect too, but revoked_by names #20, the one to undo: undoing #50
+      // would redo the take's restore, not bring the row back by itself (R421).
+      expect(undone.state.revokedBy({ upTo: 59 })).toEqual([20]);
       expect(() => judgeOp(undone.state, write({ op: 60, fields: { f2: "3" } }))).toThrow(
-        expect.objectContaining({ reason: "revoked", detail: { ops: [20, 50] } }),
+        expect.objectContaining({ reason: "revoked", detail: { ops: [20] } }),
       );
     });
 

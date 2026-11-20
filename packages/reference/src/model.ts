@@ -57,6 +57,16 @@ export interface TableSchema {
   readonly kind: TableKind;
   /** Required fields (03-deletion «重放规则», «行 / 实体的存在»). */
   readonly required: readonly FieldId[];
+  /**
+   * Field groups judged together (01-objects «冲突单元»). Only which item a candidate belongs to
+   * is modelled: a write's candidates on a group go to the item on existence when any of its
+   * fields met a revoke. Conflicts are still judged field by field, where the kernel judges them
+   * by the unit (conflict criterion ⑤: a conflict anywhere in the unit makes every target of the
+   * write in it a candidate). So on a field group the evaluator and the kernel differ when written
+   * (issue #73): conclusions with groups hold only where the conflicting writes give every field
+   * of the group. The comparison with the kernel generates no groups.
+   */
+  readonly groups?: readonly (readonly FieldId[])[];
 }
 
 export type FromParam =
@@ -128,8 +138,11 @@ export interface ResolveOp extends OpBase {
   readonly decision: "take_candidate" | "keep_effective" | "take_previous";
   /** Events of the writes whose candidates make up the conflict item. */
   readonly candidates: readonly Seq[];
-  /** The conflict unit: a field, or "existence" for items targeting the row or entity. */
-  readonly unit: FieldId | "existence";
+  /**
+   * The conflict unit: a field, a field group (fields judged together, 01-objects «冲突单元»), or
+   * "existence" for items targeting the row or entity.
+   */
+  readonly unit: FieldId | readonly FieldId[] | "existence";
   /** `take_candidate`: the event of the chosen candidate. */
   readonly take?: Seq;
 }
@@ -247,6 +260,18 @@ export interface Evaluation {
   /** Every contribution item of the replay, plus `dropped` ones that were items before. */
   readonly items: readonly ItemResult[];
   readonly reverts: readonly RevertResult[];
+  /** take_candidate resolutions: the merge base and the cover set O each recorded (09 §5.8 `take`). */
+  readonly takeCandidates: readonly {
+    readonly op: OpNumber;
+    readonly mergeBase: OpNumber;
+    readonly cover: readonly RevertEntry[];
+    /**
+     * What deletions pending when it was judged removed and that was in effect without them, by
+     * `<event>/<target>`, with the intervals then: back after a cancellation, it does not cover
+     * the take there (03-deletion «撤回与宽限期»).
+     */
+    readonly restorable?: readonly { readonly key: string; readonly valid: IvSet }[];
+  }[];
   /** The write that counts as the first creation (03-deletion «首次创建标记»). */
   readonly created: Seq | undefined;
 }
@@ -261,8 +286,9 @@ export interface LogStep {
    */
   readonly refused: boolean;
   /**
-   * Refused as `not_found`: the row or entity was removed whole by pending deletions; every
-   * pending deletion touching its contributions, by operation number.
+   * Refused as `not_found`. Non-empty: the row or entity was removed whole by pending deletions;
+   * every pending deletion touching its contributions, by operation number. Empty: the ordinary
+   * `not_found`, nothing of the row or entity is left and pending deletions are not the cause.
    */
   readonly notFound?: readonly string[];
   /** Refused because the resolution was rejected when judged, and why. */
@@ -287,6 +313,11 @@ export interface LogStep {
   }[];
   /** A cancellation: events whose pending items it kept superseded (`kept_superseded`). */
   readonly keptSuperseded?: readonly Seq[];
+  /**
+   * A person's decision on items (a conflict resolution, a confirmation or rejection): the
+   * (event, target) it recorded, as `<event>/<target>` (the items it decided, when judged).
+   */
+  readonly decided?: readonly string[];
   /** A cancellation: candidates it put back after their item was resolved, and their judgement. */
   readonly putBack?: readonly {
     readonly event: Seq;

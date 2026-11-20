@@ -139,6 +139,7 @@ const both = [
 describe.each(both)("%s table", (_, schema, isState) => {
   it("every step leaves the row or entity the reference evaluator gives", () => {
     const hits = new Hits(0.3);
+    let takesCompared = 0;
     const seen: Record<string, number> & {
       samples: number;
       awaiting: number;
@@ -222,6 +223,13 @@ describe.each(both)("%s table", (_, schema, isState) => {
                       : "proposal"
                     : tr.kind;
               seen[`undoOf_${kind}`] = (seen[`undoOf_${kind}`] ?? 0) + 1;
+            }
+            // One write with candidates in a field item and in the item on existence (a2).
+            if (
+              x.judgement.conflicts.some((c) => c.unit === "existence") &&
+              x.judgement.conflicts.some((c) => c.unit !== "existence")
+            ) {
+              seen["mixedUnits"] = (seen["mixedUnits"] ?? 0) + 1;
             }
             if (x.judgement.conflicts.some((c) => c.unit === "existence" && c.items.length > 1)) {
               seen["existenceSeveralFields"] = (seen["existenceSeveralFields"] ?? 0) + 1;
@@ -341,6 +349,21 @@ describe.each(both)("%s table", (_, schema, isState) => {
               step: i,
               reverts: s.state.reverts.map((r) => ({ ...r, record: [...r.record].sort(byEntry) })),
             });
+            // A take_candidate's merge base and cover set O (09 §5.8 `take`), as each recorded it.
+            const rec = x.judgement.record;
+            if (rec.kind === "take_candidate") {
+              takesCompared++;
+              const theirs = s.state.takeCandidates.find((t) => t.op === rec.op);
+              expect({
+                step: i,
+                mergeBase: rec.mergeBase,
+                cover: [...rec.cover].sort(byEntry),
+              }).toEqual({
+                step: i,
+                mergeBase: theirs?.mergeBase,
+                cover: [...(theirs?.cover ?? [])].sort(byEntry),
+              });
+            }
 
             // What the judgement says beyond the items, against the reference's statuses.
             const j = x.judgement;
@@ -415,6 +438,7 @@ describe.each(both)("%s table", (_, schema, isState) => {
           "takeRefused_required_in_gap",
           "existenceSeveralFields",
           "takeRefused_missing_required",
+          "mixedUnits",
         ]
       : [
           "take",
@@ -427,5 +451,7 @@ describe.each(both)("%s table", (_, schema, isState) => {
     for (const key of situations) {
       expect({ key, reached: (seen[key] ?? 0) > 0 }).toEqual({ key, reached: true });
     }
+    // Merge bases and cover sets were compared (every take_candidate judged).
+    expect({ takesCompared: takesCompared > 0 }).toEqual({ takesCompared: true });
   });
 });

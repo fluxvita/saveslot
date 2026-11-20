@@ -21,7 +21,7 @@ export const shape = (s: TableSchema): TableShape => ({
   fields: ["f2", "f3"],
   valued: s.required,
   required: s.required,
-  groups: [],
+  groups: s.groups ?? [],
 });
 
 /**
@@ -450,6 +450,53 @@ const twoFieldsSkeleton = (state: boolean) =>
   });
 
 /**
+ * One write, two units (the review's a2, state tables): its f2 runs to the next change, #13's
+ * start, and meets #21's change only (the f2 item); its f3 runs on and meets the revoke #31 (the
+ * item on existence). Decisions on either item follow at random, with random steps.
+ */
+const mixedUnitsSkeleton = fc.array(writeStep, { maxLength: 3 }).map((tail) => {
+  const head: Op[] = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: span(0, null),
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 12,
+      event: 13,
+      seen: 10,
+      valid: span(4, null),
+      fields: { f2: { value: "7", sources: ["S12"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 12,
+      valid: span(1, 2),
+      fields: { f2: { value: "2", sources: ["S20"] } },
+      acknowledge: ["overwrite"],
+    },
+    { kind: "revoke", op: 30, event: 31, seen: 20, valid: span(5, null), validSources: ["S30"] },
+    {
+      kind: "write",
+      op: 40,
+      event: 41,
+      seen: 12,
+      valid: { from: { mode: "given", value: day(1) }, to: { mode: "next_change" } },
+      fields: { f2: { value: "5", sources: ["S40"] }, f3: { value: "b", sources: ["S40"] } },
+    },
+  ];
+  return toOps(tail, true, head);
+});
+
+/**
  * Whole revokes on a state table (09 §5.7 span, §5.8 entries: the whole time `{}`, a start left
  * open `{to}`): an interval revoke, a revoke of the whole entity and its undo, whose write-backs
  * are the whole time cut by the interval revoke; or a whole revoke from an older version meeting
@@ -497,6 +544,7 @@ export const scenario = (state: boolean) =>
             { weight: 1, arbitrary: refusedTakeSkeleton(true) },
             { weight: 1, arbitrary: twoFieldsSkeleton(true) },
             { weight: 1, arbitrary: wholeSkeleton },
+            { weight: 1, arbitrary: mixedUnitsSkeleton },
           )
         : fc.oneof(
             { weight: 2, arbitrary: fc.constant(null) },
@@ -601,7 +649,10 @@ export function toInput(o: Op): JudgeInput {
     case "reject":
       return { ...base, kind: o.kind, target: o.target };
     case "resolve": {
-      const unit = o.unit === "existence" ? ("existence" as const) : { fields: [o.unit] };
+      const unit =
+        o.unit === "existence"
+          ? ("existence" as const)
+          : { fields: typeof o.unit === "string" ? [o.unit] : [...o.unit] };
       if (o.decision === "take_candidate") {
         if (o.take === undefined) throw new Error("take_candidate needs `take`");
         return {
@@ -681,6 +732,7 @@ export function judged(
       // candidates join the earliest item whose interval meets theirs, or open one). A
       // take_candidate goes to the item holding the candidate taken; another decision to the
       // earliest item. (A dropped `ver` may have changed which writes conflict.)
+      if (typeof o.unit !== "string") throw new Error("field-group units are not generated here");
       const items = itemsOfUnit(state, o.unit);
       const item =
         o.take === undefined ? items[0] : items.find((i) => i.events.includes(o.take as number));

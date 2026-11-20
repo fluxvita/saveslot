@@ -116,7 +116,13 @@ function compute(state: RowState, r: Revert) {
       ? canonical(zai.filter((y) => !isLater(y) && supersedes(x, y)).flatMap((y) => y.valid))
       : kDomain;
 
-  // Step 3: what covers each item, and its range.
+  // Step 3: what covers each item, and its range. A revoke a take_candidate wrote supersedes an
+  // earlier revoke where it lies: a person's decision on the item, written even where there was
+  // no value (03-deletion «重放规则 · 人的决定»), so undoing the earlier revoke does not bring the
+  // row back under it.
+  const takenRevoke = (x: Item) =>
+    x.content.kind === "revoke" &&
+    state.records.some((o) => o.kind === "take_candidate" && o.event === x.event);
   const coveringOf = (y: Item) =>
     now.filter(
       (x) =>
@@ -124,7 +130,7 @@ function compute(state: RowState, r: Revert) {
         !inR(x) &&
         later(x, y) &&
         x.content.kind !== "uncovered" &&
-        supersedes(x, y) &&
+        (supersedes(x, y) || (y.content.kind === "revoke" && takenRevoke(x))) &&
         !isNothing(meet(minus(x.valid, state.registeredSet(x, cur)), y.valid)),
     );
   const scope = new Map<Item, IntervalSet>();
@@ -419,8 +425,18 @@ export function judgeRevertOf(
 
   // Event and timeless tables: an undo of a revoked row is `revoked` when the row is still revoked
   // once it is written (04-write-and-read «撤回某次写入（undo）»). An undo of the revoke itself, or
-  // one taking it back with `include_later` (④, awaiting), leaves the row existing.
-  if (judged && !state.isState && state.revoked(c.cur)) {
+  // one taking it back with `include_later` (④, awaiting), leaves the row existing. An undo of a
+  // revoke in effect now (an item of it not covered, step 3) is accepted even when another revoke
+  // keeps the row revoked: it registers what it takes back, so that revoke can be undone in turn.
+  // Its own items only: a revoke an include_later takes back with it is not the target.
+  const currentRevoke = c.zai.some(
+    (y) =>
+      !c.isLater(y) &&
+      y.target === "existence" &&
+      y.content.kind === "revoke" &&
+      !isNothing(c.scope.get(y) ?? []),
+  );
+  if (judged && !state.isState && !currentRevoke && state.revoked(c.cur)) {
     const after = state.with(c.asWritten, c.regs);
     if (after.revoked(afterAt)) {
       throw new JudgeError("revoked", "the row is revoked", { ops: after.revokedBy(afterAt) });

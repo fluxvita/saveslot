@@ -1,6 +1,7 @@
 // Property tests over logs with deletions interleaved with operations (02-architecture §11,
 // «删除的性质»): no kernel.
 
+import { appendFileSync } from "node:fs";
 import type { BizPoint, FieldId } from "@fluxvita/saveslot-contract-core";
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
@@ -11,6 +12,7 @@ import {
   endpoints,
   type Iv,
   type IvSet,
+  intersect,
   isEmpty,
   subtract,
   union,
@@ -130,11 +132,13 @@ const furtherStep: fc.Arbitrary<Step> = fc.oneof(
   { weight: 3, arbitrary: decisions },
 );
 
-/** Grace-period steps: writes, restatements and decisions, no deletion events. */
+/**
+ * Grace-period steps: writes and restatements, no deletion events. No decisions: in the first
+ * version a decision on a row the pending deletion affects is refused (see `decisionInGracePeriod`).
+ */
 const graceStep: fc.Arbitrary<Step> = fc.oneof(
   { weight: 3, arbitrary: write },
   { weight: 2, arbitrary: resend },
-  { weight: 2, arbitrary: decisions },
 );
 
 function writeOp(
@@ -228,7 +232,7 @@ function extend(
       out.push({ kind: "deletion", op, id: `pi_${op}`, sources: s.src });
     } else if (s.t === "cancel") {
       const id = deletions()[deletions().length - 1 - s.back];
-      if (id !== undefined) out.push({ kind: "cancel", op, id });
+      if (id !== undefined && !decisionInGracePeriod(out, id)) out.push({ kind: "cancel", op, id });
     } else {
       const ev = evaluateLog(schema, out).final;
       const open = ev.items.filter(
@@ -317,6 +321,26 @@ const restoreAfterCancel: fc.Arbitrary<Step[]> = fc
   ]);
 
 /** Sources the log's writes cite: as a source of a field or as evidence for an interval. */
+/**
+ * Whether a person decided on the row (a resolution, a confirmation or rejection, an undo) after
+ * deletion `id` while it touched the row: in the first version a decision on a row a pending
+ * deletion affects is refused, so a log cancelling `id` after one is not one the kernel records
+ * (03-deletion «撤回与宽限期»). The generators leave such cancellations out.
+ */
+function decisionInGracePeriod(log: readonly LogEntry[], id: string): boolean {
+  const at = log.findIndex((e) => e.kind === "deletion" && e.id === id);
+  const d = log[at];
+  if (d === undefined || d.kind !== "deletion") return false;
+  const cited = new Set(citedSources(log.slice(0, at)));
+  if (!d.sources.some((x) => cited.has(x))) return false;
+  return log
+    .slice(at + 1)
+    .some(
+      (e) =>
+        e.kind === "resolve" || e.kind === "confirm" || e.kind === "reject" || e.kind === "undo",
+    );
+}
+
 function citedSources(log: readonly LogEntry[]): string[] {
   const out = new Set<string>();
   for (const e of log) {
@@ -631,6 +655,8 @@ const counts = {
   refusedInBase: 0,
   putBackDiffers: 0,
   withDecisions: 0,
+  decidedInGrace: 0,
+  decidedDiffers: 0,
   undoOfRevert: 0,
   undoOfRevertRegained: 0,
   mergePath: 0,
@@ -677,6 +703,9 @@ function noEndpointLeak(full: readonly LogEntry[], run: LogEvaluation): void {
  * replay refuses, and a candidate put back and judged again, are compared by what they gave.
  * Undefined when the deletion itself is refused.
  */
+/** Grace-period resolutions' candidates partly the same as the value after the cancellation. */
+let decidedPartial = 0;
+
 function checkCancelRestores(
   schema: TableSchema,
   prefix: readonly LogEntry[],
@@ -684,7 +713,13 @@ function checkCancelRestores(
   graceAll: readonly LogEntry[],
   cancelOp: number,
 ):
-  | { kept: number; refusedInBase: number; putBackDiffers: number; withDecisions: boolean }
+  | {
+      kept: number;
+      refusedInBase: number;
+      putBackDiffers: number;
+      withDecisions: boolean;
+      decided: { nonEmpty: boolean; differs: boolean };
+    }
   | undefined {
   const state = schema.kind === "state";
   const run = evaluateLog(schema, [
@@ -699,11 +734,144 @@ function checkCancelRestores(
   const cancelStep = run.steps.at(-1);
   const kept = cancelStep?.keptEffective ?? [];
   const cancelled = run.final;
-  const baseRun = evaluateLog(schema, [...prefix.filter((e) => !refused.has(e)), ...grace], {
+  // People's decisions in the grace period, as the run recorded them (what each decided): the
+  // baseline executes them on those items (03-deletion «撤回与宽限期»: they stay after the
+  // cancellation; a decision is as recorded in every replay).
+  const decidedInGrace = new Map<number, readonly string[]>();
+  for (const st of run.steps) {
+    if (!st.refused && grace.includes(st.entry) && st.decided !== undefined) {
+      decidedInGrace.set(st.entry.op, st.decided);
+    }
+  }
+  const baseLog = [...prefix.filter((e) => !refused.has(e)), ...grace];
+  const baseRun = evaluateLog(schema, baseLog, {
     forcedEffective: kept,
     forcedSuperseded: cancelStep?.keptSuperseded ?? [],
+    forcedDecided: decidedInGrace,
   });
   const base = baseRun.final;
+  // Checked without the record passed: each grace-period decision's items are, after the
+  // cancellation, closed by it and of its kind (a resolution's candidates, a confirmation's or
+  // rejection's awaiting items); a confirmation of items still there wrote its items.
+  for (const [op, keys] of decidedInGrace) {
+    const d = grace.find((e) => e.op === op);
+    if (d === undefined || (d.kind !== "resolve" && d.kind !== "confirm" && d.kind !== "reject"))
+      continue;
+    const kind = d.kind === "resolve" ? "candidate" : "awaiting";
+    const ofKey = cancelled.items.filter((x) => keys.includes(`${x.event}/${x.target}`));
+    const still = ofKey.filter((x) => x.status !== "dropped");
+    // The sameness rule comes first (05-time «同值的基准是写入方所见的版本»; 03-deletion «同值判断»):
+    // a decided item the same as the version its write saw, over its whole range, is no change —
+    // a corroboration with evidence pointed at, a no-op without; only an item still a change is
+    // the one the decision closed. The seen version is recomputed apart: the log up to it, with
+    // the deletions in force after the cancellation.
+    for (const key of [...new Set(ofKey.map((x) => `${x.event}/${x.target}`))]) {
+      const [ev, target] = key.split("/") as [string, string];
+      const xs = ofKey.filter((x) => `${x.event}/${x.target}` === key);
+      const live = xs.filter((x) => x.status !== "dropped");
+      const o = [...withD, ...graceAll].find(
+        (e): e is WriteOp => e.kind === "write" && e.event === Number(ev),
+      );
+      const input = target === "existence" ? undefined : o?.fields[target as FieldId];
+      if (o === undefined || input === undefined) {
+        for (const x of live) {
+          expect({ op, item: etKey(x), status: x.status, closed: x.closed === true }).toEqual({
+            op,
+            item: etKey(x),
+            status: kind,
+            closed: true,
+          });
+        }
+        continue;
+      }
+      const seenAt = o.seen ?? o.op - 1;
+      const all: LogEntry[] = [...withD, ...graceAll, { kind: "cancel", op: cancelOp, id: "pi_d" }];
+      const cancelledIds = new Set(all.flatMap((e) => (e.kind === "cancel" ? [e.id] : [])));
+      // The state as of operation `at` in the replay after the cancellation, as 03-deletion
+      // «重放规则» reads it (the «同值判断» row: the seen version as it is after the deletions; and
+      // «撤回»: a cancelled deletion no longer counts as deleted) — not 05-time's write-time view:
+      // the log up to `at` with the deletions in force now where they are (one confirmed before a
+      // write changes how the writes between are judged), a cancelled deletion as never made, and
+      // the deletions confirmed after `at` that are in force now (a deletion reaches back).
+      // Fields a write left no value on when written stay no-ops in every replay (03-deletion,
+      // deviation one: «写入时没有留下值的部分保持原样»), as the run judged them.
+      const asWritten = all.map((e) => {
+        if (e.kind !== "write") return e;
+        const st = run.steps.find((x) => x.entry === e && !x.refused);
+        if (st === undefined) return e;
+        const noop = (Object.keys(e.fields) as FieldId[]).filter(
+          (f) => !st.state.items.some((x) => x.event === e.event && x.target === f),
+        );
+        return noop.length > 0 ? { ...e, noop: [...(e.noop ?? []), ...noop] } : e;
+      });
+      const stateAt = (at: number) => {
+        const later = all.flatMap((e) =>
+          e.kind === "deletion" && e.op > at && !cancelledIds.has(e.id) ? e.sources : [],
+        );
+        // With what the cancellation recorded as kept in effect and kept superseded (people's
+        // decisions in the grace period rest on them), as the baseline takes them.
+        return evaluateLog(
+          schema,
+          [
+            ...asWritten.filter(
+              (e) =>
+                e.op <= at &&
+                !(e.kind === "deletion" && cancelledIds.has(e.id)) &&
+                e.kind !== "cancel",
+            ),
+            ...(later.length > 0
+              ? [{ kind: "deletion" as const, op: at + 0.5, id: "pi_at", sources: later }]
+              : []),
+          ],
+          { forcedEffective: kept, forcedSuperseded: cancelStep?.keptSuperseded ?? [] },
+        ).final;
+      };
+      const seenState = stateAt(seenAt);
+      // A corroboration also needs the value still the same just before the write (05-time
+      // «用同样的值写»): a part changed since the seen version is judged as an ordinary write.
+      const nowState = stateAt(o.op - 1);
+      const range = union(...xs.filter((x) => !isEmpty(x.valid)).map((x) => x.valid));
+      const seenSegs = seenState.fields[target as FieldId] ?? [];
+      const nowSegs = nowState.fields[target as FieldId] ?? [];
+      const segs = state
+        ? elementarySegments(
+            endpoints([range, ...seenSegs.map((g) => g.valid), ...nowSegs.map((g) => g.valid)]),
+          ).filter((g) => covers(range, g))
+        : [{ from: null, to: null }];
+      if (segs.length === 0) continue;
+      const sameIn = (ev: Evaluation, gs: typeof seenSegs) =>
+        segs.map(
+          (g) =>
+            (state || ev.exists) &&
+            JSON.stringify(gs.find((h) => covers(h.valid, g))?.value) ===
+              JSON.stringify(input.value),
+        );
+      const same = sameIn(seenState, seenSegs);
+      const sameNow = sameIn(nowState, nowSegs);
+      if (same.some(Boolean) && !same.every(Boolean)) {
+        decidedPartial++;
+        continue;
+      }
+      const shown = [...new Set(live.map((x) => `${x.status}${x.closed ? " closed" : ""}`))].sort();
+      const expected = !same.every(Boolean)
+        ? [`${kind} closed`]
+        : !input.explicit
+          ? []
+          : [
+              ...(sameNow.some(Boolean) ? ["corroborated"] : []),
+              ...(sameNow.some((x) => !x) ? [`${kind} closed`] : []),
+            ].sort();
+      expect({ op, key, shown }).toEqual({ op, key, shown: expected });
+    }
+    // A confirmation of items still awaiting (still a change, not same-valued now) wrote its items.
+    if (d.kind === "confirm" && still.some((x) => x.status === "awaiting")) {
+      const wrote = cancelled.items.filter((x) => x.event === d.event && x.status !== "dropped");
+      expect({ op, confirmationWrote: wrote.length > 0 }).toEqual({ op, confirmationWrote: true });
+    }
+  }
+  const decidedNonEmpty = [...decidedInGrace.values()].some((k) => k.length > 0);
+  const statsFile = process.env["DECIDED_STATS"];
+  if (statsFile && decidedNonEmpty) appendFileSync(statsFile, `DECIDED ${schema.kind}\n`);
   const graceEvents = new Set(
     grace.filter((e): e is Op => e.kind !== "deletion" && e.kind !== "cancel").map((e) => e.event),
   );
@@ -782,11 +950,25 @@ function checkCancelRestores(
     return [...by.entries()].map(([key, vs]) => `${key} ${JSON.stringify(union(...vs))}`).sort();
   };
   expect(judgement(cancelled)).toEqual(judgement(base));
+  // Whether passing the record made a difference: the same baseline judging the decisions anew.
+  const differs =
+    decidedNonEmpty &&
+    JSON.stringify(
+      judgement(
+        evaluateLog(schema, baseLog, {
+          forcedEffective: kept,
+          forcedSuperseded: cancelStep?.keptSuperseded ?? [],
+        }).final,
+      ),
+    ) !== JSON.stringify(judgement(base));
+  if (statsFile && differs) appendFileSync(statsFile, `DIFFERS ${schema.kind}\n`);
+  if (statsFile) appendFileSync(statsFile, `PARTIAL ${decidedPartial}\n`);
   return {
     kept: kept.length,
     refusedInBase: refusedInBase.length,
     putBackDiffers: putBackDiffers.length,
     withDecisions: grace.some((e) => e.kind !== "write"),
+    decided: { nonEmpty: decidedNonEmpty, differs },
   };
 }
 
@@ -922,6 +1104,476 @@ describe.each(both)("%s table", (_, schema, state) => {
     hits.check();
   });
 
+  it("taking a candidate changes no value a write outside its cover set gives", () => {
+    // 01-objects «各处理方式的执行语义» take_candidate; 03-deletion «搬运的值»: a take_candidate
+    // records its merge base and cover set O; a write in effect after the merge base and before
+    // the resolution, not in O and not a candidate of the item, keeps giving its value where it
+    // gives one, under any deletions. Checked against the same log with the resolution replaced
+    // by one of the same operation number that decides nothing (the later operations keep the
+    // versions they saw): wherever such a write gives the value there, the take does not give it
+    // in the log with the resolution. The
+    // item's own candidates are left out: the resolution closes the ones it does not take, so
+    // without it a deletion may put them in effect, and the taken one is the resolution's value.
+    // Reaching the check is built in on the state table (the fixed sample below); the random
+    // samples, half of them drawn on the reaching shape, only guard against a generator gone
+    // degenerate. On the event table O lists every
+    // write in effect on the unit when the item is resolved, so a write outside O giving a value
+    // there only comes from a deletion putting another item's candidate in effect: the samples
+    // are checked, a share of hits is not required.
+    const hits = new Hits(Number.MIN_VALUE);
+    let reverseChecked = 0;
+    let restorableMet = 0;
+    let revHits = 0;
+    const check = (h: { hit(): void }, log: LogEntry[], rev: { hit(): void } = { hit() {} }) => {
+      const run = evaluateLog(schema, log);
+      for (const tc of run.final.takeCandidates) {
+        const resolve = log.find((e) => e.kind === "resolve" && e.op === tc.op);
+        if (resolve?.kind !== "resolve" || resolve.take === undefined) continue;
+        const cover = new Set(tc.cover.map((e) => `${e.event}/${e.target}`));
+        // Every recorded restorable item, checked apart from the evaluator's record: the log up to
+        // the take replayed without the deletions pending then has it in effect over the recorded
+        // interval, where the log as it was then has not (directly removed, or judged otherwise
+        // through the removal: either way back once those deletions are cancelled).
+        if ((tc.restorable ?? []).length > 0) {
+          const prefix = log.filter((e) => e.op < tc.op);
+          const cancelledThen = new Set(prefix.flatMap((e) => (e.kind === "cancel" ? [e.id] : [])));
+          const pendingThen = new Set(
+            prefix.flatMap((e) =>
+              e.kind === "deletion" && !cancelledThen.has(e.id) ? [e.id] : [],
+            ),
+          );
+          const asThen = evaluateLog(schema, prefix).final;
+          const withoutPending = evaluateLog(
+            schema,
+            prefix.filter((e) => !(e.kind === "deletion" && pendingThen.has(e.id))),
+          ).final;
+          const inEffect = (ev: Evaluation, key: string) =>
+            union(
+              ...ev.items
+                .filter((x) => `${x.event}/${x.target}` === key && x.status === "applied")
+                .map((x) => x.valid),
+            );
+          for (const r of tc.restorable ?? []) {
+            const gone = subtract(inEffect(withoutPending, r.key), inEffect(asThen, r.key));
+            expect({
+              take: tc.op,
+              item: r.key,
+              eligible: isEmpty(subtract(r.valid, gone)),
+            }).toEqual({
+              take: tc.op,
+              item: r.key,
+              eligible: true,
+            });
+          }
+        }
+        const without = evaluateLog(
+          schema,
+          log.map((e) =>
+            e === resolve
+              ? {
+                  kind: "resolve" as const,
+                  op: resolve.op,
+                  event: resolve.event,
+                  decision: "keep_effective" as const,
+                  candidates: [],
+                  unit: resolve.unit,
+                }
+              : e,
+          ),
+        ).final;
+        // Where the take would write: the taken write's items on the unit (a hit is a write
+        // outside O there, whether or not it covers the take).
+        const taken = union(
+          ...run.final.items
+            .filter((x) => x.event === resolve.take && x.status !== "dropped")
+            .map((x) => x.valid),
+        );
+        for (const [f, segs] of Object.entries(without.fields)) {
+          for (const seg of segs ?? []) {
+            if (seg.by === undefined) continue;
+            const by = seg.by;
+            const x = without.items.find(
+              (y) => y.event === by.event && y.target === by.target && y.k === by.k,
+            );
+            if (
+              x === undefined ||
+              x.op <= tc.mergeBase ||
+              x.op >= tc.op ||
+              resolve.candidates.includes(x.event) ||
+              cover.has(`${x.event}/${x.target}`)
+            ) {
+              continue;
+            }
+            // Removed by a deletion pending when the take was judged and back since: the take wins
+            // there (03-deletion «撤回与宽限期»: a take is a write in the grace period).
+            const back = union(
+              ...(tc.restorable ?? [])
+                .filter((r) => r.key === `${x.event}/${x.target}`)
+                .map((r) => r.valid),
+            );
+            if (!isEmpty(intersect(seg.valid, back))) restorableMet++;
+            if (isEmpty(subtract(seg.valid, back))) continue;
+            if (!isEmpty(intersect(seg.valid, taken))) h.hit();
+            // Where x gives the value without the resolution, the take never gives it. (Later
+            // operations may be judged otherwise without the resolution, so the values there are
+            // not compared, only who gives them.)
+            const now = run.final.fields[f as FieldId] ?? [];
+            const ends = endpoints([seg.valid, back, ...now.map((g) => g.valid)]);
+            for (const g of state ? elementarySegments(ends) : [{ from: null, to: null }]) {
+              if (!covers(seg.valid, g) || covers(back, g)) continue;
+              const giver = now.find((h2) => covers(h2.valid, g))?.by?.event;
+              expect({ f, at: g, x: x.event, takeGives: giver === resolve.event }).toEqual({
+                f,
+                at: g,
+                x: x.event,
+                takeGives: false,
+              });
+            }
+          }
+        }
+        // The other direction: where the taken write's items lie and, without the resolution,
+        // no write outside O gives the value, the take gives it, unless the value there is
+        // already the taken one or there is no value either way (a hole). Checked when nothing
+        // but deletions and cancellations follows the take, on a field unit, the take not refused.
+        const takenOp = log.find((e) => e.kind === "write" && e.event === resolve.take);
+        const onlyDeletionsAfter = log
+          .filter((e) => e.op > tc.op)
+          .every((e) => e.kind === "deletion" || e.kind === "cancel");
+        const refused = run.steps.some((st) => st.entry === resolve && st.refused);
+        if (resolve.unit === "existence" || takenOp?.kind !== "write" || !onlyDeletionsAfter)
+          continue;
+        if (refused) continue;
+        for (const f of (Array.isArray(resolve.unit)
+          ? resolve.unit
+          : [resolve.unit]) as FieldId[]) {
+          const input = takenOp.fields[f];
+          if (input === undefined) continue;
+          const mine = union(
+            ...run.final.items
+              .filter((x) => x.event === resolve.take && x.target === f && x.status !== "dropped")
+              .map((x) => x.valid),
+          );
+          const now = run.final.fields[f] ?? [];
+          const was = without.fields[f] ?? [];
+          const ends = endpoints([mine, ...now.map((g) => g.valid), ...was.map((g) => g.valid)]);
+          for (const g of state ? elementarySegments(ends) : [{ from: null, to: null }]) {
+            if (!covers(mine, g)) continue;
+            const giver = now.find((h2) => covers(h2.valid, g));
+            reverseChecked++;
+            if (giver?.by?.event === resolve.event) {
+              rev.hit();
+              continue;
+            }
+            if (giver !== undefined && JSON.stringify(giver.value) === JSON.stringify(input.value))
+              continue;
+            const by = was.find((h2) => covers(h2.valid, g))?.by;
+            const x =
+              by === undefined
+                ? undefined
+                : without.items.find(
+                    (y) => y.event === by.event && y.target === by.target && y.k === by.k,
+                  );
+            const outsideO =
+              x !== undefined &&
+              x.op > tc.mergeBase &&
+              x.op < tc.op &&
+              !resolve.candidates.includes(x.event) &&
+              !cover.has(`${x.event}/${x.target}`);
+            if (outsideO) continue;
+            if (state && giver === undefined && x === undefined) continue;
+            // An event row the deletions removed whole (no required field left): no field gives.
+            if (!state && !run.final.exists) continue;
+            expect({ f, at: g, by: x?.event, takeGives: false }).toEqual({
+              f,
+              at: g,
+              by: x?.event,
+              takeGives: true,
+            });
+          }
+        }
+      }
+    };
+    // A skeleton of the reaching shape with its days and deletions drawn at random (state
+    // table): X, a write; Y over part of X with X's version; Z over part of Y with Y's version;
+    // C with X's version to the next change, a candidate where Y changed the value; C taken;
+    // deletions among the sources. Z outside O is what the check needs.
+    const day = (i: number) => DAYS[i] as BizPoint;
+    const skeleton = fc
+      .record({
+        x: fc.integer({ min: 0, max: 1 }),
+        y: fc.integer({ min: 1, max: 2 }),
+        z: fc.integer({ min: 2, max: 3 }),
+        cv: fc.constantFrom("1", "2"),
+        dels: fc.constantFrom<string[][]>([["S1"]], [["S1"], ["S2"]], [["S2"]], [["S9"]], []),
+      })
+      .map(({ x, y, z, cv, dels }): LogEntry[] => {
+        const span = (from: number, to: number | null): WriteOp["valid"] => ({
+          from: { mode: "given", value: day(from) },
+          to: to === null ? { mode: "next_change" } : { mode: "given", value: day(to) },
+        });
+        const w = (op: number, v: string, src: string, valid: WriteOp["valid"], seen: number) =>
+          ({
+            kind: "write",
+            op,
+            event: op + 1,
+            seen,
+            valid,
+            fields: {
+              f2: { value: v, sources: [src], ...(src === "S6" ? { explicit: true } : {}) },
+            },
+            ...(src === "S6" ? {} : { acknowledge: ["overwrite"] }),
+          }) as LogEntry;
+        return [
+          w(10, "1", "S1", span(x, y + 1), 0),
+          w(20, "3", "S2", span(y, 4), 10),
+          w(30, "5", "S3", span(z, z + 1), 20),
+          w(60, cv, "S6", span(x, null), 10),
+          {
+            kind: "resolve",
+            op: 100,
+            event: 101,
+            decision: "take_candidate",
+            candidates: [61],
+            take: 61,
+            unit: "f2",
+          },
+          ...dels.map((sources, i) => ({
+            kind: "deletion" as const,
+            op: 110 + i,
+            id: `pi_${i}`,
+            sources,
+          })),
+        ];
+      });
+    const random = withTwoSets(schema).map(({ st, a, b }): LogEntry[] => {
+      const head = extend(schema, [], st, 10);
+      const last = Math.max(...head.map((e) => e.op));
+      return [
+        ...head,
+        { kind: "deletion", op: last + 1, id: "pi_x", sources: a },
+        ...(b.length > 0
+          ? [{ kind: "deletion" as const, op: last + 2, id: "pi_y", sources: b }]
+          : []),
+      ];
+    });
+    fc.assert(
+      fc.property(
+        state ? fc.oneof(random, skeleton) : random,
+        hits.track((log) => check(hits, log, { hit: () => revHits++ })),
+      ),
+      { numRuns: RUNS },
+    );
+    if (!state) {
+      // The event table: a write outside O giving the value there comes only from a deletion
+      // putting it in effect, and on an event table a unit has one item (a candidate there is in
+      // the item, put back if removed and frozen as judged), so the only such write is one a
+      // deletion pending when the take was judged removed and that is back after the
+      // cancellation — which does not cover the take (03-deletion «撤回与宽限期»). Built in: the
+      // check meets it and the take gives the value.
+      {
+        const ew = (op: number, v: string, src: string, seen: number, extra: object = {}) =>
+          ({
+            kind: "write",
+            op,
+            event: op + 1,
+            seen,
+            fields: { f2: { value: v, sources: [src] } },
+            ...extra,
+          }) as LogEntry;
+        const log: LogEntry[] = [
+          ew(10, "1", "S1", 0),
+          ew(20, "2", "S2", 10, { acknowledge: ["overwrite"] }),
+          ew(25, "7", "S7", 20, { acknowledge: ["overwrite"] }),
+          ew(30, "5", "S5", 10),
+          { kind: "deletion", op: 40, id: "pi_7", sources: ["S7"] },
+          {
+            kind: "resolve",
+            op: 50,
+            event: 51,
+            decision: "take_candidate",
+            candidates: [31],
+            take: 31,
+            unit: "f2",
+          },
+          { kind: "cancel", op: 60, id: "pi_7" },
+        ];
+        const before = restorableMet;
+        check({ hit() {} }, log);
+        expect({ restorableMet: restorableMet > before }).toEqual({ restorableMet: true });
+        expect(evaluateLog(schema, log).final.fields["f2"]?.[0]?.value).toBe("5");
+      }
+      // The event table: the other direction is built in, as the random samples seldom reach it.
+      // #31 is a candidate against #21 and taken; a later deletion of #11's source, or of #21's
+      // (then #31 is no candidate and gives its own value), leaves the take giving 5 or the value
+      // already 5.
+      const ew = (op: number, v: string, src: string, seen: number, extra: object = {}) =>
+        ({
+          kind: "write",
+          op,
+          event: op + 1,
+          seen,
+          fields: { f2: { value: v, sources: [src] } },
+          ...extra,
+        }) as LogEntry;
+      const base: LogEntry[] = [
+        ew(10, "1", "S1", 0),
+        ew(20, "2", "S2", 10, { acknowledge: ["overwrite"] }),
+        ew(30, "5", "S5", 10),
+        {
+          kind: "resolve",
+          op: 40,
+          event: 41,
+          decision: "take_candidate",
+          candidates: [31],
+          take: 31,
+          unit: "f2",
+        },
+      ];
+      for (const tail of [[], [["S1"]], [["S2"]]] as string[][][]) {
+        let landed = false;
+        const before = reverseChecked;
+        check(
+          { hit: () => {} },
+          [
+            ...base,
+            ...tail.map((sources, i) => ({
+              kind: "deletion" as const,
+              op: 50 + i,
+              id: `pi_${i}`,
+              sources,
+            })),
+          ],
+          { hit: () => (landed = true) },
+        );
+        expect({ tail, checked: reverseChecked > before }).toEqual({ tail, checked: true });
+        if (tail.length === 0 || tail[0]?.[0] === "S1")
+          expect({ tail, landed }).toEqual({ tail, landed: true });
+      }
+      return;
+    }
+    hits.check();
+    // The other direction is reached by the random samples on the state table (about 0.9 of the
+    // segments checked are where the take gives the value): required there.
+    expect({ reverseLanded: revHits > 0 }).toEqual({ reverseLanded: true });
+    // A sample that reaches the check: #61 is taken where it was a candidate, [11-09, 11-11);
+    // deleting S1 extends it to [11-09, ∞), over #31's 5 on [11-15, 11-18). #31 does not meet
+    // the item's interval at the resolution, so it is not in O and keeps its 5.
+    const g = (from: string, to: string | null): ToParam | { from: unknown; to: unknown } => ({
+      from: { mode: "given", value: `2026-${from}` as BizPoint },
+      to:
+        to === null ? { mode: "next_change" } : { mode: "given", value: `2026-${to}` as BizPoint },
+    });
+    const write = (op: number, v: string, src: string, valid: unknown, extra: object = {}) =>
+      ({
+        kind: "write",
+        op,
+        event: op + 1,
+        valid,
+        fields: { f2: { value: v, sources: [src] } },
+        ...extra,
+      }) as LogEntry;
+    let fixed = false;
+    let fixedLanded = false;
+    check(
+      { hit: () => (fixed = true) },
+      [
+        write(10, "1", "S1", g("11-03", "11-11")),
+        write(20, "3", "S2", g("11-09", "11-20"), { seen: 10, acknowledge: ["overwrite"] }),
+        write(30, "5", "S3", g("11-15", "11-18"), { seen: 20, acknowledge: ["overwrite"] }),
+        {
+          kind: "write",
+          op: 60,
+          event: 61,
+          seen: 10,
+          valid: g("11-03", null),
+          fields: { f2: { value: "1", sources: ["S6"], explicit: true } },
+        } as LogEntry,
+        {
+          kind: "resolve",
+          op: 100,
+          event: 101,
+          decision: "take_candidate",
+          candidates: [61],
+          take: 61,
+          unit: "f2",
+        },
+        { kind: "deletion", op: 110, id: "pi_1", sources: ["S1"] },
+      ],
+      { hit: () => (fixedLanded = true) },
+    );
+    expect({ fixedSampleReachesTheCheck: fixed }).toEqual({ fixedSampleReachesTheCheck: true });
+    // The other direction on the same sample: where no write outside O gives the value, the take
+    // gives it.
+    expect({ fixedSampleLands: fixedLanded }).toEqual({ fixedSampleLands: true });
+    // A counterexample to comparing values instead of givers (seed 687768209): without the
+    // resolution, #51 is not high-impact and takes effect, so the entity has a value where it has
+    // none with the resolution; the take gives nothing there.
+    check({ hit: () => {} }, [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 0,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-03" },
+        },
+        fields: { f2: { value: "3", sources: ["S4"], explicit: true } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        valid: { from: { mode: "given", value: "2026-11-07" }, to: { mode: "next_change" } },
+        fields: { f3: { value: "2", sources: ["S4"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "resolve",
+        op: 40,
+        event: 41,
+        decision: "take_candidate",
+        candidates: [21],
+        unit: "f2",
+        take: 21,
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 40,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S4"], explicit: true } },
+      },
+      { kind: "reject", op: 60, event: 61, target: 51 },
+      {
+        kind: "write",
+        op: 70,
+        event: 71,
+        seen: 60,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-05" },
+        },
+        fields: { f3: { value: "2", sources: ["S4"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      { kind: "deletion", op: 71, id: "pi_x", sources: ["S3"] },
+      { kind: "deletion", op: 72, id: "pi_y", sources: ["S1"] },
+    ] as LogEntry[]);
+  });
+
   it("«撤回还原»: after a cancellation, what grace-period writes did not cover is as the forced replay", () => {
     // 03-deletion «推论» «撤回还原»: the part not covered by grace-period writes equals the replay
     // in which the deletion was never confirmed, the writes recorded as kept in effect take
@@ -962,6 +1614,8 @@ describe.each(both)("%s table", (_, schema, state) => {
           counts.keptEffective += checked.kept;
           counts.refusedInBase += checked.refusedInBase;
           counts.putBackDiffers += checked.putBackDiffers;
+          if (checked.decided.nonEmpty) counts.decidedInGrace++;
+          if (checked.decided.differs) counts.decidedDiffers++;
           if (checked.withDecisions) counts.withDecisions++;
         }),
       ),
@@ -1645,6 +2299,7 @@ it("«撤回还原»: a grace-period decision the replay without the deletion re
     refusedInBase: 1,
     putBackDiffers: 0,
     withDecisions: true,
+    decided: { nonEmpty: true, differs: false },
   });
   const base = evaluateLog(STATE, [...prefix, ...grace]).steps.at(-1);
   expect({ refused: base?.refused, rejected: base?.rejected }).toEqual({
@@ -1753,6 +2408,7 @@ it("«撤回还原»: a put-back candidate judged again where the forced replay 
     refusedInBase: 0,
     putBackDiffers: 1,
     withDecisions: true,
+    decided: { nonEmpty: true, differs: false },
   });
   const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 90, id: "pi_d" }]);
   const cancel = run.steps.at(-1);
@@ -1954,8 +2610,10 @@ describe("state table: a revert covers by (event, target)", () => {
   });
 });
 
-it("grace periods with decisions occur in the sampled logs", () => {
-  expect(counts.withDecisions).toBeGreaterThan(0);
+it("no grace period with a decision occurs in the sampled logs", () => {
+  // In the first version a decision on a row a pending deletion affects is refused: the grace
+  // steps carry none (see `decisionInGracePeriod`).
+  expect(counts.withDecisions).toBe(0);
 });
 
 it("undos of reverts occur in the sampled logs, also ones accepted through a pending deletion", () => {
@@ -1979,4 +2637,650 @@ it("order independence covers three deletions and deleting again after a cancell
 
 it("further operations after both deletion orders include undos and decisions", () => {
   expect(counts.furtherOps).toBeGreaterThan(0);
+});
+
+describe("«撤回还原»: a grace-period decision is executed in the baseline as recorded", () => {
+  // Found by the property (seed 1238607428). #21 is a candidate against #11, resolved by
+  // take_previous; #51 (1 from 11-01) is a candidate against #41 when written. Deleting S2
+  // removes #41: #51 erases the change point it saw, awaiting confirmation; a person confirms (or
+  // rejects) it in the grace period, then the deletion is cancelled and #41 is back.
+  const g = (from: string): WriteOp["valid"] => ({
+    from: { mode: "given", value: `2026-${from}` as BizPoint },
+    to: { mode: "open" },
+  });
+  const w = (op: number, seen: number, v: string, src: string, from: string): LogEntry =>
+    ({
+      kind: "write",
+      op,
+      event: op + 1,
+      seen,
+      valid: g(from),
+      fields: { f2: { value: v, sources: [src], explicit: false } },
+    }) as LogEntry;
+  const prefix: LogEntry[] = [
+    w(10, 0, "1", "S1", "10-01"),
+    w(20, 0, "3", "S1", "11-01"),
+    { kind: "resolve", op: 30, event: 31, decision: "take_previous", candidates: [21], unit: "f2" },
+    w(40, 30, "3", "S2", "11-01"),
+    w(50, 30, "1", "S1", "11-01"),
+  ];
+  const withD: LogEntry[] = [...prefix, { kind: "deletion", op: 60, id: "pi_d", sources: ["S2"] }];
+  for (const kind of ["confirm", "reject"] as const) {
+    it(`a ${kind}ation of #51`, () => {
+      const grace: LogEntry[] = [{ kind, op: 70, event: 71, target: 51 }];
+      const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 90, id: "pi_d" }]);
+      const items = (ev: Evaluation, e: number) =>
+        ev.items
+          .filter((x) => x.event === e)
+          .map(
+            (x) => `${x.target} ${x.status}${x.closed ? " closed" : ""} ${JSON.stringify(x.valid)}`,
+          );
+      // #51 stays the awaiting item the decision closed; no candidate is left open, so the conflict
+      // item it was a candidate of when written has none: no item is open without candidates, and
+      // #51 is not both closed by the decision and a candidate there.
+      expect(items(run.final, 51)).toEqual([
+        'f2 awaiting closed [{"from":"2026-11-01","to":null}]',
+      ]);
+      // The open conflict items after the cancellation, by unit (an item is its open candidates):
+      // none holds #51 or the write it conflicted with, #41.
+      const open = new Map<string, number[]>();
+      for (const x of run.final.items) {
+        if (x.status !== "candidate" || x.closed) continue;
+        open.set(x.target, [...(open.get(x.target) ?? []), x.event]);
+      }
+      expect([...open.values()].filter((es) => es.includes(51) || es.includes(41))).toEqual([]);
+      expect(run.final.items.filter((x) => x.status === "candidate" && !x.closed)).toEqual([]);
+      expect((run.final.fields["f2"] ?? []).map((x) => [x.valid[0]?.from, x.value])).toEqual(
+        kind === "confirm"
+          ? [
+              ["2026-10-01", "1"],
+              ["2026-11-01", "1"],
+            ]
+          : [
+              ["2026-10-01", "1"],
+              ["2026-11-01", "3"],
+            ],
+      );
+      // The confirmation wrote #51's value over #41, back after the cancellation; a rejection wrote
+      // nothing and #41's 3 is back.
+      expect(items(run.final, 71)).toEqual(
+        kind === "confirm" ? ['f2 applied [{"from":"2026-11-01","to":null}]'] : [],
+      );
+      expect(checkCancelRestores(STATE, prefix, withD, grace, 90)?.decided).toEqual({
+        nonEmpty: true,
+        differs: true,
+      });
+    });
+  }
+
+  it("an event table: keep_effective on existence while one target's source is pending deletion", () => {
+    // #31 gives f2 (SX) and f3 (SY) and meets the revoke #21: a candidate on existence for both.
+    // Deleting SX removes #31/f2; keep_effective in the grace period closes what is in the item
+    // then (#31/f3). The baseline judging it anew would close #31/f2 too.
+    const E: TableSchema = { kind: "event", required: ["f2"] };
+    const pre: LogEntry[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        fields: { f2: { value: "1", sources: ["S1"] }, f3: { value: "a", sources: ["S1"] } },
+      } as LogEntry,
+      { kind: "revoke", op: 20, event: 21, seen: 10 },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        fields: { f2: { value: "3", sources: ["SX"] }, f3: { value: "c", sources: ["SY"] } },
+      } as LogEntry,
+    ];
+    const withD: LogEntry[] = [...pre, { kind: "deletion", op: 50, id: "pi_d", sources: ["SX"] }];
+    const grace: LogEntry[] = [
+      {
+        kind: "resolve",
+        op: 60,
+        event: 61,
+        decision: "keep_effective",
+        candidates: [31],
+        unit: "existence",
+      },
+    ];
+    expect(checkCancelRestores(E, pre, withD, grace, 70)?.decided).toEqual({
+      nonEmpty: true,
+      differs: true,
+    });
+  });
+
+  it("a resolution's candidate the same as the value after the cancellation is a corroboration", () => {
+    // Found by the property (seed -915449397). #101 (3, evidence pointed at) is a candidate in the
+    // grace period, its item kept by keep_effective. The cancellation brings #41's 3 back over
+    // #101's whole range: #101 is no longer a change, a corroboration.
+    const pre = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 20,
+        valid: { from: { mode: "given", value: "2026-11-05" }, to: { mode: "next_change" } },
+        fields: { f2: { value: "3", sources: ["S4"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 60,
+        event: 61,
+        seen: 40,
+        valid: {
+          from: { mode: "given", value: "2026-11-07" },
+          to: { mode: "given", value: "2026-11-09" },
+        },
+        fields: { f2: { value: "1", sources: ["S1"], explicit: true } },
+      },
+      {
+        kind: "write",
+        op: 80,
+        event: 81,
+        seen: 60,
+        valid: {
+          from: { mode: "given", value: "2026-11-03" },
+          to: { mode: "given", value: "2026-11-05" },
+        },
+        fields: { f3: { value: "2", sources: ["S4"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+    ] as LogEntry[];
+    const withD: LogEntry[] = [...pre, { kind: "deletion", op: 90, id: "pi_d", sources: ["S4"] }];
+    const grace = [
+      {
+        kind: "write",
+        op: 100,
+        event: 101,
+        seen: 80,
+        valid: { from: { mode: "given", value: "2026-11-05" }, to: { mode: "next_change" } },
+        fields: { f2: { value: "3", sources: ["G0"], explicit: true } },
+      },
+      {
+        kind: "resolve",
+        op: 110,
+        event: 111,
+        decision: "keep_effective",
+        candidates: [101],
+        unit: "f2",
+      },
+    ] as LogEntry[];
+    expect(checkCancelRestores(STATE, pre, withD, grace, 130)?.decided.nonEmpty).toBe(true);
+    const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 130, id: "pi_d" }]);
+    expect(run.final.items.filter((x) => x.event === 101).map((x) => x.status)).toEqual([
+      "corroborated",
+    ]);
+  });
+
+  it("(A) a confirmed write the same as its seen version after the cancellation is a corroboration", () => {
+    // Seed -713180905. #41 resends 1 with evidence pointed at, awaiting in the grace period and
+    // confirmed; the cancellation brings #11's 1 back: #41 is the same as the version it saw and
+    // still the same before it, a corroboration, not the closed awaiting item (the sameness rule
+    // comes first; nothing is left to decide).
+    const pre = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 0,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-03" },
+        },
+        fields: { f2: { value: "1", sources: ["S5"], explicit: false } },
+      },
+    ] as LogEntry[];
+    const withD: LogEntry[] = [
+      ...pre,
+      { kind: "deletion", op: 30, id: "pi_d", sources: ["S1"] } as LogEntry,
+    ];
+    const grace = [
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 30,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["G0"], explicit: true } },
+      },
+      { kind: "confirm", op: 50, event: 51, target: 41 },
+    ] as LogEntry[];
+    checkCancelRestores(STATE, pre, withD, grace, 70);
+    const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 70, id: "pi_d" }]);
+    expect(run.final.items.filter((x) => x.event === 41).map((x) => x.status)).toEqual([
+      "corroborated",
+    ]);
+  });
+
+  it("(B) a closed candidate different from its seen version stays closed, the same as the value now or not", () => {
+    // Seed 340210005. #61 (2 from 11-03, no evidence pointed at) is a candidate in the grace period,
+    // its item kept by keep_effective; after the cancellation it differs from the version it saw
+    // (#11's 1 is back) though the same as the value in effect: still the candidate it closed.
+    const pre = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S4"], explicit: true } },
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 20,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-03" },
+        },
+        fields: { f2: { value: "3", sources: ["S5"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 30,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-03" },
+        },
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+      },
+    ] as LogEntry[];
+    const withD: LogEntry[] = [
+      ...pre,
+      { kind: "deletion", op: 50, id: "pi_d", sources: ["S1", "S4"] } as LogEntry,
+    ];
+    const grace = [
+      {
+        kind: "write",
+        op: 60,
+        event: 61,
+        seen: 30,
+        valid: { from: { mode: "given", value: "2026-11-03" }, to: { mode: "open" } },
+        fields: { f2: { value: "2", sources: ["G0"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 70,
+        event: 71,
+        seen: 60,
+        valid: { from: { mode: "given", value: "2026-11-03" }, to: { mode: "open" } },
+        fields: { f2: { value: "2", sources: ["G1"], explicit: true } },
+      },
+      {
+        kind: "resolve",
+        op: 80,
+        event: 81,
+        decision: "keep_effective",
+        candidates: [61],
+        unit: "f2",
+      },
+    ] as LogEntry[];
+    checkCancelRestores(STATE, pre, withD, grace, 100);
+    const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 100, id: "pi_d" }]);
+    expect(
+      run.final.items
+        .filter((x) => x.event === 61)
+        .map((x) => `${x.status}${x.closed ? " closed" : ""}`),
+    ).toEqual(["candidate closed"]);
+  });
+
+  it("a grace-period write still a change after the cancellation stays the decision's (seed -1688483462)", () => {
+    // Deleting S1 at 30 comes before #41 (S4), which erases the boundary it saw at 11-01 and
+    // awaits confirmation, never in effect. #71, written while S4's deletion is pending, is
+    // confirmed; the cancellation brings #41 back, still awaiting: #71's seen version is without
+    // a value on [10-01, 11-01), so #71 is still a change, the awaiting item the confirmation
+    // closed — not a corroboration.
+    const pre = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S5"], explicit: true } },
+      },
+      { kind: "deletion", op: 30, id: "pi_30", sources: ["S1"] },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 30,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S4"], explicit: true } },
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 40,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-03" },
+        },
+        fields: { f2: { value: "1", sources: ["S3"], explicit: false } },
+      },
+    ] as LogEntry[];
+    const withD: LogEntry[] = [...pre, { kind: "deletion", op: 60, id: "pi_d", sources: ["S4"] }];
+    const grace = [
+      {
+        kind: "write",
+        op: 70,
+        event: 71,
+        seen: 60,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["G0"], explicit: true } },
+      },
+      { kind: "confirm", op: 80, event: 81, target: 71 },
+    ] as LogEntry[];
+    checkCancelRestores(STATE, pre, withD, grace, 100);
+    const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 100, id: "pi_d" }]);
+    expect(
+      run.final.items
+        .filter((x) => x.event === 71)
+        .map((x) => `${x.status}${x.closed ? " closed" : ""}`),
+    ).toEqual(["awaiting closed"]);
+  });
+
+  it("a write the cancellation keeps in effect counts before a grace-period write (seed 639604447)", () => {
+    // #41 awaits confirmation when written; deleting S5 puts it in effect, and take_previous in the
+    // grace period rests on it, so the cancellation keeps it in effect. #61, the same as its seen
+    // version, was changed since by #41: still the candidate take_previous closed.
+    const pre = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-03" },
+        },
+        fields: { f2: { value: "2", sources: ["S5"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 30,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "2", sources: ["S1"], explicit: false } },
+      },
+    ] as LogEntry[];
+    const withD: LogEntry[] = [
+      ...pre,
+      { kind: "deletion", op: 50, id: "pi_d", sources: ["S5"] } as LogEntry,
+    ];
+    const grace = [
+      {
+        kind: "write",
+        op: 60,
+        event: 61,
+        seen: 30,
+        valid: {
+          from: { mode: "given", value: "2026-11-03" },
+          to: { mode: "given", value: "2026-11-05" },
+        },
+        fields: { f2: { value: "1", sources: ["G0"], explicit: true } },
+      },
+      {
+        kind: "resolve",
+        op: 70,
+        event: 71,
+        decision: "take_previous",
+        candidates: [61],
+        unit: "f2",
+      },
+    ] as LogEntry[];
+    checkCancelRestores(STATE, pre, withD, grace, 90);
+    const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 90, id: "pi_d" }]);
+    expect(
+      run.final.items
+        .filter((x) => x.event === 61)
+        .map((x) => `${x.status}${x.closed ? " closed" : ""}`),
+    ).toEqual(["candidate closed"]);
+  });
+
+  it("a write that was a no-op when written stays one after the cancellation (seed -1477265573)", () => {
+    // #41, written in the grace period the same as its seen version, is a no-op and stays one
+    // (deviation one: what left no value when written stays so). After the cancellation #51 is the
+    // same as its seen version and as the value before it: a corroboration.
+    const pre = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        fields: { f2: { value: "3", sources: ["S2"], explicit: false } },
+      },
+    ] as LogEntry[];
+    const withD: LogEntry[] = [
+      ...pre,
+      { kind: "deletion", op: 30, id: "pi_d", sources: ["S2"] } as LogEntry,
+    ];
+    const grace = [
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 30,
+        fields: { f2: { value: "1", sources: ["G0"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 20,
+        fields: { f2: { value: "3", sources: ["G1"], explicit: true } },
+      },
+      {
+        kind: "resolve",
+        op: 60,
+        event: 61,
+        decision: "keep_effective",
+        candidates: [51],
+        unit: "f2",
+      },
+    ] as LogEntry[];
+    checkCancelRestores(EVENT, pre, withD, grace, 80);
+    const run = evaluateLog(EVENT, [...withD, ...grace, { kind: "cancel", op: 80, id: "pi_d" }]);
+    expect(
+      run.final.items
+        .filter((x) => x.event === 51)
+        .map((x) => `${x.status}${x.closed ? " closed" : ""}`),
+    ).toEqual(["corroborated"]);
+  });
+
+  it("the second review's logs of items 1 and 3 go through the check", () => {
+    const span = (from: string, to: string | null): WriteOp["valid"] => ({
+      from: { mode: "given", value: `2026-${from}` as BizPoint },
+      to: to === null ? { mode: "open" } : { mode: "given", value: `2026-${to}` as BizPoint },
+    });
+    const wr = (
+      op: number,
+      fields: Record<string, [string, string]>,
+      valid: WriteOp["valid"],
+      extra: object = {},
+    ): LogEntry =>
+      ({
+        kind: "write",
+        op,
+        event: op + 1,
+        valid,
+        fields: Object.fromEntries(
+          Object.entries(fields).map(([f, [value, src]]) => [f, { value, sources: [src] }]),
+        ),
+        ...extra,
+      }) as LogEntry;
+    const ack = { acknowledge: ["overwrite"] };
+    // Item 1: #21 awaits confirmation when written; deleting S6 makes it a candidate, taken in the
+    // grace period; the cancellation must leave the take (#21 the candidate it closed).
+    const pre1: LogEntry[] = [
+      wr(10, { f2: ["1", "S1"] }, span("10-01", null)),
+      wr(12, { f2: ["7", "S7"] }, span("11-01", null), { seen: 10, ...ack }),
+      wr(14, { f2: ["4", "S4"] }, span("10-01", "10-15"), { seen: 12, ...ack }),
+      wr(16, { f2: ["3", "S6"] }, span("10-01", "10-15"), { seen: 14, ...ack }),
+      wr(20, { f2: ["3", "S3"] }, span("10-01", null), { seen: 12 }),
+    ];
+    checkCancelRestores(
+      STATE,
+      pre1,
+      [...pre1, { kind: "deletion", op: 30, id: "pi_d", sources: ["S6"] }],
+      [
+        {
+          kind: "resolve",
+          op: 40,
+          event: 41,
+          decision: "take_candidate",
+          candidates: [21],
+          take: 21,
+          unit: "f2",
+        },
+      ],
+      50,
+    );
+    // Item 3: a field group; deleting SX removes #31's f2, the take lists #31 in the grace period;
+    // after the cancellation #31's f2 is put back into an item of its own, not taken.
+    const G: TableSchema = {
+      kind: "state",
+      required: ["f2"],
+      groups: [["f2" as FieldId, "f3" as FieldId]],
+    };
+    const pre3: LogEntry[] = [
+      wr(10, { f2: ["1", "S1"], f3: ["a", "S1"] }, span("10-01", null)),
+      wr(20, { f2: ["2", "S2"], f3: ["b", "S2"] }, span("10-01", null), { seen: 10, ...ack }),
+      wr(30, { f2: ["3", "SX"], f3: ["c", "SY"] }, span("11-01", "11-10"), {
+        seen: 10,
+        validSources: ["SV"],
+      }),
+      wr(40, { f2: ["4", "S4"] }, span("11-01", "11-10"), { seen: 10 }),
+    ];
+    checkCancelRestores(
+      G,
+      pre3,
+      [...pre3, { kind: "deletion", op: 50, id: "pi_d", sources: ["SX"] }],
+      [
+        {
+          kind: "resolve",
+          op: 60,
+          event: 61,
+          decision: "take_candidate",
+          candidates: [31, 41],
+          take: 31,
+          unit: ["f2" as FieldId, "f3" as FieldId],
+        },
+      ],
+      70,
+    );
+  });
+});
+
+describe("logs left out: a decision on a row a pending deletion affects, then a cancellation", () => {
+  // Seed 689568591 of «撤回还原» (event table): pi_d deletes S5, which #81 cites; in its grace
+  // period a keep_effective on the row, then pi_d is cancelled. In the first version that
+  // decision is refused (03-deletion «撤回与宽限期»), so the log is not one the kernel records;
+  // the generators leave such cancellations out, and the evaluator's results on it are not
+  // checked. Writes in the grace period stay in.
+  const ev = (op: number, value: string, src: string, seen: number, explicit = false) =>
+    ({
+      kind: "write",
+      op,
+      event: op + 1,
+      seen,
+      fields: { f2: { value, sources: [src], explicit } },
+    }) as LogEntry;
+  const log: LogEntry[] = [
+    ev(10, "3", "S1", 0),
+    { kind: "deletion", op: 20, id: "pi_20", sources: ["S1", "S3"] },
+    ev(30, "1", "S1", 20),
+    { kind: "cancel", op: 40, id: "pi_20" },
+    ev(50, "3", "S1", 40, true),
+    ev(60, "1", "S1", 30),
+    ev(70, "1", "S3", 60),
+    ev(80, "1", "S5", 70, true),
+    { kind: "deletion", op: 90, id: "pi_d", sources: ["S5"] },
+    {
+      kind: "resolve",
+      op: 100,
+      event: 101,
+      decision: "keep_effective",
+      candidates: [61],
+      unit: "f2",
+    },
+  ];
+
+  it("the decision makes a cancellation of pi_d one the generators leave out", () => {
+    expect(decisionInGracePeriod(log, "pi_d")).toBe(true);
+    // pi_20 had only a write in its grace period: its cancellation stays in.
+    expect(decisionInGracePeriod(log.slice(0, 4), "pi_20")).toBe(false);
+    // A deletion touching nothing the row cites does not affect it.
+    expect(
+      decisionInGracePeriod(
+        [
+          ...log.slice(0, 8),
+          { kind: "deletion", op: 90, id: "pi_x", sources: ["S_NONE"] },
+          log[9] as LogEntry,
+        ],
+        "pi_x",
+      ),
+    ).toBe(false);
+  });
 });
