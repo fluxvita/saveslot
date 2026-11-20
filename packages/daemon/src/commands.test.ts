@@ -263,9 +263,7 @@ describe("status: the clock against the log's end (log.end, with the user sessio
       expect(out).toContain("lock      the home's single-writer lock, held by pid 4242");
       if (said === undefined) expect(out).not.toContain("warning");
       else
-        expect(out).toContain(
-          `warning: this computer's clock is ${said} the log's last record (${END})`,
-        );
+        expect(out).toContain(`warning: this computer's clock is ${said} the log's end (${END})`);
       // Nothing of the service's string is written as it came.
       expect(out).not.toContain("+08:00");
       expect(out).not.toContain("GMT");
@@ -284,7 +282,7 @@ describe("status: the clock against the log's end (log.end, with the user sessio
       const behind = quietIO();
       expect(await status(h, behind.io, { now: () => at(-10 * 60_000) })).toBe(0);
       expect(behind.out.join("\n")).toContain(
-        `warning: this computer's clock is 10 minutes behind the log's last record (${END})`,
+        `warning: this computer's clock is 10 minutes behind the log's end (${END})`,
       );
       const after = quietIO();
       expect(await status(h, after.io, { now: () => at(60_000) })).toBe(0);

@@ -1,5 +1,8 @@
 // Every static text the CLI writes (docs/zh-CN/spec/06-cli.md §4, §6), here and nowhere else, in
 // English. None holds a token, a path or a value from a result: those are parts the renderers add.
+//
+// Words: to a person, "connection instance" (the MCP texts tell the agent of "a connection");
+// "the saveslot service" in a sentence.
 
 import type { ErrorCode } from "@fluxvita/saveslot-client";
 
@@ -109,7 +112,7 @@ export const TEXTS = {
   // slot show
   eventBy: s("base · event, by"),
   stateBy: s("base · state, by"),
-  noTime: s("base · no time"),
+  noTime: s("base · without time"),
   decimals: s(" decimal places"),
   required: s("required"),
   aliases: s("aliases:"),
@@ -229,10 +232,10 @@ export const TEXTS = {
     "give the table, and if wanted a row (r_…) or an entity (e_…), or a state table's --key field=value instead: saveslot history changes <table> --since <point>",
   ),
   changesSince: s(
-    "--since is needed: an operation number, a moment, or my_last_read (since this connection last read the table)",
+    "--since is needed: an operation number, a moment, or my_last_read (since this connection instance last read the table)",
   ),
   changesReadFirst: s(
-    "my_last_read needs a read of the table by this connection (under the same task): read it first, with saveslot query <table>",
+    "my_last_read needs a read of the table by this connection instance (under the same task): read it first, with saveslot query <table>",
   ),
 
   whereNoField: (n: number) => s(`--where number ${n} does not begin with a field name`),

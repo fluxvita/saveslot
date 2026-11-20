@@ -1,5 +1,8 @@
 // Every static text the service commands print (docs/zh-CN/spec/06-cli.md §3, §4.1, §6.3), here
 // and nowhere else. No text holds a token or user data; paths are the user's own home.
+//
+// Words: to a person, "connection instance" (the MCP texts tell the agent of "a connection"); in a
+// sentence, "the saveslot service", and "saveslot service:" only as the label of a status line.
 
 import type { ConfigEntry, ConfigProblem } from "./config.ts";
 
@@ -14,8 +17,8 @@ export const TEXTS = {
   initDone: (home: string) =>
     [
       `Created ${home} (0700)`,
-      "  data/          the tenant's data (PGlite); the tenant genesis written",
-      "  control/       the control plane: credential hashes, tenant directory, anchors, handle keys",
+      "  data/          your records (the database files)",
+      "  control/       saveslot's own keys and records of connection instances",
       "  credentials/   the user session token (0600)",
       "  run/           the service's runtime (0700): saveslot.lock, saveslot.pid, saveslot.sock, saveslot.log",
     ].join("\n"),
@@ -52,8 +55,8 @@ export const TEXTS = {
   initSubMode: (path: string, mode: string) =>
     `error: ${path} has mode ${mode}; saveslot keeps it 0700 (only you can read it): chmod 700 ${path}, then run the command again.`,
   started: (pid: number, socket: string) =>
-    `saveslot service started in the background · pid ${pid} · listening on ${socket}`,
-  alreadyRunning: (pid: number) => `saveslot service is running already · pid ${pid}`,
+    `The saveslot service started in the background · pid ${pid} · listening on ${socket}`,
+  alreadyRunning: (pid: number) => `The saveslot service is running already · pid ${pid}`,
   versionMismatch: (running: string, mine: string) =>
     `error: the running saveslot service is version ${running}, this saveslot is ${mine}. Run saveslot stop, then start again.`,
   startFailed: (reason: string) =>
@@ -67,8 +70,8 @@ export const TEXTS = {
     `error: the saveslot service was not started: the home cannot be used (${code}). Check that it is a directory you can read and write, with run/ a directory in it.`,
   startTimedOut: (pid: number) =>
     `error: the saveslot service did not become ready in time; its process ${pid} is still running (it may be recovering). Check later with saveslot status; the service log is in run/saveslot.log under the home.`,
-  notRunning: "saveslot service is not running.",
-  stopped: (pid: number) => `saveslot service stopped (pid ${pid}).`,
+  notRunning: "The saveslot service is not running.",
+  stopped: (pid: number) => `The saveslot service stopped (pid ${pid}).`,
   stopHint:
     "An MCP host that connects again starts it again; to stop it for good, set mcp.autostart = false or remove saveslot from the host.",
   stopUnverified:
@@ -114,7 +117,7 @@ export const TEXTS = {
       `  pending   ${s.pending === undefined ? "unknown" : s.pending}`,
       ...(s.behindMs !== undefined
         ? [
-            `warning: this computer's clock is ${Math.floor(s.behindMs / 60_000)} minutes behind the log's last record (${s.logEnd}). New events are recorded at that time until the clock catches up; check the system clock.`,
+            `warning: this computer's clock is ${Math.floor(s.behindMs / 60_000)} minutes behind the log's end (${s.logEnd}). New events are recorded at the log's end until the clock catches up; check the system clock.`,
           ]
         : []),
     ].join("\n"),
@@ -168,7 +171,7 @@ export const TEXTS = {
     "saveslot mcp: version_mismatch: the running saveslot service is another version; restart it (saveslot stop, then saveslot start).",
   /** The call did not reach the service: nothing of it was written. */
   mcpNotDelivered: (autostart: boolean) =>
-    `saveslot service is not running; this call did not reach it, and nothing was written. ${
+    `The saveslot service is not running; this call did not reach it, and nothing was written. ${
       autostart
         ? "Start it with saveslot start; the host starts it again when it reconnects."
         : "Start it with saveslot start (automatic start is off: mcp.autostart = false)."
@@ -176,10 +179,10 @@ export const TEXTS = {
   /** The connection was cut after the call was sent: whether it took effect is not known. */
   mcpOutcomeUnknown: `The connection to the saveslot service was lost after the call was sent: ${UNKNOWN_OUTCOME} Check saveslot status if this repeats.`,
   mcpUnavailable:
-    "saveslot service is not available right now (starting or stopping). Try again shortly.",
+    "The saveslot service is not available right now (starting or stopping). Try again shortly.",
   mcpServiceFailed:
-    "saveslot service failed to start. See saveslot status; the service log is in run/saveslot.log under the home.",
-  mcpTimedOut: `saveslot service did not answer in time: ${UNKNOWN_OUTCOME}`,
+    "The saveslot service failed to start. See saveslot status; the service log is in run/saveslot.log under the home.",
+  mcpTimedOut: `The saveslot service did not answer in time: ${UNKNOWN_OUTCOME}`,
   mcpInternal: "saveslot mcp could not pass on the service's answer.",
   mcpRefused: (code: "unauthenticated" | "insufficient_scope") =>
     code === "unauthenticated"
