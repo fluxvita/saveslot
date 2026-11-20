@@ -76,7 +76,7 @@ import {
   type Visibility,
   type WriteValidationDetail,
 } from "../request/index.ts";
-import type { Tx } from "../store/ports.ts";
+import type { ReadTx, Tx } from "../store/ports.ts";
 import { type IntervalSet, meet, unionOf, WHOLE } from "../time/index.ts";
 import { appendWithDerived } from "./derive-step.ts";
 import { WriteError } from "./errors.ts";
@@ -90,6 +90,13 @@ import {
   keyText,
   keyToken,
 } from "./keys.ts";
+import {
+  checkLiteral,
+  type EvidenceIndex,
+  indexEvidence,
+  type LiteralResult,
+  literalKey,
+} from "./literal.ts";
 import { tableShape, todayIn, verOfRow, writable } from "./plan.ts";
 import {
   type Fallback,
@@ -755,6 +762,52 @@ function gapDetails(gaps: readonly GapEntry[], at: FailedAt): WriteValidationDet
 }
 
 /** The raw values a write gave, as the head event records them (09 §1.3). */
+/**
+ * A field's raw value checked against a source's text (`literal@1`), once a segment and value as the
+ * checker compares it (`literalKey`) in a request: `done` is the request's.
+ */
+function literalOf(
+  table: CompiledBaseTable,
+  raw: Partial<Record<FieldId, RawFieldValue>>,
+  indexOf: (seq: Seq) => EvidenceIndex | undefined,
+  done: Map<string, LiteralResult>,
+): (field: FieldId, source: Seq) => LiteralResult {
+  return (field, source) => {
+    const def = table.fields.find((x) => x.id === field);
+    if (def === undefined) return "na";
+    const value = raw[field] ?? null;
+    const key = `${source}|${literalKey(def, value)}`;
+    let r = done.get(key);
+    if (r === undefined) {
+      r = checkLiteral(def, value, indexOf(source));
+      done.set(key, r);
+    }
+    return r;
+  };
+}
+
+/**
+ * The text of sources a request names (`source_ref`): a text segment's text, a file reference's
+ * excerpt; none where it has none, or its block was removed by a deletion.
+ */
+async function storedTexts(
+  tx: ReadTx,
+  seqs: readonly Seq[],
+): Promise<Map<Seq, string | undefined>> {
+  const out = new Map<Seq, string | undefined>(seqs.map((s) => [s, undefined]));
+  if (seqs.length === 0) return out;
+  const r = await tx.query<{ seq: unknown; path: string; body: string | null }>(
+    "SELECT seq, path, body FROM content WHERE seq = ANY($1) AND path IN ('text', 'file')",
+    [[...new Set(seqs)]] as never,
+  );
+  for (const x of r.rows) {
+    if (x.body === null) continue;
+    const b = JSON.parse(x.body) as { text?: string; excerpt?: string };
+    out.set(Number(x.seq) as Seq, x.path === "text" ? b.text : b.excerpt);
+  }
+  return out;
+}
+
 function rawOf(
   fields: Readonly<Record<FieldId, NormalizedField>> | undefined,
 ): Partial<Record<FieldId, RawFieldValue>> {
@@ -1045,6 +1098,26 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     apiCallOps.map((o, k) => [o.index, (op + 1 + evidence.fresh.length + k) as Seq]),
   );
   const nSources = evidence.fresh.length + apiCallOps.length;
+  // The text each segment's values are checked against (`literal@1`, 04-write-and-read «来源级别»):
+  // a new segment's text, a file reference's excerpt; for a `source_ref`, the source it names. An
+  // api_call has none. Each segment is indexed once, when a field first needs it.
+  const textOf = new Map<Seq, string | undefined>();
+  const named: Seq[] = [];
+  [...req.evidence, ...req.ops.flatMap((o) => o.evidence ?? [])].forEach((g, k) => {
+    const seq = evidenceSeqs[k] as Seq;
+    if (g.kind === "source_ref") named.push(seq);
+    else textOf.set(seq, g.kind === "file_ref" ? g.excerpt : g.text);
+  });
+  for (const [seq, text] of await storedTexts(tx, named)) textOf.set(seq, text);
+  const indexes = new Map<Seq, EvidenceIndex | undefined>();
+  const literalDone = new Map<string, LiteralResult>();
+  const indexOf = (seq: Seq): EvidenceIndex | undefined => {
+    if (!indexes.has(seq)) {
+      const text = textOf.get(seq);
+      indexes.set(seq, text === undefined ? undefined : indexEvidence(text));
+    }
+    return indexes.get(seq);
+  };
   let next = op + 1 + nSources;
   // An op's value sources: its own segments, and the request's it cites (all of them when it names
   // none and has none of its own); or its `api_call` source.
@@ -1376,11 +1449,13 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         fills: [],
       });
     }
+    const raw = rawOf(fields);
     const enc = encodeOp(work.ctx, judgeInput, j, {
       intent: intent as "insert" | "update" | "correct" | "revoke",
       ...(o.target.kind === "entity_key" ? { byEntityKey: true as const } : {}),
       ...(j.created ? { created: true as const } : {}),
-      raw: rawOf(fields),
+      raw,
+      literal: literalOf(table, raw, indexOf, literalDone),
       restoreCount: restore,
       sv,
       sources: sourcesOf(o),

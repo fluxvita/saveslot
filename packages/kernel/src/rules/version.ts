@@ -30,5 +30,15 @@ export function isKnownRsqlVersion(version: string): boolean {
   return KNOWN_RSQL_VERSIONS.has(version);
 }
 
+/**
+ * The literal checker versions this kernel knows (04-write-and-read «来源级别», with the unit
+ * writings `units@1`): a head event's `ctx.literal_checker`. `apply` stops on others (09 §1.6).
+ */
+export const KNOWN_LITERAL_CHECKERS: ReadonlySet<string> = new Set(["literal@1"]);
+
+export function isKnownLiteralChecker(version: string): boolean {
+  return KNOWN_LITERAL_CHECKERS.has(version);
+}
+
 /** The whitelist version this kernel compiles new definitions with (09-event-format §7 `rsql`). */
 export const CURRENT_RSQL_VERSION = "rsql@1";

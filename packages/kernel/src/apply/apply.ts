@@ -35,7 +35,7 @@ import {
 import type { BlockState, PreparedOperation } from "../log/index.ts";
 import { readEvents } from "../log/log.ts";
 import { type DerivedRow, evaluateRule, evaluating, RuleEvaluationError } from "../rules/index.ts";
-import { isKnownRulesetVersion } from "../rules/version.ts";
+import { isKnownLiteralChecker, isKnownRulesetVersion } from "../rules/version.ts";
 import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
 import type { ValidParam } from "../time/index.ts";
 import { confirmationHash, entryChecksums } from "./confirmation.ts";
@@ -118,6 +118,12 @@ function parsed(ev: ApplyEvent): Parsed {
       ev.seq,
       `unknown ruleset_version ${String(ctx["ruleset_version"])}`,
     );
+  }
+  // The literal checks were recorded by a checker of this version: one this kernel does not know
+  // is not a recorded result it can stand by (09 §1.6).
+  const checker = ctx?.["literal_checker"];
+  if (typeof checker === "string" && !isKnownLiteralChecker(checker)) {
+    throw new ApplyError("unknown_version", ev.seq, `unknown literal_checker ${checker}`);
   }
   return { type: r.type, present, paths: [...ev.blocks.keys()] };
 }

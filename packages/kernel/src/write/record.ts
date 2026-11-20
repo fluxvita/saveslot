@@ -59,6 +59,7 @@ import type {
 import { uniqueRefs } from "../judge/index.ts";
 import { type Interval, WHOLE } from "../time/index.ts";
 import { WriteError } from "./errors.ts";
+import type { LiteralResult } from "./literal.ts";
 
 type Blocks = Record<string, unknown>;
 
@@ -162,6 +163,12 @@ export interface OpEncoding {
   /** The fields `evidence_by_field` points at, in the table's order (`ops/<i>/explicit`). */
   readonly explicit?: readonly FieldId[];
   /**
+   * The literal check of a field's raw value against one of its sources (09 §5.7
+   * `literal/<field>/<k>`, `literal@1`): written for each value item whose sources are source
+   * data, a segment a source, in the order of its sources. Absent: no literal blocks.
+   */
+  readonly literal?: (field: FieldId, source: Seq) => LiteralResult;
+  /**
    * The pending items the op's conflicts go to, by conflict: a new item, or an open one it joins,
    * with the index its candidate takes there (after the item's candidates so far, never reused)
    * and the item's merge base with it (the earliest `ver` of its candidates, 09 §5.8).
@@ -240,6 +247,7 @@ function itemsOut(
   items: readonly RecordedItem[],
   sources: readonly Seq[],
   fieldSources?: Readonly<Partial<Record<FieldId, readonly Seq[]>>>,
+  literal?: (field: FieldId, source: Seq) => LiteralResult,
 ): Blocks {
   const out: Blocks = {};
   const isState = ctx.shape.kind === "state";
@@ -271,13 +279,18 @@ function itemsOut(
           ? { status: x.status, no_value: true }
           : { status: x.status, uncovered: true };
     if (c.kind === "value") {
-      out[`sources/${at}`] =
-        x.carried !== undefined && x.carried.length > 0
-          ? x.carried.map((r) => ({ kind: "value", carried: refOut(r) }))
-          : (fieldSources?.[x.target as FieldId] ?? sources).map((s) => ({
-              kind: "value",
-              source: s,
-            }));
+      if (x.carried !== undefined && x.carried.length > 0) {
+        // A carried item is not checked again: its check is the one of the item it carries.
+        out[`sources/${at}`] = x.carried.map((r) => ({ kind: "value", carried: refOut(r) }));
+      } else {
+        const own = fieldSources?.[x.target as FieldId] ?? sources;
+        out[`sources/${at}`] = own.map((s) => ({ kind: "value", source: s }));
+        if (literal !== undefined && own.length > 0) {
+          out[`literal/${at}`] = {
+            segments: own.map((s) => ({ source: s, result: literal(x.target as FieldId, s) })),
+          };
+        }
+      }
     }
     if (isState) {
       out[`span/${at}`] = {
@@ -367,7 +380,7 @@ export function encodeOp(
       cause: "request",
       op_index: i,
     },
-    ...itemsOut(ctx, r.items, e.sources, e.fieldSources),
+    ...itemsOut(ctx, r.items, e.sources, e.fieldSources, e.literal),
   };
   if (e.validSources !== undefined && e.validSources.length > 0)
     base["valid_sources"] = [...e.validSources];

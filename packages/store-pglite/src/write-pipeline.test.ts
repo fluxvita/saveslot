@@ -277,6 +277,8 @@ describe("the main path", () => {
             },
             "fields/f2/0": { status: "applied", value: "x" },
             "sources/f2/0": [{ kind: "value", source: r.seq + 1 }],
+            // An api_call is the request itself: nothing to check the value against.
+            "literal/f2/0": { segments: [{ source: r.seq + 1, result: "na" }] },
           },
         },
       ]);

@@ -33,10 +33,12 @@ import {
 import {
   asWritten,
   COMPILED_V1,
+  checkLiteral,
   createSlotEvents,
   type Decision,
   eventsOfSteps,
   FIRST_OP,
+  indexEvidence,
   type Judged,
   judged,
   judgeOp,
@@ -199,7 +201,7 @@ function requestOf(o: Op, i: number, isState: boolean): unknown {
   return {
     sv: 1,
     ...(explicit.length > 0
-      ? { evidence: [0, 1, 2].map((k) => ({ kind: "agent_note", text: `op ${o.op} #${k}` })) }
+      ? { evidence: [0, 1, 2].map((k) => ({ kind: "agent_note", text: segmentText(o.op, k) })) }
       : {}),
     ops: [
       {
@@ -266,6 +268,44 @@ function resolutionWithSource(e: LoggedEvent): LoggedEvent {
     ),
   );
   return { ...e, blocks };
+}
+
+/** The text of an op's `k`th segment, as this test sends it. */
+const segmentText = (op: number, k: number) => `op ${op} #${k}`;
+
+/**
+ * The record mapping's events with the literal checks the pipeline adds (09 §5.7
+ * `literal/<field>/<k>`): a block for each value item whose sources are source data, a segment a
+ * source in their order, the head's raw value checked against that segment's text: an op's `k`th
+ * segment follows the head at `head + 1 + k`; an op sending none has its api_call there (nothing
+ * to check). The checker itself is pinned in kernel's literal tests.
+ */
+function withLiteral(events: readonly LoggedEvent[], o: Op, head: number): LoggedEvent[] {
+  const sends = o.kind === "write" && Object.values(o.fields).some((x) => x?.explicit === true);
+  const at = (seq: number) =>
+    sends ? indexEvidence(segmentText(o.op, seq - head - 1)) : undefined;
+  const raw = events.find((e) => e.type === "write.head")?.blocks ?? {};
+  return events.map((e) => {
+    if (e.type !== "write.base") return e;
+    const blocks: Record<string, unknown> = { ...e.blocks };
+    for (const [p, v] of Object.entries(e.blocks)) {
+      const m = /^sources\/(f[0-9]+)\/([0-9]+)$/.exec(p);
+      if (m === null || !Array.isArray(v)) continue;
+      const sources = (v as { source?: number }[]).filter((x) => x.source !== undefined);
+      if (sources.length === 0) continue;
+      blocks[`literal/${m[1]}/${m[2]}`] = {
+        segments: sources.map((x) => ({
+          source: x.source,
+          result: checkLiteral(
+            { type: "text" },
+            raw[`ops/0/set/${m[1]}`] ?? null,
+            at(x.source as number),
+          ),
+        })),
+      };
+    }
+    return { ...e, blocks };
+  });
 }
 
 /** The segments of the three an explicit field is mapped to: a non-empty subset, by op and field. */
@@ -696,7 +736,9 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       const got = await logged(store, head);
       expect({ step: k, events: got.map((e) => comparable(e, realItems, head)) }).toEqual({
         step: k,
-        events: withSources(want, o, head).map((e) => comparable(e, expectedItems, head)),
+        events: withLiteral(withSources(want, o, head), o, head).map((e) =>
+          comparable(e, expectedItems, head),
+        ),
       });
       // multi_segment_unmapped: an op sending three segments warns of its fields with items that
       // are not mapped, in the table's order.

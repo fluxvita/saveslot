@@ -155,6 +155,26 @@ describe("apply stops, never skips", () => {
     );
   });
 
+  it("on a literal checker the kernel does not know (09 §1.6)", () => {
+    const head = (checker: string) => {
+      const ev = event("write.head", {
+        ctx: {
+          now: NOW,
+          today: "2026-11-10",
+          ruleset_version: 1,
+          policy_version: 1,
+          literal_checker: checker,
+        },
+        request: { sv: 1, sv_basis: "explicit", op_count: 1 },
+      });
+      return { ...ev, header: { ...ev.header, actor: CONN, slot: SLOT } };
+    };
+    expect(reason(head("literal@2"))).toBe(
+      "unknown_version @2: apply stopped at seq 2: unknown literal_checker literal@2",
+    );
+    expect(reason(head("literal@1"))).toBe("applied");
+  });
+
   it("on a type it does not implement yet", () => {
     const ev = event("tenant.restored", {}, [], 10);
     const header = {

@@ -207,7 +207,7 @@
 
 规则只有两条：
 
-1. **`deps` 里任何一项被隐私删除，或被某次删除重述（§5.9，无论重述成什么结果），这个块就列入那次删除的位置列表。** 唯一的例外是 `schema.switched` 的 `backfill/<表ID>/<字段ID>/<n>`：它只在 `deps` 里有一项**被隐私删除**时列入，被重述不列入（补值位置照记录，删除不重述它）；它的 `deps` 按上面"给出挡点的贡献"的口径取两端（§5.5），端点日期最初出自的那次写入一定在内，所以不会因此漏删。带区间的块（`span/…`、`results/…/fields/…`、带 `value` 的 `restated/<k>`）里，值来源的搬运引用 `carried`（§5.7）指向的那一项**一律同时列进 `deps`**，所以这类块只需要看 `deps`。不带区间的 `sources/<字段ID>/<k>` 没有 `deps`：它的 `carried` 指向的项被删除、或被重述为 `dropped` 时，它连同同一项的 `fields`、`literal` 列入位置列表。
+1. **`deps` 里任何一项被隐私删除，或被某次删除重述（§5.9，无论重述成什么结果），这个块就列入那次删除的位置列表。** 唯一的例外是 `schema.switched` 的 `backfill/<表ID>/<字段ID>/<n>`：它只在 `deps` 里有一项**被隐私删除**时列入，被重述不列入（补值位置照记录，删除不重述它）；它的 `deps` 按上面"给出挡点的贡献"的口径取两端（§5.5），端点日期最初出自的那次写入一定在内，所以不会因此漏删。带区间的块（`span/…`、`results/…/fields/…`、带 `value` 的 `restated/<k>`）里，值来源的搬运引用 `carried`（§5.7）指向的那一项**一律同时列进 `deps`**，所以这类块只需要看 `deps`。不带区间的 `sources/<字段ID>/<k>` 没有 `deps`：它的 `carried` 指向的项被删除、或被重述为 `dropped` 时，它连同同一项的 `fields` 列入位置列表（搬运项没有 `literal` 块）。
 2. **被清掉、而 `apply` 之后仍需要的结果，由那次删除事件重新给出**（`restated/<k>`、`results/…`，事项条目由随后的 `item.refreshed`）。**一项贡献的判定结果以日志里最近一次给出它的事件为准。**
 
 这样，日志里由某个贡献求得的内容，在这个贡献被删除时都找得到、删得掉；删除事件自己的块同样带 `deps`，后来的删除照此清掉它们。
@@ -409,7 +409,7 @@
 | `today` | `now` 在该 slot 时区下的日期。没有 slot 的操作（`principal.*`）与不做判定的 `slot.removed` 缺省不写 |
 | `ruleset_version` | 这次操作做机械判定时用的规则版本（内核的整数版本号）。不做判定的操作也照记当时内核的版本。内核不认识的版本：`apply` 停止（§1.6） |
 | `policy_version` | 这次操作判定时该 slot 的策略版本。没有 slot 的操作（`principal.*`）与 `slot.removed` 缺省不写；新建 slot 的 `schema.draft_submitted` 记同一操作里初始策略的版本 |
-| `literal_checker` | 字面命中核对器的版本（含同义表版本）。只有 `write.head` 与触发写入的 `item.resolved` 有。内核不认识的版本：`apply` 停止（§1.6） |
+| `literal_checker` | 字面命中核对器的版本（含同义表版本）。只有 `write.head` 有。内核不认识的版本：`apply` 停止（§1.6） |
 
 删除重放时，每次旧写入按它自己的头事件记下的 `ruleset_version` 与 `policy_version` 重算。
 
@@ -898,7 +898,7 @@
 {"segments": [{"source": 22, "result": "hit"}, {"source": 26, "result": "miss"}]}
 ```
 
-按这一项引用的每段证据各记一条，`result` 取 `hit` / `miss` / `na`。核对器版本在头事件的 `ctx` 里。只有值来源是源数据（`source` 条目）的项有这一块：搬运来的项（`carried`）不重新做字面核对，没有 `literal` 块，它的核对结果看被搬运的那一项；来源是 `schema_const` 的项、`no_value` 与 `uncovered` 的项同样没有。
+按这一项引用的每段证据各记一条，`result` 取 `hit` / `miss` / `na`；`segments` 的次序与这一项的 `sources/<字段ID>/<k>` 相同。`result` 为 `na` 的情形：字段类型不适用、值为空，或这段证据没有可比的原文——`api_call`（它就是请求本身）、没带 `excerpt` 的 `file_ref`；带 `excerpt` 的 `file_ref` 按 `excerpt` 核对。核对器版本在头事件的 `ctx` 里。只有值来源是源数据（`source` 条目）的项有这一块：搬运来的项（`carried`）不重新做字面核对，没有 `literal` 块，它的核对结果看被搬运的那一项；来源是 `schema_const` 的项、`no_value` 与 `uncovered` 的项同样没有。
 
 `revert`（回退记录）与"回掉"的统一定义：
 

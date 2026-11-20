@@ -25,6 +25,8 @@ export { type QueryInput, queryInTx } from "./read/query.ts";
 export { type SqlInput, type SqlOutput, sqlInTx } from "./read/sql.ts";
 export { decodeColumns } from "./request/index.ts";
 export * from "./store/anchor-conformance.fixture.ts";
+// The literal checker, for tests holding a write's literal blocks to it.
+export { checkLiteral, indexEvidence } from "./write/literal.ts";
 export {
   asWritten,
   eventsOfRequest,
