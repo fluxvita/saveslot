@@ -26,6 +26,14 @@ export {
 // Paging, for lists outside this module (the management operations).
 export { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 export { type PendingInput, type PendingReadResult, pendingInTx } from "./pending.ts";
+export {
+  profileOf,
+  SCALE_BOUNDS,
+  type Scale,
+  type ScaleBounds,
+  scaleOf,
+  type TableProfile,
+} from "./profile.ts";
 export { fingerprint, type QueryInput, type QueryOutput, queryInTx } from "./query.ts";
 export { type ReadsListResult, readsListInTx } from "./reads-list.ts";
 export { logPosition, restoreCount } from "./select.ts";

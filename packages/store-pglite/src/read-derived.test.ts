@@ -13,6 +13,7 @@ import { join } from "node:path";
 import {
   appendOperation,
   applyEvents,
+  catalogInTx,
   continueOperation,
   createOpsContext,
   createTenant,
@@ -681,6 +682,35 @@ describe("input marks of derived rows", () => {
       expect(page.result.rows.map((x) => [x.key, x.input_marks])).toEqual([
         [{ week: "2027-01-04" }, marks({ disputed: 1 }, [item("M")])],
       ]);
+    },
+    T,
+  );
+});
+
+describe("the profile of a derived table (`catalog`, 04-contract §10 «概况»)", () => {
+  it(
+    "its rows are the derived table's own rows, as `query` counts them; it has no business time",
+    async () => {
+      const names = RULES.map((r) => r[1]);
+      const { result } = await store.read((tx) =>
+        catalogInTx(tx, {
+          actor: USER as never,
+          task: null,
+          now: NOW as never,
+          visibility: { kind: "all" },
+          params: { level: "table", tables: names },
+          read: "rd_0000000000000000" as never,
+        }),
+      );
+      const given = (result as unknown as { tables: { table: string; profile: unknown }[] }).tables;
+      expect(given.map((t) => t.table)).toEqual(names);
+      for (const t of given) {
+        expect(t.profile).toEqual({ rows: (await query({ table: t.table })).result.total });
+      }
+      // The check is of something: some of the tables hold rows by now.
+      expect(given.filter((t) => (t.profile as { rows: number }).rows > 0).length).toBeGreaterThan(
+        1,
+      );
     },
     T,
   );

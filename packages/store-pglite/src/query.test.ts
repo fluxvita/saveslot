@@ -5,6 +5,7 @@
 import {
   appendOperation,
   applyEvents,
+  catalog,
   createOpsContext,
   createTenant,
   eventsOf,
@@ -285,6 +286,39 @@ beforeEach(async () => {
   await w1(ins("settings", { key: "a" }));
   readBufferOf(s.store).take();
 }, T);
+
+describe("the profile of the tables written above (`catalog`, 04-contract §10 «概况»)", () => {
+  it("gives the rows and the business time range of each kind of table, in the form the table keeps it", async () => {
+    const r = await catalog(s.store, ctx(), {
+      level: "table",
+      tables: ["spend", "visits", "budgets", "rooms", "settings"],
+    });
+    const profiles = Object.fromEntries(
+      (r as unknown as { tables: { table: string; profile: unknown }[] }).tables.map((t) => [
+        t.table,
+        t.profile,
+      ]),
+    );
+    expect(profiles).toEqual({
+      // Three rows not revoked: the revoked fourth (2026-11-05) is neither counted nor in the range.
+      spend: { rows: 3, time_range: { from: "2026-11-01", to: "2026-11-03" } },
+      // A zoned_datetime time field: the instants, in UTC as the event format writes them.
+      visits: {
+        rows: 2,
+        time_range: { from: "2026-11-02T15:30:00.000Z", to: "2026-11-02T16:30:00.000Z" },
+      },
+      // Segments: the first entity cut in three, the second one segment.
+      // The first entity's last segment runs on: no end.
+      budgets: { rows: 4, time_range: { from: "2026-10-01" } },
+      // Every segment has an end: the latest valid_to.
+      rooms: {
+        rows: 1,
+        time_range: { from: "2026-11-01T10:00:00.000Z", to: "2026-11-02T10:00:00.000Z" },
+      },
+      settings: { rows: 2 },
+    });
+  });
+});
 
 describe("event tables", () => {
   it("reads the rows not revoked, by day descending then row ID, with ver and marks", async () => {

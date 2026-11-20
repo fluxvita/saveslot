@@ -220,7 +220,8 @@ export interface CatalogTable {
   };
   profile?: {
     rows: number;
-    time_range?: { from: BizTime; to: BizTime };
+    /** A state table with a segment that runs on has no `to`. */
+    time_range?: { from: BizTime; to?: BizTime };
     scale?: { level: "large" | "beyond_tested"; comfortable_rows: number; tested_rows: number };
   };
   described_by?: { actor: Actor; sv: Sv };

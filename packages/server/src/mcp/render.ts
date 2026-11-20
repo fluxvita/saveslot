@@ -203,6 +203,13 @@ const namedValues = (values: unknown): Part[] =>
     t`, `,
   );
 
+/** The day before a date: the inclusive end of a period that ends at it (05 §4.1). */
+function dayBefore(d: string): string {
+  const x = new Date(`${d}T00:00:00Z`);
+  x.setUTCDate(x.getUTCDate() - 1);
+  return Number.isNaN(x.getTime()) ? d : x.toISOString().slice(0, 10);
+}
+
 /** A period of business time (05 §4.1). */
 function periodOf(x: unknown): Part[] {
   const p = obj(x);
@@ -584,6 +591,41 @@ function catalogField(fd: R): Line {
   return t`  ${fieldOf(fd["name"])}  ${codeIn(fd["type"], FIELD_TYPES)}${unit}${decimals}  ${stored(String(fd["description"] ?? ""))}${required}${min}${max}${oneOf}${refers}`;
 }
 
+/**
+ * A table's data profile (05 §3 `saveslot_catalog`): ` · 132 rows · 2026-03-02 to 2026-11-08`, and
+ * after it, as a fact, the scale hint when the table has one: the lines are the ones the result
+ * gives (no thousands separators, 05 §4.1). Nothing is said of a table without a profile.
+ */
+function profileOf(tb: R): Part[] {
+  if (!isObj(tb["profile"])) return [];
+  const p = tb["profile"];
+  const range = obj(p["time_range"]);
+  const tm = obj(tb["time"]);
+  // An event table's range: both ends are values of the time field (instants as the slot's wall
+  // clock, 05 §4.1). A state table's: the period of 05 §4.1, its `to` exclusive.
+  const at = (x: unknown) =>
+    typeof x === "string" && /^\d{4}-\d{2}-\d{2}$/.test(x) ? timeOf(x) : inZone(x, tb["timezone"]);
+  const span = !isObj(p["time_range"])
+    ? []
+    : tm["type"] === "state"
+      ? t` · ${periodOf({
+          valid_from: range["from"],
+          valid_to: range["to"] ?? null,
+          ...(tm["granularity"] === "date" && typeof range["to"] === "string"
+            ? { valid_to_inclusive: dayBefore(range["to"]) }
+            : {}),
+        })}`
+      : t` · ${at(range["from"])} to ${at(range["to"])}`;
+  const scale = obj(p["scale"]);
+  const hint =
+    scale["level"] === "large"
+      ? t` · many rows (over ${count(scale["comfortable_rows"])}): writes and derived-table refreshes on this table are slower than on a small table`
+      : scale["level"] === "beyond_tested"
+        ? t` · beyond the tested range (tested up to ${count(scale["tested_rows"])} rows): writes, derived-table refreshes and reads at a past time may be much slower`
+        : [];
+  return t` · ${count(p["rows"])} rows${span}${hint}`;
+}
+
 function catalog(r: R, now: Date): Line[] | { json: true; lead: Line[] } {
   need(
     (r["level"] === "schema" && isObj(r["document"])) ||
@@ -618,7 +660,7 @@ function catalog(r: R, now: Date): Line[] | { json: true; lead: Line[] } {
           }`
         : [];
       out.push(
-        t`${tableOf(tb["table"])} (${kind}) ${stored(String(tb["description"] ?? ""))}${ruled}`,
+        t`${tableOf(tb["table"])} (${kind}) ${stored(String(tb["description"] ?? ""))}${ruled}${profileOf(tb)}`,
       );
       const key = arr(tb["entity_key"]);
       if (key.length > 0) out.push(t`  entity key: ${join(key.map(fieldOf), t`, `)}`);

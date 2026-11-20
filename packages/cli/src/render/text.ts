@@ -76,6 +76,35 @@ export const time = (v: string): Part =>
 /** A moment as a wall clock shows it, `YYYY-MM-DD HH:mm`: made from a recorded moment here. */
 export const localTime = (v: string): Part =>
   shaped(/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$/.test(v), v);
+/**
+ * A moment the service recorded, as the slot's wall clock shows it (`YYYY-MM-DD HH:mm`, as MCP
+ * shows it, 05 §4.1); as recorded when the zone or the moment is not one this can read.
+ */
+export function inZone(x: unknown, zone: unknown): Part {
+  const at = typeof x === "string" ? Date.parse(x) : Number.NaN;
+  if (typeof zone !== "string" || Number.isNaN(at)) return time(String(x ?? ""));
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(at);
+    const get = (k: string) => parts.find((p) => p.type === k)?.value ?? "";
+    return localTime(
+      `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`,
+    );
+  } catch {
+    return time(String(x ?? ""));
+  }
+}
+
+/** A business time the service computed: a date or a UTC moment; inside when it is neither. */
+export const bizTime = (v: string): Part =>
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(v) && !Number.isNaN(Date.parse(v)) ? own(v) : time(v);
 /** A number: a JSON number as written, or canonical decimal text. */
 export const num = (v: number | string): Part =>
   typeof v === "number" ? shaped(Number.isFinite(v), String(v)) : shaped(SHAPES.number.test(v), v);

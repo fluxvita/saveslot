@@ -18,15 +18,14 @@ import {
   code,
   handle,
   id,
+  inZone,
   join,
   type Line,
-  localTime,
   name,
   num,
   type Part,
   t,
   table,
-  time,
   untrusted,
 } from "./text.ts";
 
@@ -52,32 +51,6 @@ const tableOf = (x: unknown): Part => table(String(x ?? ""));
 /** A field name; `*` is a row's being there. */
 export const fieldOf = (x: unknown): Part[] =>
   x === "*" ? t`whether it exists` : [name(String(x ?? ""))];
-
-/**
- * A moment the service recorded, as the slot's wall clock shows it (`YYYY-MM-DD HH:mm`, as MCP
- * shows it, 05 §4.1); as recorded when the zone or the moment is not one this can read.
- */
-export function inZone(x: unknown, zone: unknown): Part {
-  const at = typeof x === "string" ? Date.parse(x) : Number.NaN;
-  if (typeof zone !== "string" || Number.isNaN(at)) return time(String(x ?? ""));
-  try {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: zone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(at);
-    const get = (k: string) => parts.find((p) => p.type === k)?.value ?? "";
-    return localTime(
-      `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`,
-    );
-  } catch {
-    return time(String(x ?? ""));
-  }
-}
 
 /** Who did something: the system, or the name it was given (inside), and its state. */
 export function actorOf(x: unknown): Part[] {

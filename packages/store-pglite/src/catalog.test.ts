@@ -6,6 +6,7 @@ import {
   appendOperation,
   applyEvents,
   catalog,
+  catalogInTx,
   compileNewSlot,
   createOpsContext,
   createTenant,
@@ -14,6 +15,8 @@ import {
   query,
   readBufferOf,
   readsList,
+  SCALE_BOUNDS,
+  scaleOf,
   write,
 } from "@fluxvita/saveslot-kernel";
 import { createSlotEvents, SLOT } from "@fluxvita/saveslot-kernel/testing";
@@ -208,6 +211,10 @@ describe("list", () => {
 describe("table", () => {
   it("gives each table's definition, names for IDs", async () => {
     const r = await c({ level: "table", tables: ["expenses", "ledger.Accounts"] });
+    // The profile of each table, empty here (below, with rows).
+    for (const t of r["tables"] as Record<string, unknown>[])
+      expect(t["profile"]).toEqual({ rows: 0 });
+    for (const t of r["tables"] as Record<string, unknown>[]) delete t["profile"];
     expect(r).toEqual({
       level: "table",
       tables: [
@@ -263,10 +270,13 @@ describe("table", () => {
         },
       ],
     });
-    // Not in this version: profile, examples, size hints; no aliases (the compiler takes none yet).
+    // Not in this version: the fields' examples and `described_by`; no aliases (the compiler takes
+    // none yet). The profile has its own cases below.
     for (const t of r["tables"] as Record<string, unknown>[]) {
-      expect(t).not.toHaveProperty("profile");
+      expect(t).not.toHaveProperty("described_by");
       expect(t).not.toHaveProperty("aliases");
+      for (const f of t["fields"] as Record<string, unknown>[])
+        expect(f).not.toHaveProperty("examples");
     }
   });
 
@@ -314,6 +324,234 @@ describe("table", () => {
       name: "expenses",
       nearest: [],
     });
+  });
+});
+
+/** A catalog read of the `table` level with the scale lines given, in the visible range given. */
+async function profiles(
+  tables: string[],
+  o: { bounds?: { comfortable_rows: number; tested_rows: number }; visibility?: unknown } = {},
+) {
+  const r = await s.store.read((tx) =>
+    catalogInTx(tx, {
+      actor: USER as never,
+      task: null,
+      now: "2026-11-05T05:00:00.000Z" as never,
+      visibility: (o.visibility ?? { kind: "all" }) as never,
+      params: { level: "table", tables },
+      read: "rd_0000000000000000" as never,
+      ...(o.bounds !== undefined ? { scaleBounds: o.bounds } : {}),
+    }),
+  );
+  const out = r.result as unknown as { tables: { table: string; profile: unknown }[] };
+  return Object.fromEntries(out.tables.map((t) => [t.table, t.profile]));
+}
+const w = (ops: unknown[]) => write(s.store, ctx(), { sv: 1, ops });
+const targetOf = (r: Awaited<ReturnType<typeof w>>, i: number) =>
+  r.ops[i]?.target as { row?: string; entity?: string };
+const expense = (date: string) => ({
+  intent: "insert",
+  table: "expenses",
+  set: { date, amount: { value: "10", unit: "CNY" } },
+});
+
+describe("profile (04-contract §10 `catalog` «概况»)", () => {
+  it("counts the rows not revoked of an event table, with the range of its business time", async () => {
+    const r = await w([expense("2026-11-03"), expense("2026-11-01"), expense("2026-11-09")]);
+    // The latest day is revoked: it is no row, and the range ends before it.
+    const last = targetOf(r, 2).row as string;
+    await w([{ intent: "revoke", table: "expenses", row: last }]);
+    expect(await profiles(["expenses"])).toEqual({
+      expenses: { rows: 2, time_range: { from: "2026-11-01", to: "2026-11-03" } },
+    });
+  });
+
+  it("counts the segments of a state table, and ends the range at the latest point a segment starts or ends", async () => {
+    const r = await w([
+      {
+        intent: "update",
+        table: "accounts",
+        entity_key: { name: "cash" },
+        set: { limit: 10 },
+        valid_from: "2026-11-01",
+      },
+    ]);
+    // One entity cut into three segments, and a second one that ended.
+    const cash = targetOf(r, 0).entity as string;
+    await w([
+      {
+        intent: "update",
+        table: "accounts",
+        entity: cash,
+        set: { limit: 50 },
+        valid_from: "2026-11-10",
+        valid_to: "2026-11-20",
+      },
+    ]);
+    await w([
+      {
+        intent: "update",
+        table: "accounts",
+        entity_key: { name: "bank" },
+        set: { limit: 5 },
+        valid_from: "2026-10-01",
+        valid_to: "2026-10-15",
+      },
+    ]);
+    expect(await profiles(["accounts"])).toEqual({
+      accounts: { rows: 4, time_range: { from: "2026-10-01" } },
+    });
+  });
+
+  it("gives a state table's range its latest valid_to, exclusive, when every segment has an end; none while one runs on", async () => {
+    const ended = (name: string, from: string, to: string) => ({
+      intent: "update",
+      table: "accounts",
+      entity_key: { name },
+      set: { limit: 5 },
+      valid_from: from,
+      valid_to: to,
+    });
+    await w([ended("bank", "2026-10-01", "2026-10-15")]);
+    await w([ended("cash", "2026-10-20", "2026-11-03")]);
+    expect(await profiles(["accounts"])).toEqual({
+      accounts: { rows: 2, time_range: { from: "2026-10-01", to: "2026-11-03" } },
+    });
+    // One segment that runs on: no end.
+    await w([
+      {
+        intent: "update",
+        table: "accounts",
+        entity_key: { name: "loan" },
+        set: { limit: 6 },
+        valid_from: "2026-11-03",
+      },
+    ]);
+    expect(await profiles(["accounts"])).toEqual({
+      accounts: { rows: 3, time_range: { from: "2026-10-01" } },
+    });
+  });
+
+  it("counts a state table's segments after merging, whatever the physical cut", async () => {
+    await w([
+      {
+        intent: "update",
+        table: "accounts",
+        entity_key: { name: "cash" },
+        set: { limit: 10 },
+        valid_from: "2026-11-01",
+      },
+    ]);
+    const before = await profiles(["accounts"]);
+    expect(before).toEqual({
+      accounts: { rows: 1, time_range: { from: "2026-11-01" } },
+    });
+    // The same data cut in two adjacent segments with equal values, as stored by hand.
+    await s.store.write(async (tx) => {
+      await tx.query(
+        `INSERT INTO "t_t2_v1" (entity_id, valid_from, valid_to, "f_f1", "f_f2")
+         SELECT entity_id, '2026-11-10', NULL, "f_f1", "f_f2" FROM "t_t2_v1"`,
+      );
+      await tx.query(
+        `UPDATE "t_t2_v1" SET valid_to = '2026-11-10' WHERE valid_from = '2026-11-01'`,
+      );
+    });
+    const [phys] = (
+      await s.store.read((tx) => tx.query<{ n: unknown }>(`SELECT count(*) AS n FROM "t_t2_v1"`))
+    ).rows;
+    expect(Number(phys?.n)).toBe(2);
+    const after = await profiles(["accounts"]);
+    expect((after["accounts"] as { rows: number }).rows).toBe(1);
+    // A segment with another value is a row of its own.
+    await s.store.write(async (tx) => {
+      await tx.query(`UPDATE "t_t2_v1" SET "f_f2" = '11' WHERE valid_from = '2026-11-10'`);
+    });
+    expect((await profiles(["accounts"]))["accounts"]).toEqual({
+      rows: 2,
+      time_range: { from: "2026-11-01" },
+    });
+  });
+
+  it("counts a timeless table's rows, and gives it no time range", async () => {
+    await w([
+      { intent: "insert", table: "settings", set: { key: "a" } },
+      { intent: "insert", table: "settings", set: { key: "b" } },
+    ]);
+    expect(await profiles(["settings"])).toEqual({ settings: { rows: 2 } });
+  });
+
+  it("gives an empty table no range", async () => {
+    expect(await profiles(["expenses", "accounts", "settings"])).toEqual({
+      expenses: { rows: 0 },
+      accounts: { rows: 0 },
+      settings: { rows: 0 },
+    });
+  });
+
+  it("is given in the result of `catalog` itself, with no scale hint under the shipped lines", async () => {
+    await w([expense("2026-11-01")]);
+    const r = await c({ level: "table", tables: ["expenses"] });
+    expect((r["tables"] as { profile: unknown }[])[0]?.profile).toEqual({
+      rows: 1,
+      time_range: { from: "2026-11-01", to: "2026-11-01" },
+    });
+  });
+
+  it("does not count a table out of the visible range, nor list it", async () => {
+    await w([expense("2026-11-01")]);
+    await w([{ intent: "insert", table: "settings", set: { key: "a" } }]);
+    // The credential sees the slot's table `expenses` only (table IDs: t1, t2, t3 in order).
+    const only = { kind: "scoped", slots: [{ slot: SLOT, tables: [{ table: "t1" }] }] };
+    expect(await profiles(["expenses"], { visibility: only })).toEqual({
+      expenses: { rows: 1, time_range: { from: "2026-11-01", to: "2026-11-01" } },
+    });
+    expect(
+      await refused({ level: "table", tables: ["expenses", "settings"] }, { visibility: only }),
+    ).toMatchObject({ code: "unknown_table", name: "settings" });
+    const list = (await c({}, { visibility: only })) as unknown as {
+      slots: { tables: { table: string }[] }[];
+    };
+    expect(list.slots.flatMap((x) => x.tables.map((t) => t.table))).toEqual(["expenses"]);
+  });
+
+  it("carries the scale hint over the comfortable line, and the tested line: at the line none, one over it the next", async () => {
+    // Lines of 2 and 4 rows, injected: the shipped ones are 100000 and 1000000.
+    const bounds = { comfortable_rows: 2, tested_rows: 4 };
+    const seen: [number, unknown][] = [];
+    for (let n = 0; n <= 5; n++) {
+      if (n > 0) await w([expense(`2026-11-0${n}`)]);
+      const p = (await profiles(["expenses"], { bounds }))["expenses"] as {
+        rows: number;
+        scale?: unknown;
+      };
+      expect(p.rows).toBe(n);
+      seen.push([n, p.scale]);
+    }
+    expect(seen).toEqual([
+      [0, undefined],
+      [1, undefined],
+      [2, undefined],
+      [3, { level: "large", comfortable_rows: 2, tested_rows: 4 }],
+      [4, { level: "large", comfortable_rows: 2, tested_rows: 4 }],
+      [5, { level: "beyond_tested", comfortable_rows: 2, tested_rows: 4 }],
+    ]);
+  });
+
+  it("works the scale hint out by the shipped lines: 100000 and 1000000 rows", () => {
+    expect(SCALE_BOUNDS).toEqual({ comfortable_rows: 100_000, tested_rows: 1_000_000 });
+    const level = (n: number) => scaleOf(n, SCALE_BOUNDS)?.level;
+    expect([0, 100_000, 100_001, 1_000_000, 1_000_001].map(level)).toEqual([
+      undefined,
+      undefined,
+      "large",
+      "large",
+      "beyond_tested",
+    ]);
+  });
+
+  it("does not give the hint at the `list` level", async () => {
+    await w([expense("2026-11-01")]);
+    expect(JSON.stringify(await c({}))).not.toContain("profile");
   });
 });
 

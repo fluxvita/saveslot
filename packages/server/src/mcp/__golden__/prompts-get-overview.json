@@ -5,7 +5,7 @@
       "role": "user",
       "content": {
         "type": "text",
-        "text": "Look at my saveslot: list its slots and tables with saveslot_catalog, and tell me in one sentence for each table what it records, how many records it holds and when the latest one is from (saveslot_query gives these); if there are pending items, tell me how many. Do not change anything."
+        "text": "Look at my saveslot: list its slots and tables with saveslot_catalog, and tell me in one sentence for each table what it records, how many records it holds and when the latest one is from; if there are pending items, tell me how many. Do not change anything."
       }
     }
   ]

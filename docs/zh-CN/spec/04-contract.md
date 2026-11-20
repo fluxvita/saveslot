@@ -386,7 +386,7 @@
 - **别名**：表与字段可带 `aliases`（schema 作者写的用户说法、旧称、口语叫法）。`list` 档带表的别名，`table` 档带表与每个字段的别名，`schema` 档是文档原样。别名是不可信文本（第 8 节），**不参与名字解析**：请求与受限 SQL 里只认名字，写了别名的请求照旧报 `unknown_table` / `unknown_field`；报错的 `nearest` 怎样借别名给出对的名字，见第 11 节。改别名的改动码是 `change_aliases`，归入自动生效类别 `description`。
 - `table` 档的表定义带 `external_key`（声明了来源键时：键字段的名字）。
 - `schema` 档返回的文档 ID 与 `base_version` 已填好，可以直接改了交给 `schema_draft`。带 `draft`（草稿 ID）时返回那份草稿编译后的文档（ID 已回填），不论草稿处于什么状态；读取照常记读取记录；草稿不存在或不可见报 `not_found`（`draft`）。`schema_draft` 的回执截掉了文档全文时，就用它重读。文档不能分页；超出外化面的结果预算时报 `too_large`（`result_budget`），不截断。（这是读操作，什么都没落账；已经落账的操作不用这个错误，见 surfaces 第 3 节。）
-- 概况：行数、业务时间范围、每个字段最近 K 个不同取值（按操作号取，确定性）。slot 有迁移在进行时，`list` 档带 `migration`；这期间涉及这个 slot 的调用在 `notices` 里给 `migration_progress`（目标版本与进度）。
+- 概况：行数、业务时间范围、每个字段最近 K 个不同取值（按操作号取，确定性）。`table` 档每张表都带 `profile`（行数、业务时间范围与规模提示），只数调用方可见范围内的表。行数数的是表里现有的行：事件类与无时间表数未撤销的行，状态类表数区间段（相邻且全部字段同值的段先合并，物理上怎么切不改变结果，与 `query` 的 `total` 同口径），派生表数它自己的行。业务时间范围：事件类表的 `from` 与 `to` 是时间字段的最早值与最晚值，两端都含（只算未撤销的行）；状态类表的 `from` 是最早的区间起点，`to` 是最晚的 `valid_to`，不含（与契约里所有 `valid_to` 同一约定），有一直延续的段时不给 `to`；无时间表、派生表与空表不给。读时由当前数据现算，不进事件。slot 有迁移在进行时，`list` 档带 `migration`；这期间涉及这个 slot 的调用在 `notices` 里给 `migration_progress`（目标版本与进度）。
 - **规模提示**：`table` 档的概况在行数过界时带 `scale`：超过舒适线（`comfortable_rows`）、不超过实测线（`tested_rows`）是 `large`，超过实测线是 `beyond_tested`；两条线的数值随内核版本发布（architecture「容量边界与实测数值」）。按这张表当前的 `profile.rows` 读时算出，不进事件，不是数据标记；不超过舒适线时不带。`list` 档不带。
 
 ### `query`

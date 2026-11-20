@@ -102,6 +102,65 @@ describe("reads as text: what the samples do not show", () => {
     expect(lines).toContain(`  level  integer  ${B}how${E} · ≥ 1 · ≤ ${B}x9${E}`);
   });
 
+  it("a table's profile: its rows and range; the hint only over the comfortable line, with the lines the result gives", () => {
+    const r = sample("catalog-table-state-event");
+    const [budgets] = r["tables"] as R[];
+    const head = (profile: R | undefined, extra: R = {}) =>
+      text("saveslot_catalog", { ...r, tables: [{ ...budgets, ...extra, profile }] })
+        .split("\n")
+        .find((l) => l.startsWith("budgets ")) as string;
+    const lines = { comfortable_rows: 100000, tested_rows: 1000000 };
+    // No profile: nothing is said; an empty table: its row count and no range.
+    expect(head(undefined)).not.toContain(" rows");
+    expect(head({ rows: 0 })).toBe(
+      `budgets (base · state, by date) ${B}monthly budget by category${E} · 0 rows`,
+    );
+    // At the comfortable line nothing; no thousands separators.
+    expect(head({ rows: 100000 })).not.toContain("many rows");
+    expect(head({ rows: 100000 })).toContain(" · 100000 rows");
+    expect(head({ rows: 100001, scale: { level: "large", ...lines } })).toBe(
+      `budgets (base · state, by date) ${B}monthly budget by category${E} · 100001 rows · many rows (over 100000): writes and derived-table refreshes on this table are slower than on a small table`,
+    );
+    expect(head({ rows: 1000001, scale: { level: "beyond_tested", ...lines } })).toContain(
+      " · 1000001 rows · beyond the tested range (tested up to 1000000 rows): writes, derived-table refreshes and reads at a past time may be much slower",
+    );
+    // The lines of the result, not ones of the renderer's.
+    expect(
+      head({ rows: 7, scale: { level: "large", comfortable_rows: 5, tested_rows: 9 } }),
+    ).toContain("(over 5)");
+  });
+
+  it("a table's range: an event table's ends; a state table's as the period of 05 §4.1", () => {
+    const r = sample("catalog-table-state-event");
+    const [budgets, expenses] = r["tables"] as R[];
+    const line = (tb: R, from: string, to?: string) =>
+      text("saveslot_catalog", {
+        ...r,
+        tables: [{ ...tb, profile: { rows: 2, time_range: { from, ...(to ? { to } : {}) } } }],
+      })
+        .split("\n")
+        .find((l) => l.startsWith(`${tb["table"]} `)) as string;
+    const head = (tb: R) =>
+      `${tb["table"]} (base · ${(tb["time"] as R)["type"]}, by ${(tb["time"] as R)["field"] ?? (tb["time"] as R)["granularity"]}) ${B}${tb["description"]}${E} · 2 rows`;
+    // A state table by date: open-ended; ended, the end exclusive written inclusive.
+    expect(line(budgets as R, "2026-10-01")).toBe(`${head(budgets as R)} · from 2026-10-01`);
+    expect(line(budgets as R, "2026-10-01", "2026-11-20")).toBe(
+      `${head(budgets as R)} · 2026-10-01 to 2026-11-19 (inclusive)`,
+    );
+    // By instant: start and end as written.
+    const rooms = { ...(budgets as R), time: { type: "state", granularity: "instant" } };
+    expect(line(rooms, "2026-11-01T10:00:00.000Z", "2026-11-02T10:00:00.000Z")).toBe(
+      `${head(rooms)} · 2026-11-01T10:00:00.000Z until 2026-11-02T10:00:00.000Z`,
+    );
+    // An event table: both ends, inclusive; instants as the slot's wall clock (Asia/Shanghai, UTC+8).
+    expect(line(expenses as R, "2026-03-02", "2026-11-08")).toBe(
+      `${head(expenses as R)} · 2026-03-02 to 2026-11-08`,
+    );
+    expect(line(expenses as R, "2026-11-02T15:30:00.000Z", "2026-11-02T16:30:00.000Z")).toBe(
+      `${head(expenses as R)} · 2026-11-02 23:30 to 2026-11-03 00:30`,
+    );
+  });
+
   it("a query of one entity: its key heads the result", () => {
     const r = sample("query-state");
     const [row] = r["rows"] as R[];

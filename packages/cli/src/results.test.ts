@@ -227,6 +227,69 @@ const CREATED: SchemaDraftResult = {
   outcome: "applied",
 } as never;
 
+describe("slot show: the data profile (05 §3 `saveslot_catalog`)", () => {
+  const lines = (profile: unknown, timezone = "Asia/Shanghai") =>
+    render(
+      catalogTables({ ...TABLES, tables: [{ ...TABLES.tables[0], timezone, profile }] } as never),
+      terminal,
+    ).split("\n");
+  const rowsLine = (profile: unknown, timezone?: string) =>
+    lines(profile, timezone).find((l) => l.startsWith("  rows:"));
+
+  it("an empty table: its rows, no range; a table over the comfortable line: the hint with the lines of the result", () => {
+    expect(rowsLine({ rows: 0 })).toBe("  rows: 0");
+    expect(rowsLine({ rows: 100000 })).toBe("  rows: 100000");
+    const bounds = { comfortable_rows: 100000, tested_rows: 1000000 };
+    expect(rowsLine({ rows: 100001, scale: { level: "large", ...bounds } })).toBe(
+      "  rows: 100001 · many rows (over 100000): writes and derived-table refreshes on this table are slower than on a small table",
+    );
+    expect(
+      rowsLine({
+        rows: 1000001,
+        time_range: { from: "2026-01-02", to: "2026-11-17" },
+        scale: { level: "beyond_tested", ...bounds },
+      }),
+    ).toBe(
+      "  rows: 1000001 · 2026-01-02 – 2026-11-17 · beyond the tested range (tested up to 1000000 rows): writes, derived-table refreshes and reads at a past time may be much slower",
+    );
+  });
+
+  it("a state table's range is a period: from only, to the day before the end (inclusive), or until", () => {
+    const state = (granularity: string, range: unknown) =>
+      render(
+        catalogTables({
+          ...TABLES,
+          tables: [
+            {
+              ...TABLES.tables[0],
+              time: { type: "state", granularity },
+              profile: { rows: 2, time_range: range },
+            },
+          ],
+        } as never),
+        terminal,
+      )
+        .split("\n")
+        .find((l) => l.startsWith("  rows:"));
+    expect(state("date", { from: "2026-10-01" })).toBe("  rows: 2 · from 2026-10-01");
+    expect(state("date", { from: "2026-10-01", to: "2026-11-20" })).toBe(
+      "  rows: 2 · 2026-10-01 to 2026-11-19 (inclusive)",
+    );
+    expect(
+      state("instant", { from: "2026-11-01T10:00:00.000Z", to: "2026-11-02T10:00:00.000Z" }),
+    ).toBe("  rows: 2 · 2026-11-01T10:00:00.000Z until 2026-11-02T10:00:00.000Z");
+  });
+
+  it("an instant range is shown as the slot's wall clock", () => {
+    expect(
+      rowsLine({
+        rows: 2,
+        time_range: { from: "2026-11-02T15:30:00.000Z", to: "2026-11-02T16:30:00.000Z" },
+      }),
+    ).toBe("  rows: 2 · 2026-11-02 23:30 – 2026-11-03 00:30");
+  });
+});
+
 describe("slot show (06 §4.3)", () => {
   it("each table: its kind and time, its fields, the rule of a derived one, the rows", () => {
     expect(render(catalogTables(TABLES), terminal).split("\n")).toEqual([
@@ -234,7 +297,7 @@ describe("slot show (06 §4.3)", () => {
       "health.runs (base · event, by date)  「each run」",
       "  date  date · required  「the day」",
       "  distance  quantity 「km」 6 decimal places  「how far」",
-      "  rows: 12 · 「2026-11-01」 – 「2026-11-11」",
+      "  rows: 12 · 2026-11-01 – 2026-11-11",
       "health · schema v1 · 「Asia/Shanghai」",
       `health.weekly_mileage (${TEXTS.derived})  「per week」`,
       "  total  quantity 「km」  「the total」",

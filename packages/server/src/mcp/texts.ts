@@ -108,11 +108,7 @@ export const CATALOG = {
   description: [
     "See which slots, tables and fields this user's saveslot has.",
     "Use it when the user asks about their own records and you do not yet know which tables there are, or are unsure of a table name, field name or unit; there is no need to call it again when you already looked in this conversation and have not been told of a schema update since.",
-    'Start with the default `list` for the overview, then `level: "table"` for the fields, units and relations of a few tables.',
-    {
-      text: 'With `level: "table"`, each table also comes with a data overview: how many rows it holds and the time they span.',
-      later: "P2",
-    },
+    'Start with the default `list` for the overview, then `level: "table"` for the fields, units, relations and data overview of a few tables.',
     {
       text: "Tables and fields may have aliases: what the user calls them, for matching the user's words to a table; requests use the names, never the aliases.",
       later: "P2",
@@ -122,7 +118,7 @@ export const CATALOG = {
   ],
   params: {
     level: [
-      "`list` (default): which slots and tables there are. `table`: the fields, units and relations of some tables. `schema`: the full schema document of one slot, as JSON.",
+      "`list` (default): which slots and tables there are. `table`: the fields, units, relations and overview of some tables. `schema`: the full schema document of one slot, as JSON.",
     ],
     slot: ["A slot name. Required with `schema`. With `list`, only this slot is listed."],
     tables: [
@@ -490,7 +486,7 @@ export const INSTRUCTIONS = {
 export const PROMPTS = {
   overview: {
     description: "See what is in my saveslot.",
-    text: "Look at my saveslot: list its slots and tables with saveslot_catalog, and tell me in one sentence for each table what it records, how many records it holds and when the latest one is from (saveslot_query gives these); if there are pending items, tell me how many. Do not change anything.",
+    text: "Look at my saveslot: list its slots and tables with saveslot_catalog, and tell me in one sentence for each table what it records, how many records it holds and when the latest one is from; if there are pending items, tell me how many. Do not change anything.",
   },
   pending: {
     description: "Go through the pending items one at a time; I decide what happens to each.",

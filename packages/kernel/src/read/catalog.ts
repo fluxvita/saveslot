@@ -5,8 +5,8 @@
 //   precision, a derived table's rule;
 // - `schema`: a slot's schema document as submitted, with IDs, `base_version` and the inferences
 //   filled in (../schema/fill.ts), and the slot's policy in effect.
-// Not in this version: the profile, value examples and size hints of tables (P2), reading a draft
-// (`draft`), migration status (no migrations yet). Aliases are not taken by the compiler yet, so
+// Not in this version: the value examples of the fields and `described_by` (P2), reading a draft
+// (`draft`), migration status (no migrations yet). A table has its profile (./profile.ts). Aliases are not taken by the compiler yet, so
 // none are given. The read is recorded (`operation: catalog`), counting as reading the `sv` of each
 // slot it shows (04-contract §2 «什么算读到 sv»).
 
@@ -33,6 +33,7 @@ import { filledDocument } from "../schema/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { taskOf } from "./history.ts";
 import { digest, pageAfter, positionOf } from "./page.ts";
+import { profileOf, SCALE_BOUNDS, type ScaleBounds, type TableProfile } from "./profile.ts";
 import type { KeySpec } from "./rows.ts";
 import { logPosition, restoreCount } from "./select.ts";
 import { resolveTable, type Visibility, type VisibleSlot, visibleSlots } from "./slots.ts";
@@ -46,6 +47,8 @@ export interface CatalogInput {
   readonly visibility: Visibility;
   readonly params: unknown;
   readonly read: ReadId;
+  /** The lines of the scale hint; the ones the kernel ships when not given (./profile.ts). */
+  readonly scaleBounds?: ScaleBounds;
 }
 
 export interface CatalogListResult {
@@ -88,6 +91,7 @@ export interface CatalogTable {
     readonly time_dependency: TimeDependency;
     readonly depends_on: readonly string[];
   };
+  readonly profile?: TableProfile;
 }
 
 /** One field of a catalog table (04-contract-types §4.2 `CatalogField`). */
@@ -385,10 +389,14 @@ export async function catalogInTx(
     }
     shown = [...new Set(named.map((n) => n.slot))];
     tableIds = named.map((n) => n.table.id as TableId);
-    result = {
-      level,
-      tables: named.map((n) => tableOf(n.slot, n.table, texts.get(n.slot.slot)?.get(n.table.id))),
-    };
+    const tables: CatalogTable[] = [];
+    for (const n of named) {
+      tables.push({
+        ...tableOf(n.slot, n.table, texts.get(n.slot.slot)?.get(n.table.id)),
+        profile: await profileOf(tx, n.table, input.scaleBounds ?? SCALE_BOUNDS),
+      });
+    }
+    result = { level, tables };
   } else {
     if (has(params, "draft"))
       throw new ReadError("not_in_this_version", "reading a draft", {

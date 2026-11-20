@@ -113,6 +113,20 @@ export const TEXTS = {
   required: s("required"),
   rule: s("rule"),
   rows: s("rows:"),
+  // The scale hint of a table (05 §3 `saveslot_catalog`): the lines are the result's, no separators.
+  manyRowsHead: s("many rows (over "),
+  manyRowsTail: s(
+    "): writes and derived-table refreshes on this table are slower than on a small table",
+  ),
+  beyondTestedHead: s("beyond the tested range (tested up to "),
+  beyondTestedTail: s(
+    " rows): writes, derived-table refreshes and reads at a past time may be much slower",
+  ),
+  // The period of a state table's range, as 05 §4.1 words a period.
+  from: s("from"),
+  to: s("to"),
+  until: s("until"),
+  inclusive: s("(inclusive)"),
 
   // slot create
   created: s("Created slot"),

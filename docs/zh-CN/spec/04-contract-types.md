@@ -42,7 +42,7 @@
 | 操作 | `extract_claim`、`extract_submit`、`policy.set` |
 | 错误 | `lease_expired`、`referenced` |
 | slot 策略 | 冲突期间按来源级别裁定（第一版只有 `keep_current`）；额外的高影响表 / 字段；"某类处理只接受用户会话的确认"开关 |
-| 概况 | `catalog` 的表概况第一版只有行数与业务时间范围、规模提示 `scale`、每个字段最近 K 个不同取值；没有"最近一次写入时间"。概况随 P2 给出（07-scope）：在那之前 `table` 档不带 `profile`、`examples`、`described_by` |
+| 概况 | `catalog` 的表概况第一版只有行数与业务时间范围、规模提示 `scale`、每个字段最近 K 个不同取值；没有"最近一次写入时间"。`table` 档带 `profile`（行数、业务时间范围、规模提示）；每个字段的 `examples` 与 `described_by` 随 P2 给出（07-scope），在那之前不带 |
 
 ---
 
@@ -448,10 +448,14 @@ interface CatalogTables extends CommonResult {
     }>;
     /** depends_on：规则依赖的字段，每项写成"表名.字段名"（"runs.distance"）。派生规则不跨 slot，表名是同一 slot 内的短表名，不带 slot 前缀。 */
     rule?: { id: string; version: number; sql: UntrustedText; time_dependency: "none" | "bucketed" | "now"; depends_on: string[] };
-    /** 概况（连同字段的 examples 与 described_by）随 P2 给出（07-scope），在那之前不带；见 0.2。 */
+    /** 概况：`table` 档每张表都带。字段的 examples 与 described_by 随 P2 给出（07-scope），在那之前不带；见 0.2。
+     *  rows：事件类与无时间表是未撤销的行数，状态类表是区间段数（相邻且全部字段同值的段先合并；撤销在状态类表里是无值区间，不占行），派生表是它自己的行数。
+     *  time_range：事件类表是时间字段的最早值与最晚值（只算未撤销的行）；状态类表的 from 是最早的区间起点，to 是最晚的 valid_to（不含，与契约里所有 valid_to 同一约定）；
+     *  事件类表的 to 含（是时间字段的最晚值）；状态类表有一直延续的段时不给 to；
+     *  无时间表、派生表与空表不给。日期型给 DateStr，时刻型给 Instant（UTC）。 */
     profile?: {
       rows: number;
-      time_range?: { from: BizTime; to: BizTime };
+      time_range?: { from: BizTime; to?: BizTime };   // 状态类表有一直延续的段时不给 to
       /** 规模提示：行数超过舒适线时给，读时按当前行数与内核自带的界线算出，不进事件，不是数据标记。
        *  large：超过 comfortable_rows、不超过 tested_rows；beyond_tested：超过 tested_rows。 */
       scale?: { level: "large" | "beyond_tested"; comfortable_rows: number; tested_rows: number };

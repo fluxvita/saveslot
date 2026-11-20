@@ -16,9 +16,11 @@ import {
 import { TEMPLATES } from "../templates.ts";
 import { gap, type Static, TEXTS } from "../texts.ts";
 import {
+  bizTime,
   code,
   handle,
   id,
+  inZone,
   join,
   type Line,
   name,
@@ -100,6 +102,28 @@ export function schemaTemplates(): Line[] {
   );
 }
 
+/** The day before a date: the inclusive end of a period that ends at it (05 §4.1). */
+function dayBefore(d: string): string {
+  const x = new Date(`${d}T00:00:00Z`);
+  x.setUTCDate(x.getUTCDate() - 1);
+  return Number.isNaN(x.getTime()) ? d : x.toISOString().slice(0, 10);
+}
+
+/**
+ * A table's business-time range (05 §3, §4.1): an event table's two values, instants as the slot's
+ * wall clock; a state table's as a period: from, to (inclusive by the day, or until), or from only
+ * when a segment runs on. Endpoints are business times the service computed, outside the boundary
+ * when they have their shape.
+ */
+function rangeOf(tb: CatalogTables["tables"][number], r: { from: string; to?: string }): Part[] {
+  const day = (x: string) => (/^\d{4}-\d{2}-\d{2}$/.test(x) ? bizTime(x) : inZone(x, tb.timezone));
+  if (tb.time?.type !== "state") return t`${day(r.from)} – ${day(r.to ?? r.from)}`;
+  if (r.to === undefined) return t`${words(TEXTS.from)} ${bizTime(r.from)}`;
+  return tb.time.granularity === "date"
+    ? t`${bizTime(r.from)} ${words(TEXTS.to)} ${bizTime(dayBefore(r.to))} ${words(TEXTS.inclusive)}`
+    : t`${bizTime(r.from)} ${words(TEXTS.until)} ${bizTime(r.to)}`;
+}
+
 /**
  * `saveslot slot show` (06 §4.3, the text of MCP's `saveslot_catalog` at table level, with the
  * rule's text and the data profile): each table with its kind and time; each field with its type,
@@ -136,10 +160,15 @@ export function catalogTables(r: CatalogTables): Line[] {
       );
     }
     if (tb.profile !== undefined) {
-      const range = tb.profile.time_range;
-      const span =
-        range !== undefined ? t` · ${untrusted(range.from)} – ${untrusted(range.to)}` : [];
-      out.push(t`  ${words(TEXTS.rows)} ${num(tb.profile.rows)}${span}`);
+      const { rows, time_range: range, scale } = tb.profile;
+      const span = range === undefined ? [] : t` · ${rangeOf(tb, range)}`;
+      const hint =
+        scale === undefined
+          ? []
+          : scale.level === "large"
+            ? t` · ${words(TEXTS.manyRowsHead)}${num(scale.comfortable_rows)}${words(TEXTS.manyRowsTail)}`
+            : t` · ${words(TEXTS.beyondTestedHead)}${num(scale.tested_rows)}${words(TEXTS.beyondTestedTail)}`;
+      out.push(t`  ${words(TEXTS.rows)} ${num(rows)}${span}${hint}`);
     }
   }
   out.push(...warningsAndNotices(r));
