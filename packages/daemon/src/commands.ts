@@ -17,7 +17,11 @@
 // - `status`: what `/health` says, the paths, and the number of pending items (`pending`, as the
 //   user session).
 // - `config get [<key>]`: each key's value in effect and its source (default or config.toml);
-//   a key no part of this version uses is listed as such. `config set` is not in this version.
+//   a key no part of this version uses is listed as such.
+// - `config set <key> <value>`: the two keys this version uses (./config.ts `setConfig`); another
+//   known key is refused as not supported (exit 2), and so is a value not of the key's type and
+//   limits. A file that is refused already is not written over (exit 5). Says when the value takes
+//   effect: the flush interval when the service next starts, the MCP bridge's start at its next run.
 // - `service install` / `uninstall`: starting the service at login (./autostart.ts); `install`
 //   needs an initialized home (exit 5), as `start` does.
 //
@@ -52,7 +56,15 @@ import {
 } from "@fluxvita/saveslot-service";
 import { osFileLock, PgliteBackend, PgliteStoreError } from "@fluxvita/saveslot-store-pglite";
 import { installAutostart, type System, uninstallAutostart } from "./autostart.ts";
-import { type Config, ConfigInvalid, type ConfigKey, KEYS, readConfig } from "./config.ts";
+import {
+  type Config,
+  ConfigInvalid,
+  type ConfigKey,
+  KEYS,
+  readConfig,
+  setConfig,
+  setValue,
+} from "./config.ts";
 import { health, localRequest } from "./local-request.ts";
 import { daemonVersion, main } from "./main.ts";
 import { runBridge } from "./mcp-bridge.ts";
@@ -544,19 +556,16 @@ async function checkedConfig(home: string, io: CommandIO): Promise<Config | unde
   }
 }
 
-/** `config get [<key>]`: every key's value in effect and where it comes from (06 §4.2). */
+/** `config get [<key>]` and `config set <key> <value>` (06 §4.2). */
 export async function configCommand(
   home: string,
   args: readonly string[],
   io: CommandIO,
 ): Promise<number> {
   const [verb, key, ...rest] = args;
-  if (verb === "set") {
-    io.err(TEXTS.configSetNotYet);
-    return 2;
-  }
+  if (verb === "set") return configSet(home, args.slice(1), io);
   if (verb !== "get" || rest.length > 0) {
-    io.err(TEXTS.usage("saveslot config get [<key>]"));
+    io.err(TEXTS.usage(TEXTS.configUsage));
     return 2;
   }
   if (key !== undefined && !KEYS.has(key as ConfigKey)) {
@@ -568,6 +577,34 @@ export async function configCommand(
   for (const e of config.entries) {
     if (key === undefined || e.key === key) io.out(TEXTS.configEntry(e));
   }
+  return 0;
+}
+
+/** `config set <key> <value>`: one of the keys this version uses. */
+async function configSet(home: string, args: readonly string[], io: CommandIO): Promise<number> {
+  const [key, written, ...rest] = args;
+  if (key === undefined || written === undefined || rest.length > 0) {
+    io.err(TEXTS.usage(TEXTS.configUsage));
+    return 2;
+  }
+  if (!KEYS.has(key as ConfigKey)) {
+    io.err(TEXTS.configUnknownKey(key));
+    return 2;
+  }
+  const v = setValue(key as ConfigKey, written);
+  if (!v.ok) {
+    io.err(TEXTS.configSetRefused);
+    io.err(TEXTS.configProblem(v.problem));
+    return 2;
+  }
+  const config = await checkedConfig(home, io);
+  if (config === undefined) return 5;
+  const { commentsDropped } = await setConfig(home, config, key as ConfigKey, v.value);
+  io.out(TEXTS.configSet(key, String(v.value)));
+  if (commentsDropped) io.out(TEXTS.configCommentsDropped);
+  if (key === "mcp.autostart") io.out(TEXTS.configTakesEffectBridge);
+  else if ((await health(socketFile(home))) !== undefined) io.out(TEXTS.configTakesEffectRestart);
+  else io.out(TEXTS.configTakesEffectStart);
   return 0;
 }
 

@@ -1,7 +1,7 @@
 // The local service's configuration, config.toml (06-cli §4.2, §6.2): the keys and their checks,
 // what `saveslot start`, the foreground entry and `saveslot config get` do with it.
 
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initLocalHome } from "@fluxvita/saveslot-service";
@@ -223,20 +223,89 @@ describe("the configuration of a home", () => {
     }
   });
 
-  it("config get: a key it does not know, set, or no verb: usage, exit 2", async () => {
-    for (const args of [
-      ["get", "nope"],
-      ["set", "mcp.autostart", "false"],
-      [],
-      ["get", "a", "b"],
-    ]) {
+  it("config get: a key it does not know, or no verb: usage, exit 2", async () => {
+    for (const args of [["get", "nope"], [], ["get", "a", "b"], ["put", "mcp.autostart"]]) {
       const a = io();
       expect(await configCommand(home, args, a.io)).toBe(2);
       expect(a.out).toEqual([]);
     }
-    const set = io();
-    await configCommand(home, ["set", "mcp.autostart", "false"], set.io);
-    expect(set.err).toEqual([TEXTS.configSetNotYet]);
+  });
+
+  it("config set: the key written, the file a table a section, 0600; get reads it back", async () => {
+    try {
+      const a = io();
+      expect(await configCommand(home, ["set", "mcp.autostart", "off"], a.io)).toBe(0);
+      expect(a.out).toEqual([
+        "mcp.autostart = false  (written to config.toml)",
+        TEXTS.configTakesEffectBridge,
+      ]);
+      const b = io();
+      expect(await configCommand(home, ["set", "read_log.flush_seconds", "9"], b.io)).toBe(0);
+      // No service runs on this home.
+      expect(b.out).toEqual([
+        "read_log.flush_seconds = 9  (written to config.toml)",
+        TEXTS.configTakesEffectStart,
+      ]);
+      expect(readFileSync(configFile(home), "utf8")).toBe(
+        "[read_log]\nflush_seconds = 9\n\n[mcp]\nautostart = false\n",
+      );
+      expect(statSync(configFile(home)).mode & 0o777).toBe(0o600);
+      const c = await readConfig(home);
+      expect([c.readsFlushSeconds, c.mcpAutostart]).toEqual([9, false]);
+      // The same key again: replaced, not added twice.
+      await configCommand(home, ["set", "mcp.autostart", "true"], io().io);
+      expect((await readConfig(home)).mcpAutostart).toBe(true);
+      expect(existsSync(`${configFile(home)}.tmp`)).toBe(false);
+    } finally {
+      rmSync(configFile(home), { force: true });
+    }
+  });
+
+  it("config set: comments in the file are said to be dropped", async () => {
+    writeFileSync(configFile(home), "# mine\n[mcp]\nautostart = true # yes\n");
+    try {
+      const a = io();
+      expect(await configCommand(home, ["set", "read_log.flush_seconds", "3"], a.io)).toBe(0);
+      expect(a.out).toContain(TEXTS.configCommentsDropped);
+      expect(readFileSync(configFile(home), "utf8")).not.toContain("#");
+      expect((await readConfig(home)).mcpAutostart).toBe(true);
+    } finally {
+      rmSync(configFile(home), { force: true });
+    }
+  });
+
+  it("config set: a key not in use, a value not of its type or limits, a key unknown: 2, nothing written", async () => {
+    for (const [args, says] of [
+      [["read_log.retention_days", "60"], "read_log.retention_days: not supported in this version"],
+      [["http.loopback", "on"], "http.loopback: not supported in this version"],
+      [["read_log.flush_seconds", "0"], "read_log.flush_seconds: must be at least 1 and at most"],
+      [["read_log.flush_seconds", "2147484"], "must be at least 1 and at most 2147483"],
+      [["read_log.flush_seconds", "5s"], "read_log.flush_seconds: must be a whole number"],
+      [["read_log.flush_seconds", "05"], "must be a whole number"],
+      [["mcp.autostart", "yes"], "mcp.autostart: must be true or false"],
+      [["nope", "1"], "nope is not a key saveslot knows"],
+      [["mcp.autostart"], "saveslot config set <key> <value>"],
+      [["mcp.autostart", "true", "x"], "saveslot config set <key> <value>"],
+    ] as const) {
+      const a = io();
+      expect(await configCommand(home, ["set", ...args], a.io)).toBe(2);
+      expect(a.err.join("\n")).toContain(says);
+      expect(a.out).toEqual([]);
+      expect(existsSync(configFile(home))).toBe(false);
+    }
+  });
+
+  it("config set on a refused file: 5, the file left as it was", async () => {
+    const text = "read_log.flush_seconds = 0\n";
+    writeFileSync(configFile(home), text);
+    try {
+      const a = io();
+      expect(await configCommand(home, ["set", "mcp.autostart", "false"], a.io)).toBe(5);
+      expect(a.err[0]).toBe(TEXTS.configInvalid);
+      expect(readFileSync(configFile(home), "utf8")).toBe(text);
+    } finally {
+      rmSync(configFile(home));
+    }
   });
 
   it("a refused file: config get and start exit 5 naming the key; start spawns nothing", async () => {

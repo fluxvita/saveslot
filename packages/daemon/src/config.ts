@@ -11,8 +11,12 @@
 //
 // Used in this version: `read_log.flush_seconds` (the service's interval of writing the buffered
 // reads) and `mcp.autostart` (the MCP bridge; 06 §3 step 3).
+//
+// `saveslot config set` (`setConfig`) takes those two keys only: another key in the file would
+// refuse the next start. It writes the file anew from the keys it holds (a file it can write is
+// one it could read: only these keys are in it), so the file's comments and layout are not kept.
 
-import { readFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse, TomlError } from "smol-toml";
 
@@ -215,4 +219,68 @@ export async function readConfig(home: string): Promise<Config> {
     throw e;
   }
   return parseConfig(bytes);
+}
+
+/** A value as `config set` takes it from the command line: its key's type and limits, or why not. */
+export type SetValue =
+  | { readonly ok: true; readonly value: ConfigValue }
+  | { readonly ok: false; readonly problem: ConfigProblem };
+
+/** The value written for `key` on the command line (`true` / `false`, `on` / `off`; a number). */
+export function setValue(key: ConfigKey, written: string): SetValue {
+  const spec = KEYS.get(key) as KeySpec;
+  if (!spec.used) return { ok: false, problem: { kind: "unsupported_key", key } };
+  if (spec.kind === "boolean") {
+    if (written === "true" || written === "on") return { ok: true, value: true };
+    if (written === "false" || written === "off") return { ok: true, value: false };
+    return { ok: false, problem: { kind: "not_boolean", key } };
+  }
+  if (!/^(0|[1-9][0-9]*)$/.test(written)) {
+    return { ok: false, problem: { kind: "not_integer", key, min: spec.min } };
+  }
+  const n = BigInt(written);
+  if (n < BigInt(spec.min) || n > BigInt(spec.max)) {
+    return { ok: false, problem: { kind: "out_of_range", key, min: spec.min, max: spec.max } };
+  }
+  return { ok: true, value: Number(n) };
+}
+
+/** The text of a config.toml holding the entries from the file: a table a section, in key order. */
+export function configText(entries: readonly ConfigEntry[]): string {
+  const sections = new Map<string, string[]>();
+  for (const e of entries) {
+    if (e.source !== "file") continue;
+    const dot = e.key.lastIndexOf(".");
+    const section = e.key.slice(0, dot);
+    const lines = sections.get(section) ?? [];
+    lines.push(`${e.key.slice(dot + 1)} = ${String(e.value)}`);
+    sections.set(section, lines);
+  }
+  return [...sections].map(([s, lines]) => `[${s}]\n${lines.join("\n")}\n`).join("\n");
+}
+
+/**
+ * Writes `key = value` into the home's config.toml (replaced whole, 0600). `config` is the file as
+ * it was read (valid). Resolves with whether the old file held comments, which are not kept.
+ */
+export async function setConfig(
+  home: string,
+  config: Config,
+  key: ConfigKey,
+  value: ConfigValue,
+): Promise<{ readonly commentsDropped: boolean }> {
+  let old = "";
+  try {
+    old = await readFile(configFile(home), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  const entries = config.entries.map(
+    (e): ConfigEntry => (e.key === key ? { ...e, value, source: "file" } : e),
+  );
+  const tmp = `${configFile(home)}.tmp`;
+  await writeFile(tmp, configText(entries), { mode: 0o600 });
+  await rename(tmp, configFile(home));
+  // A valid file holds the two keys only, a number and a boolean: a # in it starts a comment.
+  return { commentsDropped: old.includes("#") };
 }

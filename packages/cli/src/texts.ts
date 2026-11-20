@@ -53,7 +53,7 @@ export const TEXTS = {
       "  snippet [<host>] [--lang en|zh-CN]   text for the host's custom instructions",
       "  schema templates          the schema templates this saveslot ships",
       "",
-      "  init | start | stop | status | config get | mcp   the local service",
+      "  init | start | stop | status | config get | config set | mcp   the local service",
       "  service install | uninstall   start the saveslot service at login, or no longer",
       "",
       "options: --json  --limit <n>  --cursor <handle>  --untrusted-tags auto|always|never",

@@ -130,7 +130,8 @@ export const TEXTS = {
     stop: "usage: saveslot stop\n  stop the local saveslot service; an MCP host that connects again starts it again",
     status:
       "usage: saveslot status\n  whether the local saveslot service runs, its version, home, socket and open pending items",
-    config: "usage: saveslot config get [<key>]\n  every setting in effect and where it comes from",
+    config:
+      "usage: saveslot config get [<key>] | config set <key> <value>\n  every setting in effect and where it comes from; set one of read_log.flush_seconds, mcp.autostart",
     mcp: "usage: saveslot mcp [--record <dir>]\n  the stdio bridge an MCP host runs; needs SAVESLOT_TOKEN (a token from saveslot connect)",
     service:
       "usage: saveslot service install | uninstall\n  start the saveslot service at login (macOS: a launchd agent; Linux: a systemd user service), or no longer",
@@ -180,8 +181,16 @@ export const TEXTS = {
   },
   configEntry: (e: ConfigEntry): string =>
     `${e.key} = ${e.value}  (${e.source === "file" ? "config.toml" : "default"}${e.used ? "" : "; not in use in this version"})`,
-  configSetNotYet:
-    "error: saveslot config set is not in this version; edit config.toml under the home, then restart the service.",
+  configUsage: "saveslot config get [<key>] | saveslot config set <key> <value>",
+  configSetRefused: "error: nothing was written:",
+  configSet: (key: string, value: string) => `${key} = ${value}  (written to config.toml)`,
+  configCommentsDropped:
+    "The comments config.toml had are not kept: saveslot writes the file anew.",
+  configTakesEffectBridge:
+    "It takes effect the next time an MCP host runs saveslot mcp; the service need not restart.",
+  configTakesEffectRestart:
+    "The saveslot service running reads it when it starts: saveslot stop, then saveslot start.",
+  configTakesEffectStart: "The saveslot service reads it when it starts.",
   configUnknownKey: (key: string) => `error: ${key} is not a key saveslot knows`,
 
   // `saveslot mcp`: stderr gets event names and reason codes only; the error texts go to the host
