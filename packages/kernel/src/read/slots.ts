@@ -109,13 +109,15 @@ export function resolveTable(
   if (first === undefined) {
     const candidates =
       s === undefined
-        ? [
-            ...new Map(
-              slots.flatMap((x) =>
-                x.tables.map((y) => [y.name, { name: y.name, aliases: y.aliases ?? [] }] as const),
-              ),
-            ).values(),
-          ]
+        ? (() => {
+            // One candidate per name; tables of one name in several slots join their aliases, as
+            // the write path does (../request/normalize.ts).
+            const byName = new Map<string, string[]>();
+            for (const x of slots)
+              for (const y of x.tables)
+                byName.set(y.name, [...(byName.get(y.name) ?? []), ...(y.aliases ?? [])]);
+            return [...byName].map(([n, aliases]) => ({ name: n, aliases }));
+          })()
         : slots.flatMap((x) =>
             x.tables.map((y) => ({
               name: `${x.name}.${y.name}`,

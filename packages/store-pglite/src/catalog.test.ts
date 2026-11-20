@@ -40,6 +40,7 @@ const DOCUMENT = {
       name: "expenses",
       kind: "base",
       description: "one row per expense",
+      aliases: ["spending", "花销"],
       time: { type: "event", field: "date" },
       fields: [
         { name: "date", type: "date", required: true, description: "the day" },
@@ -49,6 +50,7 @@ const DOCUMENT = {
           type: "quantity",
           required: true,
           description: "how much",
+          aliases: ["cost", "价钱"],
           min: 0,
           unit: "CNY",
         },
@@ -171,7 +173,12 @@ describe("list", () => {
           sv: 1,
           timezone: "Asia/Shanghai",
           tables: [
-            { table: "expenses", kind: "base", description: "one row per expense" },
+            {
+              table: "expenses",
+              kind: "base",
+              description: "one row per expense",
+              aliases: ["spending", "花销"],
+            },
             { table: "accounts", kind: "base", description: "an account over time" },
             { table: "settings", kind: "base", description: "timeless" },
           ],
@@ -225,6 +232,7 @@ describe("table", () => {
           timezone: "Asia/Shanghai",
           kind: "base",
           description: "one row per expense",
+          aliases: ["spending", "花销"],
           time: { type: "event", field: "date" },
           duplicate_keys: [["date", "category", "amount"]],
           together: [["category", "amount"]],
@@ -235,6 +243,7 @@ describe("table", () => {
               name: "amount",
               type: "quantity",
               description: "how much",
+              aliases: ["cost", "价钱"],
               required: true,
               unit: "CNY",
               min: "0",
@@ -270,14 +279,17 @@ describe("table", () => {
         },
       ],
     });
-    // Not in this version: the fields' examples and `described_by`; no aliases (the compiler takes
-    // none yet). The profile has its own cases below.
+    // Not in this version: the fields' examples and `described_by`. Aliases only where there are
+    // some (below). The profile has its own cases below.
     for (const t of r["tables"] as Record<string, unknown>[]) {
       expect(t).not.toHaveProperty("described_by");
-      expect(t).not.toHaveProperty("aliases");
       for (const f of t["fields"] as Record<string, unknown>[])
         expect(f).not.toHaveProperty("examples");
     }
+    expect((r["tables"] as Record<string, unknown>[]).map((t) => t["aliases"])).toEqual([
+      ["spending", "花销"],
+      undefined,
+    ]);
   });
 
   it.each<[string, unknown, Record<string, unknown>]>([
@@ -565,6 +577,11 @@ describe("schema", () => {
       tables: { id: string; fields: { id: string }[] }[];
     };
     expect(doc.base_version).toBe(1);
+    // The aliases are in the document, as written.
+    expect((doc.tables[0] as unknown as { aliases: string[] }).aliases).toEqual([
+      "spending",
+      "花销",
+    ]);
     expect(doc.tables.map((t) => t.id)).toEqual(["t1", "t2", "t3"]);
     expect(doc.tables[0]?.fields.map((f) => f.id)).toEqual(["f1", "f2", "f3", "f4", "f5"]);
     // Nothing else changes: taking the IDs and base_version out gives the document submitted.

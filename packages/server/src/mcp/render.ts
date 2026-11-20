@@ -562,6 +562,17 @@ const tablesIn = (r: R) =>
 const ROUNDING: ReadonlySet<string> = new Set<string>(ROUNDINGS);
 const REF_TARGET: ReadonlySet<string> = new Set<string>(REF_TARGETS);
 
+/** ` · aliases: …` for a table or field that has aliases: stored text of the schema's author. */
+function aliasesOf(v: unknown): Line {
+  const aliases = arr(v);
+  return aliases.length > 0
+    ? t` · aliases: ${join(
+        aliases.map((a) => untrusted(String(a))),
+        t`, `,
+      )}`
+    : [];
+}
+
 /**
  * One field of a catalog table (05 §6 `saveslot_catalog` `table`): its name, type, unit, places
  * and rounding, description, whether required, its range, its values, what it refers to.
@@ -588,7 +599,7 @@ function catalogField(fd: R): Line {
   const refers = isObj(fd["ref"])
     ? t` · refers to ${tableOf(ref["table"])} (${codeIn(ref["target"], REF_TARGET)})`
     : [];
-  return t`  ${fieldOf(fd["name"])}  ${codeIn(fd["type"], FIELD_TYPES)}${unit}${decimals}  ${stored(String(fd["description"] ?? ""))}${required}${min}${max}${oneOf}${refers}`;
+  return t`  ${fieldOf(fd["name"])}  ${codeIn(fd["type"], FIELD_TYPES)}${unit}${decimals}  ${stored(String(fd["description"] ?? ""))}${aliasesOf(fd["aliases"])}${required}${min}${max}${oneOf}${refers}`;
 }
 
 /**
@@ -660,7 +671,7 @@ function catalog(r: R, now: Date): Line[] | { json: true; lead: Line[] } {
           }`
         : [];
       out.push(
-        t`${tableOf(tb["table"])} (${kind}) ${stored(String(tb["description"] ?? ""))}${ruled}${profileOf(tb)}`,
+        t`${tableOf(tb["table"])} (${kind}) ${stored(String(tb["description"] ?? ""))}${aliasesOf(tb["aliases"])}${ruled}${profileOf(tb)}`,
       );
       const key = arr(tb["entity_key"]);
       if (key.length > 0) out.push(t`  entity key: ${join(key.map(fieldOf), t`, `)}`);
@@ -687,16 +698,8 @@ function catalog(r: R, now: Date): Line[] | { json: true; lead: Line[] } {
     for (const x of arr(slot["tables"])) {
       const tb = obj(x);
       const kind = tb["kind"] === "derived" ? t`derived · read-only` : t`base`;
-      const aliases = arr(tb["aliases"]);
       out.push(
-        t`  ${tableOf(tb["table"])} (${kind}) ${stored(String(tb["description"] ?? ""))}${
-          aliases.length > 0
-            ? t` · aliases: ${join(
-                aliases.map((a) => untrusted(String(a))),
-                t`, `,
-              )}`
-            : []
-        }`,
+        t`  ${tableOf(tb["table"])} (${kind}) ${stored(String(tb["description"] ?? ""))}${aliasesOf(tb["aliases"])}`,
       );
     }
   }
@@ -1928,10 +1931,10 @@ function errorLines(error: R, now: Date): Line[] {
   if (details.length > DETAILS_SHOWN) {
     lines.push(t`  and ${num(details.length - DETAILS_SHOWN)} more`);
   }
-  // Tags left in a description, as a schema document read back holds them (05 §5).
+  // Tags left in a description or an alias, as a schema document read back holds them (05 §5).
   if (details.some((d) => obj(d)["code"] === "untrusted_marker")) {
     lines.push(
-      t`A description still holds the tags a result puts around stored data: remove them and submit the document again.`,
+      t`The document still holds the tags a result puts around stored data (in a description or an alias): remove them and submit the document again.`,
     );
   }
   if (error["required_scope"] === "all_slots") {

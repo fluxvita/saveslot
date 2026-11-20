@@ -102,11 +102,33 @@ describe("reads as text: what the samples do not show", () => {
     expect(lines).toContain(`  level  integer  ${B}how${E} · ≥ 1 · ≤ ${B}x9${E}`);
   });
 
+  it("aliases of a table and of a field are stored text: inside the boundary, after the description", () => {
+    // Without the profile, which follows the aliases (its own cases below).
+    const sampled = sample("catalog-table-state-event");
+    const r = {
+      ...sampled,
+      tables: (sampled["tables"] as R[]).map((tb) => ({ ...tb, profile: undefined })),
+    };
+    const lines = text("saveslot_catalog", r).split("\n");
+    expect(lines).toContain(
+      `expenses (base · event, by date) ${B}one row per expense${E} · aliases: ${B}spending${E}, ${B}花销${E}`,
+    );
+    expect(lines).toContain(`  note  text  ${B}what for${E} · aliases: ${B}memo${E}, ${B}备注${E}`);
+    // A table without aliases has no such part, and the list shows a table's aliases the same way.
+    expect(lines.filter((l) => l.includes("aliases:"))).toHaveLength(4);
+    expect(text("saveslot_catalog", sample("catalog-list"))).toContain(
+      `expenses (base) ${B}one row per expense${E} · aliases: ${B}spending${E}, ${B}花销${E}`,
+    );
+  });
+
   it("a table's profile: its rows and range; the hint only over the comfortable line, with the lines the result gives", () => {
     const r = sample("catalog-table-state-event");
     const [budgets] = r["tables"] as R[];
     const head = (profile: R | undefined, extra: R = {}) =>
-      text("saveslot_catalog", { ...r, tables: [{ ...budgets, ...extra, profile }] })
+      text("saveslot_catalog", {
+        ...r,
+        tables: [{ ...budgets, aliases: undefined, ...extra, profile }],
+      })
         .split("\n")
         .find((l) => l.startsWith("budgets ")) as string;
     const lines = { comfortable_rows: 100000, tested_rows: 1000000 };
@@ -136,7 +158,13 @@ describe("reads as text: what the samples do not show", () => {
     const line = (tb: R, from: string, to?: string) =>
       text("saveslot_catalog", {
         ...r,
-        tables: [{ ...tb, profile: { rows: 2, time_range: { from, ...(to ? { to } : {}) } } }],
+        tables: [
+          {
+            ...tb,
+            aliases: undefined,
+            profile: { rows: 2, time_range: { from, ...(to ? { to } : {}) } },
+          },
+        ],
       })
         .split("\n")
         .find((l) => l.startsWith(`${tb["table"]} `)) as string;

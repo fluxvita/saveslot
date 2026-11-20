@@ -6,8 +6,9 @@
 // - `schema`: a slot's schema document as submitted, with IDs, `base_version` and the inferences
 //   filled in (../schema/fill.ts), and the slot's policy in effect.
 // Not in this version: the value examples of the fields and `described_by` (P2), reading a draft
-// (`draft`), migration status (no migrations yet). A table has its profile (./profile.ts). Aliases are not taken by the compiler yet, so
-// none are given. The read is recorded (`operation: catalog`), counting as reading the `sv` of each
+// (`draft`), migration status (no migrations yet). A table has its profile (./profile.ts). Aliases
+// (07 «schema 文档格式» 别名) are given where a table or field has them: `list` the tables', `table`
+// the tables' and the fields', `schema` in the document as submitted. They are not names. The read is recorded (`operation: catalog`), counting as reading the `sv` of each
 // slot it shows (04-contract §2 «什么算读到 sv»).
 
 import type {
@@ -64,6 +65,7 @@ export interface CatalogListResult {
       readonly table: string;
       readonly kind: "base" | "derived";
       readonly description: string;
+      readonly aliases?: readonly string[];
     }[];
   }[];
 }
@@ -75,6 +77,7 @@ export interface CatalogTable {
   readonly timezone: string;
   readonly kind: "base" | "derived";
   readonly description: string;
+  readonly aliases?: readonly string[];
   readonly time?:
     | { readonly type: "none" }
     | { readonly type: "event"; readonly field: string }
@@ -99,6 +102,7 @@ export interface CatalogField {
   readonly name: string;
   readonly type: FieldType;
   readonly description: string;
+  readonly aliases?: readonly string[];
   readonly required?: true;
   readonly unit?: string;
   readonly min?: string;
@@ -177,6 +181,11 @@ async function submitted(
   };
 }
 
+/** Whether a table or field has aliases to give (none when absent or empty). */
+const hasAliases = (x: {
+  readonly aliases?: readonly string[];
+}): x is { readonly aliases: readonly string[] } => x.aliases !== undefined && x.aliases.length > 0;
+
 /** A table's definition, names for IDs (04-contract-types §4.2 `CatalogTables`). */
 function tableOf(slot: VisibleSlot, t: CompiledTable, sql: string | undefined): CatalogTable {
   const all = slot.compiled.tables;
@@ -194,6 +203,7 @@ function tableOf(slot: VisibleSlot, t: CompiledTable, sql: string | undefined): 
       name: f.name,
       type: f.type,
       description: f.description,
+      ...(hasAliases(f) ? { aliases: [...f.aliases] } : {}),
       ...(b.required === true ? { required: true } : {}),
       ...("unit" in f ? { unit: f.unit.code } : {}),
       ...(b.min !== undefined ? { min: b.min } : {}),
@@ -219,6 +229,7 @@ function tableOf(slot: VisibleSlot, t: CompiledTable, sql: string | undefined): 
     timezone: slot.timezone,
     kind: t.kind,
     description: t.description,
+    ...(hasAliases(t) ? { aliases: [...t.aliases] } : {}),
     fields: t.fields.map(field),
   };
   if (t.kind === "derived") {
@@ -366,7 +377,12 @@ export async function catalogInTx(
         slot_id: s.slot,
         sv: s.sv,
         timezone: s.timezone,
-        tables: ts.map((t) => ({ table: t.name, kind: t.kind, description: t.description })),
+        tables: ts.map((t) => ({
+          table: t.name,
+          kind: t.kind,
+          description: t.description,
+          ...(hasAliases(t) ? { aliases: [...t.aliases] } : {}),
+        })),
       })),
     };
   } else if (level === "table") {

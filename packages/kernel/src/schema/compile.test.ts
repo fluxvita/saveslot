@@ -33,6 +33,29 @@ describe("the compiled definition", () => {
     expect(r.warnings).toEqual([]);
   });
 
+  it("carries aliases of tables and fields, and equals apply's version 1 with them", () => {
+    const r = ok(compile(edit((d) => (d.tables[0].aliases = ["spending"]))));
+    expect(r.compiled).toEqual(COMPILED_V1);
+    const f = ok(compile(edit((d) => (d.tables[0].fields[3].aliases = ["memo", "备注"]))));
+    expect(f.compiled.tables[0]?.fields[3]).toMatchObject({
+      name: "note",
+      aliases: ["memo", "备注"],
+    });
+    expect(f.compiled.tables[0]).not.toHaveProperty("aliases");
+    // Written in NFC, empty ones left out.
+    const n = ok(
+      compile(
+        edit((d) => {
+          d.tables[0].fields[3].aliases = ["cafe\u0301"];
+          d.tables[1].aliases = [];
+        }),
+      ),
+    );
+    expect(n.compiled.tables[0]?.fields[3]).toMatchObject({ aliases: ["caf\u00e9"] });
+    expect(n.compiled.tables[1]).not.toHaveProperty("aliases");
+    expect(eventIssues(f)).toEqual([]);
+  });
+
   it("passes the strict parse of a schema.compiled event", () => {
     expect(eventIssues(compile(ledger()))).toEqual([]);
   });
@@ -372,26 +395,31 @@ describe("keys v1 does not support: not_in_this_version", () => {
 });
 
 describe("in v1, not compiled yet: not_implemented", () => {
-  it.each([
-    ["a draft changing a slot", (d: Doc) => (d.base_version = 1), "base_version"],
-    ["aliases on a table", (d: Doc) => (d.tables[1].aliases = ["a"]), "tables/1/aliases"],
-    [
-      "aliases on a field",
-      (d: Doc) => (d.tables[0].fields[1].aliases = ["a"]),
-      "tables/0/fields/1/aliases",
-    ],
-  ])("%s", (name, f, param) => {
-    const what = name.startsWith("aliases") ? "aliases" : name;
-    expect(errorOf(compile(edit(f)))).toEqual({ code: "not_implemented", what, param });
+  it("a draft changing a slot", () => {
+    expect(errorOf(compile(edit((d) => (d.base_version = 1))))).toEqual({
+      code: "not_implemented",
+      what: "a draft changing a slot",
+      param: "base_version",
+    });
   });
 
   it("wins over form and rule errors", () => {
     const d = edit((x) => {
-      x.tables[0].fields[1].aliases = ["a"];
+      x.base_version = 1;
       x.tables[0].unknown = 1;
       x.slot = "_bad";
     });
-    expect(errorOf(compile(d))).toMatchObject({ code: "not_implemented", what: "aliases" });
+    expect(errorOf(compile(d))).toMatchObject({ code: "not_implemented" });
+  });
+
+  it("aliases are compiled now: a new slot with aliases compiles", () => {
+    const r = compile(
+      edit((d) => {
+        d.tables[1].aliases = ["a"];
+        d.tables[0].fields[1].aliases = ["a"];
+      }),
+    );
+    expect(r.ok).toBe(true);
   });
 });
 

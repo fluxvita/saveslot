@@ -22,6 +22,7 @@ export type SchemaDetailCode =
   | "entity_key_not_required"
   | "cross_slot_ref"
   | "untrusted_marker"
+  | "alias_invalid"
   | "unit_unknown"
   | "external_key_table_kind"
   | "external_key_field_type"
@@ -73,7 +74,7 @@ export type CompileError =
       /** At a rule's `time_dependency`: the values this version takes. */
       readonly allowed_values?: readonly string[];
     }
-  /** In v1, but not compiled yet: changing a slot, aliases, rule forms not compiled yet. Not for callers to see as such. */
+  /** In v1, but not compiled yet: changing a slot, rule forms not compiled yet. Not for callers to see as such. */
   | { readonly code: "not_implemented"; readonly what: string; readonly param: string };
 
 export type CompileWarning =
@@ -126,6 +127,8 @@ export interface DocField {
   readonly name: string;
   readonly type: string;
   readonly description?: string;
+  /** NFC-normalized, in the order written; not checked yet (./validate.ts). */
+  readonly aliases?: readonly string[];
   readonly required: boolean;
   /** Keys present, for the per-type rules. */
   readonly keys: ReadonlySet<string>;
@@ -150,6 +153,7 @@ export interface DocTable {
   readonly keys: ReadonlySet<string>;
   readonly name: string;
   readonly description?: string;
+  readonly aliases?: readonly string[];
   readonly time: DocTime;
   readonly fields: readonly DocField[];
   readonly entity_key?: readonly string[];
@@ -163,6 +167,7 @@ export interface DocDerivedField {
   readonly path: string;
   readonly name: string;
   readonly description?: string;
+  readonly aliases?: readonly string[];
   /** Keys present: keys only base fields take are reported, not read. */
   readonly keys: ReadonlySet<string>;
   readonly type?: string;
@@ -176,6 +181,7 @@ export interface DocDerivedTable {
   readonly path: string;
   readonly name: string;
   readonly description?: string;
+  readonly aliases?: readonly string[];
   /** Keys present: keys only base tables take are reported, not read. */
   readonly keys: ReadonlySet<string>;
   readonly rule: { readonly sql: string; readonly time_dependency: TimeDependency };

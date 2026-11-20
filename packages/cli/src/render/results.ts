@@ -74,6 +74,15 @@ function paging(r: PageResult, shown: number, next: (cursor: Part) => Line): Lin
   return out;
 }
 
+/** ` · aliases: …` of a table or field that has aliases: the schema author's text, inside. */
+function aliasesOf(aliases: readonly string[] | undefined): Line {
+  if (aliases === undefined || aliases.length === 0) return [];
+  return t` · ${words(TEXTS.aliases)} ${join(
+    aliases.map((a) => [untrusted(a)]),
+    t`, `,
+  )}`;
+}
+
 /** `saveslot slot list` (06 §4.3): each slot with its schema version; each table, derived ones marked. */
 export function catalogList(r: CatalogList): Line[] {
   const out: Line[] = [];
@@ -87,7 +96,7 @@ export function catalogList(r: CatalogList): Line[] {
     for (const x of s.tables) {
       shown++;
       const kind = x.kind === "derived" ? t` (${words(TEXTS.derived)})` : [];
-      out.push(t`  ${table(x.table)}${kind}  ${untrusted(x.description)}`);
+      out.push(t`  ${table(x.table)}${kind}  ${untrusted(x.description)}${aliasesOf(x.aliases)}`);
     }
   }
   out.push(...paging(r, shown, (cursor) => t`saveslot slot list --cursor ${cursor}`));
@@ -144,14 +153,14 @@ export function catalogTables(r: CatalogTables): Line[] {
     out.push(
       t`${name(tb.slot)} · ${words(TEXTS.schemaVersion)}${num(tb.sv)} · ${untrusted(tb.timezone)}`,
     );
-    out.push(t`${table(tb.table)} (${kind})  ${untrusted(tb.description)}`);
+    out.push(t`${table(tb.table)} (${kind})  ${untrusted(tb.description)}${aliasesOf(tb.aliases)}`);
     for (const f of tb.fields) {
       const unit = f.unit !== undefined ? t` ${untrusted(f.unit)}` : [];
       const scale = f.precision?.scale;
       const decimals = scale !== undefined ? t` ${num(scale)}${words(TEXTS.decimals)}` : [];
       const required = f.required === true ? t` · ${words(TEXTS.required)}` : [];
       out.push(
-        t`  ${name(f.name)}  ${code(f.type, TYPES)}${unit}${decimals}${required}  ${untrusted(f.description)}`,
+        t`  ${name(f.name)}  ${code(f.type, TYPES)}${unit}${decimals}${required}  ${untrusted(f.description)}${aliasesOf(f.aliases)}`,
       );
     }
     if (tb.rule !== undefined) {

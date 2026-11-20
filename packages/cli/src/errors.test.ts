@@ -71,6 +71,16 @@ describe("an error's text (06 §6.3)", () => {
     ]);
   });
 
+  it("an unknown name that is an alias: the word the caller wrote stays inside, no alias text beside it", () => {
+    const e = new ContractCallError(404, {
+      code: "unknown_field",
+      message: 'unknown field "价钱"',
+      name: "价钱",
+      nearest: ["amount", "fee"],
+    });
+    expect(text(e).split("\n")).toEqual(['error unknown_field: 「unknown field "价钱"」']);
+  });
+
   it("a bound passed is said; as many slots as the tenant may have, with no way yet to make room", () => {
     const e = new ContractCallError(400, {
       code: "validation_failed",

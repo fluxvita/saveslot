@@ -23,6 +23,7 @@ export const SAMPLES: Readonly<
               table: "expenses",
               kind: "base",
               description: "one row per expense",
+              aliases: ["花销", "spending"],
             },
             {
               table: "budgets",
@@ -46,6 +47,7 @@ export const SAMPLES: Readonly<
           timezone: "Asia/Shanghai",
           kind: "base",
           description: "one row per expense",
+          aliases: ["花销", "spending"],
           fields: [
             {
               name: "date",
@@ -57,6 +59,7 @@ export const SAMPLES: Readonly<
               name: "note",
               type: "text",
               description: "what for",
+              aliases: ["memo", "备注"],
             },
             {
               name: "amount",

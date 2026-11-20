@@ -111,6 +111,7 @@ export const TEXTS = {
   noTime: s("base · no time"),
   decimals: s(" decimal places"),
   required: s("required"),
+  aliases: s("aliases:"),
   rule: s("rule"),
   rows: s("rows:"),
   // The scale hint of a table (05 §3 `saveslot_catalog`): the lines are the result's, no separators.

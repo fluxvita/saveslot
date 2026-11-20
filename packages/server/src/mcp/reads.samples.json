@@ -988,7 +988,8 @@
             {
               "table": "expenses",
               "kind": "base",
-              "description": "one row per expense"
+              "description": "one row per expense",
+              "aliases": ["spending", "花销"]
             }
           ]
         }
@@ -1025,14 +1026,16 @@
               "precision": {
                 "scale": 2,
                 "rounding": "half_up"
-              }
+              },
+              "aliases": ["限额"]
             }
           ],
           "time": {
             "type": "state",
             "granularity": "date"
           },
-          "entity_key": ["category"]
+          "entity_key": ["category"],
+          "aliases": ["monthly plan"]
         },
         {
           "table": "expenses",
@@ -1083,14 +1086,16 @@
             {
               "name": "note",
               "type": "text",
-              "description": "what for"
+              "description": "what for",
+              "aliases": ["memo", "备注"]
             }
           ],
           "time": {
             "type": "event",
             "field": "date"
           },
-          "together": [["amount", "currency_note"]]
+          "together": [["amount", "currency_note"]],
+          "aliases": ["spending", "花销"]
         }
       ]
     }
@@ -1162,7 +1167,8 @@
             {
               "name": "week_start",
               "type": "date",
-              "description": "该周周一"
+              "description": "该周周一",
+              "aliases": ["周一"]
             },
             {
               "name": "total_distance",
@@ -1201,7 +1207,8 @@
             "sql": "SELECT date_trunc('week', date::timestamp)::date AS week_start, sum(distance) AS total_distance, count(*) AS run_count, count(DISTINCT date) AS days_recorded, min(date) AS first_date, max(date) AS last_date FROM runs GROUP BY 1",
             "time_dependency": "bucketed",
             "depends_on": ["runs.date", "runs.distance"]
-          }
+          },
+          "aliases": ["每周跑量"]
         }
       ]
     }

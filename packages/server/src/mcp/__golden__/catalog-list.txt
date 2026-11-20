@@ -4,4 +4,4 @@ health · schema v1 · <untrusted-data-N>Asia/Shanghai</untrusted-data-N>
   weekly_mileage (derived · read-only) <untrusted-data-N>每周跑量与记录覆盖，周一起算。某一周没有行表示那一周没有任何跑步记录</untrusted-data-N>
 plan · schema v1 · <untrusted-data-N>Asia/Shanghai</untrusted-data-N>
   budgets (base) <untrusted-data-N>monthly budget by category</untrusted-data-N>
-  expenses (base) <untrusted-data-N>one row per expense</untrusted-data-N>
+  expenses (base) <untrusted-data-N>one row per expense</untrusted-data-N> · aliases: <untrusted-data-N>spending</untrusted-data-N>, <untrusted-data-N>花销</untrusted-data-N>

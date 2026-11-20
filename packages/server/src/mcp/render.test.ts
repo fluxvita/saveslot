@@ -496,6 +496,20 @@ describe("what 05 §6 asks for", () => {
     );
   });
 
+  it("an unknown name that is an alias: the nearest are names, the alias is only the word the caller wrote, inside", () => {
+    // The catalog sample gives `花销` as an alias of `expenses`; a request that used it is refused.
+    const e = renderError({
+      code: "unknown_table",
+      param: "table",
+      name: "花销",
+      nearest: ["expenses", "budgets"],
+      message: 'unknown table "花销"',
+    });
+    expect(e).toContain("Nearest: expenses, budgets");
+    expect(outside(e)).not.toContain("花销");
+    expect(outside(e)).not.toContain("spending");
+  });
+
   it("errors: what was refused, the nearest names, the details, the message inside, the next step", () => {
     const u = renderError(ERRORS["error_unknown_table"] as R);
     expect(u).toContain("Refused: unknown_table · parameter");

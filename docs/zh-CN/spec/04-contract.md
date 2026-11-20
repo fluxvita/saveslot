@@ -592,7 +592,7 @@
   - 按名字引用的（表名、字段名）：报该操作对不存在的名字本来报的那个——`query`、`history`、`write`、`catalog` 报 `unknown_table` / `unknown_field`，`sql` 报 `sql_rejected`（`unknown_name`）。
   - 按 ID 引用的（行、实体、事项、源数据、草稿、一次读取）：`not_found`，与 ID 不存在相同。写进参数里的行 ID 也一样：`ref` 字段的值指向不可见的行报 `validation_failed`（`ref_not_found`），前提指向不可见的行报 `not_found`；`ref_wrong_table`、`cross_slot` 只在目标可见时才报，否则"这个 ID 在别处存在"就从错误码里漏出去了。
   - 按名字或 ID 指定 slot 的参数（`catalog` 的 `slot`、`sources` 与 `pending` 的 `slot` 过滤、`policy.get`、`connections.issue` 的 `slots`）：`not_found`（`slot`）。
-- **`nearest`**（`unknown_table` / `unknown_field` 附的最接近的名字）只从可见的名字里取。别名与请求里那个名字按 `keymatch@1` 的折叠（data-model「相近的键」）比较后相同的对象，其**名字**排在最前；其余按与请求里那个名字在 `keymatch@1` 折叠之后的编辑距离从小到大排，相同时按名字的 `C` 排序（按码点）；最多给 3 个。返回的是名字，不是别名文字，所以报错里不出现不可信文本。
+- **`nearest`**（`unknown_table` / `unknown_field` 附的最接近的名字）只从可见的名字里取。别名与请求里那个名字按 `keymatch@1` 的折叠（data-model「相近的键」）比较后相同的对象，其**名字**排在最前；其余按与请求里那个名字在 `keymatch@1` 折叠之后的编辑距离从小到大排，相同时按名字的 `C` 排序（按码点）；最多给 3 个。返回的是名字，不是别名文字，所以报错里不出现不可信文本。不带 slot 的表名，几个 slot 里同名的表算一个名字，它们的别名合在一起比较。例外是 `reads.list` 的 `table` 过滤：它认的是读取记录里出现过的表名，`nearest` 只按这些表名给，不借别名。
 
 | `code` | 什么时候 |
 |---|---|

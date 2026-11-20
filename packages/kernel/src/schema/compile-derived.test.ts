@@ -376,15 +376,69 @@ describe("the form of derived tables: invalid_argument", () => {
     );
   });
 
-  it("aliases on a derived table or field: not compiled yet", () => {
-    expect(errorOf(compile(edit((d) => (d.tables[1].aliases = ["w"]))))).toMatchObject({
-      code: "not_implemented",
-      param: "tables/1/aliases",
+  it("aliases on a derived table or field are compiled", () => {
+    const r = compile(
+      edit((d) => {
+        d.tables[1].aliases = ["weekly"];
+        d.tables[1].fields[0].aliases = ["monday"];
+      }),
+    );
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const t = r.compiled.tables[1];
+    expect(t?.aliases).toEqual(["weekly"]);
+    expect(t?.fields[0]?.aliases).toEqual(["monday"]);
+    expect(t?.fields[1]).not.toHaveProperty("aliases");
+    expect(eventIssues(r)).toEqual([]);
+  });
+});
+
+describe("aliases of derived tables and fields: validation_failed", () => {
+  it("are checked like a base table's: against the names of the scope", () => {
+    expect(
+      details(
+        compile(
+          edit((d) => {
+            d.tables[1].aliases = ["a", d.tables[0].name];
+            d.tables[1].fields[0].aliases = [d.tables[1].fields[1].name];
+            d.tables[1].fields[1].aliases = [d.tables[1].fields[1].name.toUpperCase()];
+          }),
+        ),
+      ),
+    ).toEqual([
+      "tables/1/aliases/1 alias_invalid",
+      "tables/1/fields/0/aliases/0 alias_invalid",
+      "tables/1/fields/1/aliases/0 alias_invalid",
+    ]);
+  });
+});
+
+describe("aliases are no names in a rule's SQL", () => {
+  const withAliases = (sql: string, fields: Doc[]) =>
+    edit((d) => {
+      d.tables[0].aliases = ["trips"];
+      d.tables[0].fields[1].aliases = ["miles"];
+      d.tables.push({
+        name: "extra",
+        kind: "derived",
+        description: "a derived table",
+        rule: { sql, time_dependency: "none" },
+        fields,
+      });
     });
-    expect(errorOf(compile(edit((d) => (d.tables[1].fields[0].aliases = ["w"]))))).toMatchObject({
-      code: "not_implemented",
-      param: "tables/1/fields/0/aliases",
-    });
+  it("a table alias and a field alias are unknown names, the names compile", () => {
+    const fields = [f("n")];
+    const bad = (sql: string) => {
+      const e = errorOf(compile(withAliases(sql, fields)));
+      if (e.code !== "validation_failed") throw new Error(JSON.stringify(e));
+      return e.details.map((x) => [x.path, x.code, x.sql_reason]);
+    };
+    expect(bad("SELECT count(*) AS n FROM trips")).toEqual([
+      ["tables/2/rule/sql", "rule_sql_rejected", "unknown_name"],
+    ]);
+    expect(bad("SELECT sum(miles) AS n FROM runs")).toEqual([
+      ["tables/2/rule/sql", "rule_sql_rejected", "unknown_name"],
+    ]);
+    ok(compile(withAliases("SELECT sum(distance) AS n FROM runs", [f("n", { unit: "km" })])));
   });
 });
 

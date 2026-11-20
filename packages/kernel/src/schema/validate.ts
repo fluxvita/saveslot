@@ -2,6 +2,7 @@
 // read (./document.ts). Each finding is a detail with its position; all are collected, in document
 // order. Rules and their places in the spec:
 //
+// - aliases: 07-schema-evolution.md «schema 文档格式» 别名 (alias_invalid, untrusted_marker)
 // - names: 03-data-model/10-types-and-units.md «字段类型与取值范围» (名字, 名字不分 ASCII 大小写唯一)
 // - descriptions: 04-contract «schema_draft» (description_missing), 10 «字段类型与取值范围» (500 code
 //   points), 04-contract §8 入口一侧 (untrusted_marker)
@@ -118,6 +119,45 @@ function description(d: string | undefined, at: string, out: Findings): void {
   }
 }
 
+/** At most this many aliases of one table or field, each at most this many code points (07 别名). */
+const ALIASES_MAX = 8;
+const ALIAS_LENGTH_MAX = 64;
+
+/**
+ * The aliases of a table or a field (07 «schema 文档格式» 别名), already in NFC. One finding per
+ * alias at its position: `untrusted_marker` for a boundary marker, else `alias_invalid` for a
+ * length, an empty text, a control character or a line or paragraph separator (U+2028, U+2029),
+ * surrounding white space, a
+ * repeat in the same object, or a name still resolvable in the scope (`names`, folded: the current
+ * names; the old names of the last 10 versions join in with a change to an existing slot). An
+ * alias beyond the eighth is reported at its position too. Comparison is per code point, only
+ * ASCII letters without case.
+ */
+function aliases(
+  list: readonly string[] | undefined,
+  at: string,
+  names: ReadonlySet<string>,
+  out: Findings,
+): void {
+  const seen = new Set<string>();
+  (list ?? []).forEach((a, i) => {
+    const p = `${at}/aliases/${i}`;
+    if (MARKERS.some((m) => a.includes(m))) out.add(p, "untrusted_marker");
+    else if (
+      i >= ALIASES_MAX ||
+      a === "" ||
+      codePoints(a) > ALIAS_LENGTH_MAX ||
+      /[\p{Cc}\p{Zl}\p{Zp}]/u.test(a) ||
+      /^\s|\s$/u.test(a) ||
+      seen.has(fold(a)) ||
+      names.has(fold(a))
+    ) {
+      out.add(p, "alias_invalid");
+    }
+    seen.add(fold(a));
+  });
+}
+
 /** The fields of a table by folded name (the first one of a name). */
 export function fieldsByName(t: DocTable): Map<string, DocField> {
   const m = new Map<string, DocField>();
@@ -155,13 +195,20 @@ export function refTable(doc: DocSlot, name: string): AnyTable | "cross_slot" | 
   return tablesByName(doc).get(fold(table));
 }
 
-function field(f: DocField, doc: DocSlot, seen: Set<string>, out: Findings): void {
+function field(
+  f: DocField,
+  doc: DocSlot,
+  seen: Set<string>,
+  fieldNames: ReadonlySet<string>,
+  out: Findings,
+): void {
   const at = f.path;
   if (!NAME.test(f.name) || RESERVED_FIELDS.has(fold(f.name)))
     out.add(`${at}/name`, "reserved_name");
   if (seen.has(fold(f.name))) out.add(`${at}/name`, "duplicate_name");
   seen.add(fold(f.name));
   description(f.description, at, out);
+  aliases(f.aliases, at, fieldNames, out);
   if (!FIELD_TYPE_SET.has(f.type)) {
     out.add(`${at}/type`, "unknown_type", { allowed_values: [...FIELD_TYPES] });
     return;
@@ -247,7 +294,8 @@ function table(t: DocTable, doc: DocSlot, out: Findings): void {
   if (t.keys.has("rule")) out.add(`${at}/rule`, "key_not_applicable");
   if (t.fields.length === 0) out.add(`${at}/fields`, "out_of_bounds", { min: "1" });
   const seen = new Set<string>();
-  for (const f of t.fields) field(f, doc, seen, out);
+  const fieldNames = new Set(t.fields.map((f) => fold(f.name)));
+  for (const f of t.fields) field(f, doc, seen, fieldNames, out);
 
   if (t.time.type === "event") {
     // The event time is a date or a zoned date-time, and every row has one.
@@ -328,6 +376,7 @@ function derivedTable(t: DocDerivedTable, out: Findings): void {
   if (t.keys.has("external_key")) out.add(`${at}/external_key`, "external_key_table_kind");
   if (t.fields.length === 0) out.add(`${at}/fields`, "out_of_bounds", { min: "1" });
   const seen = new Set<string>();
+  const fieldNames = new Set(t.fields.map((f) => fold(f.name)));
   for (const f of t.fields) {
     const p = f.path;
     if (!NAME.test(f.name) || RESERVED_FIELDS.has(fold(f.name)))
@@ -335,6 +384,7 @@ function derivedTable(t: DocDerivedTable, out: Findings): void {
     if (seen.has(fold(f.name))) out.add(`${p}/name`, "duplicate_name");
     seen.add(fold(f.name));
     description(f.description, p, out);
+    aliases(f.aliases, p, fieldNames, out);
     for (const k of BASE_FIELD_KEYS) if (f.keys.has(k)) out.add(`${p}/${k}`, "key_not_applicable");
     if (f.type !== undefined) {
       if (!FIELD_TYPE_SET.has(f.type))
@@ -382,6 +432,7 @@ export function validate(doc: DocSlot, existingSlotNames: readonly string[]): Sc
     out.add("tables", "out_of_bounds", { min: "1" });
   }
   const seen = new Set<string>();
+  const tableNames = new Set(doc.tables.map((t) => fold(t.name)));
   for (const t of doc.tables) {
     if (t.fields.length > FIELDS_MAX) {
       out.add(`${t.path}/fields`, "out_of_bounds", { max: String(FIELDS_MAX) });
@@ -391,6 +442,7 @@ export function validate(doc: DocSlot, existingSlotNames: readonly string[]): Sc
     if (seen.has(fold(t.name))) out.add(`${t.path}/name`, "duplicate_name");
     seen.add(fold(t.name));
     description(t.description, t.path, out);
+    aliases(t.aliases, t.path, tableNames, out);
     if (t.kind === "derived") derivedTable(t, out);
     else table(t, doc, out);
   }

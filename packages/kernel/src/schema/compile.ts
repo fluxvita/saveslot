@@ -66,6 +66,7 @@ function compileField(f: DocField, index: number, doc: DocSlot, ids: Ids): Compi
     type: f.type,
     description: f.description,
   };
+  if (f.aliases !== undefined && f.aliases.length > 0) out["aliases"] = [...f.aliases];
   // `required` is present only when true (09 §7).
   if (f.required) out["required"] = true;
   if (f.min !== undefined) out["min"] = f.min;
@@ -98,6 +99,7 @@ function compileTable(t: DocTable, doc: DocSlot, ids: Ids): CompiledBaseTable {
     name: t.name,
     kind: "base",
     description: t.description,
+    ...(t.aliases !== undefined && t.aliases.length > 0 ? { aliases: [...t.aliases] } : {}),
     time: t.time.type === "event" ? { type: "event", field: ref(t.time.field) } : t.time,
     // A new physical table: `since` is this version and left out (09 §7 physical).
     physical: { table: `t_${id}_v1` },
@@ -222,6 +224,7 @@ export function compileNewSlot(input: CompileNewSlotInput): CompileResult {
           name: t.name,
           kind: "derived",
           description: t.description as string,
+          ...(t.aliases !== undefined && t.aliases.length > 0 ? { aliases: [...t.aliases] } : {}),
           // A new physical table: `since` is this version and left out (09 §7 physical).
           physical: { table: `d_${id}_v1` },
           rule: { id: ruleId, version: 1, ...r.rule },
@@ -229,6 +232,7 @@ export function compileNewSlot(input: CompileNewSlotInput): CompileResult {
             ...f,
             id: `f${i + 1}`,
             description: t.fields[i]?.description as string,
+            ...(t.fields[i]?.aliases?.length ? { aliases: [...(t.fields[i]?.aliases ?? [])] } : {}),
           })) as unknown as CompiledDerivedTable["fields"],
         },
       ];

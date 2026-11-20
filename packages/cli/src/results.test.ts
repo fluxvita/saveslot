@@ -54,7 +54,12 @@ const LIST: CatalogList = {
       sv: 2,
       timezone: "UTC",
       tables: [
-        { table: "ledger.expenses", kind: "base", description: "日常支出", aliases: ["花销"] },
+        {
+          table: "ledger.expenses",
+          kind: "base",
+          description: "日常支出",
+          aliases: ["花销", "spending"],
+        },
       ],
     },
   ],
@@ -72,7 +77,7 @@ describe("slot list (06 §4.3)", () => {
       "  health.runs  「每次跑步一行」",
       `  health.weekly_mileage (${TEXTS.derived})  「每周跑量」`,
       "ledger · schema v2 · 「UTC」",
-      "  ledger.expenses  「日常支出」",
+      "  ledger.expenses  「日常支出」 · aliases: 「花销」, 「spending」",
       `${TEXTS.warning} renamed 「from」=「"old"」 「to」=「"health.runs"」`,
       `${TEXTS.notice} schema_updated 「slot」=「"ledger"」`,
     ]);
@@ -124,7 +129,7 @@ function replaced(
 }
 
 /** Fields slot list does not show (06 §4.3 asks for none of them); `kind` only marks derived. */
-const NOT_SHOWN: ReadonlySet<string> = new Set(["level", "slot_id", "kind", "aliases"]);
+const NOT_SHOWN: ReadonlySet<string> = new Set(["level", "slot_id", "kind"]);
 
 /** What an attacker would use: an escape, a bidi override, the brackets, a tag of the boundary. */
 const PAYLOAD = (i: number) =>
@@ -171,6 +176,7 @@ const TABLES: CatalogTables = {
       timezone: "Asia/Shanghai",
       kind: "base",
       description: "each run",
+      aliases: ["jog", "跑步"],
       time: { type: "event", field: "date" },
       fields: [
         { name: "date", type: "date", description: "the day", required: true },
@@ -294,9 +300,9 @@ describe("slot show (06 §4.3)", () => {
   it("each table: its kind and time, its fields, the rule of a derived one, the rows", () => {
     expect(render(catalogTables(TABLES), terminal).split("\n")).toEqual([
       "health · schema v1 · 「Asia/Shanghai」",
-      "health.runs (base · event, by date)  「each run」",
+      "health.runs (base · event, by date)  「each run」 · aliases: 「jog」, 「跑步」",
       "  date  date · required  「the day」",
-      "  distance  quantity 「km」 6 decimal places  「how far」",
+      "  distance  quantity 「km」 6 decimal places  「how far」 · aliases: 「km run」",
       "  rows: 12 · 2026-11-01 – 2026-11-11",
       "health · schema v1 · 「Asia/Shanghai」",
       `health.weekly_mileage (${TEXTS.derived})  「per week」`,
@@ -330,9 +336,7 @@ const RENDERERS: [string, unknown, (r: never) => Line[], Omitted][] = [
     TABLES,
     catalogTables,
     (p) =>
-      ["level", "kind", "aliases", "id", "depends_on", "entity_key", "rounding"].includes(
-        last(p),
-      ) ||
+      ["level", "kind", "id", "depends_on", "entity_key", "rounding"].includes(last(p)) ||
       (p.includes("time") && last(p) === "type"),
   ],
   [

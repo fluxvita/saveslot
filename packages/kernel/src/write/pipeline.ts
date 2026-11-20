@@ -981,7 +981,12 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   const visible = await visibleSlotRows(tx, input.visibility as Visibility);
   const which = resolveWriteSlot(
     input.params,
-    visible.map((s) => ({ name: s.name, tables: s.tables.map((t) => t.name) })),
+    visible.map((s) => ({
+      name: s.name,
+      tables: s.tables.map((t) => t.name),
+      // Not names: only for the order of `nearest` (04-contract §11).
+      aliases: new Map(s.tables.map((t) => [t.name, t.aliases ?? []] as const)),
+    })),
   );
   if (!which.ok) throw requestFailure(which.error);
   const slot = visible.find((s) => s.name === which.slot) as SeenSlot;

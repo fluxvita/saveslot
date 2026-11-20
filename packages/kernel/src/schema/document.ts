@@ -27,14 +27,15 @@ export const isObject = (v: unknown): v is Obj =>
 const TOP_KEYS = ["slot", "base_version", "timezone", "tables"];
 /** Keys only base tables take. */
 const BASE_TABLE_KEYS = ["time", "entity_key", "external_key", "together", "duplicate_keys"];
-/** Every table key of the vocabulary (aliases are stopped before the form is read). */
-const TABLE_KEYS = ["name", "kind", "description", "fields", "rule", ...BASE_TABLE_KEYS];
+/** Every table key of the vocabulary. */
+const TABLE_KEYS = ["name", "kind", "description", "aliases", "fields", "rule", ...BASE_TABLE_KEYS];
 const RULE_KEYS = ["sql", "time_dependency"];
 const TIME_DEPENDENCIES: readonly string[] = ["none", "bucketed", "now"];
 const FIELD_KEYS = [
   "name",
   "type",
   "description",
+  "aliases",
   "required",
   "min",
   "max",
@@ -72,7 +73,7 @@ export function unsupportedKey(doc: Obj): CompileError | undefined {
 
 /**
  * The first thing in v1 that this compiler does not compile yet, in document order: a draft that
- * changes a slot (`base_version` not null), aliases.
+ * changes a slot (`base_version` not null).
  */
 export function notYet(doc: Obj): CompileError | undefined {
   const at = (what: string, param: string): CompileError => ({
@@ -83,12 +84,6 @@ export function notYet(doc: Obj): CompileError | undefined {
   const bv = doc["base_version"];
   if (bv !== null && bv !== undefined && typeof bv === "number") {
     return at("a draft changing a slot", "base_version");
-  }
-  for (const [t, i] of objs(doc["tables"])) {
-    if ("aliases" in t) return at("aliases", `tables/${i}/aliases`);
-    for (const [f, j] of objs(t["fields"])) {
-      if ("aliases" in f) return at("aliases", `tables/${i}/fields/${j}/aliases`);
-    }
   }
   return undefined;
 }
@@ -128,6 +123,14 @@ function strings(v: unknown, at: string): string[] {
 function groups(v: unknown, at: string): string[][] {
   if (!Array.isArray(v)) throw malformed(at);
   return v.map((g, i) => strings(g, `${at}/${i}`));
+}
+
+/**
+ * `aliases`: an array of strings, each in NFC (07 «别名»: booked after NFC; the rules on the
+ * values are ./validate.ts, on the normalized text).
+ */
+function aliases(v: unknown, at: string): string[] {
+  return strings(v, at).map((a) => a.normalize("NFC"));
 }
 
 const DECIMAL_TEXT = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/;
@@ -187,6 +190,7 @@ function field(v: unknown, at: string): DocField {
     keys: new Set(Object.keys(f)),
   };
   if ("description" in f) out.description = string(f["description"], `${at}/description`);
+  if ("aliases" in f) out.aliases = aliases(f["aliases"], `${at}/aliases`);
   if ("required" in f) {
     if (typeof f["required"] !== "boolean") throw malformed(`${at}/required`);
     out.required = f["required"];
@@ -241,6 +245,7 @@ function derivedField(v: unknown, at: string): DocDerivedField {
     keys: new Set(Object.keys(f)),
   };
   if ("description" in f) out.description = string(f["description"], `${at}/description`);
+  if ("aliases" in f) out.aliases = aliases(f["aliases"], `${at}/aliases`);
   if ("type" in f) out.type = string(f["type"], `${at}/type`);
   if ("unit" in f) out.unit = string(f["unit"], `${at}/unit`);
   precision(f, at, out);
@@ -263,6 +268,7 @@ function derivedTable(t: Record<string, unknown>, at: string): DocDerivedTable {
     fields: fields.map((f, i) => derivedField(f, `${at}/fields/${i}`)),
   };
   if ("description" in t) out.description = string(t["description"], `${at}/description`);
+  if ("aliases" in t) out.aliases = aliases(t["aliases"], `${at}/aliases`);
   return out;
 }
 
@@ -284,6 +290,7 @@ function table(v: unknown, at: string): DocTable | DocDerivedTable {
     fields: fields.map((f, i) => field(f, `${at}/fields/${i}`)),
   };
   if ("description" in t) out.description = string(t["description"], `${at}/description`);
+  if ("aliases" in t) out.aliases = aliases(t["aliases"], `${at}/aliases`);
   if ("entity_key" in t) out.entity_key = strings(t["entity_key"], `${at}/entity_key`);
   if ("external_key" in t) out.external_key = strings(t["external_key"], `${at}/external_key`);
   if ("together" in t) out.together = groups(t["together"], `${at}/together`);

@@ -156,6 +156,149 @@ describe("descriptions", () => {
   });
 });
 
+describe("aliases (07 «schema 文档格式» 别名)", () => {
+  const tableAliases = (t: number, aliases: unknown) =>
+    edit((d) => (d.tables[t].aliases = aliases));
+  // `expenses` is table 0, its `note` field 3; `accounts` is table 1 (`name`, `limit`).
+  const fieldAliases = (aliases: unknown) => field(0, 3, { aliases });
+  const T = "tables/1/aliases";
+  const F = "tables/0/fields/3/aliases";
+
+  it("are optional, up to 8 of up to 64 code points, on tables and fields", () => {
+    accepts(tableAliases(1, ["a", "b"]));
+    accepts(tableAliases(1, []));
+    accepts(fieldAliases(["花销", "旧称", "spending money"]));
+    accepts(fieldAliases(Array.from({ length: 8 }, (_, i) => `alias ${i}`)));
+    accepts(fieldAliases(["𝄞".repeat(64)]));
+    rejects(fieldAliases(["𝄞".repeat(65)]), `${F}/0 alias_invalid`);
+    rejects(
+      fieldAliases(Array.from({ length: 9 }, (_, i) => `alias ${i}`)),
+      `${F}/8 alias_invalid`,
+    );
+  });
+
+  it("a table alias equal to a table name: another table's, or its own", () => {
+    rejects(tableAliases(1, ["settings"]), `${T}/0 alias_invalid`);
+    rejects(tableAliases(1, ["fine", "settings"]), `${T}/1 alias_invalid`);
+    rejects(tableAliases(1, ["accounts"]), `${T}/0 alias_invalid`);
+  });
+
+  it("a field alias equal to a field name of its table: another field's, or its own", () => {
+    rejects(fieldAliases(["amount"]), `${F}/0 alias_invalid`);
+    rejects(fieldAliases(["note"]), `${F}/0 alias_invalid`);
+    // The name of a field of another table, or a table name, is no clash here.
+    accepts(fieldAliases(["limit", "settings"]));
+  });
+
+  it("a table alias is not compared with field names, a field alias not with table names", () => {
+    accepts(tableAliases(1, ["amount"]));
+    accepts(fieldAliases(["accounts"]));
+  });
+
+  it("only ASCII letters are folded: a case difference of ASCII is the same word", () => {
+    rejects(tableAliases(1, ["Settings"]), `${T}/0 alias_invalid`);
+    rejects(fieldAliases(["AMOUNT"]), `${F}/0 alias_invalid`);
+    rejects(fieldAliases(["Mixed", "mIXED"]), `${F}/1 alias_invalid`);
+    accepts(fieldAliases(["É", "é"]));
+  });
+
+  it("are compared after NFC: two forms of one text are a repeat", () => {
+    rejects(fieldAliases(["caf\u00e9", "cafe\u0301"]), `${F}/1 alias_invalid`);
+    accepts(fieldAliases(["cafe\u0301"]));
+  });
+
+  it("not empty, no control character or line break, no surrounding white space", () => {
+    rejects(fieldAliases([""]), `${F}/0 alias_invalid`);
+    rejects(fieldAliases(["a\u0007b"]), `${F}/0 alias_invalid`);
+    rejects(fieldAliases(["a\nb"]), `${F}/0 alias_invalid`);
+    rejects(fieldAliases(["a\tb"]), `${F}/0 alias_invalid`);
+    rejects(fieldAliases([" a"]), `${F}/0 alias_invalid`);
+    rejects(fieldAliases(["a "]), `${F}/0 alias_invalid`);
+    rejects(fieldAliases(["\u3000a"]), `${F}/0 alias_invalid`);
+    rejects(fieldAliases([" "]), `${F}/0 alias_invalid`);
+    accepts(fieldAliases(["two words"]));
+  });
+
+  it("no line or paragraph separator inside (U+2028, U+2029: not Cc, but line breaks)", () => {
+    rejects(fieldAliases(["a\u2028b"]), `${F}/0 alias_invalid`);
+    rejects(fieldAliases(["a\u2029b"]), `${F}/0 alias_invalid`);
+    rejects(tableAliases(1, ["x\u2028y"]), `${T}/0 alias_invalid`);
+  });
+
+  it("the length is counted after NFC: 80 code points written in NFD, 40 in NFC, is taken", () => {
+    const nfd = "e\u0301".repeat(40);
+    expect([...nfd].length).toBe(80);
+    accepts(fieldAliases([nfd]));
+    // 65 in NFC is still too long, however it is written.
+    rejects(fieldAliases(["e\u0301".repeat(65)]), `${F}/0 alias_invalid`);
+  });
+
+  it("no repeat in one object", () => {
+    rejects(fieldAliases(["a", "b", "a"]), `${F}/2 alias_invalid`);
+    rejects(tableAliases(1, ["x", "x"]), `${T}/1 alias_invalid`);
+  });
+
+  it("another object may have the same alias", () => {
+    accepts(
+      edit((d) => {
+        d.tables[1].aliases = ["money"];
+        d.tables[3].aliases = ["money"];
+        d.tables[0].fields[3].aliases = ["money"];
+        d.tables[0].fields[4].aliases = ["money"];
+        d.tables[1].fields[1].aliases = ["money"];
+      }),
+    );
+  });
+
+  it("a boundary marker is untrusted_marker, at the item", () => {
+    rejects(fieldAliases(["ok", "x <untrusted-data-1a2b>"]), `${F}/1 untrusted_marker`);
+    rejects(tableAliases(1, ["</untrusted-data-1a2b>"]), `${T}/0 untrusted_marker`);
+    accepts(fieldAliases(["untrusted-data is a phrase"]));
+  });
+
+  it("every finding is given, in document order", () => {
+    rejects(
+      edit((d) => {
+        d.tables[0].fields[3].aliases = ["amount", "ok", "amount"];
+        d.tables[1].aliases = ["rooms"];
+      }),
+      `${F}/0 alias_invalid`,
+      `${F}/2 alias_invalid`,
+      `${T}/0 alias_invalid`,
+    );
+  });
+
+  it("a form error when not an array of strings", () => {
+    expect(errorOf(compile(fieldAliases("a")))).toEqual({
+      code: "invalid_argument",
+      reason: "malformed",
+      param: `${F}`,
+    });
+    expect(errorOf(compile(fieldAliases(["a", 1])))).toEqual({
+      code: "invalid_argument",
+      reason: "malformed",
+      param: `${F}/1`,
+    });
+  });
+
+  // The old names of the last 10 schema versions count as names in the scope too (07 别名); a new
+  // slot has none, so only a change to an existing slot can show it.
+  it.todo(
+    "a table alias equal to a table's old name within 10 versions (waits on P4: change a slot)",
+  );
+  it.todo(
+    "a field alias equal to a field's old name within 10 versions (waits on P4: change a slot)",
+  );
+  it.todo(
+    "an alias equal to a name older than 10 versions is allowed (waits on P4: change a slot)",
+  );
+  // Changing the aliases of an existing table or field is the change `change_aliases` (07 改动码),
+  // auto-applied as `description`; only a change to an existing slot can show it.
+  it.todo(
+    "change_aliases: adding, removing or replacing aliases of an existing table or field is one change, auto-applied (waits on P4: change a slot)",
+  );
+});
+
 describe("time zone", () => {
   // Provisional: what the runtime's Intl.DateTimeFormat accepts, kept as written.
   it.each([

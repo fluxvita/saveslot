@@ -7,8 +7,8 @@ runs (base · event, by date) <untrusted-data-N>每次跑步一行</untrusted-da
   feeling  text  <untrusted-data-N>跑后感受，用户原话</untrusted-data-N>
   duplicate keys declared: date + distance (not checked in this version: a second row with the same values is saved and not flagged)
 health · schema v1 · <untrusted-data-N>Asia/Shanghai</untrusted-data-N>
-weekly_mileage (derived · read-only) <untrusted-data-N>每周跑量与记录覆盖，周一起算。某一周没有行表示那一周没有任何跑步记录</untrusted-data-N> · rule r1 v1 · depends on runs.date, runs.distance · 38 rows
-  week_start  date  <untrusted-data-N>该周周一</untrusted-data-N>
+weekly_mileage (derived · read-only) <untrusted-data-N>每周跑量与记录覆盖，周一起算。某一周没有行表示那一周没有任何跑步记录</untrusted-data-N> · aliases: <untrusted-data-N>每周跑量</untrusted-data-N> · rule r1 v1 · depends on runs.date, runs.distance · 38 rows
+  week_start  date  <untrusted-data-N>该周周一</untrusted-data-N> · aliases: <untrusted-data-N>周一</untrusted-data-N>
   total_distance  quantity <untrusted-data-N>km</untrusted-data-N> 6 decimal places (half_up)  <untrusted-data-N>该周总距离（km）；只含已记录的跑步</untrusted-data-N>
   run_count  integer  <untrusted-data-N>该周跑步次数</untrusted-data-N>
   days_recorded  integer  <untrusted-data-N>该周有跑步记录的天数（一周 7 天；不是每天都该跑，少于 7 不代表漏记）</untrusted-data-N>
