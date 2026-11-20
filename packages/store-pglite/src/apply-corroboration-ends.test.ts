@@ -26,7 +26,7 @@ import {
   eventsOfRequest,
   SLOT,
 } from "@fluxvita/saveslot-kernel/testing";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { PgliteTenantStore } from "./backend.ts";
 import { testBackend } from "./testing/test-backend.fixture.ts";
 
@@ -95,9 +95,17 @@ const ctxOf = (t: Table) => {
   };
 };
 
-const roots: string[] = [];
-afterAll(() => {
-  for (const r of roots) rmSync(r, { recursive: true, force: true });
+/**
+ * The stores a case opened and their directories: closed and removed when the case ends, so that
+ * one case's stores are open at a time (a PGlite instance each: kept open, a file of them holds
+ * gigabytes).
+ */
+const opened: { readonly root: string; store?: { close(): Promise<void> } }[] = [];
+afterEach(async () => {
+  for (const o of opened.splice(0)) {
+    await o.store?.close();
+    rmSync(o.root, { recursive: true, force: true });
+  }
 }, T);
 
 const filler: NewEvent = {
@@ -159,11 +167,13 @@ async function requests(
   reqs: readonly { readonly ops: readonly JudgeInput[]; readonly sources?: readonly number[] }[],
 ) {
   const root = mkdtempSync(join(tmpdir(), "saveslot-corroboration-ends-"));
-  roots.push(root);
+  const at = { root } as (typeof opened)[number];
+  opened.push(at);
   const store = await testBackend().open(
     { kind: "pglite", dir: join(root, "tenant") },
     { create: true },
   );
+  at.store = store;
   let minute = 0;
   const run = (events: NewEvent[]) =>
     store.write(async (tx) => {

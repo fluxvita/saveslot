@@ -37,7 +37,7 @@ import {
 } from "@fluxvita/saveslot-kernel/testing";
 import type { LogEntry } from "@fluxvita/saveslot-reference";
 import { STATE } from "@fluxvita/saveslot-reference/testing";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { PgliteTenantStore } from "./backend.ts";
 import { testBackend } from "./testing/test-backend.fixture.ts";
 
@@ -89,9 +89,17 @@ const filler: NewEvent = {
   },
 };
 
-const roots: string[] = [];
-afterAll(() => {
-  for (const r of roots) rmSync(r, { recursive: true, force: true });
+/**
+ * The stores a case opened and their directories: closed and removed when the case ends, so that
+ * one case's stores are open at a time (a PGlite instance each: kept open, a file of them holds
+ * gigabytes).
+ */
+const opened: { readonly root: string; store?: { close(): Promise<void> } }[] = [];
+afterEach(async () => {
+  for (const o of opened.splice(0)) {
+    await o.store?.close();
+    rmSync(o.root, { recursive: true, force: true });
+  }
 }, T);
 
 const g = (value: string) => ({ mode: "given" as const, value: `2026-${value}` });
@@ -129,11 +137,13 @@ const write = (
 /** A fresh tenant with the slot, and `ops` judged and applied operation by operation. */
 async function applied(ops: LogEntry[]) {
   const root = mkdtempSync(join(tmpdir(), "saveslot-apply-corroboration-"));
-  roots.push(root);
+  const at = { root } as (typeof opened)[number];
+  opened.push(at);
   const store = await testBackend().open(
     { kind: "pglite", dir: join(root, "tenant") },
     { create: true },
   );
+  at.store = store;
   let minute = 0;
   const run = (events: NewEvent[]) =>
     store.write(async (tx) => {
@@ -621,11 +631,13 @@ describe("replayed from an empty storage (K12)", () => {
    */
   async function replayed(store: PgliteTenantStore, removed: [number, string][] = []) {
     const root = mkdtempSync(join(tmpdir(), "saveslot-apply-corroboration-replay-"));
-    roots.push(root);
+    const at = { root } as (typeof opened)[number];
+    opened.push(at);
     const replica = await testBackend().open(
       { kind: "pglite", dir: join(root, "tenant") },
       { create: true },
     );
+    at.store = replica;
     const events = await store.read((tx) => tx.query("SELECT * FROM events ORDER BY seq"));
     const content = await store.read((tx) => tx.query("SELECT * FROM content ORDER BY seq, path"));
     const last = (await store.read(readTail))?.seq ?? 0;
