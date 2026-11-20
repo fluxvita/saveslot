@@ -56,7 +56,9 @@ case "$1" in
   --version) echo "$me 9.9.9 (stand-in)"; exit 0 ;;
 esac
 if [ "$1 $2" = "mcp get" ]; then
-  if [ "$mode" = hangget ]; then echo $$ > "$HOST_DIR/getting"; exec /bin/sleep 30; fi
+  # The marker is empty for a moment before the PID is in it, as \`echo $$ >\` leaves it: held
+  # open here, so that a reader that does not wait for the PID fails every time.
+  if [ "$mode" = hangget ]; then : > "$HOST_DIR/getting"; /bin/sleep 0.5; echo $$ > "$HOST_DIR/getting"; exec /bin/sleep 30; fi
   # The look-up after the add hangs (the add wrote the entry): marked for a signal to be sent.
   if [ "$mode" = hangafter ] && [ -f "$reg" ]; then echo $$ > "$HOST_DIR/looking"; exec /bin/sleep 30; fi
   # Gone between the look-up and the add.
@@ -847,9 +849,18 @@ describe("setup: asked to stop while a host's command runs", () => {
       },
     });
     const marker = join(hosts, o.marker);
-    for (let k = 0; k < 600 && !existsSync(marker); k++)
+    // The host writes its PID with `echo $$ >`: the file is there, empty, before the PID is in it.
+    // Read too early, the PID would be 0, and kill(0, 0) is this process's own group: "alive".
+    const pidIn = (): number | undefined => {
+      const text = existsSync(marker) ? readFileSync(marker, "utf8") : "";
+      return /^[1-9][0-9]*\n$/.test(text) ? Number(text) : undefined;
+    };
+    let pid = pidIn();
+    for (let k = 0; k < 600 && pid === undefined; k++) {
       await new Promise((r) => setTimeout(r, 50));
-    const pid = Number(readFileSync(marker, "utf8"));
+      pid = pidIn();
+    }
+    if (pid === undefined) throw new Error(`${o.marker}: no PID written`);
     fire?.(signal);
     const r = await running;
     // SIGKILLed with its group: gone once reaped, which may come a moment after setup returns.
