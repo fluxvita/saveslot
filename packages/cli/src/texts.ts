@@ -55,6 +55,7 @@ export const TEXTS = {
       "",
       "  init | start | stop | status | config get | config set | mcp   the local service",
       "  service install | uninstall   start the saveslot service at login, or no longer",
+      "  doctor                    check the home, the credentials, the service; what to fix",
       "",
       "options: --json  --limit <n>  --cursor <handle>  --untrusted-tags auto|always|never",
       "         --version (alone: this saveslot's version)  --help",

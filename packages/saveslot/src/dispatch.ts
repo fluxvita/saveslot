@@ -14,7 +14,16 @@ import {
 } from "@fluxvita/saveslot-daemon";
 
 /** The commands the `daemon` package has. */
-const SERVICE = new Set(["init", "start", "stop", "status", "config", "mcp", "service"] as const);
+const SERVICE = new Set([
+  "init",
+  "start",
+  "stop",
+  "status",
+  "config",
+  "mcp",
+  "service",
+  "doctor",
+] as const);
 type ServiceName = typeof SERVICE extends Set<infer N> ? N : never;
 
 /** Runs one command line (without the program name); resolves with its exit code. */

@@ -24,6 +24,7 @@
 //   effect: the flush interval when the service next starts, the MCP bridge's start at its next run.
 // - `service install` / `uninstall`: starting the service at login (./autostart.ts); `install`
 //   needs an initialized home (exit 5), as `start` does.
+// - `doctor`: each check passed, failed or a reminder (./doctor.ts); 9 when one failed.
 //
 // The lock is probed only when `/health` does not answer, and once after the stopped process has
 // exited: a probe takes the lock for a moment, and a service starting in that moment (one an MCP
@@ -48,11 +49,9 @@ import {
   ControlFileError,
   initLocalHome,
   LocalTenantError,
-  readPrivate,
   readTenantDirectory,
   rotateSession,
   ServiceRunning,
-  sessionFile,
 } from "@fluxvita/saveslot-service";
 import { osFileLock, PgliteBackend, PgliteStoreError } from "@fluxvita/saveslot-store-pglite";
 import { installAutostart, type System, uninstallAutostart } from "./autostart.ts";
@@ -65,9 +64,11 @@ import {
   setConfig,
   setValue,
 } from "./config.ts";
-import { health, localRequest } from "./local-request.ts";
+import { doctor } from "./doctor.ts";
+import { health } from "./local-request.ts";
 import { daemonVersion, main } from "./main.ts";
 import { runBridge } from "./mcp-bridge.ts";
+import { CLOCK_BEHIND_MS, clockBehind, looksSynced, withSession } from "./probes.ts";
 import {
   evalClockStart,
   lastFailureFile,
@@ -78,6 +79,8 @@ import {
 } from "./service.ts";
 import { homeProblem } from "./setup-support.ts";
 import { TEXTS } from "./texts.ts";
+
+export { CLOCK_BEHIND_MS, clockBehind, looksSynced };
 
 export interface CommandIO {
   readonly out: (line: string) => void;
@@ -94,20 +97,6 @@ const POLL_MS = 100;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** How long `start` waits for a service it saw fail to exit, after asking it to stop. */
 const FAILED_EXIT_WAIT_MS = 10_000;
-
-/** Path segments of folders that sync services keep (06-cli §3 step 2; 02-architecture §7). */
-const SYNCED = [
-  "/Library/Mobile Documents/", // iCloud Drive
-  "/Library/CloudStorage/", // Dropbox, OneDrive, Google Drive and others on macOS
-  "/Dropbox/",
-  "/OneDrive/",
-  "/Google Drive/",
-];
-
-export function looksSynced(dir: string): boolean {
-  const d = `${resolve(dir)}/`;
-  return SYNCED.some((s) => d.includes(s));
-}
 
 /**
  * Whether the home's lock is held by a process; takes and releases it when it is free, so it is
@@ -426,29 +415,6 @@ export async function stop(home: string, io: CommandIO): Promise<number> {
  * A request with the home's user session, its answer as JSON; undefined when there is no session
  * to read, the service does not answer, or the answer is no 200 of JSON. Never throws.
  */
-async function withSession(home: string, path: string): Promise<unknown> {
-  let token: string | undefined;
-  try {
-    token = (await readPrivate(sessionFile(home)))?.trim();
-  } catch {
-    return undefined;
-  }
-  if (token === undefined) return undefined;
-  try {
-    const a = await localRequest({
-      socketPath: socketFile(home),
-      method: "GET",
-      path,
-      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
-      timeoutMs: 10_000,
-    });
-    if (a.status !== 200) return undefined;
-    return JSON.parse(a.body.toString("utf8")) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
 async function pendingCount(home: string): Promise<number | undefined> {
   const v = await withSession(home, "/v1/pending?limit=1");
   const total =
@@ -475,19 +441,6 @@ async function lastFailure(home: string): Promise<{ reason: string; at: string }
   } catch {
     return undefined;
   }
-}
-
-/** How far the clock may be behind the log's end before `status` warns (02-architecture §8). */
-export const CLOCK_BEHIND_MS = 5 * 60_000;
-
-/**
- * How far `now` is behind the log's end, when by more than `CLOCK_BEHIND_MS` (02-architecture §8);
- * undefined otherwise, or when the end is not a time.
- */
-export function clockBehind(logEnd: string | undefined, now: number): number | undefined {
-  const end = logEnd !== undefined ? Date.parse(logEnd) : Number.NaN;
-  if (Number.isNaN(end)) return undefined;
-  return end - now > CLOCK_BEHIND_MS ? end - now : undefined;
 }
 
 export async function status(
@@ -610,7 +563,7 @@ async function configSet(home: string, args: readonly string[], io: CommandIO): 
 
 /** The service command `name` with its arguments; resolves with the exit code. */
 export async function serviceCommand(
-  name: "init" | "start" | "stop" | "status" | "config" | "mcp" | "service",
+  name: "init" | "start" | "stop" | "status" | "config" | "mcp" | "service" | "doctor",
   argv: readonly string[],
   io: CommandIO,
   /** Tests: the system `service` runs its commands on (never launchctl or systemctl in a test). */
@@ -694,6 +647,8 @@ export async function serviceCommand(
     }
     case "service":
       return autostartCommand(home, positionals, io, sys);
+    case "doctor":
+      return doctor(home, io, sys);
   }
 }
 

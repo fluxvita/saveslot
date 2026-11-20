@@ -3,6 +3,7 @@
 export * from "./autostart.ts";
 export * from "./commands.ts";
 export * from "./config.ts";
+export * from "./doctor.ts";
 export * from "./local-request.ts";
 export * from "./main.ts";
 export * from "./mcp-bridge.ts";

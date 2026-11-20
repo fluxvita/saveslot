@@ -133,9 +133,58 @@ export const TEXTS = {
     config:
       "usage: saveslot config get [<key>] | config set <key> <value>\n  every setting in effect and where it comes from; set one of read_log.flush_seconds, mcp.autostart",
     mcp: "usage: saveslot mcp [--record <dir>]\n  the stdio bridge an MCP host runs; needs SAVESLOT_TOKEN (a token from saveslot connect)",
+    doctor:
+      "usage: saveslot doctor\n  check the home, its credentials and run directory, the data directory, the service, its version and lock, the start at login; remind of the clock and of large tables",
     service:
       "usage: saveslot service install | uninstall\n  start the saveslot service at login (macOS: a launchd agent; Linux: a systemd user service), or no longer",
   },
+
+  // `saveslot doctor` (06 §3 step 7, §4.1): a line a check, a fix under each failure.
+  doctorLine: (verdict: "pass" | "fail" | "remind" | "skipped", item: string, says: string) =>
+    `${{ pass: "pass    ", fail: "FAIL    ", remind: "remind  ", skipped: "skipped " }[verdict]}${item}: ${says}`,
+  doctorFix: (fix: string) => `        fix: ${fix}`,
+  doctorSummary: (failed: number, reminders: number) =>
+    `${failed === 0 ? "No check failed" : `${failed} ${failed === 1 ? "check" : "checks"} failed`}; ${reminders} ${reminders === 1 ? "reminder" : "reminders"} (a reminder is not a failure).`,
+  doctorMissing: (path: string) => `${path} is not there`,
+  doctorChmod: (path: string, mode: string) =>
+    `chmod ${mode} ${path} (it must be this user's, not a link)`,
+  doctorCredentialsOk: "credentials/ 0700, the session file 0600",
+  doctorCredentialsFix: (home: string) =>
+    `chmod 700 ${home}/credentials and chmod 600 ${home}/credentials/session; if the session file is gone: saveslot stop, then saveslot init --rotate-session`,
+  doctorRunOk: "run/ 0700: the socket and the lock are this user's only",
+  doctorNoTenantDirectory: "the home's tenant directory (control/tenant.json) cannot be read",
+  doctorDataMissing: (dir: string) => `${dir}, the data directory the home records, is not there`,
+  doctorDataMissingFix:
+    "put the data directory back where the home records it (saveslot never makes a new one in its place)",
+  doctorSynced: (dir: string) =>
+    `${dir} looks like a folder a sync service (iCloud Drive, Dropbox and the like) keeps; a database there can be damaged by the sync`,
+  doctorSyncedFix:
+    "keep saveslot's data out of synced folders: a new home with saveslot init --data-dir elsewhere",
+  doctorNotRunning: "the saveslot service is not running",
+  doctorReady: (pid: number) => `the saveslot service is ready (pid ${pid})`,
+  doctorNotReady: (state: string, reason: string | undefined) =>
+    `the saveslot service is ${state}${reason !== undefined ? ` (${reason})` : ""}`,
+  doctorNotReadyFix: "see saveslot status and the service log, run/saveslot.log under the home",
+  doctorVersion: (running: string, mine: string) =>
+    `the saveslot service running is version ${running}; this saveslot is ${mine}`,
+  doctorVersionFix: "saveslot stop, then saveslot start",
+  doctorLockOk: (pid: number) =>
+    `the home's single-writer lock is held by the service (pid ${pid})`,
+  doctorLockWrong: (pid: number, file: string | undefined) =>
+    `the service (pid ${pid}) does not hold the home's single-writer lock as its pid file says (${file ?? "no pid file"})`,
+  doctorLockFix: "saveslot stop, then saveslot start",
+  doctorJobGone: (file: string, gone: readonly string[]) =>
+    `${file} runs ${gone.join(" and ")}, which ${gone.length === 1 ? "is" : "are"} not there (a Node or saveslot moved or removed)`,
+  doctorNoJob:
+    "not installed (saveslot service install); an MCP host starts the service when it connects",
+  doctorNeedsService: "not checked: the saveslot service is not ready",
+  doctorClockOk: "not behind the log's end",
+  doctorClockBehind: (minutes: number) =>
+    `this computer's clock is ${minutes} minutes behind the log's end; new events are recorded at the log's end until it catches up. Check the system clock`,
+  doctorScaleUnread: "not checked: the catalog could not be read",
+  doctorScaleOk: "every table within the comfortable line",
+  doctorScale: (table: string, rows: number, level: string) =>
+    `${table}: ${rows} rows, ${level === "beyond_tested" ? "beyond the largest size tested" : "over the comfortable line"}; saveslot is built for records at a person's pace: keep summaries, and the raw series where it comes from`,
 
   // `saveslot service install` / `uninstall` (06 §3 step 3, §4.1).
   autostartUsage: "saveslot service install | uninstall",
