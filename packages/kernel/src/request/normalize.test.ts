@@ -805,6 +805,50 @@ describe("refusals of the request's shape", () => {
     expect(errorOf(normalize(params))).toEqual(error);
   });
 
+  it("takes only a version that was in effect: numbers may skip (04-contract §2)", () => {
+    // Version 2 was a draft given up: no caller can have read it.
+    const at = (sv: number) =>
+      normalize({ ...insertExpense(), sv }, { currentSv: 3, knownSv: new Set([1, 3]) });
+    expect(errorOf(at(2))).toEqual({
+      code: "invalid_argument",
+      reason: "malformed",
+      param: "sv",
+    });
+    expect(at(1).ok).toBe(true);
+    expect(at(3).ok).toBe(true);
+    // Version 1 no exception: a number not in effect is refused whatever it is.
+    const without1 = normalize(
+      { ...insertExpense(), sv: 1 },
+      { currentSv: 3, knownSv: new Set([2, 3]) },
+    );
+    expect(errorOf(without1)).toEqual({
+      code: "invalid_argument",
+      reason: "malformed",
+      param: "sv",
+    });
+  });
+
+  it("names tables as the request's version has them: one added since is unknown_table", () => {
+    // expenses (t1) since version 3; accounts (t2) in every version; kv (t7) dropped after 1.
+    const tableVersions = new Map([
+      ["t1", { from: 3, to: 3 }],
+      ["t2", { from: 1, to: 3 }],
+      ["t7", { from: 1, to: 1 }],
+    ]);
+    const at = (sv: number) =>
+      normalize({ ...insertExpense(), sv }, { currentSv: 3, tableVersions });
+    expect(errorOf(at(2))).toEqual({
+      code: "unknown_table",
+      param: "ops/0/table",
+      name: "expenses",
+      // The nearest names among the version's tables: not a table it does not have.
+      nearest: expect.not.arrayContaining(["expenses"]),
+    });
+    expect(at(3).ok).toBe(true);
+    // A table not in the map counts as in every version.
+    expect(normalize({ ...insertExpense(), sv: 2 }, { currentSv: 3 }).ok).toBe(true);
+  });
+
   it("takes exactly 1,000 ops", () => {
     const ops = Array.from({ length: 1000 }, () => insertExpense()["ops"]);
     const r = normalize({ ops: ops.flat() });
@@ -1169,6 +1213,30 @@ describe("sv compatibility (04-contract §2)", () => {
       },
     );
     expect(seen).toEqual([]);
+  });
+
+  it("after the caller's fallback, a table the version found does not have is unknown_table", () => {
+    const r = normalize(insertExpense(), { currentSv: 3 });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const check = (sv: number) =>
+      checkSvCompatibility({
+        request: r.request,
+        sv,
+        currentSv: 3,
+        changedSince: () => new Map(),
+        tableVersions: new Map([["t1", { from: 2, to: 3 }]]),
+        tables: [
+          { id: "t1", name: "expenses" },
+          { id: "t2", name: "accounts" },
+        ],
+      });
+    expect(check(1)).toEqual({
+      code: "unknown_table",
+      param: "ops/0/table",
+      name: "expenses",
+      nearest: expect.not.arrayContaining(["expenses"]),
+    });
+    expect(check(2)).toBeUndefined();
   });
 
   it("checks a request without sv after the caller's fallback, by checkSvCompatibility", () => {

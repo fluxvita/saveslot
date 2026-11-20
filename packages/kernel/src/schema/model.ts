@@ -183,6 +183,12 @@ export interface CompileChangeInput {
    * The names still resolvable in the slot (07 «别名»: the last 10 schema versions, the current
    * one included): table names, and each table's field names by table ID. An alias may not be one.
    */
+  /**
+   * Each derived table's rule text as a draft wrote it, by table ID: a derived table the draft
+   * lists with this very text, and the rest as the catalog gives it, is unchanged. Left out, a
+   * derived table listed is never taken as unchanged.
+   */
+  readonly ruleTexts?: ReadonlyMap<string, string>;
   readonly formerNames: {
     readonly tables: readonly string[];
     readonly fields: ReadonlyMap<string, readonly string[]>;

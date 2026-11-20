@@ -50,6 +50,7 @@ import type {
   NormalizeWriteInput,
   NormalizeWriteResult,
   RequestError,
+  TableVersions,
   ToParam,
   ValidParam,
   WriteValidationDetail,
@@ -533,7 +534,13 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
   let sv: number | undefined;
   if (has(params, "sv")) {
     sv = intOf(get(params, "sv"));
-    if (sv === undefined || sv < 1 || sv > input.currentSv) invalid("malformed", "sv");
+    if (
+      sv === undefined ||
+      sv < 1 ||
+      sv > input.currentSv ||
+      (input.knownSv !== undefined && !input.knownSv.has(sv))
+    )
+      invalid("malformed", "sv");
   }
   const top = segmentsAt(get(params, "evidence"), "evidence");
   const segments = top.segments;
@@ -571,6 +578,7 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
       sv,
       input.currentSv,
       input.changedSince,
+      { versions: input.tableVersions, tables: input.compiled.tables },
     );
     if (e !== undefined) refuse(e);
   }
@@ -1208,13 +1216,38 @@ interface OpFields {
   readonly named: readonly NamedField[];
 }
 
+/** The slot's tables now, and the versions each is in (`NormalizeWriteInput.tableVersions`). */
+interface TablesInVersions {
+  readonly versions: TableVersions | undefined;
+  readonly tables: readonly { readonly id: string; readonly name: string }[];
+}
+
 function svCompatibility(
   ops: readonly OpFields[],
   sv: number,
   currentSv: number,
   changedSince: (sv: number) => ChangedFields,
+  inVersions: TablesInVersions,
 ): RequestError | undefined {
   if (sv >= currentSv) return undefined;
+  // A table the version does not have (added since): its name is not there in that version.
+  const inVersion = (id: string) => {
+    const span = inVersions.versions?.get(id);
+    return span === undefined || (span.from <= sv && sv <= span.to);
+  };
+  for (const op of ops) {
+    if (inVersion(op.table)) continue;
+    const name = inVersions.tables.find((t) => t.id === op.table)?.name ?? op.table;
+    return {
+      code: "unknown_table",
+      param: `ops/${op.index}/table`,
+      name,
+      nearest: nearest(
+        name,
+        inVersions.tables.filter((t) => inVersion(t.id)),
+      ),
+    };
+  }
   const changed = changedSince(sv);
   for (const op of ops) {
     // The whole table changed (restructure_unused): any write to it.
@@ -1262,8 +1295,14 @@ export function checkSvCompatibility(input: {
   readonly sv: number;
   readonly currentSv: number;
   readonly changedSince: (sv: number) => ChangedFields;
+  /** As `NormalizeWriteInput.tableVersions`, with the slot's tables now. */
+  readonly tableVersions?: TableVersions;
+  readonly tables?: readonly { readonly id: string; readonly name: string }[];
 }): RequestError | undefined {
-  return svCompatibility(input.request.ops, input.sv, input.currentSv, input.changedSince);
+  return svCompatibility(input.request.ops, input.sv, input.currentSv, input.changedSince, {
+    versions: input.tableVersions,
+    tables: input.tables ?? [],
+  });
 }
 
 // --- the request's slot (04-contract §1, §5) -----------------------------------------------------

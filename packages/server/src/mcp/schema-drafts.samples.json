@@ -639,5 +639,183 @@
       "code": "validation_failed",
       "message": "the document does not compile"
     }
+  },
+  "schema-draft-change-applied": {
+    "tool": "saveslot_schema_draft",
+    "result": {
+      "draft": "d_R1N0FH9PP82X9MHV",
+      "slot": "diet",
+      "slot_id": "sl_4B7R9MKYT2BWDJNG",
+      "target_sv": 2,
+      "document": {
+        "base_version": 1,
+        "slot": "diet",
+        "tables": [
+          {
+            "description": "one row per meal or snack",
+            "fields": [
+              {
+                "description": "the day",
+                "id": "f1",
+                "name": "date",
+                "required": true,
+                "type": "date"
+              },
+              {
+                "description": "what was eaten",
+                "id": "f2",
+                "name": "what",
+                "required": true,
+                "type": "text"
+              },
+              {
+                "description": "energy",
+                "id": "f3",
+                "name": "energy",
+                "type": "quantity",
+                "unit": "kcal"
+              }
+            ],
+            "id": "t1",
+            "kind": "base",
+            "name": "meals",
+            "time": {
+              "field": "date",
+              "type": "event"
+            }
+          },
+          {
+            "description": "body weight by day",
+            "fields": [
+              {
+                "description": "weight",
+                "name": "kg",
+                "required": true,
+                "type": "quantity",
+                "unit": "kg",
+                "id": "f1"
+              }
+            ],
+            "kind": "base",
+            "name": "weights",
+            "time": {
+              "granularity": "date",
+              "type": "state"
+            },
+            "id": "t2"
+          }
+        ],
+        "timezone": "Asia/Shanghai"
+      },
+      "changes": [
+        {
+          "auto": true,
+          "change": "change_description",
+          "class": "metadata",
+          "compatible_with_old_writes": true,
+          "destructive": false,
+          "target": {
+            "table": "meals"
+          }
+        },
+        {
+          "auto": true,
+          "change": "add_table",
+          "class": "create",
+          "compatible_with_old_writes": true,
+          "destructive": false,
+          "target": {
+            "table": "weights"
+          }
+        }
+      ],
+      "impact": {
+        "rows_affected": 0,
+        "derived_changed": []
+      },
+      "outcome": "applied",
+      "sv": 2
+    }
+  },
+  "schema-draft-change-pending": {
+    "tool": "saveslot_schema_draft",
+    "result": {
+      "draft": "d_MY71WHKPK8AJ7V97",
+      "slot": "diet",
+      "slot_id": "sl_4B7R9MKYT2BWDJNG",
+      "target_sv": 3,
+      "document": {
+        "base_version": 2,
+        "slot": "diet",
+        "tables": [
+          {
+            "description": "one row per meal",
+            "fields": [
+              {
+                "description": "the day",
+                "id": "f1",
+                "name": "date",
+                "required": true,
+                "type": "date"
+              },
+              {
+                "description": "what was eaten",
+                "id": "f2",
+                "name": "food",
+                "required": true,
+                "type": "text"
+              },
+              {
+                "description": "energy",
+                "id": "f3",
+                "name": "energy",
+                "type": "quantity",
+                "unit": "kcal"
+              }
+            ],
+            "id": "t1",
+            "kind": "base",
+            "name": "meals",
+            "time": {
+              "field": "date",
+              "type": "event"
+            }
+          }
+        ],
+        "timezone": "Asia/Shanghai"
+      },
+      "changes": [
+        {
+          "auto": true,
+          "change": "change_description",
+          "class": "metadata",
+          "compatible_with_old_writes": true,
+          "destructive": false,
+          "target": {
+            "table": "meals"
+          }
+        },
+        {
+          "auto": false,
+          "change": "rename_field",
+          "class": "metadata",
+          "compatible_with_old_writes": true,
+          "destructive": false,
+          "target": {
+            "table": "meals",
+            "field": "food"
+          }
+        }
+      ],
+      "impact": {
+        "rows_affected": 0,
+        "derived_changed": []
+      },
+      "outcome": "pending",
+      "item": {
+        "id": "pi_4NQDMY7N9WMTHYFT",
+        "item_ver": "iv_4NQDMY7N9WMTHYFT.11.0"
+      }
+    }
   }
 }

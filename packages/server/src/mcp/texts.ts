@@ -405,12 +405,13 @@ export const RESOLVE = {
 /** `idempotency_key` of the write tools (05 §9.1). */
 export const SCHEMA_DRAFT = {
   description: [
-    "Create a new slot from a schema document: its tables, their fields and units.",
+    "Create a new slot from a schema document (its tables, their fields and units), or change an existing slot's.",
     "Show the user the draft (each table, its fields and units) and submit it only after they agree to it: a new slot takes effect as soon as it compiles, and nothing asks them to confirm it afterwards.",
     "Use it when the user wants to start recording a kind of thing that none of their tables fits; look with saveslot_catalog first, and when a slot for it exists already, use that slot instead of creating another.",
-    "In this version it only creates slots: it cannot change an existing slot (a document whose base_version is not null is refused), and only a connection that can see every slot can create one.",
+    "To change a slot, submit the document saveslot_catalog gives with level \"schema\", changed, its IDs and base_version kept. Changes the slot's policy makes automatic (a new table, a description, aliases, looser constraints) take effect at once; the others (a rename, a dropped table) wait for the user's confirmation as a schema_change item, which this version cannot confirm yet. Only a connection that can see every slot can create one, and changing a slot needs every table of it in range.",
+
     "Fields with a unit take a code from the unit vocabulary, such as km, min or CNY.",
-    "Returns the new slot's tables as compiled and its schema version, sv 1.",
+    "Returns a new slot's tables as compiled and its schema version, sv 1; for a change, each change and whether it took effect or waits.",
     {
       text: "Write to it with saveslot_write, with that sv.",
       needs: "saveslot_write",
@@ -418,7 +419,7 @@ export const SCHEMA_DRAFT = {
   ],
   params: {
     document: [
-      "The complete schema document of the new slot: `slot` (its name: ASCII letters, digits and underscores, starting with a letter), `base_version: null`, `timezone` (an IANA name such as Asia/Shanghai), and `tables`.",
+      'The complete schema document of the new slot: `slot` (its name: ASCII letters, digits and underscores, starting with a letter), `base_version: null`, `timezone` (an IANA name such as Asia/Shanghai), and `tables`. To change a slot: the document saveslot_catalog gives with level "schema", changed, with its IDs and `base_version` kept (by its IDs a renamed table or field is known as the same one); a field left out is not dropped.',
       'Each table has a `name`, `kind: "base"`, a `description`, a `time` and `fields`. `time` is `{type: "event", field}` for one row per happening, where `field` names one of its fields of type `date` or `zoned_datetime` with `required: true`; `{type: "state", granularity: "date"}` for a value that holds over time, optionally with an `entity_key` (the names of required fields that identify one thing, such as a category); or `{type: "none"}`.',
       `Each field has a \`name\`, a \`type\` (one of ${FIELD_TYPES.map((x) => `\`${x}\``).join(", ")}), a \`description\`, and \`required: true\` when it must always be given; a \`quantity\` has a \`unit\`, an \`enum\` its \`values\`, a \`ref\` its \`ref: {table, target}\` (\`target\` is \`row\`, or \`entity\` for a state table).`,
       'A derived table is computed from a base table of the slot and is read-only: it has `kind: "derived"`, a `name`, a `description`, a `rule` and `fields`, and no `time`. `rule` is `{sql, time_dependency}`: `sql` is one SELECT over one base table of the slot, by its name, with each column it gives named by `AS <field name>`; `time_dependency` is `"bucketed"` when it groups rows by a date (a `date` field, or `date_trunc` of one) and `"none"` otherwise. Its fields have a `name` and a `description` only: their types and units come from the rule.',

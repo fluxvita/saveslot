@@ -5,12 +5,15 @@
 
 import {
   applyEvents,
+  catalog,
   createOpsContext,
   createTenant,
   KERNEL_TABLES,
+  query,
   readEvents,
   readTail,
   schemaDraft,
+  write,
 } from "@fluxvita/saveslot-kernel";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
@@ -120,11 +123,30 @@ describe("a draft that waits for confirmation", () => {
     "is a schema_change item: the receipt, the version it takes, the slot unchanged",
     async () => {
       const r = await draft({ document: rename("memo") });
-      expect(r).toMatchObject({
+      expect(r).toEqual({
+        draft: expect.stringMatching(/^d_/),
         slot: "ledger",
+        slot_id: expect.stringMatching(/^sl_/),
         target_sv: 2,
-        outcome: "pending",
-        impact: { rows_affected: 0, derived_changed: [] },
+        // On the version the slot is at, as submitted, IDs filled in.
+        document: {
+          slot: "ledger",
+          base_version: 1,
+          timezone: "Asia/Shanghai",
+          tables: [
+            {
+              id: "t1",
+              name: "expenses",
+              kind: "base",
+              description: "one row per expense",
+              time: { type: "event", field: "date" },
+              fields: [
+                { id: "f1", name: "date", type: "date", required: true, description: "the day" },
+                { id: "f2", name: "memo", type: "text", description: "what for" },
+              ],
+            },
+          ],
+        },
         changes: [
           {
             target: { table: "expenses", field: "memo" },
@@ -136,6 +158,9 @@ describe("a draft that waits for confirmation", () => {
             auto: false,
           },
         ],
+        impact: { rows_affected: 0, derived_changed: [] },
+        outcome: "pending",
+        item: { id: expect.stringMatching(/^pi_/), item_ver: expect.stringMatching(/^iv_/) },
       });
       // Usage is not computed: no `consumers` rather than an empty list.
       expect(r.impact).not.toHaveProperty("consumers");
@@ -290,27 +315,31 @@ describe("a draft that waits for confirmation", () => {
   it(
     "is rebuilt as it was: the log replayed into an empty storage gives the same state",
     async () => {
+      const expense = (sv: number, date: string) =>
+        write(s.store, ctx(), {
+          sv,
+          ops: [{ intent: "insert", table: "expenses", set: { date } }],
+        });
+      await expense(1, "2026-11-01");
       await draft({ document: rename("memo") });
       await draft({ document: rename("remark") });
-      const replica = await openReusable("saveslot-schema-draft-change-replica-");
-      try {
-        const last = (await tail()) as number;
-        const events = await rows("SELECT * FROM events ORDER BY seq");
-        const content = await rows("SELECT * FROM content ORDER BY seq, path");
-        await replica.store.write(async (tx) => {
-          const insert = async (table: string, all: readonly Record<string, unknown>[]) => {
-            for (const e of all) {
-              const cols = Object.keys(e);
-              await tx.query(
-                `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(", ")})`,
-                Object.values(e) as never,
-              );
-            }
-          };
-          await insert("events", events);
-          await insert("content", content);
-          await applyEvents(tx, await readEvents(tx, 1, last));
-        });
+      const switched = change((t) => (t.description = "every expense"));
+      switched.tables.push({
+        name: "budgets",
+        kind: "base",
+        description: "a budget",
+        time: { type: "none" },
+        fields: [{ name: "label", type: "text", description: "what for" }],
+      } as never);
+      await draft({ document: switched });
+      // Writes in the version switched to, and in the earlier one.
+      await expense(4, "2026-11-02");
+      await expense(1, "2026-11-03");
+      await write(s.store, ctx(), {
+        sv: 4,
+        ops: [{ intent: "insert", table: "budgets", set: { label: "food" } }],
+      });
+      await replayed(async (replica) => {
         const kept = new Set(
           KERNEL_TABLES.filter((t) => t.class !== "materialized").map((t) => t.name),
         );
@@ -319,9 +348,283 @@ describe("a draft that waits for confirmation", () => {
           return Object.fromEntries(Object.entries(all).filter(([name]) => !kept.has(name)));
         };
         expect(await state(replica.store)).toEqual(await state(s.store));
-      } finally {
-        await replica.close();
-      }
+        // And as it should be, not only as the live storage has it.
+        const at = async (sql: string) =>
+          (await replica.store.read((tx) => tx.query(sql))).rows as Record<string, unknown>[];
+        expect(await at("SELECT sv, state FROM schema_versions ORDER BY sv")).toEqual([
+          { sv: 1, state: "retired" },
+          { sv: 2, state: "superseded" },
+          { sv: 3, state: "superseded" },
+          { sv: 4, state: "current" },
+        ]);
+        const cat = await at("SELECT table_id, sv, structure FROM catalog ORDER BY sv, table_id");
+        expect(cat.map((x) => [x["table_id"], x["sv"]])).toEqual([
+          ["t1", 1],
+          ["t1", 4],
+          ["t2", 4],
+        ]);
+        expect(JSON.parse(cat[1]?.["structure"] as string)).toMatchObject({
+          id: "t1",
+          description: "every expense",
+          fields: [{ name: "date" }, { name: "note" }],
+        });
+        expect(JSON.parse(cat[2]?.["structure"] as string)).toMatchObject({
+          id: "t2",
+          name: "budgets",
+        });
+        expect(await at("SELECT table_id, row_count FROM counts ORDER BY table_id")).toEqual([
+          { table_id: "t1", row_count: 3 },
+          { table_id: "t2", row_count: 1 },
+        ]);
+        expect(await at("SELECT current_sv FROM slots")).toEqual([{ current_sv: 4 }]);
+      });
+    },
+    T,
+  );
+
+  it(
+    "a switch to a version given up stops the replay: the log edited",
+    async () => {
+      const pending = await draft({ document: rename("memo") });
+      await draft({ document: change((t) => (t.description = "every expense")) });
+      // The switch names the superseded draft and its number, whose compiled definition is in
+      // the log: everything but the version row's state agrees.
+      const error = await replayed(
+        async () => undefined,
+        (events, content) => {
+          // The last switch: the first is the slot's creation.
+          const sw = events.findLast((e) => e["type"] === "schema.switched") as Record<
+            string,
+            unknown
+          >;
+          const target = content.find(
+            (c) => c["seq"] === sw["seq"] && c["path"] === "target",
+          ) as Record<string, unknown>;
+          target["body"] = JSON.stringify({
+            ...JSON.parse(target["body"] as string),
+            draft_id: pending.draft,
+            to_version: 2,
+          });
+        },
+      );
+      expect(error).toMatchObject({ reason: "inconsistent" });
+      expect(String((error as Error).message)).toContain(
+        `version 2 of ${pending.slot_id} is not the pending draft ${pending.draft}`,
+      );
+    },
+    T,
+  );
+});
+
+/**
+ * The log copied into an empty storage, edited by `edit` first, and applied; `check` then reads
+ * the replica. Gives what stopped the apply, if anything.
+ */
+async function replayed(
+  check: (replica: ReusableStore) => Promise<void>,
+  edit?: (events: Record<string, unknown>[], content: Record<string, unknown>[]) => void,
+): Promise<unknown> {
+  const replica = await openReusable("saveslot-schema-draft-change-replica-");
+  try {
+    const last = (await tail()) as number;
+    const events = await rows("SELECT * FROM events ORDER BY seq");
+    const content = await rows("SELECT * FROM content ORDER BY seq, path");
+    edit?.(events, content);
+    let stopped: unknown;
+    try {
+      await replica.store.write(async (tx) => {
+        const insert = async (table: string, all: readonly Record<string, unknown>[]) => {
+          for (const e of all) {
+            const cols = Object.keys(e);
+            const marks = cols.map((_, i) => `$${i + 1}`).join(", ");
+            await tx.query(
+              `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${marks})`,
+              Object.values(e) as never,
+            );
+          }
+        };
+        await insert("events", events);
+        await insert("content", content);
+        await applyEvents(tx, await readEvents(tx, 1, last));
+      });
+    } catch (e) {
+      stopped = e;
+    }
+    if (stopped === undefined) await check(replica);
+    else if (edit === undefined) throw stopped;
+    return stopped;
+  } finally {
+    await replica.close();
+  }
+}
+
+describe("a draft whose every change is automatic", () => {
+  it(
+    "switches at once: confirmed, switched, the earlier version retired, reads use the new one",
+    async () => {
+      const r = await draft({ document: change((t) => (t.description = "every expense")) });
+      expect(r).toEqual({
+        draft: expect.stringMatching(/^d_/),
+        slot: "ledger",
+        slot_id: expect.stringMatching(/^sl_/),
+        target_sv: 2,
+        document: {
+          slot: "ledger",
+          base_version: 1,
+          timezone: "Asia/Shanghai",
+          tables: [
+            {
+              id: "t1",
+              name: "expenses",
+              kind: "base",
+              description: "every expense",
+              time: { type: "event", field: "date" },
+              fields: [
+                { id: "f1", name: "date", type: "date", required: true, description: "the day" },
+                { id: "f2", name: "note", type: "text", description: "what for" },
+              ],
+            },
+          ],
+        },
+        changes: [
+          {
+            target: { table: "expenses" },
+            change: "change_description",
+            class: "metadata",
+            compatible_with_old_writes: true,
+            destructive: false,
+            auto: true,
+          },
+        ],
+        impact: { rows_affected: 0, derived_changed: [] },
+        outcome: "applied",
+        sv: 2,
+      });
+      const op = await rows(
+        "SELECT type FROM events WHERE op = (SELECT max(op) FROM events) ORDER BY seq",
+      );
+      expect(op.map((x) => x["type"])).toEqual([
+        "schema.draft_submitted",
+        "schema.compiled",
+        "schema.confirmed",
+        "schema.switched",
+      ]);
+      expect(await versions()).toEqual([
+        [1, "retired", expect.any(String)],
+        [2, "current", r.draft],
+      ]);
+      expect(await rows("SELECT current_sv FROM slots")).toEqual([{ current_sv: 2 }]);
+      const cat = await rows("SELECT table_id, sv, structure FROM catalog ORDER BY sv, table_id");
+      expect(cat.map((x) => [x["table_id"], x["sv"]])).toEqual([
+        ["t1", 1],
+        ["t1", 2],
+      ]);
+      // What the switch wrote is the new version's definition: version 1's with the new
+      // description, without the physical tables.
+      const [v1, v2] = cat.map((x) => JSON.parse(x["structure"] as string));
+      expect(v1).toMatchObject({ id: "t1", name: "expenses", description: "one row per expense" });
+      expect(v1).not.toHaveProperty("physical");
+      expect(v2).toEqual({ ...v1, description: "every expense" });
+      // The physical table is the one version 1 built; writes and reads go on in it.
+      const w = await write(s.store, ctx(), {
+        sv: 2,
+        ops: [{ intent: "insert", table: "expenses", set: { date: "2026-11-02", note: "tea" } }],
+      });
+      expect(w).toMatchObject({ status: "saved", sv: 2 });
+      const q = await query(s.store, ctx(), { table: "expenses" });
+      expect(q).toMatchObject({ sv: 2 });
+      expect(q.rows.map((x) => x.values)).toEqual([{ date: "2026-11-02", note: "tea" }]);
+      const c = (await catalog(s.store, ctx(), {})) as unknown as {
+        slots: { slot: string; sv: number }[];
+      };
+      expect(c.slots.map((x) => [x.slot, x.sv])).toEqual([["ledger", 2]]);
+    },
+    T,
+  );
+
+  it(
+    "adds a table: built in the switch, written and read at once",
+    async () => {
+      const d = change(() => {});
+      d.tables.push({
+        name: "budgets",
+        kind: "base",
+        description: "a budget",
+        time: { type: "none" },
+        fields: [{ name: "label", type: "text", description: "what for" }],
+      } as never);
+      const r = await draft({ document: d });
+      expect(r).toMatchObject({ outcome: "applied", sv: 2 });
+      expect(r.changes.map((c: { change: string }) => c.change)).toEqual(["add_table"]);
+      await write(s.store, ctx(), {
+        sv: 2,
+        ops: [{ intent: "insert", table: "budgets", set: { label: "food" } }],
+      });
+      const q = await query(s.store, ctx(), { table: "budgets" });
+      expect(q.rows.map((x) => x.values)).toEqual([{ label: "food" }]);
+      // Version 1 has no such table: named in it, the name is not there (07 «旧版写入»).
+      await expect(
+        write(s.store, ctx(), {
+          sv: 1,
+          ops: [{ intent: "insert", table: "budgets", set: { label: "rent" } }],
+        }),
+      ).rejects.toMatchObject({
+        code: "unknown_table",
+        detail: { param: "ops/0/table", name: "budgets" },
+      });
+      // Its other table, in version 1 as well, takes the write.
+      expect(
+        await write(s.store, ctx(), {
+          sv: 1,
+          ops: [{ intent: "insert", table: "expenses", set: { date: "2026-11-03" } }],
+        }),
+      ).toMatchObject({ status: "saved" });
+    },
+    T,
+  );
+
+  it(
+    "supersedes a draft awaiting confirmation, and takes the next number",
+    async () => {
+      const pending = await draft({ document: rename("memo") });
+      const r = await draft({ document: change((t) => (t.description = "every expense")) });
+      expect(r).toMatchObject({ outcome: "applied", sv: 3, superseded_draft: pending.draft });
+      expect(await versions()).toEqual([
+        [1, "retired", expect.any(String)],
+        [2, "superseded", pending.draft],
+        [3, "current", r.draft],
+      ]);
+      expect(await rows("SELECT state FROM pending_items")).toEqual([{ state: "superseded" }]);
+      // A write may carry 1 (retired) or 3 (current), not 2: a number no version had in effect.
+      const writeAt = (sv: number) =>
+        write(s.store, ctx(), {
+          sv,
+          ops: [{ intent: "insert", table: "expenses", set: { date: "2026-11-02" } }],
+        });
+      await expect(writeAt(2)).rejects.toMatchObject({
+        code: "invalid_argument",
+        detail: { reason: "malformed", param: "sv" },
+      });
+      expect(await writeAt(1)).toMatchObject({ status: "saved" });
+      // A draft on the version switched from is outdated now (another task: not a replay).
+      expect(await refused({ document: rename("memo") }, { task: "later" })).toEqual({
+        code: "draft_outdated",
+        reason: "base_version",
+        current_sv: 3,
+      });
+    },
+    T,
+  );
+
+  it(
+    "replays: the same request gives the first receipt",
+    async () => {
+      const d = {
+        document: change((t) => (t.description = "every expense")),
+        idempotency_key: "k",
+      };
+      const r = await draft(d);
+      expect(await draft(d)).toEqual({ ...r, replayed: true });
     },
     T,
   );
@@ -423,16 +726,6 @@ describe("refused, nothing logged", () => {
         reason: "base_version",
         current_sv: 1,
       });
-    },
-    T,
-  );
-
-  it(
-    "a draft whose changes all apply at once is not made in this version",
-    async () => {
-      expect(
-        await refused({ document: change((t) => (t.description = "every expense")) }),
-      ).toMatchObject({ code: "internal", reason: "not_implemented" });
     },
     T,
   );

@@ -1,0 +1,5 @@
+In effect · slot diet · schema v1 → v2 · draft d_R1N0FH9PP82X9MHV
+  meals: change_description (metadata) · writes in the earlier version still taken · loses no data
+  weights: add_table (create) · writes in the earlier version still taken · loses no data
+Impact: 0 rows to change
+Its whole schema now: saveslot_catalog with level "schema". Write with sv 2.

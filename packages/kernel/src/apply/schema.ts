@@ -5,8 +5,9 @@
 // `schema.compiled` (with `create_slot`) → `schema.confirmed` → `slot.policy_set` →
 // `schema.switched` (no `from_version`, nothing rebuilt); and a draft changing a slot left pending:
 // its `schema.compiled` (`pending`) takes its version number (a `schema_versions` row, pending),
-// `schema.superseded` gives it up (the row and number stay). A switch from an earlier version,
-// rejected drafts and migrations stop apply as not implemented, never skipped. So does a definition
+// `schema.superseded` gives it up (the row and number stay); a switch from an earlier version that
+// rebuilds nothing (catalog-only changes, new tables) moves the pointer. Rejected drafts, switches
+// rebuilding tables and migrations stop apply as not implemented, never skipped. So does a definition
 // with an external key, or with a derived rule this version does not evaluate: their indexes and
 // evaluation belong to later phases, and an empty table would leave the state silently behind the
 // log. Derived tables get their physical tables here (./derived.ts).
@@ -131,13 +132,8 @@ function admit(
   const base: CompiledBaseTable[] = [];
   const derived: CompiledDerivedTable[] = [];
   for (const t of c.tables) {
-    if ((t.physical.since ?? c.sv) !== c.sv) {
-      throw new ApplyError(
-        "not_implemented",
-        seq,
-        `table ${t.id} built in version ${t.physical.since} is not applied yet`,
-      );
-    }
+    // Built in an earlier version and kept: nothing to build.
+    if ((t.physical.since ?? c.sv) !== c.sv) continue;
     if (t.kind === "derived") {
       let refusal: ReturnType<typeof evaluationRefusal>;
       try {
@@ -174,6 +170,10 @@ export interface SwitchInput {
   /** `seq` of the `schema.compiled` event of the draft and version switched to. */
   readonly seq: Seq;
   readonly compiled: CompiledSchema;
+  /** That event's `changes` (09 §5.5): what the draft changes, by IDs. */
+  readonly changes?: readonly { readonly change: string; readonly target: Obj }[];
+  /** A switch from an earlier version: the slot's current version's definition, when it has one. */
+  readonly from?: CompiledSchema;
 }
 
 /** The slot a `slot.removed` removes, as it is, read by the caller. */
@@ -233,7 +233,6 @@ export function planSchema(
       const changes = block("changes") as unknown as readonly { change: string }[];
       const target = block("target");
       if (!changes.some((x) => x.change === "create_slot")) {
-        if (target["outcome"] !== "pending") throw notYet("a change applied at once");
         const c = block("compiled") as unknown as CompiledSchema;
         if (!isKnownRsqlVersion(c.rsql)) {
           throw new ApplyError("unknown_version", seq, `unknown rsql version ${c.rsql}`);
@@ -258,6 +257,14 @@ export function planSchema(
       if (target["outcome"] !== "applied") throw notYet("a slot awaiting confirmation");
       const c = block("compiled") as unknown as CompiledSchema;
       admit(seq, c);
+      // A slot being created has no earlier version: every table is built in this one.
+      const kept = c.tables.find((x) => (x.physical.since ?? c.sv) !== c.sv);
+      if (kept !== undefined)
+        throw new ApplyError(
+          "inconsistent",
+          seq,
+          `table ${kept.id} of a slot being created built in version ${String(kept.physical.since)}`,
+        );
       if (c.slot !== slot) {
         throw new ApplyError("inconsistent", seq, `compiled for ${c.slot} in slot ${String(slot)}`);
       }
@@ -304,12 +311,19 @@ export function planSchema(
     // §5.5: build the version's new physical tables, point the slot at it.
     case "schema.switched": {
       const t = block("target");
-      if ("from_version" in t) throw notYet("a switch from an earlier version");
+      if ("from_version" in t) return planSwitchFrom(seq, slot, t, input);
       const to = input.switchTo;
       if (to === undefined) {
         throw new ApplyError("inconsistent", seq, `no compiled version ${String(t["to_version"])}`);
       }
       const c = to.compiled;
+      const kept = c.tables.find((x) => (x.physical.since ?? c.sv) !== c.sv);
+      if (kept !== undefined)
+        throw new ApplyError(
+          "inconsistent",
+          seq,
+          `table ${kept.id} of a slot being created built in version ${String(kept.physical.since)}`,
+        );
       const { base: tables, derived } = admit(seq, c);
       const s = input.slot;
       const inconsistent = (what: string) => new ApplyError("inconsistent", seq, what);
@@ -361,4 +375,122 @@ export function planSchema(
     default:
       return undefined;
   }
+}
+
+/**
+ * What a table's physical tables are made of, by the definition: their name, and the columns its
+ * fields give (ID and type; a base table's time columns by its time type). Equal for a table kept
+ * from one version to the next.
+ */
+function physicalShape(t: CompiledTable): string {
+  const fields = t.fields.map((f) => `${f.id}:${f.type}`).sort();
+  return t.kind === "derived"
+    ? canonicalize({ kind: "derived", table: derivedLayout(t).table, fields })
+    : canonicalize({
+        kind: "base",
+        table: t.physical.table,
+        time: t.time.type === "state" ? `state:${t.time.granularity}` : t.time.type,
+        fields,
+      });
+}
+
+/**
+ * §5.5 `schema.switched` from an earlier version, with nothing rebuilt (a change to the catalog
+ * only): the tables new in this version are built as a new slot's are (they have no writes to
+ * convert); every table of the version gets its catalog row; the pointer moves, the earlier
+ * version is retired. Tables the version keeps keep their physical tables; a table it drops stays
+ * as a retired table.
+ *
+ * Only that: what else a switch could bring stops, never skipped (an empty or stale table would
+ * leave the state silently behind the log). Not implemented: a new derived table (built empty,
+ * while its sources have rows), a kept derived table whose rule changed (not evaluated again), a
+ * time zone or slot name other than the earlier version's (nothing here recomputes what depends
+ * on them). Inconsistent: a table kept from an earlier version that the earlier version does not
+ * have, or has with other physical tables or field columns; a table of the earlier version gone
+ * without the draft dropping it.
+ */
+function planSwitchFrom(
+  seq: Seq,
+  slot: string | undefined,
+  t: Obj,
+  input: { readonly switchTo?: SwitchInput; readonly slot?: SlotInput },
+): Change[] {
+  const inconsistent = (what: string) => new ApplyError("inconsistent", seq, what);
+  const rebuilt = t["rebuilt_tables"] as readonly string[];
+  if (rebuilt.length > 0)
+    throw new ApplyError("not_implemented", seq, "a switch rebuilding tables is not applied yet");
+  const to = input.switchTo;
+  if (to === undefined) throw inconsistent(`no compiled version ${String(t["to_version"])}`);
+  const c = to.compiled;
+  const s = input.slot;
+  if (s === undefined) throw inconsistent(`no slot ${String(slot)}`);
+  if (s.currentSv !== t["from_version"])
+    throw inconsistent(
+      `slot ${String(slot)} is at version ${String(s.currentSv)}, not ${String(t["from_version"])}`,
+    );
+  const notYet = (what: string) =>
+    new ApplyError("not_implemented", seq, `${what} is not applied yet`);
+  const prev = to.from;
+  if (prev === undefined || prev.sv !== t["from_version"])
+    throw inconsistent(`no definition of version ${String(t["from_version"])}`);
+  if (c.timezone !== prev.timezone) throw notYet("a switch changing the time zone");
+  if (c.name !== prev.name) throw notYet("a switch renaming the slot");
+  const { base: built, derived } = admit(seq, c);
+  const fresh = [...built, ...derived];
+  const [newDerived] = derived;
+  if (newDerived !== undefined)
+    throw notYet(`a switch adding derived table ${newDerived.id} (built from its sources)`);
+  const taken = fresh.find((x) => s.tables.has(x.id));
+  if (taken !== undefined) throw inconsistent(`table ${taken.id} already exists`);
+  const isNew = new Set(fresh.map((x) => x.id));
+  // The tables kept: as the earlier version has them, physically.
+  for (const x of c.tables) {
+    if (isNew.has(x.id)) continue;
+    const was = prev.tables.find((y) => y.id === x.id);
+    if (was === undefined)
+      throw inconsistent(`table ${x.id} is kept, but version ${prev.sv} does not have it`);
+    if (physicalShape(was) !== physicalShape(x))
+      throw inconsistent(`table ${x.id} is kept with other physical tables or field columns`);
+    if (
+      x.kind === "derived" &&
+      was.kind === "derived" &&
+      canonicalize(x.rule as unknown as JsonValue) !==
+        canonicalize(was.rule as unknown as JsonValue)
+    )
+      throw notYet(`a switch changing the rule of derived table ${x.id}`);
+  }
+  // The tables gone: each dropped by the draft.
+  const dropped = new Set(
+    (to.changes ?? []).flatMap((x) =>
+      x.change === "drop_table" && typeof x.target["table"] === "string" ? [x.target["table"]] : [],
+    ),
+  );
+  const gone = prev.tables.find((y) => !c.tables.some((x) => x.id === y.id) && !dropped.has(y.id));
+  if (gone !== undefined)
+    throw inconsistent(`table ${gone.id} of version ${prev.sv} is gone, not dropped`);
+  return [
+    {
+      kind: "ddl",
+      sql: [
+        ...built.map(baseTableDdl),
+        ...derived.map((x) => derivedTableDdl(x, (type) => COLUMN_TYPES[type])),
+      ].join("\n"),
+    },
+    ...c.tables.flatMap((x): Change[] => [
+      { kind: "catalog_insert", table_id: x.id, sv: c.sv, slot: c.slot, structure: structureOf(x) },
+      ...(x.kind === "base" && isNew.has(x.id)
+        ? [{ kind: "counts_init", table_id: x.id } as Change]
+        : []),
+    ]),
+    {
+      kind: "version_switch",
+      slot: c.slot,
+      sv: c.sv,
+      from: t["from_version"] as number,
+      compiled_seq: to.seq,
+      draft_id: t["draft_id"] as string,
+      name: c.name,
+      timezone: c.timezone,
+    },
+  ];
 }

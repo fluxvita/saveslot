@@ -1,5 +1,6 @@
 export * from "./compile.ts";
 export { compileChange } from "./compile-change.ts";
+export { derivedTableDocument, documentOf } from "./document-of.ts";
 export { filledDocument } from "./fill.ts";
 export type * from "./model.ts";
 export { DEFAULT_SLOT_POLICY } from "./policy.ts";

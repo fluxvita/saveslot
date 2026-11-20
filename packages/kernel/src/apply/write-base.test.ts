@@ -74,6 +74,7 @@ const INPUT: WriteBaseInput = {
   openCells: OPEN,
   count: 3,
   sv: 1,
+  knownSv: new Set([1]),
   rowTable: "t2",
 };
 
@@ -360,6 +361,7 @@ describe("the source table rows of a write.base", () => {
           openCells: [],
           count: 0,
           sv: 1,
+          knownSv: new Set([1]),
           rowTable: "t1",
         },
       },
@@ -461,10 +463,21 @@ describe("a write.base that does not fit the row stops apply, decided in the pla
     expect(why(ev)).toBe("inconsistent: fields/f9/0: the table has no field f9");
   });
 
-  it("a target of another schema version", () => {
-    expect(why(base, { ...INPUT, sv: 2 })).toBe(
-      "inconsistent: target.sv 1 is not the current version 2",
+  it("a target of a later schema version stops; an earlier one is the version it was read in", () => {
+    // target.sv is 1 in `base`.
+    const at2 = { ...INPUT, sv: 2, knownSv: new Set([1, 2]) };
+    expect(why(base, at2)).toBe("applied");
+    const later = edit((b) => b.set("target", present({ ...target, sv: 3 })));
+    expect(why(later, at2)).toBe("inconsistent: target.sv 3 is after the current version 2");
+  });
+
+  it("a target of a number the slot was never in stops, as the write path refuses it", () => {
+    // target.sv is 1 in `base`. Version 1 a draft's number given up (superseded or rejected), the
+    // slot created in version 2: as the write path, apply takes only versions in effect so far.
+    expect(why(base, { ...INPUT, sv: 3, knownSv: new Set([2, 3]) })).toBe(
+      "inconsistent: target.sv 1 is no version the slot has been in",
     );
+    expect(why(base, { ...INPUT, sv: 3, knownSv: new Set([1, 3]) })).toBe("applied");
   });
 
   it("a corroboration on a state table: its explicit ends that bound its interval, written once", () => {

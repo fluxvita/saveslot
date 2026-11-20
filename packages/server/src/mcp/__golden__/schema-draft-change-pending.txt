@@ -1,0 +1,5 @@
+Awaiting confirmation · slot diet · schema v2 → v3 · draft d_MY71WHKPK8AJ7V97 · item pi_4NQDMY7N9WMTHYFT (version iv_4NQDMY7N9WMTHYFT.11.0)
+  meals: change_description (metadata) · writes in the earlier version still taken · loses no data
+  meals.food: rename_field (metadata) · writes in the earlier version still taken · loses no data · waits for confirmation
+Impact: 0 rows to change
+Tell the user the changes above. This version cannot confirm it yet: it stays pending until a newer draft replaces it, and the slot stays as it is.

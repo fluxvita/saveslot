@@ -53,11 +53,13 @@ import type { DerivedChange, OpResult, SourceKind, TimelineResultCode } from "./
 
 /** The value sets of the types below, for a client that writes them (the CLI's renderers). */
 export {
+  CHANGE_CLASSES,
   COMPILE_OUTCOMES,
   FIELD_TYPES,
   GRANULARITIES,
   REF_TARGETS,
   ROUNDINGS,
+  SCHEMA_CHANGE_CODES,
   TABLE_KINDS,
   TIME_DEPENDENCIES,
   TIME_TYPES,

@@ -604,7 +604,7 @@ ledger: 2 张表
 
 **`saveslot_resolve`**：处理一个待处理事项（冲突、待确认、〔P2 起〕已标记、〔P4 起〕schema 变更、〔P3 起〕撤回删除）。可选的处理方式在 `saveslot_pending` 的详情和各回执里给出。待确认、〔P4 起〕schema 变更这类影响大的处理，请先把详情告诉用户并问他，他同意后才处理；他在事项出现之前说的话不算对它的同意。返回事项、所做的处理与新的事项版本，以及这次处理引起的写入（每行带新的 `ver`）。
 
-**`saveslot_schema_draft`**：用一份 schema 文档新建 slot（表、字段与单位）。先把草稿（每张表、它的字段与单位）给用户看，他同意后才提交：新 slot 编译通过即生效，之后没有任何确认。用户想开始记录一类事情、而他现有的表都不合适时用它；先用 `saveslot_catalog` 看，已有合适的 slot 就直接用，不再新建。只能新建 slot，不能改已有的 slot（`base_version` 不为 `null` 的文档会被拒），也只有范围为全部 slot 的连接能新建。带单位的字段用单位词表里的代码（如 `km`、`min`、`CNY`）。返回新 slot 编译后的各表与 schema 版本 `sv: 1`；〔有 saveslot.write〕用 `saveslot_write` 写入时带上这个 `sv`。
+**`saveslot_schema_draft`**：用一份 schema 文档新建 slot（表、字段与单位），或改已有 slot 的 schema。先把草稿（每张表、它的字段与单位）给用户看，他同意后才提交：新 slot 编译通过即生效，之后没有任何确认。用户想开始记录一类事情、而他现有的表都不合适时用它；先用 `saveslot_catalog` 看，已有合适的 slot 就直接用，不再新建。改已有 slot 时，交 `saveslot_catalog` 以 `level: "schema"` 给出的文档、改好，ID 与 `base_version` 原样保留；slot 策略定为自动生效的改动（新增表、说明、别名、放宽约束）当场生效，其余（改名、删表）作为 `schema_change` 事项等用户确认，这一版还不能确认。只有范围为全部 slot 的连接能新建 slot，改一个 slot 要它的每张表都在范围内。带单位的字段用单位词表里的代码（如 `km`、`min`、`CNY`）。返回新 slot 编译后的各表与 schema 版本 `sv: 1`；改已有 slot 时返回逐项改动，以及已生效还是在等确认；〔有 saveslot.write〕用 `saveslot_write` 写入时带上这个 `sv`。
 
 **已知的限制**：每个租户至多 100 个 slot（open-questions「接口的数值与细则」）；一个被注入的默认连接可以不经确认把名额建满。空的 slot 用户可以移除（`saveslot slot remove`，契约 `slots.remove`，不进 MCP），腾出名额；连接建了 slot 又写进了记录的，这一版移除不了。连接建的 slot 在日志里有写入者，可以据此吊销那个连接。
 

@@ -189,6 +189,8 @@ export type Change =
       readonly kind: "version_switch";
       readonly slot: string;
       readonly sv: number;
+      /** The version switched from; absent when the slot is created. */
+      readonly from?: number;
       readonly compiled_seq: Seq;
       readonly draft_id: string;
       readonly name: string;

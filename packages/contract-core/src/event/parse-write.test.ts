@@ -1303,6 +1303,14 @@ describe("parseEvent: rules between the blocks of one write event", () => {
     ).toContain("span/existence/1: no such item");
   });
 
+  it("write.base: the target's sv is a version, from 1", () => {
+    const base = S("write.base");
+    const target = base.blocks["target"] as Record<string, unknown>;
+    for (const sv of [0, -1])
+      expect(issues(parse(withBlock(base, "target", { ...target, sv })))).toContain("target: sv");
+    expect(parse(withBlock(base, "target", { ...target, sv: 2 })).ok).toBe(true);
+  });
+
   it("write.base: a revert or a take, not both", () => {
     const take = S("write.base (resolve: take_candidate)");
     const both = withBlock(take, "revert", { as_of_op: 29, item: ITEM, items: [] });

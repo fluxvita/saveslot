@@ -2,10 +2,11 @@
 // (09-event-format §4.5, §5.4–§5.8): the changes each event makes, the physical tables of a
 // version, and the forms this phase stops on. Storage-backed tests are in store-pglite.
 
-import type { JsonValue } from "@fluxvita/saveslot-contract-core";
+import type { CompiledSchema, JsonValue } from "@fluxvita/saveslot-contract-core";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildOperation, type NewEvent } from "../log/index.ts";
 import { loadRsql } from "../rules/index.ts";
+import { derivedSchema, rule } from "../rules/rsql/rules.fixture.ts";
 import {
   ApplyError,
   type ApplyEvent,
@@ -244,7 +245,7 @@ describe("planEvent: what this phase stops on, never skips", () => {
     [
       "a change to a slot (no create_slot)",
       { changes: CHANGES_V1.slice(1) as unknown as JsonValue },
-      "not_implemented: a change applied at once is not applied yet",
+      "applied",
     ],
   ])("schema.compiled with %s", (_, o, expected) => {
     expect(reason(slotOp(o)[1] as ApplyEvent)).toEqual(expected);
@@ -278,9 +279,8 @@ describe("planEvent: what this phase stops on, never skips", () => {
         blocks: { target: { draft_id: DRAFT, from_version: 1, to_version: 2, rebuilt_tables: [] } },
       },
     ]);
-    expect(reason(evs[1] as ApplyEvent)).toBe(
-      "not_implemented: a switch from an earlier version is not applied yet",
-    );
+    // Applied when the compiled draft it names is in the log (store tests); here there is none.
+    expect(reason(evs[1] as ApplyEvent)).toBe("inconsistent: no compiled version 2");
   });
 
   it("a block at path __proto__ is checked like any other path, not taken as the prototype", () => {
@@ -331,11 +331,11 @@ describe("planEvent: what this phase stops on, never skips", () => {
       },
     ]);
     expect(reason(evs[1] as ApplyEvent)).toBe(
-      "not_implemented: table t1 built in version 1 is not applied yet",
+      "inconsistent: table t1 of a slot being created built in version 1",
     );
     const switched = slotOp()[4] as ApplyEvent;
     expect(reason(switched, { switchTo: { seq: 3, compiled: v2 as never }, slot: freshSlot })).toBe(
-      "not_implemented: table t1 built in version 1 is not applied yet",
+      "inconsistent: table t1 of a slot being created built in version 1",
     );
   });
 
@@ -801,5 +801,220 @@ describe("planEvent: pending items", () => {
       { kind: "flags_drop", item: ITEM },
       { kind: "request_key", key: "k4", op: 71, at: NOW, fingerprint: null },
     ]);
+  });
+});
+
+describe("planEvent: a switch from an earlier version that rebuilds nothing", () => {
+  type Def = CompiledSchema & { tables: CompiledSchema["tables"] };
+  /** Version `sv` of `c`: its tables kept from version 1, unless `fresh`. */
+  const next = (c: CompiledSchema, sv = 2): Def =>
+    ({
+      ...c,
+      sv,
+      tables: c.tables.map((t) => ({ ...t, physical: { ...t.physical, since: 1 } })),
+    }) as Def;
+  const switched = (
+    target: Record<string, JsonValue> = {},
+    blocks: Record<string, JsonValue> = {},
+  ) =>
+    op(9, [
+      createSlotEvents()[0] as NewEvent,
+      {
+        type: "schema.switched",
+        slot: SLOT,
+        blocks: {
+          target: {
+            draft_id: DRAFT,
+            from_version: 1,
+            to_version: 2,
+            rebuilt_tables: [],
+            ...target,
+          },
+          ...blocks,
+        },
+      },
+    ])[1] as ApplyEvent;
+  const inputs = (
+    to: CompiledSchema,
+    o: {
+      from?: CompiledSchema;
+      changes?: { change: string; target: Record<string, JsonValue> }[];
+      tables?: string[];
+      currentSv?: number;
+    } = {},
+  ): PlanInputs => {
+    const from = o.from ?? COMPILED_V1;
+    return {
+      switchTo: { seq: 7, compiled: to, changes: o.changes ?? [], from },
+      slot: {
+        currentSv: o.currentSv ?? 1,
+        policySeq: 5,
+        tables: new Set(o.tables ?? from.tables.map((t) => t.id)),
+      },
+    };
+  };
+  const T5 = {
+    id: "t5",
+    name: "trips",
+    kind: "base",
+    description: "a new table",
+    time: { type: "none" },
+    physical: { table: "t_t5_v2" },
+    fields: [{ id: "f1", name: "where", type: "text", description: "the place" }],
+  } as const;
+  const V2 = next(COMPILED_V1);
+  const withT5 = { ...V2, tables: [...V2.tables, T5] } as unknown as CompiledSchema;
+
+  it("builds the new base table, gives every table its catalog row, moves the pointer", () => {
+    const changes = planEvent(switched(), inputs(withT5));
+    expect(changes).toEqual([
+      { kind: "ddl", sql: baseTableDdl(T5 as never) },
+      ...["t1", "t2", "t3", "t4", "t5"].flatMap((id) => [
+        { kind: "catalog_insert", table_id: id, sv: 2, slot: SLOT, structure: expect.any(String) },
+        ...(id === "t5" ? [{ kind: "counts_init", table_id: "t5" }] : []),
+      ]),
+      {
+        kind: "version_switch",
+        slot: SLOT,
+        sv: 2,
+        from: 1,
+        compiled_seq: 7,
+        draft_id: DRAFT,
+        name: "ledger",
+        timezone: "Asia/Shanghai",
+      },
+    ]);
+    // The catalog keeps the definition as compiled, without its physical tables.
+    const t1 = changes.find((c) => c.kind === "catalog_insert") as { structure: string };
+    expect(JSON.parse(t1.structure)).toMatchObject({ id: "t1", name: "expenses" });
+    expect(JSON.parse(t1.structure)).not.toHaveProperty("physical");
+  });
+
+  it("stops on tables to rebuild, a slot at another version, a table ID taken", () => {
+    expect(
+      reason(
+        switched(
+          { migration_id: MIGRATION, rebuilt_tables: ["t1"] },
+          { "tables/t1": { rows: 0, checksum: HASH } },
+        ),
+        inputs(V2),
+      ),
+    ).toBe("not_implemented: a switch rebuilding tables is not applied yet");
+    expect(reason(switched(), inputs(V2, { currentSv: 3 }))).toBe(
+      `inconsistent: slot ${SLOT} is at version 3, not 1`,
+    );
+    expect(reason(switched(), inputs(withT5, { tables: ["t1", "t2", "t3", "t4", "t5"] }))).toBe(
+      "inconsistent: table t5 already exists",
+    );
+    expect(reason(switched(), { ...inputs(V2), switchTo: { seq: 7, compiled: V2 } })).toBe(
+      "inconsistent: no definition of version 1",
+    );
+  });
+
+  it("stops on a time zone or slot name of its own: nothing here recomputes what depends on them", () => {
+    expect(reason(switched(), inputs({ ...V2, timezone: "Europe/Paris" } as CompiledSchema))).toBe(
+      "not_implemented: a switch changing the time zone is not applied yet",
+    );
+    expect(reason(switched(), inputs({ ...V2, name: "budget" } as CompiledSchema))).toBe(
+      "not_implemented: a switch renaming the slot is not applied yet",
+    );
+  });
+
+  it("stops on a kept table not as the earlier version has it, physically", () => {
+    const t4 = V2.tables[3] as unknown as { fields: { type: string }[] };
+    const edits: [string, (t: Record<string, unknown>) => void][] = [
+      [
+        "a field of another type",
+        (t) => Object.assign((t["fields"] as object[])[0] as object, { type: "integer" }),
+      ],
+      [
+        "a field the physical table has no column for",
+        (t) =>
+          (t["fields"] as unknown[]).push({
+            id: "f2",
+            name: "value",
+            type: "text",
+            description: "v",
+          }),
+      ],
+      ["other physical tables", (t) => (t["physical"] = { table: "t_t4_v2", since: 1 })],
+      ["another time type", (t) => (t["time"] = { type: "state", granularity: "date" })],
+    ];
+    expect(t4.fields[0]?.type).toBe("text");
+    for (const [what, f] of edits) {
+      const c = structuredClone(V2) as unknown as { tables: Record<string, unknown>[] };
+      f(c.tables[3] as Record<string, unknown>);
+      expect(reason(switched(), inputs(c as unknown as CompiledSchema)), what).toBe(
+        "inconsistent: table t4 is kept with other physical tables or field columns",
+      );
+    }
+    // Kept from version 1, but version 1 has no such table.
+    const extra = {
+      ...V2,
+      tables: [...V2.tables, { ...T5, physical: { table: "t_t5_v1", since: 1 } }],
+    };
+    expect(reason(switched(), inputs(extra as unknown as CompiledSchema))).toBe(
+      "inconsistent: table t5 is kept, but version 1 does not have it",
+    );
+  });
+
+  it("stops on a table gone without the draft dropping it; dropped, the switch applies", () => {
+    const without = { ...V2, tables: V2.tables.filter((t) => t.id !== "t4") } as CompiledSchema;
+    expect(reason(switched(), inputs(without))).toBe(
+      "inconsistent: table t4 of version 1 is gone, not dropped",
+    );
+    expect(
+      reason(
+        switched(),
+        inputs(without, { changes: [{ change: "drop_table", target: { table: "t3" } }] }),
+      ),
+    ).toBe("inconsistent: table t4 of version 1 is gone, not dropped");
+    expect(
+      reason(
+        switched(),
+        inputs(without, { changes: [{ change: "drop_table", target: { table: "t4" } }] }),
+      ),
+    ).toBe("applied");
+  });
+
+  describe("derived tables", () => {
+    let withRule: CompiledSchema;
+    beforeAll(() => {
+      const health = derivedSchema(
+        rule(
+          "SELECT date_trunc('week', date::timestamp)::date AS w, sum(distance) AS total FROM runs GROUP BY 1",
+          ["w", "total"],
+          "bucketed",
+        ),
+      );
+      withRule = { ...health, slot: SLOT } as CompiledSchema;
+    });
+    const sw = () => switched();
+
+    it("stops on a new derived table: built empty while its sources have rows", () => {
+      const v1 = {
+        ...withRule,
+        tables: withRule.tables.filter((t) => t.kind === "base"),
+      } as CompiledSchema;
+      const v2 = next(withRule);
+      const t9 = v2.tables.find((t) => t.id === "t9") as unknown as { physical: object };
+      t9.physical = { table: "d_t9_v2" };
+      expect(reason(sw(), inputs(v2, { from: v1 }))).toBe(
+        "not_implemented: a switch adding derived table t9 (built from its sources) is not applied yet",
+      );
+    });
+
+    it("keeps a derived table as it was; stops on its rule changed", () => {
+      const v2 = next(withRule);
+      expect(reason(sw(), inputs(v2, { from: withRule }))).toBe("applied");
+      const changed = structuredClone(v2) as unknown as {
+        tables: { id: string; rule?: { sql: string } }[];
+      };
+      const t9 = changed.tables.find((t) => t.id === "t9") as { rule: { sql: string } };
+      t9.rule.sql = `${t9.rule.sql} `;
+      expect(reason(sw(), inputs(changed as unknown as CompiledSchema, { from: withRule }))).toBe(
+        "not_implemented: a switch changing the rule of derived table t9 is not applied yet",
+      );
+    });
   });
 });

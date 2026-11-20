@@ -8,6 +8,7 @@ import { parseEvent } from "@fluxvita/saveslot-contract-core";
 import { beforeAll, describe, expect, it } from "vitest";
 import { loadRsql } from "../rules/index.ts";
 import { compileChange } from "./compile-change.ts";
+import { documentOf } from "./document-of.ts";
 import { compile, type Doc, ledger, SLOT_ID } from "./documents.fixture.ts";
 import { filledDocument } from "./fill.ts";
 import type { CompileChangeInput, CompileChangeResult } from "./model.ts";
@@ -1127,6 +1128,82 @@ describe("findings between two tables, and what a drop list names", () => {
 
   describe("a derived table", () => {
     beforeAll(() => loadRsql());
+    const SQL = "SELECT key AS k, count(*) AS n FROM settings GROUP BY key";
+    /** Version 1 with a derived table over settings.key, and its catalog document. */
+    const withTotals = () => {
+      const d = ledger();
+      d.tables.push({
+        name: "totals",
+        kind: "derived",
+        description: "how many settings",
+        rule: { sql: SQL, time_dependency: "none" },
+        fields: [
+          { name: "k", description: "the key" },
+          { name: "n", description: "how many" },
+        ],
+      });
+      const c = compile(d);
+      if (!c.ok) throw new Error(JSON.stringify(c.error));
+      return c.compiled;
+    };
+    const texts = new Map([["t5", SQL]]);
+
+    it("listed as the catalog gives it, rule text the same: unchanged, as if not listed", () => {
+      const v1 = withTotals();
+      const doc = documentOf(v1, 1, (id) => texts.get(id));
+      expect(ok(run(doc, { current: v1, ruleTexts: texts })).changes).toEqual([]);
+      // Without the texts it cannot be told unchanged: not compiled yet, as before.
+      expect(err(run(doc, { current: v1 }))).toMatchObject({
+        code: "not_implemented",
+        what: "a change to a derived table",
+      });
+    });
+
+    it("unchanged after a field its rule reads is renamed: the text keeps the old name", () => {
+      const v1 = withTotals();
+      const renamed = documentOf(v1, 1, (id) => texts.get(id));
+      const settings = (renamed["tables"] as Doc[]).find((t) => t.name === "settings");
+      settings.fields[0].name = "label";
+      const v2 = ok(run(renamed, { current: v1, ruleTexts: texts, unused: () => true }));
+      expect(v2.changes.map((c) => c.change)).toEqual(["rename_field"]);
+      // The rule is bound by IDs; the catalog's text is as written, `key` and all.
+      const doc = documentOf(v2.compiled, 2, (id) => texts.get(id));
+      const totals = (doc["tables"] as Doc[]).find((t) => t.name === "totals");
+      expect(totals.rule.sql).toBe(SQL);
+      expect(totals.rule.depends_on).toEqual(["settings.label"]);
+      // Submitted as it is: nothing changed, the old name not resolved again (no former names).
+      const again = run(doc, { current: v2.compiled, ruleTexts: texts, targetVersion: 3 });
+      expect(ok(again).changes).toEqual([]);
+    });
+
+    it.each([
+      ["its rule text", (t: Doc) => (t.rule.sql = `${SQL} `)],
+      ["its description", (t: Doc) => (t.description = "how many keys")],
+      ["a field's description", (t: Doc) => (t.fields[0].description = "a key")],
+      ["its aliases", (t: Doc) => (t.aliases = ["counts"])],
+      ["its time dependency", (t: Doc) => (t.rule.time_dependency = "bucketed")],
+      ["a field's inferred type", (t: Doc) => (t.fields[1].type = "decimal")],
+      ["a filled key of its rule", (t: Doc) => (t.rule.version = 2)],
+    ])("changed in %s: a change to a derived table, not compiled yet", (_, f) => {
+      const v1 = withTotals();
+      const doc = documentOf(v1, 1, (id) => texts.get(id));
+      f((doc["tables"] as Doc[]).find((t) => t.name === "totals"));
+      expect(err(run(doc, { current: v1, ruleTexts: texts }))).toMatchObject({
+        code: "not_implemented",
+        what: "a change to a derived table",
+        param: "tables/4",
+      });
+    });
+
+    it("the catalog's document of any table, submitted as it is, changes nothing", () => {
+      const v1 = withTotals();
+      const doc = documentOf(v1, 1, (id) => texts.get(id));
+      for (const t of doc["tables"] as Doc[]) {
+        const one = { ...doc, tables: [t] };
+        expect(ok(run(one, { current: v1, ruleTexts: texts })).changes).toEqual([]);
+      }
+    });
+
     it("dropped: not destructive, old writes unaffected", () => {
       const draftOn = from((d) =>
         d.tables.push({

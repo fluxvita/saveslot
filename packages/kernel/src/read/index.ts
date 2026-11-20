@@ -9,6 +9,7 @@ export {
   catalogInTx,
 } from "./catalog.ts";
 export { changesInTx } from "./changes.ts";
+export { ruleTexts, ruleTextsOf, slotDocument } from "./documents.ts";
 export { FORMER_VERSIONS, formerVersions } from "./former.ts";
 export {
   asOfInTx,

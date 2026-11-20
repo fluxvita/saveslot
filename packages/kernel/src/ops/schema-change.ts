@@ -1,12 +1,15 @@
 // `schema_draft` for an existing slot (docs/zh-CN/spec/04-contract.md §10 `schema_draft`;
 // 03-data-model/07-schema-evolution.md «schema 文档格式»; 08-schema-migration.md «状态机»;
-// 09-event-format.md §4.5, §5.5, §5.8): the draft compiled against the slot's current version and,
-// in this version, left pending as a `schema_change` item. A draft whose every change applies at
-// once (a switch) is not applied yet: it stops here, before anything is logged.
+// 09-event-format.md §4.5, §5.5, §5.8): the draft compiled against the slot's current version and
+// either applied at once, when the slot's policy makes every change of it automatic, or left
+// pending as a `schema_change` item.
 //
 // One operation (§4.5): `schema.draft_submitted`; when the slot has a draft still awaiting
 // confirmation, `schema.superseded` with that draft's item's `item.superseded` (`draft_replaced`);
-// `schema.compiled` (`pending`); `item.created` (`schema_change`).
+// `schema.compiled`; then, applied at once, `schema.confirmed` (`auto`) and `schema.switched` (no
+// table rebuilt: the changes compiled in this version touch the catalog only), else
+// `item.created` (`schema_change`). An automatic change never drops a field, so the switch here
+// never brings a `premise.changed` (§5.10).
 //
 // The version number is the slot's next one not used by any version in the log (09 §5.5: a number
 // taken by a draft is not used again, rejected and superseded ones included), so `sv` may skip.
@@ -25,7 +28,7 @@ import type {
 import { ApplyError, applyEvents, eventsOf, internalDetailOf } from "../apply/index.ts";
 import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
 import { itemVer } from "../pending/index.ts";
-import { formerVersions, visibleSlots } from "../read/index.ts";
+import { formerVersions, ruleTextsOf, visibleSlots } from "../read/index.ts";
 import { restoreCount } from "../read/select.ts";
 import { RULESET_VERSION } from "../rules/index.ts";
 import { compileChange, compiledWarnings, filledDocument } from "../schema/index.ts";
@@ -51,8 +54,11 @@ export interface SchemaChangeReceipt {
   readonly changes: readonly SchemaChange[];
   /** No `consumers`: not computed in this version. */
   readonly impact: { readonly rows_affected: 0; readonly derived_changed: readonly never[] };
-  readonly outcome: "pending";
-  readonly item: { readonly id: `pi_${string}`; readonly item_ver: string };
+  readonly outcome: "applied" | "pending";
+  /** `applied`: the version switched to. */
+  readonly sv?: number;
+  /** `pending`: the item; this receipt counts as reading it. */
+  readonly item?: { readonly id: `pi_${string}`; readonly item_ver: string };
   readonly superseded_draft?: DraftId;
   readonly replayed?: true;
   /** 04-contract-types §7 `Warning`: of the tables this draft adds. */
@@ -117,8 +123,7 @@ async function receiptOf(tx: ReadTx, op: number, replayed: boolean): Promise<Sch
     submitted === undefined ||
     document === undefined ||
     compiled === undefined ||
-    changes === undefined ||
-    item === undefined
+    changes === undefined
   )
     throw new SchemaDraftError("internal", "the draft is not in the log as written");
   const before = await compiledOf(tx, compiled.slot, submitted.base_version);
@@ -141,8 +146,12 @@ async function receiptOf(tx: ReadTx, op: number, replayed: boolean): Promise<Sch
     document: filledDocument(document, compiled, submitted.base_version),
     changes: byNames(changes, compiled, before),
     impact: { rows_affected: 0, derived_changed: [] },
-    outcome: "pending",
-    item: { id: item.item, item_ver: itemVer(item.item, op, await restoreCount(tx)) },
+    ...(item !== undefined
+      ? {
+          outcome: "pending" as const,
+          item: { id: item.item, item_ver: itemVer(item.item, op, await restoreCount(tx)) },
+        }
+      : { outcome: "applied" as const, sv: compiled.sv }),
     ...(superseded !== undefined ? { superseded_draft: superseded.draft_id } : {}),
     ...(replayed ? { replayed: true as const } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
@@ -238,6 +247,7 @@ export async function draftChangeInTx(
     unused: () => false,
     targetVersion,
     formerNames: { tables: tableNames, fields: fieldNames },
+    ruleTexts: await ruleTextsOf(tx, slot.slot),
   });
   if (!result.ok) {
     const e = result.error;
@@ -276,12 +286,6 @@ export async function draftChangeInTx(
   }
   // A draft that changes nothing: no version for it (04-contract «schema_draft»).
   if (result.changes.length === 0) throw invalid("no_change", "document");
-  // Applied at once: a switch, which this version does not make yet.
-  if (result.outcome === "applied")
-    throw new SchemaDraftError("internal", "a change applied at once is not implemented", {
-      reason: "not_implemented",
-      param: "document",
-    });
 
   // The slot's draft still awaiting confirmation, if any: its item.
   const open = await tx.query<{ id: string; body: string | null }>(
@@ -332,17 +336,43 @@ export async function draftChangeInTx(
       },
     );
   }
-  events.push(
-    {
-      type: "schema.compiled",
-      slot: slot.slot,
-      blocks: {
-        target: { draft_id: draft, target_version: result.targetVersion, outcome: "pending" },
-        compiled: result.compiled as unknown as JsonValue,
-        changes: result.changes as unknown as JsonValue,
+  events.push({
+    type: "schema.compiled",
+    slot: slot.slot,
+    blocks: {
+      target: {
+        draft_id: draft,
+        target_version: result.targetVersion,
+        outcome: result.outcome,
       },
+      compiled: result.compiled as unknown as JsonValue,
+      changes: result.changes as unknown as JsonValue,
     },
-    {
+  });
+  if (result.outcome === "applied")
+    events.push(
+      {
+        type: "schema.confirmed",
+        slot: slot.slot,
+        blocks: {
+          target: { draft_id: draft, target_version: result.targetVersion, by: "auto" },
+        },
+      },
+      {
+        type: "schema.switched",
+        slot: slot.slot,
+        blocks: {
+          target: {
+            draft_id: draft,
+            from_version: current.sv,
+            to_version: result.targetVersion,
+            rebuilt_tables: [],
+          },
+        },
+      },
+    );
+  else
+    events.push({
       type: "item.created",
       slot: slot.slot,
       blocks: {
@@ -355,8 +385,7 @@ export async function draftChangeInTx(
           draft,
         },
       },
-    },
-  );
+    });
   const op = await appendOperation(tx, {
     actor: ctx.actor as never,
     now: ctx.now as never,

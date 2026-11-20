@@ -67,6 +67,8 @@ export interface WriteBaseInput {
   readonly count: number;
   /** The slot's current schema version, the one `table` is of. */
   readonly sv: number;
+  /** The slot's versions in effect so far: the current one and the retired ones. */
+  readonly knownSv: ReadonlySet<number>;
   /** The table the row or entity was created in (`row_origins`), if it was. */
   readonly rowTable: string | null;
   /**
@@ -316,11 +318,16 @@ export function planWriteBase(seq: Seq, op: Seq, present: Obj, input: WriteBaseI
   const shape = settleTable(t);
   const isState = shape.kind === "state";
   // The target must be this table's row or entity (cheap checks; each stops apply).
-  if (target["sv"] !== input.sv) {
-    throw inconsistent(
-      seq,
-      `target.sv ${String(target["sv"])} is not the current version ${input.sv}`,
-    );
+  // `sv` is the version the request's fields were read in (09 §5.7): the current one, or an earlier
+  // one whose writes are still taken (04-contract §2), checked when the write was made. So, as the
+  // write path takes it, a version of the slot in effect by now: never a later one, nor a number
+  // a draft took and never switched to.
+  const sv = target["sv"];
+  if (typeof sv !== "number" || sv > input.sv) {
+    throw inconsistent(seq, `target.sv ${String(sv)} is after the current version ${input.sv}`);
+  }
+  if (!input.knownSv.has(sv)) {
+    throw inconsistent(seq, `target.sv ${sv} is no version the slot has been in`);
   }
   if (
     isState ? "row" in target || !("entity" in target) : "entity" in target || !("row" in target)

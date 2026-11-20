@@ -15,11 +15,9 @@ import type {
   CompiledBaseField,
   CompiledDerivedTable,
   CompiledPrecision,
-  CompiledSchema,
   CompiledTable,
   FieldType,
   Instant,
-  JsonValue,
   PolicyBlock,
   PrincipalId,
   RefTarget,
@@ -30,8 +28,8 @@ import type {
 import { canonicalize, SELFCHECK_TASK } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry, ReadId } from "../audit/index.ts";
 import { fold, get, has, isDenseArray, isObj, keysOf, type Obj } from "../request/index.ts";
-import { filledDocument } from "../schema/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { ruleTextsOf, slotDocument } from "./documents.ts";
 import { taskOf } from "./history.ts";
 import { digest, pageAfter, positionOf } from "./page.ts";
 import { profileOf, SCALE_BOUNDS, type ScaleBounds, type TableProfile } from "./profile.ts";
@@ -157,29 +155,6 @@ function slotNamed(v: unknown, slots: readonly VisibleSlot[]): VisibleSlot {
 }
 
 /** The text a table's rule was written in, from the submitted document (names, not IDs). */
-async function submitted(
-  tx: ReadTx,
-  slot: SlotId,
-): Promise<{ document: JsonValue; compiled: CompiledSchema; sv: number }> {
-  const r = await tx.query<{ draft: string | null; compiled: string | null; sv: unknown }>(
-    `SELECT d.body AS draft, c.body AS compiled, v.sv
-     FROM schema_versions v
-     JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
-     JOIN events ce ON ce.seq = v.compiled_seq
-     JOIN events de ON de.op = ce.op AND de.type = 'schema.draft_submitted'
-     JOIN content d ON d.seq = de.seq AND d.path = 'draft'
-     WHERE v.slot_id = $1 AND v.state = 'current'`,
-    [slot],
-  );
-  const [row] = r.rows;
-  if (row === undefined || row.draft === null || row.compiled === null)
-    throw new ReadError("internal", "the slot's submitted document is missing");
-  return {
-    document: JSON.parse(row.draft) as JsonValue,
-    compiled: JSON.parse(row.compiled) as CompiledSchema,
-    sv: Number(row.sv),
-  };
-}
 
 /** Whether a table or field has aliases to give (none when absent or empty). */
 const hasAliases = (x: {
@@ -263,19 +238,6 @@ function tableOf(slot: VisibleSlot, t: CompiledTable, sql: string | undefined): 
       : {}),
     ...(t.together !== undefined ? { together: t.together.map((k) => k.map(own)) } : {}),
   };
-}
-
-/** The rule text by table ID, as the submitted document wrote it. */
-function ruleTexts(document: JsonValue, compiled: CompiledSchema): Map<string, string> {
-  const out = new Map<string, string>();
-  const tables = isObj(document) && Array.isArray(document["tables"]) ? document["tables"] : [];
-  for (const t of tables) {
-    if (!isObj(t) || typeof t["name"] !== "string" || !isObj(t["rule"])) continue;
-    const sql = get(t["rule"], "sql");
-    const c = compiled.tables.find((x) => fold(x.name) === fold(t["name"] as string));
-    if (c !== undefined && typeof sql === "string") out.set(c.id, sql);
-  }
-  return out;
 }
 
 /** The slot's policy in effect (04-contract-types §8.2), names for IDs. */
@@ -399,8 +361,7 @@ export async function catalogInTx(
     const texts = new Map<SlotId, Map<string, string>>();
     for (const n of named) {
       if (n.table.kind === "derived" && !texts.has(n.slot.slot)) {
-        const sub = await submitted(tx, n.slot.slot);
-        texts.set(n.slot.slot, ruleTexts(sub.document, sub.compiled));
+        texts.set(n.slot.slot, await ruleTextsOf(tx, n.slot.slot));
       }
     }
     shown = [...new Set(named.map((n) => n.slot))];
@@ -422,13 +383,14 @@ export async function catalogInTx(
       });
     if (!has(params, "slot")) throw invalid("missing", "slot");
     const s = slotNamed(get(params, "slot"), slots);
-    const sub = await submitted(tx, s.slot);
+
     shown = [s];
     result = {
       level,
       slot: s.name,
-      sv: sub.sv,
-      document: filledDocument(sub.document, sub.compiled),
+      sv: s.sv,
+      // From the current version's definition: drafts list only what they change.
+      document: await slotDocument(tx, s),
       policy: await policyOf(tx, s),
     };
   }

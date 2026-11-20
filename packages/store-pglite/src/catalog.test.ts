@@ -17,6 +17,7 @@ import {
   readsList,
   SCALE_BOUNDS,
   scaleOf,
+  schemaDraft,
   write,
 } from "@fluxvita/saveslot-kernel";
 import { createSlotEvents, SLOT } from "@fluxvita/saveslot-kernel/testing";
@@ -568,7 +569,7 @@ describe("profile (04-contract §10 `catalog` «概况»)", () => {
 });
 
 describe("schema", () => {
-  it("gives the document as submitted with IDs and base_version filled, and the policy", async () => {
+  it("gives the slot's document from its definition, IDs and base_version filled, and the policy", async () => {
     const r = await c({ level: "schema", slot: "ledger" });
     expect(r["slot"]).toBe("ledger");
     expect(r["sv"]).toBe(1);
@@ -584,7 +585,8 @@ describe("schema", () => {
     ]);
     expect(doc.tables.map((t) => t.id)).toEqual(["t1", "t2", "t3"]);
     expect(doc.tables[0]?.fields.map((f) => f.id)).toEqual(["f1", "f2", "f3", "f4", "f5"]);
-    // Nothing else changes: taking the IDs and base_version out gives the document submitted.
+    // Taking the IDs and base_version out gives the document submitted, written as the definition
+    // holds it: bounds as decimal text, the precision a quantity defaults to written out.
     const back = structuredClone(doc) as Record<string, unknown> & {
       tables: Record<string, unknown>[];
     };
@@ -593,7 +595,25 @@ describe("schema", () => {
       delete t["id"];
       for (const f of t["fields"] as Record<string, unknown>[]) delete f["id"];
     }
-    expect(back).toEqual(DOCUMENT);
+    const want = structuredClone(DOCUMENT) as unknown as {
+      tables: { fields: Record<string, unknown>[] }[];
+    };
+    const amount = want.tables[0]?.fields.find((f) => f["name"] === "amount") as Record<
+      string,
+      unknown
+    >;
+    Object.assign(amount, { min: "0", scale: 2, rounding: "half_up" });
+    const limit = want.tables[1]?.fields.find((f) => f["name"] === "limit") as Record<
+      string,
+      unknown
+    >;
+    limit["max"] = "1000";
+    expect(back).toEqual(want);
+    // Submitted back as it is, it changes nothing.
+    await expect(schemaDraft(s.store, ctx(), { document: doc })).rejects.toMatchObject({
+      code: "invalid_argument",
+      detail: { reason: "no_change", param: "document" },
+    });
     expect(r["policy"]).toEqual({
       slot: "ledger",
       policy_version: 1,

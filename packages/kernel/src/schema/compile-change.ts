@@ -32,6 +32,7 @@ import type {
   ChangeTarget,
   CompiledBaseField,
   CompiledBaseTable,
+  CompiledDerivedTable,
   CompiledSchema,
   CompiledTable,
   FieldId,
@@ -41,6 +42,7 @@ import type {
 import { SCHEMA_CHANGE_CODES } from "@fluxvita/saveslot-contract-core";
 import { compiledWarnings, compileTable, type Ids } from "./compile.ts";
 import { isObject, readDocument, unsupportedKey } from "./document.ts";
+import { derivedTableDocument } from "./document-of.ts";
 import type {
   ChangeError,
   CompileChangeInput,
@@ -98,7 +100,59 @@ function strings(v: unknown, at: string): string[] | CompileError {
  * the document of a new slot (./document.ts), and returns them. Looks only where the containers
  * have the right type: the form of the rest is `readDocument`'s to report.
  */
-function extract(doc: Obj, current: CompiledSchema): { rest: Obj; extras: Extras } | CompileError {
+/**
+ * Whether a derived table the draft lists is the one the slot has, unchanged: as the catalog's
+ * document gives it (./document-of.ts), its rule's text the very text it was written with. The
+ * rule is not resolved again by names (a field it reads may have been renamed since): text equal is
+ * rule unchanged, and its binding by IDs stands. Keys the catalog fills in may be left out; a key
+ * given must say what the catalog says.
+ */
+function sameDerived(
+  t: Obj,
+  c: CompiledDerivedTable,
+  all: CompiledSchema,
+  text: string | undefined,
+): boolean {
+  if (text === undefined) return false;
+  let want: Obj;
+  try {
+    want = derivedTableDocument(c, all.tables, text);
+  } catch {
+    return false;
+  }
+  const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const aliases = (o: Obj) =>
+    Array.isArray(o["aliases"])
+      ? o["aliases"].map((a) => (typeof a === "string" ? a.normalize("NFC") : a))
+      : [];
+  for (const k of Object.keys(t))
+    if (!["id", "name", "kind", "description", "aliases", "rule", "fields"].includes(k))
+      return false;
+  if ("id" in t && t["id"] !== want["id"]) return false;
+  if (t["name"] !== want["name"] || t["description"] !== want["description"]) return false;
+  if (!eq(aliases(t), aliases(want))) return false;
+  const r = t["rule"];
+  const wr = want["rule"] as Obj;
+  if (!isObject(r) || r["sql"] !== wr["sql"] || r["time_dependency"] !== wr["time_dependency"])
+    return false;
+  for (const [k, v] of Object.entries(r)) if (!(k in wr) || !eq(v, wr[k])) return false;
+  const fields = t["fields"];
+  const wf = want["fields"] as Obj[];
+  if (!Array.isArray(fields) || fields.length !== wf.length) return false;
+  return fields.every((f, i) => {
+    const w = wf[i] as Obj;
+    if (!isObject(f) || f["name"] !== w["name"] || f["description"] !== w["description"])
+      return false;
+    if (!eq(aliases(f), aliases(w))) return false;
+    return Object.entries(f).every(([k, v]) => k === "aliases" || (k in w && eq(v, w[k])));
+  });
+}
+
+function extract(
+  doc: Obj,
+  current: CompiledSchema,
+  ruleTexts: ReadonlyMap<string, string>,
+): { rest: Obj; extras: Extras } | CompileError {
   const rest = structuredClone(doc);
   const bv = doc["base_version"];
   if (!("base_version" in doc))
@@ -157,6 +211,19 @@ function extract(doc: Obj, current: CompiledSchema): { rest: Obj; extras: Extras
             code: "validation_failed",
             details: [{ path: `${at}/name`, code: "name_renamed_away" }],
           };
+        // Unchanged, as the catalog gives it: as if not listed. A stand-in of the document's form
+        // keeps the positions of the tables after it.
+        if (was?.kind === "derived" && sameDerived(t, was, current, ruleTexts.get(was.id))) {
+          list[i] = {
+            name: was.name,
+            kind: "derived",
+            description: was.description,
+            rule: { sql: ruleTexts.get(was.id), time_dependency: was.rule.time_dependency },
+            fields: was.fields.map((f) => ({ name: f.name, description: f.description })),
+          };
+          tables.push({ dropFields: [], fieldIds: [] });
+          continue;
+        }
         const what =
           was === undefined
             ? "add_derived_table"
@@ -341,7 +408,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     return fail({ code: "draft_outdated", reason: "base_version", current_sv: current.sv });
   const stop = unsupportedKey(document);
   if (stop !== undefined) return fail(stop);
-  const taken = extract(document, current);
+  const taken = extract(document, current, input.ruleTexts ?? new Map());
   if ("code" in taken) return fail(taken);
   const { rest, extras } = taken;
   const read = readDocument(rest);

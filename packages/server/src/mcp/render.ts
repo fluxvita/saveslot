@@ -15,6 +15,7 @@
 
 import {
   type AffectedReason,
+  CHANGE_CLASSES,
   DECISIONS as CONTRACT_DECISIONS,
   FIELD_TYPES as CONTRACT_FIELD_TYPES,
   GRANULARITIES as CONTRACT_GRANULARITIES,
@@ -29,6 +30,7 @@ import {
   type PremiseReason,
   REF_TARGETS,
   ROUNDINGS,
+  SCHEMA_CHANGE_CODES,
   SQL_REASONS,
   SUPERSEDED_REASONS,
   TIME_DEPENDENCIES,
@@ -1669,17 +1671,88 @@ const SAID_BY_TABLES: ReadonlySet<unknown> = new Set([
   "add_derived_table",
 ]);
 
+const CHANGE_CODES: ReadonlySet<string> = new Set<string>(SCHEMA_CHANGE_CODES);
+const CLASSES: ReadonlySet<string> = new Set<string>(CHANGE_CLASSES);
+
+/** What a change is to (04-contract-types §5.3 `SchemaChange.target`): the slot, a table, a field. */
+function changeTarget(x: unknown): Part[] {
+  const g = obj(x);
+  if (g["slot"] === true) return t`the slot`;
+  const table = tableOf(g["table"]);
+  if (g["field"] !== undefined) return t`${table}.${fieldOf(g["field"])}`;
+  if (g["rule"] === true) return t`${table} rule`;
+  return table;
+}
+
 /**
- * A schema draft's receipt (05 §6 `saveslot_schema_draft`): in this version always a new slot, in
- * effect at once. What was created: each table with its kind and time type, its entity key, and
- * each field's name, type and unit, so that the model can tell the user what there is now. The
- * descriptions are the caller's own and are not repeated; a change of a kind this version does not
- * make is shown as written, inside the boundary.
+ * A draft changing an existing slot (05 §6 `saveslot_schema_draft`, P4): first what came of it,
+ * in effect or awaiting confirmation (with its item); then each change with its target, class,
+ * whether writes in the earlier version are still taken and whether it loses data; then the
+ * impact. This version computes no usage (`consumers`) and runs no trial.
+ */
+function schemaChange(r: R, now: Date, out: Line[], omitted: readonly unknown[]): Line[] {
+  const applied = r["outcome"] === "applied";
+  const base = obj(r["document"])["base_version"];
+  const from = int(base) !== undefined ? t`v${count(base)} → ` : [];
+  const head = t`slot ${tableOf(r["slot"])} · schema ${from}v${count(r["target_sv"])} · draft ${idOf(r["draft"])}`;
+  if (applied) out.push(t`In effect · ${head}`);
+  else {
+    const item = obj(r["item"]);
+    out.push(
+      t`Awaiting confirmation · ${head} · item ${idOf(item["id"])} (version ${idOf(item["item_ver"])})`,
+    );
+  }
+  for (const x of arr(r["changes"])) {
+    const c = obj(x);
+    const old =
+      c["compatible_with_old_writes"] === true
+        ? t`writes in the earlier version still taken`
+        : t`writes in the earlier version refused`;
+    const loses = c["destructive"] === true ? t`loses data` : t`loses no data`;
+    const waits = !applied && c["auto"] !== true ? t` · waits for confirmation` : [];
+    out.push(
+      t`  ${changeTarget(c["target"])}: ${codeIn(c["change"], CHANGE_CODES)} (${codeIn(c["class"], CLASSES)}) · ${old} · ${loses}${waits}`,
+    );
+  }
+  const impact = obj(r["impact"]);
+  const derived = arr(impact["derived_changed"]).map((x) => {
+    const d = obj(x);
+    return t`${tableOf(d["table"])} ${count(d["rows"])} rows`;
+  });
+  out.push(
+    t`Impact: ${count(impact["rows_affected"])} rows to change${derived.length > 0 ? t`; derived values change in ${join(derived, t`, `)}` : []}`,
+  );
+  if (applied) {
+    out.push(
+      t`Its whole schema now: saveslot_catalog with level "schema". Write with sv ${count(r["sv"])}.`,
+    );
+  } else {
+    out.push(
+      t`Tell the user the changes above. This version cannot confirm it yet: it stays pending until a newer draft replaces it, and the slot stays as it is.`,
+    );
+  }
+  const shortened =
+    omitted.length > 0
+      ? [t`The receipt was shortened to fit; the draft was submitted all the same.`]
+      : [];
+  return [...out, ...remindersOf(r, now), ...shortened];
+}
+
+/**
+ * A schema draft's receipt (05 §6 `saveslot_schema_draft`). A new slot, in effect at once: what
+ * was created, each table with its kind and time type, its entity key, and each field's name, type
+ * and unit, so that the model can tell the user what there is now. The descriptions are the
+ * caller's own and are not repeated; a change of a kind this version does not make is shown as
+ * written, inside the boundary. A draft changing an existing slot: `schemaChange`.
  */
 function schemaDraft(r: R, now: Date): Line[] {
   const omitted = arr(r["omitted"]);
+  const outcome = r["outcome"];
+  // A new slot is version 1; a change to an existing slot compiles to a later one. Not told by its
+  // changes: a receipt shortened to fit leaves them out.
+  const isChange = (int(r["target_sv"]) ?? 1) > 1;
   need(
-    r["outcome"] === "applied" &&
+    (outcome === "applied" || (isChange && outcome === "pending" && isObj(r["item"]))) &&
       (isObj(r["document"]) || omitted.includes("document")) &&
       typeof r["draft"] === "string",
   );
@@ -1687,6 +1760,7 @@ function schemaDraft(r: R, now: Date): Line[] {
   if (r["replayed"] === true) {
     out.push(t`This is the receipt of an earlier identical request; nothing new was recorded.`);
   }
+  if (isChange) return schemaChange(r, now, out, omitted);
   out.push(
     t`Created · slot ${tableOf(r["slot"])} · schema v${count(r["sv"])} · draft ${idOf(r["draft"])}`,
   );

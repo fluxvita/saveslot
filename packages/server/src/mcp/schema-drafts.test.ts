@@ -1,8 +1,9 @@
 // A schema draft's receipt and refusals as text (05-surfaces §6 `saveslot_schema_draft`, §5, §7),
-// against golden files. In this version a draft only creates a slot. The samples are what a
-// running service gave back (schema-drafts.samples.json; the refusals as MCP gives them, with
-// their message): a new slot with an event, a state, a timeless and a derived table, the same
-// request replayed, a document that does not compile, tags left in a description, a connection
+// against golden files. The samples are what a running service gave back
+// (schema-drafts.samples.json; the refusals as MCP gives them, with their message): a new slot
+// with an event, a state, a timeless and a derived table, the same request replayed, a change to
+// an existing slot in effect at once (a description, a new table) and one awaiting confirmation (a
+// field renamed), a document that does not compile, tags left in a description, a connection
 // whose range is not every slot, a rule's SQL refused with its reason and a fix, too many tables,
 // no table; and what a derived table's document gets wrong: `sql` outside the rule, a rule that is
 // not an object, a time dependency missing or not one, a type on a derived field, an unknown

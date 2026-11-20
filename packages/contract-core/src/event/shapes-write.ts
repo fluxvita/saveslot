@@ -436,7 +436,8 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     if (!keys(v, at, req, ["row", "entity", "created", "op_index", "item"], issues)) return;
     tableTarget(v, at, issues);
     check(oneOf(INTENTS, v["intent"]), at, "intent", issues);
-    check(int(v["sv"]), at, "sv", issues);
+    // A schema version: versions are numbered from 1 (09 §5.5).
+    check(int(v["sv"]) && (v["sv"] as number) >= 1, at, "sv", issues);
     if ("created" in v) check(v["created"] === true, at, "created", issues);
     if (v["cause"] === "request") {
       check(int(v["op_index"]), at, "op_index", issues);

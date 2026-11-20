@@ -32,6 +32,19 @@ export interface NormalizeWriteInput {
   /** The compiled definition of the request's slot (see resolveWriteSlot). */
   readonly compiled: CompiledSchema;
   readonly currentSv: number;
+  /**
+   * The slot's versions that were ever in effect (current and retired). A number a draft took and
+   * gave up, or one awaiting confirmation, is no version a caller can have read (04-contract §2:
+   * `sv` may skip). Left out, every number up to the current one counts.
+   */
+  readonly knownSv?: ReadonlySet<number>;
+  /**
+   * The versions each table of the slot is in, by table ID: from the first to the last version in
+   * effect that has it (a table ID is never used again, and a dropped table never comes back). A
+   * request at an earlier version names tables as that version has them: one it does not have is
+   * `unknown_table`. Left out, every table counts as in every version.
+   */
+  readonly tableVersions?: TableVersions;
   /** What changed incompatibly since a version: a request at that version may not write it. */
   readonly changedSince: (sv: number) => ChangedFields;
   /**
@@ -42,6 +55,9 @@ export interface NormalizeWriteInput {
    */
   readonly inRange?: readonly { readonly name: string; readonly tables: readonly string[] }[];
 }
+
+/** The versions each table is in, by table ID (`NormalizeWriteInput.tableVersions`). */
+export type TableVersions = ReadonlyMap<string, { readonly from: number; readonly to: number }>;
 
 /**
  * Changes since a version, by `<table ID>/<field ID>`, or `<table ID>/*` for a table changed as a

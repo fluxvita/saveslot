@@ -342,7 +342,7 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
     const rows = await tx.query<{ seq: unknown; path: string; body: string | null }>(
       `SELECT c.seq, c.path, c.body FROM content c JOIN events e ON e.seq = c.seq
        WHERE e.slot = $1 AND e.type = 'schema.compiled' AND e.seq < $2
-         AND c.path IN ('target', 'compiled') ORDER BY c.seq, c.path COLLATE "C"`,
+         AND c.path IN ('target', 'compiled', 'changes') ORDER BY c.seq, c.path COLLATE "C"`,
       [ev.header["slot"] as string, ev.seq],
     );
     const bySeq = new Map<number, Record<string, JsonValue>>();
@@ -359,8 +359,24 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
         target?.["target_version"] === t["to_version"] &&
         b["compiled"] !== undefined
       ) {
-        switchTo = { seq, compiled: b["compiled"] as unknown as CompiledSchema };
+        switchTo = {
+          seq,
+          compiled: b["compiled"] as unknown as CompiledSchema,
+          ...(Array.isArray(b["changes"])
+            ? { changes: b["changes"] as unknown as SwitchInput["changes"] & object }
+            : {}),
+        };
       }
+    }
+    // A switch from an earlier version: that version's definition, the slot's current one.
+    if (switchTo !== undefined && "from_version" in t) {
+      const f = await tx.query<{ body: string | null }>(
+        `SELECT c.body FROM schema_versions v JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
+         WHERE v.slot_id = $1 AND v.sv = $2`,
+        [ev.header["slot"] as string, t["from_version"] as number],
+      );
+      const body = f.rows[0]?.body;
+      if (body != null) switchTo = { ...switchTo, from: JSON.parse(body) as CompiledSchema };
     }
     // The slot as it is, and the table IDs the tenant already uses.
     const slotRow = await tx.query<{ current_sv: unknown; policy_seq: unknown }>(
@@ -588,13 +604,17 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
   const target = p.present["target"] as Obj;
   const tableId = target["table"] as string;
   const rowId = (target["row"] ?? target["entity"]) as string;
-  const v = await tx.query<{ sv: unknown; body: string | null }>(
-    `SELECT s.sv, c.body FROM schema_versions s JOIN content c ON c.seq = s.compiled_seq AND c.path = 'compiled'
-     WHERE s.slot_id = $1 AND s.state = 'current'`,
+  // The slot's versions in effect so far, the current one with its definition: one statement.
+  const v = await tx.query<{ sv: unknown; state: string; body: string | null }>(
+    `SELECT s.sv, s.state, c.body FROM schema_versions s
+     LEFT JOIN content c ON s.state = 'current' AND c.seq = s.compiled_seq AND c.path = 'compiled'
+     WHERE s.slot_id = $1 AND s.state IN ('current', 'retired')`,
     [ev.header["slot"] as string],
   );
-  const body = v.rows[0]?.body;
-  const sv = Number(v.rows[0]?.sv);
+  const current = v.rows.find((x) => x.state === "current");
+  const knownSv = new Set(v.rows.map((x) => Number(x.sv)));
+  const body = current?.body;
+  const sv = Number(current?.sv);
   const table =
     body === undefined || body === null
       ? undefined
@@ -696,6 +716,7 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
     openCells,
     count: Number(count.rows[0]?.n ?? 0),
     sv,
+    knownSv,
     rowTable: origin.rows[0]?.table_id ?? null,
     ...(written !== undefined ? { written } : {}),
   };
@@ -872,6 +893,32 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
       ]);
       return;
     case "version_switch":
+      if (c.from !== undefined) {
+        // From an earlier version: it is retired, the pending draft's version becomes current.
+        await one(
+          tx,
+          seq,
+          "UPDATE schema_versions SET state = 'retired' WHERE slot_id = $1 AND sv = $2 AND state = 'current'",
+          [c.slot, c.from],
+          `version ${c.from} of ${c.slot} is not current`,
+        );
+        await one(
+          tx,
+          seq,
+          `UPDATE schema_versions SET state = 'current'
+           WHERE slot_id = $1 AND sv = $2 AND draft_id = $3 AND state = 'pending'`,
+          [c.slot, c.sv, c.draft_id],
+          `version ${c.sv} of ${c.slot} is not the pending draft ${c.draft_id}`,
+        );
+        await one(
+          tx,
+          seq,
+          "UPDATE slots SET current_sv = $1, name = $2, timezone = $3 WHERE id = $4",
+          [c.sv, c.name, c.timezone, c.slot],
+          `no slot ${c.slot}`,
+        );
+        return;
+      }
       // The slot's first version (a slot being created): no earlier version to retire.
       await tx.query(
         `INSERT INTO schema_versions (slot_id, sv, compiled_seq, draft_id, state)

@@ -1036,11 +1036,29 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   const today = todayIn(now, slot.timezone);
   // One schema version in this phase: nothing changed incompatibly since any version.
   const changedSince = () => new Map();
+  // The versions ever in effect: numbers skip (04-contract §2), and a draft's number is no version.
+  // With them, in the same statement, the versions each table is in: the catalog has a row for each
+  // table of each version switched to, so the first and the last of them.
+  const versionRows = await tx.query<{ table_id: string | null; lo: unknown; hi: unknown }>(
+    `SELECT NULL AS table_id, sv AS lo, sv AS hi FROM schema_versions
+     WHERE slot_id = $1 AND state IN ('current', 'retired')
+     UNION ALL
+     SELECT table_id, min(sv), max(sv) FROM catalog WHERE slot_id = $1 GROUP BY table_id`,
+    [slot.slot],
+  );
+  const knownSv = new Set<number>();
+  const tableVersions = new Map<string, { from: number; to: number }>();
+  for (const x of versionRows.rows) {
+    if (x.table_id === null) knownSv.add(Number(x.lo));
+    else tableVersions.set(x.table_id, { from: Number(x.lo), to: Number(x.hi) });
+  }
   const normalized = normalizeWrite({
     params: input.params,
     compiled: { ...slot.compiled, tables: slot.tables },
     inRange: visible.map((s) => ({ name: s.name, tables: s.tables.map((t) => t.name) })),
     currentSv: slot.sv,
+    knownSv,
+    tableVersions,
     changedSince,
   });
   if (!normalized.ok) throw requestFailure(normalized.error);
@@ -1142,6 +1160,8 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       sv,
       currentSv: slot.sv,
       changedSince,
+      tableVersions,
+      tables: slot.tables,
     });
     if (incompatible !== undefined) throw requestFailure(incompatible);
   }
