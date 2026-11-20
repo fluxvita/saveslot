@@ -52,6 +52,7 @@ export const TEXTS = {
       "  init | start | stop | status | config get | mcp   the local service",
       "",
       "options: --json  --limit <n>  --cursor <handle>  --untrusted-tags auto|always|never",
+      "         --version (alone: this saveslot's version)  --help",
     ].join("\n"),
   ),
   usageError: (what: Static) => s(`error: ${what}. See saveslot --help.`),

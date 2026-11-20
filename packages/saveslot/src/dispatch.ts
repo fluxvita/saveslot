@@ -4,6 +4,7 @@
 
 import { type CliIO, run } from "@fluxvita/saveslot-cli";
 import {
+  daemonVersion,
   homeProblem,
   init,
   initialized,
@@ -22,6 +23,12 @@ export function dispatch(
   env: Readonly<Record<string, string | undefined>>,
   io: CliIO,
 ): Promise<number> {
+  // `saveslot --version` (06 §4): the version the service reports on /health and `start` compares,
+  // the one `status` gives as this saveslot's.
+  if (argv.length === 1 && argv[0] === "--version") {
+    io.out(`${daemonVersion()}\n`);
+    return Promise.resolve(0);
+  }
   const [first, ...rest] = argv;
   if (first !== undefined && SERVICE.has(first as ServiceName)) {
     return serviceCommand(first as ServiceName, rest, {

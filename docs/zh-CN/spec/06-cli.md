@@ -423,7 +423,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 ## 4. 命令清单
 
-全局参数：`--profile <名字>`、`--json`（输出契约的结构化结果，见第 6 节）、`--yes`（非交互式确认，见第 5 节）、`--limit` / `--cursor`（分页，同契约）。"出现于"列对应第 7 节的实现步骤。
+全局参数：`--profile <名字>`、`--json`（输出契约的结构化结果，见第 6 节）、`--yes`（非交互式确认，见第 5 节）、`--limit` / `--cursor`（分页，同契约）。`saveslot --version`（单独使用）打印这个 saveslot 的版本并退出 0：与服务在 `/health` 报的、`saveslot start` 比较的、`saveslot status` 写作"这个 saveslot"的是同一个版本；不连服务。`saveslot --help` 打印用法。"出现于"列对应第 7 节的实现步骤。
 
 ### 4.1 服务（只在本地；管进程，不是契约操作）
 
