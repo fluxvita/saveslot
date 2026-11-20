@@ -12,6 +12,7 @@
 // kept (the caller's transaction rolls back).
 
 import type {
+  CompiledBaseTable,
   CompiledSchema,
   FieldId,
   PartitionId,
@@ -29,6 +30,7 @@ import {
 } from "../log/index.ts";
 import { RuleEvaluationError } from "../rules/index.ts";
 import type { Tx } from "../store/ports.ts";
+import { detectPremises } from "./detect-premises.ts";
 import { WriteError } from "./errors.ts";
 
 /** The base changes of an operation's events: each `write.base`'s table, row and fields written. */
@@ -65,7 +67,9 @@ export interface DeriveStepOutput {
 }
 
 /**
- * Appends the operation, applies it, refreshes the derived tables its base changes reach. Throws
+ * Appends the operation, applies it, puts into it the premises it changed (`premise.changed`, read
+ * from the version table once its base events are applied: ./detect-premises.ts), then refreshes the
+ * derived tables its base changes reach, all in the caller's transaction. Throws
  * ApplyError when an event does not fit the state (the caller's to report), WriteError
  * `validation_failed` (`rule_eval_failed`) when a rule fails on the data.
  */
@@ -76,9 +80,23 @@ export async function appendWithDerived(tx: Tx, input: DeriveStepInput): Promise
     events: [...input.events],
   });
   await applyEvents(tx, eventsOf(prepared));
+  // After every base and item event, before the derived writes (09 §4.2): at most one.
+  const premises = await detectPremises(
+    tx,
+    prepared.op,
+    (id) =>
+      input.schema.tables.find((t) => t.id === id && t.kind === "base") as
+        | CompiledBaseTable
+        | undefined,
+  );
+  let lastOf = prepared;
+  if (premises !== undefined) {
+    lastOf = await continueOperation(tx, prepared, [premises]);
+    await applyEvents(tx, eventsOf(lastOf));
+  }
   const changes = baseChanges(input.events);
   if (changes.length === 0) return { prepared, derived: [] };
-  const last = prepared.events.at(-1)?.seq as Seq;
+  const last = lastOf.events.at(-1)?.seq as Seq;
   let derived: DerivedWrite[];
   try {
     derived = await derivedWrites({
@@ -100,7 +118,7 @@ export async function appendWithDerived(tx: Tx, input: DeriveStepInput): Promise
   if (derived.length === 0) return { prepared, derived };
   const more = await continueOperation(
     tx,
-    prepared,
+    lastOf,
     derived.map(
       (w): NewEvent => ({
         type: "write.derived",

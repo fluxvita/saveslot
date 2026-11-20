@@ -310,7 +310,7 @@ describe("not applicable", () => {
   });
 });
 
-describe("tightened after review: what literal@1 no longer takes", () => {
+describe("what literal@1 does not take", () => {
   it("the longest writing after the number is the unit written: km/h, m/s, 公里/小时 are not km or m", () => {
     expect(at(QTY, q("5", "km"), "5 km/h")).toBe("miss");
     expect(at(QTY, q("5", "km/h"), "5 km/h")).toBe("hit");

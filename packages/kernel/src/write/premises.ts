@@ -258,7 +258,7 @@ function scopeOf(r: ResolvedPremise, t: CompiledBaseTable, ctx: PremiseContext):
 }
 
 /** The reason of the operation that changed a premise (02-integrity «什么算前提变了»). */
-async function reasonOf(
+export async function reasonOf(
   tx: ReadTx,
   t: CompiledBaseTable,
   id: string,

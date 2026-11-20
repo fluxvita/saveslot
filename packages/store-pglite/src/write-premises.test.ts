@@ -943,7 +943,7 @@ describe("reasons and counts at their edges", () => {
   );
 });
 
-describe("after review: the cover is of 出处项, carried references followed to their end", () => {
+describe("the cover is of 出处项, carried references followed to their end", () => {
   it(
     "a restatement after an undo covers the item the write-back carries, not the write-back",
     async () => {
@@ -978,7 +978,7 @@ describe("after review: the cover is of 出处项, carried references followed t
   );
 });
 
-describe("after review: the depending row's own business time", () => {
+describe("the depending row's own business time", () => {
   /** A budget entity at its version, from 10-01. */
   const aBudget = async () => {
     const b = await ok({
@@ -1156,7 +1156,7 @@ describe("after review: the depending row's own business time", () => {
   );
 });
 
-describe("after review: counts, revoked versions seen, keys of this request", () => {
+describe("counts, revoked versions seen, keys of this request", () => {
   it(
     "the declarations of this request's earlier ops count toward the limit",
     async () => {
@@ -1316,7 +1316,7 @@ const changeRoom = async (
   return { entity: room.entity, ver: r.ops[0]?.ver as string, seq: r.seq };
 };
 
-describe("after the second review: the interval of row_time", () => {
+describe("the interval of row_time", () => {
   it(
     "every field a no-op, the interval in the past: the interval the op wrote",
     async () => {
@@ -1516,7 +1516,7 @@ describe("after the second review: the interval of row_time", () => {
   );
 });
 
-describe("after the second review: the fan-in counts the edges in force once recorded", () => {
+describe("the fan-in counts the edges in force once recorded", () => {
   const aTask = async (title: string) => {
     const t = await ok({ ops: [{ intent: "insert", table: "tasks", set: { title } }] });
     return { row: t.ops[0]?.target.row as string, ver: t.ops[0]?.ver as string };
@@ -1594,7 +1594,7 @@ describe("after the second review: the fan-in counts the edges in force once rec
   );
 });
 
-describe("after the second review: covers as judging sees them, and every carried item", () => {
+describe("covers as judging sees them, and every carried item", () => {
   it(
     "the current value corroborated since the version: a restatement and a clearing at that version cover the corroboration",
     async () => {
@@ -1685,7 +1685,7 @@ describe("after the second review: covers as judging sees them, and every carrie
   );
 });
 
-describe("after the second review: a return to the merge base", () => {
+describe("a return to the merge base", () => {
   it(
     "take_previous: a restatement covers the merge base's item its write-back carries",
     async () => {
