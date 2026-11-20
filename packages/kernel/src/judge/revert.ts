@@ -405,6 +405,7 @@ export function judgeRevertOf(
     event: Seq;
     seen?: OpNumber;
     seenExplicit?: boolean;
+    seenCurrent?: true;
     acknowledge?: boolean;
   },
   entries: readonly RevertEntry[],
@@ -492,7 +493,10 @@ export function judgeRevertOf(
         o.seenExplicit === true &&
         o.seen !== undefined &&
         !state.items.some(
-          (x) => x.op > (o.seen as number) && x.op < o.op && x.status === "applied",
+          (x) =>
+            x.op > (o.seenCurrent === true ? o.op - 1 : (o.seen as number)) &&
+            x.op < o.op &&
+            x.status === "applied",
         );
       // Undoing a revoke restores what it took away: not ① (05-time «高影响写入»).
       const onlyRevokes = c.zai.every((y) => y.content.kind === "revoke");

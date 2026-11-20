@@ -295,7 +295,8 @@ describe("locating by key", () => {
         entity: a.ops[0]?.target.entity,
         intent: "update",
         by_entity_key: true,
-        ver: { op: a.seq, restore_count: 0, basis: "explicit" },
+        // The entity's current version when written (09 §5.2 `ver.current`).
+        ver: { op: a.seq, restore_count: 0, basis: "explicit", current: true },
       });
       expect(head["ops/0/noop"]).toEqual(["f1"]);
       expect(head["ops/0/set/f1"]).toBeUndefined();

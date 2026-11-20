@@ -220,7 +220,13 @@ export function eventsOfSteps(
         itemOp: version,
         restoreCount: 0,
       });
-      evs.push({ type: "item.resolved", seq: r.op, blocks: { ctx: ctxBlock, target: enc.target } });
+      // item.resolved's ctx has no literal_checker (09 §5.1).
+      const { literal_checker: _, ...resolveCtx } = ctxBlock;
+      evs.push({
+        type: "item.resolved",
+        seq: r.op,
+        blocks: { ctx: resolveCtx, target: enc.target },
+      });
       if (enc.base !== undefined) {
         evs.push({ type: "write.base", seq: r.event, op: r.op, blocks: enc.base });
       }

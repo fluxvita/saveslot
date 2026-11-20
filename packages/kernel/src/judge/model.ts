@@ -83,7 +83,25 @@ interface SeenVersion {
   readonly seen: OpNumber;
   /** `ver` was given explicitly, not taken from the read log. */
   readonly seenExplicit: boolean;
+  /**
+   * `ver` was the row's current version when written (09 §5.2 `ver.current`): its op and restore
+   * count the row's latest. The op then saw the state just before it, whatever came after `seen`
+   * without a new version (a corroboration, a deletion's restatement): judged once, at the write,
+   * and recorded; replays take the record, not a comparison of versions.
+   */
+  readonly seenCurrent?: true;
 }
+
+/**
+ * Where an op's seen state ends (05-time «同值的基准是写入方所见的版本»: `ver` current is the
+ * current state): its `ver`, or, when that was current, everything before the op (the earlier ops
+ * of its request too, by `positions`). Also the lower bound of what it did not see.
+ */
+export const seenOf = (x: {
+  readonly op: OpNumber;
+  readonly seen: OpNumber;
+  readonly seenCurrent?: true;
+}): OpNumber => (x.seenCurrent === true ? ((x.op - 1) as OpNumber) : x.seen);
 
 export interface FieldInput {
   /** The value after validation and unit conversion, in its canonical form. */
@@ -280,6 +298,7 @@ export interface RevertRecord extends RecordBase {
   /** `undo`: as the caller gave them. */
   readonly seen?: OpNumber;
   readonly seenExplicit?: boolean;
+  readonly seenCurrent?: true;
   readonly acknowledge?: true;
   readonly includeLater?: true;
   /** An undo of high impact ① taken into effect by `acknowledge`: the stretches it overwrote. */

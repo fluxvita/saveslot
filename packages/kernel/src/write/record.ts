@@ -202,17 +202,27 @@ export interface EncodedOp {
  * `same_request` for a row an earlier op of the request created, `fallback` from the read log.
  */
 function verOf(
-  r: { op: OpNumber; seen: OpNumber; seenExplicit: boolean },
+  r: { op: OpNumber; seen: OpNumber; seenExplicit: boolean; seenCurrent?: true },
   omittable: boolean,
   restoreCount: number,
 ) {
-  if (omittable && r.seen === r.op - 1 && !r.seenExplicit) return undefined;
+  if (omittable && r.seen === r.op - 1 && !r.seenExplicit && r.seenCurrent !== true) {
+    return undefined;
+  }
   const basis: VerBasis = r.seenExplicit
     ? "explicit"
     : r.seen === r.op
       ? "same_request"
       : "fallback";
-  return { op: r.seen, restore_count: restoreCount, basis };
+  if (r.seenCurrent === true && basis === "same_request") {
+    throw inconsistent("a version from the same request is not marked current");
+  }
+  return {
+    op: r.seen,
+    restore_count: restoreCount,
+    basis,
+    ...(r.seenCurrent === true ? { current: true as const } : {}),
+  };
 }
 
 function validOut(v: ValidParam) {
@@ -318,7 +328,12 @@ export function encodeOp(
   }
   const i = r.index;
   const head: Blocks = {};
-  const seen = { op: r.op, seen: r.seen ?? r.op - 1, seenExplicit: r.seenExplicit ?? false };
+  const seen = {
+    op: r.op,
+    seen: r.seen ?? r.op - 1,
+    seenExplicit: r.seenExplicit ?? false,
+    ...(r.seenCurrent === true ? { seenCurrent: true as const } : {}),
+  };
   // An insert has no `ver` (09 §5.7): it saw the state just before it, not explicitly.
   if (e.intent === "insert" && (seen.seen !== r.op - 1 || seen.seenExplicit)) {
     throw inconsistent("an insert has no ver: it sees the state just before it");
@@ -840,11 +855,13 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
     const head = heads.get(op);
     const i = base.index;
     const opTarget = head?.[`ops/${i}/target`] as
-      | { ver?: { op: OpNumber; basis: VerBasis } }
+      | { ver?: { op: OpNumber; basis: VerBasis; current?: true } }
       | undefined;
     const ver = opTarget?.ver;
     const seen = ver === undefined ? op - 1 : ver.basis === "same_request" ? op : ver.op;
     const seenExplicit = ver?.basis === "explicit";
+    // Judged once, at the write (09 §5.2): a replay takes it as recorded.
+    const current = ver?.current === true ? { seenCurrent: true as const } : {};
     const revert = head?.[`ops/${i}/revert`] as { include_later: boolean } | undefined;
     const acknowledge = head?.[`ops/${i}/acknowledge`] !== undefined;
     const valid = head?.[`ops/${i}/valid`];
@@ -858,6 +875,7 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
         items: recItems,
         seen,
         seenExplicit,
+        ...current,
         ...(acknowledge ? { acknowledge: true as const } : {}),
         ...(revert.include_later ? { includeLater: true as const } : {}),
         ack: acksIn(b),
@@ -870,6 +888,7 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
       kind: target.intent === "revoke" ? "revoke" : "write",
       seen,
       seenExplicit,
+      ...current,
       ...(valid !== undefined ? { valid: validIn(valid) } : {}),
       now,
       ...(acknowledge && target.intent !== "revoke" ? { acknowledge: true as const } : {}),

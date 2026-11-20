@@ -824,6 +824,17 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
           acknowledge: ["overwrite"],
         }) as Op;
       const scenarios: [string, Op[]][] = [
+        // A revoke over a stretch never written changes no cell: no version. The write after it,
+        // seeing it, is sent seeing #10, still the current version, so its `ver` is marked
+        // current, by the pipeline (version table) and by the scenario alike.
+        [
+          "a revoke over a stretch never written gives no version; a write after it is current",
+          [
+            write(10, 0, span("2026-11-05"), "1"),
+            revoke(20, 10, span("2026-11-01", "2026-11-03")),
+            write(30, 20, span("2026-11-01", "2026-11-03"), "2"),
+          ],
+        ],
         // A revoke inside a span already revoked gives a version (the span now comes from it); the
         // write after it sees exactly that version.
         [

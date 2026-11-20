@@ -603,25 +603,6 @@ async function verAsOf(
   return v === null || v === undefined ? undefined : `v${Number(v)}.${restoreCount}`;
 }
 
-/**
- * The row's version just before operation `op`: the last operation before it that changed the
- * row (its version table's cells), as an operation number.
- */
-async function verBefore(
-  tx: ReadTx,
-  table: CompiledBaseTable,
-  row: string,
-  op: OpNumber,
-): Promise<number | undefined> {
-  const r = await tx.query<{ v: unknown }>(
-    `SELECT max(rec_from) AS v FROM "${table.physical.table}__ver"
-     WHERE row_id = $1 AND rec_from < $2 AND intent <> 'schema_switch'`,
-    [row, op],
-  );
-  const v = r.rows[0]?.v;
-  return v === null || v === undefined ? undefined : Number(v);
-}
-
 /** The operation numbers of events, and the actors of operations. */
 async function opsOf(tx: ReadTx, seqs: readonly number[]): Promise<Map<number, number>> {
   if (seqs.length === 0) return new Map();
@@ -720,7 +701,7 @@ export async function readReceipt(
       row?: string;
       entity?: string;
       intent: Intent;
-      ver?: { op: number };
+      ver?: { op: number; basis: string; current?: true };
       by_entity_key?: true;
       created?: true;
     };
@@ -737,15 +718,16 @@ export async function readReceipt(
     // By field name, built as entries: a name like `__proto__` stays a key of its own.
     const fields = new Map<string, FieldResult | StatePart[]>();
     const rowVer = await verAsOf(tx, table, rowId, op, o.restoreCount);
-    // The op carried (or was given) a version older than the row's when it was written: what of it
-    // applied met no conflict, and is merged (04-contract §5.4 «判定与回执», 「applied」).
-    // Not for a revert, whose later writes are judged otherwise, nor a decision's write (no ver).
-    const seen = t.ver?.op;
+    // The op carried (or was given) a version that was not the row's current one when it was
+    // written: what of it applied met no conflict, and is merged (04-contract §5.4 «判定与回执»,
+    // 「applied」). "Current" is what the write recorded (09 §5.2 `ver.current`), judged once
+    // there; only an explicit or fallback version is ever marked. Not for a revert, whose later
+    // writes are judged otherwise, nor a decision's write (no ver).
     const stale =
       !resolved &&
-      seen !== undefined &&
-      head[`ops/${i}/revert`] === undefined &&
-      ((await verBefore(tx, table, rowId, op)) ?? seen) > seen;
+      (t.ver?.basis === "explicit" || t.ver?.basis === "fallback") &&
+      t.ver.current !== true &&
+      head[`ops/${i}/revert`] === undefined;
     // The row's cells as this request left them, for who gave what a candidate met (as the item's
     // details read them, ../pending/cells.ts; the same moment as `effective`, `current_ver` and the
     // item's contents, 01-objects «不过期»): read once, and only when the op has a candidate.

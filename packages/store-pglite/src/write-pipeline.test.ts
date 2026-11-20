@@ -741,7 +741,7 @@ describe("ver and sv taken from the caller's own writes", () => {
       expect(
         ((await eventsOfOp(r.seq))[0]?.blocks["ops/0/target"] as { ver?: unknown } | undefined)
           ?.ver,
-      ).toEqual({ op: b.seq, restore_count: 0, basis: "fallback" });
+      ).toEqual({ op: b.seq, restore_count: 0, basis: "fallback", current: true });
     },
     T,
   );
@@ -1261,6 +1261,8 @@ describe("reads: the fallback looks at the last read first; a write flushes the 
         op: theirs.seq,
         restore_count: 0,
         basis: "fallback",
+        // The version read is the row's current one: compared, then marked (09 §5.2).
+        current: true,
       });
     },
     T,

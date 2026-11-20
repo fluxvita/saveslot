@@ -56,8 +56,9 @@ export interface Item {
    */
   readonly explicitEnds: readonly BizPoint[];
   /**
-   * Written with a default end: the conflict criterion's "默认终点". (A part cut from a stale
-   * corroboration is always a candidate, never an L, so it needs no mark of its own.)
+   * Written with a default end: the conflict criterion's "默认终点". The changed part of a stale
+   * corroboration written to the next change is one too: it is judged as the write was written
+   * (05-time «用同样的值写»), merged or a candidate like any write.
    */
   readonly defaultEnd: boolean;
 }

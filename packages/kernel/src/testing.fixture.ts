@@ -16,6 +16,8 @@ export {
   scenario,
   shape,
 } from "./judge/scenarios.fixture.ts";
+// Which judged steps give a row a new version, as the version table has it.
+export { cellsOf, givesVersion, seenAsVersions, versionsOf } from "./judge/versions.fixture.ts";
 // An item's entries as its events give them (tests check a detail against them).
 export { actorsNow, itemEntries } from "./pending/index.ts";
 // `query` in a transaction, with the hook to read the state after an operation as a later page

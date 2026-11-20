@@ -150,12 +150,11 @@ function versions(v: Record<string, Json>, at: string, issues: Issues): void {
 }
 
 export const slotCtx =
-  (literal: "required" | "optional" | "absent"): ShapeChecker =>
+  (literal: "required" | "absent"): ShapeChecker =>
   (v, at, issues) => {
     const base = ["now", "today", "ruleset_version", "policy_version"];
     const req = literal === "required" ? [...base, "literal_checker"] : base;
-    const opt = literal === "optional" ? ["literal_checker"] : [];
-    if (!keys(v, at, req, opt, issues)) return;
+    if (!keys(v, at, req, [], issues)) return;
     check(str(v["now"]) && isInstant(v["now"]), at, "now", issues);
     check(str(v["today"]) && isDate(v["today"]), at, "today", issues);
     versions(v, at, issues);
@@ -231,7 +230,8 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
   },
   // §5.1
   WriteCtx: slotCtx("required"),
-  ResolveCtx: slotCtx("optional"),
+  // §5.1: `literal_checker` only on write.head (a decision's write checks nothing literally).
+  ResolveCtx: slotCtx("absent"),
   Task(v, at, issues) {
     check(str(v) && v !== "", at, "task", issues);
   },
@@ -298,10 +298,20 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     check(!(v["intent"] === "insert" && "ver" in v), at, "ver on an insert", issues);
     if ("ver" in v) {
       const ver = v["ver"];
-      if (keys(ver, `${at}.ver`, ["op", "restore_count", "basis"], [], issues)) {
+      if (keys(ver, `${at}.ver`, ["op", "restore_count", "basis"], ["current"], issues)) {
         check(int(ver["op"]), `${at}.ver`, "op", issues);
         check(int(ver["restore_count"]), `${at}.ver`, "restore_count", issues);
         check(oneOf(VER_BASES, ver["basis"]), `${at}.ver`, "basis", issues);
+        // §5.2: only when true; a version the op took from its own request or a key has none.
+        if ("current" in ver) {
+          check(ver["current"] === true, `${at}.ver`, "current", issues);
+          check(
+            ver["basis"] === "explicit" || ver["basis"] === "fallback",
+            `${at}.ver`,
+            "current on this basis",
+            issues,
+          );
+        }
         if (ver["basis"] === "external_key") {
           check(
             v["by_external_key"] === true,

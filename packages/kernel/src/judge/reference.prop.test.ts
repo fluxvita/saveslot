@@ -180,6 +180,23 @@ describe.each(both)("%s table", (_, schema, isState) => {
           if (st.has("awaiting") || st.has("candidate")) hits.hit();
           for (const x of steps) {
             const r = x.judgement.record;
+            // A corroboration written to the next change, cut by a change since (05-time
+            // «用同样的值写»): a corroborated item beside one in effect or a candidate, one field.
+            if (
+              r.kind === "write" &&
+              (r.valid === undefined ||
+                (r.valid !== "corrected_span" && r.valid.to.mode === "next_change"))
+            ) {
+              const byField = new Map<string, Set<string>>();
+              for (const i of r.items) {
+                const set = byField.get(i.target) ?? new Set<string>();
+                set.add(i.status);
+                byField.set(i.target, set);
+              }
+              if ([...byField.values()].some((v) => v.has("corroborated") && v.size > 1)) {
+                seen["corroborationCut"] = (seen["corroborationCut"] ?? 0) + 1;
+              }
+            }
             if (r.kind === "undo") {
               seen["undo"] = (seen["undo"] ?? 0) + 1;
               if (r.status === "awaiting") seen["undoAwaiting"] = (seen["undoAwaiting"] ?? 0) + 1;
@@ -377,6 +394,15 @@ describe.each(both)("%s table", (_, schema, isState) => {
     );
     if (process.env["JUDGE_STATS"]) console.log(schema.kind, JSON.stringify(seen));
     hits.check();
+    // A corroboration cut by a change since (05-time «用同样的值写») is reached, on state tables
+    // only: at the default 1,500 samples about 2.5 a run on state tables (1 to 4 over ten seeds),
+    // 0 on event tables in all ten (no default end there), so a check at the default would fail
+    // about one run in twelve with nothing wrong.
+    // It is checked from 6,000 samples on (a soak run; about 10 expected, none with odds under
+    // 1e-4); at the default the fixed cases of corroboration-orders.test.ts carry this path. The
+    // generator's weights for it are to come.
+    if (schema.kind === "state" && RUNS >= 6000)
+      expect(seen["corroborationCut"] ?? 0).toBeGreaterThan(0);
     // take_candidate reaches each of these situations: guards against a generator gone
     // degenerate, not shares. At the default 1,500 samples the rarest is take_revoke on event
     // tables, about 14 a run at the least seen over 5 runs: missing it entirely has odds e^-14,

@@ -300,7 +300,7 @@ const SAMPLES: Record<string, Sample> = {
   "item.resolved": {
     header: head("item.resolved", 30),
     blocks: {
-      ctx: { ...ctx, literal_checker: "literal@1" },
+      ctx,
       target: {
         item: ITEM,
         decision: "take_candidate",
@@ -530,6 +530,8 @@ describe("parseEvent: a write's blocks, value by value", () => {
     ["item.resolved", "ctx", { now: "2026-11-10" }, "ctx: now"],
     ["item.resolved", "ctx", { today: AT }, "ctx: today"],
     ["write.head", "ctx", { literal_checker: undefined }, "ctx: missing key literal_checker"],
+    // §5.1: only write.head has it; a decision's write checks nothing literally.
+    ["item.resolved", "ctx", { literal_checker: "literal@1" }, "ctx: unknown key literal_checker"],
     // flags that can only be true
     ["write.head", "ops/0/target", { by_entity_key: false }, "ops/0/target: by_entity_key"],
     ["write.head", "ops/0/target", { by_external_key: false }, "ops/0/target: by_external_key"],
@@ -793,6 +795,19 @@ describe("parseEvent: a write's blocks, value by value", () => {
       "ops/0/target",
       { ver: { op: 21, restore_count: 0, basis: "external_key" } },
       "ops/0/target: external_key basis without by_external_key",
+    ],
+    // §5.2 `ver.current`: only true, and only on an explicit or fallback version.
+    [
+      "write.head",
+      "ops/0/target",
+      { ver: { op: 21, restore_count: 0, basis: "explicit", current: false } },
+      "ops/0/target.ver: current",
+    ],
+    [
+      "write.head",
+      "ops/0/target",
+      { ver: { op: 21, restore_count: 0, basis: "same_request", current: true } },
+      "ops/0/target.ver: current on this basis",
     ],
     // write.derived (§5.7)
     ["write.derived", "target", { table: "x" }, "target: table"],

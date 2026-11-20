@@ -651,7 +651,7 @@ class Replay {
     // The interval parameters are content: their sources gone, the write has no contribution on
     // the entity at all (03-deletion «区间参数»).
     if (this.isState && this.isDeleted(o.validSources ?? evidence)) return;
-    const seen = o.seen ?? n - 1;
+    const seen = o.seenCurrent ? n - 1 : (o.seen ?? n - 1);
     const cur = n - 1;
     const fresh: Item[] = [];
     for (const [fid, input] of Object.entries(o.fields)) {
@@ -738,21 +738,56 @@ class Replay {
     }
     if (sameAsSeen) {
       // Corroboration: still the same as now → corroborated; changed since → judged as an
-      // ordinary write (05-time «用同样的值写»).
+      // ordinary write, as the write was written (05-time «用同样的值写»).
+      const corroborate = (eq: IvSet, ends: readonly Point[], into: Item[]) => {
+        for (const piece of pieces(eq)) {
+          into.push({
+            ...base,
+            status: "corroborated",
+            valid: piece,
+            explicitEnds: ends.filter((t) => piece.some((x) => x.from === t || x.to === t)),
+            defaultEnd: false,
+            from: piece[0]?.from ?? null,
+          });
+        }
+      };
       const eq = normalize(segs.filter((s) => this.vis(f, s, cur) === v));
-      for (const piece of pieces(eq)) {
-        const ends = res.explicitEnds.filter((t) => piece.some((x) => x.from === t || x.to === t));
+      const changed = subtract(res.valid, eq);
+      if (isEmpty(changed) || !res.defaultEnd) {
+        corroborate(eq, res.explicitEnds, out);
+        for (const piece of pieces(changed)) {
+          this.ordinary(o, f, input, piece, false, piece[0]?.from ?? null, false, seen, cur, out);
+        }
+        return;
+      }
+      // A default end: the changed part is the write's, from its start, to the next change.
+      const judged: Item[] = [];
+      this.ordinary(o, f, input, changed, true, res.from, false, seen, cur, judged);
+      if (judged.some((x) => x.status !== "applied")) {
+        // Not merged: its corroborations as they are, the changed part a candidate a piece.
+        corroborate(eq, res.explicitEnds, out);
+        for (const x of judged)
+          for (const piece of pieces(x.valid)) out.push({ ...x, valid: piece });
+        return;
+      }
+      // Merged (conflict criterion ④): the write's interval on the current state, cut there. As
+      // judge has it: under the rules as they are the interval ends at the field's next blocking
+      // point, so it is all the same or all changed; kept as a cut so that it stays right if
+      // what blocks a default end changes.
+      const now = this.resolve(o.valid, f, cur, o.now);
+      if (now === null) return;
+      const nowSegs = this.segments([now.valid]).filter((s) => covers(now.valid, s));
+      const eqNow = normalize(nowSegs.filter((s) => this.vis(f, s, cur) === v));
+      corroborate(eqNow, now.explicitEnds, out);
+      for (const piece of pieces(subtract(now.valid, eqNow))) {
         out.push({
           ...base,
-          status: "corroborated",
+          status: "applied",
           valid: piece,
-          explicitEnds: ends,
-          defaultEnd: false,
-          from: piece[0]?.from ?? null,
+          explicitEnds: now.explicitEnds,
+          defaultEnd: true,
+          from: now.from,
         });
-      }
-      for (const piece of pieces(subtract(res.valid, eq))) {
-        this.ordinary(o, f, input, piece, false, piece[0]?.from ?? null, false, seen, cur, out);
       }
       return;
     }
@@ -817,7 +852,7 @@ class Replay {
 
   revoke(o: RevokeOp): void {
     const n = o.op;
-    const seen = o.seen ?? n - 1;
+    const seen = o.seenCurrent ? n - 1 : (o.seen ?? n - 1);
     const cur = n - 1;
     let valid: IvSet = [ALL];
     let seenValid: IvSet = [ALL];
@@ -905,7 +940,7 @@ class Replay {
    */
   acknowledged(o: WriteOp | UndoOp): boolean {
     if (o.acknowledge === undefined || o.seen === undefined) return false;
-    const seen = o.seen;
+    const seen = o.seenCurrent ? o.op - 1 : o.seen;
     // A deletion or cancellation that changed the entity gave it a new ver (03-deletion «重放规则»,
     // ver row): a ver before it is not current. A corroboration makes no version and leaves the
     // ver as it was (05-time «用同样的值写»): only items applied after it count.

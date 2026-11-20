@@ -577,18 +577,21 @@ describe("on a state table", () => {
     T,
   );
 
-  // Fails today: judge takes the part of a corroboration changed since as given with an explicit
-  // interval (judge/write.ts, the reference evaluator alike), so A is a candidate. The fix is
-  // judge's and the reference evaluator's, in a request of its own; this turns when it lands.
-  it.fails(
-    "B then A: the same as A then B (the spec's example; judge to be fixed)",
+  // The changed part is judged as A was written: a default end, from 11-20 (B's start 11-02 is
+  // another, so no conflict), merged, resolved on the current state: [11-20, ∞), now a change of
+  // B's 3000, so in effect, not a corroboration. The end state is A then B's.
+  it(
+    "B then A: the same end state (A in effect over [11-20, ∞), B stopping there)",
     async () => {
       const a = await open();
-      await send({
+      const B = await send({
         sv: 1,
         evidence: [say("3000 from the 2nd")],
         ops: [update(a.ver, "2026-11-02", undefined, "3000")],
       });
+      expect(B.ops[0]?.fields["balance"]).toMatchObject([
+        { result: "applied", valid: { valid_from: "2026-11-02", valid_to: null } },
+      ]);
       const A = await send({
         sv: 1,
         evidence: [say("5000 from the 20th")],
@@ -597,7 +600,143 @@ describe("on a state table", () => {
         ],
       });
       expect(A.pending).toEqual([]);
-      expect(partsOf(A)).toEqual(["corroborated"]);
+      expect(A.ops[0]?.fields["balance"]).toMatchObject([
+        { result: "applied", valid: { valid_from: "2026-11-20", valid_to: null } },
+      ]);
+    },
+    T,
+  );
+
+  // A corroboration's changed part, merged: resolved on the current state, its span's deps the
+  // contributions giving the blocking point it stops at (09 §3.5), the writes that changed it too.
+  it(
+    "the changed part merged stops at another corroboration's start: that corroboration among its deps",
+    async () => {
+      const a = await open();
+      // C corroborates [11-25, 11-30): no version. B, from that version (current), from 11-02 to
+      // the next change: it stops at C's start.
+      const C = await send({
+        sv: 1,
+        evidence: [say("5000 from the 25th to the 30th")],
+        ops: [
+          update(a.ver, "2026-11-25", "2026-11-30", "5000", {
+            evidence_by_field: { balance: [0] },
+          }),
+        ],
+      });
+      const B = await send({
+        sv: 1,
+        evidence: [say("3000 from the 2nd")],
+        ops: [update(a.ver, "2026-11-02", undefined, "3000")],
+      });
+      expect(B.ops[0]?.fields["balance"]).toMatchObject([
+        { result: "applied", valid: { valid_from: "2026-11-02", valid_to: "2026-11-25" } },
+      ]);
+      // A, from the first version (before C and B), 5000 from 11-20 to the next change.
+      const A = await send({
+        sv: 1,
+        evidence: [say("5000 from the 20th")],
+        ops: [
+          update(a.ver, "2026-11-20", undefined, "5000", { evidence_by_field: { balance: [0] } }),
+        ],
+      });
+      expect(A.pending).toEqual([]);
+      // Resolved on the current state, A runs to the next change, 11-25: all of it changed (B's
+      // 3000), so one item in effect. [11-25, ∞), still 5000, is no part of A's interval now.
+      expect(partsOf(A)).toEqual(["applied"]);
+      const base = (await basesOf(A.seq))[0] ?? {};
+      const span = (base["span/f2/0"] ?? {}) as { valid?: unknown; deps?: unknown[] };
+      expect(span.valid).toEqual({ from: "2026-11-20", to: "2026-11-25" });
+      expect(span.deps).toContainEqual({ event: C.seq + 2, field: "f2", k: 0 });
+      expect(span.deps).toContainEqual({ event: B.seq + 2, field: "f2", k: 0 });
+    },
+    T,
+  );
+
+  it(
+    "the changed part merged stops at a change of value: the item starting there among its deps",
+    async () => {
+      const a = await open();
+      // 6000 from 11-25 on, before the version A and B carry.
+      const six = await send({
+        sv: 1,
+        evidence: [say("6000 from the 25th")],
+        ops: [update(a.ver, "2026-11-25", undefined, "6000")],
+      });
+      const v = six.ops[0]?.ver as string;
+      const B = await send({
+        sv: 1,
+        evidence: [say("3000 from the 2nd")],
+        ops: [update(v, "2026-11-02", undefined, "3000")],
+      });
+      const A = await send({
+        sv: 1,
+        evidence: [say("5000 from the 20th")],
+        ops: [update(v, "2026-11-20", undefined, "5000", { evidence_by_field: { balance: [0] } })],
+      });
+      expect(A.pending).toEqual([]);
+      expect(partsOf(A)).toEqual(["applied"]);
+      const span = ((await basesOf(A.seq))[0]?.["span/f2/0"] ?? {}) as {
+        valid?: unknown;
+        deps?: unknown[];
+      };
+      expect(span.valid).toEqual({ from: "2026-11-20", to: "2026-11-25" });
+      expect(span.deps).toContainEqual({ event: six.seq + 2, field: "f2", k: 0 });
+      expect(span.deps).toContainEqual({ event: B.seq + 2, field: "f2", k: 0 });
+    },
+    T,
+  );
+
+  // As it stands, pinned (08 «P3 前»: whether a revert's value write-back covers a corroboration
+  // end; develop-del settles it with the rules of taking back, and this case with it).
+  it(
+    "a corroboration covered by a write from the same version, the write undone: the write-back covers its ends",
+    async () => {
+      const a = await open();
+      const A = await send({
+        sv: 1,
+        evidence: [say("5000 from the 20th to the 25th")],
+        ops: [
+          update(a.ver, "2026-11-20", "2026-11-25", "5000", {
+            evidence_by_field: { balance: [0] },
+          }),
+        ],
+      });
+      const B = await send({
+        sv: 1,
+        evidence: [say("3000 from the 18th to the 27th")],
+        ops: [update(a.ver, "2026-11-18", "2026-11-27", "3000", { acknowledge: ["overwrite"] })],
+      });
+      expect(B.warnings).toMatchObject([{ code: "overwrote_corroborated" }]);
+      const U = await send({
+        sv: 1,
+        evidence: [say("undo that")],
+        ops: [
+          {
+            table: "ledger.accounts",
+            entity_key: CASH,
+            ver: B.ops[0]?.ver,
+            revert: { undo: B.seq },
+            acknowledge: ["overwrite"],
+          },
+        ],
+      });
+      expect(U.ops[0]?.fields["balance"]).toMatchObject([{ result: "applied" }]);
+      // 5000 again over [11-18, 11-27), written back: A's ends 11-20 and 11-25 covered, so a
+      // write from 11-19 to the next change runs past both.
+      const C = await send({
+        sv: 1,
+        evidence: [say("7000 from the 19th")],
+        ops: [
+          update(U.ops[0]?.ver as string, "2026-11-19", undefined, "7000", {
+            acknowledge: ["overwrite"],
+          }),
+        ],
+      });
+      expect(C.ops[0]?.fields["balance"]).toMatchObject([
+        { result: "applied", valid: { valid_from: "2026-11-19", valid_to: null } },
+      ]);
+      expect(A.seq).toBeGreaterThan(0);
     },
     T,
   );

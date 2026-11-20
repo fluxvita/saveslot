@@ -2356,7 +2356,7 @@ describe("intervals open at the start, and the whole time, in the log (09 §5.7,
   /** An entity, its whole revoke undone with an intent, an interval revoke cutting the undo's
    * write-back, and that undo undone by another principal: an awaiting item whose first span is
    * open at the start. */
-  const undoneUndo = async (insert: Record<string, unknown>) => {
+  const undoneUndo = async (insert: Record<string, unknown>, ackZ = true) => {
     const put = (o: Record<string, unknown>, actor = USER) =>
       send({ sv: 1, ops: [{ table: "entities", ...o }] }, { actor });
     const e = await send({ sv: 1, ops: [{ intent: "insert", table: "entities", ...insert }] });
@@ -2377,7 +2377,12 @@ describe("intervals open at the start, and the whole time, in the log (09 §5.7,
       valid_to: "2026-11-10",
     });
     const z = await put(
-      { entity, revert: { undo: u.seq }, ver: verAt(u), acknowledge: ["overwrite"] },
+      {
+        entity,
+        revert: { undo: u.seq },
+        ver: verAt(u),
+        ...(ackZ ? { acknowledge: ["overwrite"] } : {}),
+      },
       OTHER,
     );
     return { entity, cut, z, put };
@@ -2401,9 +2406,30 @@ describe("intervals open at the start, and the whole time, in the log (09 §5.7,
     }[];
 
   it(
+    "after an item in effect that changed nothing, the current ver with acknowledge: the undo takes effect at once",
+    async () => {
+      // The interval revoke cuts [11-05, 11-10), where the entity has no value: an item in effect
+      // that changes nothing, and no new version. `ver` u is still the current one (09 §5.2
+      // `ver.current`), so acknowledge takes the undo into effect, as with nothing after u.
+      const { z } = await undoneUndo({ valid_from: "2026-11-10", set: { b: "b0" } });
+      expect(z.pending ?? []).toEqual([]);
+      expect(((z.ops[0]?.fields["*"] ?? []) as { result: string }[]).map((x) => x.result)).toEqual([
+        "applied",
+        "applied",
+      ]);
+      const [head] = await ofType(z.seq, "write.head");
+      expect(((head?.blocks["ops/0/target"] ?? {}) as { ver?: unknown }).ver).toMatchObject({
+        current: true,
+      });
+    },
+    T,
+  );
+
+  it(
     "an undo of a whole revoke's undo, cut by an interval revoke: an item whose first span is open at the start",
     async () => {
-      const { entity, z } = await undoneUndo({ valid_from: "2026-11-10", set: { b: "b0" } });
+      // Not acknowledged: the undo awaits confirmation.
+      const { entity, z } = await undoneUndo({ valid_from: "2026-11-10", set: { b: "b0" } }, false);
       const item = z.pending?.[0]?.id as string;
       expect(z.ops[0]?.fields["*"]).toEqual([
         {

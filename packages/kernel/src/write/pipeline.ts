@@ -1232,10 +1232,15 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     // The version the op saw.
     let seen: OpNumber;
     let seenExplicit = false;
+    // `ver` was the row's current version (09 §5.2 `ver.current`): its op the row's latest before
+    // this request and its restore count the current one. Judged here, once, and recorded.
+    let seenCurrent = false;
+    const latest = (versions: ReadonlySet<number>) => Math.max(-1, ...versions);
     if (isNew) seen = (op - 1) as OpNumber;
     else if (work.createdHere) seen = op;
     else if (o.ver !== undefined) {
-      if (!verOfRow(o.ver, await rowVersions(tx, verTable, id), restore)) {
+      const versions = await rowVersions(tx, verTable, id);
+      if (!verOfRow(o.ver, versions, restore)) {
         throw new WriteError("invalid_argument", "the ver is not a version of this row or entity", {
           reason: "not_this_target",
           param: `${param}/ver`,
@@ -1243,6 +1248,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       }
       seen = o.ver.op;
       seenExplicit = true;
+      seenCurrent = o.ver.op === latest(versions);
     } else if (o.kind === "undo") seen = (op - 1) as OpNumber;
     else {
       const f = await fallback(tx, input, task, { kind: "ver", target: id }, () =>
@@ -1254,6 +1260,9 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       };
       if (!("found" in f)) throw readFirst(f, { target: "row", ref }, task, `${param}/ver`);
       seen = f.found;
+      seenCurrent =
+        (f.restoreCount ?? restore) === restore &&
+        f.found === latest(await rowVersions(tx, verTable, id));
       warnings.push({
         code: "ver_fallback",
         op: o.index,
@@ -1301,7 +1310,15 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     const intent =
       o.intent ?? (o.undo !== undefined ? undoneIntent(work.events, o.undo.target) : "update");
     const ack = o.acknowledge.includes("overwrite");
-    const base = { op, index: o.index, event: next as Seq, ruleset: RULESET, seen, seenExplicit };
+    const base = {
+      op,
+      index: o.index,
+      event: next as Seq,
+      ruleset: RULESET,
+      seen,
+      seenExplicit,
+      ...(seenCurrent ? { seenCurrent: true as const } : {}),
+    };
     const nowPoint = (granularity === "date" ? today : now) as never;
     const judgeInput: JudgeInput =
       o.kind === "write"

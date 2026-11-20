@@ -724,7 +724,7 @@
 | `key_from` | 给没有来源键的行补键、而这个键从一行已撤销的行转来时：那一行的行 ID。那一行从此不再占这个键 |
 | `created` | `true` 表示这个 op 新建了这一行或这个实体（`undo` 据此识别首次创建）。它是机械判定：隐私删除让它变化时，删除事件的 `recreated/<k>` 给出新值，以最近一次给出的为准（§5.9） |
 | `intent` | 意图（§6.2） |
-| `ver` | 这个 op 所见的版本。`basis`：`explicit`（调用方带的）/ `fallback`（按读取记录兜底）/ `same_request`（本请求前面的 op 新建的，不需要 `ver`；`op` 填本操作号）/ `external_key`（按来源键命中已有行：所见版本由内核取同步基线位置，`op` 是这个 op 涉及的字段里最早的基线位置，逐字段的位置在 `ops/<i>/baseline`）。新增时没有 `ver` |
+| `ver` | 这个 op 所见的版本。`basis`：`explicit`（调用方带的）/ `fallback`（按读取记录兜底）/ `same_request`（本请求前面的 op 新建的，不需要 `ver`；`op` 填本操作号）/ `external_key`（按来源键命中已有行：所见版本由内核取同步基线位置，`op` 是这个 op 涉及的字段里最早的基线位置，逐字段的位置在 `ops/<i>/baseline`）。`current`：`true` 表示写入时这个版本就是这一行的当前版本（`op` 与 `restore_count` 都与当前版本相同）；只有 `basis` 为 `explicit` 或 `fallback` 时可能带，`fallback` 取到的版本同样比过才带，`same_request` 与 `external_key` 不带。带它的 op，所见状态是它之前那一刻的状态（按 op 在请求里的次序，同一请求里前面的 op 也在内），含 `op` 之后没有换版本的记录（佐证、删除的重述、生效但没有改动任何值的项）；冲突判据里"V 之后"的下界同样取这一刻。它在写入时判定一次，重放照记录，不再比版本号。不带这个键时，所见状态取截至 `op` 那次操作。新增时没有 `ver` |
 
 `ops/<i>/valid`（只有状态类表有）。调用方对状态类表的写入总有这一块，起止都没给时写 `{"from": {"mode": "now"}, "to": {"mode": "next_change"}}`；没带区间的撤销没有。写入管线编码时照此检查，缺了就是无效事件：
 
@@ -755,7 +755,7 @@
 |---|---|
 | `table`、`row` / `entity` | 前提目标。按 `entity_key` 或临时名给的，这里记解析后的 ID（键值与临时名是内容，不记在这里） |
 | `fields` | 声明的字段 ID 列表。缺省 = 整行 |
-| `ver` | 所见版本。形状与 `ops/<i>/target` 的 `ver` 相同，`basis` 取 `explicit` / `fallback` / `same_request`（前提没有按来源键的写法） |
+| `ver` | 所见版本。同 `ops/<i>/target` 的 `ver`，但没有 `current`（前提只比值，不参与取值判定），`basis` 取 `explicit` / `fallback` / `same_request`（前提没有按来源键的写法） |
 | `range` | 声明的业务时间范围的种类：`whole`（前提目标在事件类表、无时间表上：没有业务时间）/ `from_now`（前提目标在状态类表上，从 `ctx.now` 起一直延续；`date` 粒度从 `ctx.today` 起）/ `row_time`（前提目标在状态类表上，取依赖行自己的业务时间，见 `ops/<i>/premise_valid/<j>`）/ `given`（前提目标在状态类表上，调用方给了时间，见同一块） |
 | `state` | 落账时的判定结果：`current`（所见的值就是现在的值）/ `changed`（声明时已经变了：一写下就带标记） |
 | `reason`、`since` | 只在 `state` 为 `changed` 时有：原因码（§6.8），以及所见版本之后第一次让所声明范围上的值不同的操作号 |

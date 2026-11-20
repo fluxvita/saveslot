@@ -30,6 +30,7 @@ import type {
   Shown,
   WriteInput,
 } from "./model.ts";
+import { seenOf } from "./model.ts";
 import { type Resolved, resolve, uniqueRefs } from "./resolve.ts";
 import { type Item, type Limit, NO_VALUE, type RowState, refOf, valueToken } from "./state.ts";
 
@@ -52,9 +53,22 @@ interface Part {
   readonly seenValid: IntervalSet;
   readonly defaultEnd: boolean;
   readonly from: BizPoint | null;
-  /** Resolve again on the current state when merged (not for a part cut from a corroboration). */
+  /**
+   * Resolve again on the current state when merged. A corroboration's changed part is resolved
+   * again too, by its own path (`corroboration` below), so this is not set for it.
+   */
   readonly reResolve: boolean;
   readonly deps: readonly ItemRef[];
+  /**
+   * The part of a corroboration written with a default end that changed since the seen version
+   * (05-time «用同样的值写»): judged as the write was written. A candidate as it stands, beside
+   * the corroborations `same` gives; merged, the write's interval is resolved on the current state
+   * and cut there into what is still the same (corroborations) and what changed (in effect).
+   */
+  readonly corroboration?: {
+    readonly same: readonly Draft[];
+    readonly cutters: readonly ItemRef[];
+  };
 }
 
 export interface Draft {
@@ -130,7 +144,7 @@ export function asItems(
 
 export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
   const n = w.op;
-  const { seenAt, curAt, afterAt } = positions(w.seen, n, w.index);
+  const { seenAt, curAt, afterAt } = positions(seenOf(w), n, w.index);
   const fields = (Object.keys(w.fields) as FieldId[]).sort();
   const drafts: Draft[] = [];
   const noop: FieldId[] = [];
@@ -168,20 +182,36 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
       continue;
     }
     // Corroboration: still the same now → corroborated; changed since → an ordinary write on
-    // that part, with the writes that changed it among its deps.
+    // that part, as the write was written, with the writes that changed it among its deps.
     const same = canonical(segs.filter((s) => state.token(f, s, curAt) === v));
     const changed = minus(res.valid, same);
-    const cutters = isNothing(changed) ? [] : changersOf(state, f, w.seen, n, res.valid);
+    const cutters = isNothing(changed) ? [] : changersOf(state, f, seenOf(w), n, res.valid);
     const split = !isNothing(changed);
-    for (const piece of parts(same)) {
-      drafts.push({
+    const corroborations = parts(same).map(
+      (piece): Draft => ({
         target: f,
         status: "corroborated",
         valid: piece,
         content: { kind: "value", value: input.value },
         deps: uniqueRefs([...res.deps, ...(split ? cutters : [])]),
+      }),
+    );
+    if (split && res.defaultEnd) {
+      // A default end: the changed part is the write's, from its start, to the next change.
+      ordinary.push({
+        f,
+        input,
+        seenValid: changed,
+        defaultEnd: true,
+        from: res.from,
+        reResolve: true,
+        deps: uniqueRefs([...res.deps, ...cutters]),
+        corroboration: { same: corroborations, cutters },
       });
+      continue;
     }
+    drafts.push(...corroborations);
+    // An interval given (or a correction's span): each changed piece as an explicit interval.
     for (const piece of parts(changed)) {
       ordinary.push({
         f,
@@ -216,14 +246,18 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
     }
     if (withOps.size > 0) {
       for (const p of ps) {
-        drafts.push({
-          target: p.f,
-          status: "candidate",
-          valid: p.seenValid,
-          content: { kind: "value", value: p.input.value },
-          deps: p.deps,
-          ...(withRevoke ? { onExistence: true as const } : {}),
-        });
+        // A corroboration's changed part: a candidate a piece, its corroborations as they are.
+        if (p.corroboration !== undefined) drafts.push(...p.corroboration.same);
+        for (const piece of p.corroboration !== undefined ? parts(p.seenValid) : [p.seenValid]) {
+          drafts.push({
+            target: p.f,
+            status: "candidate",
+            valid: piece,
+            content: { kind: "value", value: p.input.value },
+            deps: p.deps,
+            ...(withRevoke ? { onExistence: true as const } : {}),
+          });
+        }
       }
       conflicts.push({
         unit: withRevoke ? "existence" : { fields: unit },
@@ -233,6 +267,30 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
       continue;
     }
     for (const p of ps) {
+      if (p.corroboration !== undefined) {
+        // Merged: the write's interval resolved on the current state (conflict criterion ④),
+        // cut there into what is still the same and what changed; the blocking points' givers
+        // among the deps (09 §3.5), the writes that changed it too. Under the rules as they are,
+        // only one of the two is ever there: the interval ends at the field's next blocking
+        // point, so the value is one all along it, the same as the write's or not. It is kept as
+        // a cut, not as a test of the one value, so that it stays right if what blocks a default
+        // end changes (a corroboration's ends, 08 «P3 前»).
+        const now = resolve(state, w.valid, p.f, curAt, w.now);
+        if (now === null) continue;
+        const v = valueToken(p.input.value);
+        const sameNow = canonical(
+          state.piecesIn(now.valid).filter((s) => state.token(p.f, s, curAt) === v),
+        );
+        const deps = uniqueRefs([...now.deps, ...p.corroboration.cutters]);
+        const content = { kind: "value" as const, value: p.input.value };
+        for (const piece of parts(sameNow)) {
+          drafts.push({ target: p.f, status: "corroborated", valid: piece, content, deps });
+        }
+        for (const piece of parts(minus(now.valid, sameNow))) {
+          applied.push({ target: p.f, status: "applied", valid: piece, content, deps });
+        }
+        continue;
+      }
       // Merged: the interval is resolved on the current state (conflict criterion ④).
       const cur = p.reResolve ? resolve(state, w.valid, p.f, curAt, w.now) : null;
       applied.push({
@@ -369,7 +427,7 @@ function conflictingOps(
   curAt: Limit,
 ): { ops: OpNumber[]; revoke: boolean } {
   const out: OpNumber[] = [];
-  for (const m of state.opsBetween(w.seen, w.op)) {
+  for (const m of state.opsBetween(seenOf(w), w.op)) {
     const changed = unionOf(...unit.map((g) => state.changedBy(m, g)));
     if (isNothing(changed)) continue;
     if (!state.isState) {
@@ -465,7 +523,8 @@ export interface GapEntry {
 function acknowledges(state: RowState, w: WriteInput): boolean {
   if (w.acknowledge !== true || !w.seenExplicit) return false;
   // A corroboration makes no version (05-time «用同样的值写»): only applied items make it stale.
-  return !state.items.some((x) => x.op > w.seen && x.op < w.op && x.status === "applied");
+  const seen = seenOf(w);
+  return !state.items.some((x) => x.op > seen && x.op < w.op && x.status === "applied");
 }
 
 function shownAt(state: RowState, f: FieldId, seg: Interval, at: Limit): Shown {
@@ -546,7 +605,7 @@ function coveredCorroborations(
 
 export function judgeRevoke(state: RowState, r: RevokeInput): WriteOutcome {
   const n = r.op;
-  const { seenAt, curAt } = positions(r.seen, n, r.index);
+  const { seenAt, curAt } = positions(seenOf(r), n, r.index);
   const none: WriteOutcome = {
     items: [],
     noop: [],
@@ -575,7 +634,7 @@ export function judgeRevoke(state: RowState, r: RevokeInput): WriteOutcome {
   }
   // A revoke changes existence, which meets every conflict unit (撤销与并发修改).
   const withOps = state
-    .opsBetween(r.seen, n)
+    .opsBetween(seenOf(r), n)
     .filter((m) =>
       state.table.fields.some((g) => !isNothing(meet(state.changedBy(m, g), seenValid))),
     );

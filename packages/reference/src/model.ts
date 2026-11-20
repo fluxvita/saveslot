@@ -13,6 +13,7 @@
 // | `op`                          | operation number (09 §4.1); orders contributions                    |
 // | `event`                       | `seq` of the op's `write.base`; item references use it              |
 // | `WriteOp.seen`                | `ops/<i>/target.ver.op` (absent: the version just before `op`)      |
+// | `seenCurrent`                 | `ops/<i>/target.ver.current`: the op saw the state just before it   |
 // | `WriteOp.valid`               | `ops/<i>/valid` (`corrected_span` for both ends)                    |
 // | `WriteOp.fields[f]`           | `ops/<i>/set/f` with its evidence (`sources/f/<k>` `source` rows);   |
 // |                               | `explicit` = `evidence_by_field` pointed at evidence for `f`        |
@@ -87,6 +88,12 @@ interface OpBase {
 export interface WriteOp extends OpBase {
   readonly kind: "write";
   readonly seen?: OpNumber;
+  /**
+   * `seen` was the row's current version when written: the op saw the state just before it,
+   * whatever came after `seen` with no new version (a corroboration, a deletion's restatement).
+   * Judged at the write and recorded; a replay takes it as it is.
+   */
+  readonly seenCurrent?: true;
   /** State tables only. Absent on a state table means `from: now`, `to: next_change`. */
   readonly valid?: ValidParam;
   readonly validSources?: readonly SourceKey[];
@@ -98,6 +105,7 @@ export interface WriteOp extends OpBase {
 export interface RevokeOp extends OpBase {
   readonly kind: "revoke";
   readonly seen?: OpNumber;
+  readonly seenCurrent?: true;
   /** State tables: the revoked interval. Absent: the whole row or entity (a pure decision). */
   readonly valid?: { readonly from: FromParam; readonly to: ToParam };
   /** Sources of the interval (the user's words); absent means the revoke has no evidence. */
@@ -111,6 +119,7 @@ export interface UndoOp extends OpBase {
   readonly includeLater?: boolean;
   /** `ops/<i>/target.ver.op`, explicit; an `undo` may carry it (needed for `acknowledge`). */
   readonly seen?: OpNumber;
+  readonly seenCurrent?: true;
   readonly acknowledge?: readonly ["overwrite"];
 }
 

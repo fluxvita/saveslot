@@ -41,7 +41,13 @@ function write(
   op: number,
   fields: Record<string, string>,
   from: string,
-  o: { seen?: number; index?: number; ack?: boolean; explicit?: readonly string[] } = {},
+  o: {
+    seen?: number;
+    current?: boolean;
+    index?: number;
+    ack?: boolean;
+    explicit?: readonly string[];
+  } = {},
 ): JudgeInput {
   const index = o.index ?? 0;
   return {
@@ -52,6 +58,7 @@ function write(
     ruleset: 1,
     seen: o.seen ?? op - 1,
     seenExplicit: o.seen !== undefined,
+    ...(o.current ? { seenCurrent: true as const } : {}),
     valid: { from: { mode: "given", value: d(from) }, to: { mode: "open" } },
     now: d("11-05"),
     fields: Object.fromEntries(
@@ -145,6 +152,32 @@ function events(ctx: RowContext, inputs: readonly JudgeInput[]): StoredEvent[] {
 }
 
 describe("the record mapping", () => {
+  it("ver.current: written into the op's target when judged current, read back as seenCurrent", () => {
+    const ctx = ctxOf({ ...GROUPED, groups: [] });
+    const at = (current: boolean) => {
+      const inputs = [
+        write(10, { f4: "1" }, "10-01", {}),
+        write(20, { f4: "2" }, "10-01", { seen: 10, current }),
+      ];
+      const evs = events(ctx, inputs);
+      const head = evs.find((e) => e.header.type === "write.head" && e.header.seq === 20);
+      const back = decodeRecords(ctx, evs)[1];
+      return {
+        ver: (head?.blocks["ops/0/target"] as { ver?: unknown } | undefined)?.ver,
+        seenCurrent: back?.kind === "write" ? back.seenCurrent : "not a write",
+      };
+    };
+    expect(at(true)).toEqual({
+      ver: { op: 10, restore_count: 0, basis: "explicit", current: true },
+      seenCurrent: true,
+    });
+    // Not current: no key, and none read back.
+    expect(at(false)).toEqual({
+      ver: { op: 10, restore_count: 0, basis: "explicit" },
+      seenCurrent: undefined,
+    });
+  });
+
   it("a no-op field beside a change: its raw value is not kept, the record's no-op list is", () => {
     const ctx = ctxOf({ ...GROUPED, groups: [] });
     const inputs = [

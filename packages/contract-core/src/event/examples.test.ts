@@ -777,7 +777,7 @@ const _negatives = () => {
     today: "2026-11-10",
     ruleset_version: 1,
     policy_version: 1,
-    // @ts-expect-error `literal_checker` only on write.head and a writing item.resolved
+    // @ts-expect-error `literal_checker` only on write.head
     literal_checker: "literal@1",
   };
   const principalCtxToday: PrincipalCtx = {

@@ -12,6 +12,7 @@ import { JudgeError } from "./errors.ts";
 import { emptyState, judgeOp } from "./judge.ts";
 import type { JudgeInput, Judgement, TableShape } from "./model.ts";
 import type { RowState } from "./state.ts";
+import { versionsOf } from "./versions.fixture.ts";
 
 const NOW = "2026-11-05";
 
@@ -568,6 +569,7 @@ export function toInput(o: Op): JudgeInput {
         kind: "write",
         seen: o.seen ?? o.op - 1,
         seenExplicit: o.seen !== undefined,
+        ...(o.seenCurrent ? { seenCurrent: true as const } : {}),
         ...(o.valid !== undefined ? { valid: o.valid } : {}),
         now: o.now ?? NOW,
         fields,
@@ -580,6 +582,7 @@ export function toInput(o: Op): JudgeInput {
         kind: "revoke",
         seen: o.seen ?? o.op - 1,
         seenExplicit: o.seen !== undefined,
+        ...(o.seenCurrent ? { seenCurrent: true as const } : {}),
         ...(o.valid !== undefined ? { valid: o.valid } : {}),
         now: o.now ?? NOW,
       };
@@ -591,6 +594,7 @@ export function toInput(o: Op): JudgeInput {
         ...(o.includeLater ? { includeLater: true } : {}),
         seen: o.seen ?? o.op - 1,
         seenExplicit: o.seen !== undefined,
+        ...(o.seenCurrent ? { seenCurrent: true as const } : {}),
         ...(o.acknowledge !== undefined ? { acknowledge: true } : {}),
       };
     case "confirm":
@@ -627,6 +631,19 @@ export interface Judged {
  * Judges the log op by op, inserting the decisions; ops `judge` refuses are dropped. Returns the
  * steps that entered the log and the refusals, each with the ops before it.
  */
+/**
+ * A write, revoke or undo whose explicit `ver` is the row's current version, marked so. The version
+ * is the version table's: the latest step before it that changed a cell (versions.fixture.ts), so
+ * an existence item that changes nothing (a revoke over a stretch never written) makes none, as in
+ * the pipeline.
+ */
+function markCurrent(o: Op, steps: readonly Judged[]): Op {
+  if (o.kind !== "write" && o.kind !== "revoke" && o.kind !== "undo") return o;
+  const latest = versionsOf(steps.filter((x) => x.op.op < o.op)).at(-1);
+  if (o.seen === undefined || o.seen !== latest) return o;
+  return { ...o, seenCurrent: true };
+}
+
 export function judged(
   schema: TableSchema,
   ops: readonly Op[],
@@ -643,7 +660,10 @@ export function judged(
   let state = emptyState(table);
   const steps: Judged[] = [];
   const refused: { op: Op; reason: string; before: readonly Op[] }[] = [];
-  const enter = (o: Op) => {
+  const enter = (given: Op) => {
+    // An explicit `ver` that is the row's current version is marked so, here, at the write, as the
+    // pipeline does (09 §5.2 `ver.current`); judge and the reference take the mark.
+    const o = markCurrent(given, steps);
     const input = toInput(o);
     try {
       const r = judgeOp(state, input);

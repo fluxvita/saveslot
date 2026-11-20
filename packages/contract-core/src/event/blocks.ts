@@ -123,6 +123,11 @@ export interface VerRef {
   readonly op: OpNumber;
   readonly restore_count: number;
   readonly basis: VerBasis;
+  /**
+   * `true`: the row's current version when written (`explicit` and `fallback` only); the op saw the
+   * state just before it. Absent: it saw the state as of `op`.
+   */
+  readonly current?: true;
 }
 
 /** The version a premise declaration saw: no `external_key` basis (§6.8). */
@@ -159,11 +164,11 @@ export interface WriteCtxBlock extends SlotCtxBase {
 }
 
 /**
- * `ctx` (meta) of `item.resolved`: `literal_checker` only when the resolution triggers a write.
- * Whether it did is known from the operation's `write.base` events, not from this block.
+ * `ctx` (meta) of `item.resolved`: no `literal_checker`, written or not: the items a decision
+ * writes are carried, and carried items are not checked again (§5.7 `literal`).
  */
 export interface ResolveCtxBlock extends SlotCtxBase {
-  readonly literal_checker?: string;
+  readonly literal_checker?: never;
 }
 
 /** `ctx` (meta) of the other slot head events (`schema.draft_submitted`, `deletion.*`). */
