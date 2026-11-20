@@ -113,6 +113,60 @@ describe("a page over the budget", () => {
   });
 });
 
+describe("a sql result over the budget", () => {
+  /** The sql sample of reads.samples.json, as a running service gave it. */
+  const SQL = (
+    JSON.parse(readFileSync(new URL("./reads.samples.json", import.meta.url), "utf8")) as Record<
+      string,
+      { result: R }
+    >
+  )["sql"]?.result as R;
+  /** A sql result of `n` rows, each with a long note. */
+  const rows = (n: number): R => {
+    const q = structuredClone(SQL);
+    return {
+      ...q,
+      rows: Array.from({ length: n }, (_, i) => [
+        "food",
+        "4.5",
+        "3",
+        `note ${i} ${"x".repeat(200)}`,
+      ]),
+    };
+  };
+
+  it("is cut where the budget ends, asked for again with that many as max_rows; no cursor, the rest said", async () => {
+    const budget = 3000;
+    const asked: number[] = [];
+    const out = await fit("saveslot_sql", rows(50), budget, async (n) => {
+      asked.push(n);
+      return { ...rows(n), next_cursor: CURSOR };
+    });
+    const shown = asked[0] ?? 0;
+    expect(asked).toHaveLength(1);
+    expect(shown).toBeGreaterThan(0);
+    expect(shown).toBeLessThan(50);
+    expect(out["truncated"]).toEqual({ shown });
+    const text = renderResult("saveslot_sql", out);
+    expect(text.length).toBeLessThanOrEqual(budget);
+    expect(text).not.toContain(CURSOR);
+    expect(text).toContain(`Showing the first ${shown} rows; there are more.`);
+  });
+
+  it("one row larger than the budget: too large, to select less in the statement", async () => {
+    const error = await fit("saveslot_sql", rows(3), 100, async () => {
+      throw new Error("not asked for none");
+    }).catch((e: { code: string; detail: Record<string, unknown> }) => e);
+    expect(error).toMatchObject({
+      code: "too_large",
+      detail: { reason: "result_budget", narrow_by: ["sql"] },
+    });
+    expect(
+      renderError({ code: "too_large", ...(error as { detail: Record<string, unknown> }).detail }),
+    ).toContain("To read less: select fewer or shorter columns, or aggregate (sql).");
+  });
+});
+
 describe("a page of changes over the budget", () => {
   const changes = (n: number, total: number): R => {
     const h = JSON.parse(

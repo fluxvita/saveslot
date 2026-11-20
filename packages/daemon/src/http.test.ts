@@ -106,7 +106,7 @@ describe("HTTP's own", () => {
   it("an unknown route is 404 (route); a route of a later version is 501", async () => {
     const r = await http({ method: "GET", path: "/v1/nowhere", token: session });
     expect([r.status, err(r)["code"], err(r)["reason"]]).toEqual([404, "not_found", "route"]);
-    const later = await http({ method: "POST", path: "/v1/sql", token: session, body: "{}" });
+    const later = await http({ method: "POST", path: "/v1/deletions", token: session, body: "{}" });
     // The whole error: a route of a later version is the operation's, not a parameter's.
     expect([later.status, err(later)]).toEqual([
       501,
@@ -307,6 +307,43 @@ describe("HTTP's own", () => {
     ]);
   });
 
+  it("sql pages by max_rows and its signed cursor; a write since the first page expires it", async () => {
+    const post = (body: Record<string, unknown>) =>
+      http({ method: "POST", path: "/v1/sql", token: session, body: JSON.stringify(body) });
+    const page = async (body: Record<string, unknown>) => {
+      const r = await post(body);
+      expect(r.status).toBe(200);
+      return JSON.parse(r.body) as { rows: unknown[][]; next_cursor?: string };
+    };
+    const statement = {
+      sql: "SELECT note FROM expenses WHERE note IN ('bus', 'tea') ORDER BY note",
+      max_rows: 1,
+    };
+    const first = await page(statement);
+    expect(first.rows).toEqual([["bus"]]);
+    expect(first.next_cursor).toMatch(/^cur_/);
+    const second = await page({ ...statement, cursor: first.next_cursor });
+    expect(second.rows).toEqual([["tea"]]);
+    expect(second).not.toHaveProperty("next_cursor");
+    // The statement reads the tables as they are now: after a write, the first page's state is
+    // gone, and its later pages with it.
+    await driver(session, "write", {
+      sv: 1,
+      ops: [
+        { intent: "insert", table: "ledger.expenses", set: { date: "2026-11-17", note: "art" } },
+      ],
+    });
+    const expired = await post({ ...statement, cursor: first.next_cursor });
+    expect([expired.status, err(expired)["code"], err(expired)["reason"]]).toEqual([
+      410,
+      "handle_expired",
+      "expired",
+    ]);
+    // The kernel's position is the service's to give: a body naming it is refused.
+    const p = await post({ ...statement, position: "x" });
+    expect([p.status, err(p)["param"]]).toEqual([400, "position"]);
+  });
+
   it("every route of this version reaches its operation; every later one is 501", async () => {
     // A connection to rename, an item ID of the right form.
     const issued = JSON.parse(
@@ -346,6 +383,7 @@ describe("HTTP's own", () => {
       ["GET", "/v1/tables/expenses", undefined, 200],
       ["POST", "/v1/query", JSON.stringify({ table: "ledger.expenses" }), 200],
       ["POST", "/v1/history", JSON.stringify({ table: "ledger.expenses", row }), 200],
+      ["POST", "/v1/sql", JSON.stringify({ sql: "SELECT count(*) AS n FROM expenses" }), 200],
       ["GET", "/v1/pending", undefined, 200],
       // No such item: the operation answers (404 not_found, item), not the router.
       ["GET", `/v1/pending/${ITEM}`, undefined, 404],
@@ -382,7 +420,6 @@ describe("HTTP's own", () => {
       });
     }
     const later: [string, string][] = [
-      ["POST", "/v1/sql"],
       ["GET", "/v1/sources"],
       ["GET", "/v1/sources/s_1"],
       ["POST", "/v1/deletions/preview"],
@@ -537,7 +574,7 @@ describe("connections a response is sent on before the request arrived whole", (
     "a route of a later version with a body still coming: 501 and closed",
     async () => {
       const r = await raw([
-        head({ method: "POST", path: "/v1/sql", token: session, length: 8 * 1024 * 1024 }),
+        head({ method: "POST", path: "/v1/deletions", token: session, length: 8 * 1024 * 1024 }),
         "{",
       ]);
       expect(r.closed).toBe(true);

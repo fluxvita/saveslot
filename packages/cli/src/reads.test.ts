@@ -18,6 +18,7 @@ import {
   changesResult,
   periodOf,
   queryResult,
+  sqlResult,
   timelineResult,
 } from "./render/reads.ts";
 import { type Boundary, type Line, render } from "./render/text.ts";
@@ -125,6 +126,55 @@ describe("query (06 §4.7)", () => {
     const text = render(queryResult({ ...QUERY, total: 9, next_cursor: cursor }), terminal);
     expect(text).toContain("1 of 9 rows shown");
     expect(text).toContain(`next page: the same command with --cursor ${cursor}`);
+  });
+});
+
+describe("sql (06 §4.7)", () => {
+  const SQL = {
+    sv: { ledger: 2, health: 1 },
+    columns: [
+      { name: "category", type: "text" as const },
+      { name: "total", type: "quantity" as const, unit: "CNY" },
+      { name: "n", type: "integer" as const },
+    ],
+    rows: [
+      ["餐饮", "54", "3"],
+      ["12345", "35.5", null],
+    ],
+  };
+
+  it("the slots read, the columns with units, a line per row: a number column's text outside, a text column's inside", () => {
+    expect(render(sqlResult(SQL), terminal).split("\n")).toEqual([
+      "ledger schema v2, health schema v1 · 2 rows",
+      "category | total (「CNY」) | n",
+      "「餐饮」 | 54 | 3",
+      "「12345」 | 35.5 | —",
+    ]);
+  });
+
+  it("the marks over the rows read, at the head; a page: the next as an option", () => {
+    const cursor = `cur_abc.${"A".repeat(43)}`;
+    const lines = render(
+      sqlResult({
+        ...SQL,
+        marks_summary: {
+          disputed: 1,
+          awaiting: 0,
+          flagged: 0,
+          premise_changed: 0,
+          items: ["pi_7C2EAAAAAAAAAAAA"],
+        },
+        next_cursor: cursor,
+      }),
+      terminal,
+    ).split("\n");
+    expect(lines[1]).toBe("! among the rows read: 1 disputed (pi_7C2EAAAAAAAAAAAA)");
+    expect(lines.at(-1)).toBe(`next page: the same command with --cursor ${cursor}`);
+  });
+
+  it("a number column's cell that is no decimal text goes inside", () => {
+    const one = { ...SQL, rows: [["x", "1e9", "3"]] };
+    expect(render(sqlResult(one), terminal).split("\n")[2]).toBe("「x」 | 「1e9」 | 3");
   });
 });
 

@@ -247,6 +247,17 @@ describe("reads with a body", () => {
       body: { mode: "timeline", table: "health.runs", row: "r_1" },
     });
   });
+
+  it("sql posts its parameters, task in the header only", async () => {
+    const p = { sql: "SELECT count(*) AS n FROM runs WHERE date >= $1", params: ["2026-11-01"] };
+    expect(req(await sent(() => client.sql({ ...p, max_rows: 5, task: "t-2" })))).toEqual({
+      method: "POST",
+      url: "/v1/sql",
+      task: "t-2",
+      key: undefined,
+      body: { ...p, max_rows: 5 },
+    });
+  });
 });
 
 describe("pending and resolve", () => {

@@ -36,6 +36,8 @@ export const TEXTS = {
       "  slot remove <slot or sl_…> [--yes]   an empty slot: one nothing was ever written to",
       "  query <table> [--where 'field<op>value']… [--where-json <json>] [--order f[:desc]] [--fields a,b]",
       "        quote a condition with < or > in it, or the shell takes it as a redirection",
+      "  sql '<SELECT …>' [--param <value>]… [--max-rows <n>] [--at <moment>]",
+      "        tables and fields by name; each --param is $1, $2… in order, as text",
       "  history <table> <row or entity> | --key field=value … [--as-of <#seq or moment>] [--sources]",
       "  history changes <table> [<row or entity> | --key field=value …] --since <#seq, moment or my_last_read> [--until <#seq or moment>]",
       "  pending [list] [--slot s] [--type t] [--status open|resolved|superseded|all]",
@@ -221,6 +223,9 @@ export const TEXTS = {
 
   // query and history (06 §4.7)
   queryTableMissing: s("give the table: saveslot query <table> [--where 'field>value']…"),
+  sqlMissing: s("give one SELECT, quoted: saveslot sql '<SELECT …>' [--param <value>]…"),
+  maxRowsInvalid: s("--max-rows takes a whole number from 1"),
+  sqlNoLimit: s("sql takes --max-rows, not --limit"),
   orderBad: s("--order takes a field, with :asc or :desc after it if wanted"),
   validDuringBad: s("--valid-during takes <from>,<to>; leave <to> out for an open end"),
   detailBad: s("--detail takes concise or detailed"),

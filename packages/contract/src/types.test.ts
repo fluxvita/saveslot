@@ -15,6 +15,8 @@ import type {
   PendingDetailResult,
   QueryResult,
   ResolveResult,
+  SqlParams,
+  SqlResult,
   TimelineResult,
   WARNING_CODES,
   Warning,
@@ -80,6 +82,25 @@ const queryState = {
     },
   ],
 } satisfies QueryResult;
+
+// 04-contract-types §4.4, the `sql` example: the call and its result.
+const sqlCall = {
+  sql: "SELECT category, sum(amount) AS total FROM expenses WHERE date >= $1 GROUP BY 1 ORDER BY 2 DESC",
+  params: ["2026-11-01"],
+} satisfies SqlParams;
+const sqlResult = {
+  sv: { ledger: 1 },
+  columns: [
+    { name: "category", type: "text" },
+    { name: "total", type: "quantity", unit: "CNY" },
+  ],
+  rows: [
+    ["餐饮", "54"],
+    ["交通", "35"],
+  ],
+  total: 2,
+  marks_summary: { disputed: 1, awaiting: 0, flagged: 0, premise_changed: 0, items: ["pi_7C2E…"] },
+} satisfies SqlResult;
 
 // 04-contract-types §4.5, the `timeline` example.
 const timeline = {
@@ -303,6 +324,8 @@ describe("contract types", () => {
   it.each([
     ['"table": "ledger.expenses", "slot": "ledger", "sv": 1, "total": 1,', queryEvent],
     ['"table": "ledger.budgets", "slot": "ledger", "sv": 2, "total": 3,', queryState],
+    ['"sql": "SELECT category, sum(amount) AS total FROM expenses', sqlCall],
+    ['"sv": { "ledger": 1 }, "columns"', sqlResult],
     ['"mode": "timeline", "target"', timeline],
     ['"item_ver": "iv_4f81…", "type": "conflict", "status": "open"', conflictDetail],
     [

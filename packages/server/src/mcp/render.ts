@@ -50,6 +50,7 @@ import {
   type Part,
   render,
   renderJson,
+  renderTable,
   SHOWN_CHARS,
   t,
   time,
@@ -733,6 +734,74 @@ function query(r: R, now: Date): Line[] {
     ...pageOf(r, rows.length, () => t`rows`),
     ...remindersOf(r, now),
   ];
+}
+
+/** The marks over the rows a statement read (05 §6 `saveslot_sql`): how many, and where to look. */
+function sqlMarksOf(x: unknown): Line[] {
+  if (!isObj(x)) return [];
+  const counts: Part[][] = [];
+  for (const [k, label] of [
+    ["disputed", () => t`disputed`],
+    ["awaiting", () => t`awaiting confirmation`],
+    ["flagged", () => t`flagged`],
+    ["premise_changed", () => t`with a changed premise`],
+    ["possibly_affected", () => t`possibly affected since this connection read them`],
+  ] as const) {
+    const n = int(own(x, k));
+    if (n !== undefined && n > 0) counts.push(t`${num(n)} ${label()}`);
+  }
+  const lines: Line[] = [];
+  if (counts.length > 0) {
+    const items = arr(own(x, "items"));
+    const listed = items.length > 0 ? t` (${join(items.map(idOf), t`, `)})` : [];
+    lines.push(
+      t`⚠ Among the rows this result read: ${join(counts, t`, `)}${listed}. To look at them row by row, use saveslot_query.`,
+    );
+  }
+  if (own(x, "partially_deleted") === true) {
+    lines.push(
+      t`⚠ Part of the data at this instant has since been deleted; the result leaves it out.`,
+    );
+  }
+  return lines;
+}
+
+/**
+ * `saveslot_sql` (05 §4, §6): the slots read with their schema versions, the marks over the rows
+ * read, then the table inside one boundary: the columns (a quantity's with its unit) and a line
+ * per row. No next page over MCP (05 §3): when there are more rows, the text says so.
+ */
+function sql(r: R, now: Date): Table {
+  need(isObj(r["sv"]) && Array.isArray(r["columns"]) && Array.isArray(r["rows"]));
+  const columns = arr(r["columns"]).map(obj);
+  const rows = arr(r["rows"]);
+  need(rows.every((x) => Array.isArray(x) && x.length === columns.length));
+  need(columns.every((c) => typeof c["name"] === "string"));
+  const slots = Object.entries(obj(r["sv"])).map(([s, v]) => t`${tableOf(s)} schema v${count(v)}`);
+  const more = r["next_cursor"] !== undefined || isObj(r["truncated"]);
+  const total = int(r["total"]);
+  // Without a total the count shown must not read as all of them (05 §6).
+  const shown =
+    more && total === undefined ? t`the first ${num(rows.length)}` : ofTotal(rows.length, total);
+  return {
+    table: true,
+    lead: [t`${join(slots, t`, `)} · ${shown} rows`, ...sqlMarksOf(r["marks_summary"])],
+    header: columns.map((c) => {
+      const unit = str(c["unit"]);
+      return unit !== undefined ? `${String(c["name"])} (${unit})` : String(c["name"]);
+    }),
+    rows: rows as readonly (readonly unknown[])[],
+    tail: [
+      ...(more
+        ? [
+            total !== undefined
+              ? t`Showing the first ${num(rows.length)} of ${num(total)} rows. Add conditions or aggregate (max_rows is at most 1,000).`
+              : t`Showing the first ${num(rows.length)} rows; there are more. Add conditions or aggregate (max_rows is at most 1,000).`,
+          ]
+        : []),
+      ...remindersOf(r, now),
+    ],
+  };
 }
 
 /** A version's intent (04-contract-types §5.1 `VersionIntent`). */
@@ -1647,10 +1716,19 @@ function schemaDraft(r: R, now: Date): Line[] {
   return [...out, ...remindersOf(r, now), ...shortened];
 }
 
-type Renderer = (r: R, now: Date) => Line[] | { json: true; lead: Line[] };
+/** A table of stored data, inside one boundary between its lead and tail (`renderTable`). */
+interface Table {
+  readonly table: true;
+  readonly lead: Line[];
+  readonly header: readonly string[];
+  readonly rows: readonly (readonly unknown[])[];
+  readonly tail: Line[];
+}
+type Renderer = (r: R, now: Date) => Line[] | { json: true; lead: Line[] } | Table;
 const RENDER: ReadonlyMap<ToolName, Renderer> = new Map<ToolName, Renderer>([
   ["saveslot_catalog", catalog],
   ["saveslot_query", query],
+  ["saveslot_sql", sql],
   ["saveslot_history", history],
   ["saveslot_pending", pending],
   ["saveslot_write", write],
@@ -1672,7 +1750,9 @@ export function renderStrict(tool: ToolName, result: R, now: Date = new Date()):
   const f = RENDER.get(tool);
   if (f === undefined) throw new Error("no renderer");
   const out = f(result, now);
-  return Array.isArray(out) ? render(out) : renderJson(out.lead, result);
+  if (Array.isArray(out)) return render(out);
+  if ("table" in out) return renderTable(out.lead, out.header, out.rows, out.tail);
+  return renderJson(out.lead, result);
 }
 
 /** A tool's result as text; JSON as written when its renderer cannot give it. */
@@ -1706,6 +1786,10 @@ const NEXT: ReadonlyMap<string, () => Part[]> = new Map(
       t`This connection may not do this; the user can use a connection that may.`,
     not_in_this_version: () => t`This is not in this version of saveslot.`,
     too_large: () => t`Ask for less.`,
+    sql_rejected: () =>
+      t`Rewrite the statement where it says (saveslot_catalog has the tables and fields), and send it again.`,
+    sql_timeout: () =>
+      t`The statement took too long: add conditions, a shorter date range, or aggregate, and send it again.`,
     unavailable: () => t`saveslot is not ready; try again shortly.`,
     internal: () =>
       t`An error inside saveslot (the incident is logged); whether this call took effect is not known: read the state it concerns before deciding whether to send it again.`,
@@ -1736,6 +1820,7 @@ const NARROW: ReadonlyMap<string, () => Part[]> = new Map([
   ["slot", () => t`one slot at a time (slot)`],
   ["type", () => t`one type of item at a time (type)`],
   ["level", () => t`level "table" for the tables you need, instead of the whole document`],
+  ["sql", () => t`select fewer or shorter columns, or aggregate (sql)`],
 ]);
 
 /**
@@ -1922,6 +2007,22 @@ function errorLines(error: R, now: Date): Line[] {
       t`Revoked: ${tableOf(tg["table"])}${which !== undefined ? t` ${as(String(which), id)}` : []}`,
     );
   }
+  // sql_rejected: where in the statement (04-contract-types §9 `line`, `node`) and the service's
+  // hint. The hint is the kernel's own text today, but nothing here tells it from a stored string,
+  // so inside the boundary like a detail's `suggestion`; a node may be a name the caller wrote.
+  if (c === "sql_rejected") {
+    const at = [
+      ...(int(error["line"]) !== undefined ? [t`line ${count(error["line"])}`] : []),
+      ...(error["node"] !== undefined ? [t`at ${untrusted(String(error["node"]))}`] : []),
+    ];
+    if (at.length > 0) lines.push(t`Where: ${join(at, t`, `)}`);
+    if (error["suggestion"] !== undefined) {
+      lines.push(t`Suggestion: ${stored(String(error["suggestion"]))}`);
+    }
+  }
+  if (c === "sql_timeout" && int(error["elapsed_ms"]) !== undefined) {
+    lines.push(t`Stopped after ${count(error["elapsed_ms"])} ms`);
+  }
   // item_closed: how it ended, as the item's details give it (04-contract-types §9).
   if (error["code"] === "item_closed") lines.push(...closedLines(error));
   // A complete correct example the service gives (04-contract-types §9): it may hold the
@@ -2020,6 +2121,9 @@ const NOT_TAKEN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
 function ownNext(error: R): Part[] | undefined {
   const c = error["code"];
   const reason = error["reason"];
+  if (c === "sql_rejected" && error["use"] === "history") {
+    return t`saveslot_sql reads the record as it is now (at a business time with at); for what was recorded before, use saveslot_history.`;
+  }
   if (c === "revoked" && int(error["revoked_by"]) !== undefined) {
     return t`It was revoked at ${op(error["revoked_by"])}; to restore it, use revert: {undo: ${count(error["revoked_by"])}}.`;
   }

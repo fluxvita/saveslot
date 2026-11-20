@@ -202,6 +202,7 @@ const ROUTES: readonly Route[] = [
   }),
   route("POST", "/v1/query", "query", { operation: "query", body: true }),
   route("POST", "/v1/history", "history", { operation: "history", body: true }),
+  route("POST", "/v1/sql", "sql", { operation: "sql", body: true }),
   route("GET", "/v1/pending", "pending", { operation: "pending" }),
   route("GET", "/v1/pending/{}", "pending_item", {
     operation: "pending",
@@ -237,7 +238,6 @@ const ROUTES: readonly Route[] = [
   route("GET", "/v1/log/end", "log_end", { operation: "log.end" }),
   route("GET", "/v1/export", "export", { operation: "export" }),
   // Later versions.
-  route("POST", "/v1/sql", "sql"),
   route("GET", "/v1/sources", "sources"),
   route("GET", "/v1/sources/{}", "source"),
   route("POST", "/v1/deletions/preview", "deletion_preview"),

@@ -240,7 +240,7 @@ const clean: fc.Arbitrary<string> = fc.constantFrom(...SCOPES).chain((s) => {
   const unordered = select(true).map((q) => q.replace(/ ORDER BY .*$/, ""));
   const sub = unordered.map((q) => `SELECT * FROM (${q}) AS z`);
   // A branch of its own, not half of `sub`'s: at half it came to about 4% of the statements, two
-  // deviations above the 3% the property test asks of each form (#75).
+  // deviations above the 3% the property test asks of each form.
   const cte = unordered.map((q) => `WITH c AS (${q}) SELECT * FROM c`);
   const setop = fc
     .tuple(numberQuery, fc.constantFrom("UNION", "UNION ALL", "INTERSECT", "EXCEPT"), numberQuery)

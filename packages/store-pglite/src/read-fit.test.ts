@@ -1,7 +1,7 @@
 // A read kept to what its caller can give (kernel/ops/read.ts `Fit`): computed once more with the
 // limit the caller keeps, in the same read transaction; only that read is recorded, with exactly
-// the rows kept, and the next page starts at the first entry not kept. Keeping nothing records
-// nothing; an amount the read does not have is the caller's fault.
+// the rows kept, and the next page starts at the first entry not kept (`sql` by its `max_rows`).
+// Keeping nothing records nothing; an amount the read does not have is the caller's fault.
 
 import {
   catalog,
@@ -9,11 +9,13 @@ import {
   createTenant,
   type Fit,
   history,
+  loadRsql,
   NothingKept,
   pending,
   query,
   readsList,
   schemaDraft,
+  sql,
   write,
 } from "@fluxvita/saveslot-kernel";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -45,6 +47,7 @@ async function queryReads() {
 }
 
 beforeAll(async () => {
+  await loadRsql();
   s = await openReusable("saveslot-read-fit-");
 }, T);
 afterAll(async () => {
@@ -106,6 +109,34 @@ describe("a read kept to k entries", () => {
         position: kept.next_position,
       });
       expect(next.rows.map((r) => r.row)).toEqual(all.rows.slice(4).map((r) => r.row));
+    },
+    T,
+  );
+
+  it(
+    "sql: computed once more with the k rows kept as max_rows; one read recorded; keeping none records none",
+    async () => {
+      const statement = { sql: "SELECT note FROM expenses ORDER BY note", max_rows: 10 };
+      const all = await sql(s.store, ctx(), statement);
+      const sqlReads = async () =>
+        (await readsList(s.store, ctx(), { limit: 200 })).reads.filter((x) => x.operation === "sql")
+          .length;
+      const before = await sqlReads();
+      const seen: number[] = [];
+      const kept = await sql(s.store, ctx(), statement, {
+        fit: (r) => {
+          seen.push((r as { rows: unknown[] }).rows.length);
+          return 4;
+        },
+      });
+      expect(seen).toEqual([10]);
+      expect(kept.rows).toEqual(all.rows.slice(0, 4));
+      expect(kept.next_position).toBeDefined();
+      expect(await sqlReads()).toBe(before + 1);
+      await expect(sql(s.store, ctx(), statement, { fit: () => 0 })).rejects.toBeInstanceOf(
+        NothingKept,
+      );
+      expect(await sqlReads()).toBe(before + 1);
     },
     T,
   );

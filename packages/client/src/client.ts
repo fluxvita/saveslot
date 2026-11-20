@@ -51,6 +51,8 @@ import type {
   SchemaDraftResult,
   SlotsRemoveParams,
   SlotsRemoveResult,
+  SqlParams,
+  SqlResult,
   TimelineParams,
   TimelineResult,
 } from "@fluxvita/saveslot-contract";
@@ -123,6 +125,7 @@ export interface Client {
   catalog(p: CatalogParams & { level: "schema" }): Promise<CatalogSchema>;
   catalog(p: CatalogParams): Promise<CatalogResult>;
   query(p: QueryParams): Promise<QueryResult>;
+  sql(p: SqlParams): Promise<SqlResult>;
   history(p: TimelineParams): Promise<TimelineResult>;
   history(p: AsOfParams): Promise<AsOfResult>;
   history(p: ChangesParams): Promise<ChangesResult>;
@@ -240,6 +243,7 @@ export function createClient(o: ClientOptions): Client {
   return {
     catalog: catalog as Client["catalog"],
     query: async (p) => withBody("POST", "/v1/query", p) as Promise<QueryResult>,
+    sql: async (p) => withBody("POST", "/v1/sql", p) as Promise<SqlResult>,
     history: (async (p: HistoryParams) => withBody("POST", "/v1/history", p)) as Client["history"],
     pending: pending as Client["pending"],
     resolve: async (p) => {

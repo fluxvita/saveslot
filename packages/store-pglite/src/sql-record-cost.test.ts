@@ -5,7 +5,7 @@
 // that cannot be read by row) gets no statement for any of its references. The inputs are the
 // review's: a table of 48 rows, a LIMIT of 1 on the query, and a product of the same table in a
 // subquery of its WHERE. What is asserted is which statements the call gives the database, not
-// how long they take: a deadline met or missed says how fast the machine was (#70). The deadline
+// how long they take: a deadline met or missed says how fast the machine was. The deadline
 // itself, also when the record finds it spent, is sql-timeout.test.ts's.
 
 import { loadRsql } from "@fluxvita/saveslot-kernel";

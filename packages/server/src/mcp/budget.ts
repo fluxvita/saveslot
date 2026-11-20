@@ -27,7 +27,7 @@ type R = Record<string, unknown>;
 
 /** The list a tool's result is a page of, if it is one. */
 function listOf(tool: ToolName, r: R): string | undefined {
-  if (tool === "saveslot_query") return "rows";
+  if (tool === "saveslot_query" || tool === "saveslot_sql") return "rows";
   if (tool === "saveslot_history")
     return r["mode"] === "as_of" ? "rows" : r["mode"] === "changes" ? "changes" : "entries";
   if (tool === "saveslot_pending" && r["id"] === undefined) return "items";
@@ -159,6 +159,9 @@ function narrowBy(tool: ToolName, r: R, page: boolean): string[] {
   switch (tool) {
     case "saveslot_query":
       return page ? ["fields"] : ["fields", "where", "valid_during", "limit"];
+    // A row too long to show: the statement itself selects less.
+    case "saveslot_sql":
+      return ["sql"];
     case "saveslot_history":
       return r["mode"] === "as_of"
         ? ["valid_at"]

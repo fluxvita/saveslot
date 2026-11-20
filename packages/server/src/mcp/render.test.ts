@@ -14,6 +14,7 @@ import {
   type InputMarkKey,
   MARK_KEYS,
   type MarkKey,
+  type SqlResult,
 } from "@fluxvita/saveslot-contract";
 import { describe, expect, it } from "vitest";
 import { renderError, renderResult, renderStrict } from "./render.ts";
@@ -145,6 +146,7 @@ const TAKEN: Record<string, Sample> = (() => {
     pick(reads, "query-notices"),
     pick(reads, "history-changes-event"),
     pick(reads, "history-changes-state"),
+    pick(reads, "sql"),
   ]);
 })();
 
@@ -822,5 +824,22 @@ describe("every mark of the contract has a text (05 §4.2)", () => {
   };
   it.each([...INPUT_MARK_KEYS])("input_marks.%s", (k) => {
     expect(shown(k)).toBe(true);
+  });
+
+  // saveslot_sql's summary over the rows it read: the input marks and two of its own.
+  const SUMMARY: Record<keyof NonNullable<SqlResult["marks_summary"]>, unknown> = {
+    ...INPUT,
+    possibly_affected: 1,
+    partially_deleted: true,
+  };
+  const sq = TAKEN["sql"] as Sample;
+  const sqlRendered = (m: R) =>
+    renderResult(sq.tool, { ...sq.result, marks_summary: m }).replace(
+      /untrusted-data-[0-9a-f]{32}/g,
+      "N",
+    );
+  it.each(Object.keys(SUMMARY) as (keyof typeof SUMMARY)[])("sql marks_summary.%s", (k) => {
+    const base = k === "items" ? { ...none, disputed: 1 } : none;
+    expect(sqlRendered({ ...base, [k]: SUMMARY[k] })).not.toBe(sqlRendered(base));
   });
 });

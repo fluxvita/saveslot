@@ -178,6 +178,35 @@ export function contractSuite(
     });
   });
 
+  it("sql: one SELECT over the tables by name, a value as $1; the read recorded as sql", async () => {
+    const { session } = get();
+    const driver = call;
+    const r = result(
+      await driver(reader, "sql", {
+        sql: "SELECT note, count(*) AS n FROM expenses WHERE date >= $1 GROUP BY note ORDER BY note",
+        params: ["2026-11-01"],
+      }),
+    );
+    expect(r).toMatchObject({
+      sv: { ledger: 1 },
+      columns: [
+        { name: "note", type: "text" },
+        { name: "n", type: "integer" },
+      ],
+      rows: [
+        ["bus", "1"],
+        ["tea", "1"],
+      ],
+    });
+    expect(r).not.toHaveProperty("next_cursor");
+    // Refused before it runs: a statement that is not a SELECT.
+    expect(await driver(reader, "sql", { sql: "DELETE FROM expenses" })).toEqual({
+      error: expect.objectContaining({ code: "sql_rejected" }),
+    });
+    const reads = result(await driver(session, "reads.list", { limit: 1 }));
+    expect((reads["reads"] as { operation: string }[])[0]).toMatchObject({ operation: "sql" });
+  });
+
   it("what a credential may not do: insufficient_scope, with the scope needed", async () => {
     const driver = call;
     expect(await driver(reader, "write", { sv: 1, ops: [] })).toEqual({

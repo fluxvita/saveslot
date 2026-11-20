@@ -17,6 +17,7 @@ import {
   QUERY,
   RESOLVE,
   SCHEMA_DRAFT,
+  SQL,
   type Text,
   WRITE,
   WRITE_OP_FIELDS,
@@ -228,6 +229,36 @@ export const TOOLS: readonly Tool[] = [
         valid_during: ["2026-11-01", null],
         limit: 5,
         detail: "concise",
+        task: "weekly-review",
+      },
+    ],
+  },
+  {
+    name: "saveslot_sql",
+    operation: "sql",
+    scope: "saveslot.read",
+    description: SQL.description,
+    params: {
+      sql: { schema: str, text: SQL.params.sql, required: true },
+      params: {
+        schema: { type: "array", items: { type: ["string", "number", "boolean", "null"] } },
+        text: SQL.params.params,
+      },
+      max_rows: { schema: limit(1000), text: SQL.params.max_rows },
+      at: { schema: str, text: SQL.params.at },
+      task,
+    },
+    withheld: {
+      cursor:
+        "no next page over MCP: the text says there are more rows, to narrow or aggregate (05 §3)",
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    examples: [
+      { sql: "SELECT count(*) AS n FROM expenses" },
+      {
+        sql: "SELECT note, count(*) AS n FROM expenses WHERE date >= $1 GROUP BY 1 ORDER BY 2 DESC",
+        params: ["2026-11-01"],
+        max_rows: 20,
         task: "weekly-review",
       },
     ],

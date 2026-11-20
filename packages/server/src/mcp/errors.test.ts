@@ -3,8 +3,8 @@
 // give one): a write to a derived table, too many ops, an evidence segment and a request's
 // evidence too large, a conflict with two candidates and no candidate named, a resolve of an item
 // resolved already, a write to a revoked row, a slot not found, a derived table refreshed while
-// paged, two premises of one op on the same record, a premise on a past version. Update the
-// golden files with `pnpm exec vitest run packages/server/src/mcp/errors.test.ts -u`.
+// paged, two premises of one op on the same record, a premise on a past version, a statement
+// refused for CURRENT_DATE and one for FOR SYSTEM_TIME. Update the golden files with `pnpm exec vitest run packages/server/src/mcp/errors.test.ts -u`.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -86,6 +86,13 @@ describe("refusals as text: what the samples do not show", () => {
   it("internal: whether the call took effect is not known; read before sending it again", () => {
     expect(text({ code: "internal", incident: "inc-1" })).toContain(
       "An error inside saveslot (the incident is logged); whether this call took effect is not known: read the state it concerns before deciding whether to send it again.",
+    );
+  });
+
+  it("sql_timeout: how long it ran, and how to ask for less", () => {
+    const out = renderError({ code: "sql_timeout", elapsed_ms: 5000 }, NOW);
+    expect(out).toContain(
+      "Refused: sql_timeout\nStopped after 5000 ms\nThe statement took too long",
     );
   });
 

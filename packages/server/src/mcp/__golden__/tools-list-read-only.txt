@@ -50,13 +50,13 @@
   },
   {
     "name": "saveslot_query",
-    "description": "Read data by table, conditions, order and count, optionally by business time (`valid_at` / `valid_during`). Use it when the user asks about records in a table (a day, a period, a category); also read a row with it before changing that row. It returns each row's `ver`: bring it back when you change that row. The marks in the result give a row's state (disputed, awaiting confirmation, and so on). To see how a row came to be as it is, use saveslot_history.",
+    "description": "Read data by table, conditions, order and count, optionally by business time (`valid_at` / `valid_during`). Use it when the user asks about records in a table (a day, a period, a category); also read a row with it before changing that row. It returns each row's `ver`: bring it back when you change that row. The marks in the result give a row's state (disputed, awaiting confirmation, and so on). For aggregates and joins, use saveslot_sql. To see how a row came to be as it is, use saveslot_history.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "table": {
           "type": "string",
-          "description": "The table to read. One table at a time."
+          "description": "The table to read. One table at a time. To join tables, use saveslot_sql."
         },
         "where": {
           "type": "array",
@@ -87,7 +87,7 @@
             ],
             "additionalProperties": false
           },
-          "description": "Conditions, all of which must hold: `{field, op, value}`. For a field with a unit, write `value` as `{value, unit}`. For an \"or\", use `in`."
+          "description": "Conditions, all of which must hold: `{field, op, value}`. For a field with a unit, write `value` as `{value, unit}`. For an \"or\", use `in`. Or use saveslot_sql."
         },
         "order": {
           "type": "array",
@@ -178,6 +178,53 @@
       },
       "required": [
         "table"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "saveslot_sql",
+    "description": "Read-only SQL, one SELECT: for joins, aggregates and time windows. Tables and fields by name. NOW() is not taken: for \"today\" write saveslot_today() (saveslot_now() for the moment), which go by `at`. The result has no `ver`. To change a row, read it first with saveslot_query. To look back at what was recorded when, use saveslot_history.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sql": {
+          "type": "string",
+          "description": "One SELECT. Tables and fields by name; no NOW(); a state table by business time with `FOR VALID_TIME AS OF …`."
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          },
+          "description": "The values of `$1`, `$2` and so on, in order. Every value the user gave goes here, never into the `sql` text. A quantity as its number (a string) in its column's unit."
+        },
+        "max_rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "At most how many rows to return. Default 100, at most 1,000. When there are more, the result says so: add conditions or aggregate."
+        },
+        "at": {
+          "type": "string",
+          "description": "The evaluation instant: \"today\", and which stretch a state table read without a time condition gives, go by it. Without it, now. Usually not given."
+        },
+        "task": {
+          "type": "string",
+          "description": "A short label for this task (such as `weekly-review`): use the same value for the reads and writes of one task, so that saveslot can match the versions you read with your later writes. Never put the user's words or data in it."
+        }
+      },
+      "required": [
+        "sql"
       ],
       "additionalProperties": false
     },

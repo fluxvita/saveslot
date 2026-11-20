@@ -77,6 +77,7 @@ export const httpDriver =
       catalog: { method: "GET", path: "/v1/slots" },
       query: { method: "POST", path: "/v1/query", body: true },
       history: { method: "POST", path: "/v1/history", body: true },
+      sql: { method: "POST", path: "/v1/sql", body: true },
       pending: { method: "GET", path: id !== undefined ? `/v1/pending/${id}` : "/v1/pending" },
       write: { method: "POST", path: "/v1/writes", body: true },
       resolve: { method: "POST", path: `/v1/pending/${id}/resolution`, body: true },

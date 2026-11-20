@@ -31,6 +31,7 @@ export const OPERATIONS = {
   catalog: { scope: "saveslot.read", paged: true },
   query: { scope: "saveslot.read", paged: true },
   history: { scope: "saveslot.read", paged: true },
+  sql: { scope: "saveslot.read", paged: true },
   pending: { scope: "saveslot.read", paged: true },
   write: { scope: "saveslot.write", write: true },
   // This version's decisions (conflict and awaiting items) are `saveslot.write`'s. The scope of a

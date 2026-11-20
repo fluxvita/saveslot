@@ -1,5 +1,5 @@
 // Read operations (docs/zh-CN/spec/04-contract-types.md §4): the row of a read result (§4.1),
-// `catalog` (§4.2), `query` (§4.3) and `history` (§4.5).
+// `catalog` (§4.2), `query` (§4.3), `sql` (§4.4) and `history` (§4.5).
 
 import type {
   CompiledPrecision,
@@ -289,6 +289,38 @@ export interface QueryResult extends CommonResult, PageResult {
   slot: SlotName;
   sv: Sv;
   rows: Row[];
+}
+
+// ---------------------------------------------------------------------------------------------
+// §4.4 `sql`
+
+/** 04-contract-types §4.4 `SqlParams`: one restricted `SELECT` (03-data-model/11-restricted-sql). */
+export interface SqlParams extends CommonParams {
+  /** One SELECT, tables and fields by name; no NOW(). */
+  sql: string;
+  /** Values of `$1`, `$2`…; a quantity as decimal text in the column's declared unit. */
+  params?: Array<string | number | boolean | null>;
+  /** Rows per page. Default 100, at most 1,000. */
+  max_rows?: number;
+  /** Evaluation instant; default the entry instant. */
+  at?: Instant;
+  /** Not on MCP. */
+  cursor?: Cursor;
+}
+
+/** 04-contract-types §4.4 `SqlResult`. No `ver`, no row IDs unless selected. */
+export interface SqlResult extends CommonResult {
+  /** The schema version of each slot the query reads. */
+  sv: Record<SlotName, Sv>;
+  columns: Array<{ name: string; type: FieldType | "unknown"; unit?: string }>;
+  /** One array per row, in the order of `columns`; numbers of every kind as decimal text. Untrusted. */
+  rows: Array<Array<string | number | boolean | null>>;
+  /** When it can be had cheaply. */
+  total?: number;
+  next_cursor?: Cursor;
+  truncated?: { shown: number; total?: number };
+  /** Over the row versions the query read. */
+  marks_summary?: InputMarks & { possibly_affected?: number; partially_deleted?: true };
 }
 
 // ---------------------------------------------------------------------------------------------

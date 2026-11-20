@@ -10,6 +10,7 @@ import {
   type FieldResultCode,
   type PremiseReason,
   type QueryResult,
+  type SqlResult,
   type TimelineResult,
   VERSION_INTENTS,
 } from "@fluxvita/saveslot-client";
@@ -198,8 +199,11 @@ function marksOf(m: unknown): { inline: Part[][]; below: Line[] } {
   return { inline, below };
 }
 
-/** Input marks of a derived row (05 §4.2): the counts, and the open items among them. */
-function inputMarksOf(x: unknown): Part[] {
+/**
+ * Input marks (05 §4.2): the counts, and the open items among them; `among` names what they are
+ * among (a derived row's inputs, the rows a statement read).
+ */
+function inputMarksOf(x: unknown, among: () => Part[] = () => t`its inputs`): Part[] {
   if (!isObj(x)) return [];
   const counts: Part[][] = [];
   for (const [k, label] of [
@@ -219,7 +223,7 @@ function inputMarksOf(x: unknown): Part[] {
           t`, `,
         )})`
       : [];
-  return counts.length > 0 ? t`! among its inputs: ${join(counts, t`, `)}${listed}` : [];
+  return counts.length > 0 ? t`! among ${among()}: ${join(counts, t`, `)}${listed}` : [];
 }
 
 /** One row of a read: its ID and ver, its period, its values, its marks. */
@@ -276,6 +280,35 @@ export function queryResult(r: QueryResult): Line[] {
   return [
     t`${tableOf(r.table)} · ${name(r.slot)} schema v${count(r.sv)} · ${num(rows.length)} rows`,
     ...rowsOf(rows),
+    ...pageOf(r as unknown as R, rows.length, () => t`rows`),
+    ...warningsAndNotices(r),
+  ];
+}
+
+const NUMERIC: ReadonlySet<string> = new Set(["integer", "decimal", "quantity"]);
+
+/**
+ * `saveslot sql` (06 §4.7): a compact table. The slots read and their schema versions, the marks
+ * over the rows read, the columns (a quantity's with its unit), a line per row, the page. A
+ * number column's decimal text is shown as a number when it is one; every other cell is a value,
+ * inside.
+ */
+export function sqlResult(r: SqlResult): Line[] {
+  const rows = arr(r.rows);
+  const columns = arr(r.columns).map(obj);
+  const slots = Object.entries(obj(r.sv)).map(([s, v]) => t`${name(s)} schema v${count(v)}`);
+  const marks = inputMarksOf(r.marks_summary, () => t`the rows read`);
+  const head = columns.map((c) => {
+    const unit = str(c["unit"]);
+    return t`${name(String(c["name"] ?? ""))}${unit !== undefined ? t` (${untrusted(unit)})` : []}`;
+  });
+  const cell = (v: unknown, i: number): Part[] =>
+    typeof v === "string" && NUMERIC.has(String(columns[i]?.["type"])) ? [num(v)] : fieldValue(v);
+  return [
+    t`${join(slots, t`, `)} · ${num(rows.length)} rows`,
+    ...(marks.length > 0 ? [marks] : []),
+    join(head, t` | `),
+    ...rows.map((x) => join(arr(x).map(cell), t` | `)),
     ...pageOf(r as unknown as R, rows.length, () => t`rows`),
     ...warningsAndNotices(r),
   ];

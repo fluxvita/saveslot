@@ -177,6 +177,33 @@ export const QUERY = {
   },
 } as const satisfies { description: Text; params: Record<string, Text> };
 
+export const SQL = {
+  description: [
+    "Read-only SQL, one SELECT: for joins, aggregates and time windows. Tables and fields by name.",
+    'NOW() is not taken: for "today" write saveslot_today() (saveslot_now() for the moment), which go by `at`.',
+    "The result has no `ver`.",
+    { text: "To change a row, read it first with saveslot_query.", needs: "saveslot_query" },
+    {
+      text: "To look back at what was recorded when, use saveslot_history.",
+      needs: "saveslot_history",
+    },
+  ],
+  params: {
+    sql: [
+      "One SELECT. Tables and fields by name; no NOW(); a state table by business time with `FOR VALID_TIME AS OF …`.",
+    ],
+    params: [
+      "The values of `$1`, `$2` and so on, in order. Every value the user gave goes here, never into the `sql` text. A quantity as its number (a string) in its column's unit.",
+    ],
+    max_rows: [
+      "At most how many rows to return. Default 100, at most 1,000. When there are more, the result says so: add conditions or aggregate.",
+    ],
+    at: [
+      'The evaluation instant: "today", and which stretch a state table read without a time condition gives, go by it. Without it, now. Usually not given.',
+    ],
+  },
+} as const satisfies { description: Text; params: Record<string, Text> };
+
 export const HISTORY = {
   description: [
     "See how something came to be as it is now: every change, who made it, what the evidence was, and which tasks read it (`timeline`); what saveslot knew at a past moment, or at the time of a read or a task (`as_of`); what changed in a period (`changes`).",

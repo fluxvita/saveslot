@@ -1008,7 +1008,13 @@
           "timezone": "Asia/Shanghai",
           "kind": "base",
           "description": "monthly budget by category",
-          "profile": { "rows": 4, "time_range": { "from": "2026-10-01", "to": "2026-11-20" } },
+          "profile": {
+            "rows": 4,
+            "time_range": {
+              "from": "2026-10-01",
+              "to": "2026-11-20"
+            }
+          },
           "fields": [
             {
               "name": "category",
@@ -1046,7 +1052,10 @@
           "description": "one row per expense",
           "profile": {
             "rows": 1240000,
-            "time_range": { "from": "2026-01-02", "to": "2026-11-17" },
+            "time_range": {
+              "from": "2026-01-02",
+              "to": "2026-11-17"
+            },
             "scale": {
               "level": "beyond_tested",
               "comfortable_rows": 100000,
@@ -1112,7 +1121,13 @@
           "timezone": "Asia/Shanghai",
           "kind": "base",
           "description": "每次跑步一行",
-          "profile": { "rows": 132, "time_range": { "from": "2026-03-02", "to": "2026-11-08" } },
+          "profile": {
+            "rows": 132,
+            "time_range": {
+              "from": "2026-03-02",
+              "to": "2026-11-08"
+            }
+          },
           "fields": [
             {
               "name": "date",
@@ -1162,7 +1177,9 @@
           "timezone": "Asia/Shanghai",
           "kind": "derived",
           "description": "每周跑量与记录覆盖，周一起算。某一周没有行表示那一周没有任何跑步记录",
-          "profile": { "rows": 38 },
+          "profile": {
+            "rows": 38
+          },
           "fields": [
             {
               "name": "week_start",
@@ -1622,6 +1639,49 @@
       "until": 48,
       "total": 0,
       "changes": []
+    }
+  },
+  "sql": {
+    "tool": "saveslot_sql",
+    "result": {
+      "sv": {
+        "ledger": 1
+      },
+      "columns": [
+        {
+          "name": "category",
+          "type": "enum"
+        },
+        {
+          "name": "total",
+          "type": "quantity",
+          "unit": "km"
+        },
+        {
+          "name": "n",
+          "type": "integer"
+        },
+        {
+          "name": "tostring",
+          "type": "text"
+        }
+      ],
+      "rows": [["road", "11.4", "3", "tempo"], ["trail", "8", "1", "Café loop"]],
+      "marks_summary": {
+        "disputed": 1,
+        "awaiting": 0,
+        "flagged": 0,
+        "premise_changed": 0,
+        "items": ["pi_N2HZ0XC78AC250ZX"]
+      },
+      "notices": [
+        {
+          "code": "pending_items",
+          "slot": "ledger",
+          "count": 1,
+          "oldest_opened_at": "2026-11-20T10:04:18.775Z"
+        }
+      ]
     }
   }
 }

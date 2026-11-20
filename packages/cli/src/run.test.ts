@@ -515,6 +515,67 @@ describe("query", () => {
   });
 });
 
+describe("sql", () => {
+  const RESULT = { sv: { ledger: 1 }, columns: [{ name: "n", type: "integer" }], rows: [["2"]] };
+  const answering = () => {
+    answer = (_req, res) => json(res, 200, RESULT);
+  };
+
+  it("the statement, each --param as text in order, --max-rows, --at, --cursor", async () => {
+    answering();
+    seen.length = 0;
+    bodies.length = 0;
+    const cursor = `cur_abc.${"A".repeat(43)}`;
+    const r = await cli([
+      "sql",
+      "SELECT count(*) AS n FROM expenses WHERE date >= $1 AND amount > $2",
+      "--param",
+      "2026-11-01",
+      "--param",
+      "50",
+      "--max-rows",
+      "20",
+      "--at",
+      "2026-11-20T00:00:00Z",
+      "--cursor",
+      cursor,
+    ]);
+    expect(r.code).toBe(0);
+    expect(seen.map((x) => `${x.method} ${x.url}`)).toEqual(["POST /v1/sql"]);
+    expect(bodies[0]).toEqual({
+      sql: "SELECT count(*) AS n FROM expenses WHERE date >= $1 AND amount > $2",
+      params: ["2026-11-01", "50"],
+      max_rows: 20,
+      at: "2026-11-20T00:00:00Z",
+      cursor,
+    });
+    expect(r.out).toContain("ledger schema v1 · 1 rows");
+  });
+
+  it("--json: the result as the service gave it", async () => {
+    answering();
+    const r = await cli(["sql", "SELECT count(*) AS n FROM expenses", "--json"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual(RESULT);
+  });
+
+  it.each([
+    [["sql"], TEXTS.sqlMissing],
+    [["sql", "SELECT 1", "SELECT 2"], TEXTS.sqlMissing],
+    [["sql", "SELECT 1", "--max-rows", "0"], TEXTS.maxRowsInvalid],
+    [["sql", "SELECT 1", "--max-rows", "ten"], TEXTS.maxRowsInvalid],
+    [["sql", "SELECT 1", "--limit", "5"], TEXTS.sqlNoLimit],
+    [["sql", "SELECT 1", "--where", "a=1"], TEXTS.optionNotHere],
+  ])("%j: 2, nothing sent", async (argv, text) => {
+    answering();
+    seen.length = 0;
+    const r = await cli(argv);
+    expect(r.code).toBe(2);
+    expect(r.err).toBe(`${TEXTS.usageError(text)}\n`);
+    expect(seen).toEqual([]);
+  });
+});
+
 describe("history", () => {
   const TIMELINE = {
     mode: "timeline",

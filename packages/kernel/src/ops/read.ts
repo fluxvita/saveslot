@@ -54,7 +54,8 @@ const length = (x: unknown) => (Array.isArray(x) ? x.length : 0);
 
 /**
  * Computes a read in one read transaction, kept to what `fit` says: computed once more with the
- * limit it gives, or not at all when it keeps nothing. The entry is the one to record.
+ * page size it gives (the parameter `size`: `limit`, or `sql`'s `max_rows`), or not at all when it
+ * keeps nothing. The entry is the one to record.
  */
 async function measured<R, E>(
   store: TenantStore,
@@ -62,6 +63,7 @@ async function measured<R, E>(
   compute: (tx: ReadTx, params: unknown) => Promise<{ result: R; entry: E }>,
   count: Count<R>,
   fit: Fit | undefined,
+  size = "limit",
 ): Promise<{ result: R; entry: E }> {
   return store.read(async (tx) => {
     const first = await compute(tx, params);
@@ -74,7 +76,7 @@ async function measured<R, E>(
       throw new Error("a read's fit kept an amount the read does not have");
     }
     const asked = typeof params === "object" && params !== null ? params : {};
-    return compute(tx, { ...asked, limit: keep });
+    return compute(tx, { ...asked, [size]: keep });
   });
 }
 
@@ -209,7 +211,8 @@ export async function pending(
 /**
  * Reads `params` (a `SqlParams`) as `ctx.actor`: one restricted `SELECT` over the tables the call
  * can see. The statement timeout is `options.timeoutMs`, else the kernel's first value
- * (`SQL_TIMEOUT_MS`), and only on a store that enforces one.
+ * (`SQL_TIMEOUT_MS`), and only on a store that enforces one. `options.fit` keeps the page to what
+ * the caller can show: computed once more with that many rows as `max_rows`.
  */
 export async function sql(
   store: TenantStore,
@@ -218,23 +221,30 @@ export async function sql(
   options: {
     readonly timeoutMs?: number;
     readonly onDatabaseError?: (e: unknown) => void;
+    readonly fit?: Fit;
   } = {},
 ): Promise<SqlReadResult> {
   const timeoutMs =
     store.enforcesStatementTimeout === true ? (options.timeoutMs ?? SQL_TIMEOUT_MS) : undefined;
-  const { result, entry } = await store.read((tx) =>
-    sqlInTx(tx, {
-      actor: ctx.actor,
-      task: ctx.task,
-      now: ctx.now,
-      visibility: ctx.visibility,
-      params,
-      read: newReadId(),
-      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-      ...(options.onDatabaseError !== undefined
-        ? { onDatabaseError: options.onDatabaseError }
-        : {}),
-    }),
+  const { result, entry } = await measured(
+    store,
+    params,
+    (tx, p) =>
+      sqlInTx(tx, {
+        actor: ctx.actor,
+        task: ctx.task,
+        now: ctx.now,
+        visibility: ctx.visibility,
+        params: p,
+        read: newReadId(),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(options.onDatabaseError !== undefined
+          ? { onDatabaseError: options.onDatabaseError }
+          : {}),
+      }),
+    (r) => r.rows.length,
+    options.fit,
+    "max_rows",
   );
   readBufferOf(store).record(entry);
   return result;

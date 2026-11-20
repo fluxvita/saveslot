@@ -431,27 +431,79 @@ export function renderWithin(lines: readonly Line[], draw?: Draw): string {
   return renderParts(lines, draw).text;
 }
 
-function renderParts(lines: readonly Line[], draw?: Draw): { text: string; tags: number } {
+/** Lines read and checked: their parts, and how many are untrusted (a boundary each). */
+function readLines(lines: readonly Line[]): {
+  parts: { kind: Kind; text: string }[][];
+  tags: number;
+} {
   const parts = readParts(lines);
   check(parts);
   const tags = parts.reduce((k, l) => k + l.filter((p) => p.kind === "untrusted").length, 0);
-  const build = (n: string) =>
-    parts
-      .map((l) =>
-        l
-          .map((p) =>
-            p.kind === "untrusted"
-              ? (() => {
-                  const v = shown(p.text);
-                  const note = v.of !== undefined ? partNote(v.of) : "";
-                  return `<untrusted-data-${n}>${escapeText(v.text)}</untrusted-data-${n}>${note}`;
-                })()
-              : p.text,
-          )
-          .join(""),
+  return { parts, tags };
+}
+
+/** Read lines as text, each untrusted part inside a boundary numbered `n`. */
+function drawn(parts: readonly { kind: Kind; text: string }[][], n: string): string[] {
+  return parts.map((l) =>
+    l
+      .map((p) =>
+        p.kind === "untrusted"
+          ? (() => {
+              const v = shown(p.text);
+              const note = v.of !== undefined ? partNote(v.of) : "";
+              return `<untrusted-data-${n}>${escapeText(v.text)}</untrusted-data-${n}>${note}`;
+            })()
+          : p.text,
       )
-      .join("\n");
+      .join(""),
+  );
+}
+
+function renderParts(lines: readonly Line[], draw?: Draw): { text: string; tags: number } {
+  const { parts, tags } = readLines(lines);
+  const build = (n: string) => drawn(parts, n).join("\n");
   return { text: build(numberFor(build, tags, draw)), tags };
+}
+
+/**
+ * A table of stored data (05 §4 `saveslot_sql`, §5 «不嵌套»): `lead` and `tail` as lines, and
+ * between them the whole table inside one boundary, nothing in it wrapped again: the header and
+ * each row a line, each cell written as JSON as written (a string quoted, a number, true, false,
+ * null), the cells apart by ` | `. A string past SHOWN_CHARS shows its first part only; a line
+ * after the lead says so.
+ */
+export function renderTable(
+  lead: readonly Line[],
+  header: readonly string[],
+  rows: readonly (readonly unknown[])[],
+  tail: readonly Line[],
+  draw?: Draw,
+): string {
+  const before = readLines(lead);
+  const after = readLines(tail);
+  cut = { n: 0 };
+  let body: string;
+  try {
+    body = [header, ...rows].map((r) => r.map(escapeJson).join(" | ")).join("\n");
+  } finally {
+    const n = cut.n;
+    cut = undefined;
+    if (n > 0) {
+      before.parts.push([
+        {
+          kind: "static",
+          text: `${n} strings below show their first ${SHOWN_CHARS} characters only; this version reads no more of them over MCP: the whole values are read through the saveslot CLI or HTTP.`,
+        },
+      ]);
+    }
+  }
+  const build = (n: string) =>
+    [
+      ...drawn(before.parts, n),
+      `<untrusted-data-${n}>${body}</untrusted-data-${n}>`,
+      ...drawn(after.parts, n),
+    ].join("\n");
+  return `${UNTRUSTED_NOTICE}\n${build(numberFor(build, before.tags + after.tags + 1, draw))}`;
 }
 
 /** JSON as written (05 §5): the whole of it inside one boundary, with `lead` before it. */

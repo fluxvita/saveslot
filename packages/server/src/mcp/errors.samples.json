@@ -125,5 +125,23 @@
       "reason": "premise_historical_ver",
       "param": "ops/0/premises/0/ver"
     }
+  },
+  "error-sql-current-date": {
+    "error": {
+      "reason": "node",
+      "line": 1,
+      "node": "SQLValueFunction",
+      "suggestion": "use saveslot_today() or saveslot_now(); quote a column named like a keyword (\"user\")",
+      "code": "sql_rejected"
+    }
+  },
+  "error-sql-system-time": {
+    "error": {
+      "reason": "system_time",
+      "line": 1,
+      "node": "FOR SYSTEM_TIME",
+      "use": "history",
+      "code": "sql_rejected"
+    }
   }
 }

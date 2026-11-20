@@ -3,7 +3,8 @@
 // gave back (reads.samples.json): the pending list with items open, resolved and superseded; an
 // awaiting item with its current values by stretch; conflicts open, resolved, superseded, and on a
 // row revoked since; a timeline with a resolution and an undo, and one of a state table; a query
-// of a state table and of an event table; the catalog's list, and its tables of each kind. Update
+// of a state table and of an event table; the catalog's list, and its tables of each kind; a sql
+// result with a disputed row among those it read. Update
 // the golden files with `pnpm exec vitest run packages/server/src/mcp/reads.test.ts -u`.
 
 import { readFileSync } from "node:fs";
@@ -35,6 +36,50 @@ const B = "<untrusted-data-N>";
 const E = "</untrusted-data-N>";
 
 describe("reads as text: what the samples do not show", () => {
+  it("sql: the whole table inside one boundary; a cell's line break, bar and quote written as JSON; null as null", () => {
+    const odd = {
+      ...sample("sql"),
+      marks_summary: undefined,
+      notices: undefined,
+      rows: [
+        ["x | y", "1", "2", 'a\nb "c"'],
+        [null, null, "0", "null"],
+      ],
+    };
+    const out = text("saveslot_sql", odd);
+    expect(out.split(B).length - 1).toBe(1);
+    expect(out.split("\n").slice(1)).toEqual([
+      "ledger schema v1 · 2 rows",
+      `${B}"category" | "total (km)" | "n" | "tostring"`,
+      '"x | y" | "1" | "2" | "a\\u000ab \\"c\\""',
+      `null | null | "0" | "null"${E}`,
+    ]);
+  });
+
+  it("sql: more rows than shown, by max_rows or by the budget: said, with no cursor to page by", () => {
+    const base = { ...sample("sql"), notices: undefined };
+    const more = { ...base, next_cursor: `cur_abc.${"A".repeat(43)}` };
+    const out = text("saveslot_sql", more);
+    expect(out).not.toContain("cur_");
+    // Without a total, the count is not written as if it were all of them.
+    expect(out.split("\n")[1]).toBe("ledger schema v1 · the first 2 rows");
+    expect(out.split("\n").at(-1)).toBe(
+      "Showing the first 2 rows; there are more. Add conditions or aggregate (max_rows is at most 1,000).",
+    );
+    const cut = { ...base, truncated: { shown: 2 } };
+    expect(text("saveslot_sql", cut)).toContain("Showing the first 2 rows; there are more.");
+    // With one, the total.
+    const counted = text("saveslot_sql", { ...more, total: 5 });
+    expect(counted.split("\n")[1]).toBe("ledger schema v1 · 2 of 5 rows");
+    expect(counted.split("\n").at(-1)).toBe(
+      "Showing the first 2 of 5 rows. Add conditions or aggregate (max_rows is at most 1,000).",
+    );
+  });
+
+  it("sql: a row of another length than the columns is no shape the renderer knows", () => {
+    expect(() => renderStrict("saveslot_sql", { ...sample("sql"), rows: [["food"]] })).toThrow();
+  });
+
   it("how long an item has been open: minutes, hours, days from 48 hours", () => {
     const list = sample("pending-list");
     const item = (opened_at: string) => ({ ...(list["items"] as R[])[0], opened_at });

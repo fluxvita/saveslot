@@ -194,7 +194,7 @@ describe("MCP's own", () => {
         ...(writes.includes(t.name) ? { destructiveHint: false, idempotentHint: true } : {}),
       });
       expect(t.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
-      for (const absent of ["saveslot_sql", "saveslot_sources", "saveslot_delete"]) {
+      for (const absent of ["saveslot_sources", "saveslot_delete"]) {
         expect(JSON.stringify(t)).not.toContain(absent);
       }
     }
@@ -216,6 +216,7 @@ describe("MCP's own", () => {
     expect(tools.map((t) => t.name)).toEqual([
       "saveslot_catalog",
       "saveslot_query",
+      "saveslot_sql",
       "saveslot_history",
       "saveslot_pending",
     ]);

@@ -22,6 +22,7 @@ import {
   renameConnection,
   resolve,
   schemaDraft,
+  sql,
   write,
 } from "@fluxvita/saveslot-kernel";
 import { contractResult, type KernelCall, type Operation } from "./calls.ts";
@@ -72,6 +73,11 @@ function noticeRefs(operation: Operation, params: Obj, result: unknown): NoticeR
     case "query":
     case "history":
       return { tables: strs([params["table"]]) };
+    // The slots it read, by name: the result's `sv` has each.
+    case "sql": {
+      const sv = field(result, "sv");
+      return { slots: sv !== null && typeof sv === "object" ? Object.keys(sv) : [] };
+    }
     case "write":
       return {
         tables: strs(arr(field(result, "ops")).map((x) => field(field(x, "target"), "table"))),
@@ -186,6 +192,8 @@ export async function runOperation(o: {
           return query(store, ctx, params, fit);
         case "history":
           return history(store, ctx, params, fit);
+        case "sql":
+          return sql(store, ctx, params, fit !== undefined ? { fit } : {});
         case "pending":
           return pending(store, ctx, params, fit);
         case "write":

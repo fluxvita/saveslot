@@ -62,7 +62,13 @@ import {
   snippetLines,
 } from "./render/connections.ts";
 import { pendingDetail, pendingList, resolveResult } from "./render/pending.ts";
-import { asOfResult, changesResult, queryResult, timelineResult } from "./render/reads.ts";
+import {
+  asOfResult,
+  changesResult,
+  queryResult,
+  sqlResult,
+  timelineResult,
+} from "./render/reads.ts";
 import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
 import { type Boundary, id, type Line, render, t, untrusted, words } from "./render/text.ts";
 import { TEMPLATES, templateDocument } from "./templates.ts";
@@ -103,6 +109,9 @@ const OWN_OPTIONS = {
   apply: { type: "boolean" },
   lang: { type: "string" },
   host: { type: "string", multiple: true },
+  param: { type: "string", multiple: true },
+  "max-rows": { type: "string" },
+  at: { type: "string" },
   output: { type: "string", short: "o" },
   "after-seq": { type: "string" },
   "include-pending-deletion": { type: "boolean" },
@@ -899,6 +908,30 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
       },
       detailNotYet,
     ),
+  ],
+  [
+    "sql",
+    command(["param", "max-rows", "at"], async (o, client) => {
+      const [statement, ...extra] = o.args;
+      if (statement === undefined || extra.length > 0) throw new UsageError(TEXTS.sqlMissing);
+      // Rows per page are the contract's max_rows (06 §4.7): --limit is not taken for them.
+      if (o.limit !== undefined) throw new UsageError(TEXTS.sqlNoLimit);
+      const maxRows = ownString(o, "max-rows");
+      if (maxRows !== undefined && !/^[1-9][0-9]{0,8}$/.test(maxRows))
+        throw new UsageError(TEXTS.maxRowsInvalid);
+      // Each --param as text, in order: the service reads it as the type its use gives $n. A
+      // boolean or a NULL is written in the statement itself.
+      const params = ownList(o, "param");
+      const at = ownString(o, "at");
+      const r = await (await client()).sql({
+        sql: statement,
+        ...(params.length > 0 ? { params } : {}),
+        ...(maxRows !== undefined ? { max_rows: Number(maxRows) } : {}),
+        ...(at !== undefined ? { at } : {}),
+        ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
+      });
+      return { json: r, lines: sqlResult(r) };
+    }),
   ],
   [
     "history",
