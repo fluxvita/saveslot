@@ -86,7 +86,7 @@
 一条命令（细则见 3.3）：
 
 ```
-$ npm install -g @fluxvita/saveslot    # 一个包装好 CLI 与 saveslot 服务；需要 Node 24 及以上
+$ npm install -g @fluxvita/saveslot    # 一个包装好 CLI 与 saveslot 服务；需要 Node 24.22.1 及以上（26 系列 26.12.1 及以上）
 $ saveslot setup
 [1/5] 已创建 ~/.saveslot（0700）
 [2/5] saveslot 服务已在后台启动 · pid 4211

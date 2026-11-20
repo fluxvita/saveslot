@@ -7,7 +7,7 @@
 # hand on the default branch). Merge requests get the quick checks only.
 #
 #   merge request:          secrets, forbidden-terms, mr-title, dco
-#   default branch, push:   secrets, forbidden-terms, check (node:24); all interruptible
+#   default branch, push:   secrets, forbidden-terms, check (node:24.22.3); all interruptible
 #   schedule (nightly):     check, check-latest, prop-soak, test-postgres
 #   by hand (web, api) on the default branch: check, check-latest, prop-soak, test-postgres, secrets,
 #                           forbidden-terms
@@ -17,6 +17,12 @@
 # other slot for the quick checks; the nightly ones run one after another. On the default branch
 # only the latest push runs to the end: a push's jobs are interruptible, so a newer push cancels
 # them.
+#
+# Node is pinned to an exact version (`node:24.22.3`) in every job but check-latest: the lowest
+# supported Node is 24.22.1 (package.json `engines`), since V8 in the 24 line before it can misread
+# a one-escape object key in JSON.parse once a key of one backslash has been parsed in the same
+# process (V8 commit 93cd21e8254b, backported in Node 24.22.1). To move to a newer Node, change the
+# image here and `.nvmrc` together; the floor in `engines` moves only if the new one needs it.
 #
 # A pipeline on the schedule or by hand is never cancelled by a newer commit, whether its jobs have
 # started or still wait for the resource group (`workflow`: `auto_cancel: on_new_commit: none`).
@@ -110,10 +116,10 @@ workflow:
   script:
     - runuser -u node -- env SAVESLOT_TEST_DURABILITY="${SAVESLOT_TEST_DURABILITY:-}" pnpm check
 
-# On the lowest supported Node: after every merge, nightly and by hand (with host fsync).
+# On the pinned Node 24 (see the head of this file): after every merge, nightly and by hand (with host fsync).
 check:
   extends: [.check, .after-merge]
-  image: node:24
+  image: node:24.22.3
 
 # On the latest Node: nightly and by hand (with host fsync).
 check-latest:
@@ -127,7 +133,7 @@ check-latest:
 # counterexample in soak/failures.md and its whole output beside it.
 prop-soak:
   extends: [.pnpm, .full-only]
-  image: node:24
+  image: node:24.22.3
   resource_group: saveslot-heavy
   timeout: 60 minutes
   variables:
@@ -153,7 +159,7 @@ prop-soak:
 # but this job can reach the server, so it asks for no password.
 test-postgres:
   extends: [.pnpm, .full-only]
-  image: node:24
+  image: node:24.22.3
   services:
     - name: postgres:18.7
       alias: postgres
@@ -169,7 +175,7 @@ test-postgres:
 # Every commit in a merge request is signed off by its author (DCO).
 dco:
   extends: [.git-as-root]
-  image: node:24
+  image: node:24.22.3
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   variables:
@@ -179,7 +185,7 @@ dco:
 
 # The merge request title is a Conventional Commit: it becomes the squash commit's subject.
 mr-title:
-  image: node:24
+  image: node:24.22.3
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   script:
@@ -190,7 +196,7 @@ mr-title:
 # terms by index only); code and the spec cite spec sections, not ruling numbers.
 forbidden-terms:
   extends: [.quick, .git-as-root]
-  image: node:24
+  image: node:24.22.3
   variables:
     GIT_DEPTH: 0
   script:

@@ -36,7 +36,7 @@
 
 | 用途 | 用什么 |
 |---|---|
-| 运行时与语言 | Node 24 及以上；TypeScript 严格模式；只发 ESM |
+| 运行时与语言 | Node 24 系列 24.22.1 及以上，或 26.12.1 及以上（`.nvmrc` 写的是 CI 用的版本）；TypeScript 严格模式；只发 ESM |
 | 包管理 | pnpm（monorepo） |
 | 测试 | Vitest；性质测试用 fast-check（第 2 节） |
 | 格式化与代码检查 | Biome |
