@@ -954,6 +954,11 @@ describe("connections revoke: which one, and paging that would not end", () => {
           ...(n !== undefined ? { next_cursor: n } : {}),
         });
       }
+      if (req.method === "PATCH") {
+        const id = req.url?.split("/").pop() as string;
+        const body = (seen.at(-1)?.body ?? {}) as { name?: string };
+        return json(res, 200, conn(id, String(body.name)));
+      }
       if (req.method === "DELETE") {
         const id = req.url?.split("/").pop() as string;
         return json(
@@ -987,6 +992,43 @@ describe("connections revoke: which one, and paging that would not end", () => {
     expect(r.err).toContain(A);
     expect(r.err).toContain(B);
     expect(deleted()).toEqual([]);
+  });
+
+  const renamed = () =>
+    seen.filter((x) => x.method === "PATCH").map((x) => [x.url.split("/").pop(), x.body]);
+
+  it("rename: by ID before name; the new name sent; the old and new names said", async () => {
+    listing([[conn(B, A), conn(A, "one")]], () => undefined);
+    const r = await cli(["connections", "rename", A, "uno"]);
+    expect(r.code).toBe(0);
+    expect(renamed()).toEqual([[A, { name: "uno" }]]);
+    // Not a terminal: the names inside the boundary's tags.
+    expect(r.out).toMatch(
+      new RegExp(
+        `>uno</untrusted-data-[0-9a-f]+> \\(${A}\\), ${TEXTS.renamedFrom} <untrusted-data-[0-9a-f]+>one</untrusted-data-[0-9a-f]+>: ${TEXTS.renamedNow}`,
+      ),
+    );
+  });
+
+  it("rename: a name two instances have: refused (2), both IDs listed; the same name: nothing sent", async () => {
+    listing(
+      [[conn(A, "X"), conn(B, "X"), conn("ci_01JF00000000000000000000CC", "Y")]],
+      () => undefined,
+    );
+    const two = await cli(["connections", "rename", "X", "Z"]);
+    expect(two.code).toBe(2);
+    expect(two.err).toContain(TEXTS.nameAmbiguousRename);
+    expect(two.err).toContain(A);
+    expect(two.err).toContain(B);
+    const same = await cli(["connections", "rename", "Y", "Y"]);
+    expect(same.code).toBe(0);
+    expect(same.out).toContain(TEXTS.renamedAlready);
+    expect(renamed()).toEqual([]);
+    for (const args of [["X"], ["X", "Y", "Z"], []]) {
+      expect((await cli(["connections", "rename", ...args])).code).toBe(2);
+    }
+    expect((await cli(["connections", "rename", "nobody", "W"])).code).toBe(4);
+    expect(renamed()).toEqual([]);
   });
 
   it("the one named on a later page: found, by its ID", async () => {

@@ -268,6 +268,30 @@ describe("connections revoke: what it takes", () => {
   });
 });
 
+describe("connections rename", () => {
+  it("by name: the new name in the list, its token still works; a name taken: 5; a revoked one too", async () => {
+    const r = await saveslot(["connect", "http", "--name", "before rename"]);
+    const token = (r.out.match(TOKEN) ?? [])[0] as string;
+    const done = await saveslot(["connections", "rename", "before rename", "after rename"]);
+    expect(done.code).toBe(0);
+    expect(done.out).toContain("「after rename」");
+    expect(done.out).toContain(`${TEXTS.renamedFrom} 「before rename」: ${TEXTS.renamedNow}`);
+    const list = await saveslot(["connections", "list"]);
+    expect(list.out).toContain("「after rename」");
+    expect(list.out).not.toContain("「before rename」");
+    expect(await catalogWith(token)).toBe("ok");
+    // Another instance's name: the service refuses it, nothing changed.
+    await saveslot(["connect", "http", "--name", "taken name"]);
+    const taken = await saveslot(["connections", "rename", "after rename", "taken name"]);
+    expect(taken.code).toBe(5);
+    expect(taken.err).toContain("duplicate_name");
+    // A revoked instance is renamed as well.
+    await saveslot(["connections", "revoke", "after rename", "--yes"]);
+    expect((await saveslot(["connections", "rename", "after rename", "revoked one"])).code).toBe(0);
+    expect((await saveslot(["connections", "list"])).out).toContain("「revoked one」");
+  });
+});
+
 describe("snippet: no service asked", () => {
   it("for a host: where it goes, then the text; --lang zh-CN; without a host: the text and the table", async () => {
     // A home with no service: snippet asks none.

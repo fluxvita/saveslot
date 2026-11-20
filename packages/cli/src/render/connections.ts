@@ -144,6 +144,15 @@ export function revokedLines(c: Connection): Line[] {
   ];
 }
 
+/** `saveslot connections rename`: the instance under its name now, and the name it had. */
+export function renamedLines(c: Connection, was: string | undefined): Line[] {
+  return was === undefined
+    ? [t`${untrusted(String(c.name))} (${id(String(c.id))}) ${words(TEXTS.renamedAlready)}`]
+    : [
+        t`${untrusted(String(c.name))} (${id(String(c.id))}), ${words(TEXTS.renamedFrom)} ${untrusted(was)}: ${words(TEXTS.renamedNow)}`,
+      ];
+}
+
 /** `saveslot slot remove`: the slot removed, by name and ID. */
 export function slotRemovedLines(r: { name: unknown; slot_id: unknown }): Line[] {
   return [

@@ -19,6 +19,7 @@ import {
   type CatalogTables,
   type ChangesResult,
   type Client,
+  type Connection,
   ContractCallError,
   createClient,
   ITEM_STATUSES,
@@ -52,6 +53,7 @@ import {
   connectionLine,
   connectionsList,
   hostSetup,
+  renamedLines,
   revokedLines,
   selfcheckLine,
   setupShowable,
@@ -541,6 +543,50 @@ async function connectCommand(
 }
 
 /** `saveslot connections revoke <name or ID>` (06 §4.9): asked first, unless `--yes`. */
+/**
+ * The connection instance `which` names (`revoke`, `rename`): by ID over the whole list first; by
+ * name only when no ID is it. A name can look like another instance's ID, and two instances can
+ * share a name: that one is not guessed at (2, their IDs listed).
+ */
+async function whichConnection(
+  c: Client,
+  which: string,
+  ambiguous: Static,
+): Promise<{ readonly found: Connection } | { readonly refused: Output }> {
+  const all = await allConnections(c);
+  const named = all.filter((x) => x.name === which);
+  const found = all.find((x) => x.id === which) ?? (named.length === 1 ? named[0] : undefined);
+  if (found === undefined && named.length > 1) {
+    return {
+      refused: {
+        json: { error: { code: "ambiguous_name", ids: named.map((x) => x.id) } },
+        lines: [],
+        errLines: [[words(ambiguous)], ...named.map((x) => t`  ${connectionLine(x)}`)],
+        exit: 2,
+      },
+    };
+  }
+  if (found === undefined) throw new Failed(TEXTS.connectionNotFound, 4);
+  return { found };
+}
+
+/**
+ * `saveslot connections rename <name or ID> <new name>` (06 §4.4): `connections.update`. Revoked
+ * and disabled instances too; the history's actor is the same instance, under its new name.
+ */
+async function renameCommand(o: Options, client: () => Promise<Client>): Promise<Output> {
+  const [which, name, ...extra] = o.args;
+  if (which === undefined || name === undefined || extra.length > 0)
+    throw new UsageError(TEXTS.renameArgs);
+  const c = await client();
+  const w = await whichConnection(c, which, TEXTS.nameAmbiguousRename);
+  if ("refused" in w) return w.refused;
+  const found = w.found;
+  if (found.name === name) return { json: found, lines: renamedLines(found, undefined) };
+  const r = await c.connections.update({ id: found.id, name });
+  return { json: r, lines: renamedLines(r, found.name) };
+}
+
 async function revokeCommand(
   o: Options,
   client: () => Promise<Client>,
@@ -550,20 +596,9 @@ async function revokeCommand(
   const [which, ...extra] = o.args;
   if (which === undefined || extra.length > 0) throw new UsageError(TEXTS.revokeArgs);
   const c = await client();
-  // By ID over the whole list first; by name only when no ID is it. A name can look like another
-  // instance's ID, and two instances can share a name: that one is not guessed at.
-  const all = await allConnections(c);
-  const named = all.filter((x) => x.name === which);
-  const found = all.find((x) => x.id === which) ?? (named.length === 1 ? named[0] : undefined);
-  if (found === undefined && named.length > 1) {
-    return {
-      json: { error: { code: "ambiguous_name", ids: named.map((x) => x.id) } },
-      lines: [],
-      errLines: [[words(TEXTS.nameAmbiguous)], ...named.map((x) => t`  ${connectionLine(x)}`)],
-      exit: 2,
-    };
-  }
-  if (found === undefined) throw new Failed(TEXTS.connectionNotFound, 4);
+  const w = await whichConnection(c, which, TEXTS.nameAmbiguous);
+  if ("refused" in w) return w.refused;
+  const found = w.found;
   if (found.state !== undefined) return { json: found, lines: alreadyLines(found) };
   if (!ownFlag(o, "yes")) {
     if (io.stdinIsTTY !== true || io.ask === undefined) throw new NotDone(TEXTS.revokeNoTerminal);
@@ -690,6 +725,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
     }),
   ],
   ["connections revoke", command(["yes"], revokeCommand, undefined, TEXTS.revokeUnknown)],
+  ["connections rename", command([], renameCommand, undefined, TEXTS.renameUnknown)],
   [
     "snippet",
     command(["lang"], async (o) => {

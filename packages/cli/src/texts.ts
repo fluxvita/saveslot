@@ -49,6 +49,7 @@ export const TEXTS = {
       "        hosts: claude-code, codex, cursor, claude-desktop, generic, http",
       "  connections list          the connection instances, revoked ones too",
       "  connections revoke <name or ci_…> [--yes]",
+      "  connections rename <name or ci_…> <new name>",
       "  snippet [<host>] [--lang en|zh-CN]   text for the host's custom instructions",
       "  schema templates          the schema templates this saveslot ships",
       "",
@@ -390,6 +391,20 @@ export const TEXTS = {
   alreadyRevoked: s("is revoked already; nothing was done"),
   alreadyDisabled: s("is disabled already (by an import); nothing was done"),
   revokedNow: s("its token is refused from now on"),
+  renameArgs: s(
+    "give the connection instance and its new name: saveslot connections rename <name or ci_…> <new name>",
+  ),
+  nameAmbiguousRename: s(
+    "error: more than one connection instance has that name; give the ID of the one to rename:",
+  ),
+  renamedNow: s(
+    "the name shown changes; what it wrote and read is still this connection instance's, shown under the new name",
+  ),
+  renamedAlready: s("has that name already; nothing was done"),
+  renamedFrom: s("was"),
+  renameUnknown: s(
+    "the connection broke before the answer: it is not known whether it was renamed. See saveslot connections list",
+  ),
   revokeUnknown: s(
     "the connection broke before the answer: it is not known whether it was revoked. See saveslot connections list",
   ),
