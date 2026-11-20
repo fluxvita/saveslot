@@ -12,6 +12,7 @@ export * from "./log.ts";
 export * from "./open-tenant.ts";
 export * from "./principals.ts";
 export * from "./read.ts";
+export * from "./reconcile-deletions.ts";
 export * from "./resolve.ts";
 export * from "./schema.ts";
 export * from "./slots.ts";
