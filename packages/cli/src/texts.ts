@@ -43,6 +43,8 @@ export const TEXTS = {
       "  pending resolve <pi_…> <decision> [--candidate n] [--note text] [--yes --item-ver iv_…]",
       "  reads [--connection <name or ID>] [--since 10m]",
       "  verify                    check the log: chain, checksums, index, gaps",
+      "  export [-o file [--force]] [--after-seq n] [--include-pending-deletion [--yes]] [--encrypt [--passphrase-file p]]",
+      "                            the whole log as NDJSON; --encrypt: an age file under a passphrase",
       "  setup [--template t]… [--host claude-code|codex]… [--scope …] [--timezone z] [--yes]",
       "                            first use: init, start, a slot, and the hosts found",
       "  connect <host> --name <name> [--scope +schema | -write | read,write…] [--apply]",
@@ -375,6 +377,67 @@ export const TEXTS = {
   slotRemoveNoTerminal: s(
     "not run: stdin is no terminal to ask on. Run this again with --yes to remove without asking",
   ),
+  exportAfterSeq: s("--after-seq is a number: the seq of the last event already exported"),
+  exportPassphraseNeedsEncrypt: s("--passphrase-file goes with --encrypt; it was given without it"),
+  exportArgs: s("export takes no arguments; the file goes in -o"),
+  exportPendingNoTerminal: s(
+    "not run: the export would hold content that is in its grace period of deletion, and there is no terminal to ask on. Run this again with --yes to export it without asking",
+  ),
+  exportPendingAsk: s(
+    "this export will hold content that is waiting to be deleted: after the grace period ends it stays in the export file. Export it anyway?",
+  ),
+  exportNoPassphraseSource: s(
+    "not run: no terminal to ask the passphrase on. Give --passphrase-file <path> (a password manager's output as <(pass show saveslot))",
+  ),
+  exportPassphraseInterrupted: s("not run: interrupted at the passphrase prompt"),
+  exportPassphraseNotKept: s(
+    "The passphrase is not kept: if it is forgotten, this export cannot be opened.",
+  ),
+  exportPassphraseShort: s("warning: the passphrase is shorter than 12 characters"),
+  exportPassphraseMismatch: s(
+    "error: the two passphrases differed every time; nothing was exported",
+  ),
+  exportOutputUnwritable: s("error: the export file could not be written"),
+  exportBroken: s("the export file may be partial: run it again, from --after-seq when continuing"),
+  exportFileExists: s("the file is there already: nothing was written. Use --force to replace it"),
+  exportEncryptedToTerminal: s(
+    "an encrypted export is binary and stdout is a terminal: give -o <file>, or redirect stdout",
+  ),
+  exportWindowsFileOnly: s(
+    "on Windows the passphrase of --encrypt comes from --passphrase-file only: there is no terminal device to ask on",
+  ),
+  exportBrokenOriginalKept: s(
+    "error: the export was cut off before its end; the file that was there is as it was. Run it again",
+  ),
+  exportUnwritableOriginalKept: s(
+    "error: the export file could not be written; the file that was there is as it was",
+  ),
+  exportUnwritablePartial: s(
+    "error: the export file could not be written to the end (disk full?); the file left is partial: remove it",
+  ),
+  passphraseFileNotRegular: s(
+    "the passphrase file is not a file or a pipe (a directory, a socket or a device)",
+  ),
+  passphraseFileNotOwned: s("the passphrase file is not yours: it must belong to the current user"),
+  passphraseFileOpen: s(
+    "the passphrase file is open to group or others: run chmod 600 on it, as for the credential files",
+  ),
+  passphraseFileUnreadable: s("the passphrase file cannot be read: check the path"),
+  passphrasePipeTimeout: s(
+    "nothing came on the passphrase pipe within 30 s: check the command that writes it",
+  ),
+  passphraseEmpty: s("the passphrase is empty"),
+  passphraseMalformed: s("the passphrase is not one line of UTF-8 text"),
+  passphraseControl: s(
+    "the passphrase holds a control character (a Tab, say) or starts with a byte order mark: it is used byte for byte, so these are refused",
+  ),
+  exported: s("exported"),
+  exportedEvents: s("events, last seq"),
+  exportedNoPending: s("without the content waiting to be deleted"),
+  exportedWithPending: s("with the content waiting to be deleted"),
+  exportedEncrypted: s("encrypted with the passphrase (age v1)"),
+  exportContinueWith: s("to continue later: --after-seq"),
+  exportDecryptWith: s("to open it without saveslot: age -d -o export.ndjson"),
   slotRemovedNow: s(
     "is removed; its name can be used again, and a slot created under it is another slot",
   ),

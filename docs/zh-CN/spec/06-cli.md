@@ -516,10 +516,12 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | 命令 | 契约操作 | 关键参数 | 输出要点 | 出现于 |
 |---|---|---|---|---|
 | `saveslot reads` | `reads.list` | `--connection`、`--since` | 时刻、连接实例、`task`、操作、读到的表 / 行与版本（`saveslot connect` 的自检标"自检"）；只给版本，不给值 | P1 |
-| `saveslot export` | `export` | `-o <文件>`（默认标准输出）、`--after-seq`、`--include-pending-deletion`、`--encrypt`、`--passphrase-file <路径>` | NDJSON；加了 `--encrypt` 时是 age v1 的二进制文件（建议以 `.ndjson.age` 结尾）。结束时在标准错误写事件数、末尾 `seq`、是否含待删除内容；加密时另写"下次续传用 --after-seq <upto>"与解密命令 | P3 |
+| `saveslot export` | `export` | `-o <文件> [--force]`（默认标准输出）、`--after-seq`、`--include-pending-deletion`、`--encrypt`、`--passphrase-file <路径>` | NDJSON；加了 `--encrypt` 时是 age v1 的二进制文件（建议以 `.ndjson.age` 结尾）。结束时在标准错误写事件数、末尾 `seq`、是否含待删除内容；加密时另写"下次续传用 --after-seq <upto>"与解密命令 | P3 |
 | `saveslot import <文件>…` | `import` | `--passphrase-file <路径>`（文件是 age 加密的导出时）、`--yes`、`--profile` | 执行前：原租户 ID、事件数、导出时刻、是否含待删除内容，以及"这份导出之后在原处做的删除不在其中"；结束时：停用了多少主体、补了多少墓碑、带不过来的东西（读取记录、凭证、外部文件），并提示用 `saveslot connect` 重新签发 | P5 |
 | `saveslot verify` | `log.verify` | — | 事件总数；事件头链完整与否（或自第 k 条起断裂）；校验和不符的位置；索引列与事件头不符的位置；已按删除移除的位置；恢复留下的 `seq` 空档 | P1 |
 | `saveslot verify --replay` | `log.reconcile` | — | 比较到的 `seq`；从空存储重放日志与线上的 (b) 类逻辑表逐表比较的结果；不一致时列出表与行（只给 ID）。执行时显示进度（重放、追平、比较），进入比较阶段时提示"写入暂时排队"；输出末尾写明它查不出 `delete` 自己算错的结果 | P2 |
+
+**输出去哪**：`-o <文件>` 用独占创建（`O_CREAT|O_EXCL`，一步完成，不先查再写）、权限 0600；文件已经在时拒绝、不写任何字节，退出码 2；这一查在向服务发请求、读口令之前先做一次，最后的独占创建照旧保留。要覆盖带 `--force`：写到同一目录下新建的临时文件（独占创建、0600），整条流成功结束后再改名覆盖；中途失败删掉临时文件，原来的文件原样不动，并如实说明。`-o` 是符号链接时，`--force` 替换的是链接本身，链接指向的文件不动；不带 `--force` 时链接与文件一样算「已经在」。不带 `--force` 写到一半失败（断流、磁盘满）时，留下的文件是残缺的，提示里写明。理由：导出文件常常就是备份，被一次手误覆盖的代价比多打一个参数大。文件在拿到服务的第一批字节时才创建，所以被服务拒绝的导出不留空文件。`--encrypt` 且标准输出是终端、又没有 `-o` 时拒绝，退出码 2，说明加密的输出是二进制、请用 `-o <文件>` 或重定向；不加密时 NDJSON 照常可以写到终端。
 
 `--include-pending-deletion` 在交互式下要再确认一次："导出里将包含宽限期内待删除的内容，撤回期过后它们仍留在导出文件里。"非交互式下必须同时给 `--yes`，否则不执行，退出码 8。
 
@@ -642,7 +644,7 @@ runs r_01JC… 整行删除：date 只来自这句话
 |---|---|---|
 | 0 | 完成（含重放、`outcome: pending` 这类"已记下但未生效"——看输出） | — |
 | 1 | CLI 或 saveslot 服务内部错误；接入没有完成 | `internal`；`saveslot connect` 的自检失败（已吊销刚签发的连接实例）或 `--apply` 执行宿主命令失败（**保留**连接实例，命令已打印给人自己执行）；`saveslot setup` 有宿主失败（宿主命令失败时**吊销**刚签发的连接实例，因为令牌没有显示给任何人）、初始化失败、服务与 CLI 版本不一致 |
-| 2 | 命令用法错误（CLI 自己发现的） | 例如只取一个值的选项给了两次（不按"最后一个算数"）；`connections revoke` 的名字对应不止一个连接实例 |
+| 2 | 命令用法错误（CLI 自己发现的） | 例如只取一个值的选项给了两次（不按"最后一个算数"）；`connections revoke` 的名字对应不止一个连接实例；`export` 的口令文件用不了（普通文件权限宽于 0600、不归当前用户、不是文件或管道、读不到、管道 30 秒没写来、为空、含控制字符，各自说明原因与改法；这是发请求之前的用法错误，不是 6，6 留给凭证）、`-o` 的文件已经在 |
 | 3 | 要先重读 / 内容已变 | `read_first`、`confirmation_mismatch`、`item_closed`、`preview_outdated`、`handle_expired`、`draft_outdated`、`schema_incompatible` |
 | 4 | 找不到 | `not_found`、`unknown_table`、`unknown_field` |
 | 5 | 请求被拒 | `saveslot init` 遇到已初始化的目录或正在运行的服务（什么都不改）、`saveslot start` 遇到未初始化的目录，或服务起来之后发现存储格式过旧或过新（要先处理存储，重试没用）；`config.toml` 不合法（`saveslot start` 在派生进程之前、前台启动与 `saveslot config get` 都这样拒绝，见 4.2）；`invalid_argument`、`validation_failed`、`field_unmatched`、`sql_rejected`、`sql_timeout`、`too_large`、`derived_readonly`、`revoked`、`not_in_this_version`、`import_rejected`、`rate_limited`（`quota`）、`referenced`（后续）、`lease_expired`（后续） |

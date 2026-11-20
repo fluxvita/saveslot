@@ -103,6 +103,12 @@ const OWN_OPTIONS = {
   apply: { type: "boolean" },
   lang: { type: "string" },
   host: { type: "string", multiple: true },
+  output: { type: "string", short: "o" },
+  "after-seq": { type: "string" },
+  "include-pending-deletion": { type: "boolean" },
+  encrypt: { type: "boolean" },
+  "passphrase-file": { type: "string" },
+  force: { type: "boolean" },
 } as const;
 type OwnValue = string | string[] | boolean;
 
@@ -113,6 +119,8 @@ const ownList = (o: Options, k: string): string[] =>
   Array.isArray(o.own[k]) ? (o.own[k] as string[]) : [];
 const ownFlag = (o: Options, k: string): boolean => o.own[k] === true;
 
+import { exportCommand } from "./export.ts";
+import type { Terminal } from "./export-crypto.ts";
 import { allConnections, allSlots, everyPage } from "./pages.ts";
 import { type SetupServices, STOP_SIGNALS, type StopSignal, setup } from "./setup.ts";
 import { jsonText } from "./untrusted.ts";
@@ -126,6 +134,10 @@ export interface CliIO {
   /** Whether stdout and stderr are terminals. */
   readonly stdoutIsTTY: boolean;
   readonly stderrIsTTY: boolean;
+  /** Raw bytes to stdout, for what is not text (an export, an age file); false when not written. */
+  readonly outBytes?: (bytes: Uint8Array) => Promise<unknown>;
+  /** Tests only: the controlling terminal a passphrase is asked on (`/dev/tty` otherwise). */
+  readonly terminal?: () => Terminal | undefined;
   /** Whether stdin is a terminal: only then does a command ask (06 §5.4). */
   readonly stdinIsTTY?: boolean;
   /** Writes `prompt` to stderr and reads one line from stdin; undefined when stdin ends. */
@@ -170,6 +182,8 @@ interface Output {
   /** When stdout could not be written: what to do about it, and what to say on stderr then. */
   readonly unwritten?: () => Promise<Line[]>;
   readonly exit?: number;
+  /** The command wrote its own stdout (a stream): `--json` and `lines` are not written. */
+  readonly raw?: true;
 }
 
 interface Command {
@@ -776,6 +790,40 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
     }),
   ],
   [
+    "export",
+    command(
+      [
+        "output",
+        "after-seq",
+        "include-pending-deletion",
+        "encrypt",
+        "passphrase-file",
+        "yes",
+        "force",
+      ],
+      async (o, client, io) => {
+        if (o.args.length > 0) throw new UsageError(TEXTS.exportArgs);
+        const lines = await exportCommand(
+          {
+            out: ownString(o, "output"),
+            afterSeq: ownString(o, "after-seq"),
+            includePendingDeletion: ownFlag(o, "include-pending-deletion"),
+            encrypt: ownFlag(o, "encrypt"),
+            passphraseFile: ownString(o, "passphrase-file"),
+            yes: ownFlag(o, "yes"),
+            force: ownFlag(o, "force"),
+          },
+          client,
+          io,
+        );
+        // Stdout may be the export itself: the summary is for stderr only, `--json` or not.
+        return { json: undefined, lines: [], errLines: lines, raw: true };
+      },
+      undefined,
+      TEXTS.exportBroken,
+    ),
+  ],
+  [
     "verify",
     command([], async (o, client) => {
       if (o.args.length > 0) throw new UsageError(TEXTS.verifyArgs);
@@ -1159,11 +1207,13 @@ export async function run(
     if (r.errLines !== undefined && r.errLines.length > 0) {
       io.err(`${render(r.errLines, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`);
     }
-    const text = o.json
-      ? `${jsonText(r.json)}\n`
-      : r.lines.length > 0
-        ? `${render(r.lines, boundaryFor(io.stdoutIsTTY, o.tags, env))}\n`
-        : undefined;
+    const text = r.raw
+      ? undefined
+      : o.json
+        ? `${jsonText(r.json)}\n`
+        : r.lines.length > 0
+          ? `${render(r.lines, boundaryFor(io.stdoutIsTTY, o.tags, env))}\n`
+          : undefined;
     if (text !== undefined && (await io.out(text)) === false) {
       const said: Line[] = [[words(TEXTS.outputLost)], ...((await r.unwritten?.()) ?? [])];
       io.err(`${render(said, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`);

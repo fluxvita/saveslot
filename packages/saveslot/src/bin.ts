@@ -11,6 +11,8 @@ process.stderr.on("error", () => {});
 try {
   process.exitCode = await dispatch(process.argv.slice(2), process.env, {
     out: (s) => new Promise<boolean>((done) => process.stdout.write(s, (e) => done(e == null))),
+    outBytes: (b) =>
+      new Promise<boolean>((done) => process.stdout.write(b, (e) => done(e == null))),
     err: (s) => process.stderr.write(s),
     stdoutIsTTY: process.stdout.isTTY === true,
     stderrIsTTY: process.stderr.isTTY === true,
