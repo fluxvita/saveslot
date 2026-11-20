@@ -41,6 +41,24 @@ describe("replayLines", () => {
     ]);
   });
 
+  it("keeps the same lines from a colored run, as Vitest writes them in CI, without the colors", () => {
+    const E = "\u001b";
+    const colored = [
+      `${E}[41m${E}[1m FAIL ${E}[22m${E}[49m packages/reference/src/log.prop.test.ts${E}[2m > ${E}[22mevent table${E}[2m > ${E}[22m«撤回还原»`,
+      `${E}[31m${E}[1mError${E}[22m: Property failed after 460 tests`,
+      '{ seed: -520325339, path: "498:57:56:57:57:57:57:57:57:57", endOnFailure: true }',
+      'Counterexample: [{"st":[]}]',
+      `${E}[31m     ${E}[31m×${E}[31m «撤回还原» 1087ms${E}[39m`,
+    ].join("\n");
+    expect(replayLines(colored)).toEqual([
+      " FAIL  packages/reference/src/log.prop.test.ts > event table > «撤回还原»",
+      "Error: Property failed after 460 tests",
+      '{ seed: -520325339, path: "498:57:56:57:57:57:57:57:57:57", endOnFailure: true }',
+      'Counterexample: [{"st":[]}]',
+      "     × «撤回还原» 1087ms",
+    ]);
+  });
+
   it("finds nothing in a passing run", () => {
     expect(
       replayLines(" ✓ packages/a.prop.test.ts (2 tests) 300ms\n Test Files  1 passed (1)\n"),
@@ -81,6 +99,10 @@ describe("how a run ended", () => {
     expect(testsMs("\n   Duration  830ms (transform 40%, tests 50%, import 10%)\n")).toBe(415);
     expect(testsMs("\n   Duration  830ms (import 100%)\n")).toBeUndefined();
     expect(testsMs("no report")).toBeUndefined();
+    // As Vitest writes it in CI.
+    expect(
+      testsMs("\u001b[2m   Duration \u001b[22m 14.26s\u001b[2m (tests 100%)\u001b[22m\n"),
+    ).toBe(14260);
   });
 });
 

@@ -38,10 +38,18 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+/**
+ * `output` without its colors. Vitest colors its output in CI (with CI set, as the soak runs it),
+ * and a colored line does not start with what it says: `ESC[41m FAIL …`, `ESC[2m   Duration …`.
+ */
+export const plain = (output: string): string =>
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: the escape is what is removed
+  output.replace(/\u001b\[[0-9;]*m/g, "");
+
 /** The lines of a failed run that let it be replayed: seed and path, counterexample, the failure. */
 export function replayLines(output: string): string[] {
   const keep = /\{ seed: -?\d+, path: "[^"]*"|Counterexample: |Property failed after|^\s*(FAIL|×) /;
-  return output
+  return plain(output)
     .split("\n")
     .filter((l) => keep.test(l))
     .map((l) => l.trimEnd())
@@ -63,7 +71,7 @@ export function slug(path: string): string {
  * gives the tests (`Duration 9.04s (tests 99%, import 1%)`). Undefined without such a report.
  */
 export function testsMs(output: string): number | undefined {
-  const m = /^\s*Duration\s+([\d.]+)(ms|s)\s+\(([^)]*)\)/m.exec(output);
+  const m = /^\s*Duration\s+([\d.]+)(ms|s)\s+\(([^)]*)\)/m.exec(plain(output));
   const share = m ? /\btests (\d+)%/.exec(m[3] as string) : null;
   if (!m || !share) return undefined;
   return (Number(m[1]) * (m[2] === "s" ? 1000 : 1) * Number(share[1])) / 100;
