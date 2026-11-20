@@ -42,6 +42,7 @@ import type {
 } from "./ir.ts";
 import { rsqlParser } from "./load.ts";
 import { type Bindings, bind, type ResolvedColumn, type ResolvedTable } from "./sql-bind.ts";
+import { walkExpr, walkQuery } from "./sql-walk.ts";
 
 export type { ResolvedColumn, ResolvedTable };
 
@@ -128,6 +129,8 @@ export interface SqlAnalysis {
   readonly slots: ReadonlyMap<string, { readonly name: string; readonly sv: number }>;
   /** `saveslot_now()` or `saveslot_today()` is used, or a state table is read without a time clause. */
   readonly usesNow: boolean;
+  /** The integer sums of `query` that the executed text casts to bigint (an overflow is a runtime failure). */
+  readonly widened: ReadonlySet<Expr>;
 }
 
 // --- scopes -------------------------------------------------------------------------------------
@@ -226,6 +229,8 @@ class SqlAnalyzer extends ExprTyper {
   #ctes: Map<string, CteInfo>[] = [];
   #nextId = 1;
   #winOk = false;
+  /** How many aggregate calls enclose the expression being typed (a subquery starts again at 0). */
+  #inAgg = 0;
   readonly tables = new Map<TableRef, ResolvedTable>();
   readonly resolved = new Map<Expr, ResolvedColumn>();
   readonly #depth = new Map<Expr, number>();
@@ -737,6 +742,8 @@ class SqlAnalyzer extends ExprTyper {
     outer: Scope | undefined,
     q: Query,
   ): { cols: { name: string; ty: Ty; loc: number; anon?: boolean }[]; scope: Scope } {
+    const savedAgg = this.#inAgg;
+    this.#inAgg = 0;
     const scope: Scope = {
       ...(outer !== undefined ? { parent: outer } : {}),
       sources: [],
@@ -790,6 +797,9 @@ class SqlAnalyzer extends ExprTyper {
     if (aggregated) {
       for (const e of exprs) this.#grouped(e, keys, "the output");
       if (b.having !== undefined) this.#grouped(b.having, keys, "HAVING");
+      const own = new Set(scope.sources.map((x) => x.id));
+      for (const e of exprs) this.#groupedInSubqueries(e, keys, own, "the output");
+      if (b.having !== undefined) this.#groupedInSubqueries(b.having, keys, own, "HAVING");
     }
     // DISTINCT [ON] and ORDER BY / LIMIT / OFFSET.
     const targetKeys = exprs.map((e) => this.key(e));
@@ -854,6 +864,7 @@ class SqlAnalyzer extends ExprTyper {
         );
       }
     }
+    this.#inAgg = savedAgg;
     return { cols, scope };
   }
 
@@ -1007,6 +1018,41 @@ class SqlAnalyzer extends ExprTyper {
     this.#winOk = false;
     this.ty(g, false);
     return g;
+  }
+
+  /**
+   * A subquery of an aggregated SELECT that uses a column of that SELECT: the column must be a
+   * group key (the database refuses the query otherwise, and its words are not passed on). An
+   * aggregate in the subquery over the outer column alone is legal in PostgreSQL and refused
+   * here too, the simpler rule.
+   */
+  #groupedInSubqueries(
+    e: Expr,
+    keys: ReadonlySet<string>,
+    own: ReadonlySet<number>,
+    what: string,
+  ): void {
+    walkExpr(e, {
+      expr: (x) => {
+        if (x.k !== "sublink") return;
+        walkQuery(x.query, {
+          expr: (c) => {
+            if (c.k !== "col") return;
+            const r = this.resolved.get(c);
+            if (r === undefined || !("source" in r) || !own.has(r.source)) return;
+            if (keys.has(this.key(c))) return;
+            reject(
+              "rule_sql_rejected",
+              "node",
+              c.loc,
+              `${c.parts.join(".")} in a subquery of ${what} must be in GROUP BY`,
+              undefined,
+              c.parts.join("."),
+            );
+          },
+        });
+      },
+    });
   }
 
   /** Every column of `e` of this SELECT, outside aggregates, is in a group key. */
@@ -1263,10 +1309,9 @@ class SqlAnalyzer extends ExprTyper {
     }
     switch (o.base.k) {
       case "param":
-        this.bind(
-          { t: "unknown", param: o.base.n, konst: true, agg: false },
-          byDay ? "date" : "timestamptz",
-        );
+        // Text, read at the call exactly as a literal operand is (a day, or an instant with an offset,
+        // by what the table takes): the same refusals, the same truncation to a day with a warning.
+        this.bind({ t: "unknown", param: o.base.n, konst: true, agg: false }, "text");
         return;
       case "str": {
         const v = o.base.value;
@@ -1413,7 +1458,26 @@ class SqlAnalyzer extends ExprTyper {
     }
   }
 
+  protected override aggTy(e: Expr & { k: "agg" }, allowed: boolean): Ty {
+    this.#inAgg++;
+    try {
+      return super.aggTy(e, allowed);
+    } finally {
+      this.#inAgg--;
+    }
+  }
+
   protected override tyWin(e: Expr & { k: "win" }, allowAgg: boolean): Ty {
+    if (this.#inAgg > 0) {
+      reject(
+        "rule_sql_rejected",
+        "node",
+        e.loc,
+        "a window function inside an aggregate",
+        undefined,
+        e.name,
+      );
+    }
     if (!this.#winOk) {
       reject(
         "rule_sql_rejected",
@@ -1457,18 +1521,18 @@ class SqlAnalyzer extends ExprTyper {
       case "min":
       case "max": {
         sig(e.star ? e.name === "count" && n === 0 : n === 1);
-        const as = this.aggTy(
-          {
-            k: "agg",
-            name: e.name,
-            star: e.star,
-            distinct: false,
-            ...(e.args[0] !== undefined ? { arg: e.args[0] } : {}),
-            ...(e.filter !== undefined ? { filter: e.filter } : {}),
-            loc: e.loc,
-          },
-          true,
-        );
+        const synthetic: Expr & { k: "agg" } = {
+          k: "agg",
+          name: e.name,
+          star: e.star,
+          distinct: false,
+          ...(e.args[0] !== undefined ? { arg: e.args[0] } : {}),
+          ...(e.filter !== undefined ? { filter: e.filter } : {}),
+          loc: e.loc,
+        };
+        const as = this.aggTy(synthetic, true);
+        // The window sum of integers is numeric too: the call is the one cast back to bigint.
+        if (this.widenSet.has(synthetic)) this.widenSet.add(e);
         return plain(as);
       }
       case "rank":
@@ -1522,6 +1586,7 @@ class SqlAnalyzer extends ExprTyper {
       expansions: this.#expansions,
       tables: this.tables,
       resolved: this.resolved,
+      widen: (e) => this.widenSet.has(e),
     };
   }
 
@@ -1707,6 +1772,7 @@ export function analyzeQuery(input: AnalyzeQueryInput): SqlAnalysis {
     columns,
     tables: bound.tables as ReadonlyMap<TableRef, ResolvedTable>,
     resolved: bound.resolved,
+    widened: bound.widened,
     params: a.paramTypes,
     warnings: a.warnings,
     slots: new Map([...a.slotsRead].map(([k, s]) => [k, { name: s.name, sv: s.sv }])),

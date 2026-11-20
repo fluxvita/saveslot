@@ -21,9 +21,15 @@ export {
   type PendingReadResult,
   pendingItemsNotices,
   type QueryReadResult,
+  READ_ROWS_THRESHOLD,
   ReadError,
   type ReadsListResult,
   type Row,
+  SQL_DEFAULT_ROWS,
+  SQL_MAX_ROWS,
+  SQL_TIMEOUT_MS,
+  type SqlColumn,
+  type SqlReadResult,
   slotCreators,
   type TimelineResult,
   type VisibleSlot,
@@ -60,4 +66,5 @@ export * from "./store/anchor.ts";
 export * from "./store/anchor-check.ts";
 export * from "./store/format-v1.ts";
 export * from "./store/ports.ts";
+export { mergedSegments, type SegmentColumns, segmentColumns } from "./store/segments.ts";
 export * from "./time/index.ts";

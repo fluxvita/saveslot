@@ -1,3 +1,4 @@
+export type { ParamType } from "./analyze.ts";
 export {
   type CompiledRuleParts,
   checkBoundRule,
@@ -27,6 +28,7 @@ export {
   type RuleQuery,
   rowChecksum,
 } from "./evaluate.ts";
+export type { TimeOperand } from "./ir.ts";
 export { isRsqlLoaded, loadRsql } from "./load.ts";
 export {
   checkSql,
@@ -37,5 +39,18 @@ export {
   type SqlOutcome,
   type SqlSlot,
 } from "./sql.ts";
-export { printQuery } from "./sql-print.ts";
+export type { FormerNames, OutputColumn, SqlWarning } from "./sql-analyze.ts";
+export { fingerprintOf } from "./sql-fingerprint.ts";
+export { type PrintHooks, printQuery } from "./sql-print.ts";
+export {
+  IDENTITY_CAP,
+  type Rewritten,
+  rewriteSql,
+  type SqlCall,
+  SqlNotImplemented,
+  SqlRuntime,
+  type Statement,
+  type TableRead,
+  type TimeRead,
+} from "./sql-rewrite.ts";
 export { RSQL_VERSION } from "./whitelist.ts";

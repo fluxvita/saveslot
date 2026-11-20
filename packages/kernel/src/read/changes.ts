@@ -73,7 +73,9 @@ const historyShape = (mode: string, table: string, target: string | null, partia
  * What `my_last_read` counts (04-contract §10): by the scope of the read. A whole-table call counts
  * the reads that cover the table: a `query`, or a `changes` of the whole table that gave all of
  * its window. A call on one row or entity counts those too, and the `history` reads of that row or
- * entity (`timeline`, `as_of`, a `changes` on it that gave all of its window).
+ * entity (`timeline`, `as_of`, a `changes` on it that gave all of its window). A `sql` read counts
+ * for none: what it read depends on the query and is recorded as a superset, so it is no sign that
+ * the table was seen.
  */
 function reads(table: string, row: string | undefined) {
   const whole = historyShape("changes", table, null);
@@ -88,7 +90,7 @@ function reads(table: string, row: string | undefined) {
   }): boolean =>
     e.operation === "history"
       ? e.shape === whole || (e.shape !== undefined && e.shape !== null && ofRow.includes(e.shape))
-      : e.covers;
+      : e.operation !== "sql" && e.covers;
   return counts;
 }
 
@@ -126,7 +128,7 @@ async function lastReadOf(
       : (["timeline", "as_of", "changes"] as const).map((m) => historyShape(m, table, row))),
   ];
   const counted = `NOT l.selfcheck AND
-       ((l.operation <> 'history' AND (l.table_id = $3 OR EXISTS
+       ((l.operation NOT IN ('history', 'sql') AND (l.table_id = $3 OR EXISTS
          (SELECT 1 FROM read_log_rows x WHERE x.read_id = l.read_id AND x.table_id = $3)))
         OR (l.operation = 'history' AND l.shape = ANY($4)))`;
   const mine = await tx.query<{ pos: unknown }>(

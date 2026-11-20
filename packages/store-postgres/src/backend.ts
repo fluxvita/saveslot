@@ -439,6 +439,8 @@ class TxHandle implements Tx {
 
 export class PostgresTenantStore implements TenantStore {
   readonly formatVersion: number;
+  /** PostgreSQL enforces `statement_timeout` (the kernel sets one for a `sql` call). */
+  readonly enforcesStatementTimeout = true;
   /** The ownership epoch this store took at open. */
   readonly epoch: number;
   readonly database: string;

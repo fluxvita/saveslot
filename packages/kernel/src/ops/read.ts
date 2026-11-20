@@ -16,6 +16,9 @@ import {
   queryInTx,
   type ReadsListResult,
   readsListInTx,
+  SQL_TIMEOUT_MS,
+  type SqlReadResult,
+  sqlInTx,
   type TimelineResult,
 } from "../read/index.ts";
 import type { ReadTx, TenantStore } from "../store/ports.ts";
@@ -198,6 +201,40 @@ export async function pending(
     // The list is a page of items; an item's detail is no page.
     (r) => ("items" in r ? length(r["items"]) : undefined),
     fit,
+  );
+  readBufferOf(store).record(entry);
+  return result;
+}
+
+/**
+ * Reads `params` (a `SqlParams`) as `ctx.actor`: one restricted `SELECT` over the tables the call
+ * can see. The statement timeout is `options.timeoutMs`, else the kernel's first value
+ * (`SQL_TIMEOUT_MS`), and only on a store that enforces one.
+ */
+export async function sql(
+  store: TenantStore,
+  ctx: OpsContext,
+  params: unknown,
+  options: {
+    readonly timeoutMs?: number;
+    readonly onDatabaseError?: (e: unknown) => void;
+  } = {},
+): Promise<SqlReadResult> {
+  const timeoutMs =
+    store.enforcesStatementTimeout === true ? (options.timeoutMs ?? SQL_TIMEOUT_MS) : undefined;
+  const { result, entry } = await store.read((tx) =>
+    sqlInTx(tx, {
+      actor: ctx.actor,
+      task: ctx.task,
+      now: ctx.now,
+      visibility: ctx.visibility,
+      params,
+      read: newReadId(),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      ...(options.onDatabaseError !== undefined
+        ? { onDatabaseError: options.onDatabaseError }
+        : {}),
+    }),
   );
   readBufferOf(store).record(entry);
   return result;

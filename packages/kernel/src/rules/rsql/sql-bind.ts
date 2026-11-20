@@ -87,10 +87,17 @@ export interface Bindings {
   readonly expansions: ReadonlyMap<object, SelectItem[]>;
   readonly tables: ReadonlyMap<object, ResolvedTable>;
   readonly resolved: ReadonlyMap<Expr, ResolvedColumn>;
+  /**
+   * An integer sum, which PostgreSQL gives as numeric: the executed text casts it back to bigint, so
+   * that a sum beyond 64 bits is an overflow, a runtime failure of the query (11 «确定性» 6).
+   */
+  readonly widen: (e: Expr) => boolean;
 }
 
 export interface Bound {
   readonly query: Query;
+  /** The integer sums of `query` (its own nodes) that the executed text casts to bigint. */
+  readonly widened: ReadonlySet<Expr>;
   readonly tables: ReadonlyMap<object, ResolvedTable>;
   readonly resolved: ReadonlyMap<Expr, ResolvedColumn>;
 }
@@ -101,6 +108,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof
 export function bind(q: Query, names: readonly string[], b: Bindings): Bound {
   const tables = new Map<object, ResolvedTable>();
   const resolved = new Map<Expr, ResolvedColumn>();
+  const widened = new Set<Expr>();
 
   const sourceOf = (c: BoundCol): number => {
     const r = c.resolved;
@@ -144,7 +152,10 @@ export function bind(q: Query, names: readonly string[], b: Bindings): Bound {
     if (Array.isArray(v)) return v.map(deep);
     if (!isObj(v)) return v;
     if (v["k"] === "col" || v["k"] === "sublink") return expr(v as unknown as Expr);
-    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, deep(x)]));
+    const out = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, deep(x)]));
+    if ((v["k"] === "agg" || v["k"] === "win") && b.widen(v as unknown as Expr))
+      widened.add(out as unknown as Expr);
+    return out;
   };
 
   const sort = (s: SortItem): SortItem => {
@@ -281,5 +292,5 @@ export function bind(q: Query, names: readonly string[], b: Bindings): Bound {
     };
   }
 
-  return { query: query(q, names), tables, resolved };
+  return { query: query(q, names), tables, resolved, widened };
 }

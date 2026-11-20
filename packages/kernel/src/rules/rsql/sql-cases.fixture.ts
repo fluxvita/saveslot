@@ -106,6 +106,15 @@ export const NODE_STMT: readonly Case[] = [
   c("select", `${SR}/node`, "SELECT laps FROM runs GROUP BY CUBE (laps)"),
   c("select", `${SR}/node`, "SELECT laps FROM runs GROUP BY DISTINCT laps"),
   c("select", `${SR}/node`, "SELECT laps FROM runs GROUP BY ()"),
+  // What the database would refuse as it runs, said here instead (its words are not passed on).
+  c("select", `${SR}/node`, "SELECT sum(row_number() OVER ()) FROM runs"),
+  c("select", `${SR}/node`, "SELECT count(*) FROM runs HAVING sum(lag(laps) OVER ()) > 1"),
+  c("select", `${SR}/node`, "SELECT (SELECT r.feeling) FROM runs r GROUP BY r.route"),
+  c(
+    "select",
+    `${SR}/node`,
+    "SELECT r.route, (SELECT max(s.model) FROM shoes s WHERE s.row_id = r.feeling) FROM runs r GROUP BY r.route",
+  ),
   c("select", `${SR}/node`, "SELECT laps FROM runs NATURAL JOIN shoes"),
   c(
     "select",

@@ -21,6 +21,8 @@ export { actorsNow, itemEntries } from "./pending/index.ts";
 // `query` in a transaction, with the hook to read the state after an operation as a later page
 // does (tests compare it with the first page's path).
 export { type QueryInput, queryInTx } from "./read/query.ts";
+// `sql` in a transaction, for tests that wrap the transaction to see the statements it is given.
+export { type SqlInput, type SqlOutput, sqlInTx } from "./read/sql.ts";
 export { decodeColumns } from "./request/index.ts";
 export * from "./store/anchor-conformance.fixture.ts";
 export {

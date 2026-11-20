@@ -12,7 +12,12 @@
 import fc from "fast-check";
 
 export { Hits, propRuns } from "@fluxvita/saveslot-reference/testing";
+// The parser and the whitelist's function lists, for tests that read the text a query is executed as.
+export { rsqlParser } from "./load.ts";
 export { derivedSchema, rule, TABLES, UNITS } from "./rules.fixture.ts";
+// Random statements the checker accepts (and ones it refuses), over the slot `health`.
+export { cleanStatement, type Generated, refusedStatement } from "./sql-generate.fixture.ts";
+export { AGGREGATES, FUNCTIONS, WINDOW_FUNCTIONS } from "./whitelist.ts";
 /** fast-check, for packages that run these rules without depending on it themselves. */
 export { fc };
 

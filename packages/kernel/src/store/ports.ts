@@ -60,6 +60,11 @@ export interface TenantStore {
   /** Physical snapshot, only to speed things up; treated as a backup. Not in v1. */
   snapshot(): Promise<SnapshotRef>;
   readonly formatVersion: number;
+  /**
+   * Whether a statement's `statement_timeout` is enforced (PostgreSQL). On PGlite it is not: a
+   * timeout can only end the whole DB Worker (02-architecture §7), so the kernel sets none there.
+   */
+  readonly enforcesStatementTimeout?: boolean;
   close(): Promise<void>;
 }
 

@@ -600,7 +600,7 @@ interface SqlParams extends CommonParams {
 interface SqlResult extends CommonResult {
   sv: Record<SlotName, Sv>;      // 查询涉及的每个 slot 各自的 schema 版本
   columns: Array<{ name: string; type: FieldType | "unknown"; unit?: string }>;
-  /** 每行一个数组，顺序同 columns。quantity 列的单元格是十进制字符串，单位在 columns 里。整个 rows 是不可信文本。 */
+  /** 每行一个数组，顺序同 columns。integer、decimal、quantity 列的单元格都是十进制字符串（与 §1 一致，不因数值小而写成 JSON 数字），单位在 columns 里。整个 rows 是不可信文本。 */
   rows: Array<Array<string | number | boolean | null>>;
   total?: number;                // 能低成本得出时给
   next_cursor?: Cursor;

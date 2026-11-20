@@ -30,5 +30,16 @@ export { fingerprint, type QueryInput, type QueryOutput, queryInTx } from "./que
 export { type ReadsListResult, readsListInTx } from "./reads-list.ts";
 export { logPosition, restoreCount } from "./select.ts";
 export { slotCreators, type Visibility, type VisibleSlot, visibleSlots } from "./slots.ts";
+export {
+  READ_ROWS_THRESHOLD,
+  SQL_DEFAULT_ROWS,
+  SQL_MAX_ROWS,
+  SQL_TIMEOUT_MS,
+  type SqlColumn,
+  type SqlInput,
+  type SqlOutput,
+  type SqlReadResult,
+  sqlInTx,
+} from "./sql.ts";
 export { timelineInTx } from "./timeline.ts";
 export * from "./types.ts";

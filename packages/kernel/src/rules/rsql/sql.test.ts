@@ -550,15 +550,16 @@ describe("parameters (11 «名字» 参数)", () => {
         "2026-01-01T00:00:00Z",
       ]),
     ).toBe("$1:bigint,$2:boolean,$3:timestamptz");
+    // An operand of FOR VALID_TIME is text, read at the call as a literal operand is.
     expect(types("SELECT amount FROM budgets FOR VALID_TIME AS OF $1", ["2026-01-01"])).toBe(
-      "$1:date",
+      "$1:text",
     );
     expect(
       types("SELECT guest FROM rooms FOR VALID_TIME FROM $1 TO $2", [
         "2026-01-01T00:00:00Z",
         "2026-01-02T00:00:00Z",
       ]),
-    ).toBe("$1:timestamptz,$2:timestamptz");
+    ).toBe("$1:text,$2:text");
     expect(types("SELECT laps FROM runs LIMIT $1 OFFSET $2", [1, 2])).toBe("$1:bigint,$2:bigint");
     expect(types("SELECT distance + $1, distance * $2 FROM runs", ["1", "2"])).toBe(
       "$1:numeric:km,$2:numeric",
