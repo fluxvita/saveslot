@@ -5,7 +5,14 @@
 // runner says what to say, on which connection, in which session, and waits. The assertions are
 // not judged here. Nothing goes through MCP or an agent.
 //
-//   node --conditions=source evals/tools/fixture.ts <variant.yaml> <run directory> [--fixture-only]
+//   node --conditions=source evals/tools/fixture.ts <variant.yaml> <run directory>
+//     [--fixture-only] [--today YYYY-MM-DD]
+//
+// The variant's dates are moved to the day it runs (./shift.ts): by the same number of days, so
+// that the system prompt's "today" is the machine's date, which the hosts go by. A variant that
+// cannot keep its meaning on that day (its weeks or months would shift) is refused, with the next
+// days it can run on; a date written in a form the shift does not know stops the run. `--today`
+// sets the day to shift to, to check a shift: a host still goes by the machine's date.
 //
 // The run directory must not exist. In it:
 //   home/                      the saveslot home (data, control files, the service's log)
@@ -14,11 +21,17 @@
 //                              connection instances (no tokens), the system prompt, what was bound
 //   calls/NN-….json            every call the runner made: what it sent and what came back
 //   state/<when>/….json        what the user session reads after the fixture and after each step
+//   variant.shifted.yaml       the variant as it runs, its dates moved: what the assertions are read
+//                              against
+//   shift.json                 how far the dates moved, and each replacement with its YAML path
 //   records/<key>/             `saveslot mcp --record` for connection <key>: a new file per
 //                              session (the host starts the bridge anew), the latest one last
 //   calls.jsonl                each tool call the agents made, paired with its contract result
 //                              from the service's evaluation results (./pair.ts)
-// `--fixture-only` stops after the fixture (and its state), without running the steps.
+//   state/final/history/       at the end: every row's and entity's history (timeline, every page)
+//   state/final/pending-all.json  at the end: every item, closed ones too, each with its detail
+// `--fixture-only` stops after the fixture (and its state), without running the steps, and leaves
+// the service running; otherwise the service the runner started is stopped on every way out.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -28,10 +41,11 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
 import { osFileLock, PgliteBackend } from "@fluxvita/saveslot-store-pglite";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 // The templates as the CLI ships them (06-cli §3.1); not part of its exports.
 import { templateDocument } from "../../packages/cli/src/templates.ts";
 import { pairCalls } from "./pair.ts";
+import { cannotRun, dayOf, nextRunDays, offsetHolds, shiftVariant, todayIn } from "./shift.ts";
 
 type Obj = Record<string, unknown>;
 
@@ -59,8 +73,13 @@ interface Variant {
   )[];
 }
 
+/** Whether this run started the service, so that every way out stops it. */
+let started = false;
+let keepRunning = false;
+
 const fail = (message: string): never => {
   process.stderr.write(`error: ${message}\n`);
+  stopService();
   process.exit(1);
 };
 
@@ -68,14 +87,54 @@ const fail = (message: string): never => {
 
 const args = process.argv.slice(2);
 const fixtureOnly = args.includes("--fixture-only");
-const [file, dirArg] = args.filter((a) => !a.startsWith("--"));
+const todayAt = args.indexOf("--today");
+const todayArg = todayAt >= 0 ? args[todayAt + 1] : undefined;
+if (todayAt >= 0 && (todayArg === undefined || !/^\d{4}-\d{2}-\d{2}$/.test(todayArg))) {
+  fail("--today takes a day, YYYY-MM-DD");
+}
+const [file, dirArg] = args.filter((a, i) => !a.startsWith("--") && i !== todayAt + 1);
 if (file === undefined || dirArg === undefined) {
-  fail("usage: fixture.ts <variant.yaml> <run directory> [--fixture-only]");
+  fail("usage: fixture.ts <variant.yaml> <run directory> [--fixture-only] [--today YYYY-MM-DD]");
 }
 const dir = resolve(dirArg as string);
 if (existsSync(dir)) fail(`${dir} exists: every run starts from a new directory`);
 const text = readFileSync(file as string, "utf8");
-const v = parse(text) as Variant;
+const original = parse(text) as Variant;
+
+// --- the day it runs (./shift.ts) ----------------------------------------------------------------
+
+/** A slot's schema document: its template's, or the one the variant gives. */
+const documentOf = (s: Variant["fixture"]["slots"][number]): Obj | undefined =>
+  s.template !== undefined
+    ? (templateDocument(s.template, s.name, s.timezone)?.doc as Obj | undefined)
+    : { ...s.schema, slot: s.name, base_version: null, timezone: s.timezone };
+const rules = original.fixture.slots.flatMap((s) =>
+  ((documentOf(s)?.["tables"] ?? []) as Obj[]).flatMap((t) => {
+    const sql = (t["rule"] as Obj | undefined)?.["sql"];
+    return typeof sql === "string" ? [sql] : [];
+  }),
+);
+const zone = original.fixture.slots[0]?.timezone ?? "Asia/Shanghai";
+const today = todayArg ?? todayIn(zone);
+const days = dayOf(today) - dayOf(original.clock);
+const refusals = [
+  ...cannotRun(original as unknown as Obj, days, rules),
+  ...(offsetHolds(original.clock, days, zone)
+    ? []
+    : [`the clock's offset does not hold in ${zone} on the moved day (daylight saving)`]),
+];
+if (refusals.length > 0) {
+  fail(
+    `${original.id} cannot run on ${today}:\n  ${refusals.join("\n  ")}\n  it can on: ${nextRunDays(original as unknown as Obj, today, rules).join(", ")}`,
+  );
+}
+const shifted = shiftVariant(original as unknown as Obj, days);
+if (shifted.unknown.length > 0) {
+  fail(
+    `dates the shift does not know how to move; write them as YYYY-MM-DD, "M 月 D 日" or MM-DD:\n  ${shifted.unknown.map((u) => `${u.path}: ${u.text} (${u.why})`).join("\n  ")}`,
+  );
+}
+const v = shifted.variant as unknown as Variant;
 const home = join(dir, "home");
 const socketPath = join(home, "run", "saveslot.sock");
 
@@ -254,6 +313,89 @@ async function snapshot(session: string, when: string): Promise<void> {
   }
 }
 
+/** Every page of a GET or POST read: the pages' list at `key`, the last page's other fields. */
+async function allPages(
+  method: string,
+  path: string,
+  session: string,
+  key: string,
+  body: Obj = {},
+): Promise<Obj> {
+  const items: unknown[] = [];
+  let cursor: unknown;
+  let last: Obj = {};
+  do {
+    const r =
+      method === "GET"
+        ? await http(
+            "GET",
+            `${path}${cursor !== undefined ? `${path.includes("?") ? "&" : "?"}cursor=${encodeURIComponent(String(cursor))}` : ""}`,
+            session,
+          )
+        : await http("POST", path, session, {
+            ...body,
+            ...(cursor !== undefined ? { cursor } : {}),
+          });
+    if (r.status !== 200) fail(`${path}: ${r.status} ${JSON.stringify(r.json)}`);
+    items.push(...((r.json[key] as unknown[]) ?? []));
+    cursor = r.json["next_cursor"];
+    last = r.json;
+  } while (cursor !== undefined);
+  return { ...last, [key]: items };
+}
+
+/**
+ * At the end, what cannot be read once the service is stopped: every row's and entity's history
+ * (timeline), and every item with its detail, closed ones too.
+ */
+async function archive(session: string): Promise<void> {
+  const out = join(dir, "state", "final");
+  const historyDir = join(out, "history");
+  mkdirSync(historyDir, { recursive: true });
+  for (const s of v.fixture.slots) {
+    const cat = await http("GET", `/v1/slots/${s.name}/schema`, session);
+    for (const t of (at(cat.json, "document.tables") ?? []) as Obj[]) {
+      if (t["kind"] === "derived") continue;
+      const table = `${s.name}.${String(t["name"])}`;
+      const state = JSON.parse(readFileSync(join(out, `${table}.json`), "utf8")) as Obj;
+      const targets = new Set<string>();
+      for (const row of (state["rows"] ?? []) as Obj[]) {
+        const id = row["entity"] ?? row["row"];
+        if (typeof id === "string") targets.add(id);
+      }
+      mkdirSync(join(historyDir, table), { recursive: true });
+      for (const id of targets) {
+        const key = id.startsWith("e_") ? "entity" : "row";
+        const h = await allPages("POST", "/v1/history", session, "entries", { table, [key]: id });
+        writeFileSync(join(historyDir, table, `${id}.json`), `${JSON.stringify(h, null, 2)}\n`);
+      }
+    }
+  }
+  const list = await allPages("GET", "/v1/pending?status=all", session, "items");
+  const details: Obj[] = [];
+  for (const item of (list["items"] ?? []) as Obj[]) {
+    const r = await http("GET", `/v1/pending/${encodeURIComponent(String(item["id"]))}`, session);
+    if (r.status !== 200)
+      fail(`pending ${String(item["id"])}: ${r.status} ${JSON.stringify(r.json)}`);
+    details.push(r.json);
+  }
+  writeFileSync(
+    join(out, "pending-all.json"),
+    `${JSON.stringify({ ...list, details }, null, 2)}\n`,
+  );
+}
+
+/** Stops the service this run started, once; not after `--fixture-only`, which leaves it running. */
+function stopService(): void {
+  if (!started || keepRunning) return;
+  started = false;
+  const r = spawnSync(process.execPath, ["--conditions=source", BIN, "stop", "--home", home], {
+    encoding: "utf8",
+    env: { ...process.env, SAVESLOT_TOKEN: "" },
+  });
+  if (r.status !== 0) process.stderr.write(`stopping the service: ${r.stderr.trim()}\n`);
+}
+
 // --- the system prompt (10-evals §2.2) ------------------------------------------------------------
 
 function systemPrompt(clock: string, timezone: string): string {
@@ -273,6 +415,25 @@ function systemPrompt(clock: string, timezone: string): string {
 // --- the run -------------------------------------------------------------------------------------
 
 mkdirSync(join(dir, "calls"), { recursive: true });
+writeFileSync(
+  join(dir, "variant.shifted.yaml"),
+  `# ${v.id} moved ${days} days, from ${original.clock} to ${v.clock} (the day it ran: ${today}).\n${stringify(v)}`,
+);
+writeFileSync(
+  join(dir, "shift.json"),
+  `${JSON.stringify(
+    {
+      variant: v.id,
+      today,
+      days,
+      original_clock: original.clock,
+      clock: v.clock,
+      replacements: shifted.replacements,
+    },
+    null,
+    2,
+  )}\n`,
+);
 // The tenant's genesis at the clock's moment, not this computer's: a clock behind the log's end
 // would record every later event at that end (02-architecture §8), and the test clock would show
 // in nothing the log keeps. `saveslot init` takes no clock, so the home is made as it makes it.
@@ -283,13 +444,13 @@ await initLocalHome({
   now: new Date(v.clock).toISOString(),
 });
 saveslot(["start", "--home", home, "--eval-clock", v.clock]);
+started = true;
+// Ctrl-C while a step waits: the service is stopped before leaving.
+process.on("SIGINT", () => fail("interrupted"));
 const session = readFileSync(sessionFile(home), "utf8").trim();
 
 for (const s of v.fixture.slots) {
-  const document =
-    s.template !== undefined
-      ? templateDocument(s.template, s.name, s.timezone)?.doc
-      : { ...s.schema, slot: s.name, base_version: null, timezone: s.timezone };
+  const document = documentOf(s);
   if (document === undefined) fail(`${s.template}: no such template`);
   const r = await http("POST", "/v1/drafts", session, { document });
   writeFileSync(
@@ -328,6 +489,7 @@ const writeRun = () =>
         clock: v.clock,
         saveslot_commit: commit,
         fixture_sha256: createHash("sha256").update(text).digest("hex"),
+        shift: { today, days, original_clock: original.clock },
         connections,
         system_prompt: prompt,
         bound,
@@ -342,6 +504,7 @@ const say = (s = "") => process.stdout.write(`${s}\n`);
 say(`fixture of ${v.id} installed in ${dir}`);
 say(`bound: ${JSON.stringify(bound)}`);
 if (fixtureOnly) {
+  keepRunning = true;
   say(`the service keeps running on the test clock; stop it with: saveslot stop --home ${home}`);
   process.exit(0);
 }
@@ -389,6 +552,7 @@ for (const [i, step] of v.steps.entries()) {
 }
 rl.close();
 await snapshot(session, "final");
+await archive(session);
 // The agents' tool calls with their contract results: the text the agent got is in the record,
 // the result an assertion matches in the service's evaluation results.
 const paired = pairCalls(dir);
@@ -396,4 +560,5 @@ say("");
 say(`All steps done. State read back under ${join(dir, "state")}.`);
 say(`${paired.paired} tool calls paired in ${join(dir, "calls.jsonl")}.`);
 for (const p of paired.problems) say(`pairing: ${p}`);
-say(`Stop the service: saveslot stop --home ${home}`);
+stopService();
+say(`The service is stopped; its home stays in ${home}.`);

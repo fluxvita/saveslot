@@ -14,7 +14,7 @@ export default defineConfig({
     noExternal: ["@modelcontextprotocol/client", "eventsource"],
   },
   test: {
-    include: ["packages/*/src/**/*.test.ts", "scripts/**/*.test.ts"],
+    include: ["packages/*/src/**/*.test.ts", "scripts/**/*.test.ts", "evals/tools/**/*.test.ts"],
     // A temporary directory of the run's own, cleared when the run ends (scripts/test-tmp.ts).
     // Then, for a run with a PostgreSQL server: its test databases dropped when it ends.
     globalSetup: ["scripts/test-tmp.ts", "packages/test-backend/src/databases.fixture.ts"],
