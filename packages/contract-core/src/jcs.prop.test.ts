@@ -1,10 +1,22 @@
 // Differential property test: our encoder against the `canonicalize` package (Apache-2.0,
 // pinned dev dependency), and round-trip properties that hold for any JCS implementation.
 
+import { runInNewContext } from "node:vm";
 import referenceCanonicalize from "canonicalize";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { canonicalize, type JcsValue } from "./jcs.ts";
+
+/**
+ * `JSON.parse` in a context of its own, the value copied back. The oracle cannot be this
+ * context's `JSON.parse`: in the V8 of Node 24 before 24.22.1 (and of 26 before its fix, V8 commit
+ * 93cd21e8254b), once an object with a key of one backslash (`"\\"`) has been parsed, a later
+ * object whose key at that place is one `\uXXXX` escape gets the key `\` instead. A property run
+ * makes both, so the oracle would fail on a writing that is right. A context of its own has no
+ * such earlier parse.
+ */
+const parseApart = (text: string): unknown =>
+  structuredClone(runInNewContext("JSON.parse(text)", { text }) as unknown);
 
 const cp = (...points: number[]) => String.fromCodePoint(...points);
 
@@ -55,7 +67,7 @@ describe("canonicalize (properties)", () => {
     fc.assert(
       fc.property(jsonValue, (value) => {
         const text = canonicalize(value);
-        expect(canonicalize(JSON.parse(text) as JcsValue)).toBe(text);
+        expect(canonicalize(parseApart(text) as JcsValue)).toBe(text);
       }),
     );
   });

@@ -10,6 +10,7 @@
 //   - JSON parses back to the same value, with none of the same characters as they are.
 // Every character not plain ASCII is made from its code point: the source holds none.
 
+import { runInNewContext } from "node:vm";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
@@ -19,6 +20,17 @@ import {
   unescapeUntrusted,
   wrapEscaped,
 } from "./untrusted.ts";
+
+/**
+ * `JSON.parse` in a context of its own, the value copied back. The oracle cannot be this
+ * context's `JSON.parse`: in the V8 of Node 24 before 24.22.1 (and of 26 before its fix, V8 commit
+ * 93cd21e8254b), once an object with a key of one backslash (`"\\"`) has been parsed, a later
+ * object whose key at that place is one `\uXXXX` escape gets the key `\` instead. A property run
+ * makes both, so the oracle would fail on a writing that is right. A context of its own has no
+ * such earlier parse.
+ */
+const parseApart = (text: string): unknown =>
+  structuredClone(runInNewContext("JSON.parse(text)", { text }) as unknown);
 
 const RUNS = Number(process.env["PROP_RUNS"] ?? 500);
 const cp = (...points: number[]) => String.fromCodePoint(...points);
@@ -219,11 +231,20 @@ describe("cutting and JSON", () => {
     fc.assert(
       fc.property(fc.dictionary(text, text, { maxKeys: 4 }), (v) => {
         const w = jsonText(v);
-        expect(JSON.parse(w)).toEqual(v);
+        expect(parseApart(w)).toEqual(v);
         for (const c of chars(w)) expect(forbidden(c), JSON.stringify(c)).toBe(false);
       }),
       { numRuns: RUNS },
     );
+  });
+
+  it("JSON: a key of one backslash, then a key written as one \\u escape, read back as written", () => {
+    // The order the property run hit (see parseApart): the first object, then the second.
+    const first = { "": "", [cp(0x5c)]: "x" };
+    const second = { "": "", [cp(0xff3c)]: "y" };
+    expect(parseApart(jsonText(first))).toEqual(first);
+    expect(jsonText(second)).toContain(`${cp(0x5c)}uff3c`);
+    expect(parseApart(jsonText(second))).toEqual(second);
   });
 
   it("JSON: every C1 control, DEL and every bidi control as \\u", () => {
