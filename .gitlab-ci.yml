@@ -6,11 +6,12 @@
 # merged. CI runs it after a merge, every night, and when a phase is finished (a pipeline started by
 # hand on the default branch). Merge requests get the quick checks only.
 #
-#   merge request:          secrets, forbidden-terms, mr-title, dco
+#   merge request:          secrets, forbidden-terms, mr-title, dco; age-interop when the request
+#                           changes packages/cli/src/export-crypto*, pnpm-lock.yaml or this file
 #   default branch, push:   secrets, forbidden-terms, check (node:24.22.3); all interruptible
-#   schedule (nightly):     check, check-latest, prop-soak, test-postgres
+#   schedule (nightly):     check, check-latest, prop-soak, test-postgres, age-interop
 #   by hand (web, api) on the default branch: check, check-latest, prop-soak, test-postgres, secrets,
-#                           forbidden-terms
+#                           forbidden-terms, age-interop
 #
 # The heavy jobs (check, check-latest, prop-soak, test-postgres) run one at a time in the whole
 # project (`resource_group: saveslot-heavy`), so that a runner taking two jobs at once keeps the
@@ -171,6 +172,36 @@ test-postgres:
     SAVESLOT_TEST_POSTGRES_URL: postgres://postgres@postgres:5432/postgres
   script:
     - runuser -u node -- env SAVESLOT_TEST_POSTGRES_URL="$SAVESLOT_TEST_POSTGRES_URL" pnpm test:postgres
+
+# The passphrase encryption of an export against the age command line (docs/zh-CN/spec/06-cli.md
+# §4.8 «导出的口令加密»): age opens what saveslot writes, and saveslot opens what age writes, with the
+# passphrase given through age-plugin-batchpass. The test fails, not skips, without the two
+# commands (SAVESLOT_TEST_AGE_REQUIRED). age is a tool of this test, not shipped: it is taken from
+# its release page, pinned by version and by the archive's SHA-256 (checked once against the
+# release's sigsum proof, as the age repository's SIGSUM.md describes). Distribution packages are too
+# old (the batchpass plugin is in 1.3.0 and later). Light: not in the heavy resource group.
+age-interop:
+  extends: [.pnpm]
+  image: node:24.22.3
+  timeout: 15 minutes
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - packages/cli/src/export-crypto*
+        - pnpm-lock.yaml
+        - .gitlab-ci.yml
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(schedule|web|api)$/
+  variables:
+    AGE_VERSION: v1.3.2
+    AGE_SHA256: cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+  before_script:
+    - curl --fail --retry 3 -sSL -o /tmp/age.tgz "https://github.com/FiloSottile/age/releases/download/${AGE_VERSION}/age-${AGE_VERSION}-linux-amd64.tar.gz"
+    - echo "${AGE_SHA256}  /tmp/age.tgz" | sha256sum -c -
+    - tar xzf /tmp/age.tgz -C /usr/local/bin --strip-components=1 age/age age/age-plugin-batchpass
+    - age --version
+    - !reference [.pnpm, before_script]
+  script:
+    - runuser -u node -- env SAVESLOT_TEST_AGE_REQUIRED=1 pnpm exec vitest run packages/cli/src/export-crypto.test.ts
 
 # Every commit in a merge request is signed off by its author (DCO).
 dco:

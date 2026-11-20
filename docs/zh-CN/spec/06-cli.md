@@ -516,8 +516,8 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | 命令 | 契约操作 | 关键参数 | 输出要点 | 出现于 |
 |---|---|---|---|---|
 | `saveslot reads` | `reads.list` | `--connection`、`--since` | 时刻、连接实例、`task`、操作、读到的表 / 行与版本（`saveslot connect` 的自检标"自检"）；只给版本，不给值 | P1 |
-| `saveslot export` | `export` | `-o <文件>`（默认标准输出）、`--after-seq`、`--include-pending-deletion`、`--encrypt`、`--passphrase-file <路径>`、`--passphrase-fd <n>` | NDJSON；加了 `--encrypt` 时是 age v1 的二进制文件（建议以 `.ndjson.age` 结尾）。结束时在标准错误写事件数、末尾 `seq`、是否含待删除内容；加密时另写"下次续传用 --after-seq <upto>"与解密命令 | P3 |
-| `saveslot import <文件>…` | `import` | `--passphrase-file <路径>`、`--passphrase-fd <n>`（文件是 age 加密的导出时）、`--yes`、`--profile` | 执行前：原租户 ID、事件数、导出时刻、是否含待删除内容，以及"这份导出之后在原处做的删除不在其中"；结束时：停用了多少主体、补了多少墓碑、带不过来的东西（读取记录、凭证、外部文件），并提示用 `saveslot connect` 重新签发 | P5 |
+| `saveslot export` | `export` | `-o <文件>`（默认标准输出）、`--after-seq`、`--include-pending-deletion`、`--encrypt`、`--passphrase-file <路径>` | NDJSON；加了 `--encrypt` 时是 age v1 的二进制文件（建议以 `.ndjson.age` 结尾）。结束时在标准错误写事件数、末尾 `seq`、是否含待删除内容；加密时另写"下次续传用 --after-seq <upto>"与解密命令 | P3 |
+| `saveslot import <文件>…` | `import` | `--passphrase-file <路径>`（文件是 age 加密的导出时）、`--yes`、`--profile` | 执行前：原租户 ID、事件数、导出时刻、是否含待删除内容，以及"这份导出之后在原处做的删除不在其中"；结束时：停用了多少主体、补了多少墓碑、带不过来的东西（读取记录、凭证、外部文件），并提示用 `saveslot connect` 重新签发 | P5 |
 | `saveslot verify` | `log.verify` | — | 事件总数；事件头链完整与否（或自第 k 条起断裂）；校验和不符的位置；索引列与事件头不符的位置；已按删除移除的位置；恢复留下的 `seq` 空档 | P1 |
 | `saveslot verify --replay` | `log.reconcile` | — | 比较到的 `seq`；从空存储重放日志与线上的 (b) 类逻辑表逐表比较的结果；不一致时列出表与行（只给 ID）。执行时显示进度（重放、追平、比较），进入比较阶段时提示"写入暂时排队"；输出末尾写明它查不出 `delete` 自己算错的结果 | P2 |
 
@@ -525,10 +525,10 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 **导出的口令加密**（`--encrypt`）。导出格式不变；加密是 CLI 的可选项，用公开的 age v1 格式、口令接收方（scrypt），加密的是整条导出流（含第一行的清单）。不做私有格式：项目是开源的，自造一个容器什么也藏不住，只多出一个别人不认识的格式。不选 OpenPGP（各实现在新的认证加密模式上不互通，许可证比项目严）、`openssl enc`（没有认证，密文被改动发现不了）、JWE（整段一次加密，不适合大文件的流）、加密 ZIP（密钥派生太弱，文件头不加密）。
 
-- **口令从哪来**：默认直接打开控制终端读，不回显，输入两遍、不一致就重来——读的是控制终端而不是标准输入，所以 `saveslot export --encrypt > 文件` 照常能提示。`--passphrase-file` 读文件的第一行（不含行尾），文件权限比 0600 宽时拒绝使用，与凭证文件同一条规则；`--passphrase-fd` 从文件描述符读第一行，给脚本与密码管理器用。两者只能给一个；给了其中之一而没给 `--encrypt` 是用法错误（退出码 2），不悄悄当成加密。没有终端、也没给文件或文件描述符：不执行，退出码 8。
+- **口令从哪来**：默认直接打开控制终端读，不回显，输入两遍、不一致就重来——读的是控制终端而不是标准输入，所以 `saveslot export --encrypt > 文件` 照常能提示。`--passphrase-file <路径>` 读那个路径的第一行（不含行尾 `\r\n` / `\n`），给脚本与密码管理器用；密码管理器的输出用 shell 的进程替换交给它：`saveslot export --encrypt --passphrase-file <(pass show saveslot) -o backup.ndjson.age`。路径按给出的样子打开（跟随符号链接：Linux 上进程替换给的 `/dev/fd/63` 本身就是链接），检查的是打开后拿到的对象：普通文件要归当前用户、权限不宽于 0600，与凭证文件同一条规则，否则拒绝并说明怎么改；管道（进程替换、命名管道）要归当前用户，权限位各平台不同、不看；字符设备（终端上的 `/dev/stdin`）照收；目录、套接字、块设备拒绝。从管道读时最多等 30 秒，写方一直不写就拒绝，不挂死；读完即关。给了 `--passphrase-file` 而没给 `--encrypt` 是用法错误（退出码 2），不悄悄当成加密。没有终端、也没给口令文件：不执行，退出码 8。
 - **口令不出现在命令行参数与环境变量里**：没有 `--passphrase <口令>`（命令行参数会进 shell 历史，执行期间本机其他用户用 `ps` 看得到）；第一版也不读环境变量（一些系统上能被别的进程读到，而且会被子进程继承）。
-- **Windows 上只支持 `--passphrase-file`**：那里没有对应的控制终端设备文件，也没有能按编号传给子进程的文件描述符。Windows 上给了 `--encrypt` 而没给 `--passphrase-file`、或给了 `--passphrase-fd`，是用法错误（退出码 2）。本机服务本来只支持 macOS 与 Linux，这条只影响用服务器 profile 在 Windows 上跑的 CLI。
-- **口令的要求**：不能为空；短于 12 个字符时警告一次，不拒绝。saveslot 不保存口令，也没有找回的办法，交互式下在读口令之前写明这一点。
+- **Windows 上只支持 `--passphrase-file`**：那里没有对应的控制终端设备文件。Windows 上给了 `--encrypt` 而没给 `--passphrase-file` 是用法错误（退出码 2）。本机服务本来只支持 macOS 与 Linux，这条只影响用服务器 profile 在 Windows 上跑的 CLI。
+- **口令的要求**：不能为空；短于 12 个字符时警告一次，不拒绝。口令按给出的字节原样使用，不做 Unicode 规范化（与 age 一致）；为让同一个口令从文件、管道、终端得到同样的字节，任何来源里含控制字符（含 Tab）或以字节序标记（BOM）开头的一律拒绝并说明，不悄悄去掉。终端上输入空口令或含控制字符的口令时与「两遍不一致」一样重问，三次为限。saveslot 不保存口令，也没有找回的办法，交互式下在读口令之前写明这一点。
 - **工作因子**用格式的默认值（scrypt 的 log₂N = 18），不提供调节参数：官方 JS 实现在解密时拒绝大于 20 的值，调高了会出现"加密得了、同一个库解不了"的文件。标准输出是终端时拒绝输出密文（用法错误）；第一版不做文本包装。
 - **续传**：每次导出（含带 `--after-seq` 的续传）是一个独立的 age 文件，有自己的文件头与盐，可以用不同的口令。密文不能拼接（age 文件后面带着多余数据会被拒绝）：要把几段合起来，先各自解密，再按导出格式的续传规则把明文按顺序接起来。中途被打断的加密导出是一个被截断的 age 文件，解密到末尾会报错，不能往后续写，用同一个 `--after-seq` 重新导出这一段。加密后清单行不解密就看不到，所以结束时写明下次续传用的 `upto`。
 - **解密**：用任何 age 实现，不需要 saveslot（`age -d -o export.ndjson export.ndjson.age`，或 `rage -d`）；第一版不提供 saveslot 自己的解密命令。`saveslot import` 遇到 age 文件时在 CLI 里解密、再上传明文，口令的来源与规则同导出；服务端不接受 age 文件，那样就得把口令交给服务端。
@@ -558,6 +558,7 @@ $ saveslot export --encrypt -o saveslot-2026-11.ndjson.age
 | `saveslot write` | 见第 2 节"不做什么"：人手写 op 与证据容易出错，证据也会退化成 `api_call`；真有"人想不经 Agent 改一个值"的需求时再加，纯增量 |
 | `saveslot verify --replay` 的离线形式 | saveslot 服务起不来时停机直接打开数据目录比较；第一版只有经服务的对拍 |
 | Windows 上的本地服务 | 第一版本地只支持 macOS 与 Linux |
+| `--passphrase-fd <n>`（从文件描述符读口令） | Node 不提供分辨一个描述符是用户的 shell 打开的、还是运行时自己的（close-on-exec 位）的办法；编号写错时会读到运行时管道里的字节当口令，加密出来的文件再也解不开。第一版用 `--passphrase-file` 加进程替换 `<(…)` 代替 |
 
 ## 5. 人工确认的交互
 
@@ -647,7 +648,7 @@ runs r_01JC… 整行删除：date 只来自这句话
 | 5 | 请求被拒 | `saveslot init` 遇到已初始化的目录或正在运行的服务（什么都不改）、`saveslot start` 遇到未初始化的目录，或服务起来之后发现存储格式过旧或过新（要先处理存储，重试没用）；`config.toml` 不合法（`saveslot start` 在派生进程之前、前台启动与 `saveslot config get` 都这样拒绝，见 4.2）；`invalid_argument`、`validation_failed`、`field_unmatched`、`sql_rejected`、`sql_timeout`、`too_large`、`derived_readonly`、`revoked`、`not_in_this_version`、`import_rejected`、`rate_limited`（`quota`）、`referenced`（后续）、`lease_expired`（后续） |
 | 6 | 凭证或权限 | 未登录、凭证文件权限过宽、`unauthenticated`（令牌无效、已吊销、会话过期）、`insufficient_scope`；`saveslot mcp` 的 `SAVESLOT_TOKEN` 没设、为空或不是连接实例令牌（含用户会话令牌） |
 | 7 | 连不上或暂时不可用（稍后重试） | saveslot 服务未运行（`saveslot stop` 例外：没在运行时退出码 0）；`saveslot stop` 时 `/health` 报的 pid 与 `run/saveslot.pid` 不一致，或 `/health` 不应答而 `run/saveslot.lock` 被占着（都不发信号）；`saveslot start` 等不到就绪（进程仍在运行）、服务起来之后自己失败（数据目录不在、内部错误等，原因见 `saveslot status` 与服务日志；格式过旧或过新除外，见 5）、套接字不可达、`unavailable`（忙、恢复中、导入中、对拍中、启动中）、`rate_limited`（`busy`）；`saveslot start` 或 `saveslot setup` 启动服务失败，或另一个 `setup` 正在运行 |
-| 8 | 未执行 | 人在提示中拒绝（含 `saveslot setup` 第 5 步的拒绝：什么都没签发）；非交互式缺 `--yes` 或绑定令牌；`export --encrypt` 没有终端、也没给口令文件或文件描述符 |
+| 8 | 未执行 | 人在提示中拒绝（含 `saveslot setup` 第 5 步的拒绝：什么都没签发）；非交互式缺 `--yes` 或绑定令牌；`export --encrypt` 没有终端、也没给口令文件 |
 | 9 | 校验发现问题 | `saveslot verify` 报断裂 / 不符，`saveslot verify --replay` 报不一致，`saveslot doctor` 有不通过项（只有提醒时不给 9） |
 | 129 / 130 / 131 / 143 | 被信号停下（128 加信号编号：SIGHUP / SIGINT / SIGQUIT / SIGTERM） | `saveslot setup` 收到这四个信号之一时收尾后按此退出（§3.3 第 8 条） |
 
