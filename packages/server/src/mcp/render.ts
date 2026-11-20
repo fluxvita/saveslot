@@ -1854,6 +1854,17 @@ const REASON_NEXT: ReadonlyMap<string, () => Part[]> = new Map([
     () =>
       t`More than one slot has a table of this name: write it as slot.table, one of the candidates.`,
   ],
+  // 04-contract §5: one item has one premise in force on one target.
+  [
+    "premise_duplicate_target",
+    () =>
+      t`An op declares one premise on one record. To rest on several of its fields, list them in one premise's fields; to rest on two stretches of business time, give one valid_during that covers both, or no range.`,
+  ],
+  [
+    "premise_historical_ver",
+    () =>
+      t`This ver is a past version, as saveslot_history's as_of gives it: a premise rests on the current version. Read the record again with saveslot_query, and declare the ver it gives.`,
+  ],
 ]);
 
 function errorLines(error: R, now: Date): Line[] {
@@ -1893,6 +1904,15 @@ function errorLines(error: R, now: Date): Line[] {
         t` / `,
       )}`,
     );
+  }
+  // premise_duplicate_target: the two premises that name the same record (04-contract-types §9).
+  const twice = arr(error["premises"]);
+  if (
+    c === "invalid_argument" &&
+    error["reason"] === "premise_duplicate_target" &&
+    twice.length === 2
+  ) {
+    lines.push(t`Same record: premises ${count(twice[0])} and ${count(twice[1])} of this op`);
   }
   // revoked: the row or entity (04-contract-types §9 `target`).
   if (error["code"] === "revoked" && isObj(error["target"])) {

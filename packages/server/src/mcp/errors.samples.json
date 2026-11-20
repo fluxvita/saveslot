@@ -110,5 +110,20 @@
       "reason": "derived_changed",
       "param": "cursor"
     }
+  },
+  "error-premise-duplicate-target": {
+    "error": {
+      "code": "invalid_argument",
+      "reason": "premise_duplicate_target",
+      "param": "ops/0/premises/1",
+      "premises": [0, 1]
+    }
+  },
+  "error-premise-historical-ver": {
+    "error": {
+      "code": "invalid_argument",
+      "reason": "premise_historical_ver",
+      "param": "ops/0/premises/0/ver"
+    }
   }
 }

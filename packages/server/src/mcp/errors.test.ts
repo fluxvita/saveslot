@@ -1,8 +1,9 @@
 // Refusals as text (05-surfaces §7), against golden files. The samples are what a running
-// service gave back through its operations (errors.samples.json, with their message): a write to
-// a derived table, too many ops, an evidence segment and a request's evidence too large, a
-// conflict with two candidates and no candidate named, a resolve of an item resolved already, a
-// write to a revoked row, a slot not found, a derived table refreshed while paged. Update the
+// service gave back through its operations (errors.samples.json, with their message where they
+// give one): a write to a derived table, too many ops, an evidence segment and a request's
+// evidence too large, a conflict with two candidates and no candidate named, a resolve of an item
+// resolved already, a write to a revoked row, a slot not found, a derived table refreshed while
+// paged, two premises of one op on the same record, a premise on a past version. Update the
 // golden files with `pnpm exec vitest run packages/server/src/mcp/errors.test.ts -u`.
 
 import { readFileSync } from "node:fs";
@@ -30,6 +31,16 @@ describe("refusals as text (golden)", () => {
 
 describe("refusals as text: what the samples do not show", () => {
   const text = (error: R) => fixed(renderError(error, NOW));
+
+  it("two premises on one record without their indices: what to do, and no indices made up", () => {
+    const x = text({
+      code: "invalid_argument",
+      reason: "premise_duplicate_target",
+      param: "ops/2/premises/3",
+    });
+    expect(x).not.toContain("Same record:");
+    expect(x).toContain("list them in one premise's fields");
+  });
 
   it("revoked without the operation that revoked it: the general step", () => {
     const x = text({
