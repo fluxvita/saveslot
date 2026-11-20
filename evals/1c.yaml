@@ -30,7 +30,7 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-10-28", distance: { value: "7", unit: km } }
+            set: { date: "@month-4", distance: { value: "7", unit: km } }
       bind: { run_1028: "ops[0].target.row" }
     - as: seed
       op: write
@@ -41,7 +41,7 @@ fixture:
             table: health.runs
             set:
               {
-                date: "2026-11-01",
+                date: "@month",
                 distance: { value: "8", unit: km },
                 duration: { value: "50", unit: min },
                 feeling: "很轻松",
@@ -54,7 +54,7 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-11-03", distance: { value: "15", unit: km }, feeling: "腿有点酸" }
+            set: { date: "@month+2", distance: { value: "15", unit: km }, feeling: "腿有点酸" }
       bind: { run_1103: "ops[0].target.row" }
     - as: seed
       op: write
@@ -63,7 +63,7 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-11-05", distance: { value: "6", unit: km } }
+            set: { date: "@month+4", distance: { value: "6", unit: km } }
       bind: { run_1105: "ops[0].target.row" }
     - as: seed
       op: write
@@ -72,7 +72,7 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-11-08", distance: { value: "10", unit: km } }
+            set: { date: "@month+7", distance: { value: "10", unit: km } }
       bind: { run_1108: "ops[0].target.row" }
     - as: A
       op: write
@@ -81,7 +81,7 @@ fixture:
         ops:
           - intent: insert
             table: ledger.expenses
-            set: { date: "2026-11-10", category: 餐饮, amount: { value: "45", unit: CNY } }
+            set: { date: "@today", category: 餐饮, amount: { value: "45", unit: CNY } }
       bind: { lunch: "ops[0].target.row", lunch_ver: "ops[0].ver" }
     - as: A
       op: write
@@ -100,7 +100,7 @@ fixture:
         ops:
           - intent: insert
             table: ledger.expenses
-            set: { date: "2026-11-10", category: 交通, amount: { value: "30", unit: CNY } }
+            set: { date: "@today", category: 交通, amount: { value: "30", unit: CNY } }
       bind: { taxi: "ops[0].target.row" }
 
 steps:

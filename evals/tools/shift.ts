@@ -35,12 +35,12 @@ function dayNumber(y: number, m: number, d: number): number | undefined {
   return t / DAY_MS;
 }
 
-const parts = (n: number) => {
+export const parts = (n: number) => {
   const d = new Date(n * DAY_MS);
   return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate(), w: d.getUTCDay() };
 };
 const pad = (n: number) => String(n).padStart(2, "0");
-const isoOf = (n: number) => {
+export const isoOf = (n: number) => {
   const p = parts(n);
   return `${p.y}-${pad(p.m)}-${pad(p.d)}`;
 };
@@ -84,7 +84,7 @@ export function todayIn(timezone: string, now: Date = new Date()): string {
   }).format(now);
 }
 
-const monthIndex = (n: number) => {
+export const monthIndex = (n: number) => {
   const p = parts(n);
   return p.y * 12 + p.m - 1;
 };
@@ -94,10 +94,10 @@ const monthIndex = (n: number) => {
 /** Words about weeks a whole-day shift moves the meaning of; a weekday a seed's date pins is not one. */
 const WEEK_WORDS = /上周|这周|本周|下周|周末|上个星期|这个星期|下个星期|上礼拜|这礼拜|下礼拜/;
 /** A weekday named: in a seed's evidence it follows the seed's date; anywhere else, a week word. */
-const WEEKDAY = /(周|星期|礼拜)([一二三四五六日天])/g;
+export const WEEKDAY = /(周|星期|礼拜)([一二三四五六日天])/g;
 const MONTH_WORDS = /上个月|这个月|本月|下个月|上月|月初|月底|月末/;
 
-const WEEKDAY_CHARS = ["日", "一", "二", "三", "四", "五", "六"];
+export const WEEKDAY_CHARS = ["日", "一", "二", "三", "四", "五", "六"];
 
 /** Every string in `x`, with its YAML path. */
 function strings(x: unknown, path: string, out: [string, string][] = []): [string, string][] {
@@ -254,7 +254,7 @@ function nearest(m: number, d: number, near: number): number | undefined {
 const MONTH_DAY_REACH = 62;
 
 /** Forms of a date this does not move: written so, they stop the run. */
-const UNKNOWN_FORMS: [RegExp, string][] = [
+export const UNKNOWN_FORMS: [RegExp, string][] = [
   [/(?<![\d/])\d{1,2}\/\d{1,2}(?![\d/])/g, "a date written with a slash"],
   [/[一二三四五六七八九十]+月[一二三四五六七八九十]+[日号]/g, "a date written in Chinese numerals"],
 ];

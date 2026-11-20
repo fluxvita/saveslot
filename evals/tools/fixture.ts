@@ -11,8 +11,10 @@
 // The variant's dates are moved to the day it runs (./shift.ts): by the same number of days, so
 // that the system prompt's "today" is the machine's date, which the hosts go by. A variant that
 // cannot keep its meaning on that day (its weeks or months would shift) is refused, with the next
-// days it can run on; a date written in a form the shift does not know stops the run. `--today`
-// sets the day to shift to, to check a shift: a host still goes by the machine's date.
+// days it can run on; a date written in a form the shift does not know stops the run. A variant
+// that writes its dates as anchors (`@month+7`, ./anchors.ts) is given them on that day instead,
+// and runs on the days its anchors keep what they had on its clock's day. `--today` sets the day
+// to run as, to check a shift: a host still goes by the machine's date.
 //
 // The run directory must not exist. In it:
 //   home/                      the saveslot home (data, control files, the service's log)
@@ -23,7 +25,8 @@
 //   state/<when>/….json        what the user session reads after the fixture and after each step
 //   variant.shifted.yaml       the variant as it runs, its dates moved: what the assertions are read
 //                              against
-//   shift.json                 how far the dates moved, and each replacement with its YAML path
+//   shift.json                 how far the dates moved, and each replacement with its YAML path;
+//                              for anchors, what each one is on the reference day and on this one
 //   records/<key>/             `saveslot mcp --record` for connection <key>: a new file per
 //                              session (the host starts the bridge anew), the latest one last
 //   calls.jsonl                each tool call the agents made, paired with its contract result
@@ -44,6 +47,7 @@ import { osFileLock, PgliteBackend } from "@fluxvita/saveslot-store-pglite";
 import { parse, stringify } from "yaml";
 // The templates as the CLI ships them (06-cli §3.1); not part of its exports.
 import { templateDocument } from "../../packages/cli/src/templates.ts";
+import { anchored, cannotRunAnchored, nextAnchoredDays, usesAnchors } from "./anchors.ts";
 import { pairCalls } from "./pair.ts";
 import { cannotRun, dayOf, nextRunDays, offsetHolds, shiftVariant, todayIn } from "./shift.ts";
 
@@ -117,22 +121,47 @@ const rules = original.fixture.slots.flatMap((s) =>
 const zone = original.fixture.slots[0]?.timezone ?? "Asia/Shanghai";
 const today = todayArg ?? todayIn(zone);
 const days = dayOf(today) - dayOf(original.clock);
-const refusals = [
-  ...cannotRun(original as unknown as Obj, days, rules),
-  ...(offsetHolds(original.clock, days, zone)
-    ? []
-    : [`the clock's offset does not hold in ${zone} on the moved day (daylight saving)`]),
-];
-if (refusals.length > 0) {
-  fail(
-    `${original.id} cannot run on ${today}:\n  ${refusals.join("\n  ")}\n  it can on: ${nextRunDays(original as unknown as Obj, today, rules).join(", ")}`,
-  );
-}
-const shifted = shiftVariant(original as unknown as Obj, days);
-if (shifted.unknown.length > 0) {
-  fail(
-    `dates the shift does not know how to move; write them as YYYY-MM-DD, "M 月 D 日" or MM-DD:\n  ${shifted.unknown.map((u) => `${u.path}: ${u.text} (${u.why})`).join("\n  ")}`,
-  );
+const offsetRefusal = offsetHolds(original.clock, days, zone)
+  ? []
+  : [`the clock's offset does not hold in ${zone} on the moved day (daylight saving)`];
+const listed = (us: readonly { path: string; text: string; why: string }[]) =>
+  us.map((u) => `${u.path}: ${u.text} (${u.why})`).join("\n  ");
+
+/** A variant with anchors (./anchors.ts): given on the day it runs; otherwise moved (./shift.ts). */
+const withAnchors = usesAnchors(original as unknown as Obj)
+  ? anchored(original as unknown as Obj, dayOf(today))
+  : undefined;
+let shifted: { variant: Obj; replacements: { path: string; from: string; to: string }[] };
+if (withAnchors !== undefined) {
+  if (withAnchors.unknown.length > 0) {
+    fail(
+      `the variant writes its dates as anchors; these are not:\n  ${listed(withAnchors.unknown)}`,
+    );
+  }
+  const refusals = [
+    ...cannotRunAnchored(original as unknown as Obj, dayOf(today)),
+    ...offsetRefusal,
+  ];
+  if (refusals.length > 0) {
+    fail(
+      `${original.id} cannot run on ${today}:\n  ${refusals.join("\n  ")}\n  it can on: ${nextAnchoredDays(original as unknown as Obj, today).join(", ")}`,
+    );
+  }
+  shifted = withAnchors;
+} else {
+  const refusals = [...cannotRun(original as unknown as Obj, days, rules), ...offsetRefusal];
+  if (refusals.length > 0) {
+    fail(
+      `${original.id} cannot run on ${today}:\n  ${refusals.join("\n  ")}\n  it can on: ${nextRunDays(original as unknown as Obj, today, rules).join(", ")}`,
+    );
+  }
+  const moved = shiftVariant(original as unknown as Obj, days);
+  if (moved.unknown.length > 0) {
+    fail(
+      `dates the shift does not know how to move; write them as YYYY-MM-DD, "M 月 D 日" or MM-DD:\n  ${listed(moved.unknown)}`,
+    );
+  }
+  shifted = moved;
 }
 const v = shifted.variant as unknown as Variant;
 const home = join(dir, "home");
@@ -417,17 +446,26 @@ function systemPrompt(clock: string, timezone: string): string {
 mkdirSync(join(dir, "calls"), { recursive: true });
 writeFileSync(
   join(dir, "variant.shifted.yaml"),
-  `# ${v.id} moved ${days} days, from ${original.clock} to ${v.clock} (the day it ran: ${today}).\n${stringify(v)}`,
+  `# ${v.id} ${withAnchors !== undefined ? "given with its anchors" : "moved"}, ${days} days from ${original.clock} to ${v.clock} (the day it ran: ${today}).\n${stringify(v)}`,
 );
 writeFileSync(
   join(dir, "shift.json"),
   `${JSON.stringify(
     {
       variant: v.id,
+      mode: withAnchors !== undefined ? "anchors" : "shift",
       today,
       days,
       original_clock: original.clock,
       clock: v.clock,
+      ...(withAnchors !== undefined
+        ? {
+            reference: withAnchors.reference,
+            bases: withAnchors.bases,
+            anchors: withAnchors.uses,
+            runs_when: withAnchors.runsWhen,
+          }
+        : {}),
       replacements: shifted.replacements,
     },
     null,
@@ -489,7 +527,12 @@ const writeRun = () =>
         clock: v.clock,
         saveslot_commit: commit,
         fixture_sha256: createHash("sha256").update(text).digest("hex"),
-        shift: { today, days, original_clock: original.clock },
+        shift: {
+          mode: withAnchors !== undefined ? "anchors" : "shift",
+          today,
+          days,
+          original_clock: original.clock,
+        },
         connections,
         system_prompt: prompt,
         bound,
