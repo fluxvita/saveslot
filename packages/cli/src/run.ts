@@ -132,8 +132,10 @@ export interface CliIO {
   readonly entry?: string;
   /** Tests only: how long `connect --apply` lets the host's command run (60 s otherwise). */
   readonly hostTimeoutMs?: number;
-  /** Tests only: how long `setup` lets a host's version and look-up commands run (5 s otherwise). */
-  readonly probeTimeoutMs?: number;
+  /** Tests only: how long `setup` lets a host's `--version` run (5 s otherwise). */
+  readonly versionTimeoutMs?: number;
+  /** Tests only: how long `setup` lets a host's look-up (`mcp get saveslot`) run (5 s otherwise). */
+  readonly lookupTimeoutMs?: number;
   /** Tests only: the platform `setup` takes this one for. */
   readonly platform?: NodeJS.Platform;
   /** Tests only: this computer's name, as `setup` names instances after it. */
@@ -650,7 +652,8 @@ async function setupCommand(
     entry: io.entry,
     platform: io.platform ?? process.platform,
     hostname: io.hostname ?? (hostname().split(".")[0] as string),
-    probeTimeoutMs: io.probeTimeoutMs,
+    versionTimeoutMs: io.versionTimeoutMs,
+    lookupTimeoutMs: io.lookupTimeoutMs,
     hostTimeoutMs: io.hostTimeoutMs,
     say: (lines) => io.out(`${render(lines, boundaryFor(io.stdoutIsTTY, o.tags, env))}\n`),
     sayErr: (lines) => io.err(`${render(lines, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`),

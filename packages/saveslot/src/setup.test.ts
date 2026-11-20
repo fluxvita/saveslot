@@ -51,6 +51,8 @@ case "$me" in
   claude) [ -n "$ADD_MODE_claude" ] && mode="$ADD_MODE_claude" ;;
   codex) [ -n "$ADD_MODE_codex" ] && mode="$ADD_MODE_codex" ;;
 esac
+# A slow --version, when the case asks for one (SLOW_VERSION seconds) before it answers.
+if [ "$1" = --version ] && [ -n "$SLOW_VERSION" ]; then /bin/sleep "$SLOW_VERSION"; fi
 if [ "$1" = --version ] && [ "$mode" = hangversion ]; then echo $$ > "$HOST_DIR/versioning"; exec /bin/sleep 30; fi
 case "$1" in
   --version) echo "$me 9.9.9 (stand-in)"; exit 0 ;;
@@ -169,7 +171,8 @@ async function setup(
     env?: Record<string, string>;
     platform?: NodeJS.Platform;
     hostTimeoutMs?: number;
-    probeTimeoutMs?: number;
+    versionTimeoutMs?: number;
+    lookupTimeoutMs?: number;
     stderrIsTTY?: boolean;
     hostname?: string;
     signals?: (on: (signal: "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT") => void) => () => void;
@@ -199,7 +202,10 @@ async function setup(
       hostname: o.hostname ?? "testhost",
       platform: o.platform ?? "darwin",
       ...(o.hostTimeoutMs !== undefined ? { hostTimeoutMs: o.hostTimeoutMs } : {}),
-      ...(o.probeTimeoutMs !== undefined ? { probeTimeoutMs: o.probeTimeoutMs } : {}),
+      // A stand-in host answers --version at once: its limit is no part of what a case finds unless
+      // the case gives one, so it is wide here, however loaded the machine (the shipped limit is 5 s).
+      versionTimeoutMs: o.versionTimeoutMs ?? 60_000,
+      ...(o.lookupTimeoutMs !== undefined ? { lookupTimeoutMs: o.lookupTimeoutMs } : {}),
       // No signal reaches this process from a case unless the case sends one.
       watchSignals: o.signals ?? (() => () => {}),
     },
@@ -703,9 +709,11 @@ describe("setup: an entry there, and what it holds", () => {
     const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "codex", "--json"], {
       terminal: false,
-      // What is tested is the limit: 3 s, time for --version however slow; the look-up hangs 30 s.
-      env: { ADD_MODE: "hangafter" },
-      probeTimeoutMs: 3_000,
+      // What is tested is the look-up's limit, as shipped (5 s): the look-up after the add hangs 30 s.
+      // --version takes 6 s here, longer than that: it has a limit of its own, so the host is still
+      // found, and only the look-up ends at its limit.
+      env: { ADD_MODE: "hangafter", SLOW_VERSION: "6" },
+      lookupTimeoutMs: 5_000,
     });
     expect(r.code).toBe(1);
     expect(JSON.parse(r.out).hosts).toMatchObject([
@@ -718,8 +726,8 @@ describe("setup: an entry there, and what it holds", () => {
     const home = initializedHome();
     const r = await setup(home, ["--yes", "--host", "codex", "--json"], {
       terminal: false,
-      // The default limit (5 s): time for --version to answer however slow the machine; the
-      // look-up hangs for 30 s, so it ends at the limit either way.
+      // The look-up's limit as shipped (5 s); it hangs for 30 s, so it ends at the limit. --version
+      // has a limit of its own (wide in these cases), so it is not what ends there.
       env: { ADD_MODE: "hangget" },
     });
     expect(r.code).toBe(1);
@@ -829,7 +837,7 @@ describe("setup: asked to stop while a host's command runs", () => {
   async function stopped(
     signal: "SIGINT" | "SIGHUP",
     args: string[],
-    o: { mode: string; marker: string; probeTimeoutMs?: number; host?: "codex" | "claude" } = {
+    o: { mode: string; marker: string; limitMs?: number; host?: "codex" | "claude" } = {
       mode: "sleep",
       marker: "adding",
     },
@@ -840,7 +848,10 @@ describe("setup: asked to stop while a host's command runs", () => {
     const running = setup(home, ["--yes", "--host", "codex", "--host", "claude-code", ...args], {
       terminal: false,
       env: { [`ADD_MODE_${o.host ?? "codex"}`]: o.mode },
-      ...(o.probeTimeoutMs !== undefined ? { probeTimeoutMs: o.probeTimeoutMs } : {}),
+      // A limit given is the limit of both --version and the look-up: the signal ends the hang.
+      ...(o.limitMs !== undefined
+        ? { versionTimeoutMs: o.limitMs, lookupTimeoutMs: o.limitMs }
+        : {}),
       signals: (on) => {
         fire = on;
         return () => {
@@ -933,7 +944,7 @@ describe("setup: asked to stop while a host's command runs", () => {
       mode: "hangversion",
       marker: "versioning",
       host: "claude",
-      probeTimeoutMs: 60_000,
+      limitMs: 60_000,
     });
     expect(r.code).toBe(130);
     expect(JSON.parse(r.out).hosts).toEqual([]);
@@ -952,7 +963,7 @@ describe("setup: asked to stop while a host's command runs", () => {
       const { r, home, alive } = await stopped("SIGINT", [], {
         mode,
         marker,
-        probeTimeoutMs: 60_000,
+        limitMs: 60_000,
       });
       expect(r.code).toBe(130);
       expect(Date.now() - began).toBeLessThan(20_000);

@@ -99,7 +99,9 @@ export interface SetupInput {
   readonly entry: string | undefined;
   readonly platform: NodeJS.Platform;
   readonly hostname: string;
-  readonly probeTimeoutMs: number | undefined;
+  /** How long a host's `--version` may run, and its look-up; each 5 s when not given (tests give them). */
+  readonly versionTimeoutMs: number | undefined;
+  readonly lookupTimeoutMs: number | undefined;
   readonly hostTimeoutMs: number | undefined;
   /** Writes saveslot's lines: progress on stdout, questions' context on stderr. */
   readonly say: (lines: Line[]) => void;
@@ -246,7 +248,7 @@ async function discover(i: SetupInput, stop: AbortSignal): Promise<Found[]> {
     if (info.exe !== undefined) {
       const exe = await onPath(info.exe, i.env["PATH"]);
       if (exe === undefined) continue;
-      const version = await hostVersion(exe, i.env, i.probeTimeoutMs, stop);
+      const version = await hostVersion(exe, i.env, i.versionTimeoutMs, stop);
       // Asked to stop: what was not probed is not known to be missing; the caller halts.
       if (stop.aborted) return out;
       if (version !== undefined) out.push({ host, exe, version });
@@ -552,7 +554,7 @@ async function steps(
       continue;
     }
     const base = baseName(i.hostname, host);
-    const there = await hostEntry(exe, i.env, i.probeTimeoutMs, stop);
+    const there = await hostEntry(exe, i.env, i.lookupTimeoutMs, stop);
     halt();
     if (there.kind === "unknown") {
       byHost.set(host, {
@@ -780,7 +782,7 @@ async function addHost(
   }
   // Looked up again: no entry before, the command done, an entry now: added. Its output is never
   // shown; the path in it only adds a line when it is not seen (hosts write it their own ways).
-  const after = await hostEntry(exe, i.env, i.probeTimeoutMs, stop);
+  const after = await hostEntry(exe, i.env, i.lookupTimeoutMs, stop);
   if (after.kind !== "yes" && stop.aborted) {
     // Asked to stop while it looked: the command did succeed, so the instance is kept (the host
     // may be using it); only the entry was not checked.
