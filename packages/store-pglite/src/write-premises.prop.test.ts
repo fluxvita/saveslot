@@ -766,6 +766,11 @@ describe("premises over random histories (in force: state, since, reason as the 
         viaCarried: 0,
         // Decisions on items opened on dependent rows.
         decided: 0,
+        // Receipts with a premise_affected.
+        affected: 0,
+        // Of them, with marks taken off (matched > 0). Counted, not bounded: 1 or 2 in 25 samples,
+        // so none in a run is likely (the fixed cases hold matched).
+        affectedMatched: 0,
       };
       await fc.assert(
         fc.asyncProperty(fc.array(step, { minLength: 6, maxLength: 24 }), async (steps) => {
@@ -830,6 +835,8 @@ describe("premises over random histories (in force: state, since, reason as the 
            * The item a write on a dependent row opened, decided at once (a candidate taken, a
            * proposal confirmed): the decision's write, checked as the step's operation.
            */
+          // The oracle's marks right before the operation checked (none at the start of a sample).
+          let before = new Map<string, string[]>();
           const decided = async (
             w: object,
             decision: "take_candidate" | "confirm",
@@ -838,6 +845,9 @@ describe("premises over random histories (in force: state, since, reason as the 
             const pending = (w as { pending?: { id: string; item_ver?: string }[] }).pending;
             const it = (pending ?? []).find((x) => x.item_ver !== undefined);
             if (it === undefined) return undefined;
+            // The write that opened the item is not checked on its own: what is before the
+            // decision is what it left.
+            before = await expectedMarks();
             const d = await decide({
               id: it.id,
               decision,
@@ -853,6 +863,7 @@ describe("premises over random histories (in force: state, since, reason as the 
           const done: number[] = [];
           // The restatements by the fallback sent so far, as sent; the last one, and its target.
           const sent = new Set<string>();
+
           let last: { body: unknown; release: string } | undefined;
           /** A restatement by the fallback: a replay rests on the version now. */
           const restated = async (body: unknown, release: string) => {
@@ -1081,6 +1092,51 @@ describe("premises over random histories (in force: state, since, reason as the 
               marks: Object.fromEntries(want),
             });
             stats.marked += want.size;
+            // The receipt's premise_affected: the rows a mark changed at this operation now shows
+            // on, by reason; the rows that showed one before whose declaration is current now.
+            type Mark = [number, string, number, string, string[]];
+            const parse = (m: Map<string, string[]>) =>
+              [...m].flatMap(([row, xs]) => xs.map((x) => ({ row, m: JSON.parse(x) as Mark })));
+            const states = new Map(
+              (
+                await s.store.read((tx) =>
+                  tx.query<{ op: unknown; target: string; state: string }>(
+                    "SELECT op, target_row AS target, state FROM premise_decls",
+                  ),
+                )
+              ).rows.map((x) => [`${x.op} ${x.target}`, x.state]),
+            );
+            const marked = parse(want).filter((x) => x.m[2] === r.seq);
+            const taken = parse(before).filter(
+              (x) => states.get(`${x.m[0]} ${x.m[1]}`) === "current",
+            );
+            const byReason: Record<string, number> = {};
+            for (const reason of new Set(marked.map((x) => x.m[3])))
+              byReason[reason] = new Set(
+                marked.filter((x) => x.m[3] === reason).map((x) => x.row),
+              ).size;
+            const rows = (xs: { row: string }[]) => new Set(xs.map((x) => x.row)).size;
+            const got = (r as { premise_affected?: Record<string, unknown> }).premise_affected;
+            expect({
+              after: r.seq,
+              premise_affected:
+                got === undefined
+                  ? undefined
+                  : {
+                      count: got["count"],
+                      matched: got["matched"],
+                      by_reason: got["by_reason"],
+                    },
+            }).toEqual({
+              after: r.seq,
+              premise_affected:
+                marked.length === 0 && taken.length === 0
+                  ? undefined
+                  : { count: rows(marked), matched: rows(taken), by_reason: byReason },
+            });
+            if (got !== undefined) stats.affected++;
+            if (((got?.["matched"] as number | undefined) ?? 0) > 0) stats.affectedMatched++;
+            before = want;
           }
           stats.samples++;
         }),
@@ -1097,6 +1153,7 @@ describe("premises over random histories (in force: state, since, reason as the 
       expect(stats.changed).toBeGreaterThan(0);
       expect(stats.late).toBeGreaterThan(0);
       expect(stats.marked).toBeGreaterThan(0);
+      expect(stats.affected).toBeGreaterThan(0);
       const out = process.env["PREMISE_STATS"];
       if (out !== undefined)
         (await import("node:fs")).writeFileSync(out, `${JSON.stringify(stats)}\n`);

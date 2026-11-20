@@ -8,6 +8,7 @@ export {
   premisesOn,
 } from "./premise-marks.ts";
 export { sameValue, valueText } from "./same-value.ts";
+export { cellsAt, sourceItemsAt } from "./sources.ts";
 export {
   type Decode,
   type StateCell,

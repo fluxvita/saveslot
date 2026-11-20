@@ -273,7 +273,7 @@
 - `superseded[]`：因本次写入被取代的事项。**只有读过事项当前版本的写入方改到它的目标，事项才被取代**；没读过时事项刷新、保持未决（data-model「待处理事项」）。
 - `affected_reads`：触发影响查询时给——`correct`、`revoke`、状态类表上任何让值发生变化的写入。按原因计数，不含本次写入所带 `ver` 出自的那次读取；`covered_since` 是读取记录保留到的时刻，更早的读取不在统计内；`possible` 是其中只能算"可能受影响"的读取数（受限 SQL 读了很多行、只留了表级记录的读取，以及按版本集合匹配的读取）：这类读取说不出到底用没用到被改的那一行，宁可多报，所以单独计数；`not_covered` 列出没有覆盖的读取种类。
 - `derived[]`：受影响的派生值，一个派生行上变了的一个字段一条（分组键字段不单列，它们在 `key` 里），最多 20 条，另给 `derived_total`（字段条目的总数）。列的是值的变化：派生行出现或消失时，前后都是 null 的字段没有条目；除分组键以外的字段前后都是 null 的派生行，`derived[]` 里没有它，`derived_total` 也不计它。幂等重放的回执里 `derived[]` 为空，`derived_total` 是这次操作的派生写入条数（每个受影响的分区一条），见第 14 节。读时计算的派生值没有派生写入，不列在 `derived[]` 里，也不计入 `derived_total`；它的值在下一次读取时按当时的数据算出。
-- `premise_affected`：这次操作改动的行上，别的行声明过的前提的变化——新带上 `premise_changed` 的依赖行数（`count`）、撤掉标记的依赖行数（`matched`）、按原因计数、依赖行最多 20 行（`deletion_preview` 与 `delete` 里最多 50 行）。没有时不给。`resolve` 触发的写入、`delete` 的结果、撤回删除的 `cancelled` 里同样有它；`deletion_preview` 里是预告。
+- `premise_affected`：这次操作改动的行上，别的行声明过的前提的变化——新带上 `premise_changed` 的依赖行数（`count`）、撤掉标记的依赖行数（`matched`）、按原因计数（按行计，一行同时算进几个原因时各计一次，所以各项之和可以大于 `count`）、列出的标记按条——每个依赖行上被标记的每条声明一条，最多 20 条（`deletion_preview` 与 `delete` 里最多 50 条），`count` 仍是行数。已撤销的依赖行照样计数并列出，与带 `include_revoked` 的读取同口径。没有时不给。`resolve` 触发的写入、`delete` 的结果、撤回删除的 `cancelled` 里同样有它；`deletion_preview` 里是预告。
 - 每个 op 的 `premises[]` 与请求的 `premises` 一一对应：实际采用的所见版本（兜底时是兜底到的那个）、`state`（`current` / `changed`，`changed` 时附原因与使前提变了的操作号）。
 - `replayed`：幂等重放（第 14 节）。
 

@@ -1381,10 +1381,12 @@ interface AffectedReads {
 
 /** 一次操作改动的行上，别的行声明过的前提的变化。出现在写入回执、resolve 的 write、delete 的结果、撤回的 cancelled 里；deletion_preview 里是预告。 */
 interface PremiseAffected {
-  count: number;                     // 因本次操作新带上标记的依赖行数
+  count: number;                     // 因本次操作新带上标记的依赖行数（已撤销的依赖行照样计数并列出）
   matched: number;                   // 因本次操作撤掉标记的依赖行数
+  /** 按原因的依赖行数；一行同时算进几个原因时各计一次，各项之和可以大于 count。 */
   by_reason: Partial<Record<PremiseReason, number>>;
-  /** 新带上标记的依赖行：最多 20 行（deletion_preview 与 delete 里最多 50 行）。回执超出结果预算时属于可截短的列表。 */
+  /** 新带上的标记，按条：每个依赖行上被标记的每条声明一条（同一行可以出现几次），最多 20 条（deletion_preview 与 delete 里最多 50 条）；
+   *  count 仍是行数。回执超出结果预算时属于可截短的列表。 */
   rows: Array<{ target: TargetRef; fields: FieldName[]; declared: { seq: Seq; actor: Actor } }>;
 }
 ```

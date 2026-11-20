@@ -41,5 +41,7 @@ export {
   type LoggedEvent,
 } from "./write/log.fixture.ts";
 export { type WriteInput, writeInTx } from "./write/pipeline.ts";
+// A write's `premise_affected` with a visibility of its own (tests pin the rows not listed).
+export { premiseAffected } from "./write/premise-affected.ts";
 export { premiseFanInLimitForTests } from "./write/premises.ts";
 export { resolveInTx, revertEntriesOf } from "./write/resolve.ts";

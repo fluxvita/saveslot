@@ -249,7 +249,9 @@ export interface PremiseAffected {
   count: number;
   /** Dependent rows unmarked. */
   matched: number;
+  /** Dependent rows by reason; a row under two reasons counts in each, so these can sum past `count`. */
   by_reason: Partial<Record<PremiseReason, number>>;
+  /** One for each declaration marked on a row (a row can appear more than once), at most 20. */
   rows: Array<{ target: TargetRef; fields: FieldName[]; declared: { seq: Seq; actor: Actor } }>;
 }
 

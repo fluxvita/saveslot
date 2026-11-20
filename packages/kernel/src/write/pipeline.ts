@@ -1093,6 +1093,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       slotName: slot.name,
       restoreCount: restore,
       replayed: true,
+      visible: (id) => slot.tables.some((t) => t.id === id),
     });
     if (replay === undefined) {
       // The original write's content was deleted (`original_deleted`, the deletion phase).
@@ -1966,6 +1967,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       slotName: slot.name,
       restoreCount: restore,
       replayed: false,
+      visible: (id) => slot.tables.some((t) => t.id === id),
     })) as WriteReceipt,
     step.derived,
     slot.compiled,

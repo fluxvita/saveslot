@@ -112,11 +112,22 @@ const SOURCE_FROM = `FROM base_sources b
      LEFT JOIN content c ON c.seq = b.event_seq
        AND c.path = 'fields/' || b.field_id || '/' || b.k`;
 
+/** How the 出处项 are read. */
+export interface SourceOptions {
+  /**
+   * A corroboration counts as reverted only by registrations of operations up to the version read
+   * (a receipt rebuilt later must read what was so then); otherwise by every registration of now.
+   */
+  readonly revertsUpToVer?: boolean;
+}
+
 /** The 出处项 of a row's cells from its rows of the sources table (see `sourceItemsAt`). */
 function itemsFrom(
   rows: readonly SourceRow[],
   t: CompiledBaseTable,
   decode: Decode,
+  ver: number,
+  o: SourceOptions,
 ): (field: FieldId, cell: StateCell) => string[] {
   const carried = new Map<string, string[]>();
   const corroborations: SourceRow[] = [];
@@ -146,7 +157,9 @@ function itemsFrom(
     const f = t.fields.find((x) => x.id === field);
     const value = f === undefined ? null : cellValue(f, cell, decode);
     for (const x of corroborations) {
-      if (x.field_id !== field || (JSON.parse(x.reverted) as unknown[]).length > 0) continue;
+      if (x.field_id !== field) continue;
+      const reverts = JSON.parse(x.reverted) as { op?: number }[];
+      if (reverts.some((r) => o.revertsUpToVer !== true || (r.op ?? 0) <= ver)) continue;
       const held = (JSON.parse(x.body as string) as { value?: FieldValue }).value;
       if (held === undefined || !sameValue(held, value)) continue;
       if (
@@ -177,6 +190,7 @@ export async function sourceItemsAt(
   rowId: string,
   ver: number,
   decode: Decode,
+  o: SourceOptions = {},
 ): Promise<(field: FieldId, cell: StateCell) => string[]> {
   const r = await tx.query<SourceRow>(
     `SELECT ${SOURCE_COLUMNS}
@@ -184,7 +198,7 @@ export async function sourceItemsAt(
      WHERE b.row_id = $1 AND e.op <= $2 AND b.field_id <> 'existence'`,
     [rowId, ver],
   );
-  return itemsFrom(r.rows, t, decode);
+  return itemsFrom(r.rows, t, decode, ver, o);
 }
 
 /** `sourceItemsAt` for the rows of a page at once: one statement, whatever their number. */
@@ -194,6 +208,7 @@ export async function sourceItemsOfRows(
   rowIds: readonly string[],
   ver: number,
   decode: Decode,
+  o: SourceOptions = {},
 ): Promise<(rowId: string, field: FieldId, cell: StateCell) => string[]> {
   const r = await tx.query<SourceRow>(
     `SELECT ${SOURCE_COLUMNS}
@@ -207,6 +222,6 @@ export async function sourceItemsOfRows(
     list.push(x);
     byRow.set(x.row_id as string, list);
   }
-  const of = new Map([...byRow].map(([row, rows]) => [row, itemsFrom(rows, t, decode)]));
+  const of = new Map([...byRow].map(([row, rows]) => [row, itemsFrom(rows, t, decode, ver, o)]));
   return (rowId, field, cell) => of.get(rowId)?.(field, cell) ?? [];
 }

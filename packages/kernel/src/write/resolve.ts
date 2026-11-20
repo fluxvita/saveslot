@@ -323,6 +323,9 @@ async function readResolution(
             derived_total: write.derived_total,
             pending: write.pending,
             superseded: write.superseded,
+            ...(write.premise_affected !== undefined
+              ? { premise_affected: write.premise_affected }
+              : {}),
             ...(write.omitted !== undefined ? { omitted: write.omitted } : {}),
           },
         }

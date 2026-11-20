@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ReadTx } from "../store/ports.ts";
 import { targetDelta } from "./delta.ts";
 import { sameValue } from "./same-value.ts";
+import { sourceItemsAt } from "./sources.ts";
 import { type StateCell, segmentsOf, stateAt, stateFromCells } from "./state.ts";
 import type { ComparedDelta, EntitySegment, TargetState } from "./types.ts";
 
@@ -453,6 +454,26 @@ describe("stateAt on a fake transaction", () => {
     expect(s.kind === "row" && s.fields["f1"]?.source).toBe("10/f1/0,11/f1/0");
     // A cell no write gave has no 出处项.
     expect(s.kind === "row" && s.fields["f2"]?.source).toBe("");
+  });
+
+  it("a corroboration reverted by a later operation: gone as of now, there as of a version before it", async () => {
+    const t = { ...TABLE, ...event } as unknown as CompiledBaseTable;
+    const sources = [
+      row_({ event_seq: 10 }),
+      row_({
+        event_seq: 11,
+        status: "corroborated",
+        body: JSON.stringify({ value: "x" }),
+        reverted: '[{"op":50,"valid":[]}]',
+      }),
+    ];
+    const cell_ = cell("f1", null, null, "x", { src_event: 10, src_field: "f1", src_k: 0 });
+    const now = await sourceItemsAt(rows([], sources).tx, t, "r1", 40, decode);
+    expect(now("f1" as never, cell_)).toEqual(["10/f1/0"]);
+    const then = await sourceItemsAt(rows([], sources).tx, t, "r1", 40, decode, {
+      revertsUpToVer: true,
+    });
+    expect(then("f1" as never, cell_)).toEqual(["10/f1/0", "11/f1/0"]);
   });
 
   it("does not follow a carried loop for ever", async () => {

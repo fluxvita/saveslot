@@ -29,6 +29,7 @@ import type {
   Seq,
   SourceId,
   SupersededReason,
+  TableId,
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import type { ReadId } from "../audit/index.ts";
@@ -54,6 +55,7 @@ import { decodeColumns, qualifiedTable, type WriteWarning } from "../request/ind
 import { selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { canonical, type IntervalSet, minus, type ValueOut, valueOut } from "../time/index.ts";
+import { type PremiseAffected, premiseAffected } from "./premise-affected.ts";
 
 /**
  * A field value as a receipt gives it: an object value (a quantity) with its keys in the order the
@@ -430,6 +432,8 @@ export interface WriteReceipt {
     readonly type: (typeof EVENT_ITEM_TYPES)[number];
     readonly reason: SupersededReason;
   }[];
+  /** The dependent rows this write marked and took marks off (04-contract §5.1). */
+  readonly premise_affected?: PremiseAffected;
   readonly replayed?: true;
   /** A replay's parts the log cannot give back (04-contract §14 «重放返回什么»). */
   readonly omitted?: readonly ("existing_keys" | "derived_values")[];
@@ -705,6 +709,8 @@ export async function readReceipt(
     readonly slotName: string;
     readonly restoreCount: number;
     readonly replayed: boolean;
+    /** Whether the caller can see a table (`premise_affected.rows`); none: every table. */
+    readonly visible?: (id: TableId) => boolean;
   },
 ): Promise<WriteReceipt | undefined> {
   const events = await operationEvents(tx, op);
@@ -1119,6 +1125,14 @@ export async function readReceipt(
     derived_total: derivedWritten,
     pending,
     superseded,
+    ...(await (async () => {
+      const affected = await premiseAffected(tx, op, {
+        tableOf: (id) => tableOf(id) as CompiledBaseTable | undefined,
+        slotName: o.slotName,
+        ...(o.visible !== undefined ? { visible: o.visible } : {}),
+      });
+      return affected !== undefined ? { premise_affected: affected } : {};
+    })()),
     ...(o.replayed ? { replayed: true as const } : {}),
     ...(o.replayed && (keysLeftOut || derivedWritten > 0)
       ? {
