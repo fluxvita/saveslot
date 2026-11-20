@@ -10,5 +10,6 @@ export * from "./local-connections.ts";
 export * from "./local-init.ts";
 export * from "./local-tenant.ts";
 export * from "./operations.ts";
+export * from "./secret-file.ts";
 export * from "./slot-list.ts";
 export * from "./tokens.ts";
