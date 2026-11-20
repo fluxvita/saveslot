@@ -47,6 +47,7 @@ import { parse, stringify } from "yaml";
 // The templates as the CLI ships them (06-cli §3.1); not part of its exports.
 import { templateDocument } from "../../packages/cli/src/templates.ts";
 import { anchored, cannotRunAnchored, nextAnchoredDays, usesAnchors } from "./anchors.ts";
+import { type RunnerArgs, runnerArgs } from "./args.ts";
 import { pairCalls } from "./pair.ts";
 import { prompt as askPerson } from "./prompt.ts";
 import { cannotRun, dayOf, nextRunDays, offsetHolds, shiftVariant, todayIn } from "./shift.ts";
@@ -89,20 +90,17 @@ const fail = (message: string): never => {
 
 // --- the command line ----------------------------------------------------------------------------
 
-const args = process.argv.slice(2);
-const fixtureOnly = args.includes("--fixture-only");
-const todayAt = args.indexOf("--today");
-const todayArg = todayAt >= 0 ? args[todayAt + 1] : undefined;
-if (todayAt >= 0 && (todayArg === undefined || !/^\d{4}-\d{2}-\d{2}$/.test(todayArg))) {
-  fail("--today takes a day, YYYY-MM-DD");
-}
-const [file, dirArg] = args.filter((a, i) => !a.startsWith("--") && i !== todayAt + 1);
-if (file === undefined || dirArg === undefined) {
-  fail("usage: fixture.ts <variant.yaml> <run directory> [--fixture-only] [--today YYYY-MM-DD]");
-}
-const dir = resolve(dirArg as string);
+const parsed = runnerArgs(process.argv.slice(2));
+if ("error" in parsed) fail(parsed.error);
+const {
+  file,
+  dir: dirArg,
+  fixtureOnly,
+  today: todayArg,
+} = parsed as Exclude<RunnerArgs, { error: string }>;
+const dir = resolve(dirArg);
 if (existsSync(dir)) fail(`${dir} exists: every run starts from a new directory`);
-const text = readFileSync(file as string, "utf8");
+const text = readFileSync(file, "utf8");
 const original = parse(text) as Variant;
 
 // --- the day it runs (./shift.ts) ----------------------------------------------------------------
