@@ -262,3 +262,100 @@ describe("1a, 1c and 7c: from the 9th of every month on, with the same seeds thi
     });
   }
 });
+
+describe("1b, 9a, 2a, 2c, 9b, 9c: every day, with the same distance in each week", () => {
+  const load = (id: string) =>
+    parse(readFileSync(new URL(`../${id}.yaml`, import.meta.url), "utf8")) as Obj;
+  /** Run distances as given on `today`, summed by how many weeks (from Monday) from today. */
+  const byWeek = (v: Obj, today: number) => {
+    const r = anchored(v, today).variant as {
+      fixture: { seed: { params: Obj }[] };
+      steps: { script?: { params: Obj }[] }[];
+    };
+    const calls = [...r.fixture.seed, ...r.steps.flatMap((s) => s.script ?? [])];
+    const monday = (n: number) => n - ((parts(n).w + 6) % 7);
+    const out = new Map<number, number>();
+    for (const c of calls) {
+      const set = (
+        c.params["ops"] as { set?: { date?: string; distance?: { value: string } } }[]
+      )[0]?.set;
+      if (set?.date === undefined || set.distance === undefined) continue;
+      const w = (monday(d(set.date)) - monday(today)) / 7;
+      out.set(w, (out.get(w) ?? 0) + Number(set.distance.value));
+    }
+    return [...out].sort(([a], [b]) => a - b);
+  };
+
+  for (const [id, expected] of [
+    [
+      "1b",
+      [
+        [-2, 15],
+        [-1, 31],
+      ],
+    ],
+    [
+      "9a",
+      [
+        [-2, 15],
+        [-1, 31],
+      ],
+    ],
+    [
+      "2a",
+      [
+        [-2, 15],
+        [-1, 31],
+      ],
+    ],
+    [
+      "2c",
+      [
+        [-2, 15],
+        [-1, 34],
+      ],
+    ],
+    [
+      "9b",
+      [
+        [-2, 15],
+        [-1, 31],
+      ],
+    ],
+    [
+      "9c",
+      [
+        [-2, 15],
+        [-1, 31],
+      ],
+    ],
+  ] as const) {
+    it(id, () => {
+      const v = load(id);
+      expect(usesAnchors(v)).toBe(true);
+      const reference = d(String(v["clock"]));
+      expect(anchored(v, reference).unknown).toEqual([]);
+      expect(byWeek(v, reference)).toEqual(expected);
+      for (let t = reference; t < reference + 400; t++) {
+        expect(cannotRunAnchored(v, t), isoOf(t)).toEqual([]);
+        expect(byWeek(v, t), isoOf(t)).toEqual(expected);
+      }
+    });
+  }
+
+  it("2a and 2c name the day as the user would, and 2a's assertions find that day's row and week", () => {
+    // Tuesday 2026-12-01: last week's Tuesday is 11-24, its Monday 11-23.
+    const a = anchored(load("2a"), d("2026-12-01")).variant as {
+      steps: { user?: string }[];
+      assert: { state: { query?: { where?: Obj } }[] };
+    };
+    expect(a.steps.find((s) => s.user !== undefined)?.user).toBe(
+      "11 月 24 日 那次记错了，是 5 公里",
+    );
+    const wheres = a.assert.state.flatMap((x) => (x.query?.where ? [x.query.where] : []));
+    expect(wheres).toContainEqual({ date: "2026-11-24" });
+    expect(wheres).toContainEqual({ week_start: "2026-11-23" });
+    const c = anchored(load("2c"), d("2026-12-01")).variant as { assert: { reply: Obj[] } };
+    expect(JSON.stringify(c.assert.reply)).toContain("指出 11-24 有两条记录");
+  });
+});

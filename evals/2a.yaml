@@ -23,7 +23,7 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-10-28", distance: { value: "7", unit: km } }
+            set: { date: "@week-12", distance: { value: "7", unit: km } }
       bind: { run_1028: "ops[0].target.row" }
     - as: seed
       op: write
@@ -34,7 +34,7 @@ fixture:
             table: health.runs
             set:
               {
-                date: "2026-11-01",
+                date: "@week-8",
                 distance: { value: "8", unit: km },
                 duration: { value: "50", unit: min },
                 feeling: "很轻松",
@@ -47,7 +47,7 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-11-03", distance: { value: "15", unit: km }, feeling: "腿有点酸" }
+            set: { date: "@week-6", distance: { value: "15", unit: km }, feeling: "腿有点酸" }
       bind: { run_1103: "ops[0].target.row" }
     - as: seed
       op: write
@@ -56,7 +56,7 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-11-05", distance: { value: "6", unit: km } }
+            set: { date: "@week-4", distance: { value: "6", unit: km } }
       bind: { run_1105: "ops[0].target.row" }
     - as: seed
       op: write
@@ -65,13 +65,13 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-11-08", distance: { value: "10", unit: km } }
+            set: { date: "@week-1", distance: { value: "10", unit: km } }
       bind: { run_1108: "ops[0].target.row" }
 
 steps:
   - agent: A
     new_session: true
-    user: "11-03 那次记错了，是 5 公里"
+    user: "{@week-6} 那次记错了，是 5 公里"
 
 assert:
   calls:
@@ -96,7 +96,7 @@ assert:
       text: '必须：`saveslot_write` 的证据里有一段 `user_message`，文本包含"5 公里"。'
   state:
     - level: H
-      query: { table: health.runs, where: { date: "2026-11-03" } }
+      query: { table: health.runs, where: { date: "@week-6" } }
       expect:
         count: 1
         rows:
@@ -111,7 +111,7 @@ assert:
           fields: [distance]
           value_source_text_contains: { distance: "5 公里" }
     - level: H
-      query: { table: health.weekly_mileage, where: { week_start: "2026-11-02" } }
+      query: { table: health.weekly_mileage, where: { week_start: "@week-7" } }
       expect: { rows: [{ values: { total_distance: { quantity: { value: 21, unit: km } } } }] }
     - level: H
       text: "`ops_since_seed`：恰好一次写入，意图 `correct`。"

@@ -23,7 +23,7 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-10-28", distance: { value: "7", unit: km } }
+            set: { date: "@week-12", distance: { value: "7", unit: km } }
       bind: { run_1028: "ops[0].target.row" }
     - as: seed
       op: write
@@ -34,7 +34,7 @@ fixture:
             table: health.runs
             set:
               {
-                date: "2026-11-01",
+                date: "@week-8",
                 distance: { value: "8", unit: km },
                 duration: { value: "50", unit: min },
                 feeling: "很轻松",
@@ -47,7 +47,7 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-11-03", distance: { value: "15", unit: km }, feeling: "腿有点酸" }
+            set: { date: "@week-6", distance: { value: "15", unit: km }, feeling: "腿有点酸" }
       bind: { run_1103: "ops[0].target.row" }
     - as: seed
       op: write
@@ -56,7 +56,7 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-11-05", distance: { value: "6", unit: km } }
+            set: { date: "@week-4", distance: { value: "6", unit: km } }
       bind: { run_1105: "ops[0].target.row" }
     - as: seed
       op: write
@@ -65,7 +65,7 @@ fixture:
         ops:
           - intent: insert
             table: health.runs
-            set: { date: "2026-11-08", distance: { value: "10", unit: km } }
+            set: { date: "@week-1", distance: { value: "10", unit: km } }
       bind: { run_1108: "ops[0].target.row" }
 
 steps:
