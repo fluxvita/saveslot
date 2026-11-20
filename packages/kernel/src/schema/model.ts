@@ -37,6 +37,16 @@ export type SchemaDetailCode =
   | "nondeterministic_function"
   | "unit_inference_failed";
 
+/** The rules of an alias (07 «schema 文档格式» 别名), in the order a finding takes the first broken. */
+export type AliasRule =
+  | "count"
+  | "length"
+  | "empty"
+  | "control"
+  | "surrounding_space"
+  | "repeat"
+  | "name";
+
 /** One finding, at its position in the document (`tables/0/fields/2`, `tables/1/entity_key/0`). */
 export interface SchemaDetail {
   readonly path: string;
@@ -51,8 +61,11 @@ export interface SchemaDetail {
   readonly max?: string;
   /** `unknown_type`, and `key_not_applicable` where the type is wrong: the types it may be. */
   readonly allowed_values?: readonly string[];
-  /** `key_not_applicable` on an event table's `time/field`: the field is not required. */
-  readonly reason?: "not_required";
+  /**
+   * `key_not_applicable` on an event table's `time/field`: the field is not required. `alias_invalid`:
+   * the rule the alias breaks, the first in this order (`count` and `length` with `max`).
+   */
+  readonly reason?: AliasRule | "not_required";
   /** A rule's details: the line in its SQL, the reason, a fix when one can be given. */
   readonly line?: number;
   readonly sql_reason?: SqlReason;

@@ -2067,7 +2067,9 @@ interface ValidationDetail {
   example?: Value;               // type_mismatch：这个字段类型的一个合法取值，照 ops 的 set 里的写法。与这次给的值无关；针对这次的值算出的改法是 suggestion，两者可以同时出现
   rows?: number; samples?: TargetRef[];   // backfill_required：违反的行数与样例
   referenced_by?: string[];      // still_referenced：依赖它的对象在 schema 文档里的位置（同 path 的写法）
-  reason?: "not_required";       // 只用于 key_not_applicable 落在事件类表的 time.field 上：它指的字段不是必填
+  reason?: "not_required"        // 只用于 key_not_applicable 落在事件类表的 time.field 上：它指的字段不是必填
+    | "count" | "length" | "empty" | "control"
+    | "surrounding_space" | "repeat" | "name";   // 只用于 alias_invalid：违反的是哪一条。count 超过 8 个、length 超过 64 个字符（两者都带 max）、empty 规范化后为空、control 含换行（含 U+2028、U+2029）或控制字符、surrounding_space 首尾是空白、repeat 与同一对象里排在前面的别名重复、name 与同一作用域里仍可解析的名字相同；一项同时违反几条时按这个顺序取第一条
   /** rule_sql_rejected、nondeterministic_function、unit_inference_failed、migrate_failed、rule_eval_failed：细分原因，与 sql_rejected 的 reason 同一套取值。 */
   sql_reason?: "syntax" | "not_select" | "function" | "node" | "system_time" | "unknown_name" | "type" | "limit" | "runtime";
   suggestion?: string;           // 机器可用的改法：如替换后的 SQL 片段；写入时 zoned_datetime 写成对象 {instant, zone?} 的 type_mismatch，给出应写的字符串（2026-11-12T09:30:00+08:00[Asia/Shanghai]，没写 zone 用 slot 的时区）
@@ -2105,7 +2107,7 @@ type ValidationDetailCode =
   | "external_key_existing_field"   // 写入过的表上加来源键，键字段不是同一份草稿新增的字段
   | "external_key_in_together"      // 来源键字段出现在 together 里
   | "rule_eval_failed"              // 写入触发的派生刷新求值出错（如 64 位整数溢出）：整个写入被拒，不产生事件
-  | "alias_invalid"                 // 别名超过 8 个或 64 个字符、规范化后为空或含控制字符、同一对象内重复、与同一作用域里仍可解析的名字相同
+  | "alias_invalid"                 // 别名超过 8 个或 64 个字符、规范化后为空、含换行或控制字符、首尾是空白、同一对象内重复、与同一作用域里仍可解析的名字相同；reason 指出是哪一条
   | "unknown_reference"             // 文档里按名字指向的字段或表不存在（time.field、entity_key、external_key、together、duplicate_keys、ref.table）
   | "key_not_applicable"            // 键或它的取值用在不适用的类型或表上（如 min 写在 text 字段上、entity_key 写在非状态类表上、ref.target 与目标表的时间类型不符）
   | "out_of_bounds"                 // 取值越界：min 大于 max、超出类型的范围、scale 不在 0–12、个数或长度超限

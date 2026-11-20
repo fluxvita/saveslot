@@ -593,5 +593,51 @@
       "code": "validation_failed",
       "message": "the document does not compile"
     }
+  },
+  "schema-draft-alias-invalid": {
+    "error": {
+      "reason": "schema",
+      "details": [
+        {
+          "path": "tables/0/fields/3/aliases/0",
+          "code": "alias_invalid",
+          "reason": "name"
+        },
+        {
+          "path": "tables/0/fields/3/aliases/1",
+          "code": "alias_invalid",
+          "reason": "empty"
+        },
+        {
+          "path": "tables/0/fields/3/aliases/2",
+          "code": "alias_invalid",
+          "reason": "surrounding_space"
+        },
+        {
+          "path": "tables/0/fields/3/aliases/3",
+          "code": "alias_invalid",
+          "reason": "control"
+        },
+        {
+          "path": "tables/0/fields/3/aliases/4",
+          "code": "alias_invalid",
+          "reason": "length",
+          "max": "64"
+        },
+        {
+          "path": "tables/0/fields/3/aliases/6",
+          "code": "alias_invalid",
+          "reason": "repeat"
+        },
+        {
+          "path": "tables/0/fields/3/aliases/8",
+          "code": "alias_invalid",
+          "reason": "count",
+          "max": "8"
+        }
+      ],
+      "code": "validation_failed",
+      "message": "the document does not compile"
+    }
   }
 }

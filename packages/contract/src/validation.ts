@@ -78,8 +78,20 @@ export interface ValidationDetail {
    * of the value given (`suggestion` is the fix for that value). Both may be given.
    */
   example?: Value;
-  /** `key_not_applicable` on an event table's `time/field`: the field is not required. Only there. */
-  reason?: "not_required";
+  /**
+   * `key_not_applicable` on an event table's `time/field`: the field is not required. `alias_invalid`:
+   * the rule the alias breaks, the first in this order: `count`, `length` (both with `max`),
+   * `empty`, `control`, `surrounding_space`, `repeat`, `name`. Only there.
+   */
+  reason?:
+    | "not_required"
+    | "count"
+    | "length"
+    | "empty"
+    | "control"
+    | "surrounding_space"
+    | "repeat"
+    | "name";
   /** `backfill_required`: number of violating rows. */
   rows?: number;
   /** `backfill_required`: sample rows. */

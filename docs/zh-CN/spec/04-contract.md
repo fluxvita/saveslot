@@ -526,7 +526,7 @@
 
 - 来源键的编译明细码：声明在状态类表或派生表上（`external_key_table_kind`）；键字段的类型不是 `text`、`enum`、`integer`（`external_key_field_type`）；写入过的表上把已有字段声明为键（`external_key_existing_field`）；键字段出现在 `together` 里（`external_key_in_together`）。只声明了一个键字段时，`warnings` 给 `single_field_external_key`：多个来源系统写这张表时 ID 可能相撞。
 - 派生表规则的分组键来自自由文本字段（`text`，不含 `enum`）时，`warnings` 给 `group_key_free_text`：分组键是用户原文，删除时随分组一起清除（data-model「派生行身份」）。
-- 别名不合规则（超过 8 个、超过 64 个字符、规范化后为空或含控制字符、同一对象内重复、与同一作用域里仍可解析的名字相同）：`validation_failed`，明细码 `alias_invalid`，`path` 指到那一项。
+- 别名不合规则（超过 8 个、超过 64 个字符、规范化后为空、含换行或控制字符、首尾是空白、同一对象内重复、与同一作用域里仍可解析的名字相同）：`validation_failed`，明细码 `alias_invalid`，`path` 指到那一项，`reason` 指出违反的是哪一条（`count`、`length`、`empty`、`control`、`surrounding_space`、`repeat`、`name`，一项同时违反几条时按这个顺序取第一条；`count` 与 `length` 带 `max`）。
 - `migrate` 与表达式形式的 `backfill` 第一版只能引用本字段的旧值与常量，引用别的字段报 `not_in_this_version`；它们只对带值的位置求值，空值原样带过去。
 
 ### `delete`

@@ -268,6 +268,59 @@ describe("aliases (07 «schema 文档格式» 别名)", () => {
     );
   });
 
+  describe("the rule broken is the detail's reason (04-contract-types §9)", () => {
+    /** The details of a document that does not compile, whole. */
+    const all = (d: Doc) => {
+      const e = errorOf(compile(d));
+      if (e.code !== "validation_failed") throw new Error(JSON.stringify(e));
+      return e.details;
+    };
+    const at = (path: string, reason: string, max?: string) => ({
+      path,
+      code: "alias_invalid",
+      reason,
+      ...(max !== undefined ? { max } : {}),
+    });
+    it.each([
+      [
+        "count, with its max",
+        fieldAliases(Array.from({ length: 9 }, (_, i) => `alias ${i}`)),
+        [at(`${F}/8`, "count", "8")],
+      ],
+      ["length, with its max", fieldAliases(["𝄞".repeat(65)]), [at(`${F}/0`, "length", "64")]],
+      ["empty", fieldAliases([""]), [at(`${F}/0`, "empty")]],
+      ["control: a control character", fieldAliases(["a\u0007b"]), [at(`${F}/0`, "control")]],
+      ["control: a line separator", tableAliases(1, ["x y"]), [at(`${T}/0`, "control")]],
+      ["surrounding_space", fieldAliases(["　a"]), [at(`${F}/0`, "surrounding_space")]],
+      ["repeat", fieldAliases(["a", "b", "A"]), [at(`${F}/2`, "repeat")]],
+      ["name: a field's", fieldAliases(["Amount"]), [at(`${F}/0`, "name")]],
+      ["name: a table's", tableAliases(1, ["settings"]), [at(`${T}/0`, "name")]],
+    ])("%s", (_n, d, expected) => {
+      expect(all(d)).toEqual(expected);
+    });
+
+    it("an alias that breaks several: the first in the order count, length, empty, control, surrounding_space, repeat, name", () => {
+      // The ninth, too long, and a repeat: count.
+      const nine = Array.from({ length: 8 }, (_, i) => `alias ${i}`);
+      expect(all(fieldAliases([...nine, `${"x".repeat(70)}`]))).toEqual([
+        at(`${F}/8`, "count", "8"),
+      ]);
+      // Too long and with a control character and surrounding space: length.
+      expect(all(fieldAliases([` ${"x".repeat(70)}\u0007`]))).toEqual([
+        at(`${F}/0`, "length", "64"),
+      ]);
+      // A control character at the end, which is also white space: control.
+      expect(all(fieldAliases(["a\n"]))).toEqual([at(`${F}/0`, "control")]);
+      // Surrounding space and a name once trimmed: surrounding_space (no trimming before the name).
+      expect(all(fieldAliases([" note"]))).toEqual([at(`${F}/0`, "surrounding_space")]);
+      // A repeat of an alias that is itself a name: the first is name, the second repeat.
+      expect(all(fieldAliases(["note", "note"]))).toEqual([
+        at(`${F}/0`, "name"),
+        at(`${F}/1`, "repeat"),
+      ]);
+    });
+  });
+
   it("a form error when not an array of strings", () => {
     expect(errorOf(compile(fieldAliases("a")))).toEqual({
       code: "invalid_argument",

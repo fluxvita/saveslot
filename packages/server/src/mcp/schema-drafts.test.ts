@@ -6,7 +6,8 @@
 // whose range is not every slot, a rule's SQL refused with its reason and a fix, too many tables,
 // no table; and what a derived table's document gets wrong: `sql` outside the rule, a rule that is
 // not an object, a time dependency missing or not one, a type on a derived field, an unknown
-// type, an event table's time field not required, or of another type and not required. Update the golden files with
+// type, an event table's time field not required, or of another type and not required; aliases
+// that break each of their rules. Update the golden files with
 // `pnpm exec vitest run packages/server/src/mcp/schema-drafts.test.ts -u`.
 
 import { readFileSync } from "node:fs";

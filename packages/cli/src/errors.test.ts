@@ -102,6 +102,45 @@ describe("an error's text (06 §6.3)", () => {
     expect(lines.filter((l) => l === `  ${TEXTS.slotsFull}`)).toHaveLength(1);
   });
 
+  it.each([
+    ["count", "8"],
+    ["length", "64"],
+    ["empty"],
+    ["control"],
+    ["surrounding_space"],
+    ["repeat"],
+    ["name"],
+  ] as [string, string?][])(
+    "an alias that breaks its rule %s: the rule, in the CLI's words, under the detail",
+    (reason, max) => {
+      const path = "tables/0/fields/3/aliases/0";
+      const e = new ContractCallError(422, {
+        code: "validation_failed",
+        reason: "schema",
+        message: "the document does not compile",
+        details: [{ path, code: "alias_invalid", reason, ...(max !== undefined ? { max } : {}) }],
+      });
+      const lines = text(e).split("\n");
+      const head = `  alias_invalid${max !== undefined ? ` (${TEXTS.detailMax} ${max})` : ""}${TEXTS.detail} path 「${path}」`;
+      expect(lines[lines.indexOf(head) + 1]).toBe(`    ${TEXTS.aliasRule[reason]}`);
+    },
+  );
+
+  it("an alias's reason the CLI has no words for: nothing more than the detail", () => {
+    for (const reason of ["toString", "not_required", "later"]) {
+      const e = new ContractCallError(422, {
+        code: "validation_failed",
+        reason: "schema",
+        message: "the document does not compile",
+        details: [{ path: "tables/0/aliases/0", code: "alias_invalid", reason }],
+      });
+      const lines = text(e).split("\n");
+      const at = lines.indexOf(`  alias_invalid${TEXTS.detail} path 「tables/0/aliases/0」`);
+      expect(at, reason).toBeGreaterThan(-1);
+      expect(lines[at + 1] ?? "", reason).not.toMatch(/^ {4}\S/);
+    }
+  });
+
   it("a rule's SQL refused: why, and the suggestion, without --json", () => {
     const e = new ContractCallError(422, {
       code: "validation_failed",

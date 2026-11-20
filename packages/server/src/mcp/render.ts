@@ -1764,6 +1764,20 @@ const allowedOf = (xs: readonly unknown[]): Part[] =>
     t`, `,
   );
 
+/** What each rule of an alias says when broken (04-contract-types §9 `reason` of `alias_invalid`). */
+const ALIAS_RULES: ReadonlyMap<string, Part[]> = new Map([
+  ["count", t`too many aliases on one table or field`],
+  ["length", t`the alias is too long (characters counted after NFC)`],
+  ["empty", t`the alias is empty`],
+  ["control", t`the alias holds a line break or a control character`],
+  ["surrounding_space", t`the alias starts or ends with white space`],
+  ["repeat", t`the alias repeats one before it on the same table or field`],
+  [
+    "name",
+    t`the alias is a name that still resolves in its scope: a table of this slot or a field of its table, by its current name or an old one of the last 10 versions`,
+  ],
+]);
+
 /**
  * What a schema draft's detail says of how to put it right, beyond its code (04-contract
  * «schema_draft»): the values the service allows, a time field that is not required; and, in our
@@ -1774,6 +1788,11 @@ function detailGuide(x: R): Line[] {
   const allowed = arr(x["allowed_values"]);
   if (allowed.length > 0) lines.push(t`    allowed: ${allowedOf(allowed)}`);
   if (x["reason"] === "not_required") lines.push(t`    the field it names needs required: true`);
+  // The rule an alias breaks (07 «schema 文档格式» 别名), in our words: not the alias itself.
+  if (x["code"] === "alias_invalid") {
+    const rule = ALIAS_RULES.get(String(x["reason"]));
+    if (rule !== undefined) lines.push(t`    ${rule}`);
+  }
   // A name not of a name's form and a reserved name are one code (03-data-model/10 «名字»).
   if (x["code"] === "reserved_name") {
     lines.push(

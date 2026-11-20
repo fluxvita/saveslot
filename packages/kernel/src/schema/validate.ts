@@ -125,10 +125,10 @@ const ALIAS_LENGTH_MAX = 64;
 
 /**
  * The aliases of a table or a field (07 «schema 文档格式» 别名), already in NFC. One finding per
- * alias at its position: `untrusted_marker` for a boundary marker, else `alias_invalid` for a
- * length, an empty text, a control character or a line or paragraph separator (U+2028, U+2029),
- * surrounding white space, a
- * repeat in the same object, or a name still resolvable in the scope (`names`, folded: the current
+ * alias at its position: `untrusted_marker` for a boundary marker, else `alias_invalid` with the
+ * rule it breaks as `reason`: a count or a length (with `max`), an empty text, a control character
+ * or a line or paragraph separator (U+2028, U+2029), surrounding white space, a repeat in the same
+ * object, or a name still resolvable in the scope (`names`, folded: the current
  * names; the old names of the last 10 versions join in with a change to an existing slot). An
  * alias beyond the eighth is reported at its position too. Comparison is per code point, only
  * ASCII letters without case.
@@ -143,16 +143,25 @@ function aliases(
   (list ?? []).forEach((a, i) => {
     const p = `${at}/aliases/${i}`;
     if (MARKERS.some((m) => a.includes(m))) out.add(p, "untrusted_marker");
-    else if (
-      i >= ALIASES_MAX ||
-      a === "" ||
-      codePoints(a) > ALIAS_LENGTH_MAX ||
-      /[\p{Cc}\p{Zl}\p{Zp}]/u.test(a) ||
-      /^\s|\s$/u.test(a) ||
-      seen.has(fold(a)) ||
-      names.has(fold(a))
-    ) {
-      out.add(p, "alias_invalid");
+    else {
+      // Which rule it breaks: the first of these, in this order (04-contract-types §9).
+      const broken: Pick<SchemaDetail, "reason" | "max"> | undefined =
+        i >= ALIASES_MAX
+          ? { reason: "count", max: String(ALIASES_MAX) }
+          : codePoints(a) > ALIAS_LENGTH_MAX
+            ? { reason: "length", max: String(ALIAS_LENGTH_MAX) }
+            : a === ""
+              ? { reason: "empty" }
+              : /[\p{Cc}\p{Zl}\p{Zp}]/u.test(a)
+                ? { reason: "control" }
+                : /^\s|\s$/u.test(a)
+                  ? { reason: "surrounding_space" }
+                  : seen.has(fold(a))
+                    ? { reason: "repeat" }
+                    : names.has(fold(a))
+                      ? { reason: "name" }
+                      : undefined;
+      if (broken !== undefined) out.add(p, "alias_invalid", broken);
     }
     seen.add(fold(a));
   });

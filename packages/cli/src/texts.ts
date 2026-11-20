@@ -151,6 +151,18 @@ export const TEXTS = {
   detailMin: s("at least"),
   /** Why a rule's SQL was refused (04-contract-types §9 ValidationDetail `sql_reason`). */
   detailSqlReason: s("SQL refused as"),
+  /** The rule an alias breaks (ValidationDetail `reason` of `alias_invalid`). */
+  aliasRule: {
+    count: s("too many aliases on one table or field"),
+    length: s("the alias is too long (characters counted after NFC)"),
+    empty: s("the alias is empty"),
+    control: s("the alias holds a line break or a control character"),
+    surrounding_space: s("the alias starts or ends with white space"),
+    repeat: s("the alias repeats one before it on the same table or field"),
+    name: s(
+      "the alias is a name that still resolves in its scope: a table of this slot or a field of its table, by its current name or an old one of the last 10 versions",
+    ),
+  } as Readonly<Record<string, Static>>,
   /** A fix the service worked out (ValidationDetail `suggestion`). */
   detailSuggestion: s("suggestion:"),
   // When the tenant has as many slots as it may: an empty slot can be removed to make room.
