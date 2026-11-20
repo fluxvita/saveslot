@@ -282,6 +282,31 @@ describe("HTTP's own", () => {
     expect(b.ops[0]?.target).toEqual(a.ops[0]?.target);
   });
 
+  it("a write with premises: not in this version at the service's entry (the kernel's switch is for its tests)", async () => {
+    const r = await http({
+      method: "POST",
+      path: "/v1/writes",
+      token: session,
+      body: JSON.stringify({
+        sv: 1,
+        ops: [
+          {
+            intent: "insert",
+            table: "ledger.expenses",
+            set: { date: "2026-11-17" },
+            premises: [{ table: "ledger.expenses", row: `r_${"5".repeat(26)}` }],
+          },
+        ],
+      }),
+    });
+    expect([r.status, err(r)["code"], err(r)["reason"], err(r)["param"]]).toEqual([
+      501,
+      "not_in_this_version",
+      "parameter",
+      "ops/0/premises",
+    ]);
+  });
+
   it("every route of this version reaches its operation; every later one is 501", async () => {
     // A connection to rename, an item ID of the right form.
     const issued = JSON.parse(

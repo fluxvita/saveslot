@@ -9,8 +9,9 @@
 // has no problem of the first kind.
 //
 // Parameters this version does not take are refused as not_in_this_version at their path:
-// premises, external_key, as, evidence_by_field, an op's own evidence, source_ref segments,
-// revert.to, mode, the evidence level external_authority.
+// premises (until the detection lands: see `acceptPremisesForTests`), external_key, as, an op's own
+// evidence, source_ref segments, revert.to, mode, the evidence level external_authority, and a
+// premise's temporary name ("@…", with `as`).
 //
 // Temporary limits, until experiment 4 (08-open-questions): at most 1,000 ops; `task` and
 // `idempotency_key` at most 256 characters, well-formed, without control characters. Evidence: 32 KB
@@ -43,6 +44,7 @@ import type {
   Intent,
   NormalizedField,
   NormalizedOp,
+  NormalizedPremise,
   NormalizedTarget,
   NormalizedWrite,
   NormalizeWriteInput,
@@ -141,6 +143,31 @@ const OP_KEYS = new Set([
 ]);
 /** Op keys this version does not take, in the order they are reported. */
 const OP_NOT_YET = ["premises", "external_key", "as"];
+/** The premises an op may have (02-integrity «写入的前提» «上限»). */
+export const MAX_PREMISES = 16;
+const PREMISE_KEYS = new Set([
+  "table",
+  "row",
+  "entity",
+  "entity_key",
+  "fields",
+  "ver",
+  "valid_at",
+  "valid_during",
+]);
+/** A historical version as `as_of` gives it (04-contract §2): not one a premise may rest on. */
+const HISTORICAL_VER = /^h([1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+
+/**
+ * Whether the write path takes `premises`. Off: refused as not_in_this_version, as before. It is
+ * turned on only from kernel's test entry (`acceptPremisesForTests`, testing.fixture.ts), never by
+ * an environment variable or a request, until the detection lands and the entry opens.
+ */
+let premisesTaken = false;
+/** Tests only: the write path takes `premises` (or not again). Not exported from the kernel. */
+export function acceptPremisesForTests(on: boolean): void {
+  premisesTaken = on;
+}
 const INTENTS: ReadonlySet<string> = new Set(["insert", "update", "correct", "revoke"]);
 const VER = /^v([1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
@@ -322,7 +349,7 @@ function baseTable(
     // A table of another slot: cross_slot only when it is in range, else it is a name that is not
     // there for this caller (04-contract-types §9 `cross_slot`; 04-contract «不存在与不可见报同一个
     // 错误»). Not reached for now: an op's table was resolved with the request's slot before
-    // (`resolveWriteSlot`), and the premises that name tables are not taken in this version.
+    // (`resolveWriteSlot`); a premise's table is read here (`premiseTable`), so this is reached.
     if (t.inRange === undefined) return invalid("cross_slot", at);
     const other = t.inRange.find((x) => fold(x.name) === fold(slot));
     if (other?.tables.some((x) => fold(x) === fold(name))) return invalid("cross_slot", at);
@@ -485,6 +512,7 @@ interface PendingOp {
     readonly fields: ReadonlyMap<FieldId, readonly number[]>;
     readonly valid?: readonly number[];
   };
+  readonly premises?: readonly PendingPremise[];
   readonly named: NamedField[];
 }
 
@@ -550,17 +578,23 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
   // Second pass: values.
   const details: WriteValidationDetail[] = [];
   const ops = pending.map((p): NormalizedOp => {
-    const value = (f: CompiledBaseField, v: unknown): NormalizedField | undefined => {
+    // `at`: a value not the op's own (a premise's key), its table and path in the details.
+    const value = (
+      f: CompiledBaseField,
+      v: unknown,
+      at?: { readonly table: string; readonly path: string },
+    ): NormalizedField | undefined => {
+      const where = at === undefined ? {} : { table: at.table, path: at.path };
       if (v === null) {
         if (f.required === true) {
-          details.push({ op: p.index, field: f.name, code: "required_missing" });
+          details.push({ op: p.index, field: f.name, code: "required_missing", ...where });
           return undefined;
         }
         return { value: null, raw: null };
       }
       const r = normalizeValue(f, v, { op: p.index, name: f.name, zone, kept: true });
       if (!r.ok) {
-        details.push(r.detail);
+        details.push({ ...r.detail, ...where });
         return undefined;
       }
       warnings.push(...r.warnings);
@@ -628,6 +662,33 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
       ...(p.evidenceRefs !== undefined ? { evidenceRefs: p.evidenceRefs } : {}),
       ...(p.evidence !== undefined ? { evidence: p.evidence } : {}),
       ...(p.evidenceByField !== undefined ? { evidenceByField: p.evidenceByField } : {}),
+      ...(p.premises !== undefined
+        ? {
+            premises: p.premises.map((q, j): NormalizedPremise => {
+              let target: NormalizedPremise["target"];
+              if (q.target.kind === "entity_key") {
+                const key: Record<FieldId, NormalizedField> = {};
+                for (const [f, k, v] of q.target.entries) {
+                  const n = value(f, v, {
+                    table: qualifiedTable(input.compiled.name, q.table),
+                    path: `ops/${p.index}/premises/${j}/entity_key/${k}`,
+                  });
+                  if (n !== undefined) key[f.id] = n;
+                }
+                target = { kind: "entity_key", key };
+              } else if (q.target.kind === "row")
+                target = { kind: "row", row: q.target.row as `r_${string}` };
+              else target = { kind: "entity", entity: q.target.entity as `e_${string}` };
+              return {
+                table: q.table.id,
+                target,
+                ...(q.fields !== undefined ? { fields: q.fields } : {}),
+                ...(q.ver !== undefined ? { ver: q.ver } : {}),
+                ...(q.valid !== undefined ? { valid: q.valid } : {}),
+              };
+            }),
+          }
+        : {}),
       named: p.named,
     };
   });
@@ -685,7 +746,8 @@ function readOp(
   const at = `ops/${i}`;
   if (!isObj(o)) return invalid("malformed", at);
   for (const k of keysOf(o)) if (!OP_KEYS.has(k)) invalid("malformed", `${at}/${k}`);
-  for (const k of OP_NOT_YET) if (has(o, k)) notYet(`${at}/${k}`);
+  for (const k of OP_NOT_YET)
+    if (has(o, k) && !(k === "premises" && premisesTaken)) notYet(`${at}/${k}`);
   const table = baseTable(get(o, "table"), `${at}/table`, tables, input.compiled.tables);
   const byName = fieldsByName(table);
   const state = table.time.type === "state";
@@ -784,7 +846,9 @@ function readOp(
     if (!isObj(s)) return invalid("malformed", `${at}/set`);
     set = namedFields(s, `${at}/set`, table, byName);
     if (set.length === 0) invalid("malformed", `${at}/set`);
-  } else if (kind === "write") invalid("missing", `${at}/set`);
+  } else if (kind === "write" && !(intent === "update" && has(o, "premises")))
+    // An update without `set` is a restatement or a clearing: it carries `premises`.
+    invalid("missing", `${at}/set`);
 
   // Business time.
   let valid: ValidParam | undefined;
@@ -801,7 +865,9 @@ function readOp(
     };
     if (!hasFrom && !hasTo) {
       if (intent === "correct") valid = "corrected_span";
-      else if (kind === "write") valid = { from: { mode: "now" }, to: { mode: "next_change" } };
+      // A restatement or a clearing (no `set`) without an interval has none: from now on.
+      else if (kind === "write" && has(o, "set"))
+        valid = { from: { mode: "now" }, to: { mode: "next_change" } };
     } else {
       const from: FromParam = hasFrom
         ? { mode: "given", value: bizPoint(get(o, "valid_from"), `${at}/valid_from`, c) }
@@ -907,6 +973,9 @@ function readOp(
       evidenceByField = { fields, ...(valid !== undefined ? { valid } : {}) };
     }
   }
+  const premises = has(o, "premises")
+    ? readPremises(get(o, "premises"), at, kind, intent, tables, input, zone, warnings, i)
+    : undefined;
   const named: NamedField[] = [
     ...(set ?? []).map(([f, k]) => ({ field: f.id, name: f.name, param: `${at}/set/${k}` })),
     ...(target.kind === "entity_key" ? target.entries : []).map(([f, k]) => ({
@@ -930,8 +999,188 @@ function readOp(
     evidenceRefs,
     ...(ownEvidence !== undefined ? { evidence: ownEvidence } : {}),
     ...(evidenceByField !== undefined ? { evidenceByField } : {}),
+    ...(premises !== undefined ? { premises } : {}),
     named,
   };
+}
+
+/** One premise as step 1 reads it: its key values not normalized yet. */
+interface PendingPremise {
+  readonly table: CompiledBaseTable;
+  readonly target:
+    | { kind: "row"; row: string }
+    | { kind: "entity"; entity: string }
+    | { kind: "entity_key"; entries: [CompiledBaseField, string, unknown][] };
+  readonly fields?: FieldId[];
+  readonly ver?: { op: number; restoreCount: number };
+  readonly valid?: NormalizedPremise["valid"];
+}
+
+/**
+ * An op's `premises` (04-contract §5 «写入的前提»; 02-integrity «一条声明有什么», «哪些 op 可以带»):
+ * the shape of each, by step 1's rules. What depends on the tenant's state (the target there, the
+ * op's own target, one target twice once resolved, the version's row, how many point at it) is
+ * step 5's.
+ */
+function readPremises(
+  v: unknown,
+  at: string,
+  kind: PendingOp["kind"],
+  intent: Intent | undefined,
+  tables: Tables,
+  input: NormalizeWriteInput,
+  zone: string,
+  warnings: WriteWarning[],
+  i: number,
+): PendingPremise[] {
+  const base = `${at}/premises`;
+  if (kind === "undo") invalid("premises_with_revert", base);
+  if (kind === "revoke") invalid("premises_with_revoke", base);
+  if (!isDenseArray(v)) return invalid("malformed", base);
+  // A clearing is an update's (02-integrity «哪些 op 可以带»).
+  if (v.length === 0 && intent !== "update") invalid("malformed", base);
+  if (v.length > MAX_PREMISES) {
+    refuse({
+      code: "too_large",
+      reason: "premise_entries",
+      param: base,
+      limit: MAX_PREMISES,
+      actual: v.length,
+    });
+  }
+  return v.map((p, j): PendingPremise => {
+    const pat = `${base}/${j}`;
+    if (!isObj(p)) return invalid("malformed", pat);
+    for (const k of keysOf(p)) if (!PREMISE_KEYS.has(k)) invalid("malformed", `${pat}/${k}`);
+    const table = premiseTable(get(p, "table"), `${pat}/table`, tables, input.compiled.tables);
+    const byName = fieldsByName(table);
+    const state = table.time.type === "state";
+    // The target: exactly one of row, entity, entity_key; as an op's, without a temporary name.
+    const given = (["row", "entity", "entity_key"] as const).filter((k) => has(p, k));
+    const [first, second] = given;
+    if (second !== undefined) invalid("mutually_exclusive", `${pat}/${second}`);
+    if (first === undefined) return invalid("missing", `${pat}/${state ? "entity" : "row"}`);
+    const t = get(p, first);
+    let target: PendingPremise["target"];
+    if (first === "row") {
+      // A temporary name binds a row this request creates: with `as`, not in this version.
+      if (typeof t === "string" && t.startsWith("@")) notYet(`${pat}/row`);
+      if (state) invalid("state_table", `${pat}/row`);
+      if (typeof t !== "string" || !isId("row", t)) invalid("malformed", `${pat}/row`);
+      target = { kind: "row", row: t as string };
+    } else if (first === "entity") {
+      if (!state) invalid("not_state_table", `${pat}/entity`);
+      if (typeof t !== "string" || !isId("entity", t)) invalid("malformed", `${pat}/entity`);
+      target = { kind: "entity", entity: t as string };
+    } else {
+      if (!state) invalid("not_state_table", `${pat}/entity_key`);
+      if (table.entity_key === undefined) invalid("malformed", `${pat}/entity_key`);
+      if (!isObj(t)) return invalid("malformed", `${pat}/entity_key`);
+      const keyIds = new Set(table.entity_key as readonly string[]);
+      const keyNamed = new Set<string>();
+      const entries = keysOf(t).map((k): [CompiledBaseField, string, unknown] => {
+        const f = byName.get(fold(k));
+        if (f === undefined || !keyIds.has(f.id) || keyNamed.has(f.id))
+          return invalid("malformed", `${pat}/entity_key/${k}`);
+        keyNamed.add(f.id);
+        return [f, k, get(t, k)];
+      });
+      for (const id of keyIds) {
+        if (!keyNamed.has(id)) {
+          const f = table.fields.find((x) => x.id === id);
+          invalid("missing", `${pat}/entity_key/${f?.name ?? id}`);
+        }
+      }
+      target = { kind: "entity_key", entries };
+    }
+    // fields: names of the target's table, each once; none given is the whole row, so an empty
+    // list says nothing a missing one does not and is malformed.
+    let fields: FieldId[] | undefined;
+    if (has(p, "fields")) {
+      const fs = get(p, "fields");
+      if (!isDenseArray(fs) || fs.length === 0) return invalid("malformed", `${pat}/fields`);
+      fields = [];
+      for (const [k, x] of fs.entries()) {
+        if (typeof x !== "string") return invalid("malformed", `${pat}/fields/${k}`);
+        const f = byName.get(fold(x));
+        if (f === undefined)
+          return refuse({
+            code: "unknown_field",
+            param: `${pat}/fields/${k}`,
+            name: x,
+            nearest: nearest(x, table.fields),
+          });
+        if (fields.includes(f.id)) return invalid("malformed", `${pat}/fields/${k}`);
+        fields.push(f.id);
+      }
+    }
+    // ver: a current version's writing; a historical one (as_of's `h…`) is refused by its own
+    // reason, whatever the version's state (04-contract §5).
+    let ver: PendingPremise["ver"];
+    if (has(p, "ver")) {
+      const x = get(p, "ver");
+      if (typeof x === "string" && HISTORICAL_VER.test(x))
+        invalid("premise_historical_ver", `${pat}/ver`);
+      const m = typeof x === "string" ? VER.exec(x) : null;
+      if (m === null) return invalid("malformed", `${pat}/ver`);
+      const op = Number(m[1]);
+      const restoreCount = Number(m[2]);
+      if (!Number.isSafeInteger(op) || !Number.isSafeInteger(restoreCount))
+        invalid("malformed", `${pat}/ver`);
+      ver = { op, restoreCount };
+    }
+    // Business time: state tables only, a point or a stretch, not both.
+    const hasAt = has(p, "valid_at");
+    const hasDuring = has(p, "valid_during");
+    let valid: PendingPremise["valid"];
+    if (hasAt || hasDuring) {
+      const which = hasAt ? "valid_at" : "valid_during";
+      if (!state) invalid("not_state_table", `${pat}/${which}`);
+      if (hasAt && hasDuring) invalid("mutually_exclusive", `${pat}/valid_during`);
+      const c: PointCtx = {
+        op: i,
+        granularity: (table.time as { granularity: "date" | "instant" }).granularity,
+        zone,
+        warnings,
+      };
+      if (hasAt) valid = { at: bizPoint(get(p, "valid_at"), `${pat}/valid_at`, c) };
+      else {
+        const d = get(p, "valid_during");
+        if (!isDenseArray(d) || d.length !== 2) return invalid("malformed", `${pat}/valid_during`);
+        const from = bizPoint(d[0], `${pat}/valid_during/0`, c);
+        const to = d[1] === null ? null : bizPoint(d[1], `${pat}/valid_during/1`, c);
+        if (to !== null && !(from < to)) invalid("malformed", `${pat}/valid_during/1`);
+        valid = { during: { from, to } };
+      }
+    }
+    return {
+      table,
+      target,
+      ...(fields !== undefined ? { fields } : {}),
+      ...(ver !== undefined ? { ver } : {}),
+      ...(valid !== undefined ? { valid } : {}),
+    };
+  });
+}
+
+/**
+ * A premise's table: a base table of the request's slot. A derived table is not in this version
+ * (`not_in_this_version`, `value`: 02-integrity «能指向什么»), not `derived_readonly`, as nothing is
+ * written to it; a table of another slot is `cross_slot` as for an op's.
+ */
+function premiseTable(
+  v: unknown,
+  at: string,
+  t: Tables,
+  compiled: readonly CompiledTable[],
+): CompiledBaseTable {
+  if (typeof v === "string" && v !== "") {
+    const [slot, name] = splitTableName(v);
+    const table =
+      slot === undefined || fold(slot) === fold(t.slot) ? t.byName.get(fold(name)) : undefined;
+    if (table?.kind === "derived") return notYet(at, "value");
+  }
+  return baseTable(v, at, t, compiled);
 }
 
 /**

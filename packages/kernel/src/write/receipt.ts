@@ -24,7 +24,9 @@ import type {
   ItemCreatedReason,
   ItemId,
   OpNumber,
+  PremiseReason,
   RowId,
+  Seq,
   SourceId,
   SupersededReason,
 } from "@fluxvita/saveslot-contract-core";
@@ -206,6 +208,16 @@ export interface Impact {
   }[];
 }
 
+/** One premise in a receipt (04-contract-types §5.1). */
+export interface OpPremise {
+  readonly target: { readonly table: string; readonly row?: RowId; readonly entity?: EntityId };
+  readonly fields?: readonly string[];
+  readonly ver: string;
+  readonly state: "current" | "changed";
+  readonly reason?: PremiseReason;
+  readonly since?: Seq;
+}
+
 export interface OpReceipt {
   readonly target: {
     readonly table: string;
@@ -224,6 +236,13 @@ export interface OpReceipt {
    */
   readonly existing_keys?: readonly EntityKeyText[];
   readonly fields: Readonly<Record<string, FieldResult | readonly StatePart[]>>;
+  /**
+   * The op's premises, one for each it declared (empty for a clearing), as the head records them:
+   * the state is the one when written (04-contract-types §5.1 `OpResult.premises`).
+   */
+  readonly premises?: readonly OpPremise[];
+  /** How many of the row's other fields the op's premises cover (or a clearing clears). */
+  readonly premise_covered?: number;
   /** State tables: the interval each field resolved to (04-contract-types §5.1 `ResolvedInterval`). */
   readonly resolved?: Readonly<Record<string, ResolvedInterval>>;
   readonly undo?: {
@@ -305,6 +324,53 @@ export function withDerived(
   return { ...receipt, derived: all.slice(0, DERIVED_SHOWN), derived_total: all.length };
 }
 
+/**
+ * An op's premises as its head records them (09 §5.7), in the receipt's terms: the target by its
+ * table's name, the fields by name, the version as text, the state when written; and how many
+ * fields the declarations cover beyond the op's own (`premise_covers`; a clearing's, cleared). An
+ * op without premise blocks has neither.
+ */
+function premisesOf(
+  head: Readonly<Record<string, unknown>>,
+  i: number,
+  tableOf: (id: string) => CompiledBaseTable,
+  slotName: string,
+): { premises?: OpPremise[]; premise_covered?: number } {
+  const decl = (j: number) => head[`ops/${i}/premises/${j}`] as Record<string, unknown> | undefined;
+  const cleared = head[`ops/${i}/premises_cleared`] === true;
+  if (decl(0) === undefined && !cleared) return {};
+  const premises: OpPremise[] = [];
+  for (let j = 0; decl(j) !== undefined; j++) {
+    const p = decl(j) as {
+      table: string;
+      row?: RowId;
+      entity?: EntityId;
+      fields?: string[];
+      ver: { op: number; restore_count: number };
+      state: "current" | "changed";
+      reason?: PremiseReason;
+      since?: Seq;
+    };
+    const t = tableOf(p.table);
+    const name = (f: string) => t.fields.find((x) => x.id === f)?.name ?? f;
+    premises.push({
+      target: {
+        table: qualifiedTable(slotName, t),
+        ...(p.row !== undefined ? { row: p.row } : {}),
+        ...(p.entity !== undefined ? { entity: p.entity } : {}),
+      },
+      ...(p.fields !== undefined ? { fields: p.fields.map(name) } : {}),
+      ver: `v${p.ver.op}.${p.ver.restore_count}`,
+      state: p.state,
+      ...(p.reason !== undefined ? { reason: p.reason } : {}),
+      ...(p.since !== undefined ? { since: p.since } : {}),
+    });
+  }
+  const covers = (head[`ops/${i}/premise_covers`] ?? []) as readonly { field?: string }[];
+  const covered = new Set(covers.flatMap((c) => (c.field !== undefined ? [c.field] : []))).size;
+  return { premises, premise_covered: covered };
+}
+
 /** Where a fallback `ver` / `sv` came from (04-contract-types §7 `FallbackOrigin`). */
 export type FallbackOrigin = { readonly read: ReadId } | { readonly from_write: number };
 
@@ -322,6 +388,20 @@ export type ReceiptWarning =
       readonly code: "multi_segment_unmapped";
       readonly op: number;
       readonly fields: readonly string[];
+    }
+  /** A premise without `ver` took the fallback (04-contract §2); `premise` is its index. */
+  | ({
+      readonly code: "premise_ver_fallback";
+      readonly op: number;
+      readonly premise: number;
+      readonly ver: string;
+    } & FallbackOrigin)
+  /** A premise already changed when declared: the row is marked from the start. */
+  | {
+      readonly code: "premise_already_changed";
+      readonly op: number;
+      readonly premise: number;
+      readonly since: number;
     }
   /** A value in effect covered another's corroboration of a different value (05-time). */
   | {
@@ -959,6 +1039,7 @@ export async function readReceipt(
       ...(ver !== undefined ? { ver } : {}),
       ...(created && isState ? { created_entity: true as const } : {}),
       fields: Object.fromEntries(fields),
+      ...premisesOf(head, i, (id) => tableOf(id), o.slotName),
       ...(resolvedFields !== undefined ? { resolved: resolvedFields } : {}),
       ...(undo !== undefined ? { undo } : {}),
     });

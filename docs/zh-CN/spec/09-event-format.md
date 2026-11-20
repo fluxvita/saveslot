@@ -758,7 +758,7 @@
 | `ver` | 所见版本。同 `ops/<i>/target` 的 `ver`，但没有 `current`（前提只比值，不参与取值判定），`basis` 取 `explicit` / `fallback` / `same_request`（前提没有按来源键的写法） |
 | `range` | 声明的业务时间范围的种类：`whole`（前提目标在事件类表、无时间表上：没有业务时间）/ `from_now`（前提目标在状态类表上，从 `ctx.now` 起一直延续；`date` 粒度从 `ctx.today` 起）/ `row_time`（前提目标在状态类表上，取依赖行自己的业务时间，见 `ops/<i>/premise_valid/<j>`）/ `given`（前提目标在状态类表上，调用方给了时间，见同一块） |
 | `state` | 落账时的判定结果：`current`（所见的值就是现在的值）/ `changed`（声明时已经变了：一写下就带标记） |
-| `reason`、`since` | 只在 `state` 为 `changed` 时有：原因码（§6.8），以及所见版本之后第一次让所声明范围上的值不同的操作号 |
+| `reason`、`since` | 只在 `state` 为 `changed` 时有：`since` 是所见版本之后、从它起一直到声明时都与所见版本在所声明范围上不同的那一段版本里的第一个操作号（在所见那一刻声明、再逐次检测，得出的就是它）；`reason` 是那次操作的原因码（§6.8） |
 
 这一块是元数据：只有不透明 ID、字段 ID、操作号、恢复次数与枚举。键名用 `range` 而不用 `scope`：`write.base` 的 `existence/<k>` 已有 `scope`。
 

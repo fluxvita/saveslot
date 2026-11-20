@@ -20,6 +20,7 @@ export {
   view,
 } from "./judge.ts";
 export type * from "./model.ts";
-export { uniqueRefs } from "./resolve.ts";
+export { seenOf } from "./model.ts";
+export { resolve as resolveInterval, uniqueRefs } from "./resolve.ts";
 export { EVERYTHING, type Limit, type RowState } from "./state.ts";
 export type { GapEntry } from "./write.ts";

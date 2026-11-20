@@ -24,11 +24,14 @@
 // entries, recomputed, changed is refreshed. Each item gets one set of contents a request.
 
 import {
+  type BizPoint,
   type CompiledBaseTable,
   canonicalize,
+  type DateStr,
   type EntityId,
   type FieldId,
   type FieldValue,
+  type Instant,
   type ItemId,
   type JsonValue,
   type OpNumber,
@@ -57,8 +60,10 @@ import {
   proposalImpact,
   type RowState,
   reaches,
+  resolveInterval,
   revertScope,
   scopeOf,
+  seenOf,
   stateFromRecord,
   type TableShape,
   type Unit,
@@ -98,6 +103,21 @@ import {
   literalKey,
 } from "./literal.ts";
 import { tableShape, todayIn, verOfRow, writable } from "./plan.ts";
+import {
+  alignedTo,
+  coveredItems,
+  fanInAfter,
+  hull,
+  itemKey,
+  type PremiseRefusal,
+  pointOf,
+  premiseVersForKey,
+  type RecordedHere,
+  type ResolvedPremise,
+  resolvePremises,
+  sourceItemsOf,
+  tookEffect,
+} from "./premises.ts";
 import {
   type Fallback,
   readUnderAnotherTask,
@@ -745,6 +765,21 @@ export function judgeFailure(e: JudgeError, at: FailedAt): WriteError {
   }
 }
 
+/** A premise refused at step 5, as the write's error (04-contract §5 «写入的前提» «校验»). */
+function premiseFailure(r: PremiseRefusal): WriteError {
+  if (r.code === "not_this_target") {
+    return new WriteError("invalid_argument", "the ver is not a version of the premise's target", {
+      reason: "not_this_target",
+      param: r.param,
+    });
+  }
+  return new WriteError(r.code, `the premise is refused: ${r.reason ?? r.code}`, {
+    ...(r.reason !== undefined ? { reason: r.reason } : {}),
+    param: r.param,
+    ...(r.detail ?? {}),
+  } as never);
+}
+
 /** One `required_in_gap` detail per field and stretch: the field's name, the stretch's interval. */
 function gapDetails(gaps: readonly GapEntry[], at: FailedAt): WriteValidationDetail[] {
   const t = at.table;
@@ -1026,8 +1061,31 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     readonly corroboration: ItemRef;
   }[] = [];
 
-  // Step 2: the request key in its window.
-  const rk = requestKeyOf(actor, task ?? null, req.requestKey);
+  // Step 2: the request key in its window. With premises, the version each rests on is part of
+  // it, a fallback's as resolved now (04-contract §14 «例外一»): a restatement sent again after its
+  // premise changed is not the first one again.
+  const premiseVers = await premiseVersForKey(
+    tx,
+    req.ops,
+    (id) =>
+      slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as
+        | CompiledBaseTable
+        | undefined,
+    async (target, verTable) => {
+      const f = await fallback(tx, input, task ?? null, { kind: "ver", target }, () =>
+        verFromWrite(tx, verTable, target, actor, task ?? null),
+      );
+      return "found" in f ? f : undefined;
+    },
+    restore,
+  );
+  const rk = requestKeyOf(
+    actor,
+    task ?? null,
+    premiseVers.length === 0 || req.requestKey.idempotencyKey !== undefined
+      ? req.requestKey
+      : { ...req.requestKey, content: canonicalize([req.requestKey.content, premiseVers]) },
+  );
   const hit = await findRequest(tx, rk, now, input.windows);
   if (hit !== undefined) {
     const replay = await readReceipt(tx, hit, {
@@ -1158,6 +1216,183 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   const keyOfCreated = new Map<string, { table: TableId; key: KeyValues }>();
   const keysShown = new Map<number, EntityKeyText[]>();
 
+  /** The edges and clearing entries this request's ops recorded so far (the fan-in counts them). */
+  const recordedHere: RecordedHere = { edges: [], clears: [] };
+
+  /**
+   * The depending row's own business time for a premise without one (02-integrity «状态类表上的目标
+   * 不给业务时间时»), aligned to the target, with the contributions that gave it as `deps` when it
+   * is not the op's own. A state row: the interval this op wrote, whatever became of it, the hull of
+   * the interval each field it writes resolved to (a no-op's too: it writes that interval), or the
+   * interval a restatement gives; `deps` the givers of the hull's ends where an end was resolved
+   * from another contribution, and only of those ends. An event row: its time field as written,
+   * else its value in effect after the op (`deps`: the 出处项 giving it). None (from now on): a
+   * timeless row, an empty time field, a state row's restatement or clearing without an interval.
+   */
+  const depTime =
+    (
+      table: CompiledBaseTable,
+      state: RowState,
+      after: Limit,
+      w: {
+        readonly time?: unknown;
+        /** Per field written (`any`: a restatement), its interval, the givers of its ends, where. */
+        readonly spans?: readonly {
+          readonly f: FieldId | "any";
+          readonly valid: IntervalSet;
+          readonly deps: readonly ItemRef[];
+          readonly at: Limit;
+        }[];
+      },
+    ) =>
+    (t: CompiledBaseTable): ResolvedPremise["valid"] | undefined => {
+      const ref = (d: ItemRef) =>
+        d.target === "existence"
+          ? { event: d.event, existence: d.k }
+          : { event: d.event, field: d.target, k: d.k };
+      const unique = (ds: readonly ItemRef[]) => [
+        ...new Map(ds.map((d) => [`${d.event}/${d.target}/${d.k}`, d])).values(),
+      ];
+      let own: { at: BizPoint } | { during: { from: BizPoint; to: BizPoint | null } } | undefined;
+      let deps: ItemRef[] = [];
+      if (table.time.type === "state") {
+        const spans = w.spans ?? [];
+        const h = hull(spans.flatMap((x) => [...x.valid]));
+        if (h !== undefined) {
+          own = { during: h };
+          // An end of the hull is a span's own end: its givers there, among the span's deps.
+          for (const x of spans) {
+            const mine = hull([...x.valid]);
+            for (const p of [h.from, h.to]) {
+              if (p === null || mine === undefined || (p !== mine.from && p !== mine.to)) continue;
+              const givers = new Set(state.givers(p, x.f, x.at).map((g) => itemKey(g)));
+              deps.push(...x.deps.filter((d) => givers.has(itemKey(d))));
+            }
+          }
+          deps = unique(deps);
+        }
+      } else if (table.time.type === "event") {
+        const written = pointOf(w.time);
+        if (written !== undefined) own = { at: written };
+        else {
+          const tf = table.time.field as FieldId;
+          const st = state.pieces().map((s) => state.fieldState(tf, s, after))[0];
+          const at = st?.kind === "value" ? pointOf(st.value) : undefined;
+          if (st?.kind === "value" && at !== undefined) {
+            own = { at };
+            deps = sourceItemsOf(state, st.by);
+          }
+        }
+      }
+      if (own === undefined) return undefined;
+      const a = alignedTo(t, own, slot.timezone);
+      return deps.length > 0 ? ({ ...a, deps: deps.map(ref) } as never) : a;
+    };
+
+  /**
+   * An op's premises (step 5): checked, resolved and written into the head with the items they
+   * cover beyond the op's own (09 §5.7). A clearing records only what it covers.
+   */
+  const declarePremises = async (
+    o: NormalizedOp,
+    state: RowState,
+    c: {
+      readonly seenAt: Limit;
+      readonly after: Limit;
+      readonly covers: boolean;
+      /** The op's own items (of its `write.base`): its declarations cover them. */
+      readonly own: readonly ItemRef[];
+      readonly depValid:
+        | ((t: CompiledBaseTable) => ResolvedPremise["valid"] | undefined)
+        | undefined;
+    },
+  ) => {
+    const premises = o.premises ?? [];
+    const param = `ops/${o.index}`;
+    const self =
+      (headBlocks[`${param}/target`] as { row?: string; entity?: string } | undefined) ?? undefined;
+    const selfId = self?.row ?? self?.entity ?? "";
+    const clearing = premises.length === 0;
+    const covered = c.covers || clearing ? coveredItems(state, c.seenAt, c.after) : [];
+    const mine = [...c.own, ...covered].map(itemKey);
+    const r = await resolvePremises(
+      tx,
+      premises,
+      {
+        op,
+        index: o.index,
+        tableOf: (id) =>
+          slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as
+            | CompiledBaseTable
+            | undefined,
+        self: selfId,
+        slotName: slot.name,
+        fanIn: (target) => fanInAfter(tx, op, target, recordedHere, { i: o.index, items: mine }),
+        createdHere: (table, key) =>
+          createdByKey.has(`${table} ${keyToken(tableOf(table), key as KeyValues)}`),
+        restore,
+        zone: slot.timezone,
+        now: now as Instant,
+        today: today as DateStr,
+        fallback: async (target, verTable, j) => {
+          const f = await fallback(tx, input, task, { kind: "ver", target }, () =>
+            verFromWrite(tx, verTable, target, actor, task),
+          );
+          if ("found" in f) return f;
+          const t = tableOf((await rowTable(tx, target)) as TableId);
+          const ref = {
+            table: `${slot.name}.${t.name}`,
+            ...(t.time.type === "state" ? { entity: target } : { row: target }),
+          };
+          return {
+            refused: readFirst(f, { target: "row", ref }, task, `${param}/premises/${j}/ver`),
+          };
+        },
+      },
+      c.depValid ?? (() => undefined),
+    );
+    if ("code" in r) throw premiseFailure(r);
+    // What apply will keep of them, for the fan-in of the ops after this one.
+    r.resolved.forEach((p, j) => {
+      const target = "row" in p.target ? p.target.row : p.target.entity;
+      for (const item of mine) recordedHere.edges.push({ item, target, i: o.index, j });
+    });
+    if (clearing) for (const item of mine) recordedHere.clears.push({ item, i: o.index });
+    for (const f of r.fallbacks) {
+      warnings.push({
+        code: "premise_ver_fallback",
+        op: o.index,
+        premise: f.premise,
+        ver: `v${f.found}.${f.restoreCount ?? restore}`,
+        ...(f.origin as FallbackOrigin),
+      });
+    }
+    r.resolved.forEach((p, j) => {
+      const { valid, target, ...rest } = p;
+      // 09 §5.7: the target's row or entity beside its table.
+      const decl = { ...target, ...rest };
+      headBlocks[`${param}/premises/${j}`] = decl as unknown as JsonValue;
+      if (valid !== undefined)
+        headBlocks[`${param}/premise_valid/${j}`] = valid as unknown as JsonValue;
+      if (p.state === "changed") {
+        warnings.push({
+          code: "premise_already_changed",
+          op: o.index,
+          premise: j,
+          since: p.since as number,
+        });
+      }
+    });
+    if (clearing) headBlocks[`${param}/premises_cleared`] = true;
+    if (covered.length > 0) {
+      headBlocks[`${param}/premise_covers`] = covered.map((x) =>
+        x.target === "existence"
+          ? { event: x.event, existence: x.k }
+          : { event: x.event, field: x.target, k: x.k },
+      ) as unknown as JsonValue;
+    }
+  };
+
   for (const o of req.ops) {
     const table = tableOf(o.table);
     const shape: TableShape = tableShape(table);
@@ -1270,6 +1505,12 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         ...f.origin,
       });
     }
+    // What the op saw, as judging takes it (`seenOf`): with `ver` current, everything before it,
+    // a corroboration that left the version as it was included. Its premises' covers are of this.
+    const seenAt: Limit = {
+      upTo: seenOf({ op, seen, ...(seenCurrent ? { seenCurrent: true as const } : {}) }),
+      request: { op, below: o.index },
+    };
     // Key fields: in a write by key the key joins `set`; given in `set`, a key field must be the
     // entity's key (05-time «按 entity_key 写入»: 键字段不可改), by the same value tokens.
     let fields = o.fields;
@@ -1305,6 +1546,65 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         }
       }
       fields = merged;
+    }
+
+    // A restatement or a clearing (an update without `set`, 02-integrity «覆盖、取代与清除»): no
+    // judgement, no write.base, the row's ver unchanged. Its row must be there (`revoked` as any
+    // update's).
+    if (o.kind === "write" && o.fields === undefined && o.premises !== undefined) {
+      // By a key no entity holds: nothing to restate.
+      if (isNew) {
+        throw new WriteError("not_found", "no entity holds this key", {
+          reason: "entity",
+          param: `${param}/entity_key`,
+        });
+      }
+      const at: Limit = { upTo: (op - 1) as OpNumber, request: { op, below: o.index } };
+      const gone = isState
+        ? !work.state.pieces().some((s) => work.state.hasValue(s, at))
+        : work.state.revoked(at);
+      if (gone) {
+        throw new WriteError("revoked", "the row is revoked", {
+          param,
+          target: { table: qualifiedTable(slot.name, table), [isState ? "entity" : "row"]: id },
+        });
+      }
+      const verBlock = {
+        op: seen,
+        restore_count: restore,
+        basis: seenExplicit ? ("explicit" as const) : ("fallback" as const),
+      };
+      headBlocks[`${param}/target`] = {
+        table: table.id,
+        ...(isState ? { entity: id } : { row: id }),
+        ...(o.target.kind === "entity_key" ? { by_entity_key: true } : {}),
+        intent: "update",
+        ver: verBlock,
+      };
+      // A restatement on a state table with an interval: that interval, its ends resolved as a
+      // write's (a start left out is now; an end left out or `next_change`, the next change of
+      // any field); without one (no `valid`), from now on.
+      let spans: { f: "any"; valid: IntervalSet; deps: readonly ItemRef[]; at: Limit }[] = [];
+      if (isState && o.valid !== undefined) {
+        const nowPoint = (granularity === "date" ? today : now) as never;
+        let res: ReturnType<typeof resolveInterval>;
+        try {
+          res = resolveInterval(work.state, o.valid, "any", seenAt, nowPoint);
+        } catch (e) {
+          if (e instanceof JudgeError)
+            throw judgeFailure(e, { index: o.index, slot: slot.name, table, id });
+          throw e;
+        }
+        if (res !== null) spans = [{ f: "any", valid: res.valid, deps: res.deps, at: seenAt }];
+      }
+      await declarePremises(o, work.state, {
+        seenAt,
+        after: at,
+        covers: true,
+        own: [],
+        depValid: depTime(table, work.state, at, { spans }),
+      });
+      continue;
     }
 
     const intent =
@@ -1509,6 +1809,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       versions: { ruleset: RULESET, policy: slot.policyVersion },
     });
     Object.assign(headBlocks, enc.head);
+    const ownBase = enc.base !== undefined ? (next as Seq) : undefined;
     if (enc.base !== undefined) {
       const baseSeq = next as Seq;
       opEvents.push({ type: "write.base", slot: slot.slot, blocks: enc.base as never });
@@ -1536,6 +1837,39 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       }
     }
     if (isNew && (enc.base !== undefined || j.created)) work.createdHere = true;
+    if (o.premises !== undefined && o.kind === "write") {
+      const items = "items" in j.record ? j.record.items : [];
+      const after: Limit = { upTo: (op - 1) as OpNumber, request: { op, below: o.index + 1 } };
+      // Each field written: its items' intervals; a no-op's (no item) as judging resolved it, at
+      // the version seen.
+      const spans = isState
+        ? [
+            ...items.map((x) => ({
+              f: x.target === "existence" ? ("any" as const) : x.target,
+              valid: x.valid,
+              deps: x.deps,
+              at: after,
+            })),
+            ...("noop" in j.record ? j.record.noop : []).flatMap((f) => {
+              const res = resolveInterval(judged.state, o.valid, f, seenAt, nowPoint);
+              return res === null ? [] : [{ f, valid: res.valid, deps: res.deps, at: seenAt }];
+            }),
+          ]
+        : [];
+      await declarePremises(o, judged.state, {
+        seenAt,
+        after,
+        covers: tookEffect(j),
+        own:
+          ownBase === undefined
+            ? []
+            : items.map((x) => ({ event: ownBase, target: x.target, k: x.k })),
+        depValid: depTime(table, judged.state, after, {
+          time: fields?.[(table.time as { field?: FieldId }).field as FieldId]?.value,
+          spans,
+        }),
+      });
+    }
     if (j.record.kind === "write") {
       noopNames.set(
         o.index,

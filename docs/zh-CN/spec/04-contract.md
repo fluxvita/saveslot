@@ -195,15 +195,15 @@
 **写入的前提**（`ops[i].premises`；规则的权威定义在 data-model「写入的前提」）：
 
 - **是什么**：这次写下的内容是根据 saveslot 里哪些已读到的行定的。之后那些行在所声明的字段（与业务时间）上的值变了，这一行对任何读取方都带 `premise_changed` 标记（第 7 节）；这一行的值不动。前提不是证据：证据指向源数据原文，前提指向 saveslot 里会变的数据。
-- **一条前提**：目标（`row`、`entity` 或 `entity_key`，除 `table` 外恰好给一个；`row` 也可以写本请求里新建行的临时名 `"@p1"`）、可选的 `fields`（不给 = 整行）、`ver`（应带回，兜底见第 2 节）；目标在状态类表上时可带 `valid_at` 或 `valid_during`，都不给时，声明前提的这一行自己有业务时间就取它，没有就是"从现在起"。每个 op 最多 16 条，超出报 `too_large`（`premise_entries`）。
+- **一条前提**：目标（`row`、`entity` 或 `entity_key`，除 `table` 外恰好给一个；`row` 也可以写本请求里新建行的临时名 `"@p1"`——**这一版没有做**：临时名随 `as` 一起，报 `not_in_this_version`）、可选的 `fields`（不给 = 整行）、`ver`（应带回，兜底见第 2 节）；目标在状态类表上时可带 `valid_at` 或 `valid_during`，都不给时，声明前提的这一行自己有业务时间就取它，没有就是"从现在起"。每个 op 最多 16 条，超出报 `too_large`（`premise_entries`）。
 - **哪些 op 能带**：`insert`、`update`、`correct`。带 `revert` 的 op、`revoke`、按来源键的 op 不能带，分别报 `invalid_argument`（`premises_with_revert` / `premises_with_revoke` / `premises_with_external_key`）。`resolve` 没有这个参数。
 - **重申与清除**：`update` 不带 `set`、带非空的 `premises` 是**重申**——值不变，按所见的 `ver`，这一行现有的值以这些为前提仍然成立。`update` 带 `premises: []` 是**清除**：这一行的前提声明全部去掉，这是去掉前提的唯一写法。两者都不改行的 `ver`，都不能被 `undo`（没有可撤回的改动）。不带 `set` 的 `update` 也没带 `premises`，报 `invalid_argument`（`missing`）。
 - **一个带 `premises` 的 op 覆盖什么**：它自己写下的各项，以及这一行在所见版本上就已生效、之后仍生效的其余各项——后者只在这个 op 全部字段都已生效时才覆盖（有字段成了候选或进了待确认时只覆盖自己写下的项）；清除不受这一条限制，照样清掉整行。回执的 `premise_covered` 给出另外覆盖的字段数。
 - **校验**（判定顺序第 5 步，与 `ref` 目标的校验同处）：
   - 表不存在或不可见报 `unknown_table`，字段不存在报 `unknown_field`；行 / 实体不存在、已被隐私删除或不可见报 `not_found`（`param` 指到 `ops/<i>/premises/<j>`；被宽限期内的删除整行去掉时附全部相关删除的 ID）。
-  - 指向本 op 自己的目标：`invalid_argument`（`premise_self`）。指向派生表：`not_in_this_version`（`value`）。指向别的 slot 里可见的表：`invalid_argument`（`cross_slot`）。`ver` 是历史版本：`invalid_argument`（`premise_historical_ver`）；不是这个目标的版本：`invalid_argument`（`not_this_target`）。`valid_at` / `valid_during` 用在非状态类表的目标上：`invalid_argument`（`not_state_table`）；两者同时给：`invalid_argument`（`mutually_exclusive`）。
+  - 指向本 op 自己的目标：`invalid_argument`（`premise_self`）。同一个 op 的两条声明解析到同一个目标：`invalid_argument`（`premise_duplicate_target`，`param` 指后出现的那条，附两条的下标）——一个出处项对一个前提目标只有一条有效声明，要几个字段就并进一条的 `fields`，要两段时间就给一段盖住两段的 `valid_during` 或不给范围。指向派生表：`not_in_this_version`（`value`）。指向别的 slot 里可见的表：`invalid_argument`（`cross_slot`）。`ver` 是历史版本：`invalid_argument`（`premise_historical_ver`）；不是这个目标的版本：`invalid_argument`（`not_this_target`）。`valid_at` / `valid_during` 用在非状态类表的目标上：`invalid_argument`（`not_state_table`）；两者同时给：`invalid_argument`（`mutually_exclusive`）。
   - 目标已被 1,000 条有效声明指向：拒绝声明方，`too_large`（`premise_fan_in`，附目标与当前条数）。上限只在声明时检查，落在声明方：被依赖的一方永远不会因为别人的声明而写不进去。
-  - **不拒绝的两种**：`ver` 已过期、且所声明的范围在那之后变过；前提目标已撤销。两者都照常写入，这一行一写下就带标记，回执的 `premises[].state` 是 `changed`，`warnings` 给 `premise_already_changed`。理由：证据（用户刚说的话）要落下，标记对所有读方可见，写入方在同一个回执里就知道。`ver` 已过期但所声明的范围没变过的，照常写入、不标。
+  - **不拒绝的两种**：`ver` 已过期、且所声明的范围上现在的值与所见版本上的值不同（中间变过又改回来的不算）；前提目标已撤销、且所见版本早于那次撤销（所见版本本身就是那次撤销时记 `current`、不标）。两者都照常写入，这一行一写下就带标记，回执的 `premises[].state` 是 `changed`，`warnings` 给 `premise_already_changed`。理由：证据（用户刚说的话）要落下，标记对所有读方可见，写入方在同一个回执里就知道。`ver` 已过期但所声明的范围没变过的，照常写入、不标。
   - 重申、清除的目标行已撤销：`revoked`，与普通的 `update` 相同。
 
 ### 5.2 状态类表的区间
@@ -667,7 +667,7 @@
   - **调用方**是连接实例；凭用户会话调用时是这个用户会话。
   - **规范化**：对调用方发来的请求体做 JCS（RFC 8785）编码，不含 `task` 与 `idempotency_key`，**不含服务端兜底补上的 `ver` / `sv` / `item_ver`**。所以隔了一次读取、原样重发的请求仍是同一个请求键。
   - **JSON 数字在规范形里的写法看通道**（第 1 节）：saveslot 自己解析请求体的通道按数字在请求体里的原文写；经宿主解析的通道拿到的是双精度数，按 JCS 的数字写法写。所以同一个请求体经 HTTP 与经 MCP 发来，规范形可能不同（`1.50` 与 `1.5`），是两个请求键；同一通道上的原样重发不受影响。
-  - **例外一：前提的版本**。规范化**包含每条前提解析后的所见版本**（含兜底取得的）。"前提又变了、再核对一次、请求体逐字不变"是重申的正常用法；不含它，第二次重申会在窗口里被当成第一次的重放，返回一个过时的 `state: current`。只对前提这一处；写入目标兜底补上的 `ver` 仍不进规范化。
+  - **例外一：前提的版本**。规范化**包含每条前提解析后的所见版本**（含兜底取得的）。"前提又变了、再核对一次、请求体逐字不变"是重申的正常用法；不含它，第二次重申会在窗口里被当成第一次的重放，返回一个过时的 `state: current`。只对前提这一处；写入目标兜底补上的 `ver` 仍不进规范化。显式幂等键不受这一条影响：它照键与请求体重放，不看前提版本，所以同一个键、请求体逐字不变地再发，即使前提在两次之间变过，返回的仍是第一次的回执；要重新核对，换一个键。
   - **例外二：只含按来源键 op 的请求不计算服务端请求键**，不论在不在窗口内，重发都逐条三方比较：来源键本身就让重发幂等，同样的内容再交一遍得到 `unchanged`。显式 `idempotency_key` 照样可用：请求产生了事件时照旧记下；请求没产生事件时不被记下，重发按来源键重新判定，结果相同。含普通 op 的请求照旧计算请求键（按原始请求体，其中按来源键 op 的内容同样在内）；连接器把按来源键的 op 与普通 op 分开请求即可。
   - 两个例外作用于不同的请求：按来源键的 op 不能带前提。
 - **窗口**（服务层策略，经调用上下文交给内核，K13 不变）：**显式 `idempotency_key` 24 小时；服务端算出的请求键 10 分钟**。窗口外的同内容请求是新请求；同一件事被记了两次由来源键（同一条外部记录再交一遍是更新或无操作）与 `duplicate_keys`（两行是不是记重了）发现，不靠幂等。

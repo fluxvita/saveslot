@@ -26,6 +26,8 @@ export { type QueryInput, queryInTx } from "./read/query.ts";
 // `sql` in a transaction, for tests that wrap the transaction to see the statements it is given.
 export { type SqlInput, type SqlOutput, sqlInTx } from "./read/sql.ts";
 export { decodeColumns } from "./request/index.ts";
+// The write path takes `premises` (tests only, until the detection opens the entry).
+export { acceptPremisesForTests } from "./request/normalize.ts";
 export * from "./store/anchor-conformance.fixture.ts";
 // The literal checker, for tests holding a write's literal blocks to it.
 export { checkLiteral, indexEvidence } from "./write/literal.ts";
@@ -38,4 +40,5 @@ export {
   type LoggedEvent,
 } from "./write/log.fixture.ts";
 export { type WriteInput, writeInTx } from "./write/pipeline.ts";
+export { premiseFanInLimitForTests } from "./write/premises.ts";
 export { resolveInTx, revertEntriesOf } from "./write/resolve.ts";

@@ -81,6 +81,29 @@ export interface NormalizedField {
   readonly raw: RawFieldValue;
 }
 
+/**
+ * One premise of an op (04-contract §5 «写入的前提»), as step 1 reads it: the target as written
+ * (resolved at step 5), the fields by ID (none: the whole row), the version, and the business time
+ * given (state tables only).
+ */
+export interface NormalizedPremise {
+  readonly table: TableId;
+  readonly target:
+    | { readonly kind: "row"; readonly row: RowId }
+    | { readonly kind: "entity"; readonly entity: EntityId }
+    | { readonly kind: "entity_key"; readonly key: Readonly<Record<FieldId, NormalizedField>> };
+  readonly fields?: readonly FieldId[];
+  readonly ver?: { readonly op: OpNumber; readonly restoreCount: number };
+  readonly valid?:
+    | { readonly at: DateStr | Instant }
+    | {
+        readonly during: {
+          readonly from: DateStr | Instant;
+          readonly to: DateStr | Instant | null;
+        };
+      };
+}
+
 export interface NormalizedOp {
   readonly index: number;
   readonly table: TableId;
@@ -121,6 +144,11 @@ export interface NormalizedOp {
     readonly name: string;
     readonly param: string;
   }[];
+  /**
+   * `ops[i].premises`: absent when not given; empty for a clearing (`premises: []`). An update
+   * without `set` carries one (a restatement, or a clearing).
+   */
+  readonly premises?: readonly NormalizedPremise[];
 }
 
 export type EvidenceSegment =
@@ -211,6 +239,11 @@ export interface WriteValidationDetail {
   /** The table's name, `slot.table`: the op's table, given with every detail of a write. */
   readonly table?: string;
   readonly field?: string;
+  /**
+   * Where in the request the value is when it is not the op's own (a premise's key:
+   * `ops/<i>/premises/<j>/entity_key/<name>`); `table` is then that premise's table.
+   */
+  readonly path?: string;
   readonly code:
     | "type_mismatch"
     | "unit_missing"
@@ -283,12 +316,20 @@ export type RequestError =
     }
   | {
       readonly code: "too_large";
-      readonly reason: "evidence_segment" | "request" | "ops" | "evidence_segments";
+      readonly reason:
+        | "evidence_segment"
+        | "request"
+        | "ops"
+        | "evidence_segments"
+        | "premise_entries";
       readonly param: string;
       /** `evidence_segment`, `request`: the evidence's size in bytes. */
       readonly limit_bytes?: number;
       readonly actual_bytes?: number;
-      /** `ops`, `evidence_segments`: how many a request may have, and how many it had. */
+      /**
+       * `ops`, `evidence_segments`: how many a request may have, and how many it had;
+       * `premise_entries`: how many premises an op may have, and how many it had.
+       */
       readonly limit?: number;
       readonly actual?: number;
     };
