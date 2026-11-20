@@ -449,7 +449,7 @@
 
 没有内容块。`verify` 据此认可 `restored_to` 与本事件之间的 `seq` 空档。`restored_to` 也是判定恢复之前发出的 `ver` 时用的恢复点（[`04-contract.md`](04-contract.md) 第 15 节）。
 
-`apply`：记下当前恢复次数（供 `ver` 编码）。
+`apply`：没有物化动作。当前恢复次数不另存，取日志里最近一条 `tenant.restored` 或 `tenant.imported` 的 `restore_count`（`ver`、事项版本、句柄都读它）；锚点存储里的恢复次数与它同值——恢复流程先在锚点里加 1、再把加 1 后的值写进本事件。
 
 #### `tenant.imported`
 

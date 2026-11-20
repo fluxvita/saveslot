@@ -233,6 +233,10 @@ function planPrincipals(
         },
       ];
     }
+    // §5.2: a restore changes nothing in the materialized state; the current restore count is the
+    // latest `tenant.restored` header's (`restoreCount` in write/reads.ts reads it from there).
+    case "tenant.restored":
+      return [];
     // §5.3
     case "principal.registered": {
       const p = block("principal");

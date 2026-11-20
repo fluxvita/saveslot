@@ -512,7 +512,6 @@ export const META_KEYS = {
   ownershipEpoch: "ownership_epoch",
   sessionSettings: "session_settings",
   tzdbVersion: "tzdb_version",
-  restoreCount: "restore_count",
 } as const;
 
 /** The whole DDL script for a new tenant storage at format v1. */

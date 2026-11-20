@@ -14,6 +14,7 @@ export * from "./principals.ts";
 export * from "./read.ts";
 export * from "./reconcile-deletions.ts";
 export * from "./resolve.ts";
+export * from "./restore.ts";
 export * from "./schema.ts";
 export * from "./slots.ts";
 export * from "./tenant.ts";

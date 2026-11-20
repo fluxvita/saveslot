@@ -187,7 +187,23 @@ describe("apply stops, never skips", () => {
     expect(reason(head("literal@1"))).toBe("applied");
   });
 
-  it("on a type it does not implement yet", () => {
+  it("on a type whose blocks it does not support yet (deletion)", () => {
+    const ev = event(
+      "deletion.executed",
+      {
+        target: { deletion: `pi_${"7".repeat(16)}`, confirmed_event: 2, reason: "expiry" },
+        positions: [{ seq: 2, path: "request" }],
+      },
+      [],
+      10,
+    );
+    const header = { ...ev.header, actor: "system", trigger: "deletion_expiry", slot: SLOT };
+    expect(reason({ ...ev, header })).toBe(
+      "unsupported @10: apply stopped at seq 10: block shapes not supported yet: DeletionExecutedTarget, Positions",
+    );
+  });
+
+  it("a restore changes nothing in the materialized state (§5.2)", () => {
     const ev = event("tenant.restored", {}, [], 10);
     const header = {
       ...ev.header,
@@ -199,9 +215,7 @@ describe("apply stops, never skips", () => {
       restored_to: 8,
       high_water: 9,
     };
-    expect(reason({ ...ev, header })).toBe(
-      "not_implemented @10: apply stopped at seq 10: apply of tenant.restored is not implemented yet",
-    );
+    expect(planEvent({ ...ev, header })).toEqual([]);
   });
 });
 
