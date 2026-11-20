@@ -293,7 +293,7 @@ export function contractSuite(
           sql: "SELECT sum(distance) AS total_distance, count(*) AS run_count FROM runs",
           time_dependency: "none",
         },
-        allowed_values: ["none", "bucketed"],
+        allowed_values: ["none", "bucketed", "now"],
       }),
     });
   });

@@ -95,6 +95,12 @@ export interface ReadEntry {
   readonly valid?: ReadValid;
   /** A source read in full. */
   readonly source?: SourceId;
+  /**
+   * A derived table computed when read (02-integrity «影响查询»): the version of its rule, and the
+   * evaluation time its rows were computed at (`at`; not the entry's "now", which `at` keeps).
+   */
+  readonly ruleVersion?: number;
+  readonly evaluatedAt?: Instant;
   /** Rows read with their versions: one per entity on state tables. */
   readonly rows: readonly ReadRow[];
   /** Tables recorded at table level (read beyond the threshold): no rows. */
@@ -185,8 +191,8 @@ export async function writeReads(tx: Tx, entries: readonly ReadEntry[]): Promise
   for (const e of entries) {
     await tx.query(
       `INSERT INTO read_log (read_id, actor, task, at, pos, operation, selfcheck, historical,
-         slot_id, sv, table_id, shape, valid, source_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+         slot_id, sv, table_id, shape, valid, source_id, rule_version, evaluated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
       [
         e.read,
         e.actor,
@@ -202,6 +208,8 @@ export async function writeReads(tx: Tx, entries: readonly ReadEntry[]): Promise
         e.shape ?? null,
         e.valid === undefined ? null : canonicalize(e.valid),
         e.source ?? null,
+        e.ruleVersion ?? null,
+        e.evaluatedAt ?? null,
       ],
     );
     const rows: [TableId, string | null, ReadVersion | undefined][] = [

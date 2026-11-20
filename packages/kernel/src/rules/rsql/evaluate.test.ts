@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { canonicalize, type JsonValue } from "@fluxvita/saveslot-contract-core";
 import { beforeAll, describe, expect, it } from "vitest";
+import { computedAtRead } from "./at-read.ts";
 import { compileDerivedRule } from "./derived.ts";
 import {
   evaluateRule,
@@ -18,6 +19,9 @@ import { loadRsql } from "./load.ts";
 import { derivedSchema, rule, TABLES } from "./rules.fixture.ts";
 
 beforeAll(() => loadRsql());
+
+/** An evaluation instant and its day in Asia/Shanghai (the fixture slot's zone). */
+const CALL = { now: "2026-11-20T02:00:00Z", today: "2026-11-20" };
 
 const WEEKLY =
   "SELECT date_trunc('week', date::timestamp)::date AS week_start, sum(distance) AS total_distance, count(*) AS run_count, count(DISTINCT date) AS days_recorded, min(date) AS first_date, max(date) AS last_date FROM runs GROUP BY 1";
@@ -114,13 +118,13 @@ describe("rules this version does not evaluate", () => {
   const schema = (sql: string, fields: readonly string[], td: "none" | "bucketed" | "now") =>
     derivedSchema(rule(sql, fields, td));
 
-  it("depending on today, saveslot_date, a decimal key that may have more places than its scale", () => {
+  it("saveslot_date, a decimal key that may have more places than its scale; depending on today is evaluated", () => {
     const cases: [string, readonly string[], "none" | "bucketed" | "now", unknown][] = [
       [
         "SELECT count(*) AS n FROM runs WHERE date > saveslot_today() - 30",
         ["n"],
         "now",
-        { kind: "today" },
+        undefined,
       ],
       [
         "SELECT saveslot_date(started) AS d, count(*) AS n FROM runs GROUP BY 1",
@@ -162,7 +166,7 @@ describe("rules this version does not evaluate", () => {
       expect({ sql, refusal: evaluationRefusal(s, "t9") }).toEqual({ sql, refusal: want });
       if (want !== undefined)
         expect(() => evaluateRule(s, "t9")).toThrow("not evaluated in this version");
-      else expect(() => evaluateRule(s, "t9")).not.toThrow();
+      else expect(() => evaluateRule(s, "t9", td === "now" ? CALL : undefined)).not.toThrow();
     }
   });
 
@@ -359,5 +363,99 @@ describe("rowChecksum (09 §5.13)", () => {
     const values = { f2: { value: "31", unit: "km" }, f10: "3", f1: "2026-11-02" } as const;
     const jcs = '{"f1":"2026-11-02","f10":"3","f2":{"unit":"km","value":"31"}}';
     expect(rowChecksum(values)).toBe(createHash("sha256").update(jcs).digest("hex"));
+  });
+});
+
+describe("a rule computed when read (06-derived «时间依赖»)", () => {
+  const LAST_7 =
+    "SELECT sum(distance) AS total, count(*) AS n FROM runs WHERE date > saveslot_today() - 7";
+  const schema = (sql: string, fields: readonly string[]) =>
+    derivedSchema(rule(sql, fields, "now"));
+  const derived = (sql: string, fields: readonly string[]) =>
+    schema(sql, fields).tables.find((t) => t.id === "t9");
+
+  it("is the one test computedAtRead: now rules, and rules reading a state table without a time condition", () => {
+    expect(computedAtRead(derived(LAST_7, ["total", "n"]) as never)).toBe(true);
+    expect(
+      computedAtRead(derived("SELECT sum(amount) AS total FROM budgets", ["total"]) as never),
+    ).toBe(true);
+    const weekly = derivedSchema(rule(WEEKLY, WEEKLY_FIELDS, "bucketed")).tables.find(
+      (t) => t.id === "t9",
+    );
+    expect(computedAtRead(weekly as never)).toBe(false);
+  });
+
+  it("today and now are parameters of the call: the same text at any instant, the values differ", () => {
+    const s = schema(LAST_7, ["total", "n"]);
+    const a = evaluateRule(s, "t9", { now: "2026-11-10T02:00:00Z", today: "2026-11-10" });
+    const b = evaluateRule(s, "t9", CALL);
+    expect(a.all.sql).toBe(b.all.sql);
+    expect(a.all.sql).toContain(`("t1"."f1" > (CAST($1 AS date) - 7))`);
+    expect(a.all.sql).not.toContain("saveslot_today");
+    expect(a.all.params).toEqual(["2026-11-10"]);
+    expect(b.all.params).toEqual(["2026-11-20"]);
+    const now = evaluateRule(
+      schema("SELECT count(guest) AS n FROM rooms WHERE valid_from <= saveslot_now()", ["n"]),
+      "t9",
+      CALL,
+    );
+    // One placeholder for the instant, used by the rule and by the segment it reads.
+    expect(now.all.params).toEqual([CALL.now]);
+    expect(now.all.sql.match(/CAST\(\$1 AS timestamptz\)/g)?.length).toBe(3);
+  });
+
+  it("a state table is each entity's merged segment holding the instant, by its granularity", () => {
+    const e = evaluateRule(
+      schema("SELECT sum(amount) AS total FROM budgets", ["total"]),
+      "t9",
+      CALL,
+    );
+    expect(e.all.sql).toContain(
+      `WHERE "valid_from" <= CAST($1 AS date) AND ("valid_to" IS NULL OR "valid_to" > CAST($1 AS date)))`,
+    );
+    expect(e.all.sql).toContain(`"entity_id" AS "row_id"`);
+    expect(e.all.params).toEqual([CALL.today]);
+  });
+
+  it("the call's values come first: a partition's key and the members' rows follow them", () => {
+    const e = evaluateRule(
+      schema("SELECT category AS c, sum(amount) AS total FROM budgets GROUP BY 1", ["c", "total"]),
+      "t9",
+      CALL,
+    );
+    const p = e.partition(["food"]);
+    expect(p.sql).toMatch(/IS NOT DISTINCT FROM CAST\(\$2 AS text\)$/);
+    expect(p.params).toEqual([CALL.today, "food"]);
+    const m = e.membersAmong(["en_1"]);
+    expect(m.sql).toMatch(/= ANY\(\$2\)$/);
+    expect(m.params).toEqual([CALL.today, ["en_1"]]);
+    expect(e.members.params).toEqual([CALL.today]);
+  });
+
+  it("each statement has exactly the values its text uses: today only in an output column or HAVING is not in the members'", () => {
+    for (const sql of [
+      "SELECT route AS r, count(*) FILTER (WHERE date <= saveslot_today()) AS n FROM runs GROUP BY 1",
+      "SELECT route AS r, count(laps) AS n FROM runs GROUP BY 1 HAVING max(date) <= saveslot_today()",
+    ]) {
+      const e = evaluateRule(schema(sql, ["r", "n"]), "t9", CALL);
+      expect(e.all.params, sql).toEqual([CALL.today]);
+      expect(e.all.sql, sql).toContain("CAST($1 AS date)");
+      expect(e.members.params, sql).toEqual([]);
+      expect(e.members.sql, sql).not.toContain("$1");
+      const m = e.membersAmong(["r_1"]);
+      expect(m.sql, sql).toMatch(/= ANY\(\$1\)$/);
+      expect(m.params, sql).toEqual([["r_1"]]);
+      const p = e.partition(["park"]);
+      expect(p.sql, sql).toMatch(/CAST\(\$2 AS text\)$/);
+      expect(p.params, sql).toEqual([CALL.today, "park"]);
+    }
+  });
+
+  it("needs its instant; a rule not computed when read takes none", () => {
+    expect(() => evaluateRule(schema(LAST_7, ["total", "n"]), "t9")).toThrow("without its instant");
+    const weekly = derivedSchema(rule(WEEKLY, WEEKLY_FIELDS, "bucketed"));
+    expect(() => evaluateRule(weekly, "t9", CALL)).toThrow(
+      "an instant for a rule not computed when read",
+    );
   });
 });

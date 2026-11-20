@@ -36,6 +36,7 @@ import {
 } from "@fluxvita/saveslot-contract-core";
 import { sameValue } from "../delta/index.ts";
 import {
+  computedAtRead,
   decodeDerivedRow,
   derivedRowsQuery,
   evaluateRule,
@@ -222,7 +223,7 @@ async function refreshTable(
 /**
  * The derived writes after this operation's base changes, in the order they are appended: derived
  * tables in dependency order (this version's rules read base tables only, so in the schema's
- * order), each rule's by partition ID. A rule is recomputed once however many of its tables
+ * order), each rule's by partition ID. A table computed when read has none. A rule is recomputed once however many of its tables
  * changed, and only when one of them did.
  */
 export async function derivedWrites(input: DerivedWritesInput): Promise<DerivedWrite[]> {
@@ -230,6 +231,8 @@ export async function derivedWrites(input: DerivedWritesInput): Promise<DerivedW
   const out: DerivedWrite[] = [];
   for (const t of input.schema.tables) {
     if (t.kind !== "derived") continue;
+    // Computed when read: no derived writes, whatever changed (06-derived «时间依赖»).
+    if (computedAtRead(t)) continue;
     if (!t.rule.depends_on.some((d) => changed.has(d.table))) continue;
     out.push(...(await refreshTable(input, t)));
   }

@@ -148,6 +148,8 @@ export interface AnalyzeInput {
   readonly tables: readonly CompiledBaseTable[];
   /** Names of the slot's derived tables: reading one is not compiled yet. */
   readonly derivedTables: readonly string[];
+  /** Those among them computed when read: reading one is not in this version. */
+  readonly computedAtReadTables?: readonly string[];
   readonly fields: readonly DeclaredField[];
   readonly declaredTimeDependency: TimeDependency;
   /** `names`: the rule as written; `ids`: its ID-bound text (tables `t<n>`, fields `f<n>`). */
@@ -1247,6 +1249,13 @@ export class Analyzer extends ExprTyper {
     const tables = new Map(this.#in.tables.map((t) => [ids ? t.id : fold(t.name), t]));
     const t = tables.get(key);
     if (t !== undefined) return t;
+    if (!ids && (this.#in.computedAtReadTables ?? []).some((d) => fold(d) === key)) {
+      throw new RsqlError({
+        kind: "not_in_this_version",
+        loc: from.loc,
+        message: "a derived rule does not read a derived table computed when read in this version",
+      });
+    }
     if (!ids && this.#in.derivedTables.some((d) => fold(d) === key)) {
       return notYet(from.loc, "reading a derived table");
     }

@@ -313,7 +313,14 @@ export const generatedRule: fc.Arbitrary<GeneratedRule> = fc
     qual: fc.constantFrom<Qual>("none", "table", "alias", "slot"),
     key: fc.option(fc.constantFrom(...KEYS), { nil: undefined, freq: 4 }),
     byOrdinal: fc.boolean(),
-    today: fc.boolean(),
+    // Where today appears, if anywhere: WHERE, an output column, HAVING. A rule computed when read
+    // whose today is only in an output column or HAVING has none in its members' statement.
+    today: fc.constantFrom<"none" | "where" | "output" | "having">(
+      "none",
+      "where",
+      "output",
+      "having",
+    ),
     count: fc.integer({ min: 1, max: 3 }),
     semicolon: fc.boolean(),
   })
@@ -330,19 +337,28 @@ export const generatedRule: fc.Arbitrary<GeneratedRule> = fc
       })
       .map((p): GeneratedRule => {
         const from = g.qual === "alias" ? "runs AS r" : g.qual === "slot" ? "health.runs" : "runs";
+        const aggs =
+          g.today === "output"
+            ? [...p.aggs, "count(*) FILTER (WHERE date <= saveslot_today())"]
+            : p.aggs;
         const outs = [
           ...(p.key !== undefined ? [`${p.key} AS k`] : []),
-          ...p.aggs.map((a, i) => `${a} AS a${i}`),
+          ...aggs.map((a, i) => `${a} AS a${i}`),
         ];
-        const where = [p.where, g.today ? "date > saveslot_today() - 30" : undefined].filter(
-          (x) => x !== undefined,
-        );
+        const where = [
+          p.where,
+          g.today === "where" ? "date > saveslot_today() - 30" : undefined,
+        ].filter((x) => x !== undefined);
+        const having =
+          g.today === "having"
+            ? `max(date) <= saveslot_today()${p.having !== undefined ? ` AND (${p.having})` : ""}`
+            : p.having;
         const group = p.key === undefined ? "" : ` GROUP BY ${g.byOrdinal ? "1" : p.key}`;
-        const sql = `SELECT ${outs.join(", ")} FROM ${from}${where.length > 0 ? ` WHERE ${where.map((w) => `(${w})`).join(" AND ")}` : ""}${group}${p.having !== undefined ? ` HAVING ${p.having}` : ""}${g.semicolon ? ";" : ""}`;
+        const sql = `SELECT ${outs.join(", ")} FROM ${from}${where.length > 0 ? ` WHERE ${where.map((w) => `(${w})`).join(" AND ")}` : ""}${group}${having !== undefined ? ` HAVING ${having}` : ""}${g.semicolon ? ";" : ""}`;
         return {
           sql,
-          fields: [...(p.key !== undefined ? ["k"] : []), ...p.aggs.map((_, i) => `a${i}`)],
-          timeDependency: g.today ? "now" : g.key?.bucket ? "bucketed" : "none",
+          fields: [...(p.key !== undefined ? ["k"] : []), ...aggs.map((_, i) => `a${i}`)],
+          timeDependency: g.today !== "none" ? "now" : g.key?.bucket ? "bucketed" : "none",
         };
       });
   });

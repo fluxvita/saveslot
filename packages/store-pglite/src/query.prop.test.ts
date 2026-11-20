@@ -477,7 +477,7 @@ describe.each([
               .filter((x) => (isState ? x.entity === ENTITY : x.row === ROW))
               .map((x) => ({
                 ...(isState ? { from: x.valid_from, to: x.valid_to } : {}),
-                ver: x.ver.replace(/^v/, "h"),
+                ver: (x.ver as string).replace(/^v/, "h"),
                 values: x.values,
                 marks: kept(x.marks as never),
               }));

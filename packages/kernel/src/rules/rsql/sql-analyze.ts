@@ -20,6 +20,7 @@ import type {
   TableId,
 } from "@fluxvita/saveslot-contract-core";
 import { type AnyColumn, children, ExprTyper, type ParamType, type Ty } from "./analyze.ts";
+import { computedAtRead } from "./at-read.ts";
 import { convertRule, LIMITS } from "./convert.ts";
 import { reject } from "./errors.ts";
 import type {
@@ -355,7 +356,7 @@ class SqlAnalyzer extends ExprTyper {
 
   /** The references a read-time derived table adds: its rule's table, and what that one adds. */
   #expandedRefs(slot: SqlSlot, table: CompiledTable, depth: number): number {
-    if (table.kind !== "derived" || table.rule.time_dependency !== "now" || depth > 8) return 0;
+    if (table.kind !== "derived" || !computedAtRead(table) || depth > 8) return 0;
     const key = `${slot.slot}/${table.id}`;
     const known = this.#expansion.get(key);
     if (known !== undefined) return known;

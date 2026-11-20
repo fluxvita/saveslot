@@ -375,7 +375,7 @@ describe("query of a derived table", () => {
         result.rows.map((r) => ({
           table: "t9",
           target: expect.stringMatching(/^p_/),
-          ver: { op: Number(/^v(\d+)\./.exec(r.ver)?.[1]), restoreCount: 0 },
+          ver: { op: Number(/^v(\d+)\./.exec(r.ver as string)?.[1]), restoreCount: 0 },
         })),
       );
       expect(entry.lastRead).toEqual([{ kind: "sv", target: SLOT, op: 1, restoreCount: 0 }]);

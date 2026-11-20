@@ -194,7 +194,7 @@ describe("planEvent: what this phase stops on, never skips", () => {
     kind: "derived",
     description: "sums",
     physical: { table: "d_t5_v1" },
-    // Depends on today: computed at read time, not evaluated in this version.
+    // Depends on today: computed at read time.
     rule: {
       id: "r1",
       version: 1,
@@ -212,11 +212,6 @@ describe("planEvent: what this phase stops on, never skips", () => {
   const withTables = (tables: unknown[]) => ({ ...COMPILED_V1, tables }) as unknown as JsonValue;
 
   it.each([
-    [
-      "a derived table depending on today",
-      { compiled: withTables([...COMPILED_V1.tables, derived]) },
-      "not_implemented: derived table t5: today is not evaluated yet",
-    ],
     [
       "a derived table whose rule does not check against its definition",
       {

@@ -291,7 +291,7 @@ describe("the form of derived tables: invalid_argument", () => {
       time_dependency: "none",
     },
   };
-  const dependency = { ...example, allowed_values: ["none", "bucketed"] };
+  const dependency = { ...example, allowed_values: ["none", "bucketed", "now"] };
 
   it.each<[string, (d: Doc) => void, object]>([
     ["no rule", (d) => delete d.tables[1].rule, missing("tables/1/rule", example)],

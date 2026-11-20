@@ -307,12 +307,8 @@ const RULE_EXAMPLE = {
   sql: "SELECT sum(distance) AS total_distance, count(*) AS run_count FROM runs",
   time_dependency: "none",
 };
-/**
- * The time dependencies a slot is created with in this version. "now" is left out: the entry
- * refuses it as not_in_this_version (ops/schema.ts, through evaluationRefusal in
- * rules/rsql/evaluate.ts); add it here when rules depending on today are taken.
- */
-const TIME_DEPENDENCIES_TAKEN = ["none", "bucketed"];
+/** The time dependencies a slot is created with in this version: all three. */
+const TIME_DEPENDENCIES_TAKEN = ["none", "bucketed", "now"];
 
 /** What a form error at `param` carries besides its reason: the rule's example, its values. */
 function formExtra(

@@ -67,6 +67,11 @@ export interface PrintNames {
    * of every row the rule reads after WHERE, without aggregating; no GROUP BY, no HAVING.
    */
   readonly members?: boolean;
+  /**
+   * With `evaluate`: the text of a function call the kernel replaces (`saveslot_now()`,
+   * `saveslot_today()` as parameters of the evaluation instant), or undefined to print it as it is.
+   */
+  readonly func?: (e: Expr & { k: "func" }) => string | undefined;
 }
 
 function ident(s: string, shape: (s: string) => boolean): string {
@@ -168,8 +173,10 @@ class Printer {
         return `GREATEST(${list(e.args)})`;
       case "least":
         return `LEAST(${list(e.args)})`;
-      case "func":
+      case "func": {
         if (!/^[a-z_]+$/.test(e.name)) throw new Error("not a function name to print");
+        const replaced = this.#n.evaluate === true ? this.#n.func?.(e) : undefined;
+        if (replaced !== undefined) return replaced;
         if (this.#n.evaluate === true && e.name === "mod") {
           const [a, b] = e.args;
           if (a === undefined || b === undefined || e.args.length !== 2)
@@ -177,6 +184,7 @@ class Printer {
           return `mod(${p(a)}, NULLIF(${p(b)}, 0))`;
         }
         return `${e.name}(${list(e.args)})`;
+      }
       case "extract":
         if (!WORD.test(e.field)) throw new Error("not an EXTRACT field to print");
         return `EXTRACT(${e.field} FROM ${p(e.arg)})`;

@@ -286,6 +286,14 @@ describe("a slot with a derived table", () => {
       ),
     ],
     ["reading a state table", ruled("SELECT sum(amount) AS total FROM budgets", ["total"], "now")],
+  ])("takes a rule %s: computed when read, the slot is created", async (_, doc) => {
+    await draft({ document: doc });
+    expect(await slotCount()).toBe(1);
+    // No base row yet: the whole aggregate has no input row, so no row.
+    expect((await query(s.store, ctx(), { table: "summary" })).rows).toEqual([]);
+  });
+
+  it.each([
     [
       "calling saveslot_date",
       ruled(

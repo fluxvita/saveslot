@@ -93,12 +93,17 @@ export interface Marks {
   readonly flagged?: readonly { readonly item: ItemId; readonly reason: "duplicate_keys" }[];
   readonly corrected?: true;
   readonly revoked?: { readonly seq: Seq };
+  /** A derived row computed when read (04-contract §7): its value follows the evaluation time; no `ver`. */
+  readonly computed_at_read?: true;
 }
 
 /** §4.1 `Row`, without `detail` (not in this version yet). */
 export interface Row extends TargetRef {
-  /** `v…` (current), or `h…` read as of a record time (with `historical`). */
-  readonly ver: string;
+  /**
+   * `v…` (current), or `h…` read as of a record time (with `historical`). Absent on a derived row
+   * computed when read (`marks.computed_at_read`).
+   */
+  readonly ver?: string;
   readonly historical?: true;
   readonly values: Values;
   readonly valid_from?: BizPoint;

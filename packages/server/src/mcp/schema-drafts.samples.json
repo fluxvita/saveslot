@@ -498,7 +498,7 @@
         "sql": "SELECT sum(distance) AS total_distance, count(*) AS run_count FROM runs",
         "time_dependency": "none"
       },
-      "allowed_values": ["none", "bucketed"],
+      "allowed_values": ["none", "bucketed", "now"],
       "reason": "missing",
       "param": "tables/1/rule/time_dependency",
       "code": "invalid_argument",
@@ -511,7 +511,7 @@
         "sql": "SELECT sum(distance) AS total_distance, count(*) AS run_count FROM runs",
         "time_dependency": "none"
       },
-      "allowed_values": ["none", "bucketed"],
+      "allowed_values": ["none", "bucketed", "now"],
       "reason": "malformed",
       "param": "tables/1/rule/time_dependency",
       "code": "invalid_argument",

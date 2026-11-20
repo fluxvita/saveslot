@@ -7,10 +7,14 @@
 //   derived write that last set it; it cannot be written with, so the read registers no row
 //   version for the fallback, only `sv`.
 // - Derived tables have no business time: `valid_at` / `valid_during` are `derived_table`;
-//   `clip` / `coalesce` are `not_state_table`, as on any table but a state table. `at` is taken
-//   and has no effect: it is the evaluation time of rules depending on today, which this version
-//   computes at read time only, and which no derived table of this version has. `include_revoked`
+//   `clip` / `coalesce` are `not_state_table`, as on any table but a state table. `include_revoked`
 //   gives nothing more: a derived row is never revoked.
+// - A table computed when read (computedAtRead; 06 «时间依赖») is not read from its physical table,
+//   which stays empty: its rule is evaluated at `at` (the entry's instant when not given; "today" is
+//   its day in the slot's zone), and its rows carry `marks.computed_at_read` and no `ver`. The
+//   conditions are applied to the rows as decoded, typed as the physical table would hold them, so
+//   that they compare the same values a stored row would. Rows are ordered by the group key, which
+//   identifies them (there is no partition). `at` has no effect on any other derived table.
 // - Each row carries `input_marks` (04-contract §7): of the base rows in its partition (the rule's
 //   members: evaluate's members query, of the same checked rule and key decoding), those with an
 //   open item's flag on a field the rule depends on, counted once per row and kind; a flag on the
@@ -20,13 +24,17 @@
 // - A later page reads the derived table as it is: a derived table has no state as of a record
 //   time. When a derived write changed the table after the first page, the page is
 //   `handle_expired` (`derived_changed`) and the caller reads again from the first page; when
-//   none did, the table is what the first page read.
+//   none did, the table is what the first page read. A table computed when read has no derived
+//   writes: the test is whether a base table its rule reads has a version recorded after the first
+//   page's position; when none has, the page is computed again at the first page's `at`, which the
+//   position keeps (04-contract §15).
 
 import {
   type CompiledBaseField,
   type CompiledBaseTable,
   type CompiledDerivedTable,
   canonicalize,
+  type FieldValue,
   type Instant,
   type JsonValue,
   type TableId,
@@ -34,14 +42,18 @@ import {
 import type { ReadEntry, ReadRow } from "../audit/index.ts";
 import { get, has, instantText, type Obj, parseDateTime } from "../request/index.ts";
 import {
+  computedAtRead,
+  type DerivedRow,
   decodeDerivedRow,
   derivedRowsQuery,
   evaluateRule,
+  evaluating,
   type RuleEvaluation,
   RuleEvaluationError,
 } from "../rules/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { valueOut } from "../time/index.ts";
+import { mergedSegments } from "../store/segments.ts";
+import { dateInZone, valueOut } from "../time/index.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 import {
   bool,
@@ -53,8 +65,17 @@ import {
   QUERY_KEYS,
 } from "./params.ts";
 import type { QueryInput, QueryOutput } from "./query-io.ts";
-import { cmpKeys, type KeySpec, keyType, keyValue } from "./rows.ts";
-import { conditionSql, logPosition, Params, readTableFlags, restoreCount } from "./select.ts";
+import { cmpKeys, type KeySpec, keyType, keyValue, spansMeet } from "./rows.ts";
+import {
+  conditionSql,
+  INSTANT_TEXT,
+  logPosition,
+  Params,
+  physical,
+  readTableFlags,
+  restoreCount,
+} from "./select.ts";
+
 import type { NamedTable } from "./slots.ts";
 import {
   type InputMarks,
@@ -108,6 +129,69 @@ async function changedSince(tx: ReadTx, table: string, op: number): Promise<bool
   return r.rows.length > 0;
 }
 
+/**
+ * Whether a base table among `tables` has a version recorded after operation `op` (a cell opened
+ * or closed by a later operation, as `changes` reads them): what a table computed when read was
+ * computed from no longer holds at `op`.
+ */
+async function basesChangedSince(
+  tx: ReadTx,
+  tables: readonly CompiledBaseTable[],
+  op: number,
+): Promise<boolean> {
+  for (const b of tables) {
+    const r = await tx.query(
+      `SELECT 1 FROM ${physical(b).versions} WHERE rec_from > $1 OR rec_to > $1 LIMIT 1`,
+      [op],
+    );
+    if (r.rows.length > 0) return true;
+  }
+  return false;
+}
+
+/** The SQL type a derived field's value is held in (as apply builds the physical table). */
+const HELD: Readonly<Record<CompiledDerivedTable["fields"][number]["type"], string>> = {
+  text: "text",
+  enum: "text",
+  ref: "text",
+  integer: "bigint",
+  decimal: "numeric",
+  quantity: "numeric",
+  boolean: "boolean",
+  date: "date",
+  zoned_datetime: "timestamptz",
+};
+
+/**
+ * Which of these computed rows meet the conditions: the rows passed to the database as the
+ * physical table would hold them (one column `f_<field>` per field, of its type), and the same
+ * condition SQL as a stored derived table is read with. The indices of those that do.
+ */
+async function meeting(
+  tx: ReadTx,
+  t: CompiledDerivedTable,
+  rows: readonly DerivedRow[],
+  where: readonly Condition[],
+): Promise<Set<number>> {
+  if (where.length === 0 || rows.length === 0) return new Set(rows.map((_, i) => i));
+  const cell = (v: FieldValue) =>
+    v !== null && typeof v === "object" && "value" in v ? v.value : v;
+  const json = rows.map((r, i) => {
+    const o: Record<string, unknown> = { i };
+    for (const f of t.fields) o[`f_${f.id}`] = cell(r.values[f.id] ?? null);
+    return o;
+  });
+  const p = new Params();
+  const data = p.add(JSON.stringify(json), "::jsonb");
+  const cols = [`"i" integer`, ...t.fields.map((f) => `"f_${f.id}" ${HELD[f.type]}`)];
+  const conds = where.map((c) => conditionSql(c, p));
+  const r = await tx.query<{ i: number }>(
+    `SELECT "i" FROM jsonb_to_recordset(${data}) AS x(${cols.join(", ")}) WHERE ${conds.join(" AND ")}`,
+    p.list,
+  );
+  return new Set(r.rows.map((x) => Number(x.i)));
+}
+
 export async function queryDerived(
   tx: ReadTx,
   input: QueryInput,
@@ -135,7 +219,16 @@ export async function queryDerived(
   }
   if (has(params, "detail")) {
     const d = get(params, "detail");
-    if (d === "detailed") throw notImplemented("detail", "detail: detailed");
+    if (d === "detailed") {
+      // A row computed when read has no operation, record time or field sources to give.
+      if (computedAtRead(t))
+        throw new ReadError("not_in_this_version", "detail: detailed of a row computed when read", {
+          reason: "value",
+          param: "detail",
+          value: "detailed",
+        });
+      throw notImplemented("detail", "detail: detailed");
+    }
     if (d !== "concise") throw invalid("malformed", "detail");
   }
   // The evaluation time: checked, of no effect on this version's derived tables (above).
@@ -218,37 +311,79 @@ export async function queryDerived(
     order: order.map((o) => ({ field: o.field.id, dir: o.dir })),
   } as JsonValue);
   const position = positionOf(params, { identity, specs, restoreCount: restore, latest });
-  if (position !== undefined && (await changedSince(tx, t.id, position.seq))) {
+  const atRead = computedAtRead(t);
+  const bases = named.slot.compiled.tables.filter(
+    (b): b is CompiledBaseTable =>
+      b.kind === "base" && t.rule.depends_on.some((d) => d.table === b.id),
+  );
+  if (
+    position !== undefined &&
+    (atRead
+      ? await basesChangedSince(tx, bases, position.seq)
+      : await changedSince(tx, t.id, position.seq))
+  ) {
     throw new ReadError("handle_expired", "the derived table changed since the first page", {
       reason: "derived_changed",
       param: "position",
     });
   }
 
-  // The rows.
-  const e = evaluateRule(named.slot.compiled, t.id);
-  const q = derivedRowsQuery(t);
-  const p = new Params();
-  const conds = where.map((c) => conditionSql(c, p));
-  const res = await tx.query<Record<string, unknown>>(
-    `${q.sql}${conds.length > 0 ? ` WHERE ${conds.join(" AND ")}` : ""}`,
-    p.list,
+  // The rows: computed at the evaluation time (a later page: the first page's), or stored.
+  const evaluatedAt = position?.at ?? at;
+  const e = evaluateRule(
+    named.slot.compiled,
+    t.id,
+    atRead
+      ? { now: evaluatedAt, today: dateInZone(Date.parse(evaluatedAt), named.slot.timezone) }
+      : undefined,
   );
-  const items = res.rows.map((r) => {
-    const d = decodeDerivedRow(t, r);
-    const values: Record<string, Values[string]> = Object.create(null);
-    for (const f of fields) values[f.name] = valueOut(d.values[f.id] ?? null);
+  const item = (
+    values: DerivedRow["values"],
+    partition: string | undefined,
+    ver: number | undefined,
+  ) => {
+    const out: Record<string, Values[string]> = Object.create(null);
+    for (const f of fields) out[f.name] = valueOut(values[f.id] ?? null);
     const key: Record<string, Values[string]> = Object.create(null);
-    for (const f of keyFields) key[f.name] = valueOut(d.values[f.id] ?? null);
-    const row: Row = { table: qualified, key, ver: `v${d.ver}.${restore}`, values };
+    for (const f of keyFields) key[f.name] = valueOut(values[f.id] ?? null);
+    const keyText = canonicalize(keyFields.map((f) => values[f.id] ?? null) as JsonValue);
+    const row: Row =
+      ver === undefined
+        ? { table: qualified, key, values: out, marks: { computed_at_read: true } }
+        : { table: qualified, key, ver: `v${ver}.${restore}`, values: out };
     const keys = [
-      ...order.map((o) => keyValue(d.values[o.field.id])),
-      ...keyFields.map((f) => keyValue(d.values[f.id])),
-      d.partition,
+      ...order.map((o) => keyValue(values[o.field.id])),
+      ...keyFields.map((f) => keyValue(values[f.id])),
+      partition ?? keyText,
     ];
-    const keyText = canonicalize(keyFields.map((f) => d.values[f.id] ?? null) as JsonValue);
-    return { item: { row, partition: d.partition, ver: d.ver, key: keyText }, keys };
-  });
+    return { item: { row, partition, ver, key: keyText }, keys };
+  };
+  let items: ReturnType<typeof item>[];
+  if (atRead) {
+    const computed = await evaluating(async () => {
+      const out: DerivedRow[] = [];
+      const r = await tx.query<Record<string, unknown>>(e.all.sql, e.all.params as never);
+      for (const x of r.rows) {
+        const d = e.decode(x);
+        if (d !== undefined) out.push(d);
+      }
+      return out;
+    });
+    const kept = await meeting(tx, t, computed, where);
+    items = computed.filter((_, i) => kept.has(i)).map((d) => item(d.values, undefined, undefined));
+  } else {
+    const q = derivedRowsQuery(t);
+    const p = new Params();
+    const conds = where.map((c) => conditionSql(c, p));
+    const res = await tx.query<Record<string, unknown>>(
+      `${q.sql}${conds.length > 0 ? ` WHERE ${conds.join(" AND ")}` : ""}`,
+      p.list,
+    );
+    items = res.rows.map((r) => {
+      const d = decodeDerivedRow(t, r);
+      return item(d.values, d.partition, d.ver);
+    });
+  }
   items.sort((a, b) => cmpKeys(specs, a.keys, b.keys));
   const seq = position?.seq ?? latest;
   const { page, next } = pageAfter(items, {
@@ -256,16 +391,26 @@ export async function queryDerived(
     identity,
     position,
     seq,
-    at: position?.at ?? at,
+    at: evaluatedAt,
     restoreCount: restore,
     limit,
   });
 
+  const read = bases.find((b) => b.id === e.base);
   const marks = await inputMarks(
     tx,
     e,
     t,
     page.map((x) => x.key),
+    atRead && read !== undefined && read.time.type === "state"
+      ? {
+          table: read,
+          point:
+            read.time.granularity === "date"
+              ? dateInZone(Date.parse(evaluatedAt), named.slot.timezone)
+              : evaluatedAt,
+        }
+      : undefined,
   );
   const result = {
     table: qualified,
@@ -278,11 +423,15 @@ export async function queryDerived(
   };
 
   const tableId = t.id as TableId;
-  const readRows: ReadRow[] = page.map((x) => ({
-    table: tableId,
-    target: x.partition,
-    ver: { op: x.ver as never, restoreCount: restore },
-  }));
+  // A table computed when read is recorded at table level, under its own name (02-integrity
+  // «影响查询»); never under the base tables it reads.
+  const readRows: ReadRow[] = atRead
+    ? []
+    : page.map((x) => ({
+        table: tableId,
+        target: x.partition as string,
+        ver: { op: x.ver as never, restoreCount: restore },
+      }));
   const entry: ReadEntry = {
     read: input.read,
     actor: input.actor,
@@ -306,7 +455,8 @@ export async function queryDerived(
       time: "none",
     } as JsonValue),
     rows: readRows,
-    coarse: [],
+    coarse: atRead ? [tableId] : [],
+    ...(atRead ? { ruleVersion: t.rule.version, evaluatedAt: evaluatedAt as Instant } : {}),
     // A derived row's ver cannot be written with: only the slot version counts as read.
     lastRead: [{ kind: "sv", target: named.slot.slot, op: named.slot.sv, restoreCount: 0 }],
   };
@@ -322,6 +472,29 @@ function literalId(l: unknown): unknown {
 }
 
 /**
+ * The merged segment (../store/segments.ts) of each of these entities that holds `point` (a date,
+ * or an instant, by the table's granularity), its ends as flag spans write them.
+ */
+async function segmentsAt(
+  tx: ReadTx,
+  t: CompiledBaseTable,
+  entities: readonly string[],
+  point: string,
+): Promise<Map<string, { from: string; to: string | null }>> {
+  const byDate = t.time.type === "state" && t.time.granularity === "date";
+  const cast = byDate ? "date" : "timestamptz";
+  const text = (c: string) => (byDate ? `${c}::text` : `to_char(${c}, ${INSTANT_TEXT})`);
+  const r = await tx.query<{ entity_id: string; f: string; t: string | null }>(
+    `SELECT "entity_id", ${text('"valid_from"')} AS f, ${text('"valid_to"')} AS t
+     FROM (${mergedSegments(t)}) AS "m"
+     WHERE "entity_id" = ANY($1) AND "valid_from" <= CAST($2 AS ${cast})
+       AND ("valid_to" IS NULL OR "valid_to" > CAST($2 AS ${cast}))`,
+    [[...entities], point] as never,
+  );
+  return new Map(r.rows.map((x) => [x.entity_id, { from: x.f, to: x.t }]));
+}
+
+/**
  * The input marks of the partitions with these keys (JCS of the group key): the rule's members
  * falling in them, their open items' flags on the fields the rule depends on in the base table
  * (or on the row's existence), each kind counted once per row; the items by ID, at most 10.
@@ -331,6 +504,7 @@ export async function inputMarks(
   e: Pick<RuleEvaluation, "base" | "membersAmong" | "decodeMember">,
   t: CompiledDerivedTable,
   keys: readonly string[],
+  stateAt?: { readonly table: CompiledBaseTable; readonly point: string },
 ): Promise<Map<string, InputMarks>> {
   const out = new Map<string, InputMarks>();
   if (keys.length === 0) return out;
@@ -352,6 +526,18 @@ export async function inputMarks(
     );
     if (kept.length === 0) flags.delete(row);
     else flags.set(row, kept);
+  }
+  // A rule reading a state table with no time condition reads each entity's segment holding the
+  // evaluation point: a flag counts only when its spans meet that segment, as a read of the base
+  // table at that point marks it (04-contract §7).
+  if (stateAt !== undefined && flags.size > 0) {
+    const segments = await segmentsAt(tx, stateAt.table, [...flags.keys()], stateAt.point);
+    for (const [row, fs] of flags) {
+      const seg = segments.get(row);
+      const kept = seg === undefined ? [] : fs.filter((f) => spansMeet(f.spans, seg.from, seg.to));
+      if (kept.length === 0) flags.delete(row);
+      else flags.set(row, kept);
+    }
   }
   if (flags.size === 0) {
     for (const k of keys) out.set(k, zero());

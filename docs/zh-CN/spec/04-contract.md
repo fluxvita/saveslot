@@ -272,7 +272,7 @@
 - `pending[]`：本次生成、并入或刷新的事项。新生成的带 `item_ver`；`merged`（并入已有事项）与 `refreshed`（改到了一个没读过的未决事项的目标，或事项没被改到、重算出的内容变了）不带，要先看详情。
 - `superseded[]`：因本次写入被取代的事项。**只有读过事项当前版本的写入方改到它的目标，事项才被取代**；没读过时事项刷新、保持未决（data-model「待处理事项」）。
 - `affected_reads`：触发影响查询时给——`correct`、`revoke`、状态类表上任何让值发生变化的写入。按原因计数，不含本次写入所带 `ver` 出自的那次读取；`covered_since` 是读取记录保留到的时刻，更早的读取不在统计内；`possible` 是其中只能算"可能受影响"的读取数（受限 SQL 读了很多行、只留了表级记录的读取，以及按版本集合匹配的读取）：这类读取说不出到底用没用到被改的那一行，宁可多报，所以单独计数；`not_covered` 列出没有覆盖的读取种类。
-- `derived[]`：受影响的派生值，一个派生行上变了的一个字段一条（分组键字段不单列，它们在 `key` 里），最多 20 条，另给 `derived_total`（字段条目的总数）。列的是值的变化：派生行出现或消失时，前后都是 null 的字段没有条目；除分组键以外的字段前后都是 null 的派生行，`derived[]` 里没有它，`derived_total` 也不计它。幂等重放的回执里 `derived[]` 为空，`derived_total` 是这次操作的派生写入条数（每个受影响的分区一条），见第 14 节。
+- `derived[]`：受影响的派生值，一个派生行上变了的一个字段一条（分组键字段不单列，它们在 `key` 里），最多 20 条，另给 `derived_total`（字段条目的总数）。列的是值的变化：派生行出现或消失时，前后都是 null 的字段没有条目；除分组键以外的字段前后都是 null 的派生行，`derived[]` 里没有它，`derived_total` 也不计它。幂等重放的回执里 `derived[]` 为空，`derived_total` 是这次操作的派生写入条数（每个受影响的分区一条），见第 14 节。读时计算的派生值没有派生写入，不列在 `derived[]` 里，也不计入 `derived_total`；它的值在下一次读取时按当时的数据算出。
 - `premise_affected`：这次操作改动的行上，别的行声明过的前提的变化——新带上 `premise_changed` 的依赖行数（`count`）、撤掉标记的依赖行数（`matched`）、按原因计数、依赖行最多 20 行（`deletion_preview` 与 `delete` 里最多 50 行）。没有时不给。`resolve` 触发的写入、`delete` 的结果、撤回删除的 `cancelled` 里同样有它；`deletion_preview` 里是预告。
 - 每个 op 的 `premises[]` 与请求的 `premises` 一一对应：实际采用的所见版本（兜底时是兜底到的那个）、`state`（`current` / `changed`，`changed` 时附原因与使前提变了的操作号）。
 - `replayed`：幂等重放（第 14 节）。
@@ -348,7 +348,7 @@
 - `possibly_affected` 的 `reason`：`correct`（你曾读到的值已被纠正）、`revoke`（所含的一条记录已被撤销）、`retroactive`（你读取的业务时间上的值后来被追溯修改）、`plan_changed`（你读过的未来安排已变更）。
 - `premise_changed` 的 `reason`：上面四个同名同义，另有 `update`（前提被变更）与 `deleted`（隐私删除改掉了前提的值）。一次写入在所声明的范围上同时有追溯与未来的部分时取 `retroactive`。
 - `premise_changed` 与 `possibly_affected` 的区别：后者只给读过旧版本的那个连接实例，回答"你当时读到的对不对"，不在日志里；前者是这一行的状态，由显式声明得出、进日志，事件类表与无时间表上的 `update` 也会触发它。一行最多列 10 条，按 `since` 从新到旧，超出时另给总数。打标记、撤标记都不改这一行的 `ver`。
-- 派生行没有自己的标记，带 `input_marks`：只统计规则所依赖的字段上有标记的基础行（含 `premise_changed` 的计数）。
+- 派生行没有自己的标记，带 `input_marks`：只统计规则所依赖的字段上有标记的基础行（含 `premise_changed` 的计数）。规则不带时间限定读状态类表时，读到的是每个实体含求值时刻的那一段，标记的业务时间范围还要与那一段相交才计，与按那一刻读基础表时打不打这个标记相同。
 - `sql` 的结果带同一形状的汇总（`marks_summary`），从这次查询读到的行版本集合算出。
 
 ## 8. 不可信文本
@@ -386,7 +386,7 @@
 - **别名**：表与字段可带 `aliases`（schema 作者写的用户说法、旧称、口语叫法）。`list` 档带表的别名，`table` 档带表与每个字段的别名，`schema` 档是文档原样。别名是不可信文本（第 8 节），**不参与名字解析**：请求与受限 SQL 里只认名字，写了别名的请求照旧报 `unknown_table` / `unknown_field`；报错的 `nearest` 怎样借别名给出对的名字，见第 11 节。改别名的改动码是 `change_aliases`，归入自动生效类别 `description`。
 - `table` 档的表定义带 `external_key`（声明了来源键时：键字段的名字）。
 - `schema` 档返回的文档 ID 与 `base_version` 已填好，可以直接改了交给 `schema_draft`。带 `draft`（草稿 ID）时返回那份草稿编译后的文档（ID 已回填），不论草稿处于什么状态；读取照常记读取记录；草稿不存在或不可见报 `not_found`（`draft`）。`schema_draft` 的回执截掉了文档全文时，就用它重读。文档不能分页；超出外化面的结果预算时报 `too_large`（`result_budget`），不截断。（这是读操作，什么都没落账；已经落账的操作不用这个错误，见 surfaces 第 3 节。）
-- 概况：行数、业务时间范围、每个字段最近 K 个不同取值（按操作号取，确定性）。`table` 档每张表都带 `profile`（行数、业务时间范围与规模提示），只数调用方可见范围内的表。行数数的是表里现有的行：事件类与无时间表数未撤销的行，状态类表数区间段（相邻且全部字段同值的段先合并，物理上怎么切不改变结果，与 `query` 的 `total` 同口径），派生表数它自己的行。业务时间范围：事件类表的 `from` 与 `to` 是时间字段的最早值与最晚值，两端都含（只算未撤销的行）；状态类表的 `from` 是最早的区间起点，`to` 是最晚的 `valid_to`，不含（与契约里所有 `valid_to` 同一约定），有一直延续的段时不给 `to`；无时间表、派生表与空表不给。读时由当前数据现算，不进事件。slot 有迁移在进行时，`list` 档带 `migration`；这期间涉及这个 slot 的调用在 `notices` 里给 `migration_progress`（目标版本与进度）。
+- 概况：行数、业务时间范围、每个字段最近 K 个不同取值（按操作号取，确定性）。`table` 档每张表都带 `profile`（行数、业务时间范围与规模提示），只数调用方可见范围内的表；读时计算的派生表不带：它没有落表的行可数，现算一遍规则也不是目录该做的事。行数数的是表里现有的行：事件类与无时间表数未撤销的行，状态类表数区间段（相邻且全部字段同值的段先合并，物理上怎么切不改变结果，与 `query` 的 `total` 同口径），派生表数它自己的行。业务时间范围：事件类表的 `from` 与 `to` 是时间字段的最早值与最晚值，两端都含（只算未撤销的行）；状态类表的 `from` 是最早的区间起点，`to` 是最晚的 `valid_to`，不含（与契约里所有 `valid_to` 同一约定），有一直延续的段时不给 `to`；无时间表、派生表与空表不给。读时由当前数据现算，不进事件。slot 有迁移在进行时，`list` 档带 `migration`；这期间涉及这个 slot 的调用在 `notices` 里给 `migration_progress`（目标版本与进度）。
 - **规模提示**：`table` 档的概况在行数过界时带 `scale`：超过舒适线（`comfortable_rows`）、不超过实测线（`tested_rows`）是 `large`，超过实测线是 `beyond_tested`；两条线的数值随内核版本发布（architecture「容量边界与实测数值」）。按这张表当前的 `profile.rows` 读时算出，不进事件，不是数据标记；不超过舒适线时不带。`list` 档不带。
 
 ### `query`
@@ -435,6 +435,7 @@
   - 事件类表、无时间表：每个变了的字段一个对象。状态类表：每个变了的字段是数组，每项是前后的值不同的一段业务时间（相邻、前后值都相同的合并），带 `valid`。
   - `*`（这一行 / 这一段是否存在）：撤销或撤销的撤回改变了它时给，`before`、`after` 是布尔，`true` 表示存在；事件类表、无时间表是对象，状态类表是数组、每项带被撤销或恢复的那一段 `valid`。新增不给 `*`。带区间的撤销让那段时间没有值，该字段也给出这一段取值的消失。
 - `changes` 的 `since: "my_last_read"` = 本连接实例（带 `task` 时只认同一任务，没带时只认没带 `task` 的读取；用户会话时是这个会话）上次读过的位置，即那次读取的"所见状态的位置"（data-model「读取记录」）。**按读取覆盖的范围认**：目标是整张表（不给行或实体）的 `changes`，只认覆盖这张表的读取——`query`，以及目标是整张表且把窗口给全了的 `changes`；目标是某一行或实体的 `changes`，认覆盖这张表的读取，加上对这一行或实体的读取（`timeline`、`as_of`、对它的 `changes`），取最近的一次。只读过某一行的，对整张表问 `"my_last_read"` 得到 `read_first`（`no_read`）：它没见过那张表的其余行，不给一个漏了的答案。按记录时刻读的（`as_of`）位置是它的记录点；读派生表、别的表、别的连接实例的读取不算；`sql` 的读取也不算：它读到哪些行取决于查询，读取记录里记的又是超集，不能当作看过这张表。`saveslot connect` 的自检读取不算；没读过、或只在别的 `task` 下读过，都报 `read_first`（`target: "table"`，`param: "since"`；`reason` 分别是 `no_read` 与 `task_mismatch`，后者带 `read_task` 与 `task`，不带 `ver`）。**读完整个窗口才算读过**：`changes` 把窗口（`since` 到 `until`）给全了才登记位置为 `until`——首页放得下整个窗口时在首页登记；放不下时首页与中间的页都不登记，返回最后一页时登记。记成读过的，必须恰好是回给调用方的。`changes` 不返回 `ver`，不算逐行读，不作 `ver` 的兜底；它登记所读 slot 的 `sv`（首页），不带 `sv` 的写入可由此按 `sv_fallback` 通过。
+- **读时计算的派生表**（`marks.computed_at_read`）上，`timeline` 与 `as_of` 报 `not_in_this_version`（`param` 为 `table`）：它的行不是哪次操作写下的，也没有按时刻的状态。
 - **`changes` 不以派生表为目标**，`table` 是派生表时报 `invalid_argument`（`derived_table`）。读过派生值（如月度合计）的一方要知道读到的值是否已不成立：对派生规则所汇总的基础表查 `changes`，`since` 取那次读取结果的操作号——不用 `my_last_read`：只读过合计的一方对基础表没有读取记录，会得到 `read_first`；或者直接重读合计。第一版的影响查询不覆盖对派生值的读取，这是读方唯一的办法。
 
 ### `sources`
@@ -501,9 +502,9 @@
   - 经 `restructure_unused` 生效的任何改动之后，带旧 `sv` 写这张表的写入一律被拒：`schema_incompatible`，`changed_fields` 给一项 `{field: "*", change: <改动码>}`，`"*"` 表示整张表。
   - 草稿等确认期间这张表被写入了：草稿里凡按"从未被写入"编译的改动都不再成立，确认时一律报 `draft_outdated`（`table_written`，见 `resolve`）。
 - **第一版不支持的键或改动**：`reextract`、`extends`、`compatibility`、`derived` 改 `base`；在写入过的表上改时间类型、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 互转与改目标、换一组来源键（`change_external_key`）、改来源键字段的类型或收紧它的约束。写入过的表上仍可以加来源键（键字段须是同一份草稿新增的字段）或去掉它，都要确认。草稿里出现时整份报 `not_in_this_version`，`param` 指到那个键，不产生任何事件；因为表已被写入而不支持的，`reason` 是 `table_written`。
-- **这一版建 slot 时不收的派生规则**：依赖"今天"的（含读状态类表而不带业务时间限定的）、用到 `saveslot_date` 的、分组键是 `decimal` / `quantity` 且小数位上界可能超出推断精度的（算法见 [`03-data-model/11-restricted-sql.md`](03-data-model/11-restricted-sql.md)「小数分组键」）。都报 `not_in_this_version`，`param` 指到那张派生表的规则（`tables/<i>/rule`），不产生任何事件。
+- **这一版建 slot 时不收的派生规则**：用到 `saveslot_date` 的、分组键是 `decimal` / `quantity` 且小数位上界可能超出推断精度的（算法见 [`03-data-model/11-restricted-sql.md`](03-data-model/11-restricted-sql.md)「小数分组键」）。都报 `not_in_this_version`，`param` 指到那张派生表的规则（`tables/<i>/rule`），不产生任何事件。派生规则读读时计算的派生表，这一版同样报 `not_in_this_version`，`param` 是 `tables/<i>/rule/sql`。
 - **新建 slot** 要求凭证的 slot 范围是"全部"：限定了 slot 范围的凭证报 `insufficient_scope`（`required_scope: "all_slots"`），不论草稿里的 slot 名是否与某个不可见的 slot 重名。凭证同时没有 `saveslot.schema` 时先报缺 scope（`required_scope: "saveslot.schema"`）：先查动作，再查范围。
-- 文档的形式不对报 `invalid_argument`，`param` 是文档里的位置（写法同明细的 `path`，如 `tables/0/fields/2/min`）：文档不是对象、键的 JSON 类型不对、出现不认识的键、字符串不是良构的 Unicode（含孤立的代理项，写不进日志）、枚举值不合内容规则（见 data-model「字段类型与取值范围」）（`malformed`），缺了必有的键（`missing`）。不认识的键不忽略：拼错的 `requried` 若被忽略，字段就悄悄成了可选。`param` 落在派生表的规则上（`tables/<i>/rule` 及其下的键，或写在表上而不在规则里的 `tables/<i>/sql`）时，`example` 给出一条完整的规则 `{sql, time_dependency}`；落在 `time_dependency` 上时另带 `allowed_values`，是这一版建 slot 收的取值（`none`、`bucketed`）。`min` / `max` 可以写十进制字符串（不带指数），也可以写 JSON 数字，但数字只收 ±(2^53 − 1) 之内的整数；带小数的边界一律写成字符串：JSON 数字解析之后，已经分不出调用方写的是哪个十进制数。
+- 文档的形式不对报 `invalid_argument`，`param` 是文档里的位置（写法同明细的 `path`，如 `tables/0/fields/2/min`）：文档不是对象、键的 JSON 类型不对、出现不认识的键、字符串不是良构的 Unicode（含孤立的代理项，写不进日志）、枚举值不合内容规则（见 data-model「字段类型与取值范围」）（`malformed`），缺了必有的键（`missing`）。不认识的键不忽略：拼错的 `requried` 若被忽略，字段就悄悄成了可选。`param` 落在派生表的规则上（`tables/<i>/rule` 及其下的键，或写在表上而不在规则里的 `tables/<i>/sql`）时，`example` 给出一条完整的规则 `{sql, time_dependency}`；落在 `time_dependency` 上时另带 `allowed_values`，是这一版建 slot 收的取值（`none`、`bucketed`、`now`）。`min` / `max` 可以写十进制字符串（不带指数），也可以写 JSON 数字，但数字只收 ±(2^53 − 1) 之内的整数；带小数的边界一律写成字符串：JSON 数字解析之后，已经分不出调用方写的是哪个十进制数。
 - 编译失败报 `validation_failed`（`schema`），`details[]` 逐条指出文档里的位置。`base_version` 不是当前版本、或迁移进行中，报 `draft_outdated`。有已有字段没匹配到、也没列入删除，报 `field_unmatched`。
 - 四个与数据有关的编译明细码：
   - `still_referenced`：要删的表或字段仍被依赖（被 `ref` 指着的表；被派生规则、`entity_key`、`external_key`、`time.field`、`duplicate_keys`、`together` 用到的字段）。`referenced_by` 给出依赖方在文档里的位置；同一份草稿里把依赖方一并改掉即可。
@@ -653,7 +654,7 @@
 
 - **`task`**：除管理类操作外，所有操作都有可选的任务标识，自报，用于关联同一任务的读写；参与兜底（第 2 节）与服务端请求键（第 14 节）。
 - **分页**：`limit` 默认 20、上限 200；`cursor` 是不透明句柄（第 15 节）。结果给 `total` 与 `next_cursor`。外化面按自己的结果预算提前截断时另给 `truncated`，截断点就是页边界：`next_cursor` 从没显示的第一行开始。
-- **`detail`**：`concise`（默认）/ `detailed`（每行另给最近一次改动的操作号与记录时间，每个字段的 ID、来源级别、字面命中；`ref` 字段附被引用行的摘要；这一行当前生效的全部前提声明）。只在返回行的地方有：`query`，以及 `history` 的 `as_of`。
+- **`detail`**：`concise`（默认）/ `detailed`（每行另给最近一次改动的操作号与记录时间，每个字段的 ID、来源级别、字面命中；`ref` 字段附被引用行的摘要；这一行当前生效的全部前提声明）。只在返回行的地方有：`query`，以及 `history` 的 `as_of`。读时计算的派生表上 `detailed` 报 `not_in_this_version`：这些行没有操作号、记录时间与字段来源可给。
 - **`warnings[]`**：与本次调用的某个部分有关的结构化提醒；码表见 types 第 7 节。
 - **`notices[]`**：与本次调用相关的提示，最多 3 条；码表见 types 第 7 节。每一种提示都只按可见范围计算，范围外的 slot 不出现在任何提示里。"相关"指本次调用涉及的 slot：`catalog` 列出或点到的 slot、`query` / `history` 读的表所在的 slot、`write` 写的表所在的 slot、`resolve` 处理的事项所在的 slot、`schema_draft` 新建的 slot。提示按此刻的状态算，计算本身不记进读取记录；报错的结果不带提示。
 - **`replayed`**：幂等重放时为 true。
@@ -688,7 +689,7 @@
 | 翻页 | `cur_` | 签名，绑定查询条件 + 首页的操作号 + 恢复次数 | 1 小时 | `handle_expired`，重新查询 |
 | 作业、抽取租约（后续） | `jb_`、`ls_` | 稳定 ID；签名 | 作业结束后 30 天；15 分钟 | `not_found`；`lease_expired` |
 
-- 翻页固定在首页的操作号：翻页期间的新写入不会造成漏行、重行；换条件即失效。后续各页按首页那一刻的记录状态（与首页的求值时刻）给出行与值；标记是读取当时的（未决事项没有历史），行怎么切分不受标记影响。首页之后有恢复或导入的，后续页报 `handle_expired`（`restored`）。`history` 的 `changes` 把首页解析出的 `since` 也记在位置里。派生表没有按时刻的状态：首页之后这张派生表被刷新过，后续页报 `handle_expired`（`derived_changed`），从首页重读；没被刷新过的，读到的与首页那一刻相同。句柄绑定的是查询条件，不含 `limit`：页与页之间可以换每页条数。
+- 翻页固定在首页的操作号：翻页期间的新写入不会造成漏行、重行；换条件即失效。后续各页按首页那一刻的记录状态（与首页的求值时刻）给出行与值；标记是读取当时的（未决事项没有历史），行怎么切分不受标记影响。首页之后有恢复或导入的，后续页报 `handle_expired`（`restored`）。`history` 的 `changes` 把首页解析出的 `since` 也记在位置里。派生表没有按时刻的状态：首页之后这张派生表被刷新过，后续页报 `handle_expired`（`derived_changed`），从首页重读；没被刷新过的，读到的与首页那一刻相同。读时计算的派生表没有派生写入：位置里记着首页的操作号与求值时刻 `at`，规则所读的基础表在首页的操作号之后有了新版本，后续页报 `handle_expired`（`derived_changed`）；没有的，按同一个 `at` 重算，与首页那一刻相同。句柄绑定的是查询条件，不含 `limit`：页与页之间可以换每页条数。
 - **恢复备份或导入之后**：`ver`、`item_ver`、`dc_`、`cur_` 都带租户恢复次数。恢复与导入都让恢复次数加 1，之前签发的一律对不上。**恢复点**是最近那次恢复的 `restored_to`（`tenant.restored`），或导入的 `imported_upto`（`tenant.imported`）。
   - `ver`：恢复次数**恰好比当前小 1**、且操作号不超过恢复点的，按它自己的操作号判定冲突；其余的（操作号在恢复点之后，或恢复次数更旧），以恢复点为它读到的位置，按冲突判据比较恢复点之后的写入。前提里的 `ver` 同此。
     - 理由：恢复点及以前的事件在两条时间线里逐字节相同，按原操作号判不会错，还能多查出恢复点之前的并发改动；恢复点之后的那段可能已经丢失，只能保守处理。恢复次数差 2 及以上时，中间那次恢复之前的时间线是否与现在一致无从判断，所以不放宽。

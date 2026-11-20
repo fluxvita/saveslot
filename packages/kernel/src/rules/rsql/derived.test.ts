@@ -399,6 +399,19 @@ describe("names (11 «名字»)", () => {
       "not_implemented",
     );
   });
+
+  it("names a derived table computed when read: not in this version", () => {
+    const r = compileDerivedRule(
+      rule("SELECT count(*) AS x FROM weekly", ["x"], "none", {
+        computedAtReadTables: ["Weekly"],
+      }),
+    );
+    expect(r.ok ? "compiled" : r.error).toEqual({
+      code: "not_in_this_version",
+      param: "tables/5/rule/sql",
+      message: "a derived rule does not read a derived table computed when read in this version",
+    });
+  });
 });
 
 describe("output columns ↔ declared fields", () => {

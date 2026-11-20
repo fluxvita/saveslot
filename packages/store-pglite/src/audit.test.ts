@@ -103,6 +103,8 @@ describe("writeReads", () => {
         shape: e.shape,
         valid: '{"at":"2026-11-15"}',
         source_id: null,
+        rule_version: null,
+        evaluated_at: null,
       },
     ]);
     expect(await rowsOf("SELECT * FROM read_log_rows ORDER BY k")).toEqual([

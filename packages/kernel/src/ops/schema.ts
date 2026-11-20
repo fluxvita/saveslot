@@ -311,8 +311,8 @@ export async function schemaDraft(
     }
     const compiled = result.compiled;
     // What this version does not evaluate or build stops here, before anything is logged: a rule
-    // depending on today, one calling saveslot_date, a decimal group key that may have more
-    // places than its scale (evaluationRefusal, which apply checks again); an external key.
+    // calling saveslot_date, a decimal group key that may have more places than its scale
+    // (evaluationRefusal, which apply checks again); an external key.
     compiled.tables.forEach((t, i) => {
       if (t.kind === "derived") {
         const refusal = evaluationRefusal(compiled, t.id);

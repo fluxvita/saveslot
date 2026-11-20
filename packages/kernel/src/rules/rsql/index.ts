@@ -1,4 +1,5 @@
 export type { ParamType } from "./analyze.ts";
+export { computedAtRead } from "./at-read.ts";
 export {
   type CompiledRuleParts,
   checkBoundRule,
@@ -23,6 +24,7 @@ export {
   evaluateRule,
   evaluating,
   evaluationRefusal,
+  type RuleCall,
   type RuleEvaluation,
   RuleEvaluationError,
   type RuleQuery,

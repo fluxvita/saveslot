@@ -56,7 +56,10 @@ async function versionsOf(table: string, more: object = {}): Promise<Map<string,
   );
   readBufferOf(s.store).take();
   return new Map(
-    r.rows.map((x) => [(x.row ?? x.entity) as string, Number(/^v(\d+)\./.exec(x.ver)?.[1])]),
+    r.rows.map((x) => [
+      (x.row ?? x.entity) as string,
+      Number(/^v(\d+)\./.exec(x.ver as string)?.[1]),
+    ]),
   );
 }
 

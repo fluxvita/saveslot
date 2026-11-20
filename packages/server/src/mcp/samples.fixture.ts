@@ -787,7 +787,7 @@ export const ERRORS: Readonly<Record<string, Record<string, unknown>>> = {
     reason: "malformed",
     param: "tables/1/rule/time_dependency",
     example: { sql: "SELECT count(*) AS n FROM runs", time_dependency: "none" },
-    allowed_values: ["none", "bucketed"],
+    allowed_values: ["none", "bucketed", "now"],
     message: "tables/1/rule/time_dependency: malformed",
   },
   write_state: {

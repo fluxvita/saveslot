@@ -11,7 +11,7 @@
 // on (state table). A timeless or derived table has none; nor has an empty table.
 
 import type { CompiledBaseField, CompiledTable } from "@fluxvita/saveslot-contract-core";
-import { derivedLayout } from "../rules/index.ts";
+import { computedAtRead, derivedLayout } from "../rules/index.ts";
 import { column, INSTANT_TEXT, physical } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { mergedSegments } from "../store/segments.ts";
@@ -60,7 +60,10 @@ export async function profileOf(
   tx: ReadTx,
   t: CompiledTable,
   bounds: ScaleBounds = SCALE_BOUNDS,
-): Promise<TableProfile> {
+): Promise<TableProfile | undefined> {
+  // A derived table computed when read has no stored rows to count, and computing its rule is not
+  // the catalog's to do: no profile (04-contract §10 «概况»).
+  if (t.kind === "derived" && computedAtRead(t)) return undefined;
   let sql: string;
   if (t.kind === "derived") {
     sql = `SELECT count(*) AS n, NULL::text AS lo, NULL::text AS hi FROM "${derivedLayout(t).table}"`;

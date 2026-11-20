@@ -36,6 +36,7 @@ import {
   type Obj,
   parseDateTime,
 } from "../request/index.ts";
+import { computedAtRead } from "../rules/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { valueOut } from "../time/index.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
@@ -151,7 +152,8 @@ export async function historyTarget(
 ): Promise<Target>;
 /**
  * `changes` (04-contract.md §10 `history`): the target, or none: the whole table, which must be
- * in the visible range like any table. A derived table is `derived_table`.
+ * in the visible range like any table. A derived table is `derived_table`. In `timeline` and
+ * `as_of`, a derived table computed when read is `not_in_this_version`.
  */
 export async function historyTarget(
   tx: ReadTx,
@@ -169,6 +171,12 @@ export async function historyTarget(
   const named = resolveTable(get(params, "table"), "table", slots);
   if (named.table.kind === "derived") {
     if (mode === "changes") throw invalid("derived_table", "table");
+    // Computed when read: no operation made its rows, and it has no state as of a record time.
+    if (computedAtRead(named.table))
+      throw new ReadError("not_in_this_version", "history of a derived table computed when read", {
+        reason: "value",
+        param: "table",
+      });
     throw notImplemented("table", "history of a derived table");
   }
   const t = named.table;

@@ -470,20 +470,20 @@ saveslot 的处理是：受限 SQL 里禁用 `NOW()` 这类函数，"今天"由�
 
 同样的道理适用于读状态类表"当前值"的规则（比如"按现在的预算算剩余额度"）：哪一段算"当前"会随时间推移而变，却没有任何写入来触发重算。这类规则也是读的时候现算，不缓存。
 
-规则里怎么写"今天"、怎么读状态类表的某一天：受限 SQL 提供 `saveslot_today()`（入口取的时刻在 slot 时区下的日期）和 `saveslot_now()`（那个时刻本身），读状态类表某一天的值写 `FOR VALID_TIME AS OF …`。"各类别本月剩余预算"可以这样写成一张派生表的规则：
+规则里怎么写"今天"：受限 SQL 提供 `saveslot_today()`（入口取的时刻在 slot 时区下的日期）和 `saveslot_now()`（那个时刻本身）。"近 7 天各类别的支出"可以这样写成一张派生表的规则：
 
 ```sql
-SELECT b.category,
-       b.amount - COALESCE(SUM(e.amount), 0) AS remaining
-FROM budgets FOR VALID_TIME AS OF saveslot_today() AS b
-LEFT JOIN expenses AS e
-  ON e.category = b.category
- AND e.date >= date_trunc('month', saveslot_today()::timestamp)::date
- AND e.date <= saveslot_today()
-GROUP BY b.category, b.amount
+SELECT category,
+       sum(amount) AS spent
+FROM expenses
+WHERE date > saveslot_today() - 7
+  AND date <= saveslot_today()
+GROUP BY category
 ```
 
-`budgets FOR VALID_TIME AS OF saveslot_today()` 取的是每个类别今天生效的那一段预算；`expenses` 是事件类表，按 `date` 字段筛出本月到今天为止的支出。因为用了 `saveslot_today()`，这条规则读的时候现算，结果不带 `ver`。
+`expenses` 是事件类表，按 `date` 字段筛出今天及之前 7 天内的支出。因为用了 `saveslot_today()`，这条规则读的时候现算，结果不带 `ver`，带 `computed_at_read`；读的时候给 `at`，就按那个时刻所在的那一天算。读状态类表而不带时间限定的规则同样现算，取的是每个实体在那一天生效的那一段，例如 `SELECT sum(amount) AS total FROM budgets` 是"今天生效的预算合计"。
+
+"各类别本月剩余预算"要同时读预算和支出两张表，或者在规则里写 `FOR VALID_TIME AS OF saveslot_today()`，这一版的派生规则还不收这两种写法（规则只读一张表）。在那之前，这类数在读的时候用 `sql` 算：`sql` 收关联，也收 `FOR VALID_TIME`。
 
 > 第一版对依赖"今天"的规则只做读时计算，不做缓存。正确性相同，只差性能。
 

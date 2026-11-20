@@ -185,6 +185,8 @@ export async function readsListInTx(
       ...(x["table_id"] !== null ? { table: x["table_id"] as never } : {}),
       ...(x["valid"] !== null ? { valid: JSON.parse(String(x["valid"])) as ReadValid } : {}),
       ...(x["source_id"] !== null ? { source: x["source_id"] as never } : {}),
+      ...(x["rule_version"] !== null ? { ruleVersion: Number(x["rule_version"]) } : {}),
+      ...(x["evaluated_at"] !== null ? { evaluatedAt: String(x["evaluated_at"]) as never } : {}),
       rows: mine
         .filter((r) => r.target !== null)
         .map((r) => ({

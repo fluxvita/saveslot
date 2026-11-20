@@ -33,6 +33,8 @@ export interface DerivedRuleInput {
   readonly tables: readonly CompiledBaseTable[];
   /** The slot's derived table names: reading one is not compiled yet. */
   readonly derivedTables?: readonly string[];
+  /** Those among them computed when read: reading one is not in this version. */
+  readonly computedAtReadTables?: readonly string[];
   /** Where the rule is in the document, for details: `tables/<i>/rule/sql`. */
   readonly path: string;
 }
@@ -212,6 +214,7 @@ function check(sql: string, input: DerivedRuleInput, naming: "names" | "ids"): C
     slot: input.slot.name,
     tables: input.tables,
     derivedTables: input.derivedTables ?? [],
+    computedAtReadTables: input.computedAtReadTables ?? [],
     fields: input.fields,
     declaredTimeDependency: input.declaredTimeDependency,
     naming,

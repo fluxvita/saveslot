@@ -19,6 +19,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import {
   compileDerivedRule,
+  computedAtRead,
   type DerivedRow,
   evaluateRule,
   evaluationRefusal,
@@ -57,6 +58,8 @@ const COLUMN: Readonly<Record<string, string>> = {
 
 /** Data-dependent evaluation errors (11 «确定性» 6): division by zero, overflow, a date out of range. */
 const DATA_ERRORS = new Set(["22012", "22003", "22008"]);
+/** The instant a rule computed when read is evaluated at here, and its day in the slot's zone. */
+const AT_READ = { now: "2026-11-20T02:00:00.000Z", today: "2026-11-20" };
 
 const tableOf = (id: string, tables: readonly CompiledBaseTable[] = TABLES) =>
   tables.find((t) => t.id === id) as CompiledBaseTable;
@@ -580,6 +583,7 @@ describe("A: rewriting keeps the meaning (generated rules)", () => {
       againstBound: 0,
       divisionByZero: 0,
       dataErrors: 0,
+      atRead: 0,
     };
     const runs = tableOf("t1");
     await fc.assert(
@@ -594,16 +598,19 @@ describe("A: rewriting keeps the meaning (generated rules)", () => {
           fc.pre(false);
         }
         await load(runs, rows);
-        const e = evaluateRule(schema, "t9");
         const derived = schema.tables.find((t) => t.id === "t9");
         if (derived === undefined || derived.kind !== "derived") throw new Error("no t9");
+        // A rule computed when read is evaluated at a fixed instant, its day passed as a parameter.
+        const atRead = computedAtRead(derived);
+        const e = evaluateRule(schema, "t9", atRead ? AT_READ : undefined);
         const where = `${g.sql}\n→ ${e.all.sql}`;
-        const phys = await attempt("s_phys", e.all.sql);
-        const logical = await attempt("s_log", withoutCte(e.all.sql));
+        const phys = await attempt("s_phys", e.all.sql, e.all.params);
+        const logical = await attempt("s_log", withoutCte(e.all.sql), e.all.params);
         const bag = (o: Outcome) =>
           "error" in o ? o : { rows: o.rows.map((x) => JSON.stringify(x)).sort() };
         expect(bag(phys), where).toEqual(bag(logical));
         counts.run++;
+        if (atRead) counts.atRead++;
         if ("error" in phys) {
           counts.dataErrors++;
           return;
@@ -624,9 +631,10 @@ describe("A: rewriting keeps the meaning (generated rules)", () => {
         const memberKeys = new Set(members.rows.map((r) => keyText(e.decodeMember(r).key)));
         for (const k of byKey(e, phys.rows).keys())
           expect(memberKeys.has(k), `${where}\nno members of ${k}`).toBe(true);
-        // The bound text as stored, for rules without quotients (whose digits the guard changes).
+        // The bound text as stored, for rules without quotients (whose digits the guard changes) and
+        // not computed when read (its text calls saveslot_today(), which the database does not have).
         const bound = derived.rule.sql;
-        if (/ \/ |avg\(/.test(bound)) return;
+        if (/ \/ |avg\(/.test(bound) || atRead) return;
         const cols = derived.fields.map((f) =>
           f.type === "boolean" ? `"r"."${f.id}"` : `CAST("r"."${f.id}" AS text) AS "${f.id}"`,
         );
@@ -653,7 +661,9 @@ describe("A: rewriting keeps the meaning (generated rules)", () => {
     );
     if (process.env["RSQL_FORMS"] !== undefined) console.log(JSON.stringify(counts));
     // Most samples reach the comparison with the bound text; decimal keys (EXTRACT) are run.
-    expect(counts.againstBound / counts.run).toBeGreaterThanOrEqual(0.4);
+    // Rules computed when read are run and their partitions checked, but have no bound text to run.
+    expect(counts.againstBound / (counts.run - counts.atRead)).toBeGreaterThanOrEqual(0.4);
+    expect(counts.atRead).toBeGreaterThan(0);
     expect(counts.decimalKeys).toBeGreaterThan(0);
     expect(counts.partitions).toBeGreaterThan(0);
   });

@@ -452,7 +452,8 @@ interface CatalogTables extends CommonResult {
      *  rows：事件类与无时间表是未撤销的行数，状态类表是区间段数（相邻且全部字段同值的段先合并；撤销在状态类表里是无值区间，不占行），派生表是它自己的行数。
      *  time_range：事件类表是时间字段的最早值与最晚值（只算未撤销的行）；状态类表的 from 是最早的区间起点，to 是最晚的 valid_to（不含，与契约里所有 valid_to 同一约定）；
      *  事件类表的 to 含（是时间字段的最晚值）；状态类表有一直延续的段时不给 to；
-     *  无时间表、派生表与空表不给。日期型给 DateStr，时刻型给 Instant（UTC）。 */
+     *  无时间表、派生表与空表不给。日期型给 DateStr，时刻型给 Instant（UTC）。
+     *  读时计算的派生表（rule.time_dependency 为 now）不带 profile。 */
     profile?: {
       rows: number;
       time_range?: { from: BizTime; to?: BizTime };   // 状态类表有一直延续的段时不给 to

@@ -32,6 +32,7 @@ import { isId } from "@fluxvita/saveslot-contract-core";
 import {
   CURRENT_RSQL_VERSION,
   compileDerivedRule,
+  computedAtRead,
   type DeclaredField,
   type DerivedRuleResult,
 } from "../rules/index.ts";
@@ -136,6 +137,9 @@ function compileRule(
     slot: { name: doc.slot },
     tables: bases,
     derivedTables: doc.tables.filter((x) => x.kind === "derived").map((x) => x.name),
+    computedAtReadTables: doc.tables
+      .filter((x) => x.kind === "derived" && computedAtRead(x))
+      .map((x) => x.name),
     path: `${t.path}/rule/sql`,
   });
 }

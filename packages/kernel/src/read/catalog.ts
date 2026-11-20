@@ -407,9 +407,10 @@ export async function catalogInTx(
     tableIds = named.map((n) => n.table.id as TableId);
     const tables: CatalogTable[] = [];
     for (const n of named) {
+      const profile = await profileOf(tx, n.table, input.scaleBounds ?? SCALE_BOUNDS);
       tables.push({
         ...tableOf(n.slot, n.table, texts.get(n.slot.slot)?.get(n.table.id)),
-        profile: await profileOf(tx, n.table, input.scaleBounds ?? SCALE_BOUNDS),
+        ...(profile !== undefined ? { profile } : {}),
       });
     }
     result = { level, tables };

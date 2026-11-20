@@ -19,9 +19,15 @@
 // - A whole aggregate (no group key) with no input row has no derived row: it is an emptied
 //   partition, like a group that lost its last row (06 «刷新范围»).
 //
-// This version evaluates rules over event and timeless tables. Rules that depend on "today" are
-// computed at read time (a later version); `saveslot_date` needs the internal date column, not yet
-// built: both are refused when a slot is created and are an internal error here.
+// - A rule computed when read (computedAtRead: it depends on today, or reads a state table with no
+//   time condition; 06 «时间依赖») is evaluated at the instant the call gives (RuleCall), never at
+//   the machine's clock: `saveslot_now()` is that instant and `saveslot_today()` its day in the
+//   slot's zone, both parameters of the statement; a state table is the segment of each entity
+//   holding that instant (that day, by date granularity), adjacent same-valued segments merged
+//   (../../store/segments.ts), as `sql` reads it (11 «时间»).
+//
+// `saveslot_date` needs the internal date column, not yet built: it is refused when a slot is
+// created and is an internal error here.
 
 import { createHash } from "node:crypto";
 import {
@@ -36,7 +42,9 @@ import {
   type TableId,
 } from "@fluxvita/saveslot-contract-core";
 import { sqlStateOf } from "../../store/ports.ts";
+import { mergedSegments } from "../../store/segments.ts";
 import type { Analysis, DeclaredField } from "./analyze.ts";
+import { computedAtRead } from "./at-read.ts";
 import { checkedBoundRule } from "./derived.ts";
 import type { Expr, RuleStatement } from "./ir.ts";
 import { INPUTS, printRule } from "./print.ts";
@@ -46,6 +54,16 @@ import { RSQL_VERSION } from "./whitelist.ts";
 export interface RuleQuery {
   readonly sql: string;
   readonly params: readonly (string | boolean | null)[];
+}
+
+/**
+ * The instant a rule computed when read is evaluated at (11 «何时求值»): `now` is the call's
+ * evaluation instant (`at`, or the entry's instant), `today` its day in the slot's zone. Given by
+ * the caller: evaluation never reads a clock.
+ */
+export interface RuleCall {
+  readonly now: string;
+  readonly today: string;
 }
 
 /** One derived row: its values by field ID (09 §1.3), and its group key in the rule's key order. */
@@ -66,6 +84,13 @@ export interface RuleEvaluation {
   /** The base table the rule reads. */
   readonly base: TableId;
   /**
+   * The rows as a reader embedding the rule sees them (`sql`): columns by field ID, the values of
+   * the fields' types rounded to their precision as a stored row holds them; a whole aggregate
+   * with no input row has no row. `place` gives the text of each of the call's values (each is
+   * placed once). Not checked against the whitelist again: the kernel's own text.
+   */
+  rowsText(place: (value: string, type: "date" | "timestamptz") => string): string;
+  /**
    * The rule's members: every row of the base table the rule reads after WHERE, with the group key
    * it falls in (the key of the same expressions, decoded alike). A group HAVING drops has members
    * but no derived row.
@@ -74,7 +99,7 @@ export interface RuleEvaluation {
   /** The members among these base rows only (`members` restricted to the row IDs given). */
   membersAmong(rows: readonly string[]): {
     readonly sql: string;
-    readonly params: readonly [readonly string[]];
+    readonly params: readonly (string | boolean | null | readonly string[])[];
   };
   /** A row of `members`: its group key (in `rule.scope.key` order) and its row ID. */
   decodeMember(row: Readonly<Record<string, unknown>>): {
@@ -216,7 +241,6 @@ export function placesBound(
 
 /** Why this version does not evaluate a derived table's rule, or undefined when it does. */
 export type EvaluationRefusal =
-  | { readonly kind: "today" }
   | { readonly kind: "saveslot_date" }
   | { readonly kind: "decimal_key"; readonly field: FieldId };
 
@@ -296,9 +320,18 @@ function declared(f: CompiledDerivedField): DeclaredField {
   }
 }
 
-/** The logical table of a base table: its rows not revoked, columns named by ID. */
-function logicalTable(t: CompiledBaseTable): string {
-  if (t.time.type === "state") internal("a rule reading a state table is computed at read time");
+/**
+ * The logical table of a base table, columns named by ID: an event or timeless table's rows not
+ * revoked; a state table's merged segments holding the evaluation instant (`point`: a placeholder
+ * of the instant, or of its day by date granularity), with the entity ID also as `row_id`, the
+ * identity its members are known by. `schema` qualifies the physical table (`"public".` for a
+ * session whose search path does not have it).
+ */
+function logicalTable(
+  t: CompiledBaseTable,
+  point: (type: "date" | "timestamptz") => string,
+  schema = "",
+): string {
   const name = t.physical.table;
   if (!TABLE_ID.test(t.id) || !new RegExp(`^t_${t.id}_v[1-9][0-9]{0,8}$`).test(name))
     internal(`not a physical table name: ${JSON.stringify(name)}`);
@@ -306,7 +339,12 @@ function logicalTable(t: CompiledBaseTable): string {
     if (!FIELD_ID.test(f.id)) internal(`not a field ID: ${JSON.stringify(f.id)}`);
     return `"f_${f.id}" AS "${f.id}"`;
   });
-  return `"${t.id}" AS (SELECT row_id, ${cols.join(", ")} FROM "${name}" WHERE NOT revoked)`;
+  const from = `${schema}"${name}"`;
+  if (t.time.type !== "state")
+    return `"${t.id}" AS (SELECT row_id, ${cols.join(", ")} FROM ${from} WHERE NOT revoked)`;
+  const p = point(t.time.granularity === "date" ? "date" : "timestamptz");
+  const keys = `"entity_id" AS "row_id", "entity_id", "valid_from", "valid_to"`;
+  return `"${t.id}" AS (SELECT ${keys}, ${cols.join(", ")} FROM (${mergedSegments(t, from)}) AS "s" WHERE "valid_from" <= ${p} AND ("valid_to" IS NULL OR "valid_to" > ${p}))`;
 }
 
 /** PostgreSQL's numeric text rounded to `scale` places, in the canonical form (09 §1.2). */
@@ -447,8 +485,7 @@ function checkRule(schema: CompiledSchema, table: TableId): Checked {
   if ((rule.scope.kind === "tenant") !== (a.groupKey.length === 0))
     internal("scope and group key differ");
   let refusal: EvaluationRefusal | undefined;
-  if (rule.time_dependency === "now") refusal = { kind: "today" };
-  else if (callsSaveslotDate(stmt)) refusal = { kind: "saveslot_date" };
+  if (callsSaveslotDate(stmt)) refusal = { kind: "saveslot_date" };
   else {
     for (const f of key) {
       const target = stmt.targets[outputs.indexOf(f.id)];
@@ -472,9 +509,8 @@ function checkRule(schema: CompiledSchema, table: TableId): Checked {
 
 /**
  * Why this version does not evaluate derived table `table` of `schema` (a slot holding it is not
- * created), or undefined when it does: a rule depending on today (computed at read time),
- * `saveslot_date` (the internal date column), a decimal or quantity group key that may have more
- * places than its scale (placesBound).
+ * created), or undefined when it does: `saveslot_date` (the internal date column), a decimal or
+ * quantity group key that may have more places than its scale (placesBound).
  */
 export function evaluationRefusal(
   schema: CompiledSchema,
@@ -484,75 +520,149 @@ export function evaluationRefusal(
 }
 
 /**
- * The evaluation of derived table `table` of `schema`. Throws when the table's rule is one this
- * version does not evaluate (evaluationRefusal): a slot holding it is not created, so here that is
- * an internal error.
+ * The evaluation of derived table `table` of `schema`. A table computed when read
+ * (computedAtRead) needs the instant it is evaluated at (`call`); any other table takes none, its
+ * value not depending on one. Throws when the table's rule is one this version does not evaluate
+ * (evaluationRefusal): a slot holding it is not created, so here that is an internal error.
  */
-export function evaluateRule(schema: CompiledSchema, table: TableId): RuleEvaluation {
+export function evaluateRule(
+  schema: CompiledSchema,
+  table: TableId,
+  call?: RuleCall,
+): RuleEvaluation {
   const { derived, stmt, a, outputs, key, refusal } = checkRule(schema, table);
   if (refusal !== undefined) internal(`not evaluated in this version: ${refusal.kind}`);
+  const atRead = computedAtRead(derived);
+  if (atRead !== (call !== undefined))
+    internal(
+      atRead
+        ? "a rule computed when read without its instant"
+        : "an instant for a rule not computed when read",
+    );
   const whole = a.groupKey.length === 0;
 
-  const body = printRule(stmt, {
-    table: a.table.id,
-    column: (e) => {
-      const col = a.columnOf(e);
-      return col.kind === "field"
-        ? col.field.id
-        : (col.name as "row_id" | "entity_id" | "valid_from" | "valid_to");
-    },
-    outputs,
-    groupKey: a.groupKey,
-    hints: a.hints,
-    evaluate: true,
-  });
+  /**
+   * The rule printed with `add` placing each of the call's values: the logical table, the rule's
+   * body and its members' body.
+   */
+  const printed = (add: (v: string, type: "date" | "timestamptz") => string, schema = "") => {
+    const point = (type: "date" | "timestamptz") => {
+      if (call === undefined) return internal("a state table read with no instant");
+      return add(type === "date" ? call.today : call.now, type);
+    };
+    const func = (e: Expr & { k: "func" }): string | undefined => {
+      if (e.name !== "saveslot_now" && e.name !== "saveslot_today") return undefined;
+      if (call === undefined) return internal(`${e.name} in a rule not computed when read`);
+      return e.name === "saveslot_now" ? add(call.now, "timestamptz") : add(call.today, "date");
+    };
+    const names = {
+      table: a.table.id,
+      column: (e: Expr & { k: "col" }) => {
+        const col = a.columnOf(e);
+        return col.kind === "field"
+          ? col.field.id
+          : (col.name as "row_id" | "entity_id" | "valid_from" | "valid_to");
+      },
+      outputs,
+      groupKey: a.groupKey,
+      hints: a.hints,
+      evaluate: true,
+      func,
+    } as const;
+    // Printed when asked for: a statement places only the values of the parts it prints.
+    return {
+      logical: () => logicalTable(a.table, point, schema),
+      body: () => printRule(stmt, names),
+      membersBody: () => printRule(stmt, { ...names, members: true }),
+    };
+  };
+  /** `place` called once per value however often it is printed: one placeholder per type. */
+  const once = (place: (v: string, type: "date" | "timestamptz") => string) => {
+    const placed = new Map<string, string>();
+    return (v: string, type: "date" | "timestamptz") => {
+      let ph = placed.get(type);
+      if (ph === undefined) {
+        ph = place(v, type);
+        placed.set(type, ph);
+      }
+      return ph;
+    };
+  };
+
+  /**
+   * A statement and the call's values its text uses, numbered from `$1` in the order printed: the
+   * first parameters of the statement, its own after them. Each statement has exactly the values
+   * it prints, never another's (the members' text may have none of the rule's output columns or
+   * HAVING, where today may be the only place it appears).
+   */
+  const statement = (build: (p: ReturnType<typeof printed>) => string) => {
+    const pre: string[] = [];
+    const text = build(
+      printed(
+        once((v, type) => {
+          pre.push(v);
+          return `CAST($${pre.length} AS ${type})`;
+        }),
+      ),
+    );
+    return { text, pre };
+  };
   const cols = derived.fields.map((f) => {
     if (!FIELD_ID.test(f.id)) internal(`not a field ID: ${JSON.stringify(f.id)}`);
     return f.type === "boolean" ? `"r"."${f.id}"` : `CAST("r"."${f.id}" AS text) AS "${f.id}"`;
   });
   if (whole) cols.push(`"r"."${INPUTS}"`);
-  const head = `WITH ${logicalTable(a.table)} SELECT ${cols.join(", ")} FROM (${body}) AS "r"`;
-  const membersBody = printRule(stmt, {
-    table: a.table.id,
-    column: (e) => {
-      const col = a.columnOf(e);
-      return col.kind === "field"
-        ? col.field.id
-        : (col.name as "row_id" | "entity_id" | "valid_from" | "valid_to");
-    },
-    outputs,
-    groupKey: a.groupKey,
-    hints: a.hints,
-    evaluate: true,
-    members: true,
-  });
+  const head = statement(
+    (p) => `WITH ${p.logical()} SELECT ${cols.join(", ")} FROM (${p.body()}) AS "r"`,
+  );
   const keyCols = key.map((f) =>
     f.type === "boolean" ? `"m"."${f.id}"` : `CAST("m"."${f.id}" AS text) AS "${f.id}"`,
   );
-  const members = `WITH ${logicalTable(a.table)} SELECT ${[...keyCols, `"m"."row_id"`].join(", ")} FROM (${membersBody}) AS "m"`;
+  const members = statement(
+    (p) =>
+      `WITH ${p.logical()} SELECT ${[...keyCols, `"m"."row_id"`].join(", ")} FROM (${p.membersBody()}) AS "m"`,
+  );
 
   return {
     table,
     base: a.table.id,
-    members: { sql: members, params: [] },
+    rowsText(place) {
+      // Embedded in a `sql` statement, whose session's search path is pg_catalog only.
+      const p = printed(once(place), `"public".`);
+      const out = derived.fields.map((f) => {
+        const c = `"r"."${f.id}"`;
+        if (f.type !== "decimal" && f.type !== "quantity") return `${c} AS "${f.id}"`;
+        const { scale, rounding } = f.precision;
+        if (rounding === "half_up") return `round(${c}, ${scale}) AS "${f.id}"`;
+        // Half to even: PostgreSQL's round goes away from zero at exactly half; at exactly half
+        // with an even digit before it, truncating gives the even one.
+        const unit = `1${"0".repeat(scale)}`;
+        return `CASE WHEN mod(abs(${c}) * ${unit}, 2) = 0.5 THEN trunc(${c}, ${scale}) ELSE round(${c}, ${scale}) END AS "${f.id}"`;
+      });
+      return `WITH ${p.logical()} SELECT ${out.join(", ")} FROM (${p.body()}) AS "r"${whole ? ` WHERE "r"."${INPUTS}" > 0` : ""}`;
+    },
+    members: { sql: members.text, params: [...members.pre] },
     membersAmong: (rows) => ({
-      sql: `${members} WHERE "m"."row_id" = ANY($1)`,
-      params: [[...rows]],
+      sql: `${members.text} WHERE "m"."row_id" = ANY($${members.pre.length + 1})`,
+      params: [...members.pre, [...rows]],
     }),
     decodeMember(row) {
       const id = row["row_id"];
       if (typeof id !== "string") return internal("a member without its row ID");
       return { key: key.map((f) => decodeValue(f, row[f.id])), row: id };
     },
-    all: { sql: head, params: [] },
+    all: { sql: head.text, params: [...head.pre] },
     partition(values) {
       if (values.length !== key.length) internal("key of another length");
-      if (whole) return { sql: head, params: [] };
+      if (whole) return { sql: head.text, params: [...head.pre] };
       const conds = key.map((f, i) => {
         const t = KEY_TYPE[f.type] ?? internal(`key field ${f.id} of type ${f.type}`);
-        return `"r"."${f.id}" IS NOT DISTINCT FROM CAST($${i + 1} AS ${t})`;
+        return `"r"."${f.id}" IS NOT DISTINCT FROM CAST($${head.pre.length + i + 1} AS ${t})`;
       });
-      return { sql: `${head} WHERE ${conds.join(" AND ")}`, params: values.map(keyParam) };
+      return {
+        sql: `${head.text} WHERE ${conds.join(" AND ")}`,
+        params: [...head.pre, ...values.map(keyParam)],
+      };
     },
     decode(row) {
       if (whole) {

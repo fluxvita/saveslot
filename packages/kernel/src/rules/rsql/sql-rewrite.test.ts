@@ -5,6 +5,7 @@
 
 import { beforeAll, describe, expect, it } from "vitest";
 import { loadRsql, rsqlParser } from "./load.ts";
+import { derivedSchema, rule } from "./rules.fixture.ts";
 import { check, health, ledger } from "./sql.fixture.ts";
 import type { SqlSlot } from "./sql.ts";
 import { rewriteSql, type SqlCall, SqlNotImplemented, SqlRuntime } from "./sql-rewrite.ts";
@@ -203,14 +204,62 @@ describe("what this version does not read", () => {
   it("saveslot_date: the internal date column is not built", () => {
     expect(() => rewrite("SELECT saveslot_date(started) FROM runs")).toThrow(SqlNotImplemented);
   });
+});
 
-  it("a derived table computed when read", () => {
-    const now = health({
-      tables: health().tables.map((t) =>
-        t.kind === "derived" ? { ...t, rule: { ...t.rule, time_dependency: "now" as const } } : t,
-      ),
-    });
-    expect(() => rewrite("SELECT week FROM weekly", {}, [now])).toThrow(SqlNotImplemented);
+describe("a derived table computed when read (11 «改写»)", () => {
+  /** `health` whose derived table `weekly` is the rule given, depending on today. */
+  const withRule = (sql: string, fields: readonly string[]) =>
+    health({ tables: derivedSchema(rule(sql, fields, "now")).tables });
+
+  it("is its rule as a subquery, today a parameter, values rounded as stored; no physical derived table", () => {
+    const slot = withRule(
+      "SELECT sum(distance) AS total, sum(duration) AS minutes FROM runs WHERE date > saveslot_today() - 7",
+      ["total", "minutes"],
+    );
+    const r = rewrite("SELECT total, minutes FROM weekly", {}, [slot]);
+    expect(r.main.params).toEqual(["2026-11-05"]);
+    expect(r.main.text).toContain(`(CAST($1 AS date) - 7)`);
+    expect(r.main.text).not.toContain("d_t9_v1");
+    // The session's search path is pg_catalog: the physical table is qualified.
+    expect(r.main.text).toContain(`FROM "public"."t_t1_v1" WHERE NOT revoked`);
+    // distance is half_up to 2 places; duration half_even to 1.
+    expect(r.main.text).toContain(`round("r"."f1", 2) AS "f1"`);
+    expect(r.main.text).toContain(
+      `CASE WHEN mod(abs("r"."f2") * 10, 2) = 0.5 THEN trunc("r"."f2", 1) ELSE round("r"."f2", 1) END AS "f2"`,
+    );
+    // A whole aggregate with no input row has no row, as `query` gives it.
+    expect(r.main.text).toContain(`WHERE "r"."inputs" > 0`);
+  });
+
+  it("two slots in different zones in one statement: each expansion takes today in its own slot's zone", () => {
+    const tables = derivedSchema(
+      rule("SELECT count(laps) AS n FROM runs WHERE date = saveslot_today()", ["n"], "now"),
+    ).tables;
+    const slots = [
+      health({ tables }),
+      health({ slot: "sl_away", name: "away", timezone: "America/Los_Angeles", tables }),
+    ];
+    const a = analysed("SELECT h.n, w.n FROM health.weekly h CROSS JOIN away.weekly w", [], slots);
+    // 2026-11-05T04:00Z is 11-05 in Shanghai and 11-04 in Los Angeles.
+    const zoned: SqlCall = {
+      ...call(),
+      today: (zone) => (zone === "America/Los_Angeles" ? "2026-11-04" : "2026-11-05"),
+    };
+    const r = rewriteSql({ ...a, call: zoned });
+    expect(r.main.params).toEqual(["2026-11-05", "2026-11-04"]);
+    expect(r.tables.map((t) => [t.slot, t.table.id, t.refs])).toEqual([
+      ["sl_health", "t1", [undefined]],
+      ["sl_away", "t1", [undefined]],
+    ]);
+  });
+
+  it("is recorded on the base tables its rule reads, each whole; a state table's point is its time", () => {
+    const r = rewrite("SELECT total FROM weekly", {}, [
+      withRule("SELECT sum(amount) AS total FROM budgets", ["total"]),
+    ]);
+    expect(r.tables.map((t) => [t.table.id, t.refs])).toEqual([["t3", [undefined]]]);
+    expect(r.times).toEqual([{ slot: "sl_health", read: { at: "2026-11-05" } }]);
+    expect(r.main.params).toEqual(["2026-11-05"]);
   });
 });
 

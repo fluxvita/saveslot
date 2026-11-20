@@ -29,12 +29,15 @@
 import type {
   CompiledBaseTable,
   CompiledDerivedTable,
+  CompiledSchema,
   CompiledTable,
   SlotId,
 } from "@fluxvita/saveslot-contract-core";
 import { column } from "../../store/layout.ts";
 import type { SqlValue } from "../../store/ports.ts";
 import { mergedSegments } from "../../store/segments.ts";
+import { computedAtRead } from "./at-read.ts";
+import { evaluateRule } from "./evaluate.ts";
 import type { Expr, FromItem, Query, SelectBody, TableRef, TimeClause, TimeOperand } from "./ir.ts";
 import type { SqlAnalysis, SqlSlot } from "./sql-analyze.ts";
 import { type PrintHooks, printQuery, quoteIdent } from "./sql-print.ts";
@@ -225,14 +228,48 @@ export function rewriteSql(input: RewriteInput): Rewritten {
       table,
     });
     const inner =
-      table.kind === "derived" ? derivedText(table, withIdentity) : baseText(table, f, slot, book);
+      table.kind === "derived"
+        ? derivedText(table, f, slot, book, withIdentity)
+        : baseText(table, f, slot, book);
     return `(${inner}) AS ${quoteIdent(f.alias)}`;
   }
 
-  function derivedText(t: CompiledDerivedTable, withIdentity: boolean): string {
-    if (t.rule.time_dependency === "now") {
-      throw new SqlNotImplemented("a derived table computed when read is not read by sql yet");
+  /**
+   * A derived table computed when read: its rule as a subquery, evaluated at the call's instant
+   * (`saveslot_today()` in the table's slot's zone), its values rounded as a stored row holds
+   * them. A state table the rule reads is read at that instant: its time condition is recorded.
+   */
+  function computedText(t: CompiledDerivedTable, f: TableRef, slot: SqlSlot, book: Book): string {
+    const schema = { name: slot.name, tables: slot.tables } as unknown as CompiledSchema;
+    const today = call.today(slot.timezone);
+    const e = evaluateRule(schema, t.id, { now: call.now, today });
+    const rows = e.rowsText((v, type) => book.add(v, type));
+    for (const d of t.rule.depends_on) {
+      const b = slot.tables.find((x) => x.id === d.table);
+      if (b?.kind === "base" && b.time.type === "state") {
+        times.set(f, {
+          slot: slot.slot as SlotId,
+          read: { at: b.time.granularity === "date" ? today : call.now },
+        });
+      }
     }
+    const cols = t.fields.map((x) => {
+      if (!/^f[1-9][0-9]{0,8}$/.test(x.id))
+        throw new Error(`not a field ID: ${JSON.stringify(x.id)}`);
+      return `"${x.id}" AS ${quoteIdent(x.name)}`;
+    });
+    return `SELECT ${cols.join(", ")} FROM (${rows}) AS "x"`;
+  }
+
+  function derivedText(
+    t: CompiledDerivedTable,
+    f: TableRef,
+    slot: SqlSlot,
+    book: Book,
+    withIdentity: boolean,
+  ): string {
+    // Its reads are recorded on the base tables it reads, as a whole: no identity statement.
+    if (computedAtRead(t)) return computedText(t, f, slot, book);
     const name = t.physical.table;
     if (!TABLE_ID.test(t.id) || !new RegExp(`^d_${t.id}_v[1-9][0-9]{0,8}$`).test(name))
       throw new Error(`not a physical table name: ${JSON.stringify(name)}`);
@@ -385,6 +422,7 @@ export function rewriteSql(input: RewriteInput): Rewritten {
     const slot = slotOf.get(rt.slot);
     const table = slot?.tables.find((t) => t.id === rt.table);
     if (table === undefined || r.f.alias === undefined) return undefined;
+    if (table.kind === "derived" && computedAtRead(table)) return undefined;
     const idBook = new Book();
     const loc = s.loc;
     const body: SelectBody = {
@@ -414,22 +452,35 @@ export function rewriteSql(input: RewriteInput): Rewritten {
   };
 
   const byTable = new Map<string, { head: TableRead; refs: (Statement | undefined)[] }>();
-  for (const r of found) {
-    const rt = analysis.tables.get(r.f);
-    if (rt === undefined) continue;
-    const key = `${rt.slot}/${rt.table}`;
+  const add = (slot: SqlSlot, table: CompiledTable, ref: Statement | undefined) => {
+    const key = `${slot.slot}/${table.id}`;
     let e = byTable.get(key);
     if (e === undefined) {
-      const slot = slotOf.get(rt.slot);
-      const table = slot?.tables.find((t) => t.id === rt.table);
-      if (slot === undefined || table === undefined) throw new Error("a table the call cannot see");
       e = {
         head: { slot: slot.slot as SlotId, slotName: slot.name, table, refs: [] },
         refs: [],
       };
       byTable.set(key, e);
     }
-    e.refs.push(identityStatement(r));
+    e.refs.push(ref);
+  };
+  for (const r of found) {
+    const rt = analysis.tables.get(r.f);
+    if (rt === undefined) continue;
+    const slot = slotOf.get(rt.slot);
+    const table = slot?.tables.find((t) => t.id === rt.table);
+    if (slot === undefined || table === undefined) throw new Error("a table the call cannot see");
+    if (table.kind === "derived" && computedAtRead(table)) {
+      // A derived table computed when read has no rows of its own: what is read is the base tables
+      // its rule reads, each recorded whole (a superset of the rows its aggregate read).
+      for (const id of new Set(table.rule.depends_on.map((d) => d.table))) {
+        const b = slot.tables.find((t) => t.id === id);
+        if (b === undefined) throw new Error(`a rule reading a table not in its slot: ${id}`);
+        add(slot, b, undefined);
+      }
+      continue;
+    }
+    add(slot, table, identityStatement(r));
   }
   // A table with one reference that cannot be read by row is recorded whole, whatever its other
   // references are: no statement is run for it at all.
