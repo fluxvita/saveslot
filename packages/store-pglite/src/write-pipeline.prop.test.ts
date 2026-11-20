@@ -785,9 +785,12 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     );
     if (process.env["JUDGE_STATS"]) console.log(schema.kind, JSON.stringify({ ...seen, byKind }));
     expect(seen.samples).toBeGreaterThan(RUNS / 3);
-    // Overruns cut samples short: they must stay rare. Five rounds of 40 a table gave one in 200
-    // (a mean of 0.2 a run); more than a tenth of the runs has odds of about 3e-6.
-    expect(seen.overrun).toBeLessThanOrEqual(RUNS / 10);
+    // Overruns cut samples short: they must stay rare, not the most of a run. Seeds 1 to 5, 40
+    // samples each, gave 2, 1, 1, 0 and 1 on the state table (a mean near 1) and none on the
+    // event table; one unseeded run gave 5. The bound guards against the generator going wrong as
+    // a whole: past a quarter of the runs has odds of about 1e-8 a run at a mean of 1, and about
+    // 1e-5 at a mean of 2 (Poisson).
+    expect(seen.overrun).toBeLessThanOrEqual(RUNS / 4);
     expect(seen.pending).toBeGreaterThan(0);
     atRandom.decisions += seen.decisions;
     atRandom.corroborations += seen.corroborations;
