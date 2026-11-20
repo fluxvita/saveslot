@@ -291,26 +291,29 @@ describe("start right after the service was killed", () => {
     "kill -9, then start at once on a home as `saveslot init` makes it: the service is ready, not failed",
     async () => {
       // Made as `saveslot init` makes it: the real backend, with fsync passed to the host.
-      const home = join(mkdtempSync(join(tmpdir(), "saveslot-killed-")), "home");
+      const root = mkdtempSync(join(tmpdir(), "saveslot-killed-"));
+      roots.push(root);
+      const home = join(root, "home");
       expect(await init(home, { rotate: false }, capture().io)).toBe(0);
-      expect(await start(home, capture().io)).toBe(0);
-      const pid = Number(readFileSync(join(runDir(home), "saveslot.pid"), "utf8").trim());
-      process.kill(pid, "SIGKILL");
-      // Gone: the lock is the kernel's to release, at once.
-      const until = Date.now() + 10_000;
-      while (Date.now() < until) {
-        try {
-          process.kill(pid, 0);
-        } catch {
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 20));
-      }
-      const began = Date.now();
-      const c = capture();
-      const code = await start(home, c.io);
-      const took = Date.now() - began;
+      // From here on a service may be running: it is stopped however the case ends.
       try {
+        expect(await start(home, capture().io)).toBe(0);
+        const pid = Number(readFileSync(join(runDir(home), "saveslot.pid"), "utf8").trim());
+        process.kill(pid, "SIGKILL");
+        // Gone: the lock is the kernel's to release, at once.
+        const until = Date.now() + 10_000;
+        while (Date.now() < until) {
+          try {
+            process.kill(pid, 0);
+          } catch {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        const began = Date.now();
+        const c = capture();
+        const code = await start(home, c.io);
+        const took = Date.now() - began;
         expect({ code, err: c.err }).toEqual({ code: 0, err: [] });
         // With fsync passed to the host, the store's recovery after a kill takes its time (seconds
         // on macOS); what must not happen is a start that fails.

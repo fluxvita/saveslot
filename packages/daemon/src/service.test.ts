@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
 import { anchorFileText, createLocalHome } from "@fluxvita/saveslot-service/testing";
 import { osFileLock, type PgliteTenantStore } from "@fluxvita/saveslot-store-pglite";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { LEDGER } from "./contract-suite.fixture.ts";
 import { httpDriver } from "./http-driver.fixture.ts";
@@ -61,7 +61,19 @@ interface Child {
   readonly proc: ChildProcess;
   readonly exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   readonly stderr: () => string;
+  /** Whether it has exited. */
+  readonly gone: () => boolean;
 }
+
+/** Every process a case started: one still running when the case ends, however it ended, is killed. */
+const children = new Set<Child>();
+
+afterEach(async () => {
+  const left = [...children].filter((c) => !c.gone());
+  children.clear();
+  for (const c of left) c.proc.kill("SIGKILL");
+  await Promise.all(left.map((c) => c.exit));
+});
 
 function start(h: string): Child {
   const proc = spawn(process.execPath, ["--conditions=source", BIN, "--home", h], {
@@ -71,10 +83,16 @@ function start(h: string): Child {
   proc.stderr?.setEncoding("utf8").on("data", (c: string) => {
     err += c;
   });
+  let gone = false;
   const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
-    proc.on("exit", (code, signal) => resolve({ code, signal })),
+    proc.on("exit", (code, signal) => {
+      gone = true;
+      resolve({ code, signal });
+    }),
   );
-  return { proc, exit, stderr: () => err };
+  const child = { proc, exit, stderr: () => err, gone: () => gone };
+  children.add(child);
+  return child;
 }
 
 function health(h: string): Promise<{ status: number; body: Record<string, unknown> } | undefined> {
@@ -92,14 +110,19 @@ function health(h: string): Promise<{ status: number; body: Record<string, unkno
   });
 }
 
-/** Health once its state is one of `states`. */
-async function until(h: string, states: readonly string[]) {
-  for (let i = 0; i < 400; i++) {
+/**
+ * Health once its state is one of `states`, from the process `p` started. No fixed bound: a start
+ * after a crash is slow under load, and how slow grows with the load. It waits while `p` runs,
+ * and gives up at once when `p` exits; the case's own timeout bounds a process that hangs.
+ */
+async function until(h: string, states: readonly string[], p: Child) {
+  for (;;) {
     const r = await health(h);
     if (r !== undefined && states.includes(String(r.body["state"]))) return r.body;
+    if (p.gone())
+      throw new Error(`no health in ${states.join("/")}: the process exited\n${p.stderr()}`);
     await new Promise((r) => setTimeout(r, 50));
   }
-  throw new Error(`no health in ${states.join("/")}`);
 }
 
 const highWater = (h: string) =>
@@ -114,7 +137,7 @@ describe("the service process", () => {
   it("starts, refuses a second process, comes back after SIGKILL, and stops on SIGTERM", async () => {
     const h = home();
     const a = start(h);
-    const ready = await until(h, ["ready"]);
+    const ready = await until(h, ["ready"], a);
     expect(Object.keys(ready).sort()).toEqual(["pid", "since", "state", "version", "writer_lock"]);
     expect(ready).toMatchObject({ state: "ready", pid: a.proc.pid, version: "0.0.0" });
     expect(readFileSync(pidFile(h), "utf8")).toBe(`${a.proc.pid}\n`);
@@ -126,7 +149,7 @@ describe("the service process", () => {
     const b = start(h);
     expect(await b.exit).toEqual({ code: 1, signal: null });
     expect(b.stderr()).toMatch(/not_started reason=already_running/);
-    expect(await until(h, ["ready"])).toMatchObject({ pid: a.proc.pid });
+    expect(await until(h, ["ready"], a)).toMatchObject({ pid: a.proc.pid });
 
     // Killed: the kernel drops both locks; the socket and pid files stay behind.
     a.proc.kill("SIGKILL");
@@ -137,7 +160,7 @@ describe("the service process", () => {
     // A new process takes the lock, replaces the stale socket and pid, opens the tenant (crash
     // recovery is the store's), and serves.
     const c = start(h);
-    expect(await until(h, ["ready"])).toMatchObject({ state: "ready", pid: c.proc.pid });
+    expect(await until(h, ["ready"], c)).toMatchObject({ state: "ready", pid: c.proc.pid });
     expect(readFileSync(pidFile(h), "utf8")).toBe(`${c.proc.pid}\n`);
 
     c.proc.kill("SIGTERM");
@@ -203,7 +226,7 @@ describe("the service process", () => {
       ).result.rows.map((r) => [r.values, (r.input_marks as { disputed: number }).disputed]);
 
     let p = start(h);
-    expect(await until(h, ["ready"])).toMatchObject({ pid: p.proc.pid });
+    expect(await until(h, ["ready"], p)).toMatchObject({ pid: p.proc.pid });
     expect(await call("schema_draft", { document: withRule("ledger", "expenses") })).toMatchObject({
       result: { outcome: "applied" },
     });
@@ -212,7 +235,7 @@ describe("the service process", () => {
       p.proc.kill("SIGKILL");
       expect(await p.exit).toEqual({ code: null, signal: "SIGKILL" });
       p = start(h);
-      expect(await until(h, ["ready"]), `restart ${i}`).toMatchObject({ pid: p.proc.pid });
+      expect(await until(h, ["ready"], p), `restart ${i}`).toMatchObject({ pid: p.proc.pid });
     }
     // The derived table as before; a write refreshes it; a new document's rule compiles.
     expect(await notes("expenses_by_day")).toEqual([[{ day: "2026-11-02", notes: "1" }, 0]]);
@@ -243,7 +266,7 @@ describe("the service process", () => {
     const h = home();
     writeFileSync(join(h, "control", "anchor.json"), anchorFileText({ highWater: 5 }));
     const p = start(h);
-    expect(await until(h, ["failed"])).toMatchObject({
+    expect(await until(h, ["failed"], p)).toMatchObject({
       state: "failed",
       reason: "log_behind_high_water",
       pid: p.proc.pid,
