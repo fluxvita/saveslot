@@ -178,6 +178,38 @@ export function contractSuite(
     });
   });
 
+  it("a row read says who last changed it, when that is not the caller: query and history as_of", async () => {
+    const driver = call;
+    const { session } = get();
+    const row = result(
+      await driver(reader, "query", {
+        table: "ledger.expenses",
+        where: [{ field: "note", op: "=", value: "tea" }],
+      }),
+    )["rows"] as Record<string, unknown>[];
+    expect(row[0]?.["changed_by"]).toMatchObject({ kind: "connection", name: "writer" });
+    // The writer's own row: nothing to say.
+    const own = result(
+      await driver(writer, "query", {
+        table: "ledger.expenses",
+        where: [{ field: "note", op: "=", value: "tea" }],
+      }),
+    )["rows"] as Record<string, unknown>[];
+    expect(own[0]?.["changed_by"]).toBeUndefined();
+    // As of the write's operation: the same.
+    const id = row[0]?.["row"] as string;
+    const seq = Number(String(row[0]?.["ver"]).slice(1).split(".")[0]);
+    const asOf = result(
+      await driver(session, "history", {
+        mode: "as_of",
+        table: "ledger.expenses",
+        row: id,
+        as_of: seq,
+      }),
+    )["rows"] as Record<string, unknown>[];
+    expect(asOf[0]?.["changed_by"]).toMatchObject({ name: "writer" });
+  });
+
   it("sql: one SELECT over the tables by name, a value as $1; the read recorded as sql", async () => {
     const { session } = get();
     const driver = call;

@@ -137,6 +137,8 @@ export interface Row extends TargetRef {
   readonly valid_to?: BizPoint | null;
   readonly valid_to_inclusive?: DateStr;
   readonly marks?: Marks;
+  /** The writer of the operation in `ver`, when it is not the caller (base rows only). */
+  readonly changed_by?: Actor;
   /** Derived rows only: the marks on the rows the rule reads, on the fields it depends on. */
   readonly input_marks?: InputMarks;
 }

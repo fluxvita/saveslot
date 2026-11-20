@@ -39,6 +39,7 @@ import {
 import { computedAtRead } from "../rules/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { valueOut } from "../time/index.ts";
+import { changersOf } from "./changed-by.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 import { bizPoint, kindOf, type TableKind } from "./params.ts";
 import { cmpText, correctedWithin, type KeySpec } from "./rows.ts";
@@ -682,6 +683,11 @@ export async function asOfInTx(
         ...(Object.keys(marks).length > 0 ? { marks } : {}),
       });
     }
+  }
+  // Who made this version, when not the caller: every row here is of the one version.
+  if (version !== undefined && rows.length > 0) {
+    const by = (await changersOf(tx, [version.op], input.actor)).get(Number(version.op));
+    if (by !== undefined) for (const [i, r] of rows.entries()) rows[i] = { ...r, changed_by: by };
   }
   const page = pageAfter(
     rows.map((item) => ({

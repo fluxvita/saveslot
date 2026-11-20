@@ -50,7 +50,7 @@
   },
   {
     "name": "saveslot_query",
-    "description": "Read data by table, conditions, order and count, optionally by business time (`valid_at` / `valid_during`). Use it when the user asks about records in a table (a day, a period, a category); also read a row with it before changing that row. It returns each row's `ver`: bring it back when you change that row. The marks in the result give a row's state (disputed, awaiting confirmation, and so on). For aggregates and joins, use saveslot_sql. To see how a row came to be as it is, use saveslot_history.",
+    "description": "Read data by table, conditions, order and count, optionally by business time (`valid_at` / `valid_during`). On a state table, to see whether anything is planned after a day, pass `valid_during` from that day on. Use it when the user asks about records in a table (a day, a period, a category); also read a row with it before changing that row. It returns each row's `ver`: bring it back when you change that row. The marks in the result give a row's state (disputed, awaiting confirmation, and so on). For aggregates and joins, use saveslot_sql. To see how a row came to be as it is, use saveslot_history.",
     "inputSchema": {
       "type": "object",
       "properties": {

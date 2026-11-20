@@ -462,8 +462,12 @@ describe("what 05 §6 asks for", () => {
     expect(x).toContain("amount not in effect (see below)");
     expect(x).toMatch(
       new RegExp(
-        `amount: at the version you gave \\(#7\\) it was 45 ${B}CNY${E}; now it is 54 ${B}CNY${E} \\(#10, .*\\), ver=v10\\.0\\. Your value 50 ${B}CNY${E} is a candidate in conflict item pi_8VEZWJ3J7BMKMXTV \\(version iv_8VEZWJ3J7BMKMXTV\\.13\\.0\\); the value in effect stays 54 ${B}CNY${E}\\.`,
+        `amount: at the version you gave \\(#7\\) it was 45 ${B}CNY${E}; now it is 54 ${B}CNY${E}, set by .* \\(#10\\), ver=v10\\.0\\. Your value 50 ${B}CNY${E} did not take effect: it is a candidate in conflict item pi_8VEZWJ3J7BMKMXTV \\(version iv_8VEZWJ3J7BMKMXTV\\.13\\.0\\); the value in effect stays 54 ${B}CNY${E}\\.`,
       ),
+    );
+    // What to tell the user: it was not done, who changed it after the version given (#10).
+    expect(x).toMatch(
+      /\n {2}Tell the user this was not done: .* changed the record \(#10\) after the version you gave; ask what they want before resolving\.\n/,
     );
     expect(x).toContain(
       "  To resolve: saveslot_resolve pi_8VEZWJ3J7BMKMXTV (keep_effective / take_candidate / take_previous)",
@@ -647,7 +651,10 @@ describe("what 05 §6 asks for", () => {
       ],
     } as R);
     expect(text).toContain("The whole row: at the version you gave (#7) it existed");
-    expect(text).toContain("Your revoke is a candidate in conflict item pi_8VEZWJ3J7BMKMXTV");
+    expect(text).toContain(
+      "Your revoke did not take effect: it is a candidate in conflict item pi_8VEZWJ3J7BMKMXTV",
+    );
+    expect(text).toContain("Tell the user this was not done:");
     expect(text).not.toContain("<no value>");
     // Only that case: a whole-row candidate with a value, or on a row that did not exist at the
     // version given, keeps the field-by-field line.

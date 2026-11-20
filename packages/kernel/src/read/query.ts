@@ -10,6 +10,7 @@ import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry, ReadRow, ReadValid } from "../audit/index.ts";
 import { get, has, isObj, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { changersOf } from "./changed-by.ts";
 import { queryDerived } from "./derived.ts";
 import { type QueryPlan, queryPlan } from "./params.ts";
 import type { QueryInput, QueryOutput } from "./query-io.ts";
@@ -98,6 +99,12 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
   const rest = after === undefined ? rows : rows.filter((r) => cmpKeys(specs, r.keys, after) > 0);
   const page = rest.slice(0, plan.limit);
   const last = page.at(-1);
+  // Who last changed each row, when not the caller: one statement for the page.
+  const changers = await changersOf(
+    tx,
+    page.map((r) => r.ver),
+    input.actor,
+  );
   const result: QueryReadResult = {
     table: `${named.slot.name}.${named.table.name}`,
     slot: named.slot.name,
@@ -113,7 +120,10 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
           }),
         }
       : {}),
-    rows: page.map((r) => r.row),
+    rows: page.map((r) => {
+      const by = changers.get(r.ver);
+      return by !== undefined ? { ...r.row, changed_by: by } : r.row;
+    }),
     ...(plan.warnings.length > 0 ? { warnings: plan.warnings } : {}),
   };
 

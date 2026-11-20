@@ -57,7 +57,7 @@ describe("resolved, beyond the samples", () => {
     const s = sample(RECEIPTS, "write-resolved-next-change");
     (resolvedOf(s)["amount"] as R)["next_change"] = { at: "2026-11-10", value: null };
     expect(plain(text(s))).toContain(
-      "  amount: from 2026-11-10 on it still has no value, unchanged",
+      "  amount: up to 2026-11-10; what is recorded from then on is unchanged (still no value)",
     );
   });
 

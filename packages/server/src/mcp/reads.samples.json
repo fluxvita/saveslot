@@ -945,6 +945,11 @@
             "currency_note": null,
             "kind": "food",
             "note": "supper"
+          },
+          "changed_by": {
+            "kind": "connection",
+            "id": "ci_01JCVZ8Q3M2N4P5R6S7T8V9W0X",
+            "name": "MacBook · Codex"
           }
         }
       ]

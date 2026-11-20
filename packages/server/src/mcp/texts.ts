@@ -130,7 +130,7 @@ export const CATALOG = {
 
 export const QUERY = {
   description: [
-    "Read data by table, conditions, order and count, optionally by business time (`valid_at` / `valid_during`).",
+    "Read data by table, conditions, order and count, optionally by business time (`valid_at` / `valid_during`). On a state table, to see whether anything is planned after a day, pass `valid_during` from that day on.",
     "Use it when the user asks about records in a table (a day, a period, a category); also read a row with it before changing that row.",
     "It returns each row's `ver`: bring it back when you change that row. The marks in the result give a row's state (disputed, awaiting confirmation, and so on).",
     { text: "For aggregates and joins, use saveslot_sql.", needs: "saveslot_sql" },
@@ -284,7 +284,7 @@ export const WRITE = {
     "Derived tables are read-only: write to their source tables. Do not write each reading a device produces (heart rate, glucose): record a summary of each activity or day.",
     "A moment with its zone, such as `2026-11-12T09:30:53+08:00[Asia/Shanghai]`, is recorded as given; with an offset only (`+08:00`) it is taken in the slot's time zone and the receipt notes it; an object such as `{instant, zone}` is refused.",
     "`replayed: true` in the receipt means this was a repeat and nothing new was written; when a record with the same content really happened again, write it with a different `idempotency_key`.",
-    'Periods of state tables are `[valid_from, valid_to)`, the end not included; what a missing end and `"open"` mean is under `valid_to` in `ops`. Writing by `entity_key` creates the entity when it does not exist; the receipt lists the keys the table already has.',
+    'Periods of state tables are `[valid_from, valid_to)`, the end not included: for "until 11-20 (included)" pass `valid_to: "2026-11-21"`. Without an end, only up to the next recorded change; the receipt says nothing after it was touched. So for "from 11-02 the budget is 3000" pass `valid_from: "2026-11-02"` and no `valid_to`: a change recorded for 11-10 stays. `valid_to: "open"` carries the value on with no end: when there are recorded changes after it, it would overwrite them, and then it does not take effect until the user confirms it; with none after it, it takes effect at once. Writing by `entity_key` creates the entity when it does not exist; the receipt lists the keys the table already has.',
     { text: "It also marks the keys written alike.", later: "P2" },
     '`revoke` without a period revokes the whole entity, with a period it leaves that period without a value. For "undo that change" or "put it back as it was", use `revert: {undo: <the #n of that write>}`: it undoes only what of that write is still in effect; what others changed since is skipped and listed in the receipt.',
     {
@@ -307,7 +307,7 @@ export const WRITE = {
       "The schema version you got when reading data or the catalog, passed back unchanged. Without it, saveslot uses the one you last read.",
     ],
     evidence: [
-      'The evidence for this write, an array. The user\'s words: `{kind: "user_message", text}`, the words themselves, not rewritten or summarized. A tool result: `{kind: "tool_result", text}`; your own inference: `{kind: "agent_note", text}`; a file: `{kind: "file_ref", name, mime, size, sha256}`, with `origin` and `excerpt` if you have them (these six fields are for `file_ref` only, and `text` is not). Any kind may have `stated_at`, when the words were said, with its offset. These segments are shared by the ops.',
+      'The evidence for this write, an array. The user\'s words: `{kind: "user_message", text}`, the words themselves, not rewritten or summarized. A tool result: `{kind: "tool_result", text}`; your own inference: `{kind: "agent_note", text}`; a file: `{kind: "file_ref", name, mime, size, sha256}`, with `origin` and `excerpt` if you have them (these six fields are for `file_ref` only, and `text` is not). Any kind may have `stated_at`, when the words were said, with its offset: only when the user\'s words give that time or you do know it; otherwise leave it out, and saveslot records when it received them. These segments are shared by the ops.',
       { text: 'A source already stored: `{kind: "source_ref", id}`.', later: "P2" },
     ],
     ops: [
@@ -360,7 +360,7 @@ export const WRITE_OP_FIELDS = {
     "State tables only: from which day or moment, included. Not given: now. Pass it whenever the user says when it starts.",
   ],
   valid_to: [
-    'State tables only: up to which day or moment, not included ("until 11-20 (included)" is `2026-11-21`). Not given (`next_change`, the default): only up to the next recorded change, which stays as it is; leave it out for "from 11-02 it is 3000". `"open"`: carries on with no end; when that would overwrite changes recorded after it, the write does not take effect until the user confirms it (with none after it, it takes effect at once).',
+    'State tables only: up to which day or moment, not included ("until 11-20 (included)" is `2026-11-21`). Not given (`next_change`, the default): only up to the next recorded change, which stays; so for "from 11-02 the budget is 3000" leave it out. `"open"` carries the value on with no end: when there are recorded changes after it, it would overwrite them, and then it does not take effect until the user confirms it; with none after it, it takes effect at once.',
   ],
   evidence_refs: [
     "Which segments of the request's `evidence` this op uses (indexes, from 0). Not given: all of them.",
@@ -410,7 +410,7 @@ export const SCHEMA_DRAFT = {
     "Use it when the user wants to start recording a kind of thing that none of their tables fits; look with saveslot_catalog first, and when a slot for it exists already, use that slot instead of creating another.",
     "To change a slot, submit the document saveslot_catalog gives with level \"schema\", changed, its IDs and base_version kept. Changes the slot's policy makes automatic (a new table, a description, aliases, looser constraints) take effect at once; the others (a rename, a dropped table) wait for the user's confirmation as a schema_change item, which this version cannot confirm yet. Only a connection that can see every slot can create one, and changing a slot needs every table of it in range.",
 
-    "Fields with a unit take a code from the unit vocabulary, such as km, min or CNY.",
+    "Fields with a unit take a code from the unit vocabulary, such as km, min or CNY; a count per minute, such as a heart rate, is /min.",
     "Returns a new slot's tables as compiled and its schema version, sv 1; for a change, each change and whether it took effect or waits.",
     {
       text: "Write to it with saveslot_write, with that sv.",
@@ -419,7 +419,7 @@ export const SCHEMA_DRAFT = {
   ],
   params: {
     document: [
-      'The complete schema document of the new slot: `slot` (its name: ASCII letters, digits and underscores, starting with a letter), `base_version: null`, `timezone` (an IANA name such as Asia/Shanghai), and `tables`. To change a slot: the document saveslot_catalog gives with level "schema", changed, with its IDs and `base_version` kept (by its IDs a renamed table or field is known as the same one); a field left out is not dropped.',
+      'The complete schema document of the new slot: `slot` (its name: ASCII letters, digits and underscores, starting with a letter), `base_version: null`, `timezone` (an IANA name such as Asia/Shanghai; when you do not know the user\'s time zone, ask them, and do not guess it from their language or this computer), and `tables`. To change a slot: the document saveslot_catalog gives with level "schema", changed, with its IDs and `base_version` kept (by its IDs a renamed table or field is known as the same one); a field left out is not dropped.',
       'Each table has a `name`, `kind: "base"`, a `description`, a `time` and `fields`. `time` is `{type: "event", field}` for one row per happening, where `field` names one of its fields of type `date` or `zoned_datetime` with `required: true`; `{type: "state", granularity: "date"}` for a value that holds over time, optionally with an `entity_key` (the names of required fields that identify one thing, such as a category); or `{type: "none"}`.',
       `Each field has a \`name\`, a \`type\` (one of ${FIELD_TYPES.map((x) => `\`${x}\``).join(", ")}), a \`description\`, and \`required: true\` when it must always be given; a \`quantity\` has a \`unit\`, an \`enum\` its \`values\`, a \`ref\` its \`ref: {table, target}\` (\`target\` is \`row\`, or \`entity\` for a state table).`,
       'A derived table is computed from a base table of the slot and is read-only: it has `kind: "derived"`, a `name`, a `description`, a `rule` and `fields`, and no `time`. `rule` is `{sql, time_dependency}`: `sql` is one SELECT over one base table of the slot, by its name, with each column it gives named by `AS <field name>`; `time_dependency` is `"bucketed"` when it groups rows by a date (a `date` field, or `date_trunc` of one) and `"none"` otherwise. Its fields have a `name` and a `description` only: their types and units come from the rule.',
@@ -453,7 +453,7 @@ export const INSTRUCTIONS = {
     ],
     [
       {
-        text: "When to write: when the user states a new fact that belongs in one of the tables, asks you to record something, or says something was recorded wrongly, use saveslot_write and put the user's own words in `evidence`. Do not write when the user is asking, supposing or chatting. When no table fits, tell the user first.",
+        text: "When to write: when the user states a new fact that belongs in one of the tables, asks you to record something, or says something was recorded wrongly, use saveslot_write and put the user's own words in `evidence`. Do not write when the user is asking, supposing or chatting. When no table fits, tell the user first. When their words leave out something that decides what the record is (which meal, how many sets), or contradict themselves, ask first; do not write an incomplete record and ask afterwards.",
         needs: "saveslot_write",
       },
       {
@@ -471,7 +471,7 @@ export const INSTRUCTIONS = {
     ],
     [
       {
-        text: 'Writing it right: read a record before changing it, and pass back the `ver` and `sv` you read. When a receipt says "awaiting confirmation", tell the user what it is in that same reply and get their agreement before going on; what they said before it appeared is not agreement to it.',
+        text: 'Writing it right: read a record before changing it, and pass back the `ver` and `sv` you read. When a receipt says "awaiting confirmation", tell the user what it is in that same reply and get their agreement before going on; what they said before it appeared is not agreement to it. When the record you are about to change is no longer as it was when the user asked, and someone else changed it, tell the user what it is now and who changed it, and write only after they answer.',
         needs: "saveslot_write",
       },
       {

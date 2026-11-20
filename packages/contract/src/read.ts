@@ -125,6 +125,8 @@ export interface Row extends TargetRef {
   valid_to?: BizTime | null;
   valid_to_inclusive?: DateStr;
   marks?: Marks;
+  /** The writer of the operation in `ver`, when it is not the caller; base rows only. */
+  changed_by?: Actor;
   /** Derived rows only. */
   input_marks?: InputMarks;
   /** With `detail: "detailed"`. */

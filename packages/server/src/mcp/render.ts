@@ -343,7 +343,10 @@ function rowLine(row: R, historical = false, first = true): Line[] {
   if (Object.hasOwn(row, "valid_from")) cells.push(periodOf(row));
   const values = valuesOf(row["values"]);
   if (values.length > 0) cells.push(values);
-  const tail = [...m.inline, inputMarksOf(row["input_marks"])].filter((x) => x.length > 0);
+  // Someone else changed it last: the name, inside the untrusted boundary as every writer's is.
+  const by =
+    first && isObj(row["changed_by"]) ? t`last changed by ${actorOf(row["changed_by"])}` : [];
+  const tail = [...m.inline, inputMarksOf(row["input_marks"]), by].filter((x) => x.length > 0);
   const line = join([head.length > 0 ? head : t`  `, ...cells, ...tail], t` | `);
   return [line, ...m.below];
 }
@@ -378,8 +381,10 @@ function pageOf(r: R, shown: number, unit: () => Part[]): Line[] {
   ];
 }
 
-// multi_segment_unmapped is not drawn over MCP (05 §4.3): HTTP and the CLI give it.
-const WARNINGS = textsBy<Exclude<Warning["code"], "multi_segment_unmapped">>({
+const WARNINGS = textsBy<Warning["code"]>({
+  // What to do the next time (05 §4.3): over MCP an op cannot say which segment backs which field.
+  multi_segment_unmapped: () =>
+    t`this op cites several evidence segments, so each field takes them all as its source; next time, give each op only the segments its values come from (evidence_refs)`,
   unit_converted: () => t`converted to the field's unit`,
   rounded: () => t`rounded to the field's precision`,
   timezone_assumed: () => t`a moment without a zone was taken in the slot's time zone`,
@@ -424,6 +429,10 @@ function warningDetail(w: R): Part[] | undefined {
     const from = obj(w["from"]);
     const to = obj(w["to"]);
     return t`${fieldOf(w["field"])} converted: ${fieldValue({ value: from["value"], unit: from["unit"] })} → ${fieldValue({ value: to["value"], unit: to["unit"] })}`;
+  }
+  if (c === "multi_segment_unmapped") {
+    const fields = arr(w["fields"]).map((f) => fieldOf(f));
+    return t`${join(fields, t`, `)}: ${said(WARNINGS, c) as Part[]}`;
   }
   if (c === "rounded") {
     return t`${fieldOf(w["field"])} rounded to ${count(w["scale"])} decimal places: ${as(String(w["from"] ?? ""), num)} → ${as(String(w["to"] ?? ""), num)}`;
@@ -495,8 +504,6 @@ function remindersOf(r: R, now: Date): Line[] {
   const out: Line[] = [];
   const groups = new Map<string, R[]>();
   for (const w of arr(r["warnings"]).map(obj)) {
-    // multi_segment_unmapped is not drawn over MCP (05 §4.3).
-    if (w["code"] === "multi_segment_unmapped") continue;
     const k = JSON.stringify([String(w["code"]), w["field"] ?? null]);
     groups.set(k, [...(groups.get(k) ?? []), w]);
   }
@@ -1290,7 +1297,12 @@ function candidateLines(f: string, c: R, at: number, r: R): Line[] {
         : Object.hasOwn(values, f)
           ? t`it was ${fieldValue(values[f])}`
           : t`it had no value`;
-  const who = by["seq"] !== undefined ? t` (${op(by["seq"])}, ${actorOf(by["actor"])})` : [];
+  const who = by["seq"] !== undefined ? t` by ${actorOf(by["actor"])} (${op(by["seq"])})` : [];
+  // What the user is told: who changed it after the version given, and that this did not happen.
+  const tell =
+    by["seq"] !== undefined
+      ? t`  Tell the user this was not done: ${actorOf(by["actor"])} changed the record (${op(by["seq"])}) after the version you gave; ask what they want before resolving.`
+      : t`  Tell the user this was not done: the record was changed after the version you gave; ask what they want before resolving.`;
   const item = c["item"];
   const ref = arr(r["pending"])
     .map(obj)
@@ -1306,7 +1318,8 @@ function candidateLines(f: string, c: R, at: number, r: R): Line[] {
   // and was changed since by another write, not revoked (a second revoke would be the same value).
   if (f === "*" && (c["after"] === null || c["after"] === undefined) && prev["exists"] !== false) {
     return [
-      t`  The whole row: ${given} it existed; it has been changed since${who}, ver=${idOf(c["current_ver"])}, and still exists. Your revoke is a candidate in conflict item ${idOf(item)}${version}; the row stays as it is. saveslot_pending ${idOf(item)} shows its values in effect.`,
+      t`  The whole row: ${given} it existed; it has been changed since${who}, ver=${idOf(c["current_ver"])}, and still exists. Your revoke did not take effect: it is a candidate in conflict item ${idOf(item)}${version}; the row stays as it is. saveslot_pending ${idOf(item)} shows its values in effect.`,
+      tell,
       ...taking,
       t`  To resolve: saveslot_resolve ${idOf(item)} (${join(
         CONFLICT_DECISIONS.map((d) => [code(d, DECISIONS)]),
@@ -1315,7 +1328,8 @@ function candidateLines(f: string, c: R, at: number, r: R): Line[] {
     ];
   }
   return [
-    t`  ${fieldOf(f)}: ${given} ${then}; now it is ${fieldValue(c["effective"])}${who}, ver=${idOf(c["current_ver"])}. Your value ${fieldValue(c["after"])} is a candidate in conflict item ${idOf(item)}${version}; the value in effect stays ${fieldValue(c["effective"])}.`,
+    t`  ${fieldOf(f)}: ${given} ${then}; now it is ${fieldValue(c["effective"])}, set${who}, ver=${idOf(c["current_ver"])}. Your value ${fieldValue(c["after"])} did not take effect: it is a candidate in conflict item ${idOf(item)}${version}; the value in effect stays ${fieldValue(c["effective"])}.`,
+    tell,
     ...taking,
     t`  To resolve: saveslot_resolve ${idOf(item)} (${join(
       CONFLICT_DECISIONS.map((d) => [code(d, DECISIONS)]),
@@ -1425,8 +1439,8 @@ function resolvedLines(x: R): Line[] {
       add(
         f,
         next["value"] === null
-          ? t`from ${timeOf(next["at"])} on it still has no value, unchanged`
-          : t`from ${timeOf(next["at"])} on it is still ${fieldValue(next["value"])}, unchanged`,
+          ? t`up to ${timeOf(next["at"])}; what is recorded from then on is unchanged (still no value)`
+          : t`up to ${timeOf(next["at"])}; what is recorded from then on is unchanged (still ${fieldValue(next["value"])})`,
       );
     }
   }
@@ -1573,7 +1587,9 @@ function receiptTail(r: R, now: Date): Line[] {
     const x = obj(s);
     // Why each was closed (04-contract-types §4.8 `SupersededReason`), as the item's details say it.
     const why = x["reason"] !== undefined ? t` · ${codeIn(x["reason"], SUPERSEDED)}` : [];
-    out.push(t`Superseded: ${idOf(x["item"])} ${codeIn(x["type"], ITEM_TYPES)}${why}`);
+    out.push(
+      t`Superseded: ${idOf(x["item"])} ${codeIn(x["type"], ITEM_TYPES)}${why}. Tell the user this proposal no longer applies because of this change; saveslot_pending ${idOf(x["item"])} shows what it proposed and who proposed it.`,
+    );
   }
   if (isObj(r["affected_reads"])) {
     out.push(t`Earlier reads used the old value: ${stored(JSON.stringify(r["affected_reads"]))}`);

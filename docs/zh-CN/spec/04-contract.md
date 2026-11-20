@@ -324,6 +324,7 @@
 
 - 事项详情只列出**当前凭证可用的**处理方式（`decisions`）；用了不可用的处理方式报 `insufficient_scope`。
 - **确认委托给调用方**：saveslot 不区分确认出自人还是 Agent（architecture §3）。slot 策略可以指定"某类处理只接受用户会话的确认"，届时事项详情的 `user_session_only` 列出这些处理方式，连接实例调用它们报 `insufficient_scope`（`required_scope: "user_session"`）；这个开关第一版不实现。
+- **读到的行是谁最近改的**：`query` 与 `history` 的 `as_of` 读到的基础表的行带 `changed_by`——它 `ver` 里那次操作的写入者，不是调用方自己时才给。看到别人刚改过要改的那一行，调用方先告诉用户、问过再写；内核不因此拒绝或改判写入（带着刚读到的 `ver` 写，按契约就是看过最新的再写）。
 
 ## 7. 数据标记
 

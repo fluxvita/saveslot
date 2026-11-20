@@ -382,6 +382,8 @@ interface Row extends TargetRef {
   valid_to?: BizTime | null;
   valid_to_inclusive?: DateStr;
   marks?: Marks;
+  /** 只有基础表的行：ver 里那次操作的写入者，不是调用方自己时才给（query 与 history 的 as_of）。 */
+  changed_by?: Actor;
   input_marks?: InputMarks;      // 只有派生行
   detail?: RowDetail;            // detail: "detailed" 时
 }
