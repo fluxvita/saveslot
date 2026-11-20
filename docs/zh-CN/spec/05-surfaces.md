@@ -481,7 +481,7 @@ budgets 推广 变更：2026-11-02 起改为 3000 CNY（一直延续）会覆盖
 expenses r_01JC… 整行删除：date、category 只来自这句话
 ```
 
-**`saveslot_resolve`**：第一行写事项、处理方式、结果。`take_previous` 接着写回掉了哪些写入：每次写入的操作号、写入者与它失去的字段，与事项详情里"take_previous 会回掉"列的一致。触发了写入时按写入回执的写法接着写。已解决事项用同一处理方式重发时，第一行写"该事项已于 … 按 confirm 解决，本次没有新的改动"。`schema_change` 的 `confirm` 写"已切换到 v2"或"正在迁移到 v2（进度可用 saveslot_pending pi_… 查看）"。`deletion` 的 `cancel` 写恢复了什么、哪些事项恢复、哪些因宽限期内的写入而保持不变；有被重新判定的候选（`rejudged`）时单列一段，逐条写是哪次写入、原来属于哪个事项、结果是哪一种："与当前值相同，不再是改动""与当前值相同，已记为佐证""已另开事项 pi_…（待处理）"，没有这种候选时不写这一段。
+**`saveslot_resolve`**：第一行写事项、处理方式、结果。`take_previous` 接着写回掉了哪些写入：每次写入的操作号、写入者与它失去的字段，与事项详情里"take_previous 会回掉"列的一致。触发了写入时按写入回执的写法接着写。已解决事项用同一处理方式重发时，第一行写"该事项已于 … 按 confirm 解决，本次没有新的改动"。`schema_change` 的 `confirm` 写"已切换到 v2"或"正在迁移到 v2（进度可用 saveslot_pending pi_… 查看）"。`deletion` 的 `cancel` 写恢复了什么、哪些事项恢复、哪些因宽限期内的写入而保持不变（被重新判定的候选 `rejudged` 第一版不出现，不写）。
 
 ## 7. 报错的文本
 
@@ -489,7 +489,7 @@ expenses r_01JC… 整行删除：date、category 只来自这句话
 
 | code | 文本里的下一步 |
 |---|---|
-| `invalid_argument` | 指出哪个参数，附正确示例 / 候选；模式配错时给该模式完整的示例。事件类表传了 `valid_at`："runs 是事件类表，没有生效区间；查 2026-11-03 当天请用 valid_during: ["2026-11-03", "2026-11-04")，或 where: [{field: "date", op: "=", value: "2026-11-03"}]"。多候选没指定（`candidate_required`）：按 `candidate_choices` 列出候选的下标与写入，如"候选 0（#58，MacBook · Claude Code）/ 候选 1（#61，MacBook · Codex）"。按来源键写入的几种：`insert_with_external_key`："meals 声明了来源键，按来源键写入请用 update 并给 external_key"；`duplicate_external_key`："第 2、9 个 op 的来源键相同，请去掉重复的一条再提交"；`external_key_in_use`："这个来源键已由 r_… 占着；要把它转到这一行，先撤销 r_…"（冻结时写"这个来源键有一项可撤回的删除（pi_…），删除了结之前不能转移"）；`external_key_not_transferable`："这个来源键是 r_… 补键得来的，不能再转"；`external_key_transferred`："这一行的来源键已转给 r_…，不能再恢复它"。前提的几种指出是第几个 op 的第几条前提：`premise_self`："前提不能指向这个 op 自己的目标"；`premise_historical_ver`："h41.0 是历史版本，请用 saveslot_query 读到当前的 ver"；`cross_slot`："前提只能指向同一 slot 的表"；`premises_with_external_key` / `premises_with_revert` / `premises_with_revoke`："这种 op 不能带 premises" |
+| `invalid_argument` | 指出哪个参数，附正确示例 / 候选；模式配错时给该模式完整的示例。事件类表传了 `valid_at`："runs 是事件类表，没有生效区间；查 2026-11-03 当天请用 valid_during: ["2026-11-03", "2026-11-04")，或 where: [{field: "date", op: "=", value: "2026-11-03"}]"。宽限期内对受删除影响的行做决定（`pending_deletion_target`）："这一行受一项还能撤回的删除影响（pi_…，2026-11-22 10:00 到期）：到期之后再处理，或先撤回那项删除（saveslot_resolve pi_… cancel）"，不建议重试。多候选没指定（`candidate_required`）：按 `candidate_choices` 列出候选的下标与写入，如"候选 0（#58，MacBook · Claude Code）/ 候选 1（#61，MacBook · Codex）"。按来源键写入的几种：`insert_with_external_key`："meals 声明了来源键，按来源键写入请用 update 并给 external_key"；`duplicate_external_key`："第 2、9 个 op 的来源键相同，请去掉重复的一条再提交"；`external_key_in_use`："这个来源键已由 r_… 占着；要把它转到这一行，先撤销 r_…"（冻结时写"这个来源键有一项可撤回的删除（pi_…），删除了结之前不能转移"）；`external_key_not_transferable`："这个来源键是 r_… 补键得来的，不能再转"；`external_key_transferred`："这一行的来源键已转给 r_…，不能再恢复它"。前提的几种指出是第几个 op 的第几条前提：`premise_self`："前提不能指向这个 op 自己的目标"；`premise_historical_ver`："h41.0 是历史版本，请用 saveslot_query 读到当前的 ver"；`cross_slot`："前提只能指向同一 slot 的表"；`premises_with_external_key` / `premises_with_revert` / `premises_with_revoke`："这种 op 不能带 premises" |
 | `unknown_table` / `unknown_field` | 列出最接近的名字（`nearest`，最多 3 个）；建议 `saveslot_catalog`。最接近的名字只从本次调用可见的名字里取：凭证范围外的 slot、表与字段，与不存在的一样，永远不出现在报错里。顺序照契约第 11 节：别名与请求里的名字折叠后相同的对象，它的名字排在最前，其余按折叠后的编辑距离（"价钱 不是字段名；amount 的别名里有它，请写 amount"）；文本里写的是名字，不回显别名 |
 | `not_found` | 被宽限期内的删除去掉的："该行已被删除（pi_…，可撤回）"，不回显内容；`slot`："没有名为 sleep 的 slot；有哪些 slot 用 saveslot_catalog 查看"；前提的目标找不到时指出是第几个 op 的第几条前提；其余建议用 `saveslot_query` 重新定位。凭证范围外的 ID 与 slot 和不存在的报同一句话 |
 | `revoked` | "这一行已在 #63 撤销；要恢复它，用 revert: {undo: 63}" |

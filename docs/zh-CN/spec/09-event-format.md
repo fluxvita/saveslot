@@ -203,7 +203,8 @@
 | `schema.switched` 的 `backfill/<表ID>/<字段ID>/<n>`（§5.5；状态类表，事件类表与无时间表的 `backfill_rows/*` 是元数据块，不在此列） | 状态类表上常量补值的区间：由别的贡献定下的、实体存在而字段为空的那段 |
 | `write.head` 的 `ops/<i>/premise_valid/<j>`（§5.7） | 前提声明的范围取自依赖行的业务时间、而那个时间值出自别的贡献时，解析出的点或区间 |
 | 事项的条目块与 `scope_valid`（§5.8） | 别的写入的值与区间 |
-| 删除事件的 `results/…`、`restated/<k>`（§5.9） | 删除后的各段、被重述的贡献 |
+| `write.base` 的 `take_filled/<j>/<k>`（§5.8） | 采纳填上的撤销当时的区间，抄自那条撤销的那一项 |
+| 删除事件的 `results/…`、`restated/<k>`、`take_filled/<n>`（§5.9） | 删除后的各段、被重述的贡献、重新给出的采纳填上的区间 |
 
 规则只有两条：
 
@@ -805,6 +806,7 @@
 | `ack/<j>` | 数 | `acknowledge` 确认覆盖的一段：原来有值时 `{"field": "f2", "valid": {…}, "value": …, "op": <写下这一段的操作号>, "deps": […]}`；原来没有值时 `{"field": "f2", "valid": {…}, "no_value": true, "deps": […]}`，没有 `value` 与 `op`。`no_value` 与 `fields/<f>/<k>` 里的同名键同义：这一段原来没有值，不区分是实体无值还是字段没有贡献。`value` 与 `no_value` 恰有其一 | `deps`：写下这一段的贡献（原来有值时），给出这一段两端的贡献，这一段在一次撤销之内时另含那次撤销 |
 | `revert` | 元 | **回退记录**：这次写入回掉了哪几次操作在哪些目标上的改动，见下。`revert: {undo}` 与 `take_previous` 的基础写入都带它，形状相同。只有事件 `seq`、操作号与目标（字段 ID 或"存在"），不含下标与区间 | — |
 | `take` | 元 | **采纳记录**：`take_candidate` 触发的基础写入带它，为删除重放留下所需的记录，见 §5.8「`item.resolved`」。只有事项、候选号、操作号与（事件, 目标），不含下标与区间，不随删除清除 | — |
+| `take_filled/<j>/<k>` | 数 | 状态类表：采纳填上的一条撤销的一项当时的区间，`{"valid": {…}, "deps": [{"event": <seq>, "existence": <k>}]}`，与那一项的 `span/existence/<k>` 同构；`j` 是那条撤销在 `take.filled` 里的下标，`k` 是它在"存在"上的项的下标。一项一块。见 §5.8「`item.resolved`」 | 本块的 `deps`（§3.5）：那条撤销的那一项 |
 
 `target`：
 
@@ -1040,7 +1042,7 @@ L 只在 `[11-10, 11-15)` 上被回掉，两侧的 3000 照旧。
 | `fields/*/*` 里 `no_value` | 该字段在这一项的区间上置为没有值；版本表 |
 | `fields/*/*` 里 `uncovered` | 不赋值。该字段在这一项的区间上取登记之后露出的那一项（最后一个生效、没被登记回掉的字段项或撤销）；版本表 |
 | `revert` | **只在这次基础写入生效时登记**：`base_sources` 里把 `items` 列出的各（事件, 目标）在当前的项登记为"已被本操作回掉"（登记的范围只读块：不标 `later` 的条目上的项（`undo` 里是被撤回操作自己的项，`take_previous` 的条目都不标）登记在"它的区间 ∩ 本事件在同一字段或'存在'上写回各项的区间之和"上；标 `later` 的条目上的项 x 再与 D(x) 取交，D(x) 由 `apply` 自己算：被撤回操作的项里，状态为 `applied` 或 `corroborated`（来源表里的当前区间，被删除重述过的按重述后的）、且 x 按回掉的步骤 3 能取代的那些项的区间之并，取代关系只看内容的种类，都在块里；之后被删除事件重述的，按重述后的区间）。这次写入进了待确认时不登记，确认生效时（由那次解决触发的落账）登记；待确认的回掉因一次删除不再属高影响、在自己的写入号生效时，由那条删除事件的落账登记（用提议时列的回退记录）；被拒绝或被取代则不登记。全部被跳过的 `undo` 算已生效，没有写回项，登记的范围为空。登记"已被回掉"只有这一条路径 |
-| `take` | 无。它不登记回掉：覆盖集里的写入由采纳写下的项按普通的取代关系盖过 |
+| `take`、`take_filled/*/*` | 无。`take` 不登记回掉：覆盖集里的写入由采纳写下的项按普通的取代关系盖过。`take_filled` 不落物化状态，只供删除重放读 |
 | `existence/*` 里 `applied`、带 `restored` | 业务表在该范围内撤掉已撤销标记或无值区间；版本表 |
 | `candidate`、`awaiting` | 不改业务表与版本表 |
 | `duplicate` | 无（标记由 `item.created` 得出） |
@@ -1144,7 +1146,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `merge_base_op` | `conflict` 必有，其余类型没有：合并基的操作号（各候选所带 `ver` 中最早的那个版本） |
 | `origin_event` | 由写入引起的事项（`conflict`、`awaiting_confirmation`、`flagged`）必有：引出这个事项的 `write.base` 事件的 `seq`。`schema_change` 没有 |
 | `draft` | `schema_change` 必有，其余类型没有：草稿 ID |
-| `related_item` | 当且仅当成因为 `restored_candidate`：候选原来所在的那个事项 |
+| `related_item` | 当且仅当成因为 `restored_candidate`：候选原来所在的那个事项（第一版不出现） |
 | `ruleset_version`、`policy_version` | 判定这个事项时用的两个版本 |
 
 冲突单元是"存在"的事项（过期写入撞上撤销，或撤销成了候选），`current/<k>` 与 `previous/<k>` 只记这个单元上的东西，两种条目都列：
@@ -1224,7 +1226,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 - `cause` 为 `entries_deleted`：隐私删除清掉了事项的部分条目而事项仍未决（例如去掉了一个候选），`dropped_candidates` 列出被去掉的候选下标；此时没有 `by_event`。`by_event` 是改到事项目标的那条 `write.base` 事件（`references_changed` 时是引用方的那条）。
 - `cause` 为 `matched_changed`：`flagged` 事项比中的两行里任何一行（被标记的那一行，或被比中的另一行）被撤销或改动，事项仍未决；`by_event` 是那条 `write.base`。`flagged` 事项不看读没读过，没有 `writer_had_read`。
 - `cause` 为 `entries_restored`：撤回一次删除之后，事项当初被去掉的候选放回来。`restored_candidates` 只列**整条被去掉过**的候选的下标（与 `dropped_candidates` 对称）；候选当初只少了一部分项、撤回后那些项回来的，下标不进 `restored_candidates`，本事件用同一下标重新给出含全部项的 `candidates/<k>`。本事件的 `candidates/<k>` 按撤回后的状态重新给出它们（以本事件为准，不读回原来的块）；此时没有 `by_event`。
-- 撤回删除时事项**已经解决**的，不产生 `item.refreshed`，原事项的解决不动。放回来的候选按撤回时的当前状态重新判定，由撤回事件逐项重述：与当前生效值同值的项，按普通规则成为 `dropped`（没指证据）或 `corroborated`（指了证据）；否则仍是 `candidate`。只要还有一项是 `candidate`，随后一条 `item.created`（成因 `restored_candidate`）为这个候选另开事项，新事项里它的 `items` 只含仍是候选的那几项。回执的 `rejudged` 按候选给一条：还有项是候选记 `reopened`；否则有项成了佐证记 `corroborated`，全部成了 `dropped` 记 `dropped`。
+- **第一版不出现这一种**：宽限期内受这项删除影响的行上不能解决事项（data-model「删除 · 撤回与宽限期」），被去掉候选的事项撤回时要么仍未决（走上一条），要么已在宽限期内被取代（不放回）。格式留着，供放开那条限制时用：撤回删除时事项**已经解决**的，不产生 `item.refreshed`，原事项的解决不动。放回来的候选按撤回时的当前状态重新判定，由撤回事件逐项重述：与当前生效值同值的项，按普通规则成为 `dropped`（没指证据）或 `corroborated`（指了证据）；否则仍是 `candidate`。只要还有一项是 `candidate`，随后一条 `item.created`（成因 `restored_candidate`）为这个候选另开事项，新事项里它的 `items` 只含仍是候选的那几项。回执的 `rejudged` 按候选给一条：还有项是候选记 `reopened`；否则有项成了佐证记 `corroborated`，全部成了 `dropped` 记 `dropped`。
 - `target` 各键的出现条件：`dropped_candidates` 只随 `entries_deleted`、`restored_candidates` 只随 `entries_restored`，出现时非空；`by_event` 在 `entries_deleted`、`entries_restored` 时没有，其余成因必有；`writer_had_read` 在 `target_overwritten`（恒为 `false`）与 `references_changed` 时必有，其余成因没有；`merge_base_op` 对每种成因都可缺，给出时是刷新后的合并基。
 - **回退类的待确认事项**（提议是一次 `undo`）：刷新时按当前状态重新判定，`scope_valid` 取这次确认会写回的区间（与确认时的判定相同），`impact/*` 取同一次 `undo` 按当前状态重判的结果（确认的判定不算高影响 ①，列不出会被覆盖的段）；两次判定列出的回退条目相同。两组块各列各自的 `deps`：`scope_valid` 的出自确认的判定，`impact/*` 的出自 `undo` 的重判。只有 `deps` 变了，内容也算变了：事项刷新、版本换新（与确认哈希把 `deps` 算在内一致）。重判之后既没有要写回的项、也没有要遮住或回掉的写入时，不刷新，改发 `item.superseded`（`nothing_to_revert`）。写入方读过事项时照旧是 `overwritten`：那种情形本来就不刷新，也就没有要替代的刷新。
 - `apply`：事项版本换成本操作号。
@@ -1281,8 +1283,11 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
   | `item`、`candidate` | 所解决的事项与采纳的候选号 |
   | `merge_base_op` | 解决时事项记下的合并基，之后不重算 |
   | `items` | 覆盖集：事项的冲突单元与区间内、合并基之后、本次解决之前有项生效过的（事件, 目标），列法与 `take_previous` 的回退记录相同（§5.7），条目形状同 `revert.items`（不带 `later`） |
+  | `filled` | 状态类表：采纳填上的撤销，`[{"event": <seq>, "target": "existence"}, …]`——解决时在生效、与采纳范围相交的撤销（data-model「删除 · 搬运的值」）。一条都没有时不出现 |
 
   这块是元信息，只有序号与目标，不随删除清除。覆盖集里的写入不登记回掉：采纳写下的项按普通的取代关系盖过它们。
+
+  **填上的撤销当时的区间不在这一块里**：区间抄自那条撤销的内容，是数据。一条撤销在解决时可以有几项（被别的项切开的、由删除编出的下标），所以按项记：每一项另成一块 `take_filled/<j>/<k>`（`j` 对 `filled` 的下标，`k` 是那条撤销在"存在"上的项的下标，只记解决时在生效、与采纳范围相交的项），`{"valid": {…}, "deps": [{"event": <那条撤销的事件>, "existence": <k>}]}`，与那一项的 `span/existence/<k>` 同构，照 §3.5 处理：那一项被隐私删除或被重述，这一块就列入那次删除的位置列表；被重述而这次采纳仍在时，由那次删除事件重新给出：删除事件带 `take_filled/<n>`（`n` 从 0 起），`{"event": <采纳那条基础写入的 seq>, "revoke": <j>, "item": <k>, "valid": {…}, "deps": […]}`，区间是那一项在这次重放里、与采纳范围相交的部分，`deps` 照旧指那一项；它自己同样照 §3.5 处理。之后以日志里最近一次给出的为准（被撤回的删除给出的不作数）。重放用它判撤销与采纳项的关系（data-model 同一段）：当时填上的部分不盖住采纳项，重放里比当时多出来的部分盖住。那条撤销已不在时这一块也不在，无事可判。
 - **`take_previous`** 触发的基础写入带回退记录 `revert`（§5.7）：合并基的操作号记在它的 `as_of_op` 里，被回掉的（事件, 目标）列在 `items` 里。它与 `undo` 是同一种操作，重放规则只有 §5.7 那一套。候选不在回退记录里，由本事件关闭。
 - **确认一次待确认的回退**（`awaiting_confirmation` · `confirm`，提议是 `undo`）：确认触发的基础写入带**自己的** `revert`，按确认时的状态列定（与事项刷新后的影响一致），登记与写回都按它、以本次解决的操作号为准。提议那条基础写入里的 `revert` 只是提议内容，用于事项与预览，不用于登记。
 - 处理 `deletion` 事项（撤回）不产生本事件，见 `deletion.cancelled`。
@@ -1393,7 +1398,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | 被删的源数据 | `text` / `file` / `request` / `stated_at` |
 | 这些来源的贡献 | `write.base` 的 `fields/*/*`、`sources/*/*`、`literal/*/*`、`span/*/*`、带区间撤销的 `span/existence/*` |
 | 原始传参与操作标识 | `write.head` 的 `ops/<i>/set/*`、`ops/<i>/valid`、`ops/<i>/refs`，以及来源与它们相同的 `ops/<i>/premise_valid/*`；相关操作的 `task`、`request_key`、`idempotency` |
-| `deps` 里有被删或被重述的贡献的块（§3.5） | 别的写入的 `span/*/*`、`span/existence/*`、`ack/*`、`duplicate`；带 `deps` 的 `ops/<i>/premise_valid/*`；事项的条目块与 `scope_valid`；更早的删除事件的 `results/*/fields/*/*`、`results/*/existence`、`restated/*` |
+| `deps` 里有被删或被重述的贡献的块（§3.5） | 别的写入的 `span/*/*`、`span/existence/*`、`ack/*`、`duplicate`、`take_filled/*/*`；带 `deps` 的 `ops/<i>/premise_valid/*`；事项的条目块与 `scope_valid`；更早的删除事件的 `results/*/fields/*/*`、`results/*/existence`、`restated/*` |
 | `deps` 里有被删的贡献的补值段（被重述不算，§3.5 规则 1 的例外） | `schema.switched` 的 `backfill/*/*/*` |
 | `carried` 指向被删或被重述为 `dropped` 的贡献的项 | 搬运项的 `fields/*/*`、`sources/*/*`（搬运项没有 `literal` 块；它的 `span` 已在上一行） |
 | 随之失效的 | `item.resolved` 的 `confirmation`；派生写入的 `key`、`checksum`；`schema.switched` 的 `tables/*` |
@@ -1614,7 +1619,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `undo_includes_later` | `awaiting_confirmation` | `undo` 连后来的写入一起回掉 |
 | `undo_hides_later` | `awaiting_confirmation` | `undo` 写回的撤销会遮住后来的写入（两种成因同时成立时记 `undo_includes_later`） |
 | `conflict_cleared_by_deletion` | `awaiting_confirmation` | 删除让冲突消失，而该写入仍属高影响 |
-| `restored_candidate` | `conflict` | 撤回删除放回了一个候选，而它原来所在的事项在宽限期内已被解决：为它另开一个事项，`related_item` 指向原事项 |
+| `restored_candidate` | `conflict` | 撤回删除放回了一个候选，而它原来所在的事项在宽限期内已被解决：为它另开一个事项，`related_item` 指向原事项。第一版不出现（宽限期内受影响的行上不能解决事项） |
 | `duplicate_keys` | `flagged` | 命中疑似重复的判据 |
 | `schema_change` | `schema_change` | 草稿需要确认 |
 

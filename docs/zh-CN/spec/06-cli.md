@@ -492,7 +492,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `saveslot delete --source <s_…>…` | `deletion_preview`（`kind: privacy`）→ 人确认 → `delete` | 可重复 `--source` | 预览全文、确认提示、删除回执（撤回期限与方法） | P3 |
 | `saveslot delete preview --source <s_…>…` | `deletion_preview` | `--json` | 预览全文与 `dc_…`（10 分钟内有效） | P3 |
 | `saveslot delete apply <dc_…>` | `deletion_preview`（`{confirm}`：按这个 `dc_` 重出预览）→ 人确认 → `delete` | `--yes`（跳过展示与提问） | 预览全文、确认提示、删除回执 | P3 |
-| `saveslot delete cancel <pi_…>` | `resolve`（`deletion` · `cancel`） | `--yes` | 撤回结果：退回原状态的写入、恢复的事项、新 `ver`；被重新判定的候选及各自的结果（`rejudged`：不再是改动 / 已记为佐证 / 已另开事项） | P3 |
+| `saveslot delete cancel <pi_…>` | `resolve`（`deletion` · `cancel`） | `--yes` | 撤回结果：退回原状态的写入、恢复的事项、新 `ver`；（后续：被重新判定的候选及各自的结果，`rejudged`） | P3 |
 | `saveslot delete status <pi_…>` | `pending`（详情，`deletion`） | — | 宽限期到期时刻、每处的状态（逻辑删除 → 物理删除 → 备份失效日期）；到期后仍可查 | P3 |
 
 撤销一行不是删除，是一次业务写入，由 Agent 用 `revoke` 做。
@@ -618,7 +618,7 @@ runs r_01JC… 整行删除：date 只来自这句话
 - 确认时用的就是刚展示的那份预览的 `dc_`。`preview_outdated` 时契约给出新预览：交互式重新展示、重新提问；非交互式退出码 3，输出新的 `dc_`。`handle_expired`（超过 10 分钟）同理，提示重新预览。
 - **`saveslot delete apply <dc_…>`**：先用这个 `dc_` 向契约重取预览（`deletion_preview` 的 `{confirm}`），照上面的样子展示，再要求输入 `delete`——拿到的 `dc_` 可能是别的调用方生成的，人要看到它删什么才确认。带 `--yes` 时不展示、不提问，这条路上的保证是"执行的就是生成这个 `dc_` 时算出的范围"。
 - **预览很长时**：第一屏先写总量，逐行结果分页展示；确认提示里重复总量（"将删除 3 条源数据、影响 1,024 行"）。没翻完也能确认，但人至少看到了规模。"将会生效的写入"或"将转为待确认的写入"不为空时，确认提示里同样重复它们的条数。
-- 撤回 `saveslot delete cancel` 不核对事项版本（[`04-contract.md`](04-contract.md)「待处理事项」），换一个终端也能直接撤回；仍要一次 `y/N` 确认，因为撤回会让宽限期内基于删除后状态的写入重新计算。撤回后有候选被重新判定时（原事项在宽限期内已被解决），输出单列一段；其中另开了事项的，末尾提示 `saveslot pending` 去处理。
+- 撤回 `saveslot delete cancel` 不核对事项版本（[`04-contract.md`](04-contract.md)「待处理事项」），换一个终端也能直接撤回；仍要一次 `y/N` 确认，因为撤回会让宽限期内基于删除后状态的写入重新计算。宽限期内受这项删除影响的行上不能处理事项、不能撤回写入：这类命令报错时写明是哪一项删除、何时到期，并给出两条路（等到期，或先撤回这项删除）。
 
 ### 5.4 交互式与非交互式的边界
 

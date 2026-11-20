@@ -317,7 +317,7 @@ interface Marks {
   possibly_affected?: { reason: AffectedReason };
   /** 按时刻读、还原时，当时的部分数据已删除。 */
   partially_deleted?: true;
-  /** 这一行有一项可撤回的删除（宽限期内）。 */
+  /** 这一行受一项可撤回的删除影响（宽限期内；判据见 data-model「删除 · 撤回与宽限期」的"受影响"）。 */
   pending_deletion?: { item: ItemId };
   /** 这一行的某个 ref 字段指向的行 / 实体已撤销，或已被隐私删除。引用方的值不变（保留 ID），只标出来；目标的撤销被 undo 后标记消失。 */
   dangling_ref?: Array<{ field: FieldName; state: "revoked" | "deleted" }>;
@@ -972,6 +972,7 @@ interface PendingListResult extends CommonResult, PageResult {
     reason: ItemReason;
     opened_at: Instant; opened_by: Actor;
     overdue?: true;              // deletion：已到期但尚未物理删除
+    blocked?: true;              // 目标受一项仍待执行的删除影响，此刻不能处理；原因与到期时刻在详情的 blocked 里
   }>;
 }
 
@@ -986,8 +987,11 @@ interface ItemBase {
   slot: SlotName;
   reason: ItemReason;
   opened_at: Instant; opened_by: Actor;
-  /** 当前凭证可用的处理方式。已关闭的事项为空。deletion 事项宽限期已过、墓碑尚未落账（deletion_overdue 期间）时仍是 open，这里也为空。 */
+  /** 当前凭证可用的处理方式。已关闭的事项为空。deletion 事项宽限期已过、墓碑尚未落账（deletion_overdue 期间）时仍是 open，这里也为空。目标受一项仍待执行的删除影响时（blocked）同样为空。 */
   decisions: Decision[];
+  /** 目标受一项仍待执行的删除影响（deletion、schema_change 之外的事项）：此时 decisions 为空，任何处理方式都报
+   *  invalid_argument（pending_deletion_target）。deletions 按操作号排序；expires_at 是其中最晚的到期时刻。 */
+  blocked?: { reason: "pending_deletion"; deletions: ItemId[]; expires_at: Instant };
   /** 需要用户会话才能用的处理方式（slot 策略指定时）。@later */
   user_session_only?: Decision[];
   resolution?: ItemResolution;                                        // status: resolved
@@ -1013,7 +1017,7 @@ type ItemReason =
   | "policy_high_impact"            // awaiting_confirmation：slot 策略指定的表 / 字段 @later
   | "duplicate_keys"                // flagged
   | "stale_write"                   // conflict
-  | "restored_candidate"            // conflict：撤回删除后放回来的候选，原事项已在宽限期内解决，为它另开的事项
+  | "restored_candidate"            // @later。conflict：撤回删除后放回来的候选，原事项已在宽限期内解决，为它另开的事项
   | "schema_change"                 // schema_change
   | "request"                       // deletion：调用方确认的
   | "restored_unconfirmed"          // deletion：恢复备份后由 system 重新生成，另给了新的宽限期
@@ -1081,7 +1085,7 @@ interface ConflictDetail extends ItemBase {
    *  状态类表上是原来给出这一段值的写入（撤回只让那些值重新生效）。不对称来自版本表：撤回撤销在事件类表、无时间表上给"存在"记一格，在状态类表上不记；这里照格走，不另求一致。 */
   effective: { seq?: Seq; actor?: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean };
   candidates: Candidate[];
-  /** 成因是 restored_candidate 时：候选原来所在的那个事项。 */
+  /** 成因是 restored_candidate 时：候选原来所在的那个事项。@later */
   related_item?: ItemId;
   /** take_previous 会回到的样子：合并基（各候选所带 ver 中最早的那个版本）上的值，按合并基的操作号读这一行，范围同 effective。 */
   previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
@@ -1299,7 +1303,7 @@ interface OpResult {
   undo?: {
     of: Seq;
     skipped_superseded: Array<{ field: FieldName; valid?: Interval; by: Seq; actor: Actor }>;   // 幂等重放的回执里没有 valid（日志不记跳过的区间），omitted 含 "skipped_spans"
-    reverted_later?: Array<{ seq: Seq; actor: Actor; fields: FieldName[] }>;
+    reverted_later?: Array<{ seq: Seq; actor: Actor; fields: FieldName[] }>;   // 回退记录里标 later 的条目；与事项的 impact.reverted 口径不同，见 contract 5.3
   };
   /** 与请求的 premises 一一对应。清除（premises: []）时是空数组。 */
   premises?: Array<{
@@ -1518,7 +1522,8 @@ interface ResolveResult extends CommonResult {
     restored: ItemId[];                                                 // 恢复的事项
     kept_superseded: Array<{ item: ItemId; by: Seq }>;                  // 保持"已被取代"的事项及改过它的写入
     kept_effective: Array<{ seq: Seq; target: TargetRef; by: Seq }>;    // 因删除生效、宽限期内已被别的写入当作基线的写入：不退回
-    /** 撤回后放回来的候选，原事项在宽限期内已被解决：按撤回时的当前状态重新判定的结果，一个候选一条。
+    /** @later：第一版恒为空数组（宽限期内受影响的行上不能解决事项，被去掉的候选回到仍未决的原事项，或随已关闭的原事项关闭）。
+     *  撤回后放回来的候选，原事项在宽限期内已被解决：按撤回时的当前状态重新判定的结果，一个候选一条。
      *  reopened：还有部分与当前值不同，另开了一个冲突事项；corroborated：都与当前值相同、其中有指了证据的，成为佐证；
      *  dropped：都与当前值相同、没指证据，不再是改动。 */
     rejudged: Array<{ seq: Seq; target: TargetRef; from_item: ItemId;
@@ -2132,7 +2137,7 @@ type ValidationDetailCode =
 
 | `code` | `reason` | 其余附带字段 |
 |---|---|---|
-| `invalid_argument` | `missing` / `malformed`（含给出的 `valid_to` 不晚于区间的起点：起点没给、按"现在"算时也是）/ `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target`（`undo` 的目标是插入或首次创建、从没生效过的候选或待确认写入、schema 切换的操作号，或没有可撤回的改动：只做了同值佐证、全是无操作等，见 data-model「第 n 次写入是什么」）/ `event_table_valid_at` / `no_value_now`（状态类表上不带区间的纠错，"现在"那一点该字段无值）/ `no_time_table` / `not_state_table` / `state_table`（写入：状态类表上给了 `row`）/ `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `derived_table`（`history` 的 `changes` 以派生表为目标；`query` 在派生表上给了 `valid_at` / `valid_during`）/ `pending_deletion_source` / `cross_slot`（预览的源数据跨 slot；前提指向别的 slot 里可见的表；写入的各 op 落在不同的 slot；证据的 `source_ref` 指向别的 slot 里可见的源数据。靠 `param` 区分是哪一种）/ `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots`（签发时 `slots` 是空数组）/ `slot_not_empty`（`slots.remove`：slot 名下有记录，或有未结的结构变更事项）/ `duplicate_name`（`connections.issue`、`update`：连接实例重名）/ `tenant_not_empty`（导入的目标租户不是空的）/ 按来源键写入：`insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / 写入的前提：`premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` / `premise_duplicate_target`（同一个 op 的两条前提解析到同一个目标） / `no_change`（`schema_draft`：草稿与 slot 的当前版本相比没有改动） | `param`；`candidates?: string[]`（`ambiguous_table` 的候选表名）；`candidate_required` 时 `candidate_choices: Array<{ index: number; seq: Seq; actor: Actor }>`（事项的各候选：下标、所在写入、写入者）；`example?: object`（该模式或该参数完整的正确示例）；`allowed_values?: string[]`（参数是有限的几个取值时：这一版收的取值）；`duplicate_external_key` 时 `ops: number[]`（同键的两个 op 的下标）；`premise_duplicate_target` 时 `premises: number[]`（指向同一目标的两条前提的下标）；`external_key_in_use` 时 `deletions?: ItemId[]`（键被冻结：冻结它的全部删除）或 `holder?: RowId`（占着它的未撤销的行）；`external_key_not_transferable`、`external_key_transferred` 时 `holder: RowId`（占着或现在持有这个键的行）；`slot_not_empty` 只因未结的结构变更事项时 `cause: "open_schema_change"` 与 `item: ItemId`（先处理哪个事项） |
+| `invalid_argument` | `missing` / `malformed`（含给出的 `valid_to` 不晚于区间的起点：起点没给、按"现在"算时也是）/ `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target`（`undo` 的目标是插入或首次创建、从没生效过的候选或待确认写入、schema 切换的操作号，或没有可撤回的改动：只做了同值佐证、全是无操作等，见 data-model「第 n 次写入是什么」）/ `event_table_valid_at` / `no_value_now`（状态类表上不带区间的纠错，"现在"那一点该字段无值）/ `no_time_table` / `not_state_table` / `state_table`（写入：状态类表上给了 `row`）/ `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `derived_table`（`history` 的 `changes` 以派生表为目标；`query` 在派生表上给了 `valid_at` / `valid_during`）/ `pending_deletion_source` / `pending_deletion_target`（宽限期内对受删除影响的行 / 实体解决事项或 `undo`；附 `target: TargetRef`、`deletions: ItemId[]`（按操作号排序）、`expires_at: Instant`（其中最晚的到期时刻））/ `cross_slot`（预览的源数据跨 slot；前提指向别的 slot 里可见的表；写入的各 op 落在不同的 slot；证据的 `source_ref` 指向别的 slot 里可见的源数据。靠 `param` 区分是哪一种）/ `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots`（签发时 `slots` 是空数组）/ `slot_not_empty`（`slots.remove`：slot 名下有记录，或有未结的结构变更事项）/ `duplicate_name`（`connections.issue`、`update`：连接实例重名）/ `tenant_not_empty`（导入的目标租户不是空的）/ 按来源键写入：`insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / 写入的前提：`premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` / `premise_duplicate_target`（同一个 op 的两条前提解析到同一个目标） / `no_change`（`schema_draft`：草稿与 slot 的当前版本相比没有改动） | `param`；`candidates?: string[]`（`ambiguous_table` 的候选表名）；`candidate_required` 时 `candidate_choices: Array<{ index: number; seq: Seq; actor: Actor }>`（事项的各候选：下标、所在写入、写入者）；`example?: object`（该模式或该参数完整的正确示例）；`allowed_values?: string[]`（参数是有限的几个取值时：这一版收的取值）；`duplicate_external_key` 时 `ops: number[]`（同键的两个 op 的下标）；`premise_duplicate_target` 时 `premises: number[]`（指向同一目标的两条前提的下标）；`external_key_in_use` 时 `deletions?: ItemId[]`（键被冻结：冻结它的全部删除）或 `holder?: RowId`（占着它的未撤销的行）；`external_key_not_transferable`、`external_key_transferred` 时 `holder: RowId`（占着或现在持有这个键的行）；`slot_not_empty` 只因未结的结构变更事项时 `cause: "open_schema_change"` 与 `item: ItemId`（先处理哪个事项） |
 | `unknown_table` / `unknown_field` | — | `name`、`nearest: string[]`（只取可见的名字，最多 3 个；别名与 `name` 按 `keymatch@1` 的折叠比较后相同的对象，其名字排在最前；其余按折叠之后的编辑距离从小到大，相同时按名字的 `C` 排序） |
 | `not_found` | `row` / `entity` / `item` / `source` / `draft` / `connection` / `read` / `slot` / `route`（HTTP：没有这个端点） | `deletions?: ItemId[]`（被宽限期内的删除整行去掉时：全部碰到它的贡献的待执行删除，按操作号排序；不回显内容）；`sources?: Array<{id, state: "unknown" \| "pending_deletion" \| "removed", deletion?}>` |
 | `revoked` | — | `target: TargetRef`、`revoked_by: Seq`（用 `revert: {undo}` 恢复） |
