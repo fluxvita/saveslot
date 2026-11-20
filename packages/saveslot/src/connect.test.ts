@@ -294,6 +294,15 @@ describe("snippet: no service asked", () => {
     const all = await saveslot(["snippet"]);
     expect(all.out).toContain(TEXTS.snippetPlaces);
     for (const p of TEXTS.snippetPlace.values()) expect(all.out).toContain(p.row);
+    // Each host by itself, Gemini CLI and Antigravity CLI each with its own place.
+    expect([...TEXTS.snippetPlace.keys()]).toEqual(
+      expect.arrayContaining(["gemini", "antigravity"]),
+    );
+    for (const [host, p] of TEXTS.snippetPlace) {
+      const r = await saveslot(["snippet", host]);
+      expect(r.code, host).toBe(0);
+      expect(r.out.startsWith(`${p.before}\n\n## saveslot\n`), host).toBe(true);
+    }
     expect((await saveslot(["snippet", "generic"])).code).toBe(2);
     expect((await saveslot(["snippet", "--lang", "fr"])).code).toBe(2);
   });

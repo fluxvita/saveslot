@@ -271,7 +271,23 @@ export const TEXTS = {
     "The token is shown this once and kept nowhere. If it is lost, revoke this connection instance (saveslot connections revoke) and connect again under another name",
   ),
   pasteCommand: s("Paste this command into a terminal:"),
-  pasteConfig: s("Put this in the host's MCP configuration, as a server of its own:"),
+  // Where each host without an add command keeps its MCP servers (06 §3.2): Cursor's MCP page
+  // (cursor.com/docs/context/mcp) and the MCP site's Claude Desktop guide
+  // (modelcontextprotocol.io/docs/develop/connect-local-servers).
+  pasteConfig: new Map<string, Static>([
+    [
+      "cursor",
+      s(
+        "Put this in ~/.cursor/mcp.json (for every project; a project's .cursor/mcp.json for that project only), as a server of its own under mcpServers:",
+      ),
+    ],
+    [
+      "claude-desktop",
+      s(
+        "Put this in Claude's claude_desktop_config.json (Settings, Developer, Edit Config opens it: ~/Library/Application Support/Claude/ on macOS, ~/.config/Claude/ on Linux), as a server of its own under mcpServers; then quit Claude and open it again:",
+      ),
+    ],
+  ]),
   pasteHttp: s("Send the token as Authorization: Bearer <token> on the socket:"),
   pasteGeneric: s("An MCP client's server entry:"),
   socketWord: s("socket"),
@@ -358,7 +374,7 @@ export const TEXTS = {
     "the connection broke before the answer: it is not known whether it was revoked. See saveslot connections list",
   ),
   snippetArgs: s(
-    "saveslot snippet takes at most one host: claude-code, codex, vscode, cursor, gemini, claude-desktop or chatgpt",
+    "saveslot snippet takes at most one host: claude-code, codex, vscode, cursor, gemini, antigravity, claude-desktop or chatgpt",
   ),
   langBad: s("--lang takes en or zh-CN"),
   snippetPlaces: s(
@@ -407,7 +423,7 @@ export const TEXTS = {
       "codex",
       {
         before: s(
-          "Add this to ~/.codex/AGENTS.md (for every project), or to an AGENTS.md in a project:",
+          "Add this to ~/.codex/AGENTS.md (for every project; AGENTS.md in $CODEX_HOME when it is set), or to an AGENTS.md in a project:",
         ),
         row: s("  Codex              ~/.codex/AGENTS.md; AGENTS.md from the project root down"),
       },
@@ -444,13 +460,24 @@ export const TEXTS = {
       },
     ],
     [
+      "antigravity",
+      {
+        before: s(
+          "Add this to ~/.gemini/AGENTS.md or ~/.gemini/GEMINI.md (for every project; Gemini CLI reads ~/.gemini/GEMINI.md too), or to an AGENTS.md or GEMINI.md in the project:",
+        ),
+        row: s(
+          "  Antigravity CLI    ~/.gemini/AGENTS.md or ~/.gemini/GEMINI.md; AGENTS.md or GEMINI.md from where it starts up to the repository root",
+        ),
+      },
+    ],
+    [
       "claude-desktop",
       {
         before: s(
-          "Add this to the global instructions in Claude's settings, or to a project's instructions:",
+          "Add this to Claude's instructions (Settings, Your Claude, Instructions: for every conversation), or to a project's instructions:",
         ),
         row: s(
-          "  Claude (desktop and web)  global instructions in the settings; a project's instructions",
+          "  Claude (desktop and web)  Settings, Your Claude, Instructions; a project's instructions",
         ),
       },
     ],
@@ -458,10 +485,10 @@ export const TEXTS = {
       "chatgpt",
       {
         before: s(
-          "Add this to the custom instructions in ChatGPT's settings, or to a project's instructions (not verified):",
+          "Add this to ChatGPT's custom instructions (Settings, Personalization), or to a project's instructions:",
         ),
         row: s(
-          "  ChatGPT            custom instructions in the settings; a project's instructions (not verified)",
+          "  ChatGPT            custom instructions (Settings, Personalization); a project's instructions",
         ),
       },
     ],

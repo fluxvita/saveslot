@@ -48,10 +48,9 @@ export function hostSetup(host: Host, token: string, entry: string, socket: stri
       t`  ${words(TEXTS.socketWord)} ${shellLine([socket])}`,
     ];
   }
-  return [
-    [words(host === "generic" ? TEXTS.pasteGeneric : TEXTS.pasteConfig)],
-    ...pasteLines(JSON.stringify(pastedConfig(host, token, entry), null, 2)),
-  ];
+  const place = host === "generic" ? TEXTS.pasteGeneric : TEXTS.pasteConfig.get(host);
+  if (place === undefined) throw new Error(`no place to paste for ${host}`);
+  return [[words(place)], ...pasteLines(JSON.stringify(pastedConfig(host, token, entry), null, 2))];
 }
 
 /**

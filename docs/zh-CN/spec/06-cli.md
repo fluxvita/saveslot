@@ -281,8 +281,8 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 |---|---|---|
 | `claude-code` | `claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<令牌> -- <saveslot 的绝对路径> mcp`（另有 `claude mcp get` / `list` / `remove`） | 是 |
 | `codex` | `codex mcp add saveslot --env SAVESLOT_TOKEN=<令牌> -- <saveslot 的绝对路径> mcp`，或 `config.toml` 的 `[mcp_servers.saveslot]` 片段（另有 `codex mcp list`；`get` / `remove` 与选择作用域的参数实现时核实） | 是 |
-| `cursor` | 没有添加命令：打印配置片段，由人粘贴 | 否 |
-| `claude-desktop` | 没有添加命令：打印配置片段，由人粘贴 | 否 |
+| `cursor` | 没有添加命令：打印配置片段，由人粘贴，并写明放进 `~/.cursor/mcp.json`（对所有项目生效；只对某个项目时放进项目的 `.cursor/mcp.json`）的 `mcpServers` 里 | 否 |
+| `claude-desktop` | 没有添加命令：打印配置片段，由人粘贴，并写明放进 `claude_desktop_config.json`（设置 → Developer → Edit Config 打开的那个文件；macOS 在 `~/Library/Application Support/Claude/`，Linux 在 `~/.config/Claude/`）的 `mcpServers` 里，改完完全退出再打开 | 否 |
 | `generic` | 通用 JSON：`{"command": "<saveslot 的绝对路径>", "args": ["mcp"], "env": {"SAVESLOT_TOKEN": "<令牌>"}}` | 否 |
 | `http` | 不生成宿主配置，只打印令牌与套接字路径（给脚本与连接器用；`curl --unix-socket` 可直接调） | 否 |
 
@@ -409,14 +409,15 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | 宿主 | 用户级 | 项目级 |
 |---|---|---|
 | Claude Code | `~/.claude/CLAUDE.md` | `./CLAUDE.md` 或 `./.claude/CLAUDE.md` |
-| Codex | `~/.codex/AGENTS.md` | 项目根到当前目录各层的 `AGENTS.md` |
+| Codex | `~/.codex/AGENTS.md`（设了 `CODEX_HOME` 时是其中的 `AGENTS.md`） | 项目根到当前目录各层的 `AGENTS.md` |
 | VS Code（Copilot） | `~/.copilot/copilot-instructions.md` | `.github/copilot-instructions.md` 或 `AGENTS.md` |
 | Cursor | 只能在界面里设（User Rules） | `AGENTS.md`，或 `.cursor/rules/` 下带头部的 `.mdc` 文件 |
 | Gemini CLI | `~/.gemini/GEMINI.md` | 工作区及上层目录的 `GEMINI.md` |
-| Claude 桌面端与网页端 | 设置里的全局说明（只能在界面里改） | 项目说明 |
-| ChatGPT | 设置里的自定义指令（未核实） | 项目说明（未核实） |
+| Antigravity CLI | `~/.gemini/AGENTS.md` 或 `~/.gemini/GEMINI.md` | 从启动目录往上到仓库根的 `AGENTS.md`、`GEMINI.md` 或 `.agents/rules/*.md` |
+| Claude 桌面端与网页端 | 设置 → Your Claude → Instructions（只能在界面里改，对所有对话生效） | 项目说明 |
+| ChatGPT | 设置 → 个性化里的自定义指令 | 项目说明 |
 
-这张表随宿主的文档变，由适配表一起维护；发布前逐个核实。Gemini CLI 的文档写明它已被另一款 CLI 取代，后者的指令文件位置没有核实。
+这张表随宿主的文档变，由适配表一起维护；发布前逐个核实。Gemini CLI 与 Antigravity CLI 并存：Antigravity CLI 面向所有用户，Gemini CLI 仍可经企业许可与付费 API 密钥使用；两者都读 `~/.gemini/GEMINI.md`，放在那里两边都生效。
 
 **由谁放：用户。** saveslot 不写宿主的指令文件，`setup` 也不在同意后代放（理由见第 2 节"不做什么"）。没有一个宿主提供"往指令文件追加内容"的命令，代放只能直接编辑文件；而指令文件是用户亲手写的、直接决定模型怎么做事的文字，往里写字的工具必须让用户逐字看过。它确实是一步手动操作，所以算作可选增强，不在第 1 节设计要求的计数里。
 

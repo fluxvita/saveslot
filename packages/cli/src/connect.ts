@@ -84,6 +84,7 @@ export const SNIPPET_HOSTS = [
   "vscode",
   "cursor",
   "gemini",
+  "antigravity",
   "claude-desktop",
   "chatgpt",
 ] as const;

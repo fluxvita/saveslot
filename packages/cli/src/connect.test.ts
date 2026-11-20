@@ -18,6 +18,7 @@ import {
   onPath,
   parseScopes,
   runHostCommand,
+  SNIPPET_HOSTS,
 } from "./connect.ts";
 import { MAX_PAGES } from "./pages.ts";
 import { shellWord } from "./render/text.ts";
@@ -205,6 +206,10 @@ describe("connect: issued, self-checked, the token on stdout once", () => {
     ]);
   });
 
+  it("snippet knows a place for each of its hosts, and only for them", () => {
+    expect([...TEXTS.snippetPlace.keys()].sort()).toEqual([...SNIPPET_HOSTS].sort());
+  });
+
   it("each host's setup: a command, a configuration to paste, or the token and the socket", async () => {
     service();
     const cursor = await cli(["connect", "cursor", "--name", "c"]);
@@ -212,11 +217,11 @@ describe("connect: issued, self-checked, the token on stdout once", () => {
     expect(JSON.parse(pasted)).toEqual({
       mcpServers: { saveslot: { command: entry, args: ["mcp"], env: { SAVESLOT_TOKEN: NEW } } },
     });
-    // No file named: where the host keeps its MCP configuration is not verified here.
-    expect(cursor.out).toContain(TEXTS.pasteConfig);
+    // Where each host keeps its MCP servers, named.
+    expect(cursor.out).toContain("~/.cursor/mcp.json");
     const desktop = await cli(["connect", "claude-desktop", "--name", "d"]);
-    expect(desktop.out).toContain(TEXTS.pasteConfig);
-    for (const r of [cursor, desktop]) expect(r.out).not.toMatch(/\.json|~\//);
+    expect(desktop.out).toContain("claude_desktop_config.json");
+    expect(desktop.out).toContain("~/Library/Application Support/Claude/");
     const generic = await cli(["connect", "generic", "--name", "g"]);
     const g = generic.out.slice(generic.out.indexOf("{"), generic.out.lastIndexOf("}") + 1);
     expect(JSON.parse(g)).toEqual({ command: entry, args: ["mcp"], env: { SAVESLOT_TOKEN: NEW } });
