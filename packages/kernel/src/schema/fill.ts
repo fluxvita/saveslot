@@ -25,11 +25,17 @@ function fill(o: Obj, key: string, value: unknown): void {
 }
 
 /** The document as submitted, with what the compiler assigned and inferred filled in. */
-export function filledDocument(submitted: JsonValue, compiled: CompiledSchema): Obj {
+export function filledDocument(
+  submitted: JsonValue,
+  compiled: CompiledSchema,
+  baseVersion: number = compiled.sv,
+): Obj {
   const doc = structuredClone(submitted) as Obj;
   if (!isObj(doc)) throw new Error("the submitted document is not an object");
-  // The version the document became: a draft based on it can be submitted as is.
-  doc["base_version"] = compiled.sv;
+  // The version a draft based on it is written on: the slot's current version. For a version in
+  // effect that is the version itself; for a draft awaiting confirmation, the one it was written
+  // on (`baseVersion`), so the receipt's document can be changed and submitted as it is.
+  doc["base_version"] = baseVersion;
   const byName = new Map<string, CompiledTable>(compiled.tables.map((t) => [fold(t.name), t]));
   const byId = new Map<string, CompiledTable>(compiled.tables.map((t) => [t.id, t]));
   const fieldName = (tableId: string, fieldId: string) => {

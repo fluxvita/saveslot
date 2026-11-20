@@ -874,8 +874,9 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
     case "version_switch":
       // The slot's first version (a slot being created): no earlier version to retire.
       await tx.query(
-        "INSERT INTO schema_versions (slot_id, sv, compiled_seq, state) VALUES ($1, $2, $3, 'current')",
-        [c.slot, c.sv, c.compiled_seq],
+        `INSERT INTO schema_versions (slot_id, sv, compiled_seq, draft_id, state)
+         VALUES ($1, $2, $3, $4, 'current')`,
+        [c.slot, c.sv, c.compiled_seq, c.draft_id],
       );
       await one(
         tx,
@@ -883,6 +884,28 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
         "UPDATE slots SET current_sv = $1, name = $2, timezone = $3 WHERE id = $4",
         [c.sv, c.name, c.timezone, c.slot],
         `no slot ${c.slot}`,
+      );
+      return;
+    case "version_pending":
+      // A number taken once is not taken again: a second draft of the same number is the log at
+      // odds with itself.
+      await one(
+        tx,
+        seq,
+        `INSERT INTO schema_versions (slot_id, sv, compiled_seq, draft_id, state)
+         VALUES ($1, $2, $3, $4, 'pending') ON CONFLICT (slot_id, sv) DO NOTHING`,
+        [c.slot, c.sv, c.compiled_seq, c.draft_id],
+        `version ${c.sv} of ${c.slot} is taken already`,
+      );
+      return;
+    case "version_given_up":
+      await one(
+        tx,
+        seq,
+        `UPDATE schema_versions SET state = $1
+         WHERE slot_id = $2 AND draft_id = $3 AND state = 'pending'`,
+        [c.state, c.slot, c.draft_id],
+        `no pending draft ${c.draft_id} in ${c.slot}`,
       );
       return;
     case "item_insert": {

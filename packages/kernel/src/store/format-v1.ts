@@ -134,7 +134,10 @@ CREATE INDEX events_target_event ON events (target_event);`,
   slot_id ${T} NOT NULL,
   sv INTEGER NOT NULL,
   compiled_seq BIGINT NOT NULL,     -- seq of the schema.compiled event holding the definition
-  state ${T} NOT NULL CHECK (state IN ('current', 'retired')),
+  draft_id ${T} NOT NULL,           -- the draft compiled into it
+  -- A number is the draft's from its schema.compiled on and is never used again: pending until
+  -- switched to or given up, rejected and superseded rows stay (09 §5.5 target_version).
+  state ${T} NOT NULL CHECK (state IN ('pending', 'current', 'retired', 'rejected', 'superseded')),
   PRIMARY KEY (slot_id, sv)
 );`,
   },

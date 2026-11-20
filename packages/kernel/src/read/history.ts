@@ -481,7 +481,8 @@ async function versionAsOf(
 /** The schema version of the slot after operation `s`. */
 async function svAsOf(tx: ReadTx, slot: string, s: number, current: number): Promise<number> {
   const r = await tx.query<{ sv: unknown }>(
-    "SELECT max(sv) AS sv FROM schema_versions WHERE slot_id = $1 AND compiled_seq <= $2",
+    `SELECT max(sv) AS sv FROM schema_versions
+     WHERE slot_id = $1 AND compiled_seq <= $2 AND state IN ('current', 'retired')`,
     [slot, s],
   );
   const sv = r.rows[0]?.sv;

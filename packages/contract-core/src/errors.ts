@@ -69,6 +69,7 @@ export const DOMAIN_ERROR_REASONS = {
     "premises_with_revoke",
     "premise_historical_ver",
     "premise_duplicate_target",
+    "no_change",
   ],
   unknown_table: [],
   unknown_field: [],

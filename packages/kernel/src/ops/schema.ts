@@ -1,29 +1,7 @@
-// `schema_draft`, the path creating a slot (docs/zh-CN/spec/04-contract.md §10 `schema_draft`;
-// 04-contract-types.md §5.3; 03-data-model/01-objects.md «建 slot»; 09-event-format.md §4.5, §5.4,
-// §5.5): a v1 document compiled and applied at once, in one operation of five events — submitted,
-// compiled (`applied`), confirmed (`auto`), the default policy, switched.
-//
-// In this version only a new slot: a draft changing a slot (`base_version` not null) is
-// `not_in_this_version`. Derived tables are created with the slot, except those whose rule this
-// version does not evaluate (`not_in_this_version` on the table's `rule`). A document with an
-// external key compiles, but apply cannot build it yet, so it stops here (internal
-// `not_implemented`) before anything is logged.
-//
-// The slot ID, the draft ID and the next free table and rule numbers are read and used in the same
-// write transaction: the store has one writer, so two slots never take the same numbers.
-// Idempotency is the write's (04-contract §14): a request key over the request's canonical text,
-// or an explicit `idempotency_key` with the content's fingerprint; a hit replays the receipt from
-// the log. Nothing is recorded as read: a write after it falls back to the receipt's version on
-// the write side.
-
-import { createHash } from "node:crypto";
 import type {
   CompiledSchema,
   DraftId,
   JsonValue,
-  KernelErrorCode,
-  KernelErrorDetail,
-  KernelErrorReason,
   SchemaChangeRecord,
   SlotId,
 } from "@fluxvita/saveslot-contract-core";
@@ -40,26 +18,23 @@ import {
 import type { ReadTx, TenantStore } from "../store/ports.ts";
 import { todayIn } from "../write/index.ts";
 import type { OpsContext, Visibility } from "./context.ts";
-import { randomCrockford } from "./ids.ts";
+import { draftChangeInTx, replayChange, type SchemaChangeReceipt } from "./schema-change.ts";
+import {
+  invalid,
+  isObject,
+  newDraftId,
+  numbering,
+  own,
+  PARAM_KEYS,
+  type SchemaChange,
+  SchemaDraftError,
+  sha256,
+  tag,
+  unusedSlotId,
+} from "./schema-common.ts";
 
-/** An error of `schema_draft`, by contract error code (04-contract-types §9). */
-export class SchemaDraftError<C extends KernelErrorCode = KernelErrorCode> extends Error {
-  override readonly name = "SchemaDraftError";
-  readonly code: C;
-  readonly detail: KernelErrorDetail<C>;
-  constructor(code: C, message: string, detail: KernelErrorDetail<C> = {}) {
-    super(message);
-    this.code = code;
-    this.detail = detail;
-  }
-}
-
-/** 04-contract-types §5.3 `SchemaChange`: the logged change record, its target by names. */
-export interface SchemaChange extends Omit<SchemaChangeRecord, "target"> {
-  readonly target:
-    | { readonly slot: true }
-    | { readonly table: string; readonly field?: string; readonly rule?: true };
-}
+export type { SchemaChangeReceipt } from "./schema-change.ts";
+export { type SchemaChange, SchemaDraftError } from "./schema-common.ts";
 
 export interface SchemaDraftReceipt {
   readonly draft: DraftId;
@@ -87,85 +62,6 @@ export interface SchemaDraftReceipt {
  */
 export function mayCreateSlot(visibility: Visibility): boolean {
   return visibility.kind === "all";
-}
-
-const PARAM_KEYS = new Set(["document", "task", "idempotency_key"]);
-const MAX_TAG_CHARS = 256;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it finds
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
-
-const own = (o: object, k: string) => Object.hasOwn(o, k);
-const isObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null && !Array.isArray(v);
-const invalid = (
-  reason: KernelErrorReason<"invalid_argument">,
-  param: string,
-  extra: Record<string, unknown> = {},
-) => new SchemaDraftError("invalid_argument", `${param}: ${reason}`, { ...extra, reason, param });
-
-/** `task` / `idempotency_key`: as the write takes them (at most 256 characters, no control characters). */
-function tag(params: Record<string, unknown>, key: string): string | undefined {
-  if (!own(params, key)) return undefined;
-  const v = params[key];
-  if (
-    typeof v !== "string" ||
-    v.length === 0 ||
-    !v.isWellFormed() ||
-    [...v].length > MAX_TAG_CHARS ||
-    CONTROL.test(v)
-  )
-    throw invalid("malformed", key);
-  return v;
-}
-
-const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
-const newSlotId = (): `sl_${string}` => `sl_${randomCrockford(16)}`;
-const newDraftId = (): DraftId => `d_${randomCrockford(16)}`;
-
-/**
- * A slot ID never used in the tenant: not a slot's now, nor a removed slot's (its versions stay,
- * process/decisions/remove-empty-slot.md §4), so that the log's events of a slot always mean it.
- */
-async function unusedSlotId(tx: ReadTx): Promise<`sl_${string}`> {
-  for (;;) {
-    const id = newSlotId();
-    const r = await tx.query(
-      `SELECT 1 FROM slots WHERE id = $1 UNION ALL SELECT 1 FROM schema_versions WHERE slot_id = $1`,
-      [id],
-    );
-    if (r.rows.length === 0) return id;
-  }
-}
-
-/** The highest number of an ID like `t12` / `r3` among `ids`. */
-const highest = (ids: readonly string[], prefix: string) =>
-  Math.max(
-    0,
-    ...ids.filter((x) => x.startsWith(prefix)).map((x) => Number(x.slice(prefix.length))),
-  );
-
-/** The slot names in use, and the next free table and rule numbers of the tenant (any version). */
-async function numbering(tx: ReadTx) {
-  const names = await tx.query<{ name: string }>("SELECT name FROM slots");
-  const compiled = await tx.query<{ body: string | null }>(
-    `SELECT c.body FROM schema_versions v
-     JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'`,
-  );
-  const tables: string[] = [];
-  const rules: string[] = [];
-  for (const x of compiled.rows) {
-    if (x.body === null) continue;
-    const c = JSON.parse(x.body) as CompiledSchema;
-    for (const t of c.tables) {
-      tables.push(t.id);
-      if (t.kind === "derived") rules.push(t.rule.id);
-    }
-  }
-  return {
-    existingSlotNames: names.rows.map((x) => x.name),
-    nextTableNumber: highest(tables, "t") + 1,
-    nextRuleNumber: highest(rules, "r") + 1,
-  };
 }
 
 /** The receipt of a slot's creation, from what was logged (the same for a write and a replay). */
@@ -228,20 +124,17 @@ export async function schemaDraft(
   store: TenantStore,
   ctx: OpsContext,
   params: unknown,
-): Promise<SchemaDraftReceipt> {
+): Promise<SchemaDraftReceipt | SchemaChangeReceipt> {
   if (!isObject(params)) throw invalid("malformed", "");
   for (const k of Object.keys(params)) if (!PARAM_KEYS.has(k)) throw invalid("malformed", k);
   const task = tag(params, "task") ?? ctx.task;
   const explicit = tag(params, "idempotency_key");
   if (!own(params, "document")) throw invalid("missing", "document");
   const document = params["document"];
-  // A draft changing a slot: not in this version (07-scope: schema changes are P4).
-  if (isObject(document) && own(document, "base_version") && document["base_version"] !== null)
-    throw new SchemaDraftError("not_in_this_version", "a draft changing a slot", {
-      reason: "parameter",
-      param: "base_version",
-    });
-  if (!mayCreateSlot(ctx.visibility))
+  // A draft changing a slot: its slot must be in range, which ./schema-change.ts checks.
+  const changing =
+    isObject(document) && own(document, "base_version") && document["base_version"] !== null;
+  if (!changing && !mayCreateSlot(ctx.visibility))
     throw new SchemaDraftError("insufficient_scope", "creating a slot needs every slot in range", {
       required_scope: "all_slots",
     });
@@ -283,8 +176,26 @@ export async function schemaDraft(
             param: "idempotency_key",
           },
         );
-      return replay(tx, Number(hit.op));
+      const kind = await tx.query<{ body: string | null }>(
+        `SELECT c.body FROM events e JOIN content c ON c.seq = e.seq AND c.path = 'target'
+         WHERE e.op = $1 AND e.type = 'schema.draft_submitted'`,
+        [Number(hit.op)],
+      );
+      const created = (JSON.parse(kind.rows[0]?.body ?? "{}") as { creates_slot?: boolean })
+        .creates_slot;
+      return created === false
+        ? replayChange(tx, Number(hit.op), true)
+        : replay(tx, Number(hit.op));
     }
+    if (changing)
+      return draftChangeInTx(tx, ctx, {
+        document: document as Record<string, unknown>,
+        task: task ?? null,
+        key:
+          explicit !== undefined
+            ? { idempotency: { key, fingerprint: fingerprint as string } }
+            : { request_key: { key } },
+      });
 
     const slotId = await unusedSlotId(tx);
     const result = compileNewSlot({ document, slotId: slotId as never, ...(await numbering(tx)) });

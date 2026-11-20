@@ -42,6 +42,8 @@ const run = (
     nextTableNumber: 7,
     autoApply: DEFAULT_SLOT_POLICY.auto_apply,
     unused: () => false,
+    targetVersion: (o.current ?? v1()).sv + 1,
+    formerNames: { tables: [], fields: new Map() },
     ...o,
   });
 
@@ -416,6 +418,33 @@ describe("changes that touch the catalog only", () => {
 });
 
 describe("the definition of the next version", () => {
+  it("takes the version number it is given: numbers skip when drafts were rejected", () => {
+    const r = ok(
+      run(
+        listing([], (d) => (d.rename_to = "books")),
+        { targetVersion: 4 },
+      ),
+    );
+    expect(r.targetVersion).toBe(4);
+    expect(r.compiled.sv).toBe(4);
+    const t = ok(
+      run(
+        listing([], (d) =>
+          d.tables.push({
+            name: "budgets",
+            kind: "base",
+            description: "a budget",
+            time: { type: "none" },
+            fields: [{ name: "label", type: "text", description: "what for" }],
+          }),
+        ),
+        { targetVersion: 4 },
+      ),
+    );
+    expect(table(t, "budgets")?.physical).toEqual({ table: "t_t7_v4" });
+    expect(() => run(listing([]), { targetVersion: 1 })).toThrow();
+  });
+
   it("passes the strict parse of a schema.compiled event", () => {
     const r = ok(
       run(
@@ -807,6 +836,43 @@ describe("errors, and the order they come in", () => {
     // The dependent is dropped in the same draft: nothing is left pointing at the table.
     const both = ok(run(listing([], (d) => (d.drop_tables = ["accounts", "expenses"]))));
     expect(codes(both)).toEqual(["drop_table", "drop_table"]);
+  });
+
+  it("an alias may not be a name still resolvable from an earlier version", () => {
+    const formerNames = {
+      tables: ["expenses", "outgoings"],
+      fields: new Map([["t1", ["note", "remark"]]]),
+    };
+    expect(
+      details(
+        run(
+          listing(["expenses"], (d) => {
+            d.tables[0].aliases = ["Outgoings", "spending"];
+            d.tables[0].fields[3].aliases = ["REMARK"];
+          }),
+          { formerNames },
+        ),
+      ),
+    ).toEqual(["tables/0/aliases/0 alias_invalid", "tables/0/fields/3/aliases/0 alias_invalid"]);
+    // Another table's old field names are another scope; a new table has no old names.
+    expect(
+      codes(
+        run(
+          listing(["settings"], (d) => (d.tables[0].fields[0].aliases = ["remark"])),
+          { formerNames },
+        ),
+      ),
+    ).toEqual(["change_aliases"]);
+    // A rule broken earlier in the order is the one reported, once.
+    const r = err(
+      run(
+        listing(["expenses"], (d) => (d.tables[0].aliases = [" outgoings"])),
+        { formerNames },
+      ),
+    );
+    expect(r).toMatchObject({
+      details: [{ path: "tables/0/aliases/0", code: "alias_invalid", reason: "surrounding_space" }],
+    });
   });
 
   it("a slot left without a base table is refused", () => {

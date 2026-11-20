@@ -250,7 +250,12 @@ describe("saveslot_schema_draft: a new slot (P1)", () => {
 
   it("refused: a document changing a slot, one that does not compile, a name taken, tags left in a description", async () => {
     const changing = await draft(token.maker, { document: { ...doc("diet"), base_version: 1 } });
-    expect(errorOf(changing)).toMatchObject({ code: "not_in_this_version", param: "base_version" });
+    // The document as the slot has it: a draft that changes nothing.
+    expect(errorOf(changing)).toMatchObject({
+      code: "invalid_argument",
+      reason: "no_change",
+      param: "document",
+    });
 
     const broken = await draft(token.maker, {
       document: {

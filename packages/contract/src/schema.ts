@@ -79,8 +79,12 @@ export interface SchemaChange
 export interface SchemaImpact {
   rows_affected: number;
   derived_changed: Array<{ table: TableName; rows: number }>;
-  /** Callers that recently used renamed / dropped fields by their old names. */
-  consumers: Array<{
+  /**
+   * Callers that recently used renamed / dropped fields by their old names. Absent where usage is
+   * not computed (a change to an existing slot, in this version): not an empty list, which would
+   * say nobody uses them.
+   */
+  consumers?: Array<{
     actor: Actor;
     field: string;
     last_used: Instant;

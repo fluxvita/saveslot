@@ -190,8 +190,24 @@ export type Change =
       readonly slot: string;
       readonly sv: number;
       readonly compiled_seq: Seq;
+      readonly draft_id: string;
       readonly name: string;
       readonly timezone: string;
+    }
+  /** A draft compiled into version `sv`, awaiting confirmation (09 §5.5 `schema.compiled` pending). */
+  | {
+      readonly kind: "version_pending";
+      readonly slot: string;
+      readonly sv: number;
+      readonly compiled_seq: Seq;
+      readonly draft_id: string;
+    }
+  /** A pending draft's version given up: its row and number stay (09 §5.5). */
+  | {
+      readonly kind: "version_given_up";
+      readonly slot: string;
+      readonly draft_id: string;
+      readonly state: "superseded" | "rejected";
     }
   | { readonly kind: "item_insert"; readonly row: ItemRow }
   | {

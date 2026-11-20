@@ -571,7 +571,10 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
   }
   // An alias may not be a name that still resolves: the current names, those this draft renames
   // away included (07 «别名»).
-  const currentTableNames = new Set(current.tables.map((t) => fold(t.name)));
+  // The names of earlier versions the caller gives (the last 10) join in.
+  const currentTableNames = new Set(
+    [...current.tables.map((t) => t.name), ...input.formerNames.tables].map(fold),
+  );
   const aliasRule = (
     aliases: readonly string[] | undefined,
     at: string,
@@ -584,7 +587,12 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     });
   for (const m of matches) {
     aliasRule(m.doc.aliases, m.doc.path, currentTableNames);
-    const fieldNames = new Set((m.current?.fields ?? []).map((f) => fold(f.name)));
+    const fieldNames = new Set(
+      [
+        ...(m.current?.fields ?? []).map((f) => f.name),
+        ...(m.current === undefined ? [] : (input.formerNames.fields.get(m.current.id) ?? [])),
+      ].map(fold),
+    );
     for (const f of m.doc.fields) aliasRule(f.aliases, f.path, fieldNames);
   }
   // A table to drop that something the change keeps still points at: judged on the slot as it
@@ -882,7 +890,8 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
   }
 
   // New base tables: numbered from the tenant's next free number, built in the next version.
-  const sv = current.sv + 1;
+  const sv = input.targetVersion;
+  if (!Number.isSafeInteger(sv) || sv <= current.sv) throw new Error(`not a next version: ${sv}`);
   const fresh = matches.filter((m) => m.current === undefined);
   if (nextTableNumber + fresh.length - 1 > 999_999_999) throw new Error("table IDs exhausted");
   const tableIds = new Map<DocTable | DocDerivedTable, TableId>();

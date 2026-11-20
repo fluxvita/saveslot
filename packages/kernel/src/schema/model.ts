@@ -174,6 +174,19 @@ export interface CompileChangeInput {
   readonly autoApply: readonly string[];
   /** Whether nobody but the submitter uses the table or field (07 «改名自动生效的前提»). */
   readonly unused: (target: ChangeTarget) => boolean;
+  /**
+   * The version number the draft gets: the slot's next number not used by any version in the log,
+   * pending, rejected and superseded ones included. Numbers are never reused, so it may skip.
+   */
+  readonly targetVersion: number;
+  /**
+   * The names still resolvable in the slot (07 «别名»: the last 10 schema versions, the current
+   * one included): table names, and each table's field names by table ID. An alias may not be one.
+   */
+  readonly formerNames: {
+    readonly tables: readonly string[];
+    readonly fields: ReadonlyMap<string, readonly string[]>;
+  };
 }
 
 export type CompileChangeResult =

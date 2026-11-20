@@ -3,8 +3,10 @@
 //
 // This phase applies the path that creates a slot: `schema.draft_submitted` (creates_slot) →
 // `schema.compiled` (with `create_slot`) → `schema.confirmed` → `slot.policy_set` →
-// `schema.switched` (no `from_version`, nothing rebuilt). Changing a slot's schema, migrations and
-// rejected or superseded drafts stop apply as not implemented, never skipped. So does a definition
+// `schema.switched` (no `from_version`, nothing rebuilt); and a draft changing a slot left pending:
+// its `schema.compiled` (`pending`) takes its version number (a `schema_versions` row, pending),
+// `schema.superseded` gives it up (the row and number stay). A switch from an earlier version,
+// rejected drafts and migrations stop apply as not implemented, never skipped. So does a definition
 // with an external key, or with a derived rule this version does not evaluate: their indexes and
 // evaluation belong to later phases, and an empty table would leave the state silently behind the
 // log. Derived tables get their physical tables here (./derived.ts).
@@ -221,15 +223,39 @@ export function planSchema(
   const notYet = (what: string) =>
     new ApplyError("not_implemented", seq, `${what} is not applied yet`);
   switch (type) {
+    // §5.5: the draft is in the log; what it becomes is the events after it.
     case "schema.draft_submitted":
-      if (block("target")["creates_slot"] !== true) throw notYet("a draft changing a slot");
       return [];
     // §5.5: the first compiled definition of a slot creates its row; the version becomes current
-    // when it is switched to.
+    // when it is switched to. A draft changing a slot takes its version number now, pending until
+    // confirmed or given up.
     case "schema.compiled": {
       const changes = block("changes") as unknown as readonly { change: string }[];
-      if (!changes.some((x) => x.change === "create_slot")) throw notYet("a change to a slot");
-      if (block("target")["outcome"] !== "applied") throw notYet("a slot awaiting confirmation");
+      const target = block("target");
+      if (!changes.some((x) => x.change === "create_slot")) {
+        if (target["outcome"] !== "pending") throw notYet("a change applied at once");
+        const c = block("compiled") as unknown as CompiledSchema;
+        if (!isKnownRsqlVersion(c.rsql)) {
+          throw new ApplyError("unknown_version", seq, `unknown rsql version ${c.rsql}`);
+        }
+        if (c.slot !== slot) {
+          throw new ApplyError(
+            "inconsistent",
+            seq,
+            `compiled for ${c.slot} in slot ${String(slot)}`,
+          );
+        }
+        return [
+          {
+            kind: "version_pending",
+            slot: c.slot,
+            sv: c.sv,
+            compiled_seq: seq,
+            draft_id: target["draft_id"] as string,
+          },
+        ];
+      }
+      if (target["outcome"] !== "applied") throw notYet("a slot awaiting confirmation");
       const c = block("compiled") as unknown as CompiledSchema;
       admit(seq, c);
       if (c.slot !== slot) {
@@ -239,6 +265,16 @@ export function planSchema(
     }
     case "schema.confirmed":
       return [];
+    // §5.5: a pending draft given up for a newer one; its version number stays taken.
+    case "schema.superseded":
+      return [
+        {
+          kind: "version_given_up",
+          slot: slot as string,
+          draft_id: block("target")["draft_id"] as string,
+          state: "superseded",
+        },
+      ];
     // §5.4
     case "slot.policy_set":
       return [
@@ -316,6 +352,7 @@ export function planSchema(
           slot: c.slot,
           sv: c.sv,
           compiled_seq: to.seq,
+          draft_id: t["draft_id"] as string,
           name: c.name,
           timezone: c.timezone,
         },

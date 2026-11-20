@@ -373,10 +373,10 @@ describe("refusals", () => {
       { code: "insufficient_scope", required_scope: "all_slots" },
     ],
     [
-      "a draft changing a slot (base_version)",
+      "a draft changing a slot not in range (./schema-draft-change.test.ts has the rest)",
       { document: { ...DOCUMENT, base_version: 1 } },
-      {},
-      { code: "not_in_this_version", reason: "parameter", param: "base_version" },
+      { visibility: { kind: "scoped", slots: [] } },
+      { code: "not_found", reason: "slot", param: "slot" },
     ],
     ["no document", {}, {}, { code: "invalid_argument", reason: "missing", param: "document" }],
     [

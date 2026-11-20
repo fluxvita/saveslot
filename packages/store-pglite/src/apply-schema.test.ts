@@ -218,7 +218,13 @@ describe("creating a slot: its tables from its compiled definition", () => {
         },
       ]);
       expect(await rows(store, "SELECT * FROM schema_versions")).toEqual([
-        { slot_id: SLOT, sv: 1, compiled_seq: op + 1, state: "current" },
+        {
+          slot_id: SLOT,
+          sv: 1,
+          compiled_seq: op + 1,
+          draft_id: expect.any(String),
+          state: "current",
+        },
       ]);
       expect(
         await rows(store, "SELECT table_id, sv, slot_id FROM catalog ORDER BY table_id"),

@@ -78,6 +78,7 @@ describe("planEvent: creating a slot", () => {
       slot: SLOT,
       sv: 1,
       compiled_seq: 3,
+      draft_id: DRAFT,
       name: "ledger",
       timezone: "Asia/Shanghai",
     });
@@ -243,7 +244,7 @@ describe("planEvent: what this phase stops on, never skips", () => {
     [
       "a change to a slot (no create_slot)",
       { changes: CHANGES_V1.slice(1) as unknown as JsonValue },
-      "not_implemented: a change to a slot is not applied yet",
+      "not_implemented: a change applied at once is not applied yet",
     ],
   ])("schema.compiled with %s", (_, o, expected) => {
     expect(reason(slotOp(o)[1] as ApplyEvent)).toEqual(expected);
@@ -303,9 +304,8 @@ describe("planEvent: what this phase stops on, never skips", () => {
         },
       },
     ]);
-    expect(reason(ev as ApplyEvent)).toBe(
-      "not_implemented: a draft changing a slot is not applied yet",
-    );
+    // The draft is in the log; what it becomes is the events after it.
+    expect(planEvent(ev as ApplyEvent)).toEqual([]);
   });
 
   it("a slot whose definition has a table built in an earlier version", () => {
@@ -361,7 +361,6 @@ describe("planEvent: what this phase stops on, never skips", () => {
 
   it.each([
     ["schema.rejected", { target: { draft_id: DRAFT } }],
-    ["schema.superseded", { target: { draft_id: DRAFT, by_draft: `d_${"2".repeat(16)}` } }],
     [
       "schema.migration_started",
       { target: { migration_id: MIGRATION, draft_id: DRAFT, from_version: 1, to_version: 2 } },

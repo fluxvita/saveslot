@@ -22,7 +22,6 @@
 
 import type {
   CompiledBaseTable,
-  CompiledSchema,
   FieldId,
   Instant,
   ItemId,
@@ -56,6 +55,7 @@ import {
   type TableRead,
 } from "../rules/index.ts";
 import { type ReadTx, type SqlValue, sqlStateOf } from "../store/ports.ts";
+import { formerVersions } from "./former.ts";
 import { digest } from "./page.ts";
 import { logPosition, readFlagsOf, readTableFlags, restoreCount, rowFacts } from "./select.ts";
 import { type Visibility, visibleSlots } from "./slots.ts";
@@ -259,23 +259,14 @@ async function formerNamesOf(
 ): Promise<Map<string, NonNullable<SqlSlot["formerNames"]>>> {
   const out = new Map<string, NonNullable<SqlSlot["formerNames"]>>();
   if (slots.length === 0) return out;
-  const r = await tx.query<{ slot_id: string; body: string | null }>(
-    `SELECT v.slot_id, c.body FROM schema_versions v
-     JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
-     WHERE v.slot_id = ANY($1) AND v.state = 'retired'
-     ORDER BY v.slot_id, v.sv DESC`,
-    [slots.map((s) => s.slot)] as never,
+  const per = await formerVersions(
+    tx,
+    slots.map((s) => s.slot),
   );
-  const per = new Map<string, CompiledSchema[]>();
-  for (const x of r.rows) {
-    if (x.body === null) continue;
-    const old = JSON.parse(x.body) as CompiledSchema;
-    per.set(x.slot_id, [...(per.get(x.slot_id) ?? []), old]);
-  }
   for (const s of slots) {
     const tables: { name: string; table: TableId }[] = [];
     const fields: { table: TableId; name: string; field: FieldId }[] = [];
-    const recent = (per.get(s.slot) ?? []).filter((o) => o.sv >= s.sv - 10);
+    const recent = per.get(s.slot) ?? [];
     for (const old of recent) {
       for (const ot of old.tables) {
         const now = s.tables.find((t) => t.id === ot.id);

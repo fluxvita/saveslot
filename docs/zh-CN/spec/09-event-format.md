@@ -568,7 +568,7 @@
 
 | path | 种类 | 内容 |
 |---|---|---|
-| `target` | 元 | `{"draft_id": "d_…", "target_version": <整数>, "outcome": "applied" \| "pending"}` |
+| `target` | 元 | `{"draft_id": "d_…", "target_version": <整数>, "outcome": "applied" \| "pending"}`。`target_version` 是这份草稿在编译时分到的版本号：这个 slot 已用过的号之后的下一个，被拒、被取代的草稿占过的号也算用过，分配后不再用于别的草稿；所以一个版本号只对应一份编译后的定义，`sv` 可以不连续 |
 | `compiled` | 数 | 编译后的定义（§7）。来源：无，理由同上。重放用它，不重新编译 |
 | `changes` | 元 | 逐项改动，见下 |
 

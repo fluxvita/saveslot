@@ -9,6 +9,7 @@ export {
   catalogInTx,
 } from "./catalog.ts";
 export { changesInTx } from "./changes.ts";
+export { FORMER_VERSIONS, formerVersions } from "./former.ts";
 export {
   asOfInTx,
   type HistoryInput,

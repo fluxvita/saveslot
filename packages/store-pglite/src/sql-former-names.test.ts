@@ -43,22 +43,29 @@ beforeAll(async () => {
     await s.store.write(async (tx) => {
       await tx.exec(
         `INSERT INTO content (seq, path, body, checksum) VALUES (${seq}, 'compiled', '${JSON.stringify(old).replaceAll("'", "''")}', 'x');
-         INSERT INTO schema_versions (slot_id, sv, compiled_seq, state) VALUES ('${slot}', ${sv}, ${seq}, 'retired')`,
+         INSERT INTO schema_versions (slot_id, sv, compiled_seq, draft_id, state) VALUES ('${slot}', ${sv}, ${seq}, 'd_${String(sv).padStart(16, "0")}', 'retired')`,
       );
     });
   };
   // The ledger had `outlay` with a field `memo` where it has `spend` and `note`, one version ago; and
-  // `ancient` (twelve versions ago, out of the range of 10). The vault had `hoard`.
+  // `ancient` (the twelfth retired version back, out of the range of 10). The vault had `hoard`.
   await retire(LEDGER, 0, 900_001, (c) => {
     const t = c.tables.find((x) => x.name === "spend") as Compiled["tables"][number];
     t.name = "outlay";
     (t.fields.find((f) => f.name === "note") as { name: string }).name = "memo";
   });
+  // Ten retired versions between: the names that resolve are those of the last 10 retired
+  // versions by count, not by version number (numbers may skip).
+  for (let k = 1; k <= 10; k++) await retire(LEDGER, -k, 900_100 + k, () => {});
   await retire(LEDGER, -11, 900_002, (c) => {
     (c.tables.find((x) => x.name === "spend") as Compiled["tables"][number]).name = "ancient";
   });
   await retire(VAULT, 0, 900_003, (c) => {
     (c.tables.find((x) => x.name === "secrets") as Compiled["tables"][number]).name = "hoard";
+  });
+  // A retired version whose number is far back but the second retired one: within the 10.
+  await retire(VAULT, -50, 900_004, (c) => {
+    (c.tables.find((x) => x.name === "secrets") as Compiled["tables"][number]).name = "relic";
   });
 }, 300_000);
 afterAll(async () => {
@@ -117,6 +124,11 @@ describe("a name that does not resolve", () => {
     );
     expect(hidden).toMatchObject({ code: "sql_rejected", reason: "unknown_name" });
     expect(spelled(hidden, "hoard")).toEqual(spelled(none, "nosuch_zz"));
+  });
+
+  it("counts versions, not version numbers: a number far back within the last 10 resolves", async () => {
+    const r = await call("SELECT 1 FROM relic");
+    expect(r.result.warnings).toEqual([{ code: "renamed", from: "relic", to: "secrets" }]);
   });
 
   it("and where the call can see that slot, the former name resolves", async () => {
