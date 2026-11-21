@@ -443,10 +443,28 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 | 命令 | 用途 |
 |---|---|
-| `saveslot server init` | 建控制面库、生成句柄签名密钥（写进环境配置，由部署方保管）、创建第一个用户；要求给出 PostgreSQL 连接与对外地址 |
+| `saveslot server init` | 建控制面库的表、生成句柄签名密钥、创建第一个用户；连接与对外地址取下面「服务器模式的配置」。可重复执行：控制面库已初始化时只核对它的格式版本，密钥文件已存在时不动它，已有用户时不再创建第一个用户；格式版本不是这个 saveslot 认识的，什么都不做并报错。第一个用户的名字由 `--user <名字>` 给出，口令的读法同 `user add` |
 | `saveslot server start` | 以服务器模式启动（前台，交给 systemd 或容器管理） |
-| `saveslot server user add` / `list` / `disable` | 管理内置的本地账户；不开放注册 |
+| `saveslot server user add` / `list` / `disable` / `enable` | 管理内置的本地账户；不开放注册。`add` 同时为这个用户建租户。`disable` 停用账户：停用期间，这个用户的租户的全部凭证（用户会话与连接实例，含经 OAuth 授权得来的）在认证时一律被拒，`unauthenticated`，`reason` 为 `account_disabled`（[`04-contract.md`](04-contract.md) 第 16 节）；不吊销任何凭证，不往租户日志里写任何事件，租户与数据不动。`enable` 重新启用：这些凭证原样恢复，停用期间到期的照常过期。要彻底停掉某个连接实例，用 `connections.revoke` 吊销它 |
+| `saveslot server user passwd <名字>` | 改一个本地账户的口令，并作废这个用户现有的登录与用户会话；连接实例不受影响，日志里不写任何事件 |
 | `saveslot server restore <租户>` | 恢复备份之后走恢复流程：追加"恢复"事件、按删除登记补删、补跑已到期的删除，再对外服务；中途被打断可以重跑（[`02-architecture.md`](02-architecture.md) §8）。没走这条命令就换了库、被打开时发现的，服务拒绝对外服务并提示运行它 |
+
+`server init`、`user add` 与 `user passwd` 的口令只从终端或口令文件（`--password-file <路径>`）读，不接受命令行参数里的口令：参数会进 shell 历史与进程列表。没有终端又没给 `--password-file` 时什么都不做，退出码 8（同 `export --encrypt`）。
+
+**服务器模式的配置**：只取环境变量，不读 `config.toml`（那是本机服务的配置，4.2）。`saveslot server …` 的各条命令读同一组变量；我们的云服务也用这一组。
+
+| 变量 | 内容 | 缺省 |
+|---|---|---|
+| `SAVESLOT_CONTROL_DATABASE_URL` | 控制面库的 PostgreSQL 连接（[`02-architecture.md`](02-architecture.md) §5「控制面存储」） | 必填 |
+| `SAVESLOT_CELL_DATABASE_URL` | 唯一的 cell 所在实例的连接，库名部分是建租户库时连的维护库；租户库建在同一个实例上，用同一个角色 | 必填 |
+| `SAVESLOT_PUBLIC_URL` | 对外地址：远程 MCP 与 HTTP 的基地址，OAuth 的签发方与资源标识（RFC 8707），401 的 `resource_metadata` 由它拼出（[`05-surfaces.md`](05-surfaces.md) §14）。一个部署只有这一个对外地址，`/mcp`、`/v1`、`/oauth/*` 都拼在它后面，所以只写协议、主机与可选的端口：不带路径，不带末尾的 `/`。必须是 `https://`；只有主机是回环地址（`127.0.0.0/8`、`::1`、`localhost`）时才收 `http://`，供本机试跑。写法不合的按写法不对处理 | 必填 |
+| `SAVESLOT_HANDLE_KEY_FILE` | 句柄签名密钥的文件；`server init` 在这里生成（0600，目录要已存在）。`server start` 只读它，不写：可以按只读挂载。服务器模式不自动轮换密钥；部署方要换，就换掉这个文件再重启，换之前签发的句柄随之失效。文件不在或不是它的格式时，`server start` 拒绝启动 | 必填 |
+| `SAVESLOT_LISTEN` | 监听的地址与端口。进程只说明文 HTTP，所以缺省只听回环地址，由同一台机器上的反向代理连进来；要听别的网卡（例如容器里听 `0.0.0.0`），由部署方显式写出 | `127.0.0.1:8080` |
+| `SAVESLOT_TRUSTED_PROXIES` | 受信的反向代理的地址，逗号分隔。连接来自其中之一时，请求的来源地址取 `X-Forwarded-For` 里从右往左第一个不在这组里的地址；否则来源地址就是连接的地址（[`02-architecture.md`](02-architecture.md) §5）。登录失败的计数按这个地址算 | 空 |
+| `SAVESLOT_RATE_LIMIT` | 按租户限流：每个租户每分钟最多的请求数，正整数；设为 0 与不设都是关 | 不设：关（自部署默认关，[`02-architecture.md`](02-architecture.md) §9） |
+| `SAVESLOT_RATE_BURST` | 限流的突发容量：一个租户一次最多连着发多少个请求，正整数；限流关着时不起作用 | 等于 `SAVESLOT_RATE_LIMIT` |
+
+必填的变量缺了，或值写法不对，命令什么都不做，写明是哪个变量，退出码 5（与 `config.toml` 被拒的退出码相同，6.2）；报错里不写变量的值（连接串里可能有口令）。
 
 ### 4.2 登录与配置
 
@@ -649,10 +667,10 @@ runs r_01JC… 整行删除：date 只来自这句话
 | 2 | 命令用法错误（CLI 自己发现的） | 例如只取一个值的选项给了两次（不按"最后一个算数"）；`connections revoke` 的名字对应不止一个连接实例；`export` 的口令文件用不了（普通文件权限宽于 0600、不归当前用户、不是文件或管道、读不到、管道 30 秒没写来、为空、含控制字符，各自说明原因与改法；这是发请求之前的用法错误，不是 6，6 留给凭证）、`-o` 的文件已经在 |
 | 3 | 要先重读 / 内容已变 | `read_first`、`confirmation_mismatch`、`item_closed`、`preview_outdated`、`handle_expired`、`draft_outdated`、`schema_incompatible` |
 | 4 | 找不到 | `not_found`、`unknown_table`、`unknown_field` |
-| 5 | 请求被拒 | `saveslot init` 遇到已初始化的目录或正在运行的服务（什么都不改）、`saveslot start` 遇到未初始化的目录，或服务起来之后发现存储格式过旧或过新（要先处理存储，重试没用）；`config.toml` 不合法（`saveslot start` 在派生进程之前、前台启动与 `saveslot config get` 都这样拒绝，见 4.2）；`invalid_argument`、`validation_failed`、`field_unmatched`、`sql_rejected`、`sql_timeout`、`too_large`、`derived_readonly`、`revoked`、`not_in_this_version`、`import_rejected`、`rate_limited`（`quota`）、`referenced`（后续）、`lease_expired`（后续） |
+| 5 | 请求被拒 | `saveslot init` 遇到已初始化的目录或正在运行的服务（什么都不改）、`saveslot start` 遇到未初始化的目录，或服务起来之后发现存储格式过旧或过新（要先处理存储，重试没用）；`config.toml` 不合法（`saveslot start` 在派生进程之前、前台启动与 `saveslot config get` 都这样拒绝，见 4.2）；服务器模式的环境变量缺了或写法不对（4.1「服务器模式的配置」）；`invalid_argument`、`validation_failed`、`field_unmatched`、`sql_rejected`、`sql_timeout`、`too_large`、`derived_readonly`、`revoked`、`not_in_this_version`、`import_rejected`、`rate_limited`（`quota`）、`referenced`（后续）、`lease_expired`（后续） |
 | 6 | 凭证或权限 | 未登录、凭证文件权限过宽、`unauthenticated`（令牌无效、已吊销、会话过期）、`insufficient_scope`；`saveslot mcp` 的 `SAVESLOT_TOKEN` 没设、为空或不是连接实例令牌（含用户会话令牌） |
 | 7 | 连不上或暂时不可用（稍后重试） | saveslot 服务未运行（`saveslot stop` 例外：没在运行时退出码 0）；`saveslot stop` 时 `/health` 报的 pid 与 `run/saveslot.pid` 不一致，或 `/health` 不应答而 `run/saveslot.lock` 被占着（都不发信号）；`saveslot start` 等不到就绪（进程仍在运行）、服务起来之后自己失败（数据目录不在、内部错误等，原因见 `saveslot status` 与服务日志；格式过旧或过新除外，见 5）、套接字不可达、`unavailable`（忙、恢复中、导入中、对拍中、启动中）、`rate_limited`（`busy`）；`saveslot start` 或 `saveslot setup` 启动服务失败，或另一个 `setup` 正在运行 |
-| 8 | 未执行 | 人在提示中拒绝（含 `saveslot setup` 第 5 步的拒绝：什么都没签发）；非交互式缺 `--yes` 或绑定令牌；`export --encrypt` 没有终端、也没给口令文件 |
+| 8 | 未执行 | 人在提示中拒绝（含 `saveslot setup` 第 5 步的拒绝：什么都没签发）；非交互式缺 `--yes` 或绑定令牌；`export --encrypt` 没有终端、也没给口令文件；`server init`、`server user add`、`server user passwd` 没有终端、也没给口令文件 |
 | 9 | 校验发现问题 | `saveslot verify` 报断裂 / 不符，`saveslot verify --replay` 报不一致，`saveslot doctor` 有不通过项（只有提醒时不给 9） |
 | 129 / 130 / 131 / 143 | 被信号停下（128 加信号编号：SIGHUP / SIGINT / SIGQUIT / SIGTERM） | `saveslot setup` 收到这四个信号之一时收尾后按此退出（§3.3 第 8 条） |
 
