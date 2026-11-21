@@ -245,7 +245,7 @@
 
 `premise.changed`（§5.10）不是头事件：它只作为写入、解决、删除确认、撤回删除、schema 切换（新版删除了前提声明所声明的字段时）这几种操作的一员出现。
 
-带元数据块 `ctx`（§5.1）的头事件：**调用方发起的全部头事件**（`write.head`、`item.resolved`、`deletion.confirmed`、`deletion.cancelled`、`schema.draft_submitted`、三种 `principal.*`；将来作头事件的 `slot.policy_set` 也带），以及 `system` 产生的 `deletion.confirmed`、`deletion.cancelled`。其余由系统生成的头事件（`tenant.genesis`、`tenant.restored`、`deletion.executed`、`schema.switched`、`schema.migration_failed`）不带。`tenant.imported` 虽由用户会话发起，但它与创世事件一样是建立租户状态的事件，不做判定、没有 slot，也不带。带了请求键的另有 `request_key` 块。
+带元数据块 `ctx`（§5.1）的头事件：**调用方发起的全部头事件**（`write.head`、`item.resolved`、`deletion.confirmed`、`deletion.cancelled`、`schema.draft_submitted`、三种 `principal.*`；将来作头事件的 `slot.policy_set` 也带），以及 `system` 产生的 `deletion.confirmed`、`deletion.cancelled`、`principal.revoked`。其余由系统生成的头事件（`tenant.genesis`、`tenant.restored`、`deletion.executed`、`schema.switched`、`schema.migration_failed`）不带。`tenant.imported` 虽由用户会话发起，但它与创世事件一样是建立租户状态的事件，不做判定、没有 slot，也不带。带了请求键的另有 `request_key` 块。
 
 ### 4.2 写入
 
@@ -368,7 +368,7 @@
 
 ### 4.6 后台任务与恢复
 
-内核自己发起的操作，头事件的 `actor` 是 `system`，并带 `trigger`。第一版有五种：到期物理删除（`deletion.executed`）、迁移切换或失败、恢复流程里追加的 `tenant.restored`、恢复流程里按删除登记补出的删除事件（`deletion.confirmed`、`deletion.cancelled`、`deletion.executed`）、导入时为占位的待删除项补的墓碑（`deletion.executed`，`trigger: "import"`）。导入本身的 `tenant.imported` 由发起导入的用户主体做，不是 `system`。
+内核自己发起的操作，头事件的 `actor` 是 `system`，并带 `trigger`。第一版有六种：到期物理删除（`deletion.executed`）、迁移切换或失败、恢复流程里追加的 `tenant.restored`、恢复流程里按删除登记补出的删除事件（`deletion.confirmed`、`deletion.cancelled`、`deletion.executed`）、导入时为占位的待删除项补的墓碑（`deletion.executed`，`trigger: "import"`）、刷新令牌被重放时吊销连接实例（`principal.revoked`，`trigger: "oauth_refresh_replay"`）。导入本身的 `tenant.imported` 由发起导入的用户主体做，不是 `system`。
 
 读取记录的落盘与清理、残留清理、高水位推进、对拍、日志校验、导出都不产生事件。
 
@@ -382,7 +382,7 @@
 
 | path | 种类 | 内容 | 说明 |
 |---|---|---|---|
-| `ctx` | 元 | 见下 | 这次操作的调用上下文与判定版本。调用方发起的全部头事件都有，`system` 产生的删除确认与撤回也有；其余由系统生成的头事件没有（清单见 §4.1） |
+| `ctx` | 元 | 见下 | 这次操作的调用上下文与判定版本。调用方发起的全部头事件都有，`system` 产生的删除确认与撤回、吊销也有；其余由系统生成的头事件没有（清单见 §4.1） |
 | `task` | 数 | 字符串 | 调用方自报的任务标识。来源同 `request_key` |
 | `request_key` | 数 | `{"key": <字符串>}` | 服务端由"连接实例 + 任务 + 规范化请求"算出的请求键。规范化请求含各条前提解析后的所见版本（含兜底取得的）；写入目标兜底补上的 `ver` 不在其内 |
 | `idempotency` | 数 | `{"key": <字符串>, "fingerprint": <哈希>}` | 调用方显式给的幂等键，与请求内容的指纹（按整个请求体算） |
@@ -481,7 +481,7 @@
 
 ### 5.3 主体
 
-三种都是头事件，`actor` 是发起登记的用户主体。它们是调用方发起的操作，带 §5.1 的 `ctx`（没有 slot，所以只有 `now`、`ruleset_version`）。**第一版不带 `task`、`request_key`、`idempotency`**：契约的 `connections.*` 没有任务标识与幂等键参数，主体管理不做幂等去重。
+三种都是头事件，带 §5.1 的 `ctx`（没有 slot，所以只有 `now`、`ruleset_version`）。`principal.registered`、`principal.renamed` 的 `actor` 是发起的用户主体；`principal.revoked` 的 `actor` 见该类型下的说明，三种发起者的 `ctx` 形状相同。**第一版不带 `task`、`request_key`、`idempotency`**：契约的 `connections.*` 没有任务标识与幂等键参数，主体管理不做幂等去重。
 
 #### `principal.registered`
 
@@ -506,6 +506,8 @@
 | path | 种类 | 内容 |
 |---|---|---|
 | `principal` | 元 | `{"principal": <主体 ID>}` |
+
+`actor` 有三种：发起吊销的用户主体（`connections.revoke`）；被吊销的连接实例自己（经 OAuth 吊销端点吊销自己的授权，[`05-surfaces.md`](05-surfaces.md) 第 15 节），这时 `actor` 必须等于 `principal` 块里的主体，连接实例不能吊销别的主体，日志里出现这样的事件时 `apply` 停止；`system`，`trigger: "oauth_refresh_replay"`（同一张刷新令牌被第二次使用，按令牌泄露处理）。用户主体与连接实例发起的不带 `trigger`。三种的 `apply` 相同。对已经吊销或停用的主体再吊销，不论谁发起，都不产生事件：已吊销、已停用的连接实例也写不出一条吊销自己的事件。
 
 `apply`：维护 `principals`（种类、名称、scope、slot 范围、状态）。状态由事件得出：`principal.revoked` 之后是已吊销（`revoked`）；`tenant.imported` 把它之前登记、仍有效的主体置为已停用（`disabled`，§5.2），已吊销的保持已吊销；都没有的是有效的。令牌本身不在日志里，在控制面。
 
@@ -1693,6 +1695,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `restore` | `tenant.restored`；恢复流程按登记重新生成的删除确认与撤回 |
 | `restore_backfill` | 恢复流程补的墓碑 |
 | `import` | 导入时为占位的待删除项补的墓碑 |
+| `oauth_refresh_replay` | 刷新令牌被重放时吊销这次授权的连接实例（`principal.revoked`） |
 
 保留值：`job`、`retired_purge`、`rejudge`、`ruling`。
 

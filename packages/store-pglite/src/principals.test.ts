@@ -6,9 +6,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appendOperation,
   applyEvents,
   createOpsContext,
   createTenant,
+  eventsOf,
   issueConnection,
   KERNEL_TABLES,
   listConnections,
@@ -425,4 +427,151 @@ describe("K12: replaying the log from an empty storage gives the same state", ()
     await store.write((tx) => tx.query(`UPDATE principals SET name = 'x' WHERE id = '${desk}'`));
     expect(await replica.read(materialized)).not.toEqual(await store.read(materialized));
   });
+});
+
+// ---- 09 §5.3: revocations that are not a user's ------------------------------------------------
+
+describe("principal.revoked by the connection itself and by system (09 §5.3)", () => {
+  let s: PgliteTenantStore;
+  let a: string;
+  let b: string;
+  let c: string;
+  const system = (minute: number, trigger: string) => ctx("system", minute, { trigger });
+  /** The last event's header, as stored. */
+  const lastHeader = (x: PgliteTenantStore) =>
+    x.read(async (tx) => {
+      const last = (await readTail(tx))?.seq ?? 0;
+      return (await readEvents(tx, last, last))[0]?.header as Record<string, unknown>;
+    });
+  /** The last event's `ctx` block, as stored. */
+  const lastCtx = (x: PgliteTenantStore) =>
+    x.read(async (tx) => {
+      const last = (await readTail(tx))?.seq ?? 0;
+      return (await readEvents(tx, last, last))[0]?.blocks.get("ctx");
+    });
+
+  beforeAll(async () => {
+    s = await open("revokers");
+    await createTenant(s, ctx(USER, 0));
+    a = (await issueConnection(s, ctx(USER, 1), { name: "a", via: "oauth", client: "x" })).id;
+    b = (await issueConnection(s, ctx(USER, 1), { name: "b", via: "oauth", client: "x" })).id;
+    c = (await issueConnection(s, ctx(USER, 1), { name: "c", via: "oauth", client: "x" })).id;
+  }, T);
+  afterAll(async () => {
+    await s?.close();
+  }, 120_000);
+
+  it("a connection revokes itself: its own actor, no trigger, the same ctx", async () => {
+    expect(await revokeConnection(s, ctx(a, 2), { id: a as never })).toMatchObject({
+      state: "revoked",
+    });
+    const h = await lastHeader(s);
+    expect(h).toMatchObject({ type: "principal.revoked", actor: a });
+    expect(h).not.toHaveProperty("trigger");
+    expect(await lastCtx(s)).toEqual({
+      state: "present",
+      value: { now: "2026-11-10T04:02:00.000Z", ruleset_version: 1 },
+    });
+  });
+
+  it("a connection revoking another: refused, nothing appended", async () => {
+    const before = await tail(s);
+    expect(await refusal(revokeConnection(s, ctx(b, 3), { id: c as never }))).toEqual({
+      code: "insufficient_scope",
+      required_scope: "user_session",
+    });
+    expect(await tail(s)).toBe(before);
+  });
+
+  it("system for a replayed refresh token: trigger oauth_refresh_replay, the same ctx", async () => {
+    expect(
+      await revokeConnection(s, system(4, "revokeOnRefreshReplay"), { id: b as never }),
+    ).toMatchObject({ state: "revoked" });
+    expect(await lastHeader(s)).toMatchObject({
+      type: "principal.revoked",
+      actor: "system",
+      trigger: "oauth_refresh_replay",
+    });
+    expect(await lastCtx(s)).toEqual({
+      state: "present",
+      value: { now: "2026-11-10T04:04:00.000Z", ruleset_version: 1 },
+    });
+  });
+
+  it("system in any other internal operation: refused", async () => {
+    expect(await refusal(revokeConnection(s, system(5, "flushReads"), { id: c as never }))).toEqual(
+      { code: "internal" },
+    );
+  });
+
+  it("revoking a revoked connection appends nothing, whoever asks", async () => {
+    const before = await tail(s);
+    await revokeConnection(s, ctx(a, 6), { id: a as never });
+    await revokeConnection(s, system(6, "revokeOnRefreshReplay"), { id: a as never });
+    await revokeConnection(s, ctx(USER, 6), { id: b as never });
+    expect(await tail(s)).toBe(before);
+  });
+
+  it("a log in which a connection revokes another stops apply", async () => {
+    const before = await tail(s);
+    await expect(
+      s.write(async (tx) => {
+        const op = await appendOperation(tx, {
+          actor: c as never,
+          now: "2026-11-10T04:07:00.000Z",
+          events: [
+            {
+              type: "principal.revoked",
+              blocks: {
+                ctx: { now: "2026-11-10T04:07:00.000Z", ruleset_version: 1 },
+                principal: { principal: a },
+              },
+            },
+          ],
+        });
+        await applyEvents(tx, eventsOf(op));
+      }),
+    ).rejects.toThrow();
+    expect(await tail(s)).toBe(before);
+  });
+
+  it(
+    "replayed from an empty storage, the principals are the same",
+    async () => {
+      const replica = await open("revokers-replica");
+      try {
+        const events = await s.read((tx) => tx.query("SELECT * FROM events ORDER BY seq"));
+        const content = await s.read((tx) => tx.query("SELECT * FROM content ORDER BY seq, path"));
+        await replica.write(async (tx) => {
+          for (const rows of [
+            ["events", events.rows],
+            ["content", content.rows],
+          ] as const) {
+            for (const r of rows[1]) {
+              const cols = Object.keys(r);
+              await tx.query(
+                `INSERT INTO ${rows[0]} (${cols.join(", ")}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(", ")})`,
+                Object.values(r) as never,
+              );
+            }
+          }
+          const last = (await readTail(tx))?.seq ?? 0;
+          await applyEvents(tx, await readEvents(tx, 1, last));
+        });
+        const principals = (x: PgliteTenantStore) =>
+          x.read((tx) => tx.query("SELECT id, state FROM principals ORDER BY id"));
+        expect((await principals(replica)).rows).toEqual((await principals(s)).rows);
+        expect((await principals(s)).rows).toEqual(
+          expect.arrayContaining([
+            { id: a, state: "revoked" },
+            { id: b, state: "revoked" },
+            { id: c, state: "active" },
+          ]),
+        );
+      } finally {
+        await replica.close();
+      }
+    },
+    T,
+  );
 });

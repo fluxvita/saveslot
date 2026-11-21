@@ -6,12 +6,17 @@ import type { ReadTx } from "../store/ports.ts";
 import type { OpsContext } from "./context.ts";
 import { OpsError } from "./errors.ts";
 
-/** The checks every management operation starts with; returns the acting user. */
-export async function begin(tx: ReadTx, ctx: OpsContext): Promise<UserId> {
+/** The storage is the context's tenant. */
+export async function sameTenant(tx: ReadTx, ctx: OpsContext): Promise<void> {
   const t = await tx.query<{ value: string }>("SELECT value FROM meta WHERE key = 'tenant_id'");
   if (t.rows[0]?.value !== ctx.tenant) {
     throw new OpsError("internal", "the context's tenant is not the tenant of this storage");
   }
+}
+
+/** The checks every management operation starts with; returns the acting user. */
+export async function begin(tx: ReadTx, ctx: OpsContext): Promise<UserId> {
+  await sameTenant(tx, ctx);
   // Only user sessions (04-contract §17). The service layer checks this first; this is defence.
   const r = await tx.query<{ kind: string; state: string; id: string }>(
     "SELECT id, kind, state FROM principals WHERE id = $1",

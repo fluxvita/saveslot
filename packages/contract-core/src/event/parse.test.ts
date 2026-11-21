@@ -435,7 +435,7 @@ describe("parseEvent: header", () => {
   });
 
   it("rejects an actor the type does not allow", () => {
-    expect(issues(parse(withHeader(revoked, { actor: CONN })))).toEqual([
+    expect(issues(parse(withHeader(renamed, { actor: CONN })))).toEqual([
       "header.actor: not allowed for this type",
     ]);
   });
@@ -470,6 +470,61 @@ describe("parseEvent: header", () => {
     expect(issues(parse(withHeader(genesis, { node_id: "n_1" })))).toEqual([
       "header.node_id: malformed",
     ]);
+  });
+});
+
+describe("parseEvent: principal.revoked's three actors (§5.3)", () => {
+  const OTHER = `ci_${"6".repeat(26)}`;
+
+  it("by a user, by the connection itself, by system for a replayed refresh token", () => {
+    expect(parse(revoked)).toEqual({ ok: true, type: "principal.revoked" });
+    expect(parse(withHeader(revoked, { actor: CONN }))).toEqual({
+      ok: true,
+      type: "principal.revoked",
+    });
+    expect(
+      parse(withHeader(revoked, { actor: "system", trigger: "oauth_refresh_replay" })),
+    ).toEqual({ ok: true, type: "principal.revoked" });
+  });
+
+  it("a connection revoking another principal: refused", () => {
+    expect(issues(parse(withHeader(revoked, { actor: OTHER })))).toEqual([
+      "principal: a connection revokes no principal but itself",
+    ]);
+  });
+
+  it("a user revokes any connection", () => {
+    expect(parse(withBlock(revoked, "principal", { principal: OTHER }))).toEqual({
+      ok: true,
+      type: "principal.revoked",
+    });
+  });
+
+  it.each([
+    ["system without a trigger", { actor: "system" }, "header.trigger: missing or not allowed"],
+    [
+      "system with another trigger",
+      { actor: "system", trigger: "restore" },
+      "header.trigger: missing or not allowed",
+    ],
+    [
+      "the connection with a trigger",
+      { actor: CONN, trigger: "oauth_refresh_replay" },
+      "header.trigger: only on head events by system",
+    ],
+    [
+      "a user with a trigger",
+      { trigger: "oauth_refresh_replay" },
+      "header.trigger: only on head events by system",
+    ],
+  ])("%s: refused", (_, patch, issue) => {
+    expect(issues(parse(withHeader(revoked, patch)))).toContain(issue);
+  });
+
+  it("the trigger is not taken on the other principal events", () => {
+    expect(
+      issues(parse(withHeader(renamed, { actor: "system", trigger: "oauth_refresh_replay" }))),
+    ).toContain("header.actor: not allowed for this type");
   });
 });
 

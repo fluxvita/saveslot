@@ -310,6 +310,7 @@ export const TRIGGERS = [
   "restore",
   "restore_backfill",
   "import",
+  "oauth_refresh_replay",
 ] as const;
 export type Trigger = (typeof TRIGGERS)[number];
 

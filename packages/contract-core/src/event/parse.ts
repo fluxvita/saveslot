@@ -298,6 +298,14 @@ export function parseEvent(
       check(user["principal"] === h["actor"], "user", "principal is the actor", issues);
     }
   }
+  // §5.3: a connection revokes only itself.
+  if (type === "principal.revoked") {
+    const actor = (header as Readonly<Record<string, Json>>)["actor"];
+    const p = blocks["principal"];
+    if (str(actor) && isId("connection", actor) && isObject(p) && p["principal"] !== actor) {
+      issues.push("principal: a connection revokes no principal but itself");
+    }
+  }
   for (const entry of VOCABULARY[type] as readonly VocabularyEntry[]) {
     if (entry.always && !(entry.path in blocks) && !removedSet.has(entry.path)) {
       issues.push(`${entry.path}: required`);

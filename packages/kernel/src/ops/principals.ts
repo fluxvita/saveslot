@@ -1,7 +1,9 @@
 // Connection instances: issue, rename, revoke (docs/zh-CN/spec/04-contract.md §12, §17;
 // docs/zh-CN/spec/04-contract-types.md §8.1; docs/zh-CN/spec/09-event-format.md §5.3).
 //
-// Management operations are for user sessions only. Each entry opens one write transaction,
+// Management operations are for user sessions only; a revocation is also made by the connection
+// itself (its OAuth client revoked its grant) or by `system` (a refresh token replayed; 09 §5.3).
+// Each entry opens one write transaction,
 // appends the operation and applies it in that transaction. Slots are given as slot IDs: names
 // are resolved by the service layer.
 
@@ -9,12 +11,12 @@ import {
   type ConnectionId,
   isId,
   type JsonValue,
+  type PrincipalId,
   type PrincipalVia,
   SCOPES,
   type Scope,
   type Seq,
   type SlotId,
-  type UserId,
 } from "@fluxvita/saveslot-contract-core";
 import { applyEvents, eventsOf } from "../apply/index.ts";
 import { appendOperation, type NewEvent } from "../log/index.ts";
@@ -31,7 +33,7 @@ import type { ReadTx, TenantStore, Tx } from "../store/ports.ts";
 import type { OpsContext } from "./context.ts";
 import { OpsError } from "./errors.ts";
 import { newConnectionId } from "./ids.ts";
-import { begin } from "./management.ts";
+import { begin, sameTenant } from "./management.ts";
 
 export interface IssueConnectionParams {
   readonly name: string;
@@ -137,7 +139,7 @@ function duplicateName(): OpsError {
   });
 }
 
-async function commit(tx: Tx, ctx: OpsContext, actor: UserId, event: NewEvent): Promise<void> {
+async function commit(tx: Tx, ctx: OpsContext, actor: PrincipalId, event: NewEvent): Promise<void> {
   const op = await appendOperation(tx, { actor, now: ctx.now, events: [event] });
   await applyEvents(tx, eventsOf(op));
 }
@@ -263,8 +265,38 @@ export async function renameConnection(
 }
 
 /**
- * `connections.revoke`. Revoking a connection that is already revoked or disabled appends nothing
- * and returns it as it is.
+ * Who revokes (09 §5.3): an active user session (`connections.revoke`); the connection itself,
+ * and no other (its OAuth client revoked its grant); or `system`, in the internal operation
+ * `revokeOnRefreshReplay` only.
+ */
+async function revoker(tx: ReadTx, ctx: OpsContext, id: ConnectionId): Promise<PrincipalId> {
+  if (ctx.actor === "system") {
+    if (ctx.trigger !== "revokeOnRefreshReplay") {
+      throw new OpsError(
+        "internal",
+        "system revokes a connection only for a replayed refresh token",
+      );
+    }
+    await sameTenant(tx, ctx);
+    return "system";
+  }
+  if (isId("connection", ctx.actor)) {
+    await sameTenant(tx, ctx);
+    if (ctx.actor !== id) {
+      throw new OpsError("insufficient_scope", "a connection revokes only itself", {
+        required_scope: "user_session",
+      });
+    }
+    return ctx.actor;
+  }
+  return begin(tx, ctx);
+}
+
+/**
+ * Revokes a connection: `connections.revoke` by a user session, or the connection revoking itself,
+ * or `system` for a replayed refresh token. Revoking a connection that is already revoked or
+ * disabled appends nothing, whoever asks, and returns it as it is: a revoked connection writes
+ * nothing more.
  */
 export async function revokeConnection(
   store: TenantStore,
@@ -272,11 +304,12 @@ export async function revokeConnection(
   params: { readonly id: ConnectionId },
 ): Promise<ConnectionRecord> {
   return store.write(async (tx) => {
-    const actor = await begin(tx, ctx);
+    const actor = await revoker(tx, ctx, params.id);
     const row = await connection(tx, params.id);
     if (row.state !== "active") return record(row);
     await commit(tx, ctx, actor, {
       type: "principal.revoked",
+      ...(actor === "system" ? { trigger: "oauth_refresh_replay" as const } : {}),
       blocks: { ctx: ctxBlock(ctx), principal: { principal: params.id } },
     });
     return record((await principal(tx, params.id)) as Row);

@@ -27,6 +27,7 @@ export const INTERNAL_OPERATIONS = [
   "migrationStep",
   "advanceHighWater",
   "closeTenant",
+  "revokeOnRefreshReplay",
 ] as const;
 export type InternalOperation = (typeof INTERNAL_OPERATIONS)[number];
 

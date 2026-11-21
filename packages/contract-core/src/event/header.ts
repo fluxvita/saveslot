@@ -83,11 +83,18 @@ export type TenantImportedHeader = CallerHead<"tenant.imported", UserId> &
     readonly imported_upto: Seq;
   };
 
-// --- §5.3 principals: head events by a user principal -------------------------------------------
+// --- §5.3 principals: head events by a user principal; a revocation also by the connection itself
+// or by `system` -------------------------------------------------------------------------------------
 
 export type PrincipalRegisteredHeader = CallerHead<"principal.registered", UserId> & TenantLevel;
 export type PrincipalRenamedHeader = CallerHead<"principal.renamed", UserId> & TenantLevel;
-export type PrincipalRevokedHeader = CallerHead<"principal.revoked", UserId> & TenantLevel;
+/**
+ * By a user principal; by the connection revoked, only itself (its `principal` block names its
+ * actor, checked by `parseEvent`); or by `system` when a refresh token is replayed.
+ */
+export type PrincipalRevokedHeader =
+  | (CallerHead<"principal.revoked"> & TenantLevel)
+  | (SystemHead<"principal.revoked", "oauth_refresh_replay"> & TenantLevel);
 
 // --- §5.4 slot policy -------------------------------------------------------------------------
 
@@ -232,7 +239,13 @@ export const HEADER_RULES = {
   },
   "principal.registered": { head: "head", actor: "user", slot: false, triggers: [], extra: [] },
   "principal.renamed": { head: "head", actor: "user", slot: false, triggers: [], extra: [] },
-  "principal.revoked": { head: "head", actor: "user", slot: false, triggers: [], extra: [] },
+  "principal.revoked": {
+    head: "head",
+    actor: "caller_or_system",
+    slot: false,
+    triggers: ["oauth_refresh_replay"],
+    extra: [],
+  },
   "slot.policy_set": { head: "member", actor: "any", slot: true, triggers: [], extra: [] },
   "slot.removed": { head: "head", actor: "user", slot: true, triggers: [], extra: [] },
   "schema.draft_submitted": { head: "head", actor: "caller", slot: true, triggers: [], extra: [] },
