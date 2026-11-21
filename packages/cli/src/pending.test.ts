@@ -209,6 +209,53 @@ describe("pending (06 §5.1)", () => {
     );
   });
 
+  it("a resolution whose write marked rows resting on it: each row once, the rest counted; unmarked ones", () => {
+    const row = (r: string, seq: number) => ({
+      target: { table: "ledger.tasks", row: r },
+      fields: ["title"],
+      declared: { seq, actor },
+    });
+    const text = render(
+      resolveResult({
+        id: "pi_8VEZWJ3J7BMKMXTV",
+        type: "conflict",
+        decision: "take_candidate",
+        item_ver: "iv_8VEZWJ3J7BMKMXTV.112.0",
+        status: "resolved",
+        write: {
+          status: "saved",
+          sv: 1,
+          seq: 112,
+          ops: [],
+          derived: [],
+          derived_total: 0,
+          pending: [],
+          superseded: [],
+          premise_affected: {
+            count: 3,
+            matched: 1,
+            by_reason: { update: 3 },
+            // r_A under two declarations: listed once; one more row not listed.
+            rows: [
+              row("r_4KWKRM296X61WJ89DY5XJNVA4A", 90),
+              row("r_4KWKRM296X61WJ89DY5XJNVA4A", 95),
+              row("r_4KWKRM296X61WJ89DY5XJNVA4B", 96),
+            ],
+          },
+        },
+      } as never),
+      terminal,
+    );
+    const lines = text.split("\n");
+    expect(lines).toContain(
+      '  3 rows rest on what this changed and now carry "premise changed": ledger.tasks r_4KWKRM296X61WJ89DY5XJNVA4A, ledger.tasks r_4KWKRM296X61WJ89DY5XJNVA4B (and 1 row not listed)',
+    );
+    expect(lines).toContain(
+      '  1 row rests on premises back to the values declared and no longer carries "premise changed"',
+    );
+    expect(text).not.toContain("undefined");
+  });
+
   it("a conflict resolved by taking a candidate: which candidate, and the note inside the boundary", () => {
     const resolved = {
       ...AWAITING,

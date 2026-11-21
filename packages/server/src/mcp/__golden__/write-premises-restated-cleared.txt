@@ -1,0 +1,6 @@
+Saved · ledger schema v1 · #27
+ledger.tasks r_00000000000000000000000008 update: no change (ver=v18.0)
+  Restated on its premises as they are now (values not changed)
+  Rests on ledger.releases r_00000000000000000000000001 (seen v15.0)
+ledger.tasks r_00000000000000000000000012 update: no change (ver=v24.0)
+  Cleared this row's premise declarations

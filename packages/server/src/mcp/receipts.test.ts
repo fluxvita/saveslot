@@ -7,7 +7,9 @@
 // take_previous with the writes it undid; on state tables, how each field's interval resolved (an
 // unchanged next change, a start taken as now, a correction's stretch, a stretch without a value
 // filled, ending or lasting); an applied part merged; evidence no op cites; a clock behind the log;
-// and the pending_items notice. Update the golden files with
+// the pending_items notice; and premises: declared (one had changed already), restated and cleared,
+// rows marked by a change and unmarked by its change back (these four from kernel's test switch,
+// on a real store: the service does not take premises yet). Update the golden files with
 // `pnpm exec vitest run packages/server/src/mcp/receipts.test.ts -u`.
 
 import { readFileSync } from "node:fs";
@@ -31,6 +33,43 @@ describe("receipts as text (golden)", () => {
     // The renderer, not its JSON fallback: a shape it does not know fails here.
     await expect(`${fixed(renderStrict(tool, result, NOW))}\n`).toMatchFileSnapshot(
       `./__golden__/${name}.txt`,
+    );
+  });
+});
+
+describe("premise_affected in a receipt (05 §6)", () => {
+  it("one row each way: the verbs agree; a row under two declarations is listed once", () => {
+    const actor = { kind: "user", id: "u_1", name: "u_1" };
+    const row = (seq: number) => ({
+      target: { table: "ledger.tasks", row: "r_4KWKRM296X61WJ89DY5XJNVA4A" },
+      fields: ["title"],
+      declared: { seq, actor },
+    });
+    const text = renderStrict(
+      "saveslot_write",
+      {
+        status: "saved",
+        sv: 1,
+        seq: 40,
+        ops: [],
+        derived: [],
+        derived_total: 0,
+        pending: [],
+        superseded: [],
+        premise_affected: {
+          count: 1,
+          matched: 1,
+          by_reason: { update: 1 },
+          rows: [row(30), row(31)],
+        },
+      },
+      NOW,
+    ).split("\n");
+    expect(text).toContain(
+      '1 row rests on what this change touched and now carries "premise changed": ledger.tasks r_4KWKRM296X61WJ89DY5XJNVA4A',
+    );
+    expect(text).toContain(
+      '1 row rests on premises back to the values declared and no longer carries "premise changed"',
     );
   });
 });

@@ -1541,6 +1541,7 @@ function receiptOps(r: R): Line[] {
     if (keys.length > 0)
       out.push(t`  Keys already in the table: ${join(keys.map(keyText), t`; `)}`);
     out.push(...resolvedLines(x));
+    out.push(...opPremiseLines(x));
     const awaiting = new Map<unknown, { f: string; c: R }[]>();
     for (const [f, v] of Object.entries(obj(x["fields"]))) {
       for (const one of Array.isArray(v) ? v : [v]) {
@@ -1559,6 +1560,77 @@ function receiptOps(r: R): Line[] {
   const more = int(r["ops_omitted"]);
   if (more !== undefined && more > 0) {
     out.push(t`${num(more)} more ops are left out of this receipt: saveslot_history shows them`);
+  }
+  return out;
+}
+
+/**
+ * What an op declared on its premises (05 §6 `saveslot_write` «写入的前提»; 04-contract-types §5.1
+ * `OpResult.premises`), under the op: a clearing, a restatement, then each premise with what it
+ * rests on and the version seen; one that had changed since it was read says the row now carries
+ * "premise changed".
+ */
+function opPremiseLines(x: R): Line[] {
+  if (!Array.isArray(x["premises"])) return [];
+  const premises = arr(x["premises"]);
+  if (premises.length === 0) return [t`  Cleared this row's premise declarations`];
+  const out: Line[] = [];
+  // No field written: a restatement, its values as they were.
+  if (isObj(x["fields"]) && Object.keys(x["fields"]).length === 0)
+    out.push(t`  Restated on its premises as they are now (values not changed)`);
+  for (const p of premises) {
+    const q = obj(p);
+    const fields = arr(q["fields"]);
+    const what = fields.length > 0 ? t`the ${join(fields.map(fieldOf), t`, `)} of ` : [];
+    const changed =
+      q["state"] === "changed"
+        ? t`; it had changed since you read it (${op(q["since"])}): this row now carries "premise changed"`
+        : [];
+    out.push(t`  Rests on ${what}${targetOf(q["target"])} (seen ${idOf(q["ver"])})${changed}`);
+  }
+  return out;
+}
+
+/** "1 row" or "3 rows". */
+const rowCount = (n: number): Part[] => (n === 1 ? t`1 row` : t`${num(n)} rows`);
+/** A verb agreeing with a count: its singular form for 1. */
+const one = (n: number, singular: Part[], plural: Part[]): Part[] => (n === 1 ? singular : plural);
+
+/**
+ * The rows whose premises this change marked or unmarked (05 §6 `saveslot_write`; 04-contract-types
+ * §5.1 `PremiseAffected`): those now marked, listed by table (a row once however many of its
+ * declarations), those not listed (beyond the list, or in tables the caller cannot see) counted;
+ * then those whose premises are back to the values declared.
+ */
+function premiseAffectedLines(r: R): Line[] {
+  if (!isObj(r["premise_affected"])) return [];
+  const a = r["premise_affected"];
+  const out: Line[] = [];
+  const marked = int(a["count"]) ?? 0;
+  if (marked > 0) {
+    const byTable = new Map<string, { table: unknown; ids: unknown[] }>();
+    for (const e of arr(a["rows"])) {
+      const target = obj(obj(e)["target"]);
+      const id = target["row"] ?? target["entity"];
+      const key = String(target["table"]);
+      const group = byTable.get(key) ?? { table: target["table"], ids: [] };
+      if (!group.ids.includes(id)) group.ids.push(id);
+      byTable.set(key, group);
+    }
+    const listed = [...byTable.values()].reduce((n, g) => n + g.ids.length, 0);
+    const list = [...byTable.values()].map(
+      (g) => t`${tableOf(g.table)} ${join(g.ids.map(idOf), t`, `)}`,
+    );
+    const more = marked > listed ? t` (and ${rowCount(marked - listed)} not listed)` : [];
+    out.push(
+      t`${rowCount(marked)} ${one(marked, t`rests`, t`rest`)} on what this change touched and now ${one(marked, t`carries`, t`carry`)} "premise changed"${list.length > 0 ? t`: ${join(list, t`; `)}` : []}${more}`,
+    );
+  }
+  const matched = int(a["matched"]) ?? 0;
+  if (matched > 0) {
+    out.push(
+      t`${rowCount(matched)} ${one(matched, t`rests`, t`rest`)} on premises back to the values declared and no longer ${one(matched, t`carries`, t`carry`)} "premise changed"`,
+    );
   }
   return out;
 }
@@ -1615,7 +1687,8 @@ function itemsSaid(r: R): Set<unknown> {
 }
 
 function receiptTail(r: R, now: Date): Line[] {
-  const out: Line[] = [...derivedLines(r)];
+  // Right after the derived values (05 §6).
+  const out: Line[] = [...derivedLines(r), ...premiseAffectedLines(r)];
   const said = itemsSaid(r);
   for (const p of arr(r["pending"])) {
     const x = obj(p);
@@ -1653,9 +1726,6 @@ function receiptTail(r: R, now: Date): Line[] {
   }
   if (isObj(r["affected_reads"])) {
     out.push(t`Earlier reads used the old value: ${stored(JSON.stringify(r["affected_reads"]))}`);
-  }
-  if (isObj(r["premise_affected"])) {
-    out.push(t`Rows whose premises changed: ${stored(JSON.stringify(r["premise_affected"]))}`);
   }
   return [...out, ...remindersOf(r, now), ...shortened(r)];
 }

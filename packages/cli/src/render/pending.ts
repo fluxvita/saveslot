@@ -251,6 +251,47 @@ const revertedWrite = (w: unknown): Part[] => {
   return t`${op(x["seq"])} (${actorOf(x["actor"])})${fields.length > 0 ? t` ${join(fields.map(fieldOf), t`, `)}` : []}`;
 };
 
+/** "1 row" or "3 rows". */
+const rowCount = (n: number): Part[] => (n === 1 ? t`1 row` : t`${num(n)} rows`);
+/** A verb agreeing with a count: its singular form for 1. */
+const one = (n: number, singular: Part[], plural: Part[]): Part[] => (n === 1 ? singular : plural);
+
+/**
+ * The rows whose premises a write marked or unmarked (05 §6; 04-contract-types §5.1
+ * `PremiseAffected`): those now marked, each once however many of its declarations, the ones not
+ * listed (beyond the list, or in tables this credential cannot see) counted; then those whose
+ * premises are back to the values declared.
+ */
+export function premiseAffectedLines(w: R): Line[] {
+  if (!isObj(w["premise_affected"])) return [];
+  const a = w["premise_affected"];
+  const out: Line[] = [];
+  const marked = int(a["count"]) ?? 0;
+  if (marked > 0) {
+    const seen = new Set<string>();
+    const listed: Part[][] = [];
+    for (const e of arr(a["rows"])) {
+      const target = obj(obj(e)["target"]);
+      const key = `${String(target["table"])} ${String(target["row"] ?? target["entity"])}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      listed.push(targetOf(target));
+    }
+    const more =
+      marked > listed.length ? t` (and ${rowCount(marked - listed.length)} not listed)` : [];
+    out.push(
+      t`  ${rowCount(marked)} ${one(marked, t`rests`, t`rest`)} on what this changed and now ${one(marked, t`carries`, t`carry`)} "premise changed"${listed.length > 0 ? t`: ${join(listed, t`, `)}` : []}${more}`,
+    );
+  }
+  const matched = int(a["matched"]) ?? 0;
+  if (matched > 0) {
+    out.push(
+      t`  ${rowCount(matched)} ${one(matched, t`rests`, t`rest`)} on premises back to the values declared and no longer ${one(matched, t`carries`, t`carry`)} "premise changed"`,
+    );
+  }
+  return out;
+}
+
 /**
  * `saveslot pending resolve` (06 §5.2): the decision and the item's new version; what the write it
  * triggered did (its operation, the derived values that changed, the items it opened or
@@ -273,6 +314,7 @@ export function resolveResult(r: ResolveResult): Line[] {
     const derived = arr(w["derived"]);
     if (derived.length > 0)
       out.push(t`  derived values changed: ${num(int(w["derived_total"]) ?? derived.length)}`);
+    out.push(...premiseAffectedLines(w));
     for (const p of arr(w["pending"]))
       out.push(t`  opened ${idOf(obj(p)["item"] ?? obj(p)["id"])}`);
     for (const sup of arr(w["superseded"])) {

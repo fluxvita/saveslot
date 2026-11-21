@@ -2218,5 +2218,209 @@
       ],
       "warnings": [{ "code": "multi_segment_unmapped", "op": 0, "fields": ["amount", "note"] }]
     }
+  },
+  "write-premises-declared": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 18,
+      "ops": [
+        {
+          "target": {
+            "table": "ledger.tasks",
+            "row": "r_00000000000000000000000008"
+          },
+          "intent": "insert",
+          "ver": "v18.0",
+          "fields": {
+            "title": {
+              "result": "applied",
+              "after": "freeze"
+            }
+          },
+          "premises": [
+            {
+              "target": {
+                "table": "ledger.releases",
+                "row": "r_00000000000000000000000004"
+              },
+              "fields": ["date"],
+              "ver": "v11.0",
+              "state": "current"
+            },
+            {
+              "target": {
+                "table": "ledger.releases",
+                "row": "r_00000000000000000000000001"
+              },
+              "ver": "v7.0",
+              "state": "changed",
+              "reason": "update",
+              "since": 15
+            }
+          ],
+          "premise_covered": 0
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "warnings": [
+        {
+          "code": "premise_already_changed",
+          "op": 0,
+          "premise": 1,
+          "since": 15
+        }
+      ]
+    }
+  },
+  "write-premises-restated-cleared": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 27,
+      "ops": [
+        {
+          "target": {
+            "table": "ledger.tasks",
+            "row": "r_00000000000000000000000008"
+          },
+          "intent": "update",
+          "ver": "v18.0",
+          "fields": {},
+          "premises": [
+            {
+              "target": {
+                "table": "ledger.releases",
+                "row": "r_00000000000000000000000001"
+              },
+              "ver": "v15.0",
+              "state": "current"
+            }
+          ],
+          "premise_covered": 1
+        },
+        {
+          "target": {
+            "table": "ledger.tasks",
+            "row": "r_00000000000000000000000012"
+          },
+          "intent": "update",
+          "ver": "v24.0",
+          "fields": {},
+          "premises": [],
+          "premise_covered": 1
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": []
+    }
+  },
+  "write-premise-affected": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 30,
+      "ops": [
+        {
+          "target": {
+            "table": "ledger.releases",
+            "row": "r_00000000000000000000000004"
+          },
+          "intent": "update",
+          "ver": "v30.0",
+          "fields": {
+            "date": {
+              "result": "applied",
+              "after": "2026-12-20"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "premise_affected": {
+        "count": 2,
+        "matched": 0,
+        "by_reason": {
+          "update": 2
+        },
+        "rows": [
+          {
+            "target": {
+              "table": "ledger.tasks",
+              "row": "r_00000000000000000000000008"
+            },
+            "fields": ["title"],
+            "declared": {
+              "seq": 18,
+              "actor": {
+                "kind": "user",
+                "id": "u_11111111111111111111111111",
+                "name": "u_11111111111111111111111111"
+              }
+            }
+          },
+          {
+            "target": {
+              "table": "ledger.tasks",
+              "row": "r_00000000000000000000000010"
+            },
+            "fields": ["title"],
+            "declared": {
+              "seq": 21,
+              "actor": {
+                "kind": "user",
+                "id": "u_11111111111111111111111111",
+                "name": "u_11111111111111111111111111"
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "write-premise-affected-matched": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 34,
+      "ops": [
+        {
+          "target": {
+            "table": "ledger.releases",
+            "row": "r_00000000000000000000000004"
+          },
+          "intent": "update",
+          "ver": "v34.0",
+          "fields": {
+            "date": {
+              "result": "applied",
+              "after": "2027-01-01"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "premise_affected": {
+        "count": 0,
+        "matched": 2,
+        "by_reason": {},
+        "rows": []
+      }
+    }
   }
 }
