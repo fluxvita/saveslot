@@ -943,9 +943,9 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
         await one(
           tx,
           seq,
-          `UPDATE schema_versions SET state = 'current'
+          `UPDATE schema_versions SET state = 'current', switched_seq = $4
            WHERE slot_id = $1 AND sv = $2 AND draft_id = $3 AND state = 'pending'`,
-          [c.slot, c.sv, c.draft_id],
+          [c.slot, c.sv, c.draft_id, seq],
           `version ${c.sv} of ${c.slot} is not the pending draft ${c.draft_id}`,
         );
         await one(
@@ -959,9 +959,9 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
       }
       // The slot's first version (a slot being created): no earlier version to retire.
       await tx.query(
-        `INSERT INTO schema_versions (slot_id, sv, compiled_seq, draft_id, state)
-         VALUES ($1, $2, $3, $4, 'current')`,
-        [c.slot, c.sv, c.compiled_seq, c.draft_id],
+        `INSERT INTO schema_versions (slot_id, sv, compiled_seq, draft_id, state, switched_seq)
+         VALUES ($1, $2, $3, $4, 'current', $5)`,
+        [c.slot, c.sv, c.compiled_seq, c.draft_id, seq],
       );
       await one(
         tx,

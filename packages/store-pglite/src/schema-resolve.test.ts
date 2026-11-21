@@ -906,9 +906,9 @@ describe("removing the slot (07-scope-v1: a schema change still open keeps it)",
   );
 });
 
-describe("as_of between a draft's compilation and its switch, as things are", () => {
+describe("as_of reads the version switched to by then (08 «状态机»: a version takes effect at its switch)", () => {
   it(
-    "the draft's own operation reads the earlier version; a later one, once switched, the draft's",
+    "a confirmed draft: the earlier version up to its confirmation, the draft's from the confirmation on",
     async () => {
       const w = await write(s.store, ctx(), {
         sv: 1,
@@ -929,15 +929,124 @@ describe("as_of between a draft's compilation and its switch, as things are", ()
       ).seq as number;
       const asOf = (seq: number) =>
         history(s.store, ctx(), { table: "expenses", row, mode: "as_of", as_of: seq });
-      expect(await asOf(draftOp)).toMatchObject({ sv: 1 });
-      expect(await asOf(later)).toMatchObject({ sv: 1 });
       await decide({ id: d.item.id, decision: "confirm", item_ver: d.item.item_ver });
-      // A version counts from its compiled event's position, inside its draft's operation, so
-      // the draft's operation itself still reads version 1. A later point before the switch reads
-      // version 2 once the draft is switched to; 08 has it by the switch's position, version 1
-      // there: that comes with the switch position (schema_versions.switched_seq), next request.
-      expect(await asOf(draftOp)).toMatchObject({ sv: 1 });
-      expect(await asOf(later)).toMatchObject({ sv: 2 });
+      const [confirm] = await rows(
+        "SELECT op FROM events WHERE type = 'schema.switched' ORDER BY seq DESC LIMIT 1",
+      );
+      // Compiled at the draft, switched at the confirmation: in between, version 1 was in effect.
+      // Named as version 1 has them, though version 2 is current.
+      expect(await asOf(draftOp)).toMatchObject({
+        sv: 1,
+        rows: [{ table: "ledger.expenses", values: { date: "2026-11-02", note: "tea" } }],
+      });
+      expect(await asOf(later)).toMatchObject({ sv: 1 });
+      expect(Object.keys(((await asOf(later)) as Any).rows[0].values).sort()).toEqual([
+        "date",
+        "note",
+      ]);
+      // At the confirmation itself, one operation: the rows, their sv and the slot's schema agree.
+      const at = (await asOf(Number(confirm?.["op"]))) as Any;
+      expect(at).toMatchObject({ sv: 2 });
+      expect(Object.keys(at.rows[0].values).sort()).toEqual(["date", "memo"]);
+      expect(await catalog(s.store, ctx(), { level: "schema", slot: "ledger" })).toMatchObject({
+        sv: 2,
+      });
+    },
+    T,
+  );
+
+  it(
+    "renamed twice: a point between the two reads the middle version's names, table and field",
+    async () => {
+      const w = await write(s.store, ctx(), {
+        sv: 1,
+        ops: [{ intent: "insert", table: "expenses", set: { date: "2026-11-02", note: "tea" } }],
+      });
+      const row = (w.ops[0] as Any).target.row;
+      const second = await draft(rename("memo"));
+      await decide({ id: second.item.id, decision: "confirm", item_ver: second.item.item_ver });
+      const middle = await tail();
+      const third = rename("purpose", 2);
+      (third.tables[0] as Any).name = "spending";
+      const d = await draft(third);
+      if (d.outcome === "pending")
+        await decide({ id: d.item.id, decision: "confirm", item_ver: d.item.item_ver });
+      expect(await catalog(s.store, ctx(), { level: "schema", slot: "ledger" })).toMatchObject({
+        sv: 3,
+      });
+      const asOf = async (seq: number) =>
+        (await history(s.store, ctx(), {
+          table: "spending",
+          row,
+          mode: "as_of",
+          as_of: seq,
+        })) as Any;
+      const at = (seq: number) =>
+        asOf(seq).then((r) => ({ sv: r.sv, table: r.rows[0].table, values: r.rows[0].values }));
+      expect(await at(w.seq as number)).toEqual({
+        sv: 1,
+        table: "ledger.expenses",
+        values: { date: "2026-11-02", note: "tea" },
+      });
+      expect(await at(middle)).toEqual({
+        sv: 2,
+        table: "ledger.expenses",
+        values: { date: "2026-11-02", memo: "tea" },
+      });
+      expect(await at(await tail())).toEqual({
+        sv: 3,
+        table: "ledger.spending",
+        values: { date: "2026-11-02", purpose: "tea" },
+      });
+    },
+    T,
+  );
+
+  it(
+    "before the slot's first version took effect: the first version's sv and names, no rows",
+    async () => {
+      const [created] = await rows(
+        "SELECT min(e.op) AS op FROM events e WHERE e.type = 'schema.switched'",
+      );
+      const w = await write(s.store, ctx(), {
+        sv: 1,
+        ops: [{ intent: "insert", table: "expenses", set: { date: "2026-11-02", note: "tea" } }],
+      });
+      const row = (w.ops[0] as Any).target.row;
+      const d = await draft(rename("memo"));
+      await decide({ id: d.item.id, decision: "confirm", item_ver: d.item.item_ver });
+      // The slot is at version 2 now; a point before it was created is of version 1, as named then.
+      const before = (await history(s.store, ctx(), {
+        table: "expenses",
+        row,
+        mode: "as_of",
+        as_of: Number(created?.["op"]) - 1,
+      })) as Any;
+      expect(before).toMatchObject({ sv: 1, rows: [] });
+    },
+    T,
+  );
+
+  it(
+    "an automatic draft: compiled and switched in one operation, that operation reads the new version",
+    async () => {
+      const w = await write(s.store, ctx(), {
+        sv: 1,
+        ops: [{ intent: "insert", table: "expenses", set: { date: "2026-11-02" } }],
+      });
+      const row = (w.ops[0] as Any).target.row;
+      const auto = rename("note");
+      (auto.tables[0] as Any).description = "every expense";
+      expect(await draft(auto)).toMatchObject({ outcome: "applied", sv: 2 });
+      const [switched] = await rows(
+        "SELECT op FROM events WHERE type = 'schema.switched' ORDER BY seq DESC LIMIT 1",
+      );
+      const op = Number(switched?.["op"]);
+      const asOf = (seq: number) =>
+        history(s.store, ctx(), { table: "expenses", row, mode: "as_of", as_of: seq });
+      // The write before it, and the switch's own operation.
+      expect(await asOf(w.seq as number)).toMatchObject({ sv: 1 });
+      expect(await asOf(op)).toMatchObject({ sv: 2 });
     },
     T,
   );

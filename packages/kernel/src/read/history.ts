@@ -15,6 +15,7 @@ import type {
   BizPoint,
   CompiledBaseField,
   CompiledBaseTable,
+  CompiledSchema,
   FieldValue,
   Instant,
   JsonValue,
@@ -481,16 +482,82 @@ async function versionAsOf(
 
 /** The schema version of the slot after operation `s`. */
 async function svAsOf(tx: ReadTx, slot: string, s: number, current: number): Promise<number> {
+  // The version in effect after operation `s`: the last one switched to in an operation up to it
+  // (08 «状态机»: a version takes effect at its switch, not at its compilation; a confirmed draft
+  // is compiled in one operation and switched in a later one).
+  // Before the slot's first version took effect: its first version (04-contract `history` as_of: the
+  // answer says the sv of the time; there was none, and the rows are none either).
   const r = await tx.query<{ sv: unknown }>(
-    `SELECT max(sv) AS sv FROM schema_versions
-     WHERE slot_id = $1 AND compiled_seq <= $2 AND state IN ('current', 'retired')`,
+    `SELECT COALESCE(
+       (SELECT max(v.sv) FROM schema_versions v JOIN events e ON e.seq = v.switched_seq
+        WHERE v.slot_id = $1 AND e.op <= $2 AND v.state IN ('current', 'retired')),
+       (SELECT min(v.sv) FROM schema_versions v
+        WHERE v.slot_id = $1 AND v.switched_seq IS NOT NULL AND v.state IN ('current', 'retired'))
+     ) AS sv`,
     [slot, s],
   );
   const sv = r.rows[0]?.sv;
   return sv === null || sv === undefined ? current : Number(sv);
 }
 
-const byName = (t: CompiledBaseTable, values: Readonly<Record<string, FieldValue>>): Values => {
+/**
+ * The slot's name and the table as a version defines them, for naming what was read (08 «退役表»:
+ * by that version's compiled definition): `then`, that version's definition; `now`, the slot's name
+ * and the table as the current version has them. Where that version answers from the same physical
+ * table as the current one (a rename, a description). A table rebuilt since is `not_in_this_version`
+ * (reading retired physical tables comes with the migrations that make them); a table not in that
+ * version had no row then and is named as now; a definition missing is `internal`.
+ */
+export function namedAsOf(
+  then: CompiledSchema | undefined,
+  now: { readonly slot: string; readonly table: CompiledBaseTable },
+): { slot: string; table: CompiledBaseTable } {
+  // A version switched to is in the log with its definition: none read is the log at odds with
+  // itself, not a reason to name it as now.
+  if (then === undefined)
+    throw new ReadError("internal", "a version switched to without its compiled definition", {
+      reason: "inconsistent",
+    });
+  const was = then.tables.find((x) => x.id === now.table.id);
+  // A table that version has not: no row of it then, nothing to name otherwise.
+  if (was === undefined || was.kind !== "base") return { slot: now.slot, table: now.table };
+  // Another physical table answers for that version: reading it comes with the migrations that
+  // build it; naming the current one's rows by it would be wrong.
+  if (was.physical.table !== now.table.physical.table)
+    throw new ReadError(
+      "not_in_this_version",
+      "as_of on a version answered by another physical table",
+      {
+        reason: "not_implemented",
+        param: "as_of",
+      },
+    );
+  return { slot: then.name, table: was };
+}
+
+/** `namedAsOf` with version `sv`'s definition read from the log's content. */
+async function shownAs(
+  tx: ReadTx,
+  slot: { slot: string; name: string; sv: number },
+  t: CompiledBaseTable,
+  sv: number,
+): Promise<{ slot: string; table: CompiledBaseTable }> {
+  const now = { slot: slot.name, table: t };
+  if (sv === slot.sv) return now;
+  const r = await tx.query<{ body: string | null }>(
+    `SELECT c.body FROM schema_versions v JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
+     WHERE v.slot_id = $1 AND v.sv = $2`,
+    [slot.slot, sv],
+  );
+  const body = r.rows[0]?.body;
+  return namedAsOf(body == null ? undefined : (JSON.parse(body) as CompiledSchema), now);
+}
+
+/** A row's values by the names of `t`'s fields: only the fields `t` has. */
+export const byName = (
+  t: CompiledBaseTable,
+  values: Readonly<Record<string, FieldValue>>,
+): Values => {
   const out: Record<string, Values[string]> = Object.create(null);
   for (const f of t.fields) out[f.name] = valueOut(values[f.id] ?? null);
   return out;
@@ -631,7 +698,11 @@ export async function asOfInTx(
   }
 
   const version = await versionAsOf(tx, t, target.id, point.seq);
-  const qualified = `${target.named.slot.name}.${t.name}`;
+  // Named as the version in effect then defines them: the answer's `sv`, its names and its fields
+  // are of one version.
+  const sv = await svAsOf(tx, target.named.slot.slot, point.seq, target.named.slot.sv);
+  const shown = await shownAs(tx, target.named.slot, t, sv);
+  const qualified = `${shown.slot}.${shown.table.name}`;
   const rows: Row[] = [];
   if (version !== undefined) {
     const cells = await cellsAsOf(tx, t, target.id, point.seq);
@@ -652,7 +723,7 @@ export async function asOfInTx(
           entity: target.id as never,
           ver,
           historical: true,
-          values: byName(t, s.values),
+          values: byName(shown.table, s.values),
           valid_from: s.from as BizPoint,
           valid_to: s.to as BizPoint | null,
           ...(date && s.to !== null ? { valid_to_inclusive: dayBefore(s.to) as never } : {}),
@@ -679,7 +750,7 @@ export async function asOfInTx(
         row: target.id as never,
         ver,
         historical: true,
-        values: byName(t, values),
+        values: byName(shown.table, values),
         ...(Object.keys(marks).length > 0 ? { marks } : {}),
       });
     }
@@ -713,7 +784,7 @@ export async function asOfInTx(
       seq: point.seq as never,
       ...(point.at !== undefined && point.seq > 0 ? { recorded_at: point.at } : {}),
     },
-    sv: await svAsOf(tx, target.named.slot.slot, point.seq, target.named.slot.sv),
+    sv,
     timezone: target.named.slot.timezone,
     total: rows.length,
     ...(page.next !== undefined ? { next_position: page.next } : {}),

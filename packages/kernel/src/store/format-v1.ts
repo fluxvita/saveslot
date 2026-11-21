@@ -23,9 +23,10 @@
  * The storage format. 2: the version table's `no_value` column (a state entity without a value on a
  * stretch, told apart from an empty field). 3: `base_sources` holds every kind of source an item has,
  * for a deletion's replay: an interval's sources (`interval`) and the operation's sources beside
- * value sources. An older store is refused, not migrated.
+ * value sources. 4: `schema_versions.switched_seq` (where a version took effect, for reading as of a
+ * moment) and its state `failed` (a migration that failed). An older store is refused, not migrated.
  */
-export const STORAGE_FORMAT_VERSION = 3;
+export const STORAGE_FORMAT_VERSION = 4;
 
 /** Where a table's state comes from (§3 "日志是唯一事实来源"). */
 export type StateClass = "fact" | "materialized" | "local";
@@ -137,9 +138,12 @@ CREATE INDEX events_target_event ON events (target_event);`,
   sv INTEGER NOT NULL,
   compiled_seq BIGINT NOT NULL,     -- seq of the schema.compiled event holding the definition
   draft_id ${T} NOT NULL,           -- the draft compiled into it
+  switched_seq BIGINT,              -- seq of the schema.switched that made it current; NULL: never
   -- A number is the draft's from its schema.compiled on and is never used again: pending until
-  -- switched to or given up, rejected and superseded rows stay (09 §5.5 target_version).
-  state ${T} NOT NULL CHECK (state IN ('pending', 'current', 'retired', 'rejected', 'superseded')),
+  -- switched to or given up, rejected and superseded rows stay (09 §5.5 target_version). failed:
+  -- its migration failed (schema.migration_failed), not a decision, so not rejected.
+  state ${T} NOT NULL
+    CHECK (state IN ('pending', 'current', 'retired', 'rejected', 'superseded', 'failed')),
   PRIMARY KEY (slot_id, sv)
 );`,
   },

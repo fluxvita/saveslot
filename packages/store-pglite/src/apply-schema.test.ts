@@ -224,6 +224,8 @@ describe("creating a slot: its tables from its compiled definition", () => {
           compiled_seq: op + 1,
           draft_id: expect.any(String),
           state: "current",
+          // The slot's first version is switched to in its own creation.
+          switched_seq: op + 4,
         },
       ]);
       expect(
@@ -338,6 +340,34 @@ describe("creating a slot: its tables from its compiled definition", () => {
       const [draft, , , , switched] = createSlotEvents();
       expect(await stopped(run(store, [draft as NewEvent, switched as NewEvent]))).toBe(
         `inconsistent: slot ${SLOT} already has version 1`,
+      );
+    },
+    T,
+  );
+});
+
+describe("schema_versions' states (storage format 4)", () => {
+  it(
+    "takes failed, a migration that failed (not rejected: nobody decided it); refuses a state not listed",
+    async () => {
+      const put = (state: string) =>
+        store.write((tx) =>
+          tx.query(
+            `INSERT INTO schema_versions (slot_id, sv, compiled_seq, draft_id, state)
+             VALUES ('sl_${"9".repeat(16)}', 1, 1, $1, $2)`,
+            [`d_${"9".repeat(16)}`, state],
+          ),
+        );
+      await expect(put("migrating")).rejects.toThrow();
+      await put("failed");
+      expect(
+        await rows(
+          store,
+          `SELECT state FROM schema_versions WHERE slot_id = 'sl_${"9".repeat(16)}'`,
+        ),
+      ).toEqual([{ state: "failed" }]);
+      await store.write((tx) =>
+        tx.query(`DELETE FROM schema_versions WHERE slot_id = 'sl_${"9".repeat(16)}'`),
       );
     },
     T,
