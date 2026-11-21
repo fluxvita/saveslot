@@ -10,7 +10,14 @@
 // `unsupported` (not `ok`): the caller must stop, as for an invalid event.
 
 import { check, type Issues, isObject, type Json, keys, type ShapeChecker, str } from "./check.ts";
-import { EVENT_TYPES, type EventType, PRINCIPAL_VIAS, SCOPES, TRIGGERS } from "./enums.ts";
+import {
+  EVENT_TYPES,
+  type EventType,
+  PENDING_DELETIONS_MODES,
+  PRINCIPAL_VIAS,
+  SCOPES,
+  TRIGGERS,
+} from "./enums.ts";
 import { HEADER_FIELDS, HEADER_RULES, type HeaderField } from "./header.ts";
 import { SCHEMA_EVENT_RULES, SCHEMA_SHAPES } from "./shapes-schema.ts";
 import { WRITE_EVENT_RULES, WRITE_SHAPES } from "./shapes-write.ts";
@@ -33,6 +40,40 @@ const SHAPES: Partial<Record<string, ShapeChecker>> = {
     check(str(v["tenant_id"]) && isId("tenant", v["tenant_id"]), at, "tenant_id", issues);
     check(isEventInteger(v["storage_format"]), at, "storage_format", issues);
     check(v["event_format"] === 1, at, "event_format", issues);
+  },
+  // §5.2 tenant.imported: the target tenant and the one the export came from, and the manifest's
+  // export time and mode (the first segment's).
+  ImportedTenant(v, at, issues) {
+    if (
+      !keys(
+        v,
+        at,
+        ["tenant_id", "previous_tenant_id", "storage_format", "event_format"],
+        [],
+        issues,
+      )
+    ) {
+      return;
+    }
+    check(str(v["tenant_id"]) && isId("tenant", v["tenant_id"]), at, "tenant_id", issues);
+    check(
+      str(v["previous_tenant_id"]) && isId("tenant", v["previous_tenant_id"]),
+      at,
+      "previous_tenant_id",
+      issues,
+    );
+    check(isEventInteger(v["storage_format"]), at, "storage_format", issues);
+    check(v["event_format"] === 1, at, "event_format", issues);
+  },
+  ImportedExport(v, at, issues) {
+    if (!keys(v, at, ["exported_at", "pending_deletions"], [], issues)) return;
+    check(str(v["exported_at"]) && isInstant(v["exported_at"]), at, "exported_at", issues);
+    check(
+      (PENDING_DELETIONS_MODES as readonly Json[]).includes(v["pending_deletions"]),
+      at,
+      "pending_deletions",
+      issues,
+    );
   },
   UserPrincipal(v, at, issues) {
     if (!keys(v, at, ["principal", "kind"], [], issues)) return;
@@ -245,6 +286,17 @@ export function parseEvent(
       seq: h["seq"] as number,
       op: (h["op"] as number | undefined) ?? (h["seq"] as number),
     });
+  }
+  // §5.2: an import raises the restore count, so it is at least 1; the user it registers is its
+  // actor.
+  if (type === "tenant.imported") {
+    const h = header as Readonly<Record<string, Json>>;
+    const count = h["restore_count"];
+    check(typeof count === "number" && count >= 1, "header", "restore_count at least 1", issues);
+    const user = blocks["user"];
+    if (isObject(user) && "principal" in user) {
+      check(user["principal"] === h["actor"], "user", "principal is the actor", issues);
+    }
   }
   for (const entry of VOCABULARY[type] as readonly VocabularyEntry[]) {
     if (entry.always && !(entry.path in blocks) && !removedSet.has(entry.path)) {

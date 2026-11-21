@@ -142,6 +142,10 @@ export type Change =
   | { readonly kind: "principal_insert"; readonly row: PrincipalRow }
   | { readonly kind: "principal_rename"; readonly id: string; readonly name: string | null }
   | { readonly kind: "principal_revoke"; readonly id: string }
+  /** `tenant.imported`: every active principal registered before it is disabled, `system` aside. */
+  | { readonly kind: "principals_disable" }
+  /** `tenant.imported`: its user, registered by it or already by the imported log, is active. */
+  | { readonly kind: "principal_import_user"; readonly row: PrincipalRow }
   | { readonly kind: "tenant_id"; readonly tenant_id: string }
   /** The request key index (§5.1 `request_key`, `idempotency`): the key now names this operation. */
   | {

@@ -81,9 +81,12 @@ export async function actorsAsOf(
         known.set("system", { kind: "system", name: null, state: "active" });
         break;
       }
-      // §5.2: every principal registered before it is disabled, `system` and its own user aside.
+      // §5.2: every principal registered before it and still active is disabled, `system` and its
+      // own user aside; a revoked one stays revoked (as apply leaves `principals`).
       case "tenant.imported": {
-        for (const p of known.values()) if (p.kind !== "system") p.state = "disabled";
+        for (const p of known.values()) {
+          if (p.kind !== "system" && p.state === "active") p.state = "disabled";
+        }
         const user = of(e.blocks, "user");
         if (user !== undefined) known.set(user, { kind: "user", name: null, state: "active" });
         break;

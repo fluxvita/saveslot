@@ -28,6 +28,31 @@ const genesis = {
   },
 };
 
+const OTHER_TENANT = `tn_${"9".repeat(26)}`;
+const imported = {
+  header: {
+    type: "tenant.imported",
+    v: 1,
+    seq: 43,
+    at: AT,
+    prev_hash: HASH,
+    actor: USER,
+    node_id: NODE,
+    restore_count: 1,
+    imported_upto: 42,
+  },
+  blocks: {
+    tenant: {
+      tenant_id: TENANT,
+      previous_tenant_id: OTHER_TENANT,
+      storage_format: 1,
+      event_format: 1,
+    },
+    user: { principal: USER, kind: "user" },
+    export: { exported_at: AT, pending_deletions: "placeholder" },
+  },
+};
+
 const head = (type: string, seq = 2) => ({
   type,
   v: 1,
@@ -81,6 +106,7 @@ const issues = (r: ParseResult): readonly string[] =>
 describe("parseEvent: valid events", () => {
   it.each([
     ["tenant.genesis", genesis],
+    ["tenant.imported", imported],
     ["principal.registered", registered],
     ["principal.renamed", renamed],
     ["principal.revoked", revoked],
@@ -113,6 +139,8 @@ describe("parseEvent: valid events", () => {
     expect([...CHECKED_SHAPES].sort()).toEqual(
       [
         "GenesisTenant",
+        "ImportedExport",
+        "ImportedTenant",
         "PrincipalCtx",
         "PrincipalName",
         "PrincipalRef",
@@ -189,6 +217,64 @@ describe("parseEvent: valid events", () => {
         "WriteRequest",
       ].sort(),
     );
+  });
+});
+
+describe("parseEvent: tenant.imported (§5.2)", () => {
+  it.each([
+    [
+      "a tenant ID not of a tenant",
+      "tenant",
+      { ...imported.blocks.tenant, tenant_id: USER },
+      "tenant: tenant_id",
+    ],
+    [
+      "a previous tenant ID not of a tenant",
+      "tenant",
+      { ...imported.blocks.tenant, previous_tenant_id: "x" },
+      "tenant: previous_tenant_id",
+    ],
+    [
+      "another event format",
+      "tenant",
+      { ...imported.blocks.tenant, event_format: 2 },
+      "tenant: event_format",
+    ],
+    [
+      "an export time not an instant",
+      "export",
+      { ...imported.blocks.export, exported_at: "today" },
+      "export: exported_at",
+    ],
+    [
+      "another pending deletions mode",
+      "export",
+      { ...imported.blocks.export, pending_deletions: "some" },
+      "export: pending_deletions",
+    ],
+  ] as const)("rejects %s", (_, path, value, issue) => {
+    expect(issues(parse(withBlock(imported, path, value)))).toContain(issue);
+  });
+
+  it("rejects a restore count below 1, and a user other than the actor", () => {
+    expect(issues(parse(withHeader(imported, { restore_count: 0 })))).toContain(
+      "header: restore_count at least 1",
+    );
+    expect(
+      issues(
+        parse(withBlock(imported, "user", { principal: `u_${"2".repeat(26)}`, kind: "user" })),
+      ),
+    ).toContain("user: principal is the actor");
+  });
+
+  it("rejects a block with a key of its own, or without one it needs", () => {
+    expect(parse(withBlock(imported, "export", { ...imported.blocks.export, x: 1 })).ok).toBe(
+      false,
+    );
+    expect(
+      parse(withBlock(imported, "tenant", without(imported.blocks.tenant, "previous_tenant_id")))
+        .ok,
+    ).toBe(false);
   });
 });
 

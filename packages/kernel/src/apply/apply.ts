@@ -233,8 +233,23 @@ function planPrincipals(
         },
       ];
     }
+    // §5.2: every user and connection registered before the import and still active is disabled
+    // (`system` aside; a revoked one stays revoked); the importing user is registered and active, also when the imported log registered
+    // them (a user importing their own export); the current tenant ID is the target's. The current
+    // restore count is the header's (`restoreCount` in write/reads.ts reads it from there).
+    case "tenant.imported": {
+      const user = block("user")["principal"] as string;
+      return [
+        { kind: "tenant_id", tenant_id: block("tenant")["tenant_id"] as string },
+        { kind: "principals_disable" },
+        {
+          kind: "principal_import_user",
+          row: { ...base, id: user, kind: "user", state: "active", registered_seq: seq },
+        },
+      ];
+    }
     // §5.2: a restore changes nothing in the materialized state; the current restore count is the
-    // latest `tenant.restored` header's (`restoreCount` in write/reads.ts reads it from there).
+    // latest restore or import event's header's (store/restore-point.ts reads it from there).
     case "tenant.restored":
       return [];
     // §5.3
@@ -834,6 +849,25 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
         `no connection ${c.id} to update`,
       );
       return;
+    case "principals_disable":
+      await tx.query(
+        "UPDATE principals SET state = 'disabled' WHERE kind <> 'system' AND state = 'active'",
+      );
+      return;
+    case "principal_import_user": {
+      const r = c.row;
+      // Registered by the imported log: the same user, kept with its registration, active again.
+      await one(
+        tx,
+        seq,
+        `INSERT INTO principals (id, kind, name, scopes, slots, via, client, state, registered_seq)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (id) DO UPDATE SET state = 'active' WHERE principals.kind = 'user'`,
+        [r.id, r.kind, r.name, r.scopes, r.slots, r.via, r.client, r.state, r.registered_seq],
+        `principal ${r.id} is registered, and not as a user`,
+      );
+      return;
+    }
     case "request_key":
       // A key may be used again once its window has passed: the latest operation holds it.
       await tx.query(

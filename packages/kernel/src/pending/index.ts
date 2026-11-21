@@ -4,6 +4,7 @@
 // computed from the row's state elsewhere (judge); the shapes here are the blocks'.
 
 import type { ReadTx } from "../store/ports.ts";
+import { restorePoint } from "../store/restore-point.ts";
 
 /** A contribution reference (§3.5). */
 export interface EntryRef {
@@ -162,8 +163,9 @@ export async function openItemsOn(tx: ReadTx, table: string, row: string): Promi
 /**
  * Whether the writer's own receipt gave it the item's current version (01-objects «不过期»): the
  * current version is the one a write of this connection, under the same task, opened, whose
- * receipt gave it whole with its item version, and no restore came since (the version names the
- * restore count). Reading the item is the other way (the caller checks the reads kept).
+ * receipt gave it whole with its item version, and no restore or import came since (the version
+ * names the restore count: store/restore-point.ts). Reading the item is the other way (the caller
+ * checks the reads kept).
  */
 export async function writerHadRead(
   tx: ReadTx,
@@ -171,6 +173,8 @@ export async function writerHadRead(
   actor: string,
   task: string | null,
 ): Promise<boolean> {
+  const latest = await restorePoint(tx);
+  if (latest.seq !== null && latest.seq > item.versionOp) return false;
   const r = await tx.query<{ n: unknown }>(
     `SELECT count(*) AS n FROM events h
      JOIN events c ON c.op = h.seq AND c.type = 'item.created'
@@ -178,8 +182,7 @@ export async function writerHadRead(
      WHERE h.seq = $1 AND h.type = 'write.head' AND h.actor = $2
        AND (t.body::jsonb ->> 'item') = $3
        AND (SELECT k.body::jsonb #>> '{}' FROM content k WHERE k.seq = h.seq AND k.path = 'task' AND k.body IS NOT NULL)
-         IS NOT DISTINCT FROM $4::text
-       AND NOT EXISTS (SELECT 1 FROM events r WHERE r.type = 'tenant.restored' AND r.seq > h.seq)`,
+         IS NOT DISTINCT FROM $4::text`,
     [item.versionOp, actor, item.id, task],
   );
   return Number(r.rows[0]?.n ?? 0) > 0;

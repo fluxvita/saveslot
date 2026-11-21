@@ -266,14 +266,8 @@ export async function rowVersions(tx: ReadTx, verTable: string, row: string): Pr
   return new Set(r.rows.map((x) => Number(x.v)));
 }
 
-/** The current restore count (01-objects «版本标记»): 0 until a backup is restored. */
-export async function restoreCount(tx: ReadTx): Promise<number> {
-  const r = await tx.query<{ header: string }>(
-    "SELECT header FROM events WHERE type = 'tenant.restored' ORDER BY seq DESC LIMIT 1",
-  );
-  const h = r.rows[0]?.header;
-  return h === undefined ? 0 : ((JSON.parse(h) as { restore_count?: number }).restore_count ?? 0);
-}
+/** The current restore count: taken where every path takes it (store/restore-point.ts). */
+export { restoreCount } from "../store/restore-point.ts";
 
 /** A request key recorded at or after `since`. */
 export async function requestKeyHit(

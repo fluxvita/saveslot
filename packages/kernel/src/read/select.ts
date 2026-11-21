@@ -395,14 +395,8 @@ export async function readFlagsOf(
   return out;
 }
 
-/** The current restore count (01-objects «版本标记»): 0 until a backup is restored. */
-export async function restoreCount(tx: ReadTx): Promise<number> {
-  const r = await tx.query<{ header: string }>(
-    "SELECT header FROM events WHERE type = 'tenant.restored' ORDER BY seq DESC LIMIT 1",
-  );
-  const h = r.rows[0]?.header;
-  return h === undefined ? 0 : ((JSON.parse(h) as { restore_count?: number }).restore_count ?? 0);
-}
+/** The current restore count: taken where every path takes it (store/restore-point.ts). */
+export { restoreCount } from "../store/restore-point.ts";
 
 /** The log position: the latest operation number (0 for an empty log). */
 export async function logPosition(tx: ReadTx): Promise<number> {

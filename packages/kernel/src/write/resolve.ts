@@ -35,6 +35,7 @@ import { type ActorAsOf as Actor, actorsAsOf, type NewEvent, readTail } from "..
 import { actorsNow, closingOf, itemEntries, revertedOut } from "../pending/index.ts";
 import { normalizeResolve, type ResolveDecision, type Visibility } from "../request/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
+import { restorePoint } from "../store/restore-point.ts";
 import { appendWithDerived } from "./derive-step.ts";
 import { WriteError } from "./errors.ts";
 import {
@@ -234,15 +235,10 @@ async function itemVerFromOwn(
   );
   const same = r.rows.find((x) => (x.task ?? null) === task);
   if (same !== undefined) {
-    // The version as that receipt gave it: with the restore count of its time, so a receipt from
-    // before a restore does not bind the item now (04-contract §15: `restored`).
-    const restored = await tx.query<{ header: string }>(
-      "SELECT header FROM events WHERE type = 'tenant.restored' AND seq < $1 ORDER BY seq DESC LIMIT 1",
-      [Number(same.op)],
-    );
-    const h = restored.rows[0]?.header;
-    const restoreCount =
-      h === undefined ? 0 : ((JSON.parse(h) as { restore_count?: number }).restore_count ?? 0);
+    // The version as that receipt gave it: with the restore count of its time (the latest restore
+    // or import event before it), so a receipt from before a restore or an import does not bind
+    // the item now (04-contract §15: `restored`).
+    const { restoreCount } = await restorePoint(tx, { before: Number(same.op) });
     return { op: Number(same.op) as OpNumber, restoreCount };
   }
   const other = r.rows[0];
