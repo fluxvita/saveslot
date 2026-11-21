@@ -1,0 +1,9 @@
+# The build context is the repository root; the build needs the workspace's packages and lockfile.
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+.git
+.worktrees
+docs
+evals
+experiments

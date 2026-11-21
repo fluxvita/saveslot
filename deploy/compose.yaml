@@ -1,0 +1,33 @@
+# An example of a self-hosted server on one host: saveslot and PostgreSQL 18. TLS ends at a reverse
+# proxy in front of port 8080 (not shown). Before `docker compose up`, put in this directory:
+#   postgres-password   the superuser's password, for the database container alone
+#   saveslot-db-password  the password of the role saveslot runs as
+#   pgpass              db:5432:*:saveslot:<that password>, mode 0600, owned by uid 10001
+# Then, once: docker compose run --rm saveslot init --user <name>
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    secrets: [postgres-password, saveslot-db-password]
+    volumes:
+      - db:/var/lib/postgresql
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+  saveslot:
+    image: saveslot:0.0.0
+    depends_on: [db]
+    environment:
+      SAVESLOT_CONTROL_DATABASE_URL: postgres://saveslot@db:5432/saveslot_control
+      SAVESLOT_CELL_DATABASE_URL: postgres://saveslot@db:5432/postgres
+      SAVESLOT_PUBLIC_URL: https://saveslot.example.com
+      PGPASSFILE: /run/secrets/pgpass
+    secrets: [pgpass]
+    volumes: [keys:/var/lib/saveslot]
+    ports: ["127.0.0.1:8080:8080"]
+secrets:
+  postgres-password: { file: ./postgres-password }
+  saveslot-db-password: { file: ./saveslot-db-password }
+  pgpass: { file: ./pgpass }
+volumes:
+  db: {}
+  keys: {}
