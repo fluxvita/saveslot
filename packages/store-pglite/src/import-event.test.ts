@@ -5,10 +5,10 @@
 // active, also one the imported log registered, and makes the target's ID the current tenant ID
 // and the export's restore count plus one the current restore count. Runs on each backend.
 // Fictional IDs.
+//
+// One store for the whole file, emptied before each case (`reusable`): a store per case kept a
+// dozen PGlite instances open until the end, near 3 GB in one worker.
 
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   actorsAsOf,
   appendImportEvent,
@@ -29,8 +29,8 @@ import {
   type TenantStore,
   verifyLog,
 } from "@fluxvita/saveslot-kernel";
-import { afterAll, describe, expect, it } from "vitest";
-import { testBackend } from "./testing/test-backend.fixture.ts";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
 const SOURCE = `tn_${"8".repeat(26)}`;
 const TARGET = `tn_${"9".repeat(26)}`;
@@ -63,23 +63,24 @@ const manifest = (upto: number) => ({
   pending_deletions: "placeholder" as const,
 });
 
-const roots: string[] = [];
-const stores: TenantStore[] = [];
-async function open(): Promise<TenantStore> {
-  const root = mkdtempSync(join(tmpdir(), "saveslot-import-event-"));
-  roots.push(root);
-  const s = await testBackend().open(
-    { kind: "pglite", dir: join(root, "tenant") },
-    { create: true },
-  );
-  stores.push(s);
-  return s;
-}
+// The one store of the file.
+let reusableStore: ReusableStore | undefined;
+
+beforeAll(async () => {
+  reusableStore = await openReusable("saveslot-import-event-");
+}, 120_000);
 
 afterAll(async () => {
-  for (const s of stores) await s.close().catch(() => {});
-  for (const r of roots) rmSync(r, { recursive: true, force: true });
+  // Closes the store and removes its directory.
+  await reusableStore?.close();
 }, 120_000);
+
+/** The store as it was opened, emptied of whatever the case before left. */
+async function open(): Promise<TenantStore> {
+  if (reusableStore === undefined) throw new Error("the store is not open");
+  await reusableStore.reset();
+  return reusableStore.store;
+}
 
 /** An imported log: genesis, a connection, another connection revoked. */
 async function importedLog(): Promise<{ store: TenantStore; desk: string; phone: string }> {
@@ -185,12 +186,14 @@ describe("tenant.imported", () => {
         "disabled",
         "revoked",
       ]);
-      // The whole log replayed into an empty storage gives the same principals (K12).
-      const replica = await open();
+      // The whole log replayed into an empty storage gives the same principals (K12): the same
+      // store, emptied, takes the log back.
       const rows = await store.read(async (tx) => ({
         events: (await tx.query("SELECT * FROM events ORDER BY seq")).rows,
         content: (await tx.query("SELECT * FROM content ORDER BY seq, path")).rows,
       }));
+      const replica = await open();
+      expect(await replica.read(readTail)).toBeUndefined();
       await replica.write(async (tx) => {
         for (const [table, rs] of Object.entries(rows)) {
           for (const r of rs) {
