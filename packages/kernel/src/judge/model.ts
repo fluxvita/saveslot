@@ -270,6 +270,12 @@ interface RecordBase {
 export interface WriteRecord extends RecordBase, SeenVersion {
   readonly kind: "write" | "revoke";
   readonly valid?: ValidParam;
+  /**
+   * A write on a state table whose `ops/<i>/valid` is not there to read: removed by a deletion, or
+   * a pending deletion's placeholder on import. Its corroborations then have no explicit ends
+   * (09 §5.7 «块被移除时没有端点»), never "now" in their place. Only from decoding the log.
+   */
+  readonly validGone?: true;
   readonly now: BizPoint;
   /** `acknowledge: ["overwrite"]` as the caller gave it. */
   readonly acknowledge?: true;

@@ -109,7 +109,10 @@ function itemsOf(records: readonly OpRecord[]): Item[] {
           : undefined;
     const raw =
       proposal?.kind === "write" || proposal?.kind === "revoke" ? proposal.valid : undefined;
-    const ends = r.kind === "write" || r.kind === "revoke" ? givenEnds(raw, r.now) : [];
+    const ends =
+      (r.kind === "write" || r.kind === "revoke") && r.validGone !== true
+        ? givenEnds(raw, r.now)
+        : [];
     const nextChange =
       proposal !== undefined &&
       (raw === undefined || (raw !== "corrected_span" && raw.to.mode === "next_change"));

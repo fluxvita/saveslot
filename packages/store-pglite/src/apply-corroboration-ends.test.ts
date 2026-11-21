@@ -24,6 +24,7 @@ import {
   COMPILED_V1,
   createSlotEvents,
   eventsOfRequest,
+  judgeStateFromLog,
   SLOT,
 } from "@fluxvita/saveslot-kernel/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -164,7 +165,12 @@ const write = (
  */
 async function requests(
   t: Table,
-  reqs: readonly { readonly ops: readonly JudgeInput[]; readonly sources?: readonly number[] }[],
+  reqs: readonly {
+    readonly ops: readonly JudgeInput[];
+    readonly sources?: readonly number[];
+    /** Blocks of the request's head not there to read (a pending deletion's placeholder). */
+    readonly without?: readonly string[];
+  }[],
 ) {
   const root = mkdtempSync(join(tmpdir(), "saveslot-corroboration-ends-"));
   const at = { root } as (typeof opened)[number];
@@ -210,7 +216,13 @@ async function requests(
       await run([filler]);
     }
     const op = await run(
-      evs.map((e) => ({ type: e.type as never, slot: SLOT, blocks: e.blocks as never })),
+      evs.map((e, i) => ({
+        type: e.type as never,
+        slot: SLOT,
+        blocks: (i === 0 && r.without !== undefined
+          ? Object.fromEntries(Object.entries(e.blocks).filter(([p]) => !r.without?.includes(p)))
+          : e.blocks) as never,
+      })),
     );
     expect(op.events.map((e) => e.seq)).toEqual(evs.map((e) => e.seq));
   }
@@ -400,6 +412,42 @@ describe("the interval as written", () => {
         { status: "corroborated", valid: [{ from: d("11-10"), to: null }] },
       ]);
       expect((await rowsOf(store, 31))[0]?.corroboration_ends).toBe("[]");
+    },
+    T,
+  );
+
+  it(
+    "the head's ops/<i>/valid not there to read: no ends, on apply's side and on judge's",
+    async () => {
+      // The same corroboration as with an end given without a start, its interval block left out
+      // of the head as an import leaves a pending deletion's placeholder (09 §5.7 «块被移除时没有
+      // 端点»). Judge reads the row back from the log as the write pipeline does.
+      const { store } = await requests("t2", [
+        base,
+        {
+          ops: [
+            write(
+              20,
+              { f2: "5000" },
+              {
+                seen: 10,
+                valid: { from: { mode: "now" }, to: given(d("11-20")) },
+                explicit: ["f2"],
+              },
+            ),
+          ],
+          without: ["ops/0/valid"],
+        },
+      ]);
+      expect(await rowsOf(store, 21)).toMatchObject([
+        { field_id: "f2", corroborated: true, corroboration_ends: "[]" },
+      ]);
+      const state = await store.read((tx) => judgeStateFromLog(tx, ctxOf("t2")));
+      expect(state.items.find((x) => x.event === 21)).toMatchObject({
+        status: "corroborated",
+        explicitEnds: [],
+      });
+      expect(state.corroborationEnds("f2" as never, { upTo: 1_000 })).toEqual([]);
     },
     T,
   );

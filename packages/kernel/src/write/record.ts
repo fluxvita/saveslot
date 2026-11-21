@@ -1262,6 +1262,11 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
       seenExplicit,
       ...current,
       ...(valid !== undefined ? { valid: validIn(valid) } : {}),
+      // A caller's write on a state table always has the block (09 §5.7): not there, it was
+      // removed by a deletion or is an import's placeholder, and gives no corroboration ends.
+      ...(valid === undefined && isState && target.intent !== "revoke"
+        ? { validGone: true as const }
+        : {}),
       now,
       ...(acknowledge && target.intent !== "revoke" ? { acknowledge: true as const } : {}),
       // The fields whose evidence the caller pointed at (`ops/<i>/explicit`), in judge's order

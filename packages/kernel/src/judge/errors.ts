@@ -10,7 +10,12 @@ export type JudgeErrorReason =
   /** A ruleset version `judge` does not know. */
   | "unknown_version"
   /** Input that cannot come from a valid request (e.g. confirming a write that is not awaiting). */
-  | "invalid";
+  | "invalid"
+  /**
+   * A construct a deletion's replay does not handle in this version (D1-b, by kind): refused,
+   * never judged as something else.
+   */
+  | "not_implemented";
 
 export class JudgeError extends Error {
   readonly reason: JudgeErrorReason;

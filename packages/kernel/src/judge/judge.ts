@@ -214,14 +214,14 @@ export function judgeOp(
 }
 
 /** An overwritten stretch as the log keeps it (09 §5.7 `ack/<j>`). */
-function ackOf(o: Overwritten): AckStretch {
+export function ackOf(o: Overwritten): AckStretch {
   const base = { field: o.field, valid: o.valid, deps: o.deps };
   return o.was.kind === "value"
     ? { ...base, value: o.was.value, op: o.was.op }
     : { ...base, noValue: true };
 }
 
-function withoutDeps(r: OpRecord): OpRecord {
+export function withoutDeps(r: OpRecord): OpRecord {
   if (r.kind === "reject" || r.kind === "keep_effective") return r;
   return { ...r, items: r.items.map((x) => ({ ...x, deps: [] })) } as OpRecord;
 }

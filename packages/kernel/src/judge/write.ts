@@ -28,6 +28,7 @@ import type {
   RecordedItem,
   RevokeInput,
   Shown,
+  Target,
   WriteInput,
 } from "./model.ts";
 import { seenOf } from "./model.ts";
@@ -142,7 +143,22 @@ export function asItems(
   }));
 }
 
-export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
+/**
+ * Only when a deletion's replay judges a write again (`replayDeletion`, 03-deletion «删除结果的
+ * 定义»): what the record keeps from the write as judged when written.
+ */
+export interface ReplayOptions {
+  /** Fields judged a no-op when written: a no-op in every replay (09 §5.7 `ops/<i>/noop`). */
+  readonly noop: ReadonlySet<FieldId>;
+  /**
+   * Targets on which every item of the write was in effect when written (deviation two, by the
+   * write on a target): judged without the conflict step and never awaiting; their intervals and
+   * values are worked out again.
+   */
+  readonly protect: ReadonlySet<Target>;
+}
+
+export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOptions): WriteOutcome {
   const n = w.op;
   const { seenAt, curAt, afterAt } = positions(seenOf(w), n, w.index);
   const fields = (Object.keys(w.fields) as FieldId[]).sort();
@@ -154,7 +170,13 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
   // Same value (step 3): no-op, corroboration, or an ordinary write on the changed part.
   for (const f of fields) {
     const input = w.fields[f] as FieldInput;
+    if (replay?.noop.has(f)) {
+      noop.push(f);
+      continue;
+    }
     const res = resolve(state, w.valid, f, seenAt, w.now);
+    // Checked when written only: in a replay, a field resolving to nothing gives nothing.
+    if (res === null && replay !== undefined) continue;
     if (res === null) {
       throw new JudgeError("invalid_argument", "the field has no value at now; give an interval", {
         reason: "no_value_now",
@@ -235,8 +257,11 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
     units.set(key, [...(units.get(key) ?? []), p]);
   }
   const applied: Draft[] = [];
-  for (const ps of units.values()) {
-    const unit = state.unitOf.get((ps[0] as Part).f) ?? [];
+  for (const all of units.values()) {
+    const unit = state.unitOf.get((all[0] as Part).f) ?? [];
+    // In a replay, a target protected by deviation two is not judged for conflicts.
+    const protectedParts = all.filter((p) => replay?.protect.has(p.f) === true);
+    const ps = all.filter((p) => replay?.protect.has(p.f) !== true);
     const withOps = new Set<OpNumber>();
     let withRevoke = false;
     for (const p of ps) {
@@ -264,9 +289,8 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
         with: [...withOps].sort((x, y) => x - y),
         items: ps.map((p) => ({ event: w.event, target: p.f, k: -1 })),
       });
-      continue;
     }
-    for (const p of ps) {
+    for (const p of withOps.size > 0 ? protectedParts : all) {
       if (p.corroboration !== undefined) {
         // Merged: the write's interval resolved on the current state (conflict criterion ④),
         // cut there into what is still the same and what changed; the blocking points' givers
@@ -305,12 +329,13 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
 
   // Event and timeless tables: a revoked row cannot be written; checked on the part taking effect
   // only, after the conflict step, so a stale write meeting a revoke is a candidate (step 5).
-  if (!state.isState && applied.length > 0 && state.revoked(curAt)) {
+  // Checked when written only, not in a replay: the write is in the log.
+  if (!state.isState && applied.length > 0 && state.revoked(curAt) && replay === undefined) {
     throw new JudgeError("revoked", "the row is revoked", { ops: state.revokedBy(curAt) });
   }
 
   // Checks that depend on the current state, on the part taking effect only (step 5).
-  if (state.isState) checkGaps(state, w, applied, curAt);
+  if (state.isState && replay === undefined) checkGaps(state, w, applied, curAt);
 
   // High impact ① (step 6).
   let erased: { field: FieldId; at: BizPoint[] }[] = [];
@@ -334,7 +359,11 @@ export function judgeWrite(state: RowState, w: WriteInput): WriteOutcome {
     }
   }
   const awaiting = erased.length > 0 && !acknowledged;
-  for (const d of applied) drafts.push(awaiting ? { ...d, status: "awaiting" } : d);
+  // A target protected by deviation two never awaits (03-deletion «重放规则» 已生效的保持生效).
+  for (const d of applied) {
+    const protects = replay?.protect.has(d.target) === true;
+    drafts.push(awaiting && !protects ? { ...d, status: "awaiting" } : d);
+  }
 
   const warnings = awaiting || !state.isState ? [] : coveredCorroborations(state, applied, curAt);
   const items = numbered(drafts);
@@ -603,7 +632,7 @@ function coveredCorroborations(
   return out;
 }
 
-export function judgeRevoke(state: RowState, r: RevokeInput): WriteOutcome {
+export function judgeRevoke(state: RowState, r: RevokeInput, replay?: ReplayOptions): WriteOutcome {
   const n = r.op;
   const { seenAt, curAt } = positions(seenOf(r), n, r.index);
   const none: WriteOutcome = {
@@ -624,6 +653,7 @@ export function judgeRevoke(state: RowState, r: RevokeInput): WriteOutcome {
       throw new JudgeError("invalid", "a revoke with an interval needs a state table");
     const s = resolve(state, r.valid, "any", seenAt, r.now);
     const c = resolve(state, r.valid, "any", curAt, r.now);
+    if ((s === null || c === null) && replay !== undefined) return none;
     if (s === null || c === null) throw new JudgeError("invalid", "unresolvable revoke interval");
     seenValid = s.valid;
     valid = c.valid;
@@ -638,7 +668,8 @@ export function judgeRevoke(state: RowState, r: RevokeInput): WriteOutcome {
     .filter((m) =>
       state.table.fields.some((g) => !isNothing(meet(state.changedBy(m, g), seenValid))),
     );
-  const conflict = withOps.length > 0;
+  // In a replay, a revoke in effect when written stays in effect (deviation two).
+  const conflict = withOps.length > 0 && replay?.protect.has("existence") !== true;
   const items = numbered([
     conflict
       ? {
