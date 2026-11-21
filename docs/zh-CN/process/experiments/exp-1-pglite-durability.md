@@ -42,7 +42,7 @@
 
 **组 B 的配置**（`packages/store-pglite/src/durability.ts`，持久性模式 `"host-fsync"`，`store-pglite` 的默认值）：
 
-- 启动参数 = 默认参数去掉 `-F`，再加 `fsync=on`、`wal_sync_method=fsync`、`synchronous_commit=on`、`full_page_writes=on`、`data_sync_retry=off`；打开时读回这些设置，不符就拒绝打开。
+- 启动参数 = 默认参数去掉 `-F`，再加 `fsync=on`、`wal_sync_method=fsync`、`synchronous_commit=on`、`full_page_writes=on`、`data_sync_retry=off`；打开时读回这些设置，不符就拒绝打开。（之后为限定预写日志的大小又加了 `max_wal_size=64MB`、`min_wal_size=32MB`，并在写事务之后按需执行 `CHECKPOINT`，见 architecture §7「持久性」下的「预写日志的大小」；本地 home 写入 3.4 万行时 `pg_wal` 曾涨到 592 MB。这些不改变 fsync、整页写与同步提交，本实验的结论不变。）
 - 给 NODEFS 装上 `stream_ops.fsync`：对宿主描述符调 `fs.fsyncSync`；失败时返回 EIO，PostgreSQL 因 `data_sync_retry=off` 而 PANIC。这一处同时覆盖预写日志、检查点时的数据文件与目录。
 - 打开时的自检：打开存储时 epoch 加 1 的那次提交，若没有经钩子同步 `pg_wal/` 下的文件，就拒绝打开（`durability_not_applied`）。把钩子临时去掉后，打开确实被拒。
 - 新建存储时在临时目录里建好，对其中每个文件与目录做 `fsync`，再改名到位并同步父目录（补上第 8 条）。

@@ -26,6 +26,8 @@ export interface OpenParams {
   readonly metaKeys: { readonly storageFormat: string; readonly ownershipEpoch: string };
   /** PGlite contrib extensions to load, by module name (diagnostics and experiments only). */
   readonly contrib: readonly string[];
+  /** WAL since the last checkpoint, in bytes, past which a `checkpoint` request runs one. */
+  readonly checkpointAfterBytes: number;
 }
 
 export interface CreateParams {
@@ -45,6 +47,7 @@ export type Request =
   | { readonly kind: "exec"; readonly sql: string }
   | { readonly kind: "commit" }
   | { readonly kind: "rollback" }
+  | { readonly kind: "checkpoint" }
   | { readonly kind: "stats" }
   | { readonly kind: "close" };
 

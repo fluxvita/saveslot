@@ -518,7 +518,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     try {
       const r = await openLocalTenant({
         home: o.home,
-        backend: new PgliteBackend(),
+        backend: new PgliteBackend({ onEvent: (event, fields) => say(event, fields) }),
       });
       if (stopping !== undefined) {
         // Stopped while opening: close what was opened; stop() waits for this.

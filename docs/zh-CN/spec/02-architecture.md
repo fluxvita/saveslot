@@ -329,6 +329,7 @@ slot 策略的结构里为"某类操作只接受用户会话的确认"留了位�
 - **持久性**：已确认的写入在崩溃、断电后不能丢。
   - PGlite 在 Node 上自身不落盘：默认启动参数带 `-F`；去掉之后，它的文件系统层也不把同步调用交给宿主。saveslot 的做法：去掉 `-F`，`wal_sync_method = fsync`，给 NODEFS 装一个调用宿主 `fsync` 的钩子。
   - 打开时读回这些设置并自检：打开时那次提交必须经钩子同步 `pg_wal`，不符即拒绝打开（`durability_not_applied`）。
+  - **预写日志的大小**：PGlite 以单用户模式运行 PostgreSQL，没有检查点进程，预写日志写到 `max_wal_size` 也不会自己发起检查点（只有在 postmaster 之下才会），本机目录的 `pg_wal` 因此会随写入一直涨。saveslot 的做法：写事务的回复发出之后，主线程再核对一次所有者文件，然后请 DB Worker 检查：自上一个检查点以来的预写日志超过 64 MiB，就执行一次 `CHECKPOINT`；已失去所有权的实例不做检查点。`max_wal_size = 64MB`、`min_wal_size = 32MB` 限定检查点后保留复用的段，打开时一并读回核对。检查点失败时，实例可能已经坏了（检查点里的 fsync 失败会 PANIC），所以记一行日志（`checkpoint_failed`，只带错误码），结束 DB Worker，存储进入 `worker_failed`，此后与上面 DB Worker 意外退出相同：服务以非零码退出，由外部拉起；在此之前已确认的写入已经落盘，不受影响。
   - 钩子依赖 PGlite 的内部结构，所以 PGlite 版本钉死到补丁号；升级 PGlite 必须重跑持久性实验步骤一（两个平台）与钩子计数的单元测试。
   - 能否达标由持久性实验确认（[`07-scope-v1.md`](07-scope-v1.md) 实验 1；结果报告见 [`../process/experiments/exp-1-pglite-durability.md`](../process/experiments/exp-1-pglite-durability.md)）；不达标就换成随 saveslot 打包的原生 PostgreSQL。
 

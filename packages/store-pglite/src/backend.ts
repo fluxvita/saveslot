@@ -58,7 +58,20 @@ export interface PgliteBackendOptions {
   readonly lock?: DirLock;
   /** PGlite contrib extensions to load (e.g. "amcheck"); diagnostics and experiments only. */
   readonly contrib?: readonly string[];
+  /**
+   * WAL since the last checkpoint, in bytes, past which a write is followed by a checkpoint
+   * (db-worker.ts `checkpoint`). Default 64 MiB; lower in tests.
+   */
+  readonly checkpointAfterBytes?: number;
+  /**
+   * Where the store reports what it does on its own, outside any call: `checkpoint_failed` with
+   * the error's code (never a path). The service writes it to its log.
+   */
+  readonly onEvent?: (event: "checkpoint_failed", fields: { readonly code: string }) => void;
 }
+
+/** The default of `checkpointAfterBytes`: about what `max_wal_size` keeps (durability.ts). */
+export const CHECKPOINT_AFTER_BYTES = 64 * 1024 * 1024;
 
 const WORKER_URL = new URL(
   `./db-worker${import.meta.url.endsWith(".ts") ? ".ts" : ".js"}`,
@@ -129,11 +142,15 @@ export class PgliteBackend implements StorageBackend {
   readonly #durability: Durability;
   readonly #lock: DirLock;
   readonly #contrib: readonly string[];
+  readonly #checkpointAfterBytes: number;
+  readonly #onEvent: PgliteBackendOptions["onEvent"];
 
   constructor(opts: PgliteBackendOptions = {}) {
     this.#durability = opts.durability ?? "host-fsync";
     this.#lock = opts.lock ?? osFileLock;
     this.#contrib = opts.contrib ?? [];
+    this.#checkpointAfterBytes = opts.checkpointAfterBytes ?? CHECKPOINT_AFTER_BYTES;
+    this.#onEvent = opts.onEvent;
   }
 
   async open(
@@ -179,10 +196,11 @@ export class PgliteBackend implements StorageBackend {
           supportedFormat: STORAGE_FORMAT_VERSION,
           metaKeys: META_KEYS,
           contrib: this.#contrib,
+          checkpointAfterBytes: this.#checkpointAfterBytes,
         },
       });
       writeOwner(dir, { token, startedAt, epoch: r.epoch });
-      return new PgliteTenantStore({ dir, token, worker, lock, ...r });
+      return new PgliteTenantStore({ dir, token, worker, lock, onEvent: this.#onEvent, ...r });
     } catch (e) {
       await worker?.terminate();
       await lock.release();
@@ -256,6 +274,7 @@ export class PgliteTenantStore implements TenantStore {
   readonly #token: string;
   readonly #worker: WorkerClient;
   readonly #lock: DirLockHandle;
+  readonly #onEvent: PgliteBackendOptions["onEvent"];
   #state: State = "open";
   #tail: Promise<unknown> = Promise.resolve();
   #closed: Promise<void> | undefined;
@@ -265,6 +284,7 @@ export class PgliteTenantStore implements TenantStore {
     token: string;
     worker: WorkerClient;
     lock: DirLockHandle;
+    onEvent: PgliteBackendOptions["onEvent"];
     formatVersion: number;
     epoch: number;
   }) {
@@ -272,6 +292,7 @@ export class PgliteTenantStore implements TenantStore {
     this.#token = init.token;
     this.#worker = init.worker;
     this.#lock = init.lock;
+    this.#onEvent = init.onEvent;
     this.formatVersion = init.formatVersion;
     this.epoch = init.epoch;
   }
@@ -393,6 +414,28 @@ export class PgliteTenantStore implements TenantStore {
     tx.end();
     if (mode === "write") this.#checkOwner();
     await this._call({ kind: "commit" });
+    // Queued behind this write, so the write's caller has its result before the checkpoint runs.
+    if (mode === "write") void this.#enqueue(() => this.#checkpoint()).catch(() => {});
     return result;
+  }
+
+  /**
+   * A checkpoint after a write, when the WAL since the last one is past the threshold (db-worker.ts
+   * `checkpoint`). The owner is checked first: an instance that lost the storage must not write
+   * its pages into the new owner's directory (02-architecture §7). A checkpoint that fails may
+   * leave the instance broken (a failed fsync is a PANIC), so the worker is ended and the store is
+   * failed, as when the worker dies; what was committed is on disk already.
+   */
+  async #checkpoint(): Promise<void> {
+    if (this.#state !== "open") return;
+    this.#checkOwner();
+    try {
+      await this.#worker.call({ kind: "checkpoint" });
+    } catch (e) {
+      const code = e instanceof PgliteStoreError ? (e.sqlState ?? e.code) : "unknown";
+      this.#onEvent?.("checkpoint_failed", { code });
+      if (this.#state === "open") this.#state = "failed";
+      await this.#worker.terminate();
+    }
   }
 }

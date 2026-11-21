@@ -28,9 +28,20 @@ import { PGlite } from "@electric-sql/pglite";
 import { NodeFS } from "@electric-sql/pglite/nodefs";
 import type { Durability, HostSyncStats } from "./protocol.ts";
 
+/**
+ * How much WAL is kept (both modes). PGlite runs PostgreSQL single-user (`--single`): there is no
+ * checkpointer, so a checkpoint comes only when the WAL since the last one reaches
+ * `max_wal_size`, and the server's default of 1 GB let a local home grow by that much before
+ * any was recycled (issue: 34k rows took 592 MB of WAL). `min_wal_size` is what a checkpoint
+ * keeps for reuse. Durability is unchanged: fsync, full-page writes and synchronous commit are
+ * the same; only how often a checkpoint comes.
+ */
+const WAL_SIZE = { max_wal_size: "64", min_wal_size: "32" } as const; // MB, as pg_settings has them
+const walParams = Object.entries(WAL_SIZE).flatMap(([k, v]) => ["-c", `${k}=${v}MB`]);
+
 /** PGlite start parameters for a durability mode. */
 export function startParams(durability: Durability): string[] {
-  if (durability === "pglite-default") return [...PGlite.defaultStartParams];
+  if (durability === "pglite-default") return [...PGlite.defaultStartParams, ...walParams];
   const params = PGlite.defaultStartParams.filter((p) => p !== "-F");
   if (params.length !== PGlite.defaultStartParams.length - 1) {
     throw new Error('PGlite start parameters changed: expected exactly one "-F" to remove');
@@ -42,13 +53,15 @@ export function startParams(durability: Durability): string[] {
     ...["-c", "synchronous_commit=on"],
     ...["-c", "full_page_writes=on"],
     ...["-c", "data_sync_retry=off"],
+    ...walParams,
   ];
 }
 
 /** Settings that must hold after start for each mode; checked at open. */
 export function expectedSettings(durability: Durability): Record<string, string> {
-  if (durability === "pglite-default") return { fsync: "off" };
+  if (durability === "pglite-default") return { fsync: "off", ...WAL_SIZE };
   return {
+    ...WAL_SIZE,
     fsync: "on",
     wal_sync_method: "fsync",
     synchronous_commit: "on",

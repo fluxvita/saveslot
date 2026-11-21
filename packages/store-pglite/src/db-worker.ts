@@ -151,6 +151,7 @@ async function open(p: OpenParams): Promise<OpenResult> {
     }
     db = pg;
     epochKey = p.metaKeys.ownershipEpoch;
+    checkpointAfterBytes = p.checkpointAfterBytes;
     return { formatVersion, epoch };
   } catch (e) {
     await pg.close().catch(() => {});
@@ -218,6 +219,29 @@ async function commit(): Promise<null> {
   return null;
 }
 
+/** WAL since the last checkpoint, in bytes, past which `checkpoint` runs one. */
+let checkpointAfterBytes = Number.POSITIVE_INFINITY;
+
+/**
+ * A checkpoint when the WAL since the last one passed `checkpointAfterBytes`. PostgreSQL in
+ * single-user mode (as PGlite runs it) has no checkpointer and requests none when the WAL reaches
+ * `max_wal_size` (it does so only under a postmaster), so without this the WAL of a local home
+ * grows with every write until the next start. A checkpoint lets the segments before it be
+ * recycled or removed (`min_wal_size` / `max_wal_size`, durability.ts). The main thread asks for it
+ * after a write's reply, once it has checked again that it still owns the storage. A failure is
+ * thrown: the instance may be broken (a failed fsync is a PANIC), so the main thread ends this
+ * worker.
+ */
+async function checkpoint(): Promise<null> {
+  const pg = requireDb();
+  if (session) throw new Error("a transaction is open in the DB Worker");
+  const r = await pg.query<{ d: string }>(
+    "SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(), redo_lsn)::text AS d FROM pg_control_checkpoint()",
+  );
+  if (Number(r.rows[0]?.d ?? 0) > checkpointAfterBytes) await pg.exec("CHECKPOINT");
+  return null;
+}
+
 async function rollback(): Promise<null> {
   const pg = requireDb();
   if (!session) return null;
@@ -263,6 +287,8 @@ async function handle(req: Request): Promise<unknown> {
       return commit();
     case "rollback":
       return rollback();
+    case "checkpoint":
+      return checkpoint();
     case "stats":
       return hostSyncStats();
     case "close":

@@ -6,11 +6,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { Worker } from "node:worker_threads";
 import { META_KEYS, STORAGE_FORMAT_VERSION } from "@fluxvita/saveslot-kernel";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { PgliteBackend, type PgliteTenantStore } from "./backend.ts";
 import { PgliteStoreError } from "./errors.ts";
 import type { DirLock } from "./lock.ts";
+import { newToken, writeOwner } from "./owner.ts";
+import type { Envelope } from "./protocol.ts";
 import { testBackend } from "./testing/test-backend.fixture.ts";
 
 const roots: string[] = [];
@@ -53,6 +56,140 @@ const count = (s: PgliteTenantStore, table: string) =>
   });
 
 const T = 60_000;
+
+describe("the WAL of a local home stays bounded (single-user mode has no checkpointer)", () => {
+  it(
+    "a write's commit past the threshold is followed by a checkpoint; the WAL size settings hold",
+    async () => {
+      const dir = tenantDir();
+      const s = await testBackend({ checkpointAfterBytes: 1024 * 1024 }).open(ref(dir), {
+        create: true,
+      });
+      try {
+        const redo = () =>
+          s.read(async (tx) => {
+            const r = await tx.query<{ redo: string; since: string }>(
+              `SELECT redo_lsn::text AS redo,
+                      pg_wal_lsn_diff(pg_current_wal_insert_lsn(), redo_lsn)::text AS since
+               FROM pg_control_checkpoint()`,
+            );
+            return r.rows[0] as { redo: string; since: string };
+          });
+        const settings = await s.read((tx) =>
+          tx.query<{ name: string; setting: string }>(
+            "SELECT name, setting FROM pg_settings WHERE name IN ('max_wal_size', 'min_wal_size') ORDER BY name",
+          ),
+        );
+        expect(settings.rows).toEqual([
+          { name: "max_wal_size", setting: "64" },
+          { name: "min_wal_size", setting: "32" },
+        ]);
+        await s.write((tx) => tx.exec("CREATE TABLE t (k INT PRIMARY KEY, v TEXT)"));
+        const before = await redo();
+        // About 4 MiB of WAL, in four commits: each past 1 MiB is followed by a checkpoint.
+        for (let i = 0; i < 4; i++) {
+          await s.write((tx) =>
+            tx.exec(
+              `INSERT INTO t SELECT g, repeat('x', 1000) FROM generate_series(${i * 1000 + 1}, ${(i + 1) * 1000}) g`,
+            ),
+          );
+        }
+        const after = await redo();
+        expect(after.redo).not.toBe(before.redo);
+        expect(Number(after.since)).toBeLessThan(1024 * 1024);
+        expect(await count(s, "t")).toBe(4000);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+});
+
+describe("the checkpoint after a write", () => {
+  /** Requests the main thread sends to DB Workers while `f` runs; `swap` may replace one. */
+  async function watchingRequests<T>(
+    f: (kinds: string[]) => Promise<T>,
+    swap: (env: Envelope) => Envelope = (env) => env,
+  ): Promise<T> {
+    const post = Worker.prototype.postMessage;
+    const kinds: string[] = [];
+    const spy = vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (
+      this: Worker,
+      value: unknown,
+    ) {
+      const env = value as Envelope;
+      kinds.push(env.request.kind);
+      post.call(this, swap(env));
+    });
+    try {
+      return await f(kinds);
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it(
+    "a checkpoint that fails ends the worker: the write before it stands, the store is failed, one line is logged",
+    async () => {
+      const dir = tenantDir();
+      const events: unknown[] = [];
+      await watchingRequests(
+        async () => {
+          const s = await testBackend({
+            checkpointAfterBytes: 1,
+            onEvent: (event, fields) => events.push([event, fields]),
+          }).open(ref(dir), { create: true });
+          try {
+            await s.write((tx) => tx.exec("CREATE TABLE t (k INT)"));
+            expect(await codeOf(s.write((tx) => tx.exec("INSERT INTO t VALUES (1)")))).toBe(
+              "worker_failed",
+            );
+            expect(await codeOf(s.read((tx) => tx.query("SELECT 1")))).toBe("worker_failed");
+          } finally {
+            await s.close();
+          }
+        },
+        // A checkpoint that throws: in its place, a statement outside any transaction, which the
+        // worker refuses.
+        (env) =>
+          env.request.kind === "checkpoint"
+            ? { id: env.id, request: { kind: "query", sql: "SELECT 1", params: [] } }
+            : env,
+      );
+      expect(events).toEqual([["checkpoint_failed", { code: "unknown" }]]);
+      // What was committed before the checkpoint is there on reopen.
+      await withStore(dir, async (s) => expect(await count(s, "t")).toBe(0));
+    },
+    T,
+  );
+
+  it(
+    "is not sent once another opener took the storage over",
+    async () => {
+      const dir = tenantDir();
+      await watchingRequests(async (kinds) => {
+        const s = await testBackend({ checkpointAfterBytes: 1 }).open(ref(dir), { create: true });
+        try {
+          await s.write((tx) => tx.exec("CREATE TABLE t (k INT)"));
+          await s.read((tx) => tx.query("SELECT 1"));
+          expect(kinds.filter((k) => k === "checkpoint")).toHaveLength(1);
+          kinds.length = 0;
+          // The takeover lands after the write's reply and before the checkpoint queued behind it:
+          // this callback runs before the queue moves on to its next job.
+          await s
+            .write((tx) => tx.exec("INSERT INTO t VALUES (1)"))
+            .then(() => writeOwner(dir, { token: newToken(), startedAt: "", epoch: null }));
+          expect(await codeOf(s.read((tx) => tx.query("SELECT 1")))).toBe("ownership_lost");
+          expect(kinds).toEqual(["begin", "exec", "commit"]);
+        } finally {
+          await s.close();
+        }
+      });
+    },
+    T,
+  );
+});
 
 describe("transactions through the DB Worker", () => {
   it(
