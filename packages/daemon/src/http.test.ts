@@ -376,6 +376,8 @@ describe("HTTP's own", () => {
       ["GET", "/v1/slots", undefined, 200],
       ["GET", "/v1/slots/ledger", undefined, 200],
       ["GET", "/v1/slots/ledger/schema", undefined, 200],
+      ["GET", "/v1/slots/ledger/policy", undefined, 200],
+      ["GET", "/v1/slots/nope/policy", undefined, 404],
       // No such slot: the operation answers (404 not_found, slot), not the router.
       ["DELETE", `/v1/slots/sl_${"9".repeat(16)}`, undefined, 404],
       ["GET", "/v1/slots/ledger/tables?tables=expenses", undefined, 200],
@@ -433,7 +435,6 @@ describe("HTTP's own", () => {
       ["POST", "/v1/claims/ls_1/results"],
       ["GET", "/v1/jobs"],
       ["GET", "/v1/jobs/jb_1"],
-      ["GET", "/v1/slots/ledger/policy"],
       ["PUT", "/v1/slots/ledger/policy"],
       ["POST", "/v1/log/reconcile"],
       ["POST", "/v1/import"],

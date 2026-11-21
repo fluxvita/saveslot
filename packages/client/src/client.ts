@@ -41,6 +41,7 @@ import type {
   PendingListResult,
   PendingParams,
   PendingResult,
+  PolicyGetParams,
   QueryParams,
   QueryResult,
   ReadsListParams,
@@ -49,6 +50,7 @@ import type {
   ResolveResult,
   SchemaDraftParams,
   SchemaDraftResult,
+  SlotPolicy,
   SlotsRemoveParams,
   SlotsRemoveResult,
   SourcesGetResult,
@@ -148,6 +150,8 @@ export interface Client {
   readonly slots: {
     /** Removes an empty slot, by its ID only (04-contract §17). */
     remove(p: SlotsRemoveParams): Promise<SlotsRemoveResult>;
+    /** A slot's policy in effect (04-contract «policy.get»): any credential that sees the slot. */
+    policy(p: PolicyGetParams): Promise<SlotPolicy>;
   };
   /** A list (default), a search (with `q`), or one source by its `id` (05-surfaces §14). */
   sources(p: SourcesParams & { mode: "get"; id: string }): Promise<SourcesGetResult>;
@@ -290,6 +294,8 @@ export function createClient(o: ClientOptions): Client {
           path: `/v1/slots/${seg(slot_id)}`,
         }) as Promise<SlotsRemoveResult>;
       },
+      policy: async ({ slot, ...rest }) =>
+        get(`/v1/slots/${seg(slot)}/policy`, rest) as Promise<SlotPolicy>,
     },
     // The route says the mode: one by its ID; a search is a list with `q` (05-surfaces §14).
     sources: (async (p: SourcesParams = {}) => {

@@ -12,10 +12,12 @@ import {
   historyInTx,
   type PendingReadResult,
   pendingInTx,
+  policyGetInTx,
   type QueryReadResult,
   queryInTx,
   type ReadsListResult,
   readsListInTx,
+  type SlotPolicy,
   type SourcesResult,
   SQL_TIMEOUT_MS,
   type SqlReadResult,
@@ -151,6 +153,15 @@ export async function readsList(
   // list is then of the table alone, numbered as written (02-architecture §7 «read_log 的持久性»).
   await flushReads(store, createOpsContext({ ...ctx, actor: "system", trigger: "flushReads" }));
   return store.read((tx) => readsListInTx(tx, { actor: ctx.actor, now: ctx.now, params }));
+}
+
+/** `policy.get`: the policy in effect of one slot `ctx` sees (`params`: `{ slot }`). */
+export async function policyGet(
+  store: TenantStore,
+  ctx: OpsContext,
+  params: unknown,
+): Promise<SlotPolicy> {
+  return store.read((tx) => policyGetInTx(tx, { visibility: ctx.visibility, params }));
 }
 
 /** Reads `params` (a `CatalogParams`) as `ctx.actor`: `list`, `table` or `schema`. */

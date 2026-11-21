@@ -286,6 +286,23 @@ async function policyOf(tx: ReadTx, slot: VisibleSlot): Promise<SlotPolicy> {
   };
 }
 
+/**
+ * `policy.get` (04-contract «policy.get», 04-contract-types §8.2): the policy in effect of one slot
+ * the caller sees; `not_found` (`slot`) otherwise. Any credential with `saveslot.read` may call it.
+ * No read record: what it gives is configuration, not a table's data (§8.3 lists what is recorded).
+ */
+export async function policyGetInTx(
+  tx: ReadTx,
+  input: { readonly visibility: Visibility; readonly params: unknown },
+): Promise<SlotPolicy> {
+  const params = input.params;
+  if (!isObj(params)) throw invalid("malformed", "");
+  for (const k of keysOf(params)) if (k !== "slot" && k !== "task") throw invalid("malformed", k);
+  if (!has(params, "slot")) throw invalid("missing", "slot");
+  const slot = slotNamed(get(params, "slot"), await visibleSlots(tx, input.visibility));
+  return policyOf(tx, slot);
+}
+
 export async function catalogInTx(
   tx: ReadTx,
   input: CatalogInput,

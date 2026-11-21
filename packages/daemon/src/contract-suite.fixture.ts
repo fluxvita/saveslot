@@ -513,6 +513,36 @@ export function contractSuite(
     expect(words["sources"]).toEqual([]);
   });
 
+  it("policy.get: any credential that reads the slot, within its range (04-contract «policy.get»)", async () => {
+    const { session } = get();
+    const driver = call;
+    const ledger = result(await driver(session, "policy.get", { slot: "ledger" }));
+    expect(ledger).toMatchObject({
+      slot: "ledger",
+      policy_version: 1,
+      effective_value_rule: "keep_current",
+      set_by: { kind: "user" },
+    });
+    expect(ledger["auto_apply"]).toEqual(expect.arrayContaining(["add_table", "description"]));
+    expect(typeof ledger["seq"]).toBe("number");
+    // A connection: its own slot as the user session sees it; another slot as one that is not.
+    const only = result(
+      await driver(session, "connections.issue", {
+        name: "ledger-reader",
+        scopes: ["saveslot.read"],
+        slots: ["ledger"],
+      }),
+    );
+    const token = only["token"] as string;
+    expect(result(await driver(token, "policy.get", { slot: "ledger" }))).toEqual(ledger);
+    const hidden = await driver(token, "policy.get", { slot: "spare" });
+    expect(hidden).toEqual({
+      error: expect.objectContaining({ code: "not_found", reason: "slot", param: "slot" }),
+    });
+    expect(await driver(token, "policy.get", { slot: "nope" })).toEqual(hidden);
+    // Every connection holds saveslot.read (connections.issue refuses one without it).
+  });
+
   it("no credential, or one that is no token: unauthenticated", async () => {
     const driver = call;
     expect(await driver("", "catalog", {})).toEqual({

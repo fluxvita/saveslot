@@ -7,6 +7,8 @@ export {
   type CatalogSchemaResult,
   type CatalogTablesResult,
   catalogInTx,
+  policyGetInTx,
+  type SlotPolicy,
 } from "./catalog.ts";
 export { changesInTx } from "./changes.ts";
 export { draftDocument, ruleTexts, ruleTextsOf, slotDocument } from "./documents.ts";

@@ -83,6 +83,7 @@ export const httpDriver =
         method: "GET",
         path: rest["mode"] === "get" ? `/v1/sources/${id}` : "/v1/sources",
       },
+      "policy.get": { method: "GET", path: `/v1/slots/${String(rest["slot"])}/policy` },
       write: { method: "POST", path: "/v1/writes", body: true },
       resolve: { method: "POST", path: `/v1/pending/${id}/resolution`, body: true },
       schema_draft: { method: "POST", path: "/v1/drafts", body: true },
@@ -108,14 +109,17 @@ export const httpDriver =
     const { slot_id: _slot, ...withoutSlot } = rest;
     // The sources' mode is the route's: a list, a search (by `q`), or one by its ID.
     const { mode: _mode, ...withoutMode } = rest;
+    const { slot: _named, ...withoutSlotName } = rest;
     const p =
       operation === "slots.remove"
         ? withoutSlot
         : operation === "sources"
           ? withoutMode
-          : inPath
-            ? rest
-            : (params as Record<string, unknown>);
+          : operation === "policy.get"
+            ? withoutSlotName
+            : inPath
+              ? rest
+              : (params as Record<string, unknown>);
     const reply = await httpRequest(home(), {
       method: r.method,
       path: r.body ? r.path : `${r.path}${query(p)}`,

@@ -16,6 +16,7 @@ import {
   type NoticeRefs,
   pending,
   pendingItemsNotices,
+  policyGet,
   query,
   readsList,
   removeSlot,
@@ -202,6 +203,8 @@ export async function runOperation(o: {
           return sql(store, ctx, params, fit !== undefined ? { fit } : {});
         case "pending":
           return pending(store, ctx, params, fit);
+        case "policy.get":
+          return policyGet(store, ctx, params);
         case "sources":
           return sources(store, ctx, params, fit);
         case "write":

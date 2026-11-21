@@ -62,6 +62,7 @@ import {
   snippetLines,
 } from "./render/connections.ts";
 import { pendingDetail, pendingList, resolveResult } from "./render/pending.ts";
+import { policyShown } from "./render/policy.ts";
 import {
   asOfResult,
   changesResult,
@@ -1101,6 +1102,15 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
     ),
   ],
   ["slot remove", command(["yes"], slotRemoveCommand, undefined, TEXTS.slotRemoveUnknown)],
+  [
+    "policy show",
+    command([], async (o, client) => {
+      const [slot, ...extra] = o.args;
+      if (slot === undefined || extra.length > 0) throw new UsageError(TEXTS.policyShowArgs);
+      const r = await (await client()).slots.policy({ slot });
+      return { json: r, lines: policyShown(r) };
+    }),
+  ],
   [
     "slot show",
     command(["tables"], async (o, client) => {

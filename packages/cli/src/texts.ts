@@ -34,6 +34,7 @@ export const TEXTS = {
       "  slot show <slot> [table…]  a slot's tables: fields, rule, rows",
       "  slot create <name> --template <template> | --file <schema.json> [--timezone <zone>]",
       "  slot remove <slot or sl_…> [--yes]   an empty slot: one nothing was ever written to",
+      "  policy show <slot>        which schema changes take effect without confirmation",
       "  query <table> [--where 'field<op>value']… [--where-json <json>] [--order f[:desc]] [--fields a,b]",
       "        quote a condition with < or > in it, or the shell takes it as a redirection",
       "  sql '<SELECT …>' [--param <value>]… [--max-rows <n>] [--at <moment>]",
@@ -155,6 +156,7 @@ export const TEXTS = {
   slotNameMissing: s("give the slot's name: saveslot slot create <name>"),
   optionNotHere: s("that option is not one of this command's"),
   slotShowMissing: s("give the slot: saveslot slot show <slot> [table…]"),
+  policyShowArgs: s("give one slot: saveslot policy show <slot>"),
   detail: s("  at"),
   detailValid: s("valid"),
   /** The bound a count passed (04-contract-types §9 ValidationDetail `max`, `min`). */

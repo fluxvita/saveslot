@@ -33,6 +33,8 @@ export const OPERATIONS = {
   history: { scope: "saveslot.read", paged: true },
   sql: { scope: "saveslot.read", paged: true },
   pending: { scope: "saveslot.read", paged: true },
+  // A management operation that any credential with saveslot.read may call (04-contract «policy.get»).
+  "policy.get": { scope: "saveslot.read" },
   sources: { scope: "saveslot.read", paged: true },
   write: { scope: "saveslot.write", write: true },
   // This version's decisions (conflict and awaiting items) are `saveslot.write`'s. The scope of a

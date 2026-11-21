@@ -10,6 +10,9 @@ import type {
   SchemaChangeCode,
   SchemaChangeRecord,
 } from "@fluxvita/saveslot-contract-core";
+
+export { AUTO_APPLY_CLASSES } from "@fluxvita/saveslot-contract-core";
+
 import type {
   Actor,
   CommonResult,
@@ -45,6 +48,11 @@ export interface MigrationStatus {
   progress?: { done: number; total: number };
   /** The `schema_change` item. */
   item?: ItemId;
+}
+
+/** 04-contract-types §8.2 `PolicyGetParams`. */
+export interface PolicyGetParams {
+  slot: SlotName;
 }
 
 /**

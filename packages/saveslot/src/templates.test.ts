@@ -1,7 +1,8 @@
 // The three templates of 06-cli §3.1 end to end, on a real service: `saveslot slot create
 // --template` makes the slot, a row is written to its base table, and the derived table (or the
 // state of the entity, for the budget) reads back what the row says. `saveslot slot show` shows
-// the tables, and a template with no --timezone takes this computer's time zone and says so.
+// the tables, `saveslot policy show` the slot's policy, and a template with no --timezone takes
+// this computer's time zone and says so.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -174,6 +175,21 @@ describe("the templates, end to end", () => {
     expect(lines.some((l) => l.startsWith("  rule (bucketed): 「SELECT date_trunc('week'"))).toBe(
       true,
     );
+  });
+
+  it("policy show: which changes take effect without confirmation; a slot not there is 4", async () => {
+    const r = await saveslot("policy", "show", "health");
+    expect(r.code).toBe(0);
+    const lines = r.out.split("\n");
+    expect(lines[0]).toMatch(
+      /^slot health · policy version 1 · set by .+ at \d{4}-\d{2}-\d{2}T.+Z #\d+$/,
+    );
+    expect(lines[1]).toMatch(/^take effect without confirmation: add_table, add_derived_table, /);
+    expect(lines[2]).toBe("high impact: the defaults only");
+    const json = await saveslot("policy", "show", "health", "--json");
+    expect(JSON.parse(json.out)).toMatchObject({ slot: "health", policy_version: 1 });
+    expect((await saveslot("policy", "show", "nope")).code).toBe(4);
+    expect((await saveslot("policy", "show")).code).toBe(2);
   });
 
   it("a template with no --timezone: this computer's, said so", async () => {
