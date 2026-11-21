@@ -2,15 +2,8 @@
 // links, its owner not checked, refused when it is not a regular file or is open to others; checked
 // and read on one open file.
 
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  renameSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -37,7 +30,8 @@ afterEach(() => {
 const AS_ROOT = process.getuid?.() === 0;
 
 const root = mkdtempSync(join(tmpdir(), "saveslot-secret-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+// Removing the temporary directory can pass the default 10 s hook time under load.
+afterAll(() => rm(root, { recursive: true, force: true }), 60_000);
 let n = 0;
 const fresh = () => join(root, `f${n++}`);
 

@@ -3,15 +3,8 @@
 // tampered, of another key, expired), and kernel errors as contract errors. Fictional IDs.
 // The calls against a real tenant run in the daemon's tests.
 
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -22,7 +15,8 @@ import { ControlFileError } from "./control-files.ts";
 import { CursorKeys, CursorKeysCorrupt, cursorKeysFile } from "./cursor.ts";
 
 const root = mkdtempSync(join(tmpdir(), "saveslot-calls-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+// Removing the temporary directory can pass the default 10 s hook time under load.
+afterAll(() => rm(root, { recursive: true, force: true }), 60_000);
 let n = 0;
 function home(): string {
   const h = join(root, String(n++));

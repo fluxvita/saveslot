@@ -7,11 +7,11 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
-  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -26,7 +26,8 @@ import { Credentials, CredentialsCorrupt, credentialsFile } from "./credentials.
 import { bearerToken, newToken, sameHash, tokenHash } from "./tokens.ts";
 
 const root = mkdtempSync(join(tmpdir(), "saveslot-credentials-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+// Removing the temporary directory can pass the default 10 s hook time under load.
+afterAll(() => rm(root, { recursive: true, force: true }), 60_000);
 let n = 0;
 /** A home with `control/` at 0700. */
 function home(): string {

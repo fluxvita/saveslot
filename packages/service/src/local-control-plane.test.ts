@@ -1,7 +1,8 @@
 // The local control plane over its files: the tenant directory's one tenant, the credentials the
 // service loaded, and the anchor store (the kernel's conformance cases). Fictional IDs.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StorageBackend } from "@fluxvita/saveslot-kernel";
@@ -13,7 +14,8 @@ import { openLocalTenant } from "./local-tenant.ts";
 import { newToken, tokenHash } from "./tokens.ts";
 
 const root = mkdtempSync(join(tmpdir(), "saveslot-control-plane-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+// Removing the temporary directory can pass the default 10 s hook time under load.
+afterAll(() => rm(root, { recursive: true, force: true }), 60_000);
 
 const TENANT = `tn_${"8".repeat(26)}` as const;
 const USER = `u_${"1".repeat(26)}` as const;

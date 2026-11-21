@@ -3,7 +3,8 @@
 // directory and the credentials, and the anchor store — the kernel's conformance cases, and that
 // each of its writes commits on its own, whatever a tenant's transaction does. Fictional IDs.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TenantStore } from "@fluxvita/saveslot-kernel";
@@ -21,7 +22,8 @@ import {
 
 const T = 120_000;
 const root = mkdtempSync(join(tmpdir(), "saveslot-server-control-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+// Removing a directory holding a PGlite data directory can pass the default 10 s hook time under load.
+afterAll(() => rm(root, { recursive: true, force: true }), T);
 
 const TENANT = `tn_${"8".repeat(26)}` as const;
 const USER = `u_${"1".repeat(26)}` as const;
