@@ -1,7 +1,7 @@
 # 决定稿：冲突解决的覆盖也按操作记，不按下标与区间
 
 > 状态：已采纳。
-> 前提：[`revert-coverage-by-operation.md`](revert-coverage-by-operation.md)（回掉按（事件, 目标）记）已采纳。偏离二的保护范围在删除下怎么取（写入时状态不同的两段之间的分界点出自被删内容时）另起一稿，本稿不依赖它的结论。
+> 前提：[`revert-coverage-by-operation.md`](revert-coverage-by-operation.md)（回掉按（事件, 目标）记）已采纳。偏离二的保护范围在删除下怎么取（写入时状态不同的两段之间的分界点出自被删内容时）见 [`protection-unit-after-execution.md`](protection-unit-after-execution.md)，本稿不依赖它的结论。
 > 涉及：`spec/03-data-model/03-deletion.md` 伪代码步骤 2 与「重放规则」；`spec/03-data-model/01-objects.md` `take_previous`、`take_candidate` 与影响表；`spec/09-event-format.md` §5.7 与事项的 `candidates` 块；参考求值器。
 
 ## 1. 问题
@@ -79,7 +79,7 @@
 
 本稿的定义不依赖偏离二那一稿，但结果会随它变：K 跟着重放状态走，一次写入写入时一部分是佐证、一部分是候选时，删除之后哪部分算候选取决于那一稿的结论。这类混合写入目前没有固定用例，随那一稿补。
 
-- 偏离二的保护范围在删除下怎么取：写入时状态不同的两段之间的分界点出自被删内容时（保护整段会漏删、整段不保护会让已生效的写入退回），需要把写入时的分界点单独存、按给出者判，涉及 09 §3.5 的清除口径，另起一稿。
+- 偏离二的保护范围在删除下怎么取：写入时状态不同的两段之间的分界点出自被删内容时（保护整段会漏删、整段不保护会让已生效的写入退回），已定：保护的单位取一次写入在一个目标上的全部项，见 [`protection-unit-after-execution.md`](protection-unit-after-execution.md)。
 `kept_effective`、前提声明第 2 部分的 `premise_covers`、`carried` 在合并时可能丢引用（被并掉下标上的引用没有转给留下的下标）。它们在参考求值器里没有按下标建模，目前只有规格层面的推演，另起一稿。
 
 ## 6. 改动范围
