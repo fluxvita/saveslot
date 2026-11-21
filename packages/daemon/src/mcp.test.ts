@@ -194,7 +194,7 @@ describe("MCP's own", () => {
         ...(writes.includes(t.name) ? { destructiveHint: false, idempotentHint: true } : {}),
       });
       expect(t.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
-      for (const absent of ["saveslot_sources", "saveslot_delete"]) {
+      for (const absent of ["saveslot_delete"]) {
         expect(JSON.stringify(t)).not.toContain(absent);
       }
     }
@@ -218,6 +218,7 @@ describe("MCP's own", () => {
       "saveslot_query",
       "saveslot_sql",
       "saveslot_history",
+      "saveslot_sources",
       "saveslot_pending",
     ]);
     const r = await rpc(reader, {

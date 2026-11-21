@@ -2264,5 +2264,93 @@
         }
       ]
     }
+  },
+  "sources-list": {
+    "tool": "saveslot_sources",
+    "result": {
+      "mode": "list",
+      "sources": [
+        {
+          "id": "s_2KJ7M3Q9R5T1V8W4",
+          "kind": "user_message",
+          "slot": "plan",
+          "recorded_at": "2026-11-10T04:41:00.000Z",
+          "actor": {
+            "kind": "connection",
+            "id": "ci_01JCVZ8Q3M2N4P5R6S7T8V9W0X",
+            "name": "MacBook · Codex"
+          },
+          "correction": true,
+          "excerpt": "no, lunch was 54"
+        },
+        {
+          "id": "s_1HG6K2P8Q4S0T7V3",
+          "kind": "file_ref",
+          "slot": "plan",
+          "recorded_at": "2026-11-10T04:35:00.000Z",
+          "actor": {
+            "kind": "connection",
+            "id": "ci_01JCVZ8Q3M2N4P5R6S7T8V9W0X",
+            "name": "MacBook · Codex"
+          },
+          "file": { "name": "receipt.jpg", "mime": "image/jpeg", "size": 48213 }
+        },
+        {
+          "id": "s_0FE5J1N7P3R9S6T2",
+          "kind": "user_message",
+          "slot": "plan",
+          "recorded_at": "2026-11-09T12:03:00.000Z",
+          "actor": {
+            "kind": "connection",
+            "id": "ci_01JCVZ8Q3M2N4P5R6S7T8V9W0X",
+            "name": "MacBook · Codex"
+          },
+          "deletion": {
+            "state": "pending",
+            "item": "pi_4K7Q2W8N5R1T6Y4P",
+            "expires_at": "2026-11-12T01:12:00.000Z"
+          }
+        }
+      ],
+      "next_cursor": "cur_eyJzIjoxfQ"
+    }
+  },
+  "sources-get": {
+    "tool": "saveslot_sources",
+    "result": {
+      "mode": "get",
+      "id": "s_2KJ7M3Q9R5T1V8W4",
+      "kind": "user_message",
+      "level": "user_stated",
+      "slot": "plan",
+      "recorded_at": "2026-11-10T04:41:00.000Z",
+      "actor": {
+        "kind": "connection",
+        "id": "ci_01JCVZ8Q3M2N4P5R6S7T8V9W0X",
+        "name": "MacBook · Codex"
+      },
+      "correction": true,
+      "text": "no, lunch was 54",
+      "produced": [
+        {
+          "target": { "table": "plan.expenses", "row": "r_FW103YV2NYWERJMC947XWH3NWH" },
+          "seq": 74,
+          "fields": ["amount"],
+          "role": "value"
+        },
+        {
+          "target": { "table": "plan.expenses", "row": "r_FW103YV2NYWERJMC947XWH3NWH" },
+          "seq": 74,
+          "fields": [],
+          "role": "operation"
+        },
+        {
+          "target": { "table": "plan.budgets", "entity": "e_NT7QT9B5XKHA7AD3G773X02TQW" },
+          "seq": 75,
+          "fields": [],
+          "role": "interval"
+        }
+      ]
+    }
   }
 }

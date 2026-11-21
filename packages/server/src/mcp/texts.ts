@@ -245,6 +245,32 @@ export const HISTORY = {
   },
 } as const satisfies { description: Text; params: Record<string, Text> };
 
+export const SOURCES = {
+  description: [
+    "List, search or read source data: the user's words, tool results and file references the writes recorded, and what each produced.",
+    {
+      text: 'And preview what a deletion would remove (`mode: "deletion_preview"`); a preview deletes nothing.',
+      later: "P3",
+    },
+  ],
+  params: {
+    mode: [
+      "`list` (default): the source data, newest first; `search`: by words in it; `get`: one, with its text and what it produced.",
+      { text: "`deletion_preview`: what deleting some would remove.", later: "P3" },
+    ],
+    slot: ["Only the source data of this slot."],
+    kind: ["Only one kind: `user_message`, `agent_note`, `tool_result`, `file_ref` or `api_call`."],
+    from: [
+      "Recorded from this moment on (included): when saveslot recorded it, not a date it mentions.",
+    ],
+    to: ["Recorded before this moment (not included)."],
+    q: [
+      "Required with `search`: the words to find. In this version a substring: write words the user would have used, not a question.",
+    ],
+    id: ["Required with `get`: a source ID (`s_…`)."],
+  },
+} as const satisfies { description: Text; params: Record<string, Text> };
+
 export const PENDING = {
   description: [
     "List the pending items (conflicts, and changes awaiting confirmation), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version.",

@@ -3,6 +3,7 @@
 // its parameters are the operation's, less the ones MCP does not expose (05 §2), each of which is
 // named in `withheld`.
 
+import { SOURCE_KINDS } from "@fluxvita/saveslot-contract";
 import type { Operation, Principal, Scope } from "@fluxvita/saveslot-service";
 import type { JSONObject } from "@modelcontextprotocol/server";
 import type { ToolName } from "./names.ts";
@@ -17,6 +18,7 @@ import {
   QUERY,
   RESOLVE,
   SCHEMA_DRAFT,
+  SOURCES,
   SQL,
   type Text,
   WRITE,
@@ -350,6 +352,37 @@ export const TOOLS: readonly Tool[] = [
       { mode: "as_of", table: "expenses", row: `r_${"1".repeat(26)}`, as_of: 1 },
       { mode: "changes", table: "ledger.expenses", since: 1 },
       { mode: "changes", table: "expenses", since: 1, until: "2026-12-01T00:00:00Z", limit: 5 },
+    ],
+  },
+  {
+    name: "saveslot_sources",
+    operation: "sources",
+    scope: "saveslot.read",
+    description: SOURCES.description,
+    params: {
+      mode: { schema: { enum: ["list", "search", "get"] }, text: SOURCES.params.mode },
+      slot: { schema: str, text: SOURCES.params.slot },
+      kind: {
+        schema: { enum: [...SOURCE_KINDS] },
+        text: SOURCES.params.kind,
+      },
+      from: { schema: str, text: SOURCES.params.from },
+      to: { schema: str, text: SOURCES.params.to },
+      q: { schema: str, text: SOURCES.params.q },
+      id: { schema: str, text: SOURCES.params.id },
+      limit: { schema: limit(200), text: COMMON.limit },
+      cursor,
+      task,
+    },
+    // `deletion` (with `mode: "deletion_preview"`) is `deletion_preview`'s, a later version's
+    // operation (07-scope-v1 P3): not a parameter of `sources`, and not taken.
+    withheld: {},
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    examples: [
+      {},
+      { slot: "ledger", kind: "user_message", limit: 5 },
+      { mode: "search", q: "lunch" },
+      { mode: "get", id: `s_${"1".repeat(16)}` },
     ],
   },
   {

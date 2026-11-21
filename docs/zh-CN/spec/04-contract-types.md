@@ -798,7 +798,8 @@ interface SourcesParams extends CommonParams, PageParams {
   mode?: "list" | "search" | "get";   // 默认 list
   slot?: SlotName;
   kind?: SourceKind;
-  from?: Instant; to?: Instant;       // 记录时间，[from, to)
+  from?: Instant;                     // 记录时间，[from, to)
+  to?: Instant;
   q?: string;                         // search：必填。第一版是子串匹配
   id?: SourceId;                      // get：必填
 }

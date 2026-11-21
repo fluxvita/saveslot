@@ -31,6 +31,9 @@ import {
   REF_TARGETS,
   ROUNDINGS,
   SCHEMA_CHANGE_CODES,
+  SOURCE_KINDS,
+  SOURCE_LEVELS,
+  type SourcesGetResult,
   SQL_REASONS,
   SUPERSEDED_REASONS,
   TIME_DEPENDENCIES,
@@ -400,11 +403,17 @@ const ofTotal = (shown: number, total: unknown): Part[] =>
  * The page's end (05 §4.2 `truncated`): shown of the result's own total, and the next page's
  * handle, as the service signed it.
  */
-function pageOf(r: R, shown: number, unit: () => Part[]): Line[] {
+function pageOf(
+  r: R,
+  shown: number,
+  unit: () => Part[],
+  /** What the request can be narrowed by; by default a date range or fewer fields. */
+  narrow: () => Part[] = () => t`a date range, fewer fields`,
+): Line[] {
   const next = str(r["next_cursor"]);
   if (next === undefined && !isObj(r["truncated"])) return [];
   return [
-    t`Showing ${ofTotal(shown, r["total"])} ${unit()}${next !== undefined ? t`; next page: cursor=${as(next, handle)}` : []}; or narrow the request (a date range, fewer fields)`,
+    t`Showing ${ofTotal(shown, r["total"])} ${unit()}${next !== undefined ? t`; next page: cursor=${as(next, handle)}` : []}; or narrow the request (${narrow()})`,
   ];
 }
 
@@ -769,6 +778,109 @@ function query(r: R, now: Date): Line[] {
     ...columnsOf(rows),
     ...rowsOf(rows),
     ...pageOf(r, rows.length, () => t`rows`),
+    ...remindersOf(r, now),
+  ];
+}
+
+// --- sources ------------------------------------------------------------------------------------
+
+const KINDS: ReadonlySet<string> = new Set<string>(SOURCE_KINDS);
+const LEVELS: ReadonlySet<string> = new Set<string>(SOURCE_LEVELS);
+// What a source was to a target: its value, its operation, or only its interval (the contract's
+// `SourcesGetResult.produced[].role`; a role it does not name fails to compile here).
+type Role = NonNullable<SourcesGetResult["produced"]>[number]["role"];
+const ROLES: ReadonlySet<string> = new Set(
+  Object.keys({ value: true, operation: true, interval: true } satisfies Record<Role, true>),
+);
+/** How a source served a target, as a phrase. */
+const roleOf = (role: unknown): Part[] =>
+  role === "interval"
+    ? t`as the source of its interval`
+    : role === "value" || role === "operation"
+      ? t`as its ${codeIn(role, ROLES)} source`
+      : t`as ${codeIn(role, ROLES)}`;
+
+/** A source's kind, with the correction mark (a mark, not a kind: 05 §6 `saveslot_sources`). */
+const kindOf = (s: R): Part[] =>
+  t`${codeIn(s["kind"], KINDS)}${s["correction"] === true ? t` (correction)` : []}`;
+
+/** A file reference: its name, type and size, each as stored. */
+const fileRef = (f: R): Part[] =>
+  t`file ${stored(String(f["name"] ?? ""))} (${stored(String(f["mime"] ?? ""))}, ${num(Number(f["size"] ?? 0))} bytes)`;
+
+/** A source pending deletion or removed: its state, in place of its content. */
+function deletionOf(d: unknown): Part[] | undefined {
+  if (!isObj(d)) return undefined;
+  if (d["state"] === "pending")
+    return t`pending deletion (${idOf(d["item"])}, can be undone until ${timeOf(d["expires_at"])})`;
+  return t`deleted (${timeOf(d["at"])})`;
+}
+
+/**
+ * `saveslot_sources` (05 §6): a list or a search, a line a source (its ID, kind, slot, when it
+ * was recorded, the writer, and the start of its text or its file; its state when it is pending
+ * deletion or removed); or one source, with its text or file and what it produced. What was stored
+ * goes inside the boundary.
+ */
+function sources(r: R, now: Date): Line[] {
+  if (r["mode"] === "get") {
+    need(typeof r["id"] === "string");
+    const out: Line[] = [
+      t`${idOf(r["id"])} ${kindOf(r)} · ${tableOf(r["slot"])} · level ${codeIn(r["level"], LEVELS)} · recorded ${timeOf(r["recorded_at"])} by ${actorOf(r["actor"])}${r["stated_at"] !== undefined ? t` · said at ${timeOf(r["stated_at"])}` : []}`,
+    ];
+    const gone = deletionOf(r["deletion"]);
+    if (gone !== undefined) return [...out, t`  ${gone}`, ...remindersOf(r, now)];
+    if (r["text"] !== undefined) out.push(t`  Text: ${stored(String(r["text"]))}`);
+    if (isObj(r["file"])) {
+      const f = obj(r["file"]);
+      out.push(t`  ${fileRef(f)}, sha256 ${stored(String(f["sha256"] ?? ""))}`);
+      if (f["origin"] !== undefined) out.push(t`    origin: ${stored(String(f["origin"]))}`);
+      if (f["excerpt"] !== undefined) out.push(t`    excerpt: ${stored(String(f["excerpt"]))}`);
+    }
+    const produced = arr(r["produced"]);
+    if (produced.length === 0) out.push(t`  It produced nothing in the tables you can see.`);
+    else {
+      out.push(t`  It produced:`);
+      for (const p of produced) {
+        const e = obj(p);
+        const fields = arr(e["fields"]);
+        out.push(
+          t`    ${targetOf(e["target"])} in ${op(e["seq"])}: ${fields.length > 0 ? join(fields.map(fieldOf), t`, `) : t`the row`}, ${roleOf(e["role"])}`,
+        );
+      }
+    }
+    return [...out, ...remindersOf(r, now)];
+  }
+  need(Array.isArray(r["sources"]));
+  const items = arr(r["sources"]);
+  const out: Line[] = [
+    str(r["next_cursor"]) !== undefined
+      ? t`The latest ${num(items.length)} sources${r["mode"] === "search" ? t` found` : []}`
+      : t`${num(items.length)} sources${r["mode"] === "search" ? t` found` : []}`,
+  ];
+  for (const it of items) {
+    const s = obj(it);
+    const gone = deletionOf(s["deletion"]);
+    const said =
+      gone !== undefined
+        ? t` · ${gone}`
+        : s["excerpt"] !== undefined
+          ? t` · ${stored(String(s["excerpt"]))}`
+          : isObj(s["file"])
+            ? t` · ${fileRef(obj(s["file"]))}`
+            : [];
+    out.push(
+      t`${idOf(s["id"])} ${kindOf(s)} · ${tableOf(s["slot"])} · ${timeOf(s["recorded_at"])} · ${actorOf(s["actor"])}${said}`,
+    );
+  }
+  return [
+    ...out,
+    ...pageOf(
+      r,
+      items.length,
+      () => t`sources`,
+      () => t`a slot, a kind, or a date range`,
+    ),
     ...remindersOf(r, now),
   ];
 }
@@ -2066,6 +2178,7 @@ const RENDER: ReadonlyMap<ToolName, Renderer> = new Map<ToolName, Renderer>([
   ["saveslot_query", query],
   ["saveslot_sql", sql],
   ["saveslot_history", history],
+  ["saveslot_sources", sources],
   ["saveslot_pending", pending],
   ["saveslot_write", write],
   ["saveslot_resolve", resolve],

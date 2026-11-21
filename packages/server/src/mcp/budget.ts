@@ -31,6 +31,7 @@ function listOf(tool: ToolName, r: R): string | undefined {
   if (tool === "saveslot_history")
     return r["mode"] === "as_of" ? "rows" : r["mode"] === "changes" ? "changes" : "entries";
   if (tool === "saveslot_pending" && r["id"] === undefined) return "items";
+  if (tool === "saveslot_sources" && r["mode"] !== "get") return "sources";
   if (tool === "saveslot_catalog" && r["level"] === "list") return "slots";
   return undefined;
 }
@@ -172,6 +173,8 @@ function narrowBy(tool: ToolName, r: R, page: boolean): string[] {
       return r["level"] === "schema" ? ["level"] : r["level"] === "table" ? ["tables"] : ["slot"];
     case "saveslot_pending":
       return r["id"] === undefined ? ["slot", "type"] : [];
+    case "saveslot_sources":
+      return r["mode"] === "get" ? [] : ["slot", "kind", "from", "to", "limit"];
     default:
       return [];
   }

@@ -148,6 +148,8 @@ const TAKEN: Record<string, Sample> = (() => {
       "write-premise-affected-matched",
     ].map((k) => pick(receipts, k)),
     pick(reads, "query-notices"),
+    pick(reads, "sources-list"),
+    pick(reads, "sources-get"),
     pick(reads, "query-premise-hidden"),
     pick(reads, "history-changes-event"),
     pick(reads, "history-changes-state"),
@@ -180,7 +182,7 @@ const ALL: Record<string, Sample> = {
  */
 const OUTSIDE = new RegExp(
   [
-    "(^|\\.)(id|row|entity|item|read|ver|item_ver|current_ver|seen|slot_id|draft|recorded_at|opened_at|at|valid_from|valid_to|valid_to_inclusive|table|slot|field|next_cursor|deletion)$",
+    "(^|\\.)(id|row|entity|item|read|ver|item_ver|current_ver|seen|slot_id|draft|recorded_at|expires_at|opened_at|at|valid_from|valid_to|valid_to_inclusive|table|slot|field|next_cursor|deletion)$",
     // A quantity's number (its unit is inside).
     "(^|\\.)value$",
     "(^|\\.)(fields|unit|premise_fields|nearest|items|base_tables)\\.\\d+$",

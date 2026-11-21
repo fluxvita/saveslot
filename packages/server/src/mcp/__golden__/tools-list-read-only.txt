@@ -466,6 +466,72 @@
     }
   },
   {
+    "name": "saveslot_sources",
+    "description": "List, search or read source data: the user's words, tool results and file references the writes recorded, and what each produced.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "list",
+            "search",
+            "get"
+          ],
+          "description": "`list` (default): the source data, newest first; `search`: by words in it; `get`: one, with its text and what it produced."
+        },
+        "slot": {
+          "type": "string",
+          "description": "Only the source data of this slot."
+        },
+        "kind": {
+          "enum": [
+            "user_message",
+            "agent_note",
+            "tool_result",
+            "file_ref",
+            "api_call"
+          ],
+          "description": "Only one kind: `user_message`, `agent_note`, `tool_result`, `file_ref` or `api_call`."
+        },
+        "from": {
+          "type": "string",
+          "description": "Recorded from this moment on (included): when saveslot recorded it, not a date it mentions."
+        },
+        "to": {
+          "type": "string",
+          "description": "Recorded before this moment (not included)."
+        },
+        "q": {
+          "type": "string",
+          "description": "Required with `search`: the words to find. In this version a substring: write words the user would have used, not a question."
+        },
+        "id": {
+          "type": "string",
+          "description": "Required with `get`: a source ID (`s_…`)."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "description": "How many to return. Default 20, at most 200."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "The `next_cursor` of the previous page, passed back unchanged for the next page. Never construct one; do not pass it again after changing the request."
+        },
+        "task": {
+          "type": "string",
+          "description": "A short label for this task (such as `weekly-review`): use the same value for the reads and writes of one task, so that saveslot can match the versions you read with your later writes. Never put the user's words or data in it."
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "saveslot_pending",
     "description": "List the pending items (conflicts, and changes awaiting confirmation), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version. Use it when a receipt or a read names a pending item, or the user asks what is waiting for them.",
     "inputSchema": {

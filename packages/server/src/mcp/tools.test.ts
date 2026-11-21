@@ -215,6 +215,7 @@ group("scope", () => {
       "saveslot_query",
       "saveslot_sql",
       "saveslot_history",
+      "saveslot_sources",
       "saveslot_pending",
     ]);
     expect(toolsFor(principal(["saveslot.read", "saveslot.write"])).map((t) => t.name)).toEqual([
@@ -222,6 +223,7 @@ group("scope", () => {
       "saveslot_query",
       "saveslot_sql",
       "saveslot_history",
+      "saveslot_sources",
       "saveslot_pending",
       "saveslot_write",
       "saveslot_resolve",
