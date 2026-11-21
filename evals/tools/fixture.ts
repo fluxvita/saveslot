@@ -34,6 +34,9 @@
 //                              from the service's evaluation results (./pair.ts)
 //   state/final/history/       at the end: every row's and entity's history (timeline, every page)
 //   state/final/pending-all.json  at the end: every item, closed ones too, each with its detail
+//   state/final/sources/<s_…>.json  at the end: each source the histories refer to (value and
+//                              operation sources), as `sources` gives it (./source-ids.ts); one
+//                              that cannot be read is kept as the error it gave
 // `--fixture-only` stops after the fixture (and its state), without running the steps, and leaves
 // the service running; otherwise the service the runner started is stopped on every way out.
 
@@ -53,6 +56,7 @@ import { badLevels, LEVELS } from "./levels.ts";
 import { pairCalls } from "./pair.ts";
 import { prompt as askPerson } from "./prompt.ts";
 import { cannotRun, dayOf, nextRunDays, offsetHolds, shiftVariant, todayIn } from "./shift.ts";
+import { sourceIds } from "./source-ids.ts";
 
 type Obj = Record<string, unknown>;
 
@@ -383,12 +387,14 @@ async function allPages(
 
 /**
  * At the end, what cannot be read once the service is stopped: every row's and entity's history
- * (timeline), and every item with its detail, closed ones too.
+ * (timeline), the sources those histories refer to, and every item with its detail, closed ones
+ * too.
  */
 async function archive(session: string): Promise<void> {
   const out = join(dir, "state", "final");
   const historyDir = join(out, "history");
   mkdirSync(historyDir, { recursive: true });
+  const referred: string[] = [];
   for (const s of v.fixture.slots) {
     const cat = await http("GET", `/v1/slots/${s.name}/schema`, session);
     for (const t of (at(cat.json, "document.tables") ?? []) as Obj[]) {
@@ -405,8 +411,18 @@ async function archive(session: string): Promise<void> {
         const key = id.startsWith("e_") ? "entity" : "row";
         const h = await allPages("POST", "/v1/history", session, "entries", { table, [key]: id });
         writeFileSync(join(historyDir, table, `${id}.json`), `${JSON.stringify(h, null, 2)}\n`);
+        sourceIds(h, referred);
       }
     }
+  }
+  // The sources the histories refer to, by their IDs. One the service will not give (a deletion)
+  // is kept as its error, and the run goes on: the assertion that needs it says so.
+  const sourcesDir = join(out, "sources");
+  mkdirSync(sourcesDir, { recursive: true });
+  for (const id of referred) {
+    const r = await http("GET", `/v1/sources/${encodeURIComponent(id)}`, session);
+    if (r.status !== 200) say(`source ${id}: ${r.status}, kept as its error`);
+    writeFileSync(join(sourcesDir, `${id}.json`), `${JSON.stringify(r.json, null, 2)}\n`);
   }
   const list = await allPages("GET", "/v1/pending?status=all", session, "items");
   const details: Obj[] = [];
