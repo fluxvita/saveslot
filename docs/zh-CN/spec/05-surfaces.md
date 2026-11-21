@@ -960,22 +960,21 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 |---|---|
 | `GET /.well-known/oauth-protected-resource` | 受保护资源元数据（RFC 9728）：指向授权服务器，列出四个 scope |
 | `GET /.well-known/oauth-authorization-server` | 授权服务器元数据（RFC 8414） |
-| `GET /oauth/authorize` | 授权页：用户给这次接入起名字、选 scope、选 slot 范围 |
+| `GET /oauth/authorize` | 授权页：用户给这次接入起名字、选 scope |
 | `POST /oauth/token` | 换取与刷新令牌：`authorization_code`、`refresh_token`；CLI 登录另用设备码（RFC 8628） |
 | `POST /oauth/device` | 设备码授权的发起（`saveslot login --device`） |
 | `POST /oauth/revoke` | 吊销令牌（RFC 7009） |
 | `POST /oauth/register` | 动态客户端注册（DCR）；是否提供取决于下面的待定项 |
 
-- **授权页的默认值**：用户最多做选择和一次同意（06-cli 第 1 节的设计要求）。名字预填（取客户端登记的名称）；scope 预选 `saveslot.read saveslot.write`；slot 范围是一个"全部 slot（含以后新建的）"选项加现有 slot 的勾选列表，预选客户端请求的范围，客户端没有请求时预选"全部"。**范围选择器始终显示**，用户看得到、想改再改；不改就直接点一次"授权"。
-  - 客户端在客户端元数据里声明它要的 slot（按名字）时，预选其中现有的那些；声明的名字里没有对应 slot 的，在页上列为"不存在"，不能在授权页上新建。连接器应当声明它要的 slot，这样预选的就是最小范围。这一项不是 OAuth 的标准字段，按 saveslot 的扩展字段写，确切名字**实现时核实**。
-  - slot 范围**不编码进 scope 字符串**：受保护资源元数据照旧只列四个 scope；授权结果与令牌响应里不回传 slot 名单（slot 名是用户自己的数据），客户端只经 `catalog` 看到被授予的范围内的 slot。
+- **授权页的默认值**：用户最多做选择和一次同意（06-cli 第 1 节的设计要求）。名字预填（取客户端登记的名称）；scope 预选 `saveslot.read saveslot.write`；不改就直接点一次"授权"。
+  - **第一版授权页不选 slot 范围**：经远程授权得到的连接实例，slot 范围一律是全部（含以后新建的）。要一个只碰某几个 slot 的凭证（典型的是连接器），由用户会话签发静态令牌：`saveslot connect http --profile <名字> --slots …`（06-cli 3.2）。授权页上选范围、客户端声明它要的 slot 是后续（open-questions）。
+  - slot 范围**不编码进 scope 字符串**：受保护资源元数据照旧只列四个 scope。
 - **已知例外：只有网页界面的宿主**（如 Claude 网页端、ChatGPT）。添加自定义连接器要在宿主的界面里点若干步、手动填地址，saveslot 一侧消不掉。saveslot 能做的是在登录后的页面与 `saveslot connect <宿主> --profile cloud` 里给出要填的地址；长期是进入各家的连接器目录，那时才是"添加 + 授权"。
-- **一次授权 = 一个连接实例**：授权完成时登记进日志，名字、scope 与 slot 范围由用户在授权页上定；scope 必须包含 `saveslot.read`。刷新令牌换来的仍是同一个连接实例。step-up 重新授权得到的是一个新的连接实例，原连接实例的 scope 不变（contract 第 12 节）。
+- **一次授权 = 一个连接实例**：授权完成时登记进日志，名字与 scope 由用户在授权页上定，slot 范围是全部；scope 必须包含 `saveslot.read`。刷新令牌换来的仍是同一个连接实例。step-up 重新授权得到的是一个新的连接实例，原连接实例的 scope 不变（contract 第 12 节）。
 - **客户端怎么登记（CIMD 还是 DCR）未定**（open-questions）。它影响的范围：
   - 授权服务器元数据里宣告什么、有没有 `/oauth/register`；
   - 控制面存什么：DCR 要存注册下来的客户端，CIMD 只缓存按 URL 取回的客户端元数据；
   - 授权页上显示的客户端名称从哪来、可信到什么程度：DCR 的注册不需要认证，自报的名称不能当作身份；
-  - 客户端怎么声明所需的 slot（客户端元数据的扩展字段）；
   - 两种都不支持的客户端会要求用户手动填客户端 ID，那是一步手动操作，违背上面的设计要求；
   - `Connection.client` 里记什么。
   

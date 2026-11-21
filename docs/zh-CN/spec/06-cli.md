@@ -311,7 +311,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 - **名字建议写"设备 · 宿主"**，它会出现在历史、事项发起者与读取审计里。
 - **连接器取得凭证**：连接器（定时把外部系统的数据搬进 saveslot 的程序，不是 saveslot 的一部分）用 `saveslot connect http --name "手环 · 连接器" --slots health` 取得一个只碰它负责的 slot 的静态令牌，经 HTTP 写入（[`05-surfaces.md`](05-surfaces.md) 第 13 节）。
 - **完成时的提示**：`connect` 与 `setup` 结束时在末尾提示一行"可选：saveslot snippet <宿主>"（3.4）。
-- **服务器模式（云服务或自部署）**：宿主走远程 MCP 自己做 OAuth 授权，`saveslot connect claude-code --profile cloud`（自部署换成它的 profile）打印远程形式的添加命令 `claude mcp add saveslot --scope user --transport http https://<域名>/mcp`（写法同样实测）；这条命令里**没有令牌**，所以 `--apply` 与 `saveslot setup --profile` 会代为执行它。授权页上由用户命名、选 scope 与 slot 范围，几项都有默认值，用户不改就只点一次"授权"（[`05-surfaces.md`](05-surfaces.md) 第 15 节）。授权完成后用 `saveslot connections list` 能看到它，改名、吊销照常。只有网页界面的宿主（Claude 网页端、ChatGPT）没有命令可执行，`saveslot connect <宿主> --profile cloud` 给出要在宿主界面里填的地址，这是设计要求的已知例外。没有 Agent 的脚本与连接器走不了 OAuth：`saveslot connect http --profile cloud [--slots …]` 由用户会话签发一个静态令牌，与本地一样按 scope 与 slot 范围、可吊销。
+- **服务器模式（云服务或自部署）**：宿主走远程 MCP 自己做 OAuth 授权，`saveslot connect claude-code --profile cloud`（自部署换成它的 profile）打印远程形式的添加命令 `claude mcp add saveslot --scope user --transport http https://<域名>/mcp`（写法同样实测）；这条命令里**没有令牌**，所以 `--apply` 与 `saveslot setup --profile` 会代为执行它。授权页上由用户命名、选 scope，两项都有默认值；经授权得到的连接实例 slot 范围是全部，用户不改就只点一次"授权"（[`05-surfaces.md`](05-surfaces.md) 第 15 节）。授权完成后用 `saveslot connections list` 能看到它，改名、吊销照常。只有网页界面的宿主（Claude 网页端、ChatGPT）没有命令可执行，`saveslot connect <宿主> --profile cloud` 给出要在宿主界面里填的地址，这是设计要求的已知例外。没有 Agent 的脚本与连接器走不了 OAuth：`saveslot connect http --profile cloud [--slots …]` 由用户会话签发一个静态令牌，与本地一样按 scope 与 slot 范围、可吊销。
 
 ### 3.3 `saveslot setup`：一条命令完成上手
 
