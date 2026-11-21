@@ -74,6 +74,7 @@ export function anchorStoreConformance(
 
       it.each<[string, Partial<Record<keyof DeletionEntry, unknown>> | "extra"]>([
         ["an empty ID", { deletion: "" }],
+        ["an ID with U+0000", { deletion: "pi_\u0000" }],
         ["an unknown kind", { kind: "evidence" }],
         ["an unknown state", { state: "done" }],
         ["a due time not an instant", { dueAt: "2026-11-11" }],
@@ -91,6 +92,13 @@ export function anchorStoreConformance(
             : { ...deletionEntry(1), ...patch };
         await refuses(store.putDeletion(TENANT, bad as DeletionEntry), "invalid_entry");
         expect((await store.read(TENANT)).deletions).toEqual([]);
+      });
+
+      it("refuses a tenant ID with U+0000 and stores nothing", async () => {
+        const { store } = await make();
+        await refuses(store.putDeletion("tn_\u0000", deletionEntry(1)), "invalid_entry");
+        await refuses(store.advanceHighWater("tn_\u0000", 5), "invalid_entry");
+        await refuses(store.read("tn_\u0000"), "invalid_entry");
       });
 
       it.each(["constructor", "__proto__", "toString"])(

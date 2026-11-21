@@ -1,5 +1,6 @@
 // Runs on PostgreSQL the tests that open their stores through the test backend
-// (02-architecture §11 «测试矩阵»: the kernel's tests run on both backends), and store-postgres's own.
+// (02-architecture §11 «测试矩阵»: the kernel's tests run on both backends), store-postgres's own, and
+// the server mode's control plane (service), whose database is PostgreSQL in that mode.
 //
 // Usage: SAVESLOT_TEST_POSTGRES_URL=postgres://… node scripts/test-postgres.ts [vitest arguments…]
 //
@@ -18,6 +19,8 @@ export const TESTED = [
   "packages/store-pglite/src",
   "packages/store-postgres/src",
   "packages/test-backend/src",
+  // The server mode's control plane, whose database is PostgreSQL there.
+  "packages/service/src/server-control-plane.test.ts",
 ];
 
 /** Files not run on PostgreSQL, each with why. */

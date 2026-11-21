@@ -12,14 +12,7 @@
 // The store is opened once per process and not reopened on any request path: reopening the
 // database's Wasm instance in a long-running process is what the process model avoids (§7).
 
-import { readFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
-import type {
-  AnchorStore,
-  OpenTenantStop,
-  StorageBackend,
-  TenantStore,
-} from "@fluxvita/saveslot-kernel";
+import type { AnchorStore, StorageBackend, TenantStore } from "@fluxvita/saveslot-kernel";
 import {
   createOpsContext,
   flushReads,
@@ -28,86 +21,25 @@ import {
   openTenant,
   readTail,
 } from "@fluxvita/saveslot-kernel";
-import { openFileAnchorStore } from "@fluxvita/saveslot-kernel/anchor-file";
+import type { TenantId, UserId } from "./control-plane.ts";
+import {
+  LocalControlPlane,
+  LocalTenantError,
+  type LocalTenantFailure,
+  type TenantDirectory,
+} from "./local-control-plane.ts";
 
-type TenantId = `tn_${string}`;
-type UserId = `u_${string}`;
-
-/** 01-objects «标识的写法»: a prefix and 26 Crockford base-32 characters. */
-const CROCKFORD_26 = "[0-9A-HJKMNP-TV-Z]{26}";
-const TENANT_ID = new RegExp(`^tn_${CROCKFORD_26}$`);
-const USER_ID = new RegExp(`^u_${CROCKFORD_26}$`);
-
-/** Paths under the service's home directory (06-cli §3 «分步做»). */
-export const controlDir = (home: string): string => join(home, "control");
-export const tenantFile = (home: string): string => join(controlDir(home), "tenant.json");
-export const anchorFile = (home: string): string => join(controlDir(home), "anchor.json");
-
-/** The local tenant directory: the one user, their tenant, and where its storage is. */
-export interface TenantDirectory {
-  readonly user: UserId;
-  readonly tenant: TenantId;
-  /** The tenant's data directory, an absolute path; `<home>/data` when the file names none. */
-  readonly dataDir: string;
-}
-
-/** Why the local tenant cannot be opened or cannot serve. Stable codes, no paths, no user data. */
-export type LocalTenantFailure =
-  /** No readable `control/tenant.json`: the home was not initialized. */
-  | "not_initialized"
-  /** `control/tenant.json` is not of its form. */
-  | "tenant_directory_corrupt"
-  /** The tenant storage has no events: not created. */
-  | "tenant_empty"
-  | OpenTenantStop;
-
-export class LocalTenantError extends Error {
-  override readonly name = "LocalTenantError";
-  readonly code: LocalTenantFailure;
-  constructor(code: LocalTenantFailure, message: string) {
-    super(message);
-    this.code = code;
-  }
-}
-
-/**
- * Reads `control/tenant.json`: `{"format": 1, "user": "u_…", "tenant": "tn_…"}` and, when the data
- * directory is not `<home>/data`, `"data_dir"` with its absolute path; no other keys. A relative
- * or non-string `data_dir` is a corrupt directory, not a path to resolve against anything.
- */
-export async function readTenantDirectory(home: string): Promise<TenantDirectory> {
-  let text: string;
-  try {
-    text = await readFile(tenantFile(home), "utf8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new LocalTenantError("not_initialized", "the home has no tenant directory");
-    }
-    throw e;
-  }
-  const corrupt = () =>
-    new LocalTenantError("tenant_directory_corrupt", "the tenant directory is not of its form");
-  let v: unknown;
-  try {
-    v = JSON.parse(text);
-  } catch {
-    throw corrupt();
-  }
-  if (v === null || typeof v !== "object" || Array.isArray(v)) throw corrupt();
-  const o = v as Record<string, unknown>;
-  const keys = Object.keys(o)
-    .filter((k) => k !== "data_dir")
-    .sort();
-  if (keys.join(",") !== "format,tenant,user" || o["format"] !== 1) throw corrupt();
-  // The default is resolved, so that a relative `home` gives an absolute path, not "corrupt".
-  const dataDir = Object.hasOwn(o, "data_dir") ? o["data_dir"] : resolve(home, "data");
-  if (typeof dataDir !== "string" || !isAbsolute(dataDir)) throw corrupt();
-  const user = o["user"];
-  const tenant = o["tenant"];
-  if (typeof user !== "string" || !USER_ID.test(user)) throw corrupt();
-  if (typeof tenant !== "string" || !TENANT_ID.test(tenant)) throw corrupt();
-  return { user: user as UserId, tenant: tenant as TenantId, dataDir };
-}
+// The local control plane's files and their reading, kept importable from here.
+export {
+  anchorFile,
+  controlDir,
+  LocalControlPlane,
+  LocalTenantError,
+  type LocalTenantFailure,
+  readTenantDirectory,
+  type TenantDirectory,
+  tenantFile,
+} from "./local-control-plane.ts";
 
 /** The open local tenant. */
 export interface LocalTenant {
@@ -134,14 +66,15 @@ export async function openLocalTenant(o: {
   readonly home: string;
   readonly backend: StorageBackend;
 }): Promise<OpenLocalTenantResult> {
+  const control = new LocalControlPlane(o.home);
   let dir: TenantDirectory;
   try {
-    dir = await readTenantDirectory(o.home);
+    dir = await control.directory();
   } catch (e) {
     if (e instanceof LocalTenantError) return { ok: false, failure: e.code };
     throw e;
   }
-  const anchor = openFileAnchorStore(anchorFile(o.home));
+  const anchor = control.anchors;
   const store = await o.backend.open({ kind: "pglite", dir: dir.dataDir }, {});
   try {
     const [tail, a] = await Promise.all([

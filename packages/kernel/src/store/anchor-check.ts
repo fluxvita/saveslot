@@ -22,9 +22,12 @@ export const isCount = (v: unknown): v is number =>
   typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 /** A log position: a positive safe integer. */
 export const isSeq = (v: unknown): v is number => isCount(v) && v >= 1;
-/** A non-empty, well-formed string (an ID or a path). */
+/**
+ * A non-empty, well-formed string (an ID or a path), without U+0000: PostgreSQL's text cannot hold
+ * it, and every anchor store refuses alike what one of them cannot store.
+ */
 export const isName = (v: unknown): v is string =>
-  typeof v === "string" && v !== "" && v.isWellFormed();
+  typeof v === "string" && v !== "" && v.isWellFormed() && !v.includes("\u0000");
 
 /** The first problem of an object's keys: unknown, or a required one missing. */
 function keysProblem(
