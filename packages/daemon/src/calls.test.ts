@@ -257,3 +257,70 @@ describe("connections in the contract's shape, and who may call what", () => {
     expect(warnings).toEqual([]);
   });
 });
+
+describe("a statement the database refuses as it runs", () => {
+  it("leaves none of the database's words on standard error: its SQLSTATE goes to the warnings", async () => {
+    // The database's own text can quote what the statement held; here it says so outright.
+    const said = 'invalid input syntax: "SECRET-7f3a, a value of the caller\'s"';
+    const refusing: LocalTenant = {
+      ...t,
+      store: Object.assign(Object.create(t.store) as typeof t.store, {
+        read: <T>(fn: (tx: Parameters<Parameters<typeof t.store.read>[0]>[0]) => Promise<T>) =>
+          t.store.read((tx) =>
+            fn({
+              query: (text: string, p?: readonly unknown[]) => {
+                if (text.includes('AS "c1"')) {
+                  throw Object.assign(new Error(said), { sqlState: "22P02" });
+                }
+                return tx.query(text, p as never);
+              },
+            } as typeof tx),
+          ),
+      }),
+    };
+    const seen: { event: string; fields: Readonly<Record<string, string>> }[] = [];
+    const written: string[] = [];
+    const write = process.stderr.write.bind(process.stderr);
+    const error = console.error;
+    process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+      written.push(String(chunk));
+      return (write as (...a: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stderr.write;
+    console.error = (...args: unknown[]) => {
+      written.push(
+        args.map((a) => (a instanceof Error ? `${a.message} ${a.stack}` : String(a))).join(" "),
+      );
+    };
+    let refused: Record<string, unknown>;
+    try {
+      const operation = "sql" as const;
+      refused = await runOperation({
+        tenant: refusing,
+        credentials,
+        cursors,
+        operation,
+        call: kernelCall({
+          principal: user,
+          tenant: refusing,
+          operation,
+          body: { sql: "SELECT 1 AS n" },
+          now: NOW,
+          windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+          cursors,
+        }),
+        warn: (event, fields) => seen.push({ event, fields }),
+      }).then(
+        () => ({ refused: "nothing" }),
+        (e) =>
+          e instanceof ContractError ? { refused: e.code, ...e.detail } : { thrown: String(e) },
+      );
+    } finally {
+      process.stderr.write = write as typeof process.stderr.write;
+      console.error = error;
+    }
+    expect(refused).toMatchObject({ refused: "sql_rejected", reason: "runtime" });
+    expect(JSON.stringify(refused)).not.toContain("SECRET-7f3a");
+    expect(written.join("\n")).not.toContain("SECRET-7f3a");
+    expect(seen).toEqual([{ event: "sql_database_error", fields: { code: "22P02" } }]);
+  });
+});

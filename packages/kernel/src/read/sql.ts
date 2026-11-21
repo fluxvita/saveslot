@@ -156,9 +156,13 @@ function refused(e: SqlError): ReadError {
   });
 }
 
-/** The default log: the process's standard error. */
+/**
+ * The default log: the process's standard error, with the refusal's SQLSTATE only. The database's
+ * text can quote what the statement held (the caller's values, the tenant's data); a caller that
+ * wants more gives its own `onDatabaseError`.
+ */
 function logDatabaseError(e: unknown): void {
-  console.error("sql: the database refused a statement:", e);
+  console.error(`sql: the database refused a statement: SQLSTATE ${sqlStateOf(e) ?? "none"}`);
 }
 
 /** Our own words for the data errors the caller can cause, by SQLSTATE. */

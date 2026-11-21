@@ -82,6 +82,42 @@ describe("a statement the database refuses", () => {
     }
   });
 
+  it("with no log of the caller's, the default log has the SQLSTATE and none of the database's words", async () => {
+    const written: string[] = [];
+    const error = console.error;
+    console.error = (...args: unknown[]) => {
+      written.push(
+        args.map((a) => (a instanceof Error ? `${a.message} ${a.stack}` : String(a))).join(" "),
+      );
+    };
+    try {
+      const run = s.store.read((tx) =>
+        sqlInTx(
+          {
+            query: (text, p) => {
+              if (text.includes('AS "c1"')) {
+                throw Object.assign(new Error(ORIGINAL), { sqlState: "42703" });
+              }
+              return tx.query(text, p);
+            },
+          },
+          {
+            actor: USER as never,
+            task: null,
+            now: NOW as never,
+            visibility: { kind: "all" },
+            params: { sql: "SELECT note FROM spend" },
+            read: `rd_${"3".repeat(16)}` as never,
+          },
+        ),
+      );
+      expect(await refusal(run)).toMatchObject({ code: "sql_rejected", reason: "runtime" });
+    } finally {
+      console.error = error;
+    }
+    expect(written).toEqual(["sql: the database refused a statement: SQLSTATE 42703"]);
+  });
+
   it("a query_failed with no SQLSTATE is the caller's refusal too", async () => {
     const { run, logged } = await failing(undefined, "main", "query_failed");
     expect(await refusal(run)).toMatchObject({ code: "sql_rejected", reason: "runtime" });

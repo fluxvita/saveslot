@@ -26,6 +26,7 @@ import {
   schemaDraft,
   sources,
   sql,
+  sqlStateOf,
   write,
 } from "@fluxvita/saveslot-kernel";
 import type { Scope } from "./auth.ts";
@@ -252,7 +253,12 @@ export async function runOperation(o: {
         case "history":
           return history(store, ctx, params, fit);
         case "sql":
-          return sql(store, ctx, params, fit !== undefined ? { fit } : {});
+          return sql(store, ctx, params, {
+            ...(fit !== undefined ? { fit } : {}),
+            // A statement the database refused: its SQLSTATE in the service's warnings, never the
+            // database's text (it can quote the statement's values).
+            onDatabaseError: (e) => o.warn("sql_database_error", { code: sqlStateOf(e) ?? "" }),
+          });
         case "pending":
           return decisionsFor(o.call.scopes, await pending(store, ctx, params, fit));
         case "policy.get":
