@@ -460,7 +460,7 @@ quality:
 - **脚本**：
   1. A 新会话，用户："今天打车那笔记的是多少？"
   2. 脚本步骤，以 B：先 `query` `taxi`，再 `write`：`correct`，带读到的 `ver`，amount 35 CNY，证据"打车其实是 35 元"。
-  3. A，用户："这笔记重了，删掉吧"。
+  3. A，用户："这笔不要了，删掉吧"。
 - **调用**：
   - H 必须，两条路之一：
     - 甲（撤销进候选）：第 3 步里 `saveslot_write`，`intent: "revoke"`，结果 `status: "pending"`，`ops[0].fields["*"].result: "candidate"`。

@@ -65,7 +65,7 @@ steps:
               ver: $taxi_ver_b
               set: { amount: { value: "35", unit: CNY } }
   - agent: A
-    user: "这笔记重了，删掉吧"
+    user: "这笔不要了，删掉吧"
 
 assert:
   calls:
