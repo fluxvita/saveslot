@@ -6,6 +6,9 @@
 // `entity_key`, and covered by a later value; the receipts' warnings overwrote_corroborated and
 // multi_segment_unmapped. Requests go through the write pipeline on a real store.
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   appendOperation,
   applyEvents,
@@ -15,10 +18,12 @@ import {
   readBufferOf,
   readEvents,
   readTail,
+  sources,
 } from "@fluxvita/saveslot-kernel";
 import { COMPILED_V1, createSlotEvents, writeInTx } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
+import { testBackend } from "./testing/test-backend.fixture.ts";
 
 const T = 60_000;
 const TENANT = `tn_${"8".repeat(26)}`;
@@ -866,6 +871,220 @@ describe("on a state table", () => {
           },
           sources: [said],
         },
+      ]);
+    },
+    T,
+  );
+});
+
+describe("base_sources: the interval's sources of a field write (02-architecture §8)", () => {
+  // A state write given an interval records its interval's sources (`valid_sources`, 09 §5.7):
+  // the evidence `evidence_by_field` maps `valid` to, otherwise all its evidence. Each is a row of
+  // kind interval after the item's value sources; the log given from the first event to an empty
+  // store rebuilds the table row by row.
+  const opened = async () =>
+    send({
+      sv: 1,
+      evidence: [say("5000 since October")],
+      ops: [
+        {
+          intent: "update",
+          table: "ledger.accounts",
+          entity_key: { name: "Cash" },
+          set: { balance: "5000" },
+          valid_from: "2026-10-01",
+        },
+      ],
+    });
+  /** 3000 from the 2nd to the 20th, on two pieces of evidence, the value pointed at the first. */
+  const twoPieces = async (ver: string, map: Record<string, number[]>) =>
+    send({
+      sv: 1,
+      evidence: [say("3000"), say("from the 2nd to the 20th")],
+      ops: [
+        {
+          intent: "update",
+          table: "ledger.accounts",
+          entity_key: { name: "Cash" },
+          ver,
+          set: { balance: "3000" },
+          valid_from: "2026-11-02",
+          valid_to: "2026-11-20",
+          evidence_by_field: map,
+        },
+      ],
+    });
+  /** The rows of the balance's (f2) first item of an operation's write.base: [n, kind, source]. */
+  const rowsOf = async (op: number) => {
+    const baseSeq = (await eventsOfOp(op)).find((e) => e.type === "write.base")?.seq as number;
+    const r = await s.store.read((tx) =>
+      tx.query<Record<string, unknown>>(
+        "SELECT n, source_kind, source_seq FROM base_sources WHERE event_seq = $1 AND field_id = 'f2' AND k = 0 ORDER BY n",
+        [baseSeq],
+      ),
+    );
+    return r.rows.map((x) => [Number(x["n"]), x["source_kind"], Number(x["source_seq"])]);
+  };
+  /** `sources` (04-contract-types §4.6 `produced`) of a source, for one operation: "role fields". */
+  const produced = async (seq: number, op: number) => {
+    const id = await s.store.read(async (tx) =>
+      String(
+        (
+          await tx.query<{ source_id: string }>("SELECT source_id FROM sources WHERE seq = $1", [
+            seq,
+          ])
+        ).rows[0]?.source_id,
+      ),
+    );
+    const got = (await sources(
+      s.store,
+      createOpsContext({
+        tenant: TENANT,
+        actor: USER,
+        trigger: null,
+        task: null,
+        visibility: { kind: "all" },
+        idempotency_window: 600_000,
+        idempotency_key_window: 86_400_000,
+        now: now(),
+        confirmation: null,
+      }),
+      { mode: "get", id },
+    )) as unknown as { produced?: { seq: number; fields: string[]; role: string }[] };
+    return (got.produced ?? [])
+      .filter((x) => x.seq === op)
+      .map((x) => `${x.role} ${x.fields.join(",")}`);
+  };
+  /** From the first event, on an empty store: the same base_sources, row by row. */
+  const replaysTheSame = async () => {
+    const dir = mkdtempSync(join(tmpdir(), "saveslot-base-sources-replay-"));
+    const into = await testBackend().open({ kind: "pglite", dir }, { create: true });
+    try {
+      const events = await s.store.read((tx) => tx.query("SELECT * FROM events ORDER BY seq"));
+      const content = await s.store.read((tx) =>
+        tx.query("SELECT * FROM content ORDER BY seq, path"),
+      );
+      await into.write(async (tx) => {
+        for (const [table, rs] of [
+          ["events", events.rows],
+          ["content", content.rows],
+        ] as const) {
+          for (const r of rs) {
+            const cols = Object.keys(r as object);
+            const marks = cols.map((_, i) => `$${i + 1}`).join(", ");
+            await tx.query(
+              `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${marks})`,
+              Object.values(r as object) as never,
+            );
+          }
+        }
+        const last = (await readTail(tx))?.seq ?? 0;
+        await applyEvents(tx, await readEvents(tx, 1, last));
+      });
+      const all = "SELECT * FROM base_sources ORDER BY event_seq, row_id, field_id, k, n";
+      const want = (await s.store.read((tx) => tx.query(all))).rows;
+      expect(want.some((r) => (r as Record<string, unknown>)["source_kind"] === "interval")).toBe(
+        true,
+      );
+      expect((await into.read((tx) => tx.query(all))).rows).toEqual(want);
+    } finally {
+      await into.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it(
+    "`valid` mapped: an interval row names the evidence it is mapped to; a replay rebuilds the rows",
+    async () => {
+      const w = await twoPieces((await opened()).ops[0]?.ver as string, {
+        balance: [0],
+        valid: [1],
+      });
+      const base = (await basesOf(w.seq as number))[0] ?? {};
+      const [value] = cited(base["sources/f2/0"]);
+      const intervals = cited(base["valid_sources"]);
+      expect(intervals).toHaveLength(1);
+      expect(await rowsOf(w.seq as number)).toEqual([
+        [0, "value", value],
+        [1, "interval", intervals[0]],
+      ]);
+      // The value's evidence is listed as `value`; the interval's as `interval`.
+      expect(await produced(value as number, w.seq as number)).toEqual(["value balance"]);
+      expect(await produced(intervals[0] as number, w.seq as number)).toEqual(["interval balance"]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "`valid` not mapped: the interval rests on all the evidence, each a row of kind interval",
+    async () => {
+      const w = await twoPieces((await opened()).ops[0]?.ver as string, { balance: [0] });
+      const base = (await basesOf(w.seq as number))[0] ?? {};
+      const [value] = cited(base["sources/f2/0"]);
+      const all = cited(base["valid_sources"]);
+      expect(all).toHaveLength(2);
+      const other = all.find((x) => x !== value) as number;
+      expect(await rowsOf(w.seq as number)).toEqual([
+        [0, "value", value],
+        [1, "interval", all[0]],
+        [2, "interval", all[1]],
+      ]);
+      // The value's evidence is also an interval source of the item: listed once, as `value`. The
+      // other piece is only the interval's: `interval`.
+      expect(await produced(value as number, w.seq as number)).toEqual(["value balance"]);
+      expect(await produced(other, w.seq as number)).toEqual(["interval balance"]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "an undo's write-back: its carried value first, then the operation's sources after it",
+    async () => {
+      const first = await opened();
+      const w = await twoPieces(first.ops[0]?.ver as string, { balance: [0], valid: [1] });
+      const u = await send({
+        sv: 1,
+        evidence: [say("take that back"), say("it was a typo")],
+        ops: [
+          {
+            intent: "correct",
+            table: "ledger.accounts",
+            entity_key: { name: "Cash" },
+            ver: w.ops[0]?.ver,
+            revert: { undo: w.seq },
+            acknowledge: ["overwrite"],
+          },
+        ],
+      });
+      expect(u["refused"]).toBeUndefined();
+      const base = (await basesOf(u.seq as number))[0] ?? {};
+      const ops = cited(base["op_sources"]);
+      expect(ops).toHaveLength(2);
+      const baseSeq = (await eventsOfOp(u.seq as number)).find((e) => e.type === "write.base")
+        ?.seq as number;
+      const r = await s.store.read((tx) =>
+        tx.query<Record<string, unknown>>(
+          "SELECT n, source_kind, source_seq, carried_event FROM base_sources WHERE event_seq = $1 AND field_id = 'f2' AND k = 0 ORDER BY n",
+          [baseSeq],
+        ),
+      );
+      const opened0 = (await eventsOfOp(first.seq as number)).find((e) => e.type === "write.base")
+        ?.seq as number;
+      // The write-back carries the value of the opening write (its value source, n = 0); the
+      // undo's operation sources follow it, one row each.
+      expect(
+        r.rows.map((x) => [
+          Number(x["n"]),
+          x["source_kind"],
+          x["source_seq"] === null ? null : Number(x["source_seq"]),
+          x["carried_event"] === null ? null : Number(x["carried_event"]),
+        ]),
+      ).toEqual([
+        [0, "value", null, opened0],
+        [1, "operation", ops[0], null],
+        [2, "operation", ops[1], null],
       ]);
     },
     T,

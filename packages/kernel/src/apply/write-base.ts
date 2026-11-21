@@ -244,26 +244,39 @@ function sourceRows(
   const sources = (x.target === "existence" ? undefined : present[`sources/${x.target}/${x.k}`]) as
     | Obj[]
     | undefined;
-  if (sources === undefined) {
-    // An item with no value has no value source; the operation's sources stand for it.
-    const ops = (present["op_sources"] as Seq[] | undefined) ?? [];
-    if (ops.length === 0) return [common(0, "operation", null, [null, null, null], null)];
-    return ops.map((s, n) => common(n, "operation", s, [null, null, null], null));
-  }
-  return sources.map((s, n) => {
-    if (s["kind"] === "schema_const")
-      return common(n, "schema_const", null, [null, null, null], s["sv"] as number);
-    const c = s["carried"] as Obj | undefined;
-    if (c !== undefined)
-      return common(
-        n,
-        "value",
-        null,
-        [c["event"] as Seq, c["field"] as string, c["k"] as number],
-        null,
-      );
-    return common(n, "value", s["source"] as Seq, [null, null, null], null);
-  });
+  const ops = (present["op_sources"] as Seq[] | undefined) ?? [];
+  const intervals = (present["valid_sources"] as Seq[] | undefined) ?? [];
+  // The value sources first (or, for an item with no value, the operation's sources standing for
+  // them, as before: the row with n = 0 is the item's first), then the operation's sources beside
+  // value sources, then the interval's sources (`valid_sources`, 09 §5.7): a deletion's replay
+  // finds every kind of source here (02-architecture §8 `base_sources`).
+  const first: SqlValue[][] =
+    sources === undefined
+      ? ops.length === 0
+        ? [common(0, "operation", null, [null, null, null], null)]
+        : ops.map((s, n) => common(n, "operation", s, [null, null, null], null))
+      : sources.map((s, n) => {
+          if (s["kind"] === "schema_const")
+            return common(n, "schema_const", null, [null, null, null], s["sv"] as number);
+          const c = s["carried"] as Obj | undefined;
+          if (c !== undefined)
+            return common(
+              n,
+              "value",
+              null,
+              [c["event"] as Seq, c["field"] as string, c["k"] as number],
+              null,
+            );
+          return common(n, "value", s["source"] as Seq, [null, null, null], null);
+        });
+  const more: [string, Seq][] = [
+    ...(sources === undefined ? [] : ops.map((s): [string, Seq] => ["operation", s])),
+    ...intervals.map((s): [string, Seq] => ["interval", s]),
+  ];
+  return [
+    ...first,
+    ...more.map(([kind, s], i) => common(first.length + i, kind, s, [null, null, null], null)),
+  ];
 }
 
 const BASE_SOURCE_COLUMNS = [

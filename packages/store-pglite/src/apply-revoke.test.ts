@@ -17,6 +17,7 @@ import {
   createTenant,
   eventsOf,
   type NewEvent,
+  readEvents,
   readTail,
 } from "@fluxvita/saveslot-kernel";
 import {
@@ -352,6 +353,120 @@ describe("a state table: a whole revoke", () => {
         expect(await ver(store, "t_t2_v1__ver", ENTITY)).toBe(20);
       } finally {
         await store.close();
+      }
+    },
+    T,
+  );
+});
+
+describe("base_sources: every kind of source an item has (02-architecture §8)", () => {
+  // A write and a revoke over an interval. The record mapping gives each the interval's sources
+  // (`valid_sources`): all its evidence, here the one source event the mapping gives every op.
+  // Their rows hold the value sources first (for the revoke, which has none, the operation's
+  // stand there), then the interval's; the log given from the first event to an empty store
+  // rebuilds the same rows.
+  const ops: LogEntry[] = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+      fields: { f2: { value: "x", sources: ["S1"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "revoke",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: "2026-11-01" },
+        to: { mode: "given", value: "2026-11-10" },
+      },
+    },
+  ] as LogEntry[];
+  const rowsOf = (s: PgliteTenantStore) =>
+    s.read((tx) =>
+      tx.query<Record<string, unknown>>(
+        "SELECT * FROM base_sources ORDER BY event_seq, row_id, field_id, k, n",
+      ),
+    );
+
+  it(
+    "a revoke's interval sources are rows of kind interval, after its operation's sources",
+    async () => {
+      const { store, run, perStep } = await applied(STATE, ops);
+      try {
+        await at(store, run, perStep[0] as LoggedEvent[]);
+        await at(store, run, perStep[1] as LoggedEvent[]);
+        const rows = (await rowsOf(store)).rows.filter((r) => r["row_id"] === ENTITY);
+        const kinds = (event: number, field: string) =>
+          rows
+            .filter((r) => num(r["event_seq"]) === event && r["field_id"] === field)
+            .map((r) => [
+              num(r["n"]),
+              r["source_kind"],
+              r["source_seq"] === null ? null : num(r["source_seq"]),
+            ]);
+        // The write: its value source, then its interval's (the same source event): two rows.
+        expect(kinds(11, "f2")).toEqual([
+          [0, "value", 10],
+          [1, "interval", 10],
+        ]);
+        // The revoke: no value source and no operation sources, so a row naming no source stands
+        // first (n = 0, as before); then its interval's source.
+        expect(kinds(21, "existence")).toEqual([
+          [0, "operation", null],
+          [1, "interval", 20],
+        ]);
+      } finally {
+        await store.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "the log given from the first event to an empty store rebuilds base_sources row by row",
+    async () => {
+      const { store, run, perStep } = await applied(STATE, ops);
+      const root = mkdtempSync(join(tmpdir(), "saveslot-apply-revoke-replay-"));
+      roots.push(root);
+      const into = await testBackend().open(
+        { kind: "pglite", dir: join(root, "tenant") },
+        { create: true },
+      );
+      try {
+        await at(store, run, perStep[0] as LoggedEvent[]);
+        await at(store, run, perStep[1] as LoggedEvent[]);
+        const events = await store.read((tx) => tx.query("SELECT * FROM events ORDER BY seq"));
+        const content = await store.read((tx) =>
+          tx.query("SELECT * FROM content ORDER BY seq, path"),
+        );
+        await into.write(async (tx) => {
+          for (const [table, rs] of [
+            ["events", events.rows],
+            ["content", content.rows],
+          ] as const) {
+            for (const r of rs) {
+              const cols = Object.keys(r as object);
+              const marks = cols.map((_, i) => `$${i + 1}`).join(", ");
+              await tx.query(
+                `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${marks})`,
+                Object.values(r as object) as never,
+              );
+            }
+          }
+          const last = (await readTail(tx))?.seq ?? 0;
+          await applyEvents(tx, await readEvents(tx, 1, last));
+        });
+        const want = (await rowsOf(store)).rows;
+        expect(want.some((r) => r["source_kind"] === "interval")).toBe(true);
+        expect((await rowsOf(into)).rows).toEqual(want);
+      } finally {
+        await store.close();
+        await into.close();
       }
     },
     T,

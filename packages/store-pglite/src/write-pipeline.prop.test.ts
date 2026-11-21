@@ -341,6 +341,11 @@ function withSources(events: readonly LoggedEvent[], o: Op, head: number): Logge
             : [0, 1, 2];
       blocks[path] = segs.map((k) => ({ kind: "value", source: head + 1 + k }));
     }
+    // The interval's sources (`valid_sources`, 09 §5.7): `valid` is never mapped here, so all the
+    // op's evidence: its three segments, or its api_call.
+    if (Array.isArray(e.blocks["valid_sources"])) {
+      blocks["valid_sources"] = (explicit.length === 0 ? [0] : [0, 1, 2]).map((k) => head + 1 + k);
+    }
     return { ...e, blocks };
   });
 }
@@ -366,7 +371,7 @@ function comparable(e: LoggedEvent, items: Map<string, string>, head?: number): 
   if (e.type === "write.base" && Array.isArray(blocks["op_sources"])) {
     blocks["op_sources"] = (blocks["op_sources"] as unknown[]).map(() => "S");
   }
-  // An interval revoke's interval sources likewise.
+  // The interval's sources likewise (a write's or a revoke's given an interval).
   if (e.type === "write.base" && Array.isArray(blocks["valid_sources"])) {
     blocks["valid_sources"] = (blocks["valid_sources"] as unknown[]).map(() => "S");
   }

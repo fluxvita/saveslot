@@ -441,6 +441,54 @@ describe("the mark on the row whose value rests on the premise", () => {
   );
 
   it(
+    "the interval's sources in base_sources are not where a value came from: the same rows and marks without them",
+    async () => {
+      // A state write given an interval and no `evidence_by_field`: its interval rests on all its
+      // sources (`valid_sources`), so base_sources has a row of kind interval for each of its
+      // items (02-architecture §8). Reading the rows and their premise marks must not take those
+      // rows for where a value came from: dropping them leaves the read unchanged.
+      const r = await release("v2", "2026-12-01");
+      const plan = await ok({
+        ops: [
+          {
+            intent: "insert",
+            table: "plans",
+            set: { label: "x" },
+            valid_from: "2026-10-01",
+            premises: [{ table: "releases", row: r.target.row, ver: r.ver }],
+          },
+        ],
+      });
+      const entity = plan.ops[0]?.target.entity as string;
+      await ok({
+        ops: [
+          {
+            intent: "update",
+            table: "plans",
+            entity,
+            ver: plan.ops[0]?.ver,
+            set: { label: "y" },
+            valid_from: "2026-11-15",
+          },
+        ],
+      });
+      await update(r, { name: "x" });
+      const read = async () =>
+        (await query({ table: "plans", valid_during: ["2026-10-01", "2027-01-01"] })).filter(
+          (x) => x.entity === entity,
+        );
+      const withRows = await read();
+      expect(withRows[0]?.marks?.["premise_changed"]).toBeDefined();
+      const dropped = await s.store.write((tx) =>
+        tx.query("DELETE FROM base_sources WHERE source_kind = 'interval' RETURNING 1"),
+      );
+      expect(dropped.rows.length).toBeGreaterThan(0);
+      expect(await read()).toEqual(withRows);
+    },
+    T,
+  );
+
+  it(
     "changed, then cleared: the clearing voids the declaration, the mark goes",
     async () => {
       const r = await release("v2", "2026-12-01");

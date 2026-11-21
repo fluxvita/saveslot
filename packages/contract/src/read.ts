@@ -559,7 +559,12 @@ export interface SourcesGetResult extends CommonResult {
     target: TargetRef;
     seq: Seq;
     fields: FieldName[];
-    role: "value" | "operation";
+    /**
+     * `value`: a value source of the items (listed once when it is also their operation's or
+     * their interval's); `operation`: the operation's source; `interval`: only the source of the
+     * items' interval.
+     */
+    role: "value" | "operation" | "interval";
   }>;
   /** With it, no `text`, `file` or `produced`. */
   deletion?: SourceDeletion;

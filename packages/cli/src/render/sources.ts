@@ -15,7 +15,7 @@ import { code, join, type Line, name, num, t, time, untrusted } from "./text.ts"
 
 const KINDS: ReadonlySet<string> = new Set<string>(SOURCE_KINDS);
 const LEVELS: ReadonlySet<string> = new Set<string>(SOURCE_LEVELS);
-const ROLES: ReadonlySet<string> = new Set(["value", "operation"]);
+const ROLES: ReadonlySet<string> = new Set(["value", "operation", "interval"]);
 
 /** A file reference: its name, type and size. */
 const fileOf = (f: R) =>

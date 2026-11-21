@@ -222,23 +222,26 @@ const update = (ver: number, from: string, b: string, more: Record<string, unkno
   ],
 });
 
-/** A corroboration's row in the source table: whether it is one and its explicit ends. */
+/**
+ * A corroboration's row in the source table: whether it is one and its explicit ends. One row an
+ * item (its first, n = 0): every row of an item has the same ends (apply-corroboration-ends).
+ */
 const endsOf = async (store: PgliteTenantStore, event: number, field = "f2") =>
   (
     await store.read((tx) =>
       tx.query<{ k: number; corroborated: boolean; corroboration_ends: string | null }>(
         `SELECT k, corroborated, corroboration_ends FROM base_sources
-         WHERE event_seq = $1 AND field_id = $2 ORDER BY k`,
+         WHERE event_seq = $1 AND field_id = $2 AND n = 0 ORDER BY k`,
         [event, field],
       ),
     )
   ).rows;
-/** The explicit ends of every row an event wrote in the source table, whatever the field. */
+/** The explicit ends of every item an event wrote in the source table, whatever the field. */
 const endsOfEvent = async (store: PgliteTenantStore, event: number) =>
   (
     await store.read((tx) =>
       tx.query<{ corroboration_ends: string | null }>(
-        `SELECT corroboration_ends FROM base_sources WHERE event_seq = $1 ORDER BY field_id, k`,
+        `SELECT corroboration_ends FROM base_sources WHERE event_seq = $1 AND n = 0 ORDER BY field_id, k`,
         [event],
       ),
     )

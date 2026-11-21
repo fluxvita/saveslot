@@ -112,7 +112,7 @@ export interface SourcesGetResult {
     readonly target: { readonly table: string; readonly row?: string; readonly entity?: string };
     readonly seq: number;
     readonly fields: readonly string[];
-    readonly role: "value" | "operation";
+    readonly role: "value" | "operation" | "interval";
   }[];
 }
 
@@ -498,12 +498,20 @@ async function getOne(
   const who = await actorsNow(tx, [row.actor]);
 
   // What it produced: by operation, target and role, its fields; in the tables the caller sees.
+  // An item has a row for each kind of source it has (02-architecture §8 `base_sources`): a source
+  // that is a value source of an item and also its operation's or its interval's is listed once,
+  // as `value`; a source only of an item's interval is listed as `interval`. Ordered by the row's
+  // place in the table (item, then position), so the order does not depend on the backend.
   const tables = new Map(slot.tables.map((tb) => [tb.id as string, tb]));
   const p = await tx.query<Record<string, unknown>>(
     `SELECT e.op, e.target_table, b.row_id, b.field_id, b.source_kind
      FROM base_sources b JOIN events e ON e.seq = b.event_seq
-     WHERE b.source_seq = $1 AND b.source_kind IN ('value', 'operation')
-     ORDER BY e.op, b.row_id, b.field_id`,
+     WHERE b.source_seq = $1 AND b.source_kind IN ('value', 'operation', 'interval')
+       AND NOT (b.source_kind IN ('operation', 'interval') AND EXISTS (
+         SELECT 1 FROM base_sources v
+         WHERE v.event_seq = b.event_seq AND v.row_id = b.row_id AND v.field_id = b.field_id
+           AND v.k = b.k AND v.source_seq = b.source_seq AND v.source_kind = 'value'))
+     ORDER BY e.op, b.row_id COLLATE "C", b.field_id COLLATE "C", b.k, b.n`,
     [row.seq] as never,
   );
   const groups = new Map<
@@ -512,14 +520,19 @@ async function getOne(
       target: { table: string; row?: string; entity?: string };
       seq: number;
       fields: string[];
-      role: "value" | "operation";
+      role: "value" | "operation" | "interval";
     }
   >();
   for (const y of p.rows) {
     const table = tables.get(String(y["target_table"]));
     if (table === undefined) continue;
     const target = String(y["row_id"]);
-    const role = y["source_kind"] === "value" ? "value" : "operation";
+    const role =
+      y["source_kind"] === "value"
+        ? "value"
+        : y["source_kind"] === "interval"
+          ? "interval"
+          : "operation";
     const op = Number(y["op"]);
     const key = JSON.stringify([op, table.id, target, role]);
     const g = groups.get(key) ?? {

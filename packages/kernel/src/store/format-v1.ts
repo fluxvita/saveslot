@@ -21,9 +21,11 @@
 
 /**
  * The storage format. 2: the version table's `no_value` column (a state entity without a value on a
- * stretch, told apart from an empty field). An older store is refused, not migrated.
+ * stretch, told apart from an empty field). 3: `base_sources` holds every kind of source an item has,
+ * for a deletion's replay: an interval's sources (`interval`) and the operation's sources beside
+ * value sources. An older store is refused, not migrated.
  */
-export const STORAGE_FORMAT_VERSION = 2;
+export const STORAGE_FORMAT_VERSION = 3;
 
 /** Where a table's state comes from (§3 "日志是唯一事实来源"). */
 export type StateClass = "fact" | "materialized" | "local";
@@ -178,7 +180,7 @@ CREATE INDEX events_target_event ON events (target_event);`,
   field_id ${T} NOT NULL,           -- field ID, or 'existence'
   k INTEGER NOT NULL,               -- item index
   n INTEGER NOT NULL,               -- position in the item's source list
-  source_kind ${T} NOT NULL CHECK (source_kind IN ('value', 'operation', 'schema_const')),
+  source_kind ${T} NOT NULL CHECK (source_kind IN ('value', 'operation', 'schema_const', 'interval')),
   source_seq BIGINT,                -- source.recorded seq
   carried_event BIGINT,             -- carried contribution: write.base seq, field, item
   carried_field ${T},

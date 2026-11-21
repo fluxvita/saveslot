@@ -1814,13 +1814,16 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
               .filter((f) => o.evidenceByField?.fields.has(f)),
           }
         : {}),
-      // The interval's sources (`valid_sources`, 09 §5.7): the evidence `evidence_by_field` maps
-      // its `valid` key to; otherwise, for a revoke over an interval, all the op's evidence (or its
+      // The interval's sources (`valid_sources`, 09 §5.7), on every write or revoke given an
+      // interval (a state table's; `corrected_span` is not given by the caller): the evidence
+      // `evidence_by_field` maps its `valid` key to, otherwise all the op's evidence (or its
       // api_call), so that the interval can be traced to the words it came from when they are
-      // deleted. A write without the block rests its interval on all its evidence.
+      // deleted (`base_sources` has a row for each, 02-architecture §8).
       ...(o.evidenceByField?.valid !== undefined
         ? { validSources: mappedTo(o, o.evidenceByField.valid) }
-        : o.kind === "revoke" && o.valid !== undefined && o.valid !== "corrected_span"
+        : (o.kind === "revoke" || o.kind === "write") &&
+            o.valid !== undefined &&
+            o.valid !== "corrected_span"
           ? { validSources: sourcesOf(o) }
           : {}),
       // An undo writes back no value of its own: the request's evidence (or its api_call) is the

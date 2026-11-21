@@ -43,9 +43,14 @@ export function asWritten(o: Op, i: number): Op {
   return rest;
 }
 
-/** A revoke over an interval records its interval's sources (`valid_sources`): all its evidence. */
+/**
+ * A write or revoke with an interval parameter records its interval's sources (`valid_sources`):
+ * here, all its evidence (as the pipeline does when `evidence_by_field` maps no `valid`).
+ */
 function intervalSources(input: JudgeInput, sources: readonly number[]) {
-  return input.kind === "revoke" && input.valid !== undefined
+  return (input.kind === "revoke" || input.kind === "write") &&
+    input.valid !== undefined &&
+    input.valid !== "corrected_span"
     ? { validSources: sources as never }
     : {};
 }

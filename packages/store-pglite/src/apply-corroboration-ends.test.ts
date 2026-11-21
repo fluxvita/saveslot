@@ -229,7 +229,7 @@ const rowsOf = async (store: PgliteTenantStore, event: number) =>
         corroboration_ends: string | null;
       }>(
         `SELECT field_id, k, n, corroborated, corroboration_ends FROM base_sources
-         WHERE event_seq = $1 ORDER BY field_id COLLATE "C", k, n`,
+         WHERE event_seq = $1 AND source_kind = 'value' ORDER BY field_id COLLATE "C", k, n`,
         [event],
       ),
     )
@@ -328,6 +328,19 @@ describe("each op, each source: its own ends", () => {
       expect(await rowsOf(store, 21)).toEqual([
         { field_id: "f2", k: 0, n: 0, corroborated: true, corroboration_ends: both },
         { field_id: "f2", k: 0, n: 1, corroborated: true, corroboration_ends: both },
+      ]);
+      // The interval's sources (the same two, the interval given and not mapped) are rows of the
+      // same item: they carry the same ends.
+      const all = await store.read((tx) =>
+        tx.query<{ n: number; source_kind: string; corroboration_ends: string | null }>(
+          "SELECT n, source_kind, corroboration_ends FROM base_sources WHERE event_seq = 21 ORDER BY n",
+        ),
+      );
+      expect(all.rows.map((r) => [r.n, r.source_kind, r.corroboration_ends])).toEqual([
+        [0, "value", both],
+        [1, "value", both],
+        [2, "interval", both],
+        [3, "interval", both],
       ]);
     },
     T,

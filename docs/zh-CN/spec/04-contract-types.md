@@ -820,8 +820,8 @@ interface SourcesGetResult extends CommonResult {
   correction?: true;                  // 被一次纠错写入用作值来源
   text?: UntrustedText;
   file?: { name: UntrustedText; mime: string; size: number; sha256: string; origin?: UntrustedText; excerpt?: UntrustedText };
-  /** 它产生了哪些数据。 */
-  produced?: Array<{ target: TargetRef; seq: Seq; fields: FieldName[]; role: "value" | "operation" }>;
+  /** 它产生了哪些数据。role：value 是这些项的值来源（同一项它也是操作来源或区间来源时只列这一条）；operation 是这次操作的来源；interval 是这些项区间参数的来源（状态类表上带区间的写入与撤销的 valid_sources），只作区间来源时才列。 */
+  produced?: Array<{ target: TargetRef; seq: Seq; fields: FieldName[]; role: "value" | "operation" | "interval" }>;
   deletion?: SourceDeletion;          // 有它时不给 text / file / produced
 }
 

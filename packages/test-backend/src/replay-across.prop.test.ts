@@ -872,11 +872,24 @@ describe.skipIf(cell === undefined)("a log replayed on the other backend", () =>
     for (const k of kinds) expect({ [k]: reached[k]?.not }).toEqual({ [k]: 0 });
     const empty = [...want].filter(([, t]) => t.rows.length === 0).map(([name]) => name);
     expect(empty.sort()).toEqual([...EMPTY].sort());
-    // A corroboration with its explicit ends is among the source table's rows.
+    // A corroboration with its explicit ends is among the source table's rows: one item, with a
+    // row for each of its sources (its value's and its interval's), every row the same ends.
+    type Row = {
+      event_seq: number;
+      row_id: string;
+      field_id: string;
+      k: number;
+      corroborated: boolean;
+      corroboration_ends: string | null;
+    };
     const corroborations = (want.get("base_sources")?.rows ?? [])
-      .map((r) => JSON.parse(r) as { corroborated: boolean; corroboration_ends: string | null })
+      .map((r) => JSON.parse(r) as Row)
       .filter((r) => r.corroborated);
-    expect(corroborations.map((r) => r.corroboration_ends)).toEqual([
+    const items = new Set(
+      corroborations.map((r) => JSON.stringify([r.event_seq, r.row_id, r.field_id, r.k])),
+    );
+    expect(items.size).toBe(1);
+    expect([...new Set(corroborations.map((r) => r.corroboration_ends))]).toEqual([
       '["2026-11-15","2026-11-16"]',
     ]);
   };
