@@ -26,6 +26,7 @@
 import {
   type BizPoint,
   type CompiledBaseTable,
+  type CompiledSchema,
   canonicalize,
   type DateStr,
   type EntityId,
@@ -73,12 +74,16 @@ import { type NewEvent, readTail } from "../log/index.ts";
 import { contentBlocks, type ItemContents, openItemsOn, writerHadRead } from "../pending/index.ts";
 import {
   checkSvCompatibility,
+  get,
+  isObj,
   type NormalizedField,
   type NormalizedOp,
+  type NormalizeWriteInput,
   normalizeWrite,
   type RequestError,
   resolveWriteSlot,
   type Visibility,
+  visibleTables,
   type WriteValidationDetail,
 } from "../request/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
@@ -1007,6 +1012,78 @@ export async function settleItems(
   return added;
 }
 
+/**
+ * The slot as version `then` names it (07 «旧名字还认多久»: a write resolves names by the request's
+ * `sv`, then goes by IDs): each table and field of that version under its name then, with the
+ * current version's definition. A table that version has and the current one does not (dropped
+ * since) keeps its earlier definition, for the request to be refused as written to a dropped table.
+ * The changes a version switches to without rebuilding a table (renames, descriptions, a dropped
+ * table) leave a field's type as it was; one that rebuilds a table comes with its migration.
+ */
+export function namedAt(current: CompiledSchema, then: CompiledSchema): CompiledSchema {
+  return {
+    ...current,
+    tables: then.tables.map((t) => {
+      const now = current.tables.find((x) => x.id === t.id);
+      if (now === undefined) return t;
+      if (now.kind !== "base" || t.kind !== "base") return { ...now, name: t.name };
+      return {
+        ...now,
+        name: t.name,
+        fields: now.fields.flatMap((f) => {
+          const was = t.fields.find((g) => g.id === f.id);
+          return was === undefined ? [] : [{ ...f, name: was.name }];
+        }),
+      };
+    }),
+  };
+}
+
+/**
+ * The slot by IDs for everything after the names are resolved (judging, the rows, the log, the
+ * receipt): every table and field of the current version, those `then` has under their names then,
+ * those added since under their names now; a table dropped since kept as `then` has it. Names
+ * only: the definitions are the current ones. Not decided yet: a name used again after a rename
+ * gives a receipt two of it. A table renamed a→b and a new table named a after it can be switched
+ * to now: two tables `a` here (judging goes by IDs, so only the receipt's names are affected). A
+ * field renamed a→b and a new field named a: when adding a field can be switched to.
+ */
+export function namedAsWritten(current: CompiledSchema, then: CompiledSchema): CompiledSchema {
+  const tables = current.tables.map((now) => {
+    const t = then.tables.find((x) => x.id === now.id);
+    if (t === undefined) return now;
+    if (now.kind !== "base" || t.kind !== "base") return { ...now, name: t.name };
+    return {
+      ...now,
+      name: t.name,
+      fields: now.fields.map((f) => {
+        const was = t.fields.find((g) => g.id === f.id);
+        return was === undefined ? f : { ...f, name: was.name };
+      }),
+    };
+  });
+  const dropped = then.tables.filter((t) => !current.tables.some((x) => x.id === t.id));
+  return { ...current, tables: [...tables, ...dropped] };
+}
+
+/** Each slot's definition at version `sv`, by slot ID; none for a version the slot never had. */
+async function definitionsAt(
+  tx: ReadTx,
+  wanted: readonly { readonly slot: string; readonly sv: number }[],
+): Promise<Map<string, CompiledSchema>> {
+  const out = new Map<string, CompiledSchema>();
+  for (const w of wanted) {
+    const r = await tx.query<{ body: string | null }>(
+      `SELECT c.body FROM schema_versions v JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
+       WHERE v.slot_id = $1 AND v.sv = $2 AND v.state IN ('current', 'retired')`,
+      [w.slot, w.sv],
+    );
+    const body = r.rows[0]?.body;
+    if (body != null) out.set(w.slot, JSON.parse(body) as CompiledSchema);
+  }
+  return out;
+}
+
 /** Writes the request in `tx`; returns its receipt, or the original one for a repeated request. */
 export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt> {
   const { actor, now } = input;
@@ -1014,17 +1091,78 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   // table or field out of range is answered as one that does not exist, with the nearest names
   // and the candidates taken from what is visible only.
   const visible = await visibleSlotRows(tx, input.visibility as Visibility);
+  // The request's version on each slot: its `sv` as given, else the caller's by fallback on that
+  // slot (04-contract §2); names resolve by it (07 «旧名字还认多久»: the caller's names come from the
+  // version it read). Taken before the request is normalized, from its parameters as sent; a
+  // malformed `sv` or `task` is refused in normalizing. A slot only ever at one version needs none.
+  const raw = isObj(input.params) ? input.params : {};
+  const givenSv = get(raw, "sv");
+  const explicitSv =
+    typeof givenSv === "number" && Number.isSafeInteger(givenSv) ? givenSv : undefined;
+  const rawTask = get(raw, "task");
+  const fallbackTask = typeof rawTask === "string" ? rawTask : input.task;
+  const svFallbacks = new Map<string, Awaited<ReturnType<typeof fallback>>>();
+  const svFallback = async (s: SeenSlot) => {
+    const known = svFallbacks.get(s.slot);
+    if (known !== undefined) return known;
+    const f = await fallback(tx, input, fallbackTask, { kind: "sv", target: s.slot }, () =>
+      svFromWrite(tx, s.slot, actor, fallbackTask),
+    );
+    svFallbacks.set(s.slot, f);
+    return f;
+  };
+  const withRetired = new Set(
+    (
+      await tx.query<{ slot_id: string }>(
+        "SELECT DISTINCT slot_id FROM schema_versions WHERE state = 'retired'",
+      )
+    ).rows.map((x) => x.slot_id),
+  );
+  const earlier: { slot: string; sv: number }[] = [];
+  for (const s of visible) {
+    if (!withRetired.has(s.slot)) continue;
+    const f = explicitSv !== undefined ? { found: explicitSv } : await svFallback(s);
+    if ("found" in f && f.found < s.sv) earlier.push({ slot: s.slot, sv: f.found });
+  }
+  // Each slot as the request's version names it, where that is not the current one.
+  const versionNames = new Map<string, CompiledSchema>();
+  const versionNamesWhole = new Map<string, CompiledSchema>();
+  for (const [id, then] of await definitionsAt(tx, earlier)) {
+    const s = visible.find((x) => x.slot === id) as SeenSlot;
+    const n = namedAt(s.compiled, { ...then, name: s.name });
+    versionNamesWhole.set(id, namedAsWritten(s.compiled, { ...then, name: s.name }));
+    versionNames.set(id, {
+      ...n,
+      tables: visibleTables(input.visibility as Visibility, s.slot, n.tables) ?? [],
+    });
+  }
+  // A table name is looked up in each slot by its current names and by the request's version's:
+  // one slot having it either way is the request's; two are `ambiguous_table`, whichever way each
+  // has it (`sv` is per slot: either could be meant).
   const which = resolveWriteSlot(
     input.params,
-    visible.map((s) => ({
-      name: s.name,
-      tables: s.tables.map((t) => t.name),
-      // Not names: only for the order of `nearest` (04-contract §11).
-      aliases: new Map(s.tables.map((t) => [t.name, t.aliases ?? []] as const)),
-    })),
+    visible.map((s) => {
+      const names = s.tables.map((t) => t.name);
+      for (const t of versionNames.get(s.slot)?.tables ?? [])
+        if (!names.includes(t.name)) names.push(t.name);
+      return {
+        name: s.name,
+        tables: names,
+        // Not names: only for the order of `nearest` (04-contract §11).
+        aliases: new Map(s.tables.map((t) => [t.name, t.aliases ?? []] as const)),
+      };
+    }),
   );
   if (!which.ok) throw requestFailure(which.error);
   const slot = visible.find((s) => s.name === which.slot) as SeenSlot;
+  // The slot as the request names it: its version's names, else the current ones.
+  const naming: CompiledSchema = versionNames.get(slot.slot) ?? {
+    ...slot.compiled,
+    tables: slot.tables,
+  };
+  // The slot by IDs, named by the same version: the receipt and what a refusal names say it as the
+  // request does, so its names and its `sv` agree. The definitions are the current ones.
+  const receiptNames: CompiledSchema = versionNamesWhole.get(slot.slot) ?? slot.compiled;
   // A visible table this credential cannot write (a credential scoped to some slots: writing in
   // range comes later, 07-scope-v1), before the request is normalized: that it cannot write comes
   // before what is wrong in the ops. The table is visible, so this tells nothing out of range.
@@ -1034,8 +1172,15 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     });
   }
   const today = todayIn(now, slot.timezone);
-  // One schema version in this phase: nothing changed incompatibly since any version.
-  const changedSince = () => new Map();
+  // What changed incompatibly since the request's version: a table dropped since (07 «原则»:
+  // `drop_table` refuses old writes; written as the whole table, `"*"`). The other incompatible
+  // changes, field by field, come with the migrations that make them (S2c).
+  const droppedSince: ReturnType<NormalizeWriteInput["changedSince"]> = new Map(
+    naming.tables
+      .filter((t) => !slot.compiled.tables.some((x) => x.id === t.id))
+      .map((t) => [`${t.id}/*`, "drop_table"] as const),
+  );
+  const changedSince = () => droppedSince;
   // The versions ever in effect: numbers skip (04-contract §2), and a draft's number is no version.
   // With them, in the same statement, the versions each table is in: the catalog has a row for each
   // table of each version switched to, so the first and the last of them.
@@ -1054,7 +1199,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   }
   const normalized = normalizeWrite({
     params: input.params,
-    compiled: { ...slot.compiled, tables: slot.tables },
+    compiled: naming,
     inRange: visible.map((s) => ({ name: s.name, tables: s.tables.map((t) => t.name) })),
     currentSv: slot.sv,
     knownSv,
@@ -1065,7 +1210,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   const req = normalized.request;
   const task = req.task ?? input.task;
   const tableOf = (id: TableId) =>
-    slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as CompiledBaseTable;
+    receiptNames.tables.find((t) => t.id === id && t.kind === "base") as CompiledBaseTable;
   const restore = await restoreCount(tx);
   const warnings: ReceiptWarning[] = [...req.warnings];
   // Corroborations a value in effect covered (judge's `warnings`), turned into
@@ -1086,7 +1231,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     tx,
     req.ops,
     (id) =>
-      slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as
+      receiptNames.tables.find((t) => t.id === id && t.kind === "base") as
         | CompiledBaseTable
         | undefined,
     async (target, verTable) => {
@@ -1107,7 +1252,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   const hit = await findRequest(tx, rk, now, input.windows);
   if (hit !== undefined) {
     const replay = await readReceipt(tx, hit, {
-      compiled: slot.compiled,
+      compiled: receiptNames,
       slotName: slot.name,
       restoreCount: restore,
       replayed: true,
@@ -1147,9 +1292,8 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   let sv = req.sv;
   let svBasis: "explicit" | "fallback" = "explicit";
   if (sv === undefined) {
-    const f = await fallback(tx, input, task, { kind: "sv", target: slot.slot }, () =>
-      svFromWrite(tx, slot.slot, actor, task),
-    );
+    // Looked up before normalizing, for the names; refused here, after what comes first.
+    const f = await svFallback(slot);
     if (!("found" in f)) throw readFirst(f, { target: "slot", ref: slot.name }, task, "sv");
     sv = f.found;
     svBasis = "fallback";
@@ -1343,7 +1487,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         op,
         index: o.index,
         tableOf: (id) =>
-          slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as
+          receiptNames.tables.find((t) => t.id === id && t.kind === "base") as
             | CompiledBaseTable
             | undefined,
         self: selfId,
@@ -1692,7 +1836,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       slot: slot.name,
       table,
       tableOf: (id) =>
-        slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as
+        receiptNames.tables.find((t) => t.id === id && t.kind === "base") as
           | CompiledBaseTable
           | undefined,
       items: givenItems(j.record),
@@ -1987,14 +2131,14 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   }
   const receipt = withDerived(
     (await readReceipt(tx, op, {
-      compiled: slot.compiled,
+      compiled: receiptNames,
       slotName: slot.name,
       restoreCount: restore,
       replayed: false,
       visible: (id) => slot.tables.some((t) => t.id === id),
     })) as WriteReceipt,
     step.derived,
-    slot.compiled,
+    receiptNames,
     slot.name,
   );
   const ops = receipt.ops.map((r, i) => {

@@ -4,8 +4,10 @@
 // alias equal to the name after folding first, then by edit distance after folding, then by name in
 // C order).
 
-/** ASCII case folding: names are unique without ASCII case (04-contract §1). */
-export const fold = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+// ASCII case folding: names are unique without ASCII case (04-contract §1).
+import { fold } from "../schema/index.ts";
+
+export { fold };
 
 /** Folding for nearness (keymatch@1's fold, as far as names need it): NFKC, case, white space. */
 const nearFold = (s: string): string => s.normalize("NFKC").toLowerCase().replace(/\s+/g, "");

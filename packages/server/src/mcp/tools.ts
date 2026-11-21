@@ -39,8 +39,12 @@ interface Param {
 export interface Tool {
   readonly name: ToolName;
   readonly operation: Operation;
-  /** The scope a credential needs to have the tool listed and to call it. */
+  /**
+   * The scope a credential needs to have the tool listed and to call it. With `anyOf`, any one of
+   * those does, and `scope` is the one named when none does.
+   */
   readonly scope: Scope;
+  readonly anyOf?: readonly Scope[];
   readonly description: Text;
   readonly params: Readonly<Record<string, Param>>;
   /** The operation's parameters MCP does not expose (05 §2), with why. */
@@ -424,15 +428,17 @@ export const TOOLS: readonly Tool[] = [
   {
     name: "saveslot_resolve",
     operation: "resolve",
-    // The service's rule for resolve (04-contract §6 gives a scope per decision).
+    // The service's rule for resolve: any decision scope lets it in; the one the item's type needs
+    // is checked when it is called (04-contract §6).
     scope: "saveslot.write",
+    anyOf: ["saveslot.write", "saveslot.schema", "saveslot.delete"],
     description: RESOLVE.description,
     params: {
       id: { schema: str, text: RESOLVE.params.id, required: true },
       decision: {
         schema: {
-          // This version's items are conflicts and changes awaiting confirmation; the other
-          // decisions come with flagged items (P2), deletions (P3) and schema changes (P4).
+          // This version's items are conflicts, changes awaiting confirmation and schema changes;
+          // the other decisions come with flagged items (P2) and deletions (P3).
           enum: ["keep_effective", "take_candidate", "take_previous", "confirm", "reject"],
         },
         text: RESOLVE.params.decision,
@@ -508,9 +514,13 @@ export const TOOLS: readonly Tool[] = [
   },
 ];
 
+/** Whether `principal` may call `tool`: its scope, or any of its `anyOf`. */
+export const mayCall = (principal: Principal, tool: Tool): boolean =>
+  (tool.anyOf ?? [tool.scope]).some((x) => principal.scopes.includes(x));
+
 /** The tools listed to `principal`. */
 export function toolsFor(principal: Principal): readonly Tool[] {
-  return TOOLS.filter((t) => principal.scopes.includes(t.scope));
+  return TOOLS.filter((t) => mayCall(principal, t));
 }
 
 /**

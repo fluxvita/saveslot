@@ -25,6 +25,11 @@ export interface VisibleSlot {
   readonly compiled: CompiledSchema;
   /** The tables visible in it. */
   readonly tables: readonly CompiledTable[];
+  /**
+   * The table IDs the caller's range names in this slot, any version's; absent: the whole slot, as
+   * it is at any version. For what is no longer a table now (a table a schema switch dropped).
+   */
+  readonly rangeTables?: ReadonlySet<string>;
 }
 
 /**
@@ -59,6 +64,8 @@ export async function visibleSlots(tx: ReadTx, visibility: Visibility): Promise<
       throw e;
     }
     if (tables === undefined) continue;
+    const scope =
+      visibility.kind === "scoped" ? visibility.slots.find((s) => s.slot === x.id) : undefined;
     out.push({
       slot: x.id as SlotId,
       name: x.name,
@@ -66,6 +73,9 @@ export async function visibleSlots(tx: ReadTx, visibility: Visibility): Promise<
       sv: Number(x.current_sv),
       compiled,
       tables,
+      ...(scope?.tables !== undefined
+        ? { rangeTables: new Set(scope.tables.map((t) => t.table as string)) }
+        : {}),
     });
   }
   return out;

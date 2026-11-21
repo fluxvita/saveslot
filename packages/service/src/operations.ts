@@ -16,6 +16,7 @@ import {
   type NoticeRefs,
   pending,
   pendingItemsNotices,
+  pendingItemType,
   policyGet,
   query,
   readsList,
@@ -27,6 +28,7 @@ import {
   sql,
   write,
 } from "@fluxvita/saveslot-kernel";
+import type { Scope } from "./auth.ts";
 import { contractResult, type KernelCall, type Operation } from "./calls.ts";
 import { ContractError, contractError } from "./contract-error.ts";
 import type { Credentials } from "./credentials.ts";
@@ -165,6 +167,56 @@ const text = (p: Obj, k: string) => {
   }
 };
 
+/**
+ * The scope each item type's decisions need (04-contract §6 «处理方式»): the kernel knows only the
+ * visible range, the scope is the service's (02-architecture §5).
+ */
+const DECISION_SCOPE: ReadonlyMap<string, Scope> = new Map([
+  ["conflict", "saveslot.write"],
+  ["awaiting_confirmation", "saveslot.write"],
+  ["flagged", "saveslot.write"],
+  ["schema_change", "saveslot.schema"],
+  ["deletion", "saveslot.delete"],
+]);
+
+/**
+ * An item's detail with only the decisions the credential may take (04-contract §6: «只列出当前
+ * 凭证可用的处理方式»): the kernel lists every decision of the item's type. Every result that gives
+ * decisions goes through here, and only an item's detail (04-contract-types `ItemBase.decisions`)
+ * does: `pending`'s detail, and the `current` of `confirmation_mismatch` (which is that detail). A
+ * write's `pending[]` and `resolve`'s receipt give none. Anything else is returned as it is.
+ * The decisions a receipt's text names (MCP's write receipt for a conflict, an awaiting write)
+ * are not filtered here: a write receipt is only ever given to a credential with saveslot.write,
+ * which may take those decisions.
+ */
+export function decisionsFor(scopes: readonly Scope[], x: unknown): unknown {
+  if (x === null || typeof x !== "object" || Array.isArray(x)) return x;
+  const o = x as Record<string, unknown>;
+  if (!Array.isArray(o["decisions"]) || typeof o["type"] !== "string") return x;
+  const need = DECISION_SCOPE.get(o["type"]);
+  return need !== undefined && scopes.includes(need) ? x : { ...o, decisions: [] };
+}
+
+/**
+ * `resolve`'s scope, by the item's type (04-contract §6): checked before the kernel decides, on the
+ * item as the caller sees it. An item it does not see is not checked: the kernel refuses it as not
+ * there, so a scope error never tells that it exists. An item's type never changes.
+ */
+async function checkDecisionScope(o: {
+  readonly store: LocalTenant["store"];
+  readonly call: KernelCall;
+}): Promise<void> {
+  const id = o.call.params["id"];
+  if (typeof id !== "string") return;
+  const type = await pendingItemType(o.store, o.call.ctx, id);
+  if (type === undefined) return;
+  const need = DECISION_SCOPE.get(type);
+  if (need === undefined || !o.call.scopes.includes(need))
+    throw new ContractError("insufficient_scope", "the credential may not decide on this item", {
+      required_scope: need ?? "saveslot.write",
+    });
+}
+
 /** Runs `call` as `operation`; resolves with the contract result, rejects with a ContractError. */
 export async function runOperation(o: {
   readonly tenant: LocalTenant;
@@ -202,7 +254,7 @@ export async function runOperation(o: {
         case "sql":
           return sql(store, ctx, params, fit !== undefined ? { fit } : {});
         case "pending":
-          return pending(store, ctx, params, fit);
+          return decisionsFor(o.call.scopes, await pending(store, ctx, params, fit));
         case "policy.get":
           return policyGet(store, ctx, params);
         case "sources":
@@ -210,6 +262,7 @@ export async function runOperation(o: {
         case "write":
           return write(store, ctx, params);
         case "resolve":
+          await checkDecisionScope({ store, call: o.call });
           return resolve(store, ctx, params);
         case "schema_draft":
           return schemaDraft(store, ctx, params);
@@ -311,7 +364,14 @@ export async function runOperation(o: {
         narrow_by: [],
       });
     }
-    throw contractError(e, o.warn);
+    const c = contractError(e, o.warn);
+    // The item as it is now, with the decisions this credential may take.
+    if (c.code === "confirmation_mismatch" && c.detail["current"] !== undefined)
+      throw new ContractError(c.code, c.message, {
+        ...c.detail,
+        current: decisionsFor(o.call.scopes, c.detail["current"]),
+      } as never);
+    throw c;
   }
 }
 

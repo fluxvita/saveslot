@@ -42,7 +42,7 @@
 类型见 types 第 1 节。
 
 - **表**：限定名 `ledger.expenses`，或在可见范围内不重名时只写 `expenses`；有歧义时报 `invalid_argument`（`ambiguous_table`）并附候选。**slot** 参数接受名字或 `slot_id`。
-- **名字只在可见范围内解析**（可见范围见第 12 节）：不重名的判断、`ambiguous_table` 的候选、旧名解析都只看这个凭证可见的 slot 与表。范围外的名字不会出现在任何结果、报错、候选与提示里。
+- **名字只在可见范围内解析**（可见范围见第 12 节）：不重名的判断、`ambiguous_table` 的候选、旧名解析都只看这个凭证可见的 slot 与表。旧名解析只对表名与字段名：slot 改名之后旧名不再解析，按旧名写的限定名与以 slot 名作参数的地方都与名字不存在相同（data-model「旧名字还认多久」）。范围外的名字不会出现在任何结果、报错、候选与提示里。
 - **名字按版本解析**：写入按请求带的 `sv` 解析名字（改名后带旧名的写入照常接受）；读取接受最近几个版本内的旧名，`warnings` 给 `renamed`（data-model「schema 文档格式」）。表与字段的别名（`aliases`）不是名字，不参与解析，见第 10 节 `catalog`。
 - **行**：事件类表、无时间表用 `row`；状态类表用 `entity` 或 `entity_key`（schema 声明的自然键）；派生表用 `key`（分组键，只读；saveslot 内部换成不透明的 `partition_id`）。除 `table` 外恰好给一个。事件类表、无时间表声明了来源键时，写入还可以用 `external_key` 定位（5.1）；读操作的参数不收 `external_key`，给了报 `invalid_argument`。结果里服务端总是给出 ID，有自然键 / 分组键 / 来源键时一并给出。
 - **值与元字段分层**：读结果里字段的值放在每行的 `values` 下，行标识、`ver`、区间、标记在行对象上。用户字段名因此不会和元字段撞名。
@@ -487,12 +487,12 @@
 2. 事项已关闭：已解决、处理方式相同 → 返回原结果，`replayed: true`；已解决、处理方式不同，或已被取代 → `item_closed`（附已有结果，或取代的原因）。所以过了很久用旧 `item_ver` 重发同一处理方式，也按重放返回。
 3. 事项不是 `deletion`、也不是 `schema_change`，而它的目标受一项仍待执行的删除影响（data-model「删除 · 撤回与宽限期」）→ `invalid_argument`（`pending_deletion_target`），附相关的删除与最晚的到期时刻；不核对绑定的内容，不产生事件。
 4. 按第 6 节核对绑定的内容；对不上 → `confirmation_mismatch`，附 `current`：该事项此刻的详情（含新的 `item_ver`），与同一时刻查看详情所得相同，算读到（第 2 节）。
-5. `schema_change` 的 `confirm`：在同一个事务里重新判断。草稿里凡按"从未被写入"编译的改动（只对从未被写入的表放开的结构改动，以及归入 `restructure_unused` 的各项，见 `schema_draft` 一节），所在的表在确认时已被写入，一律报 `draft_outdated`（`table_written`）；草稿带 `migrate` 时，对试跑之后的新写入（迁移期间带旧 `sv` 的写入）重新求值，有失败的报 `draft_outdated`（`migrate_failed`）。两种都不产生任何事件，事项保持未决；调用方 `reject` 这份草稿，或提交新草稿取代它。
+5. `schema_change` 的 `confirm`：在同一个事务里重新判断。草稿里凡按"从未被写入"编译的改动（只对从未被写入的表放开的结构改动，以及归入 `restructure_unused` 的各项，见 `schema_draft` 一节），所在的表在确认时已被写入，一律报 `draft_outdated`（`table_written`）；草稿带 `migrate` 时，对试跑之后的新写入（迁移期间带旧 `sv` 的写入）重新求值，有失败的报 `draft_outdated`（`migrate_failed`）；草稿改 slot 名（`rename_slot`）而新名此时已被另一个 slot 用着（不分 ASCII 大小写），报 `draft_outdated`（`name_taken`，data-model「确认时重新判断」）。三种都不产生任何事件，事项保持未决；调用方 `reject` 这份草稿，或提交新草稿取代它。`base_version` 不再核对：待确认的草稿所基于的版本就是确认时的当前版本——其间的任何切换都出自一份新草稿，而新草稿提交时先取代了它（它的事项随之关闭，再确认报 `item_closed`）。
 
 - **触发的写入同样过 `ref` 目标的校验**（data-model「写入 ref 字段时」）：采纳候选、回到合并基、确认待确认写入（含确认一次撤回）时，这次将要生效的 `ref` 值按处理时的状态校验，不过报 `validation_failed`（`ref_not_found` / `ref_wrong_table`），明细不带 `op`、带 `table` 与 `field`；不产生任何事件，事项保持未决。
 - `take_candidate` 在事项有多个候选时必须给 `candidate`（详情里候选的 `index`；下标在事项生命周期内不复用），否则 `invalid_argument`（`candidate_required`，附候选 `candidate_choices`：每个候选的下标、所在写入的操作号与写入者）。
 - `evidence` 与 `note`：`resolve` 没有请求级证据，证据只有 `evidence` 与 `evidence_by_field`，不收 `evidence_refs`；`evidence_by_field` 的下标数的就是本次的 `evidence` 数组，处理触发写入时按字段指明那次写入的证据（这一版不收，报 `not_in_this_version`：这一版各种处理方式触发的写入的项都是搬运来的，按字段指明证据改变不了它们的来源；`migration_diff` 的 `set` 带值时才用得上）。`evidence` 每段存为一条源数据；带了 `note`、或处理会触发写入而没带证据时，解决请求本身（含 `note`）另存一条 `api_call`。**不触发写入的处理方式（`keep_effective`、`reject`、`keep`、schema 的确认与拒绝）同样如此**，所以 `note` 总有地方落、总能被隐私删除清掉。它们只是操作来源；事项详情的 `resolution.note` 从这条源数据回显，源数据被删后不再回显。既没带证据也没带 `note`、又不触发写入的解决不产生源数据。
-- 结果：触发了写入时带 `write`（形状同写入回执的对应部分，含 `premise_affected`）；`schema_change` 的 `confirm` 带 `schema`（是否已切换、新 `sv`，或迁移状态）；`deletion` 的 `cancel` 带 `cancelled`（受影响行的新 `ver`、退回原状态的写入、恢复的事项、保持"已被取代"的事项、因已被当作基线而不退回的写入、前提的变化 `premise_affected`）。
+- 结果：触发了写入时带 `write`（形状同写入回执的对应部分，含 `premise_affected`）；`schema_change` 带 `schema`：`confirm` 是已切换与新 `sv`（或迁移状态），`reject` 是 `switched: false`；`deletion` 的 `cancel` 带 `cancelled`（受影响行的新 `ver`、退回原状态的写入、恢复的事项、保持"已被取代"的事项、因已被当作基线而不退回的写入、前提的变化 `premise_affected`）。
 - **撤回时被重新判定的候选**（`cancelled.rejudged[]`，后续）：第一版不会出现——宽限期内受影响的行上不能解决事项，被删除去掉的候选撤回时回到仍未决的原事项，或随已关闭的原事项关闭。放开那条限制之后：删除曾从一个冲突事项里去掉某个候选，而那个事项在宽限期内已经被解决。撤回后候选回来，原事项的解决不动，候选按撤回时的当前值重新判定，一个候选一条：还有部分与当前值不同 → `reopened`，为它另开一个冲突事项（成因 `restored_candidate`，详情的 `related_item` 指回原事项；附新事项的 `id` 与 `item_ver`）；都与当前值相同、其中有指了证据的 → `corroborated`，成为佐证；都相同且没指证据 → `dropped`，不再是改动。后两种没有事项可处理，所以要在这里列出，调用方才知道那次写入最终没有生效。
 - **确认记录**另记 `via: "call" | "elicitation"`（`elicitation` 后续）：由外化面填写，调用方不能传，只作记录。
 
@@ -512,7 +512,7 @@
 - **从未被写入的表**（日志里没有任何一条以这张表为目标的基础写入；写过、行已全部撤销或内容已全部删除的都不算）上，下面这些改动放开：改表的时间类型（`change_time_type`）、增删改 `entity_key`（`change_entity_key`）、改 `granularity`（`change_granularity`）、`base` 改 `derived`（`change_table_kind`；反方向仍不支持）、字段与 `ref` 互转或改 `ref` 的目标（`change_ref`）、加 / 去掉 / 换来源键（`add_external_key` / `drop_external_key` / `change_external_key`）。表 ID 与字段 ID 不变。
   - 这张表最近 30 天也没有提交者以外的连接实例按名字读写过时，这些改动，连同同一张表上的 `drop_field`、`change_type`、`change_dimension`、`change_unit`、`change_precision`、`tighten_constraint`，`add_required_field`、`change_time_field`，都归入 `restructure_unused`，自动生效：没有值可丢，`class` 记 `metadata`，`destructive` 是 `false`，`migrate` 不必给。新增必填字段与可选改必填仍须给常量形式的 `backfill`。有别人读写过时要确认，影响的 `consumers` 列出他们。
   - 依赖这张表的派生规则在同一次编译里按新定义重新编译；规则的输出没变的不另列改动。
-  - 经 `restructure_unused` 生效的任何改动之后，带旧 `sv` 写这张表的写入一律被拒：`schema_incompatible`，`changed_fields` 给一项 `{field: "*", change: <改动码>}`，`"*"` 表示整张表。
+  - 经 `restructure_unused` 生效的任何改动之后，带旧 `sv` 写这张表的写入一律被拒：`schema_incompatible`，`changed_fields` 给一项 `{field: "*", change: <改动码>}`，`"*"` 表示整张表。表被删（`drop_table`）之后，带删除之前的 `sv` 写它同样如此，`change` 是 `drop_table`。
   - 草稿等确认期间这张表被写入了：草稿里凡按"从未被写入"编译的改动都不再成立，确认时一律报 `draft_outdated`（`table_written`，见 `resolve`）。
 - **第一版不支持的键或改动**：`reextract`、`extends`、`compatibility`、`derived` 改 `base`；在写入过的表上改时间类型、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 互转与改目标、换一组来源键（`change_external_key`）、改来源键字段的类型或收紧它的约束。写入过的表上仍可以加来源键（键字段须是同一份草稿新增的字段）或去掉它，都要确认。草稿里出现时整份报 `not_in_this_version`，`param` 指到那个键，不产生任何事件；因为表已被写入而不支持的，`reason` 是 `table_written`。
 - **这一版建 slot 时不收的派生规则**：用到 `saveslot_date` 的、分组键是 `decimal` / `quantity` 且小数位上界可能超出推断精度的（算法见 [`03-data-model/11-restricted-sql.md`](03-data-model/11-restricted-sql.md)「小数分组键」）。都报 `not_in_this_version`，`param` 指到那张派生表的规则（`tables/<i>/rule`），不产生任何事件。派生规则读读时计算的派生表，这一版同样报 `not_in_this_version`，`param` 是 `tables/<i>/rule/sql`。
@@ -620,11 +620,11 @@
 | `derived_readonly` | 写派生表；附它的基础表 |
 | `validation_failed` | 写入的类型、单位量纲、范围、必填不符，`ref` 的目标不存在或不可见，写入触发的派生刷新求值出错（`rule_eval_failed`），迁移进行中带旧 `sv` 的写入对新版求值转换表达式失败（`migrate_failed`，`path` 指到那个 op 的那个字段，按新版本重读再写）；schema 编译失败（含来源键与别名的规则） |
 | `read_first` | 没带 `ver` / `item_ver` / `sv`（含前提里的 `ver`）、也没有可兜底的读取；`since: "my_last_read"` 而没读过 |
-| `schema_incompatible` | 带回的 `sv` 之后，所写字段发生了不兼容变化；或所写的表经 `restructure_unused` 改过结构（`changed_fields` 给 `"*"`） |
+| `schema_incompatible` | 带回的 `sv` 之后，所写字段发生了不兼容变化；或所写的表经 `restructure_unused` 改过结构、或已被删（`changed_fields` 给 `"*"`） |
 | `too_large` | 证据段或请求超上限；超出写入准入阈值（第一版不报，见第 5.4 节「写入准入」）；不可分页的结果超出外化面的结果预算；一个 op 的前提超过 16 条，或前提目标已被 1,000 条有效声明指向 |
 | `sql_rejected` | 受限 SQL 校验不过（含引用了不存在或不可见的表、类型或单位不合、超出上限），或执行时求值出错（`runtime`） |
 | `sql_timeout` | 受限 SQL 执行超时 |
-| `draft_outdated` | 草稿的 `base_version` 不是当前版本，或迁移进行中；确认时草稿所改结构的那张表已被写入（`table_written`），或 `migrate` 对试跑之后的新写入求值失败（`migrate_failed`） |
+| `draft_outdated` | 草稿的 `base_version` 不是当前版本，或迁移进行中；确认时草稿所改结构的那张表已被写入（`table_written`），`migrate` 对试跑之后的新写入求值失败（`migrate_failed`），或草稿要改成的 slot 名已被另一个 slot 用着（`name_taken`） |
 | `field_unmatched` | 草稿里有已有字段没匹配到、也没列入删除 |
 | `confirmation_mismatch` | 解决事项时绑定的内容对不上；恢复备份或导入之前拿到的 `item_ver` |
 | `item_closed` | 事项已用不同处理方式解决、已被取代，或 `deletion` 的宽限期已过（同一处理方式重发是重放，不报错） |

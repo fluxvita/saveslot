@@ -1,0 +1,2 @@
+pi_W5VPWBFNKM2T6KFF schema_change: reject · resolved · version iv_W5VPWBFNKM2T6KFF.10.0
+Not switched: the draft is rejected, the slot stays as it is.

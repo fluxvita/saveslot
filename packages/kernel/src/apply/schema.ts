@@ -5,9 +5,10 @@
 // `schema.compiled` (with `create_slot`) → `schema.confirmed` → `slot.policy_set` →
 // `schema.switched` (no `from_version`, nothing rebuilt); and a draft changing a slot left pending:
 // its `schema.compiled` (`pending`) takes its version number (a `schema_versions` row, pending),
-// `schema.superseded` gives it up (the row and number stay); a switch from an earlier version that
-// rebuilds nothing (catalog-only changes, new tables) moves the pointer. Rejected drafts, switches
-// rebuilding tables and migrations stop apply as not implemented, never skipped. So does a definition
+// `schema.superseded` or `schema.rejected` gives it up (the row and number stay); a switch from an
+// earlier version that rebuilds nothing (catalog-only changes, new tables), after an automatic
+// change or a confirmation, moves the pointer. Switches rebuilding tables and migrations stop
+// apply as not implemented, never skipped. So does a definition
 // with an external key, or with a derived rule this version does not evaluate: their indexes and
 // evaluation belong to later phases, and an empty table would leave the state silently behind the
 // log. Derived tables get their physical tables here (./derived.ts).
@@ -28,6 +29,7 @@ import { derivedLayout, evaluationRefusal } from "../rules/index.ts";
 import { isKnownRsqlVersion } from "../rules/version.ts";
 import { derivedTableDdl } from "./derived.ts";
 import { ApplyError, type Change } from "./model.ts";
+import { fold } from "./names.ts";
 
 type Obj = Readonly<Record<string, JsonValue>>;
 
@@ -207,6 +209,8 @@ export interface SlotInput {
   readonly currentSv: number | null;
   readonly policySeq: number | null;
   readonly tables: ReadonlySet<string>;
+  /** The other slots' names: a switch renaming the slot may not take one of them. */
+  readonly otherNames?: readonly string[];
 }
 
 export function planSchema(
@@ -272,6 +276,16 @@ export function planSchema(
     }
     case "schema.confirmed":
       return [];
+    // §5.5: a pending draft the confirmer rejected; its version number stays taken.
+    case "schema.rejected":
+      return [
+        {
+          kind: "version_given_up",
+          slot: slot as string,
+          draft_id: block("target")["draft_id"] as string,
+          state: "rejected",
+        },
+      ];
     // §5.5: a pending draft given up for a newer one; its version number stays taken.
     case "schema.superseded":
       return [
@@ -404,10 +418,11 @@ function physicalShape(t: CompiledTable): string {
  * Only that: what else a switch could bring stops, never skipped (an empty or stale table would
  * leave the state silently behind the log). Not implemented: a new derived table (built empty,
  * while its sources have rows), a kept derived table whose rule changed (not evaluated again), a
- * time zone or slot name other than the earlier version's (nothing here recomputes what depends
- * on them). Inconsistent: a table kept from an earlier version that the earlier version does not
- * have, or has with other physical tables or field columns; a table of the earlier version gone
- * without the draft dropping it.
+ * time zone other than the earlier version's (nothing here recomputes the dates and derived
+ * tables that depend on it). Inconsistent: a table kept from an earlier version that the earlier
+ * version does not have, or has with other physical tables or field columns; a table of the earlier
+ * version gone without the draft dropping it; a slot name other than the earlier version's without
+ * the draft's `rename_slot` (with it, the slot takes the new name: nothing depends on the name).
  */
 function planSwitchFrom(
   seq: Seq,
@@ -434,7 +449,20 @@ function planSwitchFrom(
   if (prev === undefined || prev.sv !== t["from_version"])
     throw inconsistent(`no definition of version ${String(t["from_version"])}`);
   if (c.timezone !== prev.timezone) throw notYet("a switch changing the time zone");
-  if (c.name !== prev.name) throw notYet("a switch renaming the slot");
+  // A slot's name is a label on its row: names are resolved when read, nothing kept depends on
+  // it. Renamed with its `rename_slot`, the switch takes the new name; otherwise the log is at odds
+  // with itself.
+  if (c.name !== prev.name && !(to.changes ?? []).some((x) => x.change === "rename_slot"))
+    throw inconsistent(
+      `slot ${String(slot)} named ${c.name}, not ${prev.name}, without rename_slot`,
+    );
+  // Renamed to a name another slot has (07 «确认时重新判断»: confirming checks it again, so a log
+  // where the switch leaves two slots of one name is at odds with itself).
+  if (
+    fold(c.name) !== fold(prev.name) &&
+    (s.otherNames ?? []).some((n) => fold(n) === fold(c.name))
+  )
+    throw inconsistent(`slot ${String(slot)} renamed to ${c.name}, the name of another slot`);
   const { base: built, derived } = admit(seq, c);
   const fresh = [...built, ...derived];
   const [newDerived] = derived;

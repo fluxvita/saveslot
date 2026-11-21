@@ -25,7 +25,7 @@ import type {
   SchemaChangeRecord,
   SlotId,
 } from "@fluxvita/saveslot-contract-core";
-import { ApplyError, applyEvents, eventsOf, internalDetailOf } from "../apply/index.ts";
+import { ApplyError, applyEvents, eventsOf, fold, internalDetailOf } from "../apply/index.ts";
 import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
 import { itemVer } from "../pending/index.ts";
 import { formerVersions, ruleTextsOf, visibleSlots } from "../read/index.ts";
@@ -156,7 +156,6 @@ export async function draftChangeInTx(
   const { document } = input;
   const name = document["slot"];
   if (typeof name !== "string") throw invalid("malformed", "slot");
-  const fold = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
   const slot = (await visibleSlots(tx, ctx.visibility)).find((s) => fold(s.name) === fold(name));
   if (slot === undefined)
     throw new SchemaDraftError("not_found", `no slot ${name}`, { reason: "slot", param: "slot" });

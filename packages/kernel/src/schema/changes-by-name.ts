@@ -10,7 +10,7 @@ import type { CompiledSchema, SchemaChangeRecord } from "@fluxvita/saveslot-cont
 /** 04-contract-types §5.3 `SchemaChange`: the logged change record, its target by names. */
 export interface SchemaChange extends Omit<SchemaChangeRecord, "target"> {
   readonly target:
-    | { readonly slot: true }
+    | { readonly slot: true; readonly name: string }
     | { readonly table: string; readonly field?: string; readonly rule?: true };
 }
 
@@ -26,7 +26,8 @@ export function changesByName(
   const table = (id: string) =>
     next.tables.find((t) => t.id === id) ?? before.tables.find((t) => t.id === id);
   return changes.map((c) => {
-    if (!("table" in c.target)) return { ...c, target: c.target };
+    // The slot by its name after the change, as a renamed table or field is (04-contract-types §5.3).
+    if (!("table" in c.target)) return { ...c, target: { slot: true, name: next.name } };
     const t = table(c.target.table);
     const name = t?.name ?? c.target.table;
     if ("field" in c.target) {

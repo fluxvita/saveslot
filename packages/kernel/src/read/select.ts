@@ -52,7 +52,18 @@ export interface RowFacts {
 /** The changed premises of rows, and their declarers by ID as named now. */
 export interface PremiseFacts extends PremisesOn {
   readonly actors: ReadonlyMap<string, Actor>;
+  /**
+   * The tables premises changed by a schema switch are on (`schema_switched`), as the last version
+   * having each defines it, with its slot: a table dropped since is named as it was then.
+   */
+  readonly formerTables: ReadonlyMap<
+    string,
+    { readonly slot: string; readonly table: FormerTable }
+  >;
 }
+
+/** A table as the catalog keeps it for a version: its compiled definition without physical tables. */
+export type FormerTable = Omit<CompiledBaseTable, "physical">;
 
 /**
  * The changed premises the values of rows `ids` rest on (02-integrity «标记出现在哪一行»), on the
@@ -74,7 +85,25 @@ export async function premiseFacts(
     tx,
     [...p.decls.values()].map((d) => d.declarer),
   );
-  return { ...p, actors };
+  const switched = [
+    ...new Set(
+      [...p.decls.values()].filter((d) => d.reason === "schema_switched").map((d) => d.targetTable),
+    ),
+  ];
+  const formerTables = new Map<string, { slot: string; table: FormerTable }>();
+  if (switched.length > 0) {
+    const r = await tx.query<{ table_id: string; slot_id: string; structure: string }>(
+      `SELECT DISTINCT ON (table_id) table_id, slot_id, structure FROM catalog
+       WHERE table_id = ANY($1) ORDER BY table_id, sv DESC`,
+      [switched] as never,
+    );
+    for (const x of r.rows)
+      formerTables.set(x.table_id, {
+        slot: x.slot_id,
+        table: JSON.parse(x.structure) as FormerTable,
+      });
+  }
+  return { ...p, actors, formerTables };
 }
 
 /**

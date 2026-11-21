@@ -73,7 +73,7 @@ describe("changesByName", () => {
     ).toEqual({ table: "settings" });
   });
 
-  it("the slot, a rule, and an ID neither version has, as they are", () => {
+  it("the slot by its name after the change, a rule, and an ID neither version has, as they are", () => {
     expect(
       changesByName(
         [
@@ -81,10 +81,14 @@ describe("changesByName", () => {
           record({ table: "t1", rule: true } as never, "change_rule"),
           record({ table: "t9", field: "f9" }, "rename_field"),
         ] as never,
-        NEXT,
+        { ...NEXT, name: "books" },
         BEFORE,
       ).map((c) => c.target),
-    ).toEqual([{ slot: true }, { table: "spending", rule: true }, { table: "t9", field: "f9" }]);
+    ).toEqual([
+      { slot: true, name: "books" },
+      { table: "spending", rule: true },
+      { table: "t9", field: "f9" },
+    ]);
   });
 
   it("keeps the rest of each record", () => {

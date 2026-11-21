@@ -18,8 +18,12 @@ import type { CursorKeys } from "./cursor.ts";
 import type { LocalTenant } from "./local-tenant.ts";
 
 interface OperationRule {
-  /** The scope it needs; `user_session`: the management operations. */
+  /**
+   * The scope it needs; `user_session`: the management operations. With `anyOf`, any one of those
+   * lets the call in, and `scope` is the one named when none does.
+   */
   readonly scope: Scope | "user_session";
+  readonly anyOf?: readonly Scope[];
   /** A write operation: takes an idempotency key. */
   readonly write?: true;
   /** Pages by `cursor`. */
@@ -37,10 +41,13 @@ export const OPERATIONS = {
   "policy.get": { scope: "saveslot.read" },
   sources: { scope: "saveslot.read", paged: true },
   write: { scope: "saveslot.write", write: true },
-  // This version's decisions (conflict and awaiting items) are `saveslot.write`'s. The scope of a
-  // decision goes by the item's type (04-contract §6: schema changes `saveslot.schema`, deletions
-  // `saveslot.delete`); it is told apart here once items of those types exist.
-  resolve: { scope: "saveslot.write", write: true },
+  // A decision's scope goes by the item's type (04-contract §6): any of the three lets the call
+  // in; the one the item needs is checked by its type before the kernel decides (operations.ts).
+  resolve: {
+    scope: "saveslot.write",
+    anyOf: ["saveslot.write", "saveslot.schema", "saveslot.delete"],
+    write: true,
+  },
   schema_draft: { scope: "saveslot.schema", write: true },
   "connections.issue": { scope: "user_session" },
   "connections.list": { scope: "user_session", paged: true },
@@ -59,6 +66,8 @@ export type Operation = keyof typeof OPERATIONS;
 export interface KernelCall {
   readonly ctx: OpsContext;
   readonly params: Readonly<Record<string, unknown>>;
+  /** The credential's scopes: what goes by the item's type is checked with them (operations.ts). */
+  readonly scopes: readonly Scope[];
 }
 
 const invalid = (param: string, reason: ErrorReason<"invalid_argument"> = "malformed") =>
@@ -84,7 +93,7 @@ export function kernelCall(o: {
   if (
     rule.scope === "user_session"
       ? o.principal.kind !== "user"
-      : !o.principal.scopes.includes(rule.scope)
+      : !(rule.anyOf ?? [rule.scope]).some((x) => o.principal.scopes.includes(x))
   ) {
     throw new ContractError("insufficient_scope", "the credential may not call this operation", {
       required_scope: rule.scope,
@@ -121,7 +130,7 @@ export function kernelCall(o: {
     now: o.now,
     confirmation: null,
   });
-  return { ctx, params };
+  return { ctx, params, scopes: o.principal.scopes };
 }
 
 /** A kernel result as the contract gives it: `next_position` signed as `next_cursor` for `principal`. */

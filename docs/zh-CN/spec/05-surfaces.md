@@ -110,7 +110,7 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
 | `partially_deleted` | `部分数据已删除` |
 | `pending_deletion` | `有一项可撤回的删除（pi_…）` |
 | `dangling_ref` | 按 `state`：`revoked` → `⚠ payee 指向的记录已撤销`；`deleted` → `⚠ payee 指向的记录已删除` |
-| `premise_changed` | `⚠ 前提已变：constraints r_01JF… 的 date（声明时所见 v40.0）在 #60 被变更；涉及本行 title、due、status`。"在 #n 被……"按 `reason`：`correct` → 被纠正；`update` → 被变更；`revoke` → 被撤销；`retroactive` → 被追溯修改（变的是 <区间> 的值；按这段业务时间读才看得到）；`plan_changed` → 改了之后的安排（<起点> 起；按这段业务时间读才看得到）；`deleted` → 被删除；`schema_switched` 整句换成"…的 date 在 #n 的 schema 切换里被删除（依据的字段已不在当前版本）"。声明没列字段时写"整行"。前提目标所在的表对读方不可见（`hidden: true`）时只写本行自己的部分，仍是完整的一句：`⚠ 前提已变：本行所依据的一条记录（在你看不到的表里）在 #60 被改动；涉及本行 title、due`，目标、字段、所见版本与原因都不写。一行有多条时逐条一行，超过 10 条写总数 |
+| `premise_changed` | `⚠ 前提已变：constraints r_01JF… 的 date（声明时所见 v40.0）在 #60 被变更；涉及本行 title、due、status`。"在 #n 被……"按 `reason`：`correct` → 被纠正；`update` → 被变更；`revoke` → 被撤销；`retroactive` → 被追溯修改（变的是 <区间> 的值；按这段业务时间读才看得到）；`plan_changed` → 改了之后的安排（<起点> 起；按这段业务时间读才看得到）；`deleted` → 被删除；`schema_switched` 整句换成"…的 date 在 #n 的 schema 切换里被删除（依据的字段已不在当前版本）"。声明没列字段时写"整行"。前提目标所在的表对读方不可见（`hidden: true`）时只写本行自己的部分，仍是完整的一句：`⚠ 前提已变：本行所依据的一条记录（在你看不到的表里）在 #60 被改动；涉及本行 title、due`，目标、字段、所见版本与原因都不写。前提目标所在的表已在 schema 切换里被删除时不算不可见：读方的范围包含那张表（整个 slot，或按表 ID 列出了它）就照完整的一句写，表名与字段用删除之前那一版的（"settings r_01JF… 的 key 在 #n 的 schema 切换里被删除"）；范围不包含它的照上面不可见的那句。一行有多条时逐条一行，超过 10 条写总数 |
 | 派生行的 `input_marks` | `⚠ 本值的输入里有 1 行已标记（pi_…）/ 1 行有争议 / 2 行的前提已变` |
 | 派生行的 `computed_at_read` | `按读取时刻算出，不带 ver` |
 | `truncated` | `显示 20 / 847 行；下一页 cursor=…；或缩小条件（如加日期范围）` |
@@ -338,7 +338,9 @@ s_0 用户原话 · 2026-11-09 20:03 · MacBook · Codex · 待删除（pi_4K…
 
 **`saveslot_pending`**
 
-列表：每个事项一行，写 ID、类型、目标、原因、已挂多久；不带事项版本（列表不算读到）。
+列表：每个事项一行，写 ID、类型、目标、原因、已挂多久；不带事项版本（列表不算读到）。没有目标行的事项（`schema_change`，关乎整个 slot）写它的 slot；原因只是重复类型时不再写。
+
+详情的"可选"只列当前凭证可用的处理方式（服务层按 scope 筛，契约第 6 节）。未决事项一种都不可用时不写成"没有可选的处理"，写明是这个连接缺哪种 scope（如"处理 schema_change 事项需要 saveslot.schema"），让模型转告用户由有这种权限的连接或会话去处理，而不是以为这个事项处理不了。
 
 ```
 ledger · 2 个待处理事项
@@ -484,7 +486,7 @@ budgets 推广 变更：2026-11-02 起改为 3000 CNY（一直延续）会覆盖
 expenses r_01JC… 整行删除：date、category 只来自这句话
 ```
 
-**`saveslot_resolve`**：第一行写事项、处理方式、结果。`take_previous` 接着写回掉了哪些写入：每次写入的操作号、写入者与它失去的字段，与事项详情里"take_previous 会回掉"列的一致。触发了写入时按写入回执的写法接着写。已解决事项用同一处理方式重发时，第一行写"该事项已于 … 按 confirm 解决，本次没有新的改动"。`schema_change` 的 `confirm` 写"已切换到 v2"或"正在迁移到 v2（进度可用 saveslot_pending pi_… 查看）"。`deletion` 的 `cancel` 写恢复了什么、哪些事项恢复、哪些因宽限期内的写入而保持不变（被重新判定的候选 `rejudged` 第一版不出现，不写）。
+**`saveslot_resolve`**：第一行写事项、处理方式、结果。`take_previous` 接着写回掉了哪些写入：每次写入的操作号、写入者与它失去的字段，与事项详情里"take_previous 会回掉"列的一致。触发了写入时按写入回执的写法接着写。已解决事项用同一处理方式重发时，第一行写"该事项已于 … 按 confirm 解决，本次没有新的改动"。`schema_change` 的 `confirm` 写"已切换到 v2"或"正在迁移到 v2（进度可用 saveslot_pending pi_… 查看）"，`reject` 写"未切换，slot 保持原样"。`deletion` 的 `cancel` 写恢复了什么、哪些事项恢复、哪些因宽限期内的写入而保持不变（被重新判定的候选 `rejudged` 第一版不出现，不写）。
 
 ## 7. 报错的文本
 
@@ -609,7 +611,7 @@ ledger: 2 张表
 
 **`saveslot_resolve`**：处理一个待处理事项（冲突、待确认、〔P2 起〕已标记、〔P4 起〕schema 变更、〔P3 起〕撤回删除）。可选的处理方式在 `saveslot_pending` 的详情和各回执里给出。待确认、〔P4 起〕schema 变更这类影响大的处理，请先把详情告诉用户并问他，他同意后才处理；他在事项出现之前说的话不算对它的同意。返回事项、所做的处理与新的事项版本，以及这次处理引起的写入（每行带新的 `ver`）。
 
-**`saveslot_schema_draft`**：用一份 schema 文档新建 slot（表、字段与单位），或改已有 slot 的 schema。先把草稿（每张表、它的字段与单位）给用户看，他同意后才提交：新 slot 编译通过即生效，之后没有任何确认。用户想开始记录一类事情、而他现有的表都不合适时用它；先用 `saveslot_catalog` 看，已有合适的 slot 就直接用，不再新建。改已有 slot 时，交 `saveslot_catalog` 以 `level: "schema"` 给出的文档、改好，ID 与 `base_version` 原样保留；slot 策略定为自动生效的改动（新增表、说明、别名、放宽约束）当场生效，其余（改名、删表）作为 `schema_change` 事项等用户确认，这一版还不能确认。只有范围为全部 slot 的连接能新建 slot，改一个 slot 要它的每张表都在范围内。带单位的字段用单位词表里的代码（如 `km`、`min`、`CNY`）；每分钟的次数（如心率）写 `/min`。返回新 slot 编译后的各表与 schema 版本 `sv: 1`；改已有 slot 时返回逐项改动，以及已生效还是在等确认；〔有 saveslot.write〕用 `saveslot_write` 写入时带上这个 `sv`。
+**`saveslot_schema_draft`**：用一份 schema 文档新建 slot（表、字段与单位），或改已有 slot 的 schema。先把草稿（每张表、它的字段与单位）给用户看，他同意后才提交：新 slot 编译通过即生效，之后没有任何确认。用户想开始记录一类事情、而他现有的表都不合适时用它；先用 `saveslot_catalog` 看，已有合适的 slot 就直接用，不再新建。改已有 slot 时，交 `saveslot_catalog` 以 `level: "schema"` 给出的文档、改好，ID 与 `base_version` 原样保留；slot 策略定为自动生效的改动（新增表、说明、别名、放宽约束）当场生效，其余（改名、删表）作为 `schema_change` 事项等用户确认，用户同意后用 `saveslot_resolve` 确认（或拒绝）。只有范围为全部 slot 的连接能新建 slot，改一个 slot 要它的每张表都在范围内。带单位的字段用单位词表里的代码（如 `km`、`min`、`CNY`）；每分钟的次数（如心率）写 `/min`。返回新 slot 编译后的各表与 schema 版本 `sv: 1`；改已有 slot 时返回逐项改动，以及已生效还是在等确认；〔有 saveslot.write〕用 `saveslot_write` 写入时带上这个 `sv`。
 
 **已知的限制**：每个租户至多 100 个 slot（open-questions「接口的数值与细则」）；一个被注入的默认连接可以不经确认把名额建满。空的 slot 用户可以移除（`saveslot slot remove`，契约 `slots.remove`，不进 MCP），腾出名额；连接建了 slot 又写进了记录的，这一版移除不了。连接建的 slot 在日志里有写入者，可以据此吊销那个连接。
 

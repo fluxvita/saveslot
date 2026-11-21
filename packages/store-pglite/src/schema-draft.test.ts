@@ -114,7 +114,11 @@ describe("creating a slot", () => {
         sv: 1,
         impact: { rows_affected: 0, derived_changed: [], consumers: [] },
         changes: [
-          expect.objectContaining({ target: { slot: true }, change: "create_slot", auto: true }),
+          expect.objectContaining({
+            target: { slot: true, name: "ledger" },
+            change: "create_slot",
+            auto: true,
+          }),
           expect.objectContaining({ target: { table: "expenses" }, change: "add_table" }),
           expect.objectContaining({ target: { table: "budgets" }, change: "add_table" }),
         ],

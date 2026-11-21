@@ -92,10 +92,23 @@ export async function declaringOps(
     [[...new Set(mine.map((m) => m.op))]] as never,
   );
   const inForce = new Set(live.rows.map((x) => `${x.op}/${x.i}/${x.j}`));
+  // Tables a schema switch dropped from the slot, as the last version having each defined it: not
+  // tables out of range, when the caller's range takes them in (the whole slot, or the table by its
+  // ID); named as they were (04-contract-types §3 `premise_changed`, the same rule).
+  const dropped = await tx.query<{ table_id: string; structure: string }>(
+    `SELECT DISTINCT ON (table_id) table_id, structure FROM catalog
+     WHERE slot_id = $1 AND NOT (table_id = ANY($2)) ORDER BY table_id, sv DESC`,
+    [slot.slot, slot.compiled.tables.map((t) => t.id)] as never,
+  );
+  const former = new Map(
+    dropped.rows
+      .filter((x) => slot.rangeTables === undefined || slot.rangeTables.has(x.table_id))
+      .map((x) => [x.table_id, JSON.parse(x.structure) as CompiledBaseTable] as const),
+  );
   const tableOf = (id: string) =>
-    slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as
+    (slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as
       | CompiledBaseTable
-      | undefined;
+      | undefined) ?? former.get(id);
   for (const m of mine) {
     const prefix = `ops/${m.index}/`;
     const of = blocks.rows.filter((b) => Number(b.seq) === m.op && b.path.startsWith(prefix));
@@ -120,7 +133,7 @@ export async function declaringOps(
       const s = ended ? undefined : now.get(key);
       const since =
         s?.since !== null && s?.since !== undefined ? { since: Number(s.since) as Seq } : {};
-      if (!slot.tables.some((v) => v.id === p.table))
+      if (!slot.tables.some((v) => v.id === p.table) && !former.has(p.table))
         return ended
           ? { hidden: true, state: "ended" }
           : { hidden: true, state: s?.state ?? "current", ...since };

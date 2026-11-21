@@ -1764,7 +1764,7 @@
         "id": "u_11111111111111111111111111",
         "name": "u_11111111111111111111111111"
       },
-      "decisions": [],
+      "decisions": ["confirm", "reject"],
       "type": "schema_change",
       "draft": "d_5JWJSYG6A20FMQ07",
       "target_sv": 3,
@@ -1778,6 +1778,43 @@
           "target": {
             "table": "meals",
             "field": "dish"
+          }
+        }
+      ],
+      "impact": {
+        "rows_affected": 0,
+        "derived_changed": []
+      }
+    }
+  },
+  "pending-schema-change-rename-slot": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_JN2N3HV0YD29R6ZB",
+      "item_ver": "iv_JN2N3HV0YD29R6ZB.10.0",
+      "status": "open",
+      "slot": "diet",
+      "reason": "schema_change",
+      "opened_at": "2026-11-18T12:04:00.000Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_11111111111111111111111111",
+        "name": "u_11111111111111111111111111"
+      },
+      "decisions": ["confirm", "reject"],
+      "type": "schema_change",
+      "draft": "d_5JWJSYG6A20FMQ07",
+      "target_sv": 3,
+      "changes": [
+        {
+          "auto": false,
+          "change": "rename_slot",
+          "class": "metadata",
+          "compatible_with_old_writes": true,
+          "destructive": false,
+          "target": {
+            "slot": true,
+            "name": "food"
           }
         }
       ],
@@ -2118,6 +2155,112 @@
               "state": "ended"
             }
           ]
+        }
+      ]
+    }
+  },
+  "pending-schema-change-no-scope": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_JN2N3HV0YD29R6ZB",
+      "item_ver": "iv_JN2N3HV0YD29R6ZB.10.0",
+      "status": "open",
+      "slot": "diet",
+      "reason": "schema_change",
+      "opened_at": "2026-11-18T12:04:00.000Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_11111111111111111111111111",
+        "name": "u_11111111111111111111111111"
+      },
+      "decisions": [],
+      "type": "schema_change",
+      "draft": "d_5JWJSYG6A20FMQ07",
+      "target_sv": 3,
+      "changes": [
+        {
+          "auto": false,
+          "change": "rename_field",
+          "class": "metadata",
+          "compatible_with_old_writes": true,
+          "destructive": false,
+          "target": {
+            "table": "meals",
+            "field": "dish"
+          }
+        }
+      ],
+      "impact": {
+        "rows_affected": 0,
+        "derived_changed": []
+      }
+    }
+  },
+  "pending-conflict-no-scope": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_47G7WJXFA1PQC58N",
+      "type": "conflict",
+      "item_ver": "iv_47G7WJXFA1PQC58N.37.0",
+      "status": "open",
+      "slot": "plan",
+      "reason": "stale_write",
+      "opened_at": "2026-11-18T12:39:27.139Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+        "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+      },
+      "decisions": [],
+      "target": {
+        "table": "plan.expenses",
+        "row": "r_FW103YV2NYWERJMC947XWH3NWH",
+        "unit": ["note"]
+      },
+      "effective": {
+        "seq": 34,
+        "actor": {
+          "kind": "user",
+          "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+          "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+        },
+        "values": {
+          "note": "dinner"
+        },
+        "exists": true
+      },
+      "candidates": [
+        {
+          "index": 0,
+          "seq": 37,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "ver": "v31.0",
+          "values": {
+            "note": "supper"
+          },
+          "cause": "stale_write"
+        }
+      ],
+      "previous": {
+        "seq": 31,
+        "exists": true,
+        "values": {
+          "note": "lunch"
+        }
+      },
+      "reverted_by_previous": [
+        {
+          "seq": 34,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
         }
       ]
     }

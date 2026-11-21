@@ -80,7 +80,8 @@ export interface SchemaChange
     SchemaChangeRecord,
     "change" | "class" | "compatible_with_old_writes" | "destructive" | "auto"
   > {
-  target: { slot: true } | { table: TableName; field?: FieldName; rule?: true };
+  /** The slot, table or field by its name after the change (a renamed one by its new name). */
+  target: { slot: true; name: SlotName } | { table: TableName; field?: FieldName; rule?: true };
 }
 
 /** 04-contract-types §5.3 `SchemaImpact`. */

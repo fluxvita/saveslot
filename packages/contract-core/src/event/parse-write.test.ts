@@ -572,7 +572,7 @@ describe("parseEvent: a write's blocks, value by value", () => {
     [
       "write.head (premises)",
       "ops/0/premises/1",
-      { reason: "schema_switched" },
+      { reason: "schema_changed" },
       "ops/0/premises/1: reason",
     ],
     [
@@ -608,7 +608,7 @@ describe("parseEvent: a write's blocks, value by value", () => {
     [
       "premise.changed",
       "targets/0",
-      { changed: [{ op: 20, i: 0, j: 0, reason: "schema_switched" }] },
+      { changed: [{ op: 20, i: 0, j: 0, reason: "schema_changed" }] },
       "targets/0.changed[0]: reason",
     ],
     ["premise.changed", "targets/0", { matched: [] }, "targets/0.matched: empty"],
@@ -1265,6 +1265,21 @@ describe("parseEvent: rules between the blocks of one write event", () => {
       matched: [{ op: 23, i: 0, j: 1 }],
     });
     expect(issues(parse(twice))).toContain("targets/1: a target twice");
+  });
+
+  it("premise.changed: schema_switched is a reason (§6.8); an unknown one is not", () => {
+    const pc = S("premise.changed");
+    const at = (reason: string) =>
+      parse(
+        withBlock(pc, "targets/0", {
+          table: "t3",
+          row: ROW,
+          by_event: 27,
+          changed: [{ op: 20, i: 0, j: 0, reason }],
+        }),
+      );
+    expect(at("schema_switched").ok).toBe(true);
+    expect(issues(at("schema_changed"))).toContain("targets/0.changed[0]: reason");
   });
 
   it("item.resolved: at most one of request_key and idempotency", () => {

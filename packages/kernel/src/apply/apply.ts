@@ -38,7 +38,7 @@ import { type DerivedRow, evaluateRule, evaluating, RuleEvaluationError } from "
 import { isKnownLiteralChecker, isKnownRulesetVersion } from "../rules/version.ts";
 import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
 import type { ValidParam } from "../time/index.ts";
-import { confirmationHash, entryChecksums } from "./confirmation.ts";
+import { confirmationHash, confirmedChecksums } from "./confirmation.ts";
 import { canonicalKeyFault, type DerivedInput, planDerived } from "./derived.ts";
 import { type ItemInput, planItem } from "./items.ts";
 import { ApplyError, type BlockDepRow, type Change, type PrincipalRow } from "./model.ts";
@@ -399,6 +399,9 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
       [ev.header["slot"] as string],
     );
     const used = await tx.query<{ table_id: string }>("SELECT DISTINCT table_id FROM catalog");
+    const others = await tx.query<{ name: string }>("SELECT name FROM slots WHERE id <> $1", [
+      ev.header["slot"] as string,
+    ]);
     const row = slotRow.rows[0];
     const slot =
       row === undefined
@@ -407,6 +410,7 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
             currentSv: row.current_sv === null ? null : Number(row.current_sv),
             policySeq: row.policy_seq === null ? null : Number(row.policy_seq),
             tables: new Set(used.rows.map((r) => r.table_id)),
+            otherNames: others.rows.map((r) => r.name),
           };
     return {
       ...(switchTo !== undefined ? { switchTo } : {}),
@@ -504,7 +508,7 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
     const row = r.rows[0];
     if (row === undefined) return {};
     const confirmation =
-      p.type === "item.resolved" ? confirmationHash(await entryChecksums(tx, id)) : undefined;
+      p.type === "item.resolved" ? confirmationHash(await confirmedChecksums(tx, id)) : undefined;
     return {
       item: {
         state: row.state,

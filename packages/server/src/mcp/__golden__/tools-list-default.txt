@@ -688,7 +688,7 @@
   },
   {
     "name": "saveslot_resolve",
-    "description": "Resolve one pending item (a conflict, or a change awaiting confirmation). The ways an item can be resolved are given in its detail from saveslot_pending and in the receipts. Before a resolution with a large effect (confirming a change), tell the user the detail and ask them; resolve it only after they say yes to that. What they said before the item appeared is not agreement to it. Returns the item with the decision taken and its new version, and the writes the decision made, each row with its new `ver`.",
+    "description": "Resolve one pending item (a conflict, or a change awaiting confirmation). Schema changes awaiting confirmation are resolved here too. The ways an item can be resolved are given in its detail from saveslot_pending and in the receipts. Before a resolution with a large effect (confirming a change), tell the user the detail and ask them; resolve it only after they say yes to that. What they said before the item appeared is not agreement to it. Returns the item with the decision taken and its new version, and the writes the decision made, each row with its new `ver`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -704,7 +704,7 @@
             "confirm",
             "reject"
           ],
-          "description": "How to resolve it, only one of those its detail lists: a conflict `keep_effective` / `take_candidate` / `take_previous`; a change awaiting confirmation `confirm` / `reject`."
+          "description": "How to resolve it, only one of those its detail lists: a conflict `keep_effective` / `take_candidate` / `take_previous`; a change awaiting confirmation `confirm` / `reject`. A schema change `confirm` / `reject`."
         },
         "item_ver": {
           "type": "string",
@@ -797,7 +797,7 @@
   },
   {
     "name": "saveslot_schema_draft",
-    "description": "Create a new slot from a schema document (its tables, their fields and units), or change an existing slot's. Show the user the draft (each table, its fields and units) and submit it only after they agree to it: a new slot takes effect as soon as it compiles, and nothing asks them to confirm it afterwards. Use it when the user wants to start recording a kind of thing that none of their tables fits; look with saveslot_catalog first, and when a slot for it exists already, use that slot instead of creating another. To change a slot, submit the document saveslot_catalog gives with level \"schema\", changed, its IDs and base_version kept. Changes the slot's policy makes automatic (a new table, a description, aliases, looser constraints) take effect at once; the others (a rename, a dropped table) wait for the user's confirmation as a schema_change item, which this version cannot confirm yet. Only a connection that can see every slot can create one, and changing a slot needs every table of it in range. Fields with a unit take a code from the unit vocabulary, such as km, min or CNY; a count per minute, such as a heart rate, is /min. Returns a new slot's tables as compiled and its schema version, sv 1; for a change, each change and whether it took effect or waits. Write to it with saveslot_write, with that sv.",
+    "description": "Create a new slot from a schema document (its tables, their fields and units), or change an existing slot's. Show the user the draft (each table, its fields and units) and submit it only after they agree to it: a new slot takes effect as soon as it compiles, and nothing asks them to confirm it afterwards. Use it when the user wants to start recording a kind of thing that none of their tables fits; look with saveslot_catalog first, and when a slot for it exists already, use that slot instead of creating another. To change a slot, submit the document saveslot_catalog gives with level \"schema\", changed, its IDs and base_version kept. Changes the slot's policy makes automatic (a new table, a description, aliases, looser constraints) take effect at once; the others (a rename, a dropped table) wait for the user's confirmation as a schema_change item: once they agree, saveslot_resolve confirms it (or rejects it). Only a connection that can see every slot can create one, and changing a slot needs every table of it in range. Fields with a unit take a code from the unit vocabulary, such as km, min or CNY; a count per minute, such as a heart rate, is /min. Returns a new slot's tables as compiled and its schema version, sv 1; for a change, each change and whether it took effect or waits. Write to it with saveslot_write, with that sv.",
     "inputSchema": {
       "type": "object",
       "properties": {

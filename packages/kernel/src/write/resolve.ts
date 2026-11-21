@@ -86,6 +86,8 @@ export interface ResolveReceipt {
     readonly actor: Actor;
     readonly fields: readonly string[];
   }[];
+  /** A `schema_change` decision: whether the slot switched, and to which version. */
+  readonly schema?: { readonly switched: boolean; readonly sv?: number; readonly slot?: string };
   readonly replayed?: true;
   readonly warnings?: readonly ResolveWarning[];
 }
@@ -103,8 +105,9 @@ const DECISIONS_OF: Readonly<Record<string, readonly ResolveDecision[]>> = {
   awaiting_confirmation: ["confirm", "reject"],
 };
 /**
- * Decisions of item types of later phases that take one of this version's decisions. Not reached
- * in this version: no such item is opened, and an item without a target table is `not_found` first.
+ * Decisions of item types of other paths that take one of this version's decisions. Not reached:
+ * `schema_change` items are resolved by ../ops/schema-resolve.ts (the ops entry sends them there),
+ * and an item without a target table is `not_found` first here.
  */
 const LATER: Readonly<Record<string, readonly ResolveDecision[]>> = {
   schema_change: ["confirm", "reject"],
@@ -114,7 +117,7 @@ const LATER: Readonly<Record<string, readonly ResolveDecision[]>> = {
 type ItemType = PendingRef["type"];
 
 /** A pending item as `pending_items` keeps it. */
-interface ItemRow {
+export interface ItemRow {
   readonly id: ItemId;
   readonly type: ItemType;
   readonly slot: string | null;
@@ -125,7 +128,8 @@ interface ItemRow {
   readonly versionOp: OpNumber;
 }
 
-async function itemRow(tx: ReadTx, id: string): Promise<ItemRow | undefined> {
+/** The item `id` as `pending_items` keeps it, visible or not: the caller decides visibility. */
+export async function itemRow(tx: ReadTx, id: string): Promise<ItemRow | undefined> {
   const r = await tx.query<{
     id: string;
     type: string;
@@ -171,7 +175,7 @@ async function candidateCount(tx: ReadTx, item: string): Promise<number> {
  * item_closed (04-contract-types §9): how the item closed, in the shape its details give, the
  * principal named as they are now (an error's details are read, not a receipt: §1.6).
  */
-async function closed(tx: ReadTx, item: string, message: string): Promise<WriteError> {
+export async function closed(tx: ReadTx, item: string, message: string): Promise<WriteError> {
   const c = await closingOf(tx, item);
   const who = await actorsNow(tx, c.principals);
   const out = c.out((p) => who.get(p));
@@ -188,7 +192,7 @@ async function closed(tx: ReadTx, item: string, message: string): Promise<WriteE
 }
 
 /** The `target` block and the operation of the item's latest event of type `type`. */
-async function itemEvent(
+export async function itemEvent(
   tx: ReadTx,
   item: string,
   type: "item.resolved" | "item.superseded",
@@ -212,9 +216,10 @@ async function itemEvent(
 /**
  * The item version the caller's own receipt gave whole (04-contract §2 «兜底»): the latest of its
  * operations under the call's task that opened the item. `task_mismatch`: it did so only under
- * another task (or without one).
+ * another task (or without one). Any item type: the operation is the one whose `item.created`
+ * names the item.
  */
-async function itemVerFromOwn(
+export async function itemVerFromOwn(
   tx: ReadTx,
   item: string,
   actor: string,
@@ -331,6 +336,70 @@ async function readResolution(
   };
 }
 
+/**
+ * The item version a decision binds (04-contract §6; §2 «兜底»): the one brought back, or else the
+ * latest the caller read of the item or had whole in its own receipt, under the call's task (an
+ * `item_ver_fallback` warning says which). None: read first (`read_first`). Not the item's current
+ * version: `confirmation_mismatch`, without its detail (the ops entry adds it). Any item type.
+ */
+export async function boundItemVer(
+  tx: ReadTx,
+  input: Pick<WriteInput, "actor" | "reads">,
+  item: ItemRow,
+  given: { op: OpNumber; restoreCount: number } | undefined,
+  task: string | null,
+  restore: number,
+): Promise<ResolveWarning[]> {
+  const actor = input.actor;
+  const current = { op: item.versionOp, restoreCount: restore };
+  const warnings: ResolveWarning[] = [];
+  let seen = given;
+  if (seen === undefined) {
+    const read = await lastRead(tx, input.reads, { actor, task, kind: "item", target: item.id });
+    const own = await itemVerFromOwn(tx, item.id, actor, task);
+    if (read !== undefined && (!("op" in own) || read.op >= own.op)) {
+      seen = { op: read.op as OpNumber, restoreCount: read.restoreCount };
+      warnings.push({
+        code: "item_ver_fallback",
+        item_ver: itemVer(item.id, read.op, read.restoreCount),
+        read: read.read,
+      });
+    } else if ("op" in own) {
+      seen = { op: own.op, restoreCount: own.restoreCount };
+      warnings.push({
+        code: "item_ver_fallback",
+        item_ver: itemVer(item.id, own.op, own.restoreCount),
+      });
+    } else {
+      const other =
+        own.reason === "task_mismatch"
+          ? { readTask: own.readTask ?? null }
+          : await readUnderAnotherTask(tx, actor, task, "item", item.id).then((x) =>
+              x === undefined ? undefined : { readTask: x.task },
+            );
+      throw readFirst(
+        other !== undefined
+          ? { reason: "task_mismatch", readTask: other.readTask }
+          : { reason: "no_read" },
+        { target: "item", ref: item.id },
+        task,
+        "item_ver",
+      );
+    }
+  }
+  if (seen.op !== current.op || seen.restoreCount !== current.restoreCount) {
+    throw new WriteError("confirmation_mismatch", "the item changed since it was read", {
+      reason: seen.restoreCount !== current.restoreCount ? "restored" : "changed",
+      current: {
+        id: item.id,
+        type: item.type,
+        item_ver: itemVer(item.id, current.op, current.restoreCount),
+      },
+    });
+  }
+  return warnings;
+}
+
 /** The intent of the `write.base` event `event` on the row (`update` when there is none). */
 function intentOf(
   work: { events: readonly { header: { seq: number }; blocks: Record<string, unknown> }[] },
@@ -400,7 +469,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
 
   // The decision fits the item's type.
   if (!(DECISIONS_OF[item.type] ?? []).includes(req.decision)) {
-    // Not reached in this version: no schema_change item is opened (see LATER).
+    // Not reached: schema_change items are resolved elsewhere (see LATER).
     if ((LATER[item.type] ?? []).includes(req.decision)) {
       throw new WriteError("not_in_this_version", "not in this version", {
         reason: "value",
@@ -416,57 +485,22 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
 
   // The item version the decision binds (04-contract §6): brought back, or the latest the caller
   // read or had whole in its own receipt.
-  const current = { op: item.versionOp, restoreCount: restore };
-  const warnings: ResolveWarning[] = [];
-  let seen = req.itemVer;
-  if (seen === undefined) {
-    const read = await lastRead(tx, input.reads, { actor, task, kind: "item", target: item.id });
-    const own = await itemVerFromOwn(tx, item.id, actor, task);
-    if (read !== undefined && (!("op" in own) || read.op >= own.op)) {
-      seen = { op: read.op as OpNumber, restoreCount: read.restoreCount };
-      warnings.push({
-        code: "item_ver_fallback",
-        item_ver: itemVer(item.id, read.op, read.restoreCount),
-        read: read.read,
-      });
-    } else if ("op" in own) {
-      seen = { op: own.op, restoreCount: own.restoreCount };
-      warnings.push({
-        code: "item_ver_fallback",
-        item_ver: itemVer(item.id, own.op, own.restoreCount),
-      });
-    } else {
-      const other =
-        own.reason === "task_mismatch"
-          ? { readTask: own.readTask ?? null }
-          : await readUnderAnotherTask(tx, actor, task, "item", item.id).then((x) =>
-              x === undefined ? undefined : { readTask: x.task },
-            );
-      throw readFirst(
-        other !== undefined
-          ? { reason: "task_mismatch", readTask: other.readTask }
-          : { reason: "no_read" },
-        { target: "item", ref: item.id },
-        task,
-        "item_ver",
-      );
-    }
-  }
-  if (seen.op !== current.op || seen.restoreCount !== current.restoreCount) {
-    throw new WriteError("confirmation_mismatch", "the item changed since it was read", {
-      reason: seen.restoreCount !== current.restoreCount ? "restored" : "changed",
-      current: {
-        id: item.id,
-        type: item.type,
-        item_ver: itemVer(item.id, current.op, current.restoreCount),
-      },
-    });
-  }
+  const warnings = await boundItemVer(tx, input, item, req.itemVer, task, restore);
 
   // The row and the item on it.
-  const table = slot.compiled.tables.find(
-    (t) => t.id === item.table && t.kind === "base",
-  ) as CompiledBaseTable;
+  const table = slot.compiled.tables.find((t) => t.id === item.table && t.kind === "base") as
+    | CompiledBaseTable
+    | undefined;
+  // An open item on a table the current version does not have: the switch dropping it supersedes
+  // its items (01-objects «schema 切换»), so the log is at odds with itself.
+  if (table === undefined)
+    throw new WriteError(
+      "internal",
+      `an open item on table ${String(item.table)}, not in the slot`,
+      {
+        reason: "inconsistent",
+      },
+    );
   const shape = tableShape(table);
   const isState = shape.kind === "state";
   const ctx: RowContext = {

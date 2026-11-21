@@ -136,6 +136,7 @@ const PREMISE_VERB = textsBy<PremiseReason>({
   retroactive: () => t`changed retroactively`,
   plan_changed: () => t`changed for what comes after`,
   deleted: () => t`deleted`,
+  schema_switched: () => t`dropped by a schema change`,
 });
 
 /**

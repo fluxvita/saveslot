@@ -14,10 +14,10 @@ import type {
   CompiledTable,
   JsonValue,
 } from "@fluxvita/saveslot-contract-core";
+import { fold } from "./validate.ts";
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => v !== null && typeof v === "object" && !Array.isArray(v);
-const fold = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
 /** Sets `key` when the caller did not write it. */
 function fill(o: Obj, key: string, value: unknown): void {

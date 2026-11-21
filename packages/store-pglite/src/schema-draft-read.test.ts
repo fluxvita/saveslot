@@ -140,8 +140,8 @@ describe("a schema_change item's detail", () => {
         reason: "schema_change",
         opened_at: expect.any(String),
         opened_by: expect.objectContaining({ kind: "user", id: USER }),
-        // `resolve` takes no decision on it in this version.
-        decisions: [],
+        // Those of its type; the service keeps the ones the credential may take.
+        decisions: ["confirm", "reject"],
         type: "schema_change",
         draft: r.draft,
         target_sv: 2,

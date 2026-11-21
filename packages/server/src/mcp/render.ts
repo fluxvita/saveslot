@@ -249,6 +249,7 @@ const PREMISE_VERB = textsBy<PremiseReason>({
   retroactive: () => t`changed retroactively`,
   plan_changed: () => t`changed for what comes after`,
   deleted: () => t`deleted`,
+  schema_switched: () => t`dropped by a schema change`,
 });
 
 /** A row's marks (05 §4.2), on its line; premises changed, each on a line of its own. */
@@ -1239,6 +1240,42 @@ function conflictChoices(r: R): Line[] {
   return out;
 }
 
+/** The scope deciding on each item type takes (04-contract §6), as the service checks it. */
+const DECISION_SCOPE: ReadonlyMap<string, string> = new Map([
+  ["conflict", "saveslot.write"],
+  ["awaiting_confirmation", "saveslot.write"],
+  ["flagged", "saveslot.write"],
+  ["schema_change", "saveslot.schema"],
+  ["deletion", "saveslot.delete"],
+]);
+const SCOPES: ReadonlySet<string> = new Set(DECISION_SCOPE.values());
+
+/**
+ * An open item's choices (05 §6 `saveslot_pending`: 可选): the decisions the detail lists, which are
+ * those this credential may take. None listed on an open item: this connection lacks the scope its
+ * type takes, and says which, so that the item is not taken for one nobody can decide. A closed
+ * item has none and says nothing here.
+ */
+function choicesOf(r: R): Line[] {
+  if (r["status"] !== "open") return [];
+  const decisions = arr(r["decisions"]);
+  if (decisions.length === 0) {
+    const need = DECISION_SCOPE.get(String(r["type"]));
+    return need === undefined
+      ? []
+      : [
+          t`  This connection cannot decide on it: deciding a ${codeIn(r["type"], ITEM_TYPES)} item needs ${codeIn(need, SCOPES)}. Tell the user; they decide with a connection or session that has it.`,
+        ];
+  }
+  if (r["type"] === "conflict") return [t`  Choices:`, ...conflictChoices(r)];
+  return [
+    t`  Choices: ${join(
+      decisions.map((d) => [codeIn(d, DECISIONS)]),
+      t` / `,
+    )}`,
+  ];
+}
+
 /**
  * How a closed item ended (04-contract-types §4.8): the decision that resolved it, which candidate,
  * by whom and when, with the note given; or what superseded it, by which operation and when.
@@ -1309,18 +1346,7 @@ function pending(r: R, now: Date): Line[] {
       out.push(...revertedTell(r["impact"]));
       if (r["status"] === "open") out.push(t`  Not in effect; the value in effect is unchanged.`);
     }
-    out.push(...closedLines(r));
-    const decisions = arr(r["decisions"]);
-    if (decisions.length > 0) {
-      if (r["type"] === "conflict") out.push(t`  Choices:`, ...conflictChoices(r));
-      else
-        out.push(
-          t`  Choices: ${join(
-            decisions.map((d) => [codeIn(d, DECISIONS)]),
-            t` / `,
-          )}`,
-        );
-    }
+    out.push(...closedLines(r), ...choicesOf(r));
     return [...out, ...remindersOf(r, now)];
   }
   const items = arr(r["items"]);
@@ -1846,7 +1872,19 @@ function resolve(r: R, now: Date): Line[] {
   // take_previous: the writes it took back or hid, as the item's details listed them.
   const reverted = arr(r["reverted_by_previous"]);
   const undid = reverted.length > 0 ? [t`Undid: ${join(reverted.map(revertedWrite), t`; `)}`] : [];
-  return [head, ...replayed, ...undid, ...receipt, ...remindersOf(r, now)];
+  // A schema decision (05 §6 `saveslot_resolve`): switched, and to which version; or rejected.
+  const sc = obj(r["schema"]);
+  const schema = !isObj(r["schema"])
+    ? []
+    : sc["switched"] === true
+      ? [
+          t`Switched to schema v${count(sc["sv"])}. Write with sv ${count(sc["sv"])}.`,
+          ...(sc["slot"] !== undefined
+            ? [t`Slot renamed to ${tableOf(sc["slot"])}: name it so from now on.`]
+            : []),
+        ]
+      : [t`Not switched: the draft is rejected, the slot stays as it is.`];
+  return [head, ...replayed, ...undid, ...schema, ...receipt, ...remindersOf(r, now)];
 }
 
 /** The changes a new slot's receipt says by its tables already (05 §6 `saveslot_schema_draft`). */
@@ -1862,7 +1900,9 @@ const CLASSES: ReadonlySet<string> = new Set<string>(CHANGE_CLASSES);
 /** What a change is to (04-contract-types §5.3 `SchemaChange.target`): the slot, a table, a field. */
 function changeTarget(x: unknown): Part[] {
   const g = obj(x);
-  if (g["slot"] === true) return t`the slot`;
+  // The slot by its name after the change: renamed, its new name.
+  if (g["slot"] === true)
+    return g["name"] === undefined ? t`the slot` : t`slot ${tableOf(g["name"])}`;
   const table = tableOf(g["table"]);
   if (g["field"] !== undefined) return t`${table}.${fieldOf(g["field"])}`;
   if (g["rule"] === true) return t`${table} rule`;
@@ -1914,10 +1954,14 @@ function schemaChangeItem(r: R, now: Date): Line[] {
     t`  The slot as this draft would make it: saveslot_catalog with level "schema" and draft ${idOf(r["draft"])}.`,
     ...closedLines(r),
   ];
-  if (open)
-    out.push(
-      t`  Not in effect; the slot is unchanged. This version cannot confirm it yet: it stays pending until a newer draft replaces it.`,
-    );
+  if (open) {
+    out.push(t`  Not in effect; the slot is unchanged.`);
+    if (arr(r["decisions"]).length > 0)
+      out.push(
+        t`  Tell the user the changes above in this reply and ask them; what they said before this item appeared is not agreement to it. Once they agree: saveslot_resolve ${idOf(r["id"])} confirm (or reject).`,
+      );
+    out.push(...choicesOf(r));
+  }
   return [...out, ...remindersOf(r, now)];
 }
 
@@ -1946,7 +1990,7 @@ function schemaChange(r: R, now: Date, out: Line[], omitted: readonly unknown[])
     );
   } else {
     out.push(
-      t`Tell the user the changes above. This version cannot confirm it yet: it stays pending until a newer draft replaces it, and the slot stays as it is.`,
+      t`Not in effect; the slot stays as it is until the draft is confirmed. Tell the user the changes above in this reply and ask them; what they said before this draft is not agreement to it. Once they agree: saveslot_resolve ${idOf(obj(r["item"])["id"])} confirm (or reject).`,
     );
   }
   const shortened =

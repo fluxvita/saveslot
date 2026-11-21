@@ -359,8 +359,25 @@ describe("planEvent: what this phase stops on, never skips", () => {
     );
   });
 
+  it("schema.rejected gives up the draft's version, as a superseded one", () => {
+    const [, rejected] = op(9, [
+      {
+        type: "schema.draft_submitted",
+        slot: SLOT,
+        blocks: {
+          ctx: { now: NOW, today: "2026-11-10", ruleset_version: 1, policy_version: 1 },
+          target: { draft_id: DRAFT, creates_slot: false, base_version: 1 },
+          draft: {},
+        },
+      },
+      { type: "schema.rejected", slot: SLOT, blocks: { target: { draft_id: DRAFT } } },
+    ]);
+    expect(planEvent(rejected as ApplyEvent)).toEqual([
+      { kind: "version_given_up", slot: SLOT, draft_id: DRAFT, state: "rejected" },
+    ]);
+  });
+
   it.each([
-    ["schema.rejected", { target: { draft_id: DRAFT } }],
     [
       "schema.migration_started",
       { target: { migration_id: MIGRATION, draft_id: DRAFT, from_version: 1, to_version: 2 } },
@@ -841,6 +858,7 @@ describe("planEvent: a switch from an earlier version that rebuilds nothing", ()
       changes?: { change: string; target: Record<string, JsonValue> }[];
       tables?: string[];
       currentSv?: number;
+      otherNames?: string[];
     } = {},
   ): PlanInputs => {
     const from = o.from ?? COMPILED_V1;
@@ -850,6 +868,7 @@ describe("planEvent: a switch from an earlier version that rebuilds nothing", ()
         currentSv: o.currentSv ?? 1,
         policySeq: 5,
         tables: new Set(o.tables ?? from.tables.map((t) => t.id)),
+        ...(o.otherNames !== undefined ? { otherNames: o.otherNames } : {}),
       },
     };
   };
@@ -911,13 +930,34 @@ describe("planEvent: a switch from an earlier version that rebuilds nothing", ()
     );
   });
 
-  it("stops on a time zone or slot name of its own: nothing here recomputes what depends on them", () => {
+  it("stops on a time zone of its own: nothing here recomputes what depends on it", () => {
     expect(reason(switched(), inputs({ ...V2, timezone: "Europe/Paris" } as CompiledSchema))).toBe(
       "not_implemented: a switch changing the time zone is not applied yet",
     );
-    expect(reason(switched(), inputs({ ...V2, name: "budget" } as CompiledSchema))).toBe(
-      "not_implemented: a switch renaming the slot is not applied yet",
+  });
+
+  it("a slot name of its own: taken with the draft's rename_slot, inconsistent without", () => {
+    const renamed = { ...V2, name: "budget" } as CompiledSchema;
+    expect(reason(switched(), inputs(renamed))).toBe(
+      `inconsistent: slot ${SLOT} named budget, not ledger, without rename_slot`,
     );
+    const changes = planEvent(
+      switched(),
+      inputs(renamed, { changes: [{ change: "rename_slot", target: { slot: true } }] }),
+    );
+    expect(changes.at(-1)).toMatchObject({ kind: "version_switch", sv: 2, name: "budget" });
+  });
+
+  it("a slot renamed to another slot's name, case aside: inconsistent (07 «确认时重新判断»)", () => {
+    const renamed = { ...V2, name: "budget" } as CompiledSchema;
+    const changes = [{ change: "rename_slot", target: { slot: true } }];
+    expect(reason(switched(), inputs(renamed, { changes, otherNames: ["Budget"] }))).toBe(
+      `inconsistent: slot ${SLOT} renamed to budget, the name of another slot`,
+    );
+    // Its own name in another case is no other slot's.
+    expect(
+      planEvent(switched(), inputs(renamed, { changes, otherNames: ["books"] })).at(-1),
+    ).toMatchObject({ kind: "version_switch", name: "budget" });
   });
 
   it("stops on a kept table not as the earlier version has it, physically", () => {

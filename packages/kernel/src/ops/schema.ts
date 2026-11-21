@@ -10,6 +10,7 @@ import { ApplyError, applyEvents, eventsOf, internalDetailOf } from "../apply/in
 import { appendOperation, type NewEvent } from "../log/index.ts";
 import { evaluationRefusal, loadRsql, RULESET_VERSION } from "../rules/index.ts";
 import {
+  changesByName,
   compiledWarnings,
   compileNewSlot,
   DEFAULT_SLOT_POLICY,
@@ -73,7 +74,6 @@ function receiptOf(
   replayed: boolean,
 ): SchemaDraftReceipt {
   const warnings = compiledWarnings(compiled);
-  const name = (id: string) => compiled.tables.find((t) => t.id === id)?.name ?? id;
   return {
     draft,
     slot: compiled.name,
@@ -81,10 +81,7 @@ function receiptOf(
     target_sv: 1,
     document: filledDocument(document, compiled),
     // Names for IDs (09 §5.5: the event's `changes` hold IDs).
-    changes: changes.map((c) => ({
-      ...c,
-      target: "table" in c.target ? { ...c.target, table: name(c.target.table) } : c.target,
-    })),
+    changes: changesByName(changes, compiled, compiled),
     impact: { rows_affected: 0, derived_changed: [], consumers: [] },
     outcome: "applied",
     sv: 1,

@@ -327,5 +327,13 @@ export function resolveResult(r: ResolveResult): Line[] {
   if (reverted.length > 0) {
     out.push(t`  undid: ${join(reverted.map(revertedWrite), t`; `)}`);
   }
+  // A schema decision: the version switched to, and the slot's new name when it was renamed.
+  if (isObj(x["schema"])) {
+    const sc = obj(x["schema"]);
+    if (sc["switched"] === true) {
+      out.push(t`  switched to schema v${count(sc["sv"])}`);
+      if (sc["slot"] !== undefined) out.push(t`  slot renamed to ${name(String(sc["slot"]))}`);
+    } else out.push(t`  not switched: the slot stays as it is`);
+  }
   return [...out, ...warningsAndNotices(r)];
 }

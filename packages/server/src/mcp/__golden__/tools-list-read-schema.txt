@@ -521,8 +521,117 @@
     }
   },
   {
+    "name": "saveslot_resolve",
+    "description": "Resolve one pending item (a conflict, or a change awaiting confirmation). Schema changes awaiting confirmation are resolved here too. The ways an item can be resolved are given in its detail from saveslot_pending and in the receipts. Before a resolution with a large effect (confirming a change), tell the user the detail and ask them; resolve it only after they say yes to that. What they said before the item appeared is not agreement to it. Returns the item with the decision taken and its new version, and the writes the decision made, each row with its new `ver`.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The item ID (`pi_…`), from a receipt or saveslot_pending."
+        },
+        "decision": {
+          "enum": [
+            "keep_effective",
+            "take_candidate",
+            "take_previous",
+            "confirm",
+            "reject"
+          ],
+          "description": "How to resolve it, only one of those its detail lists: a conflict `keep_effective` / `take_candidate` / `take_previous`; a change awaiting confirmation `confirm` / `reject`. A schema change `confirm` / `reject`."
+        },
+        "item_ver": {
+          "type": "string",
+          "description": "The `iv_…` of the item's detail or of a receipt, passed back unchanged: if the item changed since you looked, the call is refused with the latest content."
+        },
+        "candidate": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Only with `take_candidate`, required when there are several: which candidate (its index in the detail, from 0)."
+        },
+        "note": {
+          "type": "string",
+          "description": "A note on why. It is stored as a source and can be deleted later like any other."
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "user_message",
+                  "agent_note",
+                  "tool_result",
+                  "file_ref"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "description": "Required for `user_message`, `agent_note` and `tool_result`; not with `file_ref`."
+              },
+              "stated_at": {
+                "type": "string",
+                "description": "Any kind: when the words were said, a moment with its offset."
+              },
+              "name": {
+                "type": "string",
+                "description": "The file's name. Required, and for `file_ref` only."
+              },
+              "mime": {
+                "type": "string",
+                "description": "Its media type. Required, and for `file_ref` only."
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Its size in bytes. Required, and for `file_ref` only."
+              },
+              "sha256": {
+                "type": "string",
+                "description": "Its SHA-256, 64 hex digits. Required, and for `file_ref` only."
+              },
+              "origin": {
+                "type": "string",
+                "description": "Where it came from. Optional, and for `file_ref` only."
+              },
+              "excerpt": {
+                "type": "string",
+                "description": "The part of it that matters. Optional, and for `file_ref` only."
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          "description": "The evidence for this resolution (such as the user saying \"the later one is right\"): an array; the user's words as `{kind: \"user_message\", text}`, the words themselves."
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Normally not given: a repeat with the same content is recognized as the same write. When a record with the same content really happened again, write it with a new value. The same value with different content is refused."
+        },
+        "task": {
+          "type": "string",
+          "description": "A short label for this task (such as `weekly-review`): use the same value for the reads and writes of one task, so that saveslot can match the versions you read with your later writes. Never put the user's words or data in it."
+        }
+      },
+      "required": [
+        "id",
+        "decision"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "saveslot_schema_draft",
-    "description": "Create a new slot from a schema document (its tables, their fields and units), or change an existing slot's. Show the user the draft (each table, its fields and units) and submit it only after they agree to it: a new slot takes effect as soon as it compiles, and nothing asks them to confirm it afterwards. Use it when the user wants to start recording a kind of thing that none of their tables fits; look with saveslot_catalog first, and when a slot for it exists already, use that slot instead of creating another. To change a slot, submit the document saveslot_catalog gives with level \"schema\", changed, its IDs and base_version kept. Changes the slot's policy makes automatic (a new table, a description, aliases, looser constraints) take effect at once; the others (a rename, a dropped table) wait for the user's confirmation as a schema_change item, which this version cannot confirm yet. Only a connection that can see every slot can create one, and changing a slot needs every table of it in range. Fields with a unit take a code from the unit vocabulary, such as km, min or CNY; a count per minute, such as a heart rate, is /min. Returns a new slot's tables as compiled and its schema version, sv 1; for a change, each change and whether it took effect or waits.",
+    "description": "Create a new slot from a schema document (its tables, their fields and units), or change an existing slot's. Show the user the draft (each table, its fields and units) and submit it only after they agree to it: a new slot takes effect as soon as it compiles, and nothing asks them to confirm it afterwards. Use it when the user wants to start recording a kind of thing that none of their tables fits; look with saveslot_catalog first, and when a slot for it exists already, use that slot instead of creating another. To change a slot, submit the document saveslot_catalog gives with level \"schema\", changed, its IDs and base_version kept. Changes the slot's policy makes automatic (a new table, a description, aliases, looser constraints) take effect at once; the others (a rename, a dropped table) wait for the user's confirmation as a schema_change item: once they agree, saveslot_resolve confirms it (or rejects it). Only a connection that can see every slot can create one, and changing a slot needs every table of it in range. Fields with a unit take a code from the unit vocabulary, such as km, min or CNY; a count per minute, such as a heart rate, is /min. Returns a new slot's tables as compiled and its schema version, sv 1; for a change, each change and whether it took effect or waits.",
     "inputSchema": {
       "type": "object",
       "properties": {

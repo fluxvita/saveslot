@@ -92,7 +92,7 @@ export const DOMAIN_ERROR_REASONS = {
   ],
   sql_rejected: SQL_REASONS,
   sql_timeout: [],
-  draft_outdated: ["base_version", "migrating", "table_written", "migrate_failed"],
+  draft_outdated: ["base_version", "migrating", "table_written", "migrate_failed", "name_taken"],
   field_unmatched: [],
   confirmation_mismatch: ["changed", "restored"],
   item_closed: ["resolved", "superseded", "expired"],

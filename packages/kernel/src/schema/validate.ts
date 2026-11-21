@@ -16,6 +16,7 @@
 //   base fields take: 04-contract «schema_draft» (key_not_applicable, external_key_table_kind)
 
 import { FIELD_TYPES } from "@fluxvita/saveslot-contract-core";
+import { fold } from "../apply/index.ts";
 import type {
   DocDerivedTable,
   DocField,
@@ -27,8 +28,8 @@ import type {
 import { FIELD_TYPE_SET } from "./model.ts";
 import { unitCandidates, unitOf } from "./units.ts";
 
-/** ASCII case folding: names are unique without ASCII case (10 «名字不分 ASCII 大小写唯一»). */
-export const fold = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+// ASCII case folding: names are unique without ASCII case (10 «名字不分 ASCII 大小写唯一»).
+export { fold };
 
 const NAME = /^[A-Za-z][A-Za-z0-9_]{0,62}$/;
 /** Field names reserved by the write and query parameters and the restricted SQL system columns. */

@@ -8,8 +8,8 @@
 //   reading its version (04-contract §2 «什么算读到 item_ver»); a closed one's is given, not counted.
 // In this version the detail is of `conflict`, `awaiting_confirmation` and `schema_change` items;
 // `flagged` (P2) items are not opened yet, so their detail is not implemented; `deletion` items and
-// migration jobs come later. A `schema_change` item offers no decision yet: `resolve` does not
-// take one on it in this version.
+// migration jobs come later. The decisions are those of the item's type: which of them the
+// caller's credential may take is the service layer's to say (it filters them by scope).
 
 import type {
   CompiledBaseTable,
@@ -82,6 +82,7 @@ const JOB_ID = /^jb_/;
 const DECISIONS: Readonly<Record<string, readonly EventDecision[]>> = {
   conflict: ["keep_effective", "take_candidate", "take_previous"],
   awaiting_confirmation: ["confirm", "reject"],
+  schema_change: ["confirm", "reject"],
 };
 
 export type ItemRow = {
@@ -120,6 +121,23 @@ export function placeOf(
   if (x.target_table === null) return { slot, table: undefined };
   const table = slot.tables.find((t) => t.id === x.target_table);
   return table === undefined ? undefined : { slot, table };
+}
+
+/**
+ * The type of the item `id` if the caller sees it (as the detail would find it), else undefined:
+ * nothing else of it. For the service layer, which checks a decision's scope by the item's type
+ * (02-architecture §5: the kernel knows only the visible range). Not a read: nothing is recorded.
+ */
+export async function pendingItemTypeInTx(
+  tx: ReadTx,
+  visibility: Visibility,
+  id: string,
+): Promise<EventItemType | undefined> {
+  if (!ITEM_ID.test(id)) return undefined;
+  const r = await tx.query<ItemRow>(`${ITEMS} WHERE p.id = $1`, [id]);
+  const x = r.rows[0];
+  if (x === undefined) return undefined;
+  return placeOf(x, await visibleSlots(tx, visibility)) === undefined ? undefined : x.type;
 }
 
 const dayBefore = (d: string): DateStr =>

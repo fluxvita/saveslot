@@ -21,6 +21,7 @@ import type {
   ItemId,
   ItemVer,
   Seq,
+  SlotName,
   SourceId,
   Sv,
   TableName,
@@ -369,8 +370,11 @@ export interface ResolveResult extends CommonResult {
    * the decision bound (`ConflictDetail.reverted_by_previous`).
    */
   reverted_by_previous?: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;
-  /** schema_change `confirm`. */
-  schema?: { switched: boolean; sv?: Sv; migration?: MigrationStatus };
+  /**
+   * schema_change `confirm`. `slot`: the slot's name in the version switched to, when the switch
+   * renames it.
+   */
+  schema?: { switched: boolean; sv?: Sv; slot?: SlotName; migration?: MigrationStatus };
   /** deletion `cancel`. */
   cancelled?: {
     rows: Array<{ target: TargetRef; ver: Ver }>;

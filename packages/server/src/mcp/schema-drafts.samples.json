@@ -130,7 +130,8 @@
       "changes": [
         {
           "target": {
-            "slot": true
+            "slot": true,
+            "name": "diet"
           },
           "change": "create_slot",
           "class": "create",
@@ -324,7 +325,8 @@
           "compatible_with_old_writes": true,
           "destructive": false,
           "target": {
-            "slot": true
+            "slot": true,
+            "name": "diet"
           }
         },
         {

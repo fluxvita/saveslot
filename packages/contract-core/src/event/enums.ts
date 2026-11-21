@@ -179,6 +179,7 @@ export const PREMISE_REASONS = [
   "retroactive",
   "plan_changed",
   "deleted",
+  "schema_switched",
 ] as const;
 export type PremiseReason = (typeof PREMISE_REASONS)[number];
 

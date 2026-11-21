@@ -48,7 +48,7 @@ import { BUDGET, budgetFor, plain } from "./budget.ts";
 import { instructionsFor } from "./instructions.ts";
 import { promptGet, promptList } from "./prompts.ts";
 import { renderError, renderResult } from "./render.ts";
-import { describe, TOOLS, type Tool, type ToolName, toolsFor } from "./tools.ts";
+import { describe, mayCall, TOOLS, type Tool, type ToolName, toolsFor } from "./tools.ts";
 
 /** How long a `server/discover` result may be cached (05 §11; 08-open-questions). */
 const DISCOVER_TTL_MS = 5 * 60_000;
@@ -254,7 +254,7 @@ export function missingScope(body: unknown, principal: Principal): string | unde
     const { method, params } = m as { method?: unknown; params?: { name?: unknown } };
     if (method !== "tools/call") continue;
     const tool = TOOLS.find((t) => t.name === params?.name);
-    if (tool !== undefined && !principal.scopes.includes(tool.scope)) return tool.scope;
+    if (tool !== undefined && !mayCall(principal, tool)) return tool.scope;
   }
   return undefined;
 }

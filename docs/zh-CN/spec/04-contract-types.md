@@ -324,7 +324,9 @@ interface Marks {
   /** 这一行当前的值所用到的前提后来变了（04-contract 5.1「写入的前提」）。值没有动；是否仍然成立由读方判断。
    *  任何读取方都看得到。最多列 10 条，按 since 从新到旧；超出时另给 premise_changed_total。打标记、撤标记都不改这一行的 ver。
    *  同一 since 的几条，后声明的在前。前提目标所在的表（或 slot）对读方不可见时是第二种形状：只有这一行自己的东西（被覆盖的字段与 since），
-   *  目标、声明的字段、所见版本、原因与表名都不给。 */
+   *  目标、声明的字段、所见版本、原因与表名都不给。前提目标所在的表已在 schema 切换里被删除（reason 为 schema_switched）时，
+   *  读方的范围包含它（整个 slot，或按表 ID 列出了它）照第一种形状给，表名与声明的字段按删除之前的最后一版；
+   *  否则是第二种形状——只剩下表也在范围里，不等于当初看得到被删的那张。 */
   premise_changed?: Array<{
     premise: TargetRef;            // 前提所在的行 / 实体
     premise_fields?: FieldName[];  // 声明的字段；没有 = 整行
@@ -1526,8 +1528,9 @@ interface ResolveResult extends CommonResult {
   write?: Pick<WriteResult, "seq" | "sv" | "ops" | "derived" | "derived_total" | "pending" | "superseded" | "affected_reads" | "premise_affected" | "omitted">;
   /** take_previous：它回掉的写入，照这次决定所确认的事项版本里 ConflictDetail.reverted_by_previous 列的（重放回执读同一份，不按当前状态重算）。 */
   reverted_by_previous?: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;
-  /** schema_change 的 confirm。 */
-  schema?: { switched: boolean; sv?: Sv; migration?: MigrationStatus };
+  /** schema_change：confirm 时已切换与新 sv（或迁移状态）；reject 时 switched: false。
+   *  slot：这次切换带 rename_slot 时，切换到的那一版里 slot 的名字（取那一版的编译后定义，不读当前的 slot 名：之后再改名，重发同一请求得到的回执也不变）；不改名时不给。 */
+  schema?: { switched: boolean; sv?: Sv; slot?: SlotName; migration?: MigrationStatus };
   /** deletion 的 cancel。 */
   cancelled?: {
     rows: Array<{ target: TargetRef; ver: Ver }>;                       // 受影响行 / 实体的新 ver
@@ -1609,7 +1612,8 @@ interface SchemaDraftResult extends CommonResult {
 }
 
 interface SchemaChange {
-  target: { slot: true } | { table: TableName; field?: FieldName; rule?: true };
+  /** 改动之后的名字：改名的 slot、表、字段给新名字（rename_slot 的 name 是改后的 slot 名，与 rename_table / rename_field 同一个口径）。 */
+  target: { slot: true; name: SlotName } | { table: TableName; field?: FieldName; rule?: true };
   /** 具体是哪一种改动（见下表）。 */
   change: SchemaChangeCode;
   /** 类别：create 新建 slot / 表；metadata 只改元数据；deterministic 确定性转换；reextract 重新抽取 @later。
@@ -1693,7 +1697,7 @@ interface SchemaImpact {
 
 - **"从未被写入"**：日志里没有任何一条以这张表（按表 ID）为目标的基础写入。写过、行已全部撤销，或内容已全部隐私删除，都不算；候选与待确认的写入也算写过。
 - **`restructure_unused`** 的条件还要求这张表最近 30 天没有提交者以外的连接实例按名字读写过（与 `rename_unused` 的"没人在用"相同）；有人用过时这些改动要确认。归入它时没有值可丢、也没有值要转换：`class` 一律是 `metadata`（表里 `class` 一栏写的是写入过的表上的类别；`class` 记的是这次切换实际做了什么），`destructive` 为 `false`，`migrate` 不必给。新增必填字段与可选改必填仍须给常量形式的 `backfill`。
-- 经 `restructure_unused` 生效的任何改动之后，带旧 `sv` 写这张表的写入一律报 `schema_incompatible`，`changed_fields` 给 `{field: "*", change: <改动码>}`。
+- 经 `restructure_unused` 生效的任何改动之后，带旧 `sv` 写这张表的写入一律报 `schema_incompatible`，`changed_fields` 给 `{field: "*", change: <改动码>}`。表被删之后，带删除之前的 `sv` 写它同样如此，`change` 是 `drop_table`。
 - 来源键字段的 `change_type`、`tighten_constraint` 在写入过的表上不支持（`not_in_this_version`）：转换后的值可能相撞。
 
 例（给 `expenses` 加一个可选字段；默认策略下 `add_optional_field` 自动生效）：
@@ -2157,11 +2161,11 @@ type ValidationDetailCode =
 | `derived_readonly` | — | `table`、`base_tables: TableName[]` |
 | `validation_failed` | `write` / `schema` | `details[]`、`current_sv?`（`write` 的明细码含 `rule_eval_failed` 与 `migrate_failed`：迁移进行中带旧 `sv` 的写入对新版求值失败，拒绝这次写入而不是让切换失败） |
 | `read_first` | `no_read` / `task_mismatch` | `target: "row" \| "item" \| "slot" \| "table"`、`ref?: TargetRef \| ItemId \| SlotName`；`task_mismatch` 时 `read_task: string \| null`（找到的那次读取的 `task`）、`task: string \| null`（这次调用的 `task`）；`null` 表示那次读取或这次调用没带 `task` |
-| `schema_incompatible` | — | `current_sv`、`changed_fields: Array<{field, change}>`（`field` 是 `"*"` 时表示整张表：这张表经 `restructure_unused` 改过结构） |
+| `schema_incompatible` | — | `current_sv`、`changed_fields: Array<{field, change}>`（`field` 是 `"*"` 时表示整张表：这张表经 `restructure_unused` 改过结构，或已被删） |
 | `too_large` | `evidence_segment` / `request`（一次请求的证据总字节数）/ `ops`（一次写入的 op 个数）/ `evidence_segments`（一次请求的证据段数，含 `source_ref` 段）/ `request_body`（HTTP：请求体超过服务能接收的上限）/ `admission` / `result_budget` / `premise_entries` / `premise_fan_in` | `limit_bytes?`、`actual_bytes?`（`evidence_segment`、`request`：字节数）；`ops` 时 `limit`、`actual`（op 个数）；`evidence_segments` 时 `limit`、`actual`（段数）；`admission` 时 `estimated_rows`、`suggested_batch`（第一版整条规则重算，代价不随请求大小变化，准入不拒绝、不报 `admission`；按受影响分区估算之后启用）；`result_budget` 时 `narrow_by: string[]`；`premise_fan_in` 时 `target: TargetRef`、`count`（目标当前被多少条有效声明指向）。这些原因都发生在落账之前；已经落账的操作回执超预算时不报错，截短并带 `omitted[]` |
 | `sql_rejected` | `syntax`（语法错误，文本不是良构的 Unicode）/ `not_select` / `function` / `node` / `system_time` / `unknown_name` / `type`（类型或单位不合）/ `limit`（超出上限）/ `runtime`（求值出错，如 64 位整数溢出） | `line`、`node`（不暴露物理名）、`use?: "history"` |
 | `sql_timeout` | — | `elapsed_ms` |
-| `draft_outdated` | `base_version` / `migrating` / `table_written`（确认时，草稿所改结构的那张表已被写入）/ `migrate_failed`（确认时，`migrate` 对试跑之后的新写入求值失败） | `current_sv`；`migrating` 时 `migration: MigrationStatus` |
+| `draft_outdated` | `base_version` / `migrating` / `table_written`（确认时，草稿所改结构的那张表已被写入）/ `migrate_failed`（确认时，`migrate` 对试跑之后的新写入求值失败）/ `name_taken`（确认时，草稿要改成的 slot 名已被另一个 slot 用着） | `current_sv`；`migrating` 时 `migration: MigrationStatus` |
 | `field_unmatched` | — | `fields: Array<{table, id, name}>` |
 | `confirmation_mismatch` | `changed` / `restored` | `current: ItemDetail`（含新的 `item_ver`） |
 | `item_closed` | `resolved` / `superseded` / `expired` | `resolution?` / `superseded?`（形状同事项详情）；`expired`（`deletion` 的宽限期已过）：已执行给 `resolution`（执行一支），尚未执行给 `expires_at` |
@@ -2190,7 +2194,7 @@ type ValidationDetailCode =
 | `deletion_preview` | `not_found`、`handle_expired`、`preview_outdated`、`too_large`（`result_budget`） |
 | `pending` | `not_found`（含 `slot`）、`handle_expired`、`too_large`（`result_budget`） |
 | `write` | `unknown_table`、`unknown_field`、`not_found`（含前提指向的行）、`revoked`、`derived_readonly`、`validation_failed`、`read_first`、`schema_incompatible`、`too_large`（含 `premise_entries`、`premise_fan_in`） |
-| `resolve` | `not_found`、`item_closed`、`confirmation_mismatch`、`read_first`、`draft_outdated`（`table_written` / `migrate_failed`：`schema_change` 的 `confirm`），以及触发的写入可能返回的 |
+| `resolve` | `not_found`、`item_closed`、`confirmation_mismatch`、`read_first`、`draft_outdated`（`table_written` / `migrate_failed` / `name_taken`：`schema_change` 的 `confirm`），以及触发的写入可能返回的 |
 | `schema_draft` | `validation_failed`、`draft_outdated`、`field_unmatched`、`too_large` |
 | `delete` | `handle_expired`、`preview_outdated` |
 | `connections.*` | `not_found`（含 `connections.issue` 的 `slots` 里不存在的 slot：`slot`） |

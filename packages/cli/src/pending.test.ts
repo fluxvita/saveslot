@@ -256,6 +256,33 @@ describe("pending (06 §5.1)", () => {
     expect(text).not.toContain("undefined");
   });
 
+  it("a schema decision: the version switched to, the slot's new name, or not switched", () => {
+    const schema = (s: Record<string, unknown>, decision = "confirm") =>
+      render(
+        resolveResult({
+          id: "pi_8VEZWJ3J7BMKMXTV",
+          type: "schema_change",
+          decision,
+          item_ver: "iv_8VEZWJ3J7BMKMXTV.110.0",
+          status: "resolved",
+          schema: s,
+        } as never),
+        terminal,
+      ).split("\n");
+    expect(schema({ switched: true, sv: 3, slot: "food" }).slice(1)).toEqual([
+      "  switched to schema v3",
+      "  slot renamed to food",
+    ]);
+    expect(schema({ switched: true, sv: 3 }).slice(1)).toEqual(["  switched to schema v3"]);
+    expect(schema({ switched: false }, "reject").slice(1)).toEqual([
+      "  not switched: the slot stays as it is",
+    ]);
+    // A name not of a name's shape stays inside the boundary.
+    expect(schema({ switched: true, sv: 3, slot: "x\u001b[2J" })).toContain(
+      "  slot renamed to 「x\\x1b[2J」",
+    );
+  });
+
   it("a conflict resolved by taking a candidate: which candidate, and the note inside the boundary", () => {
     const resolved = {
       ...AWAITING,

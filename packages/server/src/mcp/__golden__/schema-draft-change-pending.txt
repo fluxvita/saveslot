@@ -2,4 +2,4 @@ Awaiting confirmation · slot diet · schema v2 → v3 · draft d_MY71WHKPK8AJ7V
   meals: change_description (metadata) · writes in the earlier version still taken · loses no data
   meals.food: rename_field (metadata) · writes in the earlier version still taken · loses no data · waits for confirmation
 Impact: 0 rows to change
-Tell the user the changes above. This version cannot confirm it yet: it stays pending until a newer draft replaces it, and the slot stays as it is.
+Not in effect; the slot stays as it is until the draft is confirmed. Tell the user the changes above in this reply and ask them; what they said before this draft is not agreement to it. Once they agree: saveslot_resolve pi_4NQDMY7N9WMTHYFT confirm (or reject).

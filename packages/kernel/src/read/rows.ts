@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import type {
   BizPoint,
   CompiledBaseField,
+  CompiledTable,
   DateStr,
   FieldValue,
   ItemId,
@@ -317,6 +318,10 @@ function unionMarks(a: WorkMarks | undefined, b: WorkMarks | undefined): WorkMar
  * are more. `fields` are this row's fields covered. A premise on a table the caller cannot see still
  * shows, as what is of this row only (`hidden`, `since`, `fields`): that the row rests on something
  * that changed matters to whoever reads it; which table, row and fields, and how, are not told.
+ * A table a schema switch dropped (`schema_switched`) is not one the caller cannot see: to a caller
+ * whose range takes it in (the whole slot, or the table by its ID) it is told whole, named as the
+ * last version having it defined it (05 §4.2: "dropped in the schema switch of #n"); to any other it
+ * is `hidden`, as a table out of range: a range narrowed to the tables left is not one that saw it.
  */
 function shownPremises(
   plan: QueryPlan,
@@ -336,7 +341,17 @@ function shownPremises(
     const fields = plan.table.fields.filter((f) => covered.has(f.id)).map((f) => f.name);
     const reason = d.reason as PremiseReason;
     const since = d.since as never;
-    const target = visible.get(d.targetTable);
+    const former = p.formerTables.get(d.targetTable);
+    // The catalog keeps a table's definition without its physical tables, which naming needs not.
+    const target: CompiledTable | undefined =
+      visible.get(d.targetTable) ??
+      (reason === "schema_switched" &&
+      former !== undefined &&
+      former.slot === slot.slot &&
+      !slot.compiled.tables.some((x) => x.id === d.targetTable) &&
+      (slot.rangeTables === undefined || slot.rangeTables.has(d.targetTable))
+        ? (former.table as CompiledTable)
+        : undefined);
     const order = [d.since, d.op, -d.opIndex, -d.index];
     if (target === undefined || target.kind !== "base") {
       // Only what is of this row: that something it rests on changed, and since when (an operation

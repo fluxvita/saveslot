@@ -12,6 +12,7 @@ import {
   historyInTx,
   type PendingReadResult,
   pendingInTx,
+  pendingItemTypeInTx,
   policyGetInTx,
   type QueryReadResult,
   queryInTx,
@@ -222,6 +223,19 @@ export async function sources(
 }
 
 /** Reads `params` (a `PendingParams`) as `ctx.actor`: the pending items, or one item's detail. */
+/**
+ * The type of the pending item `id` as `ctx`'s caller sees it, or undefined when it does not see
+ * one (no such item, or out of range): for the service layer to check a decision's scope before
+ * `resolve`. Not a read: nothing is recorded, nothing else of the item given.
+ */
+export async function pendingItemType(
+  store: TenantStore,
+  ctx: OpsContext,
+  id: string,
+): Promise<string | undefined> {
+  return store.read((tx) => pendingItemTypeInTx(tx, ctx.visibility, id));
+}
+
 export async function pending(
   store: TenantStore,
   ctx: OpsContext,

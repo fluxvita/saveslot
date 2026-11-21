@@ -688,7 +688,7 @@
   },
   {
     "name": "saveslot_resolve",
-    "description": "Resolve one pending item (a conflict, or a change awaiting confirmation). The ways an item can be resolved are given in its detail from saveslot_pending and in the receipts. Before a resolution with a large effect (confirming a change), tell the user the detail and ask them; resolve it only after they say yes to that. What they said before the item appeared is not agreement to it. Returns the item with the decision taken and its new version, and the writes the decision made, each row with its new `ver`.",
+    "description": "Resolve one pending item (a conflict, or a change awaiting confirmation). Schema changes awaiting confirmation are resolved here too. The ways an item can be resolved are given in its detail from saveslot_pending and in the receipts. Before a resolution with a large effect (confirming a change), tell the user the detail and ask them; resolve it only after they say yes to that. What they said before the item appeared is not agreement to it. Returns the item with the decision taken and its new version, and the writes the decision made, each row with its new `ver`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -704,7 +704,7 @@
             "confirm",
             "reject"
           ],
-          "description": "How to resolve it, only one of those its detail lists: a conflict `keep_effective` / `take_candidate` / `take_previous`; a change awaiting confirmation `confirm` / `reject`."
+          "description": "How to resolve it, only one of those its detail lists: a conflict `keep_effective` / `take_candidate` / `take_previous`; a change awaiting confirmation `confirm` / `reject`. A schema change `confirm` / `reject`."
         },
         "item_ver": {
           "type": "string",

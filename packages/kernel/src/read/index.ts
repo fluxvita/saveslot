@@ -29,7 +29,12 @@ export {
 } from "./notices.ts";
 // Paging, for lists outside this module (the management operations).
 export { digest, limitOf, pageAfter, positionOf } from "./page.ts";
-export { type PendingInput, type PendingReadResult, pendingInTx } from "./pending.ts";
+export {
+  type PendingInput,
+  type PendingReadResult,
+  pendingInTx,
+  pendingItemTypeInTx,
+} from "./pending.ts";
 export {
   profileOf,
   SCALE_BOUNDS,

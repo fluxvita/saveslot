@@ -372,7 +372,7 @@ export const RESOLVE = {
     "Resolve one pending item (a conflict, or a change awaiting confirmation).",
     { text: "Flagged records are resolved here too.", later: "P2" },
     { text: "Undoing a deletion is done here too.", later: "P3" },
-    { text: "Schema changes awaiting confirmation are resolved here too.", later: "P4" },
+    "Schema changes awaiting confirmation are resolved here too.",
     {
       text: "The ways an item can be resolved are given in its detail from saveslot_pending and in the receipts.",
       needs: "saveslot_pending",
@@ -386,7 +386,7 @@ export const RESOLVE = {
       "How to resolve it, only one of those its detail lists: a conflict `keep_effective` / `take_candidate` / `take_previous`; a change awaiting confirmation `confirm` / `reject`.",
       { text: "A flagged record `keep` / `revoke`.", later: "P2" },
       { text: "Undoing a deletion `cancel`.", later: "P3" },
-      { text: "A schema change `confirm` / `reject`.", later: "P4" },
+      "A schema change `confirm` / `reject`.",
     ],
     item_ver: [
       "The `iv_…` of the item's detail or of a receipt, passed back unchanged: if the item changed since you looked, the call is refused with the latest content.",
@@ -408,7 +408,7 @@ export const SCHEMA_DRAFT = {
     "Create a new slot from a schema document (its tables, their fields and units), or change an existing slot's.",
     "Show the user the draft (each table, its fields and units) and submit it only after they agree to it: a new slot takes effect as soon as it compiles, and nothing asks them to confirm it afterwards.",
     "Use it when the user wants to start recording a kind of thing that none of their tables fits; look with saveslot_catalog first, and when a slot for it exists already, use that slot instead of creating another.",
-    "To change a slot, submit the document saveslot_catalog gives with level \"schema\", changed, its IDs and base_version kept. Changes the slot's policy makes automatic (a new table, a description, aliases, looser constraints) take effect at once; the others (a rename, a dropped table) wait for the user's confirmation as a schema_change item, which this version cannot confirm yet. Only a connection that can see every slot can create one, and changing a slot needs every table of it in range.",
+    "To change a slot, submit the document saveslot_catalog gives with level \"schema\", changed, its IDs and base_version kept. Changes the slot's policy makes automatic (a new table, a description, aliases, looser constraints) take effect at once; the others (a rename, a dropped table) wait for the user's confirmation as a schema_change item: once they agree, saveslot_resolve confirms it (or rejects it). Only a connection that can see every slot can create one, and changing a slot needs every table of it in range.",
     "Fields with a unit take a code from the unit vocabulary, such as km, min or CNY; a count per minute, such as a heart rate, is /min.",
     "Returns a new slot's tables as compiled and its schema version, sv 1; for a change, each change and whether it took effect or waits.",
     {

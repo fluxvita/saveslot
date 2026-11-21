@@ -2197,16 +2197,29 @@
       "seq": 9,
       "ops": [
         {
-          "target": { "table": "plan.expenses", "row": "r_7C3R1QHT0ADJGQVQTAFJGV4EAV" },
+          "target": {
+            "table": "plan.expenses",
+            "row": "r_7C3R1QHT0ADJGQVQTAFJGV4EAV"
+          },
           "intent": "correct",
           "ver": "v9.0",
           "fields": {
             "amount": {
               "result": "applied",
-              "before": { "unit": "CNY", "value": "45" },
-              "after": { "unit": "CNY", "value": "54" }
+              "before": {
+                "unit": "CNY",
+                "value": "45"
+              },
+              "after": {
+                "unit": "CNY",
+                "value": "54"
+              }
             },
-            "note": { "result": "applied", "before": "lunch", "after": "lunch with tea" }
+            "note": {
+              "result": "applied",
+              "before": "lunch",
+              "after": "lunch with tea"
+            }
           }
         }
       ],
@@ -2214,9 +2227,61 @@
       "derived_total": 0,
       "pending": [],
       "superseded": [
-        { "item": "pi_3K7Q2W8N5R1T6Y4P", "type": "conflict", "reason": "overwritten" }
+        {
+          "item": "pi_3K7Q2W8N5R1T6Y4P",
+          "type": "conflict",
+          "reason": "overwritten"
+        }
       ],
-      "warnings": [{ "code": "multi_segment_unmapped", "op": 0, "fields": ["amount", "note"] }]
+      "warnings": [
+        {
+          "code": "multi_segment_unmapped",
+          "op": 0,
+          "fields": ["amount", "note"]
+        }
+      ]
+    }
+  },
+  "resolve-schema-confirm": {
+    "tool": "saveslot_resolve",
+    "result": {
+      "id": "pi_E9R8CQJEMGWJEQ9Y",
+      "type": "schema_change",
+      "decision": "confirm",
+      "item_ver": "iv_E9R8CQJEMGWJEQ9Y.15.0",
+      "status": "resolved",
+      "schema": {
+        "switched": true,
+        "sv": 3
+      }
+    }
+  },
+  "resolve-schema-confirm-renamed": {
+    "tool": "saveslot_resolve",
+    "result": {
+      "id": "pi_E9R8CQJEMGWJEQ9Y",
+      "type": "schema_change",
+      "decision": "confirm",
+      "item_ver": "iv_E9R8CQJEMGWJEQ9Y.15.0",
+      "status": "resolved",
+      "schema": {
+        "switched": true,
+        "sv": 3,
+        "slot": "food"
+      }
+    }
+  },
+  "resolve-schema-reject": {
+    "tool": "saveslot_resolve",
+    "result": {
+      "id": "pi_W5VPWBFNKM2T6KFF",
+      "type": "schema_change",
+      "decision": "reject",
+      "item_ver": "iv_W5VPWBFNKM2T6KFF.10.0",
+      "status": "resolved",
+      "schema": {
+        "switched": false
+      }
     }
   },
   "write-premises-declared": {
