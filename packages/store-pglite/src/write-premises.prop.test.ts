@@ -717,7 +717,7 @@ const step: fc.Arbitrary<Step> = fc.oneof(
     }),
   },
   {
-    weight: 4,
+    weight: 6,
     arbitrary: fc.record({
       k: fc.constant("declare" as const),
       on: fc.constantFrom("release" as const, "budget" as const),
@@ -781,6 +781,20 @@ const step: fc.Arbitrary<Step> = fc.oneof(
 
 const TITLES = ["t", "u", "w"];
 
+/**
+ * A fixed sample run first in every run: a declaration resting on a release's version before the
+ * current one (late), its target then changed, the dependent row restated and cleared. It does not
+ * hang on the generator meeting the case.
+ */
+const EARLY_LATE: Step[] = [
+  { k: "declare", on: "release", r: 0, fields: true, back: 1, range: 0 },
+  { k: "release", r: 0, field: "date", value: 2 },
+  { k: "taskEdit", dep: 1, title: 1, r: 0, on: false },
+  { k: "restate", dep: 1, r: 0, back: 0, fallback: false },
+  { k: "clear", dep: 1 },
+  { k: "release", r: 0, field: "name", value: 1 },
+];
+
 const DATES = ["2026-12-01", "2026-11-20", "2026-12-15"];
 const NAMES = ["v2", "v2.1", "v3"];
 const AMOUNTS = [5000, 3000, 4000];
@@ -795,7 +809,10 @@ describe("premises over random histories (in force: state, since, reason as the 
         ops: 0,
         checked: 0,
         changed: 0,
+        // Declarations resting on a version no longer current, of the random samples; and of the
+        // fixed one (EARLY_LATE), which makes one every run.
         late: 0,
+        lateFixed: 0,
         matched: 0,
         // Restatements by the fallback sent again: replayed, or taken anew.
         replayed: 0,
@@ -818,6 +835,7 @@ describe("premises over random histories (in force: state, since, reason as the 
       };
       await fc.assert(
         fc.asyncProperty(fc.array(step, { minLength: 6, maxLength: 24 }), async (steps) => {
+          const fixed = JSON.stringify(steps) === JSON.stringify(EARLY_LATE);
           await s.reset();
           readBufferOf(s.store).take();
           ids = 0;
@@ -833,7 +851,20 @@ describe("premises over random histories (in force: state, since, reason as the 
           const releases: { row: string; vers: string[]; gone?: boolean }[] = [];
           for (const [n, d] of DATES.entries()) {
             const r = await release(NAMES[n] as string, d);
-            releases.push({ row: r.target.row, vers: [r.ver] });
+            // A second version at once: a declaration with `back` then rests on one no longer
+            // current (late), from the first step on.
+            const w = await ok({
+              ops: [
+                {
+                  intent: "update",
+                  table: "releases",
+                  row: r.target.row,
+                  ver: r.ver,
+                  set: { date: DATES[(n + 1) % DATES.length] },
+                },
+              ],
+            });
+            releases.push({ row: r.target.row, vers: [r.ver, w.ops[0]?.ver as string] });
           }
           const budgets: { entity: string; vers: string[] }[] = [];
           for (const cat of ["food", "rent"]) {
@@ -1033,7 +1064,10 @@ describe("premises over random histories (in force: state, since, reason as the 
                   first: r.ops[0]?.ver as string,
                   ops: [r.seq],
                 });
-              if (r["refused"] === undefined && ver !== x.vers.at(-1)) stats.late++;
+              if (r["refused"] === undefined && ver !== x.vers.at(-1)) {
+                if (fixed) stats.lateFixed++;
+                else stats.late++;
+              }
             } else if (st.k === "restate") {
               const dep = deps[st.dep % Math.max(1, deps.length)];
               const x = releases[st.r] as (typeof releases)[number];
@@ -1282,6 +1316,7 @@ describe("premises over random histories (in force: state, since, reason as the 
         }),
         {
           numRuns: Number(process.env["PROP_RUNS"] ?? 25),
+          examples: [[EARLY_LATE]],
           ...(process.env["PROP_SEED"] ? { seed: Number(process.env["PROP_SEED"]) } : {}),
           ...(process.env["PROP_PATH"]
             ? { path: process.env["PROP_PATH"], endOnFailure: true }
@@ -1291,6 +1326,11 @@ describe("premises over random histories (in force: state, since, reason as the 
       // The generator reaches every kind of conclusion: a degenerate one would pass vacuously.
       expect(stats.checked).toBeGreaterThan(stats.samples * 3);
       expect(stats.changed).toBeGreaterThan(0);
+      // The fixed sample's late declaration, every run; the random ones' floor only guards against
+      // a generator gone degenerate. With each release at two versions from the start and declare
+      // at weight 6, four runs of 25 gave 27, 15, 18 and 23 (a mean of about 21; before, about 6,
+      // and a run with none was seen): none in a run has odds well under one in a million.
+      expect(stats.lateFixed).toBe(1);
       expect(stats.late).toBeGreaterThan(0);
       expect(stats.marked).toBeGreaterThan(0);
       expect(stats.affected).toBeGreaterThan(0);
