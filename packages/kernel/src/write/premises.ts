@@ -38,6 +38,7 @@ import type { ItemRef, Judgement, Limit, RowState } from "../judge/index.ts";
 import { valueToken } from "../judge/state.ts";
 import { decodeColumns, type NormalizedField, type NormalizedPremise } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { type RestorePoint, restoreAt, seenOfVer } from "../store/restore-point.ts";
 import { dateInZone, type Interval, type IntervalSet, nextDay, startOfDay } from "../time/index.ts";
 import { entitiesByKey } from "./keys.ts";
 import { rowTable, rowVersions } from "./reads.ts";
@@ -112,6 +113,9 @@ export interface PremiseContext {
   /** The op's own target. */
   readonly self: string;
   readonly restore: number;
+  /** The restore count and point now, and the log's restores (04-contract §15, `seenOfVer`). */
+  readonly current: Pick<RestorePoint, "restoreCount" | "point">;
+  readonly restores: readonly RestorePoint[];
   readonly zone: string;
   /** The entry time and day (`ctx.now`, `ctx.today`). */
   readonly now: Instant;
@@ -350,7 +354,9 @@ export async function resolvePremises(
     const versions = await rowVersions(tx, verTableOf(t), id);
     let ver: ResolvedPremise["ver"];
     if (p.ver !== undefined) {
-      if (p.ver.restoreCount !== ctx.restore || !versions.has(p.ver.op))
+      // A premise's ver as a write's (04-contract §15 «前提里的 ver 同此»).
+      const read = seenOfVer(p.ver, ctx.current);
+      if (read === undefined || (read.own && !versions.has(p.ver.op)))
         return { code: "not_this_target", param: `${at}/ver` };
       ver = { op: p.ver.op as OpNumber, restore_count: p.ver.restoreCount, basis: "explicit" };
     } else {
@@ -358,7 +364,8 @@ export async function resolvePremises(
       if ("refused" in f) throw f.refused;
       ver = {
         op: f.found as OpNumber,
-        restore_count: f.restoreCount ?? ctx.restore,
+        // A read's own count, or the count at the caller's write: the ver as it was given.
+        restore_count: f.restoreCount ?? restoreAt(ctx.restores, f.found).restoreCount,
         basis: "fallback",
       };
       fallbacks.push({ premise: j, ...f });
@@ -406,11 +413,14 @@ async function stateWhenWritten(
   versions: ReadonlySet<number>,
   ctx: PremiseContext,
 ): Promise<ResolvedPremise> {
-  const later = [...versions].filter((v) => v > r.ver.op).sort((a, b) => a - b);
+  // Where the ver reads (04-contract §15): its own operation, or the restore point.
+  const from =
+    seenOfVer({ op: r.ver.op, restoreCount: r.ver.restore_count }, ctx.current)?.seen ?? r.ver.op;
+  const later = [...versions].filter((v) => v > from).sort((a, b) => a - b);
   if (later.length === 0) return r;
   const scope = scopeOf(r, t, ctx);
   const read = (v: number) => stateAt(tx, t, id, v, { decode: decodeColumns });
-  const seen = await read(r.ver.op);
+  const seen = await read(from);
   // Each later version against the one seen: the last stretch all differing starts at `since`.
   const states: TargetState[] = [];
   for (const v of later) states.push(await read(v));

@@ -77,6 +77,12 @@ export * from "./store/anchor.ts";
 export * from "./store/anchor-check.ts";
 export * from "./store/format-v1.ts";
 export * from "./store/ports.ts";
-export { type RestorePoint, restorePoint } from "./store/restore-point.ts";
+export {
+  type RestorePoint,
+  restoreAt,
+  restoreHistory,
+  restorePoint,
+  seenOfVer,
+} from "./store/restore-point.ts";
 export { mergedSegments, type SegmentColumns, segmentColumns } from "./store/segments.ts";
 export * from "./time/index.ts";

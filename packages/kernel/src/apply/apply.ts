@@ -37,6 +37,7 @@ import { readEvents } from "../log/log.ts";
 import { type DerivedRow, evaluateRule, evaluating, RuleEvaluationError } from "../rules/index.ts";
 import { isKnownLiteralChecker, isKnownRulesetVersion } from "../rules/version.ts";
 import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
+import { type RestorePoint, restorePoint } from "../store/restore-point.ts";
 import type { ValidParam } from "../time/index.ts";
 import { confirmationHash, confirmedChecksums } from "./confirmation.ts";
 import { canonicalKeyFault, type DerivedInput, planDerived } from "./derived.ts";
@@ -76,6 +77,8 @@ export interface PlanInputs {
   readonly premises?: readonly OpPremise[];
   /** A `write.head`'s `premise_covers`: the events they name, as the log has them. */
   readonly covered?: ReadonlyMap<Seq, CoveredEvent>;
+  /** The restore count and point in force at a write head with premises (04-contract §15). */
+  readonly restoreAt?: Pick<RestorePoint, "restoreCount" | "point">;
   readonly derived?: DerivedInput;
 }
 
@@ -336,7 +339,7 @@ function planOther(
           );
         }
       }
-      return planHeadPremises(seq, actor, present, inputs.covered ?? new Map());
+      return planHeadPremises(seq, actor, present, inputs.covered ?? new Map(), inputs.restoreAt);
     }
     case "premise.changed":
       return planPremiseChanged(seq, op, present);
@@ -442,7 +445,10 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
     for (const [path, v] of Object.entries(p.present))
       if (/^ops\/\d+\/premise_covers$/.test(path))
         for (const r of v as readonly Obj[]) seqs.add(r["event"] as number);
-    if (seqs.size === 0) return {};
+    // Where a premise's ver reads goes by the restore point in force at this event (§5.7 `since`).
+    const declares = Object.keys(p.present).some((path) => /^ops\/\d+\/premises\/\d+$/.test(path));
+    const at = declares ? { restoreAt: await restorePoint(tx, { before: ev.seq }) } : {};
+    if (seqs.size === 0) return at;
     const list = [...seqs];
     const params = list.map((_, k) => `$${k + 1}`).join(", ");
     const evs = await tx.query<{
@@ -476,7 +482,7 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
         items: paths.get(n) ?? new Set<string>(),
       });
     }
-    return { covered };
+    return { covered, ...at };
   }
   if (p.type === "write.base") {
     const op = ev.header["op"] as Seq;

@@ -18,6 +18,7 @@
 
 import type { JsonValue, Seq } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
+import { type RestorePoint, seenOfVer } from "../store/restore-point.ts";
 import {
   ApplyError,
   type Change,
@@ -64,6 +65,7 @@ export function planHeadPremises(
   actor: string,
   present: Obj,
   covered: ReadonlyMap<Seq, CoveredEvent>,
+  restoreAt: Pick<RestorePoint, "restoreCount" | "point"> = { restoreCount: 0, point: null },
 ): Change[] {
   const decls: PremiseDeclRow[] = [];
   const byOp = new Map<string, { j: number; target: string }[]>();
@@ -76,6 +78,23 @@ export function planHeadPremises(
     if (op === undefined) throw new ApplyError("inconsistent", seq, `${path}: no ops/${i}/target`);
     const target = (b["row"] ?? b["entity"]) as string;
     const ver = b["ver"] as Obj;
+    // Where the ver reads (§5.7): the ver as given, read where 04-contract §15 says as of this
+    // event (`seenOfVer`). It is before this operation (this operation's own for a row of this
+    // request), and a changed declaration's `since` is after it. The event's shape cannot tell
+    // either; this is where they are kept.
+    const read = seenOfVer(
+      { op: ver["op"] as number, restoreCount: ver["restore_count"] as number },
+      restoreAt,
+    );
+    const own = ver["basis"] === "same_request";
+    if (read === undefined || (own ? read.seen !== seq : read.seen >= seq))
+      throw new ApplyError(
+        "inconsistent",
+        seq,
+        `${path}: the position seen not before this operation`,
+      );
+    if (b["state"] === "changed" && (b["since"] as number) <= read.seen)
+      throw new ApplyError("inconsistent", seq, `${path}: since not after the position seen`);
     const valid = present[`ops/${i}/premise_valid/${j}`] as Obj | undefined;
     decls.push({
       op: seq,

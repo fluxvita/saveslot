@@ -41,6 +41,8 @@ export {
   type LoggedEvent,
 } from "./write/log.fixture.ts";
 export { type WriteInput, writeInTx } from "./write/pipeline.ts";
+// A compiled table's shape, for tests that read a row's state back from the log.
+export { tableShape } from "./write/plan.ts";
 // A write's `premise_affected` with a visibility of its own (tests pin the rows not listed).
 export { premiseAffected } from "./write/premise-affected.ts";
 export { premiseFanInLimitForTests } from "./write/premises.ts";

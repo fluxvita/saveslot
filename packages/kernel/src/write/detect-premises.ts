@@ -25,6 +25,7 @@ import { type PremiseScope, premiseDelta, stateAt } from "../delta/index.ts";
 import type { NewEvent } from "../log/index.ts";
 import { decodeColumns } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { restoreAt, restoreHistory, seenOfVer } from "../store/restore-point.ts";
 import { reasonOf } from "./premises.ts";
 
 /** A declaration as `premise_decls` has it. */
@@ -36,6 +37,7 @@ interface StoredDecl {
   readonly range_kind: string;
   readonly valid: string | null;
   readonly seen_op: number;
+  readonly seen_restore_count: number;
   readonly state: "current" | "changed";
 }
 
@@ -45,7 +47,8 @@ interface StoredDecl {
  */
 async function inForce(tx: ReadTx, target: string): Promise<StoredDecl[]> {
   const r = await tx.query<Record<string, unknown>>(
-    `SELECT d.op, d.op_index, d.decl_index, d.fields, d.range_kind, d.valid, d.seen_op, d.state
+    `SELECT d.op, d.op_index, d.decl_index, d.fields, d.range_kind, d.valid, d.seen_op,
+       d.seen_restore_count, d.state
      FROM premise_decls d
      WHERE d.target_row = $1 AND EXISTS (
        SELECT 1 FROM premise_edges e
@@ -66,6 +69,7 @@ async function inForce(tx: ReadTx, target: string): Promise<StoredDecl[]> {
     range_kind: x["range_kind"] as string,
     valid: (x["valid"] as string | null) ?? null,
     seen_op: Number(x["seen_op"]),
+    seen_restore_count: Number(x["seen_restore_count"]),
     state: x["state"] as "current" | "changed",
   }));
 }
@@ -124,6 +128,11 @@ export async function detectPremises(
       firsts.set(b.target_row, { table: b.target_table as TableId, seq: Number(b.seq) as Seq });
   const blocks: Record<string, unknown>[] = [];
   let slot: string | undefined;
+  // Where a declaration's seen version reads, as of its declaration (04-contract §15).
+  const restores = await restoreHistory(tx);
+  const seenAt = (d: StoredDecl) =>
+    seenOfVer({ op: d.seen_op, restoreCount: d.seen_restore_count }, restoreAt(restores, d.op))
+      ?.seen ?? d.seen_op;
   for (const [id, { table, seq }] of firsts) {
     const t = tableOf(table);
     if (t === undefined) continue;
@@ -143,7 +152,7 @@ export async function detectPremises(
         // this one reads no history.
         if (premiseDelta(before, after, scope).length > 0)
           changed.push({ ...ref, reason: await reasonOf(tx, t, id, op, before, after, scope) });
-      } else if (premiseDelta(await read(d.seen_op), after, scope).length === 0) {
+      } else if (premiseDelta(await read(seenAt(d)), after, scope).length === 0) {
         matched.push(ref);
       }
     }

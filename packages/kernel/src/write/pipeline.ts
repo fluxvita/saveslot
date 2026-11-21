@@ -87,6 +87,7 @@ import {
   type WriteValidationDetail,
 } from "../request/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
+import { restoreAt, restoreHistory, restorePoint, seenOfVer } from "../store/restore-point.ts";
 import { type IntervalSet, meet, unionOf, WHOLE } from "../time/index.ts";
 import { appendWithDerived } from "./derive-step.ts";
 import { WriteError } from "./errors.ts";
@@ -126,7 +127,6 @@ import {
 import {
   type Fallback,
   readUnderAnotherTask,
-  restoreCount,
   rowEvents,
   rowTable,
   rowVersions,
@@ -870,7 +870,11 @@ const EXISTING_KEYS = 10;
  * with what they hold. A flagged item on it stops the request: refreshing or superseding one comes
  * with duplicate detection (`matched_changed`).
  */
-export async function loadRow(tx: Tx, ctx: RowContext, param: string): Promise<RowWork> {
+export async function loadRow(tx: Tx, given: RowContext, param: string): Promise<RowWork> {
+  // A ver of an earlier restore count in the log reads at the restore point of its write
+  // (`decodeRecords`): every caller's row read with the log's restores.
+  const ctx =
+    given.restores !== undefined ? given : { ...given, restores: await restoreHistory(tx) };
   const id = ("row" in ctx.target ? ctx.target.row : ctx.target.entity) as string;
   if ((await rowTable(tx, id)) !== ctx.table) {
     throw new WriteError("not_found", "no such row or entity", {
@@ -1211,7 +1215,11 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   const task = req.task ?? input.task;
   const tableOf = (id: TableId) =>
     receiptNames.tables.find((t) => t.id === id && t.kind === "base") as CompiledBaseTable;
-  const restore = await restoreCount(tx);
+  // The restore count and point now, and the log's restores: a ver given under an earlier count
+  // reads at the point (04-contract §15, `seenOfVer`).
+  const current = await restorePoint(tx);
+  const restore = current.restoreCount;
+  const restores = await restoreHistory(tx);
   const warnings: ReceiptWarning[] = [...req.warnings];
   // Corroborations a value in effect covered (judge's `warnings`), turned into
   // `overwrote_corroborated` once the operation is in the log: the corroboration may be this
@@ -1238,7 +1246,10 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       const f = await fallback(tx, input, task ?? null, { kind: "ver", target }, () =>
         verFromWrite(tx, verTable, target, actor, task ?? null),
       );
-      return "found" in f ? f : undefined;
+      // The ver as it was given: a read's own count, or the count at the caller's write.
+      return "found" in f
+        ? { ...f, restoreCount: f.restoreCount ?? restoreAt(restores, f.found).restoreCount }
+        : undefined;
     },
     restore,
   );
@@ -1254,7 +1265,8 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     const replay = await readReceipt(tx, hit, {
       compiled: receiptNames,
       slotName: slot.name,
-      restoreCount: restore,
+      // As of the operation, not now (04-contract §14: a replay is the receipt as it was).
+      restoreCount: restoreAt(restores, hit).restoreCount,
       replayed: true,
       visible: (id) => slot.tables.some((t) => t.id === id),
     });
@@ -1496,6 +1508,8 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         createdHere: (table, key) =>
           createdByKey.has(`${table} ${keyToken(tableOf(table), key as KeyValues)}`),
         restore,
+        current,
+        restores,
         zone: slot.timezone,
         now: now as Instant,
         today: today as DateStr,
@@ -1622,6 +1636,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         target: isState ? { entity: id as EntityId } : { row: id as RowId },
         shape,
         granularity,
+        restores,
       };
       work = isNew
         ? { ctx, events: [], state: emptyState(shape), createdHere: false, items: [] }
@@ -1635,20 +1650,24 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     // `ver` was the row's current version (09 §5.2 `ver.current`): its op the row's latest before
     // this request and its restore count the current one. Judged here, once, and recorded.
     let seenCurrent = false;
+    // A ver given under an earlier restore count, recorded as given (04-contract §15).
+    let verToken: { op: number; restoreCount: number } | undefined;
     const latest = (versions: ReadonlySet<number>) => Math.max(-1, ...versions);
     if (isNew) seen = (op - 1) as OpNumber;
     else if (work.createdHere) seen = op;
     else if (o.ver !== undefined) {
       const versions = await rowVersions(tx, verTable, id);
-      if (!verOfRow(o.ver, versions, restore)) {
+      const read = seenOfVer(o.ver, current);
+      if (read === undefined || !verOfRow(o.ver, versions, read)) {
         throw new WriteError("invalid_argument", "the ver is not a version of this row or entity", {
           reason: "not_this_target",
           param: `${param}/ver`,
         });
       }
-      seen = o.ver.op;
+      seen = read.seen as OpNumber;
       seenExplicit = true;
-      seenCurrent = o.ver.op === latest(versions);
+      seenCurrent = o.ver.restoreCount === restore && o.ver.op === latest(versions);
+      if (o.ver.restoreCount !== restore) verToken = o.ver;
     } else if (o.kind === "undo") seen = (op - 1) as OpNumber;
     else {
       const f = await fallback(tx, input, task, { kind: "ver", target: id }, () =>
@@ -1659,14 +1678,27 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         ...(isState ? { entity: id } : { row: id }),
       };
       if (!("found" in f)) throw readFirst(f, { target: "row", ref }, task, `${param}/ver`);
-      seen = f.found;
+      // The version as it was given then: a read's own count, or the count at the caller's write.
+      const given = {
+        op: f.found,
+        restoreCount: f.restoreCount ?? restoreAt(restores, f.found).restoreCount,
+      };
+      const read = seenOfVer(given, current);
+      // A read or a write of this log is never of a later restore than the log's own.
+      if (read === undefined) {
+        throw new WriteError("internal", "a fallback ver of a later restore", {
+          reason: "inconsistent",
+          param: `${param}/ver`,
+        });
+      }
+      seen = read.seen as OpNumber;
       seenCurrent =
-        (f.restoreCount ?? restore) === restore &&
-        f.found === latest(await rowVersions(tx, verTable, id));
+        given.restoreCount === restore && f.found === latest(await rowVersions(tx, verTable, id));
+      if (given.restoreCount !== restore) verToken = given;
       warnings.push({
         code: "ver_fallback",
         op: o.index,
-        ver: `v${f.found}.${f.restoreCount ?? restore}`,
+        ver: `v${given.op}.${given.restoreCount}`,
         ...f.origin,
       });
     }
@@ -1734,9 +1766,10 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
           target: { table: qualifiedTable(slot.name, table), [isState ? "entity" : "row"]: id },
         });
       }
+      // The ver as given (an earlier restore count's recorded as such, 04-contract §15).
       const verBlock = {
-        op: seen,
-        restore_count: restore,
+        op: verToken?.op ?? seen,
+        restore_count: verToken?.restoreCount ?? restore,
         basis: seenExplicit ? ("explicit" as const) : ("fallback" as const),
       };
       headBlocks[`${param}/target`] = {
@@ -1945,6 +1978,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       raw,
       literal: literalOf(table, raw, indexOf, literalDone),
       restoreCount: restore,
+      ...(verToken !== undefined ? { verToken } : {}),
       sv,
       sources: sourcesOf(o),
       ...(o.evidenceByField !== undefined

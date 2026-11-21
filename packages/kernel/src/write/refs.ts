@@ -32,6 +32,7 @@ import {
 } from "../judge/index.ts";
 import { qualifiedTable, type WriteValidationDetail } from "../request/index.ts";
 import type { Tx } from "../store/ports.ts";
+import { restoreHistory } from "../store/restore-point.ts";
 import { tableShape } from "./plan.ts";
 import { rowEvents, rowTable } from "./reads.ts";
 import { decodeRecords } from "./record.ts";
@@ -160,6 +161,7 @@ async function readTarget(tx: Tx, c: RefCheck, id: string): Promise<StoredTarget
     target: isState ? { entity: id as EntityId } : { row: id as RowId },
     shape,
     granularity: isState && t.time.type === "state" ? t.time.granularity : "date",
+    restores: await restoreHistory(tx),
   } as const;
   return {
     table,

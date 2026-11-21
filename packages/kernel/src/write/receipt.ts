@@ -54,6 +54,7 @@ import {
 import { decodeColumns, qualifiedTable, type WriteWarning } from "../request/index.ts";
 import { selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { restoreHistory } from "../store/restore-point.ts";
 import { canonical, type IntervalSet, minus, type ValueOut, valueOut } from "../time/index.ts";
 import { type PremiseAffected, premiseAffected } from "./premise-affected.ts";
 
@@ -678,7 +679,13 @@ async function valuedBeforeSeq(
   const state = stateFromRecord(
     shape,
     decodeRecords(
-      { table: table.id, target: { entity: entity as EntityId }, shape, granularity },
+      {
+        table: table.id,
+        target: { entity: entity as EntityId },
+        shape,
+        granularity,
+        restores: await restoreHistory(tx),
+      },
       events,
     ),
   );

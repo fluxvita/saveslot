@@ -358,14 +358,9 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     } else if (v["state"] === "changed") {
       check(oneOf(PREMISE_REASONS, v["reason"]), at, "reason", issues);
       check(int(v["since"]), at, "since", issues);
-      const seen = isObject(ver) ? ver["op"] : undefined;
-      if (int(v["since"]) && int(seen))
-        check(
-          (v["since"] as number) > (seen as number),
-          at,
-          "since after the version seen",
-          issues,
-        );
+      // `since` is after the position seen, not after `ver.op`: a ver given before a restore is
+      // recorded as given, and where it reads goes by the restore point (04-contract §15), which
+      // this event does not carry. apply keeps that invariant (apply/premises.ts).
     } else issues.push(`${at}: state`);
   },
   // §5.7 `ops/<i>/premise_valid/<j>`: a point or a stretch, aligned to the target's table; `deps`
@@ -941,18 +936,20 @@ const premises: EventRule = (paths, blocks, issues, at) => {
             "the op's own target",
             issues,
           );
-        // The version seen is before this operation, or this operation's own (a row created in
-        // this request); a premise changed when written changed after it, by this operation at
-        // the latest.
+        // The version seen: this operation's own for a row created in this request; otherwise an
+        // operation. Whether the position it reads is before this operation goes by the restore
+        // point (04-contract §15: a ver given before a restore is recorded as given, and may be past
+        // this log's end), which this event does not carry: apply keeps it (apply/premises.ts). A
+        // premise changed when written changed by this operation at the latest.
         const ver = b["ver"];
         if (isObject(ver) && int(ver["op"])) {
           const seen = ver["op"] as number;
           check(
-            ver["basis"] === "same_request" ? seen === at.op : seen >= 1 && seen < at.op,
+            ver["basis"] === "same_request" ? seen === at.op : seen >= 1,
             p,
             ver["basis"] === "same_request"
               ? "a version of this request not this operation"
-              : "a version seen not before this operation",
+              : "a version seen not an operation",
             issues,
           );
         }

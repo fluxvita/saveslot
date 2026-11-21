@@ -10,6 +10,7 @@ import type { JudgeInput, Judgement, Unit } from "../judge/model.ts";
 import type { Judged } from "../judge/scenarios.fixture.ts";
 import type { RowState } from "../judge/state.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { restoreHistory } from "../store/restore-point.ts";
 import { canonical, type IntervalSet, meet, WHOLE } from "../time/index.ts";
 import { rowEvents } from "./reads.ts";
 import { decodeRecords, encodeOp, encodeResolution, type RowContext } from "./record.ts";
@@ -315,5 +316,11 @@ export function eventsOfRequest(
  */
 export async function judgeStateFromLog(tx: ReadTx, ctx: RowContext): Promise<RowState> {
   const id = "entity" in ctx.target ? ctx.target.entity : ctx.target.row;
-  return stateFromRecord(ctx.shape, decodeRecords(ctx, await rowEvents(tx, ctx.table, id)));
+  return stateFromRecord(
+    ctx.shape,
+    decodeRecords(
+      { ...ctx, restores: await restoreHistory(tx) },
+      await rowEvents(tx, ctx.table, id),
+    ),
+  );
 }

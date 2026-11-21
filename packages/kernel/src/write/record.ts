@@ -58,6 +58,7 @@ import type {
   WriteRecord,
 } from "../judge/index.ts";
 import { uniqueRefs } from "../judge/index.ts";
+import { type RestorePoint, restoreAt, seenOfVer } from "../store/restore-point.ts";
 import { type Interval, WHOLE } from "../time/index.ts";
 import { WriteError } from "./errors.ts";
 import type { LiteralResult } from "./literal.ts";
@@ -71,6 +72,11 @@ export interface RowContext {
   readonly shape: TableShape;
   /** State tables: the points are dates or instants; a write's "now" is `today` or `now` by it. */
   readonly granularity: "date" | "instant";
+  /**
+   * The log's restores and imports, oldest first (`restoreHistory`): a `ver` given under an earlier
+   * restore count is read at the restore point in force at its write (`seenOfVer`). None: none.
+   */
+  readonly restores?: readonly RestorePoint[];
 }
 
 /** A stored event, parsed: its header fields this mapping reads, and its blocks by path. */
@@ -153,6 +159,11 @@ export interface OpEncoding {
   readonly raw?: Readonly<Partial<Record<FieldId, RawFieldValue>>>;
   /** The `restore_count` of the version the op saw (`ver`, a candidate's `seen`). */
   readonly restoreCount: number;
+  /**
+   * The `ver` as given when it is of an earlier restore count (04-contract §15): recorded as given;
+   * what it saw (`seenOfVer`) is the judged position, which may be the restore point.
+   */
+  readonly verToken?: { readonly op: number; readonly restoreCount: number };
   /** The schema version the request was written against. */
   readonly sv: number;
   /** Value sources of the items this op writes (the request's evidence, or its `api_call`). */
@@ -206,8 +217,15 @@ function verOf(
   r: { op: OpNumber; seen: OpNumber; seenExplicit: boolean; seenCurrent?: true },
   omittable: boolean,
   restoreCount: number,
+  token?: { readonly op: number; readonly restoreCount: number },
 ) {
-  if (omittable && r.seen === r.op - 1 && !r.seenExplicit && r.seenCurrent !== true) {
+  if (
+    omittable &&
+    token === undefined &&
+    r.seen === r.op - 1 &&
+    !r.seenExplicit &&
+    r.seenCurrent !== true
+  ) {
     return undefined;
   }
   const basis: VerBasis = r.seenExplicit
@@ -219,8 +237,8 @@ function verOf(
     throw inconsistent("a version from the same request is not marked current");
   }
   return {
-    op: r.seen,
-    restore_count: restoreCount,
+    op: token?.op ?? r.seen,
+    restore_count: token?.restoreCount ?? restoreCount,
     basis,
     ...(r.seenCurrent === true ? { current: true as const } : {}),
   };
@@ -342,7 +360,9 @@ export function encodeOp(
   // Creating by key is a creation too: no `ver` (09 §5.7: 新增时没有 ver).
   const creates = e.byEntityKey === true && e.created === true;
   const ver =
-    e.intent === "insert" ? undefined : verOf(seen, r.kind === "undo" || creates, e.restoreCount);
+    e.intent === "insert"
+      ? undefined
+      : verOf(seen, r.kind === "undo" || creates, e.restoreCount, e.verToken);
   head[`ops/${i}/target`] = {
     table: ctx.table,
     ...ctx.target,
@@ -425,7 +445,12 @@ export function encodeOp(
     const cand = {
       event: r.event,
       intent: e.intent,
-      seen: { op: r.seen ?? r.op - 1, restore_count: e.restoreCount },
+      // The ver the candidate carried, as given (09 §5.8 `seen`): one given before a restore is
+      // recorded so, its position taken through `seenOfVer` where needed (04-contract §15).
+      seen: {
+        op: e.verToken?.op ?? r.seen ?? r.op - 1,
+        restore_count: e.verToken?.restoreCount ?? e.restoreCount,
+      },
       cause: "stale_write",
       items: c.items.map((ref, n) => {
         const x = mine[n];
@@ -884,8 +909,23 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
     const opTarget = head?.[`ops/${i}/target`] as
       | { ver?: { op: OpNumber; basis: VerBasis; current?: true } }
       | undefined;
-    const ver = opTarget?.ver;
-    const seen = ver === undefined ? op - 1 : ver.basis === "same_request" ? op : ver.op;
+    const ver = opTarget?.ver as
+      | { op: OpNumber; basis: VerBasis; current?: true; restore_count?: number }
+      | undefined;
+    // A ver given under an earlier restore count: where it read, as of its write (04-contract §15).
+    const given =
+      ver !== undefined && ver.basis !== "same_request" && ver.restore_count !== undefined
+        ? seenOfVer(
+            { op: ver.op, restoreCount: ver.restore_count },
+            restoreAt(ctx.restores ?? [], op),
+          )
+        : undefined;
+    const seen =
+      ver === undefined
+        ? op - 1
+        : ver.basis === "same_request"
+          ? op
+          : ((given?.seen ?? ver.op) as OpNumber);
     const seenExplicit = ver?.basis === "explicit";
     // Judged once, at the write (09 §5.2): a replay takes it as recorded.
     const current = ver?.current === true ? { seenCurrent: true as const } : {};

@@ -575,12 +575,7 @@ describe("parseEvent: a write's blocks, value by value", () => {
       { reason: "schema_changed" },
       "ops/0/premises/1: reason",
     ],
-    [
-      "write.head (premises)",
-      "ops/0/premises/1",
-      { since: 22 },
-      "ops/0/premises/1: since after the version seen",
-    ],
+    ["write.head (premises)", "ops/0/premises/1", { since: "22" }, "ops/0/premises/1: since"],
     [
       "write.head (premises)",
       "ops/0/premises/1",
@@ -1184,14 +1179,16 @@ describe("parseEvent: rules between the blocks of one write event", () => {
       head.blocks["ops/1/premise_valid/0"],
     );
     expect(issues(parse(gapped))).toContain("ops/1/premises: indices not from 0 without a gap");
-    // Versions: none before 1, none at or after this operation (25) unless of this request;
-    // a version of this request is this operation's; since by this operation at the latest.
+    // Versions: none before 1; one at or after this operation (25) is not the shape's to refuse
+    // (a ver given before an import may be past this log's end, 04-contract §15: apply checks where
+    // it reads); a version of this request is this operation's; since by this operation at the
+    // latest.
     const ver = (v: object) => withBlock(head, "ops/0/premises/0", { ...decl, ver: v });
     expect(issues(parse(ver({ op: 0, restore_count: 0, basis: "explicit" })))).toContain(
-      "ops/0/premises/0: a version seen not before this operation",
+      "ops/0/premises/0: a version seen not an operation",
     );
-    expect(issues(parse(ver({ op: 25, restore_count: 0, basis: "explicit" })))).toContain(
-      "ops/0/premises/0: a version seen not before this operation",
+    expect(issues(parse(ver({ op: 25, restore_count: 0, basis: "explicit" })))).not.toContain(
+      "ops/0/premises/0: a version seen not an operation",
     );
     expect(issues(parse(ver({ op: 24, restore_count: 0, basis: "same_request" })))).toContain(
       "ops/0/premises/0: a version of this request not this operation",

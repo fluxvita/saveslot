@@ -373,8 +373,8 @@ CREATE INDEX external_keys_holder ON external_keys (holder_row);`,
   fields ${T},                      -- JCS array of field IDs; NULL = whole row
   range_kind ${T} NOT NULL CHECK (range_kind IN ('whole', 'from_now', 'row_time', 'given')),
   valid ${T},                       -- JCS of the business time; content, cleared by tombstones
-  seen_op BIGINT NOT NULL,
-  seen_restore_count INTEGER NOT NULL,
+  seen_op BIGINT NOT NULL,          -- the ver as given (its op and restore count), not where it
+  seen_restore_count INTEGER NOT NULL, -- reads: that goes by 04-contract §15, see seenOfVer
   state ${T} NOT NULL CHECK (state IN ('current', 'changed')),
   reason ${T},
   since BIGINT,

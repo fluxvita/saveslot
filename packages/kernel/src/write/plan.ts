@@ -44,14 +44,15 @@ export function todayIn(now: string, tz: string): string {
 
 /**
  * Whether a `ver` names a version of the row (04-contract `ver`: an operation not of this row or
- * entity is `not_this_target`): its operation one of the row's versions (01-objects «版本标记»),
- * its restore count the current one. Restoring backups is not done yet, so a count other than the
- * current one cannot come from this timeline.
+ * entity is `not_this_target`), given where it reads (`seenOfVer`): one that reads its own
+ * operation (this restore count, or one less and not past the restore point) must be one of the
+ * row's versions (01-objects «版本标记»); one that reads at the restore point is not checked, its
+ * operation not being one of this timeline's.
  */
 export function verOfRow(
   ver: { readonly op: number; readonly restoreCount: number },
   versions: ReadonlySet<number>,
-  currentRestoreCount: number,
+  read: { readonly own: boolean },
 ): boolean {
-  return ver.restoreCount === currentRestoreCount && versions.has(ver.op);
+  return !read.own || versions.has(ver.op);
 }
