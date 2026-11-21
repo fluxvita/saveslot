@@ -4,7 +4,7 @@
 
 import type { BizPoint, FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
 import { evaluateLog, type Op } from "@fluxvita/saveslot-reference";
-import { EVENT as EVENT_SCHEMA } from "@fluxvita/saveslot-reference/testing";
+import { EVENT as EVENT_SCHEMA, STATE as STATE_SCHEMA } from "@fluxvita/saveslot-reference/testing";
 import { describe, expect, it } from "vitest";
 import { JudgeError } from "./errors.ts";
 import { emptyState, judgeOp, stateFromRecord, view } from "./judge.ts";
@@ -191,6 +191,55 @@ describe("a rejection of a write with a target in a conflict item when rejected"
     write(30, { f2: "7000", f3: "c" }, { seen: 20, from: "11-02" }),
     { ...decision("reject"), target: 31 },
   ];
+  // The same log for the reference evaluator, each field's value with a source of its own.
+  const refWrite = (
+    op: number,
+    seen: number,
+    from: string,
+    fields: Record<string, string>,
+    ack = false,
+  ): Op => ({
+    kind: "write",
+    op,
+    event: op + 1,
+    seen,
+    now: d("11-05"),
+    valid: { from: { mode: "given", value: d(from) }, to: { mode: "open" } },
+    fields: Object.fromEntries(
+      Object.entries(fields).map(([f, value]) => [f, { value, sources: [`S${op}${f}`] }]),
+    ),
+    ...(ack ? { acknowledge: ["overwrite"] as const } : {}),
+  });
+  const refLog: Op[] = [
+    refWrite(10, 0, "10-01", { f2: "5000", f3: "a" }),
+    refWrite(20, 19, "11-10", { f3: "b" }, true),
+    refWrite(25, 24, "10-20", { f2: "6000" }),
+    refWrite(30, 20, "11-02", { f2: "7000", f3: "c" }),
+    { kind: "reject", op: 40, event: 41, target: 31 },
+  ];
+  /** The kernel's replay and the reference evaluator's, side by side: #30's items, the values. */
+  const both = (sources: string[], contributions: string[]) => {
+    const after = replayDeletion(STATE, run(log).records, new Set(contributions));
+    const ref = evaluateLog(STATE_SCHEMA, [
+      ...refLog,
+      { kind: "deletion", op: 50, id: "pi_x", sources },
+    ]).final;
+    const of = (items: readonly { event: number; target: string; status: string }[]) =>
+      items
+        .filter((x) => x.event === 31)
+        .map((x) => [x.target, x.status])
+        .sort();
+    const vals = (fields: Readonly<Record<string, unknown>>) =>
+      ["f2", "f3"].map((f) =>
+        ((fields[f] ?? []) as { valid: { from: string | null }[]; value: unknown }[])
+          .filter((x) => x.value !== null)
+          .map((x) => [x.valid[0]?.from ?? null, x.value]),
+      );
+    return {
+      kernel: { items: of(after.state.items), values: vals(view(after.state).fields) },
+      ref: { items: of(ref.items), values: vals(ref.fields) },
+    };
+  };
 
   it("as judged: f2 a candidate, f3 awaiting and rejected", () => {
     const { records } = run(log);
@@ -222,6 +271,8 @@ describe("a rejection of a write with a target in a conflict item when rejected"
     expect(after.state.items.filter((x) => x.status === "candidate")).toEqual([]);
     expect(values(after.state, "f2")).toEqual([[d("10-01"), "5000"]]);
     expect(values(after.state, "f3")).toEqual([[d("10-01"), "a"]]);
+    const b = both(["S25f2", "S20f3"], [contributionKey(26, "f2"), contributionKey(21, "f3")]);
+    expect(b.kernel).toEqual(b.ref);
   });
 
   it("the conflict still there: f2 stays the candidate it was, in its conflict item", () => {
@@ -237,6 +288,8 @@ describe("a rejection of a write with a target in a conflict item when rejected"
       [d("10-01"), "5000"],
       [d("10-20"), "6000"],
     ]);
+    const b = both(["S20f3"], [contributionKey(21, "f3")]);
+    expect(b.kernel).toEqual(b.ref);
   });
 });
 

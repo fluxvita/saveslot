@@ -39,17 +39,25 @@ function sourcesOf(o: Op): string[] {
 /**
  * The (event, target) the deleted source data take away (as the caller works out from
  * `base_sources`): a field whose value sources include one; every target of a write or revoke
- * whose interval's sources include one (03-deletion «区间参数»).
+ * whose interval's sources include one (03-deletion «区间参数»). A write on a state table that maps
+ * no evidence to its interval has all its evidence as the interval's sources; a revoke without
+ * `valid_sources` has none.
  */
-function deletedContributions(ops: readonly Op[], deleted: ReadonlySet<string>): Set<string> {
+function deletedContributions(
+  ops: readonly Op[],
+  deleted: ReadonlySet<string>,
+  isState: boolean,
+): Set<string> {
   const out = new Set<string>();
   for (const o of ops) {
     if (o.kind !== "write" && o.kind !== "revoke") continue;
-    const intervalGone = (o.validSources ?? []).some((s) => deleted.has(s));
     if (o.kind === "revoke") {
-      if (intervalGone) out.add(contributionKey(o.event, "existence"));
+      if ((o.validSources ?? []).some((s) => deleted.has(s)))
+        out.add(contributionKey(o.event, "existence"));
       continue;
     }
+    const evidence = Object.values(o.fields).flatMap((x) => x?.sources ?? []);
+    const intervalGone = isState && (o.validSources ?? evidence).some((s) => deleted.has(s));
     for (const [f, x] of Object.entries(o.fields)) {
       if (intervalGone || (x?.sources ?? []).some((s) => deleted.has(s)))
         out.add(contributionKey(o.event, f as Target));
@@ -103,13 +111,27 @@ function compare(
   ops: readonly Op[],
   decisions: readonly Decision[],
   pick: number | readonly string[],
+  /** Writes given a second field with sources of its own (by op), no interval sources mapped. */
+  second: readonly number[] = [],
 ): {
+  partly: boolean;
   changed: boolean;
   decided: boolean;
   decisionChanged: boolean;
   protectionMatters: (op: number) => boolean;
 } {
-  const { table, steps } = judged(schema, ops, decisions);
+  const widened = ops.map((o) =>
+    o.kind === "write" && second.includes(o.op) && o.validSources === undefined
+      ? {
+          ...o,
+          fields: {
+            ...o.fields,
+            [o.fields["f2"] === undefined ? "f2" : "f3"]: { value: "m", sources: [`M${o.op}`] },
+          },
+        }
+      : o,
+  );
+  const { table, steps } = judged(schema, widened, decisions);
   const kept = steps.map((x) => x.op);
   const cited = [...new Set(kept.flatMap(sourcesOf))].sort();
   fc.pre(cited.length > 0);
@@ -127,7 +149,7 @@ function compare(
     { kind: "deletion", op: last + 1, id: "pi_x", sources: [...deleted] },
   ]).final;
   const records = steps.map((x) => x.judgement.record);
-  const replayed = replayDeletion(table, records, deletedContributions(kept, deleted));
+  const replayed = replayDeletion(table, records, deletedContributions(kept, deleted, isState));
   const { state } = replayed;
   const names = [...new Set([...Object.keys(ref.fields), ...Object.keys(view(state).fields)])];
   expect({
@@ -143,7 +165,14 @@ function compare(
   const decisionText = (rs: readonly OpRecord[]) =>
     JSON.stringify(rs.filter(isDecision).map((r) => [r.op, "items" in r ? r.items : []]));
   const before = steps.at(-1)?.state as RowState;
+  // A write with fields of different sources, one field's sources deleted, not all of them.
+  const partly = kept.some((o) => {
+    if (o.kind !== "write" || o.validSources !== undefined) return false;
+    const per = Object.values(o.fields).map((x) => (x?.sources ?? []).some((y) => deleted.has(y)));
+    return per.length > 1 && per.some((x) => x) && !per.every((x) => x);
+  });
   return {
+    partly,
     changed: JSON.stringify(view(before).fields) !== JSON.stringify(view(state).fields),
     decided: records.some(isDecision),
     decisionChanged: decisionText(records) !== decisionText(replayed.records),
@@ -155,7 +184,11 @@ function compare(
           ? { ...r, items: r.items.map((x) => ({ ...x, status: "candidate" as const })) }
           : r,
       );
-      const naive = replayDeletion(table, flipped, deletedContributions(kept, deleted)).state;
+      const naive = replayDeletion(
+        table,
+        flipped,
+        deletedContributions(kept, deleted, isState),
+      ).state;
       return JSON.stringify(itemKeys(naive.items)) !== JSON.stringify(itemKeys(state.items));
     },
   };
@@ -164,7 +197,9 @@ function compare(
 describe.each(both)("%s table", (_, schema, isState) => {
   it("a deletion's replay of writes and revokes leaves what the reference evaluator gives", () => {
     const hits = new Hits(0.3);
-    const seen = { samples: 0, changed: 0, decided: 0 };
+    // Hits: a write whose fields have sources of their own, some of them deleted.
+    const partly = new Hits(0.1);
+    const seen = { samples: 0, changed: 0, decided: 0, partly: 0 };
     fc.assert(
       fc.property(
         scenario(isState).map((s) => ({
@@ -172,20 +207,34 @@ describe.each(both)("%s table", (_, schema, isState) => {
           decisions: s.decisions.filter((d) => d.kind === "confirm" || d.kind === "reject"),
         })),
         fc.nat(),
-        hits.track(({ ops, decisions }, pick) => {
-          const c = compare(schema, isState, ops, decisions, pick);
-          seen.samples++;
-          if (c.decided) seen.decided++;
-          if (c.changed) {
-            seen.changed++;
-            hits.hit();
-          }
-        }),
+        fc.array(fc.constantFrom(10, 20, 30, 40, 50, 60), { maxLength: 3 }),
+        partly.track(
+          hits.track(
+            (
+              { ops, decisions }: { ops: Op[]; decisions: Decision[] },
+              pick: number,
+              second: number[],
+            ) => {
+              const c = compare(schema, isState, ops, decisions, pick, second);
+              seen.samples++;
+              if (c.decided) seen.decided++;
+              if (c.partly) {
+                seen.partly++;
+                partly.hit();
+              }
+              if (c.changed) {
+                seen.changed++;
+                hits.hit();
+              }
+            },
+          ),
+        ),
       ),
       { numRuns: RUNS },
     );
     hits.check();
     console.log(schema.kind, JSON.stringify(seen));
+    partly.check();
   });
 });
 
