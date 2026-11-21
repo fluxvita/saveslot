@@ -239,6 +239,46 @@ describe("history (06 §4.7)", () => {
     ]);
   });
 
+  it("the premises an entry declared, under it; a restatement and a clearing said for what they are", () => {
+    const actor = { kind: "user", id: "u_1", name: "me" };
+    const entry = (seq: number, fields: object, premises: unknown[]) => ({
+      seq,
+      recorded_at: "2026-11-10T04:31:00.000Z",
+      actor,
+      intent: seq === 10 ? "insert" : "update",
+      fields,
+      premises,
+    });
+    const release = { table: "ledger.releases", row: "r_4KWKRM296X61WJ89DY5XJNVA4Q" };
+    const timeline = {
+      ...TIMELINE,
+      total: 3,
+      entries: [
+        entry(14, {}, []),
+        entry(12, {}, [{ target: release, fields: ["date"], ver: "v9.0", state: "current" }]),
+        entry(10, { title: { result: "applied", after: "freeze" } }, [
+          { target: release, fields: ["date"], ver: "v9.0", state: "ended" },
+          { target: release, ver: "v9.0", state: "changed", reason: "update", since: 11 },
+          { hidden: true, state: "changed", since: 11 },
+          { hidden: true, state: "ended" },
+        ]),
+      ],
+      reads: [],
+    };
+    const text = render(timelineResult(timeline as never), terminal);
+    expect(text.split("\n").slice(1)).toEqual([
+      "#14 2026-11-10 12:31 update  「me」  premises cleared",
+      "#12 2026-11-10 12:31 update  「me」  premises restated",
+      "  premise: the date of ledger.releases r_4KWKRM296X61WJ89DY5XJNVA4Q (seen v9.0); unchanged",
+      "#10 2026-11-10 12:31 insert  「me」  title 「freeze」",
+      "  premise: the date of ledger.releases r_4KWKRM296X61WJ89DY5XJNVA4Q (seen v9.0); no longer in force (superseded or cleared since)",
+      "  premise: ledger.releases r_4KWKRM296X61WJ89DY5XJNVA4Q (seen v9.0); changed in #11",
+      "  premise: a record in a table you cannot see; changed in #11",
+      "  premise: a record in a table you cannot see; no longer in force (superseded or cleared since)",
+    ]);
+    expect(text).not.toContain("undefined");
+  });
+
   it("a period open at the start (a whole revoke undone): until its end, not all time", () => {
     const shown = (valid: unknown) => render([periodOf(valid)], terminal);
     expect(shown({ valid_from: null, valid_to: null })).toBe("all time");

@@ -931,9 +931,18 @@ function history(r: R, now: Date): Line[] {
     );
     // The widest interval of the write (05 §4.3), on state tables.
     const period = isObj(x["valid"]) ? t` (${periodOf(x["valid"])})` : [];
+    // A restatement or a clearing writes no field: said for what it is.
+    const premises = Array.isArray(x["premises"]) ? arr(x["premises"]) : undefined;
+    const none =
+      premises === undefined
+        ? t`no change`
+        : premises.length === 0
+          ? t`premises cleared`
+          : t`premises restated`;
     out.push(
-      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${intentOf(x)}${period}  ${actorOf(x["actor"])}  ${fields.length > 0 ? join(fields, t`; `) : t`no change`}`,
+      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${intentOf(x)}${period}  ${actorOf(x["actor"])}  ${fields.length > 0 ? join(fields, t`; `) : none}`,
     );
+    out.push(...timelinePremiseLines(premises ?? []));
   }
   const reads = arr(r["reads"]);
   if (reads.length > 0) {
@@ -949,6 +958,36 @@ function history(r: R, now: Date): Line[] {
     );
   }
   return [...out, ...pageOf(r, entries.length, () => t`changes`), ...remindersOf(r, now)];
+}
+
+/**
+ * The premises a timeline entry declared (05 §6 «timeline»; 04-contract-types §4.5
+ * `TimelineEntry.premises`), one a line under it: what it rests on and the version seen, then
+ * whether it changed since (and how, in which operation), or no longer holds (superseded or
+ * cleared since). A target in a table the caller cannot see says only that, and its state.
+ */
+function timelinePremiseLines(premises: readonly unknown[]): Line[] {
+  return premises.map((p) => {
+    const q = obj(p);
+    if (q["hidden"] === true) {
+      const state =
+        q["state"] === "changed"
+          ? t`changed in ${op(q["since"])}`
+          : q["state"] === "ended"
+            ? t`no longer in force (superseded or cleared since)`
+            : t`unchanged`;
+      return t`  premise: a record in a table you cannot see; ${state}`;
+    }
+    const fields = arr(q["fields"]);
+    const what = fields.length > 0 ? t`the ${join(fields.map(fieldOf), t`, `)} of ` : [];
+    const state =
+      q["state"] === "changed"
+        ? t`${said(PREMISE_VERB, q["reason"]) ?? [untrusted(String(q["reason"]))]} in ${op(q["since"])}`
+        : q["state"] === "ended"
+          ? t`no longer in force (superseded or cleared since)`
+          : t`unchanged`;
+    return t`  premise: ${what}${targetOf(q["target"])} (seen ${idOf(q["ver"])}); ${state}`;
+  });
 }
 
 /**

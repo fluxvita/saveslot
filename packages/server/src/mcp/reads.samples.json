@@ -1838,5 +1838,288 @@
         "derived_changed": []
       }
     }
+  },
+  "history-timeline-premises": {
+    "tool": "saveslot_history",
+    "result": {
+      "mode": "timeline",
+      "target": {
+        "table": "ledger.tasks",
+        "row": "r_00000000000000000000000007"
+      },
+      "sv": 1,
+      "timezone": "Asia/Shanghai",
+      "ver": "v26.0",
+      "total": 3,
+      "entries": [
+        {
+          "seq": 26,
+          "recorded_at": "2026-11-05T01:07:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_11111111111111111111111111",
+            "name": "u_11111111111111111111111111"
+          },
+          "intent": "update",
+          "fields": {
+            "due": {
+              "result": "applied",
+              "after": "2026-11-30",
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_0000000000000012",
+                    "kind": "api_call",
+                    "level": "agent_inferred"
+                  }
+                ],
+                "operation": []
+              }
+            }
+          }
+        },
+        {
+          "seq": 18,
+          "recorded_at": "2026-11-05T01:05:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_11111111111111111111111111",
+            "name": "u_11111111111111111111111111"
+          },
+          "intent": "update",
+          "fields": {},
+          "premises": [
+            {
+              "target": {
+                "table": "ledger.releases",
+                "row": "r_00000000000000000000000001"
+              },
+              "fields": ["date"],
+              "ver": "v7.0",
+              "state": "current"
+            }
+          ]
+        },
+        {
+          "seq": 15,
+          "recorded_at": "2026-11-05T01:04:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_11111111111111111111111111",
+            "name": "u_11111111111111111111111111"
+          },
+          "intent": "insert",
+          "fields": {
+            "title": {
+              "result": "applied",
+              "after": "freeze",
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_0000000000000008",
+                    "kind": "api_call",
+                    "level": "agent_inferred"
+                  }
+                ],
+                "operation": []
+              }
+            }
+          },
+          "premises": [
+            {
+              "target": {
+                "table": "ledger.releases",
+                "row": "r_00000000000000000000000001"
+              },
+              "fields": ["date"],
+              "ver": "v7.0",
+              "state": "ended"
+            },
+            {
+              "target": {
+                "table": "ledger.releases",
+                "row": "r_00000000000000000000000004"
+              },
+              "ver": "v11.0",
+              "state": "changed",
+              "reason": "update",
+              "since": 20
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "history-timeline-premises-hidden": {
+    "tool": "saveslot_history",
+    "result": {
+      "mode": "timeline",
+      "target": {
+        "table": "ledger.tasks",
+        "row": "r_00000000000000000000000007"
+      },
+      "sv": 1,
+      "timezone": "Asia/Shanghai",
+      "ver": "v26.0",
+      "total": 3,
+      "entries": [
+        {
+          "seq": 26,
+          "recorded_at": "2026-11-05T01:07:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_11111111111111111111111111",
+            "name": "u_11111111111111111111111111"
+          },
+          "intent": "update",
+          "fields": {
+            "due": {
+              "result": "applied",
+              "after": "2026-11-30",
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_0000000000000012",
+                    "kind": "api_call",
+                    "level": "agent_inferred"
+                  }
+                ],
+                "operation": []
+              }
+            }
+          }
+        },
+        {
+          "seq": 18,
+          "recorded_at": "2026-11-05T01:05:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_11111111111111111111111111",
+            "name": "u_11111111111111111111111111"
+          },
+          "intent": "update",
+          "fields": {},
+          "premises": [
+            {
+              "hidden": true,
+              "state": "current"
+            }
+          ]
+        },
+        {
+          "seq": 15,
+          "recorded_at": "2026-11-05T01:04:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_11111111111111111111111111",
+            "name": "u_11111111111111111111111111"
+          },
+          "intent": "insert",
+          "fields": {
+            "title": {
+              "result": "applied",
+              "after": "freeze",
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_0000000000000008",
+                    "kind": "api_call",
+                    "level": "agent_inferred"
+                  }
+                ],
+                "operation": []
+              }
+            }
+          },
+          "premises": [
+            {
+              "hidden": true,
+              "state": "ended"
+            },
+            {
+              "hidden": true,
+              "state": "changed",
+              "since": 20
+            }
+          ]
+        }
+      ],
+      "reads": [
+        {
+          "read": "rd_Y2TR2KBP0XEV3EK7",
+          "seq": 26,
+          "at": "2026-11-05T01:10:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_11111111111111111111111111",
+            "name": "u_11111111111111111111111111"
+          }
+        }
+      ]
+    }
+  },
+  "history-timeline-premises-cleared": {
+    "tool": "saveslot_history",
+    "result": {
+      "mode": "timeline",
+      "target": {
+        "table": "ledger.tasks",
+        "row": "r_00000000000000000000000013"
+      },
+      "sv": 1,
+      "timezone": "Asia/Shanghai",
+      "ver": "v29.0",
+      "total": 2,
+      "entries": [
+        {
+          "seq": 32,
+          "recorded_at": "2026-11-05T01:09:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_11111111111111111111111111",
+            "name": "u_11111111111111111111111111"
+          },
+          "intent": "update",
+          "fields": {},
+          "premises": []
+        },
+        {
+          "seq": 29,
+          "recorded_at": "2026-11-05T01:08:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_11111111111111111111111111",
+            "name": "u_11111111111111111111111111"
+          },
+          "intent": "insert",
+          "fields": {
+            "title": {
+              "result": "applied",
+              "after": "notes",
+              "sources": {
+                "value": [
+                  {
+                    "id": "s_0000000000000014",
+                    "kind": "api_call",
+                    "level": "agent_inferred"
+                  }
+                ],
+                "operation": []
+              }
+            }
+          },
+          "premises": [
+            {
+              "target": {
+                "table": "ledger.releases",
+                "row": "r_00000000000000000000000001"
+              },
+              "ver": "v7.0",
+              "state": "ended"
+            }
+          ]
+        }
+      ]
+    }
   }
 }

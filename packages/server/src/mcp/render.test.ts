@@ -152,6 +152,8 @@ const TAKEN: Record<string, Sample> = (() => {
     pick(reads, "history-changes-event"),
     pick(reads, "history-changes-state"),
     pick(reads, "sql"),
+    pick(reads, "history-timeline-premises"),
+    pick(reads, "history-timeline-premises-hidden"),
   ]);
 })();
 
