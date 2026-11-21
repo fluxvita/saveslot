@@ -558,7 +558,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
   // comes with migration_diff's `set` (later).
   const valueSources = req.evidence.length > 0 ? evidenceSeqs : sourceSeqs;
   const event = (op + 1 + nSources) as Seq;
-  const base = { op, index: 0, event, ruleset: RULESET };
+  const base = { op, index: 0, event, ruleset: RULESET, policy: slot.policyVersion };
   const unit = tracked.unit as Unit;
   const judgeInput: JudgeInput =
     req.decision === "confirm" || req.decision === "reject"

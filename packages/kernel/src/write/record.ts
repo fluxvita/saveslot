@@ -40,6 +40,7 @@ import type {
 import type {
   AckStretch,
   ConfirmRecord,
+  DecidedItem,
   ItemContent,
   ItemRef,
   ItemStatus,
@@ -672,20 +673,40 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
       });
     }
   }
-  // A field candidate of an item on existence (the write met a revoke): `onExistence`.
+  // A field candidate of an item on existence (the write met a revoke): `onExistence`, by
+  // (event, field): a write's candidates on a unit are all in one item (09 §5.8 `candidates/<k>`),
+  // so it holds for every item of that field, also for an index a deletion's replay gives later.
   const onExistence = new Set<string>();
   for (const it of items.values()) {
     if (it.unit !== "existence") continue;
     for (const c of it.candidates)
-      for (const y of c.items)
-        if (y.field !== undefined) onExistence.add(`${c.event}/${y.field}/${y.k}`);
+      for (const y of c.items) if (y.field !== undefined) onExistence.add(`${c.event}/${y.field}`);
   }
+
+  // A conflict resolution's K, from the item's candidate blocks (`candidates/<k>`): the (event,
+  // target) of each candidate item listed, in order. As judge records it (`DecidedItem`).
+  const decidedIn = (it: PendingItem): DecidedItem[] => {
+    const seen = new Map<string, DecidedItem>();
+    for (const c of it.candidates) {
+      for (const y of c.items) {
+        const target = (y.field ?? "existence") as Target;
+        seen.set(`${c.event}/${target}`, { event: c.event, target });
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.event - b.event || a.target.localeCompare(b.target));
+  };
 
   const ctxOf = (op: OpNumber) => {
     const h = heads.get(op) ?? resolutions.get(op)?.blocks;
-    const c = (h?.["ctx"] ?? {}) as { now: string; today: string; ruleset_version: number };
+    const c = (h?.["ctx"] ?? {}) as {
+      now: string;
+      today: string;
+      ruleset_version: number;
+      policy_version?: number;
+    };
     return {
       ruleset: c.ruleset_version,
+      ...(c.policy_version !== undefined ? { policy: c.policy_version } : {}),
       now: (ctx.granularity === "date" ? c.today : c.now) as never,
     };
   };
@@ -723,7 +744,9 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
           content,
           ...(carried.length > 0 ? { carried } : {}),
           deps: (span?.deps ?? []).map(refIn),
-          ...(onExistence.has(`${event}/${f}/${k}`) ? { onExistence: true as const } : {}),
+          ...(onExistence.has(`${event}/${f}`) && block.status === "candidate"
+            ? { onExistence: true as const }
+            : {}),
         });
       } else if (ex !== null) {
         const k = Number(ex[1]);
@@ -767,14 +790,15 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
   for (const x of sorted) {
     const b = x.blocks;
     const op = opOf(x);
-    const { ruleset, now } = ctxOf(op);
+    const { ruleset, policy, now } = ctxOf(op);
+    const versions = { ruleset, ...(policy !== undefined ? { policy } : {}) };
     if (x.header.type === "item.resolved") {
       const t = b["target"] as { item: ItemId; decision: string };
       const it = items.get(t.item);
       if (it === undefined) throw inconsistent(`no pending item ${t.item}`);
       if (!DECISIONS.has(t.decision))
         throw inconsistent(`decision ${t.decision} is not decoded here`);
-      const base = { op, index: 0, event: x.header.seq, ruleset };
+      const base = { op, index: 0, event: x.header.seq, ...versions };
       if (t.decision === "reject") records.push({ ...base, kind: "reject", target: it.origin });
       if (t.decision === "keep_effective") {
         records.push({
@@ -782,6 +806,7 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
           kind: "keep_effective",
           unit: it.unit,
           candidates: it.candidates.map((c) => c.event),
+          decided: decidedIn(it),
         });
       }
       continue;
@@ -794,7 +819,7 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
       item?: ItemId;
     };
     const recItems = itemsIn(x.header.seq, b);
-    const base = { op, index: target.op_index ?? 0, event: x.header.seq, ruleset };
+    const base = { op, index: target.op_index ?? 0, event: x.header.seq, ...versions };
 
     if (target.cause === "resolve") {
       const res = resolutions.get(op);
@@ -821,6 +846,7 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
           ...base,
           kind: "take_previous",
           status: "applied",
+          decided: decidedIn(it),
           revert: {
             entries: rv.items.map(entryIn),
             mergeBase: rv.as_of_op,
@@ -846,6 +872,7 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
             return rest;
           }),
           items: recItems,
+          decided: decidedIn(it),
         };
         records.push(rec);
       } else throw inconsistent(`a ${t.decision} writes nothing (seq ${x.header.seq})`);

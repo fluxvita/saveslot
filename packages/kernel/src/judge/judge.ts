@@ -13,6 +13,7 @@ import { JudgeError } from "./errors.ts";
 import type {
   AckStretch,
   ConfirmInput,
+  DecidedItem,
   FieldStretch,
   JudgeInput,
   Judgement,
@@ -26,6 +27,7 @@ import type {
   WriteRecord,
 } from "./model.ts";
 import {
+  candidatesOf,
   judgeRevertOf,
   judgeTakePrevious,
   judgeUndo,
@@ -35,6 +37,15 @@ import {
 import { EVERYTHING, effective, RowState, refKey, refOf, valueToken } from "./state.ts";
 import { judgeTakeCandidate } from "./take.ts";
 import { judgeRevoke, judgeWrite } from "./write.ts";
+
+/** A resolution's K as (event, target)s, in order (see `DecidedItem`). */
+function decidedOf(state: RowState, unit: Unit, candidates: readonly Seq[]): DecidedItem[] {
+  const seen = new Map<string, DecidedItem>();
+  for (const x of candidatesOf(state, unit, candidates)) {
+    seen.set(`${x.event}/${x.target}`, { event: x.event, target: x.target });
+  }
+  return [...seen.values()].sort((a, b) => a.event - b.event || a.target.localeCompare(b.target));
+}
 
 /** The ruleset versions this `judge` judges by (02-architecture §3 «判定的版本»). */
 export const JUDGE_RULESET_VERSIONS: ReadonlySet<number> = new Set([1]);
@@ -70,7 +81,13 @@ export function judgeOp(
   input: JudgeInput,
 ): { readonly judgement: Judgement; readonly state: RowState } {
   checkVersion(input.ruleset);
-  const base = { op: input.op, index: input.index, event: input.event, ruleset: input.ruleset };
+  const base = {
+    op: input.op,
+    index: input.index,
+    event: input.event,
+    ruleset: input.ruleset,
+    ...(input.policy !== undefined ? { policy: input.policy } : {}),
+  };
   let judgement: Judgement;
   if (input.kind === "write" || input.kind === "revoke") {
     const out = input.kind === "write" ? judgeWrite(state, input) : judgeRevoke(state, input);
@@ -117,11 +134,13 @@ export function judgeOp(
     judgement = { ...quiet, ...revertJudgement(out), record };
   } else if (input.kind === "take_previous") {
     openCandidates(state, input.unit, input.candidates);
+    const decided = decidedOf(state, input.unit, input.candidates);
     const out = judgeTakePrevious(state, input);
     const record: RevertRecord = {
       ...base,
       kind: "take_previous",
       status: "applied",
+      decided,
       revert: {
         entries: out.entries,
         mergeBase: out.mergeBase,
@@ -135,6 +154,7 @@ export function judgeOp(
     judgement = { ...quiet, ...revertJudgement(out), record };
   } else if (input.kind === "take_candidate") {
     openCandidates(state, input.unit, input.candidates);
+    const decided = decidedOf(state, input.unit, input.candidates);
     const out = judgeTakeCandidate(state, input);
     judgement = {
       ...quiet,
@@ -147,6 +167,7 @@ export function judgeOp(
         mergeBase: out.mergeBase,
         cover: out.cover,
         items: out.items,
+        decided,
       },
     };
   } else if (input.kind === "confirm" && awaitingUndo(state, input.target) !== undefined) {
@@ -176,7 +197,13 @@ export function judgeOp(
   } else {
     openCandidates(state, input.unit, input.candidates);
     judgement = {
-      record: { ...base, kind: "keep_effective", unit: input.unit, candidates: input.candidates },
+      record: {
+        ...base,
+        kind: "keep_effective",
+        unit: input.unit,
+        candidates: input.candidates,
+        decided: decidedOf(state, input.unit, input.candidates),
+      },
       ...quiet,
     };
   }
@@ -245,7 +272,7 @@ function awaitingOf(state: RowState, input: ConfirmInput | RejectInput) {
 function confirm(
   state: RowState,
   input: ConfirmInput,
-  base: { op: number; index: number; event: Seq; ruleset: number },
+  base: { op: number; index: number; event: Seq; ruleset: number; policy?: number },
 ): OpRecord {
   // The awaiting items keep their order (by start) per target; indices start from 0 again.
   const awaiting = [...awaitingOf(state, input)].sort(

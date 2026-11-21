@@ -73,6 +73,11 @@ interface OpBase {
   readonly event: Seq;
   /** The ruleset version the operation is judged by (04-write-and-read «规则版本与策略版本»). */
   readonly ruleset: number;
+  /**
+   * The slot's policy version when the operation was judged (`ctx.policy_version`, 09 §5.7):
+   * kept in the record, as a deletion's replay judges each operation again under both versions.
+   */
+  readonly policy?: number;
 }
 
 interface SeenVersion {
@@ -258,6 +263,8 @@ interface RecordBase {
   readonly index: number;
   readonly event: Seq;
   readonly ruleset: number;
+  /** The policy version it was judged under, when known (see `JudgeInputBase.policy`). */
+  readonly policy?: number;
 }
 
 export interface WriteRecord extends RecordBase, SeenVersion {
@@ -294,6 +301,8 @@ export interface RevertRecord extends RecordBase {
   readonly kind: "undo" | "take_previous";
   readonly status: "applied" | "awaiting";
   readonly revert: RevertSpec;
+  /** `take_previous` only: its K (see `DecidedItem`). */
+  readonly decided?: readonly DecidedItem[];
   readonly items: readonly RecordedItem[];
   /** `undo`: as the caller gave them. */
   readonly seen?: OpNumber;
@@ -310,10 +319,21 @@ export interface RejectRecord extends RecordBase {
   readonly target: Seq;
 }
 
+/**
+ * A conflict resolution's K as judged (03-deletion «回掉的权威定义» step 2): the (event, target)
+ * of every candidate item in the item on its unit at that point. A deletion's replay takes these as
+ * recorded: never by index, never by the event as a whole.
+ */
+export interface DecidedItem {
+  readonly event: Seq;
+  readonly target: Target;
+}
+
 export interface KeepEffectiveRecord extends RecordBase {
   readonly kind: "keep_effective";
   readonly unit: Unit;
   readonly candidates: readonly Seq[];
+  readonly decided?: readonly DecidedItem[];
 }
 
 /**
@@ -328,6 +348,7 @@ export interface TakeCandidateRecord extends RecordBase {
   readonly mergeBase: OpNumber;
   readonly cover: readonly RevertEntry[];
   readonly items: readonly RecordedItem[];
+  readonly decided?: readonly DecidedItem[];
 }
 
 export type OpRecord =

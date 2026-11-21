@@ -604,7 +604,7 @@ export const unitOf = (x: { target: string; onExistence?: true }): FieldId | "ex
   x.target === "existence" || x.onExistence === true ? "existence" : (x.target as FieldId);
 
 export function toInput(o: Op): JudgeInput {
-  const base = { op: o.op, index: 0, event: o.event, ruleset: 1 };
+  const base = { op: o.op, index: 0, event: o.event, ruleset: 1, policy: 1 };
   switch (o.kind) {
     case "write": {
       const fields: Partial<Record<FieldId, { value: FieldValue; explicit?: boolean }>> = {};

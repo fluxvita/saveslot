@@ -56,6 +56,7 @@ function write(
     index,
     event: op + 1 + index,
     ruleset: 1,
+    policy: 1,
     seen: o.seen ?? op - 1,
     seenExplicit: o.seen !== undefined,
     ...(o.current ? { seenCurrent: true as const } : {}),

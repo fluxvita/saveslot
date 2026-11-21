@@ -1636,6 +1636,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       index: o.index,
       event: next as Seq,
       ruleset: RULESET,
+      policy: slot.policyVersion,
       seen,
       seenExplicit,
       ...(seenCurrent ? { seenCurrent: true as const } : {}),
