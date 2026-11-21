@@ -367,8 +367,42 @@ slot 策略的结构里为"某类操作只接受用户会话的确认"留了位�
   |---|---|---|
   | 到期的物理删除失败（磁盘满、锁超时、后端报错） | 读不到：确认时就已逻辑删除 | 照常对外服务；按退避重试；这项删除在 `saveslot status`、`saveslot doctor`、事项详情里标"逾期未物理删除"；服务器模式同时告警 |
   | 要清的内容块校验和不符 | 读不到 | 照删；在 `verify` 里如实报告 |
-  | 残留清理失败 | 读不到 | 照常对外服务；进度不推进，下次打开与下次调度时重试 |
+  | 残留清理的语句报错（权限类除外） | 读不到 | 照常对外服务；PGlite 上按 worker 故障处理（结束 worker、存储进入 `worker_failed`，与其他 worker 故障同一条路）；进度不推进，重开后从头重做 |
+  | 原地清理遇到权限类的报错（PostgreSQL） | 读不到 | 不反复重试原地那一串：这个租户的残留清理改走重建（下文），`saveslot doctor` 写明改用重建与缺的是哪一项 |
+  | 残留清理没成：判据不过，或等快照超时 | 读不到 | 不是故障：照常对外服务，worker 照常；进度不推进，按退避重试（初值 1 分钟、每次加倍、上限 1 小时，内核常量），下次打开时也重试；`saveslot doctor` 与 `saveslot status` 有一行"残留清理未完成"（自哪条墓碑起、最近一次没成的原因与时刻），是提醒，不是不通过 |
   | 恢复流程里的补删没做完 | **读得到**：恢复出的数据里没有这次删除 | 不对外服务，直到补删完成 |
+
+### 残留清理的做法
+
+两个后端相同，由残留清理实验确定（结果报告：[`../process/experiments/exp-7-residue-cleanup.md`](../process/experiments/exp-7-residue-cleanup.md)），每一步都有"去掉就搜得到被删原文"的对照：
+
+1. `VACUUM FULL` 受影响的每张表；
+2. `ANALYZE`；
+3. （PostgreSQL）等到本库没有别的会话持有快照或事务号，最多 60 秒：查 `pg_stat_activity`，只看本库与不属于任何库的进程（`coalesce(datname, current_database()) = current_database()`），条件只用 `backend_xmin` / `backend_xid`（这两列对所有角色可见，`backend_type` 等列对无权限的角色是隐藏的，不能用来过滤）；
+4. `VACUUM FULL pg_statistic`——必须在 `ANALYZE` 之后：`ANALYZE` 会把旧的统计行（高频值就是原文）留成死行；
+5. `CHECKPOINT`，`pg_switch_wal()`，再两次 `CHECKPOINT`；
+6. 实例以 `wal_recycle = off` 运行（旧日志段不复用）。
+
+- **成功判据**：做完后 `VACUUM (VERBOSE) pg_statistic` 的报告里 "dead but not yet removable" 为 0 才算成功，不看 `n_dead_tup`。不为 0 说明有快照挡着、旧统计行还在：这次不算，进度不推进（上表"没成"一行）。
+- 语句清单固定在存储后端里，不接受外部 SQL；全部语句幂等，中途崩溃或没成都从头重做。两条语句之间插进来的写入不影响：进度按墓碑位置记，新写入里没有已删的原文。
+- 代价（10 万行的租户，macOS）：PostgreSQL 约 0.3 s、PGlite 约 0.5 s；清理期间一条写入最长等 PostgreSQL 约 10 ms、PGlite 约 50 ms（PGlite 上写入与清理同一个队列，最多等一条语句）。
+- **拿不到下一节的权限时**（典型是托管的 PostgreSQL 服务）：改用重建——把日志重放进一个全新的 database / 数据目录，校验后替换旧的再删掉旧的。新目录从没写入过被删内容。代价：10 万行时 PostgreSQL 约 8 s，**期间这个租户不可写**；删除回执如实写明用的是重建以及不可写的时段。
+- **用哪一种由启动时核对决定**（PostgreSQL）：打开时核对连接角色有没有下一节的各项授权、实例的 `wal_recycle` 是不是 `off`；都具备用原地清理，缺任何一项就用重建。`saveslot doctor` 写明现在用的是哪一种做法；用重建时写明缺的是哪一项、怎么补。PGlite 上总是原地清理。
+- 不处理的：文件删除后留在文件系统空闲块或固态硬盘上的旧数据，删除回执如实说明。
+
+### 残留清理在 PostgreSQL 上需要的权限
+
+saveslot 连 PostgreSQL 用的角色若不是超级用户，部署时要授予下面四项（在 PostgreSQL 18.7 上逐项核过）：
+
+| 用途 | 授权 |
+|---|---|
+| `VACUUM FULL pg_statistic` | `GRANT pg_maintain TO <角色>;`（PostgreSQL 17 起的预置角色） |
+| `CHECKPOINT` | `GRANT pg_checkpoint TO <角色>;` |
+| `pg_switch_wal()` | `GRANT EXECUTE ON FUNCTION pg_switch_wal() TO <角色>;`（默认没有授给 `PUBLIC`） |
+| `wal_recycle = off` | 写进实例配置：`ALTER SYSTEM SET wal_recycle = off;` 后重载（`SELECT pg_reload_conf();`）。它由检查点进程读取，会话里 `SET` 不起作用；非超级用户执行 `ALTER SYSTEM` 要 `GRANT ALTER SYSTEM ON PARAMETER wal_recycle TO <角色>;`，也可以由运维直接改 `postgresql.conf` |
+
+- 等快照读 `pg_stat_activity`，不需要额外授权（不需要 `pg_read_all_stats`）。
+- **这几步是实例级的**：切日志段、检查点、`wal_recycle` 作用于整个实例，不是一个 database。服务器模式下每租户一个 database、同一实例上有许多租户：清理按实例合并着做（一段时间内到期的各租户的表重写与 `pg_statistic` 重写各自做完，再统一切一次日志段、做检查点），不是每个租户各切一次。另一个 database 的快照不挡本库的清理（实测），所以一个租户的长事务不会让别的租户的清理"没成"。
 
 ## 8. 存储抽象
 
@@ -387,7 +421,7 @@ interface StorageBackend {
 interface TenantStore {
   write<T>(fn: (tx: Tx) => Promise<T>): Promise<T>     // 串行写事务；开头核对 epoch
   read<T>(fn: (tx: ReadTx) => Promise<T>): Promise<T>  // PGlite 上与写同一队列
-  purgeResidue(): Promise<void>                        // 物理删除后清理明文残留；两个后端各自的做法由残留清理实验确认
+  purgeResidue(): Promise<void>                        // 物理删除后清理明文残留；做法与判据见 §7「残留清理的做法」
   snapshot(): Promise<SnapshotRef>                     // 物理快照，只用来加速；按备份对待（第一版不做）
   formatVersion: number
   close(): Promise<void>
@@ -518,6 +552,7 @@ interface AnchorStore {
 | 日志规模：数据目录总大小与按表分解（`events`、`content`、业务表、版本表、`base_sources`、派生表及其读集）；每行基础数据平均占多少字节、对应多少条事件。1 万、10 万、100 万条事件三个点 | 待测 | 实验 9（形状 A） |
 | 冷启动打开一个租户到第一次 `catalog` 返回（p50、p95）；从空库整库重放的耗时与每秒事件数 | 待测 | 实验 9 |
 | 按时刻读；导出、`verify`、`verify --replay` 的耗时；加一个可选字段的重建耗时；一次隐私删除各阶段的耗时；进程峰值内存 | 待测 | 实验 9 |
+| 残留清理（原地，10 万行）：总耗时；期间一条写入最长等；重建的耗时 | PostgreSQL 301–346 ms、PGlite 488–529 ms；最长等 PostgreSQL 8–9 ms、PGlite 40–47 ms；重建 PostgreSQL 7.7–8.3 s、PGlite 1.05–1.06 s（期间不可写）。macOS、Node 24.22.3，各三次 | 实验 7（[结果](../process/experiments/exp-7-residue-cleanup.md)） |
 
 这些数字决定：两条界线的数值；日志的快照（从某个快照之后开始重放）要不要提前做；序列类型的表要不要从后续规划往前提（positioning「后续规划」）；读结果一律给 `total` 是否保留；写入准入阈值在大表上是否仍然成立。
 
