@@ -1963,16 +1963,32 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       // `evidence_by_field` maps its `valid` key to, otherwise all the op's evidence (or its
       // api_call), so that the interval can be traced to the words it came from when they are
       // deleted (`base_sources` has a row for each, 02-architecture §8).
-      ...(o.evidenceByField?.valid !== undefined
-        ? { validSources: mappedTo(o, o.evidenceByField.valid) }
-        : (o.kind === "revoke" || o.kind === "write") &&
-            o.valid !== undefined &&
-            o.valid !== "corrected_span"
-          ? { validSources: sourcesOf(o) }
-          : {}),
-      // An undo writes back no value of its own: the request's evidence (or its api_call) is the
-      // operation's source (09 §5.2 `undo`: only `target`, `op_sources` and `revert`).
-      ...(o.kind === "undo" ? { opSources: sourcesOf(o) } : {}),
+      ...(() => {
+        const validSources =
+          o.evidenceByField?.valid !== undefined
+            ? mappedTo(o, o.evidenceByField.valid)
+            : (o.kind === "revoke" || o.kind === "write") &&
+                o.valid !== undefined &&
+                o.valid !== "corrected_span"
+              ? sourcesOf(o)
+              : undefined;
+        // The operation's sources (09 §5.7 `op_sources`): an undo writes back no value of its
+        // own, so the request's evidence (or its api_call) is all of it; a revoke has no value
+        // either, and its evidence not taken as the interval's source is (all of it for a revoke
+        // of the whole row or entity), so that every segment of it is pointed at and «why it was
+        // revoked» reads back (03-deletion «来源»: control, not data).
+        const interval = new Set(validSources ?? []);
+        const opSources =
+          o.kind === "undo"
+            ? sourcesOf(o)
+            : o.kind === "revoke"
+              ? sourcesOf(o).filter((x) => !interval.has(x))
+              : [];
+        return {
+          ...(validSources !== undefined ? { validSources } : {}),
+          ...(opSources.length > 0 ? { opSources } : {}),
+        };
+      })(),
       conflictItems,
       ...(awaitingItem !== undefined ? { awaitingItem } : {}),
       versions: { ruleset: RULESET, policy: slot.policyVersion },

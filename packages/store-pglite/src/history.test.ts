@@ -222,7 +222,18 @@ describe("timeline", () => {
       recorded_at: expect.any(String),
       actor: user,
       intent: "revoke",
-      fields: { "*": { result: "applied" } },
+      // A revoke has no value; its request is its operation's source (no evidence: its api_call).
+      fields: {
+        "*": {
+          result: "applied",
+          sources: {
+            value: [],
+            operation: [
+              { id: expect.stringMatching(/^s_/), kind: "api_call", level: "agent_inferred" },
+            ],
+          },
+        },
+      },
     });
     expect(entries[1]?.["fields"]).toEqual({
       distance: {

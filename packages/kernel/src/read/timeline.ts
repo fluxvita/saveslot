@@ -287,6 +287,9 @@ export async function timelineInTx(
     }
     const ops = e.blocks["op_sources"]?.body;
     if (Array.isArray(ops)) for (const s of ops) sourceSeqs.add(Number(s));
+    // A revoke over an interval: where its interval came from (09 §5.7 `valid_sources`).
+    const vs = e.blocks["valid_sources"]?.body;
+    if (Array.isArray(vs)) for (const s of vs) sourceSeqs.add(Number(s));
   }
   // A write a resolve triggered has no evidence of its own: the resolution's (the `item.resolved`
   // head of the same operation, 09 §5.8 `op_sources`) is its operation's source.
@@ -404,6 +407,10 @@ export async function timelineInTx(
     const opSources = opSeqs
       .map((s) => ref(Number(s), false))
       .filter((x): x is SourceRef => x !== undefined);
+    const vsBody = e.blocks["valid_sources"]?.body;
+    const intervalSources = (Array.isArray(vsBody) ? (vsBody as number[]) : [])
+      .map((s) => ref(Number(s), false))
+      .filter((x): x is SourceRef => x !== undefined);
     const fields: Record<string, TimelineField[]> = Object.create(null);
     let from: string | null | undefined;
     let to: string | null | undefined;
@@ -470,9 +477,14 @@ export async function timelineInTx(
         ...(hasValue ? { after: valueOut(body["value"] as FieldValue) } : {}),
         ...(valid !== undefined ? { valid: intervalOf(valid.from, valid.to, date) } : {}),
         ...(block.removed ? { removed: true as const } : {}),
-        ...(fieldId === "existence"
-          ? {}
-          : { sources: { value: valueSources, operation: opSources } }),
+        // Existence has no value: a revoke over an interval has the interval's sources as its
+        // value sources (09 §5.7 `valid_sources`, data), and every revoke and write-back its
+        // operation's sources (`op_sources`, control: a revoke's evidence not taken as the
+        // interval's); an event from before them has neither, and gives empty lists.
+        sources: {
+          value: fieldId === "existence" ? intervalSources : valueSources,
+          operation: opSources,
+        },
       };
       const name = fieldId === "existence" ? "*" : (fieldName.get(fieldId) ?? fieldId);
       fields[name] = [...(fields[name] ?? []), item];

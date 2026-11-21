@@ -15,6 +15,7 @@ import {
   createOpsContext,
   createTenant,
   eventsOf,
+  history,
   readBufferOf,
   readEvents,
   readTail,
@@ -1085,6 +1086,250 @@ describe("base_sources: the interval's sources of a field write (02-architecture
         [0, "value", null, opened0],
         [1, "operation", ops[0], null],
         [2, "operation", ops[1], null],
+      ]);
+    },
+    T,
+  );
+});
+
+describe("a revoke's operation sources (09 §5.7 `op_sources`; 03-deletion «来源»)", () => {
+  // A revoke has no value. Its evidence not taken as the interval's source is its operation's
+  // source: all of it for a revoke of the whole row or entity (no evidence: its api_call); the
+  // segments `valid` is not mapped to for one over an interval. The timeline's existence item
+  // gives them: the interval's sources as value sources, the rest as operation sources.
+  const ctx = () =>
+    createOpsContext({
+      tenant: TENANT,
+      actor: USER,
+      trigger: null,
+      task: null,
+      visibility: { kind: "all" },
+      idempotency_window: 600_000,
+      idempotency_key_window: 86_400_000,
+      now: now(),
+      confirmation: null,
+    });
+  type Star = {
+    result: string;
+    sources?: {
+      value: { id: string; removed?: true }[];
+      operation: { id: string; removed?: true }[];
+    };
+  };
+  /** The existence item (`"*"`) of operation `op` in a row's or entity's timeline, on `store`. */
+  const starOf = async (
+    target: { table: string; row?: string; entity?: string },
+    op: number,
+    store = s.store,
+  ): Promise<Star | undefined> => {
+    const t = (await history(store, ctx(), {
+      ...target,
+      mode: "timeline",
+      limit: 200,
+    })) as unknown as {
+      entries: { seq: number; fields: Record<string, Star | Star[]> }[];
+    };
+    const star = t.entries.find((e) => e.seq === op)?.fields["*"];
+    return Array.isArray(star) ? star[0] : star;
+  };
+  /** A note, then the note revoked as a whole with `evidence`. */
+  const revokedNote = async (evidence?: unknown[]) => {
+    const n = await send({ sv: 1, evidence: [say("a note")], ops: [note("buy milk")] });
+    const row = n.ops[0]?.target.row as string;
+    const r = await send({
+      sv: 1,
+      ...(evidence !== undefined ? { evidence } : {}),
+      ops: [{ intent: "revoke", table: "ledger.notes", row, ver: n.ops[0]?.ver }],
+    });
+    return { row, r };
+  };
+  const ids = async (seqs: number[]) => Promise.all(seqs.map(sourceIdOf));
+
+  it(
+    "a revoke of the whole row: all its evidence is its operation's source, in the event, the source table and the timeline",
+    async () => {
+      const { row, r } = await revokedNote([say("I already bought it"), say("cross it off")]);
+      const base = (await basesOf(r.seq))[0] ?? {};
+      expect(base["op_sources"]).toEqual([r.seq + 1, r.seq + 2]);
+      expect(base).not.toHaveProperty("valid_sources");
+      const baseSeq = (await eventsOfOp(r.seq)).find((e) => e.type === "write.base")?.seq as number;
+      const rows = await s.store.read((tx) =>
+        tx.query<Record<string, unknown>>(
+          "SELECT source_kind, source_seq FROM base_sources WHERE event_seq = $1 AND field_id = 'existence' ORDER BY n",
+          [baseSeq],
+        ),
+      );
+      expect(rows.rows.map((x) => [x["source_kind"], Number(x["source_seq"])])).toEqual([
+        ["operation", r.seq + 1],
+        ["operation", r.seq + 2],
+      ]);
+      const star = await starOf({ table: "ledger.notes", row }, r.seq);
+      expect(star?.sources?.value).toEqual([]);
+      expect(star?.sources?.operation.map((x) => x.id)).toEqual(await ids([r.seq + 1, r.seq + 2]));
+    },
+    T,
+  );
+
+  it(
+    "a revoke of the whole row with no evidence: its api_call",
+    async () => {
+      const { row, r } = await revokedNote();
+      const call = (await eventsOfOp(r.seq)).find(
+        (e) =>
+          e.type === "source.recorded" &&
+          (e.blocks["target"] as { kind: string }).kind === "api_call",
+      );
+      expect((await basesOf(r.seq))[0]?.["op_sources"]).toEqual([call?.seq]);
+      const star = await starOf({ table: "ledger.notes", row }, r.seq);
+      expect(star?.sources?.operation.map((x) => x.id)).toEqual(await ids([call?.seq as number]));
+    },
+    T,
+  );
+
+  it(
+    "a revoke over an interval: the segment `valid` is not mapped to is the operation's source; unmapped, all are the interval's",
+    async () => {
+      const opened = await send({
+        sv: 1,
+        evidence: [say("5000 since October")],
+        ops: [
+          {
+            intent: "update",
+            table: "ledger.accounts",
+            entity_key: { name: "Cash" },
+            set: { balance: "5000" },
+            valid_from: "2026-10-01",
+          },
+        ],
+      });
+      const entity = opened.ops[0]?.target.entity as string;
+      const revoke = (ver: string, from: string, to: string, more: Record<string, unknown>) =>
+        send({
+          sv: 1,
+          evidence: [say("closed"), say(`from ${from} to ${to}`)],
+          ops: [
+            {
+              intent: "revoke",
+              table: "ledger.accounts",
+              entity,
+              ver,
+              valid_from: from,
+              valid_to: to,
+              ...more,
+            },
+          ],
+        });
+      const mapped = await revoke(opened.ops[0]?.ver as string, "2026-11-20", "2026-11-25", {
+        evidence_by_field: { valid: [1] },
+      });
+      const mb = (await basesOf(mapped.seq))[0] ?? {};
+      expect(mb["valid_sources"]).toEqual([mapped.seq + 2]);
+      expect(mb["op_sources"]).toEqual([mapped.seq + 1]);
+      const ms = await starOf({ table: "ledger.accounts", entity }, mapped.seq);
+      expect(ms?.sources?.value.map((x) => x.id)).toEqual(await ids([mapped.seq + 2]));
+      expect(ms?.sources?.operation.map((x) => x.id)).toEqual(await ids([mapped.seq + 1]));
+      const plain = await revoke(mapped.ops[0]?.ver as string, "2026-12-01", "2026-12-05", {});
+      const pb = (await basesOf(plain.seq))[0] ?? {};
+      expect(pb["valid_sources"]).toEqual([plain.seq + 1, plain.seq + 2]);
+      expect(pb).not.toHaveProperty("op_sources");
+      const ps = await starOf({ table: "ledger.accounts", entity }, plain.seq);
+      expect(ps?.sources?.value.map((x) => x.id)).toEqual(
+        await ids([plain.seq + 1, plain.seq + 2]),
+      );
+      expect(ps?.sources?.operation).toEqual([]);
+    },
+    T,
+  );
+
+  it(
+    "the revoke undone: the existence written back has the undo's evidence as its operation's source",
+    async () => {
+      const { row, r } = await revokedNote([say("cross it off")]);
+      const u = await send({
+        sv: 1,
+        evidence: [say("no, keep it")],
+        ops: [{ table: "ledger.notes", row, revert: { undo: r.seq } }],
+      });
+      expect((await basesOf(u.seq))[0]?.["op_sources"]).toEqual([u.seq + 1]);
+      const star = await starOf({ table: "ledger.notes", row }, u.seq);
+      expect(star?.sources?.value).toEqual([]);
+      expect(star?.sources?.operation.map((x) => x.id)).toEqual(await ids([u.seq + 1]));
+    },
+    T,
+  );
+
+  it(
+    "written to the log and read back on an empty store: the same base_sources row by row; the row revoked; the existence item's operation source its evidence",
+    async () => {
+      const { row, r } = await revokedNote([say("I already bought it")]);
+      const dir = mkdtempSync(join(tmpdir(), "saveslot-revoke-op-sources-replay-"));
+      const into = await testBackend().open({ kind: "pglite", dir }, { create: true });
+      try {
+        const events = await s.store.read((tx) => tx.query("SELECT * FROM events ORDER BY seq"));
+        const content = await s.store.read((tx) =>
+          tx.query("SELECT * FROM content ORDER BY seq, path"),
+        );
+        const last = (await s.store.read(readTail))?.seq ?? 0;
+        await into.write(async (tx) => {
+          for (const [table, rs] of [
+            ["events", events.rows],
+            ["content", content.rows],
+          ] as const) {
+            for (const r0 of rs) {
+              const x = { ...(r0 as Record<string, unknown>) };
+              const cols = Object.keys(x);
+              await tx.query(
+                `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(", ")})`,
+                Object.values(x) as never,
+              );
+            }
+          }
+          await applyEvents(tx, await readEvents(tx, 1, last));
+        });
+        const revoked = await into.read((tx) =>
+          tx.query<{ revoked: boolean }>('SELECT revoked FROM "t_t1_v1" WHERE row_id = $1', [row]),
+        );
+        expect(revoked.rows.map((x) => x.revoked)).toEqual([true]);
+        const all = "SELECT * FROM base_sources ORDER BY event_seq, row_id, field_id, k, n";
+        expect((await into.read((tx) => tx.query(all))).rows).toEqual(
+          (await s.store.read((tx) => tx.query(all))).rows,
+        );
+        const star = await starOf({ table: "ledger.notes", row }, r.seq, into);
+        expect(star?.sources?.operation.map((x) => x.id)).toEqual(await ids([r.seq + 1]));
+      } finally {
+        await into.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    T,
+  );
+
+  it(
+    "an event from before op_sources was recorded for a revoke: the existence item's sources are empty lists",
+    async () => {
+      const { row, r } = await revokedNote([say("cross it off")]);
+      const baseSeq = (await eventsOfOp(r.seq)).find((e) => e.type === "write.base")?.seq as number;
+      await s.store.write((tx) =>
+        tx.query("DELETE FROM content WHERE seq = $1 AND path = 'op_sources'", [baseSeq]),
+      );
+      expect(await starOf({ table: "ledger.notes", row }, r.seq)).toEqual({
+        result: "applied",
+        sources: { value: [], operation: [] },
+      });
+    },
+    T,
+  );
+
+  it(
+    "a source a revoke cites is its operation's: `sources` gives it that role, not a value's",
+    async () => {
+      const { r } = await revokedNote([say("cross it off")]);
+      const id = await sourceIdOf(r.seq + 1);
+      const got = (await sources(s.store, ctx(), { mode: "get", id })) as unknown as {
+        produced?: { seq: number; fields: string[]; role: string }[];
+      };
+      expect((got.produced ?? []).filter((x) => x.seq === r.seq).map((x) => x.role)).toEqual([
+        "operation",
       ]);
     },
     T,

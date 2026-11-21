@@ -154,8 +154,13 @@ export function eventsOfSteps(
         sources: [r.op],
         ...intervalSources(s.input, [r.op]),
         explicit: explicitOf(ctx, s.input),
-        // An undo's operation source (09 §5.2): the request's evidence or its api_call.
-        ...(r.kind === "undo" ? { opSources: [r.op] } : {}),
+        // The operation's sources (09 §5.7 `op_sources`): an undo's, the request's evidence or its
+        // api_call; a revoke's, its evidence not taken as the interval's source — all of it for a
+        // revoke of the whole row or entity, none for one over an interval (here all its evidence
+        // is the interval's).
+        ...(r.kind === "undo" || (s.input.kind === "revoke" && s.input.valid === undefined)
+          ? { opSources: [r.op] }
+          : {}),
         raw: rawOf(s.input),
         restoreCount: 0,
         conflictItems,
