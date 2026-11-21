@@ -49,7 +49,14 @@ import type {
 import type { InputMarks, Marks, PremiseReason } from "./marks.ts";
 import type { Decision, SourceLevel } from "./pending.ts";
 import type { MigrationStatus, SchemaDocument, SlotPolicy } from "./schema.ts";
-import type { DerivedChange, OpResult, SourceKind, TimelineResultCode } from "./write.ts";
+import type {
+  DerivedChange,
+  EndedOpPremiseResult,
+  HiddenOpPremiseResult,
+  OpPremiseResult,
+  SourceKind,
+  TimelineResultCode,
+} from "./write.ts";
 
 /** The value sets of the types below, for a client that writes them (the CLI's renderers). */
 export {
@@ -415,8 +422,12 @@ export interface TimelineEntry {
   /** State tables: the widest interval this write touched. */
   valid?: Interval;
   fields: Record<FieldName | "*", TimelineField | TimelineField[]>;
-  /** Premises declared by this write; `state` is the current one. */
-  premises?: OpResult["premises"];
+  /**
+   * Premises declared by this write, one for one with its request; `state` is the current one, or
+   * `ended` (`EndedOpPremiseResult`) for one superseded or cleared since. A target the reader cannot
+   * see gives `HiddenOpPremiseResult`. Both only here, never in a receipt.
+   */
+  premises?: Array<OpPremiseResult | EndedOpPremiseResult | HiddenOpPremiseResult>;
   affected?: { derived: DerivedChange[]; reads: number };
 }
 

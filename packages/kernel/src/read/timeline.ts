@@ -25,7 +25,8 @@ import {
 } from "./history.ts";
 import { intervalOf } from "./interval.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
-import type { KeySpec } from "./rows.ts";
+import { declaringOps } from "./premise-entries.ts";
+import { cmpKeys, type KeySpec } from "./rows.ts";
 import { decode, INSTANT_TEXT, logPosition, physical, restoreCount, selectOf } from "./select.ts";
 import {
   type Actor,
@@ -158,10 +159,23 @@ export async function timelineInTx(
     target: target.id,
     expand_sources: expand,
   });
-  const specs: KeySpec[] = [{ type: "count", dir: "desc" }];
+  // Newest first, as one order over the writes' entries and the restatements' and clearings' (which
+  // have no base write): the operation, then the op's index in it, then the base event (a
+  // restatement or clearing: 0). Several on one row in one request each keep a place of their own.
+  const specs: KeySpec[] = [
+    { type: "count", dir: "desc" },
+    { type: "count", dir: "desc" },
+    { type: "count", dir: "desc" },
+  ];
   const position = positionOf(params, { identity, specs, restoreCount: restore, latest });
   const upTo = position?.seq ?? latest;
   const events = (await baseEvents(tx, t.id, target.id)).filter((e) => e.op <= upTo);
+  // The premises declared on the row, by op; a restatement or clearing has no base write.
+  const declaring = await declaringOps(tx, target.id, upTo, target.named.slot);
+  const opIndexOf = (e: BaseEvent) =>
+    (e.blocks["target"]?.body as { op_index?: number } | undefined)?.op_index;
+  const withBase = new Set(events.map((e) => `${e.op}/${opIndexOf(e)}`));
+  const restated = [...declaring.values()].filter((d) => !withBase.has(`${d.op}/${d.index}`));
   const { versions } = physical(t);
 
   // The items' latest result and interval, and their value sources, from the source table.
@@ -359,10 +373,7 @@ export async function timelineInTx(
     for (const x of r.rows) if (x.decision !== null) decisions.set(x.id, x.decision);
   }
 
-  const who = await actors(
-    tx,
-    events.map((e) => e.actor),
-  );
+  const who = await actors(tx, [...events.map((e) => e.actor), ...restated.map((d) => d.actor)]);
   const fieldName = new Map(t.fields.map((f) => [f.id as string, f.name]));
   const state = t.time.type === "state";
   const date = t.time.type === "state" && t.time.granularity === "date";
@@ -477,12 +488,34 @@ export async function timelineInTx(
       // The write's widest interval (04-contract-types §4.3): open at the start when a part is.
       ...(state && from !== undefined ? { valid: intervalOf(from, to, date) } : {}),
       fields: shown,
+      ...(() => {
+        const d = declaring.get(`${e.op}/${opIndexOf(e)}`);
+        return d !== undefined ? { premises: d.premises } : {};
+      })(),
     };
   });
+  // A restatement or a clearing: an entry of its own, no field written.
+  const keyed = [
+    ...entries.map((item, n) => {
+      const e = events[n] as BaseEvent;
+      return { item, keys: [e.op, opIndexOf(e) ?? 0, e.seq] };
+    }),
+    ...restated.map((d) => ({
+      item: {
+        seq: d.op as never,
+        recorded_at: d.at,
+        actor: who.get(d.actor) as Actor,
+        intent: "update" as const,
+        fields: {},
+        premises: d.premises,
+      } satisfies TimelineEntry,
+      keys: [d.op, d.index, 0],
+    })),
+  ].sort((a, b) => cmpKeys(specs, a.keys, b.keys));
 
   // Page: newest first, by the entries' events.
   const { page, next } = pageAfter(
-    entries.map((item, n) => ({ item, keys: [(events[n] as BaseEvent).seq] })),
+    keyed.map(({ item, keys }) => ({ item, keys })),
     {
       specs,
       identity,
@@ -525,7 +558,7 @@ export async function timelineInTx(
     sv: target.named.slot.sv,
     timezone: target.named.slot.timezone,
     ver: `v${ver}.${restore}`,
-    total: entries.length,
+    total: keyed.length,
     ...(next !== undefined ? { next_position: next } : {}),
     entries: page,
     ...(reads.length > 0

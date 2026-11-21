@@ -170,6 +170,30 @@ export interface OpPremiseResult {
   since?: Seq;
 }
 
+/**
+ * One premise of a timeline entry no longer in force (04-contract §10; 04-contract-types §4.5
+ * `TimelineEntry.premises`): superseded by a later declaration on its target, or cleared. What was
+ * declared, without a state of then: it marks nothing now. Only in a timeline, never in a receipt.
+ */
+export interface EndedOpPremiseResult {
+  target: TargetRef;
+  fields?: FieldName[];
+  ver: Ver;
+  state: "ended";
+}
+
+/**
+ * One premise of a timeline entry whose target the reader cannot see (04-contract §10; 04-contract-
+ * types §4.5 `TimelineEntry.premises`): its state, and since when changed; not which table, row or
+ * fields, nor how it changed. Only in a timeline, never in a receipt: a writer sees what it declares
+ * on.
+ */
+export interface HiddenOpPremiseResult {
+  hidden: true;
+  state: PremiseState | "ended";
+  since?: Seq;
+}
+
 /** 04-contract-types §5.1 `OpResult`. */
 export interface OpResult {
   target: TargetRef;

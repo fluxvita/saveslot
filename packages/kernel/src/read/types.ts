@@ -228,7 +228,34 @@ export interface TimelineField {
   };
 }
 
-/** §4.5 `TimelineEntry`, without `premises` and `affected` (not in this version yet). */
+/**
+ * One premise as a timeline entry gives it (04-contract-types §5.1 `OpResult.premises`). On a target
+ * whose table the reader cannot see, only its state and since (as a mark gives, 04-contract §7): not
+ * which table, row or fields, nor how it changed.
+ */
+export type TimelinePremise =
+  | {
+      readonly target: { readonly table: string; readonly row?: RowId; readonly entity?: EntityId };
+      readonly fields?: readonly string[];
+      readonly ver: string;
+      readonly state: "current" | "changed";
+      readonly reason?: PremiseReason;
+      readonly since?: Seq;
+    }
+  | {
+      /** Superseded by a later declaration on its target, or cleared: no reason, no since. */
+      readonly target: { readonly table: string; readonly row?: RowId; readonly entity?: EntityId };
+      readonly fields?: readonly string[];
+      readonly ver: string;
+      readonly state: "ended";
+    }
+  | {
+      readonly hidden: true;
+      readonly state: "current" | "changed" | "ended";
+      readonly since?: Seq;
+    };
+
+/** §4.5 `TimelineEntry`, without `affected` (not in this version yet). */
 export interface TimelineEntry {
   readonly seq: Seq;
   readonly recorded_at: string;
@@ -239,6 +266,8 @@ export interface TimelineEntry {
     | { readonly undo: Seq };
   readonly valid?: Interval;
   readonly fields: Readonly<Record<string, TimelineField | readonly TimelineField[]>>;
+  /** The premises this write declared, the state the one now (a clearing's: empty). */
+  readonly premises?: readonly TimelinePremise[];
 }
 
 /** §4.5 `TimelineResult`. */

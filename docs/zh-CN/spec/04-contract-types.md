@@ -696,8 +696,20 @@ interface TimelineEntry {
   valid?: Interval;              // 状态类表：这次写入涉及的最大区间；逐字段的在 fields 里
   /** 状态类表上一个字段在这次写入里可以有几项（各段的值或结果不同），此时值是按区间排好的数组。 */
   fields: Record<FieldName | "*", TimelineField | TimelineField[]>;
-  /** 这次写入声明的前提，形状同写入回执（5.1）；state 是现在的状态。重申与清除各是一条（fields 可能为空）；清除时是空数组。 */
-  premises?: OpResult["premises"];
+  /** 这次写入声明的前提，形状同写入回执（5.1），与请求一一对应；state 是现在的状态。重申与清除各是一条（fields 可能为空）；清除时是空数组。
+   *  同一请求里对同一行的几个 op 各是一条，同一操作号之内按 op 下标从大到小（与整张表新的在前一致）。
+   *  已不再作数的声明（被同一目标上更晚的声明取代，或被清除）给 state: "ended"，不带 reason、since：它现在不参与任何标记。
+   *  前提目标所在的表（或 slot）对读方不可见时，那一条是第三种形状：有意的例外，给 state 与 since，不给是什么变了、怎么变的
+   *  （目标、声明的字段、所见版本、原因与表名）；条数与次序照旧。ended 与不可见的形状只在 timeline 里出现（回执里没有：写入方看得到自己声明的目标）。
+   *  后面的页停在第一页的操作号上，但 state 与 since 是现在的，所以 since 可以大于这一页所停的操作号。 */
+  premises?: Array<OpResult["premises"][number] | {
+    target: TargetRef; fields?: FieldName[]; ver: Ver;
+    state: "ended";                // 已被取代或清除
+  } | {
+    hidden: true;                  // 前提目标对读方不可见
+    state: "current" | "changed" | "ended";
+    since?: Seq;                   // 只在 state 为 changed 时有
+  }>;
   affected?: { derived: DerivedChange[]; reads: number };
 }
 

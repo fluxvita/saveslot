@@ -8,6 +8,9 @@
 //   reason, current again once they hold it again. A declaration made late starts at the version
 //   it saw: its state when written is that walk up to the operation before it.
 // - a current declaration's range holds the value seen (checked again directly).
+// - each task row's timeline gives premises on exactly the ops that sent `premises` for it (a
+//   declaring write, a restatement, a clearing: an entry each, several of one request each its
+//   own), as many as sent; read a page of one at a time, the same entries.
 //
 // The oracle reads only what apply left: the version table's cells (raw columns, compared as
 // text, day by day), the operations' intents and entry days, and which declarations are in force
@@ -20,6 +23,7 @@ import {
   createOpsContext,
   createTenant,
   eventsOf,
+  history,
   readBufferOf,
 } from "@fluxvita/saveslot-kernel";
 import {
@@ -662,7 +666,9 @@ type Step =
   /** From its first version, resting on a release: a candidate when the title changed since, taken. */
   | { k: "taskStale"; dep: number; title: number; r: number }
   /** An undo of one of its earlier writes: held when it takes later ones back, confirmed. */
-  | { k: "taskUndo"; dep: number; pick: number };
+  | { k: "taskUndo"; dep: number; pick: number }
+  /** One request of several ops on one dependent row: a declaring write, a restatement, a clearing. */
+  | { k: "several"; dep: number; title: number; r: number; r2: number; clear: boolean };
 
 const step: fc.Arbitrary<Step> = fc.oneof(
   {
@@ -736,6 +742,17 @@ const step: fc.Arbitrary<Step> = fc.oneof(
       pick: fc.nat(2),
     }),
   },
+  {
+    weight: 2,
+    arbitrary: fc.record({
+      k: fc.constant("several" as const),
+      dep: fc.nat(5),
+      title: fc.nat(2),
+      r: fc.nat(2),
+      r2: fc.nat(2),
+      clear: fc.boolean(),
+    }),
+  },
 );
 
 const TITLES = ["t", "u", "w"];
@@ -766,6 +783,9 @@ describe("premises over random histories (in force: state, since, reason as the 
         viaCarried: 0,
         // Decisions on items opened on dependent rows.
         decided: 0,
+        // Timeline entries of a restatement, and of a clearing (premises, no field).
+        timelineRestated: 0,
+        timelineCleared: 0,
         // Receipts with a premise_affected.
         affected: 0,
         // Of them, with marks taken off (matched > 0). Counted, not bounded: 1 or 2 in 25 samples,
@@ -810,6 +830,17 @@ describe("premises over random histories (in force: state, since, reason as the 
             });
           }
           const deps: { row: string; ver: string; first: string; ops: number[] }[] = [];
+          /**
+           * By task row, the operations that sent `premises` for it: for each, how many, op by op
+           * in request order. A replay sends nothing new.
+           */
+          const declaredOn = new Map<string, Map<number, number[]>>();
+          const sentPremises = (row: string, w: Record<string, unknown>, n: number) => {
+            if (w["refused"] !== undefined || w["replayed"] === true) return;
+            const m = declaredOn.get(row) ?? new Map<number, number[]>();
+            m.set(w["seq"] as number, [...(m.get(w["seq"] as number) ?? []), n]);
+            declaredOn.set(row, m);
+          };
           // One dependent row from the start, resting on the first release: the steps on
           // dependent rows have one to work on at once.
           {
@@ -824,6 +855,7 @@ describe("premises over random histories (in force: state, since, reason as the 
                 },
               ],
             });
+            sentPremises(d.ops[0]?.target.row as string, d as never, 1);
             deps.push({
               row: d.ops[0]?.target.row as string,
               ver: d.ops[0]?.ver as string,
@@ -969,6 +1001,7 @@ describe("premises over random histories (in force: state, since, reason as the 
                   },
                 ],
               });
+              if (r["refused"] === undefined) sentPremises(r.ops[0]?.target.row as string, r, 1);
               if (r["refused"] === undefined)
                 deps.push({
                   row: r.ops[0]?.target.row as string,
@@ -998,9 +1031,12 @@ describe("premises over random histories (in force: state, since, reason as the 
               // A restatement sent again is not taken for the first one once its premise rests on
               // another version (04-contract §14 «例外一»).
               r = st.fallback ? await restated(body, x.row) : await send(body);
+              sentPremises(dep.row, r, 1);
             } else if (st.k === "again") {
               if (last === undefined) continue;
+              const row = (last.body as { ops: { row: string }[] }).ops[0]?.row as string;
               r = await restated(last.body, last.release);
+              sentPremises(row, r, 1);
             } else if (st.k === "taskEdit" || st.k === "taskStale") {
               const i = st.dep % Math.max(1, deps.length);
               const dep = deps[i];
@@ -1021,6 +1057,7 @@ describe("premises over random histories (in force: state, since, reason as the 
                   },
                 ],
               });
+              if (on) sentPremises(dep.row, r, 1);
               if (r["refused"] === undefined) {
                 if ((r as { status?: string }).status !== "pending")
                   dep.ver = r.ops[0]?.ver as string;
@@ -1042,6 +1079,36 @@ describe("premises over random histories (in force: state, since, reason as the 
                 dep.ops.push(r.seq);
                 r = (await decided(r, "confirm", dep)) ?? r;
               }
+            } else if (st.k === "several") {
+              const dep = deps[st.dep % Math.max(1, deps.length)];
+              if (dep === undefined) continue;
+              const x = releases[st.r] as (typeof releases)[number];
+              const y = releases[st.r2] as (typeof releases)[number];
+              const rest = (z: typeof x) => [{ table: "releases", row: z.row, ver: z.vers.at(-1) }];
+              r = await send({
+                ops: [
+                  {
+                    intent: "update",
+                    table: "tasks",
+                    row: dep.row,
+                    ver: dep.ver,
+                    set: { title: TITLES[st.title] },
+                    premises: rest(x),
+                  },
+                  { intent: "update", table: "tasks", row: dep.row, premises: rest(y) },
+                  ...(st.clear
+                    ? [{ intent: "update", table: "tasks", row: dep.row, premises: [] }]
+                    : []),
+                ],
+              });
+              sentPremises(dep.row, r, 1);
+              sentPremises(dep.row, r, 1);
+              if (st.clear) sentPremises(dep.row, r, 0);
+              if (r["refused"] === undefined && r["replayed"] !== true) {
+                if ((r as { status?: string }).status !== "pending")
+                  dep.ver = r.ops[0]?.ver as string;
+                dep.ops.push(r.seq);
+              }
             } else {
               const dep = deps[st.dep % Math.max(1, deps.length)];
               if (dep === undefined) continue;
@@ -1050,6 +1117,7 @@ describe("premises over random histories (in force: state, since, reason as the 
                   { intent: "update", table: "tasks", row: dep.row, ver: dep.ver, premises: [] },
                 ],
               });
+              sentPremises(dep.row, r, 0);
             }
             // A replay (the same request again, 04-contract §14) appends nothing: nothing to check.
             if (r === undefined || r["refused"] !== undefined || r["replayed"] === true) continue;
@@ -1138,6 +1206,49 @@ describe("premises over random histories (in force: state, since, reason as the 
             if (((got?.["matched"] as number | undefined) ?? 0) > 0) stats.affectedMatched++;
             before = want;
           }
+          // Each task row's timeline: premises on the operations that sent them, as many as sent.
+          for (const dep of deps) {
+            const t = (await history(s.store, ctx(), {
+              table: "tasks",
+              row: dep.row,
+              mode: "timeline",
+              limit: 200,
+            })) as unknown as {
+              next_position?: string;
+              entries: { seq: number; intent: string; fields: object; premises?: unknown[] }[];
+            };
+            expect(t.next_position).toBeUndefined();
+            // By (operation, op index): the entries of one operation come by op index from the
+            // last, so reversed they are in request order.
+            const got = new Map<number, number[]>();
+            for (const e of [...t.entries].reverse())
+              if (e.premises !== undefined)
+                got.set(e.seq, [...(got.get(e.seq) ?? []), e.premises.length]);
+            expect({ row: dep.row, premises: [...got].sort((a, b) => a[0] - b[0]) }).toEqual({
+              row: dep.row,
+              premises: [...(declaredOn.get(dep.row) ?? [])].sort((a, b) => a[0] - b[0]),
+            });
+            // Read a page of one at a time: the same entries, none lost.
+            const one: unknown[] = [];
+            let position: string | undefined;
+            do {
+              const p = (await history(s.store, ctx(), {
+                table: "tasks",
+                row: dep.row,
+                mode: "timeline",
+                limit: 1,
+                ...(position !== undefined ? { position } : {}),
+              })) as unknown as { next_position?: string; entries: unknown[] };
+              one.push(...p.entries);
+              position = p.next_position;
+            } while (position !== undefined);
+            expect({ row: dep.row, entries: one }).toEqual({ row: dep.row, entries: t.entries });
+            for (const e of t.entries)
+              if (e.premises !== undefined && Object.keys(e.fields).length === 0) {
+                if (e.premises.length > 0) stats.timelineRestated++;
+                else stats.timelineCleared++;
+              }
+          }
           stats.samples++;
         }),
         {
@@ -1154,6 +1265,8 @@ describe("premises over random histories (in force: state, since, reason as the 
       expect(stats.late).toBeGreaterThan(0);
       expect(stats.marked).toBeGreaterThan(0);
       expect(stats.affected).toBeGreaterThan(0);
+      expect(stats.timelineRestated).toBeGreaterThan(0);
+      expect(stats.timelineCleared).toBeGreaterThan(0);
       const out = process.env["PREMISE_STATS"];
       if (out !== undefined)
         (await import("node:fs")).writeFileSync(out, `${JSON.stringify(stats)}\n`);
