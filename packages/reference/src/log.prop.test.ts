@@ -1208,8 +1208,14 @@ describe.each(both)("%s table", (_, schema, state) => {
     let reverseChecked = 0;
     let restorableMet = 0;
     let revHits = 0;
-    const check = (h: { hit(): void }, log: LogEntry[], rev: { hit(): void } = { hit() {} }) => {
-      const run = evaluateLog(schema, log);
+    const check = (
+      h: { hit(): void },
+      log: LogEntry[],
+      rev: { hit(): void } = { hit() {} },
+      // The evaluator checked; a test hands a wrong one to show the check turns red.
+      evaluate: typeof evaluateLog = evaluateLog,
+    ) => {
+      const run = evaluate(schema, log);
       for (const tc of run.final.takeCandidates) {
         const resolve = log.find((e) => e.kind === "resolve" && e.op === tc.op);
         if (resolve?.kind !== "resolve" || resolve.take === undefined) continue;
@@ -1250,7 +1256,7 @@ describe.each(both)("%s table", (_, schema, state) => {
             });
           }
         }
-        const without = evaluateLog(
+        const without = evaluate(
           schema,
           log.map((e) =>
             e === resolve
@@ -1272,6 +1278,25 @@ describe.each(both)("%s table", (_, schema, state) => {
             .filter((x) => x.event === resolve.take && x.status !== "dropped")
             .map((x) => x.valid),
         );
+        // Carried from one of the item's candidates, following `carried` only (a revert writing a
+        // candidate's value back, a revert of that, ...): whether it gives a value depends on the
+        // resolution as the candidate's own does, which closes the candidate; without the
+        // resolution a deletion may put the candidate in effect, and what is carried from it with
+        // it (the event-table counterexample below). Other references are not followed.
+        const fromCandidate = (
+          y: { readonly carried?: readonly { event: number; target: string; k: number }[] },
+          seen: Set<string> = new Set(),
+        ): boolean =>
+          (y.carried ?? []).some((c) => {
+            if (resolve.candidates.includes(c.event)) return true;
+            const key = `${c.event}/${c.target}/${c.k}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            const z = without.items.find(
+              (i) => i.event === c.event && i.target === c.target && i.k === c.k,
+            );
+            return z !== undefined && fromCandidate(z, seen);
+          });
         for (const [f, segs] of Object.entries(without.fields)) {
           for (const seg of segs ?? []) {
             if (seg.by === undefined) continue;
@@ -1284,6 +1309,7 @@ describe.each(both)("%s table", (_, schema, state) => {
               x.op <= tc.mergeBase ||
               x.op >= tc.op ||
               resolve.candidates.includes(x.event) ||
+              fromCandidate(x) ||
               cover.has(`${x.event}/${x.target}`)
             ) {
               continue;
@@ -1486,6 +1512,53 @@ describe.each(both)("%s table", (_, schema, state) => {
         expect({ restorableMet: restorableMet > before }).toEqual({ restorableMet: true });
         expect(evaluateLog(schema, log).final.fields["f2"]?.[0]?.value).toBe("5");
       }
+      // The event table, a write carried from the item's candidate (seed 1554879808): #21 is a
+      // candidate against #11, undone by #31 and that undo undone by #41. Without the resolution,
+      // deleting S1 puts #21 in effect: #31 takes it back and #41 writes 1 back, carried from
+      // #21/f2/0. With it, #21 stays closed, #31 and #41 have nothing on f2, and the take gives
+      // the 1. Not a write outside O giving a value the take covers: left out of the check.
+      {
+        const log: LogEntry[] = [
+          {
+            kind: "write",
+            op: 10,
+            event: 11,
+            seen: 0,
+            fields: { f2: { value: "1", sources: ["S1"] } },
+            acknowledge: ["overwrite"],
+          },
+          {
+            kind: "write",
+            op: 20,
+            event: 21,
+            seen: 0,
+            fields: { f2: { value: "1", sources: ["S4"] }, f3: { value: "a", sources: ["S4"] } },
+            acknowledge: ["overwrite"],
+          },
+          { kind: "undo", op: 30, event: 31, target: 20 },
+          { kind: "undo", op: 40, event: 41, target: 30 },
+          {
+            kind: "write",
+            op: 60,
+            event: 61,
+            seen: 50,
+            fields: { f2: { value: "1", sources: ["S1"] } },
+          },
+          {
+            kind: "resolve",
+            op: 70,
+            event: 71,
+            decision: "take_candidate",
+            candidates: [21],
+            unit: "f2",
+            take: 21,
+          },
+          { kind: "deletion", op: 71, id: "pi_x", sources: ["S1"] },
+        ];
+        check({ hit() {} }, log);
+        const f2 = evaluateLog(schema, log).final.fields["f2"] ?? [];
+        expect(f2.map((g) => [g.value, g.by?.event])).toEqual([["1", 71]]);
+      }
       // The event table: the other direction is built in, as the random samples seldom reach it.
       // #31 is a candidate against #21 and taken; a later deletion of #11's source, or of #21's
       // (then #31 is no candidate and gives its own value), leaves the take giving 5 or the value
@@ -1558,34 +1631,46 @@ describe.each(both)("%s table", (_, schema, state) => {
       }) as LogEntry;
     let fixed = false;
     let fixedLanded = false;
-    check(
-      { hit: () => (fixed = true) },
-      [
-        write(10, "1", "S1", g("11-03", "11-11")),
-        write(20, "3", "S2", g("11-09", "11-20"), { seen: 10, acknowledge: ["overwrite"] }),
-        write(30, "5", "S3", g("11-15", "11-18"), { seen: 20, acknowledge: ["overwrite"] }),
-        {
-          kind: "write",
-          op: 60,
-          event: 61,
-          seen: 10,
-          valid: g("11-03", null),
-          fields: { f2: { value: "1", sources: ["S6"], explicit: true } },
-        } as LogEntry,
-        {
-          kind: "resolve",
-          op: 100,
-          event: 101,
-          decision: "take_candidate",
-          candidates: [61],
-          take: 61,
-          unit: "f2",
-        },
-        { kind: "deletion", op: 110, id: "pi_1", sources: ["S1"] },
-      ],
-      { hit: () => (fixedLanded = true) },
-    );
+    const reaching: LogEntry[] = [
+      write(10, "1", "S1", g("11-03", "11-11")),
+      write(20, "3", "S2", g("11-09", "11-20"), { seen: 10, acknowledge: ["overwrite"] }),
+      write(30, "5", "S3", g("11-15", "11-18"), { seen: 20, acknowledge: ["overwrite"] }),
+      {
+        kind: "write",
+        op: 60,
+        event: 61,
+        seen: 10,
+        valid: g("11-03", null),
+        fields: { f2: { value: "1", sources: ["S6"], explicit: true } },
+      } as LogEntry,
+      {
+        kind: "resolve",
+        op: 100,
+        event: 101,
+        decision: "take_candidate",
+        candidates: [61],
+        take: 61,
+        unit: "f2",
+      },
+      { kind: "deletion", op: 110, id: "pi_1", sources: ["S1"] },
+    ];
+    check({ hit: () => (fixed = true) }, reaching, { hit: () => (fixedLanded = true) });
     expect({ fixedSampleReachesTheCheck: fixed }).toEqual({ fixedSampleReachesTheCheck: true });
+    // Leaving out what is carried from the item's candidates does not leave out a write that is
+    // not: an evaluator whose take also gives the value where #31 (outside O, its own value) gives
+    // 5 makes the check fail.
+    const wrong: typeof evaluateLog = (sch, l, o) => {
+      const r = evaluateLog(sch, l, o);
+      if (!l.some((e) => e.kind === "resolve" && e.decision === "take_candidate")) return r;
+      const f2 = (r.final.fields["f2"] ?? []).map((g) => ({
+        ...g,
+        by: { event: 101, target: "f2" as FieldId, k: 0 },
+      }));
+      return { ...r, final: { ...r.final, fields: { ...r.final.fields, f2 } } };
+    };
+    expect(() => check({ hit() {} }, reaching, { hit() {} }, wrong)).toThrow(
+      /expected \{ f: 'f2', at:/,
+    );
     // The other direction on the same sample: where no write outside O gives the value, the take
     // gives it.
     expect({ fixedSampleLands: fixedLanded }).toEqual({ fixedSampleLands: true });
