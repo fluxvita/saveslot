@@ -117,6 +117,8 @@ function latestBlocks(rec: Recorded, key: string, alsoSkip?: string): Block[] {
     const h = hist[i] as HistoryEntry;
     if (done.has(h.k)) continue;
     if (h.dropped || rec.cancelled.has(h.by) || h.by === alsoSkip) continue;
+    // Removed by a deletion carried out since (its list of positions): not readable.
+    if (rec.removed.has(`${key}#${i}`)) continue;
     out.set(h.k, { k: h.k, valid: h.valid });
     done.add(h.k);
   }
@@ -191,7 +193,12 @@ interface Recorded {
   /** The cancellation that judged each put-back candidate: its corroboration is judged as of it. */
   readonly rejudgedAt: Map<string, OpNumber>;
   /** Deletion confirmations and cancellations, with where they changed each field's value. */
-  readonly external: { op: OpNumber; changed: Map<FieldId, IvSet>; changedEntity: boolean }[];
+  readonly external: External[];
+  /**
+   * Interval blocks removed by a deletion carried out (`execute`), as `<event>/<target>#<index in
+   * history>`: what its list of positions held, by the approximation of `removedBy`.
+   */
+  readonly removed: Set<string>;
 }
 
 function emptyRecorded(): Recorded {
@@ -199,6 +206,7 @@ function emptyRecorded(): Recorded {
     judged: new Set(),
     writeTime: new Map(),
     history: new Map(),
+    removed: new Set(),
     cancelled: new Set(),
     revertRecords: new Map(),
     revertStatus: new Map(),
@@ -224,7 +232,7 @@ const INF = Number.MAX_SAFE_INTEGER;
  * How often original items of one (event, target) landed in one new item and merged (09 §5.7):
  * for occurrence checks in tests only.
  */
-export const segmentStats = { merged: 0 };
+export const segmentStats = { merged: 0, removed: 0, reused: 0 };
 const NO_VALUE = "novalue";
 
 const refKey = (r: { event: Seq; target: Target; k: number }) => `${r.event}/${r.target}/${r.k}`;
@@ -593,9 +601,28 @@ class Replay {
    * before it still counting as the candidate a resolution took or kept (`kOf`).
    */
   writeTimeStatusAt(event: Seq, target: Target, valid: IvSet): Status | undefined {
-    const base = this.rec.writeTime.get(etKey(event, target));
+    const key = etKey(event, target);
+    const base = this.rec.writeTime.get(key);
     if (base === undefined) return undefined;
-    const hit = base.filter((b) => !isEmpty(intersect(b.valid, valid)));
+    // The status is the write's own (its status blocks go only with its own sources). The
+    // interval of an item's write-time block is not to be trusted once a contribution giving one
+    // of its ends is in the deleted set (pending or carried out, R431): then it is read from the
+    // block as last given. Approximated by ends: an end neither the write's own (its start, its
+    // explicit ends) nor an end of any item of this replay that may give it.
+    const latest = latestBlocks(this.rec, key);
+    const own = this.items.filter((x) => etKey(x.event, x.target) === key);
+    const ownEnds = new Set(
+      own.flatMap((x) => [...(x.from !== null ? [x.from] : []), ...x.explicitEnds]),
+    );
+    const others = [...this.items, ...this.shadows].filter(
+      (x) => etKey(x.event, x.target) !== key && mayGiveEnd(x, target, this.schema.required),
+    );
+    const at = (b: { k: number; valid: IvSet }) => {
+      const ends = b.valid.flatMap((v) => [v.from, v.to]).filter((q): q is Point => q !== null);
+      const lost = ends.some((q) => !ownEnds.has(q) && !others.some((x) => endsAt(x, q)));
+      return lost ? (latest.find((l) => l.k === b.k)?.valid ?? b.valid) : b.valid;
+    };
+    const hit = base.filter((b) => !isEmpty(intersect(at(b), valid)));
     const pool = hit.length > 0 ? hit : base;
     if (pool.some((b) => b.status === "candidate")) return "candidate";
     if (pool.some((b) => b.status === "awaiting")) return "awaiting";
@@ -613,11 +640,20 @@ class Replay {
    */
   assignIndices(event: Seq, target: Target, fresh: Item[]): Item[] {
     fresh.sort((a, b) => ((a.valid[0]?.from ?? "") < (b.valid[0]?.from ?? "") ? -1 : 1));
-    const base = latestBlocks(this.rec, etKey(event, target)).sort((a, b) => a.k - b.k);
-    const writeTime = this.rec.writeTime.get(etKey(event, target)) ?? [];
+    const key = etKey(event, target);
+    const base = latestBlocks(this.rec, key).sort((a, b) => a.k - b.k);
+    const writeTime = this.rec.writeTime.get(key) ?? [];
+    const hist = this.rec.history.get(key) ?? [];
+    // The write-time block, unless a deletion carried out removed it: then the block as last
+    // given, as for an index a deletion gave (09 §5.7).
+    const writeTimeOf = (k: number): IvSet | undefined => {
+      const i = hist.findIndex((h) => h.by === "write" && h.k === k);
+      if (i >= 0 && this.rec.removed.has(`${key}#${i}`)) return undefined;
+      return writeTime.find((w) => w.k === k)?.valid;
+    };
     const landing = new Map<Item, { k: number; valid: IvSet }[]>();
     for (const b of base) {
-      const at = writeTime.find((w) => w.k === b.k)?.valid ?? b.valid;
+      const at = writeTimeOf(b.k) ?? b.valid;
       const hit = fresh.find((it) => !isEmpty(intersect(it.valid, at)));
       if (hit !== undefined) landing.set(hit, [...(landing.get(hit) ?? []), b]);
     }
@@ -626,8 +662,29 @@ class Replay {
       if (originals.length > 1) segmentStats.merged++;
       it.k = originals[0]?.k ?? -1;
     }
-    let next = Math.max(-1, ...base.map((b) => b.k)) + 1;
-    for (const it of fresh) if (it.k < 0) it.k = next++;
+    // An original index with no readable block left (every block of it removed by deletions
+    // carried out; restated as dropped, now a contribution again) takes its number back, by
+    // start, before new numbers are given.
+    const readable = new Set(base.map((b) => b.k));
+    const back = [
+      ...new Set(
+        hist
+          .filter(
+            (h, i) =>
+              !h.dropped && !this.rec.cancelled.has(h.by) && this.rec.removed.has(`${key}#${i}`),
+          )
+          .map((h) => h.k),
+      ),
+    ]
+      .filter((k) => !readable.has(k))
+      .sort((a, b) => a - b);
+    let next = Math.max(-1, ...base.map((b) => b.k), ...back) + 1;
+    for (const it of fresh) {
+      if (it.k >= 0) continue;
+      const k = back.shift();
+      if (k !== undefined) segmentStats.reused++;
+      it.k = k ?? next++;
+    }
     return fresh;
   }
 
@@ -733,10 +790,26 @@ class Replay {
 
   /** Where deletion events after `seen` and up to `cur` changed the value of `f`. */
   externalChanges(f: FieldId, seen: number, cur: number): IvSet[] {
+    // Where the event's record of the change on the unit rests on a contribution in the deleted
+    // set (pending or carried out: its blocks are on that deletion's list), the record is not to
+    // be trusted and the event counts as a change over the whole unit (09-references «冲突判据»,
+    // L's interval). By the deleted set, not by whether the deletion was carried out, so that the
+    // result depends on the log and the deleted set only.
     return this.rec.external
       .filter((e) => e.op > seen && e.op <= cur)
-      .map((e) => e.changed.get(f) ?? [])
+      .map((e) => (this.restsOnDeleted(e.deps.get(f)) ? [ALL] : (e.changed.get(f) ?? [])))
       .filter((c) => !isEmpty(c));
+  }
+
+  /**
+   * Whether one of these (event, target) is deleted: in the deleted set of this replay it has no
+   * item (a contribution present when the record was made, absent now). Asked while judging a
+   * later operation, when every earlier operation is in.
+   */
+  restsOnDeleted(deps: ReadonlySet<string> | undefined): boolean {
+    if (deps === undefined || deps.size === 0) return false;
+    const here = new Set([...this.items, ...this.shadows].map((x) => etKey(x.event, x.target)));
+    return [...deps].some((k) => !here.has(k));
   }
 
   /** Whether a revoke over `valid` meets a change in effect since `seen` (conflict criterion). */
@@ -1108,7 +1181,12 @@ class Replay {
     // ver as it was (05-time «用同样的值写»): only items applied after it count.
     return (
       !this.items.some((x) => x.op > seen && x.op < o.op && x.status === "applied") &&
-      !this.rec.external.some((e) => e.op > seen && e.op < o.op && e.changedEntity)
+      !this.rec.external.some(
+        (e) =>
+          e.op > seen &&
+          e.op < o.op &&
+          (e.changedEntity || this.restsOnDeleted(e.deps.get("existence"))),
+      )
     );
   }
 
@@ -2346,6 +2424,140 @@ function supersedes(x: Item, r: Item): boolean {
   return (x.target === r.target && x.content.kind !== "uncovered") || x.content.kind === "revoke";
 }
 
+/**
+ * A deletion event's change as L of the conflict criterion (`externalChange`), with what its
+ * record rests on: by unit (a field, or "existence"), the (event, target) of the contributions its
+ * listed segments rest on (`deps`, see `externalDeps`). A unit resting on a contribution in the
+ * deleted set counts as changed over the whole unit (`restsOnDeleted`).
+ */
+interface External {
+  readonly op: OpNumber;
+  readonly changed: Map<FieldId, IvSet>;
+  readonly changedEntity: boolean;
+  readonly deps: Map<Target, Set<string>>;
+}
+
+/**
+ * Whether item `x` can give a block on `target` an end at a point (05-time «给出挡点的贡献»): an
+ * item on the same field, on existence, or on a required field (at the boundary between a value
+ * and none, a required field's end is the entity's). Every such item counts, both sides, covered
+ * ones too — more than the recorded `deps`, never fewer for the ends.
+ */
+function mayGiveEnd(x: Item, target: string, required: readonly string[]): boolean {
+  return (
+    x.target === target ||
+    x.target === "existence" ||
+    target === "existence" ||
+    required.includes(x.target)
+  );
+}
+
+/** Whether `x` has an interval end at `p`. */
+function endsAt(x: Item, p: Point): boolean {
+  return x.valid.some((v) => (v.from !== null && v.from === p) || (v.to !== null && v.to === p));
+}
+
+/**
+ * The contributions a deletion event's record of its change rests on (`External.deps`, by unit),
+ * in its replay (09 §5.9 `results/<k>/fields/<f>/<j>`: the giver, carried, "and the other
+ * contributions that cut the segment to what it is", the segment listed whole). The segments
+ * listed are those whose value changed and those whose value is the same and given by another
+ * item; for each, its giver and every item that may give one of its ends.
+ */
+function externalDeps(
+  r: Replay,
+  x: External,
+  before: Evaluation,
+  after: Evaluation,
+  required: readonly string[],
+): void {
+  const fields = new Set<string>([...Object.keys(after.fields), ...Object.keys(before.fields)]);
+  for (const f of fields) {
+    const changed = x.changed.get(f as FieldId) ?? [];
+    const was = before.fields[f as FieldId] ?? [];
+    const giverAt = (seg: { valid: IvSet }) =>
+      was.find((w) => covers(w.valid, seg.valid[0] ?? ALL))?.by;
+    const listed = (after.fields[f as FieldId] ?? []).filter((seg) => {
+      if (!isEmpty(intersect(seg.valid, changed))) return true;
+      const b = giverAt(seg);
+      return b === undefined || seg.by === undefined || b.event !== seg.by.event;
+    });
+    if (listed.length === 0 && isEmpty(changed)) continue;
+    const deps = new Set<string>();
+    for (const seg of listed) {
+      if (seg.by !== undefined) deps.add(etKey(seg.by.event, seg.by.target as Target));
+      const ends = seg.valid.flatMap((v) => [v.from, v.to]).filter((q): q is Point => q !== null);
+      for (const i of r.items) {
+        if (mayGiveEnd(i, f, required) && ends.some((q) => endsAt(i, q)))
+          deps.add(etKey(i.event, i.target));
+      }
+    }
+    // Where the value changed over no listed segment (a stretch left without a value), the items
+    // in effect over it.
+    for (const i of r.items) {
+      if (
+        (i.target === f || i.target === "existence") &&
+        effective(i.status) &&
+        !isEmpty(intersect(i.valid, changed))
+      )
+        deps.add(etKey(i.event, i.target));
+    }
+    x.deps.set(f as FieldId, deps);
+  }
+  if (x.changedEntity) {
+    const on = r.items.filter((i) => i.target === "existence" && effective(i.status));
+    x.deps.set("existence", new Set(on.map((i) => etKey(i.event, i.target))));
+  }
+}
+
+/**
+ * What a deletion's list of positions holds among interval blocks (09 §3.5 rule 1): every block
+ * one of whose ends may be given by a contribution this deletion deletes or restates
+ * (`mayGiveEnd`: its field, existence, a required field; other than the item itself). Used for
+ * the indices once it is carried out (09 §5.7); L's interval and the write-time status go by the
+ * deleted set instead (`restsOnDeleted`, `writeTimeStatusAt`).
+ * `affected`: the (event, target) this deletion deletes (present before, absent after) or
+ * restates; the caller takes it to a fixed point with the items restated as they are.
+ *
+ * Approximated by ends, not by the blocks' recorded `deps`: a giver is an item of the replay
+ * before this deletion with an interval end at that point. Two ways it differs from the deps:
+ * - more: an item ending at the point that did not give it (an end the block's own write gave);
+ * - fewer: a giver that gave the end when the block was written and no longer ends there. E.g.
+ *   #21's block ends at 11-10, given by #11; a pending deletion restates #11 to end at 11-08 (the
+ *   block is on that deletion's list, removed only if it is carried out); a second deletion then
+ *   deletes #11: #11 no longer ends at 11-10 in the replay before it, so #21's block is not on
+ *   the second list, where the kernel, reading the deps, lists it.
+ */
+function removedBy(
+  rec: Recorded,
+  prev: Replay,
+  affected: ReadonlySet<string>,
+  by: string,
+  required: readonly string[],
+): { blocks: string[] } {
+  const blocks: string[] = [];
+  for (const [key, hist] of rec.history) {
+    const target = key.slice(key.indexOf("/") + 1);
+    hist.forEach((h, i) => {
+      // Its own blocks (restated by it) are given on the state after it: not on its list.
+      if (h.by === by) return;
+      if (h.dropped || rec.cancelled.has(h.by) || rec.removed.has(`${key}#${i}`)) return;
+      const ends = h.valid.flatMap((v) => [v.from, v.to]).filter((p): p is Point => p !== null);
+      const given = ends.some((p) =>
+        prev.items.some(
+          (x) =>
+            etKey(x.event, x.target) !== key &&
+            mayGiveEnd(x, target, required) &&
+            affected.has(etKey(x.event, x.target)) &&
+            endsAt(x, p),
+        ),
+      );
+      if (given) blocks.push(`${key}#${i}`);
+    });
+  }
+  return { blocks };
+}
+
 interface KnockOn {
   readonly event: Seq;
   readonly target: Target;
@@ -2364,7 +2576,7 @@ function externalChange(
   before: Evaluation,
   after: Evaluation,
   fields: readonly FieldId[],
-): { op: OpNumber; changed: Map<FieldId, IvSet>; changedEntity: boolean } {
+): External {
   const changed = changedRegions(before, after, fields);
   const sig = (ev: Evaluation) =>
     JSON.stringify(
@@ -2377,7 +2589,7 @@ function externalChange(
     [...changed.values()].some((c) => !isEmpty(c)) ||
     sig(before) !== sig(after) ||
     before.exists !== after.exists;
-  return { op, changed, changedEntity };
+  return { op, changed, changedEntity, deps: new Map() };
 }
 
 /** The value of `f` on segment `seg` as an evaluation shows it, as a comparable token. */
@@ -2438,8 +2650,16 @@ export function evaluateLog(
   const ops: Op[] = [];
   const pending = new Map<
     string,
-    { op: OpNumber; sources: readonly SourceKey[]; before: Replay; beforeState: Evaluation }
+    {
+      op: OpNumber;
+      sources: readonly SourceKey[];
+      before: Replay;
+      beforeState: Evaluation;
+      removes?: { blocks: string[] };
+    }
   >();
+  // Deletions carried out (`execute`): deleted for good, no longer pending or cancellable.
+  const executed = new Map<string, readonly SourceKey[]>();
   const steps: LogStep[] = [];
   // Every deletion confirmed, with the candidates and awaiting items in an item just before it and
   // the operation that cancelled it, if any: whether a write fell while a candidate was taken out
@@ -2470,7 +2690,11 @@ export function evaluateLog(
         c.pendingBefore.has(key),
     );
   };
-  const deletedNow = () => new Set<SourceKey>([...pending.values()].flatMap((d) => [...d.sources]));
+  const deletedNow = () =>
+    new Set<SourceKey>([
+      ...[...pending.values()].flatMap((d) => [...d.sources]),
+      ...[...executed.values()].flatMap((x) => [...x]),
+    ]);
   // Revert statuses are decided one by one in operation order and never judged again (09 §5.7,
   // 05-time «高影响写入»): a replay runs the operations in order, so deciding revert n sees the
   // earlier reverts by their decided status, and judges n itself as in effect (its write-backs
@@ -2495,8 +2719,56 @@ export function evaluateLog(
       confirmed.push({ op: e.op, pendingBefore: pendingKeys(prevState) });
       const r = replay(deletedNow());
       const state = r.result();
-      rec.external.push(externalChange(e.op, prevState, state, fieldIds(r)));
+      const change = externalChange(e.op, prevState, state, fieldIds(r));
+      externalDeps(r, change, prevState, state, schema.required);
       r.recordLatest(e.id);
+      // What its list of positions would remove when carried out, and (09 §5.9 «哪些项要重述»
+      // rule 2) the items whose block as last given is among them and still contributions:
+      // restated as they are, so that a block stays readable after it is carried out.
+      const after = new Set(r.items.map((x) => etKey(x.event, x.target)));
+      const affected = new Set<string>();
+      for (const x of prev.items) {
+        const key = etKey(x.event, x.target);
+        if (!after.has(key)) affected.add(key);
+      }
+      for (const [key, hist] of rec.history) if (hist.some((h) => h.by === e.id)) affected.add(key);
+      // To a fixed point (09 §3.5 rule 1 with §5.9 rule 2): an item restated as it is because its
+      // block is on the list is restated, so a block resting on it is on the list too.
+      let removes = removedBy(rec, prev, affected, e.id, schema.required);
+      for (let round = 0; ; round++) {
+        if (round > rec.history.size + 1) throw new Error("removal list: no fixed point");
+        const going = new Set(removes.blocks);
+        let grew = false;
+        for (const x of r.items) {
+          const key = etKey(x.event, x.target);
+          const hist = rec.history.get(key) ?? [];
+          let last = -1;
+          for (let i = hist.length - 1; i >= 0; i--) {
+            const h = hist[i] as HistoryEntry;
+            if (
+              h.k !== x.k ||
+              h.dropped ||
+              rec.cancelled.has(h.by) ||
+              rec.removed.has(`${key}#${i}`)
+            )
+              continue;
+            last = i;
+            break;
+          }
+          if (last >= 0 && going.has(`${key}#${last}`) && hist[last]?.by !== e.id) {
+            rec.history.set(key, [...hist, { k: x.k, valid: x.valid, by: e.id }]);
+            if (!affected.has(key)) {
+              affected.add(key);
+              grew = true;
+            }
+          }
+        }
+        if (!grew) break;
+        removes = removedBy(rec, prev, affected, e.id, schema.required);
+      }
+      rec.external.push(change);
+      const d = pending.get(e.id);
+      if (d !== undefined) d.removes = removes;
       steps.push({ entry: e, refused: false, state });
       prev = r;
       prevState = state;
@@ -2544,7 +2816,9 @@ export function evaluateLog(
       if (c !== undefined) c.cancelledAt = e.op;
       const r = replay(deletedNow());
       const state = r.result();
-      rec.external.push(externalChange(e.op, prevState, state, fieldIds(r)));
+      const change = externalChange(e.op, prevState, state, fieldIds(r));
+      externalDeps(r, change, prevState, state, schema.required);
+      rec.external.push(change);
       r.recordLatest("cancel", e.id);
       // Writes whose judgement changed because of the writes kept in effect: this replay
       // against the same replay without them.
@@ -2593,6 +2867,21 @@ export function evaluateLog(
       });
       prev = r;
       prevState = state;
+      continue;
+    }
+    if (e.kind === "execute") {
+      // Carried out at expiry: what its list of positions holds is removed; the state is the
+      // same. Not pending (nor cancellable) any more; still deleted.
+      const d = pending.get(e.id);
+      if (d === undefined) {
+        steps.push({ entry: e, refused: true, state: prevState });
+        continue;
+      }
+      pending.delete(e.id);
+      executed.set(e.id, d.sources);
+      for (const b of d.removes?.blocks ?? []) rec.removed.add(b);
+      if ((d.removes?.blocks.length ?? 0) > 0) segmentStats.removed++;
+      steps.push({ entry: e, refused: false, state: prevState });
       continue;
     }
     if (refused(e, deleted)) {
@@ -2693,9 +2982,9 @@ export function evaluateLog(
     for (const x of forced) rec.keptEffective.add(etKey(x.event, x.target));
     for (const e of superseded) rec.keptSuperseded.add(e);
     for (const [op, keys] of decidedAs) rec.decidedItems.set(op, new Set(keys));
-    return { steps, final: replay(deletedNow()).result() };
+    return { steps, final: replay(deletedNow()).result(), removed: [...rec.removed].sort() };
   }
-  return { steps, final: prevState };
+  return { steps, final: prevState, removed: [...rec.removed].sort() };
 }
 
 /**

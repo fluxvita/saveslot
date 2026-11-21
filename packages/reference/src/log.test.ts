@@ -4475,3 +4475,208 @@ describe("the protection unit: a write on a target, every item in effect when wr
     ]);
   });
 });
+
+describe("a deletion carried out at expiry (03-deletion «到期物理删除»; 09 §3.5, §5.7)", () => {
+  const open: ToParam = { mode: "open" };
+  const next: ToParam = { mode: "next_change" };
+  const until = (md: string): ToParam => ({ mode: "given", value: d(md) });
+  const w2 = (
+    op: number,
+    v: string,
+    src: string,
+    from: string,
+    to: ToParam,
+    seen: number,
+    explicit = false,
+  ): WriteOp => ({
+    kind: "write",
+    op,
+    event: op + 1,
+    seen,
+    valid: { from: { mode: "given", value: d(from) }, to },
+    fields: { f2: { value: v, sources: [src], ...(explicit ? { explicit } : {}) } },
+    acknowledge: ["overwrite"],
+  });
+  const exec = (op: number, id: string): LogEntry => ({ kind: "execute", op, id });
+  // #51 (3 from 11-01, explicit, f3 too) is cut into stretches by the writes around 11-05 and
+  // 11-07; #61 undoes it (as in «an original item lands by its write-time block»).
+  const S: LogEntry[] = [
+    w2(10, "3", "S1", "10-01", open, 0),
+    w2(20, "1", "S3", "11-05", next, 10),
+    w2(30, "1", "S4", "11-05", until("11-07"), 20, true),
+    w2(40, "3", "S5", "11-05", next, 30, true),
+    withF3(w2(50, "3", "S2", "11-01", open, 10, true)),
+    { kind: "undo", op: 60, event: 61, target: 50, seen: 50, acknowledge: ["overwrite"] },
+    w2(70, "1", "S3", "11-07", open, 60),
+    w2(80, "3", "S4", "11-05", next, 70),
+  ];
+
+  it("carrying a deletion out changes nothing now; it can no longer be cancelled", () => {
+    const log = [...S, del(81, "pi_a", ["S5"])];
+    const before = evaluateLog(STATE, log);
+    const run = evaluateLog(STATE, [
+      ...log,
+      exec(82, "pi_a"),
+      cancel(83, "pi_a"),
+      exec(84, "pi_a"),
+      exec(85, "pi_none"),
+    ]);
+    expect(run.steps.slice(-4).map((x) => [x.entry.kind, x.refused])).toEqual([
+      ["execute", false],
+      ["cancel", true],
+      ["execute", true],
+      ["execute", true],
+    ]);
+    expect(run.final).toEqual(before.final);
+  });
+
+  it("a later deletion after one carried out: the same values; indices follow the blocks left readable", () => {
+    // Deleting S5 restates #51's k1 as [11-05, ∞); carried out, the write-time block of k1
+    // ([11-07, ∞), its start given by #41, which S5 deletes) is removed, and k1 lands by the block
+    // as last given. Deleting S3 then: the values are those of both deletions pending, k1 on
+    // [11-05, 11-07) where it was on [11-07, ∞) (09 §5.7: an index lands by its block as last
+    // given once its write-time block is removed).
+    const pendingBoth = evaluateLog(STATE, [
+      ...S,
+      del(81, "a", ["S5"]),
+      del(82, "b", ["S3"]),
+    ]).final;
+    const carried = evaluateLog(STATE, [
+      ...S,
+      del(81, "a", ["S5"]),
+      exec(82, "a"),
+      del(83, "b", ["S3"]),
+    ]).final;
+    expect(stateWithoutIndices(carried)).toEqual(stateWithoutIndices(pendingBoth));
+    expect(items(pendingBoth, 51).filter((x) => x.startsWith("f2/"))).toEqual([
+      'f2/0 corroborated [11-01, 11-05) "3"',
+      'f2/1 corroborated [11-07, inf) "3"',
+      'f2/2 candidate [11-05, 11-07) "3"',
+    ]);
+    expect(items(carried, 51).filter((x) => x.startsWith("f2/"))).toEqual([
+      'f2/0 corroborated [11-01, 11-05) "3"',
+      'f2/1 candidate [11-05, 11-07) "3"',
+      'f2/2 corroborated [11-07, inf) "3"',
+    ]);
+    expect(tl(carried)).toEqual(['[10-01, 11-05) "3"', '[11-05, 11-07) "1"', '[11-07, inf) "3"']);
+  });
+
+  it("a deletion's own restatements are not on its list: readable after it is carried out", () => {
+    // Both carried out, then S4 deleted: #51 is one stretch again and keeps index 0. Were the
+    // blocks the deletions gave removed with them, no original index would land and it would
+    // take a new one.
+    const ev = evaluateLog(STATE, [
+      ...S,
+      del(81, "a", ["S5"]),
+      exec(82, "a"),
+      del(83, "b", ["S3"]),
+      exec(84, "b"),
+      del(85, "c", ["S4"]),
+    ]).final;
+    expect(items(ev, 51).filter((x) => x.startsWith("f2/") && !x.endsWith("dropped"))).toEqual([
+      'f2/0 corroborated [11-01, inf) "3"',
+    ]);
+  });
+
+  it("L's record rests on what cuts its segment too: a cutter deleted, pending or carried out", () => {
+    // #11 1 from 10-01; #16 4 from 11-01; #18 1 on [11-03, 11-05) cuts #16; #21 2 on [11-01,
+    // 11-03). d1 (S2) changes f2 on [11-01, 11-03) from 2 to 4, a segment given by #16 and cut at
+    // 11-03 by #18 (09 §5.9: the segment's deps include what cuts it). d2 deletes S6 (#18):
+    // d1's record rests on it, and counts over the whole unit, pending or carried out.
+    const L: LogEntry[] = [
+      w2(10, "1", "S1", "10-01", open, 0),
+      w2(15, "4", "S5", "11-01", open, 10),
+      w2(17, "1", "S6", "11-03", until("11-05"), 15),
+      w2(20, "2", "S2", "11-01", until("11-03"), 17),
+      del(30, "d1", ["S2"]),
+      del(40, "d2", ["S6"]),
+    ];
+    const W = w2(50, "5", "SW", "11-10", open, 20);
+    // By the deleted set, carried out or not (09-references «冲突判据»): the same either way.
+    for (const log of [
+      [...L, W],
+      [...L, exec(45, "d2"), W],
+    ]) {
+      expect(items(evaluateLog(STATE, log).final, 51)).toEqual(['f2/0 candidate [11-10, inf) "5"']);
+    }
+  });
+
+  it("an end given by a required field's item: the block on another field is removed", () => {
+    // f3's default end at 11-10 is where the entity has no value any more: #11's end on the
+    // required f2 gives it (05-time «给出挡点的贡献»). Deleting S1 and carrying it out removes
+    // #21's block on f3.
+    const w = (
+      op: number,
+      f: string,
+      v: string,
+      src: string,
+      from: string,
+      to: ToParam,
+      seen: number,
+    ) =>
+      ({
+        kind: "write",
+        op,
+        event: op + 1,
+        seen,
+        valid: { from: { mode: "given", value: d(from) }, to },
+        fields: { [f]: { value: v, sources: [src] } },
+        acknowledge: ["overwrite"],
+      }) as WriteOp;
+    const run = evaluateLog(STATE, [
+      w(10, "f2", "1", "S1", "10-01", until("11-10"), 0),
+      w(12, "f2", "2", "S0", "11-20", open, 10),
+      w(20, "f3", "x", "S2", "10-05", next, 12),
+      del(30, "a", ["S1"]),
+      exec(31, "a"),
+    ]);
+    expect(run.removed.filter((b) => b.startsWith("21/f3#"))).not.toEqual([]);
+  });
+
+  it("removal to a fixed point: a block resting on an item restated as it is goes too", () => {
+    // #17 (SY) ends where #13 (SX) gives it; #19 (SZ) ends where #17 starts. Deleting SX restates
+    // #17 as it is (its block is on the list), so #19's block, resting on #17, is on the list too.
+    const w = (op: number, v: string, src: string, from: string, to: ToParam, seen: number) =>
+      ({
+        kind: "write",
+        op,
+        event: op + 1,
+        seen,
+        valid: { from: { mode: "given", value: d(from) }, to },
+        fields: { f2: { value: v, sources: [src] } },
+        acknowledge: ["overwrite"],
+      }) as WriteOp;
+    const run = evaluateLog(STATE, [
+      w(10, "1", "S0", "10-01", open, 0),
+      w(12, "2", "SX", "10-10", until("11-01"), 10),
+      w(14, "3", "SW", "11-01", until("11-10"), 12),
+      w(16, "4", "SY", "10-20", next, 14),
+      w(18, "5", "SZ", "10-15", next, 16),
+      del(30, "a", ["SX"]),
+      exec(31, "a"),
+    ]);
+    expect(run.removed).toEqual(expect.arrayContaining(["19/f2#0"]));
+  });
+
+  it("L's record resting on a deleted contribution: a change over the whole unit, pending or carried out", () => {
+    // d1 (S2) changes f2 on [11-01, 11-03) from 2 to 4, resting on #16. d2 deletes S5 (#16): d1's
+    // record rests on a contribution in the deleted set and is not to be trusted; it counts as a
+    // change over the whole unit, and a write on [11-10, ∞) on the version before d1 is a
+    // candidate, whether d2 is pending or carried out.
+    const L: LogEntry[] = [
+      w2(10, "1", "S1", "10-01", open, 0),
+      w2(15, "4", "S5", "11-01", until("11-03"), 10),
+      w2(20, "2", "S2", "11-01", until("11-03"), 15),
+      del(30, "d1", ["S2"]),
+      del(40, "d2", ["S5"]),
+    ];
+    const W = w2(50, "5", "SW", "11-10", open, 20);
+    // By the deleted set, carried out or not (09-references «冲突判据»): the same either way.
+    for (const log of [
+      [...L, W],
+      [...L, exec(45, "d2"), W],
+    ]) {
+      expect(items(evaluateLog(STATE, log).final, 51)).toEqual(['f2/0 candidate [11-10, inf) "5"']);
+    }
+  });
+});

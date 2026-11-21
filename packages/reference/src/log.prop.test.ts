@@ -67,6 +67,7 @@ type Step =
   | { t: "undoRevert"; back: number }
   | { t: "delete"; src: string[] }
   | { t: "cancel"; back: number }
+  | { t: "execute"; back: number }
   /** Resolve the first open conflict item (by field), if any. */
   | { t: "resolve"; decision: "keep_effective" | "take_candidate" | "take_previous" }
   /** Confirm or reject the first open awaiting item, if any. */
@@ -134,6 +135,10 @@ const step: fc.Arbitrary<Step> = fc.oneof(
   {
     weight: 2,
     arbitrary: fc.record({ t: fc.constant("cancel" as const), back: fc.nat({ max: 1 }) }),
+  },
+  {
+    weight: 1,
+    arbitrary: fc.record({ t: fc.constant("execute" as const), back: fc.nat({ max: 1 }) }),
   },
   { weight: 4, arbitrary: decisions },
 );
@@ -274,6 +279,13 @@ function extend(
       if (target !== undefined) out.push({ kind: "undo", op, event: op + 1, target });
     } else if (s.t === "delete") {
       out.push({ kind: "deletion", op, id: `pi_${op}`, sources: s.src });
+    } else if (s.t === "execute") {
+      // Carried out at expiry: one of the latest deletions (refused when not pending).
+      const id = deletions()[deletions().length - 1 - s.back];
+      if (id !== undefined) {
+        out.push({ kind: "execute", op, id });
+        counts.executeSteps++;
+      }
     } else if (s.t === "cancel") {
       const id = deletions()[deletions().length - 1 - s.back];
       if (id !== undefined && !decisionInGracePeriod(out, id)) out.push({ kind: "cancel", op, id });
@@ -449,6 +461,23 @@ const withTwoSets = (schema: TableSchema, from: fc.Arbitrary<Step[]> = steps) =>
       redo: fc.boolean(),
     });
   });
+
+/**
+ * Random steps, a deletion carried out right after it is confirmed, then writes: writes judged on
+ * what the execution left (an earlier deletion's record of its change possibly removed).
+ */
+const executeThenWriteSteps: fc.Arbitrary<Step[]> = fc
+  .tuple(
+    fc.array(step, { minLength: 1, maxLength: 5 }),
+    fc.subarray(SOURCES, { minLength: 1, maxLength: 2 }),
+    fc.array(write, { minLength: 1, maxLength: 3 }),
+  )
+  .map(([before, src, after]) => [
+    ...before,
+    { t: "delete" as const, src },
+    { t: "execute" as const, back: 0 },
+    ...after,
+  ]);
 
 /** Writes, then an undo of one of them: a revert with write-back items for deletions to restate. */
 const revertSteps: fc.Arbitrary<Step[]> = fc
@@ -637,6 +666,23 @@ const etKey = (x: { event: number; target: string }) => `${x.event}/${x.target}`
  * delete the set again later; and all sets deleted at once. Undefined when fewer than two sets
  * are left non-empty. Each order takes at most seven operation numbers after `last`.
  */
+/**
+ * The same deletion events with each deletion never cancelled among them carried out right after
+ * it is confirmed (`execute`), numbered again in order from the first.
+ */
+function withExecutions(ds: readonly LogEntry[]): LogEntry[] {
+  const cancelled = new Set(ds.filter((e) => e.kind === "cancel").map((e) => e.id));
+  const first = ds[0]?.op ?? 0;
+  const out: LogEntry[] = [];
+  for (const e of ds) {
+    out.push({ ...e, op: first + out.length } as LogEntry);
+    if (e.kind === "deletion" && !cancelled.has(e.id)) {
+      out.push({ kind: "execute", op: first + out.length, id: e.id });
+    }
+  }
+  return out;
+}
+
 function deletionOrders(
   log: readonly LogEntry[],
   sets: { a: string[]; b: string[]; c: string[]; redo: boolean },
@@ -733,6 +779,10 @@ const counts = {
   threeDeletions: 0,
   redo: 0,
   extended: 0,
+  executeSteps: 0,
+  prefixLogs: 0,
+  executeThenWrite: 0,
+  executedOrders: 0,
   revokes: 0,
   twoFieldWrites: 0,
   resolvesOnExistence: 0,
@@ -1069,12 +1119,20 @@ describe.each(both)("%s table", (_, schema, state) => {
     const merges = new Hits(0.2);
     fc.assert(
       fc.property(
-        fc.oneof(withTwoSets(schema), cutSets),
+        fc.oneof(withTwoSets(schema), cutSets, withTwoSets(schema, executeThenWriteSteps)),
         hits.track(
           merges.track((sets) => {
             const mergedBefore = segmentStats.merged;
             const log = extend(schema, [], sets.st, 10);
-            const pending = pendingSources(evaluateLog(schema, log));
+            const before = evaluateLog(schema, log);
+            const pending = pendingSources(before);
+            // A deletion carried out with an accepted write after it, in the log before the
+            // deletion orders: the later write judged on what the execution left (its L).
+            const accepted = before.steps.filter((st) => !st.refused).map((st) => st.entry.kind);
+            const firstExec = accepted.indexOf("execute");
+            counts.prefixLogs++;
+            if (firstExec >= 0 && accepted.slice(firstExec + 1).includes("write"))
+              counts.executeThenWrite++;
             const d = deletionOrders(log, sets, pending);
             fc.pre(d !== undefined);
             const [p0, p1, p2] = d.parts;
@@ -1087,6 +1145,15 @@ describe.each(both)("%s table", (_, schema, state) => {
             if (segmentStats.merged > mergedBefore) merges.hit();
             counts.mergePath += segmentStats.merged - mergedBefore;
             for (const y of rest) expect(y).toEqual(x);
+            // Carrying the deletions out as they come (03-deletion «到期物理删除»: the state
+            // does not change; a later deletion's replay reads what is left) gives the same
+            // values; indices may differ (09 §5.7: they follow the blocks left readable).
+            for (const ds of d.orders) {
+              const run = evaluateLog(schema, [...log, ...withExecutions(ds)]);
+              if (run.steps.some((st) => st.entry.kind === "execute" && !st.refused))
+                counts.executedOrders++;
+              expect(stateWithoutIndices(run.final)).toEqual(x);
+            }
           }),
         ),
       ),
@@ -1094,6 +1161,93 @@ describe.each(both)("%s table", (_, schema, state) => {
     );
     hits.check();
     if (state) merges.check();
+  });
+
+  it("successive deletions, carried out or not: an earlier write judged on a record resting on a deleted contribution (seed -516159584)", () => {
+    // #71 (f2 1, f3 b) is a candidate on f3 when written, judged again in every replay. An
+    // earlier deletion's record of its change rests on a contribution S5 deletes; whether that
+    // deletion is carried out or not, #71 is judged on the same (09-references «冲突判据»: by the
+    // deleted set). Carried out, it used to be judged otherwise.
+    if (!state) return;
+    const sets = {
+      st: [
+        {
+          t: "write",
+          f: "f2",
+          v: "1",
+          src: "S3",
+          from: 0,
+          to: "open",
+          lag: 0,
+          explicit: false,
+          ack: false,
+        },
+        { t: "delete", src: ["S2"] },
+        { t: "resend", back: 0, src: "S2", explicit: true },
+        {
+          t: "write",
+          f: "f2",
+          v: "1",
+          src: "S1",
+          from: 0,
+          to: 0,
+          lag: 0,
+          explicit: false,
+          ack: false,
+          also: "b",
+        },
+        {
+          t: "write",
+          f: "f2",
+          v: "1",
+          src: "S5",
+          from: 0,
+          to: "open",
+          lag: 0,
+          explicit: false,
+          ack: false,
+        },
+        { t: "cancel", back: 0 },
+        {
+          t: "write",
+          f: "f2",
+          v: "1",
+          src: "S1",
+          from: 0,
+          to: "open",
+          lag: 1,
+          explicit: false,
+          ack: false,
+          also: "b",
+        },
+        {
+          t: "write",
+          f: "f2",
+          v: "1",
+          src: "S4",
+          from: 0,
+          to: "open",
+          lag: 0,
+          explicit: false,
+          ack: false,
+        },
+      ] as Step[],
+      a: ["S5"],
+      b: ["S3"],
+      c: [] as string[],
+      redo: false,
+    };
+    const log = extend(schema, [], sets.st, 10);
+    const d = deletionOrders(log, sets, pendingSources(evaluateLog(schema, log)));
+    expect(d).toBeDefined();
+    const orders = d?.orders ?? [];
+    const [x] = orders.map((ds) => stateWithoutIndices(evaluateLog(schema, [...log, ...ds]).final));
+    for (const ds of orders) {
+      expect(stateWithoutIndices(evaluateLog(schema, [...log, ...ds]).final)).toEqual(x);
+      expect(
+        stateWithoutIndices(evaluateLog(schema, [...log, ...withExecutions(ds)]).final),
+      ).toEqual(x);
+    }
   });
 
   it("successive deletions: the same further operations after either order give the same result", () => {
@@ -2808,6 +2962,17 @@ it("order independence covers three deletions and deleting again after a cancell
 
 it("further operations after both deletion orders include undos and decisions", () => {
   expect(counts.furtherOps).toBeGreaterThan(0);
+});
+
+it("deletions carried out occur in the sampled logs, and remove interval blocks", () => {
+  // Executions in the random steps (refused when the deletion is not pending) and in every order
+  // of the order-independence property; removals of blocks counted by the evaluator.
+  expect(counts.executeSteps).toBeGreaterThan(0);
+  expect(counts.executedOrders).toBeGreaterThan(0);
+  expect(segmentStats.removed).toBeGreaterThan(0);
+  // A deletion carried out with a write after it, in the log before the deletion orders: about
+  // 0.18 of those logs (a third of the samples are drawn on that shape).
+  expect(counts.executeThenWrite / counts.prefixLogs).toBeGreaterThan(0.08);
 });
 
 it("the generator reaches revokes, two-field writes and resolutions on existence", () => {

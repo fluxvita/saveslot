@@ -32,6 +32,7 @@
 // | `Evaluation.fields` / `gaps`  | `results/<k>/fields/<f>/<j>` / `results/<k>/existence` (09 §5.9)     |
 // | `DeletionEvent`               | `deletion.confirmed` (`target.deletion`, `target.sources`)          |
 // | `CancelEvent`                 | `deletion.cancelled` (`target.deletion`)                            |
+// | `ExecuteEvent`                | `deletion.executed` (`target.deletion`)                             |
 // | `ItemResult.closed`           | the item is resolved, rejected, or `kept_superseded` (09 §5.9)      |
 //
 // Not modelled in this first version: source keys (`external_key`), conflict groups
@@ -173,8 +174,19 @@ export interface CancelEvent {
   readonly id: string;
 }
 
+/**
+ * A pending deletion carried out at its expiry (`deletion.executed`, 09 §5.9): the content on its
+ * list of positions is removed for good. The state does not change; it can no longer be
+ * cancelled; a later deletion's replay reads what is left (03-deletion «到期物理删除»).
+ */
+export interface ExecuteEvent {
+  readonly kind: "execute";
+  readonly op: OpNumber;
+  readonly id: string;
+}
+
 /** One entry of the log of a row or entity: an operation, or a deletion event. */
-export type LogEntry = Op | DeletionEvent | CancelEvent;
+export type LogEntry = Op | DeletionEvent | CancelEvent | ExecuteEvent;
 
 /** An item reference: `{event, field, k}` or `{event, existence: k}` (09 §5.7). */
 export interface ItemRef {
@@ -333,4 +345,9 @@ export interface LogStep {
 export interface LogEvaluation {
   readonly steps: readonly LogStep[];
   readonly final: Evaluation;
+  /**
+   * Interval blocks removed by the deletions carried out (`execute`), as
+   * `<event>/<target>#<index in the item's history>`, sorted: what their lists of positions held.
+   */
+  readonly removed: readonly string[];
 }
