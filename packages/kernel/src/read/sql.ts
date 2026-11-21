@@ -57,7 +57,14 @@ import {
 import { type ReadTx, type SqlValue, sqlStateOf } from "../store/ports.ts";
 import { formerVersions } from "./former.ts";
 import { digest } from "./page.ts";
-import { logPosition, readFlagsOf, readTableFlags, restoreCount, rowFacts } from "./select.ts";
+import {
+  changedPremiseCovers,
+  logPosition,
+  readFlagsOf,
+  readTableFlags,
+  restoreCount,
+  rowFacts,
+} from "./select.ts";
 import { type Visibility, visibleSlots } from "./slots.ts";
 import { callOf, convertParam, type Scalar } from "./sql-values.ts";
 import { type InputMarks, invalid, notImplemented, ReadError, type ReadWarning } from "./types.ts";
@@ -375,6 +382,9 @@ async function recordedOf(
     flagged: new Set<string>(),
   };
   const items = new Set<ItemId>();
+  // Rows whose values rest on a changed premise, once each (`table/row`), on any field or segment
+  // in effect, as the other kinds are counted here.
+  const premised = new Set<string>();
   const mark = (table: string, row: string, flags: readonly { flag: string; item: ItemId }[]) => {
     for (const f of flags) {
       if (f.flag === "disputed" || f.flag === "awaiting" || f.flag === "flagged") {
@@ -390,6 +400,8 @@ async function recordedOf(
       coarse.push(id);
       if (t.table.kind === "base") {
         for (const [row, flags] of await readTableFlags(tx, id)) mark(id, row, flags);
+        for (const row of (await changedPremiseCovers(tx, t.table as CompiledBaseTable)).keys())
+          premised.add(`${id}/${row}`);
       }
       continue;
     }
@@ -407,6 +419,8 @@ async function recordedOf(
       });
     }
     for (const [row, flags] of await readFlagsOf(tx, id, ids)) mark(id, row, flags);
+    for (const row of (await changedPremiseCovers(tx, t.table as CompiledBaseTable, ids)).keys())
+      premised.add(`${id}/${row}`);
   }
   return {
     rows,
@@ -415,7 +429,7 @@ async function recordedOf(
       disputed: flagged.disputed.size,
       awaiting: flagged.awaiting.size,
       flagged: flagged.flagged.size,
-      premise_changed: 0,
+      premise_changed: premised.size,
       items: [...items].sort().slice(0, 10),
     },
   };

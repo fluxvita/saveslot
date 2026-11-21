@@ -8,6 +8,8 @@
 //   reason, current again once they hold it again. A declaration made late starts at the version
 //   it saw: its state when written is that walk up to the operation before it.
 // - a current declaration's range holds the value seen (checked again directly).
+// - `sql`'s `marks_summary.premise_changed` over tasks, read row by row and read whole, is the
+//   number of task rows the oracle finds marked.
 // - each task row's timeline gives premises on exactly the ops that sent `premises` for it (a
 //   declaring write, a restatement, a clearing: an entry each, several of one request each its
 //   own), as many as sent; read a page of one at a time, the same entries.
@@ -24,6 +26,7 @@ import {
   createTenant,
   eventsOf,
   history,
+  loadRsql,
   readBufferOf,
 } from "@fluxvita/saveslot-kernel";
 import {
@@ -33,6 +36,7 @@ import {
   premiseFanInLimitForTests,
   queryInTx,
   resolveInTx,
+  sqlInTx,
   writeInTx,
 } from "@fluxvita/saveslot-kernel/testing";
 import fc from "fast-check";
@@ -207,6 +211,7 @@ const release = async (name: string, date: string) =>
   };
 
 beforeAll(async () => {
+  await loadRsql();
   s = await openReusable("saveslot-premises-prop-");
   acceptPremisesForTests(true);
 }, T);
@@ -572,6 +577,25 @@ async function expectedMarks(carriedTo?: { n: number }): Promise<Map<string, str
   }
   return out;
 }
+
+/** Tasks read row by row, and read whole (a subquery reading the outer query's columns). */
+const ONE_BY_ONE = "SELECT title FROM tasks";
+const WHOLE =
+  "SELECT title FROM tasks t WHERE EXISTS (SELECT 1 FROM releases r WHERE r.name <> t.title)";
+/** `sql`'s `marks_summary.premise_changed` of `statement`. */
+const summed = async (statement: string): Promise<unknown> =>
+  (
+    (await s.store.read((tx) =>
+      sqlInTx(tx, {
+        actor: USER as never,
+        task: null,
+        now: now() as never,
+        visibility: { kind: "all" },
+        params: { sql: statement },
+        read: "rd_0000000000000000" as never,
+      }),
+    )) as unknown as { result: { marks_summary: Record<string, unknown> } }
+  ).result.marks_summary["premise_changed"];
 
 /** The changed premises each task carries as a query reads it, in `expectedMarks`'s terms. */
 async function readMarks(): Promise<Map<string, string[]>> {
@@ -1160,6 +1184,11 @@ describe("premises over random histories (in force: state, since, reason as the 
               marks: Object.fromEntries(want),
             });
             stats.marked += want.size;
+            // sql over tasks, row by row and the table read whole: the rows the oracle marks.
+            for (const statement of [ONE_BY_ONE, WHOLE])
+              expect({ after: r.seq, statement, premise_changed: await summed(statement) }).toEqual(
+                { after: r.seq, statement, premise_changed: want.size },
+              );
             // The receipt's premise_affected: the rows a mark changed at this operation now shows
             // on, by reason; the rows that showed one before whose declaration is current now.
             type Mark = [number, string, number, string, string[]];

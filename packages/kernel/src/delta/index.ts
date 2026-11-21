@@ -1,6 +1,7 @@
 export { targetDelta } from "./delta.ts";
 export { type PremiseDiff, type PremiseScope, premiseDelta } from "./premise.ts";
 export {
+  anyPremise,
   type DeclaredPremise,
   declKey,
   type PremiseCover,

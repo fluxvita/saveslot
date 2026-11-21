@@ -67,6 +67,7 @@ import {
 import type { QueryInput, QueryOutput } from "./query-io.ts";
 import { cmpKeys, type KeySpec, keyType, keyValue, spansMeet } from "./rows.ts";
 import {
+  changedPremiseCovers,
   conditionSql,
   INSTANT_TEXT,
   logPosition,
@@ -411,6 +412,7 @@ export async function queryDerived(
               : evaluatedAt,
         }
       : undefined,
+    read,
   );
   const result = {
     table: qualified,
@@ -498,6 +500,8 @@ async function segmentsAt(
  * The input marks of the partitions with these keys (JCS of the group key): the rule's members
  * falling in them, their open items' flags on the fields the rule depends on in the base table
  * (or on the row's existence), each kind counted once per row; the items by ID, at most 10.
+ * `premise_changed`: the members whose value of a field the rule depends on rests on a changed
+ * premise (as a read of the base table marks them, `changedPremiseCovers`), once per row.
  */
 export async function inputMarks(
   tx: ReadTx,
@@ -505,6 +509,7 @@ export async function inputMarks(
   t: CompiledDerivedTable,
   keys: readonly string[],
   stateAt?: { readonly table: CompiledBaseTable; readonly point: string },
+  base?: CompiledBaseTable,
 ): Promise<Map<string, InputMarks>> {
   const out = new Map<string, InputMarks>();
   if (keys.length === 0) return out;
@@ -527,25 +532,43 @@ export async function inputMarks(
     if (kept.length === 0) flags.delete(row);
     else flags.set(row, kept);
   }
+  // Changed premises: those covering a field the rule depends on (a premise covers no existence).
+  const premises = new Map<string, { from: string | null; to: string | null }[]>();
+  if (base !== undefined) {
+    for (const [row, cs] of await changedPremiseCovers(tx, base)) {
+      const kept = cs.filter((c) => depends.has(c.field as never));
+      if (kept.length > 0) premises.set(row, kept);
+    }
+  }
   // A rule reading a state table with no time condition reads each entity's segment holding the
-  // evaluation point: a flag counts only when its spans meet that segment, as a read of the base
-  // table at that point marks it (04-contract §7).
-  if (stateAt !== undefined && flags.size > 0) {
-    const segments = await segmentsAt(tx, stateAt.table, [...flags.keys()], stateAt.point);
+  // evaluation point: a flag or premise counts only when its spans meet that segment, as a read of
+  // the base table at that point marks it (04-contract §7).
+  if (stateAt !== undefined && (flags.size > 0 || premises.size > 0)) {
+    const segments = await segmentsAt(
+      tx,
+      stateAt.table,
+      [...new Set([...flags.keys(), ...premises.keys()])],
+      stateAt.point,
+    );
     for (const [row, fs] of flags) {
       const seg = segments.get(row);
       const kept = seg === undefined ? [] : fs.filter((f) => spansMeet(f.spans, seg.from, seg.to));
       if (kept.length === 0) flags.delete(row);
       else flags.set(row, kept);
     }
+    for (const [row, cs] of premises) {
+      const seg = segments.get(row);
+      if (seg === undefined || !cs.some((c) => spansMeet([c], seg.from, seg.to)))
+        premises.delete(row);
+    }
   }
-  if (flags.size === 0) {
+  if (flags.size === 0 && premises.size === 0) {
     for (const k of keys) out.set(k, zero());
     return out;
   }
   const wanted = new Set(keys);
   const rowsOf = new Map<string, string[]>();
-  const q = e.membersAmong([...flags.keys()]);
+  const q = e.membersAmong([...new Set([...flags.keys(), ...premises.keys()])]);
   for (const r of (await tx.query<Record<string, unknown>>(q.sql, q.params as never)).rows) {
     let m: { readonly key: readonly unknown[]; readonly row: string };
     try {
@@ -566,6 +589,8 @@ export async function inputMarks(
   for (const k of keys) {
     const counts = { disputed: 0, awaiting: 0, flagged: 0 };
     const items = new Set<string>();
+    // Once per row, however many changed premises it rests on.
+    const premiseRows = new Set((rowsOf.get(k) ?? []).filter((row) => premises.has(row)));
     for (const row of rowsOf.get(k) ?? []) {
       const seen = new Set<string>();
       for (const f of flags.get(row) ?? []) {
@@ -578,7 +603,7 @@ export async function inputMarks(
     }
     out.set(k, {
       ...counts,
-      premise_changed: 0,
+      premise_changed: premiseRows.size,
       items: [...items].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).slice(0, 10) as never,
     });
   }

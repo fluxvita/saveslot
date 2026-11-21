@@ -50,6 +50,14 @@ export interface PremisesOn {
   readonly decls: ReadonlyMap<string, DeclaredPremise>;
 }
 
+/** Whether any declaration is in force anywhere (one statement, stopping at the first edge). */
+export async function anyPremise(tx: ReadTx): Promise<boolean> {
+  const any = await tx.query<{ x: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM premise_edges WHERE target <> '*') AS x",
+  );
+  return any.rows[0]?.x === true;
+}
+
 /** The key of a declaration. */
 export const declKey = (op: unknown, opIndex: unknown, index: unknown): string =>
   `${op}/${opIndex}/${index}`;
@@ -67,16 +75,19 @@ export async function premisesOn(
   tx: ReadTx,
   t: CompiledBaseTable,
   ids: readonly string[],
-  o: { readonly decode: Decode; readonly at?: number; readonly changed?: boolean },
+  o: {
+    readonly decode: Decode;
+    readonly at?: number;
+    readonly changed?: boolean;
+    /** The caller has just asked whether there is any declaration (`anyPremise`): not again. */
+    readonly checked?: boolean;
+  },
 ): Promise<PremisesOn> {
   const covers = new Map<string, PremiseCover[]>();
   const decls = new Map<string, DeclaredPremise>();
   const unique = [...new Set(ids)];
   if (unique.length === 0) return { covers, decls };
-  const any = await tx.query<{ x: boolean }>(
-    "SELECT EXISTS (SELECT 1 FROM premise_edges WHERE target <> '*') AS x",
-  );
-  if (any.rows[0]?.x !== true) return { covers, decls };
+  if (o.checked !== true && !(await anyPremise(tx))) return { covers, decls };
   // Now: every cell not yet closed (no operation number reaches the end of the log).
   const at = o.at ?? Number.MAX_SAFE_INTEGER;
   const cells = await cellsOfRows(tx, t, unique, at);

@@ -12,7 +12,7 @@ import type {
   FieldValue,
   ItemId,
 } from "@fluxvita/saveslot-contract-core";
-import { type PremisesOn, premisesOn } from "../delta/index.ts";
+import { anyPremise, type PremisesOn, premisesOn } from "../delta/index.ts";
 import { actorsNow } from "../pending/index.ts";
 import { decodeColumns as decode } from "../request/index.ts";
 import { column, INSTANT_TEXT, physical, selectOf } from "../store/layout.ts";
@@ -75,6 +75,47 @@ export async function premiseFacts(
     [...p.decls.values()].map((d) => d.declarer),
   );
   return { ...p, actors };
+}
+
+/**
+ * The rows of table `t` (among `ids`; none given: all its rows not revoked, as a read of the whole
+ * table reads them) whose values now rest on a changed premise, with what each changed declaration
+ * covers there (02-integrity «标记出现在哪一行»): the same reading as a row's marks
+ * (`premiseFacts`), for the counts of derived rows and of `sql` (04-contract §7). The candidates
+ * are the rows the changed declarations were made on (`premise_decls.dep_row`): a declaration
+ * covers only items of its own row (its write's, and the row's own in effect at the version it
+ * saw; a taken candidate and a write-back stay on the row). A fixed number of statements, whatever
+ * the number of rows; one when the tenant has no declaration at all.
+ */
+export async function changedPremiseCovers(
+  tx: ReadTx,
+  t: CompiledBaseTable,
+  ids?: readonly string[],
+): Promise<PremisesOn["covers"]> {
+  // No declaration in the tenant (the usual case): one statement that stops at the first edge.
+  if (ids?.length === 0 || !(await anyPremise(tx))) return new Map();
+  // `state = 'changed'` only narrows the candidates (premisesOn keeps changed ones only): dropping
+  // it is an equivalent mutation. Not `SELECT DISTINCT`: the sql tests take those for the
+  // statements recording what a caller's statement read.
+  const r = await tx.query<{ dep_row: string }>(
+    `SELECT dep_row FROM premise_decls WHERE dep_table = $1 AND state = 'changed'
+       ${ids !== undefined ? "AND dep_row = ANY($2)" : ""} GROUP BY dep_row`,
+    (ids !== undefined ? [t.id, [...ids]] : [t.id]) as never,
+  );
+  let rows = r.rows.map((x) => x.dep_row);
+  if (ids === undefined && rows.length > 0) {
+    // A revoked row is not read: a state table has no segment of it, the others mark it.
+    const { business } = physical(t);
+    const live = await tx.query<{ id: string }>(
+      t.time.type === "state"
+        ? `SELECT entity_id AS id FROM ${business} WHERE entity_id = ANY($1) GROUP BY entity_id`
+        : `SELECT row_id AS id FROM ${business} WHERE row_id = ANY($1) AND NOT revoked`,
+      [rows] as never,
+    );
+    rows = live.rows.map((x) => x.id);
+  }
+  if (rows.length === 0) return new Map();
+  return (await premisesOn(tx, t, rows, { decode, changed: true, checked: true })).covers;
 }
 
 /** A business time span `[from, to)`; `to` null: it runs on. */
