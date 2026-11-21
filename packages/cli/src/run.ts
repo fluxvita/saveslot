@@ -42,6 +42,7 @@ import {
   issueChecked,
   onPath,
   parseScopes,
+  parseSlots,
   revokeQuietly,
   writes,
 } from "./connect.ts";
@@ -53,6 +54,7 @@ import {
   connectionLine,
   connectionsList,
   hostSetup,
+  rangeLine,
   renamedLines,
   revokedLines,
   selfcheckLine,
@@ -472,10 +474,10 @@ async function connectCommand(
   const connectionName = ownString(o, "name");
   if (connectionName === undefined || connectionName.trim() === "")
     throw new UsageError(TEXTS.nameMissing);
-  if (ownString(o, "slots") !== undefined) throw new UsageError(TEXTS.slotsNotYet);
   const apply = ownFlag(o, "apply");
   if (apply && !APPLIES.has(host)) throw new UsageError(TEXTS.applyNotHere);
   const scopes = parseScopes(ownList(o, "scope"));
+  const slots = parseSlots(ownString(o, "slots"));
   // The path the host starts saveslot by: checked before anything is issued.
   const entry = host === "http" ? "" : await entryPath(io.entry);
   const notes: Line[] = entryMayGo(entry) ? [[words(TEXTS.entryMayGo)]] : [];
@@ -488,7 +490,11 @@ async function connectCommand(
   if (!setupShowable(host, entry, socketOf(o), exe)) throw new Failed(TEXTS.setupUnshowable, 1);
 
   const session = await client();
-  const params = { name: connectionName, ...(scopes !== undefined ? { scopes } : {}) };
+  const params = {
+    name: connectionName,
+    ...(scopes !== undefined ? { scopes } : {}),
+    ...(slots !== undefined ? { slots } : {}),
+  };
   // With --apply, the one way a host is given an instance (as `setup` does); else issued only.
   const added = apply
     ? await issueAndAdd({
@@ -532,7 +538,7 @@ async function connectCommand(
       exit: 1,
     };
   }
-  const { token, slots, more, issued } = checked;
+  const { token, more, issued } = checked;
   const revoke = () => revokeQuietly(session, connection.id);
   // The token's only copy is in the output: lost with it, the instance is no one's.
   const lost = async (): Promise<Line[]> =>
@@ -542,10 +548,15 @@ async function connectCommand(
 
   const head: Line[] = [
     t`${words(TEXTS.issued)} ${connectionLine(connection)}`,
-    selfcheckLine(slots, more),
-    ...(createsSlots(scopes) ? [] : [[words(TEXTS.noSchemaHint(writes(scopes)))]]),
+    rangeLine(connection),
+    selfcheckLine(checked.slots, more),
+    // A range of some slots creates none, whatever its scopes (04-contract §12): adding schema
+    // would not let it, so no hint that says so.
+    ...(slots !== undefined || createsSlots(scopes)
+      ? []
+      : [[words(TEXTS.noSchemaHint(writes(scopes)))]]),
   ];
-  const selfcheck = { slots, ...(more ? { more: true } : {}) };
+  const selfcheck = { slots: checked.slots, ...(more ? { more: true } : {}) };
   if (!apply) {
     return {
       json: { ...issued, selfcheck },

@@ -33,6 +33,26 @@ const scopesOf = (x: unknown) =>
 export const connectionLine = (c: Connection): Line =>
   t`${untrusted(String(c.name))} (${id(String(c.id))}) · ${words(TEXTS.scopeWord)} ${scopesOf(c.scopes)}`;
 
+/**
+ * A connection's slot range: no range given is every slot. A range given is a range even when
+ * empty: every slot in it was removed, and the connection sees none (04-contract-types §8.1
+ * `Connection.slots`).
+ */
+function rangeOf(c: Record<string, unknown>): Line {
+  const slots = arr(c["slots"]);
+  return !Object.hasOwn(c, "slots")
+    ? [words(TEXTS.allSlots)]
+    : slots.length === 0
+      ? [words(TEXTS.noSlotsLeft)]
+      : join(
+          slots.map((s) => [name(String(obj(s)["slot"] ?? ""))]),
+          t`,`,
+        );
+}
+
+/** The issued connection's slot range, under its line (06 §3.2). */
+export const rangeLine = (c: Connection): Line => t`  ${words(TEXTS.rangeWord)} ${rangeOf(obj(c))}`;
+
 /** The self-check's line: how many slots the new token read. */
 export const selfcheckLine = (slots: number, more: boolean): Line =>
   t`${words(TEXTS.selfcheckPassed)} ${num(slots)}${more ? t` ${words(TEXTS.selfcheckMore)}` : []} ${words(TEXTS.selfcheckSlots)}`;
@@ -111,17 +131,7 @@ export function connectionsList(r: unknown): Line[] {
   const out: Line[] = [t`${num(cs.length)} ${words(TEXTS.connectionsCount)}`];
   for (const c of cs) {
     const e = obj(c);
-    // No range given: every slot. A range given is a range even when empty: every slot in it was
-    // removed, and the connection sees none (04-contract-types §8.1 `Connection.slots`).
-    const slots = arr(e["slots"]);
-    const range = !Object.hasOwn(e, "slots")
-      ? [words(TEXTS.allSlots)]
-      : slots.length === 0
-        ? [words(TEXTS.noSlotsLeft)]
-        : join(
-            slots.map((s) => [name(String(obj(s)["slot"] ?? ""))]),
-            t`,`,
-          );
+    const range = rangeOf(e);
     const state =
       e["state"] === "revoked"
         ? t`  ${words(TEXTS.revokedAt)} ${time(String(e["revoked_at"] ?? ""))}`

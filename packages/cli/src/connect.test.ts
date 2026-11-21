@@ -273,6 +273,41 @@ describe("connect: issued, self-checked, the token on stdout once", () => {
     expect(r.err).toBe(`${TEXTS.tokenOnce}\n`);
   });
 
+  it("--slots: the names sent as given; the range under the issued line; no hint about schema", async () => {
+    const slots = [
+      { slot: "health", slot_id: "sl_01JF0000000000000000000001" },
+      { slot: "ledger", slot_id: "sl_01JF0000000000000000000002" },
+    ];
+    service({ issue: [200, { ...ISSUED, scopes: ["saveslot.read", "saveslot.write"], slots }] });
+    const r = await cli(["connect", "http", "--name", "a", "--slots", "health, Ledger"]);
+    expect(r.code).toBe(0);
+    expect(seen[0]?.body).toEqual({ name: "a", slots: ["health", "Ledger"] });
+    expect(r.out).toContain(`\n  ${TEXTS.rangeWord} health,ledger\n`);
+    // Adding schema would not let a range of some slots create one: no hint that says it would.
+    expect(r.out).not.toContain(TEXTS.noSchemaHint(true));
+  });
+
+  it("--slots not given: every slot, said under the issued line", async () => {
+    service();
+    const r = await cli(["connect", "http", "--name", "a"]);
+    expect(r.code).toBe(0);
+    expect(seen[0]?.body).toEqual({ name: "a" });
+    expect(r.out).toContain(`\n  ${TEXTS.rangeWord} ${TEXTS.allSlots}\n`);
+  });
+
+  it("--slots naming no slot: the service's not_found, nothing self-checked", async () => {
+    service({
+      issue: [
+        404,
+        { error: { code: "not_found", message: "no such slot", reason: "slot", param: "slots" } },
+      ],
+    });
+    const r = await cli(["connect", "http", "--name", "a", "--slots", "nowhere"]);
+    expect(r.code).not.toBe(0);
+    expect(seen.map((x) => x.method)).toEqual(["POST"]);
+    expect(r.out).toBe("");
+  });
+
   it("--scope given more than once: each taken (it takes more than one)", async () => {
     service();
     const r = await cli([
@@ -382,10 +417,11 @@ describe("connect: refused before anything is issued", () => {
     ["two hosts", ["connect", "codex", "cursor", "--name", "a"], TEXTS.connectArgs],
     ["no name", ["connect", "codex"], TEXTS.nameMissing],
     ["an empty name", ["connect", "codex", "--name", " "], TEXTS.nameMissing],
+    ["--slots empty", ["connect", "codex", "--name", "a", "--slots", " "], TEXTS.slotsBad],
     [
-      "--slots (not in this version)",
-      ["connect", "codex", "--name", "a", "--slots", "health"],
-      TEXTS.slotsNotYet,
+      "--slots with an empty name in it",
+      ["connect", "codex", "--name", "a", "--slots", "health,,ledger"],
+      TEXTS.slotsBad,
     ],
     [
       "--apply for a host without a command",

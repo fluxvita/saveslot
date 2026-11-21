@@ -135,6 +135,17 @@ export function parseScopes(given: readonly string[]): Scope[] | undefined {
 }
 
 /**
+ * `--slots` (06 §3.2): slot names, comma separated; not given is every slot, later ones included.
+ * The names are sent as given: whether each is a slot is the service's answer (`not_found`).
+ */
+export function parseSlots(given: string | undefined): string[] | undefined {
+  if (given === undefined) return undefined;
+  const items = given.split(",").map((x) => x.trim());
+  if (items.some((x) => x === "")) throw new UsageError(TEXTS.slotsBad);
+  return items;
+}
+
+/**
  * The path the host is to start saveslot by: the one this program was started by, absolute,
  * links kept (06 §3.2). Refused (exit 1, nothing issued) when it is missing, no file, not
  * executable, or not showable as it is in the command printed.

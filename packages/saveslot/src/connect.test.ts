@@ -455,6 +455,39 @@ describe("the saveslot executable", () => {
   });
 });
 
+describe("connect --slots: a range of some slots (06-cli §3.2)", () => {
+  it("the self-check reads only the range; the range said and listed; a slot it does not name: 4, nothing issued", async () => {
+    expect((await saveslot(["slot", "create", "runs", "--template", "running"])).code).toBe(0);
+    const r = await saveslot([
+      "connect",
+      "http",
+      "--name",
+      "band · connector",
+      "--slots",
+      "HEALTH",
+    ]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`\n  ${TEXTS.rangeWord} health\n`);
+    expect(r.out).toContain(`${TEXTS.selfcheckPassed} 1 ${TEXTS.selfcheckSlots}`);
+    const listed = await saveslot(["connections", "list"]);
+    expect(listed.out).toMatch(
+      /「band · connector」 {2}ci_[0-9A-Z]{26} {2}saveslot\.read saveslot\.write saveslot\.schema {2}health {2}/,
+    );
+
+    const nowhere = await saveslot([
+      "connect",
+      "http",
+      "--name",
+      "other",
+      "--slots",
+      "health,nowhere",
+    ]);
+    expect([nowhere.code, nowhere.out]).toEqual([4, ""]);
+    expect(nowhere.err).toContain("not_found");
+    expect((await saveslot(["connections", "list"])).out).not.toContain("other");
+  });
+});
+
 describe("afterwards", () => {
   it("no file under the home holds any token shown or given (nor a 12-character piece of one)", () => {
     expect(tokens.size).toBeGreaterThan(5);
