@@ -1488,10 +1488,12 @@ describe("logs whose items once depended on the order of deletions", () => {
   });
 
   it("an original item lands by its write-time block: the undo covers the same items in every order", () => {
-    // #51's k0 [11-01, 11-07) and k1 [11-07, ∞): #61 lists (#51, f2). Deleting S5 first restates
-    // k1 as [11-05, ∞); after S3 is deleted too, [11-05, 11-07) takes effect under a new index,
-    // covered by #61 and taken back by it, as in the other orders. Values: [11-05, 11-07) is 1,
-    // given by #61.
+    // #51's k0 [11-01, 11-07) a corroboration and k1 [11-07, ∞) a candidate when written: not
+    // every item in effect, so not protected (03-deletion «删除结果的定义», the protection unit);
+    // #61 lists (#51, f2). After S5 and S3 are deleted, in every order, #51 is judged in the replay:
+    // [11-01, 11-05) and [11-07, ∞) are still the same as the version it saw (corroborations), and
+    // [11-05, 11-07), which #31 changed after that version, is a candidate under a new index.
+    // Values: [11-05, 11-07) is 1, given by #31.
     const log: LogEntry[] = [
       w2(10, "3", "S1", "10-01", open, 0),
       w2(20, "1", "S3", "11-05", { mode: "next_change" }, 10),
@@ -1508,11 +1510,25 @@ describe("logs whose items once depended on the order of deletions", () => {
       [
         'f2/0 corroborated [11-01, 11-05) "3"',
         'f2/1 corroborated [11-07, inf) "3"',
-        'f2/2 applied [11-05, 11-07) "3"',
+        'f2/2 candidate [11-05, 11-07) "3"',
       ],
     );
     const ev = evaluateLog(STATE, [...log, del(81, "pi_0", ["S5"]), del(82, "pi_1", ["S3"])]).final;
     expect(tl(ev)).toEqual(['[10-01, 11-05) "3"', '[11-05, 11-07) "1"', '[11-07, inf) "3"']);
+    // The candidate stretch is within #61's record (by (event, target), an index a deletion gave
+    // included): #51 was undone. Deleting S4 too (#31 and #81 gone), #51 is one item over
+    // [11-01, ∞), registered as taken back by #61 there: it gives no value; 3 is #11's.
+    const more = evaluateLog(STATE, [
+      ...log,
+      del(81, "pi_0", ["S5"]),
+      del(82, "pi_1", ["S3"]),
+      del(83, "pi_2", ["S4"]),
+    ]).final;
+    const own = more.items.filter((x) => x.event === 51 && x.target === "f2");
+    expect(
+      own.filter((x) => x.status !== "dropped").map((x) => [x.k, x.status, x.registrations]),
+    ).toEqual([[0, "corroborated", [{ byOp: 60, valid: [{ from: d("11-01"), to: null }] }]]]);
+    expect(tl(more)).toEqual(['[10-01, inf) "3"']);
   });
 
   it("an item whose start a deletion moved merges like the others", () => {
@@ -3382,10 +3398,11 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
     expect(items(ev, 21)).toEqual(["existence/0 applied [11-01, 11-10) revoke"]);
   });
 
-  it("a filled revoke a deletion lengthens covers the take on what it gained only", () => {
-    // #21 revokes from 11-01 to the next change, #13's start at 11-10: the take of #36 fills
-    // [11-01, 11-10). Deleting S7 removes #13: #21 runs on to ∞; the part it gained, which the
-    // user did not see, covers the take; the part the take filled stays 6.
+  it("a filled revoke a deletion lengthens covers the take nowhere", () => {
+    // #21 revokes from 11-01 to the next change, #13's start at 11-10: the take of #36 fills it.
+    // Deleting S7 removes #13: #21 runs on to ∞. A revoke the take filled covers it nowhere,
+    // whatever its interval in the replay (03-deletion «搬运的值»): judged by the whole revoke, not
+    // by an interval whose end may come only from deleted content. The take stays 6 to ∞.
     const log: LogEntry[] = [
       w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
       w(12, { f2: ["7", "S7"] }, g("11-10", "open"), { seen: 10, ...ack }),
@@ -3398,7 +3415,7 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
     expect(tl(evaluateLog(STATE, log).final)).toEqual(['[10-01, inf) "6"']);
     const ev = evaluateLog(STATE, [...log, del(50, "pi_7", ["S7"])]).final;
     expect(items(ev, 21)).toEqual(["existence/0 applied [11-01, inf) revoke"]);
-    expect(tl(ev)).toEqual(['[10-01, 11-10) "6"']);
+    expect(tl(ev)).toEqual(['[10-01, inf) "6"']);
   });
 
   it("existence item in a replay: a write outside O that a deletion puts in effect covers a taken revoke", () => {
@@ -4302,5 +4319,159 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
     });
     expect(tl(run.final)).toEqual(['[10-01, 11-01) "1"', '[11-01, inf) "7"']);
     expect(tl(run.final, "f3")).toEqual(['[10-01, inf) "a"']);
+  });
+});
+
+describe("the protection unit: a write on a target, every item in effect when written (03-deletion «删除结果的定义»)", () => {
+  const ack = { acknowledge: ["overwrite"] as ["overwrite"] };
+  const g = (from: string, to: string): WriteOp["valid"] => ({
+    from: { mode: "given", value: d(from) },
+    to: to === "open" ? { mode: "open" } : { mode: "given", value: d(to) },
+  });
+  const w = (
+    op: number,
+    v: string,
+    src: string,
+    from: string,
+    to: string,
+    extra: Partial<WriteOp> & { explicit?: boolean } = {},
+  ): WriteOp => {
+    const { explicit, ...rest } = extra;
+    return {
+      kind: "write",
+      op,
+      event: op + 1,
+      valid: g(from, to),
+      fields: { f2: { value: v, sources: [src], ...(explicit ? { explicit: true } : {}) } },
+      ...rest,
+    } as WriteOp;
+  };
+  const res = (op: number, decision: "keep_effective" | "take_previous", c: number[]): LogEntry =>
+    ({ kind: "resolve", op, event: op + 1, decision, candidates: c, unit: "f2" }) as LogEntry;
+  const kept = (run: ReturnType<typeof evaluateLog>) => run.steps.at(-1)?.keptEffective ?? [];
+
+  // M: #41 (1 over [11-01, 11-09), on the version of 10, pointed at evidence) is cut into a
+  // candidate (against #21), a corroboration [11-03, 11-07) and a candidate (against #31): not
+  // every item in effect, so not protected. #13 (5 on [11-03, 11-07)) is a candidate against #11.
+  const M: LogEntry[] = [
+    w(10, "1", "S1", "10-01", "open", { seen: 0 }),
+    w(12, "5", "S5", "11-03", "11-07", { seen: 0 }),
+    w(20, "2", "S2", "11-01", "11-03", { seen: 10, ...ack }),
+    w(30, "2", "S3", "11-07", "11-09", { seen: 20, ...ack }),
+    w(40, "1", "S4", "11-01", "11-09", { seen: 10, explicit: true }),
+  ];
+
+  it("a write cut into a corroboration and candidates, its base deleted: one candidate, in its own item", () => {
+    expect(items(evaluateLog(STATE, M).final, 41)).toEqual([
+      'f2/0 candidate [11-01, 11-03) "1"',
+      'f2/1 corroborated [11-03, 11-07) "1"',
+      'f2/2 candidate [11-07, 11-09) "1"',
+    ]);
+    // Deleting S1 puts #13 in effect: every stretch of #41 was changed after its version; one
+    // candidate, open (in the item it was a candidate of), the corroboration no longer keeping 1.
+    const ev = evaluateLog(STATE, [...M, del(50, "pi", ["S1"])]).final;
+    expect(items(ev, 41).filter((x) => !x.endsWith("dropped"))).toEqual([
+      'f2/0 candidate [11-01, 11-09) "1"',
+    ]);
+    expect(ev.items.find((x) => x.event === 41 && x.k === 0)?.closed).toBeUndefined();
+    expect(tl(ev)).toEqual(['[11-01, 11-03) "2"', '[11-03, 11-07) "5"', '[11-07, 11-09) "2"']);
+  });
+
+  it("... its item resolved by a person before: closed by that decision, no new item", () => {
+    const kept = evaluateLog(STATE, [
+      ...M,
+      res(44, "keep_effective", [41]),
+      del(50, "pi", ["S1"]),
+    ]).final;
+    expect(items(kept, 41).filter((x) => !x.endsWith("dropped"))).toEqual([
+      'f2/0 candidate [11-01, 11-09) "1" (closed)',
+    ]);
+    expect(kept.items.find((x) => x.event === 41 && x.k === 0)?.closed).toBe(true);
+    const back = evaluateLog(STATE, [
+      ...M,
+      res(44, "take_previous", [41]),
+      del(50, "pi", ["S1"]),
+    ]).final;
+    expect(back.items.find((x) => x.event === 41 && x.k === 0)?.closed).toBe(true);
+    expect(items(back, 45)).toEqual([
+      "f2/0 applied [11-01, 11-03) no_value",
+      "f2/1 applied [11-07, 11-09) no_value",
+    ]);
+    expect(tl(back)).toEqual(['[11-03, 11-07) "5"']);
+  });
+
+  // K: #41 (9 over [11-01, 11-09), on the version of 10) is a candidate against #21 (S2) and #31
+  // (S3); deleting both puts it in effect. G writes 7 from 11-15 on the version given.
+  const K: LogEntry[] = [
+    w(10, "1", "S1", "10-01", "open", { seen: 0 }),
+    w(20, "2", "S2", "11-01", "11-03", { seen: 10, ...ack }),
+    w(30, "2", "S3", "11-07", "11-09", { seen: 20, ...ack }),
+    w(40, "9", "S4", "11-01", "11-09", { seen: 10 }),
+  ];
+  const G = (op: number, seen: number) => w(op, "7", `SG${op}`, "11-15", "open", { seen, ...ack });
+
+  it("kept in effect: a write after it came wholly into effect took it as a baseline", () => {
+    const run = evaluateLog(STATE, [
+      ...K,
+      del(50, "d1", ["S2"]),
+      del(60, "d2", ["S3"]),
+      G(64, 60),
+      cancel(70, "d2"),
+    ]);
+    expect(kept(run)).toEqual([{ event: 41, target: "f2" }]);
+    expect(items(run.final, 41)).toEqual(['f2/0 applied [11-01, 11-09) "9"']);
+  });
+
+  it("not kept: the baseline write is earlier than the deletion that made it wholly in effect", () => {
+    // Two grace periods overlapping: G is written after d1, before d2; cancelling d2, or d1.
+    for (const id of ["d2", "d1"]) {
+      const run = evaluateLog(STATE, [
+        ...K,
+        del(50, "d1", ["S2"]),
+        G(54, 50),
+        del(60, "d2", ["S3"]),
+        cancel(70, id),
+      ]);
+      expect({ id, kept: kept(run) }).toEqual({ id, kept: [] });
+      expect(items(run.final, 41)).toEqual(['f2/0 candidate [11-01, 11-09) "9"']);
+    }
+  });
+
+  it("not kept: only in part in effect before the cancellation", () => {
+    // #41 (1 over [11-01, 11-07), on the version of 12, pointed at evidence) is a candidate when
+    // written. Deleting S5 makes [11-03, 11-07) the same as the version it saw (a corroboration);
+    // [11-01, 11-03) stays a candidate against #21. G takes the row as its baseline; cancelling
+    // does not keep #41: its candidate part would take effect with nobody deciding it.
+    const run = evaluateLog(STATE, [
+      w(10, "1", "S1", "10-01", "open", { seen: 0 }),
+      w(12, "5", "S5", "11-03", "11-07", { seen: 10, ...ack }),
+      w(20, "2", "S2", "11-01", "11-03", { seen: 12, ...ack }),
+      w(40, "1", "S4", "11-01", "11-07", { seen: 12, explicit: true }),
+      del(50, "d", ["S5"]),
+      G(54, 50),
+      cancel(70, "d"),
+    ]);
+    expect(kept(run)).toEqual([]);
+    expect(items(run.final, 41).filter((x) => !x.endsWith("dropped"))).toEqual([
+      'f2/0 candidate [11-01, 11-07) "1"',
+    ]);
+  });
+
+  it("kept: a write with a corroboration when written, wholly in effect only through the deletions", () => {
+    // M's #41: a corroboration does not protect it (not every item in effect when written), so it
+    // is in the same place as one all candidates: kept when every item is in effect before the
+    // cancellation and the baseline write saw it so.
+    const run = evaluateLog(STATE, [
+      ...M,
+      del(50, "d1", ["S2"]),
+      del(60, "d2", ["S3"]),
+      G(64, 60),
+      cancel(70, "d2"),
+    ]);
+    expect(kept(run)).toEqual([{ event: 41, target: "f2" }]);
+    expect(items(run.final, 41).filter((x) => !x.endsWith("dropped"))).toEqual([
+      'f2/0 corroborated [11-01, 11-07) "1"',
+      'f2/2 applied [11-07, 11-09) "1"',
+    ]);
   });
 });

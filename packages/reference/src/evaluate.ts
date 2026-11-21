@@ -153,11 +153,12 @@ interface Recorded {
   readonly coverSets: Map<OpNumber, RevertEntry[]>;
   /**
    * take_candidate on a field unit, state table: the revokes in effect over its range when it was
-   * judged, by (event, target), with their intervals then. The take filled those holes; in a
-   * replay a revoke outside O covers the take only beyond what is recorded here (deviation (2)).
-   * Bookkeeping here; the kernel records it with the resolution.
+   * judged, by (event, target), and nothing of their intervals (03-deletion «搬运的值»: a filled
+   * revoke is judged as a whole). In a replay a revoke listed here covers the take nowhere; one
+   * outside O not listed covers it wholly. The kernel records it with the resolution
+   * (`take.filled`).
    */
-  readonly takeFilled: Map<OpNumber, Map<string, IvSet>>;
+  readonly takeFilled: Map<OpNumber, Set<string>>;
   /**
    * A person's decision on items, by its operation (the kind is the operation's): for a conflict
    * resolution the (event, target) of the item's candidates as they were when it was judged, on
@@ -253,7 +254,7 @@ class Replay {
   readonly rejectedRevoked = new Set<OpNumber>();
   readonly mergeBases = new Map<OpNumber, { mergeBase: OpNumber }>();
   readonly coverSets = new Map<OpNumber, RevertEntry[]>();
-  readonly takeFilled = new Map<OpNumber, Map<string, IvSet>>();
+  readonly takeFilled = new Map<OpNumber, Set<string>>();
   readonly decidedItems = new Map<OpNumber, Set<string>>();
   /** Candidate fields judged in this replay: whether the conflict met a revoke (see `Recorded`). */
   readonly metRevoke = new Map<string, boolean>();
@@ -564,23 +565,41 @@ class Replay {
   // Recorded judgements (second pass only).
 
   /**
-   * The first pass's status of the items of (event, target) that intersect `valid`. "effective"
-   * is what deviation two protects (03-deletion «删除结果的定义»): in effect at write time,
-   * corroborations included. A write that took effect only through a deletion's recomputation is
-   * not protected; with deletions not interleaved with operations the first pass is the
-   * write-time judgement, so it never counts here. Where a candidate or an awaiting item
-   * intersects, that item was never in effect and is judged again.
+   * The write-time status of (event, target) as a unit, the write on the target (03-deletion
+   * «删除结果的定义» deviation two): "effective" when every item of it was in effect when written,
+   * corroborations included, or it was kept in effect by a cancellation; otherwise the status of
+   * an item not in effect (candidate first, then awaiting), and every item is judged again in the
+   * replay. A write that took effect only through a deletion's recomputation is not protected.
+   * `_valid` is not read: the unit has no interval (`writeTimeStatusAt` asks of a stretch).
    */
-  recordedStatus(event: Seq, target: Target, valid: IvSet): "effective" | Status | undefined {
+  recordedStatus(event: Seq, target: Target, _valid: IvSet): "effective" | Status | undefined {
     if (this.rec.keptEffective.has(etKey(event, target))) return "effective";
+    const base = this.rec.writeTime.get(etKey(event, target));
+    if (base === undefined) return undefined;
+    // The unit is the write on the target, not an interval (03-deletion «删除结果的定义» deviation
+    // two): protected only when every item of it was in effect when written; one that was not
+    // makes the whole of it judged in the replay.
+    const pool = base;
+    if (pool.some((b) => b.status === "candidate")) return "candidate";
+    if (pool.some((b) => b.status === "awaiting")) return "awaiting";
+    if (pool.some((b) => effective(b.status))) return "effective";
+    return undefined;
+  }
+
+  /**
+   * The write-time status of the part of (event, target) intersecting `valid`: whether that part
+   * was a candidate when written. Not deviation two (`recordedStatus` judges that by the unit):
+   * the sameness rule asks it of a stretch, a candidate when written now the same as the value
+   * before it still counting as the candidate a resolution took or kept (`kOf`).
+   */
+  writeTimeStatusAt(event: Seq, target: Target, valid: IvSet): Status | undefined {
     const base = this.rec.writeTime.get(etKey(event, target));
     if (base === undefined) return undefined;
     const hit = base.filter((b) => !isEmpty(intersect(b.valid, valid)));
     const pool = hit.length > 0 ? hit : base;
     if (pool.some((b) => b.status === "candidate")) return "candidate";
     if (pool.some((b) => b.status === "awaiting")) return "awaiting";
-    if (pool.some((b) => effective(b.status))) return "effective";
-    return undefined;
+    return pool.find((b) => effective(b.status))?.status;
   }
 
   /**
@@ -1237,7 +1256,7 @@ class Replay {
       x.status === "candidate" ||
       (x.status === "corroborated" &&
         x.putBack === undefined &&
-        this.recordedStatus(x.event, x.target, x.valid) === "candidate");
+        this.writeTimeStatusAt(x.event, x.target, x.valid) === "candidate");
     const pool = [...this.items, ...this.shadows];
     const recorded = this.rec.decidedItems.get(at) ?? this.decidedItems.get(at);
     if (recorded !== undefined) {
@@ -1285,11 +1304,11 @@ class Replay {
    * The revokes a take_candidate on a field unit filled (see `Recorded.takeFilled`): recorded when
    * it is judged, on the state of the history at that point, then read from the record.
    */
-  filledBy(o: ResolveOp, taken: Item[]): Map<string, IvSet> {
+  filledBy(o: ResolveOp, taken: Item[]): Set<string> {
     const n = o.op;
     const recorded = this.rec.takeFilled.get(n) ?? this.takeFilled.get(n);
     if (recorded !== undefined) return recorded;
-    const out = new Map<string, IvSet>();
+    const out = new Set<string>();
     if (this.isState) {
       const range = union(...taken.map((x) => x.valid));
       for (const x of this.items) {
@@ -1298,8 +1317,7 @@ class Replay {
         if (x.op >= n) continue;
         const valid = subtract(x.valid, this.registeredSet(x, n));
         if (isEmpty(intersect(valid, range))) continue;
-        const key = etKey(x.event, x.target);
-        out.set(key, union(out.get(key) ?? [], valid));
+        out.add(etKey(x.event, x.target));
       }
     }
     this.takeFilled.set(n, out);
@@ -1319,7 +1337,7 @@ class Replay {
     rec: {
       mergeBase: OpNumber;
       cover: Set<string>;
-      filled?: Map<string, IvSet>;
+      filled?: Set<string>;
       restorable?: Map<string, IvSet> | undefined;
     },
     n: OpNumber,
@@ -1327,7 +1345,8 @@ class Replay {
   ): IvSet {
     // A revoke and a field take (deviation (2)): on an event table a revoke is no value item and
     // never covers a field take; on a state table it does not when the take is judged (the take
-    // fills the hole), and in a replay covers it only beyond the holes the take filled then.
+    // fills the hole), and in a replay a revoke the take filled covers it nowhere, one it did not
+    // fill covers it wholly (judged by the revoke, not by an interval).
     const revokeOnField = (x: Item) => taken.target !== "existence" && x.target === "existence";
     const judging = !this.rec.judged.has(n);
     return union(
@@ -1356,7 +1375,10 @@ class Replay {
               rec.cover.has(etKey(y.event, y.target)) &&
               supersedes(y, x),
           );
-          const filled = revokeOnField(x) ? (rec.filled?.get(etKey(x.event, x.target)) ?? []) : [];
+          // A revoke the take filled (listed in its record) covers it nowhere, whatever its
+          // interval in this replay; one not listed covers it wholly (03-deletion «搬运的值»).
+          const filled =
+            revokeOnField(x) && rec.filled?.has(etKey(x.event, x.target)) === true ? [ALL] : [];
           // Removed by a deletion pending when the take was judged and back since: not covering.
           const back = rec.restorable?.get(etKey(x.event, x.target)) ?? [];
           return subtract(
@@ -2385,6 +2407,9 @@ function changedRegions(
   );
 }
 
+/** There is an item, and every item is in effect. */
+const allEffective = (xs: readonly Status[]): boolean => xs.length > 0 && xs.every(effective);
+
 const pendingStatus = (x: { status: string; closed?: true }) =>
   (x.status === "candidate" || x.status === "awaiting") && x.closed === undefined;
 
@@ -2496,13 +2521,17 @@ export function evaluateLog(
         prevState,
         () => replay(deletedNow()),
         (key) => {
-          // The operation from which the write has been in effect without interruption.
+          // The operation from which every item of the write on the target has been in effect
+          // without interruption (the latest such stretch before the cancellation).
           let since: OpNumber = e.op;
           for (let i = steps.length - 1; i >= 0; i--) {
             const st = steps[i];
             if (st === undefined || st.refused) continue;
-            const on = st.state.items.some(
-              (x) => etKey(x.event, x.target) === key && effective(x.status as Status),
+            // The view lists dropped items too: they are no contribution, not counted.
+            const on = allEffective(
+              st.state.items
+                .filter((x) => etKey(x.event, x.target) === key && x.status !== "dropped")
+                .map((x) => x.status as Status),
             );
             if (!on) break;
             since = st.entry.op;
@@ -2780,11 +2809,16 @@ function cancelDeletion(
     const [ev, target] = key.split("/") as [string, Target];
     const event = Number(ev);
     const atWrite = rec.writeTime.get(key) ?? [];
+    // By the unit, the write on the target (03-deletion «撤回与宽限期»): not every item in effect
+    // when written (so not protected by deviation two: a corroboration when written does not
+    // prevent this, it is not protected either), every item in effect before the cancellation,
+    // and not so without this deletion. Kept when, besides, a baseline write saw a version not
+    // earlier than the operation from which every item has been in effect (`effectiveSince`).
     const madeEffective =
       atWrite.length > 0 &&
-      !atWrite.some((x) => effective(x.status)) &&
-      preCancel.statusOf(event, target).some(effective) &&
-      !withoutThis.statusOf(event, target).some(effective);
+      !atWrite.every((x) => effective(x.status)) &&
+      allEffective(preCancel.statusOf(event, target)) &&
+      !allEffective(withoutThis.statusOf(event, target));
     // Writes that took effect because of the deletion go back, unless a write in the grace
     // period took the version they made as its baseline (`kept_effective`): a write on this row
     // or entity, any field, with a ver not before the confirmation, that took effect (at write
