@@ -57,37 +57,12 @@ function head(
   return { header: { type, seq }, blocks, full };
 }
 
-/**
- * The strict parse of the event: its header and every block path pass; the shapes of the deletion
- * blocks themselves are not checked by contract-core yet (`unsupported`, naming only those).
- */
-const DELETION_SHAPES = new Set([
-  "DeletionConfirmedTarget",
-  "DeletionCancelledTarget",
-  "DeletionExecutedTarget",
-  "Positions",
-  "Summary",
-  "ResultTarget",
-  "ResultField",
-  "ResultExistence",
-  "Restated",
-  "Recreated",
-  "ItemIdList",
-  "KeptSuperseded",
-  "KeptEffective",
-  "SlotCtx",
-]);
-const parses = (e: { full: Record<string, Json>; blocks: Readonly<Record<string, Json>> }) => {
-  const r = parseEvent(e.full, e.blocks as Record<string, Json>) as {
-    ok: boolean;
-    kind?: string;
-    shapes?: string[];
-    issues?: string[];
-  };
-  if (r.ok) return;
-  expect({ kind: r.kind, issues: r.issues ?? [] }).toEqual({ kind: "unsupported", issues: [] });
-  expect((r.shapes ?? []).filter((x) => !DELETION_SHAPES.has(x))).toEqual([]);
-};
+/** The strict parse of the event's type passes. */
+const parses = (e: { full: Record<string, Json>; blocks: Readonly<Record<string, Json>> }) =>
+  expect(parseEvent(e.full, e.blocks as Record<string, Json>)).toEqual({
+    ok: true,
+    type: e.full["type"],
+  });
 
 describe("deletion events decoded into records (09 §5.9)", () => {
   const confirmed = head(42, "deletion.confirmed", {
@@ -102,6 +77,7 @@ describe("deletion events decoded into records (09 §5.9)", () => {
     positions: [
       { seq: 26, path: "text" },
       { seq: 27, path: "fields/f3/0" },
+      { seq: 42, path: "summary" },
     ],
     summary: { hash: HASH },
     "results/0/target": { table: "t1", entity: ENTITY, outcome: "resegmented" },
@@ -150,6 +126,16 @@ describe("deletion events decoded into records (09 §5.9)", () => {
       seen_valid: { from: "2026-11-01", to: "2026-11-20" },
       deps: [],
     },
+    "restated/4": {
+      event: 36,
+      field: "f2",
+      k: 0,
+      status: "applied",
+      valid: { from: "2026-11-25" },
+      deps: [],
+      value: "9",
+      sources: [{ kind: "schema_const", sv: 2, field: "f2" }],
+    },
     "recreated/0": { event: 18, created: true },
     superseded_items: [ITEM2],
   });
@@ -168,6 +154,7 @@ describe("deletion events decoded into records (09 §5.9)", () => {
         positions: [
           { seq: 26, path: "text" },
           { seq: 27, path: "fields/f3/0" },
+          { seq: 42, path: "summary" },
         ],
         results: [
           {
@@ -222,6 +209,15 @@ describe("deletion events decoded into records (09 §5.9)", () => {
             status: "candidate",
             valid: [{ from: "2026-11-01", to: "2026-11-20" }],
             deps: [],
+          },
+          // A value restated onto a schema constant: its source kept, not dropped.
+          {
+            item: { event: 36, target: "f2", k: 0 },
+            status: "applied",
+            valid: [{ from: "2026-11-25", to: null }],
+            deps: [],
+            content: { kind: "value", value: "9" },
+            schemaConst: { sv: 2, field: "f2" },
           },
         ],
         recreated: [{ event: 18, created: true }],

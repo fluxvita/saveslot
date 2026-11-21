@@ -19,6 +19,7 @@ import {
   TRIGGERS,
 } from "./enums.ts";
 import { HEADER_FIELDS, HEADER_RULES, type HeaderField } from "./header.ts";
+import { DELETION_EVENT_RULES, DELETION_SHAPES } from "./shapes-deletion.ts";
 import { SCHEMA_EVENT_RULES, SCHEMA_SHAPES } from "./shapes-schema.ts";
 import { WRITE_EVENT_RULES, WRITE_SHAPES } from "./shapes-write.ts";
 import { isEventInteger, isHash, isId, isInstant } from "./values.ts";
@@ -149,9 +150,11 @@ const SHAPES: Partial<Record<string, ShapeChecker>> = {
   ...SCHEMA_SHAPES,
   // §5.6–§5.8
   ...WRITE_SHAPES,
+  // §5.9
+  ...DELETION_SHAPES,
 };
 
-const EVENT_RULES = { ...SCHEMA_EVENT_RULES, ...WRITE_EVENT_RULES };
+const EVENT_RULES = { ...SCHEMA_EVENT_RULES, ...WRITE_EVENT_RULES, ...DELETION_EVENT_RULES };
 
 /** The block shapes this module checks so far. */
 export const CHECKED_SHAPES: readonly string[] = Object.keys(SHAPES);

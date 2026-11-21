@@ -94,7 +94,7 @@ export function value(v: Json, at: string, issues: Issues, raw = false): void {
   check(str(v["unit"]) && v["unit"] !== "", at, "unit", issues);
 }
 
-function contribution(v: Json, at: string, issues: Issues): void {
+export function contribution(v: Json, at: string, issues: Issues): void {
   if (isObject(v) && "existence" in v) {
     if (!keys(v, at, ["event", "existence"], [], issues)) return;
     check(seq(v["event"]), at, "event", issues);
@@ -126,7 +126,7 @@ export function list(
 
 export const deps: ShapeChecker = (v, at, issues) => list(v, at, issues, contribution);
 
-function tableTarget(v: Record<string, Json>, at: string, issues: Issues): void {
+export function tableTarget(v: Record<string, Json>, at: string, issues: Issues): void {
   check(id("table", v["table"]), at, "table", issues);
   const row = "row" in v;
   check(row !== "entity" in v, at, "exactly one of row and entity", issues);
@@ -874,7 +874,7 @@ export type EventRule = (
 ) => void;
 
 /** Indices `0 .. n-1` with none missing (§3.1 `<n>`): the indices present, sorted. */
-function noHoles(present: readonly number[], where: string, issues: Issues): void {
+export function noHoles(present: readonly number[], where: string, issues: Issues): void {
   const sorted = [...new Set(present)].sort((a, b) => a - b);
   check(
     sorted.every((n, k) => n === k),
@@ -885,7 +885,7 @@ function noHoles(present: readonly number[], where: string, issues: Issues): voi
 }
 
 /** §5.1: at most one of `request_key` and `idempotency`. */
-const oneRequestId: EventRule = (paths, _, issues) => {
+export const oneRequestId: EventRule = (paths, _, issues) => {
   check(
     !(paths.has("request_key") && paths.has("idempotency")),
     "event",

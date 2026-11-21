@@ -1303,7 +1303,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | path | 种类 | 内容 | 来源 |
 |---|---|---|---|
 | `target` | 元 | 见下 | — |
-| `positions` | 元 | 到期要清空的内容块：`[{"seq": 26, "path": "text"}, {"seq": 27, "path": "fields/f3/0"}]` | — |
+| `positions` | 元 | 到期要清空的内容块：`[{"seq": 26, "path": "text"}, {"seq": 27, "path": "fields/f3/0"}, {"seq": 42, "path": "summary"}]`（42 是本事件自己：`summary` 列在它自己的位置列表里） | — |
 | `summary` | 数 | `{"hash": <哈希>}`：影响摘要的哈希（确认句柄绑定的那个） | 被删的内容；它自己列在 `positions` 里 |
 | `results/<k>/target` | 元 | 一个受影响的行或实体：`{"table": …, "row": …, "outcome": <枚举>}`（状态类表写 `entity`） | — |
 | `results/<k>/fields/<字段ID>/<j>` | 数 | 删除后该字段的一段，见下 | 块里的 `carried` 引用的贡献，另加块里的 `deps` |
@@ -1355,7 +1355,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 
   **状态类表上凡是列出了实体（不论因为上面哪一条），都给 `results/<k>/existence`**（删除后的全部空洞，没有空洞时 `gaps` 为空数组）。
 
-  没列到的段保持原样。字段变空时 `value` 为 `null`、`sources` 为空数组。被重述为 `no_value` 的写回项仍露在外面的部分，按第 2 类（由本次被重述的项给出的段）列出，同样写成 `value: null`、`sources: []`，`deps` 含那一项写回项。带区间的撤销被删除时，重新可见的值按它所在的整段列出（那一段的区间是给出它的贡献自己的，不含被删的撤销区间），`results/<k>/existence` 给出删除后剩下的空洞。空洞的区间可以没有 `from`（从最早起）；`from` 与 `to` 都没有表示整个实体在任何业务时刻都没有值。
+  没列到的段保持原样。这一段没有任何贡献时 `value` 为 `null`、`sources` 为空数组；这一段的值是一次显式清空（§5.7 的 `"value": null`）时 `value` 为 `null`、`sources` 照常写 `carried`。被重述为 `no_value` 的写回项仍露在外面的部分，按第 2 类（由本次被重述的项给出的段）列出，同样写成 `value: null`、`sources: []`，`deps` 含那一项写回项。带区间的撤销被删除时，重新可见的值按它所在的整段列出（那一段的区间是给出它的贡献自己的，不含被删的撤销区间），`results/<k>/existence` 给出删除后剩下的空洞。空洞的区间可以没有 `from`（从最早起）；`from` 与 `to` 都没有表示整个实体在任何业务时刻都没有值。
 - 值是从更早的贡献搬来的，来源一律写成 `carried`。以后删到这些贡献的来源时，本块同样在级联范围内。值落回 schema 切换的补值时，来源写 `schema_const` 条目（§5.7），不写 `carried`，常量本身不进 `deps`；状态类表上这一段的区间出自补值段，把那一块 `backfill/…` 的 `deps` 抄进来（§3.5）。带值的 `restated/<k>` 同样适用。
 
 `restated/<k>`：重放之后，某一项贡献的判定结果。形状与 `write.base` 里一项的判定结果相同（`fields` 的 `status` 加 `span` 的内容）：

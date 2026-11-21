@@ -187,19 +187,25 @@ describe("apply stops, never skips", () => {
     expect(reason(head("literal@1"))).toBe("applied");
   });
 
-  it("on a type whose blocks it does not support yet (deletion)", () => {
-    const ev = event(
-      "deletion.executed",
-      {
-        target: { deletion: `pi_${"7".repeat(16)}`, confirmed_event: 2, reason: "expiry" },
-        positions: [{ seq: 2, path: "request" }],
-      },
-      [],
-      10,
+  it("on a type it does not apply yet (deletion); a malformed one as invalid", () => {
+    const tombstone = (target: { [k: string]: string | number }) => {
+      const ev = event(
+        "deletion.executed",
+        { target, positions: [{ seq: 2, path: "request" }] },
+        [],
+        10,
+      );
+      return {
+        ...ev,
+        header: { ...ev.header, actor: "system", trigger: "deletion_expiry", slot: SLOT },
+      };
+    };
+    const deletion = `pi_${"7".repeat(16)}`;
+    expect(reason(tombstone({ deletion, reason: "expiry" }))).toBe(
+      "not_implemented @10: apply stopped at seq 10: apply of deletion.executed is not implemented yet",
     );
-    const header = { ...ev.header, actor: "system", trigger: "deletion_expiry", slot: SLOT };
-    expect(reason({ ...ev, header })).toBe(
-      "unsupported @10: apply stopped at seq 10: block shapes not supported yet: DeletionExecutedTarget, Positions",
+    expect(reason(tombstone({ deletion, confirmed_event: 2, reason: "expiry" }))).toBe(
+      "invalid @10: apply stopped at seq 10: invalid event: target: unknown key confirmed_event",
     );
   });
 

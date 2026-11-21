@@ -375,6 +375,8 @@ export interface Restatement {
   readonly deps: readonly ItemRef[];
   readonly content?: ItemContent;
   readonly carried?: readonly ItemRef[];
+  /** The new value is a schema constant (`schema_const`), not carried. */
+  readonly schemaConst?: { readonly sv: number; readonly field: FieldId };
   /** An existence item that restores existence (a write-back of an undone revoke). */
   readonly restored?: true;
 }
@@ -383,7 +385,10 @@ export interface Restatement {
 export interface ResultStretch {
   readonly field: FieldId;
   readonly j: number;
-  /** `null`: the field is empty there. */
+  /**
+   * `null`: no contribution gives the stretch (`carried` empty), or an explicit clearing (§5.7),
+   * carried like any value.
+   */
   readonly value: FieldValue | null;
   /** The contribution the value is carried from (empty when the field is empty). */
   readonly carried: readonly ItemRef[];

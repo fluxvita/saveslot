@@ -630,31 +630,37 @@ export function encodeResolution(
 // --- decoding deletion events ------------------------------------------------------------------
 
 /** The paths each decoded deletion event may carry besides its request-id blocks (09 §5.9). */
-const DELETION_PATHS: Readonly<Record<string, readonly RegExp[]>> = {
-  "deletion.confirmed": [
-    /^ctx$/,
-    /^target$/,
-    /^positions$/,
-    /^summary$/,
-    /^superseded_items$/,
-    /^results\/\d+\/(target|existence)$/,
-    /^results\/\d+\/fields\/f\d+\/\d+$/,
-    /^restated\/\d+$/,
-    /^recreated\/\d+$/,
+const DELETION_PATHS: ReadonlyMap<string, readonly RegExp[]> = new Map([
+  [
+    "deletion.confirmed",
+    [
+      /^ctx$/,
+      /^target$/,
+      /^positions$/,
+      /^summary$/,
+      /^superseded_items$/,
+      /^results\/\d+\/(target|existence)$/,
+      /^results\/\d+\/fields\/f\d+\/\d+$/,
+      /^restated\/\d+$/,
+      /^recreated\/\d+$/,
+    ],
   ],
-  "deletion.cancelled": [
-    /^ctx$/,
-    /^target$/,
-    /^restored_items$/,
-    /^kept_superseded\/\d+$/,
-    /^kept_effective\/\d+$/,
-    /^results\/\d+\/(target|existence)$/,
-    /^results\/\d+\/fields\/f\d+\/\d+$/,
-    /^restated\/\d+$/,
-    /^recreated\/\d+$/,
+  [
+    "deletion.cancelled",
+    [
+      /^ctx$/,
+      /^target$/,
+      /^restored_items$/,
+      /^kept_superseded\/\d+$/,
+      /^kept_effective\/\d+$/,
+      /^results\/\d+\/(target|existence)$/,
+      /^results\/\d+\/fields\/f\d+\/\d+$/,
+      /^restated\/\d+$/,
+      /^recreated\/\d+$/,
+    ],
   ],
-  "deletion.executed": [/^target$/, /^positions$/],
-};
+  ["deletion.executed", [/^target$/, /^positions$/]],
+]);
 /** §5.1 request-id blocks a caller's deletion or cancellation also carries. */
 const REQUEST_ID_PATHS = /^(task|request_key|idempotency)$/;
 
@@ -682,7 +688,7 @@ function restatementIn(v: unknown, isState: boolean): Restatement {
     seen_valid?: unknown;
     deps?: unknown[];
     value?: unknown;
-    sources?: { carried?: unknown }[];
+    sources?: { carried?: unknown; kind?: string; sv?: number; field?: FieldId }[];
     no_value?: true;
     uncovered?: true;
   };
@@ -698,6 +704,7 @@ function restatementIn(v: unknown, isState: boolean): Restatement {
   const carried = (x.sources ?? [])
     .filter((c) => c.carried !== undefined)
     .map((c) => refIn(c.carried));
+  const constant = (x.sources ?? []).find((c) => c.kind === "schema_const");
   return {
     item: refIn(x),
     status: x.status,
@@ -705,6 +712,9 @@ function restatementIn(v: unknown, isState: boolean): Restatement {
     deps: (x.deps ?? []).map(refIn),
     ...(content !== undefined ? { content } : {}),
     ...(carried.length > 0 ? { carried } : {}),
+    ...(constant !== undefined
+      ? { schemaConst: { sv: constant.sv as number, field: constant.field as FieldId } }
+      : {}),
     ...(x.restored ? { restored: true as const } : {}),
   };
 }
@@ -799,7 +809,8 @@ export function decodeDeletionRecords(
     const type = x.header.type;
     const b = x.blocks;
     const op = x.header.op ?? x.header.seq;
-    const allowed = DELETION_PATHS[type];
+    // A Map, so that a type naming an Object.prototype key is no entry.
+    const allowed = DELETION_PATHS.get(type);
     if (allowed !== undefined) {
       for (const p of Object.keys(b)) {
         if (!allowed.some((re) => re.test(p)) && !REQUEST_ID_PATHS.test(p)) {

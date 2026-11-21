@@ -482,6 +482,7 @@ const deletionEvent = {
     positions: [
       { seq: 26, path: "text" },
       { seq: 27, path: "fields/f3/0" },
+      { seq: 42, path: "summary" },
     ],
     summary: { hash: "77e0…1b" },
     "results/0/target": { table: "t1", row: "r_01JC8Z…", outcome: "fields_reverted" },
@@ -927,7 +928,8 @@ describe("spec examples", () => {
   });
 
   it("deletion positions in the examples name vocabulary paths", () => {
-    const types = { 26: "source.recorded", 27: "write.base" } as const;
+    // 42 is the confirmation itself: its summary is on its own list.
+    const types = { 26: "source.recorded", 27: "write.base", 42: "deletion.confirmed" } as const;
     for (const { seq, path } of deletionEvent.blocks.positions) {
       expect(matchPathAll(types[seq], path)).toHaveLength(1);
     }
