@@ -362,6 +362,21 @@ function rowLine(row: R, historical = false, first = true): Line[] {
   return [line, ...m.below];
 }
 
+/**
+ * The names of a read's columns, after a row's head (its ID and ver, an entity's key, a derived
+ * row's group key): its period on a state table, then its fields in the order the rows give them
+ * (the `fields` asked for, or all). A field's name is a name's shape, outside the boundary
+ * (05 §4); none for a read with no rows.
+ */
+function columnsOf(rows: readonly unknown[]): Line[] {
+  if (rows.length === 0) return [];
+  const first = obj(rows[0]);
+  const cells: Part[][] = [];
+  if (Object.hasOwn(first, "valid_from")) cells.push(t`period`);
+  for (const f of Object.keys(obj(first["values"]))) cells.push(fieldOf(f));
+  return cells.length > 0 ? [t`Columns after the row's ID and ver: ${join(cells, t` | `)}`] : [];
+}
+
 /** The rows of a read: an entity's segments together, its ID and ver on the first only. */
 function rowsOf(rows: readonly unknown[], historical = false): Line[] {
   const out: Line[] = [];
@@ -750,6 +765,7 @@ function query(r: R, now: Date): Line[] {
   const entity = oneEntity(rows);
   return [
     t`${tableOf(r["table"])} · ${tableOf(r["slot"])} schema v${count(r["sv"])}${entity !== undefined ? t` · entity ${namedValues(entity)}` : []} · ${ofTotal(rows.length, r["total"])} rows`,
+    ...columnsOf(rows),
     ...rowsOf(rows),
     ...pageOf(r, rows.length, () => t`rows`),
     ...remindersOf(r, now),
@@ -886,7 +902,9 @@ function history(r: R, now: Date): Line[] {
     const rows = arr(r["rows"]);
     return [
       t`As of ${op(at["seq"])} (${inZone(at["recorded_at"], r["timezone"])}) · schema v${count(r["sv"])}`,
-      ...(rows.length > 0 ? rowsOf(rows, true) : [t`It did not exist yet.`]),
+      ...(rows.length > 0
+        ? [...columnsOf(rows), ...rowsOf(rows, true)]
+        : [t`It did not exist yet.`]),
       ...pageOf(r, rows.length, () => t`rows`),
       ...remindersOf(r, now),
     ];

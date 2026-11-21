@@ -253,10 +253,11 @@ weekly_mileage（派生 · 只读）每周跑量与记录覆盖，周一起算 �
 
 `schema`：JSON 原文，包法见第 5 节；另起一段写 slot 策略（只读）。
 
-**`saveslot_query`**：第一行写表、slot、schema 版本、显示行数 / 总数。每行写完整的 ID、`ver`、各字段的值、标记；行带 `changed_by` 时末尾写 `last changed by ‹名字›`（名字进不可信边界）。
+**`saveslot_query`**：第一行写表、slot、schema 版本、显示行数 / 总数。第二行写列名：行首（ID 与 `ver`、实体的键、派生行的分组键）之后各列依次是什么——状态类表先是区间，再是各字段，按行里给出的次序（请求了 `fields` 就是那几列，否则是全部字段）；字段名是受限的值，放在边界外（第 4 节）；没有行时不写这一行。之后每行写完整的 ID、`ver`、各字段的值（没有值写 `—`）、标记；行带 `changed_by` 时末尾写 `last changed by ‹名字›`（名字进不可信边界）。`history` 的 `as_of` 读出的行同样先写列名这一行。
 
 ```
 runs · health schema v2 · 3 / 3 行
+行首 ID 与 ver 之后的列：date | distance
 r_01JC… ver=v57.0 | 2026-11-03 | 5 km | 已纠错
 r_01JD… ver=v44.0 | 2026-11-05 | 7 km
 r_01JE… ver=v49.0 | 2026-11-07 | 7 km | ⚠ 已标记（pi_3F…）：疑似与 r_01JD… 重复
@@ -266,6 +267,7 @@ r_01JE… ver=v49.0 | 2026-11-07 | 7 km | ⚠ 已标记（pi_3F…）：疑似�
 
 ```
 tasks · project schema v1 · 2 / 2 行
+行首 ID 与 ver 之后的列：title | due | status
 r_01JG… ver=v50.0 | 完成回归测试 | 2026-11-25 | todo
   ⚠ 前提已变：constraints r_01JF… 的 date（声明时所见 v40.0）在 #60 被变更；涉及本行 title、due、status
 r_01JK… ver=v50.0 | 写发布说明 | 2026-11-10 | todo
@@ -277,6 +279,7 @@ r_01JK… ver=v50.0 | 写发布说明 | 2026-11-10 | todo
 
 ```
 budgets · marketing schema v1 · 实体 推广 · 2026-10-01 至 2026-12-31
+行首 ID 与 ver 之后的列：区间 | amount
 e_01JA… ver=v103.0 | 2026-10-01 至 2026-11-09（含）| 5000 CNY
                      | 2026-11-10 起               | 4000 CNY
 ```

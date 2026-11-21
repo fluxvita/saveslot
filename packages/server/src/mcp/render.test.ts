@@ -773,6 +773,40 @@ describe("a period open at the start (09 §1.2: a whole revoke undone)", () => {
   });
 });
 
+describe("a read's column names (05 §6 saveslot_query)", () => {
+  const q = sample("query");
+  const rows = q.result["rows"] as R[];
+  const text = (r: R) => renderResult(q.tool, { ...q.result, ...r });
+
+  it("a line after the first: the fields in the order the rows give them, only those asked for", () => {
+    const all = Object.keys((rows[0] as R)["values"] as R);
+    expect(text({})).toContain(`\nColumns after the row's ID and ver: ${all.join(" | ")}\n`);
+    const two = all.slice(0, 2);
+    const only = rows.map((r) => ({
+      ...r,
+      values: Object.fromEntries(two.map((f) => [f, (r["values"] as R)[f]])),
+    }));
+    expect(text({ rows: only })).toContain(
+      `\nColumns after the row's ID and ver: ${two.join(" | ")}\n`,
+    );
+  });
+
+  it("no rows: no column line", () => {
+    expect(text({ rows: [], total: 0 })).not.toContain("Columns");
+  });
+
+  it("history as_of: the same line before its rows", () => {
+    const x = renderResult("saveslot_history", {
+      mode: "as_of",
+      as_of: { seq: 7, recorded_at: "2026-11-10T04:00:00Z" },
+      sv: 1,
+      timezone: "Asia/Shanghai",
+      rows: rows.map((r) => ({ ...r, ver: "h7.0", historical: true })),
+    } as R);
+    expect(x).toMatch(/\nColumns after the row's ID and ver: [^\n]+\n/);
+  });
+});
+
 describe("every mark of the contract has a text (05 §4.2)", () => {
   const item = "pi_8VEZWJ3J7BMKMXTV";
   const ref = { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" };
