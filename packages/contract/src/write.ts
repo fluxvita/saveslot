@@ -153,7 +153,11 @@ export type FieldResult =
 export interface ResolvedInterval extends Interval {
   from_as: ValidFromMode;
   to_as: ValidToMode;
-  /** `to_as: next_change` with a closed end: the unchanged segment starting there. */
+  /**
+   * The segment starting at the end, which this write left (value null: no value there): with
+   * `to_as: next_change` and a closed end, or `to_as: given` when something is recorded from the
+   * end on (a value or no value). As the operation left it.
+   */
   next_change?: { at: BizTime; value: Value | null };
   /** Gaps this write filled. */
   filled?: Interval[];

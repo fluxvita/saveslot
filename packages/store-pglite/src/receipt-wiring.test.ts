@@ -408,7 +408,7 @@ describe("resolved: how each field's interval was given and came out", () => {
   );
 
   it(
-    "an explicit end: given, no next_change",
+    "an explicit end with the value recorded on after it: next_change, as at a default end",
     async () => {
       const e = await put("entities", {
         intent: "insert",
@@ -424,8 +424,98 @@ describe("resolved: how each field's interval was given and came out", () => {
         set: { b: "b1" },
       });
       expect(resolvedOf(w)).toEqual({
+        b: {
+          ...day("2026-11-05", "2026-11-08"),
+          from_as: "given",
+          to_as: "given",
+          next_change: { at: "2026-11-08", value: "b0" },
+        },
+      });
+    },
+    T,
+  );
+
+  it(
+    "an explicit end with nothing recorded after it: no next_change",
+    async () => {
+      const w = await put("entities", {
+        intent: "insert",
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-08",
+        set: { b: "b1" },
+      });
+      expect(resolvedOf(w)).toEqual({
         b: { ...day("2026-11-05", "2026-11-08"), from_as: "given", to_as: "given" },
       });
+    },
+    T,
+  );
+
+  it(
+    "an explicit end meeting a revoke's hole, then a value: next_change with no value",
+    async () => {
+      const e = await put("entities", {
+        intent: "insert",
+        valid_from: "2026-11-01",
+        set: { b: "b0" },
+      });
+      const v = await put("entities", {
+        entity: entityOf(e),
+        intent: "revoke",
+        ver: verAt(e),
+        valid_from: "2026-11-08",
+        valid_to: "2026-11-12",
+      });
+      const w = await put("entities", {
+        entity: entityOf(e),
+        intent: "update",
+        ver: verAt(v),
+        valid_from: "2026-11-05",
+        valid_to: "2026-11-08",
+        set: { b: "b1" },
+      });
+      expect(resolvedOf(w)?.["b"]?.next_change).toEqual({ at: "2026-11-08", value: null });
+    },
+    T,
+  );
+
+  it(
+    "an explicit end: a replay after the stretch past it was changed gives the next_change of then",
+    async () => {
+      const e = await put("entities", {
+        intent: "insert",
+        valid_from: "2026-11-01",
+        set: { b: "b0" },
+      });
+      const body = {
+        sv: 1,
+        ops: [
+          {
+            table: "entities",
+            entity: entityOf(e),
+            intent: "update",
+            ver: verAt(e),
+            valid_from: "2026-11-05",
+            valid_to: "2026-11-08",
+            set: { b: "b1" },
+          },
+        ],
+        idempotency_key: "resolved-given-1",
+      };
+      const first = (await write(s.store, ctxOf(USER), body as never)) as Any;
+      expect(resolvedOf(first)?.["b"]?.next_change).toEqual({ at: "2026-11-08", value: "b0" });
+      // The stretch past the end changed afterwards.
+      const later = await put("entities", {
+        entity: entityOf(e),
+        intent: "update",
+        ver: verAt(first),
+        valid_from: "2026-11-08",
+        set: { b: "b9" },
+      });
+      expect(later.status).toBe("saved");
+      const again = (await write(s.store, ctxOf(USER), body as never)) as Any;
+      expect(again.replayed).toBe(true);
+      expect(resolvedOf(again)).toEqual(resolvedOf(first));
     },
     T,
   );
@@ -767,8 +857,15 @@ describe("resolved.filled: every stretch without a value the write fills, howeve
       expect(r.status).toBe("saved");
       expect(r.ops[0].created_entity).toBe(true);
       expect(r.ops[1].target.entity).toBe(r.ops[0].target.entity);
+      // Past its end the entity goes on (op 0's b, then op 2's), c without a value there: a
+      // stretch recorded with no value, which the write left.
       expect(r.ops[1].resolved).toEqual({
-        c: { ...span("2026-11-07", "2026-11-09"), from_as: "given", to_as: "given" },
+        c: {
+          ...span("2026-11-07", "2026-11-09"),
+          from_as: "given",
+          to_as: "given",
+          next_change: { at: "2026-11-09", value: null },
+        },
       });
       expect(r.ops[2].resolved.b.filled).toEqual([span("2026-11-12", "2026-11-15")]);
       expect(r.ops[2].resolved.k.filled).toEqual([span("2026-11-12", "2026-11-15")]);

@@ -173,7 +173,10 @@ function fieldResult(d: PartDraft, isState: boolean): FieldResult {
 export interface ResolvedInterval extends Interval {
   readonly from_as: "given" | "now" | "corrected_span";
   readonly to_as: "given" | "next_change" | "open" | "corrected_span";
-  /** to_as `next_change` with an end: the stretch starting at the end, which the write left. */
+  /**
+   * The stretch starting at the end, which the write left: with to_as `next_change` and an end, or
+   * `given` when something is recorded from the end on (a value or no value).
+   */
   readonly next_change?: { readonly at: string; readonly value: ValueOut };
   /** The stretches without a value the write filled. */
   readonly filled?: readonly Interval[];
@@ -548,7 +551,8 @@ interface RawValid {
 /**
  * A state-table op's `resolved` (04-contract §4 «next_change 逐字段解析»), from the log: how the
  * interval was given (the head's raw `valid`), what each field's items came to (their spans, as a
- * whole), the stretch at a default end (the row right after the operation), and the stretches
+ * whole), the stretch at the end (a default end, or a given one with something recorded after it;
+ * the row right after the operation), and the stretches
  * without a value the write filled: where the entity had none right before this op under an
  * applied part, however it came to have none (before its first stretch, after an explicit end, a
  * revoke's hole; 05-time «无值区间»). "Right before this op" is the row rebuilt from its events
@@ -614,7 +618,18 @@ async function resolvedOf(
       to_as: o.valid.to.mode,
     };
     let next: ResolvedInterval["next_change"];
-    if (target !== "existence" && o.valid.to.mode === "next_change" && to !== null) {
+    // The stretch starting at the end, which the write left: at a default end there always is
+    // one; at an end the caller gave, only when something is recorded from there on (a value, or
+    // a revoke's hole), as the row stood right after this operation.
+    const recordedAfter =
+      to !== null &&
+      (o.valid.to.mode === "next_change" ||
+        (o.valid.to.mode === "given" &&
+          after.some(
+            (c) =>
+              (c.field_id === target || c.field_id === "existence") && (c.vt === null || c.vt > to),
+          )));
+    if (target !== "existence" && recordedAfter && to !== null) {
       const piece = piecesOver(o.table, after, [{ from: to, to: null }], [target])[0];
       const cell =
         piece === undefined || piece.revoked || piece.noValue

@@ -1660,6 +1660,60 @@
       "superseded": []
     }
   },
+  "write-resolved-given-end-next": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 15,
+      "ops": [
+        {
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_NT7QT9B5XKHA7AD3G773X02TQW"
+          },
+          "intent": "update",
+          "ver": "v15.0",
+          "fields": {
+            "amount": [
+              {
+                "result": "applied",
+                "after": {
+                  "unit": "CNY",
+                  "value": "3000"
+                },
+                "valid": {
+                  "valid_from": "2026-11-02",
+                  "valid_to": "2026-11-10",
+                  "valid_to_inclusive": "2026-11-09"
+                }
+              }
+            ]
+          },
+          "resolved": {
+            "amount": {
+              "valid_from": "2026-11-02",
+              "valid_to": "2026-11-10",
+              "valid_to_inclusive": "2026-11-09",
+              "from_as": "given",
+              "to_as": "given",
+              "next_change": {
+                "at": "2026-11-10",
+                "value": {
+                  "unit": "CNY",
+                  "value": "4000"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": []
+    }
+  },
   "write-resolved-from-now": {
     "tool": "saveslot_write",
     "result": {

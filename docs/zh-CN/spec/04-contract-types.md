@@ -1364,7 +1364,8 @@ interface ResolvedInterval extends Interval {
   /** 调用方是怎么给起点、终点的（与事件格式的 mode 同名）。corrected_span = correct 且两端都没传：包含"现在"、以挡点为界的那一段。 */
   from_as: "given" | "now" | "corrected_span";
   to_as: "given" | "next_change" | "open" | "corrected_span";
-  /** to_as: next_change 且终点不是"一直延续"时：终点处开始的那一段，没有改动。 */
+  /** 终点处开始、这次写入没有改动的那一档（无值时 value 为 null）：to_as 为 next_change 且终点不是"一直延续"时，
+   *  或 to_as 为 given 且终点处开始还有已记录的一档（有值或无值）时给；终点之后什么都没记时不给。按这次操作完成时的状态。 */
   next_change?: { at: BizTime; value: Value | null };
   /** 这次写入填上的无值区间：生效的部分里，这个 op 之前实体在那里没有值的段，不论是怎么没有值的（实体第一段之前、显式终点之后、撤销留下的洞，
    *  data-model「时间 · 无值区间」），相邻的合成一段。"这个 op 之前"含同一请求里排在它前面的 op：它们已经生效的部分照常算——
