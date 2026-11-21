@@ -377,12 +377,7 @@ describe("planEvent: what this phase stops on, never skips", () => {
     ]);
   });
 
-  it.each([
-    [
-      "schema.migration_started",
-      { target: { migration_id: MIGRATION, draft_id: DRAFT, from_version: 1, to_version: 2 } },
-    ],
-  ])("%s", (type, blocks) => {
+  it("schema.migration_started: the migration's row, nothing built (09 §5.5)", () => {
     const head = op(9, [
       {
         type: "schema.draft_submitted",
@@ -393,11 +388,17 @@ describe("planEvent: what this phase stops on, never skips", () => {
           draft: {},
         },
       },
-      { type: type as never, slot: SLOT, blocks },
+      {
+        type: "schema.migration_started",
+        slot: SLOT,
+        blocks: {
+          target: { migration_id: MIGRATION, draft_id: DRAFT, from_version: 1, to_version: 2 },
+        },
+      },
     ]);
-    expect(reason(head[1] as ApplyEvent)).toBe(
-      `not_implemented: apply of ${type} is not implemented yet`,
-    );
+    expect(planEvent(head[1] as ApplyEvent)).toEqual([
+      { kind: "migration_start", id: MIGRATION, slot: SLOT, draft_id: DRAFT, from: 1, to: 2 },
+    ]);
   });
 });
 

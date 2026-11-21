@@ -487,7 +487,7 @@
 2. 事项已关闭：已解决、处理方式相同 → 返回原结果，`replayed: true`；已解决、处理方式不同，或已被取代 → `item_closed`（附已有结果，或取代的原因）。所以过了很久用旧 `item_ver` 重发同一处理方式，也按重放返回。
 3. 事项不是 `deletion`、也不是 `schema_change`，而它的目标受一项仍待执行的删除影响（data-model「删除 · 撤回与宽限期」）→ `invalid_argument`（`pending_deletion_target`），附相关的删除与最晚的到期时刻；不核对绑定的内容，不产生事件。
 4. 按第 6 节核对绑定的内容；对不上 → `confirmation_mismatch`，附 `current`：该事项此刻的详情（含新的 `item_ver`），与同一时刻查看详情所得相同，算读到（第 2 节）。
-5. `schema_change` 的 `confirm`：在同一个事务里重新判断。草稿里凡按"从未被写入"编译的改动（只对从未被写入的表放开的结构改动，以及归入 `restructure_unused` 的各项，见 `schema_draft` 一节），所在的表在确认时已被写入，一律报 `draft_outdated`（`table_written`）；草稿带 `migrate` 时，对试跑之后的新写入（迁移期间带旧 `sv` 的写入）重新求值，有失败的报 `draft_outdated`（`migrate_failed`）；草稿改 slot 名（`rename_slot`）而新名此时已被另一个 slot 用着（不分 ASCII 大小写），报 `draft_outdated`（`name_taken`，data-model「确认时重新判断」）。三种都不产生任何事件，事项保持未决；调用方 `reject` 这份草稿，或提交新草稿取代它。`base_version` 不再核对：待确认的草稿所基于的版本就是确认时的当前版本——其间的任何切换都出自一份新草稿，而新草稿提交时先取代了它（它的事项随之关闭，再确认报 `item_closed`）。
+5. `schema_change` 的 `confirm`：在同一个事务里重新判断。草稿里凡按"从未被写入"编译的改动（只对从未被写入的表放开的结构改动，以及归入 `restructure_unused` 的各项，见 `schema_draft` 一节），所在的表在确认时已被写入，一律报 `draft_outdated`（`table_written`）；草稿带 `migrate` 时，对试跑之后的新写入（迁移期间带旧 `sv` 的写入）重新求值，有失败的报 `draft_outdated`（`migrate_failed`）；草稿改 slot 名（`rename_slot`）而新名此时已被另一个 slot 用着（不分 ASCII 大小写），报 `draft_outdated`（`name_taken`，data-model「确认时重新判断」）；草稿收紧约束而没给 `backfill`，旧版其间写进了违反新约束的值，报 `draft_outdated`（`backfill_required`，明细同 `schema_draft` 的 `backfill_required`）。四种都不产生任何事件，事项保持未决；调用方 `reject` 这份草稿，或提交新草稿取代它（`backfill_required` 时带上 `backfill`）。`base_version` 不再核对：待确认的草稿所基于的版本就是确认时的当前版本——其间的任何切换都出自一份新草稿，而新草稿提交时先取代了它（它的事项随之关闭，再确认报 `item_closed`）。
 
 - **触发的写入同样过 `ref` 目标的校验**（data-model「写入 ref 字段时」）：采纳候选、回到合并基、确认待确认写入（含确认一次撤回）时，这次将要生效的 `ref` 值按处理时的状态校验，不过报 `validation_failed`（`ref_not_found` / `ref_wrong_table`），明细不带 `op`、带 `table` 与 `field`；不产生任何事件，事项保持未决。
 - `take_candidate` 在事项有多个候选时必须给 `candidate`（详情里候选的 `index`；下标在事项生命周期内不复用），否则 `invalid_argument`（`candidate_required`，附候选 `candidate_choices`：每个候选的下标、所在写入的操作号与写入者）。
@@ -525,7 +525,7 @@
 - 四个与数据有关的编译明细码：
   - `still_referenced`：要删的表或字段仍被依赖（被 `ref` 指着的表；被派生规则、`entity_key`、`external_key`、`time.field`、`duplicate_keys`、`together` 用到的字段）。`referenced_by` 列出依赖方：草稿里列出了它时给它在文档里的位置（如 `tables/0/fields/8`），没列出时给名字（`表.字段`，派生表给表名）。按改动之后的样子判：同一份草稿里把依赖方一并删掉或改掉即可。
   - `backfill_const_required`：新增必填字段、或把可选改成必填，一律必须给常量形式的 `backfill`，不看表里当时有没有行。表达式形式只对已有值的位置求值，没有旧值的位置只能由常量给值。
-  - `backfill_required`：收紧 `min` / `max` 或删枚举值时，已有的行违反新约束而没给 `backfill`；附违反的行数与样例。它与 `backfill_const_required` 的分工：改必填（新增必填字段、可选改必填）不看有没有行，看的是有没有常量形式的 `backfill`；其余收紧看的是有没有行违反。
+  - `backfill_required`：收紧 `min` / `max` 或删枚举值时，已有的行违反新约束而没给 `backfill`；附违反的行数与样例（`rows`、`samples`：样例至多 5 个，只给位置——行或实体——不给值；状态类表按实体计）。它与 `backfill_const_required` 的分工：改必填（新增必填字段、可选改必填）不看有没有行，看的是有没有常量形式的 `backfill`；其余收紧看的是有没有行违反。
   - `backfill_both_forms`：`backfill` 的常量形式与表达式形式同时给了；只能给一种（既收紧范围又改必填时只给常量）。
 - 其余几个编译明细码何时出现：
 
@@ -624,7 +624,7 @@
 | `too_large` | 证据段或请求超上限；超出写入准入阈值（第一版不报，见第 5.4 节「写入准入」）；不可分页的结果超出外化面的结果预算；一个 op 的前提超过 16 条，或前提目标已被 1,000 条有效声明指向 |
 | `sql_rejected` | 受限 SQL 校验不过（含引用了不存在或不可见的表、类型或单位不合、超出上限），或执行时求值出错（`runtime`） |
 | `sql_timeout` | 受限 SQL 执行超时 |
-| `draft_outdated` | 草稿的 `base_version` 不是当前版本，或迁移进行中；确认时草稿所改结构的那张表已被写入（`table_written`），`migrate` 对试跑之后的新写入求值失败（`migrate_failed`），或草稿要改成的 slot 名已被另一个 slot 用着（`name_taken`） |
+| `draft_outdated` | 草稿的 `base_version` 不是当前版本，或迁移进行中；确认时草稿所改结构的那张表已被写入（`table_written`），`migrate` 对试跑之后的新写入求值失败（`migrate_failed`），草稿要改成的 slot 名已被另一个 slot 用着（`name_taken`），或草稿收紧的约束被其间写入的值违反而没给 `backfill`（`backfill_required`） |
 | `field_unmatched` | 草稿里有已有字段没匹配到、也没列入删除 |
 | `confirmation_mismatch` | 解决事项时绑定的内容对不上；恢复备份或导入之前拿到的 `item_ver` |
 | `item_closed` | 事项已用不同处理方式解决、已被取代，或 `deletion` 的宽限期已过（同一处理方式重发是重放，不报错） |

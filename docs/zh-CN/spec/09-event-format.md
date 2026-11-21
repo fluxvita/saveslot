@@ -1772,7 +1772,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | | `unit` | `quantity`：`{"code": <单位代码>, "dimension": <量纲标识>, "to_base": <十进制字符串>}`。`to_base` 是换算到该量纲基准单位的系数；货币与温度没有（每种货币、每种温度单位自成量纲，不换算）。代码、量纲与系数取自单位词表 `units@1`（[`03-data-model/10-types-and-units.md`](03-data-model/10-types-and-units.md)） |
 | | `precision` | `quantity`、`decimal`：`{"scale": <小数位数 0–12>, "rounding": "half_up" \| "half_even"}`。字段没声明时由编译器按默认回填（货币取 ISO 4217 的最小单位位数，其余 6；舍入 `half_up`）。写入换算后的舍入、同值判断、`min` / `max` 校验都按它；字面命中比的是原始值 |
 | | `ref` | `{"table": <表 ID>, "target": "row" \| "entity"}` |
-| | `migrate` | 这一版对该字段做的确定性转换：`{"sql": <按上一版的表 ID、字段 ID 绑定的表达式>}`。第一版表达式里只能出现本字段在上一版里的 ID 与常量；只对带值的项求值。同量纲换单位由编译器生成 |
+| | `migrate` | 这一版对该字段做的确定性转换：`{"sql": <按上一版的表 ID、字段 ID 绑定的表达式>}`。第一版表达式里只能出现本字段在上一版里的 ID 与常量；只对带值的项求值。同量纲换单位不写 `migrate`，按新旧单位换算（[`03-data-model/07`](03-data-model/07-schema-evolution.md)「确定性转换怎么重放」） |
 | | `backfill` | 收紧约束时对违反行的补值：`{"sql": …}`（同样只引用本字段；只对有旧值的位置求值）或 `{"const": <值>}`（没有旧值的位置只有它给值；新增必填字段、可选改必填一律必须是这一种，不看表里有没有行）。两种形式不同时出现 |
 | | `from` | 这一版的该字段在上一版里对应的字段 ID（改名、换类型时）。新增字段没有 |
 | 派生表 | `rule.id`、`rule.version` | 规则 ID 与版本。规则文本或它依赖的字段定义有变化时版本加 1 |

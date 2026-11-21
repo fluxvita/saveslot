@@ -9,13 +9,21 @@
 // What this compiles: the changes that touch the catalog only — they build no physical table, so a
 // switch only moves the pointer: `rename_slot`, `rename_table`, `rename_field`, `change_description`,
 // `change_aliases`, `change_duplicate_keys`, `change_together`, `loosen_constraint`, `drop_table`,
-// and a new base table (`add_table`). Any other difference between the draft and the current
+// and a new base table (`add_table`). And the changes that rebuild a table into a physical table of
+// the next version (`t_<id>_v<sv>`, 08 «物理做法»): fields added (`add_optional_field`,
+// `add_required_field` with a constant `backfill`) and dropped (`drop_field`), a constraint tightened
+// (`tighten_constraint`: a constant `backfill`, or else the field handed back as a check, counted on
+// the table by the caller), precision (`change_precision`) and a unit of the same dimension
+// (`change_unit`, no `migrate`). Bounds are compared as the new unit and precision have them; what a
+// change of unit or precision would break on a bounded field is not counted in this version
+// (`not_in_this_version`, `not_implemented`). Any other difference between the draft and the current
 // version is `not_implemented` with the change's code as `what`: it is classified by what it is,
 // never taken for a change that needs nothing. Not here either: a derived table in the draft, a
-// `migrate` or `backfill`, a field to add or drop, a time zone change.
+// `migrate` or an expression `backfill`, a time zone change, the time type and keys of a table.
 //
 // Errors, in this order so the most telling one wins: a key v1 does not support, something not
-// compiled yet that the draft's form already shows (a derived table, `migrate`, `backfill`), the
+// compiled yet that the draft's form already shows (a derived table, `migrate`, an expression
+// `backfill`), the
 // document's form, `base_version` not the current one, a field of the current version neither
 // matched nor dropped, the compilation rules (every finding, document order; the rules of a table
 // the draft does not list are not checked again), then what is not compiled yet in the differences.
@@ -35,12 +43,15 @@ import type {
   CompiledDerivedTable,
   CompiledSchema,
   CompiledTable,
+  CompiledUnit,
   FieldId,
+  FieldValue,
   SchemaChangeCode,
   TableId,
 } from "@fluxvita/saveslot-contract-core";
 import { SCHEMA_CHANGE_CODES } from "@fluxvita/saveslot-contract-core";
-import { compiledWarnings, compileTable, type Ids } from "./compile.ts";
+import { convertValue, type NumberShape } from "../values/index.ts";
+import { compiledWarnings, compileField, compileTable, type Ids } from "./compile.ts";
 import { isObject, readDocument, unsupportedKey } from "./document.ts";
 import { derivedTableDocument } from "./document-of.ts";
 import type {
@@ -54,11 +65,49 @@ import type {
   DocSlot,
   DocTable,
   SchemaDetail,
+  TightenedCheck,
 } from "./model.ts";
 import { defaultScale, unitOf } from "./units.ts";
 import { compareDecimal, fold, validate } from "./validate.ts";
 
 type Obj = Record<string, unknown>;
+
+/**
+ * An old bound (canonical decimal text) as the field's new unit and precision have it; none when it
+ * passes what a value can be once converted.
+ */
+function asNew(
+  bound: string,
+  shapes: { readonly from: NumberShape; readonly to: NumberShape },
+): string | undefined {
+  const r = convertValue(bound, shapes.from, shapes.to);
+  return r.ok ? r.value : undefined;
+}
+
+/**
+ * Where a table as the draft writes it uses a field by `name` that none of its fields has (a field it
+ * drops): its time field, entity key, external key, field groups and duplicate keys, as positions.
+ */
+function keysNaming(t: DocTable, name: string): string[] {
+  const n = fold(name);
+  if (t.fields.some((f) => fold(f.name) === n)) return [];
+  const out: string[] = [];
+  if (t.time.type === "event" && fold(t.time.field) === n) out.push(`${t.path}/time/field`);
+  const lists = [
+    ["entity_key", t.entity_key],
+    ["external_key", t.external_key],
+  ] as const;
+  for (const [key, xs] of lists)
+    for (const [k, x] of (xs ?? []).entries()) if (fold(x) === n) out.push(`${t.path}/${key}/${k}`);
+  const groups = [
+    ["together", t.together],
+    ["duplicate_keys", t.duplicate_keys],
+  ] as const;
+  for (const [key, gs] of groups)
+    for (const [i, g] of (gs ?? []).entries())
+      for (const [k, x] of g.entries()) if (fold(x) === n) out.push(`${t.path}/${key}/${i}/${k}`);
+  return out;
+}
 
 const TABLE_ID = /^t[1-9][0-9]{0,8}$/;
 const FIELD_ID = /^f[1-9][0-9]{0,8}$/;
@@ -76,7 +125,11 @@ interface Extras {
     readonly id?: string;
     readonly dropFields: readonly string[];
     readonly fieldIds: readonly (string | undefined)[];
+    /** By field position: a constant `backfill` as written (`{"const": …}`), when given. */
+    readonly backfills: readonly ({ readonly raw: unknown } | undefined)[];
   }[];
+  /** `backfill_both_forms`: a `backfill` with its constant and its expression form both given. */
+  readonly bothForms: readonly string[];
 }
 
 const malformed = (param: string): CompileError => ({
@@ -177,13 +230,14 @@ function extract(
   }
   if (!("tables" in rest)) rest["tables"] = [];
 
-  const tables: { id?: string; dropFields: string[]; fieldIds: (string | undefined)[] }[] = [];
+  const tables: Extras["tables"][number][] = [];
+  const bothForms: string[] = [];
   const list = rest["tables"];
   if (Array.isArray(list)) {
     for (const [i, t] of list.entries()) {
       const at = `tables/${i}`;
       if (!isObject(t)) {
-        tables.push({ dropFields: [], fieldIds: [] });
+        tables.push({ dropFields: [], fieldIds: [], backfills: [] });
         continue;
       }
       // A derived table in a change: its rule, fields and inferred keys are compiled by a later
@@ -221,7 +275,7 @@ function extract(
             rule: { sql: ruleTexts.get(was.id), time_dependency: was.rule.time_dependency },
             fields: was.fields.map((f) => ({ name: f.name, description: f.description })),
           };
-          tables.push({ dropFields: [], fieldIds: [] });
+          tables.push({ dropFields: [], fieldIds: [], backfills: [] });
           continue;
         }
         const what =
@@ -232,10 +286,12 @@ function extract(
               : "a change to a derived table";
         return { code: "not_implemented", what, param: at };
       }
-      const extra: { id?: string; dropFields: string[]; fieldIds: (string | undefined)[] } = {
-        dropFields: [],
-        fieldIds: [],
-      };
+      const extra: {
+        id?: string;
+        dropFields: string[];
+        fieldIds: (string | undefined)[];
+        backfills: ({ raw: unknown } | undefined)[];
+      } = { dropFields: [], fieldIds: [], backfills: [] };
       if ("id" in t) {
         if (typeof t["id"] !== "string" || !TABLE_ID.test(t["id"])) return malformed(`${at}/id`);
         extra.id = t["id"];
@@ -251,16 +307,29 @@ function extract(
         for (const [j, f] of t["fields"].entries()) {
           if (!isObject(f)) {
             extra.fieldIds.push(undefined);
+            extra.backfills.push(undefined);
             continue;
           }
-          for (const k of ["migrate", "backfill"]) {
-            if (k in f)
-              return {
-                code: "not_implemented",
-                what: `a ${k} in a change`,
-                param: `${at}/fields/${j}/${k}`,
-              };
-          }
+          if ("migrate" in f)
+            return {
+              code: "not_implemented",
+              what: "a migrate in a change",
+              param: `${at}/fields/${j}/migrate`,
+            };
+          // `backfill` (07 «收紧约束»): `{"const": <value>}` or `{"sql": …}`, one of the two. The
+          // expression form comes with the restricted SQL of migrations.
+          if ("backfill" in f) {
+            const b = f["backfill"];
+            const p = `${at}/fields/${j}/backfill`;
+            if (!isObject(b) || Object.keys(b).some((k) => k !== "const" && k !== "sql"))
+              return malformed(p);
+            if ("const" in b && "sql" in b) bothForms.push(p);
+            else if ("sql" in b)
+              return { code: "not_implemented", what: "a backfill expression", param: `${p}/sql` };
+            else if (!("const" in b)) return malformed(p);
+            extra.backfills.push({ raw: b["const"] });
+            delete f["backfill"];
+          } else extra.backfills.push(undefined);
           if ("id" in f) {
             if (typeof f["id"] !== "string" || !FIELD_ID.test(f["id"]))
               return malformed(`${at}/fields/${j}/id`);
@@ -279,6 +348,7 @@ function extract(
       ...(renameTo !== undefined ? { renameTo } : {}),
       dropTables,
       tables,
+      bothForms,
     },
   };
 }
@@ -520,6 +590,8 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     else dropped.add(c.id);
   }
   const droppedFields = new Map<string, Set<string>>();
+  /** Where the draft names each field it drops, by table ID and field ID. */
+  const droppedAt = new Map<string, string>();
   for (const m of matches) {
     const set = new Set<string>();
     droppedFields.set(m.doc.path, set);
@@ -533,7 +605,10 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
       if (cf === undefined) findings.push({ path: at, code: "unknown_reference" });
       else if (m.fields.includes(cf) || set.has(cf.id))
         findings.push({ path: at, code: "duplicate_entry" });
-      else set.add(cf.id);
+      else {
+        set.add(cf.id);
+        droppedAt.set(`${cur.id}/${cf.id}`, at);
+      }
     }
   }
 
@@ -690,6 +765,26 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     if (by.length > 0)
       findings.push({ path: `drop_tables/${i}`, code: "still_referenced", referenced_by: by });
   }
+  // A field to drop that the change keeps still using (07 «删除有依赖的对象»; 04-contract
+  // «schema_draft» still_referenced): its own table's time field and keys as the draft writes them,
+  // named by their positions in it, then the derived tables still reading it, by name.
+  for (const [key, at] of droppedAt) {
+    const [table, field] = key.split("/") as [string, string];
+    const m = matches.find((x) => x.current?.id === table);
+    const name = m?.current?.fields.find((f) => f.id === field)?.name;
+    const by = m === undefined || name === undefined ? [] : keysNaming(m.doc, name);
+    by.push(
+      ...current.tables
+        .filter(
+          (r) =>
+            r.kind === "derived" &&
+            !dropped.has(r.id) &&
+            r.rule.depends_on.some((d) => d.table === table && d.field === field),
+        )
+        .map((r) => r.name),
+    );
+    if (by.length > 0) findings.push({ path: at, code: "still_referenced", referenced_by: by });
+  }
   if (findings.length > 0) return fail({ code: "validation_failed", details: findings });
 
   // From here the draft is a draft of this slot: what differs is classified.
@@ -719,6 +814,26 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
   if (doc.timezone !== current.timezone) return notYet("change_timezone", "timezone");
 
   const patched = new Map<string, CompiledBaseTable>();
+  /** Tables whose physical shape or values change: a new physical table (08 «物理做法»). */
+  const rebuilt = new Set<string>();
+  /** Fields to add, compiled once the tables have their IDs. */
+  const added: { readonly m: TableMatch; readonly j: number }[] = [];
+  /** Findings of the classification: constants missing or not of the field. */
+  const late: SchemaDetail[] = extras.bothForms.map((path) => ({
+    path,
+    code: "backfill_both_forms" as const,
+  }));
+  const checks: TightenedCheck[] = [];
+  /** A constant `backfill` for field `f`, canonical, or its finding. */
+  const constOf = (f: CompiledBaseField, raw: unknown, path: string): FieldValue | undefined => {
+    if (input.constValue === undefined) throw new Error("a constant backfill without constValue");
+    const r = input.constValue(f, raw, path);
+    if ("detail" in r) {
+      late.push(r.detail);
+      return undefined;
+    }
+    return r.value;
+  };
   for (const m of matches) {
     if (m.current === undefined) continue;
     const c = m.current;
@@ -733,16 +848,21 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     const ids = (names: readonly string[]): (string | undefined)[] =>
       names.map((n) => idOf.get(fold(n)));
 
-    // Table level. What shapes the physical table or the keys is not compiled yet.
-    if (m.extra.dropFields.length > 0 || droppedFields.get(s.path)?.size) {
-      return notYet("drop_field", `${s.path}/drop_fields`);
+    // Table level. Fields dropped or added change the physical shape: a new physical table. The
+    // time type and the keys are not compiled for a change yet.
+    const gone = droppedFields.get(s.path) ?? new Set<string>();
+    for (const id of gone) {
+      record({ ...tid, field: id as FieldId }, "drop_field", "metadata", {
+        compatible: false,
+        destructive: true,
+      });
+      rebuilt.add(c.id);
     }
-    for (const [j, cf] of m.fields.entries()) {
-      if (cf === undefined) {
-        const f = s.fields[j] as DocField;
-        return notYet(f.required ? "add_required_field" : "add_optional_field", f.path);
-      }
-    }
+    m.fields.forEach((cf, j) => {
+      if (cf !== undefined) return;
+      added.push({ m, j });
+      rebuilt.add(c.id);
+    });
     if (s.time.type !== c.time.type) return notYet("change_time_type", `${s.path}/time`);
     if (s.time.type === "event" && c.time.type === "event") {
       if (idOf.get(fold(s.time.field)) !== c.time.field)
@@ -808,97 +928,132 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
       record(tid, "change_together", "metadata", { compatible: true });
     }
 
-    // Fields: renames, text, and constraints only loosened.
-    const fields = c.fields.map((cf) => {
-      const j = m.fields.indexOf(cf);
-      const f = s.fields[j] as DocField;
-      const target = { ...tid, field: cf.id };
-      const patch: Record<string, unknown> = {};
-      const g = cf as CompiledBaseField & {
-        min?: string;
-        max?: string;
-        values?: readonly string[];
-        unit?: { code: string; dimension: string };
-        precision?: { scale: number; rounding: "half_up" | "half_even" };
-        ref?: { table: string; target: "row" | "entity" };
-      };
-      if (f.type !== cf.type)
-        return {
-          notYet: [
-            f.type === "ref" || cf.type === "ref" ? "change_ref" : "change_type",
-            f.path,
-          ] as const,
+    // Fields kept: renames, text, constraints loosened or tightened, precision, unit.
+    const fields = c.fields
+      .filter((cf) => !gone.has(cf.id))
+      .map((cf) => {
+        const j = m.fields.indexOf(cf);
+        const f = s.fields[j] as DocField;
+        const target = { ...tid, field: cf.id };
+        const patch: Record<string, unknown> = {};
+        const g = cf as CompiledBaseField & {
+          min?: string;
+          max?: string;
+          values?: readonly string[];
+          unit?: { code: string; dimension: string };
+          precision?: { scale: number; rounding: "half_up" | "half_even" };
+          ref?: { table: string; target: "row" | "entity" };
         };
-      if (f.type === "quantity") {
-        const u = unitOf(f.unit as string);
-        if (u !== undefined && u.code !== g.unit?.code) {
+        if (f.type !== cf.type)
           return {
             notYet: [
-              u.dimension === g.unit?.dimension ? "change_unit" : "change_dimension",
-              `${f.path}/unit`,
+              f.type === "ref" || cf.type === "ref" ? "change_ref" : "change_type",
+              f.path,
             ] as const,
           };
+        let unitChanged = false;
+        if (f.type === "quantity") {
+          const u = unitOf(f.unit as string);
+          if (u !== undefined && u.code !== g.unit?.code) {
+            if (u.dimension !== g.unit?.dimension)
+              return { notYet: ["change_dimension", `${f.path}/unit`] as const };
+            // The same dimension: values are converted from the old unit to the new one, with no
+            // migrate (07 «确定性转换怎么重放»).
+            patch["unit"] = { ...u };
+            unitChanged = true;
+          }
         }
-      }
-      if (f.type === "ref") {
-        const to = f.ref === undefined ? undefined : refId(f.ref.table, idByFinalName, doc.slot);
-        if (to !== g.ref?.table || f.ref?.target !== g.ref?.target)
-          return { notYet: ["change_ref", `${f.path}/ref`] as const };
-      }
-      let loosened = false;
-      if (f.type === "decimal" || f.type === "quantity") {
-        const unit = f.type === "quantity" ? unitOf(f.unit as string) : undefined;
-        const scale = f.scale ?? (unit !== undefined ? defaultScale(unit) : 6);
-        const rounding = f.rounding ?? "half_up";
-        const was = g.precision as { scale: number; rounding: "half_up" | "half_even" };
-        if (rounding !== was.rounding || scale < was.scale)
-          return { notYet: ["change_precision", f.path] as const };
-        if (scale > was.scale) {
-          patch["precision"] = { ...was, scale };
-          loosened = true;
+        if (f.type === "ref") {
+          const to = f.ref === undefined ? undefined : refId(f.ref.table, idByFinalName, doc.slot);
+          if (to !== g.ref?.table || f.ref?.target !== g.ref?.target)
+            return { notYet: ["change_ref", `${f.path}/ref`] as const };
         }
-      }
-      if (f.type === "integer" || f.type === "decimal" || f.type === "quantity") {
+        let loosened = false;
         let tightened = false;
-        for (const k of ["min", "max"] as const) {
-          const now = f[k];
-          const before = g[k];
-          if (now === before) continue;
-          // An absent bound is no bound: dropping one loosens, adding one tightens.
-          const looser =
-            now === undefined ||
-            (before !== undefined &&
-              (k === "min" ? compareDecimal(now, before) < 0 : compareDecimal(now, before) > 0));
-          if (looser) {
-            patch[k] = now;
+        let requiredNow = false;
+        /** `change_precision`: `lost` when the scale goes down (digits dropped), else `kept`. */
+        let precision: "lost" | "kept" | undefined;
+        /** A decimal or quantity: its values' shape before and after (unit and precision). */
+        let shapes: { readonly from: NumberShape; readonly to: NumberShape } | undefined;
+        if (f.type === "decimal" || f.type === "quantity") {
+          const unit = f.type === "quantity" ? unitOf(f.unit as string) : undefined;
+          const scale = f.scale ?? (unit !== undefined ? defaultScale(unit) : 6);
+          const rounding = f.rounding ?? "half_up";
+          const was = g.precision as { scale: number; rounding: "half_up" | "half_even" };
+          shapes = {
+            from: { ...(g.unit !== undefined ? { unit: g.unit as CompiledUnit } : {}), ...was },
+            to: { ...(unit !== undefined ? { unit } : {}), scale, rounding },
+          };
+          if (rounding !== was.rounding || scale < was.scale) {
+            patch["precision"] = { scale, rounding };
+            precision = scale < was.scale ? "lost" : "kept";
+          } else if (scale > was.scale) {
+            patch["precision"] = { ...was, scale };
             loosened = true;
-          } else tightened = true;
+          }
         }
-        if (tightened) return { notYet: ["tighten_constraint", f.path] as const };
-      }
-      if (f.type === "enum") {
-        const now = f.values as readonly string[];
-        const before = g.values as readonly string[];
-        // Added values loosen; a reordering alone takes nothing away and changes no value's meaning,
-        // so it is the same kind of change (automatic, old writes accepted, no rebuild).
-        if (!same(now, before)) {
-          if (!before.every((v) => now.includes(v)))
-            return { notYet: ["tighten_constraint", `${f.path}/values`] as const };
-          patch["values"] = [...now];
-          loosened = true;
+        if (f.type === "integer" || f.type === "decimal" || f.type === "quantity") {
+          for (const k of ["min", "max"] as const) {
+            const now = f[k];
+            const before = g[k];
+            if (now !== before) patch[k] = now;
+            // A bound is in the field's unit (07 «收紧约束»): the old one compared as the new unit
+            // and precision would have it, `5 m → 5 km` on `min` tightening. One past 18 integer
+            // digits once converted bounds nothing a value can be.
+            const was =
+              before === undefined || shapes === undefined ? before : asNew(before, shapes);
+            if (
+              now === was ||
+              (now !== undefined && was !== undefined && compareDecimal(now, was) === 0)
+            )
+              continue;
+            // An absent bound is no bound: dropping one loosens, adding one tightens.
+            const looser =
+              now === undefined ||
+              (was !== undefined &&
+                (k === "min" ? compareDecimal(now, was) < 0 : compareDecimal(now, was) > 0));
+            if (looser) loosened = true;
+            else tightened = true;
+          }
         }
-      }
-      if (f.required !== (cf.required === true)) {
-        if (f.required) return { notYet: ["tighten_constraint", `${f.path}/required`] as const };
-        patch["required"] = undefined;
-        loosened = true;
-      }
-      return { f, cf, target, patch, loosened };
-    });
+        if (f.type === "enum") {
+          const now = f.values as readonly string[];
+          const before = g.values as readonly string[];
+          // Added values loosen; a reordering alone takes nothing away and changes no value's meaning,
+          // so it is the same kind of change (automatic, old writes accepted, no rebuild).
+          if (!same(now, before)) {
+            patch["values"] = [...now];
+            if (!before.every((v) => now.includes(v))) tightened = true;
+            if (now.some((v) => !before.includes(v)) || !tightened) loosened = true;
+          }
+        }
+        if (f.required !== (cf.required === true)) {
+          if (f.required) {
+            patch["required"] = true;
+            requiredNow = true;
+          } else {
+            patch["required"] = undefined;
+            loosened = true;
+          }
+        }
+        return {
+          f,
+          cf,
+          j,
+          target,
+          patch,
+          loosened,
+          tightened,
+          requiredNow,
+          precision,
+          unitChanged,
+        };
+      });
     const out: CompiledBaseField[] = [];
     for (const x of fields) {
       if ("notYet" in x) return notYet(x.notYet[0], x.notYet[1]);
-      const { f, cf, target, patch, loosened } = x;
+      const { f, cf, j, target, patch, loosened, tightened, requiredNow, precision, unitChanged } =
+        x;
       const next: Record<string, unknown> = { ...cf };
       if (f.name !== cf.name) {
         next["name"] = f.name;
@@ -932,6 +1087,37 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
           autoClass: "loosen_constraint",
         });
       }
+      // Deterministic changes (07 «改动分类»): automatic only on a table never written and unused,
+      // which this version does not compute, so they wait for confirmation.
+      if (unitChanged) record(target, "change_unit", "deterministic", { compatible: true });
+      if (precision !== undefined)
+        record(target, "change_precision", "deterministic", {
+          compatible: true,
+          destructive: precision === "lost",
+        });
+      if (tightened || requiredNow)
+        record(target, "tighten_constraint", "deterministic", {
+          compatible: true,
+          destructive: true,
+        });
+      if (unitChanged || precision !== undefined || tightened || requiredNow) rebuilt.add(c.id);
+      // The `backfill` (07 «收紧约束»): a constant for optional made required, always; for a bound
+      // or enum value taken away, a constant or else no position in effect may break it.
+      const bf = m.extra.backfills[j];
+      const field = next as unknown as CompiledBaseField;
+      if (bf !== undefined) {
+        if (!tightened && !requiredNow) return fail(malformed(`${f.path}/backfill`));
+        const value = constOf(field, bf.raw, `${f.path}/backfill/const`);
+        if (value !== undefined) next["backfill"] = { const: value };
+      } else if (requiredNow) late.push({ path: f.path, code: "backfill_const_required" });
+      else if (
+        (unitChanged || precision === "lost") &&
+        (tightened || next["min"] !== undefined || next["max"] !== undefined)
+      )
+        // What breaks the field as it would be is known only with each value converted and rounded
+        // anew, which comes with building a version: not taken in this version yet.
+        return fail({ code: "not_in_this_version", reason: "not_implemented", param: f.path });
+      else if (tightened) checks.push({ table: c.id as TableId, field, path: f.path });
       out.push(next as unknown as CompiledBaseField);
     }
     const next: Record<string, unknown> = { ...c, ...set, fields: out };
@@ -980,6 +1166,49 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     table: tableIds,
     field: (t, name) => fieldIds.get(t)?.get(fold(name)) as FieldId,
   };
+  // Fields added to kept tables: numbered from the table's next free number (field IDs are never
+  // reused, given-up versions included), after the fields kept, in the draft's order.
+  const nextField = new Map<string, number>();
+  for (const { m, j } of added) {
+    const c = m.current as CompiledBaseTable;
+    const f = m.doc.fields[j] as DocField;
+    if (input.nextFieldNumber === undefined)
+      throw new Error("a field added without nextFieldNumber");
+    const n = nextField.get(c.id) ?? input.nextFieldNumber(c.id);
+    if (!Number.isSafeInteger(n) || n < 1 || n > 999_999_999)
+      throw new Error(`not a field number: ${n}`);
+    nextField.set(c.id, n + 1);
+    const cf = compileField(f, `f${n}`, merged, ids) as unknown as Record<string, unknown>;
+    const target = { table: c.id as TableId, field: cf["id"] as FieldId };
+    const bf = m.extra.backfills[j];
+    if (f.required) {
+      // A required field added: a constant fills every position in effect (07 «改动分类»).
+      if (bf === undefined) late.push({ path: f.path, code: "backfill_const_required" });
+      else {
+        const value = constOf(
+          cf as unknown as CompiledBaseField,
+          bf.raw,
+          `${f.path}/backfill/const`,
+        );
+        if (value !== undefined) cf["backfill"] = { const: value };
+      }
+      record(target, "add_required_field", "deterministic", { compatible: true });
+    } else {
+      if (bf !== undefined) return fail(malformed(`${f.path}/backfill`));
+      record(target, "add_optional_field", "metadata", {
+        compatible: true,
+        autoClass: "add_optional_field",
+      });
+    }
+    const t = patched.get(c.id) as CompiledBaseTable;
+    patched.set(c.id, { ...t, fields: [...t.fields, cf as unknown as CompiledBaseField] });
+  }
+  if (late.length > 0)
+    return fail({
+      code: "validation_failed",
+      details: late,
+    });
+
   const compiledFresh = fresh.map((m) => compileTable(m.doc, merged, ids, sv));
   for (const t of compiledFresh) {
     record({ table: t.id }, "add_table", "create", { compatible: true, autoClass: "add_table" });
@@ -987,10 +1216,11 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
 
   // Kept tables keep their physical tables: `since` says which version built them, which an omitted
   // `since` no longer would (it means this version).
-  const carry = <T extends CompiledTable>(t: T): T => ({
-    ...t,
-    physical: { table: t.physical.table, since: t.physical.since ?? current.sv },
-  });
+  // A table rebuilt gets a physical table of this version (`since` left out: this version).
+  const carry = <T extends CompiledTable>(t: T): T =>
+    rebuilt.has(t.id)
+      ? { ...t, physical: { table: `t_${t.id}_v${sv}` } }
+      : { ...t, physical: { table: t.physical.table, since: t.physical.since ?? current.sv } };
   const compiled: CompiledSchema = {
     ...current,
     name: extras.renameTo ?? current.name,
@@ -1015,6 +1245,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     outcome: changes.every((c) => c.auto) ? "applied" : "pending",
     targetVersion: sv,
     warnings,
+    checks,
   };
 }
 

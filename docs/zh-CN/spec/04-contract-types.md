@@ -2100,7 +2100,7 @@ interface ValidationDetail {
   // table：写入的明细都给（这个 op 的表），写法同回执的 slot.table
   allowed_units?: string[]; allowed_values?: string[]; min?: string; max?: string;
   example?: Value;               // type_mismatch：这个字段类型的一个合法取值，照 ops 的 set 里的写法。与这次给的值无关；针对这次的值算出的改法是 suggestion，两者可以同时出现
-  rows?: number; samples?: TargetRef[];   // backfill_required：违反的行数与样例
+  rows?: number; samples?: TargetRef[];   // backfill_required：违反的行数与样例（至多 5 个，只给位置不给值；状态类表按实体计）
   referenced_by?: string[];      // still_referenced：依赖方。草稿里列出了它时是它在文档里的位置（同 path 的写法）；没列出时是名字（表.字段，派生表给表名）
   reason?: "not_required"        // 只用于 key_not_applicable 落在事件类表的 time.field 上：它指的字段不是必填
     | "count" | "length" | "empty" | "control"
@@ -2166,7 +2166,7 @@ type ValidationDetailCode =
 | `too_large` | `evidence_segment` / `request`（一次请求的证据总字节数）/ `ops`（一次写入的 op 个数）/ `evidence_segments`（一次请求的证据段数，含 `source_ref` 段）/ `request_body`（HTTP：请求体超过服务能接收的上限）/ `admission` / `result_budget` / `premise_entries` / `premise_fan_in` | `limit_bytes?`、`actual_bytes?`（`evidence_segment`、`request`：字节数）；`ops` 时 `limit`、`actual`（op 个数）；`evidence_segments` 时 `limit`、`actual`（段数）；`admission` 时 `estimated_rows`、`suggested_batch`（第一版整条规则重算，代价不随请求大小变化，准入不拒绝、不报 `admission`；按受影响分区估算之后启用）；`result_budget` 时 `narrow_by: string[]`；`premise_fan_in` 时 `target: TargetRef`、`count`（目标当前被多少条有效声明指向）。这些原因都发生在落账之前；已经落账的操作回执超预算时不报错，截短并带 `omitted[]` |
 | `sql_rejected` | `syntax`（语法错误，文本不是良构的 Unicode）/ `not_select` / `function` / `node` / `system_time` / `unknown_name` / `type`（类型或单位不合）/ `limit`（超出上限）/ `runtime`（求值出错，如 64 位整数溢出） | `line`、`node`（不暴露物理名）、`use?: "history"` |
 | `sql_timeout` | — | `elapsed_ms` |
-| `draft_outdated` | `base_version` / `migrating` / `table_written`（确认时，草稿所改结构的那张表已被写入）/ `migrate_failed`（确认时，`migrate` 对试跑之后的新写入求值失败）/ `name_taken`（确认时，草稿要改成的 slot 名已被另一个 slot 用着） | `current_sv`；`migrating` 时 `migration: MigrationStatus` |
+| `draft_outdated` | `base_version` / `migrating` / `table_written`（确认时，草稿所改结构的那张表已被写入）/ `migrate_failed`（确认时，`migrate` 对试跑之后的新写入求值失败）/ `name_taken`（确认时，草稿要改成的 slot 名已被另一个 slot 用着）/ `backfill_required`（确认时，草稿收紧而没给 `backfill` 的约束被其间写入的值违反） | `current_sv`；`migrating` 时 `migration: MigrationStatus`；`backfill_required` 时 `details`（形状同 `schema_draft` 的 `backfill_required` 明细） |
 | `field_unmatched` | — | `fields: Array<{table, id, name}>` |
 | `confirmation_mismatch` | `changed` / `restored` | `current: ItemDetail`（含新的 `item_ver`） |
 | `item_closed` | `resolved` / `superseded` / `expired` | `resolution?` / `superseded?`（形状同事项详情）；`expired`（`deletion` 的宽限期已过）：已执行给 `resolution`（执行一支），尚未执行给 `expires_at` |
@@ -2195,7 +2195,7 @@ type ValidationDetailCode =
 | `deletion_preview` | `not_found`、`handle_expired`、`preview_outdated`、`too_large`（`result_budget`） |
 | `pending` | `not_found`（含 `slot`）、`handle_expired`、`too_large`（`result_budget`） |
 | `write` | `unknown_table`、`unknown_field`、`not_found`（含前提指向的行）、`revoked`、`derived_readonly`、`validation_failed`、`read_first`、`schema_incompatible`、`too_large`（含 `premise_entries`、`premise_fan_in`） |
-| `resolve` | `not_found`、`item_closed`、`confirmation_mismatch`、`read_first`、`draft_outdated`（`table_written` / `migrate_failed` / `name_taken`：`schema_change` 的 `confirm`），以及触发的写入可能返回的 |
+| `resolve` | `not_found`、`item_closed`、`confirmation_mismatch`、`read_first`、`draft_outdated`（`table_written` / `migrate_failed` / `name_taken` / `backfill_required`：`schema_change` 的 `confirm`），以及触发的写入可能返回的 |
 | `schema_draft` | `validation_failed`、`draft_outdated`、`field_unmatched`、`too_large` |
 | `delete` | `handle_expired`、`preview_outdated` |
 | `connections.*` | `not_found`（含 `connections.issue` 的 `slots` 里不存在的 slot：`slot`） |

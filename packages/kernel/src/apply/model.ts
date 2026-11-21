@@ -215,6 +215,18 @@ export type Change =
       readonly draft_id: string;
       readonly state: "superseded" | "rejected";
     }
+  /**
+   * A confirmed draft's migration begun (09 §5.5 `schema.migration_started`): its row only. The slot
+   * stays at its version; nothing is built (08 «状态机»: a table being built is local state).
+   */
+  | {
+      readonly kind: "migration_start";
+      readonly id: string;
+      readonly slot: string;
+      readonly draft_id: string;
+      readonly from: number;
+      readonly to: number;
+    }
   | { readonly kind: "item_insert"; readonly row: ItemRow }
   | {
       readonly kind: "item_update";

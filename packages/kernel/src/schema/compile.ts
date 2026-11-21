@@ -60,9 +60,10 @@ export interface Ids {
   readonly field: (t: DocTable, name: string) => FieldId;
 }
 
-function compileField(f: DocField, index: number, doc: DocSlot, ids: Ids): CompiledBaseField {
+/** A base table's field as compiled, under ID `id` (a new table's fields are numbered in order). */
+export function compileField(f: DocField, id: string, doc: DocSlot, ids: Ids): CompiledBaseField {
   const out: Record<string, unknown> = {
-    id: `f${index + 1}`,
+    id,
     name: f.name,
     type: f.type,
     description: f.description,
@@ -105,7 +106,7 @@ export function compileTable(t: DocTable, doc: DocSlot, ids: Ids, sv = 1): Compi
     time: t.time.type === "event" ? { type: "event", field: ref(t.time.field) } : t.time,
     // A new physical table: `since` is this version and left out (09 §7 physical).
     physical: { table: `t_${id}_v${sv}` },
-    fields: t.fields.map((f, i) => compileField(f, i, doc, ids)),
+    fields: t.fields.map((f, i) => compileField(f, `f${i + 1}`, doc, ids)),
   };
   if (t.entity_key !== undefined) out["entity_key"] = t.entity_key.map(ref);
   if (t.together !== undefined) out["together"] = t.together.map((g) => g.map(ref));

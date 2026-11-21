@@ -30,17 +30,18 @@ const TEST_FILE = "\\.(test|fixture)\\.ts$";
 /** Kernel module → kernel modules it may import (§4 table "依赖" column). */
 const KERNEL_MODULE_DEPS = {
   store: [],
+  values: [],
   log: ["store"],
   audit: ["store"],
   flags: ["store"],
   rules: ["store"],
-  request: ["schema", "time"],
+  request: ["schema", "time", "values"],
   time: ["store"],
   delta: ["store"],
   judge: ["time", "request", "delta"],
   derive: ["rules", "log", "delta"],
-  apply: ["store", "log", "flags", "rules", "time"],
-  schema: ["store", "log", "audit", "rules", "time", "apply", "derive"],
+  apply: ["store", "log", "flags", "rules", "time", "values"],
+  schema: ["store", "log", "audit", "rules", "time", "apply", "derive", "values"],
   pending: ["store", "log", "apply"],
   write: [
     "request",
@@ -79,6 +80,7 @@ const KERNEL_MODULE_DEPS = {
     "jobs",
     "sync",
     "maintenance",
+    "values",
   ],
 };
 

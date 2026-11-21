@@ -90,17 +90,22 @@ export async function numbering(tx: ReadTx) {
   );
   const tables: string[] = [];
   const rules: string[] = [];
+  // Each table's field IDs in every version compiled, given-up ones included: a field ID a
+  // rejected draft took is in its `schema.compiled` and is never used again either.
+  const fields = new Map<string, string[]>();
   for (const x of compiled.rows) {
     if (x.body === null) continue;
     const c = JSON.parse(x.body) as CompiledSchema;
     for (const t of c.tables) {
       tables.push(t.id);
       if (t.kind === "derived") rules.push(t.rule.id);
+      fields.set(t.id, [...(fields.get(t.id) ?? []), ...t.fields.map((f) => f.id)]);
     }
   }
   return {
     existingSlotNames: names.rows.map((x) => x.name),
     nextTableNumber: highest(tables, "t") + 1,
     nextRuleNumber: highest(rules, "r") + 1,
+    nextFieldNumber: (table: string) => highest(fields.get(table) ?? [], "f") + 1,
   };
 }

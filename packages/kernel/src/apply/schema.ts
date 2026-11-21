@@ -7,8 +7,9 @@
 // its `schema.compiled` (`pending`) takes its version number (a `schema_versions` row, pending),
 // `schema.superseded` or `schema.rejected` gives it up (the row and number stay); a switch from an
 // earlier version that rebuilds nothing (catalog-only changes, new tables), after an automatic
-// change or a confirmation, moves the pointer. Switches rebuilding tables and migrations stop
-// apply as not implemented, never skipped. So does a definition
+// change or a confirmation, moves the pointer. A migration begun (`schema.migration_started`) is
+// recorded, nothing built; it must go to a version rebuilding a table and have an ID of its own.
+// Switches rebuilding tables stop apply as not implemented, never skipped. So does a definition
 // with an external key, or with a derived rule this version does not evaluate: their indexes and
 // evaluation belong to later phases, and an empty table would leave the state silently behind the
 // log. Derived tables get their physical tables here (./derived.ts).
@@ -178,6 +179,26 @@ export interface SwitchInput {
   readonly from?: CompiledSchema;
 }
 
+/**
+ * Whether version `next` rebuilds a table of `current`: a table of both whose physical table is
+ * another one (07 «改动分类»; 08 «物理做法»). Only such a version has a migration (09 §4.5).
+ */
+export function rebuilds(current: CompiledSchema, next: CompiledSchema): boolean {
+  return next.tables.some((t) => {
+    const was = current.tables.find((x) => x.id === t.id);
+    return was !== undefined && was.physical.table !== t.physical.table;
+  });
+}
+
+/** What a `schema.migration_started` is checked against, read by the caller. */
+export interface MigrationInput {
+  /** The definitions of the versions it goes from and to, when the log has them. */
+  readonly from?: CompiledSchema;
+  readonly to?: CompiledSchema;
+  /** A migration with this ID is already recorded (in any slot). */
+  readonly idTaken: boolean;
+}
+
 /** The slot a `slot.removed` removes, as it is, read by the caller. */
 export interface RemoveInput {
   readonly currentSv: number | null;
@@ -222,6 +243,7 @@ export function planSchema(
     readonly switchTo?: SwitchInput;
     readonly slot?: SlotInput;
     readonly remove?: RemoveInput;
+    readonly migration?: MigrationInput;
   },
 ): Change[] | undefined {
   const notYet = (what: string) =>
@@ -286,6 +308,27 @@ export function planSchema(
           state: "rejected",
         },
       ];
+    // §5.5: a confirmed draft whose version rebuilds tables: the migration's row, nothing built.
+    case "schema.migration_started": {
+      const t = block("target");
+      const m = input.migration;
+      const inconsistent = (what: string) => new ApplyError("inconsistent", seq, what);
+      // An ID names one migration (in the tenant); only a version rebuilding a table has one.
+      if (m?.idTaken === true)
+        throw inconsistent(`migration ${String(t["migration_id"])} already recorded`);
+      if (m?.from !== undefined && m.to !== undefined && !rebuilds(m.from, m.to))
+        throw inconsistent(`version ${String(t["to_version"])} rebuilds no table: no migration`);
+      return [
+        {
+          kind: "migration_start",
+          id: t["migration_id"] as string,
+          slot: slot as string,
+          draft_id: t["draft_id"] as string,
+          from: t["from_version"] as number,
+          to: t["to_version"] as number,
+        },
+      ];
+    }
     // §5.5: a pending draft given up for a newer one; its version number stays taken.
     case "schema.superseded":
       return [

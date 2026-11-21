@@ -31,7 +31,7 @@ import {
   type Rational,
   rationalOf,
   round,
-} from "./decimal.ts";
+} from "../values/index.ts";
 import { decimalText } from "./number.ts";
 import { get, has, isObj, keysOf } from "./own.ts";
 import { instantText, parseDateTime, validDate } from "./times.ts";

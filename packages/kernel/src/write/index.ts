@@ -1,5 +1,6 @@
-// A resolve request normalized as the write path does it, for the schema decisions resolved in ops.
-export { normalizeResolve } from "../request/index.ts";
+// A resolve request normalized as the write path does it, for the schema decisions resolved in ops;
+// a value normalized as a write does it, for a schema draft's constant backfill.
+export { normalizeResolve, normalizeValue } from "../request/index.ts";
 export {
   type ReceiptWarning,
   requestFailure,

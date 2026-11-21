@@ -18,9 +18,13 @@
 //   the current version, since any switch since would have come from a newer draft, which
 //   supersedes it first. That the two agree is asserted (`internal` if not). A draft renaming the
 //   slot is refused (`draft_outdated`, `name_taken`) when another slot took the name meanwhile.
+//   A draft whose version rebuilds a table: its tightened constraints are counted again on the
+//   writes since (`draft_outdated`, `backfill_required`, positions in the draft as submitted), then
+//   the confirmation is refused (`not_in_this_version`): the migration it begins is not in this
+//   version yet. Nothing is logged either way.
 //   Events: `item.resolved` (head; `confirmation` the hash of the draft's `compiled` block) → the
 //   request's `api_call` when it has a note → `schema.confirmed` (`by: resolve`) →
-//   `schema.switched` (nothing rebuilt: this version compiles catalog-only changes) → an
+//   `schema.switched` (nothing rebuilt) → an
 //   `item.superseded` (`schema_switched`) for each open item on a table the new version drops →
 //   at most one `premise.changed` for the declarations on fields the new version drops (§5.10).
 // - `reject`: `item.resolved` → the `api_call` with a note → `schema.rejected`. Its number is not
@@ -38,6 +42,7 @@ import {
   eventsOf,
   fold,
   internalDetailOf,
+  rebuilds,
 } from "../apply/index.ts";
 import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
 import { itemVer } from "../pending/index.ts";
@@ -63,6 +68,8 @@ import {
   WriteError,
   type WriteInput,
 } from "../write/index.ts";
+import { brokenBy } from "./schema-change.ts";
+import { draftPath, tightenedWithout } from "./schema-checks.ts";
 
 /** The draft a `schema_change` item waits on, as the log has it. */
 interface Draft {
@@ -71,6 +78,8 @@ interface Draft {
   readonly state: string;
   readonly baseVersion: number;
   readonly compiled: CompiledSchema;
+  /** The document as submitted (`schema.draft_submitted` `draft`): positions in findings are in it. */
+  readonly document: unknown;
   readonly changes: readonly {
     readonly change: string;
     readonly target: Record<string, unknown>;
@@ -85,8 +94,10 @@ async function draftOf(tx: ReadTx, item: string): Promise<Draft> {
     submitted: string | null;
     compiled: string | null;
     changes: string | null;
+    document: string | null;
   }>(
-    `SELECT v.draft_id AS draft, v.sv, v.state, st.body AS submitted, c.body AS compiled, ch.body AS changes
+    `SELECT v.draft_id AS draft, v.sv, v.state, st.body AS submitted, c.body AS compiled, ch.body AS changes,
+            dr.body AS document
      FROM pending_items p
      JOIN content t ON t.path = 'target' AND t.body IS NOT NULL AND (t.body::jsonb ->> 'item') = p.id
      JOIN events ie ON ie.seq = t.seq AND ie.type = 'item.created'
@@ -96,11 +107,18 @@ async function draftOf(tx: ReadTx, item: string): Promise<Draft> {
      JOIN events ce ON ce.seq = v.compiled_seq
      JOIN events se ON se.op = ce.op AND se.type = 'schema.draft_submitted'
      JOIN content st ON st.seq = se.seq AND st.path = 'target'
+     JOIN content dr ON dr.seq = se.seq AND dr.path = 'draft'
      WHERE p.id = $1`,
     [item],
   );
   const x = r.rows[0];
-  if (x === undefined || x.compiled === null || x.changes === null || x.submitted === null)
+  if (
+    x === undefined ||
+    x.compiled === null ||
+    x.changes === null ||
+    x.submitted === null ||
+    x.document === null
+  )
     throw new WriteError("internal", `the draft of item ${item} is not in the log as written`, {
       reason: "inconsistent",
     });
@@ -110,6 +128,7 @@ async function draftOf(tx: ReadTx, item: string): Promise<Draft> {
     state: x.state,
     baseVersion: Number((JSON.parse(x.submitted) as { base_version: unknown }).base_version),
     compiled: JSON.parse(x.compiled) as CompiledSchema,
+    document: JSON.parse(x.document) as unknown,
     changes: JSON.parse(x.changes) as Draft["changes"],
   };
 }
@@ -352,6 +371,31 @@ export async function resolveSchemaChangeInTx(tx: Tx, input: WriteInput): Promis
       });
     const outdated = await outdatedOnConfirm(tx, draft, slot);
     if (outdated !== undefined) throw outdated;
+    // A version rebuilding tables: constraints it tightens without a `backfill` are counted again,
+    // since the earlier version took writes while the draft waited (07 «确认时重新判断»). Then the
+    // migration it begins is not applied yet: the confirmation is refused, nothing logged.
+    if (rebuilds(slot.compiled, draft.compiled)) {
+      // Named by the position in the document as submitted, as at submission.
+      const checks = tightenedWithout(slot.compiled, draft.compiled).map((k) => ({
+        ...k,
+        path: draftPath(draft.document, draft.compiled, k),
+      }));
+      const broken = await brokenBy(tx, slot.compiled, slot.name, checks);
+      if (broken.length > 0)
+        throw new WriteError(
+          "draft_outdated",
+          "positions written since break a tightened constraint",
+          {
+            reason: "backfill_required",
+            current_sv: slot.sv,
+            details: broken,
+          },
+        );
+      throw new WriteError("not_in_this_version", "a change rebuilding tables is not applied yet", {
+        reason: "not_implemented",
+        param: "id",
+      });
+    }
   }
 
   const hash = confirmationHash(await confirmedChecksums(tx, item.id));

@@ -2,7 +2,7 @@
 // `selectOf`): what reads show and receipts give, one decoding for both.
 
 import type { CompiledBaseField, FieldValue } from "@fluxvita/saveslot-contract-core";
-import { canonical, rationalOf } from "./decimal.ts";
+import { canonical, rationalOf } from "../values/index.ts";
 
 /** The value of `f` from its columns' raw values, in `selectOf`'s order. */
 export function decodeColumns(f: CompiledBaseField, cells: readonly unknown[]): FieldValue {

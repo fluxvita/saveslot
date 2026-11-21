@@ -5,11 +5,14 @@
 import type {
   ChangesBlock,
   ChangeTarget,
+  CompiledBaseField,
   CompiledSchema,
   FieldType,
+  FieldValue,
   RefTarget,
   Rounding,
   SlotId,
+  TableId,
   TimeDependency,
 } from "@fluxvita/saveslot-contract-core";
 import type { SqlReason } from "../rules/index.ts";
@@ -39,6 +42,15 @@ export type SchemaDetailCode =
   | "unit_inference_failed"
   // A change to an existing slot (04-contract «schema_draft» 四个与数据有关的编译明细码).
   | "still_referenced"
+  | "backfill_const_required"
+  | "backfill_both_forms"
+  // A constant `backfill` not a value of its field (04-contract-types: the write's value codes).
+  | "type_mismatch"
+  | "unit_missing"
+  | "unit_dimension"
+  | "out_of_range"
+  | "enum_value"
+  | "required_missing"
   // A new table or field named what another of the same draft is renamed away from.
   | "name_renamed_away";
 
@@ -86,7 +98,16 @@ export type CompileError =
   /** The document breaks the compilation rules: every finding, in document order. */
   | { readonly code: "validation_failed"; readonly details: readonly SchemaDetail[] }
   /** A key v1 does not support (07 «改动分类与迁移手段», end). `param`: its position. */
-  | { readonly code: "not_in_this_version"; readonly param: string }
+  | {
+      readonly code: "not_in_this_version";
+      readonly param: string;
+      /**
+       * `not_implemented`: what this version will take once a later part is in (counting what a
+       * change of unit or precision breaks needs the conversion that building a version brings);
+       * absent: a parameter this version does not take.
+       */
+      readonly reason?: "not_implemented";
+    }
   /** The document is not of the document's form: not an object, a key missing, a JSON type wrong, a key unknown. */
   | {
       readonly code: "invalid_argument";
@@ -189,6 +210,20 @@ export interface CompileChangeInput {
    * derived table listed is never taken as unchanged.
    */
   readonly ruleTexts?: ReadonlyMap<string, string>;
+  /**
+   * The next field number free in a table, by table ID: field IDs are never reused, so this counts
+   * every version compiled, given-up ones included. Called only for a table the draft adds a field to.
+   */
+  readonly nextFieldNumber?: (table: string) => number;
+  /**
+   * A constant `backfill` as the canonical value of field `f` (the caller's normalization of
+   * values), or the finding against it at `path`. Called only for a constant the draft gives.
+   */
+  readonly constValue?: (
+    f: CompiledBaseField,
+    raw: unknown,
+    path: string,
+  ) => { readonly value: FieldValue } | { readonly detail: SchemaDetail };
   readonly formerNames: {
     readonly tables: readonly string[];
     readonly fields: ReadonlyMap<string, readonly string[]>;
@@ -204,8 +239,21 @@ export type CompileChangeResult =
       readonly outcome: "applied" | "pending";
       readonly targetVersion: number;
       readonly warnings: readonly CompileWarning[];
+      /**
+       * Constraints tightened without a `backfill` (07 «收紧约束»): the caller counts the positions
+       * in effect that break the new definition, and refuses the draft when there are any.
+       */
+      readonly checks: readonly TightenedCheck[];
     }
   | { readonly ok: false; readonly error: ChangeError };
+
+/** A field whose constraint the draft tightens without a `backfill`: `field` as it would be. */
+export interface TightenedCheck {
+  readonly table: TableId;
+  readonly field: CompiledBaseField;
+  /** The field's position in the draft, for the finding. */
+  readonly path: string;
+}
 
 // --- the document, after its form is checked ---------------------------------------------------
 

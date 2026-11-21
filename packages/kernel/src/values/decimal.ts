@@ -1,4 +1,4 @@
-// Exact decimal arithmetic for request values (docs/zh-CN/spec/04-contract.md §1 «值的编码»;
+// Exact decimal arithmetic for values (docs/zh-CN/spec/04-contract.md §1 «值的编码»;
 // 03-data-model/10-types-and-units.md «精度与舍入», «单位词表»): the caller's decimal text parsed by
 // the JSON number grammar, as an exact rational of BigInts; unit conversion as value × source factor
 // ÷ target factor; rounding to a scale, half up (away from zero at exactly half) or half even.

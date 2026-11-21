@@ -50,13 +50,25 @@ import {
   planHeadPremises,
   planPremiseChanged,
 } from "./premises.ts";
-import { planSchema, type RemoveInput, type SlotInput, type SwitchInput } from "./schema.ts";
+import {
+  type MigrationInput,
+  planSchema,
+  type RemoveInput,
+  type SlotInput,
+  type SwitchInput,
+} from "./schema.ts";
 import type { SettleItem } from "./settle.ts";
 import { type OpenCell, planWriteBase, storedValid, type WriteBaseInput } from "./write-base.ts";
 
 export type { ItemInput } from "./items.ts";
 export * from "./model.ts";
-export { baseTableDdl, type SlotInput, type SwitchInput } from "./schema.ts";
+export {
+  baseTableDdl,
+  type MigrationInput,
+  rebuilds,
+  type SlotInput,
+  type SwitchInput,
+} from "./schema.ts";
 export type { OpenCell, WriteBaseInput } from "./write-base.ts";
 
 /** One event as apply reads it: the header and the blocks by path, present or removed. */
@@ -71,6 +83,7 @@ export interface PlanInputs {
   readonly switchTo?: SwitchInput;
   readonly slot?: SlotInput;
   readonly remove?: RemoveInput;
+  readonly migration?: MigrationInput;
   readonly item?: ItemInput;
   readonly writeBase?: WriteBaseInput;
   /** A `write.base`'s op's premise declarations (§5.7), from `premise_decls`. */
@@ -354,6 +367,31 @@ const UPDATES_ITEM = new Set(["item.merged", "item.refreshed", "item.superseded"
 
 /** Reads, in the caller's transaction, what the plan of a parsed event needs from the state. */
 async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanInputs> {
+  if (p.type === "schema.migration_started") {
+    // The definitions of the two versions, and whether the ID is taken.
+    const t = p.present["target"] as Obj;
+    const r = await tx.query<{ sv: unknown; body: string | null }>(
+      `SELECT v.sv, c.body FROM schema_versions v JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
+       WHERE v.slot_id = $1 AND v.sv IN ($2, $3)`,
+      [ev.header["slot"] as string, t["from_version"] as number, t["to_version"] as number],
+    );
+    const of = (sv: unknown) => {
+      const body = r.rows.find((x) => Number(x.sv) === sv)?.body;
+      return body == null ? undefined : (JSON.parse(body) as CompiledSchema);
+    };
+    const from = of(t["from_version"]);
+    const to = of(t["to_version"]);
+    const taken = await tx.query("SELECT 1 FROM migrations WHERE id = $1", [
+      t["migration_id"] as string,
+    ]);
+    return {
+      migration: {
+        ...(from !== undefined ? { from } : {}),
+        ...(to !== undefined ? { to } : {}),
+        idTaken: taken.rows.length > 0,
+      },
+    };
+  }
   if (p.type === "schema.switched") {
     // The definition switched to: the slot's `schema.compiled` of this draft and version.
     const t = p.present["target"] as Obj;
@@ -997,6 +1035,24 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
          WHERE slot_id = $2 AND draft_id = $3 AND state = 'pending'`,
         [c.state, c.slot, c.draft_id],
         `no pending draft ${c.draft_id} in ${c.slot}`,
+      );
+      return;
+    case "migration_start":
+      // The slot at the version it starts from, the draft pending at the one it goes to, and no
+      // other migration of the slot running (08 «状态机»: one change at a time); else the log is at
+      // odds with itself.
+      await one(
+        tx,
+        seq,
+        `INSERT INTO migrations (id, slot_id, draft_id, from_sv, target_sv, state)
+         SELECT $1, $2, $3, $4, $5, 'started'
+         WHERE EXISTS (SELECT 1 FROM slots WHERE id = $2 AND current_sv = $4)
+           AND EXISTS (SELECT 1 FROM schema_versions
+                       WHERE slot_id = $2 AND sv = $5 AND draft_id = $3 AND state = 'pending')
+           AND NOT EXISTS (SELECT 1 FROM migrations
+                           WHERE slot_id = $2 AND state NOT IN ('switched', 'failed'))`,
+        [c.id, c.slot, c.draft_id, c.from, c.to],
+        `migration ${c.id}: ${c.slot} not at version ${c.from}, draft ${c.draft_id} not pending at ${c.to}, or a migration running`,
       );
       return;
     case "item_insert": {

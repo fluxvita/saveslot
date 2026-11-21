@@ -7,9 +7,14 @@
 // One operation (§4.5): `schema.draft_submitted`; when the slot has a draft still awaiting
 // confirmation, `schema.superseded` with that draft's item's `item.superseded` (`draft_replaced`);
 // `schema.compiled`; then, applied at once, `schema.confirmed` (`auto`) and `schema.switched` (no
-// table rebuilt: the changes compiled in this version touch the catalog only), else
-// `item.created` (`schema_change`). An automatic change never drops a field, so the switch here
-// never brings a `premise.changed` (§5.10).
+// table rebuilt), else `item.created` (`schema_change`). An automatic change never drops a field,
+// so the switch here never brings a `premise.changed` (§5.10).
+//
+// Before anything is logged: a constraint tightened without a `backfill` is counted on the current
+// version's table (07 «收紧约束»), any position in effect breaking it refusing the draft
+// (`validation_failed`, `backfill_required`); and a draft that would apply at once and rebuilds a
+// table is refused (`not_in_this_version`): building and switching to such a version are not in
+// this version yet, and it is no change that waits for anyone.
 //
 // The version number is the slot's next one not used by any version in the log (09 §5.5: a number
 // taken by a draft is not used again, rejected and superseded ones included), so `sv` may skip.
@@ -25,17 +30,31 @@ import type {
   SchemaChangeRecord,
   SlotId,
 } from "@fluxvita/saveslot-contract-core";
-import { ApplyError, applyEvents, eventsOf, fold, internalDetailOf } from "../apply/index.ts";
+import {
+  ApplyError,
+  applyEvents,
+  eventsOf,
+  fold,
+  internalDetailOf,
+  rebuilds,
+} from "../apply/index.ts";
 import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
 import { itemVer } from "../pending/index.ts";
 import { formerVersions, ruleTextsOf, visibleSlots } from "../read/index.ts";
 import { restoreCount } from "../read/select.ts";
 import { RULESET_VERSION } from "../rules/index.ts";
-import { changesByName, compileChange, compiledWarnings, filledDocument } from "../schema/index.ts";
+import {
+  changesByName,
+  compileChange,
+  compiledWarnings,
+  filledDocument,
+  type TightenedCheck,
+} from "../schema/index.ts";
 import type { ReadTx, TenantStore } from "../store/ports.ts";
-import { todayIn } from "../write/index.ts";
+import { normalizeValue, todayIn } from "../write/index.ts";
 import type { OpsContext } from "./context.ts";
 import { randomCrockford } from "./ids.ts";
+import { tightenViolations } from "./schema-checks.ts";
 import {
   invalid,
   newDraftId,
@@ -215,13 +234,20 @@ export async function draftChangeInTx(
       fieldNames.set(t.id, [...(fieldNames.get(t.id) ?? []), ...t.fields.map((f) => f.name)]);
     }
   }
-  const { existingSlotNames, nextTableNumber } = await numbering(tx);
+  const { existingSlotNames, nextTableNumber, nextFieldNumber } = await numbering(tx);
 
   const result = compileChange({
     document,
     current,
     existingSlotNames,
     nextTableNumber,
+    nextFieldNumber,
+    // A constant `backfill` normalized as a write normalizes a value of the field as it will be.
+    constValue: (f, raw, path) => {
+      if (raw === null) return { detail: { path, code: "required_missing" } };
+      const r = normalizeValue(f, raw, { op: 0, name: f.name, zone: current.timezone, kept: true });
+      return r.ok ? { value: r.value } : { detail: { path, code: r.detail.code as never } };
+    },
     autoApply: policy.auto_apply ?? [],
     unused: () => false,
     targetVersion,
@@ -242,7 +268,7 @@ export async function draftChangeInTx(
       }
       case "not_in_this_version":
         throw new SchemaDraftError("not_in_this_version", "not in this version", {
-          reason: "parameter",
+          reason: e.reason ?? "parameter",
           param: e.param,
         });
       case "field_unmatched":
@@ -265,6 +291,24 @@ export async function draftChangeInTx(
   }
   // A draft that changes nothing: no version for it (04-contract «schema_draft»).
   if (result.changes.length === 0) throw invalid("no_change", "document");
+  // Constraints tightened without a `backfill`: no position in effect may break them (07 «收紧约束»).
+  const broken = await brokenBy(tx, current, slot.name, result.checks);
+  if (broken.length > 0)
+    throw new SchemaDraftError("validation_failed", "the document does not compile", {
+      reason: "schema",
+      details: broken,
+    });
+  // A draft that would apply at once and rebuilds a table: the build and the switch come later, so
+  // it is refused rather than left waiting (it is no change that waits for anyone).
+  if (result.outcome === "applied" && rebuilds(current, result.compiled))
+    throw new SchemaDraftError(
+      "not_in_this_version",
+      "a change rebuilding tables is not applied yet",
+      {
+        reason: "not_implemented",
+        param: "document",
+      },
+    );
 
   // The slot's draft still awaiting confirmation, if any: its item.
   const open = await tx.query<{ id: string; body: string | null }>(
@@ -378,4 +422,22 @@ export async function draftChangeInTx(
     throw e;
   }
   return receiptOf(tx, next, false);
+}
+
+/** The findings of `backfill_required` for the checks of a draft, on the current version's tables. */
+export async function brokenBy(
+  tx: ReadTx,
+  current: CompiledSchema,
+  slotName: string,
+  checks: readonly TightenedCheck[],
+): Promise<{ path: string; code: "backfill_required"; rows: number; samples: unknown[] }[]> {
+  const out: { path: string; code: "backfill_required"; rows: number; samples: unknown[] }[] = [];
+  for (const t of current.tables) {
+    if (t.kind !== "base") continue;
+    const mine = checks.filter((k) => k.table === t.id);
+    if (mine.length === 0) continue;
+    for (const v of await tightenViolations(tx, t, `${slotName}.${t.name}`, mine))
+      out.push({ path: v.path, code: "backfill_required", rows: v.rows, samples: [...v.samples] });
+  }
+  return out;
 }

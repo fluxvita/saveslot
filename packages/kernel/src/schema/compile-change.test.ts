@@ -3,7 +3,11 @@
 // their order (03-data-model/07-schema-evolution.md «schema 文档格式», «改动分类与迁移手段»;
 // 04-contract «schema_draft»). Fictional names, the ledger of ./documents.fixture.ts as version 1.
 
-import type { ChangeTarget, CompiledSchema } from "@fluxvita/saveslot-contract-core";
+import type {
+  ChangeTarget,
+  CompiledBaseTable,
+  CompiledSchema,
+} from "@fluxvita/saveslot-contract-core";
 import { parseEvent } from "@fluxvita/saveslot-contract-core";
 import { beforeAll, describe, expect, it } from "vitest";
 import { loadRsql } from "../rules/index.ts";
@@ -45,6 +49,11 @@ const run = (
     unused: () => false,
     targetVersion: (o.current ?? v1()).sv + 1,
     formerNames: { tables: [], fields: new Map() },
+    // Field numbers taken up to 11 in every table (a given-up version's included): f12 is next.
+    nextFieldNumber: () => 12,
+    // A value is its own canonical form here, but "bad", which is no value of any field.
+    constValue: (_f, raw, path) =>
+      raw === "bad" ? { detail: { path, code: "type_mismatch" } } : { value: raw as never },
     ...o,
   });
 
@@ -266,7 +275,7 @@ describe("changes that touch the catalog only", () => {
     expect(r.outcome).toBe("applied");
   });
 
-  it("loosens a bound the other way: a larger max, a smaller min; tightens either, not compiled yet", () => {
+  it("loosens a bound the other way: a larger max, a smaller min; tightens either, handed back to be checked", () => {
     const d = ledger();
     d.tables[0].fields[2].min = 10;
     d.tables[0].fields[2].max = 100;
@@ -287,16 +296,16 @@ describe("changes that touch the catalog only", () => {
     expect(codes(loosened)).toEqual(["loosen_constraint"]);
     expect(table(loosened, "expenses")?.fields[2]).toMatchObject({ min: "5", max: "200" });
     expect(codes(draft((f) => (f.min = 5)))).toEqual(["loosen_constraint"]);
-    // One bound looser and the other tighter is a tightening.
-    expect(
-      err(
-        draft((f) => {
-          f.min = 5;
-          f.max = 50;
-        }),
-      ).code,
-    ).toBe("not_implemented");
-    expect(err(draft((f) => (f.max = 50))).code).toBe("not_implemented");
+    // One bound looser and the other tighter is both; a tighter one is checked (07 «收紧约束»).
+    const both = ok(
+      draft((f) => {
+        f.min = 5;
+        f.max = 50;
+      }),
+    );
+    expect(codes(both)).toEqual(["loosen_constraint", "tighten_constraint"]);
+    expect(both.checks.map((k) => k.path)).toEqual(["tables/0/fields/2"]);
+    expect(codes(draft((f) => (f.max = 50)))).toEqual(["tighten_constraint"]);
   });
 
   it("takes an enum's values only reordered as a loosening: automatic", () => {
@@ -503,6 +512,312 @@ describe("the definition of the next version", () => {
   });
 });
 
+describe("changes that rebuild a table (08 «物理做法»; 07 «改动分类»)", () => {
+  beforeAll(() => loadRsql());
+  const on = (f: (e: Doc) => void, o: Partial<Omit<CompileChangeInput, "document">> = {}) =>
+    run(
+      listing(["expenses"], (d) => f(d.tables[0])),
+      o,
+    );
+  const records = (r: CompileChangeResult) =>
+    ok(r).changes.map((c) => [
+      c.change,
+      c.target,
+      c.class,
+      c.compatible_with_old_writes,
+      c.destructive,
+      c.auto,
+    ]);
+  const expenses = (r: CompileChangeResult) => ok(r).compiled.tables[0] as CompiledBaseTable;
+  const field = (r: CompileChangeResult, id: string) =>
+    expenses(r).fields.find((f) => f.id === id) as Doc | undefined;
+  const t1 = { table: "t1" };
+
+  it("a table rebuilt gets a physical table of the new version; one not rebuilt keeps its own", () => {
+    const r = on((e) => e.fields.push({ name: "tip", type: "integer", description: "a tip" }));
+    expect(expenses(r).physical).toEqual({ table: "t_t1_v2" });
+    expect(ok(r).compiled.tables[1]?.physical).toEqual({ table: "t_t2_v1", since: 1 });
+    // A rename alone builds nothing.
+    expect(expenses(on((e) => (e.fields[3].name = "memo"))).physical).toEqual({
+      table: "t_t1_v1",
+      since: 1,
+    });
+  });
+
+  it("an optional field added: automatic, old writes taken, its ID the table's next one", () => {
+    const r = on((e) => e.fields.push({ name: "tip", type: "integer", description: "a tip" }));
+    expect(records(r)).toEqual([
+      ["add_optional_field", { ...t1, field: "f12" }, "metadata", true, false, true],
+    ]);
+    expect(ok(r).outcome).toBe("applied");
+    expect(field(r, "f12")).toMatchObject({ name: "tip", type: "integer" });
+    // Two added: numbered on, in the draft's order, after the fields kept.
+    const two = on((e) =>
+      e.fields.push(
+        { name: "tip", type: "integer", description: "a tip" },
+        { name: "who", type: "text", description: "who paid" },
+      ),
+    );
+    expect(
+      expenses(two)
+        .fields.slice(-2)
+        .map((f) => [f.id, f.name]),
+    ).toEqual([
+      ["f12", "tip"],
+      ["f13", "who"],
+    ]);
+  });
+
+  it("a required field added: a constant backfill, always; deterministic, waits", () => {
+    const tip = { name: "tip", type: "integer", required: true, description: "a tip" };
+    expect(detailsOf(on((e) => e.fields.push(tip)))).toEqual([
+      "tables/0/fields/9 backfill_const_required",
+    ]);
+    const r = on((e) => e.fields.push({ ...tip, backfill: { const: 0 } }));
+    expect(records(r)).toEqual([
+      ["add_required_field", { ...t1, field: "f12" }, "deterministic", true, false, false],
+    ]);
+    expect(ok(r).outcome).toBe("pending");
+    expect(field(r, "f12")).toMatchObject({ required: true, backfill: { const: 0 } });
+  });
+
+  it("a field dropped: old writes refused, data lost; gone from the version", () => {
+    const r = on((e) => {
+      e.drop_fields = ["pieces"];
+      e.fields.splice(4, 1);
+    });
+    expect(records(r)).toEqual([
+      ["drop_field", { ...t1, field: "f5" }, "metadata", false, true, false],
+    ]);
+    expect(field(r, "f5")).toBeUndefined();
+    expect(expenses(r).physical).toEqual({ table: "t_t1_v2" });
+  });
+
+  it("a field a derived table reads cannot be dropped: still_referenced, naming the derived table", () => {
+    const d = ledger();
+    d.tables.push({
+      name: "spend",
+      kind: "derived",
+      description: "spent per day",
+      rule: {
+        sql: "SELECT date, count(pieces) AS n FROM expenses GROUP BY date",
+        time_dependency: "bucketed",
+      },
+      fields: [
+        { name: "date", description: "the day" },
+        { name: "n", description: "how many" },
+      ],
+    });
+    const start = compile(d);
+    if (!start.ok) throw new Error(JSON.stringify(start));
+    const x = filled(d, start.compiled);
+    x.tables = x.tables.filter((t: Doc) => t.name === "expenses");
+    x.tables[0].drop_fields = ["pieces"];
+    x.tables[0].fields.splice(4, 1);
+    const e = err(run(x, { current: start.compiled }));
+    expect(e).toMatchObject({
+      code: "validation_failed",
+      details: [
+        { path: "tables/0/drop_fields/0", code: "still_referenced", referenced_by: ["spend"] },
+      ],
+    });
+  });
+
+  it("a field its own table's time field or keys still use: still_referenced, by their positions in the draft", () => {
+    const dropping = (table: string, name: string, f: (t: Doc) => void = () => {}) =>
+      run(
+        listing([table], (d) => {
+          const t = d.tables[0];
+          t.drop_fields = [name];
+          t.fields = t.fields.filter((x: Doc) => x.name !== name);
+          f(t);
+        }),
+      );
+    const referencedBy = (r: CompileChangeResult) =>
+      (err(r) as unknown as { details: { code: string; referenced_by?: string[] }[] }).details
+        .filter((x) => x.code === "still_referenced")
+        .flatMap((x) => x.referenced_by ?? []);
+    expect(referencedBy(dropping("expenses", "date"))).toEqual(
+      expect.arrayContaining(["tables/0/time/field", "tables/0/duplicate_keys/0/0"]),
+    );
+    expect(referencedBy(dropping("expenses", "category"))).toEqual(
+      expect.arrayContaining(["tables/0/together/0/0", "tables/0/duplicate_keys/0/1"]),
+    );
+    expect(referencedBy(dropping("accounts", "name"))).toEqual(["tables/0/entity_key/0"]);
+    // Judged on the table as the draft leaves it: keys no longer using it do not keep it.
+    const r = dropping("expenses", "note", (t) => {
+      t.together = [["category", "amount"]];
+    });
+    expect(codes(r)).toEqual(["drop_field"]);
+    expect(
+      codes(
+        dropping("expenses", "category", (t) => {
+          t.together = [];
+          t.duplicate_keys = [["date", "amount"]];
+        }),
+      ),
+    ).toContain("drop_field");
+  });
+
+  it("a bound tightened without a backfill: compiled, the field handed back to be checked", () => {
+    const r = on((e) => (e.fields[2].min = 5));
+    expect(records(r)).toEqual([
+      ["tighten_constraint", { ...t1, field: "f3" }, "deterministic", true, true, false],
+    ]);
+    expect(ok(r).checks).toEqual([
+      {
+        table: "t1",
+        field: expect.objectContaining({ id: "f3", min: "5" }),
+        path: "tables/0/fields/2",
+      },
+    ]);
+    // With a constant: nothing to check, the constant kept.
+    const w = on((e) => {
+      e.fields[2].min = 5;
+      e.fields[2].backfill = { const: { value: "5", unit: "CNY" } };
+    });
+    expect(ok(w).checks).toEqual([]);
+    expect(field(w, "f3")).toMatchObject({ backfill: { const: { value: "5", unit: "CNY" } } });
+  });
+
+  describe("a bound across a change of unit or precision: compared as the new unit has it (07 «收紧约束»)", () => {
+    /** Version 1 with field f4 a quantity as given; a draft changing it. */
+    const across = (f4: Doc, change: (f: Doc) => void) => {
+      const d = ledger();
+      d.tables[0].fields[3] = { name: "weight", type: "quantity", description: "how heavy", ...f4 };
+      const start = compile(d);
+      if (!start.ok) throw new Error("not compiled");
+      const x = filled(d, start.compiled);
+      x.tables = x.tables.filter((t: Doc) => t.name === "expenses");
+      change(x.tables[0].fields[3]);
+      return run(x, { current: start.compiled });
+    };
+    const kinds = (r: CompileChangeResult) =>
+      ok(r)
+        .changes.filter((c) => "field" in c.target)
+        .map((c) => c.change);
+    const notYet = {
+      code: "not_in_this_version",
+      reason: "not_implemented",
+      param: "tables/0/fields/3",
+    };
+
+    it("kg to g with max 10 made 5000: tightened (10000 g), not loosened", () => {
+      const r = across({ unit: "kg", max: 10 }, (f) => {
+        f.unit = "g";
+        f.max = 5000;
+        f.backfill = { const: { value: "0", unit: "g" } };
+      });
+      expect(kinds(r)).toEqual(["tighten_constraint", "change_unit"]);
+    });
+
+    it("m to km with min 5 left as written: tightened (5 m is 0.005 km)", () => {
+      const r = across({ unit: "m", min: 5 }, (f) => {
+        f.unit = "km";
+        f.backfill = { const: { value: "5", unit: "km" } };
+      });
+      expect(kinds(r)).toEqual(["tighten_constraint", "change_unit"]);
+    });
+
+    it("the same bound in the new unit is no change of it: kg to g, max 10 made 10000", () => {
+      const r = across({ unit: "kg", max: 10 }, (f) => {
+        f.unit = "g";
+        f.max = 10000;
+      });
+      // Nothing tightened or loosened; still bounded, so what breaks it would need converting.
+      expect(err(r)).toEqual(notYet);
+    });
+
+    it("counting what breaks it would need converting or rounding anew: not in this version yet", () => {
+      // A unit changed and a bound tightened, no backfill.
+      expect(
+        err(
+          across({ unit: "kg", max: 10 }, (f) => {
+            f.unit = "g";
+            f.max = 5000;
+          }),
+        ),
+      ).toEqual(notYet);
+      // A unit changed on a bounded field, the bound looser.
+      expect(
+        err(
+          across({ unit: "kg", max: 10 }, (f) => {
+            f.unit = "g";
+            f.max = 20000;
+          }),
+        ),
+      ).toEqual(notYet);
+      // A scale reduced on a bounded field: a value may round past the bound.
+      expect(err(across({ unit: "kg", max: 5 }, (f) => (f.scale = 0)))).toEqual(notYet);
+      // Neither: a unit changed on a field with no bound, a rounding changed on a bounded one.
+      expect(kinds(across({ unit: "kg" }, (f) => (f.unit = "g")))).toEqual(["change_unit"]);
+      expect(kinds(across({ unit: "kg", max: 5 }, (f) => (f.rounding = "half_even")))).toEqual([
+        "change_precision",
+      ]);
+    });
+  });
+
+  it("an enum value taken away is tightened; a value added beside it loosens too", () => {
+    const r = on((e) => (e.fields[1].values = ["food", "travel"]));
+    expect(ok(r).changes.map((c) => c.change)).toEqual(["loosen_constraint", "tighten_constraint"]);
+    expect(ok(r).checks.map((k) => k.path)).toEqual(["tables/0/fields/1"]);
+  });
+
+  it("optional made required: a constant backfill, always, not a check", () => {
+    expect(detailsOf(on((e) => (e.fields[3].required = true)))).toEqual([
+      "tables/0/fields/3 backfill_const_required",
+    ]);
+    const r = on((e) => {
+      e.fields[3].required = true;
+      e.fields[3].backfill = { const: "none" };
+    });
+    expect(ok(r).checks).toEqual([]);
+    expect(field(r, "f4")).toMatchObject({ required: true, backfill: { const: "none" } });
+  });
+
+  it("precision: a scale reduced loses digits; a rounding changed does not", () => {
+    expect(records(on((e) => (e.fields[5].scale = 2)))).toEqual([
+      ["change_precision", { ...t1, field: "f6" }, "deterministic", true, true, false],
+    ]);
+    const r = on((e) => (e.fields[5].rounding = "half_up"));
+    expect(records(r)).toEqual([
+      ["change_precision", { ...t1, field: "f6" }, "deterministic", true, false, false],
+    ]);
+    expect(field(r, "f6")).toMatchObject({ precision: { scale: 4, rounding: "half_up" } });
+  });
+
+  it("a backfill: both forms, the expression form, on a field not tightened, a constant not of the field", () => {
+    expect(
+      detailsOf(
+        on((e) => {
+          e.fields[2].min = 5;
+          e.fields[2].backfill = { const: 5, sql: "1" };
+        }),
+      ),
+    ).toEqual(["tables/0/fields/2/backfill backfill_both_forms"]);
+    expect(
+      err(
+        on((e) => {
+          e.fields[2].min = 5;
+          e.fields[2].backfill = { sql: "amount + 1" };
+        }),
+      ),
+    ).toMatchObject({ code: "not_implemented", what: "a backfill expression" });
+    expect(err(on((e) => (e.fields[3].backfill = { const: "x" })))).toMatchObject({
+      code: "invalid_argument",
+      param: "tables/0/fields/3/backfill",
+    });
+    expect(
+      detailsOf(
+        on((e) => {
+          e.fields[3].required = true;
+          e.fields[3].backfill = { const: "bad" };
+        }),
+      ),
+    ).toEqual(["tables/0/fields/3/backfill/const type_mismatch"]);
+  });
+});
+
 describe("what is not compiled yet is named by its change code", () => {
   const what = (r: CompileChangeResult) => {
     const e = err(r);
@@ -512,62 +827,9 @@ describe("what is not compiled yet is named by its change code", () => {
   const on = (f: (e: Doc) => void) => run(listing(["expenses"], (d) => f(d.tables[0])));
 
   it.each([
-    [
-      "a field to add",
-      (e: Doc) => e.fields.push({ name: "tip", type: "integer", description: "a tip" }),
-      "add_optional_field",
-      "tables/0/fields/9",
-    ],
-    [
-      "a required field to add",
-      (e: Doc) =>
-        e.fields.push({ name: "tip", type: "integer", required: true, description: "a tip" }),
-      "add_required_field",
-      "tables/0/fields/9",
-    ],
-    [
-      "a field to drop",
-      (e: Doc) => {
-        e.drop_fields = ["pieces"];
-        e.fields.splice(4, 1);
-      },
-      "drop_field",
-      "tables/0/drop_fields",
-    ],
-    [
-      "a field made required",
-      (e: Doc) => (e.fields[3].required = true),
-      "tighten_constraint",
-      "tables/0/fields/3/required",
-    ],
-    [
-      "a bound raised",
-      (e: Doc) => (e.fields[2].min = 5),
-      "tighten_constraint",
-      "tables/0/fields/2",
-    ],
-    ["a bound added", (e: Doc) => (e.fields[4].min = 0), "tighten_constraint", "tables/0/fields/4"],
-    [
-      "an enum value removed",
-      (e: Doc) => (e.fields[1].values = ["food"]),
-      "tighten_constraint",
-      "tables/0/fields/1/values",
-    ],
-    [
-      "a scale reduced",
-      (e: Doc) => (e.fields[5].scale = 2),
-      "change_precision",
-      "tables/0/fields/5",
-    ],
-    [
-      "a rounding changed",
-      (e: Doc) => (e.fields[5].rounding = "half_up"),
-      "change_precision",
-      "tables/0/fields/5",
-    ],
     ["a type changed", (e: Doc) => (e.fields[4].type = "text"), "change_type", "tables/0/fields/4"],
     [
-      "a unit of the same dimension",
+      "a unit of another dimension (another currency)",
       (e: Doc) => (e.fields[2].unit = "USD"),
       "change_dimension",
       "tables/0/fields/2/unit",
@@ -614,7 +876,14 @@ describe("what is not compiled yet is named by its change code", () => {
       x.tables[0].fields[3].unit = unit;
       return run(x, { current: start.compiled });
     };
-    expect(what(draft("mi"))).toEqual(["change_unit", "tables/0/fields/3/unit"]);
+    // The same dimension compiles: converted from the old unit, with no migrate (07 «确定性转换怎么重放»).
+    const same = ok(draft("mi"));
+    expect(same.changes).toEqual([
+      expect.objectContaining({ target: { table: "t1", field: "f4" }, change: "change_unit" }),
+    ]);
+    const f4 = (same.compiled.tables[0] as CompiledBaseTable).fields[3] as Doc;
+    expect(f4.unit).toMatchObject({ code: "mi" });
+    expect(f4).not.toHaveProperty("migrate");
     expect(what(draft("kg"))).toEqual(["change_dimension", "tables/0/fields/3/unit"]);
   });
 
@@ -643,10 +912,14 @@ describe("what is not compiled yet is named by its change code", () => {
       "a migrate in a change",
       "tables/0/fields/4/migrate",
     ]);
-    expect(what(on((e) => (e.fields[4].backfill = { const: 0 })))).toEqual([
-      "a backfill in a change",
-      "tables/0/fields/4/backfill",
-    ]);
+    expect(
+      what(
+        on((e) => {
+          e.fields[4].min = 1;
+          e.fields[4].backfill = { sql: "pieces + 1" };
+        }),
+      ),
+    ).toEqual(["a backfill expression", "tables/0/fields/4/backfill/sql"]);
     expect(
       what(
         run(
@@ -951,8 +1224,8 @@ describe("findings between two tables, and what a drop list names", () => {
   });
 
   it("a dependent dropped or changed in the same draft does not keep the table referenced", () => {
-    // The ref field dropped with the table: what is not compiled yet is the drop of the field.
-    const dropped = err(
+    // The ref field dropped with the table: both dropped, nothing left referring to it.
+    const dropped = ok(
       run(
         listing(["expenses"], (d) => {
           d.drop_tables = ["accounts"];
@@ -961,7 +1234,10 @@ describe("findings between two tables, and what a drop list names", () => {
         }),
       ),
     );
-    expect(dropped).toMatchObject({ code: "not_implemented", what: "drop_field" });
+    expect(dropped.changes.map((c) => [c.change, c.target])).toEqual([
+      ["drop_field", { table: "t1", field: "f9" }],
+      ["drop_table", { table: "t2" }],
+    ]);
     // The ref field made text: its change is change_ref.
     const changed = err(
       run(

@@ -8,4 +8,4 @@ export { DEFAULT_SLOT_POLICY } from "./policy.ts";
 export { defaultScale, unitCandidates, unitCodes, unitOf } from "./units.ts";
 export { ISO_4217_PUBLISHED } from "./units-currency.ts";
 // One folding of names (apply/names.ts), for the modules below `apply` in reach only through here.
-export { fold } from "./validate.ts";
+export { compareDecimal, fold } from "./validate.ts";
