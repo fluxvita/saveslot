@@ -103,6 +103,39 @@ describe("HTTP's own", () => {
     ]);
   });
 
+  it("GET /v1/deletions/{id}: an item's detail, the same as GET /v1/pending/{id}", async () => {
+    // biome-ignore lint/suspicious/noExplicitAny: results as the contract gives them
+    type Any = any;
+    const ok = async (p: ReturnType<typeof driver>): Promise<Any> => {
+      const o = await p;
+      if (!("result" in o)) throw new Error(JSON.stringify(o.error));
+      return o.result;
+    };
+    const op = (more: Record<string, unknown>) => ({
+      sv: 1,
+      ops: [{ table: "ledger.expenses", ...more }],
+    });
+    const other = String(
+      (await ok(driver(session, "connections.issue", { name: "deletion-detail" }))).token,
+    );
+    // A conflict item: two updates from the same seen version.
+    const e = await ok(
+      driver(session, "write", op({ intent: "insert", set: { date: "2026-11-14", note: "a" } })),
+    );
+    const row = e.ops[0].target.row as string;
+    const ver = e.ops[0].ver as string;
+    await ok(driver(session, "write", op({ row, intent: "update", ver, set: { note: "b" } })));
+    const c = await ok(
+      driver(other, "write", op({ row, intent: "update", ver, set: { note: "c" } })),
+    );
+    const id = (c.pending as Any[]).find((x) => x.type === "conflict").id as string;
+    const pending = await http({ method: "GET", path: `/v1/pending/${id}`, token: session });
+    const deletion = await http({ method: "GET", path: `/v1/deletions/${id}`, token: session });
+    expect(pending.status).toBe(200);
+    expect(JSON.parse(pending.body)).toMatchObject({ id, type: "conflict" });
+    expect([deletion.status, JSON.parse(deletion.body)]).toEqual([200, JSON.parse(pending.body)]);
+  });
+
   it("an unknown route is 404 (route); a route of a later version is 501", async () => {
     const r = await http({ method: "GET", path: "/v1/nowhere", token: session });
     expect([r.status, err(r)["code"], err(r)["reason"]]).toEqual([404, "not_found", "route"]);
@@ -389,6 +422,7 @@ describe("HTTP's own", () => {
       ["GET", "/v1/pending", undefined, 200],
       // No such item: the operation answers (404 not_found, item), not the router.
       ["GET", `/v1/pending/${ITEM}`, undefined, 404],
+      ["GET", `/v1/deletions/${ITEM}`, undefined, 404],
       [
         "POST",
         `/v1/pending/${ITEM}/resolution`,
@@ -429,7 +463,6 @@ describe("HTTP's own", () => {
     const later: [string, string][] = [
       ["POST", "/v1/deletions/preview"],
       ["POST", "/v1/deletions"],
-      ["GET", "/v1/deletions/pi_1"],
       ["GET", "/v1/drafts/d_1"],
       ["POST", "/v1/claims"],
       ["POST", "/v1/claims/ls_1/results"],

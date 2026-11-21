@@ -216,6 +216,12 @@ const ROUTES: readonly Route[] = [
     parts: ["id"],
     params: ([id], q) => ({ ...q, id }),
   }),
+  // A deletion's ID is its item's (`pi_…`): the same detail as /v1/pending/{id}.
+  route("GET", "/v1/deletions/{}", "deletion", {
+    operation: "pending",
+    parts: ["id"],
+    params: ([id], q) => ({ ...q, id }),
+  }),
   route("POST", "/v1/writes", "writes", { operation: "write", body: true }),
   route("POST", "/v1/pending/{}/resolution", "resolution", {
     operation: "resolve",
@@ -257,7 +263,6 @@ const ROUTES: readonly Route[] = [
   // Later versions.
   route("POST", "/v1/deletions/preview", "deletion_preview"),
   route("POST", "/v1/deletions", "deletions"),
-  route("GET", "/v1/deletions/{}", "deletion"),
   route("GET", "/v1/drafts/{}", "draft"),
   route("POST", "/v1/claims", "claims"),
   route("POST", "/v1/claims/{}/results", "claim_results"),
