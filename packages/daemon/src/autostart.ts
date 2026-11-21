@@ -20,6 +20,7 @@
 // commands are run through `System.run`; tests give their own and never run launchctl or
 // systemctl.
 
+import { realpathSync } from "node:fs";
 import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { TEXTS } from "./texts.ts";
@@ -210,6 +211,44 @@ export async function uninstallAutostart(io: AutostartIO, sys: System): Promise<
   }
   io.out(TEXTS.autostartRemoved(file));
   return 0;
+}
+/**
+ * Where a package manager keeps a `node` that stays when Node is upgraded: Homebrew (Apple silicon,
+ * Intel, Linux) and the system. A fixed list, PATH not read: a tool may put a directory on PATH
+ * that lives only as long as the shell (fnm's), and the job would outlive it.
+ */
+export const STABLE_NODE_DIRS = [
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+  "/home/linuxbrew/.linuxbrew/bin",
+  "/usr/bin",
+  "/bin",
+] as const;
+
+/**
+ * The Node to write into the job: a path that stays when Node is upgraded, when there is one for
+ * this very Node. A package manager keeps each version under a path of its own (Homebrew's
+ * `Cellar/node/<version>/bin/node`), gone after an upgrade, and links a stable one to it
+ * (`/opt/homebrew/bin/node`): the first `node` in `STABLE_NODE_DIRS` whose real path is this
+ * process's. None: this process's path, as before.
+ */
+export function stableNode(exec: string, real: (p: string) => string = realpathSync): string {
+  let self: string;
+  try {
+    self = real(exec);
+  } catch {
+    return exec;
+  }
+  for (const dir of STABLE_NODE_DIRS) {
+    const candidate = join(dir, "node");
+    if (candidate === exec) return exec;
+    try {
+      if (real(candidate) === self) return candidate;
+    } catch {
+      // Not there.
+    }
+  }
+  return exec;
 }
 
 /** The text of a `<string>` as `launchdPlist` escaped it. */

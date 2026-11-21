@@ -24,7 +24,9 @@ import {
   installAutostart,
   type Job,
   launchdPlist,
+  STABLE_NODE_DIRS,
   type System,
+  stableNode,
   systemdUnit,
   uninstallAutostart,
 } from "./autostart.ts";
@@ -245,7 +247,8 @@ describe("service install elsewhere, and the command", () => {
     for (const a of ["--home", home, "--log", join(home, "run", "saveslot.log"), "--supervised"]) {
       expect(plist).toContain(`<string>${a}</string>`);
     }
-    expect(plist).toContain(`<string>${process.execPath}</string>`);
+    // This Node, by a path that stays when it is upgraded when it has one.
+    expect(plist).toContain(`<string>${stableNode(process.execPath)}</string>`);
   }, 60_000);
 
   it("serviceCommand takes the system it is given", async () => {
@@ -304,4 +307,60 @@ describe("the service, supervised", () => {
       await lock.release();
     }
   }, 60_000);
+});
+
+describe("the Node the job runs", () => {
+  const CELLAR = "/opt/homebrew/Cellar/node/26.13.1_2/bin/node";
+  const NVM = "/Users/u/.nvm/versions/node/v24.22.3/bin/node";
+  /** Real paths as a table: a path not in it is not there. */
+  const realOf = (t: Record<string, string>) => (p: string) => {
+    const r = t[p];
+    if (r === undefined) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    return r;
+  };
+
+  it("Homebrew's versioned Node: its stable link, where Homebrew links it", () => {
+    expect(stableNode(CELLAR, realOf({ [CELLAR]: CELLAR, "/opt/homebrew/bin/node": CELLAR }))).toBe(
+      "/opt/homebrew/bin/node",
+    );
+    const LINUX = "/home/linuxbrew/.linuxbrew/Cellar/node/24.22.3/bin/node";
+    expect(
+      stableNode(LINUX, realOf({ [LINUX]: LINUX, "/home/linuxbrew/.linuxbrew/bin/node": LINUX })),
+    ).toBe("/home/linuxbrew/.linuxbrew/bin/node");
+  });
+
+  it("a stable node that is another Node: not taken; this one's path, as before", () => {
+    const other = "/opt/homebrew/Cellar/node/26.14.0/bin/node";
+    expect(stableNode(CELLAR, realOf({ [CELLAR]: CELLAR, "/opt/homebrew/bin/node": other }))).toBe(
+      CELLAR,
+    );
+  });
+
+  it("PATH is not read: a node only a shell's PATH has (fnm, nvm) is never written", () => {
+    const fnm = "/run/user/501/fnm_multishells/123_456/bin";
+    const was = process.env["PATH"];
+    process.env["PATH"] = `${fnm}:${was ?? ""}`;
+    try {
+      expect(stableNode(NVM, realOf({ [NVM]: NVM, [`${fnm}/node`]: NVM }))).toBe(NVM);
+    } finally {
+      process.env["PATH"] = was;
+    }
+  });
+
+  it("a Node at a stable path already, or one whose real path cannot be had: as it is", () => {
+    expect(stableNode("/usr/bin/node", realOf({ "/usr/bin/node": "/usr/bin/node" }))).toBe(
+      "/usr/bin/node",
+    );
+    expect(stableNode(CELLAR, realOf({}))).toBe(CELLAR);
+  });
+
+  it("looks only in the fixed directories", () => {
+    expect([...STABLE_NODE_DIRS]).toEqual([
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      "/home/linuxbrew/.linuxbrew/bin",
+      "/usr/bin",
+      "/bin",
+    ]);
+  });
 });

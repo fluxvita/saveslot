@@ -54,7 +54,7 @@ import {
   ServiceRunning,
 } from "@fluxvita/saveslot-service";
 import { osFileLock, PgliteBackend, PgliteStoreError } from "@fluxvita/saveslot-store-pglite";
-import { installAutostart, type System, uninstallAutostart } from "./autostart.ts";
+import { installAutostart, type System, stableNode, uninstallAutostart } from "./autostart.ts";
 import {
   type Config,
   ConfigInvalid,
@@ -675,7 +675,8 @@ function supervisedArgv(home: string): string[] {
   const bin = binPath();
   const conditions = bin.endsWith(".ts") ? ["--conditions=source"] : [];
   return [
-    process.execPath,
+    // A path that stays when Node is upgraded, when this Node has one (./autostart.ts).
+    stableNode(process.execPath),
     ...conditions,
     bin,
     "--home",
