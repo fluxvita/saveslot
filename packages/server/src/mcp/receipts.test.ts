@@ -8,8 +8,8 @@
 // unchanged next change, a start taken as now, a correction's stretch, a stretch without a value
 // filled, ending or lasting); an applied part merged; evidence no op cites; a clock behind the log;
 // the pending_items notice; and premises: declared (one had changed already), restated and cleared,
-// rows marked by a change and unmarked by its change back (these four from kernel's test switch,
-// on a real store: the service does not take premises yet). Update the golden files with
+// rows marked by a change and unmarked by its change back (these four taken through the kernel's
+// write path on a real store). Update the golden files with
 // `pnpm exec vitest run packages/server/src/mcp/receipts.test.ts -u`.
 
 import { readFileSync } from "node:fs";

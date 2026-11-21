@@ -1,7 +1,6 @@
 // A receipt's `premise_affected` on PGlite (04-contract §5.1; 04-contract-types §5.1
 // `PremiseAffected`): the dependent rows a write made a mark appear on and took one off, counted by
-// row and reason, at most 20 listed; the same when the receipt is rebuilt for a replay later. The
-// write path takes `premises` only behind kernel's test switch.
+// row and reason, at most 20 listed; the same when the receipt is rebuilt for a replay later.
 
 import {
   appendOperation,
@@ -17,7 +16,6 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import { derivedSchema, rule } from "@fluxvita/saveslot-kernel/rsql-testing";
 import {
-  acceptPremisesForTests,
   COMPILED_V1,
   createSlotEvents,
   failPremiseDetectionForTests,
@@ -245,10 +243,8 @@ beforeAll(async () => {
   await loadRsql();
   COMPILED = withDerived();
   s = await openReusable("saveslot-premises-detect-");
-  acceptPremisesForTests(true);
 }, T);
 afterAll(async () => {
-  acceptPremisesForTests(false);
   await s?.close();
 }, T);
 beforeEach(async () => {

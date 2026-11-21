@@ -112,6 +112,31 @@ const SEGMENT: JsonSchema = {
 const keyValues: JsonSchema = { type: "object" };
 
 /**
+ * A premise of a write op (04-contract-types §5.1 `PremiseRef`). Which target is given, how many
+ * premises and the rest are the kernel's checks, as on every entry.
+ */
+const PREMISE: JsonSchema = {
+  type: "object",
+  properties: {
+    table: str,
+    row: str,
+    entity: str,
+    entity_key: keyValues,
+    fields: names,
+    ver: str,
+    valid_at: str,
+    valid_during: {
+      type: "array",
+      prefixItems: [str, { type: ["string", "null"] }],
+      minItems: 2,
+      maxItems: 2,
+    },
+  },
+  required: ["table"],
+  additionalProperties: false,
+};
+
+/**
  * A write op (04-contract-types §5.1 `WriteOp`), without `acknowledge` (05 §2), and without what
  * this version does not take.
  */
@@ -133,9 +158,10 @@ const WRITE_OP: JsonSchema = {
     },
     valid_from: str,
     valid_to: str,
-    // `external_key`, `as`, an op's own `evidence`, `evidence_by_field` and `premises` are not
-    // taken in this version, and not listed (05 §9 «这一版不出现的句子»).
+    // `external_key`, `as`, an op's own `evidence` and `evidence_by_field` are not taken in this
+    // version, and not listed (05 §9 «这一版不出现的句子»).
     evidence_refs: { type: "array", items: { type: "integer", minimum: 0 } },
+    premises: { type: "array", items: PREMISE },
   },
   required: ["table"],
   additionalProperties: false,

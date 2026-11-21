@@ -1061,7 +1061,6 @@ describe("refusals of the request's shape", () => {
   });
 
   it.each([
-    ["premises", { premises: [] }, "ops/0/premises"],
     ["external_key", { external_key: { k: "1" } }, "ops/0/external_key"],
     ["as", { as: "p1" }, "ops/0/as"],
     ["revert.to", { revert: { to: 3, fields: ["note"] }, set: undefined }, "ops/0/revert/to"],
@@ -1126,14 +1125,14 @@ describe("refusals of the request's shape", () => {
     const r = normalize({
       ops: [
         { intent: "update", table: "expenses", row: ROW, set: { pieces: "x" } },
-        { intent: "update", table: "expenses", row: ROW, set: { note: "x" }, premises: [] },
+        { intent: "update", table: "expenses", row: ROW, set: { note: "x" }, as: "p1" },
         { intent: "upsert", table: "expenses" },
       ],
     });
     expect(errorOf(r)).toEqual({
       code: "not_in_this_version",
       reason: "parameter",
-      param: "ops/1/premises",
+      param: "ops/1/as",
     });
   });
 });

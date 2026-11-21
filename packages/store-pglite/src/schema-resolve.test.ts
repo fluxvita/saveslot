@@ -20,7 +20,6 @@ import {
   schemaDraft,
   write,
 } from "@fluxvita/saveslot-kernel";
-import { acceptPremisesForTests } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
 
@@ -531,10 +530,6 @@ describe("a slot renamed", () => {
 });
 
 describe("a table dropped", () => {
-  // The write path takes `premises` behind the kernel's test switch.
-  beforeAll(() => acceptPremisesForTests(true));
-  afterAll(() => acceptPremisesForTests(false));
-
   it(
     "the declarations still current on its rows change (schema_switched); others stay",
     async () => {
@@ -1053,10 +1048,6 @@ describe("as_of reads the version switched to by then (08 «状态机»: a versi
 });
 
 describe("replayed", () => {
-  // The write path takes `premises` behind the kernel's test switch.
-  beforeAll(() => acceptPremisesForTests(true));
-  afterAll(() => acceptPremisesForTests(false));
-
   it(
     "the log into an empty storage gives the same state: confirmations, rejections, a superseded draft, evidence, a dropped table with an item and a premise on it",
     async () => {

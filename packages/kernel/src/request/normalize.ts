@@ -9,9 +9,8 @@
 // has no problem of the first kind.
 //
 // Parameters this version does not take are refused as not_in_this_version at their path:
-// premises (until the detection lands: see `acceptPremisesForTests`), external_key, as, an op's own
-// evidence, source_ref segments, revert.to, mode, the evidence level external_authority, and a
-// premise's temporary name ("@…", with `as`).
+// external_key, as, an op's own evidence, source_ref segments, revert.to, mode, the evidence level
+// external_authority, and a premise's temporary name ("@…", with `as`).
 //
 // Temporary limits, until experiment 4 (08-open-questions): at most 1,000 ops; `task` and
 // `idempotency_key` at most 256 characters, well-formed, without control characters. Evidence: 32 KB
@@ -143,7 +142,7 @@ const OP_KEYS = new Set([
   "evidence_by_field",
 ]);
 /** Op keys this version does not take, in the order they are reported. */
-const OP_NOT_YET = ["premises", "external_key", "as"];
+const OP_NOT_YET = ["external_key", "as"];
 /** The premises an op may have (02-integrity «写入的前提» «上限»). */
 export const MAX_PREMISES = 16;
 const PREMISE_KEYS = new Set([
@@ -159,16 +158,6 @@ const PREMISE_KEYS = new Set([
 /** A historical version as `as_of` gives it (04-contract §2): not one a premise may rest on. */
 const HISTORICAL_VER = /^h([1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
-/**
- * Whether the write path takes `premises`. Off: refused as not_in_this_version, as before. It is
- * turned on only from kernel's test entry (`acceptPremisesForTests`, testing.fixture.ts), never by
- * an environment variable or a request, until the detection lands and the entry opens.
- */
-let premisesTaken = false;
-/** Tests only: the write path takes `premises` (or not again). Not exported from the kernel. */
-export function acceptPremisesForTests(on: boolean): void {
-  premisesTaken = on;
-}
 const INTENTS: ReadonlySet<string> = new Set(["insert", "update", "correct", "revoke"]);
 const VER = /^v([1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
@@ -754,8 +743,7 @@ function readOp(
   const at = `ops/${i}`;
   if (!isObj(o)) return invalid("malformed", at);
   for (const k of keysOf(o)) if (!OP_KEYS.has(k)) invalid("malformed", `${at}/${k}`);
-  for (const k of OP_NOT_YET)
-    if (has(o, k) && !(k === "premises" && premisesTaken)) notYet(`${at}/${k}`);
+  for (const k of OP_NOT_YET) if (has(o, k)) notYet(`${at}/${k}`);
   const table = baseTable(get(o, "table"), `${at}/table`, tables, input.compiled.tables);
   const byName = fieldsByName(table);
   const state = table.time.type === "state";

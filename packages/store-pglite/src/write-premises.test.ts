@@ -1,7 +1,7 @@
 // Declaring premises through the write pipeline on PGlite (03-data-model/02-integrity-and-records
 // «写入的前提»; 04-contract §5; 09-event-format §5.7 the premise blocks): what the head records of
 // each declaration, step 5's checks, the state when written, restatement and clearing, and the
-// cover. The write path takes `premises` only behind kernel's test switch until the detection lands.
+// cover.
 
 import {
   appendOperation,
@@ -13,7 +13,6 @@ import {
   readTail,
 } from "@fluxvita/saveslot-kernel";
 import {
-  acceptPremisesForTests,
   COMPILED_V1,
   createSlotEvents,
   premiseFanInLimitForTests,
@@ -235,10 +234,8 @@ const changeRelease = async (row: string, ver: string, set: Record<string, unkno
 
 beforeAll(async () => {
   s = await openReusable("saveslot-write-premises-");
-  acceptPremisesForTests(true);
 }, T);
 afterAll(async () => {
-  acceptPremisesForTests(false);
   await s?.close();
 }, T);
 beforeEach(async () => {

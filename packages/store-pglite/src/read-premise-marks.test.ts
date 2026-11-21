@@ -1,8 +1,7 @@
 // The marks of changed premises on the rows a query reads, on PGlite (03-data-model/02-integrity-and-
 // records «写入的前提» «标记出现在哪一行»; 04-contract §7; 04-contract-types §3
 // `Marks.premise_changed`): on which rows and segments they show, their shape, the fields read, the
-// ten shown and the total, and a target the reader cannot see. The write path takes `premises`
-// only behind kernel's test switch.
+// ten shown and the total, and a target the reader cannot see.
 
 import {
   appendOperation,
@@ -15,7 +14,6 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import { derivedSchema, rule } from "@fluxvita/saveslot-kernel/rsql-testing";
 import {
-  acceptPremisesForTests,
   COMPILED_V1,
   createSlotEvents,
   failPremiseDetectionForTests,
@@ -199,10 +197,8 @@ beforeAll(async () => {
   await loadRsql();
   COMPILED = withDerived();
   s = await openReusable("saveslot-premises-detect-");
-  acceptPremisesForTests(true);
 }, T);
 afterAll(async () => {
-  acceptPremisesForTests(false);
   await s?.close();
 }, T);
 beforeEach(async () => {

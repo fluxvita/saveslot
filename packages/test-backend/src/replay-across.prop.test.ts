@@ -135,7 +135,7 @@ type Step =
    * Run `n` restated on run `m` (or its premises cleared), covering the items of its insert; the
    * earliest declaration so far marked changed. `wide`: a head of eleven ops, ops 2 and 10 both
    * restating, so that the earlier op's edge arrives after the later one's (blocks go in path
-   * order). A head by hand: the write path does not take premises yet.
+   * order). A head by hand.
    */
   | {
       readonly k: "premise";

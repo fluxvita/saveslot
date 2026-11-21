@@ -386,28 +386,51 @@ describe("HTTP's own", () => {
     expect(b.ops[0]?.target).toEqual(a.ops[0]?.target);
   });
 
-  it("a write with premises: not in this version at the service's entry (the kernel's switch is for its tests)", async () => {
-    const r = await http({
-      method: "POST",
-      path: "/v1/writes",
-      token: session,
-      body: JSON.stringify({
-        sv: 1,
-        ops: [
-          {
-            intent: "insert",
-            table: "ledger.expenses",
-            set: { date: "2026-11-17" },
-            premises: [{ table: "ledger.expenses", row: `r_${"5".repeat(26)}` }],
-          },
-        ],
-      }),
-    });
-    expect([r.status, err(r)["code"], err(r)["reason"], err(r)["param"]]).toEqual([
-      501,
-      "not_in_this_version",
-      "parameter",
-      "ops/0/premises",
+  it("a write with premises: the service takes them, and checks them in the kernel", async () => {
+    const post = (ops: unknown[]) =>
+      http({
+        method: "POST",
+        path: "/v1/writes",
+        token: session,
+        body: JSON.stringify({ sv: 1, ops }),
+      });
+    const first = await post([
+      { intent: "insert", table: "ledger.expenses", set: { date: "2026-11-17" } },
+    ]);
+    expect(first.status).toBe(200);
+    const made = (JSON.parse(first.body) as { ops: { target: { row: string }; ver: string }[] })
+      .ops[0];
+    const row = made?.target.row as string;
+    const ver = made?.ver as string;
+    const r = await post([
+      {
+        intent: "insert",
+        table: "ledger.expenses",
+        set: { date: "2026-11-18" },
+        premises: [{ table: "ledger.expenses", row, fields: ["date"], ver }],
+      },
+    ]);
+    expect(r.status).toBe(200);
+    const declared = (JSON.parse(r.body) as { ops: { premises?: unknown[] }[] }).ops[0]?.premises;
+    expect(declared).toEqual([
+      { target: { table: "ledger.expenses", row }, fields: ["date"], ver, state: "current" },
+    ]);
+    // A premise on the op's own target: refused by the kernel's checks, not at the entry.
+    const self = await post([
+      {
+        intent: "update",
+        table: "ledger.expenses",
+        row,
+        ver,
+        set: { note: "lunch" },
+        premises: [{ table: "ledger.expenses", row, ver }],
+      },
+    ]);
+    expect([self.status, err(self)["code"], err(self)["reason"], err(self)["param"]]).toEqual([
+      400,
+      "invalid_argument",
+      "premise_self",
+      "ops/0/premises/0",
     ]);
   });
 

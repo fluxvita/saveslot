@@ -739,7 +739,7 @@ async function setupCommand(
   return { json: r.json, lines: r.lines, errLines: r.errLines, exit: r.exit };
 }
 
-/** `--detail detailed` refused (P2, with premises): what to do instead (06 §4.7). */
+/** `--detail detailed` refused: what to do instead (06 §4.7). */
 const detailNotYet: Command["hint"] = (e, o) =>
   e.code === "not_in_this_version" && ownString(o, "detail") === "detailed"
     ? TEXTS.detailedNotYet

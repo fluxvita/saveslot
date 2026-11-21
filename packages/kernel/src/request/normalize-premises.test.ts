@@ -2,8 +2,7 @@
 // 可以带»): step 1's reading of each premise, and each refusal with its code, reason and path. What
 // depends on the tenant's state is step 5's (write/premises.ts).
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { acceptPremisesForTests } from "./normalize.ts";
+import { describe, expect, it } from "vitest";
 import { ENTITY, errorOf, insertExpense, normalize, onlyOp, ROW } from "./requests.fixture.ts";
 
 const OTHER_ROW = `r_${"3".repeat(26)}`;
@@ -18,20 +17,7 @@ const update = (premises: unknown, more: Record<string, unknown> = {}) => ({
   ops: [{ intent: "update", table: "settings", row: ROW, ver: "v3.0", premises, ...more }],
 });
 
-describe("premises refused while the write path does not take them", () => {
-  it("not_in_this_version at the op's premises", () => {
-    expect(errorOf(normalize(withPremises([{ table: "settings", row: OTHER_ROW }])))).toEqual({
-      code: "not_in_this_version",
-      reason: "parameter",
-      param: "ops/0/premises",
-    });
-  });
-});
-
-describe("premises taken (the kernel's test entry)", () => {
-  beforeAll(() => acceptPremisesForTests(true));
-  afterAll(() => acceptPremisesForTests(false));
-
+describe("premises", () => {
   it("a premise on a row, on fields, with its version: field IDs and the version read", () => {
     const op = onlyOp(
       normalize(

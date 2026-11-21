@@ -27,7 +27,6 @@ export { type QueryInput, queryInTx } from "./read/query.ts";
 export { type SqlInput, type SqlOutput, sqlInTx } from "./read/sql.ts";
 export { decodeColumns } from "./request/index.ts";
 // The write path takes `premises` (tests only, until the detection opens the entry).
-export { acceptPremisesForTests } from "./request/normalize.ts";
 export * from "./store/anchor-conformance.fixture.ts";
 export { failPremiseDetectionForTests } from "./write/detect-premises.ts";
 // The literal checker, for tests holding a write's literal blocks to it.

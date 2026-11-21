@@ -1,8 +1,7 @@
 // The counts of rows resting on changed premises, on PGlite (04-contract §7: a derived row's
 // `input_marks.premise_changed`, the base rows it reads whose value of a field its rule depends on
 // rests on a changed premise; `sql`'s `marks_summary.premise_changed`, the rows the query read; 04-
-// contract-types §3 `InputMarks`). The same reading as a row's marks; one per row. The write path
-// takes `premises` only behind kernel's test switch.
+// contract-types §3 `InputMarks`). The same reading as a row's marks; one per row.
 
 import {
   appendOperation,
@@ -15,7 +14,6 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import { derivedSchema, rule } from "@fluxvita/saveslot-kernel/rsql-testing";
 import {
-  acceptPremisesForTests,
   COMPILED_V1,
   createSlotEvents,
   queryInTx,
@@ -232,10 +230,8 @@ beforeAll(async () => {
   await loadRsql();
   COMPILED = withDerived();
   s = await openReusable("saveslot-premises-detect-");
-  acceptPremisesForTests(true);
 }, T);
 afterAll(async () => {
-  acceptPremisesForTests(false);
   await s?.close();
 }, T);
 beforeEach(async () => {

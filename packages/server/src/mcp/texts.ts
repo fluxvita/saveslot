@@ -317,10 +317,7 @@ export const WRITE = {
       text: "When the table declares a source key and your records come from another system, you can use `external_key` instead of `row`: give every key field, with intent `update` and no `ver`; a record already there is compared with what was last delivered, one not there is added. A record that did not change leaves nothing; a record the user revoked is skipped, not written back.",
       later: "P2",
     },
-    {
-      text: 'When what you write was decided from other records in saveslot (tasks planned by a release date, a budget set from an income), you can list those records and the `ver` you read in `premises`. If they change later, this row carries "premise changed" for anyone who reads it, naming the record and the operation; its values are not changed. When you read a row with "premise changed" and it needs adjusting, change it as usual with new `premises`; when it still holds, an `update` with `premises` and no `set` says so; `premises: []` clears them. When the reason is a retroactive change or a changed plan, read the premise at the business time the mark gives: a read without a time returns the current period only. List only the records really used, not everything read; when what you used is a derived value, list the base record it sums up. When this write becomes a candidate or awaits confirmation, it declares premises only for the fields it writes; `premises: []` still clears the whole row.',
-      later: "P2",
-    },
+    'When what you write was decided from other records in saveslot (tasks planned by a release date, a budget set from an income), you can list those records and the `ver` you read in `premises`. If they change later, this row carries "premise changed" for anyone who reads it, naming the record and the operation; its values are not changed. When you read a row with "premise changed" and it needs adjusting, change it as usual with new `premises`; when it still holds, an `update` with `premises` and no `set` says so; `premises: []` clears them. When the reason is a retroactive change or a changed plan, read the premise at the business time the mark gives: a read without a time returns the current period only. List only the records really used, not everything read; when what you used is a derived value, list the base record it sums up. When this write becomes a candidate or awaits confirmation, it declares premises only for the fields it writes; `premises: []` still clears the whole row.',
     "A write that would overwrite recorded changes does not take effect at once: the receipt lists what would be overwritten, and the pending item. Tell the user that list in this same reply and ask them; confirm it with saveslot_resolve only after they say yes to it. What they said before the item appeared is not agreement to it. Writing never deletes the original words.",
     {
       text: "To delete what the user said, preview it with `deletion_preview` of saveslot_sources, then use saveslot_delete.",
@@ -347,10 +344,7 @@ export const WRITE = {
         text: "`evidence`: the op's own segments; `evidence_by_field`: field name → evidence indexes (`valid` for the period).",
         later: "P2",
       },
-      {
-        text: "`premises`: `[{table, row or entity or entity_key, fields, ver}]`.",
-        later: "P2",
-      },
+      "`premises`: `[{table, row or entity or entity_key, fields, ver}]`, the records this op's values were decided from.",
     ],
   },
 } as const satisfies { description: Text; params: Record<string, Text> };
@@ -377,7 +371,7 @@ export const WRITE_OP_FIELDS = {
     "When changing an existing row: the `ver` you read for it, passed back unchanged; saveslot uses it to find changes others made since. Without it, the version you last read is used. Not for a row created in this request.",
   ],
   set: [
-    "Required except with `revoke` and `revert`. Field name → value, only the fields to change; a value with a unit as `{value, unit}`; `null` clears an optional field.",
+    "Required except with `revoke`, `revert`, and an `update` with only `premises`. Field name → value, only the fields to change; a value with a unit as `{value, unit}`; `null` clears an optional field.",
   ],
   revert: [
     "Instead of `set`: `{undo: n}` undoes what of write #n (from its receipt or a timeline) is still in effect. What others changed since is skipped; `include_later: true` undoes that too, only when the user asks for it.",
@@ -390,6 +384,9 @@ export const WRITE_OP_FIELDS = {
   ],
   evidence_refs: [
     "Which segments of the request's `evidence` this op uses (indexes, from 0). Not given: all of them.",
+  ],
+  premises: [
+    "The records already in saveslot that what this op writes was decided from: `[{table, row or entity or entity_key, fields, ver}]`. `ver` is the one you got when reading that record, passed back unchanged; `fields` are the fields used, left out when unsure. For a state table, add `valid_at` or `valid_during` for the time whose value was used; without them, the row's own date or time if it has one, else from now on. `[]` clears this row's premises. This is not `evidence`: `evidence` holds the user's words and tool results, `premises` points at records in saveslot.",
   ],
 } as const satisfies Record<string, Text>;
 

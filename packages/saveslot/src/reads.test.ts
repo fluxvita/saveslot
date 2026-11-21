@@ -156,7 +156,7 @@ describe("saveslot query", () => {
     expect(j.rows.map((x) => x.row)).toEqual([first]);
   });
 
-  it("--detail detailed: not in this version (P2, with premises); the service's refusal said plainly, 5", async () => {
+  it("--detail detailed: not in this version; the service's refusal said plainly, 5", async () => {
     for (const argv of [
       ["query", "food.meals", "--detail", "detailed"],
       ["history", "food.meals", first, "--as-of", "1", "--detail", "detailed"],

@@ -16,8 +16,7 @@
 //
 // The oracle reads only what apply left: the version table's cells (raw columns, compared as
 // text, day by day), the operations' intents and entry days, and which declarations are in force
-// (`premise_edges`). It does not use premiseDelta, targetDelta or the detection's code. The write
-// path takes `premises` only behind kernel's test switch.
+// (`premise_edges`). It does not use premiseDelta, targetDelta or the detection's code.
 
 import {
   appendOperation,
@@ -30,7 +29,6 @@ import {
   readBufferOf,
 } from "@fluxvita/saveslot-kernel";
 import {
-  acceptPremisesForTests,
   COMPILED_V1,
   createSlotEvents,
   premiseFanInLimitForTests,
@@ -213,10 +211,8 @@ const release = async (name: string, date: string) =>
 beforeAll(async () => {
   await loadRsql();
   s = await openReusable("saveslot-premises-prop-");
-  acceptPremisesForTests(true);
 }, T);
 afterAll(async () => {
-  acceptPremisesForTests(false);
   await s?.close();
 }, T);
 beforeEach(async () => {

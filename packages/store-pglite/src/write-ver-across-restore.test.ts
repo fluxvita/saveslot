@@ -22,7 +22,6 @@ import {
   readTail,
 } from "@fluxvita/saveslot-kernel";
 import {
-  acceptPremisesForTests,
   COMPILED_V1,
   createSlotEvents,
   judgeStateFromLog,
@@ -436,9 +435,6 @@ describe("a fallback ver from before the import", () => {
 });
 
 describe("a premise's ver from before the import", () => {
-  beforeAll(() => acceptPremisesForTests(true));
-  afterAll(() => acceptPremisesForTests(false));
-
   it(
     "one count less, not past the point: taken as given, and current when nothing changed",
     async () => {

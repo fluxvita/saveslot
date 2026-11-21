@@ -1,8 +1,7 @@
 // The premises in a row's timeline, on PGlite (04-contract §10 `history` «timeline»; 04-contract-types
 // §4.5 `TimelineEntry.premises`): a write that declared premises gives them, their state the one
 // now; a restatement and a clearing are entries of their own; a page counts them; a target the
-// reader cannot see gives its state and since only. The write path takes `premises` only behind
-// kernel's test switch.
+// reader cannot see gives its state and since only.
 
 import {
   appendOperation,
@@ -16,7 +15,6 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import { derivedSchema, rule } from "@fluxvita/saveslot-kernel/rsql-testing";
 import {
-  acceptPremisesForTests,
   COMPILED_V1,
   createSlotEvents,
   resolveInTx,
@@ -197,10 +195,8 @@ beforeAll(async () => {
   await loadRsql();
   COMPILED = withDerived();
   s = await openReusable("saveslot-premises-detect-");
-  acceptPremisesForTests(true);
 }, T);
 afterAll(async () => {
-  acceptPremisesForTests(false);
   await s?.close();
 }, T);
 beforeEach(async () => {

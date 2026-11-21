@@ -2,8 +2,7 @@
 // records «写入的前提» «检测»; 09-event-format §5.10 `premise.changed`): which declarations an
 // operation marks and takes back, with what reason and since, where the event goes in the
 // operation, that nothing of the operation stays when it fails, and that the log the pipeline
-// wrote gives the same premise tables replayed into an empty store. The write path takes
-// `premises` only behind kernel's test switch.
+// wrote gives the same premise tables replayed into an empty store.
 
 import {
   appendOperation,
@@ -18,7 +17,6 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import { derivedSchema, rule } from "@fluxvita/saveslot-kernel/rsql-testing";
 import {
-  acceptPremisesForTests,
   COMPILED_V1,
   createSlotEvents,
   failPremiseDetectionForTests,
@@ -241,10 +239,8 @@ beforeAll(async () => {
   await loadRsql();
   COMPILED = withDerived();
   s = await openReusable("saveslot-premises-detect-");
-  acceptPremisesForTests(true);
 }, T);
 afterAll(async () => {
-  acceptPremisesForTests(false);
   await s?.close();
 }, T);
 beforeEach(async () => {

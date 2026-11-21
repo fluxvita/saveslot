@@ -27,7 +27,6 @@ import {
   schemaDraft,
 } from "@fluxvita/saveslot-kernel";
 import {
-  acceptPremisesForTests,
   COMPILED_V1,
   createSlotEvents,
   failPremiseDetectionForTests,
@@ -191,10 +190,8 @@ const update = (row: string, set: Record<string, unknown>, ver: string, o: SendO
 
 beforeAll(async () => {
   s = await openReusable("saveslot-kernel-invariants-");
-  acceptPremisesForTests(true);
 }, T);
 afterAll(async () => {
-  acceptPremisesForTests(false);
   await s?.close();
 }, T);
 beforeEach(async () => {
