@@ -452,7 +452,7 @@ export const INSTRUCTIONS = {
     ],
     [
       {
-        text: "When to write: when the user states a new fact that belongs in one of the tables, asks you to record something, or says something was recorded wrongly, use saveslot_write and put the user's own words in `evidence`. Do not write when the user is asking, supposing or chatting. When no table fits, tell the user first. When their words leave out something that decides what the record is (which meal, how many sets), or contradict themselves, ask first; do not write an incomplete record and ask afterwards.",
+        text: "When to write: when the user states a new fact that belongs in one of the tables, asks you to record something, or says something was recorded wrongly, use saveslot_write and put the user's own words in `evidence`. Do not write when the user is asking, supposing or chatting. When no table fits, tell the user first. When their words leave out something that decides what the record is (which meal, how many sets), or say two things that cannot both hold (two different numbers for the same thing), ask first; do not write an incomplete record and ask afterwards. Words that differ from what is recorded are no contradiction: that is what they want changed; write it, and say so in your reply.",
         needs: "saveslot_write",
       },
       {
@@ -470,7 +470,7 @@ export const INSTRUCTIONS = {
     ],
     [
       {
-        text: 'Writing it right: read a record before changing it, and pass back the `ver` and `sv` you read. When a receipt says "awaiting confirmation", tell the user what it is in that same reply and get their agreement before going on; what they said before it appeared is not agreement to it. When the record you are about to change is no longer as it was when the user asked, and someone else changed it, tell the user what it is now and who changed it, and write only after they answer.',
+        text: 'Writing it right: read a record before changing it, and pass back the `ver` and `sv` you read. When a receipt says "awaiting confirmation", tell the user what it is in that same reply and get their agreement before going on; what they said before it appeared is not agreement to it. When someone else changed the record after the user asked and before you write, tell the user what it is now and who changed it, and write only after they answer. A record that already had an open item, or was already that way before the user asked, is not such a case: do what they asked, and tell them of the open proposals on it.',
         needs: "saveslot_write",
       },
       {

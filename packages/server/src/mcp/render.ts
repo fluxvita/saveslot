@@ -1051,6 +1051,24 @@ function impactHead(lines: Line[], isUndo: boolean): Line[] {
   return isUndo ? [t`  Confirming it records this undo; no value read now changes.`] : [];
 }
 
+/**
+ * Whose writes confirming an item would undo (an impact's `reverted`), as a sentence to tell the
+ * user: each write's operation, writer and fields. None when it undoes no write.
+ */
+function revertedTell(x: unknown): Line[] {
+  const reverted = arr(own(obj(x), "reverted"));
+  if (reverted.length === 0) return [];
+  return [
+    t`  Tell the user that confirming it undoes ${join(
+      reverted.map((v) => {
+        const e = obj(v);
+        return t`${op(e["seq"])} by ${actorOf(e["actor"])} (${join(arr(e["fields"]).map(fieldOf), t`, `)})`;
+      }),
+      t`; `,
+    )}.`,
+  ];
+}
+
 /** A write take_previous takes back or hides: its operation, its writer and the fields it loses. */
 const revertedWrite = (w: unknown): Part[] => {
   const x = obj(w);
@@ -1220,6 +1238,7 @@ function pending(r: R, now: Date): Line[] {
     if (isObj(r["impact"])) {
       const isUndo = isObj(obj(r["proposal"])["revert"]);
       out.push(...impactHead(impactLines(r["impact"], "    "), isUndo));
+      out.push(...revertedTell(r["impact"]));
       if (r["status"] === "open") out.push(t`  Not in effect; the value in effect is unchanged.`);
     }
     out.push(...closedLines(r));
@@ -1384,6 +1403,7 @@ function awaitingLines(parts: readonly { f: string; c: R }[], r: R, isUndo: bool
         ];
   return [
     ...head,
+    ...revertedTell(first.c["impact"]),
     t`  Not in effect; the value in effect is unchanged. Tell the user the above in this reply and ask them; what they said before this item appeared is not agreement to it. Once they agree: saveslot_resolve ${idOf(item)} confirm (or reject).`,
   ];
 }
@@ -1450,8 +1470,8 @@ function resolvedLines(x: R): Line[] {
       add(
         f,
         next["value"] === null
-          ? t`up to ${timeOf(next["at"])}; what is recorded from then on is unchanged (still no value)`
-          : t`up to ${timeOf(next["at"])}; what is recorded from then on is unchanged (still ${fieldValue(next["value"])})`,
+          ? t`Tell the user it now holds up to ${timeOf(next["at"])}, and that what is recorded from then on (no value) is unchanged.`
+          : t`Tell the user it now holds up to ${timeOf(next["at"])}, and that what is recorded from then on (${fieldValue(next["value"])}) is unchanged.`,
       );
     }
   }

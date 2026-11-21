@@ -4,5 +4,6 @@ pi_0000000000000005 awaiting_confirmation · ledger.entities e_00000000000000000
   In effect now: 2026-11-05 to 2026-11-09 (inclusive) b <untrusted-data-N>b0</untrusted-data-N>, c —, <untrusted-data-N>__proto__</untrusted-data-N> —
   Carrying it out would:
     undo #13 (<untrusted-data-N>u_11111111111111111111111111</untrusted-data-N>): whether it exists
+  Tell the user that confirming it undoes #13 by <untrusted-data-N>u_11111111111111111111111111</untrusted-data-N> (whether it exists).
   Not in effect; the value in effect is unchanged.
   Choices: confirm / reject
