@@ -44,6 +44,7 @@ export const TEXTS = {
       "  pending show <pi_…>",
       "  pending resolve <pi_…> <decision> [--candidate n] [--note text] [--yes --item-ver iv_…]",
       "  reads [--connection <name or ID>] [--since 10m]",
+      "  sources [list | search <words> | get <s_…>] [--slot s] [--kind k] [--from t] [--to t]",
       "  verify                    check the log: chain, checksums, index, gaps",
       "  export [-o file [--force]] [--after-seq n] [--include-pending-deletion [--yes]] [--encrypt [--passphrase-file p]]",
       "                            the whole log as NDJSON; --encrypt: an age file under a passphrase",
@@ -218,6 +219,9 @@ export const TEXTS = {
   ),
   pendingStatusBad: s("--status takes open, resolved, superseded or all"),
   readsArgs: s("saveslot reads takes options only: --connection, --since"),
+  sourcesListArgs: s("saveslot sources [list] takes options only: --slot, --kind, --from, --to"),
+  sourcesSearchArgs: s("give the words to find: saveslot sources search <words>"),
+  sourcesGetArgs: s("give one source: saveslot sources get <s_…>"),
   sinceBad: s("--since takes a moment (RFC 3339) or how long ago: 30s, 10m, 2h, 1d"),
   verifyArgs: s("saveslot verify takes no arguments"),
 

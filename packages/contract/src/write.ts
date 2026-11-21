@@ -2,12 +2,14 @@
 // `resolve` and `history` reuse, and `resolve` (§5.2). `write`'s own parameters are not here: this
 // package does not cover the `write` operation yet.
 
-import type {
-  FieldStatus,
-  PremiseState,
-  SourceKind,
-  ValidFromMode,
-  ValidToMode,
+import {
+  type FieldStatus,
+  type PremiseState,
+  SOURCE_KINDS,
+  SOURCE_LEVELS,
+  type SourceKind,
+  type ValidFromMode,
+  type ValidToMode,
 } from "@fluxvita/saveslot-contract-core";
 import type {
   Actor,
@@ -41,8 +43,9 @@ import type {
 } from "./pending.ts";
 import type { MigrationStatus } from "./schema.ts";
 
-/** 04-contract-types §2 `SourceKind` (same set as the event format's). */
+/** 04-contract-types §2 `SourceKind` (same set as the event format's), and its values. */
 export type { SourceKind };
+export { SOURCE_KINDS, SOURCE_LEVELS };
 
 // ---------------------------------------------------------------------------------------------
 // §2 Evidence

@@ -79,6 +79,10 @@ export const httpDriver =
       history: { method: "POST", path: "/v1/history", body: true },
       sql: { method: "POST", path: "/v1/sql", body: true },
       pending: { method: "GET", path: id !== undefined ? `/v1/pending/${id}` : "/v1/pending" },
+      sources: {
+        method: "GET",
+        path: rest["mode"] === "get" ? `/v1/sources/${id}` : "/v1/sources",
+      },
       write: { method: "POST", path: "/v1/writes", body: true },
       resolve: { method: "POST", path: `/v1/pending/${id}/resolution`, body: true },
       schema_draft: { method: "POST", path: "/v1/drafts", body: true },
@@ -94,16 +98,24 @@ export const httpDriver =
       export: { method: "GET", path: "/v1/export" },
     };
     const r = at[operation];
-    const inPath = ["pending", "resolve", "connections.update", "connections.revoke"].includes(
-      operation,
-    );
+    const inPath = [
+      "pending",
+      "resolve",
+      "connections.update",
+      "connections.revoke",
+      "sources",
+    ].includes(operation);
     const { slot_id: _slot, ...withoutSlot } = rest;
+    // The sources' mode is the route's: a list, a search (by `q`), or one by its ID.
+    const { mode: _mode, ...withoutMode } = rest;
     const p =
       operation === "slots.remove"
         ? withoutSlot
-        : inPath
-          ? rest
-          : (params as Record<string, unknown>);
+        : operation === "sources"
+          ? withoutMode
+          : inPath
+            ? rest
+            : (params as Record<string, unknown>);
     const reply = await httpRequest(home(), {
       method: r.method,
       path: r.body ? r.path : `${r.path}${query(p)}`,

@@ -22,6 +22,7 @@ import {
   renameConnection,
   resolve,
   schemaDraft,
+  sources,
   sql,
   write,
 } from "@fluxvita/saveslot-kernel";
@@ -86,6 +87,11 @@ function noticeRefs(operation: Operation, params: Obj, result: unknown): NoticeR
       return { items: strs([params["id"]]) };
     case "schema_draft":
       return { slots: strs([field(result, "slot")]) };
+    // The slots of the sources given (one for `get`).
+    case "sources":
+      return field(result, "mode") === "get"
+        ? { slots: strs([field(result, "slot")]) }
+        : { slots: [...new Set(strs(arr(field(result, "sources")).map((x) => field(x, "slot"))))] };
     default:
       return undefined;
   }
@@ -196,6 +202,8 @@ export async function runOperation(o: {
           return sql(store, ctx, params, fit !== undefined ? { fit } : {});
         case "pending":
           return pending(store, ctx, params, fit);
+        case "sources":
+          return sources(store, ctx, params, fit);
         case "write":
           return write(store, ctx, params);
         case "resolve":

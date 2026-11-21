@@ -114,13 +114,15 @@ export const MAX_BODY_BYTES = 1024 * 1024;
 type Obj = Record<string, unknown>;
 
 /** What each part of a path is, checked for its form before it goes anywhere. */
-type Part = "slot" | "table" | "id" | "any";
+type Part = "slot" | "table" | "id" | "source" | "any";
 const PART_FORM: Readonly<Record<Exclude<Part, "any">, RegExp>> = {
   // Names in this version are ASCII letters, digits and underscores (08-open-questions).
   slot: /^[A-Za-z0-9_]{1,64}$/,
   table: /^[A-Za-z0-9_]{1,64}$/,
   // An item (`pi_`) or a connection (`ci_`): 01-objects «标识的写法».
   id: /^(pi_[0-9A-HJKMNP-TV-Z]{16}|ci_[0-9A-HJKMNP-TV-Z]{26})$/,
+  // A source (`s_`): 01-objects «标识的写法».
+  source: /^s_[0-9A-HJKMNP-TV-Z]{16}$/,
 };
 
 /** A table name with its slot, `slot.table`, each part of a name's form. */
@@ -236,10 +238,18 @@ const ROUTES: readonly Route[] = [
   route("GET", "/v1/reads", "reads", { operation: "reads.list" }),
   route("GET", "/v1/log/verify", "log_verify", { operation: "log.verify" }),
   route("GET", "/v1/log/end", "log_end", { operation: "log.end" }),
+  // A list, or with `q` a search (05-surfaces §14); one source by its ID.
+  route("GET", "/v1/sources", "sources", {
+    operation: "sources",
+    params: (_, q) => ({ ...q, mode: q["q"] !== undefined ? "search" : "list" }),
+  }),
+  route("GET", "/v1/sources/{}", "source", {
+    operation: "sources",
+    parts: ["source"],
+    params: ([id], q) => ({ ...q, mode: "get", id }),
+  }),
   route("GET", "/v1/export", "export", { operation: "export" }),
   // Later versions.
-  route("GET", "/v1/sources", "sources"),
-  route("GET", "/v1/sources/{}", "source"),
   route("POST", "/v1/deletions/preview", "deletion_preview"),
   route("POST", "/v1/deletions", "deletions"),
   route("GET", "/v1/deletions/{}", "deletion"),
@@ -557,7 +567,8 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
             `the ${kind} in the path is not of its form`,
             {
               reason: "malformed",
-              param: kind,
+              // A source's ID is the `id` the operation takes.
+              param: kind === "source" ? "id" : kind,
             },
           );
         }

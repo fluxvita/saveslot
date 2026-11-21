@@ -47,6 +47,13 @@ export const LEDGER = {
   ],
 };
 
+/** A slot of its own, for what another slot's credential may not see of its sources. */
+const DIARY = {
+  ...LEDGER,
+  slot: "diary",
+  tables: [{ ...LEDGER.tables[0], name: "entries", description: "one row per entry" }],
+};
+
 /** A slot to remove: another table name than the ledger's, so that table names stay unique. */
 const SPARE = {
   ...LEDGER,
@@ -357,6 +364,153 @@ export function contractSuite(
         allowed_values: ["none", "bucketed", "now"],
       }),
     });
+  });
+
+  it("sources: newest first with an excerpt; a search by part of the text; one with what it produced", async () => {
+    const { session } = get();
+    const driver = call;
+    // Connections of its own: the suite's writer is revoked by now.
+    const ownWriter = result(
+      await driver(session, "connections.issue", { name: "sources-writer" }),
+    )["token"] as string;
+    const ownReader = result(
+      await driver(session, "connections.issue", {
+        name: "sources-reader",
+        scopes: ["saveslot.read"],
+      }),
+    )["token"] as string;
+    const said = `Lunch at the Caf${String.fromCodePoint(0xe9)}, 45 yuan`;
+    const w = result(
+      await driver(ownWriter, "write", {
+        sv: 1,
+        evidence: [{ kind: "user_message", text: said }],
+        ops: [
+          {
+            intent: "insert",
+            table: "ledger.expenses",
+            set: { date: "2026-11-17", note: "lunch" },
+          },
+        ],
+      }),
+    );
+    const row = (w["ops"] as { target: { row: string } }[])[0]?.target.row as string;
+    const listed = result(await driver(ownReader, "sources", { slot: "ledger", limit: 2 }));
+    const items = listed["sources"] as Record<string, unknown>[];
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ kind: "user_message", slot: "ledger", excerpt: said });
+    const seqs = items.map((x) => x["id"]);
+    expect(typeof listed["next_cursor"]).toBe("string");
+    const next = result(
+      await driver(ownReader, "sources", {
+        slot: "ledger",
+        limit: 2,
+        cursor: listed["next_cursor"],
+      }),
+    );
+    for (const x of next["sources"] as { id: string }[]) expect(seqs).not.toContain(x.id);
+
+    // NFC on both sides, A–Z folded: "LUNCH at the cafe" + U+0301 finds "Lunch at the Café"; a
+    // letter beyond ASCII is not folded, so "CAFÉ" does not.
+    const found = result(
+      await driver(ownReader, "sources", {
+        mode: "search",
+        q: `LUNCH at the cafe${String.fromCodePoint(0x301)}`,
+      }),
+    );
+    expect((found["sources"] as { excerpt: string }[]).map((x) => x.excerpt)).toEqual([said]);
+    expect(
+      (
+        result(await driver(ownReader, "sources", { mode: "search", q: "no such words" }))[
+          "sources"
+        ] as unknown[]
+      ).length,
+    ).toBe(0);
+    const upper = result(
+      await driver(ownReader, "sources", {
+        mode: "search",
+        q: `CAF${String.fromCodePoint(0xc9)}`,
+      }),
+    );
+    expect(upper["sources"]).toEqual([]);
+    expect(await driver(ownReader, "sources", { mode: "search", q: "" })).toEqual({
+      error: expect.objectContaining({ code: "invalid_argument", param: "q" }),
+    });
+
+    const id = items[0]?.["id"] as string;
+    const one = result(await driver(ownReader, "sources", { mode: "get", id }));
+    expect(one).toMatchObject({
+      mode: "get",
+      id,
+      kind: "user_message",
+      slot: "ledger",
+      text: said,
+      produced: [
+        {
+          target: { table: "ledger.expenses", row },
+          seq: w["seq"],
+          fields: ["date", "note"],
+          role: "value",
+        },
+      ],
+    });
+    // A write without evidence: the request itself, an api_call, its text the request as JCS.
+    const plain = result(
+      await driver(ownWriter, "write", {
+        sv: 1,
+        ops: [{ intent: "insert", table: "ledger.expenses", set: { date: "2026-11-18" } }],
+      }),
+    );
+    const call0 = (
+      result(await driver(ownReader, "sources", { slot: "ledger", limit: 1 }))["sources"] as Record<
+        string,
+        unknown
+      >[]
+    )[0] as Record<string, unknown>;
+    expect(call0["kind"]).toBe("api_call");
+    const got = result(
+      await driver(session, "sources", { mode: "get", id: call0["id"] as string }),
+    );
+    expect(JSON.parse(got["text"] as string)).toMatchObject({ table: "ledger.expenses" });
+    expect(got["produced"]).toEqual([
+      expect.objectContaining({ seq: plain["seq"], role: "value" }),
+    ]);
+  });
+
+  it("sources out of a credential's range: as if there were none, the same error either way", async () => {
+    const { session } = get();
+    const driver = call;
+    result(await driver(session, "schema_draft", { document: DIARY }));
+    result(
+      await driver(session, "write", {
+        sv: 1,
+        evidence: [{ kind: "user_message", text: "a diary line" }],
+        ops: [{ intent: "insert", table: "diary.entries", set: { date: "2026-11-17" } }],
+      }),
+    );
+    const theirs = (
+      result(await driver(session, "sources", { slot: "diary", limit: 1 }))["sources"] as {
+        id: string;
+      }[]
+    )[0]?.id as string;
+    const ledgerOnly = result(
+      await driver(session, "connections.issue", { name: "ledger-only", slots: ["ledger"] }),
+    )["token"] as string;
+    const hidden = await driver(ledgerOnly, "sources", { mode: "get", id: theirs });
+    const none = await driver(ledgerOnly, "sources", {
+      mode: "get",
+      id: `s_${"0".repeat(16)}`,
+    });
+    expect(hidden).toEqual({
+      error: expect.objectContaining({ code: "not_found", reason: "source" }),
+    });
+    expect(JSON.stringify(hidden)).toBe(JSON.stringify(none));
+    expect(await driver(ledgerOnly, "sources", { slot: "diary" })).toEqual({
+      error: expect.objectContaining({ code: "not_found", reason: "slot" }),
+    });
+    const all = result(await driver(ledgerOnly, "sources", { limit: 200 }));
+    expect((all["sources"] as { slot: string }[]).every((x) => x.slot === "ledger")).toBe(true);
+    const words = result(await driver(ledgerOnly, "sources", { mode: "search", q: "diary line" }));
+    expect(words["sources"]).toEqual([]);
   });
 
   it("no credential, or one that is no token: unauthenticated", async () => {

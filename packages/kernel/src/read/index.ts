@@ -47,6 +47,15 @@ export {
   wholeSlot,
 } from "./slots.ts";
 export {
+  SEARCH_SCAN,
+  type SourcesGetResult,
+  type SourcesListItem,
+  type SourcesListResult,
+  type SourcesResult,
+  searchForm,
+  sourcesInTx,
+} from "./sources.ts";
+export {
   READ_ROWS_THRESHOLD,
   SQL_DEFAULT_ROWS,
   SQL_MAX_ROWS,

@@ -1,5 +1,5 @@
 // Read operations (docs/zh-CN/spec/04-contract-types.md §4): the row of a read result (§4.1),
-// `catalog` (§4.2), `query` (§4.3), `sql` (§4.4) and `history` (§4.5).
+// `catalog` (§4.2), `query` (§4.3), `sql` (§4.4), `history` (§4.5) and `sources` (§4.6).
 
 import type {
   CompiledPrecision,
@@ -47,7 +47,7 @@ import type {
   Ver,
 } from "./common.ts";
 import type { InputMarks, Marks, PremiseReason } from "./marks.ts";
-import type { Decision, SourceLevel } from "./pending.ts";
+import type { Decision, SourceLevel, TombstoneReason } from "./pending.ts";
 import type { MigrationStatus, SchemaDocument, SlotPolicy } from "./schema.ts";
 import type {
   DerivedChange,
@@ -490,3 +490,79 @@ export interface ChangesResult extends CommonResult, PageResult {
 
 /** 04-contract-types §4.5: the result of `history`, by `mode`. */
 export type HistoryResult = TimelineResult | AsOfResult | ChangesResult;
+
+// ---------------------------------------------------------------------------------------------
+// §4.6 `sources`
+
+/** 04-contract-types §4.6 `SourcesParams`. */
+export interface SourcesParams extends CommonParams, PageParams {
+  /** Default `list`. */
+  mode?: "list" | "search" | "get";
+  slot?: SlotName;
+  kind?: SourceKind;
+  /** Recorded time, `[from, to)`. */
+  from?: Instant;
+  to?: Instant;
+  /** search: required; a substring (NFC, ASCII letters folded) in this version. */
+  q?: string;
+  /** get: required. */
+  id?: SourceId;
+}
+
+/** 04-contract-types §4.6 `SourceDeletion`: pending (in the grace period) or removed. */
+export type SourceDeletion =
+  | { state: "pending"; item: ItemId; expires_at: Instant }
+  | { state: "removed"; at: Instant; reason: TombstoneReason };
+
+/** 04-contract-types §4.6 `SourcesListResult`: newest first (by `seq`). */
+export interface SourcesListResult extends CommonResult, PageResult {
+  mode: "list" | "search";
+  sources: Array<{
+    id: SourceId;
+    kind: SourceKind;
+    slot: SlotName;
+    recorded_at: Instant;
+    stated_at?: Instant;
+    actor: Actor;
+    /** Used as a value source by a correction. */
+    correction?: true;
+    /** The text's first 200 characters (an `api_call`'s request as JCS); none when deleted. */
+    excerpt?: UntrustedText;
+    file?: { name: UntrustedText; mime: string; size: number };
+    deletion?: SourceDeletion;
+  }>;
+}
+
+/** 04-contract-types §4.6 `SourcesGetResult`. */
+export interface SourcesGetResult extends CommonResult {
+  mode: "get";
+  id: SourceId;
+  kind: SourceKind;
+  level: SourceLevel;
+  slot: SlotName;
+  recorded_at: Instant;
+  stated_at?: Instant;
+  actor: Actor;
+  correction?: true;
+  /** The text (an `api_call`'s request as JCS). */
+  text?: UntrustedText;
+  file?: {
+    name: UntrustedText;
+    mime: string;
+    size: number;
+    sha256: string;
+    origin?: UntrustedText;
+    excerpt?: UntrustedText;
+  };
+  /** What it produced: in the tables the caller sees. */
+  produced?: Array<{
+    target: TargetRef;
+    seq: Seq;
+    fields: FieldName[];
+    role: "value" | "operation";
+  }>;
+  /** With it, no `text`, `file` or `produced`. */
+  deletion?: SourceDeletion;
+}
+
+export type SourcesResult = SourcesListResult | SourcesGetResult;

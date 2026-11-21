@@ -1,4 +1,4 @@
-// The read operations `query`, `history`, `catalog`, `pending` and `reads.list` (docs/zh-CN/spec/04-contract-types.md §4.2, §4.3, §4.5, §4.8, §8.3): the call context and the
+// The read operations `query`, `history`, `catalog`, `pending`, `sources` and `reads.list` (docs/zh-CN/spec/04-contract-types.md §4.2, §4.3, §4.5, §4.6, §4.8, §8.3): the call context and the
 // parameters into `read`, in one read transaction of the tenant store; the read is recorded in the
 // store's read buffer once it succeeded (02-architecture §7 «read_log 的持久性»). A caller may keep
 // less of a read than was asked for (`Fit`): what is recorded is then what it keeps.
@@ -16,8 +16,10 @@ import {
   queryInTx,
   type ReadsListResult,
   readsListInTx,
+  type SourcesResult,
   SQL_TIMEOUT_MS,
   type SqlReadResult,
+  sourcesInTx,
   sqlInTx,
   type TimelineResult,
 } from "../read/index.ts";
@@ -175,6 +177,33 @@ export async function catalog(
       r.level === "list"
         ? r.slots.reduce((n, slot) => n + length((slot as { tables?: unknown }).tables), 0)
         : undefined,
+    fit,
+  );
+  readBufferOf(store).record(entry);
+  return result;
+}
+
+/** Reads `params` (a `SourcesParams`) as `ctx.actor`: the sources listed or searched, or one. */
+export async function sources(
+  store: TenantStore,
+  ctx: OpsContext,
+  params: unknown,
+  fit?: Fit,
+): Promise<SourcesResult> {
+  const { result, entry } = await measured(
+    store,
+    params,
+    (tx, p) =>
+      sourcesInTx(tx, {
+        actor: ctx.actor,
+        task: ctx.task,
+        now: ctx.now,
+        visibility: ctx.visibility,
+        params: p,
+        read: newReadId(),
+      }),
+    // A list or a search is a page of sources; one source is no page.
+    (r) => (r.mode === "get" ? undefined : r.sources.length),
     fit,
   );
   readBufferOf(store).record(entry);

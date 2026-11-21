@@ -16,6 +16,7 @@ import { actorsNow } from "../pending/index.ts";
 import { get, has, isObj, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { valueOut } from "../time/index.ts";
+import { isCorrection } from "./correction.ts";
 import {
   type HistoryInput,
   type HistoryOutput,
@@ -380,7 +381,7 @@ export async function timelineInTx(
   const entries: TimelineEntry[] = events.map((e) => {
     const head = (e.blocks["target"]?.body ?? {}) as Record<string, unknown>;
     const intent = String(head["intent"] ?? "") as TimelineEntry["intent"];
-    const correction = intent === "correct";
+    const correction = isCorrection(head);
     const revert = e.blocks["revert"]?.body as Record<string, unknown> | undefined;
     const via: TimelineEntry["via"] =
       head["cause"] === "resolve"

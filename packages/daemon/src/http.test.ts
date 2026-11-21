@@ -402,6 +402,11 @@ describe("HTTP's own", () => {
       ["GET", "/v1/reads", undefined, 200],
       ["GET", "/v1/log/verify", undefined, 200],
       ["GET", "/v1/log/end", undefined, 200],
+      ["GET", "/v1/sources", undefined, 200],
+      ["GET", "/v1/sources?q=lunch", undefined, 200],
+      // No such source: the operation answers (404 not_found, source); not of a source's form: 400.
+      ["GET", `/v1/sources/s_${"9".repeat(16)}`, undefined, 404],
+      ["GET", "/v1/sources/s_1", undefined, 400],
       ["GET", "/v1/export", undefined, 200],
     ];
     for (const [method, path, body, status] of ours) {
@@ -420,8 +425,6 @@ describe("HTTP's own", () => {
       });
     }
     const later: [string, string][] = [
-      ["GET", "/v1/sources"],
-      ["GET", "/v1/sources/s_1"],
       ["POST", "/v1/deletions/preview"],
       ["POST", "/v1/deletions"],
       ["GET", "/v1/deletions/pi_1"],

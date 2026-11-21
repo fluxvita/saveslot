@@ -70,6 +70,7 @@ import {
   timelineResult,
 } from "./render/reads.ts";
 import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
+import { sourceDetail, sourcesList } from "./render/sources.ts";
 import { type Boundary, id, type Line, render, t, untrusted, words } from "./render/text.ts";
 import { TEMPLATES, templateDocument } from "./templates.ts";
 import { type Static, TEXTS } from "./texts.ts";
@@ -88,6 +89,9 @@ const OWN_OPTIONS = {
   "evidence-json": { type: "string" },
   yes: { type: "boolean" },
   slot: { type: "string" },
+  kind: { type: "string" },
+  from: { type: "string" },
+  to: { type: "string" },
   type: { type: "string" },
   status: { type: "string" },
   connection: { type: "string" },
@@ -729,6 +733,29 @@ const detailNotYet: Command["hint"] = (e, o) =>
     ? TEXTS.detailedNotYet
     : undefined;
 
+/** The filters `sources` list and search take (06 §4.7), and the page. */
+const sourcesFilters = (o: Options) => {
+  const slot = ownString(o, "slot");
+  const kind = ownString(o, "kind");
+  const from = ownString(o, "from");
+  const to = ownString(o, "to");
+  return {
+    ...(slot !== undefined ? { slot } : {}),
+    ...(kind !== undefined ? { kind: kind as never } : {}),
+    ...(from !== undefined ? { from } : {}),
+    ...(to !== undefined ? { to } : {}),
+    ...(o.limit !== undefined ? { limit: o.limit } : {}),
+    ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
+  };
+};
+
+/** `saveslot sources [list]` (06 §4.7): the sources, newest first. */
+const sourcesListCommand = command(["slot", "kind", "from", "to"], async (o, client) => {
+  if (o.args.length > 0) throw new UsageError(TEXTS.sourcesListArgs);
+  const r = await (await client()).sources({ ...sourcesFilters(o), mode: "list" });
+  return { json: r, lines: sourcesList(r) };
+});
+
 const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   ["setup", command(["template", "timezone", "host", "scope", "yes"], setupCommand)],
   [
@@ -796,6 +823,27 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
         ...(o.cursor !== undefined ? { cursor: o.cursor } : {}),
       });
       return { json: r, lines: readsList(r) };
+    }),
+  ],
+  ["sources", sourcesListCommand],
+  ["sources list", sourcesListCommand],
+  [
+    "sources search",
+    command(["slot", "kind", "from", "to"], async (o, client) => {
+      // The words as given, one search text (a substring: 04-contract «sources»).
+      const q = o.args.join(" ");
+      if (q.trim() === "") throw new UsageError(TEXTS.sourcesSearchArgs);
+      const r = await (await client()).sources({ ...sourcesFilters(o), mode: "search", q });
+      return { json: r, lines: sourcesList(r) };
+    }),
+  ],
+  [
+    "sources get",
+    command([], async (o, client) => {
+      const [id, ...extra] = o.args;
+      if (id === undefined || extra.length > 0) throw new UsageError(TEXTS.sourcesGetArgs);
+      const r = await (await client()).sources({ mode: "get", id: id as `s_${string}` });
+      return { json: r, lines: sourceDetail(r) };
     }),
   ],
   [

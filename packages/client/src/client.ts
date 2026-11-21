@@ -51,6 +51,10 @@ import type {
   SchemaDraftResult,
   SlotsRemoveParams,
   SlotsRemoveResult,
+  SourcesGetResult,
+  SourcesListResult,
+  SourcesParams,
+  SourcesResult,
   SqlParams,
   SqlResult,
   TimelineParams,
@@ -145,6 +149,10 @@ export interface Client {
     /** Removes an empty slot, by its ID only (04-contract §17). */
     remove(p: SlotsRemoveParams): Promise<SlotsRemoveResult>;
   };
+  /** A list (default), a search (with `q`), or one source by its `id` (05-surfaces §14). */
+  sources(p: SourcesParams & { mode: "get"; id: string }): Promise<SourcesGetResult>;
+  sources(p?: SourcesParams & { mode?: "list" | "search" }): Promise<SourcesListResult>;
+  sources(p?: SourcesParams): Promise<SourcesResult>;
   readsList(p?: ReadsListParams): Promise<ReadsListResult>;
   logVerify(): Promise<LogVerifyResult>;
   logEnd(): Promise<LogEndResult>;
@@ -283,6 +291,19 @@ export function createClient(o: ClientOptions): Client {
         }) as Promise<SlotsRemoveResult>;
       },
     },
+    // The route says the mode: one by its ID; a search is a list with `q` (05-surfaces §14).
+    sources: (async (p: SourcesParams = {}) => {
+      const { mode = "list", id, ...rest } = p;
+      if (mode === "get") {
+        if (id === undefined) throw new ClientUsageError("sources get takes an id");
+        return get(`/v1/sources/${seg(id)}`, rest);
+      }
+      if (id !== undefined) throw new ClientUsageError(`sources ${mode} takes no id`);
+      if ((mode === "search") !== (rest.q !== undefined)) {
+        throw new ClientUsageError("q is for a search, and a search needs q");
+      }
+      return get("/v1/sources", rest);
+    }) as Client["sources"],
     readsList: async (p = {}) => get("/v1/reads", p) as Promise<ReadsListResult>,
     logVerify: async () => get("/v1/log/verify") as Promise<LogVerifyResult>,
     logEnd: async () => get("/v1/log/end") as Promise<LogEndResult>,
