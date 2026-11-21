@@ -360,6 +360,131 @@ export type OpRecord =
   | TakeCandidateRecord;
 
 // ---------------------------------------------------------------------------------------------
+// Deletion events as records (09 §5.9). Decoded for the deletion replay; no judgement reads them
+// yet (`decodeDeletionRecords`).
+
+/**
+ * A contribution's judgement after a deletion's or cancellation's replay (`restated/<k>`). `valid`
+ * is the interval on a state table (`seen_valid` for a candidate), absent when `dropped`.
+ * `content` and `carried` only on a carried item whose value, sources or kind the replay changed.
+ */
+export interface Restatement {
+  readonly item: ItemRef;
+  readonly status: ItemStatus | "dropped";
+  readonly valid?: IntervalSet;
+  readonly deps: readonly ItemRef[];
+  readonly content?: ItemContent;
+  readonly carried?: readonly ItemRef[];
+  /** An existence item that restores existence (a write-back of an undone revoke). */
+  readonly restored?: true;
+}
+
+/** One stretch of a field after the replay (`results/<k>/fields/<field>/<j>`). */
+export interface ResultStretch {
+  readonly field: FieldId;
+  readonly j: number;
+  /** `null`: the field is empty there. */
+  readonly value: FieldValue | null;
+  /** The contribution the value is carried from (empty when the field is empty). */
+  readonly carried: readonly ItemRef[];
+  /** The value is a schema constant (`schema_const`), not carried. */
+  readonly schemaConst?: { readonly sv: number; readonly field: FieldId };
+  /** State tables: the stretch and what it rests on (the carried item and what cuts it). */
+  readonly valid?: IntervalSet;
+  readonly deps: readonly ItemRef[];
+}
+
+/** One affected row or entity after the replay (`results/<k>/…`). */
+export interface ResultRow {
+  readonly table: string;
+  /** The row or entity ID. */
+  readonly id: string;
+  readonly outcome: string;
+  readonly stretches: readonly ResultStretch[];
+  /** State tables: every gap after the replay, and what they rest on (`results/<k>/existence`). */
+  readonly gaps?: { readonly gaps: IntervalSet; readonly deps: readonly ItemRef[] };
+}
+
+/** A block of `positions`: content to clear (confirmed) or cleared (executed). */
+export interface BlockAddress {
+  readonly seq: Seq;
+  readonly path: string;
+}
+
+interface DeletionLogBase {
+  /** The event's seq and operation number. */
+  readonly event: Seq;
+  readonly op: OpNumber;
+  /** The deletion ID. */
+  readonly id: string;
+}
+
+/** `deletion.confirmed`. */
+export interface DeletionRecord extends DeletionLogBase {
+  readonly kind: "deletion";
+  readonly sources: readonly Seq[];
+  readonly dueAt: string;
+  readonly origin: string;
+  readonly positions: readonly BlockAddress[];
+  readonly results: readonly ResultRow[];
+  readonly restated: readonly Restatement[];
+  readonly recreated: readonly { readonly event: Seq; readonly created: boolean }[];
+  readonly superseded: readonly string[];
+}
+
+/** `deletion.cancelled`. */
+export interface CancellationRecord extends DeletionLogBase {
+  readonly kind: "cancellation";
+  readonly origin: string;
+  readonly results: readonly ResultRow[];
+  readonly restated: readonly Restatement[];
+  readonly recreated: readonly { readonly event: Seq; readonly created: boolean }[];
+  readonly restoredItems: readonly string[];
+  readonly keptSuperseded: readonly { readonly item: string; readonly byEvent: Seq }[];
+  /**
+   * Writes kept in effect, by (event, target): the unit of the decision (03-deletion «撤回与宽限期»).
+   * The indices the event lists are for the receipt only and are not kept.
+   */
+  readonly keptEffective: readonly {
+    readonly event: Seq;
+    readonly targets: readonly Target[];
+    readonly byEvent: Seq;
+  }[];
+}
+
+/** `deletion.executed` (the tombstone). */
+export interface ExecutionRecord extends DeletionLogBase {
+  readonly kind: "execution";
+  readonly reason: string;
+  readonly positions: readonly BlockAddress[];
+}
+
+/**
+ * `item.refreshed` re-giving candidates (`entries_deleted`, `entries_restored`, or a candidate
+ * whose block a deletion cleared): each re-given candidate replaces the one at the same index.
+ */
+export interface CandidateRefresh {
+  readonly kind: "refresh";
+  readonly event: Seq;
+  readonly op: OpNumber;
+  readonly item: string;
+  readonly cause: string;
+  readonly dropped: readonly number[];
+  readonly restored: readonly number[];
+  readonly candidates: readonly {
+    readonly k: number;
+    readonly event: Seq;
+    readonly items: readonly { readonly target: Target; readonly k: number }[];
+  }[];
+}
+
+export type DeletionLogRecord =
+  | DeletionRecord
+  | CancellationRecord
+  | ExecutionRecord
+  | CandidateRefresh;
+
+// ---------------------------------------------------------------------------------------------
 // What a judgement says beyond the record (receipts, pending items).
 
 /** The state of a field on a stretch before a write. */

@@ -28,6 +28,7 @@ import type {
   ContributionRef,
   EntityId,
   FieldId,
+  FieldValue,
   Intent,
   ItemId,
   OpNumber,
@@ -39,8 +40,14 @@ import type {
 } from "@fluxvita/saveslot-contract-core";
 import type {
   AckStretch,
+  BlockAddress,
+  CancellationRecord,
+  CandidateRefresh,
   ConfirmRecord,
   DecidedItem,
+  DeletionLogRecord,
+  DeletionRecord,
+  ExecutionRecord,
   ItemContent,
   ItemRef,
   ItemStatus,
@@ -48,6 +55,9 @@ import type {
   Judgement,
   OpRecord,
   RecordedItem,
+  Restatement,
+  ResultRow,
+  ResultStretch,
   RevertEntry,
   RevertRecord,
   TableShape,
@@ -615,6 +625,290 @@ export function encodeResolution(
     };
   }
   return { target, base };
+}
+
+// --- decoding deletion events ------------------------------------------------------------------
+
+/** The paths each decoded deletion event may carry besides its request-id blocks (09 §5.9). */
+const DELETION_PATHS: Readonly<Record<string, readonly RegExp[]>> = {
+  "deletion.confirmed": [
+    /^ctx$/,
+    /^target$/,
+    /^positions$/,
+    /^summary$/,
+    /^superseded_items$/,
+    /^results\/\d+\/(target|existence)$/,
+    /^results\/\d+\/fields\/f\d+\/\d+$/,
+    /^restated\/\d+$/,
+    /^recreated\/\d+$/,
+  ],
+  "deletion.cancelled": [
+    /^ctx$/,
+    /^target$/,
+    /^restored_items$/,
+    /^kept_superseded\/\d+$/,
+    /^kept_effective\/\d+$/,
+    /^results\/\d+\/(target|existence)$/,
+    /^results\/\d+\/fields\/f\d+\/\d+$/,
+    /^restated\/\d+$/,
+    /^recreated\/\d+$/,
+  ],
+  "deletion.executed": [/^target$/, /^positions$/],
+};
+/** §5.1 request-id blocks a caller's deletion or cancellation also carries. */
+const REQUEST_ID_PATHS = /^(task|request_key|idempotency)$/;
+
+/** `<prefix>/<k>` blocks of an event, by `k` in order. */
+function indexed(b: Readonly<Blocks>, prefix: string): [number, unknown][] {
+  const re = new RegExp(`^${prefix}/(\\d+)$`);
+  return Object.entries(b)
+    .flatMap(([p, v]): [number, unknown][] => {
+      const m = re.exec(p);
+      return m === null ? [] : [[Number(m[1]), v]];
+    })
+    .sort((x, y) => x[0] - y[0]);
+}
+
+/** `restated/<k>` (09 §5.9). */
+function restatementIn(v: unknown, isState: boolean): Restatement {
+  const x = v as {
+    event: Seq;
+    field?: FieldId;
+    k?: number;
+    existence?: number;
+    restored?: true;
+    status: ItemStatus | "dropped";
+    valid?: unknown;
+    seen_valid?: unknown;
+    deps?: unknown[];
+    value?: unknown;
+    sources?: { carried?: unknown }[];
+    no_value?: true;
+    uncovered?: true;
+  };
+  const interval = x.valid ?? x.seen_valid;
+  const content: ItemContent | undefined =
+    "value" in x
+      ? { kind: "value", value: x.value as never }
+      : x.no_value
+        ? { kind: "no_value" }
+        : x.uncovered
+          ? { kind: "uncovered" }
+          : undefined;
+  const carried = (x.sources ?? [])
+    .filter((c) => c.carried !== undefined)
+    .map((c) => refIn(c.carried));
+  return {
+    item: refIn(x),
+    status: x.status,
+    ...(isState && interval !== undefined ? { valid: spanIn(interval) } : {}),
+    deps: (x.deps ?? []).map(refIn),
+    ...(content !== undefined ? { content } : {}),
+    ...(carried.length > 0 ? { carried } : {}),
+    ...(x.restored ? { restored: true as const } : {}),
+  };
+}
+
+/** `results/<k>/…` (09 §5.9), by row in order of `k`. */
+function resultsIn(b: Readonly<Blocks>): ResultRow[] {
+  const rows = new Map<
+    number,
+    { target?: unknown; existence?: unknown; stretches: ResultStretch[] }
+  >();
+  const row = (k: number) => {
+    const r = rows.get(k) ?? { stretches: [] };
+    rows.set(k, r);
+    return r;
+  };
+  for (const [p, v] of Object.entries(b)) {
+    const t = /^results\/(\d+)\/(target|existence)$/.exec(p);
+    if (t !== null) {
+      const r = row(Number(t[1]));
+      if (t[2] === "target") r.target = v;
+      else r.existence = v;
+      continue;
+    }
+    const f = /^results\/(\d+)\/fields\/(f\d+)\/(\d+)$/.exec(p);
+    if (f === null) continue;
+    const x = v as {
+      value: FieldValue | null;
+      sources: { carried?: unknown; kind?: string; sv?: number; field?: FieldId }[];
+      valid?: unknown;
+      deps?: unknown[];
+    };
+    const constant = x.sources.find((c) => c.kind === "schema_const");
+    row(Number(f[1])).stretches.push({
+      field: f[2] as FieldId,
+      j: Number(f[3]),
+      value: x.value,
+      carried: x.sources.filter((c) => c.carried !== undefined).map((c) => refIn(c.carried)),
+      ...(constant !== undefined
+        ? { schemaConst: { sv: constant.sv as number, field: constant.field as FieldId } }
+        : {}),
+      ...(x.valid !== undefined ? { valid: spanIn(x.valid) } : {}),
+      deps: (x.deps ?? []).map(refIn),
+    });
+  }
+  return [...rows.entries()]
+    .sort((x, y) => x[0] - y[0])
+    .map(([k, r]) => {
+      if (r.target === undefined) throw inconsistent(`results/${k} has no target`);
+      const t = r.target as { table: string; row?: string; entity?: string; outcome: string };
+      const e = r.existence as
+        | { gaps: { from?: string; to?: string }[]; deps?: unknown[] }
+        | undefined;
+      return {
+        table: t.table,
+        id: (t.row ?? t.entity) as string,
+        outcome: t.outcome,
+        stretches: r.stretches.sort((a, c) => a.field.localeCompare(c.field) || a.j - c.j),
+        ...(e !== undefined
+          ? {
+              gaps: {
+                gaps: e.gaps.map((g) => ({ from: g.from ?? null, to: g.to ?? null })) as Interval[],
+                deps: (e.deps ?? []).map(refIn),
+              },
+            }
+          : {}),
+      };
+    });
+}
+
+const recreatedIn = (b: Readonly<Blocks>) =>
+  indexed(b, "recreated").map(([, v]) => {
+    const x = v as { event: Seq; created: boolean };
+    return { event: x.event, created: x.created };
+  });
+
+/**
+ * The deletion events of a row's or entity's log as records (09 §5.9), in log order: every
+ * `deletion.confirmed`, `deletion.cancelled` and `deletion.executed`, and every `item.refreshed`
+ * that re-gives candidates. For the deletion replay; no judgement reads them yet, and
+ * `decodeRecords` still refuses a log with them (the judge does not replay deletions). A block
+ * path outside 09 §5.9 is refused rather than passed over: a shape this version does not produce
+ * (a candidate put back and judged again at a cancellation, a decision on a row a pending deletion
+ * affects) must not be read as if it were absent.
+ */
+export function decodeDeletionRecords(
+  ctx: RowContext,
+  events: readonly StoredEvent[],
+): DeletionLogRecord[] {
+  const isState = ctx.shape.kind === "state";
+  const out: DeletionLogRecord[] = [];
+  for (const x of [...events].sort((a, c) => a.header.seq - c.header.seq)) {
+    const type = x.header.type;
+    const b = x.blocks;
+    const op = x.header.op ?? x.header.seq;
+    const allowed = DELETION_PATHS[type];
+    if (allowed !== undefined) {
+      for (const p of Object.keys(b)) {
+        if (!allowed.some((re) => re.test(p)) && !REQUEST_ID_PATHS.test(p)) {
+          throw inconsistent(`${type} (seq ${x.header.seq}) has a block not decoded: ${p}`);
+        }
+      }
+    }
+    if (type === "deletion.confirmed") {
+      const t = b["target"] as {
+        deletion: string;
+        kind: string;
+        due_at: string;
+        sources: Seq[];
+        origin: string;
+      };
+      if (t.kind !== "privacy") throw inconsistent(`deletion kind ${t.kind} is not decoded`);
+      const record: DeletionRecord = {
+        kind: "deletion",
+        event: x.header.seq,
+        op,
+        id: t.deletion,
+        sources: [...t.sources],
+        dueAt: t.due_at,
+        origin: t.origin,
+        positions: (b["positions"] as BlockAddress[]).map((a) => ({ seq: a.seq, path: a.path })),
+        results: resultsIn(b),
+        restated: indexed(b, "restated").map(([, v]) => restatementIn(v, isState)),
+        recreated: recreatedIn(b),
+        superseded: [...((b["superseded_items"] as string[] | undefined) ?? [])],
+      };
+      out.push(record);
+    } else if (type === "deletion.cancelled") {
+      const t = b["target"] as { deletion: string; origin: string };
+      const record: CancellationRecord = {
+        kind: "cancellation",
+        event: x.header.seq,
+        op,
+        id: t.deletion,
+        origin: t.origin,
+        results: resultsIn(b),
+        restated: indexed(b, "restated").map(([, v]) => restatementIn(v, isState)),
+        recreated: recreatedIn(b),
+        restoredItems: [...((b["restored_items"] as string[] | undefined) ?? [])],
+        keptSuperseded: indexed(b, "kept_superseded").map(([, v]) => {
+          const y = v as { item: string; by_event: Seq };
+          return { item: y.item, byEvent: y.by_event };
+        }),
+        keptEffective: indexed(b, "kept_effective").map(([, v]) => {
+          const y = v as {
+            event: Seq;
+            items: { field?: FieldId; existence?: number }[];
+            by_event: Seq;
+          };
+          const targets = [
+            ...new Set(y.items.map((i): Target => (i.field !== undefined ? i.field : "existence"))),
+          ].sort();
+          return { event: y.event, targets, byEvent: y.by_event };
+        }),
+      };
+      out.push(record);
+    } else if (type === "deletion.executed") {
+      const t = b["target"] as { deletion: string; reason: string };
+      const record: ExecutionRecord = {
+        kind: "execution",
+        event: x.header.seq,
+        op,
+        id: t.deletion,
+        reason: t.reason,
+        positions: (b["positions"] as BlockAddress[]).map((a) => ({ seq: a.seq, path: a.path })),
+      };
+      out.push(record);
+    } else if (type === "item.refreshed") {
+      const t = b["target"] as {
+        item: string;
+        cause: string;
+        dropped_candidates?: number[];
+        restored_candidates?: number[];
+      };
+      const candidates = indexed(b, "candidates").map(([k, v]) => {
+        const c = v as {
+          event: Seq;
+          items: { field?: FieldId; k?: number; existence?: number }[];
+        };
+        return {
+          k,
+          event: c.event,
+          items: c.items.map((y) =>
+            y.field !== undefined
+              ? { target: y.field as Target, k: y.k ?? 0 }
+              : { target: "existence" as Target, k: y.existence ?? 0 },
+          ),
+        };
+      });
+      const deletionCause = t.cause === "entries_deleted" || t.cause === "entries_restored";
+      if (candidates.length === 0 && !deletionCause) continue;
+      const record: CandidateRefresh = {
+        kind: "refresh",
+        event: x.header.seq,
+        op,
+        item: t.item,
+        cause: t.cause,
+        dropped: [...(t.dropped_candidates ?? [])],
+        restored: [...(t.restored_candidates ?? [])],
+        candidates,
+      };
+      out.push(record);
+    }
+  }
+  return out;
 }
 
 // --- decoding ----------------------------------------------------------------------------------
