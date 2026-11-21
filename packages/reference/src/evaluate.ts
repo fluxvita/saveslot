@@ -785,11 +785,15 @@ class Replay {
           () => this.items.push(...applied),
           () => this.items.splice(this.items.length - applied.length, applied.length),
         );
+      // A rejection is of the whole write (01-objects «reject：提议不生效»): a target of a write a
+      // person rejected takes effect in no replay, whatever made it a candidate or awaiting then.
+      const rejected = this.ops.some((x) => x.kind === "reject" && x.target === o.event);
       for (const it of applied) {
         const r = this.recordedStatus(it.event, it.target, it.valid);
         if (
           (r === "awaiting" && this.resolvedAwaiting.has(o.event)) ||
-          this.listedByConfirmation(it.event, it.target)
+          this.listedByConfirmation(it.event, it.target) ||
+          (rejected && r !== "effective")
         )
           it.status = "awaiting";
         else if (hi && r !== "effective") it.status = "awaiting";
@@ -1028,6 +1032,8 @@ class Replay {
    * target):
    * - the undone operation m is a revert: m's event on every target its own record lists, whether
    *   or not m wrote back there then;
+   * - m a confirmation of a write: the confirmation's event on every target of the confirmed write
+   *   as of that write;
    * - otherwise: every target of m's event as of its write (its write-time blocks, existence
    *   included), whatever its status then and whatever items remain now. No-op fields have no
    *   item and are not targets. `skipped` (entries already superseded when the undo is written,
@@ -1048,10 +1054,15 @@ class Replay {
       for (const t of new Set(mRecord.map((e) => e.target))) add({ event: m.event, target: t });
     } else if (m !== undefined) {
       // By m's targets as of its write (its write-time blocks, existence included), whatever
-      // their status then and whatever items remain now.
+      // their status then and whatever items remain now. m a confirmation: the confirmation's
+      // event on every target of the confirmed write as of that write, not only those awaiting
+      // when it was confirmed — a target a deletion later puts in effect at the confirmation is
+      // undone with it, whether the deletion comes before the undo or after. All by the record,
+      // nothing from the state when the undo is written.
+      const of = m.kind === "confirm" ? m.target : m.event;
       for (const key of this.rec.writeTime.keys()) {
         const [ev, t] = key.split("/") as [string, Target];
-        if (Number(ev) === m.event) add({ event: m.event, target: t });
+        if (Number(ev) === m.event || Number(ev) === of) add({ event: m.event, target: t });
       }
     }
     if (includeLater) {
@@ -1358,6 +1369,8 @@ class Replay {
 
   resolveItem(o: ResolveOp): void {
     const n = o.op;
+    // Its validity is judged once, on the state without it (`evaluateLog`, `validDecision`); in
+    // every replay it is executed as recorded.
     if (o.decision === "keep_effective") {
       // It closes the item's candidates as they are (recorded); it writes nothing.
       this.kOf(o.candidates, o.unit, o.op);
@@ -1397,6 +1410,37 @@ class Replay {
       // its record lists the field writes of its unit (09 §5.7).
       () => "applied",
     );
+  }
+
+  /**
+   * Whether a person's decision is valid when judged, as the kernel judges it (`invalid`). Asked of
+   * the replay of the log before the decision, so of the state without it: a replay holding the
+   * decision already executes it (a resolution closes its candidates there).
+   * - A resolution: each candidate it lists has candidate items on its unit, none of them closed
+   *   (by an earlier resolution's record, or kept superseded by a cancellation), and the one taken
+   *   is listed. A candidate a deletion has put in effect has no candidate item left. An empty
+   *   list is accepted, as by the kernel.
+   * - A confirmation or rejection: the write (or undo) it names awaits and was not decided before.
+   */
+  validDecision(o: ResolveOp | ConfirmOp): boolean {
+    if (o.kind !== "resolve") {
+      if (this.resolvedAwaiting.has(o.target)) return false;
+      const target = this.opsByEvent.get(o.target);
+      if (target?.kind === "undo") return this.revertStatus.get(target.op) === "awaiting";
+      return this.items.some((x) => x.event === o.target && x.status === "awaiting");
+    }
+    if (o.take !== undefined && !o.candidates.includes(o.take)) return false;
+    return o.candidates.every((e) => {
+      const mine = this.items.filter(
+        (x) =>
+          x.event === e &&
+          x.status === "candidate" &&
+          (o.unit === "existence"
+            ? this.onExistence(e, x.target)
+            : !this.onExistence(e, x.target) && inUnit(o.unit, x.target)),
+      );
+      return mine.length > 0 && !mine.some((x) => this.closedCandidate(e, x.target));
+    });
   }
 
   /**
@@ -2372,6 +2416,35 @@ export function evaluateLog(
     { op: OpNumber; sources: readonly SourceKey[]; before: Replay; beforeState: Evaluation }
   >();
   const steps: LogStep[] = [];
+  // Every deletion confirmed, with the candidates and awaiting items in an item just before it and
+  // the operation that cancelled it, if any: whether a write fell while a candidate was taken out
+  // by a pending deletion (`removedAt`).
+  const confirmed: { op: OpNumber; cancelledAt?: OpNumber; pendingBefore: Set<string> }[] = [];
+  const pendingKeys = (ev: Evaluation) =>
+    new Set(ev.items.filter(pendingStatus).map((x) => etKey(x.event, x.target)));
+  /**
+   * Whether the item of (event, target) was out of every item at operation `at` because a deletion
+   * pending then had taken it out: in an item just before some deletion confirmed before `at` and
+   * not cancelled by then, and just before `at` neither in an item nor in effect.
+   */
+  const removedAt = (key: string, at: OpNumber): boolean => {
+    // Out of every item and not in effect either: one a deletion put in effect at that point is
+    // the cancellation's «保持生效» case (`kept_effective`), not this one.
+    const before = [...steps].reverse().find((x) => !x.refused && x.entry.op < at)?.state;
+    if (
+      before?.items.some(
+        (x) =>
+          etKey(x.event, x.target) === key && (pendingStatus(x) || effective(x.status as Status)),
+      )
+    )
+      return false;
+    return confirmed.some(
+      (c) =>
+        c.op < at &&
+        (c.cancelledAt === undefined || c.cancelledAt > at) &&
+        c.pendingBefore.has(key),
+    );
+  };
   const deletedNow = () => new Set<SourceKey>([...pending.values()].flatMap((d) => [...d.sources]));
   // Revert statuses are decided one by one in operation order and never judged again (09 §5.7,
   // 05-time «高影响写入»): a replay runs the operations in order, so deciding revert n sees the
@@ -2394,6 +2467,7 @@ export function evaluateLog(
         continue;
       }
       pending.set(e.id, { op: e.op, sources: e.sources, before: prev, beforeState: prevState });
+      confirmed.push({ op: e.op, pendingBefore: pendingKeys(prevState) });
       const r = replay(deletedNow());
       const state = r.result();
       rec.external.push(externalChange(e.op, prevState, state, fieldIds(r)));
@@ -2435,7 +2509,10 @@ export function evaluateLog(
           }
           return since;
         },
+        removedAt,
       );
+      const c = confirmed.find((x) => x.op === d.op);
+      if (c !== undefined) c.cancelledAt = e.op;
       const r = replay(deletedNow());
       const state = r.result();
       rec.external.push(externalChange(e.op, prevState, state, fieldIds(r)));
@@ -2543,9 +2620,20 @@ export function evaluateLog(
         if (!isEmpty(gone)) restorable.set(key, union(restorable.get(key) ?? [], gone));
       }
     }
+    // A decision is judged valid on the state without it; an invalid one never enters the log, as
+    // a refused request. One forced as another evaluation recorded it (the baseline of «撤回还原»)
+    // is executed as recorded, not judged again.
+    if (
+      (e.kind === "resolve" || e.kind === "confirm" || e.kind === "reject") &&
+      !options.forcedDecided?.has(e.op) &&
+      !prev.validDecision(e)
+    ) {
+      steps.push({ entry: e, refused: true, rejected: "invalid", state: prevState });
+      continue;
+    }
     ops.push(e);
     const r = replay(deleted);
-    // A resolution rejected when judged never enters the log, as a refused request.
+    // An operation rejected when judged never enters the log, as a refused request.
     const rejected = r.rejections.find((x) => x.op === e.op);
     if (rejected !== undefined) {
       ops.pop();
@@ -2643,6 +2731,7 @@ function cancelDeletion(
   preCancelState: Evaluation,
   replayAfter: () => Replay,
   effectiveSince: (key: string) => OpNumber,
+  removedAt: (key: string, at: OpNumber) => boolean,
 ): { event: Seq; target: Target }[] {
   const kept: { event: Seq; target: Target }[] = [];
   // The state without this deletion, every other pending deletion still applied: what this
@@ -2658,6 +2747,12 @@ function cancelDeletion(
     new Set(ev.items.filter(pendingStatus).map((x) => etKey(x.event, x.target)));
   const wasPending = pendingIn(d.beforeState);
   const nowPending = pendingIn(preCancelState);
+  // Pending without this deletion, the others still applied: an item not pending now but pending
+  // there was superseded by this deletion; one not pending there either, by another. Only this
+  // replay decides, not the state before this deletion was confirmed (another deletion may have
+  // taken the item out by then), so the order of cancellations does not matter.
+  const withoutThisState = replayAfter().result();
+  const pendingWithoutThis = pendingIn(withoutThisState);
   // Item membership, approximated (the evaluator does not track item identities): the other
   // candidates pending on the same unit just before the deletion share the item.
   const siblings = (key: string, target: Target): Seq[] =>
@@ -2681,7 +2776,7 @@ function cancelDeletion(
     );
   };
 
-  for (const key of new Set([...ets(preCancel), ...ets(d.before)])) {
+  for (const key of new Set([...ets(preCancel), ...ets(d.before), ...pendingWithoutThis])) {
     const [ev, target] = key.split("/") as [string, Target];
     const event = Number(ev);
     const atWrite = rec.writeTime.get(key) ?? [];
@@ -2705,34 +2800,41 @@ function cancelDeletion(
       kept.push({ event, target });
       continue;
     }
-    // Items the deletion superseded stay superseded when a grace-period write changed what they
-    // concern, by the conflict criterion (`kept_superseded`); the others are restored.
+    // Items this deletion superseded stay superseded when a grace-period write changed what they
+    // concern, by the conflict criterion (`kept_superseded`); the others are restored. An item
+    // another pending deletion superseded is not this cancellation's to keep or restore.
     // The item counts as superseded by the deletion when no other candidate of the same unit
     // stayed pending and no grace-period resolution closed it (same modelling limit as below).
     const itemLives =
       siblings(key, target).some((other) => nowPending.has(etKey(other, target))) ||
       resolvedInGrace(key, target);
-    if (wasPending.has(key) && !nowPending.has(key) && !itemLives) {
-      const was = d.before.items.filter((x) => x.event === event && x.target === target);
-      // "Changed" by the conflict criterion (09-references-conflict-sync «冲突判据» ②): the
-      // grace-period write changed the unit's value in effect where the candidate lies, and the
-      // candidate's value differs from the new one there. Corroborations and same-value writes do
-      // not change the value in effect.
-      const touched = grace.some((y) =>
-        was.some((w) => {
-          const fields = target === "existence" ? preCancel.fieldIds : [target];
-          return fields.some((f) =>
-            preCancel.changesSince(f, y.op - 1, y.op).some((c) => {
-              const inter = intersect(c.changed, w.valid);
-              if (isEmpty(inter)) return false;
-              if (w.content.kind !== "value") return true;
-              const mine = tok(w.content.value);
-              return preCancel
-                .segments([inter])
-                .some((g) => covers(inter, g) && preCancel.vis(f, g, y.op) !== mine);
-            }),
-          );
-        }),
+    if (!nowPending.has(key) && pendingWithoutThis.has(key) && !itemLives) {
+      // The candidate as it would be pending without this deletion.
+      const was = withoutThisState.items.filter((x) => x.event === event && x.target === target);
+      // "Changed" by the conflict criterion (09-references-conflict-sync «冲突判据» ②): a write
+      // made while the candidate was taken out by a pending deletion — by this one or by another,
+      // in no item at that point — changed the unit's value in effect where the candidate lies,
+      // and the candidate's value differs from the new one there. Corroborations and same-value
+      // writes do not change the value in effect. So the order in which the deletions are
+      // cancelled does not matter, nor which of them the write fell after.
+      const touched = ops.some(
+        (y) =>
+          y.op < cancelOp &&
+          removedAt(key, y.op) &&
+          was.some((w) => {
+            const fields = target === "existence" ? preCancel.fieldIds : [target];
+            return fields.some((f) =>
+              preCancel.changesSince(f, y.op - 1, y.op).some((c) => {
+                const inter = intersect(c.changed, w.valid);
+                if (isEmpty(inter)) return false;
+                if (w.content.kind !== "value") return true;
+                const mine = tok(w.content.value);
+                return preCancel
+                  .segments([inter])
+                  .some((g) => covers(inter, g) && preCancel.vis(f, g, y.op) !== mine);
+              }),
+            );
+          }),
       );
       if (touched) rec.keptSuperseded.add(event);
     }

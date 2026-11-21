@@ -236,7 +236,11 @@ export interface RevertEntry {
 }
 
 /** Why a resolution was rejected: what the same write would get (04-write-and-read «判定顺序»). */
-export type RejectionReason = "required_in_gap" | "revoked" | "missing_required";
+/**
+ * Why a resolution was rejected when judged; `invalid`: a candidate listed has no open candidate
+ * item on the unit, or the one taken is not listed (as the kernel's `invalid`).
+ */
+export type RejectionReason = "required_in_gap" | "revoked" | "missing_required" | "invalid";
 
 export interface RevertResult {
   readonly op: OpNumber;

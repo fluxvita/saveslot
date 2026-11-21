@@ -281,15 +281,17 @@ describe.each(both)("%s table", (_, schema, isState) => {
               seen[`undoRefused_${r.reason}`] = (seen[`undoRefused_${r.reason}`] ?? 0) + 1;
               continue;
             }
-            if (r.op.kind === "resolve") {
-              // A take refused: as the ordinary write would be (`revoked`, a gap without the
-              // required fields), or on existence with a required field nowhere to carry from.
+            if (r.op.kind === "resolve" || r.op.kind === "confirm" || r.op.kind === "reject") {
+              // A decision refused as the reference refuses it: not valid on the state without it
+              // (`invalid`), or a take refused as the ordinary write would be (`revoked`, a gap
+              // without the required fields), or on existence with a required field nowhere to
+              // carry from.
               const rej = evaluateLog(schema, [...r.before, r.op]).steps.at(-1)?.rejected;
               const expected =
                 rej === undefined
                   ? "accepted"
-                  : rej === "revoked"
-                    ? "revoked"
+                  : rej === "revoked" || rej === "invalid"
+                    ? rej
                     : "validation_failed";
               expect({ op: r.op.op, reason: r.reason }).toEqual({ op: r.op.op, reason: expected });
               seen[`takeRefused_${rej}`] = (seen[`takeRefused_${rej}`] ?? 0) + 1;

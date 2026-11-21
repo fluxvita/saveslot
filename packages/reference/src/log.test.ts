@@ -4055,4 +4055,252 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
     ]).final;
     expect(tl(ev)).toEqual(['[10-01, 11-01) "1"', '[11-10, inf) "1"']);
   });
+
+  // A resolution listing a candidate with no open candidate item on its unit, or taking one it
+  // does not list, is rejected when judged (`invalid`, as the kernel's `openCandidates`).
+  const twoCandidates: LogEntry[] = [
+    w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
+    w(20, { f2: ["2", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
+    w(30, { f2: ["5", "S5"] }, g("10-01", "open"), { seen: 10 }),
+    rv(40, "11-01", "11-10", "SR", 10),
+  ];
+
+  it("a resolution on a unit its candidate is not on is rejected as invalid", () => {
+    // #31 is a candidate on f2; #41, a revoke on the version before #21, is one on existence.
+    for (const [entry, ok] of [
+      [res(50, "keep_effective", [31], "f2"), true],
+      [res(50, "keep_effective", [41], "existence"), true],
+      [res(50, "keep_effective", [31], "existence"), false],
+      [res(50, "keep_effective", [41], "f2"), false],
+      [res(50, "keep_effective", [31, 41], "f2"), false],
+    ] as [LogEntry, boolean][]) {
+      const step = evaluateLog(STATE, [...twoCandidates, entry]).steps.at(-1);
+      expect(step?.refused, JSON.stringify(entry)).toBe(!ok);
+      if (!ok) expect(step?.rejected).toBe("invalid");
+    }
+  });
+
+  it("a take of a candidate the resolution does not list is rejected as invalid", () => {
+    const step = evaluateLog(STATE, [...twoCandidates, take(50, [31], "f2", 21)]).steps.at(-1);
+    expect(step?.rejected).toBe("invalid");
+    // A candidate already closed by an earlier resolution: rejected too.
+    const again = evaluateLog(STATE, [
+      ...twoCandidates,
+      res(50, "keep_effective", [31], "f2"),
+      take(60, [31], "f2", 31),
+    ]).steps.at(-1);
+    expect(again?.rejected).toBe("invalid");
+  });
+
+  // #82: cancelling a deletion unrelated to an item does not record that item as kept superseded
+  // when another deletion, still pending, is what superseded it.
+  it("#82 cancelling an unrelated deletion leaves an item another pending deletion superseded as without it", () => {
+    const head: LogEntry[] = [
+      w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
+      w(20, { f2: ["2", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
+      w(30, { f2: ["5", "S5"] }, g("10-01", "open"), { seen: 10 }),
+    ];
+    const tail: LogEntry[] = [
+      del(50, "pi_2", ["S2"]),
+      w(60, { f2: ["7", "S7"] }, g("11-01", "open"), { seen: 50, ...ack }),
+    ];
+    const without = evaluateLog(STATE, [...head, ...tail]).final;
+    expect(tl(without)).toEqual(['[10-01, 11-01) "5"', '[11-01, inf) "7"']);
+    const cancelled = evaluateLog(STATE, [
+      ...head,
+      del(40, "pi_x", ["S_NONE"]),
+      ...tail,
+      cancel(70, "pi_x"),
+    ]);
+    expect(cancelled.steps.at(-1)?.keptSuperseded ?? []).toEqual([]);
+    expect(tl(cancelled.final)).toEqual(tl(without));
+    expect(items(cancelled.final, 31)).toEqual(items(without, 31));
+  });
+
+  // #82: a rejection is of the whole write. #21 awaits on f2 and is a candidate on f3; it is
+  // rejected; deleting both causes (SB, the conflict on f3; S7, the high impact on f2) must not
+  // put f3 in effect.
+  it("#82 a rejected write takes effect on no target in any later replay", () => {
+    const ev = evaluateLog(STATE, [
+      ...confirmedThenFreed("reject").slice(0, -1),
+      del(40, "pi", ["SB", "S7"]),
+    ]).final;
+    expect(tl(ev, "f3")).toEqual(['[10-01, inf) "a"']);
+    expect(tl(ev)).toEqual(['[10-01, inf) "1"']);
+    expect(items(ev, 21).every((x) => x.endsWith("(closed)"))).toBe(true);
+  });
+
+  // #82: an undo of a confirmation lists the confirmation's event on every target of the
+  // confirmed write as of that write, by the record and not by the state when the undo is
+  // written. Confirming #21 carries out f2; deleting SB puts f3 in effect at the confirmation;
+  // the undo takes back f3 too, whether it comes after the deletion or before.
+  it("#82 an undo of a confirmation lists every target of the confirmed write", () => {
+    const run = evaluateLog(STATE, [...confirmedThenFreed("confirm"), undo(50, 30)]);
+    expect(run.final.reverts.at(-1)?.record).toEqual([
+      { event: 31, target: "f2" },
+      { event: 31, target: "f3" },
+    ]);
+    expect(tl(run.final, "f3")).toEqual(['[10-01, inf) "a"']);
+  });
+
+  it("#82 ... undone before the deletion: the same record, and the deletion does not let f3 fall at the confirmation", () => {
+    const head = confirmedThenFreed("confirm").slice(0, -1);
+    const run = evaluateLog(STATE, [...head, undo(40, 30), del(50, "pi", ["SB"])]);
+    expect(run.final.reverts.at(-1)?.record).toEqual([
+      { event: 31, target: "f2" },
+      { event: 31, target: "f3" },
+    ]);
+    expect(tl(run.final, "f3")).toEqual(['[10-01, inf) "a"']);
+  });
+
+  // Known limitation in the first version (kept as it is):
+  // on a state table, two revokes over the same stretch, both undone, leave the stretch without
+  // a value in either order: undoing the later one writes back a revoke (the state before it was
+  // revoked by the earlier), and undoing the earlier one first writes back a restore that counts
+  // as superseding the later one. No data is lost: writing the value again gives it back. The fix
+  // records registrations in the revert record instead of deriving them from write-backs, an
+  // event-format change left for after the first version.
+  it("known limitation: two stacked revokes on a state table, both undone, leave the stretch without a value", () => {
+    const head: LogEntry[] = [
+      w(10, { f2: ["1", "S1"] }, g("10-01", "open"), { seen: 0 }),
+      rv(13, "11-01", "11-10", "SA", 10),
+      rv(20, "11-01", "11-10", "SB", 13),
+    ];
+    for (const order of [
+      [undo(30, 20), undo(40, 13)],
+      [undo(30, 13), undo(40, 20)],
+    ]) {
+      const label = JSON.stringify(order.map((x) => (x as { target: number }).target));
+      const ev = evaluateLog(STATE, [...head, ...order]).final;
+      expect(tl(ev), label).toEqual(['[10-01, 11-01) "1"', '[11-10, inf) "1"']);
+      const again = evaluateLog(STATE, [
+        ...head,
+        ...order,
+        w(50, { f2: ["1", "S5"] }, g("11-01", "11-10"), { seen: 40, ...ack }),
+      ]).final;
+      expect(tl(again), label).toEqual(['[10-01, inf) "1"']);
+    }
+  });
+
+  // #82 review 1: two deletions, each enough to take the same candidate out of its item (one
+  // deletes its own source, one the cause of its conflict), a grace-period write over its field;
+  // both cancelled, in either order: the same end state.
+  it("#82 two deletions each superseding the same candidate, both cancelled: the order does not matter", () => {
+    const head: LogEntry[] = [
+      w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
+      w(20, { f2: ["2", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
+      w(30, { f2: ["5", "S5"] }, g("10-01", "open"), { seen: 10 }),
+      del(40, "pi_1", ["S5"]),
+      del(50, "pi_2", ["S2"]),
+      w(60, { f2: ["7", "S7"] }, g("11-01", "open"), { seen: 50, ...ack }),
+    ];
+    const ab = evaluateLog(STATE, [...head, cancel(70, "pi_1"), cancel(80, "pi_2")]).final;
+    const ba = evaluateLog(STATE, [...head, cancel(70, "pi_2"), cancel(80, "pi_1")]).final;
+    expect(tl(ba)).toEqual(tl(ab));
+    expect(items(ba, 31)).toEqual(items(ab, 31));
+    // #61 changed f2 in the grace period: #31 stays superseded, a closed candidate.
+    expect(items(ab, 31)).toEqual(['f2/0 candidate [10-01, inf) "5" (closed)']);
+    expect(tl(ab)).toEqual(['[10-01, 11-01) "2"', '[11-01, inf) "7"']);
+  });
+
+  // ... and the grace-period write falls between the two deletions: #31 is out of its item when it
+  // is written (taken out by pi_1, whichever is cancelled first). Both orders keep #31 superseded.
+  for (const [first, second] of [
+    ["pi_1", "pi_2"],
+    ["pi_2", "pi_1"],
+  ] as const) {
+    it(`#82 ... the write between the two deletions, ${first} cancelled first: #31 stays superseded`, () => {
+      const ev = evaluateLog(STATE, [
+        w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
+        w(20, { f2: ["2", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
+        w(30, { f2: ["5", "S5"] }, g("10-01", "open"), { seen: 10 }),
+        del(40, "pi_1", ["S5"]),
+        w(44, { f2: ["7", "S7"] }, g("11-01", "open"), { seen: 40, ...ack }),
+        del(50, "pi_2", ["S2"]),
+        cancel(70, first),
+        cancel(80, second),
+      ]).final;
+      expect(items(ev, 31)).toEqual(['f2/0 candidate [10-01, inf) "5" (closed)']);
+      expect(tl(ev)).toEqual(['[10-01, 11-01) "2"', '[11-01, inf) "7"']);
+    });
+  }
+
+  // #82 review: a decision is judged valid on the state without it, as the kernel judges it.
+  // #31 is a candidate against #21; deleting S2 puts it in effect: no candidate is left to keep.
+  it("#82 a resolution listing a candidate a deletion has put in effect is invalid", () => {
+    const log = [
+      w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
+      w(20, { f2: ["2", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
+      w(30, { f2: ["5", "S5"] }, g("10-01", "open"), { seen: 10 }),
+      del(44, "pi", ["S2"]),
+      res(50, "keep_effective", [31], "f2"),
+    ];
+    const run = evaluateLog(STATE, log);
+    expect(run.steps.at(-1)).toMatchObject({ refused: true, rejected: "invalid" });
+    expect(tl(run.final)).toEqual(['[10-01, inf) "5"']);
+  });
+
+  // #15 is only a candidate (nothing awaits); deleting s16 puts it in effect. Neither state has an
+  // awaiting item to confirm or reject.
+  it("#82 a confirmation or rejection with nothing awaiting is invalid", () => {
+    const conflicting = [
+      w(10, { f2: ["9", "s15"] }, g("10-01", "open")),
+      w(12, { f2: ["9.5", "s16"] }, g("10-01", "open"), { seen: 10, ...ack }),
+      w(14, { f2: ["10", "s17"] }, g("10-01", "open"), { seen: 10 }),
+    ];
+    for (const kind of ["confirm", "reject"] as const) {
+      const onCandidate = evaluateLog(STATE, [...conflicting, decide3(kind, 16, 15)]);
+      expect(onCandidate.steps.at(-1)).toMatchObject({ refused: true, rejected: "invalid" });
+      const inEffect = evaluateLog(STATE, [
+        ...conflicting,
+        del(16, "pi", ["s16"]),
+        decide3(kind, 20, 15),
+      ]);
+      expect(inEffect.steps.at(-1)).toMatchObject({ refused: true, rejected: "invalid" });
+      expect(tl(inEffect.final)).toEqual(['[10-01, inf) "10"']);
+    }
+  });
+
+  // A rejection is of the whole write (03-deletion «冲突消失之后»). Deleting S7 alone removes what
+  // made f2 high impact; the rejected write still takes effect on no target.
+  it("#82 a rejected write, one of its causes deleted: still in effect nowhere", () => {
+    const ev = evaluateLog(STATE, [
+      ...confirmedThenFreed("reject").slice(0, -1),
+      del(40, "pi", ["S7"]),
+    ]).final;
+    expect(tl(ev)).toEqual(['[10-01, inf) "1"']);
+    expect(tl(ev, "f3")).toEqual(['[10-01, inf) "b"']);
+    // f2 stays not in effect and closed; f3 is still a candidate against #15, not in effect.
+    expect(items(ev, 21)).toEqual([
+      'f2/0 awaiting [10-01, inf) "3" (closed)',
+      'f3/0 candidate [10-01, inf) "c"',
+    ]);
+  });
+
+  // An undo of a confirmation with include_later, confirmed before a deletion puts f3 in effect at
+  // the confirmation: the record lists the confirmed write's targets at the confirmation's event
+  // and the later write it takes back; f3 is undone too.
+  it("#82 an undo of a confirmation with include_later", () => {
+    const head = confirmedThenFreed("confirm").slice(0, -1);
+    const log = [
+      ...head,
+      w(34, { f2: ["8", "S8"] }, g("10-01", "open"), { seen: 30 }),
+      undo(40, 30, { includeLater: true }),
+      decide3("confirm", 44, 41),
+      del(50, "pi", ["SB"]),
+    ];
+    const run = evaluateLog(STATE, log);
+    expect(run.steps.every((x) => !x.refused)).toBe(true);
+    expect(run.final.reverts.at(-1)).toMatchObject({
+      op: 44,
+      status: "applied",
+      record: [
+        { event: 31, target: "f2" },
+        { event: 31, target: "f3" },
+        { event: 35, target: "f2", later: true },
+      ],
+    });
+    expect(tl(run.final)).toEqual(['[10-01, 11-01) "1"', '[11-01, inf) "7"']);
+    expect(tl(run.final, "f3")).toEqual(['[10-01, inf) "a"']);
+  });
 });

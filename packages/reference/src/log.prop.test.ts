@@ -52,7 +52,14 @@ type Step =
       lag: number;
       explicit: boolean;
       ack: boolean;
+      /** A write to f2 that also writes f3 with this value (two fields in one write). */
+      also?: string;
     }
+  /**
+   * A revoke: on a state table of [from, to) (to: a day or open), its interval from `src`; on an
+   * event table of the whole row.
+   */
+  | { t: "revoke"; from: number; to: number | "open"; src: string; lag: number }
   /** Restate an earlier write's value for its field, with or without evidence pointed at. */
   | { t: "resend"; back: number; src: string; explicit: boolean }
   | { t: "undo"; back: number }
@@ -65,16 +72,29 @@ type Step =
   /** Confirm or reject the first open awaiting item, if any. */
   | { t: "confirm"; reject: boolean };
 
-const write = fc.record({
-  t: fc.constant("write" as const),
-  f: fc.constantFrom<FieldId>("f2", "f2", "f3"),
-  v: fc.constantFrom("1", "2", "3"),
-  src: fc.constantFrom(...SOURCES),
+const write = fc
+  .record({
+    t: fc.constant("write" as const),
+    f: fc.constantFrom<FieldId>("f2", "f2", "f3"),
+    v: fc.constantFrom("1", "2", "3"),
+    src: fc.constantFrom(...SOURCES),
+    from: fc.nat({ max: DAYS.length - 2 }),
+    to: fc.oneof(
+      fc.constantFrom<"open" | "next">("open", "next"),
+      fc.nat({ max: DAYS.length - 1 }),
+    ),
+    lag: fc.constantFrom(0, 1, 1, 2),
+    explicit: fc.boolean(),
+    ack: fc.boolean(),
+    also: fc.constantFrom<string | undefined>(undefined, undefined, undefined, "a", "b"),
+  })
+  .map(({ also, ...w }) => (also !== undefined && w.f === "f2" ? { ...w, also } : w));
+const revoke = fc.record({
+  t: fc.constant("revoke" as const),
   from: fc.nat({ max: DAYS.length - 2 }),
-  to: fc.oneof(fc.constantFrom<"open" | "next">("open", "next"), fc.nat({ max: DAYS.length - 1 })),
+  to: fc.oneof(fc.constant("open" as const), fc.nat({ max: DAYS.length - 1 })),
+  src: fc.constantFrom(...SOURCES),
   lag: fc.constantFrom(0, 1, 1, 2),
-  explicit: fc.boolean(),
-  ack: fc.boolean(),
 });
 const resend = fc.record({
   t: fc.constant("resend" as const),
@@ -94,6 +114,7 @@ const decisions = fc.oneof(
 
 const step: fc.Arbitrary<Step> = fc.oneof(
   { weight: 6, arbitrary: write },
+  { weight: 2, arbitrary: revoke },
   { weight: 2, arbitrary: resend },
   {
     weight: 1,
@@ -120,6 +141,7 @@ const step: fc.Arbitrary<Step> = fc.oneof(
 /** Operations after two deletion orders: writes, restatements, undos and decisions. */
 const furtherStep: fc.Arbitrary<Step> = fc.oneof(
   { weight: 3, arbitrary: write },
+  { weight: 1, arbitrary: revoke },
   { weight: 1, arbitrary: resend },
   {
     weight: 2,
@@ -138,6 +160,7 @@ const furtherStep: fc.Arbitrary<Step> = fc.oneof(
  */
 const graceStep: fc.Arbitrary<Step> = fc.oneof(
   { weight: 3, arbitrary: write },
+  { weight: 1, arbitrary: revoke },
   { weight: 2, arbitrary: resend },
 );
 
@@ -168,6 +191,7 @@ function writeOp(
       : {}),
     fields: {
       [first ? "f2" : s.f]: { value: s.v, sources: [src], explicit: s.explicit && !first },
+      ...(s.also !== undefined && !first ? { f3: { value: s.also, sources: [src] } } : {}),
     },
     ...(s.ack ? { acknowledge: ["overwrite"] as const } : {}),
   };
@@ -207,6 +231,26 @@ function extend(
     if (s.t === "write" || out.length === 0) {
       const w = s.t === "write" ? s : FIRST;
       out.push(writeOp(op, w, state, out.length === 0, src ?? w.src));
+    } else if (s.t === "revoke") {
+      const end = typeof s.to === "number" ? Math.max(s.to, s.from + 1) : s.to;
+      out.push({
+        kind: "revoke",
+        op,
+        event: op + 1,
+        seen: Math.max(0, op - 10 * (1 + s.lag)),
+        ...(state
+          ? {
+              valid: {
+                from: { mode: "given", value: DAYS[s.from] as BizPoint },
+                to:
+                  end === "open"
+                    ? { mode: "open" }
+                    : { mode: "given", value: DAYS[end] ?? ("2026-12-01" as BizPoint) },
+              },
+              validSources: [src ?? s.src],
+            }
+          : {}),
+      });
     } else if (s.t === "resend") {
       const prev = writes()[writes().length - 1 - s.back];
       const [f, input] = Object.entries(prev?.fields ?? {})[0] ?? [];
@@ -245,21 +289,45 @@ function extend(
         out.push({ kind: s.reject ? "reject" : "confirm", op, event: op + 1, target: first.event });
         return;
       }
-      if (first.target === "existence") return;
-      const candidates = [
-        ...new Set(open.filter((x) => x.target === first.target).map((x) => x.event)),
-      ];
+      // The unit of the first open candidate's item: existence for a revoke, and for the fields of
+      // a write whose conflict met one; its field otherwise. The item's candidates are the open
+      // ones a resolution on that unit accepts (the evaluator rejects one listing a candidate
+      // not on the unit, as the kernel does). Found by trying each once. Picked by the evaluator's
+      // own validity check: were it to refuse a valid resolution wrongly, the property would not
+      // turn red (the resolution is just not generated).
+      const fits = (e: number, unit: FieldId | "existence") =>
+        evaluateLog(schema, [
+          ...out,
+          { kind: "resolve", op, event: op + 1, decision: "keep_effective", candidates: [e], unit },
+        ]).steps.at(-1)?.refused === false;
+      const unit: FieldId | "existence" =
+        first.target === "existence" || !fits(first.event, first.target)
+          ? "existence"
+          : first.target;
+      const candidates = [...new Set(open.map((x) => x.event))].filter((e) => fits(e, unit));
+      if (!candidates.includes(first.event)) return;
+      const existence = unit === "existence";
       out.push({
         kind: "resolve",
         op,
         event: op + 1,
         decision: s.decision,
         candidates,
-        unit: first.target,
+        unit: existence ? "existence" : first.target,
         ...(s.decision === "take_candidate" ? { take: first.event } : {}),
       });
     }
   });
+  // What the generator's later steps reach, per call (checked by «the generator reaches …»).
+  const added = out.slice(log.length);
+  counts.extended++;
+  counts.revokes += added.filter((e) => e.kind === "revoke").length;
+  counts.twoFieldWrites += added.filter(
+    (e) => e.kind === "write" && Object.keys(e.fields).length > 1,
+  ).length;
+  counts.resolvesOnExistence += added.filter(
+    (e) => e.kind === "resolve" && e.unit === "existence",
+  ).length;
   return out;
 }
 
@@ -664,6 +732,10 @@ const counts = {
   furtherOps: 0,
   threeDeletions: 0,
   redo: 0,
+  extended: 0,
+  revokes: 0,
+  twoFieldWrites: 0,
+  resolvesOnExistence: 0,
 };
 
 /**
@@ -680,6 +752,13 @@ function noEndpointLeak(full: readonly LogEntry[], run: LogEvaluation): void {
   const deleted = new Set([...pending.values()].flat());
   const dates = new Set<string>();
   for (const o of full) {
+    // A revoke's interval gives endpoints too, unless its sources are deleted.
+    if (o.kind === "revoke") {
+      if (o.valid === undefined || o.validSources?.some((y) => deleted.has(y))) continue;
+      if (o.valid.from.mode === "given") dates.add(o.valid.from.value);
+      if (o.valid.to.mode === "given") dates.add(o.valid.to.value);
+      continue;
+    }
     if (o.kind !== "write" || o.valid === undefined || o.valid === "corrected_span") continue;
     if (Object.values(o.fields).some((x) => x?.sources.some((y) => deleted.has(y)))) continue;
     if (o.valid.from.mode === "given") dates.add(o.valid.from.value);
@@ -967,7 +1046,10 @@ function checkCancelRestores(
     kept: kept.length,
     refusedInBase: refusedInBase.length,
     putBackDiffers: putBackDiffers.length,
-    withDecisions: grace.some((e) => e.kind !== "write"),
+    withDecisions: grace.some(
+      (e) =>
+        e.kind === "resolve" || e.kind === "confirm" || e.kind === "reject" || e.kind === "undo",
+    ),
     decided: { nonEmpty: decidedNonEmpty, differs },
   };
 }
@@ -1042,11 +1124,13 @@ describe.each(both)("%s table", (_, schema, state) => {
             const last = Math.max(...log.map((o) => o.op));
             const orders = d.orders;
             // Built once (decisions aimed at items open after the first order) and appended to
-            // every order; each write carries the current ver: nothing happened after its `seen`.
+            // every order; each write and revoke carries the current ver: nothing happened after its `seen`.
             const ab = [...log, ...(orders[0] as LogEntry[])];
             const tail = extend(schema, ab, after, last + 10)
               .slice(ab.length)
-              .map((e) => (e.kind === "write" ? { ...e, seen: e.op - 1 } : e));
+              .map((e) =>
+                e.kind === "write" || e.kind === "revoke" ? { ...e, seen: e.op - 1 } : e,
+              );
             if (tail.some((e) => e.kind === "undo" || e.kind === "resolve")) counts.furtherOps++;
             const [x, ...rest] = orders.map((ds) =>
               stateWithoutIndices(evaluateLog(schema, [...log, ...ds, ...tail]).final),
@@ -1607,7 +1691,9 @@ describe.each(both)("%s table", (_, schema, state) => {
           let grace = extend(schema, withD, graceSteps, dOp + 10, "G").slice(withD.length);
           // With `lateVer`, grace-period writes carry the version after the confirmation, so they
           // can make the cancellation keep a write in effect.
-          grace = grace.map((e) => (e.kind === "write" && lateVer ? { ...e, seen: e.op - 1 } : e));
+          grace = grace.map((e) =>
+            (e.kind === "write" || e.kind === "revoke") && lateVer ? { ...e, seen: e.op - 1 } : e,
+          );
           const cancelOp = dOp + 10 * (graceSteps.length + 2);
           const checked = checkCancelRestores(schema, prefix, withD, grace, cancelOp);
           fc.pre(checked !== undefined);
@@ -2637,6 +2723,17 @@ it("order independence covers three deletions and deleting again after a cancell
 
 it("further operations after both deletion orders include undos and decisions", () => {
   expect(counts.furtherOps).toBeGreaterThan(0);
+});
+
+it("the generator reaches revokes, two-field writes and resolutions on existence", () => {
+  // Per call of `extend`. Measured: about 0.25 revokes, 0.36 two-field writes and 0.018
+  // resolutions on existence. Not reached at all: a rejected write with a candidate part, and an
+  // undo of a confirmation; those two rules are kept by fixed cases (log.test).
+  expect(counts.extended).toBeGreaterThan(0);
+  expect(counts.revokes / counts.extended).toBeGreaterThan(0.1);
+  expect(counts.twoFieldWrites / counts.extended).toBeGreaterThan(0.15);
+  expect(counts.resolvesOnExistence).toBeGreaterThan(0);
+  expect(counts.resolvesOnExistence / counts.extended).toBeGreaterThan(0.005);
 });
 
 describe("«撤回还原»: a grace-period decision is executed in the baseline as recorded", () => {
