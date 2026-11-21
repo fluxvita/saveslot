@@ -626,12 +626,14 @@ describe("schema", () => {
     });
   });
 
-  it("refuses draft (not in this version), a missing slot, an unknown one", async () => {
+  it("refuses a draft not there, a missing slot, an unknown one", async () => {
+    // Reading a draft: schema-draft-read.test.ts. The slot here was created by d_111…: one
+    // that is not there.
     expect(
-      await refused({ level: "schema", slot: "ledger", draft: `d_${"1".repeat(16)}` }),
+      await refused({ level: "schema", slot: "ledger", draft: `d_${"7".repeat(16)}` }),
     ).toEqual({
-      code: "not_in_this_version",
-      reason: "parameter",
+      code: "not_found",
+      reason: "draft",
       param: "draft",
     });
     expect(await refused({ level: "schema" })).toEqual({

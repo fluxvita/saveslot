@@ -31,7 +31,7 @@ import { itemVer } from "../pending/index.ts";
 import { formerVersions, ruleTextsOf, visibleSlots } from "../read/index.ts";
 import { restoreCount } from "../read/select.ts";
 import { RULESET_VERSION } from "../rules/index.ts";
-import { compileChange, compiledWarnings, filledDocument } from "../schema/index.ts";
+import { changesByName, compileChange, compiledWarnings, filledDocument } from "../schema/index.ts";
 import type { ReadTx, TenantStore } from "../store/ports.ts";
 import { todayIn } from "../write/index.ts";
 import type { OpsContext } from "./context.ts";
@@ -66,26 +66,6 @@ export interface SchemaChangeReceipt {
 }
 
 const newItemId = (): `pi_${string}` => `pi_${randomCrockford(16)}`;
-
-/** The changes by names: tables and fields of the version they are in. */
-function byNames(
-  changes: readonly SchemaChangeRecord[],
-  next: CompiledSchema,
-  before: CompiledSchema,
-): SchemaChange[] {
-  const table = (id: string) =>
-    next.tables.find((t) => t.id === id) ?? before.tables.find((t) => t.id === id);
-  return changes.map((c) => {
-    if (!("table" in c.target)) return { ...c, target: c.target };
-    const t = table(c.target.table);
-    const name = t?.name ?? c.target.table;
-    if ("field" in c.target) {
-      const f = t?.fields.find((x) => x.id === (c.target as { field: string }).field);
-      return { ...c, target: { table: name, field: f?.name ?? c.target.field } };
-    }
-    return { ...c, target: "rule" in c.target ? { table: name, rule: true } : { table: name } };
-  });
-}
 
 async function compiledOf(tx: ReadTx, slot: string, sv: number): Promise<CompiledSchema> {
   const r = await tx.query<{ body: string | null }>(
@@ -144,7 +124,7 @@ async function receiptOf(tx: ReadTx, op: number, replayed: boolean): Promise<Sch
     target_sv: compiled.sv,
     // On the version the slot is at, as it was submitted: changed and submitted again as it is.
     document: filledDocument(document, compiled, submitted.base_version),
-    changes: byNames(changes, compiled, before),
+    changes: changesByName(changes, compiled, before),
     impact: { rows_affected: 0, derived_changed: [] },
     ...(item !== undefined
       ? {

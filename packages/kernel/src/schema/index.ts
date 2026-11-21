@@ -1,3 +1,4 @@
+export { changesByName, type SchemaChange } from "./changes-by-name.ts";
 export * from "./compile.ts";
 export { compileChange } from "./compile-change.ts";
 export { derivedTableDocument, documentOf } from "./document-of.ts";

@@ -9,7 +9,7 @@ export {
   catalogInTx,
 } from "./catalog.ts";
 export { changesInTx } from "./changes.ts";
-export { ruleTexts, ruleTextsOf, slotDocument } from "./documents.ts";
+export { draftDocument, ruleTexts, ruleTextsOf, slotDocument } from "./documents.ts";
 export { FORMER_VERSIONS, formerVersions } from "./former.ts";
 export {
   asOfInTx,
@@ -39,7 +39,13 @@ export {
 export { fingerprint, type QueryInput, type QueryOutput, queryInTx } from "./query.ts";
 export { type ReadsListResult, readsListInTx } from "./reads-list.ts";
 export { logPosition, restoreCount } from "./select.ts";
-export { slotCreators, type Visibility, type VisibleSlot, visibleSlots } from "./slots.ts";
+export {
+  slotCreators,
+  type Visibility,
+  type VisibleSlot,
+  visibleSlots,
+  wholeSlot,
+} from "./slots.ts";
 export {
   READ_ROWS_THRESHOLD,
   SQL_DEFAULT_ROWS,

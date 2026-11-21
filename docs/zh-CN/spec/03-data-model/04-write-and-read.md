@@ -545,10 +545,10 @@ schema 可以为事件类表与无时间表声明 `duplicate_keys`：一组或�
 
   | 对象 | 规则 |
   |---|---|
-  | 数据目录 | 只列范围内的 slot 与表；概况、取值示例、表间关系只涉及范围内的表 |
+  | 数据目录 | 只列范围内的 slot 与表；概况、取值示例、表间关系只涉及范围内的表。完整 schema 文档（`catalog` 的 `schema` 档，含带 `draft` 的读取）要 slot 的每张表都在范围内才给，否则与 slot 不存在相同 |
   | `query`、`history`（含 `timeline`、`as_of`、`changes`） | 目标表须在范围内。`changes` 不给目标时是"一张表的变化"，表须在范围内 |
   | 受限 SQL | 语法树里引用的每张表都须在范围内，否则 `sql_rejected`（`unknown_name`）；可以引用范围内多个 slot 的表（见「查得出」）。汇总标记只统计范围内的行 |
-  | 待处理事项、`resolve` | 事项属于某个 slot，按 slot 过滤；范围外的事项 ID 报 `not_found`。结果里的提示只算范围内的 |
+  | 待处理事项、`resolve` | 事项属于某个 slot，按 slot 过滤；范围外的事项 ID 报 `not_found`。结果里的提示只算范围内的。`schema_change` 事项与 slot 的草稿（`catalog` 带 `draft` 的读取）关乎整个 slot 的 schema，要这个 slot 的每张表都在范围内才可见，否则与不存在相同 |
   | 源数据、`source_ref`、删除预览与删除 | 每条源数据只属于一个 slot，按 slot 过滤；范围外的源数据 ID 报 `not_found` |
   | 读取记录 | 照常记在本连接实例名下。经 `history` 查某个目标的读取时目标须在范围内；按某次读取还原时，那次读取的目标在范围外报 `not_found` |
   | 影响查询 | 写入回执里受影响的读取统计的是对本次所写行的读取，这些行都在范围内，照常给；读结果上的 `possibly_affected` 只出现在范围内的行上 |

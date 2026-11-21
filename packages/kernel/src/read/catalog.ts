@@ -3,10 +3,12 @@
 // - `list`: the slots and their tables, paged by table;
 // - `table`: 1–10 tables, their definitions: time type, keys, field types, units, bounds,
 //   precision, a derived table's rule;
-// - `schema`: a slot's schema document as submitted, with IDs, `base_version` and the inferences
-//   filled in (../schema/fill.ts), and the slot's policy in effect.
-// Not in this version: the value examples of the fields and `described_by` (P2), reading a draft
-// (`draft`), migration status (no migrations yet). A table has its profile (./profile.ts). Aliases
+// - `schema`: a slot's whole schema document, IDs, `base_version` and the inferences filled in
+//   (./documents.ts), and the slot's policy in effect; with `draft`, the document the slot would
+//   have once switched to that draft, on the version it holds on (./documents.ts). Either only
+//   with every table of the slot in range.
+// Not in this version: the value examples of the fields and `described_by` (P2), migration status
+// (no migrations yet). A table has its profile (./profile.ts). Aliases
 // (07 «schema 文档格式» 别名) are given where a table or field has them: `list` the tables', `table`
 // the tables' and the fields', `schema` in the document as submitted. They are not names. The read is recorded (`operation: catalog`), counting as reading the `sv` of each
 // slot it shows (04-contract §2 «什么算读到 sv»).
@@ -16,6 +18,7 @@ import type {
   CompiledDerivedTable,
   CompiledPrecision,
   CompiledTable,
+  DraftId,
   FieldType,
   Instant,
   PolicyBlock,
@@ -29,13 +32,19 @@ import { canonicalize, SELFCHECK_TASK } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry, ReadId } from "../audit/index.ts";
 import { fold, get, has, isDenseArray, isObj, keysOf, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { ruleTextsOf, slotDocument } from "./documents.ts";
+import { draftDocument, ruleTextsOf, slotDocument } from "./documents.ts";
 import { taskOf } from "./history.ts";
 import { digest, pageAfter, positionOf } from "./page.ts";
 import { profileOf, SCALE_BOUNDS, type ScaleBounds, type TableProfile } from "./profile.ts";
 import type { KeySpec } from "./rows.ts";
 import { logPosition, restoreCount } from "./select.ts";
-import { resolveTable, type Visibility, type VisibleSlot, visibleSlots } from "./slots.ts";
+import {
+  resolveTable,
+  type Visibility,
+  type VisibleSlot,
+  visibleSlots,
+  wholeSlot,
+} from "./slots.ts";
 import { actors } from "./timeline.ts";
 import { type Actor, invalid, ReadError } from "./types.ts";
 
@@ -129,7 +138,9 @@ export interface CatalogTablesResult {
 export interface CatalogSchemaResult {
   readonly level: "schema";
   readonly slot: string;
+  /** With `draft`, the version the draft compiles to. */
   readonly sv: number;
+  readonly draft?: DraftId;
   readonly document: Record<string, unknown>;
   readonly policy: SlotPolicy;
 }
@@ -144,6 +155,7 @@ const KEYS: Readonly<Record<string, readonly string[]>> = {
 const LIST_DEFAULT = 50;
 const LIST_MAX = 200;
 const MAX_TABLES = 10;
+const DRAFT_ID = /^d_[0-9A-HJKMNP-TV-Z]{16}$/;
 
 /** A slot named by the caller within the visible range; `not_found` (`slot`) otherwise. */
 function slotNamed(v: unknown, slots: readonly VisibleSlot[]): VisibleSlot {
@@ -153,8 +165,6 @@ function slotNamed(v: unknown, slots: readonly VisibleSlot[]): VisibleSlot {
     throw new ReadError("not_found", "no such slot", { reason: "slot", param: "slot" });
   return s;
 }
-
-/** The text a table's rule was written in, from the submitted document (names, not IDs). */
 
 /** Whether a table or field has aliases to give (none when absent or empty). */
 const hasAliases = (x: {
@@ -294,6 +304,7 @@ export async function catalogInTx(
   let result: CatalogResult;
   let shown: VisibleSlot[];
   let tableIds: TableId[] = [];
+  let draft: DraftId | undefined;
 
   if (level === "list") {
     const only = has(params, "slot") ? [slotNamed(get(params, "slot"), slots)] : slots;
@@ -376,23 +387,39 @@ export async function catalogInTx(
     }
     result = { level, tables };
   } else {
-    if (has(params, "draft"))
-      throw new ReadError("not_in_this_version", "reading a draft", {
-        reason: "parameter",
-        param: "draft",
-      });
     if (!has(params, "slot")) throw invalid("missing", "slot");
     const s = slotNamed(get(params, "slot"), slots);
-
+    // A slot's schema document, its current one or a draft's, is the slot's schema as a whole:
+    // given only with every table of it in range, else the slot is as not there (04-write-and-read
+    // «可见范围»). Not the visible tables only: a derived rule's text names the tables it reads.
+    if (!wholeSlot(s))
+      throw new ReadError("not_found", "no such slot", { reason: "slot", param: "slot" });
     shown = [s];
-    result = {
-      level,
-      slot: s.name,
-      sv: s.sv,
-      // From the current version's definition: drafts list only what they change.
-      document: await slotDocument(tx, s),
-      policy: await policyOf(tx, s),
-    };
+    if (has(params, "draft")) {
+      const id = get(params, "draft");
+      if (typeof id !== "string" || !DRAFT_ID.test(id)) throw invalid("malformed", "draft");
+      draft = id as DraftId;
+      const d = await draftDocument(tx, s, id);
+      if (d === undefined)
+        throw new ReadError("not_found", "no such draft", { reason: "draft", param: "draft" });
+      result = {
+        level,
+        slot: s.name,
+        sv: d.sv,
+        draft: id as DraftId,
+        document: d.document,
+        policy: await policyOf(tx, s),
+      };
+    } else {
+      result = {
+        level,
+        slot: s.name,
+        sv: s.sv,
+        // From the current version's definition: drafts list only what they change.
+        document: await slotDocument(tx, s),
+        policy: await policyOf(tx, s),
+      };
+    }
   }
 
   const [one] = shown;
@@ -411,6 +438,7 @@ export async function catalogInTx(
       level,
       slots: shown.map((x) => x.slot as string).sort(),
       tables: [...tableIds].sort(),
+      ...(draft !== undefined ? { draft } : {}),
     }),
     rows: [],
     coarse: [],

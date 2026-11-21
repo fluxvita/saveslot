@@ -2,7 +2,7 @@
 // `saveslot_query`; §4.1, §4.2), against golden files. The results are what a running service
 // gave back (reads.samples.json): the pending list with items open, resolved and superseded; an
 // awaiting item with its current values by stretch; conflicts open, resolved, superseded, and on a
-// row revoked since; a timeline with a resolution and an undo, and one of a state table; a query
+// row revoked since; a schema_change item open, and one superseded; a timeline with a resolution and an undo, and one of a state table; a query
 // of a state table and of an event table; the catalog's list, and its tables of each kind; a sql
 // result with a disputed row among those it read. Update
 // the golden files with `pnpm exec vitest run packages/server/src/mcp/reads.test.ts -u`.
@@ -240,6 +240,29 @@ describe("reads as text: what the samples do not show", () => {
     expect(text("saveslot_query", { ...r, rows: [row], total: 1 }).split("\n")[1]).toMatch(
       new RegExp(`^plan\\.budgets · plan schema v1 · entity category ${B}food${E} · 1 of 1 rows$`),
     );
+  });
+
+  it("a schema_change item in the list: its slot, no empty target, its type said once", () => {
+    const item = sample("pending-schema-change-open");
+    const list = {
+      total: 1,
+      items: [
+        {
+          id: item["id"],
+          type: "schema_change",
+          status: "open",
+          slot: "diet",
+          reason: "schema_change",
+          opened_at: item["opened_at"],
+          opened_by: item["opened_by"],
+        },
+      ],
+    };
+    const line = text("saveslot_pending", list)
+      .split("\n")
+      .find((x) => x.startsWith(String(item["id"])));
+    expect(line).toMatch(/^pi_\w+ schema_change · slot diet · opened /);
+    expect(line).not.toContain("untrusted-data-N></untrusted-data-N");
   });
 
   void ACTOR;

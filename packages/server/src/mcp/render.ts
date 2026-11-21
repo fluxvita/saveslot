@@ -974,6 +974,16 @@ const ITEM_STATUS: ReadonlySet<string> = new Set<string>(ITEM_STATUSES);
 const DECISIONS: ReadonlySet<string> = new Set<string>(CONTRACT_DECISIONS);
 const reasonOf = (x: unknown): Part[] => (x === undefined ? [] : t` · ${codeIn(x, ITEM_REASONS)}`);
 
+/**
+ * What an item is about: its target, or its slot when it has none (a `schema_change` item is the
+ * slot's schema as a whole).
+ */
+const itemWhere = (x: R): Part[] =>
+  x["target"] !== undefined ? itemTarget(x["target"]) : t`slot ${tableOf(x["slot"])}`;
+
+/** An item's reason, unless it only says the item's type again (`schema_change`). */
+const itemReason = (x: R): Part[] => (x["reason"] === x["type"] ? [] : reasonOf(x["reason"]));
+
 function itemTarget(x: unknown): Part[] {
   const tg = obj(x);
   const unit = arr(tg["unit"]);
@@ -1173,6 +1183,7 @@ function pending(r: R, now: Date): Line[] {
   // The moments are as the service recorded them (UTC): a pending result does not give the slot's
   // time zone (05 §4.1 asks for it), and a second read only to learn it is not worth it.
   if (r["id"] !== undefined) {
+    if (r["type"] === "schema_change") return schemaChangeItem(r, now);
     const out: Line[] = [
       t`${idOf(r["id"])} ${codeIn(r["type"], ITEM_TYPES)} · ${itemTarget(r["target"])}${reasonOf(r["reason"])} · ${codeIn(r["status"], ITEM_STATUS)} · opened ${openFor(r["opened_at"], now)} ago (${timeOf(r["opened_at"])}) by ${actorOf(r["opened_by"])}${r["item_ver"] !== undefined ? t` · version ${idOf(r["item_ver"])}` : []}`,
     ];
@@ -1237,7 +1248,7 @@ function pending(r: R, now: Date): Line[] {
         ? t` · ${codeIn(x["status"], ITEM_STATUS)}`
         : [];
     out.push(
-      t`${idOf(x["id"])} ${codeIn(x["type"], ITEM_TYPES)} · ${itemTarget(x["target"])}${reasonOf(x["reason"])}${status} · opened ${openFor(x["opened_at"], now)} ago${x["overdue"] === true ? t` · overdue, not yet deleted; will be retried` : []}`,
+      t`${idOf(x["id"])} ${codeIn(x["type"], ITEM_TYPES)} · ${itemWhere(x)}${itemReason(x)}${status} · opened ${openFor(x["opened_at"], now)} ago${x["overdue"] === true ? t` · overdue, not yet deleted; will be retried` : []}`,
     );
   }
   return [...out, ...pageOf(r, items.length, () => t`items`), ...remindersOf(r, now)];
@@ -1701,6 +1712,58 @@ function changeTarget(x: unknown): Part[] {
 }
 
 /**
+ * A draft's changes, one line each (05 §6 `saveslot_schema_draft`; the same in a `schema_change`
+ * item's detail): target, code, class, whether writes in the earlier version are still taken,
+ * whether it loses data, and, when the draft waits, which changes wait.
+ */
+function changeLines(changes: unknown, waiting: boolean, pad: "  " | "    "): Line[] {
+  return arr(changes).map((x) => {
+    const c = obj(x);
+    const old =
+      c["compatible_with_old_writes"] === true
+        ? t`writes in the earlier version still taken`
+        : t`writes in the earlier version refused`;
+    const loses = c["destructive"] === true ? t`loses data` : t`loses no data`;
+    const waits = waiting && c["auto"] !== true ? t` · waits for confirmation` : [];
+    return t`${padded(pad)}${changeTarget(c["target"])}: ${codeIn(c["change"], CHANGE_CODES)} (${codeIn(c["class"], CLASSES)}) · ${old} · ${loses}${waits}`;
+  });
+}
+
+/** A draft's impact (04-contract-types §5.3 `SchemaImpact`): rows to change, derived values. */
+function schemaImpactLine(x: unknown, pad: "" | "  "): Line {
+  const impact = obj(x);
+  const derived = arr(impact["derived_changed"]).map((y) => {
+    const d = obj(y);
+    return t`${tableOf(d["table"])} ${count(d["rows"])} rows`;
+  });
+  return t`${pad === "" ? [] : t`  `}Impact: ${count(impact["rows_affected"])} rows to change${derived.length > 0 ? t`; derived values change in ${join(derived, t`, `)}` : []}`;
+}
+
+/**
+ * A `schema_change` item's detail (04-contract-types §4.8 `SchemaChangeDetail`; 05 §4): its
+ * draft and the version it compiles to, each change as the draft's receipt writes it, the impact
+ * as estimated when the draft was submitted, how it ended, and where the slot's document as the
+ * draft would make it is read. The detail gives no version the draft was written on: only the
+ * version it goes to.
+ */
+function schemaChangeItem(r: R, now: Date): Line[] {
+  const open = r["status"] === "open";
+  const out: Line[] = [
+    t`${idOf(r["id"])} ${codeIn(r["type"], ITEM_TYPES)} · ${itemWhere(r)}${itemReason(r)} · ${codeIn(r["status"], ITEM_STATUS)} · opened ${openFor(r["opened_at"], now)} ago (${timeOf(r["opened_at"])}) by ${actorOf(r["opened_by"])}${r["item_ver"] !== undefined ? t` · version ${idOf(r["item_ver"])}` : []}`,
+    t`  Draft ${idOf(r["draft"])} → schema v${count(r["target_sv"])}`,
+    ...changeLines(r["changes"], open, "    "),
+    schemaImpactLine(r["impact"], "  "),
+    t`  The slot as this draft would make it: saveslot_catalog with level "schema" and draft ${idOf(r["draft"])}.`,
+    ...closedLines(r),
+  ];
+  if (open)
+    out.push(
+      t`  Not in effect; the slot is unchanged. This version cannot confirm it yet: it stays pending until a newer draft replaces it.`,
+    );
+  return [...out, ...remindersOf(r, now)];
+}
+
+/**
  * A draft changing an existing slot (05 §6 `saveslot_schema_draft`, P4): first what came of it,
  * in effect or awaiting confirmation (with its item); then each change with its target, class,
  * whether writes in the earlier version are still taken and whether it loses data; then the
@@ -1718,26 +1781,7 @@ function schemaChange(r: R, now: Date, out: Line[], omitted: readonly unknown[])
       t`Awaiting confirmation · ${head} · item ${idOf(item["id"])} (version ${idOf(item["item_ver"])})`,
     );
   }
-  for (const x of arr(r["changes"])) {
-    const c = obj(x);
-    const old =
-      c["compatible_with_old_writes"] === true
-        ? t`writes in the earlier version still taken`
-        : t`writes in the earlier version refused`;
-    const loses = c["destructive"] === true ? t`loses data` : t`loses no data`;
-    const waits = !applied && c["auto"] !== true ? t` · waits for confirmation` : [];
-    out.push(
-      t`  ${changeTarget(c["target"])}: ${codeIn(c["change"], CHANGE_CODES)} (${codeIn(c["class"], CLASSES)}) · ${old} · ${loses}${waits}`,
-    );
-  }
-  const impact = obj(r["impact"]);
-  const derived = arr(impact["derived_changed"]).map((x) => {
-    const d = obj(x);
-    return t`${tableOf(d["table"])} ${count(d["rows"])} rows`;
-  });
-  out.push(
-    t`Impact: ${count(impact["rows_affected"])} rows to change${derived.length > 0 ? t`; derived values change in ${join(derived, t`, `)}` : []}`,
-  );
+  out.push(...changeLines(r["changes"], !applied, "  "), schemaImpactLine(r["impact"], ""));
   if (applied) {
     out.push(
       t`Its whole schema now: saveslot_catalog with level "schema". Write with sv ${count(r["sv"])}.`,

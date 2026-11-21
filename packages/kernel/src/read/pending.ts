@@ -6,13 +6,16 @@
 // - The detail (`id`): the item's contents from its latest entries (../pending/detail.ts), its
 //   version, the decisions open to it, and how it closed. Reading an open item's detail counts as
 //   reading its version (04-contract §2 «什么算读到 item_ver»); a closed one's is given, not counted.
-// In this version the detail is of `conflict` and `awaiting_confirmation` items; `flagged` (P2) and
-// `schema_change` (P4) items are not opened yet, so their detail is not implemented; `deletion`
-// items and migration jobs come later.
+// In this version the detail is of `conflict`, `awaiting_confirmation` and `schema_change` items;
+// `flagged` (P2) items are not opened yet, so their detail is not implemented; `deletion` items and
+// migration jobs come later. A `schema_change` item offers no decision yet: `resolve` does not
+// take one on it in this version.
 
 import type {
   CompiledBaseTable,
+  CompiledSchema,
   DateStr,
+  DraftId,
   EntityId,
   EventDecision,
   EventItemType,
@@ -22,6 +25,7 @@ import type {
   ItemId,
   PrincipalId,
   RowId,
+  SchemaChangeRecord,
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry, ReadId } from "../audit/index.ts";
@@ -40,6 +44,7 @@ import {
   targetOut,
 } from "../pending/index.ts";
 import { fold, get, has, isObj, keysOf } from "../request/index.ts";
+import { changesByName } from "../schema/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { type ValueOut, valueOut, valuesOut } from "../time/index.ts";
 import { taskOf } from "./history.ts";
@@ -47,7 +52,7 @@ import { type Piece, piecesOver, rowCellsAsOf, rowOf } from "./item-state.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 import type { KeySpec } from "./rows.ts";
 import { logPosition, restoreCount } from "./select.ts";
-import { type Visibility, type VisibleSlot, visibleSlots } from "./slots.ts";
+import { type Visibility, type VisibleSlot, visibleSlots, wholeSlot } from "./slots.ts";
 import { actors } from "./timeline.ts";
 import { type Actor, invalid, notImplemented, ReadError } from "./types.ts";
 
@@ -101,13 +106,17 @@ export const ITEMS = `SELECT p.id, p.type, p.slot_id, p.target_table, p.target_r
   JOIN events e ON e.seq = c.seq AND e.type = 'item.created'
   JOIN events h ON h.seq = e.op`;
 
-/** Where an item is, if it is within the visible range. */
+/**
+ * Where an item is, if it is within the visible range. A `schema_change` item is about the slot's
+ * schema as a whole: within the range only with every table of the slot in it.
+ */
 export function placeOf(
   x: ItemRow,
   slots: readonly VisibleSlot[],
 ): { slot: VisibleSlot; table: VisibleSlot["tables"][number] | undefined } | undefined {
   const slot = slots.find((s) => s.slot === x.slot_id);
   if (slot === undefined) return undefined;
+  if (x.type === "schema_change" && !wholeSlot(slot)) return undefined;
   if (x.target_table === null) return { slot, table: undefined };
   const table = slot.tables.find((t) => t.id === x.target_table);
   return table === undefined ? undefined : { slot, table };
@@ -319,7 +328,7 @@ async function detailOf(
   // Out of the visible range is as not there.
   if (x === undefined || place === undefined)
     throw new ReadError("not_found", "no such item", { reason: "item", param: "id" });
-  if (x.type !== "conflict" && x.type !== "awaiting_confirmation")
+  if (x.type !== "conflict" && x.type !== "awaiting_confirmation" && x.type !== "schema_change")
     throw notImplemented("id", `the detail of a ${x.type} item`);
   const e = (await itemEntries(tx, [x.id])).get(x.id) as ItemEntries;
   const closed = await closingOf(tx, x.id);
@@ -338,20 +347,23 @@ async function detailOf(
     opened_by: n.actor(x.opened_by),
     decisions: open ? [...(DECISIONS[x.type] ?? [])] : [],
     ...closed.out(n.actor),
-    target: { ...targetRef(x, place, n), ...targetOut(e, n) },
   };
   const result =
-    x.type === "conflict"
-      ? {
-          ...common,
-          type: "conflict" as const,
-          ...(await conflictOf(tx, e, n, place.table, versionOp)),
-        }
-      : {
-          ...common,
-          type: "awaiting_confirmation" as const,
-          ...(await awaitingOf(tx, e, n, place.table, versionOp)),
-        };
+    x.type === "schema_change"
+      ? { ...common, type: "schema_change" as const, ...(await schemaChangeOf(tx, x.id)) }
+      : x.type === "conflict"
+        ? {
+            ...common,
+            target: { ...targetRef(x, place, n), ...targetOut(e, n) },
+            type: "conflict" as const,
+            ...(await conflictOf(tx, e, n, place.table, versionOp)),
+          }
+        : {
+            ...common,
+            target: { ...targetRef(x, place, n), ...targetOut(e, n) },
+            type: "awaiting_confirmation" as const,
+            ...(await awaitingOf(tx, e, n, place.table, versionOp)),
+          };
   const entry: ReadEntry = {
     ...base,
     pos: latest as never,
@@ -512,6 +524,50 @@ async function awaitingOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versio
     },
     current: currentOf(n, await sideOf(tx, e, n, table, versionOp)),
     impact: impactOut(e, n, e.impact),
+  };
+}
+
+/**
+ * A `schema_change` item's contents (04-contract-types §4.8 `SchemaChangeDetail`): its draft, the
+ * version the draft compiles to, the changes by names, and the impact as estimated when the draft
+ * was submitted. Usage is not computed in this version: no `consumers` (as the receipt). No
+ * `migration`: nothing is migrated in this version.
+ */
+async function schemaChangeOf(tx: ReadTx, item: string) {
+  // The item's draft, as its item.created names it; the draft's compiled definition and changes,
+  // and the version it was written on, from the operation that submitted it (09 §4.5).
+  const r = await tx.query<{ type: string; path: string; body: string | null }>(
+    `SELECT e.type, c.path, c.body FROM events i
+     JOIN content t ON t.seq = i.seq AND t.path = 'target'
+     JOIN events e ON e.op = i.op AND e.type IN ('schema.draft_submitted', 'schema.compiled')
+     JOIN content c ON c.seq = e.seq AND c.path IN ('target', 'compiled', 'changes')
+     WHERE i.type = 'item.created' AND (t.body::jsonb ->> 'item') = $1`,
+    [item],
+  );
+  const block = (type: string, path: string) => {
+    const x = r.rows.find((y) => y.type === type && y.path === path);
+    return x?.body == null ? undefined : JSON.parse(x.body);
+  };
+  const submitted = block("schema.draft_submitted", "target") as
+    | { draft_id: DraftId; base_version: number }
+    | undefined;
+  const compiled = block("schema.compiled", "compiled") as CompiledSchema | undefined;
+  const changes = block("schema.compiled", "changes") as SchemaChangeRecord[] | undefined;
+  if (submitted === undefined || compiled === undefined || changes === undefined)
+    throw new ReadError("internal", `the draft of item ${item} is not in the log as written`);
+  const before = await tx.query<{ body: string | null }>(
+    `SELECT c.body FROM schema_versions v JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
+     WHERE v.slot_id = $1 AND v.sv = $2`,
+    [compiled.slot, submitted.base_version],
+  );
+  const base = before.rows[0]?.body;
+  if (base == null)
+    throw new ReadError("internal", `no version ${submitted.base_version} of ${compiled.slot}`);
+  return {
+    draft: submitted.draft_id,
+    target_sv: compiled.sv,
+    changes: changesByName(changes, compiled, JSON.parse(base) as CompiledSchema),
+    impact: { rows_affected: 0, derived_changed: [] as never[] },
   };
 }
 

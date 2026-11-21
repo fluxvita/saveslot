@@ -413,8 +413,8 @@ interface CatalogParams extends CommonParams {
   /** list（默认）：slot 与表的清单。table：某几张表的字段与概况。schema：某个 slot 的完整 schema 文档。 */
   level?: "list" | "table" | "schema";
   slot?: SlotName;               // list：只看这个 slot。schema：必填
-  /** 只对 schema：读这份草稿编译后的文档（ID 已回填），不读当前版本。草稿是什么状态都可以读；照常记读取记录。
-   *  草稿不存在或不可见报 not_found（draft）。 */
+  /** 只对 schema：读切换到这份草稿之后整个 slot 的文档（ID 已回填，base_version 是当前版本），不读当前版本。草稿是什么状态都可以读；照常记读取记录。
+   *  草稿不存在、不属于 slot 或不可见报 not_found（draft）；slot 的表不全在可见范围内时它的草稿不可见。 */
   draft?: DraftId;
   tables?: TableName[];          // table：必填，1–10 张
   limit?: number;                // 只对 list：默认 50，上限 200（按表计）
@@ -484,7 +484,7 @@ interface CatalogSchema extends CommonResult {
   slot: SlotName;
   sv: Sv;                        // 带 draft 时是这份草稿确认后会成为的版本，否则是当前版本
   draft?: DraftId;               // 带 draft 参数时原样回显
-  document: SchemaDocument;      // ID 与 base_version 已填好，改完可直接交给 schema_draft。带 draft 参数时是那份草稿编译后的文档
+  document: SchemaDocument;      // ID 与 base_version 已填好，改完可直接交给 schema_draft。带 draft 参数时是切换到那份草稿之后整个 slot 的文档
   policy: SlotPolicy;            // 只读，8.2。总是当前生效的策略：草稿不改策略
 }
 

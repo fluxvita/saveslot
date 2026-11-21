@@ -1,5 +1,5 @@
 // What both paths of `schema_draft` share (docs/zh-CN/spec/04-contract.md §10 `schema_draft`):
-// its error, the change record by names, the parameters, the request key, the tenant's numbering.
+// its error, the change record by names (../schema/changes-by-name.ts), the parameters, the request key, the tenant's numbering.
 
 import { createHash } from "node:crypto";
 import type {
@@ -8,7 +8,6 @@ import type {
   KernelErrorCode,
   KernelErrorDetail,
   KernelErrorReason,
-  SchemaChangeRecord,
 } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
 import { randomCrockford } from "./ids.ts";
@@ -25,12 +24,7 @@ export class SchemaDraftError<C extends KernelErrorCode = KernelErrorCode> exten
   }
 }
 
-/** 04-contract-types §5.3 `SchemaChange`: the logged change record, its target by names. */
-export interface SchemaChange extends Omit<SchemaChangeRecord, "target"> {
-  readonly target:
-    | { readonly slot: true }
-    | { readonly table: string; readonly field?: string; readonly rule?: true };
-}
+export type { SchemaChange } from "../schema/index.ts";
 
 export const PARAM_KEYS = new Set(["document", "task", "idempotency_key"]);
 const MAX_TAG_CHARS = 256;

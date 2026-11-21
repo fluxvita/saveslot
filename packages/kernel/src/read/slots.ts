@@ -27,6 +27,12 @@ export interface VisibleSlot {
   readonly tables: readonly CompiledTable[];
 }
 
+/**
+ * Whether every table of the slot is in the visible range. A slot's schema as a whole (its
+ * `schema_change` items, its drafts) is seen only so; otherwise it is as not there.
+ */
+export const wholeSlot = (s: VisibleSlot): boolean => s.tables.length === s.compiled.tables.length;
+
 /** The slots with a current definition that the caller can see, with their visible tables. */
 export async function visibleSlots(tx: ReadTx, visibility: Visibility): Promise<VisibleSlot[]> {
   const r = await tx.query<{

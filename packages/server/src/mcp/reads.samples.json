@@ -1688,5 +1688,94 @@
         }
       ]
     }
+  },
+  "pending-schema-change-open": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_JN2N3HV0YD29R6ZB",
+      "item_ver": "iv_JN2N3HV0YD29R6ZB.10.0",
+      "status": "open",
+      "slot": "diet",
+      "reason": "schema_change",
+      "opened_at": "2026-11-18T12:04:00.000Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_11111111111111111111111111",
+        "name": "u_11111111111111111111111111"
+      },
+      "decisions": [],
+      "type": "schema_change",
+      "draft": "d_5JWJSYG6A20FMQ07",
+      "target_sv": 3,
+      "changes": [
+        {
+          "auto": false,
+          "change": "rename_field",
+          "class": "metadata",
+          "compatible_with_old_writes": true,
+          "destructive": false,
+          "target": {
+            "table": "meals",
+            "field": "dish"
+          }
+        }
+      ],
+      "impact": {
+        "rows_affected": 0,
+        "derived_changed": []
+      }
+    }
+  },
+  "pending-schema-change-superseded": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_PYY41QJMHG2N3515",
+      "item_ver": "iv_PYY41QJMHG2N3515.10.0",
+      "status": "superseded",
+      "slot": "diet",
+      "reason": "schema_change",
+      "opened_at": "2026-11-18T12:03:00.000Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_11111111111111111111111111",
+        "name": "u_11111111111111111111111111"
+      },
+      "decisions": [],
+      "superseded": {
+        "reason": "draft_replaced",
+        "by": 10,
+        "at": "2026-11-18T12:04:00.000Z"
+      },
+      "type": "schema_change",
+      "draft": "d_KKRMH33TMW2VZS84",
+      "target_sv": 2,
+      "changes": [
+        {
+          "auto": true,
+          "change": "change_description",
+          "class": "metadata",
+          "compatible_with_old_writes": true,
+          "destructive": false,
+          "target": {
+            "table": "meals"
+          }
+        },
+        {
+          "auto": false,
+          "change": "rename_field",
+          "class": "metadata",
+          "compatible_with_old_writes": true,
+          "destructive": false,
+          "target": {
+            "table": "meals",
+            "field": "food"
+          }
+        }
+      ],
+      "impact": {
+        "rows_affected": 0,
+        "derived_changed": []
+      }
+    }
   }
 }
