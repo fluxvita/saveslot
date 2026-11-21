@@ -110,7 +110,7 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
 | `partially_deleted` | `部分数据已删除` |
 | `pending_deletion` | `有一项可撤回的删除（pi_…）` |
 | `dangling_ref` | 按 `state`：`revoked` → `⚠ payee 指向的记录已撤销`；`deleted` → `⚠ payee 指向的记录已删除` |
-| `premise_changed` | `⚠ 前提已变：constraints r_01JF… 的 date（声明时所见 v40.0）在 #60 被变更；涉及本行 title、due、status`。"在 #n 被……"按 `reason`：`correct` → 被纠正；`update` → 被变更；`revoke` → 被撤销；`retroactive` → 被追溯修改（变的是 <区间> 的值；按这段业务时间读才看得到）；`plan_changed` → 改了之后的安排（<起点> 起；按这段业务时间读才看得到）；`deleted` → 被删除；`schema_switched` 整句换成"…的 date 在 #n 的 schema 切换里被删除（依据的字段已不在当前版本）"。声明没列字段时写"整行"。一行有多条时逐条一行，超过 10 条写总数 |
+| `premise_changed` | `⚠ 前提已变：constraints r_01JF… 的 date（声明时所见 v40.0）在 #60 被变更；涉及本行 title、due、status`。"在 #n 被……"按 `reason`：`correct` → 被纠正；`update` → 被变更；`revoke` → 被撤销；`retroactive` → 被追溯修改（变的是 <区间> 的值；按这段业务时间读才看得到）；`plan_changed` → 改了之后的安排（<起点> 起；按这段业务时间读才看得到）；`deleted` → 被删除；`schema_switched` 整句换成"…的 date 在 #n 的 schema 切换里被删除（依据的字段已不在当前版本）"。声明没列字段时写"整行"。前提目标所在的表对读方不可见（`hidden: true`）时只写本行自己的部分，仍是完整的一句：`⚠ 前提已变：本行所依据的一条记录（在你看不到的表里）在 #60 被改动；涉及本行 title、due`，目标、字段、所见版本与原因都不写。一行有多条时逐条一行，超过 10 条写总数 |
 | 派生行的 `input_marks` | `⚠ 本值的输入里有 1 行已标记（pi_…）/ 1 行有争议 / 2 行的前提已变` |
 | 派生行的 `computed_at_read` | `按读取时刻算出，不带 ver` |
 | `truncated` | `显示 20 / 847 行；下一页 cursor=…；或缩小条件（如加日期范围）` |

@@ -95,6 +95,17 @@ describe("every mark of the contract has a text (05 §4.2)", () => {
     );
   });
 
+  it("a premise whose target cannot be seen: one whole sentence, what is of this row only", () => {
+    const out = text({
+      ...ROW,
+      marks: { premise_changed: [{ hidden: true, since: 12, fields: ["note"] }] },
+    });
+    expect(out).toContain(
+      "  ! premise changed: a record this row rests on, in a table you cannot see, changed in #12; covers this row's note",
+    );
+    expect(out).not.toContain("undefined");
+  });
+
   it("a disputed row says how to look at its item, as a CLI command", () => {
     expect(text({ ...ROW, marks: { disputed: MARK.disputed } })).toContain(
       `saveslot pending show ${item}`,

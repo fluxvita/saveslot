@@ -294,12 +294,23 @@ function marksOf(m: unknown): { inline: Part[][]; below: Line[] } {
   const below: Line[] = [];
   for (const p of arr(k["premise_changed"])) {
     const x = obj(p);
+    const covers = arr(x["fields"]);
+    const coverage =
+      covers.length > 0
+        ? t`covers this row's ${join(covers.map(fieldOf), t`, `)}`
+        : t`covers the whole row`;
+    // Its target's table (or slot) not seen: only what is of this row, as a whole sentence.
+    if (x["hidden"] === true) {
+      below.push(
+        t`  ⚠ premise changed: a record this row rests on, in a table you cannot see, changed in ${op(x["since"])}; ${coverage}`,
+      );
+      continue;
+    }
     const fields = arr(x["premise_fields"]);
     const what = fields.length > 0 ? t`the ${join(fields.map(fieldOf), t`, `)} of ` : [];
     const verb = said(PREMISE_VERB, x["reason"]) ?? [untrusted(String(x["reason"]))];
-    const covers = arr(x["fields"]);
     below.push(
-      t`  ⚠ premise changed: ${what}${targetOf(x["premise"])} (seen ${idOf(x["seen"])}) was ${verb} in ${op(x["since"])}${covers.length > 0 ? t`; covers this row's ${join(covers.map(fieldOf), t`, `)}` : t`; covers the whole row`}`,
+      t`  ⚠ premise changed: ${what}${targetOf(x["premise"])} (seen ${idOf(x["seen"])}) was ${verb} in ${op(x["since"])}; ${coverage}`,
     );
   }
   const total = int(k["premise_changed_total"]);

@@ -955,6 +955,67 @@
       ]
     }
   },
+  "query-premise-hidden": {
+    "tool": "saveslot_query",
+    "result": {
+      "table": "plan.expenses",
+      "slot": "plan",
+      "sv": 1,
+      "total": 2,
+      "rows": [
+        {
+          "table": "plan.expenses",
+          "row": "r_J89SBNGMPVP0Z6Y2SXM2PCWB9F",
+          "ver": "v70.0",
+          "values": {
+            "date": "2026-11-12",
+            "amount": null,
+            "currency_note": null,
+            "kind": "transport",
+            "note": "walk"
+          },
+          "marks": {
+            "premise_changed": [
+              {
+                "premise": { "table": "plan.budgets", "entity": "e_NT7QT9B5XKHA7AD3G773X02TQW" },
+                "premise_fields": ["amount"],
+                "seen": "v14.0",
+                "reason": "update",
+                "since": 72,
+                "fields": ["note"],
+                "declared": {
+                  "seq": 70,
+                  "actor": {
+                    "kind": "user",
+                    "id": "u_JPQHSW2PRE0GJ5BNF3VN3XY90W",
+                    "name": "u_JPQHSW2PRE0GJ5BNF3VN3XY90W"
+                  }
+                }
+              },
+              { "hidden": true, "since": 73, "fields": ["kind", "note"] }
+            ]
+          }
+        },
+        {
+          "table": "plan.expenses",
+          "row": "r_FW103YV2NYWERJMC947XWH3NWH",
+          "ver": "v74.0",
+          "values": {
+            "date": "2026-11-10",
+            "amount": null,
+            "currency_note": null,
+            "kind": "food",
+            "note": "supper"
+          },
+          "changed_by": {
+            "kind": "connection",
+            "id": "ci_01JCVZ8Q3M2N4P5R6S7T8V9W0X",
+            "name": "MacBook · Codex"
+          }
+        }
+      ]
+    }
+  },
   "catalog-list": {
     "tool": "saveslot_catalog",
     "result": {

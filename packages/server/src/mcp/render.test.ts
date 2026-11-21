@@ -144,6 +144,7 @@ const TAKEN: Record<string, Sample> = (() => {
       "write-clock-behind",
     ].map((k) => pick(receipts, k)),
     pick(reads, "query-notices"),
+    pick(reads, "query-premise-hidden"),
     pick(reads, "history-changes-event"),
     pick(reads, "history-changes-state"),
     pick(reads, "sql"),
