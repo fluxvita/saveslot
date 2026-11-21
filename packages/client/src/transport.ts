@@ -1,5 +1,6 @@
-// HTTP to the local saveslot service over its unix socket (docs/zh-CN/spec/06-cli.md §2 «CLI 怎么连
-// saveslot»; 05-surfaces.md §13–§15). One request, one JSON answer:
+// HTTP to the local saveslot service over its unix socket, or to a saveslot server at its external
+// address (docs/zh-CN/spec/06-cli.md §2 «CLI 怎么连 saveslot», «用户会话凭证»; 05-surfaces.md
+// §13–§15). One request, one JSON answer:
 // - 2xx: the operation's result;
 // - a contract error body `{"error": {"code", "message", ...}}`: thrown as a ContractCallError;
 // - the service not reachable (no socket, nobody listening), the connection cut, no whole answer
@@ -9,10 +10,13 @@
 // Every error comes out of the returned promise, none is thrown synchronously.
 // The socket path is the caller's (from the configuration), never taken from the environment
 // (06 §8.1), and must be absolute: node:http takes an empty or absent one as no socket at all and
-// would send the token over TCP to localhost. The token goes in `Authorization` and nowhere else;
-// it is in no error message.
+// would send the token over TCP to localhost. A server is an origin and nothing more: `https:`, or
+// `http:` on a loopback address only, so that a token never crosses a network in the clear. No
+// redirect is followed: a 3xx is no contract answer. The token goes in `Authorization` and nowhere
+// else; it is in no error message.
 
-import { request as httpRequest, type IncomingMessage } from "node:http";
+import { type ClientRequest, request as httpRequest, type IncomingMessage } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { isAbsolute } from "node:path";
 
 /** Parameters a call cannot put on the wire: refused before anything is sent. */
@@ -59,8 +63,16 @@ export class TransportError extends Error {
   }
 }
 
-export interface RequestOptions {
-  readonly socketPath: string;
+/** Where a request goes: the local service's socket, or a server's origin; one of the two. */
+export type Destination =
+  | { readonly socketPath: string; readonly server?: undefined }
+  | {
+      /** An origin: `https://host[:port]`, or `http://` on a loopback address (tests, a tunnel). */
+      readonly server: string;
+      readonly socketPath?: undefined;
+    };
+
+export type RequestOptions = Destination & {
   readonly method: "GET" | "POST" | "PATCH" | "DELETE";
   /** The path, already percent-encoded where it carries IDs or names. */
   readonly path: string;
@@ -78,12 +90,53 @@ export interface RequestOptions {
    * (default 60 s). A total limit: an answer that keeps trickling in does not extend it.
    */
   readonly timeoutMs?: number;
-}
+};
 
 /** Answers past this many bytes are not read (the contract's results stay far below it). */
 export const MAX_ANSWER_BYTES = 64 * 1024 * 1024;
 
 const UNREACHABLE = new Set(["ENOENT", "ECONNREFUSED", "ENOTSOCK", "EACCES"]);
+/** A server's address not found or not answering: nobody to ask, as an absent socket. */
+const UNREACHABLE_SERVER = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+]);
+const LOOPBACK = new Set(["127.0.0.1", "[::1]", "localhost"]);
+
+/**
+ * A server's origin as a URL, or a usage error: `https:`, or `http:` on a loopback address; no
+ * user, path, query or fragment (`https://host/` is the origin as URL writes it).
+ */
+export function serverOrigin(server: unknown): URL {
+  let u: URL;
+  try {
+    if (typeof server !== "string") throw new TypeError();
+    u = new URL(server);
+  } catch {
+    throw new ClientUsageError("the server address is not a URL");
+  }
+  const secure = u.protocol === "https:";
+  if (!secure && !(u.protocol === "http:" && LOOPBACK.has(u.hostname))) {
+    throw new ClientUsageError(
+      "the server address must be https (http only on a loopback address)",
+    );
+  }
+  if (
+    u.username !== "" ||
+    u.password !== "" ||
+    u.pathname !== "/" ||
+    u.search !== "" ||
+    u.hash !== ""
+  ) {
+    throw new ClientUsageError(
+      "the server address must be an origin: no user, path, query or fragment",
+    );
+  }
+  return u;
+}
 
 /** The longest time limit a timer can hold (setTimeout fires at once past it). */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
@@ -140,8 +193,14 @@ function prepare(o: RequestOptions): {
   body: Buffer | undefined;
   path: string;
   timeoutMs: number;
+  server: URL | undefined;
 } {
-  if (typeof o.socketPath !== "string" || !isAbsolute(o.socketPath)) {
+  let server: URL | undefined;
+  if (o.server !== undefined) {
+    if (o.socketPath !== undefined)
+      throw new ClientUsageError("a socket path or a server, not both");
+    server = serverOrigin(o.server);
+  } else if (typeof o.socketPath !== "string" || !isAbsolute(o.socketPath)) {
     throw new ClientUsageError("the socket path must be an absolute path");
   }
   const timeoutMs = o.timeoutMs ?? 60_000;
@@ -171,12 +230,58 @@ function prepare(o: RequestOptions): {
     headers["content-type"] = "application/json";
     headers["content-length"] = String(body.length);
   }
-  return { headers, body, path: target(o.path, o.query), timeoutMs };
+  return { headers, body, path: target(o.path, o.query), timeoutMs, server };
+}
+
+/** Opens the request: over the socket, or to the server's origin (https, or loopback http). */
+function open(
+  o: RequestOptions,
+  server: URL | undefined,
+  path: string,
+  headers: Record<string, string>,
+  onAnswer: (res: IncomingMessage) => void,
+): ClientRequest {
+  if (server === undefined) {
+    return httpRequest({ socketPath: o.socketPath, method: o.method, path, headers }, onAnswer);
+  }
+  return (server.protocol === "https:" ? httpsRequest : httpRequest)(
+    {
+      protocol: server.protocol,
+      // URL keeps the brackets of an IPv6 address; the request takes it without them.
+      hostname: server.hostname.replace(/^\[(.*)\]$/, "$1"),
+      port: server.port === "" ? undefined : Number(server.port),
+      method: o.method,
+      path,
+      headers,
+    },
+    onAnswer,
+  );
+}
+
+/** No answer in time; the socket's words as they were, the server's of its own. */
+const late = (server: URL | undefined) =>
+  new TransportError(
+    "broken",
+    server === undefined
+      ? "the service did not answer in time"
+      : "the saveslot server did not answer in time",
+  );
+
+/** The request failed before an answer: nobody to ask, or the connection failed. */
+function failed(server: URL | undefined, e: NodeJS.ErrnoException): TransportError {
+  if (server === undefined) {
+    return e.code !== undefined && UNREACHABLE.has(e.code)
+      ? new TransportError("unreachable", "the saveslot service is not running or not reachable")
+      : new TransportError("broken", "the connection to the saveslot service failed");
+  }
+  return e.code !== undefined && UNREACHABLE_SERVER.has(e.code)
+    ? new TransportError("unreachable", "the saveslot server is not reachable")
+    : new TransportError("broken", "the connection to the saveslot server failed");
 }
 
 /** Sends one request; resolves with the result of a 2xx answer. */
 export async function request(o: RequestOptions): Promise<unknown> {
-  const { headers, body, path, timeoutMs } = prepare(o);
+  const { headers, body, path, timeoutMs, server } = prepare(o);
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = () => {
@@ -188,77 +293,66 @@ export async function request(o: RequestOptions): Promise<unknown> {
       settle();
       reject(e);
     };
-    const req = httpRequest(
-      { socketPath: o.socketPath, method: o.method, path, headers },
-      (res) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        res.on("data", (c: Buffer) => {
-          size += c.length;
-          if (size > MAX_ANSWER_BYTES) {
-            // Settled before destroying: destroying emits the events of a cut-off answer.
-            fail(new TransportError("bad_answer", "the answer is too large", res.statusCode));
-            res.destroy();
-            return;
-          }
-          chunks.push(c);
-        });
-        res.on("error", () => fail(new TransportError("broken", "the answer was cut off")));
-        res.on("aborted", () => fail(new TransportError("broken", "the answer was cut off")));
-        res.on("end", () => {
-          if (settled) return;
-          const status = res.statusCode ?? 0;
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-          } catch {
-            fail(
-              new TransportError("bad_answer", `an answer that is not JSON (${status})`, status),
-            );
-            return;
-          }
-          if (status >= 200 && status < 300) {
-            settle();
-            resolve(parsed);
-            return;
-          }
-          const error =
-            parsed !== null && typeof parsed === "object" && Object.hasOwn(parsed, "error")
-              ? (parsed as { error: unknown }).error
-              : undefined;
-          if (
-            error !== null &&
-            typeof error === "object" &&
-            !Array.isArray(error) &&
-            Object.hasOwn(error, "code") &&
-            typeof (error as Record<string, unknown>)["code"] === "string"
-          ) {
-            fail(new ContractCallError(status, error as Record<string, unknown>));
-          } else {
-            fail(
-              new TransportError(
-                "bad_answer",
-                `an error answer without an error (${status})`,
-                status,
-              ),
-            );
-          }
-        });
-      },
-    );
+    const onAnswer = (res: IncomingMessage) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on("data", (c: Buffer) => {
+        size += c.length;
+        if (size > MAX_ANSWER_BYTES) {
+          // Settled before destroying: destroying emits the events of a cut-off answer.
+          fail(new TransportError("bad_answer", "the answer is too large", res.statusCode));
+          res.destroy();
+          return;
+        }
+        chunks.push(c);
+      });
+      res.on("error", () => fail(new TransportError("broken", "the answer was cut off")));
+      res.on("aborted", () => fail(new TransportError("broken", "the answer was cut off")));
+      res.on("end", () => {
+        if (settled) return;
+        const status = res.statusCode ?? 0;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        } catch {
+          fail(new TransportError("bad_answer", `an answer that is not JSON (${status})`, status));
+          return;
+        }
+        if (status >= 200 && status < 300) {
+          settle();
+          resolve(parsed);
+          return;
+        }
+        const error =
+          parsed !== null && typeof parsed === "object" && Object.hasOwn(parsed, "error")
+            ? (parsed as { error: unknown }).error
+            : undefined;
+        if (
+          error !== null &&
+          typeof error === "object" &&
+          !Array.isArray(error) &&
+          Object.hasOwn(error, "code") &&
+          typeof (error as Record<string, unknown>)["code"] === "string"
+        ) {
+          fail(new ContractCallError(status, error as Record<string, unknown>));
+        } else {
+          fail(
+            new TransportError(
+              "bad_answer",
+              `an error answer without an error (${status})`,
+              status,
+            ),
+          );
+        }
+      });
+    };
+    const req = open(o, server, path, headers, onAnswer);
     const timer = setTimeout(() => {
-      fail(new TransportError("broken", "the service did not answer in time"));
+      fail(late(server));
       req.destroy();
     }, timeoutMs);
     req.on("error", (e: NodeJS.ErrnoException) => {
-      fail(
-        e.code !== undefined && UNREACHABLE.has(e.code)
-          ? new TransportError(
-              "unreachable",
-              "the saveslot service is not running or not reachable",
-            )
-          : new TransportError("broken", "the connection to the saveslot service failed"),
-      );
+      fail(failed(server, e));
     });
     if (body !== undefined) req.write(body);
     req.end();
@@ -273,7 +367,7 @@ export async function request(o: RequestOptions): Promise<unknown> {
  * it as it comes.
  */
 export async function requestStream(o: RequestOptions): Promise<IncomingMessage> {
-  const { headers, body, path, timeoutMs } = prepare(o);
+  const { headers, body, path, timeoutMs, server } = prepare(o);
   return new Promise((resolve, reject) => {
     let settled = false;
     const fail = (e: Error) => {
@@ -282,79 +376,65 @@ export async function requestStream(o: RequestOptions): Promise<IncomingMessage>
       clearTimeout(timer);
       reject(e);
     };
-    const req = httpRequest(
-      { socketPath: o.socketPath, method: o.method, path, headers },
-      (res) => {
-        const status = res.statusCode ?? 0;
-        if (status >= 200 && status < 300) {
-          if (settled) {
-            res.destroy();
-            return;
-          }
-          settled = true;
-          clearTimeout(timer);
-          resolve(res);
+    const req = open(o, server, path, headers, (res) => {
+      const status = res.statusCode ?? 0;
+      if (status >= 200 && status < 300) {
+        if (settled) {
+          res.destroy();
           return;
         }
-        const chunks: Buffer[] = [];
-        let size = 0;
-        res.on("data", (c: Buffer) => {
-          size += c.length;
-          if (size > MAX_ANSWER_BYTES) {
-            fail(new TransportError("bad_answer", "the answer is too large", status));
-            res.destroy();
-            return;
-          }
-          chunks.push(c);
-        });
-        res.on("error", () => fail(new TransportError("broken", "the answer was cut off")));
-        res.on("end", () => {
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-          } catch {
-            fail(
-              new TransportError("bad_answer", `an answer that is not JSON (${status})`, status),
-            );
-            return;
-          }
-          const error =
-            parsed !== null && typeof parsed === "object" && Object.hasOwn(parsed, "error")
-              ? (parsed as { error: unknown }).error
-              : undefined;
-          if (
-            error !== null &&
-            typeof error === "object" &&
-            !Array.isArray(error) &&
-            typeof (error as Record<string, unknown>)["code"] === "string"
-          ) {
-            fail(new ContractCallError(status, error as Record<string, unknown>));
-          } else {
-            fail(
-              new TransportError(
-                "bad_answer",
-                `an error answer without an error (${status})`,
-                status,
-              ),
-            );
-          }
-        });
-      },
-    );
+        settled = true;
+        clearTimeout(timer);
+        resolve(res);
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on("data", (c: Buffer) => {
+        size += c.length;
+        if (size > MAX_ANSWER_BYTES) {
+          fail(new TransportError("bad_answer", "the answer is too large", status));
+          res.destroy();
+          return;
+        }
+        chunks.push(c);
+      });
+      res.on("error", () => fail(new TransportError("broken", "the answer was cut off")));
+      res.on("end", () => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        } catch {
+          fail(new TransportError("bad_answer", `an answer that is not JSON (${status})`, status));
+          return;
+        }
+        const error =
+          parsed !== null && typeof parsed === "object" && Object.hasOwn(parsed, "error")
+            ? (parsed as { error: unknown }).error
+            : undefined;
+        if (
+          error !== null &&
+          typeof error === "object" &&
+          !Array.isArray(error) &&
+          typeof (error as Record<string, unknown>)["code"] === "string"
+        ) {
+          fail(new ContractCallError(status, error as Record<string, unknown>));
+        } else {
+          fail(
+            new TransportError(
+              "bad_answer",
+              `an error answer without an error (${status})`,
+              status,
+            ),
+          );
+        }
+      });
+    });
     const timer = setTimeout(() => {
-      fail(new TransportError("broken", "the service did not answer in time"));
+      fail(late(server));
       req.destroy();
     }, timeoutMs);
-    req.on("error", (e: NodeJS.ErrnoException) => {
-      fail(
-        e.code !== undefined && UNREACHABLE.has(e.code)
-          ? new TransportError(
-              "unreachable",
-              "the saveslot service is not running or not reachable",
-            )
-          : new TransportError("broken", "the connection to the saveslot service failed"),
-      );
-    });
+    req.on("error", (e: NodeJS.ErrnoException) => fail(failed(server, e)));
     if (body !== undefined) req.write(body);
     req.end();
   });

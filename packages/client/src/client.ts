@@ -64,6 +64,7 @@ import type {
 } from "@fluxvita/saveslot-contract";
 import {
   ClientUsageError,
+  type Destination,
   encode,
   type RequestOptions,
   request,
@@ -71,14 +72,16 @@ import {
   TransportError,
 } from "./transport.ts";
 
-export interface ClientOptions {
-  /** The service's socket, from the configuration (06-cli §8.1). */
-  readonly socketPath: string;
+/**
+ * Where the client sends its calls: the local service's socket, from the configuration (06-cli
+ * §8.1), or a server profile's origin (06-cli §2); and with which token.
+ */
+export type ClientOptions = Destination & {
   /** The credential's token (./credentials.ts). */
   readonly token: string;
   /** Milliseconds before a request is given up (default 60 s). */
   readonly timeoutMs?: number;
-}
+};
 
 type Query = Map<string, string>;
 type Obj = Record<string, unknown>;
@@ -179,7 +182,7 @@ export function createClient(o: ClientOptions): Client {
     r: Pick<RequestOptions, "method" | "path" | "query" | "body" | "task" | "idempotencyKey">,
   ) =>
     request({
-      socketPath: o.socketPath,
+      ...(o.server !== undefined ? { server: o.server } : { socketPath: o.socketPath }),
       token: o.token,
       ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
       ...r,
@@ -317,7 +320,7 @@ export function createClient(o: ClientOptions): Client {
       const { rest, task } = split(p);
       return exportStream(
         await requestStream({
-          socketPath: o.socketPath,
+          ...(o.server !== undefined ? { server: o.server } : { socketPath: o.socketPath }),
           token: o.token,
           ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
           method: "GET",
