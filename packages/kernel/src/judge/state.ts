@@ -113,8 +113,13 @@ function itemsOf(records: readonly OpRecord[]): Item[] {
       (r.kind === "write" || r.kind === "revoke") && r.validGone !== true
         ? givenEnds(raw, r.now)
         : [];
+    // An interval block not there to read (`validGone`): its writing is unknown, judged as an
+    // explicit interval (09-references «冲突判据»): no default end.
+    const gone =
+      (proposal?.kind === "write" || proposal?.kind === "revoke") && proposal.validGone === true;
     const nextChange =
       proposal !== undefined &&
+      !gone &&
       (raw === undefined || (raw !== "corrected_span" && raw.to.mode === "next_change"));
     for (const x of r.items) {
       out.push({

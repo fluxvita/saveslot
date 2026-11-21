@@ -7,17 +7,20 @@
 // Pure: the caller works out which (event, target) the deleted source data take away (from
 // `base_sources`, by position) and passes them in; nothing here reads the store.
 //
-// D1-b2a covers writes and revokes only. Every other kind of operation in the log (a
-// confirmation, a rejection, a revert, a conflict resolution, and the writes they trigger) is
-// refused with `not_implemented`, naming the kind, never judged as an ordinary write; so is an
-// operation judged after a deletion event (its conflict criterion reads that event's L).
+// Covered: writes, revokes, and people's confirmations and rejections of awaiting writes. Every
+// other kind of operation in the log (a revert, a conflict resolution, and the writes they
+// trigger, a confirmation of an awaiting undo) is refused with `not_implemented`, naming the kind,
+// never judged as an ordinary write; so is an operation judged after a deletion event (its
+// conflict criterion reads that event's L).
 
 import type { FieldId } from "@fluxvita/saveslot-contract-core";
 import { JudgeError } from "./errors.ts";
-import { ackOf, emptyState, withoutDeps } from "./judge.ts";
+import { ackOf, emptyState, judgeOp, withoutDeps } from "./judge.ts";
 import type {
+  ConfirmRecord,
   FieldInput,
   OpRecord,
+  RejectRecord,
   RevokeInput,
   TableShape,
   Target,
@@ -41,6 +44,54 @@ function protectedTargets(r: WriteRecord): Set<Target> {
   const byTarget = new Map<Target, string[]>();
   for (const x of r.items) byTarget.set(x.target, [...(byTarget.get(x.target) ?? []), x.status]);
   return new Set([...byTarget].filter(([, statuses]) => statuses.every(effective)).map(([t]) => t));
+}
+
+/**
+ * People's confirmations and rejections, by the write they decided (deviation one): the targets
+ * each decided, as recorded — a confirmation's, those it carried from the awaiting items; a
+ * rejection's, the write's targets awaiting when written (nothing else in the log closes an
+ * awaiting item before it in this version) — and whether the write was rejected.
+ */
+function decisionsOf(
+  records: readonly OpRecord[],
+): Map<number, { decided: Set<Target>; rejected: boolean }> {
+  const out = new Map<number, { decided: Set<Target>; rejected: boolean }>();
+  for (const r of records) {
+    if (r.kind !== "confirm" && r.kind !== "reject") continue;
+    const d = out.get(r.target) ?? { decided: new Set<Target>(), rejected: false };
+    if (r.kind === "reject") {
+      d.rejected = true;
+      const w = records.find((x) => x.event === r.target);
+      if (w?.kind === "write") {
+        for (const x of w.items) if (x.status === "awaiting") d.decided.add(x.target);
+      }
+    } else {
+      for (const x of r.items) {
+        for (const c of x.carried ?? []) if (c.event === r.target) d.decided.add(c.target);
+      }
+    }
+    out.set(r.target, d);
+  }
+  return out;
+}
+
+/**
+ * A confirmation or rejection executed as recorded on the replay's state: the write's items
+ * awaiting there (05-time «高影响写入»; 03-deletion «重放规则 · 冲突消失之后»: a confirmation is of
+ * the write's high impact, it puts in effect, at its own operation, whatever of the write awaits
+ * now). Nothing awaiting any more: the decision leaves nothing.
+ */
+function decide(state: RowState, r: ConfirmRecord | RejectRecord) {
+  if (!state.items.some((x) => x.event === r.target && x.status === "awaiting")) return undefined;
+  return judgeOp(state, {
+    kind: r.kind,
+    op: r.op,
+    index: r.index,
+    event: r.event,
+    ruleset: r.ruleset,
+    ...(r.policy !== undefined ? { policy: r.policy } : {}),
+    target: r.target,
+  });
 }
 
 /**
@@ -122,10 +173,15 @@ export function replayDeletion(
   let state = emptyState(table);
   const out: OpRecord[] = [];
   const firstDeletion = Math.min(Number.POSITIVE_INFINITY, ...deletionsBefore);
+  const decisions = decisionsOf(records);
   for (const r of records) {
-    if (r.kind !== "write" && r.kind !== "revoke") {
+    const undoConfirmed = r.kind === "confirm" && r.revert !== undefined;
+    if (
+      (r.kind !== "write" && r.kind !== "revoke" && r.kind !== "confirm" && r.kind !== "reject") ||
+      undoConfirmed
+    ) {
       throw new JudgeError("not_implemented", `a deletion's replay of a ${r.kind}`, {
-        kind: r.kind,
+        kind: undoConfirmed ? "confirm of an undo" : r.kind,
         op: r.op,
       });
     }
@@ -138,9 +194,22 @@ export function replayDeletion(
         },
       );
     }
+    if (r.kind === "confirm" || r.kind === "reject") {
+      const judged = decide(state, r);
+      if (judged === undefined) continue;
+      out.push(judged.judgement.record);
+      state = judged.state;
+      continue;
+    }
     const input = inputOf(r, (t) => deleted.has(contributionKey(r.event, t)));
     if (input === undefined) continue;
-    const options: ReplayOptions = { noop: new Set(r.noop), protect: protectedTargets(r) };
+    const decision = decisions.get(r.event);
+    const options: ReplayOptions = {
+      noop: new Set(r.noop),
+      protect: protectedTargets(r),
+      decided: decision?.decided ?? new Set(),
+      rejected: decision?.rejected ?? false,
+    };
     const judged =
       input.kind === "write"
         ? judgeWrite(state, input, options)

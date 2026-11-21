@@ -3,11 +3,14 @@
 // stays a no-op). The comparison with the reference evaluator is replay-deletion.prop.test.ts.
 
 import type { BizPoint, FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
+import { evaluateLog, type Op } from "@fluxvita/saveslot-reference";
+import { EVENT as EVENT_SCHEMA } from "@fluxvita/saveslot-reference/testing";
 import { describe, expect, it } from "vitest";
 import { JudgeError } from "./errors.ts";
-import { emptyState, judgeOp, view } from "./judge.ts";
+import { emptyState, judgeOp, stateFromRecord, view } from "./judge.ts";
 import type { JudgeInput, OpRecord, TableShape, WriteInput } from "./model.ts";
 import { contributionKey, replayDeletion } from "./replay-deletion.ts";
+import { judged } from "./scenarios.fixture.ts";
 import type { RowState } from "./state.ts";
 import { judgeWrite } from "./write.ts";
 
@@ -69,23 +72,31 @@ function refusal(f: () => unknown): JudgeError {
 const values = (state: RowState, f: FieldId) =>
   (view(state).fields[f] ?? []).map((s) => [s.valid[0]?.from ?? null, s.value]);
 
-describe("what this version refuses", () => {
-  // 05-time «写状态» example: 10-01 起 5000 (#10), 11-10 起 4000 (#20); #30 from 11-02 open erases
-  // the change point and awaits.
-  const awaiting = [
-    write(10, { f2: "5000" }, { seen: 0 }),
-    { ...write(20, { f2: "4000" }, { from: "11-10" }), acknowledge: true as const },
-    write(30, { f2: "3000" }, { from: "11-02" }),
-  ];
+// 05-time «写状态» example: 10-01 起 5000 (#10), 11-10 起 4000 (#20); #30 from 11-02 open erases
+// the change point and awaits.
+const awaiting = [
+  write(10, { f2: "5000" }, { seen: 0 }),
+  { ...write(20, { f2: "4000" }, { from: "11-10" }), acknowledge: true as const },
+  write(30, { f2: "3000" }, { from: "11-02" }),
+];
+const decision = (kind: "confirm" | "reject"): JudgeInput => ({
+  kind,
+  op: 40,
+  index: 0,
+  event: 41,
+  ruleset: 1,
+  target: 31,
+});
 
-  it.each(["confirm", "reject"] as const)("a %s in the log: not_implemented, naming it", (kind) => {
-    const { records } = run([
-      ...awaiting,
-      { kind, op: 40, index: 0, event: 41, ruleset: 1, target: 31 },
-    ]);
-    const e = refusal(() => replayDeletion(STATE, records, new Set()));
+describe("what this version refuses", () => {
+  it("a confirmation of an awaiting undo: not_implemented, naming it", () => {
+    const { records } = run([...awaiting, decision("confirm")]);
+    const withRevert = records.map((r) =>
+      r.kind === "confirm" ? { ...r, revert: { entries: [], before: 20, skipped: [] } } : r,
+    );
+    const e = refusal(() => replayDeletion(STATE, withRevert, new Set()));
     expect(e.reason).toBe("not_implemented");
-    expect(e.detail).toMatchObject({ kind, op: 40 });
+    expect(e.detail).toMatchObject({ kind: "confirm of an undo", op: 40 });
   });
 
   it("an undo in the log: not_implemented, naming it", () => {
@@ -126,13 +137,121 @@ describe("what this version refuses", () => {
   });
 });
 
+describe("people's confirmations and rejections, as recorded (deviation one)", () => {
+  // #20's value deleted: #30 erases no recorded change point any more.
+  const gone20 = new Set([contributionKey(21, "f2")]);
+
+  it("a confirmed write no longer of high impact still awaits, and takes effect at the confirmation", () => {
+    const { records } = run([...awaiting, decision("confirm")]);
+    const after = replayDeletion(STATE, records, gone20);
+    expect(after.records.map((r) => [r.op, r.kind])).toEqual([
+      [10, "write"],
+      [30, "write"],
+      [40, "confirm"],
+    ]);
+    expect(after.records[1]).toMatchObject({ items: [{ target: "f2", status: "awaiting" }] });
+    expect(after.records[2]).toMatchObject({
+      items: [{ target: "f2", status: "applied", carried: [{ event: 31, target: "f2", k: 0 }] }],
+    });
+    expect(values(after.state, "f2")).toEqual([
+      [d("10-01"), "5000"],
+      [d("11-02"), "3000"],
+    ]);
+  });
+
+  it("a rejected write takes effect in no replay, though nothing makes it await now", () => {
+    const { records } = run([...awaiting, decision("reject")]);
+    const after = replayDeletion(STATE, records, gone20);
+    expect(after.records[1]).toMatchObject({ items: [{ target: "f2", status: "awaiting" }] });
+    expect(after.records[2]).toMatchObject({ kind: "reject", target: 31 });
+    expect(values(after.state, "f2")).toEqual([[d("10-01"), "5000"]]);
+  });
+
+  it.each(["confirm", "reject"] as const)(
+    "a %s of a write nothing of which is left leaves nothing",
+    (kind) => {
+      const { records } = run([...awaiting, decision(kind)]);
+      const after = replayDeletion(STATE, records, new Set([contributionKey(31, "f2")]));
+      expect(after.records.map((r) => r.op)).toEqual([10, 20]);
+      expect(values(after.state, "f2")).toEqual([
+        [d("10-01"), "5000"],
+        [d("11-10"), "4000"],
+      ]);
+    },
+  );
+});
+
+describe("a rejection of a write with a target in a conflict item when rejected", () => {
+  // #30 did not see #25: on f2 a candidate (conflict with #25); on f3 it erases #20's change point
+  // at 11-10 and awaits. #40 rejects it: the awaiting item; f2 is in the conflict item.
+  const log = [
+    write(10, { f2: "5000", f3: "a" }, { seen: 0 }),
+    { ...write(20, { f3: "b" }, { from: "11-10" }), acknowledge: true as const },
+    write(25, { f2: "6000" }, { from: "10-20" }),
+    write(30, { f2: "7000", f3: "c" }, { seen: 20, from: "11-02" }),
+    { ...decision("reject"), target: 31 },
+  ];
+
+  it("as judged: f2 a candidate, f3 awaiting and rejected", () => {
+    const { records } = run(log);
+    expect(records[3]).toMatchObject({
+      items: [
+        { target: "f2", status: "candidate" },
+        { target: "f3", status: "awaiting" },
+      ],
+    });
+  });
+
+  it("the conflict and the high impact gone: f2 takes no effect, it awaits and the rejection closes it", () => {
+    const { records } = run(log);
+    // #25's value and #20's change point deleted: nothing makes #30 a candidate or await now.
+    const after = replayDeletion(
+      STATE,
+      records,
+      new Set([contributionKey(26, "f2"), contributionKey(21, "f3")]),
+    );
+    const w = after.records.find((r) => r.op === 30);
+    expect(w).toMatchObject({
+      items: [
+        { target: "f2", status: "awaiting" },
+        { target: "f3", status: "awaiting" },
+      ],
+    });
+    expect(after.records.find((r) => r.op === 40)).toMatchObject({ kind: "reject", target: 31 });
+    expect(after.state.resolvedAwaiting(31)).toBe(true);
+    expect(after.state.items.filter((x) => x.status === "candidate")).toEqual([]);
+    expect(values(after.state, "f2")).toEqual([[d("10-01"), "5000"]]);
+    expect(values(after.state, "f3")).toEqual([[d("10-01"), "a"]]);
+  });
+
+  it("the conflict still there: f2 stays the candidate it was, in its conflict item", () => {
+    const { records } = run(log);
+    const after = replayDeletion(STATE, records, new Set([contributionKey(21, "f3")]));
+    expect(after.records.find((r) => r.op === 30)).toMatchObject({
+      items: [
+        { target: "f2", status: "candidate" },
+        { target: "f3", status: "awaiting" },
+      ],
+    });
+    expect(values(after.state, "f2")).toEqual([
+      [d("10-01"), "5000"],
+      [d("10-20"), "6000"],
+    ]);
+  });
+});
+
 describe("what the replay keeps from the records", () => {
   it("a target protected by deviation two is judged without the conflict step", () => {
     // #20 did not see #10 and writes another value over it: a conflict when judged now.
     const { state } = run([write(10, { f2: "1" })]);
     const stale = write(20, { f2: "2" }, { seen: 0 });
     expect(judgeWrite(state, stale).items.map((x) => x.status)).toEqual(["candidate"]);
-    const kept = judgeWrite(state, stale, { noop: new Set(), protect: new Set(["f2"]) });
+    const kept = judgeWrite(state, stale, {
+      noop: new Set(),
+      protect: new Set(["f2"]),
+      decided: new Set(),
+      rejected: false,
+    });
     expect(kept.items.map((x) => x.status)).toEqual(["applied"]);
   });
 
@@ -155,5 +274,88 @@ describe("what the replay keeps from the records", () => {
     const { records } = run([write(10, { f2: "1" }), write(20, { f3: "x" })]);
     const after = replayDeletion(STATE, records, new Set([contributionKey(21, "f3")]));
     expect(after.records.map((r) => r.op)).toEqual([10]);
+  });
+});
+
+describe("deviation two on an event table", () => {
+  // #10 f2=1 (S10); #20 points at evidence for the same value, having seen #10: a corroboration;
+  // #25 changes f3; #30 writes f2=5 having seen #10: applied when written (#20 changed nothing).
+  // S10 deleted: #20 is now a change between #30's `ver` and #30. Protected, #30 stays applied.
+  const ops: Op[] = [
+    { kind: "write", op: 10, event: 11, seen: 0, fields: { f2: { value: "1", sources: ["S10"] } } },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      fields: { f2: { value: "1", sources: ["S20"], explicit: true } },
+    },
+    {
+      kind: "write",
+      op: 25,
+      event: 26,
+      seen: 20,
+      fields: { f3: { value: "y", sources: ["S25"] } },
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      fields: { f2: { value: "5", sources: ["S30"] } },
+    },
+  ];
+  const status = (st: RowState, event: number, target: string) =>
+    st.items.filter((x) => x.event === event && x.target === target).map((x) => x.status);
+
+  it("a write in effect when written stays in effect, as the reference evaluator gives", () => {
+    const { table, steps } = judged(EVENT_SCHEMA, ops, []);
+    const records = steps.map((x) => x.judgement.record);
+    expect(status(steps.at(-1)?.state as RowState, 21, "f2")).toEqual(["corroborated"]);
+    expect(status(steps.at(-1)?.state as RowState, 31, "f2")).toEqual(["applied"]);
+    const after = replayDeletion(table, records, new Set([contributionKey(11, "f2")]));
+    expect(status(after.state, 21, "f2")).toEqual(["applied"]);
+    expect(status(after.state, 31, "f2")).toEqual(["applied"]);
+    const ref = evaluateLog(EVENT_SCHEMA, [
+      ...ops,
+      { kind: "deletion", op: 40, id: "pi_x", sources: ["S10"] },
+    ]).final;
+    expect(ref.items.filter((x) => x.event === 31).map((x) => x.status)).toEqual(["applied"]);
+    // Not protected (a candidate when written): judged again, the same write is a candidate.
+    const unprotected = records.map((r) =>
+      r.kind === "write" && r.op === 30
+        ? { ...r, items: r.items.map((x) => ({ ...x, status: "candidate" as const })) }
+        : r,
+    );
+    const naive = replayDeletion(table, unprotected, new Set([contributionKey(11, "f2")]));
+    expect(status(naive.state, 31, "f2")).toEqual(["candidate"]);
+  });
+});
+
+describe("an interval block not there to read: judged as an explicit interval", () => {
+  // #20 gave an explicit open interval from 11-01; #30, not having seen #20, writes another value
+  // with a default end from 11-03. Two default ends starting apart would not conflict; an explicit
+  // interval met by the seen interval does.
+  const next = (op: number, seen: number, v: string, from: string): WriteInput => ({
+    ...write(op, { f2: v }, { seen, from }),
+    valid: { from: { mode: "given", value: d(from) }, to: { mode: "next_change" } },
+  });
+
+  it("the block there: a candidate; the block gone (validGone): still a candidate, not a default end", () => {
+    const { records } = run([write(10, { f2: "1" }), write(20, { f2: "2" }, { from: "11-01" })]);
+    const gone = records.map((r) =>
+      r.op === 20 && r.kind === "write"
+        ? (() => {
+            const { valid: _, ...rest } = r;
+            return { ...rest, validGone: true as const };
+          })()
+        : r,
+    );
+    const statusOf = (rs: readonly OpRecord[]) => {
+      const r = judgeOp(stateFromRecord(STATE, rs), next(30, 10, "3", "11-03")).judgement.record;
+      return r.kind === "write" ? r.items.map((x) => x.status) : [];
+    };
+    expect(statusOf(records)).toEqual(["candidate"]);
+    expect(statusOf(gone)).toEqual(["candidate"]);
   });
 });

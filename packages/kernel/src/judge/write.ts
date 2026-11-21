@@ -156,6 +156,16 @@ export interface ReplayOptions {
    * values are worked out again.
    */
   readonly protect: ReadonlySet<Target>;
+  /**
+   * Targets whose awaiting item a person's later confirmation or rejection decided (deviation
+   * one): judged without the conflict step and awaiting, for the decision to execute as recorded.
+   */
+  readonly decided: ReadonlySet<Target>;
+  /**
+   * A person rejected the write (03-deletion «重放规则 · 冲突消失之后»): the rejection is of the
+   * whole write, so no target of it takes effect but those protected by deviation two.
+   */
+  readonly rejected: boolean;
 }
 
 export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOptions): WriteOutcome {
@@ -259,9 +269,12 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
   const applied: Draft[] = [];
   for (const all of units.values()) {
     const unit = state.unitOf.get((all[0] as Part).f) ?? [];
-    // In a replay, a target protected by deviation two is not judged for conflicts.
-    const protectedParts = all.filter((p) => replay?.protect.has(p.f) === true);
-    const ps = all.filter((p) => replay?.protect.has(p.f) !== true);
+    // In a replay, a target protected by deviation two, or decided by a person, is not judged for
+    // conflicts.
+    const exempt = (p: Part) =>
+      replay?.protect.has(p.f) === true || replay?.decided.has(p.f) === true;
+    const protectedParts = all.filter(exempt);
+    const ps = all.filter((p) => !exempt(p));
     const withOps = new Set<OpNumber>();
     let withRevoke = false;
     for (const p of ps) {
@@ -362,7 +375,10 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
   // A target protected by deviation two never awaits (03-deletion «重放规则» 已生效的保持生效).
   for (const d of applied) {
     const protects = replay?.protect.has(d.target) === true;
-    drafts.push(awaiting && !protects ? { ...d, status: "awaiting" } : d);
+    // Decided by a person, or of a rejected write: awaiting, whatever its impact now.
+    const held =
+      replay !== undefined && (replay.decided.has(d.target) || (replay.rejected && !protects));
+    drafts.push((awaiting && !protects) || held ? { ...d, status: "awaiting" } : d);
   }
 
   const warnings = awaiting || !state.isState ? [] : coveredCorroborations(state, applied, curAt);
