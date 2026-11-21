@@ -50,7 +50,15 @@ import {
   writeInTx,
 } from "@fluxvita/saveslot-kernel/testing";
 import type { Op, TableSchema } from "@fluxvita/saveslot-reference";
-import { EVENT, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
+import {
+  EVENT,
+  propRuns,
+  SOURCES,
+  STATE,
+  type Step,
+  step,
+  toOps,
+} from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
@@ -447,6 +455,64 @@ function nothingLeft(
 const atRandom = { decisions: 0, corroborations: 0 };
 
 /**
+ * An explicit restatement of the latest write's value, seeing the version just before: a
+ * corroboration wherever that value is still the one in effect.
+ */
+const restated: fc.Arbitrary<Step> = fc.record({
+  t: fc.constant("resend" as const),
+  back: fc.constant(0),
+  src: fc.constantFrom(...SOURCES),
+  explicit: fc.constant(true),
+  mark: fc.constant(false),
+  to: fc.constant("same" as const),
+});
+
+/**
+ * Random steps with one explicit restatement among them. The scenarios meet a corroboration only
+ * when an explicit field happens to carry the value in effect (`explicit` a coin, the value one of
+ * three); a quarter of the samples are these.
+ */
+const samples = (state: boolean) =>
+  fc.oneof(
+    { weight: 3, arbitrary: scenario(state) },
+    {
+      weight: 1,
+      arbitrary: fc
+        .tuple(fc.array(step, { minLength: 1, maxLength: 7 }), restated, fc.nat())
+        .map(([steps, extra, at]) => {
+          const out = [...steps];
+          out.splice(1 + (at % out.length), 0, extra);
+          return { ops: toOps(out, state), decisions: [] as Decision[] };
+        }),
+    },
+  );
+
+/**
+ * A sample run first in every run: a creation, then the same value restated explicitly with the
+ * version before; a corroboration, met whatever the generator does.
+ */
+const restatedOnce = (state: boolean) => ({
+  ops: toOps(
+    [
+      {
+        t: "write",
+        f: "f2",
+        v: "1",
+        src: ["S1"],
+        from: 0,
+        to: "open",
+        lag: 0,
+        explicit: false,
+        ack: true,
+      },
+      { t: "resend", back: 0, src: "S2", explicit: true, mark: false, to: "same" },
+    ],
+    state,
+  ),
+  decisions: [] as Decision[],
+});
+
+/**
  * A scenario for each decision, numbered as the pipeline appends (an op's event after its source):
  * a conflict item on f2 (#32 seeing #10, after #22), kept, taken or taken back to its merge base;
  * an undo taking a later write back (#42 undoing #22, after #32), awaiting confirmation, confirmed
@@ -511,7 +577,10 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     decisions: 0,
     overrun: 0,
     closed: 0,
+    // Steps judged a corroboration, of the random samples; and of the fixed one (restatedOnce),
+    // which makes one every run.
     corroborations: 0,
+    corroborationsFixed: 0,
   };
   const byKind: Record<string, number> = {};
 
@@ -781,9 +850,20 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
 
   it("each judged step sent as a write request appends what the record mapping encodes", async () => {
     await fc.assert(
-      fc.asyncProperty(scenario(isState), ({ ops, decisions }) => checkSample(ops, decisions)),
+      fc.asyncProperty(
+        samples(isState).map((x) => ({ ...x, fixed: false })),
+        async ({ ops, decisions, fixed }) => {
+          const before = seen.corroborations;
+          await checkSample(ops, decisions);
+          if (fixed) {
+            seen.corroborationsFixed += seen.corroborations - before;
+            seen.corroborations = before;
+          }
+        },
+      ),
       {
         numRuns: RUNS,
+        examples: [[{ ...restatedOnce(isState), fixed: true }]],
         ...(SEED !== undefined ? { seed: SEED } : {}),
         ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
       },
@@ -797,6 +877,8 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     // 1e-5 at a mean of 2 (Poisson).
     expect(seen.overrun).toBeLessThanOrEqual(RUNS / 4);
     expect(seen.pending).toBeGreaterThan(0);
+    // The fixed sample's corroboration, every run, sent through the pipeline and checked as encoded.
+    expect(seen.corroborationsFixed).toBe(1);
     atRandom.decisions += seen.decisions;
     atRandom.corroborations += seen.corroborations;
   });
@@ -1077,6 +1159,10 @@ it("over both tables, the random samples send decisions through resolve", () => 
 
 it("over both tables, the random samples send corroborations through the pipeline", () => {
   // Guards against a generator gone degenerate only (no explicit field sent, or none the same
-  // value): the corroborations' ends and covering are the fixed cases' (apply-corroboration).
+  // value): each table's fixed sample makes one every run, and the corroborations' ends and
+  // covering are the fixed cases' (apply-corroboration). Judged without the store over seeds 1 to
+  // 300, 40 samples a table: with a quarter of the samples restating explicitly, a mean of 15.8
+  // over both tables (variance 27.7, least 4, none at 0); before, a mean of 5.8 and two seeds at 0.
+  // Fitted as a negative binomial, none in a run has odds of about 1e-5.
   expect(atRandom.corroborations).toBeGreaterThan(0);
 });
