@@ -136,6 +136,77 @@ describe("HTTP's own", () => {
     expect([deletion.status, JSON.parse(deletion.body)]).toEqual([200, JSON.parse(pending.body)]);
   });
 
+  it("GET /v1/drafts/{id}: the slot's document once switched to the draft; not there, out of range or malformed, refused", async () => {
+    const ok = async (r: Promise<Reply>) => {
+      const x = await r;
+      if (x.status !== 200) throw new Error(`${x.status} ${x.body}`);
+      return JSON.parse(x.body) as Record<string, unknown>;
+    };
+    const document = {
+      ...LEDGER,
+      slot: "drafted",
+      tables: [{ ...LEDGER.tables[0], name: "drafted_notes", description: "notes, drafted" }],
+    };
+    const made = await ok(
+      http({
+        method: "POST",
+        path: "/v1/drafts",
+        token: session,
+        body: JSON.stringify({ document }),
+      }),
+    );
+    const id = made["draft"] as string;
+    expect(id).toMatch(/^d_/);
+    const get = (path: string, token = session) => http({ method: "GET", path, token });
+    // The draft's whole document, as catalog gives it at level schema with the draft.
+    const read = await ok(get(`/v1/drafts/${id}?slot=drafted`));
+    expect(read).toMatchObject({ level: "schema", slot: "drafted", draft: id });
+    expect(JSON.stringify(read)).toContain("drafted_notes");
+    // A draft that is not there and a draft of another slot get the same answer, byte for byte.
+    const none = await get(`/v1/drafts/d_${"9".repeat(16)}?slot=drafted`);
+    const elsewhere = await get(`/v1/drafts/${id}?slot=ledger`);
+    expect([none.status, err(none)["code"], err(none)["reason"]]).toEqual([
+      404,
+      "not_found",
+      "draft",
+    ]);
+    expect([elsewhere.status, elsewhere.body]).toEqual([none.status, none.body]);
+    // A credential whose range does not hold every table of the slot: as if the slot were not there.
+    const scoped = String(
+      (
+        await ok(
+          http({
+            method: "POST",
+            path: "/v1/connections",
+            token: session,
+            body: JSON.stringify({ name: "drafts-scoped", slots: ["ledger"] }),
+          }),
+        )
+      )["token"],
+    );
+    const outside = await get(`/v1/drafts/${id}?slot=drafted`, scoped);
+    const noSlot = await get(`/v1/drafts/${id}?slot=nowhere`, scoped);
+    expect([outside.status, err(outside)["code"], err(outside)["reason"]]).toEqual([
+      404,
+      "not_found",
+      "slot",
+    ]);
+    expect([outside.status, outside.body]).toEqual([noSlot.status, noSlot.body]);
+    // Malformed: an ID not of a draft's form, a slot not given.
+    const bad = await get("/v1/drafts/pi_1?slot=drafted");
+    expect([bad.status, err(bad)["code"], err(bad)["param"]]).toEqual([
+      400,
+      "invalid_argument",
+      "draft",
+    ]);
+    const noParam = await get(`/v1/drafts/${id}`);
+    expect([noParam.status, err(noParam)["code"], err(noParam)["param"]]).toEqual([
+      400,
+      "invalid_argument",
+      "slot",
+    ]);
+  });
+
   it("an unknown route is 404 (route); a route of a later version is 501", async () => {
     const r = await http({ method: "GET", path: "/v1/nowhere", token: session });
     expect([r.status, err(r)["code"], err(r)["reason"]]).toEqual([404, "not_found", "route"]);
@@ -431,6 +502,8 @@ describe("HTTP's own", () => {
       ],
       ["POST", "/v1/writes", JSON.stringify({ sv: 1, ops: [] }), 400],
       ["POST", "/v1/drafts", JSON.stringify({ document: { slot: "x" } }), 400],
+      // No such draft: the operation answers (404 not_found, draft), not the router.
+      ["GET", `/v1/drafts/d_${"9".repeat(16)}?slot=ledger`, undefined, 404],
       ["POST", "/v1/connections", JSON.stringify({ name: "routes 2" }), 200],
       ["GET", "/v1/connections", undefined, 200],
       ["PATCH", `/v1/connections/${issued.id}`, JSON.stringify({ name: "renamed" }), 200],
@@ -463,7 +536,6 @@ describe("HTTP's own", () => {
     const later: [string, string][] = [
       ["POST", "/v1/deletions/preview"],
       ["POST", "/v1/deletions"],
-      ["GET", "/v1/drafts/d_1"],
       ["POST", "/v1/claims"],
       ["POST", "/v1/claims/ls_1/results"],
       ["GET", "/v1/jobs"],

@@ -903,7 +903,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 | `GET /v1/pending` | `pending`（列表） | `slot`、`type`、`status`、`limit`、`cursor` | `saveslot.read` | 200 |
 | `GET /v1/pending/{id}` | `pending`（详情） | — | `saveslot.read` | 200 |
 | `GET /v1/deletions/{id}` | 同 `GET /v1/pending/{id}`：`id` 就是删除回执里的 `pi_…` | — | `saveslot.read` | 200 |
-| `GET /v1/drafts/{id}` | 查看草稿：内容同对应 `schema_change` 事项的详情，不是单独的契约操作 | — | `saveslot.read` | 200 |
+| `GET /v1/drafts/{id}` | `catalog`（`schema`，带 `draft`：切换到这份草稿之后整个 slot 的文档，不论草稿处于什么状态）。草稿不存在、不属于这个 slot 或不可见，报 `not_found`（`draft`）；slot 的表不全在可见范围内时，与 slot 不存在相同。草稿待确认时，它的 `schema_change` 事项的详情经 `GET /v1/pending/{id}` 查看 | `slot`（必填） | `saveslot.read` | 200 |
 | `POST /v1/writes` | `write` | 请求体 | `saveslot.write` | 200 |
 | `POST /v1/pending/{id}/resolution` | `resolve`（`id` 在路径里，请求体不重复） | 请求体 | 按处理方式 | 200 |
 | `POST /v1/drafts` | `schema_draft` | 请求体 | `saveslot.schema` | 200 |

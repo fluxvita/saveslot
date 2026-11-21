@@ -114,7 +114,7 @@ export const MAX_BODY_BYTES = 1024 * 1024;
 type Obj = Record<string, unknown>;
 
 /** What each part of a path is, checked for its form before it goes anywhere. */
-type Part = "slot" | "table" | "id" | "source" | "any";
+type Part = "slot" | "table" | "id" | "source" | "draft" | "any";
 const PART_FORM: Readonly<Record<Exclude<Part, "any">, RegExp>> = {
   // Names in this version are ASCII letters, digits and underscores (08-open-questions).
   slot: /^[A-Za-z0-9_]{1,64}$/,
@@ -123,6 +123,8 @@ const PART_FORM: Readonly<Record<Exclude<Part, "any">, RegExp>> = {
   id: /^(pi_[0-9A-HJKMNP-TV-Z]{16}|ci_[0-9A-HJKMNP-TV-Z]{26})$/,
   // A source (`s_`): 01-objects «标识的写法».
   source: /^s_[0-9A-HJKMNP-TV-Z]{16}$/,
+  // A schema draft (`d_`): 04-contract-types §1.1.
+  draft: /^d_[0-9A-HJKMNP-TV-Z]{16}$/,
 };
 
 /** A table name with its slot, `slot.table`, each part of a name's form. */
@@ -230,6 +232,13 @@ const ROUTES: readonly Route[] = [
     params: ([id], _, b) => withPath(b, "id", id as string),
   }),
   route("POST", "/v1/drafts", "drafts", { operation: "schema_draft", body: true }),
+  // A draft's whole document: the slot's schema as it would be once switched to it (05-surfaces
+  // §14); the slot is the query's, as catalog needs it.
+  route("GET", "/v1/drafts/{}", "draft", {
+    operation: "catalog",
+    parts: ["draft"],
+    params: ([draft], q) => ({ ...q, level: "schema", draft }),
+  }),
   route("POST", "/v1/connections", "connections_issue", {
     operation: "connections.issue",
     body: true,
@@ -263,7 +272,6 @@ const ROUTES: readonly Route[] = [
   // Later versions.
   route("POST", "/v1/deletions/preview", "deletion_preview"),
   route("POST", "/v1/deletions", "deletions"),
-  route("GET", "/v1/drafts/{}", "draft"),
   route("POST", "/v1/claims", "claims"),
   route("POST", "/v1/claims/{}/results", "claim_results"),
   route("GET", "/v1/jobs", "jobs"),
