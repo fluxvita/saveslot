@@ -77,13 +77,13 @@
 | 部署 | 怎么来 | 存在哪 | 失效 |
 |---|---|---|---|
 | 本地 | `saveslot init` 生成一个随机令牌；控制面只存它的哈希 | `~/.saveslot/credentials/session`，0600 | `saveslot init --rotate-session` 换新，旧令牌立即失效。要先 `saveslot stop`：它只换控制面里的哈希、不碰数据目录，saveslot 服务下次启动时读到新哈希；服务在运行时照样拒绝执行 |
-| 云服务 | `saveslot login`：默认打开浏览器走授权码 + PKCE（本机回环接收回调）；`--device` 用 OAuth 设备码（RFC 8628），适合 SSH 里没有浏览器的情形 | `~/.saveslot/credentials/<profile>.json`（访问令牌 + 刷新令牌，键见下），0600 | `saveslot logout` 吊销刷新令牌并删文件 |
+| 云服务 | `saveslot login`：默认打开浏览器走授权码 + PKCE（本机回环接收回调，只收带这次登录的 `state` 的那一个，别的回 400、接着等）；`--device` 用 OAuth 设备码（RFC 8628），适合 SSH 里没有浏览器的情形，轮询间隔最长按 60 秒、设备码最多等一小时，服务器给得更长也一样 | `~/.saveslot/credentials/<profile>.json`（访问令牌 + 刷新令牌，键见下），0600 | `saveslot logout` 吊销刷新令牌并删文件 |
 
 - CLI 发现凭证文件的权限比 0600 宽时拒绝使用并提示修正，与 ssh 处理私钥的做法一致。第一版凭证放文件；放进系统钥匙串（可要求人在场才取出）随桌面打包一起做。
 - **profile** 区分连接目标：`local`（默认）、`cloud`（我们的云服务，地址 `https://api.saveslot.ai`），以及 `saveslot login --server <URL> --profile <名字>` 时为自部署的服务器新建的 profile；`--profile` 或 `saveslot profile use` 切换。各目标互不相通（第一版没有同步）。
   - profile 的名字：1–32 个字符，`a-z`、`0-9` 与 `-`，不以 `-` 开头；`local`、`cloud` 是内置的，不能登记。
   - **`~/.saveslot/profiles.json`** 是 CLI 自己的文件（不是 saveslot 服务的配置）：`{"format": 1, "current": "<名字>", "servers": {"<名字>": "<地址>"}}`，`current` 是当前使用的 profile，`servers` 是登记的自部署服务器（地址写成来源，规则见上文「CLI 怎么连 saveslot」）。没有这个文件时当前 profile 是 `local`、没有登记的服务器。键不多不少，解析从严，不认识的写法拒绝使用。
-  - **`credentials/<profile>.json`**（服务器 profile 的用户会话）：`{"format": 1, "server", "access_token", "access_expires_at", "refresh_token"}`，键不多不少。`server` 是令牌签发给的那台服务器，与这个 profile 的地址逐字相同才用，否则一个令牌都不发、提示重新登录。访问令牌离到期 60 秒以内（或刚被拒为 `unauthenticated`）时先用刷新令牌换新；刷新令牌只能用一次，所以换新要先取得这个 profile 的锁（`credentials/<profile>.json.lock`，独占创建；超过 30 秒算遗留，最多等 10 秒），取得后再读一遍文件，别的命令已经换过就用它换来的。换来的一对先写进文件再用；写不进去时这次登录就结束了（旧的刷新令牌已经用掉），提示重新登录，不拿内存里的新令牌接着用。刷新被拒（`invalid_grant`）时文件保留，提示重新登录；只有 `saveslot logout` 删文件。
+  - **`credentials/<profile>.json`**（服务器 profile 的用户会话）：`{"format": 1, "server", "access_token", "access_expires_at", "refresh_token"}`，键不多不少。`server` 是令牌签发给的那台服务器，与这个 profile 的地址逐字相同才用，否则一个令牌都不发、提示重新登录。访问令牌离到期 60 秒以内（或刚被拒为 `unauthenticated`）时先用刷新令牌换新；刷新令牌只能用一次，所以换新要先取得这个 profile 的锁（`credentials/<profile>.json.lock`，独占创建；超过 30 秒算遗留，最多等 10 秒；持锁时发出的请求最长 20 秒，余下的 10 秒留给重读与写文件，锁不会在请求还没结束时被当成遗留拿走），取得后再读一遍文件，别的命令已经换过就用它换来的。换来的一对先写进文件再用；写不进去时这次登录就结束了（旧的刷新令牌已经用掉），提示重新登录，不拿内存里的新令牌接着用。刷新被拒（`invalid_grant`）时文件保留，提示重新登录；只有 `saveslot logout` 删文件。`saveslot login` 写进新的一对之后，尽力吊销被它替换的那次登录的刷新令牌：只在旧文件的 `server` 与这个 profile 的地址逐字相同时发，吊销失败只提示一次，不改变退出码。
   - 两个文件都按上面凭证文件的规则：所在目录 0700、文件 0600、属于当前用户、不能是符号链接，每次读写前都查；写入先写同目录的临时文件，同步后改名，再同步目录。
 - **凭连接实例令牌运行**：设了环境变量 `SAVESLOT_TOKEN` 时，CLI 用它代替用户会话——能做的事按该连接实例的 scope，管理类命令报 `insufficient_scope`，读写与确认都记在该连接实例名下。给有 shell 的 Agent 与脚本用（第 8.3 节）。令牌发往所选 profile 的目标：`local` 是本机的 saveslot 服务，服务器 profile 是它的服务器（服务器模式用 `saveslot connect http --profile …` 签发的静态令牌就这样用）。`SAVESLOT_TOKEN` 设了但为空、或不是连接实例令牌的形式时，CLI 拒绝执行（退出码 6），不回落到用户会话：用户会话什么都能做，只有没设这个变量时才用它。
 
@@ -474,7 +474,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 | 命令 | 用途 | 关键参数 | 输出要点 | 出现于 |
 |---|---|---|---|---|
-| `saveslot login` / `saveslot logout` | 服务器模式的用户会话 | `--server <URL>`（自部署的地址，默认我们的云服务）、`--device` | 登录的账户、令牌存放位置 | P5 |
+| `saveslot login` / `saveslot logout` | 服务器模式的用户会话 | `--profile <名字>`（不给时用当前 profile，当前是 `local` 时用 `cloud`）、`--server <URL>`（自部署的地址，与 `--profile` 一起给，登录成功后登记这个 profile）、`--device` | profile、服务器、令牌存放位置 | P5 |
 | `saveslot profile list` / `use` | 切换连接目标 | — | 当前 profile 与地址 | P5 |
 | `saveslot config get` / `set` | 本地 saveslot 服务的配置，文件是 home 下的 `config.toml`（可选：`saveslot init` 不生成它，没有这个文件时每个键取默认值）。数值策略的键都是正整数：`read_log.retention_days`（读取记录保留期，默认 180，不能低于 30）、`read_log.flush_seconds`（落盘间隔，默认 5，不能低于 1、不能超过 2147483）、`read_log.coarse_threshold`（改记表级记录的阈值，默认 1000，不能低于 1）、`high_water.events` 与 `high_water.seconds`（高水位推进间隔，默认 1000 条事件或 60 秒，都不能低于 1）。另有 `http.loopback`（回环 TCP，默认 `false`）与 `mcp.autostart`（`saveslot mcp` 自动拉起服务，默认 `true`），都是布尔值。文件不是 UTF-8 或合法的 TOML、有不认识的键、有这一版还没有用到的键、值的类型不对或超出范围时，saveslot 服务拒绝启动，指出是哪个键、为什么（不认识 / 这一版不支持 / 值的类型与范围），不回落到默认值；文案只含键名、行号与范围，不含文件里的值。`config get` 列出每个键的生效值与来源（默认 / `config.toml`），这一版还没有用到的键也列出，标明"这一版未启用"。`config set <键> <值>` 只收这一版用到的键（`read_log.flush_seconds`、`mcp.autostart`）：别的键，包括上面列出、这一版还没有用到的，报"这一版不支持"、不写文件（写进去服务反而起不来）；值按键的类型与范围检查（布尔值写 `true` / `false`，也收 `on` / `off`），不合的报用法错误（退出码 2）；文件本身已不合法时不写（退出码 5）。写入时按它认得的键整份重写这个文件（0600），原有的注释不保留，有注释时写明。写完说明何时生效：`mcp.autostart` 在宿主下一次运行 `saveslot mcp` 时，其余在服务下次启动时（服务正在运行就提示先 `stop` 再 `start`）。自部署的服务器模式用同名的配置项 | 键、值 | 改后是否需要重启 | P1（只读），P6（可写） |
 
@@ -676,7 +676,7 @@ runs r_01JC… 整行删除：date 只来自这句话
 | 7 | 连不上或暂时不可用（稍后重试） | saveslot 服务未运行（`saveslot stop` 例外：没在运行时退出码 0）；`saveslot stop` 时 `/health` 报的 pid 与 `run/saveslot.pid` 不一致，或 `/health` 不应答而 `run/saveslot.lock` 被占着（都不发信号）；`saveslot start` 等不到就绪（进程仍在运行）、服务起来之后自己失败（数据目录不在、内部错误等，原因见 `saveslot status` 与服务日志；格式过旧或过新除外，见 5）、套接字不可达、`unavailable`（忙、恢复中、导入中、对拍中、启动中）、`rate_limited`（`busy`）；`saveslot start` 或 `saveslot setup` 启动服务失败，或另一个 `setup` 正在运行 |
 | 8 | 未执行 | 人在提示中拒绝（含 `saveslot setup` 第 5 步的拒绝：什么都没签发）；非交互式缺 `--yes` 或绑定令牌；`export --encrypt` 没有终端、也没给口令文件；`server init`、`server user add`、`server user passwd` 没有终端、也没给口令文件 |
 | 9 | 校验发现问题 | `saveslot verify` 报断裂 / 不符，`saveslot verify --replay` 报不一致，`saveslot doctor` 有不通过项（只有提醒时不给 9） |
-| 129 / 130 / 131 / 143 | 被信号停下（128 加信号编号：SIGHUP / SIGINT / SIGQUIT / SIGTERM） | `saveslot setup` 收到这四个信号之一时收尾后按此退出（§3.3 第 8 条） |
+| 129 / 130 / 131 / 143 | 被信号停下（128 加信号编号：SIGHUP / SIGINT / SIGQUIT / SIGTERM） | `saveslot setup` 收到这四个信号之一时收尾后按此退出（§3.3 第 8 条）；`saveslot login` 等待浏览器或设备码时收到它们（换取令牌的请求在途中时收到的也算），关掉本机回环监听、什么都不写，按此退出 |
 
 退出码只分大类，权威信息是 `--json` 里的 `error.code`；契约以后新增的错误码归入 1 以外最接近的一类，未知的按 5 处理。
 

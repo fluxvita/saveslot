@@ -59,6 +59,11 @@ export const TEXTS = {
       "  snippet [<host>] [--lang en|zh-CN]   text for the host's custom instructions",
       "  schema templates          the schema templates this saveslot ships",
       "",
+      "  login [--profile <name> [--server <URL>]] [--device]   sign in to a server profile",
+      "        --server: a self-hosted server's address, registered as profile <name>",
+      "        --device: a code to enter on another device, when this one has no browser",
+      "  logout [--profile <name>]  sign out: revoke the sign-in and remove its tokens",
+      "",
       "  init | start | stop | status | config get | config set | mcp   the local service",
       "  service install | uninstall   start the saveslot service at login, or no longer",
       "  doctor                    check the home, the credentials, the service; what to fix",
@@ -124,6 +129,69 @@ export const TEXTS = {
   internal: s(
     "error: saveslot failed. This is a bug; the service log is in run/saveslot.log under the home.",
   ),
+
+  // login, logout
+  loginArgs: s(
+    "saveslot login takes no arguments: saveslot login [--profile <name> [--server <URL>]] [--device]",
+  ),
+  logoutArgs: s("saveslot logout takes no arguments: saveslot logout [--profile <name>]"),
+  loginServerNeedsProfile: s(
+    "--server needs --profile <name>: the name the server is registered as",
+  ),
+  loginProfileNotRegistrable: s(
+    "--profile with --server takes a new name: 1 to 32 of a-z, 0-9 and -, not starting with -, and not local or cloud",
+  ),
+  loginProfileInvalid: s("that is not a server profile's name"),
+  loginServerInvalid: s("--server takes the server's address: https://host[:port], with no path"),
+  loginOpen: s("To sign in, open this address in a browser:"),
+  loginDeviceOpen: s("To sign in, open this address on any device:"),
+  loginDeviceCode: s("and enter the code"),
+  loginDeviceComplete: s("or open this address, which carries the code:"),
+  loginIssuerMismatch: s(
+    "error: the server's sign-in answers for another address than the one given; nothing was signed in. Check the address.",
+  ),
+  loginDenied: s("error: the sign-in was declined. Run saveslot login again to retry."),
+  loginExpired: s("error: the code expired before it was approved. Run saveslot login again."),
+  loginTimedOut: s(
+    "error: the browser did not come back within 5 minutes. Run saveslot login again, or saveslot login --device.",
+  ),
+  loginRefused: s("error: the server refused the sign-in. Run saveslot login again."),
+  loginStopped: s("Stopped; nothing was signed in."),
+  loginUnreachable: s(
+    "error: the server could not be reached, or did not answer in time. Check the address and the network.",
+  ),
+  loginBusy: s(
+    "error: the server is busy or limiting requests; nothing was signed in. Try again shortly.",
+  ),
+  loginBadAnswer: s(
+    "error: the server gave an answer saveslot cannot read; nothing was signed in.",
+  ),
+  loginUnsaved: s(
+    "error: the sign-in could not be saved under the home's credentials/; nothing was signed in.",
+  ),
+  loginOldNotRevoked: s(
+    "note: the sign-in this one replaces could not be revoked at the server; it ends there when unused for 30 days.",
+  ),
+  loginPageDone: s("saveslot: signed in. You can close this tab and go back to the terminal."),
+  loginPageFailed: s("saveslot: the sign-in did not complete. The terminal says why."),
+  loginPageUsed: s("saveslot: this sign-in has already had its answer."),
+  loginPageNotThis: s("saveslot: this is not the answer of the sign-in waiting here."),
+  loginPageNotHere: s("saveslot: not found."),
+  loginDone: s("Signed in to"),
+  loginProfile: s("profile"),
+  loginTokensIn: s("The tokens are in"),
+  loginUseHint: s("Not the profile in use; to make it so: saveslot profile use"),
+  logoutRevoked: s("Signed out: the sign-in is revoked and its tokens removed"),
+  logoutNotRevoked: s(
+    "Signed out here: the tokens are removed, but the server could not be reached or did not take the revocation; the sign-in ends there when unused for 30 days",
+  ),
+  logoutOtherServer: s(
+    "Signed out here: the sign-in was for another server than the profile's, so nothing was sent; its tokens are removed",
+  ),
+  logoutMalformed: s(
+    "Signed out here: the credentials file was not readable as one, so nothing was sent; it is removed",
+  ),
+  logoutNone: s("Not signed in; nothing to do"),
 
   // slot list
   noSlots: s("No slots yet. Create one with saveslot slot create <name> --template <template>."),

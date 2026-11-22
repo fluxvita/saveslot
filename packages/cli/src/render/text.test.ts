@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { TEXTS } from "../texts.ts";
-import { cut, id, type Line, name, render, t, untrusted, words } from "./text.ts";
+import { cut, id, type Line, name, profile, render, t, untrusted, words } from "./text.ts";
 
 const cp = (...points: number[]) => String.fromCodePoint(...points);
 
@@ -21,6 +21,14 @@ describe("saveslot's own words", () => {
     // @ts-expect-error a Part is made in render/text.ts only
     const forged: Line = [{ kind: "own", text: fromOutside }];
     expect(forged).toHaveLength(1);
+  });
+
+  it("a profile's name as 06 §2 allows it goes outside; any other inside", () => {
+    const plain = { kind: "terminal", color: false } as const;
+    expect(render([[profile("my-lab")]], plain)).toBe("my-lab");
+    for (const v of ["-lab", "My-lab", "lab_1", "a".repeat(33), "lab\u001b[2J"]) {
+      expect(render([[profile(v)]], plain)).toBe(render([[untrusted(v)]], plain));
+    }
   });
 
   it("a shape that does not fit goes inside", () => {

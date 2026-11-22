@@ -11,11 +11,12 @@
 // - Human text on stdout; errors, with the next step, on stderr (06 §6.3).
 
 import { readFile } from "node:fs/promises";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   type AsOfResult,
+  addProfile,
   type CatalogTables,
   type ChangesResult,
   type Client,
@@ -74,7 +75,16 @@ import {
 } from "./render/reads.ts";
 import { catalogList, catalogTables, schemaTemplates, slotCreated } from "./render/results.ts";
 import { sourceDetail, sourcesList } from "./render/sources.ts";
-import { type Boundary, id, type Line, render, t, untrusted, words } from "./render/text.ts";
+import {
+  type Boundary,
+  id,
+  type Line,
+  profile,
+  render,
+  t,
+  untrusted,
+  words,
+} from "./render/text.ts";
 import { TEMPLATES, templateDocument } from "./templates.ts";
 import { type Static, TEXTS } from "./texts.ts";
 
@@ -125,6 +135,8 @@ const OWN_OPTIONS = {
   encrypt: { type: "boolean" },
   "passphrase-file": { type: "string" },
   force: { type: "boolean" },
+  server: { type: "string" },
+  device: { type: "boolean" },
 } as const;
 type OwnValue = string | string[] | boolean;
 
@@ -137,6 +149,14 @@ const ownFlag = (o: Options, k: string): boolean => o.own[k] === true;
 
 import { exportCommand } from "./export.ts";
 import type { Terminal } from "./export-crypto.ts";
+import {
+  LoginEnded,
+  profileCredentialsFile,
+  profileFor,
+  type SignInTesting,
+  signIn,
+} from "./login.ts";
+import { signOut } from "./logout.ts";
 import { allConnections, allSlots, everyPage } from "./pages.ts";
 import { type SetupServices, STOP_SIGNALS, type StopSignal, setup } from "./setup.ts";
 import { jsonText } from "./untrusted.ts";
@@ -172,6 +192,8 @@ export interface CliIO {
   readonly hostname?: string;
   /** Tests only: how `setup` hears of SIGINT and SIGTERM (the process's own otherwise). */
   readonly watchSignals?: (on: (signal: StopSignal) => void) => () => void;
+  /** Tests only: `login`'s stand-ins for the browser, the clock and the waits (./login.ts). */
+  readonly signInTesting?: SignInTesting;
 }
 
 interface Options {
@@ -186,6 +208,8 @@ interface Options {
   readonly own: Readonly<Record<string, OwnValue | undefined>>;
   /** The service's side, for `setup` (the entry package hands it in). */
   readonly services: SetupServices | undefined;
+  /** `--profile`, as given: for `login` and `logout` only in this version. */
+  readonly profile: string | undefined;
 }
 
 /** What a command gives: a result to write, as text and as JSON, and its exit code (default 0). */
@@ -739,6 +763,81 @@ async function setupCommand(
   return { json: r.json, lines: r.lines, errLines: r.errLines, exit: r.exit };
 }
 
+/** `saveslot login` (06 §2, §4.2): ./login.ts, with the command line and this process. */
+async function loginCommand(
+  o: Options,
+  _client: () => Promise<Client>,
+  io: CliIO,
+  env: Env,
+): Promise<Output> {
+  if (o.args.length > 0) throw new UsageError(TEXTS.loginArgs);
+  const p = await profileFor(o.home, o.profile, ownString(o, "server")).catch((e: unknown) => {
+    throw e instanceof LoginEnded ? endedAs(e) : e;
+  });
+  const stop = new AbortController();
+  let caught: StopSignal | undefined;
+  const unwatch = (io.watchSignals ?? watchProcessSignals)((signal) => {
+    caught ??= signal;
+    stop.abort();
+  });
+  let r: Awaited<ReturnType<typeof signIn>>;
+  try {
+    r = await signIn({
+      home: o.home,
+      profile: p.profile,
+      server: p.server,
+      io: { ...io, boundary: boundaryFor(io.stderrIsTTY, o.tags, env) },
+      stop: stop.signal,
+      ...(ownFlag(o, "device") ? { mode: "device" as const } : {}),
+      ...(io.signInTesting !== undefined ? { testing: io.signInTesting } : {}),
+    });
+  } finally {
+    unwatch();
+  }
+  if (!r.ok) {
+    if (r.exit === 2) throw new UsageError(r.message);
+    // Stopped by a signal: 128 plus its number (06 §6.2).
+    const exit =
+      r.exit === 130 && caught !== undefined ? 128 + osConstants.signals[caught] : r.exit;
+    throw new Failed(r.message, exit);
+  }
+  if (p.register) await addProfile(o.home, p.profile, p.server);
+  const file = profileCredentialsFile(o.home, p.profile);
+  const lines: Line[] = [
+    t`${words(TEXTS.loginDone)} ${untrusted(p.server)} (${words(TEXTS.loginProfile)} ${profile(p.profile)})`,
+    t`${words(TEXTS.loginTokensIn)} ${untrusted(file)}`,
+  ];
+  if (p.profile !== p.current) lines.push(t`${words(TEXTS.loginUseHint)} ${profile(p.profile)}`);
+  return {
+    json: { profile: p.profile, server: p.server, mode: r.mode, credentials: file },
+    lines,
+  };
+}
+
+/** `saveslot logout` (06 §2, §4.2): ./logout.ts. */
+async function logoutCommand(o: Options): Promise<Output> {
+  if (o.args.length > 0) throw new UsageError(TEXTS.logoutArgs);
+  const p = await profileFor(o.home, o.profile, undefined).catch((e: unknown) => {
+    throw e instanceof LoginEnded ? endedAs(e) : e;
+  });
+  const r = await signOut({ home: o.home, profile: p.profile, server: p.server });
+  const said: Static = {
+    revoked: TEXTS.logoutRevoked,
+    not_revoked: TEXTS.logoutNotRevoked,
+    other_server: TEXTS.logoutOtherServer,
+    malformed: TEXTS.logoutMalformed,
+    none: TEXTS.logoutNone,
+  }[r];
+  return {
+    json: { profile: p.profile, server: p.server, result: r },
+    lines: [t`${words(said)} (${words(TEXTS.loginProfile)} ${profile(p.profile)})`],
+  };
+}
+
+/** A sign-in's end from the command line's side: a usage error, or a command that failed. */
+const endedAs = (e: InstanceType<typeof LoginEnded>) =>
+  e.exit === 2 ? new UsageError(e.text) : new Failed(e.text, e.exit);
+
 /** `--detail detailed` refused: what to do instead (06 §4.7). */
 const detailNotYet: Command["hint"] = (e, o) =>
   e.code === "not_in_this_version" && ownString(o, "detail") === "detailed"
@@ -770,6 +869,8 @@ const sourcesListCommand = command(["slot", "kind", "from", "to"], async (o, cli
 
 const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   ["setup", command(["template", "timezone", "host", "scope", "yes"], setupCommand)],
+  ["login", command(["server", "device"], loginCommand)],
+  ["logout", command([], logoutCommand)],
   [
     "connect",
     command(["name", "scope", "slots", "apply"], connectCommand, undefined, TEXTS.connectUnknown),
@@ -1206,6 +1307,11 @@ function scopeValuesJoined(argv: readonly string[]): string[] {
   return out;
 }
 
+/** The commands that take a server profile in this version. */
+const PROFILE_COMMANDS: ReadonlySet<Command> = new Set(
+  ["login", "logout"].map((c) => COMMANDS.get(c) as Command),
+);
+
 /** Runs one command line (without the program name); resolves with its exit code. */
 export async function run(
   argv: readonly string[],
@@ -1244,10 +1350,6 @@ export async function run(
     (values["help"] === true ? io.out : io.err)(`${TEXTS.usage}\n`);
     return values["help"] === true ? 0 : 2;
   }
-  if (values["profile"] !== undefined && values["profile"] !== "local") {
-    io.err(`${TEXTS.profileNotYet}\n`);
-    return 2;
-  }
   const tags = values["untrusted-tags"] ?? "auto";
   if (tags !== "auto" && tags !== "always" && tags !== "never") {
     io.err(`${TEXTS.usageError(TEXTS.untrustedTagsInvalid)}\n`);
@@ -1268,6 +1370,11 @@ export async function run(
   const words_ = two !== undefined ? 2 : 1;
   if (found === undefined) {
     io.err(`${TEXTS.unknownCommand}\n`);
+    return 2;
+  }
+  const profileGiven = typeof values["profile"] === "string" ? values["profile"] : undefined;
+  if (profileGiven !== undefined && profileGiven !== "local" && !PROFILE_COMMANDS.has(found)) {
+    io.err(`${TEXTS.profileNotYet}\n`);
     return 2;
   }
   // A command's option of one value given twice is not taken as the last one given (06 §6.2).
@@ -1299,6 +1406,7 @@ export async function run(
     args: positionals.slice(words_),
     own,
     services,
+    profile: profileGiven,
   };
   const client = async () => {
     const credential = await resolveCredential({ home: o.home, env });

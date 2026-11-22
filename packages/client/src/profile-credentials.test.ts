@@ -22,6 +22,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CredentialError, sessionFile } from "./credentials.ts";
 import {
   CLI_CLIENT_ID,
+  LOCK_STALE_MS,
+  LOCKED_REQUEST_MS,
+  LOCKED_WORK_MARGIN_MS,
   type ProfileCredentials,
   profileCredentialsFile,
   readProfileCredentials,
@@ -253,6 +256,33 @@ describe("refreshProfile", () => {
     expect((await readProfileCredentials(home, "lab"))?.access_token).toBe(OLD_ACCESS);
   });
 
+  it("a server that never answers: given up within the lock's bound, however long the caller asked; the file kept, the lock released", async () => {
+    answer = () => {};
+    await writeProfileCredentials(home, "lab", due());
+    const text = readFileSync(profileCredentialsFile(home, "lab"), "utf8");
+    const started = Date.now();
+    const e = await refusal(
+      refreshProfile(home, "lab", origin, { timeoutMs: 60_000, testing: { lockedRequestMs: 300 } }),
+    );
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(e).toBeInstanceOf(TransportError);
+    expect(e).toMatchObject({ code: "broken" });
+    expect(posts).toHaveLength(1);
+    expect(readFileSync(profileCredentialsFile(home, "lab"), "utf8")).toBe(text);
+    expect(existsSync(`${profileCredentialsFile(home, "lab")}.lock`)).toBe(false);
+  });
+
+  it("a shorter limit asked by the caller: kept", async () => {
+    answer = () => {};
+    await writeProfileCredentials(home, "lab", due());
+    const started = Date.now();
+    const e = await refusal(
+      refreshProfile(home, "lab", origin, { timeoutMs: 300, testing: { lockedRequestMs: 60_000 } }),
+    );
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(e).toMatchObject({ code: "broken" });
+  });
+
   it("two commands due at once: one refresh, and both end with its token", async () => {
     await writeProfileCredentials(home, "lab", due());
     answer = (res) =>
@@ -279,6 +309,12 @@ describe("refreshProfile", () => {
 });
 
 describe("withProfileLock", () => {
+  it("a request holding it, with the rest done holding it, ends before it counts as left", () => {
+    // Raising LOCKED_REQUEST_MS alone, or shrinking the margin below the file work's, fails here.
+    expect(LOCKED_REQUEST_MS + LOCKED_WORK_MARGIN_MS).toBeLessThanOrEqual(LOCK_STALE_MS);
+    expect(LOCKED_WORK_MARGIN_MS).toBeGreaterThanOrEqual(10_000);
+  });
+
   it("held by another: waited for, then busy", async () => {
     await writeProfileCredentials(home, "lab", signedIn());
     writeFileSync(`${profileCredentialsFile(home, "lab")}.lock`, "1 x\n", { mode: 0o600 });

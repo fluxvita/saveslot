@@ -4,7 +4,7 @@
 //
 // Outside the boundary only, each checked by its shape, never trusted by the field it came from:
 // IDs as the kernel writes them, versions, paging handles, slot / table / field names as the spec
-// allows them (07-schema-evolution «名字»), canonical decimal numbers where the renderer says a
+// allows them (07-schema-evolution «名字»), profile names as 06 §2 allows them, a device sign-in's user code, canonical decimal numbers where the renderer says a
 // number stands, JSON numbers, booleans and null, UTC moments the service recorded, and contract
 // codes from a set the renderer gives. A value of another shape goes inside, whatever it looks
 // like. The strings of a stored value always go inside, even when they look like an ID (the
@@ -54,6 +54,10 @@ const SHAPES = {
   handle: /^cur_[A-Za-z0-9_-]{1,1024}\.[A-Za-z0-9_-]{43}$/,
   // Slot, table and field names: a letter, then letters, digits, underscores; at most 63.
   name: /^[A-Za-z][A-Za-z0-9_]{0,62}$/,
+  // A profile's name (06 §2): 1 to 32 of a-z, 0-9 and -, not starting with -.
+  profile: /^[a-z0-9][a-z0-9-]{0,31}$/,
+  // A device sign-in's user code as `saveslot login` takes it: XXXX-XXXX of capitals.
+  userCode: /^[A-Z]{4}-[A-Z]{4}$/,
   // A qualified table name.
   table: /^[A-Za-z][A-Za-z0-9_]{0,62}(?:\.[A-Za-z][A-Za-z0-9_]{0,62})?$/,
   // Canonical decimal text.
@@ -71,6 +75,8 @@ export const id = (v: string): Part => shaped(SHAPES.id.test(v), v);
 export const handle = (v: string): Part => shaped(SHAPES.handle.test(v), v);
 export const name = (v: string): Part => shaped(SHAPES.name.test(v), v);
 export const table = (v: string): Part => shaped(SHAPES.table.test(v), v);
+export const profile = (v: string): Part => shaped(SHAPES.profile.test(v), v);
+export const userCode = (v: string): Part => shaped(SHAPES.userCode.test(v), v);
 export const time = (v: string): Part =>
   shaped(SHAPES.time.test(v) && !Number.isNaN(Date.parse(v)), v);
 /** A moment as a wall clock shows it, `YYYY-MM-DD HH:mm`: made from a recorded moment here. */

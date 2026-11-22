@@ -13,6 +13,8 @@
 //   are used. A refresh's answer is written before its access token is used; when that write
 //   fails the sign-in is over (the old refresh token is spent), and the new tokens are dropped
 //   rather than used once and lost.
+// - A request made holding the lock ends within LOCKED_REQUEST_MS: a lock held longer than
+//   LOCK_STALE_MS is taken by the next command, which would then use the same refresh token.
 // - Tokens are in no error message.
 
 import { constants } from "node:fs";
@@ -51,6 +53,18 @@ export const REFRESH_MARGIN_MS = 60_000;
 export const LOCK_STALE_MS = 30_000;
 /** How long a command waits for another's lock. */
 export const LOCK_WAIT_MS = 10_000;
+/**
+ * The longest a request made holding the profile's lock may take (06-cli §2). With
+ * LOCKED_WORK_MARGIN_MS for the rest of what is done holding it (reading the file again, writing
+ * the new pair: a temporary file, fsync, rename, the directory's fsync), it stays within
+ * LOCK_STALE_MS: `LOCKED_REQUEST_MS + LOCKED_WORK_MARGIN_MS <= LOCK_STALE_MS`, pinned by a test.
+ */
+export const LOCKED_REQUEST_MS = 20_000;
+export const LOCKED_WORK_MARGIN_MS = 10_000;
+
+/** A request's time limit holding the lock: the caller's when shorter, never longer than `bound`. */
+export const lockedTimeout = (asked: number | undefined, bound = LOCKED_REQUEST_MS): number =>
+  asked === undefined ? bound : Math.min(asked, bound);
 
 export interface ProfileCredentials {
   readonly server: string;
@@ -233,12 +247,20 @@ async function mine(home: string, profile: string, server: string): Promise<Prof
  *   (only `logout` removes it).
  * - The new tokens cannot be written: `refresh_unsaved`; they are not used.
  * - The server not reachable, or its answer no OAuth answer: the TransportError as it came.
+ * - `timeoutMs` only shortens the token request's limit: it holds the lock, so it ends within
+ *   LOCKED_REQUEST_MS whatever is asked; a request out of time is a TransportError, the file kept.
  */
 export async function refreshProfile(
   home: string,
   profile: string,
   server: string,
-  o: { readonly rejected?: string; readonly now?: () => number; readonly timeoutMs?: number } = {},
+  o: {
+    readonly rejected?: string;
+    readonly now?: () => number;
+    readonly timeoutMs?: number;
+    /** Tests only: LOCKED_REQUEST_MS replaced. */
+    readonly testing?: { readonly lockedRequestMs?: number };
+  } = {},
 ): Promise<string> {
   const now = o.now ?? Date.now;
   const usable = (c: ProfileCredentials) => c.access_token !== o.rejected && fresh(c, now());
@@ -257,7 +279,7 @@ export async function refreshProfile(
           ["refresh_token", c.refresh_token],
           ["client_id", CLI_CLIENT_ID],
         ]),
-        ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
+        timeoutMs: lockedTimeout(o.timeoutMs, o.testing?.lockedRequestMs),
       });
     } catch (e) {
       if (e instanceof OAuthError && e.code === "invalid_grant") {
