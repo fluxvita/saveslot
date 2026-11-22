@@ -9,7 +9,8 @@ import { join } from "node:path";
 import type { ControlDatabase } from "@fluxvita/saveslot-store-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../test-backend/src/index.fixture.ts";
-import { type ServerCommandIO, serverCommand } from "./server-commands.ts";
+import type { ServerCommandIO } from "./server-command-io.ts";
+import { serverCommand } from "./server-commands.ts";
 
 /** A store the test backend opens: the control database of these tests. */
 type TenantStore = Awaited<ReturnType<ReturnType<typeof testBackend>["open"]>>;

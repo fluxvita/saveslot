@@ -211,7 +211,7 @@ export const TEXTS = {
   // `saveslot server …` (06 §4.1 «服务器自部署的运维命令», «服务器模式的配置»). A text names a
   // variable, never its value: a connection URL may hold a password.
   server: {
-    usage: "usage: saveslot server init",
+    usage: "usage: saveslot server init | restore --tenant <tenant>",
     configProblem: (p: ServerConfigProblem) =>
       p.kind === "missing"
         ? `error: ${p.variable} is not set`
@@ -235,6 +235,36 @@ export const TEXTS = {
     controlFormat:
       "error: the control database's tables are of a format this saveslot does not know; nothing was changed",
     controlReady: "The control database's tables are in place",
+    restoreTakesTenant: "saveslot server restore takes --tenant <tenant>, once",
+    restoreServerRunning:
+      "error: a saveslot server is running on this control database; stop it first, then run saveslot server restore again. Nothing was done",
+    restoreControlNotReady:
+      "error: the control database has no tables of this saveslot, or tables of a format it does not know; nothing was done",
+    restoreTenantRefused: (code: "unknown_tenant" | "tenant_not_active") =>
+      code === "unknown_tenant"
+        ? "error: the tenant directory has no such tenant; nothing was done"
+        : "error: the tenant's creation has not finished: there is nothing to restore; nothing was done",
+    restoreFlowRefused: (
+      code: "deletion_backfill_not_implemented" | "import_in_progress" | "log_empty",
+    ) =>
+      ({
+        deletion_backfill_not_implemented:
+          "error: the deletion registry has entries for this tenant, and this saveslot cannot yet make up deletions a restored database lacks; nothing was done",
+        import_in_progress:
+          "error: an import into this tenant is in progress; it must finish first. Nothing was done",
+        log_empty:
+          "error: the tenant's database has no log: put back the backup first. Nothing was done",
+      })[code],
+    restored: (
+      tenant: string,
+      r: { readonly restoreCount: number; readonly logEnd: number; readonly resumed: boolean },
+    ) =>
+      [
+        r.resumed
+          ? `Finished the restore of tenant ${tenant} that an earlier run began`
+          : `Restored tenant ${tenant}`,
+        `Its restore count is ${r.restoreCount}; its log ends at seq ${r.logEnd}. The server can be started`,
+      ].join("\n"),
   },
 
   // `saveslot service install` / `uninstall` (06 §3 step 3, §4.1).

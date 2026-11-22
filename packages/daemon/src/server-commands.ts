@@ -7,6 +7,8 @@
 // checked when it has them. The control database is the deployer's: made beforehand, owned by the
 // service's role; `init` does not create it.
 //
+// `restore` is in server-restore-command.ts.
+//
 // Exit codes (06 §6.2): 5 for a configuration, key file or control database format refused; 7 when
 // the control database cannot be reached; 2 for a usage error.
 
@@ -18,36 +20,32 @@ import {
   initControlPlane,
 } from "@fluxvita/saveslot-service";
 import { type ControlDatabase, openControlDatabase } from "@fluxvita/saveslot-store-postgres";
-import type { CommandIO } from "./commands.ts";
-import {
-  type DatabaseAt,
-  readServerConfig,
-  type ServerConfig,
-  ServerConfigInvalid,
-} from "./server-config.ts";
+import type { ServerCommandIO } from "./server-command-io.ts";
+import { readServerConfig, type ServerConfig, ServerConfigInvalid } from "./server-config.ts";
+import { restoreTarget, type ServerRestoreIO, serverRestore } from "./server-restore-command.ts";
 import { TEXTS } from "./texts.ts";
 
-export interface ServerCommandIO extends CommandIO {
-  /** The process's environment: where the configuration is read from. */
-  readonly env: Readonly<Record<string, string | undefined>>;
-  /** Opens the control database (a test gives one of its own backend's). */
-  readonly openControl?: (at: DatabaseAt) => Promise<ControlDatabase>;
-}
-
-const SUBCOMMANDS = ["init"] as const;
+const SUBCOMMANDS = ["init", "restore"] as const;
 
 /** Runs `saveslot server <argv…>`; resolves with the exit code. */
-export async function serverCommand(argv: readonly string[], io: ServerCommandIO): Promise<number> {
+export async function serverCommand(argv: readonly string[], io: ServerRestoreIO): Promise<number> {
   const [sub, ...rest] = argv;
   if (sub === undefined || !(SUBCOMMANDS as readonly string[]).includes(sub)) {
     io.err(TEXTS.usage(TEXTS.server.usage));
     return 2;
   }
-  try {
-    parseArgs({ args: [...rest], options: {}, strict: true, allowPositionals: false });
-  } catch (e) {
-    io.err(TEXTS.usage((e as Error).message));
-    return 2;
+  let target: Exclude<ReturnType<typeof restoreTarget>, number> | undefined;
+  if (sub === "restore") {
+    const t = restoreTarget(rest, io);
+    if (typeof t === "number") return t;
+    target = t;
+  } else {
+    try {
+      parseArgs({ args: [...rest], options: {}, strict: true, allowPositionals: false });
+    } catch (e) {
+      io.err(TEXTS.usage((e as Error).message));
+      return 2;
+    }
   }
   let config: ServerConfig;
   try {
@@ -57,7 +55,7 @@ export async function serverCommand(argv: readonly string[], io: ServerCommandIO
     for (const p of e.problems) io.err(TEXTS.server.configProblem(p));
     return 5;
   }
-  return serverInit(config, io);
+  return target !== undefined ? serverRestore(config, target, io) : serverInit(config, io);
 }
 
 async function serverInit(config: ServerConfig, io: ServerCommandIO): Promise<number> {

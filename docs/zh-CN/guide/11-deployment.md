@@ -422,7 +422,7 @@ $ saveslot export --encrypt -o saveslot-2026-11.ndjson.age
 
 | 模式 | 怎么触发 |
 |---|---|
-| 服务器模式 | 运维命令 `saveslot server restore <租户>` |
+| 服务器模式 | 运维命令 `saveslot server restore --tenant <租户>` |
 | 本机模式 | `saveslot start --restored` |
 
 恢复流程做的事依次是：在控制面做一个"恢复进行中"的标记并把恢复次数加一；打开租户；追加一条"恢复"事件；按删除登记补删；补做已经到期的物理删除；核对；清掉标记；对外服务。
