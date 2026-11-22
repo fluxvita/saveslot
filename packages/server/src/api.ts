@@ -36,6 +36,7 @@ import {
   runExport,
   runOperation,
   type ServedTenant,
+  type TenantRateLimiter,
 } from "@fluxvita/saveslot-service";
 import { HTTP_STATUS } from "./status.ts";
 
@@ -43,6 +44,8 @@ import { HTTP_STATUS } from "./status.ts";
 export interface ApiContext {
   /** Who a request comes from, and its tenant, lent for the request. */
   readonly callers: CallerResolver;
+  /** The per-tenant request limit (02-architecture §5 «限流与配额»); absent: none. */
+  readonly rateLimit?: TenantRateLimiter;
   readonly cursors: CursorKeys;
   readonly windows: { readonly requestKey: number; readonly idempotencyKey: number };
   readonly now: () => string;
@@ -442,12 +445,19 @@ function insufficientScopeChallenge(e: ContractError): string {
 
 export function sendError(req: IncomingMessage, res: ServerResponse, e: ContractError): number {
   const status = HTTP_STATUS[e.code];
+  const retryAfter = e.detail["retry_after"];
   send(
     req,
     res,
     status,
     { error: errorBody(e) },
-    e.code === "insufficient_scope" ? { "www-authenticate": insufficientScopeChallenge(e) } : {},
+    {
+      ...(e.code === "insufficient_scope"
+        ? { "www-authenticate": insufficientScopeChallenge(e) }
+        : {}),
+      // 05-surfaces §14: `rate_limited`, and `unavailable` when it says when to try again.
+      ...(typeof retryAfter === "number" ? { "retry-after": String(retryAfter) } : {}),
+    },
   );
   return status;
 }
@@ -533,6 +543,8 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
         return;
       }
       const who = caller.principal;
+      // Counted once a request has a tenant, before anything else is done for it.
+      ctx.rateLimit?.take(caller.tenant);
       if (
         ctx.evalClock !== undefined &&
         url.pathname === EVAL_CLOCK_PATH &&

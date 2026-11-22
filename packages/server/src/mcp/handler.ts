@@ -172,6 +172,8 @@ async function call(
     | { readonly result: Record<string, unknown> }
     | { readonly error: Record<string, unknown> };
   try {
+    // A tool call is what the per-tenant limit counts on MCP: refused, it is the tool's error.
+    ctx.rateLimit?.take(tenant.tenant);
     // What MCP does not expose (05 §2) is refused here: the operation itself would take it.
     const withheld =
       Object.keys(args).find((k) => Object.hasOwn(tool.withheld, k)) ?? tool.refuse?.(args);

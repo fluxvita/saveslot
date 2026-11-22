@@ -12,6 +12,7 @@ export * from "./local-connections.ts";
 export * from "./local-init.ts";
 export * from "./local-tenant.ts";
 export * from "./operations.ts";
+export * from "./rate-limit.ts";
 export * from "./secret-file.ts";
 export * from "./server-connections.ts";
 export * from "./server-control-plane.ts";

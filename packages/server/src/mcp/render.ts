@@ -2240,6 +2240,7 @@ const NEXT: ReadonlyMap<string, () => Part[]> = new Map(
     sql_timeout: () =>
       t`The statement took too long: add conditions, a shorter date range, or aggregate, and send it again.`,
     unavailable: () => t`saveslot is not ready; try again shortly.`,
+    rate_limited: () => t`saveslot takes no more of these requests for now; try again shortly.`,
     internal: () =>
       t`An error inside saveslot (the incident is logged); whether this call took effect is not known: read the state it concerns before deciding whether to send it again.`,
     read_first: () => t`Read the row first (saveslot_query), then write with the ver you read.`,
@@ -2584,6 +2585,9 @@ function ownNext(error: R): Part[] | undefined {
           t`, `,
         )}) instead.`
       : t`${tableOf(error["table"])} is a derived table, read-only: write to its base tables instead.`;
+  }
+  if (c === "rate_limited" && int(error["retry_after"]) !== undefined) {
+    return t`saveslot takes no more of these requests for now; try again in ${count(error["retry_after"])} s.`;
   }
   if (c === "too_large" && reason === "ops" && int(error["limit"]) !== undefined) {
     return t`At most ${count(error["limit"])} ops in one write (this one has ${count(error["actual"])}): split it into several writes.`;

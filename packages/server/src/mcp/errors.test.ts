@@ -89,6 +89,15 @@ describe("refusals as text: what the samples do not show", () => {
     );
   });
 
+  it("rate_limited: how long to wait when the service says, else to try again shortly", () => {
+    expect(text({ code: "rate_limited", reason: "quota", retry_after: 12 })).toContain(
+      "saveslot takes no more of these requests for now; try again in 12 s.",
+    );
+    expect(text({ code: "rate_limited", reason: "busy" })).toContain(
+      "saveslot takes no more of these requests for now; try again shortly.",
+    );
+  });
+
   it("sql_timeout: how long it ran, and how to ask for less", () => {
     const out = renderError({ code: "sql_timeout", elapsed_ms: 5000 }, NOW);
     expect(out).toContain(

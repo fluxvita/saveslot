@@ -35,6 +35,8 @@ export interface ConnectionIssuer {
 /** A request's caller: who it is, and its tenant, lent while `fn` runs. */
 export interface ResolvedCaller {
   readonly principal: Principal;
+  /** Its tenant's ID, known before the tenant is lent (what a per-tenant limit counts by). */
+  readonly tenant: ServedTenant["tenant"];
   use<T>(fn: (t: ServedTenant) => Promise<T>): Promise<T>;
 }
 
@@ -73,6 +75,7 @@ export function localCallers(o: {
       if (!("kind" in who)) return who;
       return {
         principal: who,
+        tenant: o.tenant().tenant,
         use: (fn) => fn(localServedTenant(o.tenant(), o.credentials)),
       };
     },

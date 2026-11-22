@@ -933,6 +933,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 - `sql_timeout` 用 422：查询本身代价过高，附缩小条件的提示；不用 408（那是客户端发送超时）。
 - **401 的 `WWW-Authenticate`**：`Bearer resource_metadata="<对外地址>/.well-known/oauth-protected-resource"`；令牌无效或过期时另带 `error="invalid_token"`。远程 MCP 的客户端凭它发现授权服务器（RFC 9728）。本机模式（unix socket、本地令牌）同样返回 401 与 `unauthenticated`，不带 `resource_metadata`。
 - `/mcp` 端点的 401 / 403 同上；除此之外 MCP 的错误都在工具结果里（第 3 节）。
+- **`Retry-After`**：错误带 `retry_after` 时（`rate_limited` 总带，`unavailable` 可重试时带），响应头 `Retry-After` 是同一个整秒数。按租户的限流见 architecture §5「限流与配额」。
 
 ## 15. 只在 HTTP 的端点（管理类操作与授权）
 
