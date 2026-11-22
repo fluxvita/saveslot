@@ -40,7 +40,8 @@ export type Principal =
 
 export interface AuthFailure {
   readonly code: "unauthenticated";
-  readonly reason: "missing" | "invalid" | "revoked";
+  /** 04-contract §16: `expired` for a credential past its expiry (the server mode's sessions). */
+  readonly reason: "missing" | "invalid" | "revoked" | "expired";
 }
 
 /** A hash no token has: what a connection hash not found is compared with. */

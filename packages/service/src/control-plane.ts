@@ -68,3 +68,25 @@ export interface ControlPlane {
     opts?: { readonly kind?: "session" | "connection" },
   ): Promise<number>;
 }
+
+/**
+ * The server mode's control plane: the tenant directory's states, which the service's flows write
+ * (tenant creation, an import's swap). Each call is one transaction of the control database.
+ */
+export interface ServerControl extends ControlPlane {
+  /** Registers a tenant as `creating`; the owner's tenant as it is when it has one (v1: one a user). */
+  registerTenant(e: {
+    readonly id: TenantId;
+    readonly owner: UserId;
+    readonly ref: TenantRef;
+  }): Promise<TenantEntry>;
+  /** Marks the tenant `active`; on an active tenant, nothing. */
+  activateTenant(id: TenantId): Promise<void>;
+  /** Records the database an import stages into; `null` forgets it. */
+  setStaging(id: TenantId, database: string | null): Promise<void>;
+  /**
+   * In one transaction, the staging database becomes the tenant's database and is forgotten
+   * (02-architecture §8, import step ⑤); refused when there is none.
+   */
+  swapInStaging(id: TenantId): Promise<void>;
+}

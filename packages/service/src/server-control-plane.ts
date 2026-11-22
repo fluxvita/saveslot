@@ -23,12 +23,13 @@ import {
   isCount,
   isName,
   type ReadTx,
+  type TenantRef,
   type Tx,
 } from "@fluxvita/saveslot-kernel";
 import type {
-  ControlPlane,
   CredentialEntry,
   PrincipalId,
+  ServerControl,
   TenantEntry,
   TenantId,
   UserId,
@@ -97,13 +98,20 @@ CREATE TABLE anchor_deletions (
  *   expiry not a canonical instant).
  * - `already_exists`: a credential of that hash is there already.
  * - `unknown_tenant`: no tenant of that ID in the directory.
+ * - `tenant_taken`: another owner's tenant has that ID, or the database is one a tenant of that cell
+ *   has, as its own or as staging.
+ * - `invalid_database`: a database name not of a PostgreSQL database's shape, or the server's own.
+ * - `no_staging`: a swap asked of a tenant with no staging database.
  */
 export type ControlPlaneErrorCode =
   | "control_format_mismatch"
   | "control_not_initialized"
   | "invalid_credential"
   | "already_exists"
-  | "unknown_tenant";
+  | "unknown_tenant"
+  | "tenant_taken"
+  | "invalid_database"
+  | "no_staging";
 
 export class ControlPlaneError extends Error {
   override readonly name = "ControlPlaneError";
@@ -116,6 +124,44 @@ export class ControlPlaneError extends Error {
 
 /** The advisory lock initializations take turns on: two processes starting at once. */
 const INIT_LOCK = 0x5ab05107;
+/**
+ * The advisory lock the directory's writes of database names take turns on: a name is looked for
+ * among the tenants' databases and staging databases, then written, and two such writes at once
+ * must not both find it free (READ COMMITTED sees no row another has not committed).
+ */
+const NAMES_LOCK = 0x5ab05108;
+
+/**
+ * A database's name as the PostgreSQL backend takes it: the same as store-postgres's
+ * DATABASE_NAME, which this package may not import (02-architecture §11); a test compares the two.
+ */
+export const DATABASE_NAME = /^[a-z][a-z0-9_]{0,62}$/;
+/** The server's own databases: never a tenant's. */
+const SERVER_DATABASES: ReadonlySet<string> = new Set(["postgres", "template0", "template1"]);
+
+function checkDatabase(name: string): void {
+  if (!DATABASE_NAME.test(name) || SERVER_DATABASES.has(name)) {
+    throw new ControlPlaneError(
+      "invalid_database",
+      `${JSON.stringify(name)} is not a tenant's database`,
+    );
+  }
+}
+
+/** A tenant of that cell has that database, as its own or as staging (`but` left out of the latter). */
+async function databaseTaken(
+  tx: ReadTx,
+  cell: string,
+  database: string,
+  but: TenantId | null,
+): Promise<boolean> {
+  const r = await tx.query(
+    `SELECT 1 FROM tenants WHERE cell = $1
+       AND (database = $2 OR (staging_database = $2 AND id IS DISTINCT FROM $3))`,
+    [cell, database, but],
+  );
+  return r.rows.length > 0;
+}
 
 const HASH = /^[0-9a-f]{64}$/;
 /** An instant as `Date.prototype.toISOString` writes it. */
@@ -195,7 +241,7 @@ const tenantEntry = (r: TenantRow): TenantEntry => ({
  * The server mode's control plane over the control database. Had only from `initControlPlane` or
  * `openControlPlane`, which check the database's format first.
  */
-export class ServerControlPlane implements ControlPlane {
+export class ServerControlPlane implements ServerControl {
   readonly #db: ControlDb;
   readonly anchors: AnchorStore;
 
@@ -225,6 +271,107 @@ export class ServerControlPlane implements ControlPlane {
       ]),
     );
     return r.rows[0] === undefined ? undefined : tenantEntry(r.rows[0]);
+  }
+
+  async registerTenant(e: {
+    readonly id: TenantId;
+    readonly owner: UserId;
+    readonly ref: TenantRef;
+  }): Promise<TenantEntry> {
+    if (e.ref.kind !== "postgres") throw new Error("a server tenant's storage is a database");
+    const { cell, database } = e.ref;
+    checkDatabase(database);
+    return this.#db.write(async (tx) => {
+      await tx.query("SELECT pg_advisory_xact_lock($1)", [NAMES_LOCK]);
+      const own = await tx.query<TenantRow>(
+        "SELECT id, owner, cell, database, state FROM tenants WHERE owner = $1",
+        [e.owner],
+      );
+      if (own.rows[0] !== undefined) return tenantEntry(own.rows[0]);
+      // Another tenant's staging database is not in the unique constraint on databases.
+      if (await databaseTaken(tx, cell, database, null)) {
+        throw new ControlPlaneError("tenant_taken", "the database is another tenant's");
+      }
+      // An owner, an ID or a database taken: nothing inserted. The owner's row is then its tenant;
+      // none means the ID or the database is another owner's.
+      await tx.query(
+        `INSERT INTO tenants (id, owner, cell, database, state) VALUES ($1, $2, $3, $4, 'creating')
+           ON CONFLICT DO NOTHING`,
+        [e.id, e.owner, cell, database],
+      );
+      const r = await tx.query<TenantRow>(
+        "SELECT id, owner, cell, database, state FROM tenants WHERE owner = $1",
+        [e.owner],
+      );
+      if (r.rows[0] === undefined) {
+        throw new ControlPlaneError("tenant_taken", "the tenant ID or database is another's");
+      }
+      return tenantEntry(r.rows[0]);
+    });
+  }
+
+  async activateTenant(id: TenantId): Promise<void> {
+    await this.#updateTenant(id, "UPDATE tenants SET state = 'active' WHERE id = $1 RETURNING id", [
+      id,
+    ]);
+  }
+
+  async setStaging(id: TenantId, database: string | null): Promise<void> {
+    if (database === null) {
+      await this.#updateTenant(
+        id,
+        "UPDATE tenants SET staging_database = NULL WHERE id = $1 RETURNING id",
+        [id],
+      );
+      return;
+    }
+    checkDatabase(database);
+    await this.#db.write(async (tx) => {
+      await tx.query("SELECT pg_advisory_xact_lock($1)", [NAMES_LOCK]);
+      const t = await tx.query<{ cell: string }>("SELECT cell FROM tenants WHERE id = $1", [id]);
+      if (t.rows[0] === undefined) throw new ControlPlaneError("unknown_tenant", `no tenant ${id}`);
+      // An import writes into its staging database before the swap: never a database in use.
+      if (await databaseTaken(tx, t.rows[0].cell, database, id)) {
+        throw new ControlPlaneError("tenant_taken", "the database is a tenant's of that cell");
+      }
+      await tx.query("UPDATE tenants SET staging_database = $2 WHERE id = $1", [id, database]);
+    });
+  }
+
+  async swapInStaging(id: TenantId): Promise<void> {
+    await this.#db.write(async (tx) => {
+      await tx.query("SELECT pg_advisory_xact_lock($1)", [NAMES_LOCK]);
+      const clash = await tx.query(
+        `SELECT 1 FROM tenants t JOIN tenants o ON o.cell = t.cell AND o.id <> t.id
+           WHERE t.id = $1 AND o.database = t.staging_database`,
+        [id],
+      );
+      if (clash.rows.length > 0) {
+        throw new ControlPlaneError("tenant_taken", "the staging database is another tenant's");
+      }
+      const r = await tx.query(
+        `UPDATE tenants SET database = staging_database, staging_database = NULL
+           WHERE id = $1 AND staging_database IS NOT NULL RETURNING id`,
+        [id],
+      );
+      if (r.rows.length > 0) return;
+      const t = await tx.query("SELECT 1 FROM tenants WHERE id = $1", [id]);
+      throw t.rows.length === 0
+        ? new ControlPlaneError("unknown_tenant", "no such tenant")
+        : new ControlPlaneError("no_staging", "the tenant has no staging database");
+    });
+  }
+
+  /** Runs an UPDATE of one tenant's row, `RETURNING id`; refuses a tenant not there. */
+  async #updateTenant(
+    id: TenantId,
+    sql: string,
+    params: readonly (string | null)[],
+  ): Promise<void> {
+    await this.#db.write(async (tx) => {
+      const r = await tx.query(sql, params);
+      if (r.rows.length === 0) throw new ControlPlaneError("unknown_tenant", `no tenant ${id}`);
+    });
   }
 
   async credential(hash: string): Promise<CredentialEntry | undefined> {

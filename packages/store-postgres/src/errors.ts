@@ -7,6 +7,7 @@
  *   the cell's maintenance database could not be connected to, or CREATE DATABASE was refused.
  * - `store_not_found`: no database of that name, or an empty one, and `create` was not asked.
  * - `not_a_store`: the database holds something, and it is not a saveslot storage.
+ * - `tenant_storage`: the database is a saveslot storage, opened as the control database.
  * - `unsupported_server_version`, `bad_encoding`, `bad_collation`, `session_settings_mismatch`:
  *   the database is not one replay would be the same on (02-architecture §8).
  * - `format_too_old`, `format_too_new`: the storage format is not the kernel's.
@@ -26,6 +27,7 @@ export type ErrorCode =
   | "database_not_created"
   | "store_not_found"
   | "not_a_store"
+  | "tenant_storage"
   | "unsupported_server_version"
   | "bad_encoding"
   | "bad_collation"

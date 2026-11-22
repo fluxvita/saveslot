@@ -10,11 +10,16 @@ import { join } from "node:path";
 import type { TenantStore } from "@fluxvita/saveslot-kernel";
 import { anchorStoreConformance, deletionEntry } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { TEST_BACKEND, testBackend } from "../../test-backend/src/index.fixture.ts";
+import {
+  POSTGRES_DATABASE_NAME,
+  TEST_BACKEND,
+  testBackend,
+} from "../../test-backend/src/index.fixture.ts";
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import {
   CONTROL_FORMAT,
   ControlPlaneError,
+  DATABASE_NAME,
   initControlPlane,
   openControlPlane,
   type ServerControlPlane,
@@ -310,6 +315,199 @@ describe("the tenant directory's databases", () => {
   );
 });
 
+describe("the tenant directory's states", () => {
+  const ref = (database: string) => ({ kind: "postgres", cell: "cell_a", database }) as const;
+  const OTHER = `u_${"2".repeat(26)}` as const;
+  const ID2 = `tn_${"9".repeat(26)}` as const;
+
+  it(
+    "registers a tenant as creating, and gives an owner's tenant as it is when it has one",
+    async () => {
+      const { cp } = await controlPlane();
+      const e = await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_1") });
+      expect(e).toEqual({ id: TENANT, owner: USER, ref: ref("tdb_1"), state: "creating" });
+      expect(await cp.registerTenant({ id: ID2, owner: USER, ref: ref("tdb_2") })).toEqual(e);
+      expect(await cp.tenant(ID2)).toBeUndefined();
+    },
+    T,
+  );
+
+  it(
+    "refuses another owner's tenant ID, or a database of the same cell; takes the name in another cell",
+    async () => {
+      const { cp } = await controlPlane();
+      await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_1") });
+      await expect(
+        cp.registerTenant({ id: TENANT, owner: OTHER, ref: ref("tdb_2") }),
+      ).rejects.toMatchObject({ name: ControlPlaneError.name, code: "tenant_taken" });
+      await expect(
+        cp.registerTenant({ id: ID2, owner: OTHER, ref: ref("tdb_1") }),
+      ).rejects.toMatchObject({ code: "tenant_taken" });
+      expect(await cp.tenantOf(OTHER)).toBeUndefined();
+      const elsewhere = { kind: "postgres", cell: "cell_b", database: "tdb_1" } as const;
+      expect(await cp.registerTenant({ id: ID2, owner: OTHER, ref: elsewhere })).toMatchObject({
+        id: ID2,
+        ref: elsewhere,
+      });
+    },
+    T,
+  );
+
+  it(
+    "activates a tenant, again without error; refuses a tenant not there",
+    async () => {
+      const { cp } = await controlPlane();
+      await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_1") });
+      await cp.activateTenant(TENANT);
+      await cp.activateTenant(TENANT);
+      expect((await cp.tenant(TENANT))?.state).toBe("active");
+      await expect(cp.activateTenant(ID2)).rejects.toMatchObject({ code: "unknown_tenant" });
+    },
+    T,
+  );
+
+  it(
+    "swaps the staging database in, in one step, and forgets it",
+    async () => {
+      const { cp, db } = await controlPlane();
+      await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_1") });
+      await cp.setStaging(TENANT, "tdb_staging");
+      await cp.swapInStaging(TENANT);
+      expect((await cp.tenant(TENANT))?.ref).toEqual(ref("tdb_staging"));
+      const r = await db.read((tx) =>
+        tx.query<{ s: string | null }>("SELECT staging_database AS s FROM tenants WHERE id = $1", [
+          TENANT,
+        ]),
+      );
+      expect(r.rows[0]?.s).toBeNull();
+    },
+    T,
+  );
+
+  it(
+    "refuses a swap with no staging database, and leaves the tenant as it was",
+    async () => {
+      const { cp } = await controlPlane();
+      await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_1") });
+      await expect(cp.swapInStaging(TENANT)).rejects.toMatchObject({ code: "no_staging" });
+      await cp.setStaging(TENANT, "tdb_staging");
+      await cp.setStaging(TENANT, null);
+      await expect(cp.swapInStaging(TENANT)).rejects.toMatchObject({ code: "no_staging" });
+      expect((await cp.tenant(TENANT))?.ref).toEqual(ref("tdb_1"));
+      await expect(cp.swapInStaging(ID2)).rejects.toMatchObject({ code: "unknown_tenant" });
+      await expect(cp.setStaging(ID2, "x")).rejects.toMatchObject({ code: "unknown_tenant" });
+    },
+    T,
+  );
+});
+
+describe("the tenant directory's database names", () => {
+  it("are checked by the same shape as the PostgreSQL backend's", () => {
+    expect(DATABASE_NAME.source).toBe(POSTGRES_DATABASE_NAME.source);
+    expect(DATABASE_NAME.flags).toBe(POSTGRES_DATABASE_NAME.flags);
+  });
+
+  const ref = (database: string, cell = "cell_a") =>
+    ({ kind: "postgres", cell, database }) as const;
+  const OTHER = `u_${"2".repeat(26)}` as const;
+  const THIRD = `u_${"3".repeat(26)}` as const;
+  const ID2 = `tn_${"9".repeat(26)}` as const;
+  const ID3 = `tn_${"7".repeat(26)}` as const;
+  const staging = async (db: TenantStore, id: string) =>
+    (
+      await db.read((tx) =>
+        tx.query<{ s: string | null }>("SELECT staging_database AS s FROM tenants WHERE id = $1", [
+          id,
+        ]),
+      )
+    ).rows[0]?.s;
+
+  it(
+    "refuses one not of a database's shape, or the server's own, registered or as staging",
+    async () => {
+      const { cp, db } = await controlPlane();
+      await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_1") });
+      for (const bad of [
+        "postgres",
+        "template0",
+        "template1",
+        'a"; DROP DATABASE x; --',
+        "",
+        "Tdb",
+        "1db",
+        "a".repeat(64),
+      ]) {
+        await expect(
+          cp.registerTenant({ id: ID2, owner: OTHER, ref: ref(bad) }),
+          bad,
+        ).rejects.toMatchObject({ name: ControlPlaneError.name, code: "invalid_database" });
+        await expect(cp.setStaging(TENANT, bad), bad).rejects.toMatchObject({
+          code: "invalid_database",
+        });
+      }
+      expect(await cp.tenantOf(OTHER)).toBeUndefined();
+      expect(await staging(db, TENANT)).toBeNull();
+    },
+    T,
+  );
+
+  it(
+    "refuses as staging a database a tenant of the cell has, or another's staging; takes it in another cell",
+    async () => {
+      const { cp, db } = await controlPlane();
+      await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_a") });
+      await cp.registerTenant({ id: ID2, owner: OTHER, ref: ref("tdb_b") });
+      await cp.registerTenant({ id: ID3, owner: THIRD, ref: ref("tdb_c", "cell_b") });
+      await expect(cp.setStaging(TENANT, "tdb_b")).rejects.toMatchObject({ code: "tenant_taken" });
+      await expect(cp.setStaging(TENANT, "tdb_a")).rejects.toMatchObject({ code: "tenant_taken" });
+      await cp.setStaging(ID2, "tdb_s");
+      await expect(cp.setStaging(TENANT, "tdb_s")).rejects.toMatchObject({ code: "tenant_taken" });
+      expect(await staging(db, TENANT)).toBeNull();
+      await cp.setStaging(ID3, "tdb_b");
+      await cp.setStaging(ID3, "tdb_s");
+      expect(await staging(db, ID3)).toBe("tdb_s");
+    },
+    T,
+  );
+
+  it(
+    "refuses to register a database another tenant of the cell has as staging",
+    async () => {
+      const { cp } = await controlPlane();
+      await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_a") });
+      await cp.setStaging(TENANT, "tdb_s");
+      await expect(
+        cp.registerTenant({ id: ID2, owner: OTHER, ref: ref("tdb_s") }),
+      ).rejects.toMatchObject({ code: "tenant_taken" });
+      expect(await cp.tenantOf(OTHER)).toBeUndefined();
+      expect(
+        await cp.registerTenant({ id: ID2, owner: OTHER, ref: ref("tdb_s", "cell_b") }),
+      ).toMatchObject({ id: ID2 });
+    },
+    T,
+  );
+
+  it(
+    "a swap that would take another tenant's database is refused as taken, and changes neither",
+    async () => {
+      const { cp, db } = await controlPlane();
+      await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_a") });
+      await cp.registerTenant({ id: ID2, owner: OTHER, ref: ref("tdb_b") });
+      // Only by hand now that setStaging refuses it: the directory as a bug could leave it.
+      await db.write((tx) =>
+        tx.query("UPDATE tenants SET staging_database = 'tdb_b' WHERE id = $1", [TENANT]),
+      );
+      await expect(cp.swapInStaging(TENANT)).rejects.toMatchObject({
+        name: ControlPlaneError.name,
+        code: "tenant_taken",
+      });
+      expect((await cp.tenant(TENANT))?.ref).toEqual(ref("tdb_a"));
+      expect((await cp.tenant(ID2))?.ref).toEqual(ref("tdb_b"));
+    },
+    T,
+  );
+});
+
 anchorStoreConformance("server control plane", async () => {
   const { cp } = await controlPlane();
   return {
@@ -444,6 +642,40 @@ describe.runIf(TEST_BACKEND === "postgres")("two connections to one control data
       } finally {
         await a.close();
         await b.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a database name registered by one and set as staging by the other at the same time is given to one",
+    async () => {
+      const ref = (database: string) => ({ kind: "postgres", cell: "cell_a", database }) as const;
+      for (let round = 0; round < 10; round++) {
+        const { dir } = await database();
+        const [a, b] = await Promise.all([secondConnection(dir), secondConnection(dir)]);
+        try {
+          const cpa = await initControlPlane(a);
+          const cpb = await openControlPlane(b);
+          await cpa.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_a") });
+          const results = await Promise.allSettled([
+            cpa.registerTenant({
+              id: `tn_${"9".repeat(26)}`,
+              owner: `u_${"2".repeat(26)}`,
+              ref: ref("tdb_x"),
+            }),
+            cpb.setStaging(TENANT, "tdb_x"),
+          ]);
+          expect(
+            results.filter((r) => r.status === "fulfilled"),
+            `round ${round}`,
+          ).toHaveLength(1);
+          const refused = results.find((r) => r.status === "rejected");
+          expect(refused?.reason).toMatchObject({ code: "tenant_taken" });
+        } finally {
+          await a.close();
+          await b.close();
+        }
       }
     },
     T,

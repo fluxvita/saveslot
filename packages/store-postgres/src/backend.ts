@@ -200,44 +200,58 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /** Connects to the tenant's database; with `create`, makes the database first when there is none. */
-  async #connect(cell: PostgresCell, database: string, create: boolean): Promise<Connection> {
-    try {
-      return await Connection.connect(cell, database, this.#make);
-    } catch (e) {
-      if (!(create && e instanceof Gone && e.sqlState === "3D000")) throw e;
-    }
-    const maintenance = cell.maintenanceDatabase ?? "postgres";
-    let admin: Connection;
-    try {
-      admin = await Connection.connect(cell, maintenance, this.#make);
-    } catch (e) {
-      throw new PostgresStoreError(
-        "database_not_created",
-        `the maintenance database ${maintenance} could not be connected to: ${(e as Error).message}`,
-        {
-          cause: e,
-          ...(e instanceof Gone && e.sqlState !== undefined ? { sqlState: e.sqlState } : {}),
-        },
-      );
-    }
-    try {
-      // template0: the only template another encoding or locale than the cluster's can be given
-      // with. LOCALE is the libc one, for what the builtin provider does not cover.
-      await admin.run(
-        `CREATE DATABASE ${quoted(database)} TEMPLATE template0 ENCODING 'UTF8'
-           LOCALE_PROVIDER builtin BUILTIN_LOCALE '${BUILTIN_LOCALE}' LOCALE 'C'`,
-      );
-    } catch (e) {
-      // Made by another opener in between (42P04, or 23505 on the catalog's index when the two
-      // ran at once): opened below like any that exists.
-      if (!(e instanceof Refused && ["42P04", "23505"].includes(e.sqlState))) {
-        throw storeError(e, "database_not_created");
-      }
-    } finally {
-      await admin.end();
-    }
-    return await Connection.connect(cell, database, this.#make);
+  #connect(cell: PostgresCell, database: string, create: boolean): Promise<Connection> {
+    return connectOrCreate(cell, database, create, this.#make);
   }
+}
+
+/**
+ * Connects to a database of the cell; with `create`, makes the database first when there is none
+ * (UTF8, the builtin provider's locale: §8). A tenant's storage and the control database open
+ * through it.
+ */
+export async function connectOrCreate(
+  cell: PostgresCell,
+  database: string,
+  create: boolean,
+  make?: MakeClient,
+): Promise<Connection> {
+  try {
+    return await Connection.connect(cell, database, make);
+  } catch (e) {
+    if (!(create && e instanceof Gone && e.sqlState === "3D000")) throw e;
+  }
+  const maintenance = cell.maintenanceDatabase ?? "postgres";
+  let admin: Connection;
+  try {
+    admin = await Connection.connect(cell, maintenance, make);
+  } catch (e) {
+    throw new PostgresStoreError(
+      "database_not_created",
+      `the maintenance database ${maintenance} could not be connected to: ${(e as Error).message}`,
+      {
+        cause: e,
+        ...(e instanceof Gone && e.sqlState !== undefined ? { sqlState: e.sqlState } : {}),
+      },
+    );
+  }
+  try {
+    // template0: the only template another encoding or locale than the cluster's can be given
+    // with. LOCALE is the libc one, for what the builtin provider does not cover.
+    await admin.run(
+      `CREATE DATABASE ${quoted(database)} TEMPLATE template0 ENCODING 'UTF8'
+         LOCALE_PROVIDER builtin BUILTIN_LOCALE '${BUILTIN_LOCALE}' LOCALE 'C'`,
+    );
+  } catch (e) {
+    // Made by another opener in between (42P04, or 23505 on the catalog's index when the two
+    // ran at once): opened below like any that exists.
+    if (!(e instanceof Refused && ["42P04", "23505"].includes(e.sqlState))) {
+      throw storeError(e, "database_not_created");
+    }
+  } finally {
+    await admin.end();
+  }
+  return await Connection.connect(cell, database, make);
 }
 
 async function one<R>(conn: Connection, sql: string, params: readonly SqlValue[] = []): Promise<R> {
@@ -248,7 +262,7 @@ async function one<R>(conn: Connection, sql: string, params: readonly SqlValue[]
  * The server's version, asked by itself: the questions after it use what only this version's
  * catalogs have, and an older server would refuse them with an error that names a column.
  */
-async function checkVersion(conn: Connection): Promise<void> {
+export async function checkVersion(conn: Connection): Promise<void> {
   const { version } = await one<{ version: number }>(
     conn,
     "SELECT current_setting('server_version_num')::int4 AS version",
@@ -295,7 +309,7 @@ async function checkDatabase(conn: Connection, where: string): Promise<void> {
   }
 }
 
-async function hasMeta(conn: Connection): Promise<boolean> {
+export async function hasMeta(conn: Connection): Promise<boolean> {
   return (await one<{ ok: boolean }>(conn, "SELECT to_regclass('public.meta') IS NOT NULL AS ok"))
     .ok;
 }

@@ -9,4 +9,5 @@ export {
   WRITE_LOCK,
 } from "./backend.ts";
 export type { PostgresCell } from "./connection.ts";
+export { type ControlDatabase, openControlDatabase } from "./control-database.ts";
 export { type ErrorCode, PostgresStoreError } from "./errors.ts";

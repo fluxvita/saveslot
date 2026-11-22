@@ -36,6 +36,9 @@ import {
 import { PostgresBackend } from "@fluxvita/saveslot-store-postgres";
 import { cellFromEnv, testDatabase } from "../../store-postgres/src/testing/server.fixture.ts";
 
+/** What PostgreSQL takes as a database's name here, for the packages that keep a copy to compare. */
+export { DATABASE_NAME as POSTGRES_DATABASE_NAME } from "@fluxvita/saveslot-store-postgres";
+
 function durabilityFromEnv(): Durability {
   const v = process.env["SAVESLOT_TEST_DURABILITY"];
   if (v === undefined || v === "") return "pglite-default";
