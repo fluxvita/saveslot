@@ -149,6 +149,7 @@ const ownFlag = (o: Options, k: string): boolean => o.own[k] === true;
 
 import { exportCommand } from "./export.ts";
 import type { Terminal } from "./export-crypto.ts";
+import { importCommand } from "./import.ts";
 import {
   LoginEnded,
   profileCredentialsFile,
@@ -992,6 +993,20 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
       undefined,
       TEXTS.exportBroken,
     ),
+  ],
+  [
+    "import",
+    command(["passphrase-file", "yes"], async (o, client, io, env) => {
+      const r = await importCommand(
+        { files: o.args, passphraseFile: ownString(o, "passphrase-file"), yes: ownFlag(o, "yes") },
+        client,
+        {
+          ...io,
+          sayErr: (lines) => io.err(`${render(lines, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`),
+        },
+      );
+      return { json: r.json, lines: r.lines };
+    }),
   ],
   [
     "verify",

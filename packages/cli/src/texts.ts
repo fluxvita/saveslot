@@ -48,6 +48,7 @@ export const TEXTS = {
       "  sources [list | search <words> | get <s_…>] [--slot s] [--kind k] [--from t] [--to t]",
       "  verify                    check the log: chain, checksums, index, gaps",
       "  export [-o file [--force]] [--after-seq n] [--include-pending-deletion [--yes]] [--encrypt [--passphrase-file p]]",
+      "  import <file>… [--passphrase-file p] [--yes]",
       "                            the whole log as NDJSON; --encrypt: an age file under a passphrase",
       "  setup [--template t]… [--host claude-code|codex]… [--scope …] [--timezone z] [--yes]",
       "                            first use: init, start, a slot, and the hosts found",
@@ -481,6 +482,53 @@ export const TEXTS = {
   ),
   exportPendingAsk: s(
     "this export will hold content that is waiting to be deleted: after the grace period ends it stays in the export file. Export it anyway?",
+  ),
+  importArgs: s("give the export files, in order: saveslot import <file>…"),
+  importFileUnreadable: (n: number) => s(`file ${n} cannot be read`),
+  importNotAnExport: (n: number) =>
+    s(`file ${n} is not a saveslot export (its first line is no manifest)`),
+  importNotFromStart: s(
+    "the first file does not start at the beginning of the log (it is a continuation): give the files from the first",
+  ),
+  importOtherTenant: (n: number) =>
+    s(`file ${n} is an export of another tenant than the first file`),
+  importOtherExport: (n: number) =>
+    s(`file ${n} is of another event format or restore count than the first file`),
+  importSegmentOrder: (n: number) =>
+    s(
+      `file ${n} does not go on where the file before it ends: give the files in order, none missing`,
+    ),
+  importPassphraseNotNeeded: s("--passphrase-file is for age files; none of these is one"),
+  importPassphrase: s("Passphrase of the export:"),
+  importAnotherPassphrase: (n: number) =>
+    s(`That passphrase does not open file ${n}. Its passphrase:`),
+  importPassphraseWrong: (n: number) =>
+    s(
+      `error: the passphrase does not open file ${n} (or it is not a whole age file); nothing was sent`,
+    ),
+  importNoPassphraseSource: s(
+    "an age file and no passphrase: give --passphrase-file <path>, or run where there is a terminal",
+  ),
+  importFrom: s("from tenant"),
+  importEvents: s("events"),
+  importFiles: s("file(s)"),
+  importExportedAt: s("exported at"),
+  importWithPending: s("with content still to be deleted (in its grace period)"),
+  importNoPending: s("without content still to be deleted"),
+  importLaterDeletions: s(
+    "Deletions made where it came from after this export are not in it: make them again here.",
+  ),
+  importNoTerminal: s("no terminal to confirm the import on: give --yes. Nothing was sent."),
+  importAsk: s("Import this into the empty tenant here?"),
+  imported: s("imported"),
+  importDisabled: s("principals disabled (the users and connection instances of before):"),
+  importTombstones: s("deletions carried out:"),
+  importCarried: s("still to be carried out:"),
+  importNotImported: s("not brought over:"),
+  importNotImportedKind: (x: string) =>
+    s(x === "read_log" ? "the read log" : x === "credentials" ? "credentials" : "external files"),
+  importReissue: s(
+    "Connect each host and script again: saveslot connect <host> --name <name> (or saveslot setup).",
   ),
   exportNoPassphraseSource: s(
     "not run: no terminal to ask the passphrase on. Give --passphrase-file <path> (a password manager's output as <(pass show saveslot))",

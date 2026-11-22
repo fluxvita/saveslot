@@ -279,6 +279,68 @@ function failed(server: URL | undefined, e: NodeJS.ErrnoException): TransportErr
     : new TransportError("broken", "the connection to the saveslot server failed");
 }
 
+/**
+ * Reads a JSON answer whole: a 2xx gives its value to `done`; a contract error, an answer too large,
+ * cut off or not JSON go to `fail` (06-cli §2: one request, one JSON answer).
+ */
+function readAnswer(
+  res: IncomingMessage,
+  fail: (e: Error) => void,
+  done: (v: unknown) => void,
+): void {
+  let over = false;
+  const stop = (e: Error) => {
+    over = true;
+    fail(e);
+  };
+  const chunks: Buffer[] = [];
+  let size = 0;
+  res.on("data", (c: Buffer) => {
+    size += c.length;
+    if (size > MAX_ANSWER_BYTES) {
+      // Stopped before destroying: destroying emits the events of a cut-off answer.
+      stop(new TransportError("bad_answer", "the answer is too large", res.statusCode));
+      res.destroy();
+      return;
+    }
+    chunks.push(c);
+  });
+  res.on("error", () => stop(new TransportError("broken", "the answer was cut off")));
+  res.on("aborted", () => stop(new TransportError("broken", "the answer was cut off")));
+  res.on("end", () => {
+    if (over) return;
+    const status = res.statusCode ?? 0;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      stop(new TransportError("bad_answer", `an answer that is not JSON (${status})`, status));
+      return;
+    }
+    if (status >= 200 && status < 300) {
+      done(parsed);
+      return;
+    }
+    const error =
+      parsed !== null && typeof parsed === "object" && Object.hasOwn(parsed, "error")
+        ? (parsed as { error: unknown }).error
+        : undefined;
+    if (
+      error !== null &&
+      typeof error === "object" &&
+      !Array.isArray(error) &&
+      Object.hasOwn(error, "code") &&
+      typeof (error as Record<string, unknown>)["code"] === "string"
+    ) {
+      stop(new ContractCallError(status, error as Record<string, unknown>));
+    } else {
+      stop(
+        new TransportError("bad_answer", `an error answer without an error (${status})`, status),
+      );
+    }
+  });
+}
+
 /** Sends one request; resolves with the result of a 2xx answer. */
 export async function request(o: RequestOptions): Promise<unknown> {
   const { headers, body, path, timeoutMs, server } = prepare(o);
@@ -293,59 +355,11 @@ export async function request(o: RequestOptions): Promise<unknown> {
       settle();
       reject(e);
     };
-    const onAnswer = (res: IncomingMessage) => {
-      const chunks: Buffer[] = [];
-      let size = 0;
-      res.on("data", (c: Buffer) => {
-        size += c.length;
-        if (size > MAX_ANSWER_BYTES) {
-          // Settled before destroying: destroying emits the events of a cut-off answer.
-          fail(new TransportError("bad_answer", "the answer is too large", res.statusCode));
-          res.destroy();
-          return;
-        }
-        chunks.push(c);
+    const onAnswer = (res: IncomingMessage) =>
+      readAnswer(res, fail, (v) => {
+        settle();
+        resolve(v);
       });
-      res.on("error", () => fail(new TransportError("broken", "the answer was cut off")));
-      res.on("aborted", () => fail(new TransportError("broken", "the answer was cut off")));
-      res.on("end", () => {
-        if (settled) return;
-        const status = res.statusCode ?? 0;
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        } catch {
-          fail(new TransportError("bad_answer", `an answer that is not JSON (${status})`, status));
-          return;
-        }
-        if (status >= 200 && status < 300) {
-          settle();
-          resolve(parsed);
-          return;
-        }
-        const error =
-          parsed !== null && typeof parsed === "object" && Object.hasOwn(parsed, "error")
-            ? (parsed as { error: unknown }).error
-            : undefined;
-        if (
-          error !== null &&
-          typeof error === "object" &&
-          !Array.isArray(error) &&
-          Object.hasOwn(error, "code") &&
-          typeof (error as Record<string, unknown>)["code"] === "string"
-        ) {
-          fail(new ContractCallError(status, error as Record<string, unknown>));
-        } else {
-          fail(
-            new TransportError(
-              "bad_answer",
-              `an error answer without an error (${status})`,
-              status,
-            ),
-          );
-        }
-      });
-    };
     const req = open(o, server, path, headers, onAnswer);
     const timer = setTimeout(() => {
       fail(late(server));
@@ -551,5 +565,74 @@ export async function oauthPost(o: {
     req.on("error", (e: NodeJS.ErrnoException) => fail(failed(server, e)));
     req.write(body);
     req.end();
+  });
+}
+
+/** How long the answer to an upload may take once its body is sent (an import replays the log). */
+export const UPLOAD_ANSWER_MS = 10 * 60_000;
+
+/**
+ * Sends one request whose body is `upload`, streamed as it comes (`import`: 05-surfaces §13), and
+ * resolves with the result of its JSON answer. No time limit while the body is sent (it may be
+ * large); once it is all sent, the answer is waited for up to `timeoutMs` (UPLOAD_ANSWER_MS when
+ * not given). When `upload` fails on the way (a file that does not read, an age file found cut
+ * short at its end), the request is destroyed before its end is sent, so the server is left with a
+ * body that is not whole, and the source's error is what this rejects with.
+ */
+export async function requestUpload(
+  o: RequestOptions & {
+    readonly upload: AsyncIterable<Uint8Array>;
+    readonly contentType: "application/x-ndjson";
+  },
+): Promise<unknown> {
+  if (o.body !== undefined) throw new ClientUsageError("an upload has no JSON body as well");
+  const { headers, path, server } = prepare({ ...o, timeoutMs: o.timeoutMs ?? UPLOAD_ANSWER_MS });
+  const timeoutMs = o.timeoutMs ?? UPLOAD_ANSWER_MS;
+  headers["content-type"] = o.contentType;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const settle = () => {
+      settled = true;
+      clearTimeout(timer);
+    };
+    const fail = (e: Error) => {
+      if (settled) return;
+      settle();
+      reject(e);
+    };
+    const req = open(o, server, path, headers, (res) =>
+      readAnswer(res, fail, (v) => {
+        if (settled) return;
+        settle();
+        resolve(v);
+      }),
+    );
+    req.on("error", (e: NodeJS.ErrnoException) => fail(failed(server, e)));
+    void (async () => {
+      try {
+        for await (const chunk of o.upload) {
+          // Answered already (refused early): nothing more is sent.
+          if (settled) return;
+          if (!req.write(chunk)) {
+            await new Promise<void>((r) => {
+              req.once("drain", r);
+              req.once("close", r);
+            });
+          }
+        }
+      } catch (e) {
+        // Not whole: the request destroyed first, so no end of the body ever reaches the server.
+        req.destroy();
+        fail(e as Error);
+        return;
+      }
+      if (settled) return;
+      req.end();
+      timer = setTimeout(() => {
+        fail(late(server));
+        req.destroy();
+      }, timeoutMs);
+    })();
   });
 }

@@ -35,6 +35,7 @@ import type {
   ExportParams,
   HistoryParams,
   HistoryResult,
+  ImportResult,
   LogEndResult,
   LogVerifyResult,
   PendingDetailResult,
@@ -69,6 +70,7 @@ import {
   type RequestOptions,
   request,
   requestStream,
+  requestUpload,
   TransportError,
 } from "./transport.ts";
 
@@ -170,6 +172,12 @@ export interface Client {
    * cut off is never taken for a whole one.
    */
   export(p?: ExportParams): Promise<ExportStream>;
+  /**
+   * Loads an export into the empty tenant (04-contract «管理类操作» `import`): `body` is the export's
+   * plain bytes, its continuations one after another; streamed as it comes. A `body` that fails on
+   * the way is not sent whole: the request is destroyed, and its error is thrown.
+   */
+  import(body: AsyncIterable<Uint8Array>, p?: { task?: string }): Promise<ImportResult>;
 }
 
 export interface ExportStream {
@@ -331,6 +339,17 @@ export function createClient(o: ClientOptions): Client {
         typeof rest["after_seq"] === "number" ? rest["after_seq"] : undefined,
       );
     },
+    import: async (body, p = {}) =>
+      requestUpload({
+        ...(o.server !== undefined ? { server: o.server } : { socketPath: o.socketPath }),
+        token: o.token,
+        ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
+        method: "POST",
+        path: "/v1/import",
+        upload: body,
+        contentType: "application/x-ndjson",
+        ...(p.task !== undefined ? { task: p.task } : {}),
+      }) as Promise<ImportResult>,
   };
 }
 

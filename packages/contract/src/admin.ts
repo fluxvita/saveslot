@@ -244,3 +244,25 @@ export interface ExportHeader {
   exported_at: Instant;
   pending_deletions: "placeholder" | "included";
 }
+
+/**
+ * 04-contract-types §8 `ImportResult`: an export loaded into an empty tenant. User session only;
+ * the input is the export's bytes (one file, or its continuations in order), no other parameter.
+ */
+export interface ImportResult {
+  tenant_id: string;
+  previous_tenant_id: string;
+  /** The number of events imported. */
+  events: number;
+  /** The `seq` of `tenant.imported`. */
+  seq: number;
+  restore_count: number;
+  principals_disabled: number;
+  slots: number;
+  /** Content blocks already removed when imported. */
+  removed: number;
+  /** Deletions given their tombstones (`executed`); still to be carried out (`carried`). */
+  pending_deletions: { executed: number; carried: number };
+  exported_at: Instant;
+  not_imported: Array<"read_log" | "credentials" | "external_files">;
+}
