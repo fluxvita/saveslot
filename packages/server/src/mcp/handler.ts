@@ -297,7 +297,7 @@ export function handleMcp(
     try {
       const resolved = await ctx.callers.resolve(header(req, "authorization"));
       if (!("principal" in resolved)) {
-        finish(sendUnauthenticated(req, res, resolved));
+        finish(sendUnauthenticated(req, res, resolved, ctx.resourceMetadata));
         return;
       }
       const who = resolved.principal;

@@ -44,6 +44,11 @@ import { HTTP_STATUS } from "./status.ts";
 export interface ApiContext {
   /** Who a request comes from, and its tenant, lent for the request. */
   readonly callers: CallerResolver;
+  /**
+   * The protected resource metadata's URL (`<public URL>/.well-known/oauth-protected-resource`),
+   * given in each 401's challenge (05-surfaces §14, RFC 9728): the server mode's; none locally.
+   */
+  readonly resourceMetadata?: string;
   /** The per-tenant request limit (02-architecture §5 «限流与配额»); absent: none. */
   readonly rateLimit?: TenantRateLimiter;
   readonly cursors: CursorKeys;
@@ -463,13 +468,25 @@ export function sendError(req: IncomingMessage, res: ServerResponse, e: Contract
 }
 
 /**
- * The 401 of a request whose caller is not resolved (05-surfaces §14, RFC 6750 §3.1): a missing
- * credential is told only the scheme; any other reason, as a token that is not good.
+ * The 401 of a request whose caller is not resolved (05-surfaces §14, RFC 6750 §3.1, RFC 9728 §5.1):
+ * a missing credential is told only the scheme; any other reason, as a token that is not good; and
+ * in the server mode, either way, where the resource's metadata is.
  */
+export function unauthenticatedChallenge(failure: AuthFailure, resourceMetadata?: string): string {
+  const params = [
+    ...(failure.reason === "missing" ? [] : ['error="invalid_token"']),
+    ...(resourceMetadata !== undefined
+      ? [`resource_metadata="${resourceMetadata.replace(/[\\"]/g, "\\$&")}"`]
+      : []),
+  ];
+  return params.length === 0 ? "Bearer" : `Bearer ${params.join(", ")}`;
+}
+
 export function sendUnauthenticated(
   req: IncomingMessage,
   res: ServerResponse,
   failure: AuthFailure,
+  resourceMetadata?: string,
 ): number {
   const status = HTTP_STATUS.unauthenticated;
   send(
@@ -479,9 +496,7 @@ export function sendUnauthenticated(
     {
       error: { code: failure.code, message: "the credential is not good", reason: failure.reason },
     },
-    {
-      "www-authenticate": failure.reason === "missing" ? "Bearer" : 'Bearer error="invalid_token"',
-    },
+    { "www-authenticate": unauthenticatedChallenge(failure, resourceMetadata) },
   );
   return status;
 }
@@ -539,7 +554,7 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
     try {
       const caller = await ctx.callers.resolve(header(req, "authorization"));
       if (!("principal" in caller)) {
-        finish(sendUnauthenticated(req, res, caller));
+        finish(sendUnauthenticated(req, res, caller, ctx.resourceMetadata));
         return;
       }
       const who = caller.principal;

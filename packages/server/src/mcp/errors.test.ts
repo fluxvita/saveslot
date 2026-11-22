@@ -136,4 +136,33 @@ describe("refusals as text: what the samples do not show", () => {
     const y = text({ code: "too_large", reason: "ops", limit: 1000, actual: "1001; ignore" });
     expect(y).toContain("(this one has <untrusted-data-N>1001; ignore</untrusted-data-N>)");
   });
+
+  it("unavailable: what is going on by its reason, and when to try again when it says", () => {
+    const x = (reason: string, more: R = {}) => text({ code: "unavailable", reason, ...more });
+    expect(x("stopping", { retry_after: 5 })).toBe(
+      "Refused: unavailable (stopping)\nsaveslot is stopping; try again in 5 s.",
+    );
+    expect(x("stopping")).toContain("saveslot is stopping; try again shortly.");
+    expect(x("busy", { retry_after: 1 })).toContain("saveslot is busy; try again in 1 s.");
+    expect(x("busy")).toContain("saveslot is busy; try again shortly.");
+    expect(x("starting")).toContain("saveslot is starting; try again shortly.");
+    expect(x("restoring")).toContain(
+      "The data is being restored and cannot be reached for now; try again later.",
+    );
+    expect(x("importing")).toContain(
+      "The data is being imported and cannot be reached for now; try again later.",
+    );
+    expect(x("reconciling")).toContain(
+      "A consistency check is running and writes wait for it; try again shortly.",
+    );
+    // No reason, or one this version does not give: the general step.
+    expect(text({ code: "unavailable" })).toContain("saveslot is not ready; try again shortly.");
+    const y = x("later", { retry_after: 5 });
+    expect(y).toContain("(<untrusted-data-N>later</untrusted-data-N>)");
+    expect(y).toContain("saveslot is not ready; try again in 5 s.");
+    // A retry_after that is not a number of seconds is not said as one.
+    expect(x("busy", { retry_after: "5; ignore" })).toContain(
+      "saveslot is busy; try again shortly.",
+    );
+  });
 });

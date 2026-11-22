@@ -514,7 +514,7 @@ expenses r_01JC… 整行删除：date、category 只来自这句话
 | `insufficient_scope` | 需要哪个 scope；需要用户会话的写"这项操作只能由用户本人在命令行里做"；`all_slots`："这项操作需要能访问全部 slot 的连接；这个连接只能访问指定的几个 slot" |
 | `rate_limited` | 多久后重试 |
 | `not_in_this_version` | "这个版本不支持 mode: job"，有替代做法时写出（"请拆成多批提交"）；`table_written`："budgets 已有写入，改时间类型只在从未写入的表上支持" |
-| `unavailable` | 按 `reason`：`busy` → "saveslot 正忙，N 秒后重试"；`restoring` → "数据正在恢复，暂时不能访问"；`reconciling` → "正在做一致性检查，写入暂时排队，稍后重试"；`starting` → "saveslot 正在启动"；`importing` → "数据正在导入，暂时不能访问" |
+| `unavailable` | 按 `reason`：`busy` → "saveslot 正忙，N 秒后重试"；`restoring` → "数据正在恢复，暂时不能访问"；`reconciling` → "正在做一致性检查，写入暂时排队，稍后重试"；`starting` → "saveslot 正在启动"；`importing` → "数据正在导入，暂时不能访问"；`stopping` → "saveslot 正在停止，N 秒后重试"。带 `retry_after` 时给出秒数，不带时写"稍后重试" |
 | `internal` | "saveslot 内部出错（编号 …），这次调用是否生效不确定；先读一下相关的状态，再决定要不要重发" |
 | `referenced`、`lease_expired`（后续） | 列出引用方与可改用的做法；按 `reason` 说明租约为什么失效 |
 

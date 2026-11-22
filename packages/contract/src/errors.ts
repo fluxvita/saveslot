@@ -33,7 +33,7 @@ export const OUTER_ERROR_REASONS = {
   rate_limited: ["quota", "busy"],
   handle_expired: ["expired", "restored", "executed", "derived_changed"],
   not_in_this_version: ["parameter", "value", "operation", "table_written", "not_implemented"],
-  unavailable: ["busy", "restoring", "importing", "reconciling", "starting"],
+  unavailable: ["busy", "restoring", "importing", "reconciling", "starting", "stopping"],
   internal: [],
   import_rejected: [
     "unsupported_format",

@@ -725,7 +725,7 @@
 | `rate_limited` | 限流或配额（`quota`）；同一租户已有一次对拍或导入在跑（`busy`） |
 | `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`） |
 | `not_in_this_version` | 调用了本版本不实现的参数、取值或操作。`reason` 说明是哪一种，附是哪个；schema 草稿里只对从未被写入的表放开的改动用在写入过的表上时，`reason` 是 `table_written` |
-| `unavailable` | 暂时不能处理：写入排队或加锁超时（`busy`）、租户正在走恢复流程（`restoring`）、租户正在导入（`importing`）、对拍进入比较阶段而排队超时（`reconciling`）、服务刚启动还在补跑到期任务（`starting`）。可重试时附 `retry_after` |
+| `unavailable` | 暂时不能处理：租户被占用或此刻打不开——写入排队、加锁超时、它的存储还没释放（`busy`）；租户正在走恢复流程（`restoring`）；租户正在导入（`importing`）；对拍进入比较阶段而排队超时（`reconciling`）；服务刚启动还在补跑到期任务（`starting`）；服务正在停止，不再接新的请求（`stopping`）。可重试时附 `retry_after` |
 | `internal` | 服务端内部错误。附 `incident`（供排查的编号，不含用户内容） |
 | `import_rejected` | 导入的文件不合格：格式不认识（`unsupported_format`）、不是从头开始（`not_from_start`）、续传的几段顺序不对（`segment_order`）、事件头链断裂（`chain_broken`）、内容校验和不符（`checksum_mismatch`）、条数或末尾对不上、清单与内容对不上（`incomplete`，如清单里的恢复次数不是导入的日志自己的）、重放失败（`replay_failed`）。只给位置（`seq`、`path`），不回显内容 |
 

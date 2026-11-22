@@ -2589,6 +2589,29 @@ function ownNext(error: R): Part[] | undefined {
   if (c === "rate_limited" && int(error["retry_after"]) !== undefined) {
     return t`saveslot takes no more of these requests for now; try again in ${count(error["retry_after"])} s.`;
   }
+  // unavailable: what is going on by its reason, with the wait when it gives one (05 §7).
+  if (c === "unavailable") {
+    const when =
+      int(error["retry_after"]) !== undefined
+        ? t`try again in ${count(error["retry_after"])} s`
+        : t`try again shortly`;
+    switch (reason) {
+      case "busy":
+        return t`saveslot is busy; ${when}.`;
+      case "stopping":
+        return t`saveslot is stopping; ${when}.`;
+      case "starting":
+        return t`saveslot is starting; ${when}.`;
+      case "reconciling":
+        return t`A consistency check is running and writes wait for it; ${when}.`;
+      case "restoring":
+        return t`The data is being restored and cannot be reached for now; try again later.`;
+      case "importing":
+        return t`The data is being imported and cannot be reached for now; try again later.`;
+      default:
+        return t`saveslot is not ready; ${when}.`;
+    }
+  }
   if (c === "too_large" && reason === "ops" && int(error["limit"]) !== undefined) {
     return t`At most ${count(error["limit"])} ops in one write (this one has ${count(error["actual"])}): split it into several writes.`;
   }
