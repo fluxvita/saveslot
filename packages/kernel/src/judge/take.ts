@@ -11,13 +11,15 @@
 // the candidate does not give carried from the merge base. The merge base and the covered writes
 // are recorded for a deletion's replay; they register nothing.
 
-import type { FieldId, OpNumber } from "@fluxvita/saveslot-contract-core";
+import type { FieldId, OpNumber, Seq } from "@fluxvita/saveslot-contract-core";
 import { sameValue } from "../delta/index.ts";
 import {
   canonical,
   type Interval,
   type IntervalSet,
   isNothing,
+  meet,
+  minus,
   parts,
   WHOLE,
 } from "../time/index.ts";
@@ -32,6 +34,8 @@ export interface TakeOutcome {
   readonly items: readonly RecordedItem[];
   readonly mergeBase: OpNumber;
   readonly cover: readonly RevertEntry[];
+  /** The revokes the take filled (see `TakeCandidateRecord.filled`). */
+  readonly filled: readonly Seq[];
 }
 
 export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): TakeOutcome {
@@ -62,7 +66,7 @@ export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): Take
         deps: revokes.map(refOf),
       });
     }
-    return { items: numbered(drafts), mergeBase, cover };
+    return { items: numbered(drafts), mergeBase, cover, filled: [] };
   }
 
   // A modification taken: per target, the union of its items.
@@ -119,7 +123,32 @@ export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): Take
   if (t.unit === "existence" && state.isState) {
     drafts.push(...carriedRequired(state, taken, targets, mergeBase, cur));
   }
-  return { items: numbered(drafts), mergeBase, cover };
+  return { items: numbered(drafts), mergeBase, cover, filled: filledBy(state, t, taken, cur) };
+}
+
+/**
+ * State tables, a take on a field unit: the revokes it fills (09 §5.8 `take.filled`; 03-deletion
+ * «搬运的值»): in effect now, outside what reverts registered, meeting the stretch the taken
+ * write's candidate items in the item lie on, whether or not every field there already has the
+ * value. By event, sorted. None on an event or timeless table, where a revoke and a field item do
+ * not cover each other, nor on an existence unit.
+ */
+function filledBy(
+  state: RowState,
+  t: TakeCandidateInput,
+  taken: readonly Item[],
+  cur: Limit,
+): Seq[] {
+  if (!state.isState || t.unit === "existence") return [];
+  const range = canonical(taken.flatMap((x) => x.valid));
+  const out = new Set<Seq>();
+  for (const x of state.items) {
+    if (x.status !== "applied" || x.target !== "existence" || x.content.kind !== "revoke") continue;
+    if (!state.sees(x, cur)) continue;
+    if (isNothing(meet(minus(x.valid, state.registeredSet(x, cur)), range))) continue;
+    out.add(x.event);
+  }
+  return [...out].sort((a, b) => a - b);
 }
 
 /**

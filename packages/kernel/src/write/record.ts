@@ -622,6 +622,10 @@ export function encodeResolution(
       candidate: e.candidate ?? 0,
       merge_base_op: r.mergeBase,
       items: r.cover.map(entryOut),
+      // 09 §5.8 `filled`: absent when none.
+      ...(r.filled.length > 0
+        ? { filled: r.filled.map((event) => entryOut({ event, target: "existence" })) }
+        : {}),
     };
   }
   return { target, base };
@@ -1189,7 +1193,12 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
         };
         records.push(rec);
       } else if (t.decision === "take_candidate") {
-        const tk = b["take"] as { candidate: number; merge_base_op: number; items: unknown[] };
+        const tk = b["take"] as {
+          candidate: number;
+          merge_base_op: number;
+          items: unknown[];
+          filled?: { event: Seq }[];
+        };
         const rec: TakeCandidateRecord = {
           ...base,
           kind: "take_candidate",
@@ -1201,6 +1210,7 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
             const { later: _, ...rest } = entryIn(e);
             return rest;
           }),
+          filled: (tk.filled ?? []).map((e) => e.event),
           items: recItems,
           decided: decidedIn(it),
         };

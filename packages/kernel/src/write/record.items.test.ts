@@ -492,6 +492,43 @@ describe("resolutions and what the scenarios do not reach", () => {
     expect(decodeRecords(ctx, evs)).toEqual(state.records);
   });
 
+  it("a take that fills a revoke: take.filled written on existence entries, and read back", () => {
+    // #20 revokes [11-03, 11-05); #30 writes 5 over [11-01, 11-09), filling it; #40 did not see
+    // #30: a candidate; #50 takes it, its stretch meeting #21 (09 §5.8 `filled`).
+    const ctx = ctxOf("state");
+    const inputs = [
+      write(10, { f2: "1" }, { valid: given("10-01") }),
+      revoke(20, 10, given("11-03", "11-05")),
+      write(30, { f2: "5" }, { seen: 20, valid: given("11-01", "11-09"), ack: true }),
+      write(40, { f2: "2" }, { seen: 20, valid: given("11-01", "11-09") }),
+      take(50, [41], 41, { fields: ["f2"] }),
+    ];
+    const { judgements, state } = replay(ctx.shape, inputs);
+    expect(judgements[4]?.record).toMatchObject({ kind: "take_candidate", filled: [21] });
+    const evs = logEvents(ctx, inputs, judgements);
+    const base = evs.find((e) => e.header.type === "write.base" && e.header.seq === 51)?.blocks;
+    expect(base?.["take"]).toMatchObject({ filled: [{ event: 21, existence: true }] });
+    for (const e of evs) {
+      if (e.header.type === "write.head" || e.header.type === "item.resolved") continue;
+      expect({
+        seq: e.header.seq,
+        ok: parses(e.header.type, e.header.seq, e.header.op, e.blocks).ok,
+      }).toEqual({ seq: e.header.seq, ok: true });
+    }
+    expect(decodeRecords(ctx, evs)).toEqual(state.records);
+    // Nothing filled: the key is absent, and reads back as none.
+    const apart = [
+      ...inputs.slice(0, 3),
+      write(40, { f2: "2" }, { seen: 20, valid: given("11-06", "11-09") }),
+      inputs[4] as JudgeInput,
+    ];
+    const r2 = replay(ctx.shape, apart);
+    const evs2 = logEvents(ctx, apart, r2.judgements);
+    const base2 = evs2.find((e) => e.header.type === "write.base" && e.header.seq === 51)?.blocks;
+    expect(Object.keys((base2?.["take"] ?? {}) as object)).not.toContain("filled");
+    expect(decodeRecords(ctx, evs2)).toEqual(r2.state.records);
+  });
+
   it("awaiting items: the cause and the unit, by what the proposal is and touches", () => {
     const ctx = ctxOf("state");
     // ① on a field: overwrites_change_point, unit the fields touched.

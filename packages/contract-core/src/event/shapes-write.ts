@@ -581,11 +581,25 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     }
   },
   Take(v, at, issues) {
-    if (!keys(v, at, ["item", "candidate", "merge_base_op", "items"], [], issues)) return;
+    if (!keys(v, at, ["item", "candidate", "merge_base_op", "items"], ["filled"], issues)) return;
     check(id("item", v["item"]), at, "item", issues);
     check(int(v["candidate"]), at, "candidate", issues);
     check(int(v["merge_base_op"]), at, "merge_base_op", issues);
     list(v["items"], `${at}.items`, issues, revertTarget([]));
+    // The revokes the take filled: entries on existence only, each once, absent when there are
+    // none. Only on a state table (a cross-block rule of write.base).
+    if ("filled" in v) {
+      const f = v["filled"];
+      check(Array.isArray(f) && f.length > 0, at, "filled", issues);
+      list(f, `${at}.filled`, issues, (e, a, is) => {
+        check(isObject(e) && e["existence"] === true, a, "existence", is);
+        revertTarget([])(e, a, is);
+      });
+      if (Array.isArray(f)) {
+        const events = f.map((e) => (isObject(e) ? e["event"] : undefined));
+        check(new Set(events).size === events.length, at, "filled: each revoke once", issues);
+      }
+    }
   },
 
   // §5.8 pending items
@@ -1174,6 +1188,15 @@ export const WRITE_EVENT_RULES: Readonly<Record<string, EventRule>> = {
       if (exSpan !== null) check(paths.has(`existence/${exSpan[1]}`), p, "no such item", issues);
     }
     check(!(paths.has("revert") && paths.has("take")), "event", "revert and take", issues);
+    // take.filled is a state table's (§5.8): the target names an entity.
+    const take = blocks["take"];
+    const target = blocks["target"];
+    check(
+      !(isObject(take) && "filled" in take) || (isObject(target) && "entity" in target),
+      "take",
+      "filled only on a state table",
+      issues,
+    );
   },
   // §5.8: a schema change item has no candidates.
   "item.created"(paths, blocks, issues) {

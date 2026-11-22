@@ -1362,6 +1362,56 @@ describe("parseEvent: rules between the blocks of one write event", () => {
     expect(issues(parse(both))).toContain("event: revert and take");
   });
 
+  it("write.base: a take's filled lists existence entries, each once, at least one, on a state table only", () => {
+    const take = S("write.base (resolve: take_candidate)");
+    // The same take on a state table: an entity target, no whole-row existence item.
+    const { "existence/0": _, ...rest } = take.blocks;
+    const onEntity = withBlock({ ...take, blocks: rest }, "target", {
+      table: "t1",
+      entity: ENTITY,
+      intent: "update",
+      sv: 1,
+      cause: "resolve",
+      item: ITEM,
+    });
+    const withFilled = (sample: typeof take, filled: unknown) =>
+      withBlock(sample, "take", {
+        item: ITEM,
+        candidate: 0,
+        merge_base_op: 29,
+        items: [{ event: 35, field: "f3" }],
+        filled,
+      });
+    expect(parse(withFilled(onEntity, [{ event: 33, existence: true }])).ok).toBe(true);
+    expect(
+      parse(
+        withFilled(onEntity, [
+          { event: 33, existence: true },
+          { event: 40, existence: true },
+        ]),
+      ).ok,
+    ).toBe(true);
+    // A row: an event or timeless table, where a revoke and a field item do not cover each other.
+    expect(issues(parse(withFilled(take, [{ event: 33, existence: true }])))).toContain(
+      "take: filled only on a state table",
+    );
+    expect(issues(parse(withFilled(onEntity, [])))).toContain("take: filled");
+    expect(
+      issues(
+        parse(
+          withFilled(onEntity, [
+            { event: 33, existence: true },
+            { event: 33, existence: true },
+          ]),
+        ),
+      ),
+    ).toContain("take: filled: each revoke once");
+    expect(issues(parse(withFilled(onEntity, [{ event: 33, field: "f3" }])))).toContain(
+      "take.filled[0]: existence",
+    );
+    expect(parse(withFilled(onEntity, [{ event: 33, target: "existence" }])).ok).toBe(false);
+  });
+
   it("item.created: a schema change has no candidates", () => {
     const sc = withBlock(
       S("item.created (schema change)"),

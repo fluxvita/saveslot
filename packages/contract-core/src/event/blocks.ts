@@ -672,6 +672,8 @@ export interface TakeBlock {
   readonly candidate: Index;
   readonly merge_base_op: OpNumber;
   readonly items: readonly RevertTarget[];
+  /** State tables: the revokes the take filled, on existence; absent when there are none. */
+  readonly filled?: readonly RevertTarget[];
 }
 
 // =============================================================================================

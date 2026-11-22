@@ -166,6 +166,7 @@ export function judgeOp(
         take: input.take,
         mergeBase: out.mergeBase,
         cover: out.cover,
+        filled: out.filled,
         items: out.items,
         decided,
       },

@@ -355,6 +355,13 @@ export interface TakeCandidateRecord extends RecordBase {
   readonly take: Seq;
   readonly mergeBase: OpNumber;
   readonly cover: readonly RevertEntry[];
+  /**
+   * State tables, a take on a field unit: the revokes it filled, by event (09 §5.8 `take.filled`):
+   * in effect when it was judged and meeting the stretch taken, less where reverts registered
+   * them. Listed by which, never by interval: a deletion's replay judges a revoke and the taken
+   * item by the revoke as a whole (03-deletion «搬运的值»). Empty: none (the block is absent).
+   */
+  readonly filled: readonly Seq[];
   readonly items: readonly RecordedItem[];
   readonly decided?: readonly DecidedItem[];
 }

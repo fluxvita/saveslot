@@ -1932,6 +1932,65 @@ describe("take_candidate", () => {
     );
   });
 
+  it("records the revokes it fills (09 §5.8 take.filled): state tables, field units, by event", () => {
+    // #20 revokes [11-03, 11-05); #30, having seen it, writes 5 over [11-01, 11-09), filling it;
+    // #40 did not see #30: a candidate on f2. Taking it: its stretch meets #21, in effect (not
+    // registered), filled.
+    const head = [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      revoke(20, span("11-03", "11-05") as RevokeInput["valid"], 10),
+      write({ op: 30, seen: 20, valid: span("11-01", "11-09"), fields: { f2: "5" }, ack: true }),
+      write({ op: 40, seen: 20, valid: span("11-01", "11-09"), fields: { f2: "2" } }),
+    ];
+    const { js } = run(STATE, [...head, take(50, ["f2"], [41], 41)]);
+    expect(items(js[3] as Judgement).map((x) => x.status)).toEqual(["candidate"]);
+    expect(last(js).record).toMatchObject({ kind: "take_candidate", filled: [21] });
+    // A candidate whose stretch does not meet the revoke: nothing filled.
+    const apart = [
+      ...head.slice(0, 3),
+      write({ op: 40, seen: 20, valid: span("11-06", "11-09"), fields: { f2: "2" } }),
+    ];
+    const away = run(STATE, [...apart, take(50, ["f2"], [41], 41)]);
+    expect(last(away.js).record).toMatchObject({ kind: "take_candidate", filled: [] });
+    // The revoke undone (registered as reverted over its whole stretch): not in effect, nothing
+    // filled.
+    const undone = [
+      ...head.slice(0, 2),
+      undo(25, 20, { seen: 20, ack: true }),
+      write({ op: 30, seen: 25, valid: span("11-01", "11-09"), fields: { f2: "5" }, ack: true }),
+      write({ op: 40, seen: 25, valid: span("11-01", "11-09"), fields: { f2: "2" } }),
+    ];
+    const back = run(STATE, [...undone, take(50, ["f2"], [41], 41)]);
+    expect(items(back.js[4] as Judgement).map((x) => x.status)).toEqual(["candidate"]);
+    expect(last(back.js).record).toMatchObject({ kind: "take_candidate", filled: [] });
+  });
+
+  it("records no filled revoke that is itself a candidate: only revokes in effect fill", () => {
+    // #20 writes 2 over [11-01, 11-09); #30, having seen only #10, revokes [11-03, 11-05): a
+    // candidate (#20 changed it); #40, having seen only #10, writes 3: a candidate. Taking #41:
+    // #31 meets its stretch but is not in effect, so the take fills nothing.
+    const { js } = run(STATE, [
+      write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
+      write({ op: 20, seen: 10, valid: span("11-01", "11-09"), fields: { f2: "2" }, ack: true }),
+      revoke(30, span("11-03", "11-05") as RevokeInput["valid"], 10),
+      write({ op: 40, seen: 10, valid: span("11-01", "11-09"), fields: { f2: "3" } }),
+      take(50, ["f2"], [41], 41),
+    ]);
+    expect(items(js[2] as Judgement)).toMatchObject([{ target: "existence", status: "candidate" }]);
+    expect(items(js[3] as Judgement)).toMatchObject([{ target: "f2", status: "candidate" }]);
+    expect(last(js).record).toMatchObject({ kind: "take_candidate", filled: [] });
+  });
+
+  it("records no filled revokes on an event table: a revoke and a field item do not cover each other", () => {
+    const { js } = run(EVENT, [
+      write({ op: 10, seen: 0, fields: { f2: "1" } }),
+      write({ op: 20, fields: { f2: "2" }, ack: true }),
+      write({ op: 30, seen: 10, fields: { f2: "3" } }),
+      take(40, ["f2"], [31], 31),
+    ]);
+    expect(last(js).record).toMatchObject({ kind: "take_candidate", filled: [] });
+  });
+
   it("a state table revoke taken where part of its stretch already has no value: written whole", () => {
     const { js } = run(STATE, [
       write({ op: 10, seen: 0, valid: span("11-03", "open"), fields: { f2: "1" } }),
@@ -1958,6 +2017,8 @@ describe("take_candidate", () => {
         write({ op: 30, seen: 10, valid: span("11-03", "11-09"), fields: { f3: "2" } }),
         take(40, "existence", [31], 31),
       ]);
+      // A take on existence lists no filled revokes (09 §5.8 `filled` is for field units).
+      expect(last(js).record).toMatchObject({ kind: "take_candidate", filled: [] });
       expect(items(last(js))).toEqual([
         {
           target: "f2",
