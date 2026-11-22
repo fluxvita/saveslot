@@ -21,6 +21,8 @@ export const TESTED = [
   "packages/test-backend/src",
   // The server mode's control plane, whose database is PostgreSQL there.
   "packages/service/src/server-control-plane.test.ts",
+  // The server mode's connection tokens: a control plane and a tenant store, both PostgreSQL there.
+  "packages/service/src/server-connections.test.ts",
 ];
 
 /** Files not run on PostgreSQL, each with why. */
