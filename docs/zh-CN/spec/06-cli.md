@@ -77,11 +77,15 @@
 | 部署 | 怎么来 | 存在哪 | 失效 |
 |---|---|---|---|
 | 本地 | `saveslot init` 生成一个随机令牌；控制面只存它的哈希 | `~/.saveslot/credentials/session`，0600 | `saveslot init --rotate-session` 换新，旧令牌立即失效。要先 `saveslot stop`：它只换控制面里的哈希、不碰数据目录，saveslot 服务下次启动时读到新哈希；服务在运行时照样拒绝执行 |
-| 云服务 | `saveslot login`：默认打开浏览器走授权码 + PKCE（本机回环接收回调）；`--device` 用 OAuth 设备码（RFC 8628），适合 SSH 里没有浏览器的情形 | `~/.saveslot/credentials/<profile>.json`（访问令牌 + 刷新令牌），0600 | `saveslot logout` 吊销刷新令牌并删文件 |
+| 云服务 | `saveslot login`：默认打开浏览器走授权码 + PKCE（本机回环接收回调）；`--device` 用 OAuth 设备码（RFC 8628），适合 SSH 里没有浏览器的情形 | `~/.saveslot/credentials/<profile>.json`（访问令牌 + 刷新令牌，键见下），0600 | `saveslot logout` 吊销刷新令牌并删文件 |
 
 - CLI 发现凭证文件的权限比 0600 宽时拒绝使用并提示修正，与 ssh 处理私钥的做法一致。第一版凭证放文件；放进系统钥匙串（可要求人在场才取出）随桌面打包一起做。
-- **profile** 区分连接目标：`local`（默认）、`cloud`（我们的云服务），以及 `saveslot login --server <URL> --profile <名字>` 时为自部署的服务器新建的 profile；`--profile` 或 `saveslot profile use` 切换。各目标互不相通（第一版没有同步）。
-- **凭连接实例令牌运行**：设了环境变量 `SAVESLOT_TOKEN` 时，CLI 用它代替用户会话——能做的事按该连接实例的 scope，管理类命令报 `insufficient_scope`，读写与确认都记在该连接实例名下。给有 shell 的 Agent 与脚本用（第 8.3 节）。`SAVESLOT_TOKEN` 设了但为空、或不是连接实例令牌的形式时，CLI 拒绝执行（退出码 6），不回落到用户会话：用户会话什么都能做，只有没设这个变量时才用它。
+- **profile** 区分连接目标：`local`（默认）、`cloud`（我们的云服务，地址 `https://api.saveslot.ai`），以及 `saveslot login --server <URL> --profile <名字>` 时为自部署的服务器新建的 profile；`--profile` 或 `saveslot profile use` 切换。各目标互不相通（第一版没有同步）。
+  - profile 的名字：1–32 个字符，`a-z`、`0-9` 与 `-`，不以 `-` 开头；`local`、`cloud` 是内置的，不能登记。
+  - **`~/.saveslot/profiles.json`** 是 CLI 自己的文件（不是 saveslot 服务的配置）：`{"format": 1, "current": "<名字>", "servers": {"<名字>": "<地址>"}}`，`current` 是当前使用的 profile，`servers` 是登记的自部署服务器（地址写成来源，规则见上文「CLI 怎么连 saveslot」）。没有这个文件时当前 profile 是 `local`、没有登记的服务器。键不多不少，解析从严，不认识的写法拒绝使用。
+  - **`credentials/<profile>.json`**（服务器 profile 的用户会话）：`{"format": 1, "server", "access_token", "access_expires_at", "refresh_token"}`，键不多不少。`server` 是令牌签发给的那台服务器，与这个 profile 的地址逐字相同才用，否则一个令牌都不发、提示重新登录。访问令牌离到期 60 秒以内（或刚被拒为 `unauthenticated`）时先用刷新令牌换新；刷新令牌只能用一次，所以换新要先取得这个 profile 的锁（`credentials/<profile>.json.lock`，独占创建；超过 30 秒算遗留，最多等 10 秒），取得后再读一遍文件，别的命令已经换过就用它换来的。换来的一对先写进文件再用；写不进去时这次登录就结束了（旧的刷新令牌已经用掉），提示重新登录，不拿内存里的新令牌接着用。刷新被拒（`invalid_grant`）时文件保留，提示重新登录；只有 `saveslot logout` 删文件。
+  - 两个文件都按上面凭证文件的规则：所在目录 0700、文件 0600、属于当前用户、不能是符号链接，每次读写前都查；写入先写同目录的临时文件，同步后改名，再同步目录。
+- **凭连接实例令牌运行**：设了环境变量 `SAVESLOT_TOKEN` 时，CLI 用它代替用户会话——能做的事按该连接实例的 scope，管理类命令报 `insufficient_scope`，读写与确认都记在该连接实例名下。给有 shell 的 Agent 与脚本用（第 8.3 节）。令牌发往所选 profile 的目标：`local` 是本机的 saveslot 服务，服务器 profile 是它的服务器（服务器模式用 `saveslot connect http --profile …` 签发的静态令牌就这样用）。`SAVESLOT_TOKEN` 设了但为空、或不是连接实例令牌的形式时，CLI 拒绝执行（退出码 6），不回落到用户会话：用户会话什么都能做，只有没设这个变量时才用它。
 
 ## 3. 上手流程（本地，从零到第一个 Agent 能用）
 

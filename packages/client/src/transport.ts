@@ -439,3 +439,117 @@ export async function requestStream(o: RequestOptions): Promise<IncomingMessage>
     req.end();
   });
 }
+
+/** An OAuth endpoint's error answer (RFC 6749 §5.2, RFC 8628 §3.5): `{"error": "<code>", ...}`. */
+export class OAuthError extends Error {
+  override readonly name = "OAuthError";
+  /** The answer's `error`: `invalid_grant`, `authorization_pending`, `slow_down`, … */
+  readonly code: string;
+  readonly status: number;
+  /** The whole answer, for what an error carries besides its code (`interval`, …). */
+  readonly body: Readonly<Record<string, unknown>>;
+  constructor(status: number, body: Readonly<Record<string, unknown>>) {
+    super(String(body["error"]));
+    this.code = String(body["error"]);
+    this.status = status;
+    this.body = body;
+  }
+}
+
+/** The OAuth endpoints a client posts to (05-surfaces §15). */
+export type OAuthPath = "/oauth/token" | "/oauth/revoke" | "/oauth/device";
+
+/**
+ * POSTs to one of a server's OAuth endpoints, the parameters as
+ * `application/x-www-form-urlencoded` (RFC 6749 §4.1.3). The rules of `request`: `server` passes
+ * `serverOrigin`, no redirect is followed, the same time and size limits. A 2xx answer: the JSON
+ * object answered, or undefined for an empty body (a revocation answers 200 with nothing, RFC
+ * 7009 §2.2). An error answer with a string `error`: an OAuthError. Anything else: a
+ * TransportError. No `Authorization`: the CLI is a public client and sends `client_id` in the form.
+ */
+export async function oauthPost(o: {
+  readonly server: string;
+  readonly path: OAuthPath;
+  readonly form: ReadonlyMap<string, string>;
+  readonly timeoutMs?: number;
+}): Promise<Record<string, unknown> | undefined> {
+  const server = serverOrigin(o.server);
+  const timeoutMs = o.timeoutMs ?? 60_000;
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) {
+    throw new ClientUsageError(
+      `the time limit must be a whole number of ms, 1 to ${MAX_TIMEOUT_MS}`,
+    );
+  }
+  const body = Buffer.from(
+    [...o.form].map(([k, v]) => `${encode(k)}=${encode(v)}`).join("&"),
+    "utf8",
+  );
+  const headers = {
+    accept: "application/json",
+    "content-type": "application/x-www-form-urlencoded",
+    "content-length": String(body.length),
+  };
+  const options = { server: o.server, method: "POST", path: o.path } as const;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (e: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    };
+    const req = open(options, server, o.path, headers, (res) => {
+      const status = res.statusCode ?? 0;
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on("data", (c: Buffer) => {
+        size += c.length;
+        if (size > MAX_ANSWER_BYTES) {
+          fail(new TransportError("bad_answer", "the answer is too large", status));
+          res.destroy();
+          return;
+        }
+        chunks.push(c);
+      });
+      res.on("error", () => fail(new TransportError("broken", "the answer was cut off")));
+      res.on("aborted", () => fail(new TransportError("broken", "the answer was cut off")));
+      res.on("end", () => {
+        if (settled) return;
+        const text = Buffer.concat(chunks).toString("utf8");
+        if (status >= 200 && status < 300 && text === "") {
+          settled = true;
+          clearTimeout(timer);
+          resolve(undefined);
+          return;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          fail(new TransportError("bad_answer", `an answer that is not JSON (${status})`, status));
+          return;
+        }
+        const obj =
+          parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : undefined;
+        if (status >= 200 && status < 300 && obj !== undefined) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(obj);
+        } else if (status >= 400 && obj !== undefined && typeof obj["error"] === "string") {
+          fail(new OAuthError(status, obj));
+        } else {
+          fail(new TransportError("bad_answer", `an answer of no OAuth form (${status})`, status));
+        }
+      });
+    });
+    const timer = setTimeout(() => {
+      fail(late(server));
+      req.destroy();
+    }, timeoutMs);
+    req.on("error", (e: NodeJS.ErrnoException) => fail(failed(server, e)));
+    req.write(body);
+    req.end();
+  });
+}

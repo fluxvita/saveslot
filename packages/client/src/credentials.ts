@@ -33,11 +33,29 @@ export interface Credential {
  * - `not_initialized`: no session file (and no `SAVESLOT_TOKEN`).
  * - `permissions`: the home, `credentials/` or the file is not this user's, is a link, is not of
  *   its kind, is open to group or others, or cannot be read by this user.
- * - `malformed`: the session file or `SAVESLOT_TOKEN` does not hold a token of its form.
+ * - `malformed`: the session file, `SAVESLOT_TOKEN`, `profiles.json` or a profile's credentials
+ *   file does not hold what its form says.
+ * - `unknown_profile`: a profile neither built in nor registered (./profiles.ts).
+ * - `signed_out`: a server profile without its credentials file: `saveslot login` first.
+ * - `server_mismatch`: the credentials file is for another server than the profile's: nothing is
+ *   sent; `saveslot login` again.
+ * - `refresh_refused`: the server refused the refresh token (`invalid_grant`): signed out.
+ * - `refresh_unsaved`: a refresh answered, and its new tokens could not be written: the old refresh
+ *   token is spent, so this sign-in is over; the new tokens are not used (./profile-credentials.ts).
+ * - `busy`: another saveslot command held the profile's lock for longer than the wait.
  */
 export class CredentialError extends Error {
   override readonly name = "CredentialError";
-  readonly code: "not_initialized" | "permissions" | "malformed";
+  readonly code:
+    | "not_initialized"
+    | "permissions"
+    | "malformed"
+    | "unknown_profile"
+    | "signed_out"
+    | "server_mismatch"
+    | "refresh_refused"
+    | "refresh_unsaved"
+    | "busy";
   /** The path concerned; absent for `SAVESLOT_TOKEN`. */
   readonly path: string | undefined;
   constructor(code: CredentialError["code"], message: string, path?: string) {
@@ -52,7 +70,7 @@ export const TOKEN_VARIABLE = "SAVESLOT_TOKEN";
 
 /** The forms of the two local tokens: prefix and 43 base64url characters (04-contract §12). */
 const SESSION_FORM = /^sls_[A-Za-z0-9_-]{43}$/;
-const CONNECTION_FORM = /^slt_[A-Za-z0-9_-]{43}$/;
+export const CONNECTION_FORM = /^slt_[A-Za-z0-9_-]{43}$/;
 
 /** The session token's file under a home. */
 export const sessionFile = (home: string): string => join(home, "credentials", "session");

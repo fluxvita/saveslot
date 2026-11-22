@@ -4,7 +4,7 @@
 // Words: to a person, "connection instance" (the MCP texts tell the agent of "a connection");
 // "the saveslot service" in a sentence.
 
-import type { ErrorCode } from "@fluxvita/saveslot-client";
+import type { CredentialError, ErrorCode } from "@fluxvita/saveslot-client";
 
 declare const brand: unique symbol;
 /**
@@ -85,16 +85,32 @@ export const TEXTS = {
     ["unknown_table", s("See the tables with saveslot slot list.")],
     ["internal", s("The service log is in run/saveslot.log under the home.")],
   ]),
-  credential: (c: "not_initialized" | "permissions" | "malformed"): Static =>
-    c === "not_initialized"
-      ? s("error: no user session here. Run saveslot init first, or set SAVESLOT_TOKEN.")
-      : c === "permissions"
-        ? s(
-            "error: the credentials are open to others, or not this user's; saveslot will not use them. Make the home and credentials/ 0700 and the session file 0600.",
-          )
-        : s(
-            "error: SAVESLOT_TOKEN, or the session file, does not hold a token of its form. Unset SAVESLOT_TOKEN to run as the user session.",
-          ),
+  credential: (c: CredentialError["code"]): Static =>
+    ({
+      not_initialized: s(
+        "error: no user session here. Run saveslot init first, or set SAVESLOT_TOKEN.",
+      ),
+      permissions: s(
+        "error: the credentials are open to others, or not this user's; saveslot will not use them. Make the home and credentials/ 0700 and the files in it 0600.",
+      ),
+      malformed: s(
+        "error: SAVESLOT_TOKEN, the session file, profiles.json or a profile's credentials file does not hold what it should. Unset SAVESLOT_TOKEN to run as the user session; sign in again with saveslot login.",
+      ),
+      unknown_profile: s("error: no such profile. See saveslot profile list."),
+      signed_out: s(
+        "error: not signed in to this profile. Run saveslot login --profile <profile>.",
+      ),
+      server_mismatch: s(
+        "error: this profile's sign-in is for another server; nothing was sent. Run saveslot login --profile <profile>.",
+      ),
+      refresh_refused: s(
+        "error: this profile's sign-in has ended. Run saveslot login --profile <profile>.",
+      ),
+      refresh_unsaved: s(
+        "error: the renewed sign-in could not be saved, and the old one is spent. Run saveslot login --profile <profile>.",
+      ),
+      busy: s("error: another saveslot command is signing in to this profile. Try again."),
+    })[c],
   transport: (c: "unreachable" | "broken" | "bad_answer"): Static =>
     c === "unreachable"
       ? s("error: the saveslot service is not running. Start it with saveslot start.")

@@ -10,6 +10,8 @@ import { createClient } from "./client.ts";
 import {
   ClientUsageError,
   ContractCallError,
+  OAuthError,
+  oauthPost,
   request,
   requestStream,
   serverOrigin,
@@ -258,5 +260,68 @@ describe("the server not reachable", () => {
       code: "unreachable",
       message: "the saveslot server is not reachable",
     });
+  });
+});
+
+describe("oauthPost", () => {
+  const form = new Map([
+    ["grant_type", "refresh_token"],
+    ["refresh_token", "r & r=1"],
+  ]);
+
+  it("the form url-encoded, no Authorization; the JSON answer", async () => {
+    const { origin, seen } = await serve((_, res) => json(res, 200, { access_token: "x" }));
+    expect(await oauthPost({ server: origin, path: "/oauth/token", form })).toEqual({
+      access_token: "x",
+    });
+    expect(seen[0]).toMatchObject({ method: "POST", url: "/oauth/token" });
+    expect(seen[0]?.headers["content-type"]).toBe("application/x-www-form-urlencoded");
+    expect(seen[0]?.headers["authorization"]).toBeUndefined();
+    expect(Object.fromEntries(new URLSearchParams(seen[0]?.body))).toEqual(
+      Object.fromEntries(form),
+    );
+  });
+
+  it("an empty 200 (a revocation): undefined", async () => {
+    const { origin } = await serve((_, res) => {
+      res.writeHead(200, { "cache-control": "no-store" });
+      res.end();
+    });
+    expect(await oauthPost({ server: origin, path: "/oauth/revoke", form })).toBeUndefined();
+  });
+
+  it("an OAuth error, 400 or 500: OAuthError with its code, status and body", async () => {
+    for (const [status, body] of [
+      [400, { error: "invalid_grant", error_description: "d" }],
+      [401, { error: "invalid_client" }],
+      [500, { error: "server_error" }],
+    ] as const) {
+      const { origin } = await serve((_, res) => json(res, status, body));
+      const e = await thrown(oauthPost({ server: origin, path: "/oauth/token", form }));
+      expect(e).toBeInstanceOf(OAuthError);
+      expect(e).toMatchObject({ code: body.error, status, body });
+    }
+  });
+
+  it("anything else: TransportError; a redirect not followed; an address no origin refused", async () => {
+    const elsewhere = await serve((_, res) => json(res, 200, {}));
+    const { origin } = await serve((req, res) => {
+      if (req.url === "/oauth/device") {
+        res.writeHead(302, { location: `${elsewhere.origin}/oauth/device` });
+        res.end();
+      } else json(res, 400, { error: { code: "x" } });
+    });
+    expect(await thrown(oauthPost({ server: origin, path: "/oauth/token", form }))).toMatchObject({
+      code: "bad_answer",
+      status: 400,
+    });
+    expect(await thrown(oauthPost({ server: origin, path: "/oauth/device", form }))).toMatchObject({
+      code: "bad_answer",
+      status: 302,
+    });
+    expect(elsewhere.seen).toEqual([]);
+    expect(
+      await thrown(oauthPost({ server: "http://a.example", path: "/oauth/token", form })),
+    ).toBeInstanceOf(ClientUsageError);
   });
 });
