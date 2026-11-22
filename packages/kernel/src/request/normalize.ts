@@ -9,8 +9,9 @@
 // has no problem of the first kind.
 //
 // Parameters this version does not take are refused as not_in_this_version at their path:
-// external_key, as, an op's own evidence, source_ref segments, revert.to, mode, the evidence level
-// external_authority, and a premise's temporary name ("@…", with `as`).
+// external_key (until the write path takes it: see `acceptExternalKeyForTests`), as, source_ref
+// segments, revert.to, mode, the evidence level external_authority, and a premise's temporary name
+// ("@…", with `as`).
 //
 // Temporary limits, until experiment 4 (08-open-questions): at most 1,000 ops; `task` and
 // `idempotency_key` at most 256 characters, well-formed, without control characters. Evidence: 32 KB
@@ -27,6 +28,7 @@ import type {
   DateStr,
   FieldId,
   Instant,
+  JcsValue,
   SourceId,
   TableId,
 } from "@fluxvita/saveslot-contract-core";
@@ -143,6 +145,18 @@ const OP_KEYS = new Set([
 ]);
 /** Op keys this version does not take, in the order they are reported. */
 const OP_NOT_YET = ["external_key", "as"];
+/**
+ * Whether the write path takes `external_key`. Off: refused as not_in_this_version, as before. It is
+ * turned on only from the kernel's test entry (`acceptExternalKeyForTests`, testing.fixture.ts),
+ * never by an environment variable or a request, until locating, the three-way comparison and the
+ * key index land and the entry opens. On, an op that gets through normalizing is stopped by the
+ * write pipeline as not implemented, with nothing written.
+ */
+let externalKeyTaken = false;
+/** Tests only: the write path takes `external_key` (or not again). Not exported from the kernel. */
+export function acceptExternalKeyForTests(on: boolean): void {
+  externalKeyTaken = on;
+}
 /** The premises an op may have (02-integrity «写入的前提» «上限»). */
 export const MAX_PREMISES = 16;
 const PREMISE_KEYS = new Set([
@@ -387,6 +401,38 @@ function namedFields(
   });
 }
 
+/**
+ * An op's `external_key` (04-write-and-read «按来源键写入»): every key field of the table's key, by
+ * name, each once. A field not in the key, or one named twice (by case), is malformed at it; a key
+ * field not given, or given `null` (not a value: the key has none), is missing.
+ */
+function keyEntries(
+  v: unknown,
+  at: string,
+  t: CompiledBaseTable,
+  byName: ReadonlyMap<string, CompiledBaseField>,
+): [CompiledBaseField, string, unknown][] {
+  if (!isObj(v)) return invalid("malformed", at);
+  const keyIds = new Set<string>(t.external_key ?? []);
+  const named = new Set<string>();
+  const entries = keysOf(v).map((k): [CompiledBaseField, string, unknown] => {
+    const f = byName.get(fold(k));
+    if (f === undefined || !keyIds.has(f.id) || named.has(f.id))
+      return invalid("malformed", `${at}/${k}`);
+    named.add(f.id);
+    const x = get(v, k);
+    if (x === null) return invalid("missing", `${at}/${k}`);
+    return [f, k, x];
+  });
+  for (const id of keyIds) {
+    if (!named.has(id)) {
+      const f = t.fields.find((x) => x.id === id);
+      invalid("missing", `${at}/${f?.name ?? id}`);
+    }
+  }
+  return entries;
+}
+
 // --- business time (04-contract §4, §5.2) ---------------------------------------------------------
 
 interface PointCtx {
@@ -490,7 +536,8 @@ interface PendingOp {
     | {
         kind: "entity_key";
         entries: [CompiledBaseField, string, unknown][];
-      };
+      }
+    | { kind: "external_key" };
   readonly ver: { op: number; restoreCount: number } | undefined;
   readonly set: [CompiledBaseField, string, unknown][] | undefined;
   readonly valid: ValidParam | undefined;
@@ -503,6 +550,11 @@ interface PendingOp {
     readonly valid?: readonly number[];
   };
   readonly premises?: readonly PendingPremise[];
+  /**
+   * `external_key`, its key fields as written: the op's target when it has no `row` (`target` is
+   * `external_key`), or the key an update by `row` adds to its row.
+   */
+  readonly externalKey?: [CompiledBaseField, string, unknown][];
   readonly named: NamedField[];
 }
 
@@ -597,8 +649,17 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
       warnings.push(...r.warnings);
       return { value: r.value, raw: r.raw };
     };
+    let key: Record<FieldId, NormalizedField> | undefined;
+    if (p.externalKey !== undefined) {
+      key = {};
+      for (const [f, , v] of p.externalKey) {
+        const n = value(f, v);
+        if (n !== undefined) key[f.id] = n;
+      }
+    }
     let target: NormalizedTarget;
-    if (p.target.kind === "entity_key") {
+    if (p.target.kind === "external_key") target = { kind: "external_key", key: key ?? {} };
+    else if (p.target.kind === "entity_key") {
       const key: Record<FieldId, NormalizedField> = {};
       for (const [f, , v] of p.target.entries) {
         const n = value(f, v);
@@ -686,6 +747,7 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
             }),
           }
         : {}),
+      ...(key !== undefined && p.target.kind === "row" ? { externalKey: key } : {}),
       named: p.named,
     };
   });
@@ -706,6 +768,7 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
     });
     return { ok: false, error: { code: "validation_failed", reason: "write", details: named } };
   }
+  externalKeys(ops);
 
   const content = requestContent(params);
   return {
@@ -729,6 +792,40 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
   };
 }
 
+/**
+ * The keys of the request's ops, their values normalized (04-write-and-read «按来源键写入»): a key
+ * field in the `set` of an op by key is the key's value again or `key_field_changed`; the same key
+ * twice in a request, by key or added to a row, is `duplicate_external_key` at the later one. Values
+ * compare by the same-value criterion (10-types-and-units «同值判据»: the canonical text of the
+ * normalized value; text is NFC, neither trimmed nor case-folded).
+ */
+function externalKeys(ops: readonly NormalizedOp[]): void {
+  const first = new Map<string, number>();
+  for (const o of ops) {
+    const key = o.target.kind === "external_key" ? o.target.key : o.externalKey;
+    if (key === undefined) continue;
+    const at = `ops/${o.index}`;
+    if (o.target.kind === "external_key" && o.fields !== undefined) {
+      for (const [id, given] of Object.entries(o.fields)) {
+        const held = key[id as FieldId];
+        if (held === undefined) continue;
+        if (canonicalize(given.value as JcsValue) !== canonicalize(held.value as JcsValue)) {
+          const n = o.named.find((x) => x.field === id && x.param.startsWith(`${at}/set/`));
+          invalid("key_field_changed", n?.param ?? `${at}/set`);
+        }
+      }
+    }
+    const text = canonicalize({
+      table: o.table,
+      key: Object.fromEntries(Object.entries(key).map(([id, v]) => [id, v.value])),
+    } as JcsValue);
+    const earlier = first.get(text);
+    if (earlier !== undefined)
+      invalid("duplicate_external_key", `${at}/external_key`, { ops: [earlier, o.index] });
+    first.set(text, o.index);
+  }
+}
+
 /** Reads one op's shape (first pass). */
 function readOp(
   o: unknown,
@@ -743,7 +840,8 @@ function readOp(
   const at = `ops/${i}`;
   if (!isObj(o)) return invalid("malformed", at);
   for (const k of keysOf(o)) if (!OP_KEYS.has(k)) invalid("malformed", `${at}/${k}`);
-  for (const k of OP_NOT_YET) if (has(o, k)) notYet(`${at}/${k}`);
+  for (const k of OP_NOT_YET)
+    if (has(o, k) && !(k === "external_key" && externalKeyTaken)) notYet(`${at}/${k}`);
   const table = baseTable(get(o, "table"), `${at}/table`, tables, input.compiled.tables);
   const byName = fieldsByName(table);
   const state = table.time.type === "state";
@@ -775,6 +873,16 @@ function readOp(
   } else if (intent === undefined) invalid("missing", `${at}/intent`);
   const kind = undo !== undefined ? "undo" : intent === "revoke" ? "revoke" : "write";
 
+  // external_key (04-write-and-read «按来源键写入»): an update or a correction on a table declaring
+  // one; by key without `row`, or added to a row by an update with `row`.
+  const keyed = has(o, "external_key");
+  if (keyed) {
+    const p = `${at}/external_key`;
+    if (table.external_key === undefined) invalid("no_external_key", p);
+    if (intent === "insert") invalid("insert_with_external_key", p);
+    if (kind !== "write") invalid("mutually_exclusive", p);
+  }
+
   // Target.
   const given = (["row", "entity", "entity_key"] as const).filter((k) => has(o, k));
   let target: PendingOp["target"];
@@ -783,10 +891,17 @@ function readOp(
     const [extra] = given;
     if (extra !== undefined) invalid("mutually_exclusive", `${at}/${extra}`);
     target = { kind: "new" };
+  } else if (keyed && given.length === 0) {
+    // By key: located by the kernel, without `ver` and without premises.
+    if (has(o, "ver")) invalid("mutually_exclusive", `${at}/ver`);
+    if (has(o, "premises")) invalid("premises_with_external_key", `${at}/premises`);
+    target = { kind: "external_key" };
   } else {
     const [first, second] = given;
     if (second !== undefined) invalid("mutually_exclusive", `${at}/${second}`);
     if (first === undefined) return invalid("missing", `${at}/${state ? "entity" : "row"}`);
+    // A key added to a row: an update only (a correction by key has no row).
+    if (keyed && intent !== "update") invalid("mutually_exclusive", `${at}/external_key`);
     const v = get(o, first);
     if (first === "row") {
       if (state) invalid("state_table", `${at}/row`);
@@ -820,6 +935,10 @@ function readOp(
     }
   }
 
+  const externalKey = keyed
+    ? keyEntries(get(o, "external_key"), `${at}/external_key`, table, byName)
+    : undefined;
+
   // ver.
   let ver: PendingOp["ver"];
   if (has(o, "ver")) {
@@ -842,8 +961,19 @@ function readOp(
     if (!isObj(s)) return invalid("malformed", `${at}/set`);
     set = namedFields(s, `${at}/set`, table, byName);
     if (set.length === 0) invalid("malformed", `${at}/set`);
-  } else if (kind === "write" && !(intent === "update" && has(o, "premises")))
-    // An update without `set` is a restatement or a clearing: it carries `premises`.
+    // A key field is given through `external_key` only: an insert giving one would let the same
+    // key be inserted twice (04-write-and-read «按来源键写入»).
+    if (intent === "insert" && table.external_key !== undefined) {
+      const keyIds = new Set<string>(table.external_key);
+      for (const [f, k] of set)
+        if (keyIds.has(f.id)) invalid("insert_with_external_key", `${at}/set/${k}`);
+    }
+  } else if (
+    kind === "write" &&
+    !(intent === "update" && (has(o, "premises") || (keyed && target.kind === "row")))
+  )
+    // An update without `set` is a restatement or a clearing (it carries `premises`), or adds a key
+    // to its row (`external_key` with `row`).
     invalid("missing", `${at}/set`);
 
   // Business time.
@@ -979,6 +1109,11 @@ function readOp(
       name: f.name,
       param: `${at}/entity_key/${k}`,
     })),
+    ...(externalKey ?? []).map(([f, k]) => ({
+      field: f.id,
+      name: f.name,
+      param: `${at}/external_key/${k}`,
+    })),
   ];
 
   return {
@@ -996,6 +1131,7 @@ function readOp(
     ...(ownEvidence !== undefined ? { evidence: ownEvidence } : {}),
     ...(evidenceByField !== undefined ? { evidenceByField } : {}),
     ...(premises !== undefined ? { premises } : {}),
+    ...(externalKey !== undefined ? { externalKey } : {}),
     named,
   };
 }

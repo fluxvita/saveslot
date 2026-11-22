@@ -77,6 +77,12 @@ export type NormalizedTarget =
       readonly kind: "entity_key";
       /** By key field ID: normalized as a value of the field, with the raw value as written. */
       readonly key: Readonly<Record<FieldId, NormalizedField>>;
+    }
+  | {
+      /** By external key (04-write-and-read «按来源键写入»): located by the kernel, no `ver`. */
+      readonly kind: "external_key";
+      /** By key field ID, every field of the table's key: as `entity_key`'s. */
+      readonly key: Readonly<Record<FieldId, NormalizedField>>;
     };
 
 export interface NormalizedField {
@@ -165,6 +171,11 @@ export interface NormalizedOp {
    * without `set` carries one (a restatement, or a clearing).
    */
   readonly premises?: readonly NormalizedPremise[];
+  /**
+   * The external key an update by `row` adds to its row (04-write-and-read «给没有来源键的行补键»),
+   * by key field ID. An op by key has its key in `target` instead.
+   */
+  readonly externalKey?: Readonly<Record<FieldId, NormalizedField>>;
 }
 
 export type EvidenceSegment =

@@ -179,7 +179,7 @@
 
 **按来源键写入**（事件类表与无时间表，schema 声明了 `external_key` 时；规则的权威定义在 data-model「按来源键写入」）：
 
-- **写法**：`external_key` 给出全部键字段的值（缺一个报 `invalid_argument`（`missing`））；意图是 `update` 或 `correct`；不带 `ver`（带了报 `invalid_argument`（`mutually_exclusive`））、不带 `row`；不能带 `premises`（`invalid_argument`（`premises_with_external_key`））。用在没声明来源键的表上报 `invalid_argument`（`no_external_key`）。
+- **写法**：`external_key` 给出全部键字段的值（缺一个、或给了 `null`，报 `invalid_argument`（`missing`））；意图是 `update` 或 `correct`（`revoke` 与带 `revert` 的 op 带了 `external_key` 报 `invalid_argument`（`mutually_exclusive`））；不带 `ver`（带了报 `invalid_argument`（`mutually_exclusive`））、不带 `row`；不能带 `premises`（`invalid_argument`（`premises_with_external_key`））。用在没声明来源键的表上报 `invalid_argument`（`no_external_key`）。
 - **有则更新、无则新增**：内核按键定位。没有这一行就新增；有就做三方比较——这个字段上次按来源键交来的值（基线值）、当前生效值、这次交来的值：与基线值相同的字段是无操作（来源没变，用户在 saveslot 里的改动不会被每次同步盖回去）；不同的，以这个字段的基线位置为所见版本，按普通的冲突判据生效或成为候选。键命中已撤销的行、或键正被一项宽限期内的删除占着时，这个 op 被跳过，不报错。每个 op 的结局在回执的 `outcome` 里（5.4）。
 - **同一请求里同一个键出现两次**，整个请求被拒：`invalid_argument`（`duplicate_external_key`，附两个 op 的下标）。
 - **临时名 `as`**：新增时绑定到新分配的行，命中已有行时绑定到命中的那一行，同一请求里后面的 op 可以用它写 `ref`。这个 op 被跳过时临时名不绑定：后面用它写 `ref` 的按来源键 op 一并跳过（`skip_reason: "ref_skipped"`），普通 op 报 `validation_failed`（`ref_not_found`）。

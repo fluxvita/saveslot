@@ -1205,6 +1205,17 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   });
   if (!normalized.ok) throw requestFailure(normalized.error);
   const req = normalized.request;
+  // By external key, or a key added to a row: taken by normalizing behind the kernel's test switch
+  // only (`acceptExternalKeyForTests`); locating, the three-way comparison and the key index are not
+  // here yet, so such a request stops before anything is looked up or written.
+  for (const o of req.ops) {
+    if (o.target.kind === "external_key" || o.externalKey !== undefined) {
+      throw new WriteError("internal", "writing by external key is not implemented", {
+        reason: "not_implemented",
+        param: `ops/${o.index}/external_key`,
+      });
+    }
+  }
   const task = req.task ?? input.task;
   const tableOf = (id: TableId) =>
     receiptNames.tables.find((t) => t.id === id && t.kind === "base") as CompiledBaseTable;

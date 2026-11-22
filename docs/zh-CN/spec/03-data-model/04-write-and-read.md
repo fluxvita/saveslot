@@ -206,7 +206,7 @@ schema 可以为事件类表与无时间表声明 `duplicate_keys`：一组或�
     "set": { "eaten_at": "2026-11-10T12:30:00+08:00", "energy": { "value": "650", "unit": "kcal" } } } ] }
 ```
 
-- **op 的写法**：`external_key` 给出全部键字段的值（缺一个报 `invalid_argument`（`missing`））；意图是 `update` 或 `correct`；**不带 `ver`**（带了报 `invalid_argument`（`mutually_exclusive`））；不带 `row`；不能带写入的前提（`invalid_argument`（`premises_with_external_key`））。用在没声明来源键的表上报 `invalid_argument`（`no_external_key`）。
+- **op 的写法**：`external_key` 给出全部键字段的值（缺一个、或给了 `null`，报 `invalid_argument`（`missing`））；意图是 `update` 或 `correct`（`revoke` 与带 `revert` 的 op 带了 `external_key` 报 `invalid_argument`（`mutually_exclusive`））；**不带 `ver`**（带了报 `invalid_argument`（`mutually_exclusive`））；不带 `row`；不能带写入的前提（`invalid_argument`（`premises_with_external_key`））。用在没声明来源键的表上报 `invalid_argument`（`no_external_key`）。
 - **`insert` 不能带键字段**：`set` 里出现键字段报 `invalid_argument`（`insert_with_external_key`），提示改用 `update` 按 `external_key` 写入。否则同一个键可以被新增两次，"有则更新"就没有唯一的目标。
 - **同一请求里同一个键出现两次，整个请求被拒**（`duplicate_external_key`，见「同一请求里的多个 op」）。连接器分页重叠时会这样；去重在连接器一侧是一行代码。
 - **可以带临时名 `as`**：新增时绑定到新分配的行，命中已有行时绑定到命中的那一行；同一请求里后面的 op 可以用它写 `ref`。"单据 + 明细"两张表都由连接器同步时，一次请求就能写完。这个 op 被跳过时临时名不绑定任何行：后面用它写 `ref` 的 op 若也是按来源键的 op，一并跳过（`skip_reason: "ref_skipped"`）；若是普通 op，按 `ref` 目标不存在报 `validation_failed`（`ref_not_found`）。
