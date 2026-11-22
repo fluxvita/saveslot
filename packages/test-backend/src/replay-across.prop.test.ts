@@ -48,6 +48,7 @@ import { derivedSchema, fc, propRuns, rule } from "@fluxvita/saveslot-kernel/rsq
 import { createSlotEvents, resolveInTx, SLOT, writeInTx } from "@fluxvita/saveslot-kernel/testing";
 import { PgliteBackend } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { copyLog } from "../../store-pglite/src/testing/copy-log.fixture.ts";
 import { type Reusable, reusable } from "../../store-pglite/src/testing/reusable-store.fixture.ts";
 import { testCell, testPostgres } from "../../store-postgres/src/testing/test-postgres.fixture.ts";
 import { TEST_DURABILITY } from "./index.fixture.ts";
@@ -633,24 +634,11 @@ async function write(store: TenantStore, schema: Schema, steps: readonly Step[])
 
 /** Gives the log of `from` to apply on the empty store `into`, from the first event. */
 async function replay(from: TenantStore, into: TenantStore): Promise<number> {
-  const events = await from.read((tx) => tx.query("SELECT * FROM events ORDER BY seq"));
-  const content = await from.read((tx) => tx.query("SELECT * FROM content ORDER BY seq, path"));
   return into.write(async (tx) => {
-    for (const [table, rs] of [
-      ["events", events.rows],
-      ["content", content.rows],
-    ] as const) {
-      for (const r of rs) {
-        const cols = Object.keys(r as object);
-        await tx.query(
-          `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(", ")})`,
-          Object.values(r as object) as never,
-        );
-      }
-    }
+    const copied = await copyLog(from, tx);
     const last = (await readTail(tx))?.seq ?? 0;
     await applyEvents(tx, await readEvents(tx, 1, last));
-    return events.rows.length;
+    return copied;
   });
 }
 

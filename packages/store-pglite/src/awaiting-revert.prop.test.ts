@@ -47,6 +47,7 @@ import {
   writeInTx,
 } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { copyLog } from "./testing/copy-log.fixture.ts";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
 const T = 600_000;
@@ -612,21 +613,8 @@ async function itemsAndTables(store: ReusableStore["store"], table: TableName) {
 /** The store's whole log replayed into the emptied replica; what it then holds. */
 async function replayed(table: TableName) {
   await replica.reset();
-  const events = await s.store.read((tx) => tx.query("SELECT * FROM events ORDER BY seq"));
-  const content = await s.store.read((tx) => tx.query("SELECT * FROM content ORDER BY seq, path"));
   await replica.store.write(async (tx) => {
-    for (const [name, rows] of [
-      ["events", events.rows],
-      ["content", content.rows],
-    ] as const) {
-      for (const r of rows) {
-        const cols = Object.keys(r as object);
-        await tx.query(
-          `INSERT INTO ${name} (${cols.join(", ")}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(", ")})`,
-          Object.values(r as object) as never,
-        );
-      }
-    }
+    await copyLog(s.store, tx);
     const last = (await readTail(tx))?.seq ?? 0;
     await applyEvents(tx, await readEvents(tx, 1, last));
   });

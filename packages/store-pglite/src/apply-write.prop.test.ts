@@ -41,6 +41,7 @@ import { EVENT, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { PgliteTenantStore } from "./backend.ts";
+import { copyLog } from "./testing/copy-log.fixture.ts";
 import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
 
 vi.setConfig({ testTimeout: 600_000 });
@@ -464,27 +465,12 @@ async function everything(tx: ReadTx): Promise<Record<string, unknown[]>> {
 async function replayed(store: PgliteTenantStore, into: ReusableStore) {
   await into.reset();
   const replica = into.store;
-  {
-    const events = await store.read((tx) => tx.query("SELECT * FROM events ORDER BY seq"));
-    const content = await store.read((tx) => tx.query("SELECT * FROM content ORDER BY seq, path"));
-    await replica.write(async (tx) => {
-      for (const [table, rs] of [
-        ["events", events.rows],
-        ["content", content.rows],
-      ] as const) {
-        for (const r of rs) {
-          const cols = Object.keys(r as object);
-          await tx.query(
-            `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(", ")})`,
-            Object.values(r as object) as never,
-          );
-        }
-      }
-      const last = (await readTail(tx))?.seq ?? 0;
-      await applyEvents(tx, await readEvents(tx, 1, last));
-    });
-    return await replica.read(everything);
-  }
+  await replica.write(async (tx) => {
+    await copyLog(store, tx);
+    const last = (await readTail(tx))?.seq ?? 0;
+    await applyEvents(tx, await readEvents(tx, 1, last));
+  });
+  return await replica.read(everything);
 }
 
 const both = [
