@@ -176,7 +176,10 @@ export class LocalControlPlane implements ControlPlane {
     }
   }
 
-  /** The connection tokens of these principals go; the one session is replaced, never removed. */
+  /**
+   * The connection tokens of these principals go; the one session is replaced, never removed, so
+   * asking for sessions only is refused rather than answered with none gone.
+   */
   async removeCredentials(
     tenant: TenantId,
     principals: ReadonlySet<PrincipalId>,
@@ -184,7 +187,7 @@ export class LocalControlPlane implements ControlPlane {
   ): Promise<number> {
     const c = this.#loaded();
     if (tenant !== (await this.directory()).tenant) throw new Error("not the local tenant");
-    if (opts.kind === "session") return 0;
+    if (opts.kind === "session") throw new Error("the local session is replaced, never removed");
     return c.removePrincipals(principals);
   }
 

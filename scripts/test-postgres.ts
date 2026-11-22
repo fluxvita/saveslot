@@ -22,6 +22,8 @@ export const TESTED = [
   // The server mode's control plane, whose database is PostgreSQL there.
   "packages/service/src/server-control-plane.test.ts",
   "packages/service/src/server-tenant.test.ts",
+  "packages/service/src/tenant-pool.test.ts",
+  "packages/service/src/server-auth.test.ts",
   // The server mode's connection tokens: a control plane and a tenant store, both PostgreSQL there.
   "packages/service/src/server-connections.test.ts",
 ];

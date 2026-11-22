@@ -88,7 +88,7 @@ describe("credentials", () => {
     expect((await Credentials.load(h.home)).connection(connection)).toBeUndefined();
   });
 
-  it("refuses what the local mode does not have: another tenant, another user, an expiry, a grant", async () => {
+  it("refuses what the local mode does not have: another tenant, another user, an expiry, a grant, a session removed", async () => {
     const h = home();
     const cp = new LocalControlPlane(h.home, h.credentials);
     const hash = tokenHash(newToken("connection"));
@@ -116,6 +116,12 @@ describe("credentials", () => {
     await expect(
       cp.putCredential({ hash, kind: "connection", principal: CI, tenant: TENANT, grant: "g_1" }),
     ).rejects.toThrow("local credentials come from no grant");
+    const session = tokenHash(newToken("session"));
+    await cp.putCredential({ hash: session, kind: "session", principal: USER, tenant: TENANT });
+    await expect(
+      cp.removeCredentials(TENANT, new Set([USER]), { kind: "session" }),
+    ).rejects.toThrow("the local session is replaced, never removed");
+    expect((await Credentials.load(h.home)).sessionHash).toBe(session);
   });
 
   it("are not read before they are loaded", async () => {

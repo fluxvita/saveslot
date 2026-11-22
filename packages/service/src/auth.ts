@@ -8,7 +8,7 @@
 // connection token's hash not found is compared once against a fixed hash too, so "not found" and
 // "found, other hash" do not differ in the work done.
 
-import type { Visibility } from "@fluxvita/saveslot-kernel";
+import type { TenantStore, Visibility } from "@fluxvita/saveslot-kernel";
 import type { Credentials } from "./credentials.ts";
 import type { LocalTenant } from "./local-tenant.ts";
 import { bearerToken, sameHash, tokenHash } from "./tokens.ts";
@@ -47,18 +47,61 @@ export interface AuthFailure {
 /** A hash no token has: what a connection hash not found is compared with. */
 const NO_HASH = "0".repeat(64);
 
-interface PrincipalRow {
-  kind: string;
-  state: string;
-  scopes: string | null;
-  slots: string | null;
+/** A principal's row in the tenant's `principals`: what authorizing it reads. */
+export interface PrincipalRow {
+  readonly kind: string;
+  readonly state: string;
+  readonly scopes: string | null;
+  readonly slots: string | null;
 }
 
-async function principalRow(t: LocalTenant, id: string): Promise<PrincipalRow | undefined> {
-  const r = await t.store.read((tx) =>
+/** The principal's row in the tenant's log, if it has one. */
+export async function principalRow(
+  store: TenantStore,
+  id: string,
+): Promise<PrincipalRow | undefined> {
+  const r = await store.read((tx) =>
     tx.query<PrincipalRow>("SELECT kind, state, scopes, slots FROM principals WHERE id = $1", [id]),
   );
   return r.rows[0];
+}
+
+/**
+ * The principal a credential of `kind` stands for, from its row in `principals`; why not, when it
+ * does not authenticate. A user session has every scope and every slot; a connection instance its
+ * scopes and slot range as registered. No row: a hash recorded by an issue that never committed.
+ */
+export function principalFromRow(
+  kind: "session" | "connection",
+  id: string,
+  row: PrincipalRow | undefined,
+): Principal | AuthFailure {
+  if (kind === "session") {
+    // The user is disabled once the tenant is imported into: it no longer authenticates.
+    if (row?.kind !== "user" || row.state !== "active") {
+      return { code: "unauthenticated", reason: "invalid" };
+    }
+    return {
+      kind: "user",
+      actor: id as `u_${string}`,
+      scopes: SCOPES,
+      visibility: { kind: "all" },
+    };
+  }
+  if (row?.kind !== "connection") return { code: "unauthenticated", reason: "invalid" };
+  if (row.state === "revoked") return { code: "unauthenticated", reason: "revoked" };
+  if (row.state !== "active") return { code: "unauthenticated", reason: "invalid" };
+  const scopes = JSON.parse(row.scopes ?? "[]") as Scope[];
+  const slots = row.slots === null ? undefined : (JSON.parse(row.slots) as SlotId[]);
+  return {
+    kind: "connection",
+    actor: id as `ci_${string}`,
+    scopes,
+    visibility:
+      slots === undefined
+        ? { kind: "all" }
+        : { kind: "scoped", slots: slots.map((slot) => ({ slot })) },
+  };
 }
 
 /** Authenticates a request by its `Authorization` header. */
@@ -78,12 +121,11 @@ export async function authenticate(o: {
     if (!sameHash(hash, o.credentials.sessionHash)) {
       return { code: "unauthenticated", reason: "invalid" };
     }
-    const row = await principalRow(o.tenant, o.tenant.user);
-    // The user is disabled once the tenant is imported into: it no longer authenticates.
-    if (row?.kind !== "user" || row.state !== "active") {
-      return { code: "unauthenticated", reason: "invalid" };
-    }
-    return { kind: "user", actor: o.tenant.user, scopes: SCOPES, visibility: { kind: "all" } };
+    return principalFromRow(
+      "session",
+      o.tenant.user,
+      await principalRow(o.tenant.store, o.tenant.user),
+    );
   }
 
   const principal = o.credentials.connection(hash);
@@ -95,20 +137,5 @@ export async function authenticate(o: {
   }
   // The found hash compared too, as the path above (its result is known: the lookup was by it).
   sameHash(hash, hash);
-  const row = await principalRow(o.tenant, principal);
-  // No such principal: a hash recorded by an issue that never committed.
-  if (row?.kind !== "connection") return { code: "unauthenticated", reason: "invalid" };
-  if (row.state === "revoked") return { code: "unauthenticated", reason: "revoked" };
-  if (row.state !== "active") return { code: "unauthenticated", reason: "invalid" };
-  const scopes = JSON.parse(row.scopes ?? "[]") as Scope[];
-  const slots = row.slots === null ? undefined : (JSON.parse(row.slots) as SlotId[]);
-  return {
-    kind: "connection",
-    actor: principal,
-    scopes,
-    visibility:
-      slots === undefined
-        ? { kind: "all" }
-        : { kind: "scoped", slots: slots.map((slot) => ({ slot })) },
-  };
+  return principalFromRow("connection", principal, await principalRow(o.tenant.store, principal));
 }

@@ -165,7 +165,7 @@ async function databaseTaken(
 
 const HASH = /^[0-9a-f]{64}$/;
 /** An instant as `Date.prototype.toISOString` writes it. */
-const isInstant = (v: string): boolean =>
+export const isInstant = (v: string): boolean =>
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(v) &&
   !Number.isNaN(Date.parse(v)) &&
   new Date(v).toISOString() === v;

@@ -60,7 +60,8 @@ export interface ControlPlane {
    * Forgets the tenant's credentials of these principals, durably; how many went. A principal's ID
    * can be in two tenants' logs (one imported from the other's export): the other tenant's are left.
    * With `kind`, only those of that kind (a password changed ends a user's sessions, not the
-   * connections it issued).
+   * connections it issued). The local mode refuses `kind: "session"`: its one session is replaced,
+   * never removed.
    */
   removeCredentials(
     tenant: TenantId,
