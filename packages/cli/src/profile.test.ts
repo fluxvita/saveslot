@@ -329,11 +329,6 @@ describe("a command run with a server profile", () => {
     expect([r.code, r.err]).toEqual([6, `${TEXTS.renewRefused}\n`]);
     expect(seen.map((x) => x.url)).toEqual(["/oauth/token"]);
   });
-
-  it("setup with a server profile: not in this version, 2", async () => {
-    const r = await cli(["setup", "--profile", "lab"]);
-    expect([r.code, r.err]).toEqual([2, `${TEXTS.usageError(TEXTS.setupServerNotYet)}\n`]);
-  });
 });
 
 describe("connect --profile", () => {

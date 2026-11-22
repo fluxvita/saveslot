@@ -32,10 +32,13 @@ import {
   hostEntry,
   hostVersion,
   issueAndAdd,
+  mcpUrl,
   onPath,
   parseScopes,
+  remoteAddCommand,
   removeCommand,
   revokeQuietly,
+  runHostCommand,
   SETUP_HOSTS,
   type SetupHost,
   writes,
@@ -112,6 +115,22 @@ export interface SetupInput {
   readonly services: SetupServices;
   /** Calls `on` at SIGINT / SIGTERM until the function it gives back is called. */
   readonly watchSignals?: (on: (signal: StopSignal) => void) => () => void;
+  /**
+   * A server profile (06 §3.3 item 13): its name, its server, and its sign-in; absent, this
+   * computer. `signedIn`: whether the profile's sign-in is usable now (its renewal failing: the
+   * error, the server's); `signIn`: `saveslot login` for it (`--device` passed on), its exit code
+   * and whether the person declined on the authorization page; undefined where login is not
+   * available.
+   */
+  readonly server?: {
+    readonly profile: string;
+    readonly server: string;
+    readonly device: boolean;
+    readonly signedIn: () => Promise<boolean>;
+    readonly signIn:
+      | ((stop: AbortSignal) => Promise<{ readonly exit: number; readonly declined: boolean }>)
+      | undefined;
+  };
 }
 
 /** What `setup` gives back: the result (`--json`), the summary, what goes to stderr, the exit. */
@@ -141,6 +160,8 @@ interface HostResult {
 
 /** What has been done so far: the result, and what is said when `setup` stops early. */
 interface Report {
+  /** A server profile's sign-in (06 §3.3 item 13, §6.1); failed or needed: nothing after it. */
+  signedIn?: "existing" | "done" | "failed" | "needed";
   initialized?: "existing" | "done" | "failed";
   service?: "ready" | "failed";
   /** This run started the service (not one running already). */
@@ -189,7 +210,12 @@ function checkInput(i: SetupInput): void {
     }
   }
   parseScopes(i.scopes);
-  // Issuing takes the user session: a connection's token cannot issue.
+  if (i.server !== undefined) {
+    // A host connecting to a server is given its scopes on the authorization page.
+    if (i.scopes.length > 0) throw new UsageError(TEXTS.setupScopeOnPage);
+    // `--host` is checked above: the hosts with an add command are those with a remote one.
+  }
+  // Issuing, and making a slot, take the user session: a connection's token cannot.
   if (i.env["SAVESLOT_TOKEN"] !== undefined) throw new Failed(TEXTS.setupNeedsSession, 6);
 }
 
@@ -283,6 +309,17 @@ export async function setup(given: SetupInput): Promise<SetupOutput> {
   const scopes = parseScopes(i.scopes);
 
   // Without a terminal and without --yes: the steps it would take, nothing done (06 §3.3 item 6).
+  if (!(i.stdinTerminal && i.stderrTerminal) && !i.yes && i.server !== undefined) {
+    let signed: boolean;
+    try {
+      signed = await i.server.signedIn();
+    } catch (e) {
+      const d = describeError(e, { remote: true });
+      return { json: { signed_in: "failed" }, lines: [], errLines: d.lines, exit: d.exit };
+    }
+    i.sayErr(await serverPlan(i, i.server, signed));
+    throw new NotDone(i.stdinTerminal ? TEXTS.setupNoTerminalErr : TEXTS.setupNoTerminal);
+  }
   if (!(i.stdinTerminal && i.stderrTerminal) && !i.yes) {
     const initialized = await i.services.initialized(i.home);
     const plan: Line[] = [[words(TEXTS.setupWouldDo)]];
@@ -313,7 +350,7 @@ export async function setup(given: SetupInput): Promise<SetupOutput> {
   const problem = await i.services.homeProblem(i.home);
   if (problem !== undefined) {
     i.passOn.err(problem);
-    return { json: { initialized: "failed" }, lines: [], errLines: [], exit: 1 };
+    return { json: homeFailed(i), lines: [], errLines: [], exit: 1 };
   }
   // The lock is under the home, made first when missing (run/ was looked at above, so what is
   // left in the way here is run/setup itself): said with its path.
@@ -324,7 +361,7 @@ export async function setup(given: SetupInput): Promise<SetupOutput> {
     const x = e as NodeJS.ErrnoException;
     if (x.code === undefined || !["EEXIST", "ENOTDIR", "EACCES", "EPERM"].includes(x.code)) throw e;
     return {
-      json: { initialized: "failed" },
+      json: homeFailed(i),
       lines: [],
       errLines: [
         t`${words(TEXTS.setupHomeInTheWay)} ${untrusted(x.path ?? i.home)} (${code(x.code, IN_THE_WAY)})`,
@@ -341,12 +378,17 @@ export async function setup(given: SetupInput): Promise<SetupOutput> {
     stop.abort();
   });
   try {
-    const exit = await steps(i, scopes, report, stop.signal);
+    const exit =
+      i.server !== undefined
+        ? await serverSteps(i, i.server, report, stop.signal)
+        : await steps(i, scopes, report, stop.signal);
     // A host given an instance that cannot create slots: how to let it (05 §1, 06 §3.2).
     const hint =
-      report.hosts.some((h) => h.state === "done") && !createsSlots(scopes)
-        ? [[words(TEXTS.noSchemaHint(writes(scopes)))]]
-        : [];
+      i.server !== undefined
+        ? [[words(TEXTS.setupServerAfter(i.server.profile))]]
+        : report.hosts.some((h) => h.state === "done") && !createsSlots(scopes)
+          ? [[words(TEXTS.noSchemaHint(writes(scopes)))]]
+          : [];
     return { json: jsonOf(report), lines: [...summary(report, true), ...hint], errLines: [], exit };
   } catch (e) {
     // Stopped by a signal only where the stop is the signal's; another error says its own cause.
@@ -455,51 +497,7 @@ async function steps(
 
   // 3. A slot, when there is none: made as `slot create --template` makes it.
   const session = await i.client();
-  const list = await session.catalog({ level: "list", limit: 1 });
-  if (list.slots.length > 0) step(3, [words(TEXTS.stepSlotsThere)]);
-  else {
-    let chosen = [...i.templates];
-    if (chosen.length === 0 && i.stdinTerminal && i.stderrTerminal && !i.yes) {
-      const names = [...TEMPLATES.keys()];
-      const width = Math.max(...names.map((n) => n.length));
-      const picked = await choose(
-        i,
-        stop,
-        TEXTS.chooseTemplates,
-        names.map(
-          (n) =>
-            t`${name(n)}${words(gap(width - n.length + 2))}${words(TEXTS.templates.get(n) as Static)}`,
-        ),
-        names.map((_, k) => k === 0),
-      );
-      chosen = names.filter((_, k) => picked[k]);
-    }
-    if (chosen.length === 0) step(3, [words(TEXTS.stepNoSlot)]);
-    for (const tpl of chosen) {
-      const slot = templateSlot(tpl) as string;
-      const made = templateDocument(tpl, slot, i.timezone);
-      let r: Awaited<ReturnType<Client["schemaDraft"]>>;
-      try {
-        r = await session.schemaDraft({ document: made?.doc ?? {} });
-      } catch (e) {
-        // As `slot create` says it: the error, and what a refused time zone takes.
-        report.slotFailed = tpl;
-        const d = describeError(e);
-        const hint = timezoneHint(e, i.timezone !== undefined);
-        throw new Stop(
-          d.exit,
-          [...d.lines, ...(hint !== undefined ? [t`  ${words(hint)}`] : [])],
-          undefined,
-        );
-      }
-      if (!i.json) {
-        step(3, t`${words(TEXTS.stepSlotMade)} ${name(tpl)}`);
-        i.say(slotCreated(r, made?.chosen).map((l) => t`      ${l}`));
-      }
-      report.slots.push({ template: tpl, slot });
-      halt();
-    }
-  }
+  await makeSlots(i, session, report, stop, (what) => step(3, what), halt);
 
   // 4. The hosts: found, and chosen (in the order given, or the list's).
   const found = await discover(i, stop);
@@ -614,6 +612,293 @@ async function steps(
   }
   halt();
   return report.hosts.some((r) => r.state === "failed" || r.state === "not_found") ? 1 : 0;
+}
+
+/** `--json` when the home cannot be used: no `initialized` on a server's branch (06 §3.3 item 13). */
+const homeFailed = (i: SetupInput) => (i.server !== undefined ? {} : { initialized: "failed" });
+
+/** The hosts setup can add to a server profile: those with a remote add command (06 §3.2). */
+const remoteAddable = (h: SetupHost) => remoteAddCommand(h, "") !== undefined;
+
+/** A host's remote add command as it runs: the host's executable by its path on PATH. */
+const remoteRun = (host: SetupHost, exe: string, url: string) => [
+  exe,
+  ...(remoteAddCommand(host, url) as string[]).slice(1),
+];
+
+/** What `setup --profile` would do, said where nothing is done (06 §3.3 items 6, 13). */
+async function serverPlan(
+  i: SetupInput,
+  server: NonNullable<SetupInput["server"]>,
+  signedIn: boolean,
+): Promise<Line[]> {
+  const url = mcpUrl(server.server);
+  const plan: Line[] = [[words(TEXTS.setupWouldDo)]];
+  if (!signedIn) plan.push([words(TEXTS.planSignIn(server.profile))]);
+  for (const tpl of i.templates) plan.push(t`  ${words(TEXTS.planSlot)} ${name(tpl)}`);
+  if (i.templates.length === 0) plan.push([words(TEXTS.planNoSlot)]);
+  for (const h of i.hosts as SetupHost[]) {
+    plan.push(t`  ${words(TEXTS.planHost)} ${words(TEXTS.hostDisplay(h))}`);
+    const exe = await onPath(HOST_INFO[h].exe as string, i.env["PATH"]);
+    if (exe === undefined) plan.push(t`    ${words(TEXTS.hostNotFound)}`);
+    else plan.push(t`    ${shellLine(remoteRun(h, exe, url))}`);
+  }
+  if (i.hosts.length === 0) plan.push([words(TEXTS.planNoHost)]);
+  return plan;
+}
+
+/**
+ * `setup --profile <server profile>` (06 §3.3 item 13): signed in first (`saveslot login`), a slot
+ * made on the server when it has none, and the chosen hosts given the remote add command. Nothing
+ * is issued: each host signs in itself, and the authorization page is the one consent; so nothing
+ * is revoked when a host's command fails.
+ */
+async function serverSteps(
+  i: SetupInput,
+  server: NonNullable<SetupInput["server"]>,
+  report: Report,
+  stop: AbortSignal,
+): Promise<number> {
+  const step = (n: number, what: Line) => {
+    if (!i.json) i.say([t`[${num(n)}/4] ${what}`]);
+  };
+  const halt = () => {
+    if (stop.aborted) throw new Stop(1, [], "interrupted");
+  };
+  const asking = i.stdinTerminal && i.stderrTerminal && !i.yes;
+  const url = mcpUrl(server.server);
+
+  // 1. Signed in to the profile, or signed in now. A renewal that fails is the server's failure.
+  let signed: boolean;
+  try {
+    signed = await server.signedIn();
+  } catch (e) {
+    report.signedIn = "failed";
+    const d = describeError(e, { remote: true });
+    throw new Stop(d.exit, d.lines, undefined);
+  }
+  if (signed) {
+    report.signedIn = "existing";
+    step(1, t`${words(TEXTS.stepSignedIn)} ${name(server.profile)}`);
+  } else if (!asking || server.signIn === undefined) {
+    // No one to sign in: said, nothing done (06 §3.3 item 6).
+    report.signedIn = "needed";
+    throw new Stop(8, [[words(TEXTS.setupSignInFirst(server.profile))]], undefined);
+  } else {
+    step(1, t`${words(TEXTS.stepSignIn)} ${name(server.profile)}`);
+    const signIn = await server.signIn(stop);
+    halt();
+    if (signIn.exit !== 0) {
+      // Login has said why. Declined on the authorization page: a person's no, as at step 5.
+      report.signedIn = "failed";
+      throw signIn.declined ? new Stop(8, [], "declined") : new Stop(signIn.exit, [], undefined);
+    }
+    report.signedIn = "done";
+  }
+  halt();
+
+  // 2. A slot on the server, when it has none.
+  const session = await i.client();
+  await makeSlots(i, session, report, stop, (what) => step(2, what), halt);
+
+  // 3. The hosts: found, and chosen; only those with a remote add command can be added here.
+  const found = await discover(i, stop);
+  halt();
+  step(3, [words(found.length === 0 ? TEXTS.stepNoHosts : TEXTS.stepHosts)]);
+  const addable = found.filter((f) => f.exe !== undefined && remoteAddable(f.host));
+  const manual = found.filter((f) => !(f.exe !== undefined && remoteAddable(f.host)));
+  let chosen: SetupHost[];
+  let listed = false;
+  if (i.hosts.length > 0 || !asking) chosen = i.hosts as SetupHost[];
+  else if (found.length === 0) chosen = [];
+  else {
+    listed = true;
+    const picked =
+      addable.length > 0
+        ? await choose(
+            i,
+            stop,
+            TEXTS.chooseHosts,
+            addable.map(
+              (f) => t`${words(TEXTS.hostDisplay(f.host))} (${untrusted(f.version ?? "")})`,
+            ),
+            addable.map(() => true),
+            manual.map(
+              (f) =>
+                t`  - ${words(TEXTS.hostDisplay(f.host))}: ${words(TEXTS.hostManualServer(f.host, server.profile))}`,
+            ),
+          )
+        : [];
+    chosen = addable.filter((_, k) => picked[k]).map((f) => f.host);
+  }
+
+  // 4. Per host: an entry already there (for this server, or another), or the command to run.
+  const order: SetupHost[] = listed ? found.map((f) => f.host) : chosen;
+  const byHost = new Map<SetupHost, HostResult | "todo">();
+  const todo: { host: SetupHost; exe: string }[] = [];
+  for (const host of chosen) {
+    const exe = found.find((f) => f.host === host)?.exe;
+    if (exe === undefined) {
+      byHost.set(host, { host, state: "not_found", why: [[words(TEXTS.hostNotFound)]] });
+      continue;
+    }
+    const there = await hostEntry(exe, i.env, i.lookupTimeoutMs, stop);
+    halt();
+    if (there.kind === "unknown") {
+      byHost.set(host, {
+        host,
+        state: "failed",
+        reason: "lookup_failed",
+        why: [[words(TEXTS.hostLookupFailed)]],
+      });
+    } else if (there.kind === "yes") {
+      // An entry named saveslot: this server's (its address seen in it), or another's (the local
+      // service, or another server): not replaced; how to remove it is said.
+      byHost.set(
+        host,
+        entryHolds(there.out, url)
+          ? { host, state: "existing" }
+          : {
+              host,
+              state: "unconfirmed",
+              reason: "other_entry",
+              why: [
+                [words(TEXTS.unconfirmedOtherEntry)],
+                t`  ${shellLine(removeCommand(host) as string[])}`,
+              ],
+            },
+      );
+    } else {
+      todo.push({ host, exe });
+      byHost.set(host, "todo");
+    }
+  }
+  if (listed) for (const f of manual) byHost.set(f.host, { host: f.host, state: "manual" });
+  const record = () => {
+    report.hosts.length = 0;
+    for (const h of order) {
+      const r = byHost.get(h);
+      if (r !== undefined && r !== "todo") report.hosts.push(r);
+    }
+  };
+  record();
+
+  if (todo.length > 0) {
+    // No token in them: each host signs in itself when first used.
+    i.sayErr([
+      [words(TEXTS.remoteSignsIn)],
+      ...todo.map((d) => t`  ${shellLine(remoteRun(d.host, d.exe, url))}`),
+    ]);
+    if (!i.yes) {
+      const a = await asked(i, stop, TEXTS.runThese(todo.length));
+      if (!/^(|y|yes)$/i.test(a.trim()))
+        throw new Stop(8, [[words(TEXTS.setupDeclined)]], "declined");
+    }
+  }
+  step(4, [words(TEXTS.stepAdd)]);
+  for (const d of todo) {
+    halt();
+    byHost.set(d.host, await addRemote(i, d.host, d.exe, url, stop));
+    record();
+  }
+  halt();
+  return report.hosts.some((r) => r.state === "failed" || r.state === "not_found") ? 1 : 0;
+}
+
+/** One host given the server's remote add command, and looked up again. */
+async function addRemote(
+  i: SetupInput,
+  host: SetupHost,
+  exe: string,
+  url: string,
+  stop: AbortSignal,
+): Promise<HostResult> {
+  const display = TEXTS.hostDisplay(host);
+  const ran = await runHostCommand(
+    remoteRun(host, exe, url),
+    i.env,
+    i.hostTimeoutMs,
+    () => {},
+    stop,
+  );
+  if (ran.kind !== "done") {
+    // Nothing was issued, so nothing is revoked; the host's status goes to stderr (item 8).
+    i.sayErr([t`${words(display as Static)}: ${words(appliedWhy(ran))}`]);
+    return { host, state: "failed", reason: appliedReason(ran), why: [[words(appliedWhy(ran))]] };
+  }
+  const after = await hostEntry(exe, i.env, i.lookupTimeoutMs, stop);
+  if (after.kind !== "yes") {
+    return {
+      host,
+      state: "failed",
+      reason: stop.aborted ? "interrupted" : after.kind === "no" ? "no_entry" : "lookup_failed",
+      why: [[words(TEXTS.entryNotSeen)], t`  ${shellLine(removeCommand(host) as string[])}`],
+    };
+  }
+  return {
+    host,
+    state: "done",
+    ...(entryHolds(after.out, url) ? {} : { why: [[words(TEXTS.addressNotSeenAfter)]] }),
+  };
+}
+
+/**
+ * A slot, when there is none (06 §3.3 step 3, item 13): made as `slot create --template` makes
+ * it, on the local service or on a server profile's.
+ */
+async function makeSlots(
+  i: SetupInput,
+  session: Client,
+  report: Report,
+  stop: AbortSignal,
+  say: (what: Line) => void,
+  halt: () => void,
+): Promise<void> {
+  const list = await session.catalog({ level: "list", limit: 1 });
+  if (list.slots.length > 0) say([words(TEXTS.stepSlotsThere)]);
+  else {
+    let chosen = [...i.templates];
+    if (chosen.length === 0 && i.stdinTerminal && i.stderrTerminal && !i.yes) {
+      const names = [...TEMPLATES.keys()];
+      const width = Math.max(...names.map((n) => n.length));
+      const picked = await choose(
+        i,
+        stop,
+        TEXTS.chooseTemplates,
+        names.map(
+          (n) =>
+            t`${name(n)}${words(gap(width - n.length + 2))}${words(TEXTS.templates.get(n) as Static)}`,
+        ),
+        names.map((_, k) => k === 0),
+      );
+      chosen = names.filter((_, k) => picked[k]);
+    }
+    if (chosen.length === 0) say([words(TEXTS.stepNoSlot)]);
+    for (const tpl of chosen) {
+      const slot = templateSlot(tpl) as string;
+      const made = templateDocument(tpl, slot, i.timezone);
+      let r: Awaited<ReturnType<Client["schemaDraft"]>>;
+      try {
+        r = await session.schemaDraft({ document: made?.doc ?? {} });
+      } catch (e) {
+        // As `slot create` says it: the error, and what a refused time zone takes.
+        report.slotFailed = tpl;
+        const d = describeError(e, { remote: i.server !== undefined });
+        const hint = timezoneHint(e, i.timezone !== undefined);
+        throw new Stop(
+          d.exit,
+          [...d.lines, ...(hint !== undefined ? [t`  ${words(hint)}`] : [])],
+          undefined,
+        );
+      }
+      if (!i.json) {
+        say(t`${words(TEXTS.stepSlotMade)} ${name(tpl)}`);
+        i.say(slotCreated(r, made?.chosen).map((l) => t`      ${l}`));
+      }
+      report.slots.push({ template: tpl, slot });
+      halt();
+    }
+  }
 }
 
 /** The last read of an instance besides its self-check: its time, or null when there is none. */
@@ -825,6 +1110,24 @@ async function addHost(
 
 /** `--json` (06 §6.1): each step's result, each host in order; never a token. */
 function jsonOf(r: Report): Record<string, unknown> {
+  if (r.signedIn !== undefined) {
+    // Not signed in: the object ends there (06 §6.1).
+    const on = r.signedIn === "existing" || r.signedIn === "done";
+    return {
+      signed_in: r.signedIn,
+      ...(on ? { slots: r.slots } : {}),
+      ...(r.slotFailed !== undefined ? { slot_failed: r.slotFailed } : {}),
+      ...(on
+        ? {
+            hosts: r.hosts.map((h) => ({
+              host: h.host,
+              state: h.state,
+              ...(h.reason !== undefined ? { reason: h.reason } : {}),
+            })),
+          }
+        : {}),
+    };
+  }
   return {
     ...(r.initialized !== undefined ? { initialized: r.initialized } : {}),
     ...(r.service !== undefined ? { service: r.service } : {}),
@@ -847,6 +1150,7 @@ function jsonOf(r: Report): Record<string, unknown> {
 /** What was done before `setup` stopped short. */
 function doneSoFar(r: Report): Line[] {
   const out: Line[] = [];
+  if (r.signedIn === "done") out.push([words(TEXTS.doneSignedIn)]);
   if (r.initialized === "done") out.push([words(TEXTS.doneInitialized)]);
   // The service only when this run started it.
   if (r.service === "ready" && r.started === true) out.push([words(TEXTS.doneService)]);

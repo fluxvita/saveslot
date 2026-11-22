@@ -23,6 +23,7 @@ import {
   type Client,
   type Connection,
   ContractCallError,
+  CredentialError,
   createClient,
   ITEM_STATUSES,
   ITEM_TYPES,
@@ -195,6 +196,8 @@ export interface CliIO {
   readonly entry?: string;
   /** Tests only: how long `connect --apply` lets the host's command run (60 s otherwise). */
   readonly hostTimeoutMs?: number;
+  /** Tests only: stands in for login's `signIn` (./login.ts) where `setup --profile` signs in. */
+  readonly signIn?: typeof signIn;
   /** Tests only: how long `setup` lets a host's `--version` run (5 s otherwise). */
   readonly versionTimeoutMs?: number;
   /** Tests only: how long `setup` lets a host's look-up (`mcp get saveslot`) run (5 s otherwise). */
@@ -797,10 +800,49 @@ async function setupCommand(
   env: Env,
 ): Promise<Output> {
   if (o.args.length > 0) throw new UsageError(TEXTS.setupArgs);
-  // A server's setup (06 §3.3 item 13) is not in this version; without --profile, this computer.
-  if (o.profile !== undefined && o.profile !== "local")
-    throw new UsageError(TEXTS.setupServerNotYet);
   if (o.services === undefined) throw new Failed(TEXTS.setupNotHere, 2);
+  // `--profile` a server's: setup's server branch (06 §3.3 item 13); else this computer, whatever
+  // profile is in use.
+  const profile = o.profile !== undefined && o.profile !== "local" ? o.profile : undefined;
+  if (profile === undefined && ownFlag(o, "device")) throw new UsageError(TEXTS.deviceIsForServer);
+  const at = profile !== undefined ? await profileServer(o.home, profile) : undefined;
+  // `saveslot login` for the profile (06 §3.3 item 13): its progress on stderr, its message on an
+  // end; stopped, setup says the signal and exits 128 + its number, as for any of its steps.
+  const login = async (x: { profile: string; server: string; stop: AbortSignal }) => {
+    const r = await (io.signIn ?? signIn)({
+      home: o.home,
+      profile: x.profile,
+      server: x.server,
+      io: { ...io, boundary: boundaryFor(io.stderrIsTTY, o.tags, env) },
+      stop: x.stop,
+      ...(ownFlag(o, "device") ? { mode: "device" as const } : {}),
+    });
+    if (r.ok) return { exit: 0, declined: false };
+    io.err(`${r.message}\n`);
+    return { exit: r.exit, declined: r.message === TEXTS.loginDenied };
+  };
+  const server =
+    profile !== undefined && at !== undefined
+      ? {
+          profile,
+          server: at,
+          device: ownFlag(o, "device"),
+          signedIn: async () => {
+            try {
+              await resolveProfileCredential({ home: o.home, env: {}, profile });
+              return true;
+            } catch (e) {
+              if (
+                e instanceof CredentialError &&
+                ["signed_out", "server_mismatch", "refresh_refused"].includes(e.code)
+              )
+                return false;
+              throw e;
+            }
+          },
+          signIn: (stop: AbortSignal) => login({ profile, server: at, stop }),
+        }
+      : undefined;
   const r = await setup({
     home: o.home,
     socket: socketOf(o),
@@ -827,6 +869,7 @@ async function setupCommand(
     client,
     services: o.services,
     watchSignals: io.watchSignals ?? watchProcessSignals,
+    ...(server !== undefined ? { server } : {}),
   });
   return { json: r.json, lines: r.lines, errLines: r.errLines, exit: r.exit };
 }
@@ -936,7 +979,7 @@ const sourcesListCommand = command(["slot", "kind", "from", "to"], async (o, cli
 });
 
 const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
-  ["setup", command(["template", "timezone", "host", "scope", "yes"], setupCommand)],
+  ["setup", command(["template", "timezone", "host", "scope", "yes", "device"], setupCommand)],
   ["login", command(["server", "device"], loginCommand)],
   ["logout", command([], logoutCommand)],
   [
@@ -1524,7 +1567,7 @@ export async function run(
   // Whether a client went to a server: its failures are then the server's, not the local service's.
   let remote = false;
   const client = async () => {
-    if (found === COMMANDS.get("setup")) {
+    if (found === COMMANDS.get("setup") && (profile === undefined || profile === "local")) {
       const credential = await resolveCredential({ home: o.home, env });
       return createClient({ socketPath: socketOf(o), token: credential.token });
     }

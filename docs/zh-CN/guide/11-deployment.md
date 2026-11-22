@@ -338,7 +338,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 
 出了问题，先跑 `saveslot doctor`。它逐项检查：服务在运行、套接字和凭证文件的权限、数据目录不在同步盘里、单写者锁、版本一致、有没有逾期没物理删除的删除、各宿主里 saveslot 的条目指向的可执行文件还在不在（用宿主自己的查看命令，不读它的配置文件）。每项结果是"通过 / 不通过 / 提醒"。两项只给提醒、不算不通过：系统时钟比日志末端落后 5 分钟以上；**数据规模**，列出行数超过舒适线或实测线的表，以及事件总数、数据目录大小、最近一次打开数据的耗时，和实测范围对照（第 10 章第 5 节"关于数据量与日志的大小"）。
 
-**服务器模式的上手**：`saveslot setup --profile <名字>` 走同一条线，步骤换成——没登录就先 `saveslot login`；没有 slot 就按模板建；对选中的宿主执行远程形式的添加命令。这条路上没有令牌，凭证由宿主自己走 OAuth 取得，授权页上的那次"授权"就是那一次同意（第 2 节）。自部署还需要先在服务器上用 `saveslot server init` 初始化、`saveslot server user add` 建账户。
+**服务器模式的上手**：`saveslot setup --profile <名字>` 走同一条线，步骤换成——没登录就先 `saveslot login`（SSH 里没有浏览器时加 `--device`）；没有 slot 就按模板建；对选中的宿主执行远程形式的添加命令。这条路上没有令牌，凭证由宿主自己走 OAuth 取得，授权页上的那次"授权"就是那一次同意（第 2 节），所以这里不选权限。能自动接的只有 Claude Code 和 Codex，其余宿主用 `saveslot connect <宿主> --profile <名字>`。宿主里已经有一条 `saveslot`（比如本机那条）时不会被覆盖，setup 会给出移除它的命令。它不切换当前使用的 profile，最后会提示 `saveslot profile use <名字>`。自部署还需要先在服务器上用 `saveslot server init` 初始化、`saveslot server user add` 建账户。
 
 规格：[`../spec/06-cli.md`](../spec/06-cli.md) 第 3 节。
 

@@ -443,9 +443,30 @@ export const TEXTS = {
   remoteChosenOnPage: s(
     "--name, --scope and --slots are for a token issued here; a host connecting to a server chooses them on the authorization page. For a static token, use saveslot connect http --profile <profile>.",
   ),
-  setupServerNotYet: s(
-    "setup --profile is not in this version: connect each host with saveslot connect <host> --profile <profile>",
+  deviceIsForServer: s("--device signs in to a server profile: give it with --profile <profile>"),
+  setupScopeOnPage: s(
+    "--scope is for a token issued here; a host connecting to a server is given its scopes on the authorization page",
   ),
+  planSignIn: (profile: string) => s(`  sign in to profile ${profile} (saveslot login)`),
+  stepSignedIn: s("signed in to profile"),
+  stepSignIn: s("signing in to profile"),
+  setupSignInFirst: (profile: string) =>
+    s(
+      `not signed in to profile ${profile}, and no one here to sign in: run saveslot login --profile ${profile} first`,
+    ),
+  hostManualServer: (host: string, profile: string) =>
+    s(`setup does not add it; run saveslot connect ${host} --profile ${profile}`),
+  unconfirmedOtherEntry: s(
+    "the host has an entry named saveslot that is not for this server (the local service, or another server); it was left as it is. To use this server instead, remove it and run setup again:",
+  ),
+  addressNotSeenAfter: s(
+    "the host's entry does not show this server's address as given (hosts write it their own ways); if it does not work, remove it and run setup again",
+  ),
+  doneSignedIn: s("signed in"),
+  setupServerAfter: (profile: string) =>
+    s(
+      `Each host asks you to authorize it on first use. To run saveslot's other commands with this server: saveslot profile use ${profile}`,
+    ),
   profileArgs: s("give the profile: saveslot profile use <profile>"),
   profileListArgs: s("profile list takes no arguments"),
   profileInUse: s("in use"),
