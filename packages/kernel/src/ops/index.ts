@@ -17,6 +17,7 @@ export * from "./open-tenant.ts";
 export * from "./principals.ts";
 export * from "./read.ts";
 export * from "./reconcile-deletions.ts";
+export * from "./reconcile-log.ts";
 export * from "./resolve.ts";
 export * from "./restore.ts";
 export * from "./schema.ts";

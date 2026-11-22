@@ -1992,9 +1992,16 @@ interface LogVerifyResult {
 
 interface LogReconcileResult {
   compared_to: number;           // 比较到的事件 seq
-  tables: Array<{ name: string; rows: number; mismatched: number }>;   // 逻辑表：architecture §8 里标了"对拍：是"的全部表
-  /** 不一致的位置：只给 ID，不回显值。最多 100 条。 */
+  /** 逻辑表：architecture §8 里标了"对拍：是"的全部表。mismatched 是至少有一处不一致的行数：状态类表按实体计；不给 row 的表也按行数计。 */
+  tables: Array<{ name: string; rows: number; mismatched: number }>;
+  /**
+   * 不一致的位置：只给 ID，不回显值。每条是去重后的 (table, row, field, kind)，同一处只出一条；最多 100 条。
+   * row 是不带内容的行标识，只由主键列组成，不从非键列拼：事件类与无时间表给行 ID；状态类表给实体 ID，
+   * 不给生效区间起点；以表 ID 为键的表（counts）给表 ID；主键里含内容的表（external_keys、request_keys 一类）
+   * 不给 row，只给 table 与 kind。
+   */
   mismatches: Array<{ table: string; row?: string; field?: string; kind: "missing" | "extra" | "different" }>;
+  /** 去重后的条数，截到 100 条之前计。它按位置计、mismatched 按行计，两者口径不同是有意的。 */
   mismatches_total: number;
 }
 

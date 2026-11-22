@@ -187,6 +187,27 @@ export interface LogVerifyResult {
 }
 
 // ---------------------------------------------------------------------------------------------
+// §8.4 `log.reconcile` (no parameters)
+
+/**
+ * 04-contract-types §8.4 `LogReconcileResult`: the log replayed from an empty storage, set against
+ * the live tables §8 of the architecture marks as compared. IDs only, never values.
+ */
+export interface LogReconcileResult {
+  /** The event's seq the tables were compared at. */
+  compared_to: number;
+  tables: Array<{ name: string; rows: number; mismatched: number }>;
+  /** At most 100; `mismatches_total` counts them all. */
+  mismatches: Array<{
+    table: string;
+    row?: string;
+    field?: string;
+    kind: "missing" | "extra" | "different";
+  }>;
+  mismatches_total: number;
+}
+
+// ---------------------------------------------------------------------------------------------
 // §8.5 `log.end` (no parameters)
 
 /**
