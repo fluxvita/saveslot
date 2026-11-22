@@ -60,6 +60,8 @@ SELECT pg_reload_conf();
 
 限流在自部署上默认关。要按用户限流，设 `SAVESLOT_RATE_LIMIT`（每个用户每分钟的请求数），可另设 `SAVESLOT_RATE_BURST`（一次最多连着发多少个请求，缺省等于前者）。
 
+**对外开放时，在反向代理上给 `/oauth/` 下的端点和登录页加按来源的限流。** `SAVESLOT_RATE_LIMIT` 按租户计，只管得到带令牌的请求；这些地址不用令牌就能访问，它管不到。
+
 连接串里的口令最好经 PostgreSQL 的口令文件（`.pgpass`）或容器的 secret 提供，不写进变量本身。
 
 **句柄签名密钥**由 `server init` 写到 `SAVESLOT_HANDLE_KEY_FILE` 指的位置（那个目录要已经存在），之后 saveslot 只读它，所以可以按只读挂载。saveslot 不会自己轮换它；要换，就换掉文件再重启，换之前发出去的翻页句柄、删除确认这类句柄随之失效，调用方重新取一次即可。
