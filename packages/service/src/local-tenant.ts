@@ -93,7 +93,12 @@ export async function openLocalTenant(o: {
     });
     if (decision.kind !== "serve") {
       await store.close();
-      return { ok: false, failure: decision.what };
+      // The import's re-entry here comes with the local import; until then a marker is reported
+      // as it was, and the tenant does not serve.
+      return {
+        ok: false,
+        failure: decision.kind === "not_implemented" ? decision.what : "import_in_progress",
+      };
     }
     // `openTenant` steps 4 and 5 (reconcile deletion entries with the log, run tasks that fell
     // due) come here with the deletion flows.

@@ -1,15 +1,18 @@
 // The first steps of opening a tenant (docs/zh-CN/spec/02-architecture.md §4 `openTenant`, §8
 // «格式版本、导出、导入与恢复»): before the tenant serves, in this order,
 //
-// 1. an import in progress (the anchor's import marker): the import's re-entry protocol comes first;
+// 1. an import in progress (the anchor's import marker): the import's re-entry comes first. With the
+//    import's event in the log (the swap happened) the host finishes the import (`finishImport`);
+//    without it, it discards the staging storage and clears the marker (`abortImportOnOpen`). The
+//    tenant does not serve until then; it is opened again after;
 // 2. a restore in progress (the anchor's restore marker): the restore flow re-enters;
 // 3. the log's end below the anchor's high water: the log went back, a restore is needed;
 // 4. reconciling deletion entries with the log, 5. running tasks that fell due: later, with the
 //    deletion flows; the caller keeps their place.
 //
 // The decision is pure: the caller reads the anchor and the log's end and passes them in. The
-// import, restore and catch-up flows are not compiled yet: each of the first three cases stops as
-// not implemented, naming which, and the tenant does not serve.
+// restore and catch-up flows are not compiled yet: cases 2 and 3 stop as not implemented, naming
+// which, and the tenant does not serve.
 //
 // A tenant that serves needs the restricted SQL parser: reading a derived table, refreshing one
 // after a write and replaying a derived write all evaluate rules, and evaluating does not load the
@@ -22,6 +25,11 @@ import type { ImportId, RestoreId } from "../store/anchor.ts";
 
 export interface OpenTenantFacts {
   readonly importInProgress?: ImportId | undefined;
+  /**
+   * With an import in progress: whether the log holds the import's event (its latest restore or
+   * import event is `tenant.imported`). Not given, the import is not taken up either way.
+   */
+  readonly importEventInLog?: boolean | undefined;
   readonly restoreInProgress?: RestoreId | undefined;
   /** The `seq` of the log's last event. */
   readonly logEnd: Seq;
@@ -34,12 +42,22 @@ export type OpenTenantStop = "import_in_progress" | "restore_in_progress" | "log
 
 export type OpenTenantDecision =
   | { readonly kind: "serve" }
+  /** The import was swapped in: rebuild the anchor and clear the marker (`finishImport`). */
+  | { readonly kind: "import_finish"; readonly importId: ImportId }
+  /** The import was not swapped in: discard the staging storage, then clear the marker. */
+  | { readonly kind: "import_abort"; readonly importId: ImportId }
   | { readonly kind: "not_implemented"; readonly what: OpenTenantStop };
 
 /** Steps 1–3 of `openTenant`, in the spec's order. */
 export function openTenantDecision(f: OpenTenantFacts): OpenTenantDecision {
-  if (f.importInProgress !== undefined)
-    return { kind: "not_implemented", what: "import_in_progress" };
+  if (f.importInProgress !== undefined) {
+    if (f.importEventInLog === undefined) {
+      return { kind: "not_implemented", what: "import_in_progress" };
+    }
+    return f.importEventInLog
+      ? { kind: "import_finish", importId: f.importInProgress }
+      : { kind: "import_abort", importId: f.importInProgress };
+  }
   if (f.restoreInProgress !== undefined) {
     return { kind: "not_implemented", what: "restore_in_progress" };
   }

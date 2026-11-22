@@ -10,6 +10,7 @@ export * from "./flush-reads.ts";
 export { newConnectionId, newReadId, randomCrockford } from "./ids.ts";
 export * from "./import.ts";
 export * from "./import-event.ts";
+export * from "./import-finish.ts";
 export * from "./log.ts";
 export * from "./notices.ts";
 export * from "./open-tenant.ts";
