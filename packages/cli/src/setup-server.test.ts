@@ -140,7 +140,9 @@ async function setup(
     env?: Record<string, string>;
     answers?: string[];
     /** Stands in for login's sign-in: its exit code (0: signed in), and its message. */
-    signIn?: () => Promise<number | { exit: number; message: string }>;
+    signIn?: () => Promise<
+      number | { exit: number; message: string; kind?: "declined" | "expired" | "timed_out" }
+    >;
     profile?: string;
     services?: SetupServices;
   } = {},
@@ -172,11 +174,18 @@ async function setup(
             signIn: async (x: { mode?: "browser" | "device"; io: { boundary?: unknown } }) => {
               signInCalls.push({ mode: x.mode, boundary: x.io.boundary });
               const a = await (o.signIn as NonNullable<typeof o.signIn>)();
-              const { exit, message } =
-                typeof a === "number" ? { exit: a, message: TEXTS.loginRefused } : a;
+              const { exit, message, kind } =
+                typeof a === "number"
+                  ? { exit: a, message: TEXTS.loginRefused, kind: undefined }
+                  : a;
               return exit === 0
                 ? { ok: true as const, mode: x.mode ?? ("browser" as const) }
-                : { ok: false as const, exit, message: message as typeof TEXTS.loginRefused };
+                : {
+                    ok: false as const,
+                    exit,
+                    message: message as typeof TEXTS.loginRefused,
+                    ...(kind !== undefined ? { kind } : {}),
+                  };
             },
           }
         : {}),
@@ -307,10 +316,11 @@ describe("setup --profile: not signed in", () => {
     expect(r.err).toContain(TEXTS.loginRefused);
   });
 
-  it("declined on the authorization page: signed_in failed, stopped declined, 8", async () => {
+  it("declined on the authorization page (login's kind): signed_in failed, stopped declined, 8", async () => {
+    // Told by the kind login gives, not by its words.
     const r = await setup(["--host", "claude-code", "--json"], {
       answers: [""],
-      signIn: async () => ({ exit: 6, message: TEXTS.loginDenied }),
+      signIn: async () => ({ exit: 8, kind: "declined", message: TEXTS.loginRefused }),
     });
     expect([r.code, JSON.parse(r.out), seen, args("claude")]).toEqual([
       8,
@@ -318,7 +328,35 @@ describe("setup --profile: not signed in", () => {
       [],
       undefined,
     ]);
-    expect(r.err).toContain(TEXTS.loginDenied);
+  });
+
+  it.each([
+    ["expired", TEXTS.loginExpired],
+    ["timed_out", TEXTS.loginTimedOut],
+  ] as const)(
+    "login ended %s: signed_in failed, not stopped, 8 as login",
+    async (kind, message) => {
+      const r = await setup(["--host", "claude-code", "--json"], {
+        answers: [""],
+        signIn: async () => ({ exit: 8, kind, message }),
+      });
+      expect([r.code, JSON.parse(r.out), seen, args("claude")]).toEqual([
+        8,
+        { signed_in: "failed" },
+        [],
+        undefined,
+      ]);
+      expect(r.err).toContain(message);
+    },
+  );
+
+  it("a message that reads as a decline but no declined kind: not stopped", async () => {
+    // The words alone no longer decide it.
+    const r = await setup(["--host", "claude-code", "--json"], {
+      answers: [""],
+      signIn: async () => ({ exit: 6, message: TEXTS.loginDenied }),
+    });
+    expect([r.code, JSON.parse(r.out)]).toEqual([6, { signed_in: "failed" }]);
   });
 
   it("login's untrusted text follows --untrusted-tags, as in saveslot login", async () => {

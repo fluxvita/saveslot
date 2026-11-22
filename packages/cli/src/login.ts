@@ -76,9 +76,18 @@ export interface SignInTesting {
   readonly lock?: { readonly waitMs?: number; readonly staleMs?: number };
 }
 
+/** Why a sign-in ended not done (exit 8): the person said no, the code expired, the wait ran out. */
+export type NotDoneKind = "declined" | "expired" | "timed_out";
+
 export type SignInResult =
   | { readonly ok: true; readonly mode: SignInMode }
-  | { readonly ok: false; readonly exit: number; readonly message: Static };
+  | {
+      readonly ok: false;
+      readonly exit: number;
+      readonly message: Static;
+      /** Only on an end not done (8). */
+      readonly kind?: NotDoneKind;
+    };
 
 /** How long the browser's callback is waited for. */
 export const CALLBACK_WAIT_MS = 5 * 60_000;
@@ -99,12 +108,19 @@ const USER_CODE = /^[A-Z]{4}-[A-Z]{4}$/;
 class Ended extends Error {
   readonly exit: number;
   readonly text: Static;
-  constructor(exit: number, text: Static) {
+  readonly kind: NotDoneKind | undefined;
+  constructor(exit: number, text: Static, kind?: NotDoneKind) {
     super(text);
     this.exit = exit;
     this.text = text;
+    this.kind = kind;
   }
 }
+
+/** The three ends not done (06 §6.2: 8), each with its kind. */
+const declined = () => new Ended(8, TEXTS.loginDenied, "declined");
+const expired = () => new Ended(8, TEXTS.loginExpired, "expired");
+const timedOut = () => new Ended(8, TEXTS.loginTimedOut, "timed_out");
 
 const base64url = (b: Buffer) => b.toString("base64url");
 
@@ -210,8 +226,8 @@ function endOf(e: unknown): Ended {
   }
   if (e instanceof OAuthError) {
     if (e.code === "temporarily_unavailable") return new Ended(7, TEXTS.loginBusy);
-    if (e.code === "access_denied") return new Ended(8, TEXTS.loginDenied);
-    if (e.code === "expired_token") return new Ended(8, TEXTS.loginExpired);
+    if (e.code === "access_denied") return declined();
+    if (e.code === "expired_token") return expired();
     return new Ended(6, TEXTS.loginRefused);
   }
   if (e instanceof CredentialError) return new Ended(6, TEXTS.credential(e.code));
@@ -352,14 +368,12 @@ async function browser(
     o.open?.(url.href);
     // Only a callback of this sign-in's `state` comes through (`listen`).
     const q = await settle(cb.query, o.waitMs, d.stop);
-    if (q === undefined) throw new Ended(8, TEXTS.loginTimedOut);
+    if (q === undefined) throw timedOut();
     if (q.getAll("iss").length !== 1 || q.get("iss") !== d.server) {
       throw new Ended(6, TEXTS.loginIssuerMismatch);
     }
     if (q.has("error")) {
-      throw q.get("error") === "access_denied"
-        ? new Ended(8, TEXTS.loginDenied)
-        : new Ended(6, TEXTS.loginRefused);
+      throw q.get("error") === "access_denied" ? declined() : new Ended(6, TEXTS.loginRefused);
     }
     const code = q.getAll("code");
     if (code.length !== 1 || code[0] === "") throw new Ended(6, TEXTS.loginRefused);
@@ -424,7 +438,7 @@ async function device(
   for (;;) {
     await settle(o.sleep(interval * 1000, d.stop), undefined, d.stop);
     if (d.stop?.aborted) throw new Ended(130, TEXTS.loginStopped);
-    if (d.now() >= deadline) throw new Ended(8, TEXTS.loginExpired);
+    if (d.now() >= deadline) throw expired();
     try {
       return await token(d, [
         ["grant_type", DEVICE_GRANT],
@@ -551,7 +565,14 @@ export async function signIn(o: {
     }
     return { ok: true, mode };
   } catch (e) {
-    if (e instanceof Ended) return { ok: false, exit: e.exit, message: e.text };
+    if (e instanceof Ended) {
+      return {
+        ok: false,
+        exit: e.exit,
+        message: e.text,
+        ...(e.kind !== undefined ? { kind: e.kind } : {}),
+      };
+    }
     throw e;
   }
 }

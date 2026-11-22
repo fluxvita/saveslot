@@ -294,7 +294,7 @@ describe("signIn in a browser", () => {
       testing: { openBrowser: b.open, callbackWaitMs: 300 },
     });
     // Not taken as this sign-in's answer: it ends only when the wait does.
-    expect(r).toEqual({ ok: false, exit: 8, message: TEXTS.loginTimedOut });
+    expect(r).toEqual({ ok: false, exit: 8, kind: "timed_out", message: TEXTS.loginTimedOut });
     expect(s.seen.filter((x) => x.path === "/oauth/token")).toEqual([]);
     expect(exists(profileCredentialsFile(home, "lab"))).toBe(false);
     await b.settled();
@@ -352,7 +352,7 @@ describe("signIn in a browser", () => {
       io: capture().io,
       testing: { openBrowser: b.open },
     });
-    expect(r).toEqual({ ok: false, exit: 8, message: TEXTS.loginDenied });
+    expect(r).toEqual({ ok: false, exit: 8, kind: "declined", message: TEXTS.loginDenied });
     expect(exists(profileCredentialsFile(home, "lab"))).toBe(false);
   });
 
@@ -443,7 +443,7 @@ describe("signIn in a browser", () => {
         callbackWaitMs: 50,
       },
     });
-    expect(r).toEqual({ ok: false, exit: 8, message: TEXTS.loginTimedOut });
+    expect(r).toEqual({ ok: false, exit: 8, kind: "timed_out", message: TEXTS.loginTimedOut });
     await expect(fetch(redirect)).rejects.toThrow();
   });
 
@@ -683,9 +683,9 @@ describe("signIn with a device code", () => {
   });
 
   it.each([
-    ["access_denied", TEXTS.loginDenied],
-    ["expired_token", TEXTS.loginExpired],
-  ] as const)("%s: not done (exit 8), nothing written", async (code, message) => {
+    ["access_denied", "declined", TEXTS.loginDenied],
+    ["expired_token", "expired", TEXTS.loginExpired],
+  ] as const)("%s: not done (exit 8, %s), nothing written", async (code, kind, message) => {
     const s = await stand({ polls: ["pending", code] });
     const t = clock();
     const r = await signIn({
@@ -695,7 +695,7 @@ describe("signIn with a device code", () => {
       io: capture(false).io,
       testing: { now: t.now, sleep: t.sleep },
     });
-    expect(r).toEqual({ ok: false, exit: 8, message });
+    expect(r).toEqual({ ok: false, exit: 8, kind, message });
     expect(exists(profileCredentialsFile(home, "lab"))).toBe(false);
   });
 
@@ -767,7 +767,7 @@ describe("signIn with a device code", () => {
       io: capture(false).io,
       testing: { now: t.now, sleep: t.sleep },
     });
-    expect(r).toEqual({ ok: false, exit: 8, message: TEXTS.loginExpired });
+    expect(r).toEqual({ ok: false, exit: 8, kind: "expired", message: TEXTS.loginExpired });
     // 3600 s at 60 s apart: the poll that would come at 3600 s is not made.
     expect(s.seen.filter((x) => x.path === "/oauth/token")).toHaveLength(59);
   }, 30_000);
@@ -811,7 +811,7 @@ describe("signIn with a device code", () => {
       io: capture(false).io,
       testing: { now: t.now, sleep: t.sleep },
     });
-    expect(r).toEqual({ ok: false, exit: 8, message: TEXTS.loginExpired });
+    expect(r).toEqual({ ok: false, exit: 8, kind: "expired", message: TEXTS.loginExpired });
     // 600 s at 5 s apart: the poll that would come at 600 s is not made.
     expect(s.seen.filter((x) => x.path === "/oauth/token")).toHaveLength(119);
   });

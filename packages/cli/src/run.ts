@@ -819,7 +819,7 @@ async function setupCommand(
     });
     if (r.ok) return { exit: 0, declined: false };
     io.err(`${r.message}\n`);
-    return { exit: r.exit, declined: r.message === TEXTS.loginDenied };
+    return { exit: r.exit, declined: r.kind === "declined" };
   };
   const server =
     profile !== undefined && at !== undefined
