@@ -418,6 +418,11 @@ export function judgeRevertOf(
   pos: Position,
   k: readonly Item[] | null,
   judged: boolean,
+  /**
+   * Whether a revoked row refuses it (an undo when written). A deletion's replay judges an
+   * awaiting undo's high impact again without it: the refusal is the request's, made once.
+   */
+  refuseRevoked: boolean = judged,
 ): RevertOutcome {
   const c = compute(state, { n: o.op, index: o.index, event: o.event, entries, pos, k });
   const lower = "before" in pos ? pos.before : pos.asOf;
@@ -436,7 +441,7 @@ export function judgeRevertOf(
       y.content.kind === "revoke" &&
       !isNothing(c.scope.get(y) ?? []),
   );
-  if (judged && !state.isState && !currentRevoke && state.revoked(c.cur)) {
+  if (refuseRevoked && !state.isState && !currentRevoke && state.revoked(c.cur)) {
     const after = state.with(c.asWritten, c.regs);
     if (after.revoked(afterAt)) {
       throw new JudgeError("revoked", "the row is revoked", { ops: after.revokedBy(afterAt) });

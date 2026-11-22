@@ -1,6 +1,8 @@
-// Fixed cases of the deletion replay (D1-b2a): what it refuses in this version, and the two things
+// Fixed cases of the deletion replay (D1-b2a–c): what it refuses in this version, the two things
 // it keeps from the records as judged when written (a write in effect stays in effect; a no-op
-// stays a no-op). The comparison with the reference evaluator is replay-deletion.prop.test.ts.
+// stays a no-op), people's decisions as recorded, and reverts (R and the value position as
+// recorded, the write-backs worked out again). The comparison with the reference evaluator is
+// replay-deletion.prop.test.ts.
 
 import type { BizPoint, FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
 import { evaluateLog, type Op } from "@fluxvita/saveslot-reference";
@@ -10,7 +12,7 @@ import { JudgeError } from "./errors.ts";
 import { emptyState, judgeOp, stateFromRecord, view } from "./judge.ts";
 import type { JudgeInput, OpRecord, TableShape, WriteInput } from "./model.ts";
 import { contributionKey, replayDeletion } from "./replay-deletion.ts";
-import { judged } from "./scenarios.fixture.ts";
+import { deletedContributions, judged } from "./scenarios.fixture.ts";
 import type { RowState } from "./state.ts";
 import { judgeWrite } from "./write.ts";
 
@@ -88,34 +90,145 @@ const decision = (kind: "confirm" | "reject"): JudgeInput => ({
   target: 31,
 });
 
+/** A reference-evaluator write on f2, its value with a source of its own (`S<op>`). */
+function refWrite(
+  op: number,
+  seen: number,
+  from: string,
+  to: string | null,
+  v: string,
+  o: { explicit?: true; ack?: true } = {},
+): Op {
+  return {
+    kind: "write",
+    op,
+    event: op + 1,
+    seen,
+    valid: {
+      from: { mode: "given", value: d(from) },
+      to: to === null ? { mode: "open" } : { mode: "given", value: d(to) },
+    },
+    fields: { f2: { value: v, sources: [`S${op}`], ...(o.explicit ? { explicit: true } : {}) } },
+    ...(o.ack ? { acknowledge: ["overwrite"] as const } : {}),
+  };
+}
+
+// #10 f2=1 from 10-01; #20, not having seen #10, writes 2 from 10-01: a candidate against #10 when
+// both are given; #30 writes 3 from 11-01.
+const conflict: Op[] = [
+  refWrite(10, 0, "10-01", null, "1"),
+  refWrite(20, 0, "10-01", null, "2"),
+  refWrite(30, 20, "11-01", null, "3"),
+];
+
+/**
+ * The log judged op by op, then the given source data deleted: the kernel's replay (given the
+ * (event, target) those sources take away) and the reference evaluator's, the f2 values of each.
+ */
+function sideBySide(
+  ops: readonly Op[],
+  sources: readonly string[],
+  contributions: readonly string[],
+  schema = STATE_SCHEMA,
+) {
+  const { table, steps } = judged(schema, ops, []);
+  expect(steps).toHaveLength(ops.length);
+  const records = steps.map((x) => x.judgement.record);
+  // The (event, target) the case lists must be what the deleted sources take away by the rule
+  // (`base_sources`): a write on a state table mapping no evidence to its interval loses every
+  // target with any of its evidence.
+  const kept = steps.map((x) => x.op);
+  expect(new Set(contributions)).toEqual(
+    deletedContributions(kept, new Set(sources), schema.kind === "state"),
+  );
+  const after = replayDeletion(table, records, new Set(contributions));
+  // The reference evaluates the ops as judged (`judged` gives a resolution the item's open
+  // candidates), so both sides read the same log.
+  const last = Math.max(...kept.map((o) => o.op));
+  const ref = evaluateLog(schema, [
+    ...kept,
+    { kind: "deletion", op: last + 1, id: "pi_x", sources: [...sources] },
+  ]).final;
+  // Each change of value, from where it starts: stretches of one value given by different
+  // items (a write-back carrying the value of the item below) are one stretch here.
+  const vals = (fields: Readonly<Record<string, unknown>>) => {
+    const out: [string | null, unknown][] = [];
+    for (const x of (fields["f2"] ?? []) as {
+      valid: { from: string | null; to: string | null }[];
+      value: unknown;
+    }[]) {
+      const prev = out.at(-1);
+      if (x.value === null) {
+        out.push([x.valid[0]?.from ?? null, null]);
+      } else if (prev === undefined || prev[1] !== x.value) {
+        out.push([x.valid[0]?.from ?? null, x.value]);
+      }
+    }
+    return out.filter(([, v]) => v !== null);
+  };
+  return {
+    records,
+    after,
+    kernel: vals(view(after.state).fields),
+    ref: vals(ref.fields),
+    refFinal: ref,
+  };
+}
+
 describe("what this version refuses", () => {
-  it("a confirmation of an awaiting undo: not_implemented, naming it", () => {
-    const { records } = run([...awaiting, decision("confirm")]);
-    const withRevert = records.map((r) =>
-      r.kind === "confirm" ? { ...r, revert: { entries: [], before: 20, skipped: [] } } : r,
+  it("a conflict resolution other than take_previous: not_implemented, naming it", () => {
+    const { table, steps } = judged(STATE_SCHEMA, conflict, []);
+    const take: Op = {
+      kind: "resolve",
+      op: 40,
+      event: 41,
+      decision: "take_candidate",
+      candidates: [21],
+      unit: "f2",
+      take: 21,
+    };
+    const after = judged(STATE_SCHEMA, [...conflict, take], []);
+    expect(after.steps.at(-1)?.judgement.record.kind).toBe("take_candidate");
+    const e = refusal(() =>
+      replayDeletion(
+        table,
+        after.steps.map((x) => x.judgement.record),
+        new Set(),
+      ),
     );
-    const e = refusal(() => replayDeletion(STATE, withRevert, new Set()));
     expect(e.reason).toBe("not_implemented");
-    expect(e.detail).toMatchObject({ kind: "confirm of an undo", op: 40 });
+    expect(e.detail).toMatchObject({ kind: "take_candidate", op: 40 });
+    expect(steps).toHaveLength(3);
   });
 
-  it("an undo in the log: not_implemented, naming it", () => {
-    const { records } = run([
-      ...awaiting.slice(0, 2),
+  it("an undecided awaiting undo no longer of high impact: not_implemented (high impact ④ again)", () => {
+    // #40 undoes #20 with include_later (acknowledging what it erases, so not ①): #30 overlaps it,
+    // so ④ makes it await. #30's value deleted: nothing later to take back, the undo would take
+    // effect at its own number.
+    const ops: Op[] = [
+      refWrite(10, 0, "10-01", null, "1"),
+      refWrite(20, 10, "11-01", "11-05", "2"),
+      // Acknowledging the change point at 11-05 it erases: applied, not awaiting.
+      refWrite(30, 20, "11-03", "11-09", "3", { ack: true }),
       {
         kind: "undo",
         op: 40,
-        index: 0,
         event: 41,
-        ruleset: 1,
         target: 20,
+        includeLater: true,
         seen: 39,
-        seenExplicit: true,
+        acknowledge: ["overwrite"],
       },
-    ]);
-    const e = refusal(() => replayDeletion(STATE, records, new Set()));
+    ];
+    const { table, steps } = judged(STATE_SCHEMA, ops, []);
+    const records = steps.map((x) => x.judgement.record);
+    expect(records[3]).toMatchObject({ kind: "undo", status: "awaiting" });
+    const e = refusal(() => replayDeletion(table, records, new Set([contributionKey(31, "f2")])));
     expect(e.reason).toBe("not_implemented");
-    expect(e.detail).toMatchObject({ kind: "undo", op: 40 });
+    expect(e.detail).toMatchObject({ kind: "undo no longer of high impact", op: 40 });
+    // Still of high impact (#20's value deleted instead): the proposal awaits, nothing refused.
+    const kept = replayDeletion(table, records, new Set([contributionKey(11, "f2")]));
+    expect(kept.records.find((r) => r.op === 40)).toMatchObject({ status: "awaiting" });
   });
 
   it("a write whose interval block is gone, with a target left: not_implemented", () => {
@@ -410,5 +523,390 @@ describe("an interval block not there to read: judged as an explicit interval", 
     };
     expect(statusOf(records)).toEqual(["candidate"]);
     expect(statusOf(gone)).toEqual(["candidate"]);
+  });
+});
+
+describe("reverts, R and the value position as recorded (03-deletion «回掉的权威定义»)", () => {
+  // 03-deletion «例（回退）»: #101 [10-01, ∞) 5000; #103 [11-10, ∞) 4000 (S103); #109 changes
+  // [11-10, 11-20) to 4500; #111 undoes #109, writing #103's 4000 back there. S103 deleted: the
+  // undo is as recorded, the value it goes back to is the one before #109 in the replay, #101's
+  // 5000, not 4500. 5000 throughout; the change points at 11-10 and 11-20 are gone.
+  const ops: Op[] = [
+    refWrite(100, 0, "10-01", null, "5000"),
+    refWrite(102, 100, "11-10", null, "4000"),
+    refWrite(108, 102, "11-10", "11-20", "4500"),
+    // Acknowledging the change point at 11-20 it erases (05-time «高影响写入» ①): applied.
+    { kind: "undo", op: 110, event: 111, target: 108, seen: 109, acknowledge: ["overwrite"] },
+  ];
+
+  it("the example: back to 5000, not 4500", () => {
+    const b = sideBySide(ops, ["S102"], [contributionKey(103, "f2")]);
+    expect(b.records[3]).toMatchObject({
+      kind: "undo",
+      status: "applied",
+      items: [{ target: "f2", content: { kind: "value", value: "4000" } }],
+    });
+    expect(b.kernel).toEqual([[d("10-01"), "5000"]]);
+    expect(b.ref).toEqual(b.kernel);
+    const undo = b.after.records.find((r) => r.op === 110);
+    expect(undo).toMatchObject({
+      kind: "undo",
+      status: "applied",
+      revert: { entries: [{ event: 109, target: "f2" }], before: 108 },
+      items: [
+        {
+          target: "f2",
+          status: "applied",
+          valid: [{ from: d("11-10"), to: d("11-20") }],
+          content: { kind: "value", value: "5000" },
+          carried: [{ event: 101, target: "f2", k: 0 }],
+        },
+      ],
+    });
+  });
+
+  it("an undo of the undo: #109's 4500 back, by the write-back", () => {
+    const again: Op[] = [
+      ...ops,
+      { kind: "undo", op: 112, event: 113, target: 110, seen: 111, acknowledge: ["overwrite"] },
+    ];
+    const b = sideBySide(again, ["S102"], [contributionKey(103, "f2")]);
+    expect(b.kernel).toEqual([
+      [d("10-01"), "5000"],
+      [d("11-10"), "4500"],
+      [d("11-20"), "5000"],
+    ]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("the undone write's own value deleted: R' is empty, no write-back, the undo gives nothing", () => {
+    const b = sideBySide(ops, ["S108"], [contributionKey(109, "f2")]);
+    expect(b.after.records.find((r) => r.op === 110)).toMatchObject({ items: [] });
+    expect(b.kernel).toEqual([
+      [d("10-01"), "5000"],
+      [d("11-10"), "4000"],
+    ]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("a confirmed undo: executed at the confirmation, with the record listed then", () => {
+    // #20's change point at 11-10 erased by undoing it: ①, the undo awaits; #50 confirms it.
+    const confirmed: Op[] = [
+      refWrite(10, 0, "10-01", null, "1"),
+      refWrite(20, 10, "11-10", null, "2"),
+      refWrite(30, 20, "11-20", null, "3"),
+      { kind: "undo", op: 40, event: 41, target: 20, seen: 39 },
+      { kind: "confirm", op: 50, event: 51, target: 41 },
+    ];
+    const plain = judged(STATE_SCHEMA, confirmed, []);
+    expect(plain.steps.map((x) => x.judgement.record.kind)).toEqual([
+      "write",
+      "write",
+      "write",
+      "undo",
+      "confirm",
+    ]);
+    expect(plain.steps[3]?.judgement.record).toMatchObject({ status: "awaiting" });
+    // #10's value deleted: before #20 there is no value; the write-back on [11-10, 11-20) is
+    // "no value at all".
+    const b = sideBySide(confirmed, ["S10"], [contributionKey(11, "f2")]);
+    expect(b.after.records.find((r) => r.op === 50)).toMatchObject({
+      kind: "confirm",
+      items: [{ target: "f2", status: "applied", content: { kind: "no_value" } }],
+    });
+    expect(b.kernel).toEqual([[d("11-20"), "3"]]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("a whole revoke whose evidence is deleted: the row stays revoked (its evidence is the operation's, not the interval's)", () => {
+    // Event table: #10 creates the row; #20 revokes it, citing S20 as the operation's evidence
+    // (not as interval sources: a whole revoke has no interval). Deleting S20 takes away no
+    // (event, target) of the revoke.
+    const ev: Op[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        fields: { f2: { value: "1", sources: ["S10"] } },
+      },
+      { kind: "revoke", op: 20, event: 21, seen: 10 },
+    ];
+    const b = sideBySide(ev, ["S20"], [], EVENT_SCHEMA);
+    expect(view(b.after.state).exists).toBe(false);
+    expect(b.refFinal.exists).toBe(false);
+  });
+});
+
+describe("take_previous: R and the merge base as recorded, K the recorded candidates still candidates", () => {
+  // #5 f2=0; #10 and #20 both saw #5 and write 1 and 2: #20 is a candidate against #10. #40 takes
+  // the previous value for the item: back to 0 at the merge base (#5), where #20's candidate lies.
+  const ops: Op[] = [
+    refWrite(5, 0, "10-01", null, "0"),
+    refWrite(10, 5, "10-01", null, "1"),
+    refWrite(20, 5, "10-01", null, "2"),
+    { kind: "resolve", op: 40, event: 41, decision: "take_previous", candidates: [21], unit: "f2" },
+  ];
+
+  it("a deletion elsewhere: the write-back as recorded, back to 0", () => {
+    const b = sideBySide(ops, [], []);
+    expect(b.records[3]).toMatchObject({ kind: "take_previous", status: "applied" });
+    expect(b.after.records.find((r) => r.op === 40)).toMatchObject({
+      kind: "take_previous",
+      items: [{ target: "f2", status: "applied", content: { kind: "value", value: "0" } }],
+    });
+    expect(b.kernel).toEqual([[d("10-01"), "0"]]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("the candidate's value deleted: K is empty, the domain too; no write-back, #10 in effect", () => {
+    const b = sideBySide(ops, ["S20"], [contributionKey(21, "f2")]);
+    expect(b.after.records.find((r) => r.op === 40)).toMatchObject({ items: [] });
+    expect(b.kernel).toEqual([[d("10-01"), "1"]]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("the candidate no longer one (#10's value deleted, the conflict gone): not_implemented", () => {
+    const { table, steps } = judged(STATE_SCHEMA, ops, []);
+    const e = refusal(() =>
+      replayDeletion(
+        table,
+        steps.map((x) => x.judgement.record),
+        new Set([contributionKey(11, "f2")]),
+      ),
+    );
+    expect(e.reason).toBe("not_implemented");
+    expect(e.detail).toMatchObject({ kind: "take_previous candidate", op: 40, event: 21 });
+  });
+});
+
+describe("take_previous: a candidate the same as the value before it in the replay still counts in K", () => {
+  // Found by the comparison (seed -2129645392). #40 (1, evidence pointed at) did not see #20 and
+  // #30: a candidate on [11-01, 11-03) and [11-07, 11-09), a corroboration of #10 between. #60 (9)
+  // is a candidate too; #63 takes the previous value for both. S20 and S60 deleted (#20 and #60):
+  // #40 on [11-01, 11-07) is the same as #10 now, a corroboration, still in K (03-deletion
+  // «回掉的权威定义» step 2: only being deleted takes a candidate out), so the domain stays
+  // [11-01, 11-09).
+  const ops: Op[] = [
+    refWrite(10, 0, "10-01", null, "1", { ack: true }),
+    refWrite(20, 10, "11-01", "11-03", "2", { ack: true }),
+    refWrite(30, 20, "11-07", "11-09", "2", { ack: true }),
+    refWrite(40, 10, "11-01", "11-09", "1", { explicit: true }),
+    refWrite(60, 20, "11-01", "11-09", "9"),
+    {
+      kind: "resolve",
+      op: 63,
+      event: 64,
+      decision: "take_previous",
+      candidates: [41, 61],
+      unit: "f2",
+    },
+  ];
+
+  it("the write-back over the whole domain, as the reference evaluator gives", () => {
+    const b = sideBySide(
+      ops,
+      ["S20", "S60"],
+      [contributionKey(21, "f2"), contributionKey(61, "f2")],
+    );
+    const taken = b.after.records.find((r) => r.op === 63);
+    expect(taken).toMatchObject({
+      items: [{ target: "f2", status: "applied", valid: [{ from: d("11-01"), to: d("11-09") }] }],
+    });
+    const refTaken = b.refFinal.items.filter((x) => x.event === 64).map((x) => x.valid);
+    expect(refTaken).toEqual([[{ from: d("11-01"), to: d("11-09") }]]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+});
+
+describe("review cases (an awaiting undo on a revoked row; event-table deps; K's filter; an applied undo)", () => {
+  it("an undecided awaiting undo that would take effect on a revoked row: its own not_implemented kind", () => {
+    // Event table: #10 creates f2 and f3; #20 writes f3; #30 revokes the row; #40 undoes #20 with
+    // include_later (the revoke over it, ④): awaiting. S20 deleted: nothing later to take back, it
+    // would take effect, and once written the row is still revoked (03-deletion «回掉的权威定义»
+    // step 4): the reference has it rejected, revoked.
+    const ops: Op[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        fields: { f3: { value: "b", sources: ["S20"] } },
+      },
+      { kind: "revoke", op: 30, event: 31, seen: 20 },
+      { kind: "undo", op: 40, event: 41, target: 20, includeLater: true },
+    ];
+    const { table, steps } = judged(EVENT_SCHEMA, ops, []);
+    const records = steps.map((x) => x.judgement.record);
+    expect(records[3]).toMatchObject({ kind: "undo", status: "awaiting" });
+    const e = refusal(() => replayDeletion(table, records, new Set([contributionKey(21, "f3")])));
+    expect(e.reason).toBe("not_implemented");
+    expect(e.detail).toMatchObject({ kind: "undo on a revoked row", op: 40 });
+    const ref = evaluateLog(EVENT_SCHEMA, [
+      ...steps.map((x) => x.op),
+      { kind: "deletion", op: 50, id: "pi_x", sources: ["S20"] },
+    ]).final;
+    expect(ref.reverts).toMatchObject([{ op: 40, status: "rejected", reason: "revoked" }]);
+  });
+
+  it.each([
+    ["state", STATE_SCHEMA],
+    ["event", EVENT_SCHEMA],
+  ] as const)(
+    "%s table: with nothing deleted, every replayed record is the logged one, deps included",
+    (_, schema) => {
+      // An undo, a confirmed undo and a take_previous; nothing deleted: the replay gives back the
+      // records as logged (an event table keeps no deps, as every judged record).
+      const ops: Op[] = [
+        refWrite(5, 0, "10-01", null, "0"),
+        refWrite(10, 5, "10-01", null, "1"),
+        refWrite(20, 5, "10-01", null, "2"),
+        {
+          kind: "resolve",
+          op: 25,
+          event: 26,
+          decision: "take_previous",
+          candidates: [21],
+          unit: "f2",
+        },
+        refWrite(30, 26, "11-10", null, "3", { ack: true }),
+        { kind: "undo", op: 40, event: 41, target: 30, seen: 39, acknowledge: ["overwrite"] },
+        refWrite(50, 41, "11-12", null, "4", { ack: true }),
+        { kind: "undo", op: 60, event: 61, target: 50, seen: 59 },
+        { kind: "confirm", op: 70, event: 71, target: 61 },
+      ];
+      const { table, steps } = judged(schema, ops, []);
+      const records = steps.map((x) => x.judgement.record);
+      const kinds = records.map((r) => r.kind);
+      expect(kinds).toContain("take_previous");
+      expect(kinds).toContain("undo");
+      // On a state table #60 erases a change point and awaits: the confirmation executes it.
+      if (schema === STATE_SCHEMA) expect(kinds).toContain("confirm");
+      expect(replayDeletion(table, records, new Set()).records).toEqual(records);
+    },
+  );
+});
+
+describe("K's filter (03-deletion «回掉的权威定义» step 2), against the reference", () => {
+  // #20, having seen #10, writes f2 = 1 (evidence pointed at: a corroboration of #10) and f3 = b
+  // over [11-01, 11-05); #25 writes f2 = 7 over [11-01, 11-03); #40, having seen only #10, writes
+  // f2 = 1 (evidence pointed at) and f3 = c over [11-01, 11-05): f2 is a candidate on
+  // [11-01, 11-03) (7 there now) and a corroboration on [11-03, 11-05); f3 a candidate on the
+  // whole. #50 takes the previous value for the item on f2 alone: K is #41's f2 candidate, its
+  // domain [11-01, 11-03); #21's corroboration, in R, is taken back there only.
+  const span2 = (from: string, to: string) => ({
+    from: { mode: "given" as const, value: d(from) },
+    to: { mode: "given" as const, value: d(to) },
+  });
+  const ops: Op[] = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: { from: { mode: "given", value: d("10-01") }, to: { mode: "open" } },
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10f3"] } },
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: span2("11-01", "11-05"),
+      fields: {
+        f2: { value: "1", sources: ["S20"], explicit: true },
+        f3: { value: "b", sources: ["S20f3"] },
+      },
+      acknowledge: ["overwrite"],
+    },
+    refWrite(25, 20, "11-01", "11-03", "7", { ack: true }),
+    {
+      kind: "write",
+      op: 40,
+      event: 41,
+      seen: 10,
+      valid: span2("11-01", "11-05"),
+      fields: {
+        f2: { value: "1", sources: ["S40"], explicit: true },
+        f3: { value: "c", sources: ["S40f3"] },
+      },
+    },
+    { kind: "resolve", op: 50, event: 51, decision: "take_previous", candidates: [41], unit: "f2" },
+  ];
+  /** The take_previous's write-backs on f2, kernel and reference, by interval. */
+  const writeBacks = (b: ReturnType<typeof sideBySide>) => ({
+    kernel: b.after.state.items
+      .filter((x) => x.event === 51 && x.target === "f2")
+      .map((x) => x.valid),
+    ref: b.refFinal.items.filter((x) => x.event === 51 && x.target === "f2").map((x) => x.valid),
+  });
+
+  it("as judged: f2 a candidate and a corroboration, f3 a candidate; the take_previous decided (41, f2) only", () => {
+    const { steps } = judged(STATE_SCHEMA, ops, []);
+    const forty = steps[3]?.judgement.record;
+    expect(forty?.kind === "write" ? forty.items.map((x) => [x.target, x.status]) : []).toEqual([
+      ["f2", "candidate"],
+      ["f2", "corroborated"],
+      ["f3", "candidate"],
+    ]);
+    expect(steps[4]?.judgement.record).toMatchObject({
+      kind: "take_previous",
+      decided: [{ event: 41, target: "f2" }],
+    });
+  });
+
+  it("a corroboration when written is not in K, and a target the resolution did not decide is not either", () => {
+    // Nothing deleted: the write-back stays on [11-01, 11-03). Counting #41's f2 corroboration
+    // (effective when written) or its f3 candidate in K would widen it to [11-01, 11-05)
+    // (03-deletion deviation one: only the decided candidate's stretches; the corroborated part
+    // is judged again by the same-value rule and is still one).
+    const b = sideBySide(ops, [], []);
+    expect(
+      b.after.state.items.filter((x) => x.event === 41 && x.target === "f2").map((x) => x.status),
+    ).toEqual(["candidate", "corroborated"]);
+    const w = writeBacks(b);
+    expect(w.kernel).toEqual([[{ from: d("11-01"), to: d("11-03") }]]);
+    expect(w.ref).toEqual(w.kernel);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("a candidate turned the same as the value before it (S25 deleted) stays in K", () => {
+    // #25 deleted: #41's f2 is the same as the value before it on the whole stretch, a
+    // corroboration now; its candidate part still counts, so the take_previous still writes back.
+    const b = sideBySide(ops, ["S25"], [contributionKey(26, "f2")]);
+    const w = writeBacks(b);
+    expect(w.kernel.length).toBeGreaterThan(0);
+    expect(w.ref).toEqual(w.kernel);
+    expect(b.ref).toEqual(b.kernel);
+  });
+});
+
+describe("an undo applied when written stays applied (03-deletion «高影响»: 按偏离二保持生效)", () => {
+  it("its write-backs, empty when written, erase change points once a deletion uncovers what it takes back", () => {
+    // #20 writes 2 on [11-03, 11-05); #30 covers it whole with 5 on [11-01, 11-09); #40 undoes
+    // #20: #21 is covered, no write-back, nothing erased, applied without acknowledge. S30 deleted:
+    // #21 is uncovered, the undo writes 1 back over it, erasing two change points; it stays
+    // applied, not awaiting.
+    const ops: Op[] = [
+      refWrite(10, 0, "10-01", null, "1"),
+      refWrite(20, 10, "11-03", "11-05", "2", { ack: true }),
+      refWrite(30, 20, "11-01", "11-09", "5", { ack: true }),
+      { kind: "undo", op: 40, event: 41, target: 20, seen: 39 },
+    ];
+    const b = sideBySide(ops, ["S30"], [contributionKey(31, "f2")]);
+    expect(b.records[3]).toMatchObject({ kind: "undo", status: "applied", items: [] });
+    expect(b.after.records.find((r) => r.op === 40)).toMatchObject({
+      status: "applied",
+      items: [{ target: "f2", status: "applied", content: { kind: "value", value: "1" } }],
+    });
+    expect(b.kernel).toEqual([[d("10-01"), "1"]]);
+    expect(b.ref).toEqual(b.kernel);
   });
 });

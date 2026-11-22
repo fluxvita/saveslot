@@ -1,6 +1,6 @@
-// The deletion replay (D1-b2a, b2b) against the reference evaluator: random logs of writes, revokes
-// and people's confirmations and rejections of awaiting writes (no reverts, no conflict
-// resolutions, no deletion events between operations) are judged op by op,
+// The deletion replay (D1-b2a–c) against the reference evaluator: random logs of writes, revokes,
+// people's confirmations and rejections, undos and take_previous (no other conflict resolutions,
+// no deletion events between operations) are judged op by op,
 // then a set of source data is deleted. `replayDeletion` on the records, given the (event, target)
 // those sources take away, must leave the row or entity the reference evaluator gives with the
 // same deletion at the end of the log: the items (by event, target, status, interval, content,
@@ -8,18 +8,21 @@
 //
 // Covered here: writes and revokes judged again on the replay's state, no-ops kept, deviation two
 // by the write on a target, corroborations and the same-value rule, conflicts and high impact
-// worked out again; confirmations and rejections executed as recorded (deviation one). Not yet
-// (refused with not_implemented, see replay-deletion.test.ts): reverts, conflict resolutions,
-// operations after a deletion event.
+// worked out again; confirmations and rejections executed as recorded (deviation one); reverts
+// with R and the value position as recorded, their write-backs worked out again. Not yet (refused
+// with not_implemented, see replay-deletion.test.ts): take_candidate and keep_effective, an
+// undecided awaiting undo no longer of high impact, a take_previous whose candidate is no longer
+// one, operations after a deletion event.
 
 import { evaluateLog, type Op, timeline } from "@fluxvita/saveslot-reference";
 import { EVENT, Hits, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
+import { JudgeError } from "./errors.ts";
 import { view } from "./judge.ts";
 import type { OpRecord, Target } from "./model.ts";
 import { contributionKey, replayDeletion } from "./replay-deletion.ts";
-import { type Decision, judged, scenario } from "./scenarios.fixture.ts";
+import { type Decision, deletedContributions, judged, scenario } from "./scenarios.fixture.ts";
 import type { RowState } from "./state.ts";
 
 vi.setConfig({ testTimeout: 120_000 });
@@ -36,36 +39,6 @@ function sourcesOf(o: Op): string[] {
   return [];
 }
 
-/**
- * The (event, target) the deleted source data take away (as the caller works out from
- * `base_sources`): a field whose value sources include one; every target of a write or revoke
- * whose interval's sources include one (03-deletion «区间参数»). A write on a state table that maps
- * no evidence to its interval has all its evidence as the interval's sources; a revoke without
- * `valid_sources` has none.
- */
-function deletedContributions(
-  ops: readonly Op[],
-  deleted: ReadonlySet<string>,
-  isState: boolean,
-): Set<string> {
-  const out = new Set<string>();
-  for (const o of ops) {
-    if (o.kind !== "write" && o.kind !== "revoke") continue;
-    if (o.kind === "revoke") {
-      if ((o.validSources ?? []).some((s) => deleted.has(s)))
-        out.add(contributionKey(o.event, "existence"));
-      continue;
-    }
-    const evidence = Object.values(o.fields).flatMap((x) => x?.sources ?? []);
-    const intervalGone = isState && (o.validSources ?? evidence).some((s) => deleted.has(s));
-    for (const [f, x] of Object.entries(o.fields)) {
-      if (intervalGone || (x?.sources ?? []).some((s) => deleted.has(s)))
-        out.add(contributionKey(o.event, f as Target));
-    }
-  }
-  return out;
-}
-
 const itemKeys = (
   items: readonly {
     event: number;
@@ -79,7 +52,8 @@ const itemKeys = (
     .filter((x) => x.status !== "dropped")
     .map(
       (x) =>
-        `${x.event}/${x.target} ${x.status} ${JSON.stringify(x.valid)} ${JSON.stringify(x.content)}`,
+        // The reference names "no value at all" noValue, the kernel no_value (09 §5.7).
+        `${x.event}/${x.target} ${x.status} ${JSON.stringify(x.valid)} ${JSON.stringify(x.content).replace('"kind":"noValue"', '"kind":"no_value"')}`,
     )
     .sort();
 
@@ -118,6 +92,9 @@ function compare(
   changed: boolean;
   decided: boolean;
   decisionChanged: boolean;
+  /** A revert in the log; one whose write-backs came out otherwise in the replay. */
+  reverted: boolean;
+  revertChanged: boolean;
   protectionMatters: (op: number) => boolean;
 } {
   const widened = ops.map((o) =>
@@ -152,8 +129,13 @@ function compare(
   const replayed = replayDeletion(table, records, deletedContributions(kept, deleted, isState));
   const { state } = replayed;
   const names = [...new Set([...Object.keys(ref.fields), ...Object.keys(view(state).fields)])];
+  // The proposal of an awaiting undo (its write-backs, awaiting) is left out: the reference keeps
+  // it in the revert's result only.
+  const proposals = new Set(
+    state.records.filter((r) => r.kind === "undo" && r.status === "awaiting").map((r) => r.event),
+  );
   expect({
-    items: itemKeys(state.items),
+    items: itemKeys(state.items.filter((x) => !proposals.has(x.event))),
     fields: timelines(view(state).fields as never, names),
     gaps: isState ? view(state).gaps : [],
   }).toEqual({
@@ -164,6 +146,19 @@ function compare(
   const isDecision = (r: OpRecord) => r.kind === "confirm" || r.kind === "reject";
   const decisionText = (rs: readonly OpRecord[]) =>
     JSON.stringify(rs.filter(isDecision).map((r) => [r.op, "items" in r ? r.items : []]));
+  const isRevert = (r: OpRecord) =>
+    r.kind === "undo" ||
+    r.kind === "take_previous" ||
+    (r.kind === "confirm" && r.revert !== undefined);
+  const revertText = (rs: readonly OpRecord[]) =>
+    JSON.stringify(
+      rs
+        .filter(isRevert)
+        .map((r) => [
+          r.op,
+          "items" in r ? itemKeys(r.items.map((x) => ({ ...x, event: r.event }))) : [],
+        ]),
+    );
   const before = steps.at(-1)?.state as RowState;
   // A write with fields of different sources, one field's sources deleted, not all of them.
   const partly = kept.some((o) => {
@@ -176,6 +171,8 @@ function compare(
     changed: JSON.stringify(view(before).fields) !== JSON.stringify(view(state).fields),
     decided: records.some(isDecision),
     decisionChanged: decisionText(records) !== decisionText(replayed.records),
+    reverted: records.some(isRevert),
+    revertChanged: revertText(records) !== revertText(replayed.records),
     // Whether the replay comes out otherwise with operation `op` recorded as a candidate when
     // written (not protected by deviation two).
     protectionMatters: (op) => {
@@ -235,6 +232,69 @@ describe.each(both)("%s table", (_, schema, isState) => {
     hits.check();
     console.log(schema.kind, JSON.stringify(seen));
     partly.check();
+  });
+});
+
+/**
+ * The shapes this version refuses (see replay-deletion.ts): high impact ④ judged again (and, with
+ * its own kind, an undo that would then take effect on a revoked row), and a take_previous whose
+ * candidate leaves no item. A sample reaching one is set aside, and counted.
+ */
+const REFUSED = new Set([
+  "undo no longer of high impact",
+  "undo on a revoked row",
+  "take_previous candidate",
+]);
+
+function refusedShape(e: unknown): boolean {
+  return (
+    e instanceof JudgeError &&
+    e.reason === "not_implemented" &&
+    REFUSED.has(String((e.detail as { kind?: unknown } | undefined)?.kind))
+  );
+}
+
+describe.each(both)("%s table, reverts", (_, schema, isState) => {
+  it("undos, take_previous and confirmed undos replayed leave what the reference evaluator gives", () => {
+    // Hits: a revert whose write-backs came out otherwise in the replay than recorded.
+    const hits = new Hits(0.05);
+    const seen = { samples: 0, reverted: 0, revertChanged: 0, refused: 0 };
+    const refusedBy: Record<string, number> = {};
+    fc.assert(
+      fc.property(
+        scenario(isState).map((s) => ({
+          // Of the conflict resolutions, take_previous only (the others are D1-b2d).
+          ops: s.ops.filter((o) => o.kind !== "resolve" || o.decision === "take_previous"),
+          decisions: s.decisions.filter((d) => d.kind !== "keep" && d.kind !== "take"),
+        })),
+        fc.nat(),
+        hits.track(({ ops, decisions }: { ops: Op[]; decisions: Decision[] }, pick: number) => {
+          seen.samples++;
+          let c: ReturnType<typeof compare>;
+          try {
+            c = compare(schema, isState, ops, decisions, pick);
+          } catch (e) {
+            if (!refusedShape(e)) throw e;
+            seen.refused++;
+            const kind = String((e as JudgeError).detail["kind"]);
+            refusedBy[kind] = (refusedBy[kind] ?? 0) + 1;
+            return;
+          }
+          if (c.reverted) seen.reverted++;
+          if (c.revertChanged) {
+            seen.revertChanged++;
+            hits.hit();
+          }
+        }),
+      ),
+      { numRuns: RUNS },
+    );
+    console.log(schema.kind, "reverts", JSON.stringify({ ...seen, refusedBy }));
+    hits.check();
+    // The refused shapes stay a minority, so the rest is what this version covers. Measured at
+    // 600 runs: about 12% on state tables (most an include_later undo whose later write the
+    // deletion took away, ④), about 1% on event tables.
+    expect(seen.refused).toBeLessThan(seen.samples * 0.2);
   });
 });
 

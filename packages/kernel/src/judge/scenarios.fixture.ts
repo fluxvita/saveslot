@@ -10,7 +10,8 @@ import fc from "fast-check";
 import { canonical, type IntervalSet, meet } from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
 import { emptyState, judgeOp } from "./judge.ts";
-import type { JudgeInput, Judgement, TableShape } from "./model.ts";
+import type { JudgeInput, Judgement, TableShape, Target } from "./model.ts";
+import { contributionKey } from "./replay-deletion.ts";
 import type { RowState } from "./state.ts";
 import { versionsOf } from "./versions.fixture.ts";
 
@@ -808,4 +809,34 @@ export function judged(
       });
   });
   return { table, steps, refused };
+}
+
+/**
+ * The (event, target) the deleted source data take away (as the caller works out from
+ * `base_sources`): a field whose value sources include one; every target of a write or revoke
+ * whose interval's sources include one (03-deletion «区间参数»). A write on a state table that maps
+ * no evidence to its interval has all its evidence as the interval's sources; a revoke without
+ * `valid_sources` has none.
+ */
+export function deletedContributions(
+  ops: readonly Op[],
+  deleted: ReadonlySet<string>,
+  isState: boolean,
+): Set<string> {
+  const out = new Set<string>();
+  for (const o of ops) {
+    if (o.kind !== "write" && o.kind !== "revoke") continue;
+    if (o.kind === "revoke") {
+      if ((o.validSources ?? []).some((s) => deleted.has(s)))
+        out.add(contributionKey(o.event, "existence"));
+      continue;
+    }
+    const evidence = Object.values(o.fields).flatMap((x) => x?.sources ?? []);
+    const intervalGone = isState && (o.validSources ?? evidence).some((s) => deleted.has(s));
+    for (const [f, x] of Object.entries(o.fields)) {
+      if (intervalGone || (x?.sources ?? []).some((s) => deleted.has(s)))
+        out.add(contributionKey(o.event, f as Target));
+    }
+  }
+  return out;
 }

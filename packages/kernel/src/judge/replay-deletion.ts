@@ -7,13 +7,17 @@
 // Pure: the caller works out which (event, target) the deleted source data take away (from
 // `base_sources`, by position) and passes them in; nothing here reads the store.
 //
-// Covered: writes, revokes, and people's confirmations and rejections of awaiting writes. Every
-// other kind of operation in the log (a revert, a conflict resolution, and the writes they
-// trigger, a confirmation of an awaiting undo) is refused with `not_implemented`, naming the kind,
-// never judged as an ordinary write; so is an operation judged after a deletion event (its
+// Covered: writes, revokes, people's confirmations and rejections of awaiting writes and undos,
+// and reverts (`undo`, `take_previous`, the confirmation of an awaiting undo): their record R and
+// value position as recorded, their ranges and write-backs worked out again on the replay's state
+// (03-deletion «回掉的权威定义»). Refused with `not_implemented`, naming the kind, never judged as
+// an ordinary write: the other conflict resolutions (`take_candidate`, `keep_effective`); an
+// undecided awaiting undo no longer of high impact (high impact ④ judged again); a take_previous
+// whose candidate is no longer one in the replay; an operation judged after a deletion event (its
 // conflict criterion reads that event's L).
 
 import type { FieldId } from "@fluxvita/saveslot-contract-core";
+import { type IntervalSet, isNothing, meet } from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
 import { ackOf, emptyState, judgeOp, withoutDeps } from "./judge.ts";
 import type {
@@ -21,12 +25,14 @@ import type {
   FieldInput,
   OpRecord,
   RejectRecord,
+  RevertRecord,
   RevokeInput,
   TableShape,
   Target,
   WriteInput,
   WriteRecord,
 } from "./model.ts";
+import { judgeRevertOf } from "./revert.ts";
 import { RowState } from "./state.ts";
 import { judgeRevoke, judgeWrite, type ReplayOptions } from "./write.ts";
 
@@ -92,6 +98,117 @@ function decide(state: RowState, r: ConfirmRecord | RejectRecord) {
     ...(r.policy !== undefined ? { policy: r.policy } : {}),
     target: r.target,
   });
+}
+
+/**
+ * A revert executed on the replay's state (03-deletion «回掉的权威定义»: R and the value position
+ * as recorded, never listed again; ranges, write-backs and registrations worked out again; the
+ * write-backs are applied, not judged again for high impact: deviation one for a person's undo,
+ * confirmation or `take_previous`, and «高影响» «已直接生效的回掉…按偏离二保持生效»). `seen`,
+ * `acknowledge` and the skipped entries stay as recorded.
+ */
+function revertAgain(
+  state: RowState,
+  r: RevertRecord,
+  deleted: (event: number, target: Target) => boolean,
+  decided: boolean,
+  candidateWhenWritten: (event: number, target: Target, valid: IntervalSet) => boolean,
+): RevertRecord {
+  if (r.kind === "take_previous") {
+    const unit = r.revert.unit;
+    const mergeBase = r.revert.mergeBase;
+    if (unit === undefined || mergeBase === undefined) {
+      throw new JudgeError("invalid", "a take_previous record without its unit or merge base", {
+        op: r.op,
+      });
+    }
+    // K (03-deletion «回掉的权威定义» step 2): of the (event, target) the resolution recorded,
+    // the items that are candidates in the replay, or that were candidates when written and are
+    // the same as the value before them now (a corroboration): only being deleted takes one out.
+    // One recorded, not deleted, with no such item (its conflict gone, taken by another item, or
+    // a same value without evidence pointed at, which leaves no item) is the resolutions'
+    // replay, not opened here.
+    const recorded = new Set((r.decided ?? []).map((x) => contributionKey(x.event, x.target)));
+    const k = state.items.filter(
+      (x) =>
+        recorded.has(contributionKey(x.event, x.target)) &&
+        (x.status === "candidate" ||
+          (x.status === "corroborated" && candidateWhenWritten(x.event, x.target, x.valid))),
+    );
+    for (const d of r.decided ?? []) {
+      if (deleted(d.event, d.target)) continue;
+      if (!k.some((x) => x.event === d.event && x.target === d.target)) {
+        throw new JudgeError(
+          "not_implemented",
+          "a deletion's replay of a take_previous whose candidate is no longer one",
+          { kind: "take_previous candidate", op: r.op, event: d.event, target: d.target },
+        );
+      }
+    }
+    const out = judgeRevertOf(state, r, r.revert.entries, { asOf: mergeBase }, k, false);
+    return { ...r, items: out.items };
+  }
+  const before = r.revert.before;
+  if (before === undefined) {
+    throw new JudgeError("invalid", "an undo record without the operation it takes back", {
+      op: r.op,
+    });
+  }
+  const out = judgeRevertOf(state, r, r.revert.entries, { before }, null, false);
+  if (r.status === "applied") return { ...r, items: out.items };
+  // Awaiting: the proposal, for a person's decision recorded after it. Undecided, it awaits only
+  // while of high impact in the replay; one no longer is (④, 03-deletion «高影响») would take
+  // effect at its own number, and at that moment the row is checked as when written: still
+  // revoked once it is written, it does not take effect (03-deletion «回掉的权威定义» step 4).
+  // Neither is opened here; the second has a kind of its own.
+  if (!decided) {
+    const again = (refuseRevoked: boolean) =>
+      judgeRevertOf(
+        state,
+        { ...r, acknowledge: r.acknowledge === true },
+        r.revert.entries,
+        { before },
+        null,
+        true,
+        refuseRevoked,
+      );
+    if (again(false).status === "applied") {
+      try {
+        again(true);
+      } catch (e) {
+        if (e instanceof JudgeError && e.reason === "revoked") {
+          throw new JudgeError(
+            "not_implemented",
+            "a deletion's replay of an awaiting undo that would take effect on a revoked row",
+            { kind: "undo on a revoked row", op: r.op },
+          );
+        }
+        throw e;
+      }
+      throw new JudgeError(
+        "not_implemented",
+        "a deletion's replay of an awaiting undo no longer of high impact",
+        { kind: "undo no longer of high impact", op: r.op },
+      );
+    }
+  }
+  return { ...r, items: out.items.map((x) => ({ ...x, status: "awaiting" as const })) };
+}
+
+/**
+ * A confirmation of an awaiting undo, executed as recorded: the revert as listed at the
+ * confirmation (its own R), the confirmation's operation the n (03-deletion «回掉的权威定义» step
+ * 4), its write-backs worked out again on the replay's state.
+ */
+function confirmUndoAgain(state: RowState, r: ConfirmRecord): ConfirmRecord {
+  const revert = r.revert;
+  if (revert?.before === undefined) {
+    throw new JudgeError("invalid", "an undo's confirmation without the operation it takes back", {
+      op: r.op,
+    });
+  }
+  const out = judgeRevertOf(state, r, revert.entries, { before: revert.before }, null, false);
+  return { ...r, items: out.items };
 }
 
 /**
@@ -174,14 +291,27 @@ export function replayDeletion(
   const out: OpRecord[] = [];
   const firstDeletion = Math.min(Number.POSITIVE_INFINITY, ...deletionsBefore);
   const decisions = decisionsOf(records);
+  // Whether a stretch of a write's items on a target was a candidate when written: it meets one
+  // of its candidate items as recorded (a stretch meeting a candidate and an effective item counts
+  // as the candidate's, as the reference's write-time status of a stretch does).
+  const candidateWhenWritten = (event: number, target: Target, valid: IntervalSet): boolean => {
+    const w = records.find((x) => x.event === event && (x.kind === "write" || x.kind === "revoke"));
+    if (w === undefined || (w.kind !== "write" && w.kind !== "revoke")) return false;
+    return w.items.some(
+      (x) => x.target === target && x.status === "candidate" && !isNothing(meet(x.valid, valid)),
+    );
+  };
   for (const r of records) {
-    const undoConfirmed = r.kind === "confirm" && r.revert !== undefined;
     if (
-      (r.kind !== "write" && r.kind !== "revoke" && r.kind !== "confirm" && r.kind !== "reject") ||
-      undoConfirmed
+      r.kind !== "write" &&
+      r.kind !== "revoke" &&
+      r.kind !== "confirm" &&
+      r.kind !== "reject" &&
+      r.kind !== "undo" &&
+      r.kind !== "take_previous"
     ) {
       throw new JudgeError("not_implemented", `a deletion's replay of a ${r.kind}`, {
-        kind: undoConfirmed ? "confirm of an undo" : r.kind,
+        kind: r.kind,
         op: r.op,
       });
     }
@@ -194,6 +324,30 @@ export function replayDeletion(
         },
       );
     }
+    if (r.kind === "undo" || r.kind === "take_previous") {
+      const decided = records.some(
+        (x) => (x.kind === "confirm" || x.kind === "reject") && x.target === r.event,
+      );
+      const again = revertAgain(
+        state,
+        r,
+        (e, t) => deleted.has(contributionKey(e, t)),
+        decided,
+        candidateWhenWritten,
+      );
+      // Event and timeless tables keep no deps, as every judged record (judge.ts).
+      const record = state.isState ? again : withoutDeps(again);
+      out.push(record);
+      state = new RowState(table, [...state.records, record]);
+      continue;
+    }
+    if (r.kind === "confirm" && r.revert !== undefined) {
+      const again = confirmUndoAgain(state, r);
+      const record = state.isState ? again : withoutDeps(again);
+      out.push(record);
+      state = new RowState(table, [...state.records, record]);
+      continue;
+    }
     if (r.kind === "confirm" || r.kind === "reject") {
       const judged = decide(state, r);
       if (judged === undefined) continue;
@@ -201,6 +355,8 @@ export function replayDeletion(
       state = judged.state;
       continue;
     }
+    // Narrowed for the compiler: a revert's kind is a union, so the branch above does not drop it.
+    if (r.kind !== "write" && r.kind !== "revoke") continue;
     const input = inputOf(r, (t) => deleted.has(contributionKey(r.event, t)));
     if (input === undefined) continue;
     const decision = decisions.get(r.event);
