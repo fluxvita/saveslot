@@ -4,7 +4,9 @@
 // Words: to a person, "connection instance" (the MCP texts tell the agent of "a connection"); in a
 // sentence, "the saveslot service", and "saveslot service:" only as the label of a status line.
 
+import type { HandleKeyFileError } from "@fluxvita/saveslot-service";
 import type { ConfigEntry, ConfigProblem } from "./config.ts";
+import type { ServerConfigProblem } from "./server-config.ts";
 
 /**
  * A call sent with no answer back (05-surfaces §11; the request key, 04-contract §14): what to do
@@ -206,6 +208,34 @@ export const TEXTS = {
   doctorScaleOk: "every table within the comfortable line",
   doctorScale: (table: string, rows: number, level: string) =>
     `${table}: ${rows} rows, ${level === "beyond_tested" ? "beyond the largest size tested" : "over the comfortable line"}; saveslot is built for records at a person's pace: keep summaries, and the raw series where it comes from`,
+  // `saveslot server …` (06 §4.1 «服务器自部署的运维命令», «服务器模式的配置»). A text names a
+  // variable, never its value: a connection URL may hold a password.
+  server: {
+    usage: "usage: saveslot server init",
+    configProblem: (p: ServerConfigProblem) =>
+      p.kind === "missing"
+        ? `error: ${p.variable} is not set`
+        : `error: ${p.variable} is not valid: ${p.what}`,
+    keyFileProblem: (code: HandleKeyFileError["code"]) =>
+      `error: the file SAVESLOT_HANDLE_KEY_FILE names ${
+        {
+          missing: "is not there",
+          not_a_file: "is not a file",
+          open_to_others: "is open to others; take every permission from others (chmod o= on it)",
+          corrupt: "is not a handle key file",
+        }[code]
+      }`,
+    keyFileNoDirectory:
+      "error: the directory of SAVESLOT_HANDLE_KEY_FILE is not there; make it, then run saveslot server init again",
+    keyFileMade:
+      "Made the handle key file (SAVESLOT_HANDLE_KEY_FILE, 0600): keep it, and back it up",
+    keyFileKept: "The handle key file (SAVESLOT_HANDLE_KEY_FILE) is there already; left as it is",
+    controlUnreachable:
+      "error: the control database (SAVESLOT_CONTROL_DATABASE_URL) could not be reached",
+    controlFormat:
+      "error: the control database's tables are of a format this saveslot does not know; nothing was changed",
+    controlReady: "The control database's tables are in place",
+  },
 
   // `saveslot service install` / `uninstall` (06 §3 step 3, §4.1).
   autostartUsage: "saveslot service install | uninstall",

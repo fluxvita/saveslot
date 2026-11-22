@@ -8,6 +8,7 @@ import {
   homeProblem,
   init,
   initialized,
+  serverCommand,
   serviceCommand,
   setupLock,
   start,
@@ -39,6 +40,14 @@ export function dispatch(
     return Promise.resolve(0);
   }
   const [first, ...rest] = argv;
+  // `saveslot server …` (06 §4.1): the server mode's commands, configured by the environment.
+  if (first === "server") {
+    return serverCommand(rest, {
+      out: (l) => io.out(`${l}\n`),
+      err: (l) => io.err(`${l}\n`),
+      env,
+    });
+  }
   if (first !== undefined && SERVICE.has(first as ServiceName)) {
     const cmdIO = { out: (l: string) => io.out(`${l}\n`), err: (l: string) => io.err(`${l}\n`) };
     // doctor: the hosts' entries are the CLI's to look at (06 §3 step 7).

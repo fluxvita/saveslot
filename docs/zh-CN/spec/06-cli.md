@@ -469,7 +469,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `SAVESLOT_CONTROL_DATABASE_URL` | 控制面库的 PostgreSQL 连接（[`02-architecture.md`](02-architecture.md) §5「控制面存储」） | 必填 |
 | `SAVESLOT_CELL_DATABASE_URL` | 唯一的 cell 所在实例的连接，库名部分是建租户库时连的维护库；租户库建在同一个实例上，用同一个角色 | 必填 |
 | `SAVESLOT_PUBLIC_URL` | 对外地址：远程 MCP 与 HTTP 的基地址，OAuth 的签发方与资源标识（RFC 8707），401 的 `resource_metadata` 由它拼出（[`05-surfaces.md`](05-surfaces.md) §14）。一个部署只有这一个对外地址，`/mcp`、`/v1`、`/oauth/*` 都拼在它后面，所以只写协议、主机与可选的端口：不带路径，不带末尾的 `/`。必须是 `https://`；只有主机是回环地址（`127.0.0.0/8`、`::1`、`localhost`）时才收 `http://`，供本机试跑。写法不合的按写法不对处理 | 必填 |
-| `SAVESLOT_HANDLE_KEY_FILE` | 句柄签名密钥的文件；`server init` 在这里生成（0600，目录要已存在）。`server start` 只读它，不写：可以按只读挂载。服务器模式不自动轮换密钥；部署方要换，就换掉这个文件再重启，换之前签发的句柄随之失效。文件不在或不是它的格式时，`server start` 拒绝启动 | 必填 |
+| `SAVESLOT_HANDLE_KEY_FILE` | 句柄签名密钥的文件。`server init` 在这里生成（0600；目录要已存在）；文件已在时只核对，不动它。`server start` 只读它、不写，可以按只读挂载；核对的是：跟随符号链接之后是普通文件，本进程读得到，"其他人"（other）没有任何权限位；不核对属主，组可读也可以。服务器模式不自动轮换密钥：部署方要换，就换掉这个文件再重启，换之前签发的句柄随之失效。文件不在、不是普通文件、对其他人开放、不是它的格式，各报一种原因，退出码都是 5；报错里不写文件的内容 | 必填 |
 | `SAVESLOT_LISTEN` | 监听的地址与端口。进程只说明文 HTTP，所以缺省只听回环地址，由同一台机器上的反向代理连进来；要听别的网卡（例如容器里听 `0.0.0.0`），由部署方显式写出 | `127.0.0.1:8080` |
 | `SAVESLOT_TRUSTED_PROXIES` | 受信的反向代理的地址，逗号分隔。连接来自其中之一时，请求的来源地址取 `X-Forwarded-For` 里从右往左第一个不在这组里的地址；否则来源地址就是连接的地址（[`02-architecture.md`](02-architecture.md) §5）。登录失败的计数按这个地址算 | 空 |
 | `SAVESLOT_RATE_LIMIT` | 按租户限流：每个租户每分钟最多的请求数，正整数；设为 0 与不设都是关 | 不设：关（自部署默认关，[`02-architecture.md`](02-architecture.md) §9） |

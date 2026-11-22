@@ -18,10 +18,12 @@
 // position.
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { join } from "node:path";
+import { closeSync, fsyncSync, openSync, rmSync, writeSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { ContractError } from "./contract-error.ts";
 import { ensureDir, readPrivate, writePrivate } from "./control-files.ts";
 import { controlDir } from "./local-tenant.ts";
+import { readSecretFile, SecretFileError } from "./secret-file.ts";
 
 /** How long a paging handle is good for (04-contract §15), and a retired key is kept. */
 export const CURSOR_TTL_MS = 60 * 60 * 1000;
@@ -39,6 +41,22 @@ export class CursorKeysCorrupt extends Error {
   override readonly name = "CursorKeysCorrupt";
   readonly code = "cursor_keys_corrupt";
 }
+
+/** The server mode's handle key file cannot be used; the message names no path or content. */
+export class HandleKeyFileError extends Error {
+  override readonly name = "HandleKeyFileError";
+  readonly code: "missing" | "not_a_file" | "open_to_others" | "corrupt";
+  constructor(code: HandleKeyFileError["code"], message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+const HANDLE_KEY_FILE_PROBLEM: Readonly<Record<SecretFileError["code"], string>> = {
+  missing: "the handle key file is not there",
+  not_a_file: "the handle key file is not a file",
+  open_to_others: "the handle key file is open to others",
+};
 
 interface Key {
   readonly id: string;
@@ -144,6 +162,63 @@ export class CursorKeys {
     ];
     write(home, k.id, keys);
     return new CursorKeys(k.id, keys);
+  }
+
+  /**
+   * The server mode's keys, from the file the deployer keeps (06-cli §4.1
+   * `SAVESLOT_HANDLE_KEY_FILE`): read, never written, checked as every secret file is
+   * (./secret-file.ts). Its retired keys are kept as they are: rotating is the deployer's, by
+   * replacing the file.
+   */
+  static async fromFile(path: string): Promise<CursorKeys> {
+    let text: string;
+    try {
+      text = await readSecretFile(path);
+    } catch (e) {
+      if (!(e instanceof SecretFileError)) throw e;
+      throw new HandleKeyFileError(e.code, HANDLE_KEY_FILE_PROBLEM[e.code]);
+    }
+    let parsed: { current: string; keys: Key[] };
+    try {
+      parsed = parse(text);
+    } catch (e) {
+      if (!(e instanceof CursorKeysCorrupt)) throw e;
+      throw new HandleKeyFileError("corrupt", "the handle key file is not of its form");
+    }
+    return new CursorKeys(parsed.current, parsed.keys);
+  }
+
+  /**
+   * Makes the server mode's key file with a first key (0600, durably), its directory being
+   * there; a file already there is checked as `fromFile` checks it and left as it is.
+   */
+  static async createFile(path: string): Promise<{ readonly created: boolean }> {
+    const k = newKey();
+    let fd: number;
+    try {
+      fd = openSync(path, "wx", 0o600);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      await CursorKeys.fromFile(path);
+      return { created: false };
+    }
+    try {
+      writeSync(fd, `${JSON.stringify({ format: 1, current: k.id, keys: [k] })}\n`);
+      fsyncSync(fd);
+    } catch (e) {
+      // An empty or partial file would be refused as corrupt by every later run.
+      closeSync(fd);
+      rmSync(path, { force: true });
+      throw e;
+    }
+    closeSync(fd);
+    const d = openSync(dirname(path), "r");
+    try {
+      fsyncSync(d);
+    } finally {
+      closeSync(d);
+    }
+    return { created: true };
   }
 
   /** The key IDs held: the current one and those retired in the last hour. */

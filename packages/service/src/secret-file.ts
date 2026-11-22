@@ -5,6 +5,7 @@
 // checked; it must be a regular file with no permission for others. It is checked on the open file
 // it is then read from, so what is checked is what is read.
 
+import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 
 /** A secret file that cannot be used; the message names no path or content. */
@@ -21,7 +22,9 @@ export class SecretFileError extends Error {
 export async function readSecretFile(path: string): Promise<string> {
   let file: Awaited<ReturnType<typeof open>>;
   try {
-    file = await open(path, "r");
+    // Not blocking: a named pipe at the path would otherwise hold the open until a writer comes,
+    // where it is to be refused as not a file. A regular file reads the same either way.
+    file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") throw new SecretFileError("missing", "the file is not there");

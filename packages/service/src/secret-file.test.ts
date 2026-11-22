@@ -2,6 +2,7 @@
 // links, its owner not checked, refused when it is not a regular file or is open to others; checked
 // and read on one open file.
 
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -86,6 +87,12 @@ describe("readSecretFile", () => {
     };
     expect(await readSecretFile(path)).toBe("k-checked");
   });
+
+  it("a named pipe: refused as not a file, without waiting for a writer", async () => {
+    const pipe = fresh();
+    execFileSync("mkfifo", ["-m", "600", pipe]);
+    expect((await refusal(pipe)).code).toBe("not_a_file");
+  }, 5_000);
 
   it.skipIf(AS_ROOT)(
     "one the process cannot read: the error is the system's, not taken as missing",

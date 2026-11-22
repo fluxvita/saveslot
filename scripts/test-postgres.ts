@@ -26,6 +26,8 @@ export const TESTED = [
   "packages/service/src/server-auth.test.ts",
   // The server mode's connection tokens: a control plane and a tenant store, both PostgreSQL there.
   "packages/service/src/server-connections.test.ts",
+  // `saveslot server init` on the control database.
+  "packages/daemon/src/server-commands.test.ts",
 ];
 
 /** Files not run on PostgreSQL, each with why. */

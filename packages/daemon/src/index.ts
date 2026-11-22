@@ -7,5 +7,7 @@ export * from "./doctor.ts";
 export * from "./local-request.ts";
 export * from "./main.ts";
 export * from "./mcp-bridge.ts";
+export * from "./server-commands.ts";
+export * from "./server-config.ts";
 export * from "./service.ts";
 export * from "./setup-support.ts";

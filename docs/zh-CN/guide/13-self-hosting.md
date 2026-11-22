@@ -66,6 +66,8 @@ SELECT pg_reload_conf();
 
 **句柄签名密钥**由 `server init` 写到 `SAVESLOT_HANDLE_KEY_FILE` 指的位置（那个目录要已经存在），之后 saveslot 只读它，所以可以按只读挂载。saveslot 不会自己轮换它；要换，就换掉文件再重启，换之前发出去的翻页句柄、删除确认这类句柄随之失效，调用方重新取一次即可。
 
+挂载时注意权限：saveslot 拒绝对"其他人"开放的密钥文件。Kubernetes 的 secret 卷默认是 0644，会被拒绝，要把 `defaultMode` 设成 0440（容器里的用户读不到时再配 `fsGroup`）；Docker 的 secret 照宿主机上那个文件的权限，在宿主机上把它设成 0600 或 0640。
+
 ## 3. 初始化与账户
 
 ```
