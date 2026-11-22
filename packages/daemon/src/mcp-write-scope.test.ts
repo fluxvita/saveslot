@@ -1,7 +1,8 @@
 // saveslot_write by a connection whose range is some slots, against a running service (04-contract
 // «名字只在可见范围内解析»; 05-surfaces §6 `saveslot_write`): a name out of its range is answered as
 // one that does not exist, and nothing in the text names a slot, table or field out of range; a
-// table in range it cannot write yet (07-scope-v1) is answered as needing every slot in range.
+// table in range is written as by any credential (03-data-model/04-write-and-read «可见范围»: 写入),
+// a bare name both in range and out of it naming the one in range.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +19,7 @@ const root = mkdtempSync(join(tmpdir(), "saveslot-mcp-write-scope-"));
 const home = join(root, "home");
 let session = "";
 let service: RunningService | undefined;
+let maker = "";
 let scoped = "";
 const http = httpDriver(() => home);
 const issue = async (params: Record<string, unknown>) =>
@@ -65,7 +67,7 @@ beforeAll(async () => {
   });
   session = readFileSync(sessionFile(home), "utf8").trim();
   service = await runService({ home, version: "t", signals: false, log: () => {} });
-  const maker = (
+  maker = (
     await issue({ name: "maker", scopes: ["saveslot.read", "saveslot.write", "saveslot.schema"] })
   ).token;
   for (const d of [
@@ -87,17 +89,20 @@ afterAll(async () => {
 
 describe("saveslot_write by a connection scoped to one slot", () => {
   it(
-    "names nothing out of its range, and a table in range needs every slot",
+    "names nothing out of its range, and writes a table in range",
     async () => {
       const write = (table: string, set: Record<string, unknown>) =>
-        call(scoped, "saveslot_write", { sv: 1, ops: [{ intent: "insert", table, set }] });
+        call(scoped, "saveslot_write", {
+          sv: 1,
+          evidence: [{ kind: "user_message", text: `${set["what"]} for lunch` }],
+          ops: [{ intent: "insert", table, set }],
+        });
       const set = { date: "2026-11-05", what: "x" };
       const cases: [string, Record<string, unknown>, RegExp][] = [
         ["nothere.meals", set, /ledger|secretplan|hidden/],
         ["secretplan.nothere", set, /ledger|hidden_table|hidden_field/],
         ["secretplan.hidden_table", { date: "2026-11-05", hidden: "x" }, /ledger|hidden_field/],
         ["hidden_table", set, /ledger|secretplan|hidden_field/],
-        ["meals", set, /ledger|secretplan|hidden/],
         ["diet.nothere", set, /ledger|secretplan|hidden/],
       ];
       for (const [table, values, out] of cases) {
@@ -105,11 +110,31 @@ describe("saveslot_write by a connection scoped to one slot", () => {
         expect([table, r.isError]).toEqual([table, true]);
         expect([table, textOf(r)]).not.toEqual([table, expect.stringMatching(out)]);
       }
-      const inRange = await write("diet.meals", set);
-      expect(inRange.isError).toBe(true);
-      expect(textOf(inRange)).toContain(
-        "This needs a connection whose range is every slot; this connection reaches only some of them.",
-      );
+      // In range: "meals" is in "diet" and in "ledger"; for this connection it is "diet"'s.
+      for (const [table, what] of [
+        ["meals", "noodles"],
+        ["diet.meals", "rice"],
+      ] as const) {
+        const r = await write(table, { date: "2026-11-05", what });
+        expect([table, r.isError ?? false]).toEqual([table, false]);
+        expect([table, textOf(r)]).not.toEqual([
+          table,
+          expect.stringMatching(/ledger|secretplan|hidden/),
+        ]);
+      }
+      const read = async (credential: string, table: string) =>
+        textOf(await call(credential, "saveslot_query", { table }));
+      for (const what of ["noodles", "rice"]) {
+        const tag = `<untrusted-data-N>${what}</untrusted-data-N>`;
+        expect([what, await read(scoped, "diet.meals")]).toEqual([
+          what,
+          expect.stringContaining(tag),
+        ]);
+        expect([what, await read(maker, "ledger.meals")]).not.toEqual([
+          what,
+          expect.stringContaining(what),
+        ]);
+      }
     },
     T,
   );

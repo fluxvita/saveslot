@@ -124,9 +124,8 @@ async function targetProblem(
   const known = c.known(id);
   const stored = known === undefined ? await storedTarget(tx, c, id) : undefined;
   const table = known?.table ?? stored?.table;
-  // Not visible is answered as not there (04-contract «不存在与不可见报同一个错误»). Not reached in
-  // this version: a write needs every slot (`writable`). When writing in a range opens, add the
-  // deterministic case: an invisible target and one that does not exist get the same answer.
+  // Not visible is answered as not there (04-contract «不存在与不可见报同一个错误»): a target in a
+  // table out of range, as one that does not exist.
   if (table === undefined || !c.visible(table)) return "ref_not_found";
   if (table !== named) return "ref_wrong_table";
   const state = known?.state ?? stored?.state;

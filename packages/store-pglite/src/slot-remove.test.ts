@@ -150,9 +150,6 @@ describe("a connection whose range named a removed slot", () => {
       // Before: the range is that one slot, and the connection sees it.
       expect(range).toEqual({ kind: "scoped", slots: [{ slot: home.slot_id }] });
       expect(await slotNames(range)).toEqual(["home"]);
-      // A connection with a slot range does not write in this version (07-scope-v1).
-      const refused = await refusal(writeExpense(conn.id, range));
-      expect(refused).toMatchObject({ code: "insufficient_scope", required_scope: "all_slots" });
 
       const r = await remove(home.slot_id);
       expect(r).toMatchObject({ slot_id: home.slot_id, name: "home", sv: 1 });

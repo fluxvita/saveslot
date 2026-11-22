@@ -108,7 +108,7 @@ import {
   type LiteralResult,
   literalKey,
 } from "./literal.ts";
-import { tableShape, todayIn, verOfRow, writable } from "./plan.ts";
+import { tableShape, todayIn, verOfRow } from "./plan.ts";
 import {
   alignedTo,
   coveredItems,
@@ -160,7 +160,7 @@ export interface WriteInput {
    * of server-computed request keys, and of explicit idempotency keys.
    */
   readonly windows: { readonly requestKey: number; readonly idempotencyKey: number };
-  readonly visibility: { readonly kind: string };
+  readonly visibility: Visibility;
   readonly params: unknown;
   /** New identifiers (01-objects «标识的写法»), from the caller. */
   readonly newId: (kind: "row" | "entity" | "source" | "item" | "partition") => string;
@@ -1094,7 +1094,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   // Names resolve within what the caller can see (04-contract «名字只在可见范围内解析»): a slot,
   // table or field out of range is answered as one that does not exist, with the nearest names
   // and the candidates taken from what is visible only.
-  const visible = await visibleSlotRows(tx, input.visibility as Visibility);
+  const visible = await visibleSlotRows(tx, input.visibility);
   // The request's version on each slot: its `sv` as given, else the caller's by fallback on that
   // slot (04-contract §2); names resolve by it (07 «旧名字还认多久»: the caller's names come from the
   // version it read). Taken before the request is normalized, from its parameters as sent; a
@@ -1137,7 +1137,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     versionNamesWhole.set(id, namedAsWritten(s.compiled, { ...then, name: s.name }));
     versionNames.set(id, {
       ...n,
-      tables: visibleTables(input.visibility as Visibility, s.slot, n.tables) ?? [],
+      tables: visibleTables(input.visibility, s.slot, n.tables) ?? [],
     });
   }
   // A table name is looked up in each slot by its current names and by the request's version's:
@@ -1158,6 +1158,8 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     }),
   );
   if (!which.ok) throw requestFailure(which.error);
+  // The slot and its tables are in range (`visible`): a credential writes whatever it can see
+  // (04-write-and-read «可见范围»: 写入).
   const slot = visible.find((s) => s.name === which.slot) as SeenSlot;
   // The slot as the request names it: its version's names, else the current ones.
   const naming: CompiledSchema = versionNames.get(slot.slot) ?? {
@@ -1167,14 +1169,6 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   // The slot by IDs, named by the same version: the receipt and what a refusal names say it as the
   // request does, so its names and its `sv` agree. The definitions are the current ones.
   const receiptNames: CompiledSchema = versionNamesWhole.get(slot.slot) ?? slot.compiled;
-  // A visible table this credential cannot write (a credential scoped to some slots: writing in
-  // range comes later, 07-scope-v1), before the request is normalized: that it cannot write comes
-  // before what is wrong in the ops. The table is visible, so this tells nothing out of range.
-  if (!writable(input.visibility, slot.slot)) {
-    throw new WriteError("insufficient_scope", "writing needs every slot in range", {
-      required_scope: "all_slots",
-    });
-  }
   const today = todayIn(now, slot.timezone);
   // What changed incompatibly since the request's version, field by field or as a whole table, as
   // the versions switched to since recorded it (07 «原则» 4). A slot only ever at one version, or a

@@ -1,9 +1,8 @@
 // A write by a credential scoped to some slots names only what it can see (04-contract «名字只在可见
 // 范围内解析», «不存在与不可见报同一个错误»): a slot, table or field out of its range is answered as
 // one that does not exist. Each request is sent to a tenant with slots out of range and to one
-// without them; the answers must be the same, key for key. A table in range that the credential
-// cannot write yet (a scoped write, 07-scope-v1) is refused for that, before what is wrong in the
-// ops.
+// without them; the answers must be the same, key for key. A table in range is written as by any
+// other credential (03-data-model/04-write-and-read «可见范围»: 写入).
 
 import {
   catalog,
@@ -72,10 +71,14 @@ async function tenant(slots: Record<string, unknown[]>) {
   return { ids, tableIds };
 }
 
-/** What a write answers: the receipt, or the error's code, message and details. */
+/**
+ * What a write answers: saved, and in which table; or the error's code, message and details. (Not
+ * the whole receipt: its IDs differ from tenant to tenant.)
+ */
 async function answer(visibility: unknown, op: Record<string, unknown>) {
   try {
-    return { ok: await write(s.store, ctxOf(CONN, visibility), { sv: 1, ops: [op] } as never) };
+    const r = await write(s.store, ctxOf(CONN, visibility), { sv: 1, ops: [op] } as never);
+    return { saved: r.status, table: r.ops[0]?.target.table };
   } catch (e) {
     const x = e as { code?: string; message?: string; detail?: unknown };
     if (x.code === undefined) throw e;
@@ -122,7 +125,7 @@ afterAll(async () => {
 
 describe("a write by a credential scoped to one slot", () => {
   it(
-    "answers what is out of range as what does not exist, and a table in range as not writable",
+    "answers what is out of range as what does not exist, and writes a table in range",
     async () => {
       const ask = async (slots: Record<string, unknown[]>) => {
         const { ids } = await tenant(slots);
@@ -162,16 +165,13 @@ describe("a write by a credential scoped to one slot", () => {
         code: "unknown_table",
         detail: { param: "ops/0/table", name: "secretplan.hidden_table", nearest: ["diet.meals"] },
       });
-      expect(withHidden["a bare name in range and out of it"]).toMatchObject({
-        code: "insufficient_scope",
-      });
-      for (const k of ["a table in range", "a table in range, with a field it does not have"]) {
-        expect(withHidden[k]).toEqual({
-          code: "insufficient_scope",
-          message: "writing needs every slot in range",
-          detail: { required_scope: "all_slots" },
-        });
+      // A bare name in range and out of it: the one in range, never ambiguous_table.
+      for (const k of ["a bare name in range and out of it", "a table in range"]) {
+        expect([k, withHidden[k]]).toEqual([k, { saved: "saved", table: "diet.meals" }]);
       }
+      expect(withHidden["a table in range, with a field it does not have"]).toMatchObject({
+        code: "unknown_field",
+      });
     },
     T,
   );
@@ -239,6 +239,85 @@ describe("a write by a credential scoped to one slot", () => {
       const hidden = await decide(item);
       expect(hidden).toEqual(await decide("pi_0000000000009999"));
       expect(hidden).toMatchObject({ code: "not_found" });
+    },
+    T,
+  );
+
+  it(
+    "a source or a ref target out of range is answered as one that does not exist, the ID aside",
+    async () => {
+      const { ids, tableIds } = await tenant({
+        diet: [
+          {
+            ...table("meals", ["what"]),
+            fields: [
+              ...table("meals", ["what"]).fields,
+              {
+                name: "note",
+                type: "ref",
+                description: "a note",
+                ref: { table: "notes", target: "row" },
+              },
+            ],
+          },
+          {
+            ...table("notes", ["text"]),
+            time: { type: "none" },
+            fields: [{ name: "text", type: "text", required: true, description: "text" }],
+          },
+        ],
+        secretplan: [table("hidden_table", ["what"])],
+      });
+      const put = (
+        table: string,
+        set: Record<string, unknown>,
+        more: Record<string, unknown> = {},
+      ) =>
+        write(s.store, ctxOf(USER, ALL), {
+          sv: 1,
+          ...more,
+          ops: [{ table, intent: "insert", set }],
+        } as never);
+      // A source in secretplan, out of range of a credential scoped to diet.
+      const said = await put("secretplan.hidden_table", SET, {
+        evidence: [{ kind: "user_message", text: "it was x" }],
+      });
+      const source = (
+        await s.store.read((tx) =>
+          tx.query<{ source_id: string }>("SELECT source_id FROM sources WHERE seq = $1", [
+            said.seq + 1,
+          ]),
+        )
+      ).rows[0]?.source_id as string;
+      expect(source).toMatch(/^s_/);
+      // A note in diet, out of range of a credential scoped to diet's meals only.
+      const note = (await put("diet.notes", { text: "n" })).ops[0]?.target.row as string;
+      const meals = (await tableIds("diet"))["meals"];
+      const toDiet = { kind: "scoped", slots: [{ slot: ids["diet"] }] };
+      const toMeals = {
+        kind: "scoped",
+        slots: [{ slot: ids["diet"], tables: [{ table: meals }] }],
+      };
+      /** An ID of the same form that names nothing: its last character changed. */
+      const other = (id: string) => `${id.slice(0, -1)}${id.endsWith("A") ? "B" : "A"}`;
+      const asText = (a: unknown, id: string) => JSON.stringify(a).split(id).join("<id>");
+      const bySource = (id: string) =>
+        answer(toDiet, {
+          intent: "insert",
+          table: "diet.meals",
+          set: SET,
+          evidence: [{ kind: "source_ref", id }],
+        });
+      const byRef = (id: string) =>
+        answer(toMeals, { intent: "insert", table: "diet.meals", set: { ...SET, note: id } });
+      expect(asText(await bySource(source), source)).toEqual(
+        asText(await bySource(other(source)), other(source)),
+      );
+      expect(await bySource(source)).toMatchObject({ code: "not_found" });
+      expect(asText(await byRef(note), note)).toEqual(
+        asText(await byRef(other(note)), other(note)),
+      );
+      expect(JSON.stringify(await byRef(note))).toContain("ref_not_found");
     },
     T,
   );

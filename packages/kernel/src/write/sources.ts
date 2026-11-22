@@ -99,7 +99,6 @@ export async function placeEvidence(
     const row = found.get(segment.id);
     const at = `${param}/id`;
     // Not there, deleted, or out of range: the same answer (04-contract «不存在与不可见报同一个错误»).
-    // Out of range is not reached in this version: a write needs every slot.
     if (
       row === undefined ||
       row.deletion_state === "removed" ||

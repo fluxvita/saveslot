@@ -4,6 +4,7 @@
 import type { CompiledBaseTable, FieldId } from "@fluxvita/saveslot-contract-core";
 import type { TableShape } from "../judge/index.ts";
 import { valuedFields } from "../pending/index.ts";
+import type { Visibility } from "../request/index.ts";
 
 /** The table as `judge` sees it (judge/model.ts `TableShape`). */
 export function tableShape(t: CompiledBaseTable): TableShape {
@@ -22,12 +23,17 @@ export function tableShape(t: CompiledBaseTable): TableShape {
 }
 
 /**
- * Whether the caller may write `table` of `slot`. The first version always passes every slot and
- * table (`visibility: all`); scoped visibility is not implemented, and this is where it will be
- * decided (04-write-and-read «可见范围»).
+ * Whether the caller may write `table` (its ID) of `slot`, or anything in `slot` when no table is
+ * given: whatever is in its range (04-write-and-read «可见范围»: 写入, 待处理事项、resolve). A slot
+ * out of range, or a table its range does not list, is not writable, as it is not visible.
  */
-export function writable(visibility: { readonly kind: string }, _slot: string, _table?: string) {
-  return visibility.kind === "all";
+export function writable(visibility: Visibility, slot: string, table?: string): boolean {
+  if (visibility.kind === "all") return true;
+  const scope = visibility.slots.find((s) => s.slot === slot);
+  if (scope === undefined) return false;
+  return (
+    table === undefined || scope.tables === undefined || scope.tables.some((t) => t.table === table)
+  );
 }
 
 /** The date of `now` in time zone `tz`, as YYYY-MM-DD (05-time «今天»). */

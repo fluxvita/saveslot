@@ -33,7 +33,7 @@ import type { DerivedWrite } from "../derive/index.ts";
 import { JudgeError, type JudgeInput, judgeOp, reaches, type Unit } from "../judge/index.ts";
 import { type ActorAsOf as Actor, actorsAsOf, type NewEvent, readTail } from "../log/index.ts";
 import { actorsNow, closingOf, itemEntries, revertedOut } from "../pending/index.ts";
-import { normalizeResolve, type ResolveDecision, type Visibility } from "../request/index.ts";
+import { normalizeResolve, type ResolveDecision } from "../request/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
 import { restorePoint } from "../store/restore-point.ts";
 import { appendWithDerived } from "./derive-step.ts";
@@ -262,6 +262,8 @@ async function readResolution(
     readonly replayed: boolean;
     /** A first receipt's derived writes, in memory (a replay has only the log). */
     readonly derived?: readonly DerivedWrite[];
+    /** Whether the caller can see a table: what the receipt lists is filtered by it. */
+    readonly visible: (id: TableId) => boolean;
   },
 ): Promise<ResolveReceipt> {
   const head = await tx.query<{ type: string; body: string | null }>(
@@ -303,6 +305,7 @@ async function readResolution(
     slotName: o.slot.name,
     restoreCount: o.restoreCount,
     replayed: o.replayed,
+    visible: o.visible,
   });
   const write =
     read !== undefined && o.derived !== undefined
@@ -433,12 +436,20 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     slot !== undefined &&
     item.table !== null &&
     writable(input.visibility, slot.slot, item.table);
+  // What the caller can see, for what a receipt lists (`premise_affected.rows`) and for refs: the
+  // tables in range, as the write path takes them (04-contract «名字只在可见范围内解析»).
+  const inRange = tableInRange(await visibleSlotRows(tx, input.visibility));
   if (hit !== undefined) {
-    // Not reached in this version: a hit is a decision taken on this item, which has a table, and
-    // every slot is writable (`writable`). Kept for scoped visibility, as the check below.
+    // A decision taken on this item by this caller: out of range now only if the range changed,
+    // which it cannot (04-contract §12); refused as below all the same.
     if (!visible)
       throw new WriteError("not_found", "no such item", { reason: "item", param: "id" });
-    return readResolution(tx, hit, { slot, restoreCount: restore, replayed: true });
+    return readResolution(tx, hit, {
+      slot,
+      restoreCount: restore,
+      replayed: true,
+      visible: inRange,
+    });
   }
   if (!visible || item.row === null || item.table === null) {
     throw new WriteError("not_found", "no such item", { reason: "item", param: "id" });
@@ -462,7 +473,13 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     const same =
       was.decision === req.decision &&
       (req.decision !== "take_candidate" || (named !== undefined && named === was.candidate));
-    if (same) return readResolution(tx, done.op, { slot, restoreCount: restore, replayed: true });
+    if (same)
+      return readResolution(tx, done.op, {
+        slot,
+        restoreCount: restore,
+        replayed: true,
+        visible: inRange,
+      });
     throw await closed(tx, item.id, "the item was resolved another way");
   }
   if (item.state !== "open") throw await closed(tx, item.id, "the item was superseded");
@@ -573,9 +590,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     req.evidence.map((segment, k) => ({ segment, param: `evidence/${k}` })),
     {
       slot: slot.slot,
-      visibleSlots: new Set(
-        (await visibleSlotRows(tx, input.visibility as Visibility)).map((s) => s.slot),
-      ),
+      visibleSlots: new Set((await visibleSlotRows(tx, input.visibility)).map((s) => s.slot)),
     },
   );
   const evidenceSeqs = [...new Set(evidence.seqsFrom(op + 1))];
@@ -628,7 +643,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     items: givenItems(j.record),
     known: (id) =>
       id === item.row ? { table: table.id as TableId, state: work.state } : undefined,
-    visible: tableInRange(await visibleSlotRows(tx, input.visibility as Visibility)),
+    visible: inRange,
     stored: new Map(),
     at: { upTo: (op - 1) as OpNumber },
   });
@@ -766,6 +781,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     restoreCount: restore,
     replayed: false,
     derived: step.derived,
+    visible: inRange,
   });
   return warnings.length > 0 ? { ...out, warnings } : out;
 }

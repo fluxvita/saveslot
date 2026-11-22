@@ -335,6 +335,285 @@ export function contractSuite(
     });
   });
 
+  // A credential limited to some slots (04-contract §12; 03-data-model/04-write-and-read «可见范围»):
+  // it writes and decides whatever is in range as any other credential would; out of range is
+  // what does not exist, to the byte. "home" is in its range; "away" is created after the
+  // refusals of names it does not know were taken, so that the same requests can be compared
+  // before "away" exists and after. A refusal by ID is compared with the refusal of an ID of the
+  // same form that names nothing, the ID itself left out.
+  const homeDoc = (slot: string) => ({
+    slot,
+    base_version: null,
+    timezone: "Asia/Shanghai",
+    tables: [
+      {
+        name: `trips_${slot}`,
+        kind: "base",
+        description: "one row per trip",
+        time: { type: "none" },
+        fields: [{ name: "name", type: "text", required: true, description: "the trip" }],
+      },
+      {
+        name: `legs_${slot}`,
+        kind: "base",
+        description: "one row per leg of a trip",
+        time: { type: "none" },
+        fields: [
+          { name: "note", type: "text", required: true, description: "the leg" },
+          {
+            name: "trip",
+            type: "ref",
+            description: "the trip it is part of",
+            ref: { table: `trips_${slot}`, target: "row" },
+          },
+        ],
+      },
+      // The same table name in both slots: by its bare name, ambiguous only to who sees both.
+      {
+        name: "camps",
+        kind: "base",
+        description: "one row per camp",
+        time: { type: "none" },
+        fields: [{ name: "name", type: "text", required: true, description: "the camp" }],
+      },
+    ],
+  });
+  // biome-ignore lint/suspicious/noExplicitAny: results as the contract gives them
+  type Any = any;
+  let homeOnly = "";
+  /** The refusals of names "home-only" does not know, taken before "away" exists. */
+  const before = new Map<string, string>();
+  const byId: Record<string, string> = {};
+  let made = 0;
+  const homeWrite = (credential: string, ops: Record<string, unknown>[]) =>
+    call(credential, "write", { sv: 1, ops });
+  /** The error as the contract gives it, as text, with each of `ids` written as `<id>`. */
+  const refusal = async (o: Promise<Outcome>, ...ids: string[]) => {
+    const r = await o;
+    if (!("error" in r)) throw new Error(`not refused: ${JSON.stringify(r.result)}`);
+    return ids.reduce((text, id) => text.split(id).join("<id>"), JSON.stringify(r.error));
+  };
+  /** An ID of the same form that names nothing: its last character changed. */
+  const other = (id: string) => `${id.slice(0, -1)}${id.endsWith("A") ? "B" : "A"}`;
+  /** The requests by name whose refusals must not tell "away" exists. */
+  const byName: Record<string, () => Promise<Outcome>> = {
+    "a table in a slot out of range": () =>
+      homeWrite(homeOnly, [{ intent: "insert", table: "away.trips_away", set: { name: "x" } }]),
+    "a table by its bare name, only out of range": () =>
+      homeWrite(homeOnly, [{ intent: "insert", table: "trips_away", set: { name: "x" } }]),
+    "a premise on a table out of range": () =>
+      homeWrite(homeOnly, [
+        {
+          intent: "insert",
+          table: "home.trips_home",
+          set: { name: "x" },
+          premises: [{ table: "away.trips_away", row: "r_00000000000000000000000000" }],
+        },
+      ]),
+    "a read of a table out of range": () => call(homeOnly, "query", { table: "away.trips_away" }),
+  };
+  /** One conflict item in `slot`'s trips: two updates from the same seen version. Its ID. */
+  const conflictIn = async (slot: string, second: string) => {
+    const { session } = get();
+    const n = ++made;
+    const table = `${slot}.trips_${slot}`;
+    const e: Any = result(
+      await homeWrite(session, [{ intent: "insert", table, set: { name: `t0-${n}` } }]),
+    );
+    const row = e.ops[0].target.row as string;
+    const ver = e.ops[0].ver as string;
+    result(
+      await homeWrite(session, [{ intent: "update", table, row, ver, set: { name: `t1-${n}` } }]),
+    );
+    const c: Any = result(
+      await homeWrite(second, [{ intent: "update", table, row, ver, set: { name: `t2-${n}` } }]),
+    );
+    return (c.pending as Any[]).find((x) => x.type === "conflict").id as string;
+  };
+  /**
+   * One awaiting item in `slot`: `by` undoes a correction together with the one made after it
+   * (`include_later`, high impact ④: 03-data-model/05-time «高影响写入»). Its ID.
+   */
+  const awaitingIn = async (slot: string, by: string) => {
+    const { session } = get();
+    const n = ++made;
+    const table = `${slot}.trips_${slot}`;
+    const a: Any = result(
+      await homeWrite(session, [{ intent: "insert", table, set: { name: `a-${n}` } }]),
+    );
+    const row = a.ops[0].target.row as string;
+    const x: Any = result(
+      await homeWrite(session, [
+        { intent: "update", table, row, ver: a.ops[0].ver, set: { name: `b-${n}` } },
+      ]),
+    );
+    result(
+      await homeWrite(session, [
+        { intent: "update", table, row, ver: x.ops[0].ver, set: { name: `c-${n}` } },
+      ]),
+    );
+    const r: Any = result(
+      await homeWrite(by, [{ table, row, revert: { undo: x.seq, include_later: true } }]),
+    );
+    return (r.pending as Any[]).find((p) => p.type === "awaiting_confirmation").id as string;
+  };
+  const detail = async (credential: string, id: string): Promise<Any> =>
+    result(await call(credential, "pending", { id }));
+
+  it("limited to some slots: what it does not know, refused before the slot out of range exists", async () => {
+    const { session } = get();
+    result(await call(session, "schema_draft", { document: homeDoc("home") }));
+    const issued = result(
+      await call(session, "connections.issue", {
+        name: "home-only",
+        scopes: ["saveslot.read", "saveslot.write", "saveslot.schema"],
+        slots: ["home"],
+      }),
+    );
+    homeOnly = issued["token"] as string;
+    for (const [what, request] of Object.entries(byName))
+      before.set(what, await refusal(request()));
+  });
+
+  it("limited to some slots: once the slot out of range exists, the same refusals to the byte", async () => {
+    const { session } = get();
+    result(await call(session, "schema_draft", { document: homeDoc("away") }));
+    for (const [what, request] of Object.entries(byName)) {
+      expect([what, await refusal(request())]).toEqual([what, before.get(what)]);
+    }
+    // A bare name both slots have: ambiguous to who sees both, the one in range to "home-only".
+    const camp = [{ intent: "insert", table: "camps", set: { name: "c" } }];
+    expect(await refusal(homeWrite(session, camp))).toContain('"ambiguous_table"');
+    expect(result(await homeWrite(homeOnly, camp))).toMatchObject({
+      status: "saved",
+      ops: [{ target: { table: "home.camps" } }],
+    });
+  });
+
+  it("limited to some slots: an ID out of range is refused as an ID that names nothing", async () => {
+    const { session } = get();
+    const trip: Any = result(
+      await homeWrite(session, [
+        { intent: "insert", table: "away.trips_away", set: { name: "far" } },
+      ]),
+    );
+    byId["row"] = trip.ops[0].target.row as string;
+    byId["seq"] = String(trip.seq);
+    byId["conflict"] = await conflictIn("away", writer);
+    byId["awaiting"] = await awaitingIn("away", session);
+    const row = byId["row"] as string;
+    // A ref value, a premise's row, an update's row: a row out of range.
+    const asRow: Record<string, (id: string) => Promise<Outcome>> = {
+      ref: (id) =>
+        homeWrite(homeOnly, [
+          { intent: "insert", table: "home.legs_home", set: { note: "n", trip: id } },
+        ]),
+      premise: (id) =>
+        homeWrite(homeOnly, [
+          {
+            intent: "insert",
+            table: "home.trips_home",
+            set: { name: "x" },
+            premises: [{ table: "home.trips_home", row: id }],
+          },
+        ]),
+      update: (id) =>
+        homeWrite(homeOnly, [
+          { intent: "update", table: "home.trips_home", row: id, set: { name: "y" } },
+        ]),
+    };
+    for (const [what, request] of Object.entries(asRow)) {
+      expect([what, await refusal(request(row), row)]).toEqual([
+        what,
+        await refusal(request(other(row)), other(row)),
+      ]);
+    }
+    // An item out of range: its detail, and each decision on it. No `item_ver`: one names its own
+    // item, so none fits the ID that names nothing, and a malformed one is refused before the item
+    // is looked up (each must reach "out of range is no such item").
+    for (const kind of ["conflict", "awaiting"] as const) {
+      const id = byId[kind] as string;
+      const decisions: Record<string, (x: string) => Promise<Outcome>> = {
+        detail: (x) => call(homeOnly, "pending", { id: x }),
+        keep_effective: (x) => call(homeOnly, "resolve", { id: x, decision: "keep_effective" }),
+        take_candidate: (x) =>
+          call(homeOnly, "resolve", { id: x, decision: "take_candidate", candidate: 0 }),
+        confirm: (x) => call(homeOnly, "resolve", { id: x, decision: "confirm" }),
+      };
+      for (const [what, request] of Object.entries(decisions)) {
+        const refused = await refusal(request(id), id);
+        expect([kind, what, JSON.parse(refused).code]).toEqual([kind, what, "not_found"]);
+        expect([kind, what, refused]).toEqual([
+          kind,
+          what,
+          await refusal(request(other(id)), other(id)),
+        ]);
+      }
+    }
+    // Undoing a write out of range, its row named by its own table's name: as one that never was.
+    const undo = (seq: number, id: string) =>
+      homeWrite(homeOnly, [{ table: "away.trips_away", row: id, revert: { undo: seq } }]);
+    const seq = Number(byId["seq"]);
+    expect(await refusal(undo(seq, row), String(seq), row)).toEqual(
+      await refusal(undo(seq + 1_000_000, other(row)), String(seq + 1_000_000), other(row)),
+    );
+  });
+
+  it("limited to some slots: writes, undoes, confirms and takes a candidate in range; its results name nothing out of range", async () => {
+    const { session } = get();
+    const tea: Any = result(
+      await homeWrite(homeOnly, [
+        { intent: "insert", table: "home.trips_home", set: { name: "tea" } },
+      ]),
+    );
+    expect(tea).toMatchObject({ status: "saved" });
+    const row = tea.ops[0].target.row as string;
+    const corrected: Any = result(
+      await homeWrite(homeOnly, [
+        {
+          intent: "update",
+          table: "home.trips_home",
+          row,
+          ver: tea.ops[0].ver,
+          set: { name: "green tea" },
+        },
+      ]),
+    );
+    const undone: Any = result(
+      await homeWrite(homeOnly, [
+        { table: "home.trips_home", row, revert: { undo: corrected.seq } },
+      ]),
+    );
+    expect(undone).toMatchObject({ status: "saved" });
+    const revoked: Any = result(
+      await homeWrite(homeOnly, [
+        { intent: "revoke", table: "home.trips_home", row, ver: undone.ops[0].ver },
+      ]),
+    );
+    expect(revoked).toMatchObject({ status: "saved", ops: [{ intent: "revoke" }] });
+
+    // An item in range: by "home-only" decided, each way.
+    const kept = await conflictIn("home", homeOnly);
+    const taken = await conflictIn("home", homeOnly);
+    const awaiting = await awaitingIn("home", homeOnly);
+    const decide = async (id: string, decision: string, more: Record<string, unknown> = {}) => {
+      const d = await detail(homeOnly, id);
+      return result(
+        await call(homeOnly, "resolve", { id, decision, item_ver: d.item_ver, ...more }),
+      );
+    };
+    const results = [
+      await decide(kept, "keep_effective"),
+      await decide(taken, "take_candidate", { candidate: 0 }),
+      await decide(awaiting, "confirm"),
+    ];
+    // Nothing out of range in what it was given: no notice of "away", whose items are open.
+    for (const r of [tea, corrected, undone, revoked, ...results]) {
+      expect(JSON.stringify(r)).not.toContain("away");
+    }
+    expect(JSON.stringify(await detail(session, byId["conflict"] as string))).toContain("away");
+  });
+
   it("a schema draft's refusals say what the value may be (04-contract «schema_draft»)", async () => {
     const { session } = get();
     const table = LEDGER.tables[0] as (typeof LEDGER.tables)[0];

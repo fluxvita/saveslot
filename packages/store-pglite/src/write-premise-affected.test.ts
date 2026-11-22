@@ -295,15 +295,15 @@ const restingOn = async (r: { target: { row: string }; ver: string }, fields?: s
     ],
   });
 
-/** Resolves an item through the pipeline. */
-const resolve = async (params: unknown): Promise<Receipt> =>
+/** Resolves an item through the pipeline, as a caller with `visibility` (default: every slot). */
+const resolve = async (params: unknown, visibility: unknown = { kind: "all" }): Promise<Receipt> =>
   (await s.store.write((tx) =>
     resolveInTx(tx, {
       actor: USER as never,
       task: null,
       now: now(),
       windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
-      visibility: { kind: "all" },
+      visibility: visibility as never,
       params,
       newId,
       reads: readBufferOf(s.store),
@@ -512,6 +512,60 @@ describe("premise_affected", () => {
         idempotency_key: "take",
       })) as unknown as { write: unknown };
       expect(affected(decided.write)).toMatchObject({ count: 1, by_reason: { update: 1 } });
+    },
+    T,
+  );
+
+  it(
+    "a decision by a credential whose range lists only the table decided on: the row it marked out of range is counted, not listed",
+    async () => {
+      const r = await release("v2", "2026-12-01");
+      const named = await update(r, { name: "x" });
+      await restingOn({ target: r.target, ver: named.ops[0]?.ver as string });
+      const stale = (await send({
+        ops: [
+          {
+            intent: "update",
+            table: "releases",
+            row: r.target.row,
+            ver: r.ver,
+            set: { name: "y" },
+          },
+        ],
+      })) as Receipt & { pending: { id: string; item_ver: string }[] };
+      // "releases" in range, "tasks" (where the marked row is) not (04-contract «名字只在可见范围内解析»).
+      const releasesOnly = {
+        kind: "scoped",
+        slots: [{ slot: COMPILED.slot, tables: [{ table: "t1" }] }],
+      };
+      const params = {
+        id: stale.pending[0]?.id,
+        decision: "take_candidate",
+        item_ver: stale.pending[0]?.item_ver,
+        idempotency_key: "take",
+      };
+      const first = (await resolve(params, releasesOnly)) as unknown as { write: unknown };
+      // Again: the same request (its key), and the same decision under another key (the item's).
+      const again = (await resolve(params, releasesOnly)) as unknown as { write: unknown };
+      const same = (await resolve(
+        { ...params, idempotency_key: "take-2" },
+        releasesOnly,
+      )) as unknown as {
+        write: unknown;
+      };
+      const whole = (await resolve(params)) as unknown as { write: unknown };
+      for (const [k, x] of [
+        ["first", first],
+        ["again", again],
+        ["same", same],
+      ] as const) {
+        expect([k, affected(x.write)]).toEqual([
+          k,
+          expect.objectContaining({ count: 1, by_reason: { update: 1 }, rows: [] }),
+        ]);
+      }
+      // The same decision read with every slot in range lists it: there was a row to leave out.
+      expect(affected(whole.write)?.rows).toHaveLength(1);
     },
     T,
   );

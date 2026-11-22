@@ -41,9 +41,16 @@ describe("tableShape", () => {
 });
 
 describe("writable and todayIn", () => {
-  it("visibility all passes; anything else does not (scoped visibility is not implemented)", () => {
-    expect(writable({ kind: "all" }, "sl", "t1")).toBe(true);
-    expect(writable({ kind: "scoped" }, "sl", "t1")).toBe(false);
+  it("whatever is in range: every slot, the slots listed, the tables listed in a slot", () => {
+    const scoped = (slots: unknown) => ({ kind: "scoped", slots }) as never;
+    expect(writable({ kind: "all" }, "sl_a", "t1")).toBe(true);
+    expect(writable(scoped([{ slot: "sl_a" }]), "sl_a", "t1")).toBe(true);
+    expect(writable(scoped([{ slot: "sl_a" }]), "sl_a")).toBe(true);
+    expect(writable(scoped([{ slot: "sl_a" }]), "sl_b", "t1")).toBe(false);
+    expect(writable(scoped([{ slot: "sl_a" }]), "sl_b")).toBe(false);
+    expect(writable(scoped([]), "sl_a")).toBe(false);
+    const tables = scoped([{ slot: "sl_a", tables: [{ table: "t1" }] }]);
+    expect([writable(tables, "sl_a", "t1"), writable(tables, "sl_a", "t2")]).toEqual([true, false]);
   });
   it("the date in the slot's time zone", () => {
     expect(todayIn("2026-11-04T17:30:00.000Z", "Asia/Shanghai")).toBe("2026-11-05");
