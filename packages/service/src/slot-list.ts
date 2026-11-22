@@ -6,8 +6,12 @@
 // and gives back nothing but names, counts, and whether the user created the slot: no table
 // names, descriptions, fields, rows or versions.
 
-import { slotCreators, type Visibility, visibleSlots } from "@fluxvita/saveslot-kernel";
-import type { LocalTenant } from "./local-tenant.ts";
+import {
+  slotCreators,
+  type TenantStore,
+  type Visibility,
+  visibleSlots,
+} from "@fluxvita/saveslot-kernel";
 
 /** A slot the credential can see: its name, and how many of its tables it can see. */
 export interface ListedSlot {
@@ -23,7 +27,10 @@ export interface ListedSlot {
 }
 
 /** The slots `visibility` can see, by name (ascending), with their visible table counts. */
-export async function slotList(tenant: LocalTenant, visibility: Visibility): Promise<ListedSlot[]> {
+export async function slotList(
+  tenant: { readonly store: TenantStore },
+  visibility: Visibility,
+): Promise<ListedSlot[]> {
   const [slots, creators] = await tenant.store.read(async (tx) => {
     const visible = await visibleSlots(tx, visibility);
     return [

@@ -16,6 +16,8 @@ import {
   initLocalHome,
   kernelCall,
   type LocalTenant,
+  localCallers,
+  localServedTenant,
   type Operation,
   openLocalTenant,
   type Principal,
@@ -62,8 +64,7 @@ async function call(
       cursors,
     });
     return (await runOperation({
-      tenant: t,
-      credentials,
+      tenant: localServedTenant(t, credentials),
       cursors,
       operation,
       call: c,
@@ -91,6 +92,25 @@ afterAll(async () => {
   await closeLocalTenant(t);
   rmSync(root, { recursive: true, force: true });
 }, T);
+
+describe("the local mode's callers", () => {
+  it("authenticate on the tenant of the moment, and lend the tenant of the moment, not one kept", async () => {
+    // The tenant is swapped between the request coming in and its use (as an import does).
+    let current: LocalTenant = t;
+    const callers = localCallers({ tenant: () => current, credentials });
+    const session = readFileSync(sessionFile(home), "utf8").trim();
+    const caller = await callers.resolve(`Bearer ${session}`);
+    if (!("principal" in caller)) throw new Error(caller.reason);
+    expect(caller.principal).toEqual(user);
+    const swapped = { ...t, tenant: `tn_${"7".repeat(26)}` } as const;
+    current = swapped;
+    expect(await caller.use(async (served) => served.tenant)).toBe(swapped.tenant);
+    expect(await callers.resolve(undefined)).toEqual({
+      code: "unauthenticated",
+      reason: "missing",
+    });
+  });
+});
 
 describe("paging handles against the kernel's positions", () => {
   it("a cursor pages on; on another query it is refused; forged, refused; expired, handle_expired", async () => {
@@ -204,8 +224,7 @@ describe("connections in the contract's shape, and who may call what", () => {
     const refusal = async (slots: string[]) => {
       try {
         await runOperation({
-          tenant: t,
-          credentials,
+          tenant: localServedTenant(t, credentials),
           cursors,
           operation: "connections.issue",
           call: kernelCall({
@@ -295,8 +314,7 @@ describe("a statement the database refuses as it runs", () => {
     try {
       const operation = "sql" as const;
       refused = await runOperation({
-        tenant: refusing,
-        credentials,
+        tenant: localServedTenant(refusing, credentials),
         cursors,
         operation,
         call: kernelCall({

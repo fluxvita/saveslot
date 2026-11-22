@@ -23,26 +23,26 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { SCOPES } from "@fluxvita/saveslot-contract";
 import {
-  authenticate,
+  type AuthFailure,
+  type CallerResolver,
   ContractError,
-  type Credentials,
   type CursorKeys,
   contractError,
   EXPORT_STALL_MS,
   type KernelCall,
   kernelCall,
-  type LocalTenant,
   type Operation,
   type Principal,
   runExport,
   runOperation,
+  type ServedTenant,
 } from "@fluxvita/saveslot-service";
 import { HTTP_STATUS } from "./status.ts";
 
 /** What the adapter needs once the service is ready. */
 export interface ApiContext {
-  readonly tenant: LocalTenant;
-  readonly credentials: Credentials;
+  /** Who a request comes from, and its tenant, lent for the request. */
+  readonly callers: CallerResolver;
   readonly cursors: CursorKeys;
   readonly windows: { readonly requestKey: number; readonly idempotencyKey: number };
   readonly now: () => string;
@@ -81,6 +81,9 @@ export interface Api {
   /** One line per request: method, route name, status, milliseconds. */
   readonly log: (fields: Readonly<Record<string, string | number>>) => void;
 }
+
+/** An operation whose answer was streamed as it was made (`export`): nothing more to send. */
+const STREAMED: unique symbol = Symbol("streamed");
 
 /** The test clock's route: only when the service was started with one; otherwise no such route. */
 export const EVAL_CLOCK_PATH = "/v1/eval/clock";
@@ -449,6 +452,30 @@ export function sendError(req: IncomingMessage, res: ServerResponse, e: Contract
   return status;
 }
 
+/**
+ * The 401 of a request whose caller is not resolved (05-surfaces §14, RFC 6750 §3.1): a missing
+ * credential is told only the scheme; any other reason, as a token that is not good.
+ */
+export function sendUnauthenticated(
+  req: IncomingMessage,
+  res: ServerResponse,
+  failure: AuthFailure,
+): number {
+  const status = HTTP_STATUS.unauthenticated;
+  send(
+    req,
+    res,
+    status,
+    {
+      error: { code: failure.code, message: "the credential is not good", reason: failure.reason },
+    },
+    {
+      "www-authenticate": failure.reason === "missing" ? "Bearer" : 'Bearer error="invalid_token"',
+    },
+  );
+  return status;
+}
+
 export const header = (req: IncomingMessage, name: string): string | undefined => {
   const v = req.headers[name];
   return Array.isArray(v) ? undefined : v;
@@ -500,26 +527,12 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
       return;
     }
     try {
-      const who = await authenticate({
-        credentials: ctx.credentials,
-        tenant: ctx.tenant,
-        authorization: header(req, "authorization"),
-      });
-      if (!("kind" in who)) {
-        const status = HTTP_STATUS.unauthenticated;
-        send(
-          req,
-          res,
-          status,
-          { error: { code: who.code, message: "the credential is not good", reason: who.reason } },
-          {
-            "www-authenticate":
-              who.reason === "missing" ? "Bearer" : 'Bearer error="invalid_token"',
-          },
-        );
-        finish(status);
+      const caller = await ctx.callers.resolve(header(req, "authorization"));
+      if (!("principal" in caller)) {
+        finish(sendUnauthenticated(req, res, caller));
         return;
       }
+      const who = caller.principal;
       if (
         ctx.evalClock !== undefined &&
         url.pathname === EVAL_CLOCK_PATH &&
@@ -604,30 +617,28 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
       const params = r.params !== undefined ? r.params(parts, query, body) : r.body ? body : query;
       const task = textHeader(req, "x-task-id", "task");
       const idempotencyKey = textHeader(req, "idempotency-key", "idempotency_key");
+      const operation = r.operation;
       const now = ctx.now();
-      const call = kernelCall({
-        principal: who,
-        tenant: ctx.tenant,
-        operation: r.operation,
-        body: params,
-        ...(task !== undefined ? { task } : {}),
-        ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
-        now,
-        windows: ctx.windows,
-        cursors: ctx.cursors,
+      const result = await caller.use(async (tenant) => {
+        const call = kernelCall({
+          principal: who,
+          tenant,
+          operation,
+          body: params,
+          ...(task !== undefined ? { task } : {}),
+          ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+          now,
+          windows: ctx.windows,
+          cursors: ctx.cursors,
+        });
+        // The export is written while the tenant is lent: its read runs on the tenant's store.
+        if (operation === "export") {
+          await streamExport(api, req, res, { ctx, tenant, call, finish });
+          return STREAMED;
+        }
+        return runOperation({ tenant, cursors: ctx.cursors, operation, call, warn: ctx.warn });
       });
-      if (r.operation === "export") {
-        await streamExport(api, req, res, { ctx, call, finish });
-        return;
-      }
-      const result = await runOperation({
-        tenant: ctx.tenant,
-        credentials: ctx.credentials,
-        cursors: ctx.cursors,
-        operation: r.operation,
-        call,
-        warn: ctx.warn,
-      });
+      if (result === STREAMED) return;
       send(req, res, 200, result);
       finish(200);
     } catch (e) {
@@ -650,6 +661,7 @@ async function streamExport(
   res: ServerResponse,
   o: {
     readonly ctx: ApiContext;
+    readonly tenant: ServedTenant;
     readonly call: KernelCall;
     readonly finish: (status: number) => void;
   },
@@ -658,7 +670,7 @@ async function streamExport(
   const gone = () => res.destroyed || res.writableEnded || req.destroyed;
   try {
     await runExport({
-      tenant: o.ctx.tenant,
+      tenant: o.tenant,
       call: o.call,
       warn: o.ctx.warn,
       sink: async (line) => {

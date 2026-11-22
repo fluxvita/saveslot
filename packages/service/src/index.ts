@@ -1,6 +1,7 @@
 // The saveslot service layer (docs/zh-CN/spec/02-architecture.md §5).
 
 export * from "./auth.ts";
+export * from "./callers.ts";
 export * from "./calls.ts";
 export * from "./contract-error.ts";
 export * from "./control-files.ts";

@@ -18,12 +18,12 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
-  authenticate,
   ContractError,
   contractError,
   kernelCall,
   type Principal,
   runOperation,
+  type ServedTenant,
   slotList,
 } from "@fluxvita/saveslot-service";
 import {
@@ -42,6 +42,7 @@ import {
   readBytes,
   send,
   sendError,
+  sendUnauthenticated,
 } from "../api.ts";
 import { HTTP_STATUS } from "../status.ts";
 import { BUDGET, budgetFor, plain } from "./budget.ts";
@@ -69,6 +70,8 @@ export function sdkHeaders(headers: IncomingMessage["headers"]): Headers {
 interface Caller {
   readonly principal: Principal;
   readonly ctx: ApiContext;
+  /** Its tenant, lent for this request. */
+  readonly tenant: ServedTenant;
   /**
    * The request is (or holds) an `initialize` or a `server/discover`, the only results that give
    * `instructions` (05 §11): only then are the slots read to make them.
@@ -111,13 +114,13 @@ export function createMcpAdapter(o: { readonly version: () => string }): McpAdap
  * only the credential's tools, never all of them behind that check.
  */
 async function serverFor(caller: Caller, version: string): Promise<Server> {
-  const { principal, ctx } = caller;
+  const { principal, tenant } = caller;
   const listed = toolsFor(principal);
   const names = new Set<ToolName>(listed.map((t) => t.name));
   const scoped = principal.visibility.kind === "scoped";
   // The slots it sees, by name and table count: read outside any operation, so no read is
   // recorded (05 §9 «slot 清单» 7, §10.1 rule 1).
-  const slots = () => slotList(ctx.tenant, principal.visibility);
+  const slots = () => slotList(tenant, principal.visibility);
   const instructions = caller.handshake
     ? instructionsFor(names, await slots(), { scoped })
     : undefined;
@@ -160,7 +163,7 @@ async function serverFor(caller: Caller, version: string): Promise<Server> {
 
 /** Calls the tool's operation: the result, or the contract's error as an error result. */
 async function call(
-  { principal, ctx }: Caller,
+  { principal, ctx, tenant }: Caller,
   tool: Tool,
   args: Readonly<Record<string, unknown>>,
 ): Promise<CallToolResult> {
@@ -196,13 +199,12 @@ async function call(
     const budget = budgetFor(tool.name, BUDGET);
     const run = async (body: Record<string, unknown>) =>
       (await runOperation({
-        tenant: ctx.tenant,
-        credentials: ctx.credentials,
+        tenant,
         cursors: ctx.cursors,
         operation,
         call: kernelCall({
           principal,
-          tenant: ctx.tenant,
+          tenant,
           operation,
           body,
           ...(typeof task === "string" ? { task } : {}),
@@ -291,26 +293,12 @@ export function handleMcp(
       return;
     }
     try {
-      const who = await authenticate({
-        credentials: ctx.credentials,
-        tenant: ctx.tenant,
-        authorization: header(req, "authorization"),
-      });
-      if (!("kind" in who)) {
-        const status = HTTP_STATUS.unauthenticated;
-        send(
-          req,
-          res,
-          status,
-          { error: { code: who.code, message: "the credential is not good", reason: who.reason } },
-          {
-            "www-authenticate":
-              who.reason === "missing" ? "Bearer" : 'Bearer error="invalid_token"',
-          },
-        );
-        finish(status);
+      const resolved = await ctx.callers.resolve(header(req, "authorization"));
+      if (!("principal" in resolved)) {
+        finish(sendUnauthenticated(req, res, resolved));
         return;
       }
+      const who = resolved.principal;
       const bytes = req.method === "POST" ? await readBytes(req) : undefined;
       let parsed: unknown;
       if (bytes !== undefined) {
@@ -344,33 +332,41 @@ export function handleMcp(
         return;
       }
       const headers = sdkHeaders(req.headers);
-      const response = await adapter.handler.fetch(
-        new Request("http://local/mcp", {
-          method: req.method ?? "GET",
-          headers,
-          ...(bytes !== undefined ? { body: new Uint8Array(bytes) } : {}),
-        }),
-        {
-          authInfo: {
-            token: "",
-            clientId: who.actor,
-            scopes: [...who.scopes],
-            extra: {
-              caller: { principal: who, ctx, handshake: isHandshake(parsed) } satisfies Caller,
+      // The whole response is made while the tenant is lent: its body is read before it goes back.
+      const { response, body } = await resolved.use(async (tenant) => {
+        const response = await adapter.handler.fetch(
+          new Request("http://local/mcp", {
+            method: req.method ?? "GET",
+            headers,
+            ...(bytes !== undefined ? { body: new Uint8Array(bytes) } : {}),
+          }),
+          {
+            authInfo: {
+              token: "",
+              clientId: who.actor,
+              scopes: [...who.scopes],
+              extra: {
+                caller: {
+                  principal: who,
+                  ctx,
+                  tenant,
+                  handshake: isHandshake(parsed),
+                } satisfies Caller,
+              },
             },
+            ...(parsed !== undefined ? { parsedBody: parsed } : {}),
           },
-          ...(parsed !== undefined ? { parsedBody: parsed } : {}),
-        },
-      );
+        );
+        const body =
+          response.body === null ? undefined : new Uint8Array(await response.arrayBuffer());
+        return { response, body };
+      });
       const out: Record<string, string> = { "cache-control": "no-store" };
       response.headers.forEach((v, k) => {
         out[k] = v;
       });
       res.writeHead(response.status, out);
-      if (response.body !== null) {
-        for await (const chunk of response.body) res.write(chunk);
-      }
-      res.end();
+      res.end(body);
       finish(response.status);
     } catch (e) {
       finish(sendError(req, res, contractError(e, ctx.warn)));

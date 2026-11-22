@@ -61,6 +61,7 @@ import {
   controlDir,
   flushLocalReads,
   type LocalTenant,
+  localCallers,
   localLogEnd,
   openLocalTenant,
   probeLocalTenant,
@@ -285,6 +286,10 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   let tenant: LocalTenant | undefined;
   let credentials: Credentials | undefined;
   let cursors: CursorKeys | undefined;
+  const currentTenant = (): LocalTenant => {
+    if (tenant === undefined) throw new Error("the tenant is not open");
+    return tenant;
+  };
   let listener: LocalListener | undefined;
   let lock: DirLockHandle | undefined;
   let probe: NodeJS.Timeout | undefined;
@@ -448,8 +453,8 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         credentials !== undefined &&
         cursors !== undefined
           ? {
-              tenant,
-              credentials,
+              // The tenant as it is when a request is served, not as it was when it came in.
+              callers: localCallers({ tenant: currentTenant, credentials }),
               cursors,
               windows: { requestKey: o.requestKeyWindowMs ?? 600_000, idempotencyKey: 86_400_000 },
               now,

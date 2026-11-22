@@ -13,9 +13,9 @@
 import type { ErrorReason } from "@fluxvita/saveslot-contract";
 import { createOpsContext, type OpsContext } from "@fluxvita/saveslot-kernel";
 import type { Principal, Scope } from "./auth.ts";
+import type { ServedTenant } from "./callers.ts";
 import { ContractError } from "./contract-error.ts";
 import type { CursorKeys } from "./cursor.ts";
-import type { LocalTenant } from "./local-tenant.ts";
 
 interface OperationRule {
   /**
@@ -76,7 +76,8 @@ const invalid = (param: string, reason: ErrorReason<"invalid_argument"> = "malfo
 /** Makes a surface's call into a kernel call; throws a ContractError when it may not be made. */
 export function kernelCall(o: {
   readonly principal: Principal;
-  readonly tenant: LocalTenant;
+  /** The tenant the call is on (a `LocalTenant` or a `ServedTenant`: its ID only). */
+  readonly tenant: Pick<ServedTenant, "tenant">;
   readonly operation: Operation;
   /** The request body (or query parameters); absent: none. */
   readonly body: unknown;

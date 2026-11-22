@@ -17,6 +17,7 @@ import {
   initLocalHome,
   kernelCall,
   type LocalTenant,
+  localServedTenant,
   type Operation,
   openLocalTenant,
   type Principal,
@@ -64,8 +65,7 @@ async function call(
       cursors,
     });
     return await runOperation({
-      tenant: t,
-      credentials,
+      tenant: localServedTenant(t, credentials),
       cursors,
       operation,
       call: c,

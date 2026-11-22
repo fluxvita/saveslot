@@ -31,18 +31,16 @@ import {
   write,
 } from "@fluxvita/saveslot-kernel";
 import type { Scope } from "./auth.ts";
+import type { ServedTenant } from "./callers.ts";
 import { contractResult, type KernelCall, type Operation } from "./calls.ts";
 import { ContractError, contractError } from "./contract-error.ts";
-import type { Credentials } from "./credentials.ts";
 import type { CursorKeys } from "./cursor.ts";
-import { issueLocalConnection, revokeLocalConnection } from "./local-connections.ts";
-import type { LocalTenant } from "./local-tenant.ts";
 
 type Obj = Readonly<Record<string, unknown>>;
 
 /** The slots' names by ID, and IDs by name. */
 async function slotNames(
-  t: LocalTenant,
+  t: Pick<ServedTenant, "store">,
 ): Promise<{ name: Map<string, string>; id: Map<string, string> }> {
   const r = await t.store.read((tx) =>
     tx.query<{ id: string; name: string }>("SELECT id, name FROM slots"),
@@ -140,7 +138,7 @@ export function orderedNotices(notices: readonly unknown[]): unknown[] {
  * in the order of `NOTICE_ORDER` (each kind's own order kept).
  */
 async function withNotices(
-  t: LocalTenant,
+  t: Pick<ServedTenant, "store">,
   ctx: KernelCall["ctx"],
   operation: Operation,
   params: Obj,
@@ -247,7 +245,7 @@ export function decisionsFor(scopes: readonly Scope[], x: unknown): unknown {
  * there, so a scope error never tells that it exists. An item's type never changes.
  */
 async function checkDecisionScope(o: {
-  readonly store: LocalTenant["store"];
+  readonly store: ServedTenant["store"];
   readonly call: KernelCall;
 }): Promise<void> {
   const id = o.call.params["id"];
@@ -263,8 +261,8 @@ async function checkDecisionScope(o: {
 
 /** Runs `call` as `operation`; resolves with the contract result, rejects with a ContractError. */
 export async function runOperation(o: {
-  readonly tenant: LocalTenant;
-  readonly credentials: Credentials;
+  /** The caller's tenant, lent for this call. */
+  readonly tenant: ServedTenant;
   readonly cursors: CursorKeys;
   readonly operation: Operation;
   readonly call: KernelCall;
@@ -363,15 +361,10 @@ export async function runOperation(o: {
               ),
             ];
           }
-          const r = await issueLocalConnection({
-            tenant: o.tenant,
-            credentials: o.credentials,
-            ctx,
-            params: {
-              name: params["name"] as string,
-              ...(params["scopes"] !== undefined ? { scopes: params["scopes"] as never } : {}),
-              ...(slots !== undefined ? { slots: slots as never } : {}),
-            },
+          const r = await o.tenant.connections.issue(ctx, {
+            name: params["name"] as string,
+            ...(params["scopes"] !== undefined ? { scopes: params["scopes"] as never } : {}),
+            ...(slots !== undefined ? { slots: slots as never } : {}),
           });
           return {
             ...connectionOut(r.connection, (await slotNames(o.tenant)).name),
@@ -391,11 +384,7 @@ export async function runOperation(o: {
         case "connections.revoke": {
           keysOnly(params, ["id"]);
           text(params, "id");
-          const c = await revokeLocalConnection({
-            tenant: o.tenant,
-            ctx,
-            id: params["id"] as never,
-          });
+          const c = await o.tenant.connections.revoke(ctx, params["id"] as never);
           return connectionOut(c, (await slotNames(o.tenant)).name);
         }
       }
@@ -431,7 +420,8 @@ export async function runOperation(o: {
  * stream is cut off).
  */
 export async function runExport(o: {
-  readonly tenant: LocalTenant;
+  /** The caller's tenant, lent for the export. */
+  readonly tenant: Pick<ServedTenant, "store">;
   readonly call: KernelCall;
   readonly warn: (event: string, fields: Readonly<Record<string, string>>) => void;
   readonly sink: (line: string) => Promise<void>;
