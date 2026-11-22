@@ -1803,7 +1803,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 ```json
 {"event_format": 1, "events": 43, "exported_at": "2026-11-10T08:00:00.000Z",
  "pending_deletions": "placeholder", "restore_count": 0, "saveslot_export": 1,
- "tenant_id": "tn_…", "upto": 43}
+ "tenant_id": "tn_…", "upto": 43, "upto_hash": "5b1e…a7"}
 ```
 
 | 键 | 含义 |
@@ -1813,6 +1813,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `restore_count` | 导出时的租户恢复次数。导入时 `tenant.imported` 的 `restore_count` 取它加 1；几段续传文件拼接导入时取最后一段的（续传的那一段更新） |
 | `after` | 续传时才有：本文件只含 `seq` 大于它的事件。带 `after` 的文件不能单独重放，要接在前一段之后。接在前一段之后的这一段：`saveslot_export`、`event_format` 是导入不认识的版本，报 `unsupported_format`（与第一段一样）；认识的版本、`tenant_id` 必须与第一段相同，`restore_count` 不得小于前一段的，否则报 `segment_order`；`pending_deletions` 各段可以不同（每个块自己带着状态）。第一段至少有创世事件，`events` 为 0 的第一段导入报 `incomplete` |
 | `upto`、`events` | 本文件最后一条事件的 `seq`；本文件的事件条数（有恢复空档时小于 `upto` 与起点之差） |
+| `upto_hash` | 第 `upto` 条事件头的哈希，写法同 `prev_hash`（§2.1）。最后一条事件头后面没有下一条的 `prev_hash` 替它作证，由它来核：导入在每段末尾比较本段最后一条事件头的哈希（没有事件的段比较前一段最后一条的），不等报 `chain_broken`，位置是 `upto` |
 | `exported_at` | 导出时刻 |
 | `pending_deletions` | `placeholder`（默认：宽限期内待删除的块换成占位）/ `included`（用户会话显式要求包含） |
 

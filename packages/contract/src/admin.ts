@@ -216,6 +216,8 @@ export interface ExportHeader {
   after?: number;
   /** The `seq` of the file's last event. */
   upto: number;
+  /** The hash of the header at `upto`, as `prev_hash` writes it. */
+  upto_hash: string;
   /** The number of events in the file. */
   events: number;
   exported_at: Instant;

@@ -48,20 +48,30 @@ export async function exportLinesOf(
   });
 }
 
-/** A segment: its manifest, then its lines, each as JCS text. */
+/**
+ * A segment: its manifest, then its lines, each as JCS text. A segment without lines names the
+ * header the one before ended at in `uptoHash`.
+ */
 export function segmentOf(
   lines: readonly ExportLine[],
-  o: { readonly tenant: string; readonly after?: number; readonly manifest?: object } = {
+  o: {
+    readonly tenant: string;
+    readonly after?: number;
+    readonly uptoHash?: string;
+    readonly manifest?: object;
+  } = {
     tenant: "",
   },
 ): string[] {
+  const last = lines.at(-1);
   const manifest = {
     saveslot_export: 1,
     tenant_id: o.tenant,
     event_format: 1,
     restore_count: 0,
     ...(o.after !== undefined ? { after: o.after } : {}),
-    upto: (lines.at(-1)?.h["seq"] as number | undefined) ?? o.after ?? 0,
+    upto: (last?.h["seq"] as number | undefined) ?? o.after ?? 0,
+    upto_hash: last !== undefined ? encode(last.h as never).hash : (o.uptoHash ?? ""),
     events: lines.length,
     exported_at: "2026-11-10T08:00:00.000Z",
     pending_deletions: "placeholder",
@@ -79,12 +89,15 @@ export async function exportFileOf(
   const lines = await store.read((tx) => exportLinesOf(tx));
   const out: string[] = [];
   let after: number | undefined;
+  let uptoHash = "";
   for (const cut of [...cuts, Number.MAX_SAFE_INTEGER]) {
     const part = lines.filter((l) => {
       const seq = l.h["seq"] as number;
       return seq > (after ?? 0) && seq <= cut;
     });
-    out.push(...segmentOf(part, { tenant, ...(after !== undefined ? { after } : {}) }));
+    out.push(...segmentOf(part, { tenant, uptoHash, ...(after !== undefined ? { after } : {}) }));
+    const last = part.at(-1);
+    if (last !== undefined) uptoHash = encode(last.h as never).hash;
     after = cut;
   }
   return out;

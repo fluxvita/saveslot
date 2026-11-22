@@ -177,6 +177,8 @@ describe("the export file", () => {
         event_format: 1,
         restore_count: 0,
         upto: 7,
+        // The last header's hash: the one header no next prev_hash checks.
+        upto_hash: sha(canonicalize(events[6]?.h ?? null)),
         events: 7,
         exported_at: EXPORTED_AT,
         pending_deletions: "placeholder",
@@ -198,11 +200,12 @@ describe("the export file", () => {
 
   it("a continuation holds the events after `after`, and says so", async () => {
     const [manifest, ...events] = parse(await exportLines({ afterSeq: 4 }));
-    expect(manifest).toMatchObject({ after: 4, upto: 7, events: 3 });
+    const upto_hash = sha(canonicalize(events[2]?.h ?? null));
+    expect(manifest).toMatchObject({ after: 4, upto: 7, upto_hash, events: 3 });
     expect(events.map((e) => e.h.seq)).toEqual([5, 6, 7]);
-    // Continuing from the end: no events, still a manifest.
+    // Continuing from the end: no events, still a manifest, naming the same last header.
     const [m2, ...none] = parse(await exportLines({ afterSeq: 7 }));
-    expect(m2).toMatchObject({ after: 7, upto: 7, events: 0 });
+    expect(m2).toMatchObject({ after: 7, upto: 7, upto_hash, events: 0 });
     expect(none).toEqual([]);
   });
 

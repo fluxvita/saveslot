@@ -2025,6 +2025,7 @@ interface ExportHeader {
   restore_count: number;
   after?: number;                      // 续传：本文件只含 seq 大于它的事件
   upto: number;                        // 本文件最后一条事件的 seq
+  upto_hash: string;                   // 第 upto 条事件头的哈希，写法同 prev_hash
   events: number;                      // 本文件的事件条数
   exported_at: string;                 // UTC，毫秒精度（事件格式的时刻写法）
   pending_deletions: "placeholder" | "included";

@@ -628,6 +628,7 @@ const manifest = {
   event_format: 1,
   restore_count: 0,
   upto: 43,
+  upto_hash: "5b1e…a7",
   events: 43,
   exported_at: "2026-11-10T08:00:00.000Z",
   pending_deletions: "placeholder",

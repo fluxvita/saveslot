@@ -95,12 +95,17 @@ const lineOf = (e: PreparedEvent): Line => ({
     : {}),
 });
 
+/** The hash of a line's header (§2.1); for no line, none (a segment without events names one). */
+const hashOf = (l: Line | undefined): string =>
+  l === undefined ? "" : sha256Hex(canonicalize(l.h as never));
+
 const manifest = (lines: readonly Line[], extra: Record<string, JsonValue> = {}) => ({
   saveslot_export: 1,
   tenant_id: TENANT,
   event_format: 1,
   restore_count: 0,
   upto: (lines.at(-1)?.h["seq"] as number | undefined) ?? 0,
+  upto_hash: hashOf(lines.at(-1)),
   events: lines.length,
   exported_at: "2026-11-10T08:00:00.000Z",
   pending_deletions: "placeholder",
@@ -174,7 +179,10 @@ describe("a file that is right", () => {
   });
 
   it("with a segment of no events where nothing came after", () => {
-    const r = read([...fileOf(LINES), ...fileOf([], { after: 4, upto: 4 })]);
+    const r = read([
+      ...fileOf(LINES),
+      ...fileOf([], { after: 4, upto: 4, upto_hash: hashOf(LINES[3]) }),
+    ]);
     expect(r.ok && r.summary).toMatchObject({ upto: 4, events: 4, segments: 2 });
   });
 
@@ -318,7 +326,43 @@ describe("refused", () => {
   });
 
   it("incomplete: a first segment with no event (an export holds the genesis at least)", () => {
-    expect(read(fileOf([]))).toEqual(rejected("incomplete"));
+    // A well-formed manifest otherwise: its upto_hash names the genesis header.
+    expect(read(fileOf([], { upto_hash: hashOf(LINES[0]) }))).toEqual(rejected("incomplete"));
+  });
+});
+
+describe("the manifest's upto_hash (§8): the last header, which no next prev_hash checks", () => {
+  it("chain_broken at upto: the last header changed, the manifest naming the one exported", () => {
+    const changed = [...LINES];
+    changed[3] = { ...LINES[3], h: { ...LINES[3]?.h, actor: `u_${"2".repeat(26)}` } } as Line;
+    expect(read(fileOf(changed, { upto_hash: hashOf(LINES[3]) }))).toEqual(
+      rejected("chain_broken", 4),
+    );
+  });
+
+  it("chain_broken: a manifest naming another header, at the end of any segment", () => {
+    expect(read(fileOf(LINES, { upto_hash: hashOf(LINES[2]) }))).toEqual(
+      rejected("chain_broken", 4),
+    );
+    // A first segment's own end: the next segment's prev_hash would not see a wrong upto_hash.
+    const first = fileOf(LINES.slice(0, 2), { upto_hash: hashOf(LINES[0]) });
+    expect(read([...first, ...fileOf(LINES.slice(2), { after: 2 })])).toEqual(
+      rejected("chain_broken", 2),
+    );
+    // A segment without events names the header the one before ended at.
+    const empty = fileOf([], { after: 4, upto: 4, upto_hash: hashOf(LINES[2]) });
+    expect(read([...fileOf(LINES), ...empty])).toEqual(rejected("chain_broken", 4));
+  });
+
+  it("unsupported_format: a manifest without it, or not 64 lowercase hex digits", () => {
+    const { upto_hash: _, ...without } = manifest(LINES);
+    const lines = LINES.map((l) => canonicalize(l as never));
+    expect(read([canonicalize(without as never), ...lines])).toEqual(
+      rejected("unsupported_format"),
+    );
+    for (const upto_hash of [hashOf(LINES[3]).toUpperCase(), hashOf(LINES[3]).slice(1)]) {
+      expect(read(fileOf(LINES, { upto_hash }))).toEqual(rejected("unsupported_format"));
+    }
   });
 });
 

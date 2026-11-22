@@ -21,7 +21,8 @@
 //   of its content; a removed block is listed by the tombstone it names, a placeholder by the
 //   `deletion.confirmed` it names, each coming after it in the file; every block the event's type
 //   always has is there;
-// - each segment holds as many events as its manifest says, ending at its `upto`.
+// - each segment holds as many events as its manifest says, ending at its `upto`, the header there
+//   hashing to its `upto_hash` (the last header has no next `prev_hash` to check it).
 // Problems are reported by position only (`seq`, and `path` when it is a path of the event type's
 // vocabulary), never by content: the messages are fixed texts.
 
@@ -104,6 +105,9 @@ const isObj = (v: unknown): v is Obj => v !== null && typeof v === "object" && !
 const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
 const isSeq = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 1;
 
+/** A SHA-256 as the format writes it: 64 lowercase hex digits (§2.1 `prev_hash`). */
+const HASH = /^[0-9a-f]{64}$/;
+
 const MANIFEST_KEYS = new Set([
   "saveslot_export",
   "tenant_id",
@@ -111,6 +115,7 @@ const MANIFEST_KEYS = new Set([
   "restore_count",
   "after",
   "upto",
+  "upto_hash",
   "events",
   "exported_at",
   "pending_deletions",
@@ -126,6 +131,8 @@ function manifestOf(v: Obj): ExportManifest | undefined {
     isCount(v["restore_count"]) &&
     (v["after"] === undefined || isSeq(v["after"])) &&
     isCount(v["upto"]) &&
+    typeof v["upto_hash"] === "string" &&
+    HASH.test(v["upto_hash"]) &&
     isCount(v["events"]) &&
     typeof v["exported_at"] === "string" &&
     (v["pending_deletions"] === "placeholder" || v["pending_deletions"] === "included");
@@ -167,6 +174,8 @@ export class ExportFileReader {
   /** Events the current segment still has to give. */
   private remaining = 0;
   private lastSeq: Seq | undefined;
+  /** The last header's hash: what a segment's `upto_hash` names. */
+  private lastHash: string | undefined;
   private count = 0;
   /** Tombstone `seq` → the removed blocks waiting for it, as `seq/path`. */
   private readonly awaitingTombstone = new Map<Seq, Set<string>>();
@@ -198,8 +207,14 @@ export class ExportFileReader {
     this.remaining--;
     this.count++;
     this.lastSeq = e.seq;
+    this.lastHash = e.hash;
     if (this.remaining === 0 && e.seq !== this.segment.upto) {
       throw this.reject("incomplete", "the segment does not end at its manifest's upto", {
+        seq: e.seq,
+      });
+    }
+    if (this.remaining === 0 && e.hash !== this.segment.upto_hash) {
+      throw this.reject("chain_broken", "the last header is not the one the manifest names", {
         seq: e.seq,
       });
     }
@@ -253,6 +268,12 @@ export class ExportFileReader {
     }
     if (m.events === 0 && m.upto !== (m.after ?? 0)) {
       throw this.reject("incomplete", "a segment without events does not end where it starts");
+    }
+    // A segment without events ends at the header the one before ended at.
+    if (m.events === 0 && m.upto_hash !== this.lastHash) {
+      throw this.reject("chain_broken", "the last header is not the one the manifest names", {
+        seq: m.upto,
+      });
     }
     this.segment = m;
     this.segments++;

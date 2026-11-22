@@ -47,6 +47,8 @@ export interface ExportManifest {
   /** Continuation files only: the file holds events with `seq` greater than this. */
   readonly after?: Seq;
   readonly upto: Seq;
+  /** The hash of the header at `upto` (§2.1, as `prev_hash` writes it). */
+  readonly upto_hash: string;
   readonly events: number;
   readonly exported_at: Instant;
   readonly pending_deletions: "placeholder" | "included";

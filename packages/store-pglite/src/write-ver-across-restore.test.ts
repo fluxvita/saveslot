@@ -130,6 +130,7 @@ const importAt = async (count: number) => {
       event_format: 1,
       restore_count: count - 1,
       upto: tail as never,
+      upto_hash: "0".repeat(64),
       events: 1,
       exported_at: "2026-11-05T08:00:00.000Z" as never,
       pending_deletions: "placeholder",

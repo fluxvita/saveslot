@@ -133,6 +133,14 @@ export async function exportStart(tx: ReadTx, params: ExportParams): Promise<Exp
       ? 0
       : n((JSON.parse(rc.rows[0].header) as { restore_count: unknown }).restore_count);
 
+  // The header at `upto`: the last one has no next `prev_hash` to vouch for it (§8 `upto_hash`).
+  const last = await tx.query<{ header_hash: string }>(
+    "SELECT header_hash FROM events WHERE seq = $1",
+    [upto],
+  );
+  const uptoHash = last.rows[0]?.header_hash;
+  if (uptoHash === undefined) throw new ExportError("corrupt_log", "the log's end has no header");
+
   const manifest = {
     saveslot_export: 1,
     tenant_id: tenantId,
@@ -140,6 +148,7 @@ export async function exportStart(tx: ReadTx, params: ExportParams): Promise<Exp
     restore_count: restoreCount,
     ...(after > 0 ? { after } : {}),
     upto,
+    upto_hash: uptoHash,
     events,
     exported_at: params.exportedAt,
     pending_deletions: included ? "included" : "placeholder",
