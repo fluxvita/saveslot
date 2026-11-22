@@ -11,6 +11,14 @@
 // session advisory locks), and changes to a kernel table itself (a column, an index, a trigger,
 // the table dropped). A test using a reusable store must not make them; one that needs to opens a
 // store of its own.
+//
+// A test that timed out is failed but not stopped: it goes on reading and writing the store, and
+// what it writes after the next test's reset fails that test for no fault of its own ("log is not
+// empty", a duplicate `seq`). So `reset` first waits for every read and write of the store still
+// running (at most `STALE_WAIT`: one that hangs fails the reset with a message, not a timeout of
+// the hook), resets, and then fails, saying so: the test it was called for fails on what an
+// earlier one left, not on a broken store. A read or write the earlier test starts after the
+// reset is not seen.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +28,7 @@ import {
   type ReadTx,
   readBufferOf,
   type TenantStore,
+  type Tx,
 } from "@fluxvita/saveslot-kernel";
 import type { PgliteTenantStore } from "../backend.ts";
 import { testBackend } from "./test-backend.fixture.ts";
@@ -91,18 +100,56 @@ export interface ReusableStore extends Reusable<PgliteTenantStore> {
   close(): Promise<void>;
 }
 
-/** Makes a store just opened reusable, on either backend; closing it stays with who opened it. */
-export async function reusable<S extends TenantStore>(store: S): Promise<Reusable<S>> {
+/** The longest `reset` waits for the reads and writes of the store still running. */
+export const STALE_WAIT = 30_000;
+
+/**
+ * Makes a store just opened reusable, on either backend; closing it stays with who opened it.
+ * From then on the store's `read` and `write` are counted while they run.
+ */
+export async function reusable<S extends TenantStore>(
+  store: S,
+  staleWait = STALE_WAIT,
+): Promise<Reusable<S>> {
   const meta = await store.read((tx) =>
     tx.query<{ key: string; value: string }>("SELECT key, value FROM meta"),
   );
   const kept = new Set((await store.read((tx) => tx.query<DbObject>(OBJECTS))).rows.map(keyOf));
   const blank = await store.read(snapshot);
+  const running = new Set<Promise<unknown>>();
+  const track = <T>(p: Promise<T>): Promise<T> => {
+    running.add(p);
+    const done = () => running.delete(p);
+    p.then(done, done);
+    return p;
+  };
+  const read = store.read.bind(store);
+  const write = store.write.bind(store);
+  Object.assign(store, {
+    read: <T>(fn: (tx: ReadTx) => Promise<T>) => track(read(fn)),
+    write: <T>(fn: (tx: Tx) => Promise<T>) => track(write(fn)),
+  });
   return {
     store,
     blank,
     reset: async () => {
-      await store.write(async (tx) => {
+      const left = running.size;
+      if (left > 0) {
+        let timer: NodeJS.Timeout | undefined;
+        const waited = await Promise.race([
+          Promise.allSettled([...running]).then(() => true),
+          new Promise<false>((r) => {
+            timer = setTimeout(() => r(false), staleWait);
+          }),
+        ]);
+        clearTimeout(timer);
+        if (!waited) {
+          throw new Error(
+            `reset: ${running.size} read(s) or write(s) of this store still running after ${staleWait} ms, left by an earlier test or sample (one that timed out goes on running); the store is not reset`,
+          );
+        }
+      }
+      await write(async (tx) => {
         const objects = (await tx.query<DbObject>(OBJECTS)).rows;
         const drops = objects.filter((o) =>
           o.kind === "TABLE" ? !KERNEL.has(o.rel as string) : !kept.has(keyOf(o)),
@@ -122,6 +169,11 @@ export async function reusable<S extends TenantStore>(store: S): Promise<Reusabl
       // Reads a sample left would count as the next sample's: whether a writer had read an item
       // decides what its write does to it.
       readBufferOf(store).take();
+      if (left > 0) {
+        throw new Error(
+          `reset: ${left} read(s) or write(s) of this store were still running, left by an earlier test or sample (one that timed out goes on running); waited for them and reset the store, but what fails after this may be theirs`,
+        );
+      }
     },
   };
 }

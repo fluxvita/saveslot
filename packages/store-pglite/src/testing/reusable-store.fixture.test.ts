@@ -5,6 +5,9 @@
 // buffer. Each kind of state a reset could leave is shown, on a store of its own, to be seen by
 // that comparison and to be gone after a reset. On either backend (02-architecture §11 «测试矩阵»).
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   appendOperation,
   applyEvents,
@@ -21,7 +24,8 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import { createSlotEvents } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { openReusable, type ReusableStore } from "./reusable-store.fixture.ts";
+import { openReusable, type ReusableStore, reusable } from "./reusable-store.fixture.ts";
+import { testBackend } from "./test-backend.fixture.ts";
 
 const T = 120_000;
 const TENANT = `tn_${"8".repeat(26)}`;
@@ -265,6 +269,83 @@ describe("reset", () => {
     ["a column's default", "ALTER TABLE meta ALTER COLUMN value SET DEFAULT 'x'"],
     ["an index", "CREATE INDEX i_left ON meta (value)"],
   ];
+
+  // A test that timed out goes on running: its writes must not land after the next reset unseen.
+  const STALE: readonly [string, (s: TenantStore, gate: Promise<void>) => Promise<unknown>][] = [
+    [
+      "a write",
+      (s, gate) =>
+        s.write(async (tx) => {
+          await gate;
+          await tx.exec("INSERT INTO meta (key, value) VALUES ('stale', '1')");
+        }),
+    ],
+    [
+      "a read",
+      (s, gate) =>
+        s.read(async (tx) => {
+          await gate;
+          await tx.query("SELECT 1");
+        }),
+    ],
+  ];
+
+  it.each(STALE)(
+    "%s still running is waited for, then reset, and the reset fails saying so",
+    async (_, stale) => {
+      const s = await openReusable("saveslot-reset-stale-");
+      try {
+        let open = () => {};
+        const left = stale(
+          s.store,
+          new Promise<void>((r) => {
+            open = r;
+          }),
+        );
+        setTimeout(() => open(), 200);
+        await expect(s.reset()).rejects.toThrow("were still running");
+        await left;
+        expect(await state(s.store)).toEqual(fresh);
+        await s.reset();
+        expect(await state(s.store)).toEqual(fresh);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a write still running past the wait fails the reset, and the store is not reset",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "saveslot-reset-hung-"));
+      const store = await testBackend().open(
+        { kind: "pglite", dir: join(root, "tenant") },
+        { create: true },
+      );
+      try {
+        const r = await reusable(store, 100);
+        await store.write((tx) => tx.exec("INSERT INTO meta (key, value) VALUES ('left', '1')"));
+        let open = () => {};
+        const gate = new Promise<void>((g) => {
+          open = g;
+        });
+        const left = store.write(async () => {
+          await gate;
+        });
+        await expect(r.reset()).rejects.toThrow("still running after 100 ms");
+        open();
+        await left;
+        expect(await state(store)).not.toEqual(fresh);
+        await r.reset();
+        expect(await state(store)).toEqual(fresh);
+      } finally {
+        await store.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    T,
+  );
 
   it.each(CHANGED)(
     "%s changed on a kernel table would be seen",
