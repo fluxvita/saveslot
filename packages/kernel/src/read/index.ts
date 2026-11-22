@@ -22,10 +22,15 @@ export {
 } from "./history.ts";
 export { historyInTx } from "./history-op.ts";
 export {
+  type LastSv,
+  lastReadSv,
   MAX_NOTICES,
+  type NoticeCaller,
   type NoticeRefs,
   type PendingItemsNotice,
   pendingItemsNotices,
+  type SchemaUpdatedNotice,
+  schemaUpdatedNoticesWith,
 } from "./notices.ts";
 // Paging, for lists outside this module (the management operations).
 export { digest, limitOf, pageAfter, positionOf } from "./page.ts";

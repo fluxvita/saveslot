@@ -24,6 +24,7 @@ import {
   renameConnection,
   resolve,
   schemaDraft,
+  schemaUpdatedNotices,
   sources,
   sql,
   sqlStateOf,
@@ -83,10 +84,16 @@ function noticeRefs(operation: Operation, params: Obj, result: unknown): NoticeR
       const sv = field(result, "sv");
       return { slots: sv !== null && typeof sv === "object" ? Object.keys(sv) : [] };
     }
-    case "write":
-      return {
-        tables: strs(arr(field(result, "ops")).map((x) => field(field(x, "target"), "table"))),
-      };
+    // By the operation it logged: its slot, whatever version's names the request used. Tables by
+    // name only for a write that logged none.
+    case "write": {
+      const seq = field(result, "seq");
+      return typeof seq === "number"
+        ? { operations: [seq] }
+        : {
+            tables: strs(arr(field(result, "ops")).map((x) => field(field(x, "target"), "table"))),
+          };
+    }
     case "resolve":
       return { items: strs([params["id"]]) };
     case "schema_draft":
@@ -104,8 +111,33 @@ function noticeRefs(operation: Operation, params: Obj, result: unknown): NoticeR
 const arr = (xs: unknown): unknown[] => (Array.isArray(xs) ? xs : []);
 
 /**
- * A result with its `pending_items` notices (04-contract-types §7), computed now: a replayed
- * receipt's too. None when there are none; at most three (with any the result has).
+ * The order notices come in, and are cut to three by (04-contract §13): what is overdue first, then
+ * a migration under way, a schema changed since the caller read it, items waiting.
+ */
+const NOTICE_ORDER: readonly string[] = [
+  "deletion_overdue",
+  "migration_progress",
+  "schema_updated",
+  "pending_items",
+];
+const noticeRank = (n: unknown) => {
+  const i = NOTICE_ORDER.indexOf(String(field(n, "code")));
+  return i < 0 ? NOTICE_ORDER.length : i;
+};
+
+/** Notices in `NOTICE_ORDER`, each kind's own order kept, cut to three. */
+export function orderedNotices(notices: readonly unknown[]): unknown[] {
+  return notices
+    .map((n, i) => ({ n, i }))
+    .sort((a, b) => noticeRank(a.n) - noticeRank(b.n) || a.i - b.i)
+    .map((x) => x.n)
+    .slice(0, 3);
+}
+
+/**
+ * A result with its `schema_updated` and `pending_items` notices (04-contract-types §7), computed
+ * now: a replayed receipt's too. None when there are none; at most three with any the result has,
+ * in the order of `NOTICE_ORDER` (each kind's own order kept).
  */
 async function withNotices(
   t: LocalTenant,
@@ -116,10 +148,21 @@ async function withNotices(
 ): Promise<unknown> {
   const refs = noticeRefs(operation, params, result);
   if (refs === undefined || result === null || typeof result !== "object") return result;
-  const found = await pendingItemsNotices(t.store, ctx.visibility, refs);
+  const found = [
+    // The task as the call's `sv` fallback takes it: the surface's, in the parameters (calls.ts).
+    ...(await schemaUpdatedNotices(
+      t.store,
+      ctx.visibility,
+      { actor: ctx.actor, task: typeof params["task"] === "string" ? params["task"] : ctx.task },
+      refs,
+    )),
+    ...(await pendingItemsNotices(t.store, ctx.visibility, refs)),
+  ];
   if (found.length === 0) return result;
-  const had = arr(field(result, "notices"));
-  return { ...(result as Record<string, unknown>), notices: [...had, ...found].slice(0, 3) };
+  return {
+    ...(result as Record<string, unknown>),
+    notices: orderedNotices([...arr(field(result, "notices")), ...found]),
+  };
 }
 
 /** A connection as the contract gives it (04-contract-types §8.1 `Connection`). */

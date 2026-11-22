@@ -1,3 +1,10 @@
+export {
+  type ChangedFields,
+  changedSinceOf,
+  type RecordedChange,
+  type SwitchedVersion,
+  switchedVersions,
+} from "./changed-since.ts";
 export { changesByName, type SchemaChange } from "./changes-by-name.ts";
 export * from "./compile.ts";
 export { compileChange } from "./compile-change.ts";

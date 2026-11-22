@@ -78,7 +78,6 @@ import {
   isObj,
   type NormalizedField,
   type NormalizedOp,
-  type NormalizeWriteInput,
   normalizeWrite,
   type RequestError,
   resolveWriteSlot,
@@ -86,6 +85,7 @@ import {
   visibleTables,
   type WriteValidationDetail,
 } from "../request/index.ts";
+import { changedSinceOf, switchedVersions } from "../schema/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
 import { restoreAt, restoreHistory, restorePoint, seenOfVer } from "../store/restore-point.ts";
 import { type IntervalSet, meet, unionOf, WHOLE } from "../time/index.ts";
@@ -1176,15 +1176,14 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     });
   }
   const today = todayIn(now, slot.timezone);
-  // What changed incompatibly since the request's version: a table dropped since (07 «原则»:
-  // `drop_table` refuses old writes; written as the whole table, `"*"`). The other incompatible
-  // changes, field by field, come with the migrations that make them (S2c).
-  const droppedSince: ReturnType<NormalizeWriteInput["changedSince"]> = new Map(
-    naming.tables
-      .filter((t) => !slot.compiled.tables.some((x) => x.id === t.id))
-      .map((t) => [`${t.id}/*`, "drop_table"] as const),
-  );
-  const changedSince = () => droppedSince;
+  // What changed incompatibly since the request's version, field by field or as a whole table, as
+  // the versions switched to since recorded it (07 «原则» 4). A slot only ever at one version, or a
+  // request at the current one, has nothing since: not read.
+  const switched =
+    withRetired.has(slot.slot) && (explicitSv === undefined || explicitSv < slot.sv)
+      ? await switchedVersions(tx, slot.slot)
+      : [];
+  const changedSince = (sv: number) => changedSinceOf(switched, sv);
   // The versions ever in effect: numbers skip (04-contract §2), and a draft's number is no version.
   // With them, in the same statement, the versions each table is in: the catalog has a row for each
   // table of each version switched to, so the first and the last of them.

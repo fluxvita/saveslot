@@ -1856,7 +1856,9 @@ type Warning =
 type Notice =
   | { code: "pending_items"; slot: SlotName; count: number; oldest_opened_at: Instant }       // 本次调用涉及的 slot 里未决的事项：条数与最早一条的产生时刻。每个 slot 一条，count 为 0 的不给；
                                                                                                      // 按 oldest_opened_at 从早到晚、同一时刻按 slot 名取前 3 条。pending 自己的结果不带（它本身就在列事项）
-  | { code: "schema_updated"; slot: SlotName; from: Sv; to: Sv; changed: string[] }                  // 本连接实例上次读到的 sv 落后
+  | { code: "schema_updated"; slot: SlotName; from: Sv; to: Sv; changed: string[] }                  // 本连接实例上次读到的 sv 落后。changed：from 之后到 to 之间每一次切换的改动目标，
+                                                                                                     // 兼容的也算，写成「表」或「表.字段」，用现在的名字（被删的用删之前的名字）；slot 本身的改动
+                                                                                                     // （改名、改时区）写成这个 slot 现在的名字。去重、按名字排序
   | { code: "migration_progress"; slot: SlotName; target_sv: Sv; done: number; total: number; item?: ItemId }
   | { code: "deletion_overdue"; slot: SlotName; item: ItemId }                                       // 已到期的删除尚未物理删除
   | { code: "job_failed"; slot: SlotName; job: JobId };                                              // @later
