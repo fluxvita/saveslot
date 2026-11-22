@@ -107,6 +107,8 @@ export type CompileError =
        * absent: a parameter this version does not take.
        */
       readonly reason?: "not_implemented";
+      /** The change or key, for the message (`change_type`, `migrate`, …). */
+      readonly what?: string;
     }
   /** The document is not of the document's form: not an object, a key missing, a JSON type wrong, a key unknown. */
   | {

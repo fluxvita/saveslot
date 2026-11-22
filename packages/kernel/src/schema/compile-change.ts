@@ -310,14 +310,15 @@ function extract(
             extra.backfills.push(undefined);
             continue;
           }
+          // Conversion expressions (`migrate`, an expression `backfill`) come after the first
+          // version, with the rebuild of a table they need (07 «确定性转换怎么重放»).
           if ("migrate" in f)
             return {
-              code: "not_implemented",
-              what: "a migrate in a change",
+              code: "not_in_this_version",
+              what: "migrate",
               param: `${at}/fields/${j}/migrate`,
             };
-          // `backfill` (07 «收紧约束»): `{"const": <value>}` or `{"sql": …}`, one of the two. The
-          // expression form comes with the restricted SQL of migrations.
+          // `backfill` (07 «收紧约束»): `{"const": <value>}` or `{"sql": …}`, one of the two.
           if ("backfill" in f) {
             const b = f["backfill"];
             const p = `${at}/fields/${j}/backfill`;
@@ -325,7 +326,11 @@ function extract(
               return malformed(p);
             if ("const" in b && "sql" in b) bothForms.push(p);
             else if ("sql" in b)
-              return { code: "not_implemented", what: "a backfill expression", param: `${p}/sql` };
+              return {
+                code: "not_in_this_version",
+                what: "a backfill expression",
+                param: `${p}/sql`,
+              };
             else if (!("const" in b)) return malformed(p);
             extra.backfills.push({ raw: b["const"] });
             delete f["backfill"];
@@ -948,7 +953,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
           return {
             notYet: [
               f.type === "ref" || cf.type === "ref" ? "change_ref" : "change_type",
-              f.path,
+              f.type === "ref" || cf.type === "ref" ? f.path : `${f.path}/type`,
             ] as const,
           };
         let unitChanged = false;
@@ -1051,7 +1056,14 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
       });
     const out: CompiledBaseField[] = [];
     for (const x of fields) {
-      if ("notYet" in x) return notYet(x.notYet[0], x.notYet[1]);
+      if ("notYet" in x) {
+        const [what, param] = x.notYet;
+        // A change of type or dimension needs a `migrate` (or converts as one), not in the first
+        // version; the other changes listed here come in a later part of this one.
+        if (what === "change_type" || what === "change_dimension")
+          return fail({ code: "not_in_this_version", what, param });
+        return notYet(what, param);
+      }
       const { f, cf, j, target, patch, loosened, tightened, requiredNow, precision, unitChanged } =
         x;
       const next: Record<string, unknown> = { ...cf };

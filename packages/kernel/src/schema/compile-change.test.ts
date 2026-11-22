@@ -802,7 +802,7 @@ describe("changes that rebuild a table (08 «物理做法»; 07 «改动分类»
           e.fields[2].backfill = { sql: "amount + 1" };
         }),
       ),
-    ).toMatchObject({ code: "not_implemented", what: "a backfill expression" });
+    ).toMatchObject({ code: "not_in_this_version", what: "a backfill expression" });
     expect(err(on((e) => (e.fields[3].backfill = { const: "x" })))).toMatchObject({
       code: "invalid_argument",
       param: "tables/0/fields/3/backfill",
@@ -818,6 +818,50 @@ describe("changes that rebuild a table (08 «物理做法»; 07 «改动分类»
   });
 });
 
+/** A change the first version does not take (07 «确定性转换怎么重放»: they need a `migrate`). */
+const later = (r: CompileChangeResult) => {
+  const e = err(r);
+  if (e.code !== "not_in_this_version") throw new Error(JSON.stringify(e));
+  expect(e).not.toHaveProperty("reason");
+  return [e.what, e.param];
+};
+
+describe("a type or dimension changed, a migrate, a backfill expression: not in this version", () => {
+  const on = (f: (e: Doc) => void) => run(listing(["expenses"], (d) => f(d.tables[0])));
+
+  it.each([
+    [
+      "a type changed",
+      (e: Doc) => (e.fields[4].type = "text"),
+      "change_type",
+      "tables/0/fields/4/type",
+    ],
+    [
+      "a unit of another dimension (another currency)",
+      (e: Doc) => (e.fields[2].unit = "USD"),
+      "change_dimension",
+      "tables/0/fields/2/unit",
+    ],
+    [
+      "a migrate",
+      (e: Doc) => (e.fields[4].migrate = { sql: "pieces" }),
+      "migrate",
+      "tables/0/fields/4/migrate",
+    ],
+    [
+      "a backfill expression",
+      (e: Doc) => {
+        e.fields[4].min = 1;
+        e.fields[4].backfill = { sql: "pieces + 1" };
+      },
+      "a backfill expression",
+      "tables/0/fields/4/backfill/sql",
+    ],
+  ])("%s", (_, f, change, param) => {
+    expect(later(on(f))).toEqual([change, param]);
+  });
+});
+
 describe("what is not compiled yet is named by its change code", () => {
   const what = (r: CompileChangeResult) => {
     const e = err(r);
@@ -827,13 +871,6 @@ describe("what is not compiled yet is named by its change code", () => {
   const on = (f: (e: Doc) => void) => run(listing(["expenses"], (d) => f(d.tables[0])));
 
   it.each([
-    ["a type changed", (e: Doc) => (e.fields[4].type = "text"), "change_type", "tables/0/fields/4"],
-    [
-      "a unit of another dimension (another currency)",
-      (e: Doc) => (e.fields[2].unit = "USD"),
-      "change_dimension",
-      "tables/0/fields/2/unit",
-    ],
     [
       "a ref retargeted",
       (e: Doc) => (e.fields[8].ref.table = "rooms"),
@@ -884,7 +921,7 @@ describe("what is not compiled yet is named by its change code", () => {
     const f4 = (same.compiled.tables[0] as CompiledBaseTable).fields[3] as Doc;
     expect(f4.unit).toMatchObject({ code: "mi" });
     expect(f4).not.toHaveProperty("migrate");
-    expect(what(draft("kg"))).toEqual(["change_dimension", "tables/0/fields/3/unit"]);
+    expect(later(draft("kg"))).toEqual(["change_dimension", "tables/0/fields/3/unit"]);
   });
 
   it("an entity key changed, a granularity changed", () => {
@@ -903,23 +940,11 @@ describe("what is not compiled yet is named by its change code", () => {
     ).toEqual(["change_granularity", "tables/0/time/granularity"]);
   });
 
-  it("a time zone, a migrate, a backfill, a derived table", () => {
+  it("a time zone, a derived table", () => {
     expect(what(run(listing([], (d) => (d.timezone = "UTC"))))).toEqual([
       "change_timezone",
       "timezone",
     ]);
-    expect(what(on((e) => (e.fields[4].migrate = { sql: "pieces" })))).toEqual([
-      "a migrate in a change",
-      "tables/0/fields/4/migrate",
-    ]);
-    expect(
-      what(
-        on((e) => {
-          e.fields[4].min = 1;
-          e.fields[4].backfill = { sql: "pieces + 1" };
-        }),
-      ),
-    ).toEqual(["a backfill expression", "tables/0/fields/4/backfill/sql"]);
     expect(
       what(
         run(

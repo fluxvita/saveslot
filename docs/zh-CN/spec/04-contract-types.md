@@ -35,7 +35,7 @@
 | `sources` | `mode: "search"` 的全文检索（第一版是子串匹配，参数相同） |
 | `deletion_preview` / `delete` | `kind: "evidence"`、`rows`；结果里的 `reextract`、`cleared`、`collateral_rows` |
 | `pending` / `resolve` | 事项类型 `migration_diff` 及其处理方式；作业（`jb_…`）；取代原因 `evidence_deleted`、`migration_failed`；候选的来由 `displaced_by_rule` |
-| `schema_draft` | 改动类别 `reextract`；字段上的 `reextract`；`extends`、`compatibility`；`derived` 改 `base`；**在写入过的表上**：表的时间类型变更、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 与其他类型互转、改 `ref` 的目标、换一组来源键（`change_external_key`）、来源键字段改类型或收紧约束（对应的改动码见 5.3；`reason` 是 `table_written`）；`migrate` / `backfill` 表达式引用本字段以外的字段；最外层不是聚合的派生规则、沙箱函数规则。草稿里出现时整份草稿报 `not_in_this_version` |
+| `schema_draft` | 改动类别 `reextract`；字段上的 `reextract`；`extends`、`compatibility`；`derived` 改 `base`；**在写入过的表上**：表的时间类型变更、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 与其他类型互转、改 `ref` 的目标、换一组来源键（`change_external_key`）、来源键字段改类型或收紧约束（对应的改动码见 5.3；`reason` 是 `table_written`）；改类型（`change_type`）、换量纲（`change_dimension`）、字段上的 `migrate`、表达式形式的 `backfill`（常量形式照做；`reason` 是 `parameter`，`param` 指到那个键）；`migrate` / `backfill` 表达式引用本字段以外的字段；最外层不是聚合的派生规则、沙箱函数规则。草稿里出现时整份草稿报 `not_in_this_version` |
 | 标记 | `stale`、`pending_extraction`；`possibly_affected` 的 `applied_by_rule` |
 | 提醒 | `job_items_appended` |
 | 提示 | `job_failed` |

@@ -267,10 +267,14 @@ export async function draftChangeInTx(
         throw invalid(reason, param, extra);
       }
       case "not_in_this_version":
-        throw new SchemaDraftError("not_in_this_version", "not in this version", {
-          reason: e.reason ?? "parameter",
-          param: e.param,
-        });
+        throw new SchemaDraftError(
+          "not_in_this_version",
+          `${e.what ?? "this"} is not in this version`,
+          {
+            reason: e.reason ?? "parameter",
+            param: e.param,
+          },
+        );
       case "field_unmatched":
         throw new SchemaDraftError(
           "field_unmatched",

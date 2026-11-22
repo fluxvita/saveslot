@@ -644,6 +644,36 @@ describe("refused, nothing logged", () => {
   );
 
   it(
+    "a type changed, a migrate: not_in_this_version at the key, named in the message",
+    async () => {
+      expect(
+        await refused({
+          document: change((t) => ((t.fields[1] as { type: string }).type = "integer")),
+        }),
+      ).toEqual({
+        code: "not_in_this_version",
+        reason: "parameter",
+        param: "tables/0/fields/1/type",
+      });
+      expect(
+        await refused({
+          document: change((t) =>
+            Object.assign(t.fields[1] as object, { migrate: { sql: "note" } }),
+          ),
+        }),
+      ).toEqual({
+        code: "not_in_this_version",
+        reason: "parameter",
+        param: "tables/0/fields/1/migrate",
+      });
+      await expect(
+        draft({ document: change((t) => ((t.fields[1] as { type: string }).type = "integer")) }),
+      ).rejects.toThrow("change_type is not in this version");
+    },
+    T,
+  );
+
+  it(
     "base_version not the current version: draft_outdated",
     async () => {
       expect(await refused({ document: change((t) => (t.description = "x"), 2) })).toMatchObject({
