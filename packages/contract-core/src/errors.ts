@@ -89,6 +89,7 @@ export const DOMAIN_ERROR_REASONS = {
     "result_budget",
     "premise_entries",
     "premise_fan_in",
+    "import_line",
   ],
   sql_rejected: SQL_REASONS,
   sql_timeout: [],

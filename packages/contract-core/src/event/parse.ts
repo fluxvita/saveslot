@@ -161,6 +161,16 @@ export const CHECKED_SHAPES: readonly string[] = Object.keys(SHAPES);
 
 // --- header (§2.1, §4.1) -------------------------------------------------------------------------
 
+/**
+ * Whether `h` is an event header of the format: its fields and their types (§2.1), the rules of its
+ * type (§4.1). Says no more than that: the issues name the header's keys, and a reader of outside
+ * input (an import) must not echo them.
+ */
+export function isEventHeader(h: unknown): boolean {
+  const issues: string[] = [];
+  return parseHeader(h as Json, issues) !== undefined && issues.length === 0;
+}
+
 function parseHeader(h: Json, issues: Issues): EventType | undefined {
   if (!isObject(h)) {
     issues.push("header: not an object");

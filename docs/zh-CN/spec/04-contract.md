@@ -748,6 +748,6 @@
 | `log.end` | 日志末端：最新一条事件的 `seq` 与记录时刻（日志为空时为 null）。只读、不带参数；`saveslot status` 用它对照本机时钟 |
 | `log.reconcile` | 对拍：把日志从空存储重放到一份临时存储，与线上的逻辑表逐表比较（范围见 architecture §11）。同步返回，日志大时耗时长；只有最后的比较阶段让该租户的写入排队。同一租户同时只跑一个，再次调用报 `rate_limited`（`busy`）。结果只给表 / 行 / 字段的 ID，不回显值。**它查不出 `delete` 自己算错的结果**（architecture §11「记录与重算一致」） |
 | `export` | 导出全部日志事件，NDJSON：第一行是清单，之后每行一条事件，形状以 [`09-event-format.md`](09-event-format.md) 第 8 节为准，可在任何后端经 `apply` 重放。宽限期内待删除的内容默认换成占位，`include_pending_deletion: true` 才包含；`after_seq` 从某个位置之后续传（清单里记为 `after`）。读取记录不在导出里 |
-| `import` | 导入到空租户：把一份导出装进一个空租户（日志里只有创世事件，锚点里没有删除登记、恢复记录与进行中的恢复或导入）。逐事件原样追加并交给 `apply` 重放，追加一条 `tenant.imported`，恢复次数加 1；导入前登记的、仍有效的主体一律停用（已吊销的保持吊销，第 12 节），凭证由用户在目标处重新签发。整体要么完成、要么目标租户保持为空；期间这个租户的其他请求报 `unavailable`（`importing`）。导出里待删除内容的占位在导入时立即补墓碑，那些删除在目标处不可撤回。读取记录、控制面的内容（凭证、授权、签名密钥、源头的删除登记）、外部文件带不过来，结果如实列出。错误：`invalid_argument`（`tenant_not_empty`）、`import_rejected`、`rate_limited`（`busy`）、`too_large`。合并导入、迁移流程不在第一版 |
+| `import` | 导入到空租户：把一份导出装进一个空租户（日志里只有创世事件，锚点里没有删除登记、恢复记录与进行中的恢复或导入）。逐事件原样追加并交给 `apply` 重放，追加一条 `tenant.imported`，恢复次数加 1；导入前登记的、仍有效的主体一律停用（已吊销的保持吊销，第 12 节），凭证由用户在目标处重新签发。整体要么完成、要么目标租户保持为空；期间这个租户的其他请求报 `unavailable`（`importing`）。导出里待删除内容的占位在导入时立即补墓碑，那些删除在目标处不可撤回。读取记录、控制面的内容（凭证、授权、签名密钥、源头的删除登记）、外部文件带不过来，结果如实列出。错误：`invalid_argument`（`tenant_not_empty`）、`import_rejected`、`rate_limited`（`busy`）、`too_large`（`import_line`：文件的一行超过上限，09 §8）。合并导入、迁移流程不在第一版 |
 
 有记录的 slot 整个删除第一版不做（positioning「后续规划」）；空的 slot 用 `slots.remove` 移除。

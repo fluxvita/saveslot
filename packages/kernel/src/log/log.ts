@@ -5,7 +5,14 @@
 // Appending does not apply anything: the events go to `apply` separately, in the same
 // transaction (K3).
 
-import type { Hash, Instant, JsonValue, Seq } from "@fluxvita/saveslot-contract-core";
+import {
+  canonicalize,
+  type Hash,
+  type Instant,
+  type JcsValue,
+  type JsonValue,
+  type Seq,
+} from "@fluxvita/saveslot-contract-core";
 import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
 import {
   buildContinuation,
@@ -14,8 +21,10 @@ import {
   type NewEvent,
   type NewOperation,
   type PreparedOperation,
+  targetIndex,
 } from "./build.ts";
 import { decodeCanonical } from "./encode.ts";
+import type { ExportedEvent } from "./import-file.ts";
 import {
   LogVerifier,
   type LogVerifyResult,
@@ -91,6 +100,52 @@ async function insertEvents(tx: Tx, prepared: PreparedOperation): Promise<void> 
         b.checksum,
       ]);
     }
+  }
+}
+
+/**
+ * Appends one event of an export file as it is (02-architecture §8 «格式版本、导出、导入与恢复»
+ * step ②), into the staging storage of an import: the header's bytes are the file's, the index
+ * columns come from the header and `target` as for any event, and each block lands in its state
+ * (09 §3.3): present with its content and checksum, removed with its tombstone's `seq`, or a
+ * pending-deletion placeholder with the confirming deletion's `seq` in `placeholder_of` and no
+ * content. The caller checked the event (`ExportFileReader`); nothing is built or re-chained here.
+ */
+export async function appendExported(tx: Tx, e: ExportedEvent): Promise<void> {
+  const h = e.header;
+  const target = e.blocks.find((b) => b.path === "target");
+  const index = targetIndex(target?.state === "present" ? target.value : undefined);
+  await tx.query(
+    `INSERT INTO events (seq, header, header_hash, type, actor, at, op, slot,
+       target_table, target_row, target_event)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [
+      e.seq,
+      e.text,
+      e.hash,
+      h["type"] as string,
+      h["actor"] as string,
+      h["at"] as string,
+      (h["op"] as number | undefined) ?? e.seq,
+      (h["slot"] as string | undefined) ?? null,
+      index.table,
+      index.row,
+      index.event,
+    ] satisfies SqlValue[],
+  );
+  for (const b of e.blocks) {
+    await tx.query(
+      `INSERT INTO content (seq, path, body, checksum, removed_by, placeholder_of)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        e.seq,
+        b.path,
+        b.state === "present" ? canonicalize(b.value as JcsValue) : null,
+        b.state === "present" ? b.sum : null,
+        b.state === "removed" ? b.by : null,
+        b.state === "placeholder" ? b.of : null,
+      ] satisfies SqlValue[],
+    );
   }
 }
 

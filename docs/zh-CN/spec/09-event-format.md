@@ -462,7 +462,7 @@
 | 字段 | 含义 |
 |---|---|
 | `node_id` | 新生成，之后的事件身份用它（§2.2） |
-| `restore_count` | 导出清单里的恢复次数加 1。导入之前发出的事项版本因此一律对不上，导入之前的 `ver` 也认得出来。清单里的这个数先要核对：是不超过 2^31 − 2 的非负整数，并且等于导入的日志自己的当前恢复次数（最近一条恢复或导入事件里的，没有则为 0）；否则清单与内容对不上，拒绝，不落账 |
+| `restore_count` | 导出清单里的恢复次数加 1（几段续传时取最后一段的清单，§8）。导入之前发出的事项版本因此一律对不上，导入之前的 `ver` 也认得出来。清单里的这个数先要核对：是不超过 2^31 − 2 的非负整数，并且等于导入的日志自己的当前恢复次数（最近一条恢复或导入事件里的，没有则为 0）；否则清单与内容对不上，拒绝，不落账 |
 | `imported_upto` | 导入的最后一条事件的 `seq`。本事件的 `seq` = `imported_upto` + 1。它也是判定导入之前发出的 `ver` 时用的导入点（[`04-contract.md`](04-contract.md) 第 15 节） |
 
 它不是一次判定，**不带 `ctx`**，也没有 `task`、`request_key`。导入用的 ID 只给暂存的存储命名、与锚点里的"导入进行中"标记配对，不进事件。
@@ -1793,7 +1793,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 
 导出 = 这个租户的全部事件，从 `seq` 1 起（续传时从 `after` 之后起），按 `seq` 升序。读取记录、控制面、物化状态都不在其中。
 
-- 文件是 **NDJSON**：每行一个 JSON 对象，UTF-8，行尾 `0x0A`。每行本身按 JCS 序列化。
+- 文件是 **NDJSON**：每行一个 JSON 对象，UTF-8，行尾 `0x0A`。每行本身按 JCS 序列化：一行不等于它自己的 JCS 序列化（别的空白、行尾、键序，同一个键出现两次），导入按格式不认识拒绝。一行至多 16 MiB（按字节；远在任何一条事件之上），超过的导入报 `too_large`（`import_line`）。
 - **第一行是清单**，之后每行一个事件。
 - 导出文件可以整体包在 age 文件里（CLI 的可选加密）；包装不属于导出格式，解开后就是本节定义的 NDJSON。
 - 一份导出可以装进一个空租户（导入，见 §5.2 `tenant.imported`）：几段续传文件按顺序接起来，逐事件原样重放。
@@ -1810,8 +1810,8 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 |---|---|
 | `saveslot_export` | 导出文件格式的版本 |
 | `tenant_id`、`event_format` | 当前的租户 ID（最近一条 `tenant.genesis` 或 `tenant.imported` 里的）；事件格式的版本 |
-| `restore_count` | 导出时的租户恢复次数。导入时 `tenant.imported` 的 `restore_count` 取它加 1 |
-| `after` | 续传时才有：本文件只含 `seq` 大于它的事件。带 `after` 的文件不能单独重放，要接在前一段之后 |
+| `restore_count` | 导出时的租户恢复次数。导入时 `tenant.imported` 的 `restore_count` 取它加 1；几段续传文件拼接导入时取最后一段的（续传的那一段更新） |
+| `after` | 续传时才有：本文件只含 `seq` 大于它的事件。带 `after` 的文件不能单独重放，要接在前一段之后。接在前一段之后的这一段：`saveslot_export`、`event_format` 是导入不认识的版本，报 `unsupported_format`（与第一段一样）；认识的版本、`tenant_id` 必须与第一段相同，`restore_count` 不得小于前一段的，否则报 `segment_order`；`pending_deletions` 各段可以不同（每个块自己带着状态）。第一段至少有创世事件，`events` 为 0 的第一段导入报 `incomplete` |
 | `upto`、`events` | 本文件最后一条事件的 `seq`；本文件的事件条数（有恢复空档时小于 `upto` 与起点之差） |
 | `exported_at` | 导出时刻 |
 | `pending_deletions` | `placeholder`（默认：宽限期内待删除的块换成占位）/ `included`（用户会话显式要求包含） |
