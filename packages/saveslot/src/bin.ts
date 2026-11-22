@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // The `saveslot` executable: the command line to `dispatch`, the exit code back. A question is
 // written to stderr and its answer read from stdin, a line at a time (./ask.ts).
+// First, before anything compiles WebAssembly (`server start`, and the commands that open the
+// local storage in this process): see the daemon's wasm-code-gc.ts.
+import "@fluxvita/saveslot-daemon/wasm-code-gc";
 import { lineAsker } from "./ask.ts";
 import { dispatch } from "./dispatch.ts";
 

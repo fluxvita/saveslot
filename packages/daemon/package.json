@@ -9,6 +9,11 @@
       "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./wasm-code-gc": {
+      "source": "./src/wasm-code-gc.ts",
+      "types": "./dist/wasm-code-gc.d.ts",
+      "default": "./dist/wasm-code-gc.js"
     }
   },
   "files": [
