@@ -4,8 +4,8 @@
 // as the types in ./blocks.ts give them. Shapes only: whether a field ID exists in the schema, or whether a
 // value fits the field's type, is the kernel's check.
 //
-// Not here yet, so still `unsupported`: the blocks of later phases (`refs`, `baseline`,
-// `duplicate`, `matched`).
+// Not here yet, so still `unsupported`: the blocks of later phases (`refs`, `duplicate`,
+// `matched`).
 
 import { check, type Issues, isObject, type Json, keys, type ShapeChecker, str } from "./check.ts";
 import {
@@ -298,6 +298,19 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     }
     if ("key_from" in v) check(id("row", v["key_from"]), at, "key_from", issues);
     check(!(v["by_entity_key"] && v["by_external_key"]), at, "one way to locate", issues);
+    // A write by external key (04-write-and-read «按来源键写入»): an update or a correction of a
+    // row (keys are on event and timeless tables only), never one given a key from another row
+    // (`key_from` is an update by `row` adding a key).
+    if (v["by_external_key"] === true) {
+      check(
+        v["intent"] === "update" || v["intent"] === "correct",
+        at,
+        "intent of a write by external key",
+        issues,
+      );
+      check(!("entity" in v), at, "by_external_key on an entity", issues);
+      check(!("key_from" in v), at, "key_from on a write by external key", issues);
+    }
     // An insert has no `ver` (§5.7: "新增时没有 ver").
     check(!(v["intent"] === "insert" && "ver" in v), at, "ver on an insert", issues);
     if ("ver" in v) {
@@ -423,6 +436,20 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
   },
   Acknowledge(v, at, issues) {
     check(Array.isArray(v) && v.length === 1 && v[0] === "overwrite", at, "acknowledge", issues);
+  },
+  // `ops/<i>/baseline`: field ID → the operation number of that field's sync baseline position, a
+  // position in the log (never empty: an op by key hitting a row writes at least one field).
+  Baseline(v, at, issues) {
+    if (!isObject(v)) {
+      check(false, at, "baseline", issues);
+      return;
+    }
+    const fields = Object.keys(v);
+    check(fields.length > 0, at, "empty baseline", issues);
+    for (const f of fields) {
+      check(isId("field", f), at, `field ${f}`, issues);
+      check(int(v[f]) && (v[f] as number) >= 1, at, `operation number of ${f}`, issues);
+    }
   },
 
   // §5.7 write.base
@@ -1007,6 +1034,71 @@ const premises: EventRule = (paths, blocks, issues, at) => {
   }
 };
 
+/**
+ * §5.7 an op by external key (`by_external_key`) and its sync baseline: creating its row, it has no
+ * `ver` and no `ops/<i>/baseline`; hitting an existing row, its `ver` has the basis `external_key`
+ * and the op has `ops/<i>/baseline`, and only such an op has either. `ver.op` is the earliest
+ * baseline position; every position is earlier than this operation (a log position, not a token:
+ * not converted by a restore point; no lower bound is checked here: a position may be as early as
+ * the operation the row got its key in); the fields with a position are exactly those the op gives
+ * a value (`set/<field>`): a field hitting a row always has a position, and a no-op field (judged
+ * against its baseline value) leaves no value and needs none.
+ */
+const baselines: EventRule = (paths, blocks, issues, at) => {
+  for (const p of paths) {
+    const m = /^ops\/(\d+)\/(target|baseline)$/.exec(p);
+    if (m === null) continue;
+    const i = m[1] as string;
+    const target = blocks[`ops/${i}/target`];
+    if (m[2] === "baseline") {
+      check(paths.has(`ops/${i}/target`), p, "no ops target for it", issues);
+      continue;
+    }
+    if (!isObject(target)) continue;
+    const byKey = target["by_external_key"] === true;
+    const created = target["created"] === true;
+    const ver = target["ver"];
+    const basis = isObject(ver) ? ver["basis"] : undefined;
+    const based = paths.has(`ops/${i}/baseline`);
+    // A write by key gives values in `set`, judged three ways: never a revert (04-contract §5.1).
+    if (byKey) check(!paths.has(`ops/${i}/revert`), p, "revert on a write by external key", issues);
+    if (byKey && created) check(!("ver" in target), p, "ver on a creation by external key", issues);
+    if (byKey && !created)
+      check(basis === "external_key", p, "a write by external key without its basis", issues);
+    if (basis === "external_key") check(!created, p, "external_key basis on a creation", issues);
+    check(
+      based === (basis === "external_key"),
+      p,
+      based ? "baseline without the external_key basis" : "external_key basis without baseline",
+      issues,
+    );
+    const b = blocks[`ops/${i}/baseline`];
+    if (!based || !isObject(b) || !isObject(ver)) continue;
+    const at_ = `ops/${i}/baseline`;
+    const positions = Object.values(b).filter((x): x is number => int(x) && x >= 1);
+    if (positions.length > 0)
+      check(ver["op"] === Math.min(...positions), p, "ver.op not the earliest baseline", issues);
+    for (const [f, n] of Object.entries(b)) {
+      if (int(n)) check(n < at.op, at_, `baseline of ${f} not before this operation`, issues);
+      check(
+        paths.has(`ops/${i}/set/${f}`),
+        at_,
+        `baseline on ${f}, a field the op does not set`,
+        issues,
+      );
+    }
+    const prefix = `ops/${i}/set/`;
+    for (const q of paths)
+      if (q.startsWith(prefix))
+        check(
+          Object.hasOwn(b, q.slice(prefix.length)),
+          q,
+          "a field set without its baseline",
+          issues,
+        );
+  }
+};
+
 export const WRITE_EVENT_RULES: Readonly<Record<string, EventRule>> = {
   // §5.7: an emptied partition has no result, so neither a key nor a checksum; a partition with a
   // row has the checksum of its result.
@@ -1036,6 +1128,7 @@ export const WRITE_EVENT_RULES: Readonly<Record<string, EventRule>> = {
   "write.head"(paths, blocks, issues, at) {
     oneRequestId(paths, blocks, issues, at);
     premises(paths, blocks, issues, at);
+    baselines(paths, blocks, issues, at);
     const r = blocks["request"];
     const count = isObject(r) && int(r["op_count"]) ? r["op_count"] : undefined;
     if (count === undefined) return;

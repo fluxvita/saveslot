@@ -9,6 +9,7 @@ const HASH = "a".repeat(64);
 const CONN = `ci_${"2".repeat(26)}`;
 const SLOT = `sl_${"4".repeat(16)}`;
 const ROW = `r_${"6".repeat(26)}`;
+const ROW_B = `r_${"1".repeat(26)}`;
 const ENTITY = `e_${"7".repeat(26)}`;
 const ITEM = `pi_${"8".repeat(16)}`;
 const ITEM_B = `pi_${"9".repeat(16)}`;
@@ -72,6 +73,35 @@ const SAMPLES: Record<string, Sample> = {
       "ops/0/target": { table: "t1", row: ROW, intent: "insert", created: true },
       "ops/0/set/f3": null,
       "ops/0/valid": { from: { mode: "corrected_span" }, to: { mode: "corrected_span" } },
+    },
+  },
+  // An op by external key hitting a row (its sync baseline, one position per field it sets, the
+  // earliest as its ver) and one creating its row (no ver, no baseline).
+  "write.head (by external key)": {
+    header: head("write.head", 25),
+    blocks: {
+      ctx: { ...ctx, literal_checker: "literal@1" },
+      request: { sv: 1, sv_basis: "explicit", op_count: 3 },
+      "ops/0/target": {
+        table: "t1",
+        row: ROW,
+        intent: "update",
+        by_external_key: true,
+        ver: { op: 12, restore_count: 0, basis: "external_key" },
+      },
+      "ops/0/set/f3": { value: "32.50", unit: "CNY" },
+      "ops/0/set/f4": "lunch",
+      "ops/0/noop": ["f1", "f2"],
+      "ops/0/baseline": { f3: 12, f4: 24 },
+      "ops/2/target": {
+        table: "t1",
+        row: ROW_B,
+        intent: "correct",
+        by_external_key: true,
+        created: true,
+      },
+      "ops/2/set/f1": "band_app",
+      "ops/2/set/f3": { value: "10", unit: "CNY" },
     },
   },
   "write.base": {
@@ -469,6 +499,7 @@ describe("parseEvent: a write's events", () => {
     "ver",
     "created",
     "by_entity_key",
+    "by_external_key",
     "restored",
     "skipped",
     "op_index",
@@ -488,11 +519,13 @@ describe("parseEvent: a write's events", () => {
   ]);
   const cases = Object.entries(SAMPLES).flatMap(([name, s]) =>
     Object.entries(s.blocks).flatMap(([path, v]) =>
-      // `source.recorded` `request` is the request JSON itself: any keys.
+      // `source.recorded` `request` is the request JSON itself: any keys. A baseline is keyed by
+      // field ID: no fixed keys (its own cases below).
       v !== null &&
       typeof v === "object" &&
       !Array.isArray(v) &&
-      !(name.startsWith("source.recorded") && path === "request")
+      !(name.startsWith("source.recorded") && path === "request") &&
+      !path.endsWith("/baseline")
         ? [[name, path, v as Record<string, unknown>] as const]
         : [],
     ),
@@ -1541,5 +1574,168 @@ describe("impact: a gap filled, apart from a value cleared to null (§5.8)", () 
     ["a gap marked false", { ...seg, value: null, gap: false, op: 21 }, "impact/0: gap"],
   ])("refuses %s", (_, v, issue) => {
     expect(impact(v)).toContain(issue);
+  });
+});
+
+describe("an op by external key and its sync baseline (§5.7)", () => {
+  const name = "write.head (by external key)";
+  const target = (patch: Record<string, unknown>) => patched(name, "ops/0/target", patch);
+  const ver = (v: Record<string, unknown>) => target({ ver: { restore_count: 0, ...v } });
+
+  it.each([
+    ["not an object", ["f3"], "ops/0/baseline: baseline"],
+    ["empty", {}, "ops/0/baseline: empty baseline"],
+    ["a key not a field ID", { f3: 12, f4: 24, x: 12 }, "ops/0/baseline: field x"],
+    ["a position 0", { f3: 0, f4: 24 }, "ops/0/baseline: operation number of f3"],
+    ["a position not an integer", { f3: 12, f4: "24" }, "ops/0/baseline: operation number of f4"],
+  ])("the block's shape: refuses %s", (_, b, issue) => {
+    expect(issues(parse(withBlock(S(name), "ops/0/baseline", b)))).toContain(issue);
+  });
+
+  it("refuses a baseline on an op not by external key, and a key's basis on one", () => {
+    const plain = withBlock(S("write.head"), "ops/0/baseline", { f3: 12 });
+    expect(issues(parse(plain))).toContain("ops/0/target: baseline without the external_key basis");
+    expect(issues(parse(ver({ op: 12, basis: "explicit" })))).toEqual(
+      expect.arrayContaining([
+        "ops/0/target: a write by external key without its basis",
+        "ops/0/target: baseline without the external_key basis",
+      ]),
+    );
+    const notByKey = withBlock(S(name), "ops/0/target", {
+      table: "t1",
+      row: ROW,
+      intent: "update",
+      ver: { op: 12, restore_count: 0, basis: "external_key" },
+    });
+    expect(issues(parse(notByKey))).toContain(
+      "ops/0/target: external_key basis without by_external_key",
+    );
+  });
+
+  it("an op by key hitting a row: no ver, or no baseline, is refused", () => {
+    expect(issues(parse(target({ ver: undefined })))).toEqual(
+      expect.arrayContaining([
+        "ops/0/target: a write by external key without its basis",
+        "ops/0/target: baseline without the external_key basis",
+      ]),
+    );
+    const s = S(name);
+    const { ["ops/0/baseline"]: _, ...rest } = s.blocks;
+    expect(issues(parse({ ...s, blocks: rest }))).toContain(
+      "ops/0/target: external_key basis without baseline",
+    );
+  });
+
+  it("an op by key creating its row: no ver, no baseline", () => {
+    const withVer = patched(name, "ops/2/target", {
+      ver: { op: 12, restore_count: 0, basis: "external_key" },
+    });
+    expect(issues(parse(withVer))).toEqual(
+      expect.arrayContaining([
+        "ops/2/target: ver on a creation by external key",
+        "ops/2/target: external_key basis on a creation",
+      ]),
+    );
+    const explicit = patched(name, "ops/2/target", {
+      ver: { op: 12, restore_count: 0, basis: "explicit" },
+    });
+    expect(issues(parse(explicit))).toContain("ops/2/target: ver on a creation by external key");
+    const based = withBlock(S(name), "ops/2/baseline", { f1: 3, f3: 3 });
+    expect(issues(parse(based))).toContain("ops/2/target: baseline without the external_key basis");
+  });
+
+  it("ver.op is the earliest position", () => {
+    expect(issues(parse(ver({ op: 24, basis: "external_key" })))).toContain(
+      "ops/0/target: ver.op not the earliest baseline",
+    );
+    expect(issues(parse(ver({ op: 11, basis: "external_key" })))).toContain(
+      "ops/0/target: ver.op not the earliest baseline",
+    );
+  });
+
+  it("every position is before this operation (25); no lower bound", () => {
+    const at = (f4: number) => withBlock(S(name), "ops/0/baseline", { f3: 12, f4 });
+    expect(issues(parse(at(25)))).toContain(
+      "ops/0/baseline: baseline of f4 not before this operation",
+    );
+    expect(issues(parse(at(26)))).toContain(
+      "ops/0/baseline: baseline of f4 not before this operation",
+    );
+    expect(parse(at(24))).toEqual({ ok: true, type: "write.head" });
+    const early = withBlock(ver({ op: 1, basis: "external_key" }), "ops/0/baseline", {
+      f3: 1,
+      f4: 1,
+    });
+    expect(parse(early)).toEqual({ ok: true, type: "write.head" });
+  });
+
+  it("the fields with a position are exactly the fields set: not a no-op one, none missing", () => {
+    const noop = withBlock(S(name), "ops/0/baseline", { f1: 12, f3: 12, f4: 24 });
+    expect(issues(parse(noop))).toContain(
+      "ops/0/baseline: baseline on f1, a field the op does not set",
+    );
+    const missing = withBlock(S(name), "ops/0/baseline", { f3: 12 });
+    expect(issues(parse(missing))).toContain("ops/0/set/f4: a field set without its baseline");
+  });
+
+  it.each([
+    [
+      "intent insert, creating",
+      "ops/2/target",
+      { intent: "insert" },
+      "intent of a write by external key",
+    ],
+    [
+      "intent revoke, creating",
+      "ops/2/target",
+      { intent: "revoke" },
+      "intent of a write by external key",
+    ],
+    [
+      "intent revoke, hitting a row",
+      "ops/0/target",
+      { intent: "revoke" },
+      "intent of a write by external key",
+    ],
+    [
+      "an entity target",
+      "ops/2/target",
+      { row: undefined, entity: ENTITY },
+      "by_external_key on an entity",
+    ],
+    ["key_from", "ops/2/target", { key_from: ROW }, "key_from on a write by external key"],
+  ])("a write by external key: refuses %s", (_, path, patch, issue) => {
+    expect(issues(parse(patched(name, path, patch)))).toContain(`${path}: ${issue}`);
+  });
+
+  it("a write by external key: no revert, creating or hitting a row; key_from stays on an update by row", () => {
+    const revert = { undo_op: 20, include_later: false };
+    expect(issues(parse(withBlock(S(name), "ops/0/revert", revert)))).toContain(
+      "ops/0/target: revert on a write by external key",
+    );
+    expect(issues(parse(withBlock(S(name), "ops/2/revert", revert)))).toContain(
+      "ops/2/target: revert on a write by external key",
+    );
+    const addKey = patched("write.head", "ops/0/target", { intent: "update", key_from: ROW_B });
+    expect(parse(addKey)).toEqual({ ok: true, type: "write.head" });
+  });
+
+  it("several fields at fault: each named", () => {
+    const b = withBlock(S(name), "ops/0/baseline", { f1: 3, f2: 3, f3: 3, f4: 3 });
+    const ver3 = withBlock(b, "ops/0/target", {
+      ...(S(name).blocks["ops/0/target"] as object),
+      ver: { op: 3, restore_count: 0, basis: "external_key" },
+    });
+    expect(issues(parse(ver3))).toEqual(
+      expect.arrayContaining([
+        "ops/0/baseline: baseline on f1, a field the op does not set",
+        "ops/0/baseline: baseline on f2, a field the op does not set",
+      ]),
+    );
+  });
+
+  it("a baseline with no target of its op", () => {
+    const s = withBlock(S(name), "ops/1/baseline", { f3: 12 });
+    expect(issues(parse(s))).toContain("ops/1/baseline: no ops target for it");
   });
 });

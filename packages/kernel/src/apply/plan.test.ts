@@ -341,7 +341,8 @@ describe("planEvent: what this phase stops on, never skips", () => {
 
   it.each([
     ["key_from", { key_from: `r_${"5".repeat(26)}` }],
-    ["by_external_key", { by_external_key: true }],
+    // Creating its row: an op by key hitting one has a ver and a baseline (09 §5.7).
+    ["by_external_key", { by_external_key: true, created: true }],
   ])("a write.head whose op has %s", (_, extra) => {
     const [head] = op(20, [
       {

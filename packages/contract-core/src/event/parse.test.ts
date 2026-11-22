@@ -183,6 +183,7 @@ describe("parseEvent: valid events", () => {
         // a write's events (parse-write.test.ts)
         "Ack",
         "Acknowledge",
+        "Baseline",
         "Candidate",
         "Checksum",
         "Confirmation",
