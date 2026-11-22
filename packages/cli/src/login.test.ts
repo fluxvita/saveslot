@@ -294,7 +294,7 @@ describe("signIn in a browser", () => {
       testing: { openBrowser: b.open, callbackWaitMs: 300 },
     });
     // Not taken as this sign-in's answer: it ends only when the wait does.
-    expect(r).toEqual({ ok: false, exit: 6, message: TEXTS.loginTimedOut });
+    expect(r).toEqual({ ok: false, exit: 8, message: TEXTS.loginTimedOut });
     expect(s.seen.filter((x) => x.path === "/oauth/token")).toEqual([]);
     expect(exists(profileCredentialsFile(home, "lab"))).toBe(false);
     await b.settled();
@@ -342,7 +342,7 @@ describe("signIn in a browser", () => {
     expect(s.seen.filter((x) => x.path === "/oauth/token")).toEqual([]);
   });
 
-  it("declined on the page: exit 6, nothing written", async () => {
+  it("declined on the page: not done (exit 8), nothing written", async () => {
     const s = await stand();
     const b = browserAt(s, { error: "access_denied" });
     const r = await signIn({
@@ -352,7 +352,21 @@ describe("signIn in a browser", () => {
       io: capture().io,
       testing: { openBrowser: b.open },
     });
-    expect(r).toEqual({ ok: false, exit: 6, message: TEXTS.loginDenied });
+    expect(r).toEqual({ ok: false, exit: 8, message: TEXTS.loginDenied });
+    expect(exists(profileCredentialsFile(home, "lab"))).toBe(false);
+  });
+
+  it("refused on the page by the server, not by the person: exit 6, nothing written", async () => {
+    const s = await stand();
+    const b = browserAt(s, { error: "invalid_scope" });
+    const r = await signIn({
+      home,
+      profile: "lab",
+      server: s.origin,
+      io: capture().io,
+      testing: { openBrowser: b.open },
+    });
+    expect(r).toEqual({ ok: false, exit: 6, message: TEXTS.loginRefused });
     expect(exists(profileCredentialsFile(home, "lab"))).toBe(false);
   });
 
@@ -414,7 +428,7 @@ describe("signIn in a browser", () => {
     for (const p of [...second, ...b.pages]) expect(p.body).not.toMatch(/sl[sr]_|code-/);
   });
 
-  it("no callback within the wait: exit 6, and the listener is closed", async () => {
+  it("no callback within the wait: not done (exit 8), and the listener is closed", async () => {
     const s = await stand();
     let redirect = "";
     const r = await signIn({
@@ -429,7 +443,7 @@ describe("signIn in a browser", () => {
         callbackWaitMs: 50,
       },
     });
-    expect(r).toEqual({ ok: false, exit: 6, message: TEXTS.loginTimedOut });
+    expect(r).toEqual({ ok: false, exit: 8, message: TEXTS.loginTimedOut });
     await expect(fetch(redirect)).rejects.toThrow();
   });
 
@@ -671,7 +685,7 @@ describe("signIn with a device code", () => {
   it.each([
     ["access_denied", TEXTS.loginDenied],
     ["expired_token", TEXTS.loginExpired],
-  ] as const)("%s: exit 6, nothing written", async (code, message) => {
+  ] as const)("%s: not done (exit 8), nothing written", async (code, message) => {
     const s = await stand({ polls: ["pending", code] });
     const t = clock();
     const r = await signIn({
@@ -681,7 +695,7 @@ describe("signIn with a device code", () => {
       io: capture(false).io,
       testing: { now: t.now, sleep: t.sleep },
     });
-    expect(r).toEqual({ ok: false, exit: 6, message });
+    expect(r).toEqual({ ok: false, exit: 8, message });
     expect(exists(profileCredentialsFile(home, "lab"))).toBe(false);
   });
 
@@ -753,7 +767,7 @@ describe("signIn with a device code", () => {
       io: capture(false).io,
       testing: { now: t.now, sleep: t.sleep },
     });
-    expect(r).toEqual({ ok: false, exit: 6, message: TEXTS.loginExpired });
+    expect(r).toEqual({ ok: false, exit: 8, message: TEXTS.loginExpired });
     // 3600 s at 60 s apart: the poll that would come at 3600 s is not made.
     expect(s.seen.filter((x) => x.path === "/oauth/token")).toHaveLength(59);
   }, 30_000);
@@ -787,7 +801,7 @@ describe("signIn with a device code", () => {
     },
   );
 
-  it("past the code's expiry by the local clock: exit 6, no further poll", async () => {
+  it("past the code's expiry by the local clock: not done (exit 8), no further poll", async () => {
     const s = await stand({ polls: ["pending"] });
     const t = clock();
     const r = await signIn({
@@ -797,7 +811,7 @@ describe("signIn with a device code", () => {
       io: capture(false).io,
       testing: { now: t.now, sleep: t.sleep },
     });
-    expect(r).toEqual({ ok: false, exit: 6, message: TEXTS.loginExpired });
+    expect(r).toEqual({ ok: false, exit: 8, message: TEXTS.loginExpired });
     // 600 s at 5 s apart: the poll that would come at 600 s is not made.
     expect(s.seen.filter((x) => x.path === "/oauth/token")).toHaveLength(119);
   });
@@ -877,7 +891,7 @@ describe("signIn's write", () => {
     });
   });
 
-  it("the profile's lock held by another command: waited for, then busy (exit 6)", async () => {
+  it("the profile's lock held by another command: waited for, then busy (exit 7, as setup's lock)", async () => {
     const s = await stand();
     mkdirSync(join(home, "credentials"), { mode: 0o700 });
     const lock = `${profileCredentialsFile(home, "lab")}.lock`;
@@ -885,7 +899,7 @@ describe("signIn's write", () => {
     const began = Date.now();
     expect(await device(s, { lock: { waitMs: 200 } })).toEqual({
       ok: false,
-      exit: 6,
+      exit: 7,
       message: TEXTS.credential("busy"),
     });
     expect(Date.now() - began).toBeGreaterThanOrEqual(200);
@@ -1147,7 +1161,7 @@ describe("the commands", () => {
   it("a sign-in that fails registers no profile", async () => {
     const s = await stand({ polls: ["access_denied"] });
     const r = await cli(["login", "--server", s.origin, "--profile", "lab"]);
-    expect(r.code).toBe(6);
+    expect(r.code).toBe(8);
     expect(r.err).toContain(TEXTS.loginDenied);
     expect((await readProfiles(home)).servers.has("lab")).toBe(false);
   });
@@ -1174,6 +1188,17 @@ describe("the commands", () => {
     expect(again.code).toBe(0);
     expect(again.out).toContain(TEXTS.logoutNone);
   });
+
+  it("logout with the profile's lock held past its full wait: try again later (7), the file kept", async () => {
+    const s = await stand();
+    expect((await cli(["login", "--server", s.origin, "--profile", "lab"])).code).toBe(0);
+    writeFileSync(`${profileCredentialsFile(home, "lab")}.lock`, "1 held\n", { mode: 0o600 });
+    const r = await cli(["logout", "--profile", "lab"]);
+    expect(r.code).toBe(7);
+    expect(r.err).toContain(TEXTS.credential("busy"));
+    expect(exists(profileCredentialsFile(home, "lab"))).toBe(true);
+    expect(s.seen.filter((x) => x.path === "/oauth/revoke")).toEqual([]);
+  }, 20_000);
 
   it.each([
     ["SIGINT", 130],

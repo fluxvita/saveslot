@@ -212,6 +212,23 @@ describe("an error's text (06 §6.3)", () => {
   it("no credential, an unreachable service, a usage error, anything else", () => {
     expect(describeError(new CredentialError("permissions", "m", "/home/x")).exit).toBe(6);
     expect(text(new CredentialError("permissions", "m", "/home/x"))).not.toContain("/home/x");
+    // A profile's lock still held after its wait: try again later, as setup's lock (06 §6.2).
+    for (const c of [
+      "not_initialized",
+      "permissions",
+      "malformed",
+      "unknown_profile",
+      "signed_out",
+      "server_mismatch",
+      "refresh_refused",
+      "refresh_unsaved",
+      "busy",
+    ] as const) {
+      expect([c, describeError(new CredentialError(c, "m", "/home/x")).exit]).toEqual([
+        c,
+        c === "busy" ? 7 : 6,
+      ]);
+    }
     expect(describeError(new TransportError("unreachable", "m")).exit).toBe(7);
     expect(describeError(new TransportError("broken", "m")).exit).toBe(7);
     expect(describeError(new TransportError("bad_answer", "m", 500)).exit).toBe(1);

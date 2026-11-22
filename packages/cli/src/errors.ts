@@ -156,7 +156,8 @@ export function describeError(
     return { lines, exit: exitOf(e.code, reason) };
   }
   if (e instanceof CredentialError) {
-    return { lines: [[words(TEXTS.credential(e.code))]], exit: 6 };
+    // A profile's lock still held after its full wait: try again later, as setup's lock.
+    return { lines: [[words(TEXTS.credential(e.code))]], exit: e.code === "busy" ? 7 : 6 };
   }
   if (e instanceof TransportError) {
     return {

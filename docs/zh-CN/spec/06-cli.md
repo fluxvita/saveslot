@@ -77,7 +77,7 @@
 | 部署 | 怎么来 | 存在哪 | 失效 |
 |---|---|---|---|
 | 本地 | `saveslot init` 生成一个随机令牌；控制面只存它的哈希 | `~/.saveslot/credentials/session`，0600 | `saveslot init --rotate-session` 换新，旧令牌立即失效。要先 `saveslot stop`：它只换控制面里的哈希、不碰数据目录，saveslot 服务下次启动时读到新哈希；服务在运行时照样拒绝执行 |
-| 云服务 | `saveslot login`：默认打开浏览器走授权码 + PKCE（本机回环接收回调，只收带这次登录的 `state` 的那一个，别的回 400、接着等）；`--device` 用 OAuth 设备码（RFC 8628），适合 SSH 里没有浏览器的情形，轮询间隔最长按 60 秒、设备码最多等一小时，服务器给得更长也一样 | `~/.saveslot/credentials/<profile>.json`（访问令牌 + 刷新令牌，键见下），0600 | `saveslot logout` 吊销刷新令牌并删文件 |
+| 云服务 | `saveslot login`：默认打开浏览器走授权码 + PKCE（本机回环接收回调，只收带这次登录的 `state` 的那一个，别的回 400、接着等）；`--device` 用 OAuth 设备码（RFC 8628），适合 SSH 里没有浏览器的情形，轮询间隔最长按 60 秒、设备码最多等一小时，服务器给得更长也一样；用户码是 8 个字母，取自 20 个辅音 `BCDFGHJKLMNPQRSTVWXZ`，响应里写成 `XXXX-XXXX`，输入时不分大小写、横线与空白忽略；CLI 只核形状 `[A-Z]{4}-[A-Z]{4}`、不核字母表，自部署的服务器也能用 | `~/.saveslot/credentials/<profile>.json`（访问令牌 + 刷新令牌，键见下），0600 | `saveslot logout` 吊销刷新令牌并删文件 |
 
 - CLI 发现凭证文件的权限比 0600 宽时拒绝使用并提示修正，与 ssh 处理私钥的做法一致。第一版凭证放文件；放进系统钥匙串（可要求人在场才取出）随桌面打包一起做。
 - **profile** 区分连接目标：`local`（默认）、`cloud`（我们的云服务，地址 `https://api.saveslot.ai`），以及 `saveslot login --server <URL> --profile <名字>` 时为自部署的服务器新建的 profile；`--profile` 或 `saveslot profile use` 切换。各目标互不相通（第一版没有同步）。
@@ -672,9 +672,9 @@ runs r_01JC… 整行删除：date 只来自这句话
 | 3 | 要先重读 / 内容已变 | `read_first`、`confirmation_mismatch`、`item_closed`、`preview_outdated`、`handle_expired`、`draft_outdated`、`schema_incompatible` |
 | 4 | 找不到 | `not_found`、`unknown_table`、`unknown_field` |
 | 5 | 请求被拒 | `saveslot init` 遇到已初始化的目录或正在运行的服务（什么都不改）、`saveslot start` 遇到未初始化的目录，或服务起来之后发现存储格式过旧或过新（要先处理存储，重试没用）；`config.toml` 不合法（`saveslot start` 在派生进程之前、前台启动与 `saveslot config get` 都这样拒绝，见 4.2）；服务器模式的环境变量缺了或写法不对（4.1「服务器模式的配置」）；`invalid_argument`、`validation_failed`、`field_unmatched`、`sql_rejected`、`sql_timeout`、`too_large`、`derived_readonly`、`revoked`、`not_in_this_version`、`import_rejected`、`rate_limited`（`quota`）、`referenced`（后续）、`lease_expired`（后续） |
-| 6 | 凭证或权限 | 未登录、凭证文件权限过宽、`unauthenticated`（令牌无效、已吊销、会话过期）、`insufficient_scope`；`saveslot mcp` 的 `SAVESLOT_TOKEN` 没设、为空或不是连接实例令牌（含用户会话令牌） |
-| 7 | 连不上或暂时不可用（稍后重试） | saveslot 服务未运行（`saveslot stop` 例外：没在运行时退出码 0）；`saveslot stop` 时 `/health` 报的 pid 与 `run/saveslot.pid` 不一致，或 `/health` 不应答而 `run/saveslot.lock` 被占着（都不发信号）；`saveslot start` 等不到就绪（进程仍在运行）、服务起来之后自己失败（数据目录不在、内部错误等，原因见 `saveslot status` 与服务日志；格式过旧或过新除外，见 5）、套接字不可达、`unavailable`（忙、恢复中、导入中、对拍中、启动中）、`rate_limited`（`busy`）；`saveslot start` 或 `saveslot setup` 启动服务失败，或另一个 `setup` 正在运行 |
-| 8 | 未执行 | 人在提示中拒绝（含 `saveslot setup` 第 5 步的拒绝：什么都没签发）；非交互式缺 `--yes` 或绑定令牌；`export --encrypt` 没有终端、也没给口令文件；`server init`、`server user add`、`server user passwd` 没有终端、也没给口令文件 |
+| 6 | 凭证或权限 | 未登录、凭证文件权限过宽、`unauthenticated`（令牌无效、已吊销、会话过期）、`insufficient_scope`；`saveslot mcp` 的 `SAVESLOT_TOKEN` 没设、为空或不是连接实例令牌（含用户会话令牌）；`saveslot login` 时服务器的签发方不是这台服务器、授权被服务器拒绝 |
+| 7 | 连不上或暂时不可用（稍后重试） | saveslot 服务未运行（`saveslot stop` 例外：没在运行时退出码 0）；`saveslot stop` 时 `/health` 报的 pid 与 `run/saveslot.pid` 不一致，或 `/health` 不应答而 `run/saveslot.lock` 被占着（都不发信号）；`saveslot start` 等不到就绪（进程仍在运行）、服务起来之后自己失败（数据目录不在、内部错误等，原因见 `saveslot status` 与服务日志；格式过旧或过新除外，见 5）、套接字不可达、`unavailable`（忙、恢复中、导入中、对拍中、启动中）、`rate_limited`（`busy`）；`saveslot start` 或 `saveslot setup` 启动服务失败，或另一个 `setup` 正在运行；profile 的锁等满 10 秒仍拿不到（`login`、`logout`、换新令牌时都一样；与 `setup` 的锁一致） |
+| 8 | 未执行 | 人在提示中拒绝（含 `saveslot setup` 第 5 步的拒绝：什么都没签发；`saveslot login` 在授权页上被拒绝，即 `access_denied`）；`saveslot login` 的设备码过期、等待超时（都什么都没写）；非交互式缺 `--yes` 或绑定令牌；`export --encrypt` 没有终端、也没给口令文件；`server init`、`server user add`、`server user passwd` 没有终端、也没给口令文件 |
 | 9 | 校验发现问题 | `saveslot verify` 报断裂 / 不符，`saveslot verify --replay` 报不一致，`saveslot doctor` 有不通过项（只有提醒时不给 9） |
 | 129 / 130 / 131 / 143 | 被信号停下（128 加信号编号：SIGHUP / SIGINT / SIGQUIT / SIGTERM） | `saveslot setup` 收到这四个信号之一时收尾后按此退出（§3.3 第 8 条）；`saveslot login` 等待浏览器或设备码时收到它们（换取令牌的请求在途中时收到的也算），关掉本机回环监听、什么都不写，按此退出 |
 

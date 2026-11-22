@@ -196,7 +196,8 @@ const BUSY_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
 /**
  * A transport or an OAuth error of a request the sign-in made, as an end. Busy or limited (a
  * status above, the contract's `unavailable` or `rate_limited`, OAuth's `temporarily_unavailable`)
- * is 7 with not reachable: try again later (06 §6.2).
+ * is 7 with not reachable: try again later (06 §6.2). Declined by the person or expired is 8, not
+ * done; refused by the server is 6.
  */
 function endOf(e: unknown): Ended {
   if (e instanceof Ended) return e;
@@ -211,8 +212,8 @@ function endOf(e: unknown): Ended {
   }
   if (e instanceof OAuthError) {
     if (e.code === "temporarily_unavailable") return new Ended(7, TEXTS.loginBusy);
-    if (e.code === "access_denied") return new Ended(6, TEXTS.loginDenied);
-    if (e.code === "expired_token") return new Ended(6, TEXTS.loginExpired);
+    if (e.code === "access_denied") return new Ended(8, TEXTS.loginDenied);
+    if (e.code === "expired_token") return new Ended(8, TEXTS.loginExpired);
     return new Ended(6, TEXTS.loginRefused);
   }
   if (e instanceof CredentialError) return new Ended(6, TEXTS.credential(e.code));
@@ -353,15 +354,14 @@ async function browser(
     o.open?.(url.href);
     // Only a callback of this sign-in's `state` comes through (`listen`).
     const q = await settle(cb.query, o.waitMs, d.stop);
-    if (q === undefined) throw new Ended(6, TEXTS.loginTimedOut);
+    if (q === undefined) throw new Ended(8, TEXTS.loginTimedOut);
     if (q.getAll("iss").length !== 1 || q.get("iss") !== d.server) {
       throw new Ended(6, TEXTS.loginIssuerMismatch);
     }
     if (q.has("error")) {
-      throw new Ended(
-        6,
-        q.get("error") === "access_denied" ? TEXTS.loginDenied : TEXTS.loginRefused,
-      );
+      throw q.get("error") === "access_denied"
+        ? new Ended(8, TEXTS.loginDenied)
+        : new Ended(6, TEXTS.loginRefused);
     }
     const code = q.getAll("code");
     if (code.length !== 1 || code[0] === "") throw new Ended(6, TEXTS.loginRefused);
@@ -426,7 +426,7 @@ async function device(
   for (;;) {
     await settle(o.sleep(interval * 1000, d.stop), undefined, d.stop);
     if (d.stop?.aborted) throw new Ended(130, TEXTS.loginStopped);
-    if (d.now() >= deadline) throw new Ended(6, TEXTS.loginExpired);
+    if (d.now() >= deadline) throw new Ended(8, TEXTS.loginExpired);
     try {
       return await token(d, [
         ["grant_type", DEVICE_GRANT],
@@ -448,8 +448,10 @@ async function device(
  * credentials file. `mode`: browser by default only when stdin and stderr are terminals, else
  * device; a browser is opened only then, an explicit `browser` otherwise prints the address and
  * waits. The message of an end holds no token; the caller writes it.
- * - The issuer not the server, the sign-in refused, denied, expired or timed out: exit 6.
- * - The server not reachable, busy or limiting: 7; an answer not of these endpoints: 1.
+ * - Declined by the person, the code expired or the wait timed out: exit 8, not done.
+ * - The issuer not the server, or the sign-in refused by the server: exit 6.
+ * - The server not reachable, busy or limiting, or the profile's lock still held after its
+ *   wait (as setup's lock): 7; an answer not of these endpoints: 1.
  * - `stop`: 130, the listener closed, nothing written; also when it comes while the tokens are
  *   fetched (06 §6.2).
  */
@@ -527,7 +529,9 @@ export async function signIn(o: {
       // The profile's name is checked above, so a usage error here is the write refusing a pair
       // not of the tokens' form: the server's answer. Anything else keeps its own cause.
       if (e instanceof ClientUsageError) throw new Ended(1, TEXTS.loginBadAnswer);
-      if (e instanceof CredentialError) throw new Ended(6, TEXTS.credential(e.code));
+      if (e instanceof CredentialError) {
+        throw new Ended(e.code === "busy" ? 7 : 6, TEXTS.credential(e.code));
+      }
       throw new Ended(1, TEXTS.loginUnsaved);
     }
     // The replaced sign-in's refresh token would stay good on the server with no one holding it:
