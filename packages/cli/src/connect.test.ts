@@ -795,6 +795,7 @@ describe("runHostCommand and onPath", () => {
     }
   };
 
+  // Five commands in sequence, four of them child processes: tight for the default 5 s under load.
   it("done, an exit status, a signal, gone, too long", async () => {
     expect(await runHostCommand([script("ok", "echo out; echo err >&2")], {})).toEqual({
       kind: "done",
@@ -812,7 +813,7 @@ describe("runHostCommand and onPath", () => {
       kind: "timeout",
     });
     expect(Date.now() - t0).toBeLessThan(5_000);
-  });
+  }, 15_000);
 
   it("a file the system cannot execute (0644, a directory, an interpreter 0644): cannot run, never a throw", async () => {
     // EACCES on Linux and macOS alike.
@@ -901,6 +902,7 @@ describe("runHostCommand and onPath", () => {
     expect(m.err).toBe("e".repeat(70000));
   });
 
+  // Five child processes in sequence: tight for the default 5 s under load.
   it("hostVersion and hostEntry: the first line, cut; yes, no, or not ended", async () => {
     expect(await hostVersion(script("v", `echo "tool ${"9".repeat(100)}"; echo second`), {})).toBe(
       `tool ${"9".repeat(75)}`,
@@ -913,7 +915,7 @@ describe("runHostCommand and onPath", () => {
     });
     expect(await hostEntry(script("has-not", "exit 1"), {})).toEqual({ kind: "no" });
     expect(await hostEntry(script("hangs", "/bin/sleep 30"), {}, 300)).toEqual({ kind: "unknown" });
-  });
+  }, 15_000);
 
   it("much on both pipes: read and dropped, no stall", async () => {
     const host = script(
