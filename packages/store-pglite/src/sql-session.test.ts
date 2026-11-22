@@ -93,8 +93,14 @@ describe("the settings of the session", () => {
   it("have no statement timeout on PGlite, where there is none; a timeout given is set where one is asked for", async () => {
     const without = await runSql(s, { sql: "SELECT 1" });
     expect(without.statements.map((x) => x.text).join("\n")).not.toContain("statement_timeout");
+    // What is left of 1234 ms when it is set: no less than 1234 less the whole call's time, in whole
+    // milliseconds, on the call's clock.
+    const before = performance.now();
     const given = await runSql(s, { sql: "SELECT 1" }, { timeoutMs: 1234 });
-    expect(limits(given.statements.map((x) => x.text))[0]).toBeGreaterThan(1200);
+    const after = performance.now();
+    expect(limits(given.statements.map((x) => x.text))[0]).toBeGreaterThanOrEqual(
+      Math.floor(1234 - (after - before)),
+    );
     expect(limits(given.statements.map((x) => x.text))[0]).toBeLessThanOrEqual(1234);
   });
 
