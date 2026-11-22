@@ -136,7 +136,7 @@ interface Recorded {
    * Item statuses and interval blocks at write time: what deviation two protects (judged on the
    * write-time blocks, not on surviving indices); original indices and where they land (step 6).
    */
-  readonly writeTime: Map<string, (Block & { status: Status })[]>;
+  readonly writeTime: Map<string, (Block & { status: Status; content: ItemContent })[]>;
   /**
    * Every interval block each item was given, in log order: by its write, by deletion
    * confirmations (`by`: the deletion ID) and by cancellations (`by`: "cancel"); `dropped` marks
@@ -2326,7 +2326,7 @@ class Replay {
     for (const [key, xs] of groups) {
       rec.writeTime.set(
         key,
-        xs.map((x) => ({ k: x.k, valid: x.valid, status: x.status })),
+        xs.map((x) => ({ k: x.k, valid: x.valid, status: x.status, content: x.content })),
       );
       rec.history.set(key, [
         ...(rec.history.get(key) ?? []),
@@ -3137,28 +3137,29 @@ function cancelDeletion(
       // "Changed" by the conflict criterion (09-references-conflict-sync «冲突判据» ②): a write
       // made while the candidate was taken out by a pending deletion — by this one or by another,
       // in no item at that point — changed the unit's value in effect where the candidate lies,
-      // and the candidate's value differs from the new one there. Corroborations and same-value
-      // writes do not change the value in effect. So the order in which the deletions are
-      // cancelled does not matter, nor which of them the write fell after.
-      const touched = ops.some(
-        (y) =>
-          y.op < cancelOp &&
-          removedAt(key, y.op) &&
-          was.some((w) => {
-            const fields = target === "existence" ? preCancel.fieldIds : [target];
-            return fields.some((f) =>
-              preCancel.changesSince(f, y.op - 1, y.op).some((c) => {
-                const inter = intersect(c.changed, w.valid);
-                if (isEmpty(inter)) return false;
-                if (w.content.kind !== "value") return true;
-                const mine = tok(w.content.value);
-                return preCancel
-                  .segments([inter])
-                  .some((g) => covers(inter, g) && preCancel.vis(f, g, y.op) !== mine);
-              }),
-            );
-          }),
-      );
+      // and the candidate's value differs from the new one there. Judged as the write was judged
+      // when written (its items as recorded then: a change in effect, not a corroboration, a
+      // candidate or a no-op), once for each write: not on the state at this cancellation, which
+      // the deletions pending now would change. So the order in which the deletions are cancelled
+      // does not matter, nor which of them the write fell after, and a cancellation in whose grace
+      // period nothing was written keeps nothing superseded.
+      const changedBy = (y: Op): boolean =>
+        was.some((w) => {
+          const mine = w.content.kind === "value" ? tok(w.content.value) : undefined;
+          const fields = target === "existence" ? preCancel.fieldIds : [target as FieldId];
+          return [...fields, "existence" as const].some((t) =>
+            (rec.writeTime.get(etKey(y.event, t)) ?? []).some((b) => {
+              if (b.status !== "applied" || isEmpty(intersect(b.valid, w.valid))) return false;
+              // On a field candidate, a revoke over it changes the field; a restore or a
+              // write-back that only registers does not.
+              if (t === "existence") return target === "existence" || b.content.kind === "revoke";
+              if (b.content.kind === "uncovered") return false;
+              if (mine === undefined) return true;
+              return b.content.kind !== "value" || tok(b.content.value) !== mine;
+            }),
+          );
+        });
+      const touched = ops.some((y) => y.op < cancelOp && removedAt(key, y.op) && changedBy(y));
       if (touched) rec.keptSuperseded.add(event);
     }
   }

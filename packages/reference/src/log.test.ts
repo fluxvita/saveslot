@@ -4680,3 +4680,87 @@ describe("a deletion carried out at expiry (03-deletion «到期物理删除»; 
     }
   });
 });
+
+describe("«保持已被取代» ②: a write's change judged as it was when written", () => {
+  // Found by the property «a cancelled deletion leaves no trace». #21 (f3 = a, S3) is a
+  // candidate; pi_30 deletes S3; #40 writes f2 in its grace period (it changes f2, not f3); pi_30
+  // is cancelled at #50 and keeps nothing superseded. A later deletion A = {S1, S3} cancelled
+  // with no write in its grace period must leave no trace either: #40 changed f3 nowhere when
+  // written, whatever deleting S1 (#10's value) would make of it now.
+  const log: LogEntry[] = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: { from: { mode: "given", value: "2026-10-01" as BizPoint }, to: { mode: "open" } },
+      fields: { f2: { value: "1", sources: ["S1"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 0,
+      valid: {
+        from: { mode: "given", value: "2026-11-05" as BizPoint },
+        to: { mode: "given", value: "2026-11-07" as BizPoint },
+      },
+      fields: {
+        f2: { value: "1", sources: ["S3"], explicit: true },
+        f3: { value: "a", sources: ["S3"] },
+      },
+      acknowledge: ["overwrite"],
+    },
+    { kind: "deletion", op: 30, id: "pi_30", sources: ["S3", "S4"] },
+    {
+      kind: "write",
+      op: 40,
+      event: 41,
+      seen: 20,
+      valid: {
+        from: { mode: "given", value: "2026-11-03" as BizPoint },
+        to: { mode: "next_change" },
+      },
+      fields: { f2: { value: "2", sources: ["S2"], explicit: true } },
+      acknowledge: ["overwrite"],
+    },
+    { kind: "cancel", op: 50, id: "pi_30" },
+    { kind: "undo", op: 70, event: 71, target: 20 },
+    { kind: "execute", op: 80, id: "pi_30" },
+  ];
+  const run = (entries: LogEntry[]) => evaluateLog(STATE, [...log, ...entries]);
+  const a = ["S1", "S3"];
+  const b = ["S2"];
+
+  it("#21's f3 is a candidate, not kept superseded, as the log stands", () => {
+    const final = run([]).final;
+    expect(
+      final.items
+        .filter((x) => x.event === 21 && x.target === "f3")
+        .map((x) => [x.status, x.closed]),
+    ).toEqual([["candidate", undefined]]);
+  });
+
+  it("delete A, cancel A, delete B = delete A, delete B, cancel A = delete B", () => {
+    const onlyB = stateWithoutIndices(
+      run([{ kind: "deletion", op: 81, id: "pi_b", sources: b }]).final,
+    );
+    const cancelFirst = run([
+      { kind: "deletion", op: 81, id: "pi_a", sources: a },
+      { kind: "cancel", op: 82, id: "pi_a" },
+      { kind: "deletion", op: 83, id: "pi_b", sources: b },
+    ]);
+    expect(cancelFirst.steps.find((s) => s.entry.op === 82)?.keptSuperseded).toEqual([]);
+    expect(stateWithoutIndices(cancelFirst.final)).toEqual(onlyB);
+    expect(
+      stateWithoutIndices(
+        run([
+          { kind: "deletion", op: 81, id: "pi_a", sources: a },
+          { kind: "deletion", op: 82, id: "pi_b", sources: b },
+          { kind: "cancel", op: 83, id: "pi_a" },
+        ]).final,
+      ),
+    ).toEqual(onlyB);
+  });
+});
