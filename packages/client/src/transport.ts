@@ -49,11 +49,13 @@ export class ContractCallError extends Error {
  * The service could not be asked, or its answer was no contract answer.
  * - `unreachable`: no socket file, or nobody listening on it;
  * - `broken`: the connection failed or closed before a whole answer, or timed out;
- * - `bad_answer`: an answer that is not JSON, too large, or an error status without an error body.
+ * - `bad_answer`: an answer that is not JSON, too large, or an error status without an error body;
+ * - `certificate`: a server's TLS certificate did not verify (expired, not yet valid, for another
+ *   name, or not from an authority this system trusts): nothing was sent.
  */
 export class TransportError extends Error {
   override readonly name = "TransportError";
-  readonly code: "unreachable" | "broken" | "bad_answer";
+  readonly code: "unreachable" | "broken" | "bad_answer" | "certificate";
   /** The HTTP status, for `bad_answer`. */
   readonly status: number | undefined;
   constructor(code: TransportError["code"], message: string, status?: number) {
@@ -105,6 +107,20 @@ const UNREACHABLE_SERVER = new Set([
   "ENETUNREACH",
 ]);
 const LOOPBACK = new Set(["127.0.0.1", "[::1]", "localhost"]);
+/** Node's codes for a certificate that did not verify (node:tls; OpenSSL's verify results). */
+const CERTIFICATE = new Set([
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "CERT_UNTRUSTED",
+  "CERT_REJECTED",
+  "CERT_SIGNATURE_FAILURE",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
 
 /**
  * A server's origin as a URL, or a usage error: `https:`, or `http:` on a loopback address; no
@@ -273,6 +289,13 @@ function failed(server: URL | undefined, e: NodeJS.ErrnoException): TransportErr
     return e.code !== undefined && UNREACHABLE.has(e.code)
       ? new TransportError("unreachable", "the saveslot service is not running or not reachable")
       : new TransportError("broken", "the connection to the saveslot service failed");
+  }
+  if (e.code !== undefined && CERTIFICATE.has(e.code)) {
+    // Said in our words only: the peer's own text is not repeated.
+    return new TransportError(
+      "certificate",
+      "the saveslot server's certificate could not be verified (expired, for another name, or not from a trusted authority); nothing was sent",
+    );
   }
   return e.code !== undefined && UNREACHABLE_SERVER.has(e.code)
     ? new TransportError("unreachable", "the saveslot server is not reachable")

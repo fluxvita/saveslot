@@ -1220,12 +1220,6 @@ describe("the commands", () => {
     },
   );
 
-  it("--profile on another command is still refused in this version", async () => {
-    const r = await cli(["slot", "list", "--profile", "lab"]);
-    expect(r.code).toBe(2);
-    expect(r.err).toContain(TEXTS.profileNotYet);
-  });
-
   it("the stored file is the format of 06 §2, keys and all", async () => {
     const s = await stand();
     await cli(["login", "--server", s.origin, "--profile", "lab"]);

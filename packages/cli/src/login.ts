@@ -40,6 +40,7 @@ import {
   withProfileLock,
   writeProfileCredentials,
 } from "@fluxvita/saveslot-client";
+import { BUSY_STATUSES } from "./errors.ts";
 import {
   type Boundary,
   type Line,
@@ -189,9 +190,6 @@ function openWithPlatform(url: string): void {
     // The address is printed: opening it by hand works as well.
   }
 }
-
-/** Statuses that say "busy, later" whatever the body: the server's or a proxy's in front of it. */
-const BUSY_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
 
 /**
  * A transport or an OAuth error of a request the sign-in made, as an end. Busy or limited (a

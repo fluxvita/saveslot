@@ -9,6 +9,7 @@ import {
   ERROR_CODES,
   type ErrorCode,
   type ErrorReason,
+  OAuthError,
   TransportError,
   VALIDATION_DETAIL_CODES,
 } from "@fluxvita/saveslot-client";
@@ -62,12 +63,28 @@ export function exitOf(errorCode: string, reason: unknown): number {
   return EXIT_BY_CODE.get(errorCode as ErrorCode) ?? 5;
 }
 
+/** Statuses that say "busy, later" whatever the body: the server's or a proxy's in front of it. */
+export const BUSY_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
+
+/**
+ * An answer saying busy or limited that is no contract error: a status above, or OAuth's
+ * `temporarily_unavailable`. 7, try again later (06 §6.2), for a sign-in and its renewal alike.
+ */
+export function busyAnswer(e: unknown): boolean {
+  if (e instanceof TransportError) {
+    return e.code === "bad_answer" && e.status !== undefined && BUSY_STATUSES.has(e.status);
+  }
+  return e instanceof OAuthError && e.code === "temporarily_unavailable";
+}
+
 /** What the command says on stderr for an error, and its exit code; never a token or a path. */
 export function describeError(
   e: unknown,
   o: {
     /** false: no general next step (the caller says its own; the code's is not about this). */
     readonly nextStep?: boolean;
+    /** The command ran against a server profile: a transport failure is the server's. */
+    readonly remote?: boolean;
   } = {},
 ): { readonly lines: Line[]; readonly exit: number } {
   if (e instanceof ContractCallError) {
@@ -159,9 +176,12 @@ export function describeError(
     // A profile's lock still held after its full wait: try again later, as setup's lock.
     return { lines: [[words(TEXTS.credential(e.code))]], exit: e.code === "busy" ? 7 : 6 };
   }
+  if (busyAnswer(e)) return { lines: [[words(TEXTS.busy(o.remote === true))]], exit: 7 };
+  // A sign-in's renewal refused for another reason than its end (that one is `refresh_refused`).
+  if (e instanceof OAuthError) return { lines: [[words(TEXTS.renewRefused)]], exit: 6 };
   if (e instanceof TransportError) {
     return {
-      lines: [[words(TEXTS.transport(e.code))]],
+      lines: [[words(TEXTS.transport(e.code, o.remote === true))]],
       exit: e.code === "bad_answer" ? 1 : 7,
     };
   }

@@ -3,7 +3,14 @@
 // saveslot's own making, to paste: outside, when it can be shown as it is (./text.ts).
 
 import { type Connection, SCOPES } from "@fluxvita/saveslot-client";
-import { APPLIES, addCommand, type Host, pastedConfig } from "../connect.ts";
+import {
+  APPLIES,
+  addCommand,
+  type Host,
+  pastedConfig,
+  remoteAddCommand,
+  remotePasted,
+} from "../connect.ts";
 import { TEXTS } from "../texts.ts";
 import { arr, obj, str } from "./reads.ts";
 import {
@@ -58,19 +65,45 @@ export const selfcheckLine = (slots: number, more: boolean): Line =>
   t`${words(TEXTS.selfcheckPassed)} ${num(slots)}${more ? t` ${words(TEXTS.selfcheckMore)}` : []} ${words(TEXTS.selfcheckSlots)}`;
 
 /** What the host is given (06 §3.2): its command, a configuration to paste, or the token. */
-export function hostSetup(host: Host, token: string, entry: string, socket: string): Line[] {
+export function hostSetup(
+  host: Host,
+  token: string,
+  entry: string,
+  socket: string,
+  server?: string,
+): Line[] {
   const command = addCommand(host, token, entry);
   if (command !== undefined) return [[words(TEXTS.pasteCommand)], t`  ${shellLine(command)}`];
   if (host === "http") {
     return [
-      [words(TEXTS.pasteHttp)],
+      [words(server === undefined ? TEXTS.pasteHttp : TEXTS.pasteHttpServer)],
       t`  ${shellLine([`SAVESLOT_TOKEN=${token}`])}`,
-      t`  ${words(TEXTS.socketWord)} ${shellLine([socket])}`,
+      server === undefined
+        ? t`  ${words(TEXTS.socketWord)} ${shellLine([socket])}`
+        : t`  ${words(TEXTS.serverWord)} ${shellLine([server])}`,
     ];
   }
   const place = host === "generic" ? TEXTS.pasteGeneric : TEXTS.pasteConfig.get(host);
   if (place === undefined) throw new Error(`no place to paste for ${host}`);
   return [[words(place)], ...pasteLines(JSON.stringify(pastedConfig(host, token, entry), null, 2))];
+}
+
+/**
+ * What a host connecting to a server is given (06 §3.2 «服务器模式»): its add command, an entry to
+ * paste, or the address for its own screen; no token in any of them: the host signs in itself.
+ */
+export function remoteSetup(host: Host, url: string): Line[] {
+  const command = remoteAddCommand(host, url);
+  const lines: Line[] = [[words(TEXTS.remoteSignsIn)]];
+  if (command !== undefined)
+    return [...lines, [words(TEXTS.pasteCommand)], t`  ${shellLine(command)}`];
+  const pasted = remotePasted(host, url);
+  if (pasted !== undefined) {
+    const place = host === "generic" ? TEXTS.pasteGeneric : TEXTS.pasteConfig.get(host);
+    if (place === undefined) throw new Error(`no place to paste for ${host}`);
+    return [...lines, [words(place)], ...pasteLines(JSON.stringify(pasted, null, 2))];
+  }
+  return [...lines, [words(TEXTS.remoteAddress(host))], t`  ${shellLine([url])}`];
 }
 
 /**
@@ -104,9 +137,15 @@ const SAMPLE_TOKEN = `slt_${"A".repeat(43)}`;
  * command by its path, run or failed. Asked before anything is issued: an output that would come
  * out inside the boundary is no use to paste, and its token would be shown for nothing.
  */
-export function setupShowable(host: Host, entry: string, socket: string, exe?: string): boolean {
+export function setupShowable(
+  host: Host,
+  entry: string,
+  socket: string,
+  exe?: string,
+  server?: string,
+): boolean {
   const lines = [
-    ...hostSetup(host, SAMPLE_TOKEN, entry, socket),
+    ...hostSetup(host, SAMPLE_TOKEN, entry, socket, server),
     ...(exe !== undefined
       ? [
           ...appliedLines(host, SAMPLE_TOKEN, entry, exe, true),

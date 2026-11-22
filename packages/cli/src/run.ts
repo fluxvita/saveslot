@@ -19,6 +19,7 @@ import {
   addProfile,
   type CatalogTables,
   type ChangesResult,
+  CLOUD_SERVER,
   type Client,
   type Connection,
   ContractCallError,
@@ -26,9 +27,14 @@ import {
   ITEM_STATUSES,
   ITEM_TYPES,
   type PendingDetailResult,
+  PROFILE_NAME,
+  profileServer,
+  readProfiles,
   resolveCredential,
+  resolveProfileCredential,
   type TimelineResult,
   TransportError,
+  useProfile,
 } from "@fluxvita/saveslot-client";
 import {
   APPLIES,
@@ -41,10 +47,13 @@ import {
   type Host,
   issueAndAdd,
   issueChecked,
+  mcpUrl,
   onPath,
   parseScopes,
   parseSlots,
+  remoteAddCommand,
   revokeQuietly,
+  runHostCommand,
   writes,
 } from "./connect.ts";
 import { describeError, timezoneHint } from "./errors.ts";
@@ -56,6 +65,7 @@ import {
   connectionsList,
   hostSetup,
   rangeLine,
+  remoteSetup,
   renamedLines,
   revokedLines,
   selfcheckLine,
@@ -80,7 +90,9 @@ import {
   id,
   type Line,
   profile,
+  name as profileName,
   render,
+  shellLine,
   t,
   untrusted,
   words,
@@ -209,8 +221,13 @@ interface Options {
   readonly own: Readonly<Record<string, OwnValue | undefined>>;
   /** The service's side, for `setup` (the entry package hands it in). */
   readonly services: SetupServices | undefined;
-  /** `--profile`, as given: for `login` and `logout` only in this version. */
+  /** `--profile` as given; not given: the profile in use (`profiles.json`, 06 §2). */
   readonly profile: string | undefined;
+}
+
+/** The server of the profile a command runs with; undefined for `local`, the local service. */
+async function serverOf(o: Options): Promise<string | undefined> {
+  return profileServer(o.home, o.profile ?? (await readProfiles(o.home)).current);
 }
 
 /** What a command gives: a result to write, as text and as JSON, and its exit code (default 0). */
@@ -477,6 +494,41 @@ async function resolveCommand(
 }
 
 /**
+ * `saveslot connect <host> --profile <server profile>` for a host that connects by itself (06 §3.2
+ * «服务器模式»): nothing is issued here. The host is given the server's remote MCP address, by its
+ * add command (run with `--apply`), an entry to paste, or the address for its own screen; it signs
+ * in with OAuth, and the name and scopes are chosen on the authorization page.
+ */
+async function remoteConnect(
+  o: Options,
+  host: Host,
+  server: string,
+  apply: boolean,
+  io: CliIO,
+  env: Env,
+): Promise<Output> {
+  for (const k of ["name", "scope", "slots"]) {
+    if (o.own[k] !== undefined) throw new UsageError(TEXTS.remoteChosenOnPage);
+  }
+  const url = mcpUrl(server);
+  const command = remoteAddCommand(host, url);
+  const exe =
+    apply && command !== undefined ? await onPath(command[0] as string, env["PATH"]) : undefined;
+  if (apply && exe === undefined) throw new Failed(TEXTS.applyNotFound, 1);
+  const json = { host, server, url, ...(command !== undefined ? { command } : {}) };
+  if (!apply) return { json, lines: remoteSetup(host, url) };
+  // As it ran: the host's executable by the absolute path found on PATH.
+  const ran = [exe as string, ...(command as string[]).slice(1)];
+  const applied = await runHostCommand(ran, env, io.hostTimeoutMs, () => {});
+  const ok = applied.kind === "done";
+  return {
+    json: { ...json, applied: ok },
+    lines: [[words(ok ? TEXTS.appliedTo(host) : TEXTS.applyFailedOut)], t`  ${shellLine(ran)}`],
+    exit: ok ? 0 : 1,
+  };
+}
+
+/**
  * `saveslot connect <host>` (06 §3.2): issue, self-check with the new token, then the host's setup
  * with the token in it, on stdout, once; with `--apply`, the host's command run as well. The token
  * is in this function's memory and in what it writes to stdout (and in the host command's
@@ -496,11 +548,15 @@ async function connectCommand(
   )
     throw new UsageError(TEXTS.connectArgs);
   const host = hostName as Host;
+  const apply = ownFlag(o, "apply");
+  if (apply && !APPLIES.has(host)) throw new UsageError(TEXTS.applyNotHere);
+  const server = await serverOf(o);
+  // A host connecting to a server signs in itself; only a static token is issued here (06 §3.2).
+  if (server !== undefined && host !== "http")
+    return remoteConnect(o, host, server, apply, io, env);
   const connectionName = ownString(o, "name");
   if (connectionName === undefined || connectionName.trim() === "")
     throw new UsageError(TEXTS.nameMissing);
-  const apply = ownFlag(o, "apply");
-  if (apply && !APPLIES.has(host)) throw new UsageError(TEXTS.applyNotHere);
   const scopes = parseScopes(ownList(o, "scope"));
   const slots = parseSlots(ownString(o, "slots"));
   // The path the host starts saveslot by: checked before anything is issued.
@@ -512,7 +568,9 @@ async function connectCommand(
     ? await onPath((addCommand(host, "", entry) as string[])[0] as string, env["PATH"])
     : undefined;
   if (apply && exe === undefined) throw new Failed(TEXTS.applyNotFound, 1);
-  if (!setupShowable(host, entry, socketOf(o), exe)) throw new Failed(TEXTS.setupUnshowable, 1);
+  if (!setupShowable(host, entry, socketOf(o), exe, server)) {
+    throw new Failed(TEXTS.setupUnshowable, 1);
+  }
 
   const session = await client();
   const params = {
@@ -533,7 +591,13 @@ async function connectCommand(
         timeoutMs: io.hostTimeoutMs,
       })
     : undefined;
-  const checked = added?.checked ?? (await issueChecked(session, socketOf(o), params));
+  const checked =
+    added?.checked ??
+    (await issueChecked(
+      session,
+      server === undefined ? { socketPath: socketOf(o) } : { server },
+      params,
+    ));
   const { connection } = checked;
   if (checked.kind !== "ready") {
     // Issued and not usable: revoked, the token not shown, why said without it; 1.
@@ -585,7 +649,7 @@ async function connectCommand(
   if (!apply) {
     return {
       json: { ...issued, selfcheck },
-      lines: [...head, ...hostSetup(host, token, entry, socketOf(o)), ...snippetHint(host)],
+      lines: [...head, ...hostSetup(host, token, entry, socketOf(o), server), ...snippetHint(host)],
       errLines: [...notes, [words(TEXTS.tokenOnce)]],
       unwritten: lost,
     };
@@ -733,6 +797,9 @@ async function setupCommand(
   env: Env,
 ): Promise<Output> {
   if (o.args.length > 0) throw new UsageError(TEXTS.setupArgs);
+  // A server's setup (06 §3.3 item 13) is not in this version; without --profile, this computer.
+  if (o.profile !== undefined && o.profile !== "local")
+    throw new UsageError(TEXTS.setupServerNotYet);
   if (o.services === undefined) throw new Failed(TEXTS.setupNotHere, 2);
   const r = await setup({
     home: o.home,
@@ -872,6 +939,40 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   ["setup", command(["template", "timezone", "host", "scope", "yes"], setupCommand)],
   ["login", command(["server", "device"], loginCommand)],
   ["logout", command([], logoutCommand)],
+  [
+    "profile list",
+    command([], async (o) => {
+      if (o.args.length > 0) throw new UsageError(TEXTS.profileListArgs);
+      const p = await readProfiles(o.home);
+      const all: [string, string][] = [
+        ["local", socketOf(o)],
+        ["cloud", CLOUD_SERVER],
+        ...[...p.servers].sort(([a], [b]) => (a < b ? -1 : 1)),
+      ];
+      return {
+        json: { current: p.current, profiles: all.map(([name, at]) => ({ name, at })) },
+        lines: all.map(([n, at]) =>
+          n === p.current
+            ? t`* ${profileName(n)}  ${shellLine([at])}  (${words(TEXTS.profileInUse)})`
+            : t`  ${profileName(n)}  ${shellLine([at])}`,
+        ),
+      };
+    }),
+  ],
+  [
+    "profile use",
+    command([], async (o) => {
+      const [name, ...extra] = o.args;
+      if (name === undefined || extra.length > 0) throw new UsageError(TEXTS.profileArgs);
+      // Not of the form: the same usage error as --profile's (06 §6.2), not an unknown profile.
+      if (!PROFILE_NAME.test(name)) throw new UsageError(TEXTS.profileBad);
+      await useProfile(o.home, name);
+      return {
+        json: { current: name },
+        lines: [t`${words(TEXTS.profileNow)} ${profileName(name)}`],
+      };
+    }),
+  ],
   [
     "connect",
     command(["name", "scope", "slots", "apply"], connectCommand, undefined, TEXTS.connectUnknown),
@@ -1322,11 +1423,6 @@ function scopeValuesJoined(argv: readonly string[]): string[] {
   return out;
 }
 
-/** The commands that take a server profile in this version. */
-const PROFILE_COMMANDS: ReadonlySet<Command> = new Set(
-  ["login", "logout"].map((c) => COMMANDS.get(c) as Command),
-);
-
 /** Runs one command line (without the program name); resolves with its exit code. */
 export async function run(
   argv: readonly string[],
@@ -1365,6 +1461,11 @@ export async function run(
     (values["help"] === true ? io.out : io.err)(`${TEXTS.usage}\n`);
     return values["help"] === true ? 0 : 2;
   }
+  const profile = typeof values["profile"] === "string" ? values["profile"] : undefined;
+  if (profile !== undefined && !PROFILE_NAME.test(profile)) {
+    io.err(`${TEXTS.usageError(TEXTS.profileBad)}\n`);
+    return 2;
+  }
   const tags = values["untrusted-tags"] ?? "auto";
   if (tags !== "auto" && tags !== "always" && tags !== "never") {
     io.err(`${TEXTS.usageError(TEXTS.untrustedTagsInvalid)}\n`);
@@ -1385,11 +1486,6 @@ export async function run(
   const words_ = two !== undefined ? 2 : 1;
   if (found === undefined) {
     io.err(`${TEXTS.unknownCommand}\n`);
-    return 2;
-  }
-  const profileGiven = typeof values["profile"] === "string" ? values["profile"] : undefined;
-  if (profileGiven !== undefined && profileGiven !== "local" && !PROFILE_COMMANDS.has(found)) {
-    io.err(`${TEXTS.profileNotYet}\n`);
     return 2;
   }
   // A command's option of one value given twice is not taken as the last one given (06 §6.2).
@@ -1421,11 +1517,32 @@ export async function run(
     args: positionals.slice(words_),
     own,
     services,
-    profile: profileGiven,
+    profile,
   };
+  // The profile's server and credential (06 §2): the local service with its session, or a server
+  // with its sign-in, renewed once on a refused token. `setup` sets up this computer: local only.
+  // Whether a client went to a server: its failures are then the server's, not the local service's.
+  let remote = false;
   const client = async () => {
-    const credential = await resolveCredential({ home: o.home, env });
-    return createClient({ socketPath: socketOf(o), token: credential.token });
+    if (found === COMMANDS.get("setup")) {
+      const credential = await resolveCredential({ home: o.home, env });
+      return createClient({ socketPath: socketOf(o), token: credential.token });
+    }
+    // A server profile's failures are the server's from here on, its sign-in's renewal included.
+    remote = (await serverOf(o)) !== undefined;
+    const c = await resolveProfileCredential({
+      home: o.home,
+      env,
+      ...(profile !== undefined ? { profile } : {}),
+    });
+    if (c.server === undefined) return createClient({ socketPath: socketOf(o), token: c.token });
+    const renew = async (rejected: string) =>
+      await resolveProfileCredential({ home: o.home, env, profile: c.profile, rejected });
+    return createClient({
+      server: c.server,
+      token: c.token,
+      ...(c.kind === "session" ? { renew } : {}),
+    });
   };
   try {
     const r = await found.run(o, client, io, env);
@@ -1458,7 +1575,7 @@ export async function run(
       io.err(`${e.text}\n`);
       return e.exit;
     }
-    const d = describeError(e);
+    const d = describeError(e, { remote });
     const hint = e instanceof ContractCallError ? found.hint?.(e, o) : undefined;
     if (hint !== undefined) d.lines.push(t`  ${words(hint)}`);
     // The request went and the answer did not come: say where to see whether it took effect.

@@ -1275,7 +1275,8 @@ describe("pending resolve", () => {
 describe("usage", () => {
   it.each([
     [["nope"], TEXTS.unknownCommand],
-    [["slot", "list", "--profile", "cloud"], TEXTS.profileNotYet],
+    [["slot", "list", "--profile", "Cloud"], TEXTS.usageError(TEXTS.profileBad)],
+    [["slot", "list", "--profile", "../x"], TEXTS.usageError(TEXTS.profileBad)],
     [["slot", "list", "--limit", "0"], TEXTS.usageError(TEXTS.limitInvalid)],
     [
       ["slot", "list", "--untrusted-tags", "sometimes"],

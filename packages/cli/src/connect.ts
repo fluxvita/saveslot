@@ -16,6 +16,7 @@ import {
   type ConnectionsIssueParams,
   type ConnectionsIssueResult,
   createClient,
+  type Destination,
   SCOPES,
   type Scope,
   SELFCHECK_TASK,
@@ -321,6 +322,44 @@ export function runHostCommand(
   });
 }
 
+/** A server's remote MCP endpoint: the one external address, `/mcp` (05-surfaces §15). */
+export const mcpUrl = (server: string): string => `${server}/mcp`;
+
+/**
+ * The host's command to add a server's remote MCP (06 §3.2 «服务器模式»), with no token in it:
+ * the host signs in itself with OAuth. Hosts without a command: undefined. Not tried against the
+ * hosts yet; claude-code's is as 06 §3.2 writes it.
+ */
+export function remoteAddCommand(host: Host, url: string): string[] | undefined {
+  if (host === "claude-code") {
+    return [
+      HOST_INFO[host].exe as string,
+      "mcp",
+      "add",
+      "saveslot",
+      "--scope",
+      "user",
+      "--transport",
+      "http",
+      url,
+    ];
+  }
+  if (host === "codex")
+    return [HOST_INFO[host].exe as string, "mcp", "add", "saveslot", "--url", url];
+  return undefined;
+}
+
+/**
+ * What to paste for a host without a remote add command: an `mcpServers` entry with the address
+ * (cursor), the address in a JSON object (generic), or nothing but the address to fill in on the
+ * host's own screen (claude-desktop: a custom connector).
+ */
+export function remotePasted(host: Host, url: string): unknown {
+  if (host === "cursor") return { mcpServers: { saveslot: { url } } };
+  if (host === "generic") return { url };
+  return undefined;
+}
+
 /** Revokes a connection instance as far as it can, never throwing: whether it did. */
 export async function revokeQuietly(session: Client, id: Connection["id"]): Promise<boolean> {
   try {
@@ -364,7 +403,7 @@ export type Checked =
  */
 export async function issueChecked(
   session: Client,
-  socketPath: string,
+  at: Destination,
   params: ConnectionsIssueParams,
 ): Promise<Checked> {
   const issued = await session.connections.issue(params);
@@ -373,7 +412,7 @@ export async function issueChecked(
     return { kind: "malformed", connection, revoked: await revokeQuietly(session, connection.id) };
   }
   try {
-    const own = createClient({ socketPath, token });
+    const own = createClient({ ...at, token });
     const r = await own.catalog({ level: "list", limit: 200, task: SELFCHECK_TASK });
     return {
       kind: "ready",
@@ -554,7 +593,7 @@ export async function issueAndAdd(o: {
   readonly timeoutMs?: number | undefined;
   readonly stop?: AbortSignal;
 }): Promise<Added> {
-  const checked = await issueChecked(o.session, o.socketPath, o.params);
+  const checked = await issueChecked(o.session, { socketPath: o.socketPath }, o.params);
   if (checked.kind !== "ready") return { kind: "not_ready", checked };
   const [, ...args] = addCommand(o.host, checked.token, o.entry) as string[];
   const ran = await runHostCommand([o.exe, ...args], o.env, o.timeoutMs, undefined, o.stop);

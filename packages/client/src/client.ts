@@ -63,8 +63,10 @@ import type {
   TimelineParams,
   TimelineResult,
 } from "@fluxvita/saveslot-contract";
+import { CredentialError } from "./credentials.ts";
 import {
   ClientUsageError,
+  ContractCallError,
   type Destination,
   encode,
   type RequestOptions,
@@ -83,6 +85,16 @@ export type ClientOptions = Destination & {
   readonly token: string;
   /** Milliseconds before a request is given up (default 60 s). */
   readonly timeoutMs?: number;
+  /**
+   * A server profile's sign-in: the token to use instead of `rejected`, which a request was just
+   * refused with (`unauthenticated`), and the server it is for. That request is sent once more
+   * with it, once, and only when that server is this client's: a sign-in for another server (the
+   * profile moved meanwhile) is `signed_out` here, nothing sent (06-cli §2). A refusal then is the
+   * caller's (06-cli §2: refreshed once on a refused token).
+   */
+  readonly renew?: (
+    rejected: string,
+  ) => Promise<{ readonly token: string; readonly server: string | undefined }>;
 };
 
 type Query = Map<string, string>;
@@ -186,15 +198,41 @@ export interface ExportStream {
 }
 
 export function createClient(o: ClientOptions): Client {
-  const send = (
+  let token = o.token;
+  const destination = o.server !== undefined ? { server: o.server } : { socketPath: o.socketPath };
+  const once = (
     r: Pick<RequestOptions, "method" | "path" | "query" | "body" | "task" | "idempotencyKey">,
   ) =>
     request({
-      ...(o.server !== undefined ? { server: o.server } : { socketPath: o.socketPath }),
-      token: o.token,
+      ...destination,
+      token,
       ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
       ...r,
     });
+  const send = async (
+    r: Pick<RequestOptions, "method" | "path" | "query" | "body" | "task" | "idempotencyKey">,
+  ) => {
+    try {
+      return await once(r);
+    } catch (e) {
+      if (
+        o.renew === undefined ||
+        !(e instanceof ContractCallError) ||
+        e.code !== "unauthenticated"
+      )
+        throw e;
+      // A refused session token: nothing was done with it, so the same request goes once more.
+      const next = await o.renew(token);
+      if (next.server !== o.server) {
+        throw new CredentialError(
+          "signed_out",
+          "the profile's sign-in is now for another server; nothing more was sent",
+        );
+      }
+      token = next.token;
+      return once(r);
+    }
+  };
   const get = (path: string, p: object = {}) => {
     const { rest, task } = split(p);
     return send({
@@ -328,8 +366,8 @@ export function createClient(o: ClientOptions): Client {
       const { rest, task } = split(p);
       return exportStream(
         await requestStream({
-          ...(o.server !== undefined ? { server: o.server } : { socketPath: o.socketPath }),
-          token: o.token,
+          ...destination,
+          token,
           ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
           method: "GET",
           path: "/v1/export",

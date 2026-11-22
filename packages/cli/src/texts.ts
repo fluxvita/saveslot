@@ -4,7 +4,7 @@
 // Words: to a person, "connection instance" (the MCP texts tell the agent of "a connection");
 // "the saveslot service" in a sentence.
 
-import type { CredentialError, ErrorCode } from "@fluxvita/saveslot-client";
+import type { CredentialError, ErrorCode, TransportError } from "@fluxvita/saveslot-client";
 
 declare const brand: unique symbol;
 /**
@@ -76,9 +76,7 @@ export const TEXTS = {
   usageError: (what: Static) => s(`error: ${what}. See saveslot --help.`),
   badArguments: s("error: the arguments are not the command's (see saveslot --help):"),
   unknownCommand: s("error: not a command of saveslot. See saveslot --help."),
-  profileNotYet: s(
-    "error: --profile is not in this version: saveslot connects to the local service only.",
-  ),
+  profileBad: s("--profile takes a profile's name: see saveslot profile list"),
   limitInvalid: s("--limit takes a whole number from 1"),
   optionTwice: s("an option that takes one value was given twice"),
   untrustedTagsInvalid: s("--untrusted-tags takes auto, always or never"),
@@ -117,16 +115,38 @@ export const TEXTS = {
       ),
       busy: s("error: another saveslot command is signing in to this profile. Try again."),
     })[c],
-  transport: (c: "unreachable" | "broken" | "bad_answer"): Static =>
-    c === "unreachable"
-      ? s("error: the saveslot service is not running. Start it with saveslot start.")
-      : c === "broken"
-        ? s(
-            "error: the connection to the saveslot service broke, or it did not answer in time. Try again; see saveslot status.",
-          )
-        : s(
-            "error: the saveslot service gave an answer saveslot cannot read. See saveslot status.",
+  /** The server's token endpoint refused a renewal with an OAuth error other than its end's. */
+  renewRefused: s(
+    "error: the saveslot server would not renew this profile's sign-in; nothing else was sent. Run saveslot login --profile <profile>; if that fails too, the server's sign-in setup needs a look.",
+  ),
+  transport: (c: TransportError["code"], remote = false): Static =>
+    remote
+      ? {
+          unreachable: s(
+            "error: the saveslot server is not reachable. Check the address and the network.",
           ),
+          broken: s(
+            "error: the connection to the saveslot server broke, or it did not answer in time. Try again.",
+          ),
+          bad_answer: s("error: the saveslot server gave an answer saveslot cannot read."),
+          certificate: s(
+            "error: the saveslot server's certificate could not be verified (expired, for another name, or not from an authority this system trusts); nothing was sent. Check the server's TLS setup.",
+          ),
+        }[c]
+      : c === "unreachable"
+        ? s("error: the saveslot service is not running. Start it with saveslot start.")
+        : c === "broken"
+          ? s(
+              "error: the connection to the saveslot service broke, or it did not answer in time. Try again; see saveslot status.",
+            )
+          : s(
+              "error: the saveslot service gave an answer saveslot cannot read. See saveslot status.",
+            ),
+  /** Busy or limiting requests (a status that says so, or OAuth's `temporarily_unavailable`). */
+  busy: (remote: boolean): Static =>
+    remote
+      ? s("error: the saveslot server is busy or limiting requests. Try again shortly.")
+      : s("error: the saveslot service is busy or limiting requests. Try again shortly."),
   internal: s(
     "error: saveslot failed. This is a bug; the service log is in run/saveslot.log under the home.",
   ),
@@ -409,6 +429,27 @@ export const TEXTS = {
   pasteHttp: s("Send the token as Authorization: Bearer <token> on the socket:"),
   pasteGeneric: s("An MCP client's server entry:"),
   socketWord: s("socket"),
+  pasteHttpServer: s("Send the token as Authorization: Bearer <token> to the server:"),
+  serverWord: s("server"),
+  remoteSignsIn: s(
+    "No token here: the host signs in itself. It opens the server's authorization page, where you name this connection and choose its scopes; it sees every slot.",
+  ),
+  remoteAddress: (host: string) =>
+    s(
+      host === "claude-desktop"
+        ? "Claude Desktop: add a custom connector (Settings, Connectors) with this address:"
+        : "Give the host this address:",
+    ),
+  remoteChosenOnPage: s(
+    "--name, --scope and --slots are for a token issued here; a host connecting to a server chooses them on the authorization page. For a static token, use saveslot connect http --profile <profile>.",
+  ),
+  setupServerNotYet: s(
+    "setup --profile is not in this version: connect each host with saveslot connect <host> --profile <profile>",
+  ),
+  profileArgs: s("give the profile: saveslot profile use <profile>"),
+  profileListArgs: s("profile list takes no arguments"),
+  profileInUse: s("in use"),
+  profileNow: s("profile in use:"),
   tokenOnceGeneric: s("The token is shown this once. An MCP client's server entry:"),
   appliedTo: (host: string) => s(`added to ${host}, by running (the token not shown again):`),
   tokenArg: s("SAVESLOT_TOKEN=<token>"),
