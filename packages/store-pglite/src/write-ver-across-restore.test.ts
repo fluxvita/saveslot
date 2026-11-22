@@ -120,7 +120,7 @@ const update = (row: string, set: Record<string, unknown>, ver?: string, more: o
 
 /** An import appended to this store, of restore count `count`: its point, the log's end. */
 const importAt = async (count: number) => {
-  const tail = (await s.store.read(readTail))?.seq ?? 0;
+  const tail = await s.store.read(readTail);
   await appendImportEvent(s.store, {
     user: USER as never,
     tenant: `tn_${"9".repeat(26)}` as never,
@@ -129,8 +129,8 @@ const importAt = async (count: number) => {
       tenant_id: TENANT as never,
       event_format: 1,
       restore_count: count - 1,
-      upto: tail as never,
-      upto_hash: "0".repeat(64),
+      upto: tail?.seq as never,
+      upto_hash: tail?.hash as never,
       events: 1,
       exported_at: "2026-11-05T08:00:00.000Z" as never,
       pending_deletions: "placeholder",

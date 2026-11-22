@@ -170,8 +170,9 @@ describe("a file that is right", () => {
     const first = LINES.slice(0, 2);
     const second = LINES.slice(2);
     const r = read([...fileOf(first), ...fileOf(second, { after: 2 })]);
+    // The manifest is the first segment's but for its end: the last segment's.
     expect(r.ok && r.summary).toEqual({
-      manifest: manifest(first),
+      manifest: { ...manifest(first), upto: 4, upto_hash: hashOf(LINES[3]) },
       upto: 4,
       events: 4,
       segments: 2,

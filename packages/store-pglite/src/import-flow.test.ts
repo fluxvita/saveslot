@@ -36,6 +36,7 @@ import {
   restorePoint,
   runImport,
   type TenantStore,
+  writeExport,
 } from "@fluxvita/saveslot-kernel";
 import { openFileAnchorStore } from "@fluxvita/saveslot-kernel/anchor-file";
 import { EVENT } from "@fluxvita/saveslot-reference/testing";
@@ -45,6 +46,7 @@ import { testBackend } from "./testing/test-backend.fixture.ts";
 import { TENANT as SOURCE, writeScenario } from "./testing/write-scenario.fixture.ts";
 
 const TARGET = `tn_${"9".repeat(26)}` as `tn_${string}`;
+const SECOND = `tn_${"6".repeat(26)}` as `tn_${string}`;
 const IMPORTER = `u_${"7".repeat(26)}`;
 const T = 120_000;
 
@@ -110,12 +112,12 @@ afterAll(async () => {
 }, T);
 
 /** A target tenant: its genesis, an anchor store of its own, and the tenant directory's pointer. */
-async function target() {
+async function target(tenant: string = TARGET) {
   const store = await open("target");
   await createTenant(
     store,
     createOpsContext({
-      tenant: TARGET,
+      tenant,
       actor: IMPORTER,
       trigger: null,
       task: null,
@@ -128,14 +130,23 @@ async function target() {
   );
   const anchor: AnchorStore = openFileAnchorStore(join(fresh("anchor"), "anchor.json"));
   // The target's high water as a tenant that served: its genesis.
-  await anchor.advanceHighWater(TARGET, 1);
+  await anchor.advanceHighWater(tenant, 1);
   return { dir: { current: store }, anchor };
 }
 type Target = Awaited<ReturnType<typeof target>>;
 
-/** Each staging storage's log end: the `seq` of its import's event. */
-const stagingEnds = new Map<TenantStore, number>();
-const endOf = (staging: TenantStore) => stagingEnds.get(staging) as never;
+/** What step ③ returned for each staging storage: its import event's `seq` and `imported_upto`. */
+const stepThree = new Map<TenantStore, { importSeq: number; importedUpto: number }>();
+/** `runImport`'s staging arguments for `staging`, as step ③ left them. */
+const stagedFor = (staging: TenantStore) => {
+  const three = stepThree.get(staging);
+  if (three === undefined) throw new Error("the staging storage was not staged");
+  return {
+    staging,
+    importSeq: three.importSeq as never,
+    importedUpto: three.importedUpto as never,
+  };
+};
 
 /** Steps ① to ③ into `staging`: the file, then the import's event. */
 async function stage(staging: TenantStore) {
@@ -146,8 +157,9 @@ async function stage(staging: TenantStore) {
     manifest: s.manifest,
     now: "2026-11-11T01:00:00.000Z" as never,
   });
-  stagingEnds.set(staging, ev.seq);
-  return ev.seq;
+  const three = { importSeq: ev.seq, importedUpto: ev.importedUpto };
+  stepThree.set(staging, three);
+  return three;
 }
 
 /** Steps ① to ③: the file into a new staging storage, the import's event after it. */
@@ -331,7 +343,7 @@ async function refused(t: Target, anchor: AnchorStore = t.anchor) {
     anchor,
     tenant: TARGET as never,
     importId: newImportId(),
-    stagingEnd: endOf(staging),
+    ...stagedFor(staging),
     swap: async () => {
       swapped = true;
       return staging;
@@ -413,22 +425,22 @@ describe("killed after ④ and after ⑤, opened again from disk", () => {
       await openFileAnchorStore(anchorFile).advanceHighWater(TARGET, 1);
       writeFileSync(pointer, targetDir);
     }
-    let stagingEnd = 0;
+    // ①–③, then ④–⑥ killed: the swap throws after its durable step (⑤), or in place of it
+    // (after ④). The staging storage stays open until the swap, which closes it.
     {
       const staging = await openDir(stagingDir, true);
-      stagingEnd = await stage(staging);
-      await staging.close();
-    }
-    // ④–⑥, killed: the swap throws after its durable step (⑤), or in place of it (after ④).
-    {
+      const three = await stage(staging);
       const target = await openDir(readFileSync(pointer, "utf8"));
       const e = await runImport({
         target,
         anchor: openFileAnchorStore(anchorFile),
         tenant: TARGET as never,
         importId: newImportId(),
-        stagingEnd: stagingEnd as never,
+        staging,
+        importSeq: three.importSeq as never,
+        importedUpto: three.importedUpto as never,
         swap: async () => {
+          await staging.close();
           if (stop === 5) writeFileSync(pointer, stagingDir);
           throw new Error(KILLED);
         },
@@ -539,7 +551,7 @@ describe("runImport (④–⑥ in one call)", () => {
         anchor: t.anchor,
         tenant: TARGET as never,
         importId: newImportId(),
-        stagingEnd: endOf(staging),
+        ...stagedFor(staging),
         swap: async () => {
           t.dir.current = staging;
           return staging;
@@ -615,6 +627,259 @@ describe("runImport (④–⑥ in one call)", () => {
   );
 });
 
+/** Where `store`'s log ends, as a manifest names it. */
+async function logEndOf(store: TenantStore) {
+  const tail = await store.read(readTail);
+  return { upto: tail?.seq as never, upto_hash: tail?.hash as never };
+}
+
+/** `lines` (the file's, or a staging storage's) imported into the empty tenant `t`, run through. */
+async function importInto(t: Target, tenant: string, lines: readonly string[]) {
+  const staging = await open("staging");
+  const s = await importIntoStaging({ staging, body: bodyOf(lines, 999) });
+  const ev = await appendImportEvent(staging, {
+    user: IMPORTER as never,
+    tenant: tenant as never,
+    manifest: s.manifest,
+    now: "2026-11-11T01:00:00.000Z" as never,
+  });
+  const r = await runImport({
+    target: t.dir.current,
+    anchor: t.anchor,
+    tenant: tenant as never,
+    importId: newImportId(),
+    staging,
+    importSeq: ev.seq,
+    importedUpto: ev.importedUpto,
+    swap: async () => {
+      t.dir.current = staging;
+      return staging;
+    },
+  });
+  return { staged: s, ev, result: r };
+}
+
+describe("the file's end is the manifest's (02-architecture §8 «格式版本、导出、导入与恢复»)", () => {
+  it(
+    "an export of an imported tenant, nothing written since, ends in its import's event; another empty tenant imports it",
+    async () => {
+      const first = await target();
+      const a = await importInto(first, TARGET, file);
+      expect(a.result).toEqual({ finished: true, highWater: sourceEnd + 1, restoreCount: 1 });
+      // The export as the kernel writes it: the log's end is the first import's event.
+      const again: string[] = [];
+      await first.dir.current.read((tx) =>
+        writeExport(tx, { exportedAt: "2026-11-11T02:00:00.000Z" as never }, async (l) => {
+          again.push(l.replace(/\n$/, ""));
+        }),
+      );
+      expect(JSON.parse(again.at(-1) as string).h).toMatchObject({
+        type: "tenant.imported",
+        seq: sourceEnd + 1,
+      });
+      const second = await target(SECOND);
+      const b = await importInto(second, SECOND, again);
+      expect(b.staged.manifest).toMatchObject({ upto: sourceEnd + 1, restore_count: 1 });
+      expect(b.result).toEqual({ finished: true, highWater: sourceEnd + 2, restoreCount: 2 });
+      expect(await second.anchor.read(SECOND)).toMatchObject({
+        restoreCount: 2,
+        highWater: sourceEnd + 2,
+      });
+      // The second tenant's log is the first's and its own import.
+      expect(
+        await second.dir.current.read((tx) => exportLinesOf(tx, { upto: sourceEnd + 1 })),
+      ).toEqual(await first.dir.current.read((tx) => exportLinesOf(tx)));
+    },
+    T,
+  );
+
+  it(
+    "a file cut in segments: the import's event follows the last segment's end",
+    async () => {
+      const t = await target();
+      const r = await importInto(t, TARGET, await exportFileOf(source, SOURCE, [1, 4]));
+      expect(r.staged).toMatchObject({ segments: 3, manifest: { upto: sourceEnd } });
+      expect(r.ev).toMatchObject({ seq: sourceEnd + 1, importedUpto: sourceEnd });
+      expect(await outcome(t)).toBe("complete");
+    },
+    T,
+  );
+});
+
+/**
+ * `runImport` into `t` from `staging` with step ③'s values as given: expected to refuse before ④,
+ * nothing swapped and the anchor as it was (no marker). Returns the error's code.
+ */
+async function refusedBeforeFour(
+  t: Target,
+  staging: TenantStore,
+  three: { importSeq: number; importedUpto: number },
+  tenant: string = TARGET,
+) {
+  const before = await t.anchor.read(tenant);
+  let swapped = false;
+  const e = await runImport({
+    target: t.dir.current,
+    anchor: t.anchor,
+    tenant: tenant as never,
+    importId: newImportId(),
+    staging,
+    importSeq: three.importSeq as never,
+    importedUpto: three.importedUpto as never,
+    swap: async () => {
+      swapped = true;
+      t.dir.current = staging;
+      return staging;
+    },
+  }).then(
+    (r) => r,
+    (x: unknown) => x,
+  );
+  expect(swapped).toBe(false);
+  expect(await t.anchor.read(tenant)).toEqual(before);
+  return e instanceof OpsError ? e.code : e;
+}
+
+/** A tombstone appended to `staging`'s log: by `trigger` for `reason` (09 §5.9). */
+const appendTombstone = (staging: TenantStore, trigger: string, reason: string) =>
+  staging.write((tx) =>
+    appendOperation(tx, {
+      actor: "system" as never,
+      now: "2026-11-11T01:00:00.000Z" as never,
+      events: [
+        {
+          type: "deletion.executed",
+          trigger,
+          slot: `sl_${"3".repeat(16)}`,
+          blocks: {
+            target: { deletion: `pi_${"5".repeat(16)}`, reason },
+            positions: [],
+          },
+        } as never,
+      ],
+    }),
+  );
+
+describe("runImport checks before ④ that the staging log ends in what step ③ appended (§8)", () => {
+  it(
+    "③ skipped, the file an export of an imported tenant ending in its import's event: internal",
+    async () => {
+      const first = await target();
+      await importInto(first, TARGET, file);
+      const again: string[] = [];
+      await first.dir.current.read((tx) =>
+        writeExport(tx, { exportedAt: "2026-11-11T02:00:00.000Z" as never }, async (l) => {
+          again.push(l.replace(/\n$/, ""));
+        }),
+      );
+      const second = await target(SECOND);
+      const staging = await open("staging");
+      const s = await importIntoStaging({ staging, body: bodyOf(again, 999) });
+      // The host goes on to ④ with the staged file's end, its last event the first import's.
+      expect(
+        await refusedBeforeFour(
+          second,
+          staging,
+          { importSeq: s.importedUpto, importedUpto: s.importedUpto },
+          SECOND,
+        ),
+      ).toBe("internal");
+      // Still empty: its genesis only, no marker, the anchor as a tenant that served.
+      expect((await second.dir.current.read(readTail))?.seq).toBe(1);
+      expect(await second.anchor.read(SECOND)).toMatchObject({ highWater: 1, restoreCount: 0 });
+      expect((await second.anchor.read(SECOND)).importInProgress).toBeUndefined();
+    },
+    T,
+  );
+
+  it(
+    "a tombstone of a placeholder after ③'s event passes: ④ and the swap run, and ⑥ refuses it as it refuses any deletion event today",
+    async () => {
+      // ③ adds these after the import's event (09 §5.2); that step is not in this version, and
+      // finishImport refuses a log with deletion events until their registry is built. Once both
+      // are in, this import completes.
+      const t = await target();
+      const staging = await staged();
+      const three = stepThree.get(staging);
+      if (three === undefined) throw new Error("not staged");
+      await appendTombstone(staging, "import", "import_placeholder");
+      const importId = newImportId();
+      let swapped = false;
+      const e = await runImport({
+        target: t.dir.current,
+        anchor: t.anchor,
+        tenant: TARGET as never,
+        importId,
+        ...stagedFor(staging),
+        swap: async () => {
+          swapped = true;
+          t.dir.current = staging;
+          return staging;
+        },
+      }).then(
+        (r) => r,
+        (x: unknown) => x,
+      );
+      expect(swapped).toBe(true);
+      expect((await t.anchor.read(TARGET)).importInProgress).toBe(importId);
+      expect(e).toBeInstanceOf(OpsError);
+      expect((e as OpsError).message).toBe(
+        "finishImport: the imported log holds deletion events; their registry is not built yet",
+      );
+    },
+    T,
+  );
+
+  it.each([
+    ["an event of another type", (s: TenantStore) => appendOne(s)],
+    ["a tombstone of another reason", (s: TenantStore) => appendTombstone(s, "import", "expiry")],
+    [
+      "a tombstone of another trigger",
+      (s: TenantStore) => appendTombstone(s, "deletion_expiry", "import_placeholder"),
+    ],
+  ])(
+    "%s after ③'s event: internal",
+    async (_, append) => {
+      const t = await target();
+      const staging = await staged();
+      const three = stepThree.get(staging);
+      if (three === undefined) throw new Error("not staged");
+      await append(staging);
+      expect(await refusedBeforeFour(t, staging, three)).toBe("internal");
+    },
+    T,
+  );
+
+  it(
+    "an event after ③'s, the import event's seq given as the log's end: its latest import event is not there (internal)",
+    async () => {
+      const t = await target();
+      const staging = await staged();
+      const three = stepThree.get(staging);
+      if (three === undefined) throw new Error("not staged");
+      await appendOne(staging);
+      expect(
+        await refusedBeforeFour(t, staging, { ...three, importSeq: three.importSeq + 1 }),
+      ).toBe("internal");
+    },
+    T,
+  );
+
+  it(
+    "an import point other than ③'s: internal",
+    async () => {
+      const t = await target();
+      const staging = await staged();
+      const three = stepThree.get(staging);
+      if (three === undefined) throw new Error("not staged");
+      expect(
+        await refusedBeforeFour(t, staging, { ...three, importedUpto: three.importedUpto - 1 }),
+      ).toBe("internal");
+    },
+    T,
+  );
+});
+
 describe("finishImport refuses, the marker kept and the anchor unchanged", () => {
   const refused = async (t: Target, store: TenantStore, importId: string) => {
     const before = await t.anchor.read(TARGET);
@@ -664,7 +929,8 @@ describe("finishImport refuses, the marker kept and the anchor unchanged", () =>
       await appendImportEvent(staging, {
         user: IMPORTER as never,
         tenant: TARGET as never,
-        manifest: s.manifest,
+        // The file as it would end with the event in it.
+        manifest: { ...s.manifest, ...(await logEndOf(staging)) },
         now: "2026-11-11T01:00:00.000Z" as never,
       });
       const importId = newImportId();
@@ -700,7 +966,7 @@ describe("finishImport refuses, the marker kept and the anchor unchanged", () =>
 });
 
 describe("the contract's error of an import (04-contract §16, 04-contract-types §9)", () => {
-  it("a refused file, a manifest that does not match its log, a second import event, a line too long", () => {
+  it("a refused file, a manifest that does not match its log, a line too long, another import", () => {
     expect(importContractError(new ImportRejected("chain_broken", "x", { seq: 7 }))).toEqual({
       code: "import_rejected",
       reason: "chain_broken",
@@ -712,9 +978,6 @@ describe("the contract's error of an import (04-contract §16, 04-contract-types
     expect(importContractError(new ImportEventError("manifest_restore_count", "x"))).toEqual({
       code: "import_rejected",
       reason: "incomplete",
-    });
-    expect(importContractError(new ImportEventError("already_imported", "x"))).toEqual({
-      code: "internal",
     });
     expect(importContractError(new ImportLineTooLarge())).toEqual({
       code: "too_large",

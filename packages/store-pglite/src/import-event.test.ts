@@ -52,12 +52,13 @@ const ctx = (minute: number) =>
     confirmation: null,
   });
 
-const manifest = (upto: number) => ({
+const manifest = (upto: number, upto_hash = "0".repeat(64)) => ({
   saveslot_export: 1 as const,
   tenant_id: SOURCE,
   event_format: 1 as const,
   restore_count: 0,
   upto,
+  upto_hash,
   events: upto,
   exported_at: "2026-11-10T08:00:00.000Z",
   pending_deletions: "placeholder" as const,
@@ -92,6 +93,12 @@ async function importedLog(): Promise<{ store: TenantStore; desk: string; phone:
   return { store, desk, phone };
 }
 
+/** The manifest of an export of `store`'s log as it is now: it ends at the log's end. */
+async function manifestOf(store: TenantStore) {
+  const tail = await store.read(readTail);
+  return manifest(tail?.seq ?? 0, tail?.hash);
+}
+
 const principals = (tx: ReadTx) =>
   tx
     .query<{ id: string; kind: string; state: string; registered_seq: unknown }>(
@@ -112,7 +119,7 @@ describe("tenant.imported", () => {
       const r = await appendImportEvent(store, {
         user: IMPORTER as never,
         tenant: TARGET as never,
-        manifest: manifest(4) as never,
+        manifest: (await manifestOf(store)) as never,
         now: "2026-11-10T09:00:00.000Z" as never,
         node: NODE as never,
       });
@@ -154,7 +161,7 @@ describe("tenant.imported", () => {
       await appendImportEvent(store, {
         user: IMPORTER as never,
         tenant: TARGET as never,
-        manifest: manifest(4) as never,
+        manifest: (await manifestOf(store)) as never,
         now: "2026-11-10T09:00:00.000Z" as never,
       });
       expect(await store.read(principals)).toEqual(
@@ -178,7 +185,7 @@ describe("tenant.imported", () => {
       await appendImportEvent(store, {
         user: IMPORTER as never,
         tenant: TARGET as never,
-        manifest: manifest(4) as never,
+        manifest: (await manifestOf(store)) as never,
         now: "2026-11-10T09:00:00.000Z" as never,
       });
       const after = await store.read(principals);
@@ -219,7 +226,7 @@ describe("tenant.imported", () => {
       await appendImportEvent(store, {
         user: USER as never,
         tenant: TARGET as never,
-        manifest: manifest(4) as never,
+        manifest: (await manifestOf(store)) as never,
         now: "2026-11-10T09:00:00.000Z" as never,
       });
       const rows = await store.read(principals);
@@ -243,7 +250,7 @@ describe("tenant.imported", () => {
       await appendImportEvent(store, {
         user: IMPORTER as never,
         tenant: TARGET as never,
-        manifest: manifest(4) as never,
+        manifest: (await manifestOf(store)) as never,
         now: "2026-11-10T09:00:00.000Z" as never,
       });
       expect(await latest()).toEqual({ restoreCount: 1, seq: 5, point: 4 });
@@ -305,7 +312,7 @@ describe("tenant.imported", () => {
       await appendImportEvent(store, {
         user: IMPORTER as never,
         tenant: TARGET as never,
-        manifest: manifest(4) as never,
+        manifest: (await manifestOf(store)) as never,
         now: "2026-11-10T09:00:00.000Z" as never,
       });
       const table = await store.read(principals);
@@ -328,18 +335,22 @@ describe("tenant.imported", () => {
     const refused = async (
       store: TenantStore,
       restore_count: unknown,
+      m: object = {},
+      o: object = {},
     ): Promise<{ code: string } | "appended"> => {
       const before = await store.read(readTail);
       try {
         await appendImportEvent(store, {
           user: IMPORTER as never,
           tenant: TARGET as never,
-          manifest: { ...manifest(4), restore_count } as never,
+          manifest: { ...(await manifestOf(store)), restore_count, ...m } as never,
           now: "2026-11-10T09:00:00.000Z" as never,
+          node: NODE as never,
+          ...o,
         });
         return "appended";
       } catch (e) {
-        if (!(e instanceof ImportEventError)) throw e;
+        if (!(e instanceof ImportEventError || e instanceof OpsError)) throw e;
         expect(await store.read(readTail)).toEqual(before);
         return { code: e.code };
       }
@@ -389,12 +400,51 @@ describe("tenant.imported", () => {
     );
 
     it(
-      "a second import event on a staging log that already ends with one",
+      "a log not ending at the manifest's end, one past it with an import's event or another event: internal",
+      async () => {
+        const { store } = await importedLog();
+        const m = await manifestOf(store);
+        expect(await refused(store, 0, { upto: 3 })).toEqual({ code: "internal" });
+        expect(await refused(store, 0, { upto: 5 })).toEqual({ code: "internal" });
+        expect(await refused(store, 0, { upto_hash: "0".repeat(64) })).toEqual({
+          code: "internal",
+        });
+        expect(await refused(store, 0, m)).toBe("appended");
+        // The same manifest again, its log now ending in the import's event: of the same node or
+        // another, nothing is appended.
+        expect(await refused(store, 0, m)).toEqual({ code: "internal" });
+        const other = { node: `n_${"4".repeat(26)}` };
+        expect(await refused(store, 0, m, other)).toEqual({ code: "internal" });
+        // One past the end, but not an import's event.
+        const atImport = await manifestOf(store);
+        await store.write((tx) =>
+          appendOperation(tx, {
+            actor: IMPORTER as never,
+            now: "2026-11-10T09:30:00.000Z" as never,
+            events: [
+              {
+                type: "principal.revoked",
+                blocks: {
+                  ctx: { now: "2026-11-10T09:30:00.000Z", ruleset_version: 1 },
+                  principal: { principal: `ci_${"3".repeat(26)}` },
+                },
+              } as never,
+            ],
+          }),
+        );
+        expect(await refused(store, 1, atImport)).toEqual({ code: "internal" });
+      },
+      T,
+    );
+
+    it(
+      "a log ending in an import's event at the manifest's end (an export of an imported tenant): appended",
       async () => {
         const { store } = await importedLog();
         expect(await refused(store, 0)).toBe("appended");
         // The staging log is now the imported log and its import: its own count is 1.
-        expect(await refused(store, 1)).toEqual({ code: "already_imported" });
+        expect(await refused(store, 1, {}, { node: `n_${"4".repeat(26)}` })).toBe("appended");
+        expect(await store.read((tx) => restorePoint(tx))).toMatchObject({ restoreCount: 2 });
       },
       T,
     );

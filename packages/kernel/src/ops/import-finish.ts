@@ -135,8 +135,13 @@ export async function abortImportOnOpen(o: {
 
 /**
  * Steps ④–⑥, after the host replayed the file into the staging storage and appended the import's
- * event there. Before ④, an anchor whose high water is above the staging log's end is `internal`,
- * nothing changed. ④ sets the marker (the
+ * event there. Before ④, `internal` with nothing changed when the staging log does not end in what
+ * step ③ appended: its latest `tenant.imported` at `importSeq`, following the file's last event
+ * `importedUpto`, and after it only the tombstones ③ adds for placeholders (`deletion.executed`,
+ * trigger `import`, reason `import_placeholder`; 09-event-format §5.2); or when the anchor's high
+ * water is above the log's end. An export of an imported tenant ends in a `tenant.imported` of its
+ * own, so the type of the latest one does not tell that ③ ran: a host that skipped it would make a
+ * copy of the source tenant, its node ID and restore count. ④ sets the marker (the
  * anchor must be empty) and then checks that the target's log holds the genesis event only; if
  * either is not so, `invalid_argument` (`tenant_not_empty`), the marker cleared, nothing changed;
  * another import's marker there is {@link ImportInProgress}.
@@ -150,16 +155,56 @@ export async function runImport(o: {
   readonly anchor: AnchorStore;
   readonly tenant: TenantId;
   readonly importId: ImportId;
-  /** The staging log's end: the `seq` of the import's event there. */
-  readonly stagingEnd: Seq;
+  /** The staging storage, open: its log is checked before ④; `swap` closes it as it needs. */
+  readonly staging: TenantStore;
+  /** The `seq` of the import's event in the staging log, as step ③ returned it. */
+  readonly importSeq: Seq;
+  /** The file's last event, as step ③ returned it: the import event's `imported_upto`. */
+  readonly importedUpto: Seq;
   readonly swap: () => Promise<TenantStore>;
 }): Promise<FinishImportResult> {
   const notEmpty = () =>
     new OpsError("invalid_argument", "the tenant is not empty", { reason: "tenant_not_empty" });
+  const staged = await o.staging.read(async (tx) => {
+    const tail = await readTail(tx);
+    const r = await tx.query<{ seq: unknown; header: string }>(
+      "SELECT seq, header FROM events WHERE type = 'tenant.imported' ORDER BY seq DESC LIMIT 1",
+    );
+    const row = r.rows[0];
+    // What follows the import's event: the tombstones of placeholders only.
+    const after = await tx.query<{ type: string; header: string; target: string | null }>(
+      `SELECT e.type, e.header, c.body AS target FROM events e
+       LEFT JOIN content c ON c.seq = e.seq AND c.path = 'target'
+       WHERE e.seq > $1 ORDER BY e.seq`,
+      [o.importSeq],
+    );
+    return {
+      end: tail?.seq ?? 0,
+      seq: row === undefined ? undefined : Number(row.seq),
+      importedUpto: row === undefined ? undefined : JSON.parse(row.header).imported_upto,
+      onlyTombstonesAfter: after.rows.every(
+        (e) =>
+          e.type === "deletion.executed" &&
+          JSON.parse(e.header).trigger === "import" &&
+          e.target !== null &&
+          JSON.parse(e.target).reason === "import_placeholder",
+      ),
+    };
+  });
+  if (
+    staged.seq !== o.importSeq ||
+    staged.importedUpto !== o.importedUpto ||
+    !staged.onlyTombstonesAfter
+  ) {
+    throw new OpsError(
+      "internal",
+      "runImport: the staging log does not end in what step ③ appended",
+    );
+  }
   const before = await o.anchor.read(o.tenant);
   // `finishImport` refuses this after the swap, and every reopen would refuse it again: the
   // tenant neither empty nor imported (§8). Refused here, the tenant stays as it was.
-  if (before.highWater > o.stagingEnd) {
+  if (before.highWater > staged.end) {
     throw new OpsError(
       "internal",
       "runImport: the anchor's high water is above the staging log's end",
@@ -210,8 +255,7 @@ export type ImportContractError =
 /**
  * The contract's error for a failure of the import's own steps: a file refused
  * (`import_rejected` with its reason and position), a manifest whose restore count does not match
- * its log (`import_rejected` `incomplete`: the manifest and the content do not match), a second
- * import event (`internal`: a request never reaches it, every import has a new staging storage), a
+ * its log (`import_rejected` `incomplete`: the manifest and the content do not match), a
  * line over the limit (`too_large` `import_line`, 09-event-format §8), another import in progress
  * (`unavailable` `importing`). Undefined for any other error, which the caller maps as it maps the rest (`OpsError` such as
  * `tenant_not_empty`, a storage failure).
@@ -229,10 +273,6 @@ export function importContractError(e: unknown): ImportContractError | undefined
     return { code: "too_large", reason: "import_line", limit_bytes: e.limitBytes };
   }
   if (e instanceof ImportInProgress) return { code: "unavailable", reason: "importing" };
-  if (e instanceof ImportEventError) {
-    return e.code === "manifest_restore_count"
-      ? { code: "import_rejected", reason: "incomplete" }
-      : { code: "internal" };
-  }
+  if (e instanceof ImportEventError) return { code: "import_rejected", reason: "incomplete" };
   return undefined;
 }

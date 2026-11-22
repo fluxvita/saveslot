@@ -89,8 +89,10 @@ export interface ExportedEvent {
 /** What the whole file held, once its end is reached and checked. */
 export interface ExportFileSummary {
   /**
-   * The first segment's manifest, but its restore count the last segment's: the count when the
-   * last segment was exported (§8). The export time and the pending deletions are the first's.
+   * The first segment's manifest, but its end (`upto`, `upto_hash`) and restore count the last
+   * segment's: where the file ends, and the count when the last segment was exported (§8). The
+   * export time and the pending deletions are the first's, and so is `events`, which nothing reads
+   * (the whole file's count is {@link ExportFileSummary.events}).
    */
   readonly manifest: ExportManifest;
   /** The last event's `seq`. */
@@ -235,7 +237,12 @@ export class ExportFileReader {
       throw this.atBlock(first, `a placeholder of ${confirmed}, which the file does not confirm`);
     }
     return {
-      manifest: { ...this.first, restore_count: this.segment?.restore_count ?? 0 },
+      manifest: {
+        ...this.first,
+        upto: this.segment?.upto ?? this.first.upto,
+        upto_hash: this.segment?.upto_hash ?? this.first.upto_hash,
+        restore_count: this.segment?.restore_count ?? 0,
+      },
       upto: this.lastSeq ?? this.first.upto,
       events: this.count,
       segments: this.segments,

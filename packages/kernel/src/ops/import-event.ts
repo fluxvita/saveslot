@@ -53,9 +53,8 @@ export const MAX_MANIFEST_RESTORE_COUNT = 2 ** 31 - 2;
  * Why the import's event was not appended. Codes are stable; the message gives no content.
  * - `manifest_restore_count`: the manifest's restore count is not a non-negative integer up to
  *   {@link MAX_MANIFEST_RESTORE_COUNT}, or not the imported log's own current restore count.
- * - `already_imported`: the staging log already ends with an import's event.
  */
-export type ImportEventErrorCode = "manifest_restore_count" | "already_imported";
+export type ImportEventErrorCode = "manifest_restore_count";
 
 export class ImportEventError extends Error {
   readonly code: ImportEventErrorCode;
@@ -66,7 +65,13 @@ export class ImportEventError extends Error {
   }
 }
 
-/** Appends and applies `tenant.imported` after the last event of the imported log in `staging`. */
+/**
+ * Appends and applies `tenant.imported` after the last event of the imported log in `staging`.
+ * The staging log must end where the manifest says (`upto`, its header hashing to `upto_hash`),
+ * whatever its last event is: an export of a tenant that was imported may end in that import's
+ * event. Anything else is `internal`, nothing appended: step ③ runs once on a staging storage of
+ * its own (§8 «重入»: a crash before ⑤ discards it, after ⑤ only ⑥ runs).
+ */
 export async function appendImportEvent(
   staging: TenantStore,
   o: ImportEventInput,
@@ -93,18 +98,13 @@ export async function appendImportEvent(
         "appendImportEvent: the staging storage holds no imported log",
       );
     }
-    const latest = await restorePoint(tx);
-    if (latest.seq === tail.seq && tail.seq > 1) {
-      const last = await tx.query<{ type: string }>("SELECT type FROM events WHERE seq = $1", [
-        tail.seq,
-      ]);
-      if (last.rows[0]?.type === "tenant.imported") {
-        throw new ImportEventError(
-          "already_imported",
-          "the staging log already ends with an import",
-        );
-      }
+    if (tail.seq !== o.manifest.upto || tail.hash !== o.manifest.upto_hash) {
+      throw new OpsError(
+        "internal",
+        "appendImportEvent: the staging log does not end at the manifest's upto",
+      );
     }
+    const latest = await restorePoint(tx);
     if (latest.restoreCount !== given) {
       throw new ImportEventError(
         "manifest_restore_count",

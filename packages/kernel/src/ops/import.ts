@@ -34,7 +34,7 @@ import { randomCrockford } from "./ids.ts";
 export const newImportId = (): ImportId => `im_${randomCrockford(16)}`;
 
 export interface StagedImport {
-  /** The first segment's manifest, with the last segment's restore count (09 §8). */
+  /** The first segment's manifest, with the last segment's end and restore count (09 §8). */
   readonly manifest: ExportManifest;
   /** The last imported event's `seq`: `imported_upto` of the import's event. */
   readonly importedUpto: Seq;

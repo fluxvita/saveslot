@@ -13,6 +13,7 @@ import {
   eventsOf,
   readBufferOf,
   readEvents,
+  readTail,
 } from "@fluxvita/saveslot-kernel";
 import {
   COMPILED_V1,
@@ -132,8 +133,9 @@ const ofType = async (op: number, type: string) =>
     }));
 
 /** The user imports their own export: they stay active; the restore count becomes 1. */
-const importOwnExport = () =>
-  appendImportEvent(s.store, {
+const importOwnExport = async () => {
+  const tail = await s.store.read(readTail);
+  return appendImportEvent(s.store, {
     user: USER as never,
     tenant: `tn_${"9".repeat(26)}` as never,
     manifest: {
@@ -141,14 +143,15 @@ const importOwnExport = () =>
       tenant_id: TENANT as never,
       event_format: 1,
       restore_count: 0,
-      upto: 1,
-      upto_hash: "0".repeat(64),
+      upto: tail?.seq as never,
+      upto_hash: tail?.hash as never,
       events: 1,
       exported_at: "2026-11-05T08:00:00.000Z" as never,
       pending_deletions: "placeholder",
     },
     now: "2026-11-05T09:00:00.000Z" as never,
   });
+};
 
 beforeAll(async () => {
   s = await openReusable("saveslot-import-receipt-");
