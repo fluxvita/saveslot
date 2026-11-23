@@ -33,6 +33,8 @@ export interface OAuthTexts {
   readonly errorTitle: string;
   readonly errors: {
     readonly client: string;
+    readonly clientLimited: string;
+    readonly clientBusy: string;
     readonly redirect: string;
     readonly tooLong: string;
     readonly form: string;
@@ -84,6 +86,8 @@ const EN: OAuthTexts = {
   errors: {
     client:
       "The application could not be identified: its client ID is not a client document saveslot can use.",
+    clientLimited: "Too many authorization requests from here lately. Try again later.",
+    clientBusy: "saveslot is busy looking up applications. Try again in a moment.",
     redirect:
       "The application asked to be sent back to an address it did not register. Nothing was sent to it.",
     tooLong: "The authorization request is too long.",
@@ -137,6 +141,8 @@ const ZH: OAuthTexts = {
   errorTitle: "这个授权请求不能使用",
   errors: {
     client: "无法识别这个应用：它的客户端 ID 不是 saveslot 能用的客户端文档。",
+    clientLimited: "这里最近发来的授权请求太多，请稍后再试。",
+    clientBusy: "saveslot 正忙于识别应用，请稍等片刻再试。",
     redirect: "这个应用要求回到一个它没有登记的地址。没有向它发送任何东西。",
     tooLong: "授权请求太长。",
     form: "这个表单已过期或已经提交过。请回到应用里重新开始。",

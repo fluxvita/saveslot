@@ -286,10 +286,13 @@ export async function handleAuthorize(
   const checked = await checkAuthorizationRequest({
     query: new URLSearchParams(query),
     external: ctx.deps.external,
-    resolveClient: (id) => resolveClient(ctx.deps, id, now),
+    resolveClient: (id) => resolveClient(ctx.deps, id, now, ctx.remote(req)),
   });
   if ("kind" in checked) {
     if (checked.kind === "redirect") return redirect(res, checked.to);
+    // Bounded fetches: not the client's fault, so not its error page.
+    if (checked.client === "fetch_limited") return errorPage(res, t, 429, t.errors.clientLimited);
+    if (checked.client === "fetch_busy") return errorPage(res, t, 503, t.errors.clientBusy);
     return errorPage(
       res,
       t,

@@ -10,7 +10,14 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type IdentityProvider, type IdentityRequest, tokenHash } from "@fluxvita/saveslot-service";
+import {
+  CLIENT_FETCH_BOUNDS,
+  type ClientFetchBounds,
+  ClientFetchLimits,
+  type IdentityProvider,
+  type IdentityRequest,
+  tokenHash,
+} from "@fluxvita/saveslot-service";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { type OAuthTestBed, oauthTestBed } from "../../../service/src/oauth.fixture.ts";
 import { testBackend } from "../../../test-backend/src/index.fixture.ts";
@@ -67,6 +74,8 @@ const identity: IdentityProvider = {
 };
 
 let bed: OAuthTestBed;
+/** Bounds on fetching client documents for the next request; the bed's when undefined. */
+let bounds: ClientFetchBounds | undefined;
 let server: Server;
 let base: string;
 let clientName = "Example <Agent>";
@@ -93,7 +102,7 @@ beforeAll(async () => {
   const deps = bed.deps;
   server = createServer((req, res) => {
     handleOAuth(req, res, {
-      deps,
+      deps: bounds === undefined ? deps : { ...deps, clientFetches: new ClientFetchLimits(bounds) },
       identity,
       remote: () => "127.0.0.1",
       now: () => NOW,
@@ -204,6 +213,27 @@ describe("signed out", () => {
       const r = await get(query({ state: "x".repeat(5000) }));
       expect(r.status).toBe(400);
       expect(loginsBegun).toEqual([]);
+    },
+    T,
+  );
+});
+
+describe("fetching the client document bounded: its own page, not the client's error", () => {
+  it.each<[string, Partial<ClientFetchBounds>, number, string]>([
+    ["past the source's fetches", { perSource: 0 }, 429, "Too many authorization requests"],
+    ["fetches under way at their bound", { concurrent: 0 }, 503, "saveslot is busy"],
+  ])(
+    "%s: %i",
+    async (_, b, status, text) => {
+      bounds = { ...CLIENT_FETCH_BOUNDS, ...b };
+      try {
+        const r = await get(query(), "s-user");
+        expect(r.status).toBe(status);
+        expect(r.headers.get("location")).toBeNull();
+        expect(await r.text()).toContain(text);
+      } finally {
+        bounds = undefined;
+      }
     },
     T,
   );

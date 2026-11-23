@@ -11,6 +11,7 @@ import {
 import type { TenantId, UserId } from "./control-plane.ts";
 import { type IdentityProvider, UserSessionError, writeUserSession } from "./identity.ts";
 import type { ClientFetcher } from "./oauth-client.ts";
+import { CLIENT_FETCH_BOUNDS, ClientFetchLimits } from "./oauth-client-limits.ts";
 import type { OAuthDeps } from "./oauth-server.ts";
 import { initOAuthTables, type OAuthStore, openOAuthStore } from "./oauth-store.ts";
 import { initControlPlane, type ServerControlPlane } from "./server-control-plane.ts";
@@ -124,6 +125,8 @@ export async function oauthTestBed(o: {
     fetchClient: o.fetchClient,
     external: o.external,
     windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+    // A test file's requests all come from one address: not bounded per source here.
+    clientFetches: new ClientFetchLimits({ ...CLIENT_FETCH_BOUNDS, perSource: 1_000_000 }),
   };
   return {
     control,

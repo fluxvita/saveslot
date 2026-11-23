@@ -52,7 +52,11 @@ export type ClientProblem =
   | "redirect_uri_malformed"
   | "auth_method_unsupported"
   | "grant_type_unsupported"
-  | "address_refused";
+  | "address_refused"
+  /** Too many fetches from this request's source lately (`ClientFetchLimits`). */
+  | "fetch_limited"
+  /** As many fetches under way as allowed: try again shortly. */
+  | "fetch_busy";
 
 export class ClientError extends Error {
   override readonly name = "ClientError";

@@ -33,6 +33,7 @@ import { audienceOf, pkceMatches } from "./oauth-authorize.ts";
 import {
   CLI_CLIENT,
   CLI_CLIENT_ID,
+  ClientError,
   type ClientFetcher,
   CONTROL,
   clientCacheSeconds,
@@ -40,6 +41,7 @@ import {
   clientIdUrl,
   type OAuthClient,
 } from "./oauth-client.ts";
+import { type ClientFetchLimits, PROCESS_CLIENT_FETCHES } from "./oauth-client-limits.ts";
 import type { Grant, OAuthStore, RefreshEntry } from "./oauth-store.ts";
 import { issueServerConnection, revokeServerConnection } from "./server-connections.ts";
 import type { OpenTenant } from "./tenant-pool.ts";
@@ -69,6 +71,8 @@ export interface OAuthDeps {
   /** The external address (configuration): the issuer and the tokens' audience. */
   readonly external: string;
   readonly windows: { readonly requestKey: number; readonly idempotencyKey: number };
+  /** The bounds on fetching client documents; the process's own when not given. */
+  readonly clientFetches?: ClientFetchLimits;
 }
 
 export const after = (now: string, seconds: number) =>
@@ -101,13 +105,15 @@ export function newRefreshToken(
 
 /**
  * The client of a client ID: the CLI's, or a client document's, from the cache while it is fresh,
- * else fetched, checked and cached. A document that fails its checks is not cached. Throws a
- * `ClientError`.
+ * else fetched, checked and cached. A document that fails its checks is not cached; one that the
+ * full cache has no room for is used for this request only. A fetch is bounded (`ClientFetchLimits`):
+ * per `source`, the request's source address, and in how many run at once. Throws a `ClientError`.
  */
 export async function resolveClient(
-  deps: Pick<OAuthDeps, "store" | "fetchClient">,
+  deps: Pick<OAuthDeps, "store" | "fetchClient" | "clientFetches">,
   clientId: string,
   now: string,
+  source: string,
 ): Promise<OAuthClient> {
   if (clientId === CLI_CLIENT_ID) return CLI_CLIENT;
   const url = clientIdUrl(clientId);
@@ -119,13 +125,25 @@ export async function resolveClient(
       // A cached document that no longer passes (the rules changed): fetched again below.
     }
   }
-  const fetched = await deps.fetchClient(url);
+  const limits = deps.clientFetches ?? PROCESS_CLIENT_FETCHES;
+  const place = limits.take(source, Date.parse(now));
+  if (place === "busy") throw new ClientError("fetch_busy", "client: too many fetches under way");
+  if (place === "limited") {
+    throw new ClientError("fetch_limited", "client: too many fetches from this source");
+  }
+  let fetched: Awaited<ReturnType<ClientFetcher>>;
+  try {
+    fetched = await deps.fetchClient(url);
+  } finally {
+    limits.done();
+  }
   const client = clientFromDocument(clientId, fetched.body);
   await deps.store.cacheClient(
     clientId,
     fetched.body,
     now,
     after(now, clientCacheSeconds(fetched.cacheControl)),
+    limits.bounds.cachedRows,
   );
   return client;
 }

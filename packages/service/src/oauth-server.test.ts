@@ -13,7 +13,12 @@ import { TEST_BACKEND, testBackend } from "../../test-backend/src/index.fixture.
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import { sessionsFrom } from "./oauth.fixture.ts";
 import { checkAudience } from "./oauth-audience.ts";
-import { CLI_CLIENT, type FetchedDocument, type OAuthClient } from "./oauth-client.ts";
+import { CLI_CLIENT, ClientError, type FetchedDocument, type OAuthClient } from "./oauth-client.ts";
+import {
+  CLIENT_FETCH_BOUNDS,
+  type ClientFetchBounds,
+  ClientFetchLimits,
+} from "./oauth-client-limits.ts";
 import {
   ACCESS_TOKEN_SECONDS,
   consentScopes,
@@ -41,6 +46,7 @@ const USER = `u_${"1".repeat(26)}` as const;
 const NOW = "2026-11-21T08:00:00.000Z";
 const later = (s: number) => new Date(Date.parse(NOW) + s * 1000).toISOString();
 const ID = "https://client.example/oauth/client.json";
+const SOURCE = "192.0.2.10";
 const CLIENT: OAuthClient = {
   id: ID,
   name: "Example Agent",
@@ -148,6 +154,7 @@ function deps(): OAuthDeps {
     },
     external: EXT,
     windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+    clientFetches: new ClientFetchLimits(),
   };
 }
 
@@ -342,10 +349,10 @@ describe("client documents", () => {
   it(
     "fetched once, served from the cache while fresh, fetched again once stale",
     async () => {
-      expect(await resolveClient(deps(), ID, NOW)).toEqual(CLIENT);
-      expect(await resolveClient(deps(), ID, later(599))).toEqual(CLIENT);
+      expect(await resolveClient(deps(), ID, NOW, SOURCE)).toEqual(CLIENT);
+      expect(await resolveClient(deps(), ID, later(599), SOURCE)).toEqual(CLIENT);
       expect(fetches).toHaveLength(1);
-      await resolveClient(deps(), ID, later(600));
+      await resolveClient(deps(), ID, later(600), SOURCE);
       expect(fetches).toHaveLength(2);
     },
     T,
@@ -355,7 +362,7 @@ describe("client documents", () => {
     "a document that fails its checks is not cached",
     async () => {
       served = { body: new TextEncoder().encode(JSON.stringify({ client_id: `${ID}x` })) };
-      await expect(resolveClient(deps(), ID, NOW)).rejects.toMatchObject({
+      await expect(resolveClient(deps(), ID, NOW, SOURCE)).rejects.toMatchObject({
         code: "client_id_mismatch",
       });
       expect(await count("oauth_clients")).toBe(0);
@@ -366,7 +373,7 @@ describe("client documents", () => {
   it(
     "the CLI is built in: nothing fetched",
     async () => {
-      expect(await resolveClient(deps(), "saveslot-cli", NOW)).toBe(CLI_CLIENT);
+      expect(await resolveClient(deps(), "saveslot-cli", NOW, SOURCE)).toBe(CLI_CLIENT);
       expect(fetches).toEqual([]);
     },
     T,
@@ -376,11 +383,121 @@ describe("client documents", () => {
     "a malformed client ID is refused before any fetch",
     async () => {
       await expect(
-        resolveClient(deps(), "http://client.example/c.json", NOW),
+        resolveClient(deps(), "http://client.example/c.json", NOW, SOURCE),
       ).rejects.toMatchObject({
         code: "client_id_malformed",
       });
       expect(fetches).toEqual([]);
+    },
+    T,
+  );
+});
+
+describe("fetching client documents is bounded", () => {
+  /** A client document for each client ID, as its own address serves it. */
+  const doc = (id: string) =>
+    new TextEncoder().encode(
+      JSON.stringify({ client_id: id, client_name: "Agent", redirect_uris: CLIENT.redirectUris }),
+    );
+  const id = (n: number) => `https://client${n}.example/c.json`;
+  const bounded = (bounds: Partial<ClientFetchBounds>, fetchClient?: OAuthDeps["fetchClient"]) => ({
+    ...deps(),
+    fetchClient:
+      fetchClient ??
+      (async (url: URL) => {
+        fetches.push(url);
+        return { body: doc(url.href), cacheControl: "max-age=600" };
+      }),
+    clientFetches: new ClientFetchLimits({ ...CLIENT_FETCH_BOUNDS, ...bounds }),
+  });
+  const problem = async (p: Promise<unknown>) => {
+    try {
+      await p;
+    } catch (e) {
+      if (e instanceof ClientError) return e.code;
+      throw e;
+    }
+    return "resolved";
+  };
+
+  it(
+    "per source: past its cache misses, fetch_limited and nothing fetched; another source, a cached one, fine",
+    async () => {
+      const d = bounded({ perSource: 3 });
+      for (const n of [1, 2, 3]) await resolveClient(d, id(n), NOW, "192.0.2.1");
+      expect(await problem(resolveClient(d, id(4), NOW, "192.0.2.1"))).toBe("fetch_limited");
+      expect(fetches).toHaveLength(3);
+      // A cached one costs no fetch, so is not counted.
+      await resolveClient(d, id(1), NOW, "192.0.2.1");
+      await resolveClient(d, id(4), NOW, "192.0.2.2");
+      // After the window, the first source may again.
+      await resolveClient(d, id(5), later(15 * 60), "192.0.2.1");
+    },
+    T,
+  );
+
+  it(
+    "at once: past the fetches under way, fetch_busy; a place comes back when a fetch ends",
+    async () => {
+      let open: () => void = () => {};
+      const gate = new Promise<void>((r) => {
+        open = r;
+      });
+      const d = bounded({ concurrent: 2 }, async (url) => {
+        await gate;
+        return { body: doc(url.href) };
+      });
+      const a = resolveClient(d, id(1), NOW, "192.0.2.1");
+      const b = resolveClient(d, id(2), NOW, "192.0.2.2");
+      // Let both reach their fetch.
+      await new Promise((r) => setTimeout(r, 50));
+      // Refused at once; let in, it would wait on the gate: the timer answers instead.
+      const third = await Promise.race([
+        problem(resolveClient(d, id(3), NOW, "192.0.2.3")),
+        new Promise((r) => setTimeout(() => r("still waiting after 2 s"), 2000)),
+      ]);
+      expect(third).toBe("fetch_busy");
+      open();
+      await Promise.all([a, b]);
+      await resolveClient(d, id(3), NOW, "192.0.2.3");
+    },
+    T,
+  );
+
+  it(
+    "the per-source count full of live sources: a new source refused, no live count dropped",
+    async () => {
+      const d = bounded({ perSource: 2, sources: 2 });
+      await resolveClient(d, id(1), NOW, "192.0.2.1");
+      await resolveClient(d, id(2), NOW, "192.0.2.2");
+      for (const n of [3, 4, 5]) {
+        expect(await problem(resolveClient(d, id(n), NOW, `198.51.100.${n}`))).toBe(
+          "fetch_limited",
+        );
+      }
+      // 192.0.2.1 still has its count: one more, then its bound.
+      await resolveClient(d, id(6), NOW, "192.0.2.1");
+      expect(await problem(resolveClient(d, id(7), NOW, "192.0.2.1"))).toBe("fetch_limited");
+    },
+    T,
+  );
+
+  it(
+    "the cache full of fresh rows: a new document used but not cached; an expired row makes room",
+    async () => {
+      const d = bounded({ cachedRows: 2 });
+      await resolveClient(d, id(1), NOW, SOURCE);
+      await resolveClient(d, id(2), NOW, SOURCE);
+      expect(await resolveClient(d, id(3), NOW, SOURCE)).toMatchObject({ id: id(3) });
+      expect(await count("oauth_clients")).toBe(2);
+      expect(await store().cachedClient(id(3))).toBeUndefined();
+      // A cached client ID is refreshed in place, full or not.
+      await resolveClient(d, id(1), later(601), SOURCE);
+      expect(await count("oauth_clients")).toBe(2);
+      // id(2) expired at 600 s: it makes room.
+      await resolveClient(d, id(3), later(601), SOURCE);
+      expect(await store().cachedClient(id(3))).toBeDefined();
+      expect(await store().cachedClient(id(2))).toBeUndefined();
     },
     T,
   );

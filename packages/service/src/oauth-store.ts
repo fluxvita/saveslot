@@ -100,6 +100,9 @@ CREATE TABLE web_forms (
  */
 const INIT_LOCK = 0x5361_7665_4f41_7531n; // "SaveOAu1"
 
+/** The advisory lock taken while a client document is cached, so the row cap holds. */
+const CACHE_LOCK = 0x5361_7665_4f41_4331n; // "SaveOAC1"
+
 /**
  * Makes the OAuth tables and records their format; on a database that has them, checks the format
  * and changes nothing (`saveslot server init`). Runs after `initControlPlane` (the tables refer to
@@ -324,21 +327,36 @@ export class OAuthStore {
       : { document: new Uint8Array(row.document), expiresAt: row.expires_at };
   }
 
+  /**
+   * Caches a client document, keeping at most `cap` rows: a client ID cached already is replaced;
+   * a new one, when `cap` rows are there after the expired ones went, is not cached (false). Rows
+   * still fresh are never dropped to make room. One writer at a time, under a lock of its own.
+   */
   async cacheClient(
     clientId: string,
     document: Uint8Array,
     fetchedAt: string,
     expiresAt: string,
-  ): Promise<void> {
-    await this.#db.write((tx) =>
-      tx.query(
-        `INSERT INTO oauth_clients (client_id, document, fetched_at, expires_at)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (client_id) DO UPDATE SET document = EXCLUDED.document,
-             fetched_at = EXCLUDED.fetched_at, expires_at = EXCLUDED.expires_at`,
+    cap: number,
+  ): Promise<boolean> {
+    return this.#db.write(async (tx) => {
+      await tx.query("SELECT pg_advisory_xact_lock($1)", [CACHE_LOCK.toString()]);
+      const r = await tx.query(
+        `UPDATE oauth_clients SET document = $2, fetched_at = $3, expires_at = $4
+           WHERE client_id = $1 RETURNING 1`,
         [clientId, document, fetchedAt, expiresAt],
-      ),
-    );
+      );
+      if (r.rows.length > 0) return true;
+      await tx.query("DELETE FROM oauth_clients WHERE expires_at <= $1", [fetchedAt]);
+      const n = await tx.query<{ n: number }>("SELECT count(*)::int AS n FROM oauth_clients");
+      if (Number(n.rows[0]?.n ?? 0) >= cap) return false;
+      await tx.query(
+        `INSERT INTO oauth_clients (client_id, document, fetched_at, expires_at)
+           VALUES ($1, $2, $3, $4)`,
+        [clientId, document, fetchedAt, expiresAt],
+      );
+      return true;
+    });
   }
 
   /** Forgets a client document: the next request fetches it again. */

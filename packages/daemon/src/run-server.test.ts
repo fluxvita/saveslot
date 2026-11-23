@@ -8,6 +8,7 @@ import { request } from "node:http";
 import { join } from "node:path";
 import {
   addLocalUser,
+  CLIENT_FETCH_BOUNDS,
   CursorKeys,
   type DiscardDatabase,
   databaseOf,
@@ -918,6 +919,58 @@ describe("runServer: an OAuth connection revoked through /v1", () => {
       });
       expect(again.status).toBe(400);
       expect(((await again.json()) as { error: string }).error).toBe("invalid_grant");
+    },
+    T,
+  );
+});
+
+// The bounds on fetching client documents count by the request's source as runServer gives it:
+// behind a trusted proxy, the address X-Forwarded-For names, so one source at its bound holds back
+// only itself. A document that fails its checks is not cached, so each request is a fetch.
+describe("runServer: client document fetches, bounded per source", () => {
+  let s: RunningServer;
+  let fetches = 0;
+  beforeAll(async () => {
+    const c = await controlDb();
+    const cfg = config();
+    await CursorKeys.createFile(cfg.handleKeyFile);
+    s = await runServer({
+      config: cfg,
+      version: "0.0.0-test",
+      openControl: async () => c.db,
+      backend: tenants().backend,
+      fetchClient: async () => {
+        fetches++;
+        return { body: new TextEncoder().encode(JSON.stringify({ client_id: "elsewhere" })) };
+      },
+    });
+  }, T);
+  afterAll(async () => {
+    await s?.close();
+  }, T);
+
+  const authorize = (source: string, i: number) =>
+    send(s, {
+      path: `/oauth/authorize?${new URLSearchParams({
+        client_id: `https://host.example/clients/${source}/${i}.json`,
+        redirect_uri: "https://host.example/callback",
+        response_type: "code",
+      })}`,
+      headers: { "x-forwarded-for": source },
+    });
+
+  it(
+    "a source past its bound gets 429 without a fetch; another source behind the proxy does not",
+    async () => {
+      const statuses: number[] = [];
+      for (let i = 0; i < CLIENT_FETCH_BOUNDS.perSource; i++) {
+        statuses.push((await authorize("203.0.113.40", i)).status);
+      }
+      expect(new Set(statuses)).toEqual(new Set([400]));
+      expect(fetches).toBe(CLIENT_FETCH_BOUNDS.perSource);
+      expect((await authorize("203.0.113.40", 999)).status).toBe(429);
+      expect(fetches).toBe(CLIENT_FETCH_BOUNDS.perSource);
+      expect((await authorize("203.0.113.41", 0)).status).toBe(400);
     },
     T,
   );
