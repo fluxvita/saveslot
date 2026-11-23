@@ -28,7 +28,13 @@ import {
   resolveClient,
   TokenError,
 } from "./oauth-server.ts";
-import { initOAuthTables, OAUTH_FORMAT, OAuthStore, openOAuthStore } from "./oauth-store.ts";
+import {
+  EXPIRED_CREDENTIAL_KEPT_SECONDS,
+  initOAuthTables,
+  OAUTH_FORMAT,
+  OAuthStore,
+  openOAuthStore,
+} from "./oauth-store.ts";
 import {
   ControlPlaneError,
   initControlPlane,
@@ -988,6 +994,55 @@ describe("form tokens", () => {
       // The form token and the code (60 seconds) have expired.
       expect(await store().sweep(later(60))).toBe(2);
       expect(await store().useForm("new", "x", later(61))).toBe(true);
+    },
+    T,
+  );
+
+  it(
+    "sweep deletes a credential of a grant a day after it expired; static tokens and grant-less sessions stay",
+    async () => {
+      const put = (hash: string, o: { expiresAt?: string; grant?: string; session?: boolean }) =>
+        cp().putCredential({
+          hash,
+          kind: o.session === true ? "session" : "connection",
+          principal: o.session === true ? USER : (`ci_${"7".repeat(26)}` as const),
+          tenant: TENANT,
+          ...(o.expiresAt === undefined ? {} : { expiresAt: o.expiresAt }),
+          ...(o.grant === undefined ? {} : { grant: o.grant }),
+        });
+      const day = EXPIRED_CREDENTIAL_KEPT_SECONDS;
+      await put("a".repeat(64), { expiresAt: later(0), grant: "g-old" });
+      await put("b".repeat(64), { expiresAt: later(1), grant: "g-recent", session: true });
+      await put("c".repeat(64), { expiresAt: later(day * 2), grant: "g-live" });
+      await put("d".repeat(64), {});
+      await put("e".repeat(64), { expiresAt: later(0), session: true });
+      const hashes = ["a", "b", "c", "d", "e"].map((x) => x.repeat(64));
+      const left = async () =>
+        (
+          await control.read((tx) =>
+            tx.query<{ hash: string }>(
+              "SELECT left(hash, 1) AS hash FROM credentials WHERE hash IN ($1, $2, $3, $4, $5) ORDER BY hash",
+              hashes,
+            ),
+          )
+        ).rows.map((r) => r.hash);
+      try {
+        // A day after the first expired: it goes; the one that expired a second later stays a day.
+        await store().sweep(later(day - 1));
+        expect(await left()).toEqual(["a", "b", "c", "d", "e"]);
+        await store().sweep(later(day));
+        expect(await left()).toEqual(["b", "c", "d", "e"]);
+        await store().sweep(later(day + 1));
+        expect(await left()).toEqual(["c", "d", "e"]);
+        // Once expired a day, the live one goes too; a static token and a session issued without a
+        // grant are never swept.
+        await store().sweep(later(day * 3));
+        expect(await left()).toEqual(["d", "e"]);
+      } finally {
+        await control.write((tx) =>
+          tx.query("DELETE FROM credentials WHERE hash IN ($1, $2, $3, $4, $5)", hashes),
+        );
+      }
     },
     T,
   );

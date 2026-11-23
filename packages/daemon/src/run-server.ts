@@ -10,8 +10,8 @@
 //
 // A token issued by an authorization is good only at the address it was issued for (its
 // audience, checked with every credential).
-// Expired codes, form tokens, client documents, refresh tokens and device codes are swept every
-// SWEEP_MS. A
+// Expired codes, form tokens, client documents, refresh tokens and device codes, and the
+// credentials an authorization issued a day after they expired, are swept every SWEEP_MS. A
 // connection revoked through /v1 or MCP takes its refresh tokens with it.
 //
 // Each route is matched on the request target's parsed path, as the adapters match theirs, so an
@@ -69,7 +69,7 @@ import type { DatabaseAt, ServerConfig } from "./server-config.ts";
 import { openIdentity, readIdentity } from "./server-identity.ts";
 import { releaseServerLock, takeServerLock } from "./server-lock.ts";
 
-/** How often expired codes, form tokens, client documents, refresh tokens and device codes are swept. */
+/** How often the authorization server's expired rows are swept. */
 export const SWEEP_MS = 10 * 60 * 1000;
 
 /** The control plane's or the authorization server's tables `start` found missing or of another format. */

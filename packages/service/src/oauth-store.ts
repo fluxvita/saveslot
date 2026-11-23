@@ -100,6 +100,9 @@ CREATE TABLE web_forms (
  */
 const INIT_LOCK = 0x5361_7665_4f41_7531n; // "SaveOAu1"
 
+/** How long past its expiry the sweep keeps a credential an authorization issued. */
+export const EXPIRED_CREDENTIAL_KEPT_SECONDS = 24 * 60 * 60;
+
 /** The advisory lock taken while a client document is cached, so the row cap holds. */
 const CACHE_LOCK = 0x5361_7665_4f41_4331n; // "SaveOAC1"
 
@@ -792,9 +795,12 @@ export class OAuthStore {
   }
 
   /**
-   * Deletes expired codes, form tokens, client documents and refresh tokens; how many rows went.
-   * A used refresh token goes when it would have expired unused: presented after that, it is
-   * refused as unknown, no longer as a replay.
+   * Deletes expired codes, form tokens, client documents, refresh tokens and device codes, and the
+   * credentials an authorization issued (access tokens and user sessions with a grant) a day after
+   * they expired; how many rows went. A used refresh token goes when it would have expired unused:
+   * presented after that, it is refused as unknown, no longer as a replay. A credential stays a day
+   * past its expiry so that a token presented late is still told it expired; after that it is
+   * unknown. Static tokens and sessions issued without a grant are never touched.
    */
   async sweep(now: string): Promise<number> {
     return this.#db.write(async (tx) => {
@@ -813,6 +819,14 @@ export class OAuthStore {
         );
         n += Number(r.rows[0]?.n ?? 0);
       }
+      const r = await tx.query<{ n: number }>(
+        `WITH gone AS (DELETE FROM credentials
+             WHERE grant_id IS NOT NULL AND expires_at IS NOT NULL AND expires_at <= $1
+             RETURNING 1)
+           SELECT count(*)::int AS n FROM gone`,
+        [new Date(Date.parse(now) - EXPIRED_CREDENTIAL_KEPT_SECONDS * 1000).toISOString()],
+      );
+      n += Number(r.rows[0]?.n ?? 0);
       return n;
     });
   }
