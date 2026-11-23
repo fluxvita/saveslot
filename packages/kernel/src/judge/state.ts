@@ -289,10 +289,16 @@ export class RowState {
   }
 
   /**
-   * A field on a piece: the last item in effect covering it among the field's value items and the
-   * revokes (03-deletion «重放规则», the value of a field).
+   * The no_value write-back that leaves field `f` without a value on a piece, when it is the last
+   * item in effect there (09 §5.7 `no_value`): the stretch's giver, though it gives no value.
    */
-  fieldState(f: FieldId, seg: Interval, at: Limit): FieldState {
+  noValueBy(f: FieldId, seg: Interval, at: Limit): Item | undefined {
+    const best = this.best(f, seg, at);
+    return best?.content.kind === "no_value" ? best : undefined;
+  }
+
+  /** The last item in effect on a piece among the field's value items and the revokes. */
+  private best(f: FieldId, seg: Interval, at: Limit): Item | undefined {
     // Write-backs that only register (`uncovered`) give nothing and cover nothing; restores only
     // cancel revokes, which the same revert registers (03-deletion «回掉的权威定义» step 6).
     let best: Item | undefined;
@@ -305,6 +311,15 @@ export class RowState {
       if (x.content.kind === "revoke" && this.restoredSince(x, seg, at)) continue;
       if (best === undefined || later(x, best)) best = x;
     }
+    return best;
+  }
+
+  /**
+   * A field on a piece: the last item in effect covering it among the field's value items and the
+   * revokes (03-deletion «重放规则», the value of a field).
+   */
+  fieldState(f: FieldId, seg: Interval, at: Limit): FieldState {
+    const best = this.best(f, seg, at);
     if (best === undefined) return { kind: "none" };
     if (best.content.kind === "revoke") return { kind: "hole", by: best };
     if (best.content.kind === "value")

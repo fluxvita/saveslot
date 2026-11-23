@@ -19,13 +19,15 @@ import { evaluateLog, type Op, timeline } from "@fluxvita/saveslot-reference";
 import { EVENT, Hits, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
+import type { IntervalSet } from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
 import { view } from "./judge.ts";
 import type { OpRecord, Restatement } from "./model.ts";
-import { replayDeletion } from "./replay-deletion.ts";
+import { deletionResult, replayDeletion } from "./replay-deletion.ts";
 import { type GivenBlock, givenByRecords } from "./restate.ts";
+import type { Stretch } from "./results.ts";
 import { type Decision, deletedContributions, judged, scenario } from "./scenarios.fixture.ts";
-import type { RowState } from "./state.ts";
+import { EVERYTHING, type RowState } from "./state.ts";
 
 vi.setConfig({ testTimeout: 120_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 110_000, markInterruptAsFailure: true });
@@ -235,6 +237,83 @@ function compare(
   const gone = deletedContributions(kept, deleted, isState);
   const replayed = replayDeletion(table, records, gone);
   const { state } = replayed;
+  // What the event says of the row (09 §5.9 «列哪些», `outcome`), against the reference's states
+  // before and after: every piece of a field whose value or giver changed is in a listed stretch
+  // with the value the reference gives now; `deleted` exactly when the row existed before only.
+  {
+    const res = deletionResult(table, records, gone);
+    // The deps of each listed stretch are complete (09 §3.5, §5.9 «段的定义»): deleting one more
+    // contribution related to its value or ends (an item on its field, on existence or on a field
+    // deciding "has a value", with an end where the stretch has one, or the stretch's giver) leaves
+    // the stretch as it is, unless its deps hold that contribution or one the deletion restates.
+    if (isState)
+      depsComplete(table, records, gone, replayed.restated, res.result.stretches, replayed.state);
+    const refBefore = evaluateLog(schema, kept).final;
+    expect(res.outcome === "deleted").toBe(refBefore.exists && !ref.exists);
+    if (ref.exists) {
+      type RefStretch = {
+        valid: { from: string | null; to: string | null }[];
+        value: unknown;
+        by?: { event: number; target: string };
+      };
+      const fieldsOf = (x: typeof ref) => x.fields as unknown as Record<string, RefStretch[]>;
+      const at = (xs: RefStretch[] | undefined, p: string | null) =>
+        (xs ?? []).find((x) =>
+          x.valid.some(
+            (v) =>
+              (v.from === null || (p !== null && v.from <= p)) &&
+              (v.to === null || (p !== null && p < v.to)),
+          ),
+        );
+      const key = (x: RefStretch | undefined) =>
+        x === undefined || x.value === null
+          ? "none"
+          : `${JSON.stringify(x.value)}|${x.by?.event}/${x.by?.target}`;
+      for (const f of new Set([
+        ...Object.keys(fieldsOf(ref)),
+        ...Object.keys(fieldsOf(refBefore)),
+      ])) {
+        const now = fieldsOf(ref)[f];
+        const was = refBefore.exists ? fieldsOf(refBefore)[f] : undefined;
+        // Start points of every stretch on either side: each piece starts at one of them.
+        const starts = [
+          ...new Set([...(now ?? []), ...(was ?? [])].flatMap((x) => x.valid.map((v) => v.from))),
+        ];
+        // A piece inside a gap after is the existence entry's (`results/<k>/existence`), not a
+        // field stretch.
+        const inGap = (p: string | null) =>
+          (ref.gaps as { from: string | null; to: string | null }[]).some(
+            (g) =>
+              (g.from === null || (p !== null && g.from <= p)) &&
+              (g.to === null || (p !== null && p < g.to)),
+          );
+        for (const p of starts) {
+          const n = at(now, p);
+          if (n === undefined || inGap(p) || key(n) === key(at(was, p))) continue;
+          const listed = res.result.stretches.find(
+            (x) =>
+              x.field === f &&
+              (x.valid === undefined ||
+                x.valid.some(
+                  (v) =>
+                    (v.from === null || (p !== null && v.from <= p)) &&
+                    (v.to === null || (p !== null && p < v.to)),
+                )),
+          );
+          // A listed stretch's value may be null (nothing gives it): only no stretch is "not listed".
+          expect({
+            field: f,
+            at: p,
+            value: listed === undefined ? "not listed" : listed.value,
+          }).toEqual({
+            field: f,
+            at: p,
+            value: n.value,
+          });
+        }
+      }
+    }
+  }
   // The restatements, laid over the blocks the log last gave (here the records as written) less
   // the deleted ones, give the replay's items (09 §5.9 «以最近一次为准»): nothing restated is
   // missed, nothing restated that the replay does not have.
@@ -350,6 +429,83 @@ function compare(
       return JSON.stringify(itemKeys(naive.items)) !== JSON.stringify(itemKeys(state.items));
     },
   };
+}
+
+/** See its call: a listed stretch changed by one more deletion has a cleared dep. */
+function depsComplete(
+  table: RowState["table"],
+  records: readonly OpRecord[],
+  gone: ReadonlySet<string>,
+  restated: readonly Restatement[],
+  stretches: readonly Stretch[],
+  after: RowState,
+): void {
+  const latest = overlay(givenByRecords(records), restated, gone);
+  const ends = (v: IntervalSet) => v.flatMap((x) => [x.from, x.to]).filter((p) => p !== null);
+  const valued = table.valued.length > 0 ? table.valued : table.fields;
+  // The contributions in effect after the replay (09 §3.5: candidates and awaiting items do not
+  // give a blocking point; one taking effect later changes the state, and that deletion lists it).
+  const items = after.items.filter((x) => x.status === "applied" || x.status === "corroborated");
+  const pieces = after.pieces();
+  /** Whether point p is a boundary between a value and none (09 §3.5). */
+  const boundary = (p: string) => {
+    const l = pieces.find((x) => x.to === p);
+    const r = pieces.find((x) => x.from === p);
+    return (
+      l !== undefined &&
+      r !== undefined &&
+      after.hasValue(l, EVERYTHING) !== after.hasValue(r, EVERYTHING)
+    );
+  };
+  for (const s of stretches) {
+    const at = ends(s.valid ?? []);
+    const related = new Set(
+      items
+        .filter((x) =>
+          at.some(
+            (p) =>
+              ends(x.valid).includes(p) &&
+              (x.target === s.field ||
+                x.target === "existence" ||
+                (boundary(p) && valued.includes(x.target as never))),
+          ),
+        )
+        .map((x) => `${x.event}/${x.target}`),
+    );
+    for (const c of s.carried) related.add(`${c.event}/${c.target}`);
+    for (const c of related) {
+      if (gone.has(c) || s.deps.some((x) => `${x.event}/${x.target}` === c)) continue;
+      const more = new Set([...gone, c]);
+      let again: ReturnType<typeof replayDeletion>;
+      try {
+        again = replayDeletion(table, records, more, [], latest);
+      } catch (e) {
+        if (e instanceof JudgeError && e.reason === "not_implemented") continue;
+        throw e;
+      }
+      const cleared = new Set([
+        c,
+        ...again.restated.map((x) => `${x.item.event}/${x.item.target}`),
+      ]);
+      if (s.deps.some((x) => cleared.has(`${x.event}/${x.target}`))) continue;
+      const key = (x: { valid: IntervalSet; value: unknown; by?: unknown; noValueBy?: unknown }) =>
+        JSON.stringify([x.valid, x.value, x.by ?? x.noValueBy ?? null]);
+      // The stretch as the replay has it, with its giver (a no_value write-back's included).
+      const was = key(
+        (view(after, [s.field], true).fields[s.field] ?? []).find(
+          (x) => JSON.stringify([x.valid, x.value]) === JSON.stringify([s.valid, s.value]),
+        ) ?? { valid: s.valid ?? [], value: "not in the replay" },
+      );
+      const holds = (view(again.state, [s.field], true).fields[s.field] ?? []).some(
+        (x) => key(x) === was,
+      );
+      expect({ stretch: was, deleted: c, holds }).toEqual({
+        stretch: was,
+        deleted: c,
+        holds: true,
+      });
+    }
+  }
 }
 
 describe.each(both)("%s table", (_, schema, isState) => {

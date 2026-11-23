@@ -1330,6 +1330,8 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 
 `results/<k>/target` 的 `outcome`：`deleted`（整行删除）/ `kept_fields_cleared`（保留，部分字段变空）/ `fields_reverted`（部分字段回到更早的值）/ `resegmented`（状态类表重新分段）/ `sources_changed`（取值没变，这一行因为给出者、判定结果或给出它们的块被重新给出而列出：例如只换了给出它的贡献；给出空洞的撤销被重新解析、空洞仍在原处；或某一项只是被原样重述）。
 
+一行同时符合几种时按上面的先后取第一个符合的：`deleted`（删除前存在、之后不存在）→ `kept_fields_cleared`（删除前有值的字段里，有一个之后在任何地方都没有值）→ `fields_reverted`（事件类表、无时间表上取值变了）→ `resegmented`（状态类表上取值或它的分段变了，无值区间也算）→ `sources_changed`。删除前不存在、删除后存在的行（例如让它不存在的撤销被删）记 `fields_reverted`：行回到更早的样子。
+
 `results/<k>/fields/<字段ID>/<j>`：删除后这个字段的一段（事件类表恒为 `j = 0`）：
 
 ```json

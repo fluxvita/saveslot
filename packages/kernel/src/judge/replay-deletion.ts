@@ -26,7 +26,7 @@
 // index's freezing).
 
 import type { FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
-import { type IntervalSet, isNothing, meet } from "../time/index.ts";
+import { canonical, type IntervalSet, isNothing, meet } from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
 import { ackOf, emptyState, judgeOp, withoutDeps } from "./judge.ts";
 import type {
@@ -44,6 +44,7 @@ import type {
   WriteRecord,
 } from "./model.ts";
 import { givenByRecords, type LatestGiven, renumber, restatements } from "./restate.ts";
+import { ALL_TIME, type Outcome, outcomeOf, type RowResult, rowResult } from "./results.ts";
 import { judgeRevertOf } from "./revert.ts";
 import { type Item, RowState } from "./state.ts";
 import { judgeTakeCandidate } from "./take.ts";
@@ -546,5 +547,65 @@ export function replayDeletion(
     state,
     records: out,
     restated: restatements(out, latest, deleted, state.isState),
+  };
+}
+
+/**
+ * A deletion's replay with what its event says of the row or entity (09 §5.9): the replay
+ * (`replayDeletion`), the row's `results` entry and outcome, and `recreated`. `deleted`: every
+ * contribution deleted by this deletion and the ones still pending before it; `pendingBefore`:
+ * those of the deletions still pending before it (the state before this deletion is their
+ * replay; with none, the records as written). `latest`: as for `replayDeletion`.
+ */
+export function deletionResult(
+  table: TableShape,
+  records: readonly OpRecord[],
+  deleted: ReadonlySet<string>,
+  pendingBefore: ReadonlySet<string> = new Set(),
+  latest: LatestGiven = givenByRecords(records),
+): {
+  readonly replay: ReturnType<typeof replayDeletion>;
+  readonly before: RowState;
+  readonly result: RowResult;
+  readonly outcome?: Outcome;
+} {
+  const before =
+    pendingBefore.size > 0
+      ? replayDeletion(table, records, pendingBefore, [], latest).state
+      : new RowState(table, records);
+  const replay = replayDeletion(table, records, deleted, [], latest);
+  // The intervals of existence items deleted or restated, and of write-backs that only register
+  // restated, before (as last given) and after (09 §5.9 «列哪些»).
+  const touched: IntervalSet[] = [];
+  const lastValid = (event: number, target: Target, k?: number) =>
+    (latest.get(contributionKey(event, target)) ?? [])
+      .filter((b) => k === undefined || b.k === k)
+      .flatMap((b) => [...b.valid, ...(b.landing ?? [])]);
+  for (const key of deleted) {
+    if (pendingBefore.has(key)) continue;
+    const [ev, target] = key.split("/") as [string, Target];
+    if (target === "existence") touched.push(lastValid(Number(ev), "existence"));
+  }
+  for (const r of replay.restated) {
+    const uncovered =
+      r.content?.kind === "uncovered" ||
+      (latest.get(contributionKey(r.item.event, r.item.target)) ?? []).some(
+        (b) => b.k === r.item.k && b.content.kind === "uncovered",
+      );
+    if (r.item.target !== "existence" && !uncovered) continue;
+    touched.push(lastValid(r.item.event, r.item.target, r.item.k), r.valid ?? []);
+  }
+  const any = touched.length > 0;
+  const existenceTouched = !any
+    ? undefined
+    : table.kind === "state"
+      ? canonical(touched.flat())
+      : ALL_TIME;
+  const result = rowResult(before, replay.state, replay.restated, existenceTouched);
+  return {
+    replay,
+    before,
+    result,
+    ...(result.listed ? { outcome: outcomeOf(result, before, replay.state) } : {}),
   };
 }

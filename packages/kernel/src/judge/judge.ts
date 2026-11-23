@@ -332,13 +332,22 @@ function isFirstCreation(before: RowState, record: WriteRecord): boolean {
   return !earlier && givesAll(after, record.event);
 }
 
-/** The row or entity after its operations: values, gaps, existence, first creation. */
-export function view(state: RowState): RowView {
+/**
+ * The row or entity after its operations: values, gaps, existence, first creation. `also`: more
+ * fields to give stretches for (a field no item gives any more, empty where the row exists).
+ */
+export function view(
+  state: RowState,
+  also: readonly FieldId[] = [],
+  /** Stretches a no_value write-back leaves without a value name it (`noValueBy`), cut by it. */
+  noValueGivers = false,
+): RowView {
   const fieldIds = [
     ...new Set<FieldId>([
       ...state.table.required,
       ...state.table.valued,
       ...state.items.flatMap((x) => (x.target === "existence" ? [] : [x.target])),
+      ...also,
     ]),
   ].sort();
   const fields: Partial<Record<FieldId, FieldStretch[]>> = {};
@@ -358,12 +367,19 @@ export function view(state: RowState): RowView {
           continue;
         }
         const st = state.fieldState(f, s, at);
+        const nv = noValueGivers ? state.noValueBy(f, s, at) : undefined;
         const stretch: FieldStretch =
           st.kind === "value"
             ? { valid: [s], value: st.value, by: refOf(st.by) }
-            : { valid: [s], value: null };
+            : nv !== undefined
+              ? { valid: [s], value: null, noValueBy: refOf(nv) }
+              : { valid: [s], value: null };
         const key =
-          st.kind === "value" ? `${valueToken(st.value)}|${refKey(refOf(st.by))}` : "none";
+          st.kind === "value"
+            ? `${valueToken(st.value)}|${refKey(refOf(st.by))}`
+            : nv !== undefined
+              ? `none|${refKey(refOf(nv))}`
+              : "none";
         const prev = out[out.length - 1];
         if (prev !== undefined && last !== undefined && last.key === key && last.to === s.from) {
           out[out.length - 1] = { ...prev, valid: canonical([...prev.valid, s]) };
@@ -390,10 +406,13 @@ export function view(state: RowState): RowView {
     if (exists) {
       for (const f of fieldIds) {
         const st = state.fieldState(f, WHOLE, at);
+        const nv = noValueGivers ? state.noValueBy(f, WHOLE, at) : undefined;
         fields[f] = [
           st.kind === "value"
             ? { valid: [WHOLE], value: st.value, by: refOf(st.by) }
-            : { valid: [WHOLE], value: null },
+            : nv !== undefined
+              ? { valid: [WHOLE], value: null, noValueBy: refOf(nv) }
+              : { valid: [WHOLE], value: null },
         ];
       }
     }

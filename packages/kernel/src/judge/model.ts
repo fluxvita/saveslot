@@ -608,6 +608,11 @@ export interface FieldStretch {
   /** `null` with no `by`: the row or entity exists there but the field has no value. */
   readonly value: FieldValue;
   readonly by?: ItemRef;
+  /**
+   * With `view`'s `noValueGivers`: the stretch is left without a value by this no_value write-back
+   * (09 §5.7), its giver though it gives no value (`value` null, no `by`).
+   */
+  readonly noValueBy?: ItemRef;
 }
 
 export interface RowView {
