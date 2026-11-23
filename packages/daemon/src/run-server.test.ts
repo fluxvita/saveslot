@@ -3,9 +3,8 @@
 // file on PostgreSQL): what answers each request, in which order, what it refuses to start on, and
 // how it closes. Fictional names.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   addLocalUser,
@@ -39,14 +38,16 @@ import { secondConnection } from "../../test-backend/src/second-connection.fixtu
 import {
   cellDiscarder,
   type RunningServer,
-  runServer,
+  type RunServerOptions,
   ServerAlreadyRunning,
   ServerStartRefused,
+  runServer as startServer,
 } from "./run-server.ts";
 import type { ServerConfig } from "./server-config.ts";
 import { IdentityTablesRefused } from "./server-identity.ts";
 import { SERVER_LOCK } from "./server-lock.ts";
 import { serverRestore } from "./server-restore-command.ts";
+import { testRoot } from "./test-root.fixture.ts";
 
 /** A store the test backend opens: the control database of these tests. */
 type Store = Awaited<ReturnType<ReturnType<typeof testBackend>["open"]>>;
@@ -55,14 +56,21 @@ const T = 120_000;
 const NOW = "2026-11-21T08:00:00.000Z";
 const PUBLIC = "http://127.0.0.1:8080";
 const CELL = "main";
-const root = mkdtempSync(join(tmpdir(), "saveslot-run-server-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }), T);
+// First: its removal runs after every other hook of the file.
+const tmp = testRoot("saveslot-run-server-", T);
+const root = tmp.root;
 
 let n = 0;
 const stores: Store[] = [];
 afterAll(async () => {
-  for (const s of stores) await s.close().catch(() => {});
+  for (const s of stores) await tmp.closeWarned("a control database", s);
 }, T);
+
+/** A server, named as still open until it is closed. */
+const runServer = async (o: RunServerOptions) => {
+  const s = await startServer(o);
+  return tmp.track(`the server on port ${s.address.port}`, s);
+};
 
 /** A server tenant's database is a directory of the test backend; `gate` holds an open back. */
 function tenants(gate?: { opened?: () => void; release?: Promise<void> }) {
@@ -78,12 +86,15 @@ function tenants(gate?: { opened?: () => void; release?: Promise<void> }) {
         opts,
       );
       const close = s.close.bind(s);
-      return Object.assign(s, {
-        close: async () => {
-          closed++;
-          await close();
-        },
-      });
+      return tmp.track(
+        `the tenant database ${ref.database}`,
+        Object.assign(s, {
+          close: async () => {
+            closed++;
+            await close();
+          },
+        }),
+      );
     },
   };
   return { backend, dir, closed: () => closed };
@@ -95,7 +106,10 @@ function tenants(gate?: { opened?: () => void; release?: Promise<void> }) {
  */
 async function controlDb(o: { provider?: boolean; external?: boolean; control?: boolean } = {}) {
   const dir = join(root, `control${n++}`);
-  const store = await testBackend().open({ kind: "pglite", dir }, { create: true });
+  const store = tmp.track(
+    `the control database ${dir}`,
+    await testBackend().open({ kind: "pglite", dir }, { create: true }),
+  );
   stores.push(store);
   const cp = o.control === false ? undefined : await initControlPlane(store);
   const made = o.provider !== false && cp !== undefined;

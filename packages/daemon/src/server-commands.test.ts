@@ -4,17 +4,8 @@
 // changed the second time, `start` running until it is stopped, and each refusal with its exit code
 // and without the configuration's values.
 
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { type AddressInfo, createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ControlDatabase, openControlDatabase } from "@fluxvita/saveslot-store-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -26,13 +17,15 @@ import type { ServerCommandIO } from "./server-command-io.ts";
 import { serverCommand } from "./server-commands.ts";
 import { SERVER_LOCK } from "./server-lock.ts";
 import type { ServerRestoreIO } from "./server-restore-command.ts";
+import { testRoot } from "./test-root.fixture.ts";
 
 /** A store the test backend opens: the control database of these tests. */
 type TenantStore = Awaited<ReturnType<ReturnType<typeof testBackend>["open"]>>;
 
 const T = 120_000;
-const root = mkdtempSync(join(tmpdir(), "saveslot-server-cmd-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }), T);
+// First: its removal runs after every other hook of the file.
+const tmp = testRoot("saveslot-server-cmd-", T);
+const root = tmp.root;
 
 /** A password no output may hold. */
 const SECRET = "pw-9c1e-must-not-show";
@@ -40,14 +33,15 @@ const SECRET = "pw-9c1e-must-not-show";
 let n = 0;
 const stores: TenantStore[] = [];
 afterAll(async () => {
-  for (const s of stores) await s.close().catch(() => {});
+  for (const s of stores) await tmp.closeWarned("a control database", s);
 }, T);
 
 /** A control database of its own; `close` from the command leaves it open for the test. */
 async function controlDb(): Promise<{ store: TenantStore; open: () => Promise<ControlDatabase> }> {
-  const store = await testBackend().open(
-    { kind: "pglite", dir: join(root, `db${n++}`) },
-    { create: true },
+  const dir = join(root, `db${n++}`);
+  const store = tmp.track(
+    `the control database ${dir}`,
+    await testBackend().open({ kind: "pglite", dir }, { create: true }),
   );
   stores.push(store);
   return {
