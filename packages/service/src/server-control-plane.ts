@@ -106,6 +106,7 @@ CREATE TABLE anchor_deletions (
 export type ControlPlaneErrorCode =
   | "control_format_mismatch"
   | "control_not_initialized"
+  | "oauth_not_initialized"
   | "invalid_credential"
   | "already_exists"
   | "unknown_tenant"

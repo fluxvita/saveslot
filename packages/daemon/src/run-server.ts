@@ -4,15 +4,16 @@
 // tenants are lent by the pool; requests are taken on TCP and go, in this order, to:
 //
 //   GET /health (no token) → the request's source (behind trusted proxies; none: 400) → the
-//   identity provider's own paths → the HTTP adapter → the MCP adapter → 404.
+//   identity provider's own paths → the authorization server (/.well-known/oauth-*, /oauth/*) →
+//   the HTTP adapter → the MCP adapter → 404.
 //
-// The authorization server (/.well-known/*, /oauth/*) and the origin check before /v1/ and /mcp
-// are not in this version of the process yet.
+// Expired codes, form tokens and client documents are swept every SWEEP_MS.
 //
 // Each route is matched on the request target's parsed path, as the adapters match theirs, so an
 // absolute-form target (`GET http://host/account/login`) goes where its path does. A request's body
-// is read here only on the identity provider's paths, for its form; every other request reaches its
-// handler with its body unread. Closing stops taking connections, lets the
+// is read here only on the identity provider's paths, for its form; the authorization server reads
+// its own; every other request reaches its handler with its body unread. Closing stops taking
+// connections, lets the
 // requests in progress end, then closes the tenants (their reads written, their high water moved
 // up) and the control database. While it runs it holds the control database's "the server is
 // running" lock (./server-lock.ts), taken before anything else: a second server does not start on
@@ -27,17 +28,22 @@ import type { AddressInfo } from "node:net";
 import {
   type Api,
   type ApiContext,
+  clientFetcher,
   createMcpAdapter,
   type HealthBody,
   handleApi,
   handleMcp,
+  handleOAuth,
 } from "@fluxvita/saveslot-server";
 import {
   ContractError,
   CursorKeys,
   type DiscardDatabase,
   importServerRequest,
+  type OAuthDeps,
+  type OAuthStore,
   openControlPlane,
+  openOAuthStore,
   requestSource,
   serverCallers,
   stagingDiscarder,
@@ -56,10 +62,13 @@ import type { DatabaseAt, ServerConfig } from "./server-config.ts";
 import { openIdentity, readIdentity } from "./server-identity.ts";
 import { releaseServerLock, takeServerLock } from "./server-lock.ts";
 
-/** The control plane's tables `start` found missing or of another format. */
+/** How often expired codes, form tokens and client documents are swept. */
+export const SWEEP_MS = 10 * 60 * 1000;
+
+/** The control plane's or the authorization server's tables `start` found missing or of another format. */
 export class ServerStartRefused extends Error {
   override readonly name = "ServerStartRefused";
-  readonly set: "control";
+  readonly set: "control" | "oauth";
   readonly reason: "not_initialized" | "format";
   constructor(set: ServerStartRefused["set"], reason: ServerStartRefused["reason"]) {
     super(
@@ -99,6 +108,10 @@ export interface RunServerOptions {
   readonly onToolResult?: ApiContext["onToolResult"];
   /** Tests only: how long an import's body may give nothing (local-import.ts's default otherwise). */
   readonly importBodyIdleMs?: number;
+  /** Tests only: the sweep's interval (SWEEP_MS otherwise), and a look at each sweep. */
+  readonly testing?: { readonly sweepMs?: number; readonly onSweep?: () => void };
+  /** Tests only: the client documents' fetcher (the network's otherwise). */
+  readonly fetchClient?: OAuthDeps["fetchClient"];
 }
 
 /**
@@ -170,6 +183,13 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       if (code === "control_not_initialized")
         throw new ServerStartRefused("control", "not_initialized");
       if (code === "control_format_mismatch") throw new ServerStartRefused("control", "format");
+      throw e;
+    });
+    const oauth: OAuthStore = await openOAuthStore(db).catch((e: unknown) => {
+      const code = (e as { code?: unknown }).code;
+      if (code === "oauth_not_initialized")
+        throw new ServerStartRefused("oauth", "not_initialized");
+      if (code === "control_format_mismatch") throw new ServerStartRefused("oauth", "format");
       throw e;
     });
     const backend = o.backend ?? new PostgresBackend({ cells: { [config.cellName]: config.cell } });
@@ -257,6 +277,16 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
     const since = new Date().toISOString();
     const api: Api = { ready: () => (state === "ready" ? ctx : undefined), log };
     const mcp = createMcpAdapter({ version: () => o.version });
+    const lentPool = pool;
+    const oauthDeps: OAuthDeps = {
+      store: oauth,
+      control,
+      pool: { use: (tenant, fn) => lentPool.use(tenant, fn) },
+      identity,
+      fetchClient: o.fetchClient ?? clientFetcher(),
+      external: config.publicUrl,
+      windows,
+    };
 
     const server: Server = createServer((req, res) => {
       void (async () => {
@@ -305,6 +335,8 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
             return;
           }
         }
+        const oauthCtx = { deps: oauthDeps, identity, remote: () => remote, now, log, warn };
+        if (await handleOAuth(req, res, oauthCtx)) return;
         if (handleApi(api, req, res)) return;
         if (handleMcp(mcp, api, req, res)) return;
         res.writeHead(404, { "content-length": 0 });
@@ -322,6 +354,14 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         resolve();
       });
     });
+    // Started once the server listens: a start that fails leaves no timer behind.
+    const sweep = setInterval(() => {
+      o.testing?.onSweep?.();
+      oauth.sweep(now()).catch((e: unknown) => {
+        warn("oauth_sweep_failed", { error: (e as Error)?.name ?? "unknown" });
+      });
+    }, o.testing?.sweepMs ?? SWEEP_MS);
+    sweep.unref();
     const at = server.address() as AddressInfo;
     const lent = pool;
     if (!lost) state = "ready";
@@ -332,6 +372,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         if (!lost) state = "stopping";
         // Before the requests in progress are waited for: an import still reading its body ends.
         for (const a of imports) a.abort();
+        clearInterval(sweep);
         await new Promise<void>((resolve, reject) => {
           server.close((e) => (e ? reject(e) : resolve()));
           server.closeIdleConnections();

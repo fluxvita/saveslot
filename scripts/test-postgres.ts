@@ -21,6 +21,8 @@ export const TESTED = [
   "packages/test-backend/src",
   // The server mode's control plane, whose database is PostgreSQL there.
   "packages/service/src/server-control-plane.test.ts",
+  "packages/service/src/oauth-server.test.ts",
+  "packages/server/src/oauth/consent.test.ts",
   "packages/service/src/server-tenant.test.ts",
   "packages/service/src/tenant-pool.test.ts",
   "packages/service/src/server-auth.test.ts",

@@ -22,6 +22,7 @@ import {
   CursorKeys,
   HandleKeyFileError,
   initControlPlane,
+  initOAuthTables,
 } from "@fluxvita/saveslot-service";
 import { type ControlDatabase, openControlDatabase } from "@fluxvita/saveslot-store-postgres";
 import { daemonVersion } from "./main.ts";
@@ -138,6 +139,7 @@ async function serverInit(config: ServerConfig, io: ServerCommandIO): Promise<nu
   }
   try {
     await initControlPlane(db);
+    await initOAuthTables(db);
     await initIdentityTables(db, external);
   } catch (e) {
     if (!(e instanceof ControlPlaneError) && !(e instanceof IdentityTablesRefused)) throw e;

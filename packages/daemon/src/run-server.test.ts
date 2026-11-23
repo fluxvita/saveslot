@@ -14,6 +14,8 @@ import {
   initControlPlane,
   initExternalLogin,
   initLocalAccounts,
+  initOAuthTables,
+  openOAuthStore,
   type ServerControlPlane,
   stagingDatabaseOf,
   type TenantPoolOptions,
@@ -102,9 +104,12 @@ function tenants(gate?: { opened?: () => void; release?: Promise<void> }) {
 
 /**
  * A control database with the tables `server init` makes for the local accounts, or for the
- * external login with `external`; told to, it leaves the provider's or every table out.
+ * external login with `external`; told to, it leaves the provider's, the authorization server's
+ * or every table out.
  */
-async function controlDb(o: { provider?: boolean; external?: boolean; control?: boolean } = {}) {
+async function controlDb(
+  o: { provider?: boolean; external?: boolean; control?: boolean; oauth?: boolean } = {},
+) {
   const dir = join(root, `control${n++}`);
   const store = tmp.track(
     `the control database ${dir}`,
@@ -112,6 +117,7 @@ async function controlDb(o: { provider?: boolean; external?: boolean; control?: 
   );
   stores.push(store);
   const cp = o.control === false ? undefined : await initControlPlane(store);
+  if (cp !== undefined && o.oauth !== false) await initOAuthTables(store);
   const made = o.provider !== false && cp !== undefined;
   if (made && o.external === true) await initExternalLogin(store);
   const accounts = made && o.external !== true ? await initLocalAccounts(store) : undefined;
@@ -293,6 +299,20 @@ describe("runServer: what answers which request", () => {
     T,
   );
 
+  it("the authorization server's metadata: the external address is the issuer and the resource", async () => {
+    const as = await send(s, { path: "/.well-known/oauth-authorization-server" });
+    expect(as.status).toBe(200);
+    expect(JSON.parse(as.body)).toMatchObject({
+      issuer: PUBLIC,
+      token_endpoint: `${PUBLIC}/oauth/token`,
+    });
+    const pr = await send(s, { path: "/.well-known/oauth-protected-resource" });
+    expect(JSON.parse(pr.body)).toMatchObject({
+      resource: PUBLIC,
+      authorization_servers: [PUBLIC],
+    });
+  });
+
   it("/account/login is the local accounts' page, with its form cookie", async () => {
     const r = await send(s, { path: LOGIN_PAGE });
     expect(r.status).toBe(200);
@@ -330,6 +350,10 @@ describe("runServer: what answers which request", () => {
     expect(page.status).toBe(200);
     expect(page.body).toContain('name="form_token"');
     expect((await send(s, { path: abs("/v1/slots") })).status).toBe(401);
+    expect((await send(s, { path: abs("/.well-known/oauth-authorization-server") })).status).toBe(
+      200,
+    );
+    expect((await send(s, { method: "POST", path: abs("/oauth/token") })).status).toBe(400);
     expect((await send(s, { path: abs("/elsewhere") })).status).toBe(404);
     const mcp = (path: string) =>
       send(s, {
@@ -538,6 +562,21 @@ describe("runServer: what it refuses to start on", () => {
     T,
   );
 
+  it(
+    "no authorization server tables: refused, naming them; none made (that is server init's)",
+    async () => {
+      const c = await controlDb({ oauth: false });
+      const cfg = config();
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const before = await tableNames(c.store);
+      const e = await start(c, cfg);
+      expect(e).toBeInstanceOf(ServerStartRefused);
+      expect(e).toMatchObject({ set: "oauth", reason: "not_initialized" });
+      expect(await tableNames(c.store)).toEqual(before);
+    },
+    T,
+  );
+
   it.each([
     ["accounts", false],
     ["external", true],
@@ -570,6 +609,7 @@ describe("runServer: what it refuses to start on", () => {
 
   it.each([
     ["control", "format"],
+    ["oauth", "oauth_format"],
     ["accounts", "accounts_format"],
   ] as const)(
     "%s tables of another format: refused as of another format",
@@ -1023,6 +1063,41 @@ describe("runServer: POST /v1/import", () => {
 
 describe("runServer: closing", () => {
   it(
+    "the sweep runs while it is open, deleting what has expired, and close() stops it",
+    async () => {
+      const c = await controlDb();
+      const cfg = config();
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      await (await openOAuthStore(c.store)).putForm("expired", "s-1", "2000-01-01T00:00:00.000Z");
+      const forms = async () =>
+        (await c.store.read((tx) => tx.query("SELECT hash FROM web_forms"))).rows.length;
+      expect(await forms()).toBe(1);
+      let sweeps = 0;
+      const s = await runServer({
+        config: cfg,
+        version: "0.0.0-test",
+        openControl: async () => c.db,
+        backend: tenants().backend,
+        testing: {
+          sweepMs: 10,
+          onSweep: () => {
+            sweeps++;
+          },
+        },
+      });
+      const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      while (sweeps < 2) await wait(10);
+      for (let i = 0; i < 100 && (await forms()) > 0; i++) await wait(10);
+      expect(await forms()).toBe(0);
+      await s.close();
+      const atClose = sweeps;
+      await wait(100);
+      expect(sweeps).toBe(atClose);
+    },
+    T,
+  );
+
+  it(
     "a request in progress when it closes still gets its answer; the tenant is closed after it",
     async () => {
       const c = await controlDb();
@@ -1196,6 +1271,7 @@ describe.skipIf(TEST_BACKEND !== "postgres")(
         const db = await openControlDatabase(pg.cell, name, { create: true });
         const cp = await initControlPlane(db);
         void cp;
+        await initOAuthTables(db);
         await initLocalAccounts(db);
         const cfg = config();
         await CursorKeys.createFile(cfg.handleKeyFile);
@@ -1237,6 +1313,9 @@ describe.skipIf(TEST_BACKEND !== "postgres")(
           });
           expect((await send(s, { path: "/v1/slots" })).status).toBe(503);
           expect((await send(s, { path: LOGIN_PAGE })).status).toBe(503);
+          expect((await send(s, { path: "/.well-known/oauth-authorization-server" })).status).toBe(
+            503,
+          );
           // The lock went with the connection: another server may take it now.
           expect(await tryLock()).toBe(true);
           await other.write((tx) =>

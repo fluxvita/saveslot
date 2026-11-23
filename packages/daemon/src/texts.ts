@@ -213,10 +213,10 @@ export const TEXTS = {
   server: {
     usage: "usage: saveslot server init | start | restore --tenant <tenant>",
     startRefused: (
-      set: "control" | "accounts" | "external",
+      set: "control" | "oauth" | "accounts" | "external",
       reason: "not_initialized" | "format",
     ) =>
-      `error: the control database's ${{ control: "control plane", accounts: "local accounts", external: "external login" }[set]} tables ${
+      `error: the control database's ${{ control: "control plane", oauth: "authorization server", accounts: "local accounts", external: "external login" }[set]} tables ${
         reason === "format"
           ? "are of a format this saveslot does not know; nothing was changed"
           : "are not there; run saveslot server init first"

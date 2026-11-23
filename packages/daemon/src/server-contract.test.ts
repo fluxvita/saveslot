@@ -21,6 +21,7 @@ import {
   initControlPlane,
   initExternalLogin,
   initLocalAccounts,
+  initOAuthTables,
   type LocalAccounts,
   type ServerControlPlane,
   type TenantPoolOptions,
@@ -147,6 +148,7 @@ function serverFixture(shape: Shape) {
     const store = await testBackend().open({ kind: "pglite", dir }, { create: true });
     stores.push(store);
     f.cp = await initControlPlane(store);
+    await initOAuthTables(store);
     f.store = store;
     // The tables `server init` makes for the shape's identity provider.
     if (shape.accounts === "local") f.accounts = await initLocalAccounts(store);
