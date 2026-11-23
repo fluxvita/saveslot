@@ -36,7 +36,12 @@ import { lockDir } from "./service.ts";
 
 // Two of its homes hold a store (some 40 MB in a thousand files), removed synchronously at the
 // end: under the load of other runs that takes more than the default 10 seconds.
-vi.setConfig({ hookTimeout: 120_000 });
+// The cases against a stubbed system only make a directory and write a file under the temporary
+// directory, with nothing slower to stub (no Node is looked for: the job's argv is given): 1 ms
+// alone, 3–24 ms in ten runs beside a store-pglite run at load 4.7–8.5. A full parallel run once took
+// one past the default 5 seconds (load 8.5, not repeated), so a stall outside the case, in
+// scheduling or the file system. 30 seconds: room for that, and a hang still shows.
+vi.setConfig({ hookTimeout: 120_000, testTimeout: 30_000 });
 
 const root = mkdtempSync(join(tmpdir(), "saveslot-autostart-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
