@@ -8,18 +8,23 @@
 #
 #   merge request:          secrets, forbidden-terms, mr-title, dco; age-interop when the request
 #                           changes packages/cli/src/export-crypto*, pnpm-lock.yaml or this file
-#   default branch, push:   secrets, forbidden-terms, check (node:24.22.3); all interruptible
-#   schedule (nightly):     check, check-latest, prop-soak, test-postgres, age-interop
-#   by hand (web, api) on the default branch: check, check-latest, prop-soak, test-postgres, secrets,
-#                           forbidden-terms, age-interop
+#   default branch, push:   secrets, forbidden-terms, the check jobs (node:24.22.3); all
+#                           interruptible
+#   schedule (nightly):     the check jobs, the check-latest jobs, prop-soak, test-postgres,
+#                           age-interop
+#   by hand (web, api) on the default branch: the check jobs, the check-latest jobs, prop-soak,
+#                           test-postgres, secrets, forbidden-terms, age-interop
 #
-# The heavy jobs (check, check-latest, prop-soak, test-postgres) run one at a time in the whole
+# The check jobs are `pnpm check` as three: check-static, check-unit, check-prop. The check-latest
+# jobs are the same three on the latest Node: check-latest-static, -unit, -prop.
+#
+# The heavy jobs (the check and check-latest jobs, prop-soak, test-postgres) run one at a time in the whole
 # project (`resource_group: saveslot-heavy`), so that a runner taking two jobs at once keeps the
 # other slot for the quick checks; the nightly ones run one after another. On the default branch
 # only the latest push runs to the end: a push's jobs are interruptible, so a newer push cancels
 # them.
 #
-# Node is pinned to an exact version (`node:24.22.3`) in every job but check-latest: the lowest
+# Node is pinned to an exact version (`node:24.22.3`) in every job but the check-latest ones: the lowest
 # supported Node is 24.22.1 (package.json `engines`), since V8 in the 24 line before it can misread
 # a one-escape object key in JSON.parse once a key of one backslash has been parsed in the same
 # process (V8 commit 93cd21e8254b, backported in Node 24.22.1). To move to a newer Node, change the
@@ -35,7 +40,7 @@
 # what the author and the reviewer ran locally; the nightly and by-hand checks set the variable, so
 # that the whole suite also runs on the real fsync path.
 #
-# The jobs that install the workspace (check, check-latest, prop-soak, test-postgres) run it as the
+# The jobs that install the workspace (the check and check-latest jobs, prop-soak, test-postgres) run it as the
 # image's `node` user, not as root: root reads and writes whatever the permission bits say, so the
 # tests of files and directories this user cannot read would otherwise be skipped. Only installing
 # pnpm itself needs root.
@@ -105,32 +110,71 @@ workflow:
   before_script:
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
 
-# `pnpm check`: type check, lint, unit and property tests, dependency rules, doc links, JSON examples.
-# A run takes about 20 minutes on a fast runner and has passed 40 on a slow one, more with host
-# fsync. The heavy jobs run on the CI runner only (its tag), not on a runner that gives a job one
-# or two CPUs. The timeout is a hard bound from outside the test process: test-level limits cannot preempt
-# synchronous code, so a stalled run would otherwise hold the runner until the project's default
-# job timeout (60 minutes). One heavy job at a time in the project: the time spent waiting for the
-# group is not counted in the timeout.
+# `pnpm check` (type check, lint, unit and property tests, dependency rules, doc links, JSON
+# examples) runs here as three jobs of the same scripts: the static checks, `test:unit`, `test:prop`.
+# Each has a timeout of its own, so one part running out of time does not take the others' results
+# with it. Locally `pnpm check` stays one command. On the CI runner the tests took about 15 minutes
+# (`test:unit` 13, `test:prop` 4); a runner that gave a job one or two CPUs took over 35 for
+# `test:unit` alone. The heavy jobs run on the CI runner only (its tag). A timeout is a hard bound
+# from outside the test process: test-level limits cannot preempt synchronous code, so a stalled
+# run would otherwise hold the runner until the project's default job timeout (60 minutes). One
+# heavy job at a time in the project: the time spent waiting for the group is not counted in the
+# timeout. Each job first prints the CPUs and the memory it can use (`ci:resources`).
 .check:
   extends: [.pnpm]
   resource_group: saveslot-heavy
   tags: [fv-ci-hk-docker]
-  timeout: 55 minutes
+
+.check-static:
+  extends: [.check]
+  timeout: 15 minutes
   script:
-    - runuser -u node -- env SAVESLOT_TEST_DURABILITY="${SAVESLOT_TEST_DURABILITY:-}" pnpm check
+    - runuser -u node -- pnpm --silent ci:resources
+    - runuser -u node -- pnpm check:static
+
+.check-unit:
+  extends: [.check]
+  timeout: 45 minutes
+  script:
+    - runuser -u node -- pnpm --silent ci:resources
+    - runuser -u node -- env SAVESLOT_TEST_DURABILITY="${SAVESLOT_TEST_DURABILITY:-}" pnpm test:unit
+
+.check-prop:
+  extends: [.check]
+  timeout: 25 minutes
+  script:
+    - runuser -u node -- pnpm --silent ci:resources
+    - runuser -u node -- env SAVESLOT_TEST_DURABILITY="${SAVESLOT_TEST_DURABILITY:-}" pnpm test:prop
 
 # On the pinned Node 24 (see the head of this file): after every merge, nightly and by hand (with host fsync).
-check:
-  extends: [.check, .after-merge]
+.check-pinned:
+  extends: [.after-merge]
   image: node:24.22.3
 
+check-static:
+  extends: [.check-static, .check-pinned]
+
+check-unit:
+  extends: [.check-unit, .check-pinned]
+
+check-prop:
+  extends: [.check-prop, .check-pinned]
+
 # On the latest Node: nightly and by hand (with host fsync).
-check-latest:
-  extends: [.check, .full-only]
+.check-latest:
+  extends: [.full-only]
   image: node:latest
   variables:
     SAVESLOT_TEST_DURABILITY: host-fsync
+
+check-latest-static:
+  extends: [.check-static, .check-latest]
+
+check-latest-unit:
+  extends: [.check-unit, .check-latest]
+
+check-latest-prop:
+  extends: [.check-prop, .check-latest]
 
 # Nightly and by hand (on the default branch): every property test file, round after round, each
 # run with a fresh random seed, for about 50 minutes. A failed run leaves its seed, replay path and
