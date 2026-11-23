@@ -181,11 +181,17 @@ export function rowResult(
       });
     }
   }
+  // State tables: a stretch that became a gap, or a gap that got a value, has no stretch of its
+  // own on one side to be seen changed above; the entity differs all the same, and the gaps are
+  // given with `existence` (09 §5.9 «列哪些»).
+  const gapsChanged =
+    after.isState && JSON.stringify(canonical(vb.gaps)) !== JSON.stringify(canonical(va.gaps));
   const listed =
     stretches.length > 0 ||
     vb.exists !== va.exists ||
     existenceTouched !== undefined ||
-    recreated.length > 0;
+    recreated.length > 0 ||
+    gapsChanged;
   const gaps =
     listed && after.isState
       ? {

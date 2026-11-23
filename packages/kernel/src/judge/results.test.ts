@@ -593,3 +593,35 @@ describe("a stretch's deps at its ends, by the definition (09 §3.5)", () => {
     expect(s?.deps).toContainEqual({ event: 31, target: "f3", k: 0 });
   });
 });
+
+describe("a stretch that becomes a gap, every field's stretches as they were", () => {
+  // #10 f2=1, f3=a from 10-01; #20 revokes [11-01, 11-07); #30 (seen #10) writes f2=2 there: a
+  // candidate (it met the revoke); #40 (seen #20) writes f2=1 from 11-01 to the next change,
+  // filling the gap. Deleting S30 and S40 leaves [11-01, 11-07) a gap again: no field's stretch
+  // changed where there still is one, but the entity differs, so it is listed and the gap given
+  // with `existence` (09 §5.9 «列哪些»).
+  const ops: Op[] = [
+    w(10, 0, { f2: "1", f3: "a" }),
+    {
+      kind: "revoke",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: d("11-01") },
+        to: { mode: "given", value: d("11-07") },
+      },
+    } as Op,
+    w(30, 10, { f2: "2" }, { from: "11-01", to: "11-07" }),
+    {
+      ...w(40, 20, { f2: "1" }, { from: "11-01", ack: true }),
+      valid: { from: { mode: "given", value: d("11-01") }, to: { mode: "next_change" } },
+    } as Op,
+  ];
+  it("listed, with the gap", () => {
+    const r = run(STATE, ops, ["S30f2", "S40f2"]);
+    expect(r.result.listed).toBe(true);
+    expect(r.result.gaps?.gaps).toContainEqual({ from: d("11-01"), to: d("11-07") });
+    expect(r.outcome).toBe("resegmented");
+  });
+});
