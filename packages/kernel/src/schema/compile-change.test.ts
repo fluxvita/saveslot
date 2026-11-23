@@ -1286,6 +1286,129 @@ describe("on a table never written: its time type, granularity and entity key (0
   });
 });
 
+describe("on a table never written: a field to or from ref, or its target (change_ref)", () => {
+  const id = (name: string) => (v1().tables.find((t) => t.name === name) as CompiledBaseTable).id;
+  const field = (r: CompileChangeResult, table: string, f: string) =>
+    (ok(r).compiled.tables.find((t) => t.name === table) as CompiledBaseTable).fields.find(
+      (x) => x.id === f,
+    ) as unknown as Doc;
+  const never = { neverWritten: () => true };
+  const record = (table: string, f: string) => ({
+    target: { table, field: f },
+    change: "change_ref",
+    class: "metadata",
+    compatible_with_old_writes: false,
+    destructive: false,
+    auto: false,
+    as_never_written: true,
+  });
+
+  it("a ref made text: compiled anew without its target, a new empty physical table", () => {
+    const draft = listing(["expenses"], (d) => {
+      d.tables[0].fields[8] = { id: "f9", name: "account", type: "text", description: "x" };
+    });
+    const r = ok(run(draft, never));
+    expect(r.changes).toEqual([record(id("expenses"), "f9")]);
+    expect(field(r, "expenses", "f9")).toEqual({
+      id: "f9",
+      name: "account",
+      type: "text",
+      description: "x",
+    });
+    expect(table(r, "expenses")?.physical).toEqual({ table: `t_${id("expenses")}_v2` });
+    expect(err(run(draft))).toEqual({
+      code: "not_in_this_version",
+      reason: "table_written",
+      what: "change_ref",
+      param: "tables/0/fields/8/type",
+    });
+  });
+
+  it("a text made a ref: its target by ID", () => {
+    const r = ok(
+      run(
+        listing(["expenses"], (d) => {
+          d.tables[0].fields[3] = {
+            id: "f4",
+            name: "note",
+            type: "ref",
+            description: "a setting",
+            ref: { table: "settings", target: "row" },
+          };
+        }),
+        never,
+      ),
+    );
+    expect(r.changes).toEqual([record(id("expenses"), "f4")]);
+    expect(field(r, "expenses", "f4").ref).toEqual({ table: id("settings"), target: "row" });
+  });
+
+  it("a ref retargeted: to another table, to a table new in the draft", () => {
+    const rooms = ok(
+      run(
+        listing(["expenses"], (d) => (d.tables[0].fields[8].ref.table = "rooms")),
+        never,
+      ),
+    );
+    expect(codes(rooms)).toEqual(["change_ref"]);
+    expect(field(rooms, "expenses", "f9").ref).toEqual({ table: id("rooms"), target: "entity" });
+    const fresh = ok(
+      run(
+        listing(["expenses"], (d) => {
+          d.tables[0].fields[8].ref.table = "wallets";
+          d.tables.push({
+            name: "wallets",
+            kind: "base",
+            description: "wallets over time",
+            time: { type: "state", granularity: "date" },
+            fields: [{ name: "label", type: "text", description: "its label" }],
+          });
+        }),
+        never,
+      ),
+    );
+    expect(codes(fresh)).toEqual(["change_ref", "add_table"]);
+    expect(field(fresh, "expenses", "f9").ref).toEqual({ table: "t7", target: "entity" });
+    // Written: not in this version, at the reference.
+    expect(
+      err(run(listing(["expenses"], (d) => (d.tables[0].fields[8].ref.table = "rooms")))),
+    ).toEqual({
+      code: "not_in_this_version",
+      reason: "table_written",
+      what: "change_ref",
+      param: "tables/0/fields/8/ref",
+    });
+  });
+
+  it("the referrer changed in the same draft as the table it points at (07 «依赖方»)", () => {
+    const draft = listing(["expenses", "accounts"], (d) => {
+      d.tables[0].fields[8].ref.target = "row";
+      d.tables[1].time = { type: "none" };
+      delete d.tables[1].entity_key;
+    });
+    const both = ok(run(draft, never));
+    expect(both.changes.map((c) => [c.change, c.target])).toEqual([
+      ["change_ref", { table: id("expenses"), field: "f9" }],
+      ["change_time_type", { table: id("accounts") }],
+      ["change_entity_key", { table: id("accounts") }],
+    ]);
+    expect(field(both, "expenses", "f9").ref).toEqual({ table: id("accounts"), target: "row" });
+    // The referrer written, the table it points at not: the referrer's change is not in this
+    // version.
+    expect(err(run(draft, { neverWritten: (t) => t === id("accounts") }))).toEqual({
+      code: "not_in_this_version",
+      reason: "table_written",
+      what: "change_ref",
+      param: "tables/0/fields/8/ref",
+    });
+    // The table pointed at written: its own change is not (the referrer's would be).
+    expect(err(run(draft, { neverWritten: (t) => t === id("expenses") }))).toMatchObject({
+      reason: "table_written",
+      what: "change_time_type",
+    });
+  });
+});
+
 describe("what is not compiled yet is named by its change code", () => {
   const what = (r: CompileChangeResult) => {
     const e = err(r);
@@ -1295,12 +1418,6 @@ describe("what is not compiled yet is named by its change code", () => {
   const on = (f: (e: Doc) => void) => run(listing(["expenses"], (d) => f(d.tables[0])));
 
   it.each([
-    [
-      "a ref retargeted",
-      (e: Doc) => (e.fields[8].ref.table = "rooms"),
-      "change_ref",
-      "tables/0/fields/8/ref",
-    ],
     [
       "the time field",
       (e: Doc) => {
@@ -1674,7 +1791,7 @@ describe("findings between two tables, and what a drop list names", () => {
       ["drop_field", { table: "t1", field: "f9" }],
       ["drop_table", { table: "t2" }],
     ]);
-    // The ref field made text: its change is change_ref.
+    // The ref field made text: its change is change_ref, on a table written not in this version.
     const changed = err(
       run(
         listing(["expenses"], (d) => {
@@ -1683,7 +1800,11 @@ describe("findings between two tables, and what a drop list names", () => {
         }),
       ),
     );
-    expect(changed).toMatchObject({ code: "not_implemented", what: "change_ref" });
+    expect(changed).toMatchObject({
+      code: "not_in_this_version",
+      reason: "table_written",
+      what: "change_ref",
+    });
   });
 
   it("a new table or field named what the draft renames away is refused for that", () => {
@@ -1732,7 +1853,11 @@ describe("findings between two tables, and what a drop list names", () => {
         }),
       ),
     );
-    expect(e).toMatchObject({ code: "not_implemented", what: "change_ref" });
+    expect(e).toMatchObject({
+      code: "not_in_this_version",
+      reason: "table_written",
+      what: "change_ref",
+    });
   });
 
   it("a name taken twice brings no findings on the references by that name", () => {
@@ -1781,7 +1906,7 @@ describe("findings between two tables, and what a drop list names", () => {
   it("a field to or from ref is change_ref", () => {
     const what = (r: CompileChangeResult) => {
       const e = err(r);
-      return e.code === "not_implemented" ? e.what : e.code;
+      return "what" in e ? e.what : e.code;
     };
     expect(
       what(

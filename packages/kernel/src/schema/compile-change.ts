@@ -17,7 +17,9 @@
 // (`change_unit`, no `migrate`). Bounds are compared as the new unit and precision have them; what a
 // change of unit or precision would break on a bounded field is not counted in this version
 // (`not_in_this_version`, `not_implemented`). A change of type or dimension compiles on a table
-// never written only (07 «从未被写入的表上改结构»: the caller says which tables are): as metadata,
+// never written only (07 «从未被写入的表上改结构»: the caller says which tables are), and so does a
+// field made a `ref` or no longer one, or its target changed (`change_ref`, whether the table it
+// points at was written or not): as metadata,
 // with no `migrate`, the field compiled anew under its ID into a new physical table that the switch
 // builds empty; on a table written it is `not_in_this_version` (`table_written`). A `migrate` and
 // an expression `backfill` are `not_in_this_version` on any table. Any other difference between the
@@ -77,11 +79,12 @@ import type {
   TightenedCheck,
 } from "./model.ts";
 import { defaultScale, unitOf } from "./units.ts";
-import { compareDecimal, fold, validate } from "./validate.ts";
+import { compareDecimal, fold, refTable, validate } from "./validate.ts";
 
 /**
  * The IDs `compileField` takes, for a field compiled anew on a kept table: only a `ref` field reads
- * them, and a change to or from `ref` is `change_ref`, never compiled through here.
+ * them, for the table it points at, which may be new in the draft and is filled in once every
+ * table has its ID (`retargeted`).
  */
 const NO_REF_IDS: Ids = {
   table: new Map(),
@@ -893,6 +896,8 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     );
   const notYet = (what: string, param: string): CompileChangeResult =>
     fail({ code: "not_implemented", what, param });
+  /** `ref` fields compiled anew: the table each points at, by ID once every table has one. */
+  const retargeted: { readonly table: string; readonly field: string; readonly f: DocField }[] = [];
   /** Tables whose time type or entity key the draft changes: their time and keys, as it writes them. */
   const retimed: { readonly id: string; readonly doc: DocTable }[] = [];
 
@@ -1052,10 +1057,18 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
           precision?: { scale: number; rounding: "half_up" | "half_even" };
           ref?: { table: string; target: "row" | "entity" };
         };
+        // To or from `ref`: `change_ref` (07 «改动分类»), compiled as a change of type is.
         if (f.type !== cf.type)
-          return f.type === "ref" || cf.type === "ref"
-            ? { notYet: ["change_ref", f.path] as const }
-            : { restructure: ["change_type", `${f.path}/type`] as const, f, cf, j, target };
+          return {
+            restructure: [
+              f.type === "ref" || cf.type === "ref" ? "change_ref" : "change_type",
+              `${f.path}/type`,
+            ] as const,
+            f,
+            cf,
+            j,
+            target,
+          };
         let unitChanged = false;
         if (f.type === "quantity") {
           const u = unitOf(f.unit as string);
@@ -1077,7 +1090,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
         if (f.type === "ref") {
           const to = f.ref === undefined ? undefined : refId(f.ref.table, idByFinalName, doc.slot);
           if (to !== g.ref?.table || f.ref?.target !== g.ref?.target)
-            return { notYet: ["change_ref", `${f.path}/ref`] as const };
+            return { restructure: ["change_ref", `${f.path}/ref`] as const, f, cf, j, target };
         }
         let loosened = false;
         let tightened = false;
@@ -1170,12 +1183,14 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
       });
     const out: CompiledBaseField[] = [];
     for (const x of fields) {
-      if ("notYet" in x) return notYet(x.notYet[0], x.notYet[1]);
       if ("restructure" in x) {
         // A change of type or dimension: on a table written, it needs a `migrate`, not in the
-        // first version. On a table never written (07 «从未被写入的表上改结构») there is no value to
-        // convert: the field is compiled anew under its ID, the change is metadata, and the table
-        // gets a new physical table, empty (not rebuilt from the log: 08 «物理做法»).
+        // first version; a change to or from `ref`, or of its target, is not supported there
+        // (`change_ref`: no rule turns a reference into another). On a table never written
+        // (07 «从未被写入的表上改结构») there is no value to convert: the field is compiled anew
+        // under its ID, the change is metadata, and the table gets a new physical table, empty
+        // (not rebuilt from the log: 08 «物理做法»). Whether the table it points at was written
+        // does not matter.
         const [what, param] = x.restructure;
         if (!input.neverWritten(c.id as TableId))
           return fail({ code: "not_in_this_version", reason: "table_written", what, param });
@@ -1192,6 +1207,8 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
             auto: policy.has("rename_unused") && input.unused(target),
           });
         asNeverWritten(target, what);
+        // The table a reference points at may be new in this draft: its ID once tables have theirs.
+        if (f.type === "ref") retargeted.push({ table: c.id, field: cf.id, f });
         // Optional made required still takes a constant (07: whatever path the change takes).
         const bf = m.extra.backfills[j];
         const madeRequired = f.required === true && cf.required !== true;
@@ -1360,6 +1377,21 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     table: tableIds,
     field: (t, name) => fieldIds.get(t)?.get(fold(name)) as FieldId,
   };
+  for (const { table: id, field, f } of retargeted) {
+    const t = patched.get(id) as CompiledBaseTable;
+    const to = ids.table.get(refTable(merged, (f.ref as { table: string }).table) as DocTable);
+    patched.set(id, {
+      ...t,
+      fields: t.fields.map((x) =>
+        x.id === field
+          ? ({
+              ...x,
+              ref: { table: to, target: (f.ref as { target: string }).target },
+            } as unknown as CompiledBaseField)
+          : x,
+      ),
+    });
+  }
   // Fields added to kept tables: numbered from the table's next free number (field IDs are never
   // reused, given-up versions included), after the fields kept, in the draft's order.
   const nextField = new Map<string, number>();

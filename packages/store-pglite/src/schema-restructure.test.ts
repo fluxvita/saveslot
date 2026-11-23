@@ -49,6 +49,17 @@ const ITEMS = {
     { name: "label", type: "text", description: "its label" },
   ],
 };
+/** A link to something, written as text by mistake. */
+const LINKS = {
+  name: "links",
+  kind: "base",
+  description: "what a note points at",
+  time: { type: "none" },
+  fields: [
+    { name: "to", type: "text", description: "what it points at" },
+    { name: "why", type: "text", description: "the reason" },
+  ],
+};
 const ROOMS = {
   name: "rooms",
   kind: "base",
@@ -150,7 +161,7 @@ beforeEach(async () => {
     slot: "plan",
     base_version: null,
     timezone: "Asia/Shanghai",
-    tables: [BUDGETS, ROOMS, ITEMS],
+    tables: [BUDGETS, ROOMS, ITEMS, LINKS],
   });
 }, T);
 
@@ -261,6 +272,70 @@ describe("a table never written, restructured", () => {
         }),
       ).toMatchObject({ status: "saved" });
       const replayed = await reconcileLog({ live: s.store, scratch: scratch.store });
+      expect(replayed.mismatches_total).toBe(0);
+    },
+    T,
+  );
+});
+
+describe("a field made a ref on a table never written (change_ref)", () => {
+  it(
+    "waits, switches at once into a new empty physical table; old writes refused whole; replays the same",
+    async () => {
+      const id = await tableId("links");
+      const d = await draft({
+        slot: "plan",
+        base_version: 1,
+        timezone: "Asia/Shanghai",
+        tables: [
+          {
+            ...LINKS,
+            id,
+            fields: [
+              {
+                ...LINKS.fields[0],
+                id: "f1",
+                type: "ref",
+                ref: { table: "rooms", target: "entity" },
+              },
+              { ...LINKS.fields[1], id: "f2" },
+            ],
+          },
+        ],
+      });
+      expect(d).toMatchObject({
+        outcome: "pending",
+        changes: [
+          {
+            target: { table: "links", field: "to" },
+            change: "change_ref",
+            class: "metadata",
+            compatible_with_old_writes: false,
+            destructive: false,
+            auto: false,
+          },
+        ],
+      });
+      expect(await confirm(d)).toMatchObject({ status: "resolved" });
+      const c = (await catalog(s.store, ctx("schema"), { level: "schema", slot: "plan" })) as Any;
+      const to = c.document.tables.find((t: Any) => t.name === "links").fields[0];
+      expect(to).toMatchObject({ type: "ref", ref: { table: "rooms", target: "entity" } });
+      expect(
+        await w({ sv: 2, ops: [{ intent: "insert", table: "links", set: { why: "y" } }] }),
+      ).toMatchObject({ status: "saved", sv: 2 });
+      expect(await rows(`SELECT count(*)::int AS n FROM "t_${id}_v2"`)).toEqual([{ n: 1 }]);
+      expect(
+        await answer(() =>
+          w({ sv: 1, ops: [{ intent: "insert", table: "links", set: { to: "room 1" } }] }),
+        ),
+      ).toEqual({
+        code: "schema_incompatible",
+        param: "ops/0/table",
+        current_sv: 2,
+        changed_fields: [{ field: "*", change: "change_ref" }],
+      });
+      const replayed = await reconcileLog({ live: s.store, scratch: scratch.store });
+      expect(replayed.mismatches).toEqual([]);
       expect(replayed.mismatches_total).toBe(0);
     },
     T,
