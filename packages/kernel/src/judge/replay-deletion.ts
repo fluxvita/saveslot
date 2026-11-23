@@ -5,7 +5,10 @@
 // two, by the write on a target).
 //
 // Pure: the caller works out which (event, target) the deleted source data take away (from
-// `base_sources`, by position) and passes them in; nothing here reads the store.
+// `base_sources`, by position) and passes them in, and the blocks the log last gave (restate.ts,
+// `LatestGiven`); nothing here reads the store. Each replayed operation's items are numbered
+// against those blocks (03-deletion «回掉的权威定义» step 6), and the replay returns what it
+// restates (09 §5.9 `restated/<k>`, rules 1 and 2; rule 3 is a cancellation's).
 //
 // Covered: writes, revokes, people's confirmations and rejections of awaiting writes and undos,
 // reverts (`undo`, `take_previous`, the confirmation of an awaiting undo): their record R and
@@ -29,6 +32,7 @@ import type {
   FieldInput,
   OpRecord,
   RejectRecord,
+  Restatement,
   RevertRecord,
   RevokeInput,
   TableShape,
@@ -37,6 +41,7 @@ import type {
   WriteInput,
   WriteRecord,
 } from "./model.ts";
+import { givenByRecords, type LatestGiven, renumber, restatements } from "./restate.ts";
 import { judgeRevertOf } from "./revert.ts";
 import { type Item, RowState } from "./state.ts";
 import { judgeTakeCandidate } from "./take.ts";
@@ -364,19 +369,47 @@ function inputOf(
 
 /**
  * The records of a row's or entity's operations, judged again as if the contributions in
- * `deleted` (by `contributionKey`) had never been. Returns the state after the replay and each
- * operation's record as judged in it (an operation nothing of which is left has no record).
- * `deletionsBefore`: the operation numbers of the deletion and cancellation events in the log; an
- * operation after one is not replayed in this version.
+ * `deleted` (by `contributionKey`) had never been. Returns the state after the replay, each
+ * operation's record as judged in it (an operation nothing of which is left has no record), its
+ * items numbered against the blocks the log last gave (03-deletion «回掉的权威定义» step 6), and the
+ * restatements (09 §5.9 `restated/<k>`, rules 1 and 2). `deletionsBefore`: the operation numbers
+ * of the deletion and cancellation events in the log; an operation after one is not replayed in
+ * this version. `latest`: the blocks the log last gave (see `LatestGiven`); by default the
+ * records as written.
  */
 export function replayDeletion(
   table: TableShape,
   records: readonly OpRecord[],
   deleted: ReadonlySet<string>,
   deletionsBefore: readonly number[] = [],
-): { readonly state: RowState; readonly records: readonly OpRecord[] } {
+  latest: LatestGiven = givenByRecords(records),
+): {
+  readonly state: RowState;
+  readonly records: readonly OpRecord[];
+  readonly restated: readonly Restatement[];
+} {
   let state = emptyState(table);
   const out: OpRecord[] = [];
+  // Each record the replay produces, its items numbered against the blocks last given, into the
+  // state: later operations refer to them by those indices.
+  const commit = (record: OpRecord) => {
+    let numberedRecord = record;
+    if ("items" in record && record.items.length > 0) {
+      const own = records.find((x) => x.event === record.event);
+      const writeTime = own !== undefined && "items" in own ? own.items : [];
+      const targets = [...new Set(record.items.map((x) => x.target))].sort();
+      const items = targets.flatMap((t) =>
+        renumber(
+          record.items.filter((x) => x.target === t),
+          latest.get(contributionKey(record.event, t)) ?? [],
+          writeTime.filter((x) => x.target === t),
+        ),
+      );
+      numberedRecord = { ...record, items } as OpRecord;
+    }
+    out.push(numberedRecord);
+    state = new RowState(table, [...state.records, numberedRecord]);
+  };
   const firstDeletion = Math.min(Number.POSITIVE_INFINITY, ...deletionsBefore);
   const decisions = decisionsOf(records);
   const resolutions = resolvedOf(records);
@@ -431,8 +464,7 @@ export function replayDeletion(
       );
       // Event and timeless tables keep no deps, as every judged record (judge.ts).
       const record = state.isState ? again : withoutDeps(again);
-      out.push(record);
-      state = new RowState(table, [...state.records, record]);
+      commit(record);
       continue;
     }
     if (r.kind === "take_candidate") {
@@ -444,29 +476,25 @@ export function replayDeletion(
         candidateWhenWritten,
       );
       const record = state.isState ? again : withoutDeps(again);
-      out.push(record);
-      state = new RowState(table, [...state.records, record]);
+      commit(record);
       continue;
     }
     // keep_effective: "these candidates do not take effect", as recorded; it writes nothing, and
     // its record closes them (RowState.closedCandidate).
     if (r.kind === "keep_effective") {
-      out.push(r);
-      state = new RowState(table, [...state.records, r]);
+      commit(r);
       continue;
     }
     if (r.kind === "confirm" && r.revert !== undefined) {
       const again = confirmUndoAgain(state, r);
       const record = state.isState ? again : withoutDeps(again);
-      out.push(record);
-      state = new RowState(table, [...state.records, record]);
+      commit(record);
       continue;
     }
     if (r.kind === "confirm" || r.kind === "reject") {
       const judged = decide(state, r);
       if (judged === undefined) continue;
-      out.push(judged.judgement.record);
-      state = judged.state;
+      commit(judged.judgement.record);
       continue;
     }
     // Narrowed for the compiler: a revert's kind is a union, so the branch above does not drop it.
@@ -504,8 +532,11 @@ export function replayDeletion(
       ack: judged.acknowledged ? judged.overwritten.map(ackOf) : [],
     };
     if (!state.isState) record = withoutDeps(record);
-    out.push(record);
-    state = new RowState(table, [...state.records, record]);
+    commit(record);
   }
-  return { state, records: out };
+  return {
+    state,
+    records: out,
+    restated: restatements(out, latest, deleted, state.isState),
+  };
 }

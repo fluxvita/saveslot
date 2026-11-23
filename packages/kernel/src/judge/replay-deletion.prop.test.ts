@@ -4,7 +4,7 @@
 // then a set of source data is deleted. `replayDeletion` on the records, given the (event, target)
 // those sources take away, must leave the row or entity the reference evaluator gives with the
 // same deletion at the end of the log: the items (by event, target, status, interval, content,
-// without indices: how original indices land is D1-b2e), every field's timeline, the gaps.
+// with indices), every field's timeline, the gaps.
 //
 // Covered here: writes and revokes judged again on the replay's state, no-ops kept, deviation two
 // by the write on a target, corroborations and the same-value rule, conflicts and high impact
@@ -21,8 +21,9 @@ import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 import { JudgeError } from "./errors.ts";
 import { view } from "./judge.ts";
-import type { OpRecord } from "./model.ts";
+import type { OpRecord, Restatement } from "./model.ts";
 import { replayDeletion } from "./replay-deletion.ts";
+import { type GivenBlock, givenByRecords } from "./restate.ts";
 import { type Decision, deletedContributions, judged, scenario } from "./scenarios.fixture.ts";
 import type { RowState } from "./state.ts";
 
@@ -44,6 +45,7 @@ const itemKeys = (
   items: readonly {
     event: number;
     target: string;
+    k: number;
     status: string;
     valid: unknown;
     content: unknown;
@@ -53,10 +55,104 @@ const itemKeys = (
     .filter((x) => x.status !== "dropped")
     .map(
       (x) =>
-        // The reference names "no value at all" noValue, the kernel no_value (09 §5.7).
-        `${x.event}/${x.target} ${x.status} ${JSON.stringify(x.valid)} ${JSON.stringify(x.content).replace('"kind":"noValue"', '"kind":"no_value"')}`,
+        // The reference names "no value at all" noValue, the kernel no_value (09 §5.7). With the
+        // index (03-deletion «回掉的权威定义» step 6): no deletion is carried out in these logs, so
+        // the reference's clearing by ends plays no part in where indices land.
+        `${x.event}/${x.target}#${x.k} ${x.status} ${JSON.stringify(x.valid)} ${JSON.stringify(x.content).replace('"kind":"noValue"', '"kind":"no_value"')}`,
     )
     .sort();
+
+/** The blocks last given, less the deleted (event, target)s, with the restatements laid over. */
+function overlay(
+  given: ReadonlyMap<string, readonly GivenBlock[]>,
+  restated: readonly Restatement[],
+  gone: ReadonlySet<string>,
+): Map<string, GivenBlock[]> {
+  const out = new Map<string, GivenBlock[]>();
+  for (const [et, blocks] of given) if (!gone.has(et)) out.set(et, [...blocks]);
+  for (const r of restated) {
+    const et = `${r.item.event}/${r.item.target}`;
+    const rest = (out.get(et) ?? []).filter((b) => b.k !== r.item.k);
+    if (r.status === "dropped") {
+      // Last given as dropped: kept so (rule 1 compares with it), landing on the last interval
+      // given before (numbering only).
+      const before = (out.get(et) ?? []).find((b) => b.k === r.item.k);
+      const landing = before?.landing ?? before?.valid ?? [];
+      out.set(et, [
+        ...rest,
+        {
+          k: r.item.k,
+          status: "dropped",
+          valid: [],
+          ...(landing.length > 0 ? { landing } : {}),
+          deps: [],
+          content: before?.content ?? { kind: "value", value: null },
+        },
+      ]);
+      continue;
+    }
+    // A new index has no block of its own: its content is the write's (any other index of it),
+    // on existence a restore or a revoke as the restatement says.
+    const was =
+      (given.get(et) ?? []).find((b) => b.k === r.item.k) ??
+      (r.item.target === "existence"
+        ? {
+            k: r.item.k,
+            status: r.status,
+            // Event and timeless tables give no interval: an item is the whole of it.
+            valid: [{ from: null, to: null }],
+            deps: [],
+            content: { kind: r.restored ? "restore" : "revoke" } as const,
+          }
+        : (given.get(et) ?? [])[0]);
+    out.set(et, [
+      ...rest,
+      {
+        k: r.item.k,
+        status: r.status,
+        // A restatement without an interval is an event or timeless table's: the whole of it.
+        valid: r.valid ?? [{ from: null, to: null }],
+        deps: r.deps,
+        // On existence a restatement is a restore exactly when it says so (09 §5.9 `restored`).
+        content:
+          r.item.target === "existence" && r.content === undefined
+            ? { kind: r.restored ? "restore" : "revoke" }
+            : (r.content ?? was?.content ?? { kind: "value", value: null }),
+        // A restatement that gives the content gives the carried references with it (none for
+        // a write-back with no value or that only registers).
+        ...(r.content !== undefined
+          ? r.carried !== undefined
+            ? { carried: r.carried }
+            : {}
+          : was?.carried !== undefined
+            ? { carried: was.carried }
+            : {}),
+      },
+    ]);
+  }
+  return normalized(out);
+}
+
+/** The blocks without those last given as dropped. */
+function withoutDropped(m: Map<string, GivenBlock[]>): Map<string, GivenBlock[]> {
+  return normalized(
+    new Map([...m].map(([et, bs]) => [et, bs.filter((b) => b.status !== "dropped")])),
+  );
+}
+
+/** The replay's items as blocks, by (event, target), each list by index. */
+function blocksOf(records: readonly OpRecord[]): Map<string, GivenBlock[]> {
+  return normalized(givenByRecords(records));
+}
+
+function normalized(m: Map<string, GivenBlock[]>): Map<string, GivenBlock[]> {
+  return new Map(
+    [...m]
+      .filter(([, bs]) => bs.length > 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([et, bs]) => [et, [...bs].sort((x, y) => x.k - y.k)]),
+  );
+}
 
 /** Each field's timeline; a stretch with no value is left out (the reference lists it as null). */
 const timelines = (fields: Readonly<Record<string, unknown>>, names: readonly string[]) =>
@@ -131,8 +227,52 @@ function compare(
     { kind: "deletion", op: last + 1, id: "pi_x", sources: [...deleted] },
   ]).final;
   const records = steps.map((x) => x.judgement.record);
-  const replayed = replayDeletion(table, records, deletedContributions(kept, deleted, isState));
+  const gone = deletedContributions(kept, deleted, isState);
+  const replayed = replayDeletion(table, records, gone);
   const { state } = replayed;
+  // The restatements, laid over the blocks the log last gave (here the records as written) less
+  // the deleted ones, give the replay's items (09 §5.9 «以最近一次为准»): nothing restated is
+  // missed, nothing restated that the replay does not have.
+  expect(withoutDropped(overlay(givenByRecords(records), replayed.restated, gone))).toEqual(
+    blocksOf(replayed.records),
+  );
+  // No restatement names a deleted contribution, as its item, in its deps or in what it carries.
+  const named = (x: { event: number; target: string }) => gone.has(`${x.event}/${x.target}`);
+  expect(
+    replayed.restated.filter(
+      (r) => named(r.item) || r.deps.some(named) || (r.carried ?? []).some(named),
+    ),
+  ).toEqual([]);
+  // The order of deletions does not matter (03-deletion «推论»), checked the way a log has it: the
+  // first deletion's restatements laid over the blocks as written (dropped kept) are the latest
+  // blocks for the second; the replay of both, numbered against them, gives the items (indices
+  // included) and values the reference evaluator gives with the two deletion events in that order.
+  if (deleted.size === 2) {
+    for (const [a, b] of [[...deleted], [...deleted].reverse()] as [string, string][]) {
+      const first = deletedContributions(kept, new Set([a]), isState);
+      const once = replayDeletion(table, records, first);
+      const afterFirst = overlay(givenByRecords(records), once.restated, first);
+      const then = replayDeletion(table, records, gone, [], afterFirst);
+      // The round trip across both: the second deletion's restatements laid over the blocks the
+      // first left give its replay's items (an item back from dropped must be restated).
+      expect(withoutDropped(overlay(afterFirst, then.restated, gone))).toEqual(
+        blocksOf(then.records),
+      );
+      const two = evaluateLog(schema, [
+        ...kept,
+        { kind: "deletion", op: last + 1, id: "pi_a", sources: [a] },
+        { kind: "deletion", op: last + 2, id: "pi_b", sources: [b] },
+      ]).final;
+      const proposalsThen = new Set(
+        then.state.records
+          .filter((r) => r.kind === "undo" && r.status === "awaiting")
+          .map((r) => r.event),
+      );
+      expect(itemKeys(then.state.items.filter((x) => !proposalsThen.has(x.event)))).toEqual(
+        itemKeys(two.items),
+      );
+    }
+  }
   const names = [...new Set([...Object.keys(ref.fields), ...Object.keys(view(state).fields)])];
   // The proposal of an awaiting undo (its write-backs, awaiting) is left out: the reference keeps
   // it in the revert's result only.
