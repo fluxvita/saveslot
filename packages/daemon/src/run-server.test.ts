@@ -10,15 +10,22 @@ import { join } from "node:path";
 import {
   addLocalUser,
   CursorKeys,
+  type DiscardDatabase,
+  databaseOf,
   initControlPlane,
   initExternalLogin,
   initLocalAccounts,
   type ServerControlPlane,
+  stagingDatabaseOf,
   type TenantPoolOptions,
   type UserId,
   writeUserSession,
 } from "@fluxvita/saveslot-service";
-import { type ControlDatabase, openControlDatabase } from "@fluxvita/saveslot-store-postgres";
+import {
+  type ControlDatabase,
+  checkDiscard,
+  openControlDatabase,
+} from "@fluxvita/saveslot-store-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_KEY } from "../../service/src/external-assertion.fixture.ts";
 import { cellFromEnv } from "../../store-postgres/src/testing/server.fixture.ts";
@@ -26,6 +33,7 @@ import { testPostgres } from "../../store-postgres/src/testing/test-postgres.fix
 import { TEST_BACKEND, testBackend } from "../../test-backend/src/index.fixture.ts";
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import {
+  cellDiscarder,
   type RunningServer,
   runServer,
   ServerAlreadyRunning,
@@ -558,6 +566,89 @@ describe("runServer: what it refuses to start on", () => {
     },
     T,
   );
+});
+
+describe("runServer: a staging database an import left", () => {
+  it(
+    "the tenant's first opening drops it, through the backend's guard, and the directory forgets it",
+    async () => {
+      const c = await controlDb();
+      const t = tenants();
+      const cfg = config();
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const cp = c.cp as ServerControlPlane;
+      const { user } = await addLocalUser(c.accounts as NonNullable<typeof c.accounts>, {
+        control: cp,
+        backend: t.backend,
+        name: "emery",
+        password: "correct horse battery",
+        cell: CELL,
+        cells: new Set([CELL]),
+        now: NOW,
+      });
+      const tenant = (await cp.tenantOf(user))?.id;
+      if (tenant === undefined) throw new Error("no tenant");
+      const staging = stagingDatabaseOf(tenant, "IM_0123456789ABCDEF");
+      await cp.setStaging(tenant, staging);
+      const dropped: Parameters<DiscardDatabase>[0][] = [];
+      const token = await sessionFor(c.store, user);
+      const s = await runServer({
+        config: cfg,
+        version: "0.0.0-test",
+        openControl: async () => c.db,
+        backend: t.backend,
+        discardDatabase: async (d) => {
+          // What the PostgreSQL backend's drop checks first: this one it would drop.
+          checkDiscard(d);
+          dropped.push(d);
+        },
+        now: () => NOW,
+      });
+      try {
+        expect((await cp.tenant(tenant))?.staging).toBe(staging);
+        const r = await send(s, {
+          path: "/v1/slots",
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(r.status).toBe(200);
+        expect(dropped).toEqual([
+          {
+            cell: CELL,
+            tenantDatabase: databaseOf(tenant),
+            current: databaseOf(tenant),
+            database: staging,
+          },
+        ]);
+        expect((await cp.tenant(tenant))?.staging).toBeUndefined();
+        // Forgotten: the next opening drops nothing.
+        await send(s, { path: "/v1/slots", headers: { authorization: `Bearer ${token}` } });
+        expect(dropped).toHaveLength(1);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it("the default drop: a tenant of another cell, or a database not the tenant's, is refused before any connection", async () => {
+    // The cell's host is not one: anything that got as far as connecting would fail otherwise.
+    const drop = cellDiscarder(config());
+    const tenant = "tn_01234567890123456789012345";
+    const request = {
+      tenantDatabase: tenant,
+      current: tenant,
+      database: `${tenant}_im_0123456789abcdef`,
+    };
+    await expect(drop({ cell: "elsewhere", ...request })).rejects.toThrow(
+      "the tenant's database is not in this server's cell",
+    );
+    await expect(drop({ cell: CELL, ...request, database: "postgres" })).rejects.toMatchObject({
+      code: "discard_refused",
+    });
+    await expect(drop({ cell: CELL, ...request, database: tenant })).rejects.toMatchObject({
+      code: "discard_refused",
+    });
+  });
 });
 
 describe("runServer: closing", () => {

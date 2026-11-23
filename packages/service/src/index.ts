@@ -25,6 +25,7 @@ export * from "./server-auth.ts";
 export * from "./server-callers.ts";
 export * from "./server-connections.ts";
 export * from "./server-control-plane.ts";
+export * from "./server-import.ts";
 export * from "./server-restore.ts";
 export * from "./server-tenant.ts";
 export * from "./slot-list.ts";

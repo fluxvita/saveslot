@@ -34,15 +34,18 @@ import {
 } from "@fluxvita/saveslot-server";
 import {
   CursorKeys,
+  type DiscardDatabase,
   openControlPlane,
   requestSource,
   serverCallers,
+  stagingDiscarder,
   TenantPool,
   type TenantPoolOptions,
   TenantRateLimiter,
 } from "@fluxvita/saveslot-service";
 import {
   type ControlDatabase,
+  discardDatabase,
   openControlDatabase,
   PostgresBackend,
 } from "@fluxvita/saveslot-store-postgres";
@@ -83,6 +86,8 @@ export interface RunServerOptions {
   readonly openControl?: (at: DatabaseAt) => Promise<ControlDatabase>;
   /** The tenants' storage (a test gives its own); PostgreSQL in the configured cell otherwise. */
   readonly backend?: TenantPoolOptions["backend"];
+  /** Drops a tenant's database an import left behind (a test gives its own); `cellDiscarder`'s otherwise. */
+  readonly discardDatabase?: DiscardDatabase;
   readonly now?: () => string;
   /** How long an unused tenant stays open. */
   readonly idleMs?: number;
@@ -90,6 +95,20 @@ export interface RunServerOptions {
   readonly warn?: (event: string, fields: Readonly<Record<string, string>>) => void;
   /** Sees each MCP tool call's contract result (the contract tests' MCP driver reads it). */
   readonly onToolResult?: ApiContext["onToolResult"];
+}
+
+/**
+ * Drops a database of the one cell (the PostgreSQL backend's `discardDatabase`, whose guard refuses
+ * any but the tenant's staging databases and the one an import replaced). A tenant recorded in
+ * another cell is refused, nothing dropped: a self-hosted server has one cell.
+ */
+export function cellDiscarder(config: ServerConfig): DiscardDatabase {
+  return async ({ cell, ...request }) => {
+    if (cell !== config.cellName) {
+      throw new Error("the tenant's database is not in this server's cell");
+    }
+    await discardDatabase(config.cell, request);
+  };
 }
 
 export interface RunningServer {
@@ -164,11 +183,13 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
           step: what,
           error: (error as Error)?.name ?? "unknown",
         }),
-      // The server mode has no import in this version, so no tenant has a staging database to
-      // drop; one found is left as it is, and the tenant serves anyway.
-      discardStaging: async () => {
-        throw new Error("the server mode's import is not in this version");
-      },
+      // A staging database an import left (refused, rolled back, or the one a swap replaced) is
+      // dropped and forgotten when its tenant is next opened; a drop that fails is warned of, the
+      // tenant serves, and the next opening tries again.
+      discardStaging: stagingDiscarder({
+        control,
+        discardDatabase: o.discardDatabase ?? cellDiscarder(config),
+      }),
       onDiscardFailure: (tenant) => warn("tenant_staging_left", { tenant }),
     });
     // Normalized when the configuration was read: one that is not a single address refuses it.
