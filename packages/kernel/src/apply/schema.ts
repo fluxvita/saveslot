@@ -10,9 +10,10 @@
 // change or a confirmation, moves the pointer. A migration begun (`schema.migration_started`) is
 // recorded, nothing built; it must go to a version rebuilding a table and have an ID of its own.
 // Switches rebuilding tables stop apply as not implemented, never skipped. So does a definition
-// with an external key, or with a derived rule this version does not evaluate: their indexes and
-// evaluation belong to later phases, and an empty table would leave the state silently behind the
-// log. Derived tables get their physical tables here (./derived.ts).
+// with a derived rule this version does not evaluate: its evaluation belongs to a later phase, and
+// an empty table would leave the state silently behind the log. Derived tables get their physical
+// tables here (./derived.ts). A table with an external key starts with no entries in the key index
+// (`external_keys`); a switch clears the entries of a table whose key it drops or changes.
 //
 // Tables are only ever created here, from the compiled definition: never by hand.
 
@@ -121,9 +122,9 @@ const structureOf = (t: CompiledTable): string => {
 };
 
 /**
- * Stops on what a compiled definition holds that this phase does not apply: external keys, derived
- * rules this version does not evaluate, and tables built in an earlier version (creating a slot
- * builds every table).
+ * Stops on what a compiled definition holds that this phase does not apply: derived rules this
+ * version does not evaluate. Returns the tables to build: not those built in an earlier version
+ * (creating a slot builds every table).
  */
 function admit(
   seq: Seq,
@@ -159,9 +160,6 @@ function admit(
       }
       derived.push(t);
       continue;
-    }
-    if ("external_key" in t && t.external_key !== undefined) {
-      throw new ApplyError("not_implemented", seq, `external key of ${t.id} is not applied yet`);
     }
     base.push(t);
   }
@@ -539,7 +537,19 @@ function planSwitchFrom(
   const gone = prev.tables.find((y) => !c.tables.some((x) => x.id === y.id) && !dropped.has(y.id));
   if (gone !== undefined)
     throw inconsistent(`table ${gone.id} of version ${prev.sv} is gone, not dropped`);
+  // The key index rebuilt as the new version has it (09 §5.5 `schema.switched`): this version
+  // adds a key to a written table only on fields the same draft adds (empty on every row, so no
+  // entries) and changes one only on a table never written, so what is left is clearing the entries
+  // of a table whose key the version drops or changes (dropping the table drops its key too).
+  const keyOf = (x: CompiledTable | undefined) =>
+    x !== undefined && x.kind === "base" && x.external_key !== undefined
+      ? canonicalize([...x.external_key])
+      : undefined;
+  const cleared = prev.tables.filter(
+    (y) => keyOf(y) !== undefined && keyOf(y) !== keyOf(c.tables.find((x) => x.id === y.id)),
+  );
   return [
+    ...cleared.map((y): Change => ({ kind: "external_keys_clear", table_id: y.id })),
     {
       kind: "ddl",
       sql: [

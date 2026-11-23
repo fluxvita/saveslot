@@ -483,6 +483,32 @@ export function planWriteBase(seq: Seq, op: Seq, present: Obj, input: WriteBaseI
   const count = isState ? settled.rows.length : settled.rows.filter((r) => !r.revoked).length;
   if (count !== input.count)
     changes.push({ kind: "counts_add", table_id: t.id, delta: count - input.count });
+
+  // The key index (§5.7 the `apply` table: a key field's item in effect gives the row its entry,
+  // by the new values; a revoke leaves it). A key is given whole and once, never `null`: a key
+  // field's item in effect with a key field still without a value is not a log the write path
+  // makes. A candidate or awaiting key field item is not in `mine`, and changes nothing here.
+  // An entry is only ever added: freezing it on `deletion.confirmed`, unfreezing it on
+  // `deletion.cancelled` and recomputing its holder on `deletion.executed` (09 §5.9) belong to the
+  // request that applies those events, which must do the recomputing with it.
+  // Only an `applied` item: a key field is never corroborated (04-write-and-read «三方比较», key
+  // fields), and one that were would find the entry its applied item gave, the same row.
+  const keyFields = t.time.type !== "state" ? t.external_key : undefined;
+  if (
+    keyFields !== undefined &&
+    mine.some((x) => x.status === "applied" && (keyFields as readonly string[]).includes(x.target))
+  ) {
+    const values = settled.rows[0]?.values ?? {};
+    const key = keyFields.map((f) => values[f]);
+    if (key.some((v) => v === undefined || v === null))
+      throw inconsistent(seq, `${rowId} has a key field's item in effect, not its whole key`);
+    changes.push({
+      kind: "external_key_add",
+      table_id: t.id,
+      key_values: canonicalize(key as JsonValue[]),
+      holder_row: rowId,
+    });
+  }
   return changes;
 }
 

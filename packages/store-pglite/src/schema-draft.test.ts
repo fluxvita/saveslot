@@ -361,14 +361,6 @@ describe("idempotency", () => {
 });
 
 describe("refusals", () => {
-  const keyed = {
-    ...structuredClone(DOCUMENT),
-    tables: [
-      { ...structuredClone(DOCUMENT).tables[0], external_key: ["note"] },
-      structuredClone(DOCUMENT).tables[1],
-    ],
-  };
-
   it.each([
     [
       "a caller whose range is not every slot",
@@ -427,22 +419,6 @@ describe("refusals", () => {
     },
     T,
   );
-
-  it(
-    "stops an external key before anything is logged (not applied yet)",
-    async () => {
-      expect(await refused({ document: keyed })).toEqual({
-        code: "internal",
-        reason: "not_implemented",
-        param: "tables/0/external_key",
-      });
-      const n = await s.store.read((tx) =>
-        tx.query<{ n: unknown }>("SELECT count(*) AS n FROM events WHERE type LIKE 'schema.%'"),
-      );
-      expect(Number(n.rows[0]?.n)).toBe(0);
-    },
-    T,
-  );
 });
 
 describe("warnings", () => {
@@ -466,13 +442,73 @@ describe("warnings", () => {
         ],
       });
       const r = await draft({ document });
-      // An external key is not applied in this version, so its warning cannot be reached here.
       expect(r.warnings).toEqual([{ code: "group_key_free_text", table: "notes_by_text" }]);
       // A replay rebuilds them from the compiled schema in the log, as the first receipt gave them.
       const { replayed, ...again } = await draft({ document });
       expect(replayed).toBe(true);
       expect(again.warnings).toEqual(r.warnings);
       expect(again).toEqual(r);
+    },
+    T,
+  );
+});
+
+describe("a slot with an external key", () => {
+  const keyed = (key: string[]) => ({
+    ...structuredClone(DOCUMENT),
+    tables: [
+      {
+        ...structuredClone(DOCUMENT).tables[0],
+        fields: [
+          ...(DOCUMENT.tables[0]?.fields ?? []),
+          { name: "origin", type: "text", description: "the source system" },
+          { name: "external_id", type: "text", description: "its ID there" },
+        ],
+        external_key: key,
+      },
+      structuredClone(DOCUMENT).tables[1],
+    ],
+  });
+  const entries = async () =>
+    Number(
+      (
+        await s.store.read((tx) =>
+          tx.query<{ n: unknown }>("SELECT count(*) AS n FROM external_keys"),
+        )
+      ).rows[0]?.n,
+    );
+
+  it(
+    "is created: catalog names the key, its key index is empty; one key field is warned of",
+    async () => {
+      const r = await draft({ document: keyed(["origin", "external_id"]) });
+      expect(r).toMatchObject({ outcome: "applied", sv: 1 });
+      expect(r.warnings).toBeUndefined();
+      const c = (await catalog(s.store, ctx(), {
+        level: "table",
+        tables: ["expenses", "budgets"],
+      })) as unknown as {
+        tables: { table: string; external_key?: string[] }[];
+      };
+      expect(c.tables.map((t) => [t.table, t.external_key])).toEqual([
+        ["expenses", ["origin", "external_id"]],
+        ["budgets", undefined],
+      ]);
+      expect(await entries()).toBe(0);
+      expect(await slotCount()).toBe(1);
+    },
+    T,
+  );
+
+  it(
+    "with a key of one field: the warning, on the receipt and on its replay",
+    async () => {
+      const r = await draft({ document: keyed(["external_id"]) });
+      expect(r.warnings).toEqual([{ code: "single_field_external_key", table: "expenses" }]);
+      const { replayed, ...again } = await draft({ document: keyed(["external_id"]) });
+      expect(replayed).toBe(true);
+      expect(again).toEqual(r);
+      expect(await entries()).toBe(0);
     },
     T,
   );

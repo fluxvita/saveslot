@@ -220,7 +220,7 @@ export async function schemaDraft(
     const compiled = result.compiled;
     // What this version does not evaluate or build stops here, before anything is logged: a rule
     // calling saveslot_date, a decimal group key that may have more places than its scale
-    // (evaluationRefusal, which apply checks again); an external key.
+    // (evaluationRefusal, which apply checks again).
     compiled.tables.forEach((t, i) => {
       if (t.kind === "derived") {
         const refusal = evaluationRefusal(compiled, t.id);
@@ -230,11 +230,7 @@ export async function schemaDraft(
             `a derived rule of this kind is not evaluated in this version: ${refusal.kind}`,
             { reason: "parameter", param: `tables/${i}/rule` },
           );
-      } else if ("external_key" in t && t.external_key !== undefined)
-        throw new SchemaDraftError("internal", "an external key is not applied yet", {
-          reason: "not_implemented",
-          param: `tables/${i}/external_key`,
-        });
+      }
     });
 
     const draft = newDraftId();

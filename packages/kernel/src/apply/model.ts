@@ -301,6 +301,18 @@ export type Change =
       readonly rows: readonly (readonly SqlValue[])[];
     }
   | { readonly kind: "counts_add"; readonly table_id: string; readonly delta: number }
+  /**
+   * The key index (§5.12 `external_keys`): a row given its whole external key holds it; the values
+   * as a JCS array in the order of the table's key fields.
+   */
+  | {
+      readonly kind: "external_key_add";
+      readonly table_id: string;
+      readonly key_values: string;
+      readonly holder_row: string;
+    }
+  /** The key index: a table's entries cleared (a switch dropping or changing its key). */
+  | { readonly kind: "external_keys_clear"; readonly table_id: string }
   /** A derived partition registered: its group key as JCS (`partitions`). */
   | {
       readonly kind: "partition_insert";

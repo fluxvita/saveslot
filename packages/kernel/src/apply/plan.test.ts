@@ -228,9 +228,9 @@ describe("planEvent: what this phase stops on, never skips", () => {
       expect.stringMatching(/^inconsistent: derived table t5: its rule does not check \(/),
     ],
     [
-      "an external key",
+      "an external key (built; its key index starts empty)",
       { compiled: withTables([{ ...COMPILED_V1.tables[3], external_key: ["f1"] }]) },
-      "not_implemented: external key of t4 is not applied yet",
+      "applied",
     ],
     [
       "an rsql version the kernel does not know",
@@ -340,10 +340,14 @@ describe("planEvent: what this phase stops on, never skips", () => {
   });
 
   it.each([
-    ["key_from", { key_from: `r_${"5".repeat(26)}` }],
+    [
+      "key_from",
+      { key_from: `r_${"5".repeat(26)}` },
+      "not_implemented: ops/0/target: transferring an external key is not in this version",
+    ],
     // Creating its row: an op by key hitting one has a ver and a baseline (09 §5.7).
-    ["by_external_key", { by_external_key: true, created: true }],
-  ])("a write.head whose op has %s", (_, extra) => {
+    ["by_external_key", { by_external_key: true, created: true }, "applied"],
+  ])("a write.head whose op has %s", (_, extra, expected) => {
     const [head] = op(20, [
       {
         type: "write.head",
@@ -355,9 +359,7 @@ describe("planEvent: what this phase stops on, never skips", () => {
         },
       },
     ]);
-    expect(reason(head as ApplyEvent)).toBe(
-      "not_implemented: ops/0/target: writes by external key are not applied yet",
-    );
+    expect(reason(head as ApplyEvent)).toBe(expected);
   });
 
   it("schema.rejected gives up the draft's version, as a superseded one", () => {
@@ -885,6 +887,54 @@ describe("planEvent: a switch from an earlier version that rebuilds nothing", ()
   } as const;
   const V2 = next(COMPILED_V1);
   const withT5 = { ...V2, tables: [...V2.tables, T5] } as unknown as CompiledSchema;
+
+  it("clears the key index of a table whose key the version drops or changes, or which it drops", () => {
+    // Version 1 with t1 keyed by f4 and t4 by f1.
+    const keyed = (c: CompiledSchema, keys: Record<string, string[] | undefined>) =>
+      ({
+        ...c,
+        tables: c.tables.map((t) => {
+          if (!(t.id in keys)) return t;
+          const { external_key: _, ...rest } = t as { external_key?: unknown };
+          const k = keys[t.id];
+          return k === undefined ? rest : { ...rest, external_key: k };
+        }),
+      }) as unknown as CompiledSchema;
+    const from = keyed(COMPILED_V1, { t1: ["f4"], t4: ["f1"] });
+    const clears = (
+      to: CompiledSchema,
+      changes: { change: string; target: Record<string, JsonValue> }[] = [],
+    ) =>
+      planEvent(switched(), inputs(to, { from, changes })).filter((c) =>
+        c.kind.startsWith("external_key"),
+      );
+    // The same keys: nothing cleared.
+    expect(clears(keyed(V2, { t1: ["f4"], t4: ["f1"] }))).toEqual([]);
+    // t1's key changed, t4's dropped: both cleared, before anything else of the switch.
+    const changed = keyed(V2, { t1: ["f4", "f5"], t4: undefined });
+    expect(clears(changed)).toEqual([
+      { kind: "external_keys_clear", table_id: "t1" },
+      { kind: "external_keys_clear", table_id: "t4" },
+    ]);
+    expect(planEvent(switched(), inputs(changed, { from }))[0]).toEqual({
+      kind: "external_keys_clear",
+      table_id: "t1",
+    });
+    // t4 dropped with its key.
+    const dropped = {
+      ...keyed(V2, { t1: ["f4"] }),
+      tables: keyed(V2, { t1: ["f4"] }).tables.filter((t) => t.id !== "t4"),
+    } as CompiledSchema;
+    expect(clears(dropped, [{ change: "drop_table", target: { table: "t4" } }])).toEqual([
+      { kind: "external_keys_clear", table_id: "t4" },
+    ]);
+    // A key added (on fields the draft adds, empty on every row): nothing to clear.
+    expect(
+      planEvent(switched(), inputs(keyed(V2, { t1: ["f4"], t4: ["f1"] }))).filter((c) =>
+        c.kind.startsWith("external_key"),
+      ),
+    ).toEqual([]);
+  });
 
   it("builds the new base table, gives every table its catalog row, moves the pointer", () => {
     const changes = planEvent(switched(), inputs(withT5));

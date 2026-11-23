@@ -339,16 +339,15 @@ function planOther(
     }
     // §5.7: its premise declarations and what they cover; its request key is added by the caller.
     case "write.head": {
-      // §5.7: writes located by an external key, and a key given to a row, change the key index
-      // and the sync baseline, which this phase does not keep yet.
+      // §5.7: a key transferred from a revoked row (`key_from`) is not in this version; the key
+      // index's yielded rows stay empty.
       for (const [path, v] of Object.entries(present)) {
         if (!/^ops\/\d+\/target$/.test(path)) continue;
-        const o = v as Obj;
-        if ("key_from" in o || "by_external_key" in o) {
+        if ("key_from" in (v as Obj)) {
           throw new ApplyError(
             "not_implemented",
             seq,
-            `${path}: writes by external key are not applied yet`,
+            `${path}: transferring an external key is not in this version`,
           );
         }
       }
@@ -1164,6 +1163,35 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
         }
       }
       for (const r of c.rows) await insert(tx, `"${c.table}"`, c.columns, r);
+      return;
+    case "external_key_add": {
+      // One entry a key (§5.12): the same row again is nothing new; another row holding it is two
+      // rows of one table with one key, which no log the write path makes has. Entries are never
+      // removed here (a deletion's recomputing comes with the request applying deletions).
+      await tx.query(
+        `INSERT INTO external_keys (table_id, key_values, holder_row, state)
+         VALUES ($1, $2, $3, 'present') ON CONFLICT (table_id, key_values) DO NOTHING`,
+        [c.table_id, c.key_values, c.holder_row],
+      );
+      const held = await tx.query<{
+        holder_row: string;
+        yielded_row: string | null;
+        state: string;
+      }>(
+        "SELECT holder_row, yielded_row, state FROM external_keys WHERE table_id = $1 AND key_values = $2",
+        [c.table_id, c.key_values],
+      );
+      const e = held.rows[0];
+      if (e === undefined || e.holder_row !== c.holder_row || e.state !== "present")
+        throw new ApplyError(
+          "inconsistent",
+          seq,
+          `${c.holder_row} given a key of ${c.table_id} that ${e?.holder_row ?? "no row"} holds`,
+        );
+      return;
+    }
+    case "external_keys_clear":
+      await tx.query("DELETE FROM external_keys WHERE table_id = $1", [c.table_id]);
       return;
     case "counts_add":
       await one(

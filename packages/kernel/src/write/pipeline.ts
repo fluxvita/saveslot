@@ -1748,6 +1748,31 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       }
       fields = merged;
     }
+    // An external key (04-write-and-read «按来源键写入»: 键字段只能经 external_key 给出): a key field
+    // in the `set` of a write by row is the key the row holds, by the same value, or
+    // `key_field_changed` (a row without a key included). The row's key is its entry in the key
+    // index: no write of this version gives a row its key within a request.
+    const externalKey = !isState && "external_key" in table ? table.external_key : undefined;
+    if (o.kind === "write" && !isNew && externalKey !== undefined && o.fields !== undefined) {
+      const named = externalKey.filter((f) => o.fields?.[f] !== undefined);
+      if (named.length > 0) {
+        const r = await tx.query<{ key_values: string }>(
+          "SELECT key_values FROM external_keys WHERE table_id = $1 AND holder_row = $2",
+          [table.id, id],
+        );
+        const held = r.rows[0] && (JSON.parse(r.rows[0].key_values) as FieldValue[]);
+        for (const f of named) {
+          const v = held?.[externalKey.indexOf(f)];
+          if (v === undefined || !sameValue((o.fields[f] as NormalizedField).value, v)) {
+            const at = o.named.find((n) => n.field === f && n.param.startsWith(`${param}/set/`));
+            throw new WriteError("invalid_argument", "a key field cannot change", {
+              reason: "key_field_changed",
+              param: at?.param ?? `${param}/set`,
+            });
+          }
+        }
+      }
+    }
 
     // A restatement or a clearing (an update without `set`, 02-integrity «覆盖、取代与清除»): no
     // judgement, no write.base, the row's ver unchanged. Its row must be there (`revoked` as any

@@ -543,6 +543,42 @@ describe("a draft whose every change is automatic", () => {
   );
 
   it(
+    "adds a table with an external key: built in the switch, catalog names the key, no entries",
+    async () => {
+      const d = change(() => {});
+      d.tables.push({
+        name: "meals",
+        kind: "base",
+        description: "a meal",
+        time: { type: "none" },
+        fields: [
+          { name: "origin", type: "text", description: "the source system" },
+          { name: "external_id", type: "text", description: "its ID there" },
+        ],
+        external_key: ["origin", "external_id"],
+      } as never);
+      const r = await draft({ document: d });
+      expect(r).toMatchObject({ outcome: "applied", sv: 2 });
+      expect(r.changes.map((c: { change: string }) => c.change)).toEqual(["add_table"]);
+      const c = (await catalog(s.store, ctx(), {
+        level: "table",
+        tables: ["meals"],
+      })) as unknown as {
+        tables: { table: string; external_key?: string[] }[];
+      };
+      expect(c.tables.find((t) => t.table === "meals")?.external_key).toEqual([
+        "origin",
+        "external_id",
+      ]);
+      const n = await s.store.read((tx) =>
+        tx.query<{ n: unknown }>("SELECT count(*) AS n FROM external_keys"),
+      );
+      expect(Number(n.rows[0]?.n)).toBe(0);
+    },
+    T,
+  );
+
+  it(
     "adds a table: built in the switch, written and read at once",
     async () => {
       const d = change(() => {});
