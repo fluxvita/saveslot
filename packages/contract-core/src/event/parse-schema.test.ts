@@ -320,6 +320,16 @@ describe("parseEvent: slot policy and schema events", () => {
     expect(parse(s)).toEqual({ ok: true, type: typeOf(name) });
   });
 
+  it("accepts a change compiled as on a table never written (as_never_written, metadata)", () => {
+    const s = withBlock(S("schema.compiled"), "changes", [
+      CHANGES[0],
+      CHANGES[1],
+      { ...CHANGES[2], class: "metadata", as_never_written: true },
+      CHANGES[3],
+    ]);
+    expect(parse(s)).toEqual({ ok: true, type: "schema.compiled" });
+  });
+
   const optional = new Set(["from_version", "migration_id", "literal_checker"]);
   const cases = Object.entries(SAMPLES).flatMap(([name, s]) =>
     Object.entries(s.blocks).flatMap(([path, v]) =>
@@ -663,6 +673,30 @@ describe("parseEvent: the other schema blocks, value by value", () => {
       "the reserved class reextract",
       withBlock(S("schema.compiled"), "changes", [{ ...CHANGES[1], class: "reextract" }]),
       "changes[0]: class",
+    ],
+    [
+      "as_never_written false",
+      withBlock(S("schema.compiled"), "changes", [
+        { ...CHANGES[2], class: "metadata", as_never_written: false },
+      ]),
+      "changes[0]: as_never_written true",
+    ],
+    [
+      "as_never_written on a deterministic change",
+      withBlock(S("schema.compiled"), "changes", [{ ...CHANGES[2], as_never_written: true }]),
+      "changes[0]: as_never_written with class metadata",
+    ],
+    [
+      "as_never_written on a slot",
+      withBlock(S("schema.compiled"), "changes", [
+        { ...CHANGES[0], class: "metadata", as_never_written: true },
+      ]),
+      "changes[0]: as_never_written on a table or field",
+    ],
+    [
+      "as_never_written on a rule",
+      withBlock(S("schema.compiled"), "changes", [{ ...CHANGES[3], as_never_written: true }]),
+      "changes[0]: as_never_written on a table or field",
     ],
     ["confirmed by", patched("schema.confirmed", "target", { by: "user" }), "target: by"],
     [

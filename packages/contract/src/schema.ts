@@ -73,12 +73,13 @@ export interface SlotPolicy
  * 04-contract-types §5.3 `SchemaChange`: one change of a draft. Its keys besides `target` are the
  * event format's change record's: `change`, `class`, `compatible_with_old_writes` (whether writes
  * carrying the old `sv` to this field are still accepted), `destructive` (loses data) and `auto`
- * (takes effect by the slot policy). The record names its target by IDs, the contract by names.
+ * (takes effect by the slot policy), and `as_never_written` (compiled as on a table never written,
+ * present only then). The record names its target by IDs, the contract by names.
  */
 export interface SchemaChange
   extends Pick<
     SchemaChangeRecord,
-    "change" | "class" | "compatible_with_old_writes" | "destructive" | "auto"
+    "change" | "class" | "compatible_with_old_writes" | "destructive" | "auto" | "as_never_written"
   > {
   /** The slot, table or field by its name after the change (a renamed one by its new name). */
   target: { slot: true; name: SlotName } | { table: TableName; field?: FieldName; rule?: true };

@@ -16,13 +16,17 @@
 // the table by the caller), precision (`change_precision`) and a unit of the same dimension
 // (`change_unit`, no `migrate`). Bounds are compared as the new unit and precision have them; what a
 // change of unit or precision would break on a bounded field is not counted in this version
-// (`not_in_this_version`, `not_implemented`). Any other difference between the draft and the current
-// version is `not_implemented` with the change's code as `what`: it is classified by what it is,
-// never taken for a change that needs nothing. Not here either: a derived table in the draft, a
-// `migrate` or an expression `backfill`, a time zone change, the time type and keys of a table.
+// (`not_in_this_version`, `not_implemented`). A change of type or dimension compiles on a table
+// never written only (07 «从未被写入的表上改结构»: the caller says which tables are): as metadata,
+// with no `migrate`, the field compiled anew under its ID into a new physical table that the switch
+// builds empty; on a table written it is `not_in_this_version` (`table_written`). A `migrate` and
+// an expression `backfill` are `not_in_this_version` on any table. Any other difference between the
+// draft and the current version is `not_implemented` with the change's code as `what`: it is
+// classified by what it is, never taken for a change that needs nothing. Not here either: a
+// derived table in the draft, a time zone change, the time type and keys of a table.
 //
 // Errors, in this order so the most telling one wins: a key v1 does not support, something not
-// compiled yet that the draft's form already shows (a derived table, `migrate`, an expression
+// compiled that the draft's form already shows (a derived table, `migrate`, an expression
 // `backfill`), the
 // document's form, `base_version` not the current one, a field of the current version neither
 // matched nor dropped, the compilation rules (every finding, document order; the rules of a table
@@ -69,6 +73,17 @@ import type {
 } from "./model.ts";
 import { defaultScale, unitOf } from "./units.ts";
 import { compareDecimal, fold, validate } from "./validate.ts";
+
+/**
+ * The IDs `compileField` takes, for a field compiled anew on a kept table: only a `ref` field reads
+ * them, and a change to or from `ref` is `change_ref`, never compiled through here.
+ */
+const NO_REF_IDS: Ids = {
+  table: new Map(),
+  field: () => {
+    throw new Error("a field compiled anew reads no field IDs");
+  },
+};
 
 type Obj = Record<string, unknown>;
 
@@ -799,7 +814,13 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     target: ChangeTarget,
     change: SchemaChangeCode,
     cls: ChangeClass,
-    o: { compatible: boolean; destructive?: boolean; autoClass?: string; auto?: boolean },
+    o: {
+      compatible: boolean;
+      destructive?: boolean;
+      autoClass?: string;
+      auto?: boolean;
+      asNeverWritten?: boolean;
+    },
   ): void => {
     changes.push({
       target,
@@ -808,8 +829,37 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
       compatible_with_old_writes: o.compatible,
       destructive: o.destructive ?? false,
       auto: o.auto ?? (o.autoClass !== undefined && policy.has(o.autoClass)),
+      ...(o.asNeverWritten ? { as_never_written: true as const } : {}),
     });
   };
+  /**
+   * A change compiled as on a table never written (07 «从未被写入的表上改结构»): metadata, nothing
+   * lost, no conversion; automatic only with `restructure_unused` and the target unused; marked
+   * `as_never_written`, so confirming judges it again and old writes are refused whole after it,
+   * which its record says: `compatible_with_old_writes` is always false.
+   */
+  const asNeverWritten = (target: ChangeTarget, change: SchemaChangeCode): void =>
+    record(target, change, "metadata", {
+      compatible: false,
+      auto: policy.has("restructure_unused") && input.unused(target),
+      asNeverWritten: true,
+    });
+  /** Whether a derived rule of the current version reads the field (its `depends_on`). */
+  const readByRule = (table: string, field: string): boolean =>
+    current.tables.some(
+      (r) =>
+        r.kind === "derived" &&
+        r.rule.depends_on.some((d) => d.table === table && d.field === field),
+    );
+  /**
+   * A field a derived rule reads, changed in what the rule computes from it (type, dimension,
+   * unit, precision) on a table never written: the rule would have to be compiled again and its
+   * table rebuilt with the switch, which comes with changes to derived tables (07 «依赖方»).
+   */
+  const ruleReads = (table: string, field: string, what: string, param: string) =>
+    readByRule(table, field)
+      ? fail({ code: "not_in_this_version", reason: "not_implemented", what, param })
+      : undefined;
   const notYet = (what: string, param: string): CompileChangeResult =>
     fail({ code: "not_implemented", what, param });
 
@@ -856,11 +906,14 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     // Table level. Fields dropped or added change the physical shape: a new physical table. The
     // time type and the keys are not compiled for a change yet.
     const gone = droppedFields.get(s.path) ?? new Set<string>();
+    const neverWritten = input.neverWritten(c.id as TableId);
     for (const id of gone) {
-      record({ ...tid, field: id as FieldId }, "drop_field", "metadata", {
-        compatible: false,
-        destructive: true,
-      });
+      if (neverWritten) asNeverWritten({ ...tid, field: id as FieldId }, "drop_field");
+      else
+        record({ ...tid, field: id as FieldId }, "drop_field", "metadata", {
+          compatible: false,
+          destructive: true,
+        });
       rebuilt.add(c.id);
     }
     m.fields.forEach((cf, j) => {
@@ -950,18 +1003,21 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
           ref?: { table: string; target: "row" | "entity" };
         };
         if (f.type !== cf.type)
-          return {
-            notYet: [
-              f.type === "ref" || cf.type === "ref" ? "change_ref" : "change_type",
-              f.type === "ref" || cf.type === "ref" ? f.path : `${f.path}/type`,
-            ] as const,
-          };
+          return f.type === "ref" || cf.type === "ref"
+            ? { notYet: ["change_ref", f.path] as const }
+            : { restructure: ["change_type", `${f.path}/type`] as const, f, cf, j, target };
         let unitChanged = false;
         if (f.type === "quantity") {
           const u = unitOf(f.unit as string);
           if (u !== undefined && u.code !== g.unit?.code) {
             if (u.dimension !== g.unit?.dimension)
-              return { notYet: ["change_dimension", `${f.path}/unit`] as const };
+              return {
+                restructure: ["change_dimension", `${f.path}/unit`] as const,
+                f,
+                cf,
+                j,
+                target,
+              };
             // The same dimension: values are converted from the old unit to the new one, with no
             // migrate (07 «确定性转换怎么重放»).
             patch["unit"] = { ...u };
@@ -978,6 +1034,10 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
         let requiredNow = false;
         /** `change_precision`: `lost` when the scale goes down (digits dropped), else `kept`. */
         let precision: "lost" | "kept" | undefined;
+        /** Where the draft changes the precision: its scale, or its rounding only. */
+        let precisionAt = `${f.path}/scale`;
+        /** The scale made larger (a loosened constraint, no value changes). */
+        let scaleRaised = false;
         /** A decimal or quantity: its values' shape before and after (unit and precision). */
         let shapes: { readonly from: NumberShape; readonly to: NumberShape } | undefined;
         if (f.type === "decimal" || f.type === "quantity") {
@@ -992,9 +1052,11 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
           if (rounding !== was.rounding || scale < was.scale) {
             patch["precision"] = { scale, rounding };
             precision = scale < was.scale ? "lost" : "kept";
+            precisionAt = scale === was.scale ? `${f.path}/rounding` : `${f.path}/scale`;
           } else if (scale > was.scale) {
             patch["precision"] = { ...was, scale };
             loosened = true;
+            scaleRaised = true;
           }
         }
         if (f.type === "integer" || f.type === "decimal" || f.type === "quantity") {
@@ -1051,21 +1113,72 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
           tightened,
           requiredNow,
           precision,
+          precisionAt,
+          scaleRaised,
           unitChanged,
         };
       });
     const out: CompiledBaseField[] = [];
     for (const x of fields) {
-      if ("notYet" in x) {
-        const [what, param] = x.notYet;
-        // A change of type or dimension needs a `migrate` (or converts as one), not in the first
-        // version; the other changes listed here come in a later part of this one.
-        if (what === "change_type" || what === "change_dimension")
-          return fail({ code: "not_in_this_version", what, param });
-        return notYet(what, param);
+      if ("notYet" in x) return notYet(x.notYet[0], x.notYet[1]);
+      if ("restructure" in x) {
+        // A change of type or dimension: on a table written, it needs a `migrate`, not in the
+        // first version. On a table never written (07 «从未被写入的表上改结构») there is no value to
+        // convert: the field is compiled anew under its ID, the change is metadata, and the table
+        // gets a new physical table, empty (not rebuilt from the log: 08 «物理做法»).
+        const [what, param] = x.restructure;
+        if (!input.neverWritten(c.id as TableId))
+          return fail({ code: "not_in_this_version", reason: "table_written", what, param });
+        const { f, cf, j, target } = x;
+        const byRule = ruleReads(c.id, cf.id, what, param);
+        if (byRule !== undefined) return byRule;
+        const next = compileField(f, cf.id, merged, NO_REF_IDS) as unknown as Record<
+          string,
+          unknown
+        >;
+        if (f.name !== cf.name)
+          record(target, "rename_field", "metadata", {
+            compatible: true,
+            auto: policy.has("rename_unused") && input.unused(target),
+          });
+        asNeverWritten(target, what);
+        // Optional made required still takes a constant (07: whatever path the change takes).
+        const bf = m.extra.backfills[j];
+        const madeRequired = f.required === true && cf.required !== true;
+        if (bf !== undefined) {
+          if (!madeRequired) return fail(malformed(`${f.path}/backfill`));
+          const value = constOf(
+            next as unknown as CompiledBaseField,
+            bf.raw,
+            `${f.path}/backfill/const`,
+          );
+          if (value !== undefined) next["backfill"] = { const: value };
+        } else if (madeRequired) late.push({ path: f.path, code: "backfill_const_required" });
+        rebuilt.add(c.id);
+        out.push(next as unknown as CompiledBaseField);
+        continue;
       }
-      const { f, cf, j, target, patch, loosened, tightened, requiredNow, precision, unitChanged } =
-        x;
+      const {
+        f,
+        cf,
+        j,
+        target,
+        patch,
+        loosened,
+        tightened,
+        requiredNow,
+        precision,
+        precisionAt,
+        scaleRaised,
+        unitChanged,
+      } = x;
+      // A larger scale on a field a derived rule reads, on any table: the rule declares the scale it
+      // computes, so it would have to be compiled again (07 «依赖方»), and this loosening is
+      // automatic. Not in this version.
+      if (scaleRaised) {
+        const byRule = ruleReads(c.id, cf.id, "change_precision", `${f.path}/scale`);
+        if (byRule !== undefined) return byRule;
+      }
       const next: Record<string, unknown> = { ...cf };
       if (f.name !== cf.name) {
         next["name"] = f.name;
@@ -1101,17 +1214,35 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
       }
       // Deterministic changes (07 «改动分类»): automatic only on a table never written and unused,
       // which this version does not compute, so they wait for confirmation.
-      if (unitChanged) record(target, "change_unit", "deterministic", { compatible: true });
-      if (precision !== undefined)
-        record(target, "change_precision", "deterministic", {
-          compatible: true,
-          destructive: precision === "lost",
-        });
-      if (tightened || requiredNow)
-        record(target, "tighten_constraint", "deterministic", {
-          compatible: true,
-          destructive: true,
-        });
+      const neverWritten = input.neverWritten(c.id as TableId);
+      if (neverWritten && unitChanged) {
+        const byRule = ruleReads(c.id, cf.id, "change_unit", `${f.path}/unit`);
+        if (byRule !== undefined) return byRule;
+      }
+      if (neverWritten && precision !== undefined) {
+        const byRule = ruleReads(c.id, cf.id, "change_precision", precisionAt);
+        if (byRule !== undefined) return byRule;
+      }
+      if (unitChanged) {
+        if (neverWritten) asNeverWritten(target, "change_unit");
+        else record(target, "change_unit", "deterministic", { compatible: true });
+      }
+      if (precision !== undefined) {
+        if (neverWritten) asNeverWritten(target, "change_precision");
+        else
+          record(target, "change_precision", "deterministic", {
+            compatible: true,
+            destructive: precision === "lost",
+          });
+      }
+      if (tightened || requiredNow) {
+        if (neverWritten) asNeverWritten(target, "tighten_constraint");
+        else
+          record(target, "tighten_constraint", "deterministic", {
+            compatible: true,
+            destructive: true,
+          });
+      }
       if (unitChanged || precision !== undefined || tightened || requiredNow) rebuilt.add(c.id);
       // The `backfill` (07 «收紧约束»): a constant for optional made required, always; for a bound
       // or enum value taken away, a constant or else no position in effect may break it.
@@ -1123,6 +1254,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
         if (value !== undefined) next["backfill"] = { const: value };
       } else if (requiredNow) late.push({ path: f.path, code: "backfill_const_required" });
       else if (
+        !neverWritten &&
         (unitChanged || precision === "lost") &&
         (tightened || next["min"] !== undefined || next["max"] !== undefined)
       )
@@ -1204,7 +1336,8 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
         );
         if (value !== undefined) cf["backfill"] = { const: value };
       }
-      record(target, "add_required_field", "deterministic", { compatible: true });
+      if (input.neverWritten(c.id as TableId)) asNeverWritten(target, "add_required_field");
+      else record(target, "add_required_field", "deterministic", { compatible: true });
     } else {
       if (bf !== undefined) return fail(malformed(`${f.path}/backfill`));
       record(target, "add_optional_field", "metadata", {

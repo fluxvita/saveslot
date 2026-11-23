@@ -26,6 +26,21 @@ describe("changedSinceOf", () => {
     expect(entries([v(2, table("drop_table", false))], 1)).toEqual([["t1/*", "drop_table"]]);
   });
 
+  it("a change compiled as on a table never written (as_never_written): the whole table, compatible or not", () => {
+    const marked = (change: SchemaChangeCode, compatible: boolean): RecordedChange => ({
+      ...field(change, compatible),
+      as_never_written: true,
+    });
+    expect(entries([v(2, marked("change_type", false))], 1)).toEqual([["t1/*", "change_type"]]);
+    expect(entries([v(2, marked("drop_field", false))], 1)).toEqual([["t1/*", "drop_field"]]);
+    expect(entries([v(2, marked("tighten_constraint", true))], 1)).toEqual([
+      ["t1/*", "tighten_constraint"],
+    ]);
+    // Not marked: by field and by compatibility, as before.
+    expect(entries([v(2, field("change_type", false))], 1)).toEqual([["t1/f2", "change_type"]]);
+    expect(entries([v(2, field("tighten_constraint", true))], 1)).toEqual([]);
+  });
+
   it.each([
     "rename_field",
     "change_description",

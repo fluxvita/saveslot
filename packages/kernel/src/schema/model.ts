@@ -106,7 +106,7 @@ export type CompileError =
        * change of unit or precision breaks needs the conversion that building a version brings);
        * absent: a parameter this version does not take.
        */
-      readonly reason?: "not_implemented";
+      readonly reason?: "not_implemented" | "table_written";
       /** The change or key, for the message (`change_type`, `migrate`, …). */
       readonly what?: string;
     }
@@ -197,6 +197,12 @@ export interface CompileChangeInput {
   readonly autoApply: readonly string[];
   /** Whether nobody but the submitter uses the table or field (07 «改名自动生效的前提»). */
   readonly unused: (target: ChangeTarget) => boolean;
+  /**
+   * Whether no `write.base` was ever logged for the table (07 «从未被写入的表上改结构»: a revoked,
+   * deleted, candidate or awaiting write counts as written; a read does not). Changes allowed only
+   * on such a table compile as metadata, with no `migrate`, into a new, empty physical table.
+   */
+  readonly neverWritten: (table: TableId) => boolean;
   /**
    * The version number the draft gets: the slot's next number not used by any version in the log,
    * pending, rejected and superseded ones included. Numbers are never reused, so it may skip.

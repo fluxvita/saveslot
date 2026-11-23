@@ -504,13 +504,16 @@ async function svAsOf(tx: ReadTx, slot: string, s: number, current: number): Pro
  * The slot's name and the table as a version defines them, for naming what was read (08 «退役表»:
  * by that version's compiled definition): `then`, that version's definition; `now`, the slot's name
  * and the table as the current version has them. Where that version answers from the same physical
- * table as the current one (a rename, a description). A table rebuilt since is `not_in_this_version`
- * (reading retired physical tables comes with the migrations that make them); a table not in that
- * version had no row then and is named as now; a definition missing is `internal`.
+ * table as the current one (a rename, a description). A table answered then by another physical
+ * table that is empty (`thenEmpty`: restructured while never written, 08 «物理做法») had no row
+ * then: named as that version has it. Another table rebuilt since is `not_in_this_version` (reading
+ * retired physical tables comes with the migrations that make them); a table not in that version
+ * had no row then and is named as now; a definition missing is `internal`.
  */
 export function namedAsOf(
   then: CompiledSchema | undefined,
   now: { readonly slot: string; readonly table: CompiledBaseTable },
+  thenEmpty = false,
 ): { slot: string; table: CompiledBaseTable } {
   // A version switched to is in the log with its definition: none read is the log at odds with
   // itself, not a reason to name it as now.
@@ -523,7 +526,7 @@ export function namedAsOf(
   if (was === undefined || was.kind !== "base") return { slot: now.slot, table: now.table };
   // Another physical table answers for that version: reading it comes with the migrations that
   // build it; naming the current one's rows by it would be wrong.
-  if (was.physical.table !== now.table.physical.table)
+  if (was.physical.table !== now.table.physical.table && !thenEmpty)
     throw new ReadError(
       "not_in_this_version",
       "as_of on a version answered by another physical table",
@@ -534,6 +537,9 @@ export function namedAsOf(
     );
   return { slot: then.name, table: was };
 }
+
+/** A base table's physical name, as `baseTableDdl` makes it: checked before it goes into SQL. */
+const PHYSICAL_NAME = /^t_t[1-9][0-9]{0,8}_v[1-9][0-9]{0,8}$/;
 
 /** `namedAsOf` with version `sv`'s definition read from the log's content. */
 async function shownAs(
@@ -550,7 +556,20 @@ async function shownAs(
     [slot.slot, sv],
   );
   const body = r.rows[0]?.body;
-  return namedAsOf(body == null ? undefined : (JSON.parse(body) as CompiledSchema), now);
+  const then = body == null ? undefined : (JSON.parse(body) as CompiledSchema);
+  // Another physical table then: an empty one (the table restructured while never written) had
+  // no row then, whatever the current one holds now.
+  const was = then?.tables.find((x) => x.id === t.id);
+  let thenEmpty = false;
+  if (was !== undefined && was.kind === "base" && was.physical.table !== t.physical.table) {
+    if (!PHYSICAL_NAME.test(was.physical.table))
+      throw new ReadError("internal", "not a physical table name", { reason: "inconsistent" });
+    const rows = await tx.query<{ any: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM "${was.physical.table}") AS any`,
+    );
+    thenEmpty = rows.rows[0]?.any === false;
+  }
+  return namedAsOf(then, now, thenEmpty);
 }
 
 /** A row's values by the names of `t`'s fields: only the fields `t` has. */

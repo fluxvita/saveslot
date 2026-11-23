@@ -109,3 +109,35 @@ export async function numbering(tx: ReadTx) {
     nextFieldNumber: (table: string) => highest(fields.get(table) ?? [], "f") + 1,
   };
 }
+
+/**
+ * Of `tables`, those with a `write.base` in the log: written, in the sense of 07 «从未被写入的表上改结构»
+ * (a write revoked, deleted, left a candidate or awaiting confirmation still counts; a read does
+ * not). It is never undone: a table written stays written.
+ */
+export async function writtenTables(tx: ReadTx, tables: readonly string[]): Promise<Set<string>> {
+  if (tables.length === 0) return new Set();
+  const r = await tx.query<{ t: string }>(
+    "SELECT DISTINCT target_table AS t FROM events WHERE type = 'write.base' AND target_table = ANY($1)",
+    [[...tables]] as never,
+  );
+  return new Set(r.rows.map((x) => x.t));
+}
+
+/**
+ * The tables a switch from `current` to `next` builds from the log (`rebuilt_tables`, 09 §5.5): those
+ * kept with a new physical table that were written. A table never written gets its new physical
+ * table empty, in the switch itself (08 «物理做法»), and needs no migration.
+ */
+export function tablesToBuild(
+  current: CompiledSchema,
+  next: CompiledSchema,
+  written: ReadonlySet<string>,
+): string[] {
+  return next.tables
+    .filter((t) => {
+      const was = current.tables.find((x) => x.id === t.id);
+      return was !== undefined && was.physical.table !== t.physical.table && written.has(t.id);
+    })
+    .map((t) => t.id);
+}

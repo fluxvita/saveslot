@@ -595,6 +595,7 @@
 | `change` | 改动码，取值见 [`03-data-model/07-schema-evolution.md`](03-data-model/07-schema-evolution.md)「改动分类与迁移手段」的表（含改别名 `change_aliases`、来源键的 `add_external_key` / `drop_external_key` / `change_external_key`，以及只在从未被写入的表上允许的 `change_time_type`、`change_entity_key`、`change_granularity`、`change_table_kind`、`change_ref`） |
 | `class` | 类别：`create`（新建 slot、新增表）/ `metadata` / `deterministic`。保留值：`reextract`。凡经 `restructure_unused` 生效的改动（从未被写入、没人在用的表上的改动，含表一级的结构改动与字段一级的 `drop_field`、`change_type`、`add_required_field`、`change_time_field` 等），一律记 `metadata`：这张表没有已有的值，也没有转换，`migrate` 不必给。`class` 记的是这次切换实际做了什么，不是改动码的固有属性。确认时这张表已被写入的，整份草稿不能确认（§4.5） |
 | `compatible_with_old_writes`、`destructive`、`auto` | 编译时的判定结果，照记。`target.outcome` 由各项的 `auto` 得出（全部为真才是 `applied`）；重放读记下的值，不按当时的策略重算 |
+| `as_never_written` | 可选，只能是 `true`、只配 `class: metadata`、目标只能是表或字段：这一项按"从未被写入"编译（[`03-data-model/07`](03-data-model/07-schema-evolution.md)「从未被写入的表上改结构」），只在这张表一直没被写入时成立。确认时的重新判断（§4.5：这张表已被写入则整份不能确认，`table_written`）与切换之后带旧 `sv` 的整表拒绝只看这个键，不从 `class` 与改动码推（只改目录的改动同样记 `metadata`）。新增的可选键，兼容旧事件 |
 
 `changes` 的次序与草稿的写法无关，同一份改动总是同一个次序：slot 一级的改动；然后现有的表按表 ID，每张表先表一级的改动、再按字段 ID 的字段改动；然后被删的表按表 ID；最后新增的表按分到的 ID。同一个目标上的几项按改动码在 [`04-contract-types.md`](04-contract-types.md) 5.3 `SchemaChangeCode` 里列出的次序。（表 ID、字段 ID 按数字部分比较。）
 

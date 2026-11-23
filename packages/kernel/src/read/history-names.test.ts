@@ -116,6 +116,12 @@ describe("a row read as of a version is named as that version defines it", () =>
         detail: expect.objectContaining({ reason: "not_implemented" }),
       }),
     );
+    // The same, with that physical table empty (restructured while never written): no row then,
+    // named as that version has it.
+    expect(namedAsOf(schema(1, "ledger", rebuilt), { slot: "books", table: now }, true)).toEqual({
+      slot: "ledger",
+      table: rebuilt,
+    });
     // A version switched to without its definition in the log: the log at odds with itself.
     expect(() => namedAsOf(undefined, { slot: "books", table: now })).toThrow(
       expect.objectContaining({

@@ -3,7 +3,9 @@
 // `changes` each switched version's `schema.compiled` recorded, never compiled again (09 §5.5: a
 // replay reads the recorded judgement). A change with `compatible_with_old_writes: false` on a field
 // refuses old writes to that field; one on a table (`drop_table`) refuses them to the whole table,
-// `"*"`. Versions given up or still pending count for nothing.
+// `"*"`, and so does a change made on a table never written (07 «从未被写入的表上改结构»: the table
+// was restructured as a whole, a write's fields are not read by the earlier definition one by one).
+// Versions given up or still pending count for nothing.
 
 import type { FieldId, SchemaChangeCode, TableId } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
@@ -14,6 +16,7 @@ export type ChangedFields = ReadonlyMap<`${TableId}/${FieldId}` | `${TableId}/*`
 /** One recorded change, as `schema.compiled` `changes` has it (09 §5.5), as far as needed here. */
 export interface RecordedChange {
   readonly change: SchemaChangeCode;
+  readonly as_never_written?: true;
   readonly target: { readonly table?: string; readonly field?: string; readonly rule?: true };
   readonly compatible_with_old_writes: boolean;
 }
@@ -34,9 +37,14 @@ export function changedSinceOf(versions: readonly SwitchedVersion[], sv: number)
     if (v.sv <= sv) continue;
     for (const c of v.changes) {
       const t = c.target;
-      if (c.compatible_with_old_writes || t.table === undefined || t.rule === true) continue;
+      // Compiled as on a table never written (09 §5.5 `as_never_written`): the whole table, compatible
+      // or not.
+      const whole = c.as_never_written === true;
+      if (!whole && (c.compatible_with_old_writes || t.table === undefined || t.rule === true))
+        continue;
+      if (t.table === undefined) continue;
       const key =
-        t.field === undefined
+        t.field === undefined || whole
           ? (`${t.table}/*` as `${TableId}/*`)
           : (`${t.table}/${t.field}` as `${TableId}/${FieldId}`);
       out.set(key, c.change);

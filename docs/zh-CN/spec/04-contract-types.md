@@ -35,7 +35,7 @@
 | `sources` | `mode: "search"` 的全文检索（第一版是子串匹配，参数相同） |
 | `deletion_preview` / `delete` | `kind: "evidence"`、`rows`；结果里的 `reextract`、`cleared`、`collateral_rows` |
 | `pending` / `resolve` | 事项类型 `migration_diff` 及其处理方式；作业（`jb_…`）；取代原因 `evidence_deleted`、`migration_failed`；候选的来由 `displaced_by_rule` |
-| `schema_draft` | 改动类别 `reextract`；字段上的 `reextract`；`extends`、`compatibility`；`derived` 改 `base`；**在写入过的表上**：表的时间类型变更、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 与其他类型互转、改 `ref` 的目标、换一组来源键（`change_external_key`）、来源键字段改类型或收紧约束（对应的改动码见 5.3；`reason` 是 `table_written`）；改类型（`change_type`）、换量纲（`change_dimension`）、字段上的 `migrate`、表达式形式的 `backfill`（常量形式照做；`reason` 是 `parameter`，`param` 指到那个键）；`migrate` / `backfill` 表达式引用本字段以外的字段；最外层不是聚合的派生规则、沙箱函数规则。草稿里出现时整份草稿报 `not_in_this_version` |
+| `schema_draft` | 改动类别 `reextract`；字段上的 `reextract`；`extends`、`compatibility`；`derived` 改 `base`；**在写入过的表上**：表的时间类型变更、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 与其他类型互转、改 `ref` 的目标、换一组来源键（`change_external_key`）、来源键字段改类型或收紧约束、改类型（`change_type`）、换量纲（`change_dimension`）（对应的改动码见 5.3；`reason` 是 `table_written`）；字段上的 `migrate`、表达式形式的 `backfill`（常量形式照做；`reason` 是 `parameter`，`param` 指到那个键）；`migrate` / `backfill` 表达式引用本字段以外的字段；最外层不是聚合的派生规则、沙箱函数规则。草稿里出现时整份草稿报 `not_in_this_version` |
 | 标记 | `stale`、`pending_extraction`；`possibly_affected` 的 `applied_by_rule` |
 | 提醒 | `job_items_appended` |
 | 提示 | `job_failed` |
@@ -1621,10 +1621,13 @@ interface SchemaChange {
    *  经 restructure_unused 生效的改动（从未被写入的表）一律是 metadata：没有已有的值，也没有转换。
    *  事件格式 schema.compiled 的 changes 与本类型逐键相同，只是 target 里用 ID 不用名字。类别不决定要不要建新物理表：那看物理形状变没变（migration 字段）。 */
   class: "create" | "metadata" | "deterministic" | "reextract";
-  /** 带旧 sv、写到这个字段的写入是否还被接受。 */
+  /** 带旧 sv、写到这个字段的写入是否还被接受。带 as_never_written 的项一律为 false：切换之后带旧 sv 写这张表的写入整表被拒。 */
   compatible_with_old_writes: boolean;
   destructive: boolean;          // 会丢数据（删表、删字段、收紧约束后置空等）。从未被写入的表上没有值可丢，为 false
   auto: boolean;                 // 按 slot 策略可自动生效（这一项改动所属的类别在 auto_apply 里）
+  /** 这一项按"从未被写入"编译（只在这种项上出现，值总是 true，class 总是 metadata）：它只在这张表一直没被写入时成立。
+   *  确认时这张表已被写入，整份草稿报 draft_outdated（table_written）；切换之后带旧 sv 写这张表的写入一律被拒（changed_fields 给 "*"）。 */
+  as_never_written?: true;
 }
 
 type SchemaChangeCode =

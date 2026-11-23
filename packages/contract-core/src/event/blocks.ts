@@ -342,6 +342,12 @@ export interface SchemaChangeRecord {
   readonly compatible_with_old_writes: boolean;
   readonly destructive: boolean;
   readonly auto: boolean;
+  /**
+   * Compiled as on a table never written (07 «从未被写入的表上改结构»): it holds only while the table
+   * stays so. Present (always `true`, with `class: "metadata"`) only on such a change; confirming
+   * judges it again, and old writes to the table are refused whole after it.
+   */
+  readonly as_never_written?: true;
 }
 
 /** `schema.compiled` `changes` (meta). */

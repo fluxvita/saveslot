@@ -47,6 +47,8 @@ const run = (
     nextTableNumber: 7,
     autoApply: DEFAULT_SLOT_POLICY.auto_apply,
     unused: () => false,
+    // Every table written unless a case says otherwise.
+    neverWritten: () => false,
     targetVersion: (o.current ?? v1()).sv + 1,
     formerNames: { tables: [], fields: new Map() },
     // Field numbers taken up to 11 in every table (a given-up version's included): f12 is next.
@@ -818,15 +820,17 @@ describe("changes that rebuild a table (08 «物理做法»; 07 «改动分类»
   });
 });
 
-/** A change the first version does not take (07 «确定性转换怎么重放»: they need a `migrate`). */
+/**
+ * A change the first version does not take (07 «确定性转换怎么重放»: they need a `migrate`): what,
+ * where, and the reason (`table_written`: allowed on a table never written; none: on no table).
+ */
 const later = (r: CompileChangeResult) => {
   const e = err(r);
   if (e.code !== "not_in_this_version") throw new Error(JSON.stringify(e));
-  expect(e).not.toHaveProperty("reason");
-  return [e.what, e.param];
+  return [e.what, e.param, e.reason ?? null];
 };
 
-describe("a type or dimension changed, a migrate, a backfill expression: not in this version", () => {
+describe("on a table written: a type or dimension changed, a migrate, a backfill expression are not in this version", () => {
   const on = (f: (e: Doc) => void) => run(listing(["expenses"], (d) => f(d.tables[0])));
 
   it.each([
@@ -835,18 +839,21 @@ describe("a type or dimension changed, a migrate, a backfill expression: not in 
       (e: Doc) => (e.fields[4].type = "text"),
       "change_type",
       "tables/0/fields/4/type",
+      "table_written",
     ],
     [
       "a unit of another dimension (another currency)",
       (e: Doc) => (e.fields[2].unit = "USD"),
       "change_dimension",
       "tables/0/fields/2/unit",
+      "table_written",
     ],
     [
       "a migrate",
       (e: Doc) => (e.fields[4].migrate = { sql: "pieces" }),
       "migrate",
       "tables/0/fields/4/migrate",
+      null,
     ],
     [
       "a backfill expression",
@@ -856,9 +863,189 @@ describe("a type or dimension changed, a migrate, a backfill expression: not in 
       },
       "a backfill expression",
       "tables/0/fields/4/backfill/sql",
+      null,
     ],
-  ])("%s", (_, f, change, param) => {
-    expect(later(on(f))).toEqual([change, param]);
+  ])("%s", (_, f, change, param, reason) => {
+    expect(later(on(f))).toEqual([change, param, reason]);
+  });
+});
+
+describe("on a table never written: a type or dimension changed compiles as metadata (07 «从未被写入的表上改结构»)", () => {
+  const expenses = (r: CompileChangeResult) => table(r, "expenses") as unknown as Doc;
+  const on = (f: (e: Doc) => void, o: Parameters<typeof run>[1] = {}) =>
+    run(
+      listing(["expenses"], (d) => f(d.tables[0])),
+      { neverWritten: () => true, ...o },
+    );
+
+  it("a type changed: the field compiled anew under its ID, no migrate, a new empty physical table", () => {
+    const r = ok(on((e) => (e.fields[4].type = "text")));
+    const was = (v1().tables.find((t) => t.name === "expenses") as unknown as Doc).fields[4];
+    const t = expenses(r);
+    expect(t.fields[4]).toEqual({
+      id: was.id,
+      name: "pieces",
+      type: "text",
+      description: "how many",
+    });
+    expect(t.physical).toEqual({ table: `t_${t.id}_v2` });
+    expect(r.changes).toEqual([
+      {
+        target: { table: t.id, field: was.id },
+        change: "change_type",
+        class: "metadata",
+        compatible_with_old_writes: false,
+        destructive: false,
+        auto: false,
+        as_never_written: true,
+      },
+    ]);
+  });
+
+  it.each<[string, (e: Doc) => unknown, string, boolean]>([
+    [
+      "a field dropped",
+      (e: Doc) => {
+        e.fields.splice(5, 1);
+        e.drop_fields = ["rate"];
+      },
+      "drop_field",
+      false,
+    ],
+    [
+      "a required field added",
+      (e: Doc) =>
+        e.fields.push({
+          name: "who",
+          type: "text",
+          required: true,
+          description: "payer",
+          backfill: { const: "me" },
+        }),
+      "add_required_field",
+      false,
+    ],
+    ["a scale made smaller", (e: Doc) => (e.fields[5].scale = 1), "change_precision", false],
+    ["a bound tightened", (e: Doc) => (e.fields[4].min = 1), "tighten_constraint", false],
+  ])(
+    "%s: metadata, nothing lost, marked as_never_written (old writes refused: not compatible), a new physical table",
+    (_, f, change, compatible) => {
+      const r = ok(on(f));
+      const t = expenses(r);
+      expect(t.physical).toEqual({ table: `t_${t.id}_v2` });
+      expect(r.changes).toEqual([
+        expect.objectContaining({
+          change,
+          class: "metadata",
+          compatible_with_old_writes: compatible,
+          destructive: false,
+          auto: false,
+          as_never_written: true,
+        }),
+      ]);
+    },
+  );
+
+  it("a unit of the same dimension: marked; a scale made smaller on a bounded field: compiled, nothing to convert", () => {
+    const d = ledger();
+    d.tables[0].fields[3] = {
+      name: "distance",
+      type: "quantity",
+      unit: "km",
+      description: "how far",
+    };
+    const start = compile(d);
+    if (!start.ok) throw new Error("not compiled");
+    const x = filled(d, start.compiled);
+    x.tables = x.tables.filter((t: Doc) => t.name === "expenses");
+    x.tables[0].fields[3].unit = "mi";
+    const mi = ok(run(x, { current: start.compiled, neverWritten: () => true }));
+    expect(mi.changes).toEqual([
+      expect.objectContaining({ change: "change_unit", class: "metadata", as_never_written: true }),
+    ]);
+    // A written table would need each value converted to count what breaks the bound.
+    const smaller = (o: Parameters<typeof run>[1]) =>
+      run(
+        listing(["expenses"], (e) => {
+          e.tables[0].fields[2].scale = 1;
+        }),
+        o,
+      );
+    expect(ok(smaller({ neverWritten: () => true })).changes).toEqual([
+      expect.objectContaining({ change: "change_precision", as_never_written: true }),
+    ]);
+    expect(err(smaller({}))).toMatchObject({
+      code: "not_in_this_version",
+      reason: "not_implemented",
+    });
+  });
+
+  it("a unit of another dimension: the field takes the new unit and its default scale", () => {
+    const r = ok(on((e) => (e.fields[2].unit = "USD")));
+    const f = expenses(r).fields[2];
+    expect(f.unit).toMatchObject({ code: "USD" });
+    expect(f.precision).toEqual({ scale: 2, rounding: "half_up" });
+    expect(codes(r)).toEqual(["change_dimension"]);
+    expect(r.changes[0]).toMatchObject({ class: "metadata", compatible_with_old_writes: false });
+  });
+
+  it("automatic only with restructure_unused in the policy and the table unused", () => {
+    const change = (o: Parameters<typeof run>[1]) =>
+      ok(on((e) => (e.fields[4].type = "text"), o)).changes[0]?.auto;
+    // The default policy has restructure_unused; this version counts every table as used.
+    expect(change({})).toBe(false);
+    expect(change({ unused: () => true, autoApply: [] })).toBe(false);
+    expect(change({ unused: () => true, autoApply: ["restructure_unused"] })).toBe(true);
+  });
+
+  it("renamed with it: the rename recorded too; made required: a constant backfill still needed", () => {
+    expect(
+      codes(
+        on((e) => {
+          e.fields[4].type = "text";
+          e.fields[4].name = "count";
+        }),
+      ),
+    ).toEqual(["rename_field", "change_type"]);
+    expect(
+      detailsOf(
+        on((e) => {
+          e.fields[4].type = "text";
+          e.fields[4].required = true;
+        }),
+      ),
+    ).toEqual(["tables/0/fields/4 backfill_const_required"]);
+    const filledIn = ok(
+      on((e) => {
+        e.fields[4].type = "text";
+        e.fields[4].required = true;
+        e.fields[4].backfill = { const: "one" };
+      }),
+    );
+    expect(expenses(filledIn).fields[4]).toMatchObject({
+      required: true,
+      backfill: { const: "one" },
+    });
+    expect(
+      err(
+        on((e) => {
+          e.fields[4].type = "text";
+          e.fields[4].backfill = { const: "one" };
+        }),
+      ),
+    ).toMatchObject({ code: "invalid_argument", param: "tables/0/fields/4/backfill" });
+  });
+
+  it("a migrate is still not in this version; a table written is judged by its own ID", () => {
+    expect(later(on((e) => (e.fields[4].migrate = { sql: "pieces" })))).toEqual([
+      "migrate",
+      "tables/0/fields/4/migrate",
+      null,
+    ]);
+    const id = (v1().tables.find((t) => t.name === "expenses") as unknown as Doc).id;
+    expect(
+      later(on((e) => (e.fields[4].type = "text"), { neverWritten: (t) => t !== id })),
+    ).toEqual(["change_type", "tables/0/fields/4/type", "table_written"]);
   });
 });
 
@@ -921,7 +1108,11 @@ describe("what is not compiled yet is named by its change code", () => {
     const f4 = (same.compiled.tables[0] as CompiledBaseTable).fields[3] as Doc;
     expect(f4.unit).toMatchObject({ code: "mi" });
     expect(f4).not.toHaveProperty("migrate");
-    expect(later(draft("kg"))).toEqual(["change_dimension", "tables/0/fields/3/unit"]);
+    expect(later(draft("kg"))).toEqual([
+      "change_dimension",
+      "tables/0/fields/3/unit",
+      "table_written",
+    ]);
   });
 
   it("an entity key changed, a granularity changed", () => {
@@ -1458,6 +1649,86 @@ describe("findings between two tables, and what a drop list names", () => {
         code: "not_implemented",
         what: "a change to a derived table",
       });
+    });
+
+    it("a table never written: a field its rule reads cannot change type (the rule would be compiled again)", () => {
+      const withRule = withTotals();
+      const doc = documentOf(withRule, 1, (id) => texts.get(id));
+      doc["tables"] = (doc["tables"] as Doc[]).filter((t) => t.name === "settings");
+      (doc["tables"] as Doc[])[0].fields[0].type = "integer";
+      const o = { current: withRule, ruleTexts: texts, neverWritten: () => true };
+      expect(err(run(doc, o))).toEqual({
+        code: "not_in_this_version",
+        reason: "not_implemented",
+        what: "change_type",
+        param: "tables/0/fields/0/type",
+      });
+      // The same table without the rule: compiled.
+      const plain = ok(run(doc, { ...o, current: v1() }));
+      expect(plain.changes.map((c) => c.change)).toEqual(["change_type"]);
+    });
+
+    it("precision of a field a rule reads: a larger scale on any table, a rounding on a table never written, not in this version", () => {
+      const RATES = "SELECT date AS d, sum(rate) AS r FROM expenses GROUP BY date";
+      const d = ledger();
+      d.tables.push({
+        name: "rates",
+        kind: "derived",
+        description: "rates by day",
+        rule: { sql: RATES, time_dependency: "bucketed" },
+        fields: [
+          { name: "d", description: "the day" },
+          { name: "r", description: "the sum" },
+        ],
+      });
+      const c = compile(d);
+      if (!c.ok) throw new Error(JSON.stringify(c.error));
+      const id = c.compiled.tables.find((t) => t.name === "rates")?.id as string;
+      const rateTexts = new Map([[id, RATES]]);
+      const draft = (f: (rate: Doc) => void) => {
+        const x = filled(d, c.compiled);
+        x.tables = x.tables.filter((t: Doc) => t.name === "expenses");
+        f(x.tables[0].fields[5]);
+        return x;
+      };
+      // A larger scale (a loosened constraint, automatic), on a table written: the rule declares
+      // the scale it computes.
+      expect(
+        err(
+          run(
+            draft((r) => (r.scale = 6)),
+            { current: c.compiled, ruleTexts: rateTexts },
+          ),
+        ),
+      ).toEqual({
+        code: "not_in_this_version",
+        reason: "not_implemented",
+        what: "change_precision",
+        param: "tables/0/fields/5/scale",
+      });
+      // The rounding only, on a table never written: named by the rounding.
+      expect(
+        err(
+          run(
+            draft((r) => (r.rounding = "half_up")),
+            { current: c.compiled, ruleTexts: rateTexts, neverWritten: () => true },
+          ),
+        ),
+      ).toEqual({
+        code: "not_in_this_version",
+        reason: "not_implemented",
+        what: "change_precision",
+        param: "tables/0/fields/5/rounding",
+      });
+      // Without the rule: a larger scale is a loosened constraint, as before.
+      expect(
+        ok(
+          run(
+            draft((r) => (r.scale = 6)),
+            { current: v1() },
+          ),
+        ).changes.map((x) => x.change),
+      ).toEqual(["loosen_constraint"]);
     });
 
     it("unchanged after a field its rule reads is renamed: the text keeps the old name", () => {

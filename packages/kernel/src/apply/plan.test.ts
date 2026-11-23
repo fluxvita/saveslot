@@ -2,7 +2,11 @@
 // (09-event-format §4.5, §5.4–§5.8): the changes each event makes, the physical tables of a
 // version, and the forms this phase stops on. Storage-backed tests are in store-pglite.
 
-import type { CompiledSchema, JsonValue } from "@fluxvita/saveslot-contract-core";
+import type {
+  CompiledBaseTable,
+  CompiledSchema,
+  JsonValue,
+} from "@fluxvita/saveslot-contract-core";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildOperation, type NewEvent } from "../log/index.ts";
 import { loadRsql } from "../rules/index.ts";
@@ -281,6 +285,57 @@ describe("planEvent: what this phase stops on, never skips", () => {
     ]);
     // Applied when the compiled draft it names is in the log (store tests); here there is none.
     expect(reason(evs[1] as ApplyEvent)).toBe("inconsistent: no compiled version 2");
+  });
+
+  it("a switch where a kept table has a new physical table, not rebuilt: built empty (08 «物理做法»)", () => {
+    // Version 2: t4 restructured while never written (its key now an integer), a new physical
+    // table of this version; the other tables kept as built in version 1.
+    const v2 = {
+      ...COMPILED_V1,
+      sv: 2,
+      tables: COMPILED_V1.tables.map((t) =>
+        t.id === "t4"
+          ? {
+              ...t,
+              physical: { table: "t_t4_v2" },
+              fields: [{ ...t.fields[0], type: "integer" }],
+            }
+          : { ...t, physical: { table: t.physical.table, since: 1 } },
+      ),
+    } as unknown as CompiledSchema;
+    const v1 = COMPILED_V1 as unknown as CompiledSchema;
+    const [, switched] = op(9, [
+      createSlotEvents()[0] as NewEvent,
+      {
+        type: "schema.switched",
+        slot: SLOT,
+        blocks: { target: { draft_id: DRAFT, from_version: 1, to_version: 2, rebuilt_tables: [] } },
+      },
+    ]);
+    const slot = { currentSv: 1, policySeq: 5, tables: new Set(v1.tables.map((t) => t.id)) };
+    const changes = planEvent(switched as ApplyEvent, {
+      switchTo: { seq: 7, compiled: v2, from: v1, changes: [] },
+      slot,
+    });
+    // Its new physical table, built as a new table's; every table's catalog row; no counts row
+    // made again (t4 has one); the pointer moves.
+    expect(changes.map((c) => c.kind)).toEqual([
+      "ddl",
+      ...v2.tables.map(() => "catalog_insert"),
+      "version_switch",
+    ]);
+    expect((changes[0] as { sql: string }).sql).toBe(
+      baseTableDdl(v2.tables[3] as CompiledBaseTable),
+    );
+    // A table of this version whose ID another slot's table has: at odds with the log.
+    const t9 = { ...COMPILED_V1.tables[3], id: "t9", name: "more", physical: { table: "t_t9_v2" } };
+    const withT9 = { ...v2, tables: [...v2.tables, t9] } as unknown as CompiledSchema;
+    expect(
+      reason(switched as ApplyEvent, {
+        switchTo: { seq: 7, compiled: withT9, from: v1, changes: [] },
+        slot: { ...slot, tables: new Set([...slot.tables, "t9"]) },
+      }),
+    ).toBe("inconsistent: table t9 already exists");
   });
 
   it("a block at path __proto__ is checked like any other path, not taken as the prototype", () => {

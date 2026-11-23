@@ -345,7 +345,7 @@ const SLOT_CHANGES = ["create_slot", "rename_slot", "change_timezone"];
 
 function change(v: Json, at: string, issues: Issues): void {
   const req = ["target", "change", "class", "compatible_with_old_writes", "destructive", "auto"];
-  if (!keys(v, at, req, [], issues)) return;
+  if (!keys(v, at, req, ["as_never_written"], issues)) return;
   const t = v["target"];
   const tat = `${at}.target`;
   const code = v["change"];
@@ -372,6 +372,17 @@ function change(v: Json, at: string, issues: Issues): void {
   check(oneOf(CHANGE_CLASSES, v["class"]), at, "class", issues);
   for (const k of ["compatible_with_old_writes", "destructive", "auto"]) {
     check(typeof v[k] === "boolean", at, k, issues);
+  }
+  // Only `true`, only with `class: "metadata"`, and only on a table or a field of one.
+  if ("as_never_written" in v) {
+    check(v["as_never_written"] === true, at, "as_never_written true", issues);
+    check(v["class"] === "metadata", at, "as_never_written with class metadata", issues);
+    check(
+      isObject(t) && "table" in t && !("rule" in t),
+      at,
+      "as_never_written on a table or field",
+      issues,
+    );
   }
 }
 

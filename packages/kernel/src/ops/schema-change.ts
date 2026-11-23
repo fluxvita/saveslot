@@ -30,14 +30,7 @@ import type {
   SchemaChangeRecord,
   SlotId,
 } from "@fluxvita/saveslot-contract-core";
-import {
-  ApplyError,
-  applyEvents,
-  eventsOf,
-  fold,
-  internalDetailOf,
-  rebuilds,
-} from "../apply/index.ts";
+import { ApplyError, applyEvents, eventsOf, fold, internalDetailOf } from "../apply/index.ts";
 import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
 import { itemVer } from "../pending/index.ts";
 import { formerVersions, ruleTextsOf, visibleSlots } from "../read/index.ts";
@@ -61,6 +54,8 @@ import {
   numbering,
   type SchemaChange,
   SchemaDraftError,
+  tablesToBuild,
+  writtenTables,
 } from "./schema-common.ts";
 
 /** The receipt of a draft changing a slot, left pending (04-contract-types §5.3 `SchemaDraftResult`). */
@@ -235,6 +230,10 @@ export async function draftChangeInTx(
     }
   }
   const { existingSlotNames, nextTableNumber, nextFieldNumber } = await numbering(tx);
+  const written = await writtenTables(
+    tx,
+    current.tables.map((t) => t.id),
+  );
 
   const result = compileChange({
     document,
@@ -250,6 +249,7 @@ export async function draftChangeInTx(
     },
     autoApply: policy.auto_apply ?? [],
     unused: () => false,
+    neverWritten: (table) => !written.has(table),
     targetVersion,
     formerNames: { tables: tableNames, fields: fieldNames },
     ruleTexts: await ruleTextsOf(tx, slot.slot),
@@ -304,7 +304,7 @@ export async function draftChangeInTx(
     });
   // A draft that would apply at once and rebuilds a table: the build and the switch come later, so
   // it is refused rather than left waiting (it is no change that waits for anyone).
-  if (result.outcome === "applied" && rebuilds(current, result.compiled))
+  if (result.outcome === "applied" && tablesToBuild(current, result.compiled, written).length > 0)
     throw new SchemaDraftError(
       "not_in_this_version",
       "a change rebuilding tables is not applied yet",

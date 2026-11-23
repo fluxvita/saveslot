@@ -680,15 +680,21 @@ describe("refused, nothing logged", () => {
   );
 
   it(
-    "a type changed, a migrate: not_in_this_version at the key, named in the message",
+    "a type changed on a table written, a migrate: not_in_this_version at the key, named in the message",
     async () => {
+      // Written: a change of type is taken only on a table never written (07 «从未被写入的表上改结构»;
+      // ./schema-never-written.test.ts).
+      await write(s.store, ctx(), {
+        sv: 1,
+        ops: [{ intent: "insert", table: "expenses", set: { date: "2026-11-01" } }],
+      });
       expect(
         await refused({
           document: change((t) => ((t.fields[1] as { type: string }).type = "integer")),
         }),
       ).toEqual({
         code: "not_in_this_version",
-        reason: "parameter",
+        reason: "table_written",
         param: "tables/0/fields/1/type",
       });
       expect(

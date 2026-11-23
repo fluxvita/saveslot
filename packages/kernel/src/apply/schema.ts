@@ -452,9 +452,10 @@ function physicalShape(t: CompiledTable): string {
 /**
  * §5.5 `schema.switched` from an earlier version, with nothing rebuilt (a change to the catalog
  * only): the tables new in this version are built as a new slot's are (they have no writes to
- * convert); every table of the version gets its catalog row; the pointer moves, the earlier
- * version is retired. Tables the version keeps keep their physical tables; a table it drops stays
- * as a retired table.
+ * convert), and so are the tables restructured while never written (a physical table of this
+ * version, not in `rebuilt_tables`: built empty, 08 «物理做法»); every table of the version gets its
+ * catalog row; the pointer moves, the earlier version is retired. Tables the version keeps keep
+ * their physical tables; a table it drops stays as a retired table.
  *
  * Only that: what else a switch could bring stops, never skipped (an empty or stale table would
  * leave the state silently behind the log). Not implemented: a new derived table (built empty,
@@ -505,16 +506,24 @@ function planSwitchFrom(
   )
     throw inconsistent(`slot ${String(slot)} renamed to ${c.name}, the name of another slot`);
   const { base: built, derived } = admit(seq, c);
-  const fresh = [...built, ...derived];
   const [newDerived] = derived;
   if (newDerived !== undefined)
     throw notYet(`a switch adding derived table ${newDerived.id} (built from its sources)`);
-  const taken = fresh.find((x) => s.tables.has(x.id));
-  if (taken !== undefined) throw inconsistent(`table ${taken.id} already exists`);
-  const isNew = new Set(fresh.map((x) => x.id));
+  // A table of the earlier version with a physical table of this one, not rebuilt from the log:
+  // restructured while never written (08 «物理做法»). Its new physical table is built empty, as a
+  // new table's; it keeps its counts row; the earlier one is retired with the version. Whether it
+  // was never written is judged when compiling and confirming, not here.
+  const recreated = new Set<string>();
+  for (const x of built) {
+    if (!s.tables.has(x.id)) continue;
+    if (!prev.tables.some((y) => y.id === x.id && y.kind === "base"))
+      throw inconsistent(`table ${x.id} already exists`);
+    recreated.add(x.id);
+  }
+  const isNew = new Set(built.filter((x) => !recreated.has(x.id)).map((x) => x.id));
   // The tables kept: as the earlier version has them, physically.
   for (const x of c.tables) {
-    if (isNew.has(x.id)) continue;
+    if (isNew.has(x.id) || recreated.has(x.id)) continue;
     const was = prev.tables.find((y) => y.id === x.id);
     if (was === undefined)
       throw inconsistent(`table ${x.id} is kept, but version ${prev.sv} does not have it`);

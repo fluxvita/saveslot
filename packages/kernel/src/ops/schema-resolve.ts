@@ -11,17 +11,18 @@
 //   5. the item version brought back (or taken by fallback) is the item's current one, else
 //      `confirmation_mismatch`.
 // Then:
-// - `confirm`: judged again in the same transaction (04-contract `resolve` 4). This version compiles
-//   no change that holds only for a table never written, and no `migrate`, so neither refusal of
-//   `draft_outdated` (`table_written`, `migrate_failed`) can come up yet: `outdatedOnConfirm` is
-//   where they go. The draft's `base_version` is not checked again: a pending draft was written on
-//   the current version, since any switch since would have come from a newer draft, which
-//   supersedes it first. That the two agree is asserted (`internal` if not). A draft renaming the
-//   slot is refused (`draft_outdated`, `name_taken`) when another slot took the name meanwhile.
-//   A draft whose version rebuilds a table: its tightened constraints are counted again on the
-//   writes since (`draft_outdated`, `backfill_required`, positions in the draft as submitted), then
-//   the confirmation is refused (`not_in_this_version`): the migration it begins is not in this
-//   version yet. Nothing is logged either way.
+// - `confirm`: judged again in the same transaction (04-contract `resolve` 4; `outdatedOnConfirm`).
+//   A change compiled as on a table never written (`as_never_written`) whose table was written
+//   since is refused (`draft_outdated`, `table_written`). This version compiles no `migrate`, so
+//   `migrate_failed` cannot come up yet. The draft's `base_version` is not checked again: a pending
+//   draft was written on the current version, since any switch since would have come from a newer
+//   draft, which supersedes it first. That the two agree is asserted (`internal` if not). A draft
+//   renaming the slot is refused (`draft_outdated`, `name_taken`) when another slot took the name
+//   meanwhile. A draft whose version rebuilds a table written: its tightened constraints are counted
+//   again on the writes since (`draft_outdated`, `backfill_required`, positions in the draft as
+//   submitted), then the confirmation is refused (`not_in_this_version`): the migration it begins is
+//   not in this version yet. Tables never written get their new physical tables empty in the switch,
+//   with no migration. Nothing is logged when refused.
 //   Events: `item.resolved` (head; `confirmation` the hash of the draft's `compiled` block) → the
 //   request's `api_call` when it has a note → `schema.confirmed` (`by: resolve`) →
 //   `schema.switched` (nothing rebuilt) → an
@@ -42,7 +43,6 @@ import {
   eventsOf,
   fold,
   internalDetailOf,
-  rebuilds,
 } from "../apply/index.ts";
 import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
 import { itemVer } from "../pending/index.ts";
@@ -70,6 +70,7 @@ import {
 } from "../write/index.ts";
 import { brokenBy } from "./schema-change.ts";
 import { draftPath, tightenedWithout } from "./schema-checks.ts";
+import { tablesToBuild, writtenTables } from "./schema-common.ts";
 
 /** The draft a `schema_change` item waits on, as the log has it. */
 interface Draft {
@@ -82,7 +83,8 @@ interface Draft {
   readonly document: unknown;
   readonly changes: readonly {
     readonly change: string;
-    readonly target: Record<string, unknown>;
+    readonly as_never_written?: true;
+    readonly target: { readonly table?: string; readonly field?: string };
   }[];
 }
 
@@ -135,16 +137,30 @@ async function draftOf(tx: ReadTx, item: string): Promise<Draft> {
 
 /**
  * A confirmation judged again (04-contract `resolve` 5; 07 «确认时重新判断»), in the decision's
- * transaction: a slot renamed to a name another slot took while the draft waited (`name_taken`; a
- * draft waiting holds no name). Not yet: a change compiled as for a table never written, on a table
- * written since (`table_written`); a `migrate` failing on writes since its trial
- * (`migrate_failed`). This version compiles neither.
+ * transaction: a change compiled as for a table never written, on a table written since
+ * (`table_written`: never written once is never so again, so the draft can never be confirmed);
+ * a slot renamed to a name another slot took while the draft waited (`name_taken`; a draft
+ * waiting holds no name). Not yet: a `migrate` failing on writes since its trial
+ * (`migrate_failed`), which this version does not compile.
  */
 async function outdatedOnConfirm(
   tx: ReadTx,
   draft: Draft,
   slot: { readonly slot: string; readonly name: string; readonly sv: number },
 ): Promise<WriteError | undefined> {
+  // Compiled as on a table never written: marked so in the log (09 §5.5 `as_never_written`).
+  const asNeverWritten = [
+    ...new Set(
+      draft.changes
+        .filter((c) => c.as_never_written === true)
+        .flatMap((c) => (c.target.table === undefined ? [] : [c.target.table])),
+    ),
+  ];
+  if ((await writtenTables(tx, asNeverWritten)).size > 0)
+    return new WriteError("draft_outdated", "a table the draft restructures was written since", {
+      reason: "table_written",
+      current_sv: slot.sv,
+    });
   const to = draft.compiled.name;
   if (fold(to) === fold(slot.name)) return undefined;
   const others = await tx.query<{ name: string }>("SELECT name FROM slots WHERE id <> $1", [
@@ -374,7 +390,13 @@ export async function resolveSchemaChangeInTx(tx: Tx, input: WriteInput): Promis
     // A version rebuilding tables: constraints it tightens without a `backfill` are counted again,
     // since the earlier version took writes while the draft waited (07 «确认时重新判断»). Then the
     // migration it begins is not applied yet: the confirmation is refused, nothing logged.
-    if (rebuilds(slot.compiled, draft.compiled)) {
+    // Only tables written are built from the log; one never written gets its new physical table
+    // empty in the switch (08 «物理做法»), and the draft switches at once.
+    const written = await writtenTables(
+      tx,
+      slot.compiled.tables.map((t) => t.id),
+    );
+    if (tablesToBuild(slot.compiled, draft.compiled, written).length > 0) {
       // Named by the position in the document as submitted, as at submission.
       const checks = tightenedWithout(slot.compiled, draft.compiled).map((k) => ({
         ...k,

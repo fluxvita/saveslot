@@ -206,6 +206,12 @@ describe("building and switching come later", () => {
   it(
     "a draft that would apply at once and rebuilds a table: not_in_this_version, nothing logged",
     async () => {
+      // Written, so the table is rebuilt from the log (one never written switches at once:
+      // ./schema-never-written.test.ts).
+      await write(s.store, ctx(), {
+        sv: 1,
+        ops: [{ intent: "insert", table: "items", set: { kind: "a" } }],
+      });
       const before = await tail();
       expect(
         await answer(() =>
@@ -220,6 +226,11 @@ describe("building and switching come later", () => {
   it(
     "confirming a draft that rebuilds a table: not_in_this_version, nothing logged, the item open",
     async () => {
+      // Written, with a value the draft keeps: rebuilt from the log.
+      await write(s.store, ctx(), {
+        sv: 1,
+        ops: [{ intent: "insert", table: "items", set: { kind: "a" } }],
+      });
       const d = await draft(items(1, (f) => (f[1].values = ["a"])));
       expect(d).toMatchObject({ outcome: "pending" });
       const before = await tail();
@@ -272,6 +283,20 @@ describe("building and switching come later", () => {
   it(
     "counted again on confirming, a finding names the field where the draft has it, not where the definition does",
     async () => {
+      // Written first, with a value the draft keeps: a table written, rebuilt from the log (one
+      // never written is judged otherwise: ./schema-never-written.test.ts).
+      await write(s.store, ctx(), {
+        sv: 1,
+        ops: [
+          {
+            intent: "update",
+            table: "plans",
+            entity_key: { who: "bob" },
+            set: { level: 1 },
+            valid_from: "2026-01-01",
+          },
+        ],
+      });
       // The draft lists only plans: tables/0 in it, tables/1 in the compiled definition.
       const d = await draft({
         slot: "ledger",
