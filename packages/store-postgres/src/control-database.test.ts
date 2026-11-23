@@ -1,6 +1,6 @@
 // openControlDatabase: a plain database for the server mode's control plane (02-architecture §5):
 // made when asked, none of a tenant's storage in it, a tenant's storage refused as one, transactions
-// that commit or roll back whole.
+// that commit or roll back whole, the host told when its connection goes away.
 
 import { describe, expect, it } from "vitest";
 import { PostgresBackend } from "./backend.ts";
@@ -127,6 +127,48 @@ describe.skipIf(cell === undefined)("against a server", () => {
       } finally {
         await db.close();
       }
+    },
+    T,
+  );
+  it(
+    "tells the host once when its connection goes away; not when it is closed",
+    async () => {
+      const name = pg.name();
+      const db = await openControlDatabase(pg.cell, name, { create: true });
+      let lost = 0;
+      const told = new Promise<void>((resolve) => {
+        db.onLost(() => {
+          lost++;
+          resolve();
+        });
+      });
+      try {
+        await pg.admin(
+          "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+          [name],
+        );
+        await told;
+        await expect(db.read((tx) => tx.query("SELECT 1"))).rejects.toBeDefined();
+        // Gone already: a listener added now is called at once.
+        let late = 0;
+        db.onLost(() => {
+          late++;
+        });
+        expect([lost, late]).toEqual([1, 1]);
+      } finally {
+        await db.close();
+      }
+      const kept = await openControlDatabase(pg.cell, name);
+      let closedLost = 0;
+      kept.onLost(() => {
+        closedLost++;
+      });
+      await kept.close();
+      // Closed: one added after is not called either.
+      kept.onLost(() => {
+        closedLost++;
+      });
+      expect(closedLost).toBe(0);
     },
     T,
   );

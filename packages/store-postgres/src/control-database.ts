@@ -10,8 +10,8 @@
 // What is checked: the database's name (as a tenant's), the server's major version, and that it is
 // not a tenant's storage (a control plane pointed at one by mistake would make its tables there and
 // go on; refused, the mistake shows when the service starts). A connection
-// that goes away leaves the control database failed: every later call refuses, and the host opens
-// it again.
+// that goes away leaves the control database failed: every later call refuses, the host is told
+// (`onLost`), and opens it again or stops.
 
 import type { QueryResult, ReadTx, SqlValue, Tx } from "@fluxvita/saveslot-kernel";
 import { checkVersion, connectOrCreate, DATABASE_NAME, hasMeta } from "./backend.ts";
@@ -23,6 +23,11 @@ export interface ControlDatabase {
   read<T>(fn: (tx: ReadTx) => Promise<T>): Promise<T>;
   write<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
   close(): Promise<void>;
+  /**
+   * `listener` is called once when the connection goes away before `close`: what it held (a
+   * session's advisory lock) is gone with it. At once if it is gone already.
+   */
+  onLost(listener: () => void): void;
 }
 
 /** Opens the control database of a cell; with `create`, makes it when it is not there. */
@@ -94,6 +99,10 @@ class PlainDatabase implements ControlDatabase {
 
   write<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     return this.#run("BEGIN ISOLATION LEVEL READ COMMITTED", fn);
+  }
+
+  onLost(listener: () => void): void {
+    this.#conn.onGone(listener);
   }
 
   async close(): Promise<void> {

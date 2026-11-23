@@ -58,6 +58,7 @@ async function controlDb(o: { bare?: boolean } = {}) {
     read: store.read.bind(store),
     write: store.write.bind(store),
     close: async () => {},
+    onLost: () => {},
   };
   return { store, cp, db, dir };
 }

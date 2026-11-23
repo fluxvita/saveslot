@@ -12,9 +12,16 @@ export interface Reply {
   readonly body: string;
 }
 
-/** One request on the socket of the service in `home`. */
+/** Where a service listens: the `home` whose socket it is, or a TCP address (the server mode). */
+export type Target = string | { readonly host: string; readonly port: number };
+
+/** Where a request to `at` goes, as `node:http`'s `request` takes it. */
+export const targetOptions = (at: Target) =>
+  typeof at === "string" ? { socketPath: socketFile(at) } : { host: at.host, port: at.port };
+
+/** One request on the socket of the service in `home`, or to its TCP address. */
 export function httpRequest(
-  home: string,
+  home: Target,
   o: {
     method: string;
     path: string;
@@ -27,7 +34,7 @@ export function httpRequest(
   return new Promise((resolve, reject) => {
     const req = request(
       {
-        socketPath: o.socket ?? socketFile(home),
+        ...(o.socket !== undefined ? { socketPath: o.socket } : targetOptions(home)),
         method: o.method,
         path: o.path,
         headers: {
@@ -62,9 +69,9 @@ const query = (p: Record<string, unknown>) => {
   return t === "" ? "" : `?${t}`;
 };
 
-/** The contract's operations over HTTP (05-surfaces §14, §15), on the service in `home()`. */
+/** The contract's operations over HTTP (05-surfaces §14, §15), on the service at `home()`. */
 export const httpDriver =
-  (home: () => string): Driver =>
+  (home: () => Target): Driver =>
   async (credential, operation: Operation, params, o = {}) => {
     const headers: Record<string, string> = {
       ...(o.task !== undefined ? { "x-task-id": utf8Header(o.task) } : {}),

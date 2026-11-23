@@ -1,9 +1,9 @@
 // "The server is running" (docs/zh-CN/spec/06-cli.md §4.1 `saveslot server start`, `server restore`;
 // 02-architecture §9: one process a deployment): a session-level advisory lock on the control
-// database. `server start` will take it when it starts and hold it on its connection while it
-// runs, so that another `server start` on the same control database does not start; until then
-// only `server restore` takes it, which tries it and does nothing while another holder has it. The
-// lock goes with the connection: a process that dies releases it.
+// database. `server start` takes it when it starts and holds it on its connection while it runs;
+// another `server start` on the same control database cannot get it and does not start, and
+// `server restore` tries it and does nothing while a server holds it. The lock goes with the
+// connection: a process that dies releases it.
 
 import type { ControlDatabase } from "@fluxvita/saveslot-store-postgres";
 

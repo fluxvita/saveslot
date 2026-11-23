@@ -1,16 +1,31 @@
-// `saveslot server init` (06-cli §4.1 «服务器自部署的运维命令», «服务器模式的配置», §6.2) on a real
-// control database, on either backend (`pnpm test:postgres` runs this file on PostgreSQL): the key
-// file and the tables made once, nothing changed the second time, and each refusal with its exit
-// code and without the configuration's values.
+// `saveslot server init` and `start` (06-cli §4.1 «服务器自部署的运维命令», «服务器模式的配置», §6.2) on
+// a real control database, on either backend (`pnpm test:postgres` runs this file on PostgreSQL):
+// the key file and the tables made once (the identity provider's chosen by the settings), nothing
+// changed the second time, `start` running until it is stopped, and each refusal with its exit code
+// and without the configuration's values.
 
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { type AddressInfo, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ControlDatabase } from "@fluxvita/saveslot-store-postgres";
+import { type ControlDatabase, openControlDatabase } from "@fluxvita/saveslot-store-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { testBackend } from "../../test-backend/src/index.fixture.ts";
+import { TEST_KEY } from "../../service/src/external-assertion.fixture.ts";
+import { cellFromEnv } from "../../store-postgres/src/testing/server.fixture.ts";
+import { testPostgres } from "../../store-postgres/src/testing/test-postgres.fixture.ts";
+import { TEST_BACKEND, testBackend } from "../../test-backend/src/index.fixture.ts";
 import type { ServerCommandIO } from "./server-command-io.ts";
 import { serverCommand } from "./server-commands.ts";
+import { SERVER_LOCK } from "./server-lock.ts";
+import type { ServerRestoreIO } from "./server-restore-command.ts";
 
 /** A store the test backend opens: the control database of these tests. */
 type TenantStore = Awaited<ReturnType<ReturnType<typeof testBackend>["open"]>>;
@@ -41,6 +56,7 @@ async function controlDb(): Promise<{ store: TenantStore; open: () => Promise<Co
       read: store.read.bind(store),
       write: store.write.bind(store),
       close: async () => {},
+      onLost: () => {},
     }),
   };
 }
@@ -56,7 +72,7 @@ function env(keyFile: string): Record<string, string> {
 
 async function server(
   argv: string[],
-  o: Partial<ServerCommandIO> & { env: Record<string, string> },
+  o: Partial<ServerRestoreIO> & { env: Record<string, string> },
 ): Promise<{ code: number; out: string; err: string; opened: number }> {
   let out = "";
   let err = "";
@@ -119,8 +135,12 @@ describe("saveslot server init", () => {
           "control_meta",
           "credentials",
           "tenants",
+          // The local accounts': no external login settings are given.
+          "accounts",
+          "web_logins",
         ]),
       );
+      expect(made).not.toContain("external_users");
       const again = await server(["init"], { env: env(keyFile), openControl: db.open });
       expect(again).toMatchObject({ code: 0, err: "" });
       expect(again.out).toContain("left as it is");
@@ -149,6 +169,230 @@ describe("saveslot server init", () => {
           ],
       );
       expect(format).toBe("99");
+    },
+    T,
+  );
+});
+
+/** A port nothing listens on now: the system's pick for a listener closed again. */
+const freePort = (): Promise<number> =>
+  new Promise((resolve, reject) => {
+    const l = createServer();
+    l.once("error", reject);
+    l.listen(0, "127.0.0.1", () => {
+      const { port } = l.address() as AddressInfo;
+      l.close(() => resolve(port));
+    });
+  });
+
+/** The external login's three settings, its key file holding `keys`. */
+function externalEnv(keys: unknown[]): Record<string, string> {
+  const keysFile = join(keyDir(), "platform-keys.json");
+  writeFileSync(keysFile, JSON.stringify({ keys }), { mode: 0o600 });
+  return {
+    SAVESLOT_IDENTITY_ISSUER: "https://platform.example",
+    SAVESLOT_IDENTITY_LOGIN_URL: "https://platform.example/login",
+    SAVESLOT_IDENTITY_KEYS_FILE: keysFile,
+  };
+}
+
+describe("saveslot server init: the identity provider's tables", () => {
+  it(
+    "the external login's settings given: its tables, not the local accounts'",
+    async () => {
+      const db = await controlDb();
+      const keyFile = join(keyDir(), "handle-key");
+      const r = await server(["init"], {
+        env: { ...env(keyFile), ...externalEnv([TEST_KEY.public]) },
+        openControl: db.open,
+      });
+      expect(r).toMatchObject({ code: 0, err: "" });
+      const made = await tables(db.store);
+      expect(made).toEqual(
+        expect.arrayContaining([
+          "external_jti",
+          "external_logins",
+          "external_states",
+          "external_users",
+        ]),
+      );
+      expect(made).not.toContain("accounts");
+      expect(made).not.toContain("web_logins");
+    },
+    T,
+  );
+
+  it("a key file it cannot use: 5, the reason named, nothing made", async () => {
+    const keyFile = join(keyDir(), "handle-key");
+    let opened = 0;
+    const r = await server(["init"], {
+      env: { ...env(keyFile), ...externalEnv([{ ...TEST_KEY.public, d: TEST_KEY.d }]) },
+      openControl: async () => {
+        opened++;
+        throw new Error("the control database was opened");
+      },
+    });
+    expect(r.code).toBe(5);
+    expect(r.err).toContain("private key");
+    expect(r.err).not.toContain(TEST_KEY.d);
+    expect(opened).toBe(0);
+    expect(() => statSync(keyFile)).toThrow();
+  });
+
+  it("some of the external login's settings: 5, the missing ones named", async () => {
+    const keyFile = join(keyDir(), "handle-key");
+    const r = await server(["init"], {
+      env: { ...env(keyFile), SAVESLOT_IDENTITY_ISSUER: "https://platform.example" },
+    });
+    expect(r.code).toBe(5);
+    expect(r.err).toContain("SAVESLOT_IDENTITY_LOGIN_URL is not set");
+    expect(r.err).toContain("SAVESLOT_IDENTITY_KEYS_FILE is not set");
+  });
+});
+
+describe("saveslot server start", () => {
+  it(
+    "after init: listens, and on the stop signal closes and exits 0",
+    async () => {
+      const db = await controlDb();
+      const keyFile = join(keyDir(), "handle-key");
+      const e = { ...env(keyFile), SAVESLOT_LISTEN: `127.0.0.1:${await freePort()}` };
+      expect((await server(["init"], { env: e, openControl: db.open })).code).toBe(0);
+      let stop!: () => void;
+      const stopped = new Promise<void>((r) => {
+        stop = r;
+      });
+      const run = server(["start"], {
+        env: e,
+        openControl: db.open,
+        backend: { open: () => Promise.reject(new Error("no tenant is opened")) },
+        stopped: () => {
+          stop();
+          return Promise.resolve();
+        },
+      });
+      await stopped;
+      const r = await run;
+      expect(r).toMatchObject({ code: 0, err: "" });
+      expect(r.out).toMatch(/listens on 127\.0\.0\.1:\d+/);
+      expect(r.out).toContain("has stopped");
+    },
+    T,
+  );
+
+  it(
+    "before init: 5, telling to run server init; nothing made",
+    async () => {
+      const db = await controlDb();
+      const keyFile = join(keyDir(), "handle-key");
+      const before = await tables(db.store);
+      const r = await server(["start"], { env: env(keyFile), openControl: db.open });
+      expect(r.code).toBe(5);
+      expect(r.err).toContain("run saveslot server init first");
+      expect(await tables(db.store)).toEqual(before);
+    },
+    T,
+  );
+
+  it(
+    "init for the local accounts, start with the external login's settings: 5, nothing made",
+    async () => {
+      const db = await controlDb();
+      const keyFile = join(keyDir(), "handle-key");
+      expect((await server(["init"], { env: env(keyFile), openControl: db.open })).code).toBe(0);
+      const before = await tables(db.store);
+      const r = await server(["start"], {
+        env: { ...env(keyFile), ...externalEnv([TEST_KEY.public]) },
+        openControl: db.open,
+      });
+      expect(r.code).toBe(5);
+      expect(r.err).toContain(
+        "external login tables are not there; run saveslot server init first",
+      );
+      expect(await tables(db.store)).toEqual(before);
+    },
+    T,
+  );
+
+  it("an argument: a usage error, 2", async () => {
+    const keyFile = join(keyDir(), "handle-key");
+    expect((await server(["start", "--now"], { env: env(keyFile) })).code).toBe(2);
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "a key file this process may not read: 5, the reason said, no stack and no path",
+    async () => {
+      const db = await controlDb();
+      const keyFile = join(keyDir(), "handle-key");
+      expect((await server(["init"], { env: env(keyFile), openControl: db.open })).code).toBe(0);
+      chmodSync(keyFile, 0o000);
+      try {
+        for (const sub of ["start", "init"]) {
+          const r = await server([sub], { env: env(keyFile), openControl: db.open });
+          expect(r.code).toBe(5);
+          expect(r.err).toBe(
+            "error: the file SAVESLOT_HANDLE_KEY_FILE names cannot be read by this process; give its user read permission\n",
+          );
+        }
+      } finally {
+        chmodSync(keyFile, 0o600);
+      }
+    },
+    T,
+  );
+});
+
+// The server lock is its control database connection's (06 §4.1): PostgreSQL only, which can end a
+// connection from outside.
+describe.skipIf(TEST_BACKEND !== "postgres")("saveslot server start: the connection lost", () => {
+  const pg = testPostgres(cellFromEnv());
+
+  it(
+    "exits 7 saying so, for the process manager to start it again; the lock is free",
+    async () => {
+      const name = pg.name();
+      const open = () => openControlDatabase(pg.cell, name, { create: true });
+      const keyFile = join(keyDir(), "handle-key");
+      const e = { ...env(keyFile), SAVESLOT_LISTEN: `127.0.0.1:${await freePort()}` };
+      expect((await server(["init"], { env: e, openControl: open })).code).toBe(0);
+      let listening!: () => void;
+      const up = new Promise<void>((r) => {
+        listening = r;
+      });
+      let out = "";
+      const run = server(["start"], {
+        env: e,
+        openControl: open,
+        backend: { open: () => Promise.reject(new Error("no tenant is opened")) },
+        out: (l) => {
+          out += `${l}\n`;
+          if (l.includes("listens on")) listening();
+        },
+        // Not stopped: what ends it is the connection.
+        stopped: () => new Promise<void>(() => {}),
+      });
+      await up;
+      await pg.admin(
+        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+           WHERE datname = $1 AND pid <> pg_backend_pid()`,
+        [name],
+      );
+      const r = await run;
+      expect(r.code).toBe(7);
+      expect(r.err).toContain("the connection to the control database");
+      expect(r.err).toContain("went away");
+      expect(out).not.toContain("has stopped");
+      const other = await openControlDatabase(pg.cell, name);
+      try {
+        const got = await other.write((tx) =>
+          tx.query<{ got: boolean }>("SELECT pg_try_advisory_lock($1) AS got", [
+            SERVER_LOCK.toString(),
+          ]),
+        );
+        expect(got.rows[0]?.got).toBe(true);
+      } finally {
+        await other.close();
+      }
     },
     T,
   );

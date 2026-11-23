@@ -6,6 +6,7 @@
 
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
+import { normalizeAddress } from "@fluxvita/saveslot-service";
 import type { PostgresCell } from "@fluxvita/saveslot-store-postgres";
 
 /** The variables, in the order of 06-cli §4.1's table. */
@@ -18,6 +19,9 @@ export const SERVER_VARIABLES = [
   "SAVESLOT_TRUSTED_PROXIES",
   "SAVESLOT_RATE_LIMIT",
   "SAVESLOT_RATE_BURST",
+  "SAVESLOT_IDENTITY_ISSUER",
+  "SAVESLOT_IDENTITY_LOGIN_URL",
+  "SAVESLOT_IDENTITY_KEYS_FILE",
 ] as const;
 export type ServerVariable = (typeof SERVER_VARIABLES)[number];
 
@@ -37,9 +41,19 @@ export interface ServerConfig {
   readonly publicUrl: string;
   readonly handleKeyFile: string;
   readonly listen: { readonly host: string; readonly port: number };
+  /** Each as `normalizeAddress` writes it. */
   readonly trustedProxies: readonly string[];
   /** Absent: rate limiting is off. */
   readonly rateLimit?: { readonly perMinute: number; readonly burst: number };
+  /**
+   * The external login's three settings, all set; absent, the identity provider is the local
+   * accounts. The address and the key file are checked when they are read (server-identity.ts).
+   */
+  readonly identity?: {
+    readonly issuer: string;
+    readonly loginUrl: string;
+    readonly keysFile: string;
+  };
 }
 
 export type ServerConfigProblem =
@@ -163,11 +177,17 @@ function listen(text: string): { host: string; port: number } {
   return { host, port: Number(port) };
 }
 
+/**
+ * Single addresses only, in the form requests' sources are compared in (02-architecture §5): no
+ * range, port or zone, which `normalizeAddress` does not take.
+ */
 function proxies(text: string): string[] {
   if (text.trim() === "") return [];
-  const list = text.split(",").map((s) => s.trim());
-  if (list.some((a) => isIP(a) === 0)) throw new Bad("an entry is not an IP address");
-  return list;
+  const list = text.split(",").map((s) => normalizeAddress(s));
+  if (list.some((a) => a === undefined)) {
+    throw new Bad("an entry is not a single IP address (no range, port or zone)");
+  }
+  return list as string[];
 }
 
 const count = (text: string, min: number): number => {
@@ -177,9 +197,24 @@ const count = (text: string, min: number): number => {
   return Number(text);
 };
 
+const IDENTITY_VARIABLES = [
+  "SAVESLOT_IDENTITY_ISSUER",
+  "SAVESLOT_IDENTITY_LOGIN_URL",
+  "SAVESLOT_IDENTITY_KEYS_FILE",
+] as const;
+
 /** The configuration from the environment; throws `ServerConfigInvalid` with every problem. */
-export function readServerConfig(env: Readonly<Record<string, string | undefined>>): ServerConfig {
+export function readServerConfig(
+  given: Readonly<Record<string, string | undefined>>,
+): ServerConfig {
   const problems: ServerConfigProblem[] = [];
+  // An identity setting of spaces only is not set: taken as set, it would choose the external login.
+  const env: Readonly<Record<string, string | undefined>> = {
+    ...given,
+    ...Object.fromEntries(
+      IDENTITY_VARIABLES.filter((v) => given[v]?.trim() === "").map((v) => [v, undefined]),
+    ),
+  };
   const take = <T>(variable: ServerVariable, required: boolean, parse: (s: string) => T) => {
     const text = env[variable];
     if (text === undefined || text === "") {
@@ -205,6 +240,20 @@ export function readServerConfig(env: Readonly<Record<string, string | undefined
   const trusted = take("SAVESLOT_TRUSTED_PROXIES", false, proxies) ?? [];
   const perMinute = take("SAVESLOT_RATE_LIMIT", false, (s) => count(s, 0)) ?? 0;
   const burst = take("SAVESLOT_RATE_BURST", false, (s) => count(s, 1));
+  // The external login takes all three or none: some set and not the others is a mistake, refused
+  // naming the ones missing rather than taken as either identity provider.
+  const set = IDENTITY_VARIABLES.filter((v) => (env[v] ?? "") !== "");
+  const identity =
+    set.length === 0
+      ? undefined
+      : {
+          issuer: take("SAVESLOT_IDENTITY_ISSUER", true, (s) => s),
+          loginUrl: take("SAVESLOT_IDENTITY_LOGIN_URL", true, (s) => s),
+          keysFile: take("SAVESLOT_IDENTITY_KEYS_FILE", true, (s) => {
+            if (!isAbsolute(s)) throw new Bad("not an absolute path");
+            return s;
+          }),
+        };
   if (problems.length > 0) throw new ServerConfigInvalid(problems);
   if (control === undefined || cellAt === undefined || pub === undefined || keyFile === undefined) {
     throw new Error("unreachable: a required variable without a problem");
@@ -219,5 +268,14 @@ export function readServerConfig(env: Readonly<Record<string, string | undefined
     trustedProxies: trusted,
     // The burst means nothing while the limit is off (06-cli §4.1).
     ...(perMinute > 0 ? { rateLimit: { perMinute, burst: burst ?? perMinute } } : {}),
+    ...(identity !== undefined
+      ? {
+          identity: {
+            issuer: identity.issuer as string,
+            loginUrl: identity.loginUrl as string,
+            keysFile: identity.keysFile as string,
+          },
+        }
+      : {}),
   };
 }

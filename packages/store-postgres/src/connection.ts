@@ -99,6 +99,8 @@ interface Ending {
 export class Connection {
   readonly #client: DriverClient;
   #gone: Ending | undefined;
+  #ended = false;
+  readonly #onGone: (() => void)[] = [];
   /** The last statement asked for: the next one is sent once it has settled. */
   #tail: Promise<unknown> = Promise.resolve();
 
@@ -106,11 +108,33 @@ export class Connection {
     this.#client = client;
     // An error with no statement in flight (the server went away while the connection was idle).
     client.on("error", (e) => {
-      this.#gone ??= { message: messageOf(e), sqlState: sqlStateOf(e), cause: e };
+      this.#lose({ message: messageOf(e), sqlState: sqlStateOf(e), cause: e });
     });
     client.on("end", () => {
-      this.#gone ??= { message: "the connection has ended", sqlState: undefined, cause: undefined };
+      this.#lose({ message: "the connection has ended", sqlState: undefined, cause: undefined });
     });
+  }
+
+  /**
+   * Marks the connection gone and tells the listeners, the first time. After `end` it is gone
+   * already, so they are not told.
+   */
+  #lose(why: Ending): void {
+    if (this.#gone !== undefined) return;
+    this.#gone = why;
+    for (const f of this.#onGone.splice(0)) f();
+  }
+
+  /**
+   * `listener` is called once when the connection goes away without `end` having been called: the
+   * server ended it, or the network did. At once if it is gone already.
+   */
+  onGone(listener: () => void): void {
+    if (this.#gone !== undefined) {
+      if (!this.#ended) listener();
+      return;
+    }
+    this.#onGone.push(listener);
   }
 
   /** Connects. Throws `Gone`, with the server's SQLSTATE when it refused (3D000: no such database). */
@@ -196,13 +220,14 @@ export class Connection {
     } catch (e) {
       const refused = refusal(e);
       if (refused) throw refused;
-      this.#gone ??= { message: messageOf(e), sqlState: sqlStateOf(e), cause: e };
+      this.#lose({ message: messageOf(e), sqlState: sqlStateOf(e), cause: e });
       throw new Gone(messageOf(e), sqlStateOf(e), e, true);
     }
   }
 
   /** Ends the connection. Never throws: one that is gone already is ended. */
   async end(): Promise<void> {
+    this.#ended = true;
     this.#gone ??= { message: "the connection has ended", sqlState: undefined, cause: undefined };
     await this.#client.end().catch(() => {});
   }

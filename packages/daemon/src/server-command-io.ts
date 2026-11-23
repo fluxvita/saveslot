@@ -10,4 +10,6 @@ export interface ServerCommandIO extends CommandIO {
   readonly env: Readonly<Record<string, string | undefined>>;
   /** Opens the control database (a test gives one of its own backend's). */
   readonly openControl?: (at: DatabaseAt) => Promise<ControlDatabase>;
+  /** `server start`: resolves when the server is to stop (default: SIGTERM or SIGINT). */
+  readonly stopped?: () => Promise<void>;
 }

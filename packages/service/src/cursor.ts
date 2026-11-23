@@ -45,7 +45,7 @@ export class CursorKeysCorrupt extends Error {
 /** The server mode's handle key file cannot be used; the message names no path or content. */
 export class HandleKeyFileError extends Error {
   override readonly name = "HandleKeyFileError";
-  readonly code: "missing" | "not_a_file" | "open_to_others" | "corrupt";
+  readonly code: "missing" | "not_a_file" | "open_to_others" | "unreadable" | "corrupt";
   constructor(code: HandleKeyFileError["code"], message: string) {
     super(message);
     this.code = code;
@@ -56,6 +56,7 @@ const HANDLE_KEY_FILE_PROBLEM: Readonly<Record<SecretFileError["code"], string>>
   missing: "the handle key file is not there",
   not_a_file: "the handle key file is not a file",
   open_to_others: "the handle key file is open to others",
+  unreadable: "the handle key file may not be read by this process",
 };
 
 interface Key {

@@ -10,7 +10,7 @@ import { TOOLS, type ToolResultSeen } from "@fluxvita/saveslot-server";
 import type { Operation } from "@fluxvita/saveslot-service";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { Driver, Outcome } from "./contract-suite.fixture.ts";
-import { socketFile } from "./service.ts";
+import { type Target, targetOptions } from "./http-driver.fixture.ts";
 
 /**
  * What a service saw its tool calls end with, in order: give `onToolResult` to `runService`;
@@ -50,9 +50,9 @@ interface Sent {
   readonly body: string;
 }
 
-/** A fetch on the socket of the service in `home`, with `credential` as the bearer token. */
+/** A fetch on the service at `home` (its socket or TCP address), `credential` the bearer token. */
 export function socketFetch(
-  home: string,
+  home: Target,
   credential: string,
   seen: (r: Sent) => void = () => {},
 ): typeof fetch {
@@ -67,7 +67,7 @@ export function socketFetch(
     return new Promise<Response>((resolve, reject) => {
       const r = request(
         {
-          socketPath: socketFile(home),
+          ...targetOptions(home),
           method: req.method,
           path: new URL(req.url).pathname,
           headers,
@@ -95,9 +95,9 @@ export function socketFetch(
   }) as typeof fetch;
 }
 
-/** A client of the service in `home`, connected as `credential` in `era`. */
+/** A client of the service at `home`, connected as `credential` in `era`. */
 export async function mcpClient(
-  home: string,
+  home: Target,
   credential: string,
   era: Era,
   seen?: (r: Sent) => void,
@@ -120,9 +120,9 @@ const toolOf = (operation: Operation) => {
   return tool.name;
 };
 
-/** The contract's operations over MCP, on the service in `home()`. */
+/** The contract's operations over MCP, on the service at `home()`. */
 export const mcpDriver =
-  (home: () => string, era: Era, obs: { readonly seen: readonly ToolResultSeen[] }): Driver =>
+  (home: () => Target, era: Era, obs: { readonly seen: readonly ToolResultSeen[] }): Driver =>
   async (credential, operation, params, o = {}) => {
     let last: Sent | undefined;
     const refused = (): Outcome | undefined => {

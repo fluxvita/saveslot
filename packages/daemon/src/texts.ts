@@ -211,7 +211,22 @@ export const TEXTS = {
   // `saveslot server …` (06 §4.1 «服务器自部署的运维命令», «服务器模式的配置»). A text names a
   // variable, never its value: a connection URL may hold a password.
   server: {
-    usage: "usage: saveslot server init | restore --tenant <tenant>",
+    usage: "usage: saveslot server init | start | restore --tenant <tenant>",
+    startRefused: (
+      set: "control" | "accounts" | "external",
+      reason: "not_initialized" | "format",
+    ) =>
+      `error: the control database's ${{ control: "control plane", accounts: "local accounts", external: "external login" }[set]} tables ${
+        reason === "format"
+          ? "are of a format this saveslot does not know; nothing was changed"
+          : "are not there; run saveslot server init first"
+      }`,
+    listening: (host: string, port: number) =>
+      `The saveslot server listens on ${host.includes(":") ? `[${host}]` : host}:${port}`,
+    stoppedCleanly: "The saveslot server has stopped",
+    identityRefused: (what: string) => `error: the external login's settings: ${what}`,
+    alreadyRunning:
+      "error: another saveslot server is running on this control database; one server a deployment",
     configProblem: (p: ServerConfigProblem) =>
       p.kind === "missing"
         ? `error: ${p.variable} is not set`
@@ -222,6 +237,7 @@ export const TEXTS = {
           missing: "is not there",
           not_a_file: "is not a file",
           open_to_others: "is open to others; take every permission from others (chmod o= on it)",
+          unreadable: "cannot be read by this process; give its user read permission",
           corrupt: "is not a handle key file",
         }[code]
       }`,
@@ -232,6 +248,8 @@ export const TEXTS = {
     keyFileKept: "The handle key file (SAVESLOT_HANDLE_KEY_FILE) is there already; left as it is",
     controlUnreachable:
       "error: the control database (SAVESLOT_CONTROL_DATABASE_URL) could not be reached",
+    controlLost:
+      "error: the connection to the control database (SAVESLOT_CONTROL_DATABASE_URL) went away, and the server lock with it; the server has stopped (start it again)",
     controlFormat:
       "error: the control database's tables are of a format this saveslot does not know; nothing was changed",
     controlReady: "The control database's tables are in place",

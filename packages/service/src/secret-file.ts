@@ -11,7 +11,7 @@ import { open } from "node:fs/promises";
 /** A secret file that cannot be used; the message names no path or content. */
 export class SecretFileError extends Error {
   override readonly name = "SecretFileError";
-  readonly code: "missing" | "not_a_file" | "open_to_others";
+  readonly code: "missing" | "not_a_file" | "open_to_others" | "unreadable";
   constructor(code: SecretFileError["code"], message: string) {
     super(message);
     this.code = code;
@@ -29,6 +29,9 @@ export async function readSecretFile(path: string): Promise<string> {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") throw new SecretFileError("missing", "the file is not there");
     if (code === "EISDIR") throw new SecretFileError("not_a_file", "the file is not a file");
+    if (code === "EACCES" || code === "EPERM") {
+      throw new SecretFileError("unreadable", "this process may not read the file");
+    }
     throw e;
   }
   try {

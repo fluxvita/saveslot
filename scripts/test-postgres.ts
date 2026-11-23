@@ -30,6 +30,9 @@ export const TESTED = [
   "packages/service/src/server-import.test.ts",
   // `saveslot server init` on the control database.
   "packages/daemon/src/server-commands.test.ts",
+  // `saveslot server start`: the process, and the contract tests over it.
+  "packages/daemon/src/run-server.test.ts",
+  "packages/daemon/src/server-contract.test.ts",
   // `saveslot server restore`: the restore flow on a server tenant, from the service and the command.
   "packages/service/src/server-restore.test.ts",
   "packages/daemon/src/server-restore-command.test.ts",

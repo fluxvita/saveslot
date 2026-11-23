@@ -270,7 +270,8 @@ export function handleMcp(
   req: IncomingMessage,
   res: ServerResponse,
 ): boolean {
-  if ((req.url ?? "").split("?")[0] !== "/mcp") return false;
+  // The path as parsed, as `/v1/` is matched: an absolute-form target is taken the same way.
+  if (new URL(req.url ?? "/", "http://local").pathname !== "/mcp") return false;
   const started = Date.now();
   let tool: string | undefined;
   const finish = (status: number) =>

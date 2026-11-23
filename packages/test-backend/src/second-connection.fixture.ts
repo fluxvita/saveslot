@@ -13,6 +13,8 @@ export interface SecondConnection {
   read<T>(fn: (tx: ReadTx) => Promise<T>): Promise<T>;
   write<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
   close(): Promise<void>;
+  /** Called once when the connection goes away before `close`. */
+  onLost(listener: () => void): void;
 }
 
 /** A connection of its own to the database of `dir` (which a test store made). */
@@ -51,5 +53,6 @@ export async function secondConnection(dir: string): Promise<SecondConnection> {
     read: (fn) => run("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", fn),
     write: (fn) => run("BEGIN", fn),
     close: () => conn.end(),
+    onLost: (listener) => conn.onGone(listener),
   };
 }

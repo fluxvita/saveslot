@@ -1,6 +1,6 @@
 // A secret file the server mode's deployer keeps (06-cli §4.1 «服务器模式的配置»): followed through
-// links, its owner not checked, refused when it is not a regular file or is open to others; checked
-// and read on one open file.
+// links, its owner not checked, refused when it is not a regular file, is open to others or may not
+// be read; checked and read on one open file.
 
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
@@ -95,10 +95,12 @@ describe("readSecretFile", () => {
   }, 5_000);
 
   it.skipIf(AS_ROOT)(
-    "one the process cannot read: the error is the system's, not taken as missing",
+    "one the process may not read: its own code, not taken as missing; no message names the path",
     async () => {
       const path = secret("k-1", 0o000);
-      await expect(readSecretFile(path)).rejects.toMatchObject({ code: "EACCES" });
+      const found = await refusal(path);
+      expect(found.code).toBe("unreadable");
+      expect(found.message).not.toContain(root);
     },
   );
 });

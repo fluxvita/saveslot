@@ -97,12 +97,65 @@ describe("the server mode's configuration", () => {
     ["SAVESLOT_LISTEN", "8080", "not <address>:<port>"],
     ["SAVESLOT_LISTEN", "localhost:8080", "the address is not an IP address"],
     ["SAVESLOT_LISTEN", "0.0.0.0:0", "the port is not 1 to 65535"],
-    ["SAVESLOT_TRUSTED_PROXIES", "10.0.0.1,,10.0.0.2", "an entry is not an IP address"],
+    ...(
+      [
+        "10.0.0.1,,10.0.0.2",
+        "fe80::1%lo0",
+        "10.0.0.1,fe80::1%eth0",
+        "10.0.0.0/8",
+        "10.0.0.1:80",
+        "[::1]",
+      ] as const
+    ).map(
+      (v) =>
+        [
+          "SAVESLOT_TRUSTED_PROXIES",
+          v,
+          "an entry is not a single IP address (no range, port or zone)",
+        ] as const,
+    ),
     ["SAVESLOT_RATE_LIMIT", "-1", "not an integer of 0 or more"],
     ["SAVESLOT_RATE_BURST", "0", "not a positive integer"],
   ] as const)("%s = %s: %s", (variable, value, what) => {
     expect(problems({ ...GOOD, [variable]: value })).toEqual([
       { kind: "malformed", variable, what },
+    ]);
+  });
+
+  it("the external login: all three of its variables, or none; some of them names the others missing", () => {
+    const external = {
+      SAVESLOT_IDENTITY_ISSUER: "https://platform.example",
+      SAVESLOT_IDENTITY_LOGIN_URL: "https://platform.example/login",
+      SAVESLOT_IDENTITY_KEYS_FILE: "/run/secrets/platform-keys.json",
+    };
+    expect(readServerConfig({ ...GOOD, ...external }).identity).toEqual({
+      issuer: "https://platform.example",
+      loginUrl: "https://platform.example/login",
+      keysFile: "/run/secrets/platform-keys.json",
+    });
+    expect(readServerConfig(GOOD).identity).toBeUndefined();
+    expect(
+      problems({ ...GOOD, SAVESLOT_IDENTITY_ISSUER: external.SAVESLOT_IDENTITY_ISSUER }),
+    ).toEqual([
+      { kind: "missing", variable: "SAVESLOT_IDENTITY_LOGIN_URL" },
+      { kind: "missing", variable: "SAVESLOT_IDENTITY_KEYS_FILE" },
+    ]);
+    expect(problems({ ...GOOD, ...external, SAVESLOT_IDENTITY_LOGIN_URL: "" })).toEqual([
+      { kind: "missing", variable: "SAVESLOT_IDENTITY_LOGIN_URL" },
+    ]);
+    // Spaces only are not set: alone, the local accounts; with the others, that one is missing.
+    expect(readServerConfig({ ...GOOD, SAVESLOT_IDENTITY_ISSUER: "   " }).identity).toBeUndefined();
+    expect(problems({ ...GOOD, ...external, SAVESLOT_IDENTITY_ISSUER: " \t " })).toEqual([
+      { kind: "missing", variable: "SAVESLOT_IDENTITY_ISSUER" },
+    ]);
+    expect(
+      problems({ ...GOOD, ...external, SAVESLOT_IDENTITY_KEYS_FILE: "keys/platform.json" }),
+    ).toEqual([
+      {
+        kind: "malformed",
+        variable: "SAVESLOT_IDENTITY_KEYS_FILE",
+        what: "not an absolute path",
+      },
     ]);
   });
 
@@ -128,6 +181,11 @@ describe("the server mode's configuration", () => {
     });
     expect(c.listen).toEqual({ host: "::1", port: 9000 });
     expect(c.trustedProxies).toEqual(["127.0.0.1", "::1"]);
+    // In the form requests' sources are compared in.
+    expect(
+      readServerConfig({ ...GOOD, SAVESLOT_TRUSTED_PROXIES: "::FFFF:10.0.0.7,2001:DB8:0:0::1" })
+        .trustedProxies,
+    ).toEqual(["10.0.0.7", "2001:db8::1"]);
     expect(c.rateLimit).toEqual({ perMinute: 120, burst: 120 });
     expect(
       readServerConfig({ ...GOOD, SAVESLOT_RATE_LIMIT: "60", SAVESLOT_RATE_BURST: "10" }),
