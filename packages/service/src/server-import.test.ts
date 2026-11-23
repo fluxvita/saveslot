@@ -192,14 +192,15 @@ async function* bodyOf(lines: readonly string[], hold?: Promise<void>): AsyncGen
   }
 }
 
-const imported = (
+/** An import and the drop it runs after its answer, both done. */
+const imported = async (
   control: ServerControl,
   pool: TenantPool,
   tenant: TenantId,
   user: UserId,
   body = bodyOf(file),
-) =>
-  importServerTenant({
+) => {
+  const r = await importServerTenant({
     control,
     backend,
     pool,
@@ -209,6 +210,9 @@ const imported = (
     body,
     now: "2026-11-21T10:30:00.000Z" as never,
   });
+  await r.dropped;
+  return r;
+};
 
 /** The tenant as a new process sees it: empty, or the import complete with the anchor agreeing. */
 async function outcome(tenant: TenantId): Promise<"empty" | "complete"> {
@@ -597,6 +601,7 @@ describe("an import", () => {
         now: "2026-11-21T10:30:00.000Z" as never,
       }).catch((x: unknown) => x);
       expect(r).toMatchObject({ highWater: sourceEnd + 1, restoreCount: 1 });
+      await (r as { dropped: Promise<void> }).dropped;
       // A refused file: the staging database's drop fails, its report throws; still import_rejected.
       const b = await newTenant();
       const broken = [...file];
@@ -672,6 +677,133 @@ describe("an import", () => {
       expect(discards.filter((d) => d.startsWith(`${databaseOf(tenant)}_im_`))).toHaveLength(1);
       await pool.closeAll();
       expect(await outcome(tenant)).toBe("empty");
+    },
+    T,
+  );
+});
+
+describe("the replaced database dropped after the answer, outside the exclusive", () => {
+  /**
+   * A drop of the database `tenant`'s import replaced held until `release` (the first one only),
+   * then done as `then` says; other drops as usual.
+   */
+  function heldDrop(tenant: TenantId, then: "drop" | "fail" = "drop") {
+    let release = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let reached = () => {};
+    const atDrop = new Promise<void>((r) => {
+      reached = r;
+    });
+    let first = true;
+    const drop: DiscardDatabase = async (o) => {
+      if (o.database === databaseOf(tenant) && first) {
+        first = false;
+        reached();
+        await held;
+        if (then === "fail") throw new Error("PROBE the server went away mid-drop");
+      }
+      return discardDatabase(o);
+    };
+    return { drop, release, atDrop };
+  }
+  /** What `p` gives, or "still waiting" after 30 s. */
+  const within = <V>(p: Promise<V>) =>
+    Promise.race([p, new Promise<string>((r) => setTimeout(() => r("still waiting"), 30_000))]);
+
+  it(
+    "the import answers while the drop is still running, and the tenant serves meanwhile",
+    async () => {
+      const { tenant, owner } = await newTenant();
+      const pool = poolOf(cp);
+      const h = heldDrop(tenant);
+      const r = await within(
+        importServerTenant({
+          control: cp,
+          backend,
+          pool,
+          discardDatabase: h.drop,
+          tenant,
+          user: owner,
+          body: bodyOf(file),
+          now: "2026-11-21T10:30:00.000Z" as never,
+        }),
+      );
+      // Answered with the drop held: the answer did not wait for it.
+      expect(r).toMatchObject({ highWater: sourceEnd + 1, restoreCount: 1 });
+      await h.atDrop;
+      expect((await cp.tenant(tenant))?.staging).toBe(databaseOf(tenant));
+      // The exclusive is released: a use is lent while the drop runs.
+      expect(await pool.use(tenant, async () => "used")).toBe("used");
+      h.release();
+      await (r as { dropped: Promise<void> }).dropped;
+      expect((await cp.tenant(tenant))?.staging).toBeUndefined();
+      expect(discards).toContain(databaseOf(tenant));
+      await pool.closeAll();
+      expect(await outcome(tenant)).toBe("complete");
+    },
+    T,
+  );
+
+  it(
+    "an opening dropping the same record meanwhile: both end, nothing told, the record forgotten",
+    async () => {
+      const { tenant, owner } = await newTenant();
+      const pool = poolOf(cp);
+      const h = heldDrop(tenant);
+      const failures: string[] = [];
+      const r = await importServerTenant({
+        control: cp,
+        backend,
+        pool,
+        discardDatabase: h.drop,
+        onDiscardFailure: (_, database) => failures.push(database),
+        tenant,
+        user: owner,
+        body: bodyOf(file),
+        now: "2026-11-21T10:30:00.000Z" as never,
+      });
+      await h.atDrop;
+      await pool.closeAll();
+      // A new process's opening: no marker, the record there, dropped by the opening itself.
+      expect(await outcome(tenant)).toBe("complete");
+      h.release();
+      await r.dropped;
+      expect(failures).toEqual([]);
+      expect((await cp.tenant(tenant))?.staging).toBeUndefined();
+    },
+    T,
+  );
+
+  it(
+    "the service stopping while the drop runs: not waited for; the drop failing is told, the record kept, the next opening drops it",
+    async () => {
+      const { tenant, owner } = await newTenant();
+      const pool = poolOf(cp);
+      const h = heldDrop(tenant, "fail");
+      const failures: string[] = [];
+      const r = await importServerTenant({
+        control: cp,
+        backend,
+        pool,
+        discardDatabase: h.drop,
+        onDiscardFailure: (_, database) => failures.push(database),
+        tenant,
+        user: owner,
+        body: bodyOf(file),
+        now: "2026-11-21T10:30:00.000Z" as never,
+      });
+      await h.atDrop;
+      // The pool closes (the server stopping) with the drop in flight: it does not wait for it.
+      expect(await within(pool.closeAll().then(() => "closed"))).toBe("closed");
+      h.release();
+      // The drop fails; that is told, and its promise still resolves (no unhandled rejection).
+      await expect(r.dropped).resolves.toBeUndefined();
+      expect(failures).toEqual([databaseOf(tenant)]);
+      expect((await cp.tenant(tenant))?.staging).toBe(databaseOf(tenant));
+      expect(await outcome(tenant)).toBe("complete");
+      expect(discards).toContain(databaseOf(tenant));
     },
     T,
   );
@@ -796,7 +928,7 @@ describe("killed after each step, the tenant opened again (§11)", () => {
       const { tenant, owner } = await newTenant();
       const pool = poolOf(cp);
       const failures: string[] = [];
-      await importServerTenant({
+      const r = await importServerTenant({
         control: cp,
         backend,
         pool,
@@ -810,6 +942,7 @@ describe("killed after each step, the tenant opened again (§11)", () => {
         body: bodyOf(file),
         now: "2026-11-21T10:30:00.000Z" as never,
       });
+      await r.dropped;
       expect(failures).toEqual([databaseOf(tenant)]);
       await pool.closeAll();
       // Still recorded, so not lost: the next opening drops it (no marker) and forgets it.

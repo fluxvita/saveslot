@@ -11,9 +11,15 @@
 //   ④–⑥ the kernel's `runImport`: the staging log checked to end in ③'s event, the empty tenant
 //       checked, the anchor's marker, the swap (one transaction of the directory: the staging
 //       database becomes the tenant's, the one it replaced is recorded as its staging database),
-//       the anchor rebuilt;
-//   then the database the import replaced (the genesis event only) dropped and forgotten, as far as
-//   it goes.
+//       the anchor rebuilt.
+//
+// The import answers once ⑥ is done and the exclusive released; the database it replaced (the
+// genesis event only) is dropped and forgotten after that, outside the exclusive, as far as it
+// goes (`dropped`). That is safe: the directory records it as the tenant's staging database and it
+// is never the one the directory names, so the only drop it can meet is an opening's drop of the
+// same record, and both drops tolerate the other (`IF EXISTS`; the record forgotten only while it
+// still names it). Nothing waits for it: a drop still running when the service stops may fail; it
+// is told to `onDiscardFailure`, the record stays, and the next opening drops the database.
 //
 // A failure before ④ drops the staging database and forgets it, and the tenant stays as it was. One
 // at or after ④ leaves the marker: the pool's next opening finishes the import (swapped in) or rolls
@@ -88,6 +94,11 @@ export function stagingDiscarder(o: {
 }
 
 export interface ServerImportResult {
+  /**
+   * The drop of the database the import replaced, run after the answer; it never rejects (a
+   * failure is told to `onDiscardFailure`). For tests and a host that wants to wait for it.
+   */
+  readonly dropped: Promise<void>;
   /** The import's result as the contract gives it (04-contract-types `ImportResult`). */
   readonly contract: ImportResult;
   readonly importId: string;
@@ -120,12 +131,33 @@ export async function importServerTenant(o: {
    */
   readonly onDiscardFailure?: (tenant: TenantId, database: string, error: unknown) => void;
 }): Promise<ServerImportResult> {
-  return o.pool.exclusive(o.tenant, () => importHeld(o), { refuse: "importing" });
+  const held = await o.pool.exclusive(o.tenant, () => importHeld(o), { refuse: "importing" });
+  // After the answer, outside the exclusive (see the top of this file).
+  return { ...held.result, dropped: dropQuietly(o, held.replaced) };
+}
+
+/**
+ * A drop that only cleans up: the database dropped and forgotten (`stagingDiscarder`); a failure
+ * is told to `onDiscardFailure` and never thrown, nor is a report that fails.
+ */
+async function dropQuietly(
+  o: Parameters<typeof importServerTenant>[0],
+  database: string,
+): Promise<void> {
+  try {
+    await stagingDiscarder(o)(o.tenant, database);
+  } catch (e) {
+    try {
+      o.onDiscardFailure?.(o.tenant, database, e);
+    } catch {
+      // A report that fails is not the import's failure.
+    }
+  }
 }
 
 async function importHeld(
   o: Parameters<typeof importServerTenant>[0],
-): Promise<ServerImportResult> {
+): Promise<{ readonly result: Omit<ServerImportResult, "dropped">; readonly replaced: string }> {
   const entry = await o.control.tenant(o.tenant);
   if (entry === undefined || entry.state !== "active") {
     throw new OpsError("internal", "importServerTenant: the tenant is not an active one");
@@ -133,17 +165,7 @@ async function importHeld(
   const ref = postgresRef(entry.ref);
   const discard = stagingDiscarder(o);
   /** A drop that only cleans up: its failure is told, never thrown in place of what happened. */
-  const tidy = async (database: string) => {
-    try {
-      await discard(o.tenant, database);
-    } catch (e) {
-      try {
-        o.onDiscardFailure?.(o.tenant, database, e);
-      } catch {
-        // A report that fails is not the import's failure.
-      }
-    }
-  };
+  const tidy = (database: string) => dropQuietly(o, database);
 
   const notEmpty = () =>
     new OpsError("invalid_argument", "the tenant is not empty", { reason: "tenant_not_empty" });
@@ -246,17 +268,19 @@ async function importHeld(
       throw e;
     }
 
-    // The database the import replaced, the directory's staging database now: the genesis event
-    // only. Dropped and forgotten as far as it goes; what is left, the pool's next opening drops.
+    // The database the import replaced, the directory's staging database now: dropped after the
+    // answer, outside the exclusive (importServerTenant).
     await closeAll(opened);
-    await tidy(ref.database);
     return {
-      contract: { ...counted, restore_count: finished.restoreCount },
-      importId,
-      importedUpto: staged.importedUpto,
-      events: staged.events,
-      highWater: finished.highWater,
-      restoreCount: finished.restoreCount,
+      result: {
+        contract: { ...counted, restore_count: finished.restoreCount },
+        importId,
+        importedUpto: staged.importedUpto,
+        events: staged.events,
+        highWater: finished.highWater,
+        restoreCount: finished.restoreCount,
+      },
+      replaced: ref.database,
     };
   } finally {
     await closeAll(opened);

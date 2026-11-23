@@ -689,7 +689,9 @@ describe("runServer: POST /v1/import", () => {
    * way to add users with empty tenants. The import's drop goes through the backend's guard and
    * then drops the test's storage of that database.
    */
-  async function serverWithSource(over: { importBodyIdleMs?: number } = {}) {
+  async function serverWithSource(
+    over: { importBodyIdleMs?: number; discardDatabase?: DiscardDatabase } = {},
+  ) {
     const c = await controlDb();
     const t = tenants();
     const cfg = config();
@@ -734,7 +736,7 @@ describe("runServer: POST /v1/import", () => {
     const exported = await send(s, { path: "/v1/export", headers: auth(source.token) });
     expect(exported.status).toBe(200);
     const file = exported.body.split("\n").filter((l) => l !== "");
-    return { s, cp, user, source, file, auth };
+    return { s, cp, user, source, file, auth, c, t, cfg };
   }
 
   /** The file as a request body: a line a chunk; `hold` stops it after the first line. */
@@ -802,6 +804,64 @@ describe("runServer: POST /v1/import", () => {
     });
     expect((await cp.tenant(tenant))?.staging).toBeUndefined();
   };
+
+  it(
+    "closed right after an import, the replaced database's drop cut off: close does not wait for it; the tenant's next opening drops it",
+    async () => {
+      // The drop of the database an import replaced never ends here: as a stop that ends the
+      // process in its middle. Other drops go through as usual.
+      let reached!: () => void;
+      const atDrop = new Promise<void>((r) => {
+        reached = r;
+      });
+      let target: `tn_${string}` | undefined;
+      const { s, cp, user, file, c, t, cfg } = await serverWithSource({
+        discardDatabase: async (d) => {
+          checkDiscard(d);
+          if (target !== undefined && d.database === databaseOf(target)) {
+            reached();
+            await new Promise(() => {});
+          }
+          await dropTestStorage(join(t.dir, d.cell, d.database));
+        },
+      });
+      const into = await user("target");
+      target = into.tenant;
+      const r = await within(upload(s, into.token, bodyOf(file)), "the import");
+      expect(r.status).toBe(200);
+      await atDrop;
+      // The answer did not wait for the drop, and neither does closing: the drop is not awaited.
+      await within(s.close(), "closing");
+      expect((await cp.tenant(into.tenant))?.staging).toBe(databaseOf(into.tenant));
+      // The next server, on the same control database and storage: the tenant's first opening
+      // drops what the cut-off drop left, and the directory forgets it.
+      const dropped: string[] = [];
+      const next = await runServer({
+        config: cfg,
+        version: "0.0.0-test",
+        openControl: async () => c.db,
+        backend: t.backend,
+        discardDatabase: async (d) => {
+          checkDiscard(d);
+          dropped.push(d.database);
+          await dropTestStorage(join(t.dir, d.cell, d.database));
+        },
+        now: () => NOW,
+      });
+      try {
+        const slots = await send(next, {
+          path: "/v1/slots",
+          headers: { authorization: `Bearer ${into.token}` },
+        });
+        expect(slots.status).toBe(200);
+        expect(dropped).toEqual([databaseOf(into.tenant)]);
+        expect((await cp.tenant(into.tenant))?.staging).toBeUndefined();
+      } finally {
+        await next.close();
+      }
+    },
+    T,
+  );
 
   it(
     "into an empty tenant: 200 with the contract's result and nothing else, the tenant's log the file's",
