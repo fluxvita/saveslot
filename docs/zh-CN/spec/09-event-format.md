@@ -804,7 +804,7 @@
 | `span/existence/<k>` | 数 | `scope` 为 `interval` 的那一项的区间：撤销的区间，或恢复存在的区间。回掉写回的项靠本块的 `deps` 记出处，所以写回落在整段时间上时也是 `interval`，区间写 `{}`；被别的项切开时可以起点开口，写 `{"to": …}`（§1.2）。只有调用方给的整体撤销是 `whole`、没有本块。见下 | 调用方给的撤销：`valid_sources`（调用方给的带区间的撤销总有这个块），另加本块的 `deps`；回掉写回的项：本块的 `deps` |
 | `valid_sources` | 元 | 区间参数的来源：`[<源数据事件的 seq>]`。状态类表上带区间参数的基础写入（写入与撤销）总有这个块：`evidence_by_field` 的 `valid` 映射到的段，没映射就是这个 op 的全部证据（没带证据时是它的 `api_call`）。不带区间参数的（状态类表上不给起点终点的写入、纠错的默认区间 `corrected_span`、整体撤销）没有这个块 | — |
 | `op_sources` | 元 | 操作来源：`[<源数据事件的 seq>]`。`undo` 的基础写入：这次请求的证据（没带时是它的 `api_call`）。调用方给的撤销：它的证据里不作区间来源的段，整体撤销是全部证据（没带时是它的 `api_call`）。一条都没有时不出现；之前的事件可能没有这个块 | — |
-| `duplicate` | 数 | 疑似重复的判定：`{"matched": [<行 ID>], "keys": [<字段 ID>], "deps": […]}`。`matched` 是命中的行（最多 10 个，按最近写入排）；`keys` 是命中的那一组 `duplicate_keys`。只在新增且已生效时有。写入时判一次，之后不重算 | `deps`：被比中的那些行在这些字段上当时生效的贡献 |
+| `duplicate` | 数 | 疑似重复的判定：`{"matched": [<行 ID>], "keys": [<字段 ID>], "deps": […]}`。`matched` 是命中的行：1 到 10 个，各出现一次，不含这一行自己，按最近写入排（被比中行上最后一次生效写入的操作号降序）；`keys` 是命中的那一组 `duplicate_keys`，非空、各字段一次。只在新增且已生效的行上有（目标是行，不是实体）。写入时判一次，之后不重算 | `deps`：被比中的那些行在这些字段上当时生效的贡献 |
 | `ack/<j>` | 数 | `acknowledge` 确认覆盖的一段：原来有值时 `{"field": "f2", "valid": {…}, "value": …, "op": <写下这一段的操作号>, "deps": […]}`；原来没有值时 `{"field": "f2", "valid": {…}, "no_value": true, "deps": […]}`，没有 `value` 与 `op`。`no_value` 与 `fields/<f>/<k>` 里的同名键同义：这一段原来没有值，不区分是实体无值还是字段没有贡献。`value` 与 `no_value` 恰有其一 | `deps`：写下这一段的贡献（原来有值时），给出这一段两端的贡献，这一段在一次撤销之内时另含那次撤销 |
 | `revert` | 元 | **回退记录**：这次写入回掉了哪几次操作在哪些目标上的改动，见下。`revert: {undo}` 与 `take_previous` 的基础写入都带它，形状相同。只有事件 `seq`、操作号与目标（字段 ID 或"存在"），不含下标与区间 | — |
 | `take` | 元 | **采纳记录**：`take_candidate` 触发的基础写入带它，为删除重放留下所需的记录，见 §5.8「`item.resolved`」。只有事项、候选号、操作号与（事件, 目标），不含下标与区间，不随删除清除 | — |
@@ -1119,7 +1119,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `proposed/<k>` | 数 | 待确认的提议在一个字段上的值：`{"field": …, "value": …, "valid": {…}, "deps": […]}` | `deps` |
 | `previous/<k>` | 数 | 合并基上的值的一段：`{"field": …, "value": …, "valid": {…}, "deps": […]}`。`take_previous` 会回到它 | `deps` |
 | `impact/<k>` | 数 | 执行后会改掉什么的一条，见下 | `deps` |
-| `matched/<k>` | 数 | `flagged`：疑似重复的另一行 `{"row": …, "deps": […]}` | `deps` |
+| `matched/<k>` | 数 | `flagged`：疑似重复的另一行 `{"row": …, "deps": […]}`。`flagged` 事项必有，从 0 起无空号，至多 10 条，各行一次，不含被标记的那一行，次序同 `write.base` 的 `duplicate.matched`；`flagged` 事项只有 `target` 与这一组，别的类型没有这一组 | `deps` |
 
 `target`：
 
@@ -1221,7 +1221,8 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 |---|---|---|
 | `target` | 元 | `{"item": "pi_…", "by_event": <seq>, "writer_had_read": <布尔>, "cause": "target_overwritten" \| "references_changed" \| "entries_deleted" \| "entries_restored" \| "matched_changed" \| "entries_changed", "dropped_candidates": [<下标>], "restored_candidates": [<下标>], "merge_base_op": <操作号>}` |
 | `current/<k>`、`previous/<k>`、`impact/<k>`、`proposed/<k>`、`scope_valid` | 数 | 刷新后的结果，整组取代之前的同名条目。**这几组每次都整组给出，零块即空组**；没有"没给出即不变"的读法 |
-| `candidates/<k>`、`matched/<k>` | 数 | 重新给出的候选条目、疑似重复的另一行，形状与 `item.created` 里的相同（带 `deps`）。**沿用原下标 `k`，只取代同下标的那一条**，没给出的保持原样。用在两处：条目块被一次删除清掉而条目仍在（例如候选的所见区间被重新解析，或候选少了一项而其余项仍在，候选仍是候选）；撤回删除时放回被去掉的候选 |
+| `matched/<k>` | 数 | `flagged` 事项仍命中的那几行，形状与 `item.created` 里的相同（带 `deps`）。**给出时整组取代之前的 `matched`**，从 0 起重新编号；没给出时不变。只随三种成因出现：`matched_changed`（必有，且只有这一组：一部分行不再命中时给出其余的；全都不再命中时事项被取代，不刷新）、`entries_deleted`（条目块被一次删除清掉而行仍命中时整组重新给出）、`entries_restored` |
+| `candidates/<k>` | 数 | 重新给出的候选条目，形状与 `item.created` 里的相同（带 `deps`）。**沿用原下标 `k`，只取代同下标的那一条**，没给出的保持原样。用在两处：条目块被一次删除清掉而条目仍在（例如候选的所见区间被重新解析，或候选少了一项而其余项仍在，候选仍是候选）；撤回删除时放回被去掉的候选 |
 
 - `cause` 为 `entries_changed`：一次请求结束时，事项没被改到，但重算出的内容与现有不同（"一次请求里的事项内容"）；`by_event` 是这次请求在这一行上最后一条 `write.base`；没有 `writer_had_read`。
 - `writer_had_read`：写入方当时是否读过这个事项的当前版本。写入时查一次读取审计，把结果记在这里，重放不重算。`cause` 为 `target_overwritten` 时恒为 `false`（读过就是取代，不是刷新）。

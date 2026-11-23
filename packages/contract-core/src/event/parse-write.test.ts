@@ -204,6 +204,16 @@ const SAMPLES: Record<string, Sample> = {
       text: { text: "it was 32.5" },
     },
   },
+  "write.base (insert, duplicate)": {
+    header: member("write.base", 27),
+    blocks: {
+      target: { table: "t1", row: ROW, intent: "insert", sv: 1, cause: "request", op_index: 0 },
+      "fields/f3/0": { status: "applied", value: "32" },
+      "sources/f3/0": [{ kind: "value", source: 26 }],
+      "existence/0": { status: "applied", scope: "whole" },
+      duplicate: { matched: [ROW_B], keys: ["f3", "f4"], deps },
+    },
+  },
   "item.created": {
     header: member("item.created", 28),
     blocks: {
@@ -301,6 +311,29 @@ const SAMPLES: Record<string, Sample> = {
         policy_version: 1,
       },
       "impact/0": { kind: "referencing_row", table: "t2", row: ROW, field: "f5" },
+    },
+  },
+  "item.created (flagged)": {
+    header: member("item.created", 28),
+    blocks: {
+      target: {
+        item: ITEM,
+        type: "flagged",
+        reason: "duplicate_keys",
+        table: "t1",
+        row: ROW,
+        origin_event: 27,
+        ruleset_version: 1,
+        policy_version: 1,
+      },
+      "matched/0": { row: ROW_B, deps },
+    },
+  },
+  "item.refreshed (matched changed)": {
+    header: member("item.refreshed", 28),
+    blocks: {
+      target: { item: ITEM, cause: "matched_changed", by_event: 27 },
+      "matched/0": { row: ROW_B, deps },
     },
   },
   "item.refreshed": {
@@ -1787,5 +1820,93 @@ describe("an op by external key and its sync baseline (§5.7)", () => {
   it("a baseline with no target of its op", () => {
     const s = withBlock(S(name), "ops/1/baseline", { f3: 12 });
     expect(issues(parse(s))).toContain("ops/1/baseline: no ops target for it");
+  });
+});
+
+describe("duplicate keys: write.base `duplicate` (§5.7) and `matched/<k>` (§5.8)", () => {
+  const rows = (n: number) =>
+    Array.from({ length: n }, (_, i) => `r_${String(i).padStart(2, "0")}${"A".repeat(24)}`);
+  const base = S("write.base (insert, duplicate)");
+  const flagged = S("item.created (flagged)");
+  const refreshed = S("item.refreshed (matched changed)");
+  const dup = (patch: Record<string, unknown>) =>
+    withBlock(base, "duplicate", { matched: [ROW_B], keys: ["f3", "f4"], deps, ...patch });
+  const withBlocks = (s: Sample, blocks: Record<string, unknown>): Sample => ({
+    ...s,
+    blocks: { ...s.blocks, ...blocks },
+  });
+  const matched = (n: number) =>
+    Object.fromEntries(rows(n).map((row, k) => [`matched/${k}`, { row, deps }]));
+
+  it.each([
+    ["no row matched", { matched: [] }, "duplicate.matched: 1 to 10 rows"],
+    ["11 rows", { matched: rows(11) }, "duplicate.matched: 1 to 10 rows"],
+    ["a row twice", { matched: [ROW_B, ROW_B] }, "duplicate.matched: a row twice"],
+    ["not a row ID", { matched: [ENTITY] }, "duplicate.matched[0]: a row ID"],
+    ["the row itself", { matched: [ROW_B, ROW] }, "duplicate: the row itself"],
+    ["no key", { keys: [] }, "duplicate.keys: empty"],
+    ["a key twice", { keys: ["f3", "f3"] }, "duplicate.keys: duplicate field"],
+    ["not a field ID", { keys: ["category"] }, "duplicate.keys[0]: a field ID"],
+  ])("write.base duplicate: %s is refused", (_, patch, issue) => {
+    expect(issues(parse(dup(patch)))).toContain(issue);
+  });
+
+  it("write.base duplicate: 10 rows are taken; only on a row", () => {
+    expect(parse(dup({ matched: rows(10) }))).toEqual({ ok: true, type: "write.base" });
+    const { row: _, ...t } = base.blocks["target"] as Record<string, unknown>;
+    expect(issues(parse(withBlock(base, "target", { ...t, entity: ENTITY })))).toContain(
+      "duplicate: only on a row",
+    );
+  });
+
+  it("item.created: a flagged item lists its matched rows and nothing else; no other item has them", () => {
+    expect(parse(withBlocks(flagged, matched(10)))).toEqual({ ok: true, type: "item.created" });
+    const { "matched/0": _, ...none } = flagged.blocks;
+    expect(issues(parse({ ...flagged, blocks: none }))).toContain(
+      "event: a flagged item without matched",
+    );
+    expect(
+      issues(parse(withBlocks(flagged, { "matched/2": { row: rows(1)[0], deps } }))),
+    ).toContain("matched: indices not from 0 without a gap");
+    expect(issues(parse(withBlocks(flagged, matched(11))))).toContain("matched: more than 10 rows");
+    expect(issues(parse(withBlocks(flagged, { "matched/1": { row: ROW_B, deps } })))).toContain(
+      "matched: a row twice",
+    );
+    expect(issues(parse(withBlocks(flagged, { "matched/1": { row: ROW, deps } })))).toContain(
+      "matched: the item's own row",
+    );
+    expect(
+      issues(
+        parse(withBlocks(flagged, { "current/0": { field: "f3", value: "1", op: 21, deps } })),
+      ),
+    ).toContain("event: current/0 on a flagged item");
+    expect(
+      issues(parse(withBlocks(S("item.created"), { "matched/0": { row: ROW_B, deps } }))),
+    ).toContain("event: matched on an item not flagged");
+  });
+
+  it("item.refreshed: matched is given whole; a matched_changed refresh gives it and nothing else", () => {
+    expect(parse(withBlocks(refreshed, matched(3)))).toEqual({ ok: true, type: "item.refreshed" });
+    const { "matched/0": _, ...none } = refreshed.blocks;
+    expect(issues(parse({ ...refreshed, blocks: none }))).toContain(
+      "event: matched_changed without matched",
+    );
+    expect(
+      issues(parse(withBlocks(refreshed, { "matched/2": { row: rows(1)[0], deps } }))),
+    ).toContain("matched: indices not from 0 without a gap");
+    expect(
+      issues(
+        parse(withBlocks(refreshed, { "current/0": { field: "f3", value: "1", op: 21, deps } })),
+      ),
+    ).toContain("event: current/0 on a matched_changed refresh");
+    // Re-given after a deletion cleared its deps, or put back: whole too.
+    expect(
+      parse(
+        withBlocks(S("item.refreshed (entries deleted)"), { "matched/0": { row: ROW_B, deps } }),
+      ),
+    ).toEqual({ ok: true, type: "item.refreshed" });
+    expect(
+      issues(parse(withBlocks(S("item.refreshed"), { "matched/0": { row: ROW_B, deps } }))),
+    ).toContain("event: matched only with matched_changed, entries_deleted or entries_restored");
   });
 });

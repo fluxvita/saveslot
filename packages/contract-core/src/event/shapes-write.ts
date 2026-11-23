@@ -4,8 +4,7 @@
 // as the types in ./blocks.ts give them. Shapes only: whether a field ID exists in the schema, or whether a
 // value fits the field's type, is the kernel's check.
 //
-// Not here yet, so still `unsupported`: the blocks of later phases (`refs`, `duplicate`,
-// `matched`).
+// Not here yet, so still `unsupported`: the blocks of later phases (`refs`).
 
 import { check, type Issues, isObject, type Json, keys, type ShapeChecker, str } from "./check.ts";
 import {
@@ -709,6 +708,36 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     if ("valid" in v) interval(v["valid"], `${at}.valid`, issues);
     deps(v["deps"], `${at}.deps`, issues);
   },
+  // §5.7 `duplicate`: the rows a new row matched, 1 to 10, each once; the `duplicate_keys` group
+  // that matched, its fields each once.
+  Duplicate(v, at, issues) {
+    if (!keys(v, at, ["matched", "keys", "deps"], [], issues)) return;
+    const m = v["matched"];
+    if (!Array.isArray(m)) check(false, `${at}.matched`, "not an array", issues);
+    else {
+      check(m.length >= 1 && m.length <= MATCHED_MAX, `${at}.matched`, "1 to 10 rows", issues);
+      m.forEach((r, i) => {
+        check(id("row", r), `${at}.matched[${i}]`, "a row ID", issues);
+      });
+      check(new Set(m).size === m.length, `${at}.matched`, "a row twice", issues);
+    }
+    const k = v["keys"];
+    if (!Array.isArray(k)) check(false, `${at}.keys`, "not an array", issues);
+    else {
+      check(k.length >= 1, `${at}.keys`, "empty", issues);
+      k.forEach((f, i) => {
+        check(id("field", f), `${at}.keys[${i}]`, "a field ID", issues);
+      });
+      check(new Set(k).size === k.length, `${at}.keys`, "duplicate field", issues);
+    }
+    deps(v["deps"], `${at}.deps`, issues);
+  },
+  // §5.8 `matched/<k>`: the other row of a duplicate match.
+  Matched(v, at, issues) {
+    if (!keys(v, at, ["row", "deps"], [], issues)) return;
+    check(id("row", v["row"]), at, "row", issues);
+    deps(v["deps"], `${at}.deps`, issues);
+  },
   Candidate(v, at, issues) {
     if (!keys(v, at, ["event", "intent", "seen", "cause", "items", "deps"], [], issues)) return;
     check(seq(v["event"]), at, "event", issues);
@@ -913,6 +942,35 @@ export type EventRule = (
   issues: Issues,
   at: { readonly seq: number; readonly op: number },
 ) => void;
+
+/** At most this many rows a duplicate match lists (§5.7 `duplicate`, §5.8 `matched/<k>`). */
+const MATCHED_MAX = 10;
+
+/**
+ * §5.8 `matched/<k>`: from 0 without a gap, at most 10, each row once, none the item's own row.
+ * A block cleared by a deletion is still there; its row is not read.
+ */
+function matchedGroup(
+  paths: ReadonlySet<string>,
+  blocks: Readonly<Record<string, Json>>,
+  own: Json,
+  issues: Issues,
+): void {
+  const at = [...paths].flatMap((p) => /^matched\/(\d+)$/.exec(p)?.slice(1).map(Number) ?? []);
+  noHoles(at, "matched", issues);
+  check(at.length <= MATCHED_MAX, "matched", "more than 10 rows", issues);
+  const rows = at.flatMap((k) => {
+    const b = blocks[`matched/${k}`];
+    return isObject(b) && str(b["row"]) ? [b["row"]] : [];
+  });
+  check(new Set(rows).size === rows.length, "matched", "a row twice", issues);
+  check(
+    own === undefined || !rows.includes(own as string),
+    "matched",
+    "the item's own row",
+    issues,
+  );
+}
 
 /** Indices `0 .. n-1` with none missing (§3.1 `<n>`): the indices present, sorted. */
 export function noHoles(present: readonly number[], where: string, issues: Issues): void {
@@ -1155,6 +1213,15 @@ export const WRITE_EVENT_RULES: Readonly<Record<string, EventRule>> = {
   // checks belong to an item; an existence item has a span exactly when its scope is `interval`;
   // a write is a revert or a take, not both.
   "write.base"(paths, blocks, issues) {
+    // §5.7 `duplicate`: a new row matched other rows, never itself, and only a row (event and
+    // timeless tables declare duplicate keys, state tables do not).
+    const dup = blocks["duplicate"];
+    const own = blocks["target"];
+    if (paths.has("duplicate") && isObject(own)) {
+      check("row" in own, "duplicate", "only on a row", issues);
+      if (isObject(dup) && Array.isArray(dup["matched"]))
+        check(!dup["matched"].includes(own["row"] as Json), "duplicate", "the row itself", issues);
+    }
     for (const p of paths) {
       const field = /^(sources|span|literal)\/(f\d+\/\d+)$/.exec(p);
       if (field !== null) {
@@ -1198,14 +1265,49 @@ export const WRITE_EVENT_RULES: Readonly<Record<string, EventRule>> = {
       issues,
     );
   },
-  // §5.8: a schema change item has no candidates.
+  // §5.8: a schema change item has no candidates. A flagged item lists the rows it matched
+  // (`matched/<k>`) and nothing else; no other item has them.
   "item.created"(paths, blocks, issues) {
     const t = blocks["target"];
+    const flagged = isObject(t) && t["type"] === "flagged";
+    const matched = [...paths].filter((p) => p.startsWith("matched/"));
+    if (!flagged) check(matched.length === 0, "event", "matched on an item not flagged", issues);
+    else {
+      check(paths.has("matched/0"), "event", "a flagged item without matched", issues);
+      matchedGroup(paths, blocks, isObject(t) ? t["row"] : undefined, issues);
+      const other = [...paths].filter((p) => p !== "target" && !p.startsWith("matched/"));
+      check(other.length === 0, "event", `${other.join(", ")} on a flagged item`, issues);
+    }
     if (isObject(t) && t["type"] === "schema_change") {
       check(
         ![...paths].some((p) => p.startsWith("candidates/")),
         "event",
         "candidates on a schema change",
+        issues,
+      );
+    }
+  },
+  // §5.8: `matched/<k>` is given whole (as `current`), so a refresh that changes which rows a
+  // flagged item lists gives all of them. A matched_changed refresh is a flagged item's: it gives
+  // the rows still matching (none left would supersede it) and nothing else.
+  "item.refreshed"(paths, blocks, issues) {
+    const t = blocks["target"];
+    const matched = [...paths].filter((p) => p.startsWith("matched/"));
+    if (matched.length > 0) matchedGroup(paths, blocks, undefined, issues);
+    if (isObject(t) && t["cause"] === "matched_changed") {
+      check(paths.has("matched/0"), "event", "matched_changed without matched", issues);
+      const other = [...paths].filter((p) => p !== "target" && !p.startsWith("matched/"));
+      check(
+        other.length === 0,
+        "event",
+        `${other.join(", ")} on a matched_changed refresh`,
+        issues,
+      );
+    } else if (matched.length > 0) {
+      check(
+        isObject(t) && (t["cause"] === "entries_deleted" || t["cause"] === "entries_restored"),
+        "event",
+        "matched only with matched_changed, entries_deleted or entries_restored",
         issues,
       );
     }

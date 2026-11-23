@@ -687,6 +687,8 @@ describe("planEvent: pending items", () => {
             origin_event: 32,
             ...versions,
           },
+          // A flagged item lists the rows it matched (09 §5.8).
+          "matched/0": { row: `r_${"1".repeat(26)}`, deps: [] },
         },
       },
     ])[1] as ApplyEvent;

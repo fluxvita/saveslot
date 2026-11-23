@@ -137,23 +137,24 @@ describe("apply stops, never skips", () => {
   });
 
   it("on a block shape it cannot check yet", () => {
-    // `write.base` `duplicate` has no shape check yet (similar keys, P2).
+    // `write.head` `ops/<i>/refs` has no shape check yet (`ref` fields and `as`, P2).
     const ev = {
-      ...event("write.base", {
-        target: {
-          table: "t1",
-          row: `r_${"6".repeat(26)}`,
-          intent: "insert",
-          sv: 1,
-          cause: "request",
-          op_index: 0,
+      ...event("write.head", {
+        ctx: {
+          now: "2026-11-10T04:41:07.123Z",
+          today: "2026-11-10",
+          ruleset_version: 1,
+          policy_version: 1,
+          literal_checker: "literal@1",
         },
-        duplicate: {},
+        request: { sv: 1, sv_basis: "explicit", op_count: 1 },
+        "ops/0/target": { table: "t1", row: `r_${"6".repeat(26)}`, intent: "insert" },
+        "ops/0/refs": {},
       }),
     };
-    const header = { ...ev.header, actor: CONN, slot: SLOT, op: 2 };
+    const header = { ...ev.header, actor: CONN, slot: SLOT };
     expect(reason({ ...ev, header })).toBe(
-      "unsupported @2: apply stopped at seq 2: block shapes not supported yet: Duplicate",
+      "unsupported @2: apply stopped at seq 2: block shapes not supported yet: Refs",
     );
   });
 

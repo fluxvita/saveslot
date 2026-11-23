@@ -190,6 +190,7 @@ describe("parseEvent: valid events", () => {
         "CurrentEntry",
         "DerivedKey",
         "DerivedTarget",
+        "Duplicate",
         "PreviousEntry",
         "ExistenceItem",
         "ExistenceSpan",
@@ -198,6 +199,7 @@ describe("parseEvent: valid events", () => {
         "FieldItem",
         "Idempotency",
         "Impact",
+        "Matched",
         "ItemCreatedTarget",
         "ItemMergedTarget",
         "ItemRefreshedTarget",
@@ -544,19 +546,20 @@ describe("parseEvent: principal.revoked's three actors (§5.3)", () => {
 });
 
 describe("parseEvent: shapes without a checker", () => {
-  // `write.base` `duplicate` is not checked yet (similar keys, P2).
+  // `write.head` `ops/<i>/refs` is not checked yet (`ref` fields and `as`, P2).
   const derived = {
-    header: { ...head("write.base"), op: 25, slot: SLOT_A },
+    header: { ...head("write.head", 25), slot: SLOT_A },
     blocks: {
-      target: {
-        table: "t1",
-        row: `r_${"6".repeat(26)}`,
-        intent: "insert",
-        sv: 1,
-        cause: "request",
-        op_index: 0,
+      ctx: {
+        now: AT,
+        today: "2026-11-10",
+        ruleset_version: 1,
+        policy_version: 1,
+        literal_checker: "literal@1",
       },
-      duplicate: {},
+      request: { sv: 1, sv_basis: "explicit", op_count: 1 },
+      "ops/0/target": { table: "t1", row: `r_${"6".repeat(26)}`, intent: "insert" },
+      "ops/0/refs": {},
     },
   };
 
@@ -564,7 +567,7 @@ describe("parseEvent: shapes without a checker", () => {
     expect(parse(derived)).toEqual({
       ok: false,
       kind: "unsupported",
-      shapes: ["Duplicate"],
+      shapes: ["Refs"],
     });
   });
 
