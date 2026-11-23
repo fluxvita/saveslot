@@ -124,13 +124,17 @@ const sameSet = (a: IntervalSet, b: IntervalSet) =>
  * or that only registers — differs from the block the log last gave; every item whose last block
  * rests on a contribution the deletion takes away or that is restated (the block is cleared), still
  * a contribution: restated as it is, to a fixed point; every index the log gave that is no longer
- * an item and was not deleted: `dropped`. `deleted`: by `${event}/${target}`.
+ * an item and was not deleted: `dropped`. `deleted`: by `${event}/${target}`. A cancellation's
+ * rule 3: `cancelled`, the items (`${event}/${target}/${k}`) whose last interval block (not a
+ * restatement as dropped) came from the deletion cancelled — `latest` is then the blocks without that deletion's (09 §5.7) — each still an
+ * item restated as it is.
  */
 export function restatements(
   replayed: readonly OpRecord[],
   latest: LatestGiven,
   deleted: ReadonlySet<string>,
   isState: boolean,
+  cancelled: ReadonlySet<string> = new Set(),
 ): Restatement[] {
   const now = new Map<string, { event: number; item: RecordedItem }>();
   for (const r of replayed) {
@@ -183,6 +187,11 @@ export function restatements(
       if (now.has(ref) || out.has(ref) || b.status === "dropped") continue;
       out.set(ref, { item: { event: Number(ev), target, k: b.k }, status: "dropped", deps: [] });
     }
+  }
+  // Rule 3 (a cancellation): an item whose last block came from the deletion cancelled.
+  for (const ref of cancelled) {
+    const x = now.get(ref);
+    if (x !== undefined && !out.has(ref)) restate(ref, x.event, x.item);
   }
   // Rule 2, to a fixed point: a last block resting on a deleted or restated contribution.
   const gone = (d: ItemRef) =>

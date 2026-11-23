@@ -387,6 +387,8 @@ export function replayDeletion(
   deleted: ReadonlySet<string>,
   deletionsBefore: readonly number[] = [],
   latest: LatestGiven = givenByRecords(records),
+  /** A cancellation's: the items whose last block came from the deletion cancelled (rule 3). */
+  cancelled: ReadonlySet<string> = new Set(),
 ): {
   readonly state: RowState;
   readonly records: readonly OpRecord[];
@@ -559,7 +561,7 @@ export function replayDeletion(
   return {
     state,
     records: out,
-    restated: restatements(out, latest, deleted, state.isState),
+    restated: restatements(out, latest, deleted, state.isState, cancelled),
   };
 }
 
@@ -578,6 +580,11 @@ export function deletionResult(
   deleted: ReadonlySet<string>,
   pendingBefore: ReadonlySet<string>,
   items: ItemsGiven,
+  /**
+   * The operation numbers of the deletion and cancellation events in the log (this deletion's
+   * and the ones before it): an operation after one is not replayed in this version.
+   */
+  deletionOps: readonly number[],
   latest: LatestGiven = givenByRecords(records),
 ): {
   readonly replay: ReturnType<typeof replayDeletion>;
@@ -588,18 +595,36 @@ export function deletionResult(
 } {
   const before =
     pendingBefore.size > 0
-      ? replayDeletion(table, records, pendingBefore, [], latest).state
+      ? replayDeletion(table, records, pendingBefore, deletionOps, latest).state
       : new RowState(table, records);
-  const replay = replayDeletion(table, records, deleted, [], latest);
-  // The intervals of existence items deleted or restated, and of write-backs that only register
-  // restated, before (as last given) and after (09 §5.9 «列哪些»).
+  const replay = replayDeletion(table, records, deleted, deletionOps, latest);
+  const changed = [...deleted].filter((k) => !pendingBefore.has(k));
+  return resultOf(table, records, before, replay, changed, items, latest);
+}
+
+/**
+ * What an event says of a row or entity, from the state before it and its replay: `results` and
+ * the outcome, and the item layer. `changed`: the contributions this event deletes or puts back;
+ * their existence items, with the existence items and write-backs that only register restated,
+ * touch the row (09 §5.9 «列哪些»).
+ */
+function resultOf(
+  table: TableShape,
+  records: readonly OpRecord[],
+  before: RowState,
+  replay: ReturnType<typeof replayDeletion>,
+  changed: readonly string[],
+  items: ItemsGiven,
+  latest: LatestGiven,
+) {
+  // The intervals of existence items deleted, put back or restated, and of write-backs that only
+  // register restated, before (as last given) and after.
   const touched: IntervalSet[] = [];
   const lastValid = (event: number, target: Target, k?: number) =>
     (latest.get(contributionKey(event, target)) ?? [])
       .filter((b) => k === undefined || b.k === k)
       .flatMap((b) => [...b.valid, ...(b.landing ?? [])]);
-  for (const key of deleted) {
-    if (pendingBefore.has(key)) continue;
+  for (const key of changed) {
     const [ev, target] = key.split("/") as [string, Target];
     if (target === "existence") touched.push(lastValid(Number(ev), "existence"));
   }
@@ -626,4 +651,39 @@ export function deletionResult(
     ...(result.listed ? { outcome: outcomeOf(result, before, replay.state) } : {}),
     items: itemsResult(before, replay.state, records, items),
   };
+}
+
+/**
+ * A cancellation of a deletion in its grace period, with what its event says of the row or entity
+ * (03-deletion «撤回与宽限期»; 09 §5.9 `deletion.cancelled`): the deletion cancelled no longer
+ * counts, the definition is worked out again (the replay without it), and the event gives the
+ * row's `results`, the restatements (rules 1, 2 and 3), `recreated` and the item layer.
+ *
+ * This version covers a cancellation with no operation after the deletion events in the log (no
+ * write in the grace period): `kept_effective` and `kept_superseded` are then empty; an operation
+ * after a deletion is refused (`not_implemented`), as in the replay.
+ *
+ * `others`: the contributions the other pending deletions delete; `cancelled`: those the deletion
+ * cancelled deletes (before: both; after: `others`). `latest`: the blocks the log last gave without
+ * the deletion cancelled's (09 §5.7); `fromCancelled`: the items whose last interval block (not a
+ * restatement as dropped, 09 §5.9 rule 3) came from it. Both the caller's, from the log, as
+ * `items`. `deletionOps`: the operation numbers of the deletion and cancellation events in the
+ * log, the deletion cancelled's included: an operation after one (a write in the grace period) is
+ * refused, `not_implemented`.
+ */
+export function cancellationResult(
+  table: TableShape,
+  records: readonly OpRecord[],
+  others: ReadonlySet<string>,
+  cancelled: ReadonlySet<string>,
+  items: ItemsGiven,
+  latest: LatestGiven,
+  fromCancelled: ReadonlySet<string>,
+  deletionOps: readonly number[],
+) {
+  const pendingBefore = new Set([...others, ...cancelled]);
+  const before = replayDeletion(table, records, pendingBefore, deletionOps, latest).state;
+  const replay = replayDeletion(table, records, others, deletionOps, latest, fromCancelled);
+  const changed = [...cancelled].filter((k) => !others.has(k));
+  return resultOf(table, records, before, replay, changed, items, latest);
 }

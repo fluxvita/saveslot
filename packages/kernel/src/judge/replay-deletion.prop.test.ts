@@ -15,7 +15,7 @@
 // revoked row), a take_previous or take_candidate whose candidate leaves no item, operations after
 // a deletion event.
 
-import { evaluateLog, type Op, timeline } from "@fluxvita/saveslot-reference";
+import { evaluateLog, type LogEntry, type Op, timeline } from "@fluxvita/saveslot-reference";
 import { EVENT, Hits, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
@@ -25,7 +25,7 @@ import { advance, openItems } from "./fates.fixture.ts";
 import { type ItemsGiven, type ItemsResult, itemsByRecords, pendingIn } from "./fates.ts";
 import { view } from "./judge.ts";
 import type { OpRecord, Restatement, Target } from "./model.ts";
-import { deletionResult, replayDeletion } from "./replay-deletion.ts";
+import { cancellationResult, deletionResult, replayDeletion } from "./replay-deletion.ts";
 import { type GivenBlock, givenByRecords } from "./restate.ts";
 import type { Stretch } from "./results.ts";
 import { type Decision, deletedContributions, judged, scenario } from "./scenarios.fixture.ts";
@@ -244,14 +244,14 @@ function compare(
   // with the value the reference gives now; `deleted` exactly when the row existed before only.
   {
     const given = itemsByRecords(new RowState(table, records));
-    const res = deletionResult(table, records, gone, new Set(), given);
+    const res = deletionResult(table, records, gone, new Set(), given, []);
     // The item layer (03-deletion «删除不增加未决事项»): every (event, target) pending after was
     // pending when written (`itemsResult` refuses one with no item given); a fate exactly where its
     // pending membership changes. On the items as the records give them, and on two variants the
     // records alone do not make: a conflict unit's candidates of several writes in one item, and an
     // item superseded for another reason (overwritten).
     for (const g of [given, joined(given), overwritten(given)]) {
-      const r = g === given ? res : deletionResult(table, records, gone, new Set(), g);
+      const r = g === given ? res : deletionResult(table, records, gone, new Set(), g, []);
       itemsHold(r.before, r.replay.state, records, g, r.items);
     }
     // The deps of each listed stretch are complete (09 §3.5, §5.9 «段的定义»): deleting one more
@@ -355,14 +355,17 @@ function compare(
         itemsByRecords(new RowState(table, records)),
         joined(itemsByRecords(new RowState(table, records))),
       ]) {
-        const one = deletionResult(table, records, first, new Set(), given);
+        const one = deletionResult(table, records, first, new Set(), given, []);
         const between = advance(given, one.items);
-        const two = deletionResult(table, records, gone, first, between);
+        const two = deletionResult(table, records, gone, first, between, []);
         itemsHold(two.before, two.replay.state, records, between, two.items);
         const end = advance(between, two.items);
         // The order of deletions does not matter to the open items either (03-deletion
         // «删除不增加未决事项»: the original item is the one when written).
-        const once = advance(given, deletionResult(table, records, gone, new Set(), given).items);
+        const once = advance(
+          given,
+          deletionResult(table, records, gone, new Set(), given, []).items,
+        );
         expect(openItems(end, two.replay.state)).toEqual(openItems(once, two.replay.state));
         for (const [key, f] of two.items.fates) {
           const [ev, target] = key.split("/") as [string, Target];
@@ -392,6 +395,154 @@ function compare(
       expect(itemKeys(then.state.items.filter((x) => !proposalsThen.has(x.event)))).toEqual(
         itemKeys(two.items),
       );
+      // The first deletion cancelled, with no write between (03-deletion «撤回与宽限期»): the
+      // state is the second's alone, as the reference evaluator gives it; the blocks without the
+      // first's (09 §5.7) with the cancellation's restatements laid over give its replay's items
+      // (rule 3: an item whose last block was the first deletion's is restated); and the open
+      // items are those after the second alone.
+      {
+        const second = deletedContributions(kept, new Set([b]), isState);
+        const given = itemsByRecords(new RowState(table, records));
+        const one = deletionResult(table, records, first, new Set(), given, []);
+        const two = deletionResult(table, records, gone, first, advance(given, one.items), []);
+        const before = advance(advance(given, one.items), two.items);
+        const withoutFirst = overlay(givenByRecords(records), then.restated, second);
+        const bySecond = new Set(
+          then.restated.map((r) => `${r.item.event}/${r.item.target}/${r.item.k}`),
+        );
+        // Last interval blocks only (09 §5.9 rule 3): a restatement as dropped is no interval.
+        const interval = (rs: readonly Restatement[]) =>
+          rs
+            .filter((r) => r.status !== "dropped")
+            .map((r) => `${r.item.event}/${r.item.target}/${r.item.k}`);
+        const fromFirst = new Set(interval(once.restated).filter((k) => !bySecond.has(k)));
+        const c = cancellationResult(
+          table,
+          records,
+          second,
+          first,
+          before,
+          withoutFirst,
+          fromFirst,
+          [],
+        );
+        expect(withoutDropped(overlay(withoutFirst, c.replay.restated, second))).toEqual(
+          blocksOf(c.replay.records),
+        );
+        const cancelled = evaluateLog(schema, [
+          ...kept,
+          { kind: "deletion", op: last + 1, id: "pi_a", sources: [a] },
+          { kind: "deletion", op: last + 2, id: "pi_b", sources: [b] },
+          { kind: "cancel", op: last + 3, id: "pi_a" },
+        ]).final;
+        const proposalsC = new Set(
+          c.replay.state.records
+            .filter((r) => r.kind === "undo" && r.status === "awaiting")
+            .map((r) => r.event),
+        );
+        const namesC = [
+          ...new Set([
+            ...Object.keys(cancelled.fields),
+            ...Object.keys(view(c.replay.state).fields),
+          ]),
+        ];
+        expect({
+          items: itemKeys(c.replay.state.items.filter((x) => !proposalsC.has(x.event))),
+          fields: timelines(view(c.replay.state).fields as never, namesC),
+        }).toEqual({
+          items: itemKeys(cancelled.items),
+          fields: timelines(cancelled.fields as never, namesC),
+        });
+        const alone = deletionResult(table, records, second, new Set(), given, []);
+        expect(openItems(advance(before, c.items), c.replay.state)).toEqual(
+          openItems(advance(given, alone.items), c.replay.state),
+        );
+        // The second deletion cancelled instead (the one confirmed after): the state is the
+        // first's alone, as the reference evaluator gives it; then the first cancelled too: the
+        // records' state and items, as the reference gives both cancellations.
+        const sameAsRef = (state: RowState, ref: ReturnType<typeof evaluateLog>["final"]): void => {
+          const proposals = new Set(
+            state.records
+              .filter((r) => r.kind === "undo" && r.status === "awaiting")
+              .map((r) => r.event),
+          );
+          const names = [
+            ...new Set([...Object.keys(ref.fields), ...Object.keys(view(state).fields)]),
+          ];
+          expect({
+            items: itemKeys(state.items.filter((x) => !proposals.has(x.event))),
+            fields: timelines(view(state).fields as never, names),
+          }).toEqual({
+            items: itemKeys(ref.items),
+            fields: timelines(ref.fields as never, names),
+          });
+        };
+        const fromSecond = new Set(interval(then.restated));
+        const cB = cancellationResult(
+          table,
+          records,
+          first,
+          second,
+          before,
+          afterFirst,
+          fromSecond,
+          [],
+        );
+        expect(withoutDropped(overlay(afterFirst, cB.replay.restated, first))).toEqual(
+          blocksOf(cB.replay.records),
+        );
+        const del = (id: string, op: number, src: string): LogEntry => ({
+          kind: "deletion",
+          op,
+          id,
+          sources: [src],
+        });
+        sameAsRef(
+          cB.replay.state,
+          evaluateLog(schema, [
+            ...kept,
+            del("pi_a", last + 1, a),
+            del("pi_b", last + 2, b),
+            { kind: "cancel", op: last + 3, id: "pi_b" },
+          ]).final,
+        );
+        expect(openItems(advance(before, cB.items), cB.replay.state)).toEqual(
+          openItems(advance(given, one.items), cB.replay.state),
+        );
+        const afterCB = advance(before, cB.items);
+        const latestBoth = overlay(givenByRecords(records), cB.replay.restated, new Set());
+        const byCB = new Set(
+          cB.replay.restated.map((r) => `${r.item.event}/${r.item.target}/${r.item.k}`),
+        );
+        const fromFirstThen = new Set(interval(once.restated).filter((k) => !byCB.has(k)));
+        const cA = cancellationResult(
+          table,
+          records,
+          new Set(),
+          first,
+          afterCB,
+          latestBoth,
+          fromFirstThen,
+          [],
+        );
+        expect(withoutDropped(overlay(latestBoth, cA.replay.restated, new Set()))).toEqual(
+          blocksOf(cA.replay.records),
+        );
+        sameAsRef(
+          cA.replay.state,
+          evaluateLog(schema, [
+            ...kept,
+            del("pi_a", last + 1, a),
+            del("pi_b", last + 2, b),
+            { kind: "cancel", op: last + 3, id: "pi_b" },
+            { kind: "cancel", op: last + 4, id: "pi_a" },
+          ]).final,
+        );
+        expect(view(cA.replay.state)).toEqual(view(new RowState(table, records)));
+        expect(openItems(advance(afterCB, cA.items), cA.replay.state)).toEqual(
+          openItems(given, cA.replay.state),
+        );
+      }
     }
   }
   const names = [...new Set([...Object.keys(ref.fields), ...Object.keys(view(state).fields)])];
@@ -627,10 +778,15 @@ function itemsHold(
         expect({ key, pendingBefore: b !== undefined }).toEqual({ key, pendingBefore: true });
     }
   }
-  // The item a new one succeeds: superseded or refreshed by this deletion, or kept superseded
-  // after an earlier one (03-deletion «删除不增加未决事项»: the kind changed, it stays superseded).
+  // The item a new one succeeds: superseded or refreshed by this deletion, kept superseded after
+  // an earlier one, or still open with other members pending (only refreshed by an earlier one):
+  // 03-deletion «删除不增加未决事项», the kind changed.
   const earlier = [...given.items]
-    .filter(([, x]) => x.standing.kind === "superseded" && x.standing.reason === "deleted")
+    .filter(
+      ([, x]) =>
+        (x.standing.kind === "superseded" && x.standing.reason === "deleted") ||
+        x.standing.kind === "open",
+    )
     .map(([id]) => id);
   for (const o of r.opened) {
     expect([...r.superseded, ...r.refreshed.map((x) => x.item), ...earlier]).toContain(o.succeeds);
