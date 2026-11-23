@@ -437,6 +437,43 @@ describe("fetching client documents is bounded", () => {
   );
 
   it(
+    "an IPv6 source is its /64: another address of the same /64 counts as the same source",
+    async () => {
+      const d = bounded({ perSource: 3 });
+      for (const n of [1, 2, 3]) await resolveClient(d, id(n), NOW, `2001:db8:2:2::${n}`);
+      expect(await problem(resolveClient(d, id(4), NOW, "2001:db8:2:2::ffff"))).toBe(
+        "fetch_limited",
+      );
+      expect(fetches).toHaveLength(3);
+      // Another /64 of the same /48 is another source.
+      await resolveClient(d, id(4), NOW, "2001:db8:2:3::1");
+      // An IPv4-mapped address is its IPv4 address.
+      await resolveClient(d, id(5), NOW, "192.0.2.77");
+      await resolveClient(d, id(6), NOW, "::ffff:192.0.2.77");
+      await resolveClient(d, id(7), NOW, "192.0.2.77");
+      expect(await problem(resolveClient(d, id(8), NOW, "::ffff:192.0.2.77"))).toBe(
+        "fetch_limited",
+      );
+    },
+    T,
+  );
+
+  it(
+    "an IPv6 /48 has a bound of its own, over all its /64s; IPv4 has none",
+    async () => {
+      const d = bounded({ perSource: 100, perWideSource: 3 });
+      for (const n of [1, 2, 3]) await resolveClient(d, id(n), NOW, `2001:db8:2:${n}::1`);
+      expect(await problem(resolveClient(d, id(4), NOW, "2001:db8:2:4::1"))).toBe("fetch_limited");
+      expect(fetches).toHaveLength(3);
+      // Another /48 is not held back with it.
+      await resolveClient(d, id(4), NOW, "2001:db8:3:1::1");
+      // IPv4 sources are counted only as themselves: four from one network all fetch.
+      for (const n of [5, 6, 7, 8]) await resolveClient(d, id(n), NOW, `198.51.100.${n}`);
+    },
+    T,
+  );
+
+  it(
     "at once: past the fetches under way, fetch_busy; a place comes back when a fetch ends",
     async () => {
       let open: () => void = () => {};
@@ -967,6 +1004,21 @@ describe("audience (RFC 8707)", () => {
       expect(await checkAudience(store(), EXT)(c)).toBe("ok");
       expect(await checkAudience(store(), "https://moved.example")(c)).toBe("invalid");
       expect(await checkAudience(store(), `${EXT}/mcp`)(c)).toBe("invalid");
+    },
+    T,
+  );
+
+  it(
+    "a credential of a voided grant: invalid, even one a write in flight let through",
+    async () => {
+      const r = await redeemCode(deps(), form(await code()), NOW);
+      const c = (await cp().credential(tokenHash(r.access_token))) as NonNullable<
+        Awaited<ReturnType<ServerControlPlane["credential"]>>
+      >;
+      expect(await checkAudience(store(), EXT)(c)).toBe("ok");
+      // The credential as it was read before the void: a race on PostgreSQL could leave such a row.
+      await store().voidGrant(c.grant as string, later(1));
+      expect(await checkAudience(store(), EXT)(c)).toBe("invalid");
     },
     T,
   );

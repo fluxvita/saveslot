@@ -5,9 +5,11 @@
 //
 // Signing in is the identity provider's, as on the authorization page (consent.ts), whose page
 // helpers, headers and one-time form tokens it shares: the form token is bound to the provider's
-// sign-in and to this page, so an authorization page's token is no good here, nor this one's there. A user code is short, so wrong ones are counted, per sign-in and per source address, in
-// this process: 5 per sign-in or 20 per source within 15 minutes, then refused until the window
-// ends. A try takes its place in the count before anything is awaited, so tries sent at once cannot
+// sign-in and to this page, so an authorization page's token is no good here, nor this one's
+// there. A user code is short, so wrong ones are counted, per sign-in and per source, in this
+// process: 5 per sign-in or 20 per source within 15 minutes, then refused until the window ends. A
+// source is counted as login failures are (`sourceKey`): an IPv4 address as it is, an IPv6 address
+// by its /64, and its /48 once more, 100 within the window. A try takes its place in the count before anything is awaited, so tries sent at once cannot
 // pass the limit; a right code gives its place back.
 
 import { randomBytes } from "node:crypto";
@@ -20,7 +22,9 @@ import {
   type IdentityRequest,
   readUserCode,
   safeReturnTo,
+  sourceKey,
   tokenHash,
+  wideSourceKey,
 } from "@fluxvita/saveslot-service";
 import {
   type ConsentContext,
@@ -39,7 +43,10 @@ import { langOf, type OAuthTexts, oauthTexts } from "./texts.ts";
 /** How many wrong codes, within what window, and how many keys each count keeps. */
 export interface TryLimits {
   readonly perSignIn: number;
+  /** Per source: an IPv4 address, an IPv6 /64. */
   readonly perSource: number;
+  /** Per IPv6 /48, all its /64s together. */
+  readonly perWideSource: number;
   readonly windowMs: number;
   /** Entries each count keeps at most. */
   readonly cap: number;
@@ -48,6 +55,7 @@ export interface TryLimits {
 export const DEVICE_TRY_LIMITS: TryLimits = {
   perSignIn: 5,
   perSource: 20,
+  perWideSource: 100,
   windowMs: 15 * 60_000,
   cap: 10_000,
 };
@@ -97,27 +105,41 @@ export class DeviceTries {
   readonly #limits: TryLimits;
   readonly #signIns: TryCount;
   readonly #sources: TryCount;
+  readonly #wide: TryCount;
 
   constructor(limits: TryLimits = DEVICE_TRY_LIMITS) {
     this.#limits = limits;
     this.#signIns = new TryCount(limits.perSignIn, limits.cap);
     this.#sources = new TryCount(limits.perSource, limits.cap);
+    this.#wide = new TryCount(limits.perWideSource, limits.cap);
   }
 
   /**
-   * Takes a try for this sign-in and source at `now`, at once (nothing awaited): false when either
-   * is at its limit, and then nothing is counted. A try taken is given back by `giveBack`.
+   * Takes a try for this sign-in and the source of `remote` (the request's source address) at
+   * `now`, at once (nothing awaited): false when the sign-in, the source or, for IPv6, its /48 is
+   * at its limit, and then nothing is counted. A try taken is given back by `giveBack`.
    */
-  take(signIn: string, source: string, now: number): boolean {
-    if (!this.#signIns.allows(signIn, now) || !this.#sources.allows(source, now)) return false;
+  take(signIn: string, remote: string, now: number): boolean {
+    const source = sourceKey(remote);
+    const wide = wideSourceKey(remote);
+    if (
+      !this.#signIns.allows(signIn, now) ||
+      (wide !== undefined && !this.#wide.allows(wide, now)) ||
+      !this.#sources.allows(source, now)
+    ) {
+      return false;
+    }
     this.#signIns.add(signIn, now, this.#limits.windowMs);
+    if (wide !== undefined) this.#wide.add(wide, now, this.#limits.windowMs);
     this.#sources.add(source, now, this.#limits.windowMs);
     return true;
   }
 
-  giveBack(signIn: string, source: string): void {
+  giveBack(signIn: string, remote: string): void {
     this.#signIns.remove(signIn);
-    this.#sources.remove(source);
+    const wide = wideSourceKey(remote);
+    if (wide !== undefined) this.#wide.remove(wide);
+    this.#sources.remove(sourceKey(remote));
   }
 }
 

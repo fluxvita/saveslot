@@ -412,7 +412,13 @@ describe("the counts", () => {
   const W = 15 * 60_000;
 
   it("a key at its limit is refused until its window ends; nothing is counted when refused", () => {
-    const c = new DeviceTries({ perSignIn: 2, perSource: 3, windowMs: W, cap: 100 });
+    const c = new DeviceTries({
+      perSignIn: 2,
+      perSource: 3,
+      perWideSource: 100,
+      windowMs: W,
+      cap: 100,
+    });
     expect(c.take("a", "ip", 0)).toBe(true);
     expect(c.take("a", "ip", 1)).toBe(true);
     expect(c.take("a", "ip", 2)).toBe(false);
@@ -425,7 +431,13 @@ describe("the counts", () => {
   });
 
   it("full: a new key is refused, and no live key loses its count to make room", () => {
-    const c = new DeviceTries({ perSignIn: 2, perSource: 100, windowMs: W, cap: 2 });
+    const c = new DeviceTries({
+      perSignIn: 2,
+      perSource: 100,
+      perWideSource: 100,
+      windowMs: W,
+      cap: 2,
+    });
     expect(c.take("a", "ip", 0)).toBe(true);
     expect(c.take("b", "ip", 0)).toBe(true);
     // Full of live sign-ins: a third is refused, whatever it sends.
@@ -435,8 +447,50 @@ describe("the counts", () => {
     expect(c.take("a", "ip", 3)).toBe(false);
   });
 
+  it("an IPv6 source is its /64: another address of the same /64 counts as the same source", () => {
+    const c = new DeviceTries({
+      perSignIn: 100,
+      perSource: 2,
+      perWideSource: 100,
+      windowMs: W,
+      cap: 100,
+    });
+    expect(c.take("s", "2001:db8:2:2::1", 0)).toBe(true);
+    expect(c.take("t", "2001:db8:2:2::2", 0)).toBe(true);
+    expect(c.take("u", "2001:db8:2:2::abcd", 0)).toBe(false);
+    // Another /64 is another source.
+    expect(c.take("u", "2001:db8:2:3::1", 0)).toBe(true);
+    // A right code gives its place back, to the /64.
+    c.giveBack("t", "2001:db8:2:2::2");
+    expect(c.take("v", "2001:db8:2:2::9", 0)).toBe(true);
+  });
+
+  it("an IPv6 /48 has a bound of its own, over all its /64s; a place given back is given to it", () => {
+    const c = new DeviceTries({
+      perSignIn: 100,
+      perSource: 100,
+      perWideSource: 3,
+      windowMs: W,
+      cap: 100,
+    });
+    for (const n of [1, 2, 3]) expect(c.take(`s${n}`, `2001:db8:2:${n}::1`, 0)).toBe(true);
+    expect(c.take("s4", "2001:db8:2:4::1", 0)).toBe(false);
+    // Another /48 is not held back with it.
+    expect(c.take("s5", "2001:db8:3:1::1", 0)).toBe(true);
+    c.giveBack("s2", "2001:db8:2:2::1");
+    expect(c.take("s4", "2001:db8:2:4::1", 0)).toBe(true);
+    // IPv4 has no wider count.
+    for (const n of [1, 2, 3, 4]) expect(c.take(`v${n}`, `198.51.100.${n}`, 0)).toBe(true);
+  });
+
   it("full of sources: a new source is refused; expired entries make room", () => {
-    const c = new DeviceTries({ perSignIn: 100, perSource: 2, windowMs: W, cap: 2 });
+    const c = new DeviceTries({
+      perSignIn: 100,
+      perSource: 2,
+      perWideSource: 100,
+      windowMs: W,
+      cap: 2,
+    });
     expect(c.take("s", "ip1", 0)).toBe(true);
     expect(c.take("s", "ip2", 0)).toBe(true);
     expect(c.take("s", "ip3", 1)).toBe(false);

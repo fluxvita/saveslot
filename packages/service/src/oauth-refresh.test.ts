@@ -405,6 +405,35 @@ describe("exchanging a refresh token", () => {
   );
 
   it(
+    "a refresh token of a voided grant, its row left behind by a race: invalid_grant, nothing issued",
+    async () => {
+      const s = await signedIn({ cli: true });
+      const row = await bed.control.read((tx) =>
+        tx.query<{ issued_at: string; expires_at: string; grant_expires_at: string | null }>(
+          "SELECT issued_at, expires_at, grant_expires_at FROM oauth_refresh_tokens WHERE hash = $1",
+          [tokenHash(s.refresh_token)],
+        ),
+      );
+      await bed.oauth.voidGrant(s.grant, later(1));
+      // The row as a write in flight could have put it back after the void deleted the others.
+      const r0 = row.rows[0] as NonNullable<(typeof row.rows)[number]>;
+      await bed.control.write((tx) =>
+        tx.query(
+          `INSERT INTO oauth_refresh_tokens (hash, grant_id, issued_at, expires_at, grant_expires_at)
+             VALUES ($1, $2, $3, $4, $5)`,
+          [tokenHash(s.refresh_token), s.grant, r0.issued_at, r0.expires_at, r0.grant_expires_at],
+        ),
+      );
+      expect(await refused(exchange(cliForm(s.refresh_token), later(2)))).toBe("invalid_grant");
+      const creds = await bed.control.read((tx) =>
+        tx.query("SELECT 1 FROM credentials WHERE grant_id = $1", [s.grant]),
+      );
+      expect(creds.rows).toEqual([]);
+    },
+    T,
+  );
+
+  it(
     "a CLI sign-in signed out while its refresh is under way: no access token left, invalid_grant",
     async () => {
       const s = await signedIn({ cli: true });
