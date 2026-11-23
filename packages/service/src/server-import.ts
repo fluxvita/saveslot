@@ -1,9 +1,10 @@
 // Import into an empty tenant, server mode (docs/zh-CN/spec/02-architecture.md §8 «格式版本、导出、导入
 // 与恢复» steps ①–⑥ and «重入», §5 «租户目录»; 04-contract.md §17 `import`).
 //
-// The whole import holds the tenant with the pool's `exclusive`, refusing (`importing`): from its
-// first step, the tenant's other requests get `unavailable` (`importing`) and a second import
-// `rate_limited` (`busy`), not a queue. Inside:
+// The import holds the tenant with the pool's `exclusive`, refusing (`importing`), from its first
+// step through ⑥: meanwhile the tenant's other requests get `unavailable` (`importing`) and a second
+// import `rate_limited` (`busy`), not a queue. The drop of the database it replaced comes after the
+// answer, outside the exclusive (below). Inside:
 //
 //   ①–③ a staging database named after the tenant and the import ID (recorded in the tenant
 //       directory as the tenant's staging database), the file replayed into it, the import's event
@@ -89,7 +90,7 @@ export function stagingDiscarder(o: {
       current: ref.database,
       database: staging,
     });
-    if (entry.staging === staging) await o.control.setStaging(tenant, null);
+    await o.control.forgetStaging(tenant, staging);
   };
 }
 
@@ -127,7 +128,8 @@ export async function importServerTenant(o: {
   readonly now: Parameters<typeof appendImportEvent>[1]["now"];
   /**
    * Told when a drop that only cleans up failed (the database the import replaced, or a staging
-   * database after a failure); the import stands, or fails with its own error.
+   * database after a failure); the import stands, or fails with its own error. By default, one
+   * line on standard error.
    */
   readonly onDiscardFailure?: (tenant: TenantId, database: string, error: unknown) => void;
 }): Promise<ServerImportResult> {
@@ -135,6 +137,16 @@ export async function importServerTenant(o: {
   // After the answer, outside the exclusive (see the top of this file).
   return { ...held.result, dropped: dropQuietly(o, held.replaced) };
 }
+
+const codeOf = (e: unknown): string => {
+  const code = (e as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : e instanceof Error ? e.name : "error";
+};
+
+/** `onDiscardFailure` by default: one line on standard error, the error's code only. */
+const reportDiscardToStderr = (tenant: TenantId, database: string, error: unknown): void => {
+  console.error(`saveslot server import: ${database} of ${tenant} not dropped: ${codeOf(error)}`);
+};
 
 /**
  * A drop that only cleans up: the database dropped and forgotten (`stagingDiscarder`); a failure
@@ -148,7 +160,7 @@ async function dropQuietly(
     await stagingDiscarder(o)(o.tenant, database);
   } catch (e) {
     try {
-      o.onDiscardFailure?.(o.tenant, database, e);
+      (o.onDiscardFailure ?? reportDiscardToStderr)(o.tenant, database, e);
     } catch {
       // A report that fails is not the import's failure.
     }

@@ -23,7 +23,7 @@ import {
   type TenantStore,
   writeExport,
 } from "@fluxvita/saveslot-kernel";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   checkDiscard,
   dropTestStorage,
@@ -306,6 +306,68 @@ async function killedAt(at: string, tenant: TenantId, user: UserId) {
   expect(String(e)).toContain("PROBE killed");
   await pool.closeAll().catch(() => {});
 }
+
+describe("a clean-up drop's record and report", () => {
+  it(
+    "a staging record written while a drop runs is kept: the drop forgets only the database it dropped",
+    async () => {
+      const { tenant } = await newTenant();
+      const left = stagingDatabaseOf(tenant, "im_0123456789abcdef");
+      const meanwhile = stagingDatabaseOf(tenant, "im_fedcba9876543210");
+      await cp.setStaging(tenant, left);
+      const discard = stagingDiscarder({
+        control: cp,
+        discardDatabase: async (o) => {
+          await discardDatabase(o);
+          // Between the drop's reading the entry and its forgetting the record: another recorded.
+          await cp.setStaging(tenant, meanwhile);
+        },
+      });
+      await discard(tenant, left);
+      expect((await cp.tenant(tenant))?.staging).toBe(meanwhile);
+      await cp.setStaging(tenant, null);
+    },
+    T,
+  );
+
+  it(
+    "with no reporter given, a failed drop after the answer is one line on standard error",
+    async () => {
+      const { tenant, owner } = await newTenant();
+      const pool = poolOf(cp);
+      const lines: string[] = [];
+      const spy = vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => {
+        lines.push(a.map(String).join(" "));
+      });
+      try {
+        const r = await importServerTenant({
+          control: cp,
+          backend,
+          pool,
+          discardDatabase: async (o) => {
+            if (o.database === databaseOf(tenant)) {
+              throw Object.assign(new Error("PROBE drop failed"), { code: "discard_refused" });
+            }
+            return discardDatabase(o);
+          },
+          tenant,
+          user: owner,
+          body: bodyOf(file),
+          now: "2026-11-21T10:30:00.000Z" as never,
+        });
+        await r.dropped;
+      } finally {
+        spy.mockRestore();
+      }
+      expect(lines).toEqual([
+        `saveslot server import: ${databaseOf(tenant)} of ${tenant} not dropped: discard_refused`,
+      ]);
+      await pool.closeAll();
+      expect(await outcome(tenant)).toBe("complete");
+    },
+    T,
+  );
+});
 
 describe("an import", () => {
   it(

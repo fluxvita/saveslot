@@ -353,6 +353,15 @@ export class ServerControlPlane implements ServerControl {
     });
   }
 
+  async forgetStaging(id: TenantId, database: string): Promise<void> {
+    await this.#db.write((tx) =>
+      tx.query(
+        "UPDATE tenants SET staging_database = NULL WHERE id = $1 AND staging_database = $2",
+        [id, database],
+      ),
+    );
+  }
+
   async swapInStaging(id: TenantId): Promise<void> {
     await this.#db.write(async (tx) => {
       await tx.query("SELECT pg_advisory_xact_lock($1)", [NAMES_LOCK]);

@@ -369,6 +369,21 @@ describe("the tenant directory's states", () => {
   );
 
   it(
+    "forgets the staging database only while the directory still names it",
+    async () => {
+      const { cp } = await controlPlane();
+      await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_1") });
+      await cp.setStaging(TENANT, "tdb_staging");
+      // Another database named: the record is left as it is.
+      await cp.forgetStaging(TENANT, "tdb_other");
+      expect((await cp.tenant(TENANT))?.staging).toBe("tdb_staging");
+      await cp.forgetStaging(TENANT, "tdb_staging");
+      expect((await cp.tenant(TENANT))?.staging).toBeUndefined();
+    },
+    T,
+  );
+
+  it(
     "swaps the staging database in, in one step, and records the one it replaced as staging",
     async () => {
       const { cp, db } = await controlPlane();

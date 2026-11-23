@@ -91,6 +91,11 @@ export interface ServerControl extends ControlPlane {
   /** Records the database an import stages into; `null` forgets it. */
   setStaging(id: TenantId, database: string | null): Promise<void>;
   /**
+   * Forgets the tenant's staging database only while the directory still names `database`, in one
+   * statement: a drop forgets what it dropped and never a record written meanwhile.
+   */
+  forgetStaging(id: TenantId, database: string): Promise<void>;
+  /**
    * In one transaction, the staging database becomes the tenant's database and the one it replaced
    * is recorded as the staging database, to be dropped (02-architecture §5, §8, import step ⑤);
    * refused when there is none.
