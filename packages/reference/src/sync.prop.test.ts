@@ -154,6 +154,50 @@ const scenario = fc.record({
   steps: fc.array(step, { minLength: 1, maxLength: 7 }),
 });
 
+/**
+ * A scenario ending in one more sync: half the time sent again with the values of the latest sync
+ * before it (the row's first, when none), so that a sync leaving nothing (`unchanged`, or `skipped`
+ * on a revoked row) is common rather than rare; else with values drawn as any sync's.
+ */
+const endingInSync = fc
+  .record({
+    first: fc.constantFrom(...VALUES),
+    steps: fc.array(step, { minLength: 0, maxLength: 6 }),
+    again: fc.boolean(),
+    v: fc.constantFrom(...VALUES),
+    f1: fc.constantFrom("a", "a", "b"),
+  })
+  .map(({ first, steps, again, v, f1 }) => {
+    const last = [...steps].reverse().find((x) => x.t === "sync") as
+      | Extract<Step, { t: "sync" }>
+      | undefined;
+    const tail: Step = again
+      ? { t: "sync", v: last?.v ?? first, explicit: false, f1: last?.f1 ?? "a" }
+      : { t: "sync", v, explicit: false, f1 };
+    return { first, steps: [...steps, tail] };
+  });
+
+/**
+ * A scenario ending in a sync that changes f2 from the latest sync's value (the row's first, when
+ * none): the last entry is a write by key with something to update, unless a user's change or a
+ * revoke since stands in its way.
+ */
+const endingInChange = fc
+  .record({
+    first: fc.constantFrom(...VALUES),
+    steps: fc.array(step, { minLength: 0, maxLength: 6 }),
+    pick: fc.nat({ max: 1 }),
+    f1: fc.constantFrom("a", "a", "b"),
+  })
+  .map(({ first, steps, pick, f1 }) => {
+    const last = [...steps].reverse().find((x) => x.t === "sync") as
+      | Extract<Step, { t: "sync" }>
+      | undefined;
+    const others = VALUES.filter((x) => x !== (last?.v ?? first));
+    const tail: Step = { t: "sync", v: others[pick] as string, explicit: false, f1 };
+    return { first, steps: [...steps, tail] };
+  });
+
 const nextOp = (log: readonly LogEntry[]) => Math.max(...log.map((e) => e.op)) + 10;
 const f2Segments = (ev: Evaluation) => ev.fields["f2" as FieldId];
 
@@ -266,12 +310,33 @@ describe("writes by source key (reference evaluator)", () => {
     hits.check();
   });
 
+  it("a sync sent again unchanged, and one on a revoked row, leave nothing (fixed cases)", () => {
+    // The situations the property below checks, built: the property's generator reaches them
+    // often, these always.
+    const same = evaluateLog(
+      TIMELESS,
+      build("1", [{ t: "sync", v: "1", explicit: false, f1: "a" }]),
+    );
+    expect(same.steps.map((x) => x.outcome)).toEqual(["created", "unchanged"]);
+    expect(same.steps[1]?.state).toBe(same.steps[0]?.state);
+    const revoked = evaluateLog(
+      TIMELESS,
+      build("1", [{ t: "revoke" }, { t: "sync", v: "2", explicit: false, f1: "a" }]),
+    );
+    expect(revoked.steps.map((x) => x.outcome)).toEqual(["created", undefined, "skipped"]);
+    expect(revoked.steps[2]?.state).toBe(revoked.steps[1]?.state);
+  });
+
   it("every write by key gets an outcome; unchanged and skipped ones leave the state as it was", () => {
-    // Hit: a write by key that left nothing, beyond the one creating the row.
+    // Hit: a write by key that left nothing, beyond the one creating the row. The generator ends
+    // each scenario in a sync, half of them the latest values sent again: measured over 40 seeds
+    // of 300 samples, the share of hits ranges 0.65–0.76 (it was 0.18–0.28 with random steps only);
+    // the minimum guards against the generator as a whole going wrong, the fixed cases above
+    // against the situation going unchecked.
     const hits = new Hits(0.2);
     fc.assert(
       fc.property(
-        scenario,
+        endingInSync,
         hits.track(({ first, steps }) => {
           const r: LogEvaluation = evaluateLog(TIMELESS, build(first, steps));
           r.steps.forEach((s, i) => {
@@ -318,12 +383,27 @@ describe("writes by source key (reference evaluator)", () => {
     hits.check();
   });
 
+  it("with the latest sync contribution in effect and nothing after it, a write by key is the ordinary write on the current version (a fixed case)", () => {
+    // The situation the property below checks, built: a sync updating f2, then one more by key
+    // and the same write without the key.
+    const log = build("1", [{ t: "sync", v: "2", explicit: false, f1: "a" }]);
+    expect(evaluateLog(TIMELESS, log).steps.at(-1)?.outcome).toBe("updated");
+    const byKey = evaluateLog(TIMELESS, [...log, syncF2(nextOp(log), "3")]);
+    const { byKey: _, ...plain } = syncF2(nextOp(log), "3");
+    const ordinary = evaluateLog(TIMELESS, [...log, plain]);
+    expect(f2Segments(byKey.final)).toEqual(f2Segments(ordinary.final));
+  });
+
   it("with the latest sync contribution in effect and nothing after it, a write by key is the ordinary write on the current version", () => {
-    // Hit: the case is reached and compared.
+    // Hit: the case is reached and compared. The generator ends each scenario in a sync changing
+    // f2, so that the last entry is one by key with something to update: measured over 40 seeds of 300 samples, the share of hits
+    // ranges 0.45–0.57 (it was 0.21–0.30 with random steps only); the minimum guards against
+    // the generator as a whole going wrong, the fixed case above against the situation going
+    // unchecked.
     const hits = new Hits(0.2);
     fc.assert(
       fc.property(
-        scenario,
+        endingInChange,
         fc.constantFrom(...VALUES),
         fc.boolean(),
         hits.track(({ first, steps }, v, explicit) => {
