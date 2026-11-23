@@ -3973,7 +3973,7 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
   const revokeAll = (op: number, seen: number): LogEntry =>
     ({ kind: "revoke", op, event: op + 1, seen }) as LogEntry;
 
-  // #24, the take of the revoke candidate #14, writes a revoke over #21's (R421): undoing #20
+  // #24, the take of the revoke candidate #14, writes a revoke over #21's: undoing #20
   // while #24 covers it takes back nothing and the row stays revoked (`revoked`); undoing #23, the
   // revoke in effect now, is accepted though #21 keeps the row revoked, and registers #24, so #20
   // can be undone in turn. Either order ends with the row existing.

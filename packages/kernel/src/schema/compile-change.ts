@@ -967,7 +967,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     });
     // The table's structure: its time type, granularity and entity key. Only on a table never
     // written (07 «从未被写入的表上改结构»): metadata, marked `as_never_written`, the table built anew
-    // and empty with the switch whatever its physical shape (R446); the time and keys of the new
+    // and empty with the switch whatever its physical shape (08 «物理做法»: a table-level change on a table never written); the time and keys of the new
     // definition are taken from the draft once the fields added have their IDs (below). On a table
     // written: `not_in_this_version` (`table_written`).
     const restructured: (readonly [SchemaChangeCode, string])[] = [];
@@ -1003,7 +1003,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     if (restructured.length > 0) retimed.push({ id: c.id, doc: s });
     // The external key (07 «来源键»). On a table never written the key index is empty: added on
     // fields it has or not, dropped, or changed to other fields, as metadata with the table built
-    // anew (R446). On a table written: dropped touches the catalog only (the index's entries are
+    // anew (08 «物理做法»). On a table written: dropped touches the catalog only (the index's entries are
     // cleared with the switch, the fields keep their values), and waits for confirmation; added
     // only on fields the same draft adds, which builds the table from the log, not in this version
     // yet; on a field it has, `external_key_existing_field`; changed, `table_written`.

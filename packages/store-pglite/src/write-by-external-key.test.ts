@@ -486,7 +486,7 @@ describe("ops that enter no event", () => {
   );
 
   it(
-    "an op that left nothing stores none of its own evidence; the request's is stored (R453)",
+    "an op that left nothing stores none of its own evidence; the request's is stored",
     async () => {
       await w({ sv: 1, ops: [byKey("m-1", { energy: 600 }), byKey("m-2", { energy: 300 })] });
       const r = await w({
@@ -560,7 +560,7 @@ describe("ops that enter no event", () => {
   );
 
   it(
-    "every field a corroboration, read back from the log: updated (R440)",
+    "every field a corroboration, read back from the log: updated (04-contract §5.4)",
     async () => {
       await w({ sv: 1, ops: [byKey("m-1", { energy: 600 })] });
       const r = await w({
@@ -744,7 +744,7 @@ describe("the merge base of a candidate by key, by unit", () => {
   );
 });
 
-describe("a table gone since the request's version (R446 ②)", () => {
+describe("a table gone since the request's version", () => {
   // A request at a version where the table had its key is not located by that version's key: the
   // table dropped since, the write is refused as a whole table changed (07 «带旧 sv 的写入»),
   // nothing located, no row created. (A key dropped from a table kept — no_external_key by the

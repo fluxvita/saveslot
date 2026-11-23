@@ -16,8 +16,11 @@ import { join } from "node:path";
 
 export const PROJECT_PATH = "agentx/saveslot";
 
-/** Ruling numbers are internal; code and the spec cite spec sections. */
-export const RULING_REF = /\bR[12][0-9]{2}\b/;
+/**
+ * Ruling numbers are internal; code and the spec cite spec sections. Any number from R100 up (the
+ * rulings run past R299); two digits or a leading zero are not one.
+ */
+export const RULING_REF = /\bR[1-9][0-9]{2,}\b/;
 export const RULING_SCOPES = ["packages/", "docs/zh-CN/spec/", "docs/zh-CN/guide/"];
 
 export interface Hit {

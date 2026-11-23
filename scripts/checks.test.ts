@@ -192,13 +192,19 @@ describe("forbidden terms", () => {
       "packages/kernel/src/x.ts": "// see R204\n",
       "docs/zh-CN/spec/a.md": "按 R112 处理\n",
       "docs/zh-CN/process/b.md": "R204 is fine here\n",
-      "packages/kernel/src/y.ts": "const R2000 = 1; // XR204\n",
+      // Two digits, a leading zero, or inside a word: not a ruling number.
+      "packages/kernel/src/y.ts": "const R20 = 1; // XR204 R042\n",
+      // Any number from R100 up: R461 and R1000 as much as R204.
+      "packages/kernel/src/z.test.ts": 'it("a fate (R461 ①)", () => {});\n',
+      "docs/zh-CN/guide/c.md": "见 R1000\n",
     });
     const hits = scan({ root, files: trackedFiles(root), terms: [] }).map(formatHit);
     expect(hits.sort()).toEqual(
       [
+        "docs/zh-CN/guide/c.md:1: ruling-number reference (cite the spec section instead)",
         "docs/zh-CN/spec/a.md:1: ruling-number reference (cite the spec section instead)",
         "packages/kernel/src/x.ts:1: ruling-number reference (cite the spec section instead)",
+        "packages/kernel/src/z.test.ts:1: ruling-number reference (cite the spec section instead)",
       ].sort(),
     );
   });

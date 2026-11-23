@@ -603,7 +603,7 @@ describe("the external key", () => {
         "external_key",
       );
       expect(await rows(`SELECT count(*)::int AS n FROM "t_${id}_v1"`)).toEqual([{ n: 1 }]);
-      // By key at the old version: judged by the current definition, which has no key (R446).
+      // By key at the old version: judged by the current definition, which has no key (04-write-and-read «写法与定位»).
       const before = await tail();
       expect(
         await answer(() =>

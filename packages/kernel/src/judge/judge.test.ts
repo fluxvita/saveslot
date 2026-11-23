@@ -1769,7 +1769,7 @@ describe("take_candidate", () => {
     expect(stretches(state, "f2")).toEqual([]);
   });
 
-  // #24, the take of the revoke candidate #14, writes a revoke over #21's (R421). Undoing #20 while
+  // #24, the take of the revoke candidate #14, writes a revoke over #21's. Undoing #20 while
   // #24 covers it takes back nothing and the row stays revoked: `revoked`, by #23, the revoke to
   // undo first. Undoing #23, the revoke in effect now, is accepted though #21 keeps the row
   // revoked; it registers #24, so #20 can be undone in turn. Either order ends with the row back.
@@ -2148,7 +2148,7 @@ describe("take_candidate", () => {
       expect(view(undone.state).exists).toBe(false);
       // The original revoke counts again (the restore is registered as reverted). The revoke the
       // undo wrote back is in effect too, but revoked_by names #20, the one to undo: undoing #50
-      // would redo the take's restore, not bring the row back by itself (R421).
+      // would redo the take's restore, not bring the row back by itself (`revoked_by` names a written-back revoke only when no other is in effect).
       expect(undone.state.revokedBy({ upTo: 59 })).toEqual([20]);
       expect(() => judgeOp(undone.state, write({ op: 60, fields: { f2: "3" } }))).toThrow(
         expect.objectContaining({ reason: "revoked", detail: { ops: [20] } }),

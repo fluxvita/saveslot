@@ -206,7 +206,7 @@ describe("the two cases of the candidate level left to the item level (checklist
     };
     const r = run(ops, ["S30f2"], { items: overwritten });
     // At the candidate level it is a candidate on both sides; its item closed for another reason
-    // than a deletion: its pending membership does not change (R452 ②), nothing is said.
+    // than a deletion: its pending membership does not change, nothing is said (a fate only for what the deletion moves).
     expect(fates(r)).toEqual({});
     expect(r.items.superseded).toEqual([]);
     expect(r.items.restored).toEqual([]);
@@ -463,7 +463,7 @@ describe("what a person decided is not pending (deviation one)", () => {
   });
 });
 
-describe("the original item still open (only refreshed): back to its kind, back in it (R452 ①)", () => {
+describe("the original item still open (only refreshed): back to its kind, back in it (03-deletion «删除结果的定义»)", () => {
   // #30 a candidate against #25, of high impact; #40 a candidate against #22; both in one item.
   const log = [
     w(10, 0, { f2: "5000" }),
@@ -526,7 +526,7 @@ describe("the original item still open (only refreshed): back to its kind, back 
   });
 });
 
-describe("an item closed for another reason, a deletion not touching it (R452 ②)", () => {
+describe("an item closed for another reason, a deletion not touching it: no fate", () => {
   it("no fate", () => {
     const ops = [
       w(5, 0, { f2: "0" }),
@@ -595,7 +595,7 @@ describe("a successor of the same kind superseded by a deletion, pending again o
   });
 });
 
-describe("a write in effect in part when written, its part in effect going back (R452 ②: returned)", () => {
+describe("a write in effect in part when written, its part in effect going back: returned", () => {
   // #10 f2=1; #20 (seen #10) f2=2 on [11-01, 11-03); #30 (seen #20) f2=2 on [11-07, 11-09); #40,
   // having seen #10, points at evidence for f2=1 on [11-01, 11-09): the same as now on [11-03,
   // 11-07) (corroborated), a candidate where #20 and #30 changed it. S10 deleted: on [11-03, 11-07)
@@ -706,7 +706,7 @@ describe("a new conflict item on a group takes the group as its unit", () => {
   });
 });
 
-describe("returned by the write's record (R454 ①): in effect in part when written", () => {
+describe("returned by the write's record: in effect in part when written", () => {
   const explicit = (o: Op): Op =>
     ({ ...o, fields: { f2: { value: "1", sources: ["S40f2"], explicit: true } } }) as Op;
   // As above: #40 corroborated on [11-03, 11-07), a candidate around it.

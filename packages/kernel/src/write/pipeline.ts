@@ -1668,7 +1668,7 @@ async function writeIn(
       }
     }
     // By external key (04-write-and-read «写法与定位»): the table's key as defined now (a request
-    // at an earlier version where the table had one is not located by it: R446 ②), the row its
+    // at an earlier version where the table had one is not located by it), the row its
     // key index entry names, or a new row. The same key twice in a request was refused.
     const external = o.target.kind === "external_key" ? o.target.key : undefined;
     let keyIds: readonly FieldId[] = [];
@@ -2509,7 +2509,7 @@ async function writeIn(
   );
   const uncited = req.evidence.map((_, k) => k).filter((k) => !cited.has(k));
   if (uncited.length > 0) warnings.push({ code: "evidence_unreferenced", evidence: uncited });
-  // The inline evidence of the ops that left nothing: not stored, and said so (R453).
+  // The inline evidence of the ops that left nothing: not stored, and said so (04-contract: no source data for an op that left nothing).
   const notStored = inlineNotStored(req, leftNothing);
   if (notStored.length > 0) {
     warnings.push({ code: "evidence_not_stored", evidence: [], op_evidence: notStored });

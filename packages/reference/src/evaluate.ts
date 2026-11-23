@@ -612,7 +612,7 @@ class Replay {
     if (base === undefined) return undefined;
     // The status is the write's own (its status blocks go only with its own sources). The
     // interval of an item's write-time block is not to be trusted once a contribution giving one
-    // of its ends is in the deleted set (pending or carried out, R431): then it is read from the
+    // of its ends is in the deleted set (pending or carried out alike: by the deleted set, not by whether it ran): then it is read from the
     // block as last given. Approximated by ends: an end neither the write's own (its start, its
     // explicit ends) nor an end of any item of this replay that may give it.
     const latest = latestBlocks(this.rec, key);

@@ -1141,7 +1141,7 @@ describe("on a table never written: its time type, granularity and entity key (0
     });
   });
 
-  it("the entity key: taken away, changed; a new physical table though its shape is the same (R446)", () => {
+  it("the entity key: taken away, changed; a new physical table though its shape is the same (08 «物理做法»)", () => {
     const accounts = byName("accounts");
     const gone = ok(
       run(

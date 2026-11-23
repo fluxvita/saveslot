@@ -772,7 +772,7 @@ function itemsHold(
   r: ItemsResult,
 ): void {
   for (const f of r.fates.values()) itemCover[f.kind] = (itemCover[f.kind] ?? 0) + 1;
-  // Writes in effect in part when written, by their records (R454 ①): `returned` only for them.
+  // Writes in effect in part when written, by their records (an item in effect and one pending on the same target when written): `returned` only for them.
   const inPart = new Set<string>();
   for (const rec of records) {
     if (!("items" in rec) || (rec.kind !== "write" && rec.kind !== "revoke")) continue;
