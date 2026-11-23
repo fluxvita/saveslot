@@ -109,7 +109,18 @@ describe("saveslot pending resolve", () => {
     const bin = fileURLToPath(new URL("./bin.ts", import.meta.url));
     const r = spawnSync(
       process.execPath,
-      ["--conditions=source", bin, "pending", "resolve", item, "take_candidate", "--home", home],
+      // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+      [
+        "--no-wasm-code-gc",
+        "--conditions=source",
+        bin,
+        "pending",
+        "resolve",
+        item,
+        "take_candidate",
+        "--home",
+        home,
+      ],
       { input: "y\n", encoding: "utf8", env: { PATH: process.env["PATH"] ?? "" }, timeout: 60_000 },
     );
     expect(r.status).toBe(8);

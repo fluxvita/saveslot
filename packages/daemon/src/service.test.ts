@@ -84,9 +84,14 @@ afterEach(async () => {
 });
 
 function start(h: string): Child {
-  const proc = spawn(process.execPath, ["--conditions=source", BIN, "--home", h], {
-    stdio: ["ignore", "ignore", "pipe"],
-  });
+  // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+  const proc = spawn(
+    process.execPath,
+    ["--no-wasm-code-gc", "--conditions=source", BIN, "--home", h],
+    {
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
   let err = "";
   proc.stderr?.setEncoding("utf8").on("data", (c: string) => {
     err += c;

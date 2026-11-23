@@ -373,7 +373,10 @@ describe("a process killed during a write", () => {
       const path = join(dir, "anchor.json");
       const script = join(tempDir(), "child.mjs");
       fs.writeFileSync(script, child);
-      const r = spawnSync(process.execPath, [script, path, phase], { encoding: "utf8" });
+      // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+      const r = spawnSync(process.execPath, ["--no-wasm-code-gc", script, path, phase], {
+        encoding: "utf8",
+      });
       expect([r.signal, r.stderr]).toEqual(["SIGKILL", ""]);
       const store = openFileAnchorStore(path);
       expect(fs.readdirSync(dir)).toEqual(["anchor.json"]);

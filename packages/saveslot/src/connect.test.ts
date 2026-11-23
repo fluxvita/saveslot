@@ -396,7 +396,8 @@ describe("the saveslot executable", () => {
   function runBin(file: string, args: string[], o: { closeStdout?: boolean; node?: boolean } = {}) {
     const child = spawn(
       o.node === false ? file : process.execPath,
-      o.node === false ? args : ["--conditions=source", file, ...args],
+      // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+      o.node === false ? args : ["--no-wasm-code-gc", "--conditions=source", file, ...args],
       {
         stdio: ["ignore", "pipe", "pipe"],
         env: { PATH: process.env["PATH"] ?? "", NO_COLOR: "1" },

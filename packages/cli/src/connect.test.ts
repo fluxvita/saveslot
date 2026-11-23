@@ -877,7 +877,8 @@ describe("runHostCommand and onPath", () => {
     const t0 = Date.now();
     const r = spawnSync(
       process.execPath,
-      ["--conditions=source", "--input-type=module", "-e", code],
+      // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+      ["--no-wasm-code-gc", "--conditions=source", "--input-type=module", "-e", code],
       { encoding: "utf8", timeout: 50_000 },
     );
     expect(r.stdout.trim()).toBe(JSON.stringify({ kind: "done" }));

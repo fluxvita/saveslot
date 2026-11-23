@@ -518,9 +518,14 @@ describe("the process, once a sign-in is done", () => {
   const CHILD = fileURLToPath(new URL("./login-child.fixture.ts", import.meta.url));
   /** Runs the sign-in in a process of its own; killed if still running `limitMs` after `go`. */
   function child(origin: string, mode: "browser" | "device") {
-    const p = spawn(process.execPath, ["--conditions=source", CHILD, home, origin, mode], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+    const p = spawn(
+      process.execPath,
+      ["--no-wasm-code-gc", "--conditions=source", CHILD, home, origin, mode],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     let out = "";
     let err = "";
     p.stdout.on("data", (c: Buffer) => {

@@ -546,7 +546,15 @@ const FIXTURE = join(import.meta.dirname, "testing", "open-store.fixture.ts");
 function spawnFixture(dir: string, mode?: "hold"): ChildProcess {
   return spawn(
     process.execPath,
-    ["--conditions=source", "--no-warnings", FIXTURE, dir, ...(mode ? [mode] : [])],
+    // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+    [
+      "--no-wasm-code-gc",
+      "--conditions=source",
+      "--no-warnings",
+      FIXTURE,
+      dir,
+      ...(mode ? [mode] : []),
+    ],
     { stdio: ["pipe", "pipe", "inherit"] },
   );
 }

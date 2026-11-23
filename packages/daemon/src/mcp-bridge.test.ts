@@ -1373,10 +1373,15 @@ const FIXTURE = fileURLToPath(new URL("./mcp-bridge-bin.fixture.ts", import.meta
 
 /** The bridge spawned as a host spawns it, on `home`; its stdout lines and stderr text. */
 function spawnBridge(home: string, env: Record<string, string>) {
-  const child = spawn(process.execPath, ["--conditions=source", FIXTURE, "--home", home], {
-    env: { PATH: process.env["PATH"] ?? "", ...env },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+  const child = spawn(
+    process.execPath,
+    ["--no-wasm-code-gc", "--conditions=source", FIXTURE, "--home", home],
+    {
+      env: { PATH: process.env["PATH"] ?? "", ...env },
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
   const lines: string[] = [];
   let buf = "";
   child.stdout.on("data", (c: Buffer) => {
@@ -1527,7 +1532,8 @@ async function hostClient(home: string, token: string, era: "legacy" | "modern")
   const stderr: string[] = [];
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: ["--conditions=source", FIXTURE, "--home", home],
+    // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+    args: ["--no-wasm-code-gc", "--conditions=source", FIXTURE, "--home", home],
     env: { SAVESLOT_TOKEN: token, PATH: process.env["PATH"] ?? "" },
     stderr: "pipe",
   });
@@ -1638,6 +1644,8 @@ describe("two hosts start the service at once", () => {
       const late = spawnSync(
         process.execPath,
         [
+          // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+          "--no-wasm-code-gc",
           "--conditions=source",
           fileURLToPath(new URL("./bin.ts", import.meta.url)),
           "--home",

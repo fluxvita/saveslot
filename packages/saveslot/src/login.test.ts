@@ -66,6 +66,8 @@ describe("saveslot login", () => {
     const p = spawn(
       process.execPath,
       [
+        // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+        "--no-wasm-code-gc",
         "--conditions=source",
         BIN,
         "login",

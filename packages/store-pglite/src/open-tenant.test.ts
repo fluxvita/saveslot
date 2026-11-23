@@ -19,7 +19,8 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 async function fixture(...args: string[]): Promise<unknown> {
   const { stdout } = await run(
     process.execPath,
-    ["--conditions=source", "--no-warnings", FIXTURE, ...args],
+    // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+    ["--no-wasm-code-gc", "--conditions=source", "--no-warnings", FIXTURE, ...args],
     { timeout: 120_000 },
   );
   return JSON.parse(stdout.trim().split("\n").at(-1) as string);

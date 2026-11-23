@@ -293,9 +293,14 @@ describe("refreshProfile", () => {
       );
     const run = () =>
       new Promise<string>((resolve, reject) => {
-        const p = spawn(process.execPath, ["--conditions=source", CHILD, home, "lab", origin], {
-          stdio: ["ignore", "pipe", "inherit"],
-        });
+        // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+        const p = spawn(
+          process.execPath,
+          ["--no-wasm-code-gc", "--conditions=source", CHILD, home, "lab", origin],
+          {
+            stdio: ["ignore", "pipe", "inherit"],
+          },
+        );
         let out = "";
         p.stdout.on("data", (c: Buffer) => {
           out += c.toString("utf8");
