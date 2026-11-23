@@ -409,6 +409,208 @@ const fields = [
   { id: "f2", name: "b", type: "text", required: true, description: "b" },
   { id: "f3", name: "c", type: "text", description: "c" },
 ];
+
+/**
+ * The counterexamples of main's red (three state-table seeds, three event-table ones; two more event-table seeds gave the third again): the last op is refused
+ * (an undo of a write on a revoked stretch; a write on a revoked row), so it is not in the log; the
+ * reaching write must still come after its number.
+ */
+const EXAMPLE_LAST_REFUSED_STATE = [
+  {
+    kind: "write",
+    op: 10,
+    event: 11,
+    seen: 0,
+    valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+    fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+    acknowledge: ["overwrite"],
+  },
+  {
+    kind: "revoke",
+    op: 20,
+    event: 21,
+    seen: 10,
+    valid: {
+      from: { mode: "given", value: "2026-11-01" },
+      to: { mode: "given", value: "2026-11-07" },
+    },
+    validSources: ["S20"],
+  },
+  {
+    kind: "write",
+    op: 30,
+    event: 31,
+    seen: 10,
+    valid: {
+      from: { mode: "given", value: "2026-11-03" },
+      to: { mode: "given", value: "2026-11-05" },
+    },
+    fields: { f2: { value: "2", sources: ["S30"] }, f3: { value: "b", sources: ["S30"] } },
+  },
+  {
+    kind: "undo",
+    op: 40,
+    event: 41,
+    target: 30,
+    includeLater: false,
+    seen: 30,
+    acknowledge: ["overwrite"],
+  },
+] as unknown as Op[];
+
+/** Two more state-table seeds: the last write, on a revoked stretch only, or an undo, refused. */
+const EXAMPLES_LAST_REFUSED_STATE_MORE = [
+  [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "revoke",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: "2026-11-01" },
+        to: { mode: "given", value: "2026-11-07" },
+      },
+      validSources: ["S20"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: "2026-11-03" },
+        to: { mode: "given", value: "2026-11-05" },
+      },
+      fields: { f2: { value: "2", sources: ["S30"] }, f3: { value: "b", sources: ["S30"] } },
+    },
+    {
+      kind: "write",
+      op: 40,
+      event: 41,
+      seen: 30,
+      valid: {
+        from: { mode: "given", value: "2026-11-01" },
+        to: { mode: "given", value: "2026-11-03" },
+      },
+      fields: { f3: { value: "1", sources: ["S6"], explicit: false } },
+      acknowledge: ["overwrite"],
+    },
+  ],
+  [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: { from: { mode: "given", value: "2026-11-09" }, to: { mode: "open" } },
+      fields: { f2: { value: "7", sources: ["S12"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 20,
+      valid: {
+        from: { mode: "given", value: "2026-11-03" },
+        to: { mode: "given", value: "2026-11-05" },
+      },
+      fields: { f2: { value: "2", sources: ["S20"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "revoke",
+      op: 40,
+      event: 41,
+      seen: 30,
+      valid: { from: { mode: "given", value: "2026-11-11" }, to: { mode: "open" } },
+      validSources: ["S30"],
+    },
+    {
+      kind: "write",
+      op: 50,
+      event: 51,
+      seen: 20,
+      valid: { from: { mode: "given", value: "2026-11-03" }, to: { mode: "next_change" } },
+      fields: { f2: { value: "5", sources: ["S40"] }, f3: { value: "b", sources: ["S40"] } },
+    },
+    {
+      kind: "undo",
+      op: 60,
+      event: 61,
+      target: 50,
+      includeLater: false,
+      seen: 50,
+      acknowledge: ["overwrite"],
+    },
+  ],
+] as unknown as Op[][];
+
+/** The event-table head of the last three: a write, a revoke, a stale write on the revoked row. */
+const lastRefusedEvent = (last: unknown): Op[] =>
+  [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    { kind: "revoke", op: 20, event: 21, seen: 10 },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      fields: { f2: { value: "2", sources: ["S30"] }, f3: { value: "b", sources: ["S30"] } },
+    },
+    last,
+  ] as unknown as Op[];
+const EXAMPLES_LAST_REFUSED_EVENT = [
+  lastRefusedEvent({
+    kind: "write",
+    op: 40,
+    event: 41,
+    seen: 30,
+    fields: { f2: { value: "1", sources: ["S4"], explicit: false } },
+    acknowledge: ["overwrite"],
+  }),
+  lastRefusedEvent({
+    kind: "undo",
+    op: 40,
+    event: 41,
+    target: 30,
+    includeLater: false,
+    seen: 30,
+    acknowledge: ["overwrite"],
+  }),
+  lastRefusedEvent({
+    kind: "write",
+    op: 40,
+    event: 41,
+    seen: 30,
+    fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+  }),
+];
 const NAME: Record<string, string> = { f2: "b", f3: "c" };
 const COMPILED = {
   ...COMPILED_V1,
@@ -689,7 +891,9 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
               ("items" in x.judgement.record &&
                 x.judgement.record.items.some((y) => y.status === "awaiting")),
           );
-          const last = judgedOnce.steps.at(-1)?.op.op ?? 0;
+          // After every op of the sample, the ones judge refused included: a refused op is not in
+          // the log, but its number is taken, and the log's numbers only grow.
+          const last = Math.max(0, ...ops.map((o) => o.op));
           if (opens && reach) {
             const op = last + 10;
             ops.push({
@@ -1090,7 +1294,8 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         // Every run: the four modes, on a history whose undo awaits and whose interval then
         // narrows (the nightly batch's first counterexample, on a state table), and the second
         // counterexample, where a refresh narrows the interval of an undo before a check of its
-        // entries. Both failed while the interval stayed the proposal's.
+        // entries. Both failed while the interval stayed the proposal's. And main's red: samples
+        // whose last op is refused, so the reaching write is numbered after it.
         examples: isState
           ? [
               [{ ops: EXAMPLE_NARROWED, decisions: [] }, true, false],
@@ -1100,12 +1305,29 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
               [{ ops: EXAMPLE_REFRESHED, decisions: [] }, true, false],
               [{ ops: EXAMPLE_REWRITTEN, decisions: [] }, true, false],
               [{ ops: EXAMPLE_EMPTIED, decisions: [] }, false, false],
+              [{ ops: EXAMPLE_LAST_REFUSED_STATE, decisions: [] }, true, false],
+              ...EXAMPLES_LAST_REFUSED_STATE_MORE.map(
+                (ops) =>
+                  [{ ops, decisions: [] }, true, false] as [
+                    { ops: Op[]; decisions: [] },
+                    boolean,
+                    boolean,
+                  ],
+              ),
             ]
           : [
               [{ ops: EXAMPLE_EVENT, decisions: [] }, true, false],
               [{ ops: EXAMPLE_EVENT, decisions: [] }, true, true],
               [{ ops: EXAMPLE_EVENT, decisions: [] }, false, false],
               [{ ops: EXAMPLE_EVENT, decisions: [] }, false, true],
+              ...EXAMPLES_LAST_REFUSED_EVENT.map(
+                (ops) =>
+                  [{ ops, decisions: [] }, true, false] as [
+                    { ops: Op[]; decisions: [] },
+                    boolean,
+                    boolean,
+                  ],
+              ),
             ],
         ...(SEED !== undefined ? { seed: SEED } : {}),
         ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
