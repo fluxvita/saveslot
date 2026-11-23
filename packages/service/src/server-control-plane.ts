@@ -123,7 +123,7 @@ export class ControlPlaneError extends Error {
 }
 
 /** The advisory lock initializations take turns on: two processes starting at once. */
-const INIT_LOCK = 0x5ab05107;
+export const INIT_LOCK = 0x5ab05107;
 /**
  * The advisory lock the directory's writes of database names take turns on: a name is looked for
  * among the tenants' databases and staging databases, then written, and two such writes at once
@@ -186,6 +186,23 @@ async function checkFormat(tx: ReadTx): Promise<void> {
 }
 
 /**
+ * Whether `control_meta` is there, in a schema of the search path, as an unqualified name finds it.
+ * Read from the catalog with this statement's snapshot, not with `to_regclass`: that answers from
+ * the connection's catalog cache, which can keep a "no such table" from an earlier lookup (a
+ * refused `openControlPlane`, say) after another process made the tables while this one waited for
+ * `INIT_LOCK`.
+ */
+async function hasControlMeta(tx: ReadTx): Promise<boolean> {
+  const r = await tx.query<{ ok: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = ANY (current_schemas(false)) AND c.relname = 'control_meta'
+     ) AS ok`,
+  );
+  return r.rows[0]?.ok === true;
+}
+
+/**
  * Makes the control database's tables and records its format; on a database that has them, checks
  * the format and does nothing more, so that running it again is safe, and two processes running it
  * at once take turns. Gives the control plane over it.
@@ -193,10 +210,7 @@ async function checkFormat(tx: ReadTx): Promise<void> {
 export async function initControlPlane(db: ControlDb): Promise<ServerControlPlane> {
   await db.write(async (tx) => {
     await tx.query("SELECT pg_advisory_xact_lock($1)", [INIT_LOCK]);
-    const there = await tx.query<{ t: string | null }>(
-      "SELECT to_regclass('control_meta')::text AS t",
-    );
-    if (there.rows[0]?.t == null) {
+    if (!(await hasControlMeta(tx))) {
       await tx.exec(DDL);
       await tx.query("INSERT INTO control_meta (key, value) VALUES ('format', $1)", [
         String(CONTROL_FORMAT),
@@ -211,10 +225,7 @@ export async function initControlPlane(db: ControlDb): Promise<ServerControlPlan
 /** The control plane over a control database `initControlPlane` made; its format checked first. */
 export async function openControlPlane(db: ControlDb): Promise<ServerControlPlane> {
   await db.read(async (tx) => {
-    const there = await tx.query<{ t: string | null }>(
-      "SELECT to_regclass('control_meta')::text AS t",
-    );
-    if (there.rows[0]?.t == null) {
+    if (!(await hasControlMeta(tx))) {
       throw new ControlPlaneError("control_not_initialized", "the control database has no tables");
     }
     await checkFormat(tx);

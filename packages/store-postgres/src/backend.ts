@@ -91,6 +91,11 @@ export const BUILTIN_LOCALE = "C.UTF-8";
  *   backend looks for them in `public`; a role's or a database's own path would put them elsewhere.
  * - `bytea_output`: the bytes of a result are read as the hex output.
  * - `lc_*`: the formats `to_char` localizes.
+ * - `default_transaction_isolation`: a transaction begun without a level (a write, `locked`) is
+ *   READ COMMITTED, whatever the database's or the role's default. A write takes the tenant's lock
+ *   and then reads: each statement after the wait must see what was committed during it, where a
+ *   REPEATABLE READ or SERIALIZABLE snapshot is the lock statement's, taken before the wait. A read
+ *   names its own level.
  */
 const OWN_SETTINGS = [
   "SET search_path = public",
@@ -98,6 +103,7 @@ const OWN_SETTINGS = [
   "SET lc_numeric = 'C'",
   "SET lc_monetary = 'C'",
   "SET lc_time = 'C'",
+  "SET default_transaction_isolation = 'read committed'",
 ];
 
 const SESSION_SETTINGS_TEXT = JSON.stringify(SESSION_SETTINGS);
@@ -338,9 +344,14 @@ async function isEmpty(conn: Connection): Promise<boolean> {
   return r.n === 0;
 }
 
-/** Runs `f` in a transaction under the tenant's write lock. */
+/**
+ * Runs `f` in a transaction under the tenant's write lock. READ COMMITTED whatever the database's
+ * default: each statement after the lock then sees what another opener committed while this one
+ * waited; at REPEATABLE READ or SERIALIZABLE the snapshot is taken at the lock's statement, before
+ * the wait, and `createStorage` would not see a storage made meanwhile.
+ */
 async function locked<T>(conn: Connection, f: () => Promise<T>): Promise<T> {
-  await conn.run("BEGIN");
+  await conn.run("BEGIN ISOLATION LEVEL READ COMMITTED");
   try {
     await conn.run(LOCK_SQL);
     const r = await f();

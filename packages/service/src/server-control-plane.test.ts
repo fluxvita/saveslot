@@ -11,6 +11,7 @@ import type { TenantStore } from "@fluxvita/saveslot-kernel";
 import { anchorStoreConformance, deletionEntry } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  databaseOf,
   POSTGRES_DATABASE_NAME,
   TEST_BACKEND,
   testBackend,
@@ -20,6 +21,7 @@ import {
   CONTROL_FORMAT,
   ControlPlaneError,
   DATABASE_NAME,
+  INIT_LOCK,
   initControlPlane,
   openControlPlane,
   type ServerControlPlane,
@@ -570,6 +572,55 @@ describe("the anchor store's writes are the control database's own", () => {
 // is what keeps their writes of one tenant apart. One connection runs one transaction at a time,
 // so this needs two; PGlite has one connection to a database, so the case runs on PostgreSQL only.
 describe.runIf(TEST_BACKEND === "postgres")("two connections to one control database", () => {
+  it(
+    "initializing after waiting for another's initialization finds its tables, though this connection had found none before",
+    async () => {
+      const { dir } = await database();
+      const [waiter, other] = await Promise.all([secondConnection(dir), secondConnection(dir)]);
+      let init: Promise<ServerControlPlane> | undefined;
+      try {
+        // This connection looks first and finds no tables.
+        await expect(openControlPlane(waiter)).rejects.toMatchObject({
+          code: "control_not_initialized",
+        });
+        await other.write(async (tx) => {
+          await tx.query("SELECT pg_advisory_xact_lock($1)", [INIT_LOCK]);
+          init = initControlPlane(waiter);
+          // An initialization that fails or ends before it waits ends this with what it did.
+          await Promise.race([
+            (async () => {
+              for (let i = 0; i < 600; i++) {
+                const r = await tx.query<{ n: number }>(
+                  `SELECT count(*)::int4 AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+                   WHERE l.locktype = 'advisory' AND NOT l.granted AND a.datname = $1`,
+                  [databaseOf(dir)],
+                );
+                if (r.rows[0]?.n === 1) return;
+                await new Promise((r) => setTimeout(r, 10));
+              }
+              throw new Error("the initialization never waited for the lock");
+            })(),
+            init.then(() => {
+              throw new Error("the initialization ended without waiting for the lock");
+            }),
+          ]);
+          // `control_meta` and its format only, all the initialization checks for: a commit of
+          // the whole DDL appears to make PostgreSQL reset the waiting connection's catalog caches.
+          await tx.exec("CREATE TABLE control_meta (key text PRIMARY KEY, value text NOT NULL)");
+          await tx.query("INSERT INTO control_meta (key, value) VALUES ('format', $1)", [
+            String(CONTROL_FORMAT),
+          ]);
+        });
+        await init;
+      } finally {
+        await other.close();
+        await init?.catch(() => {});
+        await waiter.close();
+      }
+    },
+    T,
+  );
+
   it(
     "initializing an empty one at the same time take turns, and both succeed",
     async () => {

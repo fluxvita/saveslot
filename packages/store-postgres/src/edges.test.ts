@@ -271,7 +271,7 @@ describe("opening, where a server cannot be made to show it", () => {
     await new PostgresBackend(CELLS, () => client).open(REF, {});
     const sets = client.sent.filter((s) => s.startsWith("SET"));
     expect(sets.slice(0, 2)).toEqual(["SET search_path =", "SET bytea_output ="]);
-    expect(sets).toHaveLength(5 + SESSION_SETTINGS.length);
+    expect(sets).toHaveLength(6 + SESSION_SETTINGS.length);
     const firstCatalog = client.sent.findIndex((s) => s.includes("server_encoding"));
     const lastSet = client.sent.findLastIndex((s) => s.startsWith("SET"));
     expect(lastSet).toBeLessThan(firstCatalog);

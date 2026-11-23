@@ -188,7 +188,8 @@ describe.skipIf(cell === undefined)("against a server", () => {
               current_setting('IntervalStyle') AS iv, current_setting('extra_float_digits') AS fd,
               current_setting('standard_conforming_strings') AS scs,
               current_setting('client_encoding') AS ce, current_setting('lc_numeric') AS n,
-              current_setting('lc_monetary') AS m, current_setting('lc_time') AS t`),
+              current_setting('lc_monetary') AS m, current_setting('lc_time') AS t,
+              current_setting('default_transaction_isolation') AS iso`),
           );
           expect(r.rows[0]).toEqual({
             tz: "UTC",
@@ -200,6 +201,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
             n: "C",
             m: "C",
             t: "C",
+            iso: "read committed",
           });
         });
       },
@@ -415,50 +417,85 @@ describe.skipIf(cell === undefined)("against a server", () => {
       T,
     );
 
-    it(
-      "an opener that waited for the lock while another made the storage finds it made, and does not make it again",
-      async () => {
-        const db = pg.name();
-        await pg.admin(
-          `CREATE DATABASE "${db}" TEMPLATE template0 ENCODING 'UTF8'
-             LOCALE_PROVIDER builtin BUILTIN_LOCALE 'C.UTF-8' LOCALE 'C'`,
-        );
-        // The other opener: holds the tenant's lock while it makes the storage, as `create` does.
-        // It makes `meta` and its rows only, all this opener checks for: a commit of the kernel's
-        // whole DDL can be enough invalidation messages that PostgreSQL resets the waiting
-        // connection's catalog caches, which hides a stale answer there.
-        const other = await Connection.connect(pg.cell, db);
-        try {
-          await other.run("BEGIN");
-          await other.run(`SELECT pg_advisory_xact_lock(${WRITE_LOCK[0]}, ${WRITE_LOCK[1]})`);
-          // This one has seen no storage and waits for the lock to make it.
-          const opening = backend.open(pg.ref(db), { create: true });
-          opening.catch(() => {});
-          for (let i = 0; ; i++) {
+    /**
+     * An empty database, then two openers: one holds the tenant's lock and makes the storage, as
+     * `create` does, while this backend's opener, which has seen no storage, waits for the lock.
+     * The other makes `meta` and its rows only, all the opener checks for: a commit of the kernel's
+     * whole DDL appears to make PostgreSQL reset the waiting connection's catalog caches, which
+     * hides a stale answer there. `prepare` changes the database before either connects. Returns
+     * the opener's epoch; its store is closed whatever happens.
+     */
+    async function openedWhileAnotherMadeIt(
+      prepare: (db: string) => Promise<unknown> = async () => {},
+    ): Promise<{ db: string; epoch: number }> {
+      const db = pg.name();
+      await pg.admin(
+        `CREATE DATABASE "${db}" TEMPLATE template0 ENCODING 'UTF8'
+           LOCALE_PROVIDER builtin BUILTIN_LOCALE 'C.UTF-8' LOCALE 'C'`,
+      );
+      await prepare(db);
+      const other = await Connection.connect(pg.cell, db);
+      let opening: Promise<PostgresTenantStore> | undefined;
+      try {
+        await other.run("BEGIN ISOLATION LEVEL READ COMMITTED");
+        await other.run(`SELECT pg_advisory_xact_lock(${WRITE_LOCK[0]}, ${WRITE_LOCK[1]})`);
+        opening = backend.open(pg.ref(db), { create: true });
+        const waiting = async () => {
+          for (let i = 0; i < 600; i++) {
             const r = await pg.admin(
               `SELECT count(*)::int4 AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
                WHERE l.locktype = 'advisory' AND NOT l.granted AND a.datname = $1`,
               [db],
             );
-            if (r.rows[0]?.["n"] === 1) break;
-            if (i === 600) throw new Error("the opener never waited for the lock");
+            if (r.rows[0]?.["n"] === 1) return;
             await new Promise((r) => setTimeout(r, 10));
           }
-          await other.run("CREATE TABLE meta (key text PRIMARY KEY, value text NOT NULL)");
-          for (const [k, v] of [
-            [META_KEYS.storageFormat, String(STORAGE_FORMAT_VERSION)],
-            [META_KEYS.ownershipEpoch, "0"],
-            [META_KEYS.sessionSettings, JSON.stringify(SESSION_SETTINGS)],
-          ] as const) {
-            await other.run("INSERT INTO meta (key, value) VALUES ($1, $2)", [k, v]);
-          }
-          await other.run("COMMIT");
-          const s = await opening;
-          expect(s.epoch).toBe(1);
-          await s.close();
-        } finally {
-          await other.end();
+          throw new Error("the opener never waited for the lock");
+        };
+        // An opener that fails or opens before it waits ends this with what it did.
+        await Promise.race([
+          waiting(),
+          opening.then(() => {
+            throw new Error("the opener opened without waiting for the lock");
+          }),
+        ]);
+        await other.run("CREATE TABLE meta (key text PRIMARY KEY, value text NOT NULL)");
+        for (const [k, v] of [
+          [META_KEYS.storageFormat, String(STORAGE_FORMAT_VERSION)],
+          [META_KEYS.ownershipEpoch, "0"],
+          [META_KEYS.sessionSettings, JSON.stringify(SESSION_SETTINGS)],
+        ] as const) {
+          await other.run("INSERT INTO meta (key, value) VALUES ($1, $2)", [k, v]);
         }
+        await other.run("COMMIT");
+        return { db, epoch: (await opening).epoch };
+      } finally {
+        await other.end();
+        // Ending the other connection lets an opener still waiting go on: its store is closed too.
+        await opening?.then(
+          (s) => s.close(),
+          () => {},
+        );
+      }
+    }
+
+    it(
+      "an opener that waited for the lock while another made the storage finds it made, and does not make it again",
+      async () => {
+        const { db, epoch } = await openedWhileAnotherMadeIt();
+        expect(epoch).toBe(1);
+        expect(await epochIn(db)).toBe(1);
+      },
+      T,
+    );
+
+    it(
+      "so does one on a database whose default isolation is serializable: the lock's transaction is READ COMMITTED",
+      async () => {
+        const { db, epoch } = await openedWhileAnotherMadeIt((db) =>
+          pg.admin(`ALTER DATABASE "${db}" SET default_transaction_isolation = 'serializable'`),
+        );
+        expect(epoch).toBe(1);
         expect(await epochIn(db)).toBe(1);
       },
       T,
@@ -692,6 +729,102 @@ describe.skipIf(cell === undefined)("against a server", () => {
           await expect(s.purgeResidue()).rejects.toThrow("not implemented");
           await expect(s.snapshot()).rejects.toThrow("not implemented");
         });
+      },
+      T,
+    );
+  });
+
+  // A write takes the tenant's lock first and reads after it. Its transaction is READ COMMITTED
+  // whatever the database's default, so each statement after the wait sees what was committed
+  // during it; at REPEATABLE READ the snapshot would be the lock statement's, from before the wait.
+  describe("a write that waited for the lock, on a database whose default isolation is repeatable read", () => {
+    /**
+     * A store over a tenant with a table `t`, opened after the database's default isolation was
+     * set to repeatable read. `during` runs on another connection that holds the tenant's lock
+     * while the store's write `fn` waits for it, and commits before the write goes on.
+     */
+    async function waited<T>(
+      fn: (tx: {
+        query: (sql: string) => Promise<{ rows: Record<string, unknown>[] }>;
+      }) => Promise<T>,
+      during: (other: Connection) => Promise<unknown>,
+    ): Promise<{ result: Promise<T>; s: PostgresTenantStore; db: string }> {
+      const db = pg.name();
+      await withStore(db, (s) => s.write((tx) => tx.exec("CREATE TABLE t (x INT)")));
+      await pg.admin(
+        `ALTER DATABASE "${db}" SET default_transaction_isolation = 'repeatable read'`,
+      );
+      const s = await backend.open(pg.ref(db), {});
+      const other = await Connection.connect(pg.cell, db);
+      try {
+        await other.run("BEGIN ISOLATION LEVEL READ COMMITTED");
+        await other.run(`SELECT pg_advisory_xact_lock(${WRITE_LOCK[0]}, ${WRITE_LOCK[1]})`);
+        const result = s.write((tx) => fn(tx as never));
+        result.catch(() => {});
+        const waiting = async () => {
+          for (let i = 0; i < 600; i++) {
+            const r = await pg.admin(
+              `SELECT count(*)::int4 AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+               WHERE l.locktype = 'advisory' AND NOT l.granted AND a.datname = $1`,
+              [db],
+            );
+            if (r.rows[0]?.["n"] === 1) return;
+            await new Promise((r) => setTimeout(r, 10));
+          }
+          throw new Error("the write never waited for the lock");
+        };
+        // A write that fails or ends before it waits ends this with what it did.
+        await Promise.race([
+          waiting(),
+          result.then(() => {
+            throw new Error("the write ended without waiting for the lock");
+          }),
+        ]);
+        await during(other);
+        await other.run("COMMIT");
+        await result.catch(() => {});
+        return { result, s, db };
+      } catch (e) {
+        await s.close().catch(() => {});
+        throw e;
+      } finally {
+        await other.end();
+      }
+    }
+
+    it(
+      "its reads see a row another connection committed while it waited",
+      async () => {
+        const { result, s } = await waited(
+          async (tx) => (await tx.query("SELECT count(*)::int4 AS n FROM t")).rows[0]?.["n"],
+          (other) => other.run("INSERT INTO t VALUES (1)"),
+        );
+        try {
+          expect(await result).toBe(1);
+        } finally {
+          await s.close();
+        }
+      },
+      T,
+    );
+
+    it(
+      "taken over while it waited, it gives the tenant up with ownership_lost",
+      async () => {
+        const { result, s, db } = await waited(
+          async () => "written",
+          // What another opener's takeover does under the same lock: the epoch + 1.
+          (other) =>
+            other.run("UPDATE meta SET value = (value::bigint + 1)::text WHERE key = $1", [
+              META_KEYS.ownershipEpoch,
+            ]),
+        );
+        try {
+          expect(await codeOf(result)).toBe("ownership_lost");
+          expect(await epochIn(db)).toBe(s.epoch + 1);
+        } finally {
+          await s.close();
+        }
       },
       T,
     );
