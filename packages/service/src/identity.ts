@@ -12,6 +12,7 @@
 // never meets a repeated name. A caller that needs every value (an OAuth request's repeated
 // parameters) parses the raw query or body itself.
 
+import { isIPv4, isIPv6 } from "node:net";
 import type { Tx } from "@fluxvita/saveslot-kernel";
 import type { UserId } from "./control-plane.ts";
 import { isInstant } from "./server-control-plane.ts";
@@ -242,6 +243,61 @@ export function safeReturnTo(v: string | undefined): string | undefined {
   return v;
 }
 
+/** An IPv6 address's eight groups, written out; undefined for what is not one. */
+function ipv6Groups(v: string): number[] | undefined {
+  if (!isIPv6(v)) return undefined;
+  let s = v.split("%")[0] as string;
+  // A trailing IPv4 part is the last two groups.
+  const v4 = /^(.*:)(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  if (v4 !== null) {
+    const [a, b, c, d] = (v4[2] as string).split(".").map(Number) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    s = `${v4[1]}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head, tail] = s.includes("::") ? (s.split("::") as [string, string]) : [s, undefined];
+  const h = head === "" ? [] : head.split(":");
+  const t = tail === undefined || tail === "" ? [] : tail.split(":");
+  const groups = [...h, ...Array<string>(8 - h.length - t.length).fill("0"), ...t];
+  return groups.map((g) => Number.parseInt(g, 16));
+}
+
+/**
+ * The source a request is counted under: an IPv4 address as it is (an IPv4-mapped IPv6 address
+ * as its IPv4 address), an IPv6 address by its /64, which one subscriber usually holds whole.
+ */
+export function sourceKey(remote: string): string {
+  if (isIPv4(remote)) return remote;
+  const g = ipv6Groups(remote);
+  if (g === undefined) return remote;
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) {
+    return [g[6] as number, g[7] as number].flatMap((x) => [x >> 8, x & 0xff]).join(".");
+  }
+  return `${g
+    .slice(0, 4)
+    .map((x) => x.toString(16))
+    .join(":")}::/64`;
+}
+
+/**
+ * The wider source an IPv6 request is also counted under: its /48, what one site usually holds,
+ * so that someone with many /64s of one /48 still meets a limit. None for IPv4 (an IPv4-mapped
+ * address included).
+ */
+export function wideSourceKey(remote: string): string | undefined {
+  if (isIPv4(remote)) return undefined;
+  const g = ipv6Groups(remote);
+  if (g === undefined) return undefined;
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) return undefined;
+  return `${g
+    .slice(0, 3)
+    .map((x) => x.toString(16))
+    .join(":")}::/48`;
+}
+
 /** Text made safe to write inside HTML, in text and in quoted attributes. */
 export function escapeHtml(s: string): string {
   return s
@@ -258,9 +314,18 @@ export function pageLanguage(acceptLanguage: string | undefined): "en" | "zh" {
   return first.startsWith("zh") ? "zh" : "en";
 }
 
-/** Headers every page of a provider carries: it may not be framed. */
+/**
+ * Headers every page of a provider carries: it loads nothing from anywhere (no script, style, image
+ * or frame), posts its forms only to this service, may not be framed, is not sniffed as another
+ * type, sends no referrer and is not cached.
+ */
 export const PAGE_HEADERS: readonly (readonly [string, string])[] = [
-  ["content-security-policy", "frame-ancestors 'none'"],
+  [
+    "content-security-policy",
+    "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+  ],
   ["x-frame-options", "DENY"],
+  ["x-content-type-options", "nosniff"],
+  ["referrer-policy", "no-referrer"],
   ["cache-control", "no-store"],
 ];

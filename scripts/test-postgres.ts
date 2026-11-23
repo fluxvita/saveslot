@@ -32,6 +32,7 @@ export const TESTED = [
   "packages/service/src/server-restore.test.ts",
   "packages/daemon/src/server-restore-command.test.ts",
   "packages/service/src/local-accounts.test.ts",
+  "packages/service/src/local-identity.test.ts",
 ];
 
 /** Files not run on PostgreSQL, each with why. */

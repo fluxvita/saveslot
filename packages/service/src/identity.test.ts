@@ -9,6 +9,8 @@ import {
   type SetCookie,
   safeReturnTo,
   setCookieHeader,
+  sourceKey,
+  wideSourceKey,
 } from "./identity.ts";
 
 describe("where a login may return to", () => {
@@ -124,5 +126,28 @@ describe("a cookie to set", () => {
     expect(() => setCookieHeader({ ...c, path: "relative" })).toThrow();
     expect(() => setCookieHeader({ ...c, maxAgeSeconds: -1 })).toThrow();
     expect(() => setCookieHeader({ ...c, maxAgeSeconds: 1.5 })).toThrow();
+  });
+});
+
+describe("the source a request is counted under", () => {
+  it("is an IPv4 address as it is, an IPv4-mapped one as IPv4, an IPv6 one by its /64", () => {
+    expect(sourceKey("192.0.2.7")).toBe("192.0.2.7");
+    expect(sourceKey("::ffff:192.0.2.7")).toBe("192.0.2.7");
+    expect(sourceKey("2001:db8:1:2::5")).toBe("2001:db8:1:2::/64");
+    expect(sourceKey("2001:0db8:0001:0002:ffff:ffff:ffff:ffff")).toBe("2001:db8:1:2::/64");
+    expect(sourceKey("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(sourceKey("::1")).toBe("0:0:0:0::/64");
+    expect(sourceKey("2001:db8:1:3::1")).not.toBe(sourceKey("2001:db8:1:2::1"));
+    expect(sourceKey("not an address")).toBe("not an address");
+  });
+});
+
+describe("the wider source an IPv6 request is also counted under", () => {
+  it("is its /48; none for IPv4 or an IPv4-mapped address", () => {
+    expect(wideSourceKey("2001:db8:1:2::5")).toBe("2001:db8:1::/48");
+    expect(wideSourceKey("2001:db8:1:ffff::1")).toBe("2001:db8:1::/48");
+    expect(wideSourceKey("2001:db8:2::1")).toBe("2001:db8:2::/48");
+    expect(wideSourceKey("192.0.2.7")).toBeUndefined();
+    expect(wideSourceKey("::ffff:192.0.2.7")).toBeUndefined();
   });
 });

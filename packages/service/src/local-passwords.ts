@@ -23,6 +23,28 @@ export const SCRYPT = { N: 2 ** 15, r: 8, p: 3, saltBytes: 16, keyBytes: 32 } as
 export const SCRYPT_AT_ONCE = 2;
 
 /**
+ * How many sign-in checks may wait for a place: one more is refused at once
+ * (`PasswordChecksBusy`) rather than queued. At about a tenth of a second a computation, the last
+ * of them waits under a second. The deployer's operations are never refused.
+ */
+export const SCRYPT_WAIT_MAX = 16;
+
+/**
+ * How long a sign-in check waits for a place, at most: then it leaves the queue, refused
+ * (`PasswordChecksBusy`), and the place it would have had goes to the next. The deployer's
+ * operations wait as long as it takes.
+ */
+export const SCRYPT_WAIT_MS = 2000;
+
+/** A sign-in check refused because too many are already waiting, or it waited too long. */
+export class PasswordChecksBusy extends Error {
+  override readonly name = "PasswordChecksBusy";
+  constructor() {
+    super("too many password checks are waiting");
+  }
+}
+
+/**
  * The parameters a stored hash may name, at most: what one check may cost. A hash outside them, or
  * whose salt or key is not of the right length, matches no password. `SCRYPT` is within them.
  */
@@ -44,6 +66,13 @@ export function useScryptForTests(
   p: { readonly N: number; readonly r: number; readonly p: number } | undefined,
 ): void {
   params = p ?? SCRYPT;
+}
+
+let waitMs = SCRYPT_WAIT_MS;
+
+/** Tests only: how long a sign-in check waits for a place; undefined goes back to `SCRYPT_WAIT_MS`. */
+export function useScryptWaitForTests(ms: number | undefined): void {
+  waitMs = ms ?? SCRYPT_WAIT_MS;
 }
 
 /** Tests only: forgets the dummy hash, so the next check without an account makes it again. */
@@ -85,7 +114,11 @@ const isPowerOfTwo = (n: number) => Number.isSafeInteger(n) && n > 1 && (n & (n 
  * that is not one this module writes (its key not 32 bytes, its salt under 16, its parameters out
  * of bounds) matches nothing, and costs nothing to find so.
  */
-export async function passwordMatches(password: string, stored: string): Promise<boolean> {
+export async function passwordMatches(
+  password: string,
+  stored: string,
+  o: { readonly refuseWhenBusy?: boolean } = {},
+): Promise<boolean> {
   const m = /^scrypt\$(\d{1,7})\$(\d{1,3})\$(\d{1,3})\$([A-Za-z0-9_-]+)\$([A-Za-z0-9_-]+)$/.exec(
     stored,
   );
@@ -96,7 +129,7 @@ export async function passwordMatches(password: string, stored: string): Promise
   const salt = Buffer.from(m[4] as string, "base64url");
   const want = Buffer.from(m[5] as string, "base64url");
   if (salt.length < SCRYPT.saltBytes || want.length !== SCRYPT.keyBytes) return false;
-  const got = await derive(password, salt, N, r, p, want.length);
+  const got = await derive(password, salt, N, r, p, want.length, o.refuseWhenBusy);
   return got.length === want.length && timingSafeEqual(got, want);
 }
 
@@ -105,13 +138,29 @@ const waiting: (() => void)[] = [];
 
 /**
  * A place among the `SCRYPT_AT_ONCE` computations. A place given up goes straight to the first
- * waiting, so a computation arriving in between cannot take it too.
+ * waiting, so a computation arriving in between cannot take it too. A sign-in check is refused
+ * when `SCRYPT_WAIT_MAX` already wait, and waits `SCRYPT_WAIT_MS` at most.
  */
-async function acquire(): Promise<void> {
+async function acquire(refuseWhenBusy = false): Promise<void> {
   if (running < SCRYPT_AT_ONCE) {
     running++;
   } else {
-    await new Promise<void>((resolve) => waiting.push(resolve));
+    if (refuseWhenBusy && waiting.length >= SCRYPT_WAIT_MAX) throw new PasswordChecksBusy();
+    await new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const turn = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      waiting.push(turn);
+      if (refuseWhenBusy) {
+        timer = setTimeout(() => {
+          // Out of the queue: a place given up from now on goes to the next one waiting.
+          waiting.splice(waiting.indexOf(turn), 1);
+          reject(new PasswordChecksBusy());
+        }, waitMs);
+      }
+    });
   }
   peak = Math.max(peak, running);
 }
@@ -133,8 +182,9 @@ async function derive(
   r: number,
   p: number,
   keylen: number,
+  refuseWhenBusy = false,
 ): Promise<Buffer> {
-  await acquire();
+  await acquire(refuseWhenBusy);
   computations++;
   try {
     // scrypt needs 128 · N · r bytes; twice that leaves room for its own bookkeeping.
@@ -176,6 +226,8 @@ export async function verifyLocalPassword(
   db: ControlDb,
   name: string,
   password: string,
+  /** A sign-in: refused with `PasswordChecksBusy` when too many checks wait. */
+  o: { readonly refuseWhenBusy?: boolean } = {},
 ): Promise<
   { readonly user: UserId; readonly name: string; readonly passwordHash: string } | undefined
 > {
@@ -192,6 +244,7 @@ export async function verifyLocalPassword(
   const matches = await passwordMatches(
     shaped ? password : "",
     account?.password_hash ?? (await dummyHash()),
+    o,
   );
   if (account === undefined || !matches || account.state !== "active") return undefined;
   return { user: account.id as UserId, name, passwordHash: account.password_hash };
