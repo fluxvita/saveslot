@@ -188,7 +188,11 @@ export function itemsResult(
     const orig = itemOf(given.original.get(key), key);
     if (b !== undefined && isOpen(cur)) memberOf.set(key, id);
     const member = memberOf.has(key);
-    if (partBack) {
+    // Pending after of another kind than its item (a candidate whose conflict a deletion cleared,
+    // still of high impact: awaiting): not back in that item, but succeeded below, as any pending
+    // of another kind (03-deletion «冲突消失但仍属高影响、将转为待确认的写入»).
+    const otherKind = a !== undefined && a !== cur.kind && a !== orig.kind;
+    if (partBack && !otherKind) {
       // Back where its item is: merged into it when open (restored when a deletion superseded it),
       // closed with it when a decision or another supersession closed it (no new item).
       const s = cur.standing;

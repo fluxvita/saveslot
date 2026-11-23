@@ -900,3 +900,48 @@ describe("the other kind, its original item still open with others pending (only
     expect(end).toEqual(["41:f2 awaiting: 71/f2", "41:f2 conflict: 41/f2"]);
   });
 });
+
+describe("in effect in part when written, its part going back, pending after of another kind: succeeded, not back in its item", () => {
+  // #10 f2=9 from 10-01 (S4); #20 f2=9 from 11-03 (a no-op); #30 (seen #20) f2=1 from 11-05;
+  // #40 (seen #30) f2=1 from 11-01: awaiting (it takes away the change point 11-05); #60 (seen
+  // #20) f2=9 from 11-01 to the next change, pointing at its evidence: a corroboration on
+  // [11-01, 11-05), a candidate from 11-05, in the conflict item 61:f2. Deleting S4 clears the
+  // conflict and leaves the part in effect going back; #61 is pending after, still of high
+  // impact: awaiting. Not merged back into the conflict item (another kind): the conflict item is
+  // superseded and a new awaiting item succeeds it (03-deletion «冲突消失但仍属高影响、将转为待确认
+  // 的写入»), as a cancellation of a later deletion of #61 leaves it.
+  const src = (op: number, value: string, source: string, explicit = false) => ({
+    f2: { value, sources: [source], ...(explicit ? { explicit: true } : {}) },
+  });
+  const ops: Op[] = [
+    { ...w(10, 0, {}), seen: 0, fields: src(10, "9", "S4") } as Op,
+    { ...w(20, 0, {}, { from: "11-03" }), fields: src(20, "9", "S5") } as Op,
+    { ...w(30, 20, {}, { from: "11-05", ack: true }), fields: src(30, "1", "S5") } as Op,
+    { ...w(40, 30, {}, { from: "11-01" }), fields: src(40, "1", "S1") } as Op,
+    {
+      ...w(60, 20, {}, { from: "11-01" }),
+      valid: { from: { mode: "given", value: d("11-01") }, to: { mode: "next_change" } },
+      fields: src(60, "9", "S3", true),
+    } as Op,
+  ];
+  it("61:f2 superseded, an awaiting item succeeding it", () => {
+    const r = run(ops, ["S4"]);
+    expect(r.records[4]).toMatchObject({
+      items: [
+        { target: "f2", status: "corroborated" },
+        { target: "f2", status: "candidate" },
+      ],
+    });
+    expect(r.replay.state.items.filter((x) => x.event === 61).map((x) => x.status)).toEqual([
+      "awaiting",
+    ]);
+    expect(fates(r)).toMatchObject({
+      "61/f2": { kind: "succeeded", succeeds: "61:f2", as: "awaiting" },
+    });
+    expect(r.items.superseded).toEqual(["61:f2"]);
+    expect(r.items.refreshed).toEqual([]);
+    expect(r.items.opened).toMatchObject([
+      { succeeds: "61:f2", kind: "awaiting", members: ["61/f2"] },
+    ]);
+  });
+});
