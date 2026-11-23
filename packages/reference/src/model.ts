@@ -35,9 +35,16 @@
 // | `ExecuteEvent`                | `deletion.executed` (`target.deletion`)                             |
 // | `ItemResult.closed`           | the item is resolved, rejected, or `kept_superseded` (09 §5.9)      |
 //
-// Not modelled in this first version: source keys (`external_key`), conflict groups
-// (`together`), schema switches and constant backfill, premises, `ref` fields and high impact ②,
-// system rulings, deletion of evidence and deletion by row (07-scope-v1: later), `deps`.
+// Writes by source key (`external_key`, 04-write-and-read «按来源键写入») are modelled on event and
+// timeless tables: `WriteOp.byKey` is such an op, judged against the field's sync baseline
+// (09-references-conflict-sync «冲突判据», last part), and `LogStep.outcome` says what it came to.
+// Key fields are not modelled (they take no part in the baseline or in revert records), nor is a
+// key transferred from a revoked row (not in the first version); a log with both ops by key and
+// deletion events is refused as not modelled (deletions meeting sync are P3).
+//
+// Not modelled in this first version: conflict groups (`together`), schema switches and constant
+// backfill, premises, `ref` fields and high impact ②, system rulings, deletion of evidence and
+// deletion by row (07-scope-v1: later), `deps`.
 
 import type {
   BizPoint,
@@ -111,6 +118,16 @@ export interface WriteOp extends OpBase {
   readonly fields: Readonly<Partial<Record<FieldId, FieldInput>>>;
   readonly noop?: readonly FieldId[];
   readonly acknowledge?: readonly ["overwrite"];
+  /**
+   * An op by source key (`external_key` without `row`): no `seen`, no `seenCurrent`; the version
+   * it saw is each field's baseline position. It creates the row when there is none yet.
+   */
+  readonly byKey?: true;
+  /**
+   * A key added to a row that had none (`row` + `ver` + `external_key`): an ordinary write, here
+   * only the operation from which the row has its key (a baseline position when nothing else is).
+   */
+  readonly keyAdded?: true;
 }
 
 export interface RevokeOp extends OpBase {
@@ -334,12 +351,34 @@ export interface LogStep {
    * (event, target) it recorded, as `<event>/<target>` (the items it decided, when judged).
    */
   readonly decided?: readonly string[];
+  /**
+   * A write by source key (`WriteOp.byKey`): what it came to (04-write-and-read «写法与定位»).
+   * `unchanged` (every field a no-op) and `skipped` (the row is revoked) leave nothing: the op
+   * does not enter the log, and `state` is the one before it.
+   */
+  readonly outcome?: SyncOutcome;
+  /** `skipped`: the revoke in effect, by operation number. */
+  readonly revokedBy?: OpNumber;
+  /** A write by source key that was judged: each field's result and the baseline it was judged on. */
+  readonly syncFields?: Readonly<Partial<Record<FieldId, SyncFieldResult>>>;
   /** A cancellation: candidates it put back after their item was resolved, and their judgement. */
   readonly putBack?: readonly {
     readonly event: Seq;
     readonly target: FieldId | "existence";
     readonly judged: "dropped" | "corroborated" | "candidate";
   }[];
+}
+
+export type SyncOutcome = "created" | "updated" | "unchanged" | "pending" | "skipped";
+
+export interface SyncFieldResult {
+  readonly status: "applied" | "corroborated" | "candidate" | "awaiting" | "noop";
+  /**
+   * The field's sync baseline (09-references-conflict-sync «冲突判据»): the value of its latest
+   * sync contribution (absent when it has none) and the operation of its latest one in effect, or
+   * the operation the row got its key from.
+   */
+  readonly baseline: { readonly value?: FieldValue; readonly position: OpNumber };
 }
 
 export interface LogEvaluation {

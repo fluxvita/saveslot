@@ -62,6 +62,8 @@ import type {
   RevertResult,
   RevokeOp,
   SourceKey,
+  SyncFieldResult,
+  SyncOutcome,
   TableSchema,
   UndoOp,
   ValidParam,
@@ -848,6 +850,50 @@ class Replay {
   // -------------------------------------------------------------------------------------------
   // Operations.
 
+  /**
+   * A sync contribution (09-references-conflict-sync «冲突判据»): an item a write by source key
+   * gave, whatever its status, or the item a take_candidate carried out of one. Not a write-back
+   * of `undo` or `take_previous`: those are values a person's handling brought back.
+   */
+  isSync(x: Item): boolean {
+    if (x.content.kind !== "value") return false;
+    const o = this.opsByEvent.get(x.event);
+    if (o?.kind === "write") return o.byKey === true;
+    if (o?.kind !== "resolve" || o.decision !== "take_candidate") return false;
+    return (x.carried ?? []).some((c) => {
+      const from = this.opsByEvent.get(c.event);
+      return from?.kind === "write" && from.byKey === true;
+    });
+  }
+
+  /**
+   * The sync baseline of field `f` for operation `n` (09-references-conflict-sync «冲突判据»): the
+   * value of the latest sync contribution, and the operation of the latest one in effect (applied
+   * or corroborated, not registered as reverted); with none in effect, the operation the row got
+   * its key from (the write by key that created it, or the key added to it); with none of those
+   * either (the op creating the row), the state just before `n`.
+   */
+  syncBaseline(
+    f: FieldId,
+    n: OpNumber,
+  ): { readonly has: boolean; readonly value: FieldValue; readonly position: OpNumber } {
+    const sync = this.items
+      .filter((x) => x.target === f && x.op < n && this.isSync(x))
+      .sort((a, b) => a.op - b.op);
+    const last = sync.at(-1);
+    const inEffect = sync.filter((x) => effective(x.status) && isEmpty(this.registeredSet(x, n)));
+    const keyed = this.ops
+      .filter(
+        (o): o is WriteOp =>
+          o.kind === "write" && o.op < n && (o.byKey === true || o.keyAdded === true),
+      )
+      .map((o) => o.op);
+    const position = inEffect.at(-1)?.op ?? (keyed.length > 0 ? Math.min(...keyed) : n - 1);
+    return last?.content.kind === "value"
+      ? { has: true, value: last.content.value, position }
+      : { has: false, value: null, position };
+  }
+
   write(o: WriteOp): void {
     const n = o.op;
     const evidence = [...new Set(Object.values(o.fields).flatMap((x) => x?.sources ?? []))];
@@ -864,7 +910,22 @@ class Replay {
       // judgement is not recomputed (03-deletion «两条原则», deviation one; «重放规则», no-op row).
       if (o.noop?.includes(f) || this.rec.noops.has(etKey(o.event, f))) continue;
       if (this.isDeleted(input.sources)) continue;
-      this.judgeField(o, f, input, seen, cur, fresh);
+      if (o.byKey) {
+        // Judged as any write, with two inputs replaced (04-write-and-read «三方比较»): the
+        // version seen is the field's baseline position; the same-value step compares with the
+        // baseline value, and a value equal to it is a no-op whatever evidence it points at,
+        // unless the value in effect is that value too (then pointed evidence corroborates). A
+        // field with no baseline value is judged as an ordinary write on its baseline position.
+        const b = this.syncBaseline(f, n);
+        const same = b.has && tok(input.value) === tok(b.value);
+        const sync = b.has
+          ? {
+              same,
+              explicit: same && input.explicit === true && this.vis(f, ALL, cur) === tok(b.value),
+            }
+          : undefined;
+        this.judgeField(o, f, input, b.position, cur, fresh, sync);
+      } else this.judgeField(o, f, input, seen, cur, fresh);
     }
     const applied = fresh.filter((it) => it.status === "applied");
     if (applied.length > 0) {
@@ -894,13 +955,27 @@ class Replay {
     this.push(fresh);
   }
 
-  judgeField(o: WriteOp, f: FieldId, input: FieldInput, seen: number, cur: number, out: Item[]) {
+  /**
+   * `sync`: a write by source key with a baseline value (see `write`): whether the value is the
+   * baseline value, and whether the evidence it points at counts. Replaces the same-value step.
+   */
+  judgeField(
+    o: WriteOp,
+    f: FieldId,
+    input: FieldInput,
+    seen: number,
+    cur: number,
+    out: Item[],
+    sync?: { readonly same: boolean; readonly explicit: boolean },
+  ) {
     const n = o.op;
     const res = this.resolve(o.valid, f, seen, o.now);
     if (res === null) return;
     const v = tok(input.value);
     const segs = this.segments([res.valid]).filter((s) => covers(res.valid, s));
-    const sameAsSeen = segs.every((s) => this.vis(f, s, seen) === v);
+    const sameAsSeen =
+      sync !== undefined ? sync.same : segs.every((s) => this.vis(f, s, seen) === v);
+    const explicit = sync !== undefined ? sync.explicit : input.explicit === true;
     const base = {
       event: o.event,
       target: f,
@@ -917,7 +992,7 @@ class Replay {
       const usual: Item[] = [];
       this.rec.rejudged.delete(key);
       try {
-        this.judgeField(o, f, input, seen, cur, usual);
+        this.judgeField(o, f, input, seen, cur, usual, sync);
       } finally {
         this.rec.rejudged.set(key, rejudged);
       }
@@ -932,7 +1007,7 @@ class Replay {
       }
       return;
     }
-    if (sameAsSeen && !input.explicit) {
+    if (sameAsSeen && !explicit) {
       // Same value as seen, no evidence pointed at: not a contribution (03-deletion «贡献»). At
       // write time that is a no-op, kept as recorded; in a replay a former change becomes
       // `dropped`.
@@ -1366,7 +1441,7 @@ class Replay {
     const n = o.op;
     let mb = this.rec.mergeBases.get(n) ?? this.mergeBases.get(n);
     if (mb === undefined) {
-      mb = { mergeBase: this.mergeBaseOf(o.candidates) };
+      mb = { mergeBase: this.mergeBaseOf(o.candidates, o.unit) };
       this.mergeBases.set(n, mb);
       this.coverSets.set(n, this.takePreviousRecord(o, mb.mergeBase, k, n));
     }
@@ -1492,7 +1567,7 @@ class Replay {
     const kItems = this.kOf(o.candidates, o.unit, o.op);
     let rec = this.rec.mergeBases.get(n);
     if (rec === undefined) {
-      const mergeBase = this.mergeBaseOf(o.candidates);
+      const mergeBase = this.mergeBaseOf(o.candidates, o.unit);
       this.revertRecords.set(n, this.takePreviousRecord(o, mergeBase, kItems, n));
       rec = { mergeBase };
       this.mergeBases.set(n, rec);
@@ -1552,10 +1627,23 @@ class Replay {
   }
 
   /** The merge base of a conflict item: the earliest version its candidates carried. */
-  mergeBaseOf(candidates: readonly Seq[]): OpNumber {
+  /**
+   * The earliest version the candidates carry. A write by source key carries its fields' baseline
+   * positions, the earliest over the unit's fields it wrote (04-write-and-read «三方比较»).
+   */
+  mergeBaseOf(candidates: readonly Seq[], unit: ResolveOp["unit"]): OpNumber {
     return Math.min(
       ...candidates.map((e) => {
         const c = this.opsByEvent.get(e);
+        if (c?.kind === "write" && c.byKey) {
+          const fields = (
+            unit === "existence" ? Object.keys(c.fields) : unitTargets(unit)
+          ) as FieldId[];
+          const at = fields
+            .filter((f) => c.fields[f] !== undefined)
+            .map((f) => this.syncBaseline(f, c.op).position);
+          return at.length > 0 ? Math.min(...at) : c.op - 1;
+        }
         return c !== undefined && (c.kind === "write" || c.kind === "revoke")
           ? (c.seen ?? c.op - 1)
           : (c?.op ?? 0);
@@ -2646,6 +2734,17 @@ export function evaluateLog(
     readonly forcedDecided?: ReadonlyMap<OpNumber, readonly string[]>;
   } = {},
 ): LogEvaluation {
+  // Writes by source key are modelled on event and timeless tables, without the version seen,
+  // and not with deletions (P3): anything else is refused, never judged by guess.
+  const byKey = log.filter((e): e is WriteOp => e.kind === "write" && e.byKey === true);
+  if (byKey.length > 0) {
+    if (schema.kind === "state")
+      throw new Error("not modelled: writes by source key on a state table");
+    if (byKey.some((e) => e.seen !== undefined || e.seenCurrent !== undefined))
+      throw new Error("not modelled: a write by source key carries no version seen");
+    if (log.some((e) => e.kind === "deletion" || e.kind === "cancel" || e.kind === "execute"))
+      throw new Error("not modelled: writes by source key in a log with deletions");
+  }
   const rec = emptyRecorded();
   const ops: Op[] = [];
   const pending = new Map<
@@ -2949,8 +3048,58 @@ export function evaluateLog(
       steps.push({ entry: e, refused: true, rejected: "invalid", state: prevState });
       continue;
     }
+    // A write by source key on the row it finds (04-write-and-read «写法与定位»): revoked, it is
+    // skipped; otherwise judged, and if every field is a no-op it is unchanged. Neither enters
+    // the log. Whether the row has its key: an earlier write by key or key added is in the log.
+    let sync: { keyed: boolean; fields: Partial<Record<FieldId, SyncFieldResult>> } | undefined;
+    if (e.kind === "write" && e.byKey) {
+      const keyed = ops.some((o) => o.kind === "write" && (o.byKey || o.keyAdded));
+      // A row already there without a key is not what a write by key finds: the kernel locates by
+      // key and would create another row, which this model of one row cannot say.
+      if (!keyed && ops.length > 0)
+        throw new Error("not modelled: a write by source key on a row without a key");
+      const revoke = keyed ? prev.items.find((x) => prev.liveRevoke(x, ALL, INF)) : undefined;
+      if (revoke !== undefined) {
+        steps.push({
+          entry: e,
+          refused: false,
+          outcome: "skipped",
+          revokedBy: revoke.op,
+          state: prevState,
+        });
+        continue;
+      }
+      const fields: Partial<Record<FieldId, SyncFieldResult>> = {};
+      for (const f of Object.keys(e.fields) as FieldId[]) {
+        const b = prev.syncBaseline(f, e.op);
+        fields[f] = {
+          status: "noop",
+          baseline: b.has ? { value: b.value, position: b.position } : { position: b.position },
+        };
+      }
+      sync = { keyed, fields };
+    }
     ops.push(e);
     const r = replay(deleted);
+    if (sync !== undefined) {
+      const mine = r.items.filter((x) => x.event === e.event && x.target !== "existence");
+      for (const x of mine) {
+        const f = x.target as FieldId;
+        const was = sync.fields[f];
+        if (was !== undefined) sync.fields[f] = { ...was, status: x.status };
+      }
+      if (mine.length === 0) {
+        ops.pop();
+        steps.push({
+          entry: e,
+          refused: false,
+          outcome: "unchanged",
+          syncFields: sync.fields,
+          state: prevState,
+        });
+        continue;
+      }
+    }
     // An operation rejected when judged never enters the log, as a refused request.
     const rejected = r.rejections.find((x) => x.op === e.op);
     if (rejected !== undefined) {
@@ -2967,6 +3116,9 @@ export function evaluateLog(
       refused: false,
       state,
       ...(decided !== undefined ? { decided: [...decided].sort() } : {}),
+      ...(sync !== undefined
+        ? { outcome: syncOutcome(sync.keyed, Object.values(sync.fields)), syncFields: sync.fields }
+        : {}),
     });
     prev = r;
     prevState = state;
@@ -2985,6 +3137,22 @@ export function evaluateLog(
     return { steps, final: replay(deletedNow()).result(), removed: [...rec.removed].sort() };
   }
   return { steps, final: prevState, removed: [...rec.removed].sort() };
+}
+
+/**
+ * What a judged write by source key came to (04-contract §5.4): `created` when the row had no key
+ * yet; `updated` when a field is in effect, a corroboration included (a corroboration is recorded,
+ * so the op is not `unchanged`), with candidates possibly beside it; `pending` when no field is
+ * in effect and some field is a candidate or awaiting.
+ */
+function syncOutcome(
+  keyed: boolean,
+  fields: readonly (SyncFieldResult | undefined)[],
+): SyncOutcome {
+  if (!keyed) return "created";
+  return fields.some((x) => x?.status === "applied" || x?.status === "corroborated")
+    ? "updated"
+    : "pending";
 }
 
 /**
