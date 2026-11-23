@@ -115,7 +115,11 @@ export function judgeOp(
           ? (Object.keys(input.fields) as FieldId[]).filter((f) => input.fields[f]?.explicit).sort()
           : [],
       items: out.items,
-      noop: out.noop,
+      // Hitting a row by its key, the key fields are no-ops too, not judged (09 §5.7 ops/<i>/noop).
+      noop:
+        byKey !== undefined && byKey.creates !== true
+          ? [...new Set([...out.noop, ...byKey.keyFields])].sort()
+          : out.noop,
       ack: out.acknowledged ? out.overwritten.map(ackOf) : [],
     };
     const { items: _, noop: __, baseline: ___, ...rest } = out;

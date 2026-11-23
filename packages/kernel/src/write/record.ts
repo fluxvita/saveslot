@@ -355,13 +355,10 @@ export function encodeOp(
   if (r.kind !== "write" && r.kind !== "revoke" && r.kind !== "undo") {
     throw inconsistent("encodeOp encodes the ops of a request");
   }
-  // A write by external key has its own `ver` (basis `external_key`, no `ver` creating its row)
-  // and `ops/<i>/baseline` (09 §5.7), not encoded yet: refused, never encoded as an ordinary write.
-  if (r.kind === "write" && r.byKey === true) {
-    throw new WriteError("internal", "encoding a write by external key is not implemented", {
-      reason: "not_implemented",
-    });
-  }
+  // A write by external key (09 §5.7 `by_external_key`): no `ver` creating its row; hitting one,
+  // the earliest of its fields' baseline positions as basis `external_key` (a position in this log,
+  // with the restore count at the write, never a token), and each position in `ops/<i>/baseline`.
+  const byKey = r.kind === "write" && r.byKey === true;
   const i = r.index;
   const head: Blocks = {};
   const seen = {
@@ -379,12 +376,17 @@ export function encodeOp(
   const ver =
     e.intent === "insert"
       ? undefined
-      : verOf(seen, r.kind === "undo" || creates, e.restoreCount, e.verToken);
+      : byKey
+        ? r.kind === "write" && r.baseline !== undefined
+          ? { op: r.seen, restore_count: e.restoreCount, basis: "external_key" }
+          : undefined
+        : verOf(seen, r.kind === "undo" || creates, e.restoreCount, e.verToken);
   head[`ops/${i}/target`] = {
     table: ctx.table,
     ...ctx.target,
     intent: e.intent,
     ...(e.byEntityKey ? { by_entity_key: true } : {}),
+    ...(byKey ? { by_external_key: true } : {}),
     ...(e.created ? { created: true } : {}),
     ...(ver !== undefined ? { ver } : {}),
   };
@@ -399,6 +401,9 @@ export function encodeOp(
       head[`ops/${i}/set/${f}`] = e.raw[f] ?? null;
     }
     if (noop.length > 0) head[`ops/${i}/noop`] = [...noop];
+    if (byKey && r.kind === "write" && r.baseline !== undefined) {
+      head[`ops/${i}/baseline`] = { ...r.baseline } as Blocks[string];
+    }
     if (e.explicit !== undefined && e.explicit.length > 0)
       head[`ops/${i}/explicit`] = [...e.explicit];
     // A corroboration is a field pointed at: one not in the list would read back as a no-op.

@@ -75,8 +75,8 @@ export interface ResolveReceipt {
   /** The write the decision triggered: as the write receipt gives it. */
   readonly write?: Pick<
     WriteReceipt,
-    "seq" | "sv" | "ops" | "derived" | "derived_total" | "pending" | "superseded" | "omitted"
-  >;
+    "sv" | "ops" | "derived" | "derived_total" | "pending" | "superseded" | "omitted"
+  > & { readonly seq: OpNumber };
   /**
    * `take_previous`: the writes it took back or hid, as the item's details listed them at the
    * version the decision bound (04-contract-types §4.8 `reverted_by_previous`).

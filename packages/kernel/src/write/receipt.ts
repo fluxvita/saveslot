@@ -231,9 +231,15 @@ export interface OpReceipt {
     readonly entity?: EntityId;
     /** An op by `entity_key`: the entity's key, by field name (04-contract-types `TargetRef`). */
     readonly entity_key?: Readonly<Record<string, ValueOut>>;
+    /** A write by external key: the row's key, by field name (04-contract-types `TargetRef`). */
+    readonly external_key?: Readonly<Record<string, ValueOut>>;
   };
   readonly intent: Intent;
   readonly ver?: string;
+  /** A write by external key: what it came to (04-contract §5.4). */
+  readonly outcome?: "created" | "updated" | "unchanged" | "pending" | "skipped";
+  readonly skip_reason?: "revoked";
+  readonly revoked_by?: OpNumber;
   readonly created_entity?: true;
   /**
    * An entity created by `entity_key`: the table's keys before it, at most 10 (04-contract §5.1),
@@ -241,6 +247,11 @@ export interface OpReceipt {
    * and a replay leaves them out.
    */
   readonly existing_keys?: readonly EntityKeyText[];
+  /**
+   * Not given for a write by key that is `unchanged` or `skipped` (it entered no event:
+   * 04-contract-types §5.1). Typed as given all the same: only such an op's result lacks it, and it
+   * is assembled apart (`unrecordedOp`, write/pipeline.ts).
+   */
   readonly fields: Readonly<Record<string, FieldResult | readonly StatePart[]>>;
   /**
    * The op's premises, one for each it declared (empty for a clearing), as the head records them:
@@ -389,6 +400,20 @@ export type ReceiptWarning =
   | { readonly code: "clock_behind_log"; readonly behind_seconds: number }
   /** Request-level evidence segments no op cites: stored as sources, the source of no value. */
   | { readonly code: "evidence_unreferenced"; readonly evidence: readonly number[] }
+  /** Writes by external key skipped (`outcome: skipped`), by op index (04-contract-types §7). */
+  | { readonly code: "external_key_skipped"; readonly ops: readonly number[] }
+  /**
+   * Evidence not stored (§7): no op entered an event (the request's segments, `evidence`, and every
+   * op's own); or ops that left nothing had segments of their own (`op_evidence`, by op).
+   */
+  | {
+      readonly code: "evidence_not_stored";
+      readonly evidence: readonly number[];
+      readonly op_evidence?: readonly {
+        readonly op: number;
+        readonly evidence: readonly number[];
+      }[];
+    }
   /** An op seeing several segments gave these fields no mapping: each rests on all of them. */
   | {
       readonly code: "multi_segment_unmapped";
@@ -421,7 +446,18 @@ export type ReceiptWarning =
 export interface WriteReceipt {
   readonly status: "saved" | "pending";
   readonly sv: number;
+  /**
+   * Not given when no op entered an event (every one a write by key, unchanged or skipped: no
+   * operation, 04-contract-types §5.1). Typed as given all the same: only such a request's receipt
+   * lacks it, and it is assembled apart (`nothingReceipt`, write/pipeline.ts).
+   */
   readonly seq: OpNumber;
+  /**
+   * One for each op of the request. A replay gives only the index of a write by key that entered
+   * no event (`{ op_index }`, `omitted` has `unrecorded_ops`: 04-contract-types §5.1). Typed as
+   * `OpReceipt` all the same: only such a replay has one, and what reads the receipt in this
+   * repository passes it on whole (see `unrecordedEntry`).
+   */
   readonly ops: readonly OpReceipt[];
   /** The derived values this write changed, at most 20 (first receipt only; a replay gives none). */
   readonly derived: readonly DerivedChange[];
@@ -439,8 +475,19 @@ export interface WriteReceipt {
   /** The dependent rows this write marked and took marks off (04-contract §5.1). */
   readonly premise_affected?: PremiseAffected;
   readonly replayed?: true;
+  /**
+   * The writes by external key, by outcome; none without one. A replay leaves out `unchanged` and
+   * `skipped` (`omitted` has `unrecorded_ops`).
+   */
+  readonly external_key_summary?: {
+    readonly created: number;
+    readonly updated: number;
+    readonly unchanged?: number;
+    readonly pending: number;
+    readonly skipped?: number;
+  };
   /** A replay's parts the log cannot give back (04-contract §14 «重放返回什么»). */
-  readonly omitted?: readonly ("existing_keys" | "derived_values")[];
+  readonly omitted?: readonly ("existing_keys" | "derived_values" | "unrecorded_ops")[];
   readonly warnings?: readonly ReceiptWarning[];
 }
 
@@ -733,6 +780,11 @@ export async function readReceipt(
     readonly replayed: boolean;
     /** Whether the caller can see a table (`premise_affected.rows`); none: every table. */
     readonly visible?: (id: TableId) => boolean;
+    /**
+     * A first receipt: the writes by key that entered no event (`unchanged`, `skipped`), as the
+     * pipeline judged them, by op index. Not in the log: a replay gives their index only.
+     */
+    readonly unrecorded?: ReadonlyMap<number, OpReceipt>;
   },
 ): Promise<WriteReceipt | undefined> {
   const events = await operationEvents(tx, op);
@@ -802,8 +854,21 @@ export async function readReceipt(
 
   let pendingStatus = false;
   let keysLeftOut = false;
+  let unrecordedLeftOut = false;
+  let byExternalKey = false;
   const ops: OpReceipt[] = [];
   for (let i = 0; i < request.op_count; i++) {
+    // No target: a write by key that entered no event (09 §4.2): the pipeline's, or its index.
+    if (!resolved && head[`ops/${i}/target`] === undefined) {
+      byExternalKey = true;
+      const u = o.unrecorded?.get(i);
+      if (u !== undefined) ops.push(u);
+      else {
+        ops.push(unrecordedEntry(i));
+        unrecordedLeftOut = true;
+      }
+      continue;
+    }
     const t = (resolved ? bases[i]?.blocks["target"] : head[`ops/${i}/target`]) as {
       table: string;
       row?: string;
@@ -811,9 +876,11 @@ export async function readReceipt(
       intent: Intent;
       ver?: { op: number; basis: string; current?: true };
       by_entity_key?: true;
+      by_external_key?: true;
       created?: true;
     };
     if (t.by_entity_key && t.created) keysLeftOut = true;
+    if (t.by_external_key) byExternalKey = true;
     const table = tableOf(t.table);
     const isState = table.time.type === "state";
     const byDate = table.time.type === "state" && table.time.granularity === "date";
@@ -1051,6 +1118,20 @@ export async function readReceipt(
     const ver = rowVer;
     // The key of an entity located or created by key, from the event that created it.
     const key = t.by_entity_key ? await keyOf(tx, table, rowId as EntityId) : undefined;
+    // A write by external key: the key its row holds, and what it came to (04-contract §5.4):
+    // created, or updated when some field took effect (applied or corroborated), else pending.
+    const externalKey = t.by_external_key ? await externalKeyOf(tx, table, rowId) : undefined;
+    const outcome = !t.by_external_key
+      ? undefined
+      : created
+        ? ("created" as const)
+        : [...fields.values()].some((x) =>
+              (Array.isArray(x) ? x : [x]).some(
+                (y: { result: string }) => y.result === "applied" || y.result === "corroborated",
+              ),
+            )
+          ? ("updated" as const)
+          : ("pending" as const);
     ops.push({
       target: {
         table: qualifiedTable(o.slotName, table),
@@ -1062,9 +1143,11 @@ export async function readReceipt(
               ),
             }
           : {}),
+        ...(externalKey !== undefined ? { external_key: externalKey } : {}),
       },
       intent: t.intent,
       ...(ver !== undefined ? { ver } : {}),
+      ...(outcome !== undefined ? { outcome } : {}),
       ...(created && isState ? { created_entity: true as const } : {}),
       fields: Object.fromEntries(fields),
       ...premisesOf(head, i, (id) => tableOf(id), o.slotName),
@@ -1155,14 +1238,65 @@ export async function readReceipt(
       });
       return affected !== undefined ? { premise_affected: affected } : {};
     })()),
+    ...(byExternalKey ? { external_key_summary: keySummary(ops, unrecordedLeftOut) } : {}),
     ...(o.replayed ? { replayed: true as const } : {}),
-    ...(o.replayed && (keysLeftOut || derivedWritten > 0)
+    ...(o.replayed && (keysLeftOut || derivedWritten > 0 || unrecordedLeftOut)
       ? {
           omitted: [
             ...(keysLeftOut ? ["existing_keys" as const] : []),
             ...(derivedWritten > 0 ? ["derived_values" as const] : []),
+            ...(unrecordedLeftOut ? ["unrecorded_ops" as const] : []),
           ],
         }
       : {}),
   };
+}
+
+/**
+ * The writes by external key by outcome (04-contract-types `external_key_summary`). Without the
+ * ops that entered no event (a replay), `unchanged` and `skipped` are not given.
+ */
+export function keySummary(
+  ops: readonly OpReceipt[],
+  leftOut: boolean,
+): NonNullable<WriteReceipt["external_key_summary"]> {
+  const n = (k: NonNullable<OpReceipt["outcome"]>) =>
+    ops.filter((x) => "outcome" in x && x.outcome === k).length;
+  return {
+    created: n("created"),
+    updated: n("updated"),
+    ...(leftOut ? {} : { unchanged: n("unchanged") }),
+    pending: n("pending"),
+    ...(leftOut ? {} : { skipped: n("skipped") }),
+  };
+}
+
+/**
+ * A replay's entry for a write by key that entered no event: its index only (04-contract-types
+ * §5.1 `ops: Array<OpResult | { op_index }>`). The one place an entry of `ops` is not a full
+ * `OpReceipt`; nothing in this repository reads into the entries of a replay's `ops`.
+ */
+const unrecordedEntry = (i: number): OpReceipt => ({ op_index: i }) as unknown as OpReceipt;
+
+/** The external key a row holds, by field name: its entry in the key index (§5.12). */
+export async function externalKeyOf(
+  tx: ReadTx,
+  table: CompiledBaseTable,
+  row: string,
+): Promise<Record<string, ValueOut> | undefined> {
+  const ids = table.time.type !== "state" ? table.external_key : undefined;
+  if (ids === undefined) return undefined;
+  const r = await tx.query<{ key_values: string }>(
+    "SELECT key_values FROM external_keys WHERE table_id = $1 AND holder_row = $2",
+    [table.id, row],
+  );
+  const held = r.rows[0];
+  if (held === undefined) return undefined;
+  const values = JSON.parse(held.key_values) as FieldValue[];
+  return Object.fromEntries(
+    ids.map((f, k) => [
+      table.fields.find((x) => x.id === f)?.name ?? f,
+      valueIn(values[k] ?? null),
+    ]),
+  );
 }

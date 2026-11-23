@@ -6,6 +6,7 @@ import type {
   EntityId,
   FieldId,
   ItemId,
+  RowId,
   TableId,
 } from "@fluxvita/saveslot-contract-core";
 import { parseEvent } from "@fluxvita/saveslot-contract-core";
@@ -312,48 +313,133 @@ describe("the record mapping", () => {
 });
 
 describe("a write by external key", () => {
-  // Its `ver` (basis `external_key`; none creating its row) and `ops/<i>/baseline` (09 §5.7) are
-  // not encoded yet: refused, never encoded as an ordinary write (basis `fallback`, no baseline).
-  it("is refused by encodeOp until its encoding comes", () => {
-    const shape: TableShape = {
-      kind: "timeless",
-      fields: ["f2", "f9"],
-      valued: ["f2"],
-      required: [],
-      groups: [],
-    };
-    const input: JudgeInput = {
-      kind: "write",
-      op: 10,
-      index: 0,
-      event: 11,
-      ruleset: 1,
-      seen: 9,
-      seenExplicit: false,
-      now: "2026-11-05" as never,
-      fields: { f2: { value: "600" }, f9: { value: "K" } },
-      sync: { keyFields: ["f9"], creates: true },
-    };
-    const { judgement } = judgeOp(stateFromRecord(shape, []), input);
-    expect(() =>
-      encodeOp(
-        {
-          table: "t1" as never,
-          target: { row: `r_${"1".repeat(26)}` as never },
-          shape,
-          granularity: "date",
+  // 09 §5.7: `by_external_key`; creating its row, no `ver`; hitting one, `ver` of basis
+  // `external_key` (its earliest baseline position, the restore count at the write) and
+  // `ops/<i>/baseline`, its key fields among the no-ops. Encoded, checked against the event shapes,
+  // decoded: the records are the ones judged, and the next judgement is the same.
+  const shape: TableShape = {
+    kind: "timeless",
+    fields: ["f2", "f3", "f9"],
+    valued: ["f2"],
+    required: [],
+    groups: [],
+  };
+  const ROW = `r_${"1".repeat(26)}` as RowId;
+  const ctx: RowContext = {
+    table: "t1" as TableId,
+    target: { row: ROW },
+    shape,
+    granularity: "date",
+  };
+  const base = (op: number) => ({ op, index: 0, event: op + 1, ruleset: 1, policy: 1 });
+  const fv = (o: Record<string, string>) =>
+    Object.fromEntries(Object.entries(o).map(([f, v]) => [f, { value: v }]));
+  const byKey = (op: number, fields: Record<string, string>, creates = false): JudgeInput => ({
+    ...base(op),
+    kind: "write",
+    seen: (op - 1) as never,
+    seenExplicit: false,
+    now: "2026-11-05" as never,
+    fields: fv(creates ? { ...fields, f9: "K" } : fields),
+    sync: { keyFields: ["f9" as FieldId], ...(creates ? { creates: true as const } : {}) },
+  });
+  const ordinary = (op: number, seen: number, fields: Record<string, string>): JudgeInput => ({
+    ...base(op),
+    kind: "write",
+    seen: seen as never,
+    seenExplicit: true,
+    now: "2026-11-05" as never,
+    fields: fv(fields),
+  });
+  const inputs = [
+    byKey(10, { f2: "600", f3: "x" }, true),
+    byKey(20, { f2: "650", f3: "x" }),
+    ordinary(30, 20, { f2: "500" }),
+    byKey(40, { f2: "700" }),
+  ];
+
+  function encoded(): StoredEvent[] {
+    const { judgements } = replay(shape, inputs);
+    const out: StoredEvent[] = [];
+    judgements.forEach((j, n) => {
+      const input = inputs[n] as JudgeInput & { kind: "write" };
+      const hit = input.sync !== undefined && input.sync.creates !== true;
+      const enc = encodeOp(ctx, input, j, {
+        intent: "update",
+        ...(j.created ? { created: true as const } : {}),
+        sv: 1,
+        sources: [input.op],
+        raw: Object.fromEntries(
+          Object.entries(input.fields).map(([f, x]) => [f, x?.value ?? null]),
+        ),
+        restoreCount: 0,
+        conflictItems: j.conflicts.map(() => ({
+          item: ITEM,
+          candidate: 0,
+          mergeBase: (j.record as { seen: number }).seen as never,
+        })),
+        versions: { ruleset: 1, policy: 1 },
+      });
+      out.push({
+        header: { type: "write.head", seq: input.op },
+        blocks: {
+          ctx: ctxBlock,
+          request: { sv: 1, sv_basis: "explicit", op_count: 1 },
+          ...enc.head,
         },
-        input,
-        judgement,
-        {
-          intent: "update",
-          created: true,
-          restoreCount: 0,
-          sv: 1,
-          sources: [],
-          versions: { ruleset: 1, policy: 1 },
-        },
-      ),
-    ).toThrow(/encoding a write by external key is not implemented/);
+      });
+      if (enc.base !== undefined) {
+        out.push({
+          header: { type: "write.base", seq: input.event, op: input.op },
+          blocks: enc.base,
+        });
+      }
+      enc.items.forEach((it, k) => {
+        out.push({
+          header: { type: it.type, seq: 1000 + input.event * 10 + k, op: input.op },
+          blocks: it.blocks,
+        });
+      });
+    });
+    for (const e of out) {
+      const p = parseEvent(header(e.header.type, e.header.seq, e.header.op), e.blocks);
+      expect({ seq: e.header.seq, p }).toEqual({
+        seq: e.header.seq,
+        p: { ok: true, type: e.header.type },
+      });
+    }
+    return out;
+  }
+
+  it("is encoded as 09 §5.7 has it: by_external_key, no ver creating its row, ver and baseline hitting one", () => {
+    const evs = encoded();
+    const head = (op: number) =>
+      evs.find((e) => e.header.type === "write.head" && e.header.seq === op)?.blocks;
+    expect(head(10)?.["ops/0/target"]).toEqual({
+      table: "t1",
+      row: ROW,
+      intent: "update",
+      by_external_key: true,
+      created: true,
+    });
+    expect(head(10)?.["ops/0/set/f9"]).toBe("K");
+    expect(head(20)?.["ops/0/target"]).toEqual({
+      table: "t1",
+      row: ROW,
+      intent: "update",
+      by_external_key: true,
+      ver: { op: 10, restore_count: 0, basis: "external_key" },
+    });
+    expect(head(20)?.["ops/0/baseline"]).toEqual({ f2: 10 });
+    expect(head(20)?.["ops/0/noop"]).toEqual(["f3", "f9"]);
+    expect(head(40)?.["ops/0/baseline"]).toEqual({ f2: 20 });
+  });
+
+  it("read back: the records judged, and the next op judged the same", () => {
+    const { state, judgements } = replay(shape, inputs);
+    const decoded = decodeRecords(ctx, encoded());
+    expect(decoded).toEqual(judgements.map((j) => j.record));
+    const next = byKey(50, { f2: "650" });
+    expect(judgeOp(stateFromRecord(shape, decoded), next)).toEqual(judgeOp(state, next));
   });
 });

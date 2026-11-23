@@ -1262,7 +1262,7 @@ interface WriteResult extends CommonResult {
   affected_reads?: AffectedReads;
   /** 这次操作改动的行上，别的行声明过的前提的变化。没有时不给。 */
   premise_affected?: PremiseAffected;
-  /** 只统计按来源键的 op；请求里没有按来源键的 op 时不给。幂等重放时 unchanged、skipped 两项不给（omitted 含 "unrecorded_ops"）。 */
+  /** 只统计按来源键的 op；请求里没有按来源键的 op 时不给。幂等重放时，请求里有没进事件的按来源键 op（日志里是空号）的，unchanged、skipped 两项不给（omitted 含 "unrecorded_ops"）；没有的照给（都是 0）。 */
   external_key_summary?: { created: number; updated: number; unchanged?: number; pending: number; skipped?: number };
   /** 命中请求键的重发：没有新写入，回执按日志重建。此时 pending[] 给的是事项的当前状态、不带 item_ver；回执里的 ver 与事项都不算读到。
    *  前提的部分（premises、premise_covered、premise_affected）记在元数据里，按日志完整重建，标记状态是当时的。 */
@@ -1847,7 +1847,7 @@ type Warning =
   | { code: "clock_behind_log"; behind_seconds: number }                                             // 入口时刻早于日志末端的记录时刻
   | ({ code: "premise_ver_fallback"; op: number; premise: number; ver: Ver } & FallbackOrigin)   // 前提没带 ver，用了最近一次读到的；premise = premises 的下标
   | { code: "premise_already_changed"; op: number; premise: number; since: Seq }                     // 声明时前提已经变了：这一行一写下就带 premise_changed
-  | { code: "evidence_not_stored"; evidence: number[] }                                              // write：请求没有产生事件（全部 op 都是按来源键的 unchanged / skipped），显式带的证据段也没有存下
+  | { code: "evidence_not_stored"; evidence: number[]; op_evidence?: Array<{ op: number; evidence: number[] }> }   // write：证据段没有存下——请求没有产生事件（全部 op 都是按来源键的 unchanged / skipped）时，请求级的段（evidence）与各 op 内联的段（op_evidence，按 op 下标与它的 evidence 下标）；产生了事件时，没进事件的按来源键 op 内联的段（evidence 为空）
   | { code: "external_key_skipped"; ops: number[] }                                                  // write：有按来源键的 op 被跳过（outcome: skipped）
   | { code: "external_key_resync"; rows: TargetRef[]; rows_total: number }                           // deletion_preview、delete、到期关闭的 deletion 事项详情：受影响的行有来源键，
                                                                                                      // 物理删除后 saveslot 不记得这个键，连接器再同步同一条记录时会作为新行重新出现。rows 最多 50 行

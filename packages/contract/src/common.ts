@@ -214,7 +214,12 @@ export type Warning =
   | { code: "clock_behind_log"; behind_seconds: number }
   | ({ code: "premise_ver_fallback"; op: number; premise: number; ver: Ver } & FallbackOrigin)
   | { code: "premise_already_changed"; op: number; premise: number; since: Seq }
-  | { code: "evidence_not_stored"; evidence: number[] }
+  | {
+      code: "evidence_not_stored";
+      evidence: number[];
+      /** Inline segments of ops that entered no event, by op index and the op's `evidence` index. */
+      op_evidence?: Array<{ op: number; evidence: number[] }>;
+    }
   | { code: "external_key_skipped"; ops: number[] }
   | { code: "external_key_resync"; rows: TargetRef[]; rows_total: number }
   | { code: "single_field_external_key"; table: TableName }

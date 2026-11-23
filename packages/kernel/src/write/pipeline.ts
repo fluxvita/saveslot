@@ -66,6 +66,7 @@ import {
   scopeOf,
   seenOf,
   stateFromRecord,
+  syncOutcome,
   type TableShape,
   type Unit,
   unitEntries,
@@ -78,6 +79,7 @@ import {
   isObj,
   type NormalizedField,
   type NormalizedOp,
+  type NormalizedWrite,
   normalizeWrite,
   type RequestError,
   resolveWriteSlot,
@@ -135,10 +137,14 @@ import {
   verFromWrite,
   visibleSlotRows,
 } from "./reads.ts";
-import type { FallbackOrigin, ReceiptWarning } from "./receipt.ts";
 import {
+  externalKeyOf,
+  type FallbackOrigin,
   intervalOut,
+  keySummary,
+  type OpReceipt,
   qualifiedTable,
+  type ReceiptWarning,
   readReceipt,
   type WriteReceipt,
   withDerived,
@@ -1090,6 +1096,30 @@ async function definitionsAt(
 
 /** Writes the request in `tx`; returns its receipt, or the original one for a repeated request. */
 export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt> {
+  return writeIn(tx, input, undefined);
+}
+
+/** What a write by external key came to, for its receipt (04-contract-types §5.1 `OpResult`). */
+interface KeyedOutcome {
+  readonly outcome: "created" | "updated" | "unchanged" | "pending" | "skipped";
+  readonly row: RowId;
+  /** `skipped`: the revoke in effect on the row, by operation (this request's own, if it revoked it). */
+  readonly revokedBy?: OpNumber;
+}
+
+/**
+ * The write path. A write by external key that leaves nothing (`unchanged`, `skipped`) enters no
+ * event and has no `api_call` (09 §4.2), and every source comes before every `write.base`: which
+ * ops leave nothing is known only once they are judged. So the request is judged with every op
+ * entering events; when some left nothing, it is judged again from the start with those left out
+ * (`nothing`), numbered without them. Nothing is written before the events are appended, and an
+ * op that left nothing changed no state the first time either, so the second time judges the same.
+ */
+async function writeIn(
+  tx: Tx,
+  input: WriteInput,
+  nothing: ReadonlySet<number> | undefined,
+): Promise<WriteReceipt> {
   const { actor, now } = input;
   // Names resolve within what the caller can see (04-contract «名字只在可见范围内解析»): a slot,
   // table or field out of range is answered as one that does not exist, with the nearest names
@@ -1210,11 +1240,10 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   });
   if (!normalized.ok) throw requestFailure(normalized.error);
   const req = normalized.request;
-  // By external key, or a key added to a row: taken by normalizing behind the kernel's test switch
-  // only (`acceptExternalKeyForTests`); locating, the three-way comparison and the key index are not
-  // here yet, so such a request stops before anything is looked up or written.
+  // A key added to a row (taken by normalizing behind the kernel's test switch): not here yet, so
+  // such a request stops before anything is looked up or written.
   for (const o of req.ops) {
-    if (o.target.kind === "external_key" || o.externalKey !== undefined) {
+    if (o.externalKey !== undefined) {
       throw new WriteError("internal", "writing by external key is not implemented", {
         reason: "not_implemented",
         param: `ops/${o.index}/external_key`,
@@ -1269,7 +1298,12 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       ? req.requestKey
       : { ...req.requestKey, content: canonicalize([req.requestKey.content, premiseVers]) },
   );
-  const hit = await findRequest(tx, rk, now, input.windows);
+  // A request of writes by external key only has no request key of its own (04-write-and-read
+  // «幂等»: the key makes it idempotent, the same contents again are `unchanged`); an explicit
+  // idempotency key is used as ever.
+  const byKeyOnly = req.ops.every((o) => o.target.kind === "external_key");
+  const keyed = !byKeyOnly || req.requestKey.idempotencyKey !== undefined;
+  const hit = keyed ? await findRequest(tx, rk, now, input.windows) : undefined;
   if (hit !== undefined) {
     const replay = await readReceipt(tx, hit, {
       compiled: receiptNames,
@@ -1296,11 +1330,14 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   // not is refused before anything of its ops is judged. A replay returned above as it was.
   // The segments are numbered once the operation is: the request's, then each op's own, right
   // after it (09 §4.2); a `source_ref` is the source it names.
+  // An op that leaves nothing (this time) stores no source of its own, its inline evidence
+  // included (04-contract §5.4: 不为它存源数据); the request's evidence is stored as ever (09 §5.6).
+  const entering = (o: NormalizedOp) => nothing?.has(o.index) !== true;
   const evidence = await placeEvidence(
     tx,
     [
       ...req.evidence.map((segment, k) => ({ segment, param: `evidence/${k}` })),
-      ...req.ops.flatMap((o) =>
+      ...req.ops.filter(entering).flatMap((o) =>
         (o.evidence ?? []).map((segment, k) => ({
           segment,
           param: `ops/${o.index}/evidence/${k}`,
@@ -1338,11 +1375,17 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   const ownSeqs = new Map<number, readonly Seq[]>();
   let placedAt = req.evidence.length;
   for (const o of req.ops) {
-    const n = o.evidence?.length ?? 0;
+    const n = entering(o) ? (o.evidence?.length ?? 0) : 0;
     ownSeqs.set(o.index, evidenceSeqs.slice(placedAt, placedAt + n));
     placedAt += n;
   }
-  const apiCallOps = req.evidence.length > 0 ? [] : req.ops.filter((o) => o.evidence === undefined);
+  const apiCallOps =
+    req.evidence.length > 0
+      ? []
+      : req.ops.filter((o) => o.evidence === undefined && nothing?.has(o.index) !== true);
+  // Writes by key: what each came to; those that left nothing (this time).
+  const outcomes = new Map<number, KeyedOutcome>();
+  const leftNothing = new Set<number>();
   const apiCallSeq = new Map(
     apiCallOps.map((o, k) => [o.index, (op + 1 + evidence.fresh.length + k) as Seq]),
   );
@@ -1352,11 +1395,13 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   // api_call has none. Each segment is indexed once, when a field first needs it.
   const textOf = new Map<Seq, string | undefined>();
   const named: Seq[] = [];
-  [...req.evidence, ...req.ops.flatMap((o) => o.evidence ?? [])].forEach((g, k) => {
-    const seq = evidenceSeqs[k] as Seq;
-    if (g.kind === "source_ref") named.push(seq);
-    else textOf.set(seq, g.kind === "file_ref" ? g.excerpt : g.text);
-  });
+  [...req.evidence, ...req.ops.filter(entering).flatMap((o) => o.evidence ?? [])].forEach(
+    (g, k) => {
+      const seq = evidenceSeqs[k] as Seq;
+      if (g.kind === "source_ref") named.push(seq);
+      else textOf.set(seq, g.kind === "file_ref" ? g.excerpt : g.text);
+    },
+  );
   for (const [seq, text] of await storedTexts(tx, named)) textOf.set(seq, text);
   const indexes = new Map<Seq, EvidenceIndex | undefined>();
   const literalDone = new Map<string, LiteralResult>();
@@ -1630,9 +1675,47 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         keyOfCreated.set(byKey, { table: table.id, key });
       }
     }
-    const isNew = o.target.kind === "new" || createsByKey;
+    // By external key (04-write-and-read «写法与定位»): the table's key as defined now (a request
+    // at an earlier version where the table had one is not located by it: R446 ②), the row its
+    // key index entry names, or a new row. The same key twice in a request was refused.
+    const external = o.target.kind === "external_key" ? o.target.key : undefined;
+    let keyIds: readonly FieldId[] = [];
+    let byExternalKey: RowId | undefined;
+    let createsByExternalKey = false;
+    if (external !== undefined) {
+      const now_ = slot.tables.find((t) => t.id === table.id);
+      const declared = now_?.kind === "base" ? (now_ as CompiledBaseTable).external_key : undefined;
+      if (declared === undefined) {
+        throw new WriteError("invalid_argument", "the table has no external key", {
+          reason: "no_external_key",
+          param: `${param}/external_key`,
+        });
+      }
+      keyIds = declared;
+      const values = canonicalize(keyIds.map((f) => (external[f]?.value ?? null) as JsonValue));
+      const held = await tx.query<{ holder_row: string; state: string }>(
+        "SELECT holder_row, state FROM external_keys WHERE table_id = $1 AND key_values = $2",
+        [table.id, values],
+      );
+      // A frozen entry (a deletion in its grace period) has no path to it in this version: the
+      // deletion phase skips such an op (`pending_deletion`).
+      if (held.rows[0] !== undefined && held.rows[0].state !== "present") {
+        throw new WriteError("internal", "writing by a key a deletion freezes is not implemented", {
+          reason: "not_implemented",
+          param: `${param}/external_key`,
+        });
+      }
+      const holder = held.rows[0]?.holder_row;
+      if (holder !== undefined) byExternalKey = holder as RowId;
+      else {
+        byExternalKey = input.newId("row") as RowId;
+        createsByExternalKey = true;
+      }
+    }
+    const isNew = o.target.kind === "new" || createsByKey || createsByExternalKey;
     const id =
       byKey ??
+      byExternalKey ??
       (o.target.kind === "new"
         ? input.newId(isState ? "entity" : "row")
         : o.target.kind === "row"
@@ -1652,6 +1735,23 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         : await loadRow(tx, ctx, param);
       rows.set(id, work);
     }
+    // Hitting a revoked row (an earlier op of this request's revoke too): skipped, nothing judged,
+    // recorded or kept (04-write-and-read «被撤销的行不复活»).
+    if (external !== undefined && !createsByExternalKey) {
+      const before: Limit = { upTo: (op - 1) as OpNumber, request: { op, below: o.index } };
+      // One revoke in effect on a row at a time (revoking a revoked row is refused); the latest,
+      // were there more.
+      const by = work.state.revokedBy(before);
+      if (by.length > 0) {
+        outcomes.set(o.index, {
+          outcome: "skipped",
+          row: id as RowId,
+          revokedBy: Math.max(...by) as OpNumber,
+        });
+        leftNothing.add(o.index);
+        continue;
+      }
+    }
 
     // The version the op saw.
     let seen: OpNumber;
@@ -1664,6 +1764,9 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     const latest = (versions: ReadonlySet<number>) => Math.max(-1, ...versions);
     if (isNew) seen = (op - 1) as OpNumber;
     else if (work.createdHere) seen = op;
+    // A write by key hitting a row: no ver, no fallback; judge takes each field's baseline position
+    // and the record its earliest (this is only a placeholder).
+    else if (external !== undefined) seen = (op - 1) as OpNumber;
     else if (o.ver !== undefined) {
       const versions = await rowVersions(tx, verTable, id);
       const read = seenOfVer(o.ver, current);
@@ -1779,6 +1882,17 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       }
     }
 
+    // By external key: creating the row, the key's values are its key fields' (given by this
+    // write); hitting one, the key fields are not judged (a key field given in `set` again was
+    // checked equal above, against the key the row holds).
+    if (external !== undefined) {
+      fields = isNew
+        ? { ...(fields ?? {}), ...Object.fromEntries(keyIds.map((f) => [f, external[f]])) }
+        : Object.fromEntries(
+            Object.entries(fields ?? {}).filter(([f]) => !keyIds.includes(f as FieldId)),
+          );
+    }
+
     // A restatement or a clearing (an update without `set`, 02-integrity «覆盖、取代与清除»): no
     // judgement, no write.base, the row's ver unchanged. Its row must be there (`revoked` as any
     // update's).
@@ -1872,6 +1986,9 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
               ]),
             ),
             ...(ack ? { acknowledge: true } : {}),
+            ...(external !== undefined
+              ? { sync: { keyFields: keyIds, ...(isNew ? { creates: true as const } : {}) } }
+              : {}),
           }
         : o.kind === "revoke"
           ? {
@@ -1897,6 +2014,22 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       throw e;
     }
     const j = judged.judgement;
+    // A write by key: what it came to (04-contract §5.4). Every field a no-op: `unchanged`, judged
+    // and left: no state kept, no event, no source.
+    if (external !== undefined && j.record.kind === "write") {
+      const r = j.record;
+      const outcome = isNew
+        ? ("created" as const)
+        : syncOutcome([
+            ...r.items.map((x) => x.status),
+            ...r.noop.filter((f) => !keyIds.includes(f)).map(() => "noop" as const),
+          ]);
+      outcomes.set(o.index, { outcome, row: id as RowId });
+      if (outcome === "unchanged") {
+        leftNothing.add(o.index);
+        continue;
+      }
+    }
     // Step 5, the ref fields this op writes: their targets as of the ops before it.
     const refs = await refProblems(tx, {
       index: o.index,
@@ -1940,6 +2073,14 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     }
     // Conflicts join the open item of the same unit whose interval meets theirs, the earliest of
     // several (01-objects «目标与合并»); one meeting none opens an item.
+    // The version a candidate carried: its write's seen; a write by key's, the earliest baseline
+    // position over the unit's fields (09 §5.8 `merge_base_op`, from `ops/<i>/baseline`).
+    const carried = (unit: (typeof j.conflicts)[number]["unit"]): OpNumber => {
+      const b = j.record.kind === "write" ? j.record.baseline : undefined;
+      if (b === undefined || unit === "existence") return seen;
+      const at = unit.fields.flatMap((f) => (b[f] === undefined ? [] : [b[f] as number]));
+      return (at.length > 0 ? Math.min(...at) : (j.record as { seen: number }).seen) as OpNumber;
+    };
     const conflictItems = j.conflicts.map((c) => {
       const theirs = scopeFor(work.state, { refs: [...c.items] } as TrackedItem);
       const prior = work.items.find(
@@ -1952,7 +2093,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         const candidate = prior.candidates;
         prior.candidates++;
         prior.cands[candidate] = next as Seq;
-        prior.mergeBase = Math.min(prior.mergeBase, seen) as OpNumber;
+        prior.mergeBase = Math.min(prior.mergeBase, carried(c.unit)) as OpNumber;
         prior.refs = [...prior.refs, ...c.items];
         if (!prior.here) prior.mergedHere = true;
         return { item: prior.item, merged: true as const, candidate, mergeBase: prior.mergeBase };
@@ -1964,7 +2105,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         unit: c.unit,
         candidates: 1,
         cands: [next as Seq],
-        mergeBase: seen,
+        mergeBase: carried(c.unit),
         refs: [...c.items],
         origin: next as Seq,
         versionOp: op,
@@ -1974,7 +2115,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
         reverted: [],
         fills: [],
       });
-      return { item, candidate: 0, mergeBase: seen };
+      return { item, candidate: 0, mergeBase: carried(c.unit) };
     });
     const recorded = "items" in j.record ? j.record.items : [];
     const awaitingItem = recorded.some((x) => x.status === "awaiting")
@@ -2131,6 +2272,34 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     }
   }
 
+  // Writes by key that left nothing (09 §4.2): their receipt entries, as judged now (not in the
+  // log). Every op left nothing: no event at all, the receipt from them. Some did, the first time:
+  // judged again without them, numbered so; the second time must find the same ones.
+  // Read once the request's events are in: an `unchanged` op's row may have been changed by an
+  // ordinary op of this request before it, and its receipt gives the version at the request's end.
+  const unrecordedOps = async () => {
+    const out = new Map<number, OpReceipt>();
+    for (const i of [...leftNothing].sort((a, b) => a - b)) {
+      const o = req.ops[i] as NormalizedOp;
+      const x = outcomes.get(i) as KeyedOutcome;
+      out.set(i, await unrecordedOp(tx, tableOf(o.table), slot.name, o, x, restore));
+    }
+    return out;
+  };
+  if (leftNothing.size === req.ops.length) {
+    // No op changed anything: the versions now are the request's end.
+    return nothingReceipt(req, sv, [...(await unrecordedOps()).values()], warnings);
+  }
+  if (nothing === undefined && leftNothing.size > 0) return writeIn(tx, input, leftNothing);
+  if (
+    nothing !== undefined &&
+    (nothing.size !== leftNothing.size || [...nothing].some((i) => !leftNothing.has(i)))
+  ) {
+    throw new WriteError("internal", "writes by key judged otherwise the second time", {
+      reason: "inconsistent",
+    });
+  }
+
   next += await settleItems(tx, rows.values(), {
     op,
     slot: slot.slot,
@@ -2187,7 +2356,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       },
       request: { sv, sv_basis: svBasis, op_count: req.ops.length },
       ...(task !== null ? { task } : {}),
-      ...rk.block,
+      ...(keyed ? rk.block : {}),
       ...headBlocks,
     },
   };
@@ -2220,6 +2389,7 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
       restoreCount: restore,
       replayed: false,
       visible: (id) => slot.tables.some((t) => t.id === id),
+      unrecorded: await unrecordedOps(),
     })) as WriteReceipt,
     step.derived,
     receiptNames,
@@ -2248,13 +2418,24 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
   }
   // Request-level evidence no op cites (an op naming none cites every segment): stored as sources
   // all the same, the source of no value (04-write-and-read «证据»).
+  // Cited by an op that entered an event: one cited only by ops that left nothing is unreferenced.
   const cited = new Set(
-    req.ops.flatMap(
-      (o) => o.evidenceRefs ?? (o.evidence !== undefined ? [] : req.evidence.map((_, k) => k)),
-    ),
+    req.ops
+      .filter(entering)
+      .flatMap(
+        (o) => o.evidenceRefs ?? (o.evidence !== undefined ? [] : req.evidence.map((_, k) => k)),
+      ),
   );
   const uncited = req.evidence.map((_, k) => k).filter((k) => !cited.has(k));
   if (uncited.length > 0) warnings.push({ code: "evidence_unreferenced", evidence: uncited });
+  // The inline evidence of the ops that left nothing: not stored, and said so (R453).
+  const notStored = inlineNotStored(req, leftNothing);
+  if (notStored.length > 0) {
+    warnings.push({ code: "evidence_not_stored", evidence: [], op_evidence: notStored });
+  }
+  const skipped = [...outcomes].filter(([, x]) => x.outcome === "skipped").map(([i]) => i);
+  if (skipped.length > 0)
+    warnings.push({ code: "external_key_skipped", ops: skipped.sort((a, b) => a - b) });
   // The recorded time was held at the log's end (02-architecture §7 «记录时刻»): the entry's clock
   // is behind it. Whole seconds, rounded up, so that a clock behind at all never reads 0.
   if (prepared.at !== now) {
@@ -2264,4 +2445,90 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     });
   }
   return warnings.length > 0 ? { ...out, warnings } : out;
+}
+
+/**
+ * A write by key that entered no event, as its receipt gives it (04-contract-types §5.1
+ * `OpResult`): its row and key, its outcome; `unchanged`: the row's version (nothing changed it);
+ * `skipped`: why (`revoked`) and by what. No `fields`: nothing of it was judged into the log.
+ */
+async function unrecordedOp(
+  tx: Tx,
+  table: CompiledBaseTable,
+  slotName: string,
+  o: NormalizedOp,
+  x: KeyedOutcome,
+  restore: number,
+): Promise<OpReceipt> {
+  const key = await externalKeyOf(tx, table, x.row);
+  let ver: string | undefined;
+  if (x.outcome === "unchanged") {
+    const versions = await rowVersions(tx, `${table.physical.table}__ver`, x.row);
+    ver = `v${Math.max(...versions)}.${restore}`;
+  }
+  return {
+    target: {
+      table: qualifiedTable(slotName, table),
+      row: x.row,
+      ...(key !== undefined ? { external_key: key } : {}),
+    },
+    intent: o.intent ?? "update",
+    ...(ver !== undefined ? { ver } : {}),
+    outcome: x.outcome,
+    ...(x.outcome === "skipped"
+      ? { skip_reason: "revoked" as const, revoked_by: x.revokedBy as OpNumber }
+      : {}),
+  } as OpReceipt;
+}
+
+/**
+ * The receipt of a request none of whose ops entered an event (09 §4.2: every one a write by key,
+ * `unchanged` or `skipped`): nothing appended, no operation number, so no `seq`; the evidence the
+ * caller gave not stored either (`evidence_not_stored`).
+ */
+function nothingReceipt(
+  req: NormalizedWrite,
+  sv: number,
+  ops: readonly OpReceipt[],
+  warnings: readonly ReceiptWarning[],
+): WriteReceipt {
+  const skipped = ops.flatMap((x, i) => (x.outcome === "skipped" ? [i] : []));
+  const all: ReceiptWarning[] = [
+    ...warnings,
+    ...(skipped.length > 0 ? [{ code: "external_key_skipped" as const, ops: skipped }] : []),
+    ...(() => {
+      // Nothing stored at all (04-contract §5.4): the request's segments and every op's own.
+      const inline = inlineNotStored(req, new Set(req.ops.map((o) => o.index)));
+      return req.evidence.length > 0 || inline.length > 0
+        ? [
+            {
+              code: "evidence_not_stored" as const,
+              evidence: req.evidence.map((_, k) => k),
+              ...(inline.length > 0 ? { op_evidence: inline } : {}),
+            },
+          ]
+        : [];
+    })(),
+  ];
+  return {
+    status: "saved",
+    sv,
+    ops,
+    derived: [],
+    derived_total: 0,
+    pending: [],
+    superseded: [],
+    external_key_summary: keySummary(ops, false),
+    ...(all.length > 0 ? { warnings: all } : {}),
+  } as unknown as WriteReceipt;
+}
+
+/** The inline evidence segments of the ops in `ops`, by op: indices into each op's `evidence`. */
+function inlineNotStored(
+  req: NormalizedWrite,
+  ops: ReadonlySet<number>,
+): { op: number; evidence: number[] }[] {
+  return req.ops
+    .filter((o) => ops.has(o.index) && (o.evidence?.length ?? 0) > 0)
+    .map((o) => ({ op: o.index, evidence: (o.evidence ?? []).map((_, k) => k) }));
 }

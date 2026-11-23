@@ -96,11 +96,14 @@ function run(table: TableShape, inputs: readonly JudgeInput[]) {
   }
   return { state, js, last: js[js.length - 1] as Judgement };
 }
-/** Each field's result in a write's judgement: its items' status, or `noop`. */
+/**
+ * Each field's result in a write's judgement: its items' status, or `noop`. The key field is left
+ * out: hitting a row, the record lists it among the no-ops (09 §5.7), never judged.
+ */
 function results(j: Judgement): Record<string, string> {
   const r = j.record as WriteRecord;
   const out: Record<string, string> = {};
-  for (const f of r.noop) out[f] = "noop";
+  for (const f of r.noop) if (!KEY.includes(f)) out[f] = "noop";
   for (const x of r.items) out[x.target] = x.status;
   return out;
 }
@@ -352,6 +355,11 @@ describe("what a write by key is not", () => {
     expect(() => run(T, [user(10, 9, { f2: "500" }), synced(20, { f2: "600" })])).toThrow(
       JudgeError,
     );
+  });
+
+  it("hitting a row, the record lists the key fields among the no-ops (09 §5.7 ops/<i>/noop)", () => {
+    const { last } = run(T, [SYNCED_600, synced(20, { f2: "650" })]);
+    expect((last.record as WriteRecord).noop).toEqual(["f9"]);
   });
 
   it("a write by key creating its row: items marked as sync contributions, no baseline", () => {
