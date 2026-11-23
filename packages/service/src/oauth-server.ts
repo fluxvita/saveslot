@@ -66,8 +66,11 @@ export interface OAuthDeps {
   readonly control: ControlPlane;
   readonly pool: { use<T>(tenant: TenantId, fn: (t: OpenTenant) => Promise<T>): Promise<T> };
   readonly fetchClient: ClientFetcher;
-  /** Issues the CLI's user sessions, from the login a code was consented under. */
-  readonly identity: Pick<IdentityProvider, "issueUserSession">;
+  /**
+   * Issues user sessions: the CLI's, from the login a code was consented under, and the console's,
+   * from an assertion it takes (`acceptAssertion`, only a provider that takes assertions has it).
+   */
+  readonly identity: Pick<IdentityProvider, "issueUserSession" | "acceptAssertion">;
   /** The external address (configuration): the issuer and the tokens' audience. */
   readonly external: string;
   readonly windows: { readonly requestKey: number; readonly idempotencyKey: number };

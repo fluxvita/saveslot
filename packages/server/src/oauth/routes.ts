@@ -5,8 +5,10 @@
 // - `GET /.well-known/oauth-protected-resource` (RFC 9728), also under the MCP endpoint's path, and
 //   `GET /.well-known/oauth-authorization-server` (RFC 8414): JSON, cacheable for a few minutes.
 // - `POST /oauth/token`: a form (`application/x-www-form-urlencoded`) of at most 64 KiB;
-//   `authorization_code`, `refresh_token` and the device code's. Answers carry `Cache-Control: no-store`; an error is
-//   `{error, error_description}` with 400 (RFC 6749 §5.2).
+//   `authorization_code`, `refresh_token` and the device code's, and `jwt-bearer` (RFC 7523) when the
+//   identity provider takes assertions: the hosted console's session exchange. Answers carry
+//   `Cache-Control: no-store`; an error is `{error, error_description}` with 400, 401 for
+//   `invalid_client` (RFC 6749 §5.2).
 // - `POST /oauth/revoke` (RFC 7009): a form of the same kind and limit; 200 with an empty body
 //   whether or not the token was one to revoke, an error only for a request missing what it needs.
 // - `POST /oauth/device` (RFC 8628 §3.1): a form of the same kind and limit; the CLI's only.
@@ -16,10 +18,13 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  type AssertionTokenResponse,
   DEVICE_VERIFY_PATH,
   exchangeRefreshToken,
   type IdentityProvider,
+  JWT_BEARER,
   type OAuthDeps,
+  redeemAssertion,
   redeemCode,
   redeemDeviceCode,
   revokeToken,
@@ -28,6 +33,7 @@ import {
   TokenError,
   type TokenErrorCode,
   type TokenResponse,
+  takesAssertions,
 } from "@fluxvita/saveslot-service";
 import { handleAuthorize } from "./consent.ts";
 import { type DeviceTries, handleDeviceVerify } from "./device-page.ts";
@@ -60,8 +66,11 @@ export function protectedResourceMetadata(external: string, resource: string) {
   };
 }
 
-/** RFC 8414 §2: the authorization server's metadata. */
-export function authorizationServerMetadata(external: string) {
+/**
+ * RFC 8414 §2: the authorization server's metadata. `jwt-bearer` is among the grant types only when
+ * the identity provider takes assertions.
+ */
+export function authorizationServerMetadata(external: string, o: { readonly jwtBearer: boolean }) {
   return {
     issuer: external,
     authorization_endpoint: `${external}${OAUTH_PATHS.authorize}`,
@@ -70,7 +79,12 @@ export function authorizationServerMetadata(external: string) {
     revocation_endpoint_auth_methods_supported: ["none"],
     device_authorization_endpoint: `${external}${OAUTH_PATHS.device}`,
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code", "refresh_token", DEVICE_GRANT],
+    grant_types_supported: [
+      "authorization_code",
+      "refresh_token",
+      DEVICE_GRANT,
+      ...(o.jwtBearer ? [JWT_BEARER] : []),
+    ],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
     scopes_supported: [...SCOPES],
@@ -166,7 +180,9 @@ export async function handleOAuth(
       break;
     case OAUTH_PATHS.authorizationServer:
       name = "oauth.authorization_server";
-      status = metadata(authorizationServerMetadata(external));
+      status = metadata(
+        authorizationServerMetadata(external, { jwtBearer: takesAssertions(ctx.deps.identity) }),
+      );
       break;
     case OAUTH_PATHS.token:
       name = "oauth.token";
@@ -263,7 +279,7 @@ async function token(
   const grants = form.getAll("grant_type");
   if (grants.length !== 1) return tokenError(res, "invalid_request", "grant_type is required once");
   try {
-    let r: TokenResponse;
+    let r: TokenResponse | AssertionTokenResponse;
     switch (grants[0]) {
       case "authorization_code":
         r = await redeemCode(ctx.deps, form, ctx.now());
@@ -273,6 +289,9 @@ async function token(
         break;
       case DEVICE_GRANT:
         r = await redeemDeviceCode(ctx.deps, form, ctx.now());
+        break;
+      case JWT_BEARER:
+        r = await redeemAssertion(ctx.deps, form, ctx.remote(req), ctx.now());
         break;
       default:
         return tokenError(res, "unsupported_grant_type", "the grant type is not supported");

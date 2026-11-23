@@ -11,6 +11,12 @@
 /** The client ID of saveslot's own CLI: a public client, redirected to the loopback only. */
 export const CLI_CLIENT_ID = "saveslot-cli";
 
+/**
+ * The client ID of the hosted console's session exchange (oauth-assertion.ts): a built-in public
+ * client that only exchanges assertions, never sent to the authorization page.
+ */
+export const CONSOLE_CLIENT_ID = "saveslot-console";
+
 /** At most this many bytes of a client document are read. */
 export const CLIENT_DOCUMENT_MAX_BYTES = 16 * 1024;
 /** A client document is kept at least this long, and at most the next; without a word, the least. */

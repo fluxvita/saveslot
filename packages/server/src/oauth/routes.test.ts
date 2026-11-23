@@ -1,8 +1,9 @@
 // The authorization server's routes over real HTTP on the loopback, without a database: the two
 // metadata documents, every way the token endpoint refuses a request before or around a redemption
 // or an exchange, and the revocation endpoint's answers. Redemption, exchange and revocation
-// themselves are tested in the service (oauth-server.test.ts, oauth-refresh.test.ts); here the
-// store is a stand-in that knows no code and no token. Fictional addresses.
+// themselves are tested in the service (oauth-server.test.ts, oauth-refresh.test.ts,
+// oauth-assertion.test.ts); here the store is a stand-in that knows no code and no token, and the
+// identity provider one that takes assertions only when a case says so. Fictional addresses.
 
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -17,6 +18,12 @@ const logged: Record<string, string | number>[] = [];
 const warned: string[] = [];
 let failTake = false;
 let failRefresh = false;
+/** Whether the identity provider takes assertions, and the sources it was given. */
+let assertions = false;
+const sources: string[] = [];
+const TENANT = `tn_${"0".repeat(26)}`;
+const USER = `u_${"1".repeat(26)}`;
+const SESSION_TOKEN = `sls_${"S".repeat(43)}`;
 
 const deps = {
   external: EXT,
@@ -31,8 +38,23 @@ const deps = {
       if (failRefresh) throw new Error("the database is gone");
       return undefined;
     },
+    putGrant: async () => {},
   },
-  control: { credential: async () => undefined },
+  control: {
+    credential: async () => undefined,
+    tenantOf: async () => ({ id: TENANT, owner: USER, state: "active" }),
+  },
+  identity: {
+    get acceptAssertion() {
+      return assertions
+        ? async (assertion: string, remote: string) => {
+            sources.push(remote);
+            return assertion === "good" ? { user: USER, session: "s1" } : undefined;
+          }
+        : undefined;
+    },
+    issueUserSession: async () => SESSION_TOKEN,
+  },
 } as unknown as OAuthDeps;
 
 beforeAll(async () => {
@@ -81,6 +103,7 @@ const post =
 const token = post(OAUTH_PATHS.token);
 const revoke = post(OAUTH_PATHS.revoke);
 const REFRESH = `slr_${"R".repeat(43)}`;
+const JWT = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
 async function refused(r: Response, status: number, error: string) {
   expect(r.status).toBe(status);
@@ -129,6 +152,23 @@ describe("metadata", () => {
       authorization_response_iss_parameter_supported: true,
     });
     expect(m).not.toHaveProperty("registration_endpoint");
+  });
+
+  it("authorization server: jwt-bearer among the grant types only when the provider takes assertions", async () => {
+    assertions = true;
+    try {
+      const r = await fetch(`${base}${OAUTH_PATHS.authorizationServer}`);
+      expect(
+        ((await r.json()) as { grant_types_supported: string[] }).grant_types_supported,
+      ).toEqual([
+        "authorization_code",
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:device_code",
+        JWT,
+      ]);
+    } finally {
+      assertions = false;
+    }
   });
 
   it("only GET and HEAD", async () => {
@@ -214,6 +254,40 @@ describe("token endpoint", () => {
       401,
       "invalid_client",
     );
+  });
+
+  it("jwt-bearer from a provider that takes no assertions: unsupported_grant_type", async () => {
+    await refused(
+      await token(form({ grant_type: JWT, assertion: "good" })),
+      400,
+      "unsupported_grant_type",
+    );
+  });
+
+  it("jwt-bearer: a session of 15 minutes and no refresh token; the request's source passed on", async () => {
+    assertions = true;
+    sources.length = 0;
+    try {
+      const r = await token(form({ grant_type: JWT, assertion: "good" }));
+      expect(r.status).toBe(200);
+      expect(r.headers.get("cache-control")).toBe("no-store");
+      expect(await r.json()).toEqual({
+        access_token: SESSION_TOKEN,
+        token_type: "Bearer",
+        expires_in: 900,
+        scope: "saveslot.read saveslot.write saveslot.schema saveslot.delete",
+      });
+      expect(sources).toEqual(["127.0.0.1"]);
+      await refused(
+        await token(form({ grant_type: JWT, assertion: "good", client_id: "saveslot-cli" })),
+        401,
+        "invalid_client",
+      );
+      await refused(await token(form({ grant_type: JWT, assertion: "bad" })), 400, "invalid_grant");
+      await refused(await token(form({ grant_type: JWT })), 400, "invalid_request");
+    } finally {
+      assertions = false;
+    }
   });
 
   it("a form field named __proto__ is a field like any other", async () => {

@@ -965,7 +965,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 | `GET /.well-known/oauth-protected-resource` | 受保护资源元数据（RFC 9728）：指向授权服务器，列出四个 scope |
 | `GET /.well-known/oauth-authorization-server` | 授权服务器元数据（RFC 8414） |
 | `GET /oauth/authorize` | 授权页：用户给这次接入起名字、选 scope |
-| `POST /oauth/token` | 换取与刷新令牌：`authorization_code`、`refresh_token`；CLI 登录另用设备码（RFC 8628） |
+| `POST /oauth/token` | 换取与刷新令牌：`authorization_code`、`refresh_token`；CLI 登录另用设备码（RFC 8628）；身份提供者收身份声明时（外部登录），另收 `urn:ietf:params:oauth:grant-type:jwt-bearer`（RFC 7523）：表单里每个参数至多一次、`assertion` 恰好一个且非空，先核这些再问提供者；声明由身份提供者核（第一次见到的账户按请求的来源计数），换来 15 分钟的用户会话，不发刷新令牌；这个会话记在以提供者给的 `session` 为 ID、客户端为 `saveslot-console` 的授权下，先记授权再签会话，提供者不签（账户此间被停用、租户不在启用状态）时这次授权作废。提供者不收声明时回 `unsupported_grant_type`，声明不被接受或用户没有租户时回 `invalid_grant`。授权服务器元数据的 `grant_types_supported` 只在收声明时列出它 |
 | `POST /oauth/device` | 设备码授权的发起（`saveslot login --device`） |
 | `GET`、`POST /oauth/device/verify` | 设备码的验证页：用户在已登录的浏览器里输入终端上显示的代码，批准或拒绝 |
 | `POST /oauth/revoke` | 吊销令牌（RFC 7009） |
@@ -986,6 +986,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
   - 回调地址与文档里的某一项逐字相同；回环 IP 字面量的回调不比端口（RFC 8252 §7.3）。客户端与回调地址都通过之前出的错只显示错误页，不跳回客户端；之后的错误按 RFC 6749 带 `state` 跳回，并带 `iss`（RFC 9207）。
   - 只收 DCR 的客户端在第一版连不上，用户只能手动填客户端 ID；按实测的客户端支持情况补 DCR（scope-v1）。
 - **saveslot 的 CLI 是内置的公共客户端** `saveslot-cli`，不经 CIMD。回调只收回环 IP 字面量（`127.0.0.1`、`[::1]`）上的 `/callback`，端口不限；不收 `localhost`（它可能被解析到别处，RFC 8252 §8.3）。它的授权页只问"登录 saveslot CLI"，不选 scope：换来的是用户会话，不是连接实例。
+- **工作台换会话用的也是内置的公共客户端** `saveslot-console`，只用来交换身份声明，不进授权页：`jwt-bearer` 的请求可以不带 `client_id`，带了就必须是它，否则报 `invalid_client`；换来的会话记在这个客户端的授权下，工作台吊销（RFC 7009）时送的就是它。
 - **令牌**：不透明的随机令牌，控制面只存 SHA-256，写法与本机令牌相同；不用自包含的令牌（JWT）：每个请求本来就要读主体登记，吊销从下一个请求起生效。
 
   | 东西 | 形状 | 有效期 |

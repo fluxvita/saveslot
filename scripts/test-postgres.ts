@@ -44,6 +44,7 @@ export const TESTED = [
   "packages/service/src/local-accounts.test.ts",
   "packages/service/src/local-identity.test.ts",
   "packages/service/src/external-identity.test.ts",
+  "packages/service/src/oauth-assertion.test.ts",
 ];
 
 /** Files not run on PostgreSQL, each with why. */
