@@ -1184,7 +1184,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 - `deps` 含 `items` 里的每一项，以及截出这些区间的贡献。
 - 事项的候选项（采纳与回到合并基所说的 K）按（`event`, 事项 `target.unit`）认，不按 `items` 里的下标：删除让同一次候选写入的几项合并、留最小下标时，按下标认会认丢。
 - **下标 `k` 就是候选号**，全文只有这一套：契约 `Candidate.index`、`resolve` 的 `candidate`、`item.resolved` 的 `candidate`、`item.refreshed` 的 `dropped_candidates` / `restored_candidates` 与它重新给出的 `candidates/<k>`，指的都是它。`take_candidate` 采纳该候选的**全部项**。
-- 候选的一部分项因隐私删除不再是贡献、其余仍在时，候选还是这个候选（下标不变）：原条目块按 `deps` 清除，随后的 `item.refreshed` 用同一个下标重新给出只含剩余项的条目。全部项都不在了，才列入 `dropped_candidates`。
+- 候选的一部分项因隐私删除不再是贡献、其余仍在时，候选还是这个候选（下标不变）：原条目块按 `deps` 清除，随后的 `item.refreshed` 用同一个下标重新给出只含剩余项的条目。因这次删除不再是这个事项里的候选的，才列入 `dropped_candidates`：成因被删而生效、转为待确认（由接替的事项接着）、被回退记录覆盖、全部项都被删掉；同一事项里还有候选仍未决时，事项刷新而不被取代。
 
 `impact/<k>` 的形状随成因：
 
@@ -1226,11 +1226,11 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 
 - `cause` 为 `entries_changed`：一次请求结束时，事项没被改到，但重算出的内容与现有不同（"一次请求里的事项内容"）；`by_event` 是这次请求在这一行上最后一条 `write.base`；没有 `writer_had_read`。
 - `writer_had_read`：写入方当时是否读过这个事项的当前版本。写入时查一次读取审计，把结果记在这里，重放不重算。`cause` 为 `target_overwritten` 时恒为 `false`（读过就是取代，不是刷新）。
-- `cause` 为 `entries_deleted`：隐私删除清掉了事项的部分条目而事项仍未决（例如去掉了一个候选），`dropped_candidates` 列出被去掉的候选下标；此时没有 `by_event`。`by_event` 是改到事项目标的那条 `write.base` 事件（`references_changed` 时是引用方的那条）。
+- `cause` 为 `entries_deleted`：隐私删除清掉了事项的部分条目而事项仍未决（例如去掉了一个候选），`dropped_candidates` 列出被去掉的候选下标；同一次删除里另有候选回到这个事项时，`restored_candidates` 一并列在这一条里（一次操作里每个事项至多一条 `item.refreshed`，§4.2）；此时没有 `by_event`。`by_event` 是改到事项目标的那条 `write.base` 事件（`references_changed` 时是引用方的那条）。
 - `cause` 为 `matched_changed`：`flagged` 事项比中的两行里任何一行（被标记的那一行，或被比中的另一行）被撤销或改动，事项仍未决；`by_event` 是那条 `write.base`。`flagged` 事项不看读没读过，没有 `writer_had_read`。
-- `cause` 为 `entries_restored`：撤回一次删除之后，事项当初被去掉的候选放回来。`restored_candidates` 只列**整条被去掉过**的候选的下标（与 `dropped_candidates` 对称）；候选当初只少了一部分项、撤回后那些项回来的，下标不进 `restored_candidates`，本事件用同一下标重新给出含全部项的 `candidates/<k>`。本事件的 `candidates/<k>` 按撤回后的状态重新给出它们（以本事件为准，不读回原来的块）；此时没有 `by_event`。
+- `cause` 为 `entries_restored`：撤回一次删除之后，或之后的删除让当初被去掉的候选回到仍未决的原事项（因先前的删除才生效、本次回到原来的种类），事项当初被去掉的候选放回来。`restored_candidates` 只列**整条被去掉过**的候选的下标（与 `dropped_candidates` 对称）；候选当初只少了一部分项、撤回后那些项回来的，下标不进 `restored_candidates`，本事件用同一下标重新给出含全部项的 `candidates/<k>`。本事件的 `candidates/<k>` 按撤回或删除之后的状态重新给出它们（以本事件为准，不读回原来的块）；此时没有 `by_event`。
 - **第一版不出现这一种**：宽限期内受这项删除影响的行上不能解决事项（data-model「删除 · 撤回与宽限期」），被去掉候选的事项撤回时要么仍未决（走上一条），要么已在宽限期内被取代（不放回）。格式留着，供放开那条限制时用：撤回删除时事项**已经解决**的，不产生 `item.refreshed`，原事项的解决不动。放回来的候选按撤回时的当前状态重新判定，由撤回事件逐项重述：与当前生效值同值的项，按普通规则成为 `dropped`（没指证据）或 `corroborated`（指了证据）；否则仍是 `candidate`。只要还有一项是 `candidate`，随后一条 `item.created`（成因 `restored_candidate`）为这个候选另开事项，新事项里它的 `items` 只含仍是候选的那几项。回执的 `rejudged` 按候选给一条：还有项是候选记 `reopened`；否则有项成了佐证记 `corroborated`，全部成了 `dropped` 记 `dropped`。
-- `target` 各键的出现条件：`dropped_candidates` 只随 `entries_deleted`、`restored_candidates` 只随 `entries_restored`，出现时非空；`by_event` 在 `entries_deleted`、`entries_restored` 时没有，其余成因必有；`writer_had_read` 在 `target_overwritten`（恒为 `false`）与 `references_changed` 时必有，其余成因没有；`merge_base_op` 对每种成因都可缺，给出时是刷新后的合并基。
+- `target` 各键的出现条件：`dropped_candidates` 只随 `entries_deleted`，`restored_candidates` 随 `entries_restored`，或随 `entries_deleted`（同一次删除里既有候选离开、又有候选回来时：有候选离开就取 `entries_deleted`，只有候选回来才取 `entries_restored`），出现时非空；`by_event` 在 `entries_deleted`、`entries_restored` 时没有，其余成因必有；`writer_had_read` 在 `target_overwritten`（恒为 `false`）与 `references_changed` 时必有，其余成因没有；`merge_base_op` 对每种成因都可缺，给出时是刷新后的合并基。
 - **回退类的待确认事项**（提议是一次 `undo`）：刷新时按当前状态重新判定，`scope_valid` 取这次确认会写回的区间（与确认时的判定相同），`impact/*` 取同一次 `undo` 按当前状态重判的结果（确认的判定不算高影响 ①，列不出会被覆盖的段）；两次判定列出的回退条目相同。两组块各列各自的 `deps`：`scope_valid` 的出自确认的判定，`impact/*` 的出自 `undo` 的重判。只有 `deps` 变了，内容也算变了：事项刷新、版本换新（与确认哈希把 `deps` 算在内一致）。重判之后既没有要写回的项、也没有要遮住或回掉的写入时，不刷新，改发 `item.superseded`（`nothing_to_revert`）。写入方读过事项时照旧是 `overwritten`：那种情形本来就不刷新，也就没有要替代的刷新。
 - `apply`：事项版本换成本操作号。
 

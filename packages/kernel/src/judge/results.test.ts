@@ -4,6 +4,7 @@ import type { BizPoint } from "@fluxvita/saveslot-contract-core";
 import type { Op, TableSchema } from "@fluxvita/saveslot-reference";
 import { EVENT, STATE } from "@fluxvita/saveslot-reference/testing";
 import { describe, expect, it } from "vitest";
+import { itemsByRecords } from "./fates.ts";
 import type { Restatement } from "./model.ts";
 import { deletionResult } from "./replay-deletion.ts";
 import { rowResult } from "./results.ts";
@@ -50,6 +51,12 @@ function run(schema: TableSchema, ops: Op[], sources: string[], pending: string[
     steps.map((x) => x.judgement.record),
     all,
     before,
+    itemsByRecords(
+      new RowState(
+        table,
+        steps.map((x) => x.judgement.record),
+      ),
+    ),
   );
 }
 

@@ -28,20 +28,22 @@
 import type { FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
 import { canonical, type IntervalSet, isNothing, meet } from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
+import { type ItemsGiven, type ItemsResult, itemsResult } from "./fates.ts";
 import { ackOf, emptyState, judgeOp, withoutDeps } from "./judge.ts";
-import type {
-  ConfirmRecord,
-  FieldInput,
-  OpRecord,
-  RejectRecord,
-  Restatement,
-  RevertRecord,
-  RevokeInput,
-  TableShape,
-  TakeCandidateRecord,
-  Target,
-  WriteInput,
-  WriteRecord,
+import {
+  type ConfirmRecord,
+  contributionKey,
+  type FieldInput,
+  type OpRecord,
+  type RejectRecord,
+  type Restatement,
+  type RevertRecord,
+  type RevokeInput,
+  type TableShape,
+  type TakeCandidateRecord,
+  type Target,
+  type WriteInput,
+  type WriteRecord,
 } from "./model.ts";
 import { givenByRecords, type LatestGiven, renumber, restatements } from "./restate.ts";
 import { ALL_TIME, type Outcome, outcomeOf, type RowResult, rowResult } from "./results.ts";
@@ -50,8 +52,7 @@ import { type Item, RowState } from "./state.ts";
 import { judgeTakeCandidate } from "./take.ts";
 import { judgeRevoke, judgeWrite, type ReplayOptions } from "./write.ts";
 
-/** The (event, target) of a contribution, as the caller lists the deleted ones. */
-export const contributionKey = (event: number, target: Target): string => `${event}/${target}`;
+export { contributionKey } from "./model.ts";
 
 const effective = (s: string) => s === "applied" || s === "corroborated";
 
@@ -555,19 +556,23 @@ export function replayDeletion(
  * (`replayDeletion`), the row's `results` entry and outcome, and `recreated`. `deleted`: every
  * contribution deleted by this deletion and the ones still pending before it; `pendingBefore`:
  * those of the deletions still pending before it (the state before this deletion is their
- * replay; with none, the records as written). `latest`: as for `replayDeletion`.
+ * replay; with none, the records as written). `items`: which item each (event, target) ever
+ * pending is in and how each item stands, from the log's item events (fates.ts); the item layer
+ * comes back as `items`. `latest`: as for `replayDeletion`.
  */
 export function deletionResult(
   table: TableShape,
   records: readonly OpRecord[],
   deleted: ReadonlySet<string>,
-  pendingBefore: ReadonlySet<string> = new Set(),
+  pendingBefore: ReadonlySet<string>,
+  items: ItemsGiven,
   latest: LatestGiven = givenByRecords(records),
 ): {
   readonly replay: ReturnType<typeof replayDeletion>;
   readonly before: RowState;
   readonly result: RowResult;
   readonly outcome?: Outcome;
+  readonly items: ItemsResult;
 } {
   const before =
     pendingBefore.size > 0
@@ -607,5 +612,6 @@ export function deletionResult(
     before,
     result,
     ...(result.listed ? { outcome: outcomeOf(result, before, replay.state) } : {}),
+    items: itemsResult(before, replay.state, records, items),
   };
 }

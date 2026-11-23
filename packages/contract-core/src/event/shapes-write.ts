@@ -833,7 +833,7 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
       references_changed: { req: ["by_event", "writer_had_read"], opt: [] },
       matched_changed: { req: ["by_event"], opt: [] },
       entries_changed: { req: ["by_event"], opt: [] },
-      entries_deleted: { req: [], opt: ["dropped_candidates"] },
+      entries_deleted: { req: [], opt: ["dropped_candidates", "restored_candidates"] },
       entries_restored: { req: [], opt: ["restored_candidates"] },
     };
     const shape =

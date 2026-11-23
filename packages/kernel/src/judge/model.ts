@@ -108,6 +108,9 @@ export const seenOf = (x: {
   readonly seenCurrent?: true;
 }): OpNumber => (x.seenCurrent === true ? ((x.op - 1) as OpNumber) : x.seen);
 
+/** The (event, target) of a contribution, as the caller lists the deleted ones. */
+export const contributionKey = (event: number, target: Target): string => `${event}/${target}`;
+
 export interface FieldInput {
   /** The value after validation and unit conversion, in its canonical form. */
   readonly value: FieldValue;

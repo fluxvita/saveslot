@@ -879,9 +879,10 @@ export interface ItemMergedTarget extends ItemTargetVersions {
  * `item.refreshed` `target` (meta).
  * `by_event` is absent for `entries_deleted` and `entries_restored`; `writer_had_read` is absent
  * for `matched_changed` (flagged items do not look at reads).
- * Presence per cause (§5.8): `dropped_candidates` only with `entries_deleted`,
- * `restored_candidates` only with `entries_restored`, non-empty when present; `merge_base_op`
- * optional on every cause.
+ * Presence per cause (§5.8): `dropped_candidates` only with `entries_deleted`;
+ * `restored_candidates` with `entries_restored`, or with `entries_deleted` when the same deletion
+ * also brings candidates back (one `item.refreshed` an item an operation, §4.2); non-empty when
+ * present; `merge_base_op` optional on every cause.
  */
 export type ItemRefreshedTarget =
   | {
@@ -915,6 +916,7 @@ export type ItemRefreshedTarget =
       readonly item: ItemId;
       readonly cause: "entries_deleted";
       readonly dropped_candidates?: readonly [Index, ...Index[]];
+      readonly restored_candidates?: readonly [Index, ...Index[]];
       readonly merge_base_op?: OpNumber;
     }
   | {

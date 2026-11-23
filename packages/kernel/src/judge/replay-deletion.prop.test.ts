@@ -21,13 +21,15 @@ import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 import type { IntervalSet } from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
+import { advance, openItems } from "./fates.fixture.ts";
+import { type ItemsGiven, type ItemsResult, itemsByRecords, pendingIn } from "./fates.ts";
 import { view } from "./judge.ts";
-import type { OpRecord, Restatement } from "./model.ts";
+import type { OpRecord, Restatement, Target } from "./model.ts";
 import { deletionResult, replayDeletion } from "./replay-deletion.ts";
 import { type GivenBlock, givenByRecords } from "./restate.ts";
 import type { Stretch } from "./results.ts";
 import { type Decision, deletedContributions, judged, scenario } from "./scenarios.fixture.ts";
-import { EVERYTHING, type RowState } from "./state.ts";
+import { EVERYTHING, RowState } from "./state.ts";
 
 vi.setConfig({ testTimeout: 120_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 110_000, markInterruptAsFailure: true });
@@ -241,7 +243,17 @@ function compare(
   // before and after: every piece of a field whose value or giver changed is in a listed stretch
   // with the value the reference gives now; `deleted` exactly when the row existed before only.
   {
-    const res = deletionResult(table, records, gone);
+    const given = itemsByRecords(new RowState(table, records));
+    const res = deletionResult(table, records, gone, new Set(), given);
+    // The item layer (03-deletion «删除不增加未决事项»): every (event, target) pending after was
+    // pending when written (`itemsResult` refuses one with no item given); a fate exactly where its
+    // pending membership changes. On the items as the records give them, and on two variants the
+    // records alone do not make: a conflict unit's candidates of several writes in one item, and an
+    // item superseded for another reason (overwritten).
+    for (const g of [given, joined(given), overwritten(given)]) {
+      const r = g === given ? res : deletionResult(table, records, gone, new Set(), g);
+      itemsHold(r.before, r.replay.state, records, g, r.items);
+    }
     // The deps of each listed stretch are complete (09 §3.5, §5.9 «段的定义»): deleting one more
     // contribution related to its value or ends (an item on its field, on existence or on a field
     // deciding "has a value", with an end where the stretch has one, or the stretch's giver) leaves
@@ -337,6 +349,31 @@ function compare(
       const once = replayDeletion(table, records, first);
       const afterFirst = overlay(givenByRecords(records), once.restated, first);
       const then = replayDeletion(table, records, gone, [], afterFirst);
+      // The item layer across both, each deletion given the items as the one before left them:
+      // nothing pending is left without an item to be in.
+      for (const given of [
+        itemsByRecords(new RowState(table, records)),
+        joined(itemsByRecords(new RowState(table, records))),
+      ]) {
+        const one = deletionResult(table, records, first, new Set(), given);
+        const between = advance(given, one.items);
+        const two = deletionResult(table, records, gone, first, between);
+        itemsHold(two.before, two.replay.state, records, between, two.items);
+        const end = advance(between, two.items);
+        // The order of deletions does not matter to the open items either (03-deletion
+        // «删除不增加未决事项»: the original item is the one when written).
+        const once = advance(given, deletionResult(table, records, gone, new Set(), given).items);
+        expect(openItems(end, two.replay.state)).toEqual(openItems(once, two.replay.state));
+        for (const [key, f] of two.items.fates) {
+          const [ev, target] = key.split("/") as [string, Target];
+          if (pendingIn(two.replay.state, Number(ev), target) === undefined) continue;
+          if (f.kind === "returned" && f.into !== "merged") continue;
+          expect({ key, standing: end.items.get(end.of.get(key) ?? "")?.standing }).toEqual({
+            key,
+            standing: { kind: "open" },
+          });
+        }
+      }
       // The round trip across both: the second deletion's restatements laid over the blocks the
       // first left give its replay's items (an item back from dropped must be restated).
       expect(withoutDropped(overlay(afterFirst, then.restated, gone))).toEqual(
@@ -431,6 +468,38 @@ function compare(
   };
 }
 
+/** How many fates and refreshed items the samples gave (the item layer's coverage). */
+const itemCover: Record<string, number> = {};
+
+/** The items with each conflict unit's candidates in one item (the earliest's), all open. */
+function joined(g: ItemsGiven): ItemsGiven {
+  const first = new Map<string, string>();
+  const to = (id: string) => {
+    const x = g.items.get(id);
+    if (x?.kind !== "conflict") return id;
+    const unit = x.unit === "existence" ? "existence" : [...x.unit.fields].sort().join(",");
+    if (!first.has(unit)) first.set(unit, id);
+    return first.get(unit) as string;
+  };
+  const of = new Map(
+    [...g.of]
+      .sort(([a], [b]) => Number(a.split("/")[0]) - Number(b.split("/")[0]))
+      .map(([k, id]) => [k, to(id)]),
+  );
+  return { original: of, of, items: g.items };
+}
+
+/** The items with the first conflict item superseded as overwritten. */
+function overwritten(g: ItemsGiven): ItemsGiven {
+  const id = [...g.items].find(([, x]) => x.kind === "conflict" && x.standing.kind === "open")?.[0];
+  if (id === undefined) return g;
+  const items = new Map(g.items);
+  const x = items.get(id);
+  if (x !== undefined)
+    items.set(id, { ...x, standing: { kind: "superseded", reason: "overwritten" } });
+  return { ...g, items };
+}
+
 /** See its call: a listed stretch changed by one more deletion has a cleared dep. */
 function depsComplete(
   table: RowState["table"],
@@ -506,6 +575,67 @@ function depsComplete(
       });
     }
   }
+}
+
+/**
+ * The item layer's own rules, on any deletion: each fate agrees with the (event, target)'s pending
+ * on either side; a new item succeeds one superseded or refreshed; no item is both.
+ */
+function itemsHold(
+  before: RowState,
+  after: RowState,
+  records: readonly OpRecord[],
+  given: ItemsGiven,
+  r: ItemsResult,
+): void {
+  for (const f of r.fates.values()) itemCover[f.kind] = (itemCover[f.kind] ?? 0) + 1;
+  // Writes in effect in part when written, by their records (R454 ①): `returned` only for them.
+  const inPart = new Set<string>();
+  for (const rec of records) {
+    if (!("items" in rec) || (rec.kind !== "write" && rec.kind !== "revoke")) continue;
+    for (const t of new Set(rec.items.map((x) => x.target))) {
+      const st = rec.items.filter((x) => x.target === t).map((x) => x.status);
+      if (
+        st.some((x) => x === "applied" || x === "corroborated") &&
+        st.some((x) => x === "candidate" || x === "awaiting")
+      )
+        inPart.add(`${rec.event}/${t}`);
+    }
+  }
+  if (r.refreshed.length > 0) itemCover["refreshed"] = (itemCover["refreshed"] ?? 0) + 1;
+  for (const rec of records) {
+    if (!("items" in rec)) continue;
+    for (const x of rec.items) {
+      const key = `${rec.event}/${x.target}`;
+      const b = pendingIn(before, rec.event, x.target);
+      const a = pendingIn(after, rec.event, x.target);
+      const cur = given.items.get(given.of.get(key) ?? "");
+      const open = cur?.standing.kind === "open";
+      const f = r.fates.get(key);
+      // Leaving an open item: only from one it was pending in; into an item: only when pending
+      // after; with no fate and pending after in an open item, it was pending in it before.
+      const returned = inPart.has(key) ? ["returned"] : [];
+      const kinds =
+        a !== undefined
+          ? ["succeeded", "restored", "rejoined", "none", ...returned]
+          : b !== undefined && open
+            ? ["removed", "now_effective", "closed_by_revert", ...returned]
+            : ["none", ...returned];
+      const fate = f?.kind ?? "none";
+      expect({ key, fate, ok: kinds.includes(fate) }).toEqual({ key, fate, ok: true });
+      if (a !== undefined && fate === "none" && open)
+        expect({ key, pendingBefore: b !== undefined }).toEqual({ key, pendingBefore: true });
+    }
+  }
+  // The item a new one succeeds: superseded or refreshed by this deletion, or kept superseded
+  // after an earlier one (03-deletion «删除不增加未决事项»: the kind changed, it stays superseded).
+  const earlier = [...given.items]
+    .filter(([, x]) => x.standing.kind === "superseded" && x.standing.reason === "deleted")
+    .map(([id]) => id);
+  for (const o of r.opened) {
+    expect([...r.superseded, ...r.refreshed.map((x) => x.item), ...earlier]).toContain(o.succeeds);
+  }
+  expect(r.superseded.filter((x) => r.refreshed.some((y) => y.item === x))).toEqual([]);
 }
 
 describe.each(both)("%s table", (_, schema, isState) => {
@@ -741,5 +871,18 @@ describe("event table, deviation two", () => {
     );
     hits.check();
     console.log("event deviation two", JSON.stringify(seen));
+  });
+});
+
+// The item layer's coverage over the samples above (it relies on the file's tests running in
+// order, as vitest runs them): each kind of fate a deletion's rules give, and refreshed items.
+// `returned` and `closed_by_revert` are left to the fixed cases (fates.test.ts): a write in effect
+// in part when written, or a candidate an undo's record covers, is not drawn every run.
+describe("the item layer's coverage", () => {
+  it("the samples gave each kind of fate and refreshed items", () => {
+    const need = ["removed", "now_effective", "succeeded", "restored", "rejoined", "refreshed"];
+    expect(Object.fromEntries(need.map((k) => [k, (itemCover[k] ?? 0) > 0]))).toEqual(
+      Object.fromEntries(need.map((k) => [k, true])),
+    );
   });
 });

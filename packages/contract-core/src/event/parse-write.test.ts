@@ -354,6 +354,22 @@ const SAMPLES: Record<string, Sample> = {
       target: { item: ITEM, cause: "entries_deleted", dropped_candidates: [1], merge_base_op: 9 },
     },
   },
+  // A candidate leaving and another coming back in one deletion: one event, both lists.
+  "item.refreshed (entries deleted, some restored)": {
+    header: member("item.refreshed", 28),
+    blocks: {
+      target: {
+        item: ITEM,
+        cause: "entries_deleted",
+        dropped_candidates: [1],
+        restored_candidates: [0],
+      },
+    },
+  },
+  "item.refreshed (entries restored)": {
+    header: member("item.refreshed", 28),
+    blocks: { target: { item: ITEM, cause: "entries_restored", restored_candidates: [0] } },
+  },
   "item.superseded": {
     header: member("item.superseded", 28),
     blocks: {
@@ -540,6 +556,7 @@ describe("parseEvent: a write's events", () => {
     "literal_checker",
     "merge_base_op",
     "dropped_candidates",
+    "restored_candidates",
     "later",
     "writer_had_read",
     "origin",
@@ -815,10 +832,16 @@ describe("parseEvent: a write's blocks, value by value", () => {
       "target: unknown key dropped_candidates",
     ],
     [
+      "item.refreshed (entries restored)",
+      "target",
+      { dropped_candidates: [1] },
+      "target: unknown key dropped_candidates",
+    ],
+    [
       "item.refreshed (entries deleted)",
       "target",
-      { restored_candidates: [1] },
-      "target: unknown key restored_candidates",
+      { restored_candidates: [] },
+      "target: restored_candidates",
     ],
     [
       "item.refreshed (entries deleted)",
