@@ -107,13 +107,15 @@ workflow:
 
 # `pnpm check`: type check, lint, unit and property tests, dependency rules, doc links, JSON examples.
 # A run takes about 20 minutes on a fast runner and has passed 40 on a slow one, more with host
-# fsync. The timeout is a hard bound from outside the test process: test-level limits cannot preempt
+# fsync. The heavy jobs run on the CI runner only (its tag), not on a runner that gives a job one
+# or two CPUs. The timeout is a hard bound from outside the test process: test-level limits cannot preempt
 # synchronous code, so a stalled run would otherwise hold the runner until the project's default
 # job timeout (60 minutes). One heavy job at a time in the project: the time spent waiting for the
 # group is not counted in the timeout.
 .check:
   extends: [.pnpm]
   resource_group: saveslot-heavy
+  tags: [fv-ci-hk-docker]
   timeout: 55 minutes
   script:
     - runuser -u node -- env SAVESLOT_TEST_DURABILITY="${SAVESLOT_TEST_DURABILITY:-}" pnpm check
@@ -137,6 +139,7 @@ prop-soak:
   extends: [.pnpm, .full-only]
   image: node:24.22.3
   resource_group: saveslot-heavy
+  tags: [fv-ci-hk-docker]
   timeout: 60 minutes
   variables:
     SOAK_MINUTES: "50"
@@ -166,6 +169,7 @@ test-postgres:
     - name: postgres:18.7
       alias: postgres
   resource_group: saveslot-heavy
+  tags: [fv-ci-hk-docker]
   timeout: 20 minutes
   variables:
     POSTGRES_HOST_AUTH_METHOD: trust
