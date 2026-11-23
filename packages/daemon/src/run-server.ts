@@ -7,7 +7,8 @@
 //   identity provider's own paths → the authorization server (/.well-known/oauth-*, /oauth/*) →
 //   the HTTP adapter → the MCP adapter → 404.
 //
-// Expired codes, form tokens, client documents and refresh tokens are swept every SWEEP_MS. A
+// Expired codes, form tokens, client documents, refresh tokens and device codes are swept every
+// SWEEP_MS. A
 // connection revoked through /v1 or MCP takes its refresh tokens with it.
 //
 // Each route is matched on the request target's parsed path, as the adapters match theirs, so an
@@ -63,7 +64,7 @@ import type { DatabaseAt, ServerConfig } from "./server-config.ts";
 import { openIdentity, readIdentity } from "./server-identity.ts";
 import { releaseServerLock, takeServerLock } from "./server-lock.ts";
 
-/** How often expired codes, form tokens, client documents and refresh tokens are swept. */
+/** How often expired codes, form tokens, client documents, refresh tokens and device codes are swept. */
 export const SWEEP_MS = 10 * 60 * 1000;
 
 /** The control plane's or the authorization server's tables `start` found missing or of another format. */

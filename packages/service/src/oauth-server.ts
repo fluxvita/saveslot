@@ -200,13 +200,17 @@ export function singleParam(form: URLSearchParams, name: string): string | undef
   return all[0];
 }
 
-/** The token endpoint's errors (RFC 6749 §5.2). */
+/** The token endpoint's errors (RFC 6749 §5.2; a device code's poll, RFC 8628 §3.5). */
 export type TokenErrorCode =
   | "invalid_request"
   | "invalid_client"
   | "invalid_grant"
   | "unsupported_grant_type"
-  | "invalid_target";
+  | "invalid_target"
+  | "authorization_pending"
+  | "slow_down"
+  | "access_denied"
+  | "expired_token";
 
 export class TokenError extends Error {
   override readonly name = "TokenError";

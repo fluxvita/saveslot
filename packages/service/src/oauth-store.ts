@@ -1,12 +1,12 @@
 // The authorization server's tables in the control database (docs/zh-CN/spec/02-architecture.md §5
 // «控制面存储»; 05-surfaces.md §15 «远程授权»): client documents fetched (a cache), grants, codes not
-// yet redeemed, refresh tokens, and the consent page's one-time form tokens. Server mode only. Who
+// yet redeemed, refresh tokens, device codes, and the consent page's one-time form tokens. Server mode only. Who
 // the user is comes from the identity provider (signing in is not the authorization server's).
 // What each table holds is in §5; the SQL is here.
 //
 // They have a format of their own (`control_meta`'s `oauth_format`), made and checked by
 // `initOAuthTables` beside `initControlPlane`, so either can change without the other. Codes, refresh
-// tokens and form tokens are stored by their SHA-256 only, as credentials are. A format is not
+// tokens, device codes and form tokens are stored by their SHA-256 only, as credentials are. A format is not
 // upgraded: a database of another format is refused, and is made again.
 
 import type { Tx } from "@fluxvita/saveslot-kernel";
@@ -31,7 +31,7 @@ async function inserting<T>(what: string, write: () => Promise<T>): Promise<T> {
 }
 
 /** The OAuth tables' format: `control_meta`'s `oauth_format`. */
-export const OAUTH_FORMAT = 2;
+export const OAUTH_FORMAT = 3;
 
 const DDL = `
 CREATE TABLE oauth_clients (
@@ -75,6 +75,19 @@ CREATE TABLE oauth_refresh_tokens (
   replaced_by text
 );
 CREATE INDEX oauth_refresh_tokens_grant ON oauth_refresh_tokens (grant_id);
+CREATE TABLE oauth_device_codes (
+  device_hash text PRIMARY KEY,
+  user_code text NOT NULL UNIQUE,
+  client_id text NOT NULL,
+  resource text NOT NULL,
+  state text NOT NULL CHECK (state IN ('pending', 'approved', 'denied')),
+  user_id text,
+  login text,
+  tenant text REFERENCES tenants (id),
+  expires_at text NOT NULL,
+  interval_s integer NOT NULL,
+  last_poll_at text
+);
 CREATE TABLE web_forms (
   hash text PRIMARY KEY,
   bound_to text NOT NULL,
@@ -182,6 +195,24 @@ export interface RefreshEntry {
   readonly replacedBy?: string;
 }
 
+/** A device code (RFC 8628), by the hash of its device code. */
+export interface DeviceEntry {
+  readonly deviceHash: string;
+  /** Upper case, without the dash. */
+  readonly userCode: string;
+  readonly clientId: string;
+  readonly resource: string;
+  readonly state: "pending" | "approved" | "denied";
+  /** Set when approved or denied: who answered, and under which login (`currentUser`'s `session`). */
+  readonly user?: UserId;
+  readonly login?: string;
+  readonly tenant?: TenantId;
+  readonly expiresAt: string;
+  /** Seconds a client waits between polls. */
+  readonly interval: number;
+  readonly lastPollAt?: string;
+}
+
 /** What a code stands for, as the authorization page settled it. */
 export interface CodeEntry {
   readonly clientId: string;
@@ -207,6 +238,39 @@ async function insertRefresh(tx: Tx, r: RefreshEntry): Promise<void> {
        VALUES ($1, $2, $3, $4, $5)`,
     [r.hash, r.grant, r.issuedAt, r.expiresAt, r.grantExpiresAt ?? null],
   );
+}
+
+const DEVICE_COLUMNS =
+  "device_hash, user_code, client_id, resource, state, user_id, login, tenant, expires_at, interval_s, last_poll_at";
+
+interface DeviceRow {
+  device_hash: string;
+  user_code: string;
+  client_id: string;
+  resource: string;
+  state: "pending" | "approved" | "denied";
+  user_id: string | null;
+  login: string | null;
+  tenant: string | null;
+  expires_at: string;
+  interval_s: number | string;
+  last_poll_at: string | null;
+}
+
+function deviceEntry(row: DeviceRow): DeviceEntry {
+  return {
+    deviceHash: row.device_hash,
+    userCode: row.user_code,
+    clientId: row.client_id,
+    resource: row.resource,
+    state: row.state,
+    ...(row.user_id === null ? {} : { user: row.user_id as UserId }),
+    ...(row.login === null ? {} : { login: row.login }),
+    ...(row.tenant === null ? {} : { tenant: row.tenant as TenantId }),
+    expiresAt: row.expires_at,
+    interval: Number(row.interval_s),
+    ...(row.last_poll_at === null ? {} : { lastPollAt: row.last_poll_at }),
+  };
 }
 
 async function insertGrant(tx: Tx, g: Grant): Promise<void> {
@@ -471,6 +535,122 @@ export class OAuthStore {
     return r.rows.length > 0;
   }
 
+  /** Records a pending device code. A user code in use already is `already_exists`. */
+  async putDeviceCode(d: Omit<DeviceEntry, "state" | "user" | "login" | "tenant" | "lastPollAt">) {
+    await inserting("a device code of that user code", () =>
+      this.#db.write((tx) =>
+        tx.query(
+          `INSERT INTO oauth_device_codes (device_hash, user_code, client_id, resource, state,
+               expires_at, interval_s)
+             VALUES ($1, $2, $3, $4, 'pending', $5, $6)`,
+          [d.deviceHash, d.userCode, d.clientId, d.resource, d.expiresAt, d.interval],
+        ),
+      ),
+    );
+  }
+
+  /**
+   * Answers a pending, unexpired device code for its user code: approved by `user` of `tenant`
+   * under `login`, or denied. Whether there was such a code.
+   */
+  async decideDeviceCode(
+    userCode: string,
+    answer: {
+      readonly approved: boolean;
+      readonly user: UserId;
+      readonly login: string;
+      readonly tenant: TenantId;
+    },
+    now: string,
+  ): Promise<boolean> {
+    const r = await this.#db.write((tx) =>
+      tx.query(
+        `UPDATE oauth_device_codes SET state = $2, user_id = $3, login = $4, tenant = $5
+           WHERE user_code = $1 AND state = 'pending' AND expires_at > $6 RETURNING 1`,
+        [
+          userCode,
+          answer.approved ? "approved" : "denied",
+          answer.user,
+          answer.login,
+          answer.tenant,
+          now,
+        ],
+      ),
+    );
+    return r.rows.length > 0;
+  }
+
+  /**
+   * A client's poll of a device code: the code as it was, and whether the poll came sooner than
+   * its interval after the one before; such a poll raises the interval by `slowDownBy` seconds.
+   * The poll's time is recorded either way, in the same transaction.
+   */
+  async pollDeviceCode(
+    hash: string,
+    now: string,
+    slowDownBy: number,
+  ): Promise<{ readonly entry: DeviceEntry; readonly tooSoon: boolean } | undefined> {
+    return this.#db.write(async (tx) => {
+      const r = await tx.query<DeviceRow>(
+        `SELECT ${DEVICE_COLUMNS} FROM oauth_device_codes WHERE device_hash = $1 FOR UPDATE`,
+        [hash],
+      );
+      const row = r.rows[0];
+      if (row === undefined) return undefined;
+      const entry = deviceEntry(row);
+      const tooSoon =
+        entry.lastPollAt !== undefined &&
+        Date.parse(now) < Date.parse(entry.lastPollAt) + entry.interval * 1000;
+      await tx.query(
+        "UPDATE oauth_device_codes SET last_poll_at = $2, interval_s = $3 WHERE device_hash = $1",
+        [hash, now, entry.interval + (tooSoon ? slowDownBy : 0)],
+      );
+      return { entry, tooSoon };
+    });
+  }
+
+  /**
+   * Takes an approved device code for the grant it gives: deletes it, and records the grant (a CLI
+   * sign-in of the user who approved it) with its first refresh token, in one transaction, so a
+   * device code is redeemed once; with the login it was approved under. Undefined when it is not
+   * there, or not approved.
+   */
+  async redeemDeviceCode(
+    hash: string,
+    grant: { readonly id: string; readonly createdAt: string },
+    refresh: RefreshEntry,
+  ): Promise<{ readonly grant: Grant; readonly login: string } | undefined> {
+    return this.#db.write(async (tx) => {
+      const r = await tx.query<DeviceRow>(
+        `DELETE FROM oauth_device_codes WHERE device_hash = $1 AND state = 'approved'
+           RETURNING ${DEVICE_COLUMNS}`,
+        [hash],
+      );
+      const row = r.rows[0];
+      if (row === undefined) return undefined;
+      const d = deviceEntry(row);
+      if (d.user === undefined || d.login === undefined || d.tenant === undefined) {
+        throw new Error("oauth_device_codes: an approved code without its user");
+      }
+      const g: Grant = {
+        id: grant.id,
+        kind: "session",
+        principal: d.user,
+        tenant: d.tenant,
+        clientId: d.clientId,
+        resource: d.resource,
+        createdAt: grant.createdAt,
+      };
+      await tx.query(
+        `INSERT INTO oauth_grants (id, kind, principal, tenant, client_id, resource, created_at)
+           VALUES ($1, 'session', $2, $3, $4, $5, $6)`,
+        [g.id, d.user, d.tenant, g.clientId, g.resource, g.createdAt],
+      );
+      await insertRefresh(tx, refresh);
+      return { grant: g, login: d.login };
+    });
+  }
+
   async putCode(hash: string, c: CodeEntry): Promise<void> {
     await inserting("a code of that hash", () =>
       this.#db.write((tx) =>
@@ -601,7 +781,13 @@ export class OAuthStore {
   async sweep(now: string): Promise<number> {
     return this.#db.write(async (tx) => {
       let n = 0;
-      for (const table of ["oauth_codes", "web_forms", "oauth_clients", "oauth_refresh_tokens"]) {
+      for (const table of [
+        "oauth_codes",
+        "web_forms",
+        "oauth_clients",
+        "oauth_refresh_tokens",
+        "oauth_device_codes",
+      ]) {
         const r = await tx.query<{ n: number }>(
           `WITH gone AS (DELETE FROM ${table} WHERE expires_at <= $1 RETURNING 1)
              SELECT count(*)::int AS n FROM gone`,

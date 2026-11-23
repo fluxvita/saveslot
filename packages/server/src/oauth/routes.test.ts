@@ -26,6 +26,7 @@ const deps = {
       return undefined;
     },
     grantOfCode: async () => undefined,
+    pollDeviceCode: async () => undefined,
     refreshToken: async () => {
       if (failRefresh) throw new Error("the database is gone");
       return undefined;
@@ -114,8 +115,13 @@ describe("metadata", () => {
       token_endpoint: `${EXT}/oauth/token`,
       revocation_endpoint: `${EXT}/oauth/revoke`,
       revocation_endpoint_auth_methods_supported: ["none"],
+      device_authorization_endpoint: `${EXT}/oauth/device`,
       response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code", "refresh_token"],
+      grant_types_supported: [
+        "authorization_code",
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:device_code",
+      ],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
       scopes_supported: ["saveslot.read", "saveslot.write", "saveslot.schema", "saveslot.delete"],
@@ -193,6 +199,20 @@ describe("token endpoint", () => {
       await token(form({ grant_type: "refresh_token", client_id: "c" })),
       400,
       "invalid_request",
+    );
+  });
+
+  it("a device code no one issued: invalid_grant; another client's poll: invalid_client", async () => {
+    const grant_type = "urn:ietf:params:oauth:grant-type:device_code";
+    await refused(
+      await token(form({ grant_type, device_code: "d".repeat(43), client_id: "saveslot-cli" })),
+      400,
+      "invalid_grant",
+    );
+    await refused(
+      await token(form({ grant_type, device_code: "d".repeat(43), client_id: "c" })),
+      401,
+      "invalid_client",
     );
   });
 
@@ -279,6 +299,29 @@ describe("revocation endpoint (RFC 7009)", () => {
     } finally {
       failRefresh = false;
     }
+  });
+});
+
+describe("device authorization endpoint (RFC 8628)", () => {
+  const device = post(OAUTH_PATHS.device);
+
+  it("only POST, a form", async () => {
+    expect((await fetch(`${base}${OAUTH_PATHS.device}`)).status).toBe(405);
+    await refused(await device("{}", "application/json"), 400, "invalid_request");
+  });
+
+  it("the CLI's only: another client is invalid_client; none, or twice, invalid_request", async () => {
+    await refused(
+      await device(form({ client_id: "https://client.example/c.json" })),
+      401,
+      "invalid_client",
+    );
+    await refused(await device(form({})), 400, "invalid_request");
+    await refused(
+      await device(form({ client_id: ["saveslot-cli", "saveslot-cli"] })),
+      400,
+      "invalid_request",
+    );
   });
 });
 

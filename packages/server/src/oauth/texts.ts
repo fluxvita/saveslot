@@ -43,6 +43,19 @@ export interface OAuthTexts {
     readonly scopes: string;
     readonly internal: string;
   };
+  /** The device code's verification page (`saveslot login --device`). */
+  readonly device: {
+    readonly title: string;
+    readonly explain: string;
+    readonly codeLabel: string;
+    readonly codeHint: string;
+    readonly approve: string;
+    readonly deny: string;
+    readonly wrongCode: string;
+    readonly limited: string;
+    readonly approved: string;
+    readonly denied: string;
+  };
 }
 
 const EN: OAuthTexts = {
@@ -82,6 +95,21 @@ const EN: OAuthTexts = {
     scopes: "The permissions sent are not ones this request offered.",
     internal: "Something went wrong on saveslot's side. Try again later.",
   },
+  device: {
+    title: "Sign in the saveslot command line",
+    explain:
+      "This signs the saveslot command line in as you, with full access to your saveslot. Approve only if you started saveslot login --device yourself and the code below is the one in your terminal.",
+    codeLabel: "Code shown in your terminal",
+    codeHint: "8 letters, such as BCDF-GHJK.",
+    approve: "Sign in the command line",
+    deny: "Deny",
+    wrongCode:
+      "This code is not one that is waiting: check it against your terminal. A code lasts 10 minutes.",
+    limited: "Too many wrong codes. Try again later.",
+    approved:
+      "The saveslot command line is signed in. You can close this page and go back to your terminal.",
+    denied: "The sign-in was denied. Nothing was signed in.",
+  },
 };
 
 const ZH: OAuthTexts = {
@@ -118,6 +146,19 @@ const ZH: OAuthTexts = {
     nameTaken: "已有一个连接实例叫这个名字，请换一个。",
     scopes: "提交的权限不在这次请求提供的范围内。",
     internal: "saveslot 这一侧出了问题，请稍后再试。",
+  },
+  device: {
+    title: "登录 saveslot 命令行",
+    explain:
+      "这会让 saveslot 命令行以你的身份登录，可以完全访问你的 saveslot。只有当 saveslot login --device 是你自己运行的、而且下面的代码和终端里显示的一致时，才批准。",
+    codeLabel: "终端里显示的代码",
+    codeHint: "8 个字母，例如 BCDF-GHJK。",
+    approve: "登录命令行",
+    deny: "拒绝",
+    wrongCode: "这个代码不在等待中：请和终端里的核对一下。代码 10 分钟内有效。",
+    limited: "错误的代码太多，请稍后再试。",
+    approved: "saveslot 命令行已登录。可以关闭这个页面，回到终端。",
+    denied: "已拒绝这次登录，没有登录任何东西。",
   },
 };
 

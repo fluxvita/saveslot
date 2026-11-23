@@ -132,6 +132,7 @@ describe("saveslot server init", () => {
           // The authorization server's.
           "oauth_clients",
           "oauth_codes",
+          "oauth_device_codes",
           "oauth_grants",
           "oauth_refresh_tokens",
           "web_forms",

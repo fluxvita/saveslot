@@ -314,6 +314,21 @@ describe("runServer: what answers which request", () => {
     });
   });
 
+  it("the CLI's device sign-in starts here, its verification page at the external address", async () => {
+    const r = await send(s, {
+      method: "POST",
+      path: "/oauth/device",
+      headers: FORM,
+      body: new URLSearchParams({ client_id: "saveslot-cli", resource: PUBLIC }).toString(),
+    });
+    expect(r.status).toBe(200);
+    const d = JSON.parse(r.body) as { device_code: string; verification_uri: string };
+    expect(d.device_code).toBeTruthy();
+    expect(d.verification_uri.startsWith(`${PUBLIC}/`)).toBe(true);
+    const page = await send(s, { path: d.verification_uri.slice(PUBLIC.length) });
+    expect(page.status).not.toBe(404);
+  });
+
   it("/account/login is the local accounts' page, with its form cookie", async () => {
     const r = await send(s, { path: LOGIN_PAGE });
     expect(r.status).toBe(200);

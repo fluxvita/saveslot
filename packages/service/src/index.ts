@@ -19,6 +19,7 @@ export * from "./local-init.ts";
 export * from "./local-tenant.ts";
 export * from "./oauth-authorize.ts";
 export * from "./oauth-client.ts";
+export * from "./oauth-device.ts";
 export * from "./oauth-refresh.ts";
 export * from "./oauth-server.ts";
 export * from "./oauth-store.ts";

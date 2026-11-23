@@ -70,13 +70,13 @@ export function cookiesOf(header: string | undefined): Map<string, string> {
 }
 
 /** The first value of each name of a query or form, as the provider reads it. */
-function fieldsOf(params: URLSearchParams): Map<string, string> {
+export function fieldsOf(params: URLSearchParams): Map<string, string> {
   const out = new Map<string, string>();
   for (const [k, v] of params) if (!out.has(k)) out.set(k, v);
   return out;
 }
 
-function headersOf(req: IncomingMessage): Map<string, string> {
+export function headersOf(req: IncomingMessage): Map<string, string> {
   const out = new Map<string, string>();
   for (const [k, v] of Object.entries(req.headers)) {
     if (typeof v === "string") out.set(k, v);
@@ -86,7 +86,7 @@ function headersOf(req: IncomingMessage): Map<string, string> {
 }
 
 /** Headers of every page of the authorization server. */
-const PAGE_HEADERS = {
+export const PAGE_HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store",
   pragma: "no-cache",
@@ -97,14 +97,15 @@ const PAGE_HEADERS = {
   "referrer-policy": "no-referrer",
 } as const;
 
-function page(t: OAuthTexts, body: string): string {
+/** A page of the authorization server: `body` is HTML made by the caller, escaped where it must be. */
+export function page(t: OAuthTexts, body: string, title: string = t.title): string {
   return `<!doctype html>
-<html lang="${t.htmlLang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(t.title)}</title>
+<html lang="${t.htmlLang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:2rem auto;padding:0 1rem}label{display:block;margin:.5rem 0}input[type=text]{width:100%;font:inherit;padding:.3rem}button{font:inherit;padding:.4rem 1rem;margin:.75rem .5rem 0 0}.hint{color:#555;font-size:.9em}.error{color:#a00}</style>
 </head><body>${body}</body></html>`;
 }
 
-function sendPage(
+export function sendPage(
   res: ServerResponse,
   status: number,
   html: string,
@@ -121,7 +122,12 @@ function sendPage(
   return status;
 }
 
-function errorPage(res: ServerResponse, t: OAuthTexts, status: number, message: string): number {
+export function errorPage(
+  res: ServerResponse,
+  t: OAuthTexts,
+  status: number,
+  message: string,
+): number {
   return sendPage(
     res,
     status,
@@ -129,7 +135,7 @@ function errorPage(res: ServerResponse, t: OAuthTexts, status: number, message: 
   );
 }
 
-function redirect(
+export function redirect(
   res: ServerResponse,
   location: string,
   cookies: readonly SetCookie[] = [],
@@ -144,13 +150,14 @@ function redirect(
   return 302;
 }
 
-function identityResponse(res: ServerResponse, r: IdentityResponse): number {
+export function identityResponse(res: ServerResponse, r: IdentityResponse): number {
   return r.kind === "redirect"
     ? redirect(res, r.location, r.cookies)
     : sendPage(res, r.status, r.html, r.cookies, r.headers);
 }
 
-async function readForm(req: IncomingMessage): Promise<URLSearchParams | undefined> {
+/** An answer form of at most `CONSENT_BODY_MAX_BYTES`; undefined when it is not one. */
+export async function readForm(req: IncomingMessage): Promise<URLSearchParams | undefined> {
   const type = (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
   if (type !== "application/x-www-form-urlencoded") return undefined;
   const chunks: Buffer[] = [];

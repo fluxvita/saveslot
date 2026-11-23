@@ -966,6 +966,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 | `GET /oauth/authorize` | 授权页：用户给这次接入起名字、选 scope |
 | `POST /oauth/token` | 换取与刷新令牌：`authorization_code`、`refresh_token`；CLI 登录另用设备码（RFC 8628） |
 | `POST /oauth/device` | 设备码授权的发起（`saveslot login --device`） |
+| `GET`、`POST /oauth/device/verify` | 设备码的验证页：用户在已登录的浏览器里输入终端上显示的代码，批准或拒绝 |
 | `POST /oauth/revoke` | 吊销令牌（RFC 7009） |
 
 - **授权页的默认值**：用户最多做选择和一次同意（06-cli 第 1 节的设计要求）。名字预填（取客户端登记的名称）；scope 预选 `saveslot.read saveslot.write`；不改就直接点一次"授权"。
@@ -1003,6 +1004,11 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
   - CLI 登录的刷新令牌：作废这次授权（即登出），日志里没有事件。
   - 单张访问令牌：只删这一张，之后它报 `invalid`；主体不吊销，同一授权下别的令牌照常可用。
   - 反过来，用户经 `connections.revoke` 吊销一个经 OAuth 授权的连接实例时，这次授权的刷新令牌一并删掉。
+- **设备码**（RFC 8628，只给 CLI 的 `saveslot login --device`）：
+  - 发起：表单带 `client_id`，不是 `saveslot-cli` 报 `invalid_client`；`resource` 给了的话要是对外地址。响应给设备码、用户码（8 个字母，取自 20 个辅音字母，显示成 `BCDF-GHJK`）、验证页地址（也给一个带 `user_code` 的完整地址）、10 分钟的有效期与 5 秒的轮询间隔。设备码与别的令牌一样只存 SHA-256。
+  - 轮询（`grant_type=urn:ietf:params:oauth:grant-type:device_code`）：`client_id` 不是 CLI 的报 `invalid_client`；设备码不认得报 `invalid_grant`；依次是过期 `expired_token`、比间隔来得早 `slow_down`（间隔随之加 5 秒）、还没答复 `authorization_pending`、被拒绝 `access_denied`。已批准的换出与浏览器登录相同的东西：用户会话（由身份提供者从批准时的那次登录签发；那次登录已经结束的，报 `invalid_grant`，这次授权作废）、刷新令牌，90 天总期限从这一刻算。兑换时设备码在同一个事务里删掉，所以只能换一次。
+  - 验证页：没有登录时经身份提供者登录，回到这一页（连同 `user_code`）；登录剩下的时间不到一个授权码的有效期（60 秒）时也一样，GET 与提交答复都这样，批准记下的是这次登录。页面明说这是在登录 saveslot 命令行、能完全访问用户的 saveslot，只有自己运行了 `saveslot login --device`、而且代码与终端上的一致时才批准；用户码一栏（带 `user_code` 打开时预填）、"批准"与"拒绝"两个按钮。用户码不分大小写，横线与空格不计。表单令牌与授权页的一样一次有效，绑在身份提供者的这次登录与这个验证页上：授权页的令牌在这里用不了，反之亦然。页面不缓存、不能被嵌入。
+  - 错误的用户码（形状不对、不认得、已过期、已答复过）在进程内计数：15 分钟内同一次登录满 5 次，或同一来源满 20 次，拒绝到这个窗口结束，报 429，正确的代码也不收。一次尝试在等待任何结果之前就记入计数，同时发来的尝试不能越过上限；代码正确时这一次不计。两张计数表都有条目上限：满了先清到期的，仍满就把新来的当作已到上限拒绝，不为腾地方删掉还在窗口里的计数。
 
 **本地账户的登录页**（服务器自部署、用内置本地账户时；身份提供者见 architecture §12）。授权页、设备码页发现没有登录时，把浏览器送到这里，登录后回到原来的页面。
 

@@ -274,17 +274,19 @@ describe("tables", () => {
     T,
   );
 
-  it(
-    "a database of the format before refresh tokens: refused by its format, not upgraded",
-    async () => {
-      expect(OAUTH_FORMAT).toBe(2);
+  it.each([1, 2])(
+    "a database of an earlier format (%i: before refresh tokens, before device codes): refused, not upgraded",
+    async (earlier) => {
+      expect(OAUTH_FORMAT).toBe(3);
       await control.write((tx) =>
-        tx.query("UPDATE control_meta SET value = '1' WHERE key = 'oauth_format'"),
+        tx.query("UPDATE control_meta SET value = $1 WHERE key = 'oauth_format'", [
+          String(earlier),
+        ]),
       );
       try {
         await expect(openOAuthStore(control)).rejects.toMatchObject({
           code: "control_format_mismatch",
-          message: expect.stringContaining("format 1"),
+          message: expect.stringContaining(`format ${earlier}`),
         });
       } finally {
         await control.write((tx) =>
