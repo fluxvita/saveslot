@@ -1185,7 +1185,10 @@ function summary(r: Report, finished: boolean): Line[] {
     r.hosts.some((h) => h.state === "done") &&
     !r.hosts.some((h) => h.state === "failed")
   ) {
-    out.push([words(TEXTS.setupDone)]);
+    const claudeCode = r.hosts.some(
+      (h) => h.host === "claude-code" && (h.state === "done" || h.state === "existing"),
+    );
+    out.push([words(TEXTS.setupDone(claudeCode))]);
   }
   return out;
 }

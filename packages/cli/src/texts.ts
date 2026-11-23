@@ -845,9 +845,13 @@ export const TEXTS = {
   stepSlotMade: s("made from the template"),
   stepHosts: s("the hosts on this computer"),
   stepAdd: s("adding saveslot to the hosts"),
-  setupDone: s(
-    'Done. In Claude Code, type /mcp__saveslot__overview (shown as /saveslot:overview in the / menu); in any host, you can ask "what is in saveslot?"',
-  ),
+  // Claude Code's command only when it is among the hosts saveslot is in (06 §3.2).
+  setupDone: (claudeCode: boolean) =>
+    claudeCode
+      ? s(
+          'Done. In Claude Code, type /mcp__saveslot__overview (shown as /saveslot:overview in the / menu); in any host, you can ask "what is in saveslot?"',
+        )
+      : s('Done. In any host, you can ask "what is in saveslot?"'),
   stepNoHosts: s("no host found on this computer: saveslot connect <host> adds one"),
   // `saveslot doctor`'s lines for the hosts (06 §3 step 7).
   doctorHostNoLookup: s("not checked: it has no look-up command to ask"),

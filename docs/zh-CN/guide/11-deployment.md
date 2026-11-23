@@ -288,7 +288,7 @@ saveslot 只执行宿主自己提供的添加命令（`claude mcp add`、`codex 
 安装 → saveslot init → saveslot start → 建一个 slot → saveslot connect → 把打印出的命令贴进终端（或加 --apply）→ 在 Agent 里问一句 → saveslot reads 验证
 ```
 
-**① 安装。** 第一版发布为一个 npm 包 `@fluxvita/saveslot`，里面有命令行工具和 saveslot 服务（`npm install -g @fluxvita/saveslot`）。npm 是 JavaScript 生态的包管理器，安装这个包需要电脑上先有 Node 运行时。不需要另装数据库。
+**① 安装。** 第一版发布为一个 npm 包 `@fluxvita/saveslot`，里面有命令行工具和 saveslot 服务（`npm install -g @fluxvita/saveslot`）。npm 是 JavaScript 生态的包管理器，安装这个包需要电脑上先有 Node 运行时。不需要另装数据库。Linux 上 Node 装在系统目录时，普通用户全局安装会因为没有写权限而失败，这时给 npm 设一个用户自己的安装目录（06-cli 第 3 节「安装的前提」）。
 
 独立的可执行文件和桌面安装包（不要求用户先装 Node）要等一项打包实验的结论，第一版不保证有。
 

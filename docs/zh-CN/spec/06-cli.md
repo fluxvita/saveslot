@@ -117,6 +117,8 @@ Codex：已接入 · MacBook · Codex（ci_01JG…）
 可选：saveslot snippet claude-code（建议放进宿主自定义指令的一段文字）
 ```
 
+**安装的前提**：`npm install -g` 要求 npm 的全局目录可写。Linux 上 Node 装在 `/usr/local` 时普通用户没有写权限，安装报 `EACCES`；说明文字给出 npm 的做法：设用户级的 prefix（`npm config set prefix ~/.npm-global`，并把 `~/.npm-global/bin` 加进 `PATH`），不建议用 `sudo`（装出来的文件属于 root，宿主登记的入口路径也随之落在系统目录里）。
+
 宿主命令的确切写法由 CLI 的宿主适配表维护（3.2），**实现时逐个实测**。选择用编号切换的文本提示（输入编号切换某一项，直接回车确认），不进终端的原始模式、不加依赖；用方向键与空格勾选的样子留到桌面打包时再做。执行的宿主命令写的是在 `PATH` 里找到的绝对路径（3.2）。
 
 **分步做**（`setup` 调用的就是这几条命令；评测与脚本继续用它们）：
@@ -292,7 +294,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 | `generic` | 通用 JSON：`{"command": "<saveslot 的绝对路径>", "args": ["mcp"], "env": {"SAVESLOT_TOKEN": "<令牌>"}}` | 否 |
 | `http` | 不生成宿主配置，只打印令牌与套接字路径（给脚本与连接器用；`curl --unix-socket` 可直接调） | 否 |
 
-宿主怎么呈现 saveslot 的 prompts（[`05-surfaces.md`](05-surfaces.md) 10.1）：Claude Code（2.1.327 实测）的斜杠菜单显示为 `/saveslot:overview`，直接输入 `/saveslot:overview` 与 `/mcp__saveslot__overview` 都可以；但冒号写法后面带参数时报"Unknown command"，带参数只能写 `/mcp__saveslot__pending health`。参数按空白切开、按位置对应，多出来的词不进 prompt；含空格的值加引号。Cursor 的文档写着支持 prompts，没有写调用的写法（未核实）；Codex（0.167.2 实测）不支持 prompts：`/mcp verbose` 不列 prompts，两种写法都报"Unrecognized command"。`setup` 结尾的提示只写 Claude Code 的写法，其余宿主让用户直接问一句。
+宿主怎么呈现 saveslot 的 prompts（[`05-surfaces.md`](05-surfaces.md) 10.1）：Claude Code（2.1.327 实测）的斜杠菜单显示为 `/saveslot:overview`，直接输入 `/saveslot:overview` 与 `/mcp__saveslot__overview` 都可以；但冒号写法后面带参数时报"Unknown command"，带参数只能写 `/mcp__saveslot__pending health`。参数按空白切开、按位置对应，多出来的词不进 prompt；含空格的值加引号。Cursor 的文档写着支持 prompts，没有写调用的写法（未核实）；Codex（0.167.2 实测）不支持 prompts：`/mcp verbose` 不列 prompts，两种写法都报"Unrecognized command"。`setup` 结尾的提示按这次的结果写：Claude Code 在接上的宿主里（这次接入或已有条目）时，写它的斜杠命令写法，再写"在任何宿主里也可以问一句"；不在时只写"在任何宿主里可以问一句"，不提 Claude Code。
 
 - **宿主命令的写法**：服务名在前，`-e` / `--env` 在后，再接 `--` 与可执行文件。添加命令一律写**用户级**：saveslot 的数据按人不按项目，接入应当对这个用户的所有项目生效；Claude Code 的添加命令默认写"当前项目"这一档，所以显式带 `--scope user`，别的宿主有同类选项的同样处理。`vscode`（`code --add-mcp`）写到哪一处配置、同名时的行为都没有核实，实测之后再加入适配表。
 - **没有添加命令的宿主**（`cursor`、`claude-desktop`）只能手动粘贴，是第 1 节设计要求的已知例外。

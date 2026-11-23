@@ -75,6 +75,35 @@ saveslot 是给所有 Agent 用的数据底座：跟踪会随时间演变的事�
 - **第一版只做导出**，保证用户能把数据带走；导入与迁移随多节点放到后续。
 - 不进第一版的（多节点、抽取作业、saveslot 自己调模型、防篡改、整个 slot 删除、文件存储等）见 [`docs/zh-CN/spec/01-positioning.md`](docs/zh-CN/spec/01-positioning.md)「后续规划」；第一版完整范围见 [`docs/zh-CN/spec/07-scope-v1.md`](docs/zh-CN/spec/07-scope-v1.md)。
 
+## 上手（本机模式）
+
+需要 Node 24.22.1 及以上（26 系列 26.12.1 及以上）。
+
+npm 包还没发布，现在从源码检出运行：
+
+```sh
+pnpm install && pnpm build
+node packages/saveslot/dist/bin.js setup
+```
+
+发布之后：
+
+```sh
+npm install -g @fluxvita/saveslot
+saveslot setup
+```
+
+`saveslot setup` 建好 `~/.saveslot`、启动服务、用模板建第一个 slot，并把 saveslot 加进本机找到的宿主（Claude Code、Codex；Cursor 与 Claude Desktop 打印配置片段，由人粘贴）。之后在 Agent 里问一句"saveslot 里有什么"。
+
+Linux 上 Node 装在 `/usr/local` 时，普通用户执行 `npm install -g` 会报 `EACCES`。不要用 `sudo`，给 npm 设一个用户自己的目录：
+
+```sh
+npm config set prefix ~/.npm-global
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.profile
+```
+
+开一个新的终端，再执行 `npm install -g`。细则见 [`docs/zh-CN/spec/06-cli.md`](docs/zh-CN/spec/06-cli.md) 第 3 节。
+
 ## 文档怎么读
 
 文档都在 `docs/` 下，四个目录各管一件事：

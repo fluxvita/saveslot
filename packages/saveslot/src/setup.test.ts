@@ -333,6 +333,10 @@ describe("setup on a terminal, from nothing", () => {
     expect(readFileSync(join(hosts, "claude.entry"), "utf8")).toContain(entry);
     // The start at login is the user's to choose (06 §3.3 item 11).
     expect(r.out).toContain(TEXTS.autostartHint);
+    // Claude Code is among the hosts: the closing line gives its command (06 §3.2).
+    expect(r.out).toContain(
+      'Done. In Claude Code, type /mcp__saveslot__overview (shown as /saveslot:overview in the / menu); in any host, you can ask "what is in saveslot?"',
+    );
   });
 
   it("run again: each step there already; nothing issued, nothing asked to run", async () => {
@@ -429,6 +433,23 @@ describe("setup without a terminal", () => {
     expect(r.out).toContain(TEXTS.stepNoSlot);
     expect((await connections(home)).map((c) => c.name)).toEqual(["testhost · Codex"]);
     expect(existsSync(join(hosts, "claude.entry"))).toBe(false);
+    // Claude Code is not among the hosts: the closing line does not name it (06 §3.2).
+    expect(r.out).toContain(`Done. In any host, you can ask "what is in saveslot?"`);
+    expect(r.out).not.toContain("Claude Code");
+  });
+
+  it("Claude Code's entry there already and Codex added: the closing line gives Claude Code's command", async () => {
+    freshHosts();
+    const home = initializedHome();
+    expect((await setup(home, ["--yes", "--host", "claude-code"], { terminal: false })).code).toBe(
+      0,
+    );
+    const r = await setup(home, ["--yes", "--host", "claude-code", "--host", "codex"], {
+      terminal: false,
+    });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Codex: added");
+    expect(r.out).toContain("Done. In Claude Code, type /mcp__saveslot__overview");
   });
 
   it("--scope -schema: the instance cannot create slots, and the summary says how to let it", async () => {
