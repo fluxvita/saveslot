@@ -451,9 +451,10 @@ const twoFieldsSkeleton = (state: boolean) =>
   });
 
 /**
- * One write, two units (the review's a2, state tables): its f2 runs to the next change, #13's
- * start, and meets #21's change only (the f2 item); its f3 runs on and meets the revoke #31 (the
- * item on existence). Decisions on either item follow at random, with random steps.
+ * One write, two units (the review's a2, state tables): its f2 runs to the next change, #21's
+ * start, and meets #31's change only (the f2 item); its f3 runs on and meets the revoke #41 (the
+ * item on existence). Decisions on either item follow at random, with random steps. Ops 10 apart:
+ * inserted decisions go between them in op order.
  */
 const mixedUnitsSkeleton = fc.array(writeStep, { maxLength: 3 }).map((tail) => {
   const head: Op[] = [
@@ -468,8 +469,8 @@ const mixedUnitsSkeleton = fc.array(writeStep, { maxLength: 3 }).map((tail) => {
     },
     {
       kind: "write",
-      op: 12,
-      event: 13,
+      op: 20,
+      event: 21,
       seen: 10,
       valid: span(4, null),
       fields: { f2: { value: "7", sources: ["S12"] } },
@@ -477,19 +478,19 @@ const mixedUnitsSkeleton = fc.array(writeStep, { maxLength: 3 }).map((tail) => {
     },
     {
       kind: "write",
-      op: 20,
-      event: 21,
-      seen: 12,
+      op: 30,
+      event: 31,
+      seen: 20,
       valid: span(1, 2),
       fields: { f2: { value: "2", sources: ["S20"] } },
       acknowledge: ["overwrite"],
     },
-    { kind: "revoke", op: 30, event: 31, seen: 20, valid: span(5, null), validSources: ["S30"] },
+    { kind: "revoke", op: 40, event: 41, seen: 30, valid: span(5, null), validSources: ["S30"] },
     {
       kind: "write",
-      op: 40,
-      event: 41,
-      seen: 12,
+      op: 50,
+      event: 51,
+      seen: 20,
       valid: { from: { mode: "given", value: day(1) }, to: { mode: "next_change" } },
       fields: { f2: { value: "5", sources: ["S40"] }, f3: { value: "b", sources: ["S40"] } },
     },
@@ -530,6 +531,64 @@ const wholeSkeleton = fc
     return toOps(tail, true, head);
   });
 
+/**
+ * State tables, a take that fills a revoke (09 §5.8 `take.filled`): #20 revokes a stretch; #30
+ * writes over it (filling it); #40, having seen #20, writes another value over the same stretch:
+ * a candidate against #30. #50 takes it: the revoke in effect meeting its stretch is filled.
+ * Random steps follow, then any deletion may make the filled revoke or another one cover the take.
+ * Ops 10 apart, as the other skeletons: inserted decisions go between them in op order.
+ */
+const filledTakeSkeleton = fc
+  .tuple(fc.nat({ max: 1 }), fc.boolean(), fc.array(writeStep, { maxLength: 3 }))
+  .map(([a, withSources, tail]) => {
+    const head: Op[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: span(0, null),
+        fields: { f2: { value: "1", sources: ["S10"] } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: span(a + 1, a + 2),
+        ...(withSources ? { validSources: ["S20"] } : {}),
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 20,
+        valid: span(a, a + 3),
+        fields: { f2: { value: "5", sources: ["S30"] } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 20,
+        valid: span(a, a + 3),
+        fields: { f2: { value: "3", sources: ["S40"] } },
+      },
+      {
+        kind: "resolve",
+        op: 50,
+        event: 51,
+        decision: "take_candidate",
+        candidates: [41],
+        unit: "f2",
+        take: 41,
+      },
+    ];
+    return toOps(tail, true, head);
+  });
+
 export const scenario = (state: boolean) =>
   fc
     .record({
@@ -540,6 +599,7 @@ export const scenario = (state: boolean) =>
             { weight: 1, arbitrary: laterSkeleton(true) },
             { weight: 1, arbitrary: holeSkeleton },
             { weight: 1, arbitrary: candidatesSkeleton(true) },
+            { weight: 1, arbitrary: filledTakeSkeleton },
             { weight: 1, arbitrary: existenceSkeleton(true) },
             { weight: 1, arbitrary: splitSkeleton },
             { weight: 1, arbitrary: refusedTakeSkeleton(true) },
@@ -712,7 +772,12 @@ export function judged(
   let state = emptyState(table);
   const steps: Judged[] = [];
   const refused: { op: Op; reason: string; before: readonly Op[] }[] = [];
+  let lastOp = 0;
   const enter = (given: Op) => {
+    // A log's operation numbers only grow: a skeleton or an inserted decision out of order is a
+    // fixture error, not a log to judge.
+    if (given.op <= lastOp) throw new Error(`op ${given.op} after op ${lastOp}: not in order`);
+    lastOp = given.op;
     // An explicit `ver` that is the row's current version is marked so, here, at the write, as the
     // pipeline does (09 §5.2 `ver.current`); judge and the reference take the mark.
     const o = markCurrent(given, steps);

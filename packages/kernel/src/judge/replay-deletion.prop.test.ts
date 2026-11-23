@@ -1,6 +1,6 @@
-// The deletion replay (D1-b2a–d1) against the reference evaluator: random logs of writes, revokes,
-// people's confirmations and rejections, undos, take_previous and keep_effective (no take_candidate,
-// no deletion events between operations) are judged op by op,
+// The deletion replay (D1-b2a–d2) against the reference evaluator: random logs of writes, revokes,
+// people's confirmations and rejections, undos and the three conflict resolutions (no deletion
+// events between operations) are judged op by op,
 // then a set of source data is deleted. `replayDeletion` on the records, given the (event, target)
 // those sources take away, must leave the row or entity the reference evaluator gives with the
 // same deletion at the end of the log: the items (by event, target, status, interval, content,
@@ -9,10 +9,11 @@
 // Covered here: writes and revokes judged again on the replay's state, no-ops kept, deviation two
 // by the write on a target, corroborations and the same-value rule, conflicts and high impact
 // worked out again; confirmations and rejections executed as recorded (deviation one); reverts
-// with R and the value position as recorded, their write-backs worked out again. Not yet (refused
-// with not_implemented, see replay-deletion.test.ts): take_candidate, an undecided awaiting undo
-// no longer of high impact, a take_previous whose candidate leaves no item, operations after a
-// deletion event.
+// with R and the value position as recorded, their write-backs worked out again; keep_effective
+// and take_candidate as recorded. Not yet (refused with not_implemented, see
+// replay-deletion.test.ts): an undecided awaiting undo no longer of high impact (or then on a
+// revoked row), a take_previous or take_candidate whose candidate leaves no item, operations after
+// a deletion event.
 
 import { evaluateLog, type Op, timeline } from "@fluxvita/saveslot-reference";
 import { EVENT, Hits, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
@@ -20,8 +21,8 @@ import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 import { JudgeError } from "./errors.ts";
 import { view } from "./judge.ts";
-import type { OpRecord, Target } from "./model.ts";
-import { contributionKey, replayDeletion } from "./replay-deletion.ts";
+import type { OpRecord } from "./model.ts";
+import { replayDeletion } from "./replay-deletion.ts";
 import { type Decision, deletedContributions, judged, scenario } from "./scenarios.fixture.ts";
 import type { RowState } from "./state.ts";
 
@@ -95,6 +96,9 @@ function compare(
   /** A revert in the log; one whose write-backs came out otherwise in the replay. */
   reverted: boolean;
   revertChanged: boolean;
+  /** A take_candidate in the log; one with filled revokes. */
+  took: boolean;
+  tookFilled: boolean;
   protectionMatters: (op: number) => boolean;
 } {
   const widened = ops.map((o) =>
@@ -182,6 +186,8 @@ function compare(
     decided: records.some(isDecision),
     decisionChanged: decisionText(records) !== decisionText(replayed.records),
     reverted: records.some(isRevert),
+    took: records.some((r) => r.kind === "take_candidate"),
+    tookFilled: records.some((r) => r.kind === "take_candidate" && r.filled.length > 0),
     revertChanged: revertText(records) !== revertText(replayed.records),
     // Whether the replay comes out otherwise with operation `op` recorded as a candidate when
     // written (not protected by deviation two).
@@ -254,6 +260,7 @@ const REFUSED = new Set([
   "undo no longer of high impact",
   "undo on a revoked row",
   "take_previous candidate",
+  "take_candidate candidate",
 ]);
 
 function refusedShape(e: unknown): boolean {
@@ -268,14 +275,20 @@ describe.each(both)("%s table, reverts", (_, schema, isState) => {
   it("undos, take_previous and confirmed undos replayed leave what the reference evaluator gives", () => {
     // Hits: a revert whose write-backs came out otherwise in the replay than recorded.
     const hits = new Hits(0.05);
-    const seen = { samples: 0, reverted: 0, revertChanged: 0, refused: 0 };
+    const seen = {
+      samples: 0,
+      reverted: 0,
+      revertChanged: 0,
+      took: 0,
+      tookFilled: 0,
+      refused: 0,
+    };
     const refusedBy: Record<string, number> = {};
     fc.assert(
       fc.property(
         scenario(isState).map((s) => ({
-          // Of the conflict resolutions, take_previous and keep_effective (take_candidate is D1-b2d2).
-          ops: s.ops.filter((o) => o.kind !== "resolve" || o.decision !== "take_candidate"),
-          decisions: s.decisions.filter((d) => d.kind !== "take"),
+          ops: s.ops,
+          decisions: s.decisions,
         })),
         fc.nat(),
         hits.track(({ ops, decisions }: { ops: Op[]; decisions: Decision[] }, pick: number) => {
@@ -291,6 +304,8 @@ describe.each(both)("%s table, reverts", (_, schema, isState) => {
             return;
           }
           if (c.reverted) seen.reverted++;
+          if (c.took) seen.took++;
+          if (c.tookFilled) seen.tookFilled++;
           if (c.revertChanged) {
             seen.revertChanged++;
             hits.hit();

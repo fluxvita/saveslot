@@ -10,15 +10,17 @@
 // Covered: writes, revokes, people's confirmations and rejections of awaiting writes and undos,
 // reverts (`undo`, `take_previous`, the confirmation of an awaiting undo): their record R and
 // value position as recorded, their ranges and write-backs worked out again on the replay's state
-// (03-deletion «回掉的权威定义»), and `keep_effective` as recorded. A candidate a conflict
-// resolution decided stays that candidate in every replay, the conflict there or not (deviation
-// one), so the resolution's record still closes it. Refused with `not_implemented`, naming the
-// kind, never judged as an ordinary write: `take_candidate`; an undecided awaiting undo no longer
-// of high impact (high impact ④ judged again); a take_previous whose recorded candidate, not
-// deleted, leaves no item in the replay (a same value without evidence pointed at); an operation
-// judged after a deletion event (its conflict criterion reads that event's L).
+// (03-deletion «回掉的权威定义»); `keep_effective` as recorded; `take_candidate` with its merge
+// base, cover set and filled revokes as recorded, where it lands worked out again (03-deletion
+// «搬运的值»). A candidate a conflict resolution decided stays that candidate in every replay, the
+// conflict there or not (deviation one), so the resolution's record still closes it. Refused with
+// `not_implemented`, naming the kind, never judged as an ordinary write: an undecided awaiting
+// undo no longer of high impact (high impact ④ judged again), with a kind of its own when the row
+// would still be revoked once it takes effect; a take_previous or take_candidate whose recorded
+// candidate, not deleted, leaves no item in the replay (a same value without evidence pointed
+// at); an operation judged after a deletion event (its conflict criterion reads that event's L).
 
-import type { FieldId } from "@fluxvita/saveslot-contract-core";
+import type { FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
 import { type IntervalSet, isNothing, meet } from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
 import { ackOf, emptyState, judgeOp, withoutDeps } from "./judge.ts";
@@ -30,12 +32,14 @@ import type {
   RevertRecord,
   RevokeInput,
   TableShape,
+  TakeCandidateRecord,
   Target,
   WriteInput,
   WriteRecord,
 } from "./model.ts";
 import { judgeRevertOf } from "./revert.ts";
-import { RowState } from "./state.ts";
+import { type Item, RowState } from "./state.ts";
+import { judgeTakeCandidate } from "./take.ts";
 import { judgeRevoke, judgeWrite, type ReplayOptions } from "./write.ts";
 
 /** The (event, target) of a contribution, as the caller lists the deleted ones. */
@@ -150,29 +154,7 @@ function revertAgain(
         op: r.op,
       });
     }
-    // K (03-deletion «回掉的权威定义» step 2): of the (event, target) the resolution recorded,
-    // the items that are candidates in the replay, or that were candidates when written and are
-    // the same as the value before them now (a corroboration): only being deleted takes one out.
-    // A recorded one stays a candidate whether or not its conflict is still there (`resolved`,
-    // judgeWrite); one not deleted with no such item is a same value without evidence pointed at,
-    // which leaves no item: not opened here.
-    const recorded = new Set((r.decided ?? []).map((x) => contributionKey(x.event, x.target)));
-    const k = state.items.filter(
-      (x) =>
-        recorded.has(contributionKey(x.event, x.target)) &&
-        (x.status === "candidate" ||
-          (x.status === "corroborated" && candidateWhenWritten(x.event, x.target, x.valid))),
-    );
-    for (const d of r.decided ?? []) {
-      if (deleted(d.event, d.target)) continue;
-      if (!k.some((x) => x.event === d.event && x.target === d.target)) {
-        throw new JudgeError(
-          "not_implemented",
-          "a deletion's replay of a take_previous whose candidate is no longer one",
-          { kind: "take_previous candidate", op: r.op, event: d.event, target: d.target },
-        );
-      }
-    }
+    const k = kOf(state, r, deleted, candidateWhenWritten);
     const out = judgeRevertOf(state, r, r.revert.entries, { asOf: mergeBase }, k, false);
     return { ...r, items: out.items };
   }
@@ -221,6 +203,84 @@ function revertAgain(
     }
   }
   return { ...r, items: out.items.map((x) => ({ ...x, status: "awaiting" as const })) };
+}
+
+/**
+ * K of a conflict resolution in the replay (03-deletion «回掉的权威定义» step 2): of the
+ * (event, target)s it recorded (`decided`), the items that are candidates in the replay, or that
+ * were candidates when written and are the same as the value before them now (a corroboration):
+ * only being deleted takes one out. A recorded one stays a candidate whether or not its conflict
+ * is still there (`resolved`, judgeWrite); one not deleted with no such item is a same value
+ * without evidence pointed at, which leaves no item: not opened here.
+ */
+function kOf(
+  state: RowState,
+  r: RevertRecord | TakeCandidateRecord,
+  deleted: (event: number, target: Target) => boolean,
+  candidateWhenWritten: (event: number, target: Target, valid: IntervalSet) => boolean,
+): Item[] {
+  const recorded = new Set((r.decided ?? []).map((x) => contributionKey(x.event, x.target)));
+  const k = state.items.filter(
+    (x) =>
+      recorded.has(contributionKey(x.event, x.target)) &&
+      (x.status === "candidate" ||
+        (x.status === "corroborated" && candidateWhenWritten(x.event, x.target, x.valid))),
+  );
+  for (const d of r.decided ?? []) {
+    if (deleted(d.event, d.target)) continue;
+    if (!k.some((x) => x.event === d.event && x.target === d.target)) {
+      throw new JudgeError(
+        "not_implemented",
+        `a deletion's replay of a ${r.kind} whose candidate is no longer one`,
+        { kind: `${r.kind} candidate`, op: r.op, event: d.event, target: d.target },
+      );
+    }
+  }
+  return k;
+}
+
+/**
+ * A take_candidate executed as recorded on the replay's state (03-deletion «搬运的值»,
+ * «重放规则 · 人的决定»): K as the replay has it; the merge base, the cover set O and the filled
+ * revokes as recorded; where it lands worked out again, less what writes outside O cover; the
+ * checks on the current state made when it was judged not made again.
+ */
+function takeAgain(
+  state: RowState,
+  r: TakeCandidateRecord,
+  records: readonly OpRecord[],
+  deleted: (event: number, target: Target) => boolean,
+  candidateWhenWritten: (event: number, target: Target, valid: IntervalSet) => boolean,
+): TakeCandidateRecord {
+  const k = kOf(state, r, deleted, candidateWhenWritten);
+  // The taken write's value on each field it gave in the item, as written: the fields the
+  // resolution recorded as decided for the taken write (from the record, not from the replay's
+  // state, where a deleted contribution has no item to say which item it was in).
+  const values = new Map<FieldId, FieldValue>();
+  const w = records.find((x) => x.event === r.take);
+  if (w !== undefined && (w.kind === "write" || w.kind === "revoke")) {
+    for (const x of w.items) {
+      if (x.target === "existence" || x.content.kind !== "value" || values.has(x.target)) continue;
+      if (!(r.decided ?? []).some((d) => d.event === w.event && d.target === x.target)) continue;
+      values.set(x.target, x.content.value);
+    }
+  }
+  const out = judgeTakeCandidate(
+    state,
+    {
+      kind: "take_candidate",
+      op: r.op,
+      index: r.index,
+      event: r.event,
+      ruleset: r.ruleset,
+      ...(r.policy !== undefined ? { policy: r.policy } : {}),
+      unit: r.unit,
+      candidates: r.candidates,
+      take: r.take,
+    },
+    { k, mergeBase: r.mergeBase, cover: r.cover, filled: r.filled, values },
+  );
+  return { ...r, items: out.items };
 }
 
 /**
@@ -322,13 +382,16 @@ export function replayDeletion(
   const resolutions = resolvedOf(records);
   // Whether a stretch of a write's items on a target was a candidate when written: it meets one
   // of its candidate items as recorded (a stretch meeting a candidate and an effective item counts
-  // as the candidate's, as the reference's write-time status of a stretch does).
+  // as the candidate's, as the reference's write-time status of a stretch does). A stretch meeting
+  // none of its items as recorded — the part a deletion extended (a default end whose blocking
+  // point is gone) — takes the write's status on the target: an extension of a candidate still
+  // belongs to its item (03-deletion «回掉的权威定义» step 2).
   const candidateWhenWritten = (event: number, target: Target, valid: IntervalSet): boolean => {
     const w = records.find((x) => x.event === event && (x.kind === "write" || x.kind === "revoke"));
     if (w === undefined || (w.kind !== "write" && w.kind !== "revoke")) return false;
-    return w.items.some(
-      (x) => x.target === target && x.status === "candidate" && !isNothing(meet(x.valid, valid)),
-    );
+    const own = w.items.filter((x) => x.target === target);
+    const hit = own.filter((x) => !isNothing(meet(x.valid, valid)));
+    return (hit.length > 0 ? hit : own).some((x) => x.status === "candidate");
   };
   for (const r of records) {
     if (
@@ -338,7 +401,8 @@ export function replayDeletion(
       r.kind !== "reject" &&
       r.kind !== "undo" &&
       r.kind !== "take_previous" &&
-      r.kind !== "keep_effective"
+      r.kind !== "keep_effective" &&
+      r.kind !== "take_candidate"
     ) {
       throw new JudgeError("not_implemented", `a deletion's replay of a ${r.kind}`, {
         kind: r.kind,
@@ -366,6 +430,19 @@ export function replayDeletion(
         candidateWhenWritten,
       );
       // Event and timeless tables keep no deps, as every judged record (judge.ts).
+      const record = state.isState ? again : withoutDeps(again);
+      out.push(record);
+      state = new RowState(table, [...state.records, record]);
+      continue;
+    }
+    if (r.kind === "take_candidate") {
+      const again = takeAgain(
+        state,
+        r,
+        records,
+        (e, t) => deleted.has(contributionKey(e, t)),
+        candidateWhenWritten,
+      );
       const record = state.isState ? again : withoutDeps(again);
       out.push(record);
       state = new RowState(table, [...state.records, record]);

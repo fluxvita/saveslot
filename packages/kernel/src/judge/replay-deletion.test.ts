@@ -113,14 +113,6 @@ function refWrite(
   };
 }
 
-// #10 f2=1 from 10-01; #20, not having seen #10, writes 2 from 10-01: a candidate against #10 when
-// both are given; #30 writes 3 from 11-01.
-const conflict: Op[] = [
-  refWrite(10, 0, "10-01", null, "1"),
-  refWrite(20, 0, "10-01", null, "2"),
-  refWrite(30, 20, "11-01", null, "3"),
-];
-
 /**
  * The log judged op by op, then the given source data deleted: the kernel's replay (given the
  * (event, target) those sources take away) and the reference evaluator's, the f2 values of each.
@@ -177,31 +169,6 @@ function sideBySide(
 }
 
 describe("what this version refuses", () => {
-  it("a conflict resolution other than take_previous: not_implemented, naming it", () => {
-    const { table, steps } = judged(STATE_SCHEMA, conflict, []);
-    const take: Op = {
-      kind: "resolve",
-      op: 40,
-      event: 41,
-      decision: "take_candidate",
-      candidates: [21],
-      unit: "f2",
-      take: 21,
-    };
-    const after = judged(STATE_SCHEMA, [...conflict, take], []);
-    expect(after.steps.at(-1)?.judgement.record.kind).toBe("take_candidate");
-    const e = refusal(() =>
-      replayDeletion(
-        table,
-        after.steps.map((x) => x.judgement.record),
-        new Set(),
-      ),
-    );
-    expect(e.reason).toBe("not_implemented");
-    expect(e.detail).toMatchObject({ kind: "take_candidate", op: 40 });
-    expect(steps).toHaveLength(3);
-  });
-
   it("an undecided awaiting undo no longer of high impact: not_implemented (high impact ④ again)", () => {
     // #40 undoes #20 with include_later (acknowledging what it erases, so not ①): #30 overlaps it,
     // so ④ makes it await. #30's value deleted: nothing later to take back, the undo would take
@@ -1153,5 +1120,333 @@ describe("a resolved candidate stays closed whichever unit it meets in the repla
     expect(r.kernel.cands).toEqual(["21/f2 true"]);
     expect(r.kernel.fields["f2"]).toEqual([[d("10-01"), "0"]]);
     expect(r.kernel).toEqual(r.ref);
+  });
+});
+
+describe("take_candidate, as recorded: merge base, O and filled from the record, where it lands again", () => {
+  const revokeOp = (op: number, seen: number, from: string, to: string): Op => ({
+    kind: "revoke",
+    op,
+    event: op + 1,
+    seen,
+    valid: {
+      from: { mode: "given", value: d(from) },
+      to: { mode: "given", value: d(to) },
+    },
+  });
+  const takeOp = (op: number, take: number, unit: "f2" | "existence" = "f2"): Op => ({
+    kind: "resolve",
+    op,
+    event: op + 1,
+    decision: "take_candidate",
+    candidates: [take],
+    unit,
+    take,
+  });
+  const takeItems = (st: RowState, event: number) =>
+    st.items
+      .filter((x) => x.event === event)
+      .map((x) => [x.target, x.status, x.valid, x.content.kind]);
+
+  // State table. #26 revokes [11-05, 11-07) and #28 writes 5 over [11-01, 11-09), filling it.
+  // #30 (seen #10) and #35 (seen #26) write 3: candidates in one item (#20 and #28 changed what
+  // they saw). #33 revokes [11-07, 11-09) having seen only #10: a candidate (#28 changed there).
+  // #40 takes #35: merge base #10, O = {(21, f2), (29, f2)}, filled = [#27].
+  const stateOps: Op[] = [
+    refWrite(10, 0, "10-01", null, "1", { ack: true }),
+    refWrite(20, 10, "11-01", "11-03", "2", { ack: true }),
+    revokeOp(26, 20, "11-05", "11-07"),
+    refWrite(28, 26, "11-01", "11-09", "5", { ack: true }),
+    refWrite(30, 10, "11-01", "11-03", "3"),
+    revokeOp(33, 10, "11-07", "11-09"),
+    refWrite(35, 26, "11-01", "11-09", "3"),
+    takeOp(40, 36),
+  ];
+
+  it("as judged: the take records filled = [#27], its item over [11-01, 11-09)", () => {
+    const { steps } = judged(STATE_SCHEMA, stateOps, []);
+    expect(steps.map((x) => x.judgement.record.kind)).toContain("take_candidate");
+    const take = steps.find((x) => x.judgement.record.kind === "take_candidate")?.judgement.record;
+    expect(take).toMatchObject({ mergeBase: 10, filled: [27] });
+    expect(take?.kind === "take_candidate" ? take.items.map((x) => x.valid) : []).toEqual([
+      [{ from: d("11-01"), to: d("11-09") }],
+    ]);
+  });
+
+  it("with nothing deleted the replayed records are the logged ones", () => {
+    const { table, steps } = judged(STATE_SCHEMA, stateOps, []);
+    const records = steps.map((x) => x.judgement.record);
+    expect(replayDeletion(table, records, new Set()).records).toEqual(records);
+  });
+
+  it("① state table: a revoke in filled does not cover the take; one not in filled (in effect only after the deletion) covers it wholly", () => {
+    // S28 deleted: #33's conflict is gone, it takes effect (no one resolved it); it was not in
+    // effect when the take was judged, so it is not in filled: it covers the taken item where it
+    // lies, as a whole. #26 is in filled: it covers nothing. (03-deletion «搬运的值»)
+    const b = sideBySide(stateOps, ["S28"], [contributionKey(29, "f2")]);
+    expect(takeItems(b.after.state, 41)).toEqual([
+      ["f2", "applied", [{ from: d("11-01"), to: d("11-07") }], "value"],
+    ]);
+    expect(b.kernel).toEqual([
+      [d("10-01"), "1"],
+      [d("11-01"), "3"],
+      [d("11-09"), "1"],
+    ]);
+    expect(b.ref).toEqual(b.kernel);
+    // The stretch #33 revokes has no value on either side.
+    expect(b.refFinal.gaps).toEqual(view(b.after.state).gaps);
+  });
+
+  it("② event table: a revoke covers no taken field item, and a field write outside O no taken revoke", () => {
+    // #35 revokes having seen #10: a candidate on existence (#20 changed what it saw). S20 deleted:
+    // #35 takes effect, the row is revoked; the taken field item stays, on a revoked row.
+    const fieldTaken: Op[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        fields: { f2: { value: "1", sources: ["S10"] } },
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        fields: { f2: { value: "2", sources: ["S20"] } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        fields: { f2: { value: "3", sources: ["S30"] } },
+      },
+      { kind: "revoke", op: 35, event: 36, seen: 10 },
+      takeOp(40, 31),
+    ];
+    const a = sideBySide(fieldTaken, ["S20"], [contributionKey(21, "f2")], EVENT_SCHEMA);
+    expect(takeItems(a.after.state, 41)).toEqual([
+      ["f2", "applied", [{ from: null, to: null }], "value"],
+    ]);
+    expect(view(a.after.state).exists).toBe(false);
+    expect(a.refFinal.exists).toBe(false);
+    expect(a.ref).toEqual(a.kernel);
+    // #30 revokes having seen #10: a candidate on existence; #25 writes 5 having seen #10: a
+    // candidate on f2. #40 takes the revoke (O = {(21, f2)}). S20 deleted: #25 takes effect, not
+    // in O, after the merge base: on an event table it does not cover the taken revoke.
+    const revokeTaken: Op[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        fields: { f2: { value: "1", sources: ["S10"] } },
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        fields: { f2: { value: "2", sources: ["S20"] } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 25,
+        event: 26,
+        seen: 10,
+        fields: { f2: { value: "5", sources: ["S25"] } },
+      },
+      { kind: "revoke", op: 30, event: 31, seen: 10 },
+      takeOp(40, 31, "existence"),
+    ];
+    const r = sideBySide(revokeTaken, ["S20"], [contributionKey(21, "f2")], EVENT_SCHEMA);
+    expect(r.records.at(-1)).toMatchObject({ kind: "take_candidate" });
+    expect(takeItems(r.after.state, 41)).toEqual([
+      ["existence", "applied", [{ from: null, to: null }], "revoke"],
+    ]);
+    expect(view(r.after.state).exists).toBe(false);
+    expect(r.refFinal.exists).toBe(false);
+  });
+
+  it("③ on existence (event table): the taken write's field deleted, it lands on the same-valued candidate and restores the row", () => {
+    // Found by review (seed -2091758890, shrunk). #20 revokes the row; #30 and #40, neither
+    // having seen it, write f2 = 2: candidates on existence. #45 takes #40 (a restore and f2 = 2).
+    // S6 (#40's f2) deleted: #30's f2 is the same value, in K: the take lands on it (03-deletion
+    // «搬运的值»), the row restored.
+    const ops: Op[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+        acknowledge: ["overwrite"],
+      },
+      { kind: "revoke", op: 20, event: 21, seen: 10 },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        fields: { f2: { value: "2", sources: ["S30"] }, f3: { value: "b", sources: ["S30"] } },
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 0,
+        fields: { f2: { value: "2", sources: ["S6"] } },
+        acknowledge: ["overwrite"],
+      },
+      takeOp(45, 41, "existence"),
+    ];
+    const b = sideBySide(ops, ["S6"], [contributionKey(41, "f2")], EVENT_SCHEMA);
+    expect(b.records.at(-1)).toMatchObject({ kind: "take_candidate", unit: "existence" });
+    expect(takeItems(b.after.state, 46)).toEqual([
+      ["existence", "applied", [{ from: null, to: null }], "restore"],
+      ["f2", "applied", [{ from: null, to: null }], "value"],
+    ]);
+    expect(view(b.after.state).exists).toBe(true);
+    expect(b.refFinal.exists).toBe(true);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("③ on existence (state table): the taken write deleted, it lands on the same-valued candidate", () => {
+    // #20 revokes [11-01, 11-05); #30 and #35, neither having seen it, write f2 = 3 from 11-01:
+    // candidates on existence. #40 takes #30. S30 deleted: #35's f2 is the same value, in K: the
+    // take lands on it.
+    const ops: Op[] = [
+      refWrite(10, 0, "10-01", null, "1", { ack: true }),
+      revokeOp(20, 10, "11-01", "11-05"),
+      refWrite(30, 10, "11-01", null, "3"),
+      refWrite(35, 10, "11-01", null, "3"),
+      takeOp(40, 31, "existence"),
+    ];
+    const b = sideBySide(ops, ["S30"], [contributionKey(31, "f2")]);
+    expect(b.records.at(-1)).toMatchObject({ kind: "take_candidate", unit: "existence" });
+    expect(takeItems(b.after.state, 41).map((x) => x[0])).toContain("f2");
+    expect(b.kernel).toEqual([
+      [d("10-01"), "1"],
+      [d("11-01"), "3"],
+    ]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("a candidate's part a deletion extended stays in K: the take lands on it too", () => {
+    // Found by the comparison (3000 runs). #70 writes 1 from 11-03 to the next change: when
+    // written it ends at 11-09 (#30's end) and is a candidate; #73 takes it. S20 and S30 deleted:
+    // #70's default end runs on past 11-09; the part beyond (the same as the value before it now,
+    // a corroboration) meets no block written, and takes the write's status there, a candidate:
+    // in K (03-deletion «回掉的权威定义» step 2). The take lands on [11-03, ∞).
+    const ops: Op[] = [
+      refWrite(10, 0, "10-01", null, "1", { ack: true }),
+      refWrite(20, 10, "11-01", "11-05", "2", { ack: true }),
+      refWrite(30, 20, "11-03", "11-09", "3", { ack: true }),
+      { kind: "undo", op: 40, event: 41, target: 20, includeLater: true },
+      { kind: "reject", op: 50, event: 50, target: 41 },
+      refWrite(60, 59, "11-07", "11-09", "9"),
+      {
+        kind: "write",
+        op: 70,
+        event: 71,
+        seen: 50,
+        valid: { from: { mode: "given", value: d("11-03") }, to: { mode: "next_change" } },
+        fields: { f2: { value: "1", sources: ["S70"], explicit: true } },
+        acknowledge: ["overwrite"],
+      },
+      takeOp(73, 71),
+    ];
+    const b = sideBySide(
+      ops,
+      ["S20", "S30"],
+      [contributionKey(21, "f2"), contributionKey(31, "f2")],
+    );
+    expect(b.records.at(-1)).toMatchObject({ kind: "take_candidate" });
+    expect(takeItems(b.after.state, 74)).toEqual([
+      ["f2", "applied", [{ from: d("11-03"), to: null }], "value"],
+    ]);
+    expect(b.refFinal.items.filter((x) => x.event === 74).map((x) => x.valid)).toEqual([
+      [{ from: d("11-03"), to: null }],
+    ]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("a revoke outside O that a later write in O covers in turn does not cover the take", () => {
+    // #25 (seen #10) revokes [11-03, 11-05): a candidate against #20 (an item on existence), so
+    // not in O and not filled. #30 writes 6 over [11-01, 11-09), in effect: in O. #40 (seen #10)
+    // writes 3: a candidate on f2; #50 takes it. S20 deleted: #25 takes effect after the merge
+    // base, outside O, not filled, so it would cover the take wholly where it lies; but #30 (in O)
+    // supersedes it there, so it covers nothing (03-deletion «搬运的值»): 3 on the whole stretch.
+    const ops: Op[] = [
+      refWrite(10, 0, "10-01", null, "1", { ack: true }),
+      refWrite(20, 10, "11-01", "11-09", "2", { ack: true }),
+      revokeOp(25, 10, "11-03", "11-05"),
+      refWrite(30, 25, "11-01", "11-09", "6", { ack: true }),
+      refWrite(40, 10, "11-01", "11-09", "3"),
+      takeOp(50, 41),
+    ];
+    const b = sideBySide(ops, ["S20"], [contributionKey(21, "f2")]);
+    expect(b.after.state.items.filter((x) => x.event === 26).map((x) => x.status)).toEqual([
+      "applied",
+    ]);
+    expect(takeItems(b.after.state, 51)).toEqual([
+      ["f2", "applied", [{ from: d("11-01"), to: d("11-09") }], "value"],
+    ]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("a candidate turned the same as the value before it stays in K: the take lands on it too", () => {
+    // #40 (seen #10) writes 1 over [11-01, 11-05), a candidate (#20 and #25 wrote 2 there). S25
+    // deleted: on [11-03, 11-05) #41 is the same as the value before it now, a corroboration,
+    // still in K (03-deletion «回掉的权威定义» step 2); the take lands on [11-01, 11-05).
+    const ops: Op[] = [
+      refWrite(10, 0, "10-01", null, "1", { ack: true }),
+      refWrite(20, 10, "11-01", "11-03", "2", { ack: true }),
+      refWrite(25, 20, "11-03", "11-05", "2", { ack: true }),
+      refWrite(40, 10, "11-01", "11-05", "1", { explicit: true }),
+      takeOp(50, 41),
+    ];
+    const b = sideBySide(ops, ["S25"], [contributionKey(26, "f2")]);
+    expect(
+      b.after.state.items.filter((x) => x.event === 41).map((x) => [x.status, x.valid]),
+    ).toEqual([
+      ["candidate", [{ from: d("11-01"), to: d("11-03") }]],
+      ["corroborated", [{ from: d("11-03"), to: d("11-05") }]],
+    ]);
+    expect(takeItems(b.after.state, 51)).toEqual([
+      ["f2", "applied", [{ from: d("11-01"), to: d("11-05") }], "value"],
+    ]);
+    const refTake = b.refFinal.items.filter((x) => x.event === 51).map((x) => x.valid);
+    expect(refTake).toEqual([[{ from: d("11-01"), to: d("11-05") }]]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  // #20 writes 2; #30 and #35, both seen only #10, write 3: candidates in one item. #40 takes #30.
+  const twoSame: Op[] = [
+    refWrite(10, 0, "10-01", null, "1", { ack: true }),
+    refWrite(20, 10, "10-01", null, "2", { ack: true }),
+    refWrite(30, 10, "10-01", null, "3"),
+    refWrite(35, 10, "10-01", null, "3"),
+    takeOp(40, 31),
+  ];
+
+  it("③ the taken candidate's contributions all deleted: with no same-valued candidate the take gives nothing there", () => {
+    const one = [...twoSame.slice(0, 3), takeOp(40, 31)];
+    const b = sideBySide(one, ["S30"], [contributionKey(31, "f2")]);
+    expect(takeItems(b.after.state, 41)).toEqual([]);
+    expect(b.kernel).toEqual([[d("10-01"), "2"]]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("③ the taken candidate's contributions all deleted: it lands on a same-valued candidate's items", () => {
+    const b = sideBySide(twoSame, ["S30"], [contributionKey(31, "f2")]);
+    expect(takeItems(b.after.state, 41)).toEqual([
+      ["f2", "applied", [{ from: d("10-01"), to: null }], "value"],
+    ]);
+    expect(b.kernel).toEqual([[d("10-01"), "3"]]);
+    expect(b.ref).toEqual(b.kernel);
   });
 });

@@ -11,7 +11,7 @@
 // the candidate does not give carried from the merge base. The merge base and the covered writes
 // are recorded for a deletion's replay; they register nothing.
 
-import type { FieldId, OpNumber, Seq } from "@fluxvita/saveslot-contract-core";
+import type { FieldId, FieldValue, OpNumber, Seq } from "@fluxvita/saveslot-contract-core";
 import { sameValue } from "../delta/index.ts";
 import {
   canonical,
@@ -24,10 +24,10 @@ import {
   WHOLE,
 } from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
-import type { ItemRef, RecordedItem, RevertEntry, TakeCandidateInput } from "./model.ts";
+import type { ItemRef, RecordedItem, RevertEntry, TakeCandidateInput, Target } from "./model.ts";
 import { uniqueRefs } from "./resolve.ts";
 import { candidatesOf, coveredSince, mergeBaseOf } from "./revert.ts";
-import { type Item, type Limit, type RowState, refOf, valueToken } from "./state.ts";
+import { type Item, type Limit, type RowState, refOf, supersedes, valueToken } from "./state.ts";
 import { checkGapsOf, type Draft, type GapEntry, numbered } from "./write.ts";
 
 export interface TakeOutcome {
@@ -38,15 +38,40 @@ export interface TakeOutcome {
   readonly filled: readonly Seq[];
 }
 
-export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): TakeOutcome {
+/**
+ * A take executed as recorded in a deletion's replay (03-deletion «搬运的值», «重放规则 · 人的
+ * 决定»): K as the replay has it, and the merge base, the cover set O and the filled revokes as
+ * recorded. What it writes lands again: per target the taken write's items in K (with none left,
+ * the items in K of the candidates with the same value on that field), less where writes outside
+ * O cover them (`coveredOutsideO`); the checks on the current state made when it was judged are
+ * not made again.
+ */
+export interface TakeReplay {
+  readonly k: readonly Item[];
+  readonly mergeBase: OpNumber;
+  readonly cover: readonly RevertEntry[];
+  readonly filled: readonly Seq[];
+  /**
+   * The taken write's value on each field it gave in the item, as written (from its record and
+   * the resolution's recorded `decided`), also on a field whose contribution the deletion took.
+   */
+  readonly values: ReadonlyMap<FieldId, FieldValue>;
+}
+
+export function judgeTakeCandidate(
+  state: RowState,
+  t: TakeCandidateInput,
+  replay?: TakeReplay,
+): TakeOutcome {
   if (!t.candidates.includes(t.take)) {
     throw new JudgeError("invalid", "the candidate taken is not in the item", { take: t.take });
   }
   const cur: Limit = { upTo: t.op - 1, request: { op: t.op, below: t.index } };
-  const k = candidatesOf(state, t.unit, t.candidates);
-  const taken = k.filter((x) => x.event === t.take);
-  const mergeBase = mergeBaseOf(state, t.candidates);
-  const cover = coveredSince(state, t, mergeBase, k);
+  const k = replay?.k ?? candidatesOf(state, t.unit, t.candidates);
+  const mergeBase = replay?.mergeBase ?? mergeBaseOf(state, t.candidates);
+  const cover = replay?.cover ?? coveredSince(state, t, mergeBase, k);
+  const taken =
+    replay === undefined ? k.filter((x) => x.event === t.take) : landing(state, t, replay, k);
   const drafts: Draft[] = [];
 
   // A revoke taken takes effect on its interval, also where there is already no value: as a
@@ -66,7 +91,7 @@ export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): Take
         deps: revokes.map(refOf),
       });
     }
-    return { items: numbered(drafts), mergeBase, cover, filled: [] };
+    return { items: numbered(drafts), mergeBase, cover, filled: replay?.filled ?? [] };
   }
 
   // A modification taken: per target, the union of its items.
@@ -103,14 +128,14 @@ export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): Take
 
   // A field unit: the checks on the current state an ordinary write passes, on what takes effect
   // (04-write-and-read «判定顺序» step 5): a revoked row, a gap without the required fields.
-  if (t.unit !== "existence" && drafts.length > 0) {
+  if (t.unit !== "existence" && drafts.length > 0 && replay === undefined) {
     if (!state.isState && state.revoked(cur)) {
       throw new JudgeError("revoked", "the row is revoked", { ops: state.revokedBy(cur) });
     }
     if (state.isState) checkGapsOf(state, targets, drafts, cur);
   }
 
-  if (t.unit === "existence" && !state.isState && state.revoked(cur)) {
+  if (t.unit === "existence" && !state.isState && taken.length > 0 && state.revoked(cur)) {
     // The row exists again; the revoke is not registered as reverted.
     drafts.push({
       target: "existence",
@@ -121,9 +146,99 @@ export function judgeTakeCandidate(state: RowState, t: TakeCandidateInput): Take
     });
   }
   if (t.unit === "existence" && state.isState) {
-    drafts.push(...carriedRequired(state, taken, targets, mergeBase, cur));
+    drafts.push(...carriedRequired(state, taken, targets, mergeBase, cur, replay !== undefined));
   }
-  return { items: numbered(drafts), mergeBase, cover, filled: filledBy(state, t, taken, cur) };
+  return {
+    items: numbered(drafts),
+    mergeBase,
+    cover,
+    filled: replay?.filled ?? filledBy(state, t, taken, cur),
+  };
+}
+
+/**
+ * Where the take lands in a replay: per target, the taken write's items in K, or with none left
+ * on a field, the items in K of the candidates with the same value there; each less where writes
+ * outside O cover it. Items with nothing left are dropped.
+ */
+function landing(
+  state: RowState,
+  t: TakeCandidateInput,
+  replay: TakeReplay,
+  k: readonly Item[],
+): Item[] {
+  const own = k.filter((x) => x.event === t.take);
+  const fields = new Set<Target>([...own.map((x) => x.target), ...replay.values.keys()]);
+  const out: Item[] = [];
+  for (const target of [...fields].sort()) {
+    let giving = own.filter((x) => x.target === target);
+    const value = target === "existence" ? undefined : replay.values.get(target);
+    if (giving.length === 0 && value !== undefined) {
+      giving = k.filter(
+        (x) =>
+          x.target === target && x.content.kind === "value" && sameValue(x.content.value, value),
+      );
+    }
+    for (const x of giving) {
+      const valid = minus(x.valid, coveredOutsideO(state, replay, t.op, x));
+      if (!isNothing(valid)) out.push({ ...x, valid });
+    }
+  }
+  return out;
+}
+
+/**
+ * Where writes outside the cover set O cover a taken item in a replay (03-deletion «搬运的值»):
+ * an item in effect after the merge base and before the take, not in O, that supersedes the taken
+ * item (step 3), less where an earlier revert registered it and where a later item in O
+ * supersedes it in turn. Revokes and field items: on a state table a revoke covers a taken field
+ * item wholly unless the take filled it (listed in `filled`), judged by the revoke, not by an
+ * interval; on an event or timeless table a revoke covers no field item, and a field write covers
+ * no taken revoke (only a restore outside O does).
+ */
+export function coveredOutsideO(
+  state: RowState,
+  rec: {
+    readonly mergeBase: OpNumber;
+    readonly cover: readonly RevertEntry[];
+    readonly filled: readonly Seq[];
+  },
+  n: OpNumber,
+  taken: Item,
+): IntervalSet {
+  const at: Limit = { upTo: n - 1 };
+  const inO = new Set(rec.cover.map((e) => `${e.event}/${e.target}`));
+  const revokeOnField = (x: Item) => taken.target !== "existence" && x.target === "existence";
+  const covering = state.items.filter(
+    (x) =>
+      x.status === "applied" &&
+      x.op > rec.mergeBase &&
+      x.op < n &&
+      !inO.has(`${x.event}/${x.target}`) &&
+      x.content.kind !== "uncovered" &&
+      !(revokeOnField(x) && !state.isState) &&
+      !(!state.isState && taken.target === "existence" && x.content.kind !== "restore") &&
+      supersedes(x, taken),
+  );
+  const out: IntervalSet[] = [];
+  for (const x of covering) {
+    if (revokeOnField(x) && rec.filled.includes(x.event)) continue;
+    const underO = state.items.filter(
+      (y) =>
+        y.status === "applied" &&
+        y.op > x.op &&
+        y.op < n &&
+        inO.has(`${y.event}/${y.target}`) &&
+        supersedes(y, x),
+    );
+    out.push(
+      minus(
+        meet(minus(x.valid, state.registeredSet(x, at)), taken.valid),
+        canonical(underO.flatMap((y) => minus(y.valid, state.registeredSet(y, at)))),
+      ),
+    );
+  }
+  return canonical(out.flat());
 }
 
 /**
@@ -167,6 +282,8 @@ function carriedRequired(
   targets: readonly FieldId[],
   mergeBase: OpNumber,
   cur: Limit,
+  /** In a replay, executed as recorded: where the merge base has no value, nothing is carried. */
+  replaying = false,
 ): Draft[] {
   const scope = canonical(taken.flatMap((x) => x.valid));
   const gap = canonical(state.piecesIn(scope).filter((s) => !state.hasValue(s, cur)));
@@ -179,7 +296,7 @@ function carriedRequired(
     const none = state.piecesIn(gap).filter((s) => state.fieldState(f, s, at).kind !== "value");
     if (none.length > 0) lacking.push({ field: f, valid: canonical(none) });
   }
-  if (lacking.length > 0) {
+  if (lacking.length > 0 && !replaying) {
     throw new JudgeError("validation_failed", "a required field has no value to carry", {
       gaps: lacking,
     });
