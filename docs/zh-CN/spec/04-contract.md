@@ -663,6 +663,7 @@
 - **第一版 scope 与 slot 范围签发后都不能改**：要改就吊销后重签。远程授权的 step-up（越权后重新授权）得到的是一个新的连接实例，原来那个不变。来源键的唯一范围是表、不含连接实例，换一个连接实例接着同步不会重复新增。
 - **声明"外部权威"级别的权限**（后续）：将来开放 `external_authority` 时，它是用户会话在签发时授予连接实例的一项权限，与 scope、slot 范围一同记在主体登记事件里（第 3 节）。
 - **凭证失效**：令牌缺失、无效、已吊销、会话过期，一律 `unauthenticated`，`reason` 区分四种情形（第 16 节）。吊销立即生效。
+- **账户停用**（服务器模式）：租户属主的账户被停用期间，这个租户的全部凭证（用户会话与连接实例）认证时都报 `unauthenticated`（`account_disabled`），不打开租户；日志里不写吊销，凭证也不删，账户重新启用后照常可用。账户状态由身份提供者给出（architecture §12），它不认识这个账户时按凭证无效（`invalid`）处理。
 - **吊销之后留下什么**：吊销只让这个凭证此后的请求被拒，不触发任何删除，也不改动已有的数据。它写过的数据 `actor` 不变；结果里的 `Actor.name` 照旧是它的名字，`Actor.state` 是 `revoked`，文本渲染时名字后标"已吊销"。它的名字**仍然占用**：同一用户下不能再签发同名的连接实例，历史里同一个名字只指一个主体。它发起而尚未处理的事项（冲突、待确认、已标记、schema 变更、宽限期内的删除）照常保留，由用户会话或其他有相应 scope 的连接实例处理；宽限期内的删除照常到期执行。读取记录里它的读取照常参与影响查询。
 - **停用的主体**：导入到空租户（第 17 节）把导入前登记、仍有效的全部用户主体与连接实例置为停用（`system` 除外；已吊销的保持已吊销）。停用的主体不能认证，第一版不能恢复；它写过的数据、发起而未处理的事项，与吊销之后留下的完全一样；`Actor.state` 是 `disabled`，文本渲染时名字后标"已停用"，名字同样仍然占用。`connections.list` 里的连接实例同样带 `state`（`revoked` / `disabled`）。
 
@@ -720,7 +721,7 @@
 
 | `code` | 什么时候 |
 |---|---|
-| `unauthenticated` | 凭证缺失（`missing`）、无效（`invalid`）、已吊销（`revoked`）、过期（`expired`） |
+| `unauthenticated` | 凭证缺失（`missing`）、无效（`invalid`）、已吊销（`revoked`）、过期（`expired`）；服务器模式下租户属主的账户已停用（`account_disabled`） |
 | `insufficient_scope` | 凭证没有所需 scope（含 `resolve` 用了当前凭证不可用的处理方式）；连接实例调用只给用户会话的管理类操作（`required_scope: "user_session"`）；限定了 slot 范围的凭证新建 slot（`required_scope: "all_slots"`，缺 scope 时先报缺 scope） |
 | `rate_limited` | 限流或配额（`quota`）；同一租户已有一次对拍或导入在跑（`busy`） |
 | `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`） |

@@ -28,7 +28,7 @@ import type { ValidationDetail } from "./validation.ts";
  * reasons each gives (none: `[]`). The domain codes' are contract-core's.
  */
 export const OUTER_ERROR_REASONS = {
-  unauthenticated: ["missing", "invalid", "revoked", "expired"],
+  unauthenticated: ["missing", "invalid", "revoked", "expired", "account_disabled"],
   insufficient_scope: [],
   rate_limited: ["quota", "busy"],
   handle_expired: ["expired", "restored", "executed", "derived_changed"],

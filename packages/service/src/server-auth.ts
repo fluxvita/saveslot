@@ -1,17 +1,20 @@
 // Who a request of the server mode comes from (docs/zh-CN/spec/02-architecture.md §5 «身份»,
 // «权限»; 04-contract.md §12, §16 `unauthenticated`): the `Authorization` header's token → its hash →
 // the control plane's credential (routing only) → expired is refused there, before any tenant is
-// opened → the tenant, lent by the pool → the principal's state, scopes and slot range from the
+// opened → the tenant owner's account state from the identity provider (disabled refused as
+// `account_disabled`, unknown as `invalid`, the tenant still not opened) → the tenant, lent by the pool → the principal's state, scopes and slot range from the
 // tenant log (`principals`), as in the local mode: a principal revoked in the log is refused though
 // its hash is still in the control plane.
 //
-// Every request asks the control database for the credential: no cache. The control database has
+// Every request asks the control database for the credential and the tenant's owner, and the
+// identity provider for the owner's state: no cache. The control database has
 // one connection, so authentications queue with the anchor store's writes; a cache from hash to
 // (tenant, principal) is safe, authorization being the log's, but forgetting a credential would
 // then have to reach it in every process.
 
 import { type AuthFailure, type Principal, principalFromRow, principalRow } from "./auth.ts";
 import type { ControlPlane, CredentialEntry, TenantId } from "./control-plane.ts";
+import type { IdentityProvider } from "./identity.ts";
 import { isInstant } from "./server-control-plane.ts";
 import type { TenantPool } from "./tenant-pool.ts";
 import { bearerToken, tokenHash } from "./tokens.ts";
@@ -44,6 +47,8 @@ export async function authenticateServer(o: {
    */
   readonly now: string;
   readonly checkCredential?: CheckCredential;
+  /** The account states: every credential of a disabled account's tenant is refused. */
+  readonly identity: Pick<IdentityProvider, "userState">;
 }): Promise<Caller | AuthFailure> {
   if (!isInstant(o.now)) {
     throw new Error("the request's time is an instant as toISOString writes it");
@@ -64,6 +69,10 @@ export async function authenticateServer(o: {
   if (o.checkCredential !== undefined && (await o.checkCredential(entry)) !== "ok") {
     return { code: "unauthenticated", reason: "invalid" };
   }
+  const tenant = await o.control.tenant(entry.tenant);
+  const state = tenant === undefined ? "unknown" : await o.identity.userState(tenant.owner);
+  if (state === "disabled") return { code: "unauthenticated", reason: "account_disabled" };
+  if (state !== "active") return { code: "unauthenticated", reason: "invalid" };
   const principal = await o.pool.use(entry.tenant, async (t) =>
     principalFromRow(entry.kind, entry.principal, await principalRow(t.store, entry.principal)),
   );

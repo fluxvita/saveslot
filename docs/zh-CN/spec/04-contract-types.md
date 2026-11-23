@@ -2184,7 +2184,7 @@ type ValidationDetailCode =
 | `confirmation_mismatch` | `changed` / `restored` | `current: ItemDetail`（含新的 `item_ver`） |
 | `item_closed` | `resolved` / `superseded` / `expired` | `resolution?` / `superseded?`（形状同事项详情）；`expired`（`deletion` 的宽限期已过）：已执行给 `resolution`（执行一支），尚未执行给 `expires_at` |
 | `preview_outdated` | — | `preview: DeletionPreviewResult`（含新的 `dc_`） |
-| `unauthenticated` | `missing` / `invalid` / `revoked` / `expired` | — |
+| `unauthenticated` | `missing` / `invalid` / `revoked` / `expired` / `account_disabled`（服务器模式：租户属主的账户已停用） | — |
 | `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"`（`all_slots`：这项操作需要范围为全部 slot 的凭证——限定了 slot 范围的凭证新建 slot。只对可见的目标报，不泄露范围外的东西） |
 | `rate_limited` | `quota` / `busy`（同一租户已有一次对拍或导入在跑） | `retry_after` |
 | `handle_expired` | `expired` / `restored` / `executed` / `derived_changed`（翻页期间派生表被刷新过，从首页重读） | `deletion?: ItemId`（已执行过的 `dc_`） |

@@ -1,7 +1,8 @@
 // authenticateServer on either backend (02-architecture §5; 04-contract §12, §16): the token's hash
 // found in the control plane, an expired credential refused before any tenant opens, the principal
 // read from the tenant's log — a connection revoked there refused though its hash is still in the
-// control plane. Fictional IDs.
+// control plane — and every credential of a tenant refused while its owner's account is disabled.
+// Fictional IDs.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +19,14 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../test-backend/src/index.fixture.ts";
 import { SCOPES } from "./auth.ts";
-import type { TenantEntry } from "./control-plane.ts";
+import type { TenantEntry, UserId } from "./control-plane.ts";
+import {
+  disableLocalUser,
+  enableLocalUser,
+  initLocalAccounts,
+  type LocalAccounts,
+  listLocalUsers,
+} from "./local-accounts.ts";
 import { authenticateServer } from "./server-auth.ts";
 import { initControlPlane, type ServerControlPlane } from "./server-control-plane.ts";
 import { createServerTenant } from "./server-tenant.ts";
@@ -44,6 +52,13 @@ let control: TenantStore;
 let cp: ServerControlPlane;
 let pool: TenantPool;
 let tenant: TenantEntry;
+let accounts: LocalAccounts;
+/** The owner's account state as the local accounts keep it; a user without an account is unknown. */
+const identity = {
+  userState: async (user: UserId) =>
+    (await listLocalUsers(accounts)).find((u) => u.user === user)?.state ?? ("unknown" as const),
+};
+const OWNER_NAME = "owner";
 beforeAll(async () => {
   control = await testBackend().open(
     { kind: "pglite", dir: join(root, "control") },
@@ -65,6 +80,13 @@ beforeAll(async () => {
     cells: new Set([CELL]),
     now: NOW,
   });
+  accounts = await initLocalAccounts(control);
+  await control.write((tx) =>
+    tx.query(
+      "INSERT INTO accounts (id, name, password_hash, state) VALUES ($1, $2, 'x', 'active')",
+      [tenant.owner, OWNER_NAME],
+    ),
+  );
 }, T);
 afterAll(async () => {
   await pool?.closeAll();
@@ -85,7 +107,7 @@ const ctx = () =>
   });
 
 const auth = (authorization: string | undefined, now = NOW) =>
-  authenticateServer({ control: cp, pool, authorization, now });
+  authenticateServer({ control: cp, pool, authorization, now, identity });
 
 /** A connection registered in the tenant's log, its token's hash in the control plane. */
 async function connection(
@@ -198,6 +220,7 @@ describe("authenticateServer", () => {
           pool: refusing,
           authorization: `Bearer ${token}`,
           now: NOW,
+          identity,
         }),
       ).toEqual({ code: "unauthenticated", reason: "expired" });
       expect(opens).toBe(before);
@@ -230,6 +253,7 @@ describe("authenticateServer", () => {
           pool: recording,
           authorization: `Bearer ${token}`,
           now: NOW,
+          identity,
           checkCredential: async (c) => {
             seen.push(c.hash);
             return "invalid";
@@ -245,6 +269,7 @@ describe("authenticateServer", () => {
           pool,
           authorization: `Bearer ${token}`,
           now: NOW,
+          identity,
           checkCredential: async () => "ok",
         }),
       ).toMatchObject({ tenant: tenant.id, principal: { kind: "user" } });
@@ -278,6 +303,74 @@ describe("authenticateServer", () => {
           "the request's time is an instant as toISOString writes it",
         );
       }
+    },
+    T,
+  );
+
+  it(
+    "refuses every credential of a disabled account's tenant, without opening it; enabled, they authenticate",
+    async () => {
+      const c = await connection();
+      const session = newToken("session");
+      await cp.putCredential({
+        hash: tokenHash(session),
+        kind: "session",
+        principal: tenant.owner,
+        tenant: tenant.id,
+        expiresAt: "2026-11-21T10:00:00.000Z",
+      });
+      expect(await auth(`Bearer ${c.token}`)).toMatchObject({ tenant: tenant.id });
+      await disableLocalUser(accounts, { name: OWNER_NAME });
+      try {
+        const before = opens;
+        const refusing = new TenantPool({
+          control: cp,
+          backend: { open: () => Promise.reject(new Error("no tenant may be opened")) },
+          idleMs: 60_000,
+          discardStaging: async () => {},
+        });
+        for (const token of [c.token, session]) {
+          expect(
+            await authenticateServer({
+              control: cp,
+              pool: refusing,
+              authorization: `Bearer ${token}`,
+              now: NOW,
+              identity,
+            }),
+          ).toEqual({ code: "unauthenticated", reason: "account_disabled" });
+        }
+        expect(opens).toBe(before);
+        // Nothing was forgotten in the control plane.
+        expect(await cp.credential(tokenHash(c.token))).toBeDefined();
+      } finally {
+        await enableLocalUser(accounts, { name: OWNER_NAME });
+      }
+      expect(await auth(`Bearer ${c.token}`)).toMatchObject({
+        tenant: tenant.id,
+        principal: { kind: "connection", actor: c.id },
+      });
+      expect(await auth(`Bearer ${session}`)).toMatchObject({
+        tenant: tenant.id,
+        principal: { kind: "user" },
+      });
+    },
+    T,
+  );
+
+  it(
+    "refuses a credential whose tenant's owner the identity provider does not know, as invalid",
+    async () => {
+      const c = await connection();
+      expect(
+        await authenticateServer({
+          control: cp,
+          pool,
+          authorization: `Bearer ${c.token}`,
+          now: NOW,
+          identity: { userState: async () => "unknown" },
+        }),
+      ).toEqual({ code: "unauthenticated", reason: "invalid" });
     },
     T,
   );
