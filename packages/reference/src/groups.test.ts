@@ -5,7 +5,12 @@ import type { BizPoint } from "@fluxvita/saveslot-contract-core";
 import { describe, expect, it } from "vitest";
 import { evaluate, evaluateLog } from "./evaluate.ts";
 import type { Op, TableSchema, WriteOp } from "./model.ts";
-import { GROUP_LOGS, GROUP_TAKE_INTO_HOLE } from "./testing/groups.fixture.ts";
+import {
+  GROUP_LOGS,
+  GROUP_TAKE_INTO_HOLE,
+  GROUP_TAKE_NOOP_FIELD,
+  GROUP_TAKE_NOOP_FIELD_EVENT,
+} from "./testing/groups.fixture.ts";
 
 const d = (md: string) => `2026-${md}` as BizPoint;
 const GROUP: TableSchema = { kind: "state", required: ["f2"], groups: [["f2", "f3"]] };
@@ -106,4 +111,22 @@ describe("a take on a group, checked on what it writes", () => {
     const steps = evaluateLog(schema, [...ops, take]).steps;
     expect(steps.at(-1)).toMatchObject({ refused: true, rejected: "missing_required" });
   });
+});
+
+describe("a take on a group of a write with a field it gave as a no-op", () => {
+  it.each([
+    ["state table", GROUP_TAKE_NOOP_FIELD],
+    ["event table", GROUP_TAKE_NOOP_FIELD_EVENT],
+  ] as const)(
+    "%s: writes only the fields the candidate has items on; no same-valued candidate stands in",
+    (_, { schema, ops, take }) => {
+      const final = evaluateLog(schema, [...ops, take]).final;
+      const f = final.fields as unknown as Record<
+        string,
+        { value: unknown; by?: { event: number } }[]
+      >;
+      expect(f["f2"]?.map((x) => [x.value, x.by?.event])).toEqual([["5", 21]]);
+      expect(f["f3"]?.map((x) => [x.value, x.by?.event])).toEqual([["b", 44]]);
+    },
+  );
 });

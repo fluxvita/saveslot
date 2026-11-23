@@ -3,8 +3,14 @@
 // statuses the reference evaluator gives (reference/src/testing/groups.fixture.ts).
 
 import { evaluate, evaluateLog } from "@fluxvita/saveslot-reference";
-import { GROUP_LOGS, GROUP_TAKE_INTO_HOLE } from "@fluxvita/saveslot-reference/testing";
+import {
+  GROUP_LOGS,
+  GROUP_TAKE_INTO_HOLE,
+  GROUP_TAKE_NOOP_FIELD,
+  GROUP_TAKE_NOOP_FIELD_EVENT,
+} from "@fluxvita/saveslot-reference/testing";
 import { describe, expect, it } from "vitest";
+import { view } from "./judge.ts";
 import { judged } from "./scenarios.fixture.ts";
 
 describe("field groups, as the reference evaluator judges them", () => {
@@ -41,4 +47,32 @@ describe("a take on a group into a hole (a property counterexample)", () => {
       r === undefined ? undefined : evaluateLog(schema, [...r.before, r.op]).steps.at(-1);
     expect(last).toMatchObject({ refused: true, rejected: "missing_required" });
   });
+});
+
+describe("a take on a group of a write with a field it gave as a no-op (property counterexamples)", () => {
+  it.each([
+    ["state table", GROUP_TAKE_NOOP_FIELD],
+    ["event table", GROUP_TAKE_NOOP_FIELD_EVENT],
+  ] as const)(
+    "%s: judge and the reference write only the candidate's field",
+    (_, { schema, ops }) => {
+      // The take inserted after #40, on the item holding #30's and #40's candidates.
+      const { steps, refused } = judged(schema, ops, [
+        { after: 3, pick: 0, kind: "take", flag: 0, focus: false },
+      ]);
+      expect(refused).toEqual([]);
+      const last = steps.at(-1);
+      expect(last?.op).toMatchObject({ kind: "resolve", take: 31, candidates: [31, 41] });
+      const kernel = view(last?.state as never).fields;
+      const ref = evaluateLog(
+        schema,
+        steps.map((x) => x.op),
+      ).final.fields as unknown as Record<string, { value: unknown; by?: { event: number } }[]>;
+      const of = (xs: readonly { value: unknown; by?: { event: number } }[] | undefined) =>
+        (xs ?? []).map((x) => [x.value, x.by?.event]);
+      expect(of(kernel["f2" as never])).toEqual([["5", 21]]);
+      expect(of(ref["f2"])).toEqual(of(kernel["f2" as never]));
+      expect(of(ref["f3"])).toEqual(of(kernel["f3" as never]));
+    },
+  );
 });

@@ -103,3 +103,42 @@ export const GROUP_TAKE_INTO_HOLE: { schema: TableSchema; ops: Op[]; take: Op } 
     take: 31,
   } as unknown as Op,
 };
+
+/**
+ * A take on a group of a write that gave one field as a no-op (a property counterexample): #30,
+ * having seen #10, writes f2 = 1 (the same as in V: a no-op, no item) and f3 = b (a candidate on
+ * the group, against #20's f2); #40, having seen nothing, writes f2 = 1: a candidate in the same
+ * item. Taking #30's candidate writes f3 only: #30 has nothing on f2 to take, and #40's same value
+ * does not stand in for it. f2 stays #20's 5.
+ */
+export const GROUP_TAKE_NOOP_FIELD: { schema: TableSchema; ops: Op[]; take: Op } = {
+  schema: GROUP,
+  ops: [
+    w(10, 0, { f2: "1", f3: "a" }, "11-01", "open", true),
+    w(20, 10, { f2: "5" }, "11-01", "open", true),
+    {
+      ...w(30, 10, { f2: "1", f3: "b" }, "11-01"),
+      fields: { f2: { value: "1", sources: ["S30"] }, f3: { value: "b", sources: ["S30f3"] } },
+    },
+    w(40, 0, { f2: "1" }, "11-01", "open", true),
+  ],
+  take: {
+    kind: "resolve",
+    op: 43,
+    event: 44,
+    decision: "take_candidate",
+    candidates: [31, 41],
+    unit: ["f2", "f3"],
+    take: 31,
+  } as unknown as Op,
+};
+
+/** The same on an event table (a second counterexample): no interval, the same take. */
+export const GROUP_TAKE_NOOP_FIELD_EVENT: { schema: TableSchema; ops: Op[]; take: Op } = {
+  schema: { kind: "event", required: ["f2"], groups: [["f2", "f3"]] },
+  ops: GROUP_TAKE_NOOP_FIELD.ops.map((o) => {
+    const { valid: _, ...rest } = o as WriteOp;
+    return rest as Op;
+  }),
+  take: GROUP_TAKE_NOOP_FIELD.take,
+};

@@ -1826,6 +1826,10 @@ class Replay {
     for (const f of fields) {
       const input = takenOp?.kind === "write" ? takenOp.fields[f] : undefined;
       if (input === undefined) continue;
+      // A field the taken write gave as a no-op when written had no item: there is nothing of it
+      // to take, and no same-valued candidate stands in for it (03-deletion «搬运的值»: they stand in
+      // for the taken write's items, gone in a replay).
+      if (takenOp?.kind === "write" && this.wroteNoop(takenOp, f)) continue;
       const v = tok(input.value);
       const same = k.filter(
         (x) => x.target === f && x.content.kind === "value" && tok(x.content.value) === v,
