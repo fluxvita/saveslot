@@ -30,6 +30,7 @@ export type SchemaDetailCode =
   | "unit_unknown"
   | "external_key_table_kind"
   | "external_key_field_type"
+  | "external_key_existing_field"
   | "external_key_in_together"
   | "unknown_reference"
   | "key_not_applicable"

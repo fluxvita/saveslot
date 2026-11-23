@@ -30,7 +30,11 @@
 // (`table_written`); with a derived rule reading the table, `not_in_this_version`
 // (`not_implemented`: the rule would be compiled again). A table no longer a state table, or made
 // one, that a table the draft does not list references is `still_referenced`. Not here either: a
-// derived table in the draft, a time zone change, the time field, the external key.
+// derived table in the draft, a time zone change, the time field. The external key: added,
+// dropped or changed on a table never written as the structure is; on a table written, dropped
+// touches the catalog only, added on a field it has is `external_key_existing_field`, added on a
+// field the draft adds is not in this version yet (it builds the table from the log), changed is
+// `table_written`.
 //
 // Errors, in this order so the most telling one wins: a key v1 does not support, something not
 // compiled that the draft's form already shows (a derived table, `migrate`, an expression
@@ -898,6 +902,8 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     fail({ code: "not_implemented", what, param });
   /** `ref` fields compiled anew: the table each points at, by ID once every table has one. */
   const retargeted: { readonly table: string; readonly field: string; readonly f: DocField }[] = [];
+  /** Tables whose external key the draft changes: their key, as it writes it. */
+  const rekeyed: { readonly id: string; readonly doc: DocTable }[] = [];
   /** Tables whose time type or entity key the draft changes: their time and keys, as it writes them. */
   const retimed: { readonly id: string; readonly doc: DocTable }[] = [];
 
@@ -995,15 +1001,35 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
       rebuilt.add(c.id);
     }
     if (restructured.length > 0) retimed.push({ id: c.id, doc: s });
+    // The external key (07 «来源键»). On a table never written the key index is empty: added on
+    // fields it has or not, dropped, or changed to other fields, as metadata with the table built
+    // anew (R446). On a table written: dropped touches the catalog only (the index's entries are
+    // cleared with the switch, the fields keep their values), and waits for confirmation; added
+    // only on fields the same draft adds, which builds the table from the log, not in this version
+    // yet; on a field it has, `external_key_existing_field`; changed, `table_written`.
     if (!sameKey(keyIds(s.external_key), c.external_key)) {
-      return notYet(
+      const what =
         c.external_key === undefined
           ? "add_external_key"
           : s.external_key === undefined
             ? "drop_external_key"
-            : "change_external_key",
-        `${s.path}/external_key`,
-      );
+            : "change_external_key";
+      const param = `${s.path}/external_key`;
+      if (neverWritten) {
+        asNeverWritten(tid, what);
+        rebuilt.add(c.id);
+        rekeyed.push({ id: c.id, doc: s });
+      } else if (what === "drop_external_key") {
+        record(tid, what, "metadata", { compatible: true });
+        rekeyed.push({ id: c.id, doc: s });
+      } else if (what === "add_external_key") {
+        const had = (s.external_key ?? []).flatMap((n, i) =>
+          idOf.has(fold(n)) ? [`${param}/${i}`] : [],
+        );
+        if (had.length === 0)
+          return fail({ code: "not_in_this_version", reason: "not_implemented", what, param });
+        for (const path of had) late.push({ path, code: "external_key_existing_field" });
+      } else return fail({ code: "not_in_this_version", reason: "table_written", what, param });
     }
 
     if (s.name !== c.name) {
@@ -1450,6 +1476,15 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     else delete next["entity_key"];
     patched.set(id, next as unknown as CompiledBaseTable);
   }
+  for (const { id, doc: s } of rekeyed) {
+    const t = patched.get(id) as CompiledBaseTable;
+    const idOf = new Map(t.fields.map((f) => [fold(f.name), f.id]));
+    const next: Record<string, unknown> = { ...t };
+    if (s.external_key !== undefined)
+      next["external_key"] = s.external_key.map((n) => idOf.get(fold(n)) as FieldId);
+    else delete next["external_key"];
+    patched.set(id, next as unknown as CompiledBaseTable);
+  }
   if (late.length > 0)
     return fail({
       code: "validation_failed",
@@ -1480,7 +1515,12 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     ],
   };
 
-  const pathOf = new Map(fresh.map((m) => [m.doc.name, `${m.doc.path}/external_key`] as const));
+  // A key of one field, on a new table or one whose key the draft changes (07 «来源键»).
+  const pathOf = new Map(
+    [...fresh.map((m) => m.doc), ...rekeyed.map((r) => r.doc)].map(
+      (d) => [d.name, `${d.path}/external_key`] as const,
+    ),
+  );
   const warnings: CompileWarning[] = compiledWarnings(compiled).flatMap((w) => {
     const path = pathOf.get(w.table);
     return path === undefined ? [] : [{ ...w, path }];

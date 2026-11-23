@@ -60,6 +60,20 @@ const LINKS = {
     { name: "why", type: "text", description: "the reason" },
   ],
 };
+/** Tags, some from another system by an optional code there: rows without a key can be written. */
+const TAGS = {
+  name: "tags",
+  kind: "base",
+  description: "tags, some synced",
+  time: { type: "none" },
+  external_key: ["code"],
+  fields: [
+    { name: "code", type: "text", description: "the other system's code" },
+    { name: "label", type: "text", description: "its label" },
+  ],
+};
+/** TAGS as a draft writes it without its external key. */
+const { external_key: _, ...withoutKey } = TAGS;
 const ROOMS = {
   name: "rooms",
   kind: "base",
@@ -161,7 +175,7 @@ beforeEach(async () => {
     slot: "plan",
     base_version: null,
     timezone: "Asia/Shanghai",
-    tables: [BUDGETS, ROOMS, ITEMS, LINKS],
+    tables: [BUDGETS, ROOMS, ITEMS, LINKS, TAGS],
   });
 }, T);
 
@@ -536,6 +550,123 @@ describe("an old write by external key to a table restructured: schema_incompati
     async (_, params) => {
       await switched();
       expect(await answer(() => w(params))).toEqual(refusal);
+    },
+    T,
+  );
+});
+
+describe("the external key", () => {
+  beforeAll(() => acceptExternalKeyForTests(true));
+  afterAll(() => acceptExternalKeyForTests(false));
+
+  it(
+    "dropped on a table written: the catalog only, confirmed; by key at the old version no_external_key, by row accepted, no row added",
+    async () => {
+      const id = await tableId("tags");
+      const first = await w({
+        sv: 1,
+        ops: [{ intent: "insert", table: "tags", set: { label: "a" } }],
+      });
+      const row = first.ops[0].target.row;
+      const d = await draft({
+        slot: "plan",
+        base_version: 1,
+        timezone: "Asia/Shanghai",
+        tables: [
+          {
+            ...withoutKey,
+            id,
+            fields: [
+              { ...TAGS.fields[0], id: "f1" },
+              { ...TAGS.fields[1], id: "f2" },
+            ],
+          },
+        ],
+      });
+      expect(d).toMatchObject({
+        outcome: "pending",
+        changes: [
+          {
+            target: { table: "tags" },
+            change: "drop_external_key",
+            class: "metadata",
+            compatible_with_old_writes: true,
+            destructive: false,
+            auto: false,
+          },
+        ],
+      });
+      expect(await confirm(d)).toMatchObject({ status: "resolved" });
+      // The catalog only: the physical table is the first version's, with its row.
+      const c = (await catalog(s.store, ctx("schema"), { level: "schema", slot: "plan" })) as Any;
+      expect(c.document.tables.find((t: Any) => t.name === "tags")).not.toHaveProperty(
+        "external_key",
+      );
+      expect(await rows(`SELECT count(*)::int AS n FROM "t_${id}_v1"`)).toEqual([{ n: 1 }]);
+      // By key at the old version: judged by the current definition, which has no key (R446).
+      const before = await tail();
+      expect(
+        await answer(() =>
+          w({
+            sv: 1,
+            ops: [
+              { intent: "update", table: "tags", external_key: { code: "x" }, set: { label: "b" } },
+            ],
+          }),
+        ),
+      ).toMatchObject({ code: "invalid_argument", reason: "no_external_key" });
+      expect(await tail()).toBe(before);
+      // By row at the old version: accepted (the change is compatible), and no row added.
+      expect(
+        await w({ sv: 1, ops: [{ intent: "update", table: "tags", row, set: { label: "c" } }] }),
+      ).toMatchObject({ status: "saved" });
+      expect(await rows(`SELECT count(*)::int AS n FROM "t_${id}_v1"`)).toEqual([{ n: 1 }]);
+      expect(
+        (await query(s.store, ctx("r"), { table: "tags" })).rows.map((x: Any) => x.values),
+      ).toEqual([{ code: null, label: "c" }]);
+      const replayed = await reconcileLog({ live: s.store, scratch: scratch.store });
+      expect(replayed.mismatches).toEqual([]);
+      expect(replayed.mismatches_total).toBe(0);
+    },
+    T,
+  );
+
+  it(
+    "changed on a table never written: switched into a new empty table, the key index of the new key",
+    async () => {
+      const id = await tableId("tags");
+      const d = await draft({
+        slot: "plan",
+        base_version: 1,
+        timezone: "Asia/Shanghai",
+        tables: [
+          {
+            ...TAGS,
+            id,
+            external_key: ["label"],
+            fields: [
+              { ...TAGS.fields[0], id: "f1" },
+              { ...TAGS.fields[1], id: "f2" },
+            ],
+          },
+        ],
+      });
+      expect(d.changes.map((c: Any) => c.change)).toEqual(["change_external_key"]);
+      expect(await confirm(d)).toMatchObject({ status: "resolved" });
+      const c = (await catalog(s.store, ctx("schema"), { level: "schema", slot: "plan" })) as Any;
+      expect(c.document.tables.find((t: Any) => t.name === "tags").external_key).toEqual(["label"]);
+      expect(await rows(`SELECT count(*)::int AS n FROM "t_${id}_v2"`)).toEqual([{ n: 0 }]);
+      // An old write to it is refused whole.
+      expect(
+        await answer(() =>
+          w({ sv: 1, ops: [{ intent: "insert", table: "tags", set: { label: "a" } }] }),
+        ),
+      ).toMatchObject({
+        code: "schema_incompatible",
+        changed_fields: [{ field: "*", change: "change_external_key" }],
+      });
+      const replayed = await reconcileLog({ live: s.store, scratch: scratch.store });
+      expect(replayed.mismatches_total).toBe(0);
     },
     T,
   );

@@ -1409,6 +1409,126 @@ describe("on a table never written: a field to or from ref, or its target (chang
   });
 });
 
+describe("the external key (07 «来源键»)", () => {
+  /** Version 1 with settings keyed by `key`. */
+  const keyed = () => {
+    const d = ledger();
+    d.tables[3].external_key = ["key"];
+    const c = compile(d);
+    if (!c.ok) throw new Error(JSON.stringify(c.error));
+    return { d, current: c.compiled };
+  };
+  const settingsOf = (r: CompileChangeResult) => table(r, "settings") as CompiledBaseTable;
+  const draftOn = (d: Doc, current: CompiledSchema, f: (t: Doc) => void) => {
+    const x = filled(d, current);
+    x.tables = x.tables.filter((t: Doc) => t.name === "settings");
+    f(x.tables[0]);
+    return x;
+  };
+  const marked = (change: string) => ({
+    target: { table: "t4" },
+    change,
+    class: "metadata",
+    compatible_with_old_writes: false,
+    destructive: false,
+    auto: false,
+    as_never_written: true,
+  });
+
+  it("never written: added on a field it has, a new empty physical table, the one-field warning", () => {
+    const draft = listing(["settings"], (d) => (d.tables[0].external_key = ["key"]));
+    const r = ok(run(draft, { neverWritten: () => true }));
+    expect(r.changes).toEqual([marked("add_external_key")]);
+    expect(settingsOf(r).external_key).toEqual(["f1"]);
+    expect(settingsOf(r).physical).toEqual({ table: "t_t4_v2" });
+    expect(r.warnings).toEqual([
+      expect.objectContaining({ code: "single_field_external_key", path: "tables/0/external_key" }),
+    ]);
+  });
+
+  it("never written: changed to other fields (one the draft adds), dropped", () => {
+    const { d, current } = keyed();
+    const changed = ok(
+      run(
+        draftOn(d, current, (t) => {
+          t.fields.push({ name: "origin", type: "text", description: "where from" });
+          t.external_key = ["origin", "key"];
+        }),
+        { current, neverWritten: () => true },
+      ),
+    );
+    expect(changed.changes.map((c) => c.change)).toEqual([
+      "change_external_key",
+      "add_optional_field",
+    ]);
+    expect(settingsOf(changed).external_key).toEqual(["f12", "f1"]);
+    const dropped = ok(
+      run(
+        draftOn(d, current, (t) => delete t.external_key),
+        { current, neverWritten: () => true },
+      ),
+    );
+    expect(dropped.changes).toEqual([marked("drop_external_key")]);
+    expect(settingsOf(dropped)).not.toHaveProperty("external_key");
+    expect(settingsOf(dropped).physical).toEqual({ table: "t_t4_v2" });
+  });
+
+  it("written: dropped touches the catalog only and waits; changed is table_written", () => {
+    const { d, current } = keyed();
+    const dropped = ok(
+      run(
+        draftOn(d, current, (t) => delete t.external_key),
+        { current },
+      ),
+    );
+    expect(dropped.changes).toEqual([
+      {
+        target: { table: "t4" },
+        change: "drop_external_key",
+        class: "metadata",
+        compatible_with_old_writes: true,
+        destructive: false,
+        auto: false,
+      },
+    ]);
+    expect(dropped.outcome).toBe("pending");
+    expect(settingsOf(dropped)).not.toHaveProperty("external_key");
+    // Kept physically: the key is no column.
+    expect(settingsOf(dropped).physical).toEqual({ table: "t_t4_v1", since: 1 });
+    const changed = draftOn(d, current, (t) => {
+      t.fields.push({ name: "origin", type: "text", description: "where from" });
+      t.external_key = ["origin", "key"];
+    });
+    expect(err(run(changed, { current }))).toEqual({
+      code: "not_in_this_version",
+      reason: "table_written",
+      what: "change_external_key",
+      param: "tables/0/external_key",
+    });
+  });
+
+  it("written: added on a field it has is external_key_existing_field; on a field the draft adds, not yet", () => {
+    expect(
+      detailsOf(run(listing(["settings"], (d) => (d.tables[0].external_key = ["key"])))),
+    ).toEqual(["tables/0/external_key/0 external_key_existing_field"]);
+    expect(
+      err(
+        run(
+          listing(["settings"], (d) => {
+            d.tables[0].fields.push({ name: "code", type: "text", description: "its code" });
+            d.tables[0].external_key = ["code"];
+          }),
+        ),
+      ),
+    ).toEqual({
+      code: "not_in_this_version",
+      reason: "not_implemented",
+      what: "add_external_key",
+      param: "tables/0/external_key",
+    });
+  });
+});
+
 describe("what is not compiled yet is named by its change code", () => {
   const what = (r: CompileChangeResult) => {
     const e = err(r);
@@ -1426,12 +1546,6 @@ describe("what is not compiled yet is named by its change code", () => {
       },
       "change_time_field",
       "tables/0/time/field",
-    ],
-    [
-      "an external key added",
-      (e: Doc) => (e.external_key = ["note"]),
-      "add_external_key",
-      "tables/0/external_key",
     ],
   ])("%s", (_, f, change, param) => {
     expect(what(on(f))).toEqual([change, param]);
