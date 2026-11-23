@@ -76,10 +76,13 @@ export interface ApiContext {
   readonly warn: (event: string, fields: Readonly<Record<string, string>>) => void;
   /**
    * `import` (`POST /v1/import`, 05-surfaces): the export file's bytes, read as they come in, into
-   * the empty tenant, the user's session calling. Absent, the route is not in this version.
+   * the empty tenant, the user's session calling. Absent, the route is not in this version. Called
+   * once the caller is authenticated and the tenant no longer lent for that: the import holds it.
    */
   readonly import?: (o: {
     readonly principal: Principal;
+    /** The caller's tenant. */
+    readonly tenant: ServedTenant["tenant"];
     readonly body: AsyncIterable<Uint8Array>;
     readonly now: string;
   }) => Promise<ImportResult>;
@@ -295,6 +298,8 @@ const ROUTES: readonly Route[] = [
     params: ([id], q) => ({ ...q, mode: "get", id }),
   }),
   route("GET", "/v1/export", "export", { operation: "export" }),
+  // Served when the context has `import` (the local mode, the server mode); not an operation.
+  route("POST", "/v1/import", "import"),
   // Later versions.
   route("POST", "/v1/deletions/preview", "deletion_preview"),
   route("POST", "/v1/deletions", "deletions"),
@@ -304,7 +309,6 @@ const ROUTES: readonly Route[] = [
   route("GET", "/v1/jobs/{}", "job"),
   route("PUT", "/v1/slots/{}/policy", "policy_set"),
   route("POST", "/v1/log/reconcile", "log_reconcile"),
-  route("POST", "/v1/import", "import"),
 ];
 
 /** The query string as parameters, by the contract's names. */
@@ -382,6 +386,7 @@ async function importRequest(
   url: URL,
   ctx: ApiContext,
   who: Principal,
+  tenant: ServedTenant["tenant"],
   run: NonNullable<ApiContext["import"]>,
 ): Promise<ImportResult> {
   if (who.kind !== "user") {
@@ -403,7 +408,7 @@ async function importRequest(
       { reason: "malformed", param: "" },
     );
   }
-  return run({ principal: who, body: req, now: ctx.now() });
+  return run({ principal: who, tenant, body: req, now: ctx.now() });
 }
 
 /** Whether the request says its body is JSON. */
@@ -617,7 +622,20 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
               reason: "importing",
             });
       }
-      const caller = await ctx.callers.resolve(header(req, "authorization"));
+      const caller = await ctx.callers.resolve(header(req, "authorization")).catch((e: unknown) => {
+        // The server mode authenticates through the tenant, which an import holding it refuses
+        // (`importing`): another import is told it is busy, as the local mode tells it above.
+        throw e instanceof ContractError &&
+          e.code === "unavailable" &&
+          e.detail["reason"] === "importing" &&
+          url.pathname === IMPORT_PATH &&
+          req.method === "POST"
+          ? new ContractError("rate_limited", "an import of this tenant is in progress", {
+              reason: "busy",
+              retry_after: IMPORT_BUSY_RETRY_AFTER,
+            })
+          : e;
+      });
       if (!("principal" in caller)) {
         finish(sendUnauthenticated(req, res, caller, ctx.resourceMetadata));
         return;
@@ -663,7 +681,8 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
       }
       name = r.name;
       if (r.name === "import" && ctx.import !== undefined) {
-        const result = await importRequest(req, url, ctx, who, ctx.import);
+        // Not inside `caller.use`: the import holds the tenant, and waits for every use to end.
+        const result = await importRequest(req, url, ctx, who, caller.tenant, ctx.import);
         send(req, res, 200, result);
         finish(200);
         return;

@@ -30,7 +30,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_KEY } from "../../service/src/external-assertion.fixture.ts";
 import { cellFromEnv } from "../../store-postgres/src/testing/server.fixture.ts";
 import { testPostgres } from "../../store-postgres/src/testing/test-postgres.fixture.ts";
-import { TEST_BACKEND, testBackend } from "../../test-backend/src/index.fixture.ts";
+import {
+  dropTestStorage,
+  TEST_BACKEND,
+  testBackend,
+} from "../../test-backend/src/index.fixture.ts";
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import {
   cellDiscarder,
@@ -82,7 +86,7 @@ function tenants(gate?: { opened?: () => void; release?: Promise<void> }) {
       });
     },
   };
-  return { backend, closed: () => closed };
+  return { backend, dir, closed: () => closed };
 }
 
 /**
@@ -649,6 +653,298 @@ describe("runServer: a staging database an import left", () => {
       code: "discard_refused",
     });
   });
+});
+
+describe("runServer: POST /v1/import", () => {
+  const KEYS = [
+    "tenant_id",
+    "previous_tenant_id",
+    "events",
+    "seq",
+    "principals_disabled",
+    "slots",
+    "removed",
+    "pending_deletions",
+    "exported_at",
+    "not_imported",
+    "restore_count",
+  ];
+
+  /**
+   * A server with a source tenant (its genesis, a connection) and the source's export file, and a
+   * way to add users with empty tenants. The import's drop goes through the backend's guard and
+   * then drops the test's storage of that database.
+   */
+  async function serverWithSource(over: { importBodyIdleMs?: number } = {}) {
+    const c = await controlDb();
+    const t = tenants();
+    const cfg = config();
+    await CursorKeys.createFile(cfg.handleKeyFile);
+    const cp = c.cp as ServerControlPlane;
+    const accounts = c.accounts as NonNullable<typeof c.accounts>;
+    const user = async (name: string) => {
+      const { user: u } = await addLocalUser(accounts, {
+        control: cp,
+        backend: t.backend,
+        name,
+        password: "correct horse battery",
+        cell: CELL,
+        cells: new Set([CELL]),
+        now: NOW,
+      });
+      const tenant = (await cp.tenantOf(u))?.id;
+      if (tenant === undefined) throw new Error("no tenant");
+      return { tenant, token: await sessionFor(c.store, u) };
+    };
+    const s = await runServer({
+      config: cfg,
+      version: "0.0.0-test",
+      openControl: async () => c.db,
+      backend: t.backend,
+      discardDatabase: async (d) => {
+        checkDiscard(d);
+        await dropTestStorage(join(t.dir, d.cell, d.database));
+      },
+      now: () => NOW,
+      ...over,
+    });
+    const source = await user("source");
+    const auth = (token: string) => ({ authorization: `Bearer ${token}` });
+    const issued = await send(s, {
+      method: "POST",
+      path: "/v1/connections",
+      headers: { ...auth(source.token), "content-type": "application/json" },
+      body: '{"name":"desk"}',
+    });
+    expect(issued.status).toBe(200);
+    const exported = await send(s, { path: "/v1/export", headers: auth(source.token) });
+    expect(exported.status).toBe(200);
+    const file = exported.body.split("\n").filter((l) => l !== "");
+    return { s, cp, user, source, file, auth };
+  }
+
+  /** The file as a request body: a line a chunk; `hold` stops it after the first line. */
+  async function* bodyOf(lines: readonly string[], hold?: Promise<void>) {
+    for (const [i, l] of lines.entries()) {
+      yield Buffer.from(`${l}\n`);
+      if (i === 0 && hold !== undefined) await hold;
+    }
+  }
+
+  /** An import request whose body is written as `body` gives it, chunk by chunk. */
+  function upload(s: RunningServer, token: string, body: AsyncIterable<Uint8Array>) {
+    return new Promise<Reply>((resolve, reject) => {
+      const req = request(
+        {
+          host: s.address.host,
+          port: s.address.port,
+          method: "POST",
+          path: "/v1/import",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/x-ndjson",
+            "transfer-encoding": "chunked",
+          },
+        },
+        (res) => {
+          let text = "";
+          res.setEncoding("utf8").on("data", (c: string) => {
+            text += c;
+          });
+          res.on("end", () =>
+            resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text }),
+          );
+        },
+      );
+      req.on("error", reject);
+      void (async () => {
+        try {
+          for await (const chunk of body) {
+            if (!req.write(chunk)) await new Promise((r) => req.once("drain", r));
+          }
+          req.end();
+        } catch {
+          // The server answered and closed before the body was all written.
+        }
+      })();
+    });
+  }
+
+  /** `p`, or a failure that says it never answered: a hang is a failure, not a test's timeout. */
+  const within = <R>(p: Promise<R>, what: string, ms = 30_000) =>
+    Promise.race([
+      p,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`${what} never answered`)), ms).unref(),
+      ),
+    ]);
+
+  /** The tenant as the anchor and the directory have it: empty, no import left over. */
+  const leftEmpty = async (cp: ServerControlPlane, tenant: `tn_${string}`) => {
+    const a = await cp.anchors.read(tenant);
+    expect({ restoreCount: a.restoreCount, importInProgress: a.importInProgress }).toEqual({
+      restoreCount: 0,
+      importInProgress: undefined,
+    });
+    expect((await cp.tenant(tenant))?.staging).toBeUndefined();
+  };
+
+  it(
+    "into an empty tenant: 200 with the contract's result and nothing else, the tenant's log the file's",
+    async () => {
+      const { s, cp, user, source, file } = await serverWithSource();
+      try {
+        const target = await user("target");
+        // Answered at all: the authentication's use of the tenant has ended before the import
+        // takes it, or the import would wait for it for ever.
+        const r = await within(upload(s, target.token, bodyOf(file)), "the import");
+        expect(r.status).toBe(200);
+        const result = JSON.parse(r.body);
+        expect(Object.keys(result)).toEqual(KEYS);
+        const sourceEnd = JSON.parse(file[0] as string).upto;
+        expect(result).toMatchObject({
+          tenant_id: target.tenant,
+          previous_tenant_id: source.tenant,
+          events: sourceEnd,
+          seq: sourceEnd + 1,
+          restore_count: 1,
+          not_imported: ["read_log", "credentials", "external_files"],
+        });
+        const a = await cp.anchors.read(target.tenant);
+        expect({ highWater: a.highWater, restoreCount: a.restoreCount }).toEqual({
+          highWater: sourceEnd + 1,
+          restoreCount: 1,
+        });
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "while one holds the tenant: another import is rate_limited (busy) with retry_after, any other request unavailable (importing)",
+    async () => {
+      const { s, cp, user, file, auth } = await serverWithSource();
+      try {
+        const target = await user("target");
+        let release!: () => void;
+        const held = new Promise<void>((r) => {
+          release = r;
+        });
+        const first = upload(s, target.token, bodyOf(file, held));
+        // The import holds the tenant once its staging database is recorded.
+        for (let i = 0; (await cp.tenant(target.tenant))?.staging === undefined; i++) {
+          if (i === 600) throw new Error("the import never began");
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        const second = await within(upload(s, target.token, bodyOf(file)), "the second import");
+        expect(second.status).toBe(429);
+        expect(second.headers["retry-after"]).toBe("5");
+        expect(JSON.parse(second.body).error).toMatchObject({
+          code: "rate_limited",
+          reason: "busy",
+          retry_after: 5,
+        });
+        const other = await send(s, { path: "/v1/slots", headers: auth(target.token) });
+        expect(other.status).toBe(503);
+        expect(JSON.parse(other.body).error).toMatchObject({
+          code: "unavailable",
+          reason: "importing",
+        });
+        release();
+        expect((await within(first, "the first import")).status).toBe(200);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "refused: a tenant not empty (tenant_not_empty), a file that is not one (import_rejected); the tenant left as it was",
+    async () => {
+      const { s, cp, user, source, file } = await serverWithSource();
+      try {
+        const notEmpty = await within(upload(s, source.token, bodyOf(file)), "the import");
+        expect(notEmpty.status).toBe(400);
+        expect(JSON.parse(notEmpty.body).error).toMatchObject({
+          code: "invalid_argument",
+          reason: "tenant_not_empty",
+        });
+        const target = await user("target");
+        const bad = await within(upload(s, target.token, bodyOf(["not an export"])), "the import");
+        expect(bad.status).toBe(422);
+        expect(JSON.parse(bad.body).error).toMatchObject({ code: "import_rejected" });
+        await leftEmpty(cp, target.tenant);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a body that stops giving bytes: import_rejected (incomplete), the tenant left empty",
+    async () => {
+      const { s, cp, user, file } = await serverWithSource({ importBodyIdleMs: 300 });
+      try {
+        const target = await user("target");
+        let release!: () => void;
+        const r = await within(
+          upload(
+            s,
+            target.token,
+            bodyOf(
+              file,
+              new Promise<void>((resolve) => {
+                release = resolve;
+              }),
+            ),
+          ),
+          "the stalled import",
+        );
+        release();
+        expect(r.status).toBe(422);
+        expect(JSON.parse(r.body).error).toMatchObject({
+          code: "import_rejected",
+          reason: "incomplete",
+        });
+        await leftEmpty(cp, target.tenant);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "the server stopping while a body is read: the import is abandoned, import_rejected (incomplete), and the stop does not wait for the client",
+    async () => {
+      // The body may give nothing for ten minutes: only the stop's abort ends the import sooner.
+      const { s, cp, user, file } = await serverWithSource({ importBodyIdleMs: 600_000 });
+      const target = await user("target");
+      let release!: () => void;
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      const r = upload(s, target.token, bodyOf(file, held));
+      for (let i = 0; (await cp.tenant(target.tenant))?.staging === undefined; i++) {
+        if (i === 600) throw new Error("the import never began");
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      await within(s.close(), "the stop", 90_000);
+      release();
+      const answered = await within(r, "the abandoned import");
+      expect(answered.status).toBe(422);
+      expect(JSON.parse(answered.body).error).toMatchObject({
+        code: "import_rejected",
+        reason: "incomplete",
+      });
+      await leftEmpty(cp, target.tenant);
+    },
+    T,
+  );
 });
 
 describe("runServer: closing", () => {

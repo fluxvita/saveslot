@@ -33,8 +33,10 @@ import {
   handleMcp,
 } from "@fluxvita/saveslot-server";
 import {
+  ContractError,
   CursorKeys,
   type DiscardDatabase,
+  importServerRequest,
   openControlPlane,
   requestSource,
   serverCallers,
@@ -95,6 +97,8 @@ export interface RunServerOptions {
   readonly warn?: (event: string, fields: Readonly<Record<string, string>>) => void;
   /** Sees each MCP tool call's contract result (the contract tests' MCP driver reads it). */
   readonly onToolResult?: ApiContext["onToolResult"];
+  /** Tests only: how long an import's body may give nothing (local-import.ts's default otherwise). */
+  readonly importBodyIdleMs?: number;
 }
 
 /**
@@ -195,6 +199,10 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
     // Normalized when the configuration was read: one that is not a single address refuses it.
     const trusted = new Set(config.trustedProxies);
     const windows = { requestKey: 600_000, idempotencyKey: 86_400_000 };
+    const tenantPool = pool;
+    // The imports in progress, each with what abandons its body: a stop does not wait on a client
+    // that stalled (`import_rejected`, `incomplete`, before ④; an import past its body ends).
+    const imports = new Set<AbortController>();
     const ctx: ApiContext = {
       callers: serverCallers({
         control,
@@ -217,6 +225,34 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       now,
       ...(o.onToolResult !== undefined ? { onToolResult: o.onToolResult } : {}),
       warn,
+      import: async (r) => {
+        // The route lets only the user's session import; its actor is the user.
+        if (r.principal.kind !== "user") {
+          throw new ContractError("insufficient_scope", "only the user session imports", {
+            required_scope: "user_session",
+          });
+        }
+        const abort = new AbortController();
+        imports.add(abort);
+        if (state === "stopping") abort.abort();
+        try {
+          return await importServerRequest({
+            control,
+            backend,
+            pool: tenantPool,
+            discardDatabase: o.discardDatabase ?? cellDiscarder(config),
+            tenant: r.tenant,
+            user: r.principal.actor,
+            body: r.body,
+            now: r.now as never,
+            signal: abort.signal,
+            ...(o.importBodyIdleMs !== undefined ? { bodyIdleMs: o.importBodyIdleMs } : {}),
+            onDiscardFailure: (tenant) => warn("tenant_staging_left", { tenant }),
+          });
+        } finally {
+          imports.delete(abort);
+        }
+      },
     };
     const since = new Date().toISOString();
     const api: Api = { ready: () => (state === "ready" ? ctx : undefined), log };
@@ -294,6 +330,8 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       failed,
       close: async () => {
         if (!lost) state = "stopping";
+        // Before the requests in progress are waited for: an import still reading its body ends.
+        for (const a of imports) a.abort();
         await new Promise<void>((resolve, reject) => {
           server.close((e) => (e ? reject(e) : resolve()));
           server.closeIdleConnections();

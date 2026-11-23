@@ -55,46 +55,51 @@ async function serving<T>(run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (e) {
-    if (e instanceof TenantPoolError) {
-      if (
-        e.code === "importing" ||
-        e.code === "import_in_progress" ||
-        e.code === "staging_not_discarded"
-      ) {
-        throw new ContractError("unavailable", "the tenant is being imported", {
-          reason: "importing",
-        });
-      }
-      if (e.code === "restoring" || e.code === "restore_in_progress") {
-        throw new ContractError("unavailable", "the tenant is being restored", {
-          reason: "restoring",
-        });
-      }
-      if (e.code === "busy" && e.holder === "restoring") {
-        throw new ContractError("unavailable", "the tenant is being restored", {
-          reason: "restoring",
-        });
-      }
-      if (e.code === "busy") {
-        throw new ContractError("rate_limited", "an import holds the tenant", {
-          reason: "busy",
-        });
-      }
-      if (e.code === "close_failed") {
-        throw new ContractError("unavailable", "the tenant cannot be opened yet", {
-          reason: "busy",
-          retry_after: BUSY_RETRY_AFTER,
-        });
-      }
-      if (e.code === "pool_closed") {
-        throw new ContractError("unavailable", "the server is stopping", {
-          reason: "stopping",
-          retry_after: STOPPING_RETRY_AFTER,
-        });
-      }
-    }
-    throw e;
+    throw poolContractError(e);
   }
+}
+
+/** The pool's refusal as the contract gives it (see {@link serving}); anything else as it is. */
+export function poolContractError(e: unknown): unknown {
+  if (e instanceof TenantPoolError) {
+    if (
+      e.code === "importing" ||
+      e.code === "import_in_progress" ||
+      e.code === "staging_not_discarded"
+    ) {
+      return new ContractError("unavailable", "the tenant is being imported", {
+        reason: "importing",
+      });
+    }
+    if (e.code === "restoring" || e.code === "restore_in_progress") {
+      return new ContractError("unavailable", "the tenant is being restored", {
+        reason: "restoring",
+      });
+    }
+    if (e.code === "busy" && e.holder === "restoring") {
+      return new ContractError("unavailable", "the tenant is being restored", {
+        reason: "restoring",
+      });
+    }
+    if (e.code === "busy") {
+      return new ContractError("rate_limited", "an import holds the tenant", {
+        reason: "busy",
+      });
+    }
+    if (e.code === "close_failed") {
+      return new ContractError("unavailable", "the tenant cannot be opened yet", {
+        reason: "busy",
+        retry_after: BUSY_RETRY_AFTER,
+      });
+    }
+    if (e.code === "pool_closed") {
+      return new ContractError("unavailable", "the server is stopping", {
+        reason: "stopping",
+        retry_after: STOPPING_RETRY_AFTER,
+      });
+    }
+  }
+  return e;
 }
 
 export function serverCallers(o: {

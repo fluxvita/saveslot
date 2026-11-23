@@ -25,8 +25,9 @@
 // depend on a backend (§11). Its guard refuses any database but the tenant's staging databases and
 // the one an import replaced, and the one the directory names now.
 
+import type { ImportResult } from "@fluxvita/saveslot-contract";
 import {
-  appendImportEvent,
+  type appendImportEvent,
   importIntoStaging,
   newImportId,
   OpsError,
@@ -37,6 +38,7 @@ import {
   type TenantStore,
 } from "@fluxvita/saveslot-kernel";
 import type { ServerControl, TenantId, UserId } from "./control-plane.ts";
+import { appendImportEventCounted } from "./import-result.ts";
 import { databaseOf } from "./server-tenant.ts";
 import { type TenantPool, takeUpImport } from "./tenant-pool.ts";
 
@@ -86,6 +88,8 @@ export function stagingDiscarder(o: {
 }
 
 export interface ServerImportResult {
+  /** The import's result as the contract gives it (04-contract-types `ImportResult`). */
+  readonly contract: ImportResult;
   readonly importId: string;
   /** The last imported event's `seq`. */
   readonly importedUpto: number;
@@ -188,15 +192,16 @@ async function importHeld(
     let store: TenantStore;
     let staged: Awaited<ReturnType<typeof importIntoStaging>>;
     let ev: Awaited<ReturnType<typeof appendImportEvent>>;
+    let counted: Omit<ImportResult, "restore_count">;
     try {
       store = await open({ ...ref, database: staging }, true);
       staged = await importIntoStaging({ staging: store, body: o.body });
-      ev = await appendImportEvent(store, {
-        user: o.user,
+      ({ ev, result: counted } = await appendImportEventCounted(store, {
         tenant: o.tenant,
-        manifest: staged.manifest,
+        user: o.user,
+        staged,
         now: o.now,
-      });
+      }));
     } catch (e) {
       await closeAll(opened);
       await tidy(staging);
@@ -246,6 +251,7 @@ async function importHeld(
     await closeAll(opened);
     await tidy(ref.database);
     return {
+      contract: { ...counted, restore_count: finished.restoreCount },
       importId,
       importedUpto: staged.importedUpto,
       events: staged.events,

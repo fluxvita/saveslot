@@ -224,6 +224,20 @@ describe("an import into the local tenant", () => {
         exported_at: "2026-11-22T08:00:00.000Z",
         not_imported: ["read_log", "credentials", "external_files"],
       });
+      // In this order on the wire, as the server mode gives it too.
+      expect(Object.keys(r)).toEqual([
+        "tenant_id",
+        "previous_tenant_id",
+        "events",
+        "seq",
+        "principals_disabled",
+        "slots",
+        "removed",
+        "pending_deletions",
+        "exported_at",
+        "not_imported",
+        "restore_count",
+      ]);
       // The replaced data directory removed by the import itself, before any opening would.
       expect(besides(join(home, "data"))).toEqual([]);
       expect(await outcome(home)).toBe("complete");

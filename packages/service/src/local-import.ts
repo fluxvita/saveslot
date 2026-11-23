@@ -32,13 +32,11 @@ import { basename, dirname, join } from "node:path";
 import type { ImportResult } from "@fluxvita/saveslot-contract";
 import {
   type AnchorStore,
-  appendImportEvent,
   type ImportId,
   ImportRejected,
   importContractError,
   importIntoStaging,
   newImportId,
-  type ReadTx,
   readTail,
   runImport,
   type StorageBackend,
@@ -46,6 +44,7 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import { ContractError } from "./contract-error.ts";
 import type { TenantId, UserId } from "./control-plane.ts";
+import { appendImportEventCounted } from "./import-result.ts";
 
 /** An import ID as the kernel makes it (`newImportId`): `im_` and 16 Crockford characters. */
 const IMPORT_ID = /^im_[0-9A-HJKMNP-TV-Z]{16}$/;
@@ -213,8 +212,6 @@ export interface ImportTarget {
   readonly close: () => Promise<void>;
 }
 
-const NOT_IMPORTED: ImportResult["not_imported"] = ["read_log", "credentials", "external_files"];
-
 /**
  * Imports the export file in `body` into the local tenant, which must be empty, the user's
  * session calling. Errors as the contract gives them (`ContractError`): `import_rejected`,
@@ -285,33 +282,15 @@ export async function importLocalTenant(o: {
       staging,
       body: bodyWithin(o.body, o.bodyIdleMs ?? IMPORT_BODY_IDLE_MS, o.signal),
     });
-    const disabledBefore = await staging.read(countDisabled);
-    const ev = await appendImportEvent(staging, {
-      user: o.user,
+    const counted = await appendImportEventCounted(staging, {
       tenant: t.tenant,
-      manifest: staged.manifest,
+      user: o.user,
+      staged,
       now: o.now as never,
     });
-    const [disabledAfter, slots, removed] = await staging.read(
-      async (tx) =>
-        [await countDisabled(tx), await count(tx, "slots"), await countRemoved(tx)] as const,
-    );
-    restoreCount = ev.restoreCount;
-    importedUpto = ev.importedUpto;
-    result = {
-      tenant_id: t.tenant,
-      previous_tenant_id: staged.manifest.tenant_id,
-      events: staged.events,
-      seq: ev.seq,
-      principals_disabled: disabledAfter - disabledBefore,
-      slots,
-      removed,
-      // An import refuses a file holding a deletion event until apply knows them (`replay_failed`),
-      // so it carries no deletion still pending and tombstones none.
-      pending_deletions: { executed: 0, carried: 0 },
-      exported_at: staged.manifest.exported_at,
-      not_imported: NOT_IMPORTED,
-    };
+    restoreCount = counted.ev.restoreCount;
+    importedUpto = counted.ev.importedUpto;
+    result = counted.result;
   } catch (e) {
     await closeStaging().catch(() => {});
     rm(stagingDir);
@@ -386,7 +365,7 @@ export const IMPORT_BODY_IDLE_MS = 60_000;
  * import is refused as `import_rejected` (`incomplete`) before ④, and nothing of it is kept. The
  * error says nothing of the file's content.
  */
-async function* bodyWithin(
+export async function* bodyWithin(
   body: AsyncIterable<Uint8Array>,
   idleMs: number,
   signal: AbortSignal | undefined,
@@ -433,24 +412,3 @@ function asContractError(e: unknown): unknown {
   const { code, ...detail } = c;
   return new ContractError(code, "the import was refused", detail);
 }
-
-const count = async (tx: ReadTx, table: "slots"): Promise<number> =>
-  Number((await tx.query<{ n: unknown }>(`SELECT count(*) AS n FROM ${table}`)).rows[0]?.n ?? 0);
-
-const countDisabled = async (tx: ReadTx): Promise<number> =>
-  Number(
-    (
-      await tx.query<{ n: unknown }>(
-        "SELECT count(*) AS n FROM principals WHERE state = 'disabled'",
-      )
-    ).rows[0]?.n ?? 0,
-  );
-
-const countRemoved = async (tx: ReadTx): Promise<number> =>
-  Number(
-    (
-      await tx.query<{ n: unknown }>(
-        "SELECT count(*) AS n FROM content WHERE removed_by IS NOT NULL",
-      )
-    ).rows[0]?.n ?? 0,
-  );

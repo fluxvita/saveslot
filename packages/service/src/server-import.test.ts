@@ -140,8 +140,10 @@ async function newTenant(): Promise<{ tenant: TenantId; owner: UserId }> {
 /** An export file: a source tenant's log (genesis, a connection's registration), as NDJSON. */
 let file: string[];
 let sourceEnd: number;
+let sourceTenant: TenantId;
 beforeAll(async () => {
   const { tenant } = await newTenant();
+  sourceTenant = tenant;
   const pool = poolOf(cp);
   file = await pool.use(tenant, async (t) => {
     await t.store.write((tx) =>
@@ -314,6 +316,34 @@ describe("an import", () => {
         events: sourceEnd,
         highWater: sourceEnd + 1,
       });
+      // The contract's result, as the local mode gives it: the same keys in the same order.
+      expect(r.contract).toEqual({
+        tenant_id: tenant,
+        previous_tenant_id: sourceTenant,
+        events: sourceEnd,
+        seq: sourceEnd + 1,
+        restore_count: 1,
+        // The source's user and its connection: active before the import, disabled by it.
+        principals_disabled: 2,
+        slots: 0,
+        removed: 0,
+        pending_deletions: { executed: 0, carried: 0 },
+        exported_at: "2026-11-21T09:30:00.000Z",
+        not_imported: ["read_log", "credentials", "external_files"],
+      });
+      expect(Object.keys(r.contract)).toEqual([
+        "tenant_id",
+        "previous_tenant_id",
+        "events",
+        "seq",
+        "principals_disabled",
+        "slots",
+        "removed",
+        "pending_deletions",
+        "exported_at",
+        "not_imported",
+        "restore_count",
+      ]);
       const entry = await cp.tenant(tenant);
       // The staging database's name as 02 §5 gives it, spelled out rather than taken from the code.
       expect(entry?.ref).toMatchObject({
