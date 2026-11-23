@@ -12,14 +12,24 @@
 // The store is opened once per process and not reopened on any request path: reopening the
 // database's Wasm instance in a long-running process is what the process model avoids (§7).
 
-import type { AnchorStore, StorageBackend, TenantStore } from "@fluxvita/saveslot-kernel";
+import { dirname } from "node:path";
+import type {
+  AnchorStore,
+  RestorePoint,
+  StorageBackend,
+  TenantStore,
+} from "@fluxvita/saveslot-kernel";
 import {
+  abortImportOnOpen,
   createOpsContext,
+  finishImport,
   flushReads,
   type InternalOperation,
+  importEventInLog,
   type OpsContext,
   openTenant,
   readTail,
+  restorePoint,
 } from "@fluxvita/saveslot-kernel";
 import type { TenantId, UserId } from "./control-plane.ts";
 import {
@@ -28,6 +38,12 @@ import {
   type LocalTenantFailure,
   type TenantDirectory,
 } from "./local-control-plane.ts";
+import {
+  discardLocalStaging,
+  fsyncDirectory,
+  removeImportLeftovers,
+  repairLocalSwap,
+} from "./local-import.ts";
 
 // The local control plane's files and their reading, kept importable from here.
 export {
@@ -47,6 +63,13 @@ export interface LocalTenant {
   readonly user: UserId;
   readonly store: TenantStore;
   readonly anchor: AnchorStore;
+  /** The data directory the tenant was opened from. */
+  readonly dataDir: string;
+  /**
+   * The restore count and point when it was opened: an import or a restore opens the tenant again,
+   * so a request that began before one sees another here when it is served.
+   */
+  readonly restorePoint: RestorePoint;
 }
 
 export type OpenLocalTenantResult =
@@ -65,7 +88,12 @@ export type OpenLocalTenantResult =
 export async function openLocalTenant(o: {
   readonly home: string;
   readonly backend: StorageBackend;
+  /** Told when an import's leftover next to the data directory could not be removed. */
+  readonly onLeftover?: (path: string, error: unknown) => void;
+  /** @internal Tests only: fsyncs a directory (`fsyncDirectory` otherwise). */
+  readonly fsyncDir?: (path: string) => void;
 }): Promise<OpenLocalTenantResult> {
+  const fsyncDir = o.fsyncDir ?? fsyncDirectory;
   const control = new LocalControlPlane(o.home);
   let dir: TenantDirectory;
   try {
@@ -75,9 +103,11 @@ export async function openLocalTenant(o: {
     throw e;
   }
   const anchor = control.anchors;
+  // Killed between an import's two renames: the second one finished first (local-import.ts).
+  repairLocalSwap(dir.dataDir, (await anchor.read(dir.tenant)).importInProgress, fsyncDir);
   const store = await o.backend.open({ kind: "pglite", dir: dir.dataDir }, {});
   try {
-    const [tail, a] = await Promise.all([
+    const [tail, first] = await Promise.all([
       store.read((tx) => readTail(tx)),
       anchor.read(dir.tenant),
     ]);
@@ -85,24 +115,63 @@ export async function openLocalTenant(o: {
       await store.close();
       return { ok: false, failure: "tenant_empty" };
     }
+    let a = first;
+    // The import's re-entry (§8 «重入»): with its event in the log the swap happened, and the
+    // import is finished; without it, the staging directory goes and the marker is cleared.
+    if (a.importInProgress !== undefined) {
+      const importId = a.importInProgress;
+      const decision = await openTenant({
+        importInProgress: importId,
+        importEventInLog: await store.read((tx) => importEventInLog(tx)),
+        restoreInProgress: a.restoreInProgress,
+        logEnd: tail.seq,
+        highWater: a.highWater,
+      });
+      if (decision.kind === "import_finish") {
+        // The swap's renames durable before ⑥ (§8), whether this opening renamed or the import
+        // was stopped after its renames and before its own fsync.
+        fsyncDir(dirname(dir.dataDir));
+        await finishImport({ store, anchor, tenant: dir.tenant, importId });
+      } else if (decision.kind === "import_abort") {
+        await abortImportOnOpen({
+          anchor,
+          tenant: dir.tenant,
+          importId,
+          discardStaging: async () => discardLocalStaging(dir.dataDir, importId),
+        });
+      }
+      a = await anchor.read(dir.tenant);
+    }
+    const end = (await store.read((tx) => readTail(tx)))?.seq ?? tail.seq;
     const decision = await openTenant({
       importInProgress: a.importInProgress,
       restoreInProgress: a.restoreInProgress,
-      logEnd: tail.seq,
+      logEnd: end,
       highWater: a.highWater,
     });
     if (decision.kind !== "serve") {
       await store.close();
-      // The import's re-entry here comes with the local import; until then a marker is reported
-      // as it was, and the tenant does not serve.
       return {
         ok: false,
         failure: decision.kind === "not_implemented" ? decision.what : "import_in_progress",
       };
     }
+    // What imports left next to the data directory, now that none is in progress.
+    removeImportLeftovers(dir.dataDir, undefined, o.onLeftover);
     // `openTenant` steps 4 and 5 (reconcile deletion entries with the log, run tasks that fell
     // due) come here with the deletion flows.
-    return { ok: true, tenant: { tenant: dir.tenant, user: dir.user, store, anchor } };
+    const point = await store.read((tx) => restorePoint(tx));
+    return {
+      ok: true,
+      tenant: {
+        tenant: dir.tenant,
+        user: dir.user,
+        store,
+        anchor,
+        dataDir: dir.dataDir,
+        restorePoint: point,
+      },
+    };
   } catch (e) {
     await store.close().catch(() => {});
     throw e;
@@ -132,7 +201,11 @@ export function localUserContext(
 }
 
 /** The context of a local internal operation: `system`, the task's name, the time given. */
-function systemContext(t: LocalTenant, trigger: InternalOperation, now: string): OpsContext {
+function systemContext(
+  t: Pick<LocalTenant, "tenant">,
+  trigger: InternalOperation,
+  now: string,
+): OpsContext {
   return createOpsContext({
     tenant: t.tenant,
     actor: "system",
@@ -169,7 +242,8 @@ export async function flushLocalReads(
  * failure is returned for the caller to log, and the storage closes regardless.
  */
 export async function closeLocalTenant(
-  t: LocalTenant,
+  // No data directory or restore point: a server tenant is closed here too (tenant-pool.ts).
+  t: Pick<LocalTenant, "tenant" | "user" | "store" | "anchor">,
   now: string = new Date().toISOString(),
 ): Promise<{ readsError?: unknown; highWaterError?: unknown }> {
   let readsError: unknown;

@@ -60,7 +60,9 @@ import {
   closeLocalTenant,
   controlDir,
   flushLocalReads,
+  importLocalTenant,
   type LocalTenant,
+  LocalTenantGate,
   localCallers,
   localLogEnd,
   openLocalTenant,
@@ -113,6 +115,18 @@ export interface RunServiceOptions {
   readonly log?: (line: string) => void;
   /** Called once the service listens, before the tenant is opened (state `starting`). */
   readonly onListening?: (service: RunningService) => void;
+  /**
+   * Tests only, given only in code: what opens the tenant (`openLocalTenant` otherwise), and the
+   * import as the HTTP surface calls it, handed over once the service listens.
+   */
+  readonly testing?: {
+    readonly openTenant?: typeof openLocalTenant;
+    /** How long an import's body may give nothing (local-import.ts's default otherwise). */
+    readonly importBodyIdleMs?: number;
+    readonly onImport?: (
+      run: (body: AsyncIterable<Uint8Array>, at: string) => Promise<unknown>,
+    ) => void;
+  };
 }
 
 export interface Exited {
@@ -290,6 +304,15 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     if (tenant === undefined) throw new Error("the tenant is not open");
     return tenant;
   };
+  // The tenant's gate for an import, and the import in progress (a stop waits for it).
+  const gate = new LocalTenantGate();
+  let importRun: Promise<unknown> | undefined;
+  /** Aborts the import still reading its body: a stop does not wait on a client that stalled. */
+  let importAbort: AbortController | undefined;
+  const tenantBackend = new PgliteBackend({ onEvent: (event, fields) => say(event, fields) });
+  const openTenant = o.testing?.openTenant ?? openLocalTenant;
+  const leftover = (_path: string, e: unknown) =>
+    say("import_leftover_not_removed", { code: codeOf(e) });
   let listener: LocalListener | undefined;
   let lock: DirLockHandle | undefined;
   let probe: NodeJS.Timeout | undefined;
@@ -369,10 +392,13 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         process.off("SIGTERM", onSignal);
         process.off("SIGINT", onSignal);
       }
+      // An import still reading its body is refused and rolled back (before ④); one past it ends.
+      importAbort?.abort();
       await listener?.close().catch(() => {});
       // A stop during opening waits for it: the storage is closed before the home's lock goes, so
       // the next process that takes the lock finds the data directory free too.
       await opening;
+      await importRun?.catch(() => {});
       if (tenant !== undefined) {
         const t = tenant;
         tenant = undefined;
@@ -449,12 +475,14 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     api: {
       ready: () =>
         state === "ready" &&
-        tenant !== undefined &&
+        (tenant !== undefined || gate.importing) &&
         credentials !== undefined &&
         cursors !== undefined
           ? {
               // The tenant as it is when a request is served, not as it was when it came in.
-              callers: localCallers({ tenant: currentTenant, credentials }),
+              callers: localCallers({ tenant: currentTenant, credentials, gate }),
+              importing: () => gate.importing,
+              import: (r) => importInto(r.body, r.now),
               cursors,
               windows: { requestKey: o.requestKeyWindowMs ?? 600_000, idempotencyKey: 86_400_000 },
               now,
@@ -519,12 +547,84 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   if (evalStart !== undefined) say("eval_clock", { start: new Date(evalStart).toISOString() });
   o.onListening?.(handle);
 
+  /**
+   * An import into the tenant (local-import.ts), holding it: the tenant is closed at the swap and
+   * opened again afterwards, whichever way the import ended, as a start opens it (the import's
+   * re-entry included). The credentials of principals the import disabled go then. A stop waits
+   * for it: `importRun` is the import holding the gate, never one refused as `busy`.
+   */
+  const importInto = (body: AsyncIterable<Uint8Array>, at: string) =>
+    gate.exclusive(() => {
+      const run = importHeld(body, at);
+      importRun = run;
+      return run;
+    });
+  const importHeld = async (body: AsyncIterable<Uint8Array>, at: string) => {
+    const abort = new AbortController();
+    importAbort = abort;
+    if (stopping !== undefined) abort.abort();
+    const t = currentTenant();
+    let closed = false;
+    try {
+      return await importLocalTenant({
+        backend: tenantBackend,
+        target: {
+          tenant: t.tenant,
+          store: t.store,
+          anchor: t.anchor,
+          dataDir: t.dataDir,
+          close: async () => {
+            closed = true;
+            tenant = undefined;
+            const r = await closeLocalTenant(t, now());
+            if (r.readsError !== undefined)
+              say("reads_not_flushed", { code: codeOf(r.readsError) });
+            if (r.highWaterError !== undefined)
+              say("high_water_not_advanced", { code: codeOf(r.highWaterError) });
+          },
+        },
+        user: t.user,
+        body,
+        now: at,
+        onLeftover: (_path, e) => say("import_leftover_not_removed", { code: codeOf(e) }),
+        signal: abort.signal,
+        ...(o.testing?.importBodyIdleMs !== undefined
+          ? { bodyIdleMs: o.testing.importBodyIdleMs }
+          : {}),
+      });
+    } finally {
+      if (closed) await reopenAfterImport();
+    }
+  };
+  /** The tenant opened again after an import; if it does not open, the service fails and stops. */
+  const reopenAfterImport = async () => {
+    try {
+      const r = await openTenant({ home: o.home, backend: tenantBackend, onLeftover: leftover });
+      if (!r.ok) {
+        state = "failed";
+        reason = r.failure;
+        say("failed", { reason: r.failure });
+        void stop(1);
+        return;
+      }
+      tenant = r.tenant;
+      if (credentials !== undefined) {
+        const dropped = await pruneCredentials(r.tenant, credentials);
+        if (dropped > 0) say("credentials_pruned", { count: dropped });
+      }
+    } catch (e) {
+      state = "failed";
+      reason = codeOf(e);
+      say("failed", { reason });
+      void stop(1);
+    }
+  };
+
+  o.testing?.onImport?.(importInto);
+
   opening = (async () => {
     try {
-      const r = await openLocalTenant({
-        home: o.home,
-        backend: new PgliteBackend({ onEvent: (event, fields) => say(event, fields) }),
-      });
+      const r = await openTenant({ home: o.home, backend: tenantBackend, onLeftover: leftover });
       if (stopping !== undefined) {
         // Stopped while opening: close what was opened; stop() waits for this.
         if (r.ok) {
@@ -612,39 +712,45 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     let probing = false;
     probe = setInterval(() => {
       const t = tenant;
-      // One probe at a time: a slow read is not stacked on.
-      if (t === undefined || state !== "ready" || probing) return;
+      // One probe at a time: a slow read is not stacked on. A use of the tenant: none while an
+      // import holds it, and an import waits for one in progress before it closes the tenant.
+      if (t === undefined || state !== "ready" || probing || gate.importing) return;
       probing = true;
-      probeLocalTenant(t).then(
-        () => {
-          probing = false;
-        },
-        (e: unknown) => {
-          probing = false;
-          if (state !== "ready") return;
-          // The DB Worker is gone: not reopened in this process (§7); exit non-zero.
-          state = "failed";
-          reason = codeOf(e);
-          say("failed", { reason });
-          void stop(1);
-        },
-      );
+      gate
+        .use(() => probeLocalTenant(t))
+        .then(
+          () => {
+            probing = false;
+          },
+          (e: unknown) => {
+            probing = false;
+            if (state !== "ready") return;
+            // The DB Worker is gone: not reopened in this process (§7); exit non-zero.
+            state = "failed";
+            reason = codeOf(e);
+            say("failed", { reason });
+            void stop(1);
+          },
+        );
     }, o.probeMs ?? 5000);
     let flushing = false;
     readsFlush = setInterval(() => {
       const t = tenant;
-      // One flush at a time; a failed one leaves the reads buffered for the next (§7).
-      if (t === undefined || state !== "ready" || flushing) return;
+      // One flush at a time; a failed one leaves the reads buffered for the next (§7). A use of
+      // the tenant, as the probe is.
+      if (t === undefined || state !== "ready" || flushing || gate.importing) return;
       flushing = true;
-      flushLocalReads(t, now()).then(
-        () => {
-          flushing = false;
-        },
-        (e: unknown) => {
-          flushing = false;
-          if (state === "ready") say("reads_flush_failed", { code: codeOf(e) });
-        },
-      );
+      gate
+        .use(() => flushLocalReads(t, now()))
+        .then(
+          () => {
+            flushing = false;
+          },
+          (e: unknown) => {
+            flushing = false;
+            if (state === "ready") say("reads_flush_failed", { code: codeOf(e) });
+          },
+        );
     }, o.readsFlushMs ?? 5000);
   })();
   await opening;

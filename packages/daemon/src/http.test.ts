@@ -565,7 +565,6 @@ describe("HTTP's own", () => {
       ["GET", "/v1/jobs/jb_1"],
       ["PUT", "/v1/slots/ledger/policy"],
       ["POST", "/v1/log/reconcile"],
-      ["POST", "/v1/import"],
     ];
     for (const [method, path] of later) {
       const r = await http({
@@ -576,6 +575,9 @@ describe("HTTP's own", () => {
       });
       expect({ method, path, status: r.status }).toEqual({ method, path, status: 501 });
     }
+    // `import` is in this version: a JSON body reaches it, and is not the export file it takes.
+    const imported = await http({ method: "POST", path: "/v1/import", token: session, body: "{}" });
+    expect(imported.status).toBe(400);
   });
 
   it(

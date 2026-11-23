@@ -292,12 +292,27 @@ describe("the service process", () => {
 });
 
 describe("the service in process", () => {
-  it.each([
-    [
-      "an import in progress",
+  it("rolls back an import found in progress whose event is not in the log, then serves", async () => {
+    // 02-architecture §8 «重入»: the marker without the import's event in the log is an import
+    // stopped before its swap; the staging storage goes and the marker is cleared.
+    const h = home();
+    writeFileSync(
+      join(h, "control", "anchor.json"),
       anchorFileText({ highWater: 1, importInProgress: "im_1" }),
-      "import_in_progress",
-    ],
+    );
+    const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
+    expect([s.state, s.reason]).toEqual(["ready", undefined]);
+    const entry = Object.values(
+      JSON.parse(readFileSync(join(h, "control", "anchor.json"), "utf8")).tenants as Record<
+        string,
+        Record<string, unknown>
+      >,
+    )[0];
+    expect(entry?.["importInProgress"]).toBeUndefined();
+    await s.stop();
+  });
+
+  it.each([
     [
       "a restore in progress",
       anchorFileText({ highWater: 1, restoreInProgress: "rs_1" }),

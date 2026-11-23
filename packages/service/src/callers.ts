@@ -13,6 +13,7 @@ import type {
 import { type AuthFailure, authenticate, type Principal } from "./auth.ts";
 import type { Credentials } from "./credentials.ts";
 import { issueLocalConnection, revokeLocalConnection } from "./local-connections.ts";
+import { importingError, type LocalTenantGate } from "./local-import.ts";
 import type { LocalTenant } from "./local-tenant.ts";
 
 /** What the operations need of a tenant, in either mode: lent for one request. */
@@ -60,24 +61,40 @@ export function localServedTenant(tenant: LocalTenant, credentials: Credentials)
 /**
  * The local mode's callers: the tenant is taken afresh for each request and each `use` (an import
  * swaps the tenant's directory in and opens its store again: one taken earlier is stale by then).
+ * With a gate, authenticating and each use run as uses of the tenant: refused with `unavailable`
+ * (`importing`) while an import holds it, and waited for by an import that begins. A request
+ * authenticated before an import or a restore and served after it is refused the same way (02-
+ * architecture §8): its caller was found on a tenant that is not the one it would run on.
  */
 export function localCallers(o: {
   readonly tenant: () => LocalTenant;
   readonly credentials: Credentials;
+  readonly gate?: LocalTenantGate;
 }): CallerResolver {
+  const asUse = <T>(fn: () => Promise<T>): Promise<T> =>
+    o.gate !== undefined ? o.gate.use(fn) : fn();
   return {
-    async resolve(authorization) {
-      const who = await authenticate({
-        credentials: o.credentials,
-        tenant: o.tenant(),
-        authorization,
-      });
-      if (!("kind" in who)) return who;
-      return {
-        principal: who,
-        tenant: o.tenant().tenant,
-        use: (fn) => fn(localServedTenant(o.tenant(), o.credentials)),
-      };
-    },
+    resolve: (authorization) =>
+      asUse(async () => {
+        const at = o.tenant();
+        const who = await authenticate({ credentials: o.credentials, tenant: at, authorization });
+        if (!("kind" in who)) return who;
+        const point = at.restorePoint;
+        return {
+          principal: who,
+          tenant: at.tenant,
+          use: (fn) =>
+            asUse(async () => {
+              const now = o.tenant();
+              if (
+                now.restorePoint.restoreCount !== point.restoreCount ||
+                now.restorePoint.point !== point.point
+              ) {
+                throw importingError();
+              }
+              return fn(localServedTenant(now, o.credentials));
+            }),
+        };
+      }),
   };
 }

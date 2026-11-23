@@ -21,7 +21,7 @@
 // the query string, a request body or a response body.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { SCOPES } from "@fluxvita/saveslot-contract";
+import { type ImportResult, SCOPES } from "@fluxvita/saveslot-contract";
 import {
   type AuthFailure,
   type CallerResolver,
@@ -29,6 +29,7 @@ import {
   type CursorKeys,
   contractError,
   EXPORT_STALL_MS,
+  IMPORT_BUSY_RETRY_AFTER,
   type KernelCall,
   kernelCall,
   type Operation,
@@ -73,6 +74,20 @@ export interface ApiContext {
   readonly exportStallMs?: number;
   /** Not-implemented paths and internal errors (no request content). */
   readonly warn: (event: string, fields: Readonly<Record<string, string>>) => void;
+  /**
+   * `import` (`POST /v1/import`, 05-surfaces): the export file's bytes, read as they come in, into
+   * the empty tenant, the user's session calling. Absent, the route is not in this version.
+   */
+  readonly import?: (o: {
+    readonly principal: Principal;
+    readonly body: AsyncIterable<Uint8Array>;
+    readonly now: string;
+  }) => Promise<ImportResult>;
+  /**
+   * Whether an import holds the tenant now: every request is refused before it is authenticated
+   * (`unavailable`, `importing`), another import with `rate_limited` (`busy`).
+   */
+  readonly importing?: () => boolean;
 }
 
 /** One MCP tool call, as the service saw it end. */
@@ -355,6 +370,42 @@ export function readBytes(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
+const IMPORT_PATH = "/v1/import";
+
+/**
+ * `POST /v1/import`: the user's session only; the body is the export file's NDJSON
+ * (`Content-Type: application/x-ndjson`), given to the import as it comes in, never held whole
+ * (05-surfaces). The limit on a request's body does not apply: the import bounds each line.
+ */
+async function importRequest(
+  req: IncomingMessage,
+  url: URL,
+  ctx: ApiContext,
+  who: Principal,
+  run: NonNullable<ApiContext["import"]>,
+): Promise<ImportResult> {
+  if (who.kind !== "user") {
+    throw new ContractError("insufficient_scope", "only the user session imports", {
+      required_scope: "user_session",
+    });
+  }
+  if (url.search !== "") {
+    throw new ContractError("invalid_argument", "an import takes no parameters", {
+      reason: "malformed",
+      param: "",
+    });
+  }
+  const type = (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
+  if (type !== "application/x-ndjson") {
+    throw new ContractError(
+      "invalid_argument",
+      "the body is the export file's NDJSON (Content-Type: application/x-ndjson)",
+      { reason: "malformed", param: "" },
+    );
+  }
+  return run({ principal: who, body: req, now: ctx.now() });
+}
+
 /** Whether the request says its body is JSON. */
 export function isJson(req: IncomingMessage): boolean {
   const type = (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
@@ -416,13 +467,17 @@ export function send(
     // ended on this side and destroyed only after a grace: destroyed at once (what the HTTP server
     // does after a `Connection: close` response), a client still sending would fail its write and
     // drop the response unread. A request parsed on it meanwhile is not served: after a
-    // `Connection: close` response the HTTP server serves none on that connection.
-    const socket = req.socket;
+    // `Connection: close` response the HTTP server serves none on that connection. A connection
+    // already gone (the request destroyed: its socket is null then, or destroyed) is left alone,
+    // and the response ends on nothing.
+    const socket = req.socket as typeof req.socket | null;
     req.pause();
-    socket.destroySoon = () => {
-      socket.end();
-      setTimeout(() => socket.destroy(), CLOSE_GRACE_MS).unref();
-    };
+    if (socket !== null && !socket.destroyed) {
+      socket.destroySoon = () => {
+        socket.end();
+        setTimeout(() => socket.destroy(), CLOSE_GRACE_MS).unref();
+      };
+    }
   }
   res.end(text);
 }
@@ -552,6 +607,16 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
       return;
     }
     try {
+      if (ctx.importing?.() === true) {
+        throw url.pathname === IMPORT_PATH && req.method === "POST"
+          ? new ContractError("rate_limited", "an import of this tenant is in progress", {
+              reason: "busy",
+              retry_after: IMPORT_BUSY_RETRY_AFTER,
+            })
+          : new ContractError("unavailable", "the tenant is being imported into", {
+              reason: "importing",
+            });
+      }
       const caller = await ctx.callers.resolve(header(req, "authorization"));
       if (!("principal" in caller)) {
         finish(sendUnauthenticated(req, res, caller, ctx.resourceMetadata));
@@ -597,6 +662,12 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
         throw new ContractError("not_found", "no such route", { reason: "route" });
       }
       name = r.name;
+      if (r.name === "import" && ctx.import !== undefined) {
+        const result = await importRequest(req, url, ctx, who, ctx.import);
+        send(req, res, 200, result);
+        finish(200);
+        return;
+      }
       if (r.operation === undefined) {
         throw new ContractError("not_in_this_version", "not in this version", {
           reason: "operation",

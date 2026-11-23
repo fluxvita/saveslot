@@ -955,7 +955,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 
 **导出格式**：`Content-Type: application/x-ndjson`（社区通行的写法，没有在 IANA 登记），流式输出。第一行是清单（contract-types 的 `ExportHeader`），之后每行一条事件（事件头 + 内容块与校验和），形状以 [`09-event-format.md`](09-event-format.md) 第 8 节为准。宽限期内待删除的内容块默认换成占位，清单的 `pending_deletions` 写明是否包含。**端点不提供加密**：在请求里传口令，它会经过代理与日志，而且等于把口令交给本来就看得到明文的一方；传输途中已有 HTTPS 或只对当前系统用户开放的套接字。加密是 CLI 的可选项（06-cli 4.8），直接调 HTTP 的人把响应接到任何 age 实现上即可。
 
-**导入**只收明文 NDJSON：服务端不接收口令，也就不解密；加了密的导出由 CLI 在客户端一侧解开后再上传。目标租户必须是空的（只有创世事件），整体要么完成、要么保持为空；导入期间这个租户的其他请求报 `unavailable`（`importing`）。规则见 contract「管理类操作」。
+**导入**只收明文 NDJSON：服务端不接收口令，也就不解密；加了密的导出由 CLI 在客户端一侧解开后再上传。目标租户必须是空的（只有创世事件），整体要么完成、要么保持为空；导入期间这个租户的其他请求报 `unavailable`（`importing`），本机服务在认证之前就这样回答：认证要读租户，而导入期间租户不可读。另一次导入报 `rate_limited`（`busy`），带 `retry_after`。请求体中途断开、停住超过 60 秒没有新的字节，或服务在读请求体期间停止，都报 `import_rejected`（`incomplete`），租户仍是空的。规则见 contract「管理类操作」。
 
 **远程授权**（服务器模式；本机模式不提供这些端点）：OAuth 2.1，授权码 + PKCE，令牌的 audience 取配置里的对外地址（RFC 8707）。
 

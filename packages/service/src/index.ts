@@ -14,6 +14,7 @@ export * from "./identity.ts";
 export * from "./local-accounts.ts";
 export * from "./local-connections.ts";
 export * from "./local-identity.ts";
+export * from "./local-import.ts";
 export * from "./local-init.ts";
 export * from "./local-tenant.ts";
 export * from "./operations.ts";
