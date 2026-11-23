@@ -934,6 +934,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 - **401 的 `WWW-Authenticate`**：`Bearer resource_metadata="<对外地址>/.well-known/oauth-protected-resource"`；令牌无效或过期时另带 `error="invalid_token"`。远程 MCP 的客户端凭它发现授权服务器（RFC 9728）。本机模式（unix socket、本地令牌）同样返回 401 与 `unauthenticated`，不带 `resource_metadata`。
 - `/mcp` 端点的 401 / 403 同上；除此之外 MCP 的错误都在工具结果里（第 3 节）。
 - **`Retry-After`**：错误带 `retry_after` 时（`rate_limited` 总带，`unavailable` 可重试时带），响应头 `Retry-After` 是同一个整秒数。按租户的限流见 architecture §5「限流与配额」。
+- **服务器模式里带了 `Origin` 而不是对外地址的请求报 403**，不进入 MCP 与 `/v1`：浏览器里别的网站的页面发来的请求（防 DNS 重绑定）。宿主从自己的服务端调用，不带 `Origin`。响应体是普通文本，不是契约错误：请求还没到契约那一层。
 
 ## 15. 只在 HTTP 的端点（管理类操作与授权）
 

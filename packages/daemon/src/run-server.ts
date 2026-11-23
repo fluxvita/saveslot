@@ -5,8 +5,11 @@
 //
 //   GET /health (no token) → the request's source (behind trusted proxies; none: 400) → the
 //   identity provider's own paths → the authorization server (/.well-known/oauth-*, /oauth/*) →
-//   the HTTP adapter → the MCP adapter → 404.
+//   for /v1/ and /mcp, a page of another site refused (its `Origin`, 05-surfaces §14) → the HTTP
+//   adapter → the MCP adapter → 404.
 //
+// A token issued by an authorization is good only at the address it was issued for (its
+// audience, checked with every credential).
 // Expired codes, form tokens, client documents, refresh tokens and device codes are swept every
 // SWEEP_MS. A
 // connection revoked through /v1 or MCP takes its refresh tokens with it.
@@ -36,10 +39,12 @@ import {
   handleApi,
   handleMcp,
   handleOAuth,
+  originGuard,
 } from "@fluxvita/saveslot-server";
 import {
   ContractError,
   CursorKeys,
+  checkAudience,
   type DiscardDatabase,
   importServerRequest,
   type OAuthDeps,
@@ -230,6 +235,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         control,
         pool,
         identity,
+        checkCredential: checkAudience(oauth, config.publicUrl),
         oauth,
         now,
       }),
@@ -290,6 +296,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       external: config.publicUrl,
       windows,
     };
+    const externalOrigin = new URL(config.publicUrl).origin;
 
     const server: Server = createServer((req, res) => {
       void (async () => {
@@ -340,6 +347,14 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         }
         const oauthCtx = { deps: oauthDeps, identity, remote: () => remote, now, log, warn };
         if (await handleOAuth(req, res, oauthCtx)) return;
+        if (path.startsWith("/v1/") || path === "/mcp") {
+          const refused = originGuard(req, externalOrigin);
+          if (refused !== undefined) {
+            res.writeHead(refused.status, refused.headers);
+            res.end(refused.body);
+            return;
+          }
+        }
         if (handleApi(api, req, res)) return;
         if (handleMcp(mcp, api, req, res)) return;
         res.writeHead(404, { "content-length": 0 });

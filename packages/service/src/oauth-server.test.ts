@@ -12,6 +12,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_BACKEND, testBackend } from "../../test-backend/src/index.fixture.ts";
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import { sessionsFrom } from "./oauth.fixture.ts";
+import { checkAudience } from "./oauth-audience.ts";
 import { CLI_CLIENT, type FetchedDocument, type OAuthClient } from "./oauth-client.ts";
 import {
   ACCESS_TOKEN_SECONDS,
@@ -833,6 +834,38 @@ describe("form tokens", () => {
       // The form token and the code (60 seconds) have expired.
       expect(await store().sweep(later(60))).toBe(2);
       expect(await store().useForm("new", "x", later(61))).toBe(true);
+    },
+    T,
+  );
+});
+
+describe("audience (RFC 8707)", () => {
+  it(
+    "a credential of a grant is good only at the address its grant was issued for",
+    async () => {
+      const r = await redeemCode(deps(), form(await code()), NOW);
+      const cred = await cp().credential(tokenHash(r.access_token));
+      expect(cred).toBeDefined();
+      const c = cred as NonNullable<typeof cred>;
+      expect(await checkAudience(store(), EXT)(c)).toBe("ok");
+      expect(await checkAudience(store(), "https://moved.example")(c)).toBe("invalid");
+      expect(await checkAudience(store(), `${EXT}/mcp`)(c)).toBe("invalid");
+    },
+    T,
+  );
+
+  it(
+    "a credential of a grant no longer there: invalid; one of no grant: ok",
+    async () => {
+      const base = {
+        kind: "connection" as const,
+        principal: `ci_${"5".repeat(26)}` as const,
+        tenant: TENANT,
+      };
+      expect(
+        await checkAudience(store(), EXT)({ ...base, hash: "a".repeat(64), grant: "gone" }),
+      ).toBe("invalid");
+      expect(await checkAudience(store(), EXT)({ ...base, hash: "b".repeat(64) })).toBe("ok");
     },
     T,
   );

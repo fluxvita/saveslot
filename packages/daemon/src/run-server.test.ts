@@ -18,6 +18,7 @@ import {
   openOAuthStore,
   type ServerControlPlane,
   stagingDatabaseOf,
+  type TenantId,
   type TenantPoolOptions,
   tokenHash,
   type UserId,
@@ -241,14 +242,17 @@ async function failedLogin(s: RunningServer, source: string, name: string): Prom
 describe("runServer: what answers which request", () => {
   let s: RunningServer;
   let session = "";
+  let c: Awaited<ReturnType<typeof controlDb>>;
+  let user: UserId;
+  let tenantId: TenantId;
   beforeAll(async () => {
-    const c = await controlDb();
+    c = await controlDb();
     const t = tenants();
     const cfg = config();
     await CursorKeys.createFile(cfg.handleKeyFile);
     const accounts = c.accounts as NonNullable<typeof c.accounts>;
     const cp = c.cp as ServerControlPlane;
-    const { user } = await addLocalUser(accounts, {
+    ({ user } = await addLocalUser(accounts, {
       control: cp,
       backend: t.backend,
       name: "alex",
@@ -256,7 +260,8 @@ describe("runServer: what answers which request", () => {
       cell: CELL,
       cells: new Set([CELL]),
       now: NOW,
-    });
+    }));
+    tenantId = (await cp.tenantOf(user))?.id as TenantId;
     session = await sessionFor(c.store, user);
     s = await runServer({
       config: cfg,
@@ -313,6 +318,60 @@ describe("runServer: what answers which request", () => {
       authorization_servers: [PUBLIC],
     });
   });
+
+  it("a page of another site: 403 before /v1/ and /mcp, plain text; the external origin goes on", async () => {
+    const auth = { authorization: `Bearer ${session}` };
+    for (const path of ["/v1/slots", "/mcp"]) {
+      const r = await send(s, { path, headers: { ...auth, origin: "https://evil.example" } });
+      expect(r.status).toBe(403);
+      expect(r.headers["content-type"]).toContain("text/plain");
+    }
+    // Matched on the parsed path, as the adapters are: an absolute-form target is no way around it.
+    const abs = await send(s, {
+      path: "http://elsewhere.example/v1/slots",
+      headers: { ...auth, origin: "https://evil.example" },
+    });
+    expect(abs.status).toBe(403);
+    const ok = await send(s, { path: "/v1/slots", headers: { ...auth, origin: PUBLIC } });
+    expect(ok.status).toBe(200);
+    // The identity provider's and the authorization server's pages have checks of their own.
+    const page = await send(s, { path: LOGIN_PAGE, headers: { origin: "https://evil.example" } });
+    expect(page.status).toBe(200);
+    // Nor is any other path the guard's: what nothing answers is still 404.
+    const elsewhere = await send(s, {
+      path: "/elsewhere",
+      headers: { origin: "https://evil.example" },
+    });
+    expect(elsewhere.status).toBe(404);
+  });
+
+  it(
+    "a token of an authorization is good only at the address it was issued for",
+    async () => {
+      const oauth = await openOAuthStore(c.store);
+      const grantFor = async (id: string, resource: string) => {
+        await oauth.putGrant({
+          id,
+          kind: "session",
+          principal: user,
+          tenant: tenantId,
+          clientId: "saveslot-cli",
+          resource,
+          createdAt: NOW,
+        });
+        return c.store.write((tx) =>
+          writeUserSession(tx, user, { grant: id, expiresAt: "2099-01-01T00:00:00.000Z" }),
+        );
+      };
+      const here = await grantFor("g-here", PUBLIC);
+      const there = await grantFor("g-there", "https://elsewhere.example");
+      const status = async (t: string) =>
+        (await send(s, { path: "/v1/slots", headers: { authorization: `Bearer ${t}` } })).status;
+      expect(await status(here)).toBe(200);
+      expect(await status(there)).toBe(401);
+    },
+    T,
+  );
 
   it("the CLI's device sign-in starts here, its verification page at the external address", async () => {
     const r = await send(s, {
@@ -432,6 +491,292 @@ describe("runServer: no trusted proxy", () => {
       } finally {
         await s.close();
       }
+    },
+    T,
+  );
+});
+
+// Remote MCP end to end (05-surfaces §14, §15 «远程授权»), through the server itself: a host that
+// knows only the MCP endpoint's address finds the authorization server from the 401, reads both
+// metadata documents, sends its user through the local accounts' login and the authorization page
+// with PKCE, redeems the code, then initializes, lists the tools, reads and writes (a new slot); a
+// page of another site is refused before MCP; once the user revokes the connection through /v1, its
+// refresh tokens are gone and the same token gets 401. Raw JSON-RPC, as a host sends it.
+describe("runServer: remote MCP, end to end", () => {
+  const CLIENT_ID = "https://host.example/oauth/client.json";
+  const REDIRECT = "https://host.example/callback";
+  const VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+  const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+  const PROTOCOL = "2025-11-25";
+  let s: RunningServer;
+  let c: Awaited<ReturnType<typeof controlDb>>;
+  let base = "";
+  let session = "";
+  let token = "";
+  let refresh = "";
+  let connection = "";
+  beforeAll(async () => {
+    c = await controlDb();
+    const t = tenants();
+    const cfg = config();
+    await CursorKeys.createFile(cfg.handleKeyFile);
+    const { user } = await addLocalUser(c.accounts as NonNullable<typeof c.accounts>, {
+      control: c.cp as ServerControlPlane,
+      backend: t.backend,
+      name: "robin",
+      password: "correct horse battery",
+      cell: CELL,
+      cells: new Set([CELL]),
+      now: NOW,
+    });
+    session = await sessionFor(c.store, user);
+    s = await runServer({
+      config: cfg,
+      version: "0.0.0-test",
+      openControl: async () => c.db,
+      backend: t.backend,
+      now: () => NOW,
+      // The host's client document, as its address would give it: nothing goes to the network.
+      fetchClient: async () => ({
+        body: new TextEncoder().encode(
+          JSON.stringify({
+            client_id: CLIENT_ID,
+            client_name: "Example Host",
+            redirect_uris: [REDIRECT],
+          }),
+        ),
+      }),
+    });
+    base = `http://${s.address.host}:${s.address.port}`;
+  }, T);
+  afterAll(async () => {
+    await s?.close();
+  }, T);
+
+  /** An address of the external one, as this test's server answers it. */
+  const local = (url: string) => {
+    expect(url.startsWith(PUBLIC)).toBe(true);
+    return `${base}${url.slice(PUBLIC.length)}`;
+  };
+  let ids = 0;
+  const rpc = (t: string | undefined, method: string, params: unknown, more = {}) =>
+    fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-protocol-version": PROTOCOL,
+        ...(t === undefined ? {} : { authorization: `Bearer ${t}` }),
+        ...more,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: ++ids, method, params }),
+    });
+  /** A JSON-RPC result, sent as JSON or as one SSE message (a host takes either). */
+  const result = async (r: Response) => {
+    expect(r.status).toBe(200);
+    const text = await r.text();
+    const json = (r.headers.get("content-type") ?? "").startsWith("text/event-stream")
+      ? text
+          .split("\n")
+          .filter((l) => l.startsWith("data:"))
+          .map((l) => l.slice(5).trim())
+          .join("")
+      : text;
+    const body = JSON.parse(json) as { result?: Record<string, unknown>; error?: unknown };
+    expect(body.error).toBeUndefined();
+    return body.result as Record<string, unknown>;
+  };
+  const initialize = (t: string | undefined, more = {}) =>
+    rpc(
+      t,
+      "initialize",
+      {
+        protocolVersion: PROTOCOL,
+        capabilities: {},
+        clientInfo: { name: "example-host", version: "1" },
+      },
+      more,
+    );
+
+  it(
+    "finds the authorization server from the 401, signs in, and authorizes with PKCE",
+    async () => {
+      const first = await initialize(undefined);
+      expect(first.status).toBe(401);
+      const challenge = first.headers.get("www-authenticate") as string;
+      const prmUrl = /resource_metadata="([^"]+)"/.exec(challenge)?.[1] as string;
+      expect(prmUrl).toBe(`${PUBLIC}/.well-known/oauth-protected-resource`);
+      const prm = (await (await fetch(local(prmUrl))).json()) as {
+        authorization_servers: string[];
+      };
+      const issuer = prm.authorization_servers[0] as string;
+      const asm = (await (
+        await fetch(local(`${issuer}/.well-known/oauth-authorization-server`))
+      ).json()) as { authorization_endpoint: string; token_endpoint: string };
+
+      const q = new URLSearchParams({
+        client_id: CLIENT_ID,
+        redirect_uri: REDIRECT,
+        response_type: "code",
+        code_challenge: CHALLENGE,
+        code_challenge_method: "S256",
+        scope: "saveslot.read saveslot.write saveslot.schema",
+        resource: `${PUBLIC}/mcp`,
+        state: "st-e2e",
+      }).toString();
+      const pageUrl = `${local(asm.authorization_endpoint)}?${q}`;
+      // Signed out: sent to the local accounts' login, which comes back to the page.
+      const out = await fetch(pageUrl, { redirect: "manual" });
+      expect(out.status).toBe(302);
+      const loginAt = new URL(out.headers.get("location") as string, base);
+      const form = await fetch(`${base}${loginAt.pathname}${loginAt.search}`);
+      const formToken = /name="form_token" value="([^"]+)"/.exec(await form.text())?.[1] as string;
+      const formCookie = (form.headers.get("set-cookie") ?? "").split(";")[0] as string;
+      const login = await fetch(`${base}/account/login`, {
+        method: "POST",
+        redirect: "manual",
+        headers: { ...FORM, cookie: formCookie },
+        body: new URLSearchParams({
+          form_token: formToken,
+          return_to: loginAt.searchParams.get("return_to") as string,
+          name: "robin",
+          password: "correct horse battery",
+        }).toString(),
+      });
+      expect(login.status).toBe(303);
+      const cookie = login.headers
+        .getSetCookie()
+        .find((x) => x.startsWith("saveslot_login="))
+        ?.split(";")[0] as string;
+
+      const page = await (await fetch(pageUrl, { headers: { cookie } })).text();
+      const consentToken = /name="form_token" value="([^"]+)"/.exec(page)?.[1] as string;
+      const answer = await fetch(pageUrl, {
+        method: "POST",
+        redirect: "manual",
+        headers: { ...FORM, cookie },
+        body: new URLSearchParams([
+          ["form_token", consentToken],
+          ["decision", "allow"],
+          ["name", "Laptop · Example Host"],
+          ["scope", "saveslot.read"],
+          ["scope", "saveslot.write"],
+          ["scope", "saveslot.schema"],
+        ]).toString(),
+      });
+      expect(answer.status).toBe(302);
+      const back = new URL(answer.headers.get("location") as string);
+      expect(`${back.origin}${back.pathname}`).toBe(REDIRECT);
+      expect(back.searchParams.get("state")).toBe("st-e2e");
+      expect(back.searchParams.get("iss")).toBe(PUBLIC);
+
+      const t = await fetch(local(asm.token_endpoint), {
+        method: "POST",
+        headers: FORM,
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: back.searchParams.get("code") as string,
+          code_verifier: VERIFIER,
+          client_id: CLIENT_ID,
+          redirect_uri: REDIRECT,
+          resource: `${PUBLIC}/mcp`,
+        }).toString(),
+      });
+      expect(t.status).toBe(200);
+      const body = (await t.json()) as {
+        access_token: string;
+        refresh_token: string;
+        scope: string;
+      };
+      expect(body.scope).toBe("saveslot.read saveslot.write saveslot.schema");
+      token = body.access_token;
+      refresh = body.refresh_token;
+      connection = (await (c.cp as ServerControlPlane).credential(tokenHash(token)))
+        ?.principal as string;
+      expect(connection).toMatch(/^ci_/);
+    },
+    T,
+  );
+
+  it(
+    "with the token: initialize, the tools, a read, a write",
+    async () => {
+      const init = await result(await initialize(token));
+      expect(init).toMatchObject({ protocolVersion: PROTOCOL, serverInfo: { name: "saveslot" } });
+      const tools = (await result(await rpc(token, "tools/list", {})))["tools"] as {
+        name: string;
+      }[];
+      const names = tools.map((x) => x.name);
+      expect(names).toContain("saveslot_schema_draft");
+      expect(names).not.toContain("saveslot_delete");
+      const written = await result(
+        await rpc(token, "tools/call", {
+          name: "saveslot_schema_draft",
+          arguments: {
+            document: {
+              slot: "diet",
+              base_version: null,
+              timezone: "Asia/Shanghai",
+              tables: [
+                {
+                  name: "meals",
+                  kind: "base",
+                  description: "one row per meal",
+                  time: { type: "event", field: "date" },
+                  fields: [
+                    { name: "date", type: "date", required: true, description: "the day" },
+                    { name: "what", type: "text", required: true, description: "what was eaten" },
+                  ],
+                },
+              ],
+            },
+            task: "start-diet",
+          },
+        }),
+      );
+      expect(written["isError"]).not.toBe(true);
+      const catalog = await result(
+        await rpc(token, "tools/call", { name: "saveslot_catalog", arguments: {} }),
+      );
+      expect(JSON.stringify(catalog)).toContain("diet");
+    },
+    T,
+  );
+
+  it(
+    "a page of another site: 403 before MCP, plain text",
+    async () => {
+      const r = await initialize(token, { origin: "https://evil.example" });
+      expect(r.status).toBe(403);
+      expect(r.headers.get("content-type")).toContain("text/plain");
+    },
+    T,
+  );
+
+  it(
+    "revoked by its user through /v1: its refresh tokens gone, the same token 401 invalid_token",
+    async () => {
+      const refreshRows = async () =>
+        (
+          await c.store.read((tx) =>
+            tx.query("SELECT 1 FROM oauth_refresh_tokens WHERE hash = $1", [tokenHash(refresh)]),
+          )
+        ).rows.length;
+      expect(await refreshRows()).toBe(1);
+      const r = await fetch(`${base}/v1/connections/${connection}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${session}` },
+      });
+      expect(r.status).toBe(200);
+      expect(await refreshRows()).toBe(0);
+      const after = await rpc(token, "tools/list", {});
+      expect(after.status).toBe(401);
+      const challenge = after.headers.get("www-authenticate") ?? "";
+      expect(challenge).toMatch(/^Bearer /);
+      expect(challenge).toContain('error="invalid_token"');
+      expect(challenge).toContain(
+        `resource_metadata="${PUBLIC}/.well-known/oauth-protected-resource"`,
+      );
     },
     T,
   );
@@ -945,7 +1290,12 @@ describe("runServer: POST /v1/import", () => {
   }
 
   /** An import request whose body is written as `body` gives it, chunk by chunk. */
-  function upload(s: RunningServer, token: string, body: AsyncIterable<Uint8Array>) {
+  function upload(
+    s: RunningServer,
+    token: string,
+    body: AsyncIterable<Uint8Array>,
+    more: Readonly<Record<string, string>> = {},
+  ) {
     return new Promise<Reply>((resolve, reject) => {
       const req = request(
         {
@@ -957,6 +1307,7 @@ describe("runServer: POST /v1/import", () => {
             authorization: `Bearer ${token}`,
             "content-type": "application/x-ndjson",
             "transfer-encoding": "chunked",
+            ...more,
           },
         },
         (res) => {
@@ -1086,6 +1437,31 @@ describe("runServer: POST /v1/import", () => {
           highWater: sourceEnd + 1,
           restoreCount: 1,
         });
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a page of another site: 403 before the import starts, the tenant left as it was; the external origin goes on",
+    async () => {
+      const { s, cp, user, file } = await serverWithSource();
+      try {
+        const target = await user("target");
+        const foreign = await within(
+          upload(s, target.token, bodyOf(file), { origin: "https://evil.example" }),
+          "the import",
+        );
+        expect(foreign.status).toBe(403);
+        expect(foreign.headers["content-type"]).toContain("text/plain");
+        await leftEmpty(cp, target.tenant);
+        const own = await within(
+          upload(s, target.token, bodyOf(file), { origin: PUBLIC }),
+          "the import",
+        );
+        expect(own.status).toBe(200);
       } finally {
         await s.close();
       }
