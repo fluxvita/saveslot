@@ -241,6 +241,42 @@ const candidatesSkeleton = (state: boolean) =>
     });
 
 /**
+ * A shadow (03-deletion «回掉的权威定义» step 2): #11 writes 2; #21, having seen it, 0; #31,
+ * having seen #21, 1; #41, having seen #21 too, 2 again: a candidate against #31, optionally with
+ * #51 (seen #21) of 2 or 3 in the same item. #61 takes #41 or takes the previous. Deleting S20
+ * leaves #41 the same as its seen version (#11's 2) with no evidence pointed at: no item, a
+ * shadow in the resolution's K. Random steps follow.
+ */
+export const shadowSkeleton = (state: boolean) =>
+  fc
+    .tuple(
+      fc.nat({ max: 2 }),
+      fc.constantFrom<"take_previous" | "take_candidate">("take_previous", "take_candidate"),
+      fc.constantFrom(null, "2", "3"),
+      fc.array(writeStep, { maxLength: 3 }),
+    )
+    .map(([a, decision, other, tail]) => {
+      const sp = (f: number, t: number | null) => (state ? span(f, t) : undefined);
+      const head: Op[] = [
+        { ...put(10, 0, "2", sp(0, null)), seen: 0 },
+        put(20, 10, "0", sp(0, null)),
+        put(30, 20, "1", sp(a, a + 3)),
+        put(40, 20, "2", sp(a, a + 3), false),
+        ...(other !== null ? [put(50, 20, other, sp(a + 1, a + 2), false)] : []),
+        {
+          kind: "resolve" as const,
+          op: 60,
+          event: 61,
+          decision,
+          candidates: other !== null ? [41, 51] : [41],
+          unit: "f2" as FieldId,
+          ...(decision === "take_candidate" ? { take: 41 } : {}),
+        },
+      ];
+      return toOps(tail, state, head);
+    });
+
+/**
  * An item whose unit is existence, taken: #21 revokes (on a state table, a stretch); #31, with the
  * version before it, writes f2 or the optional f3 and becomes a candidate on existence; #41 takes
  * it. On a state table the entity may start late, so that the merge base has no f2 where the

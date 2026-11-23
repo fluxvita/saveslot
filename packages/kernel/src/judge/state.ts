@@ -50,6 +50,13 @@ export interface Item {
   readonly deps: readonly ItemRef[];
   /** A field candidate in an item whose unit is existence. */
   readonly onExistence?: true;
+  /**
+   * A shadow (a deletion's replay only, never in `items`): a candidate a conflict resolution
+   * recorded that is the same as its seen version in the replay with no evidence pointed at, so
+   * no contribution; it still counts in the resolution's K (03-deletion «回掉的权威定义» step 2).
+   * Its `deps` are what cuts its interval.
+   */
+  readonly shadow?: true;
   /** Given by a write by external key (a sync contribution, ./sync.ts). */
   readonly sync?: true;
   /**

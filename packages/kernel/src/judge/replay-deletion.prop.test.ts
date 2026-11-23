@@ -25,10 +25,21 @@ import { advance, openItems } from "./fates.fixture.ts";
 import { type ItemsGiven, type ItemsResult, itemsByRecords, pendingIn } from "./fates.ts";
 import { view } from "./judge.ts";
 import type { OpRecord, Restatement, Target } from "./model.ts";
-import { cancellationResult, deletionResult, replayDeletion } from "./replay-deletion.ts";
+import {
+  cancellationResult,
+  contributionKey,
+  deletionResult,
+  replayDeletion,
+} from "./replay-deletion.ts";
 import { type GivenBlock, givenByRecords } from "./restate.ts";
 import type { Stretch } from "./results.ts";
-import { type Decision, deletedContributions, judged, scenario } from "./scenarios.fixture.ts";
+import {
+  type Decision,
+  deletedContributions,
+  judged,
+  scenario,
+  shadowSkeleton,
+} from "./scenarios.fixture.ts";
 import { EVERYTHING, RowState } from "./state.ts";
 
 vi.setConfig({ testTimeout: 120_000 });
@@ -204,6 +215,11 @@ function compare(
   /** A take_candidate in the log; one with filled revokes. */
   took: boolean;
   tookFilled: boolean;
+  /**
+   * A conflict resolution whose K holds a shadow in the replay: a candidate it recorded, not
+   * deleted, with no item left (the same as its seen version, no evidence pointed at).
+   */
+  shadowed: boolean;
   protectionMatters: (op: number) => boolean;
 } {
   const widened = ops.map((o) =>
@@ -600,6 +616,15 @@ function compare(
     reverted: records.some(isRevert),
     took: records.some((r) => r.kind === "take_candidate"),
     tookFilled: records.some((r) => r.kind === "take_candidate" && r.filled.length > 0),
+    shadowed: records.some(
+      (r) =>
+        (r.kind === "take_candidate" || r.kind === "take_previous") &&
+        (r.decided ?? []).some(
+          (x) =>
+            !gone.has(contributionKey(x.event, x.target)) &&
+            !replayed.state.items.some((y) => y.event === x.event && y.target === x.target),
+        ),
+    ),
     revertChanged: revertText(records) !== revertText(replayed.records),
     // Whether the replay comes out otherwise with operation `op` recorded as a candidate when
     // written (not protected by deviation two).
@@ -840,8 +865,9 @@ describe.each(both)("%s table", (_, schema, isState) => {
 
 /**
  * The shapes this version refuses (see replay-deletion.ts): high impact ④ judged again (and, with
- * its own kind, an undo that would then take effect on a revoked row), and a take_previous whose
- * candidate leaves no item. A sample reaching one is set aside, and counted.
+ * its own kind, an undo that would then take effect on a revoked row), and a resolution whose
+ * candidate leaves neither an item nor a shadow (a same-valued one counts its shadow, `kOf`). A
+ * sample reaching one is set aside, and counted.
  */
 const REFUSED = new Set([
   "undo no longer of high impact",
@@ -868,6 +894,7 @@ describe.each(both)("%s table, reverts", (_, schema, isState) => {
       revertChanged: 0,
       took: 0,
       tookFilled: 0,
+      shadowed: 0,
       refused: 0,
     };
     const refusedBy: Record<string, number> = {};
@@ -893,6 +920,7 @@ describe.each(both)("%s table, reverts", (_, schema, isState) => {
           if (c.reverted) seen.reverted++;
           if (c.took) seen.took++;
           if (c.tookFilled) seen.tookFilled++;
+          if (c.shadowed) seen.shadowed++;
           if (c.revertChanged) {
             seen.revertChanged++;
             hits.hit();
@@ -907,6 +935,30 @@ describe.each(both)("%s table, reverts", (_, schema, isState) => {
     // 600 runs: about 12% on state tables (most an include_later undo whose later write the
     // deletion took away, ④), about 1% on event tables.
     expect(seen.refused).toBeLessThan(seen.samples * 0.2);
+  });
+
+  it("a resolution whose candidate is a shadow in the replay leaves what the reference evaluator gives", () => {
+    // Hits: a shadow in a resolution's K (`shadowSkeleton`: S20 deleted leaves #41 the same as
+    // its seen version, no evidence pointed at), the rest of the comparison as above.
+    const hits = new Hits(0.5);
+    fc.assert(
+      fc.property(
+        shadowSkeleton(isState),
+        fc.subarray(["S10", "S30", "S40", "S50"], { maxLength: 1 }),
+        hits.track((ops: Op[], more: string[]) => {
+          let c: ReturnType<typeof compare>;
+          try {
+            c = compare(schema, isState, ops, [], ["S20", ...more]);
+          } catch (e) {
+            if (!refusedShape(e)) throw e;
+            return;
+          }
+          if (c.shadowed) hits.hit();
+        }),
+      ),
+      { numRuns: Math.max(50, Math.floor(RUNS / 4)) },
+    );
+    hits.check();
   });
 });
 

@@ -1905,9 +1905,10 @@ class Replay {
     if (o.take === undefined) throw new Error("take_candidate needs `take`");
     const cands = this.kOf(o.candidates, "existence", o.op);
     const rec = this.takeRecord(o, cands);
-    // Where writes outside the cover set O cover a taken item, that write stays in effect.
+    // Where writes outside the cover set O cover a taken item, that write stays in effect. A
+    // shadow of the taken write is its item in K (03-deletion «搬运的值»), as on a field unit.
     const taken = cands
-      .filter((x) => x.event === o.take && !this.shadows.includes(x))
+      .filter((x) => x.event === o.take)
       .map((x) => ({ ...x, valid: subtract(x.valid, this.coveredOutsideO(rec, n, x)) }))
       .filter((x) => !isEmpty(x.valid));
     const base = {
@@ -1951,11 +1952,7 @@ class Replay {
       if (input === undefined) continue;
       const v = tok(input.value);
       const same = cands.filter(
-        (x) =>
-          x.target === f &&
-          x.content.kind === "value" &&
-          tok(x.content.value) === v &&
-          !this.shadows.includes(x),
+        (x) => x.target === f && x.content.kind === "value" && tok(x.content.value) === v,
       );
       const own = same.filter((x) => x.event === o.take);
       for (const x of own.length > 0 ? own : same) {

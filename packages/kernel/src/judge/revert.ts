@@ -280,7 +280,8 @@ function writeBackDeps(
     ...zai.map(refOf),
     ...by.map(refOf),
     ...zai.filter((y) => y.target === t).flatMap((y) => coveringOf(y).map(refOf)),
-    ...(k ?? []).map(refOf),
+    // A shadow in K: the interval it gives the domain rests on what cuts it (09 §3.5).
+    ...(k ?? []).flatMap((c) => [refOf(c), ...(c.shadow === true ? c.deps : [])]),
     ...ends.map(refOf),
   ]);
 }

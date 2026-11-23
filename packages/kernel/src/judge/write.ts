@@ -2,7 +2,13 @@
 // 05-time «用同样的值写» «高影响写入» «无值区间» «状态类表上的撤销»; 09-references-conflict-sync
 // «冲突判据» «撤销与并发修改»).
 
-import type { BizPoint, FieldId, OpNumber } from "@fluxvita/saveslot-contract-core";
+import type {
+  BizPoint,
+  FieldId,
+  FieldValue,
+  OpNumber,
+  Seq,
+} from "@fluxvita/saveslot-contract-core";
 import { sameValue } from "../delta/index.ts";
 import {
   canonical,
@@ -179,6 +185,24 @@ export interface ReplayOptions {
    * in an item on existence (it met a revoke), as recorded when written. Absent: none.
    */
   readonly resolved?: ReadonlyMap<Target, boolean>;
+  /**
+   * Collects the shadows (state.ts `Item.shadow`): each field the same as its seen version with no
+   * evidence pointed at, its value and its interval as written-time rules resolve it on the
+   * replay's state, with what cuts it. A deletion's replay only: when written such a field is a
+   * no-op, never a candidate, so nothing there needs it.
+   */
+  readonly shadows?: Shadow[];
+}
+
+/** A field a write gives no item on in a replay, as a conflict resolution's K still counts it. */
+export interface Shadow {
+  readonly event: Seq;
+  readonly target: FieldId;
+  readonly value: FieldValue;
+  readonly valid: IntervalSet;
+  readonly deps: readonly ItemRef[];
+  /** Written with a default end, as the item it would be (state.ts `Item.defaultEnd`). */
+  readonly defaultEnd: boolean;
 }
 
 export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOptions): WriteOutcome {
@@ -235,6 +259,14 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
         : segs.every((s) => state.token(f, s, seenAtFor(f)) === v);
     if (sameAsSeen && !input.explicit) {
       noop.push(f);
+      replay?.shadows?.push({
+        event: w.event,
+        target: f,
+        value: input.value,
+        valid: res.valid,
+        deps: res.deps,
+        defaultEnd: res.defaultEnd,
+      });
       continue;
     }
     if (!sameAsSeen) {

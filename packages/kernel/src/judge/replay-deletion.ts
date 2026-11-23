@@ -16,12 +16,14 @@
 // (03-deletion «回掉的权威定义»); `keep_effective` as recorded; `take_candidate` with its merge
 // base, cover set and filled revokes as recorded, where it lands worked out again (03-deletion
 // «搬运的值»). A candidate a conflict resolution decided stays that candidate in every replay, the
-// conflict there or not (deviation one), so the resolution's record still closes it. Refused with
+// conflict there or not (deviation one), so the resolution's record still closes it; one the same
+// as its seen version with no evidence pointed at leaves no item, its shadow counts in the
+// resolution's K (`kOf`; 03-deletion «回掉的权威定义» step 2). Refused with
 // `not_implemented`, naming the kind, never judged as an ordinary write: an undecided awaiting
 // undo no longer of high impact (high impact ④ judged again), with a kind of its own when the row
 // would still be revoked once it takes effect; a take_previous or take_candidate whose recorded
-// candidate, not deleted, leaves no item in the replay (a same value without evidence pointed
-// at); an operation judged after a deletion event (its conflict criterion reads that event's L);
+// candidate, not deleted, leaves neither an item nor a shadow in the replay; an operation judged
+// after a deletion event (its conflict criterion reads that event's L);
 // a write by external key (its sync baseline in a replay is the deletion phase's, with the key
 // index's freezing); a write that added a key to a row (the key index's part of a deletion).
 
@@ -50,7 +52,7 @@ import { ALL_TIME, type Outcome, outcomeOf, type RowResult, rowResult } from "./
 import { judgeRevertOf } from "./revert.ts";
 import { type Item, RowState } from "./state.ts";
 import { judgeTakeCandidate } from "./take.ts";
-import { judgeRevoke, judgeWrite, type ReplayOptions } from "./write.ts";
+import { judgeRevoke, judgeWrite, type ReplayOptions, type Shadow } from "./write.ts";
 
 export { contributionKey } from "./model.ts";
 
@@ -154,6 +156,9 @@ function revertAgain(
   deleted: (event: number, target: Target) => boolean,
   decided: boolean,
   candidateWhenWritten: (event: number, target: Target, valid: IntervalSet) => boolean,
+  shadows: readonly Shadow[],
+  records: readonly OpRecord[],
+  latest: LatestGiven,
 ): RevertRecord {
   if (r.kind === "take_previous") {
     const unit = r.revert.unit;
@@ -163,7 +168,7 @@ function revertAgain(
         op: r.op,
       });
     }
-    const k = kOf(state, r, deleted, candidateWhenWritten);
+    const k = kOf(state, r, deleted, candidateWhenWritten, shadows, records, latest);
     const out = judgeRevertOf(state, r, r.revert.entries, { asOf: mergeBase }, k, false);
     return { ...r, items: out.items };
   }
@@ -227,9 +232,12 @@ function kOf(
   r: RevertRecord | TakeCandidateRecord,
   deleted: (event: number, target: Target) => boolean,
   candidateWhenWritten: (event: number, target: Target, valid: IntervalSet) => boolean,
+  shadows: readonly Shadow[],
+  records: readonly OpRecord[],
+  latest: LatestGiven,
 ): Item[] {
   const recorded = new Set((r.decided ?? []).map((x) => contributionKey(x.event, x.target)));
-  const k = state.items.filter(
+  const k: Item[] = state.items.filter(
     (x) =>
       recorded.has(contributionKey(x.event, x.target)) &&
       (x.status === "candidate" ||
@@ -237,12 +245,44 @@ function kOf(
   );
   for (const d of r.decided ?? []) {
     if (deleted(d.event, d.target)) continue;
-    if (!k.some((x) => x.event === d.event && x.target === d.target)) {
+    if (k.some((x) => x.event === d.event && x.target === d.target)) continue;
+    // The same as its seen version now with no evidence pointed at: no item, its shadow counts
+    // (03-deletion «回掉的权威定义» step 2: 「c 在重放里成了同值（不再是改动）仍算在」).
+    const sh = shadows.find((x) => x.event === d.event && x.target === d.target);
+    const w = records.find((x) => x.event === d.event);
+    // Its indices as the log last gave them, earlier deletions' renumbering included: those not
+    // last given as dropped, which this deletion restates as dropped; with none left, those an
+    // earlier deletion did (09 §5.7 `carried`: a take can carry an index restated as dropped).
+    const given = latest.get(contributionKey(d.event, d.target)) ?? [];
+    const open = given.filter((x) => x.status !== "dropped");
+    const indices = (open.length > 0 ? open : given).map((x) => x.k).sort((a, b) => a - b);
+    if (sh === undefined || w === undefined || indices.length === 0) {
+      // No item and no shadow (a recorded candidate that is no contribution in the replay for
+      // another reason than a same value, such as a revoke on a row revoked already): not in this
+      // version.
       throw new JudgeError(
         "not_implemented",
         `a deletion's replay of a ${r.kind} whose candidate is no longer one`,
         { kind: `${r.kind} candidate`, op: r.op, event: d.event, target: d.target },
       );
+    }
+    for (const index of indices) {
+      const item: Item = {
+        event: sh.event,
+        target: sh.target,
+        k: index,
+        op: w.op,
+        index: w.index,
+        status: "candidate",
+        valid: sh.valid,
+        content: { kind: "value", value: sh.value },
+        deps: sh.deps,
+        shadow: true,
+        // A candidate: corroboration endpoints are read only on corroborated items.
+        explicitEnds: [],
+        defaultEnd: sh.defaultEnd,
+      };
+      k.push(item);
     }
   }
   return k;
@@ -260,8 +300,10 @@ function takeAgain(
   records: readonly OpRecord[],
   deleted: (event: number, target: Target) => boolean,
   candidateWhenWritten: (event: number, target: Target, valid: IntervalSet) => boolean,
+  shadows: readonly Shadow[],
+  latest: LatestGiven,
 ): TakeCandidateRecord {
-  const k = kOf(state, r, deleted, candidateWhenWritten);
+  const k = kOf(state, r, deleted, candidateWhenWritten, shadows, records, latest);
   // The taken write's value on each field it gave in the item, as written: the fields the
   // resolution recorded as decided for the taken write (from the record, not from the replay's
   // state, where a deleted contribution has no item to say which item it was in).
@@ -417,6 +459,9 @@ export function replayDeletion(
     state = new RowState(table, [...state.records, numberedRecord]);
   };
   const firstDeletion = Math.min(Number.POSITIVE_INFINITY, ...deletionsBefore);
+  // Fields the same as their seen version with no evidence pointed at, a conflict resolution's K
+  // still counts (`kOf`).
+  const shadows: Shadow[] = [];
   const decisions = decisionsOf(records);
   const resolutions = resolvedOf(records);
   // Whether a stretch of a write's items on a target was a candidate when written: it meets one
@@ -485,6 +530,9 @@ export function replayDeletion(
         (e, t) => deleted.has(contributionKey(e, t)),
         decided,
         candidateWhenWritten,
+        shadows,
+        records,
+        latest,
       );
       // Event and timeless tables keep no deps, as every judged record (judge.ts).
       const record = state.isState ? again : withoutDeps(again);
@@ -498,6 +546,8 @@ export function replayDeletion(
         records,
         (e, t) => deleted.has(contributionKey(e, t)),
         candidateWhenWritten,
+        shadows,
+        latest,
       );
       const record = state.isState ? again : withoutDeps(again);
       commit(record);
@@ -527,6 +577,7 @@ export function replayDeletion(
     if (input === undefined) continue;
     const decision = decisions.get(r.event);
     const options: ReplayOptions = {
+      shadows,
       noop: new Set(r.noop),
       protect: protectedTargets(r),
       decided: decision?.decided ?? new Set(),

@@ -106,13 +106,17 @@ export function judgeTakeCandidate(
     // Compared with what is in effect there: a stretch without a value is not "the same".
     const same = state.piecesIn(valid).every((s) => state.token(f, s, cur) === v);
     if (same) continue;
-    const carried = uniqueRefs(
-      k
-        .filter(
-          (x) => x.target === f && x.content.kind === "value" && sameValue(x.content.value, value),
-        )
-        .map(refOf),
+    const giving = k.filter(
+      (x) => x.target === f && x.content.kind === "value" && sameValue(x.content.value, value),
     );
+    const carried = uniqueRefs(giving.map(refOf));
+    // A shadow carried: the interval it gives rests on what cuts it, as a take_previous's
+    // write-back over a shadow (revert.ts), so a deletion of one of those finds this block
+    // (09 §3.5 rule 1).
+    const deps = uniqueRefs([
+      ...carried,
+      ...giving.flatMap((x) => (x.shadow === true ? x.deps : [])),
+    ]);
     // One item per stretch: an item has one interval (09 §5.7 `span/<f>/<k>`).
     for (const part of parts(valid)) {
       drafts.push({
@@ -121,7 +125,7 @@ export function judgeTakeCandidate(
         valid: part,
         content: { kind: "value", value },
         carried,
-        deps: carried,
+        deps,
       });
     }
   }
@@ -167,6 +171,8 @@ function landing(
   replay: TakeReplay,
   k: readonly Item[],
 ): Item[] {
+  // A shadow of the taken write counts as its item in K: the take lands on it, with the taken
+  // write's value (03-deletion «搬运的值»: only items gone, deleted, hand over to same-valued ones).
   const own = k.filter((x) => x.event === t.take);
   const fields = new Set<Target>([...own.map((x) => x.target), ...replay.values.keys()]);
   const out: Item[] = [];

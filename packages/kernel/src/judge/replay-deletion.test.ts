@@ -12,6 +12,7 @@ import { JudgeError } from "./errors.ts";
 import { emptyState, judgeOp, stateFromRecord, view } from "./judge.ts";
 import type { JudgeInput, OpRecord, TableShape, WriteInput } from "./model.ts";
 import { contributionKey, replayDeletion } from "./replay-deletion.ts";
+import { givenByRecords } from "./restate.ts";
 import { deletedContributions, judged } from "./scenarios.fixture.ts";
 import { EVERYTHING, type RowState } from "./state.ts";
 import { judgeWrite } from "./write.ts";
@@ -1448,5 +1449,137 @@ describe("take_candidate, as recorded: merge base, O and filled from the record,
     ]);
     expect(b.kernel).toEqual([[d("10-01"), "3"]]);
     expect(b.ref).toEqual(b.kernel);
+  });
+});
+
+describe("a recorded candidate the same as its seen version in the replay, no evidence: its shadow counts in K", () => {
+  // #5 f2=2; #10, having seen #5, writes 0 over it; #20, having seen #10, writes 1; #30, having
+  // seen #10 too, writes 2: a candidate against #20. A resolution of the item. S10 deleted: #30's
+  // seen version is #5's 2, the same as #30's value, no evidence pointed at: no item, a shadow; the
+  // resolution's K still holds it (03-deletion «回掉的权威定义» step 2).
+  const head: Op[] = [
+    refWrite(5, 0, "10-01", null, "2"),
+    refWrite(10, 5, "10-01", null, "0", { ack: true }),
+    refWrite(20, 10, "10-01", null, "1"),
+    refWrite(30, 10, "10-01", null, "2"),
+  ];
+  const resolve = (decision: "take_previous" | "take_candidate"): Op =>
+    ({
+      kind: "resolve",
+      op: 40,
+      event: 41,
+      decision,
+      candidates: [31],
+      unit: "f2",
+      ...(decision === "take_candidate" ? { take: 31 } : {}),
+    }) as Op;
+
+  it.each(["take_previous", "take_candidate"] as const)(
+    "%s: replayed as the reference does",
+    (decision) => {
+      const b = sideBySide([...head, resolve(decision)], ["S10"], [contributionKey(11, "f2")]);
+      expect(b.records[3]).toMatchObject({ items: [{ target: "f2", status: "candidate" }] });
+      // #30 has no item in the replay: the same as its seen version, no evidence pointed at.
+      expect(b.after.state.items.filter((x) => x.event === 31)).toEqual([]);
+      expect(b.after.records.map((r) => r.kind)).toContain(decision);
+      expect(b.kernel).toEqual(b.ref);
+    },
+  );
+  it("take_candidate lands on the shadow: #30's 2, as the person chose, carried from #30's item", () => {
+    const b = sideBySide(
+      [...head, resolve("take_candidate")],
+      ["S10"],
+      [contributionKey(11, "f2")],
+    );
+    expect(b.kernel).toEqual([[d("10-01"), "2"]]);
+    const take = b.after.records.find((r) => r.kind === "take_candidate");
+    expect(take).toMatchObject({
+      items: [{ target: "f2", content: { kind: "value", value: "2" } }],
+    });
+    expect(
+      (take as unknown as { items: { carried: unknown[] }[] }).items[0]?.carried,
+    ).toContainEqual({
+      event: 31,
+      target: "f2",
+      k: 0,
+    });
+  });
+
+  it("then #30's source deleted too: no item of #30 left in K, as deleting both at once", () => {
+    const both = sideBySide(
+      [...head, resolve("take_candidate")],
+      ["S10", "S30"],
+      [contributionKey(11, "f2"), contributionKey(31, "f2")],
+    );
+    expect(both.kernel).toEqual([[d("10-01"), "1"]]);
+    expect(both.kernel).toEqual(both.ref);
+  });
+});
+
+describe("a take_previous's write-back over a shadow rests on what cuts the shadow", () => {
+  // #5 f2=2; #10 writes 0 over it; #15 a change at 11-10; #20, having seen #15, writes 1 on
+  // [10-01, 11-10); #30, having seen #15, writes 2 from 10-01 to the next change: [10-01, 11-10),
+  // its end #15's start, a candidate against #20. take_previous. S10 deleted: #30's shadow on
+  // [10-01, 11-10), cut by #16; the write-back over it rests on #16 too (09 §3.5), though #25
+  // covers #16's start in the state.
+  const ops: Op[] = [
+    refWrite(5, 0, "10-01", null, "2"),
+    refWrite(10, 5, "10-01", null, "0", { ack: true }),
+    refWrite(15, 10, "11-10", null, "7", { ack: true }),
+    refWrite(20, 15, "10-01", "11-10", "1", { ack: true }),
+    // #25 covers [11-05, 11-20): at 11-10 the replay's state has no boundary, so #16 cuts the
+    // write-back only through the shadow's end.
+    refWrite(25, 20, "11-05", "11-20", "5", { ack: true }),
+    {
+      ...refWrite(30, 15, "10-01", null, "2"),
+      valid: { from: { mode: "given", value: d("10-01") }, to: { mode: "next_change" } },
+    } as Op,
+    // #35, having seen #10 only, writes 8 on [10-01, 10-20): a candidate in the same item, so the
+    // merge base is #10, before #15: at the value position 11-10 is no boundary.
+    refWrite(35, 10, "10-01", "10-20", "8"),
+    {
+      kind: "resolve",
+      op: 50,
+      event: 51,
+      decision: "take_previous",
+      candidates: [31, 36],
+      unit: "f2",
+    } as Op,
+  ];
+
+  it("its deps hold #16; a later deletion of S15 restates it (rule 2)", () => {
+    const b = sideBySide(ops, ["S10"], [contributionKey(11, "f2")]);
+    expect(b.kernel).toEqual(b.ref);
+    expect(b.after.state.items.filter((x) => x.event === 31)).toEqual([]);
+    expect(b.records.at(-1)).toMatchObject({ kind: "take_previous" });
+    const back = b.after.records.find((r) => r.kind === "take_previous");
+    const items = (back as unknown as { items: { deps: { event: number }[] }[] }).items;
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.some((x) => x.deps.some((y) => y.event === 16))).toBe(true);
+    // The second deletion, S10 pending before it: the blocks after the first are the latest.
+    const latest = new Map(givenByRecords(b.records));
+    for (const r of b.after.restated) {
+      const et = `${r.item.event}/${r.item.target}`;
+      const was = latest.get(et) ?? [];
+      latest.set(et, [
+        ...was.filter((x) => x.k !== r.item.k),
+        {
+          k: r.item.k,
+          status: r.status,
+          valid: r.valid ?? [],
+          deps: r.deps,
+          content: r.content ?? was[0]?.content ?? { kind: "value", value: null },
+        },
+      ]);
+    }
+    const table = judged(STATE_SCHEMA, ops, []).table;
+    const second = replayDeletion(
+      table,
+      b.records,
+      new Set([contributionKey(11, "f2"), contributionKey(16, "f2")]),
+      [],
+      latest,
+    );
+    expect(second.restated.map((r) => r.item.event)).toContain(51);
   });
 });
