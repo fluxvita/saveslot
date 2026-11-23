@@ -31,6 +31,7 @@ export const TESTED = [
   // `saveslot server restore`: the restore flow on a server tenant, from the service and the command.
   "packages/service/src/server-restore.test.ts",
   "packages/daemon/src/server-restore-command.test.ts",
+  "packages/service/src/local-accounts.test.ts",
 ];
 
 /** Files not run on PostgreSQL, each with why. */

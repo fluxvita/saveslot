@@ -8,6 +8,8 @@ export * from "./control-files.ts";
 export * from "./control-plane.ts";
 export * from "./credentials.ts";
 export * from "./cursor.ts";
+export * from "./identity.ts";
+export * from "./local-accounts.ts";
 export * from "./local-connections.ts";
 export * from "./local-init.ts";
 export * from "./local-tenant.ts";
