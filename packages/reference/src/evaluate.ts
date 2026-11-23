@@ -1626,11 +1626,18 @@ class Replay {
     this.rejections.push({ op: o.op, reason });
   }
 
-  /** The merge base of a conflict item: the earliest version its candidates carried. */
   /**
-   * The earliest version the candidates carry. A write by source key carries its fields' baseline
-   * positions, the earliest over the unit's fields it wrote (04-write-and-read «三方比较»).
+   * The merge base of a conflict item: the earliest version its candidates carried. A write by
+   * source key carries its fields' baseline positions, the earliest over the unit's fields it
+   * wrote (04-write-and-read «三方比较»), the fields it wrote as a no-op left out: they carry no
+   * baseline (09 §5.8 `ops/<i>/baseline`, §5.7). On `existence` that is every field it wrote.
    */
+  /** Whether write `o` gave field `f` as a no-op, as judged when it was written. */
+  wroteNoop(o: WriteOp, f: FieldId): boolean {
+    const key = etKey(o.event, f);
+    return o.noop?.includes(f) === true || this.rec.noops.has(key) || this.noops.has(key);
+  }
+
   mergeBaseOf(candidates: readonly Seq[], unit: ResolveOp["unit"]): OpNumber {
     return Math.min(
       ...candidates.map((e) => {
@@ -1640,7 +1647,7 @@ class Replay {
             unit === "existence" ? Object.keys(c.fields) : unitTargets(unit)
           ) as FieldId[];
           const at = fields
-            .filter((f) => c.fields[f] !== undefined)
+            .filter((f) => c.fields[f] !== undefined && !this.wroteNoop(c, f))
             .map((f) => this.syncBaseline(f, c.op).position);
           return at.length > 0 ? Math.min(...at) : c.op - 1;
         }

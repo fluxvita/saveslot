@@ -29,8 +29,10 @@ type Step =
   | { t: "sync"; v: string; explicit: boolean; f1: string }
   | { t: "local"; v: string; lag: number }
   | { t: "revoke" }
+  // A revoke undone at once: the writes after it that meet its reach are on existence.
+  | { t: "revokeBack" }
   | { t: "undo"; back: number }
-  | { t: "resolve"; decision: ResolveOp["decision"] };
+  | { t: "resolve"; decision: ResolveOp["decision"]; unit: "f2" | "existence" };
 
 const step: fc.Arbitrary<Step> = fc.oneof(
   {
@@ -52,6 +54,7 @@ const step: fc.Arbitrary<Step> = fc.oneof(
     }),
   },
   { weight: 1, arbitrary: fc.record({ t: fc.constant("revoke" as const) }) },
+  { weight: 1, arbitrary: fc.record({ t: fc.constant("revokeBack" as const) }) },
   {
     weight: 2,
     arbitrary: fc.record({ t: fc.constant("undo" as const), back: fc.nat({ max: 2 }) }),
@@ -65,6 +68,8 @@ const step: fc.Arbitrary<Step> = fc.oneof(
         "keep_effective",
         "take_previous",
       ),
+      // On existence: a candidate that met a revoke's reach (a sync after a revoke undone).
+      unit: fc.constantFrom<"f2" | "existence">("f2", "existence"),
     }),
   },
 );
@@ -104,7 +109,10 @@ function build(first: string, steps: readonly Step[]): LogEntry[] {
       const seen = op - 10 * (1 + s.lag);
       log.push({ kind: "write", op, event, seen, fields: { f2: field(s.v, `user${op}`) } });
     } else if (s.t === "revoke") log.push({ kind: "revoke", op, event });
-    else if (s.t === "undo") {
+    else if (s.t === "revokeBack") {
+      log.push({ kind: "revoke", op, event });
+      log.push({ kind: "undo", op: op + 5, event: op + 6, target: op });
+    } else if (s.t === "undo") {
       const r = evaluateLog(TIMELESS, log);
       const recorded = r.steps
         .filter((x) => !x.refused && x.outcome !== "unchanged" && x.outcome !== "skipped")
@@ -114,20 +122,28 @@ function build(first: string, steps: readonly Step[]): LogEntry[] {
       if (target !== undefined) log.push({ kind: "undo", op, event, target });
     } else {
       const open = evaluateLog(TIMELESS, log).final.items.filter(
-        (x) => x.status === "candidate" && !x.closed && x.target === "f2",
+        (x) =>
+          x.status === "candidate" && !x.closed && (s.unit === "existence" || x.target === "f2"),
       );
       const events = [...new Set(open.map((x) => x.event))].sort((a, b) => a - b);
       const take = events.at(-1);
       if (take === undefined) return;
-      log.push({
+      const o: ResolveOp = {
         kind: "resolve",
         op,
         event,
         decision: s.decision,
-        candidates: events,
-        unit: "f2",
+        // On existence the latest candidate alone: whether its items are on existence is the
+        // evaluator's to say, so the resolution is kept only when it is not rejected.
+        candidates: s.unit === "existence" ? [take] : events,
+        unit: s.unit,
         ...(s.decision === "take_candidate" ? { take } : {}),
-      });
+      };
+      if (s.unit === "existence") {
+        const judged = evaluateLog(TIMELESS, [...log, o]).steps.at(-1);
+        if (judged === undefined || judged.refused || judged.rejected !== undefined) return;
+      }
+      log.push(o);
     }
   });
   return log;
@@ -171,6 +187,85 @@ function baselineValue(
 }
 
 describe("writes by source key (reference evaluator)", () => {
+  it("resolutions on existence of a candidate by key are judged, never refused", () => {
+    // A random history, then a revoke undone at once, a sync changing f1 (on existence, as it
+    // meets the revoke's reach) and a resolution of it on existence: the merge base over the
+    // candidate's fields, its no-op fields left out (09 §5.8), is taken on such logs. Hit: the
+    // resolution was generated (the sync was a candidate) with a candidate by key.
+    const hits = new Hits(0.3);
+    fc.assert(
+      fc.property(
+        scenario,
+        fc.constantFrom("b", "c"),
+        fc.constantFrom(...VALUES),
+        fc.constantFrom<ResolveOp["decision"]>("take_candidate", "keep_effective", "take_previous"),
+        hits.track(({ first, steps }, f1, v, decision) => {
+          const log = build(first, [
+            ...steps,
+            { t: "revokeBack" },
+            { t: "sync", v, explicit: false, f1 },
+            { t: "resolve", decision, unit: "existence" },
+          ]);
+          const r = evaluateLog(TIMELESS, log);
+          const byKey = new Set(
+            log
+              .filter((e) => e.kind === "write" && e.byKey === true)
+              .map((e) => (e as WriteOp).event),
+          );
+          r.steps.forEach((x) => {
+            const e = x.entry;
+            if (e.kind !== "resolve" || e.unit !== "existence") return;
+            expect(x.refused).toBe(false);
+            if (e.candidates.some((c) => byKey.has(c))) hits.hit();
+          });
+        }),
+      ),
+      { numRuns: RUNS },
+    );
+    hits.check();
+  });
+
+  it("a field the candidate sent as a no-op does not move the merge base on existence: the same as not sending it", () => {
+    // 09 §5.8: the merge base of a candidate by key is the earliest baseline position over the
+    // unit's fields, from `ops/<i>/baseline`, which has no no-op field. So the sync that sent f2
+    // unchanged and the same sync without f2 come to the same state after the resolution.
+    // Hit: the tail's sync was a candidate on existence with f2 a no-op, and was resolved.
+    const hits = new Hits(0.2);
+    fc.assert(
+      fc.property(
+        scenario,
+        fc.constantFrom("b", "c"),
+        fc.constantFrom<ResolveOp["decision"]>("take_candidate", "keep_effective", "take_previous"),
+        hits.track(({ first, steps }, f1, decision) => {
+          const head = build(first, [...steps, { t: "revokeBack" }]);
+          const evHead = evaluateLog(TIMELESS, head);
+          // f2 sent as its baseline value: a no-op unless something else decides.
+          const v = baselineValue(head, evHead.final, "f2");
+          if (v === undefined) return;
+          const log = build(first, [
+            ...steps,
+            { t: "revokeBack" },
+            { t: "sync", v, explicit: false, f1 },
+            { t: "resolve", decision, unit: "existence" },
+          ]);
+          const last = log.at(-1);
+          const candidate = log.at(-2);
+          if (last?.kind !== "resolve" || candidate?.kind !== "write") return;
+          const r = evaluateLog(TIMELESS, log);
+          if (r.steps.at(-2)?.syncFields?.["f2" as FieldId]?.status !== "noop") return;
+          const without: WriteOp = { ...candidate, fields: { f1: candidate.fields["f1"] } };
+          const r2 = evaluateLog(TIMELESS, [...log.slice(0, -2), without, last]);
+          hits.hit();
+          expect(r2.steps.at(-1)?.refused).toBe(false);
+          expect(r2.final.fields).toEqual(r.final.fields);
+          expect(r2.final.exists).toEqual(r.final.exists);
+        }),
+      ),
+      { numRuns: RUNS },
+    );
+    hits.check();
+  });
+
   it("every write by key gets an outcome; unchanged and skipped ones leave the state as it was", () => {
     // Hit: a write by key that left nothing, beyond the one creating the row.
     const hits = new Hits(0.2);

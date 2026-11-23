@@ -239,6 +239,34 @@ describe("a key added to a row, and a revoked row", () => {
   });
 });
 
+describe("the merge base of a candidate by key (09 §5.8: the earliest baseline position over the unit, no-op fields left out)", () => {
+  it("on existence: a field the candidate gave as a no-op does not take the merge base back to its earlier baseline (fixed case)", () => {
+    // #20 changes f1 and sends f2 unchanged (a no-op, f2's baseline stays #10); revoked at #30,
+    // put back at #40; #50 changes f1 again and is a candidate on existence (it met the revoke's
+    // reach); #60 goes back. f2 is a no-op at #50 too, so its baseline position (#10) is no part
+    // of the merge base: that is f1's, #20, and f1 goes back to b, not to a.
+    const r = run([
+      sync(10, "1", { f1: "a" }),
+      sync(20, "1", { f1: "b" }),
+      { kind: "revoke", op: 30, event: 31 },
+      { kind: "undo", op: 40, event: 41, target: 30 },
+      sync(50, "1", { f1: "c" }),
+      {
+        kind: "resolve",
+        op: 60,
+        event: 61,
+        decision: "take_previous",
+        candidates: [51],
+        unit: "existence",
+      },
+    ]);
+    expect(r.steps.map((x) => x.refused)).toEqual([false, false, false, false, false, false]);
+    expect(r.steps[4]?.syncFields?.["f2" as FieldId]?.status).toBe("noop");
+    expect(r.final.fields["f1" as FieldId]?.[0]?.value).toBe("b");
+    expect(f2(r.final)).toBe("1");
+  });
+});
+
 describe("not modelled: refused, never judged by guess", () => {
   it("a log with writes by key and a deletion", () => {
     expect(() =>
