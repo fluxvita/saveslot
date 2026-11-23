@@ -8,7 +8,7 @@ import { META_KEYS, SESSION_SETTINGS, STORAGE_FORMAT_VERSION } from "@fluxvita/s
 import pg from "pg";
 import { describe, expect, it } from "vitest";
 import { PostgresBackend, type PostgresTenantStore } from "./backend.ts";
-import type { DriverClient } from "./connection.ts";
+import { Connection, type DriverClient, Gone } from "./connection.ts";
 import { PostgresStoreError } from "./errors.ts";
 
 /** An error as the server sends one. */
@@ -31,12 +31,22 @@ class StandIn extends EventEmitter implements DriverClient {
   }
 
   #queue: Promise<unknown> = Promise.resolve();
+  /** Queries asked for and not yet answered, and the most there were at once. */
+  inFlight = 0;
+  mostInFlight = 0;
 
-  /** One statement at a time, in the order asked, as on a connection. */
+  /**
+   * One statement at a time, in the order asked, as on a connection: the driver queues a query
+   * asked for while another runs, which it deprecates. `mostInFlight` shows whether it was asked.
+   */
   query(q: string | pg.QueryConfig): Promise<unknown> {
+    this.inFlight++;
+    this.mostInFlight = Math.max(this.mostInFlight, this.inFlight);
     const answered = this.#queue.then(() => this.#answer(q));
     this.#queue = answered.catch(() => {});
-    return answered;
+    return answered.finally(() => {
+      this.inFlight--;
+    });
   }
 
   async #answer(q: string | pg.QueryConfig): Promise<unknown> {
@@ -205,6 +215,79 @@ describe("a server that ends the session with an error", () => {
     expect((e as PostgresStoreError).code).toBe("query_failed");
     client.script = () => undefined;
     expect(await codeOf(store.write(async () => {}))).toBe("no error");
+  });
+});
+
+describe("statements on one connection, one at a time", () => {
+  /** A connection over a stand-in client, as a store's or the control database's. */
+  async function connected(): Promise<{ conn: Connection; client: StandIn }> {
+    const client = new StandIn();
+    const conn = await Connection.connect(CELLS.cells.here, "tenant_a", () => client);
+    client.sent.length = 0;
+    client.mostInFlight = 0;
+    return { conn, client };
+  }
+
+  it("statements a transaction asks for at once go to the driver one at a time, and answer in order", async () => {
+    const { store, client } = await opened();
+    client.mostInFlight = 0;
+    client.script = async (sql) => {
+      const m = /^SELECT (\d+) AS i$/.exec(sql);
+      if (m === null) return undefined;
+      // The earlier ones take longer: answers out of order would show.
+      await new Promise((r) => setTimeout(r, 25 - 5 * Number(m[1])));
+      return { rows: [{ i: Number(m[1]) }] };
+    };
+    const got = await store.read((tx) =>
+      Promise.all(
+        [0, 1, 2, 3, 4].map(async (i) => (await tx.query(`SELECT ${i} AS i`)).rows[0]?.["i"]),
+      ),
+    );
+    expect(got).toEqual([0, 1, 2, 3, 4]);
+    expect(client.mostInFlight).toBe(1);
+  });
+
+  it("a statement the database refuses does not hold up the next", async () => {
+    const { conn, client } = await connected();
+    client.script = (sql) =>
+      sql.startsWith("SELECT 1 / 0")
+        ? serverError("ERROR", "22012", "division by zero")
+        : undefined;
+    const [a, b, c] = await Promise.allSettled([
+      conn.run("SELECT 1"),
+      conn.run("SELECT 1 / 0"),
+      conn.run("SELECT 2"),
+    ]);
+    expect([a.status, b.status, c.status]).toEqual(["fulfilled", "rejected", "fulfilled"]);
+    expect(client.sent).toEqual(["SELECT 1", "SELECT 1 /", "SELECT 2"]);
+    expect(client.mostInFlight).toBe(1);
+    await conn.end();
+  });
+
+  it("statements still waiting when the connection ends are not sent: they throw Gone", async () => {
+    const { conn, client } = await connected();
+    let answer = () => {};
+    client.script = (sql) =>
+      sql === "SELECT 1"
+        ? new Promise<undefined>((r) => {
+            answer = () => r(undefined);
+          })
+        : undefined;
+    const first = conn.run("SELECT 1");
+    const waiting = [conn.run("SELECT 2"), conn.run("SELECT 3")];
+    await new Promise((r) => setTimeout(r, 10));
+    await conn.end();
+    answer();
+    await first.catch(() => {});
+    for (const w of waiting) {
+      const e = await w.then(
+        () => undefined,
+        (x: unknown) => x,
+      );
+      expect(e).toBeInstanceOf(Gone);
+      expect((e as Gone).sent).toBe(false);
+    }
+    expect(client.sent).toEqual(["SELECT 1"]);
   });
 });
 

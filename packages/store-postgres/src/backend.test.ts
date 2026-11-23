@@ -723,6 +723,29 @@ describe.skipIf(cell === undefined)("against a server", () => {
     );
 
     it(
+      "statements a transaction asks for at once run one after another, and answer in order",
+      async () => {
+        await withStore(pg.name(), async (s) => {
+          // The earlier ones take longer: answers out of order would show.
+          const got = await s.read((tx) =>
+            Promise.all(
+              [0, 1, 2, 3, 4].map(
+                async (i) =>
+                  (
+                    await tx.query<{ i: number }>(
+                      `SELECT ${i}::int4 AS i FROM pg_sleep(${(4 - i) * 0.02})`,
+                    )
+                  ).rows[0]?.i,
+              ),
+            ),
+          );
+          expect(got).toEqual([0, 1, 2, 3, 4]);
+        });
+      },
+      T,
+    );
+
+    it(
       "purgeResidue and snapshot are not in this version, as on PGlite",
       async () => {
         await withStore(pg.name(), async (s) => {

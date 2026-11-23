@@ -99,6 +99,8 @@ interface Ending {
 export class Connection {
   readonly #client: DriverClient;
   #gone: Ending | undefined;
+  /** The last statement asked for: the next one is sent once it has settled. */
+  #tail: Promise<unknown> = Promise.resolve();
 
   private constructor(client: DriverClient) {
     this.#client = client;
@@ -159,8 +161,19 @@ export class Connection {
    * runs a query; without, a script by the simple protocol, and the last statement's result.
    * Throws `Refused` when the database refuses it and goes on, `Gone` when the connection is gone
    * already (nothing is sent) or goes away under it.
+   *
+   * One statement at a time: one asked for while another runs is sent once that one has settled,
+   * whatever it gave, so the driver never gets a query while it is executing one (which it queues
+   * itself only as a deprecated behaviour). One still waiting when the connection ends is not sent:
+   * it throws `Gone`.
    */
-  async run(sql: string, params?: readonly SqlValue[]): Promise<Result> {
+  run(sql: string, params?: readonly SqlValue[]): Promise<Result> {
+    const r = this.#tail.then(() => this.#runNow(sql, params));
+    this.#tail = r.catch(() => {});
+    return r;
+  }
+
+  async #runNow(sql: string, params: readonly SqlValue[] | undefined): Promise<Result> {
     if (this.#gone) {
       throw new Gone(this.#gone.message, this.#gone.sqlState, this.#gone.cause, false);
     }
