@@ -22,8 +22,13 @@
 // builds empty; on a table written it is `not_in_this_version` (`table_written`). A `migrate` and
 // an expression `backfill` are `not_in_this_version` on any table. Any other difference between the
 // draft and the current version is `not_implemented` with the change's code as `what`: it is
-// classified by what it is, never taken for a change that needs nothing. Not here either: a
-// derived table in the draft, a time zone change, the time type and keys of a table.
+// classified by what it is, never taken for a change that needs nothing. A table's time type,
+// granularity and entity key change on a table never written only, as metadata, the table built
+// anew and empty whatever its physical shape; on a table written, `not_in_this_version`
+// (`table_written`); with a derived rule reading the table, `not_in_this_version`
+// (`not_implemented`: the rule would be compiled again). A table no longer a state table, or made
+// one, that a table the draft does not list references is `still_referenced`. Not here either: a
+// derived table in the draft, a time zone change, the time field, the external key.
 //
 // Errors, in this order so the most telling one wins: a key v1 does not support, something not
 // compiled that the draft's form already shows (a derived table, `migrate`, an expression
@@ -785,6 +790,27 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     if (by.length > 0)
       findings.push({ path: `drop_tables/${i}`, code: "still_referenced", referenced_by: by });
   }
+  // A table made a state table, or no longer one, that a table the draft does not list references
+  // (07 «依赖方»): its `ref.target` (`entity` on a state table, `row` otherwise) no longer matches,
+  // and an unlisted table's rules are not checked again above. A listed one is checked as the
+  // draft writes it.
+  for (const m of matches) {
+    const c = m.current;
+    if (c === undefined || c.kind !== "base") continue;
+    const state = m.doc.time.type === "state";
+    if ((c.time.type === "state") === state) continue;
+    const by: string[] = [];
+    for (const r of current.tables) {
+      if (dropped.has(r.id) || r.kind !== "base" || bySub.has(r.id)) continue;
+      for (const f of r.fields) {
+        const ref = (f as { ref?: { table: string; target: "row" | "entity" } }).ref;
+        if (ref !== undefined && ref.table === c.id && (ref.target === "entity") !== state)
+          by.push(`${r.name}.${f.name}`);
+      }
+    }
+    if (by.length > 0)
+      findings.push({ path: `${m.doc.path}/time`, code: "still_referenced", referenced_by: by });
+  }
   // A field to drop that the change keeps still using (07 «删除有依赖的对象»; 04-contract
   // «schema_draft» still_referenced): its own table's time field and keys as the draft writes them,
   // named by their positions in it, then the derived tables still reading it, by name.
@@ -860,8 +886,15 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     readByRule(table, field)
       ? fail({ code: "not_in_this_version", reason: "not_implemented", what, param })
       : undefined;
+  /** Whether a derived rule of the current version reads any field of the table. */
+  const readsTable = (table: string): boolean =>
+    current.tables.some(
+      (r) => r.kind === "derived" && r.rule.depends_on.some((d) => d.table === table),
+    );
   const notYet = (what: string, param: string): CompileChangeResult =>
     fail({ code: "not_implemented", what, param });
+  /** Tables whose time type or entity key the draft changes: their time and keys, as it writes them. */
+  const retimed: { readonly id: string; readonly doc: DocTable }[] = [];
 
   if (extras.renameTo !== undefined && extras.renameTo !== current.name) {
     record({ slot: true }, "rename_slot", "metadata", { compatible: true });
@@ -921,7 +954,13 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
       added.push({ m, j });
       rebuilt.add(c.id);
     });
-    if (s.time.type !== c.time.type) return notYet("change_time_type", `${s.path}/time`);
+    // The table's structure: its time type, granularity and entity key. Only on a table never
+    // written (07 «从未被写入的表上改结构»): metadata, marked `as_never_written`, the table built anew
+    // and empty with the switch whatever its physical shape (R446); the time and keys of the new
+    // definition are taken from the draft once the fields added have their IDs (below). On a table
+    // written: `not_in_this_version` (`table_written`).
+    const restructured: (readonly [SchemaChangeCode, string])[] = [];
+    if (s.time.type !== c.time.type) restructured.push(["change_time_type", `${s.path}/time`]);
     if (s.time.type === "event" && c.time.type === "event") {
       if (idOf.get(fold(s.time.field)) !== c.time.field)
         return notYet("change_time_field", `${s.path}/time/field`);
@@ -931,7 +970,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
       c.time.type === "state" &&
       s.time.granularity !== c.time.granularity
     )
-      return notYet("change_granularity", `${s.path}/time/granularity`);
+      restructured.push(["change_granularity", `${s.path}/time/granularity`]);
     const keyIds = (names: readonly string[] | undefined) =>
       names === undefined ? undefined : ids(names);
     const sameKey = (
@@ -939,7 +978,18 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
       b: readonly string[] | undefined,
     ) => (a === undefined || b === undefined ? a === b : same(a, b));
     if (!sameKey(keyIds(s.entity_key), c.entity_key))
-      return notYet("change_entity_key", `${s.path}/entity_key`);
+      restructured.push(["change_entity_key", `${s.path}/entity_key`]);
+    for (const [what, param] of restructured) {
+      if (!neverWritten)
+        return fail({ code: "not_in_this_version", reason: "table_written", what, param });
+      // A derived rule reading the table would be compiled again against its new structure, which
+      // comes with changes to derived tables (07 «依赖方»): not in this version.
+      if (readsTable(c.id))
+        return fail({ code: "not_in_this_version", reason: "not_implemented", what, param });
+      asNeverWritten(tid, what);
+      rebuilt.add(c.id);
+    }
+    if (restructured.length > 0) retimed.push({ id: c.id, doc: s });
     if (!sameKey(keyIds(s.external_key), c.external_key)) {
       return notYet(
         c.external_key === undefined
@@ -1347,6 +1397,26 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     }
     const t = patched.get(c.id) as CompiledBaseTable;
     patched.set(c.id, { ...t, fields: [...t.fields, cf as unknown as CompiledBaseField] });
+  }
+  // The time and entity key of a table restructured, as the draft writes them, by the IDs its
+  // fields have now (fields it adds included). The compilation rules held them already: an event
+  // table's time field exists and is required, an entity key only on a state table.
+  for (const { id, doc: s } of retimed) {
+    const t = patched.get(id) as CompiledBaseTable;
+    const idOf = new Map(t.fields.map((f) => [fold(f.name), f.id]));
+    const ref = (n: string) => idOf.get(fold(n)) as FieldId;
+    const next: Record<string, unknown> = {
+      ...t,
+      time:
+        s.time.type === "event"
+          ? { type: "event", field: ref(s.time.field) }
+          : s.time.type === "state"
+            ? { type: "state", granularity: s.time.granularity }
+            : { type: "none" },
+    };
+    if (s.entity_key !== undefined) next["entity_key"] = s.entity_key.map(ref);
+    else delete next["entity_key"];
+    patched.set(id, next as unknown as CompiledBaseTable);
   }
   if (late.length > 0)
     return fail({

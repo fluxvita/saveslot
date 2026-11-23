@@ -287,7 +287,9 @@ export async function draftChangeInTx(
           current_sv: e.current_sv,
         });
       default:
-        throw new SchemaDraftError("internal", `${e.what} is not implemented`, {
+        // A change of the first version this build does not compile yet: not in this version
+        // (07 «改动分类» 第一版), never an internal error.
+        throw new SchemaDraftError("not_in_this_version", `${e.what} is not in this version`, {
           reason: "not_implemented",
           param: e.param,
         });

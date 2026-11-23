@@ -48,6 +48,13 @@ export interface NormalizeWriteInput {
   /** What changed incompatibly since a version: a request at that version may not write it. */
   readonly changedSince: (sv: number) => ChangedFields;
   /**
+   * The request's version by fallback (04-contract §2), when it gives no `sv` and the caller found
+   * one before normalizing. Only for a table changed as a whole since (`restructure_unused`): an op
+   * on it is refused before its shape is read, as one with that `sv` given is. Everything else the
+   * fallback decides is the caller's, after normalizing.
+   */
+  readonly fallbackSv?: number;
+  /**
    * The slots in the caller's range with their tables in range (04-contract «名字只在可见范围内
    * 解析»): a table named in another slot is `cross_slot` only when that slot and table are in
    * range, `unknown_table` otherwise. Left out, no range is known: a table named in another slot

@@ -1202,6 +1202,11 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
     knownSv,
     tableVersions,
     changedSince,
+    // By fallback, looked up above: a table changed as a whole since is refused in normalizing.
+    ...(() => {
+      const f = explicitSv === undefined ? svFallbacks.get(slot.slot) : undefined;
+      return f !== undefined && "found" in f ? { fallbackSv: f.found } : {};
+    })(),
   });
   if (!normalized.ok) throw requestFailure(normalized.error);
   const req = normalized.request;

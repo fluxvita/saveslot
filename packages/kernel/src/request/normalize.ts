@@ -602,8 +602,13 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
   const tables = tablesOf(input);
   const zone = input.compiled.timezone;
   const warnings: WriteWarning[] = [];
+  // Tables changed as a whole since the request's version, given or by fallback (07 «带旧 sv 的
+  // 写入»): an op on one is refused as it is reached, before its shape is read against a structure
+  // the caller did not write it for. Ops before it are read first (document order).
+  const asOf = sv ?? input.fallbackSv;
+  const since = asOf !== undefined && asOf < input.currentSv ? input.changedSince(asOf) : undefined;
   const pending = rawOps.map((o, i) =>
-    readOp(o, i, tables, input, segments.length, zone, warnings, evidenceBytes),
+    readOp(o, i, tables, input, segments.length, zone, warnings, evidenceBytes, since),
   );
   // The request's evidence, its own and every op's, against one set of limits.
   checkEvidenceTotal(
@@ -836,6 +841,7 @@ function readOp(
   zone: string,
   warnings: WriteWarning[],
   evidenceBytes: { n: number },
+  since: ChangedFields | undefined,
 ): PendingOp {
   const at = `ops/${i}`;
   if (!isObj(o)) return invalid("malformed", at);
@@ -843,6 +849,14 @@ function readOp(
   for (const k of OP_NOT_YET)
     if (has(o, k) && !(k === "external_key" && externalKeyTaken)) notYet(`${at}/${k}`);
   const table = baseTable(get(o, "table"), `${at}/table`, tables, input.compiled.tables);
+  const whole = since?.get(`${table.id}/*`);
+  if (whole !== undefined)
+    refuse({
+      code: "schema_incompatible",
+      param: `${at}/table`,
+      current_sv: input.currentSv,
+      changed_fields: [{ field: "*", change: whole }],
+    });
   const byName = fieldsByName(table);
   const state = table.time.type === "state";
 

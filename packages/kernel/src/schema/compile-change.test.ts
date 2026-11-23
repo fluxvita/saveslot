@@ -1049,6 +1049,243 @@ describe("on a table never written: a type or dimension changed compiles as meta
   });
 });
 
+describe("on a table never written: its time type, granularity and entity key (07 «从未被写入的表上改结构»)", () => {
+  const byName = (name: string) => v1().tables.find((t) => t.name === name) as CompiledBaseTable;
+  /** The record of a change compiled as on a table never written, `auto` as given. */
+  const restructured = (target: ChangeTarget, change: string, auto = false) => ({
+    target,
+    change,
+    class: "metadata",
+    compatible_with_old_writes: false,
+    destructive: false,
+    auto,
+    as_never_written: true,
+  });
+
+  it("the time type: none made state with an entity key, built anew and empty", () => {
+    const id = byName("settings").id;
+    const draft = listing(["settings"], (d) => {
+      d.tables[0].time = { type: "state", granularity: "date" };
+      d.tables[0].entity_key = ["key"];
+    });
+    const r = ok(run(draft, { neverWritten: () => true }));
+    expect(r.changes).toEqual([
+      restructured({ table: id }, "change_time_type"),
+      restructured({ table: id }, "change_entity_key"),
+    ]);
+    expect(r.outcome).toBe("pending");
+    const t = table(r, "settings") as CompiledBaseTable;
+    expect(t.time).toEqual({ type: "state", granularity: "date" });
+    expect(t.entity_key).toEqual([byName("settings").fields[0]?.id]);
+    expect(t.physical).toEqual({ table: `t_${id}_v2` });
+    // Nobody else uses it, and the policy has restructure_unused: applied at once.
+    const auto = ok(run(draft, { neverWritten: () => true, unused: () => true }));
+    expect(auto.outcome).toBe("applied");
+    expect(auto.changes.every((c) => c.auto)).toBe(true);
+    // Without restructure_unused in the policy: waits.
+    const strict = ok(
+      run(draft, {
+        neverWritten: () => true,
+        unused: () => true,
+        autoApply: DEFAULT_SLOT_POLICY.auto_apply.filter((c) => c !== "restructure_unused"),
+      }),
+    );
+    expect(strict.outcome).toBe("pending");
+    // On a table written: not in this version, named.
+    expect(err(run(draft, { neverWritten: (t) => t !== id }))).toEqual({
+      code: "not_in_this_version",
+      reason: "table_written",
+      what: "change_time_type",
+      param: "tables/0/time",
+    });
+  });
+
+  it("the time field of an event table made of a field the same draft adds", () => {
+    const r = ok(
+      run(
+        listing(["settings"], (d) => {
+          d.tables[0].fields.push({
+            name: "day",
+            type: "date",
+            required: true,
+            description: "the day",
+            backfill: { const: "2026-01-01" },
+          });
+          d.tables[0].time = { type: "event", field: "day" };
+        }),
+        { neverWritten: () => true },
+      ),
+    );
+    expect((table(r, "settings") as CompiledBaseTable).time).toEqual({
+      type: "event",
+      field: "f12",
+    });
+    expect(codes(r)).toEqual(["change_time_type", "add_required_field"]);
+  });
+
+  it("the granularity", () => {
+    const id = byName("rooms").id;
+    const draft = listing(["rooms"], (d) => (d.tables[0].time.granularity = "date"));
+    const r = ok(run(draft, { neverWritten: () => true }));
+    expect(r.changes).toEqual([restructured({ table: id }, "change_granularity")]);
+    expect((table(r, "rooms") as CompiledBaseTable).time).toEqual({
+      type: "state",
+      granularity: "date",
+    });
+    expect(table(r, "rooms")?.physical).toEqual({ table: `t_${id}_v2` });
+    expect(err(run(draft))).toEqual({
+      code: "not_in_this_version",
+      reason: "table_written",
+      what: "change_granularity",
+      param: "tables/0/time/granularity",
+    });
+  });
+
+  it("the entity key: taken away, changed; a new physical table though its shape is the same (R446)", () => {
+    const accounts = byName("accounts");
+    const gone = ok(
+      run(
+        listing(["accounts"], (d) => delete d.tables[0].entity_key),
+        { neverWritten: () => true },
+      ),
+    );
+    expect(gone.changes).toEqual([restructured({ table: accounts.id }, "change_entity_key")]);
+    expect(table(gone, "accounts")).not.toHaveProperty("entity_key");
+    expect(table(gone, "accounts")?.physical).toEqual({ table: `t_${accounts.id}_v2` });
+    const both = listing(["accounts"], (d) => {
+      d.tables[0].fields[1].required = true;
+      d.tables[0].fields[1].backfill = { const: 0 };
+      d.tables[0].entity_key = ["name", "limit"];
+    });
+    const r = ok(run(both, { neverWritten: () => true }));
+    expect(codes(r)).toEqual(["change_entity_key", "tighten_constraint"]);
+    expect((table(r, "accounts") as CompiledBaseTable).entity_key).toEqual(
+      accounts.fields.map((f) => f.id),
+    );
+    expect(err(run(both))).toMatchObject({
+      code: "not_in_this_version",
+      reason: "table_written",
+      what: "change_entity_key",
+    });
+  });
+
+  it("the decision's example: an event table made a state table, its time field dropped", () => {
+    const plan: Doc = {
+      slot: "ledger",
+      base_version: null,
+      timezone: "Asia/Shanghai",
+      tables: [
+        {
+          name: "budgets",
+          kind: "base",
+          description: "monthly budgets",
+          time: { type: "event", field: "date" },
+          fields: [
+            { name: "date", type: "date", required: true, description: "the day" },
+            { name: "category", type: "text", required: true, description: "the kind" },
+            {
+              name: "amount",
+              type: "quantity",
+              unit: "CNY",
+              required: true,
+              min: 0,
+              description: "how much",
+            },
+          ],
+        },
+      ],
+    };
+    const start = compile(plan);
+    if (!start.ok) throw new Error(JSON.stringify(start.error));
+    const x = filled(plan, start.compiled);
+    x.tables[0].time = { type: "state", granularity: "date" };
+    x.tables[0].entity_key = ["category"];
+    x.tables[0].fields.splice(0, 1);
+    x.tables[0].drop_fields = ["date"];
+    const r = ok(run(x, { current: start.compiled, neverWritten: () => true, unused: () => true }));
+    expect(r.changes).toEqual([
+      restructured({ table: "t1" }, "change_time_type", true),
+      restructured({ table: "t1" }, "change_entity_key", true),
+      restructured({ table: "t1", field: "f1" }, "drop_field", true),
+    ]);
+    expect(r.outcome).toBe("applied");
+    const t = r.compiled.tables[0] as CompiledBaseTable;
+    expect(t.time).toEqual({ type: "state", granularity: "date" });
+    expect(t.entity_key).toEqual(["f2"]);
+    expect(t.fields.map((f) => f.id)).toEqual(["f2", "f3"]);
+    expect(t.physical).toEqual({ table: "t_t1_v2" });
+  });
+
+  it("a table an unlisted table references, made no state table: still referenced (fixed case)", () => {
+    const draft = listing(["accounts"], (d) => {
+      d.tables[0].time = { type: "none" };
+      delete d.tables[0].entity_key;
+    });
+    const r = run(draft, { neverWritten: () => true });
+    expect(err(r)).toEqual({
+      code: "validation_failed",
+      details: [
+        {
+          path: "tables/0/time",
+          code: "still_referenced",
+          referenced_by: ["expenses.account"],
+        },
+      ],
+    });
+    // Judged before what the classification finds: the same on a table written.
+    expect(detailsOf(run(draft))).toEqual(["tables/0/time still_referenced"]);
+    // The referrer listed as it is: its own reference is checked, as the draft writes it.
+    const listed = listing(["expenses", "accounts"], (d) => {
+      d.tables[1].time = { type: "none" };
+      delete d.tables[1].entity_key;
+    });
+    expect(detailsOf(run(listed, { neverWritten: () => true }))).toEqual([
+      "tables/0/fields/8/ref/target key_not_applicable",
+    ]);
+    // A state table kept a state table: the references still match.
+    expect(
+      codes(
+        run(
+          listing(["accounts"], (d) => (d.tables[0].time.granularity = "instant")),
+          { neverWritten: () => true },
+        ),
+      ),
+    ).toEqual(["change_granularity"]);
+  });
+
+  describe("a derived rule reading the table", () => {
+    beforeAll(() => loadRsql());
+    it("is not compiled again in this version: not in this version", () => {
+      const SQL = "SELECT key AS k, count(*) AS n FROM settings GROUP BY key";
+      const d = ledger();
+      d.tables.push({
+        name: "totals",
+        kind: "derived",
+        description: "how many settings",
+        rule: { sql: SQL, time_dependency: "none" },
+        fields: [
+          { name: "k", description: "the key" },
+          { name: "n", description: "how many" },
+        ],
+      });
+      const c = compile(d);
+      if (!c.ok) throw new Error(JSON.stringify(c.error));
+      const doc = documentOf(c.compiled, 1, () => SQL);
+      doc["tables"] = (doc["tables"] as Doc[]).filter((t) => t.name === "settings");
+      (doc["tables"] as Doc[])[0].time = { type: "state", granularity: "date" };
+      const o = { current: c.compiled, ruleTexts: new Map([["t5", SQL]]) };
+      expect(err(run(doc, { ...o, neverWritten: () => true }))).toEqual({
+        code: "not_in_this_version",
+        reason: "not_implemented",
+        what: "change_time_type",
+        param: "tables/0/time",
+      });
+      // Written: that comes first.
+      expect(err(run(doc, o))).toMatchObject({ reason: "table_written" });
+    });
+  });
+});
+
 describe("what is not compiled yet is named by its change code", () => {
   const what = (r: CompileChangeResult) => {
     const e = err(r);
@@ -1064,7 +1301,6 @@ describe("what is not compiled yet is named by its change code", () => {
       "change_ref",
       "tables/0/fields/8/ref",
     ],
-    ["the time type", (e: Doc) => (e.time = { type: "none" }), "change_time_type", "tables/0/time"],
     [
       "the time field",
       (e: Doc) => {
@@ -1113,22 +1349,6 @@ describe("what is not compiled yet is named by its change code", () => {
       "tables/0/fields/3/unit",
       "table_written",
     ]);
-  });
-
-  it("an entity key changed, a granularity changed", () => {
-    expect(
-      what(
-        run(
-          listing(["accounts"], (d) => {
-            d.tables[0].fields[1].required = true;
-            d.tables[0].entity_key = ["limit"];
-          }),
-        ),
-      ),
-    ).toEqual(["change_entity_key", "tables/0/entity_key"]);
-    expect(
-      what(run(listing(["accounts"], (d) => (d.tables[0].time.granularity = "instant")))),
-    ).toEqual(["change_granularity", "tables/0/time/granularity"]);
   });
 
   it("a time zone, a derived table", () => {

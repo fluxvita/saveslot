@@ -36,6 +36,22 @@ describe("changedSinceOf", () => {
     expect(entries([v(2, marked("tighten_constraint", true))], 1)).toEqual([
       ["t1/*", "tighten_constraint"],
     ]);
+    // A table restructured, a field dropped with it (07 «从未被写入的表上改结构», the decision's
+    // example): named by the first change the version records, the table's own (fixed case).
+    const own = (change: SchemaChangeCode): RecordedChange => ({
+      ...table(change, false),
+      as_never_written: true,
+    });
+    expect(
+      entries(
+        [v(2, own("change_time_type"), own("change_entity_key"), marked("drop_field", false))],
+        1,
+      ),
+    ).toEqual([["t1/*", "change_time_type"]]);
+    // A later version still wins over an earlier one.
+    expect(entries([v(2, own("change_time_type")), v(3, marked("drop_field", false))], 1)).toEqual([
+      ["t1/*", "drop_field"],
+    ]);
     // Not marked: by field and by compatibility, as before.
     expect(entries([v(2, field("change_type", false))], 1)).toEqual([["t1/f2", "change_type"]]);
     expect(entries([v(2, field("tighten_constraint", true))], 1)).toEqual([]);

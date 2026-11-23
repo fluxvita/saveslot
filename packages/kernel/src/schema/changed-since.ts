@@ -29,12 +29,16 @@ export interface SwitchedVersion {
 
 /**
  * The fields and tables changed incompatibly in the versions after `sv`. When one changed so in
- * several, the latest change is the one given: it decides what the target is now.
+ * several versions, the latest version's change is the one given: it decides what the target is
+ * now. Within one version, the first change recorded for it: `changes` lists a table's own changes
+ * before its fields' (09 §5.5), so a table restructured is named by its table-level change
+ * (`change_time_type`), not by a field dropped with it.
  */
 export function changedSinceOf(versions: readonly SwitchedVersion[], sv: number): ChangedFields {
   const out = new Map<`${TableId}/${FieldId}` | `${TableId}/*`, SchemaChangeCode>();
   for (const v of [...versions].sort((a, b) => a.sv - b.sv)) {
     if (v.sv <= sv) continue;
+    const inVersion = new Set<string>();
     for (const c of v.changes) {
       const t = c.target;
       // Compiled as on a table never written (09 §5.5 `as_never_written`): the whole table, compatible
@@ -47,6 +51,8 @@ export function changedSinceOf(versions: readonly SwitchedVersion[], sv: number)
         t.field === undefined || whole
           ? (`${t.table}/*` as `${TableId}/*`)
           : (`${t.table}/${t.field}` as `${TableId}/${FieldId}`);
+      if (inVersion.has(key)) continue;
+      inVersion.add(key);
       out.set(key, c.change);
     }
   }
