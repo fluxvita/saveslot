@@ -1333,11 +1333,12 @@ describe("refreshes, round two (09-event-format §5.8 «一次请求里的事项
   );
 
   it(
-    "a row with an open flagged item: the write stops, not implemented, nothing written",
+    "a row with an open flagged item takes writes (superseding and refreshing it: write-duplicates-later.test.ts)",
     async () => {
       const a = await send({ sv: 1, ops: [{ intent: "insert", table: "rows", set: { b: "1" } }] });
       const row = rowAt(a);
-      // Flagged items come with duplicate detection: one put in place here.
+      // An open flagged item put in place here, with no entries of its own: nothing to judge it on,
+      // so the write goes through and leaves it as it is.
       await s.store.write((tx) =>
         tx.query(
           `INSERT INTO pending_items (id, type, slot_id, target_table, target_row, state, version_op)
@@ -1345,12 +1346,16 @@ describe("refreshes, round two (09-event-format §5.8 «一次请求里的事项
           [row, a.seq],
         ),
       );
-      const before = (await s.store.read(readTail))?.seq;
-      expect(await update(row, { b: "2" }, verAt(a))).toMatchObject({
-        refused: "internal",
-        reason: "not_implemented",
-      });
-      expect((await s.store.read(readTail))?.seq).toBe(before);
+      const before = (await s.store.read(readTail))?.seq as number;
+      expect(await update(row, { b: "2" }, verAt(a))).not.toHaveProperty("refused");
+      expect((await s.store.read(readTail))?.seq).toBeGreaterThan(before);
+      // The item stays open: the write reached it, and it had nothing to be judged again on.
+      const open = await s.store.read((tx) =>
+        tx.query("SELECT state FROM pending_items WHERE target_row = $1 AND type = 'flagged'", [
+          row,
+        ]),
+      );
+      expect(open.rows).toEqual([{ state: "open" }]);
     },
     T,
   );

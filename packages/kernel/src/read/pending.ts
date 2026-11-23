@@ -6,8 +6,8 @@
 // - The detail (`id`): the item's contents from its latest entries (../pending/detail.ts), its
 //   version, the decisions open to it, and how it closed. Reading an open item's detail counts as
 //   reading its version (04-contract §2 «什么算读到 item_ver»); a closed one's is given, not counted.
-// In this version the detail is of `conflict`, `awaiting_confirmation` and `schema_change` items;
-// `flagged` (P2) items are not opened yet, so their detail is not implemented; `deletion` items and
+// In this version the detail is of `conflict`, `awaiting_confirmation`, `flagged` and
+// `schema_change` items; `deletion` items and
 // migration jobs come later. The decisions are those of the item's type: which of them the
 // caller's credential may take is the service layer's to say (it filters them by scope).
 
@@ -83,6 +83,7 @@ const DECISIONS: Readonly<Record<string, readonly EventDecision[]>> = {
   conflict: ["keep_effective", "take_candidate", "take_previous"],
   awaiting_confirmation: ["confirm", "reject"],
   schema_change: ["confirm", "reject"],
+  flagged: ["keep", "revoke"],
 };
 
 export type ItemRow = {
@@ -346,7 +347,12 @@ async function detailOf(
   // Out of the visible range is as not there.
   if (x === undefined || place === undefined)
     throw new ReadError("not_found", "no such item", { reason: "item", param: "id" });
-  if (x.type !== "conflict" && x.type !== "awaiting_confirmation" && x.type !== "schema_change")
+  if (
+    x.type !== "conflict" &&
+    x.type !== "awaiting_confirmation" &&
+    x.type !== "schema_change" &&
+    x.type !== "flagged"
+  )
     throw notImplemented("id", `the detail of a ${x.type} item`);
   const e = (await itemEntries(tx, [x.id])).get(x.id) as ItemEntries;
   const closed = await closingOf(tx, x.id);
@@ -369,19 +375,26 @@ async function detailOf(
   const result =
     x.type === "schema_change"
       ? { ...common, type: "schema_change" as const, ...(await schemaChangeOf(tx, x.id)) }
-      : x.type === "conflict"
+      : x.type === "flagged"
         ? {
             ...common,
             target: { ...targetRef(x, place, n), ...targetOut(e, n) },
-            type: "conflict" as const,
-            ...(await conflictOf(tx, e, n, place.table, versionOp)),
+            type: "flagged" as const,
+            ...(await flaggedOf(tx, e, n, place, versionOp)),
           }
-        : {
-            ...common,
-            target: { ...targetRef(x, place, n), ...targetOut(e, n) },
-            type: "awaiting_confirmation" as const,
-            ...(await awaitingOf(tx, e, n, place.table, versionOp)),
-          };
+        : x.type === "conflict"
+          ? {
+              ...common,
+              target: { ...targetRef(x, place, n), ...targetOut(e, n) },
+              type: "conflict" as const,
+              ...(await conflictOf(tx, e, n, place.table, versionOp)),
+            }
+          : {
+              ...common,
+              target: { ...targetRef(x, place, n), ...targetOut(e, n) },
+              type: "awaiting_confirmation" as const,
+              ...(await awaitingOf(tx, e, n, place.table, versionOp)),
+            };
   const entry: ReadEntry = {
     ...base,
     pos: latest as never,
@@ -437,6 +450,44 @@ const pieceOut = (n: N, p: Piece) => ({
   ...n.interval({ from: p.from, to: p.to }),
   values: p.values === null ? null : valuesOut(p.values),
 });
+
+/**
+ * A flagged item's detail (04-contract-types §4.8 `FlaggedDetail`): the rows it matched, latest
+ * written first, as its entries give them; the `duplicate_keys` group that matched, from its
+ * write's `duplicate` block (none left once a deletion cleared it); the flagged row's values on
+ * those fields as of the item's version.
+ */
+async function flaggedOf(
+  tx: ReadTx,
+  e: ItemEntries,
+  n: N,
+  place: { slot: VisibleSlot; table: Table },
+  versionOp: number,
+) {
+  const t = place.table as CompiledBaseTable;
+  const r =
+    e.originEvent === undefined
+      ? undefined
+      : (
+          await tx.query<{ body: string | null }>(
+            "SELECT body FROM content WHERE seq = $1 AND path = 'duplicate'",
+            [e.originEvent],
+          )
+        ).rows[0]?.body;
+  const keys: string[] = typeof r === "string" ? (JSON.parse(r) as { keys: string[] }).keys : [];
+  const row =
+    keys.length > 0
+      ? rowOf(t, await rowCellsAsOf(tx, t, e.row as string, versionOp), keys)
+      : undefined;
+  return {
+    related: e.matched.map((b) => ({
+      table: `${place.slot.name}.${t.name}`,
+      row: b["row"] as RowId,
+    })),
+    keys: keys.map((f) => n.field(f)),
+    ...(row?.values !== undefined ? { matched_values: valuesOut(row.values) } : {}),
+  };
+}
 
 async function conflictOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versionOp: number) {
   const candidates = candidatesOut(e, n);

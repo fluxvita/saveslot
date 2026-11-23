@@ -43,6 +43,8 @@ export interface ItemEntries {
   readonly impact: readonly Blocks[];
   /** The candidates in effect, by index. */
   readonly candidates: ReadonlyMap<number, Blocks>;
+  /** A flagged item's matched rows (`matched/<k>`), as last given whole (09 §5.8). */
+  readonly matched: readonly Blocks[];
   /** The operation and actor of each event the entries name. */
   readonly opOfEvent: ReadonlyMap<number, number>;
   readonly actorOfOp: ReadonlyMap<number, string>;
@@ -117,6 +119,7 @@ export async function itemEntries(
         proposed: [],
         impact: [],
         candidates: new Map(),
+        matched: [],
         opOfEvent: new Map(),
         actorOfOp: new Map(),
       };
@@ -139,6 +142,8 @@ export async function itemEntries(
       cur.scope = (sv?.spans ?? []).map(spanIn);
     }
     if (typeof t["merge_base_op"] === "number") cur.mergeBase = t["merge_base_op"];
+    // Matched rows: given whole when given (09 §5.8 `item.refreshed`), kept when not.
+    if (group("matched").length > 0) cur.matched = group("matched");
     // Candidates: a refresh gives some again by index, keeping the others; dropped ones go.
     for (const [p, b] of Object.entries(e.blocks)) {
       const m = /^candidates\/(\d+)$/.exec(p);

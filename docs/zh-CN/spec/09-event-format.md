@@ -1161,6 +1161,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 - 一次请求里，每个事项至多产生一组内容。这次请求新开的事项，`item.created`（以及请求里后来的 op 并入它的 `item.merged`）的条目按请求结束时的状态；已有的事项被这次请求里任何一个 op 改到，只在全部 op 的事件之后算一次刷新或取代，条目同样按请求结束时的状态，`by_event` 是最后一个改到它的 `write.base`。
 - 是否"读过"按请求开始时事项的版本判。这次请求并入过的事项一律按没读过，与并入、改到的先后无关：不取代（取代会把这次请求刚并进去的候选一起丢掉），被改到时刷新，事件里记 `writer_had_read: false`。
 - 被改到的事项，`by_event` 逐个 op 判：比较每个 op 之前与之后事项单元上的生效值，最后一个确实改了的 op 的 `write.base`；改了又改回的，按最后那次算。
+- 这次请求新开的 `flagged` 事项，到请求结束时已没有任何列出的行命中（或被标记的行已被撤销）的，不开：`matched` 至少一行，按结束时的状态它没有条目。写入里的 `duplicate` 块照写，它是写入时的判定。
 - 这次请求并入了、又没有哪个 op 改到的事项，并入带来的内容变化由 `item.merged` 自己给出（它带 `current`），不另出 `item.refreshed`，回执只标 `merged`。
 - 内容不能悄悄过期：一次请求结束时，对它写过的每一行上没被改到的未决事项重算内容（条目连同 `op`、`deps`，以及影响），与现有内容不同就刷新（`cause` 为 `entries_changed`），只刷新、不取代，不看读没读过。例如同一段被第二次撤销，"存在"事项的条目改指后一次撤销；字段单元上的同值佐证，值没变、不算改到，但影响里多了一次写入。
 - 回执的 `pending[]` 里每个事项只出现一次，带上适用的标记（`merged`、`refreshed`；这次请求新开的事项给 `item_ver`，不标 `merged`）；被取代的只出现在 `superseded[]`。
@@ -1221,13 +1222,14 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 |---|---|---|
 | `target` | 元 | `{"item": "pi_…", "by_event": <seq>, "writer_had_read": <布尔>, "cause": "target_overwritten" \| "references_changed" \| "entries_deleted" \| "entries_restored" \| "matched_changed" \| "entries_changed", "dropped_candidates": [<下标>], "restored_candidates": [<下标>], "merge_base_op": <操作号>}` |
 | `current/<k>`、`previous/<k>`、`impact/<k>`、`proposed/<k>`、`scope_valid` | 数 | 刷新后的结果，整组取代之前的同名条目。**这几组每次都整组给出，零块即空组**；没有"没给出即不变"的读法 |
-| `matched/<k>` | 数 | `flagged` 事项仍命中的那几行，形状与 `item.created` 里的相同（带 `deps`）。**给出时整组取代之前的 `matched`**，从 0 起重新编号；没给出时不变。只随三种成因出现：`matched_changed`（必有，且只有这一组：一部分行不再命中时给出其余的；全都不再命中时事项被取代，不刷新）、`entries_deleted`（条目块被一次删除清掉而行仍命中时整组重新给出）、`entries_restored` |
+| `matched/<k>` | 数 | `flagged` 事项仍命中的那几行，形状与 `item.created` 里的相同（带 `deps`）。**给出时整组取代之前的 `matched`**，从 0 起重新编号；没给出时不变。只随四种成因出现：`matched_changed`（必有，且只有这一组：一部分行不再命中时给出其余的，保持原来的先后；全都不再命中时事项被取代，不刷新）、`entries_changed`（行都仍命中，但有的行改由别的贡献给出命中的值：整组重新给出，`deps` 指向现在给出的贡献，先后不变）、`entries_deleted`（条目块被一次删除清掉而行仍命中时整组重新给出）、`entries_restored` |
 | `candidates/<k>` | 数 | 重新给出的候选条目，形状与 `item.created` 里的相同（带 `deps`）。**沿用原下标 `k`，只取代同下标的那一条**，没给出的保持原样。用在两处：条目块被一次删除清掉而条目仍在（例如候选的所见区间被重新解析，或候选少了一项而其余项仍在，候选仍是候选）；撤回删除时放回被去掉的候选 |
 
 - `cause` 为 `entries_changed`：一次请求结束时，事项没被改到，但重算出的内容与现有不同（"一次请求里的事项内容"）；`by_event` 是这次请求在这一行上最后一条 `write.base`；没有 `writer_had_read`。
 - `writer_had_read`：写入方当时是否读过这个事项的当前版本。写入时查一次读取审计，把结果记在这里，重放不重算。`cause` 为 `target_overwritten` 时恒为 `false`（读过就是取代，不是刷新）。
 - `cause` 为 `entries_deleted`：隐私删除清掉了事项的部分条目而事项仍未决（例如去掉了一个候选），`dropped_candidates` 列出被去掉的候选下标；同一次删除里另有候选回到这个事项时，`restored_candidates` 一并列在这一条里（一次操作里每个事项至多一条 `item.refreshed`，§4.2）；此时没有 `by_event`。`by_event` 是改到事项目标的那条 `write.base` 事件（`references_changed` 时是引用方的那条）。
-- `cause` 为 `matched_changed`：`flagged` 事项比中的两行里任何一行（被标记的那一行，或被比中的另一行）被撤销或改动，事项仍未决；`by_event` 是那条 `write.base`。`flagged` 事项不看读没读过，没有 `writer_had_read`。
+- `cause` 为 `matched_changed`：`flagged` 事项比中的两行里任何一行（被标记的那一行，或被比中的另一行）被撤销或改动，有的行不再命中，事项仍未决；`by_event` 见 `item.superseded` 的同一原因。`cause` 为 `entries_changed` 而事项是 `flagged` 的：列出的行都仍命中，只是给出命中的值的贡献变了（例如两行在同一个请求里都改成同一个新值）；不重新给出的话，以后删到新贡献的来源时条目块不在位置列表里（§3.5）。`flagged` 事项不看读没读过，没有 `writer_had_read`。
+- `flagged` 事项"命中"与写入时同一个定义：几组 `duplicate_keys` 里任一组命中即命中。被标记的行与列出的某一行在**任何一组**上都不再命中，这一行才算不再命中；`matched/<k>` 的 `deps` 取它现在命中的第一组（标记时命中的那一组在先）。写入的 `duplicate.keys` 仍是标记时命中的那一组，不随之后的写入改。
 - `cause` 为 `entries_restored`：撤回一次删除之后，或之后的删除让当初被去掉的候选回到仍未决的原事项（因先前的删除才生效、本次回到原来的种类），事项当初被去掉的候选放回来。`restored_candidates` 只列**整条被去掉过**的候选的下标（与 `dropped_candidates` 对称）；候选当初只少了一部分项、撤回后那些项回来的，下标不进 `restored_candidates`，本事件用同一下标重新给出含全部项的 `candidates/<k>`。本事件的 `candidates/<k>` 按撤回或删除之后的状态重新给出它们（以本事件为准，不读回原来的块）；此时没有 `by_event`。
 - **第一版不出现这一种**：宽限期内受这项删除影响的行上不能解决事项（data-model「删除 · 撤回与宽限期」），被去掉候选的事项撤回时要么仍未决（走上一条），要么已在宽限期内被取代（不放回）。格式留着，供放开那条限制时用：撤回删除时事项**已经解决**的，不产生 `item.refreshed`，原事项的解决不动。放回来的候选按撤回时的当前状态重新判定，由撤回事件逐项重述：与当前生效值同值的项，按普通规则成为 `dropped`（没指证据）或 `corroborated`（指了证据）；否则仍是 `candidate`。只要还有一项是 `candidate`，随后一条 `item.created`（成因 `restored_candidate`）为这个候选另开事项，新事项里它的 `items` 只含仍是候选的那几项。回执的 `rejudged` 按候选给一条：还有项是候选记 `reopened`；否则有项成了佐证记 `corroborated`，全部成了 `dropped` 记 `dropped`。
 - `target` 各键的出现条件：`dropped_candidates` 只随 `entries_deleted`，`restored_candidates` 随 `entries_restored`，或随 `entries_deleted`（同一次删除里既有候选离开、又有候选回来时：有候选离开就取 `entries_deleted`，只有候选回来才取 `entries_restored`），出现时非空；`by_event` 在 `entries_deleted`、`entries_restored` 时没有，其余成因必有；`writer_had_read` 在 `target_overwritten`（恒为 `false`）与 `references_changed` 时必有，其余成因没有；`merge_base_op` 对每种成因都可缺，给出时是刷新后的合并基。
@@ -1242,7 +1244,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 |---|---|---|
 | `target` | 元 | `{"item": "pi_…", "reason": <取代原因，§6.6>, "by_event": <seq>, "writer_had_read": <布尔>}` |
 
-`by_event` 是取代它的事件的 `seq`：`overwritten` 时是那条 `write.base`，`schema_switched` 时是 `schema.switched`，`deleted` / `deletion_cancelled` 时是删除确认或撤回的头事件，`draft_replaced` 时是 `schema.superseded`。`matched_changed` 时是改到比中的两行之一的那条 `write.base`。`nothing_to_revert` 时是让它没事可做的那条 `write.base`（改到它的那条，或这次请求在这一行上最后一条）。`writer_had_read` 只在 `reason` 为 `overwritten` 时有；`flagged` 事项不带它。
+`by_event` 是取代它的事件的 `seq`：`overwritten` 时是那条 `write.base`，`schema_switched` 时是 `schema.switched`，`deleted` / `deletion_cancelled` 时是删除确认或撤回的头事件，`draft_replaced` 时是 `schema.superseded`。`matched_changed` 时是改到比中的两行之一的那条 `write.base`：逐个 op 判，取这次操作里最后一个确实让事项要说的内容（哪些行仍命中、各由哪些贡献给出、被标记的行在不在）变了的 op 在这些行上的 `write.base`；只改了别的字段的 op 不算。`item.refreshed` 的 `matched_changed`、`entries_changed`（`flagged` 事项的）同样这样取。`nothing_to_revert` 时是让它没事可做的那条 `write.base`（改到它的那条，或这次请求在这一行上最后一条）。`writer_had_read` 只在 `reason` 为 `overwritten` 时有；`flagged` 事项不带它。
 
 `apply`：事项状态置为已被取代；撤掉对应标记；事项版本换成本操作号。
 

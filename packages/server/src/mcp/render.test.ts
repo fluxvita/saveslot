@@ -627,6 +627,27 @@ describe("what 05 §6 asks for", () => {
     expect(rule).toContain("A derived table's rule takes only sql and time_dependency");
   });
 
+  it("a flagged item's detail: the key group matched, the row's values on it, the rows it may duplicate", () => {
+    const text = renderResult("saveslot_pending", {
+      id: "pi_8VEZWJ3J7BMKMXTV",
+      type: "flagged",
+      status: "open",
+      reason: "duplicate_keys",
+      item_ver: "iv_2",
+      opened_at: "2026-11-05T00:00:00.000Z",
+      opened_by: "u_SHB4YXDGYB8V7P0REQDCX8SGT4",
+      target: { table: "food.meals", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" },
+      related: [{ table: "food.meals", row: "r_1KWKRM296X61WJ89DY5XJNVA4P" }],
+      keys: ["day", "energy"],
+      matched_values: { day: "2026-11-01" },
+      decisions: ["keep", "revoke"],
+    } as R);
+    expect(text).toContain("Duplicate keys matched:");
+    expect(text).toMatch(/day.*\+.*energy/);
+    expect(text).toContain("May duplicate");
+    expect(text).toContain("r_1KWKRM296X61WJ89DY5XJNVA4P");
+  });
+
   it("confirmation_mismatch: the item as it is now, and to ask the user again (05 §7)", () => {
     const text = renderError(
       {

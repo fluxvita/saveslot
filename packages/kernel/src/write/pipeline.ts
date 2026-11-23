@@ -15,7 +15,10 @@
 // key field given otherwise is refused (`key_field_changed`).
 //
 // Stopped as not implemented, with nothing written: a write to a table some kept derived rule reads
-// (the refresh comes with `derive`), and a row with a flagged item.
+// (the refresh comes with `derive`).
+// Duplicate keys (./duplicates.ts, ./flagged.ts): a row created and in effect is compared once and
+// may open a flagged item; at the request's end, flagged items whose rows it wrote are judged again
+// (superseded or refreshed, `matched_changed`), those it opened given its end state.
 // Pending items (01-objects «待处理事项», «不过期»; 09 §5.8 «一次请求里的事项内容»): an op's
 // conflicts join the open item of their unit whose interval meets theirs, or open one; a write of
 // high impact opens an awaiting item. Their contents are the request's end state: the item events
@@ -92,7 +95,9 @@ import type { ReadTx, Tx } from "../store/ports.ts";
 import { restoreAt, restoreHistory, restorePoint, seenOfVer } from "../store/restore-point.ts";
 import { type IntervalSet, meet, unionOf, WHOLE } from "../time/index.ts";
 import { appendWithDerived } from "./derive-step.ts";
+import { createdInEffect, duplicateBlock, duplicateOf, flaggedItem } from "./duplicates.ts";
 import { WriteError } from "./errors.ts";
+import { type OpenedFlagged, settleFlagged } from "./flagged.ts";
 import {
   type EntityKeyText,
   entitiesByKey,
@@ -281,6 +286,8 @@ export interface RowWork {
   readonly items: TrackedItem[];
   /** The last `write.base` of this request on the row. */
   lastBase?: Seq;
+  /** Each `write.base` of this request on the row, by its op's index (./flagged.ts `by_event`). */
+  bases?: { index: number; seq: Seq }[];
 }
 
 /** The entry groups of an item (09 §5.8), and those each kind of item event gives whole. */
@@ -873,8 +880,8 @@ const EXISTING_KEYS = 10;
 
 /**
  * A row or entity as a request finds it: its state rebuilt from its events, and its open items
- * with what they hold. A flagged item on it stops the request: refreshing or superseding one comes
- * with duplicate detection (`matched_changed`).
+ * with what they hold (conflicts and proposals; a flagged item on it is judged again at the
+ * request's end, ./flagged.ts).
  */
 export async function loadRow(tx: Tx, given: RowContext, param: string): Promise<RowWork> {
   // A ver of an earlier restore count in the log reads at the restore point of its write
@@ -891,12 +898,6 @@ export async function loadRow(tx: Tx, given: RowContext, param: string): Promise
   const events = await rowEvents(tx, ctx.table, id);
   const state = stateFromRecord(ctx.shape, decodeRecords(ctx, events));
   const open = await openItemsOn(tx, ctx.table, id);
-  if (open.some((x) => x.type === "flagged")) {
-    throw new WriteError("internal", "writing a row with a flagged item is not implemented", {
-      reason: "not_implemented",
-      param,
-    });
-  }
   const items = withProposals(
     state,
     trackedItems(events, new Map(open.map((x) => [x.id, x.versionOp as OpNumber]))),
@@ -1119,6 +1120,8 @@ async function writeIn(
   tx: Tx,
   input: WriteInput,
   nothing: ReadonlySet<number> | undefined,
+  /** Ops whose flagged item is not opened: none of its rows matches by the request's end. */
+  unflagged?: ReadonlySet<number>,
 ): Promise<WriteReceipt> {
   const { actor, now } = input;
   // Names resolve within what the caller can see (04-contract «名字只在可见范围内解析»): a slot,
@@ -1429,6 +1432,8 @@ async function writeIn(
   };
 
   const rows = new Map<string, RowWork>();
+  /** The flagged items this request opens, their entries settled at its end (./flagged.ts). */
+  const openedFlagged: OpenedFlagged[] = [];
   // The ref targets this request reads from the store (step 5), read once.
   const storedTargets: StoredTargets = new Map();
   const headBlocks: Record<string, JsonValue> = {};
@@ -2285,11 +2290,33 @@ async function writeIn(
     });
     Object.assign(headBlocks, enc.head);
     const ownBase = enc.base !== undefined ? (next as Seq) : undefined;
+    // Duplicate keys (04-write-and-read «疑似重复»; ./duplicates.ts): a row this op created and
+    // that is in effect is compared once. Created, not inserted: what the judgement says
+    // (`j.created`), so a row created by key (an update or a correction) is compared too.
+    const duplicate =
+      enc.base !== undefined && createdInEffect(j)
+        ? await duplicateOf(tx, {
+            table,
+            self: id as RowId,
+            state: work.state,
+            requestRows: [...rows.values()].flatMap((w) =>
+              w !== work && w.ctx.table === table.id && "row" in w.ctx.target
+                ? [{ row: w.ctx.target.row, state: w.state }]
+                : [],
+            ),
+            op,
+            index: o.index,
+          })
+        : undefined;
     if (enc.base !== undefined) {
       const baseSeq = next as Seq;
-      opEvents.push({ type: "write.base", slot: slot.slot, blocks: enc.base as never });
+      const base =
+        duplicate === undefined ? enc.base : { ...enc.base, duplicate: duplicateBlock(duplicate) };
+      opEvents.push({ type: "write.base", slot: slot.slot, blocks: base as never });
       next++;
       work.lastBase = baseSeq;
+      if (work.bases === undefined) work.bases = [];
+      work.bases.push({ index: o.index, seq: baseSeq });
       // The items it opens or joins; their entries come at the end of the request (rule: an item's
       // contents are the request's end state, 01-objects «不过期»).
       enc.items.forEach((it, n) => {
@@ -2301,6 +2328,31 @@ async function writeIn(
         opEvents.push({ type: it.type, slot: slot.slot, blocks: it.blocks as never });
         next++;
       });
+      // The row's flagged item (09 §5.8): not one of `work.items`, which are settled at the
+      // request's end as conflicts and proposals are.
+      if (duplicate !== undefined && unflagged?.has(o.index) !== true) {
+        const item = input.newId("item") as ItemId;
+        const blocks = flaggedItem(duplicate, {
+          item,
+          table: table.id,
+          row: id as RowId,
+          origin: baseSeq,
+          ruleset: RULESET,
+          policy: slot.policyVersion,
+        });
+        opEvents.push({ type: "item.created", slot: slot.slot, blocks: blocks as never });
+        next++;
+        // Its entries are the request's end state (09 §5.8): judged again at the end.
+        openedFlagged.push({
+          index: o.index,
+          item,
+          table: table.id,
+          row: id as RowId,
+          keys: duplicate.keys,
+          listed: duplicate.matched,
+          blocks,
+        });
+      }
       // The open items it reaches, settled at the end of the request.
       for (const t of work.items) {
         // Op by op: what this op changed, from just before it to just after it.
@@ -2371,7 +2423,8 @@ async function writeIn(
     // No op changed anything: the versions now are the request's end.
     return nothingReceipt(req, sv, [...(await unrecordedOps()).values()], warnings);
   }
-  if (nothing === undefined && leftNothing.size > 0) return writeIn(tx, input, leftNothing);
+  if (nothing === undefined && leftNothing.size > 0)
+    return writeIn(tx, input, leftNothing, unflagged);
   if (
     nothing !== undefined &&
     (nothing.size !== leftNothing.size || [...nothing].some((i) => !leftNothing.has(i)))
@@ -2389,6 +2442,42 @@ async function writeIn(
     restore,
     events: opEvents,
   });
+  // Flagged items whose rows the request wrote: judged again as it leaves them (./flagged.ts).
+  const flagged = await settleFlagged(tx, {
+    slot: slot.slot,
+    tableOf: (id) => tableOf(id as TableId),
+    written: [...rows.values()].flatMap((w) =>
+      w.lastBase !== undefined && "row" in w.ctx.target
+        ? [
+            {
+              table: w.ctx.table,
+              row: w.ctx.target.row,
+              state: w.state,
+              lastBase: w.lastBase,
+              bases: w.bases ?? [],
+            },
+          ]
+        : [],
+    ),
+    op,
+    opCount: req.ops.length,
+    boundary: (i) => ({ upTo: (op - 1) as OpNumber, request: { op, below: i } }),
+    opened: openedFlagged,
+  });
+  // A flagged item opened with no row matching by the request's end is not opened (09 §5.8: its
+  // entries are the request's end state, and it lists at least one row): the request judged again
+  // without it, numbered so. The second time must open the rest as they are.
+  if (flagged.unopened.length > 0) {
+    if (unflagged !== undefined) {
+      throw new WriteError("internal", "flagged items judged otherwise the second time", {
+        reason: "inconsistent",
+      });
+    }
+    return writeIn(tx, input, nothing, new Set(flagged.unopened));
+  }
+  const flaggedEvents = flagged.events;
+  opEvents.push(...flaggedEvents);
+  next += flaggedEvents.length;
 
   // Sources: the request's evidence, or each op's request as an `api_call` (04-write-and-read
   // «不变量：每次写入都有源数据»), without the values of its no-op fields.

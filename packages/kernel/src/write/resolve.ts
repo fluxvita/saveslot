@@ -14,7 +14,10 @@
 //   8. the result, read back from the log.
 //
 // This version: a conflict item's `keep_effective`, `take_candidate`, `take_previous`; an awaiting
-// item's `confirm`, `reject`. Decisions of later phases are refused when normalizing.
+// item's `confirm`, `reject`; a flagged item's `keep` (nothing written, the flag taken off) and
+// `revoke` (the flagged row revoked, a revoke judged as any). Decisions of later phases are refused
+// when normalizing. The flagged items whose rows a decision's write reaches are judged again as a
+// write's are (./flagged.ts).
 
 import type {
   CompiledBaseTable,
@@ -38,6 +41,7 @@ import type { ReadTx, Tx } from "../store/ports.ts";
 import { restorePoint } from "../store/restore-point.ts";
 import { appendWithDerived } from "./derive-step.ts";
 import { WriteError } from "./errors.ts";
+import { settleFlagged } from "./flagged.ts";
 import {
   judgeFailure,
   loadRow,
@@ -47,6 +51,7 @@ import {
   requestFailure,
   revertEntriesNow,
   settleItems,
+  type TrackedItem,
   type WriteInput,
 } from "./pipeline.ts";
 import { tableShape, todayIn, writable } from "./plan.ts";
@@ -103,6 +108,7 @@ export interface ResolveWarning {
 const DECISIONS_OF: Readonly<Record<string, readonly ResolveDecision[]>> = {
   conflict: ["keep_effective", "take_candidate", "take_previous"],
   awaiting_confirmation: ["confirm", "reject"],
+  flagged: ["keep", "revoke"],
 };
 /**
  * Decisions of item types of other paths that take one of this version's decisions. Not reached:
@@ -416,6 +422,29 @@ function intentOf(
     | "revoke";
 }
 
+/** A conflict or awaiting item's decision as judge takes it. */
+function decisionInput(
+  decision: ResolveDecision,
+  base: { op: OpNumber; index: number; event: Seq; ruleset: number; policy: number },
+  tracked: TrackedItem,
+  candidate: number | undefined,
+): JudgeInput {
+  const unit = tracked.unit as Unit;
+  if (decision === "confirm" || decision === "reject")
+    return { ...base, kind: decision, target: tracked.origin };
+  if (decision === "take_candidate")
+    return {
+      ...base,
+      kind: "take_candidate",
+      unit,
+      candidates: tracked.cands,
+      take: tracked.cands[candidate as number] as Seq,
+    };
+  if (decision === "keep_effective" || decision === "take_previous")
+    return { ...base, kind: decision, unit, candidates: tracked.cands };
+  throw new Error(`not a conflict or awaiting decision: ${decision}`);
+}
+
 /** Resolves the pending item the request names, in `tx`; returns the decision's result. */
 export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveReceipt> {
   const { actor, now } = input;
@@ -526,20 +555,24 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     shape,
     granularity: table.time.type === "state" ? table.time.granularity : "date",
   };
+  // A flagged item's decision (01-objects «各处理方式的执行语义»): not one of the row's tracked items.
+  const flagged = item.type === "flagged" ? (req.decision as "keep" | "revoke") : undefined;
   const work = await loadRow(tx, ctx, "id");
   const tracked = work.items.find((x) => x.item === item.id);
-  if (tracked === undefined) {
+  if (tracked === undefined && flagged === undefined) {
     throw new WriteError("internal", "an open item not on its row", { reason: "inconsistent" });
   }
 
   // `take_candidate`: which candidate (04-contract `resolve`).
   let candidate: number | undefined;
   if (req.decision === "take_candidate") {
-    const n = tracked.cands.length;
+    // A conflict item's decision: the item is a tracked one (checked above).
+    const cands = (tracked as TrackedItem).cands;
+    const n = cands.length;
     if (req.candidate === undefined && n > 1) {
       const ops = await tx.query<{ seq: unknown; op: unknown; actor: string }>(
         "SELECT seq, op, actor FROM events WHERE seq = ANY($1)",
-        [tracked.cands] as never,
+        [cands] as never,
       );
       const by = new Map(ops.rows.map((x) => [Number(x.seq), x]));
       // The writers as they are now, as the item's details give them (04-contract-types §1.6).
@@ -550,7 +583,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
       throw new WriteError("invalid_argument", "several candidates: name one", {
         reason: "candidate_required",
         param: "candidate",
-        candidate_choices: tracked.cands.map((e, index) => ({
+        candidate_choices: cands.map((e, index) => ({
           index,
           seq: Number(by.get(e)?.op ?? e),
           actor: who.get(by.get(e)?.actor ?? ""),
@@ -580,7 +613,8 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
 
   // The decision, judged on the row's state.
   const op = (((await readTail(tx))?.seq ?? 0) + 1) as OpNumber;
-  const triggers = ["take_candidate", "take_previous", "confirm"].includes(req.decision);
+  const triggers =
+    ["take_candidate", "take_previous", "confirm"].includes(req.decision) || flagged === "revoke";
   // Sources (09 §4.3): each evidence segment, then the request itself as an `api_call` when it
   // has a note, or when it triggers a write and has no evidence. The triggered write's own items
   // take the evidence as their value sources, or else the `api_call`.
@@ -604,22 +638,18 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
   const valueSources = req.evidence.length > 0 ? evidenceSeqs : sourceSeqs;
   const event = (op + 1 + nSources) as Seq;
   const base = { op, index: 0, event, ruleset: RULESET, policy: slot.policyVersion };
-  const unit = tracked.unit as Unit;
-  const judgeInput: JudgeInput =
-    req.decision === "confirm" || req.decision === "reject"
-      ? { ...base, kind: req.decision, target: tracked.origin }
-      : req.decision === "take_candidate"
-        ? {
-            ...base,
-            kind: "take_candidate",
-            unit,
-            candidates: tracked.cands,
-            take: tracked.cands[candidate as number] as Seq,
-          }
-        : { ...base, kind: req.decision, unit, candidates: tracked.cands };
-  let judged: ReturnType<typeof judgeOp>;
+  // "Now" as a write takes it: the day, or the instant on a state table by the instant.
+  const nowPoint = (ctx.granularity === "date" ? todayIn(now, slot.timezone) : now) as never;
+  const judgeInput: JudgeInput | undefined =
+    flagged === "keep"
+      ? undefined
+      : flagged === "revoke"
+        ? // The whole row revoked, on the item's version as the decision binds it.
+          { ...base, kind: "revoke", seen: (op - 1) as OpNumber, seenExplicit: true, now: nowPoint }
+        : decisionInput(req.decision, base, tracked as TrackedItem, candidate);
+  let judged: ReturnType<typeof judgeOp> | undefined;
   try {
-    judged = judgeOp(work.state, judgeInput);
+    judged = judgeInput === undefined ? undefined : judgeOp(work.state, judgeInput);
   } catch (e) {
     // A decision has no ops: its triggered write's failures name no op and no `ops/…` parameter.
     // `no_value_now` (a correction without an interval, no value "now") is not reached here in
@@ -630,7 +660,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     }
     throw e;
   }
-  const j = judged.judgement;
+  const j = judged?.judgement;
   // The ref fields the decision's write gives (a taken candidate, a confirmed write): their targets
   // now, as a write's (refs.ts). Refused, the item stays as it is.
   const refs = await refProblems(tx, {
@@ -640,7 +670,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
       slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as
         | CompiledBaseTable
         | undefined,
-    items: givenItems(j.record),
+    items: j === undefined ? [] : givenItems(j.record),
     known: (id) =>
       id === item.row ? { table: table.id as TableId, state: work.state } : undefined,
     visible: inRange,
@@ -657,24 +687,32 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
   // again, has nothing to write back and nothing to hide is closed by the write that leaves it so,
   // in that write's transaction (../write/pipeline.ts `nothingToRevert`; 04-write-and-read
   // «撤回某次写入（undo）»). Refused rather than recorded as an empty write.
-  if (j.record.kind === "confirm" && j.record.revert !== undefined && j.record.items.length === 0) {
+  if (
+    j?.record.kind === "confirm" &&
+    j.record.revert !== undefined &&
+    j.record.items.length === 0
+  ) {
     throw new WriteError("internal", "an awaiting undo with nothing to revert is still open", {
       reason: "inconsistent",
     });
   }
-  work.state = judged.state;
+  if (judged !== undefined) work.state = judged.state;
   // The intent the triggered write carries on (09 §6.1 «意图»): the taken candidate's write, the
-  // proposal's, or for `take_previous` the write of the latest entry its revert takes back.
-  const r = j.record;
+  // proposal's, or for `take_previous` the write of the latest entry its revert takes back; a
+  // flagged item's revoke is a revoke.
+  const r = j?.record;
   const intent =
-    r.kind === "take_previous"
-      ? r.revert.entries.length === 0
-        ? "update"
-        : intentOf(work, Math.max(...r.revert.entries.map((x) => x.event)))
-      : r.kind === "take_candidate"
-        ? intentOf(work, r.take)
-        : intentOf(work, tracked.origin);
+    flagged !== undefined
+      ? "revoke"
+      : r?.kind === "take_previous"
+        ? r.revert.entries.length === 0
+          ? "update"
+          : intentOf(work, Math.max(...r.revert.entries.map((x) => x.event)))
+        : r?.kind === "take_candidate"
+          ? intentOf(work, r.take)
+          : intentOf(work, (tracked as TrackedItem).origin);
   const enc = encodeResolution(ctx, j, {
+    ...(flagged !== undefined ? { flagged } : {}),
     item: item.id,
     ...(candidate !== undefined ? { candidate } : {}),
     intent,
@@ -720,7 +758,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
   ];
   const opEvents: NewEvent[] = [];
   // The item the decision closes gets nothing more in this request (one set of contents).
-  work.items.splice(work.items.indexOf(tracked), 1);
+  if (tracked !== undefined) work.items.splice(work.items.indexOf(tracked), 1);
   if (enc.base !== undefined) {
     opEvents.push({ type: "write.base", slot: slot.slot, blocks: enc.base as never });
     work.lastBase = event;
@@ -739,6 +777,32 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     restore,
     events: opEvents,
   });
+  // Other flagged items listing the row the decision's write wrote (../write/flagged.ts); the item
+  // decided is closed by the decision.
+  if (enc.base !== undefined && "row" in ctx.target) {
+    const flagged = await settleFlagged(tx, {
+      slot: slot.slot,
+      tableOf: (id) =>
+        slot.compiled.tables.find((t) => t.id === id && t.kind === "base") as
+          | CompiledBaseTable
+          | undefined,
+      written: [
+        {
+          table: ctx.table,
+          row: ctx.target.row,
+          state: work.state,
+          lastBase: event,
+          bases: [{ index: 0, seq: event }],
+        },
+      ],
+      op,
+      opCount: 1,
+      boundary: (i) => ({ upTo: (op - 1) as OpNumber, request: { op, below: i } }),
+      except: item.id,
+    });
+    // A decision opens no flagged item: nothing to leave unopened.
+    opEvents.push(...flagged.events);
+  }
   const head: NewEvent = {
     type: "item.resolved",
     slot: slot.slot,

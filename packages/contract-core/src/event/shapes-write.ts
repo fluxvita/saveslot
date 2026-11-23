@@ -1288,8 +1288,9 @@ export const WRITE_EVENT_RULES: Readonly<Record<string, EventRule>> = {
     }
   },
   // §5.8: `matched/<k>` is given whole (as `current`), so a refresh that changes which rows a
-  // flagged item lists gives all of them. A matched_changed refresh is a flagged item's: it gives
-  // the rows still matching (none left would supersede it) and nothing else.
+  // flagged item lists, or the contributions they rest on, gives all of them. A matched_changed
+  // refresh is a flagged item's: it gives the rows still matching (none left would supersede it)
+  // and nothing else.
   "item.refreshed"(paths, blocks, issues) {
     const t = blocks["target"];
     const matched = [...paths].filter((p) => p.startsWith("matched/"));
@@ -1304,10 +1305,15 @@ export const WRITE_EVENT_RULES: Readonly<Record<string, EventRule>> = {
         issues,
       );
     } else if (matched.length > 0) {
+      // entries_changed: a flagged item's rows all still matching, the values now given by other
+      // contributions (their `deps`), given whole again.
       check(
-        isObject(t) && (t["cause"] === "entries_deleted" || t["cause"] === "entries_restored"),
+        isObject(t) &&
+          (t["cause"] === "entries_changed" ||
+            t["cause"] === "entries_deleted" ||
+            t["cause"] === "entries_restored"),
         "event",
-        "matched only with matched_changed, entries_deleted or entries_restored",
+        "matched only with matched_changed, entries_changed, entries_deleted or entries_restored",
         issues,
       );
     }

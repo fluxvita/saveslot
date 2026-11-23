@@ -19,13 +19,18 @@ import {
 import { get, has, isObj, keysOf } from "./own.ts";
 import type { EvidenceSegment, RequestError } from "./types.ts";
 
-/** The decisions of this version: a conflict item's three, an awaiting item's two (04-contract §6). */
+/**
+ * The decisions of this version: a conflict item's three, an awaiting item's two, a flagged item's
+ * two (04-contract §6).
+ */
 export type ResolveDecision =
   | "keep_effective"
   | "take_candidate"
   | "take_previous"
   | "confirm"
-  | "reject";
+  | "reject"
+  | "keep"
+  | "revoke";
 
 const DECISIONS: ReadonlySet<string> = new Set([
   "keep_effective",
@@ -33,11 +38,11 @@ const DECISIONS: ReadonlySet<string> = new Set([
   "take_previous",
   "confirm",
   "reject",
-]);
-/** Decisions of later phases: a flagged item's, a deletion's, a migration's. */
-const DECISIONS_LATER: ReadonlySet<string> = new Set([
   "keep",
   "revoke",
+]);
+/** Decisions of later phases: a deletion's, a migration's. */
+const DECISIONS_LATER: ReadonlySet<string> = new Set([
   "cancel",
   "accept_all",
   "rows",

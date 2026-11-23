@@ -1928,8 +1928,19 @@ describe("duplicate keys: write.base `duplicate` (§5.7) and `matched/<k>` (§5.
         withBlocks(S("item.refreshed (entries deleted)"), { "matched/0": { row: ROW_B, deps } }),
       ),
     ).toEqual({ ok: true, type: "item.refreshed" });
+    // Every row still matching, on other contributions now: whole too.
+    const changed = {
+      ...S("item.refreshed"),
+      blocks: { target: { item: ITEM, cause: "entries_changed", by_event: 27 } },
+    };
+    expect(parse(withBlocks(changed, { "matched/0": { row: ROW_B, deps } }))).toEqual({
+      ok: true,
+      type: "item.refreshed",
+    });
     expect(
       issues(parse(withBlocks(S("item.refreshed"), { "matched/0": { row: ROW_B, deps } }))),
-    ).toContain("event: matched only with matched_changed, entries_deleted or entries_restored");
+    ).toContain(
+      "event: matched only with matched_changed, entries_changed, entries_deleted or entries_restored",
+    );
   });
 });

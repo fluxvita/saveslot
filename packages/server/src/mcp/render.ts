@@ -723,12 +723,9 @@ function catalog(r: R, now: Date): Line[] | { json: true; lead: Line[] } {
       const key = arr(tb["entity_key"]);
       if (key.length > 0) out.push(t`  entity key: ${join(key.map(fieldOf), t`, `)}`);
       for (const f of arr(tb["fields"])) out.push(catalogField(obj(f)));
-      // What the table declares, as declared, and that this version does not check it (the
-      // check, `flagged`, comes with P2: 07-scope-v1). Drop the parenthesis when it does.
+      // What the table declares, as declared: a new row matching one group is saved and flagged.
       for (const g of arr(tb["duplicate_keys"])) {
-        out.push(
-          t`  duplicate keys declared: ${join(arr(g).map(fieldOf), t` + `)} (not checked in this version: a second row with the same values is saved and not flagged)`,
-        );
+        out.push(t`  duplicate keys declared: ${join(arr(g).map(fieldOf), t` + `)}`);
       }
       for (const g of arr(tb["together"])) {
         out.push(t`  field group (one conflict unit): ${join(arr(g).map(fieldOf), t` + `)}`);
@@ -1422,6 +1419,16 @@ function pending(r: R, now: Date): Line[] {
     const out: Line[] = [
       t`${idOf(r["id"])} ${codeIn(r["type"], ITEM_TYPES)} · ${itemTarget(r["target"])}${reasonOf(r["reason"])} · ${codeIn(r["status"], ITEM_STATUS)} · opened ${openFor(r["opened_at"], now)} ago (${timeOf(r["opened_at"])}) by ${actorOf(r["opened_by"])}${r["item_ver"] !== undefined ? t` · version ${idOf(r["item_ver"])}` : []}`,
     ];
+    // A flagged item (04-contract-types §4.8 `FlaggedDetail`): the key group that matched, the
+    // flagged row's values on it, and the rows it may duplicate.
+    if (r["type"] === "flagged") {
+      const keys = arr(r["keys"]);
+      if (keys.length > 0) {
+        const values = isObj(r["matched_values"]) ? t` (${namedValues(r["matched_values"])})` : [];
+        out.push(t`  Duplicate keys matched: ${join(keys.map(fieldOf), t` + `)}${values}`);
+      }
+      for (const rel of arr(r["related"])) out.push(t`  May duplicate ${targetOf(rel)}`);
+    }
     if (isObj(r["effective"])) {
       const e = r["effective"];
       // By stretch, each stretch names its write; otherwise the side's own.

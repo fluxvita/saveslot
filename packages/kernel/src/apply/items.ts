@@ -112,17 +112,20 @@ export function planItem(
       return out;
     }
     // §5.8 item.merged / item.refreshed: the item's version is this operation; whole groups
-    // replace the earlier entries of the same name, candidates and matched rows by index.
+    // replace the earlier entries of the same name, candidates by index; a flagged item's matched
+    // rows, when given, whole (not given, they stay).
     case "item.merged":
     case "item.refreshed": {
       const id = (t as Obj)["item"] as string;
       // An item.merged giving `current` gives it whole too; one without keeps the earlier.
       const current = type === "item.merged" && paths.some((p) => p.startsWith("current/"));
+      const matched = paths.some((p) => p.startsWith("matched/"));
       const groups = [
         ...(WHOLE_GROUPS[type] as readonly string[]),
         ...(current ? ["current"] : []),
+        ...(matched ? ["matched"] : []),
       ];
-      const byIndex = paths.filter((p) => /^(candidates|matched)\/\d+$/.test(p));
+      const byIndex = paths.filter((p) => /^candidates\/\d+$/.test(p));
       return [
         { kind: "item_update", id, version_op: op },
         { kind: "entries_drop", item: id, groups, paths: type === "item.refreshed" ? byIndex : [] },

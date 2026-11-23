@@ -569,6 +569,11 @@ export interface ResolutionEncoding {
   readonly restoreCount: number;
   /** The value sources of the items the triggered write gives itself (not carried): `op_sources`. */
   readonly sources?: readonly Seq[];
+  /**
+   * A flagged item's decision (01-objects «各处理方式的执行语义»): `keep` writes nothing; `revoke`
+   * revokes the flagged row, a revoke judged as any (`j.record` its revoke record).
+   */
+  readonly flagged?: "keep" | "revoke";
 }
 
 export interface EncodedResolution {
@@ -581,9 +586,36 @@ export interface EncodedResolution {
 /** The events of a person's decision on a pending item (§5.8 `item.resolved`). */
 export function encodeResolution(
   ctx: RowContext,
-  j: Judgement,
+  j: Judgement | undefined,
   e: ResolutionEncoding,
 ): EncodedResolution {
+  if (e.flagged !== undefined) {
+    const target: Blocks = {
+      item: e.item,
+      decision: e.flagged,
+      item_op: e.itemOp,
+      restore_count: e.restoreCount,
+      via: "call",
+    };
+    if (e.flagged === "keep") return { target };
+    const r = j?.record;
+    if (r?.kind !== "revoke") throw inconsistent("a flagged item's revoke encodes a revoke");
+    return {
+      target,
+      base: {
+        target: {
+          table: ctx.table,
+          ...ctx.target,
+          intent: "revoke",
+          sv: e.sv,
+          cause: "resolve",
+          item: e.item,
+        },
+        ...itemsOut(ctx, r.items, e.sources ?? []),
+      },
+    };
+  }
+  if (j === undefined) throw inconsistent("a decision other than keep is judged");
   const r = j.record;
   const decision =
     r.kind === "confirm" || r.kind === "reject" || r.kind === "keep_effective"
@@ -960,6 +992,10 @@ const DECISIONS = new Set([
   "keep_effective",
   "take_candidate",
   "take_previous",
+  // A flagged item's: `keep` writes nothing and judges nothing on the row; `revoke`'s write is
+  // decoded as the revoke it was judged as.
+  "keep",
+  "revoke",
 ]);
 
 interface PendingItem {
@@ -1225,6 +1261,21 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
           filled: (tk.filled ?? []).map((e) => e.event),
           items: recItems,
           decided: decidedIn(it),
+        };
+        records.push(rec);
+      } else if (t.decision === "revoke") {
+        // A flagged item's revoke (01-objects «各处理方式的执行语义»): the row revoked as a revoke
+        // on the version the decision bound, judged once and recorded.
+        const rec: WriteRecord = {
+          ...base,
+          kind: "revoke",
+          seen: (op - 1) as OpNumber,
+          seenExplicit: true,
+          now: now as never,
+          explicit: [],
+          items: recItems,
+          noop: [],
+          ack: [],
         };
         records.push(rec);
       } else throw inconsistent(`a ${t.decision} writes nothing (seq ${x.header.seq})`);
