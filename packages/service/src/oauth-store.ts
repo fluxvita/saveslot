@@ -1,12 +1,13 @@
 // The authorization server's tables in the control database (docs/zh-CN/spec/02-architecture.md §5
 // «控制面存储»; 05-surfaces.md §15 «远程授权»): client documents fetched (a cache), grants, codes not
-// yet redeemed, and the consent page's one-time form tokens. Server mode only. Who the user is comes
-// from the identity provider (signing in is not the authorization server's).
+// yet redeemed, refresh tokens, and the consent page's one-time form tokens. Server mode only. Who
+// the user is comes from the identity provider (signing in is not the authorization server's).
 // What each table holds is in §5; the SQL is here.
 //
 // They have a format of their own (`control_meta`'s `oauth_format`), made and checked by
-// `initOAuthTables` beside `initControlPlane`, so either can change without the other. Codes and form
-// tokens are stored by their SHA-256 only, as credentials are.
+// `initOAuthTables` beside `initControlPlane`, so either can change without the other. Codes, refresh
+// tokens and form tokens are stored by their SHA-256 only, as credentials are. A format is not
+// upgraded: a database of another format is refused, and is made again.
 
 import type { Tx } from "@fluxvita/saveslot-kernel";
 import type { Scope } from "./auth.ts";
@@ -30,7 +31,7 @@ async function inserting<T>(what: string, write: () => Promise<T>): Promise<T> {
 }
 
 /** The OAuth tables' format: `control_meta`'s `oauth_format`. */
-export const OAUTH_FORMAT = 1;
+export const OAUTH_FORMAT = 2;
 
 const DDL = `
 CREATE TABLE oauth_clients (
@@ -65,6 +66,15 @@ CREATE TABLE oauth_codes (
   name text,
   expires_at text NOT NULL
 );
+CREATE TABLE oauth_refresh_tokens (
+  hash text PRIMARY KEY,
+  grant_id text NOT NULL REFERENCES oauth_grants (id),
+  issued_at text NOT NULL,
+  expires_at text NOT NULL,
+  grant_expires_at text,
+  replaced_by text
+);
+CREATE INDEX oauth_refresh_tokens_grant ON oauth_refresh_tokens (grant_id);
 CREATE TABLE web_forms (
   hash text PRIMARY KEY,
   bound_to text NOT NULL,
@@ -159,6 +169,19 @@ export interface Grant {
   readonly codeHash?: string;
 }
 
+/** A refresh token, by its hash. */
+export interface RefreshEntry {
+  readonly hash: string;
+  readonly grant: string;
+  readonly issuedAt: string;
+  /** It stops working when unused until then. */
+  readonly expiresAt: string;
+  /** A CLI sign-in's total limit, the same for every token of the grant; none for a connection. */
+  readonly grantExpiresAt?: string;
+  /** The hash of the token it was exchanged for: set, it is used, and presenting it is a replay. */
+  readonly replacedBy?: string;
+}
+
 /** What a code stands for, as the authorization page settled it. */
 export interface CodeEntry {
   readonly clientId: string;
@@ -176,6 +199,14 @@ export interface CodeEntry {
   /** The connection instance's name; none for the CLI's sign-in. */
   readonly name?: string;
   readonly expiresAt: string;
+}
+
+async function insertRefresh(tx: Tx, r: RefreshEntry): Promise<void> {
+  await tx.query(
+    `INSERT INTO oauth_refresh_tokens (hash, grant_id, issued_at, expires_at, grant_expires_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+    [r.hash, r.grant, r.issuedAt, r.expiresAt, r.grantExpiresAt ?? null],
+  );
 }
 
 async function insertGrant(tx: Tx, g: Grant): Promise<void> {
@@ -253,8 +284,14 @@ export class OAuthStore {
     );
   }
 
-  async putGrant(g: Grant): Promise<void> {
-    await inserting("a grant of that ID", () => this.#db.write((tx) => insertGrant(tx, g)));
+  /** Records a grant, and with it its first refresh token when given, in one transaction. */
+  async putGrant(g: Grant, refresh?: RefreshEntry): Promise<void> {
+    await inserting("a grant of that ID", () =>
+      this.#db.write(async (tx) => {
+        await insertGrant(tx, g);
+        if (refresh !== undefined) await insertRefresh(tx, refresh);
+      }),
+    );
   }
 
   async grant(id: string): Promise<Grant | undefined> {
@@ -300,17 +337,26 @@ export class OAuthStore {
   }
 
   /**
-   * Records the connection instance a grant issued, only while the grant is not voided: false when
-   * it is (a replay of its code came first), and nothing is recorded.
+   * Records the connection instance a grant issued, and with it the grant's first refresh token
+   * when given, in one transaction, only while the grant is not voided: false when it is (a replay
+   * of its code came first), and nothing is recorded.
    */
-  async setGrantPrincipal(id: string, principal: PrincipalId): Promise<boolean> {
-    const r = await this.#db.write((tx) =>
-      tx.query(
-        "UPDATE oauth_grants SET principal = $2 WHERE id = $1 AND voided_at IS NULL RETURNING 1",
-        [id, principal],
-      ),
+  async setGrantPrincipal(
+    id: string,
+    principal: PrincipalId,
+    refresh?: RefreshEntry,
+  ): Promise<boolean> {
+    return inserting("a refresh token of that hash", () =>
+      this.#db.write(async (tx) => {
+        const r = await tx.query(
+          "UPDATE oauth_grants SET principal = $2 WHERE id = $1 AND voided_at IS NULL RETURNING 1",
+          [id, principal],
+        );
+        if (r.rows.length === 0) return false;
+        if (refresh !== undefined) await insertRefresh(tx, refresh);
+        return true;
+      }),
     );
-    return r.rows.length > 0;
   }
 
   /**
@@ -334,8 +380,8 @@ export class OAuthStore {
   }
 
   /**
-   * Voids a grant: marks it, and deletes the credentials it issued, in one transaction. Voiding a
-   * voided grant changes nothing. How many credentials went.
+   * Voids a grant: marks it, and deletes the credentials and the refresh tokens it issued, in one
+   * transaction. Voiding a voided grant changes nothing. How many credentials went.
    */
   async voidGrant(id: string, at: string): Promise<number> {
     return this.#db.write(async (tx) => {
@@ -343,6 +389,7 @@ export class OAuthStore {
         id,
         at,
       ]);
+      await tx.query("DELETE FROM oauth_refresh_tokens WHERE grant_id = $1", [id]);
       const r = await tx.query<{ n: number }>(
         `WITH gone AS (DELETE FROM credentials WHERE grant_id = $1 RETURNING 1)
            SELECT count(*)::int AS n FROM gone`,
@@ -350,6 +397,78 @@ export class OAuthStore {
       );
       return Number(r.rows[0]?.n ?? 0);
     });
+  }
+
+  /** A refresh token by its hash, used or not. */
+  async refreshToken(hash: string): Promise<RefreshEntry | undefined> {
+    const r = await this.#db.read((tx) =>
+      tx.query<{
+        grant_id: string;
+        issued_at: string;
+        expires_at: string;
+        grant_expires_at: string | null;
+        replaced_by: string | null;
+      }>(
+        `SELECT grant_id, issued_at, expires_at, grant_expires_at, replaced_by
+           FROM oauth_refresh_tokens WHERE hash = $1`,
+        [hash],
+      ),
+    );
+    const row = r.rows[0];
+    if (row === undefined) return undefined;
+    return {
+      hash,
+      grant: row.grant_id,
+      issuedAt: row.issued_at,
+      expiresAt: row.expires_at,
+      ...(row.grant_expires_at === null ? {} : { grantExpiresAt: row.grant_expires_at }),
+      ...(row.replaced_by === null ? {} : { replacedBy: row.replaced_by }),
+    };
+  }
+
+  /**
+   * Exchanges a refresh token for `next`: marks `old` used by `next` only while it is unused, and
+   * records `next`, in one transaction. False when `old` was used already, or is gone: of two
+   * exchanges of one token at once, one wins and the other gets false.
+   */
+  async rotateRefreshToken(old: string, next: RefreshEntry): Promise<boolean> {
+    return this.#db.write(async (tx) => {
+      const r = await tx.query(
+        `UPDATE oauth_refresh_tokens SET replaced_by = $2
+           WHERE hash = $1 AND replaced_by IS NULL RETURNING 1`,
+        [old, next.hash],
+      );
+      if (r.rows.length === 0) return false;
+      await insertRefresh(tx, next);
+      return true;
+    });
+  }
+
+  /**
+   * Deletes the refresh tokens of a principal's grants in a tenant (a revoked connection's); its
+   * access tokens stay, so that they are refused as revoked. How many went.
+   */
+  async dropRefreshTokens(tenant: TenantId, principal: PrincipalId): Promise<number> {
+    return this.#db.write(async (tx) => {
+      const r = await tx.query<{ n: number }>(
+        `WITH gone AS (DELETE FROM oauth_refresh_tokens WHERE grant_id IN
+             (SELECT id FROM oauth_grants WHERE tenant = $1 AND principal = $2) RETURNING 1)
+           SELECT count(*)::int AS n FROM gone`,
+        [tenant, principal],
+      );
+      return Number(r.rows[0]?.n ?? 0);
+    });
+  }
+
+  /** Deletes one access token of a grant; whether it was there. */
+  async removeAccessToken(hash: string, grant: string): Promise<boolean> {
+    const r = await this.#db.write((tx) =>
+      tx.query("DELETE FROM credentials WHERE hash = $1 AND grant_id = $2 RETURNING 1", [
+        hash,
+        grant,
+      ]),
+    );
+    return r.rows.length > 0;
   }
 
   async putCode(hash: string, c: CodeEntry): Promise<void> {
@@ -388,6 +507,8 @@ export class OAuthStore {
   async takeCodeForGrant(
     hash: string,
     decide: (c: CodeEntry) => Grant,
+    /** The grant's first refresh token, recorded with it when given (a CLI sign-in's). */
+    refreshOf?: (g: Grant) => RefreshEntry | undefined,
   ): Promise<{ readonly code: CodeEntry; readonly grant: Grant } | undefined> {
     let refused: { readonly error: unknown } | undefined;
     const taken = await inserting("a grant of that ID", () =>
@@ -435,6 +556,8 @@ export class OAuthStore {
           return undefined;
         }
         await insertGrant(tx, { ...grant, codeHash: hash });
+        const refresh = refreshOf?.(grant);
+        if (refresh !== undefined) await insertRefresh(tx, refresh);
         return { code, grant: { ...grant, codeHash: hash } };
       }),
     );
@@ -470,11 +593,15 @@ export class OAuthStore {
     return row !== undefined && row.bound_to === boundTo && row.expires_at > now;
   }
 
-  /** Deletes expired codes, form tokens and client documents; how many rows went. */
+  /**
+   * Deletes expired codes, form tokens, client documents and refresh tokens; how many rows went.
+   * A used refresh token goes when it would have expired unused: presented after that, it is
+   * refused as unknown, no longer as a replay.
+   */
   async sweep(now: string): Promise<number> {
     return this.#db.write(async (tx) => {
       let n = 0;
-      for (const table of ["oauth_codes", "web_forms", "oauth_clients"]) {
+      for (const table of ["oauth_codes", "web_forms", "oauth_clients", "oauth_refresh_tokens"]) {
         const r = await tx.query<{ n: number }>(
           `WITH gone AS (DELETE FROM ${table} WHERE expires_at <= $1 RETURNING 1)
              SELECT count(*)::int AS n FROM gone`,

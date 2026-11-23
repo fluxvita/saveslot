@@ -1,23 +1,29 @@
 // The authorization server's HTTP routes of the server mode (docs/zh-CN/spec/05-surfaces.md §14,
-// §15 «远程授权»): the two metadata documents and the token endpoint. The local mode has none of them.
+// §15 «远程授权»): the two metadata documents, the token endpoint and the revocation endpoint. The
+// local mode has none of them.
 //
 // - `GET /.well-known/oauth-protected-resource` (RFC 9728), also under the MCP endpoint's path, and
 //   `GET /.well-known/oauth-authorization-server` (RFC 8414): JSON, cacheable for a few minutes.
 // - `POST /oauth/token`: a form (`application/x-www-form-urlencoded`) of at most 64 KiB;
-//   `authorization_code` only in this version. Answers carry `Cache-Control: no-store`; an error is
+//   `authorization_code` and `refresh_token`. Answers carry `Cache-Control: no-store`; an error is
 //   `{error, error_description}` with 400 (RFC 6749 §5.2).
+// - `POST /oauth/revoke` (RFC 7009): a form of the same kind and limit; 200 with an empty body
+//   whether or not the token was one to revoke, an error only for a request missing what it needs.
 //
 // Logged per request, as the API does: method, route name, status, milliseconds. Never a header,
 // a query, a form or a token.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  exchangeRefreshToken,
   type IdentityProvider,
   type OAuthDeps,
   redeemCode,
+  revokeToken,
   SCOPES,
   TokenError,
   type TokenErrorCode,
+  type TokenResponse,
 } from "@fluxvita/saveslot-service";
 import { handleAuthorize } from "./consent.ts";
 
@@ -31,6 +37,7 @@ export const OAUTH_PATHS = {
   authorizationServer: "/.well-known/oauth-authorization-server",
   authorize: "/oauth/authorize",
   token: "/oauth/token",
+  revoke: "/oauth/revoke",
 } as const;
 
 /** RFC 9728 §2: the protected resource's metadata. `resource` is the address the client used. */
@@ -49,8 +56,10 @@ export function authorizationServerMetadata(external: string) {
     issuer: external,
     authorization_endpoint: `${external}${OAUTH_PATHS.authorize}`,
     token_endpoint: `${external}${OAUTH_PATHS.token}`,
+    revocation_endpoint: `${external}${OAUTH_PATHS.revoke}`,
+    revocation_endpoint_auth_methods_supported: ["none"],
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
     scopes_supported: [...SCOPES],
@@ -150,6 +159,10 @@ export async function handleOAuth(
       name = "oauth.token";
       status = await token(req, res, ctx);
       break;
+    case OAUTH_PATHS.revoke:
+      name = "oauth.revoke";
+      status = await revoke(req, res, ctx);
+      break;
     case OAUTH_PATHS.authorize:
       name = "oauth.authorize";
       try {
@@ -173,11 +186,13 @@ export async function handleOAuth(
   return true;
 }
 
-async function token(
+/**
+ * The form of a POST to the token or revocation endpoint; else the error answered, by its status.
+ */
+async function postedForm(
   req: IncomingMessage,
   res: ServerResponse,
-  ctx: OAuthRoutesContext,
-): Promise<number> {
+): Promise<URLSearchParams | number> {
   if (req.method !== "POST") {
     send(res, 405, { error: "method_not_allowed" }, { allow: "POST", ...NO_STORE });
     return 405;
@@ -192,20 +207,58 @@ async function token(
   }
   const body = await readBody(req, TOKEN_BODY_MAX_BYTES);
   if (body === undefined) return tokenError(res, "invalid_request", "the body is too large");
-  const form = new URLSearchParams(body.toString("utf8"));
+  return new URLSearchParams(body.toString("utf8"));
+}
+
+/** Answers a step's error: a `TokenError` as itself, anything else as a server error. */
+function failed(res: ServerResponse, ctx: OAuthRoutesContext, event: string, e: unknown): number {
+  if (e instanceof TokenError) return tokenError(res, e.code, e.message);
+  ctx.warn(event, { error: e instanceof Error ? e.name : "unknown" });
+  send(res, 500, { error: "server_error" }, NO_STORE);
+  return 500;
+}
+
+async function token(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: OAuthRoutesContext,
+): Promise<number> {
+  const form = await postedForm(req, res);
+  if (typeof form === "number") return form;
   const grants = form.getAll("grant_type");
   if (grants.length !== 1) return tokenError(res, "invalid_request", "grant_type is required once");
-  if (grants[0] !== "authorization_code") {
-    return tokenError(res, "unsupported_grant_type", "only authorization_code in this version");
-  }
   try {
-    const r = await redeemCode(ctx.deps, form, ctx.now());
+    let r: TokenResponse;
+    switch (grants[0]) {
+      case "authorization_code":
+        r = await redeemCode(ctx.deps, form, ctx.now());
+        break;
+      case "refresh_token":
+        r = await exchangeRefreshToken(ctx.deps, form, ctx.now());
+        break;
+      default:
+        return tokenError(res, "unsupported_grant_type", "the grant type is not supported");
+    }
     send(res, 200, r, NO_STORE);
     return 200;
   } catch (e) {
-    if (e instanceof TokenError) return tokenError(res, e.code, e.message);
-    ctx.warn("oauth.token_failed", { error: e instanceof Error ? e.name : "unknown" });
-    send(res, 500, { error: "server_error" }, NO_STORE);
-    return 500;
+    return failed(res, ctx, "oauth.token_failed", e);
   }
+}
+
+async function revoke(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: OAuthRoutesContext,
+): Promise<number> {
+  const form = await postedForm(req, res);
+  if (typeof form === "number") return form;
+  try {
+    await revokeToken(ctx.deps, form, ctx.now());
+  } catch (e) {
+    return failed(res, ctx, "oauth.revoke_failed", e);
+  }
+  res.writeHead(200, { "content-length": 0, ...NO_STORE });
+  res.end();
+  return 200;
 }

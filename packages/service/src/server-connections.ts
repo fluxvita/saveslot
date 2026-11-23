@@ -69,12 +69,20 @@ export async function issueServerConnection(o: {
   }
 }
 
+/** What the control plane's clean-up of a revoked connection needs of the OAuth tables. */
+export interface RevokedOAuth {
+  /** Deletes the refresh tokens of the connection's grants; how many went. */
+  dropRefreshTokens(tenant: TenantId, connection: ConnectionId): Promise<number>;
+}
+
 /**
  * `connections.revoke` in the server mode: the revocation in the tenant's log, which refuses the
  * connection from its next request on; then the control plane's clean-up, all in one place.
  */
 export async function revokeServerConnection(o: {
   readonly control: ControlPlane;
+  /** The OAuth tables: the server mode always has them. */
+  readonly oauth: RevokedOAuth;
   readonly tenant: TenantId;
   readonly store: TenantStore;
   readonly ctx: OpsContext;
@@ -91,8 +99,11 @@ export async function revokeServerConnection(o: {
  * the control plane holds of the connection, and should drop, goes here (an OAuth grant's
  * refresh tokens).
  */
-async function cleanUpRevoked(_o: {
+async function cleanUpRevoked(o: {
   readonly control: ControlPlane;
+  readonly oauth: RevokedOAuth;
   readonly tenant: TenantId;
   readonly id: ConnectionId;
-}): Promise<void> {}
+}): Promise<void> {
+  await o.oauth.dropRefreshTokens(o.tenant, o.id);
+}

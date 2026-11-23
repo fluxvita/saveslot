@@ -52,6 +52,8 @@ const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 /** The login codes are consented under, and the logins still going (ID to user). */
 const LOGIN = "login-1";
 const logins = new Map<string, typeof USER>();
+/** Users whose account is there but not active. */
+const inactive = new Set<typeof USER>();
 
 let control: TenantStore;
 let controlPlane: ServerControlPlane;
@@ -104,6 +106,7 @@ beforeEach(async () => {
   fetches = [];
   logins.clear();
   logins.set(LOGIN, USER);
+  inactive.clear();
   served = {
     body: new TextEncoder().encode(
       JSON.stringify({
@@ -116,7 +119,8 @@ beforeEach(async () => {
   };
   await control.write((tx) =>
     tx.exec(
-      "DELETE FROM oauth_codes; DELETE FROM oauth_grants; DELETE FROM oauth_clients; " +
+      "DELETE FROM oauth_codes; DELETE FROM oauth_refresh_tokens; DELETE FROM oauth_grants; " +
+        "DELETE FROM oauth_clients; " +
         "DELETE FROM web_forms; DELETE FROM credentials",
     ),
   );
@@ -130,7 +134,7 @@ function deps(): OAuthDeps {
   return {
     store: store(),
     control: cp(),
-    identity: sessionsFrom(control, logins),
+    identity: sessionsFrom(control, logins, new Map(), inactive),
     pool: {
       use: (id, fn) => {
         expect(id).toBe(TENANT);
@@ -270,6 +274,29 @@ describe("tables", () => {
     T,
   );
 
+  it(
+    "a database of the format before refresh tokens: refused by its format, not upgraded",
+    async () => {
+      expect(OAUTH_FORMAT).toBe(2);
+      await control.write((tx) =>
+        tx.query("UPDATE control_meta SET value = '1' WHERE key = 'oauth_format'"),
+      );
+      try {
+        await expect(openOAuthStore(control)).rejects.toMatchObject({
+          code: "control_format_mismatch",
+          message: expect.stringContaining("format 1"),
+        });
+      } finally {
+        await control.write((tx) =>
+          tx.query("UPDATE control_meta SET value = $1 WHERE key = 'oauth_format'", [
+            String(OAUTH_FORMAT),
+          ]),
+        );
+      }
+    },
+    T,
+  );
+
   it("a store is had only through openOAuthStore", () => {
     expect(() => new OAuthStore(control, Symbol("oauth tables checked") as never)).toThrow(
       "open it with openOAuthStore",
@@ -385,6 +412,7 @@ describe("redeeming a code", () => {
         token_type: "Bearer",
         expires_in: ACCESS_TOKEN_SECONDS,
         scope: "saveslot.read saveslot.write",
+        refresh_token: expect.stringMatching(/^slr_[A-Za-z0-9_-]{43}$/),
       });
       const [p] = await registered(name);
       expect(p).toMatchObject({
@@ -463,6 +491,30 @@ describe("redeeming a code", () => {
         ),
       );
       expect(g.rows).toEqual([{ kind: "session", voided_at: NOW }]);
+    },
+    T,
+  );
+
+  it(
+    "the CLI's code, its account disabled before the redemption: invalid_grant, the grant void",
+    async () => {
+      const c = await code({
+        client: CLI_CLIENT,
+        redirectUri: "http://127.0.0.1:49152/callback",
+        scopes: [],
+        name: null,
+      });
+      inactive.add(USER);
+      const f = form(c, {
+        client_id: "saveslot-cli",
+        redirect_uri: "http://127.0.0.1:49152/callback",
+      });
+      expect(await refused(redeemCode(deps(), f, NOW))).toBe("invalid_grant");
+      expect(await count("credentials")).toBe(0);
+      const g = await control.read((tx) =>
+        tx.query<{ voided_at: string | null }>("SELECT voided_at FROM oauth_grants"),
+      );
+      expect(g.rows).toEqual([{ voided_at: NOW }]);
     },
     T,
   );

@@ -2,7 +2,8 @@
 // token's hash is in the control plane under the tenant and the connection registered in its log,
 // with the grant and expiry given; interrupted between the two, the hash is there and the
 // connection is not (it authenticates as nothing); a registration that fails drops the hash;
-// revoked, the log says so and the hash stays, so the token is refused as revoked. A real control
+// revoked, the log says so and the hash stays, so the token is refused as revoked, and its refresh
+// tokens are dropped. A real control
 // plane and a real tenant store; fictional IDs.
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -181,8 +182,16 @@ describe("revoking a connection in the server mode", () => {
       params: { name: "to revoke" },
       via: "token",
     });
+    const dropped: string[] = [];
+    const oauth = {
+      dropRefreshTokens: async (tenant: string, id: string) => {
+        dropped.push(`${tenant} ${id}`);
+        return 0;
+      },
+    };
     const revoked = await revokeServerConnection({
       control,
+      oauth,
       tenant: TENANT,
       store,
       ctx: ctx(),
@@ -190,6 +199,8 @@ describe("revoking a connection in the server mode", () => {
     });
     expect(revoked).toMatchObject({ id: connection.id, state: "revoked" });
     expect(await registered(connection.id)).toBe("revoked");
+    // The clean-up asked the OAuth tables to drop the connection's refresh tokens.
+    expect(dropped).toEqual([`${TENANT} ${connection.id}`]);
     expect(await control.credential(tokenHash(token))).toMatchObject({
       principal: connection.id,
       tenant: TENANT,
@@ -198,6 +209,7 @@ describe("revoking a connection in the server mode", () => {
     expect(
       await revokeServerConnection({
         control,
+        oauth,
         tenant: TENANT,
         store,
         ctx: ctx(),

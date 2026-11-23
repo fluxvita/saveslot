@@ -1,7 +1,8 @@
 // The authorization server's routes over real HTTP on the loopback, without a database: the two
-// metadata documents, and every way the token endpoint refuses a request before or around a
-// redemption. Redemption itself is tested in the service (oauth-server.test.ts); here its store is
-// a stand-in that knows no code. Fictional addresses.
+// metadata documents, every way the token endpoint refuses a request before or around a redemption
+// or an exchange, and the revocation endpoint's answers. Redemption, exchange and revocation
+// themselves are tested in the service (oauth-server.test.ts, oauth-refresh.test.ts); here the
+// store is a stand-in that knows no code and no token. Fictional addresses.
 
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -15,6 +16,7 @@ let base: string;
 const logged: Record<string, string | number>[] = [];
 const warned: string[] = [];
 let failTake = false;
+let failRefresh = false;
 
 const deps = {
   external: EXT,
@@ -24,7 +26,12 @@ const deps = {
       return undefined;
     },
     grantOfCode: async () => undefined,
+    refreshToken: async () => {
+      if (failRefresh) throw new Error("the database is gone");
+      return undefined;
+    },
   },
+  control: { credential: async () => undefined },
 } as unknown as OAuthDeps;
 
 beforeAll(async () => {
@@ -62,12 +69,23 @@ const form = (o: Record<string, string | string[]>) => {
   for (const [k, v] of Object.entries(o)) for (const x of [v].flat()) f.append(k, x);
   return f.toString();
 };
-const token = (body: string, type = "application/x-www-form-urlencoded") =>
-  fetch(`${base}${OAUTH_PATHS.token}`, {
-    method: "POST",
-    headers: { "content-type": type },
-    body,
-  });
+const post =
+  (path: string) =>
+  (body: string, type = "application/x-www-form-urlencoded") =>
+    fetch(`${base}${path}`, {
+      method: "POST",
+      headers: { "content-type": type },
+      body,
+    });
+const token = post(OAUTH_PATHS.token);
+const revoke = post(OAUTH_PATHS.revoke);
+const REFRESH = `slr_${"R".repeat(43)}`;
+
+async function refused(r: Response, status: number, error: string) {
+  expect(r.status).toBe(status);
+  expect(r.headers.get("cache-control")).toBe("no-store");
+  expect(await r.json()).toMatchObject({ error });
+}
 
 describe("metadata", () => {
   it("protected resource (RFC 9728): the external address, the issuer, the four scopes", async () => {
@@ -87,15 +105,17 @@ describe("metadata", () => {
     expect(await r.json()).toMatchObject({ resource: `${EXT}/mcp`, authorization_servers: [EXT] });
   });
 
-  it("authorization server (RFC 8414): code + S256, public clients, CIMD, no registration", async () => {
+  it("authorization server (RFC 8414): code + S256, refresh, revocation, public clients, CIMD, no registration", async () => {
     const r = await fetch(`${base}${OAUTH_PATHS.authorizationServer}`);
     const m = (await r.json()) as Record<string, unknown>;
     expect(m).toEqual({
       issuer: EXT,
       authorization_endpoint: `${EXT}/oauth/authorize`,
       token_endpoint: `${EXT}/oauth/token`,
+      revocation_endpoint: `${EXT}/oauth/revoke`,
+      revocation_endpoint_auth_methods_supported: ["none"],
       response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
       scopes_supported: ["saveslot.read", "saveslot.write", "saveslot.schema", "saveslot.delete"],
@@ -113,12 +133,6 @@ describe("metadata", () => {
 });
 
 describe("token endpoint", () => {
-  async function refused(r: Response, status: number, error: string) {
-    expect(r.status).toBe(status);
-    expect(r.headers.get("cache-control")).toBe("no-store");
-    expect(await r.json()).toMatchObject({ error });
-  }
-
   it("only POST", async () => {
     const r = await fetch(`${base}${OAUTH_PATHS.token}`);
     expect(r.status).toBe(405);
@@ -141,8 +155,8 @@ describe("token endpoint", () => {
     );
   });
 
-  it.each(["refresh_token", "client_credentials", "password", "urn:x"])(
-    "grant_type %s: unsupported_grant_type in this version",
+  it.each(["client_credentials", "password", "urn:x"])(
+    "grant_type %s: unsupported_grant_type",
     async (grant_type) => {
       await refused(await token(form({ grant_type })), 400, "unsupported_grant_type");
     },
@@ -166,6 +180,19 @@ describe("token endpoint", () => {
       ),
       400,
       "invalid_grant",
+    );
+  });
+
+  it("a refresh token no one issued: invalid_grant; none given: invalid_request", async () => {
+    await refused(
+      await token(form({ grant_type: "refresh_token", refresh_token: REFRESH, client_id: "c" })),
+      400,
+      "invalid_grant",
+    );
+    await refused(
+      await token(form({ grant_type: "refresh_token", client_id: "c" })),
+      400,
+      "invalid_request",
     );
   });
 
@@ -200,6 +227,61 @@ describe("token endpoint", () => {
   });
 });
 
+describe("revocation endpoint (RFC 7009)", () => {
+  it("only POST", async () => {
+    const r = await fetch(`${base}${OAUTH_PATHS.revoke}`);
+    expect(r.status).toBe(405);
+    expect(r.headers.get("allow")).toBe("POST");
+  });
+
+  it("a body that is not a form, or past the limit: invalid_request", async () => {
+    await refused(
+      await revoke(JSON.stringify({ token: REFRESH }), "application/json"),
+      400,
+      "invalid_request",
+    );
+    await refused(
+      await revoke(form({ token: "x".repeat(TOKEN_BODY_MAX_BYTES), client_id: "c" })),
+      400,
+      "invalid_request",
+    );
+  });
+
+  it("no token, or no client_id, or either twice: invalid_request", async () => {
+    await refused(await revoke(form({ client_id: "c" })), 400, "invalid_request");
+    await refused(await revoke(form({ token: REFRESH })), 400, "invalid_request");
+    await refused(
+      await revoke(form({ token: [REFRESH, REFRESH], client_id: "c" })),
+      400,
+      "invalid_request",
+    );
+  });
+
+  it.each([REFRESH, `slt_${"T".repeat(43)}`, "not a token"])(
+    "a token no one issued (%s): 200, an empty body, not stored",
+    async (t) => {
+      const r = await revoke(form({ token: t, client_id: "c", token_type_hint: "refresh_token" }));
+      expect(r.status).toBe(200);
+      expect(r.headers.get("cache-control")).toBe("no-store");
+      expect(await r.text()).toBe("");
+    },
+  );
+
+  it("an internal error: server_error, nothing of it in the answer", async () => {
+    failRefresh = true;
+    try {
+      const r = await revoke(form({ token: REFRESH, client_id: "c" }));
+      expect(r.status).toBe(500);
+      const text = await r.text();
+      expect(JSON.parse(text)).toEqual({ error: "server_error" });
+      expect(text).not.toContain("database");
+      expect(warned).toContain("oauth.revoke_failed");
+    } finally {
+      failRefresh = false;
+    }
+  });
+});
+
 describe("routing", () => {
   it.each([
     "/oauth/identity/callback",
@@ -217,5 +299,14 @@ describe("routing", () => {
       { method: "POST", route: "oauth.token", status: 400, ms: expect.any(Number) },
     ]);
     expect(JSON.stringify(logged)).not.toContain("secret-code");
+  });
+
+  it("a revocation is logged by its route, never its token", async () => {
+    logged.length = 0;
+    await revoke(form({ token: REFRESH, client_id: "c" }));
+    expect(logged).toEqual([
+      { method: "POST", route: "oauth.revoke", status: 200, ms: expect.any(Number) },
+    ]);
+    expect(JSON.stringify(logged)).not.toContain(REFRESH);
   });
 });

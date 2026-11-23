@@ -9,6 +9,7 @@
 // the tenant log's (§12), so a revocation holds from the next request on. A user session is issued
 // by the identity provider, from the login the consent was given under: a login that has ended
 // since (a sign-out, a password change, its expiry) issues none.
+// A redemption also gives the grant's first refresh token (exchanging it is oauth-refresh.ts).
 //
 // The pages, the cookies and the HTTP shapes are the server package's (oauth routes).
 
@@ -39,7 +40,7 @@ import {
   clientIdUrl,
   type OAuthClient,
 } from "./oauth-client.ts";
-import type { Grant, OAuthStore } from "./oauth-store.ts";
+import type { Grant, OAuthStore, RefreshEntry } from "./oauth-store.ts";
 import { issueServerConnection, revokeServerConnection } from "./server-connections.ts";
 import type { OpenTenant } from "./tenant-pool.ts";
 import { tokenHash } from "./tokens.ts";
@@ -48,6 +49,10 @@ import { tokenHash } from "./tokens.ts";
 export const CODE_SECONDS = 60;
 /** How long an access token works. */
 export const ACCESS_TOKEN_SECONDS = 60 * 60;
+/** How long a refresh token works unused. */
+export const REFRESH_TOKEN_SECONDS = 30 * 24 * 60 * 60;
+/** How long a CLI sign-in lasts at most, refreshed or not; a connection's grant has no limit. */
+export const CLI_SIGN_IN_SECONDS = 90 * 24 * 60 * 60;
 /** The scopes offered when a request asks for none (contract §12's default). */
 export const DEFAULT_SCOPES: readonly Scope[] = ["saveslot.read", "saveslot.write"];
 
@@ -66,8 +71,33 @@ export interface OAuthDeps {
   readonly windows: { readonly requestKey: number; readonly idempotencyKey: number };
 }
 
-const after = (now: string, seconds: number) =>
+export const after = (now: string, seconds: number) =>
   new Date(Date.parse(now) + seconds * 1000).toISOString();
+
+/** A refresh token's form: `slr_` and 43 base64url characters. */
+export const REFRESH_TOKEN = /^slr_[A-Za-z0-9_-]{43}$/;
+
+/**
+ * A new refresh token of a grant, issued at `now`, and its entry (its hash). `grantExpiresAt` is a
+ * CLI sign-in's limit, carried from token to token.
+ */
+export function newRefreshToken(
+  grant: string,
+  now: string,
+  grantExpiresAt: string | undefined,
+): { readonly token: string; readonly entry: RefreshEntry } {
+  const token = `slr_${randomBytes(32).toString("base64url")}`;
+  return {
+    token,
+    entry: {
+      hash: tokenHash(token),
+      grant,
+      issuedAt: now,
+      expiresAt: after(now, REFRESH_TOKEN_SECONDS),
+      ...(grantExpiresAt === undefined ? {} : { grantExpiresAt }),
+    },
+  };
+}
 
 /**
  * The client of a client ID: the CLI's, or a client document's, from the cache while it is fresh,
@@ -163,6 +193,13 @@ export async function issueCode(
   return code;
 }
 
+/** A form's parameter given at most once (RFC 6749 §3.1); undefined when it is not given. */
+export function singleParam(form: URLSearchParams, name: string): string | undefined {
+  const all = form.getAll(name);
+  if (all.length > 1) throw new TokenError("invalid_request", `${name} given more than once`);
+  return all[0];
+}
+
 /** The token endpoint's errors (RFC 6749 §5.2). */
 export type TokenErrorCode =
   | "invalid_request"
@@ -186,6 +223,7 @@ export interface TokenResponse {
   readonly token_type: "Bearer";
   readonly expires_in: number;
   readonly scope: string;
+  readonly refresh_token: string;
 }
 
 /** Tests: points of a redemption to run something else at, or to stop at. */
@@ -241,7 +279,8 @@ export function grantGuardedControl(
  * credential or a principal recorded after that is refused (`grantGuardedControl`,
  * `setGrantPrincipal`), or for a user session deleted once written. Then the CLI's user is signed
  * in from the login the code was consented under (ended: `invalid_grant`), or the connection
- * instance issued.
+ * instance issued; the grant's first refresh token is recorded with the grant (the CLI's) or with
+ * its connection.
  */
 export async function redeemCode(
   deps: OAuthDeps,
@@ -249,11 +288,7 @@ export async function redeemCode(
   now: string,
   hooks: RedeemHooks = {},
 ): Promise<TokenResponse> {
-  const one = (name: string): string | undefined => {
-    const all = form.getAll(name);
-    if (all.length > 1) throw new TokenError("invalid_request", `${name} given more than once`);
-    return all[0];
-  };
+  const one = (name: string) => singleParam(form, name);
   const code = one("code");
   const verifier = one("code_verifier");
   const clientId = one("client_id");
@@ -267,42 +302,52 @@ export async function redeemCode(
   const hash = tokenHash(code);
   const id = randomBytes(16).toString("hex");
   let scopes: Scope[] = [];
-  const taken = await deps.store.takeCodeForGrant(hash, (c): Grant => {
-    if (c.expiresAt <= now) throw new TokenError("invalid_grant", "the code has expired");
-    if (c.clientId !== clientId || c.redirectUri !== redirectUri) {
-      throw new TokenError(
-        "invalid_grant",
-        "the code was issued to another client or redirect URI",
-      );
-    }
-    if (!pkceMatches(verifier, c.codeChallenge)) {
-      throw new TokenError("invalid_grant", "the code verifier does not match");
-    }
-    if (resource !== undefined && audienceOf(resource, deps.external) !== c.resource) {
-      throw new TokenError("invalid_target", "the resource is not the code's");
-    }
-    if (c.resource !== deps.external) {
-      throw new TokenError("invalid_grant", "the code was issued for another address");
-    }
-    const cli = c.clientId === CLI_CLIENT_ID;
-    if (!cli) {
-      const given = consentScopes(c.scopes, c.requestedScopes);
-      if (given === undefined || c.name === undefined) {
-        throw new TokenError("invalid_grant", "the code's consent is not one the page could give");
+  // A CLI sign-in's first refresh token is recorded with its grant; a connection's, with its
+  // connection.
+  const cliRefresh = newRefreshToken(id, now, after(now, CLI_SIGN_IN_SECONDS));
+  const taken = await deps.store.takeCodeForGrant(
+    hash,
+    (c): Grant => {
+      if (c.expiresAt <= now) throw new TokenError("invalid_grant", "the code has expired");
+      if (c.clientId !== clientId || c.redirectUri !== redirectUri) {
+        throw new TokenError(
+          "invalid_grant",
+          "the code was issued to another client or redirect URI",
+        );
       }
-      scopes = given;
-    }
-    return {
-      id,
-      kind: cli ? "session" : "connection",
-      // A connection's principal is recorded once it is issued.
-      ...(cli ? { principal: c.user } : {}),
-      tenant: c.tenant,
-      clientId: c.clientId,
-      resource: c.resource,
-      createdAt: now,
-    };
-  });
+      if (!pkceMatches(verifier, c.codeChallenge)) {
+        throw new TokenError("invalid_grant", "the code verifier does not match");
+      }
+      if (resource !== undefined && audienceOf(resource, deps.external) !== c.resource) {
+        throw new TokenError("invalid_target", "the resource is not the code's");
+      }
+      if (c.resource !== deps.external) {
+        throw new TokenError("invalid_grant", "the code was issued for another address");
+      }
+      const cli = c.clientId === CLI_CLIENT_ID;
+      if (!cli) {
+        const given = consentScopes(c.scopes, c.requestedScopes);
+        if (given === undefined || c.name === undefined) {
+          throw new TokenError(
+            "invalid_grant",
+            "the code's consent is not one the page could give",
+          );
+        }
+        scopes = given;
+      }
+      return {
+        id,
+        kind: cli ? "session" : "connection",
+        // A connection's principal is recorded once it is issued.
+        ...(cli ? { principal: c.user } : {}),
+        tenant: c.tenant,
+        clientId: c.clientId,
+        resource: c.resource,
+        createdAt: now,
+      };
+    },
+    (g) => (g.kind === "session" ? cliRefresh.entry : undefined),
+  );
   if (taken === undefined) {
     // Taken before: whatever its first redemption gave stops working (OAuth 2.1 §4.1.3).
     const g = await deps.store.grantOfCode(hash);
@@ -340,6 +385,7 @@ export async function redeemCode(
       token_type: "Bearer",
       expires_in: ACCESS_TOKEN_SECONDS,
       scope: SCOPES.join(" "),
+      refresh_token: cliRefresh.token,
     };
   }
 
@@ -382,11 +428,12 @@ export async function redeemCode(
     const { connection, token } = issued;
     // Registered: the grant must now name it. Voided meanwhile (a replay), or not recorded, the
     // connection holds no token anyone can use: revoked by the user who authorized it, the grant
-    // voided, so that its name is not left taken by nothing. (Once refresh tokens exist, the
-    // revocation also drops them: revokeServerConnection's clean-up.)
+    // voided, so that its name is not left taken by nothing; the revocation's clean-up drops its
+    // refresh tokens.
+    const refresh = newRefreshToken(id, now, undefined);
     let named: boolean;
     try {
-      named = await deps.store.setGrantPrincipal(id, connection.id);
+      named = await deps.store.setGrantPrincipal(id, connection.id, refresh.entry);
     } catch (e) {
       await undo(deps, t.store, ctx, c.tenant, connection.id, id, now);
       throw e;
@@ -400,6 +447,7 @@ export async function redeemCode(
       token_type: "Bearer",
       expires_in: ACCESS_TOKEN_SECONDS,
       scope: connection.scopes.join(" "),
+      refresh_token: refresh.token,
     };
   });
 }
@@ -414,6 +462,13 @@ async function undo(
   grant: string,
   now: string,
 ): Promise<void> {
-  await revokeServerConnection({ control: deps.control, tenant, store, ctx, id: connection });
+  await revokeServerConnection({
+    control: deps.control,
+    oauth: deps.store,
+    tenant,
+    store,
+    ctx,
+    id: connection,
+  });
   await deps.store.voidGrant(grant, now);
 }

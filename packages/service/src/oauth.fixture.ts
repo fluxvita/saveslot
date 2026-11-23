@@ -24,24 +24,39 @@ export interface OAuthTestBed {
   readonly deps: OAuthDeps;
   /** The logins a user session may be issued from (`sessionsFrom`), by ID: add and remove freely. */
   readonly logins: Map<string, UserId>;
+  /** When a user's sessions were last ended (`sessionsFrom`): set it to end them. */
+  readonly sessionsEnded: Map<UserId, string>;
+  /** Users whose account is there but not active (`sessionsFrom`): add to disable, remove to enable. */
+  readonly inactive: Set<UserId>;
   close(): Promise<void>;
 }
 
 /**
- * A stand-in for the identity provider's `issueUserSession`, over `control`: a session is written
- * only from a login in `live` (its ID to its user), as the provider writes it; from any other,
- * `login_ended`.
+ * A stand-in for the identity provider's `issueUserSession`, over `control`, writing the session as
+ * the provider does: from a login only when it is in `live` (its ID to its user); from a refresh
+ * only when the user's sessions were not ended (`ended`, user to when) at or after the grant was
+ * made; else `login_ended`. A user in `inactive` gets `account_inactive` from any source.
  */
 export function sessionsFrom(
   control: TenantStore,
   live: ReadonlyMap<string, UserId>,
+  ended: ReadonlyMap<UserId, string> = new Map(),
+  inactive: ReadonlySet<UserId> = new Set(),
 ): Pick<IdentityProvider, "issueUserSession"> {
   return {
     issueUserSession: (user, o) =>
       control.write(async (tx) => {
-        if (!("login" in o.from) || live.get(o.from.login) !== user) {
-          throw new UserSessionError("login_ended", "the login has ended");
+        if (inactive.has(user)) {
+          throw new UserSessionError("account_inactive", "the account is not active");
         }
+        const from = o.from;
+        const ok =
+          "login" in from
+            ? live.get(from.login) === user
+            : "refresh" in from
+              ? !((ended.get(user) ?? "") >= from.refresh.grantedAt)
+              : false;
+        if (!ok) throw new UserSessionError("login_ended", "the login has ended");
         return writeUserSession(tx, user, {
           expiresAt: o.expiresAt,
           ...(o.grant === undefined ? {} : { grant: o.grant }),
@@ -97,10 +112,12 @@ export async function oauthTestBed(o: {
     }),
   );
   const logins = new Map<string, UserId>();
+  const sessionsEnded = new Map<UserId, string>();
+  const inactive = new Set<UserId>();
   const deps: OAuthDeps = {
     store: oauth,
     control: cp,
-    identity: sessionsFrom(control, logins),
+    identity: sessionsFrom(control, logins, sessionsEnded, inactive),
     pool: {
       use: (_id, fn) => fn({ tenant: o.tenant, owner: o.user, store: tenant, anchor: cp.anchors }),
     },
@@ -115,6 +132,8 @@ export async function oauthTestBed(o: {
     cp,
     deps,
     logins,
+    sessionsEnded,
+    inactive,
     close: async () => {
       await tenant.close();
       await control.close();

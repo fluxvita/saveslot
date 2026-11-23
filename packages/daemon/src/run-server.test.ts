@@ -19,6 +19,7 @@ import {
   type ServerControlPlane,
   stagingDatabaseOf,
   type TenantPoolOptions,
+  tokenHash,
   type UserId,
   writeUserSession,
 } from "@fluxvita/saveslot-service";
@@ -416,6 +417,147 @@ describe("runServer: no trusted proxy", () => {
       } finally {
         await s.close();
       }
+    },
+    T,
+  );
+});
+
+// A connection instance an OAuth host was authorized for, revoked by its user through /v1
+// (connections.revoke): its refresh tokens go with it, through the OAuth tables the server hands
+// serverCallers, so the host cannot get a new access token from one it kept.
+describe("runServer: an OAuth connection revoked through /v1", () => {
+  const CLIENT_ID = "https://host.example/oauth/client.json";
+  const REDIRECT = "https://host.example/callback";
+  const VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+  const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+  let s: RunningServer;
+  let c: Awaited<ReturnType<typeof controlDb>>;
+  let base = "";
+  let session = "";
+  beforeAll(async () => {
+    c = await controlDb();
+    const t = tenants();
+    const cfg = config();
+    await CursorKeys.createFile(cfg.handleKeyFile);
+    const { user } = await addLocalUser(c.accounts as NonNullable<typeof c.accounts>, {
+      control: c.cp as ServerControlPlane,
+      backend: t.backend,
+      name: "sasha",
+      password: "correct horse battery",
+      cell: CELL,
+      cells: new Set([CELL]),
+      now: NOW,
+    });
+    session = await sessionFor(c.store, user);
+    s = await runServer({
+      config: cfg,
+      version: "0.0.0-test",
+      openControl: async () => c.db,
+      backend: t.backend,
+      now: () => NOW,
+      fetchClient: async () => ({
+        body: new TextEncoder().encode(
+          JSON.stringify({ client_id: CLIENT_ID, redirect_uris: [REDIRECT] }),
+        ),
+      }),
+    });
+    base = `http://${s.address.host}:${s.address.port}`;
+  }, T);
+  afterAll(async () => {
+    await s?.close();
+  }, T);
+
+  /** Signs in at the local accounts' login, consents, redeems the code: the token answer. */
+  async function authorize() {
+    const pageUrl = `${base}/oauth/authorize?${new URLSearchParams({
+      client_id: CLIENT_ID,
+      redirect_uri: REDIRECT,
+      response_type: "code",
+      code_challenge: CHALLENGE,
+      code_challenge_method: "S256",
+      resource: `${PUBLIC}/mcp`,
+      state: "st-1",
+    })}`;
+    const out = await fetch(pageUrl, { redirect: "manual" });
+    const loginAt = new URL(out.headers.get("location") as string, base);
+    const form = await fetch(`${base}${loginAt.pathname}${loginAt.search}`);
+    const formToken = /name="form_token" value="([^"]+)"/.exec(await form.text())?.[1] as string;
+    const login = await fetch(`${base}/account/login`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { ...FORM, cookie: (form.headers.get("set-cookie") ?? "").split(";")[0] as string },
+      body: new URLSearchParams({
+        form_token: formToken,
+        return_to: loginAt.searchParams.get("return_to") as string,
+        name: "sasha",
+        password: "correct horse battery",
+      }).toString(),
+    });
+    const cookie = login.headers
+      .getSetCookie()
+      .find((x) => x.startsWith("saveslot_login="))
+      ?.split(";")[0] as string;
+    const page = await (await fetch(pageUrl, { headers: { cookie } })).text();
+    const answer = await fetch(pageUrl, {
+      method: "POST",
+      redirect: "manual",
+      headers: { ...FORM, cookie },
+      body: new URLSearchParams([
+        ["form_token", /name="form_token" value="([^"]+)"/.exec(page)?.[1] as string],
+        ["decision", "allow"],
+        ["name", "Example Host"],
+        ["scope", "saveslot.read"],
+      ]).toString(),
+    });
+    const code = new URL(answer.headers.get("location") as string).searchParams.get("code");
+    const t = await fetch(`${base}/oauth/token`, {
+      method: "POST",
+      headers: FORM,
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: code as string,
+        code_verifier: VERIFIER,
+        client_id: CLIENT_ID,
+        redirect_uri: REDIRECT,
+      }).toString(),
+    });
+    expect(t.status).toBe(200);
+    return (await t.json()) as { access_token: string; refresh_token: string };
+  }
+
+  it(
+    "its refresh tokens are deleted, and one kept is refused",
+    async () => {
+      const { access_token, refresh_token } = await authorize();
+      const connection = (await (c.cp as ServerControlPlane).credential(tokenHash(access_token)))
+        ?.principal as string;
+      expect(connection).toMatch(/^ci_/);
+      const refreshRows = async () =>
+        (
+          await c.store.read((tx) =>
+            tx.query("SELECT 1 FROM oauth_refresh_tokens WHERE hash = $1", [
+              tokenHash(refresh_token),
+            ]),
+          )
+        ).rows.length;
+      expect(await refreshRows()).toBe(1);
+      const r = await fetch(`${base}/v1/connections/${connection}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${session}` },
+      });
+      expect(r.status).toBe(200);
+      expect(await refreshRows()).toBe(0);
+      const again = await fetch(`${base}/oauth/token`, {
+        method: "POST",
+        headers: FORM,
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token,
+          client_id: CLIENT_ID,
+        }).toString(),
+      });
+      expect(again.status).toBe(400);
+      expect(((await again.json()) as { error: string }).error).toBe("invalid_grant");
     },
     T,
   );

@@ -133,6 +133,7 @@ describe("saveslot server init", () => {
           "oauth_clients",
           "oauth_codes",
           "oauth_grants",
+          "oauth_refresh_tokens",
           "web_forms",
           // The local accounts': no external login settings are given.
           "accounts",

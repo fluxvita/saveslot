@@ -9,7 +9,11 @@ import type { CallerResolver, ServedTenant } from "./callers.ts";
 import { ContractError } from "./contract-error.ts";
 import type { ControlPlane, TenantId, UserId } from "./control-plane.ts";
 import { authenticateServer, type Caller, type CheckCredential } from "./server-auth.ts";
-import { issueServerConnection, revokeServerConnection } from "./server-connections.ts";
+import {
+  issueServerConnection,
+  type RevokedOAuth,
+  revokeServerConnection,
+} from "./server-connections.ts";
 import { type OpenTenant, type TenantPool, TenantPoolError } from "./tenant-pool.ts";
 
 /** What the callers need of the identity provider: an account's state. */
@@ -109,11 +113,17 @@ export function serverCallers(o: {
   readonly identity: AccountStates;
   /** A further check of a credential found and not expired (an OAuth token's audience). */
   readonly checkCredential?: CheckCredential;
+  /**
+   * The OAuth tables, whose refresh tokens of a connection go when it is revoked (`runServer`
+   * always gives them); absent, there are none to drop.
+   */
+  readonly oauth?: RevokedOAuth;
   /** The request's time, as `toISOString` writes it (`authenticateServer` refuses any other). */
   readonly now: () => string;
   readonly authenticate?: AuthenticateServer;
 }): CallerResolver {
   const authenticate = o.authenticate ?? authenticateServer;
+  const oauth: RevokedOAuth = o.oauth ?? { dropRefreshTokens: async () => 0 };
   const served = (tenant: TenantId, t: OpenTenant): ServedTenant => ({
     tenant,
     store: t.store,
@@ -128,7 +138,7 @@ export function serverCallers(o: {
           via: "token",
         }),
       revoke: (ctx, id) =>
-        revokeServerConnection({ control: o.control, tenant, store: t.store, ctx, id }),
+        revokeServerConnection({ control: o.control, oauth, tenant, store: t.store, ctx, id }),
     },
   });
   return {
