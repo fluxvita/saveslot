@@ -399,6 +399,18 @@ const EXAMPLE_EVENT = [
   { kind: "write", op: 20, event: 21, seen: 10, fields: { f2: { value: "2", sources: ["S20"] } } },
 ] as unknown as Op[];
 
+/**
+ * An event table's item open and not reached: f2 written, changed at the current version, then
+ * written at the first version (stale: a conflict item on f2); then f3 written at the current
+ * version, which leaves the item as it was.
+ */
+const EXAMPLE_UNREACHED_EVENT = [
+  { kind: "write", op: 10, event: 11, seen: 0, fields: { f2: { value: "1", sources: ["S10"] } } },
+  { kind: "write", op: 20, event: 21, seen: 10, fields: { f2: { value: "2", sources: ["S20"] } } },
+  { kind: "write", op: 30, event: 31, seen: 10, fields: { f2: { value: "3", sources: ["S30"] } } },
+  { kind: "write", op: 40, event: 41, seen: 20, fields: { f3: { value: "x", sources: ["S40"] } } },
+] as unknown as Op[];
+
 const TENANT = `tn_${"8".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}`;
 const ROW = `r_${"6".repeat(26)}`;
@@ -891,10 +903,24 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
               ("items" in x.judgement.record &&
                 x.judgement.record.items.some((y) => y.status === "awaiting")),
           );
+          // The items it opens are all on f2 alone: a write of f3 at the current version, before
+          // the reaching one, leaves them unreached. Half the samples get one (by the number of their
+          // ops), so that an item open and not reached is common rather than rare.
+          const onF2 = judgedOnce.steps.every(
+            (x) =>
+              x.judgement.conflicts.every(
+                (c) => c.unit !== "existence" && c.unit.fields.join() === "f2",
+              ) &&
+              (!("items" in x.judgement.record) ||
+                x.judgement.record.items.every(
+                  (y) => y.status !== "awaiting" || y.target === "f2",
+                )),
+          );
           // After every op of the sample, the ones judge refused included: a refused op is not in
           // the log, but its number is taken, and the log's numbers only grow.
-          const last = Math.max(0, ...ops.map((o) => o.op));
-          if (opens && reach) {
+          let last = Math.max(0, ...ops.map((o) => o.op));
+          let base = judgedOnce;
+          if (opens && onF2 && ops.length % 2 === 0) {
             const op = last + 10;
             ops.push({
               kind: "write",
@@ -904,11 +930,27 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
               ...(isState
                 ? { valid: { from: { mode: "given", value: "2026-01-01" }, to: { mode: "open" } } }
                 : {}),
+              fields: { f3: { value: "aside", sources: [`S${op}`] } },
+              acknowledge: ["overwrite"],
+            } as unknown as Op);
+            last = op;
+            base = judged(schema, ops, []);
+          }
+          if (opens && reach) {
+            const op = last + 10;
+            ops.push({
+              kind: "write",
+              op,
+              event: op + 2,
+              seen: versionsOf(base.steps).at(-1) ?? last,
+              ...(isState
+                ? { valid: { from: { mode: "given", value: "2026-01-01" }, to: { mode: "open" } } }
+                : {}),
               fields: { f2: { value: "reached", sources: [`S${op}`] } },
               acknowledge: ["overwrite"],
             } as unknown as Op);
           }
-          const { steps } = opens && reach ? judged(schema, ops, []) : judgedOnce;
+          const { steps } = opens && reach ? judged(schema, ops, []) : base;
           await main.reset();
           const store = main.store;
           const run = (events: NewEvent[]) =>
@@ -1320,6 +1362,8 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
               [{ ops: EXAMPLE_EVENT, decisions: [] }, true, true],
               [{ ops: EXAMPLE_EVENT, decisions: [] }, false, false],
               [{ ops: EXAMPLE_EVENT, decisions: [] }, false, true],
+              [{ ops: EXAMPLE_UNREACHED_EVENT, decisions: [] }, false, false],
+              [{ ops: EXAMPLE_UNREACHED_EVENT, decisions: [] }, true, true],
               ...EXAMPLES_LAST_REFUSED_EVENT.map(
                 (ops) =>
                   [{ ops, decisions: [] }, true, false] as [
@@ -1337,6 +1381,9 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     // 100, too few for a guard that never fails.
     // The cases each sample must reach are built in (above); these only guard against a generator
     // gone degenerate as a whole.
+    // `unreached` on an event table: the fixed example EXAMPLE_UNREACHED_EVENT builds it; with the
+    // write of f3 put before the reaching one, 15 runs of the default count gave 14–25 such steps a
+    // run (shares 0.30–0.48); without it 0–12, one run none.
     if (process.env["JUDGE_STATS"]) console.log(schema.kind, JSON.stringify({ ...seen, modes }));
     // The four modes, every run (the fixed examples).
     expect(Object.keys(modes).sort()).toEqual([
