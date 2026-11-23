@@ -451,6 +451,48 @@ const twoFieldsSkeleton = (state: boolean) =>
   });
 
 /**
+ * A stale write giving both fields after a change of one (09-references-conflict-sync «冲突单元»):
+ * #20 changes f2 only; #30, having seen #10, writes f2 and f3. With f2 and f3 in a group the
+ * conflict is the group's and both are candidates (conflict criterion ⑤); without, only f2.
+ * Decisions on the item follow at random, with random steps.
+ */
+const groupSkeleton = (state: boolean) =>
+  fc
+    .tuple(fc.nat({ max: 1 }), fc.constantFrom("1", "2"), fc.array(writeStep, { maxLength: 3 }))
+    .map(([a, v, tail]) => {
+      const sp = (f: number, t: number | null) => (state ? { valid: span(f, t) } : {});
+      const head: Op[] = [
+        {
+          kind: "write",
+          op: 10,
+          event: 11,
+          seen: 0,
+          ...sp(0, null),
+          fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+          acknowledge: ["overwrite"],
+        },
+        {
+          kind: "write",
+          op: 20,
+          event: 21,
+          seen: 10,
+          ...sp(a, null),
+          fields: { f2: { value: "5", sources: ["S20"] } },
+          acknowledge: ["overwrite"],
+        },
+        {
+          kind: "write",
+          op: 30,
+          event: 31,
+          seen: 10,
+          ...sp(a, null),
+          fields: { f2: { value: v, sources: ["S30"] }, f3: { value: "b", sources: ["S30f3"] } },
+        },
+      ];
+      return toOps(tail, state, head);
+    });
+
+/**
  * One write, two units (the review's a2, state tables): its f2 runs to the next change, #21's
  * start, and meets #31's change only (the f2 item); its f3 runs on and meets the revoke #41 (the
  * item on existence). Decisions on either item follow at random, with random steps. Ops 10 apart:
@@ -604,6 +646,7 @@ export const scenario = (state: boolean) =>
             { weight: 1, arbitrary: splitSkeleton },
             { weight: 1, arbitrary: refusedTakeSkeleton(true) },
             { weight: 1, arbitrary: twoFieldsSkeleton(true) },
+            { weight: 1, arbitrary: groupSkeleton(true) },
             { weight: 1, arbitrary: wholeSkeleton },
             { weight: 1, arbitrary: mixedUnitsSkeleton },
           )
@@ -614,6 +657,7 @@ export const scenario = (state: boolean) =>
             { weight: 1, arbitrary: existenceSkeleton(false) },
             { weight: 1, arbitrary: refusedTakeSkeleton(false) },
             { weight: 1, arbitrary: twoFieldsSkeleton(false) },
+            { weight: 1, arbitrary: groupSkeleton(false) },
           ),
       decisions: fc.array(decision, { maxLength: 5 }),
       fallback: fc.array(fc.boolean(), { maxLength: 9 }),
@@ -639,13 +683,11 @@ function withoutVer(o: Op, drop: boolean): Op {
  * (01-objects «目标与合并»): by write, in log order, a write's candidates joining the earliest item
  * whose interval meets theirs (on state tables), or opening one.
  */
-function itemsOfUnit(
-  state: RowState,
-  unit: FieldId | "existence",
-): { events: number[]; spans: IntervalSet }[] {
+function itemsOfUnit(state: RowState, unit: UnitName): { events: number[]; spans: IntervalSet }[] {
   const spansOf = new Map<number, IntervalSet>();
   for (const x of state.items) {
-    if (x.status !== "candidate" || unitOf(x) !== unit) continue;
+    if (x.status !== "candidate" || unitKeyOf(unitOf(x, state.table.groups)) !== unitKeyOf(unit))
+      continue;
     if (state.closedCandidate(x.event, x.target)) continue;
     spansOf.set(x.event, canonical([...(spansOf.get(x.event) ?? []), ...x.valid]));
   }
@@ -661,8 +703,25 @@ function itemsOfUnit(
   return items;
 }
 
-export const unitOf = (x: { target: string; onExistence?: true }): FieldId | "existence" =>
-  x.target === "existence" || x.onExistence === true ? "existence" : (x.target as FieldId);
+/** A conflict unit as the reference names it: a field, a field group, or existence. */
+export type UnitName = FieldId | readonly FieldId[] | "existence";
+
+const unitKeyOf = (u: UnitName): string =>
+  u === "existence" ? u : typeof u === "string" ? u : [...u].sort().join(",");
+
+/**
+ * The unit of the item a candidate item belongs to, as the reference names it: existence when it
+ * met a revoke; else its field's group (01-objects «冲突单元») when the field is in one, or the
+ * field.
+ */
+export const unitOf = (
+  x: { target: string; onExistence?: true },
+  groups: readonly (readonly FieldId[])[] = [],
+): UnitName => {
+  if (x.target === "existence" || x.onExistence === true) return "existence";
+  const group = groups.find((g) => g.includes(x.target as FieldId));
+  return group !== undefined && group.length > 1 ? [...group].sort() : (x.target as FieldId);
+};
 
 export function toInput(o: Op): JudgeInput {
   const base = { op: o.op, index: 0, event: o.event, ruleset: 1, policy: 1 };
@@ -798,11 +857,15 @@ export function judged(
       // candidates join the earliest item whose interval meets theirs, or open one). A
       // take_candidate goes to the item holding the candidate taken; another decision to the
       // earliest item. (A dropped `ver` may have changed which writes conflict.)
-      if (typeof o.unit !== "string") throw new Error("field-group units are not generated here");
-      const items = itemsOfUnit(state, o.unit);
+      // A skeleton names a field; on a schema with groups the item is its group's.
+      const named =
+        o.unit === "existence" || typeof o.unit !== "string"
+          ? o.unit
+          : unitOf({ target: o.unit }, table.groups);
+      const items = itemsOfUnit(state, named);
       const item =
         o.take === undefined ? items[0] : items.find((i) => i.events.includes(o.take as number));
-      if (item !== undefined) enter({ ...o, candidates: item.events });
+      if (item !== undefined) enter({ ...o, unit: named, candidates: item.events });
     } else if (o.kind === "confirm" || o.kind === "reject") {
       // A skeleton's decision, on an item still awaiting.
       const awaiting = state.items.some(
@@ -848,7 +911,7 @@ export function judged(
         );
         const x = open[d.pick % Math.max(1, open.length)];
         if (x === undefined) return;
-        const unit = unitOf(x);
+        const unit = unitOf(x, table.groups);
         // A decision on the item holding the candidate picked (01-objects «目标与合并»).
         const candidates = resolving
           ? (itemsOfUnit(state, unit).find((i) => i.events.includes(x.event))?.events ?? [x.event])

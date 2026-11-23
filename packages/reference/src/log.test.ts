@@ -3830,8 +3830,8 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
     expect(ev.fields["f2"]?.[0]?.by?.event).toBe(61);
   });
 
-  // #73: on a field group the evaluator judges conflicts field by field, the kernel by the unit
-  // (conflict criterion ⑤). Pinned as the evaluator is now; when #73 is done both agree.
+  // A field group (09-references-conflict-sync «冲突单元», «组值»): conflicts are judged by the
+  // unit, as the kernel judges them (conflict criterion ⑤).
   const G73: TableSchema = { kind: "state", required: ["f2", "f3"], groups: [["f2", "f3"]] };
   const log73: LogEntry[] = [
     w(10, { f2: ["1", "S1"], f3: ["a", "S1"] }, g("10-01", "open"), { seen: 0 }),
@@ -3840,34 +3840,34 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
     rv(35, "11-01", "11-10", "S3", 34),
   ];
 
-  it("#73 (as now) a group write meeting a change on f2 only: f3 takes effect, unlike the kernel", () => {
+  it("a group write meeting a change on f2 only: f3 is a candidate too, as in the kernel", () => {
     const ev = evaluateLog(G73, [...log73, take(40, [31], ["f2", "f3"], 31)]).final;
-    // The kernel: 31/f3 a closed candidate too, 41/f3 "c", O = [21/f2].
+    // As the kernel: 31/f3 a closed candidate too, 41/f3 "c", O = [21/f2].
     expect(items(ev, 31)).toEqual([
       'f2/0 candidate [10-01, inf) "5" (closed)',
-      'f3/0 applied [10-01, inf) "c"',
+      'f3/0 candidate [10-01, inf) "c" (closed)',
     ]);
-    expect(items(ev, 41)).toEqual(['f2/0 applied [10-01, inf) "5" carried #31/f2/0']);
+    expect(items(ev, 41)).toEqual([
+      'f2/0 applied [10-01, inf) "5" carried #31/f2/0',
+      'f3/0 applied [10-01, inf) "c" carried #31/f3/0',
+    ]);
     expect(ev.takeCandidates).toEqual([
       {
         op: 40,
         mergeBase: 10,
-        cover: [
-          { event: 21, target: "f2" },
-          { event: 31, target: "f3" },
-        ],
+        cover: [{ event: 21, target: "f2" }],
       },
     ]);
   });
 
-  it("#73 (as now) a write giving f3 only in a group: applied, where the kernel makes it a candidate", () => {
+  it("a write giving f3 only in a group: a candidate (the unit met #21's change on f2), as in the kernel", () => {
     const ev = evaluateLog({ kind: "state", required: ["f2"], groups: [["f2", "f3"]] }, [
       w(10, { f2: ["1", "S1"], f3: ["a", "S1"] }, g("10-01", "open"), { seen: 0 }),
       w(20, { f2: ["2", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
       w(30, { f3: ["c", "S5"] }, g("10-01", "open"), { seen: 10 }),
     ]).final;
-    // The kernel: a candidate (the unit [f2, f3] met #21's change), and a take of it is refused.
-    expect(items(ev, 31)).toEqual(['f3/0 applied [10-01, inf) "c"']);
+    // As the kernel: a candidate (the unit [f2, f3] met #21's change).
+    expect(items(ev, 31)).toEqual(['f3/0 candidate [10-01, inf) "c"']);
   });
 
   // Third review (!199 note 7398): each log as given, red on 7dd461c before its fix.

@@ -2,4 +2,5 @@
 // property run and hit counts. Source only (not built); only test files may import it.
 
 export * from "./arbitraries.fixture.ts";
+export * from "./groups.fixture.ts";
 export * from "./prop-coverage.fixture.ts";

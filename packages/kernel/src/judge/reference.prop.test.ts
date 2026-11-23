@@ -131,9 +131,14 @@ const lacksRequired = (schema: TableSchema, o: Op) =>
 /** A JSON round trip, as the records will make through events. */
 const roundTrip = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
 
+/** The two fields of the generator judged together (01-objects «冲突单元»). */
+const GROUPS = [["f2", "f3"]] as const;
+
 const both = [
   ["state", STATE, true],
   ["event", EVENT, false],
+  ["state, group {f2, f3}", { ...STATE, groups: GROUPS }, true],
+  ["event, group {f2, f3}", { ...EVENT, groups: GROUPS }, false],
 ] as const;
 
 describe.each(both)("%s table", (_, schema, isState) => {
@@ -230,6 +235,25 @@ describe.each(both)("%s table", (_, schema, isState) => {
               x.judgement.conflicts.some((c) => c.unit !== "existence")
             ) {
               seen["mixedUnits"] = (seen["mixedUnits"] ?? 0) + 1;
+            }
+            // On a field group: one conflict on the group whose candidates are on both fields
+            // (conflict criterion ⑤), and a resolution of an item on the group.
+            if (
+              x.judgement.conflicts.some(
+                (c) =>
+                  c.unit !== "existence" &&
+                  c.unit.fields.length > 1 &&
+                  new Set(c.items.map((i) => i.target)).size > 1,
+              )
+            ) {
+              seen["groupWhole"] = (seen["groupWhole"] ?? 0) + 1;
+            }
+            if (
+              (r.kind === "keep_effective" || r.kind === "take_candidate") &&
+              r.unit !== "existence" &&
+              r.unit.fields.length > 1
+            ) {
+              seen["groupResolved"] = (seen["groupResolved"] ?? 0) + 1;
             }
             if (x.judgement.conflicts.some((c) => c.unit === "existence" && c.items.length > 1)) {
               seen["existenceSeveralFields"] = (seen["existenceSeveralFields"] ?? 0) + 1;
@@ -440,7 +464,8 @@ describe.each(both)("%s table", (_, schema, isState) => {
           "takeRefused_required_in_gap",
           "existenceSeveralFields",
           "takeRefused_missing_required",
-          "mixedUnits",
+          // A write's candidates on two units: f2 and f3 are two units only without the group.
+          ...("groups" in schema ? ["groupWhole", "groupResolved"] : ["mixedUnits"]),
         ]
       : [
           "take",
@@ -449,6 +474,7 @@ describe.each(both)("%s table", (_, schema, isState) => {
           "take_revoke",
           "takeRefused_revoked",
           "existenceSeveralFields",
+          ...("groups" in schema ? ["groupWhole", "groupResolved"] : []),
         ];
     for (const key of situations) {
       expect({ key, reached: (seen[key] ?? 0) > 0 }).toEqual({ key, reached: true });

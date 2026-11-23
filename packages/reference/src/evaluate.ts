@@ -264,6 +264,10 @@ class Replay {
   readonly rejectedRevoked = new Set<OpNumber>();
   readonly mergeBases = new Map<OpNumber, { mergeBase: OpNumber }>();
   readonly coverSets = new Map<OpNumber, RevertEntry[]>();
+  /** Conflict units (fields joined by ",") a field of the write being judged conflicted on. */
+  readonly unitsInConflict = new Set<string>();
+  /** Units judged as in conflict (conflict criterion ⑤), while a write's group is judged again. */
+  readonly forcedUnits = new Set<string>();
   readonly takeFilled = new Map<OpNumber, Set<string>>();
   readonly decidedItems = new Map<OpNumber, Set<string>>();
   /** Candidate fields judged in this replay: whether the conflict met a revoke (see `Recorded`). */
@@ -733,7 +737,11 @@ class Replay {
     seen: number,
     cur: number,
     met?: { revoke: boolean },
+    o?: WriteOp,
   ): boolean {
+    if (o !== undefined && this.unitOf(f).length > 1) {
+      return this.groupConflicts(o, f, value, seenValid, defaultEnd, from, seen, cur, met);
+    }
     let found = false;
     // The conflict met a revoke when one of the conflicting operations has a revoke in effect over
     // the part (as judge's conflict record has it).
@@ -785,6 +793,98 @@ class Replay {
       const inter = intersect(seenValid, changed);
       for (const s of this.segments([inter])) {
         if (covers(inter, s) && this.vis(f, s, cur) !== value) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The conflict criterion on a field group (09-references-conflict-sync «冲突单元», «组值»): an
+   * operation L after V that changed any field of the group meets W where the group value differs.
+   * W's group value: for each field of the group, W's value where W gives it (and it is not a
+   * no-op or deleted), else the value in V; the current group value: each field's value now. A
+   * default end against a default end compares W's group value with the group value L left at the
+   * start. The same-value step (①) stays field by field: this judges only what reaches `ordinary`.
+   */
+  groupConflicts(
+    o: WriteOp,
+    f: FieldId,
+    value: string,
+    seenValid: IvSet,
+    defaultEnd: boolean,
+    from: Point | null,
+    seen: number,
+    cur: number,
+    met?: { revoke: boolean },
+  ): boolean {
+    const unit = this.unitOf(f);
+    const given = (h: FieldId) => {
+      const input = o.fields[h];
+      return input !== undefined &&
+        !o.noop?.includes(h) &&
+        !this.rec.noops.has(etKey(o.event, h)) &&
+        !this.isDeleted(input.sources)
+        ? tok(input.value)
+        : undefined;
+    };
+    const mine = (h: FieldId, s: Iv) => (h === f ? value : (given(h) ?? this.vis(h, s, seen)));
+    const differs = (s: Iv, at: number) => unit.some((h) => this.vis(h, s, at) !== mine(h, s));
+    let found = false;
+    const note = (op: number, part: IvSet) => {
+      found = true;
+      if (met !== undefined && !met.revoke) {
+        met.revoke = this.items.some(
+          (x) =>
+            x.op === op &&
+            x.status === "applied" &&
+            x.content.kind === "revoke" &&
+            !isEmpty(intersect(x.valid, part)),
+        );
+      }
+    };
+    // The operations that changed some field of the group, each with where it changed one.
+    const byOp = new Map<number, IvSet[]>();
+    for (const h of unit) {
+      for (const c of this.changesSince(h, seen, cur)) {
+        byOp.set(c.op, [...(byOp.get(c.op) ?? []), c.changed]);
+      }
+    }
+    for (const [op, changed] of [...byOp].sort((a, b) => a[0] - b[0])) {
+      if (!this.isState) {
+        note(op, [ALL]);
+        if (met === undefined) return true;
+        continue;
+      }
+      const lItems = this.items.filter(
+        (x) =>
+          x.op === op &&
+          x.status === "applied" &&
+          (x.target === "existence" || unit.includes(x.target as FieldId)),
+      );
+      const lFields = lItems.filter((x) => x.target !== "existence");
+      if (defaultEnd && lFields.length > 0 && lFields.every((x) => x.defaultEnd)) {
+        if (lFields.some((x) => x.from === from)) {
+          const start = this.segments([seenValid]).find((g) => covers(seenValid, g));
+          if (start !== undefined && differs(start, op)) {
+            note(op, seenValid);
+            if (met === undefined) return true;
+          }
+        }
+        continue;
+      }
+      const lValid = lItems.length > 0 ? union(...lItems.map((x) => x.valid)) : union(...changed);
+      const inter = intersect(seenValid, lValid);
+      if (this.segments([inter]).some((g) => covers(inter, g) && differs(g, cur))) {
+        note(op, seenValid);
+        if (met === undefined) return true;
+      }
+    }
+    if (found) return true;
+    for (const h of unit) {
+      for (const changed of this.externalChanges(h, seen, cur)) {
+        if (!this.isState) return true;
+        const inter = intersect(seenValid, changed);
+        if (this.segments([inter]).some((g) => covers(inter, g) && differs(g, cur))) return true;
       }
     }
     return false;
@@ -926,6 +1026,34 @@ class Replay {
           : undefined;
         this.judgeField(o, f, input, b.position, cur, fresh, sync);
       } else this.judgeField(o, f, input, seen, cur, fresh);
+    }
+    // Conflict criterion ⑤ on a field group: a conflict on any field the write gives in the group
+    // makes its parts on the group's other fields candidates too. Those fields are judged again
+    // with the unit forced; their corroborated parts stay as they are.
+    const groupsHit = [...this.unitsInConflict].filter((u) => u.includes(","));
+    this.unitsInConflict.clear();
+    if (groupsHit.length > 0) {
+      const again = (Object.keys(o.fields) as FieldId[]).filter(
+        (f) =>
+          groupsHit.includes(this.unitOf(f).join(",")) &&
+          fresh.some((x) => x.target === f && x.status === "applied"),
+      );
+      if (again.length > 0) {
+        for (const f of again) {
+          for (let i = fresh.length - 1; i >= 0; i--)
+            if (fresh[i]?.target === f) fresh.splice(i, 1);
+        }
+        for (const u of groupsHit) this.forcedUnits.add(u);
+        try {
+          for (const f of again) {
+            const input = o.fields[f];
+            if (input !== undefined) this.judgeField(o, f, input, seen, cur, fresh);
+          }
+        } finally {
+          this.forcedUnits.clear();
+          this.unitsInConflict.clear();
+        }
+      }
     }
     const applied = fresh.filter((it) => it.status === "applied");
     if (applied.length > 0) {
@@ -1101,10 +1229,14 @@ class Replay {
     let conflict =
       (r === "candidate" && this.closedCandidate(o.event, f)) || this.listedByResolution(o.event, f)
         ? true
-        : this.conflicts(f, v, seenValid, defaultEnd, from, seen, cur, met);
+        : this.conflicts(f, v, seenValid, defaultEnd, from, seen, cur, met, o);
+    // Conflict criterion ⑤: a conflict anywhere in the unit makes every part of the write judged
+    // there a candidate (`write` judges a group's fields again with the unit forced).
+    if (this.forcedUnits.has(this.unitOf(f).join(","))) conflict = true;
     if (conflict) {
       const key = etKey(o.event, f);
       this.metRevoke.set(key, (this.metRevoke.get(key) ?? false) || met.revoke);
+      this.unitsInConflict.add(this.unitOf(f).join(","));
     }
     if (r === "effective") conflict = false; // deviation two: what was in effect stays in effect
     // An awaiting write a person confirmed or rejected is a recorded decision (deviation one): it
@@ -1689,6 +1821,8 @@ class Replay {
     };
     const fresh: Item[] = [];
     const written: IvSet[] = [];
+    /** The fields the take writes an item on. */
+    const writes: FieldId[] = [];
     for (const f of fields) {
       const input = takenOp?.kind === "write" ? takenOp.fields[f] : undefined;
       if (input === undefined) continue;
@@ -1705,6 +1839,7 @@ class Replay {
       const segs = this.segments([valid]).filter((g) => covers(valid, g));
       if (segs.every((g) => this.vis(f, g, n - 1) === v)) continue; // same value: no contribution
       written.push(valid);
+      writes.push(f);
       // One item per stretch: an item has one interval (09 §5.7 `span/<f>/<k>`).
       for (const part of pieces(valid)) {
         fresh.push({
@@ -1735,15 +1870,13 @@ class Replay {
       return;
     }
     const all = union(...written);
-    // The fields the taken write gives, not the unit's: a field of a group it does not give has no
-    // value written into the hole (as judge checks a take).
-    const given = fields.filter(
-      (f) => takenOp?.kind === "write" && takenOp.fields[f] !== undefined,
-    );
+    // The fields the take writes an item on, not the unit's nor the request's: a field of a group
+    // the taken write does not give, or gives as a no-op (no item, so nothing to take), has no value
+    // written into the hole (as judge checks a take: on what takes effect).
     if (
       judging &&
       this.isState &&
-      this.schema.required.some((r) => !given.includes(r)) &&
+      this.schema.required.some((r) => !writes.includes(r)) &&
       this.segments([all])
         .filter((g) => covers(all, g))
         .some((g) => !this.hasValue(g, n - 1))

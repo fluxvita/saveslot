@@ -163,9 +163,14 @@ const timelines = (fields: Readonly<Record<string, unknown>>, names: readonly st
     ]),
   );
 
+/** The two fields of the generator judged together (01-objects «冲突单元»). */
+const GROUPS = [["f2", "f3"]] as const;
+
 const both = [
   ["state", STATE, true],
   ["event", EVENT, false],
+  ["state, group {f2, f3}", { ...STATE, groups: GROUPS }, true],
+  ["event, group {f2, f3}", { ...EVENT, groups: GROUPS }, false],
 ] as const;
 
 type Schema = (typeof both)[number][1];

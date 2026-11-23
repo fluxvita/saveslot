@@ -42,9 +42,9 @@
 // key transferred from a revoked row (not in the first version); a log with both ops by key and
 // deletion events is refused as not modelled (deletions meeting sync are P3).
 //
-// Not modelled in this first version: conflict groups (`together`), schema switches and constant
-// backfill, premises, `ref` fields and high impact ②, system rulings, deletion of evidence and
-// deletion by row (07-scope-v1: later), `deps`.
+// Not modelled in this first version: schema switches and constant backfill, premises, `ref`
+// fields and high impact ②, system rulings, deletion of evidence and deletion by row (07-scope-v1:
+// later), `deps`.
 
 import type {
   BizPoint,
@@ -66,13 +66,11 @@ export interface TableSchema {
   /** Required fields (03-deletion «重放规则», «行 / 实体的存在»). */
   readonly required: readonly FieldId[];
   /**
-   * Field groups judged together (01-objects «冲突单元»). Only which item a candidate belongs to
-   * is modelled: a write's candidates on a group go to the item on existence when any of its
-   * fields met a revoke. Conflicts are still judged field by field, where the kernel judges them
-   * by the unit (conflict criterion ⑤: a conflict anywhere in the unit makes every target of the
-   * write in it a candidate). So on a field group the evaluator and the kernel differ when written
-   * (issue #73): conclusions with groups hold only where the conflicting writes give every field
-   * of the group. The comparison with the kernel generates no groups.
+   * Field groups judged together (09-references-conflict-sync «冲突单元», «组值»): a write
+   * conflicts on a group when an operation after its version changed any field of the group and
+   * the group value differs (conflict criterion ⑤: then every part of the write judged on the
+   * group is a candidate); the same-value step stays field by field. A write's candidates on a
+   * group go to the item on existence when any of its fields met a revoke.
    */
   readonly groups?: readonly (readonly FieldId[])[];
 }
