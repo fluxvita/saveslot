@@ -1,0 +1,25 @@
+{
+  "name": "@fluxvita/saveslot-connector-ts",
+  "version": "0.0.1",
+  "private": true,
+  "description": "TypeScript SDK for writing saveslot connectors (the TypeScript side; other platforms have their own SDKs).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/.tsbuildinfo"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

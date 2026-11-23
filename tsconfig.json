@@ -12,6 +12,7 @@
     { "path": "packages/daemon" },
     { "path": "packages/client" },
     { "path": "packages/cli" },
-    { "path": "packages/saveslot" }
+    { "path": "packages/saveslot" },
+    { "path": "packages/connector-ts" }
   ]
 }

@@ -20,6 +20,16 @@ const PACKAGE_DEPS = {
   reference: ["contract-core"],
   // The backend tests open their stores with: either of the two (§11 «测试矩阵»).
   "test-backend": ["kernel", "store-pglite", "store-postgres"],
+  // The TypeScript connector SDK is a caller of the service over HTTP, like a script: it imports no package.
+  "connector-ts": [],
+};
+
+/**
+ * Package → workspace packages its test files may import besides: the connector SDK's tests start
+ * the real local service and call it over its socket.
+ */
+const TEST_DEPS = {
+  "connector-ts": ["daemon", "service", "store-pglite"],
 };
 
 /** Test-only packages: any test file may import them, no other file may. */
@@ -89,17 +99,30 @@ const TRANSPORT_MODULES = ["http", "https", "http2", "net", "tls", "dgram"];
 
 const alt = (names) => names.map((n) => n.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")).join("|");
 
-const packageRules = Object.entries(PACKAGE_DEPS).map(([pkg, allowed]) => ({
-  name: `package-${pkg}`,
+const packageRule = (name, pkg, allowed, from) => ({
+  name,
   comment: `${pkg} may only import workspace packages: ${allowed.join(", ") || "(none)"}`,
   severity: "error",
-  from: { path: `^packages/${pkg}/` },
+  from,
   to: {
     path: `^packages/(?!(?:${alt([pkg, ...allowed])})/)`,
     // Test-only packages are covered by the "test-only-package" rule instead.
     pathNot: `^packages/(?:${alt(TEST_ONLY_PACKAGES)})/`,
   },
-}));
+});
+
+const packageRules = Object.entries(PACKAGE_DEPS).flatMap(([pkg, allowed]) => {
+  const tests = TEST_DEPS[pkg];
+  if (tests === undefined) {
+    return [packageRule(`package-${pkg}`, pkg, allowed, { path: `^packages/${pkg}/` })];
+  }
+  return [
+    packageRule(`package-${pkg}`, pkg, allowed, { path: `^packages/${pkg}/`, pathNot: TEST_FILE }),
+    packageRule(`package-${pkg}-tests`, pkg, [...allowed, ...tests], {
+      path: `^packages/${pkg}/.*${TEST_FILE}`,
+    }),
+  ];
+});
 
 const kernelModuleRules = Object.entries(KERNEL_MODULE_DEPS).map(([mod, allowed]) => ({
   name: `kernel-module-${mod}`,
