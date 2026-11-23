@@ -57,8 +57,10 @@ type Step =
   | { t: "sync"; v: string; explicit: boolean; f1: string }
   | { t: "local"; v: string; lag: number }
   | { t: "revoke" }
+  // A revoke undone at once: the writes after it that meet its reach are on existence.
+  | { t: "revokeBack" }
   | { t: "undo"; back: number }
-  | { t: "resolve"; decision: ResolveOp["decision"] };
+  | { t: "resolve"; decision: ResolveOp["decision"]; unit: "f2" | "existence" };
 
 const step: fc.Arbitrary<Step> = fc.oneof(
   {
@@ -79,6 +81,7 @@ const step: fc.Arbitrary<Step> = fc.oneof(
     }),
   },
   { weight: 1, arbitrary: fc.record({ t: fc.constant("revoke" as const) }) },
+  { weight: 1, arbitrary: fc.record({ t: fc.constant("revokeBack" as const) }) },
   {
     weight: 2,
     arbitrary: fc.record({ t: fc.constant("undo" as const), back: fc.nat({ max: 2 }) }),
@@ -92,6 +95,8 @@ const step: fc.Arbitrary<Step> = fc.oneof(
         "keep_effective",
         "take_previous",
       ),
+      // On existence: a candidate that met a revoke's reach (a sync after a revoke undone).
+      unit: fc.constantFrom<"f2" | "existence">("f2", "existence"),
     }),
   },
 );
@@ -141,7 +146,10 @@ function build(byHand: boolean, first: string, steps: readonly Step[]): LogEntry
       const seen = Math.max(10, op - 10 * (1 + s.lag));
       log.push({ kind: "write", op, event, seen, fields: { f2: field(s.v, `user${op}`) } });
     } else if (s.t === "revoke") log.push({ kind: "revoke", op, event });
-    else if (s.t === "undo") {
+    else if (s.t === "revokeBack") {
+      log.push({ kind: "revoke", op, event });
+      log.push({ kind: "undo", op: op + 5, event: op + 6, target: op });
+    } else if (s.t === "undo") {
       const r = evaluateLog(TIMELESS, log);
       const recorded = r.steps
         .filter((x) => !x.refused && x.outcome !== "unchanged" && x.outcome !== "skipped")
@@ -151,20 +159,29 @@ function build(byHand: boolean, first: string, steps: readonly Step[]): LogEntry
       if (target !== undefined) log.push({ kind: "undo", op, event, target });
     } else {
       const open = evaluateLog(TIMELESS, log).final.items.filter(
-        (x) => x.status === "candidate" && !x.closed && x.target === "f2",
+        (x) =>
+          x.status === "candidate" && !x.closed && (s.unit === "existence" || x.target === "f2"),
       );
       const events = [...new Set(open.map((x) => x.event))].sort((a, b) => a - b);
       const take = events.at(-1);
       if (take === undefined) return;
-      log.push({
+      const o: ResolveOp = {
         kind: "resolve",
         op,
         event,
         decision: s.decision,
-        candidates: events,
-        unit: "f2",
+        // On existence the latest candidate alone: whether its items are on existence is the
+        // reference's to say, so the resolution is kept only when it is not rejected (as the
+        // reference's own sync.prop.test.ts does).
+        candidates: s.unit === "existence" ? [take] : events,
+        unit: s.unit,
         ...(s.decision === "take_candidate" ? { take } : {}),
-      });
+      };
+      if (s.unit === "existence") {
+        const judged = evaluateLog(TIMELESS, [...log, o]).steps.at(-1);
+        if (judged === undefined || judged.refused || judged.rejected !== undefined) return;
+      }
+      log.push(o);
     }
   });
   return log;
@@ -361,6 +378,21 @@ function referenceRefuses(before: readonly LogEntry[], o: LogEntry, reason: stri
  * same value sent again with evidence (a no-op).
  */
 const FIXED: [{ byHand: boolean; first: string; steps: Step[] }][] = [
+  // The review's probe P1: f1 synced to b (f2 a no-op), the row revoked and the revoke undone, f1
+  // synced to c — a candidate on existence — taken back: the merge base is the candidate's
+  // baseline position over the fields it gave (#20, its no-op f2 left out), so f1 is back to b.
+  [
+    {
+      byHand: false,
+      first: "1",
+      steps: [
+        { t: "sync", v: "1", explicit: false, f1: "b" },
+        { t: "revokeBack" },
+        { t: "sync", v: "1", explicit: false, f1: "c" },
+        { t: "resolve", decision: "take_previous", unit: "existence" },
+      ],
+    },
+  ],
   [
     {
       byHand: false,
@@ -437,6 +469,8 @@ describe("writes by external key: judge against the reference evaluator", () => 
             const where = { step: i, op: s.entry.op };
             expect({ ...where, refused: s.refused }).toEqual({ ...where, refused: false });
             if (s.outcome !== undefined) count(`outcome_${s.outcome}`);
+            if (s.entry.kind === "resolve" && s.entry.unit === "existence")
+              count(`resolve_existence_${s.entry.decision}`);
             if ((s.outcome === "unchanged" || s.outcome === "skipped") && i > 0) hits.hit();
             expect({ ...where, outcome: k.outcome }).toEqual({ ...where, outcome: s.outcome });
             if (s.outcome === "skipped") {
@@ -474,6 +508,7 @@ describe("writes by external key: judge against the reference evaluator", () => 
       "field_corroborated",
       "field_candidate",
       "field_noop",
+      "resolve_existence_take_previous",
     ])
       expect({ k, reached: (seen[k] ?? 0) > 0 }).toEqual({ k, reached: true });
   });
