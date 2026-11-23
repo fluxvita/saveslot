@@ -470,10 +470,24 @@ export function replayDeletion(
   // none of its items as recorded — the part a deletion extended (a default end whose blocking
   // point is gone) — takes the write's status on the target: an extension of a candidate still
   // belongs to its item (03-deletion «回掉的权威定义» step 2).
+  // An item's interval as written is not to be trusted once a contribution it rests on (its
+  // deps: what gives its ends) is in the deleted set, pending or carried out: it is read from the
+  // last block that gave it an interval (protection-unit decision, item 6); its status is the
+  // write's.
   const candidateWhenWritten = (event: number, target: Target, valid: IntervalSet): boolean => {
     const w = records.find((x) => x.event === event && (x.kind === "write" || x.kind === "revoke"));
     if (w === undefined || (w.kind !== "write" && w.kind !== "revoke")) return false;
-    const own = w.items.filter((x) => x.target === target);
+    const given = latest.get(contributionKey(event, target)) ?? [];
+    const own = w.items
+      .filter((x) => x.target === target)
+      .map((x) => {
+        if (!x.deps.some((d) => deleted.has(contributionKey(d.event, d.target)))) return x;
+        // The last block that gave it an interval: a restatement as dropped gives none.
+        const last = given.find((b) => b.k === x.k);
+        const valid =
+          last?.landing ?? (last !== undefined && last.valid.length > 0 ? last.valid : x.valid);
+        return { ...x, valid };
+      });
     const hit = own.filter((x) => !isNothing(meet(x.valid, valid)));
     return (hit.length > 0 ? hit : own).some((x) => x.status === "candidate");
   };

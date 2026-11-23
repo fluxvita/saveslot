@@ -321,3 +321,142 @@ describe("an operation after a deletion event (a write in the grace period): not
     ).toMatchObject({ reason: "not_implemented" });
   });
 });
+
+describe("an item's interval as written, once what gives its end is deleted, is read as the log last gave it", () => {
+  // f2 and f3 one group. #10 f2=1, f3=a from 10-01; #20 revokes [11-01, 11-07) (S20); #30 writes
+  // f2=2, f3=b on [11-03, 11-05); #40 (seen 0) f2=9 on [11-01, 11-03): a candidate; #50 (seen
+  // #10) f2=1 from 11-01, pointing at its evidence: a candidate on [11-01, 11-07) (its end the
+  // revoke's), a corroboration from 11-07. #53 takes #50. A deletes S20, then B deletes S10, then
+  // B is cancelled: as A alone, with #51's blocks as A restated them. Its candidate's end 11-07
+  // came from the revoke, which is deleted: its interval is A's restatement [11-01, 11-03), so
+  // from 11-05 #51 was a corroboration when written and the take does not land there.
+  const ops: Op[] = [
+    {
+      ...w(10, 0, { f2: "1", f3: "a" }, { ack: true }),
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+    } as Op,
+    {
+      kind: "revoke",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: d("11-01") },
+        to: { mode: "given", value: d("11-07") },
+      },
+      validSources: ["S20"],
+    } as Op,
+    {
+      ...w(30, 0, { f2: "2", f3: "b" }, { from: "11-03", to: "11-05" }),
+      seen: undefined,
+      fields: { f2: { value: "2", sources: ["S30"] }, f3: { value: "b", sources: ["S30"] } },
+    } as never as Op,
+    w(40, 0, { f2: "9" }, { from: "11-01", to: "11-03" }),
+    {
+      ...w(50, 10, { f2: "1" }, { from: "11-01", ack: true }),
+      fields: { f2: { value: "1", sources: ["S50"], explicit: true } },
+    } as Op,
+    {
+      kind: "resolve",
+      op: 53,
+      event: 54,
+      decision: "take_candidate",
+      candidates: [41, 51],
+      unit: "existence",
+      take: 51,
+    } as Op,
+  ];
+  const schema = { ...STATE, groups: [["f2", "f3"]] } as typeof STATE;
+  it("the take lands on [11-01, 11-05), as the reference evaluator gives it", () => {
+    const { table, steps } = judged(schema, ops, []);
+    expect(steps).toHaveLength(ops.length);
+    const records = steps.map((x) => x.judgement.record);
+    const kept = steps.map((x) => x.op);
+    const gA = deletedContributions(kept, new Set(["S20"]), true);
+    const gB = deletedContributions(kept, new Set(["S10"]), true);
+    const at54 = (items: readonly { event: number; status: string; valid: unknown }[]) =>
+      items.filter((x) => x.event === 54).map((x) => [x.status, x.valid]);
+    // A alone: the blocks as written are the latest; the candidate's interval read from them.
+    const alone = replayDeletion(table, records, gA);
+    const refAlone = evaluateLog(schema, [
+      ...kept,
+      { kind: "deletion", op: 61, id: "pi_a", sources: ["S20"] },
+    ]).final;
+    expect(at54(alone.state.items)).toEqual(at54(refAlone.items));
+    // A, B, B cancelled: A's restatements are the latest.
+    const afterA = laid(givenByRecords(records), alone.restated);
+    const both = replayDeletion(table, records, new Set([...gA, ...gB]), [], afterA);
+    const fromB = new Set(
+      both.restated
+        .filter((r) => r.status !== "dropped")
+        .map((r) => `${r.item.event}/${r.item.target}/${r.item.k}`),
+    );
+    const cB = cancellationResult(
+      table,
+      records,
+      gA,
+      gB,
+      itemsByRecords(new RowState(table, records)),
+      afterA,
+      fromB,
+      [],
+    );
+    const ref = evaluateLog(schema, [
+      ...kept,
+      { kind: "deletion", op: 61, id: "pi_a", sources: ["S20"] },
+      { kind: "deletion", op: 62, id: "pi_b", sources: ["S10"] },
+      { kind: "cancel", op: 63, id: "pi_b" },
+    ]).final;
+    expect(at54(cB.replay.state.items)).toEqual([
+      ["applied", [{ from: d("11-01"), to: d("11-05") }]],
+    ]);
+    expect(at54(cB.replay.state.items)).toEqual(at54(ref.items));
+  });
+});
+
+describe("an item a deletion restated as dropped: its interval is the last one given", () => {
+  // #10 f2=1; #20 f2=2 on [11-01, 11-03); #30 f2=2 on [11-07, 11-09); #40 (seen #10) f2=1 on
+  // [11-01, 11-09), pointing at its evidence: candidates on [11-01, 11-03) and [11-07, 11-09), a
+  // corroboration between; #50 takes it. A deletes S30: the candidate on [11-07, 11-09) is the
+  // same as the value now, restated as dropped. B deletes S20, then is cancelled: as A alone.
+  // The dropped block gives no interval; the last one that did is the write's own, so the take
+  // still lands on [11-01, 11-09).
+  const ops: Op[] = [
+    w(10, 0, { f2: "1" }, { ack: true }),
+    w(20, 10, { f2: "2" }, { from: "11-01", to: "11-03", ack: true }),
+    w(30, 20, { f2: "2" }, { from: "11-07", to: "11-09", ack: true }),
+    {
+      ...w(40, 10, { f2: "1" }, { from: "11-01", to: "11-09" }),
+      fields: { f2: { value: "1", sources: ["S40f2"], explicit: true } },
+    } as Op,
+    {
+      kind: "resolve",
+      op: 50,
+      event: 51,
+      decision: "take_candidate",
+      candidates: [41],
+      unit: "f2",
+      take: 41,
+    } as Op,
+  ];
+  it("the take on [11-01, 11-09), as the reference evaluator gives it", () => {
+    const { table, steps } = judged(STATE, ops, []);
+    const records = steps.map((x) => x.judgement.record);
+    const kept = steps.map((x) => x.op);
+    const gA = deletedContributions(kept, new Set(["S30f2"]), true);
+    const alone = replayDeletion(table, records, gA);
+    const afterA = laid(givenByRecords(records), alone.restated);
+    const replay = replayDeletion(table, records, gA, [], afterA);
+    // The reference's view lists dropped items too: no contribution, not compared.
+    const at51 = (items: readonly { event: number; status: string; valid: unknown }[]) =>
+      items.filter((x) => x.event === 51 && x.status !== "dropped").map((x) => [x.status, x.valid]);
+    const ref = evaluateLog(STATE, [
+      ...kept,
+      { kind: "deletion", op: 61, id: "pi_a", sources: ["S30f2"] },
+      { kind: "deletion", op: 62, id: "pi_b", sources: ["S20f2"] },
+      { kind: "cancel", op: 63, id: "pi_b" },
+    ]).final;
+    expect(at51(replay.state.items)).toEqual([["applied", [{ from: d("11-01"), to: d("11-09") }]]]);
+    expect(at51(replay.state.items)).toEqual(at51(ref.items));
+  });
+});

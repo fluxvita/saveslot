@@ -46,6 +46,13 @@ vi.setConfig({ testTimeout: 120_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 110_000, markInterruptAsFailure: true });
 
 const RUNS = propRuns(600);
+/** A failing run replayed: `PROP_SEED` and `PROP_PATH` as fast-check printed them. */
+const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
+const REPLAY = {
+  numRuns: RUNS,
+  ...(SEED !== undefined ? { seed: SEED } : {}),
+  ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
+};
 
 /** The source data the ops cite, by op. */
 function sourcesOf(o: Op): string[] {
@@ -855,7 +862,7 @@ describe.each(both)("%s table", (_, schema, isState) => {
           ),
         ),
       ),
-      { numRuns: RUNS },
+      REPLAY,
     );
     hits.check();
     console.log(schema.kind, JSON.stringify(seen));
@@ -927,7 +934,7 @@ describe.each(both)("%s table, reverts", (_, schema, isState) => {
           }
         }),
       ),
-      { numRuns: RUNS },
+      REPLAY,
     );
     console.log(schema.kind, "reverts", JSON.stringify({ ...seen, refusedBy }));
     hits.check();
@@ -993,7 +1000,7 @@ describe("state table, people's confirmations and rejections", () => {
           }
         }),
       ),
-      { numRuns: RUNS },
+      REPLAY,
     );
     hits.check();
     console.log("decisions", JSON.stringify(seen));
@@ -1075,7 +1082,7 @@ describe("event table, deviation two", () => {
           }
         }),
       ),
-      { numRuns: RUNS },
+      REPLAY,
     );
     hits.check();
     console.log("event deviation two", JSON.stringify(seen));
