@@ -476,6 +476,9 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `SAVESLOT_TRUSTED_PROXIES` | 受信的反向代理的地址，逗号分隔。连接来自其中之一时，请求的来源地址取 `X-Forwarded-For` 里从右往左第一个不在这组里的地址；否则来源地址就是连接的地址（[`02-architecture.md`](02-architecture.md) §5）。登录失败的计数按这个地址算 | 空 |
 | `SAVESLOT_RATE_LIMIT` | 按租户限流：每个租户每分钟最多的请求数，正整数；设为 0 与不设都是关 | 不设：关（自部署默认关，[`02-architecture.md`](02-architecture.md) §9） |
 | `SAVESLOT_RATE_BURST` | 限流的突发容量：一个租户一次最多连着发多少个请求，正整数；限流关着时不起作用 | 等于 `SAVESLOT_RATE_LIMIT` |
+| `SAVESLOT_IDENTITY_ISSUER` | 外部登录：签发身份声明的平台，声明的 `iss` 须与它相同（声明的 `aud` 须是 `SAVESLOT_PUBLIC_URL`）。三个 `SAVESLOT_IDENTITY_*` 要么全设、要么全不设：全设时身份提供者是外部登录，全不设时是内置本地账户（[`02-architecture.md`](02-architecture.md) §12「身份提供者」）；只设了一部分按写法不对处理，报错写明缺了哪几个。自部署不用设 | 不设：内置本地账户 |
+| `SAVESLOT_IDENTITY_LOGIN_URL` | 外部登录：平台的登录地址，浏览器登录时被送到这里，只带 `state`。必须是 `https://`；只有主机是回环地址时才收 `http://` | 不设 |
+| `SAVESLOT_IDENTITY_KEYS_FILE` | 外部登录：平台的公钥文件，JWK Set（`{"keys": [...]}`），每把是带 `kid` 的 Ed25519 公钥。按密钥文件读：普通文件，属主以外的人没有任何权限，否则拒绝启动；文件里有私钥（`d`）时也拒绝启动，报错写明原因：平台的签名私钥只该在平台上。要换公钥，就换掉这个文件再重启 | 不设 |
 
 必填的变量缺了，或值写法不对，命令什么都不做，写明是哪个变量，退出码 5（与 `config.toml` 被拒的退出码相同，6.2）；报错里不写变量的值（连接串里可能有口令）。
 

@@ -62,6 +62,8 @@ SELECT pg_reload_conf();
 
 **对外开放时，在反向代理上给 `/oauth/` 下的端点和登录页加按来源的限流。** `SAVESLOT_RATE_LIMIT` 按租户计，只管得到带令牌的请求；这些地址不用令牌就能访问，它管不到。
 
+自部署用内置的本地账户登录，`SAVESLOT_IDENTITY_ISSUER`、`SAVESLOT_IDENTITY_LOGIN_URL`、`SAVESLOT_IDENTITY_KEYS_FILE` 这三个变量不用设：它们是我们的云服务接自己的账户系统用的（外部登录）。三个要么全设、要么全不设；只设了一部分，saveslot 拒绝启动，不会悄悄回到本地账户。
+
 连接串里的口令最好经 PostgreSQL 的口令文件（`.pgpass`）或容器的 secret 提供，不写进变量本身。
 
 **句柄签名密钥**由 `server init` 写到 `SAVESLOT_HANDLE_KEY_FILE` 指的位置（那个目录要已经存在），之后 saveslot 只读它，所以可以按只读挂载。saveslot 不会自己轮换它；要换，就换掉文件再重启，换之前发出去的翻页句柄、删除确认这类句柄随之失效，调用方重新取一次即可。
