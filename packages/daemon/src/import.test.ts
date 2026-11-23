@@ -21,6 +21,8 @@ import {
 } from "./service.ts";
 
 const T = 120_000;
+/** The stalled upload's case: the import's own steps under load, and a 90 s guard against a hang. */
+const STALL_T = 240_000;
 const root = mkdtempSync(join(tmpdir(), "saveslot-import-http-"));
 const lines: string[] = [];
 let file: string[] = [];
@@ -419,27 +421,37 @@ describe("the service around an import", () => {
     async () => {
       const h = join(root, "stop-stalled");
       const token = await home(h);
-      const s = await start(h);
+      // No idle limit in reach: only the stop's abort can end this import.
+      const s = await startWith(h, { importBodyIdleMs: 3_600_000 });
+      await untilReady(s);
       async function* stalled() {
         yield bytesOf(file).slice(0, 10);
         await new Promise(() => {});
       }
       const running = upload({ token, home: h }, stalled());
       await untilImporting(token, h);
-      // Not held until the client gives up: the import is aborted while it waits for the body.
-      const ended = await Promise.race([
-        s.stop().then(() => "stopped"),
-        new Promise((r) => setTimeout(() => r("still stopping"), 20_000)),
-      ]);
-      expect(ended).toBe("stopped");
-      expect(await s.exited).toEqual({ code: 0 });
-      const r = await running;
-      if ("status" in r) {
-        expect(reasonOf(r.body)).toEqual({ code: "import_rejected", reason: "incomplete" });
+      // The import under way: its staging directory made (①), so it reads the body now or next.
+      while (!readdirSync(h).some((x) => x.startsWith("data.import-"))) {
+        await new Promise((r) => setTimeout(r, 20));
       }
+      const stopping = s.stop();
+      // The stop's abort reaches the import, which the client sees as its refusal: not held until
+      // the client gives up. The bound only keeps a hang from lasting the whole case.
+      const r = await Promise.race([
+        running,
+        new Promise<string>((done) => setTimeout(() => done("no answer"), 90_000)),
+      ]);
+      expect(typeof r === "object" && "status" in r ? r.status : r).toBe(422);
+      expect(reasonOf((r as { body: string }).body)).toEqual({
+        code: "import_rejected",
+        reason: "incomplete",
+      });
+      // Then the stop ends: nothing else holds it.
+      await stopping;
+      expect(await s.exited).toEqual({ code: 0 });
       expect(readdirSync(h).filter((x) => x.startsWith("data."))).toEqual([]);
     },
-    T,
+    STALL_T,
   );
 
   it(
