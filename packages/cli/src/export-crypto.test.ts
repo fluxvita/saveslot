@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as age from "age-encryption";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   decryptStream,
@@ -51,6 +52,16 @@ async function collect(s: ReadableStream<Uint8Array>): Promise<Uint8Array> {
 const PLAIN = `{"saveslot_export":1}\n${'{"h":{"seq":1}}\n'.repeat(5000)}`; // spans several age chunks
 const PASS = "correct horse battery staple";
 
+// A file for the cases about reading one, where the scrypt work factor plays no part: made at a low
+// factor, which the reader takes from the header. Two scrypt runs at the default factor take
+// seconds on a busy runner; the cases above keep the default, through `encryptStream`.
+async function quickFile(plain: string): Promise<Uint8Array> {
+  const e = new age.Encrypter();
+  e.setScryptWorkFactor(10);
+  e.setPassphrase(PASS);
+  return e.encrypt(bytes(plain));
+}
+
 const codeOf = async (p: Promise<unknown>) =>
   p.then(
     () => "no error",
@@ -85,27 +96,31 @@ describe("encrypting the export stream", () => {
   });
 
   it("a wrong passphrase does not open it", async () => {
-    const enc = await collect(await encryptStream(streamOf([bytes(PLAIN)]), PASS));
+    const enc = await quickFile(PLAIN);
+    // The right one does, at that factor: the refusals below are not about the factor.
+    expect(Buffer.from(await collect(await decryptStream(streamOf([enc]), PASS))).toString()).toBe(
+      PLAIN,
+    );
     await expect(
       decryptStream(streamOf([enc]), `${PASS}x`).then((s) => collect(s)),
     ).rejects.toThrow();
   });
 
   it("a truncated file fails by the end of reading, never as a short success", async () => {
-    const enc = await collect(await encryptStream(streamOf([bytes(PLAIN)]), PASS));
+    const enc = await quickFile(PLAIN);
     const cut = enc.subarray(0, enc.length - 100);
     await expect(decryptStream(streamOf([cut]), PASS).then((s) => collect(s))).rejects.toThrow();
   });
 
   it("a changed byte in the body fails", async () => {
-    const enc = Buffer.from(await collect(await encryptStream(streamOf([bytes(PLAIN)]), PASS)));
+    const enc = Buffer.from(await quickFile(PLAIN));
     enc[enc.length - 40] = (enc[enc.length - 40] ?? 0) ^ 0xff;
     await expect(decryptStream(streamOf([enc]), PASS).then((s) => collect(s))).rejects.toThrow();
   });
 
   it("extra data after the file is refused (ciphertexts cannot be concatenated)", async () => {
-    const a = await collect(await encryptStream(streamOf([bytes("one\n")]), PASS));
-    const b = await collect(await encryptStream(streamOf([bytes("two\n")]), PASS));
+    const a = await quickFile("one\n");
+    const b = await quickFile("two\n");
     await expect(
       decryptStream(streamOf([Buffer.concat([a, b])]), PASS).then((s) => collect(s)),
     ).rejects.toThrow();
