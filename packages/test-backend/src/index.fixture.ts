@@ -24,7 +24,7 @@
 // left out of a run on PostgreSQL by name, each with its reason (scripts/test-postgres.ts).
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import type { TenantRef } from "@fluxvita/saveslot-kernel";
 import {
@@ -33,8 +33,16 @@ import {
   type PgliteBackendOptions,
   PgliteStoreError,
 } from "@fluxvita/saveslot-store-pglite";
-import { PostgresBackend } from "@fluxvita/saveslot-store-postgres";
-import { cellFromEnv, testDatabase } from "../../store-postgres/src/testing/server.fixture.ts";
+import { discardDatabase, PostgresBackend } from "@fluxvita/saveslot-store-postgres";
+
+/** The server mode's drop guard, for the tests that drop a tenant's databases by their names. */
+export { checkDiscard } from "@fluxvita/saveslot-store-postgres";
+
+import {
+  cellFromEnv,
+  sqlOn,
+  testDatabase,
+} from "../../store-postgres/src/testing/server.fixture.ts";
 
 /** What PostgreSQL takes as a database's name here, for the packages that keep a copy to compare. */
 export { DATABASE_NAME as POSTGRES_DATABASE_NAME } from "@fluxvita/saveslot-store-postgres";
@@ -108,4 +116,39 @@ function postgresInPlaceOfPglite() {
 export function testBackend(opts: PgliteBackendOptions = {}): PgliteBackend {
   if (TEST_BACKEND === "postgres") return postgresInPlaceOfPglite() as unknown as PgliteBackend;
   return new PgliteBackend({ durability: TEST_DURABILITY, ...opts });
+}
+
+/**
+ * Drops the storage that stands for a directory, as the server mode drops a database: on
+ * PostgreSQL the database itself, by store-postgres's own `discardDatabase` (its `DROP DATABASE …
+ * WITH (FORCE)`; the name is the directory's, so its guard on a tenant's names has nothing to tell
+ * apart here and is tested on its own in store-postgres); on PGlite the directory removed. Nothing
+ * when it is gone. The storage must be closed.
+ */
+export async function dropTestStorage(dir: string): Promise<void> {
+  if (TEST_BACKEND === "postgres") {
+    const cell = cellFromEnv();
+    if (cell === undefined) {
+      throw new Error(
+        "SAVESLOT_TEST_BACKEND=postgres, but SAVESLOT_TEST_POSTGRES_URL names no server to run on",
+      );
+    }
+    const database = databaseOf(dir);
+    await discardDatabase(cell, { tenantDatabase: database, current: "", database });
+  }
+  rmSync(resolve(dir), { recursive: true, force: true });
+}
+
+/** Whether the storage that stands for a directory is there: on PostgreSQL, asked of the server. */
+export async function testStorageExists(dir: string): Promise<boolean> {
+  if (TEST_BACKEND !== "postgres") return existsSync(resolve(dir));
+  const cell = cellFromEnv();
+  if (cell === undefined) throw new Error("SAVESLOT_TEST_POSTGRES_URL names no server");
+  const r = await sqlOn(
+    cell,
+    cell.maintenanceDatabase ?? "postgres",
+    "SELECT 1 FROM pg_database WHERE datname = $1",
+    [databaseOf(dir)],
+  );
+  return r.rows.length === 1;
 }

@@ -369,7 +369,7 @@ describe("the tenant directory's states", () => {
   );
 
   it(
-    "swaps the staging database in, in one step, and forgets it",
+    "swaps the staging database in, in one step, and records the one it replaced as staging",
     async () => {
       const { cp, db } = await controlPlane();
       await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_1") });
@@ -381,7 +381,7 @@ describe("the tenant directory's states", () => {
           TENANT,
         ]),
       );
-      expect(r.rows[0]?.s).toBeNull();
+      expect(r.rows[0]?.s).toBe("tdb_1");
     },
     T,
   );

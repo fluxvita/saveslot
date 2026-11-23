@@ -10,4 +10,10 @@ export {
 } from "./backend.ts";
 export type { PostgresCell } from "./connection.ts";
 export { type ControlDatabase, openControlDatabase } from "./control-database.ts";
+export {
+  checkDiscard,
+  type DiscardRequest,
+  discardDatabase,
+  stagingDatabaseShape,
+} from "./discard.ts";
 export { type ErrorCode, PostgresStoreError } from "./errors.ts";

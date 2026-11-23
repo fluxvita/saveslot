@@ -22,7 +22,10 @@ export interface TenantEntry {
   readonly ref: TenantRef;
   /** `creating` until its storage holds the genesis; only an `active` tenant serves. */
   readonly state: "creating" | "active";
-  /** An import's staging database, while there is one (server mode; 02-architecture §5, §8). */
+  /**
+   * An import's staging database while there is one, and after the swap the database it replaced
+   * until that is dropped (server mode; 02-architecture §5, §8).
+   */
   readonly staging?: string;
 }
 
@@ -88,8 +91,9 @@ export interface ServerControl extends ControlPlane {
   /** Records the database an import stages into; `null` forgets it. */
   setStaging(id: TenantId, database: string | null): Promise<void>;
   /**
-   * In one transaction, the staging database becomes the tenant's database and is forgotten
-   * (02-architecture §8, import step ⑤); refused when there is none.
+   * In one transaction, the staging database becomes the tenant's database and the one it replaced
+   * is recorded as the staging database, to be dropped (02-architecture §5, §8, import step ⑤);
+   * refused when there is none.
    */
   swapInStaging(id: TenantId): Promise<void>;
 }

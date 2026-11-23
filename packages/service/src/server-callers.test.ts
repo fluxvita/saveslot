@@ -126,17 +126,19 @@ describe("the server mode's callers", () => {
 
   // 04-contract §16, §17: an import or a restore holding the tenant, by this process's gate or by
   // the anchor's marker, and a staging database not discarded with the marker there, are
-  // `unavailable`; another import or reconcile holding it is `rate_limited` (`busy`).
+  // `unavailable`; the pool's `busy` follows its holder: an import's is `rate_limited` (`busy`), a
+  // restore's `unavailable` (`restoring`), as anything during a restore.
   it.each([
-    ["import_in_progress", "unavailable", "importing"],
-    ["importing", "unavailable", "importing"],
-    ["staging_not_discarded", "unavailable", "importing"],
-    ["restore_in_progress", "unavailable", "restoring"],
-    ["restoring", "unavailable", "restoring"],
-    ["busy", "rate_limited", "busy"],
+    ["import_in_progress", undefined, "unavailable", "importing"],
+    ["importing", undefined, "unavailable", "importing"],
+    ["staging_not_discarded", undefined, "unavailable", "importing"],
+    ["restore_in_progress", undefined, "unavailable", "restoring"],
+    ["restoring", undefined, "unavailable", "restoring"],
+    ["busy", "importing", "rate_limited", "busy"],
+    ["busy", "restoring", "unavailable", "restoring"],
   ] as const)(
-    "a tenant the pool refuses for %s is %s (%s) at authentication",
-    async (code, contract, reason) => {
+    "a tenant the pool refuses for %s (holder %s) is %s (%s) at authentication",
+    async (code, holder, contract, reason) => {
       const { p } = pool();
       const callers = serverCallers({
         control,
@@ -144,7 +146,7 @@ describe("the server mode's callers", () => {
         identity,
         now: () => "2026-11-21T08:00:00.000Z",
         authenticate: async () => {
-          throw new TenantPoolError(code, "does not serve");
+          throw new TenantPoolError(code, "does not serve", holder === undefined ? {} : { holder });
         },
       });
       expect(await outcome(callers.resolve("Bearer t"))).toEqual({ code: contract, reason });

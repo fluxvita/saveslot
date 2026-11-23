@@ -19,6 +19,8 @@
  * - `commit_unknown`: the connection ended after COMMIT was sent and before its answer, or the
  *   server answered it by ending the session: the transaction may be committed, or not.
  * - `store_closed`: the store was closed.
+ * - `discard_refused`: a database to discard is neither the tenant's own staging database nor the
+ *   one an import replaced, or it is the one the tenant's directory names now: nothing is dropped.
  */
 export type ErrorCode =
   | "unknown_cell"
@@ -39,7 +41,8 @@ export type ErrorCode =
   | "transaction_failed"
   | "connection_lost"
   | "commit_unknown"
-  | "store_closed";
+  | "store_closed"
+  | "discard_refused";
 
 /** An error raised by the PostgreSQL storage backend. `code` is stable; the message is for people. */
 export class PostgresStoreError extends Error {

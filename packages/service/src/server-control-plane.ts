@@ -365,7 +365,8 @@ export class ServerControlPlane implements ServerControl {
         throw new ControlPlaneError("tenant_taken", "the staging database is another tenant's");
       }
       const r = await tx.query(
-        `UPDATE tenants SET database = staging_database, staging_database = NULL
+        // The two exchanged: the database replaced stays recorded until it is dropped.
+        `UPDATE tenants SET database = staging_database, staging_database = database
            WHERE id = $1 AND staging_database IS NOT NULL RETURNING id`,
         [id],
       );

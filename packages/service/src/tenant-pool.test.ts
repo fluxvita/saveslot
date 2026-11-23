@@ -518,10 +518,13 @@ describe("TenantPool", () => {
         name: "TenantPoolError",
         code: "importing",
       });
-      await expect(p.exclusive(e.id, async () => "ran")).rejects.toMatchObject({ code: "busy" });
+      await expect(p.exclusive(e.id, async () => "ran")).rejects.toMatchObject({
+        code: "busy",
+        holder: "importing",
+      });
       await expect(
         p.exclusive(e.id, async () => "ran", { refuse: "restoring" }),
-      ).rejects.toMatchObject({ code: "busy" });
+      ).rejects.toMatchObject({ code: "busy", holder: "importing" });
       finishUse();
       await first;
       // Closing the tenant takes its time: the import's start is waited for, not slept on.
@@ -531,6 +534,37 @@ describe("TenantPool", () => {
       await imp;
       expect(await p.use(e.id, async () => "lent")).toBe("lent");
       expect(order).toEqual(["use in progress ends", "import runs", "import ends"]);
+      await p.closeAll();
+    },
+    T,
+  );
+
+  it(
+    "an exclusive refused while a restore holds the tenant is busy with the restore as its holder",
+    async () => {
+      const e = await tenantOf(owner());
+      const p = pool();
+      let finishRestore = () => {};
+      let restoreStarted = () => {};
+      const restoreRuns = new Promise<void>((r) => {
+        restoreStarted = r;
+      });
+      const restore = p.exclusive(
+        e.id,
+        async () => {
+          restoreStarted();
+          await new Promise<void>((r) => {
+            finishRestore = r;
+          });
+        },
+        { refuse: "restoring" },
+      );
+      await restoreRuns;
+      await expect(
+        p.exclusive(e.id, async () => "ran", { refuse: "importing" }),
+      ).rejects.toMatchObject({ code: "busy", holder: "restoring" });
+      finishRestore();
+      await restore;
       await p.closeAll();
     },
     T,

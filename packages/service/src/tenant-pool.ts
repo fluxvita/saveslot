@@ -20,20 +20,23 @@
 //
 // An import or a restore holds its tenant with `exclusive` and `refuse`: from taking the gate to its
 // end, uses are refused at once with that code (`importing`, `restoring`) rather than queued, and
-// another exclusive with `busy`. These are this process's gate; `import_in_progress` and
+// another exclusive with `busy`, which names the holder. These are this process's gate; `import_in_progress` and
 // `restore_in_progress` are the anchor's markers, which any opening sees (§8).
 //
 // Opening takes up an import a crash left (§8 «重入»), as the kernel's `openTenant` decides it: with
 // the anchor's import marker, the import's event in the log says it was swapped in, and the import
 // is finished (`finishImport`); without it, the staging database is discarded and the marker cleared
-// (`abortImportOnOpen`); then the decision is taken again. Discarding is the host's
+// (`abortImportOnOpen`); then the decision is taken again. Once finished, the staging database the
+// directory names is the one the swap replaced, and is discarded as one with no marker (below). Discarding is the host's
 // (`discardStaging`); when it fails with the marker there, this opening is refused with
 // `staging_not_discarded`, not kept, and the next use tries again.
 //
 // A staging database with no marker is discarded on every opening. That is safe because the server
 // mode's import takes the tenant with `exclusive(..., { refuse: "importing" })` before it makes the
-// staging database and does ①–③ inside it: while an import is under way nothing opens the tenant, so
-// one seen on opening was left by a crash before ④. Without the marker the tenant's data is whole: a
+// staging database and holds it through ⑥, the swap included: while an import is under way nothing
+// in this process opens the tenant, and v1 runs one process per control database (02 §7), so
+// one seen on opening was left by a crash before ④, or is the database a swap replaced (⑤ records it
+// there) that a crash or a failed drop left. Without the marker the tenant's data is whole: a
 // discard that fails is reported (`onDiscardFailure`), the tenant serves, and the next opening tries
 // again. The empty log (`tenant_empty`) is checked after the marker, as §4 orders them.
 //
@@ -48,6 +51,7 @@ import {
   abortImportOnOpen,
   finishImport,
   importEventInLog,
+  type OpenTenantDecision,
   type OpenTenantStop,
   openTenant,
   readTail,
@@ -110,7 +114,10 @@ export type TenantPoolFailure =
   | "importing"
   /** A restore holds the tenant in this process (not the anchor's `restore_in_progress`). */
   | "restoring"
-  /** An exclusive that refuses holds the tenant: another one is not queued. */
+  /**
+   * An exclusive that refuses holds the tenant: another one is not queued. The error's `holder`
+   * says which (`importing`, `restoring`).
+   */
   | "busy"
   /**
    * An import's staging database could not be discarded on opening, with the import's marker there:
@@ -122,9 +129,12 @@ export type TenantPoolFailure =
 export class TenantPoolError extends Error {
   override readonly name = "TenantPoolError";
   readonly code: TenantPoolFailure;
-  constructor(code: TenantPoolFailure, message: string) {
+  /** With `busy`: what the exclusive holding the tenant refuses its uses with. */
+  readonly holder?: ExclusiveRefusal;
+  constructor(code: TenantPoolFailure, message: string, o: { holder?: ExclusiveRefusal } = {}) {
     super(message);
     this.code = code;
+    if (o.holder !== undefined) this.holder = o.holder;
   }
 }
 
@@ -233,7 +243,7 @@ export class TenantPool {
    * Waits for the uses in progress, holds new ones back, closes the tenant, then runs `fn`. Not
    * reentrant: a `use` or `exclusive` of the same tenant inside `fn` waits for `fn`, for ever.
    * With `refuse`, from taking the gate to the end, uses are refused with it at once and another
-   * exclusive with `busy`, rather than queued.
+   * exclusive with `busy` (its `holder` the `refuse` given here), rather than queued.
    */
   async exclusive<T>(
     tenant: TenantId,
@@ -244,7 +254,9 @@ export class TenantPool {
     const slot = this.#slot(tenant);
     while (slot.gate !== undefined) {
       if (slot.refuse !== undefined) {
-        throw new TenantPoolError("busy", `the tenant is held: ${slot.refuse}`);
+        throw new TenantPoolError("busy", `the tenant is held: ${slot.refuse}`, {
+          holder: slot.refuse,
+        });
       }
       await slot.gate;
     }
@@ -374,42 +386,17 @@ export class TenantPool {
     const store = await backend.open(entry.ref, {});
     try {
       const tail = await store.read((tx) => readTail(tx));
-      const decide = async () => {
-        const a = await control.anchors.read(tenant);
-        return openTenant({
-          importInProgress: a.importInProgress,
-          importEventInLog:
-            a.importInProgress === undefined
-              ? undefined
-              : await store.read((tx) => importEventInLog(tx)),
-          restoreInProgress: a.restoreInProgress,
-          logEnd: tail?.seq ?? 0,
-          highWater: a.highWater,
-        });
-      };
-      let decision = await decide();
-      if (decision.kind === "import_finish") {
-        await finishImport({ store, anchor: control.anchors, tenant, importId: decision.importId });
-        decision = await decide();
-      } else if (decision.kind === "import_abort") {
-        await abortImportOnOpen({
-          anchor: control.anchors,
-          tenant,
-          importId: decision.importId,
-          discardStaging: async () => {
-            try {
-              await discard();
-            } catch (e) {
-              throw new TenantPoolError(
-                "staging_not_discarded",
-                `an import's staging database was not discarded: ${codeOf(e)}`,
-              );
-            }
-          },
-        });
-        decision = await decide();
-      } else if (staging !== undefined) {
-        // No marker: left by a crash before ④ (see the top of this file).
+      const { decision, taken } = await takeUpImport({
+        store,
+        anchors: control.anchors,
+        tenant,
+        logEnd: tail?.seq ?? 0,
+        discardStaging: discard,
+      });
+      if (taken !== "aborted" && staging !== undefined) {
+        // No marker (any more): left by a crash before ④, or the database a swap replaced (see the
+        // top of this file). Safe on every opening only because v1 runs one process per control
+        // database (§7).
         await discard().catch((e) => this.#reportDiscard(tenant, e));
       }
       if (tail === undefined) throw new TenantPoolError("tenant_empty", "the tenant has no events");
@@ -425,4 +412,66 @@ export class TenantPool {
       throw e;
     }
   }
+}
+
+/**
+ * Takes up an import a crash or a failure left (02-architecture §8 «重入»), as the kernel's
+ * `openTenant` decides it, on the tenant's storage as the directory routes it now: with the
+ * anchor's import marker and the import's event in the log, the import is finished
+ * (`finishImport`); with the marker and no event, the staging database is discarded
+ * (`discardStaging`; its failure is `staging_not_discarded`) and the marker cleared
+ * (`abortImportOnOpen`). Returns the decision taken again, and what was done: once `finished`, the
+ * staging database the directory names is the one the swap replaced. The pool's opening and the
+ * server mode's import both run it before anything else.
+ */
+export async function takeUpImport(o: {
+  readonly store: TenantStore;
+  readonly anchors: AnchorStore;
+  readonly tenant: TenantId;
+  /** The log's end, read from `store`. */
+  readonly logEnd: number;
+  readonly discardStaging: () => Promise<void>;
+}): Promise<{ decision: OpenTenantDecision; taken?: "finished" | "aborted" }> {
+  const decide = async () => {
+    const a = await o.anchors.read(o.tenant);
+    return openTenant({
+      importInProgress: a.importInProgress,
+      importEventInLog:
+        a.importInProgress === undefined
+          ? undefined
+          : await o.store.read((tx) => importEventInLog(tx)),
+      restoreInProgress: a.restoreInProgress,
+      logEnd: o.logEnd,
+      highWater: a.highWater,
+    });
+  };
+  const decision = await decide();
+  if (decision.kind === "import_finish") {
+    await finishImport({
+      store: o.store,
+      anchor: o.anchors,
+      tenant: o.tenant,
+      importId: decision.importId,
+    });
+    return { decision: await decide(), taken: "finished" };
+  }
+  if (decision.kind === "import_abort") {
+    await abortImportOnOpen({
+      anchor: o.anchors,
+      tenant: o.tenant,
+      importId: decision.importId,
+      discardStaging: async () => {
+        try {
+          await o.discardStaging();
+        } catch (e) {
+          throw new TenantPoolError(
+            "staging_not_discarded",
+            `an import's staging database was not discarded: ${codeOf(e)}`,
+          );
+        }
+      },
+    });
+    return { decision: await decide(), taken: "aborted" };
+  }
+  return { decision };
 }

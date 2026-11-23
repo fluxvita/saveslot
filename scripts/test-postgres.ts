@@ -26,6 +26,8 @@ export const TESTED = [
   "packages/service/src/server-auth.test.ts",
   // The server mode's connection tokens: a control plane and a tenant store, both PostgreSQL there.
   "packages/service/src/server-connections.test.ts",
+  // The server mode's import: its staging databases, the swap in the directory, the drop.
+  "packages/service/src/server-import.test.ts",
   // `saveslot server init` on the control database.
   "packages/daemon/src/server-commands.test.ts",
   // `saveslot server restore`: the restore flow on a server tenant, from the service and the command.

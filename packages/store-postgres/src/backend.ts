@@ -70,7 +70,7 @@ export const serverMajor = (versionNum: number): number => Math.floor(versionNum
 export const DATABASE_NAME = /^[a-z][a-z0-9_]{0,62}$/;
 
 /** The databases every server has: never a tenant's, whatever a reference says. */
-const SERVER_DATABASES = ["postgres", "template0", "template1"];
+export const SERVER_DATABASES: readonly string[] = ["postgres", "template0", "template1"];
 
 /**
  * The advisory lock of a tenant's writes. Advisory locks are a database's own and a tenant has a

@@ -44,7 +44,9 @@ const STOPPING_RETRY_AFTER = 5;
  * anchor's marker (`import_in_progress`, `restore_in_progress`), and for an import's staging
  * database not discarded with the marker there (`importing`: the import is not rolled back yet);
  * for a storage that did not close and cannot be opened again yet (`busy`); for a server stopping.
- * `rate_limited` (`busy`) for another import or reconcile holding the tenant (the pool's `busy`).
+ * The pool's `busy` (an exclusive refused while another that refuses holds the tenant) follows its
+ * holder: during a restore anything is `unavailable` (`restoring`); while an import holds it,
+ * `rate_limited` (`busy`), as for another import or a reconcile in progress.
  * Anything else the pool refuses is not the caller's to wait out (a tenant not yet created or empty
  * behind a valid credential, a log behind its high water) and goes on as it is, to be answered
  * `internal`.
@@ -68,8 +70,13 @@ async function serving<T>(run: () => Promise<T>): Promise<T> {
           reason: "restoring",
         });
       }
+      if (e.code === "busy" && e.holder === "restoring") {
+        throw new ContractError("unavailable", "the tenant is being restored", {
+          reason: "restoring",
+        });
+      }
       if (e.code === "busy") {
-        throw new ContractError("rate_limited", "an import or a reconcile holds the tenant", {
+        throw new ContractError("rate_limited", "an import holds the tenant", {
           reason: "busy",
         });
       }
