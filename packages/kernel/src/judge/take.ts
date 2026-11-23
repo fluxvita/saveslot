@@ -68,7 +68,7 @@ export function judgeTakeCandidate(
   }
   const cur: Limit = { upTo: t.op - 1, request: { op: t.op, below: t.index } };
   const k = replay?.k ?? candidatesOf(state, t.unit, t.candidates);
-  const mergeBase = replay?.mergeBase ?? mergeBaseOf(state, t.candidates);
+  const mergeBase = replay?.mergeBase ?? mergeBaseOf(state, t.candidates, t.unit);
   const cover = replay?.cover ?? coveredSince(state, t, mergeBase, k);
   const taken =
     replay === undefined ? k.filter((x) => x.event === t.take) : landing(state, t, replay, k);

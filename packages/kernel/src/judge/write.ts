@@ -34,6 +34,7 @@ import type {
 import { seenOf } from "./model.ts";
 import { type Resolved, resolve, uniqueRefs } from "./resolve.ts";
 import { type Item, type Limit, NO_VALUE, type RowState, refOf, valueToken } from "./state.ts";
+import { type SyncBaseline, syncBaseline } from "./sync.ts";
 
 /** What judging one write or revoke gives, before the record is assembled. */
 export interface WriteOutcome {
@@ -44,6 +45,11 @@ export interface WriteOutcome {
   readonly overwritten: readonly Overwritten[];
   readonly acknowledged: boolean;
   readonly warnings: readonly CoveredCorroboration[];
+  /**
+   * A write by external key hitting a row: the sync baseline position each field it gives a value
+   * was judged on (no-op fields left out: they leave no value).
+   */
+  readonly baseline?: Readonly<Partial<Record<FieldId, OpNumber>>>;
 }
 
 /** One part of a field the write judges as an ordinary write (conflict criterion). */
@@ -179,6 +185,14 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
   const n = w.op;
   const { seenAt, curAt, afterAt } = positions(seenOf(w), n, w.index);
   const fields = (Object.keys(w.fields) as FieldId[]).sort();
+  // A write by external key hitting a row (09-references-conflict-sync «冲突判据», the paragraph
+  // on writes by external key): each field's version seen is its own sync baseline position, and
+  // its same-value step compares with the baseline value. Every other write: one version seen.
+  const sync =
+    w.sync !== undefined && w.sync.creates !== true ? baselines(state, w, curAt) : undefined;
+  const seenFor = (f: FieldId): OpNumber => sync?.get(f)?.position ?? seenOf(w);
+  const seenAtFor = (f: FieldId): Limit =>
+    sync === undefined ? seenAt : positions(seenFor(f), n, w.index).seenAt;
   const drafts: Draft[] = [];
   const noop: FieldId[] = [];
   const ordinary: Part[] = [];
@@ -191,7 +205,7 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
       noop.push(f);
       continue;
     }
-    const res = resolve(state, w.valid, f, seenAt, w.now);
+    const res = resolve(state, w.valid, f, seenAtFor(f), w.now);
     // Checked when written only: in a replay, a field resolving to nothing gives nothing.
     if (res === null && replay !== undefined) continue;
     if (res === null) {
@@ -203,7 +217,22 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
     seenRes.set(f, res);
     const v = valueToken(input.value);
     const segs = state.piecesIn(res.valid);
-    const sameAsSeen = segs.every((s) => state.token(f, s, seenAt) === v);
+    const base = sync?.get(f);
+    if (base?.value !== undefined && valueToken(base.value) === v) {
+      // The source has not changed: a no-op whatever evidence is pointed at, unless the value in
+      // effect is that value too; then pointed evidence corroborates (taken below).
+      if (!input.explicit || !segs.every((s) => state.token(f, s, curAt) === v)) {
+        noop.push(f);
+        continue;
+      }
+    }
+    // With a baseline value, the same-value step compares with it alone (the three-way table's
+    // step ①): another value is the source changed, judged for conflicts on the baseline position,
+    // whatever the value there. Without one, as an ordinary write on the baseline position.
+    const sameAsSeen =
+      base?.value !== undefined
+        ? valueToken(base.value) === v
+        : segs.every((s) => state.token(f, s, seenAtFor(f)) === v);
     if (sameAsSeen && !input.explicit) {
       noop.push(f);
       continue;
@@ -224,7 +253,7 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
     // that part, as the write was written, with the writes that changed it among its deps.
     const same = canonical(segs.filter((s) => state.token(f, s, curAt) === v));
     const changed = minus(res.valid, same);
-    const cutters = isNothing(changed) ? [] : changersOf(state, f, seenOf(w), n, res.valid);
+    const cutters = isNothing(changed) ? [] : changersOf(state, f, seenFor(f), n, res.valid);
     const split = !isNothing(changed);
     const corroborations = parts(same).map(
       (piece): Draft => ({
@@ -285,7 +314,7 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
     const withOps = new Set<OpNumber>();
     let withRevoke = false;
     for (const p of ps) {
-      const c = conflictingOps(state, w, p, unit, seenRes, seenAt, curAt);
+      const c = conflictingOps(state, w, p, unit, seenRes, seenFor(p.f), seenAtFor, curAt);
       for (const m of c.ops) withOps.add(m);
       withRevoke ||= c.revoke;
     }
@@ -421,7 +450,40 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
         .map((x) => ({ event: w.event, target: x.target, k: x.k })),
     };
   });
-  return { items, noop, conflicts: withItems, erased, overwritten, acknowledged, warnings };
+  return {
+    items,
+    noop,
+    conflicts: withItems,
+    erased,
+    overwritten,
+    acknowledged,
+    warnings,
+    ...(sync !== undefined
+      ? {
+          baseline: Object.fromEntries(
+            fields.filter((f) => !noop.includes(f)).map((f) => [f, seenFor(f)]),
+          ) as Partial<Record<FieldId, OpNumber>>,
+        }
+      : {}),
+  };
+}
+
+/**
+ * Each field's sync baseline for a write by key hitting a row (./sync.ts), as of the state before
+ * it. A key field among the fields is the caller's mistake: hitting a row, they are no-ops.
+ */
+function baselines(state: RowState, w: WriteInput, curAt: Limit): Map<FieldId, SyncBaseline> {
+  const keyFields = w.sync?.keyFields ?? [];
+  const out = new Map<FieldId, SyncBaseline>();
+  for (const f of Object.keys(w.fields) as FieldId[]) {
+    if (keyFields.includes(f)) {
+      throw new JudgeError("invalid", "a key field judged in a write by key hitting a row", {
+        field: f,
+      });
+    }
+    out.set(f, syncBaseline(state, f, { op: w.op, index: w.index }, curAt, keyFields));
+  }
+  return out;
 }
 
 /** The items in effect after the seen version that changed `f` (or existence) inside `valid`. */
@@ -454,7 +516,7 @@ function groupOfWrite(
   unit: readonly FieldId[],
   seenRes: ReadonlyMap<FieldId, Resolved>,
   seg: Interval,
-  seenAt: Limit,
+  seenAt: (g: FieldId) => Limit,
 ): string {
   return unit
     .map((g) => {
@@ -463,7 +525,7 @@ function groupOfWrite(
       if (input !== undefined && res !== undefined && within(seg, res.valid)) {
         return valueToken(input.value);
       }
-      return state.token(g, seg, seenAt);
+      return state.token(g, seg, seenAt(g));
     })
     .join("|");
 }
@@ -482,11 +544,12 @@ function conflictingOps(
   p: Part,
   unit: readonly FieldId[],
   seenRes: ReadonlyMap<FieldId, Resolved>,
-  seenAt: Limit,
+  seen: OpNumber,
+  seenAt: (g: FieldId) => Limit,
   curAt: Limit,
 ): { ops: OpNumber[]; revoke: boolean } {
   const out: OpNumber[] = [];
-  for (const m of state.opsBetween(seenOf(w), w.op)) {
+  for (const m of state.opsBetween(seen, w.op)) {
     const changed = unionOf(...unit.map((g) => state.changedBy(m, g)));
     if (isNothing(changed)) continue;
     if (!state.isState) {

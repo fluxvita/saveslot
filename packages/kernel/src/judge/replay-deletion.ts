@@ -21,7 +21,9 @@
 // undo no longer of high impact (high impact ④ judged again), with a kind of its own when the row
 // would still be revoked once it takes effect; a take_previous or take_candidate whose recorded
 // candidate, not deleted, leaves no item in the replay (a same value without evidence pointed
-// at); an operation judged after a deletion event (its conflict criterion reads that event's L).
+// at); an operation judged after a deletion event (its conflict criterion reads that event's L);
+// a write by external key (its sync baseline in a replay is the deletion phase's, with the key
+// index's freezing).
 
 import type { FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
 import { type IntervalSet, isNothing, meet } from "../time/index.ts";
@@ -439,6 +441,12 @@ export function replayDeletion(
     ) {
       throw new JudgeError("not_implemented", `a deletion's replay of a ${r.kind}`, {
         kind: r.kind,
+        op: r.op,
+      });
+    }
+    if (r.kind === "write" && r.byKey === true) {
+      throw new JudgeError("not_implemented", "a deletion's replay of a write by external key", {
+        kind: "write_by_external_key",
         op: r.op,
       });
     }

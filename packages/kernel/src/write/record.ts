@@ -355,6 +355,13 @@ export function encodeOp(
   if (r.kind !== "write" && r.kind !== "revoke" && r.kind !== "undo") {
     throw inconsistent("encodeOp encodes the ops of a request");
   }
+  // A write by external key has its own `ver` (basis `external_key`, no `ver` creating its row)
+  // and `ops/<i>/baseline` (09 §5.7), not encoded yet: refused, never encoded as an ordinary write.
+  if (r.kind === "write" && r.byKey === true) {
+    throw new WriteError("internal", "encoding a write by external key is not implemented", {
+      reason: "not_implemented",
+    });
+  }
   const i = r.index;
   const head: Blocks = {};
   const seen = {
@@ -1222,14 +1229,19 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
     const head = heads.get(op);
     const i = base.index;
     const opTarget = head?.[`ops/${i}/target`] as
-      | { ver?: { op: OpNumber; basis: VerBasis; current?: true } }
+      | { ver?: { op: OpNumber; basis: VerBasis; current?: true }; by_external_key?: true }
       | undefined;
     const ver = opTarget?.ver as
       | { op: OpNumber; basis: VerBasis; current?: true; restore_count?: number }
       | undefined;
     // A ver given under an earlier restore count: where it read, as of its write (04-contract §15).
+    // A write by key's ver is a position in the log the kernel took (its earliest baseline
+    // position, 09 §5.7), not a token: never converted.
     const given =
-      ver !== undefined && ver.basis !== "same_request" && ver.restore_count !== undefined
+      ver !== undefined &&
+      ver.basis !== "same_request" &&
+      ver.basis !== "external_key" &&
+      ver.restore_count !== undefined
         ? seenOfVer(
             { op: ver.op, restoreCount: ver.restore_count },
             restoreAt(ctx.restores ?? [], op),
@@ -1288,6 +1300,12 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
       items: recItems,
       noop: target.intent === "revoke" ? [] : ((head?.[`ops/${i}/noop`] ?? []) as FieldId[]),
       ack: acksIn(b),
+      // A write by external key: its items are sync contributions; hitting a row, the baseline
+      // position each field was judged on (09 §5.7 `by_external_key`, `ops/<i>/baseline`).
+      ...(opTarget?.by_external_key === true ? { byKey: true as const } : {}),
+      ...(head?.[`ops/${i}/baseline`] !== undefined
+        ? { baseline: head[`ops/${i}/baseline`] as Partial<Record<FieldId, OpNumber>> }
+        : {}),
     };
     records.push(rec);
   }

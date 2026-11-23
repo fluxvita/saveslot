@@ -124,6 +124,14 @@ export interface WriteInput extends OpBase, SeenVersion {
   readonly fields: Readonly<Partial<Record<FieldId, FieldInput>>>;
   /** `acknowledge: ["overwrite"]`. */
   readonly acknowledge?: boolean;
+  /**
+   * A write by external key (04-write-and-read «按来源键写入»; event and timeless tables): its
+   * items are sync contributions. Hitting a row (`creates` absent), each field is judged on its
+   * own sync baseline (./sync.ts), worked out here: `seen` and `seenExplicit` are not read, and the
+   * record keeps the positions. `keyFields`: the table's key fields, never among `fields` when it
+   * hits a row (no-ops, left out by the caller).
+   */
+  readonly sync?: { readonly keyFields: readonly FieldId[]; readonly creates?: true };
 }
 
 export interface RevokeInput extends OpBase, SeenVersion {
@@ -288,6 +296,13 @@ export interface WriteRecord extends RecordBase, SeenVersion {
   readonly noop: readonly FieldId[];
   /** A high impact write taken into effect by `acknowledge`: the stretches it overwrote (`ack/<j>`). */
   readonly ack: readonly AckStretch[];
+  /** A write by external key (09 §5.7 `by_external_key`): its items are sync contributions. */
+  readonly byKey?: true;
+  /**
+   * A write by external key hitting a row: each field it gave a value, the operation of the sync
+   * baseline position it was judged on (09 §5.7 `ops/<i>/baseline`); `seen` is the earliest.
+   */
+  readonly baseline?: Readonly<Partial<Record<FieldId, OpNumber>>>;
 }
 
 export interface ConfirmRecord extends RecordBase {

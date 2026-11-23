@@ -575,12 +575,25 @@ export function candidatesOf(state: RowState, unit: Unit, candidates: readonly S
   );
 }
 
-/** The merge base: the earliest version the candidates carried (01-objects «各处理方式的执行语义»). */
-export function mergeBaseOf(state: RowState, candidates: readonly Seq[]): OpNumber {
+/**
+ * The merge base: the earliest version the candidates carried (01-objects «各处理方式的执行语义»).
+ * A candidate of a write by external key carried its baseline position, the earliest over the
+ * fields of `unit` it wrote (09-references-conflict-sync «冲突判据»): not the write's `seen`, the
+ * earliest over all its fields.
+ */
+export function mergeBaseOf(state: RowState, candidates: readonly Seq[], unit: Unit): OpNumber {
   return Math.min(
     ...candidates.map((e) => {
       const r = state.records.find((x) => x.event === e);
-      return r !== undefined && (r.kind === "write" || r.kind === "revoke") ? r.seen : (r?.op ?? 0);
+      if (r === undefined || (r.kind !== "write" && r.kind !== "revoke")) return r?.op ?? 0;
+      if (r.kind === "write" && r.baseline !== undefined && unit !== "existence") {
+        const at = unit.fields.flatMap((f) => {
+          const n = r.baseline?.[f];
+          return n === undefined ? [] : [n];
+        });
+        if (at.length > 0) return Math.min(...at);
+      }
+      return r.seen;
     }),
   );
 }
@@ -619,7 +632,7 @@ export function judgeTakePrevious(
   t: TakePreviousInput,
 ): RevertOutcome & { mergeBase: OpNumber } {
   const k = candidatesOf(state, t.unit, t.candidates);
-  const mergeBase = mergeBaseOf(state, t.candidates);
+  const mergeBase = mergeBaseOf(state, t.candidates, t.unit);
   const entries = coveredSince(state, t, mergeBase, k);
   return {
     ...judgeRevertOf(state, t, entries, { asOf: mergeBase }, k, false),

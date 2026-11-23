@@ -91,12 +91,22 @@ export function judgeOp(
   let judgement: Judgement;
   if (input.kind === "write" || input.kind === "revoke") {
     const out = input.kind === "write" ? judgeWrite(state, input) : judgeRevoke(state, input);
+    // A write by key: its seen is the earliest of its fields' baseline positions (09 §5.7
+    // `ver.basis: external_key`), never given; creating its row, it is the operation before.
+    const byKey = input.kind === "write" ? input.sync : undefined;
+    const positions = Object.values(out.baseline ?? {}) as number[];
+    const seen =
+      byKey === undefined
+        ? input.seen
+        : ((positions.length > 0 ? Math.min(...positions) : input.op - 1) as typeof input.seen);
     const record: WriteRecord = {
       ...base,
       kind: input.kind,
-      seen: input.seen,
-      seenExplicit: input.seenExplicit,
-      ...(input.seenCurrent ? { seenCurrent: true as const } : {}),
+      seen,
+      seenExplicit: byKey === undefined ? input.seenExplicit : false,
+      ...(input.seenCurrent && byKey === undefined ? { seenCurrent: true as const } : {}),
+      ...(byKey !== undefined ? { byKey: true as const } : {}),
+      ...(out.baseline !== undefined && positions.length > 0 ? { baseline: out.baseline } : {}),
       ...(input.valid !== undefined ? { valid: input.valid } : {}),
       now: input.now,
       ...(input.kind === "write" && input.acknowledge ? { acknowledge: true as const } : {}),
@@ -108,7 +118,7 @@ export function judgeOp(
       noop: out.noop,
       ack: out.acknowledged ? out.overwritten.map(ackOf) : [],
     };
-    const { items: _, noop: __, ...rest } = out;
+    const { items: _, noop: __, baseline: ___, ...rest } = out;
     judgement = {
       record,
       ...rest,

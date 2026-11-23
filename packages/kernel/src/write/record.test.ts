@@ -310,3 +310,50 @@ describe("the record mapping", () => {
     expect(judgeOp(stateFromRecord(ctx.shape, decoded), next)).toEqual(judgeOp(state, next));
   });
 });
+
+describe("a write by external key", () => {
+  // Its `ver` (basis `external_key`; none creating its row) and `ops/<i>/baseline` (09 §5.7) are
+  // not encoded yet: refused, never encoded as an ordinary write (basis `fallback`, no baseline).
+  it("is refused by encodeOp until its encoding comes", () => {
+    const shape: TableShape = {
+      kind: "timeless",
+      fields: ["f2", "f9"],
+      valued: ["f2"],
+      required: [],
+      groups: [],
+    };
+    const input: JudgeInput = {
+      kind: "write",
+      op: 10,
+      index: 0,
+      event: 11,
+      ruleset: 1,
+      seen: 9,
+      seenExplicit: false,
+      now: "2026-11-05" as never,
+      fields: { f2: { value: "600" }, f9: { value: "K" } },
+      sync: { keyFields: ["f9"], creates: true },
+    };
+    const { judgement } = judgeOp(stateFromRecord(shape, []), input);
+    expect(() =>
+      encodeOp(
+        {
+          table: "t1" as never,
+          target: { row: `r_${"1".repeat(26)}` as never },
+          shape,
+          granularity: "date",
+        },
+        input,
+        judgement,
+        {
+          intent: "update",
+          created: true,
+          restoreCount: 0,
+          sv: 1,
+          sources: [],
+          versions: { ruleset: 1, policy: 1 },
+        },
+      ),
+    ).toThrow(/encoding a write by external key is not implemented/);
+  });
+});

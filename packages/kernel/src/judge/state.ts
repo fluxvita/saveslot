@@ -50,6 +50,8 @@ export interface Item {
   readonly deps: readonly ItemRef[];
   /** A field candidate in an item whose unit is existence. */
   readonly onExistence?: true;
+  /** Given by a write by external key (a sync contribution, ./sync.ts). */
+  readonly sync?: true;
   /**
    * The start and explicit end the caller gave that lie on the item's interval: its
    * corroboration endpoints when it is a corroboration (09 §5.7).
@@ -134,6 +136,7 @@ function itemsOf(records: readonly OpRecord[]): Item[] {
         ...(x.carried !== undefined ? { carried: x.carried } : {}),
         deps: x.deps,
         ...(x.onExistence ? { onExistence: true as const } : {}),
+        ...(r.kind === "write" && r.byKey === true ? { sync: true as const } : {}),
         explicitEnds: ends.filter((p) => bounds(x.valid, p)),
         defaultEnd: nextChange && x.target !== "existence",
       });
