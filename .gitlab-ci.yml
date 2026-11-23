@@ -106,14 +106,15 @@ workflow:
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
 
 # `pnpm check`: type check, lint, unit and property tests, dependency rules, doc links, JSON examples.
-# Runs take about 10 minutes on a fast runner and about 20 on a slow one. The timeout is a hard bound
-# from outside the test process: test-level limits cannot preempt synchronous code, so a stalled run
-# would otherwise hold the runner until the project's default job timeout. One heavy job at a time
-# in the project: the time spent waiting for the group is not counted in the timeout.
+# A run takes about 20 minutes on a fast runner and has passed 40 on a slow one, more with host
+# fsync. The timeout is a hard bound from outside the test process: test-level limits cannot preempt
+# synchronous code, so a stalled run would otherwise hold the runner until the project's default
+# job timeout (60 minutes). One heavy job at a time in the project: the time spent waiting for the
+# group is not counted in the timeout.
 .check:
   extends: [.pnpm]
   resource_group: saveslot-heavy
-  timeout: 40 minutes
+  timeout: 55 minutes
   script:
     - runuser -u node -- env SAVESLOT_TEST_DURABILITY="${SAVESLOT_TEST_DURABILITY:-}" pnpm check
 
