@@ -63,7 +63,7 @@ class StandIn extends EventEmitter implements DriverClient {
         rows: [{ encoding: "UTF8", provider: "b", locale: "C.UTF-8", collate: "C", ctype: "C" }],
       };
     }
-    if (sql.includes("to_regclass")) return { rows: [{ ok: true }] };
+    if (sql.includes("c.relname = 'meta'")) return { rows: [{ ok: true }] };
     if (sql.startsWith("SELECT value FROM meta")) {
       const value = {
         [META_KEYS.storageFormat]: String(STORAGE_FORMAT_VERSION),

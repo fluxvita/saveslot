@@ -309,9 +309,22 @@ async function checkDatabase(conn: Connection, where: string): Promise<void> {
   }
 }
 
+/**
+ * Whether the `meta` table is there, read from the catalog with this statement's snapshot. Not
+ * `to_regclass`: it answers from the connection's catalog cache, which keeps a "no such table" from
+ * an earlier lookup until the connection takes in other sessions' invalidations, and waiting for an
+ * advisory lock does not make it do so; under `createStorage`'s lock it would miss a storage
+ * another opener made meanwhile.
+ */
 export async function hasMeta(conn: Connection): Promise<boolean> {
-  return (await one<{ ok: boolean }>(conn, "SELECT to_regclass('public.meta') IS NOT NULL AS ok"))
-    .ok;
+  const r = await one<{ ok: boolean }>(
+    conn,
+    `SELECT EXISTS (
+       SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public' AND c.relname = 'meta'
+     ) AS ok`,
+  );
+  return r.ok;
 }
 
 /** Whether the public schema holds no table, view or sequence. */

@@ -13,6 +13,7 @@ import {
   serverMajor,
   WRITE_LOCK,
 } from "./backend.ts";
+import { Connection } from "./connection.ts";
 import { PostgresStoreError } from "./errors.ts";
 import { CELL, cellOf, testCell, testPostgres } from "./testing/test-postgres.fixture.ts";
 
@@ -410,6 +411,55 @@ describe.skipIf(cell === undefined)("against a server", () => {
         await a.close();
         await b.close();
         expect(await epochIn(db)).toBe(2);
+      },
+      T,
+    );
+
+    it(
+      "an opener that waited for the lock while another made the storage finds it made, and does not make it again",
+      async () => {
+        const db = pg.name();
+        await pg.admin(
+          `CREATE DATABASE "${db}" TEMPLATE template0 ENCODING 'UTF8'
+             LOCALE_PROVIDER builtin BUILTIN_LOCALE 'C.UTF-8' LOCALE 'C'`,
+        );
+        // The other opener: holds the tenant's lock while it makes the storage, as `create` does.
+        // It makes `meta` and its rows only, all this opener checks for: a commit of the kernel's
+        // whole DDL can be enough invalidation messages that PostgreSQL resets the waiting
+        // connection's catalog caches, which hides a stale answer there.
+        const other = await Connection.connect(pg.cell, db);
+        try {
+          await other.run("BEGIN");
+          await other.run(`SELECT pg_advisory_xact_lock(${WRITE_LOCK[0]}, ${WRITE_LOCK[1]})`);
+          // This one has seen no storage and waits for the lock to make it.
+          const opening = backend.open(pg.ref(db), { create: true });
+          opening.catch(() => {});
+          for (let i = 0; ; i++) {
+            const r = await pg.admin(
+              `SELECT count(*)::int4 AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+               WHERE l.locktype = 'advisory' AND NOT l.granted AND a.datname = $1`,
+              [db],
+            );
+            if (r.rows[0]?.["n"] === 1) break;
+            if (i === 600) throw new Error("the opener never waited for the lock");
+            await new Promise((r) => setTimeout(r, 10));
+          }
+          await other.run("CREATE TABLE meta (key text PRIMARY KEY, value text NOT NULL)");
+          for (const [k, v] of [
+            [META_KEYS.storageFormat, String(STORAGE_FORMAT_VERSION)],
+            [META_KEYS.ownershipEpoch, "0"],
+            [META_KEYS.sessionSettings, JSON.stringify(SESSION_SETTINGS)],
+          ] as const) {
+            await other.run("INSERT INTO meta (key, value) VALUES ($1, $2)", [k, v]);
+          }
+          await other.run("COMMIT");
+          const s = await opening;
+          expect(s.epoch).toBe(1);
+          await s.close();
+        } finally {
+          await other.end();
+        }
+        expect(await epochIn(db)).toBe(1);
       },
       T,
     );
