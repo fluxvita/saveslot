@@ -50,7 +50,13 @@ beforeAll(async () => {
     { create: true },
   );
   cp = await initControlPlane(control);
-  pool = new TenantPool({ control: cp, backend, idleMs: 60_000, now: () => NOW });
+  pool = new TenantPool({
+    control: cp,
+    backend,
+    idleMs: 60_000,
+    now: () => NOW,
+    discardStaging: async () => {},
+  });
   tenant = await createServerTenant({
     control: cp,
     backend,
@@ -183,6 +189,7 @@ describe("authenticateServer", () => {
         control: cp,
         backend: { open: () => Promise.reject(new Error("no tenant may be opened")) },
         idleMs: 60_000,
+        discardStaging: async () => {},
       });
       const before = opens;
       expect(

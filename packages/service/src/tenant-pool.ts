@@ -18,6 +18,25 @@
 // closed again before the tenant is opened anew, by the next use, exclusive or closeAll. While it
 // stays open, those are refused with `close_failed`: on PGlite a second opening would meet its lock.
 //
+// An import or a restore holds its tenant with `exclusive` and `refuse`: from taking the gate to its
+// end, uses are refused at once with that code (`importing`, `restoring`) rather than queued, and
+// another exclusive with `busy`. These are this process's gate; `import_in_progress` and
+// `restore_in_progress` are the anchor's markers, which any opening sees (§8).
+//
+// Opening takes up an import a crash left (§8 «重入»), as the kernel's `openTenant` decides it: with
+// the anchor's import marker, the import's event in the log says it was swapped in, and the import
+// is finished (`finishImport`); without it, the staging database is discarded and the marker cleared
+// (`abortImportOnOpen`); then the decision is taken again. Discarding is the host's
+// (`discardStaging`); when it fails with the marker there, this opening is refused with
+// `staging_not_discarded`, not kept, and the next use tries again.
+//
+// A staging database with no marker is discarded on every opening. That is safe because the server
+// mode's import takes the tenant with `exclusive(..., { refuse: "importing" })` before it makes the
+// staging database and does ①–③ inside it: while an import is under way nothing opens the tenant, so
+// one seen on opening was left by a crash before ④. Without the marker the tenant's data is whole: a
+// discard that fails is reported (`onDiscardFailure`), the tenant serves, and the next opening tries
+// again. The empty log (`tenant_empty`) is checked after the marker, as §4 orders them.
+//
 // `closeAll` is for stopping: it refuses uses and exclusives from then on, waits for the ones in
 // progress, and returns once every tenant is closed.
 //
@@ -26,6 +45,9 @@
 
 import {
   type AnchorStore,
+  abortImportOnOpen,
+  finishImport,
+  importEventInLog,
   type OpenTenantStop,
   openTenant,
   readTail,
@@ -54,7 +76,20 @@ export interface TenantPoolOptions {
    * standard error: the tenant's ID, what failed and the error's code, nothing of its data.
    */
   readonly onCloseFailure?: (tenant: TenantId, what: CloseFailure, error: unknown) => void;
+  /**
+   * Drops an import's staging database of the tenant and clears it from the directory; nothing
+   * when it is gone. Called when the tenant opens and an import left one (§8 «重入»).
+   */
+  readonly discardStaging: (tenant: TenantId, staging: string) => Promise<void>;
+  /**
+   * Told that a staging database with no import marker could not be discarded on opening; the
+   * tenant serves anyway. By default written to standard error: the tenant's ID and the error's code.
+   */
+  readonly onDiscardFailure?: (tenant: TenantId, error: unknown) => void;
 }
+
+/** What an `exclusive` that refuses tells the uses arriving meanwhile. */
+export type ExclusiveRefusal = "importing" | "restoring";
 
 /** What went wrong closing a tenant: its reads not written, its high water not moved, its storage not closed. */
 export type CloseFailure = "reads_not_flushed" | "high_water_not_advanced" | "close_failed";
@@ -71,6 +106,17 @@ export type TenantPoolFailure =
   | "close_failed"
   /** The pool is closed (closeAll). */
   | "pool_closed"
+  /** An import holds the tenant in this process (not the anchor's `import_in_progress`). */
+  | "importing"
+  /** A restore holds the tenant in this process (not the anchor's `restore_in_progress`). */
+  | "restoring"
+  /** An exclusive that refuses holds the tenant: another one is not queued. */
+  | "busy"
+  /**
+   * An import's staging database could not be discarded on opening, with the import's marker there:
+   * the import is not rolled back yet; the next use tries again.
+   */
+  | "staging_not_discarded"
   | OpenTenantStop;
 
 export class TenantPoolError extends Error {
@@ -91,6 +137,8 @@ interface Slot {
   closing?: Promise<void> | undefined;
   /** Set while an `exclusive` holds the tenant: uses wait for it. */
   gate?: Promise<void> | undefined;
+  /** Set while an `exclusive` that refuses holds it: uses are refused with it, not queued. */
+  refuse?: ExclusiveRefusal | undefined;
   /** Called when the last use ends, for an `exclusive` or a `closeAll` waiting on them. */
   drained?: (() => void) | undefined;
   /** A storage whose close failed: closed again before the tenant is opened anew. */
@@ -104,6 +152,10 @@ const codeOf = (e: unknown): string => {
 
 const reportToStderr = (tenant: TenantId, what: CloseFailure, error: unknown): void => {
   console.error(`saveslot tenant pool: ${what} for ${tenant}: ${codeOf(error)}`);
+};
+
+const reportDiscardToStderr = (tenant: TenantId, error: unknown): void => {
+  console.error(`saveslot tenant pool: staging_not_discarded for ${tenant}: ${codeOf(error)}`);
 };
 
 export class TenantPool {
@@ -136,8 +188,12 @@ export class TenantPool {
     // while a close is waited for, and a close may be an exclusive's. The old storage is closed
     // first: opening it again meanwhile would meet its single-writer lock.
     for (;;) {
-      if (slot.gate !== undefined) await slot.gate;
-      else if (slot.closing !== undefined) await slot.closing;
+      if (slot.gate !== undefined) {
+        if (slot.refuse !== undefined) {
+          throw new TenantPoolError(slot.refuse, `the tenant is held: ${slot.refuse}`);
+        }
+        await slot.gate;
+      } else if (slot.closing !== undefined) await slot.closing;
       else if (slot.unclosed !== undefined && slot.opening === undefined) {
         await this.#close(tenant);
         if (slot.unclosed !== undefined) {
@@ -176,16 +232,28 @@ export class TenantPool {
   /**
    * Waits for the uses in progress, holds new ones back, closes the tenant, then runs `fn`. Not
    * reentrant: a `use` or `exclusive` of the same tenant inside `fn` waits for `fn`, for ever.
+   * With `refuse`, from taking the gate to the end, uses are refused with it at once and another
+   * exclusive with `busy`, rather than queued.
    */
-  async exclusive<T>(tenant: TenantId, fn: () => Promise<T>): Promise<T> {
+  async exclusive<T>(
+    tenant: TenantId,
+    fn: () => Promise<T>,
+    opts: { readonly refuse?: ExclusiveRefusal } = {},
+  ): Promise<T> {
     this.#refuseClosed();
     const slot = this.#slot(tenant);
-    while (slot.gate !== undefined) await slot.gate;
+    while (slot.gate !== undefined) {
+      if (slot.refuse !== undefined) {
+        throw new TenantPoolError("busy", `the tenant is held: ${slot.refuse}`);
+      }
+      await slot.gate;
+    }
     this.#refuseClosed();
     let release = () => {};
     slot.gate = new Promise<void>((resolve) => {
       release = resolve;
     });
+    slot.refuse = opts.refuse;
     try {
       if (slot.uses > 0) {
         await new Promise<void>((resolve) => {
@@ -200,6 +268,7 @@ export class TenantPool {
       return await fn();
     } finally {
       slot.gate = undefined;
+      slot.refuse = undefined;
       release();
     }
   }
@@ -226,6 +295,14 @@ export class TenantPool {
 
   #refuseClosed(): void {
     if (this.#closed) throw new TenantPoolError("pool_closed", "the pool is closed");
+  }
+
+  #reportDiscard(tenant: TenantId, error: unknown): void {
+    try {
+      (this.options.onDiscardFailure ?? reportDiscardToStderr)(tenant, error);
+    } catch {
+      // A report that fails is not the pool's failure.
+    }
   }
 
   #report(tenant: TenantId, what: CloseFailure, error: unknown): void {
@@ -290,22 +367,54 @@ export class TenantPool {
     if (entry.state !== "active") {
       throw new TenantPoolError("tenant_creating", "the tenant's creation is not finished");
     }
+    const staging = entry.staging;
+    const discard = async () => {
+      if (staging !== undefined) await this.options.discardStaging(tenant, staging);
+    };
     const store = await backend.open(entry.ref, {});
     try {
-      const [tail, a] = await Promise.all([
-        store.read((tx) => readTail(tx)),
-        control.anchors.read(tenant),
-      ]);
+      const tail = await store.read((tx) => readTail(tx));
+      const decide = async () => {
+        const a = await control.anchors.read(tenant);
+        return openTenant({
+          importInProgress: a.importInProgress,
+          importEventInLog:
+            a.importInProgress === undefined
+              ? undefined
+              : await store.read((tx) => importEventInLog(tx)),
+          restoreInProgress: a.restoreInProgress,
+          logEnd: tail?.seq ?? 0,
+          highWater: a.highWater,
+        });
+      };
+      let decision = await decide();
+      if (decision.kind === "import_finish") {
+        await finishImport({ store, anchor: control.anchors, tenant, importId: decision.importId });
+        decision = await decide();
+      } else if (decision.kind === "import_abort") {
+        await abortImportOnOpen({
+          anchor: control.anchors,
+          tenant,
+          importId: decision.importId,
+          discardStaging: async () => {
+            try {
+              await discard();
+            } catch (e) {
+              throw new TenantPoolError(
+                "staging_not_discarded",
+                `an import's staging database was not discarded: ${codeOf(e)}`,
+              );
+            }
+          },
+        });
+        decision = await decide();
+      } else if (staging !== undefined) {
+        // No marker: left by a crash before ④ (see the top of this file).
+        await discard().catch((e) => this.#reportDiscard(tenant, e));
+      }
       if (tail === undefined) throw new TenantPoolError("tenant_empty", "the tenant has no events");
-      const decision = await openTenant({
-        importInProgress: a.importInProgress,
-        restoreInProgress: a.restoreInProgress,
-        logEnd: tail.seq,
-        highWater: a.highWater,
-      });
       if (decision.kind !== "serve") {
-        // The import's re-entry comes with the server mode's import; until then a marker is reported
-        // as it is, and the tenant does not serve.
+        // An import's decision again, after it was taken up, is a marker that stayed.
         const what = decision.kind === "not_implemented" ? decision.what : "import_in_progress";
         throw new TenantPoolError(what, `the tenant does not serve: ${what}`);
       }

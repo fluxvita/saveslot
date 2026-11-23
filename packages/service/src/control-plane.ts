@@ -22,6 +22,8 @@ export interface TenantEntry {
   readonly ref: TenantRef;
   /** `creating` until its storage holds the genesis; only an `active` tenant serves. */
   readonly state: "creating" | "active";
+  /** An import's staging database, while there is one (server mode; 02-architecture §5, §8). */
+  readonly staging?: string;
 }
 
 /** What a token's hash stands for. The scopes and the slot range are not here: they are the log's. */

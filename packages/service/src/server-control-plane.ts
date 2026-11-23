@@ -228,6 +228,7 @@ interface TenantRow {
   cell: string;
   database: string;
   state: "creating" | "active";
+  staging_database: string | null;
 }
 
 const tenantEntry = (r: TenantRow): TenantEntry => ({
@@ -235,6 +236,7 @@ const tenantEntry = (r: TenantRow): TenantEntry => ({
   owner: r.owner as UserId,
   ref: { kind: "postgres", cell: r.cell, database: r.database },
   state: r.state,
+  ...(r.staging_database === null ? {} : { staging: r.staging_database }),
 });
 
 /**
@@ -257,18 +259,20 @@ export class ServerControlPlane implements ServerControl {
 
   async tenant(id: TenantId): Promise<TenantEntry | undefined> {
     const r = await this.#db.read((tx) =>
-      tx.query<TenantRow>("SELECT id, owner, cell, database, state FROM tenants WHERE id = $1", [
-        id,
-      ]),
+      tx.query<TenantRow>(
+        "SELECT id, owner, cell, database, state, staging_database FROM tenants WHERE id = $1",
+        [id],
+      ),
     );
     return r.rows[0] === undefined ? undefined : tenantEntry(r.rows[0]);
   }
 
   async tenantOf(owner: UserId): Promise<TenantEntry | undefined> {
     const r = await this.#db.read((tx) =>
-      tx.query<TenantRow>("SELECT id, owner, cell, database, state FROM tenants WHERE owner = $1", [
-        owner,
-      ]),
+      tx.query<TenantRow>(
+        "SELECT id, owner, cell, database, state, staging_database FROM tenants WHERE owner = $1",
+        [owner],
+      ),
     );
     return r.rows[0] === undefined ? undefined : tenantEntry(r.rows[0]);
   }
@@ -284,7 +288,7 @@ export class ServerControlPlane implements ServerControl {
     return this.#db.write(async (tx) => {
       await tx.query("SELECT pg_advisory_xact_lock($1)", [NAMES_LOCK]);
       const own = await tx.query<TenantRow>(
-        "SELECT id, owner, cell, database, state FROM tenants WHERE owner = $1",
+        "SELECT id, owner, cell, database, state, staging_database FROM tenants WHERE owner = $1",
         [e.owner],
       );
       if (own.rows[0] !== undefined) return tenantEntry(own.rows[0]);
@@ -300,7 +304,7 @@ export class ServerControlPlane implements ServerControl {
         [e.id, e.owner, cell, database],
       );
       const r = await tx.query<TenantRow>(
-        "SELECT id, owner, cell, database, state FROM tenants WHERE owner = $1",
+        "SELECT id, owner, cell, database, state, staging_database FROM tenants WHERE owner = $1",
         [e.owner],
       );
       if (r.rows[0] === undefined) {

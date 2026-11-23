@@ -39,26 +39,38 @@ const BUSY_RETRY_AFTER = 1;
 const STOPPING_RETRY_AFTER = 5;
 
 /**
- * A tenant that does not serve now, as the contract says it (04-contract §16 `unavailable`): an
- * import or a restore in progress (the pool says an import in progress also for one it has yet to
- * finish or abort), a storage that did not close and cannot be opened again yet (`busy`), a server
- * stopping. Anything else the pool refuses is not the caller's to wait out (a tenant not yet
- * created or empty behind a valid credential, a log behind its high water) and goes on as it is, to
- * be answered `internal`.
+ * A tenant that does not serve now, as the contract says it (04-contract §16, §17): `unavailable`
+ * for an import or a restore holding it, by this process's gate (`importing`, `restoring`) or by the
+ * anchor's marker (`import_in_progress`, `restore_in_progress`), and for an import's staging
+ * database not discarded with the marker there (`importing`: the import is not rolled back yet);
+ * for a storage that did not close and cannot be opened again yet (`busy`); for a server stopping.
+ * `rate_limited` (`busy`) for another import or reconcile holding the tenant (the pool's `busy`).
+ * Anything else the pool refuses is not the caller's to wait out (a tenant not yet created or empty
+ * behind a valid credential, a log behind its high water) and goes on as it is, to be answered
+ * `internal`.
  */
 async function serving<T>(run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (e) {
     if (e instanceof TenantPoolError) {
-      if (e.code === "import_in_progress") {
+      if (
+        e.code === "importing" ||
+        e.code === "import_in_progress" ||
+        e.code === "staging_not_discarded"
+      ) {
         throw new ContractError("unavailable", "the tenant is being imported", {
           reason: "importing",
         });
       }
-      if (e.code === "restore_in_progress") {
+      if (e.code === "restoring" || e.code === "restore_in_progress") {
         throw new ContractError("unavailable", "the tenant is being restored", {
           reason: "restoring",
+        });
+      }
+      if (e.code === "busy") {
+        throw new ContractError("rate_limited", "an import or a reconcile holds the tenant", {
+          reason: "busy",
         });
       }
       if (e.code === "close_failed") {

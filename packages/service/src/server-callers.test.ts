@@ -124,12 +124,19 @@ describe("the server mode's callers", () => {
     }
   };
 
+  // 04-contract §16, §17: an import or a restore holding the tenant, by this process's gate or by
+  // the anchor's marker, and a staging database not discarded with the marker there, are
+  // `unavailable`; another import or reconcile holding it is `rate_limited` (`busy`).
   it.each([
-    ["import_in_progress", "importing"],
-    ["restore_in_progress", "restoring"],
+    ["import_in_progress", "unavailable", "importing"],
+    ["importing", "unavailable", "importing"],
+    ["staging_not_discarded", "unavailable", "importing"],
+    ["restore_in_progress", "unavailable", "restoring"],
+    ["restoring", "unavailable", "restoring"],
+    ["busy", "rate_limited", "busy"],
   ] as const)(
-    "a tenant that does not serve now (%s) is unavailable (%s) at authentication",
-    async (code, reason) => {
+    "a tenant the pool refuses for %s is %s (%s) at authentication",
+    async (code, contract, reason) => {
       const { p } = pool();
       const callers = serverCallers({
         control,
@@ -140,7 +147,7 @@ describe("the server mode's callers", () => {
           throw new TenantPoolError(code, "does not serve");
         },
       });
-      expect(await outcome(callers.resolve("Bearer t"))).toEqual({ code: "unavailable", reason });
+      expect(await outcome(callers.resolve("Bearer t"))).toEqual({ code: contract, reason });
     },
   );
 

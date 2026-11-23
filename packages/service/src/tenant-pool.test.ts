@@ -3,18 +3,22 @@
 // high water moved up; `exclusive` waiting for uses and holding new ones back, the next use opening
 // what the directory names then; only an active tenant opened. Fictional IDs.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appendImportEvent,
   createOpsContext,
   createTenant,
+  importIntoStaging,
   type ReadEntry,
   readBufferOf,
   readTail,
+  runImport,
   type StorageBackend,
   type TenantRef,
   type TenantStore,
+  writeExport,
 } from "@fluxvita/saveslot-kernel";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../test-backend/src/index.fixture.ts";
@@ -115,8 +119,20 @@ async function until(ok: () => boolean): Promise<void> {
 
 /** A pool that closes a tenant `idleMs` after its last use. */
 function pool(idleMs = 60_000, more: Partial<TenantPoolOptions> = {}): TenantPool {
-  return new TenantPool({ control: cp, backend, idleMs, now: () => NOW, ...more });
+  return new TenantPool({
+    control: cp,
+    backend,
+    idleMs,
+    now: () => NOW,
+    discardStaging: async (tenant, staging) => {
+      discarded.push(`${tenant} ${staging}`);
+    },
+    ...more,
+  });
 }
+
+/** The staging databases the pools discarded, as `tenant staging`. */
+const discarded: string[] = [];
 
 describe("TenantPool", () => {
   it(
@@ -459,4 +475,314 @@ describe("TenantPool", () => {
     },
     T,
   );
+
+  it(
+    "an exclusive that refuses refuses uses at once and other exclusives as busy, from taking the gate to its end",
+    async () => {
+      const e = await tenantOf(owner());
+      const p = pool();
+      const order: string[] = [];
+      let finishUse = () => {};
+      let started = () => {};
+      const isStarted = new Promise<void>((r) => {
+        started = r;
+      });
+      // A use in progress: the import waits for it, already refusing what comes meanwhile.
+      const first = p.use(e.id, async () => {
+        started();
+        await new Promise<void>((r) => {
+          finishUse = r;
+        });
+        order.push("use in progress ends");
+      });
+      await isStarted;
+      let finishImport = () => {};
+      let importStarted = () => {};
+      const importRuns = new Promise<void>((r) => {
+        importStarted = r;
+      });
+      const imp = p.exclusive(
+        e.id,
+        async () => {
+          order.push("import runs");
+          importStarted();
+          await new Promise<void>((r) => {
+            finishImport = r;
+          });
+          order.push("import ends");
+        },
+        { refuse: "importing" },
+      );
+      await sleep(20);
+      await expect(p.use(e.id, async () => "lent")).rejects.toMatchObject({
+        name: "TenantPoolError",
+        code: "importing",
+      });
+      await expect(p.exclusive(e.id, async () => "ran")).rejects.toMatchObject({ code: "busy" });
+      await expect(
+        p.exclusive(e.id, async () => "ran", { refuse: "restoring" }),
+      ).rejects.toMatchObject({ code: "busy" });
+      finishUse();
+      await first;
+      // Closing the tenant takes its time: the import's start is waited for, not slept on.
+      await importRuns;
+      await expect(p.use(e.id, async () => "lent")).rejects.toMatchObject({ code: "importing" });
+      finishImport();
+      await imp;
+      expect(await p.use(e.id, async () => "lent")).toBe("lent");
+      expect(order).toEqual(["use in progress ends", "import runs", "import ends"]);
+      await p.closeAll();
+    },
+    T,
+  );
+
+  // 02-architecture §8 «重入», one case for each place an import can stop, each state made by the
+  // kernel's own steps on real storages and the anchor read back after.
+  describe("opening a tenant an import left", () => {
+    const stagingOf = (e: TenantEntry) => `${databaseOf(e.id)}_staging`;
+    const dirOf = (database: string) => join(root, CELL, database);
+    /** The host's discard: the staging database dropped, then cleared from the directory. */
+    const discard = async (tenant: TenantId, staging: string) => {
+      rmSync(dirOf(staging), { recursive: true, force: true });
+      await cp.setStaging(tenant, null);
+    };
+
+    /** The file's last event for each staged tenant, as step ③ returned it. */
+    const importedUpto = new Map<TenantId, number>();
+
+    /**
+     * Steps ①–③ into `e`'s staging database, registered first: another tenant's log exported and
+     * replayed there, then the import's event. Returns the staging log's end, the import event's
+     * `seq`.
+     */
+    const stage = async (e: TenantEntry): Promise<number> => {
+      const source = await tenantOf(owner());
+      const from = await backend.open(source.ref, {});
+      const lines: string[] = [];
+      try {
+        await from.read((tx) =>
+          writeExport(tx, { exportedAt: NOW as never }, async (l) => {
+            lines.push(l);
+          }),
+        );
+      } finally {
+        await from.close();
+      }
+      const staging = stagingOf(e);
+      await cp.setStaging(e.id, staging);
+      const store = await backend.open(
+        { kind: "postgres", cell: CELL, database: staging },
+        { create: true },
+      );
+      try {
+        const body = (async function* () {
+          yield new TextEncoder().encode(lines.join(""));
+        })();
+        const s = await importIntoStaging({ staging: store, body });
+        const ev = await appendImportEvent(store, {
+          user: e.owner,
+          tenant: e.id,
+          manifest: s.manifest,
+          now: NOW as never,
+        });
+        importedUpto.set(e.id, s.importedUpto);
+        return ev.seq;
+      } finally {
+        await store.close();
+      }
+    };
+
+    /**
+     * Steps ④–⑥ by the kernel's `runImport`, killed in the swap: before it took effect (the marker
+     * set, ⑤ not done) or after (⑤ done, ⑥ not).
+     */
+    const killed = async (e: TenantEntry, end: number, at: "before ⑤" | "after ⑤") => {
+      const target = await backend.open(e.ref, {});
+      const staging = await backend.open(
+        { kind: "postgres", cell: CELL, database: stagingOf(e) },
+        {},
+      );
+      try {
+        await expect(
+          runImport({
+            target,
+            anchor: cp.anchors,
+            tenant: e.id,
+            importId: "im_killed",
+            staging,
+            importSeq: end as never,
+            importedUpto: importedUpto.get(e.id) as never,
+            swap: async () => {
+              if (at === "after ⑤") await cp.swapInStaging(e.id);
+              throw new Error("PROBE killed in the swap");
+            },
+          }),
+        ).rejects.toThrow("PROBE killed in the swap");
+      } finally {
+        await staging.close();
+        await target.close();
+      }
+      expect((await cp.anchors.read(e.id)).importInProgress).toBe("im_killed");
+    };
+
+    const tailOf = (p: TenantPool, e: TenantEntry) =>
+      p.use(e.id, async (t) => (await t.store.read((tx) => readTail(tx)))?.seq);
+
+    it(
+      "stopped before ④: the staging database is discarded, the anchor left as it was, and it serves",
+      async () => {
+        const e = await tenantOf(owner());
+        await stage(e);
+        const before = await cp.anchors.read(e.id);
+        const p = pool(60_000, { discardStaging: discard });
+        expect(await tailOf(p, e)).toBe(1);
+        expect((await cp.tenant(e.id))?.staging).toBeUndefined();
+        expect(existsSync(dirOf(stagingOf(e)))).toBe(false);
+        expect(await cp.anchors.read(e.id)).toEqual(before);
+        await p.closeAll();
+      },
+      T,
+    );
+
+    it(
+      "stopped between ④ and ⑤: rolled back, the staging database discarded and the marker cleared; it serves empty",
+      async () => {
+        const e = await tenantOf(owner());
+        const end = await stage(e);
+        await killed(e, end, "before ⑤");
+        const p = pool(60_000, { discardStaging: discard });
+        expect(await tailOf(p, e)).toBe(1);
+        expect((await cp.tenant(e.id))?.staging).toBeUndefined();
+        expect(existsSync(dirOf(stagingOf(e)))).toBe(false);
+        const a = await cp.anchors.read(e.id);
+        expect(a.importInProgress).toBeUndefined();
+        expect(a.restoreCount).toBe(0);
+        await p.closeAll();
+      },
+      T,
+    );
+
+    it(
+      "stopped between ⑤ and ⑥: finished, the high water at the log's end and the import's restore count; it serves the import",
+      async () => {
+        const e = await tenantOf(owner());
+        const end = await stage(e);
+        await killed(e, end, "after ⑤");
+        expect((await cp.tenant(e.id))?.ref).toMatchObject({ database: stagingOf(e) });
+        const p = pool(60_000, { discardStaging: discard });
+        expect(await tailOf(p, e)).toBe(end);
+        const a = await cp.anchors.read(e.id);
+        expect(a.importInProgress).toBeUndefined();
+        expect(a.highWater).toBe(end);
+        expect(a.restoreCount).toBe(1);
+        await p.closeAll();
+      },
+      T,
+    );
+
+    it(
+      "the marker there and the staging database already gone: the marker cleared, and it serves empty",
+      async () => {
+        const e = await tenantOf(owner());
+        const end = await stage(e);
+        await killed(e, end, "before ⑤");
+        // An earlier rollback discarded the staging database and stopped before clearing the marker.
+        await discard(e.id, stagingOf(e));
+        const tried: string[] = [];
+        const p = pool(60_000, {
+          discardStaging: async (tenant, staging) => {
+            tried.push(staging);
+            await discard(tenant, staging);
+          },
+        });
+        expect(await tailOf(p, e)).toBe(1);
+        expect(tried).toEqual([]);
+        expect((await cp.anchors.read(e.id)).importInProgress).toBeUndefined();
+        await p.closeAll();
+      },
+      T,
+    );
+
+    it(
+      "the marker there and the discard failing: this opening is refused and the marker kept; the next one rolls back",
+      async () => {
+        const e = await tenantOf(owner());
+        const end = await stage(e);
+        await killed(e, end, "before ⑤");
+        const failing = pool(60_000, {
+          discardStaging: async () => {
+            throw new Error("PROBE discard failed");
+          },
+        });
+        await expect(failing.use(e.id, async () => "lent")).rejects.toMatchObject({
+          name: "TenantPoolError",
+          code: "staging_not_discarded",
+        });
+        expect((await cp.anchors.read(e.id)).importInProgress).toBe("im_killed");
+        expect((await cp.tenant(e.id))?.staging).toBe(stagingOf(e));
+        await failing.closeAll();
+        const p = pool(60_000, { discardStaging: discard });
+        expect(await tailOf(p, e)).toBe(1);
+        expect((await cp.anchors.read(e.id)).importInProgress).toBeUndefined();
+        await p.closeAll();
+      },
+      T,
+    );
+
+    it(
+      "the marker there and the log empty: the marker is taken up first, then the opening refused as tenant_empty (§4's order)",
+      async () => {
+        const e = await tenantOf(owner());
+        // A new, empty database put in the directory's place: on either backend, a storage with no log.
+        const empty = `${databaseOf(e.id)}_empty`;
+        await (
+          await backend.open({ kind: "postgres", cell: CELL, database: empty }, { create: true })
+        ).close();
+        await cp.setStaging(e.id, empty);
+        await cp.swapInStaging(e.id);
+        await cp.anchors.beginImport(e.id, "im_empty");
+        const p = pool(60_000, { discardStaging: discard });
+        await expect(p.use(e.id, async () => "lent")).rejects.toMatchObject({
+          code: "tenant_empty",
+        });
+        expect((await cp.anchors.read(e.id)).importInProgress).toBeUndefined();
+        await p.closeAll();
+      },
+      T,
+    );
+
+    it(
+      "no marker and the discard failing: reported in one line, it serves, and the next opening tries again",
+      async () => {
+        const e = await tenantOf(owner());
+        await stage(e);
+        const reported: string[] = [];
+        const failing = pool(60_000, {
+          discardStaging: async () => {
+            throw Object.assign(new Error("PROBE discard failed"), { code: "PROBE_DROP" });
+          },
+          onDiscardFailure: (tenant, error) => {
+            reported.push(`${tenant} ${(error as { code?: string }).code}`);
+          },
+        });
+        expect(await tailOf(failing, e)).toBe(1);
+        expect(reported).toEqual([`${e.id} PROBE_DROP`]);
+        expect((await cp.tenant(e.id))?.staging).toBe(stagingOf(e));
+        await failing.closeAll();
+        const p = pool(60_000, { discardStaging: discard });
+        expect(await tailOf(p, e)).toBe(1);
+        expect((await cp.tenant(e.id))?.staging).toBeUndefined();
+        await p.closeAll();
+
+        // A tenant with neither: nothing discarded.
+        const plain = await tenantOf(owner());
+        discarded.length = 0;
+        const q = pool();
+        expect(await tailOf(q, plain)).toBe(1);
+        expect(discarded).toEqual([]);
+        await q.closeAll();
+      },
+      T,
+    );
+  });
 });
