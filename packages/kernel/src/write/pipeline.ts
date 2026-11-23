@@ -1240,16 +1240,6 @@ async function writeIn(
   });
   if (!normalized.ok) throw requestFailure(normalized.error);
   const req = normalized.request;
-  // A key added to a row (taken by normalizing behind the kernel's test switch): not here yet, so
-  // such a request stops before anything is looked up or written.
-  for (const o of req.ops) {
-    if (o.externalKey !== undefined) {
-      throw new WriteError("internal", "writing by external key is not implemented", {
-        reason: "not_implemented",
-        param: `ops/${o.index}/external_key`,
-      });
-    }
-  }
   const task = req.task ?? input.task;
   const tableOf = (id: TableId) =>
     receiptNames.tables.find((t) => t.id === id && t.kind === "base") as CompiledBaseTable;
@@ -1383,6 +1373,8 @@ async function writeIn(
     req.evidence.length > 0
       ? []
       : req.ops.filter((o) => o.evidence === undefined && nothing?.has(o.index) !== true);
+  // Keys this request added to rows, by row: the index learns them only once applied.
+  const keysAddedHere = new Map<string, string>();
   // Writes by key: what each came to; those that left nothing (this time).
   const outcomes = new Map<number, KeyedOutcome>();
   const leftNothing = new Set<number>();
@@ -1735,6 +1727,86 @@ async function writeIn(
         : await loadRow(tx, ctx, param);
       rows.set(id, work);
     }
+    // A key added to a row (04-write-and-read «给没有来源键的行补键»): the row holds it already
+    // (the same: nothing to add; another: `key_field_changed`), or the key's state decides — held by
+    // no row: added; by a row not revoked: `external_key_in_use`; by a revoked row: a transfer, not
+    // in this version. A revoke earlier in this request counts; so does a key this request added.
+    // The key fields join the op's fields: to add the key, or (the row holding it already) to be
+    // judged a no-op, the same value.
+    let addsKey = false;
+    if (o.externalKey !== undefined) {
+      // The row first (04-write-and-read: 这一行未撤销): a revoked row is `revoked`, whatever the
+      // key's state, as any update naming it.
+      const at: Limit = { upTo: (op - 1) as OpNumber, request: { op, below: o.index } };
+      const revokedBy = work.state.revokedBy(at);
+      if (revokedBy.length > 0) {
+        throw new WriteError("revoked", "the row is revoked", {
+          param,
+          target: { table: qualifiedTable(slot.name, table), row: id },
+          revoked_by: Math.max(...revokedBy),
+        });
+      }
+      const added = o.externalKey;
+      const declared = (table as { external_key?: readonly FieldId[] }).external_key ?? [];
+      const values = canonicalize(declared.map((f) => (added[f]?.value ?? null) as JsonValue));
+      const own =
+        keysAddedHere.get(id) ??
+        (
+          await tx.query<{ key_values: string }>(
+            "SELECT key_values FROM external_keys WHERE table_id = $1 AND holder_row = $2",
+            [table.id, id],
+          )
+        ).rows[0]?.key_values;
+      if (own !== undefined && own !== values) {
+        throw new WriteError("invalid_argument", "a key field cannot change", {
+          reason: "key_field_changed",
+          param: `${param}/external_key`,
+        });
+      }
+      if (own === undefined) {
+        const entry = (
+          await tx.query<{ holder_row: string; state: string }>(
+            "SELECT holder_row, state FROM external_keys WHERE table_id = $1 AND key_values = $2",
+            [table.id, values],
+          )
+        ).rows[0];
+        // A frozen entry (a deletion in its grace period): `external_key_in_use` with the
+        // deletions, the deletion phase's; no path to one yet.
+        if (entry !== undefined && entry.state !== "present") {
+          throw new WriteError("internal", "adding a key a deletion freezes is not implemented", {
+            reason: "not_implemented",
+            param: `${param}/external_key`,
+          });
+        }
+        const holder = entry?.holder_row;
+        if (holder !== undefined) {
+          const before: Limit = { upTo: (op - 1) as OpNumber, request: { op, below: o.index } };
+          const here = rows.get(holder);
+          const revoked =
+            here !== undefined
+              ? here.state.revoked(before)
+              : (
+                  await tx.query<{ revoked: boolean | null }>(
+                    `SELECT revoked FROM "${table.physical.table}" WHERE row_id = $1`,
+                    [holder],
+                  )
+                ).rows[0]?.revoked === true;
+          if (revoked) {
+            throw new WriteError("not_in_this_version", "transferring an external key", {
+              reason: "parameter",
+              param: `${param}/external_key`,
+            });
+          }
+          throw new WriteError("invalid_argument", "the external key is held by another row", {
+            reason: "external_key_in_use",
+            param: `${param}/external_key`,
+            holder,
+          });
+        }
+        keysAddedHere.set(id, values);
+      }
+      addsKey = true;
+    }
     // Hitting a revoked row (an earlier op of this request's revoke too): skipped, nothing judged,
     // recorded or kept (04-write-and-read «被撤销的行不复活»).
     if (external !== undefined && !createsByExternalKey) {
@@ -1858,17 +1930,23 @@ async function writeIn(
     }
     // An external key (04-write-and-read «按来源键写入»: 键字段只能经 external_key 给出): a key field
     // in the `set` of a write by row is the key the row holds, by the same value, or
-    // `key_field_changed` (a row without a key included). The row's key is its entry in the key
-    // index: no write of this version gives a row its key within a request.
+    // `key_field_changed` (a row without a key included). The row's key: one an earlier op of this
+    // request added (`keysAddedHere`; the index learns it only once applied), else its entry in
+    // the key index.
     const externalKey = !isState && "external_key" in table ? table.external_key : undefined;
     if (o.kind === "write" && !isNew && externalKey !== undefined && o.fields !== undefined) {
       const named = externalKey.filter((f) => o.fields?.[f] !== undefined);
       if (named.length > 0) {
-        const r = await tx.query<{ key_values: string }>(
-          "SELECT key_values FROM external_keys WHERE table_id = $1 AND holder_row = $2",
-          [table.id, id],
-        );
-        const held = r.rows[0] && (JSON.parse(r.rows[0].key_values) as FieldValue[]);
+        const here = keysAddedHere.get(id);
+        const stored =
+          here ??
+          (
+            await tx.query<{ key_values: string }>(
+              "SELECT key_values FROM external_keys WHERE table_id = $1 AND holder_row = $2",
+              [table.id, id],
+            )
+          ).rows[0]?.key_values;
+        const held = stored === undefined ? undefined : (JSON.parse(stored) as FieldValue[]);
         for (const f of named) {
           const v = held?.[externalKey.indexOf(f)];
           if (v === undefined || !sameValue((o.fields[f] as NormalizedField).value, v)) {
@@ -1882,6 +1960,9 @@ async function writeIn(
       }
     }
 
+    // A key added (or held already): its fields join `set`, judged as any write — applied where the
+    // row had no value, a no-op where it holds the same key.
+    if (addsKey && o.externalKey !== undefined) fields = { ...(fields ?? {}), ...o.externalKey };
     // By external key: creating the row, the key's values are its key fields' (given by this
     // write); hitting one, the key fields are not judged (a key field given in `set` again was
     // checked equal above, against the key the row holds).

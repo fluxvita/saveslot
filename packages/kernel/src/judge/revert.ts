@@ -303,7 +303,10 @@ export function undoEntries(
   index: number,
 ): RevertEntry[] {
   const out = new Map<string, RevertEntry>();
+  // Key fields are in no revert record: an undo never takes a row's key back.
+  const keyFields: readonly string[] = state.table.keyFields ?? [];
   const add = (e: RevertEntry) => {
+    if (keyFields.includes(e.target)) return;
     const key = etKey(e.event, e.target);
     if (!out.has(key)) out.set(key, e);
   };
@@ -348,7 +351,13 @@ export function undoEntries(
  * confirmed revert is undone by the confirming operation.
  */
 export function undoneOp(state: RowState, m: OpNumber): OpNumber {
-  if (state.items.some((x) => x.op === m && x.status === "applied")) return m;
+  // A key field's item is not one of the operation's changes in effect (an undo never takes a key
+  // back), as in `judgeUndo`.
+  const keyFields: readonly string[] = state.table.keyFields ?? [];
+  if (
+    state.items.some((x) => x.op === m && x.status === "applied" && !keyFields.includes(x.target))
+  )
+    return m;
   const confirmations = state.records
     .filter((x) => x.op === m && x.kind === "undo" && x.status === "awaiting")
     .flatMap((p) =>
@@ -381,8 +390,11 @@ export function judgeUndo(state: RowState, u: UndoInput): RevertOutcome & { befo
     });
   }
   // Nothing applied on this row (a candidate, an awaiting write, only corroborations or no-ops,
-  // a revert with no write-back): no change to undo.
-  if (!state.items.some((x) => x.op === m && x.status === "applied")) {
+  // a revert with no write-back, only the row's key added): no change to undo.
+  const keyFields: readonly string[] = state.table.keyFields ?? [];
+  if (
+    !state.items.some((x) => x.op === m && x.status === "applied" && !keyFields.includes(x.target))
+  ) {
     throw new JudgeError("invalid_argument", "no change to undo", {
       reason: "undo_target",
       param: "revert/undo",

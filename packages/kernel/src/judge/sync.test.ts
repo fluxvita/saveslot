@@ -7,9 +7,10 @@
 import type { BizPoint, FieldId, FieldValue, Seq } from "@fluxvita/saveslot-contract-core";
 import { describe, expect, it } from "vitest";
 import { JudgeError } from "./errors.ts";
-import { emptyState, judgeOp } from "./judge.ts";
+import { emptyState, judgeOp, stateFromRecord } from "./judge.ts";
 import type { JudgeInput, Judgement, TableShape, Unit, WriteInput, WriteRecord } from "./model.ts";
 import { replayDeletion } from "./replay-deletion.ts";
+import { undoneOp } from "./revert.ts";
 import type { RowState } from "./state.ts";
 import { syncOutcome } from "./sync.ts";
 import { judgeWrite } from "./write.ts";
@@ -343,6 +344,115 @@ describe("the writes that changed a field since its baseline position, among a p
     expect(out.items.map((x) => ({ target: x.target, status: x.status, deps: x.deps }))).toEqual([
       { target: "f2", status: "candidate", deps: [{ event: 31, target: "f2", k: 0 }] },
     ]);
+  });
+});
+
+describe("a revert never takes a row's key back (04-write-and-read «给没有来源键的行补键»)", () => {
+  // The key fields known to the table (`keyFields`): no revert record has them.
+  const KEYED: TableShape = { ...T, keyFields: ["f9"] };
+  // #10 written by hand; #20 its key added, alone or with another field.
+  const handRow = user(10, 9, { f2: "500" });
+
+  it("undoing a write that only added the key: no change to undo", () => {
+    let caught: unknown;
+    try {
+      run(KEYED, [handRow, user(20, 10, { f9: "K" }), undo(30, 20)]);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toMatchObject({ reason: "invalid_argument", detail: { reason: "undo_target" } });
+  });
+
+  it("undoing a write that added the key and changed a field: the field goes back, the key stays", () => {
+    const { last, state } = run(KEYED, [
+      handRow,
+      user(20, 10, { f9: "K", f2: "550" }),
+      undo(30, 20),
+    ]);
+    const entries = (last.record as unknown as { revert: { entries: { target: string }[] } }).revert
+      .entries;
+    expect(entries.map((e) => e.target)).toEqual(["f2"]);
+    const live = (f: string) =>
+      state.items
+        .filter((x) => x.target === f && x.status === "applied")
+        .filter((x) => state.registrations(x, { upTo: 1e9 }).length === 0)
+        .map((x) => [x.op, x.content]);
+    expect(live("f9")).toEqual([[20, { kind: "value", value: "K" }]]);
+    expect(live("f2")).toContainEqual([30, { kind: "value", value: "500" }]);
+  });
+
+  it("without keyFields the key field is reverted like any field (the shape decides)", () => {
+    const { last } = run(T, [handRow, user(20, 10, { f9: "K", f2: "550" }), undo(30, 20)]);
+    const entries = (last.record as unknown as { revert: { entries: { target: string }[] } }).revert
+      .entries;
+    expect(entries.map((e) => e.target).sort()).toEqual(["f2", "f9"]);
+  });
+});
+
+describe("a deletion's replay of a write that added a key: not implemented in this version", () => {
+  it("refused, naming the kind; without the key fields known, replayed as any write", () => {
+    const keyed: TableShape = { ...T, keyFields: ["f9"] };
+    const { state } = run(keyed, [user(10, 9, { f2: "500" }), user(20, 10, { f9: "K" })]);
+    let caught: unknown;
+    try {
+      replayDeletion(keyed, state.records, new Set());
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toMatchObject({
+      reason: "not_implemented",
+      detail: { kind: "write_adding_external_key", op: 20 },
+    });
+    expect(() => replayDeletion(T, state.records, new Set())).not.toThrow();
+  });
+});
+
+describe("undoneOp: a key field's item is not one of an operation's changes", () => {
+  // Hand-written records (an awaiting undo is not reachable on a table with a key: no high impact
+  // there): op 20 added the key and proposed an undo, confirmed by op 30. Undoing op 20 is undoing
+  // what the confirmation wrote; the key item alone does not make op 20 its own target.
+  it("an op that only added the key and proposed an undo: the confirmation's op is undone", () => {
+    const item = (target: string, value: string) => ({
+      target,
+      k: 0,
+      status: "applied" as const,
+      valid: [{}],
+      content: { kind: "value" as const, value },
+      deps: [],
+    });
+    const w = (op: number, items: unknown[]) => ({
+      ...base(op),
+      kind: "write",
+      seen: op - 1,
+      seenExplicit: true,
+      now: NOW,
+      explicit: [],
+      items,
+      noop: [],
+      ack: [],
+    });
+    const revert = { entries: [], before: 10, skipped: [] };
+    const records = [
+      w(10, [item("f2", "1")]),
+      w(20, [item("f9", "K")]),
+      {
+        ...base(20),
+        index: 1,
+        event: 22,
+        kind: "undo",
+        status: "awaiting",
+        revert,
+        items: [],
+        seen: 19,
+        seenExplicit: true,
+        ack: [],
+      },
+      { ...base(30), kind: "confirm", target: 22, items: [], revert },
+    ];
+    const keyed = stateFromRecord({ ...T, keyFields: ["f9"] }, records as never);
+    expect(undoneOp(keyed, 20 as never)).toBe(30);
+    // Without the key fields known, the key item counts: op 20 is its own target.
+    expect(undoneOp(stateFromRecord(T, records as never), 20 as never)).toBe(20);
   });
 });
 

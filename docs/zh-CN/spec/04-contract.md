@@ -189,6 +189,7 @@
   - 被一行未撤销的行占着：`invalid_argument`（`external_key_in_use`，附占着它的行 ID）。要转，先撤销它。
   - 被一行已撤销、创建时就带着这个键的行占着：键转到这一行。
   - 被一行已撤销、键是补键得来的行占着：`invalid_argument`（`external_key_not_transferable`，附占着它的行 ID）。不连环转移。
+  - 第一版不做转移：键被一行已撤销的行占着时（上面两种），一律报 `not_in_this_version`（`param` 指 `ops/<i>/external_key`）。
   - 没被占用：补上。之后这一行的键不可改。
 - **让出了键的被撤销行不能再重新存在**：`undo` 那次撤销、带 `include_later` 的回退连带回掉它、确认一项这样的待确认回退，生效时报 `invalid_argument`（`external_key_transferred`，附现在持有这个键的行 ID）。
 

@@ -23,7 +23,7 @@
 // candidate, not deleted, leaves no item in the replay (a same value without evidence pointed
 // at); an operation judged after a deletion event (its conflict criterion reads that event's L);
 // a write by external key (its sync baseline in a replay is the deletion phase's, with the key
-// index's freezing).
+// index's freezing); a write that added a key to a row (the key index's part of a deletion).
 
 import type { FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
 import { canonical, type IntervalSet, isNothing, meet } from "../time/index.ts";
@@ -443,6 +443,18 @@ export function replayDeletion(
     ) {
       throw new JudgeError("not_implemented", `a deletion's replay of a ${r.kind}`, {
         kind: r.kind,
+        op: r.op,
+      });
+    }
+    // A write that gave the row its key (its key field items): the key index's part of a deletion
+    // (freezing, the holder recomputed) comes with the deletion phase.
+    if (
+      r.kind === "write" &&
+      r.byKey !== true &&
+      r.items.some((x) => (table.keyFields ?? []).includes(x.target as never))
+    ) {
+      throw new JudgeError("not_implemented", "a deletion's replay of a write adding a key", {
+        kind: "write_adding_external_key",
         op: r.op,
       });
     }

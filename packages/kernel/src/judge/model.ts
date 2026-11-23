@@ -51,6 +51,11 @@ export interface TableShape {
    * unit of its own (09-references-conflict-sync «冲突判据»).
    */
   readonly groups: readonly (readonly FieldId[])[];
+  /**
+   * The external key's fields (event and timeless tables): given only by the write that gives the
+   * row its key, never in a revert record (04-write-and-read «给没有来源键的行补键»: 回退碰不到键).
+   */
+  readonly keyFields?: readonly FieldId[];
 }
 
 // ---------------------------------------------------------------------------------------------

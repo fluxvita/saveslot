@@ -1118,9 +1118,11 @@ export async function readReceipt(
     const ver = rowVer;
     // The key of an entity located or created by key, from the event that created it.
     const key = t.by_entity_key ? await keyOf(tx, table, rowId as EntityId) : undefined;
-    // A write by external key: the key its row holds, and what it came to (04-contract §5.4):
+    // A write by external key: what it came to (04-contract §5.4):
     // created, or updated when some field took effect (applied or corroborated), else pending.
-    const externalKey = t.by_external_key ? await externalKeyOf(tx, table, rowId) : undefined;
+    // Any row holding an external key gives it (04-contract §1 «行»: with its ID, its key), as it
+    // was at this operation: a replay's receipt is the first one again (04-contract §14).
+    const externalKey = isState ? undefined : await externalKeyOf(tx, table, rowId, op);
     const outcome = !t.by_external_key
       ? undefined
       : created
@@ -1278,14 +1280,29 @@ export function keySummary(
  */
 const unrecordedEntry = (i: number): OpReceipt => ({ op_index: i }) as unknown as OpReceipt;
 
-/** The external key a row holds, by field name: its entry in the key index (§5.12). */
+/**
+ * The external key a row holds, by field name: its entry in the key index (§5.12). With `asOf`,
+ * only if the row had it by that operation (its first key field's first cell with a value opened
+ * no later; a row's key fields have empty cells from its creation): a key
+ * added since is not the row's then.
+ */
 export async function externalKeyOf(
   tx: ReadTx,
   table: CompiledBaseTable,
   row: string,
+  asOf?: number,
 ): Promise<Record<string, ValueOut> | undefined> {
   const ids = table.time.type !== "state" ? table.external_key : undefined;
   if (ids === undefined) return undefined;
+  if (asOf !== undefined) {
+    const since = await tx.query<{ v: unknown }>(
+      `SELECT min(rec_from) AS v FROM "${table.physical.table}__ver"
+       WHERE row_id = $1 AND field_id = $2 AND "f_${ids[0]}" IS NOT NULL`,
+      [row, ids[0]],
+    );
+    const first = since.rows[0]?.v;
+    if (first === null || first === undefined || Number(first) > asOf) return undefined;
+  }
   const r = await tx.query<{ key_values: string }>(
     "SELECT key_values FROM external_keys WHERE table_id = $1 AND holder_row = $2",
     [table.id, row],

@@ -19,6 +19,9 @@ export function tableShape(t: CompiledBaseTable): TableShape {
     valued: valuedFields(t),
     required,
     groups: (t.together ?? []).map((g) => [...g] as FieldId[]),
+    ...(t.time.type !== "state" && t.external_key !== undefined
+      ? { keyFields: [...t.external_key] as FieldId[] }
+      : {}),
   };
 }
 
