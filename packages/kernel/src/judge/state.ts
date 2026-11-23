@@ -541,9 +541,22 @@ export class RowState {
     );
   }
 
-  /** Records of keep-effective decisions and confirmations: which pending items are closed. */
+  /**
+   * Whether a conflict resolution closed the candidate of write `event` on `target`: one the
+   * resolution recorded among the candidates it decided (`decided`, by (event, target)), as
+   * recorded (03-deletion deviation one; 01-objects «处理之后事项不重开»), whichever unit the
+   * candidate meets in a replay. A record without `decided`: by its unit and candidates.
+   */
   closedCandidate(event: Seq, target: Target): boolean {
     return this.records.some((r) => {
+      if (
+        (r.kind === "keep_effective" ||
+          r.kind === "take_candidate" ||
+          r.kind === "take_previous") &&
+        r.decided !== undefined
+      ) {
+        return r.decided.some((d) => d.event === event && d.target === target);
+      }
       const item =
         r.kind === "keep_effective" || r.kind === "take_candidate"
           ? { unit: r.unit, candidates: r.candidates }

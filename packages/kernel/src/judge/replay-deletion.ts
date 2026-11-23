@@ -8,13 +8,15 @@
 // `base_sources`, by position) and passes them in; nothing here reads the store.
 //
 // Covered: writes, revokes, people's confirmations and rejections of awaiting writes and undos,
-// and reverts (`undo`, `take_previous`, the confirmation of an awaiting undo): their record R and
+// reverts (`undo`, `take_previous`, the confirmation of an awaiting undo): their record R and
 // value position as recorded, their ranges and write-backs worked out again on the replay's state
-// (03-deletion «回掉的权威定义»). Refused with `not_implemented`, naming the kind, never judged as
-// an ordinary write: the other conflict resolutions (`take_candidate`, `keep_effective`); an
-// undecided awaiting undo no longer of high impact (high impact ④ judged again); a take_previous
-// whose candidate is no longer one in the replay; an operation judged after a deletion event (its
-// conflict criterion reads that event's L).
+// (03-deletion «回掉的权威定义»), and `keep_effective` as recorded. A candidate a conflict
+// resolution decided stays that candidate in every replay, the conflict there or not (deviation
+// one), so the resolution's record still closes it. Refused with `not_implemented`, naming the
+// kind, never judged as an ordinary write: `take_candidate`; an undecided awaiting undo no longer
+// of high impact (high impact ④ judged again); a take_previous whose recorded candidate, not
+// deleted, leaves no item in the replay (a same value without evidence pointed at); an operation
+// judged after a deletion event (its conflict criterion reads that event's L).
 
 import type { FieldId } from "@fluxvita/saveslot-contract-core";
 import { type IntervalSet, isNothing, meet } from "../time/index.ts";
@@ -82,6 +84,32 @@ function decisionsOf(
 }
 
 /**
+ * The candidates people's conflict resolutions decided, by the write: the targets each resolution
+ * recorded (`decided`, by (event, target)), each with whether it was a candidate in an item on
+ * existence when written (it met a revoke).
+ */
+function resolvedOf(records: readonly OpRecord[]): Map<number, Map<Target, boolean>> {
+  const out = new Map<number, Map<Target, boolean>>();
+  for (const r of records) {
+    if (r.kind !== "keep_effective" && r.kind !== "take_candidate" && r.kind !== "take_previous") {
+      continue;
+    }
+    for (const d of r.decided ?? []) {
+      const w = records.find((x) => x.event === d.event);
+      const onExistence =
+        d.target === "existence" ||
+        (w !== undefined &&
+          "items" in w &&
+          w.items.some((x) => x.target === d.target && x.onExistence === true));
+      const m = out.get(d.event) ?? new Map<Target, boolean>();
+      m.set(d.target, onExistence);
+      out.set(d.event, m);
+    }
+  }
+  return out;
+}
+
+/**
  * A confirmation or rejection executed as recorded on the replay's state: the write's items
  * awaiting there (05-time «高影响写入»; 03-deletion «重放规则 · 冲突消失之后»: a confirmation is of
  * the write's high impact, it puts in effect, at its own operation, whatever of the write awaits
@@ -125,9 +153,9 @@ function revertAgain(
     // K (03-deletion «回掉的权威定义» step 2): of the (event, target) the resolution recorded,
     // the items that are candidates in the replay, or that were candidates when written and are
     // the same as the value before them now (a corroboration): only being deleted takes one out.
-    // One recorded, not deleted, with no such item (its conflict gone, taken by another item, or
-    // a same value without evidence pointed at, which leaves no item) is the resolutions'
-    // replay, not opened here.
+    // A recorded one stays a candidate whether or not its conflict is still there (`resolved`,
+    // judgeWrite); one not deleted with no such item is a same value without evidence pointed at,
+    // which leaves no item: not opened here.
     const recorded = new Set((r.decided ?? []).map((x) => contributionKey(x.event, x.target)));
     const k = state.items.filter(
       (x) =>
@@ -291,6 +319,7 @@ export function replayDeletion(
   const out: OpRecord[] = [];
   const firstDeletion = Math.min(Number.POSITIVE_INFINITY, ...deletionsBefore);
   const decisions = decisionsOf(records);
+  const resolutions = resolvedOf(records);
   // Whether a stretch of a write's items on a target was a candidate when written: it meets one
   // of its candidate items as recorded (a stretch meeting a candidate and an effective item counts
   // as the candidate's, as the reference's write-time status of a stretch does).
@@ -308,7 +337,8 @@ export function replayDeletion(
       r.kind !== "confirm" &&
       r.kind !== "reject" &&
       r.kind !== "undo" &&
-      r.kind !== "take_previous"
+      r.kind !== "take_previous" &&
+      r.kind !== "keep_effective"
     ) {
       throw new JudgeError("not_implemented", `a deletion's replay of a ${r.kind}`, {
         kind: r.kind,
@@ -341,6 +371,13 @@ export function replayDeletion(
       state = new RowState(table, [...state.records, record]);
       continue;
     }
+    // keep_effective: "these candidates do not take effect", as recorded; it writes nothing, and
+    // its record closes them (RowState.closedCandidate).
+    if (r.kind === "keep_effective") {
+      out.push(r);
+      state = new RowState(table, [...state.records, r]);
+      continue;
+    }
     if (r.kind === "confirm" && r.revert !== undefined) {
       const again = confirmUndoAgain(state, r);
       const record = state.isState ? again : withoutDeps(again);
@@ -365,6 +402,7 @@ export function replayDeletion(
       protect: protectedTargets(r),
       decided: decision?.decided ?? new Set(),
       rejected: decision?.rejected ?? false,
+      resolved: resolutions.get(r.event) ?? new Map(),
     };
     const judged =
       input.kind === "write"

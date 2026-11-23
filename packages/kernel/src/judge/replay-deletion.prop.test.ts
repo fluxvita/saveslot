@@ -1,5 +1,5 @@
-// The deletion replay (D1-b2a–c) against the reference evaluator: random logs of writes, revokes,
-// people's confirmations and rejections, undos and take_previous (no other conflict resolutions,
+// The deletion replay (D1-b2a–d1) against the reference evaluator: random logs of writes, revokes,
+// people's confirmations and rejections, undos, take_previous and keep_effective (no take_candidate,
 // no deletion events between operations) are judged op by op,
 // then a set of source data is deleted. `replayDeletion` on the records, given the (event, target)
 // those sources take away, must leave the row or entity the reference evaluator gives with the
@@ -10,9 +10,9 @@
 // by the write on a target, corroborations and the same-value rule, conflicts and high impact
 // worked out again; confirmations and rejections executed as recorded (deviation one); reverts
 // with R and the value position as recorded, their write-backs worked out again. Not yet (refused
-// with not_implemented, see replay-deletion.test.ts): take_candidate and keep_effective, an
-// undecided awaiting undo no longer of high impact, a take_previous whose candidate is no longer
-// one, operations after a deletion event.
+// with not_implemented, see replay-deletion.test.ts): take_candidate, an undecided awaiting undo
+// no longer of high impact, a take_previous whose candidate leaves no item, operations after a
+// deletion event.
 
 import { evaluateLog, type Op, timeline } from "@fluxvita/saveslot-reference";
 import { EVENT, Hits, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
@@ -120,7 +120,8 @@ function compare(
           cited[Math.floor(pick / 7) % cited.length] as string,
         ])
       : new Set(pick);
-  const last = Math.max(...kept.map((o) => o.op));
+  // After every operation and event of the log: a deletion event has a number of its own.
+  const last = Math.max(...kept.map((o) => Math.max(o.op, o.event)));
   const ref = evaluateLog(schema, [
     ...kept,
     { kind: "deletion", op: last + 1, id: "pi_x", sources: [...deleted] },
@@ -138,10 +139,19 @@ function compare(
     items: itemKeys(state.items.filter((x) => !proposals.has(x.event))),
     fields: timelines(view(state).fields as never, names),
     gaps: isState ? view(state).gaps : [],
+    // Which candidates a resolution keeps closed (03-deletion deviation one).
+    closed: state.items
+      .filter((x) => x.status === "candidate" && !proposals.has(x.event))
+      .map((x) => `${x.event}/${x.target} ${state.closedCandidate(x.event, x.target)}`)
+      .sort(),
   }).toEqual({
     items: itemKeys(ref.items),
     fields: timelines(ref.fields as never, names),
     gaps: isState ? ref.gaps : [],
+    closed: ref.items
+      .filter((x) => x.status === "candidate")
+      .map((x) => `${x.event}/${x.target} ${x.closed === true}`)
+      .sort(),
   });
   const isDecision = (r: OpRecord) => r.kind === "confirm" || r.kind === "reject";
   const decisionText = (rs: readonly OpRecord[]) =>
@@ -263,9 +273,9 @@ describe.each(both)("%s table, reverts", (_, schema, isState) => {
     fc.assert(
       fc.property(
         scenario(isState).map((s) => ({
-          // Of the conflict resolutions, take_previous only (the others are D1-b2d).
-          ops: s.ops.filter((o) => o.kind !== "resolve" || o.decision === "take_previous"),
-          decisions: s.decisions.filter((d) => d.kind !== "keep" && d.kind !== "take"),
+          // Of the conflict resolutions, take_previous and keep_effective (take_candidate is D1-b2d2).
+          ops: s.ops.filter((o) => o.kind !== "resolve" || o.decision !== "take_candidate"),
+          decisions: s.decisions.filter((d) => d.kind !== "take"),
         })),
         fc.nat(),
         hits.track(({ ops, decisions }: { ops: Op[]; decisions: Decision[] }, pick: number) => {

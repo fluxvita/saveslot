@@ -13,7 +13,7 @@ import { emptyState, judgeOp, stateFromRecord, view } from "./judge.ts";
 import type { JudgeInput, OpRecord, TableShape, WriteInput } from "./model.ts";
 import { contributionKey, replayDeletion } from "./replay-deletion.ts";
 import { deletedContributions, judged } from "./scenarios.fixture.ts";
-import type { RowState } from "./state.ts";
+import { EVERYTHING, type RowState } from "./state.ts";
 import { judgeWrite } from "./write.ts";
 
 const STATE: TableShape = {
@@ -144,7 +144,8 @@ function sideBySide(
   const after = replayDeletion(table, records, new Set(contributions));
   // The reference evaluates the ops as judged (`judged` gives a resolution the item's open
   // candidates), so both sides read the same log.
-  const last = Math.max(...kept.map((o) => o.op));
+  // After every operation and event of the log: a deletion event has a number of its own.
+  const last = Math.max(...kept.map((o) => Math.max(o.op, o.event)));
   const ref = evaluateLog(schema, [
     ...kept,
     { kind: "deletion", op: last + 1, id: "pi_x", sources: [...sources] },
@@ -666,17 +667,18 @@ describe("take_previous: R and the merge base as recorded, K the recorded candid
     expect(b.ref).toEqual(b.kernel);
   });
 
-  it("the candidate no longer one (#10's value deleted, the conflict gone): not_implemented", () => {
-    const { table, steps } = judged(STATE_SCHEMA, ops, []);
-    const e = refusal(() =>
-      replayDeletion(
-        table,
-        steps.map((x) => x.judgement.record),
-        new Set([contributionKey(11, "f2")]),
-      ),
+  it("the candidate's conflict gone (#10's value deleted): still the candidate it closed, the write-back as recorded", () => {
+    // Deviation one: the resolution decided #20's candidate; it stays that candidate whether or
+    // not the conflict is still there, and the take_previous still goes back to the merge base.
+    const b = sideBySide(ops, ["S10"], [contributionKey(11, "f2")]);
+    const twenty = b.after.state.items.filter((x) => x.event === 21);
+    expect(twenty.map((x) => x.status)).toEqual(["candidate"]);
+    expect(b.after.state.closedCandidate(21, "f2")).toBe(true);
+    expect(b.kernel).toEqual([[d("10-01"), "0"]]);
+    expect(b.ref).toEqual(b.kernel);
+    expect(b.refFinal.items.filter((x) => x.event === 21).map((x) => [x.status, x.closed])).toEqual(
+      [["candidate", true]],
     );
-    expect(e.reason).toBe("not_implemented");
-    expect(e.detail).toMatchObject({ kind: "take_previous candidate", op: 40, event: 21 });
   });
 });
 
@@ -908,5 +910,248 @@ describe("an undo applied when written stays applied (03-deletion «高影响»:
     });
     expect(b.kernel).toEqual([[d("10-01"), "1"]]);
     expect(b.ref).toEqual(b.kernel);
+  });
+});
+
+describe("keep_effective, as recorded: the candidates it decided take effect in no replay", () => {
+  // #5 f2=0; #10 and #20 both saw #5 and write 1 and 2: #20 is a candidate against #10; #40 keeps
+  // the value in effect (03-deletion «人已经解决的冲突，照记录»).
+  const ops: Op[] = [
+    refWrite(5, 0, "10-01", null, "0"),
+    refWrite(10, 5, "10-01", null, "1"),
+    refWrite(20, 5, "10-01", null, "2"),
+    {
+      kind: "resolve",
+      op: 40,
+      event: 41,
+      decision: "keep_effective",
+      candidates: [21],
+      unit: "f2",
+    },
+  ];
+
+  it("the value in effect deleted: the candidate does not take effect, the value falls back to #5's", () => {
+    const b = sideBySide(ops, ["S10"], [contributionKey(11, "f2")]);
+    expect(b.records[3]).toMatchObject({ kind: "keep_effective" });
+    expect(b.after.records.map((r) => [r.op, r.kind])).toEqual([
+      [5, "write"],
+      [20, "write"],
+      [40, "keep_effective"],
+    ]);
+    expect(b.after.state.items.filter((x) => x.event === 21).map((x) => x.status)).toEqual([
+      "candidate",
+    ]);
+    expect(b.after.state.closedCandidate(21, "f2")).toBe(true);
+    expect(b.kernel).toEqual([[d("10-01"), "0"]]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("the candidate's value deleted: nothing of it is left; #10 stays in effect", () => {
+    const b = sideBySide(ops, ["S20"], [contributionKey(21, "f2")]);
+    expect(b.kernel).toEqual([[d("10-01"), "1"]]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("without the resolution the same deletion lets the candidate take effect (the record is what keeps it closed)", () => {
+    const b = sideBySide(ops.slice(0, 3), ["S10"], [contributionKey(11, "f2")]);
+    expect(b.kernel).toEqual([[d("10-01"), "2"]]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+});
+
+describe("the candidate level of two cases whose item level is D1-b2e", () => {
+  it("a candidate an undo's record covers, put in effect by a deletion, is taken back with it", () => {
+    // #20 did not see #10: its f2 is a candidate, its f3 in effect. #30 undoes #20: R lists both
+    // (21, f2) and (21, f3), the candidate too. S10 deleted (#10's value): #20's f2 is no longer
+    // a candidate, it takes effect, and the undo takes it back (03-deletion «回掉的权威定义» step
+    // 1); f2 falls back to #5's 0. The item level (not a pending item) is b2e's.
+    const ops: Op[] = [
+      refWrite(5, 0, "10-01", null, "0"),
+      refWrite(10, 5, "10-01", null, "1"),
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 5,
+        valid: { from: { mode: "given", value: d("10-01") }, to: { mode: "open" } },
+        fields: { f2: { value: "2", sources: ["S20"] }, f3: { value: "x", sources: ["S20f3"] } },
+      },
+      { kind: "undo", op: 30, event: 31, target: 20, seen: 29, acknowledge: ["overwrite"] },
+    ];
+    const b = sideBySide(ops, ["S10"], [contributionKey(11, "f2")]);
+    expect(b.records[2]).toMatchObject({
+      items: [
+        { target: "f2", status: "candidate" },
+        { target: "f3", status: "applied" },
+      ],
+    });
+    expect(b.records[3]).toMatchObject({
+      kind: "undo",
+      revert: {
+        entries: [
+          { event: 21, target: "f2" },
+          { event: 21, target: "f3" },
+        ],
+      },
+    });
+    const f2 = b.after.state.items.filter((x) => x.event === 21 && x.target === "f2");
+    expect(f2.map((x) => x.status)).toEqual(["applied"]);
+    expect(
+      b.after.state.registeredOn(f2[0] as never, { from: d("10-01"), to: null }, EVERYTHING),
+    ).toBe(true);
+    expect(b.kernel).toEqual([[d("10-01"), "0"]]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+
+  it("a candidate whose item a later write overwrote stays a candidate, not in effect, when that write is deleted", () => {
+    // #20 is a candidate against #10; #30, having seen #20, writes 3 over the same stretch (the
+    // item superseded, overwritten). S30 deleted: #20's part goes back to its item, which stays
+    // superseded; at the candidate level it is a candidate and #10's value is in effect. The item
+    // level (closed with the item) is b2e's.
+    const ops: Op[] = [
+      refWrite(5, 0, "10-01", null, "0"),
+      refWrite(10, 5, "10-01", null, "1"),
+      refWrite(20, 5, "10-01", null, "2"),
+      refWrite(30, 20, "10-01", null, "3"),
+    ];
+    const b = sideBySide(ops, ["S30"], [contributionKey(31, "f2")]);
+    expect(b.records[2]).toMatchObject({ items: [{ target: "f2", status: "candidate" }] });
+    expect(b.after.state.items.filter((x) => x.event === 21).map((x) => x.status)).toEqual([
+      "candidate",
+    ]);
+    expect(b.kernel).toEqual([[d("10-01"), "1"]]);
+    expect(b.ref).toEqual(b.kernel);
+  });
+});
+
+describe("a resolved candidate stays closed whichever unit it meets in the replay (closed by the recorded decided list)", () => {
+  const open10 = {
+    from: { mode: "given" as const, value: d("10-01") },
+    to: { mode: "open" as const },
+  };
+  const w = (op: number, seen: number, fields: Record<string, [string, string[]]>): Op => ({
+    kind: "write",
+    op,
+    event: op + 1,
+    seen,
+    valid: open10,
+    fields: Object.fromEntries(
+      Object.entries(fields).map(([f, [v, s]]) => [f, { value: v, sources: s }]),
+    ),
+  });
+  const keep = (op: number, candidates: number[], unit: "existence" | "f2" | "f3"): Op => ({
+    kind: "resolve",
+    op,
+    event: op + 1,
+    decision: "keep_effective",
+    candidates,
+    unit,
+  });
+  /** Kernel and reference side by side: f2, f3 and every candidate with whether it is closed. */
+  function closedness(ops: Op[], sources: string[], contributions: string[]) {
+    const { table, steps } = judged(STATE_SCHEMA, ops, []);
+    expect(steps).toHaveLength(ops.length);
+    const kept = steps.map((x) => x.op);
+    const after = replayDeletion(
+      table,
+      steps.map((x) => x.judgement.record),
+      new Set(contributions),
+    );
+    const last = Math.max(...kept.map((o) => Math.max(o.op, o.event)));
+    const ref = evaluateLog(STATE_SCHEMA, [
+      ...kept,
+      { kind: "deletion", op: last + 1, id: "pi_x", sources },
+    ]).final;
+    const vals = (fs: Readonly<Record<string, unknown>>) =>
+      Object.fromEntries(
+        ["f2", "f3"].map((f) => [
+          f,
+          ((fs[f] ?? []) as { valid: { from: string | null }[]; value: unknown }[])
+            .filter((s) => s.value !== null)
+            .map((s) => [s.valid[0]?.from ?? null, s.value]),
+        ]),
+      );
+    return {
+      kernel: {
+        fields: vals(view(after.state).fields),
+        cands: after.state.items
+          .filter((x) => x.status === "candidate")
+          .map((x) => `${x.event}/${x.target} ${after.state.closedCandidate(x.event, x.target)}`)
+          .sort(),
+      },
+      ref: {
+        fields: vals(ref.fields),
+        cands: ref.items
+          .filter((x) => x.status === "candidate")
+          .map((x) => `${x.event}/${x.target} ${x.closed === true}`)
+          .sort(),
+      },
+    };
+  }
+
+  it("A: a candidate on existence (it met a revoke and a write); the revoke deleted, the write conflict left: still closed", () => {
+    const ops: Op[] = [
+      w(5, 0, { f2: ["0", ["S5"]] }),
+      w(10, 5, { f2: ["1", ["S10"]] }),
+      { kind: "revoke", op: 12, event: 13, seen: 10, valid: open10, validSources: ["R12"] },
+      w(20, 5, { f2: ["2", ["S20"]] }),
+      keep(40, [21], "existence"),
+    ];
+    const r = closedness(ops, ["R12"], [contributionKey(13, "existence")]);
+    expect(r.kernel.cands).toEqual(["21/f2 true"]);
+    expect(r.kernel).toEqual(r.ref);
+  });
+
+  it("B: a field candidate; a revoke candidate takes effect after the deletion and it now meets a revoke: still closed", () => {
+    const ops: Op[] = [
+      w(5, 0, { f2: ["0", ["S5"]] }),
+      w(10, 5, { f2: ["1", ["S10"]] }),
+      { kind: "revoke", op: 12, event: 13, seen: 5, valid: open10, validSources: ["R12"] },
+      w(20, 10, { f2: ["2", ["S20"]] }),
+      w(25, 5, { f2: ["3", ["S25"]] }),
+      keep(40, [26], "f2"),
+    ];
+    const r = closedness(ops, ["S10"], [contributionKey(11, "f2")]);
+    expect(r.kernel.cands).toContain("26/f2 true");
+    expect(r.kernel).toEqual(r.ref);
+  });
+
+  it("only f3 listed: f2 of the same write takes effect once its conflict is gone; f3 stays closed", () => {
+    const ops: Op[] = [
+      w(5, 0, { f2: ["0", ["S5"]], f3: ["a", ["S5"]] }),
+      w(10, 5, { f2: ["1", ["S10"]], f3: ["b", ["S10"]] }),
+      w(20, 5, { f2: ["2", ["S20a"]], f3: ["c", ["S20b"]] }),
+      keep(40, [21], "f3"),
+    ];
+    const r = closedness(ops, ["S10"], [contributionKey(11, "f2"), contributionKey(11, "f3")]);
+    expect(r.kernel.cands).toEqual(["21/f3 true"]);
+    expect(r.kernel.fields).toEqual({ f2: [[d("10-01"), "2"]], f3: [[d("10-01"), "a"]] });
+    expect(r.kernel).toEqual(r.ref);
+  });
+
+  it("a revoke kept out (existence), the write in effect deleted: the revoke stays a closed candidate", () => {
+    const ops: Op[] = [
+      w(5, 0, { f2: ["0", ["S5"]] }),
+      w(10, 5, { f2: ["1", ["S10"]] }),
+      { kind: "revoke", op: 20, event: 21, seen: 5, valid: open10, validSources: ["R20"] },
+      keep(40, [21], "existence"),
+    ];
+    const r = closedness(ops, ["S10"], [contributionKey(11, "f2")]);
+    expect(r.kernel.cands).toEqual(["21/existence true"]);
+    expect(r.kernel.fields["f2"]).toEqual([[d("10-01"), "0"]]);
+    expect(r.kernel).toEqual(r.ref);
+  });
+
+  it("a field candidate that met only a revoke (an item on existence), the revoke deleted: still closed", () => {
+    const ops: Op[] = [
+      w(5, 0, { f2: ["0", ["S5"]] }),
+      { kind: "revoke", op: 10, event: 11, seen: 5, valid: open10, validSources: ["R10"] },
+      w(20, 5, { f2: ["2", ["S20"]] }),
+      keep(40, [21], "existence"),
+    ];
+    const r = closedness(ops, ["R10"], [contributionKey(11, "existence")]);
+    expect(r.kernel.cands).toEqual(["21/f2 true"]);
+    expect(r.kernel.fields["f2"]).toEqual([[d("10-01"), "0"]]);
+    expect(r.kernel).toEqual(r.ref);
   });
 });

@@ -166,6 +166,13 @@ export interface ReplayOptions {
    * whole write, so no target of it takes effect but those protected by deviation two.
    */
   readonly rejected: boolean;
+  /**
+   * Targets a person's conflict resolution listed among the candidates it decided (deviation one,
+   * 01-objects «处理之后事项不重开»): a candidate in every replay, whether or not the conflict is
+   * still there, so the resolution's record still closes it. The value: whether the candidate was
+   * in an item on existence (it met a revoke), as recorded when written. Absent: none.
+   */
+  readonly resolved?: ReadonlyMap<Target, boolean>;
 }
 
 export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOptions): WriteOutcome {
@@ -282,7 +289,12 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
       for (const m of c.ops) withOps.add(m);
       withRevoke ||= c.revoke;
     }
-    if (withOps.size > 0) {
+    // A candidate a resolution decided stays one, in the item it was in when written.
+    const resolvedHere = ps.filter((p) => replay?.resolved?.has(p.f) === true);
+    if (resolvedHere.length > 0 && withOps.size === 0) {
+      withRevoke = resolvedHere.some((p) => replay?.resolved?.get(p.f) === true);
+    }
+    if (withOps.size > 0 || resolvedHere.length > 0) {
       for (const p of ps) {
         // A corroboration's changed part: a candidate a piece, its corroborations as they are.
         if (p.corroboration !== undefined) drafts.push(...p.corroboration.same);
@@ -297,13 +309,15 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
           });
         }
       }
-      conflicts.push({
-        unit: withRevoke ? "existence" : { fields: unit },
-        with: [...withOps].sort((x, y) => x - y),
-        items: ps.map((p) => ({ event: w.event, target: p.f, k: -1 })),
-      });
+      if (withOps.size > 0) {
+        conflicts.push({
+          unit: withRevoke ? "existence" : { fields: unit },
+          with: [...withOps].sort((x, y) => x - y),
+          items: ps.map((p) => ({ event: w.event, target: p.f, k: -1 })),
+        });
+      }
     }
-    for (const p of withOps.size > 0 ? protectedParts : all) {
+    for (const p of withOps.size > 0 || resolvedHere.length > 0 ? protectedParts : all) {
       if (p.corroboration !== undefined) {
         // Merged: the write's interval resolved on the current state (conflict criterion ④),
         // cut there into what is still the same and what changed; the blocking points' givers
@@ -685,7 +699,10 @@ export function judgeRevoke(state: RowState, r: RevokeInput, replay?: ReplayOpti
       state.table.fields.some((g) => !isNothing(meet(state.changedBy(m, g), seenValid))),
     );
   // In a replay, a revoke in effect when written stays in effect (deviation two).
-  const conflict = withOps.length > 0 && replay?.protect.has("existence") !== true;
+  // A revoke a resolution decided as a candidate stays one (deviation one).
+  const conflict =
+    (withOps.length > 0 || replay?.resolved?.has("existence") === true) &&
+    replay?.protect.has("existence") !== true;
   const items = numbered([
     conflict
       ? {
@@ -700,15 +717,16 @@ export function judgeRevoke(state: RowState, r: RevokeInput, replay?: ReplayOpti
   return {
     ...none,
     items,
-    conflicts: conflict
-      ? [
-          {
-            unit: "existence",
-            with: withOps,
-            items: [{ event: r.event, target: "existence", k: 0 }],
-          },
-        ]
-      : [],
+    conflicts:
+      conflict && withOps.length > 0
+        ? [
+            {
+              unit: "existence",
+              with: withOps,
+              items: [{ event: r.event, target: "existence", k: 0 }],
+            },
+          ]
+        : [],
   };
 }
 
