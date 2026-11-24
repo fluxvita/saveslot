@@ -9,8 +9,7 @@
 // has no problem of the first kind.
 //
 // Parameters this version does not take are refused as not_in_this_version at their path:
-// external_key (until the write path takes it: see `acceptExternalKeyForTests`), as, source_ref
-// segments, revert.to, mode, the evidence level external_authority, and a premise's temporary name
+// as, source_ref segments, revert.to, mode, the evidence level external_authority, and a premise's temporary name
 // ("@…", with `as`).
 //
 // Temporary limits, until experiment 4 (08-open-questions): at most 1,000 ops; `task` and
@@ -144,19 +143,7 @@ const OP_KEYS = new Set([
   "evidence_by_field",
 ]);
 /** Op keys this version does not take, in the order they are reported. */
-const OP_NOT_YET = ["external_key", "as"];
-/**
- * Whether the write path takes `external_key`. Off: refused as not_in_this_version, as before. It is
- * turned on only from the kernel's test entry (`acceptExternalKeyForTests`, testing.fixture.ts),
- * never by an environment variable or a request, until locating, the three-way comparison and the
- * key index land and the entry opens. On, an op that gets through normalizing is stopped by the
- * write pipeline as not implemented, with nothing written.
- */
-let externalKeyTaken = false;
-/** Tests only: the write path takes `external_key` (or not again). Not exported from the kernel. */
-export function acceptExternalKeyForTests(on: boolean): void {
-  externalKeyTaken = on;
-}
+const OP_NOT_YET = ["as"];
 /** The premises an op may have (02-integrity «写入的前提» «上限»). */
 export const MAX_PREMISES = 16;
 const PREMISE_KEYS = new Set([
@@ -846,8 +833,7 @@ function readOp(
   const at = `ops/${i}`;
   if (!isObj(o)) return invalid("malformed", at);
   for (const k of keysOf(o)) if (!OP_KEYS.has(k)) invalid("malformed", `${at}/${k}`);
-  for (const k of OP_NOT_YET)
-    if (has(o, k) && !(k === "external_key" && externalKeyTaken)) notYet(`${at}/${k}`);
+  for (const k of OP_NOT_YET) if (has(o, k)) notYet(`${at}/${k}`);
   const table = baseTable(get(o, "table"), `${at}/table`, tables, input.compiled.tables);
   const whole = since?.get(`${table.id}/*`);
   if (whole !== undefined)

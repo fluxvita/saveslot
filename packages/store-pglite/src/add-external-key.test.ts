@@ -2,7 +2,6 @@
 // 补键»; 04-contract §5.1): added, then hit by a sync; the row holding it or another; the key held
 // by a row not revoked or revoked (a transfer, not in this version), a revoke in the same request
 // too; a revoked row; two keys for one row in a request; an undo never taking the key back.
-// Behind the kernel's test switch.
 
 import {
   createOpsContext,
@@ -14,7 +13,6 @@ import {
   schemaDraft,
   write,
 } from "@fluxvita/saveslot-kernel";
-import { acceptExternalKeyForTests } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
@@ -99,10 +97,8 @@ const rows = () =>
 beforeAll(async () => {
   s = await openReusable("saveslot-add-key-");
   scratch = await openReusable("saveslot-add-key-scratch-");
-  acceptExternalKeyForTests(true);
 }, T);
 afterAll(async () => {
-  acceptExternalKeyForTests(false);
   await s?.close();
   await scratch?.close();
 }, T);

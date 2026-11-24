@@ -735,6 +735,163 @@ describe("query keys of the caller's", () => {
   });
 });
 
+describe("writes by source key over HTTP (04-write-and-read «按来源键写入»; 05 §6)", () => {
+  // A connector's table: timeless, keyed by (origin, external_id).
+  const SYNCED = {
+    ...LEDGER,
+    slot: "synced",
+    tables: [
+      {
+        name: "rides",
+        kind: "base",
+        description: "rides from an app",
+        time: { type: "none" },
+        external_key: ["origin", "external_id"],
+        fields: [
+          { name: "origin", type: "text", description: "the app" },
+          { name: "external_id", type: "text", description: "its ID there" },
+          { name: "fare", type: "integer", description: "how much" },
+        ],
+      },
+    ],
+  };
+  type Receipt = {
+    seq?: number;
+    replayed?: true;
+    ops: Record<string, unknown>[];
+    external_key_summary?: Record<string, number>;
+    warnings?: { code: string }[];
+  };
+  const post = async (ops: unknown[], key?: string) => {
+    const r = await http({
+      method: "POST",
+      path: "/v1/writes",
+      token: session,
+      ...(key !== undefined ? { headers: { "idempotency-key": key } } : {}),
+      body: JSON.stringify({ sv: 1, ops }),
+    });
+    return { status: r.status, body: JSON.parse(r.body) as Receipt & { error?: R } };
+  };
+  type R = Record<string, unknown>;
+  const byKey = (id: string, fare: number) => ({
+    intent: "update",
+    table: "synced.rides",
+    external_key: { origin: "app", external_id: id },
+    set: { fare },
+  });
+  const op = (r: { body: Receipt }) => r.body.ops[0] as R;
+  const target = (r: { body: Receipt }) => op(r)["target"] as { row: string };
+
+  it(
+    "created, unchanged (nothing appended), updated; a local change kept as a candidate; a revoked row skipped",
+    async () => {
+      const made = await http({
+        method: "POST",
+        path: "/v1/drafts",
+        token: session,
+        body: JSON.stringify({ document: SYNCED }),
+      });
+      expect(made.status).toBe(200);
+
+      const created = await post([byKey("k-1", 10)]);
+      expect([created.status, op(created)["outcome"]]).toEqual([200, "created"]);
+      expect(created.body.external_key_summary).toMatchObject({ created: 1, unchanged: 0 });
+      const row = target(created).row;
+
+      const same = await post([byKey("k-1", 10)]);
+      expect([same.status, op(same)["outcome"], same.body.seq]).toEqual([
+        200,
+        "unchanged",
+        undefined,
+      ]);
+
+      const updated = await post([byKey("k-1", 12)]);
+      expect([op(updated)["outcome"], target(updated).row]).toEqual(["updated", row]);
+
+      // The user changes the fare here; the source changes it too: not overwritten.
+      const local = await post([
+        {
+          intent: "update",
+          table: "synced.rides",
+          row,
+          ver: op(updated)["ver"],
+          set: { fare: 15 },
+        },
+      ]);
+      expect(local.status).toBe(200);
+      const pending = await post([byKey("k-1", 13)]);
+      expect([pending.body.ops[0]?.["outcome"], (pending.body as unknown as R)["status"]]).toEqual([
+        "pending",
+        "pending",
+      ]);
+
+      // Revoked by the user: a sync of the same record is skipped, not written back.
+      const revoked = await post([
+        { intent: "revoke", table: "synced.rides", row, ver: op(pending)["ver"] },
+      ]);
+      expect(revoked.status).toBe(200);
+      const skipped = await post([byKey("k-1", 14)]);
+      expect(op(skipped)).toMatchObject({
+        outcome: "skipped",
+        skip_reason: "revoked",
+        revoked_by: revoked.body.seq,
+      });
+      expect(skipped.body.warnings?.map((w) => w.code)).toContain("external_key_skipped");
+    },
+    T,
+  );
+
+  it(
+    "a key added to a row written by hand, then hit by a sync; a transfer is not in this version; a replay gives an op that entered no event by its index",
+    async () => {
+      const hand = await post([{ intent: "insert", table: "synced.rides", set: { fare: 20 } }]);
+      const row = target(hand).row;
+      const added = await post([
+        {
+          intent: "update",
+          table: "synced.rides",
+          row,
+          ver: op(hand)["ver"],
+          external_key: { origin: "app", external_id: "k-2" },
+        },
+      ]);
+      expect(added.status).toBe(200);
+      const hit = await post([byKey("k-2", 21)]);
+      expect([op(hit)["outcome"], target(hit).row]).toEqual(["updated", row]);
+
+      // k-1 is held by the row revoked above: adding it to another row would transfer it.
+      const other = await post([{ intent: "insert", table: "synced.rides", set: { fare: 30 } }]);
+      const transfer = await post([
+        {
+          intent: "update",
+          table: "synced.rides",
+          row: target(other).row,
+          ver: op(other)["ver"],
+          external_key: { origin: "app", external_id: "k-1" },
+        },
+      ]);
+      expect([
+        transfer.status,
+        transfer.body.error?.["code"],
+        transfer.body.error?.["param"],
+      ]).toEqual([501, "not_in_this_version", "ops/0/external_key"]);
+
+      // One op by key unchanged, one ordinary: sent twice with one key, the second a replay.
+      const ops = [
+        byKey("k-2", 21),
+        { intent: "insert", table: "synced.rides", set: { fare: 40 } },
+      ];
+      const first = await post(ops, "sync-and-note");
+      const again = await post(ops, "sync-and-note");
+      expect(first.body.ops[0]?.["outcome"]).toBe("unchanged");
+      expect(again.body.replayed).toBe(true);
+      expect(again.body.ops[0]).toEqual({ op_index: 0 });
+      expect(again.body.ops[1]?.["target"]).toEqual(first.body.ops[1]?.["target"]);
+    },
+    T,
+  );
+});
+
 describe("the log", () => {
   it("one line a request with its route and status; no token, header value, path part or body", () => {
     const requests = lines.filter((l) => l.includes(" request "));

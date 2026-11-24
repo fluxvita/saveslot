@@ -186,6 +186,8 @@ const OUTSIDE = new RegExp(
     // A quantity's number (its unit is inside).
     "(^|\\.)value$",
     "(^|\\.)(fields|unit|premise_fields|nearest|items|base_tables)\\.\\d+$",
+    // A table's source key: its fields' names (a receipt's `external_key` is by name, its values inside).
+    "(^|\\.)tables\\.\\d+\\.external_key\\.\\d+$",
     "(^|\\.)tables\\.\\d+\\.fields\\.\\d+\\.name$",
     "(^|\\.)time\\.field$",
     "^id$",
@@ -323,6 +325,12 @@ describe("what 05 §6 asks for", () => {
     const x = text("catalog_list");
     expect(x).toMatch(new RegExp(`ledger · schema v1 · ${B}Asia/Shanghai${E}`));
     expect(x).toMatch(new RegExp(`expenses \\(base\\) ${B}one row per expense${E}`));
+  });
+
+  it("catalog table: a table with a source key says so on a line of its own (05 §6)", () => {
+    const x = text("catalog_table").split("\n");
+    expect(x).toContain("  source key: origin + external_id");
+    expect(x.filter((l) => l.includes("source key"))).toHaveLength(1);
   });
 
   it("catalog schema: the JSON as written, whole, in one boundary", () => {

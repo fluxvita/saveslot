@@ -17,7 +17,6 @@ import {
   schemaDraft,
   write,
 } from "@fluxvita/saveslot-kernel";
-import { acceptExternalKeyForTests } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
@@ -477,8 +476,6 @@ it(
 );
 
 describe("an old write by external key to a table restructured: schema_incompatible, not a key error (fixed cases)", () => {
-  beforeAll(() => acceptExternalKeyForTests(true));
-  afterAll(() => acceptExternalKeyForTests(false));
   /** items made an event table, after the caller wrote rooms at version 1. */
   const switched = async () => {
     await w({
@@ -556,9 +553,6 @@ describe("an old write by external key to a table restructured: schema_incompati
 });
 
 describe("the external key", () => {
-  beforeAll(() => acceptExternalKeyForTests(true));
-  afterAll(() => acceptExternalKeyForTests(false));
-
   it(
     "dropped on a table written: the catalog only, confirmed; by key at the old version no_external_key, by row accepted, no row added",
     async () => {

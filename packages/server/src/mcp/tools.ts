@@ -148,6 +148,7 @@ const WRITE_OP: JsonSchema = {
     row: str,
     entity: str,
     entity_key: keyValues,
+    external_key: keyValues,
     ver: str,
     set: { type: "object" },
     revert: {
@@ -158,7 +159,7 @@ const WRITE_OP: JsonSchema = {
     },
     valid_from: str,
     valid_to: str,
-    // `external_key`, `as`, an op's own `evidence` and `evidence_by_field` are not taken in this
+    // `as`, an op's own `evidence` and `evidence_by_field` are not taken in this
     // version, and not listed (05 §9 «这一版不出现的句子»).
     evidence_refs: { type: "array", items: { type: "integer", minimum: 0 } },
     premises: { type: "array", items: PREMISE },

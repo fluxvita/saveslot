@@ -2,7 +2,7 @@
 // 04-contract §5.1, §5.4, §14; 09-event-format §4.2, §5.6, §5.7): locating by the key index, each
 // outcome with its receipt and events, the ops that enter no event (no source, an empty index in
 // `ops/<i>`, no event at all when none enters), the request key, the merge base of a candidate by
-// unit, and a table whose key the current version no longer has. Behind the kernel's test switch.
+// unit, and a table whose key the current version no longer has.
 
 import {
   createOpsContext,
@@ -14,7 +14,6 @@ import {
   schemaDraft,
   write,
 } from "@fluxvita/saveslot-kernel";
-import { acceptExternalKeyForTests } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
@@ -274,10 +273,8 @@ function contractIssues(r: Any): string[] {
 beforeAll(async () => {
   s = await openReusable("saveslot-write-by-key-");
   scratch = await openReusable("saveslot-write-by-key-scratch-");
-  acceptExternalKeyForTests(true);
 }, T);
 afterAll(async () => {
-  acceptExternalKeyForTests(false);
   await s?.close();
   await scratch?.close();
 }, T);

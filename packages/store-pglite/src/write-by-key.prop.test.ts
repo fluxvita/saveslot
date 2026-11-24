@@ -33,7 +33,6 @@ import {
   schemaDraft,
   write,
 } from "@fluxvita/saveslot-kernel";
-import { acceptExternalKeyForTests } from "@fluxvita/saveslot-kernel/testing";
 import {
   evaluateLog,
   type LogEntry,
@@ -558,10 +557,8 @@ const FIXED: [{ first: string; steps: Step[] }][] = [
 beforeAll(async () => {
   s = await openReusable("saveslot-write-by-key-prop-");
   scratch = await openReusable("saveslot-write-by-key-prop-scratch-");
-  acceptExternalKeyForTests(true);
 }, 120_000);
 afterAll(async () => {
-  acceptExternalKeyForTests(false);
   await s?.close();
   await scratch?.close();
 }, 120_000);

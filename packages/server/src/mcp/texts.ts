@@ -313,10 +313,7 @@ export const WRITE = {
     'Periods of state tables are `[valid_from, valid_to)`, the end not included: for "until 11-20 (included)" pass `valid_to: "2026-11-21"`. Without an end, only up to the next recorded change; the receipt says nothing after it was touched. So for "from 11-02 the budget is 3000" pass `valid_from: "2026-11-02"` and no `valid_to`: a change recorded for 11-10 stays. `valid_to: "open"` carries the value on with no end: when there are recorded changes after it, it would overwrite them, and then it does not take effect until the user confirms it; with none after it, it takes effect at once. Writing by `entity_key` creates the entity when it does not exist; the receipt lists the keys the table already has.',
     { text: "It also marks the keys written alike.", later: "P2" },
     '`revoke` without a period revokes the whole entity, with a period it leaves that period without a value. For "undo that change" or "put it back as it was", use `revert: {undo: <the #n of that write>}`: it undoes only what of that write is still in effect; what others changed since is skipped and listed in the receipt.',
-    {
-      text: "When the table declares a source key and your records come from another system, you can use `external_key` instead of `row`: give every key field, with intent `update` and no `ver`; a record already there is compared with what was last delivered, one not there is added. A record that did not change leaves nothing; a record the user revoked is skipped, not written back.",
-      later: "P2",
-    },
+    "Records from another system, in a table with a source key: `external_key` instead of `row`, every key field, intent `update`, no `ver`. One already there is compared with what was last delivered, one not there is added; one unchanged leaves nothing; one the user revoked is skipped.",
     'When what you write was decided from other records in saveslot (tasks planned by a release date, a budget set from an income), you can list those records and the `ver` you read in `premises`. If they change later, this row carries "premise changed" for anyone who reads it, naming the record and the operation; its values are not changed. When you read a row with "premise changed" and it needs adjusting, change it as usual with new `premises`; when it still holds, an `update` with `premises` and no `set` says so; `premises: []` clears them. When the reason is a retroactive change or a changed plan, read the premise at the business time the mark gives: a read without a time returns the current period only. List only the records really used, not everything read; when what you used is a derived value, list the base record it sums up. When this write becomes a candidate or awaits confirmation, it declares premises only for the fields it writes; `premises: []` still clears the whole row.',
     "A write that would overwrite recorded changes does not take effect at once: the receipt lists what would be overwritten, and the pending item. Tell the user that list in this same reply and ask them; confirm it with saveslot_resolve only after they say yes to it. What they said before the item appeared is not agreement to it. Writing never deletes the original words.",
     {
@@ -335,7 +332,7 @@ export const WRITE = {
     ],
     ops: [
       'One or more operations on one slot, in order; all succeed or none does. Each: `intent`; `table`; `row` (`r_…`, an existing row of an event table or a table without time), or `entity` / `entity_key` (a state table); `ver` as read; `set` (field name → value; a value with a unit as `{value, unit}`; `null` clears an optional field); for state tables `valid_from` (included) and `valid_to` (not included; `next_change` by default, or `open`); `revert: {undo: n, include_later?}` instead of `set`; `evidence_refs` (indexes into the request\'s `evidence`). Tell "it changed" (`update`) from "it was recorded wrongly" (`correct`).',
-      { text: "`external_key`: the record's key in the system it comes from.", later: "P2" },
+      "`external_key`: the record's key in the system it comes from.",
       {
         text: '`as`: a temporary name for a new row, used later in the request as `"@p1"`.',
         later: "P2",
@@ -361,14 +358,17 @@ export const WRITE_OP_FIELDS = {
     "Required. The table's name as saveslot_catalog gives it. A derived table cannot be written: write its source table.",
   ],
   row: [
-    "For an existing row of an event table or a table without time: its ID (`r_…`), from a read. Not with `insert`.",
+    "For an existing row of an event table or a table without time: its ID (`r_…`), from a read. Not with `insert`, nor when writing by `external_key`.",
   ],
   entity: ["For an existing entity of a state table (or give `entity_key`): its ID (`e_…`)."],
   entity_key: [
     'Instead of `entity`: the entity\'s natural key, such as `{"category": "food"}`; an entity not there is created. Use intent `update`. A key written wrong creates a new entity: the receipt lists the keys the table already has.',
   ],
+  external_key: [
+    "Only when the table declares a source key: the record's key in the system it comes from, every key field's value. Use intent `update` or `correct`, with no `ver` and no `row`. When saveslot has this record, each field is compared with what you delivered last time: unchanged, nothing is done; changed and not changed here since, it is updated; changed here too, it becomes a candidate for a person to decide, not overwritten. A record not there yet is added. A record the user revoked is skipped. To give an existing row without a source key its key, give it with `row` and `ver`.",
+  ],
   ver: [
-    "When changing an existing row: the `ver` you read for it, passed back unchanged; saveslot uses it to find changes others made since. Without it, the version you last read is used. Not for a row created in this request.",
+    "When changing an existing row: the `ver` you read for it, passed back unchanged; saveslot uses it to find changes others made since. Without it, the version you last read is used. Not for a row created in this request, nor when writing by `external_key`.",
   ],
   set: [
     "Required except with `revoke`, `revert`, and an `update` with only `premises`. Field name → value, only the fields to change; a value with a unit as `{value, unit}`; `null` clears an optional field.",

@@ -1061,7 +1061,6 @@ describe("refusals of the request's shape", () => {
   });
 
   it.each([
-    ["external_key", { external_key: { k: "1" } }, "ops/0/external_key"],
     ["as", { as: "p1" }, "ops/0/as"],
     ["revert.to", { revert: { to: 3, fields: ["note"] }, set: undefined }, "ops/0/revert/to"],
   ])("%s is not in this version", (_, extra, param) => {

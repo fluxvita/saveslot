@@ -407,6 +407,23 @@ describe("a deletion's replay of a write that added a key: not implemented in th
   });
 });
 
+describe("a deletion's replay of a write by key: not implemented in this version", () => {
+  it("refused at the first write by key, naming the kind, before the write adding a key's check", () => {
+    const keyed: TableShape = { ...T, keyFields: KEY };
+    const { state } = run(keyed, [created(10, { f2: "600" }), synced(20, { f2: "700" })]);
+    let caught: unknown;
+    try {
+      replayDeletion(keyed, state.records, new Set());
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toMatchObject({
+      reason: "not_implemented",
+      detail: { kind: "write_by_external_key", op: 10 },
+    });
+  });
+});
+
 describe("undoneOp: a key field's item is not one of an operation's changes", () => {
   // Hand-written records (an awaiting undo is not reachable on a table with a key: no high impact
   // there): op 20 added the key and proposed an undo, confirmed by op 30. Undoing op 20 is undoing

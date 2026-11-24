@@ -565,6 +565,79 @@ describe("MCP's own", () => {
   });
 });
 
+describe("writes by source key over MCP (05 §6, §9)", () => {
+  const s = serviceFixture("saveslot-mcp-by-key-");
+  const SYNCED = {
+    ...LEDGER,
+    slot: "synced",
+    tables: [
+      {
+        name: "rides",
+        kind: "base",
+        description: "rides from an app",
+        time: { type: "none" },
+        external_key: ["origin", "external_id"],
+        fields: [
+          { name: "origin", type: "text", description: "the app" },
+          { name: "external_id", type: "text", description: "its ID there" },
+          { name: "fare", type: "integer", description: "how much" },
+        ],
+      },
+    ],
+  };
+  beforeAll(async () => {
+    const http = httpDriver(() => s.home);
+    expect(await http(s.session, "schema_draft", { document: SYNCED })).toMatchObject({
+      result: { outcome: "applied" },
+    });
+  }, T);
+
+  it("the write tool takes external_key; the receipt says the summary, the source key and what changed nothing", async () => {
+    const c = await mcpClient(s.home, s.session, "legacy");
+    const { tools } = await c.listTools();
+    type Schema = {
+      properties: { ops: { items: { properties: Record<string, { description?: string }> } } };
+    };
+    const schema = tools.find((t) => t.name === "saveslot_write")?.inputSchema as unknown;
+    const op = (schema as Schema).properties.ops.items.properties;
+    expect(op["external_key"]?.description).toContain("source key");
+    const text = async (fare: number) => {
+      const r = await c.callTool({
+        name: "saveslot_write",
+        arguments: {
+          sv: 1,
+          ops: [
+            {
+              intent: "update",
+              table: "synced.rides",
+              external_key: { origin: "app", external_id: "k-1" },
+              set: { fare },
+            },
+          ],
+        },
+      });
+      textOnly(r);
+      expect(r.isError).not.toBe(true);
+      return (r.content as { text: string }[])[0]?.text ?? "";
+    };
+    const created = await text(10);
+    expect(created).toContain("By source key: created 1 · updated 0 · unchanged 0");
+    expect(created).toContain("update by source key, created");
+    const again = await text(10);
+    expect(again.split("\n")[0]).toBe("No change; nothing was recorded · synced schema v1");
+    expect(again).toContain("unchanged 1");
+    // The catalog names the source key.
+    const cat = await c.callTool({
+      name: "saveslot_catalog",
+      arguments: { level: "table", tables: ["synced.rides"] },
+    });
+    expect((cat.content as { text: string }[])[0]?.text).toContain(
+      "  source key: origin + external_id",
+    );
+    await c.close();
+  });
+});
+
 describe("an observer of tool results that fails", () => {
   it(
     "changes nothing of the answer: a write that took effect is reported as such, and told once",

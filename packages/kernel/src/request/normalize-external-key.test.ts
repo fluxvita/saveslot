@@ -4,8 +4,7 @@
 // are the write pipeline's; a key field in an update by `row` is checked there against the row.
 
 import type { CompiledSchema } from "@fluxvita/saveslot-contract-core";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { acceptExternalKeyForTests } from "./normalize.ts";
+import { describe, expect, it } from "vitest";
 import { COMPILED, errorOf, normalize as onFixture, onlyOp, ROW } from "./requests.fixture.ts";
 
 // The fixture slot plus two keyed tables: `meals` (an event table, a key of two text fields) and
@@ -84,20 +83,7 @@ const refusal = (reason: string, param: string, more: Record<string, unknown> = 
   ...more,
 });
 
-describe("external_key while the write path does not take it", () => {
-  it("not_in_this_version at the op's external_key, on a keyed table too", () => {
-    expect(errorOf(normalize(ops(byKey())))).toEqual({
-      code: "not_in_this_version",
-      reason: "parameter",
-      param: "ops/0/external_key",
-    });
-  });
-});
-
-describe("external_key taken (the kernel's test entry)", () => {
-  beforeAll(() => acceptExternalKeyForTests(true));
-  afterAll(() => acceptExternalKeyForTests(false));
-
+describe("external_key", () => {
   it("an op by key: the key as its target, normalized by field ID; no ver; its fields named", () => {
     const op = onlyOp(normalize(ops(byKey())));
     expect(op.target).toEqual({

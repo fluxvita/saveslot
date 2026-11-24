@@ -2487,5 +2487,344 @@
         "rows": []
       }
     }
+  },
+  "write-by-key-created-unchanged": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 10,
+      "ops": [
+        {
+          "target": {
+            "table": "food.meals",
+            "row": "r_0YKGZXSY5JGE9SZ2K4YFSRJE94",
+            "external_key": {
+              "origin": "band_app",
+              "external_id": "m-1"
+            }
+          },
+          "intent": "update",
+          "ver": "v7.0",
+          "outcome": "unchanged"
+        },
+        {
+          "target": {
+            "table": "food.meals",
+            "row": "r_0Q80JWDHTZQPVF27DZ0115DDS5",
+            "external_key": {
+              "origin": "band_app",
+              "external_id": "m-2"
+            }
+          },
+          "intent": "update",
+          "ver": "v10.0",
+          "outcome": "created",
+          "fields": {
+            "origin": {
+              "result": "applied",
+              "after": "band_app"
+            },
+            "external_id": {
+              "result": "applied",
+              "after": "m-2"
+            },
+            "energy": {
+              "result": "applied",
+              "after": "300"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "external_key_summary": {
+        "created": 1,
+        "updated": 0,
+        "unchanged": 1,
+        "pending": 0,
+        "skipped": 0
+      }
+    }
+  },
+  "write-by-key-nothing": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "ops": [
+        {
+          "target": {
+            "table": "food.meals",
+            "row": "r_0YKGZXSY5JGE9SZ2K4YFSRJE94",
+            "external_key": {
+              "origin": "band_app",
+              "external_id": "m-1"
+            }
+          },
+          "intent": "update",
+          "ver": "v7.0",
+          "outcome": "unchanged"
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "external_key_summary": {
+        "created": 0,
+        "updated": 0,
+        "unchanged": 1,
+        "pending": 0,
+        "skipped": 0
+      },
+      "warnings": [
+        {
+          "code": "evidence_not_stored",
+          "evidence": [0]
+        }
+      ]
+    }
+  },
+  "write-by-key-op-evidence": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "ops": [
+        {
+          "target": {
+            "table": "food.meals",
+            "row": "r_0YKGZXSY5JGE9SZ2K4YFSRJE94",
+            "external_key": {
+              "origin": "band_app",
+              "external_id": "m-1"
+            }
+          },
+          "intent": "update",
+          "ver": "v7.0",
+          "outcome": "unchanged"
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "external_key_summary": {
+        "created": 0,
+        "updated": 0,
+        "unchanged": 1,
+        "pending": 0,
+        "skipped": 0
+      },
+      "warnings": [
+        {
+          "code": "evidence_not_stored",
+          "evidence": [],
+          "op_evidence": [
+            {
+              "op": 0,
+              "evidence": [0]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "write-by-key-replay": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 10,
+      "ops": [
+        {
+          "op_index": 0
+        },
+        {
+          "target": {
+            "table": "food.meals",
+            "row": "r_0Q80JWDHTZQPVF27DZ0115DDS5",
+            "external_key": {
+              "origin": "band_app",
+              "external_id": "m-2"
+            }
+          },
+          "intent": "update",
+          "ver": "v10.0",
+          "outcome": "created",
+          "fields": {
+            "origin": {
+              "result": "applied",
+              "after": "band_app"
+            },
+            "external_id": {
+              "result": "applied",
+              "after": "m-2"
+            },
+            "energy": {
+              "result": "applied",
+              "after": "300"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "external_key_summary": {
+        "created": 1,
+        "updated": 0,
+        "pending": 0
+      },
+      "replayed": true,
+      "omitted": ["unrecorded_ops"]
+    }
+  },
+  "write-by-key-pending": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "pending",
+      "sv": 1,
+      "seq": 20,
+      "ops": [
+        {
+          "target": {
+            "table": "food.meals",
+            "row": "r_0YKGZXSY5JGE9SZ2K4YFSRJE94",
+            "external_key": {
+              "origin": "band_app",
+              "external_id": "m-1"
+            }
+          },
+          "intent": "update",
+          "ver": "v13.0",
+          "outcome": "pending",
+          "fields": {
+            "energy": {
+              "result": "candidate",
+              "after": "700",
+              "item": "pi_XPWJBAEF66917SQA",
+              "effective": "650",
+              "current_ver": "v13.0",
+              "by": {
+                "seq": 13,
+                "actor": {
+                  "kind": "user",
+                  "id": "u_11111111111111111111111111",
+                  "name": "u_11111111111111111111111111"
+                }
+              },
+              "previous": {
+                "seq": 7,
+                "exists": true,
+                "values": {
+                  "energy": "600",
+                  "note": "a"
+                }
+              }
+            },
+            "origin": {
+              "result": "noop"
+            },
+            "external_id": {
+              "result": "noop"
+            },
+            "note": {
+              "result": "noop"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [
+        {
+          "id": "pi_XPWJBAEF66917SQA",
+          "type": "conflict",
+          "reason": "stale_write",
+          "merged": true
+        }
+      ],
+      "superseded": [],
+      "external_key_summary": {
+        "created": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "pending": 1,
+        "skipped": 0
+      }
+    }
+  },
+  "write-by-key-skipped": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 27,
+      "ops": [
+        {
+          "target": {
+            "table": "food.meals",
+            "row": "r_0Q80JWDHTZQPVF27DZ0115DDS5",
+            "external_key": {
+              "origin": "band_app",
+              "external_id": "m-2"
+            }
+          },
+          "intent": "update",
+          "outcome": "skipped",
+          "skip_reason": "revoked",
+          "revoked_by": 24
+        },
+        {
+          "target": {
+            "table": "food.meals",
+            "row": "r_WZH9S74K8VEVPQVQ05BSRCF6X7",
+            "external_key": {
+              "origin": "band_app",
+              "external_id": "m-3"
+            }
+          },
+          "intent": "update",
+          "ver": "v27.0",
+          "outcome": "created",
+          "fields": {
+            "origin": {
+              "result": "applied",
+              "after": "band_app"
+            },
+            "external_id": {
+              "result": "applied",
+              "after": "m-3"
+            },
+            "energy": {
+              "result": "applied",
+              "after": "100"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "external_key_summary": {
+        "created": 1,
+        "updated": 0,
+        "unchanged": 0,
+        "pending": 0,
+        "skipped": 1
+      },
+      "warnings": [
+        {
+          "code": "external_key_skipped",
+          "ops": [0]
+        }
+      ]
+    }
   }
 }

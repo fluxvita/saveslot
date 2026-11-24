@@ -13,7 +13,6 @@ import {
   schemaDraft,
   write,
 } from "@fluxvita/saveslot-kernel";
-import { acceptExternalKeyForTests } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
@@ -380,8 +379,6 @@ describe("at most 10 rows, latest written first", () => {
 });
 
 describe("a row created by external key (04 «与已有机制的关系»: created by key, compared as any new row)", () => {
-  beforeAll(() => acceptExternalKeyForTests(true));
-  afterAll(() => acceptExternalKeyForTests(false));
   const byKey = (id: string, set: Record<string, unknown>) => ({
     intent: "update",
     table: "synced",

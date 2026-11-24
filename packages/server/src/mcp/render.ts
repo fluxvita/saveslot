@@ -435,11 +435,11 @@ const WARNINGS = textsBy<Warning["code"]>({
     t`this machine's clock is behind the log's end; the time recorded is the log's end`,
   evidence_unreferenced: () =>
     t`an evidence segment is cited by no op: stored as source data, but no value comes from it`,
-  evidence_not_stored: () => t`nothing was recorded, and the evidence was not stored`,
+  evidence_not_stored: () => t`evidence not stored: nothing it backs was recorded`,
   premise_ver_fallback: () => t`a premise without ver: the one you last read was used`,
   premise_already_changed: () =>
     t`a premise had changed since you read it; the row carries "premise changed"`,
-  external_key_skipped: () => t`some ops were skipped`,
+  external_key_skipped: () => t`some ops were skipped; each says why above`,
   external_key_resync: () =>
     t`rows lose their source key: a connector syncing the same record again adds another row`,
   single_field_external_key: () =>
@@ -461,6 +461,26 @@ function originOf(w: R): Part[] {
  */
 function warningDetail(w: R): Part[] | undefined {
   const c = w["code"];
+  if (c === "evidence_not_stored") {
+    // The request's segments and each op's own (04-contract-types §7), by index: all of them when
+    // no op entered an event; else the own segments of the ops by source key that did not.
+    const parts: Part[][] = [];
+    const request = arr(w["evidence"]).map((i) => [num(int(i) ?? 0)]);
+    if (request.length > 0) parts.push(t`segments ${join(request, t`, `)}`);
+    for (const e of arr(w["op_evidence"]).map(obj)) {
+      const own = arr(e["evidence"]).map((i) => [num(int(i) ?? 0)]);
+      parts.push(t`op ${num(int(e["op"]) ?? 0)}'s own segments ${join(own, t`, `)}`);
+    }
+    return parts.length > 0
+      ? t`evidence not stored, as nothing it backs was recorded: ${join(parts, t`; `)}`
+      : undefined;
+  }
+  if (c === "external_key_skipped") {
+    const ops = arr(w["ops"]).map((i) => [num(int(i) ?? 0)]);
+    return ops.length > 0
+      ? t`${one(ops.length, t`op`, t`ops`)} ${join(ops, t`, `)} skipped; each says why above`
+      : undefined;
+  }
   if (c === "unit_converted") {
     const from = obj(w["from"]);
     const to = obj(w["to"]);
@@ -722,6 +742,9 @@ function catalog(r: R, now: Date): Line[] | { json: true; lead: Line[] } {
       );
       const key = arr(tb["entity_key"]);
       if (key.length > 0) out.push(t`  entity key: ${join(key.map(fieldOf), t`, `)}`);
+      // The source key (05 §6 `saveslot_catalog` «来源键»), its fields as the table declares them.
+      const source = arr(tb["external_key"]);
+      if (source.length > 0) out.push(t`  source key: ${join(source.map(fieldOf), t` + `)}`);
       for (const f of arr(tb["fields"])) out.push(catalogField(obj(f)));
       // What the table declares, as declared: a new row matching one group is saved and flagged.
       for (const g of arr(tb["duplicate_keys"])) {
@@ -1530,13 +1553,18 @@ const CONFLICT_DECISIONS = ["keep_effective", "take_candidate", "take_previous"]
 function candidateLines(f: string, c: R, at: number, r: R): Line[] {
   const prev = obj(c["previous"]);
   const by = obj(c["by"]);
+  // An op by source key gives no version: its merge base is what was last delivered.
+  const byKey = obj(arr(r["ops"])[at])["outcome"] !== undefined;
+  const base = byKey ? t`it was last delivered` : t`the version you gave`;
   const fallback = arr(r["warnings"])
     .map(obj)
     .find((w) => w["code"] === "ver_fallback" && int(w["op"]) === at);
   const given =
     fallback !== undefined
       ? t`at the version used (${idOf(fallback["ver"])}, ${originOf(fallback)}, ${op(prev["seq"])})`
-      : t`at the version you gave (${op(prev["seq"])})`;
+      : byKey
+        ? t`when it was last delivered (${op(prev["seq"])})`
+        : t`at the version you gave (${op(prev["seq"])})`;
   const values = obj(prev["values"]);
   // A state table gives the merge base by stretch: each stretch's value of this field.
   const spans = arr(prev["spans"])
@@ -1557,8 +1585,8 @@ function candidateLines(f: string, c: R, at: number, r: R): Line[] {
   // What the user is told: who changed it after the version given, and that this did not happen.
   const tell =
     by["seq"] !== undefined
-      ? t`  Tell the user this was not done: ${actorOf(by["actor"])} changed the record (${op(by["seq"])}) after the version you gave; ask what they want before resolving.`
-      : t`  Tell the user this was not done: the record was changed after the version you gave; ask what they want before resolving.`;
+      ? t`  Tell the user this was not done: ${actorOf(by["actor"])} changed the record (${op(by["seq"])}) after ${base}; ask what they want before resolving.`
+      : t`  Tell the user this was not done: the record was changed after ${base}; ask what they want before resolving.`;
   const item = c["item"];
   const ref = arr(r["pending"])
     .map(obj)
@@ -1711,7 +1739,17 @@ function receiptOps(r: R): Line[] {
   for (const [at, o] of arr(r["ops"]).entries()) {
     const x = obj(o);
     if (!Object.hasOwn(x, "target")) {
-      out.push(t`op ${count(x["op_index"])}: not recorded then (unchanged or skipped)`);
+      // A replay's op by source key that entered no event (05 §6 «重放»).
+      out.push(
+        t`op ${count(x["op_index"])}: unchanged or skipped then; its details were not recorded`,
+      );
+      continue;
+    }
+    // By source key (05 §6 «按来源键写入»): an unchanged op is in the summary only; a skipped one
+    // says why.
+    if (x["outcome"] === "unchanged") continue;
+    if (x["outcome"] === "skipped") {
+      out.push(t`op ${num(at)} skipped: ${skipReasonOf(x)}`);
       continue;
     }
     // A receipt shortened to fit has no field results: that is not "no change".
@@ -1730,8 +1768,11 @@ function receiptOps(r: R): Line[] {
     const created = x["created_entity"] === true ? t` · new entity` : [];
     const undo = isObj(x["undo"]) ? x["undo"] : undefined;
     const undoes = undo !== undefined ? t` (undoes ${op(undo["of"])})` : [];
+    const how = OUTCOMES.has(String(x["outcome"]))
+      ? t`${codeIn(x["intent"], INTENTS)} by source key, ${codeIn(x["outcome"], OUTCOMES)}`
+      : codeIn(x["intent"], INTENTS);
     out.push(
-      t`${targetOf(x["target"])} ${codeIn(x["intent"], INTENTS)}${undoes}: ${what}${x["ver"] !== undefined ? t` (ver=${idOf(x["ver"])})` : []}${created}`,
+      t`${targetOf(x["target"])} ${how}${undoes}: ${what}${x["ver"] !== undefined ? t` (ver=${idOf(x["ver"])})` : []}${created}`,
     );
     // A new entity by its key: the keys the table had, so that a key written wrong shows.
     const keys = arr(x["existing_keys"]);
@@ -1759,6 +1800,24 @@ function receiptOps(r: R): Line[] {
     out.push(t`${num(more)} more ops are left out of this receipt: saveslot_history shows them`);
   }
   return out;
+}
+
+/** The outcomes of an op by source key that have a line of their own (05 §6). */
+const OUTCOMES: ReadonlySet<string> = new Set(["created", "updated", "pending"]);
+
+/** Why an op by source key was skipped (04-contract-types §5.1 `skip_reason`; 05 §6). */
+function skipReasonOf(x: R): Part[] {
+  switch (x["skip_reason"]) {
+    case "revoked":
+      return t`its row was revoked in ${op(x["revoked_by"])}`;
+    case "pending_deletion":
+      return t`its source key has a deletion that can still be undone (${idOf(x["deletion"])})`;
+    case "ref_skipped":
+      return t`op ${num(int(x["ref_op"]) ?? 0)}, which it refers to, was skipped`;
+    default:
+      need(false);
+      return [];
+  }
 }
 
 /**
@@ -1967,7 +2026,9 @@ function statusOf(r: R): Part[] {
 
 /** The slot of a receipt, from its targets' qualified table names (`slot.table`). */
 function slotOf(r: R): Part[] {
-  const table = str(obj(obj(arr(r["ops"])[0])["target"])["table"]);
+  // The first op with a target: a replay's op by source key that entered no event has none.
+  const first = arr(r["ops"]).find((o) => isObj(obj(o)["target"]));
+  const table = str(obj(obj(first)["target"])["table"]);
   const slot = table?.includes(".") === true ? table.split(".")[0] : undefined;
   return slot !== undefined ? t`${as(slot, name)} ` : [];
 }
@@ -1987,7 +2048,20 @@ function write(r: R, now: Date): Line[] {
       t`The original write was deleted (${idOf(r["original_deleted"]["deletion"])}); it was not written again.`,
     );
   }
-  out.push(t`${status} · ${slotOf(r)}schema v${count(r["sv"])}${seq}`);
+  // Every op by source key unchanged or skipped: nothing recorded, no operation (05 §6).
+  const nothing = r["seq"] === undefined && r["replayed"] !== true;
+  out.push(
+    nothing
+      ? t`No change; nothing was recorded · ${slotOf(r)}schema v${count(r["sv"])}`
+      : t`${status} · ${slotOf(r)}schema v${count(r["sv"])}${seq}`,
+  );
+  if (isObj(r["external_key_summary"])) {
+    const k = r["external_key_summary"];
+    const n = (f: string) => num(int(k[f]) ?? 0);
+    out.push(
+      t`By source key: created ${n("created")} · updated ${n("updated")} · unchanged ${n("unchanged")} · pending ${n("pending")} · skipped ${n("skipped")}`,
+    );
+  }
   return [...out, ...receiptOps(r), ...receiptTail(r, now)];
 }
 
