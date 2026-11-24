@@ -24,7 +24,7 @@
 
 ### 0.2 第一版不实现
 
-本文写完整设计。第一版不实现的参数、取值、操作统一标 `@later`。**调用第一版不实现的东西一律报 `not_in_this_version`**（第 9 节），第一版生成的 schema 里不出现它们。
+本文写完整设计。第一版不实现的参数、取值、操作统一标 `@later`。**调用第一版不实现的东西一律报 `not_in_this_version`**（第 9 节），第一版生成的 schema 里不出现它们。下表写的是第一版不实现的；0.1.0 另有尚未提供的部分，见表后的清单。
 
 | 位置 | 第一版不实现的 |
 |---|---|
@@ -42,7 +42,16 @@
 | 操作 | `extract_claim`、`extract_submit`、`policy.set` |
 | 错误 | `lease_expired`、`referenced` |
 | slot 策略 | 冲突期间按来源级别裁定（第一版只有 `keep_current`）；额外的高影响表 / 字段；"某类处理只接受用户会话的确认"开关 |
-| 概况 | `catalog` 的表概况第一版只有行数与业务时间范围、规模提示 `scale`、每个字段最近 K 个不同取值；没有"最近一次写入时间"。`table` 档带 `profile`（行数、业务时间范围、规模提示）；每个字段的 `examples` 与 `described_by` 随 P2 给出（07-scope），在那之前不带 |
+| 概况 | `catalog` 的表概况第一版只有行数与业务时间范围、规模提示 `scale`、每个字段最近 K 个不同取值；没有"最近一次写入时间"。`table` 档带 `profile`（行数、业务时间范围、规模提示）；每个字段的 `examples` 与 `described_by` 第一版不给 |
+
+**0.1.0 尚未提供（第一版里有）**：0.1.0 是第一个对外发布的版本，只提供第一版的一部分（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。下面这些在第一版的设计范围内，本文照写，0.1.0 里调用它们报 `not_in_this_version`。与上表分开：上表是第一版不做的，下表是第一版做、0.1.0 暂未提供的。
+
+| 哪一块 | 包括什么 | 类型在哪里 |
+|---|---|---|
+| 隐私删除 | `deletion_preview`、`delete`、撤回删除（`deletion` 事项的 `cancel`）；只因它们而有的字段、标记（`pending_deletion`、`dangling_ref`）、事项类型 `deletion`、句柄 `dc_`，与 `sources` 的 `deletion` 字段 | 4.7、5.4；`Marks`（第 3 节）、`ErrorCode` 表里与删除有关的行（`preview_outdated`、`pending_deletion_source`、`pending_deletion_target`、`handle_expired` 的 `executed` 等） |
+| 重建物理表的迁移 | 在写入过的表上加字段、删字段、收紧约束、改精度、换单位；迁移的进度（`migration`、`migration_progress`） | 5.3（`SchemaChange`、`SchemaImpact`、`MigrationStatus`）；`draft_outdated` 与 `not_in_this_version` 的 `table_written`、`migrate_failed` |
+| 对拍 | `log.reconcile` | 8.4 里 `log.reconcile` 的部分 |
+| 修改 slot 策略 | `policy.set`（它本来就在第一版之后，也在上表里） | 8.2 |
 
 ---
 
@@ -461,7 +470,7 @@ interface CatalogTables extends CommonResult {
     }>;
     /** depends_on：规则依赖的字段，每项写成"表名.字段名"（"runs.distance"）。派生规则不跨 slot，表名是同一 slot 内的短表名，不带 slot 前缀。 */
     rule?: { id: string; version: number; sql: UntrustedText; time_dependency: "none" | "bucketed" | "now"; depends_on: string[] };
-    /** 概况：`table` 档每张表都带。字段的 examples 与 described_by 随 P2 给出（07-scope），在那之前不带；见 0.2。
+    /** 概况：`table` 档每张表都带。第一版不给字段的 examples 与 described_by；见 0.2。
      *  rows：事件类与无时间表是未撤销的行数，状态类表是区间段数（相邻且全部字段同值的段先合并；撤销在状态类表里是无值区间，不占行），派生表是它自己的行数。
      *  time_range：事件类表是时间字段的最早值与最晚值（只算未撤销的行）；状态类表的 from 是最早的区间起点，to 是最晚的 valid_to（不含，与契约里所有 valid_to 同一约定）；
      *  事件类表的 to 含（是时间字段的最晚值）；状态类表有一直延续的段时不给 to；
@@ -1661,7 +1670,7 @@ interface SchemaImpact {
   rows_affected: number;
   derived_changed: Array<{ table: TableName; rows: number }>;
   /** 最近按旧名字读写过被改名 / 被删字段的调用方（从读写记录推断）。 */
-  consumers?: Array<{ actor: Actor; field: string; last_used: Instant; used_for: "read" | "write" }>;  // 这一版改已有 slot 时不计算，不给（新建 slot 给空列表：没有谁用过一个刚建的 slot）
+  consumers?: Array<{ actor: Actor; field: string; last_used: Instant; used_for: "read" | "write" }>;  // 0.1.0 改已有 slot 时不计算使用方，不给（新建 slot 给空列表：没有谁用过一个刚建的 slot）
   /** migrate / backfill 的试跑。 */
   trial?: { rows: number; failed: number; samples: Array<{ target: TargetRef; error: ValidationDetailCode }> };
   /** 分组键来自自由文本字段的派生规则。 */
@@ -1884,7 +1893,8 @@ type Scope = "saveslot.read" | "saveslot.write" | "saveslot.schema" | "saveslot.
 interface ConnectionsIssueParams {
   /** 建议写成"设备 · Agent"。同一用户下不重名，重名报 invalid_argument（duplicate_name，param: "name"）；按存下的字符串逐码点比较，不折叠大小写；已吊销、已停用的连接实例的名字仍然占用（历史里同一个名字只指一个主体）。 */
   name: string;
-  /** 必须包含 saveslot.read。默认 ["saveslot.read", "saveslot.write", "saveslot.schema"]：能读写、能新建 slot，不能删除。 */
+  /** 必须包含 saveslot.read。默认 ["saveslot.read", "saveslot.write", "saveslot.schema"]：能读写、能新建 slot，不能删除；`saveslot.delete` 总要显式给。
+   *  OAuth 授权请求没有请求 scope 时给 ["saveslot.read", "saveslot.write"]（04-contract 第 12 节）。 */
   scopes?: Scope[];
   /** slot 范围：slot 名或 slot_id 的数组。不给 = 全部（含以后新建的）。给了：每个都必须存在（否则 not_found / slot），不能是空数组（invalid_argument / empty_slots）。
    *  签发后不能改。 */
@@ -1897,7 +1907,7 @@ interface Connection {
   via: "token" | "oauth";        // 本地令牌 / 静态令牌，或一次 OAuth 授权
   client?: string;               // via: oauth 时的客户端标识
   created_at: Instant;
-  last_used_at?: Instant;        // 这一版不给（08-open-questions「连接实例的最近使用时刻」）
+  last_used_at?: Instant;        // 第一版不给（08-open-questions「连接实例的最近使用时刻」）
   /** 与 Actor.state 一致：已吊销（revoked）或因导入而停用（disabled）时给；有效时不给。 */
   state?: "revoked" | "disabled";
   revoked_at?: Instant;
@@ -1939,7 +1949,7 @@ interface SlotPolicy {
   effective_value_rule: "keep_current" | "by_rank" /* @later */;
   /** 来源级别的秩表。第一版只记不用。 */
   rank: { user_stated: number; agent_inferred: number; miss: number };
-  /** 哪些 schema 改动不经确认直接生效。默认策略八个全开；restructure_unused 加入默认策略之前建的 slot 没有它。 */
+  /** 哪些 schema 改动不经确认直接生效。默认策略八个全开；slot 的策略是建它时写下的全文，策略里没有 restructure_unused 的 slot，这一类改动要确认。 */
   auto_apply: Array<"add_table" | "add_derived_table" | "add_optional_field" | "description"
                     | "rename_unused" | "loosen_constraint" | "duplicate_keys" | "restructure_unused">;
   /** 额外算高影响的表 / 字段。@later */
@@ -2171,7 +2181,7 @@ type ValidationDetailCode =
 
 | `code` | `reason` | 其余附带字段 |
 |---|---|---|
-| `invalid_argument` | `missing` / `malformed`（含给出的 `valid_to` 不晚于区间的起点：起点没给、按"现在"算时也是）/ `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target`（`undo` 的目标是插入或首次创建、从没生效过的候选或待确认写入、schema 切换的操作号，或没有可撤回的改动：只做了同值佐证、全是无操作等，见 data-model「第 n 次写入是什么」）/ `event_table_valid_at` / `no_value_now`（状态类表上不带区间的纠错，"现在"那一点该字段无值）/ `no_time_table` / `not_state_table` / `state_table`（写入：状态类表上给了 `row`）/ `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `derived_table`（`history` 的 `changes` 以派生表为目标；`query` 在派生表上给了 `valid_at` / `valid_during`）/ `pending_deletion_source` / `pending_deletion_target`（宽限期内对受删除影响的行 / 实体解决事项或 `undo`；附 `target: TargetRef`、`deletions: ItemId[]`（按操作号排序）、`expires_at: Instant`（其中最晚的到期时刻））/ `cross_slot`（预览的源数据跨 slot；前提指向别的 slot 里可见的表；写入的各 op 落在不同的 slot；证据的 `source_ref` 指向别的 slot 里可见的源数据。靠 `param` 区分是哪一种）/ `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots`（签发时 `slots` 是空数组）/ `slot_not_empty`（`slots.remove`：slot 名下有记录，或有未结的结构变更事项）/ `duplicate_name`（`connections.issue`、`update`：连接实例重名；写入：同一请求里两个 op 的临时名 `as` 相同）/ `tenant_not_empty`（导入的目标租户不是空的）/ 按来源键写入：`insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / 写入的前提：`premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` / `premise_duplicate_target`（同一个 op 的两条前提解析到同一个目标） / `premise_target_pending`（前提指向本请求新建的行，而那次新建在本请求结束时没有生效；附 `as?` 与 `op`） / `no_change`（`schema_draft`：草稿与 slot 的当前版本相比没有改动） | `param`；`candidates?: string[]`（`ambiguous_table` 的候选表名）；`candidate_required` 时 `candidate_choices: Array<{ index: number; seq: Seq; actor: Actor }>`（事项的各候选：下标、所在写入、写入者）；`example?: object`（该模式或该参数完整的正确示例）；`allowed_values?: string[]`（参数是有限的几个取值时：这一版收的取值）；`duplicate_external_key` 时 `ops: number[]`（同键的两个 op 的下标）；`premise_duplicate_target` 时 `premises: number[]`（指向同一目标的两条前提的下标）；`external_key_in_use` 时 `deletions?: ItemId[]`（键被冻结：冻结它的全部删除）或 `holder?: RowId`（占着它的未撤销的行）；`external_key_not_transferable`、`external_key_transferred` 时 `holder: RowId`（占着或现在持有这个键的行）；`slot_not_empty` 只因未结的结构变更事项时 `cause: "open_schema_change"` 与 `item: ItemId`（先处理哪个事项） |
+| `invalid_argument` | `missing` / `malformed`（含给出的 `valid_to` 不晚于区间的起点：起点没给、按"现在"算时也是）/ `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target`（`undo` 的目标是插入或首次创建、从没生效过的候选或待确认写入、schema 切换的操作号，或没有可撤回的改动：只做了同值佐证、全是无操作等，见 data-model「第 n 次写入是什么」）/ `event_table_valid_at` / `no_value_now`（状态类表上不带区间的纠错，"现在"那一点该字段无值）/ `no_time_table` / `not_state_table` / `state_table`（写入：状态类表上给了 `row`）/ `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `derived_table`（`history` 的 `changes` 以派生表为目标；`query` 在派生表上给了 `valid_at` / `valid_during`）/ `pending_deletion_source` / `pending_deletion_target`（宽限期内对受删除影响的行 / 实体解决事项或 `undo`；附 `target: TargetRef`、`deletions: ItemId[]`（按操作号排序）、`expires_at: Instant`（其中最晚的到期时刻））/ `cross_slot`（预览的源数据跨 slot；前提指向别的 slot 里可见的表；写入的各 op 落在不同的 slot；证据的 `source_ref` 指向别的 slot 里可见的源数据。靠 `param` 区分是哪一种）/ `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots`（签发时 `slots` 是空数组）/ `slot_not_empty`（`slots.remove`：slot 名下有记录，或有未结的结构变更事项）/ `duplicate_name`（`connections.issue`、`update`：连接实例重名；写入：同一请求里两个 op 的临时名 `as` 相同）/ `tenant_not_empty`（导入的目标租户不是空的）/ 按来源键写入：`insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / 写入的前提：`premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` / `premise_duplicate_target`（同一个 op 的两条前提解析到同一个目标） / `premise_target_pending`（前提指向本请求新建的行，而那次新建在本请求结束时没有生效；附 `as?` 与 `op`） / `no_change`（`schema_draft`：草稿与 slot 的当前版本相比没有改动） | `param`；`candidates?: string[]`（`ambiguous_table` 的候选表名）；`candidate_required` 时 `candidate_choices: Array<{ index: number; seq: Seq; actor: Actor }>`（事项的各候选：下标、所在写入、写入者）；`example?: object`（该模式或该参数完整的正确示例）；`allowed_values?: string[]`（参数是有限的几个取值时：第一版收的取值）；`duplicate_external_key` 时 `ops: number[]`（同键的两个 op 的下标）；`premise_duplicate_target` 时 `premises: number[]`（指向同一目标的两条前提的下标）；`external_key_in_use` 时 `deletions?: ItemId[]`（键被冻结：冻结它的全部删除）或 `holder?: RowId`（占着它的未撤销的行）；`external_key_not_transferable`、`external_key_transferred` 时 `holder: RowId`（占着或现在持有这个键的行）；`slot_not_empty` 只因未结的结构变更事项时 `cause: "open_schema_change"` 与 `item: ItemId`（先处理哪个事项） |
 | `unknown_table` / `unknown_field` | — | `name`、`nearest: string[]`（只取可见的名字，最多 3 个；别名与 `name` 按 `keymatch@1` 的折叠比较后相同的对象，其名字排在最前；其余按折叠之后的编辑距离从小到大，相同时按名字的 `C` 排序） |
 | `not_found` | `row` / `entity` / `item` / `source` / `draft` / `connection` / `read` / `slot` / `route`（HTTP：没有这个端点） | `deletions?: ItemId[]`（被宽限期内的删除整行去掉时：全部碰到它的贡献的待执行删除，按操作号排序；不回显内容）；`sources?: Array<{id, state: "unknown" \| "pending_deletion" \| "removed", deletion?}>` |
 | `revoked` | — | `target: TargetRef`、`revoked_by: Seq`（用 `revert: {undo}` 恢复） |
@@ -2191,7 +2201,7 @@ type ValidationDetailCode =
 | `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"`（`all_slots`：这项操作需要范围为全部 slot 的凭证——限定了 slot 范围的凭证新建 slot。只对可见的目标报，不泄露范围外的东西） |
 | `rate_limited` | `quota` / `busy`（同一租户已有一次对拍或导入在跑） | `retry_after` |
 | `handle_expired` | `expired` / `restored` / `executed` / `derived_changed`（翻页期间派生表被刷新过，从首页重读） | `deletion?: ItemId`（已执行过的 `dc_`） |
-| `not_in_this_version` | `parameter` / `value` / `operation` / `table_written`（只对从未被写入的表放开的改动用在写入过的表上）/ `not_implemented`（这一版的实现还走不到的情形：参数本身合法，不是留给后续版本的参数） | `param?`、`value?`（`reason` 为 `value` 且那个取值是契约里该参数的固定取值之一时带；调用方随手写的字符串不带）、`operation?` |
+| `not_in_this_version` | `parameter` / `value` / `operation` / `table_written`（只对从未被写入的表放开的改动用在写入过的表上）/ `not_implemented`（0.1.0 的实现还走不到的情形：参数本身合法，不是留给后续版本的参数） | `param?`、`value?`（`reason` 为 `value` 且那个取值是契约里该参数的固定取值之一时带；调用方随手写的字符串不带）、`operation?` |
 | `unavailable` | `busy` / `restoring` / `importing` / `reconciling` / `starting` / `stopping` | `retry_after?` |
 | `internal` | — | `incident: string`（供排查的编号，不含内容） |
 | `import_rejected` | `unsupported_format` / `not_from_start` / `segment_order` / `chain_broken` / `checksum_mismatch` / `incomplete` / `replay_failed` | `seq?`、`path?`（只给位置，不回显内容） |
