@@ -131,6 +131,10 @@ workflow:
 .check-static:
   extends: [.check]
   timeout: 15 minutes
+  variables:
+    # docs:translations dates each translated document by its last commit, which needs the whole
+    # history: a shallow clone dates every file to its one commit.
+    GIT_DEPTH: 0
   script:
     - runuser -u node -- pnpm --silent ci:resources
     - runuser -u node -- pnpm check:static

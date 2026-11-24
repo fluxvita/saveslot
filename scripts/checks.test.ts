@@ -17,6 +17,7 @@ import {
 } from "./check-forbidden-terms.ts";
 import { checkJsonExamples, parseError } from "./check-json-examples.ts";
 import { titleProblem } from "./check-mr-title.ts";
+import { checkTranslations, lastChange, sourceLine, sourceOf } from "./check-translations.ts";
 
 const REPO = resolve(import.meta.dirname, "..");
 const dirs: string[] = [];
@@ -61,6 +62,117 @@ describe("doc links", () => {
       "2:b.md#no-such:no heading with this anchor",
       "2:../x.md:points outside the repository",
     ]);
+  });
+});
+
+describe("English documents", () => {
+  const SRC =
+    "Translated from docs/zh-CN/guide/01-what.md, updated in the same commit as this file.";
+
+  it("checks links within the English tree, to the Chinese tree, and English heading anchors", () => {
+    const root = tree({
+      "docs/zh-CN/guide/01-what.md": "# 1. 它是什么\n## 1.1 一条日志\n",
+      "docs/zh-CN/guide/02-how.md": "# 2. 怎么用\n",
+      "docs/zh-CN/spec/02-architecture.md": "## 格式版本、导出导入与恢复\n",
+      "docs/guide/01-what.md": [
+        "# 1. What it is",
+        "",
+        `> ${SRC}`,
+        "## 1.1 One log per user, the `ver` of a row",
+        "[self](#11-one-log-per-user-the-ver-of-a-row) [ok](#1-what-it-is) [bad](#11-一条日志)",
+        "[untranslated](../zh-CN/guide/02-how.md) [zh anchor](../zh-CN/guide/01-what.md#11-一条日志)",
+        "[spec](../zh-CN/spec/02-architecture.md#格式版本导出导入与恢复)",
+        "[missing](02-how.md) [en spec](../spec/02-architecture.md#format-versions)",
+        "```json",
+        '{"ok": true}',
+        "```",
+        "```json",
+        "{bad}",
+        "```",
+      ].join("\n"),
+    });
+    const problems = checkDocLinks(root).map((p) => `${p.file}:${p.line}:${p.target}:${p.reason}`);
+    expect(problems).toEqual([
+      "docs/guide/01-what.md:5:#11-一条日志:no heading with this anchor",
+      "docs/guide/01-what.md:8:02-how.md:file does not exist",
+      "docs/guide/01-what.md:8:../spec/02-architecture.md#format-versions:file does not exist",
+    ]);
+    const { problems: json, blocks } = checkJsonExamples(root);
+    expect(blocks).toBe(2);
+    expect(json.map((p) => `${p.file}:${p.line}`)).toEqual(["docs/guide/01-what.md:13"]);
+  });
+
+  it("requires each English spec and guide file to name its Chinese source near the top", () => {
+    expect(sourceOf(`# T\n\n<!-- ${SRC} -->\n`)).toBe("docs/zh-CN/guide/01-what.md");
+    expect(
+      sourceOf(
+        "# T\n\nTranslated from `docs/zh-CN/a.md`, updated in the same commit as this file.",
+      ),
+    ).toBe("docs/zh-CN/a.md");
+    expect(sourceOf("# T\nTranslated from 535b4e4b of docs/zh-CN/a.md")).toBe("old");
+    expect(sourceOf("# T\nTranslated from docs/zh-CN/a.md")).toBeUndefined(); // the sentence is cut
+    expect(sourceOf(`${"\n".repeat(6)}${SRC}`)).toBeUndefined(); // too far down
+    const root = tree({
+      "docs/zh-CN/guide/01-what.md": "# 1\n",
+      "docs/zh-CN/guide/04-old.md": "# 4\n",
+      "docs/zh-CN/spec/02-architecture.md": "# 2\n",
+      "docs/guide/01-what.md": `# 1\n\n> ${SRC}\n> The Chinese edition has changed since: section 1.2.\n`,
+      "docs/guide/02-how.md": "# 2\n\nNo source line.\n",
+      "docs/guide/03-gone.md":
+        "# 3\n\nTranslated from docs/zh-CN/guide/03-gone.md, updated in the same commit as this file.\n",
+      "docs/guide/04-old.md": "# 4\n\nTranslated from 535b4e4b of docs/zh-CN/guide/04-old.md\n",
+      "docs/spec/02-architecture.md":
+        "# 2\n\nTranslated from docs/zh-CN/spec/09-other.md, updated in the same commit as this file.\n",
+      "docs/README.md": "# Not a translation\n",
+      "README.md": "# Not a translation\n",
+    });
+    expect(checkTranslations(root).map((p) => `${p.file}: ${p.reason}`)).toEqual([
+      `docs/guide/02-how.md: no "${sourceLine("docs/zh-CN/guide/02-how.md")}" in its first 6 lines`,
+      "docs/guide/03-gone.md: its source docs/zh-CN/guide/03-gone.md does not exist",
+      `docs/guide/04-old.md: names a commit, which squash merges lose; write "${sourceLine("docs/zh-CN/guide/04-old.md")}"`,
+      "docs/spec/02-architecture.md: says it is translated from docs/zh-CN/spec/09-other.md, expected docs/zh-CN/spec/02-architecture.md",
+    ]);
+  });
+
+  it("reports a translation the Chinese file has moved past, unless its head says so", () => {
+    const zh = "docs/zh-CN/guide/01-what.md";
+    const en = "docs/guide/01-what.md";
+    const root = tree({ [zh]: "# 1\n", [en]: `# 1\n\n> ${SRC}\n` });
+    const at: Record<string, number> = { [zh]: 2_000_000_000, [en]: 1_999_000_000 };
+    const problems = checkTranslations(root, undefined, (f) => at[f]);
+    expect(problems.map((p) => p.reason)).toEqual([
+      `${zh} changed after it (2033-05-18, translation 2033-05-06); update it, or add "The Chinese edition has changed since: …" under the source line`,
+    ]);
+    writeFileSync(
+      join(root, en),
+      `# 1\n\n> ${SRC}\n> The Chinese edition has changed since: 1.2.\n`,
+    );
+    expect(checkTranslations(root, undefined, (f) => at[f])).toEqual([]);
+    expect(checkTranslations(root, undefined, () => undefined)).toEqual([]); // outside git
+  });
+
+  it("dates files by their last commit", () => {
+    const root = tree({ "docs/zh-CN/guide/01-what.md": "# 1\n" });
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: root, stdio: "pipe" });
+    expect(lastChange(root, "docs/zh-CN/guide/01-what.md")).toBeUndefined(); // not a repository
+    git("init", "-q");
+    git("add", ".");
+    git(
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.com",
+      "commit",
+      "-qm",
+      "a",
+      "--date=@1800000000",
+    );
+    expect(lastChange(root, "docs/zh-CN/guide/01-what.md")).toBeGreaterThan(0);
+    expect(lastChange(root, "docs/guide/01-what.md")).toBeUndefined(); // never committed
+  });
+
+  it("passes on the repository as it is", () => {
+    expect(checkTranslations(REPO)).toEqual([]);
   });
 });
 
