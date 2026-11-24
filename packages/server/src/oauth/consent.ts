@@ -10,7 +10,10 @@
 // The answer form carries a one-time token bound to the provider's sign-in (`session`) and to the
 // request the page was shown for (its query): a page of one sign-in cannot be answered under
 // another, a sign-out leaves its forms useless, and a token cannot answer another request. Pages are
-// never framed, never cached, never send a referrer; whatever a client or a user wrote is escaped.
+// never framed, never cached, send a referrer only to this service (so that a form posted here
+// carries its `Origin`), and the redirect to the client carries none. The consent page's forms may
+// go to this service and to the origin of the request's redirect URI: a browser checks the redirect
+// after the answer against `form-action` too. Whatever a client or a user wrote is escaped.
 // Cookies and form fields are read through Maps and URLSearchParams only.
 
 import { randomBytes } from "node:crypto";
@@ -85,17 +88,40 @@ export function headersOf(req: IncomingMessage): Map<string, string> {
   return out;
 }
 
+/** The pages' content security policy; `formSource`, a source `form-action` allows besides 'self'. */
+function contentSecurityPolicy(formSource?: string): string {
+  const forms = formSource === undefined ? "'self'" : `'self' ${formSource}`;
+  return `default-src 'none'; style-src 'unsafe-inline'; form-action ${forms}; frame-ancestors 'none'; base-uri 'none'`;
+}
+
 /** Headers of every page of the authorization server. */
 export const PAGE_HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store",
   pragma: "no-cache",
-  "content-security-policy":
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+  "content-security-policy": contentSecurityPolicy(),
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
-  "referrer-policy": "no-referrer",
+  "referrer-policy": "same-origin",
 } as const;
+
+/**
+ * The source of a redirect URI that already matched the client's, as `form-action` writes it: the
+ * origin of an `http` or `https` URI, the scheme of another (`com.example.app:`). Undefined for one
+ * that is neither, so nothing of the URI but these is ever written into a header.
+ */
+export function redirectSource(redirectUri: string): string | undefined {
+  let u: URL;
+  try {
+    u = new URL(redirectUri);
+  } catch {
+    return undefined;
+  }
+  if (u.protocol === "http:" || u.protocol === "https:") {
+    return /^https?:\/\/[A-Za-z0-9.:[\]-]+$/.test(u.origin) ? u.origin : undefined;
+  }
+  return /^[a-z][a-z0-9+.-]*:$/.test(u.protocol) ? u.protocol : undefined;
+}
 
 /** A page of the authorization server: `body` is HTML made by the caller, escaped where it must be. */
 export function page(t: OAuthTexts, body: string, title: string = t.title): string {
@@ -111,10 +137,14 @@ export function sendPage(
   html: string,
   cookies: readonly SetCookie[] = [],
   extra: readonly (readonly [string, string])[] = [],
+  formSource?: string,
 ): number {
   res.writeHead(status, {
     ...Object.fromEntries(extra),
     ...PAGE_HEADERS,
+    ...(formSource === undefined
+      ? {}
+      : { "content-security-policy": contentSecurityPolicy(formSource) }),
     "content-length": Buffer.byteLength(html),
     ...(cookies.length === 0 ? {} : { "set-cookie": cookies.map(setCookieHeader) }),
   });
@@ -259,7 +289,7 @@ async function consentPage(
     `<button type="submit" name="decision" value="deny">${escapeHtml(t.deny)}</button>`,
     "</form>",
   );
-  return sendPage(res, 200, page(t, parts.join("\n")));
+  return sendPage(res, 200, page(t, parts.join("\n")), [], [], redirectSource(r.redirectUri));
 }
 
 /**

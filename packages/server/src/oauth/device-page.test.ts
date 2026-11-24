@@ -285,7 +285,9 @@ describe("the page", () => {
       expect(r.headers.get("x-frame-options")).toBe("DENY");
       expect(r.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
       expect(r.headers.get("cache-control")).toBe("no-store");
-      expect(r.headers.get("referrer-policy")).toBe("no-referrer");
+      // Its form goes to this service only; not no-referrer, under which it posts `Origin: null`.
+      expect(r.headers.get("content-security-policy")).toContain("form-action 'self';");
+      expect(r.headers.get("referrer-policy")).toBe("same-origin");
       const html = await r.text();
       expect(html).toContain("This signs the saveslot command line in as you");
       expect(html).toContain("Alex &lt;Example&gt;");

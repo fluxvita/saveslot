@@ -22,6 +22,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { type OAuthTestBed, oauthTestBed } from "../../../service/src/oauth.fixture.ts";
 import { testBackend } from "../../../test-backend/src/index.fixture.ts";
 
+import { redirectSource } from "./consent.ts";
 import { handleOAuth } from "./routes.ts";
 
 const T = 120_000;
@@ -79,6 +80,8 @@ let bounds: ClientFetchBounds | undefined;
 let server: Server;
 let base: string;
 let clientName = "Example <Agent>";
+/** The redirect URIs the client document lists. */
+let redirects = [REDIRECT];
 let names = 0;
 /** A connection name not used before in this file's tenant. */
 const freshName = (what: string) => `${what} ${names++}`;
@@ -93,7 +96,7 @@ beforeAll(async () => {
     external: EXT,
     fetchClient: async () => ({
       body: new TextEncoder().encode(
-        JSON.stringify({ client_id: ID, client_name: clientName, redirect_uris: [REDIRECT] }),
+        JSON.stringify({ client_id: ID, client_name: clientName, redirect_uris: redirects }),
       ),
     }),
   });
@@ -126,6 +129,7 @@ afterAll(async () => {
 beforeEach(async () => {
   loginsBegun = [];
   clientName = "Example <Agent>";
+  redirects = [REDIRECT];
   await bed.control.write((tx) => tx.exec("DELETE FROM oauth_clients"));
 });
 
@@ -174,11 +178,17 @@ async function shown(r: Response) {
   };
 }
 
-function expectPageHeaders(r: Response) {
-  expect(r.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+/** The pages' policy; `formSource`, where the consent page's forms may go besides this service. */
+const csp = (formSource?: string) =>
+  `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${formSource === undefined ? "" : ` ${formSource}`}; frame-ancestors 'none'; base-uri 'none'`;
+
+/** Headers of a page; its forms go to this service only unless `formSource` is given. */
+function expectPageHeaders(r: Response, formSource?: string) {
+  expect(r.headers.get("content-security-policy")).toBe(csp(formSource));
   expect(r.headers.get("x-frame-options")).toBe("DENY");
   expect(r.headers.get("cache-control")).toBe("no-store");
-  expect(r.headers.get("referrer-policy")).toBe("no-referrer");
+  // Not no-referrer: under it a browser posts the page's forms with `Origin: null`.
+  expect(r.headers.get("referrer-policy")).toBe("same-origin");
 }
 
 const entities = (s: string) =>
@@ -277,7 +287,7 @@ describe("signed in", () => {
     async () => {
       const r = await get(query(), "s-user");
       expect(r.status).toBe(200);
-      expectPageHeaders(r);
+      expectPageHeaders(r, "https://client.example");
       const { html, token, name } = await shown(r);
       expect(html).not.toContain("<Agent>");
       expect(html).toContain("Example &lt;Agent&gt;");
@@ -305,6 +315,47 @@ describe("signed in", () => {
   );
 
   it(
+    "the page's forms may go to this service and to the origin of the request's redirect URI only",
+    async () => {
+      // A browser checks the redirect after the answer against form-action too (05
+      // «授权页、验证页与它们的错误页的响应头»): without the redirect URI's origin the client never
+      // gets its code. Only the origin, or the scheme, is written: never the rest of the URI.
+      for (const [uri, source] of [
+        ["http://127.0.0.1:61433/callback", "http://127.0.0.1:61433"],
+        ["http://localhost:58520/callback", "http://localhost:58520"],
+        ["https://client.example:8443/cb?from=app", "https://client.example:8443"],
+        ["com.example.app:/oauth/callback", "com.example.app:"],
+        ["https://client.example/cb;form-action%20*", "https://client.example"],
+        ["https://client.example/cb;form-action *", "https://client.example"],
+      ]) {
+        redirects = [uri as string];
+        await bed.control.write((tx) => tx.exec("DELETE FROM oauth_clients"));
+        const r = await get(query({ redirect_uri: uri }), "s-user");
+        expect(r.status, uri).toBe(200);
+        expectPageHeaders(r, source);
+      }
+    },
+    T,
+  );
+
+  it(
+    "the page shown again after an answer it refused allows the redirect URI's origin too",
+    async () => {
+      const q = query();
+      const a = await shown(await get(q, "s-user"));
+      const r = await post(
+        q,
+        "s-user",
+        `form_token=${encodeURIComponent(a.token)}&decision=allow&scope=saveslot.read&name=`,
+      );
+      expect(r.status).toBe(200);
+      expect((await shown(r)).token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expectPageHeaders(r, "https://client.example");
+    },
+    T,
+  );
+
+  it(
     "a disabled user, or one without a tenant: a page",
     async () => {
       expect((await get(query(), "s-disabled")).status).toBe(403);
@@ -324,8 +375,13 @@ describe("the answer", () => {
       expect((await post(q, "s-user-2", allow(a.token))).status).toBe(403);
       expect((await post(q, "s-user", allow(a.token))).status).toBe(403);
       const b = await shown(await get(q, "s-user"));
-      expect((await post(q, "s-user", allow(b.token))).status).toBe(302);
-      expect((await post(q, "s-user", allow(b.token))).status).toBe(403);
+      const sent = await post(q, "s-user", allow(b.token));
+      expect(sent.status).toBe(302);
+      // The redirect to the client carries the code: no referrer goes with it.
+      expect(sent.headers.get("referrer-policy")).toBe("no-referrer");
+      const again = await post(q, "s-user", allow(b.token));
+      expect(again.status).toBe(403);
+      expectPageHeaders(again);
       expect((await post(q, "s-user", allow("not-a-token"))).status).toBe(403);
       expect((await post(q, "s-user", "decision=allow&scope=saveslot.read&name=x")).status).toBe(
         403,
@@ -574,4 +630,14 @@ describe("consent to token", () => {
     },
     T,
   );
+});
+
+describe("redirectSource", () => {
+  it("is the origin of an http or https URI, the scheme of another, nothing else of the URI", () => {
+    expect(redirectSource("http://127.0.0.1:61433/callback")).toBe("http://127.0.0.1:61433");
+    expect(redirectSource("https://client.example:443/cb")).toBe("https://client.example");
+    expect(redirectSource("https://client.example/cb;x y\nz")).toBe("https://client.example");
+    expect(redirectSource("com.example.app:/cb; script-src *")).toBe("com.example.app:");
+    expect(redirectSource("not a URI")).toBeUndefined();
+  });
 });

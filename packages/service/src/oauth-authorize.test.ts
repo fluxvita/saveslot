@@ -153,6 +153,44 @@ describe("authorization request", () => {
     }
   });
 
+  describe("a listed localhost redirect: any port, as a loopback IP literal's", () => {
+    const LOCAL: OAuthClient = {
+      ...CLIENT,
+      id: "https://local.example/client.json",
+      redirectUris: ["http://localhost/callback"],
+    };
+    const local = (redirect_uri: string) =>
+      checkAuthorizationRequest({
+        query: new URLSearchParams({ ...base, client_id: LOCAL.id, redirect_uri }),
+        external: EXT,
+        resolveClient: async () => LOCAL,
+      });
+    it.each(["http://localhost:58520/callback", "http://LOCALHOST:1/callback"])(
+      "taken: %s",
+      async (redirect_uri) => {
+        expect(await local(redirect_uri)).toMatchObject({ redirectUri: redirect_uri });
+      },
+    );
+    it.each([
+      // localhost and an IP literal do not stand for each other, either way.
+      "http://127.0.0.1:58520/callback",
+      "http://foo.localhost:58520/callback",
+      "http://localhost.:58520/callback",
+      "http://a@localhost:1/callback",
+      "https://localhost:58520/callback",
+      "http://localhost:58520/other",
+      "http://localhost:58520/callback?x=1",
+    ])("refused without a redirect: %s", async (redirect_uri) => {
+      expect(await local(redirect_uri)).toEqual({ kind: "page", reason: "redirect_uri" });
+    });
+    it("a listed IP literal does not take localhost", async () => {
+      expect(await check({ ...base, redirect_uri: "http://localhost:4000/cb" })).toEqual({
+        kind: "page",
+        reason: "redirect_uri",
+      });
+    });
+  });
+
   describe("the CLI: a loopback IP literal at /callback, any port", () => {
     const cli = { ...base, client_id: "saveslot-cli" };
     it.each(["http://127.0.0.1:49152/callback", "http://[::1]:8000/callback"])(

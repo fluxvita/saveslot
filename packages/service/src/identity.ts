@@ -317,7 +317,8 @@ export function pageLanguage(acceptLanguage: string | undefined): "en" | "zh" {
 /**
  * Headers every page of a provider carries: it loads nothing from anywhere (no script, style, image
  * or frame), posts its forms only to this service, may not be framed, is not sniffed as another
- * type, sends no referrer and is not cached.
+ * type, sends a referrer only to this service and is not cached. Not `no-referrer`: under it a
+ * browser sends `Origin: null` with a form posted to the same origin, and the sign-in refuses that.
  */
 export const PAGE_HEADERS: readonly (readonly [string, string])[] = [
   [
@@ -326,6 +327,6 @@ export const PAGE_HEADERS: readonly (readonly [string, string])[] = [
   ],
   ["x-frame-options", "DENY"],
   ["x-content-type-options", "nosniff"],
-  ["referrer-policy", "no-referrer"],
+  ["referrer-policy", "same-origin"],
   ["cache-control", "no-store"],
 ];

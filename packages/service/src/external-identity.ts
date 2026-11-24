@@ -11,7 +11,7 @@
 //   `nonce` is that state; the state must be unexpired and this browser's (its cookie's secret
 //   matching), and is used once, taken whether or not the secret matched. The login
 //   it makes lasts ten minutes, enough for one consent: each authorization goes by the platform
-//   again. Its answers carry no referrer and are not cached.
+//   again. Its answers send a referrer only to this service and are not cached.
 // - `acceptAssertion` takes an assertion of purpose `session`, for the console's user session.
 // - An assertion's `jti` is used once: kept in the control database until its `exp`, so a restart
 //   still refuses it again. It is recorded only after every other check passed.
@@ -532,7 +532,8 @@ export class ExternalIdentity implements IdentityProvider {
   }
 
   #callbackHeaders(): readonly (readonly [string, string])[] {
-    // PAGE_HEADERS already sends no referrer, and keeps the answer out of every cache.
+    // PAGE_HEADERS already sends a referrer only to this service, and keeps the answer out of every
+    // cache.
     return PAGE_HEADERS;
   }
 

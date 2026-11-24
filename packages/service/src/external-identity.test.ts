@@ -324,7 +324,7 @@ describe("a login through the platform", () => {
   );
 
   it(
-    "comes back signed in, to where it was going, with no referrer and nothing cached",
+    "comes back signed in, to where it was going, with a referrer only to itself and nothing cached",
     async () => {
       const p = provider(logins, true);
       const sub = account();
@@ -337,7 +337,7 @@ describe("a login through the platform", () => {
       expect(r).toMatchObject({ kind: "redirect", location: TO });
       expect(r?.kind === "redirect" && r.headers).toContainEqual([
         "referrer-policy",
-        "no-referrer",
+        "same-origin",
       ]);
       expect(r?.kind === "redirect" && r.headers).toContainEqual(["cache-control", "no-store"]);
       const who = await current(p, cookieOf(r, LOGIN));

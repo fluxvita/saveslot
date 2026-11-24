@@ -1,7 +1,8 @@
 // An authorization request (docs/zh-CN/spec/05-surfaces.md §15 «远程授权»; OAuth 2.1 §4.1; RFC
 // 7636; RFC 8707), checked in a fixed order:
 //   1. the client: saveslot's CLI, or a client document that can be fetched and passes its checks;
-//   2. the redirect URI, one the client lists (the CLI: a loopback IP literal, any port);
+//   2. the redirect URI, one the client lists, a loopback one at any port (the CLI: a loopback IP
+//      literal at /callback);
 // until both pass, the user sees an error page and is never sent anywhere (OAuth 2.1 §4.1.2.1);
 //   3. the rest, an error sent back to the client's redirect URI with `state`: the response type,
 //      PKCE (S256 only), the scopes, the resource.
@@ -101,24 +102,30 @@ function redirectAllowed(client: OAuthClient, uri: string): boolean {
     return false;
   }
   if (u.hash !== "" || uri.includes("#")) return false;
-  // A loopback redirect with a port of its own, for the CLI and for client documents alike: plain
-  // HTTP to a loopback IP literal, no user information.
-  const loopback =
-    u.protocol === "http:" &&
-    isLoopbackLiteral(u.hostname) &&
-    u.username === "" &&
-    u.password === "";
+  // A loopback redirect has a port of its own, chosen by the app at run time (RFC 8252 §7.3): plain
+  // HTTP, no user information, to a loopback IP literal or, for a client document, to `localhost`
+  // exactly (05 «远程授权»: clients list it so; reaching another host by it takes changing this
+  // machine's resolution, and the code is bound to PKCE). The CLI: an IP literal only.
+  const plain = (x: URL) => x.protocol === "http:" && x.username === "" && x.password === "";
   if (client.builtIn) {
-    return loopback && u.pathname === CLI_REDIRECT_PATH && u.search === "";
+    return (
+      plain(u) &&
+      isLoopbackLiteral(u.hostname) &&
+      u.pathname === CLI_REDIRECT_PATH &&
+      u.search === ""
+    );
   }
   if (client.redirectUris.includes(uri)) return true;
-  // A loopback IP literal: the port is the app's to choose at run time (RFC 8252 §7.3).
-  if (!loopback) return false;
+  const loopback = (x: URL) =>
+    plain(x) && (isLoopbackLiteral(x.hostname) || x.hostname === "localhost");
+  if (!loopback(u)) return false;
+  // The same as a listed loopback redirect but for the port: the host as written, so `localhost`
+  // and an IP literal never stand for each other.
   const portless = (x: URL) => `${x.protocol}//${x.hostname}${x.pathname}${x.search}`;
   return client.redirectUris.some((r) => {
     try {
       const listed = new URL(r);
-      return isLoopbackLiteral(listed.hostname) && portless(listed) === portless(u);
+      return loopback(listed) && portless(listed) === portless(u);
     } catch {
       return false;
     }
