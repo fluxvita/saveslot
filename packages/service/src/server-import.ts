@@ -3,8 +3,9 @@
 //
 // The import holds the tenant with the pool's `exclusive`, refusing (`importing`), from its first
 // step through ⑥: meanwhile the tenant's other requests get `unavailable` (`importing`) and a second
-// import `rate_limited` (`busy`), not a queue. The drop of the database it replaced comes after the
-// answer, outside the exclusive (below). Inside:
+// import `rate_limited` (`busy`), not a queue. The drops that only clean up (the database it
+// replaced; a failed import's staging database) come after the answer, outside the exclusive
+// (below). Inside:
 //
 //   ①–③ a staging database named after the tenant and the import ID (recorded in the tenant
 //       directory as the tenant's staging database), the file replayed into it, the import's event
@@ -22,11 +23,17 @@
 // still names it). Nothing waits for it: a drop still running when the service stops may fail; it
 // is told to `onDiscardFailure`, the record stays, and the next opening drops the database.
 //
-// A failure before ④ drops the staging database and forgets it, and the tenant stays as it was. One
-// at or after ④ leaves the marker: the pool's next opening finishes the import (swapped in) or rolls
-// it back (not), and a staging database with no marker is dropped there too (`stagingDiscarder`).
-// The database the swap replaced is that too: a crash after ⑤, or a drop that failed, leaves it
-// recorded, and the pool's next opening drops it.
+// A failure that leaves the tenant as it was (a file refused, a tenant not empty, ④ refusing the
+// marker) answers first too: the exclusive is released and the error thrown, and the staging
+// database it leaves is dropped and forgotten after that, outside the exclusive, as the replaced
+// one is (`onFailureDrops`). The directory records it until its drop has finished. A new import
+// meanwhile meets that record and drops it before recording its own (both drops `IF EXISTS`, the
+// record forgotten only while it still names it); an opening meanwhile drops it as any unmarked
+// staging database, and waits for that drop. A failure from ④ on leaves the marker: the pool's
+// next opening finishes the import (swapped in) or rolls it back (not), and a staging database with
+// no marker is dropped there too (`stagingDiscarder`). The database the swap replaced is that
+// too: a crash after ⑤, or a drop that failed, leaves it recorded, and the pool's next opening drops
+// it.
 //
 // Dropping is the daemon's (`discardDatabase`, from the PostgreSQL backend): this package does not
 // depend on a backend (§11). Its guard refuses any database but the tenant's staging databases and
@@ -132,10 +139,31 @@ export async function importServerTenant(o: {
    * line on standard error.
    */
   readonly onDiscardFailure?: (tenant: TenantId, database: string, error: unknown) => void;
+  /**
+   * Given, when the import fails, the drops it leaves to run after its answer (as `dropped` is on
+   * success); the promise never rejects. For tests and a host that wants to wait for them.
+   */
+  readonly onFailureDrops?: (dropped: Promise<void>) => void;
 }): Promise<ServerImportResult> {
-  const held = await o.pool.exclusive(o.tenant, () => importHeld(o), { refuse: "importing" });
-  // After the answer, outside the exclusive (see the top of this file).
-  return { ...held.result, dropped: dropQuietly(o, held.replaced) };
+  // The databases to drop after the answer, outside the exclusive (see the top of this file).
+  const after: string[] = [];
+  let held: Awaited<ReturnType<typeof importHeld>>;
+  try {
+    held = await o.pool.exclusive(o.tenant, () => importHeld(o, after), { refuse: "importing" });
+  } catch (e) {
+    const dropped = dropAllQuietly(o, after);
+    o.onFailureDrops?.(dropped);
+    throw e;
+  }
+  return { ...held.result, dropped: dropAllQuietly(o, [...after, held.replaced]) };
+}
+
+/** The drops left for after the answer, one after another; never rejects. */
+async function dropAllQuietly(
+  o: Parameters<typeof importServerTenant>[0],
+  databases: readonly string[],
+): Promise<void> {
+  for (const database of databases) await dropQuietly(o, database);
 }
 
 const codeOf = (e: unknown): string => {
@@ -169,6 +197,7 @@ async function dropQuietly(
 
 async function importHeld(
   o: Parameters<typeof importServerTenant>[0],
+  after: string[],
 ): Promise<{ readonly result: Omit<ServerImportResult, "dropped">; readonly replaced: string }> {
   const entry = await o.control.tenant(o.tenant);
   if (entry === undefined || entry.state !== "active") {
@@ -176,8 +205,13 @@ async function importHeld(
   }
   const ref = postgresRef(entry.ref);
   const discard = stagingDiscarder(o);
-  /** A drop that only cleans up: its failure is told, never thrown in place of what happened. */
-  const tidy = (database: string) => dropQuietly(o, database);
+  /**
+   * A drop that only cleans up: left for after the answer, outside the exclusive; its failure is
+   * told, never thrown in place of what happened.
+   */
+  const tidy = (database: string) => {
+    after.push(database);
+  };
 
   const notEmpty = () =>
     new OpsError("invalid_argument", "the tenant is not empty", { reason: "tenant_not_empty" });
@@ -214,7 +248,7 @@ async function importHeld(
     const left = taken === "aborted" ? undefined : (await o.control.tenant(o.tenant))?.staging;
     if (tail?.seq !== 1 || !anchorEmpty) {
       // A database the directory still names as staging (the one a swap replaced) is tidied up.
-      if (left !== undefined) await tidy(left);
+      if (left !== undefined) tidy(left);
       throw notEmpty();
     }
     // A staging database a crash before ④ left, no marker with it: dropped before another is
@@ -238,7 +272,7 @@ async function importHeld(
       }));
     } catch (e) {
       await closeAll(opened);
-      await tidy(staging);
+      tidy(staging);
       throw e;
     }
 
@@ -275,7 +309,7 @@ async function importHeld(
         .catch(() => false);
       if (left) {
         await closeAll(opened);
-        await tidy(staging);
+        tidy(staging);
       }
       throw e;
     }

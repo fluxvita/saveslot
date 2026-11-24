@@ -192,7 +192,7 @@ async function* bodyOf(lines: readonly string[], hold?: Promise<void>): AsyncGen
   }
 }
 
-/** An import and the drop it runs after its answer, both done. */
+/** An import and the drops it runs after its answer, both done, whether it stands or fails. */
 const imported = async (
   control: ServerControl,
   pool: TenantPool,
@@ -200,18 +200,27 @@ const imported = async (
   user: UserId,
   body = bodyOf(file),
 ) => {
-  const r = await importServerTenant({
-    control,
-    backend,
-    pool,
-    discardDatabase,
-    tenant,
-    user,
-    body,
-    now: "2026-11-21T10:30:00.000Z" as never,
-  });
-  await r.dropped;
-  return r;
+  let afterFailure: Promise<void> | undefined;
+  try {
+    const r = await importServerTenant({
+      control,
+      backend,
+      pool,
+      discardDatabase,
+      tenant,
+      user,
+      body,
+      now: "2026-11-21T10:30:00.000Z" as never,
+      onFailureDrops: (p) => {
+        afterFailure = p;
+      },
+    });
+    await r.dropped;
+    return r;
+  } catch (e) {
+    await afterFailure;
+    throw e;
+  }
 };
 
 /** The tenant as a new process sees it: empty, or the import complete with the anchor agreeing. */
@@ -567,6 +576,7 @@ describe("an import", () => {
       const broken = [...file];
       broken[2] = (broken[2] as string).replace('"desk"', '"DESK"');
       const failures: string[] = [];
+      let after: Promise<void> | undefined;
       const e = await importServerTenant({
         control: cp,
         backend,
@@ -576,13 +586,20 @@ describe("an import", () => {
           return discardDatabase(o);
         },
         onDiscardFailure: (_, database) => failures.push(database),
+        onFailureDrops: (p) => {
+          after = p;
+        },
         tenant,
         user: owner,
         body: bodyOf(broken),
         now: "2026-11-21T10:30:00.000Z" as never,
       }).catch((x: unknown) => x);
       expect(e instanceof ImportRejected ? e.reason : e).toBe("checksum_mismatch");
+      // The drop runs after the answer: it failed, that was told, and its promise resolved.
+      await expect(after).resolves.toBeUndefined();
       expect(failures).toHaveLength(1);
+      // Still recorded until a drop finishes.
+      expect((await cp.tenant(tenant))?.staging).toBe(failures[0]);
       expect(failures[0]?.startsWith(`${databaseOf(tenant)}_im_`)).toBe(true);
       await pool.closeAll();
       // Still recorded, so the next opening drops it.
@@ -668,18 +685,23 @@ describe("an import", () => {
       const b = await newTenant();
       const broken = [...file];
       broken[2] = (broken[2] as string).replace('"desk"', '"DESK"');
+      let after: Promise<void> | undefined;
       const e = await importServerTenant({
         control: cp,
         backend,
         pool,
         discardDatabase: failingDrop,
         onDiscardFailure: throwing,
+        onFailureDrops: (p) => {
+          after = p;
+        },
         tenant: b.tenant,
         user: b.owner,
         body: bodyOf(broken),
         now: "2026-11-21T10:30:00.000Z" as never,
       }).catch((x: unknown) => x);
       expect(e instanceof ImportRejected ? e.reason : e).toBe("checksum_mismatch");
+      await expect(after).resolves.toBeUndefined();
       await pool.closeAll();
       expect(await outcome(a.tenant)).toBe("complete");
       expect(await outcome(b.tenant)).toBe("empty");
@@ -866,6 +888,205 @@ describe("the replaced database dropped after the answer, outside the exclusive"
       expect((await cp.tenant(tenant))?.staging).toBe(databaseOf(tenant));
       expect(await outcome(tenant)).toBe("complete");
       expect(discards).toContain(databaseOf(tenant));
+    },
+    T,
+  );
+});
+
+describe("a failed import's staging database dropped after the answer, outside the exclusive", () => {
+  /**
+   * Drops as usual, except the first drop `which` matches: held until its `release`, then done.
+   * `reached` resolves when that drop has been asked for.
+   */
+  function holding(...which: ((database: string, tenantDatabase: string) => boolean)[]) {
+    const held = which.map((match) => {
+      let release = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      let reach = () => {};
+      const reached = new Promise<void>((r) => {
+        reach = r;
+      });
+      return { match, gate, release, reach, reached, used: false };
+    });
+    const drop: DiscardDatabase = async (o) => {
+      const h = held.find((x) => !x.used && x.match(o.database, o.tenantDatabase));
+      if (h !== undefined) {
+        h.used = true;
+        h.reach();
+        await h.gate;
+      }
+      return discardDatabase(o);
+    };
+    return { drop, held };
+  }
+  const isStaging = (database: string, tenantDatabase: string) =>
+    database.startsWith(`${tenantDatabase}_im_`);
+  /** What `p` gives, or "still waiting" after 30 s. */
+  const within = <V>(p: Promise<V>) =>
+    Promise.race([p, new Promise<string>((r) => setTimeout(() => r("still waiting"), 30_000))]);
+  const reasonOf = (e: unknown) =>
+    e instanceof ImportRejected ? e.reason : e instanceof OpsError ? e.detail.reason : e;
+  const brokenFile = () => {
+    const broken = [...file];
+    broken[2] = (broken[2] as string).replace('"desk"', '"DESK"');
+    return broken;
+  };
+  /** An import with `drop`; its error (or result), and the promise of the drops after a failure. */
+  const tried = (
+    control: ServerControl,
+    pool: TenantPool,
+    tenant: TenantId,
+    user: UserId,
+    drop: DiscardDatabase,
+    body: AsyncIterable<Uint8Array>,
+  ) => {
+    let after: Promise<void> = Promise.resolve();
+    const outcome = importServerTenant({
+      control,
+      backend,
+      pool,
+      discardDatabase: drop,
+      onFailureDrops: (p) => {
+        after = p;
+      },
+      tenant,
+      user,
+      body,
+      now: "2026-11-21T10:30:00.000Z" as never,
+    }).catch((x: unknown) => x);
+    return { outcome, after: () => after };
+  };
+
+  it(
+    "a file refused: refused while its staging database's drop is held, the record kept until the drop has finished",
+    async () => {
+      const { tenant, owner } = await newTenant();
+      const pool = poolOf(cp);
+      const h = holding(isStaging);
+      const t = tried(cp, pool, tenant, owner, h.drop, bodyOf(brokenFile()));
+      // Answered with the drop held: the refusal did not wait for it.
+      expect(reasonOf(await within(t.outcome))).toBe("checksum_mismatch");
+      await h.held[0]?.reached;
+      const staging = (await cp.tenant(tenant))?.staging;
+      expect(staging?.startsWith(`${databaseOf(tenant)}_im_`)).toBe(true);
+      expect(discards).not.toContain(staging);
+      h.held[0]?.release();
+      await t.after();
+      expect(discards).toContain(staging);
+      expect((await cp.tenant(tenant))?.staging).toBeUndefined();
+      await pool.closeAll();
+      expect(await outcome(tenant)).toBe("empty");
+    },
+    T,
+  );
+
+  it(
+    "a new import right after a refusal, its drop still held: the new one drops it and stands; the old drop's end clears nothing of the new",
+    async () => {
+      const { tenant, owner } = await newTenant();
+      const pool = poolOf(cp);
+      // Held: the refused import's staging drop, and the new import's drop of the database it replaced.
+      const h = holding(isStaging, (database, tenantDatabase) => database === tenantDatabase);
+      const refused = tried(cp, pool, tenant, owner, h.drop, bodyOf(brokenFile()));
+      expect(reasonOf(await within(refused.outcome))).toBe("checksum_mismatch");
+      await h.held[0]?.reached;
+      const old = (await cp.tenant(tenant))?.staging as string;
+      // The new import meets the old record and drops it (not held: only the first drop is).
+      const r = await within(
+        importServerTenant({
+          control: cp,
+          backend,
+          pool,
+          discardDatabase: h.drop,
+          tenant,
+          user: owner,
+          body: bodyOf(file),
+          now: "2026-11-21T10:30:00.000Z" as never,
+        }),
+      );
+      expect(r).toMatchObject({ highWater: sourceEnd + 1, restoreCount: 1 });
+      await h.held[1]?.reached;
+      // The record names the database the swap replaced, its drop held.
+      expect((await cp.tenant(tenant))?.staging).toBe(databaseOf(tenant));
+      // The old drop ends now: its forgetting must not clear the newer record.
+      h.held[0]?.release();
+      await refused.after();
+      expect((await cp.tenant(tenant))?.staging).toBe(databaseOf(tenant));
+      h.held[1]?.release();
+      await (r as { dropped: Promise<void> }).dropped;
+      expect((await cp.tenant(tenant))?.staging).toBeUndefined();
+      expect(discards).toContain(old);
+      await pool.closeAll();
+      expect(await outcome(tenant)).toBe("complete");
+    },
+    T,
+  );
+
+  it(
+    "a tenant not empty, a staging database still recorded: refused while that database's drop is held",
+    async () => {
+      const { tenant, owner } = await newTenant();
+      const pool = poolOf(cp);
+      await imported(cp, pool, tenant, owner);
+      const left = `${databaseOf(tenant)}_im_0123456789abcdef`;
+      await (
+        await backend.open({ kind: "postgres", cell: CELL, database: left }, { create: true })
+      ).close();
+      await cp.setStaging(tenant, left);
+      const h = holding((database) => database === left);
+      const t = tried(cp, pool, tenant, owner, h.drop, bodyOf(file));
+      expect(reasonOf(await within(t.outcome))).toBe("tenant_not_empty");
+      await h.held[0]?.reached;
+      expect((await cp.tenant(tenant))?.staging).toBe(left);
+      h.held[0]?.release();
+      await t.after();
+      expect((await cp.tenant(tenant))?.staging).toBeUndefined();
+      expect(discards).toContain(left);
+      await pool.closeAll();
+      expect(await outcome(tenant)).toBe("complete");
+    },
+    T,
+  );
+
+  it(
+    "④ refusing the marker: refused while the staging database's drop is held, the tenant still empty",
+    async () => {
+      const { tenant, owner } = await newTenant();
+      // ④ refuses as it does when the tenant is no longer empty: no marker set.
+      const anchors = new Proxy(cp.anchors as AnchorStore, {
+        get(t, k) {
+          const v = Reflect.get(t, k);
+          if (typeof v !== "function") return v;
+          if (k !== "beginImport") return v.bind(t);
+          return async () => {
+            throw new OpsError("invalid_argument", "the tenant is not empty", {
+              reason: "tenant_not_empty",
+            });
+          };
+        },
+      });
+      const control = new Proxy(cp, {
+        get(t, k) {
+          if (k === "anchors") return anchors;
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }) as unknown as ServerControl;
+      const pool = poolOf(control);
+      const h = holding(isStaging);
+      const t = tried(control, pool, tenant, owner, h.drop, bodyOf(file));
+      expect(reasonOf(await within(t.outcome))).toBe("tenant_not_empty");
+      await h.held[0]?.reached;
+      const staging = (await cp.tenant(tenant))?.staging;
+      expect(staging?.startsWith(`${databaseOf(tenant)}_im_`)).toBe(true);
+      h.held[0]?.release();
+      await t.after();
+      expect((await cp.tenant(tenant))?.staging).toBeUndefined();
+      expect(discards).toContain(staging);
+      await pool.closeAll();
+      expect(await outcome(tenant)).toBe("empty");
     },
     T,
   );

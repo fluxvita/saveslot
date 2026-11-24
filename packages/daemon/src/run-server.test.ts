@@ -1285,8 +1285,15 @@ describe("runServer: POST /v1/import", () => {
    * then drops the test's storage of that database.
    */
   async function serverWithSource(
-    over: { importBodyIdleMs?: number; discardDatabase?: DiscardDatabase } = {},
+    over: {
+      importBodyIdleMs?: number;
+      discardDatabase?: DiscardDatabase;
+      /** The first drop of a staging database waits for this (a slow DROP DATABASE). */
+      holdStagingDrop?: Promise<void>;
+    } = {},
   ) {
+    const { holdStagingDrop, ...overRun } = over;
+    let stagingHeld = false;
     const c = await controlDb();
     const t = tenants();
     const cfg = config();
@@ -1314,10 +1321,14 @@ describe("runServer: POST /v1/import", () => {
       backend: t.backend,
       discardDatabase: async (d) => {
         checkDiscard(d);
+        if (holdStagingDrop !== undefined && !stagingHeld && d.database !== d.tenantDatabase) {
+          stagingHeld = true;
+          await holdStagingDrop;
+        }
         await dropTestStorage(join(t.dir, d.cell, d.database));
       },
       now: () => NOW,
-      ...over,
+      ...overRun,
     });
     const source = await user("source");
     const auth = (token: string) => ({ authorization: `Bearer ${token}` });
@@ -1397,12 +1408,20 @@ describe("runServer: POST /v1/import", () => {
     ]);
 
   /** The tenant as the anchor and the directory have it: empty, no import left over. */
+  /**
+   * The tenant as the anchor and the directory have it: empty, no import left over, once the
+   * staging database's drop (after a refusal's answer, outside the exclusive) has finished.
+   */
   const leftEmpty = async (cp: ServerControlPlane, tenant: `tn_${string}`) => {
     const a = await cp.anchors.read(tenant);
     expect({ restoreCount: a.restoreCount, importInProgress: a.importInProgress }).toEqual({
       restoreCount: 0,
       importInProgress: undefined,
     });
+    // A bounded wait: a drop that never ends is a failure here, not the test's timeout.
+    for (let i = 0; i < 600 && (await cp.tenant(tenant))?.staging !== undefined; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
     expect((await cp.tenant(tenant))?.staging).toBeUndefined();
   };
 
@@ -1564,7 +1583,13 @@ describe("runServer: POST /v1/import", () => {
   it(
     "refused: a tenant not empty (tenant_not_empty), a file that is not one (import_rejected); the tenant left as it was",
     async () => {
-      const { s, cp, user, source, file } = await serverWithSource();
+      // The staging database's drop held, as a slow DROP DATABASE holds it on a busy PostgreSQL:
+      // the refusal answers anyway, the drop running after it.
+      let release = () => {};
+      const holdStagingDrop = new Promise<void>((r) => {
+        release = r;
+      });
+      const { s, cp, user, source, file } = await serverWithSource({ holdStagingDrop });
       try {
         const notEmpty = await within(upload(s, source.token, bodyOf(file)), "the import");
         expect(notEmpty.status).toBe(400);
@@ -1576,8 +1601,12 @@ describe("runServer: POST /v1/import", () => {
         const bad = await within(upload(s, target.token, bodyOf(["not an export"])), "the import");
         expect(bad.status).toBe(422);
         expect(JSON.parse(bad.body).error).toMatchObject({ code: "import_rejected" });
+        // Answered with the drop held: the record stays until the drop has finished.
+        expect((await cp.tenant(target.tenant))?.staging).toBeDefined();
+        release();
         await leftEmpty(cp, target.tenant);
       } finally {
+        release();
         await s.close();
       }
     },
