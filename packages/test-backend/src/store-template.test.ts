@@ -1,10 +1,14 @@
 // The store template (store-template.fixture.ts): a storage the test backend copies from it is the
 // storage made for real, structure, rows and sequences; storages copied from one template touch
 // neither each other nor the template; other creation parameters get another template; neither a
-// template half made nor one of other parameters is copied; two first creations at once get one
-// template and two whole storages; `template: false`, or a run without a templates directory,
-// makes the storage for real. PGlite only: on PostgreSQL there is no template.
+// template half made nor one of other parameters is copied; two first creations at once, in one
+// process or in two, get one template and whole storages; `template: false`, or a run without a
+// templates directory, makes the storage for real. PGlite only: on PostgreSQL there is no template.
+//
+// A storage made for real (initdb in WASM, seconds) is made once in beforeAll and compared against;
+// the cases whose subject is not making a template share one templates directory.
 
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,14 +29,23 @@ afterAll(() => {
   if (root !== undefined) rmSync(root, { recursive: true, force: true });
 }, T);
 
-/** Each case's own directory of templates, in place of the run's. */
+/**
+ * Each case's own directory of templates, in place of the run's; `shared()` gives the cases whose
+ * subject is not making a template one directory for them all instead.
+ */
 let templates: string;
+let sharedTemplates: string | undefined;
 let before: string | undefined;
 beforeEach(() => {
   templates = mkdtempSync(join(root, "templates-"));
   before = process.env[TEMPLATES_ENV];
   process.env[TEMPLATES_ENV] = templates;
 });
+const shared = () => {
+  sharedTemplates ??= mkdtempSync(join(root, "shared-"));
+  templates = sharedTemplates;
+  process.env[TEMPLATES_ENV] = templates;
+};
 afterEach(() => {
   if (before === undefined) delete process.env[TEMPLATES_ENV];
   else process.env[TEMPLATES_ENV] = before;
@@ -123,21 +136,41 @@ async function opened<R>(
 }
 
 describe.skipIf(TEST_BACKEND !== "pglite")("the store template", () => {
-  it(
-    "a storage copied from it is the storage made for real: structure, rows, sequences, epoch, the directory's entries",
-    async () => {
-      const copied = fresh();
-      const real = fresh();
-      const a = await opened(copied, {}, async (s) => ({ epoch: s.epoch, state: await state(s) }));
-      expect(readdirSync(templates)).toEqual([templateKey("pglite-default")]);
-      const b = await opened(real, { template: false }, async (s) => ({
+  /**
+   * A storage made for real, once: its directory, its epoch at first open, its state; and what the
+   * templates directory it was made under held after (`template: false` makes none).
+   */
+  let real: { dir: string; epoch: number; state: Awaited<ReturnType<typeof state>> };
+  let leftByReal: string[];
+  beforeAll(async () => {
+    const dir = fresh();
+    const was = process.env[TEMPLATES_ENV];
+    const under = mkdtempSync(join(root, "real-"));
+    process.env[TEMPLATES_ENV] = under;
+    try {
+      real = await opened(dir, { template: false }, async (s) => ({
+        dir,
         epoch: s.epoch,
         state: await state(s),
       }));
+    } finally {
+      if (was === undefined) delete process.env[TEMPLATES_ENV];
+      else process.env[TEMPLATES_ENV] = was;
+    }
+    leftByReal = readdirSync(under);
+  }, T);
+
+  it(
+    "a storage copied from it is the storage made for real: structure, rows, sequences, epoch, the directory's entries",
+    async () => {
+      shared();
+      const copied = fresh();
+      const a = await opened(copied, {}, async (s) => ({ epoch: s.epoch, state: await state(s) }));
+      expect(readdirSync(templates)).toEqual([templateKey("pglite-default")]);
       expect(Object.keys(a.state.tables).length).toBeGreaterThan(5);
       expect(a.state.structure["columns"]?.length).toBeGreaterThan(20);
-      expect(a).toEqual(b);
-      expect(readdirSync(copied).sort()).toEqual(readdirSync(real).sort());
+      expect(a).toEqual({ epoch: real.epoch, state: real.state });
+      expect(readdirSync(copied).sort()).toEqual(readdirSync(real.dir).sort());
     },
     T,
   );
@@ -145,6 +178,7 @@ describe.skipIf(TEST_BACKEND !== "pglite")("the store template", () => {
   it(
     "storages copied from one template touch neither each other nor the template",
     async () => {
+      shared();
       const one = fresh();
       const blank = await opened(one, {}, async (s) => {
         const was = await state(s);
@@ -184,8 +218,7 @@ describe.skipIf(TEST_BACKEND !== "pglite")("the store template", () => {
         mkdirSync(join(templates, left));
         writeFileSync(join(templates, left, "PG_VERSION"), "not a storage\n");
       }
-      const copied = await opened(fresh(), {}, state);
-      expect(await opened(fresh(), { template: false }, state)).toEqual(copied);
+      expect(await opened(fresh(), {}, state)).toEqual(real.state);
       expect(readdirSync(templates).sort()).toEqual(
         [`${key}.making-1-dead`, "0".repeat(32), key].sort(),
       );
@@ -203,11 +236,12 @@ describe.skipIf(TEST_BACKEND !== "pglite")("the store template", () => {
   );
 
   it(
-    "two first creations at once: one template, two whole storages",
+    "two first creations at once in one process: one template, two whole storages",
     async () => {
       const dirs = [fresh(), fresh()];
       const both = await Promise.all(dirs.map((d) => opened(d, {}, state)));
-      expect(both[0]).toEqual(both[1]);
+      expect(both[0]).toEqual(real.state);
+      expect(both[1]).toEqual(real.state);
       expect(readdirSync(templates)).toEqual([templateKey("pglite-default")]);
       // And copying into a directory that already holds a storage leaves it to the opening.
       expect(await copyTemplate(templates, dirs[0] as string, "pglite-default")).toBe(false);
@@ -216,10 +250,26 @@ describe.skipIf(TEST_BACKEND !== "pglite")("the store template", () => {
   );
 
   it(
+    "two processes making the template at once: one is renamed into place, both get it, and a copy is whole",
+    async () => {
+      const made = await Promise.all([maker(templates), maker(templates)]);
+      // Both were making it at the same time: each started before the other ended.
+      expect(made[0]?.started).toBeLessThan(made[1]?.ended as number);
+      expect(made[1]?.started).toBeLessThan(made[0]?.ended as number);
+      const key = templateKey("pglite-default");
+      expect(made.map((m) => m.at)).toEqual([join(templates, key), join(templates, key)]);
+      // Nothing half made is left: the one whose rename came second dropped its own.
+      expect(readdirSync(templates)).toEqual([key]);
+      expect(await opened(fresh(), {}, state)).toEqual(real.state);
+    },
+    T,
+  );
+
+  it(
     "template: false, or a run without a templates directory, makes the storage for real",
     async () => {
-      await opened(fresh(), { template: false }, async () => {});
-      expect(readdirSync(templates)).toEqual([]);
+      // The storage made with `template: false` in beforeAll left no template where it was made.
+      expect(leftByReal).toEqual([]);
       delete process.env[TEMPLATES_ENV];
       await opened(fresh(), {}, async () => {});
       expect(readdirSync(templates)).toEqual([]);
@@ -227,3 +277,32 @@ describe.skipIf(TEST_BACKEND !== "pglite")("the store template", () => {
     T,
   );
 });
+
+const MAKER = join(import.meta.dirname, "make-template.fixture.ts");
+
+/** make-template.fixture.ts in a process of its own: when it made the template, and where it is. */
+function maker(templates: string): Promise<{ at: string; started: number; ended: number }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      // Wasm code GC off, as the test forks have it (vitest.config.ts, nodejs/node#66366).
+      [
+        "--no-wasm-code-gc",
+        "--conditions=source",
+        "--no-warnings",
+        MAKER,
+        templates,
+        "pglite-default",
+      ],
+      { stdio: ["ignore", "pipe", "inherit"] },
+    );
+    let out = "";
+    child.stdout?.on("data", (b) => {
+      out += String(b);
+    });
+    child.once("error", reject);
+    child.once("exit", (code) =>
+      code === 0 ? resolve(JSON.parse(out)) : reject(new Error(`the maker exited ${code}`)),
+    );
+  });
+}
