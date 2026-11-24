@@ -1532,7 +1532,13 @@ describe.each(both)("%s table", (_, schema, state) => {
             }
             if (giver !== undefined && JSON.stringify(giver.value) === JSON.stringify(input.value))
               continue;
-            const by = was.find((h2) => covers(h2.valid, g))?.by;
+            // No value there with the take and without it (a write-back of "no value", which the
+            // view names no giver for, or nothing at all): the take gives nothing there and changes
+            // nothing a write gives.
+            const wasHere = was.find((h2) => covers(h2.valid, g));
+            if ((giver === undefined || giver.value === null) && (wasHere?.value ?? null) === null)
+              continue;
+            const by = wasHere?.by;
             const x =
               by === undefined
                 ? undefined
@@ -1629,6 +1635,59 @@ describe.each(both)("%s table", (_, schema, state) => {
       ),
       { numRuns: RUNS },
     );
+    if (!state) {
+      // Built in (seed -1884293232): deleting #30's words takes the take's cover set away, so the
+      // take gives nothing; #50, an undo of #20 outside the cover set, writes back "no value" on
+      // f3, with the take and without it. No value on either side: nothing the take changed.
+      check(hits, [
+        {
+          kind: "write",
+          op: 10,
+          event: 11,
+          seen: 0,
+          fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+          acknowledge: ["overwrite"],
+        },
+        {
+          kind: "write",
+          op: 20,
+          event: 21,
+          seen: 0,
+          fields: { f3: { value: "2", sources: ["S4"], explicit: true } },
+          acknowledge: ["overwrite"],
+        },
+        {
+          kind: "write",
+          op: 30,
+          event: 31,
+          seen: 20,
+          fields: { f3: { value: "1", sources: ["S5"], explicit: true } },
+          acknowledge: ["overwrite"],
+        },
+        {
+          kind: "write",
+          op: 40,
+          event: 41,
+          seen: 20,
+          fields: {
+            f2: { value: "3", sources: ["S4"], explicit: false },
+            f3: { value: "a", sources: ["S4"] },
+          },
+        },
+        { kind: "undo", op: 50, event: 51, target: 20 },
+        {
+          kind: "resolve",
+          op: 60,
+          event: 61,
+          decision: "take_candidate",
+          candidates: [41],
+          unit: "f3",
+          take: 41,
+        },
+        { kind: "deletion", op: 61, id: "pi_x", sources: ["S5"] },
+        { kind: "deletion", op: 62, id: "pi_y", sources: ["S5"] },
+      ] as unknown as LogEntry[]);
+    }
     if (!state) {
       // The event table: a write outside O giving the value there comes only from a deletion
       // putting it in effect, and on an event table a unit has one item (a candidate there is in
