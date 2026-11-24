@@ -193,15 +193,20 @@ export function restatements(
     const x = now.get(ref);
     if (x !== undefined && !out.has(ref)) restate(ref, x.event, x.item);
   }
-  // Rule 2, to a fixed point: a last block resting on a deleted or restated contribution.
+  // Rule 2, to a fixed point: a last block resting on a deleted or restated contribution. A
+  // carried item's sources without an interval have no deps: they go when an item they carry is
+  // deleted or restated as dropped (09 §3.5 rule 1), so the item is restated too.
   const gone = (d: ItemRef) =>
     deleted.has(key(d.event, d.target)) || out.has(`${d.event}/${d.target}/${d.k}`);
+  const carriedGone = (d: ItemRef) =>
+    deleted.has(key(d.event, d.target)) ||
+    out.get(`${d.event}/${d.target}/${d.k}`)?.status === "dropped";
   for (let changed = true; changed; ) {
     changed = false;
     for (const [ref, { event, item: x }] of now) {
       if (out.has(ref)) continue;
       const given = latest.get(key(event, x.target))?.find((b) => b.k === x.k);
-      if (given?.deps.some(gone)) {
+      if (given?.deps.some(gone) || given?.carried?.some(carriedGone)) {
         restate(ref, event, x);
         changed = true;
       }

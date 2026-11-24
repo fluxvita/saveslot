@@ -332,6 +332,67 @@ const readable = (v: { exists: boolean; gaps: unknown; fields: object }) => {
 const plain = (v: { exists: boolean; gaps: unknown; fields: object }) =>
   JSON.parse(JSON.stringify({ exists: v.exists, gaps: v.gaps, fields: v.fields })) as View;
 
+/**
+ * Event table: #30 a candidate against #20, taken (#50); #60 a candidate against that, taken too
+ * (the generator's decision, op 63, carrying #60's value). Deleting #20's words makes #60 a no-op,
+ * restated as dropped; the take's item stays in effect, carrying it, and its sources without an
+ * interval are on the list (09 §3.5 rule 1): restated as it is. Found by the property (seed
+ * -1136674429).
+ */
+const CARRIED_DROPPED = {
+  ops: [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      fields: { f2: { value: "2", sources: ["S20"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      fields: { f2: { value: "3", sources: ["S30"] } },
+    },
+    {
+      kind: "resolve",
+      op: 50,
+      event: 51,
+      decision: "take_candidate",
+      candidates: [31],
+      take: 31,
+      unit: "f2",
+    },
+    {
+      kind: "write",
+      op: 60,
+      event: 61,
+      seen: 20,
+      fields: { f2: { value: "1", sources: ["S6"], explicit: false } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 70,
+      event: 71,
+      seen: 30,
+      fields: { f2: { value: "9", sources: ["S5"], explicit: false } },
+    },
+  ],
+  decisions: [{ after: 1516442422, pick: 0, kind: "take", flag: 0, focus: false }],
+  pick: 6,
+} as unknown as { ops: Op[]; decisions: Decision[]; pick: number };
+
 const CTX_DELETE = {
   now: "2026-11-10T06:00:00.000Z",
   today: "2026-11-10",
@@ -716,6 +777,10 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
   };
 
   it("the deletion the operation works out and appends is judge's replay, applied and replayed the same", async () => {
+    if (!isState) {
+      const x = CARRIED_DROPPED;
+      await checkSample(x.ops, x.decisions, x.pick);
+    }
     await fc.assert(
       fc.asyncProperty(scenario(isState), fc.nat(), ({ ops, decisions }, pick) =>
         checkSample(ops, decisions, pick),

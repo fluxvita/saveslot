@@ -166,6 +166,33 @@ describe("restatements (§5.9)", () => {
     ]);
   });
 
+  it("rule 2, a carried item: restated when what it carries is deleted or restated as dropped, not when restated otherwise", () => {
+    // Event table. #31 a candidate; #51 a take carrying it (its sources without an interval have
+    // no deps, 09 §3.5 rule 1).
+    const c31 = write(30, [
+      item(0, "11-01", null, { status: "candidate", content: { kind: "value", value: "3" } }),
+    ]);
+    const take = write(50, [
+      item(0, "11-01", null, { content: { kind: "value", value: "3" }, carried: [ref(31)] }),
+    ]);
+    const given = givenByRecords([w10, c31, take]);
+    const of = (r: ReturnType<typeof restatements>) => r.map((x) => [x.item.event, x.status]);
+    // #31 restated, still a contribution (applied now): the take is not restated.
+    const applied = write(30, [item(0, "11-01", null, { content: { kind: "value", value: "3" } })]);
+    expect(of(restatements([w10, applied, take], given, new Set(), false))).toEqual([
+      [31, "applied"],
+    ]);
+    // #31 no longer an item (restated as dropped): the take is restated as it is.
+    expect(of(restatements([w10, take], given, new Set(), false))).toEqual([
+      [31, "dropped"],
+      [51, "applied"],
+    ]);
+    // #31 deleted: the take is restated as it is.
+    expect(of(restatements([w10, take], given, new Set(["31/f2"]), false))).toEqual([
+      [51, "applied"],
+    ]);
+  });
+
   it("an index given that is no longer an item, not deleted: dropped; a deleted one: not restated", () => {
     const replayed = [w10, w30];
     expect(restatements(replayed, latest, new Set(), true)).toEqual([
