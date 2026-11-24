@@ -14,11 +14,14 @@ import {
   pending,
   query,
   readBufferOf,
+  readEvents,
+  readTail,
   write,
 } from "@fluxvita/saveslot-kernel";
 import { COMPILED_V1, createSlotEvents, queryInTx } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
+import { insertRows } from "./testing/copy-log.fixture.ts";
+import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
 
 const T = 120_000;
 const TENANT = `tn_${"8".repeat(26)}`;
@@ -174,13 +177,40 @@ let r4: string;
 let entityA: string;
 let entityB: string;
 
+/** The tables written above, as their log and as `snapshot()` gives them, and the clock after. */
+let seed: { events: object[]; content: object[]; tables: Record<string, string[]>; minute: number };
+
 beforeAll(async () => {
   s = await openReusable("saveslot-query-");
+  await written();
+  seed = {
+    ...(await s.store.read(async (tx) => ({
+      events: (await tx.query("SELECT * FROM events ORDER BY seq")).rows as object[],
+      content: (await tx.query("SELECT * FROM content ORDER BY seq, path")).rows as object[],
+    }))),
+    tables: await s.store.read(snapshot),
+    minute,
+  };
 }, T);
 afterAll(async () => {
   await s?.close();
 }, T);
+// Each case starts from the tables written once in beforeAll: the store emptied, the log put back
+// and replayed (K12: the log replayed into an empty storage gives the same tables), the clock as it
+// was. Writing them anew for each case took most of the file's time; the first case checks that the
+// replay gives every table as written.
 beforeEach(async () => {
+  await s.reset();
+  await s.store.write(async (tx) => {
+    await insertRows(tx, "events", seed.events as Record<string, unknown>[]);
+    await insertRows(tx, "content", seed.content as Record<string, unknown>[]);
+    await applyEvents(tx, await readEvents(tx, 1, (await readTail(tx))?.seq ?? 0));
+  });
+  minute = seed.minute;
+}, T);
+
+/** The tables every case reads: a tenant, a slot, and the rows written below. */
+async function written(): Promise<void> {
   await s.reset();
   readBufferOf(s.store).take();
   minute = 0;
@@ -285,7 +315,14 @@ beforeEach(async () => {
   await w1(ins("settings", { key: "b" }));
   await w1(ins("settings", { key: "a" }));
   readBufferOf(s.store).take();
-}, T);
+}
+
+it("each case starts from the tables as they were written: every table, row for row", async () => {
+  expect(Object.keys(seed.tables).length).toBeGreaterThan(10);
+  expect(seed.events.length).toBeGreaterThan(20);
+  expect(await s.store.read(snapshot)).toEqual(seed.tables);
+  expect(readBufferOf(s.store).size).toBe(0);
+});
 
 describe("the profile of the tables written above (`catalog`, 04-contract §10 «概况»)", () => {
   it("gives the rows and the business time range of each kind of table, in the form the table keeps it", async () => {
