@@ -3,8 +3,12 @@
 // logs, and the write pipeline with identifiers chosen by the test. Source only (not built); only
 // test files may import it.
 
+// A deletion's replay of one row, and which blocks are data blocks (09 §5), for the positions'
+// checks on a real log.
+export { matchPath } from "@fluxvita/saveslot-contract-core";
 export { withConfirmations } from "./apply/confirmation.fixture.ts";
 export * from "./apply/slot.fixture.ts";
+export { deletionReplayForTests } from "./delete/replay.fixture.ts";
 // The states of a target at a version position, and their comparison.
 export { stateAt, targetDelta } from "./delta/index.ts";
 // One judgement on a state, for a test asking what a decision would do now.

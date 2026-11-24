@@ -203,9 +203,11 @@ function depOf(r: Obj): { dep_event: Seq; dep_field: string; dep_k: number } {
 
 /**
  * The block dependency index of an event (§5.12 块依赖索引, §3.5): each present data block's
- * `deps`, and the `carried` contributions of `sources/*` entries. Removed blocks depend on nothing.
+ * `deps`; the `carried` contributions of `sources/*` entries, and of the `sources` in a deletion
+ * event's `results/…` and `restated/<k>`; the item a `restated/<k>` restates. Removed blocks
+ * depend on nothing.
  */
-function blockDeps(seq: Seq, present: Obj): BlockDepRow[] {
+export function blockDeps(seq: Seq, present: Obj): BlockDepRow[] {
   const out: BlockDepRow[] = [];
   for (const path of Object.keys(present).sort()) {
     const v = present[path];
@@ -217,6 +219,16 @@ function blockDeps(seq: Seq, present: Obj): BlockDepRow[] {
       for (const e of v as Obj[]) {
         if (e["carried"] !== undefined) refs.push({ ref: e["carried"] as Obj, kind: "carried" });
       }
+    }
+    // A deletion event's results and restatements (09 §5.9): what their `sources` carry (an event
+    // or timeless table's result has no `deps`), and the item a restatement restates (the block
+    // goes when that item is deleted or restated again).
+    if (/^(results\/\d+\/fields\/|restated\/)/.test(path) && v !== null && typeof v === "object") {
+      const o = v as Obj;
+      for (const e of (Array.isArray(o["sources"]) ? o["sources"] : []) as Obj[]) {
+        if (e["carried"] !== undefined) refs.push({ ref: e["carried"] as Obj, kind: "carried" });
+      }
+      if (path.startsWith("restated/")) refs.push({ ref: o, kind: "deps" });
     }
     refs.forEach(({ ref, kind }, n) => {
       out.push({ seq, path, n, ...depOf(ref), dep_kind: kind });
