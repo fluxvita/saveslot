@@ -48,9 +48,9 @@ import { openReusable, type ReusableStore } from "./testing/reusable-store.fixtu
 vi.setConfig({ testTimeout: 600_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 500_000, markInterruptAsFailure: true });
 
-// A sample is a dozen requests on a real store: about 20 s. 12 by default (the fixed samples
+// A sample is a dozen requests on a real store: about 20 s. 14 by default (the ten fixed samples
 // among them); the nightly long batch raises it with PROP_RUNS.
-const RUNS = propRuns(12);
+const RUNS = propRuns(14);
 const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
 const TENANT = `tn_${"8".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}`;
@@ -86,7 +86,7 @@ const VALUES = ["1", "2", "3"];
 type Step =
   | { t: "sync"; v: string; explicit: boolean; f1: string }
   | { t: "local"; v: string; lag: number }
-  | { t: "revoke" }
+  | { t: "revoke"; lag?: number }
   | { t: "revokeBack" }
   | { t: "undo"; back: number }
   | { t: "resolve"; decision: ResolveOp["decision"]; unit: "f2" | "existence" };
@@ -109,7 +109,12 @@ const step: fc.Arbitrary<Step> = fc.oneof(
       lag: fc.constantFrom(0, 0, 1),
     }),
   },
-  { weight: 1, arbitrary: fc.record({ t: fc.constant("revoke" as const) }) },
+  // On the version read, or on one before it (a stale revoke: a conflict on existence where the
+  // row changed since, 03-data-model «冲突判据»), as a user's change goes.
+  {
+    weight: 1,
+    arbitrary: fc.record({ t: fc.constant("revoke" as const), lag: fc.constantFrom(0, 0, 1) }),
+  },
   { weight: 1, arbitrary: fc.record({ t: fc.constant("revokeBack" as const) }) },
   {
     weight: 2,
@@ -402,18 +407,24 @@ async function runScenario(first: string, steps: readonly Step[], seen: Record<s
         false,
       );
     } else if (st.t === "revoke" || st.t === "revokeBack") {
-      const cur = done.at(-1);
-      if (cur === undefined) continue;
+      const latest = done.at(-1);
+      if (latest === undefined) continue;
+      // A revoke with a lag goes on a version before the latest, as a stale user's change does;
+      // the reference judges it on what it saw (`seen`).
+      const lag = st.t === "revoke" ? (st.lag ?? 0) : 0;
+      const vers = done.filter((d) => d.kind !== "resolve");
+      const at = lag > 0 ? (vers[vers.length - 1 - lag] ?? latest) : latest;
+      if (at !== latest) count("revoke_stale");
       refOp += 10;
       const op = refOp;
       const before = done.length;
       await apply(
-        { kind: "revoke", op, event: op + 1 },
+        { kind: "revoke", op, event: op + 1, ...(at !== latest ? { seen: at.ref } : {}) },
         () =>
           write(s.store, ctx(), {
             sv: 1,
             idempotency_key: once(op),
-            ops: [{ intent: "revoke", table: "items", row, ver: cur.ver }],
+            ops: [{ intent: "revoke", table: "items", row, ver: at.ver }],
           }),
         false,
       );
@@ -456,7 +467,20 @@ async function runScenario(first: string, steps: readonly Step[], seen: Record<s
       const open = evaluateLog(TIMELESS, log).final.items.filter(
         (x) => x.status === "candidate" && !x.closed,
       );
-      const events = [...new Set(open.map((x) => x.event))].sort((a, b) => a - b);
+      // The reference models no supersession, so the test supplies it: a write whose item a write
+      // that had read it overwrote is no longer a candidate in any item (01-objects «不过期»:
+      // 读过该事项的当前版本 → 已被取代; a closed item takes no decision), and the decision on a
+      // later item does not close it. Left to the reference, its K would put it in this item's
+      // conflict and close it with the rest, while the kernel keeps it in the superseded item.
+      const gone = new Set(
+        (await liveItems(["superseded"]))
+          .flatMap((x) => x.writes)
+          .map((w) => (done.find((d) => d.live === w)?.ref ?? Number.NaN) + 1),
+      );
+      const events = [...new Set(open.map((x) => x.event))]
+        .filter((e) => !gone.has(e))
+        .sort((a, b) => a - b);
+      const leftOut = open.some((x) => gone.has(x.event));
       const item = (await liveItems()).find((x) => x.unit === st.unit);
       if (events.length === 0 || item === undefined) continue;
       // The candidate taken is the test's choice, the same write on both sides: the kernel item's
@@ -484,6 +508,7 @@ async function runScenario(first: string, steps: readonly Step[], seen: Record<s
         continue;
       }
       count(`resolve_${st.unit}_${st.decision}`);
+      if (leftOut) count("resolve_beside_superseded");
       if (st.unit === "existence" && st.decision === "take_candidate" && item.candidates >= 2)
         count("resolve_existence_take_candidate_two");
       await apply(
@@ -509,9 +534,21 @@ async function runScenario(first: string, steps: readonly Step[], seen: Record<s
  * skipped; the revoke undone and the source changed (a candidate on existence), taken back; a
  * corroboration with evidence; a user's change and a conflict on the field, kept effective; one
  * taken back, then the row revoked and the revoke undone; two candidates in one item on existence,
- * one taken.
+ * one taken; a decision beside a superseded item, on the field and on existence.
  */
 const FIXED: [{ first: string; steps: Step[] }][] = [
+  // A revoke on the version before a user's change: stale, judged a conflict on existence (the
+  // row changed since), with the reference judging it on what it saw.
+  [
+    {
+      first: "1",
+      steps: [
+        { t: "sync", v: "2", explicit: false, f1: "a" },
+        { t: "local", v: "3", lag: 0 },
+        { t: "revoke", lag: 1 },
+      ],
+    },
+  ],
   [
     {
       first: "1",
@@ -589,6 +626,37 @@ const FIXED: [{ first: string; steps: Step[] }][] = [
       ],
     },
   ],
+  // A decision beside a superseded item: the sync's candidate is in an item the undo overwrote
+  // (the user had read it), then a later sync opens another item on the field and its candidate
+  // is taken. The superseded item's candidate is closed by the supersession, not by the decision:
+  // on the reference's side it is left out of the decision and stays pending, as the kernel's
+  // superseded item is counted.
+  [
+    {
+      first: "3",
+      steps: [
+        { t: "local", v: "1", lag: 0 },
+        { t: "sync", v: "1", explicit: false, f1: "a" },
+        { t: "undo", back: 1 },
+        { t: "sync", v: "3", explicit: false, f1: "a" },
+        { t: "resolve", decision: "take_candidate", unit: "f2" },
+      ],
+    },
+  ],
+  // The same on existence: a stale revoke a candidate, its item superseded by the undo of the
+  // revoke that follows; a sync's candidate on existence taken.
+  [
+    {
+      first: "1",
+      steps: [
+        { t: "local", v: "3", lag: 0 },
+        { t: "revoke", lag: 1 },
+        { t: "revokeBack" },
+        { t: "sync", v: "1", explicit: false, f1: "b" },
+        { t: "resolve", decision: "take_candidate", unit: "existence" },
+      ],
+    },
+  ],
   // A local write on a stale version makes a conflict item; a later one on the current version
   // overwrites its target and the kernel closes the item as superseded.
   [
@@ -642,7 +710,9 @@ describe("writes by external key through the write path, against the reference's
       "resolve_existence_take_previous",
       "resolve_f2_keep_effective",
       "revoke_after_resolve",
+      "revoke_stale",
       "resolve_existence_take_candidate_two",
+      "resolve_beside_superseded",
     ])
       expect({ k, reached: (seen[k] ?? 0) > 0 }).toEqual({ k, reached: true });
   });
