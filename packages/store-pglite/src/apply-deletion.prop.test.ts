@@ -323,6 +323,90 @@ async function storedRegs(tx: ReadTx, id: string) {
 const plain = (v: { exists: boolean; gaps: unknown; fields: object }) =>
   JSON.parse(JSON.stringify({ exists: v.exists, gaps: v.gaps, fields: v.fields })) as View;
 
+/**
+ * A state entity whose write-back with no value (a conflict taken back to its merge base) a
+ * deletion restates as it was (a generated sample, kept as it was): the row is not listed, and its
+ * cells stay as they are; the item's content is not renewed when the restatement gives the one its
+ * cells hold.
+ */
+const RESTATED_AS_IT_WAS = {
+  ops: [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+      fields: { f2: { value: "5", sources: ["S20"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+      fields: { f2: { value: "1", sources: ["S30"] }, f3: { value: "b", sources: ["S30f3"] } },
+    },
+    {
+      kind: "write",
+      op: 40,
+      event: 41,
+      seen: 0,
+      valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+      fields: { f2: { value: "1", sources: ["S5"], explicit: false } },
+      acknowledge: ["overwrite"],
+    },
+  ],
+  decisions: [{ after: 534718871, pick: 0, kind: "previous", flag: 0, focus: false }],
+  pick: 13,
+} as unknown as { ops: Op[]; decisions: Decision[]; pick: number };
+
+/**
+ * A timeless row whose undo's write-back a deletion empties and its cancellation gives back the
+ * value the write-back's own block has (a generated sample, kept as it was): the cells hold the
+ * deletion's empty content until the cancellation, so they open anew, though the content given is
+ * the block's own.
+ */
+const BACK_TO_ITS_OWN = {
+  ops: [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      fields: { f2: { value: "5", sources: ["S20"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      fields: { f2: { value: "1", sources: ["S30"] }, f3: { value: "b", sources: ["S30f3"] } },
+    },
+  ],
+  decisions: [{ after: 301897, pick: 960258331, kind: "undo", flag: 0, focus: false }],
+  pick: 0,
+} as unknown as { ops: Op[]; decisions: Decision[]; pick: number };
+
 const CTX_DELETE = {
   now: "2026-11-10T06:00:00.000Z",
   today: "2026-11-10",
@@ -671,6 +755,8 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
   };
 
   it("apply of a deletion gives judge's replay, and replays the same", async () => {
+    const x = isState ? RESTATED_AS_IT_WAS : BACK_TO_ITS_OWN;
+    await checkSample(x.ops, x.decisions, x.pick);
     await fc.assert(
       fc.asyncProperty(scenario(isState), fc.nat(), ({ ops, decisions }, pick) =>
         checkSample(ops, decisions, pick),

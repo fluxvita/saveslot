@@ -89,6 +89,12 @@ export interface DeletionRow {
    * (cancelled deletions' left out), so an item out of the source table keeps it too.
    */
   readonly contentGiven: ReadonlyMap<string, { seq: Seq; path: string; block: Obj }>;
+  /**
+   * The content each item's open cells hold, where `contentGiven` would be the block, but a
+   * deletion this event cancels still counted (its content is in the cells until now). Absent: as
+   * `contentGiven`.
+   */
+  readonly contentHeld?: ReadonlyMap<string, { seq: Seq; path: string; block: Obj }>;
 }
 
 export interface DeletionInput {
@@ -214,7 +220,11 @@ function itemsAfter(
           if (!isState || own["scope"] !== "interval") valid = [WHOLE];
         } else if (givesContent(r.block)) {
           content = fieldContent(r.block);
-          renewed.add(k);
+          // Its cells open anew only when the content is not the one they hold (a restatement may
+          // give the same content again: a write-back restated as it was).
+          const held = (row.contentHeld ?? row.contentGiven).get(k)?.block ?? own;
+          const before = fieldContent(held);
+          if (canonicalize(content as never) !== canonicalize(before as never)) renewed.add(k);
           if ("value" in r.block) sources = r.block["sources"] as Obj[];
         } else {
           // The restatement gives the judgement only: the content as last given.

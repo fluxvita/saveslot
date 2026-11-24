@@ -829,16 +829,18 @@ async function readDeletion(
     }
     // Where each item's content is: the latest restatement giving one, of the deletion events in
     // force before this one (a deletion cancelled, its blocks left out; this event's own are the
-    // plan's; a later one is not yet in force, as when the log is replayed from empty).
+    // plan's; a later one is not yet in force, as when the log is replayed from empty). And the
+    // content its cells hold now: the same, the deletion this event cancels still counted.
     const contentGiven = new Map<string, { seq: Seq; path: string; block: Obj }>();
+    const contentHeld = new Map<string, { seq: Seq; path: string; block: Obj }>();
     const givers = await tx.query<{ seq: unknown; path: string; body: string }>(
       `SELECT e.seq, c.path, c.body FROM events e JOIN content c ON c.seq = e.seq
        WHERE e.type IN ('deletion.confirmed', 'deletion.cancelled') AND e.slot = $1
-         AND c.path LIKE 'restated/%' AND c.body IS NOT NULL AND e.seq < $2 AND e.seq <> $3
+         AND c.path LIKE 'restated/%' AND c.body IS NOT NULL AND e.seq < $2
          AND NOT (e.type = 'deletion.confirmed'
            AND e.seq IN (SELECT confirmed_seq FROM deletions WHERE state = 'cancelled'))
        ORDER BY e.seq, c.path`,
-      [ev.header["slot"] as string, ev.seq, cancel?.seq ?? ev.seq],
+      [ev.header["slot"] as string, ev.seq],
     );
     const mine = new Set(seqs);
     for (const g of givers.rows) {
@@ -848,12 +850,15 @@ async function readDeletion(
         "existence" in b
           ? `${b["event"] as number}/existence/${b["existence"] as number}`
           : `${b["event"] as number}/${b["field"] as string}/${b["k"] as number}`;
-      contentGiven.set(k, { seq: Number(g.seq), path: g.path, block: b });
+      const at = { seq: Number(g.seq), path: g.path, block: b };
+      contentHeld.set(k, at);
+      if (Number(g.seq) !== cancel?.seq) contentGiven.set(k, at);
     }
     rows.push({
       table,
       rowId,
       contentGiven,
+      contentHeld,
       events: evs.rows.map((x) => ({
         seq: Number(x.seq),
         op: Number(x.op),
