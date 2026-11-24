@@ -36,7 +36,7 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 
 ## Toolchain
 
-- Node 24.22.1 or later on the 24 line, or 26.12.1 or later (`.nvmrc` names the version CI runs), TypeScript strict mode, ESM only.
+- Node 24.22.1 or later on the 24 line, or 26.12.1 or later (`.nvmrc` names the version CI runs; the nightly checks also run on the 26 line), TypeScript strict mode, ESM only.
 - pnpm workspace; Vitest for tests, fast-check for property tests; Biome for formatting and lint; Changesets for versioning.
 - Run `pnpm check` on the head before every push (type check, lint, tests, dependency rules, doc links, JSON examples) and put the result in the merge request; do not bypass it. The merge request's pipeline runs quick checks only; CI runs the full check after merges and nightly, and a maintainer runs it again before merging when the change is risky. A failure on the default branch is fixed with priority.
 

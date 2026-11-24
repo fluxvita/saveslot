@@ -10,25 +10,28 @@
 #                           changes packages/cli/src/export-crypto*, pnpm-lock.yaml or this file
 #   default branch, push:   secrets, forbidden-terms, the check jobs (node:24.22.3); all
 #                           interruptible
-#   schedule (nightly):     the check jobs, the check-latest jobs, prop-soak, test-postgres,
+#   schedule (nightly):     the check jobs, the check-26 jobs, prop-soak, test-postgres,
 #                           age-interop
-#   by hand (web, api) on the default branch: the check jobs, the check-latest jobs, prop-soak,
+#   by hand (web, api) on the default branch: the check jobs, the check-26 jobs, prop-soak,
 #                           test-postgres, secrets, forbidden-terms, age-interop
 #
-# The check jobs are `pnpm check` as three: check-static, check-unit, check-prop. The check-latest
-# jobs are the same three on the latest Node: check-latest-static, -unit, -prop.
+# The check jobs are `pnpm check` as three: check-static, check-unit, check-prop. The check-26
+# jobs are the same three on the 26 LTS line (package.json `engines` takes 24 and 26):
+# check-26-static, -unit, -prop. A Node line `engines` does not take is not tested.
 #
-# The heavy jobs (the check and check-latest jobs, prop-soak, test-postgres) run one at a time in the whole
+# The heavy jobs (the check and check-26 jobs, prop-soak, test-postgres) run one at a time in the whole
 # project (`resource_group: saveslot-heavy`), so that a runner taking two jobs at once keeps the
 # other slot for the quick checks; the nightly ones run one after another. On the default branch
 # only the latest push runs to the end: a push's jobs are interruptible, so a newer push cancels
 # them.
 #
-# Node is pinned to an exact version (`node:24.22.3`) in every job but the check-latest ones: the lowest
-# supported Node is 24.22.1 (package.json `engines`), since V8 in the 24 line before it can misread
-# a one-escape object key in JSON.parse once a key of one backslash has been parsed in the same
-# process (V8 commit 93cd21e8254b, backported in Node 24.22.1). To move to a newer Node, change the
-# image here and `.nvmrc` together; the floor in `engines` moves only if the new one needs it.
+# Node is pinned to an exact version: `node:24.22.3` in every job but the check-26 ones, which run
+# `node:26.13.1`. The lowest supported Node is 24.22.1 (package.json `engines`), since V8 in the
+# 24 line before it can misread a one-escape object key in JSON.parse once a key of one backslash
+# has been parsed in the same process (V8 commit 93cd21e8254b, backported in Node 24.22.1). To
+# move to a newer Node, change the image here and `.nvmrc` together; the floor in `engines` moves
+# only if the new one needs it. The check-26 image moves to a newer 26 release by hand, as the 24
+# one does.
 #
 # A pipeline on the schedule or by hand is never cancelled by a newer commit, whether its jobs have
 # started or still wait for the resource group (`workflow`: `auto_cancel: on_new_commit: none`).
@@ -40,7 +43,7 @@
 # what the author and the reviewer ran locally; the nightly and by-hand checks set the variable, so
 # that the whole suite also runs on the real fsync path.
 #
-# The jobs that install the workspace (the check and check-latest jobs, prop-soak, test-postgres) run it as the
+# The jobs that install the workspace (the check and check-26 jobs, prop-soak, test-postgres) run it as the
 # image's `node` user, not as root: root reads and writes whatever the permission bits say, so the
 # tests of files and directories this user cannot read would otherwise be skipped. Only installing
 # pnpm itself needs root.
@@ -160,21 +163,21 @@ check-unit:
 check-prop:
   extends: [.check-prop, .check-pinned]
 
-# On the latest Node: nightly and by hand (with host fsync).
-.check-latest:
+# On the 26 LTS line: nightly and by hand (with host fsync).
+.check-26:
   extends: [.full-only]
-  image: node:latest
+  image: node:26.13.1
   variables:
     SAVESLOT_TEST_DURABILITY: host-fsync
 
-check-latest-static:
-  extends: [.check-static, .check-latest]
+check-26-static:
+  extends: [.check-static, .check-26]
 
-check-latest-unit:
-  extends: [.check-unit, .check-latest]
+check-26-unit:
+  extends: [.check-unit, .check-26]
 
-check-latest-prop:
-  extends: [.check-prop, .check-latest]
+check-26-prop:
+  extends: [.check-prop, .check-26]
 
 # Nightly and by hand (on the default branch): every property test file, round after round, each
 # run with a fresh random seed, for about 50 minutes. A failed run leaves its seed, replay path and
