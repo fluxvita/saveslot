@@ -164,6 +164,7 @@ const eventsSince = (after: number) =>
     const end = (await readTail(tx))?.seq ?? after;
     if (end <= after) return [];
     return (await readEvents(tx, after + 1, end)).map((e) => ({
+      seq: e.header["seq"] as number,
       type: e.header["type"] as string,
       blocks: Object.fromEntries(
         [...e.blocks].flatMap(([k, b]) => (b.state === "present" ? [[k, b.value]] : [])),
@@ -286,7 +287,13 @@ async function runScenario(first: string, steps: readonly Step[], seen: Record<s
       if (outcome === "created") row = receipt.ops[0].target.row;
     }
     log.push(entry);
-    if (receipt.seq !== undefined && appended.length > 0) {
+    // Every step that appended to the log is one the next steps build on: its operation, taken from
+    // the log (a decision's receipt gives it as `write.seq`, or none when it wrote nothing), so a
+    // receipt of another shape cannot leave a step out and the next steps on a version behind.
+    if (appended.length > 0) {
+      const live = (appended.find((e) => e.type === "write.head") ?? appended[0])?.seq as number;
+      const given = receipt.seq ?? receipt.write?.seq;
+      expect({ op: entry.op, live: given ?? live }).toEqual({ op: entry.op, live });
       const ver = await s.store.read(async (tx) =>
         Number(
           (
@@ -297,7 +304,8 @@ async function runScenario(first: string, steps: readonly Step[], seen: Record<s
           ).rows[0]?.v,
         ),
       );
-      done.push({ ref: entry.op, live: receipt.seq, ver: `v${ver}.0`, kind: entry.kind });
+      if (entry.kind === "revoke" && done.at(-1)?.kind === "resolve") count("revoke_after_resolve");
+      done.push({ ref: entry.op, live, ver: `v${ver}.0`, kind: entry.kind });
     }
     // (3) the key index: the one entry, the row's.
     const keys = await s.store.read(async (tx) =>
@@ -440,24 +448,33 @@ async function runScenario(first: string, steps: readonly Step[], seen: Record<s
         false,
       );
     } else {
+      // Every open candidate: which of them are in the item on this unit is the reference's to say
+      // (its K, by its own record of which conflicts met a revoke), not the test's. Given only the
+      // latest on existence, the reference closed that one and kept the item's others pending,
+      // where a decision closes every candidate of its item (01-objects «take_candidate»: 其余候选
+      // 不生效; «处理之后事项不重开»: 没被采纳的候选不再出现在任何未决事项里).
       const open = evaluateLog(TIMELESS, log).final.items.filter(
-        (x) =>
-          x.status === "candidate" && !x.closed && (st.unit === "existence" || x.target === "f2"),
+        (x) => x.status === "candidate" && !x.closed,
       );
       const events = [...new Set(open.map((x) => x.event))].sort((a, b) => a - b);
-      const take = events.at(-1);
       const item = (await liveItems()).find((x) => x.unit === st.unit);
-      if (take === undefined || item === undefined) continue;
+      if (events.length === 0 || item === undefined) continue;
+      // The candidate taken is the test's choice, the same write on both sides: the kernel item's
+      // last, and the reference's event of that write.
+      const takenRef = done.find((d) => d.live === item.writes.at(-1))?.ref;
+      expect({ op: refOp + 10, takenRef: takenRef !== undefined }).toEqual({
+        op: refOp + 10,
+        takenRef: true,
+      });
+      const take = (takenRef as number) + 1;
       refOp += 10;
       const op = refOp;
-      // On existence the latest candidate alone, kept only when the reference does not reject it
-      // (whether its items are on existence is the reference's to say).
       const o: ResolveOp = {
         kind: "resolve",
         op,
         event: op + 1,
         decision: st.decision,
-        candidates: st.unit === "existence" ? [take] : events,
+        candidates: events,
         unit: st.unit,
         ...(st.decision === "take_candidate" ? { take } : {}),
       };
@@ -467,6 +484,8 @@ async function runScenario(first: string, steps: readonly Step[], seen: Record<s
         continue;
       }
       count(`resolve_${st.unit}_${st.decision}`);
+      if (st.unit === "existence" && st.decision === "take_candidate" && item.candidates >= 2)
+        count("resolve_existence_take_candidate_two");
       await apply(
         o,
         () =>
@@ -488,7 +507,9 @@ async function runScenario(first: string, steps: readonly Step[], seen: Record<s
 /**
  * Fixed samples, every run: the source sent again (unchanged); the row revoked and a sync
  * skipped; the revoke undone and the source changed (a candidate on existence), taken back; a
- * corroboration with evidence; a user's change and a conflict on the field, kept effective.
+ * corroboration with evidence; a user's change and a conflict on the field, kept effective; one
+ * taken back, then the row revoked and the revoke undone; two candidates in one item on existence,
+ * one taken.
  */
 const FIXED: [{ first: string; steps: Step[] }][] = [
   [
@@ -537,6 +558,34 @@ const FIXED: [{ first: string; steps: Step[] }][] = [
       steps: [
         { t: "local", v: "2", lag: 0 },
         { t: "local", v: "2", lag: 1 },
+      ],
+    },
+  ],
+  // A conflict on the field taken back, then the row revoked and the revoke undone: the revoke is
+  // on the version the decision left (a step after a decision once went on the version before it,
+  // and the kernel rightly judged the revoke a stale write).
+  [
+    {
+      first: "1",
+      steps: [
+        { t: "local", v: "2", lag: 0 },
+        { t: "sync", v: "2", explicit: false, f1: "a" },
+        { t: "resolve", decision: "take_previous", unit: "f2" },
+        { t: "revoke" },
+        { t: "undo", back: 0 },
+      ],
+    },
+  ],
+  // The row revoked and the revoke undone, then two syncs: two candidates in one item on existence,
+  // one taken; the item's other candidate is closed with it, on both sides.
+  [
+    {
+      first: "1",
+      steps: [
+        { t: "revokeBack" },
+        { t: "sync", v: "2", explicit: false, f1: "a" },
+        { t: "sync", v: "1", explicit: false, f1: "a" },
+        { t: "resolve", decision: "take_candidate", unit: "existence" },
       ],
     },
   ],
@@ -592,6 +641,8 @@ describe("writes by external key through the write path, against the reference's
       "outcome_skipped",
       "resolve_existence_take_previous",
       "resolve_f2_keep_effective",
+      "revoke_after_resolve",
+      "resolve_existence_take_candidate_two",
     ])
       expect({ k, reached: (seen[k] ?? 0) > 0 }).toEqual({ k, reached: true });
   });
