@@ -36,12 +36,8 @@ import {
 } from "node:fs";
 import { cp } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  createPgdata,
-  creation,
-  type Durability,
-  PGDATA_DIR,
-} from "@fluxvita/saveslot-store-pglite";
+import { type Durability, PGDATA_DIR } from "@fluxvita/saveslot-store-pglite";
+import { createPgdata, creation } from "@fluxvita/saveslot-store-pglite/testing";
 
 /** The environment variable naming the run's directory of templates. */
 export const TEMPLATES_ENV = "SAVESLOT_TEST_TEMPLATES";
