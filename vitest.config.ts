@@ -1,3 +1,4 @@
+import { availableParallelism } from "node:os";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -14,6 +15,11 @@ export default defineConfig({
     noExternal: ["@modelcontextprotocol/client", "eventsource"],
   },
   test: {
+    // At most 5 workers, and as Vitest has it, one fewer than the CPUs: on 10 CPUs, 9 workers
+    // (each with its PGlite DB Workers) kept the load past 20 for the time 5 took, and starved
+    // the cases on Vitest's 5 s default; on the CI runner's 4 CPUs it stays 3. Not a percentage,
+    // which would give the CI runner 2. VITEST_MAX_WORKERS still overrides it.
+    maxWorkers: Math.min(5, Math.max(availableParallelism() - 1, 1)),
     include: ["packages/*/src/**/*.test.ts", "scripts/**/*.test.ts", "evals/tools/**/*.test.ts"],
     // A temporary directory of the run's own, cleared when the run ends (scripts/test-tmp.ts).
     // Then, for a run with a PostgreSQL server: its test databases dropped when it ends.

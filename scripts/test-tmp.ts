@@ -33,10 +33,16 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** A run's directory is `<base>/<RUN_PREFIX>XXXXXX`: `owner` (the run's pid) and `t/` (its TMPDIR). */
+/**
+ * A run's directory is `<base>/<RUN_PREFIX>XXXXXX`: `owner` (the run's pid), `t/` (its TMPDIR) and
+ * `templates/` (the test backend's store templates, SAVESLOT_TEST_TEMPLATES: the run's, not a
+ * test's leftovers, and so not said at the end).
+ */
 export const RUN_PREFIX = "sst-";
 const OWNER = "owner";
 const TMP = "t";
+const TEMPLATES = "templates";
+const TEMPLATES_ENV = "SAVESLOT_TEST_TEMPLATES";
 
 export interface Proc {
   readonly pid: number;
@@ -129,6 +135,7 @@ function clear(): Proc[] {
   run = undefined;
   if (before === undefined) delete process.env["TMPDIR"];
   else process.env["TMPDIR"] = before;
+  delete process.env[TEMPLATES_ENV];
 
   const procs = stopProcessesUnder(dir);
   for (const p of procs) {
@@ -160,6 +167,7 @@ export function setup(): void {
   mkdirSync(join(run, TMP));
   before = process.env["TMPDIR"];
   process.env["TMPDIR"] = join(run, TMP);
+  process.env[TEMPLATES_ENV] = join(run, TEMPLATES);
   // An interrupted run ends by the process exiting, without the teardown. Vitest exits on SIGINT
   // and SIGTERM; a hangup (the terminal closed) has no handler and would end the process at once.
   process.once("exit", clear);

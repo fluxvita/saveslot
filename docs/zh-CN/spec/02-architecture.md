@@ -706,7 +706,7 @@ schema 里由 Agent 写的说明与别名、写入回执里列出的已有的键
 | `connector-ts` | 写连接器的 TypeScript SDK。连接器是以连接实例的身份代用户写入 saveslot 的程序（05-surfaces 第 13 节），通常把某个外部系统的记录存进一个 slot：开发者描述连接器（manifest）、声明要写的 slot 与表、把记录对应成行；SDK 只经 HTTP 完成其余的事（slot 不存在时提交一份 schema 草稿把它连同表建好，已存在时只核对、不改；分批新增写入；幂等键、重试与请求头）。来源键、别名与改已有 slot 随服务的后续阶段加入（07-scope-v1）。第三方的令牌不经过它。其他平台的 SDK 不在本仓库 | 无（只用运行时的 `fetch`；本机服务的 unix socket 由调用方经 `setFetch` 接入）。任何包都不导入它；它的测试另可导入 `daemon`、`service`、`store-pglite`，以启动真实的本机服务 |
 | `sdk`（后续） | 门面：同一套契约接口，后端可选"嵌入（kernel + service + 宿主策略）"或"远程（client）" | service、client、store-pglite |
 | `reference`（私有，不发布） | 参考求值器（见下「测试矩阵」）：按定义写的删除重放与回掉，只作测试对照 | contract-core。不依赖 `kernel`；只有测试文件可以导入它 |
-| `test-backend`（私有，不发布） | 测试开库用的后端（见下「测试矩阵」）：默认是 PGlite；一次运行指明时换成 PostgreSQL，测试仍按数据目录开库，每个目录对应一个 database，各测试文件不变 | kernel、store-pglite、store-postgres。只有测试文件可以导入它 |
+| `test-backend`（私有，不发布） | 测试开库用的后端（见下「测试矩阵」）：默认是 PGlite，新建的存储从本次运行按建库参数造好的模板复制，测「新建」本身的用例照常真新建；一次运行指明时换成 PostgreSQL，测试仍按数据目录开库，每个目录对应一个 database，各测试文件不变 | kernel、store-pglite、store-postgres。只有测试文件可以导入它 |
 
 - **依赖方向**：`contract-core ← kernel ← service ← server ← daemon`；`kernel` 不依赖任何传输方式、不依赖 `service` 与 `contract`；适配器不能绕过 `service` 调内核。
   包级与模块级（§4）的依赖规则都写进 `pnpm check`，合并前必须通过（见下「CI 只调脚本」）。

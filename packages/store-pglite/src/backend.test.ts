@@ -2,14 +2,20 @@
 // ownership epoch and the storage format check (02-architecture §7, §8).
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
 import { META_KEYS, STORAGE_FORMAT_VERSION } from "@fluxvita/saveslot-kernel";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { PgliteBackend, type PgliteTenantStore } from "./backend.ts";
+import {
+  createPgdata,
+  creation,
+  PGDATA_DIR,
+  PgliteBackend,
+  type PgliteTenantStore,
+} from "./backend.ts";
 import { PgliteStoreError } from "./errors.ts";
 import type { DirLock } from "./lock.ts";
 import { newToken, writeOwner } from "./owner.ts";
@@ -320,10 +326,12 @@ describe("opening", () => {
   it(
     "refuses a missing storage unless asked to create it",
     async () => {
+      // Made for real, not copied from the test backend's template: making it is the subject.
+      const real = testBackend({ template: false });
       const dir = tenantDir();
-      expect(await codeOf(backend.open(ref(dir), {}))).toBe("store_not_found");
-      await withStore(dir, async () => {});
-      const s = await backend.open(ref(dir), {});
+      expect(await codeOf(real.open(ref(dir), {}))).toBe("store_not_found");
+      await (await real.open(ref(dir), { create: true })).close();
+      const s = await real.open(ref(dir), {});
       await s.close();
     },
     T,
@@ -400,6 +408,99 @@ describe("opening", () => {
       expect(e?.code).toBe("format_too_old");
       expect(e?.message).toContain("initialize the store anew");
       expect(await codeOf(backend.open(ref(dir), {}))).toBe("format_too_old");
+    },
+    T,
+  );
+});
+
+// Making a storage, by PgliteBackend itself: its steps, what a making stopped halfway leaves, and
+// createPgdata. The test backend copies most tests' storages from a template made once, so this
+// is where the steps of making one are tested.
+describe("making a storage", () => {
+  const making = new PgliteBackend({ durability: "pglite-default" });
+
+  it(
+    "makes it in pgdata.creating and moves it to pgdata once whole: the format's meta rows, the epoch moved by the open",
+    async () => {
+      const dir = tenantDir();
+      const s = await making.open(ref(dir), { create: true });
+      try {
+        expect(s.epoch).toBe(1);
+        const meta = await s.read((tx) =>
+          tx.query<{ key: string; value: string }>("SELECT key, value FROM meta ORDER BY key"),
+        );
+        expect(Object.fromEntries(meta.rows.map((r) => [r.key, r.value]))).toEqual(
+          Object.fromEntries(
+            creation("pglite-default").metaRows.map(([k, v]) => [
+              k,
+              k === META_KEYS.ownershipEpoch ? "1" : v,
+            ]),
+          ),
+        );
+      } finally {
+        await s.close();
+      }
+      expect(readdirSync(dir)).toContain(PGDATA_DIR);
+      expect(readdirSync(dir)).not.toContain("pgdata.creating");
+      expect(existsSync(join(dir, PGDATA_DIR, "PG_VERSION"))).toBe(true);
+    },
+    T,
+  );
+
+  it(
+    "a pgdata.creating left by a making that stopped halfway is cleared, and the storage made whole",
+    async () => {
+      const dir = tenantDir();
+      mkdirSync(join(dir, "pgdata.creating", "base"), { recursive: true });
+      writeFileSync(join(dir, "pgdata.creating", "base", "half"), "half made\n");
+      const s = await making.open(ref(dir), { create: true });
+      try {
+        expect(await count(s, "meta")).toBe(creation("pglite-default").metaRows.length);
+      } finally {
+        await s.close();
+      }
+      expect(readdirSync(dir)).not.toContain("pgdata.creating");
+      expect(existsSync(join(dir, PGDATA_DIR, "base", "half"))).toBe(false);
+    },
+    T,
+  );
+
+  it(
+    "a pgdata that holds no storage: not_a_store, with or without create, and left as it is",
+    async () => {
+      const dir = tenantDir();
+      mkdirSync(join(dir, PGDATA_DIR), { recursive: true });
+      writeFileSync(join(dir, PGDATA_DIR, "mine"), "not a database\n");
+      expect(await codeOf(making.open(ref(dir), {}))).toBe("not_a_store");
+      expect(await codeOf(making.open(ref(dir), { create: true }))).toBe("not_a_store");
+      expect(readdirSync(join(dir, PGDATA_DIR))).toEqual(["mine"]);
+    },
+    T,
+  );
+
+  it(
+    "createPgdata makes what opening with create makes: opened, the same tables and rows",
+    async () => {
+      const made = tenantDir();
+      mkdirSync(made);
+      await createPgdata(join(made, PGDATA_DIR), "pglite-default");
+      const rows = async (s: PgliteTenantStore) =>
+        s.read(async (tx) => {
+          const t = await tx.query<{ t: string }>(
+            "SELECT tablename AS t FROM pg_tables WHERE schemaname = 'public' ORDER BY 1",
+          );
+          const meta = await tx.query("SELECT key, value FROM meta ORDER BY key");
+          return { tables: t.rows.map((r) => r.t), meta: meta.rows };
+        });
+      const a = await making.open(ref(made), {});
+      const b = await making.open(ref(tenantDir()), { create: true });
+      try {
+        expect(a.epoch).toBe(1);
+        expect(await rows(a)).toEqual(await rows(b));
+      } finally {
+        await a.close();
+        await b.close();
+      }
     },
     T,
   );

@@ -34,6 +34,7 @@ import { fsyncPath, fsyncTree } from "./fsutil.ts";
 import { type DirLock, type DirLockHandle, osFileLock } from "./lock.ts";
 import { newToken, readOwnerToken, writeOwner } from "./owner.ts";
 import type {
+  CreateParams,
   Durability,
   Envelope,
   HostSyncStats,
@@ -214,22 +215,43 @@ export class PgliteBackend implements StorageBackend {
     rmSync(creating, { recursive: true, force: true });
     await worker.call({
       kind: "create",
-      params: {
-        pgdata: creating,
-        durability: this.#durability,
-        sessionSettings: SESSION_SETTINGS,
-        ddl: formatV1Ddl(),
-        metaRows: [
-          [META_KEYS.storageFormat, String(STORAGE_FORMAT_VERSION)],
-          [META_KEYS.ownershipEpoch, "0"],
-          [META_KEYS.sessionSettings, JSON.stringify(SESSION_SETTINGS)],
-        ],
-      },
+      params: { pgdata: creating, ...creation(this.#durability) },
     });
     // PGlite copies initdb's result into the directory without syncing it; sync it all here.
     fsyncTree(creating);
     renameSync(creating, join(dir, PGDATA_DIR));
     fsyncPath(dir);
+  }
+}
+
+/**
+ * What a new storage is made from, but for where: the same for every storage made with one
+ * durability. Whatever changes what a new storage holds is in here.
+ */
+export function creation(durability: Durability): Omit<CreateParams, "pgdata"> {
+  return {
+    durability,
+    sessionSettings: SESSION_SETTINGS,
+    ddl: formatV1Ddl(),
+    metaRows: [
+      [META_KEYS.storageFormat, String(STORAGE_FORMAT_VERSION)],
+      [META_KEYS.ownershipEpoch, "0"],
+      [META_KEYS.sessionSettings, JSON.stringify(SESSION_SETTINGS)],
+    ],
+  };
+}
+
+/**
+ * Makes a new storage's data directory at `pgdata` (its parent there already), as opening with
+ * `create` makes it, and nothing else: no lock, no owner, not opened, not synced to the host. For the test backend, which copies
+ * one into each storage a test creates.
+ */
+export async function createPgdata(pgdata: string, durability: Durability): Promise<void> {
+  const worker = new WorkerClient();
+  try {
+    await worker.call({ kind: "create", params: { pgdata, ...creation(durability) } });
+  } finally {
+    await worker.terminate();
   }
 }
 

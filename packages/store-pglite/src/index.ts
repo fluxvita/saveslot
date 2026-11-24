@@ -1,5 +1,7 @@
 // PGlite storage backend for the saveslot kernel (02-architecture §7, §8).
 export {
+  createPgdata,
+  creation,
   PGDATA_DIR,
   PgliteBackend,
   type PgliteBackendOptions,

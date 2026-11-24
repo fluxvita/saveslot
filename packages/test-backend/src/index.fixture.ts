@@ -17,6 +17,9 @@
 //
 // The product default does not change: PgliteBackend without options uses "host-fsync".
 //
+// A new PGlite storage is copied from the run's template for its creation parameters rather than
+// made, unless `template` is false (store-template.fixture.ts).
+//
 // With SAVESLOT_TEST_BACKEND=postgres it is PostgreSQL in PGlite's place, on the server
 // SAVESLOT_TEST_POSTGRES_URL names: the tests go on asking for the storage of a directory, and
 // each directory is given a database of its own. No test file knows; what a test asks of PGlite
@@ -34,6 +37,7 @@ import {
   PgliteStoreError,
 } from "@fluxvita/saveslot-store-pglite";
 import { discardDatabase, PostgresBackend } from "@fluxvita/saveslot-store-postgres";
+import { copyTemplate, TEMPLATES_ENV } from "./store-template.fixture.ts";
 
 /** The server mode's drop guard, for the tests that drop a tenant's databases by their names. */
 export { checkDiscard } from "@fluxvita/saveslot-store-postgres";
@@ -109,13 +113,45 @@ function postgresInPlaceOfPglite() {
   };
 }
 
+/** PGlite's backend, a new storage copied from the run's template for its parameters. */
+class TemplatedPgliteBackend extends PgliteBackend {
+  readonly #durability: Durability;
+  readonly #root: string;
+
+  constructor(opts: PgliteBackendOptions & { readonly durability: Durability }, root: string) {
+    super(opts);
+    this.#durability = opts.durability;
+    this.#root = root;
+  }
+
+  override async open(tenant: TenantRef, opts: { readonly create?: boolean } = {}) {
+    if (opts.create && tenant.kind === "pglite") {
+      await copyTemplate(this.#root, resolve(tenant.dir), this.#durability);
+    }
+    return super.open(tenant, opts);
+  }
+}
+
+export interface TestBackendOptions extends PgliteBackendOptions {
+  /**
+   * Whether a new PGlite storage is copied from the run's template (store-template.fixture.ts).
+   * Default true; false for a test whose subject is making a storage.
+   */
+  readonly template?: boolean;
+}
+
 /**
- * A backend for tests. On PGlite: `TEST_DURABILITY` unless the options name a durability. On
- * PostgreSQL the options are PGlite's own and are not used.
+ * A backend for tests. On PGlite: `TEST_DURABILITY` unless the options name a durability; a new
+ * storage copied from the run's template unless `template` is false. On PostgreSQL the options
+ * are PGlite's own and are not used.
  */
-export function testBackend(opts: PgliteBackendOptions = {}): PgliteBackend {
+export function testBackend(opts: TestBackendOptions = {}): PgliteBackend {
   if (TEST_BACKEND === "postgres") return postgresInPlaceOfPglite() as unknown as PgliteBackend;
-  return new PgliteBackend({ durability: TEST_DURABILITY, ...opts });
+  const { template = true, ...rest } = opts;
+  const o = { durability: TEST_DURABILITY, ...rest };
+  const root = process.env[TEMPLATES_ENV];
+  if (!template || root === undefined || root === "") return new PgliteBackend(o);
+  return new TemplatedPgliteBackend(o, root);
 }
 
 /**

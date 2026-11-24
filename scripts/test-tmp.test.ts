@@ -2,7 +2,7 @@
 // it takes for its own to clear, and that it leaves the others.
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -157,10 +157,14 @@ describe("how a run ends", () => {
     expect(await gone(pid)).toBe(true);
   }, 150_000);
 
-  it("a directory a test left, and no process: said, and the run passes", () => {
-    const r = runCase("clean");
+  it("a directory a test left, and no process: said, and the run passes; the store templates are not said, and go with the run", () => {
+    const at = join(scratch(), "templates");
+    const r = runCase("clean", { TEMPLATES_FILE: at });
     expect(r.out).toContain("1 passed");
-    expect(r.out).toMatch(/test-tmp: 1 entries the tests did not remove: left-dir-\w+/);
+    expect(r.out).toMatch(/test-tmp: 1 entries the tests did not remove: left-dir-\w+\n/);
+    const templates = readFileSync(at, "utf8");
+    expect(templates).toMatch(new RegExp(`/${RUN_PREFIX}\\w+/templates$`));
+    expect(existsSync(templates)).toBe(false);
     expect(r.out).not.toContain("had to be stopped");
     expect(r.status).toBe(0);
   }, 150_000);
