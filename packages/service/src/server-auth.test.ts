@@ -71,6 +71,7 @@ beforeAll(async () => {
     idleMs: 60_000,
     now: () => NOW,
     discardStaging: async () => {},
+    discardScratch: async () => {},
   });
   tenant = await createServerTenant({
     control: cp,
@@ -212,6 +213,7 @@ describe("authenticateServer", () => {
         backend: { open: () => Promise.reject(new Error("no tenant may be opened")) },
         idleMs: 60_000,
         discardStaging: async () => {},
+        discardScratch: async () => {},
       });
       const before = opens;
       expect(
@@ -328,6 +330,7 @@ describe("authenticateServer", () => {
           backend: { open: () => Promise.reject(new Error("no tenant may be opened")) },
           idleMs: 60_000,
           discardStaging: async () => {},
+          discardScratch: async () => {},
         });
         for (const token of [c.token, session]) {
           expect(

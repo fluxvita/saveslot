@@ -28,6 +28,7 @@ export * from "./oauth-server.ts";
 export * from "./oauth-store.ts";
 export * from "./operations.ts";
 export * from "./rate-limit.ts";
+export * from "./reconcile.ts";
 export * from "./request-source.ts";
 export * from "./secret-file.ts";
 export * from "./server-auth.ts";

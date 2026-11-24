@@ -44,6 +44,7 @@ export { checkDiscard } from "@fluxvita/saveslot-store-postgres";
 
 import {
   cellFromEnv,
+  dropDatabases,
   sqlOn,
   testDatabase,
 } from "../../store-postgres/src/testing/server.fixture.ts";
@@ -187,4 +188,39 @@ export async function testStorageExists(dir: string): Promise<boolean> {
     [databaseOf(dir)],
   );
   return r.rows.length === 1;
+}
+
+/**
+ * Removes the storage of a directory: the directory, and on PostgreSQL what stands for it too, which
+ * removing the directory alone leaves as it was (a store made there again would find its rows).
+ * Nothing when there is none.
+ *
+ * On PostgreSQL the database is emptied, not dropped: its `public` schema, where a store keeps all
+ * it has (the backend's `search_path`), is dropped and made again, and a store made there afterwards
+ * is set up as in a new database. A DROP DATABASE waits for a checkpoint, and drops made one after
+ * another mid-test wait for one each, behind every other file's; the run's end drops this run's
+ * databases together. Unlike DROP DATABASE … WITH (FORCE), dropping the schema waits for any session
+ * still holding a lock in it: close the store first. `drop` drops the database itself, as a host's
+ * discarding would.
+ */
+export async function removeStorage(
+  dir: string,
+  o: { readonly drop?: boolean } = {},
+): Promise<void> {
+  rmSync(resolve(dir), { recursive: true, force: true });
+  if (TEST_BACKEND !== "postgres") return;
+  const cell = cellFromEnv();
+  if (cell === undefined) throw new Error("SAVESLOT_TEST_POSTGRES_URL names no server");
+  if (o.drop === true) {
+    const failed = await dropDatabases(cell, [databaseOf(dir)]);
+    if (failed !== undefined) throw failed;
+    return;
+  }
+  try {
+    await sqlOn(cell, databaseOf(dir), "DROP SCHEMA IF EXISTS public CASCADE");
+    await sqlOn(cell, databaseOf(dir), "CREATE SCHEMA public");
+  } catch (e) {
+    // No such database: nothing to remove.
+    if ((e as { sqlState?: unknown } | null)?.sqlState !== "3D000") throw e;
+  }
 }

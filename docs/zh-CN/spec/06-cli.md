@@ -146,6 +146,8 @@ $ saveslot connect claude-code --name "MacBook · Claude Code"
 可选：saveslot snippet claude-code（建议放进宿主自定义指令的一段文字）
 ```
 
+`init` 之后 home 里还会出现 `tmp/`（0700）：`tmp/reconcile/<租户 ID>` 是对拍（`saveslot verify --replay`）的临时存储，每个租户一份，由服务在对拍开始时建出；对拍结束时不论成败都删掉，服务打开租户时清掉崩溃留下的（[`02-architecture.md`](02-architecture.md) §3）。
+
 在 Claude Code 里问"saveslot 里有哪些 slot"，然后：
 
 ```

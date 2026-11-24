@@ -100,7 +100,8 @@ CREATE TABLE anchor_deletions (
  * - `unknown_tenant`: no tenant of that ID in the directory.
  * - `tenant_taken`: another owner's tenant has that ID, or the database is one a tenant of that cell
  *   has, as its own or as staging.
- * - `invalid_database`: a database name not of a PostgreSQL database's shape, or the server's own.
+ * - `invalid_database`: a database name not of a PostgreSQL database's shape, the server's own, or
+ *   one ending in `_reconcile` (a tenant's `log.reconcile` scratch database, §3).
  * - `no_staging`: a swap asked of a tenant with no staging database.
  */
 export type ControlPlaneErrorCode =
@@ -139,9 +140,11 @@ const NAMES_LOCK = 0x5ab05108;
 export const DATABASE_NAME = /^[a-z][a-z0-9_]{0,62}$/;
 /** The server's own databases: never a tenant's. */
 const SERVER_DATABASES: ReadonlySet<string> = new Set(["postgres", "template0", "template1"]);
+/** The suffix of a tenant's `log.reconcile` scratch database (02-architecture §3): never a tenant's. */
+export const SCRATCH_SUFFIX = "_reconcile";
 
 function checkDatabase(name: string): void {
-  if (!DATABASE_NAME.test(name) || SERVER_DATABASES.has(name)) {
+  if (!DATABASE_NAME.test(name) || SERVER_DATABASES.has(name) || name.endsWith(SCRATCH_SUFFIX)) {
     throw new ControlPlaneError(
       "invalid_database",
       `${JSON.stringify(name)} is not a tenant's database`,

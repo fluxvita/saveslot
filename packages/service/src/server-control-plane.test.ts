@@ -440,7 +440,7 @@ describe("the tenant directory's database names", () => {
     ).rows[0]?.s;
 
   it(
-    "refuses one not of a database's shape, or the server's own, registered or as staging",
+    "refuses one not of a database's shape, the server's own, or a scratch database's, registered or as staging",
     async () => {
       const { cp, db } = await controlPlane();
       await cp.registerTenant({ id: TENANT, owner: USER, ref: ref("tdb_1") });
@@ -453,6 +453,8 @@ describe("the tenant directory's database names", () => {
         "Tdb",
         "1db",
         "a".repeat(64),
+        "tn_00000000000000000000000001_reconcile",
+        "tdb_reconcile",
       ]) {
         await expect(
           cp.registerTenant({ id: ID2, owner: OTHER, ref: ref(bad) }),

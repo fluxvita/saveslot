@@ -40,6 +40,12 @@
 // discard that fails is reported (`onDiscardFailure`), the tenant serves, and the next opening tries
 // again. The empty log (`tenant_empty`) is checked after the marker, as §4 orders them.
 //
+// Opening drops the tenant's `log.reconcile` scratch storage a crash left (§3), before it opens the
+// tenant's storage: no run can be going on then, since a run holds a use. Dropping is the host's
+// (`discardScratch`); when it fails, the failure is reported (`onScratchDiscardFailure`) and the
+// tenant serves: the scratch storage is not the tenant's data, the next opening tries again, and a
+// run drops one left over before it makes its own.
+//
 // `closeAll` is for stopping: it refuses uses and exclusives from then on, waits for the ones in
 // progress, and returns once every tenant is closed.
 //
@@ -90,6 +96,16 @@ export interface TenantPoolOptions {
    * tenant serves anyway. By default written to standard error: the tenant's ID and the error's code.
    */
   readonly onDiscardFailure?: (tenant: TenantId, error: unknown) => void;
+  /**
+   * Drops the tenant's `log.reconcile` scratch storage; nothing when there is none. Called when the
+   * tenant opens, for one a crash left (§3).
+   */
+  readonly discardScratch: (tenant: TenantId) => Promise<void>;
+  /**
+   * Told that a `log.reconcile` scratch storage could not be dropped on opening; the tenant serves
+   * anyway. By default written to standard error: the tenant's ID and the error's code.
+   */
+  readonly onScratchDiscardFailure?: (tenant: TenantId, error: unknown) => void;
 }
 
 /** What an `exclusive` that refuses tells the uses arriving meanwhile. */
@@ -166,6 +182,10 @@ const reportToStderr = (tenant: TenantId, what: CloseFailure, error: unknown): v
 
 const reportDiscardToStderr = (tenant: TenantId, error: unknown): void => {
   console.error(`saveslot tenant pool: staging_not_discarded for ${tenant}: ${codeOf(error)}`);
+};
+
+const reportScratchDiscardToStderr = (tenant: TenantId, error: unknown): void => {
+  console.error(`saveslot tenant pool: scratch_not_discarded for ${tenant}: ${codeOf(error)}`);
 };
 
 export class TenantPool {
@@ -317,6 +337,14 @@ export class TenantPool {
     }
   }
 
+  #reportScratchDiscard(tenant: TenantId, error: unknown): void {
+    try {
+      (this.options.onScratchDiscardFailure ?? reportScratchDiscardToStderr)(tenant, error);
+    } catch {
+      // A report that fails is not the pool's failure.
+    }
+  }
+
   #report(tenant: TenantId, what: CloseFailure, error: unknown): void {
     try {
       (this.options.onCloseFailure ?? reportToStderr)(tenant, what, error);
@@ -383,6 +411,7 @@ export class TenantPool {
     const discard = async () => {
       if (staging !== undefined) await this.options.discardStaging(tenant, staging);
     };
+    await this.options.discardScratch(tenant).catch((e) => this.#reportScratchDiscard(tenant, e));
     const store = await backend.open(entry.ref, {});
     try {
       const tail = await store.read((tx) => readTail(tx));

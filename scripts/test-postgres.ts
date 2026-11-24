@@ -45,6 +45,8 @@ export const TESTED = [
   "packages/service/src/local-identity.test.ts",
   "packages/service/src/external-identity.test.ts",
   "packages/service/src/oauth-assertion.test.ts",
+  // log.reconcile's scratch database in that mode.
+  "packages/service/src/reconcile.test.ts",
 ];
 
 /** Files not run on PostgreSQL, each with why. */

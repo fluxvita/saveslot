@@ -117,6 +117,7 @@ const poolOf = (control: ServerControl, discard: DiscardDatabase = discardDataba
     idleMs: 60_000,
     now: () => NOW,
     discardStaging: stagingDiscarder({ control, discardDatabase: discard }),
+    discardScratch: async () => {},
   });
   pools.push(p);
   return p;

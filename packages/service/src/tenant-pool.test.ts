@@ -127,6 +127,7 @@ function pool(idleMs = 60_000, more: Partial<TenantPoolOptions> = {}): TenantPoo
     discardStaging: async (tenant, staging) => {
       discarded.push(`${tenant} ${staging}`);
     },
+    discardScratch: async () => {},
     ...more,
   });
 }
@@ -565,6 +566,43 @@ describe("TenantPool", () => {
       ).rejects.toMatchObject({ code: "busy", holder: "restoring" });
       finishRestore();
       await restore;
+      await p.closeAll();
+    },
+    T,
+  );
+
+  it(
+    "drops the tenant's log.reconcile scratch storage when it opens; a failed drop is reported, it serves, and the next opening tries again",
+    async () => {
+      const e = await tenantOf(owner());
+      const dropped: TenantId[] = [];
+      const openedAtDrop: number[] = [];
+      const reported: string[] = [];
+      let fails = 1;
+      const more: Partial<TenantPoolOptions> = {
+        discardScratch: async (t) => {
+          dropped.push(t);
+          openedAtDrop.push(opened.get(databaseOf(e.id)) ?? 0);
+          if (fails-- > 0) throw Object.assign(new Error("PROBE"), { code: "probe_failed" });
+        },
+        onScratchDiscardFailure: (tenant, error) => {
+          reported.push(`${tenant} ${(error as { code?: string }).code}`);
+        },
+      };
+      const before = opened.get(databaseOf(e.id)) ?? 0;
+      const failing = pool(60_000, more);
+      expect(await failing.use(e.id, async () => "lent")).toBe("lent");
+      expect(reported).toEqual([`${e.id} probe_failed`]);
+      // Once per opening: not on a use of the tenant already open.
+      expect(await failing.use(e.id, async () => "lent")).toBe("lent");
+      expect(dropped).toEqual([e.id]);
+      await failing.closeAll();
+      const p = pool(60_000, more);
+      expect(await p.use(e.id, async () => "lent")).toBe("lent");
+      expect(dropped).toEqual([e.id, e.id]);
+      expect(reported).toEqual([`${e.id} probe_failed`]);
+      // Each drop comes before that opening opens the tenant's storage.
+      expect(openedAtDrop).toEqual([before, before + 1]);
       await p.closeAll();
     },
     T,

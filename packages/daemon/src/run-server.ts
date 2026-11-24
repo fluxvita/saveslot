@@ -222,6 +222,10 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         discardDatabase: o.discardDatabase ?? cellDiscarder(config),
       }),
       onDiscardFailure: (tenant) => warn("tenant_staging_left", { tenant }),
+      // The server mode makes no log.reconcile scratch database in this version (the operation is
+      // not served on any host yet), so an opening has none to drop. Serving it needs a drop of
+      // `<tenant>_reconcile` that the store's guard allows, given here.
+      discardScratch: async () => {},
     });
     // Normalized when the configuration was read: one that is not a single address refuses it.
     const trusted = new Set(config.trustedProxies);

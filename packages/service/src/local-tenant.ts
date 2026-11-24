@@ -1,7 +1,8 @@
 // The local mode's one tenant, opened when the service starts and kept open while it runs
 // (docs/zh-CN/spec/02-architecture.md §5 控制面存储, §7 进程模型, §8 租户存储与锚点存储).
 //
-// Opening: read `control/tenant.json` for the tenant ID, open the anchor store (`control/anchor.json`)
+// Opening: read `control/tenant.json` for the tenant ID, drop a `log.reconcile` scratch storage a
+// crash left (`<home>/tmp/reconcile/<tenant>`), open the anchor store (`control/anchor.json`)
 // and the tenant storage (the caller's backend, without `create`), read the anchor and the log's
 // end, and decide with the kernel's `openTenant` steps 1–3 whether the tenant serves. Reconciling
 // deletion entries and running tasks that fell due come later (their place is marked below).
@@ -44,6 +45,7 @@ import {
   removeImportLeftovers,
   repairLocalSwap,
 } from "./local-import.ts";
+import { discardLocalScratch } from "./reconcile.ts";
 
 // The local control plane's files and their reading, kept importable from here.
 export {
@@ -107,6 +109,11 @@ export async function openLocalTenant(o: {
   repairLocalSwap(dir.dataDir, (await anchor.read(dir.tenant)).importInProgress, fsyncDir);
   const store = await o.backend.open({ kind: "pglite", dir: dir.dataDir }, {});
   try {
+    // A `log.reconcile` scratch storage a crash left (02-architecture §3). Only once the store is
+    // open, so this process holds the home's one writer: another process opening the same home is
+    // refused there, and never deletes the scratch storage from under a run of the one that holds
+    // it. No run is going on in this process yet.
+    await discardLocalScratch(o.home, dir.tenant);
     const [tail, first] = await Promise.all([
       store.read((tx) => readTail(tx)),
       anchor.read(dir.tenant),
