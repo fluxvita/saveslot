@@ -29,8 +29,16 @@ export async function readSecretFile(path: string): Promise<string> {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") throw new SecretFileError("missing", "the file is not there");
     if (code === "EISDIR") throw new SecretFileError("not_a_file", "the file is not a file");
-    if (code === "EACCES" || code === "EPERM") {
-      throw new SecretFileError("unreadable", "this process may not read the file");
+    // Its permissions, or its path: a loop of links, a name too long, a part that is not a
+    // directory. Each is the file not read, said without the path.
+    if (
+      code === "EACCES" ||
+      code === "EPERM" ||
+      code === "ELOOP" ||
+      code === "ENAMETOOLONG" ||
+      code === "ENOTDIR"
+    ) {
+      throw new SecretFileError("unreadable", "the file cannot be read");
     }
     throw e;
   }

@@ -94,6 +94,20 @@ describe("readSecretFile", () => {
     expect((await refusal(pipe)).code).toBe("not_a_file");
   }, 5_000);
 
+  it("behind a loop of links, a name too long, a path through a file: unreadable; no message names the path", async () => {
+    const a = fresh();
+    const b = fresh();
+    symlinkSync(b, a);
+    symlinkSync(a, b);
+    const found = [
+      await refusal(a),
+      await refusal(join(root, "x".repeat(300))),
+      await refusal(join(secret("k-1"), "inside")),
+    ];
+    expect(found.map((f) => f.code)).toEqual(["unreadable", "unreadable", "unreadable"]);
+    for (const f of found) expect(f.message).not.toContain(root);
+  });
+
   it.skipIf(AS_ROOT)(
     "one the process may not read: its own code, not taken as missing; no message names the path",
     async () => {

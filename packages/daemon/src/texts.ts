@@ -211,7 +211,66 @@ export const TEXTS = {
   // `saveslot server …` (06 §4.1 «服务器自部署的运维命令», «服务器模式的配置»). A text names a
   // variable, never its value: a connection URL may hold a password.
   server: {
-    usage: "usage: saveslot server init | start | restore --tenant <tenant>",
+    usage:
+      "usage: saveslot server init [--user <name> [--password-file <path>]] | start | restore --tenant <tenant> | user add|list|disable|enable|passwd",
+    userUsage:
+      "usage: saveslot server user add <name> [--password-file <path>] | list | disable <name> | enable <name> | passwd <name> [--password-file <path>]",
+    userTakesName: (sub: string) => `saveslot server user ${sub} takes one account name`,
+    passwordFileOnce: "--password-file takes one path, once",
+    initPasswordFileWithoutUser:
+      "--password-file is for the first user's password: give --user <name> with it",
+    initUserOnce: "--user takes one name, once",
+    userExternal:
+      "error: the external login manages the accounts (SAVESLOT_IDENTITY_* are set); saveslot server user and server init --user are for the built-in local accounts. Nothing was done",
+    noPasswordSource:
+      "error: there is no terminal to ask the password on; give --password-file <path>. Nothing was done",
+    passwordFileRefused: (
+      code: "missing" | "not_a_file" | "open_to_others" | "unreadable" | "empty",
+    ) =>
+      `error: the file --password-file names ${
+        {
+          missing: "is not there",
+          not_a_file: "is not a regular file (a pipe is not taken)",
+          open_to_others: "is open to others; take every permission from others (chmod o= on it)",
+          unreadable:
+            "cannot be read: give this process's user read permission, and check the path (a loop of links, a name too long, a part that is not a directory)",
+          empty: "has no password on its first line",
+        }[code]
+      }. Nothing was done`,
+    /** What a refusal says was left: nothing, or (`init --user`, after its tables) the account only. */
+    nothingDone: "nothing was done",
+    initAccountNotMade:
+      "the handle key file and the control database's tables are in place, the account was not made: run saveslot server init --user again",
+    passwordsDiffer: (after: string) => `error: the two entries differed each time; ${after}`,
+    passwordInterrupted: (after: string) => `Interrupted at the password prompt; ${after}`,
+    accountRefused: (
+      code: "bad_name" | "bad_password" | "name_taken" | "unknown_user" | string,
+      name: string,
+      after: string,
+    ) =>
+      `error: ${
+        {
+          bad_name: `the name ${JSON.stringify(name)} is not one an account can have: letters a-z, digits, ".", "_", "-", a letter or digit first, 64 at most`,
+          bad_password: "the password is not one an account can have: 8 to 1024 characters",
+          name_taken: `an account named ${JSON.stringify(name)} is there already`,
+          unknown_user: `there is no account named ${JSON.stringify(name)}`,
+        }[code] ?? "the account operation was refused"
+      }; ${after}`,
+    userAdded: (name: string, tenant: string) => `Added the account ${name} · tenant ${tenant}`,
+    userNone: "There are no local accounts; add one with saveslot server user add <name>",
+    userNoTenant: "(no tenant: run saveslot server user add again)",
+    userDisabled: (name: string) =>
+      `Disabled the account ${name}: every credential of its tenant is refused until it is enabled again; nothing was revoked`,
+    userEnabled: (name: string) =>
+      `Enabled the account ${name}: its credentials authenticate again as they were`,
+    passwordChanged: (name: string) =>
+      `Changed the password of ${name}: its web logins and user sessions have ended; its connections are not affected`,
+    initFirstUser: (name: string, tenant: string) =>
+      `Made the first account, ${name} · tenant ${tenant}`,
+    initAccountsExist: "There are local accounts already: no first account made",
+    initAccountFinished: (name: string, tenant: string) =>
+      `Finished the account ${name}, which an earlier run left without its tenant · tenant ${tenant}`,
+    initNoUser: "No account made: add one with saveslot server user add <name>",
     startRefused: (
       set: "control" | "oauth" | "accounts" | "external",
       reason: "not_initialized" | "format",
@@ -237,7 +296,8 @@ export const TEXTS = {
           missing: "is not there",
           not_a_file: "is not a file",
           open_to_others: "is open to others; take every permission from others (chmod o= on it)",
-          unreadable: "cannot be read by this process; give its user read permission",
+          unreadable:
+            "cannot be read: give this process's user read permission, and check the path (a loop of links, a name too long, a part that is not a directory)",
           corrupt: "is not a handle key file",
         }[code]
       }`,

@@ -332,7 +332,7 @@ describe("saveslot server start", () => {
           const r = await server([sub], { env: env(keyFile), openControl: db.open });
           expect(r.code).toBe(5);
           expect(r.err).toBe(
-            "error: the file SAVESLOT_HANDLE_KEY_FILE names cannot be read by this process; give its user read permission\n",
+            "error: the file SAVESLOT_HANDLE_KEY_FILE names cannot be read: give this process's user read permission, and check the path (a loop of links, a name too long, a part that is not a directory)\n",
           );
         }
       } finally {

@@ -77,14 +77,14 @@ SELECT pg_reload_conf();
 $ saveslot server init --user alice
 ```
 
-建控制面库的表、生成句柄签名密钥、建第一个账户和它的数据。口令从终端读；没有终端时用 `--password-file <路径>`。命令行参数里不接受口令：参数会进 shell 历史与进程列表。重复执行是安全的：已经做过的步骤不再做。
+建控制面库的表、生成句柄签名密钥、建第一个账户和它的数据。口令从终端读（不回显，输两遍）；没有终端时用 `--password-file <路径>`，取文件的第一行，文件要是普通文件、其他人没有任何权限（例如 `chmod 600`）。命令行参数里不接受口令：参数会进 shell 历史与进程列表。重复执行是安全的：已经做过的步骤不再做。
 
 账户由你用命令管理，saveslot 不开放注册：
 
 | 做什么 | 命令 |
 |---|---|
 | 加一个账户（同时为它建一份独立的数据） | `saveslot server user add <名字>` |
-| 列出账户 | `saveslot server user list` |
+| 列出账户：名字、状态、租户 ID（第 5 节恢复一个租户时用到） | `saveslot server user list` |
 | 停用一个账户：停用期间，它的登录和它给 Agent 签发的全部连接都用不了；数据不动，什么也不吊销 | `saveslot server user disable <名字>` |
 | 重新启用：登录和连接原样恢复 | `saveslot server user enable <名字>` |
 | 改口令：它现有的登录与用户会话立即作废；它给 Agent 签发的连接不受影响 | `saveslot server user passwd <名字>` |

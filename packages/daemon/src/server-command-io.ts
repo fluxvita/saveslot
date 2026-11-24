@@ -4,6 +4,7 @@
 import type { ControlDatabase } from "@fluxvita/saveslot-store-postgres";
 import type { CommandIO } from "./commands.ts";
 import type { DatabaseAt } from "./server-config.ts";
+import type { PasswordTerminal } from "./server-password.ts";
 
 export interface ServerCommandIO extends CommandIO {
   /** The process's environment: where the configuration is read from. */
@@ -12,4 +13,9 @@ export interface ServerCommandIO extends CommandIO {
   readonly openControl?: (at: DatabaseAt) => Promise<ControlDatabase>;
   /** `server start`: resolves when the server is to stop (default: SIGTERM or SIGINT). */
   readonly stopped?: () => Promise<void>;
+  /**
+   * The terminal a password is asked on (default: the controlling terminal); undefined when there
+   * is none.
+   */
+  readonly terminal?: () => PasswordTerminal | undefined;
 }

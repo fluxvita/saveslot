@@ -56,7 +56,7 @@ const HANDLE_KEY_FILE_PROBLEM: Readonly<Record<SecretFileError["code"], string>>
   missing: "the handle key file is not there",
   not_a_file: "the handle key file is not a file",
   open_to_others: "the handle key file is open to others",
-  unreadable: "the handle key file may not be read by this process",
+  unreadable: "the handle key file cannot be read",
 };
 
 interface Key {
