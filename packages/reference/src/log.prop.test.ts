@@ -1347,9 +1347,11 @@ describe.each(both)("%s table", (_, schema, state) => {
     // records its merge base and cover set O; a write in effect after the merge base and before
     // the resolution, not in O and not a candidate of the item, keeps giving its value where it
     // gives one, under any deletions. Checked against the same log with the resolution replaced
-    // by one of the same operation number that decides nothing (the later operations keep the
-    // versions they saw): wherever such a write gives the value there, the take does not give it
-    // in the log with the resolution. The
+    // by one of the same operation number that writes nothing: a keep_effective listing the same
+    // candidates, which stay the candidates it closed, so the writes between them and the
+    // resolution are judged as with it (the later operations keep the versions they saw):
+    // wherever such a write gives the value there, the take does not give it in the log with the
+    // resolution. The
     // item's own candidates are left out: the resolution closes the ones it does not take, so
     // without it a deletion may put them in effect, and the taken one is the resolution's value.
     // Reaching the check is built in on the state table (the fixed sample below); the random
@@ -1419,7 +1421,7 @@ describe.each(both)("%s table", (_, schema, state) => {
                   op: resolve.op,
                   event: resolve.event,
                   decision: "keep_effective" as const,
-                  candidates: [],
+                  candidates: resolve.candidates,
                   unit: resolve.unit,
                 }
               : e,
@@ -1895,6 +1897,92 @@ describe.each(both)("%s table", (_, schema, state) => {
       { kind: "deletion", op: 71, id: "pi_x", sources: ["S3"] },
       { kind: "deletion", op: 72, id: "pi_y", sources: ["S1"] },
     ] as LogEntry[]);
+    // The comparison keeps the item's candidates closed (a keep_effective listing them): a
+    // candidate a resolution listed stays the candidate it closed in every replay (01-objects
+    // «处理之后事项不重开»), and writes between it and the resolution are judged against that.
+    // With no candidates listed, the comparison has the candidate in effect and judges those
+    // writes otherwise. Two such logs, each failing the other direction when the comparison listed
+    // none (state table):
+    // - #20 a candidate against #10; #30 revokes from 11-01; #50 writes 1 on [11-01, 11-03) with
+    //   evidence; #21 taken; S1 deleted. With #21 closed, #51 takes effect and gives 1 there.
+    // - #31 a candidate against #21; #41 writes 2 from 11-01 to the next change; #31 taken; S3 and
+    //   S4 deleted. With #31 closed it gives no change point, so #41 runs on over [11-07, 11-09).
+    if (state) {
+      const sw = (
+        op: number,
+        seen: number,
+        f: string,
+        v: string,
+        src: string,
+        valid: object,
+        extra: object = {},
+      ) =>
+        ({
+          kind: "write",
+          op,
+          event: op + 1,
+          seen,
+          valid,
+          fields: { [f]: { value: v, sources: [src] } },
+          ...extra,
+        }) as LogEntry;
+      const span = (from: string, to?: string) => ({
+        from: { mode: "given", value: `2026-${from}` },
+        to: to === undefined ? { mode: "open" } : { mode: "given", value: `2026-${to}` },
+      });
+      const take = (op: number, c: number): LogEntry => ({
+        kind: "resolve",
+        op,
+        event: op + 1,
+        decision: "take_candidate",
+        candidates: [c],
+        unit: "f2",
+        take: c,
+      });
+      const between: LogEntry[] = [
+        sw(10, 0, "f2", "1", "S1", span("10-01"), { acknowledge: ["overwrite"] }),
+        sw(20, 0, "f2", "3", "S5", span("11-01")),
+        {
+          kind: "revoke",
+          op: 30,
+          event: 31,
+          seen: 20,
+          valid: span("11-01"),
+          validSources: ["S4"],
+        } as LogEntry,
+        sw(50, 20, "f2", "1", "S3", span("11-01", "11-03"), {
+          fields: { f2: { value: "1", sources: ["S3"], explicit: true } },
+        }),
+        take(70, 21),
+        { kind: "deletion", op: 72, id: "pi_y", sources: ["S1"] },
+      ];
+      check({ hit() {} }, between);
+      const f2 = evaluateLog(schema, between).final.fields["f2"] ?? [];
+      expect(f2.map((x) => [x.value, x.by?.event])).toEqual([
+        ["1", 51],
+        ["3", 71],
+      ]);
+      const extended: LogEntry[] = [
+        sw(10, 0, "f2", "3", "S3", span("10-01"), { acknowledge: ["overwrite"] }),
+        sw(20, 10, "f2", "2", "S4", span("11-07", "11-09"), { acknowledge: ["overwrite"] }),
+        sw(30, 0, "f2", "3", "S1", span("11-07", "11-09"), { acknowledge: ["overwrite"] }),
+        {
+          kind: "write",
+          op: 40,
+          event: 41,
+          seen: 30,
+          valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "next_change" } },
+          fields: { f2: { value: "2", sources: ["S5"], explicit: true } },
+          acknowledge: ["overwrite"],
+        } as LogEntry,
+        take(90, 31),
+        { kind: "deletion", op: 91, id: "pi_x", sources: ["S3"] },
+        { kind: "deletion", op: 92, id: "pi_y", sources: ["S4"] },
+      ];
+      check({ hit() {} }, extended);
+      const g2 = evaluateLog(schema, extended).final.fields["f2"] ?? [];
+      expect(g2.map((x) => [x.value, x.by?.event])).toEqual([["2", 41]]);
+    }
   });
 
   it("«撤回还原»: after a cancellation, what grace-period writes did not cover is as the forced replay", () => {
