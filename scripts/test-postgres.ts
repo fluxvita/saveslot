@@ -38,6 +38,8 @@ export const TESTED = [
   // `saveslot server start`: the process, and the contract tests over it.
   "packages/daemon/src/run-server.test.ts",
   "packages/daemon/src/server-contract.test.ts",
+  // The storage format's samples of the server mode: pg_dump scripts, restored and read.
+  "packages/daemon/src/format-sample-server.test.ts",
   // `saveslot server restore`: the restore flow on a server tenant, from the service and the command.
   "packages/service/src/server-restore.test.ts",
   "packages/daemon/src/server-restore-command.test.ts",

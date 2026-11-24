@@ -17,3 +17,12 @@ id = "saveslot-session-token"
 description = "saveslot user session token"
 regex = '''sls_[A-Za-z0-9_-]{43}'''
 keywords = ["sls_"]
+
+# The samples of a storage format (docs/zh-CN/process/decisions/data-compatibility.md §4): data
+# written once by a release and kept for the tests of every later one. A sample holds the
+# credentials of its own throwaway tenants (the server sample's `expected.json` has the user
+# sessions issued when it was made, which a reader must still be let in with); they open nothing
+# but the sample, in tests. By path only, and no further than the samples' directory.
+[allowlist]
+description = "storage format samples: credentials of throwaway sample tenants, used in tests only"
+paths = ['''^packages/test-backend/fixtures/storage-format/''']

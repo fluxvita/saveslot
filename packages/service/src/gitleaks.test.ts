@@ -14,6 +14,13 @@ describe(".gitleaks.toml", () => {
     expect(rules.map((r) => r.source.slice(0, 4))).toEqual(["slt_", "sls_"]);
   });
 
+  it("lets through one path only: the storage format's samples", () => {
+    const paths = [...toml.matchAll(/^paths = \[(.*)\]$/gm)].map((m) => m[1]);
+    expect(paths).toEqual(["'''^packages/test-backend/fixtures/storage-format/'''"]);
+    expect(toml.match(/^\[(?:\[rules\.)?allowlists?\]?\]$/gm)).toEqual(["[allowlist]"]);
+    expect(toml).not.toMatch(/^(?:regexes|stopwords|commits) = /m);
+  });
+
   const t = newToken("connection");
   const s = newToken("session");
   it.each([
