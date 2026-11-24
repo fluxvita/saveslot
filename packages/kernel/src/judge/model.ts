@@ -91,6 +91,24 @@ interface OpBase {
   readonly policy?: number;
 }
 
+/**
+ * A deletion's confirmation or cancellation as L of the conflict criterion
+ * (09-references-conflict-sync «冲突判据», L's interval): by field, where it changed the value, as
+ * its own record says (its `results` blocks against the state before it, in the log), never worked
+ * out again; `"whole"` where its block on the field's unit is on the list of positions of a
+ * deletion in the current deleted set (the record no longer to be trusted: changed over the whole
+ * unit). The caller's, from the log.
+ */
+export interface ExternalChange {
+  readonly op: OpNumber;
+  readonly changed: ReadonlyMap<FieldId, IntervalSet | "whole">;
+  /**
+   * It changed the row or entity at all — a value, or the judgement of any item — and so gave it a
+   * new version (03-deletion «重放规则», ver row): a `ver` before it is not current.
+   */
+  readonly changedEntity: boolean;
+}
+
 interface SeenVersion {
   /**
    * The version the op saw (`ver`): an operation number before `op`. The ops of the same request
@@ -106,6 +124,11 @@ interface SeenVersion {
    * and recorded; replays take the record, not a comparison of versions.
    */
   readonly seenCurrent?: true;
+  /**
+   * The deletion events in the log before the op (`ExternalChange`): those after `seen` count as L
+   * of the conflict criterion. Absent: none.
+   */
+  readonly external?: readonly ExternalChange[];
 }
 
 /**

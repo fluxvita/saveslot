@@ -37,12 +37,14 @@ import { ackOf, emptyState, judgeOp, withoutDeps } from "./judge.ts";
 import {
   type ConfirmRecord,
   contributionKey,
+  type ExternalChange,
   type FieldInput,
   type OpRecord,
   type RejectRecord,
   type Restatement,
   type RevertRecord,
   type RevokeInput,
+  seenOf,
   type TableShape,
   type TakeCandidateRecord,
   type Target,
@@ -360,6 +362,7 @@ function confirmUndoAgain(state: RowState, r: ConfirmRecord): ConfirmRecord {
 function inputOf(
   r: WriteRecord,
   gone: (t: Target) => boolean,
+  external: readonly ExternalChange[],
 ): WriteInput | RevokeInput | undefined {
   const base = {
     op: r.op,
@@ -371,6 +374,7 @@ function inputOf(
     seenExplicit: r.seenExplicit,
     ...(r.seenCurrent ? { seenCurrent: true as const } : {}),
     now: r.now,
+    ...(external.length > 0 ? { external } : {}),
   };
   if (r.kind === "revoke") {
     if (gone("existence")) return undefined;
@@ -420,19 +424,25 @@ function inputOf(
  * `deleted` (by `contributionKey`) had never been. Returns the state after the replay, each
  * operation's record as judged in it (an operation nothing of which is left has no record), its
  * items numbered against the blocks the log last gave (03-deletion «回掉的权威定义» step 6), and the
- * restatements (09 §5.9 `restated/<k>`, rules 1 and 2). `deletionsBefore`: the operation numbers
- * of the deletion and cancellation events in the log; an operation after one is not replayed in
- * this version. `latest`: the blocks the log last gave (see `LatestGiven`); by default the
- * records as written.
+ * restatements (09 §5.9 `restated/<k>`, rules 1 and 2). `external`: the deletion and
+ * cancellation events in the log as L of the conflict criterion (`ExternalChange`): a write or
+ * revoke after one (in a grace period) is judged with those after its version seen among its L.
+ * `latest`: the blocks the log last gave (see `LatestGiven`); by default the records as written.
  */
 export function replayDeletion(
   table: TableShape,
   records: readonly OpRecord[],
   deleted: ReadonlySet<string>,
-  deletionsBefore: readonly number[] = [],
+  external: readonly ExternalChange[] = [],
   latest: LatestGiven = givenByRecords(records),
   /** A cancellation's: the items whose last block came from the deletion cancelled (rule 3). */
   cancelled: ReadonlySet<string> = new Set(),
+  /**
+   * The (event, target) recorded as kept effective by cancellations in the log (09 §5.9
+   * `kept_effective`), the caller's from the log: already in effect, as if so when written
+   * (03-deletion «删除结果的定义» deviation two; «撤回与宽限期»: the protection lasts).
+   */
+  keptEffective: ReadonlySet<string> = new Set(),
 ): {
   readonly state: RowState;
   readonly records: readonly OpRecord[];
@@ -460,7 +470,6 @@ export function replayDeletion(
     out.push(numberedRecord);
     state = new RowState(table, [...state.records, numberedRecord]);
   };
-  const firstDeletion = Math.min(Number.POSITIVE_INFINITY, ...deletionsBefore);
   // Fields the same as their seen version with no evidence pointed at, a conflict resolution's K
   // still counts (`kOf`).
   const shadows: Shadow[] = [];
@@ -526,15 +535,6 @@ export function replayDeletion(
         kind: "write_by_external_key",
         op: r.op,
       });
-    }
-    if (r.op > firstDeletion) {
-      throw new JudgeError(
-        "not_implemented",
-        "a deletion's replay of an operation after a deletion event",
-        {
-          op: r.op,
-        },
-      );
     }
     if (r.kind === "undo" || r.kind === "take_previous") {
       const decided = records.some(
@@ -603,13 +603,24 @@ export function replayDeletion(
         { kind: "referenced_revoke_awaiting", op: r.op },
       );
     }
-    const given = inputOf(r, (t) => deleted.has(contributionKey(r.event, t)));
+    const given = inputOf(r, (t) => deleted.has(contributionKey(r.event, t)), external);
     if (given === undefined) continue;
     const input = referenced && given.kind === "revoke" ? { ...given, referenced: true } : given;
     const options: ReplayOptions = {
       shadows,
       noop: new Set(r.noop),
-      protect: protectedTargets(r),
+      protect: new Set([
+        ...protectedTargets(r),
+        // Kept in effect by a cancellation, unless a person's resolution recorded it as a
+        // candidate: that decision stands as recorded (deviation one comes first).
+        ...r.items
+          .map((x) => x.target)
+          .filter(
+            (t) =>
+              keptEffective.has(contributionKey(r.event, t)) &&
+              resolutions.get(r.event)?.has(t) !== true,
+          ),
+      ]),
       decided: decision?.decided ?? new Set(),
       rejected: decision?.rejected ?? false,
       resolved: resolutions.get(r.event) ?? new Map(),
@@ -680,6 +691,14 @@ export function replayDeletion(
 }
 
 /**
+ * The deletion and cancellation events as L for a replay whose deleted set is the one given
+ * (`ExternalChange`): an event's unit counts as changed whole when its record is on the list of
+ * positions of a deletion in that set (09-references «冲突判据», L's interval). The caller's, from
+ * the log.
+ */
+export type ExternalFor = (deleted: ReadonlySet<string>) => readonly ExternalChange[];
+
+/**
  * A deletion's replay with what its event says of the row or entity (09 §5.9): the replay
  * (`replayDeletion`), the row's `results` entry and outcome, and `recreated`. `deleted`: every
  * contribution deleted by this deletion and the ones still pending before it; `pendingBefore`:
@@ -695,11 +714,16 @@ export function deletionResult(
   pendingBefore: ReadonlySet<string>,
   items: ItemsGiven,
   /**
-   * The operation numbers of the deletion and cancellation events in the log (this deletion's
-   * and the ones before it): an operation after one is not replayed in this version.
+   * The deletion and cancellation events in the log before this one, as L of the conflict
+   * criterion for the writes after them (`ExternalChange`, the caller's from the log), for a
+   * replay's deleted set: whether an event counts over a whole unit depends on it (its record on
+   * the list of positions of a deletion in that set), so the replay before this deletion and the
+   * one with it are each given theirs.
    */
-  deletionOps: readonly number[],
+  external: ExternalFor,
   latest: LatestGiven = givenByRecords(records),
+  /** Kept effective by cancellations in the log (`replayDeletion`). */
+  keptEffective: ReadonlySet<string> = new Set(),
 ): {
   readonly replay: ReturnType<typeof replayDeletion>;
   readonly before: RowState;
@@ -707,11 +731,29 @@ export function deletionResult(
   readonly outcome?: Outcome;
   readonly items: ItemsResult;
 } {
+  // The state before it: the records as written, unless a pending deletion or a cancellation's
+  // keeping in effect makes it otherwise.
   const before =
-    pendingBefore.size > 0
-      ? replayDeletion(table, records, pendingBefore, deletionOps, latest).state
+    pendingBefore.size > 0 || keptEffective.size > 0
+      ? replayDeletion(
+          table,
+          records,
+          pendingBefore,
+          external(pendingBefore),
+          latest,
+          new Set(),
+          keptEffective,
+        ).state
       : new RowState(table, records);
-  const replay = replayDeletion(table, records, deleted, deletionOps, latest);
+  const replay = replayDeletion(
+    table,
+    records,
+    deleted,
+    external(deleted),
+    latest,
+    new Set(),
+    keptEffective,
+  );
   const changed = [...deleted].filter((k) => !pendingBefore.has(k));
   return resultOf(table, records, before, replay, changed, items, latest);
 }
@@ -767,23 +809,58 @@ function resultOf(
   };
 }
 
+/** What a cancellation needs from the log besides the records (the caller's). */
+export interface CancellationLog {
+  /** The deletion cancelled's operation number. */
+  readonly cancelledOp: number;
+  /**
+   * The operation from which this row or entity has been covered without a break by pending
+   * deletions up to this cancellation: deletions whose pending stretches meet or overlap join into
+   * one, a deletion cancelled since counting until its cancellation. Not after `cancelledOp`; when
+   * in doubt, the earlier bound.
+   */
+  readonly coveredSince: number;
+  /** Kept effective by earlier cancellations in the log (`replayDeletion`). */
+  readonly keptEffective: ReadonlySet<string>;
+  /**
+   * For an (event, target), the operation from which every item of it has been in effect without
+   * a break up to the cancellation: the operation of the event that last gave its blocks, all of
+   * them in effect (the deletion cancelled's confirmation, a later restatement or a decision).
+   */
+  readonly effectiveSince: (key: string) => number;
+}
+
+/** One (event, target) a cancellation keeps in effect, and the grace-period write that saw it. */
+export interface KeptEffective {
+  readonly event: number;
+  readonly target: Target;
+  readonly byEvent: number;
+}
+
 /**
  * A cancellation of a deletion in its grace period, with what its event says of the row or entity
  * (03-deletion «撤回与宽限期»; 09 §5.9 `deletion.cancelled`): the deletion cancelled no longer
  * counts, the definition is worked out again (the replay without it), and the event gives the
- * row's `results`, the restatements (rules 1, 2 and 3), `recreated` and the item layer.
+ * row's `results`, the restatements (rules 1, 2 and 3), `recreated`, `kept_effective` and the item
+ * layer.
  *
- * This version covers a cancellation with no operation after the deletion events in the log (no
- * write in the grace period): `kept_effective` and `kept_superseded` are then empty; an operation
- * after a deletion is refused (`not_implemented`), as in the replay.
+ * Kept effective: an (event, target) this deletion alone put in effect (not every item in effect
+ * when written; every item in effect with it; not so without it) stays in effect when a write in
+ * the grace period, in effect when written, saw a version not before the operation from which
+ * every item of it has been in effect (`effectiveSince`); `byEvent` is the first such write.
+ *
+ * Kept superseded is not in this version: a cancellation, with an operation on this row or entity
+ * while it was covered without a break by pending deletions (`coveredSince`), of a deletion that
+ * took a candidate away (an (event, target)
+ * pending without it and not with it, not kept in effect) is refused, `not_implemented`. Otherwise
+ * nothing was taken away and nothing is kept superseded.
  *
  * `others`: the contributions the other pending deletions delete; `cancelled`: those the deletion
  * cancelled deletes (before: both; after: `others`). `latest`: the blocks the log last gave without
  * the deletion cancelled's (09 §5.7); `fromCancelled`: the items whose last interval block (not a
  * restatement as dropped, 09 §5.9 rule 3) came from it. Both the caller's, from the log, as
- * `items`. `deletionOps`: the operation numbers of the deletion and cancellation events in the
- * log, the deletion cancelled's included: an operation after one (a write in the grace period) is
- * refused, `not_implemented`.
+ * `items`. `external`: the deletion and cancellation events in the log, the deletion cancelled's
+ * included (`ExternalChange`), for each replay's deleted set (`ExternalFor`).
  */
 export function cancellationResult(
   table: TableShape,
@@ -793,11 +870,126 @@ export function cancellationResult(
   items: ItemsGiven,
   latest: LatestGiven,
   fromCancelled: ReadonlySet<string>,
-  deletionOps: readonly number[],
+  external: ExternalFor,
+  log: CancellationLog,
 ) {
   const pendingBefore = new Set([...others, ...cancelled]);
-  const before = replayDeletion(table, records, pendingBefore, deletionOps, latest).state;
-  const replay = replayDeletion(table, records, others, deletionOps, latest, fromCancelled);
+  const kept0 = log.keptEffective;
+  const before = replayDeletion(
+    table,
+    records,
+    pendingBefore,
+    external(pendingBefore),
+    latest,
+    new Set(),
+    kept0,
+  ).state;
+  const without = replayDeletion(
+    table,
+    records,
+    others,
+    external(others),
+    latest,
+    fromCancelled,
+    kept0,
+  );
+  // The grace period of the deletion cancelled: its baseline writes (kept in effect).
+  const grace = records.filter((r) => r.op > log.cancelledOp);
+  // Operations while the row was taken out of the pending set by any pending deletion, this one
+  // or another (03-deletion «撤回与宽限期», kept superseded ②): the refusal looks at these, so
+  // the order of cancellations does not matter.
+  const covered = records.filter((r) => r.op > log.coveredSince);
+  // Pending: in an open item. A candidate a person's resolution closed, or an awaiting write a
+  // confirmation or rejection decided, is not (its item is closed whatever its status).
+  const pending = (st: RowState) =>
+    new Set(
+      st.items
+        .filter(
+          (x) =>
+            (x.status === "candidate" && !st.closedCandidate(x.event, x.target)) ||
+            (x.status === "awaiting" && !st.resolvedAwaiting(x.event)),
+        )
+        .map((x) => contributionKey(x.event, x.target)),
+    );
+  const keptEffective = keptBy(records, before, without.state, grace, log);
+  // Kept superseded can only hold for what this deletion took out of the pending set and did not
+  // keep in effect (03-deletion «撤回与宽限期»): with an operation after the deletion, refused.
+  if (covered.length > 0) {
+    const was = pending(before);
+    const keptKeys = new Set(keptEffective.map((x) => contributionKey(x.event, x.target)));
+    const tookAway = [...pending(without.state)].filter((k) => !was.has(k) && !keptKeys.has(k));
+    if (tookAway.length > 0) {
+      throw new JudgeError(
+        "not_implemented",
+        "a cancellation, with writes in the grace period, of a deletion that took candidates away",
+        {
+          kind: "cancellation_keeping_superseded",
+          op: (covered[0] as OpRecord).op,
+          took: tookAway,
+        },
+      );
+    }
+  }
+  const replay =
+    keptEffective.length === 0
+      ? without
+      : replayDeletion(
+          table,
+          records,
+          others,
+          external(others),
+          latest,
+          fromCancelled,
+          new Set([...kept0, ...keptEffective.map((x) => contributionKey(x.event, x.target))]),
+        );
   const changed = [...cancelled].filter((k) => !others.has(k));
-  return resultOf(table, records, before, replay, changed, items, latest);
+  return {
+    ...resultOf(table, records, before, replay, changed, items, latest),
+    keptEffective,
+  };
+}
+
+/** The version an operation saw: its own `seen`, or, without one, the state just before it. */
+function seenOfRecord(y: OpRecord): number {
+  if ((y.kind === "write" || y.kind === "revoke" || y.kind === "undo") && y.seen !== undefined) {
+    return seenOf({ op: y.op, seen: y.seen, ...(y.seenCurrent ? { seenCurrent: true } : {}) });
+  }
+  return y.op - 1;
+}
+
+/** See `cancellationResult`: what the cancellation keeps in effect. */
+function keptBy(
+  records: readonly OpRecord[],
+  before: RowState,
+  without: RowState,
+  grace: readonly OpRecord[],
+  log: CancellationLog,
+): KeptEffective[] {
+  const allIn = (st: RowState, event: number, target: Target) => {
+    const own = st.items.filter((x) => x.event === event && x.target === target);
+    return own.length > 0 && own.every((x) => effective(x.status));
+  };
+  // A grace-period operation that took effect when written (some item in effect), with what it saw.
+  const baselines = grace
+    .filter((y) => "items" in y && y.items.some((x) => effective(x.status)))
+    .map((y) => ({ op: y.op, event: y.event, seen: seenOfRecord(y) }));
+  const out: KeptEffective[] = [];
+  for (const r of records) {
+    if (r.kind !== "write" && r.kind !== "revoke") continue;
+    if (r.op > log.cancelledOp) continue;
+    for (const target of [...new Set(r.items.map((x) => x.target))].sort()) {
+      const key = contributionKey(r.event, target);
+      if (log.keptEffective.has(key)) continue;
+      const atWrite = r.items.filter((x) => x.target === target);
+      const made =
+        !atWrite.every((x) => effective(x.status)) &&
+        allIn(before, r.event, target) &&
+        !allIn(without, r.event, target);
+      if (!made) continue;
+      const since = log.effectiveSince(key);
+      const by = baselines.find((y) => y.op > since && y.seen >= since);
+      if (by !== undefined) out.push({ event: r.event, target, byEvent: by.event });
+    }
+  }
+  return out;
 }

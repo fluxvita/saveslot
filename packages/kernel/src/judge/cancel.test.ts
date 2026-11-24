@@ -9,12 +9,25 @@ import { describe, expect, it } from "vitest";
 import { cancelBoth, laid, PART_BACK_OPS } from "./cancel.fixture.ts";
 import { advance, openItems } from "./fates.fixture.ts";
 import { type ItemStanding, type ItemsGiven, itemsByRecords } from "./fates.ts";
-import { view } from "./judge.ts";
-import type { OpRecord, Restatement } from "./model.ts";
-import { cancellationResult, deletionResult, replayDeletion } from "./replay-deletion.ts";
+import { judgeOp, view } from "./judge.ts";
+import type { OpRecord, Restatement, WriteInput } from "./model.ts";
+import {
+  type CancellationLog,
+  cancellationResult,
+  deletionResult,
+  replayDeletion,
+} from "./replay-deletion.ts";
 import { givenByRecords } from "./restate.ts";
-import { deletedContributions, judged } from "./scenarios.fixture.ts";
+import { deletedContributions, judged, toInput } from "./scenarios.fixture.ts";
 import { RowState } from "./state.ts";
+
+/** A cancellation with no operation after the deletion cancelled, nothing kept by earlier ones. */
+const NO_GRACE = {
+  cancelledOp: Number.MAX_SAFE_INTEGER,
+  coveredSince: Number.MAX_SAFE_INTEGER,
+  keptEffective: new Set<string>(),
+  effectiveSince: () => 0,
+};
 
 const d = (md: string) => `2026-${md}` as BizPoint;
 const w = (
@@ -42,7 +55,7 @@ const w = (
  * The log judged; deletion A (its sources) confirmed, then B (pending before it is A), then A
  * cancelled. The kernel's three events, each given what the log says before it.
  */
-function inTurn(ops: Op[], a: string[], b: string[] = []) {
+function inTurn(ops: Op[], a: string[], b: string[] = [], log: CancellationLog = NO_GRACE) {
   const { table, steps } = judged(STATE, ops, []);
   expect(steps).toHaveLength(ops.length);
   const kept = steps.map((x) => x.op);
@@ -51,11 +64,12 @@ function inTurn(ops: Op[], a: string[], b: string[] = []) {
   const [ga, gb] = [gone(a), gone(b)];
   const base = givenByRecords(records);
   const g0 = itemsByRecords(new RowState(table, records));
-  const delA = deletionResult(table, records, ga, new Set(), g0, [], base);
+  const delA = deletionResult(table, records, ga, new Set(), g0, () => [], base);
   const afterA = laid(base, delA.replay.restated);
   const g1 = advance(g0, delA.items);
   const both = new Set([...ga, ...gb]);
-  const delB = b.length > 0 ? deletionResult(table, records, both, ga, g1, [], afterA) : undefined;
+  const delB =
+    b.length > 0 ? deletionResult(table, records, both, ga, g1, () => [], afterA) : undefined;
   const g2 = delB === undefined ? g1 : advance(g1, delB.items);
   // Without A's blocks (09 §5.7): B's restatements over the records; the items whose last block
   // came from A: restated by A and not since by B.
@@ -70,7 +84,7 @@ function inTurn(ops: Op[], a: string[], b: string[] = []) {
       .map((r) => `${r.item.event}/${r.item.target}/${r.item.k}`)
       .filter((k) => !byB.has(k)),
   );
-  const cancel = cancellationResult(table, records, gb, ga, g2, withoutA, fromA, []);
+  const cancel = cancellationResult(table, records, gb, ga, g2, withoutA, fromA, () => [], log);
   return { table, records, kept, delA, delB, g0, g2, cancel, end: advance(g2, cancel.items), gb };
 }
 
@@ -131,7 +145,7 @@ describe("a cancellation puts back what the deletion took (no write in the grace
       r.gb,
       new Set(),
       r.g0,
-      [],
+      () => [],
       givenByRecords(r.records),
     );
     expect(openItems(r.end, r.cancel.replay.state)).toEqual(
@@ -206,7 +220,8 @@ describe("rule 3 feeds rule 2 (09 §5.9): a block resting on an item restated as
       itemsByRecords(new RowState(table, records)),
       givenByRecords(records),
       new Set(["11/f2/0"]),
-      [],
+      () => [],
+      NO_GRACE,
     );
     expect(keys(r.replay.restated)).toEqual([
       ["11/f2/0", "applied"],
@@ -249,55 +264,110 @@ describe("existence items put back touch the row (09 §5.9 «列哪些»)", () =
       g,
       givenByRecords(records),
       new Set(),
-      [],
+      () => [],
+      NO_GRACE,
     );
     expect(r.result.listed).toBe(false);
   });
 });
 
-describe("an operation after a deletion event (a write in the grace period): not in this version", () => {
+describe("a cancellation with a write in the grace period that saw what the deletion put in effect: kept effective", () => {
   // #10 f2=1; #20 (seen #10) f2=2; #30 (seen #10) f2=3: a candidate. A deletion of S20f2 at
-  // operation 35 puts #30 in effect; #40, written in its grace period having seen 35, writes f3.
-  // Its cancellation would have to keep #30 in effect (kept_effective): refused, as the deletion's
-  // own result of a log with an operation after it.
+  // operation 35 puts #30 in effect; #40, written in its grace period having seen 35, writes f3 and
+  // takes effect. Cancelling the deletion keeps #30 in effect, by #40 (03-deletion «撤回与宽限期»).
   const ops = [...conflict, w(40, 35, { f3: "x" })];
   const { table, steps } = judged(STATE, ops, []);
   const records = steps.map((x) => x.judgement.record);
   const kept = steps.map((x) => x.op);
   const ga = deletedContributions(kept, new Set(["S20f2"]), true);
   const g = itemsByRecords(new RowState(table, records));
-  const refusal = (f: () => unknown) => {
-    try {
-      f();
-    } catch (e) {
-      return e;
-    }
-    return undefined;
-  };
+  const log = (seenAt: number) => ({
+    cancelledOp: 35,
+    coveredSince: 35,
+    keptEffective: new Set<string>(),
+    // #30's items have all been in effect since the deletion's confirmation.
+    effectiveSince: () => seenAt,
+  });
+  const ref = evaluateLog(STATE, [
+    ...kept.slice(0, 3),
+    { kind: "deletion", op: 35, id: "pi_a", sources: ["S20f2"] },
+    kept[3] as Op,
+    { kind: "cancel", op: 45, id: "pi_a" },
+  ]);
 
-  it("the cancellation is refused", () => {
-    expect(
-      refusal(() =>
-        cancellationResult(
-          table,
-          records,
-          new Set(),
-          ga,
-          g,
-          givenByRecords(records),
-          new Set(),
-          [35],
-        ),
-      ),
-    ).toMatchObject({ reason: "not_implemented" });
+  it("#30 kept in effect by #40, as the reference evaluator keeps it", () => {
+    const r = cancellationResult(
+      table,
+      records,
+      new Set(),
+      ga,
+      g,
+      givenByRecords(records),
+      new Set(),
+      () => [],
+      log(35),
+    );
+    expect(r.keptEffective).toEqual([{ event: 31, target: "f2", byEvent: 41 }]);
+    expect(ref.steps.at(-1)?.keptEffective).toEqual([{ event: 31, target: "f2" }]);
+    expect(r.replay.state.items.filter((x) => x.event === 31).map((x) => x.status)).toEqual([
+      "applied",
+    ]);
+    expect(ref.final.items.filter((x) => x.event === 31).map((x) => x.status)).toEqual(["applied"]);
   });
 
-  it("so is the deletion's result with an operation after it", () => {
+  it("the protection lasts: a later deletion replays #30 as already in effect, as the reference does", () => {
+    // After the cancellation, a deletion of S40f3 (#40's f3): #30 still conflicts with #20, but
+    // it was kept in effect, so it stays in effect (03-deletion «删除结果的定义» deviation two).
+    const later = new Set(["41/f3"]);
+    const kept30 = replayDeletion(
+      table,
+      records,
+      later,
+      [],
+      undefined,
+      new Set(),
+      new Set(["31/f2"]),
+    );
+    expect(kept30.state.items.filter((x) => x.event === 31).map((x) => x.status)).toEqual([
+      "applied",
+    ]);
+    // Without it, #30 is a candidate against #20 again.
     expect(
-      refusal(() =>
-        deletionResult(table, records, ga, new Set(), g, [35], givenByRecords(records)),
-      ),
-    ).toMatchObject({ reason: "not_implemented" });
+      replayDeletion(table, records, later)
+        .state.items.filter((x) => x.event === 31)
+        .map((x) => x.status),
+    ).toEqual(["candidate"]);
+    const ref2 = evaluateLog(STATE, [
+      ...kept.slice(0, 3),
+      { kind: "deletion", op: 35, id: "pi_a", sources: ["S20f2"] },
+      kept[3] as Op,
+      { kind: "cancel", op: 45, id: "pi_a" },
+      { kind: "deletion", op: 50, id: "pi_b", sources: ["S40f3"] },
+    ]).final;
+    expect(ref2.items.filter((x) => x.event === 31).map((x) => x.status)).toEqual(["applied"]);
+  });
+
+  it("#40 saw a version before #30 was in effect: nothing kept; #30 would be a candidate again and may stay superseded, refused", () => {
+    let thrown: unknown;
+    try {
+      cancellationResult(
+        table,
+        records,
+        new Set(),
+        ga,
+        g,
+        givenByRecords(records),
+        new Set(),
+        () => [],
+        log(36),
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toMatchObject({
+      reason: "not_implemented",
+      detail: { kind: "cancellation_keeping_superseded", op: 40, took: ["31/f2"] },
+    });
   });
 });
 
@@ -378,7 +448,8 @@ describe("an item's interval as written, once what gives its end is deleted, is 
       itemsByRecords(new RowState(table, records)),
       afterA,
       fromB,
-      [],
+      () => [],
+      NO_GRACE,
     );
     const ref = evaluateLog(schema, [
       ...kept,
@@ -471,14 +542,14 @@ describe("a part going back pending as its original item's kind goes back to its
     const gab = deletedContributions(kept, new Set(["S1", "S5"]), true);
     const base = givenByRecords(records);
     const g0 = itemsByRecords(new RowState(table, records));
-    const delA = deletionResult(table, records, ga, new Set(), g0, [], base);
+    const delA = deletionResult(table, records, ga, new Set(), g0, () => [], base);
     const delB = deletionResult(
       table,
       records,
       gab,
       ga,
       advance(g0, delA.items),
-      [],
+      () => [],
       laid(base, delA.replay.restated),
     );
     expect(delB.items.fates.get("61/f2")).toMatchObject({
@@ -508,7 +579,7 @@ describe("a part going back pending as its original item's kind goes back to its
       gab,
       ga,
       r.g3,
-      [],
+      () => [],
       laid(base, r.cB.replay.restated),
     );
     expect(again.items.fates.get("61/f2")).toMatchObject({ kind: "returned", into: "merged" });
@@ -556,7 +627,7 @@ describe("a part going back whose item is closed, or that is a member of a succe
         ga,
         new Set(),
         itemsByRecords(new RowState(table, records)),
-        [],
+        () => [],
         base,
       );
       const byCB = new Set(
@@ -576,7 +647,8 @@ describe("a part going back whose item is closed, or that is a member of a succe
             .map((x) => `${x.item.event}/${x.item.target}/${x.item.k}`)
             .filter((k) => !byCB.has(k)),
         ),
-        [],
+        () => [],
+        NO_GRACE,
       );
       expect(cA.items.fates.get("61/f2")).toEqual({
         kind: "returned",
@@ -609,7 +681,7 @@ describe("a part going back whose item is closed, or that is a member of a succe
       deletedContributions(kept, new Set(["S5"]), true),
       new Set(),
       g,
-      [],
+      () => [],
       base,
     );
 
@@ -643,5 +715,359 @@ describe("a part going back whose item is closed, or that is a member of a succe
     });
     expect(r.items.restored).toEqual([]);
     expect(r.items.superseded).toEqual(["61:existence>awaiting"]);
+  });
+});
+
+describe("a candidate the deletion turned awaiting, a write in the grace period: the cancellation as with none", () => {
+  // #10 f2=1; #15 f2=5 from 11-15; #20 (seen #15) f2=2 on [11-01, 11-10); #30 (seen #15) f2=3 from
+  // 10-01: a candidate against #20. The deletion of S20f2 (operation 35) leaves #30 taking away the
+  // change point 11-15 of its version: awaiting (high impact ①), pending before and after. #40,
+  // in the grace period, writes f3. Cancelled: nothing was taken out of the pending set, so
+  // nothing can be kept superseded; the awaiting item goes and the conflict item comes back, as
+  // a cancellation with no write in the grace period does.
+  const ops = [
+    w(10, 0, { f2: "1" }),
+    w(15, 10, { f2: "5" }, { from: "11-15", ack: true }),
+    w(20, 15, { f2: "2" }, { from: "11-01", to: "11-10", ack: true }),
+    w(30, 15, { f2: "3" }),
+    w(40, 35, { f3: "x" }),
+  ];
+  it("the awaiting item superseded, the conflict item restored", () => {
+    const r = inTurn(ops, ["S20f2"], [], {
+      cancelledOp: 35,
+      coveredSince: 35,
+      keptEffective: new Set(),
+      effectiveSince: () => 35,
+    });
+    expect(r.delA.replay.state.items.filter((x) => x.event === 31).map((x) => x.status)).toEqual([
+      "awaiting",
+    ]);
+    expect(r.delA.items.opened).toMatchObject([{ succeeds: "31:f2", kind: "awaiting" }]);
+    expect(r.cancel.keptEffective).toEqual([]);
+    expect(r.cancel.items.superseded).toEqual(["31:f2>awaiting"]);
+    expect(r.cancel.items.restored).toEqual(["31:f2"]);
+    const ref = evaluateLog(STATE, [
+      ...r.kept.slice(0, 4),
+      { kind: "deletion", op: 35, id: "pi_a", sources: ["S20f2"] },
+      r.kept[4] as Op,
+      { kind: "cancel", op: 45, id: "pi_a" },
+    ]);
+    const status = (items: readonly { event: number; status: string }[]) =>
+      items.filter((x) => x.event === 31).map((x) => x.status);
+    expect(status(r.cancel.replay.state.items)).toEqual(["candidate"]);
+    expect(status(ref.final.items)).toEqual(["candidate"]);
+    expect(ref.steps.at(-1)?.keptEffective ?? []).toEqual([]);
+    expect(ref.steps.at(-1)?.keptSuperseded ?? []).toEqual([]);
+  });
+});
+
+describe("in effect without the deletion cancelled too (another pending deletion): not kept by this one", () => {
+  // #10 f2=1; #20 (seen #10) f2=2 with evidence Sa and Sb; #30 (seen #10) f2=3: a candidate. A
+  // deletes Sa, B deletes Sb: each alone takes #20 out (a state table's write mapping no evidence
+  // to its interval loses everything with any of it), so #30 is in effect with either. #40, after
+  // both, writes f3 having seen B. A cancelled, B still pending: #30 stays in effect by B, not
+  // made effective by A, so A's cancellation keeps nothing.
+  const ops: Op[] = [
+    w(10, 0, { f2: "1" }),
+    {
+      ...w(20, 10, { f2: "2" }),
+      fields: { f2: { value: "2", sources: ["Sa", "Sb"] } },
+    } as Op,
+    w(30, 10, { f2: "3" }),
+    w(40, 37, { f3: "x" }),
+  ];
+  it("keeps nothing; #30 in effect by B, as the reference evaluator gives", () => {
+    const r = inTurn(ops, ["Sa"], ["Sb"], {
+      cancelledOp: 35,
+      coveredSince: 35,
+      keptEffective: new Set(),
+      effectiveSince: () => 35,
+    });
+    expect(r.cancel.keptEffective).toEqual([]);
+    expect(r.cancel.replay.state.items.filter((x) => x.event === 31).map((x) => x.status)).toEqual([
+      "applied",
+    ]);
+    const ref = evaluateLog(STATE, [
+      ...r.kept.slice(0, 3),
+      { kind: "deletion", op: 35, id: "pi_a", sources: ["Sa"] },
+      { kind: "deletion", op: 37, id: "pi_b", sources: ["Sb"] },
+      r.kept[3] as Op,
+      { kind: "cancel", op: 45, id: "pi_a" },
+    ]);
+    expect(ref.steps.at(-1)?.keptEffective ?? []).toEqual([]);
+    expect(ref.final.items.filter((x) => x.event === 31).map((x) => x.status)).toEqual(["applied"]);
+  });
+});
+
+describe("kept in effect, but closed by a person's resolution: the resolution stands", () => {
+  // #10 f2=3; #20 (seen #10) f2=2; #30 (seen #10) f2=3 pointing at its evidence: a candidate
+  // against #20, which a keep_effective resolution (#35) closes. The deletion of S20f2 (operation
+  // 37) leaves #30 the same as the value in effect, a corroboration; #40, after it, writes f3.
+  // Cancelled: #30 is kept in effect as the reference records it, but the resolution recorded it
+  // as a candidate and that stands (deviation one): a candidate again, not in effect.
+  const ops: Op[] = [
+    w(10, 0, { f2: "3" }),
+    w(20, 10, { f2: "2" }, { ack: true }),
+    {
+      ...w(30, 10, { f2: "3" }),
+      fields: { f2: { value: "3", sources: ["S30f2"], explicit: true } },
+    } as Op,
+    {
+      kind: "resolve",
+      op: 35,
+      event: 36,
+      decision: "keep_effective",
+      candidates: [31],
+      unit: "f2",
+    } as Op,
+    w(40, 37, { f3: "x" }),
+  ];
+  it("#30 a candidate again, as the reference evaluator gives", () => {
+    const r = inTurn(ops, ["S20f2"], [], {
+      cancelledOp: 37,
+      coveredSince: 37,
+      keptEffective: new Set(),
+      effectiveSince: () => 37,
+    });
+    const ref = evaluateLog(STATE, [
+      ...r.kept.slice(0, 4),
+      { kind: "deletion", op: 37, id: "pi_a", sources: ["S20f2"] },
+      r.kept[4] as Op,
+      { kind: "cancel", op: 45, id: "pi_a" },
+    ]);
+    const status = (items: readonly { event: number; status: string }[]) =>
+      items.filter((x) => x.event === 31).map((x) => x.status);
+    expect(status(r.delA.replay.state.items)).toEqual(["corroborated"]);
+    expect(r.cancel.keptEffective.map((x) => `${x.event}/${x.target}`)).toEqual(
+      (ref.steps.at(-1)?.keptEffective ?? []).map((x) => `${x.event}/${x.target}`),
+    );
+    expect(status(r.cancel.replay.state.items)).toEqual(["candidate"]);
+    expect(status(ref.final.items)).toEqual(["candidate"]);
+  });
+});
+
+describe("a write while the row was taken out by any pending deletion: refused in either order of cancelling", () => {
+  // #10 f2=1; #20 (seen #10) f2=2; #30 (seen #10) f2=3 with evidence Sa and Sb: a candidate
+  // against #20. B (operation 40) deletes Sa: #30 out. #50 (seen 40) writes f2=9. A (operation
+  // 60) deletes Sb: #30 out too. The row has been covered by pending deletions since 40 (B, then
+  // B and A). Whichever is cancelled last puts #30 back pending, and #50 changed f2 while it was
+  // out (kept superseded ②, by any pending deletion): refused, whatever the order.
+  const ops: Op[] = [
+    w(10, 0, { f2: "1" }),
+    w(20, 10, { f2: "2" }),
+    { ...w(30, 10, { f2: "3" }), fields: { f2: { value: "3", sources: ["Sa", "Sb"] } } } as Op,
+    w(50, 40, { f2: "9" }),
+  ];
+  const { table, steps } = judged(STATE, ops, []);
+  const records: OpRecord[] = steps.map((x) => x.judgement.record);
+  const kept = steps.map((x) => x.op);
+  const gA = deletedContributions(kept, new Set(["Sb"]), true);
+  const gB = deletedContributions(kept, new Set(["Sa"]), true);
+  const g0 = itemsByRecords(new RowState(table, records));
+  const log = (cancelledOp: number) => ({
+    cancelledOp,
+    coveredSince: 40,
+    keptEffective: new Set<string>(),
+    effectiveSince: () => 0,
+  });
+  const refusal = (f: () => unknown) => {
+    try {
+      f();
+    } catch (e) {
+      return e;
+    }
+    return undefined;
+  };
+  const cancel = (others: ReadonlySet<string>, gone: ReadonlySet<string>, op: number) =>
+    cancellationResult(
+      table,
+      records,
+      others,
+      gone,
+      g0,
+      givenByRecords(records),
+      new Set(),
+      () => [],
+      log(op),
+    );
+  const ref = (first: string, second: string) =>
+    evaluateLog(STATE, [
+      ...kept.slice(0, 3),
+      { kind: "deletion", op: 40, id: "pi_b", sources: ["Sa"] },
+      kept[3] as Op,
+      { kind: "deletion", op: 60, id: "pi_a", sources: ["Sb"] },
+      { kind: "cancel", op: 70, id: first },
+      { kind: "cancel", op: 80, id: second },
+    ]).steps;
+
+  it("B cancelled, then A: the second refused (the reference keeps #30 superseded there)", () => {
+    expect(refusal(() => cancel(gA, gB, 40))).toBeUndefined();
+    expect(refusal(() => cancel(new Set(), gA, 60))).toMatchObject({
+      reason: "not_implemented",
+      detail: { kind: "cancellation_keeping_superseded", op: 50, took: ["31/f2"] },
+    });
+    expect(ref("pi_b", "pi_a").at(-1)?.keptSuperseded).toEqual([31]);
+  });
+
+  it("A cancelled, then B: the second refused too", () => {
+    expect(refusal(() => cancel(gB, gA, 60))).toBeUndefined();
+    expect(refusal(() => cancel(new Set(), gB, 40))).toMatchObject({
+      reason: "not_implemented",
+      detail: { kind: "cancellation_keeping_superseded", op: 50, took: ["31/f2"] },
+    });
+    expect(ref("pi_a", "pi_b").at(-1)?.keptSuperseded).toEqual([31]);
+  });
+});
+
+describe("two baseline writes: by_event the first", () => {
+  // As the kept-in-effect case, with #42 (seen #41) writing f3 again: #40 and #42 both took
+  // the version as their baseline; `by_event` is the first, #41 (09 §5.9 `kept_effective`).
+  const ops = [...conflict, w(40, 35, { f3: "x" }), w(42, 41, { f3: "y" })];
+  it("byEvent #41, as the reference keeps it", () => {
+    const { table, steps } = judged(STATE, ops, []);
+    const records = steps.map((x) => x.judgement.record);
+    const kept = steps.map((x) => x.op);
+    const ga = deletedContributions(kept, new Set(["S20f2"]), true);
+    const g = itemsByRecords(new RowState(table, records));
+    const r = cancellationResult(
+      table,
+      records,
+      new Set(),
+      ga,
+      g,
+      givenByRecords(records),
+      new Set(),
+      () => [],
+      {
+        cancelledOp: 35,
+        coveredSince: 35,
+        keptEffective: new Set(),
+        effectiveSince: () => 35,
+      },
+    );
+    expect(r.keptEffective).toEqual([{ event: 31, target: "f2", byEvent: 41 }]);
+    const ref = evaluateLog(STATE, [
+      ...kept.slice(0, 3),
+      { kind: "deletion", op: 35, id: "pi_a", sources: ["S20f2"] },
+      kept[3] as Op,
+      kept[4] as Op,
+      { kind: "cancel", op: 45, id: "pi_a" },
+    ]);
+    expect(ref.steps.at(-1)?.keptEffective).toEqual([{ event: 31, target: "f2" }]);
+  });
+});
+
+describe("an awaiting write a confirmation decided is in no open item: one the deletion took out of a candidate item is taken away", () => {
+  // #10 f2=1, f3=m from 11-05; #20 (seen #10) f3=b on [11-05, 11-09); #30 (seen #10) f2=m, f3=c on
+  // [11-01, 11-07): f3 a candidate against #20, f2 awaiting (it fills a stretch without a value);
+  // operation 33 confirms #30's awaiting write. The deletion of S20 (operation 35) leaves #30's f3
+  // awaiting too, and the confirmation decides it: its f3 in effect through the confirmation's
+  // write (#34). W2 (operation 36, seen 35) writes f3 from 11-02. Cancelling the deletion puts #30's
+  // f3 back as a candidate, out of every open item while W2 changed f3 over it: it may be kept
+  // superseded (03-deletion «撤回与宽限期»), which this version refuses. An awaiting write a
+  // confirmation decided is not pending, as a candidate a resolution closed is not.
+  const ops = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: { from: { mode: "given", value: d("11-05") }, to: { mode: "open" } },
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "m", sources: ["M10"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: d("11-05") },
+        to: { mode: "given", value: d("11-09") },
+      },
+      fields: { f3: { value: "b", sources: ["S20"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: d("11-01") },
+        to: { mode: "given", value: d("11-07") },
+      },
+      fields: { f3: { value: "c", sources: ["S30"] }, f2: { value: "m", sources: ["M30"] } },
+    },
+    { kind: "confirm", op: 33, event: 34, target: 31 },
+  ] as unknown as Op[];
+  const W2 = {
+    kind: "write",
+    op: 36,
+    event: 37,
+    seen: 35,
+    valid: { from: { mode: "given", value: d("11-02") }, to: { mode: "open" } },
+    fields: { f3: { value: "v", sources: ["SV"] } },
+    acknowledge: ["overwrite"],
+  } as unknown as Op;
+
+  it("refused, as the reference evaluator keeps #30 superseded", () => {
+    const { table, steps } = judged(STATE, ops, []);
+    expect(steps).toHaveLength(ops.length);
+    const records = steps.map((x) => x.judgement.record);
+    const kept = steps.map((x) => x.op);
+    const ga = deletedContributions(kept, new Set(["S20"]), true);
+    const g0 = itemsByRecords(new RowState(table, records));
+    const first = deletionResult(
+      table,
+      records,
+      ga,
+      new Set(),
+      g0,
+      () => [],
+      givenByRecords(records),
+    );
+    const st = (
+      xs: readonly { event: number; target: string; status: string }[],
+      e: number,
+      t: string,
+    ) => xs.filter((x) => x.event === e && x.target === t).map((x) => x.status);
+    // With the deletion: #30's f3 awaiting, decided, in effect through the confirmation's write.
+    expect(st(first.replay.state.items, 31, "f3")).toEqual(["awaiting"]);
+    expect(st(first.replay.state.items, 34, "f3")).toEqual(["applied"]);
+    const w2 = judgeOp(first.replay.state, toInput(W2) as WriteInput);
+    expect(st(w2.state.items, 37, "f3")).toEqual(["applied"]);
+    const withW = [...records, w2.judgement.record];
+    let thrown: unknown;
+    try {
+      cancellationResult(
+        table,
+        withW,
+        new Set(),
+        ga,
+        advance(g0, first.items),
+        givenByRecords(withW),
+        new Set(
+          first.replay.restated
+            .filter((r) => r.status !== "dropped")
+            .map((r) => `${r.item.event}/${r.item.target}/${r.item.k}`),
+        ),
+        () => [],
+        { cancelledOp: 35, coveredSince: 35, keptEffective: new Set(), effectiveSince: () => 0 },
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toMatchObject({
+      reason: "not_implemented",
+      detail: { kind: "cancellation_keeping_superseded", took: ["31/f3"] },
+    });
+    const ref = evaluateLog(STATE, [
+      ...kept,
+      { kind: "deletion", op: 35, id: "pi_a", sources: ["S20"] },
+      W2,
+      { kind: "cancel", op: 38, id: "pi_a" },
+    ]);
+    expect(ref.steps.at(-1)?.keptSuperseded).toEqual([31]);
   });
 });

@@ -1441,7 +1441,7 @@ revert        {"before_op":20,"items":[{"event":22,"field":"f2"}]}
 | `restated/<k>`、`recreated/<k>` | 数 / 元 | 与 `deletion.confirmed` 同形：撤回后各项贡献的判定结果与首次创建标记。因那次删除而生效、撤回后退回未生效状态的写入，在这里重述为 `candidate` 或 `awaiting`；被那次删除重述过的项，在这里按撤回后的状态再重述一次 |
 | `restored_items` | 元 | 恢复为未决的事项 ID 列表 |
 | `kept_superseded/<k>` | 元 | 保持"已被取代"的事项：`{"item": "pi_…", "by_event": <seq>}` |
-| `kept_effective/<k>` | 元 | 因删除而生效、宽限期内已被别的写入当作基线而不退回的写入（只在撤回前它在这个目标上的各项全部生效时记；判定按（事件, 目标），`items` 只供回执，下标不参与判定）：`{"event": <seq>, "items": [{"field": …, "k": …}], "by_event": <以它为基线的那条 write.base 的 seq>}`（对"存在"的一项写成 `{"existence": <k>}`） |
+| `kept_effective/<k>` | 元 | 因删除而生效、宽限期内已被别的写入当作基线而不退回的写入（只在撤回前它在这个目标上的各项全部生效时记；判定按（事件, 目标），`items` 只供回执，下标不参与判定）：`{"event": <seq>, "items": [{"field": …, "k": …}], "by_event": <以它为基线的那条 write.base 的 seq>}`（对"存在"的一项写成 `{"existence": <k>}`）。宽限期内以它为基线的写入有几次时，`by_event` 取第一次 |
 
 - 被那次删除列入 `positions` 的块恢复可读（仍被别的待执行删除列出的除外）。其中带 `deps` 的块，内容是删除之前求得的；撤回之后是否仍然成立由重放决定，变了的由本事件的 `restated`、`results` 重新给出，并以本事件为准。
 - 那次删除确认事件自己的 `results/*`、`restated/*` 块此后不再是"最近一次给出的"；它们留在日志里，照 §3.5 随它们的 `deps` 清除。

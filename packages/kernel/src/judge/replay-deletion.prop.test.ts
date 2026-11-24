@@ -15,16 +15,17 @@
 // revoked row), a take_previous or take_candidate whose candidate leaves no item, operations after
 // a deletion event.
 
+import type { FieldId } from "@fluxvita/saveslot-contract-core";
 import { evaluateLog, type LogEntry, type Op, timeline } from "@fluxvita/saveslot-reference";
 import { EVENT, Hits, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
-import type { IntervalSet } from "../time/index.ts";
+import { canonical, type IntervalSet } from "../time/index.ts";
 import { JudgeError } from "./errors.ts";
 import { advance, openItems } from "./fates.fixture.ts";
 import { type ItemsGiven, type ItemsResult, itemsByRecords, pendingIn } from "./fates.ts";
-import { view } from "./judge.ts";
-import type { OpRecord, Restatement, Target } from "./model.ts";
+import { judgeOp, view } from "./judge.ts";
+import type { ExternalChange, OpRecord, Restatement, Target, WriteInput } from "./model.ts";
 import {
   cancellationResult,
   contributionKey,
@@ -39,8 +40,17 @@ import {
   judged,
   scenario,
   shadowSkeleton,
+  toInput,
 } from "./scenarios.fixture.ts";
-import { EVERYTHING, RowState } from "./state.ts";
+import { EVERYTHING, effective, RowState } from "./state.ts";
+
+/** A cancellation with no operation after the deletion cancelled, nothing kept by earlier ones. */
+const NO_GRACE = {
+  cancelledOp: Number.MAX_SAFE_INTEGER,
+  coveredSince: Number.MAX_SAFE_INTEGER,
+  keptEffective: new Set<string>(),
+  effectiveSince: () => 0,
+};
 
 vi.setConfig({ testTimeout: 120_000 });
 fc.configureGlobal({ interruptAfterTimeLimit: 110_000, markInterruptAsFailure: true });
@@ -267,14 +277,14 @@ function compare(
   // with the value the reference gives now; `deleted` exactly when the row existed before only.
   {
     const given = itemsByRecords(new RowState(table, records));
-    const res = deletionResult(table, records, gone, new Set(), given, []);
+    const res = deletionResult(table, records, gone, new Set(), given, () => []);
     // The item layer (03-deletion «删除不增加未决事项»): every (event, target) pending after was
     // pending when written (`itemsResult` refuses one with no item given); a fate exactly where its
     // pending membership changes. On the items as the records give them, and on two variants the
     // records alone do not make: a conflict unit's candidates of several writes in one item, and an
     // item superseded for another reason (overwritten).
     for (const g of [given, joined(given), overwritten(given)]) {
-      const r = g === given ? res : deletionResult(table, records, gone, new Set(), g, []);
+      const r = g === given ? res : deletionResult(table, records, gone, new Set(), g, () => []);
       itemsHold(r.before, r.replay.state, records, g, r.items);
     }
     // The deps of each listed stretch are complete (09 §3.5, §5.9 «段的定义»): deleting one more
@@ -368,6 +378,7 @@ function compare(
   // included) and values the reference evaluator gives with the two deletion events in that order.
   if (deleted.size === 2) {
     for (const [a, b] of [[...deleted], [...deleted].reverse()] as [string, string][]) {
+      graceWrite(schema, isState, table, kept, records, a, b, last);
       const first = deletedContributions(kept, new Set([a]), isState);
       const once = replayDeletion(table, records, first);
       const afterFirst = overlay(givenByRecords(records), once.restated, first);
@@ -378,16 +389,16 @@ function compare(
         itemsByRecords(new RowState(table, records)),
         joined(itemsByRecords(new RowState(table, records))),
       ]) {
-        const one = deletionResult(table, records, first, new Set(), given, []);
+        const one = deletionResult(table, records, first, new Set(), given, () => []);
         const between = advance(given, one.items);
-        const two = deletionResult(table, records, gone, first, between, []);
+        const two = deletionResult(table, records, gone, first, between, () => []);
         itemsHold(two.before, two.replay.state, records, between, two.items);
         const end = advance(between, two.items);
         // The order of deletions does not matter to the open items either (03-deletion
         // «删除不增加未决事项»: the original item is the one when written).
         const once = advance(
           given,
-          deletionResult(table, records, gone, new Set(), given, []).items,
+          deletionResult(table, records, gone, new Set(), given, () => []).items,
         );
         expect(openItems(end, two.replay.state)).toEqual(openItems(once, two.replay.state));
         for (const [key, f] of two.items.fates) {
@@ -426,8 +437,15 @@ function compare(
       {
         const second = deletedContributions(kept, new Set([b]), isState);
         const given = itemsByRecords(new RowState(table, records));
-        const one = deletionResult(table, records, first, new Set(), given, []);
-        const two = deletionResult(table, records, gone, first, advance(given, one.items), []);
+        const one = deletionResult(table, records, first, new Set(), given, () => []);
+        const two = deletionResult(
+          table,
+          records,
+          gone,
+          first,
+          advance(given, one.items),
+          () => [],
+        );
         const before = advance(advance(given, one.items), two.items);
         const withoutFirst = overlay(givenByRecords(records), then.restated, second);
         const bySecond = new Set(
@@ -447,7 +465,8 @@ function compare(
           before,
           withoutFirst,
           fromFirst,
-          [],
+          () => [],
+          NO_GRACE,
         );
         expect(withoutDropped(overlay(withoutFirst, c.replay.restated, second))).toEqual(
           blocksOf(c.replay.records),
@@ -476,7 +495,7 @@ function compare(
           items: itemKeys(cancelled.items),
           fields: timelines(cancelled.fields as never, namesC),
         });
-        const alone = deletionResult(table, records, second, new Set(), given, []);
+        const alone = deletionResult(table, records, second, new Set(), given, () => []);
         expect(openItems(advance(before, c.items), c.replay.state)).toEqual(
           openItems(advance(given, alone.items), c.replay.state),
         );
@@ -509,7 +528,8 @@ function compare(
           before,
           afterFirst,
           fromSecond,
-          [],
+          () => [],
+          NO_GRACE,
         );
         expect(withoutDropped(overlay(afterFirst, cB.replay.restated, first))).toEqual(
           blocksOf(cB.replay.records),
@@ -546,7 +566,8 @@ function compare(
           afterCB,
           latestBoth,
           fromFirstThen,
-          [],
+          () => [],
+          NO_GRACE,
         );
         expect(withoutDropped(overlay(latestBoth, cA.replay.restated, new Set()))).toEqual(
           blocksOf(cA.replay.records),
@@ -653,6 +674,42 @@ function compare(
 
 /** How many fates and refreshed items the samples gave (the item layer's coverage). */
 const itemCover: Record<string, number> = {};
+/**
+ * What the grace-period writes reached (`graceWrite`): W compared after `a`; W not applied there
+ * (a candidate against `a` or awaiting for its version); `a` counted whole on some unit when `b`
+ * was deleted too; that replay compared.
+ */
+const graceCover = {
+  judged: 0,
+  notApplied: 0,
+  candidate: 0,
+  whole: 0,
+  compared: 0,
+  // Counted, not asserted: neither set holds the other. At default runs about 1204 units both
+  // count whole, 688 only the approximation, 660 only the kernel's blocks. The reference lists by
+  // ends; it does not list the segments given by items this deletion restates, nor those meeting
+  // an existence item deleted or restated, nor take the givers of a gap's ends (09 §5.9
+  // «列哪些»). Which blocks are on a list is checked on real logs by the deletion encoding's
+  // property (nothing removed that should stay, nothing left that should go).
+  /** Units the reference evaluator's approximation by ends counts whole, also in `forcedWhole`. */
+  endsAgree: 0,
+  /** Units it counts whole that the kernel's blocks do not put on b's list. */
+  endsMore: 0,
+  /** Units the kernel's blocks put on b's list that the approximation does not count whole. */
+  kernelOnly: 0,
+};
+/** The largest share of `graceCancel`'s samples set aside for W2 pending (measured: see the test). */
+const W2_PENDING_MAX = 0.2;
+/** Cancellations with a write in the grace period (`graceCancel`): compared, keeping something, refused. */
+const cancelCover = {
+  /** W2 judged: the samples that reach the cancellation's comparison or are set aside below. */
+  tried: 0,
+  compared: 0,
+  kept: 0,
+  refused: 0,
+  /** Set aside: W2 itself pending, its own item not modelled. */
+  w2Pending: 0,
+};
 
 /** The items with each conflict unit's candidates in one item (the earliest's), all open. */
 function joined(g: ItemsGiven): ItemsGiven {
@@ -681,6 +738,317 @@ function overwritten(g: ItemsGiven): ItemsGiven {
   if (x !== undefined)
     items.set(id, { ...x, standing: { kind: "superseded", reason: "overwritten" } });
   return { ...g, items };
+}
+
+/**
+ * A write in the grace period of deletion `a` (09-references «冲突判据»: `a` among its L), then
+ * deletion `b`, against the reference evaluator with the same log: the write as judged with `a`
+ * as L, and the state after `b`'s replay, `a`'s record taken as changed over the whole unit
+ * where it rests on what `b` deletes or restates (09 §3.5 rule 1). The L of `a` is worked out the way the
+ * caller does (its result against the state before it).
+ */
+function graceWrite(
+  schema: Schema,
+  isState: boolean,
+  table: RowState["table"],
+  kept: readonly Op[],
+  records: readonly OpRecord[],
+  a: string,
+  b: string,
+  last: number,
+): void {
+  const ga = deletedContributions(kept, new Set([a]), isState);
+  const both = deletedContributions(kept, new Set([a, b]), isState);
+  let first: ReturnType<typeof deletionResult>;
+  try {
+    first = deletionResult(
+      table,
+      records,
+      ga,
+      new Set(),
+      itemsByRecords(new RowState(table, records)),
+      () => [],
+    );
+  } catch (e) {
+    if (e instanceof JudgeError && e.reason === "not_implemented") return;
+    throw e;
+  }
+  const before = view(first.before, [], true);
+  const after = view(first.replay.state, Object.keys(before.fields) as never, true);
+  // Where `a` changed each field's value or whether it has one (its L, by field).
+  const changed = new Map<FieldId, IntervalSet | "whole">();
+  const fields = [...new Set([...Object.keys(before.fields), ...Object.keys(after.fields)])];
+  const pieces = (v: typeof before) => [
+    ...Object.values(v.fields).flatMap((xs) => (xs ?? []).flatMap((x) => x.valid)),
+    ...v.gaps,
+  ];
+  const cuts = first.replay.state.pieces([...pieces(before), ...pieces(after)].map((x) => [x]));
+  const tokenAt = (v: typeof before, f: string, s: { from: string | null; to: string | null }) => {
+    if (
+      isState &&
+      v.gaps.some(
+        (g) =>
+          (g.from === null || (s.from !== null && g.from <= s.from)) &&
+          (g.to === null || (s.to !== null && s.to <= g.to)),
+      )
+    )
+      return "gap";
+    const x = (v.fields[f as FieldId] ?? []).find((y) =>
+      y.valid.some(
+        (g) =>
+          (g.from === null || (s.from !== null && g.from <= s.from)) &&
+          (g.to === null || (s.to !== null && s.to <= g.to)),
+      ),
+    );
+    return x === undefined ? "none" : JSON.stringify(x.value);
+  };
+  for (const f of fields) {
+    const c = (isState ? cuts : [{ from: null, to: null }]).filter(
+      (s) => tokenAt(before, f, s) !== tokenAt(after, f, s) || before.exists !== after.exists,
+    );
+    if (c.length > 0) changed.set(f as FieldId, canonical(c as never));
+  }
+  // It changed the entity (a new version, 03-deletion «重放规则» ver row): a value, whether it
+  // exists, or the judgement of any item (its index, status or interval).
+  const sig = (st: RowState) =>
+    JSON.stringify(st.items.map((x) => [x.event, x.target, x.k, x.status, x.valid]).sort());
+  const changedEntity =
+    changed.size > 0 ||
+    before.exists !== after.exists ||
+    sig(first.before) !== sig(first.replay.state);
+  const D = { op: (last + 1) as never, changed, changedEntity };
+  graceCancel(schema, isState, table, kept, records, a, ga, first, D, last);
+  // The write: f2 = "w", having seen the last operation before `a`.
+  const seen = Math.max(...kept.map((o) => o.op));
+  const W: Op = {
+    kind: "write",
+    op: last + 2,
+    event: last + 3,
+    seen,
+    ...(isState
+      ? { valid: { from: { mode: "given", value: "2026-11-02" }, to: { mode: "open" } } }
+      : {}),
+    fields: { f2: { value: "w", sources: ["SW"] } },
+    acknowledge: ["overwrite"],
+  } as Op;
+  let judgedW: ReturnType<typeof judgeOp>;
+  try {
+    judgedW = judgeOp(first.replay.state, { ...(toInput(W) as WriteInput), external: [D] });
+  } catch (e) {
+    if (e instanceof JudgeError) return;
+    throw e;
+  }
+  const del = (id: string, op: number, src: string): LogEntry => ({
+    kind: "deletion",
+    op,
+    id,
+    sources: [src],
+  });
+  const refW = evaluateLog(schema, [...kept, del("pi_a", last + 1, a), W]);
+  if (refW.steps.at(-1)?.refused === true) return;
+  const wOf = (items: readonly { event: number; status: string }[]) =>
+    items
+      .filter((x) => x.event === last + 3)
+      .map((x) => x.status)
+      .sort();
+  expect({ write: wOf(judgedW.state.items) }).toEqual({ write: wOf(refW.final.items) });
+  graceCover.judged++;
+  if (wOf(judgedW.state.items).some((x) => x !== "applied")) graceCover.notApplied++;
+  if (wOf(judgedW.state.items).includes("candidate")) graceCover.candidate++;
+  // Then `b`: where `a`'s record (its blocks, by their deps) rests on what `b` deletes or restates,
+  // it is on `b`'s list of positions (09 §3.5 rule 1) and counts as changing the whole unit
+  // (09-references «冲突判据», L's interval). Worked out here from the kernel's blocks, as
+  // the caller will from the log, and given to both sides: the reference evaluator, which has no
+  // real deps, takes it instead of its approximation by ends (`forcedWhole`).
+  const withW = [...records, judgedW.judgement.record];
+  const unitOf = (f: string) =>
+    (table.groups.find((g) => g.includes(f as FieldId)) ?? [f]) as string[];
+  let second: ReturnType<typeof replayDeletion>;
+  let whole: Set<Target>;
+  try {
+    const bOnly = deletedContributions(kept, new Set([b]), isState);
+    // The blocks as the log has them after `a`: its restatements over the records (W's as written).
+    const afterA = overlay(givenByRecords(withW), first.replay.restated, ga);
+    const probe = replayDeletion(table, withW, both, [D], afterA);
+    const hit = new Set([
+      ...[...bOnly].filter((k) => !ga.has(k)),
+      ...probe.restated.map((r) => `${r.item.event}/${r.item.target}`),
+    ]);
+    const on = (deps: readonly { event: number; target: string }[]) =>
+      deps.some((x) => hit.has(`${x.event}/${x.target}`));
+    whole = new Set<Target>(
+      first.result.stretches
+        .filter((st) => on(st.deps))
+        .flatMap((st) => unitOf(st.field)) as Target[],
+    );
+    if (on(first.result.gaps?.deps ?? [])) whole.add("existence");
+    const Db: ExternalChange = {
+      op: D.op,
+      changedEntity: changedEntity || whole.has("existence"),
+      changed: new Map<FieldId, IntervalSet | "whole">([
+        ...[...changed].filter(([f]) => !whole.has(f)),
+        ...[...whole].filter((f) => f !== "existence").map((f) => [f as FieldId, "whole"] as const),
+      ]),
+    };
+    second = replayDeletion(table, withW, both, [Db], afterA);
+    if (whole.size > 0) graceCover.whole++;
+  } catch (e) {
+    if (e instanceof JudgeError && e.reason === "not_implemented") return;
+    throw e;
+  }
+  const bothSources = new Set([a, b]);
+  const refB = evaluateLog(
+    schema,
+    [...kept, del("pi_a", last + 1, a), W, del("pi_b", last + 4, b)],
+    {
+      forcedWhole: (op, deleted) =>
+        op === D.op && [...bothSources].every((x) => deleted.has(x as never)) ? whole : undefined,
+      observeWhole: (op, _deleted, unit, byEnds) => {
+        if (op !== D.op) return;
+        if (byEnds && whole.has(unit)) graceCover.endsAgree++;
+        else if (byEnds) graceCover.endsMore++;
+        else if (whole.has(unit)) graceCover.kernelOnly++;
+      },
+    },
+  ).final;
+  const proposals = new Set(
+    second.state.records
+      .filter((r) => r.kind === "undo" && r.status === "awaiting")
+      .map((r) => r.event),
+  );
+  const names = [
+    ...new Set([...Object.keys(refB.fields), ...Object.keys(view(second.state).fields)]),
+  ];
+  expect({
+    items: itemKeys(second.state.items.filter((x) => !proposals.has(x.event))),
+    fields: timelines(view(second.state).fields as never, names),
+  }).toEqual({
+    items: itemKeys(refB.items),
+    fields: timelines(refB.fields as never, names),
+  });
+  graceCover.compared++;
+}
+
+/**
+ * See its call: a write W2 in `a`'s grace period, having seen `a` (its baseline the state `a`
+ * left), then `a` cancelled. What the cancellation keeps in effect, the items and the values, as
+ * the reference evaluator gives; a cancellation that would have to keep something superseded is
+ * refused (`cancellation_keeping_superseded`) and set aside.
+ */
+function graceCancel(
+  schema: Schema,
+  isState: boolean,
+  table: RowState["table"],
+  kept: readonly Op[],
+  records: readonly OpRecord[],
+  a: string,
+  ga: ReadonlySet<string>,
+  first: ReturnType<typeof deletionResult>,
+  D: ExternalChange,
+  last: number,
+): void {
+  const W2: Op = {
+    kind: "write",
+    op: last + 2,
+    event: last + 3,
+    seen: last + 1,
+    ...(isState
+      ? { valid: { from: { mode: "given", value: "2026-11-02" }, to: { mode: "open" } } }
+      : {}),
+    fields: { f3: { value: "v", sources: ["SV"] } },
+    acknowledge: ["overwrite"],
+  } as Op;
+  let judged2: ReturnType<typeof judgeOp>;
+  try {
+    judged2 = judgeOp(first.replay.state, { ...(toInput(W2) as WriteInput), external: [D] });
+  } catch (e) {
+    if (e instanceof JudgeError) return;
+    throw e;
+  }
+  cancelCover.tried++;
+  // W2 pending (a candidate or awaiting) would open an item of its own in the log, which this
+  // comparison does not model (the item layer is given as the log has it after `a`): set aside,
+  // counted, and kept a minority below.
+  if (judged2.state.items.some((x) => x.event === W2.event && !effective(x.status))) {
+    cancelCover.w2Pending++;
+    return;
+  }
+  const withW = [...records, judged2.judgement.record];
+  // The items whose last interval block was `a`'s: restated by it, not as dropped.
+  const restatedByA = new Set(
+    first.replay.restated
+      .filter((r) => r.status !== "dropped")
+      .map((r) => `${r.item.event}/${r.item.target}`),
+  );
+  const fromA = new Set(
+    first.replay.restated
+      .filter((r) => r.status !== "dropped")
+      .map((r) => `${r.item.event}/${r.item.target}/${r.item.k}`),
+  );
+  // Since when every item of an (event, target) has been in effect, as the log says: `a`'s
+  // confirmation when it restated it, else its own operation.
+  const opOf = new Map(records.map((r) => [r.event, r.op]));
+  const since = (key: string) =>
+    restatedByA.has(key) ? last + 1 : (opOf.get(Number(key.split("/")[0])) ?? 0);
+  let c: ReturnType<typeof cancellationResult>;
+  try {
+    c = cancellationResult(
+      table,
+      withW,
+      new Set(),
+      ga,
+      // The items as the log has them after `a`: the records' items, then `a`'s item layer.
+      advance(itemsByRecords(new RowState(table, records)), first.items),
+      givenByRecords(withW),
+      fromA,
+      () => [D],
+      {
+        cancelledOp: last + 1,
+        coveredSince: last + 1,
+        keptEffective: new Set(),
+        effectiveSince: since,
+      },
+    );
+  } catch (e) {
+    if (e instanceof JudgeError && e.reason === "not_implemented") {
+      if (String(e.detail["kind"]) === "cancellation_keeping_superseded") cancelCover.refused++;
+      return;
+    }
+    throw e;
+  }
+  const ref = evaluateLog(schema, [
+    ...kept,
+    { kind: "deletion", op: last + 1, id: "pi_a", sources: [a] },
+    W2,
+    { kind: "cancel", op: last + 4, id: "pi_a" },
+  ]);
+  // W2 refused where the pipeline checks what judge does not (a row gone, its required field
+  // missing): not a grace-period write.
+  if (ref.steps.find((x) => x.entry.op === last + 2)?.refused === true) return;
+  const step = ref.steps.at(-1);
+  expect(step?.refused).toBe(false);
+  // Not refused: nothing can be kept superseded, which the refusal is to cover in every case.
+  expect(step?.keptSuperseded ?? []).toEqual([]);
+  expect(c.keptEffective.map((x) => `${x.event}/${x.target}`).sort()).toEqual(
+    (step?.keptEffective ?? []).map((x) => `${x.event}/${x.target}`).sort(),
+  );
+  const proposals = new Set(
+    c.replay.state.records
+      .filter((r) => r.kind === "undo" && r.status === "awaiting")
+      .map((r) => r.event),
+  );
+  const names = [
+    ...new Set([...Object.keys(ref.final.fields), ...Object.keys(view(c.replay.state).fields)]),
+  ];
+  expect({
+    items: itemKeys(c.replay.state.items.filter((x) => !proposals.has(x.event))),
+    fields: timelines(view(c.replay.state).fields as never, names),
+  }).toEqual({
+    items: itemKeys(ref.final.items),
+    fields: timelines(ref.final.fields as never, names),
+  });
+  cancelCover.compared++;
+  if (c.keptEffective.length > 0) cancelCover.kept++;
 }
 
 /** See its call: a listed stretch changed by one more deletion has a cleared dep. */
@@ -1100,6 +1468,22 @@ describe("the item layer's coverage", () => {
     const need = ["removed", "now_effective", "succeeded", "restored", "rejoined", "refreshed"];
     expect(Object.fromEntries(need.map((k) => [k, (itemCover[k] ?? 0) > 0]))).toEqual(
       Object.fromEntries(need.map((k) => [k, true])),
+    );
+  });
+
+  it("the samples gave cancellations with a write in the grace period, some keeping in effect", () => {
+    console.log("cancel", JSON.stringify(cancelCover));
+    expect(cancelCover.compared).toBeGreaterThan(0);
+    expect(cancelCover.kept).toBeGreaterThan(0);
+    expect(cancelCover.refused).toBeGreaterThan(0);
+    expect(cancelCover.w2Pending).toBeLessThan(cancelCover.tried * W2_PENDING_MAX);
+  });
+
+  it("the samples gave grace-period writes of each kind", () => {
+    console.log("grace", JSON.stringify(graceCover));
+    const { endsAgree: _a, endsMore: _m, kernelOnly: _k, ...kinds } = graceCover;
+    expect(Object.fromEntries(Object.entries(kinds).map(([k, n]) => [k, n > 0]))).toEqual(
+      Object.fromEntries(Object.keys(kinds).map((k) => [k, true])),
     );
   });
 });

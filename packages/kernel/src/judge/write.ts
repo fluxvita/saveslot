@@ -27,6 +27,7 @@ import { JudgeError } from "./errors.ts";
 import type {
   Conflict,
   CoveredCorroboration,
+  ExternalChange,
   FieldInput,
   ItemRef,
   ItemStatus,
@@ -606,6 +607,21 @@ function groupAt(state: RowState, unit: readonly FieldId[], seg: Interval, at: L
  * The operations after the seen version (other requests) that W's part conflicts with
  * (09-references-conflict-sync «冲突判据» ②③).
  */
+/** The deletion events of an op's input after the version it saw, before the op. */
+const externalSince = (
+  x: { readonly op: OpNumber; readonly external?: readonly ExternalChange[] },
+  seen: OpNumber,
+): ExternalChange[] => (x.external ?? []).filter((e) => e.op > seen && e.op < x.op);
+
+/** Where a deletion event changed any field of `fields` (the whole time for `"whole"`). */
+const externalOn = (e: ExternalChange, fields: readonly FieldId[]): IntervalSet =>
+  unionOf(
+    ...fields.map((g) => {
+      const c = e.changed.get(g);
+      return c === undefined ? [] : c === "whole" ? [WHOLE] : c;
+    }),
+  );
+
 function conflictingOps(
   state: RowState,
   w: WriteInput,
@@ -657,6 +673,28 @@ function conflictingOps(
         )
     ) {
       out.push(m);
+    }
+  }
+  // Deletion events after the version seen (L of the conflict criterion, 09-references «冲突判据»):
+  // where their record says they changed the unit, or over the whole unit when that record is on
+  // a deletion's list of positions; judged as an explicit interval.
+  for (const e of externalSince(w, seen)) {
+    const changed = externalOn(e, unit);
+    if (isNothing(changed)) continue;
+    if (!state.isState) {
+      out.push(e.op);
+      continue;
+    }
+    const inter = meet(p.seenValid, changed);
+    if (
+      state
+        .piecesIn(inter)
+        .some(
+          (s) =>
+            groupOfWrite(state, w, unit, seenRes, s, seenAt) !== groupAt(state, unit, s, curAt),
+        )
+    ) {
+      out.push(e.op);
     }
   }
   // The conflict is with a revoke when one of these operations revoked where the part lies.
@@ -712,9 +750,13 @@ export interface GapEntry {
  */
 function acknowledges(state: RowState, w: WriteInput): boolean {
   if (w.acknowledge !== true || !w.seenExplicit) return false;
-  // A corroboration makes no version (05-time «用同样的值写»): only applied items make it stale.
+  // A corroboration makes no version (05-time «用同样的值写»): only applied items make it stale,
+  // and a deletion or cancellation that changed the row or entity (it gave it a new version).
   const seen = seenOf(w);
-  return !state.items.some((x) => x.op > seen && x.op < w.op && x.status === "applied");
+  return (
+    !state.items.some((x) => x.op > seen && x.op < w.op && x.status === "applied") &&
+    !externalSince(w, seen).some((e) => e.changedEntity)
+  );
 }
 
 function shownAt(state: RowState, f: FieldId, seg: Interval, at: Limit): Shown {
@@ -823,12 +865,18 @@ export function judgeRevoke(state: RowState, r: RevokeInput, replay?: ReplayOpti
   } else if (!state.isState && state.revoked(curAt)) {
     return none; // Revoking a revoked row again is a no-op.
   }
-  // A revoke changes existence, which meets every conflict unit (撤销与并发修改).
-  const withOps = state
-    .opsBetween(seenOf(r), n)
-    .filter((m) =>
-      state.table.fields.some((g) => !isNothing(meet(state.changedBy(m, g), seenValid))),
-    );
+  // A revoke changes existence, which meets every conflict unit (撤销与并发修改). Deletion events
+  // after the version seen count where their record says they changed a field (L's interval).
+  const withOps = [
+    ...state
+      .opsBetween(seenOf(r), n)
+      .filter((m) =>
+        state.table.fields.some((g) => !isNothing(meet(state.changedBy(m, g), seenValid))),
+      ),
+    ...externalSince(r, seenOf(r))
+      .filter((e) => !isNothing(meet(externalOn(e, state.table.fields), seenValid)))
+      .map((e) => e.op),
+  ].sort((a, b) => a - b);
   // In a replay, a revoke in effect when written stays in effect (deviation two).
   // A revoke a resolution decided as a candidate stays one (deviation one).
   const conflict =

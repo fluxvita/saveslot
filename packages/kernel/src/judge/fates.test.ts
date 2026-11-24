@@ -54,7 +54,14 @@ function run(
   const before = deletedContributions(kept, new Set(pending), isState);
   const records = steps.map((x) => x.judgement.record);
   const written = new RowState(table, records);
-  const res = deletionResult(table, records, all, before, (o.items ?? itemsByRecords)(written), []);
+  const res = deletionResult(
+    table,
+    records,
+    all,
+    before,
+    (o.items ?? itemsByRecords)(written),
+    () => [],
+  );
   return { ...res, records, written, table };
 }
 
@@ -324,10 +331,10 @@ describe("two deletions in turn: the original item is the one when written", () 
   const given = itemsByRecords(new RowState(table, records));
   /** The first deletion, then the second with the first pending before it. */
   const inTurn = (first: string[], second: string[]) => {
-    const one = deletionResult(table, records, gone(first), new Set(), given, []);
+    const one = deletionResult(table, records, gone(first), new Set(), given, () => []);
     const between = advance(given, one.items);
     const all = gone([...first, ...second]);
-    const two = deletionResult(table, records, all, gone(first), between, []);
+    const two = deletionResult(table, records, all, gone(first), between, () => []);
     return { one, between, two, end: advance(between, two.items) };
   };
 
@@ -359,7 +366,14 @@ describe("two deletions in turn: the original item is the one when written", () 
     expect(two.items.superseded).toEqual(["28:f2", successor]);
     expect(two.items.opened).toEqual([]);
     // Both at once: #30 a conflict throughout, in its original item; the open items the same.
-    const once = deletionResult(table, records, gone(["S25f2", "S15f2"]), new Set(), given, []);
+    const once = deletionResult(
+      table,
+      records,
+      gone(["S25f2", "S15f2"]),
+      new Set(),
+      given,
+      () => [],
+    );
     expect(Object.fromEntries(once.items.fates)["31/f2"]).toBeUndefined();
     expect(openItems(end, two.replay.state)).toEqual(
       openItems(advance(given, once.items), once.replay.state),
@@ -491,7 +505,7 @@ describe("the original item still open (only refreshed): back to its kind, back 
   };
 
   it("#25 then #15: awaiting in a successor, then back in pi_a; the successor superseded; as both at once", () => {
-    const one = deletionResult(table, records, gone(["S25f2"]), new Set(), given, []);
+    const one = deletionResult(table, records, gone(["S25f2"]), new Set(), given, () => []);
     expect(one.items.refreshed).toEqual([
       { item: "pi_a", cause: "entries_deleted", left: ["31/f2"], back: [] },
     ]);
@@ -505,7 +519,7 @@ describe("the original item still open (only refreshed): back to its kind, back 
       gone(["S25f2", "S15f2"]),
       gone(["S25f2"]),
       between,
-      [],
+      () => [],
     );
     expect(Object.fromEntries(two.items.fates)).toEqual({
       "28/f2": { kind: "now_effective", item: "28:f2" },
@@ -516,7 +530,14 @@ describe("the original item still open (only refreshed): back to its kind, back 
       { item: "pi_a", cause: "entries_restored", left: [], back: ["31/f2"] },
     ]);
     expect(two.items.opened).toEqual([]);
-    const once = deletionResult(table, records, gone(["S25f2", "S15f2"]), new Set(), given, []);
+    const once = deletionResult(
+      table,
+      records,
+      gone(["S25f2", "S15f2"]),
+      new Set(),
+      given,
+      () => [],
+    );
     expect(openItems(advance(between, two.items), two.replay.state)).toEqual(
       openItems(advance(given, once.items), once.replay.state),
     );
@@ -723,14 +744,14 @@ describe("returned by the write's record: in effect in part when written", () =>
     const kept = steps.map((x) => x.op);
     const gone = (s: string[]) => deletedContributions(kept, new Set(s), true);
     const g = itemsByRecords(new RowState(table, records));
-    const one = deletionResult(table, records, gone(["S20f2", "S30f2"]), new Set(), g, []);
+    const one = deletionResult(table, records, gone(["S20f2", "S30f2"]), new Set(), g, () => []);
     const two = deletionResult(
       table,
       records,
       gone(["S20f2", "S30f2", "S10f2"]),
       gone(["S20f2", "S30f2"]),
       advance(g, one.items),
-      [],
+      () => [],
     );
     return { one, two };
   };
@@ -802,7 +823,14 @@ describe("returned by the write's record: in effect in part when written", () =>
       const kept = steps.map((x) => x.op);
       const gone = (s: string[]) => deletedContributions(kept, new Set(s), true);
       const g = itemsByRecords(new RowState(table, records));
-      const r = deletionResult(table, records, gone(["S20f2", "S10f2"]), gone(["S20f2"]), g, []);
+      const r = deletionResult(
+        table,
+        records,
+        gone(["S20f2", "S10f2"]),
+        gone(["S20f2"]),
+        g,
+        () => [],
+      );
       expect([...r.items.fates.values()].filter((f) => f.kind === "returned")).toEqual([]);
     }
   });
@@ -880,13 +908,13 @@ describe("the other kind, its original item still open with others pending (only
     expect(
       records.map((r) => ("items" in r ? r.items.map((x) => x.status).join(",") : "")),
     ).toEqual(["applied", "applied", "applied", "candidate", "applied", "candidate"]);
-    const one = deletionResult(table, records, gone(["S3"]), new Set(), given, []);
+    const one = deletionResult(table, records, gone(["S3"]), new Set(), given, () => []);
     expect(Object.fromEntries(one.items.fates)).toEqual({
       "71/f2": { kind: "now_effective", item: "41:f2" },
     });
     expect(one.items.refreshed.map((x) => [x.item, x.left])).toEqual([["41:f2", ["71/f2"]]]);
     const between = advance(given, one.items);
-    const two = deletionResult(table, records, gone(["S3", "S2"]), gone(["S3"]), between, []);
+    const two = deletionResult(table, records, gone(["S3", "S2"]), gone(["S3"]), between, () => []);
     expect(Object.fromEntries(two.items.fates)).toEqual({
       "71/f2": { kind: "succeeded", item: "41:f2", succeeds: "41:f2", as: "awaiting" },
     });
@@ -894,7 +922,7 @@ describe("the other kind, its original item still open with others pending (only
     expect(two.items.opened.map((x) => [x.succeeds, x.kind, x.members])).toEqual([
       ["41:f2", "awaiting", ["71/f2"]],
     ]);
-    const once = deletionResult(table, records, gone(["S3", "S2"]), new Set(), given, []);
+    const once = deletionResult(table, records, gone(["S3", "S2"]), new Set(), given, () => []);
     const end = openItems(advance(between, two.items), two.replay.state);
     expect(end).toEqual(openItems(advance(given, once.items), once.replay.state));
     expect(end).toEqual(["41:f2 awaiting: 71/f2", "41:f2 conflict: 41/f2"]);

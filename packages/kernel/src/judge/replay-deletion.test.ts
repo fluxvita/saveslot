@@ -209,14 +209,6 @@ describe("what this version refuses", () => {
     // Every target of it deleted: nothing of it is left, nothing to refuse.
     expect(replayDeletion(STATE, gone, new Set([contributionKey(11, "f2")])).records).toEqual([]);
   });
-
-  it("an operation after a deletion event: not_implemented", () => {
-    const { records } = run(awaiting.slice(0, 2));
-    expect(replayDeletion(STATE, records, new Set(), [25]).records).toHaveLength(2);
-    const e = refusal(() => replayDeletion(STATE, records, new Set(), [15]));
-    expect(e.reason).toBe("not_implemented");
-    expect(e.detail).toMatchObject({ op: 20 });
-  });
 });
 
 describe("people's confirmations and rejections, as recorded (deviation one)", () => {

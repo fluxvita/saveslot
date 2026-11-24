@@ -4,18 +4,19 @@
 
 import { itemsByRecords } from "../judge/fates.ts";
 import type { OpRecord, TableShape } from "../judge/model.ts";
-import { deletionResult } from "../judge/replay-deletion.ts";
+import { deletionResult, type ExternalFor } from "../judge/replay-deletion.ts";
 import { RowState } from "../judge/state.ts";
 
 /**
- * The replay of the row with `deleted` taken away, nothing pending before; `deletionOps`: the
- * operation numbers of the deletion events already in the log (none by default).
+ * The replay of the row with `deleted` taken away, nothing pending before; `external`: the
+ * deletion and cancellation events already in the log as L of the conflict criterion, for a
+ * replay's deleted set (none by default).
  */
 export const deletionReplayForTests = (
   table: TableShape,
   records: readonly OpRecord[],
   deleted: ReadonlySet<string>,
-  deletionOps: readonly number[] = [],
+  external: ExternalFor = () => [],
 ) =>
   deletionResult(
     table,
@@ -23,5 +24,5 @@ export const deletionReplayForTests = (
     deleted,
     new Set(),
     itemsByRecords(new RowState(table, records)),
-    deletionOps,
+    external,
   );

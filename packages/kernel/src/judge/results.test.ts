@@ -57,7 +57,7 @@ function run(schema: TableSchema, ops: Op[], sources: string[], pending: string[
         steps.map((x) => x.judgement.record),
       ),
     ),
-    [],
+    () => [],
   );
 }
 

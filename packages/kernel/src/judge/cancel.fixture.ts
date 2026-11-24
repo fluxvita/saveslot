@@ -6,10 +6,18 @@ import type { Op } from "@fluxvita/saveslot-reference";
 import { advance } from "./fates.fixture.ts";
 import { itemsByRecords } from "./fates.ts";
 import type { OpRecord, Restatement, TableShape } from "./model.ts";
-import { cancellationResult, deletionResult } from "./replay-deletion.ts";
+import { type CancellationLog, cancellationResult, deletionResult } from "./replay-deletion.ts";
 import { type GivenBlock, givenByRecords, type LatestGiven } from "./restate.ts";
 import { deletedContributions } from "./scenarios.fixture.ts";
 import { RowState } from "./state.ts";
+
+/** A cancellation with no operation after the deletion cancelled, nothing kept by earlier ones. */
+const NO_GRACE: CancellationLog = {
+  cancelledOp: Number.MAX_SAFE_INTEGER,
+  coveredSince: Number.MAX_SAFE_INTEGER,
+  keptEffective: new Set<string>(),
+  effectiveSince: () => 0,
+};
 
 const d = (md: string) => `2026-${md}` as BizPoint;
 const w = (
@@ -76,10 +84,10 @@ export function cancelBoth(
       .filter((r) => r.status !== "dropped")
       .map((r) => `${r.item.event}/${r.item.target}/${r.item.k}`);
   const g0 = itemsByRecords(new RowState(table, records));
-  const delA = deletionResult(table, records, ga, new Set(), g0, [], base);
+  const delA = deletionResult(table, records, ga, new Set(), g0, () => [], base);
   const afterA = laid(base, delA.replay.restated);
   const g1 = advance(g0, delA.items);
-  const delB = deletionResult(table, records, both, ga, g1, [], afterA);
+  const delB = deletionResult(table, records, both, ga, g1, () => [], afterA);
   const g2 = advance(g1, delB.items);
   // B cancelled: the blocks without B's are A's over the records; B's last interval blocks.
   const cB = cancellationResult(
@@ -90,7 +98,8 @@ export function cancelBoth(
     g2,
     afterA,
     new Set(interval(delB.replay.restated)),
-    [],
+    () => [],
+    NO_GRACE,
   );
   const g3 = advance(g2, cB.items);
   // A cancelled: the blocks without A's are B's cancellation's over the records.
@@ -105,7 +114,8 @@ export function cancelBoth(
     g3,
     laid(base, cB.replay.restated),
     new Set(interval(delA.replay.restated).filter((k) => !byCB.has(k))),
-    [],
+    () => [],
+    NO_GRACE,
   );
   return { table, records, g0, g2, g3, cB, cA, end: advance(g3, cA.items) };
 }

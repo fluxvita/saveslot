@@ -196,6 +196,21 @@ interface Recorded {
   readonly rejudgedAt: Map<string, OpNumber>;
   /** Deletion confirmations and cancellations, with where they changed each field's value. */
   readonly external: External[];
+  /** The operation number of each deletion confirmed, by its ID (L's record on a list, 09 §3.5 rule 1). */
+  readonly deletionOp: Map<string, OpNumber>;
+  /**
+   * Given by the caller (`evaluateLog` option `forcedWhole`): for a deletion event's operation and
+   * the deleted set of a replay, the units whose record is on a current deletion's list of
+   * positions — taken instead of `restsOnDeleted`, which approximates the list by ends.
+   */
+  forcedWhole?: (op: OpNumber, deleted: ReadonlySet<SourceKey>) => ReadonlySet<Target> | undefined;
+  /** Told, where `forcedWhole` decides, what the approximation by ends would have said. */
+  observeWhole?: (
+    op: OpNumber,
+    deleted: ReadonlySet<SourceKey>,
+    unit: Target,
+    byEnds: boolean,
+  ) => void;
   /**
    * Interval blocks removed by a deletion carried out (`execute`), as `<event>/<target>#<index in
    * history>`: what its list of positions held, by the approximation of `removedBy`.
@@ -225,6 +240,7 @@ function emptyRecorded(): Recorded {
     rejudged: new Map(),
     rejudgedAt: new Map(),
     external: [],
+    deletionOp: new Map(),
   };
 }
 
@@ -902,19 +918,45 @@ class Replay {
     // result depends on the log and the deleted set only.
     return this.rec.external
       .filter((e) => e.op > seen && e.op <= cur)
-      .map((e) => (this.restsOnDeleted(e.deps.get(f)) ? [ALL] : (e.changed.get(f) ?? [])))
+      .map((e) => (this.wholeOn(e, f) ? [ALL] : (e.changed.get(f) ?? [])))
       .filter((c) => !isEmpty(c));
   }
 
+  /** Whether deletion event `e` counts as changing `unit` whole in this replay. */
+  wholeOn(e: External, unit: Target): boolean {
+    const forced = this.rec.forcedWhole?.(e.op, this.deleted);
+    if (forced !== undefined) {
+      this.rec.observeWhole?.(
+        e.op,
+        this.deleted,
+        unit,
+        this.restsOnDeleted(e.deps.get(unit), e.op),
+      );
+      return forced.has(unit);
+    }
+    return this.restsOnDeleted(e.deps.get(unit), e.op);
+  }
+
   /**
-   * Whether one of these (event, target) is deleted: in the deleted set of this replay it has no
-   * item (a contribution present when the record was made, absent now). Asked while judging a
-   * later operation, when every earlier operation is in.
+   * Whether the record of a deletion event (operation `op`) resting on these (event, target) is on
+   * the list of positions of a deletion in the current deleted set (09-references «冲突判据», L's
+   * interval, by 09 §3.5 rule 1): one of them is deleted (in this replay it has no item: present
+   * when the record was made, absent now), or a deletion confirmed after it, not cancelled,
+   * restated it. Asked while judging a later operation, when every earlier operation is in.
    */
-  restsOnDeleted(deps: ReadonlySet<string> | undefined): boolean {
+  restsOnDeleted(deps: ReadonlySet<string> | undefined, op: OpNumber): boolean {
     if (deps === undefined || deps.size === 0) return false;
     const here = new Set([...this.items, ...this.shadows].map((x) => etKey(x.event, x.target)));
-    return [...deps].some((k) => !here.has(k));
+    const restatedAfter = (k: string) =>
+      (this.rec.history.get(k) ?? []).some(
+        (h) => !this.rec.cancelled.has(h.by) && (this.rec.deletionOp.get(h.by) ?? 0) > op,
+      );
+    // "Restated" is the other half of 09 §3.5 rule 1 and stays, though no log built so far tells it apart:
+    // the deps here are approximated by ends (`externalDeps`), and an item a later deletion
+    // restates without deleting changes an end only through a contribution that deletion deletes,
+    // which is itself among the deps, so `!here.has` already holds. Under `forcedWhole` this is
+    // not asked at all.
+    return [...deps].some((k) => !here.has(k) || restatedAfter(k));
   }
 
   /** Whether a revoke over `valid` meets a change in effect since `seen` (conflict criterion). */
@@ -1416,10 +1458,7 @@ class Replay {
     return (
       !this.items.some((x) => x.op > seen && x.op < o.op && x.status === "applied") &&
       !this.rec.external.some(
-        (e) =>
-          e.op > seen &&
-          e.op < o.op &&
-          (e.changedEntity || this.restsOnDeleted(e.deps.get("existence"))),
+        (e) => e.op > seen && e.op < o.op && (e.changedEntity || this.wholeOn(e, "existence")),
       )
     );
   }
@@ -2902,6 +2941,23 @@ export function evaluateLog(
      * its own replay would find (a decision is as recorded in every replay).
      */
     readonly forcedDecided?: ReadonlyMap<OpNumber, readonly string[]>;
+    /**
+     * For a deletion event's operation and a replay's deleted set, the units (fields, "existence")
+     * whose record is on a current deletion's list of positions (09-references «冲突判据», L's
+     * interval), as the log's blocks and their deps say; `undefined` leaves it to the
+     * approximation by ends (`restsOnDeleted`).
+     */
+    readonly forcedWhole?: (
+      op: OpNumber,
+      deleted: ReadonlySet<SourceKey>,
+    ) => ReadonlySet<Target> | undefined;
+    /** Where `forcedWhole` decides, what the approximation by ends would have said (tests). */
+    readonly observeWhole?: (
+      op: OpNumber,
+      deleted: ReadonlySet<SourceKey>,
+      unit: Target,
+      byEnds: boolean,
+    ) => void;
   } = {},
 ): LogEvaluation {
   // Writes by source key are modelled on event and timeless tables, without the version seen,
@@ -2915,7 +2971,11 @@ export function evaluateLog(
     if (log.some((e) => e.kind === "deletion" || e.kind === "cancel" || e.kind === "execute"))
       throw new Error("not modelled: writes by source key in a log with deletions");
   }
-  const rec = emptyRecorded();
+  const rec: Recorded = {
+    ...emptyRecorded(),
+    ...(options.forcedWhole !== undefined ? { forcedWhole: options.forcedWhole } : {}),
+    ...(options.observeWhole !== undefined ? { observeWhole: options.observeWhole } : {}),
+  };
   const ops: Op[] = [];
   const pending = new Map<
     string,
@@ -2985,6 +3045,7 @@ export function evaluateLog(
         continue;
       }
       pending.set(e.id, { op: e.op, sources: e.sources, before: prev, beforeState: prevState });
+      rec.deletionOp.set(e.id, e.op);
       confirmed.push({ op: e.op, pendingBefore: pendingKeys(prevState) });
       const r = replay(deletedNow());
       const state = r.result();
