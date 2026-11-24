@@ -216,10 +216,12 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         }),
       // A staging database an import left (refused, rolled back, or the one a swap replaced) is
       // dropped and forgotten when its tenant is next opened; a drop that fails is warned of, the
-      // tenant serves, and the next opening tries again.
+      // tenant serves, and the next opening tries again. One the import is still dropping, after
+      // its answer, is left to that drop: the opening does not wait for a DROP DATABASE.
       discardStaging: stagingDiscarder({
         control,
         discardDatabase: o.discardDatabase ?? cellDiscarder(config),
+        inFlight: "leave",
       }),
       onDiscardFailure: (tenant) => warn("tenant_staging_left", { tenant }),
       // The server mode makes no log.reconcile scratch database in this version (the operation is

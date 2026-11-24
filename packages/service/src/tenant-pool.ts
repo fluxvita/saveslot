@@ -36,9 +36,11 @@
 // staging database and holds it through ⑥, the swap included: while an import is under way nothing
 // in this process opens the tenant, and v1 runs one process per control database (02 §7), so
 // one seen on opening was left by a crash before ④, or is the database a swap replaced (⑤ records it
-// there) that a crash or a failed drop left. Without the marker the tenant's data is whole: a
-// discard that fails is reported (`onDiscardFailure`), the tenant serves, and the next opening tries
-// again. The empty log (`tenant_empty`) is checked after the marker, as §4 orders them.
+// there) that a crash or a failed drop left, or is a refused import's staging database (dropped after
+// the refusal's answer, recorded until then). One whose drop is still under way is left to that drop
+// by the server's `discardStaging` (`inFlight: "leave"`), so the opening does not wait for it.
+// Without the marker the tenant's data is whole: a discard that fails is reported
+// (`onDiscardFailure`), the tenant serves, and the next opening tries again. The empty log (`tenant_empty`) is checked after the marker, as §4 orders them.
 //
 // Opening drops the tenant's `log.reconcile` scratch storage a crash left (§3), before it opens the
 // tenant's storage: no run can be going on then, since a run holds a use. Dropping is the host's

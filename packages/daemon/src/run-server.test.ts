@@ -1407,7 +1407,6 @@ describe("runServer: POST /v1/import", () => {
       ),
     ]);
 
-  /** The tenant as the anchor and the directory have it: empty, no import left over. */
   /**
    * The tenant as the anchor and the directory have it: empty, no import left over, once the
    * staging database's drop (after a refusal's answer, outside the exclusive) has finished.
@@ -1589,7 +1588,7 @@ describe("runServer: POST /v1/import", () => {
       const holdStagingDrop = new Promise<void>((r) => {
         release = r;
       });
-      const { s, cp, user, source, file } = await serverWithSource({ holdStagingDrop });
+      const { s, cp, user, source, file, auth } = await serverWithSource({ holdStagingDrop });
       try {
         const notEmpty = await within(upload(s, source.token, bodyOf(file)), "the import");
         expect(notEmpty.status).toBe(400);
@@ -1602,6 +1601,14 @@ describe("runServer: POST /v1/import", () => {
         expect(bad.status).toBe(422);
         expect(JSON.parse(bad.body).error).toMatchObject({ code: "import_rejected" });
         // Answered with the drop held: the record stays until the drop has finished.
+        expect((await cp.tenant(target.tenant))?.staging).toBeDefined();
+        // The tenant's next request opens it: the opening leaves the staging database to the drop
+        // under way and serves, rather than waiting on a second DROP of it.
+        const next = await within(
+          send(s, { path: "/v1/slots", headers: auth(target.token) }),
+          "the next request",
+        );
+        expect(next.status).toBe(200);
         expect((await cp.tenant(target.tenant))?.staging).toBeDefined();
         release();
         await leftEmpty(cp, target.tenant);

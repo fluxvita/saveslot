@@ -28,12 +28,13 @@
 // database it leaves is dropped and forgotten after that, outside the exclusive, as the replaced
 // one is (`onFailureDrops`). The directory records it until its drop has finished. A new import
 // meanwhile meets that record and drops it before recording its own (both drops `IF EXISTS`, the
-// record forgotten only while it still names it); an opening meanwhile drops it as any unmarked
-// staging database, and waits for that drop. A failure from ④ on leaves the marker: the pool's
-// next opening finishes the import (swapped in) or rolls it back (not), and a staging database with
-// no marker is dropped there too (`stagingDiscarder`). The database the swap replaced is that
-// too: a crash after ⑤, or a drop that failed, leaves it recorded, and the pool's next opening drops
-// it.
+// record forgotten only while it still names it), and waits for that drop to end first, so a drop
+// that fails cannot leave it unrecorded. An opening meanwhile, with the server's pool, leaves it to
+// that drop and does not wait (`stagingDiscarder`'s `inFlight`). A failure from ④ on leaves the
+// marker: the pool's next opening finishes the import (swapped in) or rolls it back (not), and a
+// staging database with no marker is dropped there too (`stagingDiscarder`). The database the swap
+// replaced is that too: a crash after ⑤, or a drop that failed, leaves it recorded, and the pool's
+// next opening drops it.
 //
 // Dropping is the daemon's (`discardDatabase`, from the PostgreSQL backend): this package does not
 // depend on a backend (§11). Its guard refuses any database but the tenant's staging databases and
@@ -80,24 +81,60 @@ const postgresRef = (ref: TenantRef) => {
 };
 
 /**
+ * The drops of a staging database under way, by control plane, then by tenant and database. A
+ * server has one control plane, and one process runs on a control database (02-architecture §7),
+ * so for a server these are all the drops there are. A control plane closed and opened again (a
+ * server started again in the same process) starts with none.
+ */
+const dropsInFlight = new WeakMap<ServerControl, Map<string, Promise<void>>>();
+
+/**
  * The pool's `discardStaging`: drops the tenant's staging database (nothing when it is gone) and
  * forgets it in the directory. A database the directory names as the tenant's is never dropped.
+ *
+ * A drop of the same database may already be under way (an import's, after its answer), and
+ * `inFlight` says what to do then. "wait": wait for it to end, then drop and forget as usual
+ * (nothing left to drop then), so that what needs the database gone, an import about to record its
+ * own, gets it gone even when that drop failed. "leave": leave the database to that drop and
+ * return at once, for an opening, which serves whether the record is there or not and should not
+ * wait for a `DROP DATABASE`; a drop that fails leaves the record for the next opening.
  */
 export function stagingDiscarder(o: {
   readonly control: ServerControl;
   readonly discardDatabase: DiscardDatabase;
+  readonly inFlight: "wait" | "leave";
 }): (tenant: TenantId, staging: string) => Promise<void> {
+  let drops = dropsInFlight.get(o.control);
+  if (drops === undefined) {
+    drops = new Map();
+    dropsInFlight.set(o.control, drops);
+  }
+  const inFlight = drops;
   return async (tenant, staging) => {
-    const entry = await o.control.tenant(tenant);
-    if (entry === undefined) return;
-    const ref = postgresRef(entry.ref);
-    await o.discardDatabase({
-      cell: ref.cell,
-      tenantDatabase: databaseOf(tenant),
-      current: ref.database,
-      database: staging,
-    });
-    await o.control.forgetStaging(tenant, staging);
+    const key = `${tenant}\u0000${staging}`;
+    const running = inFlight.get(key);
+    if (running !== undefined) {
+      if (o.inFlight === "leave") return;
+      await running.catch(() => {});
+    }
+    const drop = (async () => {
+      const entry = await o.control.tenant(tenant);
+      if (entry === undefined) return;
+      const ref = postgresRef(entry.ref);
+      await o.discardDatabase({
+        cell: ref.cell,
+        tenantDatabase: databaseOf(tenant),
+        current: ref.database,
+        database: staging,
+      });
+      await o.control.forgetStaging(tenant, staging);
+    })();
+    inFlight.set(key, drop);
+    try {
+      await drop;
+    } finally {
+      if (inFlight.get(key) === drop) inFlight.delete(key);
+    }
   };
 }
 
@@ -152,7 +189,11 @@ export async function importServerTenant(o: {
     held = await o.pool.exclusive(o.tenant, () => importHeld(o, after), { refuse: "importing" });
   } catch (e) {
     const dropped = dropAllQuietly(o, after);
-    o.onFailureDrops?.(dropped);
+    try {
+      o.onFailureDrops?.(dropped);
+    } catch {
+      // A host's callback that throws is not the import's failure: its own error is.
+    }
     throw e;
   }
   return { ...held.result, dropped: dropAllQuietly(o, [...after, held.replaced]) };
@@ -185,7 +226,9 @@ async function dropQuietly(
   database: string,
 ): Promise<void> {
   try {
-    await stagingDiscarder(o)(o.tenant, database);
+    // A drop of it already under way is joined, then this one drops what is left: `dropped` and
+    // `onFailureDrops` resolve only once the database is gone, and a failure is told here.
+    await stagingDiscarder({ ...o, inFlight: "wait" })(o.tenant, database);
   } catch (e) {
     try {
       (o.onDiscardFailure ?? reportDiscardToStderr)(o.tenant, database, e);
@@ -204,7 +247,8 @@ async function importHeld(
     throw new OpsError("internal", "importServerTenant: the tenant is not an active one");
   }
   const ref = postgresRef(entry.ref);
-  const discard = stagingDiscarder(o);
+  // What must be gone before the import goes on: a drop of it under way is waited for first.
+  const discard = stagingDiscarder({ ...o, inFlight: "wait" });
   /**
    * A drop that only cleans up: left for after the answer, outside the exclusive; its failure is
    * told, never thrown in place of what happened.
