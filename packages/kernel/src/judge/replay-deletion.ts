@@ -662,6 +662,30 @@ export function replayDeletion(
         { kind: "revoke_conflict_cleared", op: r.op },
       );
     }
+    // A revoke that was a no-op when written (the row revoked already: no existence item), in effect
+    // in the replay: as with a candidate whose conflict the deletion clears, whether it awaits for
+    // its referrers (high impact ②) needs other rows', which a replay does not see (03-deletion
+    // «高影响（重算）»). On a table that may be referred to, refused.
+    if (
+      r.kind === "revoke" &&
+      !r.items.some((x) => x.target === "existence") &&
+      judged.items.some((x) => x.target === "existence" && x.status === "applied")
+    ) {
+      if (table.referable === undefined) {
+        throw new JudgeError(
+          "invalid",
+          "a deletion's replay needs to know whether the table may be referred to",
+          { op: r.op },
+        );
+      }
+      if (table.referable === true) {
+        throw new JudgeError(
+          "not_implemented",
+          "a deletion's replay of a revoke that was a no-op when written and takes effect, on a table referred to",
+          { kind: "revoke_noop_now_effective", op: r.op },
+        );
+      }
+    }
     let record: OpRecord = {
       op: r.op,
       index: r.index,

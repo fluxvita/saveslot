@@ -1172,6 +1172,7 @@ const REFUSED = new Set([
   "take_candidate candidate",
   "referenced_revoke_awaiting",
   "revoke_conflict_cleared",
+  "revoke_noop_now_effective",
 ]);
 
 function refusedShape(e: unknown): boolean {

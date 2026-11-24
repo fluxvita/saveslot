@@ -22,11 +22,13 @@
 // - `item_numbered_anew`: a restatement gives an (event, target) an item index it did not have
 //   (apply does not number items anew);
 // - `referenced_revoke_awaiting`: an affected row refers to a row whose revoke awaits for its
-//   referrers (high impact ②), or such a revoke, undecided, is on an affected row; and
-//   `revoke_conflict_cleared`: a revoke a candidate when written, its conflict cleared by the
-//   deletion, on a table that may be referred to (03-deletion «高影响（重算）»: who refers to it is
-//   other rows', which the replay of the affected rows does not see). The replay refuses the
-//   shapes on the row itself; the referrer on another row is refused here.
+//   referrers (high impact ②), or such a revoke, undecided, is on an affected row;
+//   `revoke_conflict_cleared`, `revoke_noop_now_effective`: on a table that may be referred to, a
+//   revoke that takes effect in the replay where, when written, it was a candidate whose conflict
+//   the deletion clears, or a no-op (the row revoked already). A revoke awaits only for high
+//   impact ②, so an awaiting one is the kind above (03-deletion «高影响（重算）»: who
+//   refers to it is other rows', which the replay of the affected rows does not see). The replay
+//   refuses the shapes on the row itself; the referrer on another row is refused here.
 
 import { createHash } from "node:crypto";
 import {
@@ -63,7 +65,10 @@ export type RefusedKind =
   | "premise"
   | "schema_const"
   | "derived"
-  | "item_numbered_anew";
+  | "item_numbered_anew"
+  /** Refused by the replay (judge/replay-deletion.ts), passed on with its kind. */
+  | "revoke_conflict_cleared"
+  | "revoke_noop_now_effective";
 
 const refuse = (kind: RefusedKind, message: string, detail: Record<string, unknown> = {}) =>
   new WriteError("internal", `a deletion ${message} is not implemented`, {
@@ -373,7 +378,8 @@ export async function planDeletionOf(
       throw refuse("schema_const", "on a row holding a schema constant", { row: id });
     }
     // Whether the table may be referred to, by every version the slot has had: the replay refuses a
-    // revoke whose conflict the deletion clears on such a table (`revoke_conflict_cleared`).
+    // revoke a candidate or a no-op when written that takes effect, on such a table
+    // (`revoke_conflict_cleared`, `revoke_noop_now_effective`).
     const shape = replayShape(table, versions);
     const isState = shape.kind === "state";
     const ctx: RowContext = {

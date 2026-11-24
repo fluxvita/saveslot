@@ -182,3 +182,68 @@ describe("a deletion's replay of a stale revoke whose conflict the deletion clea
     expect(ref.exists).toBe(false);
   });
 });
+
+describe("a deletion's replay of a revoke that was a no-op when written and takes effect", () => {
+  // #10 f2=9 (S3); #20 (seen 0) f2=1 (S2): a candidate against #10; #23 (seen 12) revokes the row,
+  // its target referred to: it awaits (high impact ②); #25 confirms it, the row revoked; #33
+  // revokes again: a no-op when written (the row revoked already). Deleting #10's f2: #20 takes
+  // effect, #23 (having seen a version before #20) is a candidate against it, the confirmation
+  // writes nothing, and the row is not revoked where #33 falls: #33 takes effect in the replay.
+  // Whether it awaits for its referrers is other rows' (the reference evaluator, given them, has
+  // it awaiting): on a table that may be referred to, refused.
+  const ops = [
+    { kind: "write", op: 10, event: 11, seen: 0, fields: { f2: { value: "9", sources: ["S3"] } } },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 0,
+      fields: { f2: { value: "1", sources: ["S2"] } },
+      acknowledge: ["overwrite"],
+    },
+    { kind: "revoke", op: 23, event: 24, seen: 12, referenced: true },
+    { kind: "confirm", op: 25, event: 26, target: 24 },
+    { kind: "revoke", op: 33, event: 34, seen: 32, referenced: true },
+  ] as unknown as Op[];
+  const gone = new Set([contributionKey(11, "f2")]);
+
+  it("on a table that may be referred to: refused (not_implemented), never judged as effective", () => {
+    const { table, steps } = judged(EVENT_SCHEMA, ops, []);
+    expect(steps).toHaveLength(ops.length);
+    const records = steps.map((x) => x.judgement.record);
+    // #33 was a no-op when written: no item.
+    expect(records[4]?.kind === "revoke" && records[4].items).toEqual([]);
+    expect(table.referable).toBe(true);
+    let caught: unknown;
+    try {
+      replayDeletion(table, records, gone);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toMatchObject({
+      reason: "not_implemented",
+      detail: { kind: "revoke_noop_now_effective", op: 33 },
+    });
+    // The reference evaluator, knowing #33's referrers, has it awaiting: other rows decide.
+    const ref = evaluateLog(EVENT_SCHEMA, [
+      ...ops,
+      { kind: "deletion", op: 40, id: "pi_d", sources: ["S3"] },
+    ]).final;
+    expect(
+      ref.items.filter((x) => x.event === 34 && x.target === "existence").map((x) => x.status),
+    ).toEqual(["awaiting"]);
+  });
+
+  it("referable not given: refused (invalid), never taken as not referable", () => {
+    const { table, steps } = judged(EVENT_SCHEMA, ops, []);
+    const records = steps.map((x) => x.judgement.record);
+    const { referable: _, ...unknown } = table;
+    let caught: unknown;
+    try {
+      replayDeletion(unknown, records, gone);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toMatchObject({ reason: "invalid" });
+  });
+});
