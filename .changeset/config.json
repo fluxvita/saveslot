@@ -2,7 +2,21 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
   "changelog": "@changesets/cli/changelog",
   "commit": false,
-  "fixed": [],
+  "fixed": [
+    [
+      "@fluxvita/saveslot",
+      "@fluxvita/saveslot-cli",
+      "@fluxvita/saveslot-client",
+      "@fluxvita/saveslot-contract",
+      "@fluxvita/saveslot-contract-core",
+      "@fluxvita/saveslot-daemon",
+      "@fluxvita/saveslot-server",
+      "@fluxvita/saveslot-service",
+      "@fluxvita/saveslot-kernel",
+      "@fluxvita/saveslot-store-pglite",
+      "@fluxvita/saveslot-store-postgres"
+    ]
+  ],
   "linked": [],
   "access": "public",
   "baseBranch": "main",

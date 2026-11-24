@@ -15,16 +15,20 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.fixture.*",
+    "!dist/.tsbuildinfo"
   ],
   "engines": {
     "node": ">=24.22.1 <25 || >=26.12.1"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@fluxvita/saveslot-client": "workspace:*",
     "age-encryption": "0.3.1"
   },
-  "private": true,
   "devDependencies": {
     "fast-check": "4.10.2"
   }

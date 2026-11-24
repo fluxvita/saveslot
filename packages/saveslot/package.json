@@ -12,16 +12,20 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.fixture.*",
+    "!dist/.tsbuildinfo"
   ],
   "engines": {
     "node": ">=24.22.1 <25 || >=26.12.1"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@fluxvita/saveslot-cli": "workspace:*",
     "@fluxvita/saveslot-daemon": "workspace:*"
   },
-  "private": true,
   "bin": {
     "saveslot": "./dist/bin.js"
   }

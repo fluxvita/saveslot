@@ -12,16 +12,20 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.fixture.*",
+    "!dist/.tsbuildinfo"
   ],
   "engines": {
     "node": ">=24.22.1 <25 || >=26.12.1"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@fluxvita/saveslot-kernel": "workspace:*",
     "pg": "8.23.1"
   },
-  "private": true,
   "devDependencies": {
     "@electric-sql/pglite": "0.5.16",
     "@types/pg": "8.23.1"

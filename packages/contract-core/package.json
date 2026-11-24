@@ -12,13 +12,17 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.fixture.*",
+    "!dist/.tsbuildinfo"
   ],
   "engines": {
     "node": ">=24.22.1 <25 || >=26.12.1"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {},
-  "private": true,
   "devDependencies": {
     "canonicalize": "5.1.0",
     "fast-check": "4.10.2"

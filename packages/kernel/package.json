@@ -23,16 +23,20 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.fixture.*",
+    "!dist/.tsbuildinfo"
   ],
   "engines": {
     "node": ">=24.22.1 <25 || >=26.12.1"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@fluxvita/saveslot-contract-core": "workspace:*",
     "libpg-query": "18.2.4"
   },
-  "private": true,
   "devDependencies": {
     "@fluxvita/saveslot-reference": "workspace:*",
     "fast-check": "4.10.2"

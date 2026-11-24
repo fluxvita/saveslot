@@ -17,10 +17,15 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.fixture.*",
+    "!dist/.tsbuildinfo"
   ],
   "engines": {
     "node": ">=24.22.1 <25 || >=26.12.1"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@fluxvita/saveslot-server": "workspace:*",
@@ -29,7 +34,6 @@
     "@fluxvita/saveslot-store-postgres": "workspace:*",
     "smol-toml": "1.9.1"
   },
-  "private": true,
   "devDependencies": {
     "@modelcontextprotocol/client": "2.4.0"
   }
