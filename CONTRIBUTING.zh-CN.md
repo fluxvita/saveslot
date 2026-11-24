@@ -5,8 +5,8 @@
 ## 流程
 
 1. 从主分支拉一个分支。没有向仓库推分支的权限时，先 fork，在自己的 fork 里拉分支。
-2. 向 `main` 提合并请求（用了 fork 就从 fork 提），按模板填写。标题用 conventional commits 写法，它就是 squash 之后那个提交的标题；CI 会检查标题（类型限 `feat`、`fix`、`docs`、`test`、`build`、`ci`、`chore`、`refactor`、`perf`、`revert`、`style`，范围用小写）。
-3. 分支推上去之后只在末端追加提交，不变基、不强推：审过的提交保持原样。分支只是落后于 `main` 时不用处理，维护者在合并时变基。与 `main` 有冲突，或者合进 `main` 之后 `pnpm check` 不再通过时，由你在分支末端合并一次 `main`（合并提交带 `Signed-off-by`，说明里列出冲突的文件与各自的取法），在那个头上跑 `pnpm check`，再推送。维护者不替作者在分支上解冲突。
+2. 向 `main` 提合并请求（用了 fork 就从 fork 提），按模板填写。合并请求都提到 `main`，给已发布版本的修复也一样：合进 `main` 之后由维护者挑到那个版本的发布分支（`release/0.<小版本>`）。标题用 conventional commits 写法，它就是 squash 之后那个提交的标题；CI 会检查标题（类型限 `feat`、`fix`、`docs`、`test`、`build`、`ci`、`chore`、`refactor`、`perf`、`revert`、`style`，范围用小写）。
+3. 分支推上去之后只在末端追加提交：审过的提交保持原样。分支保持线性，不带合并提交：合并请求以 fast-forward 的方式 squash 进 `main`，带合并提交的分支在合并时变基不了。分支只是落后于 `main` 时不用处理，维护者在合并时变基。与 `main` 有冲突，或者叠到最新的 `main` 上 `pnpm check` 不再通过时，由你变基到最新的 `main`，在那个头上跑 `pnpm check`，用 `git push --force-with-lease` 推上去，并在合并请求上写一句（旧头、新头、各处冲突的取法）。已推的分支只在这一种情况下重写。维护者不替作者在分支上解冲突。
 4. 合并的条件：合并请求的流水线（快检查：标题、签名、密钥、禁用词）通过；`pnpm check` 在要合并的头上通过（你在推之前跑，把结果贴进描述；维护者视改动的风险在合并前于最终的头上再跑一遍）；评审讨论全部解决，并由一位维护者批准。
 5. 由维护者 squash 合并。
 
