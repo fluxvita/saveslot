@@ -20,6 +20,11 @@ import { newToken, tokenHash } from "./tokens.ts";
 
 /** Whether the restricted SQL parser is loaded in this process (the tenant's opening loads it). */
 export { isRsqlLoaded } from "@fluxvita/saveslot-kernel";
+/**
+ * Cheaper scrypt for new passwords in a test that is not about the hash's cost: each hash records
+ * its own parameters, and the shipped ones are tested in local-accounts.test.ts.
+ */
+export { useScryptForTests } from "./local-passwords.ts";
 
 export const TEST_TENANT = `tn_${"8".repeat(26)}` as const;
 export const TEST_USER = `u_${"1".repeat(26)}` as const;

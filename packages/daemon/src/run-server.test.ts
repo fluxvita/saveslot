@@ -2,6 +2,9 @@
 // §14, §15) on a real control database and tenants, on either backend (`pnpm test:postgres` runs this
 // file on PostgreSQL): what answers each request, in which order, what it refuses to start on, and
 // how it closes. Fictional names.
+//
+// New passwords are hashed with cheap scrypt parameters (useScryptForTests): this file is not about
+// the hash's cost. The real parameters are covered by service's local-accounts.test.ts.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
@@ -25,6 +28,7 @@ import {
   type UserId,
   writeUserSession,
 } from "@fluxvita/saveslot-service";
+import { useScryptForTests } from "@fluxvita/saveslot-service/testing";
 import {
   type ControlDatabase,
   checkDiscard,
@@ -67,6 +71,10 @@ const root = tmp.root;
 
 let n = 0;
 const stores: Store[] = [];
+// Cheap scrypt for new passwords (see the head of the file); each hash records its own parameters.
+beforeAll(() => useScryptForTests({ N: 2 ** 10, r: 8, p: 1 }));
+afterAll(() => useScryptForTests(undefined));
+
 afterAll(async () => {
   for (const s of stores) await tmp.closeWarned("a control database", s);
 }, T);
