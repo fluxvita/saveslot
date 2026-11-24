@@ -1,7 +1,10 @@
-# Publishes to npm what main's versions say and npm does not have yet (RELEASING.md). Runs after the
-# `ci` workflow passed on a push to main, on the commit it checked; by hand to retry. Publishes nothing
-# in Changesets pre mode (prereleases are published by hand) or when the entry's version is already
-# on npm, so every other push to main ends after the first steps.
+# Publishes to npm what a release branch's versions say and npm does not have yet (RELEASING.md).
+# Runs after the `ci` workflow passed on a push to a release branch (`release/0.<minor>`), on the
+# commit it checked; by hand to retry, on a release branch. Versions and tags are set on the release
+# branch, so main never publishes. Publishes nothing in Changesets pre mode (prereleases are
+# published by hand) or when the entry's version is already on npm, so every other push to a release
+# branch ends after the first steps. GitHub runs a `workflow_run` workflow from the default branch's
+# copy of this file, so a change to it takes effect once it is on main.
 
 name: release
 
@@ -9,7 +12,7 @@ on:
   workflow_run:
     workflows: [ci]
     types: [completed]
-    branches: [main]
+    branches: ["release/**"]
   workflow_dispatch:
 
 permissions:
@@ -22,8 +25,9 @@ concurrency:
 jobs:
   publish:
     if: >-
-      github.repository == 'fluxvita/saveslot' && (github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'))
+      github.repository == 'fluxvita/saveslot' && ((github.event_name == 'workflow_dispatch' &&
+      startsWith(github.ref, 'refs/heads/release/')) || (github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
