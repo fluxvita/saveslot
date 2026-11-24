@@ -6,12 +6,13 @@ import type { Op } from "@fluxvita/saveslot-reference";
 import { evaluateLog } from "@fluxvita/saveslot-reference";
 import { STATE } from "@fluxvita/saveslot-reference/testing";
 import { describe, expect, it } from "vitest";
+import { cancelBoth, laid, PART_BACK_OPS } from "./cancel.fixture.ts";
 import { advance, openItems } from "./fates.fixture.ts";
-import { itemsByRecords } from "./fates.ts";
+import { type ItemStanding, type ItemsGiven, itemsByRecords } from "./fates.ts";
 import { view } from "./judge.ts";
 import type { OpRecord, Restatement } from "./model.ts";
 import { cancellationResult, deletionResult, replayDeletion } from "./replay-deletion.ts";
-import { type GivenBlock, givenByRecords, type LatestGiven } from "./restate.ts";
+import { givenByRecords } from "./restate.ts";
 import { deletedContributions, judged } from "./scenarios.fixture.ts";
 import { RowState } from "./state.ts";
 
@@ -36,28 +37,6 @@ const w = (
   ) as never,
   ...(o.ack ? { acknowledge: ["overwrite"] as const } : {}),
 });
-
-/** The blocks after a deletion's restatements: each restated index replaced, as the log reads. */
-function laid(base: LatestGiven, restated: readonly Restatement[]): Map<string, GivenBlock[]> {
-  const out = new Map([...base].map(([k, bs]) => [k, [...bs]]));
-  for (const r of restated) {
-    const et = `${r.item.event}/${r.item.target}`;
-    const was = (out.get(et) ?? []).find((b) => b.k === r.item.k) ?? (out.get(et) ?? [])[0];
-    const rest = (out.get(et) ?? []).filter((b) => b.k !== r.item.k);
-    out.set(et, [
-      ...rest,
-      {
-        k: r.item.k,
-        status: r.status,
-        valid: r.status === "dropped" ? [] : (r.valid ?? [{ from: null, to: null }]),
-        deps: r.deps,
-        content: r.content ?? was?.content ?? { kind: "value", value: null },
-        ...(r.carried !== undefined ? { carried: r.carried } : {}),
-      },
-    ]);
-  }
-  return out;
-}
 
 /**
  * The log judged; deletion A (its sources) confirmed, then B (pending before it is A), then A
@@ -458,5 +437,211 @@ describe("an item a deletion restated as dropped: its interval is the last one g
     ]).final;
     expect(at51(replay.state.items)).toEqual([["applied", [{ from: d("11-01"), to: d("11-09") }]]]);
     expect(at51(replay.state.items)).toEqual(at51(ref.items));
+  });
+});
+
+describe("a part going back pending as its original item's kind goes back to its original item, not the successor it is in", () => {
+  // #10 f2=9 from 10-01 (S5); #20 f2=9 on [11-01, 11-03); #40 revokes [11-01, 11-03) (S1); #60
+  // (seen #20) f2=9 from 11-01 pointing at its evidence: a candidate on [11-01, 11-03) on the
+  // existence item 61:existence (it met the revoke), a corroboration from 11-03; #70 revokes
+  // [11-01, 11-03) again (S1). A deletes S1, B deletes S5: #61 awaiting, 61:existence>awaiting
+  // succeeding the conflict item. B cancelled: #61 a corroboration, not pending. A cancelled: its
+  // part in effect goes back, a candidate again: of the original item's kind, so back in
+  // 61:existence, restored (03-deletion «因先前的删除才生效、本次将回到未决的写入»: «种类与原事项
+  // 相同的给出它回到的原事项（已被取代的恢复…）», kinds compared with the original item's).
+  const ops = PART_BACK_OPS;
+  const run = (a: string[], b: string[]) => {
+    const { table, steps } = judged(STATE, ops, []);
+    return cancelBoth(
+      table,
+      steps.map((x) => x.judgement.record),
+      steps.map((x) => x.op),
+      a,
+      b,
+    );
+  };
+  it("of the kind of neither its original item nor the one it is in: a new item succeeds the original", () => {
+    // A deletes S1: #61 a corroboration, not pending. B deletes S5 too: its part in effect goes
+    // back, pending as awaiting; its original item and the one it is in are both 61:existence, a
+    // conflict item: succeeded, an awaiting item opened.
+    const { table, steps } = judged(STATE, ops, []);
+    const kept = steps.map((x) => x.op);
+    const records = steps.map((x) => x.judgement.record);
+    const ga = deletedContributions(kept, new Set(["S1"]), true);
+    const gab = deletedContributions(kept, new Set(["S1", "S5"]), true);
+    const base = givenByRecords(records);
+    const g0 = itemsByRecords(new RowState(table, records));
+    const delA = deletionResult(table, records, ga, new Set(), g0, [], base);
+    const delB = deletionResult(
+      table,
+      records,
+      gab,
+      ga,
+      advance(g0, delA.items),
+      [],
+      laid(base, delA.replay.restated),
+    );
+    expect(delB.items.fates.get("61/f2")).toMatchObject({
+      kind: "succeeded",
+      succeeds: "61:existence",
+      as: "awaiting",
+    });
+    expect(delB.items.opened).toMatchObject([
+      { succeeds: "61:existence", kind: "awaiting", members: ["61/f2"] },
+    ]);
+  });
+
+  it("of the kind of the successor it is in, not its original item's: back in that successor, restored", () => {
+    // As above, then B cancelled (the successor superseded, #61 not pending), then S5 deleted again
+    // (another deletion): its part in effect goes back pending as awaiting, the kind of the
+    // successor it is in, not of 61:existence: back in 61:existence>awaiting, restored.
+    const r = run(["S1"], ["S5"]);
+    const base = givenByRecords(r.records);
+    const { steps } = judged(STATE, ops, []);
+    const kept = steps.map((x) => x.op);
+    const ga = deletedContributions(kept, new Set(["S1"]), true);
+    const gab = deletedContributions(kept, new Set(["S1", "S5"]), true);
+    expect(r.g3.of.get("61/f2")).toBe("61:existence>awaiting");
+    const again = deletionResult(
+      r.table,
+      r.records,
+      gab,
+      ga,
+      r.g3,
+      [],
+      laid(base, r.cB.replay.restated),
+    );
+    expect(again.items.fates.get("61/f2")).toMatchObject({ kind: "returned", into: "merged" });
+    expect(again.items.fates.get("61/f2")).not.toHaveProperty("to");
+    expect(again.items.restored).toEqual(["61:existence>awaiting"]);
+    expect(openItems(advance(r.g3, again.items), again.replay.state)).toEqual([
+      "61:existence awaiting: 61/f2",
+    ]);
+  });
+  it("61:existence restored, the open items as written", () => {
+    const r = run(["S1"], ["S5"]);
+    expect(r.g0.items.get("61:existence")?.kind).toBe("conflict");
+    // After both deletions, #61 awaiting in the item succeeding 61:existence.
+    expect(r.g2.of.get("61/f2")).toBe("61:existence>awaiting");
+    expect(r.cA.items.restored).toEqual(["61:existence"]);
+    expect(r.cA.items.fates.get("61/f2")).toMatchObject({ kind: "returned", to: "61:existence" });
+    expect(openItems(r.end, r.cA.replay.state)).toEqual(openItems(r.g0, r.cA.replay.state));
+    expect(openItems(r.end, r.cA.replay.state)).toEqual(["61:existence conflict: 61/f2"]);
+  });
+});
+
+describe("a part going back whose item is closed, or that is a member of a successor before", () => {
+  const { table, steps } = judged(STATE, PART_BACK_OPS, []);
+  const records = steps.map((x) => x.judgement.record);
+  const kept = steps.map((x) => x.op);
+  const base = givenByRecords(records);
+  const withStanding = (g: ItemsGiven, id: string, standing: ItemStanding): ItemsGiven => {
+    const items = new Map(g.items);
+    const x = items.get(id);
+    if (x !== undefined) items.set(id, { ...x, standing });
+    return { ...g, items };
+  };
+
+  // After deleting S1 and S5 and cancelling S5 (61:existence and its awaiting successor both
+  // superseded by deletion), the successor is closed for another reason before S1 is cancelled.
+  // Its candidate closes with it (03-deletion «撤回与宽限期»: «事项已关闭的（…被普通写入…或被别的
+  // 删除、schema 切换）不放回，候选随它关闭»): 61:existence is not restored.
+  for (const reason of ["schema_changed", "overwritten"]) {
+    it(`the successor superseded (${reason}): closes with it, the original not restored`, () => {
+      const r = cancelBoth(table, records, kept, ["S1"], ["S5"]);
+      const ga = deletedContributions(kept, new Set(["S1"]), true);
+      const delA = deletionResult(
+        table,
+        records,
+        ga,
+        new Set(),
+        itemsByRecords(new RowState(table, records)),
+        [],
+        base,
+      );
+      const byCB = new Set(
+        r.cB.replay.restated.map((x) => `${x.item.event}/${x.item.target}/${x.item.k}`),
+      );
+      const g = withStanding(r.g3, "61:existence>awaiting", { kind: "superseded", reason });
+      const cA = cancellationResult(
+        table,
+        records,
+        new Set(),
+        ga,
+        g,
+        laid(base, r.cB.replay.restated),
+        new Set(
+          delA.replay.restated
+            .filter((x) => x.status !== "dropped")
+            .map((x) => `${x.item.event}/${x.item.target}/${x.item.k}`)
+            .filter((k) => !byCB.has(k)),
+        ),
+        [],
+      );
+      expect(cA.items.fates.get("61/f2")).toEqual({
+        kind: "returned",
+        item: "61:existence>awaiting",
+        into: "closed_with_supersession",
+      });
+      expect(cA.items.restored).toEqual([]);
+      expect(openItems(advance(g, cA.items), cA.replay.state)).toEqual([]);
+    });
+  }
+
+  // As written, a member of an open awaiting item succeeding 61:existence (the item layer given so,
+  // deterministically). Deleting S5: #61's part in effect (from 11-03) goes back, a candidate on
+  // the whole: of the original item's kind, so it goes to 61:existence and leaves the successor.
+  const successor = (original: ItemStanding): ItemsGiven => {
+    const g0 = itemsByRecords(new RowState(table, records));
+    const items = new Map(g0.items);
+    items.set("61:existence", { kind: "conflict", unit: "existence", standing: original });
+    items.set("61:existence>awaiting", {
+      kind: "awaiting",
+      unit: "existence",
+      standing: { kind: "open" },
+    });
+    return { original: g0.original, of: new Map([["61/f2", "61:existence>awaiting"]]), items };
+  };
+  const deleteS5 = (g: ItemsGiven) =>
+    deletionResult(
+      table,
+      records,
+      deletedContributions(kept, new Set(["S5"]), true),
+      new Set(),
+      g,
+      [],
+      base,
+    );
+
+  it("a member of the successor, the original superseded by a deletion: back in the original, restored; the successor superseded", () => {
+    const g = successor({ kind: "superseded", reason: "deleted" });
+    const r = deleteS5(g);
+    expect(r.replay.state.items.filter((x) => x.event === 61).map((x) => x.status)).toEqual([
+      "candidate",
+    ]);
+    expect(r.items.fates.get("61/f2")).toEqual({
+      kind: "returned",
+      item: "61:existence>awaiting",
+      into: "merged",
+      to: "61:existence",
+    });
+    expect(r.items.restored).toEqual(["61:existence"]);
+    expect(r.items.superseded).toEqual(["61:existence>awaiting"]);
+    expect(openItems(advance(g, r.items), r.replay.state)).toEqual([
+      "61:existence conflict: 61/f2",
+    ]);
+  });
+
+  it("a member of the successor, the original closed by a decision: closes with the original, named; the successor left", () => {
+    const g = successor({ kind: "resolved" });
+    const r = deleteS5(g);
+    expect(r.items.fates.get("61/f2")).toEqual({
+      kind: "returned",
+      item: "61:existence>awaiting",
+      into: "closed_by_decision",
+      to: "61:existence",
+    });
+    expect(r.items.restored).toEqual([]);
+    expect(r.items.superseded).toEqual(["61:existence>awaiting"]);
   });
 });

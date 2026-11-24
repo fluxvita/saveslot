@@ -22,6 +22,7 @@ export function advance(g: ItemsGiven, r: ItemsResult): ItemsGiven {
   for (const [k, f] of r.fates) {
     if (f.kind === "restored") of.set(k, f.restores);
     if (f.kind === "rejoined") of.set(k, f.into);
+    if (f.kind === "returned" && f.to !== undefined) of.set(k, f.to);
   }
   for (const o of r.opened) {
     const id = `${o.succeeds}>${o.kind}`;

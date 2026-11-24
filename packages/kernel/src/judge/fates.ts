@@ -56,10 +56,14 @@ export interface ItemsGiven {
  * - `succeeded`: pending after, of the other kind than its original item, and no item succeeding
  *   that one is of its kind: a new item succeeds the original one to one (`succeeds`).
  * - `returned`: a write in effect in part when written (by its record: on the target, items in
- *   effect and items not), a part of which in effect before is not after: back where its item is
- *   (`merged`: its item, restored when a deletion superseded it; `closed_by_decision`: a person's
- *   decision closed it; `closed_with_supersession`: superseded for another reason, no new item).
- *   A write a candidate or awaiting in full when written gets no `returned`.
+ *   effect and items not), a part of which in effect before is not after. When the item it is in
+ *   is closed (a person's decision, or a supersession for another reason than a deletion), it
+ *   closes with it. Otherwise it goes where its kind says (`destination`: its original item when
+ *   of that kind, else the item it is in): `merged` into it, restored when a deletion superseded
+ *   it; `closed_by_decision` / `closed_with_supersession` when that item is closed so (no new
+ *   item). `to` names that item when it is not the one it is in; it then leaves the one it is in.
+ *   With no item of its kind it is `succeeded` instead. A write a candidate or awaiting in full
+ *   when written gets no `returned`.
  */
 export type PendingFate =
   | { readonly kind: "removed" | "now_effective" | "closed_by_revert"; readonly item: string }
@@ -75,6 +79,8 @@ export type PendingFate =
       readonly kind: "returned";
       readonly item: string;
       readonly into: "merged" | "closed_by_decision" | "closed_with_supersession";
+      /** The item it goes to when not `item`: its original item, of its kind again. */
+      readonly to?: string;
     };
 
 /** An item a deletion opens to succeed one (09 §5.8 `item.created`, after the deletion event). */
@@ -145,6 +151,23 @@ const revertedWhole = (s: RowState, x: RowState["items"][number]) =>
   isNothing(minus(x.valid, s.registeredSet(x, EVERYTHING)));
 
 /**
+ * Where a pending (event, target) goes after a deletion or cancellation, by its kind after
+ * (03-deletion «因先前的删除才生效、本次将回到未决的写入»: «种类与原事项相同的给出它回到的原事项
+ * …；种类不同的…已有的同种类接替事项，或新开的»; kinds compared with the original item's): its
+ * original item when of that kind; else the item it is in now when of that kind (a successor);
+ * else none (a new item succeeds the original).
+ */
+function destination(
+  kind: PendingKind,
+  id: string,
+  cur: { readonly kind: PendingKind },
+  origId: string,
+  orig: { readonly kind: PendingKind },
+): string | undefined {
+  return kind === orig.kind ? origId : kind === cur.kind ? id : undefined;
+}
+
+/**
  * The item layer of a deletion. `before`: the state before it (the replay of the deletions still
  * pending before it, or the records as written); `after`: its replay; `records`: the records as
  * written (every (event, target) ever pending is among theirs); `given`: the items.
@@ -188,24 +211,39 @@ export function itemsResult(
     const orig = itemOf(given.original.get(key), key);
     if (b !== undefined && isOpen(cur)) memberOf.set(key, id);
     const member = memberOf.has(key);
-    // Pending after of another kind than its item (a candidate whose conflict a deletion cleared,
-    // still of high impact: awaiting): not back in that item, but succeeded below, as any pending
-    // of another kind (03-deletion «冲突消失但仍属高影响、将转为待确认的写入»).
-    const otherKind = a !== undefined && a !== cur.kind && a !== orig.kind;
-    if (partBack && !otherKind) {
-      // Back where its item is: merged into it when open (restored when a deletion superseded it),
+    // How a stand closes it: a person's decision, or a supersession for another reason than a
+    // deletion. Neither puts a candidate back (03-deletion «撤回与宽限期»: «事项已关闭的…不放回，
+    // 候选随它关闭»).
+    const closedBy = (x: { standing: ItemStanding }) =>
+      x.standing.kind === "resolved"
+        ? ("closed_by_decision" as const)
+        : x.standing.kind === "superseded" && x.standing.reason !== "deleted"
+          ? ("closed_with_supersession" as const)
+          : undefined;
+    // Where it is pending after (03-deletion «因先前的删除才生效、本次将回到未决的写入»: kinds are
+    // compared with the original item's): `destination`. A part going back with no item of its
+    // kind (a candidate whose conflict a deletion cleared, still of high impact: awaiting) is
+    // succeeded below, as any pending of another kind.
+    const to = a === undefined ? id : destination(a, id, cur, origId, orig);
+    if (partBack) {
+      // The item it is in closed: it closes with it, as the other branch below.
+      const closedHere = closedBy(cur);
+      if (closedHere !== undefined) {
+        fates.set(key, { kind: "returned", item: id, into: closedHere });
+        continue;
+      }
+    }
+    if (partBack && to !== undefined) {
+      // Back where it goes: merged into it when open (restored when a deletion superseded it),
       // closed with it when a decision or another supersession closed it (no new item).
-      const s = cur.standing;
-      const into =
-        s.kind === "resolved"
-          ? "closed_by_decision"
-          : s.kind === "superseded" && s.reason !== "deleted"
-            ? "closed_with_supersession"
-            : "merged";
-      fates.set(key, { kind: "returned", item: id, into });
-      if (into === "merged") {
-        join(id, key);
-        if (byDeletion(cur)) restoredToo.add(id);
+      const into = to === origId ? orig : cur;
+      const how = closedBy(into) ?? "merged";
+      fates.set(key, { kind: "returned", item: id, into: how, ...(to !== id ? { to } : {}) });
+      // Gone from the item it is in when it goes to another.
+      if (member && to !== id) leaving.add(key);
+      if (how === "merged") {
+        join(to, key);
+        if (byDeletion(into)) restoredToo.add(to);
       }
       continue;
     }
@@ -222,14 +260,10 @@ export function itemsResult(
       leaving.add(key);
       continue;
     }
-    const s = cur.standing;
     // Closed by a person's decision or superseded for another reason: closed on both sides.
-    if (s.kind === "resolved" || (s.kind === "superseded" && s.reason !== "deleted")) continue;
+    if (closedBy(cur) !== undefined) continue;
     // Not pending after (a decision closes the part gone back) with its item open: as closed.
     if (a === undefined) continue;
-    // Where it is pending after: its original item when of its kind; else the item it is in now
-    // when that one is of its kind (a successor); else a new item succeeding the original.
-    const to = a === orig.kind ? origId : a === cur.kind ? id : undefined;
     if (to === undefined) {
       fates.set(key, { kind: "succeeded", item: id, succeeds: origId, as: a });
       if (member) leaving.add(key);

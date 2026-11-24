@@ -910,18 +910,18 @@ describe("in effect in part when written, its part going back, pending after of 
   // impact: awaiting. Not merged back into the conflict item (another kind): the conflict item is
   // superseded and a new awaiting item succeeds it (03-deletion «冲突消失但仍属高影响、将转为待确认
   // 的写入»), as a cancellation of a later deletion of #61 leaves it.
-  const src = (op: number, value: string, source: string, explicit = false) => ({
+  const src = (value: string, source: string, explicit = false) => ({
     f2: { value, sources: [source], ...(explicit ? { explicit: true } : {}) },
   });
   const ops: Op[] = [
-    { ...w(10, 0, {}), seen: 0, fields: src(10, "9", "S4") } as Op,
-    { ...w(20, 0, {}, { from: "11-03" }), fields: src(20, "9", "S5") } as Op,
-    { ...w(30, 20, {}, { from: "11-05", ack: true }), fields: src(30, "1", "S5") } as Op,
-    { ...w(40, 30, {}, { from: "11-01" }), fields: src(40, "1", "S1") } as Op,
+    { ...w(10, 0, {}), seen: 0, fields: src("9", "S4") } as Op,
+    { ...w(20, 0, {}, { from: "11-03" }), fields: src("9", "S5") } as Op,
+    { ...w(30, 20, {}, { from: "11-05", ack: true }), fields: src("1", "S5") } as Op,
+    { ...w(40, 30, {}, { from: "11-01" }), fields: src("1", "S1") } as Op,
     {
       ...w(60, 20, {}, { from: "11-01" }),
       valid: { from: { mode: "given", value: d("11-01") }, to: { mode: "next_change" } },
-      fields: src(60, "9", "S3", true),
+      fields: src("9", "S3", true),
     } as Op,
   ];
   it("61:f2 superseded, an awaiting item succeeding it", () => {
