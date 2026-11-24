@@ -168,6 +168,16 @@ export function describeError(
         t`  --candidate ${typeof x["index"] === "number" ? num(x["index"]) : untrusted(String(x["index"]))} (#${typeof x["seq"] === "number" ? num(x["seq"]) : untrusted(String(x["seq"]))})`,
       );
     }
+    // A parameter of a few values: those the service takes (a decision an item takes, say).
+    const allowed = Object.hasOwn(e.body, "allowed_values") ? e.body["allowed_values"] : undefined;
+    if (Array.isArray(allowed) && allowed.length > 0) {
+      lines.push(
+        t`  ${words(TEXTS.allowedValues)} ${join(
+          allowed.map((v) => [untrusted(String(v))]),
+          t` / `,
+        )}`,
+      );
+    }
     const hint = o.nextStep === false ? undefined : TEXTS.nextStep.get(e.code as ErrorCode);
     if (hint !== undefined) lines.push(t`  ${words(hint)}`);
     return { lines, exit: exitOf(e.code, reason) };

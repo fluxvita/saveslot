@@ -1341,8 +1341,14 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
         } else if (keys.length > 0) {
           target = { entity_key: entityKey(o, await fieldsOf(c, tableName)) };
         }
-        // An operation number as one; a moment, or `my_last_read`, as written (the service checks).
-        const point = (v: string) => (/^[0-9]{1,15}$/.test(v) ? Number(v) : v);
+        // An operation number as one; how long ago (`15m`, as `reads --since` takes it) as the
+        // moment it was; a moment, or `my_last_read`, as written (the service checks).
+        const point = (v: string) =>
+          /^[0-9]{1,15}$/.test(v)
+            ? Number(v)
+            : /^[0-9]{1,9}(s|m|h|d)$/.test(v.trim())
+              ? sinceOf(v, new Date())
+              : v;
         const until = ownString(o, "until");
         const r = await c.history({
           table: tableName,
@@ -1503,7 +1509,10 @@ export async function run(
     return 2;
   }
   if (values["help"] === true || positionals.length === 0) {
-    (values["help"] === true ? io.out : io.err)(`${TEXTS.usage}\n`);
+    // A command with a usage of its own gives it; any other, the commands' list.
+    const own = values["help"] === true && positionals[0] === "setup";
+    const usage = own ? TEXTS.setupUsage([...TEMPLATES.keys()]) : TEXTS.usage;
+    (values["help"] === true ? io.out : io.err)(`${usage}\n`);
     return values["help"] === true ? 0 : 2;
   }
   const profile = typeof values["profile"] === "string" ? values["profile"] : undefined;

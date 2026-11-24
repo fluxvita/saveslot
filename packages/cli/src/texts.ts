@@ -343,6 +343,7 @@ export const TEXTS = {
   orderBad: s("--order takes a field, with :asc or :desc after it if wanted"),
   validDuringBad: s("--valid-during takes <from>,<to>; leave <to> out for an open end"),
   detailBad: s("--detail takes concise or detailed"),
+  allowedValues: s("it takes:"),
   detailedNotYet: s(
     "--detail detailed is not for a derived table: its rows have no sources of their own; leave it out",
   ),
@@ -845,6 +846,30 @@ export const TEXTS = {
   stepStart: s("the service"),
   stepSlotsThere: s("there are slots already: none made"),
   stepNoSlot: s("no slot made"),
+  /** `setup --yes` with no `--template` (06 §3.3 item 6: what is not given is not done). */
+  stepNoSlotYes: (templates: readonly string[]) =>
+    s(
+      `no slot made: with --yes a slot is made only from --template (${templates.join(", ")}); add one and run setup again, or later: saveslot slot create <name> --template <template>`,
+    ),
+  /** `saveslot setup --help` (06 §3.3): its own options, not the commands' list. */
+  setupUsage: (templates: readonly string[]) =>
+    s(
+      [
+        "usage: saveslot setup [--template <template>]… [--timezone <zone>] [--host claude-code|codex]… [--scope <scopes>] [--yes]",
+        "",
+        "  Sets saveslot up in one go: initialises it, starts the service, makes a slot when there is none,",
+        "  and connects the hosts found on this machine, asking once before it changes any host.",
+        "",
+        `  --template <template>  a slot from a template (repeatable): ${templates.join(", ")}`,
+        "  --timezone <zone>      the time zone of the slots --template makes (an IANA name)",
+        "  --host <host>          a host to connect (repeatable): claude-code, codex",
+        "  --scope <scopes>       the connections' scopes (default: saveslot.read saveslot.write saveslot.schema)",
+        "  --yes                  ask nothing: what is not given is not done (no --template: no slot;",
+        "                         no --host: no host connected)",
+        "",
+        "  A host with no add command (Cursor, Claude Desktop): saveslot connect <host>.",
+      ].join("\n"),
+    ),
   stepSlotMade: s("made from the template"),
   stepHosts: s("the hosts on this computer"),
   stepAdd: s("adding saveslot to the hosts"),

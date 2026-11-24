@@ -510,7 +510,7 @@ describe("the order of the checks (04-contract `resolve`)", () => {
   );
 
   it(
-    "a decision the item's type does not take: invalid_argument",
+    "a decision the item's type does not take: invalid_argument, with those it takes",
     async () => {
       const { c, item } = await disputed();
       expect(
@@ -518,6 +518,7 @@ describe("the order of the checks (04-contract `resolve`)", () => {
       ).toMatchObject({
         refused: "invalid_argument",
         param: "decision",
+        allowed_values: ["keep_effective", "take_candidate", "take_previous"],
       });
     },
     T,

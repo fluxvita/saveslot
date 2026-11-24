@@ -88,6 +88,26 @@ describe("pending (06 §5.1)", () => {
     expect(lines[2]).toMatch(/^pi_8VEZWJ3J7BMKMXTV conflict .* · open 30 min$/);
   });
 
+  it("--status all: a closed item says its status and when it was opened, not how long open", () => {
+    const items = (LIST as unknown as { items: Record<string, unknown>[] }).items;
+    const closed = {
+      ...LIST,
+      items: [
+        { ...items[0], status: "resolved" },
+        { ...items[1], status: "superseded" },
+      ],
+    };
+    const lines = render(pendingList(closed as never, NOW), terminal).split("\n");
+    // Oldest first, as ever: each with its own status.
+    expect(
+      lines
+        .slice(1)
+        .map((l) => /· (resolved|superseded) · opened \S+Z$/.exec(l)?.[1])
+        .sort(),
+    ).toEqual(["resolved", "superseded"]);
+    expect(lines.some((l) => l.includes(" · open "))).toBe(false);
+  });
+
   it("how long: minutes, hours, days", () => {
     const text = (opened: string) => render([openFor(opened, NOW)], { kind: "plain" });
     expect(text("2026-11-10T20:59:30.000Z")).toBe("0 min");
