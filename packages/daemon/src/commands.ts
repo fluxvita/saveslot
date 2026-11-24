@@ -53,7 +53,7 @@ import {
   rotateSession,
   ServiceRunning,
 } from "@fluxvita/saveslot-service";
-import { osFileLock, PgliteBackend, PgliteStoreError } from "@fluxvita/saveslot-store-pglite";
+import { osFileLock, PgliteStoreError } from "@fluxvita/saveslot-store-pglite";
 import { installAutostart, type System, stableNode, uninstallAutostart } from "./autostart.ts";
 import {
   type Config,
@@ -65,6 +65,7 @@ import {
   setValue,
 } from "./config.ts";
 import { type DoctorOptions, doctor } from "./doctor.ts";
+import { initBackend } from "./init-backend.ts";
 import { health } from "./local-request.ts";
 import { daemonVersion, main } from "./main.ts";
 import { runBridge } from "./mcp-bridge.ts";
@@ -167,7 +168,7 @@ export async function init(
     const r = await initLocalHome({
       home,
       ...(o.dataDir !== undefined ? { dataDir: o.dataDir } : {}),
-      backend: new PgliteBackend(),
+      backend: initBackend(),
       lock: osFileLock,
       now: new Date().toISOString(),
     });

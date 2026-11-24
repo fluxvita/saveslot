@@ -14,6 +14,9 @@
       "source": "./src/wasm-code-gc.ts",
       "types": "./dist/wasm-code-gc.d.ts",
       "default": "./dist/wasm-code-gc.js"
+    },
+    "./testing": {
+      "source": "./src/testing.fixture.ts"
     }
   },
   "files": [

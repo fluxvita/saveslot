@@ -1,6 +1,10 @@
 // The service commands with real processes (06-cli §3 steps 2–3, §4.1, §6.2): init and its
 // refusals, start in the background and again, status, stop and the cases where stop sends no
 // signal, and what the background log holds.
+//
+// `init` here makes the home's tenant storage with the test backend, which copies it from the run's
+// template (useInitBackendForTests, restored in afterAll); one case makes it without the switch,
+// as the product does, and has the service open it in a child process.
 
 import { spawn } from "node:child_process";
 import {
@@ -20,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initLocalHome, sessionFile } from "@fluxvita/saveslot-service";
 import { osFileLock } from "@fluxvita/saveslot-store-pglite";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import {
   CLOCK_BEHIND_MS,
@@ -34,6 +38,7 @@ import {
 import { LEDGER } from "./contract-suite.fixture.ts";
 import { homeTemplate } from "./home-copy.fixture.ts";
 import { httpRequest } from "./http-driver.fixture.ts";
+import { useInitBackendForTests } from "./init-backend.ts";
 import { health } from "./local-request.ts";
 import { lockDir, pidFile, runService, socketFile } from "./service.ts";
 
@@ -48,6 +53,8 @@ afterEach(async () => {
   for (const h of started.splice(0)) await run("stop", h);
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
+beforeAll(() => useInitBackendForTests(testBackend()));
+afterAll(() => useInitBackendForTests(undefined));
 
 async function run(name: "init" | "start" | "stop" | "status", home: string, ...args: string[]) {
   const out: string[] = [];
@@ -99,6 +106,32 @@ describe("init", () => {
     expect((await run("stop", h)).code).toBe(0);
     expect((await run("init", h, "--rotate-session")).code).toBe(0);
     expect(readFileSync(sessionFile(h), "utf8")).not.toBe(token);
+  });
+
+  it("without the tests' backend, makes the home as the product does, and the service opens it in its own process", async () => {
+    // A backend that counts what it is asked to open, set and then unset: once unset, init must not
+    // use it.
+    let asked = 0;
+    const counted = testBackend();
+    const open = counted.open.bind(counted);
+    counted.open = (...a: Parameters<typeof open>) => {
+      asked++;
+      return open(...a);
+    };
+    useInitBackendForTests(counted);
+    useInitBackendForTests(undefined);
+    try {
+      const h = await initialized();
+      expect(asked).toBe(0);
+      expect((await run("start", h)).code).toBe(0);
+      expect((await health(socketFile(h)))?.state).toBe("ready");
+      const st = await run("status", h);
+      expect(st.code).toBe(0);
+      expect(st.out).toContain("ready");
+      expect((await run("stop", h)).code).toBe(0);
+    } finally {
+      useInitBackendForTests(testBackend());
+    }
   });
 
   it("names a folder a sync service keeps", () => {
