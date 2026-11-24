@@ -5,6 +5,8 @@ export {
   type WriteReceipt,
 } from "../write/index.ts";
 export * from "./context.ts";
+export * from "./deletion.ts";
+export * from "./deletion-plan.ts";
 export * from "./errors.ts";
 export * from "./flush-reads.ts";
 export { newConnectionId, newReadId, randomCrockford } from "./ids.ts";

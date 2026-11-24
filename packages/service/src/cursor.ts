@@ -35,6 +35,12 @@ export const cursorKeysFile = (home: string): string => join(keysDir(home), "cur
 const KEY_ID = /^k[0-9a-f]{16}$/;
 const SECRET = /^[0-9a-f]{64}$/;
 const FORM = /^cur_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{43})$/;
+const CONFIRM_FORM = /^dc_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{43})$/;
+
+/** How long a deletion confirmation handle is good for (04-contract §15: 10 minutes). */
+export const CONFIRM_TTL_MS = 10 * 60 * 1000;
+/** The longest confirmation handle taken: it binds the sources' IDs (about 20 characters each). */
+export const MAX_CONFIRM = 1 << 20;
 
 /** `control/keys/cursor.json` is not of its form. */
 export class CursorKeysCorrupt extends Error {
@@ -278,10 +284,83 @@ export class CursorKeys {
     return p;
   }
 
-  #mac(id: string, payload: string): Buffer {
+  /**
+   * The deletion confirmation handle `dc_…` of what the kernel's preview binds (02-architecture §5:
+   * the deletion, slot and sources, impact summary hash, the preview's seq and the restore count),
+   * for `principal` of `tenant`, good for 10 minutes from `now`. Signed with the same keys as
+   * `cur_`, its MAC under another prefix, so neither handle verifies as the other.
+   */
+  signConfirm(
+    binding: Readonly<Record<string, unknown>>,
+    tenant: string,
+    principal: string,
+    now: string,
+  ): { readonly handle: string; readonly expiresAt: string } {
+    const expiresAt = new Date(Date.parse(now) + CONFIRM_TTL_MS).toISOString();
+    const payload = Buffer.from(
+      JSON.stringify({ v: 1, k: this.#current, t: tenant, a: principal, b: binding, x: expiresAt }),
+      "utf8",
+    ).toString("base64url");
+    const handle = `dc_${payload}.${this.#mac(this.#current, payload, "dc_v1").toString("base64url")}`;
+    // Checked when given, not only when taken back: a handle this service would refuse is not
+    // given.
+    if (handle.length > MAX_CONFIRM) {
+      throw new ContractError("internal", "the confirmation handle would be too long", {});
+    }
+    return { handle, expiresAt };
+  }
+
+  /**
+   * What a confirmation handle this service gave `principal` of `tenant` binds, if it verifies;
+   * whether it is past its expiry. Expired, it is still given back: the kernel answers a handle
+   * already confirmed (`replayed`, with its deletion) before it refuses an expired one
+   * (04-contract «判定顺序»). Not one of this service's, or given to another principal or tenant:
+   * `invalid_argument` (`malformed`, `param: "confirm"`).
+   */
+  verifyConfirm(
+    handle: unknown,
+    tenant: string,
+    principal: string,
+    now: string,
+  ): { readonly binding: Readonly<Record<string, unknown>>; readonly expired: boolean } {
+    const bad = () =>
+      new ContractError("invalid_argument", "the confirmation is not one this service gave", {
+        reason: "malformed",
+        param: "confirm",
+      });
+    if (typeof handle !== "string" || handle.length > MAX_CONFIRM) throw bad();
+    const m = CONFIRM_FORM.exec(handle);
+    if (m === null) throw bad();
+    const payload = m[1] as string;
+    let o: Record<string, unknown>;
+    try {
+      const v = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as unknown;
+      if (v === null || typeof v !== "object" || Array.isArray(v)) throw bad();
+      o = v as Record<string, unknown>;
+    } catch {
+      throw bad();
+    }
+    if (Object.keys(o).sort().join(",") !== "a,b,k,t,v,x" || o["v"] !== 1) throw bad();
+    const id = o["k"];
+    if (typeof id !== "string" || !this.#keys.has(id)) throw bad();
+    const given = Buffer.from(m[2] as string, "base64url");
+    if (given.toString("base64url") !== m[2]) throw bad();
+    const want = this.#mac(id, payload, "dc_v1");
+    if (given.length !== want.length || !timingSafeEqual(given, want)) throw bad();
+    const { a, b, t, x } = o;
+    if (a !== principal || t !== tenant) throw bad();
+    if (b === null || typeof b !== "object" || Array.isArray(b) || typeof x !== "string") {
+      throw bad();
+    }
+    const at = Date.parse(x);
+    if (Number.isNaN(at)) throw bad();
+    return { binding: b as Record<string, unknown>, expired: Date.parse(now) >= at };
+  }
+
+  #mac(id: string, payload: string, prefix = "cur_v1"): Buffer {
     const k = this.#keys.get(id) as Key;
     return createHmac("sha256", Buffer.from(k.secret, "hex"))
-      .update(`cur_v1.${payload}`, "utf8")
+      .update(`${prefix}.${payload}`, "utf8")
       .digest();
   }
 }
