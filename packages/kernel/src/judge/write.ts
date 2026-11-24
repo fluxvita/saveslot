@@ -222,6 +222,42 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
   const ordinary: Part[] = [];
   const seenRes = new Map<FieldId, Resolved>();
 
+  // Where this write itself makes the entity begin to exist (state tables): on a piece without a
+  // value at the position compared, every field that defines "has a value" is given by it (not
+  // empty) or has a value there already (with none, any field it gives). There an optional field
+  // written empty is as one not given: read as empty, not as no value (10-types-and-units «清空字段»:
+  // 新增时显式写 null 与"原来没有值"同值). Elsewhere a piece without a value stays one (a write of
+  // optional fields alone does not fill it). Judged at the position compared, as the token is: the
+  // version seen for the same-value step, the current one for whether a corroboration still holds
+  // (05-time «用同样的值写»: a part changed since the version seen is an ordinary write). The fields
+  // are those of existence (`valued`, 05-time «无值区间»), the ones a token of "no value" reads.
+  const givenRes = new Map<string, Resolved | null>();
+  const givenOn = (g: FieldId, s: Interval, at: Limit) => {
+    const x = w.fields[g];
+    if (x === undefined || x.value === null) return false;
+    const key = `${g}@${at.upTo}/${at.request?.op ?? ""}/${at.request?.below ?? ""}`;
+    if (!givenRes.has(key)) givenRes.set(key, resolve(state, w.valid, g, at, w.now));
+    const r = givenRes.get(key);
+    return r !== null && r !== undefined && within(s, r.valid);
+  };
+  const valued = state.table.valued;
+  const createdHere = (s: Interval, atOf: (g: FieldId) => Limit) =>
+    state.isState &&
+    (valued.length > 0
+      ? valued.every(
+          (g) => givenOn(g, s, atOf(g)) || state.fieldState(g, s, atOf(g)).kind === "value",
+        )
+      : fields.some((g) => givenOn(g, s, atOf(g))));
+  /**
+   * A field's token on a piece at a position, empty where this write makes the entity begin to
+   * exist there. `atOf`: the position for each field (per field as seen, by a sync's baselines).
+   */
+  const tokenFor = (f: FieldId, s: Interval, atOf: (g: FieldId) => Limit, v: string) => {
+    const t = state.token(f, s, atOf(f));
+    return t === NO_VALUE && v === "none" && createdHere(s, atOf) ? "none" : t;
+  };
+  const atCur = () => curAt;
+
   // Same value (step 3): no-op, corroboration, or an ordinary write on the changed part.
   for (const f of fields) {
     const input = w.fields[f] as FieldInput;
@@ -245,7 +281,7 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
     if (base?.value !== undefined && valueToken(base.value) === v) {
       // The source has not changed: a no-op whatever evidence is pointed at, unless the value in
       // effect is that value too; then pointed evidence corroborates (taken below).
-      if (!input.explicit || !segs.every((s) => state.token(f, s, curAt) === v)) {
+      if (!input.explicit || !segs.every((s) => tokenFor(f, s, atCur, v) === v)) {
         noop.push(f);
         continue;
       }
@@ -256,7 +292,7 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
     const sameAsSeen =
       base?.value !== undefined
         ? valueToken(base.value) === v
-        : segs.every((s) => state.token(f, s, seenAtFor(f)) === v);
+        : segs.every((s) => tokenFor(f, s, seenAtFor, v) === v);
     if (sameAsSeen && !input.explicit) {
       noop.push(f);
       replay?.shadows?.push({
@@ -283,7 +319,7 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
     }
     // Corroboration: still the same now → corroborated; changed since → an ordinary write on
     // that part, as the write was written, with the writes that changed it among its deps.
-    const same = canonical(segs.filter((s) => state.token(f, s, curAt) === v));
+    const same = canonical(segs.filter((s) => tokenFor(f, s, atCur, v) === v));
     const changed = minus(res.valid, same);
     const cutters = isNothing(changed) ? [] : changersOf(state, f, seenFor(f), n, res.valid);
     const split = !isNothing(changed);

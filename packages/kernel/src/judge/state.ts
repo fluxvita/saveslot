@@ -95,7 +95,12 @@ export const effective = (s: ItemStatus): boolean => s === "applied" || s === "c
 
 /** A field's state on a stretch, as a token comparable for equality. */
 export const NO_VALUE = "no_value";
-export const valueToken = (v: FieldValue): string => `v:${valueText(v)}`;
+/**
+ * A value as the same-value judgement compares it: what is read. An empty value reads as no
+ * contribution does, so the two are the same (10-types-and-units «清空字段», the same-value table
+ * «空与空相同»).
+ */
+export const valueToken = (v: FieldValue): string => (v === null ? "none" : `v:${valueText(v)}`);
 
 export type FieldState =
   | { readonly kind: "value"; readonly value: FieldValue; readonly by: Item }

@@ -355,6 +355,36 @@ describe("candidates are not values in effect", () => {
   );
 });
 
+describe("an empty value written where a field never had one moves nothing (10-types-and-units «清空字段»)", () => {
+  it(
+    "a field never written, written empty: no new version, so the order of rows matched stays",
+    async () => {
+      // The property's counterexample (seed -1646098214), on meals: #1 note "same"; #2 note
+      // "same"; #1 updated with energy empty, a field it never had: the same value (empty reads
+      // as no contribution), a no-op, its last write in effect still #1's insert. A meal with note
+      // "same" then matches #2 and #1, latest written first: #2, #1.
+      const r1 = (await w([meal({ note: "same", day: "2026-10-01" })])).ops[0].target.row;
+      const r2 = (await w([meal({ note: "same", day: "2026-10-02" })])).ops[0].target.row;
+      const bases = () =>
+        rows(
+          "SELECT count(*)::int AS n FROM events WHERE type = 'write.base' AND target_row = $1",
+          [r1],
+        );
+      expect(await bases()).toEqual([{ n: 1 }]);
+      await w([{ intent: "update", table: "meals", row: r1, set: { energy: null } }]);
+      // A no-op: no base write, no new version of #1.
+      expect(await bases()).toEqual([{ n: 1 }]);
+      const before = await tail();
+      await w([meal({ note: "same", day: "2026-10-03" })]);
+      const l = await logged(before);
+      expect(l.duplicate[0].matched).toEqual([r2, r1]);
+      expect(l.matched).toEqual([r2, r1]);
+      await replaysTheSame();
+    },
+    T,
+  );
+});
+
 describe("at most 10 rows, latest written first", () => {
   it(
     "12 alike: the 10 written last are listed, latest first",

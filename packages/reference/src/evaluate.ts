@@ -240,7 +240,8 @@ const NO_VALUE = "novalue";
 const refKey = (r: { event: Seq; target: Target; k: number }) => `${r.event}/${r.target}/${r.k}`;
 const etKey = (event: Seq, target: Target) => `${event}/${target}`;
 const refOf = (it: Item): ItemRef => ({ event: it.event, target: it.target, k: it.k });
-const tok = (v: FieldValue) => `v:${canonicalize(v as JcsValue)}`;
+/** A value as read: empty reads as no contribution does (10-types-and-units «清空字段»). */
+const tok = (v: FieldValue) => (v === null ? "none" : `v:${canonicalize(v as JcsValue)}`);
 const effective = (s: Status) => s === "applied" || s === "corroborated";
 
 type FieldState =
@@ -254,6 +255,8 @@ function stateTok(s: FieldState): string {
 }
 
 class Replay {
+  /** Set by `write` for the write being judged: where it makes the entity begin to exist. */
+  creating: (s: Iv, at: number) => boolean = () => false;
   readonly items: Item[] = [];
   /** Same-valued contributions that are no longer items, kept for the domain of step 2. */
   readonly shadows: Item[] = [];
@@ -1003,6 +1006,23 @@ class Replay {
     const seen = o.seenCurrent ? n - 1 : (o.seen ?? n - 1);
     const cur = n - 1;
     const fresh: Item[] = [];
+    // Where this write itself makes the entity begin to exist, at the position compared (the
+    // version seen, or the current one for whether a corroboration still holds): every required
+    // field given by it (not empty) or with a value there already (with none required, any field
+    // it gives). There an optional field written empty is as one not given (10-types-and-units
+    // «清空字段»).
+    const givenOn = (g: FieldId, s: Iv, at: number) => {
+      const x = o.fields[g];
+      if (x === undefined || x.value === null || this.isDeleted(x.sources)) return false;
+      const r = this.resolve(o.valid, g, at, o.now);
+      return r !== null && covers(r.valid, s);
+    };
+    const req = this.schema.required;
+    this.creating = (s: Iv, at: number) =>
+      this.isState &&
+      (req.length > 0
+        ? req.every((g) => givenOn(g, s, at) || this.fieldState(g, s, at).kind === "value")
+        : (Object.keys(o.fields) as FieldId[]).some((g) => givenOn(g, s, at)));
     for (const [fid, input] of Object.entries(o.fields)) {
       const f = fid as FieldId;
       if (input === undefined) continue;
@@ -1101,8 +1121,12 @@ class Replay {
     if (res === null) return;
     const v = tok(input.value);
     const segs = this.segments([res.valid]).filter((s) => covers(res.valid, s));
-    const sameAsSeen =
-      sync !== undefined ? sync.same : segs.every((s) => this.vis(f, s, seen) === v);
+    // Empty where this write makes the entity begin to exist (`write`'s `creating`).
+    const visFor = (s: Iv, at: number) => {
+      const t = this.vis(f, s, at);
+      return t === NO_VALUE && v === "none" && this.creating(s, at) ? "none" : t;
+    };
+    const sameAsSeen = sync !== undefined ? sync.same : segs.every((s) => visFor(s, seen) === v);
     const explicit = sync !== undefined ? sync.explicit : input.explicit === true;
     const base = {
       event: o.event,
@@ -1165,7 +1189,7 @@ class Replay {
           });
         }
       };
-      const eq = normalize(segs.filter((s) => this.vis(f, s, cur) === v));
+      const eq = normalize(segs.filter((s) => visFor(s, cur) === v));
       const changed = subtract(res.valid, eq);
       if (isEmpty(changed) || !res.defaultEnd) {
         corroborate(eq, res.explicitEnds, out);

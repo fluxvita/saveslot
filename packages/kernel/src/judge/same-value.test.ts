@@ -85,8 +85,15 @@ describe("the judge's value comparison, old against new", () => {
     expect(same).toBeLessThan(pairs);
   });
 
-  it("gives the same token as before for every value", () => {
-    for (const v of CORPUS) expect(valueToken(v)).toBe(oldToken(v));
+  it("gives the same token as before for every value but the empty one", () => {
+    for (const v of CORPUS) if (v !== null) expect(valueToken(v)).toBe(oldToken(v));
+  });
+
+  it("reads an empty value as no contribution does, and no other value so", () => {
+    // 10-types-and-units «清空字段»: an empty value and no contribution both read empty, the same
+    // value. The token of no contribution is "none" (state.ts `token`).
+    expect(valueToken(null)).toBe("none");
+    for (const v of CORPUS) if (v !== null) expect(valueToken(v)).not.toBe("none");
   });
 
   it("agrees on generated pairs, and the token's equality is the comparison", () => {
@@ -94,7 +101,8 @@ describe("the judge's value comparison, old against new", () => {
       fc.property(valueArb, valueArb, (a, b) => {
         expect(sameValue(a, b)).toBe(oldSame(a, b));
         expect(valueToken(a) === valueToken(b)).toBe(oldSame(a, b));
-        expect(valueToken(a)).toBe(oldToken(a));
+        if (a !== null) expect(valueToken(a)).toBe(oldToken(a));
+        else expect(valueToken(a)).toBe("none");
       }),
       { numRuns: 1000 },
     );
