@@ -1,7 +1,8 @@
 // `import` over HTTP on the local socket (04-contract §17; 05-surfaces `POST /v1/import`): the
 // export file's NDJSON streamed in by the user session into the empty tenant; other requests
 // refused while it runs (`importing`), another import `busy`; a body cut midway leaves the tenant
-// empty. The services run on real tenants with their real credentials. Fictional data.
+// empty. The services run on real tenants with their real credentials, opened by the test
+// backend (see TESTING_BACKEND). Fictional data.
 
 import { mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { request } from "node:http";
@@ -41,8 +42,21 @@ async function home(h: string): Promise<string> {
   });
   return readFileSync(sessionFile(h), "utf8").trim();
 }
+/**
+ * The service's tenant and its import's staging storage on the test backend, which copies a new
+ * storage from the run's template instead of making it, with the run's durability: host fsync in
+ * the runs that set SAVESLOT_TEST_DURABILITY=host-fsync (nightly and by hand), not otherwise. What
+ * the service opens with by default is tested in service.test.ts.
+ */
+const TESTING_BACKEND: NonNullable<RunServiceOptions["testing"]>["backend"] = (o) => testBackend(o);
 const start = (h: string) =>
-  runService({ home: h, version: "t", signals: false, log: (l) => lines.push(l) });
+  runService({
+    home: h,
+    version: "t",
+    signals: false,
+    log: (l) => lines.push(l),
+    testing: { backend: TESTING_BACKEND },
+  });
 
 beforeAll(async () => {
   // The export file: a source home's log (its genesis, a connection), as the service writes it.
@@ -285,7 +299,13 @@ describe("the service around an import", () => {
     return { openTenant, release: () => release(), atReopen };
   };
   const startWith = (h: string, testing: NonNullable<RunServiceOptions["testing"]>) =>
-    runService({ home: h, version: "t", signals: false, log: (l) => lines.push(l), testing });
+    runService({
+      home: h,
+      version: "t",
+      signals: false,
+      log: (l) => lines.push(l),
+      testing: { backend: TESTING_BACKEND, ...testing },
+    });
   const untilReady = async (s: RunningService) => {
     for (const until = Date.now() + 30_000; Date.now() < until; ) {
       if (s.state === "ready" && s.tenant !== undefined) return;

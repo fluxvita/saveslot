@@ -75,6 +75,7 @@ import {
   type DirLockHandle,
   osFileLock,
   PgliteBackend,
+  type PgliteBackendOptions,
   PgliteStoreError,
 } from "@fluxvita/saveslot-store-pglite";
 import { redactTokens } from "./mcp-record.ts";
@@ -121,6 +122,11 @@ export interface RunServiceOptions {
    */
   readonly testing?: {
     readonly openTenant?: typeof openLocalTenant;
+    /**
+     * What makes the backend the tenant and an import's staging storage are opened and made with,
+     * from the options the service gives it (`new PgliteBackend(options)` otherwise).
+     */
+    readonly backend?: (options: PgliteBackendOptions) => PgliteBackend;
     /** How long an import's body may give nothing (local-import.ts's default otherwise). */
     readonly importBodyIdleMs?: number;
     readonly onImport?: (
@@ -309,7 +315,8 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   let importRun: Promise<unknown> | undefined;
   /** Aborts the import still reading its body: a stop does not wait on a client that stalled. */
   let importAbort: AbortController | undefined;
-  const tenantBackend = new PgliteBackend({ onEvent: (event, fields) => say(event, fields) });
+  const backendOptions: PgliteBackendOptions = { onEvent: (event, fields) => say(event, fields) };
+  const tenantBackend = o.testing?.backend?.(backendOptions) ?? new PgliteBackend(backendOptions);
   const openTenant = o.testing?.openTenant ?? openLocalTenant;
   const leftover = (_path: string, e: unknown) =>
     say("import_leftover_not_removed", { code: codeOf(e) });
