@@ -4,7 +4,10 @@
 // operation in effect; for each row a request creates, it works out the match by trying every row
 // (the earlier ops of the same request included) and is compared with the `duplicate` block and
 // the flagged item in the log. The cases that must be there have fixed cases in
-// write-duplicates.test.ts; the floor below only guards the generator. Fictional names.
+// write-duplicates.test.ts. Every run ends with a request that makes a match by construction: a
+// row inserted with one key group copied from a live row the run picked, or, when no live row has a
+// whole group, two rows inserted alike in one request; so a match against the run's random state is
+// in every run, whatever the generator draws. The floor below only guards that. Fictional names.
 
 import {
   createOpsContext,
@@ -35,7 +38,9 @@ type Values = Partial<Record<Field, string | null>>;
 type Op =
   | { t: "insert"; set: Values }
   | { t: "update"; pick: number; set: Values }
-  | { t: "revoke"; pick: number };
+  | { t: "revoke"; pick: number }
+  /** An insert with group `group` copied from a live row `pick` (see `copyRequest`). */
+  | { t: "copy"; pick: number; group: number };
 
 const values: fc.Arbitrary<Values> = fc.record(
   { a: fc.constantFrom(...VALUES), b: fc.constantFrom(...VALUES), c: fc.constantFrom(...VALUES) },
@@ -49,11 +54,39 @@ const op: fc.Arbitrary<Op> = fc.oneof(
   },
   { weight: 1, arbitrary: fc.record({ t: fc.constant("revoke" as const), pick: fc.nat(20) }) },
 );
-/** Requests of one to three ops. */
-const scenario = fc.array(fc.array(op, { minLength: 1, maxLength: 3 }), {
-  minLength: 2,
-  maxLength: 8,
-});
+/** Requests of one to three ops, then the request that makes a match (`copy`). */
+const scenario = fc
+  .tuple(
+    fc.array(fc.array(op, { minLength: 1, maxLength: 3 }), { minLength: 2, maxLength: 8 }),
+    fc.nat(20),
+    fc.nat(1),
+  )
+  .map(([requests, pick, group]): Op[][] => [...requests, [{ t: "copy", pick, group }]]);
+
+/**
+ * A value no generated op uses: the request that makes a match is never the same as an earlier
+ * request (which would be replayed, writing nothing), and the field it fills is in no whole group.
+ */
+const OWN = "made";
+
+/**
+ * The ops of the request that makes a match. Live rows with a whole key group: the `pick`-th of
+ * them, by the group asked first if it has it whole, else the other; the new row copies that group
+ * and sets a field outside it to OWN. None: two rows with `c` OWN in one request, the second
+ * matching the first (a request's earlier ops count, 04-write-and-read «疑似重复»).
+ */
+function copyRequest(live: readonly ModelRow[], o: { pick: number; group: number }): Values[] {
+  const whole = (r: ModelRow, g: readonly Field[]) =>
+    g.every((f) => r.values[f] !== undefined && r.values[f] !== null);
+  for (const g of [GROUPS[o.group % 2], GROUPS[(o.group + 1) % 2]] as (readonly Field[])[]) {
+    const from = live.filter((r) => whole(r, g));
+    const target = from[o.pick % Math.max(1, from.length)];
+    if (target === undefined) continue;
+    const copied = Object.fromEntries(g.map((f) => [f, target.values[f]])) as Values;
+    return [g.includes("c") ? { ...copied, a: OWN } : { ...copied, c: OWN }];
+  }
+  return [{ c: OWN }, { c: OWN }];
+}
 
 interface ModelRow {
   readonly id: string;
@@ -139,6 +172,8 @@ it(
         /** The open flagged items, by flagged row: the key group flagged on and the rows listed. */
         const items = new Map<string, { group: readonly Field[]; listed: string[] }>();
         let any = false;
+        /** Whether the last request, the one that makes a match, made one. */
+        let made = false;
         for (const req of requests) {
           // A row an earlier op of the request revokes is not written again in it.
           const gone = new Set<string>();
@@ -146,7 +181,12 @@ it(
           // The request as sent, and what the model does with each op.
           const ops: unknown[] = [];
           const plan: ((row: string, opNo: number) => void)[] = [];
-          for (const o of req) {
+          // The request that makes a match: inserts, as below.
+          const sent: Op[] = req.flatMap((o) =>
+            o.t === "copy" ? copyRequest(live(), o).map((set): Op => ({ t: "insert", set })) : [o],
+          );
+          for (const o of sent) {
+            if (o.t === "copy") continue;
             const set = Object.fromEntries(Object.entries(o.t === "revoke" ? {} : o.set));
             if (o.t === "insert") {
               if (Object.values(set).every((v) => v === null || v === undefined)) continue;
@@ -222,6 +262,7 @@ it(
             });
             if (c.want !== undefined) {
               any = true;
+              if (req[0]?.t === "copy") made = true;
               const g = GROUPS.find((x) => x.map((f) => IDS[f]).join() === c.want?.keys.join());
               items.set(c.row, { group: g as readonly Field[], listed: [...c.want.matched] });
             }
@@ -271,6 +312,7 @@ it(
           // A row flagged when written but left with nothing by the request's end opens no item.
           expect(flagged[0]?.["n"]).toBe(created.filter((c) => items.has(c.row)).length);
         }
+        expect(made).toBe(true);
         if (any) hit++;
         const replayed = await reconcileLog({ live: s.store, scratch: scratch.store });
         expect(replayed.mismatches_total).toBe(0);

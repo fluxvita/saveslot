@@ -220,6 +220,105 @@ async function dataBlocks(tx: ReadTx) {
     }));
 }
 
+/**
+ * A sample per table that lists a block for resting on a restated item ("deps on a restated item"),
+ * by construction: random samples reach it only a few times in 40 (event tables: two to four), so
+ * the guard below would otherwise hold by chance. Each was a generated sample (seed 12345), kept as
+ * it was; that it lists such a block is asserted, not assumed.
+ * - state: from 2026-11-01, `b` 1 and `c` a; `b` 5 seen at the first; `b` 2 and `c` b seen at the
+ *   first; an undo of the third with later writes.
+ * - event: `b` 1 and `c` a; a revoke; `b` 2 seen at the first; the existence item taken as that
+ *   write; `b` 9 (not explicit); `b` 1 from two sources.
+ */
+const RESTATING: Record<"state" | "event", { ops: Op[]; decisions: Decision[]; pick: number }> = {
+  state: {
+    ops: [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "5", sources: ["S20"] } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "2", sources: ["S30"] }, f3: { value: "b", sources: ["S30f3"] } },
+      },
+      {
+        kind: "undo",
+        op: 40,
+        event: 41,
+        target: 30,
+        includeLater: true,
+        seen: 30,
+        acknowledge: ["overwrite"],
+      },
+    ],
+    decisions: [],
+    pick: 1218304737,
+  } as never,
+  event: {
+    ops: [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+        acknowledge: ["overwrite"],
+      },
+      { kind: "revoke", op: 20, event: 21, seen: 10 },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        fields: { f2: { value: "2", sources: ["S30"] } },
+      },
+      {
+        kind: "resolve",
+        op: 40,
+        event: 41,
+        decision: "take_candidate",
+        candidates: [31],
+        take: 31,
+        unit: "existence",
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 10,
+        fields: { f2: { value: "9", sources: ["S4"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 60,
+        event: 61,
+        seen: 20,
+        fields: { f2: { value: "1", sources: ["S5", "S6"], explicit: true } },
+      },
+    ],
+    decisions: [],
+    pick: 5,
+  } as never,
+};
+
 const both = [
   ["state", STATE, true],
   ["event", EVENT, false],
@@ -238,7 +337,12 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
   /** The blocks listed, by why they must go. */
   const reasons: Record<string, number> = {};
 
-  const checkSample = async (ops: readonly Op[], decisions: readonly Decision[], pick: number) => {
+  /** Checks one sample; returns why each block it listed must go, or undefined if it was not checked. */
+  const checkSample = async (
+    ops: readonly Op[],
+    decisions: readonly Decision[],
+    pick: number,
+  ): Promise<Set<string> | undefined> => {
     const { steps } = judged(schema, ops.map(asWritten), decisions);
     const ctx = {
       table: (isState ? "t2" : "t1") as never,
@@ -253,7 +357,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     });
     if (collides) {
       seen.skipped++;
-      return;
+      return undefined;
     }
     await main.reset();
     const store = main.store;
@@ -285,7 +389,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       );
     }
 
-    await store.read(async (tx) => {
+    return store.read(async (tx) => {
       const blocks = await dataBlocks(tx);
       // The sources the row's writes cite; one or two of them deleted.
       const cited = [
@@ -303,7 +407,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         .sort((a, b) => a - b);
       if (cited.length === 0) {
         seen.skipped++;
-        return;
+        return undefined;
       }
       const first = cited[pick % cited.length] as number;
       const second = cited[(pick >> 3) % cited.length] as number;
@@ -323,7 +427,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         // A form the replay refuses (`not_implemented`): not this check's concern.
         if (e instanceof JudgeError) {
           seen.refused++;
-          return;
+          return undefined;
         }
         throw e;
       }
@@ -484,11 +588,13 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         return [`${k}: no reason`];
       });
       expect({ sources, unexplained }).toEqual({ sources, unexplained: [] });
+      const mine = new Set<string>();
       for (const p of positions) {
         const b = byKey.get(`${p.seq} ${p.path}`);
         const why =
           b === undefined ? (p.seq === self ? "summary" : "other") : (mustGo(b) ?? "paired");
         reasons[why] = (reasons[why] ?? 0) + 1;
+        mine.add(why);
       }
       // A cascade: a block listed by what it rests on (by deps or what it carries), beyond the
       // contributions' own blocks and the operations' parameters.
@@ -504,14 +610,22 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       if (cascade) seen.cascaded++;
       // Nothing of the decoy row.
       expect(positions.filter((p) => decoySeqs.has(p.seq))).toEqual([]);
+      return mine;
     });
   };
 
   it("the positions leave nothing resting on what a deletion takes away or restates, and list nothing else", async () => {
+    // The sample that must be there, made so: it reaches the check and lists a block resting on a
+    // restated item.
+    const fixed = RESTATING[isState ? "state" : "event"];
+    const why = await checkSample(fixed.ops, fixed.decisions, fixed.pick);
+    expect({ restating: why?.has("deps on a restated item") ?? false }).toEqual({
+      restating: true,
+    });
     await fc.assert(
-      fc.asyncProperty(scenario(isState), fc.nat(), ({ ops, decisions }, pick) =>
-        checkSample(ops, decisions, pick),
-      ),
+      fc.asyncProperty(scenario(isState), fc.nat(), async ({ ops, decisions }, pick) => {
+        await checkSample(ops, decisions, pick);
+      }),
       {
         numRuns: RUNS,
         ...(SEED !== undefined ? { seed: SEED } : {}),
