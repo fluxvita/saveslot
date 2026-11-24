@@ -1,8 +1,15 @@
 {
   "name": "@fluxvita/saveslot-daemon",
-  "version": "0.0.0",
+  "version": "0.1.0-rc.0",
   "description": "Process entry for the saveslot service: backend selection, configuration, background task scheduler.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fluxvita/saveslot.git",
+    "directory": "packages/daemon"
+  },
+  "homepage": "https://github.com/fluxvita/saveslot#readme",
+  "bugs": "https://github.com/fluxvita/saveslot/issues",
   "type": "module",
   "exports": {
     ".": {

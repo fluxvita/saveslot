@@ -10,7 +10,14 @@ Include what you found, how to reproduce it, the affected version or commit, and
 
 ## Supported versions
 
-saveslot is before 1.0. Security fixes go into the latest release only.
+saveslot is before 1.0. Security fixes go into a new release of the latest minor version only; upgrade to get them.
+
+| Version | Security fixes |
+| --- | --- |
+| 0.1.x (latest) | Yes |
+| Prereleases (`0.1.0-rc.*`) | No: upgrade to the release |
+
+All `@fluxvita/saveslot-*` packages are released together at the same version as `@fluxvita/saveslot`; the version that counts is that of `@fluxvita/saveslot` (`saveslot --version`).
 
 ## Scope
 

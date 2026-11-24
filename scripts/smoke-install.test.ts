@@ -1,11 +1,20 @@
 // Tests for the release set's check (scripts/smoke-install.ts): the repository passes it, and each
 // rule fails on the input it exists to catch.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ENTRY, FILES, INTERNAL_NOTE, releaseProblems } from "./smoke-install.ts";
+import {
+  BUGS,
+  ENTRY,
+  FILES,
+  HOMEPAGE,
+  INTERNAL_NOTE,
+  REPOSITORY,
+  releaseProblems,
+} from "./smoke-install.ts";
 
 const REPO = resolve(import.meta.dirname, "..");
 const dirs: string[] = [];
@@ -21,7 +30,11 @@ interface Spec {
   files?: unknown;
   access?: string;
   readme?: string | null;
+  /** Fields that replace the right ones. */
+  meta?: Record<string, unknown>;
 }
+
+const NODE = ">=24.22.1 <25 || >=26.12.1";
 
 function repo(pkgs: Spec[], fixed: string[][]): string {
   const root = mkdtempSync(join(tmpdir(), "saveslot-release-"));
@@ -31,6 +44,7 @@ function repo(pkgs: Spec[], fixed: string[][]): string {
     writeFileSync(join(root, path), body);
   };
   put(".changeset/config.json", JSON.stringify({ fixed }));
+  put("package.json", JSON.stringify({ engines: { node: NODE } }));
   for (const p of pkgs) {
     const dir = `packages/${p.name.replace(/^@fluxvita\/(saveslot-)?/, "") || "saveslot"}`;
     put(
@@ -41,6 +55,11 @@ function repo(pkgs: Spec[], fixed: string[][]): string {
         files: p.files ?? FILES,
         publishConfig: { access: p.access ?? "public" },
         dependencies: p.deps ?? {},
+        repository: { type: "git", url: REPOSITORY, directory: dir },
+        homepage: HOMEPAGE,
+        bugs: BUGS,
+        engines: { node: NODE },
+        ...p.meta,
       }),
     );
     const readme =
@@ -58,6 +77,27 @@ const REF = "@fluxvita/saveslot-reference";
 describe("release set", () => {
   it("has no problems in this repository", () => {
     expect(releaseProblems(REPO)).toEqual([]);
+  });
+
+  it("no source or test file writes the current version down: it would be wrong after the next one", () => {
+    const version = (
+      JSON.parse(readFileSync(join(REPO, "packages/saveslot/package.json"), "utf8")) as {
+        version: string;
+      }
+    ).version;
+    const files = execFileSync(
+      "git",
+      ["ls-files", "-z", "packages/*/src/*.ts", "packages/*/src/**/*.ts"],
+      {
+        cwd: REPO,
+        encoding: "utf8",
+      },
+    )
+      .split("\0")
+      .filter((f) => f !== "");
+    const named = files.filter((f) => readFileSync(join(REPO, f), "utf8").includes(`"${version}"`));
+    // Read it from the package's package.json (as daemonVersion() does) instead.
+    expect(named).toEqual([]);
   });
 
   it("passes a published entry and internal package in one fixed group", () => {
@@ -103,6 +143,29 @@ describe("release set", () => {
     expect(releaseProblems(root)).toEqual([
       `${ENTRY}: files is ["dist"], not ${JSON.stringify(FILES)}`,
       `${ENTRY}: publishConfig.access is not "public"`,
+    ]);
+  });
+
+  it("reports a repository, home page, issues link or Node range that is not the project's", () => {
+    const root = repo(
+      [
+        {
+          name: ENTRY,
+          meta: {
+            repository: { type: "git", url: REPOSITORY, directory: "packages/cli" },
+            homepage: "https://example.com",
+            bugs: undefined,
+            engines: { node: ">=24" },
+          },
+        },
+      ],
+      [[ENTRY]],
+    );
+    expect(releaseProblems(root)).toEqual([
+      `${ENTRY}: repository is not {"type": "git", "url": "${REPOSITORY}", "directory": "packages/saveslot"}`,
+      `${ENTRY}: homepage is not ${HOMEPAGE}`,
+      `${ENTRY}: bugs is not ${BUGS}`,
+      `${ENTRY}: engines.node is not the root's "${NODE}"`,
     ]);
   });
 

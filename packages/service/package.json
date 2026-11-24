@@ -1,8 +1,15 @@
 {
   "name": "@fluxvita/saveslot-service",
-  "version": "0.0.0",
+  "version": "0.1.0-rc.0",
   "description": "The saveslot service layer: identity, permissions, idempotency waiting, handles, rate limits, control plane storage.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fluxvita/saveslot.git",
+    "directory": "packages/service"
+  },
+  "homepage": "https://github.com/fluxvita/saveslot#readme",
+  "bugs": "https://github.com/fluxvita/saveslot/issues",
   "type": "module",
   "exports": {
     ".": {

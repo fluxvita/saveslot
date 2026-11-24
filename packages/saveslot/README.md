@@ -24,4 +24,7 @@ echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.profile
 
 Open a new shell, then run `npm install -g` again.
 
+Install it globally rather than running it with `npx`: `saveslot setup` gives the agent hosts the path of the
+installed command, and a path in npx's cache can be removed at any time.
+
 The other `@fluxvita/saveslot-*` packages it installs are internal and are released with it at the same version.

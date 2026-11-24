@@ -29,6 +29,10 @@ import { dirname, join, resolve } from "node:path";
 export const ENTRY = "@fluxvita/saveslot";
 export const VERDACCIO = "verdaccio@7.1.2";
 export const INTERNAL_NOTE = "**Internal package of saveslot.**";
+/** Where every published package says its source, home page and issues are. */
+export const REPOSITORY = "git+https://github.com/fluxvita/saveslot.git";
+export const HOMEPAGE = "https://github.com/fluxvita/saveslot#readme";
+export const BUGS = "https://github.com/fluxvita/saveslot/issues";
 /** What every published package leaves out of `dist`: test fixtures and the build cache. */
 export const FILES = ["dist", "!dist/**/*.fixture.*", "!dist/.tsbuildinfo"];
 
@@ -38,6 +42,10 @@ interface Manifest {
   files?: unknown;
   publishConfig?: { access?: unknown };
   dependencies?: Record<string, string>;
+  repository?: { type?: unknown; url?: unknown; directory?: unknown };
+  homepage?: unknown;
+  bugs?: unknown;
+  engines?: { node?: unknown };
 }
 
 export interface Pkg {
@@ -58,7 +66,9 @@ export function workspacePackages(root: string): Pkg[] {
 /**
  * What is wrong with the release set under `root`, one line each: the published packages (those
  * not private) must be the Changesets fixed group, be closed under their workspace dependencies,
- * carry the same `files` and public access, and have a README whose opening says what they are.
+ * carry the same `files`, public access, repository (with their own directory), home page, issues
+ * link and Node range as the root, and have a README whose opening says what they are. npm checks
+ * a provenance statement against `repository`.
  */
 export function releaseProblems(root: string): string[] {
   const problems: string[] = [];
@@ -70,6 +80,8 @@ export function releaseProblems(root: string): string[] {
   const config = JSON.parse(readFileSync(join(root, ".changeset/config.json"), "utf8")) as {
     fixed?: string[][];
   };
+  const rootEngines = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as Manifest)
+    .engines?.node;
   const fixed = config.fixed ?? [];
   const group = new Set(fixed[0] ?? []);
   if (fixed.length !== 1)
@@ -91,6 +103,15 @@ export function releaseProblems(root: string): string[] {
     }
     if (m.publishConfig?.access !== "public")
       problems.push(`${m.name}: publishConfig.access is not "public"`);
+    const repo = m.repository;
+    if (repo?.type !== "git" || repo.url !== REPOSITORY || repo.directory !== dir)
+      problems.push(
+        `${m.name}: repository is not {"type": "git", "url": "${REPOSITORY}", "directory": "${dir}"}`,
+      );
+    if (m.homepage !== HOMEPAGE) problems.push(`${m.name}: homepage is not ${HOMEPAGE}`);
+    if (m.bugs !== BUGS) problems.push(`${m.name}: bugs is not ${BUGS}`);
+    if (m.engines?.node !== rootEngines)
+      problems.push(`${m.name}: engines.node is not the root's ${JSON.stringify(rootEngines)}`);
     const readme = join(root, dir, "README.md");
     if (!existsSync(readme)) {
       problems.push(`${m.name}: no README.md`);

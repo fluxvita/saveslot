@@ -1,0 +1,69 @@
+# Publishes to npm what main's versions say and npm does not have yet (RELEASING.md). Runs after the
+# `ci` workflow passed on a push to main, on the commit it checked; by hand to retry. Publishes nothing
+# in Changesets pre mode (prereleases are published by hand) or when the entry's version is already
+# on npm, so every other push to main ends after the first steps.
+
+name: release
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.repository == 'fluxvita/saveslot' && (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write # the tags
+      id-token: write # provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+      - id: due
+        run: |
+          version="$(node -p 'require("./packages/saveslot/package.json").version')"
+          if [ -e .changeset/pre.json ]; then
+            echo "Changesets pre mode: prereleases are published by hand."
+          elif npm view "@fluxvita/saveslot@${version}" version >/dev/null 2>&1; then
+            echo "@fluxvita/saveslot@${version} is on npm already."
+          else
+            echo "Publishing ${version}."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.due.outputs.publish == 'true'
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - if: steps.due.outputs.publish == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - if: steps.due.outputs.publish == 'true'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          pnpm smoke:install
+      - if: steps.due.outputs.publish == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
+        run: pnpm changeset publish
+      - if: steps.due.outputs.publish == 'true'
+        run: |
+          git tag "v$(node -p 'require("./packages/saveslot/package.json").version')"
+          git push origin --tags

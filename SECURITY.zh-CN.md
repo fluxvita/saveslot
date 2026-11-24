@@ -10,7 +10,14 @@
 
 ## 支持的版本
 
-saveslot 处在 1.0 之前，安全修复只进最新的发布版本。
+saveslot 处在 1.0 之前，安全修复只以最新小版本的新发布给出，升级才能拿到。
+
+| 版本 | 安全修复 |
+| --- | --- |
+| 0.1.x（最新） | 有 |
+| 预发布（`0.1.0-rc.*`） | 无，请升级到正式版 |
+
+各个 `@fluxvita/saveslot-*` 包与 `@fluxvita/saveslot` 同一个版本一起发布，以 `@fluxvita/saveslot` 的版本为准（`saveslot --version`）。
 
 ## 范围
 

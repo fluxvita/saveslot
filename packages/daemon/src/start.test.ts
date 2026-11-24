@@ -20,6 +20,7 @@ import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture
 import { init, start, status, stop } from "./commands.ts";
 import { homeTemplate } from "./home-copy.fixture.ts";
 import { health } from "./local-request.ts";
+import { daemonVersion } from "./main.ts";
 import { lastFailureFile, lockDir, runDir, runService, socketFile } from "./service.ts";
 import { TEXTS } from "./texts.ts";
 
@@ -90,7 +91,12 @@ describe("start, while another process is starting the service", () => {
       expect(await health(socketFile(home))).toBeUndefined();
       // … and only then does the other start listening.
       await held.release();
-      const other = await runService({ home, version: "0.0.0", signals: false, log: () => {} });
+      const other = await runService({
+        home,
+        version: daemonVersion(),
+        signals: false,
+        log: () => {},
+      });
       try {
         expect(await started).toBe(0);
         expect(c.out.join("\n")).toContain(`pid ${process.pid}`);

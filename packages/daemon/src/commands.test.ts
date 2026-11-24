@@ -44,6 +44,13 @@ import { lockDir, pidFile, runService, socketFile } from "./service.ts";
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
+/** This package's version, as the service reports it: never a version written down here. */
+const VERSION = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version: string;
+  }
+).version;
+
 const root = mkdtempSync(join(tmpdir(), "ssc-"));
 let n = 0;
 const started: string[] = [];
@@ -231,7 +238,7 @@ describe("status: the clock against the log's end (log.end, with the user sessio
         return res.writeHead(200, { "content-type": "application/json" }).end(
           JSON.stringify({
             state: "ready",
-            version: "0.0.0",
+            version: VERSION,
             pid: 4242,
             since: "2026-11-18T00:00:00Z",
             writer_lock: "held",
@@ -310,7 +317,12 @@ describe("status: the clock against the log's end (log.end, with the user sessio
   it("against the service: the log's end is the genesis's recorded time; a clock behind it, warned", async () => {
     const h = join(root, String(n++));
     await initLocalHome({ home: h, backend: testBackend(), lock: osFileLock, now: END });
-    const svc = await runService({ home: h, version: "0.0.0", signals: false, log: () => {} });
+    const svc = await runService({
+      home: h,
+      version: VERSION,
+      signals: false,
+      log: () => {},
+    });
     try {
       const behind = quietIO();
       expect(await status(h, behind.io, { now: () => at(-10 * 60_000) })).toBe(0);

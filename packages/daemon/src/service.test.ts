@@ -38,7 +38,7 @@ import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture
 import { serviceCommand } from "./commands.ts";
 import { LEDGER } from "./contract-suite.fixture.ts";
 import { httpDriver } from "./http-driver.fixture.ts";
-import { main } from "./main.ts";
+import { daemonVersion, main } from "./main.ts";
 import { lastFailureFile, lockDir, pidFile, runService, socketFile } from "./service.ts";
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -152,7 +152,7 @@ describe("the service process", () => {
     const a = start(h);
     const ready = await until(h, ["ready"], a);
     expect(Object.keys(ready).sort()).toEqual(["pid", "since", "state", "version", "writer_lock"]);
-    expect(ready).toMatchObject({ state: "ready", pid: a.proc.pid, version: "0.0.0" });
+    expect(ready).toMatchObject({ state: "ready", pid: a.proc.pid, version: daemonVersion() });
     expect(readFileSync(pidFile(h), "utf8")).toBe(`${a.proc.pid}\n`);
     expect(statSync(join(h, "run")).mode & 0o777).toBe(0o700);
     expect(statSync(socketFile(h)).mode & 0o777).toBe(0o600);
