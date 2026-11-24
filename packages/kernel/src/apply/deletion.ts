@@ -26,7 +26,9 @@
 // Refused with `not_implemented`, each a case of its own: a schema constant (`backfill` and
 // `schema_const` sources are not applied in this version); a premise declaration's business time
 // listed (premises with deletion); a key field listed on a table with an external key (keys with
-// deletion); a restatement numbering a new item. Not here: `deletion.cancelled`, the tombstone.
+// deletion); a restatement numbering a new item. `deletion.cancelled` goes the same way
+// (`planDeletionCancelled`), each item's judgement the one the log last gives without the
+// cancelled deletion's blocks. Not here: the tombstone.
 
 import {
   type BizPoint,
@@ -241,7 +243,11 @@ function itemsAfter(
           target === "existence"
             ? listed.has(`${ev.seq} span/existence/${idx}`)
             : listed.has(`${ev.seq} ${ownPath}`);
-        if (mine) continue; // taken away (or a carried item dropped)
+        // Its own block read no more: taken away (or a carried item dropped), unless a deletion's
+        // restatement still readable gave its content again (09 §5.9: then it is still a
+        // contribution, its content where that restatement is).
+        const again = row.contentGiven.get(k);
+        if (mine && (again === undefined || listed.has(`${again.seq} ${again.path}`))) continue;
         status = stored.status;
         valid = stored.valid;
         const last = row.contentGiven.get(k)?.block ?? own;
@@ -409,6 +415,73 @@ export function planDeletionConfirmed(seq: Seq, present: Obj, input: DeletionInp
     if (/^ops\/\d+\/premise_valid\/\d+$/.test(p.path))
       throw notYet(seq, "of a premise declaration's business time");
   }
+  return [
+    ...planRows(seq, present, input, listed, "deletion"),
+    // The deleted sources read as pending deletion: no write refers to them as evidence any more
+    // (03-deletion «撤回与宽限期»: `pending_deletion_source`).
+    { kind: "sources_state", seqs: [...(t["sources"] as Seq[])], state: "pending_deletion" },
+    {
+      kind: "deletion_insert",
+      id: t["deletion"] as string,
+      deletion_kind: t["kind"] as string,
+      due_at: t["due_at"] as string,
+      confirmed_seq: seq,
+    },
+    { kind: "pending_blocks", deletion_seq: seq, positions },
+  ];
+}
+
+/** What a cancellation reads besides the rows it touches. */
+export interface CancellationInput extends DeletionInput {
+  /** The `deletion.confirmed` it cancels. */
+  readonly cancelled: Seq;
+  /** The sources it deleted that no other pending deletion deletes: present again. */
+  readonly sources: readonly Seq[];
+  /** The blocks of the rows' events still pending under the other pending deletions. */
+  readonly listed: ReadonlySet<string>;
+  /** The items put back undecided (`restored_items`): each one's flag, if its type gives one. */
+  readonly restored: readonly {
+    readonly id: string;
+    readonly flag?: Extract<Change, { kind: "flag_insert" }>["row"];
+  }[];
+}
+
+/**
+ * The changes of a `deletion.cancelled` (§5.9): the rows it touches as for a confirmation, each
+ * item's judgement the one the log last gives without the cancelled deletion's blocks (the
+ * caller's `stored`), and the blocks read no more those the other pending deletions list; the
+ * version cells' intent `deletion_cancelled`. The deletion cancelled; its blocks readable again
+ * where no other pending deletion lists them; the items it superseded put back undecided, with
+ * their flags. `kept_superseded` and `kept_effective` are metadata (their effect is in the
+ * restatements and item events). Pure; throws {@link ApplyError}.
+ */
+export function planDeletionCancelled(seq: Seq, present: Obj, input: CancellationInput): Change[] {
+  const t = present["target"] as Obj;
+  const changes = planRows(seq, present, input, input.listed, "deletion_cancelled");
+  changes.push(
+    { kind: "deletion_cancel", id: t["deletion"] as string },
+    { kind: "pending_release", deletion_seq: input.cancelled },
+    // The sources it deleted read as present again, but those another pending deletion deletes.
+    { kind: "sources_state", seqs: [...input.sources], state: "present" },
+  );
+  for (const r of input.restored) {
+    changes.push({ kind: "item_update", id: r.id, state: "open", version_op: seq });
+    if (r.flag !== undefined) changes.push({ kind: "flag_insert", row: r.flag });
+  }
+  return changes;
+}
+
+/**
+ * The rows a deletion or a cancellation touches, rebuilt in the source table, settled and held to
+ * its results; the first creations it gives. `listed`: the blocks of the rows' events read no more.
+ */
+function planRows(
+  seq: Seq,
+  present: Obj,
+  input: DeletionInput,
+  listed: ReadonlySet<string>,
+  intent: string,
+): Change[] {
   const restated = restatedOf(present);
   const results = resultsOf(seq, present);
   const changes: Change[] = [];
@@ -434,7 +507,7 @@ export function planDeletionConfirmed(seq: Seq, present: Obj, input: DeletionInp
       row.openCells,
       row.count,
       seq,
-      "deletion",
+      intent,
       after.renewed,
     );
     const result = results.find((x) => x.id === row.rowId);
@@ -569,19 +642,6 @@ export function planDeletionConfirmed(seq: Seq, present: Obj, input: DeletionInp
     if (b["created"] === false && row.origin === b["event"] && !created.has(row.rowId))
       changes.push({ kind: "row_origin_drop", row_id: row.rowId });
   }
-  changes.push(
-    // The deleted sources read as pending deletion: no write refers to them as evidence any more
-    // (03-deletion «撤回与宽限期»: `pending_deletion_source`).
-    { kind: "sources_state", seqs: [...(t["sources"] as Seq[])], state: "pending_deletion" },
-    {
-      kind: "deletion_insert",
-      id: t["deletion"] as string,
-      deletion_kind: t["kind"] as string,
-      due_at: t["due_at"] as string,
-      confirmed_seq: seq,
-    },
-    { kind: "pending_blocks", deletion_seq: seq, positions },
-  );
   return changes;
 }
 

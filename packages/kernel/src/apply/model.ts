@@ -231,7 +231,8 @@ export type Change =
   | {
       readonly kind: "item_update";
       readonly id: string;
-      readonly state?: "resolved" | "superseded";
+      /** `open`: an item put back undecided by a cancelled deletion (09 §5.9 `restored_items`). */
+      readonly state?: "resolved" | "superseded" | "open";
       readonly decision?: string;
       readonly version_op?: Seq;
     }
@@ -292,6 +293,10 @@ export type Change =
       readonly due_at: string;
       readonly confirmed_seq: Seq;
     }
+  /** A deletion cancelled (`deletions`). */
+  | { readonly kind: "deletion_cancel"; readonly id: string }
+  /** The blocks a deletion listed, readable again but where another pending deletion lists them. */
+  | { readonly kind: "pending_release"; readonly deletion_seq: Seq }
   /** The blocks a pending deletion lists, read no more (`pending_blocks`). */
   | {
       readonly kind: "pending_blocks";

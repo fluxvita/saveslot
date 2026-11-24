@@ -24,6 +24,7 @@ import {
   applyEvents,
   createOpsContext,
   createTenant,
+  encodeCancellation,
   encodeDeletion,
   eventsOf,
   JudgeError,
@@ -41,6 +42,7 @@ import {
 import {
   asWritten,
   COMPILED_V1,
+  cancellationReplayForTests,
   createSlotEvents,
   type Decision,
   deletionReplayForTests,
@@ -377,6 +379,8 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     judgeUnlisted: 0,
     listed: 0,
     restated: 0,
+    cancelled: 0,
+    cancelRefused: 0,
   };
   let unlisted: string | undefined;
   const notYet: Record<string, number> = {};
@@ -496,7 +500,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         // The items' IDs are the log's; judge's are its own names: not written here.
         superseded: [],
       });
-      return { replay, positions, self, listed: r.listed, blocks };
+      return { replay, positions, self, listed: r.listed, blocks, sources };
     });
     if (made === undefined) {
       seen.skipped++;
@@ -573,6 +577,97 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     await scratch.reset();
     const r = await reconcileLog({ live: store, scratch: scratch.store });
     expect(r.mismatches).toEqual([]);
+
+    // The deletion cancelled (09 §5.9 `deletion.cancelled`), as the cancellation will be made:
+    // judge's replay without it, encoded; then the same checks, the blocks readable again and the
+    // deletion cancelled. With no write since, the row is back to what it was.
+    const records = steps.map((x) => x.judgement.record);
+    const deleted = await store.read(async (tx) =>
+      takenAway(await readCitations(tx, SLOT, made.sources), new Set(made.sources)),
+    );
+    let back: ReturnType<typeof cancellationReplayForTests>;
+    try {
+      back = cancellationReplayForTests(
+        shape(schema),
+        records,
+        deleted,
+        made.replay.replay.restated,
+      );
+    } catch (e) {
+      if (e instanceof JudgeError) {
+        seen.cancelRefused++;
+        return;
+      }
+      throw e;
+    }
+    const b = back.result;
+    if (
+      !b.listed &&
+      JSON.stringify(plain(view(back.before))) !== JSON.stringify(plain(view(back.replay.state)))
+    ) {
+      seen.judgeUnlisted++;
+      return;
+    }
+    const cancelBlocks = encodeCancellation({
+      id: DELETION,
+      origin: "request",
+      results: b.listed
+        ? [
+            {
+              table: isState ? "t2" : "t1",
+              id,
+              outcome: back.outcome as string,
+              stretches: b.stretches,
+              ...(b.gaps !== undefined ? { gaps: b.gaps } : {}),
+            },
+          ]
+        : [],
+      restated: back.replay.restated,
+      recreated: b.recreated,
+      // The items' IDs are the log's; no item events were made with the deletion.
+      restoredItems: [],
+      keptSuperseded: [],
+      keptEffective: [],
+    });
+    try {
+      await run(store, [
+        { type: "deletion.cancelled", slot: SLOT, blocks: { ctx: CTX_DELETE, ...cancelBlocks } },
+      ] as NewEvent[]);
+    } catch (e) {
+      const a = e instanceof ApplyError ? e : (e as { cause?: unknown }).cause;
+      if (a instanceof ApplyError && a.reason === "not_implemented") {
+        seen.notYet++;
+        return;
+      }
+      throw e;
+    }
+    seen.cancelled++;
+    const backState = back.replay.state;
+    const vb = plain(view(backState));
+    expect(
+      plain(await store.read((tx) => fromCells(tx, isState, Object.keys(vb.fields).sort()))),
+    ).toEqual(vb);
+    expect(await store.read((tx) => storedItems(tx, id))).toEqual(
+      backState.items
+        .filter((x) => x.status === "applied" || x.status === "corroborated")
+        .map((x) => {
+          const w = x.valid[0];
+          const iv = isState ? `${w?.from ?? null}..${w?.to ?? null}` : "null..null";
+          return `${item(x)} ${x.status} ${iv}`;
+        })
+        .sort(),
+    );
+    await store.read(async (tx) => {
+      const evs = await readEvents(tx, 1, (await readTail(tx))?.seq ?? 0);
+      expect(evs.flatMap((e) => [...e.blocks].filter(([, x]) => x.state === "pending"))).toEqual(
+        [],
+      );
+      const d = await tx.query("SELECT id, state FROM deletions");
+      expect(d.rows).toEqual([{ id: DELETION, state: "cancelled" }]);
+    });
+    await scratch.reset();
+    const r2 = await reconcileLog({ live: store, scratch: scratch.store });
+    expect(r2.mismatches).toEqual([]);
   };
 
   it("apply of a deletion gives judge's replay, and replays the same", async () => {
@@ -594,5 +689,6 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     expect(seen.samples).toBeGreaterThan(RUNS / 4);
     expect(seen.listed).toBeGreaterThan(0);
     expect(seen.restated).toBeGreaterThan(0);
+    expect(seen.cancelled).toBeGreaterThan(RUNS / 4);
   });
 });

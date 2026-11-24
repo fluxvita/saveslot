@@ -10,6 +10,7 @@ import { interval } from "../time/index.ts";
 import {
   type DeletionInput,
   type DeletionRow,
+  planDeletionCancelled,
   planDeletionConfirmed,
   type StoredItem,
 } from "./deletion.ts";
@@ -630,6 +631,106 @@ describe("the plan of a deletion.confirmed", () => {
       const e = event();
       for (const p of Object.keys(e)) if (p.startsWith("results/")) delete e[p];
       stops(() => planDeletionConfirmed(SELF, e, { rows: [row] }), "not_implemented", /key field/);
+    });
+  });
+
+  describe("a deletion.cancelled", () => {
+    // The deletion of #22's source cancelled: the row as #22 had it, every item as last given
+    // without the deletion (the caller's `stored`); nothing else pending.
+    const cancelRow: DeletionRow = {
+      ...ROW_IN,
+      // As the deletion left it: #22's cell gone.
+      openCells: [
+        cell("10-01", "11-10", 12, 40),
+        cell("11-10", null, 15, 40),
+        {
+          field: "f3",
+          valid_from: d("10-01"),
+          valid_to: null,
+          src: null,
+          no_value: false,
+          rec_from: 12,
+        },
+      ],
+      count: 2,
+    };
+    const cancelled = (over: Record<string, JsonValue> = {}) => ({
+      target: { deletion: DELETION, origin: "request" },
+      "results/0/target": { table: "t2", entity: ENTITY, outcome: "resegmented" },
+      "results/0/fields/f2/0": {
+        value: "5000",
+        sources: [{ kind: "value", carried: { event: 12, field: "f2", k: 0 } }],
+        valid: { from: d("10-01"), to: d("11-02") },
+        deps: [{ event: 12, field: "f2", k: 0 }],
+      },
+      "results/0/fields/f2/1": {
+        value: "3000",
+        sources: [{ kind: "value", carried: { event: 22, field: "f2", k: 0 } }],
+        valid: { from: d("11-02"), to: d("11-20") },
+        deps: [{ event: 22, field: "f2", k: 0 }],
+      },
+      "results/0/fields/f2/2": {
+        value: "4000",
+        sources: [{ kind: "value", carried: { event: 15, field: "f2", k: 0 } }],
+        valid: { from: d("11-20") },
+        deps: [{ event: 15, field: "f2", k: 0 }],
+      },
+      "results/0/existence": { gaps: [{ to: d("10-01") }], deps: [] },
+      ...over,
+    });
+    const FLAG = {
+      table_id: "t2",
+      row_id: ENTITY,
+      flag: "disputed",
+      item_id: `pi_${"5".repeat(16)}`,
+      fields: '["f2"]',
+      spans: null,
+    };
+    const input = {
+      rows: [cancelRow],
+      cancelled: SELF,
+      sources: [21],
+      listed: new Set<string>(),
+      restored: [{ id: FLAG.item_id, flag: FLAG }],
+    };
+
+    it("the row back, the deletion cancelled, its blocks released, the item put back with its flag", () => {
+      const cs = planDeletionCancelled(50, cancelled(), input);
+      expect(kinds(cs)).toEqual([
+        "base_sources_row",
+        "rows_replace",
+        "cells",
+        "counts_add",
+        "deletion_cancel",
+        "pending_release",
+        "sources_state",
+        "item_update",
+        "flag_insert",
+      ]);
+      expect((cs[2] as Extract<Change, { kind: "cells" }>).rows.map((r) => r[5])).toEqual([
+        "deletion_cancelled",
+        "deletion_cancelled",
+        "deletion_cancelled",
+      ]);
+      expect(cs.slice(4)).toEqual([
+        { kind: "deletion_cancel", id: DELETION },
+        { kind: "pending_release", deletion_seq: SELF },
+        { kind: "sources_state", seqs: [21], state: "present" },
+        { kind: "item_update", id: FLAG.item_id, state: "open", version_op: 50 },
+        { kind: "flag_insert", row: FLAG },
+      ]);
+    });
+
+    it("an item's own block still pending under another deletion: out of the row, and the results then disagree", () => {
+      stops(
+        () =>
+          planDeletionCancelled(50, cancelled(), {
+            ...input,
+            listed: new Set(["22 fields/f2/0"]),
+          }),
+        "inconsistent",
+        /not what the row settles to/,
+      );
     });
   });
 });

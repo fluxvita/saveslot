@@ -248,27 +248,30 @@ function group<K, V>(pairs: Iterable<readonly [K, V]>): Map<K, V[]> {
 }
 
 /**
- * The time of each table of the slot (its rows' own business time, for `row_time` premises), from
- * the slot's current definition.
+ * The time of each table of the slot (its rows' own business time, for `row_time` premises), by
+ * schema version: a write is read in the version its request names (`request.sv`), whose table
+ * may have another time than the current one.
  */
 async function tablesOf(
   tx: ReadTx,
   slot: string,
-): Promise<Map<string, { type: string; field?: string }>> {
-  const out = new Map<string, { type: string; field?: string }>();
-  const r = await tx.query<{ body: string }>(
-    `SELECT c.body FROM schema_versions v JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
-     WHERE v.slot_id = $1 AND v.state = 'current'`,
+): Promise<Map<number, Map<string, { type: string; field?: string }>>> {
+  const out = new Map<number, Map<string, { type: string; field?: string }>>();
+  const r = await tx.query<{ sv: unknown; body: string }>(
+    `SELECT v.sv, c.body FROM schema_versions v JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
+     WHERE v.slot_id = $1`,
     [slot],
   );
   for (const x of r.rows) {
+    const byTable = new Map<string, { type: string; field?: string }>();
     for (const t of (JSON.parse(x.body) as { tables: Obj[] }).tables) {
       const time = t["time"] as Obj;
-      out.set(t["id"] as string, {
+      byTable.set(t["id"] as string, {
         type: time["type"] as string,
         ...(typeof time["field"] === "string" ? { field: time["field"] } : {}),
       });
     }
+    out.set(Number(x.sv), byTable);
   }
   return out;
 }
@@ -346,7 +349,7 @@ export async function readPositionIndex(
     await tx.query<{ seq: unknown; path: string; body: string | null }>(
       `SELECT c.seq, c.path,
          CASE WHEN c.path LIKE 'ops/%/premises/%' OR c.path LIKE 'ops/%/premise_valid/%'
-           OR c.path LIKE 'ops/%/target' THEN c.body ELSE NULL END AS body
+           OR c.path LIKE 'ops/%/target' OR c.path = 'request' THEN c.body ELSE NULL END AS body
        FROM events e JOIN content c ON c.seq = e.seq
        WHERE e.seq = ANY($1) AND e.seq = e.op AND c.body IS NOT NULL
        ORDER BY c.seq, c.path COLLATE "C"`,
@@ -359,13 +362,17 @@ export async function readPositionIndex(
     const premiseRanges = new Map<string, string>();
     const premiseDeps = new Set<string>();
     const timeBlock = new Map<number, string>();
+    // The version the request was read in: a write head's `request.sv`.
+    const request = rows.find((r) => r.path === "request");
+    const sv = request?.body == null ? undefined : (JSON.parse(request.body) as Obj)["sv"];
+    const ofVersion = typeof sv === "number" ? tables.get(sv) : undefined;
     for (const r of rows) {
       if (r.body === null) continue;
       const b = JSON.parse(r.body) as Obj;
       const target = /^ops\/(\d+)\/target$/.exec(r.path);
       if (target !== null) {
         const i = Number(target[1]);
-        const time = tables.get(b["table"] as string);
+        const time = ofVersion?.get(b["table"] as string);
         if (time?.type === "state") timeBlock.set(i, `ops/${i}/valid`);
         else if (time?.type === "event") timeBlock.set(i, `ops/${i}/set/${time.field}`);
         continue;

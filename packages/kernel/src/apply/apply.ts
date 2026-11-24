@@ -41,13 +41,15 @@ import { type RestorePoint, restorePoint } from "../store/restore-point.ts";
 import type { ValidParam } from "../time/index.ts";
 import { confirmationHash, confirmedChecksums } from "./confirmation.ts";
 import {
+  type CancellationInput,
   type DeletionInput,
   type DeletionRow,
+  planDeletionCancelled,
   planDeletionConfirmed,
   type StoredItem,
 } from "./deletion.ts";
 import { canonicalKeyFault, type DerivedInput, planDerived } from "./derived.ts";
-import { type ItemInput, planItem } from "./items.ts";
+import { flagOf, type ItemInput, planItem } from "./items.ts";
 import { ApplyError, type BlockDepRow, type Change, type PrincipalRow } from "./model.ts";
 import {
   type CoveredEvent,
@@ -64,7 +66,13 @@ import {
   type SwitchInput,
 } from "./schema.ts";
 import type { SettleItem } from "./settle.ts";
-import { type OpenCell, planWriteBase, storedValid, type WriteBaseInput } from "./write-base.ts";
+import {
+  corroborationEnds as endsOf,
+  type OpenCell,
+  planWriteBase,
+  storedValid,
+  type WriteBaseInput,
+} from "./write-base.ts";
 
 export type { ItemInput } from "./items.ts";
 export * from "./model.ts";
@@ -101,6 +109,8 @@ export interface PlanInputs {
   readonly derived?: DerivedInput;
   /** A `deletion.confirmed`: the rows it touches. */
   readonly deletion?: DeletionInput;
+  /** A `deletion.cancelled`: the rows it touches, the deletion it cancels, the items it puts back. */
+  readonly cancellation?: CancellationInput;
 }
 
 /** The events of an operation just appended, for apply in the same transaction. */
@@ -174,6 +184,16 @@ export function planEvent(ev: ApplyEvent, inputs: PlanInputs = {}): Change[] {
       : undefined) ??
     (type === "deletion.confirmed"
       ? planDeletionConfirmed(ev.seq, present, inputs.deletion ?? { rows: [] })
+      : undefined) ??
+    (type === "deletion.cancelled"
+      ? planDeletionCancelled(
+          ev.seq,
+          present,
+          inputs.cancellation ??
+            (() => {
+              throw new ApplyError("inconsistent", ev.seq, "no deletion to cancel");
+            })(),
+        )
       : undefined) ??
     planOther(type, ev.seq, op, slot, ev.header["actor"] as string, block, present, inputs);
   if (changes === undefined) {
@@ -552,6 +572,7 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
     };
   }
   if (p.type === "deletion.confirmed") return { deletion: await readDeletion(tx, ev, p) };
+  if (p.type === "deletion.cancelled") return { cancellation: await readCancellation(tx, ev, p) };
   if (p.type === "write.derived") {
     const derived = await readDerived(tx, ev, p);
     return derived === undefined ? {} : { derived };
@@ -681,11 +702,29 @@ export const givesContent = (r: Obj) => "value" in r || "no_value" in r || "unco
  * its source table items, its open version cells and row count. The events' blocks are read from
  * `content` directly, pending ones too: a deletion's rows are rebuilt from every block they have.
  */
-async function readDeletion(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<DeletionInput> {
-  const positions = p.present["positions"] as { seq: Seq; path: string }[];
+async function readDeletion(
+  tx: ReadTx,
+  ev: ApplyEvent,
+  p: Parsed,
+  /**
+   * A cancellation: the deletion it cancels (its `deletion.confirmed`'s seq, positions and the
+   * items it restated). The rows it touched are touched again; each item's judgement is the one
+   * the log last gave without that deletion's blocks (09 §5.9 `deletion.cancelled`), and the
+   * blocks read no more are those the other pending deletions list.
+   */
+  cancel?: { readonly seq: Seq; readonly positions: readonly { seq: Seq; path: string }[] },
+): Promise<DeletionInput & { readonly listed?: ReadonlySet<string> }> {
+  const positions = cancel?.positions ?? (p.present["positions"] as { seq: Seq; path: string }[]);
   const events = new Set<Seq>();
   for (const x of positions) {
     if (/^(fields|span)\/(f\d+|existence)\/\d+$/.test(x.path)) events.add(x.seq);
+  }
+  if (cancel !== undefined) {
+    const r = await tx.query<{ body: string }>(
+      "SELECT body FROM content WHERE seq = $1 AND path LIKE 'restated/%' AND body IS NOT NULL",
+      [cancel.seq],
+    );
+    for (const x of r.rows) events.add((JSON.parse(x.body) as Obj)["event"] as Seq);
   }
   const targets = new Map<string, string>();
   for (const [path, v] of Object.entries(p.present)) {
@@ -711,6 +750,7 @@ async function readDeletion(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<Dele
   const body = v.rows[0]?.body;
   const compiled = body == null ? undefined : (JSON.parse(body) as CompiledSchema);
   const rows: DeletionRow[] = [];
+  const listed = new Set<string>();
   for (const [rowId, tableId] of [...targets].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
     const table = compiled?.tables.find((t) => t.id === tableId && t.kind === "base") as
       | CompiledBaseTable
@@ -753,7 +793,7 @@ async function readDeletion(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<Dele
       [rowId],
     );
     const items = new Map<string, StoredItem>();
-    for (const x of stored.rows) {
+    for (const x of cancel === undefined ? stored.rows : []) {
       items.set(`${Number(x.event_seq)}/${x.field_id}/${x.k}`, {
         status: x.status,
         valid: storedValid(x.valid_from, x.valid_to),
@@ -778,17 +818,27 @@ async function readDeletion(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<Dele
         );
       }
     }
+    if (cancel !== undefined) {
+      for (const [k, x] of await lastGiven(tx, ev, table, cancel.seq, evs.rows, bySeq, written))
+        items.set(k, x);
+      const pend = await tx.query<{ seq: unknown; path: string }>(
+        "SELECT seq, path FROM pending_blocks WHERE seq = ANY($1) AND deletion_seq <> $2",
+        [seqs, cancel.seq] as never,
+      );
+      for (const x of pend.rows) listed.add(`${Number(x.seq)} ${x.path}`);
+    }
     // Where each item's content is: the latest restatement giving one, of the deletion events in
-    // force (a deletion cancelled, its blocks left out; this event's own are the plan's).
+    // force before this one (a deletion cancelled, its blocks left out; this event's own are the
+    // plan's; a later one is not yet in force, as when the log is replayed from empty).
     const contentGiven = new Map<string, { seq: Seq; path: string; block: Obj }>();
     const givers = await tx.query<{ seq: unknown; path: string; body: string }>(
       `SELECT e.seq, c.path, c.body FROM events e JOIN content c ON c.seq = e.seq
        WHERE e.type IN ('deletion.confirmed', 'deletion.cancelled') AND e.slot = $1
-         AND c.path LIKE 'restated/%' AND c.body IS NOT NULL AND e.seq <> $2
+         AND c.path LIKE 'restated/%' AND c.body IS NOT NULL AND e.seq < $2 AND e.seq <> $3
          AND NOT (e.type = 'deletion.confirmed'
            AND e.seq IN (SELECT confirmed_seq FROM deletions WHERE state = 'cancelled'))
        ORDER BY e.seq, c.path`,
-      [ev.header["slot"] as string, ev.seq],
+      [ev.header["slot"] as string, ev.seq, cancel?.seq ?? ev.seq],
     );
     const mine = new Set(seqs);
     for (const g of givers.rows) {
@@ -816,7 +866,178 @@ async function readDeletion(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<Dele
       written,
     });
   }
-  return { rows };
+  return cancel === undefined ? { rows } : { rows, listed };
+}
+
+/**
+ * What a `deletion.cancelled` reads (./deletion.ts): the deletion it cancels, pending (its
+ * confirmation's seq and positions); the rows that deletion and this event touch, as for a
+ * deletion, read as the log stands without that deletion; the items it puts back, each with the
+ * flag its `item.created` and current `scope_valid` give.
+ */
+async function readCancellation(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<CancellationInput> {
+  const id = (p.present["target"] as Obj)["deletion"] as string;
+  const d = await tx.query<{ confirmed_seq: unknown; state: string }>(
+    "SELECT confirmed_seq, state FROM deletions WHERE id = $1",
+    [id],
+  );
+  const row = d.rows[0];
+  if (row === undefined || row.state !== "pending") {
+    throw new ApplyError("inconsistent", ev.seq, `no pending deletion ${id} to cancel`);
+  }
+  const cancelled = Number(row.confirmed_seq);
+  const pos = await tx.query<{ body: string }>(
+    "SELECT body FROM content WHERE seq = $1 AND path = 'positions' AND body IS NOT NULL",
+    [cancelled],
+  );
+  const positions = JSON.parse(pos.rows[0]?.body ?? "[]") as { seq: Seq; path: string }[];
+  // Its sources, but those another pending deletion deletes too. Only pending deletions are looked
+  // at, not executed ones: no deletion is executed in this version (`deletion.executed` is not
+  // applied yet), so none can still hold a source this one gives back.
+  const tgt = await tx.query<{ body: string }>(
+    "SELECT body FROM content WHERE seq = $1 AND path = 'target'",
+    [cancelled],
+  );
+  const deleted = (JSON.parse(tgt.rows[0]?.body ?? "{}") as { sources?: Seq[] }).sources ?? [];
+  const others = await tx.query<{ body: string }>(
+    `SELECT c.body FROM deletions d JOIN content c ON c.seq = d.confirmed_seq AND c.path = 'target'
+     WHERE d.state = 'pending' AND d.confirmed_seq <> $1`,
+    [cancelled],
+  );
+  const still = new Set(
+    others.rows.flatMap((x) => (JSON.parse(x.body) as { sources: Seq[] }).sources),
+  );
+  const read = await readDeletion(tx, ev, p, { seq: cancelled, positions });
+  const restored = [];
+  for (const item of (p.present["restored_items"] as string[] | undefined) ?? []) {
+    // Only an item this deletion superseded is put back (09 §5.9 `restored_items`).
+    const now = await tx.query<{ state: string }>("SELECT state FROM pending_items WHERE id = $1", [
+      item,
+    ]);
+    if (now.rows[0]?.state !== "superseded") {
+      throw new ApplyError(
+        "inconsistent",
+        ev.seq,
+        `item ${item} to put back is ${now.rows[0]?.state ?? "not there"}, not superseded`,
+      );
+    }
+    const created = await tx.query<{ body: string }>(
+      `SELECT c.body FROM events e JOIN content c ON c.seq = e.seq AND c.path = 'target'
+       WHERE e.type = 'item.created' AND (c.body::jsonb ->> 'item') = $1`,
+      [item],
+    );
+    const target =
+      created.rows[0] === undefined ? undefined : (JSON.parse(created.rows[0].body) as Obj);
+    if (target === undefined) {
+      throw new ApplyError("inconsistent", ev.seq, `no item ${item} to put back`);
+    }
+    const scope = await tx.query<{ body: string | null }>(
+      `SELECT c.body FROM pending_entries e JOIN content c ON c.seq = e.content_seq AND c.path = e.content_path
+       WHERE e.item_id = $1 AND e.content_path = 'scope_valid' ORDER BY e.n DESC LIMIT 1`,
+      [item],
+    );
+    const sv = scope.rows[0]?.body;
+    const flag = flagOf(item, target, sv == null ? undefined : (JSON.parse(sv) as JsonValue));
+    restored.push({ id: item, ...(flag !== undefined ? { flag } : {}) });
+  }
+  return {
+    rows: read.rows,
+    cancelled,
+    sources: deleted.filter((x) => !still.has(x)),
+    listed: read.listed ?? new Set(),
+    restored,
+  };
+}
+
+/**
+ * Each item of a row in effect as the log last gives it without a cancelled deletion's blocks (09
+ * §5.9 `deletion.cancelled`; 03-deletion «结果怎么落进日志» «以最近一次为准»): the latest of its own
+ * blocks and the `restated/<k>` of the deletion and cancellation events before this one, the
+ * cancellation applied now and every cancelled deletion left out. Items not in effect so are not in the map; where an
+ * item's content is, `contentGiven` says.
+ */
+async function lastGiven(
+  tx: ReadTx,
+  ev: ApplyEvent,
+  table: CompiledBaseTable,
+  cancelled: Seq,
+  events: readonly { seq: unknown }[],
+  bySeq: ReadonlyMap<number, Record<string, JsonValue>>,
+  written: ReadonlyMap<Seq, { valid: ValidParam | undefined; now: BizPoint } | undefined>,
+): Promise<Map<string, StoredItem>> {
+  const isState = table.time.type === "state";
+  const r = await tx.query<{ seq: unknown; path: string; body: string }>(
+    `SELECT e.seq, c.path, c.body FROM events e JOIN content c ON c.seq = e.seq
+     WHERE e.type IN ('deletion.confirmed', 'deletion.cancelled') AND e.slot = $1
+       AND c.path LIKE 'restated/%' AND c.body IS NOT NULL AND e.seq <> $2 AND e.seq < $3
+       AND NOT (e.type = 'deletion.confirmed'
+         AND e.seq IN (SELECT confirmed_seq FROM deletions WHERE state = 'cancelled'))
+     ORDER BY e.seq, c.path`,
+    [ev.header["slot"] as string, cancelled, ev.seq],
+  );
+  const byItem = new Map<string, { seq: Seq; path: string; block: Obj }[]>();
+  for (const x of r.rows) {
+    const b = JSON.parse(x.body) as Obj;
+    const k =
+      "existence" in b
+        ? `${b["event"] as number}/existence/${b["existence"] as number}`
+        : `${b["event"] as number}/${b["field"] as string}/${b["k"] as number}`;
+    byItem.set(k, [...(byItem.get(k) ?? []), { seq: Number(x.seq), path: x.path, block: b }]);
+  }
+  const interval = (v: JsonValue | undefined) =>
+    v === undefined
+      ? storedValid(null, null)
+      : storedValid(
+          ((v as Obj)["from"] as string | undefined) ?? null,
+          ((v as Obj)["to"] as string | undefined) ?? null,
+        );
+  const out = new Map<string, StoredItem>();
+  for (const e of events) {
+    const seq = Number(e.seq);
+    const blocks = bySeq.get(seq) ?? {};
+    for (const [path, v] of Object.entries(blocks)) {
+      const f = /^fields\/(f\d+)\/(\d+)$/.exec(path);
+      const x = /^existence\/(\d+)$/.exec(path);
+      if (f === null && x === null) continue;
+      const target = f !== null ? (f[1] as string) : "existence";
+      const kk = Number(f !== null ? f[2] : (x as RegExpExecArray)[1]);
+      const k = `${seq}/${target}/${kk}`;
+      const own = v as Obj;
+      const later = byItem.get(k) ?? [];
+      const last = later.at(-1);
+      // The judgement: the latest restatement, or the item's own blocks.
+      let status: string;
+      let valid: ReturnType<typeof storedValid>;
+      if (last !== undefined) {
+        status = last.block["status"] as string;
+        valid = isState
+          ? interval((last.block["valid"] ?? last.block["seen_valid"]) as JsonValue | undefined)
+          : storedValid(null, null);
+      } else {
+        status = own["status"] as string;
+        const span = blocks[`span/${target}/${kk}`] as Obj | undefined;
+        valid =
+          isState && span !== undefined
+            ? interval((span["valid"] ?? span["seen_valid"]) as JsonValue | undefined)
+            : storedValid(null, null);
+      }
+      if (status !== "applied" && status !== "corroborated") continue;
+      if (target === "existence" && !isState) valid = storedValid(null, null);
+      const w = written.get(seq);
+      out.set(k, {
+        status,
+        valid,
+        corroborationEnds:
+          isState && status === "corroborated"
+            ? canonicalize((w === undefined ? [] : endsOf(valid, w.valid, w.now)) as JsonValue)
+            : null,
+        // A schema constant's item is refused before this (`not_implemented`, «on a schema
+        // constant»), so no item here is one.
+        schemaConst: false,
+      });
+    }
+  }
+  return out;
 }
 
 /** A stored instant or date column as the event format writes it. */
@@ -1329,6 +1550,18 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
         `INSERT INTO deletions (id, kind, state, due_at, confirmed_seq) VALUES ($1, $2, 'pending', $3, $4)`,
         [c.id, c.deletion_kind, c.due_at, c.confirmed_seq],
       );
+      return;
+    case "deletion_cancel":
+      await one(
+        tx,
+        seq,
+        "UPDATE deletions SET state = 'cancelled' WHERE id = $1 AND state = 'pending'",
+        [c.id],
+        `no pending deletion ${c.id}`,
+      );
+      return;
+    case "pending_release":
+      await tx.query("DELETE FROM pending_blocks WHERE deletion_seq = $1", [c.deletion_seq]);
       return;
     case "pending_blocks":
       for (const p of c.positions) {

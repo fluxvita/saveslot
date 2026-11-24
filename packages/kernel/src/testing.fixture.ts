@@ -8,7 +8,11 @@
 export { matchPath } from "@fluxvita/saveslot-contract-core";
 export { withConfirmations } from "./apply/confirmation.fixture.ts";
 export * from "./apply/slot.fixture.ts";
-export { deletionReplayForTests } from "./delete/replay.fixture.ts";
+export {
+  cancellationReplayForTests,
+  DeletionSessionForTests,
+  deletionReplayForTests,
+} from "./delete/replay.fixture.ts";
 // The states of a target at a version position, and their comparison.
 export { stateAt, targetDelta } from "./delta/index.ts";
 // One judgement on a state, for a test asking what a decision would do now.

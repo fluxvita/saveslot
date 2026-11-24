@@ -19,7 +19,7 @@ import {
   write,
 } from "@fluxvita/saveslot-kernel";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { confirmDeletion } from "./testing/deletion.fixture.ts";
+import { cancelDeletion, confirmDeletion, DeletionSession } from "./testing/deletion.fixture.ts";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
 const T = 120_000;
@@ -321,6 +321,219 @@ describe("a deletion confirmed: the rows as its results say, the blocks it lists
       ]);
       const again = await query(s.store, ctx(), { table: "meals" });
       expect(again.rows.map((x: Any) => x.values.amount)).toEqual(["50"]);
+    },
+    T,
+  );
+
+  it(
+    "the lunch's deletion cancelled: 35 again, the correction's words readable, the deletion cancelled",
+    async () => {
+      const r1 = await w(
+        [{ intent: "insert", table: "lunches", set: { amount: "45" } }],
+        "lunch was 45",
+      );
+      const row = r1.ops[0].target.row as string;
+      await w(
+        [{ intent: "correct", table: "lunches", row, set: { amount: "35" } }],
+        "no, lunch was 35",
+      );
+      const correction = await sourceOf("no, lunch was 35");
+      const input = {
+        slot: await slotId(),
+        table: await compiled("lunches"),
+        row,
+        sources: [correction],
+        actor: USER,
+        now: now(),
+      };
+      await confirmDeletion(s.store, input);
+      const back = await cancelDeletion(s.store, { ...input, now: now() });
+      const read = await query(s.store, ctx(), { table: "lunches" });
+      expect(read.rows.map((x: Any) => [x.row, x.values.amount, x.ver])).toEqual([
+        [row, "35", `v${back.self}.0`],
+      ]);
+      await s.store.read(async (tx) => {
+        const evs = await readEvents(tx, correction, correction);
+        expect(evs[0]?.blocks.get("text")).toMatchObject({ state: "present" });
+        const d = await tx.query("SELECT state FROM deletions");
+        expect(d.rows).toEqual([{ state: "cancelled" }]);
+        // The correction's words can be referred to as evidence again.
+        const src = await tx.query("SELECT deletion_state FROM sources WHERE seq = $1", [
+          correction,
+        ]);
+        expect(src.rows).toEqual([{ deletion_state: "present" }]);
+      });
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "two deletions pending of the same words, one cancelled: the words stay pending, the amount stays 45",
+    async () => {
+      const r1 = await w(
+        [{ intent: "insert", table: "lunches", set: { amount: "45" } }],
+        "lunch was 45",
+      );
+      const row = r1.ops[0].target.row as string;
+      await w(
+        [{ intent: "correct", table: "lunches", row, set: { amount: "35" } }],
+        "no, lunch was 35",
+      );
+      const correction = await sourceOf("no, lunch was 35");
+      const session = new DeletionSession(s.store, {
+        slot: await slotId(),
+        table: await compiled("lunches"),
+        row,
+        actor: USER,
+      });
+      const first = `pi_${"A".repeat(16)}`;
+      const second = `pi_${"B".repeat(16)}`;
+      await session.confirm(first, [correction], now());
+      const other = await session.confirm(second, [correction], now());
+      await session.cancel(first, now());
+      const read = await query(s.store, ctx(), { table: "lunches" });
+      expect(read.rows.map((x: Any) => [x.row, x.values.amount])).toEqual([[row, "45"]]);
+      await s.store.read(async (tx) => {
+        // The other deletion still deletes the words: unreadable, and not evidence to refer to.
+        const evs = await readEvents(tx, correction, correction);
+        expect(evs[0]?.blocks.get("text")).toEqual({ state: "pending", by: other.self });
+        const src = await tx.query("SELECT deletion_state FROM sources WHERE seq = $1", [
+          correction,
+        ]);
+        expect(src.rows).toEqual([{ deletion_state: "pending_deletion" }]);
+        const d = await tx.query("SELECT id, state FROM deletions ORDER BY id");
+        expect(d.rows).toEqual([
+          { id: first, state: "cancelled" },
+          { id: second, state: "pending" },
+        ]);
+      });
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  /**
+   * 45, then 50, then 35, then the 35 undone: the undo writes 50 back, carried from the second
+   * write. The second write's words deleted: the undo's item now carries 45 (a restatement giving
+   * it new content). Returns the row and the second write's source.
+   */
+  const undone = async () => {
+    const r1 = await w([{ intent: "insert", table: "lunches", set: { amount: "45" } }], "first 45");
+    const row = r1.ops[0].target.row as string;
+    await w([{ intent: "correct", table: "lunches", row, set: { amount: "50" } }], "then 50");
+    const third = await w(
+      [{ intent: "correct", table: "lunches", row, set: { amount: "35" } }],
+      "then 35",
+    );
+    await w([{ table: "lunches", row, revert: { undo: third.seq } }], "not 35 after all");
+    const amount = async () =>
+      (await query(s.store, ctx(), { table: "lunches" })).rows.map((x: Any) => x.values.amount);
+    expect(await amount()).toEqual(["50"]);
+    const input = {
+      slot: await slotId(),
+      table: await compiled("lunches"),
+      row,
+      sources: [await sourceOf("then 50")],
+      actor: USER,
+    };
+    return { input, amount };
+  };
+
+  it(
+    "an undo carrying a deleted write: the deletion gives it new content, its cancellation takes it back",
+    async () => {
+      const { input, amount } = await undone();
+      const made = await confirmDeletion(s.store, { ...input, now: now() });
+      expect(made.replay.replay.restated.length).toBeGreaterThan(0);
+      expect(await amount()).toEqual(["45"]);
+      await cancelDeletion(s.store, { ...input, now: now() });
+      expect(await amount()).toEqual(["50"]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "the same deleted and cancelled twice: the first cancelled deletion's new content gives nothing",
+    async () => {
+      const { input, amount } = await undone();
+      await confirmDeletion(s.store, { ...input, now: now() });
+      await cancelDeletion(s.store, { ...input, now: now() });
+      const again = { ...input, id: `pi_${"C".repeat(16)}` };
+      await confirmDeletion(s.store, { ...again, now: now() });
+      expect(await amount()).toEqual(["45"]);
+      await cancelDeletion(s.store, { ...again, now: now() });
+      expect(await amount()).toEqual(["50"]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "a conflict item superseded by the deletion of its candidate's words, put back by the cancellation: open again, its flag back",
+    async () => {
+      const a = await w([{ intent: "insert", table: "lunches", set: { amount: "9" } }], "nine");
+      const row = a.ops[0].target.row as string;
+      const ver = a.ops[0].ver as string;
+      await w([{ intent: "update", table: "lunches", row, ver, set: { amount: "9.5" } }], "9.5");
+      const c = await w(
+        [{ intent: "update", table: "lunches", row, ver, set: { amount: "10" } }],
+        "ten, not 9.5",
+      );
+      const item = c.pending[0]?.id as string;
+      const itemState = () =>
+        s.store.read(async (tx) => ({
+          item: (await tx.query("SELECT state FROM pending_items WHERE id = $1", [item])).rows,
+          flags: (await tx.query("SELECT flag FROM flags WHERE item_id = $1", [item])).rows,
+        }));
+      const open = await itemState();
+      expect(open.item).toEqual([{ state: "open" }]);
+      expect(open.flags.length).toBeGreaterThan(0);
+      const input = {
+        slot: await slotId(),
+        table: await compiled("lunches"),
+        row,
+        sources: [await sourceOf("ten, not 9.5")],
+        actor: USER,
+        now: now(),
+      };
+      await confirmDeletion(s.store, { ...input, superseded: [item] });
+      expect(await itemState()).toEqual({ item: [{ state: "superseded" }], flags: [] });
+      await cancelDeletion(s.store, { ...input, restoredItems: [item], now: now() });
+      expect(await itemState()).toEqual(open);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "an item put back that the deletion did not supersede stops the cancellation as inconsistent",
+    async () => {
+      const a = await w([{ intent: "insert", table: "lunches", set: { amount: "9" } }], "nine");
+      const row = a.ops[0].target.row as string;
+      const ver = a.ops[0].ver as string;
+      await w([{ intent: "update", table: "lunches", row, ver, set: { amount: "9.5" } }], "9.5");
+      const c = await w(
+        [{ intent: "update", table: "lunches", row, ver, set: { amount: "10" } }],
+        "ten, not 9.5",
+      );
+      const item = c.pending[0]?.id as string;
+      const input = {
+        slot: await slotId(),
+        table: await compiled("lunches"),
+        row,
+        sources: [await sourceOf("9.5")],
+        actor: USER,
+        now: now(),
+      };
+      await confirmDeletion(s.store, input);
+      const e = await cancelDeletion(s.store, {
+        ...input,
+        restoredItems: [item],
+        now: now(),
+      }).catch((x: unknown) => x);
+      expect(String((e as Error).message)).toContain(`item ${item} to put back is open`);
     },
     T,
   );

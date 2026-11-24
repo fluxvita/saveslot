@@ -55,6 +55,27 @@ function spans(v: JsonValue | undefined): string | null {
   return Array.isArray(s) && !whole ? canonicalize(s) : null;
 }
 
+/**
+ * The flag an open item gives its target (none for a type without one, or an item with no row):
+ * from its `item.created` target and its current `scope_valid` (an item put back undecided gives
+ * it again, 09 §5.9 `restored_items`).
+ */
+export function flagOf(item: string, target: Obj, scopeValid: JsonValue | undefined) {
+  const flag = FLAG_OF[target["type"] as string];
+  const row = (target["row"] ?? target["entity"] ?? null) as string | null;
+  const table = (target["table"] ?? null) as string | null;
+  if (flag === undefined || table === null || row === null) return undefined;
+  const unit = target["unit"];
+  return {
+    table_id: table,
+    row_id: row,
+    flag,
+    item_id: item,
+    fields: unit === undefined ? null : canonicalize(unit),
+    spans: spans(scopeValid),
+  };
+}
+
 export function planItem(
   type: string,
   seq: Seq,
@@ -94,21 +115,8 @@ export function planItem(
         },
         { kind: "entries_insert", entries: entries(id, seq, paths, 0) },
       ];
-      const flag = FLAG_OF[target["type"] as string];
-      if (flag !== undefined && table !== null && row !== null) {
-        const unit = target["unit"];
-        out.push({
-          kind: "flag_insert",
-          row: {
-            table_id: table,
-            row_id: row,
-            flag,
-            item_id: id,
-            fields: unit === undefined ? null : canonicalize(unit),
-            spans: spans(present["scope_valid"]),
-          },
-        });
-      }
+      const flag = flagOf(id, target, present["scope_valid"]);
+      if (flag !== undefined) out.push({ kind: "flag_insert", row: flag });
       return out;
     }
     // §5.8 item.merged / item.refreshed: the item's version is this operation; whole groups
