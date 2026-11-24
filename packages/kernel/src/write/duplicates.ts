@@ -16,9 +16,9 @@
 // request's earlier ops wrote, whose stored state is still the request's start: for them the
 // pipeline's own state of the row is read instead, never the stored row.
 //
-// Rows in a confirmed deletion are not compared (04 «和谁比»). Until the apply of
-// `deletion.confirmed` leaves the physical tables as they are after the deletion, the caller passes
-// them in `excluded`; once it does, the query alone leaves them out and that parameter goes.
+// Rows in a confirmed deletion are compared as it leaves them (04 «和谁比»): the apply of
+// `deletion.confirmed` leaves the physical tables as they are after the deletion, so a row it takes
+// away is not there to match, and a row it gives other values matches by those.
 
 import type {
   CompiledBaseTable,
@@ -218,7 +218,7 @@ async function storedDeps(
  * What row `self`, just created and in effect with `mine` on its fields, matched: the first group
  * with a match, its rows latest written first (at most 10), and their contributions. Undefined when
  * no group matched. `requestRows`: the other rows the request's earlier ops wrote, as `at` has
- * them, at operation `op`; `excluded`: rows not to compare (in a confirmed deletion).
+ * them, at operation `op`.
  */
 export async function findDuplicates(
   tx: Tx,
@@ -229,11 +229,9 @@ export async function findDuplicates(
     readonly requestRows: readonly RequestRow[];
     readonly at: Limit;
     readonly op: OpNumber;
-    readonly excluded?: ReadonlySet<string>;
   },
 ): Promise<DuplicateMatch | undefined> {
   const { table: t, self, mine } = input;
-  const excluded = input.excluded ?? new Set<string>();
   const touched = new Set(input.requestRows.map((r) => r.row as string));
   for (const group of duplicateKeysOf(t)) {
     // A field empty or absent on the new row: this group matches nothing.
@@ -241,8 +239,8 @@ export async function findDuplicates(
     const found: Compared[] = [];
     // Stored rows the request did not write: as stored.
     const stored = (
-      await storedMatches(tx, t, group, mine, self, MATCHED_MAX + touched.size + excluded.size)
-    ).filter((x) => !touched.has(x.row) && !excluded.has(x.row));
+      await storedMatches(tx, t, group, mine, self, MATCHED_MAX + touched.size)
+    ).filter((x) => !touched.has(x.row));
     const deps = await storedDeps(
       tx,
       t,
@@ -255,7 +253,7 @@ export async function findDuplicates(
     // a candidate, a proposal leave none); else the stored one.
     const hits: { row: RowId; deps: DuplicateDep[]; mine: boolean }[] = [];
     for (const r of input.requestRows) {
-      if (r.row === self || excluded.has(r.row)) continue;
+      if (r.row === self) continue;
       const theirs = valuesOf(r.state, group, input.at);
       if (theirs === undefined) continue;
       const values = new Map([...theirs].map(([f, x]) => [f, x.value]));
@@ -309,9 +307,7 @@ export function createdInEffect(j: Judgement): boolean {
 /**
  * The pipeline's call: row `self`, created by op `index` of operation `op`, as its state has it
  * just after that op, against the stored rows and the request's other rows as they are just
- * before it. Undefined for a table without duplicate keys or with no match. No row is excluded:
- * rows in a confirmed deletion leave the physical tables once its apply does (see the file's
- * head); until then a confirmed deletion does not happen in this version.
+ * before it. Undefined for a table without duplicate keys or with no match.
  */
 export async function duplicateOf(
   tx: Tx,
@@ -338,7 +334,6 @@ export async function duplicateOf(
     requestRows: input.requestRows,
     at: { upTo, request: { op: input.op, below: input.index } },
     op: input.op,
-    excluded: new Set(),
   });
 }
 

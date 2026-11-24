@@ -1,8 +1,9 @@
 // Duplicate keys when writing (03-data-model/04-write-and-read.md «疑似重复»; 09-event-format.md
 // §5.7 `duplicate`, §5.8 `item.created` of a flagged item): a row created and in effect is compared
 // once with the table's rows in effect, the request's earlier ops included; a match is recorded on
-// its `write.base` and opens a flagged item; the write is saved all the same. Every case ends with
-// the log replayed into an empty storage. Fictional names.
+// its `write.base` and opens a flagged item; the write is saved all the same. After a confirmed
+// deletion, rows are compared as it leaves them. Every case ends with the log replayed into an
+// empty storage. Fictional names.
 
 import {
   createOpsContext,
@@ -14,6 +15,7 @@ import {
   write,
 } from "@fluxvita/saveslot-kernel";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { confirmDeletion } from "./testing/deletion.fixture.ts";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
 const T = 120_000;
@@ -322,6 +324,105 @@ describe("what is not compared", () => {
       await w([{ intent: "update", table: "meals", row: c, set: { note: "cake" } }]);
       expect(b).not.toBe(c);
       expect(await logged(before)).toEqual({ duplicate: [], items: [], matched: [] });
+      await replaysTheSame();
+    },
+    T,
+  );
+});
+
+describe("a confirmed deletion: rows compared as it leaves them (04 «和谁比»)", () => {
+  /** A write with the user's words as its evidence: a source a deletion can name. */
+  const said = (ops: unknown[], text: string): Promise<Any> =>
+    write(s.store, ctx("w"), { sv: 1, evidence: [{ kind: "user_message", text }], ops });
+  const sourceOf = async (text: string) =>
+    Number(
+      (
+        await rows(
+          `SELECT c.seq FROM content c JOIN events e ON e.seq = c.seq
+           WHERE e.type = 'source.recorded' AND c.path = 'text' AND c.body LIKE $1`,
+          [`%${text}%`],
+        )
+      )[0]?.["seq"],
+    );
+  const compiled = async (name: string) => {
+    const r = await rows(
+      `SELECT c.body FROM schema_versions v JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
+       WHERE v.state = 'current'`,
+    );
+    return (JSON.parse(r[0]?.["body"] as string).tables as Any[]).find((t) => t.name === name);
+  };
+  const deleted = async (row: string, text: string) =>
+    confirmDeletion(s.store, {
+      slot: (await rows("SELECT slot_id FROM schema_versions LIMIT 1"))[0]?.["slot_id"] as string,
+      table: await compiled("meals"),
+      row,
+      sources: [await sourceOf(text)],
+      actor: USER,
+      now: `2026-11-05T06:${String(++minute % 60).padStart(2, "0")}:00.000Z`,
+    });
+  /** The `write.base` of a row's first write. */
+  const createdBy = async (row: string) =>
+    Number(
+      (
+        await rows(
+          "SELECT min(seq) AS seq FROM events WHERE type = 'write.base' AND target_row = $1",
+          [row],
+        )
+      )[0]?.["seq"],
+    );
+
+  it(
+    "a row the deletion takes away is not compared; a row it leaves is",
+    async () => {
+      const gone = (await said([meal({ day: "2026-11-01", note: "toast" })], "toast on the 1st"))
+        .ops[0].target.row;
+      const kept = (await said([meal({ day: "2026-11-02", note: "toast" })], "toast on the 2nd"))
+        .ops[0].target.row;
+      await deleted(gone, "toast on the 1st");
+      const before = await tail();
+      const r = await said([meal({ day: "2026-11-03", note: "toast" })], "toast on the 3rd");
+      const row = r.ops[0].target.row;
+      const l = await logged(before);
+      expect(l.duplicate).toEqual([
+        {
+          row,
+          matched: [kept],
+          keys: ["f3"],
+          deps: [{ event: await createdBy(kept), field: "f3", k: 0 }],
+        },
+      ]);
+      expect(l.matched).toEqual([kept]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "a row the deletion gives an earlier value: compared by that value, not the one it took away",
+    async () => {
+      const a = (await said([meal({ day: "2026-11-01", note: "toast" })], "it was toast")).ops[0]
+        .target.row;
+      await said(
+        [{ intent: "update", table: "meals", row: a, set: { note: "jam" } }],
+        "no, it was jam",
+      );
+      await deleted(a, "no, it was jam");
+      const before = await tail();
+      await said([meal({ day: "2026-11-02", note: "jam" })], "jam on the 2nd");
+      expect(await logged(before)).toEqual({ duplicate: [], items: [], matched: [] });
+      const mid = await tail();
+      const r = await said([meal({ day: "2026-11-03", note: "toast" })], "toast on the 3rd");
+      const row = r.ops[0].target.row;
+      const l = await logged(mid);
+      // Matched on the value the first write gives again, resting on that write's contribution.
+      expect(l.duplicate).toEqual([
+        {
+          row,
+          matched: [a],
+          keys: ["f3"],
+          deps: [{ event: await createdBy(a), field: "f3", k: 0 }],
+        },
+      ]);
       await replaysTheSame();
     },
     T,

@@ -51,7 +51,7 @@ function storeOf(stored: { row: RowId; last: number }[], queries: string[] = [])
 }
 const mine = (v: Record<string, FieldValue>) =>
   new Map(Object.entries(v).map(([f, x]) => [F(f), x]));
-const find = (tx: Tx, values: Record<string, FieldValue>, excluded?: Set<string>) =>
+const find = (tx: Tx, values: Record<string, FieldValue>) =>
   findDuplicates(tx, {
     table: TABLE,
     self: row(99),
@@ -59,7 +59,6 @@ const find = (tx: Tx, values: Record<string, FieldValue>, excluded?: Set<string>
     requestRows: [],
     at: { upTo: 49 as never },
     op: 50 as never,
-    ...(excluded !== undefined ? { excluded } : {}),
   });
 
 describe("which writes are compared", () => {
@@ -144,19 +143,5 @@ describe("findDuplicates", () => {
     const queries: string[] = [];
     expect(await find(storeOf([{ row: row(1), last: 1 }], queries), { f1: null })).toBeUndefined();
     expect(queries).toEqual([]);
-  });
-
-  it("rows in a confirmed deletion are left out (fixed case, until its apply leaves the tables as after it)", async () => {
-    const tx = storeOf([
-      { row: row(1), last: 5 },
-      { row: row(2), last: 4 },
-    ]);
-    expect((await find(tx, { f1: "2026-11-01", f2: "x" }))?.matched).toEqual([row(1), row(2)]);
-    expect((await find(tx, { f1: "2026-11-01", f2: "x" }, new Set([row(1)])))?.matched).toEqual([
-      row(2),
-    ]);
-    expect(
-      await find(tx, { f1: "2026-11-01", f2: "x" }, new Set([row(1), row(2)])),
-    ).toBeUndefined();
   });
 });
