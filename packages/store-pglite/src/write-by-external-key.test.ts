@@ -5,6 +5,7 @@
 // unit, and a table whose key the current version no longer has.
 
 import {
+  catalog,
   createOpsContext,
   createTenant,
   readEvents,
@@ -745,7 +746,7 @@ describe("a table gone since the request's version", () => {
   // A request at a version where the table had its key is not located by that version's key: the
   // table dropped since, the write is refused as a whole table changed (07 «带旧 sv 的写入»),
   // nothing located, no row created. (A key dropped from a table kept — no_external_key by the
-  // current definition — comes with drop_external_key in a draft.)
+  // current definition — below.)
   it(
     "dropped: schema_incompatible, nothing located or created",
     async () => {
@@ -779,6 +780,62 @@ describe("a table gone since the request's version", () => {
         changed_fields: [{ field: "*", change: "drop_table" }],
       });
       expect(await tail()).toBe(before);
+    },
+    T,
+  );
+});
+
+describe("the key dropped from a table written by key (04-write-and-read «写法与定位»)", () => {
+  // The rows keep their key fields' values; the table has no key now. A request at the version
+  // that had it is judged by the current definition: no_external_key, nothing located, no row
+  // created, though the key's row is there. By row it is written as usual.
+  it(
+    "by key at the old version: no_external_key, no row created; by row: written",
+    async () => {
+      const made = await w({ sv: 1, ops: [byKey("m-1", { energy: 600 })] });
+      const row = made.ops[0].target.row;
+      const doc = (await catalog(s.store, ctx(), { level: "schema", slot: "food" })) as Any;
+      const meals = doc.document.tables.find((t: Any) => t.name === "meals");
+      delete meals.external_key;
+      const d = (await schemaDraft(s.store, ctx(), {
+        document: { ...doc.document, base_version: 1 },
+      })) as Any;
+      expect(d.changes).toEqual([expect.objectContaining({ change: "drop_external_key" })]);
+      if (d.outcome === "pending") {
+        await resolve(s.store, ctx(), {
+          id: d.item.id,
+          decision: "confirm",
+          item_ver: d.item.item_ver,
+        });
+      }
+      const count = () =>
+        s.store.read(
+          async (tx) =>
+            (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM "t_${meals.id}_v1"`))
+              .rows[0]?.n,
+        );
+      const before = await tail();
+      expect(await refused({ sv: 1, ops: [byKey("m-1", { energy: 650 })] })).toMatchObject({
+        code: "invalid_argument",
+        reason: "no_external_key",
+        param: "ops/0/external_key",
+      });
+      // A key not there before either: refused the same way, not added as a new row.
+      expect(await refused({ sv: 1, ops: [byKey("m-9", { energy: 1 })] })).toMatchObject({
+        code: "invalid_argument",
+        reason: "no_external_key",
+      });
+      expect([await tail(), await count()]).toEqual([before, 1]);
+      const byRow = await w({
+        sv: 1,
+        ops: [
+          { intent: "update", table: "meals", row, ver: made.ops[0].ver, set: { energy: 650 } },
+        ],
+      });
+      expect(byRow.status).toBe("saved");
+      expect(await count()).toBe(1);
+      const r = await reconcileLog({ live: s.store, scratch: scratch.store });
+      expect(r.mismatches).toEqual([]);
     },
     T,
   );

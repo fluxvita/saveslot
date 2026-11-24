@@ -1949,6 +1949,8 @@ async function writeIn(
     if (external !== undefined) {
       const now_ = slot.tables.find((t) => t.id === table.id);
       const declared = now_?.kind === "base" ? (now_ as CompiledBaseTable).external_key : undefined;
+      // Not reached from a request: normalizing reads the current definitions under the request's
+      // names (`namedAt`) and refuses first; kept so that locating never reads an old key.
       if (declared === undefined) {
         throw new WriteError("invalid_argument", "the table has no external key", {
           reason: "no_external_key",
