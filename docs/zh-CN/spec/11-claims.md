@@ -4,7 +4,7 @@
 
 规格的规则散在各章里，其中一部分是全称断言："两种顺序得出同一个结论""从空存储重放得到同样的状态"。这份索引不加新规则，只做对照：一条断言写在哪里，什么样的输入能推翻它，这个检验在哪条测试里跑。
 
-这一版覆盖三个子系统：冲突判定、重放的确定性（含两个存储后端）、读取记录与历史。隐私删除与需要重建物理表的迁移的断言之后补。
+这一版覆盖三个子系统：冲突判定、重放的确定性（含两个存储后端）、读取记录与历史，另有跨版本的数据兼容一条。隐私删除与需要重建物理表的迁移的断言之后补。
 
 ## 怎么读这张表
 
@@ -67,3 +67,11 @@
 | H5 | 读取记录记下所见状态的位置：`as_of` 的读取记在它的记录点，后续页记在首页的操作号，之后的写入不改变它（[读取记录](03-data-model/02-integrity-and-records.md#读取记录read_log)） | 固定用例：一次 `as_of` 读取之后再写，按这次读取还原得到的仍是它当时看到的状态；后续页在日志前进之后仍记在首页的操作号 | `packages/store-pglite/src/history.test.ts` › `an as_of read is recorded at its record point: {read} of it gives that state`<br>`packages/store-pglite/src/history.test.ts` › `a later query page is recorded at the first page's operation: {read} gives what it saw`<br>`packages/store-pglite/src/history.test.ts` › `later as_of pages keep the first page's record point, however the log moves` | 部分有测试 | `kernel/src/read`、`kernel/src/audit` |
 | H6 | 读取记录不进日志：记一次读取不追加事件、不改物化状态（[标识与对象](03-data-model/01-objects.md)「每个租户一条日志」） | 应当比：任意读取前后日志末端与对拍清单里的表不变 | — | 无测试 | `kernel/src/audit` |
 | H7 | 影响查询的结构性判据：读取被标 `possibly_affected` ⇔ 它问过的某个（字段，业务时刻）上，值在读取时的版本与现在之间不同（[测试矩阵](02-architecture.md#测试矩阵)「影响查询的结构性判据」） | 应当比：随机的读取与写入序列之后，逐次读取比"被标"与"值确实不同"是否一致，两个方向（多报、漏报）都查 | — | 无测试 | `kernel/src/read` |
+
+## 跨版本的数据兼容
+
+规则在 [`02-architecture.md`](02-architecture.md#格式版本导出导入与恢复)「格式版本、导出、导入与恢复」，决定在 [`data-compatibility.md`](../process/decisions/data-compatibility.md)。
+
+| 编号 | 断言 | 预言 | 测试 | 状态 | 归属 |
+|---|---|---|---|---|---|
+| C1 | 任何一个发布过的格式（0.1.0 及以后）写下的数据，都能被当前版本打开并升级到当前格式；升级之后由日志得出的表与从空存储重放这条日志的结果一致（[格式版本检查与跨版本的数据兼容](02-architecture.md#格式版本导出导入与恢复)；[K12](02-architecture.md#内核不变量)） | 应当比：对夹具里每个发布过的格式的每一份样本（本机模式、服务器模式），用当前版本打开、升级，读出样本存下时记的固定值，再从空存储重放日志与表对拍。0.1.0 只有格式 5，没有升级可测；升级机制随第一次改格式交付，这一行那时换成样本测试 | — | 无测试 | `kernel/src/store` |
