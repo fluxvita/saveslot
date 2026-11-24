@@ -119,7 +119,7 @@ export async function placeEvidence(
         { reason: "malformed", param: at },
       );
     }
-    // Not reached in this version: deletion comes later.
+    // A deletion confirmed and not run yet lists it (03-deletion «撤回与宽限期»).
     if (row.deletion_state === "pending_deletion") {
       throw new WriteError("invalid_argument", "the source is in a pending deletion", {
         reason: "pending_deletion_source",

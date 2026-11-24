@@ -168,6 +168,8 @@ describe("the plan of a write.base", () => {
           false,
           null,
           "[]",
+          null,
+          null,
         ],
         [
           31,
@@ -187,6 +189,8 @@ describe("the plan of a write.base", () => {
           false,
           null,
           "[]",
+          null,
+          null,
         ],
       ],
     });

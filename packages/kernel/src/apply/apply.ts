@@ -40,6 +40,12 @@ import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
 import { type RestorePoint, restorePoint } from "../store/restore-point.ts";
 import type { ValidParam } from "../time/index.ts";
 import { confirmationHash, confirmedChecksums } from "./confirmation.ts";
+import {
+  type DeletionInput,
+  type DeletionRow,
+  planDeletionConfirmed,
+  type StoredItem,
+} from "./deletion.ts";
 import { canonicalKeyFault, type DerivedInput, planDerived } from "./derived.ts";
 import { type ItemInput, planItem } from "./items.ts";
 import { ApplyError, type BlockDepRow, type Change, type PrincipalRow } from "./model.ts";
@@ -93,6 +99,8 @@ export interface PlanInputs {
   /** The restore count and point in force at a write head with premises (04-contract §15). */
   readonly restoreAt?: Pick<RestorePoint, "restoreCount" | "point">;
   readonly derived?: DerivedInput;
+  /** A `deletion.confirmed`: the rows it touches. */
+  readonly deletion?: DeletionInput;
 }
 
 /** The events of an operation just appended, for apply in the same transaction. */
@@ -172,6 +180,9 @@ export function planEvent(ev: ApplyEvent, inputs: PlanInputs = {}): Change[] {
     planBase(type, ev.seq, op, present, inputs) ??
     (type === "write.derived"
       ? planDerived(ev.seq, op, present, removedOf(ev), inputs.derived)
+      : undefined) ??
+    (type === "deletion.confirmed"
+      ? planDeletionConfirmed(ev.seq, present, inputs.deletion ?? { rows: [] })
       : undefined) ??
     planOther(type, ev.seq, op, slot, ev.header["actor"] as string, block, present, inputs);
   if (changes === undefined) {
@@ -549,6 +560,7 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
       })),
     };
   }
+  if (p.type === "deletion.confirmed") return { deletion: await readDeletion(tx, ev, p) };
   if (p.type === "write.derived") {
     const derived = await readDerived(tx, ev, p);
     return derived === undefined ? {} : { derived };
@@ -669,9 +681,201 @@ async function readDerived(
 
 type FieldValueOf = DerivedRow["key"][number];
 
+/** A restatement that gives the item's content itself (09 §5.9 `restated/<k>`). */
+export const givesContent = (r: Obj) => "value" in r || "no_value" in r || "uncovered" in r;
+
+/**
+ * What a `deletion.confirmed` touches (./deletion.ts): every row with an item whose own block it
+ * lists or that it restates, and every row its results list, each with its `write.base` events,
+ * its source table items, its open version cells and row count. The events' blocks are read from
+ * `content` directly, pending ones too: a deletion's rows are rebuilt from every block they have.
+ */
+async function readDeletion(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<DeletionInput> {
+  const positions = p.present["positions"] as { seq: Seq; path: string }[];
+  const events = new Set<Seq>();
+  for (const x of positions) {
+    if (/^(fields|span)\/(f\d+|existence)\/\d+$/.test(x.path)) events.add(x.seq);
+  }
+  const targets = new Map<string, string>();
+  for (const [path, v] of Object.entries(p.present)) {
+    if (/^restated\/\d+$/.test(path)) events.add((v as Obj)["event"] as Seq);
+    if (/^results\/\d+\/target$/.test(path)) {
+      const t = v as Obj;
+      targets.set((t["row"] ?? t["entity"]) as string, t["table"] as string);
+    }
+  }
+  if (events.size > 0) {
+    const r = await tx.query<{ target_table: string; target_row: string }>(
+      `SELECT DISTINCT target_table, target_row FROM events
+       WHERE type = 'write.base' AND seq = ANY($1)`,
+      [[...events]] as never,
+    );
+    for (const x of r.rows) targets.set(x.target_row, x.target_table);
+  }
+  const v = await tx.query<{ body: string | null }>(
+    `SELECT c.body FROM schema_versions s JOIN content c ON c.seq = s.compiled_seq AND c.path = 'compiled'
+     WHERE s.slot_id = $1 AND s.state = 'current'`,
+    [ev.header["slot"] as string],
+  );
+  const body = v.rows[0]?.body;
+  const compiled = body == null ? undefined : (JSON.parse(body) as CompiledSchema);
+  const rows: DeletionRow[] = [];
+  for (const [rowId, tableId] of [...targets].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    const table = compiled?.tables.find((t) => t.id === tableId && t.kind === "base") as
+      | CompiledBaseTable
+      | undefined;
+    if (table === undefined) {
+      throw new ApplyError(
+        "inconsistent",
+        ev.seq,
+        `no table ${tableId} in the slot's current version`,
+      );
+    }
+    const evs = await tx.query<{ seq: unknown; op: unknown }>(
+      `SELECT seq, op FROM events WHERE type = 'write.base' AND target_table = $1 AND target_row = $2
+       ORDER BY seq`,
+      [tableId, rowId],
+    );
+    const seqs = evs.rows.map((x) => Number(x.seq));
+    const blocks = await tx.query<{ seq: unknown; path: string; body: string }>(
+      "SELECT seq, path, body FROM content WHERE seq = ANY($1) AND body IS NOT NULL",
+      [seqs] as never,
+    );
+    const bySeq = new Map<number, Record<string, JsonValue>>();
+    for (const b of blocks.rows) {
+      const m = bySeq.get(Number(b.seq)) ?? Object.create(null);
+      m[b.path] = JSON.parse(b.body) as JsonValue;
+      bySeq.set(Number(b.seq), m);
+    }
+    const stored = await tx.query<{
+      event_seq: unknown;
+      field_id: string;
+      k: number;
+      source_kind: string;
+      status: "applied" | "corroborated";
+      valid_from: string | null;
+      valid_to: string | null;
+      corroboration_ends: string | null;
+    }>(
+      `SELECT event_seq, field_id, k, source_kind, status, valid_from, valid_to, corroboration_ends
+       FROM base_sources WHERE row_id = $1 AND n = 0`,
+      [rowId],
+    );
+    const items = new Map<string, StoredItem>();
+    for (const x of stored.rows) {
+      items.set(`${Number(x.event_seq)}/${x.field_id}/${x.k}`, {
+        status: x.status,
+        valid: storedValid(x.valid_from, x.valid_to),
+        corroborationEnds: x.corroboration_ends,
+        schemaConst: x.source_kind === "schema_const",
+      });
+    }
+    const { openCells, count } = await cellsOf(tx, table, rowId);
+    const origin = await tx.query<{ origin_seq: unknown }>(
+      "SELECT origin_seq FROM row_origins WHERE row_id = $1",
+      [rowId],
+    );
+    const written = new Map<Seq, Awaited<ReturnType<typeof writtenInterval>>>();
+    if (table.time.type === "state") {
+      for (const x of evs.rows) {
+        const seq = Number(x.seq);
+        const present = bySeq.get(seq) ?? {};
+        const be: ApplyEvent = { seq, header: { op: Number(x.op) }, blocks: new Map() };
+        written.set(
+          seq,
+          await writtenInterval(tx, be, { type: "write.base", present, paths: [] }, table),
+        );
+      }
+    }
+    // Where each item's content is: the latest restatement giving one, of the deletion events in
+    // force (a deletion cancelled, its blocks left out; this event's own are the plan's).
+    const contentGiven = new Map<string, { seq: Seq; path: string; block: Obj }>();
+    const givers = await tx.query<{ seq: unknown; path: string; body: string }>(
+      `SELECT e.seq, c.path, c.body FROM events e JOIN content c ON c.seq = e.seq
+       WHERE e.type IN ('deletion.confirmed', 'deletion.cancelled') AND e.slot = $1
+         AND c.path LIKE 'restated/%' AND c.body IS NOT NULL AND e.seq <> $2
+         AND NOT (e.type = 'deletion.confirmed'
+           AND e.seq IN (SELECT confirmed_seq FROM deletions WHERE state = 'cancelled'))
+       ORDER BY e.seq, c.path`,
+      [ev.header["slot"] as string, ev.seq],
+    );
+    const mine = new Set(seqs);
+    for (const g of givers.rows) {
+      const b = JSON.parse(g.body) as Obj;
+      if (!mine.has(b["event"] as number) || !givesContent(b)) continue;
+      const k =
+        "existence" in b
+          ? `${b["event"] as number}/existence/${b["existence"] as number}`
+          : `${b["event"] as number}/${b["field"] as string}/${b["k"] as number}`;
+      contentGiven.set(k, { seq: Number(g.seq), path: g.path, block: b });
+    }
+    rows.push({
+      table,
+      rowId,
+      contentGiven,
+      events: evs.rows.map((x) => ({
+        seq: Number(x.seq),
+        op: Number(x.op),
+        blocks: bySeq.get(Number(x.seq)) ?? {},
+      })),
+      stored: items,
+      openCells,
+      count,
+      origin: origin.rows[0] === undefined ? null : Number(origin.rows[0].origin_seq),
+      written,
+    });
+  }
+  return { rows };
+}
+
 /** A stored instant or date column as the event format writes it. */
 const asText = (col: string, instant: boolean) =>
   instant ? `to_char(${col} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')` : `${col}::text`;
+
+/** A row's or entity's open version cells and its row count now. */
+async function cellsOf(
+  tx: ReadTx,
+  table: CompiledBaseTable,
+  rowId: string,
+): Promise<{ openCells: OpenCell[]; count: number }> {
+  const isState = table.time.type === "state";
+  const instant = isState && table.time.type === "state" && table.time.granularity === "instant";
+  const name = table.physical.table;
+  const cells = await tx.query<{
+    field_id: string;
+    valid_from: string | null;
+    valid_to: string | null;
+    src_event: unknown;
+    src_field: string | null;
+    src_k: number | null;
+    no_value: boolean | null;
+    rec_from: unknown;
+  }>(
+    `SELECT field_id, ${isState ? asText("valid_from", instant) : "NULL"} AS valid_from,
+       ${isState ? asText("valid_to", instant) : "NULL"} AS valid_to, src_event, src_field, src_k,
+       no_value, rec_from
+     FROM "${name}__ver" WHERE row_id = $1 AND rec_to IS NULL`,
+    [rowId],
+  );
+  const openCells: OpenCell[] = cells.rows.map((c) => ({
+    field: c.field_id,
+    valid_from: c.valid_from,
+    valid_to: c.valid_to,
+    src:
+      c.src_event === null
+        ? null
+        : { event: Number(c.src_event), target: c.src_field as never, k: c.src_k as number },
+    no_value: c.no_value === true,
+    rec_from: Number(c.rec_from),
+  }));
+  const counted = await tx.query<{ n: unknown }>(
+    isState
+      ? `SELECT count(*) AS n FROM "${name}" WHERE entity_id = $1`
+      : `SELECT count(*) AS n FROM "${name}" WHERE row_id = $1 AND NOT revoked`,
+    [rowId],
+  );
+  return { openCells, count: Number(counted.rows[0]?.n ?? 0) };
+}
 
 /** What a `write.base` settles: its table, the row's items, open cells and row count. */
 async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBaseInput> {
@@ -711,17 +915,24 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
     valid_to: string | null;
     reverted: string;
     body: string | null;
+    given: string | null;
   }>(
-    `SELECT b.event_seq, b.field_id, b.k, b.status, b.valid_from, b.valid_to, b.reverted, c.body
+    // An item a deletion restated with a new content (a carried item's value, `no_value`,
+    // `uncovered`) has it in that event's `restated/<k>` (`given_path`); any other, in its own block.
+    `SELECT b.event_seq, b.field_id, b.k, b.status, b.valid_from, b.valid_to, b.reverted, c.body,
+       g.body AS given
      FROM base_sources b LEFT JOIN content c ON c.seq = b.event_seq AND c.path =
        CASE WHEN b.field_id = 'existence' THEN 'existence/' || b.k ELSE 'fields/' || b.field_id || '/' || b.k END
+     LEFT JOIN content g ON g.seq = b.given_seq AND g.path = b.given_path
      WHERE b.row_id = $1 AND b.n = 0 ORDER BY b.event_seq, b.field_id COLLATE "C", b.k`,
     [rowId],
   );
   const items: SettleItem[] = [];
   for (const r of stored.rows) {
-    if (r.body === null) continue; // the block was removed (a deletion's tombstone)
-    const b = JSON.parse(r.body) as Obj;
+    const given = r.given === null ? undefined : (JSON.parse(r.given) as Obj);
+    const own = r.body === null ? undefined : (JSON.parse(r.body) as Obj);
+    const b = given !== undefined && givesContent(given) ? given : own;
+    if (b === undefined) continue; // the block was removed (a deletion's tombstone)
     const existence = r.field_id === "existence";
     items.push({
       event: Number(r.event_seq),
@@ -730,7 +941,7 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
       status: r.status,
       valid: storedValid(r.valid_from, r.valid_to),
       content: existence
-        ? b["restored"] === true
+        ? b["restored"] === true || own?.["restored"] === true
           ? { kind: "restore" }
           : { kind: "revoke" }
         : "value" in b
@@ -743,42 +954,7 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
       ).map((x) => ({ op: x.op, valid: x.valid as never })),
     });
   }
-  const isState = table.time.type === "state";
-  const instant = isState && table.time.type === "state" && table.time.granularity === "instant";
-  const name = table.physical.table;
-  const cells = await tx.query<{
-    field_id: string;
-    valid_from: string | null;
-    valid_to: string | null;
-    src_event: unknown;
-    src_field: string | null;
-    src_k: number | null;
-    no_value: boolean | null;
-    rec_from: unknown;
-  }>(
-    `SELECT field_id, ${isState ? asText("valid_from", instant) : "NULL"} AS valid_from,
-       ${isState ? asText("valid_to", instant) : "NULL"} AS valid_to, src_event, src_field, src_k,
-       no_value, rec_from
-     FROM "${name}__ver" WHERE row_id = $1 AND rec_to IS NULL`,
-    [rowId],
-  );
-  const openCells: OpenCell[] = cells.rows.map((c) => ({
-    field: c.field_id,
-    valid_from: c.valid_from,
-    valid_to: c.valid_to,
-    src:
-      c.src_event === null
-        ? null
-        : { event: Number(c.src_event), target: c.src_field as never, k: c.src_k as number },
-    no_value: c.no_value === true,
-    rec_from: Number(c.rec_from),
-  }));
-  const count = await tx.query<{ n: unknown }>(
-    isState
-      ? `SELECT count(*) AS n FROM "${name}" WHERE entity_id = $1`
-      : `SELECT count(*) AS n FROM "${name}" WHERE row_id = $1 AND NOT revoked`,
-    [rowId],
-  );
+  const { openCells, count } = await cellsOf(tx, table, rowId);
   const origin = await tx.query<{ table_id: string }>(
     "SELECT table_id FROM row_origins WHERE row_id = $1",
     [rowId],
@@ -788,7 +964,7 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
     table,
     items,
     openCells,
-    count: Number(count.rows[0]?.n ?? 0),
+    count,
     sv,
     knownSv,
     rowTable: origin.rows[0]?.table_id ?? null,
@@ -1140,6 +1316,37 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
          WHERE event_seq = $2 AND row_id = $3 AND field_id = $4 AND k = $5 AND n > 0`,
         [c.reverted, c.event, c.row_id, c.field, c.k],
       );
+      return;
+    case "base_sources_row":
+      await tx.query(
+        "DELETE FROM base_sources WHERE row_id = $1 AND source_kind <> 'schema_const'",
+        [c.row_id],
+      );
+      for (const r of c.rows) await insert(tx, "base_sources", c.columns, r);
+      return;
+    case "row_origin_drop":
+      await tx.query("DELETE FROM row_origins WHERE row_id = $1", [c.row_id]);
+      return;
+    case "sources_state":
+      await tx.query("UPDATE sources SET deletion_state = $2 WHERE seq = ANY($1)", [
+        [...c.seqs],
+        c.state,
+      ] as never);
+      return;
+    case "deletion_insert":
+      await tx.query(
+        `INSERT INTO deletions (id, kind, state, due_at, confirmed_seq) VALUES ($1, $2, 'pending', $3, $4)`,
+        [c.id, c.deletion_kind, c.due_at, c.confirmed_seq],
+      );
+      return;
+    case "pending_blocks":
+      for (const p of c.positions) {
+        await tx.query("INSERT INTO pending_blocks (seq, path, deletion_seq) VALUES ($1, $2, $3)", [
+          p.seq,
+          p.path,
+          c.deletion_seq,
+        ]);
+      }
       return;
     case "row_origin":
       await tx.query(

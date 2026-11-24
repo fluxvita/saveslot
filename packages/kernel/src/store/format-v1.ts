@@ -24,9 +24,11 @@
  * stretch, told apart from an empty field). 3: `base_sources` holds every kind of source an item has,
  * for a deletion's replay: an interval's sources (`interval`) and the operation's sources beside
  * value sources. 4: `schema_versions.switched_seq` (where a version took effect, for reading as of a
- * moment) and its state `failed` (a migration that failed). An older store is refused, not migrated.
+ * moment) and its state `failed` (a migration that failed). 5: `base_sources.given_seq` and
+ * `given_path` (where an item's latest judgement and content are, once a deletion restated it) and
+ * `pending_blocks` (the blocks a pending deletion lists). An older store is refused, not migrated.
  */
-export const STORAGE_FORMAT_VERSION = 4;
+export const STORAGE_FORMAT_VERSION = 5;
 
 /** Where a table's state comes from (§3 "日志是唯一事实来源"). */
 export type StateClass = "fact" | "materialized" | "local";
@@ -179,7 +181,7 @@ CREATE INDEX events_target_event ON events (target_event);`,
     class: "materialized",
     reconciled: true,
     ddl: `CREATE TABLE base_sources (
-  event_seq BIGINT NOT NULL,        -- write.base, deletion event (restated items) or schema.switched
+  event_seq BIGINT NOT NULL,        -- the item's write.base, or the schema.switched of a constant
   row_id ${T} NOT NULL,             -- row or entity ID
   field_id ${T} NOT NULL,           -- field ID, or 'existence'
   k INTEGER NOT NULL,               -- item index
@@ -196,6 +198,8 @@ CREATE INDEX events_target_event ON events (target_event);`,
   corroborated BOOLEAN NOT NULL DEFAULT FALSE,
   corroboration_ends ${T},          -- JCS: explicit corroboration endpoints; content
   reverted ${T},                    -- JCS: [{op, intervals}] registered by undo / take_previous
+  given_seq BIGINT,                 -- the deletion event whose restated/<k> last gave the item's
+  given_path ${T},                  -- content (a value, no_value, uncovered); NULL: its own block
   PRIMARY KEY (event_seq, row_id, field_id, k, n)
 );
 CREATE INDEX base_sources_row ON base_sources (row_id, field_id);
@@ -217,6 +221,21 @@ CREATE INDEX base_sources_carried ON base_sources (carried_event, carried_field,
   PRIMARY KEY (seq, path, n)
 );
 CREATE INDEX block_deps_dep ON block_deps (dep_event, dep_field, dep_k);`,
+  },
+  {
+    // The blocks a pending deletion lists (09 §5.9 `positions`): read no more from its confirmation
+    // on (§3.3 "待删除"), cleared by its tombstone, readable again when it is cancelled and no other
+    // pending deletion lists them. One row a deletion and block.
+    name: "pending_blocks",
+    class: "materialized",
+    reconciled: true,
+    ddl: `CREATE TABLE pending_blocks (
+  seq BIGINT NOT NULL,
+  path ${T} NOT NULL,
+  deletion_seq BIGINT NOT NULL,     -- the deletion.confirmed listing the block
+  PRIMARY KEY (seq, path, deletion_seq)
+);
+CREATE INDEX pending_blocks_deletion ON pending_blocks (deletion_seq);`,
   },
   {
     name: "row_origins",

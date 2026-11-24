@@ -17,9 +17,11 @@
 //
 // A table compared while empty on both sides shows nothing. The fixed histories (`EVERY`) put rows
 // in every compared table this version's kernel writes, a conflict item and its resolution among
-// them, and check that they did. Three are empty on both sides and are named in `EMPTY`:
-// deletions, external keys and migrations; the kernel does not write them yet, and each is to get
-// its steps here with the feature that writes it. Premises are not taken by the write path yet
+// them, and check that they did. Four are empty on both sides and are named in `EMPTY`:
+// deletions and pending blocks, external keys, migrations. The first two are written only by the
+// apply of a `deletion.confirmed`, which no operation makes yet (the `delete` operation is to
+// come); the kernel does not write the others yet. Each is to get its steps here with the feature
+// that writes it. Premises are not taken by the write path yet
 // either: their steps append a head by hand (a restatement or a clearing on a run, covering the
 // items of its insert) and a `premise.changed`, so that `apply` fills both premise tables.
 //
@@ -705,8 +707,12 @@ async function compared(tx: ReadTx): Promise<Map<string, Compared>> {
   return out;
 }
 
-/** The compared tables empty on both sides in the fixed histories: this kernel writes none of them. */
-const EMPTY = ["deletions", "external_keys", "migrations"];
+/**
+ * The compared tables empty on both sides in the fixed histories: no step writes them. `deletions`
+ * and `pending_blocks` are written by a confirmed deletion's apply, and no operation confirms one
+ * yet.
+ */
+const EMPTY = ["deletions", "external_keys", "migrations", "pending_blocks"];
 
 const cell = testCell();
 const pg = testPostgres(cell);

@@ -149,9 +149,13 @@ export async function appendExported(tx: Tx, e: ExportedEvent): Promise<void> {
   }
 }
 
-/** A content block as read back (09 §3.3): present, or removed by a tombstone. */
+/**
+ * A content block as read back (09 §3.3): present; pending, listed by a deletion not yet run and
+ * read no more (`by`: the earliest `deletion.confirmed` listing it); or removed by a tombstone.
+ */
 export type BlockState =
   | { readonly state: "present"; readonly value: JsonValue }
+  | { readonly state: "pending"; readonly by: Seq }
   | { readonly state: "removed"; readonly by: Seq };
 
 export interface StoredEvent {
@@ -162,7 +166,11 @@ export interface StoredEvent {
   readonly blocks: ReadonlyMap<string, BlockState>;
 }
 
-/** Reads events with `from <= seq <= to`, with their blocks, in `seq` order. */
+/**
+ * Reads events with `from <= seq <= to`, with their blocks, in `seq` order. A block a pending
+ * deletion lists (`pending_blocks`) is read as pending, without its content (09 §5.9: read no more
+ * from the confirmation on): every path reading the log's blocks through here sees it so.
+ */
 export async function readEvents(tx: ReadTx, from: Seq, to: Seq): Promise<StoredEvent[]> {
   const evs = await tx.query<{ seq: unknown; header: string }>(
     "SELECT seq, header FROM events WHERE seq BETWEEN $1 AND $2 ORDER BY seq",
@@ -173,8 +181,12 @@ export async function readEvents(tx: ReadTx, from: Seq, to: Seq): Promise<Stored
     path: string;
     body: string | null;
     removed_by: unknown;
+    pending_by: unknown;
   }>(
-    'SELECT seq, path, body, removed_by FROM content WHERE seq BETWEEN $1 AND $2 ORDER BY seq, path COLLATE "C"',
+    `SELECT c.seq, c.path, c.body, c.removed_by,
+       (SELECT min(p.deletion_seq) FROM pending_blocks p WHERE p.seq = c.seq AND p.path = c.path)
+         AS pending_by
+     FROM content c WHERE c.seq BETWEEN $1 AND $2 ORDER BY c.seq, c.path COLLATE "C"`,
     [from, to],
   );
   const bySeq = new Map<number, Map<string, BlockState>>();
@@ -182,6 +194,8 @@ export async function readEvents(tx: ReadTx, from: Seq, to: Seq): Promise<Stored
     const m = bySeq.get(n(b.seq)) ?? new Map<string, BlockState>();
     bySeq.set(n(b.seq), m);
     if (b.removed_by !== null) m.set(b.path, { state: "removed", by: n(b.removed_by) });
+    else if (b.pending_by !== null && b.body !== null)
+      m.set(b.path, { state: "pending", by: n(b.pending_by) });
     else if (b.body !== null)
       m.set(b.path, { state: "present", value: JSON.parse(b.body) as JsonValue });
   }

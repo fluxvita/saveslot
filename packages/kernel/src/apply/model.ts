@@ -266,6 +266,38 @@ export type Change =
       readonly k: number;
       readonly reverted: string;
     }
+  /**
+   * A row's or entity's items in the source table, replaced (a deletion event rebuilds the rows it
+   * touches): every row of it but a schema constant's.
+   */
+  | {
+      readonly kind: "base_sources_row";
+      readonly row_id: string;
+      readonly columns: readonly string[];
+      readonly rows: readonly (readonly SqlValue[])[];
+    }
+  /** No write creates the row any more (a deletion's `recreated`). */
+  | { readonly kind: "row_origin_drop"; readonly row_id: string }
+  /** Source data's deletion state (`sources.deletion_state`): a deletion pending, cancelled. */
+  | {
+      readonly kind: "sources_state";
+      readonly seqs: readonly Seq[];
+      readonly state: "present" | "pending_deletion";
+    }
+  /** A deletion confirmed, pending (`deletions`). */
+  | {
+      readonly kind: "deletion_insert";
+      readonly id: string;
+      readonly deletion_kind: string;
+      readonly due_at: string;
+      readonly confirmed_seq: Seq;
+    }
+  /** The blocks a pending deletion lists, read no more (`pending_blocks`). */
+  | {
+      readonly kind: "pending_blocks";
+      readonly deletion_seq: Seq;
+      readonly positions: readonly { readonly seq: Seq; readonly path: string }[];
+    }
   /** The write that first created the row or entity (`row_origins`). */
   | {
       readonly kind: "row_origin";

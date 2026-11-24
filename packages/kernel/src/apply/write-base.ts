@@ -39,6 +39,7 @@ import {
   type Registration,
   registrations,
   type SettleContent,
+  type Settled,
   type SettleItem,
   type SettleTable,
   settle,
@@ -106,7 +107,7 @@ const inconsistent = (seq: Seq, message: string) => new ApplyError("inconsistent
  * without its interval block; on an event or timeless table, an interval block or an interval
  * revoke.
  */
-function itemsOf(seq: Seq, present: Obj, shape: SettleTable): SettleItem[] {
+export function itemsOf(seq: Seq, present: Obj, shape: SettleTable): SettleItem[] {
   const isState = shape.kind === "state";
   const items: SettleItem[] = [];
   const fields = new Set<string>(shape.fields);
@@ -182,7 +183,7 @@ export function corroborationEnds(
  * left as it is by later events (whether an end still counts is judged when an interval is
  * resolved). Null for any other item.
  */
-function corroborationEndsOf(
+export function corroborationEndsOf(
   x: SettleItem,
   isState: boolean,
   written: WriteBaseInput["written"],
@@ -200,7 +201,7 @@ const ends = (v: IntervalSet): { from: string | null; to: string | null } => {
   return { from: x.from, to: x.to };
 };
 
-const regsJson = (rs: readonly Registration[]) =>
+export const regsJson = (rs: readonly Registration[]) =>
   canonicalize(
     rs.map((r) => ({
       op: r.op,
@@ -208,13 +209,22 @@ const regsJson = (rs: readonly Registration[]) =>
     })) as JsonValue,
   );
 
-/** The source table rows of a new item: one per source; one without a source otherwise. */
-function sourceRows(
+/**
+ * The source table rows of an item: one per source; one without a source otherwise. `over`, for
+ * an item a deletion restates: the value sources it now has (instead of the event's
+ * `sources/<t>/<k>`), its "reverted" registrations, and the block that gives it last.
+ */
+export function sourceRows(
   seq: Seq,
   rowId: string,
   x: SettleItem,
   present: Obj,
   corroborationEnds: string | null,
+  over: {
+    readonly sources?: readonly Obj[];
+    readonly reverted?: string;
+    readonly given?: { readonly seq: Seq; readonly path: string };
+  } = {},
 ): SqlValue[][] {
   const status = x.status;
   const { from, to } = ends(x.valid);
@@ -239,11 +249,13 @@ function sourceRows(
     to,
     status === "corroborated",
     corroborationEnds,
-    "[]",
+    over.reverted ?? "[]",
+    over.given?.seq ?? null,
+    over.given?.path ?? null,
   ];
-  const sources = (x.target === "existence" ? undefined : present[`sources/${x.target}/${x.k}`]) as
-    | Obj[]
-    | undefined;
+  const sources = (
+    x.target === "existence" ? undefined : (over.sources ?? present[`sources/${x.target}/${x.k}`])
+  ) as readonly Obj[] | undefined;
   const ops = (present["op_sources"] as Seq[] | undefined) ?? [];
   const intervals = (present["valid_sources"] as Seq[] | undefined) ?? [];
   // The value sources first (or, for an item with no value, the operation's sources standing for
@@ -279,7 +291,7 @@ function sourceRows(
   ];
 }
 
-const BASE_SOURCE_COLUMNS = [
+export const BASE_SOURCE_COLUMNS = [
   "event_seq",
   "row_id",
   "field_id",
@@ -297,6 +309,8 @@ const BASE_SOURCE_COLUMNS = [
   "corroborated",
   "corroboration_ends",
   "reverted",
+  "given_seq",
+  "given_path",
 ];
 
 /** A field value as the columns of its field take it (02-architecture §8 业务表). */
@@ -313,6 +327,110 @@ function fieldColumns(t: CompiledBaseTable): string[] {
   return t.fields.flatMap((f) =>
     f.type === "zoned_datetime" ? [`f_${f.id}`, `f_${f.id}__zone`] : [`f_${f.id}`],
   );
+}
+
+/**
+ * A row or entity settled from all its items in effect (./settle.ts), as changes: the business
+ * table's rows, the version cells (an open cell no longer current closed at `op`, or dropped when
+ * `op` opened it; a current cell not open yet opened at `op` with `intent`), and the row count.
+ * Shared by `write.base` and the deletion events (which settle the row from the source table as
+ * the deletion leaves it, then hold it to their results).
+ */
+export function settleRowChanges(
+  t: CompiledBaseTable,
+  rowId: string,
+  items: readonly SettleItem[],
+  openCells: readonly OpenCell[],
+  count: number,
+  op: Seq,
+  intent: string,
+  /**
+   * Items whose content changed since their cells opened (a deletion restating a carried item's
+   * value, or making it a `no_value` write-back): their open cells close and open anew, the cell's
+   * identity being what it covers and who gives it, not the value.
+   */
+  renewed: ReadonlySet<string> = new Set(),
+): { settled: Settled; changes: Change[] } {
+  const shape = settleTable(t);
+  const isState = shape.kind === "state";
+  const changes: Change[] = [];
+  const settled = settle(shape, items);
+  const physical = t.physical.table;
+  const key = isState ? "entity_id" : "row_id";
+  const cols = fieldColumns(t);
+  changes.push({
+    kind: "rows_replace",
+    table: physical,
+    key,
+    id: rowId,
+    columns: isState
+      ? ["entity_id", "valid_from", "valid_to", ...cols]
+      : ["row_id", "revoked", ...cols],
+    rows: settled.rows.map((r) => [
+      rowId,
+      ...(isState ? [r.valid?.from ?? null, r.valid?.to ?? null] : [r.revoked]),
+      ...shape.fields.flatMap((f) => columnValues(t, f, r.values[f] ?? null)),
+    ]),
+  });
+
+  // Version cells (02-architecture §8 版本表): an open cell no longer current is closed at this
+  // operation, or dropped when this operation opened it (a later op of one operation overwrites);
+  // a current cell not open yet is opened at this operation.
+  const now = new Map(
+    settled.cells.map((c) => [
+      cellKey(c.field, c.valid?.from ?? null, c.valid?.to ?? null, c.by, c.noValue === true),
+      c,
+    ]),
+  );
+  const open = new Map(
+    openCells.map((c) => [cellKey(c.field, c.valid_from, c.valid_to, c.src, c.no_value), c]),
+  );
+  const renew = (src: ItemKey | null) =>
+    src !== null && renewed.has(`${src.event}/${src.target}/${src.k}`);
+  const close = [...open].filter(([k, c]) => !now.has(k) || renew(c.src)).map(([, c]) => c);
+  const added = [...now].filter(([k, c]) => !open.has(k) || renew(c.by)).map(([, c]) => c);
+  changes.push({
+    kind: "cells",
+    table: `${physical}__ver`,
+    row_id: rowId,
+    state: isState,
+    op,
+    close: close.map((c) => ({ field: c.field, valid_from: c.valid_from, rec_from: c.rec_from })),
+    columns: [
+      "row_id",
+      "field_id",
+      ...(isState ? ["valid_from", "valid_to"] : []),
+      "rec_from",
+      "intent",
+      "src_event",
+      "src_field",
+      "src_k",
+      "revoked",
+      "no_value",
+      ...cols,
+    ],
+    rows: added.map((c: Cell) => [
+      rowId,
+      c.field,
+      ...(isState ? [c.valid?.from ?? null, c.valid?.to ?? null] : []),
+      op,
+      intent,
+      c.by?.event ?? null,
+      c.by?.target ?? null,
+      c.by?.k ?? null,
+      c.revoked === true ? true : null,
+      c.noValue === true ? true : null,
+      ...shape.fields.flatMap((f) =>
+        f === c.field ? columnValues(t, f, c.value) : columnValues(t, f, null),
+      ),
+    ]),
+  });
+
+  const counted = isState ? settled.rows.length : settled.rows.filter((r) => !r.revoked).length;
+  if (counted !== count)
+    changes.push({ kind: "counts_add", table_id: t.id, delta: counted - count });
+
+  return { settled, changes };
 }
 
 /** A cell's identity: what it covers, who gave it, and whether it says the entity has no value. */
@@ -409,80 +527,17 @@ export function planWriteBase(seq: Seq, op: Seq, present: Obj, input: WriteBaseI
   }
 
   // The row settled from all its items.
-  const settled = settle(shape, [...items, ...mine]);
-  const physical = t.physical.table;
-  const key = isState ? "entity_id" : "row_id";
-  const cols = fieldColumns(t);
-  changes.push({
-    kind: "rows_replace",
-    table: physical,
-    key,
-    id: rowId,
-    columns: isState
-      ? ["entity_id", "valid_from", "valid_to", ...cols]
-      : ["row_id", "revoked", ...cols],
-    rows: settled.rows.map((r) => [
-      rowId,
-      ...(isState ? [r.valid?.from ?? null, r.valid?.to ?? null] : [r.revoked]),
-      ...shape.fields.flatMap((f) => columnValues(t, f, r.values[f] ?? null)),
-    ]),
-  });
-
-  // Version cells (02-architecture §8 版本表): an open cell no longer current is closed at this
-  // operation, or dropped when this operation opened it (a later op of one operation overwrites);
-  // a current cell not open yet is opened at this operation.
-  const now = new Map(
-    settled.cells.map((c) => [
-      cellKey(c.field, c.valid?.from ?? null, c.valid?.to ?? null, c.by, c.noValue === true),
-      c,
-    ]),
-  );
-  const open = new Map(
-    input.openCells.map((c) => [cellKey(c.field, c.valid_from, c.valid_to, c.src, c.no_value), c]),
-  );
-  const close = [...open].filter(([k]) => !now.has(k)).map(([, c]) => c);
-  const added = [...now].filter(([k]) => !open.has(k)).map(([, c]) => c);
   const intent = target["intent"] as string;
-  changes.push({
-    kind: "cells",
-    table: `${physical}__ver`,
-    row_id: rowId,
-    state: isState,
+  const { settled, changes: settledChanges } = settleRowChanges(
+    t,
+    rowId,
+    [...items, ...mine],
+    input.openCells,
+    input.count,
     op,
-    close: close.map((c) => ({ field: c.field, valid_from: c.valid_from, rec_from: c.rec_from })),
-    columns: [
-      "row_id",
-      "field_id",
-      ...(isState ? ["valid_from", "valid_to"] : []),
-      "rec_from",
-      "intent",
-      "src_event",
-      "src_field",
-      "src_k",
-      "revoked",
-      "no_value",
-      ...cols,
-    ],
-    rows: added.map((c: Cell) => [
-      rowId,
-      c.field,
-      ...(isState ? [c.valid?.from ?? null, c.valid?.to ?? null] : []),
-      op,
-      intent,
-      c.by?.event ?? null,
-      c.by?.target ?? null,
-      c.by?.k ?? null,
-      c.revoked === true ? true : null,
-      c.noValue === true ? true : null,
-      ...shape.fields.flatMap((f) =>
-        f === c.field ? columnValues(t, f, c.value) : columnValues(t, f, null),
-      ),
-    ]),
-  });
-
-  const count = isState ? settled.rows.length : settled.rows.filter((r) => !r.revoked).length;
-  if (count !== input.count)
-    changes.push({ kind: "counts_add", table_id: t.id, delta: count - input.count });
+    intent,
+  );
+  changes.push(...settledChanges);
 
   // The key index (§5.7 the `apply` table: a key field's item in effect gives the row its entry,
   // by the new values; a revoke leaves it). A key is given whole and once, never `null`: a key

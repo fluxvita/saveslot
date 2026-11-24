@@ -157,7 +157,7 @@ describe("start on a home it cannot use: a code and an exit, never a throw or a 
 describe("start on a store of another storage format: what to do, said and logged", () => {
   /**
    * The home's store with its storage format version set to `v` (02-architecture §8; `meta`'s
-   * `storage_format`). This saveslot's format is 4: 3 is an older, development one, 5 a newer one.
+   * `storage_format`). This saveslot's format is 5: 4 is an older, development one, 6 a newer one.
    */
   async function withFormat(home: string, v: number) {
     const store = await testBackend().open({ kind: "pglite", dir: join(home, "data") }, {});
@@ -171,8 +171,8 @@ describe("start on a store of another storage format: what to do, said and logge
   }
 
   for (const [label, v, text, said] of [
-    ["an older, development format", 3, TEXTS.startFormatTooOld, "initialize the store anew"],
-    ["a newer format", 5, TEXTS.startFormatTooNew, "newer"],
+    ["an older, development format", 4, TEXTS.startFormatTooOld, "initialize the store anew"],
+    ["a newer format", 6, TEXTS.startFormatTooNew, "newer"],
   ] as const) {
     it(
       `a store of ${label}: exit 5, the text for it, and the backend's words in the log`,
