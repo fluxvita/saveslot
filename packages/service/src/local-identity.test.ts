@@ -695,15 +695,27 @@ describe("the local accounts' login", () => {
       try {
         const src = "192.0.2.41";
         const t = await formToken(p, src);
-        const started = Date.now();
+        // Whether the limit has passed, by the clock the check's own wait runs on: a timer of the
+        // same length, set before the request. Node fires timers of one length in the order they
+        // were set, from the event loop's millisecond clock, which can be a millisecond behind
+        // Date.now(): an elapsed time read from Date.now() could show 99.
+        let limitPassed = false;
+        const limit = new Promise<void>((resolve) =>
+          setTimeout(() => {
+            limitPassed = true;
+            resolve();
+          }, 100),
+        );
         const r = await post(
           p,
           { form_token: t, return_to: TO, name: a.name, password: PASSWORD },
           src,
         );
+        // Refused only after waiting the limit.
+        expect(limitPassed).toBe(true);
+        await limit;
         expect(status(r)).toBe(503);
         expect(header(r, "retry-after")).toBe("1");
-        expect(Date.now() - started).toBeGreaterThanOrEqual(100);
         expect(scryptLoadForTests()).toMatchObject({ running: 2, waiting: 0 });
       } finally {
         useScryptWaitForTests(undefined);
