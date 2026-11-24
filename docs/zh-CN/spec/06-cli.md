@@ -289,16 +289,16 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 
 | 宿主 | 生成什么 | `setup` 能自动接 |
 |---|---|---|
-| `claude-code` | `claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<令牌> -- <saveslot 的绝对路径> mcp`（另有 `claude mcp get` / `list` / `remove`） | 是 |
-| `codex` | `codex mcp add saveslot --env SAVESLOT_TOKEN=<令牌> -- <saveslot 的绝对路径> mcp`，或 `config.toml` 的 `[mcp_servers.saveslot]` 片段（另有 `codex mcp list`；`get` / `remove` 与选择作用域的参数实现时核实） | 是 |
-| `cursor` | 没有添加命令：打印配置片段，由人粘贴，并写明放进 `~/.cursor/mcp.json`（对所有项目生效；只对某个项目时放进项目的 `.cursor/mcp.json`）的 `mcpServers` 里 | 否 |
-| `claude-desktop` | 没有添加命令：打印配置片段，由人粘贴，并写明放进 `claude_desktop_config.json`（设置 → Developer → Edit Config 打开的那个文件；macOS 在 `~/Library/Application Support/Claude/`，Linux 在 `~/.config/Claude/`）的 `mcpServers` 里，改完完全退出再打开 | 否 |
+| `claude-code` | `claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<令牌> -- <saveslot 的绝对路径> mcp`（另有 `claude mcp get` / `list` / `remove`；2.1.323 实测，写进 `~/.claude.json`） | 是 |
+| `codex` | `codex mcp add saveslot --env SAVESLOT_TOKEN=<令牌> -- <saveslot 的绝对路径> mcp`，或 `config.toml` 的 `[mcp_servers.saveslot]` 片段（另有 `codex mcp get` / `list` / `remove`，`get` 的行为见 3.3 第 7 条；0.171.0 实测，添加命令写进用户级的 `~/.codex/config.toml`；选择作用域的参数未核实） | 是 |
+| `cursor` | 没有添加命令：打印配置片段，由人粘贴，并写明放进 `~/.cursor/mcp.json`（对所有项目生效；只对某个项目时放进项目的 `.cursor/mcp.json`）的 `mcpServers` 里（3.31.15 实测：启动时读到并连上，Agent 能调用） | 否 |
+| `claude-desktop` | 没有添加命令：打印配置片段，由人粘贴，并写明放进 `claude_desktop_config.json`（设置 → Developer → Edit Config 打开的那个文件；macOS 在 `~/Library/Application Support/Claude/`，Linux 在 `~/.config/Claude/`）的 `mcpServers` 里，改完完全退出再打开（6.28899.6 实测：接上后出现在输入框 ＋ → 连接器 的列表里，与远程连接器在一处） | 否 |
 | `generic` | 通用 JSON：`{"command": "<saveslot 的绝对路径>", "args": ["mcp"], "env": {"SAVESLOT_TOKEN": "<令牌>"}}` | 否 |
 | `http` | 不生成宿主配置，只打印令牌与套接字路径（给脚本与连接器用；`curl --unix-socket` 可直接调） | 否 |
 
 宿主怎么呈现 saveslot 的 prompts（[`05-surfaces.md`](05-surfaces.md) 10.1）：Claude Code（2.1.327 实测）的斜杠菜单显示为 `/saveslot:overview`，直接输入 `/saveslot:overview` 与 `/mcp__saveslot__overview` 都可以；但冒号写法后面带参数时报"Unknown command"，带参数只能写 `/mcp__saveslot__pending health`。参数按空白切开、按位置对应，多出来的词不进 prompt；含空格的值加引号。Cursor 的文档写着支持 prompts，没有写调用的写法（未核实）；Codex（0.167.2 实测）不支持 prompts：`/mcp verbose` 不列 prompts，两种写法都报"Unrecognized command"。`setup` 结尾的提示按这次的结果写：Claude Code 在接上的宿主里（这次接入或已有条目）时，写它的斜杠命令写法，再写"在任何宿主里也可以问一句"；不在时只写"在任何宿主里可以问一句"，不提 Claude Code。
 
-- **宿主命令的写法**：服务名在前，`-e` / `--env` 在后，再接 `--` 与可执行文件。添加命令一律写**用户级**：saveslot 的数据按人不按项目，接入应当对这个用户的所有项目生效；Claude Code 的添加命令默认写"当前项目"这一档，所以显式带 `--scope user`，别的宿主有同类选项的同样处理。`vscode`（`code --add-mcp`）写到哪一处配置、同名时的行为都没有核实，实测之后再加入适配表。
+- **宿主命令的写法**：服务名在前，`-e` / `--env` 在后，再接 `--` 与可执行文件。添加命令一律写**用户级**：saveslot 的数据按人不按项目，接入应当对这个用户的所有项目生效；Claude Code 的添加命令默认写"当前项目"这一档，所以显式带 `--scope user`，别的宿主有同类选项的同样处理。`vscode` 不在适配表里：VS Code 的 MCP 宿主是 GitHub Copilot Chat 的 Agent 模式，它的添加命令 `code --add-mcp '<JSON>'`（1.147.0 实测）写进用户级的 `mcp.json`（macOS 在 `~/Library/Application Support/Code/User/`，结构是 `{"servers": {"saveslot": {…}}}`），同名时直接覆盖原条目、退出码 0、不提示，新建的文件权限是 0644；`code` 也没有查看单个条目的命令，3.3 第 7 条"先用宿主的查看命令判断已有条目"做不到。要接 VS Code，用 `generic` 的条目经 `code --add-mcp` 或手动写进 `mcp.json`。
 - **没有添加命令的宿主**（`cursor`、`claude-desktop`）只能手动粘贴，是第 1 节设计要求的已知例外。
 - **令牌只显示一次**：控制面只存哈希；丢了就吊销重签。`--apply` 时由 CLI 执行上表里宿主自己的添加命令，令牌不落进 CLI 的任何文件——**但会落在别处**：贴进终端的命令进了 shell 历史；`--apply` 执行宿主命令时令牌在进程参数里，执行期间本机其他用户能用 `ps` 看到；最后它住在宿主的配置文件里。`--apply` 执行成功时不再显示令牌：打印"已添加到 <宿主>"与执行的那条命令，令牌的位置写成 `<令牌>`（连接实例的 ID、名字与 scope 在签发那一行）；`--json` 的输出不变，仍是签发结果（含令牌）。"令牌只显示这一次"这句提示写到标准错误（`--json` 时也是），标准输出里只有要粘贴的东西。只用 unix socket 时这些暴露对别的系统用户无害（他们连不上套接字），打开回环 TCP 后就不是了（第 8.1 节）。各宿主命令的确切写法由 CLI 的宿主适配表维护，实现时逐个实测。
 - **命令写绝对路径**：宿主启动 `saveslot mcp` 时的 PATH 未必包含 npm 全局目录（图形界面启动的宿主、用版本管理器切换 Node 的环境），所以生成的命令一律用 `saveslot` 可执行文件的绝对路径；`saveslot doctor` 经宿主自己的查看命令检查条目里的路径是否还在。
