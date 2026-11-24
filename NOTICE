@@ -2,3 +2,8 @@ saveslot
 Copyright 2026 FluxVita
 
 Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes data from the Unicode Character Database 17.0.0
+(third_party/unicode/17.0.0), Copyright © 1991-2026 Unicode, Inc., licensed
+under the Unicode License v3 (third_party/unicode/17.0.0/LICENSE.txt). The
+kernel's packaged tables for keymatch@1 are generated from it.
