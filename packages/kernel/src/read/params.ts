@@ -36,7 +36,13 @@ import {
 import { unitOf } from "../schema/index.ts";
 import { dateInZone, nextDay, startOfDay } from "../time/index.ts";
 import type { NamedTable } from "./slots.ts";
-import { invalid, notImplemented, ReadError, type ReadWarning } from "./types.ts";
+import {
+  detailedNotInThisVersion,
+  invalid,
+  notImplemented,
+  ReadError,
+  type ReadWarning,
+} from "./types.ts";
 
 export type TableKind = "event" | "state" | "timeless";
 
@@ -392,7 +398,7 @@ export function queryPlan(
 
   if (has(params, "detail")) {
     const d = get(params, "detail");
-    if (d === "detailed") throw notImplemented("detail", "detail: detailed");
+    if (d === "detailed") throw detailedNotInThisVersion();
     if (d !== "concise") throw invalid("malformed", "detail");
   }
 

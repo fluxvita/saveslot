@@ -57,6 +57,7 @@ import {
 import { type NamedTable, resolveTable, type Visibility, visibleSlots } from "./slots.ts";
 import {
   type AsOfResult,
+  detailedNotInThisVersion,
   invalid,
   type Marks,
   notImplemented,
@@ -606,7 +607,7 @@ export async function asOfInTx(
   const task = taskOf(params, input.task);
   if (has(params, "detail")) {
     const d = get(params, "detail");
-    if (d === "detailed") throw notImplemented("detail", "detail: detailed");
+    if (d === "detailed") throw detailedNotInThisVersion();
     if (d !== "concise") throw invalid("malformed", "detail");
   }
   const warnings: ReadWarning[] = [];

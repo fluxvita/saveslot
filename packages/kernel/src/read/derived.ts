@@ -79,9 +79,9 @@ import {
 
 import type { NamedTable } from "./slots.ts";
 import {
+  detailedNotInThisVersion,
   type InputMarks,
   invalid,
-  notImplemented,
   ReadError,
   type ReadWarning,
   type Row,
@@ -220,16 +220,9 @@ export async function queryDerived(
   }
   if (has(params, "detail")) {
     const d = get(params, "detail");
-    if (d === "detailed") {
-      // A row computed when read has no operation, record time or field sources to give.
-      if (computedAtRead(t))
-        throw new ReadError("not_in_this_version", "detail: detailed of a row computed when read", {
-          reason: "value",
-          param: "detail",
-          value: "detailed",
-        });
-      throw notImplemented("detail", "detail: detailed");
-    }
+    // A derived row has no sources of its own to give, whether computed when read or stored: a
+    // detail of half its parts would mislead (not in this version either way).
+    if (d === "detailed") throw detailedNotInThisVersion();
     if (d !== "concise") throw invalid("malformed", "detail");
   }
   // The evaluation time: checked, of no effect on this version's derived tables (above).

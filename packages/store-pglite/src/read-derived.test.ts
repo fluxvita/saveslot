@@ -353,6 +353,13 @@ describe("query of a derived table", () => {
         reason: "derived_table",
         param: "valid_during",
       });
+      // A stored derived table, as one computed when read: no sources of its own to detail.
+      expect(await refused({ table: "weekly", detail: "detailed" })).toEqual({
+        code: "not_in_this_version",
+        reason: "value",
+        param: "detail",
+        value: "detailed",
+      });
       expect(await refused({ table: "weekly", clip: true })).toEqual({
         code: "invalid_argument",
         reason: "not_state_table",

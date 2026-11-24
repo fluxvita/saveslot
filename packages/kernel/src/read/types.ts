@@ -45,6 +45,18 @@ export const invalid = (
   extra: Record<string, unknown> = {},
 ) => new ReadError("invalid_argument", `${param}: ${reason}`, { reason, param, ...extra });
 
+/**
+ * `detail: "detailed"` (04-contract-types §4.1 `RowDetail`): a parameter of a later version, so
+ * `not_in_this_version` with the value named, wherever a read takes `detail` (04-contract §16); not
+ * a hole of this one (`notImplemented`).
+ */
+export const detailedNotInThisVersion = () =>
+  new ReadError("not_in_this_version", "detail: detailed is not in this version", {
+    reason: "value",
+    param: "detail",
+    value: "detailed",
+  });
+
 /** Not built yet in this version of the kernel (an internal error to the caller). */
 export const notImplemented = (param: string, what: string) =>
   new ReadError("internal", `${param}: ${what} is not implemented`, {
