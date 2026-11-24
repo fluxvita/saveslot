@@ -19,6 +19,7 @@ import {
   createOpsContext,
   createTenant,
   eventsOf,
+  type ReadTx,
   readBufferOf,
   readEvents,
   readTail,
@@ -28,7 +29,7 @@ import { propRuns } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { copyLog } from "./testing/copy-log.fixture.ts";
-import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
+import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
 const RUNS = propRuns(15);
 const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
@@ -267,6 +268,21 @@ type OpReceipt = {
   existing_keys?: unknown[];
 };
 type Result = { ops?: OpReceipt[]; refused?: string; reason?: string; param?: string };
+
+/**
+ * What the replay is compared on: the business and version tables of table `id`, and
+ * `row_origins`, every row as JSON text, sorted. Only these three are read.
+ */
+const compared = (id: string) => async (tx: ReadTx) => {
+  const big = (_: string, v: unknown) => (typeof v === "bigint" ? String(v) : v);
+  const rows = async (name: string) =>
+    (await tx.query(`SELECT * FROM "${name}"`)).rows.map((r) => JSON.stringify(r, big)).sort();
+  return {
+    business: await rows(`t_${id}_v1`),
+    version: await rows(`t_${id}_v1__ver`),
+    origins: await rows("row_origins"),
+  };
+};
 
 const opOf = (ver: string) => Number(ver.slice(1).split(".")[0]);
 
@@ -560,14 +576,8 @@ describe.each(TABLES)("writing by entity_key: $table", (t: Keyed) => {
             await copyLog(store, tx);
             await applyEvents(tx, await readEvents(tx, 1, (await readTail(tx))?.seq ?? 0));
           });
-          const tables = (x: Record<string, string[]>) => ({
-            business: x[`t_${t.id}_v1`],
-            version: x[`t_${t.id}_v1__ver`],
-            origins: x["row_origins"],
-          });
-          expect(tables(await replica.store.read(snapshot))).toEqual(
-            tables(await store.read(snapshot)),
-          );
+          const tables = compared(t.id);
+          expect(await replica.store.read(tables)).toEqual(await store.read(tables));
           seen.replayed++;
         }
       }),
