@@ -399,12 +399,14 @@ interface RowDetail {
     literal: "hit" | "miss" | "na";   // 字面命中
     ref?: { values: Values };    // ref 字段：被引用行的摘要
   }>;
-  /** 这一行当前生效的全部前提声明（含没变的）。字段的含义同 Marks.premise_changed；state: current 时不给 reason、since。没有声明时不给。 */
-  premises?: Array<{
-    premise: TargetRef; premise_fields?: FieldName[]; seen: Ver;
-    state: "current" | "changed"; reason?: PremiseReason; since?: Seq;
-    fields: FieldName[]; declared: { seq: Seq; actor: Actor };
-  }>;
+  /** 这一行当前生效的全部前提声明（含没变的）。字段的含义同 Marks.premise_changed；state: current 时不给 reason、since。没有声明时不给。
+   *  目标表不可见的声明只给 hidden、state、since（changed 时）、fields，同 Marks。history 的 as_of 不给（前提声明的状态不按时刻留存）。 */
+  premises?: Array<
+    | { premise: TargetRef; premise_fields?: FieldName[]; seen: Ver;
+        state: "current" | "changed"; reason?: PremiseReason; since?: Seq;
+        fields: FieldName[]; declared: { seq: Seq; actor: Actor } }
+    | { hidden: true; state: "current" | "changed"; since?: Seq; fields: FieldName[] }
+  >;
 }
 ```
 

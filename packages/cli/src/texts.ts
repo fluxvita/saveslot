@@ -344,7 +344,7 @@ export const TEXTS = {
   validDuringBad: s("--valid-during takes <from>,<to>; leave <to> out for an open end"),
   detailBad: s("--detail takes concise or detailed"),
   detailedNotYet: s(
-    "--detail detailed comes in a later version; leave it out for the rows as they are",
+    "--detail detailed is not for a derived table: its rows have no sources of their own; leave it out",
   ),
   historyTarget: s(
     "give the table and a row (r_…) or an entity (e_…), or a state table's --key field=value instead",

@@ -23,7 +23,13 @@ import type {
   TableId,
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
-import { READ_ID, type ReadBuffer, type ReadEntry, type ReadId } from "../audit/index.ts";
+import {
+  READ_ID,
+  type ReadBuffer,
+  type ReadEntry,
+  type ReadId,
+  type ReadRow,
+} from "../audit/index.ts";
 import {
   fold,
   get,
@@ -42,6 +48,7 @@ import type { ReadTx } from "../store/ports.ts";
 import { valueOut } from "../time/index.ts";
 import { changersOf } from "./changed-by.ts";
 import { danglingOf, revokedTargets } from "./dangling.ts";
+import { rowDetails } from "./detail.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 import { bizPoint, kindOf, type TableKind } from "./params.ts";
 import { cmpText, correctedWithin, type KeySpec } from "./rows.ts";
@@ -57,13 +64,13 @@ import {
 import { type NamedTable, resolveTable, type Visibility, visibleSlots } from "./slots.ts";
 import {
   type AsOfResult,
-  detailedNotInThisVersion,
   invalid,
   type Marks,
   notImplemented,
   ReadError,
   type ReadWarning,
   type Row,
+  type RowDetail,
   type Values,
 } from "./types.ts";
 import { segmentsOf } from "./versions.ts";
@@ -605,10 +612,13 @@ export async function asOfInTx(
 ): Promise<HistoryOutput<AsOfResult>> {
   const t = target.table;
   const task = taskOf(params, input.task);
+  // `detail: "detailed"`: each row with its `RowDetail`, without premises (04-contract §10
+  // `as_of`: the state of a premise is not kept by record time).
+  let detailed = false;
   if (has(params, "detail")) {
     const d = get(params, "detail");
-    if (d === "detailed") throw detailedNotInThisVersion();
-    if (d !== "concise") throw invalid("malformed", "detail");
+    if (d === "detailed") detailed = true;
+    else if (d !== "concise") throw invalid("malformed", "detail");
   }
   const warnings: ReadWarning[] = [];
   if (!has(params, "as_of")) throw invalid("missing", "as_of");
@@ -725,6 +735,12 @@ export async function asOfInTx(
   const shown = await shownAs(tx, target.named.slot, t, sv);
   const qualified = `${shown.slot}.${shown.table.name}`;
   const rows: Row[] = [];
+  // What each row's detail is worked out from: its values by field ID and its stretch.
+  const sources: {
+    values: Readonly<Record<string, FieldValue>>;
+    from?: string;
+    to?: string | null;
+  }[] = [];
   if (version !== undefined) {
     const cells = await cellsAsOf(tx, t, target.id, point.seq);
     const ver = `h${version.op}.${restore}`;
@@ -750,6 +766,7 @@ export async function asOfInTx(
           !((s.to === null || s.to > during[0]) && (during[1] === null || s.from < during[1]))
         )
           continue;
+        sources.push({ values: s.values, from: s.from, to: s.to });
         rows.push({
           table: qualified,
           entity: target.id as never,
@@ -786,6 +803,7 @@ export async function asOfInTx(
         // The revoke's own operation, not when its cell was last cut.
         ...(revoke !== undefined ? { revoked: { seq: Number(revoke.src_op) as never } } : {}),
       };
+      sources.push({ values });
       rows.push({
         table: qualified,
         row: target.id as never,
@@ -795,6 +813,27 @@ export async function asOfInTx(
         ...(Object.keys(marks).length > 0 ? { marks } : {}),
       });
     }
+  }
+  // The detail of each row, as of the point; the rows a ref summary read, for the read record.
+  let detailRead: ReadRow[] = [];
+  if (detailed && version !== undefined && rows.length > 0) {
+    const d = await rowDetails(tx, {
+      table: t,
+      fields: shown.table.fields as readonly CompiledBaseField[],
+      visible: target.named.slot.tables,
+      page: sources.map((x) => ({
+        id: target.id,
+        ver: Number(version.op),
+        values: x.values,
+        ...(x.from !== undefined ? { validFrom: x.from, validTo: x.to ?? null } : {}),
+      })),
+      asOf: point.seq,
+      at: (point.at ?? input.now) as Instant,
+      zone: target.named.slot.timezone,
+      restoreCount: restore,
+    });
+    for (const [i, r] of rows.entries()) rows[i] = { ...r, detail: d.details[i] as RowDetail };
+    detailRead = d.read;
   }
   // Who made this version, when not the caller: every row here is of the one version.
   if (version !== undefined && rows.length > 0) {
@@ -848,8 +887,8 @@ export async function asOfInTx(
     shape: canonicalize({ mode: "as_of", table: t.id, target: target.id }),
     ...(valid !== undefined ? { valid } : {}),
     // A historical version: recorded, but not read for the fallback (04-contract §2).
-    rows:
-      version === undefined
+    rows: [
+      ...(version === undefined
         ? []
         : [
             {
@@ -857,7 +896,10 @@ export async function asOfInTx(
               target: target.id,
               ver: { op: version.op as never, restoreCount: restore },
             },
-          ],
+          ]),
+      // The rows a ref summary read (`detail: "detailed"`), as of the same point.
+      ...detailRead,
+    ],
     coarse: [],
     lastRead: [],
   };

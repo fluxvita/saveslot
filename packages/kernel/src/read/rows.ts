@@ -16,6 +16,7 @@ import type {
   DateStr,
   FieldValue,
   ItemId,
+  Seq,
 } from "@fluxvita/saveslot-contract-core";
 import {
   canonicalize,
@@ -41,6 +42,7 @@ import {
   invalid,
   type Marks,
   type PremiseChangedMark,
+  type PremiseDetail,
   ReadError,
   type Row,
   type Values,
@@ -322,34 +324,39 @@ function unionMarks(a: WorkMarks | undefined, b: WorkMarks | undefined): WorkMar
 }
 
 /**
- * The changed premises of a row as shown (04-contract-types §3 `Marks.premise_changed`): the latest
- * `since` first (of one `since`, the later declaration first), at most 10, the total when there
- * are more. `fields` are this row's fields covered. A premise on a table the caller cannot see still
- * shows, as what is of this row only (`hidden`, `since`, `fields`): that the row rests on something
- * that changed matters to whoever reads it; which table, row and fields, and how, are not told.
+ * The premises of a row as shown, each with its order: the latest `since` first (of one `since`,
+ * the later declaration first; a `current` one, with no `since`, after every `changed` one).
+ * `fields` are this row's fields covered. A premise on a table the caller cannot see still shows, as
+ * what is of this row only (`hidden`, `state`, `since`, `fields`): that the row rests on something
+ * matters to whoever reads it; which table, row and fields, and how, are not told.
  * A table a schema switch dropped (`schema_switched`) is not one the caller cannot see: to a caller
  * whose range takes it in (the whole slot, or the table by its ID) it is told whole, named as the
  * last version having it defined it (05 §4.2: "dropped in the schema switch of #n"); to any other it
  * is `hidden`, as a table out of range: a range narrowed to the tables left is not one that saw it.
+ * `changedOnly`: the declarations in a `changed` state only (the marks); else all in effect (the
+ * detail, 04-contract-types §4.1 `RowDetail.premises`).
  */
-function shownPremises(
+function premiseEntries(
   plan: QueryPlan,
   facts: RowFacts,
   list: readonly WorkPremise[],
-): Pick<Marks, "premise_changed" | "premise_changed_total"> {
+  changedOnly: boolean,
+): PremiseDetail[] {
   const p = facts.premises;
-  if (p === undefined) return {};
+  if (p === undefined) return [];
   const slot = plan.named.slot;
   const visible = new Map(slot.tables.map((t) => [t.id as string, t]));
-  const marks: { order: readonly number[]; mark: PremiseChangedMark }[] = [];
+  const out: { order: readonly number[]; entry: PremiseDetail }[] = [];
   for (const w of list) {
     const d = p.decls.get(w.decl);
-    // Changed ones only (`premiseFacts` asks for no other; a changed one has both).
-    if (d === undefined || d.state !== "changed" || d.since === null || d.reason === null) continue;
+    if (d === undefined) continue;
+    const changed = d.state === "changed" && d.since !== null && d.reason !== null;
+    if (changedOnly && !changed) continue;
     const covered = new Set(w.covers.map((c) => c.field));
     const fields = plan.table.fields.filter((f) => covered.has(f.id)).map((f) => f.name);
-    const reason = d.reason as PremiseReason;
-    const since = d.since as never;
+    const reason = changed ? (d.reason as PremiseReason) : undefined;
+    const since = changed ? (d.since as never as Seq) : undefined;
+    const state = changed ? ("changed" as const) : ("current" as const);
     const former = p.formerTables.get(d.targetTable);
     // The catalog keeps a table's definition without its physical tables, which naming needs not.
     const target: CompiledTable | undefined =
@@ -361,17 +368,20 @@ function shownPremises(
       (slot.rangeTables === undefined || slot.rangeTables.has(d.targetTable))
         ? (former.table as CompiledTable)
         : undefined);
-    const order = [d.since, d.op, -d.opIndex, -d.index];
+    const order = [since ?? -1, d.op, -d.opIndex, -d.index];
     if (target === undefined || target.kind !== "base") {
       // Only what is of this row: that something it rests on changed, and since when (an operation
       // number, as its own versions show); not how (`deleted` would tell of a deletion there).
-      marks.push({ order, mark: { hidden: true, since, fields } });
+      out.push({
+        order,
+        entry: { hidden: true, state, ...(since !== undefined ? { since } : {}), fields },
+      });
       continue;
     }
     const names = new Map(target.fields.map((f) => [f.id as string, f.name]));
-    marks.push({
+    out.push({
       order,
-      mark: {
+      entry: {
         premise: {
           table: `${slot.name}.${target.name}`,
           ...(target.time.type === "state"
@@ -380,8 +390,9 @@ function shownPremises(
         },
         ...(d.fields !== null ? { premise_fields: d.fields.map((f) => names.get(f) ?? f) } : {}),
         seen: `v${d.seen.op}.${d.seen.restoreCount}`,
-        reason,
-        since,
+        state,
+        ...(reason !== undefined ? { reason } : {}),
+        ...(since !== undefined ? { since } : {}),
         fields,
         declared: {
           seq: d.op as never,
@@ -390,17 +401,30 @@ function shownPremises(
       },
     });
   }
-  if (marks.length === 0) return {};
   // The latest since first; then the latest declaring operation; within it in op order.
-  marks.sort((a, b) => {
+  out.sort((a, b) => {
     for (let i = 0; i < a.order.length; i++) {
       const x = (b.order[i] as number) - (a.order[i] as number);
       if (x !== 0) return x;
     }
     return 0;
   });
+  return out.map((x) => x.entry);
+}
+
+/** The changed premises of a row as shown (04-contract-types §3 `Marks.premise_changed`): at most 10. */
+function shownPremises(
+  plan: QueryPlan,
+  facts: RowFacts,
+  list: readonly WorkPremise[],
+): Pick<Marks, "premise_changed" | "premise_changed_total"> {
+  const marks: PremiseChangedMark[] = premiseEntries(plan, facts, list, true).map((e) => {
+    const { state: _, ...m } = e;
+    return m as PremiseChangedMark;
+  });
+  if (marks.length === 0) return {};
   return {
-    premise_changed: marks.slice(0, 10).map((x) => x.mark),
+    premise_changed: marks.slice(0, 10),
     ...(marks.length > 10 ? { premise_changed_total: marks.length } : {}),
   };
 }
@@ -412,6 +436,11 @@ export interface ShownRow {
   readonly row: Row;
   readonly id: string;
   readonly ver: number;
+  /** A state table's segment, as the cells hold it (`validFrom` absent elsewhere). */
+  readonly validFrom?: string;
+  readonly validTo?: string | null;
+  /** `detail: "detailed"`: every premise in effect on the row, as `RowDetail.premises` gives it. */
+  readonly premises?: readonly PremiseDetail[];
   /** Every field's value, by field ID (merged segments: the first's), for the order keys. */
   readonly values: Readonly<Record<string, FieldValue>>;
   readonly keys: readonly (string | boolean | number | null)[];
@@ -530,7 +559,19 @@ export function shownRows(
         return Object.keys(all).length > 0 ? { marks: all } : {};
       })(),
     };
-    return { row, id: r.id, ver, values: r.values };
+    return {
+      row,
+      id: r.id,
+      ver,
+      values: r.values,
+      ...(r.validFrom !== undefined ? { validFrom: r.validFrom, validTo: r.validTo ?? null } : {}),
+      ...(plan.detailed
+        ? {
+            premises:
+              marks?.premise !== undefined ? premiseEntries(plan, facts, marks.premise, false) : [],
+          }
+        : {}),
+    };
   });
 }
 

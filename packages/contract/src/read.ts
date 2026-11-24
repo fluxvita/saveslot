@@ -64,9 +64,13 @@ export {
   COMPILE_OUTCOMES,
   FIELD_TYPES,
   GRANULARITIES,
+  LITERAL_RESULTS,
+  PREMISE_REASONS,
+  PREMISE_STATES,
   REF_TARGETS,
   ROUNDINGS,
   SCHEMA_CHANGE_CODES,
+  SOURCE_LEVELS,
   TABLE_KINDS,
   TIME_DEPENDENCIES,
   TIME_TYPES,
@@ -107,17 +111,23 @@ export interface RowDetail {
       ref?: { values: Values };
     }
   >;
-  /** All premise declarations in effect on this row. */
-  premises?: Array<{
-    premise: TargetRef;
-    premise_fields?: FieldName[];
-    seen: Ver;
-    state: PremiseState;
-    reason?: PremiseReason;
-    since?: Seq;
-    fields: FieldName[];
-    declared: { seq: Seq; actor: Actor };
-  }>;
+  /**
+   * All premise declarations in effect on this row (not on `history` `as_of`). One whose target's
+   * table the caller cannot see gives only what is of this row, as `Marks.premise_changed` does.
+   */
+  premises?: Array<
+    | {
+        premise: TargetRef;
+        premise_fields?: FieldName[];
+        seen: Ver;
+        state: PremiseState;
+        reason?: PremiseReason;
+        since?: Seq;
+        fields: FieldName[];
+        declared: { seq: Seq; actor: Actor };
+      }
+    | { hidden: true; state: PremiseState; since?: Seq; fields: FieldName[] }
+  >;
 }
 
 /** 04-contract-types §4.1 `Row`. */

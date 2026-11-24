@@ -282,7 +282,7 @@ P4b 是第一版之后的第一个增量。是否紧接着做，在 P4 结束、
 | 方面 | 提供什么 |
 |---|---|
 | 写入 | 四种意图（新增、变更、纠错、撤销）；按冲突单元的 `ver` 与冲突判定、候选与冲突事项；状态类表的区间、默认终点与无值区间；高影响写入进待确认；回退与撤回某次写入；幂等；证据与字段级来源、字面命中；按来源键写入（转移键除外）；相近键提示（`similar_keys`）；写入的前提 |
-| 读取 | 数据目录、`query`、`sql`、派生表；`history` 的 `timeline`、`as_of`、`changes`；源数据；待处理事项；读取记录与 `ver` 的兜底。`detail: "detailed"` 尚未提供，报 `not_in_this_version` |
+| 读取 | 数据目录、`query`、`sql`、派生表；`history` 的 `timeline`、`as_of`、`changes`；源数据；待处理事项；读取记录与 `ver` 的兜底；`query` 与 `history` 的 `as_of` 上的 `detail: "detailed"`（派生表上报 `not_in_this_version`） |
 | 待处理事项 | 冲突、待确认、schema 变更三类事项的查看与解决 |
 | schema | 新建 slot；改已有 slot 时只动数据目录的变更（改名、改说明与别名、放宽约束、新增表、删表等）；从未被写入的表上的结构改动；移除空 slot |
 | 日志 | 事件头链与校验和的校验（`saveslot verify`）；导出与导出的口令加密；导入到空租户 |

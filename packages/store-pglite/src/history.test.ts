@@ -473,15 +473,22 @@ describe("as_of", () => {
         as_of: { read: `rd_${"0".repeat(16)}` },
       }),
     ).toMatchObject({ code: "not_found", param: "as_of/read" });
-    // detail: detailed is a later version's (04-contract-types §4.1).
-    expect(
-      await refused({ table: "budgets", entity, mode: "as_of", as_of: 1, detail: "detailed" }),
-    ).toEqual({
-      code: "not_in_this_version",
-      reason: "value",
-      param: "detail",
-      value: "detailed",
+    // detail: detailed: each row's detail as of the read, no premises (their state is not kept by
+    // record time, 04-contract §10 `as_of`).
+    const detailed = await h({
+      table: "budgets",
+      entity,
+      mode: "as_of",
+      as_of: { read: first },
+      detail: "detailed",
     });
+    const rowsOf = detailed["rows"] as unknown as Record<string, Record<string, unknown>>[];
+    expect(rowsOf.length).toBeGreaterThan(0);
+    for (const r of rowsOf) {
+      expect(r["detail"]?.["seq"]).toBe(Number(String(r["ver"]).slice(1).split(".")[0]));
+      expect(r["detail"]?.["premises"]).toBeUndefined();
+      expect(Object.keys(r["detail"]?.["fields"] as object)).toContain("amount");
+    }
   });
 
   it("is a read recorded without a version to fall back to", async () => {

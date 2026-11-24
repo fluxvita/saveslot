@@ -7,6 +7,7 @@ import type {
   EntityId,
   EVENT_DECISIONS,
   FieldStatus,
+  Instant,
   ItemId,
   KernelErrorCode,
   KernelErrorDetail,
@@ -144,7 +145,49 @@ export type PremiseChangedMark =
       readonly fields: readonly string[];
     };
 
-/** §4.1 `Row`, without `detail` (not in this version yet). */
+/**
+ * §4.1 `RowDetail.premises`, one entry: a declaration in effect on the row, `changed` with its
+ * reason and since, `current` without; one whose target's table the caller cannot see, only what is
+ * of this row (as `PremiseChangedMark`).
+ */
+export type PremiseDetail =
+  | {
+      readonly premise: TargetRef;
+      readonly premise_fields?: readonly string[];
+      readonly seen: string;
+      readonly state: "current" | "changed";
+      readonly reason?: PremiseReason;
+      readonly since?: Seq;
+      readonly fields: readonly string[];
+      readonly declared: { readonly seq: Seq; readonly actor: Actor };
+    }
+  | {
+      readonly hidden: true;
+      readonly state: "current" | "changed";
+      readonly since?: Seq;
+      readonly fields: readonly string[];
+    };
+
+/** §4.1 `RowDetail` (`detail: "detailed"`). */
+export interface RowDetail {
+  /** The operation that last changed the row (the number in `ver`). */
+  readonly seq: Seq;
+  readonly recorded_at: Instant;
+  readonly fields: Readonly<
+    Record<
+      string,
+      {
+        readonly field_id: string;
+        readonly level?: SourceLevel;
+        readonly literal: "hit" | "miss" | "na";
+        readonly ref?: { readonly values: Values };
+      }
+    >
+  >;
+  readonly premises?: readonly PremiseDetail[];
+}
+
+/** §4.1 `Row`. */
 export interface Row extends TargetRef {
   /**
    * `v…` (current), or `h…` read as of a record time (with `historical`). Absent on a derived row
@@ -161,6 +204,8 @@ export interface Row extends TargetRef {
   readonly changed_by?: Actor;
   /** Derived rows only: the marks on the rows the rule reads, on the fields it depends on. */
   readonly input_marks?: InputMarks;
+  /** `detail: "detailed"`. */
+  readonly detail?: RowDetail;
 }
 
 /** §3 `InputMarks`: base rows of the partition with marks on the fields the rule depends on. */

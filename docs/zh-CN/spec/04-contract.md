@@ -432,7 +432,7 @@
 | `mode` | 回答什么 |
 |---|---|
 | `timeline`（默认） | 一行 / 实体的每次操作：谁、什么时候、什么意图、每个字段的结果与前后值、来源（值来源与操作来源分开）；读过各版本的读取。返回当前 `ver`，算逐行读 |
-| `as_of` | 目标在某个记录时刻的样子；`ver` 是历史版本。行上只带当时的 `corrected` 与 `revoked`：事项标记（`disputed`、`awaiting`）与 `premise_changed` 说的是现在的状态（前提声明的状态不按时刻留存），不给 |
+| `as_of` | 目标在某个记录时刻的样子；`ver` 是历史版本。行上只带当时的 `corrected` 与 `revoked`：事项标记（`disputed`、`awaiting`）与 `premise_changed` 说的是现在的状态（前提声明的状态不按时刻留存），不给；同一个理由，`detail: "detailed"` 的行上不给 `premises`，其余明细按那个记录时刻给 |
 | `changes` | 两个记录时刻之间的变化；可以不给目标，返回整张表的变化 |
 | `composition`（后续） | 派生行由哪些基础行构成 |
 
@@ -674,7 +674,7 @@
 
 - **`task`**：除管理类操作外，所有操作都有可选的任务标识，自报，用于关联同一任务的读写；参与兜底（第 2 节）与服务端请求键（第 14 节）。
 - **分页**：`limit` 默认 20、上限 200；`cursor` 是不透明句柄（第 15 节）。结果给 `total` 与 `next_cursor`。外化面按自己的结果预算提前截断时另给 `truncated`，截断点就是页边界：`next_cursor` 从没显示的第一行开始。
-- **`detail`**：`concise`（默认）/ `detailed`（每行另给最近一次改动的操作号与记录时间，每个字段的 ID、来源级别、字面命中；`ref` 字段附被引用行的摘要；这一行当前生效的全部前提声明）。只在返回行的地方有：`query`，以及 `history` 的 `as_of`。派生表（读时计算的与存储的）上 `detailed` 报 `not_in_this_version`：派生行没有自己的操作号、记录时间与字段来源可给。
+- **`detail`**：`concise`（默认）/ `detailed`（每行另给最近一次改动的操作号与记录时间，每个字段的 ID、来源级别、字面命中；`ref` 字段附被引用行的摘要；这一行当前生效的全部前提声明）。字段的字面命中按它仍在的值来源里的各段汇总：任一段命中为 `hit`，否则任一段未命中为 `miss`，否则 `na`（全部不适用、没有段，如值出自 schema 常量或为空）；来源级别只在 `hit` 时给，取命中那些段的最高声明级别。被引用行的摘要是它在同一读取位置可见的全部字段值，与直接读它时同形；状态类实体取读取那一刻的值（`query` 是求值时刻，`as_of` 是那个记录时刻）；目标表不可见、目标已撤销或不存在、那一刻没有值时不给；读出摘要的被引用行记入这次读取的读取记录（同一连接实例与 task），但不作 `ver` 的兜底，也不算 `my_last_read`：摘要不是整行，读方没见过那一行的其余字段与它的 `ver`。前提声明的目标表不可见时只给 `hidden`、`state`、`since`、`fields`，与 `Marks.premise_changed` 同；不设上限，排序与 `fields` 的投影同 `Marks.premise_changed`（变了的在前，没变的在后）。只在返回行的地方有：`query`，以及 `history` 的 `as_of`。派生表（读时计算的与存储的）上 `detailed` 报 `not_in_this_version`：派生行没有自己的操作号、记录时间与字段来源可给。
 - **`warnings[]`**：与本次调用的某个部分有关的结构化提醒；码表见 types 第 7 节。
 - **`notices[]`**：与本次调用相关的提示，最多 3 条；码表见 types 第 7 节。几种提示的次序是 `deletion_overdue`、`migration_progress`、`schema_updated`、`pending_items`，同一种之内按各自的次序；合起来超过 3 条时按这个次序截断。每一种提示都只按可见范围计算，范围外的 slot 不出现在任何提示里。"相关"指本次调用涉及的 slot：`catalog` 列出或点到的 slot、`query` / `history` 读的表所在的 slot、`write` 写的表所在的 slot、`resolve` 处理的事项所在的 slot、`schema_draft` 新建的 slot。提示按此刻的状态算，计算本身不记进读取记录；报错的结果不带提示。
 - **`replayed`**：幂等重放时为 true。

@@ -1291,11 +1291,6 @@ describe("refusals", () => {
       { table: "spend", fields: ["date", "DATE"] },
       { code: "invalid_argument", reason: "malformed", param: "fields/1" },
     ],
-    [
-      "detail: detailed (a later version)",
-      { table: "spend", detail: "detailed" },
-      { code: "not_in_this_version", reason: "value", param: "detail", value: "detailed" },
-    ],
   ])("refuses %s", async (_, params, error) => {
     expect(await refused(params)).toEqual(error);
   });

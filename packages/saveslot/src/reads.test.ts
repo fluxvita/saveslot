@@ -156,19 +156,22 @@ describe("saveslot query", () => {
     expect(j.rows.map((x) => x.row)).toEqual([first]);
   });
 
-  it("--detail detailed: not in this version; the service's refusal said plainly, 5", async () => {
-    for (const argv of [
-      ["query", "food.meals", "--detail", "detailed"],
-      ["history", "food.meals", first, "--as-of", "1", "--detail", "detailed"],
-    ]) {
-      const r = await saveslot(...argv);
-      expect(r.code).toBe(5);
-      expect(r.out).toBe("");
-      expect(r.err).toMatch(/^error not_in_this_version /);
-      expect(r.err).toContain("detail: detailed");
-      // Then what to do instead, as the CLI's own words.
-      expect(r.err.trim().split("\n")).toEqual([expect.any(String), `  ${TEXTS.detailedNotYet}`]);
-    }
+  it("--detail detailed: the service gives each row its detail (drawn as text with the CLI's own lines later)", async () => {
+    const q = await saveslot("query", "food.meals", "--detail", "detailed", "--json");
+    expect(q.code).toBe(0);
+    const rows = (JSON.parse(q.out) as { rows: { detail?: { seq?: number } }[] }).rows;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) expect(typeof r.detail?.seq).toBe("number");
+    const h = await saveslot(
+      "history",
+      "food.meals",
+      first,
+      "--as-of",
+      "1",
+      "--detail",
+      "detailed",
+    );
+    expect(h.code).toBe(0);
   });
 
   it("a quantity --where with no unit: a usage error before any query", async () => {

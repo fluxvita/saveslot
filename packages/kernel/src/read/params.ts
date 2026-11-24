@@ -36,13 +36,7 @@ import {
 import { unitOf } from "../schema/index.ts";
 import { dateInZone, nextDay, startOfDay } from "../time/index.ts";
 import type { NamedTable } from "./slots.ts";
-import {
-  detailedNotInThisVersion,
-  invalid,
-  notImplemented,
-  ReadError,
-  type ReadWarning,
-} from "./types.ts";
+import { invalid, notImplemented, ReadError, type ReadWarning } from "./types.ts";
 
 export type TableKind = "event" | "state" | "timeless";
 
@@ -104,6 +98,8 @@ export interface QueryPlan {
   readonly clip: boolean;
   readonly coalesce: boolean;
   readonly includeRevoked: boolean;
+  /** `detail: "detailed"`: each row of the page with its `RowDetail` (04-contract-types §4.1). */
+  readonly detailed: boolean;
   readonly limit: number;
   /** The page to continue (./rows.ts `Position`), as given. */
   readonly position: string | undefined;
@@ -396,10 +392,11 @@ export function queryPlan(
     task = v;
   }
 
+  let detailed = false;
   if (has(params, "detail")) {
     const d = get(params, "detail");
-    if (d === "detailed") throw detailedNotInThisVersion();
-    if (d !== "concise") throw invalid("malformed", "detail");
+    if (d === "detailed") detailed = true;
+    else if (d !== "concise") throw invalid("malformed", "detail");
   }
 
   // Evaluation time.
@@ -523,6 +520,7 @@ export function queryPlan(
     clip: intervalOnly(params, "clip", false, kind, time),
     coalesce: intervalOnly(params, "coalesce", true, kind, time),
     includeRevoked: bool(params, "include_revoked", false),
+    detailed,
     limit,
     position,
     at,

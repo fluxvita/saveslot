@@ -951,7 +951,7 @@ async function logoutCommand(o: Options): Promise<Output> {
 const endedAs = (e: InstanceType<typeof LoginEnded>) =>
   e.exit === 2 ? new UsageError(e.text) : new Failed(e.text, e.exit);
 
-/** `--detail detailed` refused: what to do instead (06 §4.7). */
+/** `--detail detailed` refused (a derived table's rows have no detail to give): what to do instead. */
 const detailNotYet: Command["hint"] = (e, o) =>
   e.code === "not_in_this_version" && ownString(o, "detail") === "detailed"
     ? TEXTS.detailedNotYet

@@ -70,17 +70,19 @@ export type FormerTable = Omit<CompiledBaseTable, "physical">;
 /**
  * The changed premises the values of rows `ids` rest on (02-integrity «标记出现在哪一行»), on the
  * cells in effect at operation `at` (a later page's position) or now; the declarations' state is
- * always the one now.
+ * always the one now. `all`: every declaration in effect, changed or not (`detail: "detailed"`,
+ * `RowDetail.premises`); the marks still take the changed ones only.
  */
 export async function premiseFacts(
   tx: ReadTx,
   t: CompiledBaseTable,
   ids: readonly string[],
   at?: number,
+  all = false,
 ): Promise<PremiseFacts> {
   const p = await premisesOn(tx, t, ids, {
     decode,
-    changed: true,
+    ...(all ? {} : { changed: true }),
     ...(at !== undefined ? { at } : {}),
   });
   const actors = await actorsNow(

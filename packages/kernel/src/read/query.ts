@@ -13,6 +13,7 @@ import type { ReadTx } from "../store/ports.ts";
 import { changersOf } from "./changed-by.ts";
 import { revokedTargets } from "./dangling.ts";
 import { queryDerived } from "./derived.ts";
+import { rowDetails } from "./detail.ts";
 import { type QueryPlan, queryPlan } from "./params.ts";
 import type { QueryInput, QueryOutput } from "./query-io.ts";
 import {
@@ -88,7 +89,7 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
     ...(asOf === undefined
       ? await rowFacts(tx, plan.table, ids)
       : await rowFactsAsOf(tx, plan.table, ids, asOf)),
-    premises: await premiseFacts(tx, plan.table, ids, asOf),
+    premises: await premiseFacts(tx, plan.table, ids, asOf, plan.detailed),
     // Targets in tables the caller can see only: a target out of range says nothing of itself.
     revokedTargets: await revokedTargets(tx, plan.table, named.slot.tables, selected, asOf),
   };
@@ -108,6 +109,19 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
     page.map((r) => r.ver),
     input.actor,
   );
+  // `detail: "detailed"`: each row's detail, and the rows its ref summaries read.
+  const detailed = plan.detailed
+    ? await rowDetails(tx, {
+        table: plan.table,
+        fields: plan.fields,
+        visible: named.slot.tables,
+        page,
+        asOf,
+        at: (position?.at as Instant | undefined) ?? plan.at,
+        zone: named.slot.timezone,
+        restoreCount: restore,
+      })
+    : undefined;
   const result: QueryReadResult = {
     table: `${named.slot.name}.${named.table.name}`,
     slot: named.slot.name,
@@ -123,9 +137,16 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
           }),
         }
       : {}),
-    rows: page.map((r) => {
+    rows: page.map((r, i) => {
       const by = changers.get(r.ver);
-      return by !== undefined ? { ...r.row, changed_by: by } : r.row;
+      const d = detailed?.details[i];
+      return {
+        ...r.row,
+        ...(by !== undefined ? { changed_by: by } : {}),
+        ...(d !== undefined
+          ? { detail: { ...d, ...((r.premises ?? []).length > 0 ? { premises: r.premises } : {}) } }
+          : {}),
+      };
     }),
     ...(plan.warnings.length > 0 ? { warnings: plan.warnings } : {}),
   };
@@ -134,11 +155,15 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
   const read = new Map<string, number>();
   for (const r of page) read.set(r.id, r.ver);
   const tableId = named.table.id as TableId;
-  const readRows: ReadRow[] = [...read].map(([target, op]) => ({
-    table: tableId,
-    target,
-    ver: { op: op as never, restoreCount: restore },
-  }));
+  const readRows: ReadRow[] = [
+    ...[...read].map(([target, op]) => ({
+      table: tableId,
+      target,
+      ver: { op: op as never, restoreCount: restore },
+    })),
+    // The rows a ref summary read (`detail: "detailed"`): read as much as the page's.
+    ...(detailed?.read ?? []),
+  ];
   const valid = validRead(plan);
   const entry: ReadEntry = {
     read: input.read,
@@ -155,11 +180,13 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
     ...(valid !== undefined ? { valid } : {}),
     rows: readRows,
     coarse: [],
+    // The page's own rows only: a ref summary is not the row it names, whose other fields and
+    // version the reader has not seen (04-contract §10 `detail`), so it is no fallback for a write.
     lastRead: [
-      ...readRows.map((r) => ({
+      ...[...read].map(([target, op]) => ({
         kind: "ver" as const,
-        target: r.target,
-        op: r.ver?.op as number,
+        target,
+        op,
         restoreCount: restore,
       })),
       { kind: "sv" as const, target: named.slot.slot, op: named.slot.sv, restoreCount: 0 },
