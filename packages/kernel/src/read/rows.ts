@@ -221,6 +221,7 @@ function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): WorkMarks | 
     flagged?: { item: never; reason: "duplicate_keys" }[];
     corrected?: true;
     revoked?: { seq: never };
+    dangling_ref?: { field: string; state: "revoked" }[];
   } = {};
   for (const f of facts.flags.get(r.id) ?? ([] as Flag[])) {
     // Only where the value read would change with it (04-contract §7).
@@ -251,6 +252,14 @@ function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): WorkMarks | 
   }
   const revokedBy = facts.revokedBy.get(r.id);
   if (r.revoked && revokedBy !== undefined) out.revoked = { seq: revokedBy as never };
+  // dangling_ref: a ref field read whose value names a target revoked since (04-contract §7).
+  for (const f of t.fields) {
+    if (f.type !== "ref" || (plan.fieldsGiven && !read.has(f.id))) continue;
+    const v = r.values[f.id];
+    if (typeof v === "string" && facts.revokedTargets?.has(v) === true) {
+      out.dangling_ref = [...(out.dangling_ref ?? []), { field: f.name, state: "revoked" }];
+    }
+  }
   // Changed premises: those covering a value on this segment (02-integrity «标记出现在哪一行»);
   // with `fields` given, only those covering a field read (04-contract §7).
   const byDecl = new Map<string, WorkPremise["covers"][number][]>();

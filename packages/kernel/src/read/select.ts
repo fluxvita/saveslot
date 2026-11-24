@@ -47,6 +47,8 @@ export interface RowFacts {
   readonly flags: ReadonlyMap<string, readonly Flag[]>;
   /** The changed premises the rows' values rest on (`premiseFacts`); absent: none asked for. */
   readonly premises?: PremiseFacts;
+  /** The targets of the rows' ref values revoked as read (`revokedTargets`); absent: none asked. */
+  readonly revokedTargets?: ReadonlySet<string>;
 }
 
 /** The changed premises of rows, and their declarers by ID as named now. */

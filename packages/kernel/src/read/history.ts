@@ -41,6 +41,7 @@ import { computedAtRead } from "../rules/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { valueOut } from "../time/index.ts";
 import { changersOf } from "./changed-by.ts";
+import { danglingOf, revokedTargets } from "./dangling.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 import { bizPoint, kindOf, type TableKind } from "./params.ts";
 import { cmpText, correctedWithin, type KeySpec } from "./rows.ts";
@@ -726,11 +727,22 @@ export async function asOfInTx(
   if (version !== undefined) {
     const cells = await cellsAsOf(tx, t, target.id, point.seq);
     const ver = `h${version.op}.${restore}`;
+    // Ref values naming a target revoked then (`dangling_ref`), in tables the caller can see.
+    const gone = (values: Readonly<Record<string, unknown>>[]) =>
+      revokedTargets(
+        tx,
+        t,
+        target.named.slot.tables,
+        values.map((v) => ({ values: v })),
+        point.seq,
+      );
     if (target.kind === "state") {
       const date = t.time.type === "state" && t.time.granularity === "date";
       const correct = (await correctSpansOf(tx, t, [target.id], point.seq)).get(target.id);
       const readAll = new Set<string>(t.fields.map((f) => f.id));
-      for (const s of segmentsOf(t, cells)) {
+      const segments = segmentsOf(t, cells);
+      const revoked = await gone(segments.map((s) => s.values));
+      for (const s of segments) {
         if (at !== undefined && !(s.from <= at && (s.to === null || at < s.to))) continue;
         if (
           during !== undefined &&
@@ -747,9 +759,16 @@ export async function asOfInTx(
           valid_to: s.to as BizPoint | null,
           ...(date && s.to !== null ? { valid_to_inclusive: dayBefore(s.to) as never } : {}),
           // By segment, as query gives it: every field is read.
-          ...(correctedWithin(correct, readAll, s.from, s.to)
-            ? { marks: { corrected: true } }
-            : {}),
+          ...((): { marks?: Marks } => {
+            const dangling = danglingOf(t, s.values, revoked);
+            const m: Marks = {
+              ...(correctedWithin(correct, readAll, s.from, s.to)
+                ? { corrected: true as const }
+                : {}),
+              ...(dangling.length > 0 ? { dangling_ref: dangling } : {}),
+            };
+            return Object.keys(m).length > 0 ? { marks: m } : {};
+          })(),
         });
       }
     } else if (cells.length > 0) {
@@ -759,8 +778,10 @@ export async function asOfInTx(
         values[f.id] = c === undefined ? null : cellValue(f, c);
       }
       const revoke = cells.find((c) => c.field_id === "existence" && c.revoked === true);
+      const dangling = danglingOf(t, values, await gone([values]));
       const marks: Marks = {
         ...(version.corrected ? { corrected: true as const } : {}),
+        ...(dangling.length > 0 ? { dangling_ref: dangling } : {}),
         // The revoke's own operation, not when its cell was last cut.
         ...(revoke !== undefined ? { revoked: { seq: Number(revoke.src_op) as never } } : {}),
       };

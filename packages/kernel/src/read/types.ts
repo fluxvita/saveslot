@@ -93,6 +93,14 @@ export interface Marks {
   }[];
   readonly flagged?: readonly { readonly item: ItemId; readonly reason: "duplicate_keys" }[];
   readonly corrected?: true;
+  /**
+   * A ref field of this row names a row or entity revoked since (`revoked`), or deleted
+   * (`deleted`, with deletion): its value is kept (04-contract §7).
+   */
+  readonly dangling_ref?: readonly {
+    readonly field: string;
+    readonly state: "revoked" | "deleted";
+  }[];
   readonly revoked?: { readonly seq: Seq };
   /**
    * The premises of the values read changed (04-contract §7): at most 10, the latest `since`

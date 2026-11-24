@@ -11,6 +11,7 @@ import type { ReadEntry, ReadRow, ReadValid } from "../audit/index.ts";
 import { get, has, isObj, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { changersOf } from "./changed-by.ts";
+import { revokedTargets } from "./dangling.ts";
 import { queryDerived } from "./derived.ts";
 import { type QueryPlan, queryPlan } from "./params.ts";
 import type { QueryInput, QueryOutput } from "./query-io.ts";
@@ -88,6 +89,8 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
       ? await rowFacts(tx, plan.table, ids)
       : await rowFactsAsOf(tx, plan.table, ids, asOf)),
     premises: await premiseFacts(tx, plan.table, ids, asOf),
+    // Targets in tables the caller can see only: a target out of range says nothing of itself.
+    revokedTargets: await revokedTargets(tx, plan.table, named.slot.tables, selected, asOf),
   };
   const rows: ShownRow[] = shownRows(plan, selected, facts, restore).map((s) => ({
     ...s,
