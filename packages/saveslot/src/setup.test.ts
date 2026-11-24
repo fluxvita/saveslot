@@ -3,6 +3,10 @@
 // (`mcp add …`), writing down what they were given; ADD_MODE (or ADD_MODE_<host>, for one host)
 // makes the add fail in each way. Most cases run the command in this process (`dispatch`); one runs
 // the `saveslot` executable itself.
+//
+// `init` run in this process makes the home's tenant storage with the test backend, which copies it
+// from the run's template (useInitBackendForTests, restored in afterAll); the cases that run the
+// executable make it as the product does. commands.test covers init without the switch.
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -23,7 +27,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request, TEXTS } from "@fluxvita/saveslot-cli/testing";
 import { type CommandIO, serviceCommand, setupLock, socketFile } from "@fluxvita/saveslot-daemon";
+import { useInitBackendForTests } from "@fluxvita/saveslot-daemon/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { testBackend } from "../../test-backend/src/index.fixture.ts";
 import { dispatch } from "./dispatch.ts";
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
@@ -254,6 +260,7 @@ const works = async (home: string, token: string) => {
 };
 
 beforeAll(async () => {
+  useInitBackendForTests(testBackend());
   mkdirSync(join(root, "bin"));
   mkdirSync(join(root, "user-home"));
   writeFileSync(entry, "#!/bin/sh\n", { mode: 0o755 });
@@ -270,6 +277,7 @@ afterAll(async () => {
   // Each was stopped already; this is for a case cut short before its afterEach.
   for (const h of homes) await stopService(h);
   rmSync(root, { recursive: true, force: true });
+  useInitBackendForTests(undefined);
 });
 
 describe("an initialized home: a copy of the template", () => {
@@ -563,7 +571,7 @@ describe("setup: the host's command fails; the instance revoked (no one has its 
     expect(JSON.parse(r.out).hosts).toMatchObject([
       { host: "codex", state: "done", connection: { state: "live" } },
     ]);
-    const text = await setup(newHome(), ["--yes", "--host", "claude-code"], {
+    const text = await setup(initializedHome(), ["--yes", "--host", "claude-code"], {
       terminal: false,
       env: { ADD_MODE: "otherpath" },
     });
