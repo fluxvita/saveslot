@@ -385,6 +385,8 @@ const DECISIONS_NOW: ReadonlyMap<string, string> = new Map([
   ["keep_effective", "conflict"],
   ["take_candidate", "conflict"],
   ["take_previous", "conflict"],
+  ["keep", "flagged"],
+  ["revoke", "flagged"],
 ]);
 
 /** `--evidence-json <file>`: evidence segments, or `{evidence, evidence_by_field}` (04-contract-types §5.2). */

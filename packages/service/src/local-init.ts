@@ -10,7 +10,7 @@
 // directory is a home fully initialized. `rotateSession` replaces the session token; the old one
 // stops working at once.
 
-import { mkdir } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   createOpsContext,
@@ -86,6 +86,14 @@ export async function checkLocalHome(home: string): Promise<void> {
 }
 
 /**
+ * Checks the data directory as the home is checked (06 §3, §8.1): this user's, 0700, not a link.
+ * Wherever it is: one put outside the home is not behind the home's 0700.
+ */
+export async function checkLocalDataDir(dataDir: string): Promise<void> {
+  await checkMode(dataDir, 0o700);
+}
+
+/**
  * Initializes `home`. The data directory defaults to `<home>/data`; another one must be an absolute
  * path and is recorded in `control/tenant.json` as `data_dir`, where the service opens it.
  */
@@ -109,6 +117,11 @@ export async function initLocalHome(o: {
     const user = `u_${randomCrockford(26)}`;
     // Normalized, so that the default written another way (a trailing slash, `..`) is not recorded.
     const dataDir = resolve(o.dataDir ?? join(o.home, "data"));
+    // The data directory this user's only (06 §3, §8.1), wherever it is: one put outside the home
+    // is not behind the home's 0700, and the storage's files are made readable by others. Made so
+    // before the storage is; one there already (empty, or the backend refuses it) is closed too.
+    await mkdir(dataDir, { recursive: true, mode: 0o700 });
+    await chmod(dataDir, 0o700);
     const store = await o.backend.open({ kind: "pglite", dir: dataDir }, { create: true });
     try {
       await createTenant(

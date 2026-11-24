@@ -1248,7 +1248,6 @@ describe("pending resolve", () => {
     [["pending", "resolve", ID], TEXTS.resolveArgs],
     [["pending", "resolve", "pi_short", "confirm"], TEXTS.resolveArgs],
     [["pending", "resolve", `${ID}\u001b[2J`, "confirm"], TEXTS.resolveArgs],
-    [["pending", "resolve", ID, "keep"], TEXTS.decisionNotYet],
     [["pending", "resolve", ID, "cancel"], TEXTS.decisionNotYet],
     [["pending", "resolve", ID, "take_candidate", "--candidate", "x"], TEXTS.candidateBad],
     [

@@ -604,6 +604,9 @@ export async function profileFor(
   if (given !== undefined && !PROFILE_NAME.test(given)) {
     throw new Ended(2, TEXTS.loginProfileInvalid);
   }
+  // `local` given: the local mode has no sign-in (06 §4.2); it is not taken as `cloud`, which would
+  // sign in to the cloud service unasked. Only the profile in use, when it is `local`, means `cloud`.
+  if (given === "local") throw new Ended(2, TEXTS.loginLocalProfile);
   const chosen = given ?? current;
   const profile = chosen === "local" ? "cloud" : chosen;
   const server = await profileServer(home, profile);

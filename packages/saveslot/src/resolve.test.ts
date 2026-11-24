@@ -1,9 +1,10 @@
 // `saveslot pending resolve` against a real service (06-cli §5.2, §5.4): a conflict, shown and
 // resolved by take_candidate with the version shown; the item then closed (3 on another try);
-// and the executable itself, its stdin no terminal, doing nothing (8).
+// the executable itself, its stdin no terminal, doing nothing (8); a flagged item (a suspected
+// duplicate) resolved by keep (06 §7).
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -144,5 +145,65 @@ describe("saveslot pending resolve", () => {
     expect(r.code).toBe(3);
     expect(r.err).toContain("resolved: take_candidate");
     expect(r.asked).toEqual([]);
+  });
+});
+
+describe("saveslot pending resolve of a flagged item", () => {
+  it("a suspected duplicate kept: keep --yes --item-ver resolves it", async () => {
+    // A slot whose meals are suspected duplicates on (day, energy).
+    const file = join(root, "food.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        timezone: "UTC",
+        tables: [
+          {
+            name: "meals",
+            kind: "base",
+            description: "a meal",
+            time: { type: "event", field: "day" },
+            fields: [
+              { name: "day", type: "date", required: true, description: "the day" },
+              { name: "energy", type: "quantity", unit: "kcal", description: "energy" },
+            ],
+            duplicate_keys: [["day", "energy"]],
+          },
+        ],
+      }),
+    );
+    expect((await saveslot(["slot", "create", "food", "--file", file])).code).toBe(0);
+    for (const text of ["lunch, 600 kcal", "lunch again, 600 kcal"]) {
+      await write({
+        sv: 1,
+        evidence: [{ kind: "user_message", text }],
+        ops: [
+          {
+            intent: "insert",
+            table: "food.meals",
+            set: { day: "2026-11-10", energy: { value: "600", unit: "kcal" } },
+          },
+        ],
+      });
+    }
+    const list = JSON.parse((await saveslot(["pending", "--json"])).out) as {
+      items: { id: string; type: string }[];
+    };
+    const id = list.items.find((x) => x.type === "flagged")?.id as string;
+    expect(id).toMatch(/^pi_/);
+    // The version as the item's detail gives it.
+    const detail = JSON.parse((await saveslot(["pending", "show", id, "--json"])).out) as {
+      item_ver: string;
+    };
+    const r = await saveslot([
+      "pending",
+      "resolve",
+      id,
+      "keep",
+      "--yes",
+      "--item-ver",
+      detail.item_ver,
+    ]);
+    expect([r.code, r.err]).toEqual([0, ""]);
+    expect(r.out).toMatch(new RegExp(`^${id} resolved: keep`));
   });
 });

@@ -355,11 +355,13 @@ async function startService(
       await Promise.race([gone, sleep(FAILED_EXIT_WAIT_MS)]);
     }
     io.err(
-      h.reason === "format_too_old"
-        ? TEXTS.startFormatTooOld
-        : h.reason === "format_too_new"
-          ? TEXTS.startFormatTooNew
-          : TEXTS.startFailed(h.reason ?? "failed"),
+      h.reason === "data_dir_permissions"
+        ? TEXTS.startDataDirOpen
+        : h.reason === "format_too_old"
+          ? TEXTS.startFormatTooOld
+          : h.reason === "format_too_new"
+            ? TEXTS.startFormatTooNew
+            : TEXTS.startFailed(h.reason ?? "failed"),
     );
     // A store of another format is refused until something is done about it (06-cli §6.2: 5);
     // any other failure of a started service may pass on a retry (7).

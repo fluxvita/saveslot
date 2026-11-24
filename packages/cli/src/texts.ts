@@ -163,6 +163,9 @@ export const TEXTS = {
     "--profile with --server takes a new name: 1 to 32 of a-z, 0-9 and -, not starting with -, and not local or cloud",
   ),
   loginProfileInvalid: s("that is not a server profile's name"),
+  loginLocalProfile: s(
+    "the local profile does not sign in: login and logout are for a server profile (--profile cloud, or one registered with --server)",
+  ),
   loginServerInvalid: s("--server takes the server's address: https://host[:port], with no path"),
   loginOpen: s("To sign in, open this address in a browser:"),
   loginDeviceOpen: s("To sign in, open this address on any device:"),

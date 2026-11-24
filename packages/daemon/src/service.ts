@@ -47,7 +47,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { connect } from "node:net";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { HealthBody, LocalListener, ToolResultSeen } from "@fluxvita/saveslot-server";
 import { listenLocal } from "@fluxvita/saveslot-server";
 import {
@@ -56,6 +56,7 @@ import {
   CredentialsCorrupt,
   CursorKeys,
   CursorKeysCorrupt,
+  checkLocalDataDir,
   checkLocalHome,
   closeLocalTenant,
   controlDir,
@@ -194,6 +195,8 @@ export function evalClockStart(v: string): number | undefined {
 
 /** The test clock asked for over a log that holds more than the tenant's genesis. */
 class EvalClockRefused extends Error {}
+/** The data directory put elsewhere is not this user's alone (06 §3, §8.1). */
+class DataDirOpen extends Error {}
 
 /** A stable code for a failure: the store's own code, or a generic one. Never a message. */
 function codeOf(e: unknown): string {
@@ -653,6 +656,17 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         // Holding the home's lock: what a write killed before its rename left goes first.
         removeStaleTemps([join(o.home, "control"), join(o.home, "credentials")]);
         await checkLocalHome(o.home);
+        // A data directory put elsewhere (06 §3, §8.1): this user's alone, as the home is. The
+        // default one is inside the home's 0700 and not checked (a home made before init made it
+        // 0700 has it as the storage made it).
+        if (resolve(r.tenant.dataDir) !== resolve(o.home, "data")) {
+          try {
+            await checkLocalDataDir(r.tenant.dataDir);
+          } catch (e) {
+            if (e instanceof ControlFileError) throw new DataDirOpen();
+            throw e;
+          }
+        }
         credentials = await Credentials.load(o.home);
         const dropped = await pruneCredentials(r.tenant, credentials);
         if (dropped > 0) say("credentials_pruned", { count: dropped });
@@ -682,13 +696,15 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         reason =
           e instanceof EvalClockRefused
             ? "eval_clock_refused"
-            : e instanceof ControlFileError
-              ? "credentials_permissions"
-              : e instanceof CredentialsCorrupt
-                ? "credentials_corrupt"
-                : e instanceof CursorKeysCorrupt
-                  ? "cursor_keys_corrupt"
-                  : codeOf(e);
+            : e instanceof DataDirOpen
+              ? "data_dir_permissions"
+              : e instanceof ControlFileError
+                ? "credentials_permissions"
+                : e instanceof CredentialsCorrupt
+                  ? "credentials_corrupt"
+                  : e instanceof CursorKeysCorrupt
+                    ? "cursor_keys_corrupt"
+                    : codeOf(e);
         say("failed", { reason });
         return;
       }

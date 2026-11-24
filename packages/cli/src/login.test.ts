@@ -1064,14 +1064,21 @@ describe("signOut", () => {
 });
 
 describe("the profile login and logout act on", () => {
-  it("--profile, else the one in use; local is taken as cloud", async () => {
+  it("--profile, else the one in use; the one in use local is taken as cloud", async () => {
     expect(await profileFor(home, undefined, undefined)).toEqual({
       profile: "cloud",
       server: CLOUD_SERVER,
       current: "local",
       register: false,
     });
-    expect(await profileFor(home, "local", undefined)).toMatchObject({ profile: "cloud" });
+    expect(await profileFor(home, "cloud", undefined)).toMatchObject({ profile: "cloud" });
+  });
+
+  it("--profile local given: a usage error, not the cloud service signed in to unasked", async () => {
+    await expect(profileFor(home, "local", undefined)).rejects.toMatchObject({
+      exit: 2,
+      text: TEXTS.loginLocalProfile,
+    });
   });
 
   it("--server registers a new name; it needs --profile, and not a built-in one", async () => {
@@ -1130,6 +1137,15 @@ describe("the commands", () => {
     );
     return { code, out, err };
   }
+
+  it("login and logout --profile local: exit 2, nothing signed in or out, no server asked", async () => {
+    for (const command of ["login", "logout"]) {
+      const r = await cli([command, "--profile", "local"]);
+      expect([command, r.code]).toEqual([command, 2]);
+      expect(r.err).toContain(TEXTS.loginLocalProfile.slice(0, 40));
+      expect(exists(profileCredentialsFile(home, "cloud"))).toBe(false);
+    }
+  });
 
   it("login --server --profile signs in, then registers the profile; the one in use stays", async () => {
     const s = await stand();

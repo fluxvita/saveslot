@@ -63,6 +63,9 @@ export const TEXTS = {
     `error: the running saveslot service is version ${running}, this saveslot is ${mine}. Run saveslot stop, then start again.`,
   startFailed: (reason: string) =>
     `error: the saveslot service did not start (${reason}). The service log is in run/saveslot.log under the home.`,
+  /** A data directory put elsewhere is not the user's alone (06 §3, §8.1). */
+  startDataDirOpen:
+    "error: the saveslot service did not start (data_dir_permissions): the data directory set with --data-dir is open to others, not yours, or a link. Make it a directory of yours with mode 0700 (chmod 700 on it; its path is data_dir in control/tenant.json under the home), then start again.",
   /** The store is of another storage format (02-architecture §8 «格式版本检查»): what to do. */
   startFormatTooOld:
     "error: the saveslot service did not start (format_too_old): the store was made by a development version of saveslot, in a storage format this one does not open and does not migrate. Initialize a new home with this version.",

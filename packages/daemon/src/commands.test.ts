@@ -197,6 +197,55 @@ describe("init", () => {
     expect(recorded(d)).toBeUndefined();
   });
 
+  // The mode bits are what is checked: as root every directory can be read anyway, and the owner
+  // check passes; these cases need a user the bits bind.
+  const asRoot = process.getuid?.() === 0;
+  const modeOf = (p: string) => (statSync(p).mode & 0o777).toString(8);
+
+  it.skipIf(asRoot)(
+    "init makes the data directory 0700, put elsewhere or not, whatever the umask lets through",
+    async () => {
+      const was = process.umask(0o022);
+      try {
+        const h = join(root, String(n++));
+        const data = join(root, `data-${n++}`);
+        expect((await run("init", h, "--data-dir", data)).code).toBe(0);
+        expect(modeOf(data)).toBe("700");
+        const d = join(root, String(n++));
+        expect((await run("init", d)).code).toBe(0);
+        expect(modeOf(join(d, "data"))).toBe("700");
+      } finally {
+        process.umask(was);
+      }
+    },
+  );
+
+  it.skipIf(asRoot)(
+    "a data directory put elsewhere and open to others: the service does not start, and says why",
+    async () => {
+      const h = join(root, String(n++));
+      const data = join(root, `data-${n++}`);
+      expect((await run("init", h, "--data-dir", data)).code).toBe(0);
+      chmodSync(data, 0o755);
+      const r = await run("start", h);
+      expect(r.code).not.toBe(0);
+      expect(r.err).toContain("(data_dir_permissions)");
+      expect(r.err).toContain("data directory");
+      chmodSync(data, 0o700);
+      expect((await run("start", h)).code).toBe(0);
+    },
+  );
+
+  it.skipIf(asRoot)(
+    "the default data directory left as an older init made it (0755): not checked, the service starts",
+    async () => {
+      const h = join(root, String(n++));
+      expect((await run("init", h)).code).toBe(0);
+      chmodSync(join(h, "data"), 0o755);
+      expect((await run("start", h)).code).toBe(0);
+    },
+  );
+
   it("--data-dir with --rotate-session, or empty, is a usage error (2) and makes nothing", async () => {
     const h = join(root, String(n++));
     expect((await run("init", h, "--data-dir", "/tmp/x", "--rotate-session")).code).toBe(2);
