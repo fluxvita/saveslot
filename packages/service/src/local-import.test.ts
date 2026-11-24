@@ -13,8 +13,10 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
+import { cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
@@ -54,11 +56,32 @@ const backend: StorageBackend = testBackend();
 const noLock: HomeLock = { acquire: async () => ({ release: async () => {} }) };
 
 let n = 0;
-async function newHome(): Promise<string> {
+async function initializedHome(): Promise<string> {
   const home = join(root, `h${n++}`);
   await initLocalHome({ home, backend, lock: noLock, now: NOW });
   return home;
 }
+
+/**
+ * A home of its own for a case: a copy of one initialized home, made once (its data directory is
+ * `<home>/data`, a path relative to the home). The copies share their tenant and user ids; no case
+ * puts two of them together. The export's source home is initialized apart, with ids of its own.
+ */
+let blank: Promise<string> | undefined;
+async function newHome(): Promise<string> {
+  blank ??= initializedHome();
+  const home = join(root, `h${n++}`);
+  await cp(await blank, home, { recursive: true });
+  expect(entries(home)).toEqual(entries(await blank));
+  return home;
+}
+
+/** A directory's entries, each with its mode: what a copy must keep of the home it copies. */
+const entries = (dir: string): string[] =>
+  readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .map((x) => `${x} ${(statSync(join(dir, x)).mode & 0o7777).toString(8)}`)
+    .concat(`. ${(statSync(dir).mode & 0o7777).toString(8)}`)
+    .sort();
 
 // The tenants a case opened, closed after it: each PGlite instance holds its memory until closed.
 const open = new Set<LocalTenant>();
@@ -84,7 +107,7 @@ let file: string[];
 let sourceTenant: string;
 let sourceEnd: number;
 beforeAll(async () => {
-  const home = await newHome();
+  const home = await initializedHome();
   const t = await opened(home);
   await issueConnection(t.store, localUserContext(t, { now: NOW }), { name: "desk", via: "token" });
   file = [];
