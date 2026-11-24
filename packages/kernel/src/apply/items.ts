@@ -134,9 +134,21 @@ export function planItem(
         ...(matched ? ["matched"] : []),
       ];
       const byIndex = paths.filter((p) => /^candidates\/\d+$/.test(p));
+      // An item.refreshed's `dropped_candidates`: those candidates left the item, their entries go.
+      const dropped =
+        type === "item.refreshed"
+          ? (((t as Obj)["dropped_candidates"] as readonly number[] | undefined) ?? []).map(
+              (k) => `candidates/${k}`,
+            )
+          : [];
       return [
         { kind: "item_update", id, version_op: op },
-        { kind: "entries_drop", item: id, groups, paths: type === "item.refreshed" ? byIndex : [] },
+        {
+          kind: "entries_drop",
+          item: id,
+          groups: [...groups, ...dropped],
+          paths: type === "item.refreshed" ? byIndex : [],
+        },
         { kind: "entries_insert", entries: entries(id, seq, paths, input.item?.nextEntry ?? 0) },
         { kind: "flag_valid", item: id, spans: spans(present["scope_valid"]) },
       ];

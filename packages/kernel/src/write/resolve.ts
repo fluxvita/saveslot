@@ -44,6 +44,7 @@ import { WriteError } from "./errors.ts";
 import { settleFlagged } from "./flagged.ts";
 import {
   judgeFailure,
+  liveCandidates,
   loadRow,
   type RowWork,
   RULESET,
@@ -167,16 +168,31 @@ export async function itemRow(tx: ReadTx, id: string): Promise<ItemRow | undefin
       };
 }
 
-/** How many candidates an item was given (`candidates/<k>` of its item events). */
-async function candidateCount(tx: ReadTx, item: string): Promise<number> {
-  const r = await tx.query<{ n: unknown }>(
-    `SELECT count(DISTINCT c.path) AS n FROM events e
+/** The indices of the candidates still in an item: `candidates/<k>` of its item events, less those a refresh dropped. */
+async function liveIndices(tx: ReadTx, item: string): Promise<number[]> {
+  const given = await tx.query<{ path: string }>(
+    `SELECT DISTINCT c.path FROM events e
      JOIN content t ON t.seq = e.seq AND t.path = 'target' AND t.body IS NOT NULL
      JOIN content c ON c.seq = e.seq AND c.path LIKE 'candidates/%'
      WHERE e.type IN ('item.created', 'item.merged') AND (t.body::jsonb ->> 'item') = $1`,
     [item],
   );
-  return Number(r.rows[0]?.n ?? 0);
+  // Those a refresh dropped are no longer the item's (09 §5.8 `dropped_candidates`).
+  const refreshes = await tx.query<{ body: string }>(
+    `SELECT t.body FROM events e
+     JOIN content t ON t.seq = e.seq AND t.path = 'target' AND t.body IS NOT NULL
+     WHERE e.type = 'item.refreshed' AND (t.body::jsonb ->> 'item') = $1`,
+    [item],
+  );
+  const dropped = new Set(
+    refreshes.rows.flatMap(
+      (x) => (JSON.parse(x.body) as { dropped_candidates?: number[] }).dropped_candidates ?? [],
+    ),
+  );
+  return given.rows
+    .map((x) => Number(x.path.split("/")[1]))
+    .filter((k) => !dropped.has(k))
+    .sort((a, b) => a - b);
 }
 
 /**
@@ -439,11 +455,11 @@ function decisionInput(
       ...base,
       kind: "take_candidate",
       unit,
-      candidates: tracked.cands,
+      candidates: liveCandidates(tracked),
       take: tracked.cands[candidate as number] as Seq,
     };
   if (decision === "keep_effective" || decision === "take_previous")
-    return { ...base, kind: decision, unit, candidates: tracked.cands };
+    return { ...base, kind: decision, unit, candidates: liveCandidates(tracked) };
   throw new Error(`not a conflict or awaiting decision: ${decision}`);
 }
 
@@ -495,12 +511,14 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
       });
     }
     const was = done.target as { decision: string; candidate?: number };
-    // The candidate the request names, as an open item would take it: left out, the only one;
-    // left out among several, none (an open item would refuse it, `candidate_required`).
+    // The candidate the request names, as an open item would take it: left out, the only one
+    // still in the item; left out among several, none (an open item would refuse it,
+    // `candidate_required`).
+    const live = req.decision === "take_candidate" ? await liveIndices(tx, item.id) : [];
     const named =
       req.decision !== "take_candidate"
         ? undefined
-        : (req.candidate ?? ((await candidateCount(tx, item.id)) === 1 ? 0 : undefined));
+        : (req.candidate ?? (live.length === 1 ? live[0] : undefined));
     const same =
       was.decision === req.decision &&
       (req.decision !== "take_candidate" || (named !== undefined && named === was.candidate));
@@ -569,9 +587,14 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
   let candidate: number | undefined;
   if (req.decision === "take_candidate") {
     // A conflict item's decision: the item is a tracked one (checked above).
-    const cands = (tracked as TrackedItem).cands;
+    const t = tracked as TrackedItem;
+    const cands = t.cands;
     const n = cands.length;
-    if (req.candidate === undefined && n > 1) {
+    // The candidates still in the item, by index: one a refresh dropped is not (09 §5.8).
+    const live = cands.flatMap((e, index) =>
+      t.dropped?.has(index) === true ? [] : [{ e, index }],
+    );
+    if (req.candidate === undefined && live.length > 1) {
       const ops = await tx.query<{ seq: unknown; op: unknown; actor: string }>(
         "SELECT seq, op, actor FROM events WHERE seq = ANY($1)",
         [cands] as never,
@@ -585,15 +608,15 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
       throw new WriteError("invalid_argument", "several candidates: name one", {
         reason: "candidate_required",
         param: "candidate",
-        candidate_choices: cands.map((e, index) => ({
+        candidate_choices: live.map(({ e, index }) => ({
           index,
           seq: Number(by.get(e)?.op ?? e),
           actor: who.get(by.get(e)?.actor ?? ""),
         })),
       });
     }
-    candidate = req.candidate ?? 0;
-    if (candidate >= n) {
+    candidate = req.candidate ?? live[0]?.index ?? 0;
+    if (candidate >= n || t.dropped?.has(candidate) === true) {
       throw new WriteError("invalid_argument", "no such candidate", {
         reason: "index_out_of_range",
         param: "candidate",

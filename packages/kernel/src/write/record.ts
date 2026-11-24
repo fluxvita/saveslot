@@ -1005,7 +1005,7 @@ interface PendingItem {
   readonly unit: Unit;
   readonly origin: Seq;
   /** Candidates by their index in the item (`candidates/<k>`), in order: (event, its items). */
-  readonly candidates: { event: Seq; items: { field?: FieldId; k: number }[] }[];
+  readonly candidates: { index: number; event: Seq; items: { field?: FieldId; k: number }[] }[];
 }
 
 /**
@@ -1042,6 +1042,7 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
             items: { field?: FieldId; k?: number; existence?: number }[];
           };
           return {
+            index: Number(p.split("/")[1]),
             event: c.event,
             items: c.items.map((y) => ({
               ...(y.field ? { field: y.field } : {}),
@@ -1055,6 +1056,16 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
         origin: prior?.origin ?? t.origin_event,
         candidates: [...(prior?.candidates ?? []), ...cands],
       });
+    }
+    // 09 §5.8 item.refreshed `dropped_candidates`: those candidates left the item.
+    const left = (b["target"] as { item?: ItemId; dropped_candidates?: number[] } | undefined)
+      ?.dropped_candidates;
+    if (x.header.type === "item.refreshed" && left !== undefined) {
+      const id = (b["target"] as { item: ItemId }).item;
+      const it = items.get(id);
+      if (it !== undefined) {
+        items.set(id, { ...it, candidates: it.candidates.filter((c) => !left.includes(c.index)) });
+      }
     }
   }
   // A field candidate of an item on existence (the write met a revoke): `onExistence`, by

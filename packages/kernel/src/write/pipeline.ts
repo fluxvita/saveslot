@@ -246,6 +246,12 @@ const unitKey = (u: Unit) => (u === "existence" ? "existence" : [...u.fields].so
 const unitIn = (u: readonly string[]): Unit =>
   u[0] === "existence" ? "existence" : { fields: u as FieldId[] };
 
+const refKeyOf = (r: ItemRef) => `${r.event}/${r.target}/${r.k}`;
+
+/** A conflict item's candidates still in it (not dropped by a refresh), by their write events. */
+export const liveCandidates = (t: TrackedItem): Seq[] =>
+  t.cands.filter((_, k) => t.dropped?.has(k) !== true);
+
 /** A pending item on the row the pipeline keeps track of while it writes. */
 export interface TrackedItem {
   readonly item: ItemId;
@@ -255,6 +261,11 @@ export interface TrackedItem {
   candidates: number;
   /** Conflict items: each candidate's write event, by its index (`candidates/<k>`). */
   readonly cands: Seq[];
+  /**
+   * Conflict items: the indices of candidates that left the item (an `item.refreshed`'s
+   * `dropped_candidates`, 09 §5.8): no longer its candidates, though their indices stay used.
+   */
+  dropped?: ReadonlySet<number>;
   mergeBase: OpNumber;
   /** The items of its candidates (conflict) or of the proposal (awaiting). */
   refs: ItemRef[];
@@ -276,6 +287,8 @@ export interface TrackedItem {
   scopeAtStart?: IntervalSet;
   /** Its entry groups as the log holds them before this request, by path. */
   readonly stored: Readonly<Record<string, unknown>>;
+  /** The event that gave each of `stored`, by path (read from the log only). */
+  readonly storedAt?: Readonly<Record<string, Seq>>;
   /** Awaiting items: the writes its proposal would take back, as last given. */
   reverted: { readonly op: OpNumber; readonly deps: readonly ItemRef[] }[];
   /**
@@ -328,11 +341,16 @@ const refIn = (d: { event: number; field?: string; existence?: number; k?: numbe
 });
 
 /** The open items of a row, from its item events and the items' state now. */
-function trackedItems(
+export function trackedItems(
   events: readonly StoredEvent[],
   open: ReadonlyMap<string, OpNumber>,
 ): TrackedItem[] {
-  const by = new Map<string, TrackedItem & { stored: Record<string, unknown> }>();
+  const by = new Map<
+    string,
+    TrackedItem & { stored: Record<string, unknown>; storedAt: Record<string, Seq> }
+  >();
+  /** The items of each candidate, by `${item}/${k}`. */
+  const candRefs = new Map<string, readonly string[]>();
   for (const e of events) {
     const t = e.blocks["target"] as
       | {
@@ -355,6 +373,23 @@ function trackedItems(
         return cand.items.map((y) => refIn({ event: cand.event, ...y }));
       });
     const n = Object.keys(e.blocks).filter((p) => p.startsWith("candidates/")).length;
+    // Each candidate's items, by its index: what a refresh's `dropped_candidates` takes away.
+    const refsAt = new Map(
+      Object.entries(e.blocks).flatMap(([p, c]) => {
+        const m = /^candidates\/(\d+)$/.exec(p);
+        if (m === null) return [];
+        const cand = c as {
+          event: Seq;
+          items: { field?: FieldId; k?: number; existence?: number }[];
+        };
+        return [
+          [
+            Number(m[1]),
+            cand.items.map((y) => refKeyOf(refIn({ event: cand.event, ...y }))),
+          ] as const,
+        ];
+      }),
+    );
     const cands = Object.entries(e.blocks).flatMap(([p, c]) => {
       const m = /^candidates\/(\d+)$/.exec(p);
       return m === null ? [] : [[Number(m[1]), (c as { event: Seq }).event] as const];
@@ -374,6 +409,7 @@ function trackedItems(
         here: false,
         mergedHere: false,
         stored: {},
+        storedAt: {},
         reverted: [],
         ...(t.reason === "referenced_row" ? { referrers: [] } : {}),
         fills: [],
@@ -387,6 +423,14 @@ function trackedItems(
     }
     if (e.header.type === "item.created" || e.header.type === "item.merged") {
       for (const [k, ev] of cands) x.cands[k] = ev;
+      for (const [k, keys] of refsAt) candRefs.set(`${t.item}/${k}`, keys);
+    }
+    // 09 §5.8 item.refreshed: the candidates that left the item.
+    const left = (t as { dropped_candidates?: number[] }).dropped_candidates;
+    if (e.header.type === "item.refreshed" && left !== undefined && left.length > 0) {
+      x.dropped = new Set([...(x.dropped ?? []), ...left]);
+      const gone = new Set(left.flatMap((k) => candRefs.get(`${t.item}/${k}`) ?? []));
+      x.refs = x.refs.filter((r) => !gone.has(refKeyOf(r)));
     }
     // Candidates re-given by a refresh keep their indices: only the merge base may change.
     if (e.header.type !== "item.created" && t.merge_base_op !== undefined)
@@ -399,8 +443,14 @@ function trackedItems(
         ? all?.filter((g) => g !== "current")
         : all;
     if (gives !== undefined) {
-      for (const p of Object.keys(x.stored)) if (gives.includes(groupOf(p))) delete x.stored[p];
-      Object.assign(x.stored, pick(e.blocks, gives));
+      for (const p of Object.keys(x.stored)) {
+        if (!gives.includes(groupOf(p))) continue;
+        delete x.stored[p];
+        delete x.storedAt[p];
+      }
+      const given = pick(e.blocks, gives);
+      Object.assign(x.stored, given);
+      for (const p of Object.keys(given)) x.storedAt[p] = e.header.seq;
     }
   }
   for (const x of by.values()) {
@@ -463,7 +513,7 @@ export async function hadRead(
 }
 
 /** An awaiting item's proposal: the awaiting items of the write that opened it. */
-function withProposals(state: RowState, items: TrackedItem[]): TrackedItem[] {
+export function withProposals(state: RowState, items: TrackedItem[]): TrackedItem[] {
   for (const t of items) {
     if (t.type !== "awaiting_confirmation") continue;
     t.refs = state.items
@@ -554,7 +604,7 @@ export function reachScope(state: RowState, t: TrackedItem): IntervalSet {
  * proposal and impact (what the proposal would overwrite now, and the writes it would take back
  * while they are in effect).
  */
-function itemContents(state: RowState, t: TrackedItem, at: Limit): ItemContents {
+export function itemContents(state: RowState, t: TrackedItem, at: Limit): ItemContents {
   // A revert proposal: its interval from the judgement of its confirmation now, so that confirming
   // writes the interval shown; its impact, as before, from the same undo judged again now (that
   // judgement also says what it would overwrite, high impact ①, which a confirmation does not
@@ -756,7 +806,7 @@ function previousNow(
       event: (op + 1) as Seq,
       ruleset: RULESET,
       unit: t.unit,
-      candidates: t.cands,
+      candidates: liveCandidates(t),
     });
     return { state: out.state, at: { upTo: (op - 1) as OpNumber }, afterAt: { upTo: op } };
   } catch (e) {

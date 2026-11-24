@@ -340,6 +340,7 @@ const CTX_DELETE = {
 };
 const DELETION = `pi_${"7".repeat(16)}`;
 const DUE = "2026-11-11T06:00:00.000Z";
+let newItems = 0;
 const item = (x: { event: number; target: string; k: number }) => `${x.event}/${x.target}/${x.k}`;
 
 /** The source table's items in effect: status and interval, by item. */
@@ -386,6 +387,9 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     refused: 0,
     notYet: 0,
     applyNotYet: 0,
+    superseded: 0,
+    opened: 0,
+    refreshed: 0,
     listed: 0,
     restated: 0,
   };
@@ -511,7 +515,8 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
           : [],
         restated,
         recreated: r.recreated,
-        superseded: [],
+        // The items superseded, by the log's IDs (judge's item layer on the log's items).
+        superseded: plan.items.flatMap((x) => x.superseded).sort(),
       });
       return { replay, plan, positions, self, listed: r.listed, blocks };
     });
@@ -538,26 +543,57 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       plain(view(made.replay.replay.state)),
     );
     expect(made.plan.rows.every((x) => x.id === (isState ? ENTITY : ROW))).toBe(true);
-    // What this version confirms changes no pending item: judge's item layer is empty.
-    const layer = planned?.result.items;
-    expect({
-      fates: layer?.fates.size,
-      superseded: layer?.superseded,
-      restored: layer?.restored,
-      refreshed: layer?.refreshed,
-      opened: layer?.opened,
-    }).toEqual({ fates: 0, superseded: [], restored: [], refreshed: [], opened: [] });
     // A row not listed reads the same after (09 §5.9 «列哪些»): its values, givers and gaps. A field
     // empty all along with no giver reads as one the view does not name (the view names a field
     // only when an item gives it or it defines existence): left out on both sides.
     if (!made.listed) {
       expect(readable(view(made.replay.replay.state))).toEqual(readable(view(made.replay.before)));
     }
+    // Each open item on the row before, with its members, read from the log's blocks: a conflict
+    // item's candidates' (event, target), an awaiting item's proposal (its origin's items
+    // awaiting before). Not from the item layer under test.
+    const rowId = isState ? ENTITY : ROW;
+    const membersBefore = await store.read(async (tx) => {
+      const items = await tx.query<{ id: string; type: string }>(
+        "SELECT id, type FROM pending_items WHERE state = 'open' AND target_row = $1",
+        [rowId],
+      );
+      const out = new Map<string, { type: string; members: string[] }>();
+      for (const it of items.rows) {
+        if (it.type === "conflict") {
+          const c = await tx.query<{ body: string }>(
+            `SELECT c.body FROM pending_entries e
+             JOIN content c ON c.seq = e.content_seq AND c.path = e.content_path
+             WHERE e.item_id = $1 AND e.content_path LIKE 'candidates/%' AND c.body IS NOT NULL`,
+            [it.id],
+          );
+          const members = c.rows.flatMap((x) => {
+            const b = JSON.parse(x.body) as { event: number; items: { field?: string }[] };
+            return b.items.map((y) => `${b.event}/${y.field ?? "existence"}`);
+          });
+          out.set(it.id, { type: it.type, members: [...new Set(members)].sort() });
+        } else if (it.type === "awaiting_confirmation") {
+          const t = await tx.query<{ body: string }>(
+            `SELECT c.body FROM content c JOIN events e ON e.seq = c.seq
+             WHERE e.type = 'item.created' AND c.path = 'target' AND c.body LIKE $1`,
+            [`%"item":"${it.id}"%`],
+          );
+          const origin = (JSON.parse(t.rows[0]?.body ?? "{}") as { origin_event?: number })
+            .origin_event;
+          const members = (planned?.result.before.items ?? [])
+            .filter((x) => x.event === origin && x.status === "awaiting")
+            .map((x) => `${x.event}/${x.target}`);
+          out.set(it.id, { type: it.type, members: [...new Set(members)].sort() });
+        }
+      }
+      return out;
+    });
     try {
       await store.write((tx) =>
         appendDeletion(tx, made.plan, {
           id: DELETION,
           dueAt: DUE,
+          newId: () => `pi_ZZ${String(++newItems).padStart(14, "0")}`,
           actor: USER as never,
           now: CTX_DELETE.now as never,
         }),
@@ -569,6 +605,53 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         return;
       }
       throw e;
+    }
+    // The item layer against its members (03-deletion «推论», 09 §5.8): by the replay's statuses
+    // after, a member stays when still pending of its item's kind (candidate / awaiting). An item
+    // none of whose members stays is superseded; one some of whose members leave stays open and is
+    // refreshed; each item a member of which turns from a candidate to awaiting is succeeded by a
+    // new awaiting item.
+    {
+      const after = new Map<string, Set<string>>();
+      for (const x of made.replay.replay.state.items) {
+        const key = `${x.event}/${x.target}`;
+        after.set(key, new Set([...(after.get(key) ?? []), x.status]));
+      }
+      const pendingAs = (key: string, status: string) => after.get(key)?.has(status) === true;
+      const stored = await store.read(async (tx) => {
+        const r = await tx.query<{ id: string; state: string }>(
+          "SELECT id, state FROM pending_items WHERE target_row = $1",
+          [rowId],
+        );
+        const refreshed = await tx.query<{ body: string }>(
+          `SELECT c.body FROM content c JOIN events e ON e.seq = c.seq
+           WHERE e.op = $1 AND e.type = 'item.refreshed' AND c.path = 'target'`,
+          [made.self],
+        );
+        return {
+          state: new Map(r.rows.map((x) => [x.id, x.state])),
+          refreshed: new Set(
+            refreshed.rows.map((x) => (JSON.parse(x.body) as { item: string }).item),
+          ),
+        };
+      });
+      let opens = 0;
+      for (const [id, it] of membersBefore) {
+        const kind = it.type === "conflict" ? "candidate" : "awaiting";
+        const stays = it.members.filter((m) => pendingAs(m, kind));
+        if (it.type === "conflict" && it.members.some((m) => pendingAs(m, "awaiting"))) opens++;
+        expect([id, stored.state.get(id)]).toEqual([id, stays.length > 0 ? "open" : "superseded"]);
+        if (stays.length > 0 && stays.length < it.members.length) {
+          expect([id, stored.refreshed.has(id)]).toEqual([id, true]);
+        }
+        if (stays.length === 0) seen.superseded++;
+        if (stored.refreshed.has(id)) seen.refreshed++;
+      }
+      const created = [...stored.state].filter(
+        ([id, st]) => st === "open" && !membersBefore.has(id),
+      );
+      expect(created.length).toBe(opens);
+      if (opens > 0) seen.opened++;
     }
     // The event appended: the blocks judge's replay encodes to.
     await store.read(async (tx) => {
@@ -651,5 +734,29 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     expect(seen.samples).toBeGreaterThan(RUNS / 4);
     expect(seen.listed).toBeGreaterThan(0);
     expect(seen.restated).toBeGreaterThan(0);
+    // The item layer reached: items superseded and refreshed (against a generator gone degenerate).
+    // A candidate leaving an item that stays open, and an awaiting item opened, are built in the
+    // fixed cases (delete-op.test.ts); the samples rarely reach them.
+    // Built in: two stale candidates against #20 in one item; deleting #30's source (S3, the third
+    // source cited) takes one away and the item stays open, refreshed.
+    const from = { mode: "given", value: "2026-10-01" } as never;
+    const valid = isState ? { valid: { from, to: { mode: "open" } } } : {};
+    const w = (op: number, seen: number, value: string, src: string) =>
+      ({
+        kind: "write",
+        op,
+        event: op + 1,
+        seen,
+        ...valid,
+        fields: { f2: { value, sources: [src], explicit: false } },
+      }) as unknown as Op;
+    const before = seen.refreshed;
+    await checkSample(
+      [w(10, 0, "1", "S1"), w(20, 10, "2", "S2"), w(30, 10, "3", "S3"), w(40, 10, "4", "S4")],
+      [],
+      2,
+    );
+    expect(seen.refreshed).toBeGreaterThan(before);
+    expect(seen.superseded).toBeGreaterThan(0);
   });
 });

@@ -14,11 +14,13 @@ import {
   createOpsContext,
   createTenant,
   type DeletionBinding,
+  pending,
   previewDeletion,
   query,
   type ReadTx,
   readTail,
   reconcileLog,
+  resolve as resolve$,
   schemaDraft,
   write,
 } from "@fluxvita/saveslot-kernel";
@@ -74,6 +76,26 @@ const DISHES = {
     { name: "meal", type: "ref", description: "its meal", ref: { table: "meals", target: "row" } },
   ],
 };
+/** Rows the same by name: a second one opens a `flagged` item (04-contract-types «duplicate_keys»). */
+const PAIRS = {
+  name: "pairs",
+  kind: "base",
+  description: "two fields that go together",
+  time: { type: "none" },
+  together: [["a", "b"]],
+  fields: [
+    { name: "a", type: "text", required: true, description: "one" },
+    { name: "b", type: "text", description: "the other" },
+  ],
+};
+const DUPS = {
+  name: "dups",
+  kind: "base",
+  description: "named rows",
+  time: { type: "none" },
+  duplicate_keys: [["name"]],
+  fields: [{ name: "name", type: "text", required: true, description: "a name" }],
+};
 
 let s: ReusableStore;
 let scratch: ReusableStore;
@@ -120,6 +142,37 @@ const sourceSeq = (text: string) =>
       [`%${text}%`],
     );
     return Number(r.rows[0]?.seq);
+  });
+/** The open items, by ID. */
+const openItems = () =>
+  s.store.read(async (tx) =>
+    (
+      await tx.query<{ id: string }>(
+        "SELECT id FROM pending_items WHERE state = 'open' ORDER BY id",
+      )
+    ).rows.map((x) => x.id),
+  );
+/** The events of operation `op` (from its head event): type, target block, `superseded_items`. */
+const opEvents = (op: number) =>
+  s.store.read(async (tx) => {
+    const r = await tx.query<{ seq: unknown; type: string }>(
+      "SELECT seq, type FROM events WHERE seq = $1 OR op = $1 ORDER BY seq",
+      [op],
+    );
+    const out: { type: string; target: unknown; superseded?: unknown }[] = [];
+    for (const e of r.rows) {
+      const b = await tx.query<{ path: string; body: string }>(
+        "SELECT path, body FROM content WHERE seq = $1 AND path IN ('target', 'superseded_items') AND body IS NOT NULL",
+        [Number(e.seq)],
+      );
+      const by = Object.fromEntries(b.rows.map((x) => [x.path, JSON.parse(x.body)]));
+      out.push({
+        type: e.type,
+        target: by["target"],
+        ...(by["superseded_items"] !== undefined ? { superseded: by["superseded_items"] } : {}),
+      });
+    }
+    return out;
   });
 const replaysTheSame = async () => {
   await scratch.reset();
@@ -171,7 +224,7 @@ beforeEach(async () => {
       slot: "home",
       base_version: null,
       timezone: "UTC",
-      tables: [LUNCH, BUDGET, KEYED, MEALS, DISHES],
+      tables: [LUNCH, BUDGET, KEYED, MEALS, DISHES, DUPS, PAIRS],
     },
   });
 }, T);
@@ -477,10 +530,10 @@ describe("the shapes this version refuses, before anything is appended", () => {
   );
 
   it(
-    "a deletion that changes a pending item: pending_items_touched",
+    "a conflict's cause deleted: the candidate takes effect, its item superseded (deleted)",
     async () => {
       // #1 45; #2 35 having seen #1; #3 30 having seen #1 too: a candidate against #2. Deleting
-      // #2's words takes the conflict's cause away.
+      // #2's words takes the conflict's cause away: #3 takes effect, the item is superseded.
       const { row, first } = await lunch();
       await w(
         [
@@ -494,22 +547,134 @@ describe("the shapes this version refuses, before anything is appended", () => {
         ],
         "it was 30",
       );
-      const open = await s.store.read((tx) =>
-        tx.query<{ id: string }>("SELECT id FROM pending_items WHERE state = 'open'"),
-      );
-      expect(open.rows).toHaveLength(1);
-      await refusedAs([await sourceId("no, lunch was 35")], "pending_items_touched");
+      const item = (await openItems())[0] as string;
+      const { binding } = await previewDeletion(s.store, {
+        sources: [await sourceId("no, lunch was 35")],
+      });
+      const receipt = await confirm(binding);
+      expect(receipt.superseded).toEqual([{ item, type: "conflict", reason: "deleted" }]);
+      expect(receipt.now_effective.map((x) => [x.item, x.item_becomes])).toEqual([
+        [item, "superseded"],
+      ]);
+      expect(await openItems()).toEqual([]);
+      const events = await opEvents(receipt.seq);
+      expect(events.map((e) => [e.type, e.target])).toEqual([
+        ["deletion.confirmed", expect.objectContaining({ deletion: receipt.deletion.id })],
+        ["item.superseded", { item, reason: "deleted", by_event: receipt.seq }],
+      ]);
+      expect(events[0]?.superseded).toEqual([item]);
+      const read = await query(s.store, ctx(), { table: "lunches" });
+      expect(read.rows.map((x: Any) => x.values.amount)).toEqual(["30"]);
+      await replaysTheSame();
+      // The same handle again: the write put in effect is counted from the log; the list is not.
+      const again = await confirm(binding);
+      expect([again.now_effective, again.now_effective_total, again.omitted]).toEqual([
+        [],
+        1,
+        ["rows", "lists"],
+      ]);
+      expect(again.superseded).toEqual(receipt.superseded);
     },
     T,
   );
 
   it(
-    "an open item's entry the deletion lists, its members unchanged: pending_items_touched",
+    "a conflict cleared, the write still of high impact: the item superseded, an awaiting item opened",
     async () => {
-      // #1 45; #2 35 having seen #1; #3 30 having seen #1: a candidate against #2, the item's value
-      // at the merge base #1's 45. Deleting #1's words: #2 still gives 35 and #3 is still a
-      // candidate against it (no item's members change), but the item's entry of the merge base
-      // rests on #1's contribution and is listed.
+      // #1 5000 from 10-01; #2 (seen #1) 4000 on [11-10, 11-20); #3 (seen #1) 3000 from 09-01
+      // to 12-01: a candidate against #2. Deleting #2's words clears the conflict, but #3 fills the
+      // stretch before 10-01 that has no value (high impact): it awaits, in an item opened for it.
+      const r1 = await w(
+        [{ intent: "insert", table: "budget", valid_from: "2026-10-01", set: { amount: "5000" } }],
+        "budget is 5000 from october",
+      );
+      const entity = r1.ops[0].target.entity as string;
+      const ver = r1.ops[0].ver;
+      await w(
+        [
+          {
+            intent: "update",
+            table: "budget",
+            entity,
+            ver,
+            valid_from: "2026-11-10",
+            valid_to: "2026-11-20",
+            set: { amount: "4000" },
+          },
+        ],
+        "4000 for ten days",
+      );
+      await w(
+        [
+          {
+            intent: "update",
+            table: "budget",
+            entity,
+            ver,
+            valid_from: "2026-09-01",
+            valid_to: "2026-12-01",
+            set: { amount: "3000" },
+          },
+        ],
+        "3000 from september",
+      );
+      const before = await openItems();
+      expect(before).toHaveLength(1);
+      const { preview, binding } = await previewDeletion(s.store, {
+        sources: [await sourceId("4000 for ten days")],
+      });
+      // 04-contract-types §4.7: by field name, the interval on a state table, the item it
+      // succeeds, and the impact as `AwaitingImpact`.
+      expect(preview.now_awaiting.map((x) => Object.keys(x).sort())).toEqual([
+        ["fields", "from_item", "impact", "seq", "target", "valid"],
+      ]);
+      expect(preview.now_awaiting[0]).toMatchObject({
+        target: { table: "budget", entity },
+        fields: { amount: "3000" },
+        from_item: before[0],
+      });
+      const receipt = await confirm(binding);
+      // §5.4: the item opened instead of the values; the impact as the item's details give it.
+      expect(receipt.now_awaiting.map((x) => Object.keys(x).sort())).toEqual([
+        ["impact", "item", "seq", "target"],
+      ]);
+      const opened = receipt.now_awaiting[0]?.item;
+      const detail: Any = await pending(s.store, ctx(), { id: opened?.id });
+      expect(detail.impact).toEqual(receipt.now_awaiting[0]?.impact);
+      expect(preview.now_awaiting[0]?.impact).toEqual(detail.impact);
+      expect(Object.keys(detail.impact).length).toBeGreaterThan(0);
+      expect(opened?.item_ver).toBe(`iv_${opened?.id.slice(3)}.${receipt.seq}.0`);
+      expect(receipt.superseded.map((x) => x.item)).toEqual(before);
+      expect(await openItems()).toEqual([opened?.id]);
+      const events = await opEvents(receipt.seq);
+      expect(events.map((e) => [e.type, (e.target as Any).item])).toEqual([
+        ["deletion.confirmed", undefined],
+        ["item.created", opened?.id],
+        ["item.superseded", before[0]],
+      ]);
+      expect(events[1]?.target).toMatchObject({
+        type: "awaiting_confirmation",
+        reason: "conflict_cleared_by_deletion",
+        entity,
+      });
+      await replaysTheSame();
+      // The same handle again: the item lists rebuilt from the deletion's operation; what the log
+      // does not keep apart (the values put in effect) is listed as omitted.
+      const again = await confirm(binding);
+      expect(again.replayed).toBe(true);
+      expect([again.superseded, again.superseded_total]).toEqual([receipt.superseded, 1]);
+      expect([again.now_awaiting, again.now_awaiting_total]).toEqual([receipt.now_awaiting, 1]);
+      expect(again.omitted).toEqual(["rows", "lists"]);
+      expect(again.now_effective_total).toBe(receipt.now_effective_total);
+    },
+    T,
+  );
+
+  it(
+    "an open item's entry the deletion lists, its members unchanged: refreshed (entries_deleted), still open",
+    async () => {
+      // As above; deleting #1's words: #2 still gives 35 and #3 is still a candidate against it,
+      // but the item's entry of the merge base rests on #1's contribution and is listed.
       const { row, first } = await lunch();
       await w(
         [
@@ -523,10 +688,220 @@ describe("the shapes this version refuses, before anything is appended", () => {
         ],
         "it was 30",
       );
-      await refusedAs([await sourceId("lunch was 45")], "pending_items_touched");
+      const item = (await openItems())[0] as string;
+      const { binding } = await previewDeletion(s.store, {
+        sources: [await sourceId("lunch was 45")],
+      });
+      const receipt = await confirm(binding);
+      expect(receipt.superseded).toEqual([]);
+      expect(await openItems()).toEqual([item]);
+      const events = await opEvents(receipt.seq);
+      expect(events.map((e) => [e.type, e.target])).toEqual([
+        ["deletion.confirmed", expect.objectContaining({ deletion: receipt.deletion.id })],
+        ["item.refreshed", { item, cause: "entries_deleted" }],
+      ]);
+      await replaysTheSame();
     },
     T,
   );
+
+  it(
+    "one of an item's candidates deleted, another still in conflict: refreshed with dropped_candidates, still open",
+    async () => {
+      // #1 45; #2 35 having seen #1; #3 30 and #4 25, each having seen #1: candidates against #2.
+      // Deleting #3's words: #3 leaves the item, #4 is still a candidate in it.
+      const { row, first } = await lunch();
+      const stale = (amount: string, words: string) =>
+        w(
+          [{ intent: "correct", table: "lunches", row, ver: first.ops[0].ver, set: { amount } }],
+          words,
+        );
+      await stale("30", "it was 30");
+      await stale("25", "it was 25");
+      const items = await openItems();
+      expect(items).toHaveLength(1);
+      const item = items[0] as string;
+      const before = await s.store.read(async (tx) =>
+        (
+          await tx.query<{ path: string }>(
+            "SELECT content_path AS path FROM pending_entries WHERE item_id = $1 AND content_path LIKE 'candidates/%'",
+            [item],
+          )
+        ).rows
+          .map((x) => Number(x.path.split("/")[1]))
+          .sort((a, b) => a - b),
+      );
+      expect(before).toHaveLength(2);
+      const { binding } = await previewDeletion(s.store, {
+        sources: [await sourceId("it was 30")],
+      });
+      const receipt = await confirm(binding);
+      expect(receipt.superseded).toEqual([]);
+      expect(await openItems()).toEqual([item]);
+      const events = await opEvents(receipt.seq);
+      expect(events.map((e) => [e.type, e.target])).toEqual([
+        ["deletion.confirmed", expect.objectContaining({ deletion: receipt.deletion.id })],
+        // #3's candidate is the first the item was given.
+        ["item.refreshed", { item, cause: "entries_deleted", dropped_candidates: [before[0]] }],
+      ]);
+      const read = await query(s.store, ctx(), { table: "lunches" });
+      expect(read.rows.map((x: Any) => x.values.amount)).toEqual(["35"]);
+      await replaysTheSame();
+      // The candidate that left is no longer the item's: its entry is gone, taking it is refused.
+      expect(
+        await s.store.read(async (tx) =>
+          (
+            await tx.query<{ path: string }>(
+              "SELECT content_path AS path FROM pending_entries WHERE item_id = $1 AND content_path LIKE 'candidates/%' ORDER BY 1",
+              [item],
+            )
+          ).rows.map((x) => x.path),
+        ),
+      ).toEqual([`candidates/${before[1]}`]);
+      const iv = await s.store.read(async (tx) => {
+        const r = await tx.query<{ v: unknown }>(
+          "SELECT version_op AS v FROM pending_items WHERE id = $1",
+          [item],
+        );
+        return `iv_${item.slice(3)}.${Number(r.rows[0]?.v)}.0`;
+      });
+      const e = await thrown(() =>
+        resolve$(s.store, ctx(), {
+          id: item,
+          item_ver: iv,
+          decision: "take_candidate",
+          candidate: before[0],
+        }),
+      );
+      expect([e?.code, e?.detail?.reason]).toEqual(["invalid_argument", "index_out_of_range"]);
+      // Named or not, the one left is the only candidate to take: 25.
+      const took: Any = await resolve$(s.store, ctx(), {
+        id: item,
+        item_ver: iv,
+        decision: "take_candidate",
+        idempotency_key: "k-once",
+      });
+      // The same decision again, by another request key: a repeat of the resolved item's decision
+      // (the one candidate left, as before), its receipt again, not item_closed.
+      const again: Any = await resolve$(s.store, ctx(), {
+        id: item,
+        item_ver: iv,
+        decision: "take_candidate",
+      });
+      expect(again.replayed).toBe(true);
+      const { replayed: _r, ...rest } = again;
+      const { replayed: _f, ...firstRest } = took;
+      expect(rest).toEqual(firstRest);
+      const taken = await query(s.store, ctx(), { table: "lunches" });
+      expect(taken.rows.map((x: Any) => x.values.amount)).toEqual(["25"]);
+    },
+    T,
+  );
+
+  it(
+    "part of a candidate deleted, the rest still a candidate: given again at its index",
+    async () => {
+      // a and b go together (one conflict unit). #1 1/1; #2 2/2 having seen #1; #3 3/3 having
+      // seen #1, each field on its own words: one candidate of both fields against #2. Deleting the
+      // words of b takes #3's b away; its a is still a candidate, given again as candidates/0.
+      const r1 = await w([{ intent: "insert", table: "pairs", set: { a: "1", b: "1" } }], "pair 1");
+      const row = r1.ops[0].target.row as string;
+      const ver = r1.ops[0].ver;
+      await w([{ intent: "correct", table: "pairs", row, ver, set: { a: "2", b: "2" } }], "pair 2");
+      await write(s.store, ctx(), {
+        sv: 1,
+        evidence: [
+          { kind: "user_message", text: "a is 3" },
+          { kind: "user_message", text: "b is 3" },
+        ],
+        ops: [
+          {
+            intent: "correct",
+            table: "pairs",
+            row,
+            ver,
+            set: { a: "3", b: "3" },
+            evidence_by_field: { a: [0], b: [1] },
+          },
+        ],
+      } as never);
+      const item = (await openItems())[0] as string;
+      const { binding } = await previewDeletion(s.store, {
+        sources: [await sourceId("b is 3")],
+      });
+      const receipt = await confirm(binding);
+      expect(await openItems()).toEqual([item]);
+      const given = await s.store.read(async (tx) =>
+        (
+          await tx.query<{ path: string; body: string }>(
+            `SELECT c.path, c.body FROM content c JOIN events e ON e.seq = c.seq
+             WHERE e.op = $1 AND e.type = 'item.refreshed' AND c.path LIKE 'candidates/%'`,
+            [receipt.seq],
+          )
+        ).rows.map((x) => [x.path, JSON.parse(x.body)]),
+      );
+      // By field ID: a is the table's first field (f1), b its second.
+      expect(given.map(([p, b]) => [p, b.items.map((x: Any) => [x.field, x.value])])).toEqual([
+        ["candidates/0", [["f1", "3"]]],
+      ]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "an item on the listed row resolved since the preview: preview_outdated",
+    async () => {
+      // #1 45; #2 35 having seen #1; #3 30 having seen #1: a candidate against #2. The preview of
+      // deleting #2's words supersedes the item; a person keeps #2's value before the confirmation.
+      const { row, first } = await lunch();
+      await w(
+        [
+          {
+            intent: "correct",
+            table: "lunches",
+            row,
+            ver: first.ops[0].ver,
+            set: { amount: "30" },
+          },
+        ],
+        "it was 30",
+      );
+      const item = (await openItems())[0] as string;
+      const { binding } = await previewDeletion(s.store, {
+        sources: [await sourceId("no, lunch was 35")],
+      });
+      await resolve$(s.store, ctx(), { id: item, decision: "keep_effective" });
+      expect(await openItems()).toEqual([]);
+      const e = await thrown(() => confirm(binding));
+      expect(e?.code).toBe("preview_outdated");
+      expect(e?.detail?.binding?.hash).not.toBe(binding.hash);
+      expect((await anchor.read(TENANT as never)).deletions).toEqual([]);
+    },
+    T,
+  );
+
+  for (const words of ["a is x", "b is x"]) {
+    it(
+      `a flagged item whose rows the deletion changes (${words}): pending_items_touched`,
+      async () => {
+        // B written with A's name: a flagged item on B lists A. Its supersession or refresh is not
+        // made yet: refused whole, the item left as it is.
+        await w([{ intent: "insert", table: "dups", set: { name: "x" } }], "a is x");
+        await w([{ intent: "insert", table: "dups", set: { name: "x" } }], "b is x");
+        const flagged = await s.store.read(async (tx) =>
+          (
+            await tx.query<{ id: string }>(
+              "SELECT id FROM pending_items WHERE state = 'open' AND type = 'flagged'",
+            )
+          ).rows.map((x) => x.id),
+        );
+        expect(flagged).toHaveLength(1);
+        await refusedAs([await sourceId(words)], "pending_items_touched");
+      },
+      T,
+    );
+  }
 
   it(
     "a row a premise declaration names: premise",

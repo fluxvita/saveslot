@@ -5,15 +5,21 @@
 // the preview and the confirmation both start here, so what is confirmed is what was previewed
 // unless the impact summary changed (`preview_outdated`).
 //
-// This version works out a deletion only when no affected row's log has a deletion event yet and
-// the deletion changes no pending item (no item's members, none of an open item's entry blocks
-// listed). Every other shape, and each shape the later parts of the deletion do not apply yet, is
+// This version works out a deletion only when no affected row's log has a deletion event yet. The
+// pending items it changes are changed by item events after its own (./deletion-items.ts).
+// Every other shape, and each shape the later parts of the deletion do not apply yet, is
 // refused before anything is appended, as `not_implemented` with a kind of its own:
 //
 // - `prior_deletion_on_row`: an affected row or entity already has a deletion or cancellation on it
 //   (its earlier deletions' item layer, restatements and pending sets are not read yet);
-// - `pending_items_touched`: the deletion would change a pending item (its item events are not
-//   written yet);
+// - `pending_items_touched`: an open item of a type other than a conflict or an awaiting
+//   confirmation (a `flagged` item) has an entry block on the list of positions (its supersession or
+//   refresh, 03-deletion «删除结果的定义», is not made yet);
+// - `awaiting_not_a_write`: an awaiting item the deletion would open is a revert's or a revoke's
+//   proposal (its `impact.reverted` / `referrers` are not worked out) (./deletion-items.ts);
+// - `items_restored`, `succeeded_as_conflict`: an item an earlier deletion superseded comes back
+//   (not reached with no earlier deletion), or a write awaiting is a conflict candidate after (its
+//   new conflict item's candidate entry is not made yet) (./deletion-items.ts);
 // - `external_key`: the table has an external key (keys with deletion);
 // - `premise`: a premise declaration names an affected row, as its target or its dependent row
 //   (premises with deletion: the forecast and `premise.changed`);
@@ -43,7 +49,6 @@ import {
 import { positionsOf, readPositionIndex } from "../delete/positions.ts";
 import { type BaseCitations, readCitations, takenAway } from "../delete/taken.ts";
 import { JudgeError } from "../judge/errors.ts";
-import { itemsByRecords } from "../judge/fates.ts";
 import type { BlockAddress, OpRecord, Restatement, TableShape } from "../judge/index.ts";
 import { stateFromRecord, view } from "../judge/index.ts";
 import { deletionResult } from "../judge/replay-deletion.ts";
@@ -55,12 +60,12 @@ import { WriteError } from "../write/errors.ts";
 import { replayShape } from "../write/plan.ts";
 import { readSlots, rowEvents } from "../write/reads.ts";
 import { decodeRecords, type RowContext, type StoredEvent } from "../write/record.ts";
+import { type ItemEventsOut, itemEventsOf, itemsFromLog, type LogItem } from "./deletion-items.ts";
 
 /** The kinds of deletion this version refuses (see the file's head). */
 export type RefusedKind =
   | "prior_deletion_on_row"
   | "referenced_revoke_awaiting"
-  | "pending_items_touched"
   | "external_key"
   | "premise"
   | "schema_const"
@@ -68,7 +73,11 @@ export type RefusedKind =
   | "item_numbered_anew"
   /** Refused by the replay (judge/replay-deletion.ts), passed on with its kind. */
   | "revoke_conflict_cleared"
-  | "revoke_noop_now_effective";
+  | "revoke_noop_now_effective"
+  | "pending_items_touched"
+  | "items_restored"
+  | "succeeded_as_conflict"
+  | "awaiting_not_a_write";
 
 const refuse = (kind: RefusedKind, message: string, detail: Record<string, unknown> = {}) =>
   new WriteError("internal", `a deletion ${message} is not implemented`, {
@@ -84,6 +93,10 @@ export interface RowPlan {
   readonly id: string;
   readonly isState: boolean;
   readonly records: readonly OpRecord[];
+  /** The row's events (its own and its items'). */
+  readonly events: readonly StoredEvent[];
+  /** Its pending items, as their events say. */
+  readonly items: ReadonlyMap<string, LogItem>;
   /** The last event of the row's log (its own and its items'): what its version is in the summary. */
   readonly last: Seq;
   readonly result: ReturnType<typeof deletionResult>;
@@ -93,6 +106,12 @@ export interface RowPlan {
 export interface AffectedSet {
   readonly rows: readonly { readonly table: string; readonly id: string; readonly last: Seq }[];
   readonly sources: readonly { readonly seq: Seq; readonly state: string }[];
+  /** The pending items on the affected rows, with their versions and how they stand. */
+  readonly items: readonly {
+    readonly id: string;
+    readonly version: number;
+    readonly standing: string;
+  }[];
 }
 
 export interface DeletionPlan {
@@ -104,6 +123,10 @@ export interface DeletionPlan {
   readonly deleted: ReadonlySet<string>;
   readonly rows: readonly RowPlan[];
   readonly restated: readonly Restatement[];
+  /** Each affected row's item events, worked out with placeholder IDs for new items. */
+  readonly items: readonly ItemEventsOut[];
+  /** The same, with the new items' IDs `newId` gives. */
+  readonly itemEvents: (newId: () => string) => readonly ItemEventsOut[];
   /** The deletion event's own seq, if it were appended now. */
   readonly self: Seq;
   readonly positions: readonly BlockAddress[];
@@ -207,6 +230,41 @@ async function rowsWithDeletions(tx: ReadTx, slot: string): Promise<Set<string>>
   return out;
 }
 
+/**
+ * The open items, other than conflicts and awaiting confirmations, the deletion touches: on an
+ * affected row or entity, or with an entry block on the list of positions. The item events of this
+ * version do not change them.
+ */
+async function otherItemsTouched(
+  tx: ReadTx,
+  positions: readonly BlockAddress[],
+  rows: ReadonlySet<string>,
+): Promise<string[]> {
+  const r = await tx.query<{
+    id: string;
+    target_row: string | null;
+    content_seq: unknown;
+    content_path: string | null;
+  }>(
+    `SELECT i.id, i.target_row, e.content_seq, e.content_path FROM pending_items i
+     LEFT JOIN pending_entries e ON e.item_id = i.id
+     WHERE i.state = 'open' AND i.type NOT IN ('conflict', 'awaiting_confirmation')`,
+  );
+  const listed = new Set(positions.map((p) => `${p.seq}\u0000${p.path}`));
+  return [
+    ...new Set(
+      r.rows
+        .filter(
+          (x) =>
+            (x.target_row !== null && rows.has(x.target_row)) ||
+            (x.content_path !== null &&
+              listed.has(`${Number(x.content_seq)}\u0000${x.content_path}`)),
+        )
+        .map((x) => x.id),
+    ),
+  ].sort();
+}
+
 /** Every compiled schema version the slot has had: whether a table may be referred to. */
 async function slotVersions(tx: ReadTx, slot: string): Promise<CompiledSchema[]> {
   const r = await tx.query<{ body: string }>(
@@ -257,42 +315,8 @@ async function holdsSchemaConst(tx: ReadTx, id: string): Promise<boolean> {
   return r.rows.length > 0;
 }
 
-/** The entry blocks of open items the positions list. */
-async function openEntriesListed(
-  tx: ReadTx,
-  positions: readonly BlockAddress[],
-): Promise<string[]> {
-  if (positions.length === 0) return [];
-  const r = await tx.query<{ item_id: string; content_seq: unknown; content_path: string }>(
-    `SELECT e.item_id, e.content_seq, e.content_path FROM pending_entries e
-     JOIN pending_items i ON i.id = e.item_id
-     WHERE i.state = 'open' AND e.content_seq = ANY($1)`,
-    [[...new Set(positions.map((p) => p.seq))] as never],
-  );
-  const listed = new Set(positions.map((p) => `${p.seq}\u0000${p.path}`));
-  return [
-    ...new Set(
-      r.rows
-        .filter((x) => listed.has(`${Number(x.content_seq)}\u0000${x.content_path}`))
-        .map((x) => x.item_id),
-    ),
-  ].sort();
-}
-
 const lastOf = (events: readonly StoredEvent[]): Seq =>
   events.reduce((m, e) => Math.max(m, e.header.seq), 0) as Seq;
-
-/** Whether the item layer of a row's replay changes anything. */
-function itemsChanged(r: ReturnType<typeof deletionResult>): boolean {
-  const x = r.items;
-  return (
-    x.fates.size > 0 ||
-    x.superseded.length > 0 ||
-    x.restored.length > 0 ||
-    x.refreshed.length > 0 ||
-    x.opened.length > 0
-  );
-}
 
 /**
  * Works out a deletion of `sourceIds` on the state `tx` reads. Refuses (`WriteError`) what this
@@ -392,8 +416,8 @@ export async function planDeletionOf(
     const events = await rowEvents(tx, table.id, id);
     const records = decodeRecords(ctx, events);
     const state = stateFromRecord(shape, records);
-    // The item layer is only looked at for whether it changes (this version refuses any change):
-    // the records' approximation of the items is enough to tell.
+    // Which pending item each (event, target) is in, as the row's item events say.
+    const logItems = itemsFromLog(events, state);
     let result: ReturnType<typeof deletionResult>;
     try {
       result = deletionResult(
@@ -401,7 +425,7 @@ export async function planDeletionOf(
         records,
         deleted,
         new Set(),
-        itemsByRecords(state),
+        logItems.given,
         () => [],
         givenByRecords(records),
       );
@@ -415,9 +439,6 @@ export async function planDeletionOf(
         });
       }
       throw e;
-    }
-    if (itemsChanged(result)) {
-      throw refuse("pending_items_touched", "changing a pending item", { row: id });
     }
     // An item index a restatement gives that the (event, target) did not have.
     for (const r of result.replay.restated) {
@@ -443,6 +464,8 @@ export async function planDeletionOf(
       id,
       isState,
       records,
+      events,
+      items: logItems.items,
       last: lastOf(events),
       result,
     });
@@ -452,16 +475,50 @@ export async function planDeletionOf(
   const self = (tail + 1) as Seq;
   const index = await readPositionIndex(tx, { slot, sources: seqs, bases, deleted, restated });
   const positions = positionsOf({ sources: seqs, deleted, restated, index, self });
-  const touchedItems = await openEntriesListed(tx, positions);
-  if (touchedItems.length > 0) {
-    throw refuse("pending_items_touched", "listing a pending item's entry", {
-      items: touchedItems,
-    });
+  const listed = new Set(positions.map((p) => `${p.seq} ${p.path}`));
+  const others = await otherItemsTouched(tx, positions, new Set(rows.map((r) => r.id)));
+  if (others.length > 0) {
+    throw refuse(
+      "pending_items_touched",
+      "changing a pending item other than a conflict or an awaiting confirmation",
+      {
+        items: others,
+      },
+    );
   }
+  // The item events, worked out now so that a shape they do not cover refuses at the preview; the
+  // confirmation works them out again with the new items' IDs.
+  const itemEvents = (newId: () => string) =>
+    rows.map((r) =>
+      itemEventsOf({
+        slot,
+        table: r.table.id,
+        target: r.isState ? { entity: r.id } : { row: r.id },
+        events: r.events,
+        items: r.items,
+        layer: r.result.items,
+        after: r.result.replay.state,
+        records: r.records,
+        listed,
+        self,
+        newId,
+      }),
+    );
+  let n = 0;
+  const items = itemEvents(() => `pi_${String(++n).padStart(16, "0")}`);
 
   const affected: AffectedSet = {
     rows: rows.map((r) => ({ table: r.table.id, id: r.id, last: r.last })),
     sources: seqs.map((seq) => ({ seq, state: states.get(seq) ?? "present" })),
+    items: rows
+      .flatMap((r) =>
+        [...r.items.values()].map((x) => ({
+          id: x.id,
+          version: x.versionOp,
+          standing: x.standing.kind,
+        })),
+      )
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   };
   return {
     slot,
@@ -473,6 +530,8 @@ export async function planDeletionOf(
     restated,
     self,
     positions,
+    items,
+    itemEvents,
     affected,
     hash: affectedHash(affected),
     tail,
