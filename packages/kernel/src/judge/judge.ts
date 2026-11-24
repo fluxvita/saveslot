@@ -299,7 +299,9 @@ function confirm(
     status: "applied" as const,
     valid: x.valid,
     content: x.content,
-    carried: [refOf(x)],
+    // A value carries the proposed one (09 §5.7 `sources/…` `carried`); existence has no sources
+    // (a revoke awaiting for its referrers, high impact ②): only its deps name the proposal.
+    ...(x.target !== "existence" ? { carried: [refOf(x)] } : {}),
     deps: [refOf(x)],
   }));
   return { ...base, kind: "confirm", target: input.target, items };

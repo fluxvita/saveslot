@@ -48,7 +48,15 @@ export type ImpactBlock =
       readonly op?: number;
       readonly deps: readonly EntryRef[];
     }
-  | { readonly kind: "reverted_write"; readonly op: number; readonly deps: readonly EntryRef[] };
+  | { readonly kind: "reverted_write"; readonly op: number; readonly deps: readonly EntryRef[] }
+  /** High impact ②: a row (or entity) whose ref field still names the revoked target (09 §5.8). */
+  | {
+      readonly kind: "referencing_row";
+      readonly table: string;
+      readonly row?: string;
+      readonly entity?: string;
+      readonly field: string;
+    };
 
 /** A proposed value of an awaiting item (`proposed/<k>`). */
 export interface ProposedBlock {
@@ -128,17 +136,24 @@ export function contentBlocks(c: ItemContents): Record<string, unknown> {
   });
   c.impact?.forEach((e, k) => {
     out[`impact/${k}`] =
-      e.kind === "reverted_write"
-        ? { kind: e.kind, op: e.op, deps: e.deps.map(refOut) }
-        : {
+      e.kind === "referencing_row"
+        ? {
             kind: e.kind,
+            table: e.table,
+            ...(e.entity !== undefined ? { entity: e.entity } : { row: e.row }),
             field: e.field,
-            ...(e.valid !== undefined ? { valid: spanOut(e.valid) } : {}),
-            value: e.value ?? null,
-            ...(e.gap === true ? { gap: true } : {}),
-            ...(e.op !== undefined ? { op: e.op } : {}),
-            deps: e.deps.map(refOut),
-          };
+          }
+        : e.kind === "reverted_write"
+          ? { kind: e.kind, op: e.op, deps: e.deps.map(refOut) }
+          : {
+              kind: e.kind,
+              field: e.field,
+              ...(e.valid !== undefined ? { valid: spanOut(e.valid) } : {}),
+              value: e.value ?? null,
+              ...(e.gap === true ? { gap: true } : {}),
+              ...(e.op !== undefined ? { op: e.op } : {}),
+              deps: e.deps.map(refOut),
+            };
   });
   return out;
 }

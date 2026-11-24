@@ -25,7 +25,9 @@
 // candidate, not deleted, leaves neither an item nor a shadow in the replay; an operation judged
 // after a deletion event (its conflict criterion reads that event's L);
 // a write by external key (its sync baseline in a replay is the deletion phase's, with the key
-// index's freezing); a write that added a key to a row (the key index's part of a deletion).
+// index's freezing); a write that added a key to a row (the key index's part of a deletion); an
+// undecided revoke awaiting for its referrers (high impact ②, judged again by the deletion phase);
+// on a table that may be referred to, a revoke whose conflict the deletion clears (the same).
 
 import type { FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
 import { canonical, type IntervalSet, isNothing, meet } from "../time/index.ts";
@@ -587,9 +589,23 @@ export function replayDeletion(
     }
     // Narrowed for the compiler: a revert's kind is a union, so the branch above does not drop it.
     if (r.kind !== "write" && r.kind !== "revoke") continue;
-    const input = inputOf(r, (t) => deleted.has(contributionKey(r.event, t)));
-    if (input === undefined) continue;
     const decision = decisions.get(r.event);
+    // A revoke that awaited confirmation when written (high impact ②, the only way a revoke
+    // awaits): who referred to its target is other rows', which a replay does not see. Decided,
+    // it awaits as written and its decision is executed as recorded (deviation one); undecided,
+    // whether it is still of high impact is the deletion phase's to judge (03-deletion «高影响
+    // （重算）»): refused, never judged as effective.
+    const referenced = r.kind === "revoke" && r.items.some((x) => x.status === "awaiting");
+    if (referenced && decision === undefined) {
+      throw new JudgeError(
+        "not_implemented",
+        "a deletion's replay of an undecided revoke awaiting for its referrers",
+        { kind: "referenced_revoke_awaiting", op: r.op },
+      );
+    }
+    const given = inputOf(r, (t) => deleted.has(contributionKey(r.event, t)));
+    if (given === undefined) continue;
+    const input = referenced && given.kind === "revoke" ? { ...given, referenced: true } : given;
     const options: ReplayOptions = {
       shadows,
       noop: new Set(r.noop),
@@ -602,6 +618,39 @@ export function replayDeletion(
       input.kind === "write"
         ? judgeWrite(state, input, options)
         : judgeRevoke(state, input, options);
+    // A revoke that was a candidate when written, its conflict gone with the deletion: whether
+    // it now awaits for its referrers (high impact ②, never judged when written: a stale write is a
+    // candidate first) needs other rows', which a replay does not see. On a table that may be
+    // referred to, refused; the deletion phase judges it again with them.
+    if (
+      r.kind === "revoke" &&
+      r.items.some((x) => x.target === "existence" && x.status === "candidate") &&
+      !judged.items.some((x) => x.target === "existence" && x.status === "candidate")
+    ) {
+      // Whether the table may be referred to must be given (`replayShape`): taken as no here, a
+      // revoke awaiting for its referrers would be put into effect without them.
+      if (table.referable === undefined) {
+        throw new JudgeError(
+          "invalid",
+          "a deletion's replay needs to know whether the table may be referred to",
+          {
+            op: r.op,
+          },
+        );
+      }
+    }
+    if (
+      r.kind === "revoke" &&
+      table.referable === true &&
+      r.items.some((x) => x.target === "existence" && x.status === "candidate") &&
+      !judged.items.some((x) => x.target === "existence" && x.status === "candidate")
+    ) {
+      throw new JudgeError(
+        "not_implemented",
+        "a deletion's replay of a revoke whose conflict the deletion clears, on a table referred to",
+        { kind: "revoke_conflict_cleared", op: r.op },
+      );
+    }
     let record: OpRecord = {
       op: r.op,
       index: r.index,

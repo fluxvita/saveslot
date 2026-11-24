@@ -208,10 +208,27 @@ const note = (text = "n") =>
   send({ sv: 1, ops: [{ intent: "insert", table: "notes", set: { text } }] });
 const pay = (set: Record<string, unknown>) =>
   send({ sv: 1, ops: [{ intent: "insert", table: "payments", set: { memo: "m", ...set } }] });
-const revokeAccount = (a: Receipt) =>
-  send({ sv: 1, ops: [{ intent: "revoke", table: "accounts", entity: entityOf(a), ver: ver(a) }] });
-const revokeNote = (n: Receipt) =>
-  send({ sv: 1, ops: [{ intent: "revoke", table: "notes", row: rowOf(n), ver: ver(n) }] });
+/**
+ * A revoke carried out: one still referred to awaits confirmation (high impact ②, 05-time
+ * «高影响写入»), confirmed here so that the target is revoked for the cases below.
+ */
+async function carriedOut(r: Receipt & Record<string, unknown>) {
+  const item = (r.pending ?? []).find((p) => p.type === "awaiting_confirmation");
+  if (item !== undefined)
+    await resolve({ id: item.id, decision: "confirm", item_ver: item.item_ver });
+  return r;
+}
+const revokeAccount = async (a: Receipt) =>
+  carriedOut(
+    await send({
+      sv: 1,
+      ops: [{ intent: "revoke", table: "accounts", entity: entityOf(a), ver: ver(a) }],
+    }),
+  );
+const revokeNote = async (n: Receipt) =>
+  carriedOut(
+    await send({ sv: 1, ops: [{ intent: "revoke", table: "notes", row: rowOf(n), ver: ver(n) }] }),
+  );
 /** The detail of a payment op whose ref field fails. */
 const bad = (field: string, code: string, op = 0) => ({
   op,

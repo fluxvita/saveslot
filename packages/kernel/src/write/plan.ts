@@ -1,10 +1,42 @@
 // Pure pieces of the write pipeline (02-architecture §4 L5 `write`): what a compiled table is to
 // `judge`, whether a write must refresh derived tables, and "today" in the slot's time zone.
 
-import type { CompiledBaseTable, FieldId } from "@fluxvita/saveslot-contract-core";
+import type {
+  CompiledBaseTable,
+  CompiledSchema,
+  FieldId,
+  TableId,
+} from "@fluxvita/saveslot-contract-core";
 import type { TableShape } from "../judge/index.ts";
 import { valuedFields } from "../pending/index.ts";
 import type { Visibility } from "../request/index.ts";
+
+/**
+ * Whether rows of `table` may be referred to (`TableShape.referable`): a ref field of the
+ * slot names it in any of `versions`, every schema version the log has had for the slot (a
+ * reference written under an earlier version stays in the log). Better refuse more than judge a
+ * revoke again without its referrers.
+ */
+export function referableIn(versions: readonly CompiledSchema[], table: TableId): boolean {
+  return versions.some((v) =>
+    v.tables.some(
+      (t) =>
+        t.kind === "base" &&
+        (t as CompiledBaseTable).fields.some(
+          (f) => f.type === "ref" && (f as { ref?: { table: TableId } }).ref?.table === table,
+        ),
+    ),
+  );
+}
+
+/**
+ * The table as a deletion's replay sees it: `tableShape` with `referable` given, from every schema
+ * version the slot has had (`referableIn`). The deletion phase builds its shapes with this: the
+ * replay refuses a revoke it cannot judge without knowing (judge/replay-deletion.ts).
+ */
+export function replayShape(t: CompiledBaseTable, versions: readonly CompiledSchema[]): TableShape {
+  return { ...tableShape(t), referable: referableIn(versions, t.id) };
+}
 
 /** The table as `judge` sees it (judge/model.ts `TableShape`). */
 export function tableShape(t: CompiledBaseTable): TableShape {

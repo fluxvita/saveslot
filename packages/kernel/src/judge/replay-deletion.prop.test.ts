@@ -881,6 +881,8 @@ const REFUSED = new Set([
   "undo on a revoked row",
   "take_previous candidate",
   "take_candidate candidate",
+  "referenced_revoke_awaiting",
+  "revoke_conflict_cleared",
 ]);
 
 function refusedShape(e: unknown): boolean {

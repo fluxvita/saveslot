@@ -45,9 +45,11 @@ import { settleFlagged } from "./flagged.ts";
 import {
   judgeFailure,
   loadRow,
+  type RowWork,
   RULESET,
   reachScope,
   readFirst,
+  refreshReferenced,
   requestFailure,
   revertEntriesNow,
   settleItems,
@@ -769,7 +771,14 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
         t.reachedBy = event;
     }
   }
-  await settleItems(tx, [work], {
+  // High impact ②: a decision changing a referrer (taking a candidate that points a ref elsewhere,
+  // confirming a revoke of a referrer) refreshes the items on the targets, as a write does.
+  const self = work.ctx.target;
+  const rows = new Map<string, RowWork>([
+    [("row" in self ? self.row : self.entity) as string, work],
+  ]);
+  await refreshReferenced(tx, rows, { tables: slot.compiled.tables, op });
+  await settleItems(tx, rows.values(), {
     op,
     slot: slot.slot,
     writer: input,

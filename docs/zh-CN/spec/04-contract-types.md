@@ -1073,7 +1073,7 @@ interface AwaitingImpact {
   overwritten?: Array<{ field: FieldName; valid?: Interval; value: Value; seq: Seq; actor: Actor }>;  // 会被覆盖的段
   filled_gaps?: Array<{ valid?: Interval; revoked_by?: Seq }>;                                         // 会被填掉的无值区间（只列在这里）
   reverted?: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;                        // 确认后读到的结果会变的后来写入，不论在不在回退记录里（write-and-read「撤回某次写入」）；fields：结果会变的字段，"*" 是撤销；一条表示至少有一部分会变
-  referrers?: TargetRef[];                                                                             // 仍引用该行的行
+  referrers?: Array<TargetRef & { field: FieldName }>;                                                 // 仍引用该行的行，一个引用字段一条
 }
 
 interface FlaggedDetail extends ItemBase {

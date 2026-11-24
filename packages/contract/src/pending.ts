@@ -154,7 +154,8 @@ export interface AwaitingImpact {
    */
   reverted?: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;
   /** Rows still referencing the row. */
-  referrers?: TargetRef[];
+  /** High impact ②: each row still referring to the target, by the ref field that does. */
+  referrers?: Array<TargetRef & { field: FieldName }>;
 }
 
 /** 04-contract-types §4.8 `AwaitingDetail`. */

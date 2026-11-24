@@ -157,6 +157,7 @@ type N = Naming<Actor, ValueOut, ItemInterval>;
 function namingOf(
   table: VisibleSlot["tables"][number] | undefined,
   who: ReadonlyMap<string, Actor>,
+  slot?: VisibleSlot,
 ): N {
   const isState = table !== undefined && table.kind === "base" && table.time.type === "state";
   const byDate =
@@ -166,6 +167,20 @@ function namingOf(
     table.time.granularity === "date";
   return {
     isState,
+    ...(slot !== undefined
+      ? {
+          table: (id: string) => {
+            const t = slot.tables.find((x) => x.id === id);
+            return t === undefined ? undefined : `${slot.name}.${t.name}`;
+          },
+          fieldOf: (tid: string, fid: string) => {
+            const t = slot.tables.find((x) => x.id === tid);
+            return (
+              (t?.kind === "base" ? t.fields.find((f) => f.id === fid)?.name : undefined) ?? fid
+            );
+          },
+        }
+      : {}),
     field: (id) => table?.fields.find((f) => f.id === id)?.name ?? id,
     interval: (s: Span): ItemInterval => ({
       valid_from: s.from,
@@ -296,7 +311,7 @@ async function listOf(
     entries.values(),
   );
   const items = page.map(({ x, place }) => {
-    const n = namingOf(place.table, who);
+    const n = namingOf(place.table, who, place.slot);
     const e = entries.get(x.id);
     return {
       id: x.id,
@@ -358,7 +373,7 @@ async function detailOf(
   const closed = await closingOf(tx, x.id);
   const who = await whoOf(tx, [x], [e]);
   for (const [, a] of await actors(tx, closed.principals)) who.set(a.id, a);
-  const n = namingOf(place.table, who);
+  const n = namingOf(place.table, who, place.slot);
   const versionOp = Number(x.version_op);
   const open = x.state === "open";
   const common = {

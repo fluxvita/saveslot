@@ -539,11 +539,13 @@ export function encodeOp(
           type: "awaiting_confirmation",
           // ④ by taking later writes back, or by hiding them (09 §6); both: the first.
           reason:
-            r.kind === "undo" && j.takesBack.length > 0
-              ? "undo_includes_later"
-              : r.kind === "undo" && j.hides.length > 0
-                ? "undo_hides_later"
-                : "overwrites_change_point",
+            r.kind === "revoke"
+              ? "referenced_row"
+              : r.kind === "undo" && j.takesBack.length > 0
+                ? "undo_includes_later"
+                : r.kind === "undo" && j.hides.length > 0
+                  ? "undo_hides_later"
+                  : "overwrites_change_point",
           table: ctx.table,
           ...ctx.target,
           unit: onExistence ? ["existence"] : fields,

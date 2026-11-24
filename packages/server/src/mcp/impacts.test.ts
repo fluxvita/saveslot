@@ -49,6 +49,24 @@ describe("derived values and impacts: what the samples do not show", () => {
     );
   });
 
+  it("a revoke awaiting for the rows still referring to it (high impact ②): one line naming them", () => {
+    const detail = {
+      ...(SAMPLES["pending-awaiting-overwrite"] as { result: R }).result,
+      reason: "referenced_row",
+      impact: {
+        referrers: [
+          { table: "food.dishes", row: "r_1V9SBXK6Q0FZ0VB4E5J2XH7Y2A", field: "meal" },
+          { table: "food.plans", entity: "e_2V9SBXK6Q0FZ0VB4E5J2XH7Y2A", field: "meal" },
+        ],
+      },
+    };
+    const lines = text("saveslot_pending", detail).split("\n");
+    expect(lines).toContain(
+      "    leave 2 rows referring to it (their value kept; read as pointing at a revoked record): food.dishes r_1V9SBXK6Q0FZ0VB4E5J2XH7Y2A (meal); food.plans e_2V9SBXK6Q0FZ0VB4E5J2XH7Y2A (meal)",
+    );
+    expect(lines.some((l) => l.includes("referenced_row"))).toBe(true);
+  });
+
   it("a change awaiting confirmation that is not an undo, with nothing in its impact: no heading over nothing", async () => {
     const detail = {
       ...(SAMPLES["pending-awaiting-overwrite"] as { result: R }).result,

@@ -789,6 +789,7 @@ export function toInput(o: Op): JudgeInput {
         ...(o.seenCurrent ? { seenCurrent: true as const } : {}),
         ...(o.valid !== undefined ? { valid: o.valid } : {}),
         now: o.now ?? NOW,
+        ...(o.referenced === true ? { referenced: true } : {}),
       };
     case "undo":
       return {
@@ -936,7 +937,15 @@ export function judged(
         }
         if (d.kind === "revoke") {
           if (!isEventTable) return;
-          enter({ kind: "revoke", op, event, seen: (d.flag & 1) === 1 ? op - 11 : op - 1 });
+          // Its target still referred to by another row (high impact ②), as the write path would
+          // find it: by `flag` bit 2.
+          enter({
+            kind: "revoke",
+            op,
+            event,
+            seen: (d.flag & 1) === 1 ? op - 11 : op - 1,
+            ...((d.flag & 2) === 2 ? { referenced: true as const } : {}),
+          });
           return;
         }
         const resolving = d.kind === "keep" || d.kind === "previous" || d.kind === "take";
@@ -972,7 +981,9 @@ export function judged(
         );
       });
   });
-  return { table, steps, refused };
+  // A revoke given as referred to (high impact ②): the table may be referred to.
+  const referable = steps.some((x) => x.op.kind === "revoke" && x.op.referenced === true);
+  return { table: { ...table, referable }, steps, refused };
 }
 
 /**

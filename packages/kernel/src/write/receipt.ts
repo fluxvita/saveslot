@@ -914,6 +914,14 @@ export async function readReceipt(
 
     /** How the receipt writes field names, intervals and actors (as the pending details do). */
     const naming: Naming<Actor> = {
+      table: (id) => {
+        const t = o.compiled.tables.find((x) => x.id === id);
+        return t === undefined ? undefined : qualifiedTable(o.slotName, t as CompiledBaseTable);
+      },
+      fieldOf: (tid, fid) =>
+        (o.compiled.tables.find((x) => x.id === tid) as CompiledBaseTable | undefined)?.fields.find(
+          (f) => f.id === fid,
+        )?.name ?? fid,
       field: name,
       interval: (v) => iv(v) as unknown as Record<string, unknown>,
       actor: actorOut,

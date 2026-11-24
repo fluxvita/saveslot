@@ -412,7 +412,11 @@ describe.each(both)("%s table", (_, schema, isState) => {
               conflict: has("candidate"),
             });
             if (x.op.kind === "write" || x.op.kind === "revoke") {
-              expect({ step: i, awaiting: j.erased.length > 0 && !j.acknowledged }).toEqual({
+              // ① (a change point erased, not acknowledged), or ② (a revoke of a referred row).
+              const awaits =
+                (j.erased.length > 0 && !j.acknowledged) ||
+                (j.record.kind === "revoke" && j.record.items.some((y) => y.status === "awaiting"));
+              expect({ step: i, awaiting: awaits }).toEqual({
                 step: i,
                 awaiting: has("awaiting"),
               });

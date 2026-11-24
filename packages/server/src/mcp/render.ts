@@ -1212,8 +1212,21 @@ function impactLines(x: unknown, pad: string): Line[] {
       ),
     );
   }
+  // High impact ②: the rows still referring to the row it revokes; they keep its ID.
+  const referrers = arr(own(im, "referrers"));
+  if (referrers.length > 0) {
+    out.push(
+      indent(
+        t`leave ${num(referrers.length)} ${referrers.length === 1 ? t`row` : t`rows`} referring to it (their value kept; read as pointing at a revoked record): ${join(
+          referrers.map((r) => t`${targetOf(r)} (${fieldOf(obj(r)["field"])})`),
+          t`; `,
+        )}`,
+      ),
+    );
+  }
   for (const [k, v] of Object.entries(im)) {
-    if (k === "overwritten" || k === "filled_gaps" || k === "reverted") continue;
+    if (k === "overwritten" || k === "filled_gaps" || k === "reverted" || k === "referrers")
+      continue;
     out.push(indent(t`${untrusted(k)}: ${stored(JSON.stringify(v))}`));
   }
   return out;

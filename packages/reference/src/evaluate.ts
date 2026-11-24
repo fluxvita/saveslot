@@ -1319,10 +1319,13 @@ class Replay {
       defaultEnd: false,
       from: null,
     };
+    // High impact ②: a revoke of a row or a whole entity still referred to awaits confirmation;
+    // stale, it is a candidate first (05-time «既版本对不上、又是高影响»).
+    const awaiting = !conflict && o.referenced === true && (!this.isState || o.valid === undefined);
     this.push([
       conflict
         ? { ...base, status: "candidate", valid: seenValid }
-        : { ...base, status: "applied", valid },
+        : { ...base, status: awaiting ? "awaiting" : "applied", valid },
     ]);
   }
 
@@ -1516,7 +1519,9 @@ class Replay {
         event: o.event,
         op: o.op,
         status: "applied" as const,
-        carried: [refOf(x)],
+        // A value carries the proposed one; existence (a revoke awaiting for its referrers,
+        // high impact ②) has no sources to carry (09 §5.7).
+        ...(x.target !== "existence" ? { carried: [refOf(x)] } : {}),
         explicitEnds: [],
       })),
     );

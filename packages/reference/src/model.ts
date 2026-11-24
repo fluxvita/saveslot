@@ -136,6 +136,11 @@ export interface RevokeOp extends OpBase {
   readonly valid?: { readonly from: FromParam; readonly to: ToParam };
   /** Sources of the interval (the user's words); absent means the revoke has no evidence. */
   readonly validSources?: readonly SourceKey[];
+  /**
+   * High impact ② (05-time «高影响写入»): the target is still referred to by another row, as the
+   * write path found it when written (other rows: given, not modelled here).
+   */
+  readonly referenced?: true;
 }
 
 export interface UndoOp extends OpBase {

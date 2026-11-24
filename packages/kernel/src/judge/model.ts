@@ -56,6 +56,12 @@ export interface TableShape {
    * row its key, never in a revert record (04-write-and-read «给没有来源键的行补键»: 回退碰不到键).
    */
   readonly keyFields?: readonly FieldId[];
+  /**
+   * Whether a row of the table may be referred to (a ref field of the slot names this table in
+   * any schema version the log has had): high impact ② may decide a revoke of it, which a
+   * deletion's replay cannot judge again without the referrers (`referableIn`, write/plan.ts).
+   */
+  readonly referable?: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -147,6 +153,12 @@ export interface RevokeInput extends OpBase, SeenVersion {
   /** State tables: the revoked interval. Absent: the whole row or entity. */
   readonly valid?: { readonly from: FromParam; readonly to: ToParam };
   readonly now: BizPoint;
+  /**
+   * High impact ② (05-time «高影响写入»): the row or entity is still referenced by another row's
+   * ref field, as the write path found it (other rows; this judge sees one). On a state table only
+   * for a revoke of the whole entity (no `valid`). Not given in a replay.
+   */
+  readonly referenced?: boolean;
 }
 
 /** A person confirms an awaiting write: its proposal is executed as recorded. */

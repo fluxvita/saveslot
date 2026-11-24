@@ -155,6 +155,7 @@ import {
   withDerived,
 } from "./receipt.ts";
 import { decodeRecords, encodeOp, type RowContext, type StoredEvent } from "./record.ts";
+import { type Referrer, referrersOf } from "./referrers.ts";
 import { givenItems, refProblems, type StoredTargets, tableInRange } from "./refs.ts";
 import { findRequest, requestKeyOf } from "./request-key.ts";
 import { evidenceSource, placeEvidence } from "./sources.ts";
@@ -272,6 +273,16 @@ export interface TrackedItem {
   readonly stored: Readonly<Record<string, unknown>>;
   /** Awaiting items: the writes its proposal would take back, as last given. */
   reverted: { readonly op: OpNumber; readonly deps: readonly ItemRef[] }[];
+  /**
+   * An awaiting revoke of high impact ② (`referenced_row`): the rows still referring to its target,
+   * as last given, or as this request finds them at its end. Absent for any other item.
+   */
+  referrers?: Referrer[];
+  /**
+   * The `write.base` of this request that changed one of its referrers (a ref value, a revoke),
+   * when the item's own row was not written: what a refresh of its referrers names.
+   */
+  touchedBy?: Seq;
   /** This request's `item.created` / `item.merged` events of the item, filled at its end. */
   readonly fills: { readonly index: number; readonly merged: boolean }[];
 }
@@ -322,6 +333,7 @@ function trackedItems(
       | {
           item: ItemId;
           type?: string;
+          reason?: string;
           unit?: string[];
           merge_base_op?: number;
           origin_event?: number;
@@ -358,6 +370,7 @@ function trackedItems(
         mergedHere: false,
         stored: {},
         reverted: [],
+        ...(t.reason === "referenced_row" ? { referrers: [] } : {}),
         fills: [],
       });
     }
@@ -386,6 +399,20 @@ function trackedItems(
     }
   }
   for (const x of by.values()) {
+    if (x.referrers !== undefined) {
+      x.referrers = Object.entries(x.stored)
+        .filter(
+          ([p, b]) => p.startsWith("impact/") && (b as { kind: string }).kind === "referencing_row",
+        )
+        .map(([, b]) => {
+          const r = b as { table: TableId; row?: RowId; entity?: EntityId; field: FieldId };
+          return {
+            table: r.table,
+            ...(r.entity !== undefined ? { entity: r.entity } : { row: r.row as RowId }),
+            field: r.field,
+          };
+        });
+    }
     x.reverted = Object.entries(x.stored)
       .filter(
         ([p, b]) => p.startsWith("impact/") && (b as { kind: string }).kind === "reverted_write",
@@ -548,8 +575,18 @@ function itemContents(state: RowState, t: TrackedItem, at: Limit): ItemContents 
     ...scopeBlock,
     current,
     proposed: proposedOf(state, t),
-    impact: awaitingImpactNow(state, t, at),
+    impact: [...awaitingImpactNow(state, t, at), ...referencingRows(t)],
   };
+}
+
+/** High impact ②: each referrer of the item's target, an impact entry (09 §5.8 `referencing_row`). */
+function referencingRows(t: TrackedItem) {
+  return (t.referrers ?? []).map((r) => ({
+    kind: "referencing_row" as const,
+    table: r.table as string,
+    ...(r.entity !== undefined ? { entity: r.entity as string } : { row: r.row as string }),
+    field: r.field as string,
+  }));
 }
 
 /** An awaiting item's proposal entries: each value its items give, a span of their interval each. */
@@ -861,6 +898,111 @@ async function storedTexts(
   return out;
 }
 
+/** The rows and entities a request has worked on, as `referrersOf` reads them. */
+function knownRows(rows: ReadonlyMap<string, RowWork>) {
+  return new Map([...rows].map(([id, w]) => [id, { table: w.ctx.table, state: w.state }]));
+}
+
+/**
+ * The rows and entities a request's ref values named, before it or after it, each with the table
+ * the field names and the `write.base` of the row that named it: of every row the request wrote
+ * (a revoke or a revoke undone included: its values then). Every value an item of a ref field of
+ * such a row gives, in effect or not: a superset, what is found again is compared.
+ */
+/**
+ * High impact ② at the end of a request or a resolution (05-time ② 段末: 引用方变了，事项的影响随之
+ * 刷新): the targets its ref values named before or after it, and those of the rows it revoked or
+ * brought back. An open `referenced_row` item on one has its referrers found again (as of the end,
+ * the request's own rows laid over), the target's row loaded into `rows` when it was not touched.
+ * The item names the `write.base` of a row that joined or left its referrers (`touchedBy`), when
+ * its own row was not written; settling compares its entries and refreshes it if they changed.
+ */
+export async function refreshReferenced(
+  tx: Tx,
+  rows: Map<string, RowWork>,
+  o: {
+    readonly tables: readonly { readonly id: TableId; readonly kind: string }[];
+    /** The log's restores, when the caller read them (`RowContext.restores`). */
+    readonly restores?: RowContext["restores"];
+    readonly op: OpNumber;
+  },
+): Promise<void> {
+  for (const [target, { table: targetTable, by }] of referredTargets(rows, o.tables)) {
+    // An item the request opened is not stored yet: the row is among the request's own then.
+    let work = rows.get(target);
+    if (work === undefined) {
+      const open = await tx.query<{ id: string }>(
+        `SELECT id FROM pending_items WHERE target_table = $1 AND target_row = $2
+           AND state = 'open' AND type = 'awaiting_confirmation'`,
+        [targetTable, target],
+      );
+      if (open.rows.length === 0) continue;
+      const t = o.tables.find((x) => x.id === targetTable) as CompiledBaseTable;
+      const isState = t.time.type === "state";
+      work = await loadRow(
+        tx,
+        {
+          table: t.id,
+          target: isState ? { entity: target as EntityId } : { row: target as RowId },
+          shape: tableShape(t),
+          granularity: isState && t.time.type === "state" ? t.time.granularity : "date",
+          ...(o.restores !== undefined ? { restores: o.restores } : {}),
+        },
+        "ops",
+      );
+      rows.set(target, work);
+    }
+    for (const t of work.items) {
+      if (t.referrers === undefined) continue;
+      const was = new Set<string>(t.referrers.map((r) => (r.row ?? r.entity) as string));
+      const now = await referrersOf(tx, {
+        tables: o.tables as never,
+        targetTable,
+        target,
+        known: knownRows(rows),
+        at: { upTo: o.op },
+      });
+      const is = new Set<string>(now.map((r) => (r.row ?? r.entity) as string));
+      t.referrers = now;
+      // The write that changed who refers: of a row that joined or left (09 §5.8 `by_event`).
+      const moved = [...by.keys()].find((id) => was.has(id) !== is.has(id));
+      const at = moved !== undefined ? by.get(moved) : undefined;
+      if (at !== undefined) t.touchedBy ??= at;
+    }
+  }
+}
+
+/**
+ * The rows and entities a request's ref values named, before it or after it, each with the table
+ * the field names and, by the row naming it, that row's `write.base`: of every row the request
+ * wrote (a revoke or a revoke undone included: its values then). Every value an item of a ref field
+ * of such a row gives, in effect or not: a superset, what is found again is compared.
+ */
+function referredTargets(
+  rows: ReadonlyMap<string, RowWork>,
+  tables: readonly { readonly id: TableId; readonly kind: string }[],
+): Map<string, { readonly table: TableId; readonly by: Map<string, Seq> }> {
+  const out = new Map<string, { table: TableId; by: Map<string, Seq> }>();
+  for (const [id, w] of rows) {
+    if (w.lastBase === undefined) continue;
+    const t = tables.find((x) => x.id === w.ctx.table);
+    if (t?.kind !== "base") continue;
+    for (const f of (t as CompiledBaseTable).fields) {
+      if (f.type !== "ref") continue;
+      const to = (f as { ref: { table: TableId } }).ref.table;
+      for (const x of w.state.items) {
+        if (x.target !== f.id || x.content.kind !== "value") continue;
+        const v = x.content.value;
+        if (typeof v !== "string" || v === id) continue;
+        const entry = out.get(v) ?? { table: to, by: new Map<string, Seq>() };
+        entry.by.set(id, w.lastBase);
+        out.set(v, entry);
+      }
+    }
+  }
+  return out;
+}
+
 function rawOf(
   fields: Readonly<Record<FieldId, NormalizedField>> | undefined,
 ): Partial<Record<FieldId, RawFieldValue>> {
@@ -961,7 +1103,9 @@ export async function settleItems(
         const groups = f.merged ? (GIVES["item.merged"] as readonly string[]) : GROUPS;
         o.events[f.index] = { ...ev, blocks: { ...ev.blocks, ...pick(blocks, groups) } as never };
       }
-      if (t.here || work.lastBase === undefined) continue;
+      // Its own row written by the request, or only one of its referrers (high impact ②).
+      const by = work.lastBase ?? t.touchedBy;
+      if (t.here || by === undefined) continue;
       const mergeBase = t.type === "conflict" ? { merge_base_op: t.mergeBase } : {};
       if (t.reachedBy !== undefined) {
         if (!t.mergedHere && (await hadRead(tx, o.writer, o.task, t, o.restore))) {
@@ -1004,7 +1148,7 @@ export async function settleItems(
       if (t.mergedHere) continue;
       if (canonicalize(t.stored as never) === canonicalize(blocks as never)) continue;
       if (nothingToRevert(work.state, t, atEnd.upTo)) {
-        o.events.push(closedEmpty(o.slot, t.item, work.lastBase));
+        o.events.push(closedEmpty(o.slot, t.item, by));
         work.items.splice(work.items.indexOf(t), 1);
         added++;
         continue;
@@ -1013,7 +1157,7 @@ export async function settleItems(
         type: "item.refreshed",
         slot: o.slot,
         blocks: {
-          target: { item: t.item, by_event: work.lastBase, cause: "entries_changed", ...mergeBase },
+          target: { item: t.item, by_event: by, cause: "entries_changed", ...mergeBase },
           ...blocks,
         } as never,
       });
@@ -2053,6 +2197,18 @@ async function writeIn(
       ...(seenCurrent ? { seenCurrent: true as const } : {}),
     };
     const nowPoint = (granularity === "date" ? today : now) as never;
+    // High impact ② (05-time «高影响写入»): a revoke of a row, or of a whole entity, still referred
+    // to by other rows, as the store holds them with the ops before this one laid over.
+    const referrers =
+      o.kind === "revoke" && (!isState || o.valid === undefined)
+        ? await referrersOf(tx, {
+            tables: slot.tables,
+            targetTable: table.id,
+            target: id,
+            known: knownRows(rows),
+            at: { upTo: (op - 1) as OpNumber, request: { op, below: o.index } },
+          })
+        : [];
     const judgeInput: JudgeInput =
       o.kind === "write"
         ? {
@@ -2082,6 +2238,7 @@ async function writeIn(
               kind: "revoke",
               ...(o.valid !== undefined && o.valid !== "corrected_span" ? { valid: o.valid } : {}),
               now: nowPoint,
+              ...(referrers.length > 0 ? { referenced: true } : {}),
             }
           : {
               ...base,
@@ -2228,6 +2385,8 @@ async function writeIn(
         reverted: awaitingImpact(work.state, j).flatMap((x) =>
           x.kind === "reverted_write" ? [{ op: x.op, deps: x.deps }] : [],
         ),
+        // A revoke awaiting for ② (the only way a revoke awaits): who refers to its target.
+        ...(j.record.kind === "revoke" ? { referrers } : {}),
         fills: [],
       });
     }
@@ -2433,6 +2592,8 @@ async function writeIn(
       reason: "inconsistent",
     });
   }
+
+  await refreshReferenced(tx, rows, { tables: slot.tables, restores, op });
 
   next += await settleItems(tx, rows.values(), {
     op,

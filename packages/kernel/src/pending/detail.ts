@@ -6,7 +6,14 @@
 // The callers say how an operation's actor and an interval are written (`Naming`), so the same
 // functions serve both.
 
-import type { CandidateCause, FieldValue, Intent, ItemId } from "@fluxvita/saveslot-contract-core";
+import type {
+  CandidateCause,
+  EntityId,
+  FieldValue,
+  Intent,
+  ItemId,
+  RowId,
+} from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
 
 export type Blocks = Readonly<Record<string, unknown>>;
@@ -187,6 +194,13 @@ export interface Naming<A, V = unknown, I = Record<string, unknown>> {
   /** A field value as the caller gives it (a zoned date-time as text, 04-contract-types §1.4). */
   readonly value: (v: FieldValue) => V;
   readonly isState: boolean;
+  /**
+   * A table of the item's slot by ID, as the caller names it (`slot.table`); undefined for one the
+   * caller cannot see (its rows are not listed). Absent: no referrer is listed.
+   */
+  readonly table?: (id: string) => string | undefined;
+  /** A field of a table of the item's slot, by their IDs, as the caller names it. */
+  readonly fieldOf?: (table: string, field: string) => string;
 }
 
 const actorAt = <A, V, I>(e: ItemEntries, n: Naming<A, V, I>, op: number) =>
@@ -248,10 +262,31 @@ export function impactOut<A, V, I>(e: ItemEntries, n: Naming<A, V, I>, blocks: r
       ...(typeof b["op"] === "number" ? { revoked_by: b["op"] as number } : {}),
     }));
   const reverted = revertedOut(e, n, blocks);
+  // High impact ②: the rows still referring to the target, by the ref field that does, those in
+  // tables the caller can see.
+  const seen = new Set<string>();
+  const referrers = blocks
+    .filter((b) => b["kind"] === "referencing_row")
+    .flatMap((b) => {
+      const table = n.table?.(b["table"] as string);
+      const id = (b["row"] ?? b["entity"]) as string;
+      const field = b["field"] as string;
+      const key = `${id} ${field}`;
+      if (table === undefined || seen.has(key)) return [];
+      seen.add(key);
+      return [
+        {
+          table,
+          ...(b["entity"] !== undefined ? { entity: id as EntityId } : { row: id as RowId }),
+          field: n.fieldOf?.(b["table"] as string, field) ?? field,
+        },
+      ];
+    });
   return {
     ...(overwritten.length > 0 ? { overwritten } : {}),
     ...(filled.length > 0 ? { filled_gaps: filled } : {}),
     ...(reverted.length > 0 ? { reverted } : {}),
+    ...(referrers.length > 0 ? { referrers } : {}),
   };
 }
 
