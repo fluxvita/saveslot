@@ -694,7 +694,7 @@ describe("on a state table", () => {
   );
 
   // As it stands, pinned (08 «P3 前»: whether a revert's value write-back covers a corroboration
-  // end; develop-del settles it with the rules of taking back, and this case with it).
+  // end; it is settled by the rules of taking back, and this case with it).
   it(
     "a corroboration covered by a write from the same version, the write undone: the write-back covers its ends",
     async () => {
