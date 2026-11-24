@@ -402,6 +402,53 @@ const CTX_DELETE = {
 const DELETION = `pi_${"7".repeat(16)}`;
 const DUE = "2026-11-11T06:00:00.000Z";
 let newItems = 0;
+
+/**
+ * State table: #20 2 on [11-01, 11-05); #30 3 on [11-05, 11-11), having seen #20; #50 undoes #30,
+ * writing back "no value" on [11-05, 11-11) (none was there before #30). Deleting #30's words (pick 41: the second source cited, alone) leaves #50's record
+ * nothing to take back: its write-back is restated as dropped, and the stretch it gave "no value"
+ * is given by nothing. Its giver changed, so the row is listed, though no stretch is there after
+ * (09 §5.9 «列哪些»).
+ */
+const NO_VALUE_GONE = {
+  ops: [
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 0,
+      valid: {
+        from: { mode: "given", value: "2026-11-01" },
+        to: { mode: "given", value: "2026-11-05" },
+      },
+      fields: { f2: { value: "2", sources: ["S20"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 20,
+      valid: {
+        from: { mode: "given", value: "2026-11-05" },
+        to: { mode: "given", value: "2026-11-11" },
+      },
+      fields: { f2: { value: "3", sources: ["S30"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "undo",
+      op: 50,
+      event: 51,
+      target: 30,
+      includeLater: false,
+      seen: 31,
+      acknowledge: ["overwrite"],
+    },
+  ],
+  decisions: [],
+  pick: 41,
+} as unknown as { ops: Op[]; decisions: Decision[]; pick: number };
 const item = (x: { event: number; target: string; k: number }) => `${x.event}/${x.target}/${x.k}`;
 
 /** The source table's items in effect: status and interval, by item. */
@@ -823,5 +870,10 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     );
     expect(seen.refreshed).toBeGreaterThan(before);
     expect(seen.superseded).toBeGreaterThan(0);
+    if (isState) {
+      const listed = seen.listed;
+      await checkSample(NO_VALUE_GONE.ops, NO_VALUE_GONE.decisions, NO_VALUE_GONE.pick);
+      expect(seen.listed).toBe(listed + 1);
+    }
   });
 });

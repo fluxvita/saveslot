@@ -411,6 +411,30 @@ describe("a no_value write-back's stretch (09 §5.9 «列哪些»: class 2, deps
     expect(f3?.deps).toContainEqual({ event: 31, target: "f3", k: 0 });
   });
 
+  it("a write-back's piece in a gap, before and after, given by nothing once it is dropped: listed, no stretch", () => {
+    // #20 f2=2 on [11-01, 11-05); #30 f2=3 on [11-05, 11-11), having seen #20; #50 undoes #30:
+    // "no value" written back on [11-05, 11-11), in a gap (f2 is required). S30f2 deleted: #50's
+    // write-back is dropped, the piece given by nothing.
+    const ops: Op[] = [
+      w(20, 0, { f2: "2" }, { from: "11-01", to: "11-05", ack: true }),
+      w(30, 20, { f2: "3" }, { from: "11-05", to: "11-11", ack: true }),
+      {
+        kind: "undo",
+        op: 50,
+        event: 51,
+        target: 30,
+        includeLater: false,
+        seen: 31,
+        acknowledge: ["overwrite"],
+      } as Op,
+    ];
+    const r = run(STATE, ops, ["S30f2"]);
+    expect(r.replay.restated.map((x) => [x.item.event, x.status])).toContainEqual([51, "dropped"]);
+    expect(r.result.listed).toBe(true);
+    expect(r.result.stretches.filter((x) => x.field === "f2" && x.value === null)).toEqual([]);
+    expect(r.result.gaps?.gaps.length).toBeGreaterThan(0);
+  });
+
   it("the same state before and after, the write-back only restated: listed", () => {
     const { table, steps } = judged(
       STATE,

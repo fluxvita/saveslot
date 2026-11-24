@@ -186,8 +186,29 @@ export function rowResult(
   // given with `existence` (09 §5.9 «列哪些»).
   const gapsChanged =
     after.isState && JSON.stringify(canonical(vb.gaps)) !== JSON.stringify(canonical(va.gaps));
+  // A piece given before (a value, a revoke leaving a hole, or a no_value write-back, in a gap as
+  // well) that nothing gives after, or that another gives: no stretch after to be seen changed
+  // above, the field's giver changed all the same (09 §5.9 «列哪些»: a field whose value or giver
+  // differs). Listed, with no stretch of its own: apply's «没列到的段保持原样» check looks only
+  // outside the stretches listed and the result's gaps, and outside a gap a piece given no value
+  // reads as one given nothing (apply/deletion.ts, `planRows`, the check "the other way").
+  // State tables only: on an event or timeless table the view gives after every field the row had
+  // before, one stretch each, and the loop above compares it with the one before already.
+  const givenBeforeChanged =
+    va.exists &&
+    before.isState &&
+    fields.some((f) =>
+      before
+        .pieces([...before.items.map((i) => i.valid), ...after.items.map((i) => i.valid)])
+        .some((s) => {
+          const b = giverOn(before, f, s);
+          const a = giverOn(after, f, s);
+          return b !== undefined && (a === undefined || refKey(a) !== refKey(b));
+        }),
+    );
   const listed =
     stretches.length > 0 ||
+    givenBeforeChanged ||
     vb.exists !== va.exists ||
     existenceTouched !== undefined ||
     recreated.length > 0 ||
