@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { checkClaims, claimRows, testCases } from "./check-claims.ts";
 import { dcoProblem } from "./check-dco.ts";
 import { checkDocLinks, headingAnchors, slugify } from "./check-doc-links.ts";
 import {
@@ -79,6 +80,134 @@ describe("JSON examples", () => {
     const { problems, blocks } = checkJsonExamples(root);
     expect(blocks).toBe(2);
     expect(problems.map((p) => p.line)).toEqual([10]);
+  });
+});
+
+describe("claims index", () => {
+  const TEST = [
+    'describe("outer", () => {',
+    '  it("holds", () => {});',
+    '  it.each([1, 2])("case %s", () => {});',
+    '  it.skip("skipped", () => {});',
+    '  it.todo("to do");',
+    '  describe.skip("off", () => {',
+    '    it("inside", () => {});',
+    "  });",
+    '  describe.skipIf(process.env.X === undefined)("with a server", () => {',
+    '    it("needs it", () => {});',
+    "  });",
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a test file's source, as text
+    "  it(`a ${1} template`, () => {});",
+    "});",
+    'it("holds", () => {});',
+    'const title = "not a case"; call("neither");',
+  ].join("\n");
+  const HEAD = "| 编号 | 断言 | 预言 | 测试 | 状态 |\n|---|---|---|---|---|\n";
+  const index = (...rows: string[]) => ({
+    "docs/zh-CN/spec/11-claims.md": `# Claims\n\n${HEAD}${rows.join("\n")}\n`,
+    "docs/zh-CN/spec/a.md": "# A\n",
+    "p/x.test.ts": TEST,
+  });
+  const reasons = (root: string) => checkClaims(root).problems.map((p) => `${p.id}: ${p.reason}`);
+
+  it("reads a test file's cases: titles with their blocks, each's, skips and conditions", () => {
+    expect(
+      testCases(TEST).map(
+        (c) => `${c.skipped ? "S " : ""}${c.conditional ? "C " : ""}${c.chain.join(" › ")}`,
+      ),
+    ).toEqual([
+      "outer › holds",
+      "outer › case %s",
+      "S outer › skipped",
+      "S outer › to do",
+      "S outer › off › inside",
+      "C outer › with a server › needs it",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the title as the source has it
+      "outer › a ${1} template",
+      "holds",
+    ]);
+  });
+
+  it("reads rows by the header's columns, test references from code spans, an escaped pipe", () => {
+    const [row] = claimRows(
+      `${HEAD}| J1 | a [claim](a.md) | compares x \\| y | \`p/x.test.ts\` › \`outer\` › \`holds\`<br>\`p/y.test.ts\` › \`other\` | 成立 | \`kernel\` |\n\n| not | a | claims | table |\n|---|---|---|---|\n| 1 | 2 | 3 | 4 |\n`,
+    );
+    expect(row).toMatchObject({
+      line: 3,
+      id: "J1",
+      oracle: "compares x | y",
+      status: "成立",
+      tests: [
+        { file: "p/x.test.ts", chain: ["outer", "holds"] },
+        { file: "p/y.test.ts", chain: ["other"] },
+      ],
+    });
+    expect(claimRows(`${HEAD}| J1 | c | o | — | 无测试 |\n\ntext\n| a | b |\n`)).toHaveLength(1);
+  });
+
+  it("passes rows whose tests exist and run, a conditional one counted", () => {
+    const root = tree(
+      index(
+        "| A1 | [c](a.md) | o | `p/x.test.ts` › `outer` › `holds`<br>`p/x.test.ts` › `case %s` | 成立 |",
+        "| A2 | [c](a.md) | o | `p/x.test.ts` › `needs it` | 部分有测试 |",
+        "| A3 | [c](a.md) | o | — | 无测试 |",
+      ),
+    );
+    expect(checkClaims(root)).toEqual({ problems: [], rows: 3, tests: 3, conditional: 1 });
+  });
+
+  it("fails a test that is missing, skipped or unnamed, and a file that is missing", () => {
+    const root = tree(
+      index(
+        "| B1 | [c](a.md) | o | `p/x.test.ts` › `no such case` | 成立 |",
+        "| B2 | [c](a.md) | o | `p/x.test.ts` › `skipped` | 成立 |",
+        "| B3 | [c](a.md) | o | `p/x.test.ts` › `off` › `inside` | 成立 |",
+        "| B4 | [c](a.md) | o | `p/x.test.ts` › `to do` | 成立 |",
+        "| B5 | [c](a.md) | o | `p/gone.test.ts` › `holds` | 成立 |",
+        "| B6 | [c](a.md) | o | `p/x.test.ts` | 成立 |",
+        "| B7 | [c](a.md) | o | `p/x.test.ts` › `inner` › `holds` | 成立 |",
+        "| B8 | [c](a.md) | o | `holds` | 成立 |",
+      ),
+    );
+    expect(reasons(root)).toEqual([
+      'B1: p/x.test.ts: no case titled "no such case"',
+      'B2: p/x.test.ts: "skipped" is skipped',
+      'B3: p/x.test.ts: "off › inside" is skipped',
+      'B4: p/x.test.ts: "to do" is skipped',
+      "B5: p/gone.test.ts: file does not exist",
+      "B6: p/x.test.ts: no case named; write the case's title after the file",
+      'B7: p/x.test.ts: no case titled "inner › holds"',
+      'B8: status "成立" needs a test reference; a row with no test is 无测试',
+      'B8: title "holds" comes before any test file',
+    ]);
+  });
+
+  it("fails a row without an id, a link, an oracle or a known status, and a status against its tests", () => {
+    const root = tree(
+      index(
+        "| C1 | no link | o | `p/x.test.ts` › `holds` | 成立 |",
+        "| C1 | [c](a.md) |  | `p/x.test.ts` › `holds` | holds |",
+        "|  | [c](a.md) | o | — | 成立 |",
+        "| C4 | [c](a.md) | o | `p/x.test.ts` › `holds` | 无测试 |",
+      ),
+    );
+    expect(reasons(root)).toEqual([
+      "C1: the claim does not link to where the spec states it",
+      "C1: the id is used by an earlier row",
+      "C1: no oracle",
+      'C1: status "holds" is not one of: 成立, 部分有测试, 已知不成立, 无测试',
+      ": no id",
+      ': status "成立" needs a test reference; a row with no test is 无测试',
+      "C4: status 无测试 on a row that names a test",
+    ]);
+  });
+
+  it("fails an index with no rows, and passes the repository's own", () => {
+    const root = tree({ "docs/zh-CN/spec/11-claims.md": "# Claims\n\nNo table yet.\n" });
+    expect(reasons(root)).toEqual([": no claim rows found"]);
+    const own = checkClaims(REPO);
+    expect(own.problems).toEqual([]);
+    expect(own.rows).toBeGreaterThan(20);
   });
 });
 

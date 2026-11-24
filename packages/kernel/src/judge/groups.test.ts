@@ -2,7 +2,8 @@
 // a group whose judgement needs more than one field at a time, judged by the kernel, with the
 // statuses the reference evaluator gives (reference/src/testing/groups.fixture.ts).
 
-import { evaluate, evaluateLog } from "@fluxvita/saveslot-reference";
+import type { BizPoint } from "@fluxvita/saveslot-contract-core";
+import { evaluate, evaluateLog, type Op, type TableSchema } from "@fluxvita/saveslot-reference";
 import {
   GROUP_LOGS,
   GROUP_TAKE_INTO_HOLE,
@@ -28,6 +29,48 @@ describe("field groups, as the reference evaluator judges them", () => {
       .sort();
     expect(kernel).toEqual(want);
     expect(ref).toEqual(want);
+  });
+});
+
+// 09 «组值», the example's two halves: W and L, from the same version, write one field of a group
+// to the same value. On a state table the group values are equal, so W takes effect; on an event
+// table values are not compared, the unit changed after V is a conflict.
+describe("the group value where W and L write the same", () => {
+  const write = (op: number, seen: number, fields: Record<string, string>, state: boolean): Op => ({
+    kind: "write",
+    op,
+    event: op + 1,
+    seen,
+    ...(state
+      ? {
+          valid: { from: { mode: "given", value: "2026-10-01" as BizPoint }, to: { mode: "open" } },
+        }
+      : {}),
+    fields: Object.fromEntries(
+      Object.entries(fields).map(([f, value]) => [f, { value, sources: [`S${op}${f}`] }]),
+    ),
+  });
+  it.each([
+    ["a state table: no conflict, in effect", "state", "applied"],
+    ["an event table: a candidate", "event", "candidate"],
+  ] as const)("W and L both write f2 of a group to the same value on %s", (_, kind, want) => {
+    const schema: TableSchema = { kind, required: ["f2"], groups: [["f2", "f3"]] };
+    const state = kind === "state";
+    const ops = [
+      write(5, 0, { f2: "0", f3: "a" }, state),
+      write(10, 5, { f2: "1" }, state),
+      write(20, 5, { f2: "1" }, state),
+    ];
+    const { steps } = judged(schema, ops, []);
+    expect(steps).toHaveLength(ops.length);
+    const kernel = (steps.at(-1)?.state.items ?? [])
+      .filter((x) => x.event === 21)
+      .map((x) => [x.target, x.status]);
+    const ref = evaluate(schema, ops)
+      .items.filter((x) => x.event === 21)
+      .map((x) => [x.target, x.status]);
+    expect(kernel).toEqual([["f2", want]]);
+    expect(ref).toEqual([["f2", want]]);
   });
 });
 
