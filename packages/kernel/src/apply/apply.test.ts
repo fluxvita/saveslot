@@ -136,8 +136,8 @@ describe("apply stops, never skips", () => {
     );
   });
 
-  it("on a block shape it cannot check yet", () => {
-    // `write.head` `ops/<i>/refs` has no shape check yet (`ref` fields and `as`, P2).
+  it("on a block of a shape it checks and the block fails", () => {
+    // `write.head` `ops/<i>/refs` without its temporary name.
     const ev = {
       ...event("write.head", {
         ctx: {
@@ -153,8 +153,8 @@ describe("apply stops, never skips", () => {
       }),
     };
     const header = { ...ev.header, actor: CONN, slot: SLOT };
-    expect(reason({ ...ev, header })).toBe(
-      "unsupported @2: apply stopped at seq 2: block shapes not supported yet: Refs",
+    expect(reason({ ...ev, header })).toMatch(
+      /^invalid @2: apply stopped at seq 2: .*ops\/0\/refs/,
     );
   });
 

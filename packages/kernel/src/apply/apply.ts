@@ -136,16 +136,7 @@ function parsed(ev: ApplyEvent): Parsed {
     else removed.push(path);
   }
   const r = parseEvent(ev.header, present, removed);
-  if (!r.ok) {
-    if (r.kind === "invalid") {
-      throw new ApplyError("invalid", ev.seq, `invalid event: ${r.issues.join("; ")}`);
-    }
-    throw new ApplyError(
-      "unsupported",
-      ev.seq,
-      `block shapes not supported yet: ${r.shapes.join(", ")}`,
-    );
-  }
+  if (!r.ok) throw new ApplyError("invalid", ev.seq, `invalid event: ${r.issues.join("; ")}`);
   const ctx = present["ctx"] as Obj | undefined;
   if (ctx !== undefined && !isKnownRulesetVersion(ctx["ruleset_version"] as number)) {
     throw new ApplyError(

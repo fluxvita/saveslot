@@ -6,8 +6,8 @@
 // paths, enums, required fields). Whether the kernel knows a version string recorded inside a
 // block (ruleset, checker, compiler) is the kernel's check, not a shape.
 //
-// Block shapes are added type by type. A block whose shape has no checker yet makes the result
-// `unsupported` (not `ok`): the caller must stop, as for an invalid event.
+// Every shape of the vocabulary has a checker (parse.test.ts holds it to that). One added to the
+// vocabulary without one is reported as an issue: the event is not `ok`, and the caller stops.
 
 import { check, type Issues, isObject, type Json, keys, type ShapeChecker, str } from "./check.ts";
 import {
@@ -28,9 +28,8 @@ import { matchPath, VOCABULARY, type VocabularyEntry } from "./vocabulary.ts";
 export type ParseResult =
   | { readonly ok: true; readonly type: EventType }
   /** Not a valid v1 event: the reasons, by position (`header.<field>` or a block path). */
-  | { readonly ok: false; readonly kind: "invalid"; readonly issues: readonly string[] }
-  /** Valid as far as checked, but a block's shape has no checker yet. */
-  | { readonly ok: false; readonly kind: "unsupported"; readonly shapes: readonly string[] };
+  | { readonly ok: false; readonly kind: "invalid"; readonly issues: readonly string[] };
+/** Valid as far as checked, but a block's shape has no checker yet. */
 
 // --- block shapes (§5.1–§5.3) ------------------------------------------------------------------
 
@@ -273,7 +272,6 @@ export function parseEvent(
   const type = parseHeader(header, issues);
   if (type === undefined) return { ok: false, kind: "invalid", issues };
   const removedSet = new Set(removed);
-  const unsupported = new Set<string>();
   for (const path of removedSet) {
     const entry = matchPath(type, path);
     if (entry === undefined) issues.push(`${path}: not in the vocabulary of ${type}`);
@@ -288,7 +286,7 @@ export function parseEvent(
       continue;
     }
     const checker = SHAPES[entry.shape];
-    if (checker === undefined) unsupported.add(entry.shape);
+    if (checker === undefined) issues.push(`${path}: shape ${entry.shape} has no checker`);
     else checker(blocks[path], path, issues);
   }
   // Rules between the blocks of one event (§5.5–§5.8).
@@ -325,7 +323,5 @@ export function parseEvent(
     }
   }
   if (issues.length > 0) return { ok: false, kind: "invalid", issues };
-  if (unsupported.size > 0)
-    return { ok: false, kind: "unsupported", shapes: [...unsupported].sort() };
   return { ok: true, type };
 }

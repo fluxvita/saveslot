@@ -94,6 +94,7 @@ import { changedSinceOf, switchedVersions } from "../schema/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
 import { restoreAt, restoreHistory, restorePoint, seenOfVer } from "../store/restore-point.ts";
 import { type IntervalSet, meet, unionOf, WHOLE } from "../time/index.ts";
+import type { ValueOut } from "../time/zone.ts";
 import { appendWithDerived } from "./derive-step.ts";
 import { createdInEffect, duplicateBlock, duplicateOf, flaggedItem } from "./duplicates.ts";
 import { WriteError } from "./errors.ts";
@@ -1003,6 +1004,67 @@ function referredTargets(
   return out;
 }
 
+/**
+ * The temporary names the ref values of `o`'s `set` give ("@name"), each with its field. Only a
+ * ref field's value is a name: any other field's text starting with "@" is that text.
+ */
+function namesUsed(
+  o: NormalizedOp,
+  table: CompiledBaseTable,
+): { readonly field: FieldId; readonly name: string }[] {
+  const out: { field: FieldId; name: string }[] = [];
+  for (const [f, x] of Object.entries(o.fields ?? {})) {
+    const v = x?.value;
+    if (table.fields.find((y) => y.id === f)?.type !== "ref") continue;
+    if (typeof v === "string" && v.startsWith("@"))
+      out.push({ field: f as FieldId, name: v.slice(1) });
+  }
+  return out;
+}
+
+/** `o` with each name of `named` the ID it is bound to (value and raw alike), in its field. */
+function withNamesBound(
+  o: NormalizedOp,
+  named: readonly { readonly field: FieldId; readonly name: string }[],
+  bound: ReadonlyMap<string, { readonly id?: string }>,
+): NormalizedOp {
+  const fields: Record<FieldId, NormalizedField> = { ...(o.fields ?? {}) };
+  for (const n of named) {
+    const id = bound.get(n.name)?.id;
+    if (id !== undefined) fields[n.field] = { value: id as FieldValue, raw: id };
+  }
+  return { ...o, fields };
+}
+
+/** The row the key index names for a key, if any. */
+async function keyHolder(
+  tx: ReadTx,
+  table: CompiledBaseTable,
+  key: Readonly<Record<FieldId, NormalizedField>>,
+): Promise<string | undefined> {
+  const ids = (table as { external_key?: readonly FieldId[] }).external_key ?? [];
+  const values = canonicalize(ids.map((f) => (key[f]?.value ?? null) as JsonValue));
+  const r = await tx.query<{ holder_row: string }>(
+    "SELECT holder_row FROM external_keys WHERE table_id = $1 AND key_values = $2",
+    [table.id, values],
+  );
+  return r.rows[0]?.holder_row;
+}
+
+/** An external key as the request gives it, by field name: its values as written. */
+function keyAsGiven(
+  table: CompiledBaseTable,
+  key: Readonly<Record<FieldId, NormalizedField>>,
+): Record<string, ValueOut> {
+  // As written: a key field's value is text, a number or an enum's (never a zoned date-time).
+  return Object.fromEntries(
+    Object.entries(key).map(([f, x]) => [
+      table.fields.find((y) => y.id === f)?.name ?? f,
+      x.raw as ValueOut,
+    ]),
+  );
+}
+
 function rawOf(
   fields: Readonly<Record<FieldId, NormalizedField>> | undefined,
 ): Partial<Record<FieldId, RawFieldValue>> {
@@ -1247,9 +1309,12 @@ export async function writeInTx(tx: Tx, input: WriteInput): Promise<WriteReceipt
 /** What a write by external key came to, for its receipt (04-contract-types §5.1 `OpResult`). */
 interface KeyedOutcome {
   readonly outcome: "created" | "updated" | "unchanged" | "pending" | "skipped";
-  readonly row: RowId;
+  /** Absent only when skipped for a temporary name (`refOp`) before locating found no row. */
+  readonly row?: RowId;
   /** `skipped`: the revoke in effect on the row, by operation (this request's own, if it revoked it). */
   readonly revokedBy?: OpNumber;
+  /** `skipped` (`ref_skipped`): the op whose temporary name a ref value named, itself skipped. */
+  readonly refOp?: number;
 }
 
 /**
@@ -1525,6 +1590,20 @@ async function writeIn(
   // Writes by key: what each came to; those that left nothing (this time).
   const outcomes = new Map<number, KeyedOutcome>();
   const leftNothing = new Set<number>();
+  // Temporary names (`as`, 04-contract «临时名 as»), as the ops declaring them bind them, in order:
+  // the row or entity; none when that op was skipped. A later op's "@name" resolves here.
+  const bound = new Map<
+    string,
+    {
+      readonly index: number;
+      readonly id?: string;
+      readonly table?: TableId;
+      readonly created?: boolean;
+    }
+  >();
+  // The rows and entities this request creates, each with the op creating it and its temporary
+  // name: a premise on one must find it in effect when the request ends (premise_target_pending).
+  const createdIn = new Map<string, { readonly index: number; readonly as?: string }>();
   const apiCallSeq = new Map(
     apiCallOps.map((o, k) => [o.index, (op + 1 + evidence.fresh.length + k) as Seq]),
   );
@@ -1701,7 +1780,17 @@ async function writeIn(
         slotName: slot.name,
         fanIn: (target) => fanInAfter(tx, op, target, recordedHere, { i: o.index, items: mine }),
         createdHere: (table, key) =>
-          createdByKey.has(`${table} ${keyToken(tableOf(table), key as KeyValues)}`),
+          createdByKey.get(`${table} ${keyToken(tableOf(table), key as KeyValues)}`),
+        named: (name) => {
+          const n = bound.get(name);
+          return n === undefined
+            ? undefined
+            : {
+                ...(n.id !== undefined ? { id: n.id } : {}),
+                table: n.table as TableId,
+                created: n.created === true,
+              };
+        },
         restore,
         current,
         restores,
@@ -1767,7 +1856,41 @@ async function writeIn(
     }
   };
 
-  for (const o of req.ops) {
+  for (const given of req.ops) {
+    // Temporary names in its ref values: each the row an earlier op bound it to. One whose op was
+    // skipped binds nothing: an op by key using it is skipped too (`ref_skipped`), any other names
+    // no row (`ref_not_found`).
+    const named = namesUsed(given, tableOf(given.table));
+    // Normalizing took only names an earlier op declares: each has its entry by now.
+    if (named.some((n) => !bound.has(n.name))) {
+      throw new WriteError("internal", "a temporary name no earlier op declared", {
+        reason: "inconsistent",
+        param: `ops/${given.index}`,
+      });
+    }
+    const unbound = named.find((n) => bound.get(n.name)?.id === undefined);
+    if (unbound !== undefined) {
+      const refOp = bound.get(unbound.name)?.index as number;
+      if (given.target.kind === "external_key") {
+        if (given.as !== undefined) bound.set(given.as, { index: given.index });
+        outcomes.set(given.index, { outcome: "skipped", refOp });
+        leftNothing.add(given.index);
+        continue;
+      }
+      const t = tableOf(given.table);
+      throw new WriteError("validation_failed", "a ref field's target is not there", {
+        reason: "write",
+        details: [
+          {
+            op: given.index,
+            table: qualifiedTable(slot.name, t),
+            field: t.fields.find((f) => f.id === unbound.field)?.name ?? unbound.field,
+            code: "ref_not_found",
+          },
+        ],
+      });
+    }
+    const o = named.length > 0 ? withNamesBound(given, named, bound) : given;
     const table = tableOf(o.table);
     const shape: TableShape = tableShape(table);
     const isState = shape.kind === "state";
@@ -1970,9 +2093,15 @@ async function writeIn(
           revokedBy: Math.max(...by) as OpNumber,
         });
         leftNothing.add(o.index);
+        if (o.as !== undefined) bound.set(o.as, { index: o.index });
         continue;
       }
     }
+    // Its temporary name binds the row it creates or hits, from here on in the request.
+    if (o.as !== undefined)
+      bound.set(o.as, { index: o.index, id, table: table.id, created: isNew });
+    if (isNew && !createdIn.has(id))
+      createdIn.set(id, { index: o.index, ...(o.as !== undefined ? { as: o.as } : {}) });
 
     // The version the op saw.
     let seen: OpNumber;
@@ -2448,6 +2577,9 @@ async function writeIn(
       versions: { ruleset: RULESET, policy: slot.policyVersion },
     });
     Object.assign(headBlocks, enc.head);
+    // The temporary name it declares (09 §5.2 `ops/<i>/refs`): the caller's text, data, deleted
+    // with the op's evidence (03-deletion); the IDs it resolved to are in the ref values.
+    if (o.as !== undefined) headBlocks[`ops/${o.index}/refs`] = { as: o.as };
     const ownBase = enc.base !== undefined ? (next as Seq) : undefined;
     // Duplicate keys (04-write-and-read «疑似重复»; ./duplicates.ts): a row this op created and
     // that is in effect is compared once. Created, not inserted: what the judgement says
@@ -2593,6 +2725,28 @@ async function writeIn(
     });
   }
 
+  // A premise on a row this request creates (`same_request`): that creation must be in effect when
+  // the request ends; one awaiting confirmation or a candidate refuses the declaring op (08 «as 与
+  // 临时名»): send the creation alone first, then declare or restate.
+  // Not reached in this version: an insert and a creation by key always take effect (nothing to
+  // overwrite, no version to be stale against); kept for the high impact a slot's policy will add.
+  for (const [path, b] of Object.entries(headBlocks)) {
+    const m = /^ops\/(\d+)\/premises\/(\d+)$/.exec(path);
+    if (m === null) continue;
+    const d = b as { row?: string; entity?: string; ver?: { basis?: string } };
+    if (d.ver?.basis !== "same_request") continue;
+    const target = (d.row ?? d.entity) as string;
+    const state = rows.get(target)?.state;
+    if (state?.items.some((x) => x.status === "applied") === true) continue;
+    const made = createdIn.get(target);
+    throw new WriteError("invalid_argument", "the premise's row is not in effect", {
+      reason: "premise_target_pending",
+      param: path,
+      ...(made !== undefined
+        ? { op: made.index, ...(made.as !== undefined ? { as: made.as } : {}) }
+        : {}),
+    });
+  }
   await refreshReferenced(tx, rows, { tables: slot.tables, restores, op });
 
   next += await settleItems(tx, rows.values(), {
@@ -2791,24 +2945,42 @@ async function unrecordedOp(
   x: KeyedOutcome,
   restore: number,
 ): Promise<OpReceipt> {
-  const key = await externalKeyOf(tx, table, x.row);
+  // Skipped for a temporary name before it was located: the key as the request gives it, and the
+  // row holding it, if any.
+  const row =
+    x.row ??
+    (o.target.kind === "external_key"
+      ? ((await keyHolder(tx, table, o.target.key)) as RowId | undefined)
+      : undefined);
+  const key =
+    row !== undefined
+      ? await externalKeyOf(tx, table, row)
+      : o.target.kind === "external_key"
+        ? keyAsGiven(table, o.target.key)
+        : undefined;
   let ver: string | undefined;
-  if (x.outcome === "unchanged") {
-    const versions = await rowVersions(tx, `${table.physical.table}__ver`, x.row);
+  if (x.outcome === "unchanged" && row !== undefined) {
+    const versions = await rowVersions(tx, `${table.physical.table}__ver`, row);
     ver = `v${Math.max(...versions)}.${restore}`;
   }
   return {
     target: {
       table: qualifiedTable(slotName, table),
-      row: x.row,
+      ...(row !== undefined ? { row } : {}),
       ...(key !== undefined ? { external_key: key } : {}),
     },
+    ...(o.as !== undefined ? { as: o.as } : {}),
     intent: o.intent ?? "update",
     ...(ver !== undefined ? { ver } : {}),
     outcome: x.outcome,
     ...(x.outcome === "skipped"
-      ? { skip_reason: "revoked" as const, revoked_by: x.revokedBy as OpNumber }
+      ? x.refOp !== undefined
+        ? { skip_reason: "ref_skipped" as const, ref_op: x.refOp }
+        : { skip_reason: "revoked" as const, revoked_by: x.revokedBy as OpNumber }
       : {}),
+    // No `fields`: nothing of it was judged into the log. The kernel's OpReceipt has them always
+    // (the type compromise until receipts become a strict union); the contract check in
+    // write-by-external-key.test.ts holds the JSON to the contract.
   } as OpReceipt;
 }
 

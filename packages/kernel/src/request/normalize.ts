@@ -143,7 +143,10 @@ const OP_KEYS = new Set([
   "evidence_by_field",
 ]);
 /** Op keys this version does not take, in the order they are reported. */
-const OP_NOT_YET = ["as"];
+/** Op parameters not in this version: none now (`external_key` and `as` both taken). */
+const OP_NOT_YET: readonly string[] = [];
+/** A temporary name (`as`): letters, digits, `_` and `-`, at most 64. */
+const TEMP_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 /** The premises an op may have (02-integrity «写入的前提» «上限»). */
 export const MAX_PREMISES = 16;
 const PREMISE_KEYS = new Set([
@@ -542,6 +545,8 @@ interface PendingOp {
    * `external_key`), or the key an update by `row` adds to its row.
    */
   readonly externalKey?: [CompiledBaseField, string, unknown][];
+  /** `as`: the temporary name this op declares. */
+  readonly as?: string;
   readonly named: NamedField[];
 }
 
@@ -594,8 +599,10 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
   // the caller did not write it for. Ops before it are read first (document order).
   const asOf = sv ?? input.fallbackSv;
   const since = asOf !== undefined && asOf < input.currentSv ? input.changedSince(asOf) : undefined;
+  // Temporary names (`as`), each with the op declaring it: unique in a request.
+  const names = new Map<string, number>();
   const pending = rawOps.map((o, i) =>
-    readOp(o, i, tables, input, segments.length, zone, warnings, evidenceBytes, since),
+    readOp(o, i, tables, input, segments.length, zone, warnings, evidenceBytes, since, names),
   );
   // The request's evidence, its own and every op's, against one set of limits.
   checkEvidenceTotal(
@@ -619,11 +626,15 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
   // Second pass: values.
   const details: WriteValidationDetail[] = [];
   const ops = pending.map((p): NormalizedOp => {
+    // The temporary names an earlier op declared: the only ones a value of this op may name.
+    const before = new Set([...names].filter(([, j]) => j < p.index).map(([n]) => n));
     // `at`: a value not the op's own (a premise's key), its table and path in the details.
+    // `named`: a value of the op's own `set`, which may be a temporary name.
     const value = (
       f: CompiledBaseField,
       v: unknown,
       at?: { readonly table: string; readonly path: string },
+      named?: ReadonlySet<string>,
     ): NormalizedField | undefined => {
       const where = at === undefined ? {} : { table: at.table, path: at.path };
       if (v === null) {
@@ -633,7 +644,13 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
         }
         return { value: null, raw: null };
       }
-      const r = normalizeValue(f, v, { op: p.index, name: f.name, zone, kept: true });
+      const r = normalizeValue(f, v, {
+        op: p.index,
+        name: f.name,
+        zone,
+        kept: true,
+        ...(named !== undefined ? { names: named } : {}),
+      });
       if (!r.ok) {
         details.push({ ...r.detail, ...where });
         return undefined;
@@ -667,7 +684,7 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
     if (p.set !== undefined) {
       fields = {};
       for (const [f, , v] of p.set) {
-        const n = value(f, v);
+        const n = value(f, v, undefined, before);
         if (n !== undefined) fields[f.id] = n;
       }
       if (p.intent === "insert") {
@@ -726,7 +743,8 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
                   if (n !== undefined) key[f.id] = n;
                 }
                 target = { kind: "entity_key", key };
-              } else if (q.target.kind === "row")
+              } else if (q.target.kind === "name") target = q.target;
+              else if (q.target.kind === "row")
                 target = { kind: "row", row: q.target.row as `r_${string}` };
               else target = { kind: "entity", entity: q.target.entity as `e_${string}` };
               return {
@@ -740,6 +758,7 @@ function normalize(input: NormalizeWriteInput): NormalizeWriteResult {
           }
         : {}),
       ...(key !== undefined && p.target.kind === "row" ? { externalKey: key } : {}),
+      ...(p.as !== undefined ? { as: p.as } : {}),
       named: p.named,
     };
   });
@@ -829,6 +848,7 @@ function readOp(
   warnings: WriteWarning[],
   evidenceBytes: { n: number },
   since: ChangedFields | undefined,
+  names: Map<string, number>,
 ): PendingOp {
   const at = `ops/${i}`;
   if (!isObj(o)) return invalid("malformed", at);
@@ -938,6 +958,19 @@ function readOp(
   const externalKey = keyed
     ? keyEntries(get(o, "external_key"), `${at}/external_key`, table, byName)
     : undefined;
+
+  // A temporary name (04-contract «临时名 as»): for the row an insert creates, or the row an op by
+  // key creates or hits; later ops of the request write it as "@name". Unique in the request.
+  let as: string | undefined;
+  if (has(o, "as")) {
+    const v = get(o, "as");
+    if (typeof v !== "string" || !TEMP_NAME.test(v)) invalid("malformed", `${at}/as`);
+    if (target.kind !== "new" && target.kind !== "external_key")
+      invalid("mutually_exclusive", `${at}/as`);
+    if (names.has(v as string)) invalid("duplicate_name", `${at}/as`);
+    names.set(v as string, i);
+    as = v as string;
+  }
 
   // ver.
   let ver: PendingOp["ver"];
@@ -1132,6 +1165,7 @@ function readOp(
     ...(evidenceByField !== undefined ? { evidenceByField } : {}),
     ...(premises !== undefined ? { premises } : {}),
     ...(externalKey !== undefined ? { externalKey } : {}),
+    ...(as !== undefined ? { as } : {}),
     named,
   };
 }
@@ -1141,6 +1175,7 @@ interface PendingPremise {
   readonly table: CompiledBaseTable;
   readonly target:
     | { kind: "row"; row: string }
+    | { kind: "name"; name: string }
     | { kind: "entity"; entity: string }
     | { kind: "entity_key"; entries: [CompiledBaseField, string, unknown][] };
   readonly fields?: FieldId[];
@@ -1195,11 +1230,15 @@ function readPremises(
     const t = get(p, first);
     let target: PendingPremise["target"];
     if (first === "row") {
-      // A temporary name binds a row this request creates: with `as`, not in this version.
-      if (typeof t === "string" && t.startsWith("@")) notYet(`${pat}/row`);
       if (state) invalid("state_table", `${pat}/row`);
-      if (typeof t !== "string" || !isId("row", t)) invalid("malformed", `${pat}/row`);
-      target = { kind: "row", row: t as string };
+      // A temporary name ("@name"): the row an earlier op of the request binds it to, resolved by
+      // the write path (02-integrity «能指向什么»: 本请求里新建的行).
+      if (typeof t === "string" && t.startsWith("@") && TEMP_NAME.test(t.slice(1)))
+        target = { kind: "name", name: t.slice(1) };
+      else {
+        if (typeof t !== "string" || !isId("row", t)) invalid("malformed", `${pat}/row`);
+        target = { kind: "row", row: t as string };
+      }
     } else if (first === "entity") {
       if (!state) invalid("not_state_table", `${pat}/entity`);
       if (typeof t !== "string" || !isId("entity", t)) invalid("malformed", `${pat}/entity`);

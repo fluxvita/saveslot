@@ -1218,7 +1218,7 @@ describe("counts, revoked versions seen, keys of this request", () => {
   );
 
   it(
-    "an entity_key naming an entity an earlier op of the request created: not in this version",
+    "an entity_key naming an entity an earlier op of the request created: that entity, seen at the request's end",
     async () => {
       const before = await tail();
       const r = await send({
@@ -1238,12 +1238,12 @@ describe("counts, revoked versions seen, keys of this request", () => {
           },
         ],
       });
-      expect(r).toEqual({
-        refused: "not_in_this_version",
-        reason: "parameter",
-        param: "ops/1/premises/0",
-      });
-      expect(await tail()).toBe(before);
+      expect(r).toMatchObject({ status: "saved" });
+      const w = r as unknown as { seq: number; ops: { premises?: unknown[] }[] };
+      expect(w.ops[1]?.premises).toEqual([
+        expect.objectContaining({ ver: `v${w.seq}.0`, state: "current" }),
+      ]);
+      expect(await tail()).toBeGreaterThan(before);
     },
     T,
   );

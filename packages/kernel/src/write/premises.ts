@@ -60,7 +60,8 @@ export interface ResolvedPremise {
   readonly ver: {
     readonly op: OpNumber;
     readonly restore_count: number;
-    readonly basis: "explicit" | "fallback";
+    /** `same_request`: a row this request creates, seen at the request's end. */
+    readonly basis: "explicit" | "fallback" | "same_request";
   };
   readonly range: PremiseRange;
   readonly valid?:
@@ -106,8 +107,18 @@ export interface PremiseContext {
    * (`fanInAfter`, with what this request recorded before it): counted toward the limit.
    */
   readonly fanIn: (target: string) => Promise<number>;
-  /** Whether an earlier op of this request created the entity a key names (with `as`: not yet). */
-  readonly createdHere: (table: TableId, key: Readonly<Record<FieldId, unknown>>) => boolean;
+  /** The entity an earlier op of this request created with the key, if any. */
+  readonly createdHere: (
+    table: TableId,
+    key: Readonly<Record<FieldId, unknown>>,
+  ) => EntityId | undefined;
+  /**
+   * The row an earlier op of this request bound a temporary name to (`as`), its table, and whether
+   * the op created it; no row when that op was skipped; undefined when no earlier op declared it.
+   */
+  readonly named: (
+    name: string,
+  ) => { readonly id?: string; readonly table: TableId; readonly created: boolean } | undefined;
   readonly index: number;
   readonly tableOf: (id: TableId) => CompiledBaseTable | undefined;
   /** The op's own target. */
@@ -139,7 +150,8 @@ async function targetOf(
   if (p.target.kind === "entity_key") {
     const held = await entitiesByKey(tx, t, valuesOf(p.target.key));
     id = held[0];
-  } else id = p.target.kind === "row" ? p.target.row : p.target.entity;
+  } else if (p.target.kind === "name") id = undefined;
+  else id = p.target.kind === "row" ? p.target.row : p.target.entity;
   // Not there, or a row of another table: the same answer (04-contract «不存在与不可见报同一个错误»).
   if (id === undefined || (await rowTable(tx, id)) !== t.id)
     return { code: "not_found", reason: t.time.type === "state" ? "entity" : "row", param: at };
@@ -168,6 +180,8 @@ export async function premiseVersForKey(
         out.push(`${o.index}/${j}:v${p.ver.op}.${p.ver.restoreCount}`);
         continue;
       }
+      // A row this request binds by name: its version is the request's own, nothing to add.
+      if (p.target.kind === "name") continue;
       const t = tableOf(p.table);
       if (t === undefined) continue;
       const id = await targetOf(tx, p, t, "");
@@ -319,12 +333,31 @@ export async function resolvePremises(
   for (const [j, p] of premises.entries()) {
     const at = `ops/${ctx.index}/premises/${j}`;
     const t = ctx.tableOf(p.table) as CompiledBaseTable;
-    // An entity an earlier op of this request created: a premise on a row this request creates,
-    // which comes with `as` (02-integrity «能指向什么»).
-    if (p.target.kind === "entity_key" && ctx.createdHere(t.id, valuesOf(p.target.key)))
-      return { code: "not_in_this_version", reason: "parameter", param: at };
-    const id = await targetOf(tx, p, t, at);
-    if (typeof id !== "string") return id;
+    // A row or entity an earlier op of this request created, by name or by key (02-integrity
+    // «能指向什么»: 本请求里新建的行; 08 «as 与临时名»): seen as at the request's end, its version
+    // this operation's own (`same_request`). A name an op hitting a row by key bound: that row,
+    // as any row given by ID. One bound to no row of this table (its op skipped, another table):
+    // not there.
+    let id: string;
+    let own = false;
+    if (p.target.kind === "name") {
+      const n = ctx.named(p.target.name);
+      if (n?.id === undefined || n.table !== t.id)
+        return { code: "not_found", reason: t.time.type === "state" ? "entity" : "row", param: at };
+      id = n.id;
+      own = n.created;
+    } else {
+      const created =
+        p.target.kind === "entity_key" ? ctx.createdHere(t.id, valuesOf(p.target.key)) : undefined;
+      if (created !== undefined) {
+        id = created;
+        own = true;
+      } else {
+        const found = await targetOf(tx, p, t, at);
+        if (typeof found !== "string") return found;
+        id = found;
+      }
+    }
     if (id === ctx.self) return { code: "invalid_argument", reason: "premise_self", param: at };
     const first = seenTargets.get(id);
     if (first !== undefined)
@@ -350,10 +383,14 @@ export async function resolvePremises(
           count: n,
         },
       };
-    // The version seen.
-    const versions = await rowVersions(tx, verTableOf(t), id);
+    // The version seen. A row this request creates: the request's own, at its end; no ver to give.
+    const versions = own ? new Set<number>() : await rowVersions(tx, verTableOf(t), id);
     let ver: ResolvedPremise["ver"];
-    if (p.ver !== undefined) {
+    if (own) {
+      if (p.ver !== undefined)
+        return { code: "invalid_argument", reason: "mutually_exclusive", param: `${at}/ver` };
+      ver = { op: ctx.op, restore_count: ctx.restore, basis: "same_request" };
+    } else if (p.ver !== undefined) {
       // A premise's ver as a write's (04-contract §15 «前提里的 ver 同此»).
       const read = seenOfVer(p.ver, ctx.current);
       if (read === undefined || (read.own && !versions.has(p.ver.op)))
@@ -399,7 +436,8 @@ export async function resolvePremises(
       ...(valid !== undefined ? { valid } : {}),
       state: "current",
     };
-    out.push(await stateWhenWritten(tx, t, id, base, versions, ctx));
+    // Seen at the request's end: nothing after it, current.
+    out.push(own ? base : await stateWhenWritten(tx, t, id, base, versions, ctx));
   }
   return { resolved: out, fallbacks };
 }

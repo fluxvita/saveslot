@@ -433,6 +433,12 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
     check(int(v["undo_op"]), at, "undo_op", issues);
     check(typeof v["include_later"] === "boolean", at, "include_later", issues);
   },
+  // `ops/<i>/refs` (data): the temporary name the op declared (`as`), the caller's text, 1 to 64
+  // letters, digits, `_` and `-` (04-contract «临时名 as»).
+  Refs(v, at, issues) {
+    if (!keys(v, at, ["as"], [], issues)) return;
+    check(typeof v["as"] === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(v["as"]), at, "as", issues);
+  },
   Acknowledge(v, at, issues) {
     check(Array.isArray(v) && v.length === 1 && v[0] === "overwrite", at, "acknowledge", issues);
   },

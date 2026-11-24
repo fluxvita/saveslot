@@ -172,7 +172,8 @@
   - `acknowledge`、`evidence_refs` 里的重复项：`invalid_argument`（`malformed`，`param` 指到第二次出现的那一项）。
   - 限定名 `slot.table` 的 slot 不是本请求所在的 slot：`invalid_argument`（`cross_slot`）。
   - 状态类表上 `valid_from` 不早于 `valid_to`：`invalid_argument`（`malformed`，`param` 为 `valid_to`）。两端都给时在这一步；只给 `valid_to`、起点按"现在"（slot 时区下的那一天或那一刻）算时，在判定这个 op 时才知道，排在 `not_found`、`read_first` 之后，同样报 `invalid_argument`（`malformed`，`param` 为 `ops/<i>/valid_to`）。
-  - `ref` 写临时名 `"@p1"`：第一版没有 `as`，请求里不会有绑定它的 op，报 `validation_failed`（`ref_not_found`）。
+  - `ref` 写临时名 `"@p1"`：须是本请求里排在前面的某个 op 用 `as` 声明的；没有 op 声明、或声明它的 op 排在后面，报 `validation_failed`（`ref_not_found`）。
+  - `as`：1 至 64 个字母、数字、`_`、`-`，否则 `invalid_argument`（`malformed`）；只能用在 `insert` 与按来源键的 op 上，别的 op 带了报 `invalid_argument`（`mutually_exclusive`，`param` 指 `ops/<i>/as`）；同一请求里两个 op 用了同一个临时名，报 `invalid_argument`（`duplicate_name`，`param` 指后一个）。
 - **`valid_from` / `valid_to` 只用于状态类表**；用在别的表上报 `invalid_argument`（`not_state_table`）。实体的键字段不随业务时间变化：带区间的写入里出现 `entity_key` 的键字段且值与实体的键不同，报 `invalid_argument`（`key_field_changed`）。
 - **同一请求里多个 op 作用于同一行 / 实体**：后面的 op 看得到前面 op 的结果。对本请求里新建的行 / 实体，后面的 op 不需要 `ver`；对请求之前已存在的，各 op 带的 `ver` 都表示"请求开始时所见的版本"，冲突判定只比请求之外的写入。各 op 独立判定：一个 op 成了候选，不影响其他 op 生效。同一行 / 实体只得一个新 `ver`。
 - **`acknowledge: ["overwrite"]`**：已与用户确认覆盖类的高影响，直接生效。**只在这个 op 显式带了当前 `ver` 时有效**，否则照常进待确认（data-model「写状态」）。哪些外化面开放见 surfaces。
@@ -196,12 +197,13 @@
 **写入的前提**（`ops[i].premises`；规则的权威定义在 data-model「写入的前提」）：
 
 - **是什么**：这次写下的内容是根据 saveslot 里哪些已读到的行定的。之后那些行在所声明的字段（与业务时间）上的值变了，这一行对任何读取方都带 `premise_changed` 标记（第 7 节）；这一行的值不动。前提不是证据：证据指向源数据原文，前提指向 saveslot 里会变的数据。
-- **一条前提**：目标（`row`、`entity` 或 `entity_key`，除 `table` 外恰好给一个；`row` 也可以写本请求里新建行的临时名 `"@p1"`——**这一版没有做**：临时名随 `as` 一起，报 `not_in_this_version`）、可选的 `fields`（不给 = 整行）、`ver`（应带回，兜底见第 2 节）；目标在状态类表上时可带 `valid_at` 或 `valid_during`，都不给时，声明前提的这一行自己有业务时间就取它，没有就是"从现在起"。每个 op 最多 16 条，超出报 `too_large`（`premise_entries`）。
+- **一条前提**：目标（`row`、`entity` 或 `entity_key`，除 `table` 外恰好给一个；`row` 也可以写本请求里前面的 op 绑定的临时名 `"@p1"`，见 data-model「写入的前提 · 能指向什么」）、可选的 `fields`（不给 = 整行）、`ver`（应带回，兜底见第 2 节）；目标在状态类表上时可带 `valid_at` 或 `valid_during`，都不给时，声明前提的这一行自己有业务时间就取它，没有就是"从现在起"。每个 op 最多 16 条，超出报 `too_large`（`premise_entries`）。
 - **哪些 op 能带**：`insert`、`update`、`correct`。带 `revert` 的 op、`revoke`、按来源键的 op 不能带，分别报 `invalid_argument`（`premises_with_revert` / `premises_with_revoke` / `premises_with_external_key`）。`resolve` 没有这个参数。
 - **重申与清除**：`update` 不带 `set`、带非空的 `premises` 是**重申**——值不变，按所见的 `ver`，这一行现有的值以这些为前提仍然成立。`update` 带 `premises: []` 是**清除**：这一行的前提声明全部去掉，这是去掉前提的唯一写法。两者都不改行的 `ver`，都不能被 `undo`（没有可撤回的改动）。不带 `set` 的 `update` 也没带 `premises`，报 `invalid_argument`（`missing`）。
 - **一个带 `premises` 的 op 覆盖什么**：它自己写下的各项，以及这一行在所见版本上就已生效、之后仍生效的其余各项——后者只在这个 op 全部字段都已生效时才覆盖（有字段成了候选或进了待确认时只覆盖自己写下的项）；清除不受这一条限制，照样清掉整行。回执的 `premise_covered` 给出另外覆盖的字段数。
 - **校验**（判定顺序第 5 步，与 `ref` 目标的校验同处）：
   - 表不存在或不可见报 `unknown_table`，字段不存在报 `unknown_field`；行 / 实体不存在、已被隐私删除或不可见报 `not_found`（`param` 指到 `ops/<i>/premises/<j>`；被宽限期内的删除整行去掉时附全部相关删除的 ID）。
+  - 临时名没有绑定到这张表的行（没有前面的 op 声明它、它的 op 被跳过、或绑定的是别的表的行）：`not_found`；指向本请求新建的行时带了 `ver`：`invalid_argument`（`mutually_exclusive`）；那次新建在本请求结束时没有生效：`invalid_argument`（`premise_target_pending`，附 `as` 与 `op`）。
   - 指向本 op 自己的目标：`invalid_argument`（`premise_self`）。同一个 op 的两条声明解析到同一个目标：`invalid_argument`（`premise_duplicate_target`，`param` 指后出现的那条，附两条的下标）——一个出处项对一个前提目标只有一条有效声明，要几个字段就并进一条的 `fields`，要两段时间就给一段盖住两段的 `valid_during` 或不给范围。指向派生表：`not_in_this_version`（`value`）。指向别的 slot 里可见的表：`invalid_argument`（`cross_slot`）。`ver` 是历史版本：`invalid_argument`（`premise_historical_ver`）；不是这个目标的版本：`invalid_argument`（`not_this_target`）。`valid_at` / `valid_during` 用在非状态类表的目标上：`invalid_argument`（`not_state_table`）；两者同时给：`invalid_argument`（`mutually_exclusive`）。
   - 目标已被 1,000 条有效声明指向：拒绝声明方，`too_large`（`premise_fan_in`，附目标与当前条数）。上限只在声明时检查，落在声明方：被依赖的一方永远不会因为别人的声明而写不进去。
   - **不拒绝的两种**：`ver` 已过期、且所声明的范围上现在的值与所见版本上的值不同（中间变过又改回来的不算）；前提目标已撤销、且所见版本早于那次撤销（所见版本本身就是那次撤销时记 `current`、不标）。两者都照常写入，这一行一写下就带标记，回执的 `premises[].state` 是 `changed`，`warnings` 给 `premise_already_changed`。理由：证据（用户刚说的话）要落下，标记对所有读方可见，写入方在同一个回执里就知道。`ver` 已过期但所声明的范围没变过的，照常写入、不标。

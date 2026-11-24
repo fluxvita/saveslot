@@ -65,6 +65,11 @@ export interface ValueContext {
    * then also be one that can be written out and read back (a zoned date-time, below).
    */
   readonly kept?: true;
+  /**
+   * The temporary names an earlier op of the request declared (`as`): a `ref` value "@name" names
+   * one, the row it binds resolved by the write path. Absent: no temporary name is taken.
+   */
+  readonly names?: ReadonlySet<string>;
 }
 
 /**
@@ -236,8 +241,9 @@ export function normalizeValue(f: CompiledBaseField, v: unknown, c: ValueContext
     }
     case "ref": {
       if (typeof v !== "string") return fail("type_mismatch");
-      // A temporary name needs `as`, not in this version: no op of the request declares one.
-      if (v.startsWith("@")) return fail("ref_not_found");
+      // A temporary name: one an earlier op declares (04-contract «临时名 as»), kept as written
+      // for the write path to resolve; any other names no row (ref_not_found, 04-contract §1).
+      if (v.startsWith("@")) return c.names?.has(v.slice(1)) ? ok(v, v) : fail("ref_not_found");
       if (!isId("row", v) && !isId("entity", v)) return fail("type_mismatch");
       return ok(v, v);
     }

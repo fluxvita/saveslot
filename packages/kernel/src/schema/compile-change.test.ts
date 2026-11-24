@@ -495,7 +495,7 @@ describe("the definition of the next version", () => {
         changes: r.changes,
       },
     );
-    expect(p.ok ? [] : p.kind === "invalid" ? p.issues : p.shapes).toEqual([]);
+    expect(p.ok ? [] : p.issues).toEqual([]);
   });
 
   it("is the same twice, and changes nothing when its own result is written back", () => {

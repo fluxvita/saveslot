@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CHECKED_SHAPES, type ParseResult, parseEvent } from "./parse.ts";
+import { VOCABULARY } from "./vocabulary.ts";
 
 const ZERO = "0".repeat(64);
 const HASH = "a".repeat(64);
@@ -214,6 +215,7 @@ describe("parseEvent: valid events", () => {
         "PremiseValid",
         "PremisesCleared",
         "RawValue",
+        "Refs",
         "RequestKey",
         "ResolveCtx",
         "Revert",
@@ -545,9 +547,19 @@ describe("parseEvent: principal.revoked's three actors (§5.3)", () => {
   });
 });
 
-describe("parseEvent: shapes without a checker", () => {
-  // `write.head` `ops/<i>/refs` is not checked yet (`ref` fields and `as`, P2).
-  const derived = {
+describe("parseEvent: every shape has a checker", () => {
+  // `write.head` `ops/<i>/refs` was the last without one (`ref` fields and `as`, P2). A shape added
+  // to the vocabulary without a checker is reported as unsupported, not ok (parse.ts).
+  it("each shape the vocabulary names is checked", () => {
+    const named = new Set(
+      Object.values(VOCABULARY).flatMap((entries) =>
+        (entries as readonly { readonly shape: string }[]).map((e) => e.shape),
+      ),
+    );
+    expect([...named].filter((x) => !CHECKED_SHAPES.includes(x))).toEqual([]);
+  });
+
+  const withRefs = (refs: unknown) => ({
     header: { ...head("write.head", 25), slot: SLOT_A },
     blocks: {
       ctx: {
@@ -559,24 +571,20 @@ describe("parseEvent: shapes without a checker", () => {
       },
       request: { sv: 1, sv_basis: "explicit", op_count: 1 },
       "ops/0/target": { table: "t1", row: `r_${"6".repeat(26)}`, intent: "insert" },
-      "ops/0/refs": {},
+      "ops/0/refs": refs,
     },
-  };
-
-  it("reports a block whose shape has no checker as unsupported, not ok", () => {
-    expect(parse(derived)).toEqual({
-      ok: false,
-      kind: "unsupported",
-      shapes: ["Refs"],
-    });
   });
 
-  it("reports invalid before unsupported", () => {
-    const s = { ...derived, header: { ...derived.header, v: 2 } };
-    expect(parse(s)).toEqual({
-      ok: false,
-      kind: "invalid",
-      issues: ["header.v: unknown format version"],
-    });
+  it("`ops/<i>/refs`: the temporary name, 1 to 64 letters, digits, _ and -", () => {
+    expect(parse(withRefs({ as: "o-1_A" }))).toEqual({ ok: true, type: "write.head" });
+    for (const bad of [
+      {},
+      { as: "" },
+      { as: "o 1" },
+      { as: "x".repeat(65) },
+      { as: 1 },
+      { as: "o", x: 1 },
+    ])
+      expect(parse(withRefs(bad))).toMatchObject({ ok: false, kind: "invalid" });
   });
 });

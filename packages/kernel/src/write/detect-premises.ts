@@ -136,7 +136,11 @@ export async function detectPremises(
   for (const [id, { table, seq }] of firsts) {
     const t = tableOf(table);
     if (t === undefined) continue;
-    const decls = await inForce(tx, id);
+    // A declaration of this operation on a row it creates (`same_request`: its seen version is
+    // this operation, 08 «as 与临时名») sees the request's end: what the request did to its target,
+    // creating it included, is no change of it. One on a row read before (explicit, fallback) sees
+    // that version, and a later op of the request changing it is a change, as before.
+    const decls = (await inForce(tx, id)).filter((d) => !(d.op === op && d.seen_op === op));
     if (decls.length === 0) continue;
     const read = (v: number) => stateAt(tx, t, id, v, { decode: decodeColumns });
     const before = await read(op - 1);

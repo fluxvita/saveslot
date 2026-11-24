@@ -130,12 +130,9 @@ describe("premises", () => {
     });
   });
 
-  it("a temporary name is with `as`: not in this version", () => {
-    expect(errorOf(normalize(withPremises([{ table: "settings", row: "@p1" }])))).toEqual({
-      code: "not_in_this_version",
-      reason: "parameter",
-      param: "ops/0/premises/0/row",
-    });
+  it("a temporary name in `row`: kept as a name, for the write path to resolve", () => {
+    const op = onlyOp(normalize(withPremises([{ table: "settings", row: "@p1" }])));
+    expect(op.premises?.[0]?.target).toEqual({ kind: "name", name: "p1" });
   });
 
   it("tables: a derived one is not in this version, an unknown one unknown_table", () => {

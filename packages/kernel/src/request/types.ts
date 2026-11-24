@@ -120,7 +120,9 @@ export interface NormalizedPremise {
   readonly target:
     | { readonly kind: "row"; readonly row: RowId }
     | { readonly kind: "entity"; readonly entity: EntityId }
-    | { readonly kind: "entity_key"; readonly key: Readonly<Record<FieldId, NormalizedField>> };
+    | { readonly kind: "entity_key"; readonly key: Readonly<Record<FieldId, NormalizedField>> }
+    /** A temporary name ("@name" in `row`): the row an earlier op of the request bound it to. */
+    | { readonly kind: "name"; readonly name: string };
   readonly fields?: readonly FieldId[];
   readonly ver?: { readonly op: OpNumber; readonly restoreCount: number };
   readonly valid?:
@@ -183,6 +185,12 @@ export interface NormalizedOp {
    * by key field ID. An op by key has its key in `target` instead.
    */
   readonly externalKey?: Readonly<Record<FieldId, NormalizedField>>;
+  /**
+   * `as`: the temporary name this op declares, for the row an insert creates or an op by key
+   * creates or hits. A `ref` value of a later op naming it is "@name" in `fields`, resolved by the
+   * write path.
+   */
+  readonly as?: string;
 }
 
 export type EvidenceSegment =

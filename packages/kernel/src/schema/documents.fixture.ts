@@ -130,8 +130,7 @@ export function eventIssues(r: CompileResult): readonly string[] {
     changes: r.changes,
   };
   const p = parseEvent(header, blocks);
-  if (p.ok) return [];
-  return p.kind === "invalid" ? p.issues : p.shapes.map((s) => `unsupported ${s}`);
+  return p.ok ? [] : p.issues;
 }
 
 /** The error of a result that should not compile. */

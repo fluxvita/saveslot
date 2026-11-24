@@ -238,8 +238,10 @@ export interface OpReceipt {
   readonly ver?: string;
   /** A write by external key: what it came to (04-contract §5.4). */
   readonly outcome?: "created" | "updated" | "unchanged" | "pending" | "skipped";
-  readonly skip_reason?: "revoked";
+  /** `skipped`: on a revoked row (`revoked_by`), or a temporary name whose op was skipped (`ref_op`). */
+  readonly skip_reason?: "revoked" | "ref_skipped";
   readonly revoked_by?: OpNumber;
+  readonly ref_op?: number;
   readonly created_entity?: true;
   /**
    * An entity created by `entity_key`: the table's keys before it, at most 10 (04-contract §5.1),
@@ -1155,6 +1157,10 @@ export async function readReceipt(
           : {}),
         ...(externalKey !== undefined ? { external_key: externalKey } : {}),
       },
+      // Its temporary name, as the head recorded it (09 §5.2 `ops/<i>/refs`).
+      ...(typeof (head[`ops/${i}/refs`] as { as?: unknown } | undefined)?.as === "string"
+        ? { as: (head[`ops/${i}/refs`] as { as: string }).as }
+        : {}),
       intent: t.intent,
       ...(ver !== undefined ? { ver } : {}),
       ...(outcome !== undefined ? { outcome } : {}),

@@ -1060,16 +1060,17 @@ describe("refusals of the request's shape", () => {
     expect(errorOf(normalize(op(o)))).toEqual({ code: "invalid_argument", ...error });
   });
 
-  it.each([
-    ["as", { as: "p1" }, "ops/0/as"],
-    ["revert.to", { revert: { to: 3, fields: ["note"] }, set: undefined }, "ops/0/revert/to"],
-  ])("%s is not in this version", (_, extra, param) => {
-    const o = { intent: "update", table: "expenses", row: ROW, set: { note: "x" }, ...extra };
-    if (o.set === undefined) delete (o as { set?: unknown }).set;
+  it("revert.to is not in this version", () => {
+    const o = {
+      intent: "update",
+      table: "expenses",
+      row: ROW,
+      revert: { to: 3, fields: ["note"] },
+    };
     expect(errorOf(normalize(op(o)))).toEqual({
       code: "not_in_this_version",
       reason: "parameter",
-      param,
+      param: "ops/0/revert/to",
     });
   });
 
@@ -1129,8 +1130,8 @@ describe("refusals of the request's shape", () => {
       ],
     });
     expect(errorOf(r)).toEqual({
-      code: "not_in_this_version",
-      reason: "parameter",
+      code: "invalid_argument",
+      reason: "mutually_exclusive",
       param: "ops/1/as",
     });
   });
