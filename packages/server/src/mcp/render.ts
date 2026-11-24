@@ -1385,6 +1385,15 @@ function conflictChoices(r: R): Line[] {
   return out;
 }
 
+/** The decisions each item type takes (04-contract §6 事项类型 × 处理方式). */
+const DECISIONS_BY_TYPE: ReadonlyMap<string, readonly string[]> = new Map([
+  ["conflict", ["keep_effective", "take_candidate", "take_previous"]],
+  ["awaiting_confirmation", ["confirm", "reject"]],
+  ["flagged", ["keep", "revoke"]],
+  ["schema_change", ["confirm", "reject"]],
+  ["deletion", ["cancel"]],
+]);
+
 /** The scope deciding on each item type takes (04-contract §6), as the service checks it. */
 const DECISION_SCOPE: ReadonlyMap<string, string> = new Map([
   ["conflict", "saveslot.write"],
@@ -1515,8 +1524,18 @@ function pending(r: R, now: Date): Line[] {
       x["status"] !== undefined && x["status"] !== "open"
         ? t` · ${codeIn(x["status"], ITEM_STATUS)}`
         : [];
+    // An open item's decisions by its type (04-contract §6), so that one is not guessed: the
+    // detail lists those this connection may take.
+    const takes = DECISIONS_BY_TYPE.get(String(x["type"]));
+    const decide =
+      (x["status"] === undefined || x["status"] === "open") && takes !== undefined
+        ? t` · decide with ${join(
+            takes.map((d) => [codeIn(d, DECISIONS)]),
+            t` / `,
+          )}`
+        : [];
     out.push(
-      t`${idOf(x["id"])} ${codeIn(x["type"], ITEM_TYPES)} · ${itemWhere(x)}${itemReason(x)}${status} · opened ${openFor(x["opened_at"], now)} ago${x["overdue"] === true ? t` · overdue, not yet deleted; will be retried` : []}`,
+      t`${idOf(x["id"])} ${codeIn(x["type"], ITEM_TYPES)} · ${itemWhere(x)}${itemReason(x)}${status} · opened ${openFor(x["opened_at"], now)} ago${x["overdue"] === true ? t` · overdue, not yet deleted; will be retried` : []}${decide}`,
     );
   }
   return [...out, ...pageOf(r, items.length, () => t`items`), ...remindersOf(r, now)];

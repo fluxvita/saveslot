@@ -543,9 +543,11 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
         value: req.decision,
       });
     }
+    // The decisions it does take, as the error names them (04-contract-types §9 `allowed_values`).
     throw new WriteError("invalid_argument", "the item does not take this decision", {
       reason: "malformed",
       param: "decision",
+      allowed_values: [...(DECISIONS_OF[item.type] ?? [])],
     });
   }
 

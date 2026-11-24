@@ -237,6 +237,14 @@ describe("setup --profile: signed in, the hosts given the remote add command", (
     expect(args("claude")).toBeUndefined();
   });
 
+  it("--yes with no --template: no slot, and why, with the templates to give", async () => {
+    await signIn();
+    slots = [];
+    const r = await setup(["--yes", "--host", "claude-code"]);
+    expect(r.out).toContain("no slot made: with --yes a slot is made only from --template (");
+    expect(r.out).toContain("saveslot slot create <name> --template <template>");
+  });
+
   it("an entry for something else (the local service): left as it is, unconfirmed, how to remove it", async () => {
     await signIn();
     writeFileSync(join(state, "claude.entry"), `saveslot: ${entry} mcp - ✓ Connected\n`);

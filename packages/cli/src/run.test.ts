@@ -709,6 +709,23 @@ describe("history changes", () => {
   };
   const row = "r_4KWKRM296X61WJ89DY5XJNVA4P";
 
+  it("--since and --until as how long ago (15m), as reads --since takes them: the moment it was", async () => {
+    answering();
+    bodies.length = 0;
+    const before = Date.now();
+    const r = await cli(["history", "changes", "expenses", "--since", "15m", "--until", "1m"]);
+    expect(r.code).toBe(0);
+    const body = bodies[bodies.length - 1] as { since: string; until: string };
+    const ago = (x: string, min: number) => {
+      const d = before - Date.parse(x);
+      return d > (min - 1) * 60_000 && d < (min + 1) * 60_000;
+    };
+    expect({ since: ago(body.since, 15), until: ago(body.until, 1) }).toEqual({
+      since: true,
+      until: true,
+    });
+  });
+
   it.each([
     [
       ["history", "changes", "expenses", "--since", "3"],
@@ -1292,6 +1309,12 @@ describe("usage", () => {
   it("an unknown option, no command: 2; --help: the usage, 0", async () => {
     expect((await cli(["slot", "list", "--nope"])).code).toBe(2);
     expect((await cli([])).code).toBe(2);
+    // A command with a usage of its own: setup gives its options, not the commands' list.
+    const own = await cli(["setup", "--help"]);
+    expect(own.code).toBe(0);
+    expect(own.out).toContain("usage: saveslot setup ");
+    expect(own.out).toContain("--yes                  ask nothing: what is not given is not done");
+    expect(own.out).not.toContain("slot list ");
     const h = await cli(["--help"]);
     expect(h.code).toBe(0);
     expect(h.out).toBe(`${TEXTS.usage}\n`);

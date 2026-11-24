@@ -67,6 +67,12 @@ const itemTarget = (target: unknown, slot: unknown): Part[] =>
 
 /** `saveslot pending` (06 §4.5, §5.1): oldest first, each with how long it has been open. */
 export function pendingList(r: PendingListResult, now: Date): Line[] {
+  // Its status (06 §5.1, `--status all`): an open item for how long; a closed one says so, and
+  // when it was opened (what was decided is in `pending show`).
+  const state = (x: R): Part[] =>
+    x["status"] === "open" || x["status"] === undefined
+      ? t`open ${openFor(x["opened_at"], now)}`
+      : t`${codeOf(x["status"], STATUSES)} · opened ${time(String(x["opened_at"] ?? ""))}`;
   const items = [...arr((r as unknown as R)["items"])].map(obj);
   // Oldest first within the page (06 §5.1); a moment it cannot read goes last.
   const at = (x: R) => {
@@ -77,7 +83,7 @@ export function pendingList(r: PendingListResult, now: Date): Line[] {
   const out: Line[] = [t`${num(items.length)} pending items`];
   for (const x of items) {
     out.push(
-      t`${idOf(x["id"])} ${codeOf(x["type"], TYPES)} · ${itemTarget(x["target"], x["slot"])} · ${codeOf(x["reason"], REASONS)} · open ${openFor(x["opened_at"], now)}${x["overdue"] === true ? t` · overdue: past its time, not yet deleted` : []}`,
+      t`${idOf(x["id"])} ${codeOf(x["type"], TYPES)} · ${itemTarget(x["target"], x["slot"])} · ${codeOf(x["reason"], REASONS)} · ${state(x)}${x["overdue"] === true ? t` · overdue: past its time, not yet deleted` : []}`,
     );
   }
   const next = str((r as unknown as R)["next_cursor"]);

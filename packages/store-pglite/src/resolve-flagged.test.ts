@@ -183,12 +183,13 @@ describe("revoke", () => {
   );
 
   it(
-    "a decision not a flagged item's is refused",
+    "a decision not a flagged item's is refused, with those it takes",
     async () => {
       const { item } = await flaggedPair();
       expect(await decide(item, "keep_effective")).toMatchObject({
         code: "invalid_argument",
         param: "decision",
+        allowed_values: ["keep", "revoke"],
       });
     },
     T,

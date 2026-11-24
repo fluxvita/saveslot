@@ -69,6 +69,8 @@ export interface ErrorDetails {
   candidate_choices?: Array<{ index: number; seq: Seq; actor: Actor }>;
   /** A complete correct example of the mode or parameter. */
   example?: Record<string, unknown>;
+  /** A parameter of a few values: those this version takes. */
+  allowed_values?: string[];
   /** `duplicate_external_key`: indexes of the two ops with the same key. */
   ops?: number[];
   /** `external_key_*`: the row holding the key. */

@@ -873,7 +873,8 @@ async function makeSlots(
       );
       chosen = names.filter((_, k) => picked[k]);
     }
-    if (chosen.length === 0) say([words(TEXTS.stepNoSlot)]);
+    if (chosen.length === 0)
+      say([words(i.yes ? TEXTS.stepNoSlotYes([...TEMPLATES.keys()]) : TEXTS.stepNoSlot)]);
     for (const tpl of chosen) {
       const slot = templateSlot(tpl) as string;
       const made = templateDocument(tpl, slot, i.timezone);

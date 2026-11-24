@@ -1,5 +1,5 @@
 plan · 4 of 4 pending items
-pi_SANGZFYX0QFX6QV0 awaiting_confirmation · plan.budgets e_PCNDRTPDVM2QF7B3K14H0EN3W8 amount · overwrites_change_point · opened 2 h ago
-pi_47G7WJXFA1PQC58N conflict · plan.expenses r_FW103YV2NYWERJMC947XWH3NWH note · stale_write · opened 2 h ago
-pi_SAFF6RBB802V71BZ conflict · plan.expenses r_Q1X4BK6NR6AFD1AQQ3PHP7HCPJ note · stale_write · opened 2 h ago
+pi_SANGZFYX0QFX6QV0 awaiting_confirmation · plan.budgets e_PCNDRTPDVM2QF7B3K14H0EN3W8 amount · overwrites_change_point · opened 2 h ago · decide with confirm / reject
+pi_47G7WJXFA1PQC58N conflict · plan.expenses r_FW103YV2NYWERJMC947XWH3NWH note · stale_write · opened 2 h ago · decide with keep_effective / take_candidate / take_previous
+pi_SAFF6RBB802V71BZ conflict · plan.expenses r_Q1X4BK6NR6AFD1AQQ3PHP7HCPJ note · stale_write · opened 2 h ago · decide with keep_effective / take_candidate / take_previous
 pi_SYCGGKE1CVJXGB7D conflict · plan.expenses r_J89SBNGMPVP0Z6Y2SXM2PCWB9F note · stale_write · superseded · opened 2 h ago

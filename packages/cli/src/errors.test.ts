@@ -71,6 +71,17 @@ describe("an error's text (06 §6.3)", () => {
     ]);
   });
 
+  it("a parameter of a few values refused: the values the service takes, each inside", () => {
+    const e = new ContractCallError(400, {
+      code: "invalid_argument",
+      message: "the item does not take this decision",
+      reason: "malformed",
+      param: "decision",
+      allowed_values: ["keep", "revoke"],
+    });
+    expect(text(e).split("\n")).toContain("  it takes: 「keep」 / 「revoke」");
+  });
+
   it("an unknown name that is an alias: the word the caller wrote stays inside, no alias text beside it", () => {
     const e = new ContractCallError(404, {
       code: "unknown_field",

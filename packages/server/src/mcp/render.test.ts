@@ -952,3 +952,33 @@ describe("every mark of the contract has a text (05 §4.2)", () => {
     expect(sqlRendered({ ...base, [k]: SUMMARY[k] })).not.toBe(sqlRendered(base));
   });
 });
+
+describe("the list of pending items: each open one with the decisions its type takes (04-contract §6)", () => {
+  const opener = { kind: "user", id: "u_11111111111111111111111111", name: "Ann" };
+  const item = (id: string, type: string, status: string, reason: string) => ({
+    id,
+    type,
+    status,
+    slot: "food",
+    reason,
+    opened_at: "2026-11-05T03:00:00.000Z",
+    opened_by: opener,
+    target: { table: "food.meals", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" },
+  });
+  const lines = renderResult("saveslot_pending", {
+    items: [
+      item("pi_8VEZWJ3J7BMKMXTV", "flagged", "open", "duplicate_keys"),
+      item("pi_9BEZWJ3J7BMKMXTV", "conflict", "resolved", "stale_write"),
+    ],
+  } as never).split("\n");
+
+  it("an open flagged item: keep / revoke, so that keep_effective is not guessed", () => {
+    expect(lines.find((l) => l.includes("pi_8VEZWJ3J7BMKMXTV"))).toMatch(
+      / · decide with keep \/ revoke$/,
+    );
+  });
+
+  it("a closed one: no decisions", () => {
+    expect(lines.find((l) => l.includes("pi_9BEZWJ3J7BMKMXTV"))).not.toContain("decide with");
+  });
+});
