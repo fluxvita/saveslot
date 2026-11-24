@@ -283,6 +283,8 @@ forbidden-terms:
     - node scripts/check-forbidden-terms.ts
 
 # No secrets in the commits of a merge request, or anywhere in the history of the default branch.
+# On a branch, only the history the checked-out commit reaches: without `--log-opts`, gitleaks scans
+# every ref the runner's clone holds, other branches' commits among them.
 secrets:
   extends: [.quick, .git-as-root]
   image:
@@ -295,5 +297,5 @@ secrets:
       if [ -n "$CI_MERGE_REQUEST_DIFF_BASE_SHA" ]; then
         gitleaks git --redact --verbose --log-opts="$CI_MERGE_REQUEST_DIFF_BASE_SHA..HEAD" .
       else
-        gitleaks git --redact --verbose .
+        gitleaks git --redact --verbose --log-opts="HEAD" .
       fi
