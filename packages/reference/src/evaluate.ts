@@ -199,6 +199,13 @@ interface Recorded {
   /** The operation number of each deletion confirmed, by its ID (L's record on a list, 09 §3.5 rule 1). */
   readonly deletionOp: Map<string, OpNumber>;
   /**
+   * The (event, target) each deletion restates on its own, by its ID: on the replay with the
+   * deletions carried out by then and this one, against the replay with those carried out alone.
+   * Its list of positions is its own, apart from the other pending deletions (03-deletion «多项删除
+   * 各自列全位置»): the restatements of its event, made with them, do not tell it.
+   */
+  readonly restatedAlone: Map<string, Set<string>>;
+  /**
    * Given by the caller (`evaluateLog` option `forcedWhole`): for a deletion event's operation and
    * the deleted set of a replay, the units whose record is on a current deletion's list of
    * positions — taken instead of `restsOnDeleted`, which approximates the list by ends.
@@ -241,6 +248,7 @@ function emptyRecorded(): Recorded {
     rejudgedAt: new Map(),
     external: [],
     deletionOp: new Map(),
+    restatedAlone: new Map(),
   };
 }
 
@@ -948,14 +956,14 @@ class Replay {
     if (deps === undefined || deps.size === 0) return false;
     const here = new Set([...this.items, ...this.shadows].map((x) => etKey(x.event, x.target)));
     const restatedAfter = (k: string) =>
-      (this.rec.history.get(k) ?? []).some(
-        (h) => !this.rec.cancelled.has(h.by) && (this.rec.deletionOp.get(h.by) ?? 0) > op,
+      [...this.rec.restatedAlone].some(
+        ([by, keys]) =>
+          keys.has(k) && !this.rec.cancelled.has(by) && (this.rec.deletionOp.get(by) ?? 0) > op,
       );
-    // "Restated" is the other half of 09 §3.5 rule 1 and stays, though no log built so far tells it apart:
-    // the deps here are approximated by ends (`externalDeps`), and an item a later deletion
-    // restates without deleting changes an end only through a contribution that deletion deletes,
-    // which is itself among the deps, so `!here.has` already holds. Under `forcedWhole` this is
-    // not asked at all.
+    // "Restated" is the other half of 09 §3.5 rule 1, by what the later deletion restates on its
+    // own (`restatedAlone`), not by its event's restatements: those are made with the other
+    // pending deletions, and one cancelled since would leave its share behind. Under `forcedWhole`
+    // this is not asked at all.
     return [...deps].some((k) => !here.has(k) || restatedAfter(k));
   }
 
@@ -2923,6 +2931,34 @@ const pendingStatus = (x: { status: string; closed?: true }) =>
   (x.status === "candidate" || x.status === "awaiting") && x.closed === undefined;
 
 /**
+ * The (event, target) a deletion of `sources` restates on its own (09 §5.9 «哪些项要重述», rule 1):
+ * on the replay with the deletions carried out by then and these sources, a target whose items
+ * differ from those on the replay with the carried-out deletions alone — an index, its status,
+ * interval, content (a value, a write-back with no value or that only registers) or carried
+ * references — or that is no longer there. Deps are not modelled (approximated by ends), so they
+ * are not compared.
+ */
+function restatedOnItsOwn(
+  replay: (deleted: ReadonlySet<SourceKey>) => Replay,
+  executed: ReadonlyMap<string, readonly SourceKey[]>,
+  sources: readonly SourceKey[],
+): Set<string> {
+  const carriedOut = [...executed.values()].flatMap((x) => [...x]);
+  const judged = (r: Replay) => {
+    const by = new Map<string, string[]>();
+    for (const x of r.items) {
+      const key = etKey(x.event, x.target);
+      const j = JSON.stringify([x.k, x.status, x.valid, x.content, x.carried ?? []]);
+      by.set(key, [...(by.get(key) ?? []), j]);
+    }
+    return new Map([...by].map(([k, v]) => [k, v.sort().join()]));
+  };
+  const before = judged(replay(new Set(carriedOut)));
+  const after = judged(replay(new Set([...carriedOut, ...sources])));
+  return new Set([...before].filter(([k, v]) => after.get(k) !== v).map(([k]) => k));
+}
+
+/**
  * Evaluates the log of one row or entity: operations interleaved with deletion confirmations and
  * cancellations, by operation number. Each operation is judged at its own point in the log, on
  * the state with the deletions confirmed and not cancelled by then (03-deletion «撤回与宽限期»:
@@ -3046,6 +3082,7 @@ export function evaluateLog(
       }
       pending.set(e.id, { op: e.op, sources: e.sources, before: prev, beforeState: prevState });
       rec.deletionOp.set(e.id, e.op);
+      rec.restatedAlone.set(e.id, restatedOnItsOwn(replay, executed, e.sources));
       confirmed.push({ op: e.op, pendingBefore: pendingKeys(prevState) });
       const r = replay(deletedNow());
       const state = r.result();

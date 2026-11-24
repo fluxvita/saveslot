@@ -3719,3 +3719,81 @@ describe("logs left out: a decision on a row a pending deletion affects, then a 
     ).toBe(false);
   });
 });
+
+describe("state table: a cancelled deletion leaves no trace, by what a later one restates on its own", () => {
+  it("delete A, delete B, cancel A = delete B (seed -13174690)", () => {
+    // #70 revokes from 11-01, having seen #40: a candidate against #60 (f3 from 11-01). The record
+    // of #50 (the cancellation of a deletion of S3) on f3 rests on #30's f3. Deleting S3 takes #60
+    // away and #70 takes effect. Deleting S5 as well (#40's corroboration) makes the deletion of S3
+    // restate #30's f3 in its event; once that is cancelled, its list of positions is its own
+    // (03-deletion «多项删除各自列全位置»): without S5 it does not restate #30's f3, so #50's record
+    // is not on it and #70 still takes effect.
+    const given = (value: string) => ({ mode: "given" as const, value: value as BizPoint });
+    const log: LogEntry[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: given("2026-10-01"), to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S2"], explicit: false } },
+      },
+      { kind: "deletion", op: 20, id: "pi_20", sources: ["S3"] },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 20,
+        valid: { from: given("2026-11-01"), to: given("2026-11-03") },
+        fields: {
+          f2: { value: "1", sources: ["S1"], explicit: false },
+          f3: { value: "b", sources: ["S1"] },
+        },
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 30,
+        valid: { from: given("2026-11-01"), to: given("2026-11-03") },
+        fields: { f2: { value: "1", sources: ["S5"], explicit: true } },
+      },
+      { kind: "cancel", op: 50, id: "pi_20" },
+      {
+        kind: "write",
+        op: 60,
+        event: 61,
+        seen: 50,
+        valid: { from: given("2026-11-01"), to: { mode: "next_change" } },
+        fields: { f3: { value: "1", sources: ["S3"], explicit: false } },
+      },
+      {
+        kind: "revoke",
+        op: 70,
+        event: 71,
+        seen: 40,
+        valid: { from: given("2026-11-01"), to: { mode: "open" } },
+        validSources: ["S1"],
+      },
+    ] as LogEntry[];
+    const run = (entries: LogEntry[]) => evaluateLog(STATE, [...log, ...entries]).final;
+    const onlyB = run([{ kind: "deletion", op: 71, id: "pi_b", sources: ["S3"] }]);
+    expect(onlyB.items.filter((x) => x.event === 71).map((x) => [x.target, x.status])).toEqual([
+      ["existence", "applied"],
+    ]);
+    for (const entries of [
+      [
+        { kind: "deletion", op: 71, id: "pi_a", sources: ["S5"] },
+        { kind: "deletion", op: 72, id: "pi_b", sources: ["S3"] },
+        { kind: "cancel", op: 73, id: "pi_a" },
+      ],
+      [
+        { kind: "deletion", op: 71, id: "pi_a", sources: ["S5"] },
+        { kind: "cancel", op: 72, id: "pi_a" },
+        { kind: "deletion", op: 73, id: "pi_b", sources: ["S3"] },
+      ],
+    ] as LogEntry[][]) {
+      expect(stateWithoutIndices(run(entries))).toEqual(stateWithoutIndices(onlyB));
+    }
+  });
+});
