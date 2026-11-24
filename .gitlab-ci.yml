@@ -3,17 +3,21 @@
 #
 # The full check (`pnpm check`) is not run on merge requests: the author runs it on the head before
 # pushing and puts the result in the description, and the reviewer runs it again on the head to be
-# merged. CI runs it after a merge, every night, and when a phase is finished (a pipeline started by
-# hand on the default branch). Merge requests get the quick checks only.
+# merged. CI runs it after a merge (or a pick to a release branch), every night, and when a phase is
+# finished (a pipeline started by hand on a main line). Merge requests get the quick checks only.
 #
 #   merge request:          secrets, forbidden-terms, mr-title, dco; age-interop when the request
 #                           changes packages/cli/src/export-crypto*, pnpm-lock.yaml or this file
-#   default branch, push:   secrets, forbidden-terms, the check jobs (node:24.22.3); all
+#   main line, push:        secrets, forbidden-terms, the check jobs (node:24.22.3); all
 #                           interruptible
 #   schedule (nightly):     the check jobs, the check-26 jobs, prop-soak, test-postgres,
 #                           age-interop
-#   by hand (web, api) on the default branch: the check jobs, the check-26 jobs, prop-soak,
+#   by hand (web, api) on a main line: the check jobs, the check-26 jobs, prop-soak,
 #                           test-postgres, secrets, forbidden-terms, age-interop
+#
+# The main lines are the default branch and the release branches (`release/0.<minor>`, RELEASING.md):
+# a commit picked to a release branch is checked as a merge to the default branch is. The schedule
+# is the project's, set on the default branch.
 #
 # The check jobs are `pnpm check` as three: check-static, check-unit, check-prop. The check-26
 # jobs are the same three on the 26 LTS line (package.json `engines` takes 24 and 26):
@@ -21,8 +25,8 @@
 #
 # The heavy jobs (the check and check-26 jobs, prop-soak, test-postgres) run one at a time in the whole
 # project (`resource_group: saveslot-heavy`), so that a runner taking two jobs at once keeps the
-# other slot for the quick checks; the nightly ones run one after another. On the default branch
-# only the latest push runs to the end: a push's jobs are interruptible, so a newer push cancels
+# other slot for the quick checks; the nightly ones run one after another. On a main line only the
+# latest push runs to the end: a push's jobs are interruptible, so a newer push cancels
 # them.
 #
 # Node is pinned to an exact version: `node:24.22.3` in every job but the check-26 ones, which run
@@ -57,27 +61,27 @@
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(schedule|web|api)$/
+    - if: ($CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH =~ /^release\//) && $CI_PIPELINE_SOURCE =~ /^(schedule|web|api)$/
       auto_cancel:
         on_new_commit: none
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: ($CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH =~ /^release\//)
 
-# On merge requests, pushes to the default branch and by hand; not on the schedule. On a push to the
-# default branch interruptible: a newer push cancels them.
+# On merge requests, pushes to the main lines and by hand; not on the schedule. On a push to a main
+# line interruptible: a newer push cancels them.
 .quick:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
-    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH =~ /^release\//)
       interruptible: true
     - when: on_success
 
-# After a merge (a push to the default branch), on the schedule and by hand; not on merge requests.
-# Tests use host fsync on the schedule and by hand only. After a push interruptible: a newer push
-# cancels it; on the schedule and by hand it runs to the end.
+# After a push to a main line (a merge, or a commit picked to a release branch), on the schedule and
+# by hand; not on merge requests. Tests use host fsync on the schedule and by hand only. After a push
+# interruptible: a newer push cancels it; on the schedule and by hand it runs to the end.
 .after-merge:
   rules:
-    - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_COMMIT_BRANCH !~ /^release\//
       when: never
     - if: $CI_PIPELINE_SOURCE == "push"
       interruptible: true
@@ -85,10 +89,10 @@ workflow:
       variables:
         SAVESLOT_TEST_DURABILITY: host-fsync
 
-# On the schedule and by hand only.
+# On the schedule and by hand only, on a main line.
 .full-only:
   rules:
-    - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_COMMIT_BRANCH !~ /^release\//
       when: never
     - if: $CI_PIPELINE_SOURCE =~ /^(schedule|web|api)$/
 
@@ -183,7 +187,7 @@ check-26-unit:
 check-26-prop:
   extends: [.check-prop, .check-26]
 
-# Nightly and by hand (on the default branch): every property test file, round after round, each
+# Nightly and by hand (on a main line): every property test file, round after round, each
 # run with a fresh random seed, for about 50 minutes. A failed run leaves its seed, replay path and
 # counterexample in soak/failures.md and its whole output beside it.
 prop-soak:
@@ -202,7 +206,7 @@ prop-soak:
     expire_in: 30 days
     paths: [soak/]
 
-# Nightly and by hand (on the default branch): the kernel's tests on a real store, the PostgreSQL
+# Nightly and by hand (on a main line): the kernel's tests on a real store, the PostgreSQL
 # backend's own and the replay across the two backends, on a PostgreSQL server
 # (docs/zh-CN/spec/02-architecture.md §11 «测试矩阵»: both backends). `pnpm check` has no server and
 # skips what needs one; here nothing may be skipped for want of it: the script fails without the
@@ -246,7 +250,7 @@ age-interop:
         - packages/cli/src/export-crypto*
         - pnpm-lock.yaml
         - .gitlab-ci.yml
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(schedule|web|api)$/
+    - if: ($CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH =~ /^release\//) && $CI_PIPELINE_SOURCE =~ /^(schedule|web|api)$/
   variables:
     AGE_VERSION: v1.3.2
     AGE_SHA256: cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
@@ -289,7 +293,7 @@ forbidden-terms:
   script:
     - node scripts/check-forbidden-terms.ts
 
-# No secrets in the commits of a merge request, or anywhere in the history of the default branch.
+# No secrets in the commits of a merge request, or anywhere in the history of a main line.
 # On a branch, only the history the checked-out commit reaches: without `--log-opts`, gitleaks scans
 # every ref the runner's clone holds, other branches' commits among them.
 secrets:
