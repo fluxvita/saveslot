@@ -9,9 +9,10 @@
 // and a second connection writing by key without `ver`. After each request: each op went to the
 // model's entity for its key, or created one where it holds none (a revoke by a key none holds is
 // not_found; a second connection that never read an existing key gets read_first); a key field given
-// unlike the entity's key was refused; each key has one entity at most; a creation's existing_keys
-// are the request's earlier new keys, then the model's keys, the latest changed first, as text that
-// writes back. Every fourth sample, the log replayed into an empty storage gives the same tables.
+// unlike the entity's key was refused; each key has one entity at most; a creation's similar_keys
+// are the keys written alike as the model works them out (`keymatch@1` on its keys); its
+// existing_keys are those, then the request's earlier new keys, then the model's keys, the latest
+// changed first, as text that writes back. Every fourth sample, the log replayed into an empty storage gives the same tables.
 
 import {
   appendOperation,
@@ -24,7 +25,12 @@ import {
   readEvents,
   readTail,
 } from "@fluxvita/saveslot-kernel";
-import { COMPILED_V1, createSlotEvents, writeInTx } from "@fluxvita/saveslot-kernel/testing";
+import {
+  COMPILED_V1,
+  createSlotEvents,
+  matchKey,
+  writeInTx,
+} from "@fluxvita/saveslot-kernel/testing";
 import { propRuns } from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -121,6 +127,8 @@ interface Keyed {
   key(k: number, way: number): Record<string, unknown>;
   /** Key `k` as existing_keys shows it. */
   shown(k: number): unknown;
+  /** Key `k`'s fields, in the key's order, for `keymatch@1`: each `text` or not, and its value. */
+  parts(k: number): readonly { readonly text: boolean; readonly value: unknown }[];
 }
 
 const pick = <T>(xs: readonly T[], i: number) => xs[i % xs.length] as T;
@@ -135,6 +143,8 @@ const TABLES: readonly Keyed[] = [
       category: pick(pick([["café", "café"], ["Café"], ["cafe"], ["tea"]], k), way),
     }),
     shown: (k) => pick(["café", "Café", "cafe", "tea"], k),
+    // Café is café folded; cafe is either one an edit away.
+    parts: (k) => [{ text: true, value: pick(["café", "Café", "cafe", "tea"], k) }],
   },
   {
     table: "limits",
@@ -155,6 +165,10 @@ const TABLES: readonly Keyed[] = [
       region: pick(["north", "north", "south", "south"], k),
       level: pick(["1", "2"], k),
     }),
+    parts: (k) => [
+      { text: true, value: pick(["north", "north", "south", "south"], k) },
+      { text: false, value: pick(["1", "2"], k) },
+    ],
   },
   {
     table: "bookings",
@@ -188,6 +202,10 @@ const TABLES: readonly Keyed[] = [
       ),
       deposit: pick(["5 CNY", "6 CNY"], Math.floor(k / 2)),
     }),
+    parts: (k) => [
+      { text: false, value: k % 2 },
+      { text: false, value: Math.floor(k / 2) },
+    ],
   },
 ];
 
@@ -266,6 +284,7 @@ type OpReceipt = {
   ver?: string;
   created_entity?: true;
   existing_keys?: unknown[];
+  similar_keys?: { key: unknown; match: string; revoked?: true }[];
 };
 type Result = { ops?: OpReceipt[]; refused?: string; reason?: string; param?: string };
 
@@ -286,6 +305,21 @@ const compared = (id: string) => async (tx: ReadTx) => {
 
 const opOf = (ver: string) => Number(ver.slice(1).split(".")[0]);
 
+const LEVEL = { fold: 0, affix: 1, edit: 2 } as const;
+/** How keys `a` and `b` of the table compare under `keymatch@1`, from their fields. */
+const alikeKeys = (t: Keyed, a: number, b: number) => {
+  const pa = t.parts(a);
+  const pb = t.parts(b);
+  return matchKey(
+    pa.map((x, i) => {
+      const y = pb[i] as { text: boolean; value: unknown };
+      return x.text
+        ? { text: true as const, a: x.value as string, b: y.value as string }
+        : { text: false as const, equal: x.value === y.value };
+    }),
+  );
+};
+
 // One store for the samples and one to replay into, for the whole file: the tables' groups run one
 // after another, and each sample empties what it uses before using it (opening PGlite builds a
 // database, seconds; emptying one takes milliseconds).
@@ -302,7 +336,23 @@ afterAll(async () => {
 
 describe.each(TABLES)("writing by entity_key: $table", (t: Keyed) => {
   it("ops go to the model's entity for their key, or create it; one entity a key", async () => {
-    const seen = { samples: 0, created: 0, located: 0, changed: 0, replayed: 0 };
+    // The table's first two keys alike (keymatch@1), if any: a fixed sample creates the one, then
+    // the other, so a creation with similar_keys is reached by construction, not by chance.
+    const pair = Array.from({ length: t.keys }, (_, a) =>
+      Array.from({ length: t.keys }, (_, b) => [a, b] as const),
+    )
+      .flat()
+      .find(([a, b]) => a !== b && alikeKeys(t, a, b) !== undefined);
+    const createKey = (key: number): Step => ({
+      kind: "key",
+      key,
+      way: 0,
+      amount: 0,
+      setKey: "none",
+    });
+    const examples: [Step[]][] =
+      pair === undefined ? [] : [[[createKey(pair[0]), createKey(pair[1])]]];
+    const seen = { samples: 0, created: 0, located: 0, changed: 0, replayed: 0, alike: 0 };
     await fc.assert(
       fc.asyncProperty(steps, async (sample) => {
         const store = main.store;
@@ -383,14 +433,61 @@ describe.each(TABLES)("writing by entity_key: $table", (t: Keyed) => {
           entity_key: t.key(k, way),
           ...extra,
         });
-        const create = (k: number, o: OpReceipt, before: unknown[], at: object) => {
-          expect({ at, created: o.created_entity, keys: o.existing_keys }).toEqual({
+        // The model's keys written like key `k` (10-types-and-units «相近的键», `keymatch@1`): the
+        // request's earlier new keys (`earlier`, the most recent of all) and the model's keys,
+        // revoked ones marked; by level, distance, latest write, entity ID; at most 5.
+        const similar = (k: number, earlier: readonly { k: number; entity: string }[]) =>
+          [
+            ...earlier.map((x, i) => ({ ...x, at: Number.MAX_SAFE_INTEGER - i, revoked: false })),
+            ...[...held]
+              .filter(([j]) => j !== k && !earlier.some((x) => x.k === j))
+              .map(([j, h]) => ({ k: j, entity: h.entity, at: opOf(h.ver), revoked: h.revoked })),
+          ]
+            .flatMap((x) => {
+              const m = alikeKeys(t, k, x.k);
+              return m === undefined ? [] : [{ ...x, ...m }];
+            })
+            .sort(
+              (a, b) =>
+                LEVEL[a.match] - LEVEL[b.match] ||
+                a.distance - b.distance ||
+                b.at - a.at ||
+                (a.entity < b.entity ? -1 : 1),
+            )
+            .slice(0, 5)
+            .map((x) => ({
+              key: t.shown(x.k),
+              match: x.match,
+              ...(x.revoked ? { revoked: true } : {}),
+            }));
+        const create = (
+          k: number,
+          o: OpReceipt,
+          before: unknown[],
+          at: object,
+          earlier: readonly { k: number; entity: string }[] = [],
+        ) => {
+          // similar_keys as the model works them out; those first in existing_keys (04-contract-types
+          // `existing_keys`), then the rest by the latest write, as the model has them.
+          const alike = similar(k, earlier);
+          const first = new Set(alike.map((x) => JSON.stringify(x.key)));
+          expect({
+            at,
+            created: o.created_entity,
+            similar: o.similar_keys,
+            keys: o.existing_keys,
+          }).toEqual({
             at,
             created: true,
-            keys: before,
+            similar: alike.length > 0 ? alike : undefined,
+            keys: [
+              ...alike.map((x) => x.key),
+              ...before.filter((x) => !first.has(JSON.stringify(x))),
+            ].slice(0, 10),
           });
           order.push(k);
           seen.created++;
+          if (alike.length > 0) seen.alike++;
         };
 
         for (const [n, st] of sample.entries()) {
@@ -549,6 +646,7 @@ describe.each(TABLES)("writing by entity_key: $table", (t: Keyed) => {
                   ob,
                   [...(ha === undefined ? [t.shown(st.a)] : []), ...before].slice(0, 10),
                   at,
+                  ha === undefined ? [{ k: st.a, entity: entA }] : [],
                 );
               }
               held.set(st.b, { entity: entB, ver: ob.ver as string, revoked: false });
@@ -583,16 +681,23 @@ describe.each(TABLES)("writing by entity_key: $table", (t: Keyed) => {
       }),
       {
         numRuns: RUNS,
+        examples,
         ...(SEED !== undefined ? { seed: SEED } : {}),
         ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
       },
     );
     // The cases each sample must have are built in; these only guard against a generator gone
     // degenerate as a whole.
+    // fast-check runs the fixed sample as one of the RUNS.
     expect(seen.samples).toBe(RUNS);
     expect(seen.created).toBeGreaterThan(0);
     expect(seen.located).toBeGreaterThan(0);
     expect(seen.changed).toBeGreaterThan(0);
     expect(seen.replayed).toBeGreaterThan(0);
+    // A table with keys alike: its fixed sample created them, so some creation had similar_keys.
+    expect({ pair: pair !== undefined, alike: seen.alike > 0 }).toEqual({
+      pair: pair !== undefined,
+      alike: pair !== undefined,
+    });
   }, 600_000);
 });

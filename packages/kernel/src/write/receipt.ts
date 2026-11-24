@@ -250,6 +250,17 @@ export interface OpReceipt {
    */
   readonly existing_keys?: readonly EntityKeyText[];
   /**
+   * An entity created by `entity_key`: the table's keys written like the new one (`keymatch@1`),
+   * at most 5, those first in `existing_keys`; absent when none. Worked out at the write, as
+   * `existing_keys`; a replay leaves them out. `revoked`: at the write the entity has a value at
+   * no point (a revoke of the whole, or revokes over every stretch it had a value).
+   */
+  readonly similar_keys?: readonly {
+    readonly key: EntityKeyText;
+    readonly match: "fold" | "affix" | "edit";
+    readonly revoked?: true;
+  }[];
+  /**
    * Not given for a write by key that is `unchanged` or `skipped` (it entered no event:
    * 04-contract-types §5.1). Typed as given all the same: only such an op's result lacks it, and it
    * is assembled apart (`unrecordedOp`, write/pipeline.ts).

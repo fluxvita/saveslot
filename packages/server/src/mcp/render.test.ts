@@ -333,6 +333,36 @@ describe("what 05 §6 asks for", () => {
     expect(x.filter((l) => l.includes("source key"))).toHaveLength(1);
   });
 
+  it("a new entity with keys written alike: their own line first, why, and how to put it right", () => {
+    const receipts = JSON.parse(
+      readFileSync(new URL("./receipts.samples.json", import.meta.url), "utf8"),
+    ) as Record<string, Sample>;
+    const base = receipts["write-new-entity-existing-keys"] as Sample;
+    const op = (base.result["ops"] as R[])[0] as R;
+    const result = {
+      ...base.result,
+      ops: [
+        {
+          ...op,
+          existing_keys: ["Travel", "travel 2026", "food"],
+          similar_keys: [
+            { key: "Travel", match: "fold" },
+            { key: "travel 2026", match: "affix", revoked: true },
+          ],
+        },
+      ],
+    };
+    const x = renderResult(base.tool, result)
+      .split("\n")
+      .map((l) => l.replace(/<\/?untrusted-data-[0-9a-f]{32}>/g, ""));
+    const alike = x.findIndex((l) => l.includes("written alike"));
+    expect(x[alike]).toBe(
+      "  Keys already in the table written alike: Travel (differs only in case, width or white space); travel 2026 (one is the start or the end of the other; revoked)",
+    );
+    expect(x[alike + 1]).toContain("revoke the entity just created");
+    expect(x.findIndex((l) => l.includes("Keys already in the table:"))).toBeGreaterThan(alike);
+  });
+
   it("catalog schema: the JSON as written, whole, in one boundary", () => {
     const x = text("catalog_schema").split("\n");
     expect(x[1]).toContain("ledger · schema v1");

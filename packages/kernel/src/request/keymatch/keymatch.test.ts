@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { build, FILES, readFiles, render } from "../../../../../scripts/gen-keymatch.ts";
 import {
   distance,
+  distanceWithin,
   foldKey,
   matchFolded,
   matchKey,
@@ -123,6 +124,18 @@ describe("long keys", () => {
     // The full O(n·m) distance took about 700 ms here; the bounded one a few tens.
     expect({ under: ms < 250 }).toEqual({ under: true });
     expect(alike).toBeGreaterThan(0);
+  });
+
+  it("two keys of 200,000 code points differing in one: no row ends it early, yet linear", () => {
+    const a = Array.from({ length: 200_000 }, (_, i) => 0x4e00 + (i % 500));
+    const b = [...a];
+    b[100_000] = 0x41;
+    const start = performance.now();
+    const d = distanceWithin(a, b, 2);
+    const ms = performance.now() - start;
+    expect(d).toBe(1);
+    // A row allocated whole made this quadratic: 200,000 rows of 200,001 cells.
+    expect({ under: ms < 250 }).toEqual({ under: true });
   });
 });
 

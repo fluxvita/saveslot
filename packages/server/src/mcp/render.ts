@@ -1775,6 +1775,23 @@ function receiptOps(r: R): Line[] {
       t`${targetOf(x["target"])} ${how}${undoes}: ${what}${x["ver"] !== undefined ? t` (ver=${idOf(x["ver"])})` : []}${created}`,
     );
     // A new entity by its key: the keys the table had, so that a key written wrong shows.
+    // Keys written like the new one (05 §6 `saveslot_write`): first, on lines of their own, with
+    // why they are alike and how to put it right.
+    const alike = arr(x["similar_keys"]).map(obj);
+    if (alike.length > 0) {
+      out.push(
+        t`  Keys already in the table written alike: ${join(
+          alike.map(
+            (k) =>
+              t`${keyText(k["key"])} (${said(SIMILAR_MATCH, k["match"]) ?? need(false) ?? []}${k["revoked"] === true ? t`; revoked` : []})`,
+          ),
+          t`; `,
+        )}`,
+      );
+      out.push(
+        t`  If it is the same one: revoke the entity just created (revoke, without a period), then write by the existing key`,
+      );
+    }
     const keys = arr(x["existing_keys"]);
     if (keys.length > 0)
       out.push(t`  Keys already in the table: ${join(keys.map(keyText), t`; `)}`);
@@ -1819,6 +1836,13 @@ function skipReasonOf(x: R): Part[] {
       return [];
   }
 }
+
+/** Why keys are alike (05 §6 `saveslot_write`; `keymatch@1`). */
+const SIMILAR_MATCH = textsBy<"fold" | "affix" | "edit">({
+  fold: () => t`differs only in case, width or white space`,
+  affix: () => t`one is the start or the end of the other`,
+  edit: () => t`differs by a character or two`,
+});
 
 /**
  * What an op declared on its premises (05 §6 `saveslot_write` «写入的前提»; 04-contract-types §5.1

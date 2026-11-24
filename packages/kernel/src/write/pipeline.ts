@@ -53,6 +53,7 @@ import { sameValue } from "../delta/index.ts";
 import {
   awaitingImpact,
   conflictImpact,
+  EVERYTHING,
   emptyState,
   type GapEntry,
   type ItemRef,
@@ -100,6 +101,7 @@ import { createdInEffect, duplicateBlock, duplicateOf, flaggedItem } from "./dup
 import { WriteError } from "./errors.ts";
 import { type OpenedFlagged, settleFlagged } from "./flagged.ts";
 import {
+  createSimilarCache,
   type EntityKeyText,
   entitiesByKey,
   existingKeys,
@@ -108,6 +110,8 @@ import {
   keyOf,
   keyText,
   keyToken,
+  type SimilarKey,
+  similarKeys,
 } from "./keys.ts";
 import {
   checkLiteral,
@@ -518,6 +522,10 @@ function confirmNow(state: RowState, t: TrackedItem, upTo?: OpNumber): Judgement
  * not judge high impact (it does not say what would be overwritten, ①). The two list the same revert
  * entries (awaiting-revert.prop checks it).
  */
+/** A state entity has a value at some point (05-time «无值区间»: every required field has one). */
+const valuedSomewhere = (state: RowState): boolean =>
+  state.pieces().some((p) => state.hasValue(p, EVERYTHING));
+
 export function scopeFor(state: RowState, t: TrackedItem): IntervalSet {
   if (!state.isState) return [WHOLE];
   const now = confirmNow(state, t);
@@ -1666,6 +1674,15 @@ async function writeIn(
   const createdByKey = new Map<string, EntityId>();
   const keyOfCreated = new Map<string, { table: TableId; key: KeyValues }>();
   const keysShown = new Map<number, EntityKeyText[]>();
+  // The keys written like an entity's created by key, by op (`similar_keys`): first in its keys shown.
+  const keysAlike = new Map<number, SimilarKey[]>();
+  // The entities this request's ops wrote so far, the latest last, for `similar_keys`, and whether
+  // each is revoked as its last op here left it: a value at no point (a revoke of the whole, revokes
+  // over every stretch, an undo, or a write left a candidate on an entity with none). Read off its
+  // state once an op changes it, not again at each comparison.
+  const writtenHere = new Map<EntityId, { table: TableId; revoked: boolean }>();
+  // What `similar_keys` reads of the store, once a request.
+  const similarCache = createSimilarCache();
 
   /** The edges and clearing entries this request's ops recorded so far (the fan-in counts them). */
   const recordedHere: RecordedHere = { edges: [], clears: [] };
@@ -1924,15 +1941,36 @@ async function writeIn(
             param: `${param}/entity_key`,
           });
         }
-        // The keys before it: this request's earlier ones first, the latest first, then the stored.
-        const earlier = [...keyOfCreated.values()]
-          .filter((x) => x.table === table.id)
+        // The keys before it: this request's earlier ones first, the latest first, then the stored;
+        // those written alike first of all (04-contract-types `existing_keys`).
+        const mine = [...keyOfCreated]
+          .filter(([, x]) => x.table === table.id)
           .reverse()
-          .map((x) => keyText(table, x.key));
-        keysShown.set(
-          o.index,
-          [...earlier, ...(await existingKeys(tx, table, EXISTING_KEYS))].slice(0, EXISTING_KEYS),
+          .map(([entity, x]) => ({ entity: entity as EntityId, key: x.key }));
+        const alike = await similarKeys(
+          tx,
+          table,
+          key,
+          [...writtenHere]
+            .filter(([, x]) => x.table === table.id)
+            .reverse()
+            .map(([entity, x]) => ({
+              entity,
+              ...(keyOfCreated.has(entity)
+                ? { key: (keyOfCreated.get(entity) as { key: KeyValues }).key }
+                : {}),
+              revoked: x.revoked,
+            })),
+          similarCache,
         );
+        if (alike.length > 0) keysAlike.set(o.index, alike);
+        const first = alike.map((x) => x.key);
+        const seen = new Set(first.map((k) => JSON.stringify(k)));
+        const rest = [
+          ...mine.map((x) => keyText(table, x.key)),
+          ...(await existingKeys(tx, table, EXISTING_KEYS)),
+        ].filter((k) => !seen.has(JSON.stringify(k)));
+        keysShown.set(o.index, [...first, ...rest].slice(0, EXISTING_KEYS));
         byKey = input.newId("entity") as EntityId;
         createsByKey = true;
         createdByKey.set(token, byKey);
@@ -2429,6 +2467,13 @@ async function writeIn(
       });
     }
     work.state = judged.state;
+    if (isState) {
+      writtenHere.delete(id as EntityId);
+      writtenHere.set(id as EntityId, {
+        table: table.id,
+        revoked: !valuedSomewhere(judged.state),
+      });
+    }
     for (const w of j.warnings) covered.push({ op: o.index, table: o.table, ...w });
     // Several segments and fields with no mapping: each of them rests on all the segments
     // (04-contract §3), a deletion of any one takes them.
@@ -2884,7 +2929,10 @@ async function writeIn(
   );
   const ops = receipt.ops.map((r, i) => {
     const keys = keysShown.get(i);
-    return keys !== undefined && r.created_entity ? { ...r, existing_keys: keys } : r;
+    const alike = keysAlike.get(i);
+    return keys !== undefined && r.created_entity
+      ? { ...r, existing_keys: keys, ...(alike !== undefined ? { similar_keys: alike } : {}) }
+      : r;
   });
   const out = keysShown.size > 0 ? { ...receipt, ops } : receipt;
   for (const c of covered) {

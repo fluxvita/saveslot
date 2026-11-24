@@ -151,31 +151,36 @@ const endsWith = (a: readonly number[], b: readonly number[]) =>
 /**
  * The Levenshtein distance when it is at most `k`, else `k + 1`: only the cells within `k` of the
  * diagonal are worked out (a cell further off is more than `k` already), and a row all over `k`
- * ends it. O(n·k), not O(n·m).
+ * ends it. O(n·k) in time, O(k) in space: a row keeps its band only, cell `j` of row `i` at
+ * `j - i + k`.
  */
 export function distanceWithin(a: readonly number[], b: readonly number[], k: number): number {
   if (Math.abs(a.length - b.length) > k) return k + 1;
   const far = k + 1;
-  let prev = Array.from({ length: b.length + 1 }, (_, j) => (j <= k ? j : far));
+  const w = 2 * k + 1;
+  let prev = new Array<number>(w).fill(far);
+  let cur = new Array<number>(w).fill(far);
+  for (let j = 0; j <= Math.min(k, b.length); j++) prev[j + k] = j;
   for (let i = 1; i <= a.length; i++) {
-    const cur = new Array<number>(b.length + 1).fill(far);
-    if (i <= k) cur[0] = i;
-    let least = cur[0] as number;
+    cur.fill(far);
+    if (i <= k) cur[k - i] = i;
+    let least = i <= k ? i : far;
     const from = Math.max(1, i - k);
     const to = Math.min(b.length, i + k);
     for (let j = from; j <= to; j++) {
+      const d = j - i + k;
       const v = Math.min(
-        (prev[j] as number) + 1,
-        (cur[j - 1] as number) + 1,
-        (prev[j - 1] as number) + (a[i - 1] === b[j - 1] ? 0 : 1),
+        (d + 1 < w ? (prev[d + 1] as number) : far) + 1,
+        (d > 0 ? (cur[d - 1] as number) : far) + 1,
+        (prev[d] as number) + (a[i - 1] === b[j - 1] ? 0 : 1),
       );
-      cur[j] = v > far ? far : v;
+      cur[d] = v > far ? far : v;
       if (v < least) least = v;
     }
     if (least > k) return far;
-    prev = cur;
+    [prev, cur] = [cur, prev];
   }
-  const d = prev[b.length] as number;
+  const d = prev[b.length - a.length + k] as number;
   return d > k ? far : d;
 }
 

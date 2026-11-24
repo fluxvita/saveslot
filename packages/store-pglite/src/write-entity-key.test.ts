@@ -122,6 +122,7 @@ type Receipt = {
     ver?: string;
     created_entity?: true;
     existing_keys?: unknown[];
+    similar_keys?: { key: unknown; match: string; revoked?: true }[];
     fields: Record<string, unknown>;
   }[];
 };
@@ -674,6 +675,153 @@ describe("the key of an entity comes from the event that created it", () => {
   );
 });
 
+describe("similar_keys: revoked as at the write; how many, in what order, over what scope", () => {
+  const made = async (category: string) => {
+    const r = await one(budget(category, { amount: "1" }));
+    return { entity: r.ops[0]?.target.entity as string, ver: r.ops[0]?.ver as string };
+  };
+  const keysOf = (r: Receipt, i = 0) => r.ops[i]?.similar_keys?.map((x) => x.key);
+
+  it(
+    "an earlier op's write on a stale version left a candidate: still revoked, as the next request sees it",
+    async () => {
+      const q = await made("Q4推广");
+      await one({ intent: "revoke", table: "budgets", entity: q.entity, ver: q.ver });
+      const r = await send({
+        sv: 1,
+        ops: [
+          { ...budget("Q4推广", { amount: "3" }), ver: q.ver },
+          budget("q4 推广", { amount: "2" }),
+        ],
+      });
+      expect((r as { pending?: unknown[] }).pending?.length).toBeGreaterThan(0);
+      expect(r.ops[1]?.similar_keys).toEqual([{ key: "Q4推广", match: "fold", revoked: true }]);
+      const next = await one(budget("Q4推广 ", { amount: "2" }));
+      expect(next.ops[0]?.similar_keys).toEqual([
+        { key: "q4 推广", match: "fold" },
+        { key: "Q4推广", match: "fold", revoked: true },
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "an earlier op undid the revoke: not revoked",
+    async () => {
+      const q = await made("Q4推广");
+      const gone = await one({ intent: "revoke", table: "budgets", entity: q.entity, ver: q.ver });
+      const r = await send({
+        sv: 1,
+        ops: [
+          { table: "budgets", entity: q.entity, revert: { undo: gone.seq } },
+          budget("q4 推广", { amount: "2" }),
+        ],
+      });
+      expect(r.ops[1]?.similar_keys).toEqual([{ key: "Q4推广", match: "fold" }]);
+    },
+    T,
+  );
+
+  it(
+    "an earlier op revoked over every stretch with a value: revoked; over a part only: not",
+    async () => {
+      const q = await made("Q4推广");
+      const whole = await send({
+        sv: 1,
+        ops: [
+          {
+            intent: "revoke",
+            table: "budgets",
+            entity: q.entity,
+            ver: q.ver,
+            valid_from: "2026-10-01",
+          },
+          budget("q4 推广", { amount: "2" }),
+        ],
+      });
+      expect(whole.ops[1]?.similar_keys).toEqual([{ key: "Q4推广", match: "fold", revoked: true }]);
+      const p = await made("办公用品");
+      const part = await send({
+        sv: 1,
+        ops: [
+          {
+            intent: "revoke",
+            table: "budgets",
+            entity: p.entity,
+            ver: p.ver,
+            valid_from: "2026-10-05",
+            valid_to: "2026-10-07",
+          },
+          budget("办公 用品", { amount: "2" }),
+        ],
+      });
+      expect(part.ops[1]?.similar_keys).toEqual([{ key: "办公用品", match: "fold" }]);
+    },
+    T,
+  );
+
+  it(
+    "at most 5: by level, then distance, then the latest written",
+    async () => {
+      for (const k of [
+        "MARKETING",
+        "marketin",
+        "marketingaaaa",
+        "marketting",
+        "marketng",
+        "markting",
+      ])
+        await made(k);
+      const r = await one(budget("marketing", { amount: "2" }));
+      // fold; affix at 1, at 4; then three edits at 1, the latest written first, the oldest cut.
+      expect(r.ops[0]?.similar_keys).toEqual([
+        { key: "MARKETING", match: "fold" },
+        { key: "marketin", match: "affix" },
+        { key: "marketingaaaa", match: "affix" },
+        { key: "markting", match: "edit" },
+        { key: "marketng", match: "edit" },
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "the same level, distance and latest write: by entity ID, not by the key's text",
+    async () => {
+      // One request: one latest write for both; Travel created first has the smaller ID, though
+      // TRAVEL comes first in C order.
+      await send({
+        sv: 1,
+        ops: [budget("Travel", { amount: "1" }), budget("TRAVEL", { amount: "1" })],
+      });
+      expect(keysOf(await one(budget("travel ", { amount: "2" })))).toEqual(["Travel", "TRAVEL"]);
+    },
+    T,
+  );
+
+  it(
+    "a key without a text field: none, the existing keys given",
+    async () => {
+      const booking = (deposit: string) => ({
+        intent: "update",
+        table: "bookings",
+        entity_key: {
+          at: "2026-11-05T10:00:00+08:00[Asia/Shanghai]",
+          deposit: { value: deposit, unit: "CNY" },
+        },
+        set: { amount: "1" },
+        valid_from: "2026-10-01",
+      });
+      await one(booking("5"));
+      const r = await one(booking("6"));
+      expect(r.ops[0]?.created_entity).toBe(true);
+      expect(r.ops[0]?.similar_keys).toBeUndefined();
+      expect(r.ops[0]?.existing_keys?.length).toBe(1);
+    },
+    T,
+  );
+});
+
 describe("keys that are not text", () => {
   const booking = (at: string, deposit: unknown, extra: Record<string, unknown> = {}) => ({
     intent: "update",
@@ -829,6 +977,175 @@ describe("keys that are not text", () => {
       );
       expect(r.refused).toBeUndefined();
       expect(r.ops[0]?.target.entity).toBe(a.ops[0]?.target.entity);
+    },
+    T,
+  );
+});
+
+describe("similar_keys (10-types-and-units «相近的键», keymatch@1)", () => {
+  const made = async (category: string) => {
+    const r = await one(budget(category, { amount: "1" }));
+    return { entity: r.ops[0]?.target.entity as string, ver: r.ops[0]?.ver as string };
+  };
+
+  it.each([
+    ["Q4推广", "q4 推广", "fold"],
+    ["Q4推广", "Q4推广预算", "affix"],
+    ["marketing", "marketting", "edit"],
+  ])(
+    "%s, then %s: %s, first in existing_keys",
+    async (old, fresh, match) => {
+      await made("行政");
+      await made(old);
+      const r = await one(budget(fresh, { amount: "2" }));
+      expect(r.ops[0]?.similar_keys).toEqual([{ key: old, match }]);
+      expect(r.ops[0]?.existing_keys?.[0]).toBe(old);
+      expect(r.ops[0]?.existing_keys).toEqual([old, "行政"]);
+    },
+    T,
+  );
+
+  it(
+    "none alike: not given; two characters apart by one: not alike",
+    async () => {
+      await made("房租");
+      const r = await one(budget("房贷", { amount: "2" }));
+      expect(r.ops[0]?.created_entity).toBe(true);
+      expect(r.ops[0]?.similar_keys).toBeUndefined();
+    },
+    T,
+  );
+
+  it(
+    "a revoked entity is compared and marked revoked",
+    async () => {
+      const q = await made("Q4推广");
+      await one({ intent: "revoke", table: "budgets", entity: q.entity, ver: q.ver });
+      const r = await one(budget("q4 推广", { amount: "2" }));
+      expect(r.ops[0]?.similar_keys).toEqual([{ key: "Q4推广", match: "fold", revoked: true }]);
+    },
+    T,
+  );
+
+  it(
+    "by level first: fold before affix",
+    async () => {
+      await made("Q4推广");
+      await made("Q4推广预算");
+      const r = await one(budget("q4 推广预算 ", { amount: "2" }));
+      expect(r.ops[0]?.similar_keys).toEqual([
+        { key: "Q4推广预算", match: "fold" },
+        { key: "Q4推广", match: "affix" },
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "by level before distance: an affix at distance 3 before an edit at distance 1",
+    async () => {
+      await made("abcdefgX");
+      await made("abcdefghXYZ");
+      const r = await one(budget("abcdefgh", { amount: "2" }));
+      expect(r.ops[0]?.similar_keys).toEqual([
+        { key: "abcdefghXYZ", match: "affix" },
+        { key: "abcdefgX", match: "edit" },
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "an entity an earlier op of the request created is compared too",
+    async () => {
+      const r = await send({
+        sv: 1,
+        ops: [budget("Q4推广", { amount: "1" }), budget("q4 推广", { amount: "2" })],
+      });
+      expect(r.ops[1]?.similar_keys).toEqual([{ key: "Q4推广", match: "fold" }]);
+    },
+    T,
+  );
+
+  it(
+    "as at the write: a revoked entity an earlier op wrote again is not revoked; one it revoked is",
+    async () => {
+      const q = await made("Q4推广");
+      const gone = await one({ intent: "revoke", table: "budgets", entity: q.entity, ver: q.ver });
+      const back = await send({
+        sv: 1,
+        ops: [
+          { ...budget("Q4推广", { amount: "3" }), ver: gone.ops[0]?.ver },
+          budget("q4 推广", { amount: "2" }),
+        ],
+      });
+      expect(back.ops[1]?.similar_keys).toEqual([{ key: "Q4推广", match: "fold" }]);
+      const made_ = await send({
+        sv: 1,
+        ops: [
+          budget("办公用品", { amount: "1" }),
+          { intent: "revoke", table: "budgets", entity_key: { category: "办公用品" } },
+          budget("办公 用品", { amount: "2" }),
+        ],
+      });
+      expect(made_.ops[2]?.similar_keys).toEqual([
+        { key: "办公用品", match: "fold", revoked: true },
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "as at the write: an entity an earlier op wrote is the latest written",
+    async () => {
+      const a = await made("q4推广");
+      await made("Q4 推广");
+      const before = await one(budget("Q4推广 ", { amount: "2" }));
+      expect(before.ops[0]?.similar_keys?.map((x) => x.key)).toEqual(["Q4 推广", "q4推广"]);
+      const r = await send({
+        sv: 1,
+        ops: [
+          { ...budget("q4推广", { amount: "3" }), ver: a.ver },
+          budget(" Q4推广", { amount: "2" }),
+        ],
+      });
+      expect(r.ops[1]?.similar_keys?.map((x) => x.key)).toEqual(["q4推广", "Q4推广 ", "Q4 推广"]);
+    },
+    T,
+  );
+
+  it(
+    "a key of several fields: the text field alike, the other the same value; another value, none",
+    async () => {
+      const limit = (region: string, level: string) => ({
+        intent: "update",
+        table: "limits",
+        entity_key: { region, level },
+        set: { amount: "1" },
+        valid_from: "2026-10-01",
+      });
+      await one(limit("north", "1"));
+      const r = await one(limit("North", "1.00"));
+      expect(r.ops[0]?.similar_keys).toEqual([
+        { key: { region: "north", level: "1" }, match: "fold" },
+      ]);
+      const other = await one(limit("North", "2"));
+      expect(other.ops[0]?.similar_keys).toBeUndefined();
+    },
+    T,
+  );
+
+  it(
+    "a replay leaves them out, as existing_keys",
+    async () => {
+      await made("Q4推广");
+      const params = { sv: 1, idempotency_key: "again", ops: [budget("q4 推广", { amount: "2" })] };
+      const first = await send(params);
+      expect(first.ops[0]?.similar_keys).toBeDefined();
+      const again = await send(params);
+      expect(again.replayed).toBe(true);
+      expect(again.ops[0]?.similar_keys).toBeUndefined();
+      expect(again.omitted).toContain("existing_keys");
     },
     T,
   );

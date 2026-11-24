@@ -21,8 +21,10 @@ import {
   type FieldId,
   type FieldValue,
   type JcsValue,
+  type TableId,
 } from "@fluxvita/saveslot-contract-core";
 import type { NormalizedField } from "../request/index.ts";
+import { foldKey, type Match, matchKey } from "../request/keymatch/index.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { zonedText } from "../time/index.ts";
 
@@ -131,4 +133,151 @@ export async function existingKeys(
     .sort(([a], [b]) => (at.get(b) ?? 0) - (at.get(a) ?? 0) || (a < b ? -1 : a > b ? 1 : 0))
     .slice(0, limit)
     .map(([, k]) => keyText(t, k));
+}
+
+/** Entities compared for `similar_keys`, the most recently written first (10 «比较范围», 初值). */
+export const SIMILAR_SCOPE = 5000;
+/** `similar_keys` given at most. */
+export const SIMILAR_MAX = 5;
+
+/** A key written alike (04-contract-types `OpResult.similar_keys`). */
+export interface SimilarKey {
+  readonly key: EntityKeyText;
+  readonly match: Match;
+  readonly revoked?: true;
+}
+
+/** What `similarKeys` reads of a table once a request (`createSimilarCache`). */
+interface TableSnapshot {
+  /** The stored entities with their keys, the most recently written first, then by entity ID. */
+  readonly byRecency: readonly {
+    readonly entity: EntityId;
+    readonly key: KeyValues;
+    readonly at: number;
+  }[];
+  /** The stored entities' keys, by entity. */
+  readonly keyOf: ReadonlyMap<EntityId, KeyValues>;
+  /** The stored entities with a value over some stretch (a row in the business table). */
+  readonly valued: ReadonlySet<string>;
+}
+
+/**
+ * What `similarKeys` reads once a request and keeps: each table's stored keys, their latest write
+ * and whether they have a value (the store does not change while a request is judged: its own
+ * writes come in as `here`), and each text folded (`foldKey`).
+ */
+export interface SimilarCache {
+  readonly tables: Map<TableId, TableSnapshot>;
+  readonly folded: Map<string, readonly number[]>;
+}
+
+export const createSimilarCache = (): SimilarCache => ({ tables: new Map(), folded: new Map() });
+
+async function snapshotOf(
+  tx: ReadTx,
+  t: CompiledBaseTable,
+  cache: SimilarCache,
+): Promise<TableSnapshot> {
+  const had = cache.tables.get(t.id);
+  if (had !== undefined) return had;
+  const name = t.physical.table;
+  if (!/^t[1-9][0-9]{0,8}$/.test(t.id) || !new RegExp(`^t_${t.id}_v[1-9][0-9]{0,8}$`).test(name)) {
+    throw new Error(`not a physical table name: ${JSON.stringify(name)}`);
+  }
+  const stored = await tableKeys(tx, t);
+  const latest = await tx.query<{ row_id: string; at: unknown }>(
+    `SELECT row_id, max(rec_from) AS at FROM "${name}__ver" GROUP BY row_id`,
+  );
+  const at = new Map(latest.rows.map((x) => [x.row_id, Number(x.at)]));
+  const valued = new Set(
+    (await tx.query<{ id: string }>(`SELECT DISTINCT entity_id AS id FROM "${name}"`)).rows.map(
+      (x) => x.id,
+    ),
+  );
+  const byRecency = [...stored]
+    .map(([entity, key]) => ({ entity, key, at: at.get(entity) ?? 0 }))
+    .sort((a, b) => b.at - a.at || (a.entity < b.entity ? -1 : a.entity > b.entity ? 1 : 0));
+  const snap = { byRecency, keyOf: stored, valued };
+  cache.tables.set(t.id, snap);
+  return snap;
+}
+
+function foldedOf(s: string, cache: SimilarCache): readonly number[] {
+  let f = cache.folded.get(s);
+  if (f === undefined) {
+    f = foldKey(s);
+    cache.folded.set(s, f);
+  }
+  return f;
+}
+
+/**
+ * The table's keys written like `key` (10-types-and-units «相近的键», `keymatch@1`): of its entities,
+ * the most recently written `SIMILAR_SCOPE`, revoked ones included and marked; at most
+ * `SIMILAR_MAX`, by level, distance, latest write, entity ID. None for a key without a `text` field.
+ *
+ * As at the write (04-contract-types: worked out from the state at that moment): `here` are the
+ * entities this request's earlier ops wrote, the latest first; they are the most recent of all.
+ * `revoked` is the entity having a value at no point at that moment (a revoke of the whole, or
+ * revokes over every stretch it had a value), the same as a stored entity with no row in the
+ * business table; the caller reads it off the entity's state in the request. `key`: one this
+ * request created, not stored yet.
+ */
+export async function similarKeys(
+  tx: ReadTx,
+  t: CompiledBaseTable,
+  key: KeyValues,
+  here: readonly {
+    readonly entity: EntityId;
+    readonly key?: KeyValues;
+    readonly revoked: boolean;
+  }[],
+  cache: SimilarCache,
+): Promise<SimilarKey[]> {
+  const fields = keyFields(t);
+  if (!fields.some((f) => f.type === "text")) return [];
+  const snap = await snapshotOf(tx, t, cache);
+  const mine = new Set(here.map((x) => x.entity as string));
+  const all: { entity: EntityId; key: KeyValues; at: number; revoked: boolean }[] = [];
+  here.forEach((x, i) => {
+    const k = x.key ?? snap.keyOf.get(x.entity);
+    if (k !== undefined)
+      all.push({ entity: x.entity, key: k, at: Number.MAX_SAFE_INTEGER - i, revoked: x.revoked });
+  });
+  for (const x of snap.byRecency) {
+    if (all.length >= SIMILAR_SCOPE) break;
+    if (mine.has(x.entity)) continue;
+    all.push({ ...x, revoked: !snap.valued.has(x.entity) });
+  }
+  all.splice(SIMILAR_SCOPE);
+  const LEVEL: Record<Match, number> = { fold: 0, affix: 1, edit: 2 };
+  const found = all.flatMap((x) => {
+    const m = matchKey(
+      fields.map((f) => {
+        const a = key[f.id] ?? null;
+        const b = x.key[f.id] ?? null;
+        return f.type === "text" && typeof a === "string" && typeof b === "string"
+          ? { text: true as const, a, b, folded: { a: foldedOf(a, cache), b: foldedOf(b, cache) } }
+          : {
+              text: false as const,
+              equal: canonicalize(a as JcsValue) === canonicalize(b as JcsValue),
+            };
+      }),
+    );
+    return m === undefined ? [] : [{ ...x, ...m }];
+  });
+  return found
+    .sort(
+      (a, b) =>
+        LEVEL[a.match] - LEVEL[b.match] ||
+        a.distance - b.distance ||
+        b.at - a.at ||
+        (a.entity < b.entity ? -1 : a.entity > b.entity ? 1 : 0),
+    )
+    .slice(0, SIMILAR_MAX)
+    .map((x) => ({
+      key: keyText(t, x.key),
+      match: x.match,
+      ...(x.revoked ? { revoked: true as const } : {}),
+    }));
 }
