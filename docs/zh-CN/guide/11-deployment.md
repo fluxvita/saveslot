@@ -61,7 +61,7 @@ Agent 经 **MCP** 连 saveslot（第 1 章介绍过：Agent 调用外部工具�
 | `saveslot_write`        | 写     | 写入：新增、变更、纠错、撤销                                     |
 | `saveslot_resolve`      | 写     | 处理一个待处理事项                                          |
 | `saveslot_schema_draft` | 写     | 提交 schema 草稿（建 slot、改表结构；第一版先开建 slot）                 |
-| `saveslot_delete`       | 写     | 执行一次已预览的删除                                         |
+| `saveslot_delete`       | 写     | 执行一次已预览的删除（0.1.0 尚未提供）                              |
 
 完整设计里还有两个与"重新抽取"有关的工具，随那部分功能后做。
 
@@ -148,7 +148,7 @@ $ saveslot connect http --name "手环 · 连接器" --slots health
 | 给 Agent 签发、查看、吊销凭证 | `saveslot connect`、`saveslot connections list / revoke` |
 | 打印建议放进宿主自定义指令的文案 | `saveslot snippet` |
 | 处理待处理事项 | `saveslot pending`、`saveslot pending show`、`saveslot pending resolve` |
-| 删除与撤回 | `saveslot delete`、`saveslot delete cancel` |
+| 删除与撤回（0.1.0 尚未提供） | `saveslot delete`、`saveslot delete cancel` |
 | 查数据、看历史 | `saveslot query`、`saveslot history`、`saveslot sql`、`saveslot sources` |
 | 看谁读过什么 | `saveslot reads` |
 | 校验、对拍 | `saveslot verify`、`saveslot verify --replay` |
@@ -184,7 +184,7 @@ $ saveslot connect http --name "手环 · 连接器" --slots health
 | `saveslot.read` | 全部读操作，含删除预览 | 每个连接实例都必须有 |
 | `saveslot.write` | 写入；处理与写入有关的事项 | 给 |
 | `saveslot.schema` | 提交 schema 草稿；处理 schema 变更事项 | 不给，要显式勾选 |
-| `saveslot.delete` | 执行删除；撤回删除 | 不给，要显式勾选 |
+| `saveslot.delete` | 执行删除；撤回删除（0.1.0 尚未提供） | 不给，要显式勾选 |
 
 命令行签发时用 `--scope` 调整。两种写法，不能混用：
 
