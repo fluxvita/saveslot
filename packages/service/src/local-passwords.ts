@@ -82,18 +82,23 @@ export function resetDummyForTests(): void {
 
 let computations = 0;
 let peak = 0;
+let refusedFull = 0;
+let refusedLate = 0;
 
 /**
  * Tests only: how many computations are running and how many wait their turn; how many were
- * started in all, and the most that ever ran at once.
+ * started in all, and the most that ever ran at once; how many sign-in checks were refused, with
+ * the queue full and at the time limit.
  */
 export function scryptLoadForTests(): {
   readonly running: number;
   readonly waiting: number;
   readonly computations: number;
   readonly peak: number;
+  readonly refusedFull: number;
+  readonly refusedLate: number;
 } {
-  return { running, waiting: waiting.length, computations, peak };
+  return { running, waiting: waiting.length, computations, peak, refusedFull, refusedLate };
 }
 
 /** A password's hash with the current parameters, as stored. */
@@ -145,7 +150,10 @@ async function acquire(refuseWhenBusy = false): Promise<void> {
   if (running < SCRYPT_AT_ONCE) {
     running++;
   } else {
-    if (refuseWhenBusy && waiting.length >= SCRYPT_WAIT_MAX) throw new PasswordChecksBusy();
+    if (refuseWhenBusy && waiting.length >= SCRYPT_WAIT_MAX) {
+      refusedFull++;
+      throw new PasswordChecksBusy();
+    }
     await new Promise<void>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const turn = () => {
@@ -155,8 +163,12 @@ async function acquire(refuseWhenBusy = false): Promise<void> {
       waiting.push(turn);
       if (refuseWhenBusy) {
         timer = setTimeout(() => {
-          // Out of the queue: a place given up from now on goes to the next one waiting.
-          waiting.splice(waiting.indexOf(turn), 1);
+          // Out of the queue: a place given up from now on goes to the next one waiting. Its turn
+          // clears this timer, so the turn is still there; were it given, nothing is done.
+          const i = waiting.indexOf(turn);
+          if (i < 0) return;
+          waiting.splice(i, 1);
+          refusedLate++;
           reject(new PasswordChecksBusy());
         }, waitMs);
       }

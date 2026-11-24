@@ -14,7 +14,7 @@ import {
   type TenantRef,
   type TenantStore,
 } from "@fluxvita/saveslot-kernel";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { TEST_BACKEND, testBackend } from "../../test-backend/src/index.fixture.ts";
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import type { TenantId, UserId } from "./control-plane.ts";
@@ -39,6 +39,7 @@ import {
   resetDummyForTests,
   SCRYPT,
   SCRYPT_AT_ONCE,
+  SCRYPT_WAIT_MS,
   STORED_MAX,
   scryptLoadForTests,
   scryptPlacesForTests,
@@ -281,6 +282,46 @@ describe("passwords", () => {
         expect(scryptLoadForTests()).toMatchObject({ running: 0, waiting: 0 });
       } finally {
         // Whatever failed, every place is given back, so that the tests after this one can compute.
+        for (
+          let i = 0;
+          i < 10 && scryptLoadForTests().running + scryptLoadForTests().waiting > 0;
+          i++
+        ) {
+          release();
+          await Promise.resolve();
+        }
+      }
+    },
+    T,
+  );
+
+  it(
+    "a time limit that runs out once its wait was over takes nobody else out of the queue",
+    async () => {
+      const { acquire, release } = scryptPlacesForTests;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      // Its turn clears the time limit; here it is not cleared, so that it runs out anyway.
+      const clear = vi.spyOn(globalThis, "clearTimeout").mockImplementation(() => {});
+      try {
+        await acquire();
+        await acquire();
+        const a = acquire(true);
+        release();
+        await a;
+        vi.advanceTimersByTime(SCRYPT_WAIT_MS / 2);
+        const b = acquire(true);
+        expect(scryptLoadForTests()).toMatchObject({ running: 2, waiting: 1 });
+        // The first one's time limit runs out: the second is still waiting, and gets the next place.
+        vi.advanceTimersByTime(SCRYPT_WAIT_MS / 2);
+        expect(scryptLoadForTests()).toMatchObject({ running: 2, waiting: 1 });
+        release();
+        await b;
+        release();
+        release();
+        expect(scryptLoadForTests()).toMatchObject({ running: 0, waiting: 0 });
+      } finally {
+        clear.mockRestore();
+        vi.useRealTimers();
         for (
           let i = 0;
           i < 10 && scryptLoadForTests().running + scryptLoadForTests().waiting > 0;

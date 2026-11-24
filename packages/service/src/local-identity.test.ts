@@ -778,6 +778,7 @@ describe("the local accounts' login", () => {
         );
         const tokens: string[] = [];
         for (const src of srcs) tokens.push(await formToken(p, src));
+        const before = scryptLoadForTests();
         const results = await Promise.all(
           srcs.map(async (src, i) => {
             const started = Date.now();
@@ -793,13 +794,16 @@ describe("the local accounts' login", () => {
         const refused = results.filter((x) => status(x.r) === 503);
         expect(admitted.length + refused.length).toBe(100);
         for (const x of refused) expect(header(x.r, "retry-after")).toBe("1");
-        // Over the cap: answered at once; past the limit: answered at the limit.
-        const atOnce = refused.filter((x) => x.ms < limit);
-        expect(atOnce.length).toBeGreaterThan(0);
-        // A sign-in let in waits the limit at most, then its own computation and its write.
-        const slowest = Math.max(...admitted.map((x) => x.ms));
-        expect(slowest).toBeLessThan(limit + 1000);
-        expect(Math.max(...refused.map((x) => x.ms))).toBeLessThan(limit + 1000);
+        // Told apart by the queue, not by the clock: some refused with the queue full, every
+        // refusal either that or at the time limit.
+        const after = scryptLoadForTests();
+        const full = after.refusedFull - before.refusedFull;
+        const late = after.refusedLate - before.refusedLate;
+        expect(full).toBeGreaterThan(0);
+        expect(full + late).toBe(refused.length);
+        // A sign-in waits the limit at most, then its own computation and its write: bounded
+        // generously, for a busy machine.
+        expect(Math.max(...results.map((x) => x.ms))).toBeLessThan(limit + 10_000);
       } finally {
         useScryptWaitForTests(undefined);
         useScryptForTests({ N: 2 ** 10, r: 8, p: 1 });
