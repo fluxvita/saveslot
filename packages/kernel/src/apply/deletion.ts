@@ -196,6 +196,11 @@ function itemsAfter(
       const [, target, kk] = k.split("/") as [string, FieldId | "existence", string];
       const idx = Number(kk);
       const ownPath = target === "existence" ? `existence/${idx}` : `fields/${target}/${idx}`;
+      // Always there: the items are those of the event's blocks still readable (`blocks` above), so
+      // every `?? own` below has a block to fall back on. An item whose own block a tombstone cleared
+      // is not one of them, and a restatement of it is refused above (as numbering an item anew);
+      // nothing is cleared in this version (`deletion.executed` is not applied yet). When it is,
+      // such an item's content comes from a restatement alone, and this is to be revisited.
       const own = ev.blocks[ownPath] as Obj;
       const r = restated.get(k);
       const stored = row.stored.get(k);

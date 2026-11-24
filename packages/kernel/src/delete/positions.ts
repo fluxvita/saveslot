@@ -93,7 +93,12 @@ export interface PositionsInput {
   readonly sources: readonly Seq[];
   /** The (event, target) contributions taken away (./taken.ts `takenAway`). */
   readonly deleted: ReadonlySet<string>;
-  /** The replay's restatements, of every row the deletion lists. */
+  /**
+   * The restatements of this deletion's replay alone, of every row it lists: with no other deletion
+   * pending, executed ones counted (09 §3.5 rule 1: what a deletion lists does not depend on the
+   * others pending, so a cancellation of one leaves the others' lists as they are). With another
+   * pending, they are not the event's `restated/<k>`, which are the replay's with them.
+   */
   readonly restated: readonly Restatement[];
   readonly index: PositionIndex;
   /** The deletion event's own seq. */

@@ -107,19 +107,27 @@ export class DeletionSessionForTests {
     return out;
   }
 
-  /** The blocks last given, `gone` taken away; the restatements of cancelled deletions and `skip`'s left out. */
-  #latest(records: readonly OpRecord[], gone: ReadonlySet<string>, skip?: string) {
+  /**
+   * The blocks last given, `gone` taken away; the restatements of cancelled deletions and of those
+   * in `skip` left out.
+   */
+  #latest(records: readonly OpRecord[], gone: ReadonlySet<string>, skip: readonly string[] = []) {
     let m: Map<string, GivenBlock[]> = new Map(
       [...givenByRecords(records)].filter(([et]) => !gone.has(et)),
     );
     for (const e of this.#log) {
-      if (e.kind === "confirm" && (this.#deletions.get(e.id)?.cancelled || e.id === skip)) continue;
+      const off = this.#deletions.get(e.id)?.cancelled === true || skip.includes(e.id);
+      if (e.kind === "confirm" && off) continue;
       m = overlay(m, e.restated, gone);
     }
     return m;
   }
 
-  /** The replay of deletion `id` taking `deleted` away, recorded. */
+  /**
+   * The replay of deletion `id` taking `deleted` away, recorded; with `alone`, the restatements of
+   * its replay with no other deletion pending (what its positions are worked out from, 09 §3.5
+   * rule 1): the blocks last given without any pending deletion's, a cancellation's counted.
+   */
   confirm(
     records: readonly OpRecord[],
     id: string,
@@ -136,9 +144,22 @@ export class DeletionSessionForTests {
       external,
       this.#latest(records, before),
     );
+    const pending = [...this.#deletions].filter(([, d]) => !d.cancelled).map(([x]) => x);
+    const alone =
+      pending.length === 0
+        ? res.replay.restated
+        : deletionResult(
+            this.table,
+            records,
+            deleted,
+            new Set(),
+            itemsByRecords(new RowState(this.table, records)),
+            external,
+            this.#latest(records, new Set(), pending),
+          ).replay.restated;
     this.#deletions.set(id, { deleted, cancelled: false });
     this.#log.push({ kind: "confirm", id, restated: res.replay.restated });
-    return res;
+    return { ...res, alone };
   }
 
   /** The replay of deletion `id` cancelled, recorded. */
@@ -168,7 +189,7 @@ export class DeletionSessionForTests {
       others,
       d.deleted,
       itemsByRecords(new RowState(this.table, records)),
-      this.#latest(records, others, id),
+      this.#latest(records, others, [id]),
       from,
       external,
       NO_GRACE,

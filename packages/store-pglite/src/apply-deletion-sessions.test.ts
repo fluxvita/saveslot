@@ -7,9 +7,11 @@
 // table, blocks pending, sources, deletions, items), and every sequence is replayed from an empty
 // storage with no mismatch. Fictional names.
 //
-// Not here: two deletions of the same source, and a deletion confirmed after another was
-// cancelled compared with it alone; both are open questions of the positions and the
-// confirmation's check, not of the cancellation.
+// A deletion's positions are its own (09 §3.5 rule 1): confirmed with another pending, it lists
+// what it lists alone, so cancelling the other leaves it as if alone.
+//
+// Not here: a deletion confirmed after another was cancelled compared with it alone (it may list
+// the cancelled deletion's own blocks resting on what it takes away).
 
 import {
   createOpsContext,
@@ -204,6 +206,8 @@ const picks: [string, string][] = [
   ["s1", "s2"],
   ["s2", "s1"],
   ["s3", "s2"],
+  // Both the same source: the second deletes nothing more, and lists what it lists alone.
+  ["s2", "s2"],
 ];
 type Step = ["+" | "-", "A" | "B"];
 /** Each sequence, and the one whose state it must end in (none: the state before any). */
@@ -281,20 +285,12 @@ async function run(setup: Setup, steps: readonly Step[], pick: Record<"A" | "B",
   return { before, after };
 }
 
-/**
- * Known to fail, for a reason outside the cancellation: a deletion confirmed while another is
- * pending lists fewer of an item's blocks (`proposed/0`, `scope_valid`) than it does alone (the
- * positions, `delete/positions.ts`). Each runs as failing (`it.fails`), so it shows when fixed.
- */
-const KNOWN = new Set(["budget3, A deletes s3, B s2: +A +B -A = +B"]);
-
 describe("two deletions of one row, confirmed and cancelled in turn", () => {
   for (const [name, setup] of setups) {
     for (const [a, b] of picks) {
       for (const [label, steps, ref] of sequences) {
-        const title = `${name}, A deletes ${a}, B ${b}: ${label}`;
-        (KNOWN.has(title) ? it.fails : it)(
-          title,
+        it(
+          `${name}, A deletes ${a}, B ${b}: ${label}`,
           async () => {
             const pick = { A: a, B: b };
             const r = await run(setup, steps, pick);

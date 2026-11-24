@@ -320,8 +320,77 @@ async function storedRegs(tx: ReadTx, id: string) {
   );
 }
 
-const plain = (v: { exists: boolean; gaps: unknown; fields: object }) =>
-  JSON.parse(JSON.stringify({ exists: v.exists, gaps: v.gaps, fields: v.fields })) as View;
+/**
+ * A view as plain JSON, a field left out where every stretch is without a value and without a giver:
+ * `view` lists a field only while it is required or valued or some item names it, so a field whose
+ * only item a deletion takes away drops out of it, though what a read shows of it is the same.
+ */
+const plain = (v: { exists: boolean; gaps: unknown; fields: object }) => {
+  const fields = Object.fromEntries(
+    Object.entries(v.fields as Record<string, Stretch[]>).filter(
+      ([, ss]) =>
+        !ss.every(
+          (x) =>
+            x.value === null &&
+            (x as { by?: unknown }).by === undefined &&
+            (x as { noValueBy?: unknown }).noValueBy === undefined,
+        ),
+    ),
+  );
+  return JSON.parse(JSON.stringify({ exists: v.exists, gaps: v.gaps, fields })) as View;
+};
+
+/**
+ * A state entity whose one item of an optional field a deletion takes away (a generated sample,
+ * kept as it was): the row is not listed, and reads the same, though `view` no longer lists the
+ * field (once counted here as judge leaving a change unlisted; the comparison's, see `plain`).
+ */
+const OPTIONAL_GONE = {
+  ops: [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+      fields: { f2: { value: "1", sources: ["S1"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "revoke",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: "2026-11-09" },
+        to: { mode: "given", value: "2026-11-11" },
+      },
+      validSources: ["S2"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: "2026-11-01" },
+        to: { mode: "given", value: "2026-11-11" },
+      },
+      fields: { f2: { value: "1", sources: ["S2"], explicit: true } },
+    },
+    {
+      kind: "write",
+      op: 40,
+      event: 41,
+      seen: 0,
+      valid: { from: { mode: "given", value: "2026-11-09" }, to: { mode: "next_change" } },
+      fields: { f3: { value: "3", sources: ["S6"], explicit: true } },
+      acknowledge: ["overwrite"],
+    },
+  ],
+  decisions: [],
+  pick: 12542651,
+} as unknown as { ops: Op[]; decisions: Decision[]; pick: number };
 
 /**
  * A state entity whose write-back with no value (a conflict taken back to its merge base) a
@@ -460,13 +529,11 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     skipped: 0,
     refused: 0,
     notYet: 0,
-    judgeUnlisted: 0,
     listed: 0,
     restated: 0,
     cancelled: 0,
     cancelRefused: 0,
   };
-  let unlisted: string | undefined;
   const notYet: Record<string, number> = {};
 
   const checkSample = async (ops: readonly Op[], decisions: readonly Decision[], pick: number) => {
@@ -594,16 +661,14 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       seen.refused++;
       return;
     }
-    // judge's replay changing what a read shows of the row without listing it is judge's to
-    // answer (09 §5.9 «列哪些»), not apply's: counted, the first such sample kept, skipped.
-    if (
-      !made.listed &&
-      JSON.stringify(plain(view(made.replay.before))) !==
-        JSON.stringify(plain(view(made.replay.replay.state)))
-    ) {
-      seen.judgeUnlisted++;
-      unlisted ??= JSON.stringify({ ops, decisions, pick });
-      return;
+    // A row the results do not list reads the same before and after (09 §5.9 «列哪些»).
+    if (!made.listed) {
+      expect({ ops, decisions, pick, after: plain(view(made.replay.replay.state)) }).toEqual({
+        ops,
+        decisions,
+        pick,
+        after: plain(view(made.replay.before)),
+      });
     }
     try {
       await run(store, [
@@ -623,6 +688,26 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     if (made.replay.replay.restated.length > 0) seen.restated++;
     const state = made.replay.replay.state;
     const id = isState ? ENTITY : ROW;
+    // A row the results do not list keeps its cells: the deletion opens none (a restatement giving
+    // the content they hold renews nothing). But for the one exception apply leaves unchecked (09
+    // §5.9 «列哪些»): an event or timeless row that exists neither before nor after (revoked, its
+    // values kept), settled as the source table leaves it.
+    const existsOnce = view(made.replay.before).exists || view(made.replay.replay.state).exists;
+    if (!made.listed && (isState || existsOnce)) {
+      const opened = await store.read((tx) =>
+        tx.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM ${isState ? "t_t2_v1__ver" : "t_t1_v1__ver"}
+           WHERE row_id = $1 AND rec_from = (SELECT max(seq) FROM events)`,
+          [id],
+        ),
+      );
+      expect({ ops, decisions, pick, opened: opened.rows[0]?.n }).toEqual({
+        ops,
+        decisions,
+        pick,
+        opened: 0,
+      });
+    }
 
     // The version table is judge's view of the replay's state.
     const v = plain(view(state));
@@ -685,12 +770,13 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       throw e;
     }
     const b = back.result;
-    if (
-      !b.listed &&
-      JSON.stringify(plain(view(back.before))) !== JSON.stringify(plain(view(back.replay.state)))
-    ) {
-      seen.judgeUnlisted++;
-      return;
+    if (!b.listed) {
+      expect({ ops, decisions, pick, after: plain(view(back.replay.state)) }).toEqual({
+        ops,
+        decisions,
+        pick,
+        after: plain(view(back.before)),
+      });
     }
     const cancelBlocks = encodeCancellation({
       id: DELETION,
@@ -757,6 +843,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
   it("apply of a deletion gives judge's replay, and replays the same", async () => {
     const x = isState ? RESTATED_AS_IT_WAS : BACK_TO_ITS_OWN;
     await checkSample(x.ops, x.decisions, x.pick);
+    if (isState) await checkSample(OPTIONAL_GONE.ops, OPTIONAL_GONE.decisions, OPTIONAL_GONE.pick);
     await fc.assert(
       fc.asyncProperty(scenario(isState), fc.nat(), ({ ops, decisions }, pick) =>
         checkSample(ops, decisions, pick),
@@ -770,7 +857,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     if (process.env["DELETION_COUNTS"] !== undefined)
       appendFileSync(
         process.env["DELETION_COUNTS"],
-        `${isState ? "state" : "event"} ${JSON.stringify({ seen, notYet, unlisted })}\n`,
+        `${isState ? "state" : "event"} ${JSON.stringify({ seen, notYet })}\n`,
       );
     expect(seen.samples).toBeGreaterThan(RUNS / 4);
     expect(seen.listed).toBeGreaterThan(0);

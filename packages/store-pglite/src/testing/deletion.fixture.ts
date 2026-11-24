@@ -269,14 +269,15 @@ export class DeletionSession {
       const res = this.#session.confirm(records, id, deleted);
       const restated = res.replay.restated;
       const self = ((await readTail(tx))?.seq ?? 0) + 1;
+      // The positions as this deletion alone gives them (09 §3.5 rule 1), whatever else is pending.
       const index = await readPositionIndex(tx, {
         slot: this.#input.slot,
         sources,
         bases,
         deleted,
-        restated,
+        restated: res.alone,
       });
-      const positions = positionsOf({ sources, deleted, restated, index, self });
+      const positions = positionsOf({ sources, deleted, restated: res.alone, index, self });
       const blocks: Record<string, unknown> = {
         ctx: { now, today: now.slice(0, 10), ruleset_version: 1, policy_version: 1 },
         ...encodeDeletion({
