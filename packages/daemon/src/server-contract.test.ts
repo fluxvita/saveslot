@@ -173,6 +173,7 @@ function serverFixture(shape: Shape) {
       handleKeyFile: join(keys, "handle-key"),
       listen: { host: "127.0.0.1", port: 0 },
       trustedProxies: [],
+      allowedOrigins: [],
       ...(shape.rateLimit !== undefined ? { rateLimit: shape.rateLimit } : {}),
     };
     if (shape.accounts === "external") {

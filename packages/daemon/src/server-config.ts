@@ -1,8 +1,9 @@
 // The server mode's configuration (docs/zh-CN/spec/06-cli.md §4.1 «服务器模式的配置», §6.2): read
 // from the environment only, never from a config.toml. Every variable is checked and every problem
 // is reported at once, in the order of that table; a problem names the variable and what is wrong
-// with it, never the value (a connection URL may hold a password). `saveslot server …` refuses
-// with exit code 5 when there is any.
+// with it, never the value (a connection URL may hold a password); only an entry of
+// `SAVESLOT_ALLOWED_ORIGINS` that is not an origin is named, an origin holding nothing secret.
+// `saveslot server …` refuses with exit code 5 when there is any.
 
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
@@ -17,6 +18,7 @@ export const SERVER_VARIABLES = [
   "SAVESLOT_HANDLE_KEY_FILE",
   "SAVESLOT_LISTEN",
   "SAVESLOT_TRUSTED_PROXIES",
+  "SAVESLOT_ALLOWED_ORIGINS",
   "SAVESLOT_RATE_LIMIT",
   "SAVESLOT_RATE_BURST",
   "SAVESLOT_IDENTITY_ISSUER",
@@ -43,6 +45,11 @@ export interface ServerConfig {
   readonly listen: { readonly host: string; readonly port: number };
   /** Each as `normalizeAddress` writes it. */
   readonly trustedProxies: readonly string[];
+  /**
+   * The origins whose pages may call `/v1/`, `/oauth/token` and `/oauth/revoke` from a browser
+   * (05-surfaces §13), each as a browser writes it in `Origin`.
+   */
+  readonly allowedOrigins: readonly string[];
   /** Absent: rate limiting is off. */
   readonly rateLimit?: { readonly perMinute: number; readonly burst: number };
   /**
@@ -190,6 +197,37 @@ function proxies(text: string): string[] {
   return list as string[];
 }
 
+/**
+ * Origins as a browser writes them in `Origin`, compared with it as they are written: scheme, host
+ * and a port other than the default, nothing else; `http://` on a loopback host only, as for
+ * `SAVESLOT_PUBLIC_URL`. An entry that is not one is named: an origin holds nothing secret.
+ */
+function origins(text: string): string[] {
+  if (text.trim() === "") return [];
+  const list = text.split(",").map((s) => s.trim());
+  for (const entry of list) {
+    let u: URL | undefined;
+    try {
+      u = new URL(entry);
+    } catch {}
+    if (
+      u === undefined ||
+      (u.protocol !== "https:" && (u.protocol !== "http:" || !loopback(u.hostname))) ||
+      u.origin !== entry ||
+      // Nothing a browser sends: a wildcard (an entry is compared as written), a host ending in a
+      // dot, port 0.
+      u.hostname.includes("*") ||
+      u.hostname.endsWith(".") ||
+      u.port === "0"
+    ) {
+      throw new Bad(
+        `the entry ${JSON.stringify(entry)} is not an origin as a browser sends it: https://host[:port] in lower case, no default port, no path or trailing / (http:// on a loopback host only)`,
+      );
+    }
+  }
+  return list;
+}
+
 const count = (text: string, min: number): number => {
   if (!/^[0-9]{1,9}$/.test(text) || Number(text) < min) {
     throw new Bad(min === 0 ? "not an integer of 0 or more" : "not a positive integer");
@@ -238,6 +276,7 @@ export function readServerConfig(
   });
   const at = take("SAVESLOT_LISTEN", false, listen) ?? listen(DEFAULT_LISTEN);
   const trusted = take("SAVESLOT_TRUSTED_PROXIES", false, proxies) ?? [];
+  const allowed = take("SAVESLOT_ALLOWED_ORIGINS", false, origins) ?? [];
   const perMinute = take("SAVESLOT_RATE_LIMIT", false, (s) => count(s, 0)) ?? 0;
   const burst = take("SAVESLOT_RATE_BURST", false, (s) => count(s, 1));
   // The external login takes all three or none: some set and not the others is a mistake, refused
@@ -266,6 +305,7 @@ export function readServerConfig(
     handleKeyFile: keyFile,
     listen: at,
     trustedProxies: trusted,
+    allowedOrigins: allowed,
     // The burst means nothing while the limit is off (06-cli §4.1).
     ...(perMinute > 0 ? { rateLimit: { perMinute, burst: burst ?? perMinute } } : {}),
     ...(identity !== undefined

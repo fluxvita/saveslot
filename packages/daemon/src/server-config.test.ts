@@ -46,6 +46,7 @@ describe("the server mode's configuration", () => {
       handleKeyFile: "/run/secrets/saveslot-handle-key",
       listen: { host: "127.0.0.1", port: 8080 },
       trustedProxies: [],
+      allowedOrigins: [],
     });
   });
 
@@ -190,6 +191,43 @@ describe("the server mode's configuration", () => {
     expect(
       readServerConfig({ ...GOOD, SAVESLOT_RATE_LIMIT: "60", SAVESLOT_RATE_BURST: "10" }),
     ).toMatchObject({ rateLimit: { perMinute: 60, burst: 10 } });
+  });
+
+  it("allowed origins: comma-separated, each kept as written; spaces only is none", () => {
+    expect(
+      readServerConfig({
+        ...GOOD,
+        SAVESLOT_ALLOWED_ORIGINS: " https://app.example , http://localhost:5173,https://[::1]:8443",
+      }).allowedOrigins,
+    ).toEqual(["https://app.example", "http://localhost:5173", "https://[::1]:8443"]);
+    expect(readServerConfig({ ...GOOD, SAVESLOT_ALLOWED_ORIGINS: "  " }).allowedOrigins).toEqual(
+      [],
+    );
+  });
+
+  it.each([
+    ["https://app.example/", "https://app.example/"],
+    ["https://app.example/console", "https://app.example/console"],
+    ["https://app.example,", ""],
+    ["https://app.example,,https://b.example", ""],
+    ["https://App.example", "https://App.example"],
+    ["https://app.example:443", "https://app.example:443"],
+    ["https://app.example:0", "https://app.example:0"],
+    ["https://app.example.", "https://app.example."],
+    ["https://app.example?x=1", "https://app.example?x=1"],
+    ["https://user@app.example", "https://user@app.example"],
+    ["https://*.example", "https://*.example"],
+    ["app.example", "app.example"],
+    ["http://app.example", "http://app.example"],
+    ["https://ok.example,null", "null"],
+  ])("SAVESLOT_ALLOWED_ORIGINS = %j: refused, naming the entry %j", (value, entry) => {
+    expect(problems({ ...GOOD, SAVESLOT_ALLOWED_ORIGINS: value })).toEqual([
+      {
+        kind: "malformed",
+        variable: "SAVESLOT_ALLOWED_ORIGINS",
+        what: `the entry ${JSON.stringify(entry)} is not an origin as a browser sends it: https://host[:port] in lower case, no default port, no path or trailing / (http:// on a loopback host only)`,
+      },
+    ]);
   });
 
   it("rate limiting at 0 is off, and a burst then means nothing", () => {

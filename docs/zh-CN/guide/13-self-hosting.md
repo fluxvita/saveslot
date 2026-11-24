@@ -54,8 +54,11 @@ SELECT pg_reload_conf();
 | `SAVESLOT_HANDLE_KEY_FILE` | 句柄签名密钥的文件：`server init` 生成它，之后 saveslot 只读不写 | `/run/secrets/saveslot-handle-key` |
 | `SAVESLOT_LISTEN` | 监听地址，缺省 `127.0.0.1:8080` | `0.0.0.0:8080`（容器里） |
 | `SAVESLOT_TRUSTED_PROXIES` | 你的反向代理的地址，逗号分隔 | `127.0.0.1` |
+| `SAVESLOT_ALLOWED_ORIGINS` | 可以在浏览器里直接调用 HTTP 接口的网页来源，逗号分隔；缺省为空，不允许任何网页跨源调用（`/mcp` 始终不允许） | `https://console.example.com` |
 
 **saveslot 缺省只听本机的回环地址。** 它只说明文 HTTP：要是缺省就听全部网卡，照着文档起一个没加防火墙的实例，网络上的人就能在明文里截到令牌。反向代理和 saveslot 在同一台机器上时，回环地址正好够用。在容器里跑时，反向代理在容器外面，要把 `SAVESLOT_LISTEN` 显式写成 `0.0.0.0:8080`，再只把这个端口交给反向代理（例如只映射到宿主机的 `127.0.0.1`）。
+
+**生产部署不要在 `SAVESLOT_ALLOWED_ORIGINS` 里写 `http://localhost` 这类来源。** 写了，本机上任何一个开发中的网页都能跨源调用接口（虽然仍要令牌）。
 
 **反向代理要配上 `SAVESLOT_TRUSTED_PROXIES`。** saveslot 只看得到反向代理连过来，请求真正从哪来，要靠代理写进 `X-Forwarded-For` 的地址；只有连接来自这里列出的代理时，saveslot 才信这个头。不配的话，所有人的请求在 saveslot 看来都来自代理这一个地址：一个人输错几次口令，按来源计数的登录失败限制就会挡住所有人。
 

@@ -426,6 +426,18 @@ describe("saveslot server init: what it refuses before the database", () => {
     expect(r.err + r.out).not.toContain(SECRET);
   });
 
+  it("an allowed origin that is not one: start refuses, 5, naming the entry, nothing opened", async () => {
+    const e = {
+      ...env("/k"),
+      SAVESLOT_ALLOWED_ORIGINS: "https://console.example,https://app.example/",
+    };
+    const r = await server(["start"], { env: e, openControl: never });
+    expect([r.code, r.opened]).toEqual([5, 0]);
+    expect(r.err).toContain(
+      'error: SAVESLOT_ALLOWED_ORIGINS is not valid: the entry "https://app.example/" is not an origin',
+    );
+  });
+
   it("the key file's directory missing: 5, nothing opened", async () => {
     const r = await server(["init"], {
       env: env(join(root, "nowhere", "handle-key")),

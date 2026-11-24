@@ -178,6 +178,7 @@ const serve = (d: Deployment) =>
       ...readServerConfig(d.env),
       listen: { host: "127.0.0.1", port: 0 },
       trustedProxies: [],
+      allowedOrigins: [],
     },
     version: "0.0.0-test",
     openControl: async () => d.db,

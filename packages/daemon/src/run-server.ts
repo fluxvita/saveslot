@@ -3,10 +3,12 @@
 // tables in it checked, never made (that is `saveslot server init`'s); the handle keys are read;
 // tenants are lent by the pool; requests are taken on TCP and go, in this order, to:
 //
-//   GET /health (no token) → the request's source (behind trusted proxies; none: 400) → the
-//   identity provider's own paths → the authorization server (/.well-known/oauth-*, /oauth/*) →
-//   for /v1/ and /mcp, a page of another site refused (its `Origin`, 05-surfaces §14) → the HTTP
-//   adapter → the MCP adapter → 404.
+//   GET /health (no token) → for /v1/, /oauth/token and /oauth/revoke, the CORS headers
+//   (05-surfaces §13) → the request's source (behind trusted proxies; none: 400) → a listed
+//   origin's preflight answered → the identity provider's own paths → the authorization server
+//   (/.well-known/oauth-*, /oauth/*) → for /v1/ and /mcp, a page of another site refused (its
+//   `Origin`, 05-surfaces §14; on /v1/ a listed origin is not another site's) → the HTTP adapter →
+//   the MCP adapter → 404.
 //
 // A token issued by an authorization is good only at the address it was issued for (its
 // audience, checked with every credential).
@@ -34,12 +36,15 @@ import {
   type Api,
   type ApiContext,
   clientFetcher,
+  corsHeaders,
   createMcpAdapter,
+  crossOriginPath,
   type HealthBody,
   handleApi,
   handleMcp,
   handleOAuth,
   originGuard,
+  PREFLIGHT_HEADERS,
 } from "@fluxvita/saveslot-server";
 import {
   ContractError,
@@ -303,6 +308,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       windows,
     };
     const externalOrigin = new URL(config.publicUrl).origin;
+    const allowed: ReadonlySet<string> = new Set(config.allowedOrigins);
 
     const server: Server = createServer((req, res) => {
       void (async () => {
@@ -323,6 +329,9 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
           res.end(body);
           return;
         }
+        // Set first, so that every response on the path has them: writeHead adds its own to these.
+        const cors = crossOriginPath(path) ? corsHeaders(req, allowed) : {};
+        for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
         const remote = requestSource({
           connection: req.socket.remoteAddress,
           forwardedFor: req.headers["x-forwarded-for"],
@@ -330,6 +339,11 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         });
         if (remote === undefined) {
           res.writeHead(400, { "content-length": 0 });
+          res.end();
+          return;
+        }
+        if (req.method === "OPTIONS" && cors["access-control-allow-origin"] !== undefined) {
+          res.writeHead(204, PREFLIGHT_HEADERS);
           res.end();
           return;
         }
@@ -354,7 +368,8 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         const oauthCtx = { deps: oauthDeps, identity, remote: () => remote, now, log, warn };
         if (await handleOAuth(req, res, oauthCtx)) return;
         if (path.startsWith("/v1/") || path === "/mcp") {
-          const refused = originGuard(req, externalOrigin);
+          // A listed origin's page calls /v1/, never /mcp.
+          const refused = originGuard(req, externalOrigin, path === "/mcp" ? undefined : allowed);
           if (refused !== undefined) {
             res.writeHead(refused.status, refused.headers);
             res.end(refused.body);

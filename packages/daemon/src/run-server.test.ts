@@ -181,6 +181,7 @@ function config(over: Partial<ServerConfig> = {}): ServerConfig {
     handleKeyFile: join(keys, "handle-key"),
     listen: { host: "127.0.0.1", port: 0 },
     trustedProxies: ["127.0.0.1"],
+    allowedOrigins: [],
     ...over,
   };
 }
@@ -217,6 +218,15 @@ function send(
     req.end();
   });
 }
+
+/** The hosted console's origin, as its browser sends it. */
+const CONSOLE = "https://console.example";
+
+/** A reply's CORS headers (and `Vary`), by name. */
+const corsOf = (r: Reply) =>
+  Object.fromEntries(
+    Object.entries(r.headers).filter(([k]) => k.startsWith("access-control-") || k === "vary"),
+  );
 
 const FORM = { "content-type": "application/x-www-form-urlencoded" };
 /** The login page, as an authorization page sends a browser there (05-surfaces §15). */
@@ -352,6 +362,27 @@ describe("runServer: what answers which request", () => {
       headers: { origin: "https://evil.example" },
     });
     expect(elsewhere.status).toBe(404);
+  });
+
+  it("no origins listed (the default): another site's page gets no CORS headers, its preflight no answer", async () => {
+    const from = { origin: CONSOLE };
+    const api = await send(s, {
+      path: "/v1/slots",
+      headers: { ...from, authorization: `Bearer ${session}` },
+    });
+    expect(api.status).toBe(403);
+    for (const path of ["/oauth/token", "/oauth/revoke"]) {
+      const r = await send(s, { method: "POST", path, headers: { ...from, ...FORM }, body: "" });
+      expect(r.status).toBe(400);
+      expect(corsOf(r)).toEqual({});
+      expect((await send(s, { method: "OPTIONS", path, headers: from })).status).toBe(405);
+    }
+    expect(corsOf(api)).toEqual({});
+    const preflight = await send(s, { method: "OPTIONS", path: "/v1/slots", headers: from });
+    expect([preflight.status, corsOf(preflight)]).toEqual([403, {}]);
+    // Nor does any response vary with Origin while none is listed.
+    const none = await send(s, { path: "/v1/slots" });
+    expect([none.status, corsOf(none)]).toEqual([401, {}]);
   });
 
   it(
@@ -503,6 +534,202 @@ describe("runServer: no trusted proxy", () => {
     },
     T,
   );
+});
+
+// A deployment's listed origins (05-surfaces §13): a browser page of the hosted console calls
+// /v1/, /oauth/token and /oauth/revoke directly; another site's page gets no CORS headers, and /mcp
+// takes no page of another site, listed or not. No response allows credentials.
+describe("runServer: origins a deployment lists", () => {
+  let s: RunningServer;
+  let session = "";
+  const LISTED = { origin: CONSOLE };
+  const OTHER = { origin: "https://evil.example" };
+  beforeAll(async () => {
+    const c = await controlDb();
+    const t = tenants();
+    const cfg = config({ allowedOrigins: ["https://elsewhere.example", CONSOLE] });
+    await CursorKeys.createFile(cfg.handleKeyFile);
+    const { user } = await addLocalUser(c.accounts as NonNullable<typeof c.accounts>, {
+      control: c.cp as ServerControlPlane,
+      backend: t.backend,
+      name: "robin",
+      password: "correct horse battery",
+      cell: CELL,
+      cells: new Set([CELL]),
+      now: NOW,
+    });
+    session = await sessionFor(c.store, user);
+    s = await runServer({
+      config: cfg,
+      version: "0.0.0-test",
+      openControl: async () => c.db,
+      backend: t.backend,
+      now: () => NOW,
+    });
+  }, T);
+  afterAll(async () => {
+    await s?.close();
+  }, T);
+
+  it("a listed origin's preflight is answered on /v1/, /oauth/token and /oauth/revoke", async () => {
+    for (const path of ["/v1/writes", "/v1/connections/c_1", "/oauth/token", "/oauth/revoke"]) {
+      const r = await send(s, {
+        method: "OPTIONS",
+        path,
+        headers: {
+          ...LISTED,
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "authorization, content-type, idempotency-key",
+        },
+      });
+      expect(r.status).toBe(204);
+      expect(corsOf(r)).toEqual({
+        "access-control-allow-origin": CONSOLE,
+        vary: "Origin",
+        "access-control-expose-headers": "Retry-After, WWW-Authenticate",
+        "access-control-allow-methods": "GET, POST, PATCH, DELETE",
+        "access-control-allow-headers": "Authorization, Content-Type, Idempotency-Key, X-Task-Id",
+      });
+    }
+  });
+
+  it(
+    "a listed origin's calls are taken, each response naming it; none allows credentials",
+    async () => {
+      const api = await send(s, {
+        path: "/v1/slots",
+        headers: { ...LISTED, authorization: `Bearer ${session}` },
+      });
+      expect(api.status).toBe(200);
+      // A refusal carries them too: the page reads why.
+      const unauthenticated = await send(s, { path: "/v1/slots", headers: LISTED });
+      expect(unauthenticated.status).toBe(401);
+      const token = await send(s, {
+        method: "POST",
+        path: "/oauth/token",
+        headers: { ...LISTED, ...FORM },
+        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: "x" }).toString(),
+      });
+      expect(token.status).toBe(400);
+      const revoke = await send(s, {
+        method: "POST",
+        path: "/oauth/revoke",
+        headers: { ...LISTED, ...FORM },
+        body: new URLSearchParams({ token: "not-a-token", client_id: "saveslot-cli" }).toString(),
+      });
+      expect(revoke.status).toBe(200);
+      for (const r of [api, unauthenticated, token, revoke]) {
+        expect(corsOf(r)).toEqual({
+          "access-control-allow-origin": CONSOLE,
+          vary: "Origin",
+          "access-control-expose-headers": "Retry-After, WWW-Authenticate",
+        });
+      }
+    },
+    T,
+  );
+
+  it("an origin not listed: processed as before, its origin named nowhere", async () => {
+    const api = await send(s, {
+      path: "/v1/slots",
+      headers: { ...OTHER, authorization: `Bearer ${session}` },
+    });
+    expect(api.status).toBe(403);
+    const token = await send(s, {
+      method: "POST",
+      path: "/oauth/token",
+      headers: { ...OTHER, ...FORM },
+      body: "",
+    });
+    expect(token.status).toBe(400);
+    const preflight = await send(s, { method: "OPTIONS", path: "/oauth/revoke", headers: OTHER });
+    expect(preflight.status).toBe(405);
+    // Compared as written: the console's origin in capitals, or with a port, is not it.
+    const near: Reply[] = [];
+    for (const origin of ["https://Console.example", `${CONSOLE}:443`]) {
+      const r = await send(s, {
+        path: "/v1/slots",
+        headers: { origin, authorization: `Bearer ${session}` },
+      });
+      expect(r.status).toBe(403);
+      near.push(r);
+    }
+    for (const r of [api, token, preflight, ...near]) expect(corsOf(r)).toEqual({ vary: "Origin" });
+  });
+
+  it("a listed origin's page may send X-Task-Id, every header the HTTP surface defines", async () => {
+    const r = await send(s, {
+      method: "OPTIONS",
+      path: "/v1/writes",
+      headers: { ...LISTED, "access-control-request-headers": "x-task-id" },
+    });
+    const allowed = String(r.headers["access-control-allow-headers"]).toLowerCase().split(", ");
+    expect(allowed).toEqual(
+      expect.arrayContaining(["authorization", "content-type", "idempotency-key", "x-task-id"]),
+    );
+  });
+
+  it("a listed origin's page reads why it was refused and when to retry: WWW-Authenticate exposed", async () => {
+    const r = await send(s, { path: "/v1/slots", headers: LISTED });
+    expect(r.status).toBe(401);
+    expect(r.headers["www-authenticate"]).toBeDefined();
+    const exposed = String(r.headers["access-control-expose-headers"]).toLowerCase().split(", ");
+    expect(exposed).toEqual(expect.arrayContaining(["www-authenticate", "retry-after"]));
+  });
+
+  it("while origins are listed, every response on /v1/ and the token endpoints varies with Origin", async () => {
+    const replies = [
+      await send(s, { path: "/v1/slots", headers: OTHER }),
+      await send(s, { path: "/v1/slots" }),
+      await send(s, { path: "/v1/slots", headers: { authorization: `Bearer ${session}` } }),
+      await send(s, { method: "POST", path: "/oauth/token", headers: FORM, body: "" }),
+      await send(s, { method: "POST", path: "/oauth/revoke", headers: FORM, body: "" }),
+    ];
+    expect(replies.map((r) => r.status)).toEqual([403, 401, 200, 400, 400]);
+    for (const r of replies) expect(corsOf(r)).toEqual({ vary: "Origin" });
+  });
+
+  it("the other pages take no listed origin: no CORS headers, no preflight answered", async () => {
+    for (const [method, path] of [
+      ["GET", "/oauth/authorize?client_id=x"],
+      ["GET", LOGIN_PAGE],
+      ["POST", "/oauth/device"],
+      ["GET", "/oauth/device/verify"],
+      ["GET", "/.well-known/oauth-authorization-server"],
+    ] as const) {
+      const r = await send(s, {
+        method,
+        path,
+        headers: { ...LISTED, ...(method === "POST" ? FORM : {}) },
+        ...(method === "POST" ? { body: "" } : {}),
+      });
+      expect(r.status).not.toBe(404);
+      expect(corsOf(r)).toEqual({});
+      const preflight = await send(s, { method: "OPTIONS", path, headers: LISTED });
+      expect(preflight.status).not.toBe(204);
+      expect(corsOf(preflight)).toEqual({});
+    }
+  });
+
+  it("/mcp takes no page of another site, listed or not, and answers none of its preflights", async () => {
+    for (const from of [LISTED, OTHER]) {
+      const r = await send(s, {
+        method: "POST",
+        path: "/mcp",
+        headers: {
+          ...from,
+          authorization: `Bearer ${session}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+      });
+      expect(r.status).toBe(403);
+      expect(corsOf(r)).toEqual({});
+      const preflight = await send(s, { method: "OPTIONS", path: "/mcp", headers: from });
+      expect([preflight.status, corsOf(preflight)]).toEqual([403, {}]);
+    }
+  });
 });
 
 // Remote MCP end to end (05-surfaces §14, §15 «远程授权»), through the server itself: a host that
