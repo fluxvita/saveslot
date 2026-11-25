@@ -498,3 +498,58 @@ describe.each(RESULTS)(
     });
   },
 );
+
+describe("--detail detailed: each row's detail below it (06 §4.7, worded as 05 §4.1)", () => {
+  const QUERY = {
+    table: "ledger.expenses",
+    slot: "ledger",
+    sv: 1,
+    total: 1,
+    rows: [],
+  };
+  const text = (row: unknown) => render(queryResult({ ...QUERY, rows: [row] } as never), terminal);
+  const detail = {
+    seq: 12,
+    recorded_at: "2026-11-05T03:12:00.000Z",
+    fields: {
+      amount: { field_id: "f2", literal: "hit", level: "user_stated" },
+      note: { field_id: "f3", literal: "miss" },
+      date: { field_id: "f1", literal: "na" },
+    },
+    premises: [
+      {
+        premise: ref,
+        premise_fields: ["date"],
+        seen: "v7.0",
+        state: "changed",
+        reason: "update",
+        since: 10,
+        fields: ["note"],
+        declared: { seq: 7, actor },
+      },
+      { premise: ref, seen: "v9.0", state: "current", fields: [], declared: { seq: 9, actor } },
+      { hidden: true, state: "current", fields: ["amount"] },
+    ],
+  };
+
+  it("its last change, each field's literal result and level, every premise", () => {
+    const out = text({ ...ROW, detail });
+    for (const s of [
+      "  last changed in #12, recorded ",
+      "  amount: literal hit, user_stated",
+      "  note: literal miss",
+      "  date: literal not applicable",
+      "(seen v7.0) · covers this row's note · declared in #7 by ",
+      "· changed: changed in #10",
+      "(seen v9.0) · covers the whole row · declared in #9 by ",
+      "  premise: a record in a table you cannot see · covers this row's amount · unchanged",
+    ])
+      expect(out).toContain(s);
+    // No longer the detail as a block of JSON.
+    expect(out).not.toContain('"field_id"');
+  });
+
+  it("without a detail, nothing below the row of it", () => {
+    expect(text(ROW)).not.toContain("last changed in");
+  });
+});

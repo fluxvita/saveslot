@@ -540,7 +540,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 | 命令 | 契约操作 | 关键参数 | 输出要点 | 出现于 |
 |---|---|---|---|---|
-| `saveslot query <表>` | `query` | `--where 'distance>5km'`（可重复）、`--order`、`--fields`、`--valid-at` / `--valid-during`、`--include-revoked`、`--detail` | 同 MCP `saveslot_query` 的行文本：`ver`、值、全部标记（含"前提已变"）；`--detail detailed` 另列每行当前的前提声明 | P1（`--detail detailed` P2：服务已给每行的 `detail`；CLI 把它画成文本的那几行随 CLI 渲染那份请求，在那之前只在 `--json` 里看得到；派生表上服务回 `not_in_this_version`，CLI 按通用错误输出并补一句提示） |
+| `saveslot query <表>` | `query` | `--where 'distance>5km'`（可重复）、`--order`、`--fields`、`--valid-at` / `--valid-during`、`--include-revoked`、`--detail` | 同 MCP `saveslot_query` 的行文本：`ver`、值、全部标记（含"前提已变"）；`--detail detailed` 在每行下面另起缩进行：最近一次改动的操作号与时刻、各字段的字面命中与来源级别（`ref` 字段附被引用行的摘要）、当前生效的全部前提声明（措辞同 MCP 文本，05 §4.1、§4.2） | P1（`--detail detailed` P2；派生表上服务回 `not_in_this_version`，CLI 按通用错误输出并补一句提示） |
 | `saveslot sql '<SELECT …>'` | `sql` | `--param`、`--max-rows`、`--at` | 紧凑表格；头部汇总标记 | P2 |
 | `saveslot history <表> <行或实体>` | `history`（`timeline` / `as_of`） | `--as-of <操作号/时刻>`、`--as-of-read <rd_…>`（按那次读取还原）、`--valid-at`（状态类表）、`--key <字段>=<值>`（状态类表按 `entity_key` 定位，代替实体 ID，可重复）、`--sources`（展开原文）、`--detail detailed`（只配 `--as-of` / `--as-of-read`：每行另列字段的来源级别与字面命中、最近一次改动；不列前提声明） | 每个版本：`#seq`、时间、写入者、意图、前后值、来源、声明的前提（重申与清除各一条）；读过它的读取 | P1（`--detail detailed` P2，同 `query`） |
 | `saveslot history changes <表> [<行或实体>]` | `history`（`changes`） | `--since <操作号/时刻/my_last_read>`（必填）、`--until <操作号/时刻>`、`--key <字段>=<值>`（同 `history`；不给行、实体与 `--key` 就是整张表） | 一段记录时间内的变化，文本同 MCP `saveslot_history` 的 `changes`，翻页用 `--cursor`；`my_last_read` 指这个用户（或 `SAVESLOT_TOKEN` 的连接实例）上次读过的位置 | P2 |
