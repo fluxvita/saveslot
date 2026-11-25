@@ -2,7 +2,7 @@
 
 English · [简体中文](CONTRIBUTING.zh-CN.md)
 
-The full contributor guide is currently in Chinese: [`docs/zh-CN/guide/12-contributing.md`](docs/zh-CN/guide/12-contributing.md). This page lists the essentials.
+The full contributor guide is [`docs/guide/12-contributing.md`](docs/guide/12-contributing.md) ([中文](docs/zh-CN/guide/12-contributing.md)). This page lists the essentials.
 
 ## Workflow
 
@@ -14,7 +14,7 @@ The full contributor guide is currently in Chinese: [`docs/zh-CN/guide/12-contri
 
 ## Conventions
 
-- **Language.** Commit messages, code comments, identifiers, log and error messages are written in English. The design documents are currently authoritative in Chinese (`docs/zh-CN/`); an English edition will be added under `docs/` before the project goes public. Each English file under `docs/spec/` and `docs/guide/` says near its top `Translated from docs/zh-CN/<same path>, updated in the same commit as this file.`; `pnpm docs:translations` checks it. When the Chinese file changes later and the English one does not follow, add a line under it: `The Chinese edition has changed since: …`.
+- **Language.** Commit messages, code comments, identifiers, log and error messages are written in English. The design documents are authoritative in Chinese (`docs/zh-CN/`). The specification and the guide also have an English edition at the same path under `docs/` ([`docs/README.md`](docs/README.md) lists them); the English edition of `docs/zh-CN/process/` and `docs/zh-CN/research/` is pending. When you change a Chinese document that has an English edition, change the English file in the same merge request. Each English file says near its top `Translated from docs/zh-CN/<same path>, updated in the same commit as this file.`; `pnpm docs:translations` checks it. When the Chinese file changes later and the English one does not follow, add a line under it: `The Chinese edition has changed since: …`.
 - **Commit messages** follow [Conventional Commits](https://www.conventionalcommits.org/): `feat(kernel): …`, `fix(cli): …`, `docs(spec): …`.
 - **Sign off every commit** (`git commit -s`). This is the [Developer Certificate of Origin](https://developercertificate.org/) (DCO): it certifies that you have the right to submit the change under the project license. There is no CLA. Sign off with your real name and the same email as the commit author; CI checks that the sign-off matches the author.
 - **AI-assisted contributions.** You may use AI tools. The sign-off is always made by a person, never by a tool, and that person is responsible for the change as if they had written it: they have reviewed it, understand it, and have the right to submit it under the project license. Do not add trailers that attribute the change to an AI tool; the sign-off says who is responsible.

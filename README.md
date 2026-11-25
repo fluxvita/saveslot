@@ -12,10 +12,11 @@ English · [简体中文](README.zh-CN.md)
 
 saveslot is in **early development**. Local mode (the saveslot service on your own computer, shared by the agents on it) runs end to end from a source checkout. It is not published to npm yet; server mode is under way.
 
-The design documents are currently written in **Simplified Chinese** under [`docs/zh-CN/`](docs/zh-CN/). An English edition will be added under `docs/` before the project is announced.
+The design documents are written in **Simplified Chinese** under [`docs/zh-CN/`](docs/zh-CN/), and the Chinese edition is authoritative. The specification and the guide also have an English edition under `docs/`; [`docs/README.md`](docs/README.md) lists them. The English edition of the decision records, walkthroughs and research notes is pending.
 
 | Where | What |
 |---|---|
+| [`docs/`](docs/README.md) | The documents that have an English edition |
 | [`docs/zh-CN/guide/`](docs/zh-CN/guide/README.md) | Guide: a narrative introduction, read in order |
 | [`docs/zh-CN/spec/`](docs/zh-CN/spec/README.md) | Specification: the authoritative definition of behavior |
 | [`docs/zh-CN/process/`](docs/zh-CN/process/README.md) | Design decision records and scenario walkthroughs |

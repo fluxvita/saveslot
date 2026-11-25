@@ -53,17 +53,23 @@ between them are `workspace:*` in the repository and the exact version when publ
 
 ## A release
 
-1. The version is set on the release branch. A maintainer adds the commit `chore(release): <version>`
+1. The English edition is brought up to date with the Chinese one first; the Chinese is authoritative.
+   `pnpm docs:translations` lists the English documents whose Chinese source changed after them
+   (a warning, not a failure), and `git grep -l "The Chinese edition has changed since" -- docs
+   ':!docs/zh-CN'` the ones marked as behind. Each is updated from the Chinese text in a pull
+   request to `main`, with that line removed, and cherry-picked onto the release branch, until both
+   lists are empty on the release branch.
+2. The version is set on the release branch. A maintainer adds the commit `chore(release): <version>`
    there, which runs `pnpm changeset version`: the versions and the changelogs. Before the first
    release of a minor version it also leaves Changesets pre mode (`changeset pre exit`). This commit
    is the one made on the release branch itself: until the release there is nothing in it for `main`.
-2. On that push to the release branch, the release workflow builds, runs `pnpm smoke:install` (a
+3. On that push to the release branch, the release workflow builds, runs `pnpm smoke:install` (a
    throwaway local registry, an install from it, the installed `saveslot` run), and publishes the
    versions that are not on npm yet with `changeset publish`, as `latest`, with provenance. Then it
    tags the commit `v<version>` and pushes the tags.
-3. Only a commit whose full check passed on the release branch is released: the release workflow runs
+4. Only a commit whose full check passed on the release branch is released: the release workflow runs
    after `ci` on the same push and stops if it failed.
-4. After the release the maintainer brings the release commit to `main` in a pull request (the
+5. After the release the maintainer brings the release commit to `main` in a pull request (the
    versions, the changelogs, and the changesets it used up), so that the next version on `main` starts
    from the released one.
 

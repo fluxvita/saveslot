@@ -1,10 +1,15 @@
-// Checks that every English document under docs/spec/ and docs/guide/ names its Chinese source:
-// within its first lines, `Translated from docs/zh-CN/<same path>, updated in the same commit as this
-// file.`, and that Chinese file exists. The Chinese text is the source of truth. No commit is named:
-// a branch's commits are gone once it is squash-merged. A following line `The Chinese edition has
-// changed since: …` (added when the Chinese text moved on and the English did not) is allowed.
-// Drift: when git says the Chinese file was last changed after the English one, and the English head
-// does not carry that line, the translation has fallen behind and is reported. This needs the full
+// Checks the English edition of the documents. The Chinese text (docs/zh-CN/) is the source of truth.
+//
+// Fails when:
+// - a Chinese document has no English file at the same path under docs/ (docs/zh-CN/guide/x.md →
+//   docs/guide/x.md), outside the directories listed in NOT_YET;
+// - an English file does not name its Chinese source within its first lines, as `Translated from
+//   docs/zh-CN/<same path>, updated in the same commit as this file.`, or that file does not exist.
+//   No commit is named: a branch's commits are gone once it is squash-merged.
+//
+// Reports without failing (drift): when git says the Chinese file was last changed after the
+// English one, and the English head does not carry a line `The Chinese edition has changed since:
+// …`. Drift is brought to nothing before a release (RELEASING.md). Dating files needs the full
 // history in CI (a shallow clone dates every file to the boundary commit and hides drift).
 
 import { execFileSync } from "node:child_process";
@@ -18,7 +23,25 @@ export interface TranslationProblem {
 }
 
 /** Directories whose English files are translations of the same path under docs/zh-CN/. */
-const TRANSLATED = ["docs/spec/", "docs/guide/"];
+const TRANSLATED = ["docs/spec/", "docs/guide/", "docs/process/", "docs/research/"];
+
+/**
+ * Chinese directories whose English edition is not required yet. Each entry says why and until
+ * when; remove it once its English files are in.
+ */
+export const NOT_YET: readonly { dir: string; why: string; until: string }[] = [
+  {
+    dir: "docs/zh-CN/process/",
+    why: "decision records, walkthroughs and experiment notes; the spec and guide came first",
+    until: "a week after 0.1.0",
+  },
+  {
+    dir: "docs/zh-CN/research/",
+    why: "technical research behind the spec; the spec and guide came first",
+    until: "a week after 0.1.0",
+  },
+];
+
 /** How many lines from the top the source line may sit at (a title and a blank line come first). */
 const HEAD_LINES = 6;
 const SOURCE =
@@ -57,12 +80,22 @@ export function sourceOf(text: string): string | "old" | undefined {
   return undefined;
 }
 
+/** Chinese documents without an English file at the same path, outside NOT_YET. */
+export function missingEnglish(root: string, files: readonly string[]): TranslationProblem[] {
+  return files
+    .filter((f) => f.startsWith("docs/zh-CN/") && !NOT_YET.some((n) => f.startsWith(n.dir)))
+    .map((zh) => ({ zh, en: `docs/${zh.slice("docs/zh-CN/".length)}` }))
+    .filter(({ en }) => !existsSync(join(root, en)))
+    .map(({ zh, en }) => ({ file: zh, reason: `no English edition (${en})` }));
+}
+
 export function checkTranslations(
   root: string,
   files = listMarkdownFiles(root),
   changedAt: (file: string) => number | undefined = (f) => lastChange(root, f),
-): TranslationProblem[] {
-  const problems: TranslationProblem[] = [];
+): { problems: TranslationProblem[]; drift: TranslationProblem[] } {
+  const problems = missingEnglish(root, files);
+  const drift: TranslationProblem[] = [];
   for (const file of files) {
     if (!TRANSLATED.some((d) => file.startsWith(d))) continue;
     const expected = `docs/zh-CN/${file.slice("docs/".length)}`;
@@ -90,26 +123,32 @@ export function checkTranslations(
         .slice(0, HEAD_LINES)
         .some((l) => BEHIND.test(l));
       if (zh !== undefined && en !== undefined && zh > en && !behind) {
-        problems.push({
+        drift.push({
           file,
           reason: `${expected} changed after it (${day(zh)}, translation ${day(en)}); update it, or add "The Chinese edition has changed since: …" under the source line`,
         });
       }
     }
   }
-  return problems;
+  return { problems, drift };
 }
 
 if (import.meta.main) {
   const root = process.cwd();
-  const files = listMarkdownFiles(root).filter((f) => TRANSLATED.some((d) => f.startsWith(d)));
-  const problems = checkTranslations(root, files);
+  const { problems, drift } = checkTranslations(root);
+  for (const d of drift) console.warn(`${d.file}: ${d.reason}`);
+  if (drift.length > 0) {
+    console.warn(
+      `\n${drift.length} translation(s) behind their Chinese source: not a failure; bring them up to date before a release (RELEASING.md).\n`,
+    );
+  }
   for (const p of problems) console.error(`${p.file}: ${p.reason}`);
   if (problems.length > 0) {
-    console.error(`\n${problems.length} translation(s) without a valid source line.`);
+    console.error(`\n${problems.length} problem(s) with the English edition.`);
     process.exit(1);
   }
+  const english = listMarkdownFiles(root).filter((f) => TRANSLATED.some((d) => f.startsWith(d)));
   console.log(
-    `Translations OK: ${files.length} English spec and guide files name their Chinese source.`,
+    `Translations OK: ${english.length} English documents, each naming its Chinese source; not required yet: ${NOT_YET.map((n) => `${n.dir} (until ${n.until})`).join(", ")}.`,
   );
 }
