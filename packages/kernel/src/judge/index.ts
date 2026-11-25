@@ -24,4 +24,5 @@ export { seenOf } from "./model.ts";
 export { resolve as resolveInterval, uniqueRefs } from "./resolve.ts";
 export { EVERYTHING, type Limit, type RowState, valueToken } from "./state.ts";
 export { type SyncOutcome, syncOutcome } from "./sync.ts";
+export { givesVersion } from "./versions.ts";
 export type { GapEntry } from "./write.ts";

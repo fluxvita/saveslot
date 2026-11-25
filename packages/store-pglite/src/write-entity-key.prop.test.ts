@@ -213,7 +213,7 @@ type Step =
   | { kind: "key"; key: number; way: number; amount: number; setKey: "none" | "same" | "other" }
   | { kind: "entity"; which: number; way: number; amount: number; setKey: "same" | "other" }
   | { kind: "revoke"; which: number }
-  | { kind: "pair"; a: number; b: number; way: number }
+  | { kind: "pair"; a: number; b: number; way: number; vouch: boolean }
   | { kind: "revokeKey"; key: number; way: number }
   | { kind: "createRevoke"; key: number; way: number }
   | { kind: "other"; key: number; way: number };
@@ -247,6 +247,7 @@ const random: fc.Arbitrary<Step> = fc.oneof(
       a: fc.nat(3),
       b: fc.nat(3),
       way: fc.nat(2),
+      vouch: fc.boolean(),
     }),
   },
 );
@@ -350,8 +351,28 @@ describe.each(TABLES)("writing by entity_key: $table", (t: Keyed) => {
       amount: 0,
       setKey: "none",
     });
-    const examples: [Step[]][] =
-      pair === undefined ? [] : [[[createKey(pair[0]), createKey(pair[1])]]];
+    // A key whose last write in the request was a no-op (the same value it holds) has not changed
+    // there, so it ranks by its latest change; a key created and changed since ranks before it.
+    // Found by the property soak on budgets: cafe created after café (written alike again in the
+    // same request) and Café (created later than café's last change).
+    const noopThenAlike: Step[] = [
+      { kind: "revokeKey", key: 0, way: 0 },
+      { kind: "other", key: 0, way: 0 },
+      { kind: "pair", a: 0, b: 1, way: 0, vouch: false },
+      { kind: "pair", a: 0, b: 2, way: 0, vouch: false },
+      { kind: "createRevoke", key: 0, way: 0 },
+      { kind: "pair", a: 0, b: 0, way: 0, vouch: false },
+    ];
+    // The same with evidence pointed at for the value written again: a corroboration, which makes
+    // no version either (04-contract §2 `ver`: 同值佐证不改变它).
+    const vouchThenAlike: Step[] = noopThenAlike.map((x) =>
+      x.kind === "pair" ? { ...x, vouch: true } : x,
+    );
+    const examples: [Step[]][] = [
+      ...(pair === undefined ? [] : [[[createKey(pair[0]), createKey(pair[1])]] as [Step[]]]),
+      [noopThenAlike],
+      [vouchThenAlike],
+    ];
     const seen = { samples: 0, created: 0, located: 0, changed: 0, replayed: 0, alike: 0 };
     await fc.assert(
       fc.asyncProperty(steps, async (sample) => {
@@ -615,8 +636,15 @@ describe.each(TABLES)("writing by entity_key: $table", (t: Keyed) => {
             const ha = held.get(st.a);
             const hb = st.b === st.a ? undefined : held.get(st.b);
             const before = expectedKeys();
+            // `vouch`: evidence pointed at for the amount, a corroboration where the value is the same.
+            const vouched = st.vouch
+              ? {
+                  evidence: [{ kind: "user_message", text: "the amount again" }],
+                  evidence_by_field: { amount: [0] },
+                }
+              : {};
             const r = await send([
-              byKey(st.a, st.way, 1, ha ? { ver: ha.ver } : {}),
+              byKey(st.a, st.way, 1, { ...(ha ? { ver: ha.ver } : {}), ...vouched }),
               // An entity there before the request: each op brings the version it saw.
               byKey(
                 st.b,
