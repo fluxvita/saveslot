@@ -54,7 +54,7 @@ SELECT pg_reload_conf();
 | `SAVESLOT_PUBLIC_URL` | 对外地址：`https://`，不带路径、不带末尾的 `/`（只在本机试跑、主机是回环地址时可以写 `http://`） | `https://saveslot.example.com` |
 | `SAVESLOT_HANDLE_KEY_FILE` | 句柄签名密钥的文件：`server init` 生成它，之后 saveslot 只读不写 | `/run/secrets/saveslot-handle-key` |
 | `SAVESLOT_LISTEN` | 监听地址，缺省 `127.0.0.1:8080` | `0.0.0.0:8080`（容器里） |
-| `SAVESLOT_TRUSTED_PROXIES` | 你的反向代理的地址，逗号分隔 | `127.0.0.1` |
+| `SAVESLOT_TRUSTED_PROXIES` | 你的反向代理的地址或网段，逗号分隔 | `127.0.0.1`；`10.0.8.0/24` |
 | `SAVESLOT_ALLOWED_ORIGINS` | 可以在浏览器里直接调用 HTTP 接口的网页来源，逗号分隔；缺省为空，不允许任何网页跨源调用（`/mcp` 始终不允许） | `https://console.example.com` |
 
 **saveslot 缺省只听本机的回环地址。** 它只说明文 HTTP：要是缺省就听全部网卡，照着文档起一个没加防火墙的实例，网络上的人就能在明文里截到令牌。反向代理和 saveslot 在同一台机器上时，回环地址正好够用。在容器里跑时，反向代理在容器外面，要把 `SAVESLOT_LISTEN` 显式写成 `0.0.0.0:8080`，再只把这个端口交给反向代理（例如只映射到宿主机的 `127.0.0.1`）。
@@ -62,6 +62,10 @@ SELECT pg_reload_conf();
 **生产部署不要在 `SAVESLOT_ALLOWED_ORIGINS` 里写 `http://localhost` 这类来源。** 写了，本机上任何一个开发中的网页都能跨源调用接口（虽然仍要令牌）。
 
 **反向代理要配上 `SAVESLOT_TRUSTED_PROXIES`。** saveslot 只看得到反向代理连过来，请求真正从哪来，要靠代理写进 `X-Forwarded-For` 的地址；只有连接来自这里列出的代理时，saveslot 才信这个头。不配的话，所有人的请求在 saveslot 看来都来自代理这一个地址：一个人输错几次口令，按来源计数的登录失败限制就会挡住所有人。
+
+代理的地址会在一个子网里变，或者前面还有一层 CDN 时，名单里写网段：负载均衡器所在的子网，加上 CDN 公布的出口网段。**名单里只能是你自己的代理。** 落在名单里的任何地址都能直接连到 saveslot、自己写 `X-Forwarded-For`，冒充任何来源；所以这些子网里不能有别的能连到 saveslot 的东西。`0.0.0.0/0` 这类盖住全部地址的写法 saveslot 不收。
+
+**名单要随 CDN 公布的出口网段更新。** CDN 的出口网段会变；名单没跟上时，从新出口来的请求不再被跳过，来源会算成那个出口的地址。这是往安全的方向错（来源不会因此被伪造），但同一个出口后面的用户会共用一份按来源计的额度：登录失败的次数、设备码页的尝试次数都算在一起。
 
 限流在自部署上默认关。要按用户限流，设 `SAVESLOT_RATE_LIMIT`（每个用户每分钟的请求数），可另设 `SAVESLOT_RATE_BURST`（一次最多连着发多少个请求，缺省等于前者）。
 

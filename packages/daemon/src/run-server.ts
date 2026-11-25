@@ -62,6 +62,7 @@ import {
   TenantPool,
   type TenantPoolOptions,
   TenantRateLimiter,
+  trustedProxies,
 } from "@fluxvita/saveslot-service";
 import {
   type ControlDatabase,
@@ -234,8 +235,8 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       // `<tenant>_reconcile` that the store's guard allows, given here.
       discardScratch: async () => {},
     });
-    // Normalized when the configuration was read: one that is not a single address refuses it.
-    const trusted = new Set(config.trustedProxies);
+    // Checked when the configuration was read: an entry not taken refuses it.
+    const trusted = trustedProxies(config.trustedProxies);
     const windows = { requestKey: 600_000, idempotencyKey: 86_400_000 };
     const tenantPool = pool;
     // The imports in progress, each with what abandons its body: a stop does not wait on a client

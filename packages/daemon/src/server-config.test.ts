@@ -98,23 +98,6 @@ describe("the server mode's configuration", () => {
     ["SAVESLOT_LISTEN", "8080", "not <address>:<port>"],
     ["SAVESLOT_LISTEN", "localhost:8080", "the address is not an IP address"],
     ["SAVESLOT_LISTEN", "0.0.0.0:0", "the port is not 1 to 65535"],
-    ...(
-      [
-        "10.0.0.1,,10.0.0.2",
-        "fe80::1%lo0",
-        "10.0.0.1,fe80::1%eth0",
-        "10.0.0.0/8",
-        "10.0.0.1:80",
-        "[::1]",
-      ] as const
-    ).map(
-      (v) =>
-        [
-          "SAVESLOT_TRUSTED_PROXIES",
-          v,
-          "an entry is not a single IP address (no range, port or zone)",
-        ] as const,
-    ),
     ["SAVESLOT_RATE_LIMIT", "-1", "not an integer of 0 or more"],
     ["SAVESLOT_RATE_BURST", "0", "not a positive integer"],
   ] as const)("%s = %s: %s", (variable, value, what) => {
@@ -191,6 +174,77 @@ describe("the server mode's configuration", () => {
     expect(
       readServerConfig({ ...GOOD, SAVESLOT_RATE_LIMIT: "60", SAVESLOT_RATE_BURST: "10" }),
     ).toMatchObject({ rateLimit: { perMinute: 60, burst: 10 } });
+  });
+
+  it("trusted proxies: single addresses and CIDR ranges, each in one written form", () => {
+    expect(
+      readServerConfig({
+        ...GOOD,
+        SAVESLOT_TRUSTED_PROXIES:
+          " 10.0.0.0/8 , 192.0.2.7/32,2001:DB8::/32, 2001:db8:1::7/128,::ffff:198.51.100.0/120,3fff::/20",
+      }).trustedProxies,
+    ).toEqual([
+      "10.0.0.0/8",
+      "192.0.2.7",
+      "2001:db8::/32",
+      "2001:db8:1::7",
+      "198.51.100.0/24",
+      "3fff::/20",
+    ]);
+  });
+
+  const NOT_ADDRESS = "is not an IP address or address/prefix (no port, zone or name)";
+  const PREFIX = "has a prefix length that is not a decimal within 0-32 (IPv4) or 0-128 (IPv6)";
+  const HOST_BITS = "has bits set past its prefix: write the range's first address";
+  const EVERYTHING = "holds every address, so any client could write its own source";
+  it.each([
+    ["10.0.0.1,,10.0.0.2", "", NOT_ADDRESS],
+    ["fe80::1%lo0", "fe80::1%lo0", NOT_ADDRESS],
+    ["10.0.0.1:80", "10.0.0.1:80", NOT_ADDRESS],
+    ["[::1]", "[::1]", NOT_ADDRESS],
+    ["proxy.internal", "proxy.internal", NOT_ADDRESS],
+    ["fe80::%en0/64", "fe80::%en0/64", NOT_ADDRESS],
+    ["192.0.2.0 /24", "192.0.2.0 /24", NOT_ADDRESS],
+    ["192.0.2.0/ 24", "192.0.2.0/ 24", PREFIX],
+    ["192.0.2.0/33", "192.0.2.0/33", PREFIX],
+    ["2001:db8::/129", "2001:db8::/129", PREFIX],
+    ["192.0.2.0/-1", "192.0.2.0/-1", PREFIX],
+    ["192.0.2.0/", "192.0.2.0/", PREFIX],
+    ["192.0.2.0/08", "192.0.2.0/08", PREFIX],
+    ["192.0.2.0/24/24", "192.0.2.0/24/24", PREFIX],
+    ["192.0.2.0/+24", "192.0.2.0/+24", PREFIX],
+    ["192.0.2.1/24", "192.0.2.1/24", HOST_BITS],
+    ["2001:db8::1/64", "2001:db8::1/64", HOST_BITS],
+    ["::ffff:192.0.2.0/88", "::ffff:192.0.2.0/88", HOST_BITS],
+    ["0.0.0.0/0", "0.0.0.0/0", EVERYTHING],
+    ["::/0", "::/0", EVERYTHING],
+    ["::ffff:0:0/96", "::ffff:0:0/96", EVERYTHING],
+    ["::/80", "::/80", EVERYTHING],
+    ["::ff00:0:0/88", "::ff00:0:0/88", EVERYTHING],
+    ["::fffe:0:0/95", "::fffe:0:0/95", EVERYTHING],
+  ] as const)(
+    "SAVESLOT_TRUSTED_PROXIES = %j: refused, naming the entry %j",
+    (value, entry, why) => {
+      expect(problems({ ...GOOD, SAVESLOT_TRUSTED_PROXIES: value })).toEqual([
+        {
+          kind: "malformed",
+          variable: "SAVESLOT_TRUSTED_PROXIES",
+          what: `the entry ${JSON.stringify(entry)} ${why}`,
+        },
+      ]);
+    },
+  );
+
+  it("trusted proxies: every entry not taken is named, in order, the good ones not", () => {
+    expect(problems({ ...GOOD, SAVESLOT_TRUSTED_PROXIES: "192.0.2.1/24, 10.0.0.1, ::/0" })).toEqual(
+      [
+        {
+          kind: "malformed",
+          variable: "SAVESLOT_TRUSTED_PROXIES",
+          what: `the entry "192.0.2.1/24" ${HOST_BITS}; the entry "::/0" ${EVERYTHING}`,
+        },
+      ],
+    );
   });
 
   it("allowed origins: comma-separated, each kept as written; spaces only is none", () => {

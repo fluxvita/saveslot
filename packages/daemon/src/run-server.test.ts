@@ -536,6 +536,45 @@ describe("runServer: no trusted proxy", () => {
   );
 });
 
+describe("runServer: a trusted proxy range", () => {
+  it(
+    "a connection inside the range is a trusted proxy: X-Forwarded-For's address is the source",
+    async () => {
+      const c = await controlDb();
+      const t = tenants();
+      // The loopback connection is inside 127.0.0.0/8, not a single address listed.
+      const cfg = config({ trustedProxies: ["127.0.0.0/8"] });
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      await addLocalUser(c.accounts as NonNullable<typeof c.accounts>, {
+        control: c.cp as ServerControlPlane,
+        backend: t.backend,
+        name: "kai",
+        password: "correct horse battery",
+        cell: CELL,
+        cells: new Set([CELL]),
+        now: NOW,
+      });
+      const s = await runServer({
+        config: cfg,
+        version: "0.0.0-test",
+        openControl: async () => c.db,
+        backend: t.backend,
+        now: () => NOW,
+      });
+      try {
+        const statuses: number[] = [];
+        for (let i = 0; i < 6; i++) statuses.push(await failedLogin(s, "203.0.113.40", "kai"));
+        expect(statuses).toEqual([401, 401, 401, 401, 401, 429]);
+        // Another source behind the same range is not held back with it.
+        expect(await failedLogin(s, "203.0.113.41", "kai")).toBe(401);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+});
+
 // A deployment's listed origins (05-surfaces §13): a browser page of the hosted console calls
 // /v1/, /oauth/token and /oauth/revoke directly; another site's page gets no CORS headers, and /mcp
 // takes no page of another site, listed or not. No response allows credentials.
