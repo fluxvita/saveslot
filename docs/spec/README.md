@@ -3,6 +3,8 @@
 > Translated from docs/zh-CN/spec/README.md, updated in the same commit as this file.
 > The Chinese edition is authoritative; where the two differ, the Chinese one holds.
 
+> Every specification document has a Chinese edition ([`docs/zh-CN/spec/`](../zh-CN/spec/README.md)); where the two differ, the Chinese one holds.
+
 > The complete definition of every rule, to be looked up as needed by those who implement the kernel, write integrators and review the design. Someone meeting saveslot for the first time reads the guide first ([`../guide/`](../guide/README.md)); a one-page overview of the project is in [`README.md`](../../README.md) at the repository root. Where the guide and the specification differ, the specification holds.
 
 The reading order is the numeric order of the file names: **01 → 02 → 03 → … → 10**; 07 (scope of the first version), 08 (open questions) and 11 (claims index) can be consulted at any time.
