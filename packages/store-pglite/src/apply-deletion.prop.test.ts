@@ -393,6 +393,62 @@ const OPTIONAL_GONE = {
 } as unknown as { ops: Op[]; decisions: Decision[]; pick: number };
 
 /**
+ * A state entity on which a deletion brings a field item into effect under a revoke (#30, a
+ * candidate until #20's words are deleted): every field there is given by the revoke before and
+ * after, but the revoked existence cell, kept only over a field item in effect, now reaches back to
+ * 11-03. Listed (09 §5.9 «列哪些», state tables); unlisted, apply stopped on the cell.
+ */
+const UNDER_REVOKE = {
+  ops: [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: { from: { mode: "given", value: "2026-11-05" }, to: { mode: "open" } },
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: "2026-11-05" },
+        to: { mode: "given", value: "2026-11-09" },
+      },
+      fields: { f3: { value: "b", sources: ["S20"] } },
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      valid: {
+        from: { mode: "given", value: "2026-11-03" },
+        to: { mode: "given", value: "2026-11-07" },
+      },
+      fields: { f3: { value: "c", sources: ["S30"] } },
+    },
+    {
+      kind: "revoke",
+      op: 70,
+      event: 71,
+      seen: 20,
+      valid: {
+        from: { mode: "given", value: "2026-11-03" },
+        to: { mode: "given", value: "2026-11-11" },
+      },
+      validSources: ["S70"],
+    },
+  ],
+  decisions: [],
+  // The sources cited are #10's, #20's and #30's: this pick deletes #20's alone.
+  pick: 4,
+} as unknown as { ops: Op[]; decisions: Decision[]; pick: number };
+
+/**
  * A state entity whose write-back with no value (a conflict taken back to its merge base) a
  * deletion restates as it was (a generated sample, kept as it was): the row is not listed, and its
  * cells stay as they are; the item's content is not renewed when the restatement gives the one its
@@ -884,6 +940,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     const x = isState ? RESTATED_AS_IT_WAS : BACK_TO_ITS_OWN;
     await checkSample(x.ops, x.decisions, x.pick);
     if (isState) await checkSample(OPTIONAL_GONE.ops, OPTIONAL_GONE.decisions, OPTIONAL_GONE.pick);
+    if (isState) await checkSample(UNDER_REVOKE.ops, UNDER_REVOKE.decisions, UNDER_REVOKE.pick);
     if (!isState) await checkSample(DROPPED_BACK.ops, DROPPED_BACK.decisions, DROPPED_BACK.pick);
     await fc.assert(
       fc.asyncProperty(scenario(isState), fc.nat(), ({ ops, decisions }, pick) =>

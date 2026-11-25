@@ -13,6 +13,7 @@ import {
   isNothing,
   meet,
   WHOLE,
+  within,
 } from "../time/index.ts";
 import { view } from "./judge.ts";
 import type { ItemRef, Restatement } from "./model.ts";
@@ -55,6 +56,39 @@ function pieceState(state: RowState, f: FieldId, s: Interval): string {
       : nv !== undefined
         ? `none|${refKey(refOf(nv))}`
         : "none";
+}
+
+/**
+ * On a state table: the cells apply settles on a piece without a value (apply/settle.ts
+ * `settleState`), as one token; empty where the piece has a value. They are those of the fields
+ * that decide "has a value" (the required ones, or every field when none is): each one a no_value
+ * write-back gives, and an `existence` cell marked revoked by the latest revoke there, only where an
+ * item in effect on a field lies under it. That last cell depends on more than any field's giver:
+ * a deletion changing where a field item under a revoke is in effect moves it.
+ */
+function gapCells(state: RowState, s: Interval): string {
+  const t = state.table;
+  const deciding = t.required.length > 0 ? t.required : t.fields;
+  const valued = (f: FieldId) => state.fieldState(f, s, EVERYTHING).kind === "value";
+  if (t.required.length > 0 ? t.required.every(valued) : t.fields.some(valued)) return "";
+  const out: string[] = [];
+  let revoke: ItemRef | undefined;
+  for (const f of deciding) {
+    const nv = state.noValueBy(f, s, EVERYTHING);
+    if (nv !== undefined) out.push(`${f} no_value ${refKey(refOf(nv))}`);
+    const st = state.fieldState(f, s, EVERYTHING);
+    if (st.kind === "hole" && (revoke === undefined || st.by.event > revoke.event)) {
+      revoke = refOf(st.by);
+    }
+  }
+  const underRevoke = state.items.some(
+    (x) =>
+      x.target !== "existence" &&
+      (x.status === "applied" || x.status === "corroborated") &&
+      within(s, x.valid),
+  );
+  if (revoke !== undefined && underRevoke) out.push(`existence revoked ${refKey(revoke)}`);
+  return out.join("; ");
 }
 
 /** What gives a field its state on a piece, a no_value write-back included; none: nothing. */
@@ -208,9 +242,18 @@ export function rowResult(
           return b !== undefined && (a === undefined || refKey(a) !== refKey(b));
         }),
     );
+  // A piece without a value whose cells differ (09 §5.9 «列哪些», state tables: a stretch where
+  // apply's revoked existence cell or a no_value cell differs): the fields' givers can be the same on
+  // both sides, as where a field item under the same revoke is in effect changes.
+  const gapCellsChanged =
+    before.isState &&
+    before
+      .pieces([...before.items.map((i) => i.valid), ...after.items.map((i) => i.valid)])
+      .some((s) => gapCells(before, s) !== gapCells(after, s));
   const listed =
     stretches.length > 0 ||
     givenBeforeChanged ||
+    gapCellsChanged ||
     vb.exists !== va.exists ||
     existenceTouched !== undefined ||
     recreated.length > 0 ||

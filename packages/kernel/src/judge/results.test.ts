@@ -468,6 +468,146 @@ describe("a no_value write-back's stretch (09 §5.9 «列哪些»: class 2, deps
     expect(r.result.listed).toBe(false);
   });
 
+  it("a field item coming into effect under a revoke, every field's giver the same: listed", () => {
+    // #30 (a candidate: it had not seen #20) is in effect once #20's words are deleted, on
+    // [11-03, 11-07), all under #70's revoke: every field there is given by the revoke before and
+    // after, but apply keeps the revoked existence cell only over a field item in effect, and it
+    // now reaches back to 11-03 (09 §5.9 «列哪些», state tables).
+    const ops: Op[] = [
+      w(10, 0, { f2: "1", f3: "a" }, { from: "11-05", ack: true }),
+      w(20, 10, { f3: "b" }, { from: "11-05", to: "11-09" }),
+      w(30, 10, { f3: "c" }, { from: "11-03", to: "11-07" }),
+      {
+        kind: "revoke",
+        op: 70,
+        event: 71,
+        seen: 20,
+        valid: {
+          from: { mode: "given", value: d("11-03") },
+          to: { mode: "given", value: d("11-11") },
+        },
+        validSources: ["S70"],
+      } as Op,
+    ];
+    const r = run(STATE, ops, ["S20f3"]);
+    expect(r.replay.restated.map((x) => [x.item.event, x.status])).toEqual([[31, "applied"]]);
+    expect(r.result.stretches).toEqual([]);
+    expect(r.result.listed).toBe(true);
+  });
+
+  it("a no_value cell appearing where the giver of every field stays the same: listed", () => {
+    // Two required fields. #10 gives f2 (A) and f3 (B) on [11-01, 11-10); #20 gives f2 again and
+    // #30 undoes it, writing #10's f2 back. A pending deletion takes B: no value there, the
+    // write-back giving f2 its carried value. This deletion takes A: the write-back is restated
+    // as no_value, and apply keeps a no_value cell for f2 where there was none, while each field's
+    // giver is the same (f2's #30, f3's none).
+    const R2: TableSchema = { kind: "state", required: ["f2", "f3"] } as TableSchema;
+    const valid = {
+      from: { mode: "given", value: d("11-01") },
+      to: { mode: "given", value: d("11-10") },
+    };
+    const ops: Op[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid,
+        validSources: ["V"],
+        fields: { f2: { value: "1", sources: ["A"] }, f3: { value: "a", sources: ["B"] } },
+        acknowledge: ["overwrite"],
+      } as Op,
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid,
+        validSources: ["V2"],
+        fields: { f2: { value: "2", sources: ["X"], explicit: true } },
+        acknowledge: ["overwrite"],
+      } as Op,
+      {
+        kind: "undo",
+        op: 30,
+        event: 31,
+        seen: 21,
+        target: 20,
+        includeLater: false,
+        acknowledge: ["overwrite"],
+      } as Op,
+    ];
+    const r = run(R2, ops, ["A"], ["B"]);
+    expect(r.replay.restated.map((x) => [x.item.event, x.item.target, x.content?.kind])).toEqual([
+      [31, "f2", "no_value"],
+    ]);
+    expect(r.result.stretches).toEqual([]);
+    expect(r.result.listed).toBe(true);
+  });
+
+  it("an entity there neither before nor after, a field's giver gone: listed", () => {
+    // #10 gives f2 (required) and a pending deletion takes it: no value anywhere. This deletion
+    // takes #20, the only giver of f3 on [11-07, 11-09). Apply stores no cell for f3 there, but the
+    // field's giver changed (09 §5.9 «列哪些»: the exemption for a row there neither before nor
+    // after is an event or timeless table's only).
+    const ops: Op[] = [
+      w(10, 0, { f2: "1" }, { ack: true }),
+      w(20, 10, { f3: "3" }, { from: "11-07", to: "11-09" }),
+    ];
+    const r = run(STATE, ops, ["S20f3"], ["S10f2"]);
+    expect([r.result.existedBefore, r.result.existsAfter]).toEqual([false, false]);
+    expect(r.replay.restated).toEqual([]);
+    expect(r.result.listed).toBe(true);
+  });
+
+  it("an entity revoked all along, a write-back that only registers restated: listed", () => {
+    // #20 revokes the entity everywhere; #50 writes f2 on [11-03, 11-09) and #53 undoes it, a
+    // write-back that only registers. S3, the words of #50 and #60, deleted: the write-back is
+    // restated as dropped. Apply's cells stay the same, but such a restatement lists the entity
+    // (09 §5.9 «列哪些»: an uncovered write-back restated).
+    const ops: Op[] = [
+      w(10, 0, { f2: "1" }, { ack: true }),
+      { kind: "revoke", op: 20, event: 21, seen: 10 } as Op,
+      { kind: "revoke", op: 30, event: 31, seen: 10 } as Op,
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        valid: {
+          from: { mode: "given", value: d("11-03") },
+          to: { mode: "given", value: d("11-09") },
+        },
+        fields: { f2: { value: "2", sources: ["S3", "S6"], explicit: true } },
+        acknowledge: ["overwrite"],
+      } as Op,
+      {
+        kind: "undo",
+        op: 53,
+        event: 54,
+        target: 50,
+        includeLater: false,
+        seen: 52,
+        acknowledge: ["overwrite"],
+      } as Op,
+      {
+        kind: "write",
+        op: 60,
+        event: 61,
+        seen: 20,
+        valid: {
+          from: { mode: "given", value: d("11-07") },
+          to: { mode: "given", value: d("11-09") },
+        },
+        fields: { f2: { value: "9", sources: ["S3"], explicit: true } },
+      } as Op,
+    ];
+    const r = run(STATE, ops, ["S3"]);
+    expect([r.result.existedBefore, r.result.existsAfter]).toEqual([false, false]);
+    expect(r.before.items.find((x) => x.event === 54)?.content.kind).toBe("uncovered");
+    expect(r.replay.restated.map((x) => [x.item.event, x.status])).toEqual([[54, "dropped"]]);
+    expect(r.result.listed).toBe(true);
+  });
+
   it("the same state before and after, the write-back only restated: listed", () => {
     const { table, steps } = judged(
       STATE,
