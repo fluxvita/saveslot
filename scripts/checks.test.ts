@@ -25,6 +25,7 @@ import {
   sourceLine,
   sourceOf,
 } from "./check-translations.ts";
+import { ciEnv } from "./ci-env.ts";
 import { listMarkdownFiles } from "./markdown.ts";
 
 const REPO = resolve(import.meta.dirname, "..");
@@ -484,7 +485,10 @@ describe("forbidden terms", () => {
   function run(root: string, env: Record<string, string>) {
     const clean = Object.fromEntries(
       Object.entries(process.env).filter(
-        ([k]) => !k.startsWith("CI_") && k !== "SAVESLOT_FORBIDDEN_TERMS_B64",
+        ([k]) =>
+          !k.startsWith("CI_") &&
+          !k.startsWith("SAVESLOT_CI_") &&
+          k !== "SAVESLOT_FORBIDDEN_TERMS_B64",
       ),
     );
     const r = spawnSync("node", ["--no-warnings", SCRIPT], {
@@ -515,12 +519,34 @@ describe("forbidden terms", () => {
     expect(r.output).toContain("Forbidden terms OK: 3 term(s)");
   });
 
-  it("without the list: fails in the project's pipelines, warns elsewhere", () => {
+  it("without the list: fails where the workflow says it is required, warns elsewhere (a fork)", () => {
     const root = repo({ "a.md": "nothing to see\n" });
-    expect(run(root, { CI_PROJECT_PATH: "agentx/saveslot" }).code).toBe(1);
-    const fork = run(root, { CI_PROJECT_PATH: "someone/saveslot" });
+    expect(run(root, { SAVESLOT_CI_TERMS_REQUIRED: "true" }).code).toBe(1);
+    const fork = run(root, { SAVESLOT_CI_TERMS_REQUIRED: "false" });
     expect(fork.code).toBe(0);
     expect(fork.output).toMatch(/Warning: SAVESLOT_FORBIDDEN_TERMS_B64 is not set/);
+  });
+});
+
+describe("the CI run's variables", () => {
+  it("the base, the title, and whether the list is required", () => {
+    expect(
+      ciEnv({
+        SAVESLOT_CI_BASE: "def",
+        SAVESLOT_CI_TITLE: "docs: y",
+        SAVESLOT_CI_TERMS_REQUIRED: "false",
+      }),
+    ).toEqual({ base: "def", title: "docs: y", termsRequired: false });
+    expect(ciEnv({ SAVESLOT_CI_TERMS_REQUIRED: "true" }).termsRequired).toBe(true);
+    expect(ciEnv({})).toEqual({ base: undefined, title: undefined, termsRequired: false });
+  });
+
+  it("an empty base is none; an empty title is still a title, to be refused", () => {
+    expect(ciEnv({ SAVESLOT_CI_BASE: "", SAVESLOT_CI_TITLE: "" })).toEqual({
+      base: undefined,
+      title: "",
+      termsRequired: false,
+    });
   });
 });
 

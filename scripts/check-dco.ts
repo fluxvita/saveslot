@@ -2,9 +2,11 @@
 // (`Signed-off-by:`) by its author.
 //
 // Usage: node scripts/check-dco.ts [<base>]
-// The range is <base>..HEAD. <base> defaults to $CI_MERGE_REQUEST_DIFF_BASE_SHA, then origin/main.
+// The range is <base>..HEAD. <base> defaults to the pull or merge request's base (./ci-env.ts),
+// then origin/main.
 
 import { execFileSync } from "node:child_process";
+import { ciEnv } from "./ci-env.ts";
 
 export interface CommitInfo {
   sha: string;
@@ -42,7 +44,7 @@ function commitsIn(range: string): CommitInfo[] {
 }
 
 if (import.meta.main) {
-  const base = process.argv[2] ?? process.env["CI_MERGE_REQUEST_DIFF_BASE_SHA"] ?? "origin/main";
+  const base = process.argv[2] ?? ciEnv(process.env).base ?? "origin/main";
   const commits = commitsIn(`${base}..HEAD`);
   let bad = 0;
   for (const c of commits) {
