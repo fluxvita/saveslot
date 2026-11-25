@@ -8,8 +8,8 @@ saveslot is a shared data layer for all of a person's agents: it records things 
 
 ## Language
 
-- **Write everything in the repository in English**: commit messages, merge request titles, code comments, identifiers, log and error messages, test names.
-- **The design documents are in Chinese** under `docs/zh-CN/`, and the Chinese edition is authoritative. The specification and the guide also have an English edition at the same path under `docs/` (`docs/README.md` lists them); the English edition of `docs/zh-CN/process/` and `docs/zh-CN/research/` is pending. Edit the Chinese documents when the spec or guide must change, and change the English file in the same merge request (`pnpm docs:translations` reports an English file that fell behind). Do not start an English edition of a process or research document unless asked.
+- **Write everything in the repository in English**: commit messages, pull request titles, code comments, identifiers, log and error messages, test names.
+- **The design documents are in Chinese** under `docs/zh-CN/`, and the Chinese edition is authoritative. The specification and the guide also have an English edition at the same path under `docs/` (`docs/README.md` lists them); the English edition of `docs/zh-CN/process/` and `docs/zh-CN/research/` is pending. Edit the Chinese documents when the spec or guide must change, and change the English file in the same pull request (`pnpm docs:translations` reports an English file that fell behind). Do not start an English edition of a process or research document unless asked.
 
 ## Where the docs are, and which one wins
 
@@ -27,7 +27,7 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 
 ## Rules
 
-- **Spec first.** A change in behavior updates `docs/zh-CN/spec/` in the same merge request; changes that affect reader understanding also update `docs/zh-CN/guide/`.
+- **Spec first.** A change in behavior updates `docs/zh-CN/spec/` in the same pull request; changes that affect reader understanding also update `docs/zh-CN/guide/`.
 - **Incompatible changes to the event format, the kernel invariants (K1–K14) or the operation contract** start with a decision record in `docs/zh-CN/process/decisions/` that is reviewed before the spec and code change. Do not change them directly.
 - **`docs/zh-CN/spec/` and `docs/zh-CN/guide/` describe the design only.** Process information (dates, revision rounds, "it used to be X, now Y", review sources) belongs in `docs/zh-CN/process/`.
 - **Use the spec's terms** (slot, source data, table data, conflict unit, `ver`, …). Do not invent synonyms.
@@ -38,15 +38,15 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 
 - Node 24.22.1 or later on the 24 line, or 26.12.1 or later (`.nvmrc` names the version CI runs; the nightly checks also run on the 26 line), TypeScript strict mode, ESM only.
 - pnpm workspace; Vitest for tests, fast-check for property tests; Biome for formatting and lint; Changesets for versioning.
-- Run `pnpm check` on the head before every push (type check, lint, tests, dependency rules, doc links, JSON examples) and put the result in the merge request; do not bypass it. The merge request's pipeline runs quick checks only; CI runs the full check after merges and nightly, and a maintainer runs it again before merging when the change is risky. A failure on the default branch is fixed with priority.
+- Run `pnpm check` on the head before every push (type check, lint, tests, dependency rules, doc links, JSON examples, the English documents' source lines, the claims index); do not bypass it. CI runs it, with the quick checks, on every pull request, and must pass before a merge; on `main` it runs again after merges and nightly. A failure on the default branch is fixed with priority.
 
 ## Commits
 
 - Conventional Commits, scoped by package or doc area: `feat(kernel): …`, `fix(cli): …`, `docs(spec): …`.
 - Every commit needs a `Signed-off-by` from a person (DCO). The sign-off is that person's certification, not yours: add it (`git commit -s`, with their name and email as the commit author) only when the person you work for has asked you to commit the change on their behalf. Never sign off on your own, and never sign off as a tool.
 - Do not add trailers that attribute a commit to an AI tool (such as `Co-authored-by` for an assistant).
-- Changes reach `main` only through merge requests, which a maintainer squash-merges. Every merge request targets `main`; a fix that has to be in a released version is cherry-picked by a maintainer onto its release branch (`release/0.<minor>`) after it is merged. Do not open a merge request against a release branch or push to one. Once a branch is pushed, add commits at its end, and keep it linear, without merge commits: a branch that is only behind `main` is rebased by the maintainer when merging, and one with a merge commit cannot be. When the branch conflicts with `main`, or `pnpm check` no longer passes on top of the latest `main`, rebase it onto the latest `main`, run `pnpm check` on that head, push with `git push --force-with-lease`, and say so in the merge request (the old head, the new head, how each conflict was resolved); a pushed branch is rewritten in this case only. The maintainer does not resolve conflicts on a contributor's branch.
-- Before pushing to a branch you pushed earlier, check that it still exists on the remote (`git ls-remote origin refs/heads/<branch>`): its merge request may have been merged and the branch deleted, and a push would create it again.
+- Changes reach `main` only through pull requests, which a maintainer squash-merges. Every pull request targets `main`; a fix that has to be in a released version is cherry-picked by a maintainer onto its release branch (`release/0.<minor>`) after it is merged. Do not open a pull request against a release branch or push to one. Once a branch is pushed, add commits at its end, and keep it linear, without merge commits: a branch that is only behind `main` is rebased by the maintainer when merging, and one with a merge commit cannot be. When the branch conflicts with `main`, or `pnpm check` no longer passes on top of the latest `main`, rebase it onto the latest `main`, run `pnpm check` on that head, push with `git push --force-with-lease`, and say so in the pull request (the old head, the new head, how each conflict was resolved); a pushed branch is rewritten in this case only. The maintainer does not resolve conflicts on a contributor's branch.
+- Before pushing to a branch you pushed earlier, check that it still exists on the remote (`git ls-remote origin refs/heads/<branch>`): its pull request may have been merged and the branch deleted, and a push would create it again.
 - Split unrelated changes into separate commits. Commit only when asked.
 
 ## Tests

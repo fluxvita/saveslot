@@ -1,6 +1,7 @@
 // Tests for the repository check scripts: each check must fail on the inputs it exists to catch.
 
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -71,6 +72,33 @@ describe("doc links", () => {
       "2:b.md#no-such:no heading with this anchor",
       "2:../x.md:points outside the repository",
     ]);
+  });
+
+  it("reports every line naming an internal host, in links, prose or code, without the name", () => {
+    const domains = new Set([createHash("sha256").update("internal.example").digest("hex")]);
+    const root = tree({
+      "a.md": [
+        "[tracker](https://git.internal.example/p/-/issues/1)",
+        "mirror at Ci.Internal.Example:8443, see `internal.example`",
+        "fine: notinternal.example, internal.examples, example.com",
+        "```",
+        "git clone ssh://git@git.internal.example/p.git",
+        "```",
+      ].join("\n"),
+    });
+    const problems = checkDocLinks(root, ["a.md"], domains).map(
+      (p) => `${p.line}:${p.target}:${p.reason}`,
+    );
+    expect(problems).toEqual([
+      "1:(not shown):names an internal host",
+      "2:(not shown):names an internal host",
+      "5:(not shown):names an internal host",
+    ]);
+    expect(checkDocLinks(root, ["a.md"], new Set())).toEqual([]);
+  });
+
+  it("finds no internal host in the repository's own documents", () => {
+    expect(checkDocLinks(REPO).filter((p) => p.reason === "names an internal host")).toEqual([]);
   });
 });
 
