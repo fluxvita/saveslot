@@ -476,7 +476,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `SAVESLOT_PUBLIC_URL` | 对外地址：远程 MCP 与 HTTP 的基地址，OAuth 的签发方与资源标识（RFC 8707），401 的 `resource_metadata` 由它拼出（[`05-surfaces.md`](05-surfaces.md) §14）。一个部署只有这一个对外地址，`/mcp`、`/v1`、`/oauth/*` 都拼在它后面，所以只写协议、主机与可选的端口：不带路径，不带末尾的 `/`。必须是 `https://`；只有主机是回环地址（`127.0.0.0/8`、`::1`、`localhost`）时才收 `http://`，供本机试跑。写法不合的按写法不对处理 | 必填 |
 | `SAVESLOT_HANDLE_KEY_FILE` | 句柄签名密钥的文件。`server init` 在这里生成（0600；目录要已存在）；文件已在时只核对，不动它。`server start` 只读它、不写，可以按只读挂载；核对的是：跟随符号链接之后是普通文件，本进程读得到，"其他人"（other）没有任何权限位；不核对属主，组可读也可以。服务器模式不自动轮换密钥：部署方要换，就换掉这个文件再重启，换之前签发的句柄随之失效。文件不在、不是普通文件、本进程读不到、对其他人开放、不是它的格式，各报一种原因，退出码都是 5；报错里不写文件的内容 | 必填 |
 | `SAVESLOT_LISTEN` | 监听的地址与端口。进程只说明文 HTTP，所以缺省只听回环地址，由同一台机器上的反向代理连进来；要听别的网卡（例如容器里听 `0.0.0.0`），由部署方显式写出 | `127.0.0.1:8080` |
-| `SAVESLOT_TRUSTED_PROXIES` | 受信的反向代理的地址，逗号分隔。连接来自其中之一时，请求的来源地址取 `X-Forwarded-For` 里从右往左第一个不在这组里的地址；否则来源地址就是连接的地址（[`02-architecture.md`](02-architecture.md) §5）。登录失败的计数按这个地址算。只收单个地址：带网段、端口或 zone 的项按写法不对处理（[`02-architecture.md`](02-architecture.md) §5） | 空 |
+| `SAVESLOT_TRUSTED_PROXIES` | 受信的反向代理，逗号分隔，每一项是单个地址或 CIDR 网段（如 `192.0.2.10`、`192.0.2.0/24`、`2001:db8::/32`）。连接来自落在其中某一项里的地址时，请求的来源地址取 `X-Forwarded-For` 里从右往左第一个不受信的地址；否则来源地址就是连接的地址（[`02-architecture.md`](02-architecture.md) §5）。登录失败的计数按这个地址算。前缀之后的位不为零、前缀长度越界或写法不严、盖住全部地址（`0.0.0.0/0`、`::/0` 一类）、带端口或 zone 的项按写法不对处理（[`02-architecture.md`](02-architecture.md) §5） | 空 |
 | `SAVESLOT_ALLOWED_ORIGINS` | 可以在浏览器里跨源调用 `/v1/*`、`/oauth/token`、`/oauth/revoke` 的来源，逗号分隔（[`05-surfaces.md`](05-surfaces.md) §13）。每项写成浏览器在 `Origin` 里发的样子：协议、主机与可选的端口，小写，不写缺省端口，不带路径、不带末尾的 `/`；与请求的 `Origin` 原样比较，不支持通配。必须是 `https://`；只有主机是回环地址时才收 `http://`。有一项写法不合，整个变量按写法不对处理，报错写明是哪一项 | 空：不允许浏览器跨源调用 |
 | `SAVESLOT_RATE_LIMIT` | 按租户限流：每个租户每分钟最多的请求数，正整数；设为 0 与不设都是关 | 不设：关（自部署默认关，[`02-architecture.md`](02-architecture.md) §9） |
 | `SAVESLOT_RATE_BURST` | 限流的突发容量：一个租户一次最多连着发多少个请求，正整数；限流关着时不起作用 | 等于 `SAVESLOT_RATE_LIMIT` |
@@ -484,7 +484,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `SAVESLOT_IDENTITY_LOGIN_URL` | 外部登录：平台的登录地址，浏览器登录时被送到这里，只带 `state`。必须是 `https://`；只有主机是回环地址时才收 `http://` | 不设 |
 | `SAVESLOT_IDENTITY_KEYS_FILE` | 外部登录：平台的公钥文件，JWK Set（`{"keys": [...]}`），每把是带 `kid` 的 Ed25519 公钥。与 `SAVESLOT_HANDLE_KEY_FILE` 一样核对：跟随符号链接之后是普通文件，本进程读得到，"其他人"（other）没有任何权限位，不核对属主，组可读也可以；不是这样就拒绝启动；文件里有私钥（`d`）时也拒绝启动，报错写明原因：平台的签名私钥只该在平台上。要换公钥，就换掉这个文件再重启 | 不设 |
 
-必填的变量缺了，或值写法不对，命令什么都不做，写明是哪个变量，退出码 5（与 `config.toml` 被拒的退出码相同，6.2）；报错里不写变量的值（连接串里可能有口令），只有 `SAVESLOT_ALLOWED_ORIGINS` 写明不合的那一项（来源里没有需要保密的内容）。
+必填的变量缺了，或值写法不对，命令什么都不做，写明是哪个变量，退出码 5（与 `config.toml` 被拒的退出码相同，6.2）；报错里不写变量的值（连接串里可能有口令），只有 `SAVESLOT_TRUSTED_PROXIES` 与 `SAVESLOT_ALLOWED_ORIGINS` 写明不合的那一项（地址与来源里没有需要保密的内容）。
 
 ### 4.2 登录与配置
 

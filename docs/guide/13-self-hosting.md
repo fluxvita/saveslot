@@ -57,7 +57,7 @@ Server mode reads only environment variables; it does not read the `config.toml`
 | `SAVESLOT_PUBLIC_URL` | The public address: `https://`, with no path and no trailing `/` (`http://` is allowed only for a trial run on the local machine where the host is a loopback address) | `https://saveslot.example.com` |
 | `SAVESLOT_HANDLE_KEY_FILE` | The file of the handle signing key: `server init` generates it, and after that saveslot only reads it and never writes it | `/run/secrets/saveslot-handle-key` |
 | `SAVESLOT_LISTEN` | The listen address, default `127.0.0.1:8080` | `0.0.0.0:8080` (inside a container) |
-| `SAVESLOT_TRUSTED_PROXIES` | The addresses of your reverse proxy, comma-separated | `127.0.0.1` |
+| `SAVESLOT_TRUSTED_PROXIES` | The addresses or ranges of your reverse proxy, comma-separated | `127.0.0.1`; `10.0.8.0/24` |
 | `SAVESLOT_ALLOWED_ORIGINS` | The web origins that may call the HTTP interface directly from a browser, comma-separated; the default is empty, which allows no web page to make cross-origin calls (`/mcp` never allows them) | `https://console.example.com` |
 
 **By default saveslot listens only on the local loopback address.** It speaks only plain HTTP: if it listened on all network interfaces by default, anyone following the documentation to start an instance with no firewall could capture tokens in plaintext from the network. When the reverse proxy and saveslot are on the same machine, the loopback address is exactly enough. When running in a container, the reverse proxy is outside the container: write `SAVESLOT_LISTEN` explicitly as `0.0.0.0:8080`, and then hand only this port to the reverse proxy (for example, map it only to `127.0.0.1` of the host).
@@ -65,6 +65,10 @@ Server mode reads only environment variables; it does not read the `config.toml`
 **In a production deployment, do not put origins such as `http://localhost` in `SAVESLOT_ALLOWED_ORIGINS`.** If you do, any web page under development on the local machine can call the interface across origins (although a token is still required).
 
 **Set `SAVESLOT_TRUSTED_PROXIES` for the reverse proxy.** saveslot sees only the reverse proxy connecting to it; where a request really came from depends on the address the proxy writes into `X-Forwarded-For`, and saveslot trusts this header only when the connection comes from a proxy listed here. If it is not set, every request looks to saveslot as if it came from the single address of the proxy: when one person mistypes a password a few times, the login failure limit, which counts by source, blocks everyone.
+
+When the proxy's address changes within a subnet, or there is a CDN in front of it, write ranges in the list: the subnet of the load balancer, and the egress ranges the CDN publishes. **The list must hold only your own proxies.** Any address inside the list can connect to saveslot directly and write `X-Forwarded-For` itself, posing as any source; so nothing else that can reach saveslot may be in those subnets. saveslot does not accept an entry such as `0.0.0.0/0` that covers every address.
+
+**Keep the list up to date with the egress ranges the CDN publishes.** A CDN's egress ranges change; when the list has not caught up, requests from a new egress are no longer skipped, and their source is taken to be that egress's address. This errs on the safe side (the source cannot be forged this way), but the users behind one egress share one allowance counted by source: failed logins and tries on the device code page are counted together.
 
 Rate limiting is off by default in self-hosting. To limit by user, set `SAVESLOT_RATE_LIMIT` (requests per minute for each user); you can also set `SAVESLOT_RATE_BURST` (the most requests that can be sent in a row at one time; by default equal to the former).
 

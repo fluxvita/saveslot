@@ -231,6 +231,8 @@ importers:
         specifier: workspace:*
         version: link:../contract
 
+  packages/connector-ts: {}
+
   packages/contract:
     dependencies:
       '@fluxvita/saveslot-contract-core':
@@ -330,6 +332,10 @@ importers:
       '@fluxvita/saveslot-kernel':
         specifier: workspace:*
         version: link:../kernel
+    devDependencies:
+      fast-check:
+        specifier: 4.10.2
+        version: 4.10.2
 
   packages/store-pglite:
     dependencies:

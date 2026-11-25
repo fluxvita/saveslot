@@ -36,5 +36,8 @@
     "@fluxvita/saveslot-contract": "workspace:*",
     "@fluxvita/saveslot-contract-core": "workspace:*",
     "@fluxvita/saveslot-kernel": "workspace:*"
+  },
+  "devDependencies": {
+    "fast-check": "4.10.2"
   }
 }

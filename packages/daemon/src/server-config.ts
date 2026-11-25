@@ -2,12 +2,13 @@
 // from the environment only, never from a config.toml. Every variable is checked and every problem
 // is reported at once, in the order of that table; a problem names the variable and what is wrong
 // with it, never the value (a connection URL may hold a password); only an entry of
-// `SAVESLOT_ALLOWED_ORIGINS` that is not an origin is named, an origin holding nothing secret.
+// `SAVESLOT_TRUSTED_PROXIES` or `SAVESLOT_ALLOWED_ORIGINS` that is not taken is named, an address
+// or an origin holding nothing secret.
 // `saveslot server …` refuses with exit code 5 when there is any.
 
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
-import { normalizeAddress } from "@fluxvita/saveslot-service";
+import { type ProxyEntryProblem, parseProxyEntry } from "@fluxvita/saveslot-service";
 import type { PostgresCell } from "@fluxvita/saveslot-store-postgres";
 
 /** The variables, in the order of 06-cli §4.1's table. */
@@ -43,7 +44,7 @@ export interface ServerConfig {
   readonly publicUrl: string;
   readonly handleKeyFile: string;
   readonly listen: { readonly host: string; readonly port: number };
-  /** Each as `normalizeAddress` writes it. */
+  /** Single addresses and CIDR ranges, each in `parseProxyEntry`'s written form. */
   readonly trustedProxies: readonly string[];
   /**
    * The origins whose pages may call `/v1/`, `/oauth/token` and `/oauth/revoke` from a browser
@@ -184,17 +185,29 @@ function listen(text: string): { host: string; port: number } {
   return { host, port: Number(port) };
 }
 
+const PROXY_PROBLEM: Readonly<Record<ProxyEntryProblem, string>> = {
+  not_an_address: "is not an IP address or address/prefix (no port, zone or name)",
+  prefix: "has a prefix length that is not a decimal within 0-32 (IPv4) or 0-128 (IPv6)",
+  host_bits: "has bits set past its prefix: write the range's first address",
+  everything: "holds every address, so any client could write its own source",
+};
+
 /**
- * Single addresses only, in the form requests' sources are compared in (02-architecture §5): no
- * range, port or zone, which `normalizeAddress` does not take.
+ * Single addresses and CIDR ranges (02-architecture §5), each in one written form. Every entry that
+ * is not one is named, with what is wrong: an address holds nothing secret.
  */
 function proxies(text: string): string[] {
   if (text.trim() === "") return [];
-  const list = text.split(",").map((s) => normalizeAddress(s));
-  if (list.some((a) => a === undefined)) {
-    throw new Bad("an entry is not a single IP address (no range, port or zone)");
+  const bad: string[] = [];
+  const list: string[] = [];
+  for (const entry of text.split(",")) {
+    const r = parseProxyEntry(entry);
+    if (typeof r === "string")
+      bad.push(`the entry ${JSON.stringify(entry.trim())} ${PROXY_PROBLEM[r]}`);
+    else list.push(r.form);
   }
-  return list as string[];
+  if (bad.length > 0) throw new Bad(bad.join("; "));
+  return list;
 }
 
 /**
