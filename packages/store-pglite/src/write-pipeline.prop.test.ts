@@ -557,6 +557,56 @@ function fixed(isState: boolean): [string, Op[]][] {
   ];
 }
 
+/**
+ * The scenarios' operations spread out: SPREAD times the room between steps, and between a step and
+ * the decision inserted after it. The scenarios number a step every 10 and a decision at op + 5,
+ * while a step appends up to five events past its operation (its head, source and base, then
+ * items, refreshes and supersessions, which the record mapping does not number): a decision at
+ * op + 5 found its numbers taken, and the sample was cut short there (an overrun). At 2, over
+ * seeds 1 to 20 on both tables (5,025 steps), a step's events reached at most op + 5, against a
+ * decision at op + 10 and the next step at op + 20.
+ *
+ * Each operation moves by its step and its offset in the step; an event moves with its operation
+ * (the same distance after it); `seen` and an undo's target are operations, a decision's
+ * candidates, taken candidate and confirmed write are events. The first write stays at FIRST_OP.
+ */
+const SPREAD = 2;
+const spreadOp = (n: number) =>
+  n < FIRST_OP ? n : FIRST_OP + (Math.floor(n / 10) - 1) * 10 * SPREAD + (n % 10) * SPREAD;
+function spread(ops: readonly Op[]): Op[] {
+  const events = new Map(ops.map((o) => [o.event, spreadOp(o.op) + (o.event - o.op)]));
+  const ev = (e: number) => {
+    const m = events.get(e);
+    if (m === undefined) throw new Error(`event ${e} is no op's`);
+    return m;
+  };
+  return ops.map((o): Op => {
+    const at = { op: spreadOp(o.op), event: ev(o.event) };
+    switch (o.kind) {
+      case "write":
+      case "revoke":
+        return { ...o, ...at, ...(o.seen !== undefined ? { seen: spreadOp(o.seen) } : {}) };
+      case "undo":
+        return {
+          ...o,
+          ...at,
+          target: spreadOp(o.target),
+          ...(o.seen !== undefined ? { seen: spreadOp(o.seen) } : {}),
+        };
+      case "resolve":
+        return {
+          ...o,
+          ...at,
+          candidates: o.candidates.map(ev),
+          ...(o.take !== undefined ? { take: ev(o.take) } : {}),
+        };
+      default:
+        // confirm, reject
+        return { ...o, ...at, target: ev(o.target) };
+    }
+  });
+}
+
 // One store for the samples, for the whole file: the tables' groups run one after another, and each
 // sample empties it before using it (opening PGlite builds a database, seconds; emptying one takes
 // milliseconds).
@@ -592,11 +642,11 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     const decisions = generated.filter((d) =>
       ["keep", "take", "previous", "confirm", "reject"].includes(d.kind),
     );
-    // One a step, at op + 5: after the step's own events (head, source, base, items at op + 3
-    // on), with room for the refreshes it may append before the next step at op + 10.
-    const numbering = { slots: [5], eventAfter: 2 };
+    // One a step, at op + 5 * SPREAD: after the step's own events (head, source, base, items at
+    // op + 3 on), with room for the refreshes it may append before the next step.
+    const numbering = { slots: [5 * SPREAD], eventAfter: 2 };
     // Decisions go through `resolve`, the rest through `write`.
-    const raw = all;
+    const raw = spread(all);
     if (raw.length < 2) {
       seen.skipped++;
       return;
@@ -870,12 +920,11 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     );
     if (process.env["JUDGE_STATS"]) console.log(schema.kind, JSON.stringify({ ...seen, byKind }));
     expect(seen.samples).toBeGreaterThan(RUNS / 3);
-    // Overruns cut samples short: they must stay rare, not the most of a run. Seeds 1 to 5, 40
-    // samples each, gave 2, 1, 1, 0 and 1 on the state table (a mean near 1) and none on the
-    // event table; one unseeded run gave 5. The bound guards against the generator going wrong as
-    // a whole: past a quarter of the runs has odds of about 1e-8 a run at a mean of 1, and about
-    // 1e-5 at a mean of 2 (Poisson).
-    expect(seen.overrun).toBeLessThanOrEqual(RUNS / 4);
+    // Overruns cut samples short: they must stay rare. With the operations spread out (SPREAD),
+    // seeds 1 to 20 gave none on either table, the nearest a step came to the next numbers being
+    // four events short. The bound guards against the generator or the pipeline's refreshes going
+    // wrong as a whole, not a sample now and then.
+    expect(seen.overrun).toBeLessThanOrEqual(RUNS / 10);
     expect(seen.pending).toBeGreaterThan(0);
     // The fixed sample's corroboration, every run, sent through the pipeline and checked as encoded.
     expect(seen.corroborationsFixed).toBe(1);
@@ -1100,7 +1149,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         closed: seen.closed - before.closed,
       }).toEqual({ sampled: 1, closed: 1 });
       // Closed so, the item answers a confirm and a reject the same: item_closed, with the same
-      // reason and the write that closed it.
+      // reason and the write that closed it (#80 of the scenario, as spread out when sent).
       const store = main.store;
       const closedItem = (
         await store.read((tx) =>
@@ -1135,7 +1184,10 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       const onConfirm = await answer("confirm");
       expect(onConfirm).toMatchObject({
         code: "item_closed",
-        detail: { reason: "superseded", superseded: { reason: "nothing_to_revert", by: 80 } },
+        detail: {
+          reason: "superseded",
+          superseded: { reason: "nothing_to_revert", by: spreadOp(80) },
+        },
       });
       expect(await answer("reject")).toEqual(onConfirm);
     },
