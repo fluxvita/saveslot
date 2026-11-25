@@ -17,7 +17,15 @@ import {
 } from "./check-forbidden-terms.ts";
 import { checkJsonExamples, parseError } from "./check-json-examples.ts";
 import { titleProblem } from "./check-mr-title.ts";
-import { checkTranslations, lastChange, sourceLine, sourceOf } from "./check-translations.ts";
+import {
+  checkTranslations,
+  lastChange,
+  missingEnglish,
+  NOT_YET,
+  sourceLine,
+  sourceOf,
+} from "./check-translations.ts";
+import { listMarkdownFiles } from "./markdown.ts";
 
 const REPO = resolve(import.meta.dirname, "..");
 const dirs: string[] = [];
@@ -114,6 +122,7 @@ describe("English documents", () => {
     expect(sourceOf(`${"\n".repeat(6)}${SRC}`)).toBeUndefined(); // too far down
     const root = tree({
       "docs/zh-CN/guide/01-what.md": "# 1\n",
+      "docs/zh-CN/guide/02-how.md": "# 2\n",
       "docs/zh-CN/guide/04-old.md": "# 4\n",
       "docs/zh-CN/spec/02-architecture.md": "# 2\n",
       "docs/guide/01-what.md": `# 1\n\n> ${SRC}\n> The Chinese edition has changed since: section 1.2.\n`,
@@ -126,7 +135,7 @@ describe("English documents", () => {
       "docs/README.md": "# Not a translation\n",
       "README.md": "# Not a translation\n",
     });
-    expect(checkTranslations(root).map((p) => `${p.file}: ${p.reason}`)).toEqual([
+    expect(checkTranslations(root).problems.map((p) => `${p.file}: ${p.reason}`)).toEqual([
       `docs/guide/02-how.md: no "${sourceLine("docs/zh-CN/guide/02-how.md")}" in its first 6 lines`,
       "docs/guide/03-gone.md: its source docs/zh-CN/guide/03-gone.md does not exist",
       `docs/guide/04-old.md: names a commit, which squash merges lose; write "${sourceLine("docs/zh-CN/guide/04-old.md")}"`,
@@ -134,21 +143,42 @@ describe("English documents", () => {
     ]);
   });
 
-  it("reports a translation the Chinese file has moved past, unless its head says so", () => {
+  it("lists a translation the Chinese file has moved past as drift, not as a problem", () => {
     const zh = "docs/zh-CN/guide/01-what.md";
     const en = "docs/guide/01-what.md";
     const root = tree({ [zh]: "# 1\n", [en]: `# 1\n\n> ${SRC}\n` });
     const at: Record<string, number> = { [zh]: 2_000_000_000, [en]: 1_999_000_000 };
-    const problems = checkTranslations(root, undefined, (f) => at[f]);
-    expect(problems.map((p) => p.reason)).toEqual([
+    const { problems, drift } = checkTranslations(root, undefined, (f) => at[f]);
+    expect(problems).toEqual([]);
+    expect(drift.map((p) => p.reason)).toEqual([
       `${zh} changed after it (2033-05-18, translation 2033-05-06); update it, or add "The Chinese edition has changed since: …" under the source line`,
     ]);
     writeFileSync(
       join(root, en),
       `# 1\n\n> ${SRC}\n> The Chinese edition has changed since: 1.2.\n`,
     );
-    expect(checkTranslations(root, undefined, (f) => at[f])).toEqual([]);
-    expect(checkTranslations(root, undefined, () => undefined)).toEqual([]); // outside git
+    expect(checkTranslations(root, undefined, (f) => at[f]).drift).toEqual([]);
+    expect(checkTranslations(root, undefined, () => undefined).drift).toEqual([]); // outside git
+  });
+
+  it("requires an English file for each Chinese document, outside the directories not due yet", () => {
+    const root = tree({
+      "docs/zh-CN/guide/01-what.md": "# 1\n",
+      "docs/zh-CN/guide/02-how.md": "# 2\n",
+      "docs/zh-CN/spec/03-data-model/01-objects.md": "# 3.1\n",
+      "docs/zh-CN/process/decisions/a.md": "# a\n",
+      "docs/zh-CN/research/b.md": "# b\n",
+      "docs/guide/01-what.md": `# 1\n\n> ${SRC}\n`,
+    });
+    expect(missingEnglish(root, listMarkdownFiles(root))).toEqual([
+      { file: "docs/zh-CN/guide/02-how.md", reason: "no English edition (docs/guide/02-how.md)" },
+      {
+        file: "docs/zh-CN/spec/03-data-model/01-objects.md",
+        reason: "no English edition (docs/spec/03-data-model/01-objects.md)",
+      },
+    ]);
+    // Each exception says why and until when.
+    for (const n of NOT_YET) expect(n.why.length > 0 && n.until.length > 0).toBe(true);
   });
 
   it("dates files by their last commit", () => {
@@ -172,7 +202,7 @@ describe("English documents", () => {
   });
 
   it("passes on the repository as it is", () => {
-    expect(checkTranslations(REPO)).toEqual([]);
+    expect(checkTranslations(REPO).problems).toEqual([]);
   });
 });
 

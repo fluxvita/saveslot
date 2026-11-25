@@ -9,7 +9,7 @@ saveslot is a shared data layer for all of a person's agents: it records things 
 ## Language
 
 - **Write everything in the repository in English**: commit messages, merge request titles, code comments, identifiers, log and error messages, test names.
-- **The design documents are currently in Chinese** under `docs/zh-CN/` and are authoritative until an English edition is added under `docs/`. Edit the Chinese documents when the spec or guide must change; do not start an English edition unless asked.
+- **The design documents are in Chinese** under `docs/zh-CN/`, and the Chinese edition is authoritative. The specification and the guide also have an English edition at the same path under `docs/` (`docs/README.md` lists them); the English edition of `docs/zh-CN/process/` and `docs/zh-CN/research/` is pending. Edit the Chinese documents when the spec or guide must change, and change the English file in the same merge request (`pnpm docs:translations` reports an English file that fell behind). Do not start an English edition of a process or research document unless asked.
 
 ## Where the docs are, and which one wins
 
