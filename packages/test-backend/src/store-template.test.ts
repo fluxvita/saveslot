@@ -15,7 +15,12 @@ import { join } from "node:path";
 import type { TenantStore } from "@fluxvita/saveslot-kernel";
 import type { PgliteTenantStore } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { TEST_BACKEND, type TestBackendOptions, testBackend } from "./index.fixture.ts";
+import {
+  TEST_BACKEND,
+  TEST_DURABILITY,
+  type TestBackendOptions,
+  testBackend,
+} from "./index.fixture.ts";
 import { copyTemplate, TEMPLATES_ENV, templateFor, templateKey } from "./store-template.fixture.ts";
 
 const T = 180_000;
@@ -166,7 +171,7 @@ describe.skipIf(TEST_BACKEND !== "pglite")("the store template", () => {
       shared();
       const copied = fresh();
       const a = await opened(copied, {}, async (s) => ({ epoch: s.epoch, state: await state(s) }));
-      expect(readdirSync(templates)).toEqual([templateKey("pglite-default")]);
+      expect(readdirSync(templates)).toEqual([templateKey(TEST_DURABILITY)]);
       expect(Object.keys(a.state.tables).length).toBeGreaterThan(5);
       expect(a.state.structure["columns"]?.length).toBeGreaterThan(20);
       expect(a).toEqual({ epoch: real.epoch, state: real.state });
@@ -212,7 +217,7 @@ describe.skipIf(TEST_BACKEND !== "pglite")("the store template", () => {
   it(
     "neither a template half made nor one of other parameters is copied",
     async () => {
-      const key = templateKey("pglite-default");
+      const key = templateKey(TEST_DURABILITY);
       // What a maker killed halfway leaves, and a template of parameters this run does not have.
       for (const left of [`${key}.making-1-dead`, "0".repeat(32)]) {
         mkdirSync(join(templates, left));
@@ -242,9 +247,9 @@ describe.skipIf(TEST_BACKEND !== "pglite")("the store template", () => {
       const both = await Promise.all(dirs.map((d) => opened(d, {}, state)));
       expect(both[0]).toEqual(real.state);
       expect(both[1]).toEqual(real.state);
-      expect(readdirSync(templates)).toEqual([templateKey("pglite-default")]);
+      expect(readdirSync(templates)).toEqual([templateKey(TEST_DURABILITY)]);
       // And copying into a directory that already holds a storage leaves it to the opening.
-      expect(await copyTemplate(templates, dirs[0] as string, "pglite-default")).toBe(false);
+      expect(await copyTemplate(templates, dirs[0] as string, TEST_DURABILITY)).toBe(false);
     },
     T,
   );
@@ -256,7 +261,7 @@ describe.skipIf(TEST_BACKEND !== "pglite")("the store template", () => {
       // Both were making it at the same time: each started before the other ended.
       expect(made[0]?.started).toBeLessThan(made[1]?.ended as number);
       expect(made[1]?.started).toBeLessThan(made[0]?.ended as number);
-      const key = templateKey("pglite-default");
+      const key = templateKey(TEST_DURABILITY);
       expect(made.map((m) => m.at)).toEqual([join(templates, key), join(templates, key)]);
       // Nothing half made is left: the one whose rename came second dropped its own.
       expect(readdirSync(templates)).toEqual([key]);
@@ -292,7 +297,7 @@ function maker(templates: string): Promise<{ at: string; started: number; ended:
         "--no-warnings",
         MAKER,
         templates,
-        "pglite-default",
+        TEST_DURABILITY,
       ],
       { stdio: ["ignore", "pipe", "inherit"] },
     );
