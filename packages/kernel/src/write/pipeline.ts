@@ -56,6 +56,7 @@ import {
   EVERYTHING,
   emptyState,
   type GapEntry,
+  givesVersion,
   type ItemRef,
   JudgeError,
   type JudgeInput,
@@ -2516,8 +2517,12 @@ async function writeIn(
         details: refs,
       });
     }
+    // An op that gives the entity no new version (every field a no-op or a corroboration, or every
+    // change a candidate or awaiting: 04-contract §2 `ver`) does not make it the latest written: the
+    // stored entities rank by their latest version, and this one keeps its place among them.
+    const changed = isState && givesVersion(work.state, judged);
     work.state = judged.state;
-    if (isState) {
+    if (changed) {
       writtenHere.delete(id as EntityId);
       writtenHere.set(id as EntityId, {
         table: table.id,

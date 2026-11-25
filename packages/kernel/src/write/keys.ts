@@ -217,7 +217,8 @@ function foldedOf(s: string, cache: SimilarCache): readonly number[] {
  * `SIMILAR_MAX`, by level, distance, latest write, entity ID. None for a key without a `text` field.
  *
  * As at the write (04-contract-types: worked out from the state at that moment): `here` are the
- * entities this request's earlier ops wrote, the latest first; they are the most recent of all.
+ * entities this request's earlier ops gave a new version, the latest first; they are the most
+ * recent of all.
  * `revoked` is the entity having a value at no point at that moment (a revoke of the whole, or
  * revokes over every stretch it had a value), the same as a stored entity with no row in the
  * business table; the caller reads it off the entity's state in the request. `key`: one this
