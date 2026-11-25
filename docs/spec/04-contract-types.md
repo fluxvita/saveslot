@@ -3,8 +3,8 @@
 > Translated from docs/zh-CN/spec/04-contract-types.md, updated in the same commit as this file.
 > The Chinese edition is authoritative; where the two differ, the Chinese one holds.
 
-> This document is the **structure** of the operation contract: the parameters, results, errors and all enumerations of every operation, written as TypeScript types. The rules and explanations (what is returned when, and why) are in [`04-contract.md`](04-contract.md); the kernel rules are in [`03-data-model/`](../zh-CN/spec/03-data-model/README.md) (Chinese); how MCP and HTTP carry the contract is in [`05-surfaces.md`](../zh-CN/spec/05-surfaces.md) (Chinese).
-> **Field names, nested structures and enumeration values are defined by this document.** The two packages `contract-core` / `contract` in the implementation correspond to it item by item; OpenAPI is generated from them, and the MCP `inputSchema` is composed from the types in this file by the mapping table in section 1 of [`05-surfaces.md`](../zh-CN/spec/05-surfaces.md) (Chinese). The `description` of an MCP parameter is wording written for the model, and its original text is in [`05-surfaces.md`](../zh-CN/spec/05-surfaces.md) (Chinese) 9.1; the comments on parameters in this document describe types and constraints.
+> This document is the **structure** of the operation contract: the parameters, results, errors and all enumerations of every operation, written as TypeScript types. The rules and explanations (what is returned when, and why) are in [`04-contract.md`](04-contract.md); the kernel rules are in [`03-data-model/`](03-data-model/README.md); how MCP and HTTP carry the contract is in [`05-surfaces.md`](05-surfaces.md).
+> **Field names, nested structures and enumeration values are defined by this document.** The two packages `contract-core` / `contract` in the implementation correspond to it item by item; OpenAPI is generated from them, and the MCP `inputSchema` is composed from the types in this file by the mapping table in section 1 of [`05-surfaces.md`](05-surfaces.md). The `description` of an MCP parameter is wording written for the model, and its original text is in [`05-surfaces.md`](05-surfaces.md) 9.1; the comments on parameters in this document describe types and constraints.
 
 ## 0. Conventions
 
@@ -12,7 +12,7 @@
 
 - Types are written in TypeScript and express shape only; `?` marks an optional field. Constraints such as "required" and "mutually exclusive" in comments are checked by the server, and a violation reports `invalid_argument` (unless stated otherwise).
 - **Belonging to `contract-core` (a kernel dependency)**: the common types in sections 1 to 3, the data part of each operation's result, and the domain errors in section 9. **Belonging to `contract` (the outer wrapping)**: `task`, `idempotency_key`, `limit` / `cursor`, `detail`, handles, `notices`, `replayed`, `truncated`, the outer errors in section 9, and the administrative operations in section 8.
-- **Identifiers in examples** are written as "prefix + the first few characters + `…`"; `s_1` and `s_2` are shorthand labels for the two sources in the examples that run through the documents. The length and character set of real identifiers are in "标识的写法" in the data model.
+- **Identifiers in examples** are written as "prefix + the first few characters + `…`"; `s_1` and `s_2` are shorthand labels for the two sources in the examples that run through the documents. The length and character set of real identifiers are in "How identifiers are written" in the data model.
 - **Enumerations only grow**: adding an optional field, an error code or an enumeration value raises the minor version of the contract, and callers must tolerate unknown fields and enumeration values (the architecture document §6).
 - **Uniform key names**:
 
@@ -47,7 +47,7 @@ This document writes out the complete design. Parameters, values and operations 
 | Slot policy | arbitration by source level during a conflict (the first version has only `keep_current`); extra high-impact tables / fields; the switch "a kind of handling accepts confirmation only from a user session" |
 | Profile | In the first version the table profile of `catalog` has only the row count and the valid-time range, the size hint `scale`, and the most recent K distinct values of each field; there is no "time of the most recent write". The `table` level carries `profile` (row count, valid-time range, size hint); the `examples` and `described_by` of each field are not provided in the first version |
 
-**Not provided in 0.1.0 yet (part of the first version)**: 0.1.0 is the first version released publicly and provides only a part of the first version ([`07-scope-v1.md`](../zh-CN/spec/07-scope-v1.md) (Chinese) section 7). The items below are within the design scope of the first version and are written out in this document as they are; calling them in 0.1.0 reports `not_in_this_version`. This is separate from the table above: the table above lists what the first version does not do, and the table below lists what the first version does and 0.1.0 does not provide yet.
+**Not provided in 0.1.0 yet (part of the first version)**: 0.1.0 is the first version released publicly and provides only a part of the first version ([`07-scope-v1.md`](07-scope-v1.md) section 7). The items below are within the design scope of the first version and are written out in this document as they are; calling them in 0.1.0 reports `not_in_this_version`. This is separate from the table above: the table above lists what the first version does not do, and the table below lists what the first version does and 0.1.0 does not provide yet.
 
 | Which part | What it includes | Where the types are |
 |---|---|---|
@@ -85,7 +85,7 @@ type Cursor        = string;    // "cur_…" paging handle, signed
 
 ```ts
 /**
- * Operation number. Each write / resolve / delete / undo has one: the seq of its head event.
+ * Operation number. Each write / resolve / delete / deletion cancellation has one: the seq of its head event.
  * Every #n that appears externally is an operation number: the seq of a receipt, the number in ver, the entries of the timeline, the n of undo,
  * the values of as_of / since / until. The seq of the individual events inside one operation is not exposed.
  */
@@ -165,7 +165,7 @@ type Values = Record<FieldName, Value>;
 type UntrustedText = string;
 ```
 
-**Comparison with the notation of the event format** (the same value is written differently in a log event and in the external contract, and an implementation follows each side separately; see [`09-event-format.md`](../zh-CN/spec/09-event-format.md) (Chinese) 1.2 and 1.3):
+**Comparison with the notation of the event format** (the same value is written differently in a log event and in the external contract, and an implementation follows each side separately; see [`09-event-format.md`](09-event-format.md) 1.2 and 1.3):
 
 | Value | Contract (external) | Event format (in the log) |
 |---|---|---|
@@ -217,7 +217,7 @@ interface Actor {
 }
 ```
 
-The `Actor` in a write receipt (including a write triggered by `resolve`) takes the form it had at the time of that write operation: `name` is the name given by the last registration or renaming in the log that is not later than this write, and `state` is the state at that time. "This write" means the operation the receipt belongs to, not the earlier operation that `seq` in a field points to: for example, `by: {seq: 11, actor}` says that the value now in effect was given by operation 11, and the name and state of `actor` are still those at the time of this write. The results of read operations and administrative operations take the present ones. So a later renaming or revocation does not change the receipt of a write, and an idempotent replay gives the same principal as well ("幂等重放的回执" in [`03-data-model/04-write-and-read.md`](../zh-CN/spec/03-data-model/04-write-and-read.md) (Chinese)).
+The `Actor` in a write receipt (including a write triggered by `resolve`) takes the form it had at the time of that write operation: `name` is the name given by the last registration or renaming in the log that is not later than this write, and `state` is the state at that time. "This write" means the operation the receipt belongs to, not the earlier operation that `seq` in a field points to: for example, `by: {seq: 11, actor}` says that the value now in effect was given by operation 11, and the name and state of `actor` are still those at the time of this write. The results of read operations and administrative operations take the present ones. So a later renaming or revocation does not change the receipt of a write, and an idempotent replay gives the same principal as well ("The receipt of an idempotent replay" in [`03-data-model/04-write-and-read.md`](03-data-model/04-write-and-read.md)).
 
 ### 1.7 Parameters and results every operation has
 
@@ -315,7 +315,7 @@ Each row of a read result carries `marks` (not given when there is no flag).
 
 ```ts
 interface Marks {
-  /** There is an unresolved conflict item; the value given is the value in effect as decided by the rule. A row can have several items. */
+  /** There is an open conflict item; the value given is the value in effect as decided by the rule. A row can have several items. */
   disputed?: Array<{ item: ItemId; fields: Array<FieldName | "*">; spans?: Interval[] }>;   // "*" = what is disputed is whether this row / this segment exists; spans: the segments of the item interval
   /** There is a proposal that has not taken effect yet; the value given is the current value. */
   awaiting?: Array<{ item: ItemId; fields: Array<FieldName | "*">; spans?: Interval[]; proposed?: Values | null; proposed_revert?: { undo: Seq } }>;  // proposed: null = a proposed revoke; when the proposal is a revert, proposed is not given and proposed_revert is given
@@ -329,7 +329,7 @@ interface Marks {
   possibly_affected?: { reason: AffectedReason };
   /** When read by instant and restored, part of the data at that time has been deleted. */
   partially_deleted?: true;
-  /** This row is affected by a deletion that can still be canceled (within the grace period; for the criterion see "affected" in "删除 · 撤回与宽限期" in the data model). */
+  /** This row is affected by a deletion that can still be canceled (within the grace period; for the criterion see "affected" in "Deletion · Cancelling a deletion and the grace period" in the data model). */
   pending_deletion?: { item: ItemId };
   /** A row / entity that a ref field of this row points to has been revoked, or has been privacy-deleted. The value of the referencing row does not change (the ID is kept) and is only flagged; when the revoke of the target is undone, the flag disappears. */
   dangling_ref?: Array<{ field: FieldName; state: "revoked" | "deleted" }>;
@@ -374,7 +374,7 @@ interface InputMarks {
   awaiting: number;
   flagged: number;
   premise_changed: number;   // the number of base rows that carry premise_changed on the fields the rule depends on
-  items: ItemId[];       // the unresolved items involved, in the string order of their IDs, at most 10
+  items: ItemId[];       // the open items involved, in the string order of their IDs, at most 10
 }
 ```
 
@@ -503,7 +503,7 @@ interface CatalogSchema extends CommonResult {
   policy: SlotPolicy;            // read-only, 8.2. Always the policy currently in effect: a draft does not change the policy
 }
 
-/** The schema document. The authoritative definition of the format is in "schema 文档格式" in the data model. */
+/** The schema document. The authoritative definition of the format is in "Schema document format" in the data model. */
 type SchemaDocument = Record<string, unknown>;
 
 interface MigrationStatus {
@@ -617,7 +617,7 @@ A state table, `valid_during`:
 ```ts
 interface SqlParams extends CommonParams {
   /** A single SELECT. Tables and fields are given by name, and tables of several slots within the visible range can be referenced; state tables can use FOR VALID_TIME AS OF … / FROM … TO …; NOW() cannot be used.
-   *  The allowlist is in "受限 SQL" in the data model (03-data-model/11-restricted-sql.md). */
+   *  The allowlist is in "Restricted SQL" in the data model (03-data-model/11-restricted-sql.md). */
   sql: string;
   /** The values of the positional parameters $1, $2…: string, number, boolean, null. A quantity with a unit is passed as a decimal string in the unit declared for that column. */
   params?: Array<string | number | boolean | null>;
@@ -1084,7 +1084,7 @@ interface AwaitingImpact {
   /** valid on these two is given on state tables only: rows of event tables and timeless tables have no interval. */
   overwritten?: Array<{ field: FieldName; valid?: Interval; value: Value; seq: Seq; actor: Actor }>;  // the segments that will be overwritten
   filled_gaps?: Array<{ valid?: Interval; revoked_by?: Seq }>;                                         // the intervals without a value that will be filled (listed here only)
-  reverted?: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;                        // later writes whose result as read will change after confirmation, whether or not they are in the revert record (write-and-read, "撤回某次写入"); fields: the fields whose result will change, "*" is a revoke; one entry means at least part of it will change
+  reverted?: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;                        // later writes whose result as read will change after confirmation, whether or not they are in the revert record (write-and-read, "Undoing a write"); fields: the fields whose result will change, "*" is a revoke; one entry means at least part of it will change
   referrers?: Array<TargetRef & { field: FieldName }>;                                                 // rows that still reference this row, one entry per reference field
 }
 
@@ -1117,8 +1117,8 @@ interface ConflictDetail extends ItemBase {
   /** What take_previous would go back to: the values at the merge base (the earliest of the ver values the candidates carry), this row read at the operation number of the merge base, with the same range as effective. */
   previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
   /** The writes that take_previous would revert: all writes that took effect on this conflict unit after the merge base; and the writes outside the unit that gave a value within the item's interval after the merge base
-   *  and would lose their value when take_previous returns this segment to having no value (when this segment has no value at the merge base, see cause three of ④ in "时间 · 高影响写入"). */
-  reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;   // writes later than the merge base whose result as read would change if the row went back to the merge base now; the same basis as AwaitingImpact.reverted (write-and-read, "撤回某次写入" judges that one by the result that can be read), and the same shape
+   *  and would lose their value when take_previous returns this segment to having no value (when this segment has no value at the merge base, see cause three of ④ in "Time · High-impact writes"). */
+  reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;   // writes later than the merge base whose result as read would change if the row went back to the merge base now; the same basis as AwaitingImpact.reverted (write-and-read, "Undoing a write" judges that one by the result that can be read), and the same shape
   /** When a candidate would be high-impact if it took effect: the content that would be overwritten. take_candidate is the confirmation of it. */
   candidate_impact?: Record<string /* index of the candidate */, AwaitingImpact>;
 }
@@ -1313,7 +1313,7 @@ interface OpResult {
   /** When created_entity: the entity keys that already exist in the table, at most 10. Similar keys first, the rest by most recent write. */
   existing_keys?: EntityKeyText[];
   /** When created_entity: existing keys written similarly to the new key, at most 5, ordered by level (fold, affix, edit), edit distance, most recent write, entity ID; not given when there are none.
-   *  Criterion keymatch@1 ("相近的键" in the data model). revoked: at the moment of the write this entity has no value at any point in time (revoked as a whole, or interval revokes cover all periods that had values). All of them appear at the start of existing_keys. */
+   *  Criterion keymatch@1 ("Similar keys" in the data model). revoked: at the moment of the write this entity has no value at any point in time (revoked as a whole, or interval revokes cover all periods that had values). All of them appear at the start of existing_keys. */
   similar_keys?: Array<{ key: EntityKeyText; match: "fold" | "affix" | "edit"; revoked?: true }>;
   /** Results per field. For revoke, and when the target is "existence", the key is "*". The parts skipped by an undo are not here; they are in undo.skipped_superseded.
    *  Event tables, timeless tables: one result per field.
@@ -1383,7 +1383,7 @@ interface ResolvedInterval extends Interval {
    *  or when to_as is given and a recorded step (with or without a value) still starts at the end point; not given when nothing is recorded after the end point. As of the state when this operation completed. */
   next_change?: { at: BizTime; value: Value | null };
   /** The intervals without a value that this write filled: within the part that took effect, the segments where the entity had no value before this op, however it came to have none (before the first segment of the entity, after an explicit end point, a hole left by a revoke,
-   *  "时间 · 无值区间" in the data model), with adjacent ones joined into one segment. "Before this op" includes the ops ahead of it in the same request: the parts of them that have already taken effect count as usual:
+   *  "Time · Intervals without a value" in the data model), with adjacent ones joined into one segment. "Before this op" includes the ops ahead of it in the same request: the parts of them that have already taken effect count as usual:
    *  where an earlier op gave a value it does not count as filled, and a hole an earlier op revoked out does count. Not given for an entity this op creates (it did not exist before); given as usual for one an earlier op creates.
    *  Lists only the segments that have taken effect and have been filled: the parts awaiting confirmation and the candidate parts are not yet filled, so they are not given; what they would fill once confirmed is in impact.filled_gaps. */
   filled?: Interval[];
@@ -1408,12 +1408,12 @@ interface AffectedReads {
   count: number;                 // does not include the read that the ver carried by this write came from
   by_reason: Partial<Record<AffectedReason, number>>;
   covered_since: Instant;        // the moment up to which read records are kept: earlier reads are not counted
-  /** The number of reads in count that can only be counted as "possibly affected": matched by a table-level record or by a version set ("纠错影响查询" in the data model). Not given when there are none. */
+  /** The number of reads in count that can only be counted as "possibly affected": matched by a table-level record or by a version set ("Querying the reads a correction affects" in the data model). Not given when there are none. */
   possible?: number;
   not_covered?: Array<"derived_reads">;
 }
 
-/** Changes, on the rows an operation changed, to premises declared by other rows. Appears in the write receipt, in the write of resolve, in the result of delete, and in the cancelled of an undo of a deletion; in deletion_preview it is a forecast. */
+/** Changes, on the rows an operation changed, to premises declared by other rows. Appears in the write receipt, in the write of resolve, in the result of delete, and in the cancelled of a deletion cancellation; in deletion_preview it is a forecast. */
 interface PremiseAffected {
   count: number;                     // the number of dependent rows newly flagged because of this operation (a revoked dependent row is counted and listed all the same)
   matched: number;                   // the number of dependent rows whose flag was removed because of this operation
@@ -1552,7 +1552,7 @@ interface ResolveResult extends CommonResult {
     kept_superseded: Array<{ item: ItemId; by: Seq }>;                  // the items that stay "superseded", and the writes that changed them
     kept_effective: Array<{ seq: Seq; target: TargetRef; by: Seq }>;    // writes that took effect because of the deletion and were taken as the baseline by other writes within the grace period: not returned
     /** @later: always an empty array in the first version (an item cannot be resolved on an affected row within the grace period; a candidate that was removed goes back to the original item that is still open, or closes together with the original item that has been closed).
-     *  Candidates put back after the undo, whose original item was resolved within the grace period: the result of judging again by the current state at the time of the undo, one entry per candidate.
+     *  Candidates put back after cancelling a deletion, whose original item was resolved within the grace period: the result of judging again by the current state at the time of the cancellation, one entry per candidate.
      *  reopened: part of it still differs from the current value, so another conflict item was opened; corroborated: all of it is the same as the current value, and some of it pointed to evidence, so it becomes a corroboration;
      *  dropped: all of it is the same as the current value and none pointed to evidence, so it is no longer a change. */
     rejudged: Array<{ seq: Seq; target: TargetRef; from_item: ItemId;
@@ -1599,7 +1599,7 @@ Adopting a candidate (triggers a write):
 
 ```ts
 interface SchemaDraftParams extends WriteCommonParams {
-  /** The schema document (data-model "schema 文档格式"). When creating a slot, base_version: null. */
+  /** The schema document (data-model "Schema document format"). When creating a slot, base_version: null. */
   document: SchemaDocument;
 }
 
@@ -1679,7 +1679,7 @@ interface SchemaImpact {
 }
 ```
 
-The correspondence between change codes, classes and the automatic-effect categories (`auto_apply`) in the slot policy (the complete rules for each kind of change are in data-model "改动分类与迁移手段"):
+The correspondence between change codes, classes and the automatic-effect categories (`auto_apply`) in the slot policy (the complete rules for each kind of change are in data-model "Kinds of change and means of migration"):
 
 | `change` | `class` | Which `auto_apply` category it belongs to |
 |---|---|---|
@@ -1906,7 +1906,7 @@ interface Connection {
   via: "token" | "oauth";        // a local token / static token, or one OAuth authorization
   client?: string;               // the client identifier when via: oauth
   created_at: Instant;
-  last_used_at?: Instant;        // not given in the first version (08-open-questions "连接实例的最近使用时刻")
+  last_used_at?: Instant;        // not given in the first version (08-open-questions "The last-used moment of a connection")
   /** Consistent with Actor.state: given when revoked (revoked) or disabled because of an import (disabled); not given when valid. */
   state?: "revoked" | "disabled";
   revoked_at?: Instant;
@@ -1983,7 +1983,7 @@ interface ReadsListResult extends PageResult {
     /** The rows and versions read. Only versions are given, not values. At most 50 entries, with the total given separately. */
     rows?: Array<{ target: TargetRef; seq: Seq }>;
     rows_total?: number;
-    /** Tables where too many rows were read and the record was changed to a table-level record (data-model "读取记录"): only the table and the position of the state seen by this read, with no per-row versions. */
+    /** Tables where too many rows were read and the record was changed to a table-level record (data-model "Read records"): only the table and the position of the state seen by this read, with no per-row versions. */
     coarse?: Array<{ table: TableName; pos: Seq }>;
     valid?: { at?: BizTime; during?: [BizTime, BizTime | null] };   // the valid time asked about
     source?: SourceId;           // what was read is the original text of source data
@@ -2007,7 +2007,7 @@ interface LogVerifyResult {
 
 interface LogReconcileResult {
   compared_to: number;           // the event seq compared up to
-  /** Logical tables: all tables marked "对拍：是" in architecture §8. mismatched is the number of rows with at least one inconsistency: state tables count by entity; a table that gives no row also counts by rows. */
+  /** Logical tables: all tables marked "replay comparison: yes" in architecture §8. mismatched is the number of rows with at least one inconsistency: state tables count by entity; a table that gives no row also counts by rows. */
   tables: Array<{ name: string; rows: number; mismatched: number }>;
   /**
    * The positions of inconsistencies: IDs only, values are not echoed. Each entry is a deduplicated (table, row, field, kind), one entry per place; at most 100 entries.
@@ -2151,7 +2151,7 @@ type ValidationDetailCode =
   // write
   | "type_mismatch" | "unit_missing" | "unit_unknown" | "unit_dimension" | "out_of_range"
   | "enum_value" | "required_missing" | "required_in_gap" | "ref_not_found" | "ref_wrong_table"
-  | "malformed"                     // the decimal original text does not conform to JSON number syntax (04-contract section 1 "值的编码")
+  | "malformed"                     // the decimal original text does not conform to JSON number syntax (04-contract section 1 "The encoding of values")
   | "empty_row"                     // an insert on an event table or a timeless table gave no field a non-empty value: a clearing cannot hold up a row by itself, and this row will not exist (carries op and table)
   // schema compilation
   | "reserved_name" | "duplicate_name" | "description_missing" | "unknown_type"
@@ -2180,7 +2180,7 @@ The accompanying fields of each error code:
 
 | `code` | `reason` | Other accompanying fields |
 |---|---|---|
-| `invalid_argument` | `missing` / `malformed` (including a given `valid_to` that is not later than the start of the interval: also when the start is not given and "now" is used) / `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target` (the target of `undo` is an insert or a first creation, a candidate or awaiting-confirmation write that never took effect, the operation number of a schema switch, or there is no change that can be undone: only a same-value corroboration was made, all are no-ops, and so on; see data-model "第 n 次写入是什么") / `event_table_valid_at` / `no_value_now` (a correction without an interval on a state table, where the field has no value at the point "now") / `no_time_table` / `not_state_table` / `state_table` (write: `row` was given on a state table) / `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `derived_table` (the `changes` of `history` targets a derived table; `query` gave `valid_at` / `valid_during` on a derived table) / `pending_deletion_source` / `pending_deletion_target` (resolving an item or `undo` on a row / entity affected by a deletion during the grace period; with `target: TargetRef`, `deletions: ItemId[]` (sorted by operation number), `expires_at: Instant` (the latest expiry among them)) / `cross_slot` (the sources of a preview span slots; a premise points to a table visible in another slot; the ops of a write fall in different slots; the `source_ref` of evidence points to source data visible in another slot. `param` tells which one) / `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots` (`slots` is an empty array at issuing) / `slot_not_empty` (`slots.remove`: the slot has records under its name, or has an unresolved schema change item) / `duplicate_name` (`connections.issue`, `update`: duplicate connection name; write: two ops in the same request have the same temporary name `as`) / `tenant_not_empty` (the target tenant of the import is not empty) / writes by external key: `insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / premises of a write: `premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` / `premise_duplicate_target` (two premises of the same op resolve to the same target) / `premise_target_pending` (the premise points to a row newly created by this request, and that creation did not take effect at the end of the request; with `as?` and `op`) / `no_change` (`schema_draft`: the draft has no change compared with the slot's current version) | `param`; `candidates?: string[]` (the candidate table names of `ambiguous_table`); for `candidate_required`, `candidate_choices: Array<{ index: number; seq: Seq; actor: Actor }>` (the candidates of the item: index, the write it belongs to, the writer); `example?: object` (a complete correct example of that mode or that parameter); `allowed_values?: string[]` (when the parameter takes a limited set of values: the values accepted in the first version); for `duplicate_external_key`, `ops: number[]` (the indexes of the two ops with the same key); for `premise_duplicate_target`, `premises: number[]` (the indexes of the two premises pointing to the same target); for `external_key_in_use`, `deletions?: ItemId[]` (the key is frozen: all the deletions that freeze it) or `holder?: RowId` (the row that holds it and is not revoked); for `external_key_not_transferable` and `external_key_transferred`, `holder: RowId` (the row that holds, or now holds, this key); for `slot_not_empty` only because of an unresolved schema change item, `cause: "open_schema_change"` and `item: ItemId` (which item to handle first) |
+| `invalid_argument` | `missing` / `malformed` (including a given `valid_to` that is not later than the start of the interval: also when the start is not given and "now" is used) / `ambiguous_table` / `mode_mismatch` / `mutually_exclusive` / `not_this_target` / `content_deleted` / `undo_target` (the target of `undo` is an insert or a first creation, a candidate or awaiting-confirmation write that never took effect, the operation number of a schema switch, or there is no change that can be undone: only a same-value corroboration was made, all are no-ops, and so on; see data-model "What write n is") / `event_table_valid_at` / `no_value_now` (a correction without an interval on a state table, where the field has no value at the point "now") / `no_time_table` / `not_state_table` / `state_table` (write: `row` was given on a state table) / `granularity` / `key_field_changed` / `insert_with_entity_key` / `candidate_required` / `derived_table` (the `changes` of `history` targets a derived table; `query` gave `valid_at` / `valid_during` on a derived table) / `pending_deletion_source` / `pending_deletion_target` (resolving an item or `undo` on a row / entity affected by a deletion during the grace period; with `target: TargetRef`, `deletions: ItemId[]` (sorted by operation number), `expires_at: Instant` (the latest expiry among them)) / `cross_slot` (the sources of a preview span slots; a premise points to a table visible in another slot; the ops of a write fall in different slots; the `source_ref` of evidence points to source data visible in another slot. `param` tells which one) / `idempotency_key_reuse` / `index_out_of_range` / `empty_mapping` / `operator_type` / `missing_read_scope` / `empty_slots` (`slots` is an empty array at issuing) / `slot_not_empty` (`slots.remove`: the slot has records under its name, or has an open schema change item) / `duplicate_name` (`connections.issue`, `update`: duplicate connection name; write: two ops in the same request have the same temporary name `as`) / `tenant_not_empty` (the target tenant of the import is not empty) / writes by external key: `insert_with_external_key` / `no_external_key` / `duplicate_external_key` / `external_key_in_use` / `external_key_not_transferable` / `external_key_transferred` / `premises_with_external_key` / premises of a write: `premise_self` / `premises_with_revert` / `premises_with_revoke` / `premise_historical_ver` / `premise_duplicate_target` (two premises of the same op resolve to the same target) / `premise_target_pending` (the premise points to a row newly created by this request, and that creation did not take effect at the end of the request; with `as?` and `op`) / `no_change` (`schema_draft`: the draft has no change compared with the slot's current version) | `param`; `candidates?: string[]` (the candidate table names of `ambiguous_table`); for `candidate_required`, `candidate_choices: Array<{ index: number; seq: Seq; actor: Actor }>` (the candidates of the item: index, the write it belongs to, the writer); `example?: object` (a complete correct example of that mode or that parameter); `allowed_values?: string[]` (when the parameter takes a limited set of values: the values accepted in the first version); for `duplicate_external_key`, `ops: number[]` (the indexes of the two ops with the same key); for `premise_duplicate_target`, `premises: number[]` (the indexes of the two premises pointing to the same target); for `external_key_in_use`, `deletions?: ItemId[]` (the key is frozen: all the deletions that freeze it) or `holder?: RowId` (the row that holds it and is not revoked); for `external_key_not_transferable` and `external_key_transferred`, `holder: RowId` (the row that holds, or now holds, this key); for `slot_not_empty` only because of an open schema change item, `cause: "open_schema_change"` and `item: ItemId` (which item to handle first) |
 | `unknown_table` / `unknown_field` | — | `name`, `nearest: string[]` (only visible names, at most 3; an object whose alias equals `name` after the folding comparison of `keymatch@1` has its name first; the rest by edit distance after folding from small to large, ties by the `C` ordering of the name) |
 | `not_found` | `row` / `entity` / `item` / `source` / `draft` / `connection` / `read` / `slot` / `route` (HTTP: no such endpoint) | `deletions?: ItemId[]` (when a row is removed entirely by a deletion during the grace period: all pending deletions that touch its contributions, sorted by operation number; content is not echoed); `sources?: Array<{id, state: "unknown" \| "pending_deletion" \| "removed", deletion?}>` |
 | `revoked` | — | `target: TargetRef`, `revoked_by: Seq` (restore with `revert: {undo}`) |
