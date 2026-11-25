@@ -435,6 +435,39 @@ describe("a no_value write-back's stretch (09 §5.9 «列哪些»: class 2, deps
     expect(r.result.gaps?.gaps.length).toBeGreaterThan(0);
   });
 
+  it("an entity there neither before nor after, the no_value write-back giving it changed: listed", () => {
+    // #10 gives f2 (required) and a pending deletion takes it: no value anywhere, the entity does
+    // not exist. #30 undoes #20 and #50 undoes #40, each writing back "no value" from 11-01.
+    // S40f2 deleted as well: #50's write-back is dropped and #30's gives the piece instead.
+    const ops: Op[] = [
+      w(10, 0, { f2: "1" }, { from: "11-01" }),
+      w(20, 10, { f2: "2" }, { from: "11-01", ack: true }),
+      { kind: "undo", op: 30, event: 31, target: 20, includeLater: false } as Op,
+      w(40, 31, { f2: "3" }, { from: "11-01", ack: true }),
+      { kind: "undo", op: 50, event: 51, target: 40, includeLater: false } as Op,
+    ];
+    const r = run(STATE, ops, ["S40f2"], ["S10f2"]);
+    expect([r.result.existedBefore, r.result.existsAfter]).toEqual([false, false]);
+    expect(r.replay.restated.map((x) => [x.item.event, x.status])).toContainEqual([51, "dropped"]);
+    expect(r.result.listed).toBe(true);
+  });
+
+  it("an entity there neither before nor after, no giver changed: not listed", () => {
+    // As above, and #60, having seen #10 only: a candidate, giving nothing. Its words deleted:
+    // no piece's giver changes.
+    const ops: Op[] = [
+      w(10, 0, { f2: "1" }, { from: "11-01" }),
+      w(20, 10, { f2: "2" }, { from: "11-01", ack: true }),
+      { kind: "undo", op: 30, event: 31, target: 20, includeLater: false } as Op,
+      w(40, 31, { f2: "3" }, { from: "11-01", ack: true }),
+      { kind: "undo", op: 50, event: 51, target: 40, includeLater: false } as Op,
+      w(60, 10, { f2: "6" }, { from: "11-01" }),
+    ];
+    const r = run(STATE, ops, ["S60f2"], ["S10f2"]);
+    expect([r.result.existedBefore, r.result.existsAfter]).toEqual([false, false]);
+    expect(r.result.listed).toBe(false);
+  });
+
   it("the same state before and after, the write-back only restated: listed", () => {
     const { table, steps } = judged(
       STATE,

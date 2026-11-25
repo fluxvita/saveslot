@@ -194,8 +194,10 @@ export function rowResult(
   // reads as one given nothing (apply/deletion.ts, `planRows`, the check "the other way").
   // State tables only: on an event or timeless table the view gives after every field the row had
   // before, one stretch each, and the loop above compares it with the one before already.
+  // Also where the entity exists neither before nor after: apply settles its cells all the same
+  // (09 §5.9 «列哪些»; the exemption for a row there neither before nor after is an event or
+  // timeless table's only).
   const givenBeforeChanged =
-    va.exists &&
     before.isState &&
     fields.some((f) =>
       before
