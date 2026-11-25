@@ -328,7 +328,7 @@ describe("exchanging a refresh token", () => {
   );
 
   it(
-    "a resource not the grant's: invalid_target; the grant's, or its /mcp, accepted",
+    "a resource not the grant's: invalid_target; the grant's, with a trailing slash, or its /mcp, accepted",
     async () => {
       const s = await signedIn();
       expect(
@@ -336,7 +336,8 @@ describe("exchanging a refresh token", () => {
           exchange(refreshForm(s.refresh_token, { resource: "https://elsewhere.example" }), NOW),
         ),
       ).toBe("invalid_target");
-      await exchange(refreshForm(s.refresh_token, { resource: `${EXT}/mcp` }), later(1));
+      const t = await exchange(refreshForm(s.refresh_token, { resource: `${EXT}/` }), later(1));
+      await exchange(refreshForm(t.refresh_token, { resource: `${EXT}/mcp` }), later(2));
     },
     T,
   );

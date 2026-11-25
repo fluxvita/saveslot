@@ -34,10 +34,14 @@ export function pkceMatches(verifier: string, challenge: string): boolean {
 
 /**
  * The audience a `resource` names: the service's external address, given as itself or as its MCP
- * or HTTP endpoint (a client commonly sends the MCP endpoint's URL). Anything else names nothing.
+ * or HTTP endpoint (a client commonly sends the MCP endpoint's URL). The address with an empty path
+ * and with the path `/` are the same URL (RFC 3986 §6.2.3), and a client that takes the protected
+ * resource metadata's `resource` through a URL parser sends the latter. Anything else names nothing.
  */
 export function audienceOf(resource: string, external: string): string | undefined {
-  return [external, `${external}/mcp`, `${external}/v1`].includes(resource) ? external : undefined;
+  return [external, `${external}/`, `${external}/mcp`, `${external}/v1`].includes(resource)
+    ? external
+    : undefined;
 }
 
 /** An authorization request that passed every check. */

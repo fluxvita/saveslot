@@ -76,8 +76,19 @@ describe("PKCE", () => {
 
 describe("audience", () => {
   it("the external address, its MCP and its HTTP endpoint name it; nothing else does", () => {
-    for (const r of [EXT, `${EXT}/mcp`, `${EXT}/v1`]) expect(audienceOf(r, EXT)).toBe(EXT);
-    for (const r of [`${EXT}/`, `${EXT}/mcp/`, "https://other.example", `${EXT}.evil`]) {
+    // `${EXT}/` is the address itself (RFC 3986 §6.2.3): what a client sends when it takes the
+    // protected resource metadata's `resource` through a URL parser.
+    for (const r of [EXT, `${EXT}/`, `${EXT}/mcp`, `${EXT}/v1`])
+      expect(audienceOf(r, EXT)).toBe(EXT);
+    for (const r of [
+      `${EXT}//`,
+      `${EXT}/mcp/`,
+      `${EXT}/v1/`,
+      `${EXT}/?`,
+      `${EXT}/#`,
+      "https://other.example",
+      `${EXT}.evil`,
+    ]) {
       expect(audienceOf(r, EXT)).toBeUndefined();
     }
   });
