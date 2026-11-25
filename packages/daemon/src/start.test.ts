@@ -1,6 +1,7 @@
 // `saveslot start` (06-cli §3 step 3, §6.2) where it meets another process starting at the same
 // moment, and a home it cannot use: it waits for the other, and it never throws.
 
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -15,13 +16,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initLocalHome } from "@fluxvita/saveslot-service";
 import { osFileLock } from "@fluxvita/saveslot-store-pglite";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { init, start, status, stop } from "./commands.ts";
 import { homeTemplate } from "./home-copy.fixture.ts";
 import { health } from "./local-request.ts";
 import { daemonVersion } from "./main.ts";
-import { lastFailureFile, lockDir, runDir, runService, socketFile } from "./service.ts";
+import { lastFailureFile, lockDir, pidFile, runDir, runService, socketFile } from "./service.ts";
 import { TEXTS } from "./texts.ts";
 
 /** Running as root, whom the permission bits do not bind (see the case that uses it). */
@@ -57,8 +58,61 @@ const template = homeTemplate(join(templateRoot, "home"), (home) =>
 async function freshHome(): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), "saveslot-start-"));
   roots.push(root);
-  return template.copy(join(root, "home"));
+  return used(await template.copy(join(root, "home")));
 }
+
+/** The homes the case in progress used: a service still on one when the case ends is stopped. */
+let homes: string[] = [];
+const used = (home: string): string => {
+  homes.push(home);
+  return home;
+};
+
+/** Whether a process holds the home's lock: a service running, or still starting. */
+async function lockHeld(home: string): Promise<boolean> {
+  try {
+    await (await osFileLock.acquire(lockDir(home))).release();
+    return false;
+  } catch (e) {
+    // No lock to be had at all (`run/` a file, the home not a directory): nothing holds it.
+    return (e as { code?: string }).code === "store_locked";
+  }
+}
+
+/** The command line of process `pid`; empty when there is none (`ps` exits 1). */
+function commandOf(pid: number): string {
+  try {
+    return execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * However a case ended, no service it started outlives it. `stop` signals only a service that
+ * answers on its socket; one still starting holds the home's lock without answering, and `stop`
+ * leaves it alone (exit 7). A `start` that timed out leaves its service so, recovering
+ * (02-architecture §8). That one is killed by the pid in the pid file, written once it holds the
+ * lock and before it opens the tenant; only a process that is a service of this home, so that an
+ * old pid file never names another process.
+ */
+afterEach(async () => {
+  const left = homes;
+  homes = [];
+  for (const home of left) {
+    if (!(await lockHeld(home))) continue;
+    await stop(home, capture().io).catch(() => {});
+    const until = Date.now() + 30_000;
+    while (await lockHeld(home)) {
+      if (Date.now() > until) throw new Error("a service of the case's home is still running");
+      const pid = Number(existsSync(pidFile(home)) ? readFileSync(pidFile(home), "utf8") : "");
+      if (Number.isInteger(pid) && pid > 0 && commandOf(pid).includes(`--home ${home} `)) {
+        process.kill(pid, "SIGKILL");
+      }
+      await sleep(100);
+    }
+  }
+}, T);
 
 function capture() {
   const out: string[] = [];
@@ -299,7 +353,7 @@ describe("start right after the service was killed", () => {
       // Made as `saveslot init` makes it: the real backend, with fsync passed to the host.
       const root = mkdtempSync(join(tmpdir(), "saveslot-killed-"));
       roots.push(root);
-      const home = join(root, "home");
+      const home = used(join(root, "home"));
       expect(await init(home, { rotate: false }, capture().io)).toBe(0);
       // From here on a service may be running: it is stopped however the case ends.
       try {
