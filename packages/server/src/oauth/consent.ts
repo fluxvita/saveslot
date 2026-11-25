@@ -261,7 +261,9 @@ async function consentPage(
   parts.push(`<input type="hidden" name="form_token" value="${escapeHtml(form)}">`);
   if (!r.client.builtIn) {
     const offered = r.scopes ?? DEFAULT_SCOPES;
-    const ticked = s.ticked ?? offered;
+    // Shown first, ticked are the default scopes the client asked for (05 §15: read and write);
+    // making schemas and deleting are offered when asked for, never ticked for the user.
+    const ticked = s.ticked ?? offered.filter((x) => DEFAULT_SCOPES.includes(x));
     parts.push(
       `<label>${escapeHtml(t.nameLabel)}<input type="text" name="name" maxlength="100" required value="${escapeHtml(s.name ?? "")}"></label>`,
       `<p class="hint">${escapeHtml(t.nameHint)}</p>`,
