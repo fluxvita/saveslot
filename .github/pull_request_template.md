@@ -24,7 +24,7 @@ Closes #
 
 <!-- Paste the tail of the output. Say plainly what was not actually run (for example steps that need root or another machine). -->
 
-- [ ] `pnpm check` passes locally on the head of this pull request (paste the result above: CI does not run it on pull requests)
+- [ ] `pnpm check` passes locally on the head of this pull request (CI runs it again)
 - [ ] Every commit is signed off by its author (`pnpm dco`)
 
 ## Review focus

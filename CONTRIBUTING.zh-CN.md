@@ -5,22 +5,22 @@
 ## 流程
 
 1. 从主分支拉一个分支。没有向仓库推分支的权限时，先 fork，在自己的 fork 里拉分支。
-2. 向 `main` 提合并请求（用了 fork 就从 fork 提），按模板填写。合并请求都提到 `main`，给已发布版本的修复也一样：合进 `main` 之后由维护者挑到那个版本的发布分支（`release/0.<小版本>`）。标题用 conventional commits 写法，它就是 squash 之后那个提交的标题；CI 会检查标题（类型限 `feat`、`fix`、`docs`、`test`、`build`、`ci`、`chore`、`refactor`、`perf`、`revert`、`style`，范围用小写）。
-3. 分支推上去之后只在末端追加提交：审过的提交保持原样。分支保持线性，不带合并提交：合并请求以 fast-forward 的方式 squash 进 `main`，带合并提交的分支在合并时变基不了。分支只是落后于 `main` 时不用处理，维护者在合并时变基。与 `main` 有冲突，或者叠到最新的 `main` 上 `pnpm check` 不再通过时，由你变基到最新的 `main`，在那个头上跑 `pnpm check`，用 `git push --force-with-lease` 推上去，并在合并请求上写一句（旧头、新头、各处冲突的取法）。已推的分支只在这一种情况下重写。维护者不替作者在分支上解冲突。
-4. 合并的条件：合并请求的流水线（快检查：标题、签名、密钥、禁用词）通过；`pnpm check` 在要合并的头上通过（你在推之前跑，把结果贴进描述；维护者视改动的风险在合并前于最终的头上再跑一遍）；评审讨论全部解决，并由一位维护者批准。
+2. 向 `main` 提拉取请求（用了 fork 就从 fork 提），按模板填写。拉取请求都提到 `main`，给已发布版本的修复也一样：合进 `main` 之后由维护者挑到那个版本的发布分支（`release/0.<小版本>`）。标题用 conventional commits 写法，它就是 squash 之后那个提交的标题；CI 会检查标题（类型限 `feat`、`fix`、`docs`、`test`、`build`、`ci`、`chore`、`refactor`、`perf`、`revert`、`style`，范围用小写）。
+3. 分支推上去之后只在末端追加提交：审过的提交保持原样。分支保持线性，不带合并提交：拉取请求以 fast-forward 的方式 squash 进 `main`，带合并提交的分支在合并时变基不了。分支只是落后于 `main` 时不用处理，维护者在合并时变基。与 `main` 有冲突，或者叠到最新的 `main` 上 `pnpm check` 不再通过时，由你变基到最新的 `main`，在那个头上跑 `pnpm check`，用 `git push --force-with-lease` 推上去，并在拉取请求上写一句（旧头、新头、各处冲突的取法）。已推的分支只在这一种情况下重写。维护者不替作者在分支上解冲突。
+4. 合并的条件：CI 在拉取请求上跑的检查全部通过（标题、签名、密钥、禁用词，以及 `pnpm check`）；评审讨论全部解决，并由一位维护者批准。
 5. 由维护者 squash 合并。
 
 ## 约定
 
 - **提交信息**用 conventional commits（`feat(kernel): …`、`fix(cli): …`、`docs(spec): …`）。
-- **语言**：提交信息、代码注释、标识符、日志与报错文案一律用英文。文档以中文版（`docs/zh-CN/`）为准。规格与讲解另有英文版，放在 `docs/` 下不带语言标记的同名路径（清单见 [`docs/README.md`](docs/README.md)）；`docs/zh-CN/process/` 与 `docs/zh-CN/research/` 的英文版待补。改有英文版的中文文档时，在同一个合并请求里把英文版一起改。每份英文文件在开头写明中文源的路径：`Translated from docs/zh-CN/<同名路径>, updated in the same commit as this file.`，由 `pnpm docs:translations` 检查。中文版之后又改了、英文版没跟上时，在这一行下面加一行说明：`The Chinese edition has changed since: …`。
+- **语言**：提交信息、代码注释、标识符、日志与报错文案一律用英文。文档以中文版（`docs/zh-CN/`）为准。规格与讲解另有英文版，放在 `docs/` 下不带语言标记的同名路径（清单见 [`docs/README.md`](docs/README.md)）；`docs/zh-CN/process/` 与 `docs/zh-CN/research/` 的英文版待补。改有英文版的中文文档时，在同一个拉取请求里把英文版一起改。每份英文文件在开头写明中文源的路径：`Translated from docs/zh-CN/<同名路径>, updated in the same commit as this file.`，由 `pnpm docs:translations` 检查。中文版之后又改了、英文版没跟上时，在这一行下面加一行说明：`The Chinese edition has changed since: …`。
 - **每个提交带 `Signed-off-by`**（`git commit -s`）。这是 DCO（Developer Certificate of Origin）：表示你有权按本项目的许可证提交这段内容。本项目不设 CLA。签名用真实姓名，邮箱与提交作者的邮箱相同；CI 会检查签名与作者是否一致。
 - **借助 AI 完成的贡献**：可以用 AI 工具。签名永远由人来加，不由工具加；签名的人对改动负责，如同亲手写的一样：读过、理解，并且有权按本项目的许可证提交。不要在提交信息里加把改动归于 AI 工具的署名行，签名已经说明谁负责。
-- **规格先行**。改变行为的改动，在同一个合并请求里改 `docs/zh-CN/spec/`；影响读者理解的，同步改 `docs/zh-CN/guide/`。改事件格式、内核不变量、契约的不兼容改动，先在 `docs/zh-CN/process/decisions/` 提一份决定稿并通过评审，再改规格与代码。
+- **规格先行**。改变行为的改动，在同一个拉取请求里改 `docs/zh-CN/spec/`；影响读者理解的，同步改 `docs/zh-CN/guide/`。改事件格式、内核不变量、契约的不兼容改动，先在 `docs/zh-CN/process/decisions/` 提一份决定稿并通过评审，再改规格与代码。
 - **调研归属**：技术调研进 `docs/zh-CN/research/`；竞品分析、市场与产品快照、产品定位、收费和商业策略类调研放内部仓库，不进本仓库。混合报告按内容拆分，不留两份同步正文；公开设计依赖的结论必须在本仓库独立成立，不能依赖内部调研。现有技术报告保留原位，公开前标注已被取代的建议与未核实判断，不改写原结论、不删历史。
 - **不提交**密钥、内部地址、与项目无关的个人信息。
 - **golden 文件**：模型读的一部分文字（MCP 服务的 `instructions`、prompts）固定在测试旁边的 `__golden__/` 目录里。有意改这些文字时，用 `pnpm exec vitest run <测试文件> -u` 更新，与改动一起提交；评审看这些文件的 diff 就是看措辞的变化。设了 `CI`（CI 里就是这样）时，golden 文件不一致或缺失都会让测试失败，不会写出新的。
-- 在要推的头上本地跑 `pnpm check`（类型检查、lint、测试、依赖规则、文档链接、JSON 例子），结果贴进合并请求。CI 跑的是同一组脚本，但在合并之后与每晚跑，不在合并请求上跑。主分支变红时优先修。
+- 推之前本地跑 `pnpm check`（类型检查、lint、测试、依赖规则、文档链接、JSON 例子、英文版注明的中文源、断言索引）。CI 在每个拉取请求上跑同一组脚本；合并之后与每晚在 `main` 上再跑，另加 Node 26 LTS、性质测试长跑和 PostgreSQL 上的测试。`main` 变红时优先修。
 
 ## 跑测试
 
@@ -39,6 +39,8 @@
 - 缺陷、任务与调研：Issues，选对应的模板。
 - 提问与设计讨论：Discussions。
 - 安全问题：见 [`SECURITY.zh-CN.md`](SECURITY.zh-CN.md)，不要公开提 Issue。
+
+公开之前，项目的 Issue 与改动记在一台内部服务器上。迁到 GitHub（2026-11-27）之后那边只读：Issue、讨论和补丁都到这里来，补丁以向 `main` 的拉取请求提交。
 
 ## 许可证
 

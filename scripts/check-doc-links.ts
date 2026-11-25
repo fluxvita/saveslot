@@ -1,7 +1,11 @@
 // Checks that every relative link in the repository's Markdown files points to an existing file,
 // and that every `#fragment` on a link to a Markdown file names a heading in that file.
-// External links (with a URL scheme) are not fetched.
+// External links (with a URL scheme) are not fetched. No Markdown file may name an internal host,
+// anywhere in it (links, prose, code): the repository is public. The internal domains are listed
+// by their SHA-256 only, so that the list does not name them either; a host matches when it or a
+// parent domain is listed, and the report gives the line, not the name.
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize, resolve } from "node:path";
 import { listMarkdownFiles, splitFences } from "./markdown.ts";
@@ -18,6 +22,31 @@ const INLINE_LINK = /!?\[(?:[^\][]|\[[^\]]*\])*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*
 /** Reference definitions: `[label]: target`. */
 const REF_DEF = /^ {0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s+.*)?$/;
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
+/** SHA-256 of the internal domains, lowercase, without a trailing dot. */
+export const INTERNAL_DOMAINS: ReadonlySet<string> = new Set([
+  "fb70f0057eec8570ee8a3ffd295d656127baf97413fb548bf4389e911d63a4b7",
+]);
+const HOSTNAME = /[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/gi;
+const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+
+/** Lines (1-based) that name a host in one of the given domains, once per line. */
+export function internalHostLines(text: string, domains: ReadonlySet<string>): number[] {
+  const out: number[] = [];
+  text.split("\n").forEach((line, i) => {
+    for (const m of line.matchAll(HOSTNAME)) {
+      const labels = m[0].toLowerCase().split(".");
+      const hit = labels.some(
+        (_, k) => k < labels.length - 1 && domains.has(sha256(labels.slice(k).join("."))),
+      );
+      if (hit) {
+        out.push(i + 1);
+        return;
+      }
+    }
+  });
+  return out;
+}
 
 /** GitHub-style heading anchor. */
 export function slugify(heading: string): string {
@@ -59,7 +88,11 @@ export function extractLinks(text: string): { line: number; target: string }[] {
   return out;
 }
 
-export function checkDocLinks(root: string, files = listMarkdownFiles(root)): LinkProblem[] {
+export function checkDocLinks(
+  root: string,
+  files = listMarkdownFiles(root),
+  internal: ReadonlySet<string> = INTERNAL_DOMAINS,
+): LinkProblem[] {
   const problems: LinkProblem[] = [];
   const anchorCache = new Map<string, Set<string>>();
   const anchorsOf = (abs: string): Set<string> => {
@@ -73,6 +106,9 @@ export function checkDocLinks(root: string, files = listMarkdownFiles(root)): Li
   for (const file of files) {
     const abs = join(root, file);
     const text = readFileSync(abs, "utf8");
+    for (const line of internalHostLines(text, internal)) {
+      problems.push({ file, line, target: "(not shown)", reason: "names an internal host" });
+    }
     for (const { line, target } of extractLinks(text)) {
       if (SCHEME.test(target) || target.startsWith("//")) continue;
       const hashAt = target.indexOf("#");
@@ -110,7 +146,7 @@ if (import.meta.main) {
   const problems = checkDocLinks(root, files);
   for (const p of problems) console.error(`${p.file}:${p.line}: ${p.target} (${p.reason})`);
   if (problems.length > 0) {
-    console.error(`\n${problems.length} broken link(s) in ${files.length} Markdown files.`);
+    console.error(`\n${problems.length} problem(s) in ${files.length} Markdown files.`);
     process.exit(1);
   }
   console.log(`Doc links OK: ${files.length} Markdown files checked.`);

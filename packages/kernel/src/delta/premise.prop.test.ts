@@ -209,7 +209,7 @@ describe("premiseDelta against the criterion, day by day (entity)", () => {
     expect(stats.unchanged).toBeGreaterThan(stats.runs / 10);
     expect(stats.revokes).toBeGreaterThan(0);
     expect(stats.goneWithoutRevoke).toBeGreaterThan(0);
-    // DELTA_STATS=<file>: the counts of a run, for a merge request.
+    // DELTA_STATS=<file>: the counts of a run, for a pull request.
     const out = process.env["DELTA_STATS"];
     if (out !== undefined) writeFileSync(out, `${JSON.stringify(stats)}\n`);
   });

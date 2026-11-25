@@ -4,7 +4,7 @@ English · [简体中文](SECURITY.zh-CN.md)
 
 ## Reporting a vulnerability
 
-Report security issues privately through the repository's private vulnerability reporting (on GitHub: the **Security** tab, then **Report a vulnerability**). Do not open a public issue, discussion or merge request for a vulnerability.
+Report security issues privately through the repository's private vulnerability reporting (on GitHub: the **Security** tab, then **Report a vulnerability**). Do not open a public issue, discussion or pull request for a vulnerability.
 
 Include what you found, how to reproduce it, the affected version or commit, and the impact you expect. We will acknowledge the report, keep you informed while we work on a fix, and credit you in the advisory unless you prefer not to be named.
 
