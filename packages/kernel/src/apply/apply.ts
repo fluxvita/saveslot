@@ -1136,11 +1136,15 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
   }>(
     // An item a deletion restated with a new content (a carried item's value, `no_value`,
     // `uncovered`) has it in that event's `restated/<k>` (`given_path`); any other, in its own block.
+    // That block is read by a scalar subquery, not a second join of `content`: it is at most one
+    // row (the key of `content`), null when `given_seq` is, and as a join it made the planner,
+    // without statistics, read the whole key of `base_sources` for one row's sources.
     `SELECT b.event_seq, b.field_id, b.k, b.status, b.valid_from, b.valid_to, b.reverted, c.body,
-       g.body AS given
+       CASE WHEN b.given_seq IS NULL THEN NULL ELSE
+         (SELECT g.body FROM content g WHERE g.seq = b.given_seq AND g.path = b.given_path) END
+         AS given
      FROM base_sources b LEFT JOIN content c ON c.seq = b.event_seq AND c.path =
        CASE WHEN b.field_id = 'existence' THEN 'existence/' || b.k ELSE 'fields/' || b.field_id || '/' || b.k END
-     LEFT JOIN content g ON g.seq = b.given_seq AND g.path = b.given_path
      WHERE b.row_id = $1 AND b.n = 0 ORDER BY b.event_seq, b.field_id COLLATE "C", b.k`,
     [rowId],
   );
