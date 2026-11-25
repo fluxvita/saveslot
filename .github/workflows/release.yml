@@ -3,8 +3,10 @@
 # commit it checked; by hand to retry, on a release branch. Versions and tags are set on the release
 # branch, so main never publishes. Publishes nothing in Changesets pre mode (prereleases are
 # published by hand) or when the entry's version is already on npm, so every other push to a release
-# branch ends after the first steps. GitHub runs a `workflow_run` workflow from the default branch's
-# copy of this file, so a change to it takes effect once it is on main.
+# branch ends after the first steps. Once a release is published, the `image` workflow builds and
+# pushes its container image, tagged with the version and `latest`. GitHub runs a `workflow_run`
+# workflow from the default branch's copy of this file, so a change to it takes effect once it is on
+# main.
 
 name: release
 
@@ -33,11 +35,16 @@ jobs:
     permissions:
       contents: write # the tags
       id-token: write # provenance
+    outputs:
+      published: ${{ steps.publish.outcome == 'success' }}
+      sha: ${{ steps.sha.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - id: due
         run: |
           version="$(node -p 'require("./packages/saveslot/package.json").version')"
@@ -62,7 +69,8 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
           pnpm smoke:install
-      - if: steps.due.outputs.publish == 'true'
+      - id: publish
+        if: steps.due.outputs.publish == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
@@ -71,3 +79,16 @@ jobs:
         run: |
           git tag "v$(node -p 'require("./packages/saveslot/package.json").version')"
           git push origin --tags
+
+  image:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    permissions:
+      contents: read
+      packages: write # the image on ghcr.io
+      id-token: write # its provenance attestation
+      attestations: write
+    uses: ./.github/workflows/image.yml
+    with:
+      ref: ${{ needs.publish.outputs.sha }}
+      latest: true

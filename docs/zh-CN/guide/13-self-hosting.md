@@ -8,6 +8,7 @@
 
 | 要什么 | 说明 |
 |---|---|
+| saveslot | `npm install -g @fluxvita/saveslot`，或直接拉容器镜像 `ghcr.io/fluxvita/saveslot:<版本>`（linux/amd64 与 linux/arm64，每个版本随 npm 包一起发）。镜像启动即 `saveslot server start`，监听容器里的 `0.0.0.0:8080`，不带任何密钥与口令；[`deploy/compose.yaml`](../../../deploy/compose.yaml) 是它连同 PostgreSQL 跑在一台主机上的例子（把其中的 `image` 换成要用的版本）。要自己构建镜像，用 [`deploy/build-image.sh`](../../../deploy/build-image.sh) |
 | PostgreSQL 18 | 每个用户一个 database，另有一个控制面库（存账户、凭证、租户目录与删除登记）。两者可以在同一个实例上 |
 | 一个数据库角色 | 见下 |
 | 对外地址 | Agent 和命令行连进来的 HTTPS 地址，例如 `https://saveslot.example.com`。TLS 由你前面的反向代理负责，saveslot 进程本身监听明文 HTTP |
