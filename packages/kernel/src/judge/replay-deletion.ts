@@ -39,6 +39,7 @@ import {
   contributionKey,
   type ExternalChange,
   type FieldInput,
+  type ItemRef,
   type OpRecord,
   type RejectRecord,
   type Restatement,
@@ -796,6 +797,8 @@ function resultOf(
   changed: readonly string[],
   items: ItemsGiven,
   latest: LatestGiven,
+  /** Items put back that no contribution put back gives and the event does not restate. */
+  back: readonly ItemRef[] = [],
 ) {
   // The intervals of existence items deleted, put back or restated, and of write-backs that only
   // register restated, before (as last given) and after.
@@ -807,6 +810,12 @@ function resultOf(
   for (const key of changed) {
     const [ev, target] = key.split("/") as [string, Target];
     if (target === "existence") touched.push(lastValid(Number(ev), "existence"));
+  }
+  for (const x of back) {
+    const now = replay.state.items.find(
+      (y) => y.event === x.event && y.target === x.target && y.k === x.k,
+    );
+    touched.push(lastValid(x.event, x.target, x.k), now?.valid ?? []);
   }
   for (const r of replay.restated) {
     const uncovered =
@@ -967,8 +976,25 @@ export function cancellationResult(
           new Set([...kept0, ...keptEffective.map((x) => contributionKey(x.event, x.target))]),
         );
   const changed = [...cancelled].filter((k) => !others.has(k));
+  // Put back without a contribution put back: an existence item, or a write-back that only
+  // registers, the deletion cancelled restated as dropped (its interval empty there). The
+  // cancellation does not restate it (09 §5.9 rule 3 takes interval blocks, not a dropped one),
+  // so it is not among the restatements either; it touches the row all the same (09 §5.9 «列哪些»).
+  const had = new Set(before.items.map((x) => `${x.event}/${x.target}/${x.k}`));
+  const restatedNow = new Set(
+    replay.restated.map((r) => `${r.item.event}/${r.item.target}/${r.item.k}`),
+  );
+  const back = replay.state.items
+    .filter(
+      (x) =>
+        (x.target === "existence" || x.content.kind === "uncovered") &&
+        !had.has(`${x.event}/${x.target}/${x.k}`) &&
+        !restatedNow.has(`${x.event}/${x.target}/${x.k}`) &&
+        !changed.includes(contributionKey(x.event, x.target)),
+    )
+    .map((x) => ({ event: x.event, target: x.target, k: x.k }));
   return {
-    ...resultOf(table, records, before, replay, changed, items, latest),
+    ...resultOf(table, records, before, replay, changed, items, latest, back),
     keptEffective,
   };
 }

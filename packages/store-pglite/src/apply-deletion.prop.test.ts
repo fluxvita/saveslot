@@ -476,6 +476,46 @@ const BACK_TO_ITS_OWN = {
   pick: 0,
 } as unknown as { ops: Op[]; decisions: Decision[]; pick: number };
 
+/**
+ * Event table: inserted, revoked, the revoke undone; a stale write meets it on existence and a
+ * take_previous resolves it, writing existence back. Deleting the stale write's words restates
+ * the write-back as dropped and lists the row; cancelling the deletion puts the write-back back
+ * without restating it (09 §5.9 rule 3 takes interval blocks), and the cancellation still lists
+ * the row (09 §5.9 «列哪些»). Found by the property (seed 365570185).
+ */
+const DROPPED_BACK = {
+  ops: [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    { kind: "revoke", op: 20, event: 21, seen: 10 },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 10,
+      fields: { f2: { value: "2", sources: ["S30"] }, f3: { value: "b", sources: ["S30"] } },
+    },
+    {
+      kind: "write",
+      op: 40,
+      event: 41,
+      seen: 30,
+      fields: { f2: { value: "2", sources: ["S1"], explicit: false } },
+    },
+  ],
+  decisions: [
+    { after: 1760185074, pick: 0, kind: "previous", flag: 0, focus: false },
+    { after: 12001433, pick: 1453381293, kind: "undo", flag: 0, focus: false },
+  ],
+  pick: 4,
+} as unknown as { ops: Op[]; decisions: Decision[]; pick: number };
+
 const CTX_DELETE = {
   now: "2026-11-10T06:00:00.000Z",
   today: "2026-11-10",
@@ -844,6 +884,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     const x = isState ? RESTATED_AS_IT_WAS : BACK_TO_ITS_OWN;
     await checkSample(x.ops, x.decisions, x.pick);
     if (isState) await checkSample(OPTIONAL_GONE.ops, OPTIONAL_GONE.decisions, OPTIONAL_GONE.pick);
+    if (!isState) await checkSample(DROPPED_BACK.ops, DROPPED_BACK.decisions, DROPPED_BACK.pick);
     await fc.assert(
       fc.asyncProperty(scenario(isState), fc.nat(), ({ ops, decisions }, pick) =>
         checkSample(ops, decisions, pick),

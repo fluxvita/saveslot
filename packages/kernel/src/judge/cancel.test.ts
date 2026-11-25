@@ -95,6 +95,28 @@ const keys = (r: readonly Restatement[]) =>
 const conflict = [w(10, 0, { f2: "1" }), w(20, 10, { f2: "2" }), w(30, 10, { f2: "3" })];
 
 describe("a cancellation puts back what the deletion took (no write in the grace period)", () => {
+  it("an existence item there before and after the cancellation, not restated: the row not listed", () => {
+    // #40 revokes from 12-01 (an existence item); #30 a candidate. Deleting #30's words takes the
+    // candidate away and lists nothing; cancelling puts it back. The revoke is there all along:
+    // nothing put back on existence, the row not listed.
+    const revoke: Op = {
+      kind: "revoke",
+      op: 40,
+      event: 41,
+      seen: 20,
+      now: d("11-05"),
+      valid: { from: { mode: "given", value: d("12-01") }, to: { mode: "open" } },
+      validSources: ["S40"],
+    } as never;
+    const r = inTurn([...conflict, revoke], ["S30f2"]);
+    expect(r.delA.result.listed).toBe(false);
+    expect(
+      r.cancel.replay.state.items.some((x) => x.event === 41 && x.target === "existence"),
+    ).toBe(true);
+    expect(keys(r.cancel.replay.restated).filter(([k]) => String(k).startsWith("41/"))).toEqual([]);
+    expect(r.cancel.result.listed).toBe(false);
+  });
+
   it("the value in effect deleted and the deletion cancelled: the candidate pending again, its item restored", () => {
     const r = inTurn(conflict, ["S20f2"]);
     expect(keys(r.delA.replay.restated)).toContainEqual(["31/f2/0", "applied"]);
