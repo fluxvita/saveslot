@@ -118,7 +118,7 @@ workflow:
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
 
 # `pnpm check` (type check, lint, unit and property tests, dependency rules, doc links, JSON
-# examples) runs here as three jobs of the same scripts: the static checks, `test:unit`, `test:prop`.
+# examples, the claims index) runs here as three jobs of the same scripts: the static checks, `test:unit`, `test:prop`.
 # Each has a timeout of its own, so one part running out of time does not take the others' results
 # with it. Locally `pnpm check` stays one command. On the CI runner the tests took about 15 minutes
 # (`test:unit` 13, `test:prop` 4); a runner that gave a job one or two CPUs took over 35 for
@@ -280,7 +280,7 @@ mr-title:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   script:
-    - node scripts/check-mr-title.ts
+    - SAVESLOT_CI_TITLE="$CI_MERGE_REQUEST_TITLE" node scripts/check-mr-title.ts
 
 # A project-held list of terms appears nowhere in tracked files, paths, the merge request's commit
 # messages or title (the list is the masked variable SAVESLOT_FORBIDDEN_TERMS_B64; output names
@@ -291,7 +291,12 @@ forbidden-terms:
   variables:
     GIT_DEPTH: 0
   script:
-    - node scripts/check-forbidden-terms.ts
+    # The scripts read neutral variables (scripts/ci-env.ts); the list is required in this project's
+    # own pipelines only.
+    - |
+      required=false; [ "$CI_PROJECT_PATH" = "agentx/saveslot" ] && required=true
+      SAVESLOT_CI_BASE="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" SAVESLOT_CI_TITLE="${CI_MERGE_REQUEST_TITLE:-}" \
+        SAVESLOT_CI_TERMS_REQUIRED="$required" node scripts/check-forbidden-terms.ts
 
 # No secrets in the commits of a merge request, or anywhere in the history of a main line.
 # On a branch, only the history the checked-out commit reaches: without `--log-opts`, gitleaks scans

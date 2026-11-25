@@ -6,15 +6,14 @@
 // The terms come from $SAVESLOT_FORBIDDEN_TERMS_B64: base64 of newline-separated terms. The list
 // is not part of the repository. Output names a term only by its index in the list, never by its
 // text, so the list does not reach CI logs. Without the variable the term check fails in the
-// project's own pipelines ($CI_PROJECT_PATH = agentx/saveslot) and is skipped elsewhere (forks,
-// local runs). In a merge request pipeline, commit messages of
-// $CI_MERGE_REQUEST_DIFF_BASE_SHA..HEAD and $CI_MERGE_REQUEST_TITLE are checked too.
+// project's own runs and is skipped elsewhere (forks, local runs). In a pull or merge request,
+// the commit messages of base..HEAD and the title are checked too. Which run is which, and the
+// base and title, come from ./ci-env.ts.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-
-export const PROJECT_PATH = "agentx/saveslot";
+import { ciEnv } from "./ci-env.ts";
 
 /**
  * Ruling numbers are internal; code and the spec cite spec sections. Any number from R100 up (the
@@ -137,10 +136,11 @@ function commitsIn(range: string): { sha: string; message: string }[] {
 
 if (import.meta.main) {
   const env = process.env;
+  const ci = ciEnv(env);
   const b64 = env["SAVESLOT_FORBIDDEN_TERMS_B64"];
   let terms: string[] = [];
   if (b64 === undefined || b64.trim() === "") {
-    if (env["CI_PROJECT_PATH"] === PROJECT_PATH) {
+    if (ci.termsRequired) {
       console.error("SAVESLOT_FORBIDDEN_TERMS_B64 is not set; it is required in this project.");
       process.exit(1);
     }
@@ -154,8 +154,7 @@ if (import.meta.main) {
       process.exit(1);
     }
   }
-  const base = env["CI_MERGE_REQUEST_DIFF_BASE_SHA"];
-  const title = env["CI_MERGE_REQUEST_TITLE"];
+  const { base, title } = ci;
   const root = process.cwd();
   const hits = scan({
     root,
@@ -169,6 +168,6 @@ if (import.meta.main) {
     console.error(`\n${hits.length} problem(s). Terms are named by their index in the list only.`);
     process.exit(1);
   }
-  const scope = base ? ", commit messages and the MR title" : "";
+  const scope = base ? ", commit messages and the request title" : "";
   console.log(`Forbidden terms OK: ${terms.length} term(s) checked in tracked files${scope}.`);
 }

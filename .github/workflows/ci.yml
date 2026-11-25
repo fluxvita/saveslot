@@ -1,0 +1,300 @@
+# CI only calls scripts from the repository (package.json), so the checks stay the same on any CI
+# platform. See docs/zh-CN/spec/02-architecture.md §11.
+#
+#   pull request:      title, dco, forbidden-terms, secrets; `pnpm check` as three jobs on the
+#                      pinned Node; age-interop when the request changes
+#                      packages/cli/src/export-crypto*, pnpm-lock.yaml or this file. All of them
+#                      are the required checks of main.
+#   push to a main line: forbidden-terms, secrets; `pnpm check` on the pinned Node and on Node 26
+#                      LTS; prop-soak, test-postgres, age-interop
+#   nightly, by hand:  the same as a push to a main line but forbidden-terms and secrets, with the
+#                      tests on the host's fsync (SAVESLOT_TEST_DURABILITY,
+#                      packages/test-backend/src/index.fixture.ts)
+#
+# The main lines are main and the release branches (`release/0.<minor>`, RELEASING.md): a commit
+# picked to a release branch is checked as a merge to main is, and the release workflow publishes
+# from a release branch only after this one passed there. The nightly run is on main.
+#
+# `pnpm check` runs as three jobs of the same scripts (check:static, test:unit, test:prop), each
+# with a timeout of its own, so one part running out of time does not take the others' results
+# with it. Locally it stays one command.
+#
+# A newer push to the same pull request, or to the same main line, cancels the run before it. A
+# nightly or by-hand run is never cancelled. Each job has a runner of its own, so the heavy jobs run
+# side by side.
+#
+# Node is pinned to an exact version: 24.22.3 (as `.nvmrc`) in every job but the Node 26 ones, which
+# run 26.13.1 (package.json `engines` takes 24 and 26; a Node line it does not take is not tested).
+# The lowest supported Node is 24.22.1. To move to a newer Node, change it here and in `.nvmrc`
+# together; the 26 one moves to a newer 26 release by hand, as the 24 one does.
+#
+# Jobs run as the runner's own user, not root, so the tests of files and directories that user
+# cannot read are not skipped.
+#
+# GitHub has no variable for a pull request's base commit or title, so the workflow hands them to
+# the scripts as SAVESLOT_CI_* (scripts/ci-env.ts). The title goes through the environment, never
+# into a shell line.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main, "release/**"]
+  schedule:
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+
+env:
+  SAVESLOT_CI_BASE: ${{ github.event.pull_request.base.sha }}
+  SAVESLOT_CI_TITLE: ${{ github.event.pull_request.title }}
+  SAVESLOT_TEST_DURABILITY: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'host-fsync' || '' }}
+
+jobs:
+  # The request title is a Conventional Commit: it becomes the squash commit's subject.
+  title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+      - run: node scripts/check-mr-title.ts
+
+  # Every commit in a pull request is signed off by its author (DCO).
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # The pull request's own commits, not the merge commit GitHub makes for it.
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+      - run: node scripts/check-dco.ts
+
+  # A project-held list of terms appears nowhere in tracked files, paths, the request's commit
+  # messages or title (the list is the secret SAVESLOT_FORBIDDEN_TERMS_B64; output names terms by
+  # index only); code and the spec cite spec sections, not ruling numbers.
+  forbidden-terms:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SAVESLOT_FORBIDDEN_TERMS_B64: ${{ secrets.SAVESLOT_FORBIDDEN_TERMS_B64 }}
+      # A fork's pull request runs without the repository's secrets: the list is not there, so the
+      # check of ruling references still runs and the terms are checked on main after the merge.
+      SAVESLOT_CI_TERMS_REQUIRED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+      - run: node scripts/check-forbidden-terms.ts
+
+  # No secrets in the commits of a pull request, or anywhere in the history of a main line.
+  secrets:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: gitleaks
+        run: |
+          curl --fail --retry 3 -sSL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          if [ -n "$SAVESLOT_CI_BASE" ]; then
+            "$RUNNER_TEMP/gitleaks" git --redact --verbose --log-opts="$SAVESLOT_CI_BASE..HEAD" .
+          else
+            # The history of the commit checked, not `git log --all`: the full fetch also brings
+            # every other branch and tag, and a finding there must not fail this one.
+            "$RUNNER_TEMP/gitleaks" git --redact --verbose --log-opts="HEAD" .
+          fi
+
+  # `pnpm check` (type check, lint, unit and property tests, dependency rules, doc links, JSON
+  # examples, the English documents' source lines, the claims index) as three jobs. On Node 26 LTS
+  # only on a main line, nightly and by hand. Each job first prints the CPUs and the memory it can use
+  # (`ci:resources`).
+  check:
+    name: check-${{ matrix.part }} (Node ${{ matrix.node }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [static, unit, prop]
+        node: ${{ fromJSON(github.event_name == 'pull_request' && '["24.22.3"]' || '["24.22.3", "26.13.1"]') }}
+        include:
+          # check:static dates each translated document by its last commit (docs:translations),
+          # which needs the whole history: a shallow clone dates every file to its one commit.
+          - { part: static, script: "check:static", timeout: 15, depth: 0 }
+          - { part: unit, script: "test:unit", timeout: 45, depth: 1 }
+          - { part: prop, script: "test:prop", timeout: 25, depth: 1 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: ${{ matrix.depth }}
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --silent ci:resources
+      - run: pnpm ${{ matrix.script }}
+
+  # Every property test file, round after round, each run with a fresh random seed, for about 50
+  # minutes. A failed run leaves its seed, replay path and counterexample in soak/failures.md and
+  # its whole output beside it, kept as the run's artifact.
+  prop-soak:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SOAK_MINUTES: "50"
+      SOAK_RUN_MINUTES: "15"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:prop:soak
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: soak
+          path: soak/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # The kernel's tests on a real store, the PostgreSQL backend's own and the replay across the two
+  # backends, on a PostgreSQL server (02-architecture §11 «测试矩阵»: both backends). Nothing may be
+  # skipped for want of the server: the script fails without the variable, and a test that needs
+  # the server fails when it is not there. The server is a service of the job, its minor version
+  # fixed; the cluster is made with the encoding and the locale the backend gives each tenant's
+  # database (§8). Nothing but this job can reach it, so it asks for no password.
+  #
+  # The runner image ships PostgreSQL 16's client; `format-sample-server.test.ts` runs `pg_dump`
+  # against the 18 server, which refuses a server newer than itself, so the 18 client is installed
+  # from apt.postgresql.org (key pinned by SHA-256).
+  test-postgres:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    # On the CI runner it took under 20 minutes; a 2-CPU runner (a private repository's) needs more.
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18.7
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8 --locale=C
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      SAVESLOT_TEST_POSTGRES_URL: postgres://postgres@localhost:5432/postgres
+      PGDG_SHA256: 0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: postgresql-client-18
+        run: |
+          curl --fail --retry 3 -sSL -o "$RUNNER_TEMP/pgdg.asc" \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "${PGDG_SHA256}  $RUNNER_TEMP/pgdg.asc" | sha256sum -c -
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo install -m 0644 "$RUNNER_TEMP/pgdg.asc" /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          . /etc/os-release
+          printf 'Types: deb\nURIs: https://apt.postgresql.org/pub/repos/apt\nSuites: %s-pgdg\nComponents: main\nSigned-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc\n' \
+            "$VERSION_CODENAME" | sudo tee /etc/apt/sources.list.d/pgdg.sources > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-18
+          echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/18/bin/pg_dump --version
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:postgres
+
+  # The passphrase encryption of an export against the age command line (06-cli §4.8 «导出的口令加密»):
+  # age opens what saveslot writes, and saveslot opens what age writes, with the passphrase given
+  # through age-plugin-batchpass. The test fails, not skips, without the two commands
+  # (SAVESLOT_TEST_AGE_REQUIRED). age is a tool of this test, not shipped: taken from its release
+  # page, pinned by version and by the archive's SHA-256 (checked once against the release's sigsum
+  # proof, as the age repository's SIGSUM.md describes). On a pull request only when it changes the
+  # code, the lockfile or this file; the job then passes without running the test.
+  age-interop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      AGE_VERSION: v1.3.2
+      AGE_SHA256: cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The base commit, to see what the pull request changes. (Not `&& 0 || 1`: 0 is false in
+          # an expression, so that gives 1.)
+          fetch-depth: 0
+      - id: scope
+        run: |
+          # A failing `git diff` fails the step (bash -e), rather than reading as "not touched".
+          if [ -n "$SAVESLOT_CI_BASE" ]; then changed="$(git diff --name-only "$SAVESLOT_CI_BASE" HEAD)"; fi
+          if [ -z "$SAVESLOT_CI_BASE" ] \
+              || grep -qE '^(packages/cli/src/export-crypto|pnpm-lock\.yaml$|\.github/workflows/ci\.yml$)' <<< "$changed"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not touched by this pull request: skipped."
+          fi
+      - if: steps.scope.outputs.run == 'true'
+        run: |
+          curl --fail --retry 3 -sSL -o "$RUNNER_TEMP/age.tgz" \
+            "https://github.com/FiloSottile/age/releases/download/${AGE_VERSION}/age-${AGE_VERSION}-linux-amd64.tar.gz"
+          echo "${AGE_SHA256}  $RUNNER_TEMP/age.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar xzf "$RUNNER_TEMP/age.tgz" -C "$RUNNER_TEMP/bin" --strip-components=1 age/age age/age-plugin-batchpass
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - if: steps.scope.outputs.run == 'true'
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - if: steps.scope.outputs.run == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+          cache: pnpm
+      - if: steps.scope.outputs.run == 'true'
+        run: |
+          age --version
+          pnpm install --frozen-lockfile
+          SAVESLOT_TEST_AGE_REQUIRED=1 pnpm exec vitest run packages/cli/src/export-crypto.test.ts

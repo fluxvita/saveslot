@@ -1,8 +1,8 @@
-// Checks that a merge request title is a Conventional Commit: it becomes the squash commit's
-// subject on main (CONTRIBUTING.md).
+// Checks that a pull or merge request title is a Conventional Commit: it becomes the squash
+// commit's subject on main (CONTRIBUTING.md).
 //
 // Usage: node scripts/check-mr-title.ts [<title>]
-// The title defaults to $CI_MERGE_REQUEST_TITLE.
+// The title defaults to the request's title (./ci-env.ts).
 
 export const TYPES = [
   "feat",
@@ -20,6 +20,8 @@ export const TYPES = [
 
 const TITLE = new RegExp(`^(?:${TYPES.join("|")})(?:\\([a-z0-9][a-z0-9-]*\\))?!?: \\S`);
 
+import { ciEnv } from "./ci-env.ts";
+
 /** GitLab marks drafts with a prefix that is not part of the eventual commit subject. */
 const DRAFT = /^(?:Draft:\s*|\[Draft\]\s*|\(Draft\)\s*)/i;
 
@@ -35,16 +37,16 @@ export function titleProblem(title: string): string | undefined {
 }
 
 if (import.meta.main) {
-  const title = process.argv[2] ?? process.env["CI_MERGE_REQUEST_TITLE"];
+  const title = process.argv[2] ?? ciEnv(process.env).title;
   if (title === undefined) {
-    console.error("No title: pass it as an argument or set CI_MERGE_REQUEST_TITLE.");
+    console.error("No title: pass it as an argument, or set SAVESLOT_CI_TITLE.");
     process.exit(2);
   }
   const problem = titleProblem(title);
   if (problem !== undefined) {
-    console.error(`Merge request title is not a Conventional Commit: ${problem}.`);
+    console.error(`The request title is not a Conventional Commit: ${problem}.`);
     console.error(`Title: ${title}`);
     process.exit(1);
   }
-  console.log("MR title OK.");
+  console.log("Request title OK.");
 }
