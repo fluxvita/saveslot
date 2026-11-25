@@ -363,7 +363,55 @@ function rowLine(row: R, historical = false, first = true): Line[] {
     first && isObj(row["changed_by"]) ? t`last changed by ${actorOf(row["changed_by"])}` : [];
   const tail = [...m.inline, inputMarksOf(row["input_marks"]), by].filter((x) => x.length > 0);
   const line = join([head.length > 0 ? head : t`  `, ...cells, ...tail], t` | `);
-  return [line, ...m.below];
+  return [line, ...m.below, ...detailLines(row["detail"])];
+}
+
+/** A field's literal result (04-contract-types §4.1 `RowDetail`). */
+const LITERAL = textsBy<"hit" | "miss" | "na">({
+  hit: () => t`literal hit`,
+  miss: () => t`literal miss`,
+  na: () => t`literal not applicable`,
+});
+
+/**
+ * `detail: "detailed"` (05 §4.1): on indented lines below the row, its last change and when; each
+ * field's literal result and source level, a ref field's summary of the record it names; each
+ * premise in effect (05 §4.2: target, fields, version seen, the write declaring it), changed or
+ * not. One on a table you cannot see: only what is of this row.
+ */
+function detailLines(d: unknown): Line[] {
+  if (!isObj(d)) return [];
+  const out: Line[] = [t`  last changed in ${op(d["seq"])}, recorded ${timeOf(d["recorded_at"])}`];
+  for (const [name, v] of Object.entries(obj(d["fields"]))) {
+    const x = obj(v);
+    const level = x["level"] !== undefined ? t`, ${codeIn(x["level"], LEVELS)}` : [];
+    const literal = said(LITERAL, x["literal"]) ?? [untrusted(String(x["literal"]))];
+    const ref = isObj(x["ref"]) ? t` · names ${namedValues(x["ref"]["values"])}` : [];
+    out.push(t`  ${fieldOf(name)}: ${literal}${level}${ref}`);
+  }
+  for (const p of arr(d["premises"])) {
+    const x = obj(p);
+    const covers = arr(x["fields"]);
+    const coverage =
+      covers.length > 0
+        ? t`covers this row's ${join(covers.map(fieldOf), t`, `)}`
+        : t`covers the whole row`;
+    const state =
+      x["state"] === "changed"
+        ? t`changed: ${said(PREMISE_VERB, x["reason"]) ?? [untrusted(String(x["reason"]))]}${x["since"] !== undefined ? t` in ${op(x["since"])}` : []}`
+        : t`unchanged`;
+    if (x["hidden"] === true) {
+      out.push(t`  premise: a record in a table you cannot see · ${coverage} · ${state}`);
+      continue;
+    }
+    const fields = arr(x["premise_fields"]);
+    const what = fields.length > 0 ? t`the ${join(fields.map(fieldOf), t`, `)} of ` : [];
+    const declared = obj(x["declared"]);
+    out.push(
+      t`  premise: ${what}${targetOf(x["premise"])} (seen ${idOf(x["seen"])}) · ${coverage} · declared in ${op(declared["seq"])} by ${actorOf(declared["actor"])} · ${state}`,
+    );
+  }
+  return out;
 }
 
 /**

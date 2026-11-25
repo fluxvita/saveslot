@@ -162,6 +162,11 @@ describe("saveslot query", () => {
     const rows = (JSON.parse(q.out) as { rows: { detail?: { seq?: number } }[] }).rows;
     expect(rows.length).toBeGreaterThan(0);
     for (const r of rows) expect(typeof r.detail?.seq).toBe("number");
+    // As text: below each row, its last change and its fields.
+    const shown = await saveslot("query", "food.meals", "--detail", "detailed");
+    expect(shown.code).toBe(0);
+    expect(shown.out).toContain("  last changed in #");
+    expect(shown.out).toMatch(/\n {2}[a-z_]+: literal (hit|miss|not applicable)/);
     const h = await saveslot(
       "history",
       "food.meals",

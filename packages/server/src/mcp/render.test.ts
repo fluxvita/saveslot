@@ -982,3 +982,58 @@ describe("the list of pending items: each open one with the decisions its type t
     expect(lines.find((l) => l.includes("pi_9BEZWJ3J7BMKMXTV"))).not.toContain("decide with");
   });
 });
+
+describe('a row\'s detail (05 §4.1 `detail: "detailed"`; §4.2 every premise)', () => {
+  const actor = { kind: "user", id: "u_11111111111111111111111111", name: "Ann" };
+  const q = sample("query");
+  const { marks: _m, input_marks: _i, ...row } = (q.result["rows"] as R[])[0] as R;
+  const detail = {
+    seq: 12,
+    recorded_at: "2026-11-05T03:12:00.000Z",
+    fields: {
+      amount: { field_id: "f2", literal: "hit", level: "user_stated" },
+      note: { field_id: "f3", literal: "miss" },
+      category: { field_id: "f1", literal: "na", ref: { values: { name: "lunch" } } },
+    },
+    premises: [
+      {
+        premise: { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" },
+        premise_fields: ["date"],
+        seen: "v7.0",
+        state: "changed",
+        reason: "update",
+        since: 10,
+        fields: ["note"],
+        declared: { seq: 7, actor },
+      },
+      {
+        premise: { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" },
+        seen: "v9.0",
+        state: "current",
+        fields: [],
+        declared: { seq: 9, actor },
+      },
+      { hidden: true, state: "current", fields: ["amount"] },
+    ],
+  };
+  const lines = (r: R) =>
+    renderResult(q.tool, { ...q.result, rows: [r] })
+      .replace(/<\/?untrusted-data-[0-9a-f]{32}>/g, "")
+      .split("\n");
+
+  it("indented below the row: its last change, each field, each premise", () => {
+    expect(lines({ ...row, detail }).filter((l) => l.startsWith("  "))).toEqual([
+      "  last changed in #12, recorded 2026-11-05T03:12:00.000Z",
+      "  amount: literal hit, user_stated",
+      "  note: literal miss",
+      "  category: literal not applicable · names name lunch",
+      "  premise: the date of ledger.expenses r_4KWKRM296X61WJ89DY5XJNVA4P (seen v7.0) · covers this row's note · declared in #7 by Ann · changed: changed in #10",
+      "  premise: ledger.expenses r_4KWKRM296X61WJ89DY5XJNVA4P (seen v9.0) · covers the whole row · declared in #9 by Ann · unchanged",
+      "  premise: a record in a table you cannot see · covers this row's amount · unchanged",
+    ]);
+  });
+
+  it("without a detail, the row as before", () => {
+    expect(lines(row).some((l) => l.includes("last changed in"))).toBe(false);
+  });
+});
