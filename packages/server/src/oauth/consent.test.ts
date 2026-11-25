@@ -302,6 +302,25 @@ describe("signed in", () => {
   );
 
   it(
+    "a client asking for all four scopes: all four offered, only read and write ticked",
+    async () => {
+      const q = query({ scope: "saveslot.read saveslot.write saveslot.schema saveslot.delete" });
+      const { html } = await shown(await get(q, "s-user"));
+      expect(html).toContain('name="scope" value="saveslot.write" checked');
+      expect(html).toContain('name="scope" value="saveslot.schema">');
+      expect(html).toContain('name="scope" value="saveslot.delete">');
+      expect(html.match(/ checked/g)).toHaveLength(2);
+      // Asked for read and schema only: schema offered, nothing but read ticked.
+      const narrow = await shown(
+        await get(query({ scope: "saveslot.read saveslot.schema" }), "s-user"),
+      );
+      expect(narrow.html).toContain('name="scope" value="saveslot.schema">');
+      expect(narrow.html.match(/ checked/g)).toHaveLength(1);
+    },
+    T,
+  );
+
+  it(
     "in Chinese when the browser's first language is Chinese, in English otherwise",
     async () => {
       expect((await shown(await get(query(), "s-user", "zh-CN,en;q=0.8"))).html).toContain(
