@@ -23,6 +23,7 @@ const HOST_NAMES: ReadonlyMap<string, string> = new Map([
   ["codex", "Codex"],
   ["cursor", "Cursor"],
   ["claude-desktop", "Claude Desktop"],
+  ["vscode", "VS Code"],
 ]);
 
 export const TEXTS = {
@@ -379,12 +380,12 @@ export const TEXTS = {
 
   // connect, connections, snippet (06 §3.2, §3.4, §4.9)
   connectArgs: s(
-    "give the host: saveslot connect claude-code|codex|cursor|claude-desktop|generic|http --name <name>",
+    "give the host: saveslot connect claude-code|codex|cursor|claude-desktop|vscode|generic|http --name <name>",
   ),
   nameMissing: s('give the connection instance a name: --name "<device> · <host>"'),
   slotsBad: s("--slots takes slot names, comma separated: --slots health,ledger"),
   applyNotHere: s(
-    "--apply runs a host's add command: claude-code and codex have one; for the others, paste what connect prints",
+    "--apply runs a host's add command: claude-code and codex have one; for vscode, run the command connect prints yourself; for the others, paste what it prints",
   ),
   scopeBad: s("--scope takes scope names, comma separated: +schema, -write, or read,write,schema"),
   scopeMixed: s(
@@ -430,6 +431,14 @@ export const TEXTS = {
       ),
     ],
   ]),
+  // VS Code's add command (06 §3.2): printed, not run, with what it does that the others do not.
+  vscodeAgentMode: s("VS Code uses saveslot in GitHub Copilot Chat, in Agent mode."),
+  vscodeReplaces: s(
+    "note: code --add-mcp replaces an entry named saveslot in VS Code without asking.",
+  ),
+  vscodeFileMode: s(
+    'note: it writes the token into VS Code\'s user mcp.json, which other users of this computer can read. Make the file yours only afterwards: chmod 600 "$HOME/Library/Application Support/Code/User/mcp.json" on macOS, chmod 600 ~/.config/Code/User/mcp.json on Linux.',
+  ),
   pasteHttp: s("Send the token as Authorization: Bearer <token> on the socket:"),
   pasteGeneric: s("An MCP client's server entry:"),
   socketWord: s("socket"),

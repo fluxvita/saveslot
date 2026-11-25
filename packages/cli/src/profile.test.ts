@@ -395,6 +395,22 @@ describe("connect --profile", () => {
     expect(seen).toEqual([]);
   });
 
+  it("vscode: its add command with the address printed, never run (--apply is 2)", async () => {
+    const r = await cli(["connect", "vscode", "--profile", "lab"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(TEXTS.remoteSignsIn);
+    expect(r.out).toContain(
+      `  code --add-mcp '${JSON.stringify({ name: "saveslot", type: "http", url: `${origin}/mcp` })}'\n`,
+    );
+    // It replaces an entry of the same name; no token in it, so nothing about the file's mode.
+    expect(r.out).toContain(TEXTS.vscodeReplaces);
+    expect(r.out).not.toContain(TEXTS.vscodeFileMode);
+    const applied = await cli(["connect", "vscode", "--profile", "lab", "--apply"]);
+    expect(applied.code).toBe(2);
+    expect(applied.err).toContain(TEXTS.applyNotHere);
+    expect(seen).toEqual([]);
+  });
+
   it("a name, scopes or slots for a host signing in itself: 2, nothing sent", async () => {
     for (const extra of [
       ["--name", "a"],

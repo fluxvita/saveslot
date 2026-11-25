@@ -4,12 +4,12 @@
 
 import { type Connection, SCOPES } from "@fluxvita/saveslot-client";
 import {
-  APPLIES,
   addCommand,
   type Host,
   pastedConfig,
   remoteAddCommand,
   remotePasted,
+  SNIPPET_HOSTS,
 } from "../connect.ts";
 import { TEXTS } from "../texts.ts";
 import { arr, obj, str } from "./reads.ts";
@@ -73,7 +73,12 @@ export function hostSetup(
   server?: string,
 ): Line[] {
   const command = addCommand(host, token, entry);
-  if (command !== undefined) return [[words(TEXTS.pasteCommand)], t`  ${shellLine(command)}`];
+  if (command !== undefined)
+    return [
+      [words(TEXTS.pasteCommand)],
+      t`  ${shellLine(command)}`,
+      ...(host === "vscode" ? vscodeNotes(true) : []),
+    ];
   if (host === "http") {
     return [
       [words(server === undefined ? TEXTS.pasteHttp : TEXTS.pasteHttpServer)],
@@ -89,6 +94,16 @@ export function hostSetup(
 }
 
 /**
+ * Under VS Code's command (06 §3.2): where it is used, that it replaces an entry of the same name,
+ * and, when the token is in it, that the file it writes is to be made private.
+ */
+const vscodeNotes = (token: boolean): Line[] => [
+  [words(TEXTS.vscodeAgentMode)],
+  [words(TEXTS.vscodeReplaces)],
+  ...(token ? [[words(TEXTS.vscodeFileMode)]] : []),
+];
+
+/**
  * What a host connecting to a server is given (06 §3.2 «服务器模式»): its add command, an entry to
  * paste, or the address for its own screen; no token in any of them: the host signs in itself.
  */
@@ -96,7 +111,12 @@ export function remoteSetup(host: Host, url: string): Line[] {
   const command = remoteAddCommand(host, url);
   const lines: Line[] = [[words(TEXTS.remoteSignsIn)]];
   if (command !== undefined)
-    return [...lines, [words(TEXTS.pasteCommand)], t`  ${shellLine(command)}`];
+    return [
+      ...lines,
+      [words(TEXTS.pasteCommand)],
+      t`  ${shellLine(command)}`,
+      ...(host === "vscode" ? vscodeNotes(false) : []),
+    ];
   const pasted = remotePasted(host, url);
   if (pasted !== undefined) {
     const place = host === "generic" ? TEXTS.pasteGeneric : TEXTS.pasteConfig.get(host);
@@ -158,7 +178,7 @@ export function setupShowable(
 
 /** The closing hint of `connect`, for a host `snippet` knows. */
 export function snippetHint(host: Host): Line[] {
-  return APPLIES.has(host) || host === "cursor" || host === "claude-desktop"
+  return (SNIPPET_HOSTS as readonly string[]).includes(host)
     ? [[words(TEXTS.snippetHint(host))]]
     : [];
 }

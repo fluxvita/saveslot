@@ -263,6 +263,35 @@ describe("connect: issued, self-checked, the token on stdout once", () => {
     ]);
   });
 
+  it("vscode: code --add-mcp with the entry, what it does said under it", async () => {
+    const odd = join(root, "my bin", "it's", "saveslot");
+    mkdirSync(join(root, "my bin", "it's"), { recursive: true });
+    writeFileSync(odd, "#!/bin/sh\n", { mode: 0o755 });
+    service();
+    const r = await cli(["connect", "vscode", "--name", "v"], { entry: odd });
+    expect(r.code).toBe(0);
+    const line = (r.out.split("\n").find((l) => l.startsWith("  code ")) as string).trim();
+    const words = execFileSync("sh", ["-c", `set -- ${line}; printf '%s\\0' "$@"`])
+      .toString("utf8")
+      .split("\0")
+      .slice(0, -1);
+    expect(words.slice(0, 2)).toEqual(["code", "--add-mcp"]);
+    expect(words).toHaveLength(3);
+    expect(JSON.parse(words[2] as string)).toEqual({
+      name: "saveslot",
+      command: odd,
+      args: ["mcp"],
+      env: { SAVESLOT_TOKEN: NEW },
+    });
+    // It replaces an entry of the same name, and the file it writes is readable by others.
+    expect(r.out).toContain(TEXTS.vscodeAgentMode);
+    expect(r.out).toContain(TEXTS.vscodeReplaces);
+    expect(r.out).toContain(TEXTS.vscodeFileMode);
+    expect(r.out).toContain(TEXTS.snippetHint("vscode"));
+    expect(occurrences(r.out, NEW)).toBe(1);
+    expect(r.err).toBe(`${TEXTS.tokenOnce}\n`);
+  });
+
   it("an entry with _npx in a name, not as a directory: no note", async () => {
     const near = join(root, "my_npx_tools", "saveslot");
     mkdirSync(join(root, "my_npx_tools"), { recursive: true });
@@ -413,7 +442,7 @@ describe("connect --apply against the stand-in: the host's executable found on P
 describe("connect: refused before anything is issued", () => {
   it.each([
     ["no host", ["connect", "--name", "a"], TEXTS.connectArgs],
-    ["a host it does not know", ["connect", "vscode", "--name", "a"], TEXTS.connectArgs],
+    ["a host it does not know", ["connect", "zed", "--name", "a"], TEXTS.connectArgs],
     ["two hosts", ["connect", "codex", "cursor", "--name", "a"], TEXTS.connectArgs],
     ["no name", ["connect", "codex"], TEXTS.nameMissing],
     ["an empty name", ["connect", "codex", "--name", " "], TEXTS.nameMissing],
@@ -426,6 +455,11 @@ describe("connect: refused before anything is issued", () => {
     [
       "--apply for a host without a command",
       ["connect", "cursor", "--name", "a", "--apply"],
+      TEXTS.applyNotHere,
+    ],
+    [
+      "--apply for vscode: its command is printed, never run",
+      ["connect", "vscode", "--name", "a", "--apply"],
       TEXTS.applyNotHere,
     ],
     ["--scope -read", ["connect", "codex", "--name", "a", "--scope", "-read"], TEXTS.scopeNoRead],
@@ -518,7 +552,7 @@ describe("connect: every form of the output checked before anything is issued", 
     writeFileSync(quoted, "#!/bin/sh\n", { mode: 0o755 });
   });
 
-  it.each(["cursor", "claude-desktop", "generic"])(
+  it.each(["cursor", "claude-desktop", "vscode", "generic"])(
     "an entry with a quote, for %s: its JSON line would hold an escape; refused (1), nothing issued",
     async (host) => {
       service();

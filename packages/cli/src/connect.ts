@@ -31,6 +31,7 @@ export const HOSTS = [
   "codex",
   "cursor",
   "claude-desktop",
+  "vscode",
   "generic",
   "http",
 ] as const;
@@ -67,7 +68,11 @@ export const HOST_INFO: Readonly<
   },
 };
 
-/** The hosts with a command to add saveslot: the ones `--apply` and `setup` can run. */
+/**
+ * The hosts with a command to add saveslot that `--apply` and `setup` can run. VS Code has one
+ * (`code --add-mcp`) and is not among them (06 §3.2): it replaces an entry of the same name without
+ * a word, writes the token into a file other users can read, and has no command to look an entry up.
+ */
 export const APPLIES: ReadonlySet<Host> = new Set<Host>(
   SETUP_HOSTS.filter((h) => HOST_INFO[h].exe !== undefined),
 );
@@ -167,7 +172,10 @@ export async function entryPath(entry: string | undefined): Promise<string> {
 /** Whether the path is in npx's cache (a `_npx` directory in it), which goes away: said, not refused. */
 export const entryMayGo = (entry: string): boolean => entry.split("/").includes("_npx");
 
-/** The host's command to add saveslot, as its arguments (06 §3.2: user level, name first). */
+/**
+ * The host's command to add saveslot, as its arguments (06 §3.2: user level, name first). VS Code's
+ * is printed for the user to run, never run here.
+ */
 export function addCommand(host: Host, token: string, entry: string): string[] | undefined {
   const env = `SAVESLOT_TOKEN=${token}`;
   if (host === "claude-code")
@@ -196,8 +204,20 @@ export function addCommand(host: Host, token: string, entry: string): string[] |
       entry,
       "mcp",
     ];
+  if (host === "vscode")
+    return vscodeAdd({ command: entry, args: ["mcp"], env: { SAVESLOT_TOKEN: token } });
   return undefined;
 }
+
+/**
+ * `code --add-mcp '<JSON>'` (VS Code 1.147.0, checked): the server named in the JSON, written to
+ * the user-level `mcp.json` under `servers`.
+ */
+const vscodeAdd = (server: Record<string, unknown>): string[] => [
+  "code",
+  "--add-mcp",
+  JSON.stringify({ name: "saveslot", ...server }),
+];
 
 /** The configuration a host without an add command is given to paste (06 §3.2). */
 export function pastedConfig(host: Host, token: string, entry: string): unknown {
@@ -328,7 +348,8 @@ export const mcpUrl = (server: string): string => `${server}/mcp`;
 /**
  * The host's command to add a server's remote MCP (06 §3.2 «服务器模式»), with no token in it:
  * the host signs in itself with OAuth. Hosts without a command: undefined. Not tried against the
- * hosts yet; claude-code's is as 06 §3.2 writes it.
+ * hosts yet; claude-code's is as 06 §3.2 writes it. VS Code's writes `{"type": "http", "url": …}`
+ * (1.147.0, checked); whether it then signs in by itself is not.
  */
 export function remoteAddCommand(host: Host, url: string): string[] | undefined {
   if (host === "claude-code") {
@@ -346,6 +367,7 @@ export function remoteAddCommand(host: Host, url: string): string[] | undefined 
   }
   if (host === "codex")
     return [HOST_INFO[host].exe as string, "mcp", "add", "saveslot", "--url", url];
+  if (host === "vscode") return vscodeAdd({ type: "http", url });
   return undefined;
 }
 
