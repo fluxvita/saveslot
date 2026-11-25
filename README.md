@@ -2,6 +2,8 @@
 
 English · [简体中文](README.zh-CN.md)
 
+[![ci](https://github.com/fluxvita/saveslot/actions/workflows/ci.yml/badge.svg)](https://github.com/fluxvita/saveslot/actions/workflows/ci.yml)
+
 **saveslot is Agent Data Infra: a shared data layer for all of a person's agents.** It tracks things that change over time and keeps the full timeline from the original evidence to the current state. The data belongs to the user and is not tied to any model vendor or agent host.
 
 - **Time is first-class.** A database stores the present; agent memory stores what was said. saveslot stores the timeline of a thing: what it is now, how it got there, and the evidence behind every step.
@@ -10,7 +12,11 @@ English · [简体中文](README.zh-CN.md)
 
 ## Status
 
-saveslot is in **early development**. Local mode (the saveslot service on your own computer, shared by the agents on it) runs end to end from a source checkout. It is not published to npm yet; server mode is under way.
+The first release, **0.1**, has both modes. In **local mode** the saveslot service runs on your own computer, and the agents on it share it. In **server mode** one saveslot serves all of your devices, hosted or self-hosted, with accounts and sign-in, OAuth authorization, remote MCP, import, and the `saveslot server` operations commands. It writes (add, change, correct, revoke, with conflicts and confirmations), reads (catalog, query, SQL, history, sources), handles pending items, creates slots and changes their schema where no table has to be rebuilt, and exports, imports and verifies the log. Agents reach it through MCP; people through the `saveslot` command.
+
+Not in 0.1 yet, in either mode, coming in later releases: privacy deletion (preview, confirm, undo within 24 hours, physical deletion when due; to undo a wrong value now, revoke it, and the history stays), and schema changes that rebuild a table that has been written to (adding or dropping a field, tightening a constraint, changing precision or unit). Also not wired up yet: `saveslot verify --replay`, changing a slot's policy, and detailed query output. The details: [`docs/zh-CN/spec/07-scope-v1.md`](docs/zh-CN/spec/07-scope-v1.md) section 7.
+
+saveslot is before 1.0: interfaces may change between minor versions.
 
 The design documents are written in **Simplified Chinese** under [`docs/zh-CN/`](docs/zh-CN/), and the Chinese edition is authoritative. The specification and the guide also have an English edition under `docs/`; [`docs/README.md`](docs/README.md) lists them. The English edition of the decision records, walkthroughs and research notes is pending.
 
@@ -26,21 +32,23 @@ The design documents are written in **Simplified Chinese** under [`docs/zh-CN/`]
 
 You need Node 24.22.1 or later on the 24 line, or 26.12.1 or later.
 
-From a source checkout, until the package is on npm:
-
 ```sh
-pnpm install && pnpm build
-node packages/saveslot/dist/bin.js setup
-```
-
-Once it is published:
-
-```sh
-npm install -g @fluxvita/saveslot
+npm install -g @fluxvita/saveslot      # until 0.1.0 is out: @fluxvita/saveslot@next
 saveslot setup
 ```
 
-`saveslot setup` creates `~/.saveslot`, starts the service, offers a first slot from a template, and adds saveslot to the agent hosts it finds (Claude Code, Codex; Cursor and Claude Desktop by a snippet you paste). Then ask your agent "what is in saveslot?".
+`saveslot setup` creates `~/.saveslot`, starts the service, offers a first slot from a template, and adds saveslot to the agent hosts it finds (Claude Code, Codex; Cursor and Claude Desktop by a snippet you paste). Pick the `running` template, then tell your agent:
+
+> I ran 5 km this morning in 28 minutes, felt easy.
+
+The agent writes it with the evidence of what you said, and the row is there:
+
+```sh
+saveslot query health.runs
+saveslot history health.runs r_…    # the row's id from the query: how it got there, with the evidence
+```
+
+From a source checkout instead: `pnpm install && pnpm build`, then `node packages/saveslot/dist/bin.js setup`.
 
 On Linux, when Node is installed under `/usr/local`, `npm install -g` fails with `EACCES` for a normal user. Give npm a prefix of your own instead of using `sudo`:
 
@@ -51,9 +59,11 @@ echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.profile
 
 Open a new shell, then run `npm install -g` again. The steps in detail: [`docs/zh-CN/spec/06-cli.md`](docs/zh-CN/spec/06-cli.md) §3.
 
-## Contributing
+## Getting help and contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- Questions: [Discussions](https://github.com/fluxvita/saveslot/discussions); bugs and tasks: [Issues](https://github.com/fluxvita/saveslot/issues). See [`SUPPORT.md`](SUPPORT.md).
+- Security issues: privately, as [`SECURITY.md`](SECURITY.md) says.
+- Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md). Who decides what: [`GOVERNANCE.md`](GOVERNANCE.md). Everyone follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

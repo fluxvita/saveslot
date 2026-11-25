@@ -81,21 +81,25 @@ saveslot 是给所有 Agent 用的数据底座：跟踪会随时间演变的事�
 
 需要 Node 24.22.1 及以上（26 系列 26.12.1 及以上）。
 
-npm 包还没发布，现在从源码检出运行：
-
 ```sh
-pnpm install && pnpm build
-node packages/saveslot/dist/bin.js setup
-```
-
-发布之后：
-
-```sh
-npm install -g @fluxvita/saveslot
+npm install -g @fluxvita/saveslot      # 0.1.0 发布之前：@fluxvita/saveslot@next
 saveslot setup
 ```
 
-`saveslot setup` 建好 `~/.saveslot`、启动服务、用模板建第一个 slot，并把 saveslot 加进本机找到的宿主（Claude Code、Codex；Cursor 与 Claude Desktop 打印配置片段，由人粘贴）。之后在 Agent 里问一句"saveslot 里有什么"。
+`saveslot setup` 建好 `~/.saveslot`、启动服务、用模板建第一个 slot，并把 saveslot 加进本机找到的宿主（Claude Code、Codex；Cursor 与 Claude Desktop 打印配置片段，由人粘贴）。模板选 `running`，然后对 Agent 说：
+
+> 今天早上跑了 5 公里，28 分钟，挺轻松。
+
+Agent 把它连同你的原话一起写进去，这一行就在了：
+
+```sh
+saveslot query health.runs
+saveslot history health.runs r_…    # r_… 取自上面的结果：这一行怎么来的、证据是什么
+```
+
+也可以从源码检出运行：`pnpm install && pnpm build`，再 `node packages/saveslot/dist/bin.js setup`。
+
+0.1 是第一个发布版本，提供本机模式与服务器模式（账户与登录、OAuth 授权、远程 MCP、导入、`saveslot server` 的运维命令）。两种模式下尚未提供的是隐私删除（预览、确认、24 小时内撤回、到期物理删除、恢复备份后的补删）和在写入过的表上需要重建表的 schema 改动，随后的版本提供；`saveslot verify --replay`、修改 slot 策略、详细的查询输出也尚未接入。详见 [`docs/zh-CN/spec/07-scope-v1.md`](docs/zh-CN/spec/07-scope-v1.md) 第 7 节。
 
 Linux 上 Node 装在 `/usr/local` 时，普通用户执行 `npm install -g` 会报 `EACCES`。不要用 `sudo`，给 npm 设一个用户自己的目录：
 
@@ -123,4 +127,5 @@ echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.profile
 
 - 仓库：`fluxvita/saveslot`；网站：`saveslot.ai`；npm 包：`@fluxvita/saveslot`。
 - 许可证：[Apache-2.0](LICENSE)，代码与文档相同。名字与标识的使用见[商标政策](TRADEMARKS.zh-CN.md)。
-- 参与贡献：[`CONTRIBUTING.md`](CONTRIBUTING.zh-CN.md) 与 [`docs/zh-CN/guide/12-contributing.md`](docs/zh-CN/guide/12-contributing.md)。
+- 参与贡献：[`CONTRIBUTING.md`](CONTRIBUTING.zh-CN.md) 与 [`docs/zh-CN/guide/12-contributing.md`](docs/zh-CN/guide/12-contributing.md)；谁决定什么见 [`GOVERNANCE.md`](GOVERNANCE.md)，参与者遵守[行为准则](CODE_OF_CONDUCT.md)。
+- 求助：提问去 [Discussions](https://github.com/fluxvita/saveslot/discussions)，缺陷与任务提 [Issues](https://github.com/fluxvita/saveslot/issues)（[`SUPPORT.md`](SUPPORT.md)）；安全问题按 [`SECURITY.zh-CN.md`](SECURITY.zh-CN.md) 私下报告。
