@@ -11,6 +11,7 @@ Specification: [`../spec/02-architecture.md`](../spec/02-architecture.md) §9 "T
 
 | What | Description |
 |---|---|
+| saveslot | `npm install -g @fluxvita/saveslot`, or pull the container image `ghcr.io/fluxvita/saveslot:<version>` (linux/amd64 and linux/arm64, published with the npm packages for every version). The image starts as `saveslot server start`, listens on `0.0.0.0:8080` inside the container, and holds no key or password; [`deploy/compose.yaml`](../../deploy/compose.yaml) is an example of it running with PostgreSQL on one host (set its `image` to the version you use). To build the image yourself, use [`deploy/build-image.sh`](../../deploy/build-image.sh) |
 | PostgreSQL 18 | One database per user, plus one control database (it stores accounts, credentials, the tenant catalog and the deletion register). Both can be on the same instance |
 | A database role | See below |
 | A public address | The HTTPS address that agents and the command line connect to, for example `https://saveslot.example.com`. TLS is handled by the reverse proxy in front of it; the saveslot process itself listens on plain HTTP |

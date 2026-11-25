@@ -17,6 +17,9 @@ fixed group (`.changeset/config.json`), always at the same version.
 | `connector-ts` | No | The connector SDK; nothing the entry needs. Released on its own later. |
 | `reference`, `test-backend` | No | Test-only: the reference evaluator and the tests' storage backend. |
 
+The server mode is also published as a container image, `ghcr.io/fluxvita/saveslot:<version>` (see
+"Container image").
+
 Every package but the entry is internal: its README opens by saying so, and its interface may change in
 any release. Each package ships only `dist`, without test fixtures and build caches. Dependencies
 between them are `workspace:*` in the repository and the exact version when published.
@@ -66,7 +69,8 @@ between them are `workspace:*` in the repository and the exact version when publ
 3. On that push to the release branch, the release workflow builds, runs `pnpm smoke:install` (a
    throwaway local registry, an install from it, the installed `saveslot` run), and publishes the
    versions that are not on npm yet with `changeset publish`, as `latest`, with provenance. Then it
-   tags the commit `v<version>` and pushes the tags.
+   tags the commit `v<version>` and pushes the tags, and has the container image of that commit
+   built and pushed as `<version>` and `latest` (see "Container image").
 4. Only a commit whose full check passed on the release branch is released: the release workflow runs
    after `ci` on the same push and stops if it failed.
 5. After the release the maintainer brings the release commit to `main` in a pull request (the
@@ -75,6 +79,25 @@ between them are `workspace:*` in the repository and the exact version when publ
 
 Nothing is published from a laptop, except the prerelease below. npm provenance needs a public
 repository and a GitHub-hosted runner, so it starts with the first release from the public repository.
+
+## Container image
+
+The server mode's image is built from `deploy/Dockerfile` with the repository root as the context
+(as `deploy/build-image.sh` does) and published to the GitHub container registry:
+`ghcr.io/fluxvita/saveslot:<version>`, one tag for `linux/amd64` and `linux/arm64`, with a provenance
+attestation. `<version>` is the entry package's version at the commit built. The image workflow
+(`.github/workflows/image.yml`) does it:
+
+- On pull requests and on pushes to `main` and release branches it builds both platforms and pushes
+  nothing.
+- After the release workflow has published a release to npm, it builds the published commit and
+  pushes it as `<version>` and `latest`.
+- By hand (`workflow_dispatch`), for a git tag `v<version>`: to publish a prerelease's image, or to
+  retry a release's. The tag must name the entry package's version at that commit. `latest` is added
+  only when asked, and never to a prerelease.
+
+The image holds no credential; the workflow pushes with its own token, scoped to the job
+(`packages: write`).
 
 ## Prereleases
 
@@ -85,7 +108,8 @@ repository and a GitHub-hosted runner, so it starts with the first release from 
 - `0.1.0-rc.0` is published by a maintainer from their own machine, from the commit whose full check
   passed, before the repository is public; it carries no provenance. Afterwards the maintainer tags
   that commit (`pnpm changeset tag`, and `v0.1.0-rc.0`) and checks every package's `next` and `latest`
-  (`npm dist-tag ls`).
+  (`npm dist-tag ls`). Its container image is pushed by hand from that tag (see "Container image"),
+  without `latest`.
 
 ## Credentials
 

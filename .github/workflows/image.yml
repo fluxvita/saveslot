@@ -1,0 +1,203 @@
+# Builds the server mode's container image from deploy/Dockerfile (RELEASING.md «Container image»),
+# for linux/amd64 and linux/arm64, each on a runner of its own architecture. On pull requests and on
+# pushes to main and release branches it only builds. It pushes ghcr.io/fluxvita/saveslot:<version>,
+# <version> being the entry package's version at the commit built, in two cases:
+# - called by the release workflow once it has published a release to npm, on the commit published;
+#   that image is also tagged `latest`;
+# - by hand, for a git tag `v<version>` (to publish a prerelease's image, or to retry); `latest` only
+#   when asked, and never for a prerelease.
+# The per-architecture images are pushed by digest and joined into one multi-platform tag, with a
+# provenance attestation. No credential goes into the image: the build reads only the repository.
+
+name: image
+
+on:
+  pull_request:
+  push:
+    branches: [main, "release/**"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The git tag to build and push, v<version> (v0.1.0-rc.0)
+        required: true
+        type: string
+      latest:
+        description: Also tag the image `latest` (refused for a prerelease)
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit to build and push
+        required: true
+        type: string
+      latest:
+        description: Also tag the image `latest` (refused for a prerelease)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ inputs.tag || inputs.ref || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+
+env:
+  IMAGE: ghcr.io/fluxvita/saveslot
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+      push: ${{ steps.plan.outputs.push }}
+      tags: ${{ steps.plan.outputs.tags }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || (inputs.tag && format('refs/tags/{0}', inputs.tag)) || '' }}
+          persist-credentials: false
+      - id: plan
+        env:
+          TAG: ${{ inputs.tag }}
+          CALLED_REF: ${{ inputs.ref }}
+          LATEST: ${{ inputs.latest }}
+        run: |
+          version="$(node -p 'require("./packages/saveslot/package.json").version')"
+          push=false
+          if [ -n "$TAG" ]; then
+            if [ "$TAG" != "v${version}" ]; then
+              echo "::error::The tag ${TAG} is not v${version}, the entry package's version at it."
+              exit 1
+            fi
+            push=true
+          elif [ -n "$CALLED_REF" ]; then
+            push=true
+          fi
+          if [ "$push" = true ] && [ "$GITHUB_REPOSITORY" != fluxvita/saveslot ]; then
+            echo "::error::Images are pushed from fluxvita/saveslot only."
+            exit 1
+          fi
+          tags="${IMAGE}:${version}"
+          if [ "$LATEST" = true ]; then
+            case "$version" in
+              *-*)
+                echo "::error::${version} is a prerelease; it is not tagged latest."
+                exit 1
+                ;;
+            esac
+            tags="${tags} ${IMAGE}:latest"
+          fi
+          {
+            echo "sha=$(git rev-parse HEAD)"
+            echo "version=${version}"
+            echo "push=${push}"
+            echo "tags=${tags}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Version ${version}, push: ${push}, tags: ${tags}"
+
+  build:
+    needs: plan
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write # pushing by digest; used only when the plan says push
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: needs.plan.outputs.push == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          # The repository root as the context, as deploy/build-image.sh builds it; the ignore file
+          # beside the Dockerfile (deploy/Dockerfile.dockerignore) applies.
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/fluxvita/saveslot
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.version }}
+            org.opencontainers.image.licenses=Apache-2.0
+          outputs: >-
+            ${{ needs.plan.outputs.push == 'true'
+            && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE)
+            || 'type=cacheonly' }}
+      - if: needs.plan.outputs.push == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+      - if: needs.plan.outputs.push == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [plan, build]
+    if: needs.plan.outputs.push == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write # the multi-platform tags and the attestation
+      id-token: write # signing the attestation
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: tag
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          TAGS: ${{ needs.plan.outputs.tags }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          args=()
+          for t in $TAGS; do args+=(-t "$t"); done
+          sources=()
+          for d in *; do sources+=("${IMAGE}@sha256:${d}"); done
+          if [ "${#sources[@]}" -ne 2 ]; then
+            echo "::error::Expected two platform images, found ${#sources[@]}."
+            exit 1
+          fi
+          docker buildx imagetools create "${args[@]}" "${sources[@]}"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.tag.outputs.digest }}
+          push-to-registry: true
