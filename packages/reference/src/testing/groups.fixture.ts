@@ -13,19 +13,108 @@ const w = (
   seen: number,
   fields: Record<string, string>,
   from = "10-01",
-  to: "open" | "next_change" = "open",
+  /** `open`, `next_change`, or a given end (`MM-DD`). */
+  to = "open",
   ack = false,
 ): WriteOp => ({
   kind: "write",
   op,
   event: op + 1,
   seen,
-  valid: { from: { mode: "given", value: d(from) }, to: { mode: to } },
+  valid: {
+    from: { mode: "given", value: d(from) },
+    to: to === "open" || to === "next_change" ? { mode: to } : { mode: "given", value: d(to) },
+  },
   fields: Object.fromEntries(
     Object.entries(fields).map(([f, value]) => [f, { value, sources: [`S${op}${f}`] }]),
   ) as WriteOp["fields"],
   ...(ack ? { acknowledge: ["overwrite"] as const } : {}),
 });
+
+type Valid = NonNullable<WriteOp["valid"]>;
+
+/** A write acknowledging overwrite, its interval given as is (`corrected_span` with `now`). */
+const at = (
+  op: number,
+  seen: number,
+  valid: Valid,
+  fields: Record<string, string>,
+  now?: string,
+): WriteOp => ({
+  kind: "write",
+  op,
+  event: op + 1,
+  seen,
+  valid,
+  ...(now !== undefined ? { now: d(now) } : {}),
+  fields: Object.fromEntries(
+    Object.entries(fields).map(([f, value]) => [f, { value, sources: [`S${op}${f}`] }]),
+  ) as WriteOp["fields"],
+  acknowledge: ["overwrite"],
+});
+const given = (from: string, to?: string): Valid => ({
+  from: { mode: "given", value: d(from) },
+  to: to === undefined ? { mode: "open" } : { mode: "given", value: d(to) },
+});
+const toNext = (from: string): Valid => ({
+  from: { mode: "given", value: d(from) },
+  to: { mode: "next_change" },
+});
+
+/**
+ * #11, #21 (in V, a change of `short` over [11-01, 11-05)), #31 (after V, f2 = 3 and f3 = m over
+ * [11-03, 11-09)), #61 (seen #20: f2 = 3, f3 = m from 11-01 to the next change).
+ */
+export function groupInstantOps(short: "f2" | "f3"): Op[] {
+  const span = (from: string, to?: string) => ({
+    from: { mode: "given" as const, value: d(from) },
+    to: to === undefined ? { mode: "open" as const } : { mode: "given" as const, value: d(to) },
+  });
+  return [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: span("10-01"),
+      fields: {
+        f2: { value: "1", sources: ["S10"] },
+        ...(short === "f3" ? { f3: { value: "1", sources: ["S10f3"] } } : {}),
+      },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: span("11-01", "11-05"),
+      fields: { [short]: { value: "2", sources: ["S20"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 20,
+      valid: span("11-03", "11-09"),
+      fields: { f2: { value: "3", sources: ["S30"] }, f3: { value: "m", sources: ["M30"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 60,
+      event: 61,
+      seen: 20,
+      valid: { from: { mode: "given", value: d("11-01") }, to: { mode: "next_change" } },
+      fields: {
+        f2: { value: "3", sources: ["S6"], explicit: false },
+        f3: { value: "m", sources: ["M60"] },
+      },
+      acknowledge: ["overwrite"],
+    },
+  ] as Op[];
+}
 
 export const GROUP_LOGS: Record<
   string,
@@ -62,6 +151,98 @@ export const GROUP_LOGS: Record<
     ],
     event: 31,
     want: [["f2", "candidate"]],
+  },
+  // The group value instant by instant: #61 (seen #20) writes f2 = 3 and f3 = m from 11-01 to the
+  // next change. Each field's seen interval is its own: f2's stops at f2's change point in V
+  // (11-05), f3's runs on. #31, after V, wrote f2 and f3 over [11-03, 11-09). On [11-05, 11-09) only
+  // f3's interval reaches: W's group value takes f2 from V (1), not W's 3, and differs from the
+  // current (3, m): a conflict, both of #61's fields candidates.
+  "the group value: a field W wrote whose seen interval does not hold the instant takes V's value":
+    {
+      schema: GROUP,
+      ops: groupInstantOps("f2"),
+      event: 61,
+      want: [
+        ["f2", "candidate"],
+        ["f3", "candidate"],
+      ],
+    },
+  // The same, the other way round: f3's seen interval is the short one (#21 changed f3 in V), f2's
+  // runs on; on [11-05, 11-09) W's group value takes f3 from V (1).
+  "the group value: the same with f3's seen interval the short one": {
+    schema: GROUP,
+    ops: groupInstantOps("f3"),
+    event: 61,
+    want: [
+      ["f2", "candidate"],
+      ["f3", "candidate"],
+    ],
+  },
+  // Seen intervals resolved on V, not on the current state: #61 (seen #20) writes f2 = 3, f3 = m
+  // from 11-01 to the next change; f2's seen interval at V is [11-01, 11-05) (#21's change), f3's
+  // runs on. #31, after V, wrote the same (3, m) over [11-01, 11-09), so on the current state f2's
+  // would run to 11-09. On [11-05, 11-09) W's group value takes f2 from V (1) against the current
+  // (3, m): a conflict, both of #61's fields candidates.
+  "the group value: a seen interval is resolved on V, not on the current state": {
+    schema: GROUP,
+    ops: [
+      at(10, 0, given("10-01"), { f2: "1", f3: "a" }),
+      at(20, 10, given("11-01", "11-05"), { f2: "2" }),
+      at(30, 20, given("11-01", "11-09"), { f2: "3", f3: "m" }),
+      at(60, 20, toNext("11-01"), { f2: "3", f3: "m" }),
+    ],
+    event: 61,
+    want: [
+      ["f2", "candidate"],
+      ["f3", "candidate"],
+    ],
+  },
+  // The start of a seen interval holds: #31 sets f2 to 3 over [11-01, 11-05), #41 f3 to m from
+  // 11-01. #61 (seen #20) writes (3, m) from 11-01 to the next change: f2's seen interval is
+  // [11-01, 11-05), f3's runs on. From 11-01 W's group value is the current one at every instant
+  // (W's f2 inside f2's interval, V's after it): no conflict, both take effect.
+  "the group value: a field's seen interval holds from its start": {
+    schema: GROUP,
+    ops: [
+      at(10, 0, given("10-01"), { f2: "1", f3: "a" }),
+      at(20, 10, given("11-01", "11-05"), { f2: "2" }),
+      at(30, 20, given("11-01", "11-05"), { f2: "3" }),
+      at(40, 30, given("11-01"), { f3: "m" }),
+      at(60, 20, toNext("11-01"), { f2: "3", f3: "m" }),
+    ],
+    event: 61,
+    want: [
+      ["f2", "applied"],
+      ["f3", "applied"],
+    ],
+  },
+  // Two writes of the same values, both having seen #20, by `corrected_span` (05-time): f2's seen
+  // interval [10-01, 11-05), f3's [10-01, ∞). The second's group value is the first's at every
+  // instant of its intervals: it takes effect as the first did.
+  "the group value: a twin written on the same version takes effect too": {
+    schema: GROUP,
+    ops: [
+      at(10, 0, given("10-01"), { f2: "1", f3: "a" }),
+      at(20, 10, given("11-05"), { f2: "2" }),
+      at(30, 20, "corrected_span", { f2: "3", f3: "m" }, "11-02"),
+      at(40, 20, "corrected_span", { f2: "3", f3: "m" }, "11-02"),
+    ],
+    event: 41,
+    want: [
+      ["f2", "applied"],
+      ["f3", "applied"],
+    ],
+  },
+  // Without the group, field by field: neither field's seen interval meets #31 where its value
+  // differs, both take effect (up to #31's change point, 11-03).
+  "without the group the same log takes effect": {
+    schema: { kind: "state", required: ["f2"] },
+    ops: groupInstantOps("f2"),
+    event: 61,
+    want: [
+      ["f2", "applied"],
+      ["f3", "applied"],
+    ],
   },
 };
 

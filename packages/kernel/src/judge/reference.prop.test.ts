@@ -14,12 +14,18 @@
 // are covered by fixed cases (judge.test.ts), as are `deps` and the overwritten stretches.
 
 import { evaluateLog, type Op, type TableSchema } from "@fluxvita/saveslot-reference";
-import { EVENT, Hits, propRuns, STATE } from "@fluxvita/saveslot-reference/testing";
+import {
+  EVENT,
+  groupInstantOps,
+  Hits,
+  propRuns,
+  STATE,
+} from "@fluxvita/saveslot-reference/testing";
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 import { isNothing, meet } from "../time/index.ts";
 import { judgeOp, stateFromRecord, view } from "./judge.ts";
-import { type Judged, judged, scenario } from "./scenarios.fixture.ts";
+import { type Decision, type Judged, judged, scenario } from "./scenarios.fixture.ts";
 import { EVERYTHING, type RowState, refKey } from "./state.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -169,282 +175,276 @@ describe.each(both)("%s table", (_, schema, isState) => {
       takePrevious: 0,
       confirmUndo: 0,
     };
-    fc.assert(
-      fc.property(
-        scenario(isState),
-        hits.track(({ ops, decisions }) => {
-          const { table, steps, refused } = judged(schema, ops, decisions);
-          const kept = steps.map((x) => x.op);
-          const fin = steps[steps.length - 1]?.state;
-          const st = new Set(fin?.items.map((x) => x.status) ?? []);
-          seen.samples++;
-          if (st.has("awaiting")) seen.awaiting++;
-          if (st.has("candidate")) seen.candidate++;
-          if (st.has("corroborated")) seen.corroborated++;
-          if (kept.some((o) => o.op % 10 !== 0)) seen.decided++;
-          if (refused.length > 0) seen.refused++;
-          if (st.has("awaiting") || st.has("candidate")) hits.hit();
-          for (const x of steps) {
-            const r = x.judgement.record;
-            // A corroboration written to the next change, cut by a change since (05-time
-            // «用同样的值写»): a corroborated item beside one in effect or a candidate, one field.
-            if (
-              r.kind === "write" &&
-              (r.valid === undefined ||
-                (r.valid !== "corrected_span" && r.valid.to.mode === "next_change"))
-            ) {
-              const byField = new Map<string, Set<string>>();
-              for (const i of r.items) {
-                const set = byField.get(i.target) ?? new Set<string>();
-                set.add(i.status);
-                byField.set(i.target, set);
-              }
-              if ([...byField.values()].some((v) => v.has("corroborated") && v.size > 1)) {
-                seen["corroborationCut"] = (seen["corroborationCut"] ?? 0) + 1;
-              }
-            }
-            if (r.kind === "undo") {
-              seen["undo"] = (seen["undo"] ?? 0) + 1;
-              if (r.status === "awaiting") seen["undoAwaiting"] = (seen["undoAwaiting"] ?? 0) + 1;
-              if (r.revert.entries.some((e) => e.later)) seen["later"] = (seen["later"] ?? 0) + 1;
-              if (x.judgement.takesBack.length > 0)
-                seen["takesBack"] = (seen["takesBack"] ?? 0) + 1;
-              if (x.judgement.hides.length > 0) seen["hides"] = (seen["hides"] ?? 0) + 1;
-              if (r.revert.skipped.length > 0) seen["skipped"] = (seen["skipped"] ?? 0) + 1;
-            }
-            if (r.kind === "undo") {
-              const target = steps.find((k) => k.op.op === (x.op as { target: number }).target);
-              const tr = target?.judgement.record;
-              const kind =
-                tr === undefined
-                  ? "none"
-                  : tr.kind === "undo" && tr.status === "awaiting"
-                    ? steps.some(
-                        (k) =>
-                          k.judgement.record.kind === "confirm" &&
-                          k.judgement.record.target === tr.event,
-                      )
-                      ? "confirmedProposal"
-                      : "proposal"
-                    : tr.kind;
-              seen[`undoOf_${kind}`] = (seen[`undoOf_${kind}`] ?? 0) + 1;
-            }
-            // One write with candidates in a field item and in the item on existence (a2).
-            if (
-              x.judgement.conflicts.some((c) => c.unit === "existence") &&
-              x.judgement.conflicts.some((c) => c.unit !== "existence")
-            ) {
-              seen["mixedUnits"] = (seen["mixedUnits"] ?? 0) + 1;
-            }
-            // On a field group: one conflict on the group whose candidates are on both fields
-            // (conflict criterion ⑤), and a resolution of an item on the group.
-            if (
-              x.judgement.conflicts.some(
-                (c) =>
-                  c.unit !== "existence" &&
-                  c.unit.fields.length > 1 &&
-                  new Set(c.items.map((i) => i.target)).size > 1,
-              )
-            ) {
-              seen["groupWhole"] = (seen["groupWhole"] ?? 0) + 1;
-            }
-            if (
-              (r.kind === "keep_effective" || r.kind === "take_candidate") &&
-              r.unit !== "existence" &&
-              r.unit.fields.length > 1
-            ) {
-              seen["groupResolved"] = (seen["groupResolved"] ?? 0) + 1;
-            }
-            if (x.judgement.conflicts.some((c) => c.unit === "existence" && c.items.length > 1)) {
-              seen["existenceSeveralFields"] = (seen["existenceSeveralFields"] ?? 0) + 1;
-            }
-            if (r.kind === "take_candidate") {
-              seen["take"] = (seen["take"] ?? 0) + 1;
-              if (r.unit === "existence") seen["takeExistence"] = (seen["takeExistence"] ?? 0) + 1;
-              if (r.items.length === 0) seen["takeNothing"] = (seen["takeNothing"] ?? 0) + 1;
-              for (const y of r.items) {
-                const key = `take_${y.content.kind}${y.carried?.some((c) => c.event !== r.take) ? "_carriedOther" : ""}`;
-                seen[key] = (seen[key] ?? 0) + 1;
-              }
-              // Several stretches: more than one item on a field.
-              if (r.items.some((y) => y.target !== "existence" && y.k > 0))
-                seen["takeManyStretches"] = (seen["takeManyStretches"] ?? 0) + 1;
-            }
-            if (r.kind === "take_previous") {
-              seen["takePrevious"] = (seen["takePrevious"] ?? 0) + 1;
-              if ((r.revert.candidates?.length ?? 0) > 1)
-                seen["takePreviousMany"] = (seen["takePreviousMany"] ?? 0) + 1;
-            }
-            if (r.kind === "confirm" && r.revert !== undefined)
-              seen["confirmUndo"] = (seen["confirmUndo"] ?? 0) + 1;
-            if (
-              (r.kind === "undo" || r.kind === "take_previous" || r.kind === "confirm") &&
-              "items" in r
-            ) {
-              for (const y of r.items)
-                seen[`wb_${y.content.kind}`] = (seen[`wb_${y.content.kind}`] ?? 0) + 1;
-            }
+    const sample = ({ ops, decisions }: { ops: Op[]; decisions: Decision[] }): void => {
+      const { table, steps, refused } = judged(schema, ops, decisions);
+      const kept = steps.map((x) => x.op);
+      const fin = steps[steps.length - 1]?.state;
+      const st = new Set(fin?.items.map((x) => x.status) ?? []);
+      seen.samples++;
+      if (st.has("awaiting")) seen.awaiting++;
+      if (st.has("candidate")) seen.candidate++;
+      if (st.has("corroborated")) seen.corroborated++;
+      if (kept.some((o) => o.op % 10 !== 0)) seen.decided++;
+      if (refused.length > 0) seen.refused++;
+      if (st.has("awaiting") || st.has("candidate")) hits.hit();
+      for (const x of steps) {
+        const r = x.judgement.record;
+        // A corroboration written to the next change, cut by a change since (05-time
+        // «用同样的值写»): a corroborated item beside one in effect or a candidate, one field.
+        if (
+          r.kind === "write" &&
+          (r.valid === undefined ||
+            (r.valid !== "corrected_span" && r.valid.to.mode === "next_change"))
+        ) {
+          const byField = new Map<string, Set<string>>();
+          for (const i of r.items) {
+            const set = byField.get(i.target) ?? new Set<string>();
+            set.add(i.status);
+            byField.set(i.target, set);
           }
-          if (refused.some((x) => x.op.kind === "undo"))
-            seen["undoRefused"] = (seen["undoRefused"] ?? 0) + 1;
-
-          // Refusals: a write lacking a required field whose part taking effect fills a gap, a
-          // write taking effect on a revoked event row, or an undo the reference rejects (for
-          // `undo_target`, or `revoked`); nothing else.
-          for (const r of refused) {
-            if (r.op.kind === "undo") {
-              const last = evaluateLog(schema, [...r.before, r.op]).final.reverts.at(-1);
-              expect({ op: r.op.op, reason: r.reason }).toEqual({
-                op: r.op.op,
-                reason: last?.reason === "revoked" ? "revoked" : "invalid_argument",
-              });
-              expect({ op: r.op.op, status: last?.status }).toEqual({
-                op: r.op.op,
-                status: "rejected",
-              });
-              seen[`undoRefused_${r.reason}`] = (seen[`undoRefused_${r.reason}`] ?? 0) + 1;
-              continue;
-            }
-            if (r.op.kind === "resolve" || r.op.kind === "confirm" || r.op.kind === "reject") {
-              // A decision refused as the reference refuses it: not valid on the state without it
-              // (`invalid`), or a take refused as the ordinary write would be (`revoked`, a gap
-              // without the required fields), or on existence with a required field nowhere to
-              // carry from.
-              const rej = evaluateLog(schema, [...r.before, r.op]).steps.at(-1)?.rejected;
-              const expected =
-                rej === undefined
-                  ? "accepted"
-                  : rej === "revoked" || rej === "invalid"
-                    ? rej
-                    : "validation_failed";
-              expect({ op: r.op.op, reason: r.reason }).toEqual({ op: r.op.op, reason: expected });
-              seen[`takeRefused_${rej}`] = (seen[`takeRefused_${rej}`] ?? 0) + 1;
-              continue;
-            }
-            if (r.reason === "revoked") {
-              expect({
-                op: r.op.op,
-                kind: r.op.kind,
-                revoked: revokedRow(schema, r.before),
-                effective: takesEffect(schema, r.before, r.op),
-              }).toEqual({ op: r.op.op, kind: "write", revoked: true, effective: true });
-              seen["writeRevoked"] = (seen["writeRevoked"] ?? 0) + 1;
-              continue;
-            }
-            expect({ op: r.op.op, reason: r.reason }).toEqual({
-              op: r.op.op,
-              reason: "validation_failed",
-            });
-            expect(lacksRequired(schema, r.op) && fillsGap(schema, r.before, r.op)).toBe(true);
+          if ([...byField.values()].some((v) => v.has("corroborated") && v.size > 1)) {
+            seen["corroborationCut"] = (seen["corroborationCut"] ?? 0) + 1;
           }
-          steps.forEach((x, i) => {
-            if (!isState && x.op.kind === "write" && takesEffect(schema, kept.slice(0, i), x.op)) {
-              expect({ op: x.op.op, revoked: revokedRow(schema, kept.slice(0, i)) }).toEqual({
-                op: x.op.op,
-                revoked: false,
-              });
-            }
-            if (isState && lacksRequired(schema, x.op)) {
-              expect({ op: x.op.op, fillsGap: fillsGap(schema, kept.slice(0, i), x.op) }).toEqual({
-                op: x.op.op,
-                fillsGap: false,
-              });
-            }
+        }
+        if (r.kind === "undo") {
+          seen["undo"] = (seen["undo"] ?? 0) + 1;
+          if (r.status === "awaiting") seen["undoAwaiting"] = (seen["undoAwaiting"] ?? 0) + 1;
+          if (r.revert.entries.some((e) => e.later)) seen["later"] = (seen["later"] ?? 0) + 1;
+          if (x.judgement.takesBack.length > 0) seen["takesBack"] = (seen["takesBack"] ?? 0) + 1;
+          if (x.judgement.hides.length > 0) seen["hides"] = (seen["hides"] ?? 0) + 1;
+          if (r.revert.skipped.length > 0) seen["skipped"] = (seen["skipped"] ?? 0) + 1;
+        }
+        if (r.kind === "undo") {
+          const target = steps.find((k) => k.op.op === (x.op as { target: number }).target);
+          const tr = target?.judgement.record;
+          const kind =
+            tr === undefined
+              ? "none"
+              : tr.kind === "undo" && tr.status === "awaiting"
+                ? steps.some(
+                    (k) =>
+                      k.judgement.record.kind === "confirm" &&
+                      k.judgement.record.target === tr.event,
+                  )
+                  ? "confirmedProposal"
+                  : "proposal"
+                : tr.kind;
+          seen[`undoOf_${kind}`] = (seen[`undoOf_${kind}`] ?? 0) + 1;
+        }
+        // One write with candidates in a field item and in the item on existence (a2).
+        if (
+          x.judgement.conflicts.some((c) => c.unit === "existence") &&
+          x.judgement.conflicts.some((c) => c.unit !== "existence")
+        ) {
+          seen["mixedUnits"] = (seen["mixedUnits"] ?? 0) + 1;
+        }
+        // On a field group: one conflict on the group whose candidates are on both fields
+        // (conflict criterion ⑤), and a resolution of an item on the group.
+        if (
+          x.judgement.conflicts.some(
+            (c) =>
+              c.unit !== "existence" &&
+              c.unit.fields.length > 1 &&
+              new Set(c.items.map((i) => i.target)).size > 1,
+          )
+        ) {
+          seen["groupWhole"] = (seen["groupWhole"] ?? 0) + 1;
+        }
+        if (
+          (r.kind === "keep_effective" || r.kind === "take_candidate") &&
+          r.unit !== "existence" &&
+          r.unit.fields.length > 1
+        ) {
+          seen["groupResolved"] = (seen["groupResolved"] ?? 0) + 1;
+        }
+        if (x.judgement.conflicts.some((c) => c.unit === "existence" && c.items.length > 1)) {
+          seen["existenceSeveralFields"] = (seen["existenceSeveralFields"] ?? 0) + 1;
+        }
+        if (r.kind === "take_candidate") {
+          seen["take"] = (seen["take"] ?? 0) + 1;
+          if (r.unit === "existence") seen["takeExistence"] = (seen["takeExistence"] ?? 0) + 1;
+          if (r.items.length === 0) seen["takeNothing"] = (seen["takeNothing"] ?? 0) + 1;
+          for (const y of r.items) {
+            const key = `take_${y.content.kind}${y.carried?.some((c) => c.event !== r.take) ? "_carriedOther" : ""}`;
+            seen[key] = (seen[key] ?? 0) + 1;
+          }
+          // Several stretches: more than one item on a field.
+          if (r.items.some((y) => y.target !== "existence" && y.k > 0))
+            seen["takeManyStretches"] = (seen["takeManyStretches"] ?? 0) + 1;
+        }
+        if (r.kind === "take_previous") {
+          seen["takePrevious"] = (seen["takePrevious"] ?? 0) + 1;
+          if ((r.revert.candidates?.length ?? 0) > 1)
+            seen["takePreviousMany"] = (seen["takePreviousMany"] ?? 0) + 1;
+        }
+        if (r.kind === "confirm" && r.revert !== undefined)
+          seen["confirmUndo"] = (seen["confirmUndo"] ?? 0) + 1;
+        if (
+          (r.kind === "undo" || r.kind === "take_previous" || r.kind === "confirm") &&
+          "items" in r
+        ) {
+          for (const y of r.items)
+            seen[`wb_${y.content.kind}`] = (seen[`wb_${y.content.kind}`] ?? 0) + 1;
+        }
+      }
+      if (refused.some((x) => x.op.kind === "undo"))
+        seen["undoRefused"] = (seen["undoRefused"] ?? 0) + 1;
+
+      // Refusals: a write lacking a required field whose part taking effect fills a gap, a
+      // write taking effect on a revoked event row, or an undo the reference rejects (for
+      // `undo_target`, or `revoked`); nothing else.
+      for (const r of refused) {
+        if (r.op.kind === "undo") {
+          const last = evaluateLog(schema, [...r.before, r.op]).final.reverts.at(-1);
+          expect({ op: r.op.op, reason: r.reason }).toEqual({
+            op: r.op.op,
+            reason: last?.reason === "revoked" ? "revoked" : "invalid_argument",
           });
-
-          const ref = evaluateLog(schema, kept);
-          expect(ref.steps.length).toBe(steps.length);
-          ref.steps.forEach((s, i) => {
-            const x = steps[i] as Judged;
-            expect(s.refused).toBe(false);
-            expect({ step: i, view: view(x.state) }).toEqual({
-              step: i,
-              view: {
-                kind: s.state.kind,
-                exists: s.state.exists,
-                gaps: s.state.gaps,
-                fields: s.state.fields,
-                created: s.state.created,
-              },
-            });
-            expect({ step: i, items: itemsOf(x.state) }).toEqual({
-              step: i,
-              items: referenceItems(s.state.items),
-            });
-            expect({ step: i, reverts: revertsOf(steps.slice(0, i + 1)) }).toEqual({
-              step: i,
-              reverts: s.state.reverts.map((r) => ({ ...r, record: [...r.record].sort(byEntry) })),
-            });
-            // A take_candidate's merge base and cover set O (09 §5.8 `take`), as each recorded it.
-            const rec = x.judgement.record;
-            if (rec.kind === "take_candidate") {
-              takesCompared++;
-              const theirs = s.state.takeCandidates.find((t) => t.op === rec.op);
-              expect({
-                step: i,
-                mergeBase: rec.mergeBase,
-                cover: [...rec.cover].sort(byEntry),
-              }).toEqual({
-                step: i,
-                mergeBase: theirs?.mergeBase,
-                cover: [...(theirs?.cover ?? [])].sort(byEntry),
-              });
-            }
-
-            // What the judgement says beyond the items, against the reference's statuses.
-            const j = x.judgement;
-            // Every item one interval, every (target, index) once (09 §5.7: one span per item).
-            if (j.record.kind !== "reject" && j.record.kind !== "keep_effective") {
-              const keys = j.record.items.map((y) => `${y.target}/${y.k}`);
-              expect({ step: i, unique: new Set(keys).size === keys.length }).toEqual({
-                step: i,
-                unique: true,
-              });
-              expect({ step: i, one: j.record.items.every((y) => y.valid.length === 1) }).toEqual({
-                step: i,
-                one: true,
-              });
-            }
-            const mine = s.state.items.filter((y) => y.event === x.op.event);
-            const has = (status: string) => mine.some((y) => y.status === status);
-            expect({ step: i, conflict: j.conflicts.length > 0 }).toEqual({
-              step: i,
-              conflict: has("candidate"),
-            });
-            if (x.op.kind === "write" || x.op.kind === "revoke") {
-              // ① (a change point erased, not acknowledged), or ② (a revoke of a referred row).
-              const awaits =
-                (j.erased.length > 0 && !j.acknowledged) ||
-                (j.record.kind === "revoke" && j.record.items.some((y) => y.status === "awaiting"));
-              expect({ step: i, awaiting: awaits }).toEqual({
-                step: i,
-                awaiting: has("awaiting"),
-              });
-            }
-            if (j.acknowledged) expect(j.erased.length).toBeGreaterThan(0);
-            if (x.input.kind === "write" && j.record.kind === "write") {
-              const given = Object.keys(x.input.fields).sort();
-              expect({ step: i, noop: j.record.noop }).toEqual({
-                step: i,
-                noop: given.filter((f) => !mine.some((y) => y.target === f)),
-              });
-            }
-
-            // The next op judged on the state rebuilt from the records after a round trip.
-            const rebuilt = stateFromRecord(table, roundTrip(x.before.records));
-            expect({ step: i, judgement: judgeOp(rebuilt, x.input).judgement }).toEqual({
-              step: i,
-              judgement: j,
-            });
+          expect({ op: r.op.op, status: last?.status }).toEqual({
+            op: r.op.op,
+            status: "rejected",
           });
-        }),
-      ),
-      {
-        numRuns: RUNS,
-        ...(SEED !== undefined ? { seed: SEED } : {}),
-        ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
-      },
-    );
+          seen[`undoRefused_${r.reason}`] = (seen[`undoRefused_${r.reason}`] ?? 0) + 1;
+          continue;
+        }
+        if (r.op.kind === "resolve" || r.op.kind === "confirm" || r.op.kind === "reject") {
+          // A decision refused as the reference refuses it: not valid on the state without it
+          // (`invalid`), or a take refused as the ordinary write would be (`revoked`, a gap
+          // without the required fields), or on existence with a required field nowhere to
+          // carry from.
+          const rej = evaluateLog(schema, [...r.before, r.op]).steps.at(-1)?.rejected;
+          const expected =
+            rej === undefined
+              ? "accepted"
+              : rej === "revoked" || rej === "invalid"
+                ? rej
+                : "validation_failed";
+          expect({ op: r.op.op, reason: r.reason }).toEqual({ op: r.op.op, reason: expected });
+          seen[`takeRefused_${rej}`] = (seen[`takeRefused_${rej}`] ?? 0) + 1;
+          continue;
+        }
+        if (r.reason === "revoked") {
+          expect({
+            op: r.op.op,
+            kind: r.op.kind,
+            revoked: revokedRow(schema, r.before),
+            effective: takesEffect(schema, r.before, r.op),
+          }).toEqual({ op: r.op.op, kind: "write", revoked: true, effective: true });
+          seen["writeRevoked"] = (seen["writeRevoked"] ?? 0) + 1;
+          continue;
+        }
+        expect({ op: r.op.op, reason: r.reason }).toEqual({
+          op: r.op.op,
+          reason: "validation_failed",
+        });
+        expect(lacksRequired(schema, r.op) && fillsGap(schema, r.before, r.op)).toBe(true);
+      }
+      steps.forEach((x, i) => {
+        if (!isState && x.op.kind === "write" && takesEffect(schema, kept.slice(0, i), x.op)) {
+          expect({ op: x.op.op, revoked: revokedRow(schema, kept.slice(0, i)) }).toEqual({
+            op: x.op.op,
+            revoked: false,
+          });
+        }
+        if (isState && lacksRequired(schema, x.op)) {
+          expect({ op: x.op.op, fillsGap: fillsGap(schema, kept.slice(0, i), x.op) }).toEqual({
+            op: x.op.op,
+            fillsGap: false,
+          });
+        }
+      });
+
+      const ref = evaluateLog(schema, kept);
+      expect(ref.steps.length).toBe(steps.length);
+      ref.steps.forEach((s, i) => {
+        const x = steps[i] as Judged;
+        expect(s.refused).toBe(false);
+        expect({ step: i, view: view(x.state) }).toEqual({
+          step: i,
+          view: {
+            kind: s.state.kind,
+            exists: s.state.exists,
+            gaps: s.state.gaps,
+            fields: s.state.fields,
+            created: s.state.created,
+          },
+        });
+        expect({ step: i, items: itemsOf(x.state) }).toEqual({
+          step: i,
+          items: referenceItems(s.state.items),
+        });
+        expect({ step: i, reverts: revertsOf(steps.slice(0, i + 1)) }).toEqual({
+          step: i,
+          reverts: s.state.reverts.map((r) => ({ ...r, record: [...r.record].sort(byEntry) })),
+        });
+        // A take_candidate's merge base and cover set O (09 §5.8 `take`), as each recorded it.
+        const rec = x.judgement.record;
+        if (rec.kind === "take_candidate") {
+          takesCompared++;
+          const theirs = s.state.takeCandidates.find((t) => t.op === rec.op);
+          expect({
+            step: i,
+            mergeBase: rec.mergeBase,
+            cover: [...rec.cover].sort(byEntry),
+          }).toEqual({
+            step: i,
+            mergeBase: theirs?.mergeBase,
+            cover: [...(theirs?.cover ?? [])].sort(byEntry),
+          });
+        }
+
+        // What the judgement says beyond the items, against the reference's statuses.
+        const j = x.judgement;
+        // Every item one interval, every (target, index) once (09 §5.7: one span per item).
+        if (j.record.kind !== "reject" && j.record.kind !== "keep_effective") {
+          const keys = j.record.items.map((y) => `${y.target}/${y.k}`);
+          expect({ step: i, unique: new Set(keys).size === keys.length }).toEqual({
+            step: i,
+            unique: true,
+          });
+          expect({ step: i, one: j.record.items.every((y) => y.valid.length === 1) }).toEqual({
+            step: i,
+            one: true,
+          });
+        }
+        const mine = s.state.items.filter((y) => y.event === x.op.event);
+        const has = (status: string) => mine.some((y) => y.status === status);
+        expect({ step: i, conflict: j.conflicts.length > 0 }).toEqual({
+          step: i,
+          conflict: has("candidate"),
+        });
+        if (x.op.kind === "write" || x.op.kind === "revoke") {
+          // ① (a change point erased, not acknowledged), or ② (a revoke of a referred row).
+          const awaits =
+            (j.erased.length > 0 && !j.acknowledged) ||
+            (j.record.kind === "revoke" && j.record.items.some((y) => y.status === "awaiting"));
+          expect({ step: i, awaiting: awaits }).toEqual({
+            step: i,
+            awaiting: has("awaiting"),
+          });
+        }
+        if (j.acknowledged) expect(j.erased.length).toBeGreaterThan(0);
+        if (x.input.kind === "write" && j.record.kind === "write") {
+          const given = Object.keys(x.input.fields).sort();
+          expect({ step: i, noop: j.record.noop }).toEqual({
+            step: i,
+            noop: given.filter((f) => !mine.some((y) => y.target === f)),
+          });
+        }
+
+        // The next op judged on the state rebuilt from the records after a round trip.
+        const rebuilt = stateFromRecord(table, roundTrip(x.before.records));
+        expect({ step: i, judgement: judgeOp(rebuilt, x.input).judgement }).toEqual({
+          step: i,
+          judgement: j,
+        });
+      });
+    };
+    fc.assert(fc.property(scenario(isState), hits.track(sample)), {
+      numRuns: RUNS,
+      ...(SEED !== undefined ? { seed: SEED } : {}),
+      ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
+    });
     if (process.env["JUDGE_STATS"]) console.log(schema.kind, JSON.stringify(seen));
     hits.check();
     // A corroboration cut by a change since (05-time «用同样的值写») is reached, on state tables
@@ -485,5 +485,13 @@ describe.each(both)("%s table", (_, schema, isState) => {
     }
     // Merge bases and cover sets were compared (every take_candidate judged).
     expect({ takesCompared: takesCompared > 0 }).toEqual({ takesCompared: true });
+    // Built in, on a field group (09-references «组值», instant by instant): a write whose two fields
+    // have seen intervals of their own, one of them stopping short of L's change. The samples
+    // reach it seldom (a default end resolved field by field, on a group). Run after the floors
+    // above are compared, so they count only what the generator reached.
+    if (schema.groups !== undefined && isState) {
+      for (const short of ["f2", "f3"] as const)
+        sample({ ops: groupInstantOps(short), decisions: [] });
+    }
   });
 });

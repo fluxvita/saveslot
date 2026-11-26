@@ -854,7 +854,24 @@ class Replay {
         ? tok(input.value)
         : undefined;
     };
-    const mine = (h: FieldId, s: Iv) => (h === f ? value : (given(h) ?? this.vis(h, s, seen)));
+    // W's group value at a point (09-references «冲突判据», 组值): a field W wrote whose own seen
+    // interval holds the point gives W's value; the others, those W did not write and those it
+    // wrote whose seen interval does not hold the point, the value in V. Each field's seen interval
+    // is resolved on its own (a default end stops at that field's next change in V).
+    const seenOf = new Map<FieldId, IvSet>();
+    const seenValidOf = (h: FieldId) => {
+      let x = seenOf.get(h);
+      if (x === undefined) {
+        x = h === f ? seenValid : (this.resolve(o.valid, h, seen, o.now)?.valid ?? []);
+        seenOf.set(h, x);
+      }
+      return x;
+    };
+    const mine = (h: FieldId, s: Iv) => {
+      if (h === f) return value;
+      const w = given(h);
+      return w !== undefined && covers(seenValidOf(h), s) ? w : this.vis(h, s, seen);
+    };
     const differs = (s: Iv, at: number) => unit.some((h) => this.vis(h, s, at) !== mine(h, s));
     let found = false;
     const note = (op: number, part: IvSet) => {
