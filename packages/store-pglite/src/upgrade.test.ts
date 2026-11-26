@@ -240,4 +240,51 @@ describe("what is refused before any upgrade", () => {
     },
     T,
   );
+
+  it(
+    "a step that controls its transaction (a COMMIT half way) is refused; the store stays as it was",
+    async () => {
+      const dir = await made();
+      const failed = await backend([], F + 1, [
+        step(F, "CREATE TABLE up_t (x int); COMMIT; CREATE TABLE up_u (x int);"),
+      ])
+        .open(ref(dir))
+        .then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+      expect(String(failed)).toContain("the step from format 5 controls its transaction (COMMIT)");
+      const s = await backend([]).open(ref(dir));
+      try {
+        expect(await formatOf(s)).toBe(F);
+        expect(await tables(s)).toEqual([]);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "both too old and of other session settings: format_too_old (the format is checked first)",
+    async () => {
+      const dir = await made();
+      const s = await backend([]).open(ref(dir));
+      await s.write(async (tx) => {
+        await tx.query("UPDATE meta SET value = $1 WHERE key = $2", [
+          String(F - 1),
+          META_KEYS.storageFormat,
+        ]);
+        await tx.query("UPDATE meta SET value = $1 WHERE key = $2", [
+          JSON.stringify(["SET TIME ZONE 'Asia/Shanghai'"]),
+          META_KEYS.sessionSettings,
+        ]);
+      });
+      await s.close();
+      expect(await codeOf(backend([], F + 1, [step(F - 1, ""), step(F, "")]).open(ref(dir)))).toBe(
+        "format_too_old",
+      );
+    },
+    T,
+  );
 });

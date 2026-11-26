@@ -219,9 +219,11 @@ export class PostgresBackend implements StorageBackend {
         }
         await createStorage(conn, this.#format);
       }
-      let formatVersion = await checkFormat(conn, this.#format);
+      await checkFormat(conn, this.#format);
       await checkSessionSettings(conn);
-      const epoch = await takeOwnership(conn);
+      const owned = await takeOwnership(conn, this.#format);
+      const epoch = owned.epoch;
+      let formatVersion = owned.formatVersion;
       if (formatVersion < this.#format) {
         // An older format, upgraded now, after the epoch is taken: an older process still holding
         // the tenant finds another epoch at its next write and gives the tenant up, rather than
@@ -519,9 +521,16 @@ async function checkSessionSettings(conn: Connection): Promise<void> {
   }
 }
 
-/** Ownership epoch + 1 (02-architecture §7), after any write another opener has in progress. */
-async function takeOwnership(conn: Connection): Promise<number> {
+/** Ownership epoch + 1 (02-architecture §7), after any write another opener has in progress; the format checked under the same lock. */
+async function takeOwnership(
+  conn: Connection,
+  format: number,
+): Promise<{ epoch: number; formatVersion: number }> {
   return await locked(conn, async () => {
+    // The format read again under the lock, before the epoch is raised: a newer version may have
+    // upgraded the store while this opener waited on the lock, and code of an older format must
+    // not own (and then write into) a store of a newer one (format_too_new, the epoch untouched).
+    const formatVersion = await checkFormat(conn, format);
     const r = await one<{ value: string }>(
       conn,
       `INSERT INTO meta (key, value) VALUES ($1, '1')
@@ -529,7 +538,7 @@ async function takeOwnership(conn: Connection): Promise<number> {
        RETURNING value`,
       [META_KEYS.ownershipEpoch],
     );
-    return Number(r.value);
+    return { epoch: Number(r.value), formatVersion };
   });
 }
 

@@ -162,6 +162,46 @@ describe.skipIf(cell === undefined)("against a server", () => {
       },
       T,
     );
+
+    it(
+      "a step that controls its transaction (a COMMIT half way) is refused; the store stays as it was",
+      async () => {
+        const db = await made();
+        const failed = await backend([], F + 1, [
+          step(F, "CREATE TABLE up_t (x int); COMMIT; CREATE TABLE up_u (x int);"),
+        ])
+          .open(pg.ref(db), {})
+          .then(
+            () => undefined,
+            (e: unknown) => e,
+          );
+        expect(String(failed)).toContain(
+          "the step from format 5 controls its transaction (COMMIT)",
+        );
+        expect(await formatIn(db)).toBe(F);
+        expect(await tablesIn(db)).toEqual([]);
+      },
+      T,
+    );
+
+    it(
+      "both too old and of other session settings: format_too_old (the format is checked first)",
+      async () => {
+        const db = await made();
+        await pg.sql(db, "UPDATE meta SET value = $1 WHERE key = $2", [
+          String(F - 1),
+          META_KEYS.storageFormat,
+        ]);
+        await pg.sql(db, "UPDATE meta SET value = $1 WHERE key = $2", [
+          JSON.stringify(["SET TIME ZONE 'Asia/Shanghai'"]),
+          META_KEYS.sessionSettings,
+        ]);
+        expect(
+          await codeOf(backend([], F + 1, [step(F - 1, ""), step(F, "")]).open(pg.ref(db), {})),
+        ).toBe("format_too_old");
+      },
+      T,
+    );
   });
 
   describe("one writer", () => {
@@ -185,6 +225,63 @@ describe.skipIf(cell === undefined)("against a server", () => {
         } finally {
           await closing(next);
           await old.close();
+        }
+      },
+      T,
+    );
+
+    it(
+      "an older version waiting on the lock while a newer one is in its step: format_too_new, the epoch untouched; the newer goes on",
+      async () => {
+        const db = await made();
+        const epochIn = async () =>
+          Number(
+            (await pg.sql(db, "SELECT value FROM meta WHERE key = $1", [META_KEYS.ownershipEpoch]))
+              .rows[0]?.["value"],
+          );
+        const newer = backend([], F + 1, [
+          step(F, "SELECT pg_sleep(1.5); CREATE TABLE up_l (x int);"),
+        ])
+          .open(pg.ref(db), {})
+          .then(
+            (s) => s,
+            (e: unknown) => e,
+          );
+        const activity = async (where: string) =>
+          (
+            await pg.admin(
+              `SELECT count(*)::int4 AS n FROM pg_stat_activity WHERE datname = $1 AND ${where}`,
+              [db],
+            )
+          ).rows[0]?.["n"];
+        for (let i = 0; i < 200 && (await activity("query LIKE 'SELECT pg_sleep%'")) !== 1; i++) {
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        // The older version (the kernel's format, no step) reads format F without the lock, then
+        // waits on the lock the newer one's step holds.
+        const older = pg.backend.open(pg.ref(db), {}).then(
+          (s) => s,
+          (e: unknown) => e,
+        );
+        let waited = false;
+        for (let i = 0; i < 200 && !waited; i++) {
+          waited = (await activity("wait_event_type = 'Lock' AND wait_event = 'advisory'")) === 1;
+          if (!waited) await new Promise((r) => setTimeout(r, 20));
+        }
+        expect(waited).toBe(true);
+        expect(await activity("query LIKE 'SELECT pg_sleep%'")).toBe(1);
+        const n = await newer;
+        const o = await older;
+        expect(n).not.toBeInstanceOf(Error);
+        const s = n as PostgresTenantStore;
+        try {
+          expect(o).toBeInstanceOf(PostgresStoreError);
+          expect((o as PostgresStoreError).code).toBe("format_too_new");
+          expect(await epochIn()).toBe(s.epoch);
+          expect(await formatIn(db)).toBe(F + 1);
+          await s.write((tx) => tx.query("INSERT INTO up_l VALUES (1)"));
+        } finally {
+          await s.close();
         }
       },
       T,
