@@ -1313,6 +1313,53 @@ describe("reads: the fallback looks at the last read first; a write flushes the 
   );
 
   it(
+    "read under several other tasks: task_mismatch names the latest of those reads, then the least task by code point",
+    async () => {
+      const flush = () =>
+        flushReads(
+          s.store,
+          createOpsContext({
+            tenant: TENANT,
+            actor: "system",
+            trigger: "flushReads",
+            task: null,
+            visibility: { kind: "all" },
+            idempotency_key_window: 86_400_000,
+            idempotency_window: 600_000,
+            now: now(),
+            confirmation: null,
+          }),
+        );
+      const mismatch = (row: string, readTask: string) => ({
+        refused: "read_first",
+        reason: "task_mismatch",
+        target: "row",
+        ref: { table: "ledger.rows", row },
+        param: "ops/0/ver",
+        read_task: readTask,
+        task: null,
+      });
+      // The latest position wins, whatever order the reads came in: here it is not the least task
+      // by name either, which is the order the table's key would give a statement without ORDER BY.
+      const a = rowAt(await insertRow("several-a"));
+      read([{ kind: "ver", target: a, op: 5 }], { actor: OTHER, task: "t-a" });
+      read([{ kind: "ver", target: a, op: 9 }], { actor: OTHER, task: "t-b" });
+      read([{ kind: "ver", target: a, op: 7 }], { actor: OTHER, task: "t-c" });
+      // Two rows, two contents: the same insert twice is a repeat, answered with the first row.
+      const b = rowAt(await insertRow("several-b"));
+      expect(b).not.toBe(a);
+      read([{ kind: "ver", target: b, op: 8 }], { actor: OTHER, task: "a-task" });
+      read([{ kind: "ver", target: b, op: 8 }], { actor: OTHER, task: "T-task" });
+      await flush();
+      expect(await update(a, { b: "y" }, undefined, { actor: OTHER })).toEqual(mismatch(a, "t-b"));
+      expect(await update(b, { b: "y" }, undefined, { actor: OTHER })).toEqual(
+        mismatch(b, "T-task"),
+      );
+    },
+    T,
+  );
+
+  it(
     "the connect self-check's read is not a read under another task: no_read, not task_mismatch",
     async () => {
       // `saveslot connect` reads the catalog with the new token under this task (contract-core
