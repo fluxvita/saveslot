@@ -486,10 +486,10 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `SAVESLOT_IDENTITY_KEYS_FILE` | 外部登录：平台的公钥文件，JWK Set（`{"keys": [...]}`），每把是带 `kid` 的 Ed25519 公钥。与 `SAVESLOT_HANDLE_KEY_FILE` 一样核对：跟随符号链接之后是普通文件，本进程读得到，"其他人"（other）没有任何权限位，不核对属主，组可读也可以；不是这样就拒绝启动；文件里有私钥（`d`）时也拒绝启动，报错写明原因：平台的签名私钥只该在平台上。要换公钥，就换掉这个文件再重启 | 不设 |
 | `SAVESLOT_SHUTDOWN_DRAIN` | 下线的摘除等待：收到终止信号之后照常处理请求的秒数（这期间 `/ready` 已回 503，见上面 `server start`），0 到 3600 的整数；0 表示不等 | `10` |
 | `SAVESLOT_SHUTDOWN_TIMEOUT` | 下线的在途上限：摘除等待之后，等进行中的请求做完至多多少秒，0 到 3600 的整数；到时仍未结束的连接被关闭；0 表示不等、直接关闭 | `30` |
-| `SAVESLOT_TENANT_CONNECTIONS` | 一个进程同时打开的租户数上限，也就是租户连接数的上限（每个打开的租户一条连接，[`02-architecture.md`](02-architecture.md) §7「连接」），1 到 10000 的整数。到上限时先关闲置最久的租户；没有闲置的，请求排队，5 秒内等不到回 `unavailable`（`busy`）。缺省 50：PostgreSQL 默认的 `max_connections` 是 100，留出控制面库、导入、运维与另一个进程的余量；大的部署按连接预算（下面）调高 | `50` |
+| `SAVESLOT_TENANT_CONNECTIONS` | 一个进程同时打开的租户数上限，也就是租户连接数的上限（每个打开的租户一条连接，[`02-architecture.md`](02-architecture.md) §7「连接」），1 到 10000 的整数。到上限时先关闲置最久的租户；没有闲置的，请求排队，5 秒内等不到回 `unavailable`（`busy`）。缺省 50：按下面的连接预算，一个进程在 PostgreSQL 默认的 `max_connections`（100）里用得下，还留出控制面库、导入与运维的余量；多于一个进程时，调低这一项或调高 `max_connections`；大的部署在连接预算之内调高 | `50` |
 | `SAVESLOT_TENANT_IDLE` | 一个租户最后一次使用之后，空闲多少秒关掉它、放回它的连接，1 到 86400 的整数 | `300` |
 
-**连接预算**：一个部署用到的 PostgreSQL 连接要满足 `SAVESLOT_TENANT_CONNECTIONS` × 进程数 + 3 × 进程数 + 同时进行的导入数 × 2 ≤ 实例可用的连接数。每个进程的 3 条是不计入上限的固定连接（控制面库一条，新建租户与建库删库时各一条）；导入一次直接打开两个库；可用的连接数是 `max_connections` 减去 `superuser_reserved_connections`、`reserved_connections` 与运维自己要用的。
+**连接预算**：一个部署用到的 PostgreSQL 连接要满足 `SAVESLOT_TENANT_CONNECTIONS` × 进程数 + 4 × 进程数 + 同时进行的导入数 × 2 ≤ 实例可用的连接数。每个进程的 4 条是不计入上限的固定连接：控制面库一条；建库用的维护库一条，正在建的租户的库一条——建库与建租户在一个进程里各一次一个，排在后面的至多等 5 秒，等不到就回暂时忙（外部登录的首次登录回 503，带 `Retry-After`；`server user`、`server init` 退出码 7）；删库用的维护库一条——删库在一个进程里一次一个，没有人等它的应答，所以不设等待上限（删库要等一次检查点，忙的时候很慢，不与建库共用，免得把首次登录挡在后面）；导入一次直接打开两个库；可用的连接数是 `max_connections` 减去 `superuser_reserved_connections`、`reserved_connections` 与运维自己要用的。
 
 必填的变量缺了，或值写法不对，命令什么都不做，写明是哪个变量，退出码 5（与 `config.toml` 被拒的退出码相同，6.2）；报错里不写变量的值（连接串里可能有口令），只有 `SAVESLOT_TRUSTED_PROXIES` 与 `SAVESLOT_ALLOWED_ORIGINS` 写明不合的那一项（地址与来源里没有需要保密的内容）。
 

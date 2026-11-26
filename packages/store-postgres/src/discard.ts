@@ -15,6 +15,7 @@
 import { DATABASE_NAME, SERVER_DATABASES } from "./backend.ts";
 import { Connection, type PostgresCell } from "./connection.ts";
 import { PostgresStoreError } from "./errors.ts";
+import { withDropTurn } from "./maintenance.ts";
 
 /** The staging database names of the tenant whose database is `tenantDatabase`. */
 export const stagingDatabaseShape = (tenantDatabase: string): RegExp =>
@@ -56,10 +57,13 @@ export function checkDiscard(o: DiscardRequest): void {
  */
 export async function discardDatabase(cell: PostgresCell, o: DiscardRequest): Promise<void> {
   checkDiscard(o);
-  const c = await Connection.connect(cell, cell.maintenanceDatabase ?? "postgres");
-  try {
-    await c.run(`DROP DATABASE IF EXISTS "${o.database}" WITH (FORCE)`);
-  } finally {
-    await c.end();
-  }
+  // The process's one connection for drops to the maintenance database (./maintenance.ts).
+  await withDropTurn(async () => {
+    const c = await Connection.connect(cell, cell.maintenanceDatabase ?? "postgres");
+    try {
+      await c.run(`DROP DATABASE IF EXISTS "${o.database}" WITH (FORCE)`);
+    } finally {
+      await c.end();
+    }
+  });
 }

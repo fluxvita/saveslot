@@ -164,6 +164,7 @@ export function serverCallers(o: {
         principal: caller.principal,
         tenant: caller.tenant,
         use: (fn) => serving(() => o.pool.use(caller.tenant, (t) => fn(served(caller.tenant, t)))),
+        release: caller.release,
       };
     },
   };

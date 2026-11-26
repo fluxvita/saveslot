@@ -19,6 +19,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   type AssertionTokenResponse,
+  creatingBusy,
   DEVICE_VERIFY_PATH,
   exchangeRefreshToken,
   type IdentityProvider,
@@ -242,6 +243,12 @@ async function postedForm(
 /** Answers a step's error: a `TokenError` as itself, anything else as a server error. */
 function failed(res: ServerResponse, ctx: OAuthRoutesContext, event: string, e: unknown): number {
   if (e instanceof TokenError) return tokenError(res, e.code, e.message);
+  // A user's tenant that waited past its turn to be created (02-architecture §7 «连接»): a retry in
+  // a moment, as a sign-in the server cannot take now.
+  if (creatingBusy(e)) {
+    send(res, 503, { error: "temporarily_unavailable" }, { ...NO_STORE, "retry-after": "1" });
+    return 503;
+  }
   ctx.warn(event, { error: e instanceof Error ? e.name : "unknown" });
   send(res, 500, { error: "server_error" }, NO_STORE);
   return 500;

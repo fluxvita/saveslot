@@ -80,7 +80,8 @@ export interface ServerConfig {
 
 /**
  * The open tenants' defaults (06-cli §4.1 «服务器模式的配置»): 50 leaves room, within PostgreSQL's
- * default max_connections of 100, for the control database, imports, operators and a second process.
+ * default max_connections of 100, for one process with the connection budget, with room for the control
+ * database, imports and operators; more processes take a lower value or a higher max_connections.
  */
 export const DEFAULT_TENANTS = { maxOpen: 50, idleSeconds: 300 } as const;
 

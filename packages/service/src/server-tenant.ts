@@ -6,7 +6,10 @@
 // in another: the registration's cell and database cannot be changed afterwards. The control plane
 // holds no storage backend: this flow does.
 //
-// Two creations for one owner in this process take turns: the second finds the first's tenant. Two
+// Two creations for one owner in this process take turns: the second finds the first's tenant.
+// Creations of different owners take turns too, one at a time in a process, so that a process
+// holds at most one connection to a tenant's database being created (02-architecture §7 «连接»,
+// the connection budget); one waiting longer than CREATION_WAIT_MS is refused with `busy`. Two
 // processes (not in v1, one process a deployment) would meet at the owner's unique row: both get
 // the same tenant, and opening its storage, the later opener takes it over (§7); the one it was
 // taken from fails with `ownership_lost`, and calling again gives the tenant the other made.
@@ -27,8 +30,63 @@ export const databaseOf = (tenant: TenantId): string => tenant.toLowerCase();
  * Why a tenant was not created:
  * - `unknown_cell`: the cell asked for is not one of the deployment's; nothing was registered.
  * - `cell_mismatch`: the owner's tenant is still being created, registered in another cell.
+ * - `busy`: another tenant was being created in this process for longer than CREATION_WAIT_MS;
+ *   nothing was done for this one: try again shortly.
  */
-export type ServerTenantErrorCode = "unknown_cell" | "cell_mismatch";
+export type ServerTenantErrorCode = "unknown_cell" | "cell_mismatch" | "busy";
+
+/**
+ * Whether a tenant's creation was refused for waiting past its turn: this process's creations
+ * (`busy`), or the cell's maintenance database (the PostgreSQL backend's `maintenance_busy`, read
+ * by its code: this package does not depend on that backend). Either is a retry in a moment.
+ */
+export function creatingBusy(e: unknown): boolean {
+  if (e instanceof ServerTenantError) return e.code === "busy";
+  return (e as { code?: unknown } | null)?.code === "maintenance_busy";
+}
+
+/** How long a creation waits for its turn among this process's creations. */
+export const CREATION_WAIT_MS = 5_000;
+
+/** Tests only: the wait, in place of CREATION_WAIT_MS. */
+export const creationForTests = { waitMs: undefined as number | undefined };
+
+let creating = false;
+const creations: { go: () => void; timer: ReturnType<typeof setTimeout> }[] = [];
+
+/** Runs `fn` with this process's one turn at creating a tenant. */
+async function inTurn<T>(fn: () => Promise<T>): Promise<T> {
+  if (creating || creations.length > 0) {
+    await new Promise<void>((go, refuse) => {
+      const waiter = {
+        go,
+        timer: setTimeout(() => {
+          const i = creations.indexOf(waiter);
+          if (i >= 0) creations.splice(i, 1);
+          refuse(
+            new ServerTenantError(
+              "busy",
+              "another tenant is being created in this process: try again shortly",
+            ),
+          );
+        }, creationForTests.waitMs ?? CREATION_WAIT_MS),
+      };
+      creations.push(waiter);
+    });
+  } else {
+    creating = true;
+  }
+  try {
+    return await fn();
+  } finally {
+    const next = creations.shift();
+    if (next === undefined) creating = false;
+    else {
+      clearTimeout(next.timer);
+      next.go();
+    }
+  }
+}
 
 export class ServerTenantError extends Error {
   override readonly name = "ServerTenantError";
@@ -58,7 +116,7 @@ export function createServerTenant(o: {
   }
   const running = byOwner.get(o.owner);
   if (running !== undefined) return running;
-  const p = create(o).finally(() => byOwner.delete(o.owner));
+  const p = inTurn(() => create(o)).finally(() => byOwner.delete(o.owner));
   byOwner.set(o.owner, p);
   return p;
 }

@@ -29,6 +29,11 @@ export type CheckCredential = (c: CredentialEntry) => Promise<"ok" | "invalid">;
 export interface Caller {
   readonly tenant: TenantId;
   readonly principal: Principal;
+  /**
+   * Lets the tenant count as idle again: it is held from the authentication on, so that it is not
+   * closed for another before the request's operation uses it (TenantPool `hold`).
+   */
+  readonly release: () => void;
 }
 
 /**
@@ -73,8 +78,18 @@ export async function authenticateServer(o: {
   const state = tenant === undefined ? "unknown" : await o.identity.userState(tenant.owner);
   if (state === "disabled") return { code: "unauthenticated", reason: "account_disabled" };
   if (state !== "active") return { code: "unauthenticated", reason: "invalid" };
-  const principal = await o.pool.use(entry.tenant, async (t) =>
-    principalFromRow(entry.kind, entry.principal, await principalRow(t.store, entry.principal)),
-  );
-  return "kind" in principal ? { tenant: entry.tenant, principal } : principal;
+  // Held inside this use, so that it is never idle between this use and the operation's.
+  let release: (() => void) | undefined;
+  const principal = await o.pool.use(entry.tenant, async (t) => {
+    const p = principalFromRow(
+      entry.kind,
+      entry.principal,
+      await principalRow(t.store, entry.principal),
+    );
+    if ("kind" in p) release = o.pool.hold(entry.tenant);
+    return p;
+  });
+  return "kind" in principal && release !== undefined
+    ? { tenant: entry.tenant, principal, release }
+    : (principal as AuthFailure);
 }

@@ -161,6 +161,7 @@ describe("authenticateServer", () => {
           scopes: SCOPES,
           visibility: { kind: "all" },
         },
+        release: expect.any(Function),
       });
     },
     T,
@@ -170,7 +171,10 @@ describe("authenticateServer", () => {
     "gives a connection's caller with the scopes the tenant's log registered",
     async () => {
       const c = await connection();
-      expect(await auth(`Bearer ${c.token}`)).toEqual({
+      const holds = () => pool.stateForTests().slots.find((x) => x.tenant === tenant.id)?.holds;
+      const before = holds() ?? 0;
+      const caller = await auth(`Bearer ${c.token}`);
+      expect(caller).toEqual({
         tenant: tenant.id,
         principal: {
           kind: "connection",
@@ -178,7 +182,12 @@ describe("authenticateServer", () => {
           scopes: ["saveslot.read"],
           visibility: { kind: "all" },
         },
+        release: expect.any(Function),
       });
+      // Its tenant held from the authentication until the request lets it go (02 §7 «连接»).
+      expect(holds()).toBe(before + 1);
+      if ("release" in caller) caller.release();
+      expect(holds()).toBe(before);
     },
     T,
   );

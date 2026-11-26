@@ -49,6 +49,7 @@ import {
   initControlPlane,
   type ServerControlPlane,
 } from "./server-control-plane.ts";
+import { ServerTenantError } from "./server-tenant.ts";
 
 const T = 120_000;
 const START = Date.parse("2026-11-20T10:00:00.000Z");
@@ -574,6 +575,45 @@ describe("an assertion for a session", () => {
       expect((await listExternalUsers(logins)).filter((u) => u.subject === sub)).toHaveLength(1);
       const tenant = await cp.tenantOf(a?.user as `u_${string}`);
       expect(tenant?.state).toBe("active");
+    },
+    T,
+  );
+});
+
+describe("a first sign-in whose tenant waits past its turn to be made", () => {
+  // As the server's creations refuse one that waited too long (server-tenant.ts, `busy`).
+  const busyProvider = () =>
+    new ExternalIdentity({
+      logins,
+      config,
+      control: cp,
+      backend,
+      cell: CELL,
+      cells: new Set([CELL]),
+      now: () => clock,
+      makeTenantForTests: async () => {
+        throw new ServerTenantError("busy", "m");
+      },
+    });
+
+  it(
+    "the browser's return: 503 with Retry-After, to sign in again in a moment",
+    async () => {
+      const p = busyProvider();
+      const state = await begin(p);
+      const r = await callback(p, { state, assertion: authorizeFor(state, account()) });
+      expect(status(r)).toBe(503);
+      expect(r?.kind === "page" ? r.headers : []).toContainEqual(["retry-after", "1"]);
+    },
+    T,
+  );
+
+  it(
+    "an assertion exchanged: the refusal goes on as busy, not as an assertion that does not verify",
+    async () => {
+      await expect(
+        busyProvider().acceptAssertion(sessionFor(account()), "198.51.100.8"),
+      ).rejects.toSatisfy((e) => e instanceof ServerTenantError && e.code === "busy");
     },
     T,
   );

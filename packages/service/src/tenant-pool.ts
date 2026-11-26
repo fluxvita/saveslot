@@ -197,6 +197,11 @@ interface Slot {
   placing?: Promise<void> | undefined;
   /** When its last use ended (monotonic): the idle tenant unused for longest is closed first. */
   lastUsed: number;
+  /**
+   * Requests holding it between their uses (`hold`): not idle while any does. Takes no place and
+   * holds back no exclusive and no `closeAll`.
+   */
+  holds: number;
   uses: number;
   idle?: ReturnType<typeof setTimeout> | undefined;
   /** A close in progress: a use waits for it before opening the tenant again. */
@@ -228,6 +233,33 @@ const reportScratchDiscardToStderr = (tenant: TenantId, error: unknown): void =>
   console.error(`saveslot tenant pool: scratch_not_discarded for ${tenant}: ${codeOf(error)}`);
 };
 
+/** Tests only: what `TenantPool.stateForTests` gives, for checking the pool's invariants. */
+export interface TenantPoolState {
+  readonly closed: boolean;
+  /** The places held. */
+  readonly held: number;
+  /** The uses waiting in line. */
+  readonly line: number;
+  /** Idle tenants being closed to free a place. */
+  readonly evicting: number;
+  /** The idle tenant the next eviction would close, if any. */
+  readonly idlest: TenantId | undefined;
+  readonly slots: readonly {
+    readonly tenant: TenantId;
+    readonly place: boolean;
+    readonly open: boolean;
+    readonly opening: boolean;
+    readonly closing: boolean;
+    readonly unclosed: boolean;
+    readonly uses: number;
+    /** Requests holding it between their uses. */
+    readonly holds: number;
+    readonly gate: boolean;
+    readonly idleTimer: boolean;
+    readonly placing: boolean;
+  }[];
+}
+
 /** A use waiting in line for a place. */
 interface Waiter {
   readonly tenant: TenantId;
@@ -246,9 +278,41 @@ export class TenantPool {
   readonly #line: Waiter[] = [];
   /** Idle tenants being closed to free a place. */
   #evicting = 0;
+  /**
+   * Tenants whose close failed and was tried again for the line now waiting: each is tried once
+   * while someone waits, not again and again; forgotten when the line is empty.
+   */
+  readonly #retried = new Set<TenantId>();
 
   constructor(o: TenantPoolOptions) {
     this.options = o;
+  }
+
+  /**
+   * Tests only: the pool's state as it is, for checks of its invariants between the steps of a
+   * schedule. Reads, never changes; nothing else may depend on it.
+   */
+  stateForTests(): TenantPoolState {
+    return {
+      closed: this.#closed,
+      held: this.#held,
+      line: this.#line.length,
+      evicting: this.#evicting,
+      idlest: this.#idlest(),
+      slots: [...this.#slots].map(([tenant, s]) => ({
+        tenant,
+        place: s.place === true,
+        open: s.open === true,
+        opening: s.opening !== undefined,
+        closing: s.closing !== undefined,
+        unclosed: s.unclosed !== undefined,
+        uses: s.uses,
+        holds: s.holds,
+        gate: s.gate !== undefined,
+        idleTimer: s.idle !== undefined,
+        placing: s.placing !== undefined,
+      })),
+    };
   }
 
   #now(): string {
@@ -258,7 +322,7 @@ export class TenantPool {
   #slot(tenant: TenantId): Slot {
     let s = this.#slots.get(tenant);
     if (s === undefined) {
-      s = { uses: 0, lastUsed: 0 };
+      s = { uses: 0, lastUsed: 0, holds: 0 };
       this.#slots.set(tenant, s);
     }
     return s;
@@ -328,14 +392,44 @@ export class TenantPool {
       if (slot.uses === 0) {
         slot.lastUsed = performance.now();
         slot.drained?.();
-        if (slot.opening !== undefined && slot.gate === undefined) {
-          slot.idle = setTimeout(() => void this.#close(tenant), this.options.idleMs);
-          slot.idle.unref?.();
-          // Idle now: one a use in line may have the place of.
-          this.#pump();
-        }
+        if (slot.holds === 0) this.#idleNow(tenant, slot);
       }
     }
+  }
+
+  /**
+   * Keeps the tenant from counting as idle until the function given back is called (once; a second
+   * call does nothing): a request's authentication takes it inside its use, so that its tenant is
+   * not closed for another before its operation's use begins (02-architecture §7 «连接»). Only
+   * inside a use of the tenant. It opens nothing and takes no place; an exclusive still closes the
+   * tenant, and `closeAll` does not wait for it.
+   */
+  hold(tenant: TenantId): () => void {
+    const slot = this.#slots.get(tenant);
+    if (slot === undefined || slot.uses === 0) {
+      throw new Error("a tenant is held only inside a use of it");
+    }
+    slot.holds++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      slot.holds--;
+      if (slot.holds === 0 && slot.uses === 0) {
+        slot.lastUsed = performance.now();
+        this.#idleNow(tenant, slot);
+      }
+    };
+  }
+
+  /** A tenant no use and no hold has: open, it waits its idle time, and the line may have it. */
+  #idleNow(tenant: TenantId, slot: Slot): void {
+    if (this.#closed || slot.opening === undefined || slot.gate !== undefined) return;
+    if (slot.idle !== undefined) clearTimeout(slot.idle);
+    slot.idle = setTimeout(() => void this.#close(tenant), this.options.idleMs);
+    slot.idle.unref?.();
+    // Idle now: one a use in line may have the place of.
+    this.#pump();
   }
 
   /** Takes one of the `maxOpen` places: at once while one is free and no one is in line; else in line. */
@@ -371,8 +465,11 @@ export class TenantPool {
       this.#held++;
       w.resolve();
     }
+    if (this.#line.length === 0) this.#retried.clear();
     while (this.#line.length > this.#evicting) {
-      const victim = this.#idlest();
+      // An idle tenant first; else one whose close failed, its close tried once more (it still
+      // holds a connection, so its place counts; nothing else would ever try again).
+      const victim = this.#idlest() ?? this.#unclosedToRetry();
       if (victim === undefined) return;
       this.#evicting++;
       void this.#close(victim).finally(() => {
@@ -390,6 +487,7 @@ export class TenantPool {
         s.place === true &&
         s.open === true &&
         s.uses === 0 &&
+        s.holds === 0 &&
         s.gate === undefined &&
         s.closing === undefined &&
         s.unclosed === undefined &&
@@ -399,6 +497,25 @@ export class TenantPool {
       }
     }
     return found?.[0];
+  }
+
+  /** An unused tenant whose close failed, not yet tried again for the line waiting now. */
+  #unclosedToRetry(): TenantId | undefined {
+    for (const [tenant, s] of this.#slots) {
+      if (
+        s.place === true &&
+        s.unclosed !== undefined &&
+        s.opening === undefined &&
+        s.uses === 0 &&
+        s.gate === undefined &&
+        s.closing === undefined &&
+        !this.#retried.has(tenant)
+      ) {
+        this.#retried.add(tenant);
+        return tenant;
+      }
+    }
+    return undefined;
   }
 
   /** Gives the tenant's place back once it holds no connection: not open, not closing, nothing unclosed. */

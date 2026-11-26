@@ -39,6 +39,27 @@ export interface ResolvedCaller {
   /** Its tenant's ID, known before the tenant is lent (what a per-tenant limit counts by). */
   readonly tenant: ServedTenant["tenant"];
   use<T>(fn: (t: ServedTenant) => Promise<T>): Promise<T>;
+  /**
+   * The server mode: lets its tenant count as idle again (02-architecture §7 «连接»). Its
+   * authentication holds the tenant from then until the request's response ends; the surfaces
+   * call this once it has (a second call does nothing).
+   */
+  readonly release?: () => void;
+}
+
+/**
+ * Releases the caller's hold on its tenant when this request's response ends (its `close`, which
+ * is the response's, a keep-alive connection's later requests aside), or at once when it ended
+ * already (the client gone before the caller was found).
+ */
+export function releaseWithResponse(
+  caller: Pick<ResolvedCaller, "release">,
+  res: { readonly closed: boolean; once(event: "close", fn: () => void): unknown },
+): void {
+  const release = caller.release;
+  if (release === undefined) return;
+  if (res.closed) release();
+  else res.once("close", release);
 }
 
 export interface CallerResolver {

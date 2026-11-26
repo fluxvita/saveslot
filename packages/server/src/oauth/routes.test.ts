@@ -49,6 +49,9 @@ const deps = {
       return assertions
         ? async (assertion: string, remote: string) => {
             sources.push(remote);
+            // As the external login refuses one whose tenant waited too long to be made.
+            if (assertion === "busy")
+              throw Object.assign(new Error("busy"), { code: "maintenance_busy" });
             return assertion === "good" ? { user: USER, session: "s1" } : undefined;
           }
         : undefined;
@@ -285,6 +288,19 @@ describe("token endpoint", () => {
       );
       await refused(await token(form({ grant_type: JWT, assertion: "bad" })), 400, "invalid_grant");
       await refused(await token(form({ grant_type: JWT })), 400, "invalid_request");
+    } finally {
+      assertions = false;
+    }
+  });
+
+  it("jwt-bearer whose user's tenant waited past its turn to be made: 503 temporarily_unavailable, Retry-After", async () => {
+    assertions = true;
+    try {
+      const r = await token(form({ grant_type: JWT, assertion: "busy" }));
+      expect(r.status).toBe(503);
+      expect(r.headers.get("retry-after")).toBe("1");
+      expect(r.headers.get("cache-control")).toBe("no-store");
+      expect(await r.json()).toEqual({ error: "temporarily_unavailable" });
     } finally {
       assertions = false;
     }

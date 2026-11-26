@@ -2290,7 +2290,10 @@ describe("runServer: closing in three steps", () => {
 
 describe("runServer: at most SAVESLOT_TENANT_CONNECTIONS tenants open", () => {
   /** A server allowing one open tenant, with two users; `gate` holds a tenant's opening back. */
-  async function oneTenantServer(gate: { opened?: () => void; release?: Promise<void> }) {
+  async function oneTenantServer(
+    gate: { opened?: () => void; release?: Promise<void> },
+    openWaitMs = 300,
+  ) {
     const c = await controlDb();
     const t = tenants(gate);
     const cfg = config({ tenants: { maxOpen: 1, idleSeconds: 300 } });
@@ -2317,7 +2320,7 @@ describe("runServer: at most SAVESLOT_TENANT_CONNECTIONS tenants open", () => {
       backend: t.backend,
       now: () => NOW,
       warn: (event) => warned.push(event),
-      testing: { drainMs: 0, openWaitMs: 300 },
+      testing: { drainMs: 0, openWaitMs },
     });
     return { s, first, second, warned };
   }
@@ -2325,7 +2328,9 @@ describe("runServer: at most SAVESLOT_TENANT_CONNECTIONS tenants open", () => {
   it(
     "with one place, two users' requests in turn are each answered: the idle tenant is closed for the other",
     async () => {
-      const { s, first, second } = await oneTenantServer({});
+      // The pool's own wait (5 s): closing the other tenant, on PostgreSQL, may take longer than a
+      // short one.
+      const { s, first, second } = await oneTenantServer({}, 5000);
       for (const token of [first, second, first, second]) {
         expect(
           (await send(s, { path: "/v1/slots", headers: { authorization: `Bearer ${token}` } }))

@@ -54,6 +54,7 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import { Connection, Gone, type MakeClient, type PostgresCell, Refused } from "./connection.ts";
 import { PostgresStoreError } from "./errors.ts";
+import { withCreationTurn } from "./maintenance.ts";
 import { affectedRows } from "./values.ts";
 
 export interface PostgresBackendOptions {
@@ -290,36 +291,39 @@ export async function connectOrCreate(
   } catch (e) {
     if (!(create && e instanceof Gone && e.sqlState === "3D000")) throw e;
   }
-  const maintenance = cell.maintenanceDatabase ?? "postgres";
-  let admin: Connection;
-  try {
-    admin = await Connection.connect(cell, maintenance, make);
-  } catch (e) {
-    throw new PostgresStoreError(
-      "database_not_created",
-      `the maintenance database ${maintenance} could not be connected to: ${(e as Error).message}`,
-      {
-        cause: e,
-        ...(e instanceof Gone && e.sqlState !== undefined ? { sqlState: e.sqlState } : {}),
-      },
-    );
-  }
-  try {
-    // template0: the only template another encoding or locale than the cluster's can be given
-    // with. LOCALE is the libc one, for what the builtin provider does not cover.
-    await admin.run(
-      `CREATE DATABASE ${quoted(database)} TEMPLATE template0 ENCODING 'UTF8'
-         LOCALE_PROVIDER builtin BUILTIN_LOCALE '${BUILTIN_LOCALE}' LOCALE 'C'`,
-    );
-  } catch (e) {
-    // Made by another opener in between (42P04, or 23505 on the catalog's index when the two
-    // ran at once): opened below like any that exists.
-    if (!(e instanceof Refused && ["42P04", "23505"].includes(e.sqlState))) {
-      throw storeError(e, "database_not_created");
+  // The process's one connection for creations to the maintenance database (./maintenance.ts).
+  await withCreationTurn(async () => {
+    const maintenance = cell.maintenanceDatabase ?? "postgres";
+    let admin: Connection;
+    try {
+      admin = await Connection.connect(cell, maintenance, make);
+    } catch (e) {
+      throw new PostgresStoreError(
+        "database_not_created",
+        `the maintenance database ${maintenance} could not be connected to: ${(e as Error).message}`,
+        {
+          cause: e,
+          ...(e instanceof Gone && e.sqlState !== undefined ? { sqlState: e.sqlState } : {}),
+        },
+      );
     }
-  } finally {
-    await admin.end();
-  }
+    try {
+      // template0: the only template another encoding or locale than the cluster's can be given
+      // with. LOCALE is the libc one, for what the builtin provider does not cover.
+      await admin.run(
+        `CREATE DATABASE ${quoted(database)} TEMPLATE template0 ENCODING 'UTF8'
+           LOCALE_PROVIDER builtin BUILTIN_LOCALE '${BUILTIN_LOCALE}' LOCALE 'C'`,
+      );
+    } catch (e) {
+      // Made by another opener in between (42P04, or 23505 on the catalog's index when the two
+      // ran at once): opened below like any that exists.
+      if (!(e instanceof Refused && ["42P04", "23505"].includes(e.sqlState))) {
+        throw storeError(e, "database_not_created");
+      }
+    } finally {
+      await admin.end();
+    }
+  });
   return await Connection.connect(cell, database, make);
 }
 
