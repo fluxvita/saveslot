@@ -508,6 +508,7 @@ async function remoteConnect(
   o: Options,
   host: Host,
   server: string,
+  profile: string,
   apply: boolean,
   io: CliIO,
   env: Env,
@@ -521,7 +522,7 @@ async function remoteConnect(
     apply && command !== undefined ? await onPath(command[0] as string, env["PATH"]) : undefined;
   if (apply && exe === undefined) throw new Failed(TEXTS.applyNotFound, 1);
   const json = { host, server, url, ...(command !== undefined ? { command } : {}) };
-  if (!apply) return { json, lines: remoteSetup(host, url) };
+  if (!apply) return { json, lines: remoteSetup(host, url, profile) };
   // As it ran: the host's executable by the absolute path found on PATH.
   const ran = [exe as string, ...(command as string[]).slice(1)];
   const applied = await runHostCommand(ran, env, io.hostTimeoutMs, () => {});
@@ -555,10 +556,11 @@ async function connectCommand(
   const host = hostName as Host;
   const apply = ownFlag(o, "apply");
   if (apply && !APPLIES.has(host)) throw new UsageError(TEXTS.applyNotHere);
-  const server = await serverOf(o);
+  const profileName = o.profile ?? (await readProfiles(o.home)).current;
+  const server = await profileServer(o.home, profileName);
   // A host connecting to a server signs in itself; only a static token is issued here (06 §3.2).
   if (server !== undefined && host !== "http")
-    return remoteConnect(o, host, server, apply, io, env);
+    return remoteConnect(o, host, server, profileName, apply, io, env);
   const connectionName = ownString(o, "name");
   if (connectionName === undefined || connectionName.trim() === "")
     throw new UsageError(TEXTS.nameMissing);

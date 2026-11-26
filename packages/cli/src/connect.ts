@@ -373,11 +373,15 @@ export function remoteAddCommand(host: Host, url: string): string[] | undefined 
 
 /**
  * What to paste for a host without a remote add command: an `mcpServers` entry with the address
- * (cursor), the address in a JSON object (generic), or nothing but the address to fill in on the
- * host's own screen (claude-desktop: a custom connector).
+ * and a static token's header (cursor: its remote sign-in needs dynamic client registration, which
+ * this version does not offer, so it uses a token from `connect http`; 06 §3.2), the address in a
+ * JSON object (generic), or nothing but the address to fill in on the host's own screen
+ * (claude-desktop: a custom connector).
  */
 export function remotePasted(host: Host, url: string): unknown {
-  if (host === "cursor") return { mcpServers: { saveslot: { url } } };
+  if (host === "cursor") {
+    return { mcpServers: { saveslot: { url, headers: { Authorization: "Bearer TOKEN" } } } };
+  }
   if (host === "generic") return { url };
   return undefined;
 }

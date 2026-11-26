@@ -106,10 +106,14 @@ const vscodeNotes = (token: boolean): Line[] => [
 /**
  * What a host connecting to a server is given (06 §3.2 «服务器模式»): its add command, an entry to
  * paste, or the address for its own screen; no token in any of them: the host signs in itself.
+ * Cursor does not sign in to a server in this version: it is told to issue a static token with
+ * `connect http` on `profile`, and given the entry with the token's place in its header.
  */
-export function remoteSetup(host: Host, url: string): Line[] {
+export function remoteSetup(host: Host, url: string, profile: string): Line[] {
   const command = remoteAddCommand(host, url);
-  const lines: Line[] = [[words(TEXTS.remoteSignsIn)]];
+  const lines: Line[] = [
+    [words(host === "cursor" ? TEXTS.cursorServerStatic(profile) : TEXTS.remoteSignsIn)],
+  ];
   if (command !== undefined)
     return [
       ...lines,

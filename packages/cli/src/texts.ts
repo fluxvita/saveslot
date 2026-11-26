@@ -447,6 +447,10 @@ export const TEXTS = {
   remoteSignsIn: s(
     "No token here: the host signs in itself. It opens the server's authorization page, where you name this connection and choose its scopes; it sees every slot.",
   ),
+  cursorServerStatic: (profile: string) =>
+    s(
+      `Cursor cannot sign in to a server in this version (its remote sign-in needs dynamic client registration). Issue it a static token instead, saveslot connect http --profile ${profile} --name <name>, and put the token in the entry's header in place of TOKEN.`,
+    ),
   remoteAddress: (host: string) =>
     s(
       host === "claude-desktop"

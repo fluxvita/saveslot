@@ -386,9 +386,29 @@ describe("connect --profile", () => {
     });
   });
 
-  it("cursor: an entry with the address; claude-desktop: the address for its screen", async () => {
+  it("cursor: a static token from connect http, and the entry with its header (06 §3.2)", async () => {
     const c = await cli(["connect", "cursor", "--profile", "lab"]);
-    expect(c.out).toContain(`"url": "${origin}/mcp"`);
+    expect(c.code).toBe(0);
+    // Cursor cannot sign in to a server in this version: nothing says it does.
+    expect(c.out).not.toContain(TEXTS.remoteSignsIn);
+    expect(c.out).toContain(TEXTS.cursorServerStatic("lab"));
+    expect(c.out).toContain("saveslot connect http --profile lab --name <name>");
+    expect(c.out).toContain(
+      JSON.stringify(
+        {
+          mcpServers: {
+            saveslot: { url: `${origin}/mcp`, headers: { Authorization: "Bearer TOKEN" } },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    expect(c.out).not.toMatch(/sl[st]_/);
+    expect(seen).toEqual([]);
+  });
+
+  it("claude-desktop: the address for its screen", async () => {
     const d = await cli(["connect", "claude-desktop", "--profile", "lab"]);
     expect(d.out).toContain(TEXTS.remoteAddress("claude-desktop"));
     expect(d.out).toContain(`  ${origin}/mcp\n`);
