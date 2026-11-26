@@ -816,7 +816,7 @@ describe("the shapes this version refuses, before anything is appended", () => {
   it(
     "an item on the row resolved after an earlier deletion: the resolution itself refused, nothing appended",
     async () => {
-      // As in «an awaiting item the pending deletion opened»: deleting #2's words leaves #3
+      // As in "an awaiting item the pending deletion opened": deleting #2's words leaves #3
       // awaiting, in an item that deletion opens. Its resolution would be an operation on the row
       // (refused as ops_after_deletion), but this version cannot judge a row with a deletion on it:
       // the resolution is refused itself, before anything is appended, so the next deletion
