@@ -1,5 +1,7 @@
 # saveslot · 外化面：MCP 与 HTTP
 
+[English](../../spec/05-surfaces.md) · 简体中文
+
 > 操作的规则见 [`04-contract.md`](04-contract.md)，参数、结果与错误的结构见 [`04-contract-types.md`](04-contract-types.md)；内核规则见 [`03-data-model/`](03-data-model/README.md)；分层见 [`02-architecture.md`](02-architecture.md) §2、§6、§11。CLI 是另一个外化面，见 [`06-cli.md`](06-cli.md)。
 > **本文写的是完整设计**，第一版不开的工具、端点与增强当场标"后续"，范围以 [`07-scope-v1.md`](07-scope-v1.md) 为准（MCP 第一版开 10 个工具与 3 个 prompts；elicitation 后续）。接口层调研见 [`../research/references-mcp.md`](../research/references-mcp.md)。待定项统一记在 [`08-open-questions.md`](08-open-questions.md)。
 > 第一版部署：本地 saveslot 服务只供本机访问（同一台机器上的多个 Agent 共用），跨设备用服务器模式（我们的云服务或自部署）；例子里的两个连接实例都在同一台 MacBook 上。

@@ -1,5 +1,7 @@
 # 01 · saveslot 是什么
 
+[English](../../guide/01-what-is-saveslot.md) · 简体中文
+
 ## 一句话
 
 saveslot 是给 Agent 用的数据底座。它跟踪会随时间变化的事物，并保留每样东西从原始证据到当前状态的完整时间线。数据归用户所有，不绑定任何一家模型或 Agent 产品。

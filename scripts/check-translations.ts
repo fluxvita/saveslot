@@ -1,21 +1,26 @@
-// Checks the English edition of the documents. The Chinese text (docs/zh-CN/) is the source of truth.
+// Checks the two editions of the documents: Chinese under docs/zh-CN/, English at the same path
+// under docs/ (docs/zh-CN/guide/x.md and docs/guide/x.md). The two are aligned in meaning and
+// changed in the same pull request.
 //
 // Fails when:
-// - a Chinese document has no English file at the same path under docs/ (docs/zh-CN/guide/x.md →
-//   docs/guide/x.md), outside the directories listed in NOT_YET;
-// - an English file does not name its Chinese source within its first lines, as `Translated from
-//   docs/zh-CN/<same path>, updated in the same commit as this file.`, or that file does not exist.
-//   No commit is named: a branch's commits are gone once it is squash-merged.
+// - a Chinese document has no English file at the same path, outside the directories listed in
+//   NOT_YET; or an English file under the translated directories has no Chinese file at the same
+//   path;
+// - a file of a pair does not carry, within its first lines, the language switch that links the
+//   other file of the pair: `English · [简体中文](<path>)` in the English file,
+//   `[English](<path>) · 简体中文` in the Chinese one, with <path> relative to the file;
 //
 // - an English document (any Markdown file outside docs/zh-CN/ that is not a `*.zh-CN.md`) links a
 //   file or directory under docs/zh-CN/ that has an English edition at the same path under docs/,
-//   outside the links listed in ZH_LINKS_KEPT: its reader should land on the English page. Links to
-//   what exists only in Chinese (process/, research/) and to docs/zh-CN/ itself pass.
+//   outside its own language switch and the links listed in ZH_LINKS_KEPT: its reader should land
+//   on the English page. Links to what exists only in Chinese (process/, research/) and to
+//   docs/zh-CN/ itself pass.
 //
-// Reports without failing (drift): when git says the Chinese file was last changed after the
-// English one, and the English head does not carry a line `The Chinese edition has changed since:
-// …`. Drift is brought to nothing before a release (RELEASING.md). Dating files needs the full
-// history in CI (a shallow clone dates every file to the boundary commit and hides drift).
+// Reports without failing (drift): when git says one file of a pair was last changed after the
+// other, and the other carries no line saying it is behind (`The Chinese edition has changed since:
+// …` in an English file, `英文版此后有改动：…` in a Chinese one). Drift is brought to nothing
+// before a release (RELEASING.md). Dating files needs the full history in CI (a shallow clone dates
+// every file to the boundary commit and hides drift).
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -28,10 +33,7 @@ export interface TranslationProblem {
   reason: string;
 }
 
-/**
- * Directories, and single files, whose English files are translations of the same path under
- * docs/zh-CN/.
- */
+/** Directories, and single files, whose English files pair with the same path under docs/zh-CN/. */
 const TRANSLATED = [
   "docs/spec/",
   "docs/guide/",
@@ -65,22 +67,7 @@ export const ZH_LINKS_KEPT: readonly { file: string; target: string; why: string
   {
     file: "docs/README.md",
     target: "docs/zh-CN/",
-    why: "the index of both editions: its Chinese column links each document's Chinese source",
-  },
-  {
-    file: "docs/guide/README.md",
-    target: "docs/zh-CN/guide/README.md",
-    why: "the line saying the Chinese edition is authoritative",
-  },
-  {
-    file: "docs/spec/README.md",
-    target: "docs/zh-CN/spec/README.md",
-    why: "the line saying the Chinese edition is authoritative",
-  },
-  {
-    file: "docs/development.md",
-    target: "docs/zh-CN/development.md",
-    why: "the language switcher at the head of the development guide",
+    why: "the index of both editions: its Chinese column links each document's Chinese edition",
   },
   {
     file: "CONTRIBUTING.md",
@@ -90,17 +77,18 @@ export const ZH_LINKS_KEPT: readonly { file: string; target: string; why: string
   ...["AGENTS.md", "CONTRIBUTING.md", "RELEASING.md"].map((file) => ({
     file,
     target: "docs/zh-CN/spec/",
-    why: "addresses contributors, who change the Chinese specification first",
+    why: "addresses contributors, who change both editions of the specification",
   })),
 ];
 
-/** How many lines from the top the source line may sit at (a title and a blank line come first). */
+/** How many lines from the top the language switch may sit at (a title and a blank line come first). */
 const HEAD_LINES = 6;
-const SOURCE =
-  /Translated from `?(docs\/zh-CN\/[^\s`,]+)`?, updated in the same commit as this file\./;
-/** The earlier form, which named a commit. */
-const OLD_SOURCE = /Translated from `?[0-9a-f]{7,40}`? of /;
-const BEHIND = /The Chinese edition has changed since/;
+const EN_SWITCH = /^(?:>\s*)?English · \[简体中文\]\(([^)\s]+)\)\s*$/;
+const ZH_SWITCH = /^(?:>\s*)?\[English\]\(([^)\s]+)\) · 简体中文\s*$/;
+/** The earlier head of an English file, which named its Chinese source as a translation. */
+const OLD_HEAD = /Translated from /;
+const EN_BEHIND = /The Chinese edition has changed since/;
+const ZH_BEHIND = /英文版此后有改动/;
 
 /** Commit time (seconds) of the last change to `file`, or undefined outside git or for new files. */
 export function lastChange(root: string, file: string): number | undefined {
@@ -118,36 +106,60 @@ export function lastChange(root: string, file: string): number | undefined {
 
 const day = (t: number): string => new Date(t * 1000).toISOString().slice(0, 10);
 
-export function sourceLine(path: string): string {
-  return `Translated from ${path}, updated in the same commit as this file.`;
+const isChinese = (file: string): boolean => file.startsWith("docs/zh-CN/");
+
+/** The other file of a pair: docs/zh-CN/x ↔ docs/x. */
+export function counterpart(file: string): string {
+  return isChinese(file)
+    ? `docs/${file.slice("docs/zh-CN/".length)}`
+    : `docs/zh-CN/${file.slice("docs/".length)}`;
 }
 
-/** The Chinese path the head names, "old" for the earlier form with a commit, or undefined. */
-export function sourceOf(text: string): string | "old" | undefined {
+/** The relative link from `file` to `target`, both repository paths. */
+const linkFrom = (file: string, target: string): string =>
+  relative(dirname(file), target).split("\\").join("/");
+
+/** The language switch `file` should carry. */
+export function switchLine(file: string): string {
+  const link = linkFrom(file, counterpart(file));
+  return isChinese(file) ? `[English](${link}) · 简体中文` : `English · [简体中文](${link})`;
+}
+
+/**
+ * The repository path the language switch in the head of `file` links, "old" when the head still
+ * has the earlier translation line instead, or undefined.
+ */
+export function switchOf(file: string, text: string): string | "old" | undefined {
+  const re = isChinese(file) ? ZH_SWITCH : EN_SWITCH;
+  let old = false;
   for (const line of text.split("\n").slice(0, HEAD_LINES)) {
-    const m = SOURCE.exec(line);
-    if (m?.[1] !== undefined) return m[1];
-    if (OLD_SOURCE.test(line)) return "old";
+    const m = re.exec(line);
+    if (m?.[1] !== undefined) {
+      return normalize(join(dirname(file), decodeURIComponent(m[1])))
+        .split("\\")
+        .join("/");
+    }
+    if (OLD_HEAD.test(line)) old = true;
   }
-  return undefined;
+  return old ? "old" : undefined;
 }
 
 /** Chinese documents without an English file at the same path, outside NOT_YET. */
 export function missingEnglish(root: string, files: readonly string[]): TranslationProblem[] {
   return files
-    .filter((f) => f.startsWith("docs/zh-CN/") && !NOT_YET.some((n) => f.startsWith(n.dir)))
-    .map((zh) => ({ zh, en: `docs/${zh.slice("docs/zh-CN/".length)}` }))
+    .filter((f) => isChinese(f) && !NOT_YET.some((n) => f.startsWith(n.dir)))
+    .map((zh) => ({ zh, en: counterpart(zh) }))
     .filter(({ en }) => !existsSync(join(root, en)))
     .map(({ zh, en }) => ({ file: zh, reason: `no English edition (${en})` }));
 }
 
 /** Whether `file` is an English document: outside docs/zh-CN/ and not a `*.zh-CN.md`. */
-const isEnglish = (file: string): boolean =>
-  !file.startsWith("docs/zh-CN/") && !file.endsWith(".zh-CN.md");
+const isEnglish = (file: string): boolean => !isChinese(file) && !file.endsWith(".zh-CN.md");
 
 /**
  * Links from English documents to a file or directory under docs/zh-CN/ whose English edition
- * exists (docs/zh-CN/x → docs/x), outside ZH_LINKS_KEPT.
+ * exists (docs/zh-CN/x → docs/x), outside a file's link to its own Chinese edition and
+ * ZH_LINKS_KEPT.
  */
 export function zhLinksWithEnglish(
   root: string,
@@ -156,6 +168,7 @@ export function zhLinksWithEnglish(
   const out: (TranslationProblem & { line: number })[] = [];
   for (const file of files.filter(isEnglish)) {
     const text = readFileSync(join(root, file), "utf8");
+    const own = TRANSLATED.some((d) => file.startsWith(d)) ? counterpart(file) : undefined;
     for (const { line, target } of extractLinks(text)) {
       if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("//")) continue;
       const pathPart = target.split("#")[0] ?? "";
@@ -166,6 +179,7 @@ export function zhLinksWithEnglish(
       const rest = path.slice("docs/zh-CN/".length);
       if (rest === "") continue;
       if (!existsSync(join(root, "docs", rest))) continue;
+      if (path === own) continue;
       const dir = pathPart.endsWith("/") ? "/" : "";
       const shown = `${path}${dir}`;
       const en = `docs/${rest}${dir}`;
@@ -184,6 +198,18 @@ export function zhLinksWithEnglish(
   return out;
 }
 
+/** The problem with the language switch of `file`, whose counterpart exists, or undefined. */
+function switchProblem(file: string, text: string): string | undefined {
+  const expected = counterpart(file);
+  const found = switchOf(file, text);
+  if (found === "old") {
+    return `still has the old "Translated from …" head; replace it with "${switchLine(file)}"`;
+  }
+  if (found === undefined) return `no "${switchLine(file)}" in its first ${HEAD_LINES} lines`;
+  if (found !== expected) return `its language switch links ${found}, expected ${expected}`;
+  return undefined;
+}
+
 export function checkTranslations(
   root: string,
   files = listMarkdownFiles(root),
@@ -197,38 +223,35 @@ export function checkTranslations(
     })),
   ];
   const drift: TranslationProblem[] = [];
-  for (const file of files) {
-    if (!TRANSLATED.some((d) => file.startsWith(d))) continue;
-    const expected = `docs/zh-CN/${file.slice("docs/".length)}`;
-    const text = readFileSync(join(root, file), "utf8");
-    const source = sourceOf(text);
-    if (source === "old") {
-      problems.push({
-        file,
-        reason: `names a commit, which squash merges lose; write "${sourceLine(expected)}"`,
+  for (const en of files) {
+    if (!TRANSLATED.some((d) => en.startsWith(d))) continue;
+    const zh = counterpart(en);
+    if (!existsSync(join(root, zh))) {
+      problems.push({ file: en, reason: `no Chinese edition (${zh})` });
+      continue;
+    }
+    const enText = readFileSync(join(root, en), "utf8");
+    const zhText = readFileSync(join(root, zh), "utf8");
+    const enProblem = switchProblem(en, enText);
+    const zhProblem = switchProblem(zh, zhText);
+    if (enProblem !== undefined) problems.push({ file: en, reason: enProblem });
+    if (zhProblem !== undefined) problems.push({ file: zh, reason: zhProblem });
+    if (enProblem !== undefined || zhProblem !== undefined) continue;
+    const zhAt = changedAt(zh);
+    const enAt = changedAt(en);
+    if (zhAt === undefined || enAt === undefined || zhAt === enAt) continue;
+    const head = (text: string) => text.split("\n").slice(0, HEAD_LINES);
+    if (zhAt > enAt && !head(enText).some((l) => EN_BEHIND.test(l))) {
+      drift.push({
+        file: en,
+        reason: `${zh} changed after it (${day(zhAt)}, this file ${day(enAt)}); bring it in line, or add "The Chinese edition has changed since: …" under the language switch`,
       });
-    } else if (source === undefined) {
-      problems.push({
-        file,
-        reason: `no "${sourceLine(expected)}" in its first ${HEAD_LINES} lines`,
+    }
+    if (enAt > zhAt && !head(zhText).some((l) => ZH_BEHIND.test(l))) {
+      drift.push({
+        file: zh,
+        reason: `${en} changed after it (${day(enAt)}, this file ${day(zhAt)}); bring it in line, or add "英文版此后有改动：…" under the language switch`,
       });
-    } else if (source !== expected) {
-      problems.push({ file, reason: `says it is translated from ${source}, expected ${expected}` });
-    } else if (!existsSync(join(root, expected))) {
-      problems.push({ file, reason: `its source ${expected} does not exist` });
-    } else {
-      const zh = changedAt(expected);
-      const en = changedAt(file);
-      const behind = text
-        .split("\n")
-        .slice(0, HEAD_LINES)
-        .some((l) => BEHIND.test(l));
-      if (zh !== undefined && en !== undefined && zh > en && !behind) {
-        drift.push({
-          file,
-          reason: `${expected} changed after it (${day(zh)}, translation ${day(en)}); update it, or add "The Chinese edition has changed since: …" under the source line`,
-        });
-      }
     }
   }
   return { problems, drift };
@@ -240,16 +263,16 @@ if (import.meta.main) {
   for (const d of drift) console.warn(`${d.file}: ${d.reason}`);
   if (drift.length > 0) {
     console.warn(
-      `\n${drift.length} translation(s) behind their Chinese source: not a failure; bring them up to date before a release (RELEASING.md).\n`,
+      `\n${drift.length} document(s) behind the other edition: not a failure; bring them in line before a release (RELEASING.md).\n`,
     );
   }
   for (const p of problems) console.error(`${p.file}: ${p.reason}`);
   if (problems.length > 0) {
-    console.error(`\n${problems.length} problem(s) with the English edition.`);
+    console.error(`\n${problems.length} problem(s) with the two editions.`);
     process.exit(1);
   }
   const english = listMarkdownFiles(root).filter((f) => TRANSLATED.some((d) => f.startsWith(d)));
   console.log(
-    `Translations OK: ${english.length} English documents, each naming its Chinese source; not required yet: ${NOT_YET.map((n) => `${n.dir} (until ${n.until})`).join(", ")}.`,
+    `Editions OK: ${english.length} documents in both editions, each linking the other; English not required yet: ${NOT_YET.map((n) => `${n.dir} (until ${n.until})`).join(", ")}.`,
   );
 }

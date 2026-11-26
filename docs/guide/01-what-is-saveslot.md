@@ -1,7 +1,6 @@
 # 01 · What saveslot is
 
-> Translated from docs/zh-CN/guide/01-what-is-saveslot.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/01-what-is-saveslot.md)
 
 ## In one sentence
 

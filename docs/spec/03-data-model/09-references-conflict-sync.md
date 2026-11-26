@@ -1,7 +1,6 @@
 # saveslot · Data-layer mechanisms · 09 References, conflicts and sync
 
-> Translated from docs/zh-CN/spec/03-data-model/09-references-conflict-sync.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../../zh-CN/spec/03-data-model/09-references-conflict-sync.md)
 
 > Part of the data-layer mechanisms; for the contents see [`README.md`](README.md). A section quoted with "…" in the text may be in another file in the same directory; look it up by the contents.
 

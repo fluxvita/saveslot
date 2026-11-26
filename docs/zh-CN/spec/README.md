@@ -1,6 +1,8 @@
 # saveslot · 规格
 
-> 每份规格都有英文版（[`docs/spec/`](../../spec/README.md)），两个版本不一致时以中文版为准。
+[English](../../spec/README.md) · 简体中文
+
+> 每份规格都有英文版（[`docs/spec/`](../../spec/README.md)），与本版语义对齐；两者不一致算缺陷，请提 Issue。
 
 > 每条规则的完整定义，给实现内核、写接入方、审查设计的人按需查。第一次接触 saveslot 的人先读讲解（[`../guide/`](../guide/README.md)）；项目的一页总览在仓库根的 [`README.zh-CN.md`](../../../README.zh-CN.md)。讲解与规格不一致时以规格为准。
 

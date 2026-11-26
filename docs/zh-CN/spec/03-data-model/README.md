@@ -1,5 +1,7 @@
 # saveslot · 数据层机制（目录）
 
+[English](../../../spec/03-data-model/README.md) · 简体中文
+
 数据机制与内核规则的权威定义，按主题分成 11 份。日志里每种事件的字段级定义另见 [`../09-event-format.md`](../09-event-format.md)。定位与边界见 [`../01-positioning.md`](../01-positioning.md)；
 操作契约见 [`../04-contract.md`](../04-contract.md)，外化面见 [`../05-surfaces.md`](../05-surfaces.md)（MCP、HTTP）与 [`../06-cli.md`](../06-cli.md)（CLI）；契约只引用这里的规则，不另定规则。
 一个从头走到尾的例子见讲解 [`../../guide/02-walkthrough.md`](../../guide/02-walkthrough.md)（与本目录不一致处以本目录为准）。

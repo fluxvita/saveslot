@@ -1,7 +1,6 @@
 # saveslot · Data-layer mechanisms · 02 Integrity and records
 
-> Translated from docs/zh-CN/spec/03-data-model/02-integrity-and-records.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../../zh-CN/spec/03-data-model/02-integrity-and-records.md)
 
 > Part of the data-layer mechanisms; for the contents see [`README.md`](README.md). Sections quoted in the text with "…" may be in other files of the same directory; look them up in the contents.
 

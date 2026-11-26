@@ -1,7 +1,6 @@
 # saveslot · Type definitions of the operation contract
 
-> Translated from docs/zh-CN/spec/04-contract-types.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/04-contract-types.md)
 
 > This document is the **structure** of the operation contract: the parameters, results, errors and all enumerations of every operation, written as TypeScript types. The rules and explanations (what is returned when, and why) are in [`04-contract.md`](04-contract.md); the kernel rules are in [`03-data-model/`](03-data-model/README.md); how MCP and HTTP carry the contract is in [`05-surfaces.md`](05-surfaces.md).
 > **Field names, nested structures and enumeration values are defined by this document.** The two packages `contract-core` / `contract` in the implementation correspond to it item by item; OpenAPI is generated from them, and the MCP `inputSchema` is composed from the types in this file by the mapping table in section 1 of [`05-surfaces.md`](05-surfaces.md). The `description` of an MCP parameter is wording written for the model, and its original text is in [`05-surfaces.md`](05-surfaces.md) 9.1; the comments on parameters in this document describe types and constraints.

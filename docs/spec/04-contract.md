@@ -1,7 +1,6 @@
 # saveslot · The operation contract
 
-> Translated from docs/zh-CN/spec/04-contract.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/04-contract.md)
 
 > For the place of the contract in the core, see [`02-architecture.md`](02-architecture.md) §6; for the data mechanisms and the kernel rules, see [`03-data-model/`](03-data-model/README.md); for the two surfaces MCP and HTTP, see [`05-surfaces.md`](05-surfaces.md), and for the CLI, see [`06-cli.md`](06-cli.md).
 > **This document gives rules and explanations; the structure of parameters, results and errors, and all enumerations, are in [`04-contract-types.md`](04-contract-types.md), and field names and values follow it.**

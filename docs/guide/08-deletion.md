@@ -1,7 +1,6 @@
 # 08 · Deletion
 
-> Translated from docs/zh-CN/guide/08-deletion.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/08-deletion.md)
 
 Chapter 2 used the lunch row to show three cases of privacy deletion. This chapter covers deletion in full: where its definition comes from, why it is defined this way, the whole process from preview to physical erasure, what remains after deletion, and how to make sure that deleted things do not come back when a backup is restored.
 

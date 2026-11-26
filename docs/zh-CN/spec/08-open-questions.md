@@ -1,5 +1,7 @@
 # saveslot · 待定清单
 
+[English](../../spec/08-open-questions.md) · 简体中文
+
 > 唯一的待定清单：方案里还没定的事项都记在这里，其他文档提到"待定"时指向本文。
 > 定位与技术选型见 [`01-positioning.md`](01-positioning.md)；已经定下的规则写在各方案文档里，本文只列未定的部分。
 > 按"什么时候必须定"分三组；阶段编号见 [`07-scope-v1.md`](07-scope-v1.md) 第 4 节。

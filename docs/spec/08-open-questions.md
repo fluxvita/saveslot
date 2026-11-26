@@ -1,7 +1,6 @@
 # saveslot · Open questions
 
-> Translated from docs/zh-CN/spec/08-open-questions.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/08-open-questions.md)
 
 > The only list of undecided items: every item in the design that is not yet settled is recorded here, and when other documents mention "undecided" they point to this document.
 > For positioning and technology choices see [`01-positioning.md`](01-positioning.md); rules already settled are written in the individual design documents, and this document lists only the undecided parts.

@@ -1,7 +1,6 @@
 # saveslot · Data-layer mechanisms · 01 Data layers and objects
 
-> Translated from docs/zh-CN/spec/03-data-model/01-objects.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../../zh-CN/spec/03-data-model/01-objects.md)
 
 > Part of the data-layer mechanisms; for the contents see [`README.md`](README.md). A section quoted in the text with "…" may be in another file of the same directory; look it up in the contents.
 

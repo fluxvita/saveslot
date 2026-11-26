@@ -56,12 +56,11 @@ between them are `workspace:*` in the repository and the exact version when publ
 
 ## A release
 
-1. The English edition is brought up to date with the Chinese one first; the Chinese is authoritative.
-   `pnpm docs:translations` lists the English documents whose Chinese source changed after them
-   (a warning, not a failure), and `git grep -l "The Chinese edition has changed since" -- docs
-   ':!docs/zh-CN'` the ones marked as behind. Each is updated from the Chinese text in a pull
-   request to `main`, with that line removed, and cherry-picked onto the release branch, until both
-   lists are empty on the release branch.
+1. The two editions of the documents are brought in line first. `pnpm docs:translations` lists
+   the documents whose other edition changed after them (a warning, not a failure), and
+   `git grep -l -e "The Chinese edition has changed since" -e "英文版此后有改动" -- docs` the ones
+   marked as behind. Each is brought in line in a pull request to `main`, with that line removed,
+   and cherry-picked onto the release branch, until both lists are empty on the release branch.
 2. The version is set on the release branch. A maintainer adds the commit `chore(release): <version>`
    there, which runs `pnpm changeset version`: the versions and the changelogs. Before the first
    release of a minor version it also leaves Changesets pre mode (`changeset pre exit`). This commit

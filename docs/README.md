@@ -1,6 +1,6 @@
 # saveslot documentation
 
-The Chinese edition is authoritative. Every English file names its Chinese source at its head, and where the two differ, the Chinese one holds.
+The guide and the specification have two editions, English and Chinese, aligned in meaning. Each file links the other edition at its head. A change to one changes the other in the same pull request, and a difference between them is a defect, to be reported as an issue.
 
 All guide and specification documents have an English edition. The decision records, walkthroughs and experiment reports under `zh-CN/process/` and the research notes under `zh-CN/research/` are in Chinese only for now; their English edition is pending.
 

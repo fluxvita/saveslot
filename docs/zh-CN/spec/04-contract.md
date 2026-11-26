@@ -1,5 +1,7 @@
 # saveslot · 操作契约（contract）
 
+[English](../../spec/04-contract.md) · 简体中文
+
 > 契约在核心里的位置见 [`02-architecture.md`](02-architecture.md) §6；数据机制与内核规则见 [`03-data-model/`](03-data-model/README.md)；MCP 与 HTTP 两个外化面见 [`05-surfaces.md`](05-surfaces.md)，CLI 见 [`06-cli.md`](06-cli.md)。
 > **本文写规则与说明；参数、结果、错误的结构与全部枚举在 [`04-contract-types.md`](04-contract-types.md)，字段名与取值以它为准。**
 > 两份文档写的都是完整设计。第一版不实现的部分在类型文件里标 `@later`，清单见它的 0.2 节；范围以 [`07-scope-v1.md`](07-scope-v1.md) 为准。待定项统一记在 [`08-open-questions.md`](08-open-questions.md)。

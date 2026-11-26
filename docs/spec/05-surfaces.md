@@ -1,7 +1,6 @@
 # saveslot · The surfaces: MCP and HTTP
 
-> Translated from docs/zh-CN/spec/05-surfaces.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/05-surfaces.md)
 
 > The rules of the operations are in [`04-contract.md`](04-contract.md); the structure of parameters, results and errors is in [`04-contract-types.md`](04-contract-types.md); the kernel rules are in [`03-data-model/`](03-data-model/README.md); the layering is in [`02-architecture.md`](02-architecture.md) §2, §6 and §11. The CLI is another surface, described in [`06-cli.md`](06-cli.md).
 > **This document gives the complete design.** Tools, endpoints and enhancements that the first version does not open are marked "Later" on the spot; the scope is defined by [`07-scope-v1.md`](07-scope-v1.md) (the first version opens 10 MCP tools and 3 prompts; elicitation is later). The research on the interface layer is in [`../research/references-mcp.md`](../zh-CN/research/references-mcp.md) (Chinese). Undecided items are all recorded in [`08-open-questions.md`](08-open-questions.md).

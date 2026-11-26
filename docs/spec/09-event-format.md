@@ -1,7 +1,6 @@
 # saveslot · Event format v1
 
-> Translated from docs/zh-CN/spec/09-event-format.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/09-event-format.md)
 
 > The field-level definition of every kind of event in the log. The implementation of `log` and `apply` follows this document; it is also the format description of an exported file: without any saveslot code, this document alone should be enough to read an exported log.
 > The rules themselves (when each kind of event is produced, how judgement is done) are in [`03-data-model/`](03-data-model/README.md); the layering and the invariants are in [`02-architecture.md`](02-architecture.md). This document only defines "what an event writes, and how".

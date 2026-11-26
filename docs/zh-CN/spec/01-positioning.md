@@ -1,5 +1,7 @@
 # saveslot · 定位
 
+[English](../../spec/01-positioning.md) · 简体中文
+
 > saveslot 的方向是 **Agent Data Infra**。调研材料见 [`../research/`](../research/)。
 >
 > 本文是定位与边界；数据层机制见 [`03-data-model/`](03-data-model/README.md)，操作契约见 [`04-contract.md`](04-contract.md)，外化面见 [`05-surfaces.md`](05-surfaces.md)（MCP、HTTP）与 [`06-cli.md`](06-cli.md)（CLI），事件格式见 [`09-event-format.md`](09-event-format.md)，第一版范围见 [`07-scope-v1.md`](07-scope-v1.md)，待定项见 [`08-open-questions.md`](08-open-questions.md)，面向初次接触者的讲解见 [`../guide/`](../guide/README.md)，一个从头走到尾的例子见 [`../guide/02-walkthrough.md`](../guide/02-walkthrough.md)（讲解与规格不一致处以规格为准）。

@@ -1,7 +1,6 @@
 # saveslot · Data-layer mechanisms (contents)
 
-> Translated from docs/zh-CN/spec/03-data-model/README.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../../zh-CN/spec/03-data-model/README.md)
 
 The authoritative definition of the data mechanisms and the kernel rules, divided by topic into 11 parts. The field-level definition of each kind of event in the log is in [`../09-event-format.md`](../09-event-format.md). For positioning and boundaries see [`../01-positioning.md`](../01-positioning.md);
 for the operation contract see [`../04-contract.md`](../04-contract.md), and for the surfaces see [`../05-surfaces.md`](../05-surfaces.md) (MCP, HTTP) and [`../06-cli.md`](../06-cli.md) (CLI); the contract only cites the rules here and sets no rules of its own.

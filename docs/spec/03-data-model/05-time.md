@@ -1,7 +1,6 @@
 # saveslot · Data-layer mechanisms · 05 Time
 
-> Translated from docs/zh-CN/spec/03-data-model/05-time.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../../zh-CN/spec/03-data-model/05-time.md)
 
 > Part of the data-layer mechanisms; for the contents see [`README.md`](README.md). A section quoted in "…" in the text may be in another file in the same directory; look it up in the contents.
 
