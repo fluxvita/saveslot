@@ -19,7 +19,7 @@ You need Node 24.22.1 or later on the 24 line, or 26.12.1 or later.
 
 ```sh
 npm install -g @fluxvita/saveslot
-saveslot setup      # pick the running template; it adds saveslot to Claude Code and Codex
+saveslot setup      # pick the running template; it adds saveslot to the agents it finds, such as Claude Code and Codex
 ```
 
 Then tell your agent:
@@ -53,7 +53,7 @@ flowchart LR
 
 | | What it keeps | Who reads and writes it | Why a value changed |
 |---|---|---|---|
-| A database | The current values | The programs you write | Not recorded |
+| A conventional database | The current values | The programs you write | Not recorded |
 | An agent's built-in memory | Things that were said | That one agent | Not recorded |
 | saveslot | The timeline of each thing | All of your agents | Every value carries its sources and its history |
 
@@ -66,21 +66,24 @@ flowchart LR
 | Cursor | `saveslot connect cursor` prints the configuration to paste |
 | Claude Desktop | `saveslot connect claude-desktop` prints the configuration to paste |
 
-Agents reach saveslot over MCP: locally through `saveslot mcp`, and in server mode over remote MCP, signing in with OAuth. Scripts and connectors use HTTP; people use the `saveslot` command.
+Agents reach saveslot over MCP: locally through `saveslot mcp`, and in server mode over remote MCP, where most hosts sign in with OAuth and Cursor uses a token from `saveslot connect http` ([`06-cli.md`](docs/spec/06-cli.md) §3.2). Scripts and connectors use HTTP; people use the `saveslot` command.
 
 ## Status
 
-**0.1** is the first release, with a local mode and a server mode (hosted or self-hosted). saveslot is before 1.0: interfaces may change between minor versions. Some parts of the design are not in 0.1 yet; [what 0.1 includes](docs/spec/07-scope-v1.md) is in section 7 of the scope.
+**0.1** is the first release, with a local mode and a server mode (hosted or self-hosted). saveslot is before 1.0: interfaces may change between minor versions. Some parts of the design are not in 0.1 yet; see [what 0.1.0 provides](docs/spec/07-scope-v1.md#7-what-010-provides).
 
 ## Documentation
 
-The guide and the specification are kept in two editions, English under [`docs/`](docs/README.md) and Chinese under [`docs/zh-CN/`](docs/zh-CN/), aligned in meaning: a change to one changes the other in the same pull request, and a difference between them is a defect, to be reported as an issue. The decision records, walkthroughs and research notes are in Chinese only for now; the index lists them.
+The documents are under `docs/`, in four directories, each with one job. The guide and the specification have two editions, English and Chinese: the Chinese one is under `docs/zh-CN/`, the English one at the same path under `docs/` without `zh-CN/`, and [`docs/README.md`](docs/README.md) lists them. The two editions are aligned in meaning: a change to one changes the other in the same pull request, and a difference between them is a defect, to be reported as an issue. The process material and the research reports are in Chinese only for now.
 
 | Where | What |
 |---|---|
-| [`docs/guide/`](docs/guide/README.md) | Guide: a narrative introduction, read in order |
-| [`docs/spec/`](docs/spec/README.md) | Specification: the authoritative definition of behavior |
-| [`docs/`](docs/README.md) | Index of every document in both editions |
+| [`docs/guide/`](docs/guide/README.md) | **Guide**: for people meeting saveslot for the first time, read in order. The problem it solves, one example from start to finish, the core concepts, the architecture, why each mechanism is designed the way it is |
+| [`docs/spec/`](docs/spec/README.md) | **Specification**: the complete definition of every rule, for implementing and reviewing, looked up as needed. Its contents and reading order are in [`docs/spec/README.md`](docs/spec/README.md) |
+| [`docs/zh-CN/process/`](docs/zh-CN/process/README.md) | Process material: `decisions/` (design decisions and their reasons), `walkthroughs/` (scenario walkthroughs); in Chinese only for now |
+| [`docs/zh-CN/research/`](docs/zh-CN/research/) | Research reports; in Chinese only for now |
+
+Where the guide and the specification differ, the specification holds.
 
 ## Getting help and contributing
 

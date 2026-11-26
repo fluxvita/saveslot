@@ -15,11 +15,11 @@
 
 ## 上手
 
-需要 Node 24.22.1 及以上（26 系列 26.12.1 及以上）。
+需要 Node 24 系列的 24.22.1 及以上，或 26.12.1 及以上。
 
 ```sh
 npm install -g @fluxvita/saveslot
-saveslot setup      # 模板选 running；它会把 saveslot 加进 Claude Code 与 Codex
+saveslot setup      # 模板选 running；它会把 saveslot 加进本机找到的 Agent，如 Claude Code 与 Codex
 ```
 
 然后对 Agent 说：
@@ -46,14 +46,14 @@ flowchart LR
     direction TB
     L["只追加的日志：<br/>每次写入都带证据"] --> T["当前状态：<br/>表、历史、冲突"]
   end
-  L -- "导出" --> E["你的数据，就是这条日志"]
+  L -- "导出" --> E["你的数据，<br/>就是这条日志"]
 ```
 
 ## 和别的东西有什么不同
 
 | | 存什么 | 谁来读写 | 值为什么变了 |
 |---|---|---|---|
-| 数据库 | 当前的值 | 你写的程序 | 不记 |
+| 一般的数据库 | 当前的值 | 你写的程序 | 不记 |
 | Agent 自带的记忆 | 说过的话 | 那一个 Agent | 不记 |
 | saveslot | 每样东西的时间线 | 你所有的 Agent | 每个值都带着出处和历史 |
 
@@ -66,11 +66,11 @@ flowchart LR
 | Cursor | `saveslot connect cursor` 打印要粘贴的配置 |
 | Claude 桌面端 | `saveslot connect claude-desktop` 打印要粘贴的配置 |
 
-Agent 经 MCP 连 saveslot：本机经 `saveslot mcp`，服务器模式走远程 MCP，用 OAuth 登录授权。脚本与连接器用 HTTP；人用 `saveslot` 命令。
+Agent 经 MCP 连 saveslot：本机经 `saveslot mcp`，服务器模式走远程 MCP，多数宿主用 OAuth 登录授权，Cursor 用 `saveslot connect http` 签发的令牌（[`06-cli.md`](docs/zh-CN/spec/06-cli.md) 第 3.2 节）。脚本与连接器用 HTTP；人用 `saveslot` 命令。
 
 ## 状态
 
-**0.1** 是第一个发布版本，有本机模式和服务器模式（云托管或自部署）。saveslot 还在 1.0 之前：小版本之间接口可能变化。设计里有些部分 0.1 还没有提供，[0.1 包含什么](docs/zh-CN/spec/07-scope-v1.md)见范围文档第 7 节。
+**0.1** 是第一个发布版本，有本机模式和服务器模式（云托管或自部署）。saveslot 还在 1.0 之前：小版本之间接口可能变化。设计里有些部分 0.1 还没有提供，见 [0.1.0 提供哪些](docs/zh-CN/spec/07-scope-v1.md#7-010-提供哪些)。
 
 ## 文档
 
@@ -80,8 +80,8 @@ Agent 经 MCP 连 saveslot：本机经 `saveslot mcp`，服务器模式走远程
 |---|---|
 | [`docs/zh-CN/guide/`](docs/zh-CN/guide/README.md) | **讲解**：给第一次接触的人，顺着读。解决什么问题、一个例子走到底、核心概念、架构、各机制为什么这样设计 |
 | [`docs/zh-CN/spec/`](docs/zh-CN/spec/README.md) | **规格**：每条规则的完整定义，给实现与审查用，按需查。目录与阅读顺序见 [`docs/zh-CN/spec/README.md`](docs/zh-CN/spec/README.md) |
-| [`docs/zh-CN/process/`](docs/zh-CN/process/README.md) | 过程材料：`decisions/`（设计决定及其理由）、`walkthroughs/`（场景推演） |
-| [`docs/zh-CN/research/`](docs/zh-CN/research/) | 调研报告 |
+| [`docs/zh-CN/process/`](docs/zh-CN/process/README.md) | 过程材料：`decisions/`（设计决定及其理由）、`walkthroughs/`（场景推演）；目前只有中文版 |
+| [`docs/zh-CN/research/`](docs/zh-CN/research/) | 调研报告；目前只有中文版 |
 
 讲解与规格不一致时以规格为准。
 
