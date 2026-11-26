@@ -61,8 +61,12 @@ export function dispatch(
     // doctor: the hosts' entries are the CLI's to look at (06 §3 step 7).
     return first === "doctor"
       ? serviceCommand("doctor", rest, cmdIO, undefined, {
-          hosts: (home) =>
-            doctorHosts({ env, entry: io.entry, session: () => localSession(home, env) }),
+          hosts: (home, ready) =>
+            doctorHosts({
+              env,
+              entry: io.entry,
+              ...(ready ? { session: () => localSession(home, env) } : {}),
+            }),
         })
       : serviceCommand(first as ServiceName, rest, cmdIO);
   }

@@ -202,6 +202,18 @@ describe("doctor's hosts, from the entry package", () => {
     const items = all.map((f) => f.item);
     expect(items.indexOf("host Codex")).toBe(items.indexOf("start at login") + 1);
   }, 60_000);
+
+  it("told the service is not ready when it is not running: its reads are not asked for", async () => {
+    const home = await shared();
+    const ready: boolean[] = [];
+    await findings(home, system(), {
+      hosts: async (_, r) => {
+        ready.push(r);
+        return [];
+      },
+    });
+    expect(ready).toEqual([false]);
+  }, 60_000);
 });
 
 describe("doctor with the service", () => {
@@ -217,7 +229,15 @@ describe("doctor with the service", () => {
     try {
       // The start says the Node it runs on.
       expect(lines.some((l) => l.endsWith(` runtime node=${process.versions.node}`))).toBe(true);
-      const all = await findings(home, system());
+      const ready: boolean[] = [];
+      const all = await findings(home, system(), {
+        hosts: async (_, r) => {
+          ready.push(r);
+          return [];
+        },
+      });
+      // The hosts are told the service is ready: their reads may be asked for.
+      expect(ready).toEqual([true]);
       expect(verdicts(all)).toMatchObject({
         service: "pass",
         version: "pass",
