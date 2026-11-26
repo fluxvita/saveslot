@@ -17,6 +17,8 @@ export interface QueryInput {
   readonly read: ReadId;
   /** Tests only: read the state after this operation, as a later page does. */
   readonly asOf?: number;
+  /** Tests only: the whole read, never pushed down: the standard a pushed-down page is held to. */
+  readonly full?: true;
 }
 
 export interface QueryOutput {

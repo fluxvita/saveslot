@@ -36,6 +36,7 @@ import {
 } from "../request/index.ts";
 import { valueOut } from "../time/index.ts";
 import { intervalOf } from "./interval.ts";
+import type { KeySpec, KeyType } from "./order-sql.ts";
 import type { QueryPlan } from "./params.ts";
 import type { Flag, RowFacts, SelectedRow, Span } from "./select.ts";
 import {
@@ -577,12 +578,7 @@ export function shownRows(
 
 // --- order ---------------------------------------------------------------------------------------
 
-export type KeyType = "number" | "text" | "plain" | "boolean" | "count";
-
-export interface KeySpec {
-  readonly type: KeyType;
-  readonly dir: "asc" | "desc";
-}
+export type { KeySpec, KeyType } from "./order-sql.ts";
 
 /** Code point order (UTF-8 byte order, the "C" collation). */
 export function cmpText(a: string, b: string): number {

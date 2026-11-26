@@ -14,19 +14,31 @@ import { changersOf } from "./changed-by.ts";
 import { revokedTargets } from "./dangling.ts";
 import { queryDerived } from "./derived.ts";
 import { rowDetails } from "./detail.ts";
+import { queryKeys } from "./order-sql.ts";
 import { type QueryPlan, queryPlan } from "./params.ts";
 import type { QueryInput, QueryOutput } from "./query-io.ts";
 import {
   cmpKeys,
   decodePosition,
   encodePosition,
+  type KeySpec,
   keySpecs,
+  type Position,
   queryIdentity,
   rowKeys,
   type ShownRow,
   shownRows,
 } from "./rows.ts";
-import { logPosition, premiseFacts, restoreCount, rowFacts, selectRows } from "./select.ts";
+import {
+  countRows,
+  logPosition,
+  premiseFacts,
+  restoreCount,
+  rowFacts,
+  type SelectedRow,
+  selectFirst,
+  selectRows,
+} from "./select.ts";
 import { resolveTable, visibleSlots } from "./slots.ts";
 import { invalid, type QueryReadResult } from "./types.ts";
 import { rowFactsAsOf, selectRowsAsOf } from "./versions.ts";
@@ -56,6 +68,94 @@ function validRead(plan: QueryPlan): ReadValid | undefined {
   return undefined;
 }
 
+/** A page of the rows shown, how many rows there are in all, and whether more follow the page. */
+interface PageRows {
+  readonly page: readonly ShownRow[];
+  readonly total: number;
+  readonly more: boolean;
+}
+
+/** What the rows shown need beside their values, for the rows selected given. */
+async function factsOf(
+  tx: ReadTx,
+  plan: QueryPlan,
+  selected: readonly SelectedRow[],
+  asOf: number | undefined,
+) {
+  const ids = selected.map((r) => r.id);
+  return {
+    ...(asOf === undefined
+      ? await rowFacts(tx, plan.table, ids)
+      : await rowFactsAsOf(tx, plan.table, ids, asOf)),
+    premises: await premiseFacts(tx, plan.table, ids, asOf, plan.detailed),
+    // Targets in tables the caller can see only: a target out of range says nothing of itself.
+    revokedTargets: await revokedTargets(tx, plan.table, plan.named.slot.tables, selected, asOf),
+  };
+}
+
+/** The rows shown from the rows selected, with their keys, in order. */
+async function shownInOrder(
+  tx: ReadTx,
+  plan: QueryPlan,
+  specs: readonly KeySpec[],
+  restore: number,
+  selected: readonly SelectedRow[],
+  asOf: number | undefined,
+): Promise<ShownRow[]> {
+  const facts = await factsOf(tx, plan, selected, asOf);
+  const rows: ShownRow[] = shownRows(plan, selected, facts, restore).map((s) => ({
+    ...s,
+    keys: rowKeys(plan, s),
+  }));
+  rows.sort((a, b) => cmpKeys(specs, a.keys, b.keys));
+  return rows;
+}
+
+/**
+ * The whole read: every row selected (of the latest state, or as of `asOf`), its facts, merged
+ * and ordered, and the page after `after`. Where a page cannot be pushed down, and the standard a
+ * pushed-down page is compared with.
+ */
+async function queryRowsFull(
+  tx: ReadTx,
+  plan: QueryPlan,
+  specs: readonly KeySpec[],
+  restore: number,
+  after: Position["keys"] | undefined,
+  asOf: number | undefined,
+): Promise<PageRows> {
+  const selected =
+    asOf === undefined ? await selectRows(tx, plan) : await selectRowsAsOf(tx, plan, asOf);
+  const rows = await shownInOrder(tx, plan, specs, restore, selected, asOf);
+  const rest = after === undefined ? rows : rows.filter((r) => cmpKeys(specs, r.keys, after) > 0);
+  const page = rest.slice(0, plan.limit);
+  return { page, total: rows.length, more: rest.length > page.length };
+}
+
+/**
+ * A first page of the latest state pushed down to SQL: the page's rows and one more (whether more
+ * follow) in the order of the keys, the facts of the page's rows only, and the total counted
+ * apart. Where each row selected is a row shown: event tables, and state tables at a point.
+ * Undefined elsewhere: timeless tables (their order's first key, `ver`, is not a column of the
+ * business table) and state tables over an interval (segments are merged before the page).
+ */
+async function queryRowsPushed(
+  tx: ReadTx,
+  plan: QueryPlan,
+  specs: readonly KeySpec[],
+  restore: number,
+): Promise<PageRows | undefined> {
+  if (plan.kind === "timeless" || (plan.kind === "state" && plan.time.kind === "during"))
+    return undefined;
+  const selected = await selectFirst(tx, plan, queryKeys(plan, specs), plan.limit + 1);
+  const shown = selected.slice(0, plan.limit);
+  return {
+    page: await shownInOrder(tx, plan, specs, restore, shown, undefined),
+    total: await countRows(tx, plan),
+    more: selected.length > plan.limit,
+  };
+}
+
 export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOutput> {
   const params = input.params;
   if (!isObj(params)) throw invalid("malformed", "");
@@ -82,26 +182,14 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
       ? first
       : queryPlan(params, named, { now: position.at as Instant, task: input.task });
   const asOf = position?.seq ?? input.asOf;
-  const selected =
-    asOf === undefined ? await selectRows(tx, plan) : await selectRowsAsOf(tx, plan, asOf);
-  const ids = selected.map((r) => r.id);
-  const facts = {
-    ...(asOf === undefined
-      ? await rowFacts(tx, plan.table, ids)
-      : await rowFactsAsOf(tx, plan.table, ids, asOf)),
-    premises: await premiseFacts(tx, plan.table, ids, asOf, plan.detailed),
-    // Targets in tables the caller can see only: a target out of range says nothing of itself.
-    revokedTargets: await revokedTargets(tx, plan.table, named.slot.tables, selected, asOf),
-  };
-  const rows: ShownRow[] = shownRows(plan, selected, facts, restore).map((s) => ({
-    ...s,
-    keys: rowKeys(plan, s),
-  }));
-  rows.sort((a, b) => cmpKeys(specs, a.keys, b.keys));
-
-  const after = position?.keys;
-  const rest = after === undefined ? rows : rows.filter((r) => cmpKeys(specs, r.keys, after) > 0);
-  const page = rest.slice(0, plan.limit);
+  // A first page of the latest state is pushed down to SQL where it can be; the rest, and what
+  // cannot yet, is the whole read.
+  const pushed =
+    input.full === true || position !== undefined || asOf !== undefined
+      ? undefined
+      : await queryRowsPushed(tx, plan, specs, restore);
+  const { page, total, more } =
+    pushed ?? (await queryRowsFull(tx, plan, specs, restore, position?.keys, asOf));
   const last = page.at(-1);
   // Who last changed each row, when not the caller: one statement for the page.
   const changers = await changersOf(
@@ -126,8 +214,8 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
     table: `${named.slot.name}.${named.table.name}`,
     slot: named.slot.name,
     sv: named.slot.sv,
-    total: rows.length,
-    ...(rest.length > page.length && last !== undefined
+    total,
+    ...(more && last !== undefined
       ? {
           next_position: encodePosition(identity, {
             seq: asOf ?? latest,

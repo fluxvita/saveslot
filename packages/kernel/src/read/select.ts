@@ -18,6 +18,7 @@ import { decodeColumns as decode } from "../request/index.ts";
 import { column, INSTANT_TEXT, physical, selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { containsPoint, pointWithin } from "../time/index.ts";
+import { orderBySql, type SqlKey } from "./order-sql.ts";
 import type { Condition, Literal, QueryPlan } from "./params.ts";
 import { type Actor, ReadError } from "./types.ts";
 
@@ -225,11 +226,10 @@ export function conditionSql(c: Condition, p: Params): string {
   }
 }
 
-/** The rows the plan selects, every field's value with each. */
-export async function selectRows(tx: ReadTx, plan: QueryPlan): Promise<SelectedRow[]> {
+/** The plan's business table, its conditions and the columns a selected row is read from. */
+function selection(plan: QueryPlan, p: Params): { from: string; where: string; cols: string[] } {
   const t = plan.table;
   const { business } = physical(t);
-  const p = new Params();
   const where: string[] = [];
   const state = plan.kind === "state";
   const cast = pointCast(plan);
@@ -263,28 +263,70 @@ export async function selectRows(tx: ReadTx, plan: QueryPlan): Promise<SelectedR
       : ["revoked"]),
     ...t.fields.flatMap((f) => selectOf(f).map((s, i) => `${s} AS c_${f.id}_${i}`)),
   ];
+  return { from: business, where: where.join(" AND "), cols };
+}
+
+function selectedOf(plan: QueryPlan, x: Record<string, unknown>): SelectedRow {
+  const t = plan.table;
+  const values: Record<string, FieldValue> = Object.create(null);
+  for (const f of t.fields) {
+    const n = selectOf(f).length;
+    values[f.id] = decode(
+      f,
+      Array.from({ length: n }, (_, i) => x[`c_${f.id}_${i}`]),
+    );
+  }
+  return {
+    id: String(x["id"]),
+    ...(plan.kind === "state"
+      ? { validFrom: String(x["vf"]), validTo: x["vt"] === null ? null : String(x["vt"]) }
+      : {}),
+    revoked: x["revoked"] === true,
+    values,
+  };
+}
+
+/** The rows the plan selects, every field's value with each. */
+export async function selectRows(tx: ReadTx, plan: QueryPlan): Promise<SelectedRow[]> {
+  const p = new Params();
+  const { from, where, cols } = selection(plan, p);
   const r = await tx.query<Record<string, unknown>>(
-    `SELECT ${cols.join(", ")} FROM ${business}${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""}`,
+    `SELECT ${cols.join(", ")} FROM ${from}${where !== "" ? ` WHERE ${where}` : ""}`,
     p.list,
   );
-  return r.rows.map((x) => {
-    const values: Record<string, FieldValue> = Object.create(null);
-    for (const f of t.fields) {
-      const n = selectOf(f).length;
-      values[f.id] = decode(
-        f,
-        Array.from({ length: n }, (_, i) => x[`c_${f.id}_${i}`]),
-      );
-    }
-    return {
-      id: String(x["id"]),
-      ...(state
-        ? { validFrom: String(x["vf"]), validTo: x["vt"] === null ? null : String(x["vt"]) }
-        : {}),
-      revoked: x["revoked"] === true,
-      values,
-    };
-  });
+  return r.rows.map((x) => selectedOf(plan, x));
+}
+
+/**
+ * The first `limit` rows the plan selects in the order of `keys` (./order-sql.ts): a first page
+ * pushed down to SQL, where each selected row is a row shown (not over a state table's interval,
+ * whose segments are merged first).
+ */
+export async function selectFirst(
+  tx: ReadTx,
+  plan: QueryPlan,
+  keys: readonly SqlKey[],
+  limit: number,
+): Promise<SelectedRow[]> {
+  const p = new Params();
+  const { from, where, cols } = selection(plan, p);
+  const r = await tx.query<Record<string, unknown>>(
+    `SELECT ${cols.join(", ")} FROM ${from}${where !== "" ? ` WHERE ${where}` : ""}` +
+      ` ORDER BY ${orderBySql(keys)} LIMIT ${p.add(limit, "::bigint")}`,
+    p.list,
+  );
+  return r.rows.map((x) => selectedOf(plan, x));
+}
+
+/** How many rows the plan selects (rows shown, under the same condition as `selectFirst`). */
+export async function countRows(tx: ReadTx, plan: QueryPlan): Promise<number> {
+  const p = new Params();
+  const { from, where } = selection(plan, p);
+  const r = await tx.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM ${from}${where !== "" ? ` WHERE ${where}` : ""}`,
+    p.list,
+  );
+  return Number(r.rows[0]?.n ?? 0);
 }
 
 /** `ver`, the revoke in effect, `corrected` and the open items' flags of the given rows. */
