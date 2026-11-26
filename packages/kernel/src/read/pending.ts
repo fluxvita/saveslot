@@ -39,6 +39,7 @@ import {
   itemVer,
   type Naming,
   proposalOut,
+  readPendingTargets,
   revertedOut,
   type Span,
   targetOut,
@@ -310,9 +311,19 @@ async function listOf(
     page.map((p) => p.x),
     entries.values(),
   );
+  // The page's open items whose targets pending deletions affect: read once for the page.
+  const pendingTargets = page.some((p) => p.x.state === "open" && p.x.target_row !== null)
+    ? await readPendingTargets(tx)
+    : undefined;
   const items = page.map(({ x, place }) => {
     const n = namingOf(place.table, who, place.slot);
     const e = entries.get(x.id);
+    const blocked =
+      x.state === "open" &&
+      x.type !== "schema_change" &&
+      x.target_table !== null &&
+      x.target_row !== null &&
+      pendingTargets?.on(x.target_table, x.target_row) !== undefined;
     return {
       id: x.id,
       type: x.type,
@@ -324,6 +335,7 @@ async function listOf(
       reason: reasonOf(x),
       opened_at: x.opened_at,
       opened_by: n.actor(x.opened_by),
+      ...(blocked ? { blocked: true as const } : {}),
     };
   });
   const entry: ReadEntry = {
@@ -376,6 +388,12 @@ async function detailOf(
   const n = namingOf(place.table, who, place.slot);
   const versionOp = Number(x.version_op);
   const open = x.state === "open";
+  // An open item whose target a pending deletion affects takes no decision now (04-contract
+  // «目标受一项仍待执行的删除影响的事项»).
+  const blocked =
+    open && x.type !== "schema_change" && x.target_table !== null && x.target_row !== null
+      ? (await readPendingTargets(tx)).on(x.target_table, x.target_row)
+      : undefined;
   const common = {
     id: x.id,
     item_ver: itemVer(x.id, versionOp, restore),
@@ -384,7 +402,16 @@ async function detailOf(
     reason: reasonOf(x),
     opened_at: x.opened_at,
     opened_by: n.actor(x.opened_by),
-    decisions: open ? [...(DECISIONS[x.type] ?? [])] : [],
+    decisions: open && blocked === undefined ? [...(DECISIONS[x.type] ?? [])] : [],
+    ...(blocked !== undefined
+      ? {
+          blocked: {
+            reason: "pending_deletion" as const,
+            deletions: [...blocked.deletions],
+            expires_at: blocked.expiresAt,
+          },
+        }
+      : {}),
     ...closed.out(n.actor),
   };
   const result =

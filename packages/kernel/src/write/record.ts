@@ -1025,7 +1025,17 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
     // A refresh re-giving candidates is the deletion phase's, not decoded here.
     const regives =
       x.header.type === "item.refreshed" && Object.keys(b).some((p) => p.startsWith("candidates/"));
-    if (!DECODED_TYPES.has(x.header.type) || regives) {
+    // The deletion phase's events (a deletion, its cancellation or execution, a refresh re-giving
+    // candidates) on the row: judging a row with them is not in this version, so a write or a
+    // decision on it is refused as such, nothing appended. Any other type is a log at odds.
+    if (regives || x.header.type.startsWith("deletion.")) {
+      throw new WriteError(
+        "internal",
+        `decodeRecords does not handle ${x.header.type} (seq ${x.header.seq}): judging a row a deletion touched is not implemented`,
+        { reason: "not_implemented" },
+      );
+    }
+    if (!DECODED_TYPES.has(x.header.type)) {
       throw inconsistent(`decodeRecords does not handle ${x.header.type} (seq ${x.header.seq})`);
     }
     if (x.header.type === "write.head") heads.set(x.header.seq, b);

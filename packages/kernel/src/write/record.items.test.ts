@@ -782,6 +782,23 @@ describe("resolutions and what the scenarios do not reach", () => {
         { header: { type: "item.refreshed", seq: 5, op: 4 }, blocks: { "candidates/0": {} } },
       ]),
     ).toThrow("does not handle item.refreshed");
+    const reasonOf = (events: unknown[]) => {
+      try {
+        decodeRecords(ctx, events as never);
+      } catch (e) {
+        return (e as { detail?: { reason?: string } }).detail?.reason;
+      }
+      return undefined;
+    };
+    // The deletion phase's: not in this version. Another type: the log at odds.
+    expect(
+      reasonOf([
+        { header: { type: "item.refreshed", seq: 5, op: 4 }, blocks: { "candidates/0": {} } },
+      ]),
+    ).toBe("not_implemented");
+    expect(reasonOf([{ header: { type: "premise.changed", seq: 5, op: 5 }, blocks: {} }])).toBe(
+      "inconsistent",
+    );
     // A decision this phase does not decode, on an item it knows.
     const inputs = [
       write(10, { f2: "1" }),
