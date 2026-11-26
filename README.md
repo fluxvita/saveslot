@@ -18,14 +18,12 @@ Not in 0.1 yet, in either mode, coming in later releases: privacy deletion (prev
 
 saveslot is before 1.0: interfaces may change between minor versions.
 
-The guide and the specification are in English under [`docs/`](docs/README.md). They are translated from the Chinese edition under [`docs/zh-CN/`](docs/zh-CN/), which is authoritative: where the two differ, the Chinese one holds. The decision records, walkthroughs and research notes are in Chinese only for now.
+The guide and the specification are kept in two editions, English under [`docs/`](docs/README.md) and Chinese under [`docs/zh-CN/`](docs/zh-CN/). Neither is a copy of the other: a change to one changes the other in the same pull request, and a difference between them is a defect, to be reported as an issue. The decision records, walkthroughs and research notes are in Chinese only for now; the index lists them.
 
 | Where | What |
 |---|---|
 | [`docs/guide/`](docs/guide/README.md) | Guide: a narrative introduction, read in order |
 | [`docs/spec/`](docs/spec/README.md) | Specification: the authoritative definition of behavior |
-| [`docs/zh-CN/process/`](docs/zh-CN/process/README.md) | Design decision records and scenario walkthroughs (Chinese only for now) |
-| [`docs/zh-CN/research/`](docs/zh-CN/research/) | Background research (Chinese only for now) |
 | [`docs/`](docs/README.md) | Index of every document in both editions |
 
 ## Try it (local mode)

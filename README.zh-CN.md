@@ -116,7 +116,7 @@ echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.profile
 
 ## 文档怎么读
 
-文档都在 `docs/` 下，以中文版（`docs/zh-CN/`）为准，四个目录各管一件事。规格与讲解另有英文版，放在 `docs/` 下去掉 `zh-CN/` 的同名路径，清单见 [`docs/README.md`](docs/README.md)；过程材料与调研报告的英文版待补。
+文档都在 `docs/` 下，四个目录各管一件事。规格与讲解有中文与英文两个版本：中文版在 `docs/zh-CN/`，英文版在 `docs/` 下去掉 `zh-CN/` 的同名路径，清单见 [`docs/README.md`](docs/README.md)。两个版本互不为副本：改一个就在同一个拉取请求里改另一个，两者不一致算缺陷，请提 Issue。过程材料与调研报告目前只有中文版。
 
 | 目录 | 读什么 |
 |---|---|
