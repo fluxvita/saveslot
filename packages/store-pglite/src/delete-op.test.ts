@@ -10,10 +10,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type AnchorStore,
+  appendOperation,
   confirmDeletion,
   createOpsContext,
   createTenant,
   type DeletionBinding,
+  type NewEvent,
   pending,
   previewDeletion,
   query,
@@ -752,22 +754,146 @@ describe("the shapes this version refuses, before anything is appended", () => {
     expect(await tail()).toBe(at);
   };
 
+  /** The lunch, its correction's words deleted (pending): the row at 45. */
+  const lunchDeletedOnce = async () => {
+    const l = await lunch();
+    const { binding } = await previewDeletion(s.store, {
+      sources: [await sourceId("no, lunch was 35")],
+    });
+    const first = await confirm(binding);
+    const [read] = (await query(s.store, ctx(), { table: "lunches" })).rows as Any[];
+    expect(read.values.amount).toBe("45");
+    return { ...l, first, ver: read.ver };
+  };
+
+  // Any operation on the row after its earliest deletion, whatever it changes: each kind of one.
   it(
-    "a row written on after an earlier deletion: ops_after_deletion",
+    "a row corrected after an earlier deletion: ops_after_deletion",
     async () => {
-      const { row } = await lunch();
-      const { binding } = await previewDeletion(s.store, {
-        sources: [await sourceId("no, lunch was 35")],
-      });
-      const first = await confirm(binding);
+      const { row } = await lunchDeletedOnce();
       await w([{ intent: "correct", table: "lunches", row, set: { amount: "40" } }], "it was 40");
-      const src = await sourceId("lunch was 45");
-      const e = await thrown(() => previewDeletion(s.store, { sources: [src] }));
-      expect(first.seq).toBeGreaterThan(0);
-      expect([e?.detail?.reason, e?.detail?.kind]).toEqual([
-        "not_implemented",
-        "ops_after_deletion",
-      ]);
+      await refusedAs([await sourceId("lunch was 45")], "ops_after_deletion");
+    },
+    T,
+  );
+
+  it(
+    "a row revoked after an earlier deletion: ops_after_deletion",
+    async () => {
+      const { row, ver } = await lunchDeletedOnce();
+      await w([{ intent: "revoke", table: "lunches", row, ver }], "forget that lunch");
+      await refusedAs([await sourceId("lunch was 45")], "ops_after_deletion");
+    },
+    T,
+  );
+
+  it(
+    "a write after an earlier deletion that changes nothing: ops_after_deletion",
+    async () => {
+      const { row, ver } = await lunchDeletedOnce();
+      await w(
+        [{ intent: "correct", table: "lunches", row, ver, set: { amount: "45" } }],
+        "yes, 45",
+      );
+      expect(
+        (await query(s.store, ctx(), { table: "lunches" })).rows.map((x: Any) => x.values.amount),
+      ).toEqual(["45"]);
+      await refusedAs([await sourceId("lunch was 45")], "ops_after_deletion");
+    },
+    T,
+  );
+
+  it(
+    "an undo on the row after an earlier deletion: ops_after_deletion",
+    async () => {
+      const { row, ver, second } = await lunchDeletedOnce();
+      await w([{ table: "lunches", row, ver, revert: { undo: second.seq } }], "undo the 35");
+      await refusedAs([await sourceId("lunch was 45")], "ops_after_deletion");
+    },
+    T,
+  );
+
+  it(
+    "an item on the row resolved after an earlier deletion: the resolution itself refused, nothing appended",
+    async () => {
+      // As in «an awaiting item the pending deletion opened»: deleting #2's words leaves #3
+      // awaiting, in an item that deletion opens. Its resolution would be an operation on the row
+      // (refused as ops_after_deletion), but this version cannot judge a row with a deletion on it:
+      // the resolution is refused itself, before anything is appended, so the next deletion
+      // meets nothing written since.
+      const r1 = await w(
+        [{ intent: "insert", table: "budget", valid_from: "2026-10-01", set: { amount: "5000" } }],
+        "budget is 5000 from october",
+      );
+      const entity = r1.ops[0].target.entity as string;
+      const ver = r1.ops[0].ver;
+      const span = (from: string, to: string, amount: string) => ({
+        intent: "update",
+        table: "budget",
+        entity,
+        ver,
+        valid_from: from,
+        valid_to: to,
+        set: { amount },
+      });
+      await w([span("2026-11-10", "2026-11-20", "4000")], "4000 for ten days");
+      await w([span("2026-09-01", "2026-12-01", "3000")], "3000 from september");
+      const a = await previewDeletion(s.store, { sources: [await sourceId("4000 for ten days")] });
+      const first = await confirm(a.binding);
+      const item = first.now_awaiting[0]?.item.id as string;
+      const iv = await s.store.read(async (tx) => {
+        const r = await tx.query<{ v: unknown }>(
+          "SELECT version_op AS v FROM pending_items WHERE id = $1",
+          [item],
+        );
+        return `iv_${item.slice(3)}.${Number(r.rows[0]?.v)}.0`;
+      });
+      for (const decision of ["confirm", "reject"]) {
+        const at = await tail();
+        expect(
+          await thrown(() => resolve$(s.store, ctx(), { id: item, item_ver: iv, decision })),
+        ).toBeDefined();
+        expect(await tail()).toBe(at);
+      }
+      expect(await openItems()).toEqual([item]);
+      const b = await previewDeletion(s.store, {
+        sources: [await sourceId("budget is 5000 from october")],
+      });
+      expect(b.preview.superseded.map((x) => x.item)).toEqual([item]);
+    },
+    T,
+  );
+
+  it(
+    "a row a carried-out deletion touched: executed_deletion_on_row",
+    async () => {
+      // No operation carries a deletion out in this version, nor is `deletion.executed` applied:
+      // the event is appended by hand, with the first deletion's positions (09 §5.9).
+      const { first } = await lunchDeletedOnce();
+      const positions = await s.store.read(async (tx) => {
+        const r = await tx.query<{ body: string }>(
+          "SELECT body FROM content WHERE seq = $1 AND path = 'positions'",
+          [first.seq],
+        );
+        return JSON.parse(r.rows[0]?.body ?? "[]") as unknown[];
+      });
+      expect(positions.length).toBeGreaterThan(0);
+      const { slot } = await compiledOf("lunches");
+      await s.store.write(async (tx) => {
+        await appendOperation(tx, {
+          actor: "system" as never,
+          now: now() as never,
+          events: [
+            {
+              type: "deletion.executed",
+              trigger: "deletion_expiry",
+              slot,
+              blocks: { target: { deletion: first.deletion.id, reason: "expiry" }, positions },
+            } as NewEvent,
+          ],
+        });
+      });
+      await refusedAs([await sourceId("lunch was 45")], "executed_deletion_on_row");
     },
     T,
   );
