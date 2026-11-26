@@ -77,7 +77,16 @@ import {
   unitEntries,
 } from "../judge/index.ts";
 import { type NewEvent, readTail } from "../log/index.ts";
-import { contentBlocks, type ItemContents, openItemsOn, writerHadRead } from "../pending/index.ts";
+import {
+  contentBlocks,
+  type ItemContents,
+  openItemsOn,
+  PENDING_DELETION_TARGET,
+  type PendingTargets,
+  pendingDeletionTargetDetail,
+  readPendingTargets,
+  writerHadRead,
+} from "../pending/index.ts";
 import {
   checkSvCompatibility,
   get,
@@ -1714,6 +1723,8 @@ async function writeIn(
   };
 
   const rows = new Map<string, RowWork>();
+  // The rows pending deletions affect, read when an `undo` first asks.
+  let pendingTargets: PendingTargets | undefined;
   /** The flagged items this request opens, their entries settled at its end (./flagged.ts). */
   const openedFlagged: OpenedFlagged[] = [];
   // The ref targets this request reads from the store (step 5), read once.
@@ -2076,6 +2087,24 @@ async function writeIn(
         : o.target.kind === "row"
           ? o.target.row
           : (o.target as { entity: EntityId }).entity);
+    // An `undo` of a row or entity a pending deletion affects (04-contract «宽限期内不能撤回受影响的行
+    // 上的写入»): refused, the whole request with it; after the deletion runs or is cancelled, as usual.
+    if (o.kind === "undo" && !isNew) {
+      pendingTargets ??= await readPendingTargets(tx);
+      const blocked = pendingTargets.on(table.id, id);
+      if (blocked !== undefined) {
+        throw new WriteError(
+          "invalid_argument",
+          PENDING_DELETION_TARGET,
+          pendingDeletionTargetDetail(param, {
+            table: `${slot.name}.${table.name}`,
+            isState,
+            row: id,
+            blocked,
+          }),
+        );
+      }
+    }
     let work = rows.get(id);
     if (work === undefined) {
       const ctx: RowContext = {

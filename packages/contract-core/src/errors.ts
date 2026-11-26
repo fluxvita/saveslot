@@ -47,6 +47,7 @@ export const DOMAIN_ERROR_REASONS = {
     "candidate_required",
     "derived_table",
     "pending_deletion_source",
+    "pending_deletion_target",
     "cross_slot",
     "idempotency_key_reuse",
     "index_out_of_range",

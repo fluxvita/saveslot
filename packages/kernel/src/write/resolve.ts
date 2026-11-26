@@ -35,7 +35,15 @@ import { lastRead, type ReadId } from "../audit/index.ts";
 import type { DerivedWrite } from "../derive/index.ts";
 import { JudgeError, type JudgeInput, judgeOp, reaches, type Unit } from "../judge/index.ts";
 import { type ActorAsOf as Actor, actorsAsOf, type NewEvent, readTail } from "../log/index.ts";
-import { actorsNow, closingOf, itemEntries, revertedOut } from "../pending/index.ts";
+import {
+  actorsNow,
+  closingOf,
+  itemEntries,
+  PENDING_DELETION_TARGET,
+  pendingDeletionTargetDetail,
+  readPendingTargets,
+  revertedOut,
+} from "../pending/index.ts";
 import { normalizeResolve, type ResolveDecision } from "../request/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
 import { restorePoint } from "../store/restore-point.ts";
@@ -532,6 +540,27 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     throw await closed(tx, item.id, "the item was resolved another way");
   }
   if (item.state !== "open") throw await closed(tx, item.id, "the item was superseded");
+
+  // Step 3 (04-contract `resolve`): an item whose target a pending deletion affects takes no
+  // decision in the grace period, a deletion's and a schema change's own aside; before the
+  // decision and the item version are checked, nothing appended.
+  // (A deletion's own item is not one of these: it is not resolved here in this version.)
+  if (item.type !== "schema_change") {
+    const blocked = (await readPendingTargets(tx)).on(item.table, item.row);
+    if (blocked !== undefined) {
+      const table = slot.compiled.tables.find((t) => t.id === item.table);
+      throw new WriteError(
+        "invalid_argument",
+        PENDING_DELETION_TARGET,
+        pendingDeletionTargetDetail("id", {
+          table: `${slot.name}.${table?.name ?? ""}`,
+          isState: table?.kind === "base" && table.time.type === "state",
+          row: item.row,
+          blocked,
+        }),
+      );
+    }
+  }
 
   // The decision fits the item's type.
   if (!(DECISIONS_OF[item.type] ?? []).includes(req.decision)) {

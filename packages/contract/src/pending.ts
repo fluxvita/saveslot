@@ -117,6 +117,8 @@ export interface PendingListItem {
   opened_by: Actor;
   /** deletion: past due but not yet physically deleted. */
   overdue?: true;
+  /** The target is affected by a deletion still pending: no decision now (the detail's `blocked`). */
+  blocked?: true;
 }
 
 /** 04-contract-types §4.8 `PendingListResult`. */
@@ -133,8 +135,14 @@ export interface ItemBase {
   reason: ItemReason;
   opened_at: Instant;
   opened_by: Actor;
-  /** Decisions the current credential may use; empty when closed. */
+  /** Decisions the current credential may use; empty when closed, or when `blocked`. */
   decisions: Decision[];
+  /**
+   * The target is affected by a deletion still pending (items other than `deletion` and
+   * `schema_change`): `decisions` is empty and any decision is `invalid_argument`
+   * (`pending_deletion_target`). `deletions` by operation; `expires_at` the latest due.
+   */
+  blocked?: { reason: "pending_deletion"; deletions: ItemId[]; expires_at: Instant };
   /** status `resolved`. */
   resolution?: ItemResolution;
   /** status `superseded`. */

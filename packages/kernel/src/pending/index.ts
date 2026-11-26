@@ -207,3 +207,11 @@ export * from "./actors.ts";
 export * from "./cells.ts";
 export * from "./closing.ts";
 export * from "./detail.ts";
+
+export {
+  PENDING_DELETION_TARGET,
+  type PendingBlock,
+  type PendingTargets,
+  pendingDeletionTargetDetail,
+  readPendingTargets,
+} from "./pending-targets.ts";

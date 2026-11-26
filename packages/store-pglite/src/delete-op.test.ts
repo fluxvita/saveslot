@@ -766,53 +766,200 @@ describe("the shapes this version refuses, before anything is appended", () => {
     return { ...l, first, ver: read.ver };
   };
 
+  /**
+   * The budget's awaiting item a deletion opens: #1 5000 from 10-01; #2 4000 on [11-10, 11-20);
+   * #3 3000 on [09-01, 12-01), having seen #1, a candidate against #2. Deleting #2's words leaves
+   * #3 awaiting, in an item the deletion opens; the entity is affected by that pending deletion.
+   */
+  const budgetAwaiting = async () => {
+    const r1 = await w(
+      [{ intent: "insert", table: "budget", valid_from: "2026-10-01", set: { amount: "5000" } }],
+      "budget is 5000 from october",
+    );
+    const entity = r1.ops[0].target.entity as string;
+    const ver = r1.ops[0].ver;
+    const span = (from: string, to: string, amount: string) => ({
+      intent: "update",
+      table: "budget",
+      entity,
+      ver,
+      valid_from: from,
+      valid_to: to,
+      set: { amount },
+    });
+    await w([span("2026-11-10", "2026-11-20", "4000")], "4000 for ten days");
+    await w([span("2026-09-01", "2026-12-01", "3000")], "3000 from september");
+    const { binding } = await previewDeletion(s.store, {
+      sources: [await sourceId("4000 for ten days")],
+    });
+    const receipt = await confirm(binding);
+    const opened = receipt.now_awaiting[0]?.item as { id: string; item_ver: string };
+    expect(await openItems()).toEqual([opened.id]);
+    return { entity, span, receipt, opened };
+  };
+
   it(
-    "an awaiting item a deletion opened: a decision on it, or a write on its entity, not_implemented",
+    "an awaiting item a deletion opened, in its grace period: no decision (pending_deletion_target), blocked in its detail and the list",
     async () => {
-      // #1 5000 from 10-01; #2 4000 on [11-10, 11-20); #3 3000 on [09-01, 12-01), having seen #1:
-      // a candidate against #2. Deleting #2's words leaves #3 awaiting, in an item the deletion
-      // opens (its item.created in the deletion's operation). Judging the entity would read the
-      // deletion's event, which this version does not: refused as such, nothing appended.
-      const r1 = await w(
-        [{ intent: "insert", table: "budget", valid_from: "2026-10-01", set: { amount: "5000" } }],
-        "budget is 5000 from october",
-      );
-      const entity = r1.ops[0].target.entity as string;
-      const ver = r1.ops[0].ver;
-      const span = (from: string, to: string, amount: string) => ({
-        intent: "update",
-        table: "budget",
-        entity,
-        ver,
-        valid_from: from,
-        valid_to: to,
-        set: { amount },
-      });
-      await w([span("2026-11-10", "2026-11-20", "4000")], "4000 for ten days");
-      await w([span("2026-09-01", "2026-12-01", "3000")], "3000 from september");
-      const { binding } = await previewDeletion(s.store, {
-        sources: [await sourceId("4000 for ten days")],
-      });
-      const receipt = await confirm(binding);
-      const opened = receipt.now_awaiting[0]?.item;
-      expect(await openItems()).toEqual([opened?.id]);
-      const refused = async (f: () => Promise<unknown>) => {
+      const { entity, span, receipt, opened } = await budgetAwaiting();
+      const pendingTarget = {
+        code: "invalid_argument",
+        reason: "pending_deletion_target",
+        param: "id",
+        target: { table: "home.budget", entity },
+        deletions: [receipt.deletion.id],
+        expires_at: receipt.deletion.expires_at,
+      };
+      const refusedAs = async (f: () => Promise<unknown>, want: Record<string, unknown>) => {
         const at = await tail();
         const e = await thrown(f);
-        expect([e?.code, e?.detail?.reason]).toEqual(["internal", "not_implemented"]);
+        expect({ code: e?.code, ...e?.detail }).toEqual(want);
         expect(await tail()).toBe(at);
       };
-      for (const decision of ["confirm", "reject"]) {
-        await refused(() =>
-          resolve$(s.store, ctx(), { id: opened?.id, item_ver: opened?.item_ver, decision }),
+      // Any decision, before the item version and the decision are checked (04-contract `resolve`
+      // step 3): an old version, a decision the item does not take.
+      for (const [decision, item_ver] of [
+        ["confirm", opened.item_ver],
+        ["reject", opened.item_ver],
+        ["confirm", `iv_${opened.id.slice(3)}.1.0`],
+        ["keep", opened.item_ver],
+      ] as const) {
+        await refusedAs(
+          () => resolve$(s.store, ctx(), { id: opened.id, item_ver, decision }),
+          pendingTarget,
         );
       }
+      // Its detail: no decision, the reason and the latest due; the list marks it.
+      const detail: Any = await pending(s.store, ctx(), { id: opened.id });
+      expect([detail.decisions, detail.blocked]).toEqual([
+        [],
+        {
+          reason: "pending_deletion",
+          deletions: [receipt.deletion.id],
+          expires_at: receipt.deletion.expires_at,
+        },
+      ]);
+      const list: Any = await pending(s.store, ctx(), {});
+      expect(list.items.map((x: Any) => [x.id, x.blocked])).toEqual(
+        expect.arrayContaining([[opened.id, true]]),
+      );
+      // A write on the entity: judging it would read the deletion's event, not in this version.
       const [row]: Any = (await query(s.store, ctx(), { table: "budget" })).rows;
-      await refused(() =>
+      const at = await tail();
+      const e = await thrown(() =>
         w([{ ...span("2026-12-05", "2026-12-10", "1"), ver: row?.ver }], "one in december"),
       );
-      expect(await openItems()).toEqual([opened?.id]);
+      expect([e?.code, e?.detail?.reason]).toEqual(["internal", "not_implemented"]);
+      expect(await tail()).toBe(at);
+      expect(await openItems()).toEqual([opened.id]);
       await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "an undo on a row a pending deletion affects: pending_deletion_target, the whole request with it",
+    async () => {
+      const { row, ver, second, first } = await lunchDeletedOnce();
+      const at = await tail();
+      const e = await thrown(() =>
+        w(
+          [
+            { intent: "insert", table: "lunches", set: { amount: "12" } },
+            { table: "lunches", row, ver, revert: { undo: second.seq } },
+          ],
+          "another lunch, and undo the 35",
+        ),
+      );
+      expect({ code: e?.code, ...e?.detail }).toEqual({
+        code: "invalid_argument",
+        reason: "pending_deletion_target",
+        param: "ops/1",
+        target: { table: "home.lunches", row },
+        deletions: [first.deletion.id],
+        expires_at: first.deletion.expires_at,
+      });
+      expect(await tail()).toBe(at);
+      expect((await query(s.store, ctx(), { table: "lunches" })).rows).toHaveLength(1);
+    },
+    T,
+  );
+
+  it(
+    "rows no pending deletion affects: an undo and a decision as usual, nothing blocked",
+    async () => {
+      await lunchDeletedOnce();
+      // Another lunch: 20, corrected to 25, and to 30 by a writer who had seen only the 20 (a
+      // candidate against the 25).
+      const o1 = await w([{ intent: "insert", table: "lunches", set: { amount: "20" } }], "20");
+      const other = o1.ops[0].target.row as string;
+      const o2 = await w(
+        [{ intent: "correct", table: "lunches", row: other, set: { amount: "25" } }],
+        "25",
+      );
+      await w(
+        [
+          {
+            intent: "correct",
+            table: "lunches",
+            row: other,
+            ver: o1.ops[0].ver,
+            set: { amount: "30" },
+          },
+        ],
+        "30",
+      );
+      const [item] = await openItems();
+      const list: Any = await pending(s.store, ctx(), {});
+      expect(list.items.map((x: Any) => [x.id, x.blocked])).toEqual([[item, undefined]]);
+      const detail: Any = await pending(s.store, ctx(), { id: item });
+      expect([detail.blocked, detail.decisions.length > 0]).toEqual([undefined, true]);
+      const took: Any = await resolve$(s.store, ctx(), {
+        id: item,
+        item_ver: detail.item_ver,
+        decision: "take_candidate",
+      });
+      expect(took.replayed).not.toBe(true);
+      const read: Any = await query(s.store, ctx(), { table: "lunches" });
+      const ver = read.rows.find((x: Any) => x.row === other)?.ver;
+      await w([{ table: "lunches", row: other, ver, revert: { undo: o2.seq } }], "undo the 25");
+    },
+    T,
+  );
+
+  it(
+    "a deletion cancelled: its rows are no longer blocked, an undo goes through",
+    async () => {
+      const { row, ver, second, first } = await lunchDeletedOnce();
+      const { table, slot } = await compiledOf("lunches");
+      await cancelDeletion(s.store, {
+        slot,
+        table,
+        row,
+        sources: [await sourceSeq("no, lunch was 35")],
+        id: first.deletion.id,
+        actor: USER,
+        now: now(),
+      });
+      const at = await tail();
+      await w([{ table: "lunches", row, ver, revert: { undo: second.seq } }], "undo the 35");
+      expect(await tail()).toBeGreaterThan(at);
+    },
+    T,
+  );
+
+  it(
+    "the deletion's own item is not held by step 3",
+    async () => {
+      const { first } = await lunchDeletedOnce();
+      const e = await thrown(() =>
+        resolve$(s.store, ctx(), {
+          id: first.deletion.id,
+          item_ver: first.deletion.item_ver,
+          decision: "cancel",
+        }),
+      );
+      expect(e?.detail?.reason).not.toBe("pending_deletion_target");
     },
     T,
   );
@@ -857,7 +1004,19 @@ describe("the shapes this version refuses, before anything is appended", () => {
   it(
     "an undo on the row after an earlier deletion: ops_after_deletion",
     async () => {
-      const { row, ver, second } = await lunchDeletedOnce();
+      // While the deletion is pending the undo is refused (pending_deletion_target); once it is
+      // cancelled the undo goes through, and is an operation after that earlier deletion.
+      const { row, ver, second, first } = await lunchDeletedOnce();
+      const { table, slot } = await compiledOf("lunches");
+      await cancelDeletion(s.store, {
+        slot,
+        table,
+        row,
+        sources: [await sourceSeq("no, lunch was 35")],
+        id: first.deletion.id,
+        actor: USER,
+        now: now(),
+      });
       await w([{ table: "lunches", row, ver, revert: { undo: second.seq } }], "undo the 35");
       await refusedAs([await sourceId("lunch was 45")], "ops_after_deletion");
     },
@@ -865,13 +1024,13 @@ describe("the shapes this version refuses, before anything is appended", () => {
   );
 
   it(
-    "an item on the row resolved after an earlier deletion: the resolution itself refused, nothing appended",
+    "an item on the row resolved after an earlier deletion: the resolution refused (pending_deletion_target), nothing appended",
     async () => {
       // As in "an awaiting item the pending deletion opened": deleting #2's words leaves #3
       // awaiting, in an item that deletion opens. Its resolution would be an operation on the row
-      // (refused as ops_after_deletion), but this version cannot judge a row with a deletion on it:
-      // the resolution is refused itself, before anything is appended, so the next deletion
-      // meets nothing written since.
+      // (refused as ops_after_deletion), but no decision is taken on a row a pending deletion
+      // affects (pending_deletion_target): the resolution is refused itself, before anything is
+      // appended, so the next deletion meets nothing written since.
       const r1 = await w(
         [{ intent: "insert", table: "budget", valid_from: "2026-10-01", set: { amount: "5000" } }],
         "budget is 5000 from october",
@@ -901,9 +1060,13 @@ describe("the shapes this version refuses, before anything is appended", () => {
       });
       for (const decision of ["confirm", "reject"]) {
         const at = await tail();
-        expect(
-          await thrown(() => resolve$(s.store, ctx(), { id: item, item_ver: iv, decision })),
-        ).toBeDefined();
+        const e = await thrown(() =>
+          resolve$(s.store, ctx(), { id: item, item_ver: iv, decision }),
+        );
+        expect([e?.code, e?.detail?.reason]).toEqual([
+          "invalid_argument",
+          "pending_deletion_target",
+        ]);
         expect(await tail()).toBe(at);
       }
       expect(await openItems()).toEqual([item]);
@@ -1167,7 +1330,7 @@ describe("the shapes this version refuses, before anything is appended", () => {
       const read = await query(s.store, ctx(), { table: "lunches" });
       expect(read.rows.map((x: Any) => x.values.amount)).toEqual(["35"]);
       await replaysTheSame();
-      // The candidate that left is no longer the item's: its entry is gone, taking it is refused.
+      // The candidate that left is no longer the item's: its entry is gone.
       expect(
         await s.store.read(async (tx) =>
           (
@@ -1185,35 +1348,24 @@ describe("the shapes this version refuses, before anything is appended", () => {
         );
         return `iv_${item.slice(3)}.${Number(r.rows[0]?.v)}.0`;
       });
-      const e = await thrown(() =>
-        resolve$(s.store, ctx(), {
-          id: item,
-          item_ver: iv,
-          decision: "take_candidate",
-          candidate: before[0],
-        }),
-      );
-      expect([e?.code, e?.detail?.reason]).toEqual(["invalid_argument", "index_out_of_range"]);
-      // Named or not, the one left is the only candidate to take: 25.
-      const took: Any = await resolve$(s.store, ctx(), {
-        id: item,
-        item_ver: iv,
-        decision: "take_candidate",
-        idempotency_key: "k-once",
-      });
-      // The same decision again, by another request key: a repeat of the resolved item's decision
-      // (the one candidate left, as before), its receipt again, not item_closed.
-      const again: Any = await resolve$(s.store, ctx(), {
-        id: item,
-        item_ver: iv,
-        decision: "take_candidate",
-      });
-      expect(again.replayed).toBe(true);
-      const { replayed: _r, ...rest } = again;
-      const { replayed: _f, ...firstRest } = took;
-      expect(rest).toEqual(firstRest);
-      const taken = await query(s.store, ctx(), { table: "lunches" });
-      expect(taken.rows.map((x: Any) => x.values.amount)).toEqual(["25"]);
+      // The row is affected by the deletion still pending: no decision on the item in its grace
+      // period (03-deletion «撤回与宽限期»), named candidate or not; nothing appended.
+      for (const candidate of [before[0], before[1], undefined]) {
+        const at = await tail();
+        const e = await thrown(() =>
+          resolve$(s.store, ctx(), {
+            id: item,
+            item_ver: iv,
+            decision: "take_candidate",
+            ...(candidate !== undefined ? { candidate } : {}),
+          }),
+        );
+        expect([e?.code, e?.detail?.reason]).toEqual([
+          "invalid_argument",
+          "pending_deletion_target",
+        ]);
+        expect(await tail()).toBe(at);
+      }
     },
     T,
   );
