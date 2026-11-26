@@ -8,17 +8,21 @@
 export { matchPath } from "@fluxvita/saveslot-contract-core";
 export { withConfirmations } from "./apply/confirmation.fixture.ts";
 export * from "./apply/slot.fixture.ts";
+// The states of a target at a version position, and their comparison.
+// The block model of a row's deletions: each one's list of positions by 09 §3.5 rule 1, apart from
+// the delete operation's code (store-pglite delete-log.prop).
+export { type Block, BlockModel } from "./delete/blocks.fixture.ts";
 export {
   cancellationReplayForTests,
   DeletionSessionForTests,
   deletionReplayForTests,
 } from "./delete/replay.fixture.ts";
-// The states of a target at a version position, and their comparison.
 export { stateAt, targetDelta } from "./delta/index.ts";
 // One judgement on a state, for a test asking what a decision would do now.
 export { judgeOp } from "./judge/index.ts";
 export {
   type Decision,
+  deletedContributions,
   type Judged,
   judged,
   scenario,
