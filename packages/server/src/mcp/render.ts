@@ -265,13 +265,16 @@ function marksOf(m: unknown): { inline: Part[][]; below: Line[] } {
   }
   for (const a of arr(k["awaiting"])) {
     const x = obj(a);
+    // A mark that carries no proposal names the item only (its detail has the proposal).
     const what =
       x["proposed"] === null
-        ? t`proposed: revoke`
+        ? t`: proposed: revoke`
         : isObj(x["proposed_revert"])
-          ? t`proposed: undo ${op(x["proposed_revert"]["undo"])}`
-          : t`proposed: ${namedValues(x["proposed"])}`;
-    inline.push(t`⚠ a change awaiting confirmation (${idOf(x["item"])}): ${what}`);
+          ? t`: proposed: undo ${op(x["proposed_revert"]["undo"])}`
+          : isObj(x["proposed"]) && Object.keys(x["proposed"]).length > 0
+            ? t`: proposed: ${namedValues(x["proposed"])}`
+            : [];
+    inline.push(t`⚠ a change awaiting confirmation (${idOf(x["item"])})${what}`);
   }
   for (const f of arr(k["flagged"])) {
     const x = obj(f);
@@ -1788,11 +1791,15 @@ function resolvedLines(x: R): Line[] {
     }
     if (isObj(ri["next_change"])) {
       const next = ri["next_change"];
+      const then = next["value"] === null ? t`no value` : fieldValue(next["value"]);
+      // A day table's change is at a date: its last day, inclusive, as the period above says it
+      // (05 §4.1); a moment table's at an instant, which the period ends before.
+      const at = next["at"];
       add(
         f,
-        next["value"] === null
-          ? t`Tell the user it now holds up to ${timeOf(next["at"])}, and that what is recorded from then on (no value) is unchanged.`
-          : t`Tell the user it now holds up to ${timeOf(next["at"])}, and that what is recorded from then on (${fieldValue(next["value"])}) is unchanged.`,
+        typeof at === "string" && /^\d{4}-\d{2}-\d{2}$/.test(at)
+          ? t`Tell the user it now holds through ${timeOf(dayBefore(at))} (inclusive), and that what is recorded from ${timeOf(at)} on (${then}) is unchanged.`
+          : t`Tell the user it now holds up to ${timeOf(at)}, and that what is recorded from then on (${then}) is unchanged.`,
       );
     }
   }
@@ -2429,6 +2436,12 @@ const NEXT: ReadonlyMap<string, () => Part[]> = new Map(
     internal: () =>
       t`An error inside saveslot (the incident is logged); whether this call took effect is not known: read the state it concerns before deciding whether to send it again.`,
     read_first: () => t`Read the row first (saveslot_query), then write with the ver you read.`,
+    schema_incompatible: () =>
+      t`The slot's schema changed since the version this request was written for: read it again with saveslot_catalog, and write with the sv it gives.`,
+    draft_outdated: () =>
+      t`Get the slot's current document with saveslot_catalog (level "schema"), make the change on it, and submit it again.`,
+    field_unmatched: () =>
+      t`A table you change lists all its fields: to rename a field, keep it with its id; to drop it, list it in the table's drop_fields.`,
     confirmation_mismatch: () =>
       t`The item changed after you read it (its current content is above): tell the user what changed, and resolve it with the new item_ver only once they decide again.`,
   } satisfies Partial<Record<ErrorCode, () => Part[]>>) as [string, () => Part[]][],
@@ -2436,6 +2449,8 @@ const NEXT: ReadonlyMap<string, () => Part[]> = new Map(
 
 /** The reasons of the contract's errors this version gives (04-contract-types §9), every code's. */
 const REASONS: ReadonlySet<string> = new Set<string>(Object.values(ERROR_REASONS).flat());
+/** The contract's error codes: each is a code in the text, whether or not it has a next step. */
+const CODES: ReadonlySet<string> = new Set<string>(Object.keys(ERROR_REASONS));
 
 /** Why a rule's SQL was refused (04-contract-types §9 `SqlReason`). */
 const SQL_REASON: ReadonlySet<string> = new Set<string>(SQL_REASONS);
@@ -2596,7 +2611,7 @@ const REASON_NEXT: ReadonlyMap<string, () => Part[]> = new Map([
 function errorLines(error: R, now: Date): Line[] {
   const c = error["code"];
   const lines: Line[] = [
-    t`Refused: ${codeIn(c, keysOf(NEXT))}${error["reason"] !== undefined ? t` (${codeIn(error["reason"], REASONS)})` : []}${error["param"] !== undefined ? t` · parameter ${untrusted(String(error["param"]))}` : []}`,
+    t`Refused: ${codeIn(c, CODES)}${error["reason"] !== undefined ? t` (${codeIn(error["reason"], REASONS)})` : []}${error["param"] !== undefined ? t` · parameter ${untrusted(String(error["param"]))}` : []}`,
   ];
   if (error["message"] !== undefined) lines.push(t`Message: ${stored(String(error["message"]))}`);
   if (error["name"] !== undefined) lines.push(t`Not found: ${untrusted(String(error["name"]))}`);
@@ -2677,6 +2692,34 @@ function errorLines(error: R, now: Date): Line[] {
   // confirmation_mismatch: the item as it is now, with its new item_ver (05 §7).
   if (isObj(error["current"])) {
     lines.push(t`The item now:`, ...pending(error["current"], now).map((l) => t`  ${l}`));
+  }
+  // schema_incompatible: what changed, a field's name or "*" for the whole table (04-contract-types §9).
+  const changed = arr(error["changed_fields"]);
+  if (c === "schema_incompatible" && changed.length > 0) {
+    lines.push(
+      t`Changed: ${join(
+        changed.map((x) => {
+          const ch = obj(x);
+          return ch["field"] === "*"
+            ? t`the whole table: ${codeIn(ch["change"], CHANGE_CODES)}`
+            : t`${fieldOf(ch["field"])}: ${codeIn(ch["change"], CHANGE_CODES)}`;
+        }),
+        t`; `,
+      )}`,
+    );
+  }
+  // field_unmatched: the current version's fields the draft neither lists nor drops.
+  const unmatched = arr(error["fields"]);
+  if (c === "field_unmatched" && unmatched.length > 0) {
+    lines.push(
+      t`Not in the draft: ${join(
+        unmatched.map((x) => {
+          const u = obj(x);
+          return t`${tableOf(u["table"])}.${fieldOf(u["name"])} (${as(String(u["id"] ?? ""), name)})`;
+        }),
+        t`, `,
+      )}`,
+    );
   }
   const details = arr(error["details"]);
   for (const d of details.slice(0, DETAILS_SHOWN)) {
@@ -2813,6 +2856,65 @@ function ownNext(error: R): Part[] | undefined {
   ) {
     const what = reason === "evidence_segment" ? t`one evidence segment` : t`a request's evidence`;
     return t`At most ${count(error["limit_bytes"])} bytes in ${what} (this has ${count(error["actual_bytes"])}): give a long text as a file_ref with the part that matters as its excerpt.`;
+  }
+  // 05 §7 too_large: the bound and the count, and what to do.
+  if (c === "too_large" && reason === "evidence_segments" && int(error["limit"]) !== undefined) {
+    return t`At most ${count(error["limit"])} evidence segments in one request (this one has ${count(error["actual"])}): split it into several writes, or merge the segments that cite the same source.`;
+  }
+  if (c === "too_large" && reason === "premise_entries" && int(error["limit"]) !== undefined) {
+    return t`At most ${count(error["limit"])} premises on one op (this one has ${count(error["actual"])}): list only the records the op really rests on.`;
+  }
+  if (c === "too_large" && reason === "premise_fan_in" && isObj(error["target"])) {
+    return t`${targetOf(error["target"])} already has ${count(error["count"])} premises resting on it: no more can be declared on it; leave it out of this op's premises.`;
+  }
+  // 05 §7 schema_incompatible, draft_outdated: the version to go on from.
+  if (c === "schema_incompatible" && int(error["current_sv"]) !== undefined) {
+    return t`The slot's schema is at v${count(error["current_sv"])} now: read it again with saveslot_catalog, and write with sv ${count(error["current_sv"])}.`;
+  }
+  if (
+    c === "draft_outdated" &&
+    reason === "base_version" &&
+    int(error["current_sv"]) !== undefined
+  ) {
+    return t`The slot is at schema v${count(error["current_sv"])} now: get its current document with saveslot_catalog (level "schema"), make the change on it, and submit it again.`;
+  }
+  if (c === "draft_outdated" && reason === "table_written") {
+    return t`A table this draft changes has been written since the draft was submitted, so its change, made for a table never written, cannot be confirmed: reject the draft, or submit a new one.`;
+  }
+  // 05 §7 invalid_argument by source key and of premises: what they ask is not a retry as it is.
+  if (c === "invalid_argument") {
+    const ops = arr(error["ops"]);
+    if (reason === "duplicate_external_key" && ops.length === 2) {
+      return t`Ops ${count(ops[0])} and ${count(ops[1])} have the same source key: remove one of them, and send the request again.`;
+    }
+    if (reason === "external_key_in_use") {
+      const deletions = arr(error["deletions"]);
+      if (deletions.length > 0) {
+        return t`This source key has a deletion that can still be cancelled (${join(deletions.map(idOf), t`, `)}): it cannot move to another row until that deletion is settled.`;
+      }
+      if (error["holder"] !== undefined) {
+        return t`This source key is held by ${idOf(error["holder"])}: to move it to this row, first revoke ${idOf(error["holder"])}.`;
+      }
+    }
+    if (reason === "external_key_not_transferable" && error["holder"] !== undefined) {
+      return t`This source key came to ${idOf(error["holder"])} when its key was added: it cannot move again.`;
+    }
+    if (reason === "external_key_transferred" && error["holder"] !== undefined) {
+      return t`This row's source key has moved to ${idOf(error["holder"])}: this row cannot be restored with it.`;
+    }
+    if (reason === "premise_self") {
+      return t`A premise cannot rest on the op's own record: rest it on another record, or leave it out.`;
+    }
+    if (reason === "cross_slot" && String(error["param"] ?? "").includes("/premises/")) {
+      return t`A premise can only rest on a table of the op's own slot: leave this one out.`;
+    }
+    if (
+      reason === "premises_with_external_key" ||
+      reason === "premises_with_revert" ||
+      reason === "premises_with_revoke"
+    ) {
+      return t`This kind of op (${reason === "premises_with_external_key" ? t`one by source key` : reason === "premises_with_revert" ? t`a revert` : t`a revoke`}) cannot carry premises: send it without them.`;
+    }
   }
   if (c === "not_in_this_version" && reason === "value" && error["value"] !== undefined) {
     const known = NOT_TAKEN_VALUES.get(String(error["param"] ?? ""));

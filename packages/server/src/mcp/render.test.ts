@@ -189,6 +189,8 @@ const OUTSIDE = new RegExp(
     // A table's source key: its fields' names (a receipt's `external_key` is by name, its values inside).
     "(^|\\.)tables\\.\\d+\\.external_key\\.\\d+$",
     "(^|\\.)tables\\.\\d+\\.fields\\.\\d+\\.name$",
+    // field_unmatched: the fields the draft left out, by their names.
+    "^fields\\.\\d+\\.name$",
     "(^|\\.)time\\.field$",
     "^id$",
     "(^|\\.)pending\\.\\d+\\.(id|item_ver)$",
@@ -1043,5 +1045,104 @@ describe('a row\'s detail (05 §4.1 `detail: "detailed"`; §4.2 every premise)',
 
   it("without a detail, the row as before", () => {
     expect(lines(row).some((l) => l.includes("last changed in"))).toBe(false);
+  });
+});
+
+// The 05-surfaces read-through: refusals whose own data says the next step, where no running
+// service gives them in this version (a source key does not move to another row in 0.1.x; a fan-in
+// of a thousand premises), a mark with no proposal, and a next change on a moment table.
+describe("refusals and marks the samples do not show", () => {
+  const R0 = "r_0000000000000000000000000A";
+  it("a premise target at its fan-in bound: the target and its count", () => {
+    const text = renderError({
+      code: "too_large",
+      reason: "premise_fan_in",
+      param: "ops/0/premises/0",
+      target: { table: "plan.constraints", row: R0 },
+      count: 1000,
+    });
+    expect(text).toContain(`plan.constraints ${R0} already has 1000 premises resting on it`);
+    expect(text).not.toContain("Ask for less.");
+  });
+
+  it("a source key held, frozen, added, moved: the row, or the deletion, and no plain retry", () => {
+    const held = renderError({
+      code: "invalid_argument",
+      reason: "external_key_in_use",
+      param: "ops/0/external_key",
+      holder: R0,
+    });
+    expect(held).toContain(
+      `This source key is held by ${R0}: to move it to this row, first revoke ${R0}.`,
+    );
+    const frozen = renderError({
+      code: "invalid_argument",
+      reason: "external_key_in_use",
+      param: "ops/0/external_key",
+      deletions: ["pi_0000000000000001"],
+    });
+    expect(frozen).toContain("a deletion that can still be cancelled (pi_0000000000000001)");
+    expect(frozen).not.toContain("send the request again");
+    expect(
+      renderError({
+        code: "invalid_argument",
+        reason: "external_key_not_transferable",
+        holder: R0,
+      }),
+    ).toContain(`This source key came to ${R0} when its key was added: it cannot move again.`);
+    expect(
+      renderError({ code: "invalid_argument", reason: "external_key_transferred", holder: R0 }),
+    ).toContain(`This row's source key has moved to ${R0}`);
+    expect(
+      renderError({
+        code: "invalid_argument",
+        reason: "premises_with_revert",
+        param: "ops/0/premises",
+      }),
+    ).toContain("This kind of op (a revert) cannot carry premises");
+  });
+
+  it("an awaiting mark with no proposal names the item only, never an empty proposed", () => {
+    const text = renderResult("saveslot_query", {
+      level: "rows",
+      table: "plan.budgets",
+      total: 1,
+      rows: [
+        {
+          row: R0,
+          ver: "v3.0",
+          values: { amount: 1 },
+          marks: { awaiting: [{ item: "pi_0000000000000002" }] },
+        },
+      ],
+    } as R);
+    expect(text).toContain("⚠ a change awaiting confirmation (pi_0000000000000002)");
+    expect(text).not.toContain("proposed:");
+  });
+
+  it("a next change on a moment table: up to the instant, as before", () => {
+    const receipts = JSON.parse(
+      readFileSync(new URL("./receipts.samples.json", import.meta.url), "utf8"),
+    ) as Record<string, { result: R }>;
+    const w = (receipts["write-resolved-next-change"] as { result: R }).result;
+    const op0 = (w["ops"] as R[])[0] as R;
+    const amount = (op0["resolved"] as R)["amount"] as R;
+    const text = renderResult("saveslot_write", {
+      ...w,
+      ops: [
+        {
+          ...op0,
+          resolved: {
+            amount: {
+              ...amount,
+              next_change: { ...(amount["next_change"] as R), at: "2026-11-10T09:30:00Z" },
+            },
+          },
+        },
+      ],
+    } as R);
+    expect(text).toContain(
+      "it now holds up to 2026-11-10T09:30:00Z, and that what is recorded from then on",
+    );
   });
 });

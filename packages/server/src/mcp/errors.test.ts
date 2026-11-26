@@ -4,7 +4,10 @@
 // evidence too large, a conflict with two candidates and no candidate named, a resolve of an item
 // resolved already, a write to a revoked row, a slot not found, a derived table refreshed while
 // paged, two premises of one op on the same record, a premise on a past version, a statement
-// refused for CURRENT_DATE and one for FOR SYSTEM_TIME, an insert by source key. Update the golden files with `pnpm exec vitest run packages/server/src/mcp/errors.test.ts -u`.
+// refused for CURRENT_DATE and one for FOR SYSTEM_TIME, an insert by source key; too many evidence
+// segments and too many premises; a premise on the op's own record, one in another slot, premises
+// on a revoke and on an op by source key; two ops by one source key; a draft that leaves out a
+// field, one on an old version, and a write on the version before a table was dropped. Update the golden files with `pnpm exec vitest run packages/server/src/mcp/errors.test.ts -u`.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";

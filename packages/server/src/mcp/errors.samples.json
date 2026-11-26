@@ -151,5 +151,101 @@
       "reason": "insert_with_external_key",
       "param": "ops/0/external_key"
     }
+  },
+  "error-evidence-segments": {
+    "error": {
+      "code": "too_large",
+      "message": "the request is refused: too_large",
+      "reason": "evidence_segments",
+      "param": "evidence",
+      "limit": 1000,
+      "actual": 1001
+    }
+  },
+  "error-premise-entries": {
+    "error": {
+      "code": "too_large",
+      "message": "the request is refused: too_large",
+      "reason": "premise_entries",
+      "param": "ops/0/premises",
+      "limit": 16,
+      "actual": 17
+    }
+  },
+  "error-premise-self": {
+    "error": {
+      "code": "invalid_argument",
+      "message": "the premise is refused: premise_self",
+      "reason": "premise_self",
+      "param": "ops/0/premises/0"
+    }
+  },
+  "error-premise-cross-slot": {
+    "error": {
+      "code": "invalid_argument",
+      "message": "the request is refused: invalid_argument",
+      "reason": "cross_slot",
+      "param": "ops/0/premises/0/table"
+    }
+  },
+  "error-premises-with-revoke": {
+    "error": {
+      "code": "invalid_argument",
+      "message": "the request is refused: invalid_argument",
+      "reason": "premises_with_revoke",
+      "param": "ops/0/premises"
+    }
+  },
+  "error-premises-with-external-key": {
+    "error": {
+      "code": "invalid_argument",
+      "message": "the request is refused: invalid_argument",
+      "reason": "premises_with_external_key",
+      "param": "ops/0/premises"
+    }
+  },
+  "error-duplicate-external-key": {
+    "error": {
+      "code": "invalid_argument",
+      "message": "the request is refused: invalid_argument",
+      "reason": "duplicate_external_key",
+      "param": "ops/1/external_key",
+      "ops": [0, 1]
+    }
+  },
+  "error-field-unmatched": {
+    "error": {
+      "code": "field_unmatched",
+      "message": "a field of the current version is neither in the draft nor dropped",
+      "fields": [
+        {
+          "table": "expenses",
+          "id": "f3",
+          "name": "note"
+        }
+      ]
+    }
+  },
+  "error-draft-outdated": {
+    "error": {
+      "code": "draft_outdated",
+      "message": "base_version is not the current version",
+      "reason": "base_version",
+      "current_sv": 3
+    }
+  },
+  "error-schema-incompatible": {
+    "error": {
+      "code": "schema_incompatible",
+      "message": "the request is refused: schema_incompatible",
+      "param": "ops/0/table",
+      "current_sv": 2,
+      "changed_fields": [
+        {
+          "field": "*",
+          "change": "drop_table"
+        }
+      ]
+    }
   }
 }
