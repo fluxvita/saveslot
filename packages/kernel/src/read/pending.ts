@@ -47,6 +47,7 @@ import {
 import { fold, get, has, isObj, keysOf } from "../request/index.ts";
 import { changesByName } from "../schema/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { READABLE_CONTENT } from "../store/readable-content.ts";
 import { type ValueOut, valueOut, valuesOut } from "../time/index.ts";
 import { taskOf } from "./history.ts";
 import { type Piece, piecesOver, rowCellsAsOf, rowOf } from "./item-state.ts";
@@ -512,7 +513,7 @@ async function flaggedOf(
       ? undefined
       : (
           await tx.query<{ body: string | null }>(
-            "SELECT body FROM content WHERE seq = $1 AND path = 'duplicate'",
+            `SELECT body FROM ${READABLE_CONTENT} c WHERE seq = $1 AND path = 'duplicate'`,
             [e.originEvent],
           )
         ).rows[0]?.body;
@@ -611,6 +612,7 @@ async function awaitingOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versio
   if (target.intent === undefined) {
     throw new ReadError("internal", `the write proposing item ${e.id} without its intent`);
   }
+  // A revert record is metadata no deletion lists (09 §5.5, §5.9): read as stored.
   const rv = await tx.query<{ body: string }>(
     "SELECT body FROM content WHERE seq = $1 AND path = $2 AND body IS NOT NULL",
     [op, `ops/${target.op_index ?? 0}/revert`],

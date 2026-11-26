@@ -26,6 +26,7 @@ import {
 import type { NormalizedField } from "../request/index.ts";
 import { foldKey, type Match, matchKey } from "../request/keymatch/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { READABLE_CONTENT } from "../store/readable-content.ts";
 import { zonedText } from "../time/index.ts";
 
 export type EntityKey = Readonly<Record<FieldId, NormalizedField>>;
@@ -53,7 +54,7 @@ export async function tableKeys(
   const ids = new Set<string>(keyFields(t).map((f) => f.id));
   const r = await tx.query<{ row_id: string; path: string; body: string }>(
     `SELECT o.row_id, c.path, c.body FROM row_origins o
-     JOIN content c ON c.seq = o.origin_seq AND c.body IS NOT NULL AND c.path LIKE 'fields/%'
+     JOIN ${READABLE_CONTENT} c ON c.seq = o.origin_seq AND c.body IS NOT NULL AND c.path LIKE 'fields/%'
      WHERE o.table_id = $1 ORDER BY o.row_id, c.path`,
     [t.id],
   );

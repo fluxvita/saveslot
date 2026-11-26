@@ -15,6 +15,7 @@ import type {
   RowId,
 } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
+import { READABLE_CONTENT } from "../store/readable-content.ts";
 
 export type Blocks = Readonly<Record<string, unknown>>;
 export type Span = { readonly from: string | null; readonly to: string | null };
@@ -81,7 +82,7 @@ export async function itemEntries(
   }>(
     `SELECT e.seq, e.type, c.path, c.body, t.body::jsonb ->> 'item' AS item
      FROM events e JOIN content t ON t.seq = e.seq AND t.path = 'target' AND t.body IS NOT NULL
-     JOIN content c ON c.seq = e.seq AND c.body IS NOT NULL
+     JOIN ${READABLE_CONTENT} c ON c.seq = e.seq AND c.body IS NOT NULL
      WHERE e.type IN ('item.created', 'item.merged', 'item.refreshed')
        AND ($2::bigint IS NULL OR e.op <= $2)
        AND (t.body::jsonb ->> 'item') = ANY($1)

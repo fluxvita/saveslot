@@ -103,6 +103,7 @@ import {
 } from "../request/index.ts";
 import { changedSinceOf, switchedVersions } from "../schema/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
+import { READABLE_CONTENT } from "../store/readable-content.ts";
 import { restoreAt, restoreHistory, restorePoint, seenOfVer } from "../store/restore-point.ts";
 import { type IntervalSet, meet, unionOf, WHOLE } from "../time/index.ts";
 import type { ValueOut } from "../time/zone.ts";
@@ -715,8 +716,9 @@ async function sourceIdsOf(tx: Tx, ref: ItemRef): Promise<SourceId[]> {
       const key = `${r.event}/${r.target}/${r.k}`;
       if (seen.has(key) || r.target === "existence") continue;
       seen.add(key);
+      // A block a pending deletion lists reads as none: the item it carried is deleted.
       const b = await tx.query<{ body: string | null }>(
-        "SELECT body FROM content WHERE seq = $1 AND path = $2",
+        `SELECT body FROM ${READABLE_CONTENT} c WHERE seq = $1 AND path = $2`,
         [r.event, `sources/${r.target}/${r.k}`],
       );
       const body = b.rows[0]?.body;
@@ -947,7 +949,9 @@ function literalOf(
 
 /**
  * The text of sources a request names (`source_ref`): a text segment's text, a file reference's
- * excerpt; none where it has none, or its block was removed by a deletion.
+ * excerpt; none where it has none, or its block was removed by a deletion. A source a pending
+ * deletion lists is refused before this (`pending_deletion_source`, ./sources.ts), so a pending
+ * block here is an inconsistency, not something to read past.
  */
 async function storedTexts(
   tx: ReadTx,
@@ -955,11 +959,20 @@ async function storedTexts(
 ): Promise<Map<Seq, string | undefined>> {
   const out = new Map<Seq, string | undefined>(seqs.map((s) => [s, undefined]));
   if (seqs.length === 0) return out;
-  const r = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-    "SELECT seq, path, body FROM content WHERE seq = ANY($1) AND path IN ('text', 'file')",
+  const r = await tx.query<{
+    seq: unknown;
+    path: string;
+    body: string | null;
+    pending_by: unknown;
+  }>(
+    `SELECT seq, path, body, pending_by FROM ${READABLE_CONTENT} c
+     WHERE seq = ANY($1) AND path IN ('text', 'file')`,
     [[...new Set(seqs)]] as never,
   );
   for (const x of r.rows) {
+    if (x.pending_by !== null) {
+      throw new WriteError("internal", `source ${x.seq} is in a pending deletion yet was cited`);
+    }
     if (x.body === null) continue;
     const b = JSON.parse(x.body) as { text?: string; excerpt?: string };
     out.set(Number(x.seq) as Seq, x.path === "text" ? b.text : b.excerpt);

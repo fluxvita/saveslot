@@ -42,6 +42,7 @@ import { type Limit, type RowState, stateFromRecord } from "../judge/index.ts";
 import type { NewEvent } from "../log/index.ts";
 import { itemEntries } from "../pending/index.ts";
 import type { Tx } from "../store/ports.ts";
+import { READABLE_CONTENT } from "../store/readable-content.ts";
 import { restoreHistory } from "../store/restore-point.ts";
 import { type DuplicateDep, duplicateKeysOf, matchesGroup, valuesOf } from "./duplicates.ts";
 import { tableShape } from "./plan.ts";
@@ -148,7 +149,8 @@ export async function settleFlagged(
     `SELECT p.id FROM pending_items p
      WHERE p.state = 'open' AND p.type = 'flagged'
        AND (p.target_row = ANY($1) OR EXISTS (
-         SELECT 1 FROM pending_entries e JOIN content c ON c.seq = e.content_seq AND c.path = e.content_path
+         SELECT 1 FROM pending_entries e
+         JOIN ${READABLE_CONTENT} c ON c.seq = e.content_seq AND c.path = e.content_path
          WHERE e.item_id = p.id AND e.content_path LIKE 'matched/%' AND c.body IS NOT NULL
            AND (c.body::jsonb ->> 'row') = ANY($1)))
      ORDER BY p.id`,
@@ -297,7 +299,7 @@ export async function settleFlagged(
 async function keysOf(tx: Tx, origin: number | undefined): Promise<FieldId[] | undefined> {
   if (origin === undefined) return undefined;
   const r = await tx.query<{ body: string | null }>(
-    "SELECT body FROM content WHERE seq = $1 AND path = 'duplicate'",
+    `SELECT body FROM ${READABLE_CONTENT} c WHERE seq = $1 AND path = 'duplicate'`,
     [origin],
   );
   const body = r.rows[0]?.body;

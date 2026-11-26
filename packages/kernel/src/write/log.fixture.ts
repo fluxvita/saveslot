@@ -12,7 +12,7 @@ import type { RowState } from "../judge/state.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { restoreHistory } from "../store/restore-point.ts";
 import { canonical, type IntervalSet, meet, WHOLE } from "../time/index.ts";
-import { rowEvents } from "./reads.ts";
+import { type RowEventsOptions, rowEvents } from "./reads.ts";
 import { decodeRecords, encodeOp, encodeResolution, type RowContext } from "./record.ts";
 
 /** The operation of the scenarios' first write: the insert that makes the row or entity. */
@@ -314,13 +314,17 @@ export function eventsOfRequest(
  * The row's state as judge rebuilds it from the stored log: the write pipeline's reading
  * (`rowEvents`, `decodeRecords`), not apply's. Tests hold what apply wrote against it.
  */
-export async function judgeStateFromLog(tx: ReadTx, ctx: RowContext): Promise<RowState> {
+export async function judgeStateFromLog(
+  tx: ReadTx,
+  ctx: RowContext,
+  o: RowEventsOptions = {},
+): Promise<RowState> {
   const id = "entity" in ctx.target ? ctx.target.entity : ctx.target.row;
   return stateFromRecord(
     ctx.shape,
     decodeRecords(
       { ...ctx, restores: await restoreHistory(tx) },
-      await rowEvents(tx, ctx.table, id),
+      await rowEvents(tx, ctx.table, id, o),
     ),
   );
 }

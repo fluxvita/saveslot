@@ -7,10 +7,11 @@
 // after the manifest reads only up to `upto`: events appended meanwhile are not in the file, and
 // the file says what it holds.
 //
-// Not done yet: placeholders for content pending deletion (the default of an export that has
-// pending deletions). An export that meets a pending deletion without being told to include its
-// content stops, saying so (`ExportError` `pending_deletion_unsupported`); it never writes the
-// content out unasked.
+// Content pending deletion (§3.3, §8): by default each block a deletion in its grace period lists
+// is written as a placeholder, `{"pending_deletion": <seq of the earliest deletion.confirmed
+// listing it>}`, and the manifest says `placeholder`; only when asked (`include_pending_deletion`,
+// a user session's choice) is its content written, and the manifest says `included`. Which blocks
+// are pending is read as the log's other readers read it (../store/readable-content.ts).
 
 import {
   canonicalize,
@@ -20,12 +21,9 @@ import {
   type Seq,
 } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
+import { pendingBy } from "../store/readable-content.ts";
 
-export type ExportErrorCode =
-  | "invalid_after_seq"
-  | "pending_deletion_unsupported"
-  | "changed_during_export"
-  | "corrupt_log";
+export type ExportErrorCode = "invalid_after_seq" | "changed_during_export" | "corrupt_log";
 
 export class ExportError extends Error {
   readonly code: ExportErrorCode;
@@ -102,7 +100,6 @@ export async function exportStart(tx: ReadTx, params: ExportParams): Promise<Exp
 
   const included = params.includePendingDeletion === true;
   const pending = await pendingDeletions(tx, upto);
-  if (!included && pending.length > 0) throw pendingRefusal();
 
   const count = await tx.query<{ c: unknown }>(
     "SELECT count(*) AS c FROM events WHERE seq > $1 AND seq <= $2",
@@ -167,17 +164,13 @@ export async function exportStart(tx: ReadTx, params: ExportParams): Promise<Exp
   };
 }
 
-const pendingRefusal = () =>
-  new ExportError(
-    "pending_deletion_unsupported",
-    "a deletion is in its grace period and placeholders for its content are not implemented; export with include_pending_deletion or after it has run",
-  );
-
 /**
  * One batch of event lines after `from`, up to `start.upto`, in a read transaction the caller
  * holds; `next` is where the next batch starts, undefined when this was the last. Without
  * `include_pending_deletion`, a deletion confirmed since the export started stops it
- * (`changed_during_export`): its content may be in the lines still to come.
+ * (`changed_during_export`): its content may be in the lines still to come, and the file holds no
+ * event to make it a placeholder. So does one cancelled since: lines already written hold its
+ * placeholders, the lines to come would hold its content.
  */
 export async function exportBatch(
   tx: ReadTx,
@@ -195,6 +188,12 @@ export async function exportBatch(
         "a deletion was confirmed while the export ran; export again",
       );
     }
+    if (start.pending.some((id) => !now.includes(id))) {
+      throw new ExportError(
+        "changed_during_export",
+        "a deletion was cancelled or executed while the export ran; export again",
+      );
+    }
   }
   const evs = await tx.query<{ seq: unknown; header: string }>(
     "SELECT seq, header FROM events WHERE seq > $1 AND seq <= $2 ORDER BY seq LIMIT $3",
@@ -209,9 +208,11 @@ export async function exportBatch(
     checksum: string | null;
     removed_by: unknown;
     placeholder_of: unknown;
+    pending_by: unknown;
   }>(
-    `SELECT seq, path, body, checksum, removed_by, placeholder_of FROM content
-     WHERE seq > $1 AND seq <= $2 ORDER BY seq, path COLLATE "C"`,
+    `SELECT c.seq, c.path, c.body, c.checksum, c.removed_by, c.placeholder_of,
+       ${pendingBy("c")} AS pending_by
+     FROM content c WHERE c.seq > $1 AND c.seq <= $2 ORDER BY c.seq, c.path COLLATE "C"`,
     [from, n(last.seq)],
   );
   const bySeq = new Map<number, Record<string, JsonValue>>();
@@ -229,6 +230,8 @@ export async function exportBatch(
       );
     }
     if (b.removed_by !== null) c[b.path] = { removed_by: n(b.removed_by) };
+    else if (b.body !== null && b.pending_by !== null && !start.included)
+      c[b.path] = { pending_deletion: n(b.pending_by) };
     else if (b.body !== null) c[b.path] = { v: JSON.parse(b.body) as JsonValue, sum: b.checksum };
     else if (b.placeholder_of !== null) c[b.path] = { pending_deletion: n(b.placeholder_of) };
     else throw new ExportError("corrupt_log", "a content block has no state");

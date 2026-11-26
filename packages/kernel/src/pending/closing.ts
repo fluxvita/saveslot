@@ -4,6 +4,7 @@
 
 import type { SupersededReason } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
+import { READABLE_CONTENT } from "../store/readable-content.ts";
 import type { Blocks } from "./detail.ts";
 
 /** A decision of this version, as `item.resolved` records it (09 §5.8; the request's `decision`). */
@@ -96,7 +97,7 @@ async function noteOf(tx: ReadTx, resolved: number): Promise<string | undefined>
      JOIN content t ON t.path = 'target' AND t.body IS NOT NULL
        AND t.seq IN (SELECT jsonb_array_elements_text(o.body::jsonb)::bigint)
        AND (t.body::jsonb ->> 'kind') = 'api_call'
-     JOIN content q ON q.seq = t.seq AND q.path = 'request' AND q.body IS NOT NULL
+     JOIN ${READABLE_CONTENT} q ON q.seq = t.seq AND q.path = 'request' AND q.body IS NOT NULL
      WHERE o.seq = $1 AND o.path = 'op_sources' AND o.body IS NOT NULL`,
     [resolved],
   );

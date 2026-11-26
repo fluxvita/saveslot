@@ -84,7 +84,11 @@ const write = (now: Instant, value: string): NewOperation => ({
   ],
 });
 
-const tombstone = (now: Instant): NewOperation => ({
+const tombstone = (
+  now: Instant,
+  deletion: string = DELETION,
+  confirmedEvent = 8,
+): NewOperation => ({
   actor: "system",
   now,
   events: [
@@ -93,7 +97,7 @@ const tombstone = (now: Instant): NewOperation => ({
       slot: SLOT,
       trigger: "deletion_expiry",
       blocks: {
-        target: { deletion: DELETION, confirmed_event: 8, reason: "expiry" },
+        target: { deletion, confirmed_event: confirmedEvent, reason: "expiry" },
         positions: [{ seq: 6, path: "request" }],
       },
     },
@@ -122,6 +126,21 @@ const confirmed = (now: Instant, deletion: string = DELETION): NewOperation => (
           origin: "request",
         },
         positions: [{ seq: 6, path: "request" }],
+      },
+    },
+  ],
+});
+
+const cancelled = (now: Instant, deletion: string = DELETION): NewOperation => ({
+  actor: USER,
+  now,
+  events: [
+    {
+      type: "deletion.cancelled",
+      slot: SLOT,
+      blocks: {
+        ctx: { now, today: "2026-11-10", ruleset_version: 1, policy_version: 1 },
+        target: { deletion, confirmed_event: 9 },
       },
     },
   ],
@@ -232,21 +251,58 @@ describe("the export file", () => {
   );
 
   it(
-    "a deletion in its grace period: stops unless told to include; included says so; once executed or cancelled it no longer stops",
+    "a deletion in its grace period: its blocks are placeholders unless told to include; included says so; cancelled midway stops it; executed, removed",
     async () => {
-      await store.write((tx) => appendOperation(tx, confirmed(t("06:00")))); // 9
-      const refused = await exportLines().catch((x: unknown) => x);
-      expect(refused).toBeInstanceOf(ExportError);
-      expect((refused as ExportError).code).toBe("pending_deletion_unsupported");
+      await store.write(async (tx) => {
+        await appendOperation(tx, confirmed(t("06:00"))); // 9
+        // As its apply registers it: the second write's value is pending, listed by #9.
+        await tx.query(
+          "INSERT INTO pending_blocks (seq, path, deletion_seq) VALUES (7, 'fields/f2/0', 9)",
+        );
+      });
+      const [manifest, ...events] = parse(await exportLines());
+      expect(manifest).toMatchObject({ pending_deletions: "placeholder", upto: 9, events: 9 });
+      expect(events[6]?.c?.["fields/f2/0"]).toEqual({ pending_deletion: 9 });
+      expect(events[6]?.c?.["target"]).toHaveProperty("sum");
+      expect(events[3]?.c?.["fields/f2/0"]).toHaveProperty("v", { value: "45", status: "applied" });
 
-      const [manifest, ...events] = parse(await exportLines({ includePendingDeletion: true }));
-      expect(manifest).toMatchObject({ pending_deletions: "included", upto: 9, events: 9 });
-      expect(events).toHaveLength(9);
+      const [m1, ...all] = parse(await exportLines({ includePendingDeletion: true }));
+      expect(m1).toMatchObject({ pending_deletions: "included", upto: 9, events: 9 });
+      expect(all[6]?.c?.["fields/f2/0"]).toHaveProperty("v", { value: "50", status: "applied" });
 
-      // Executed: no longer pending.
-      await store.write((tx) => appendOperation(tx, tombstone(t("07:00")))); // 10
-      const [m2] = parse(await exportLines());
+      // Cancelled between two steps: the lines written hold its placeholders, the rest would not.
+      const p = { exportedAt: EXPORTED_AT };
+      const start = await store.read((tx) => exportStart(tx, p));
+      const first = await store.read((tx) => exportBatch(tx, start, start.after, 2));
+      await store.write(async (tx) => {
+        await appendOperation(tx, cancelled(t("06:30"))); // 10
+        await tx.query("DELETE FROM pending_blocks WHERE deletion_seq = 9");
+      });
+      const e = await store
+        .read((tx) => exportBatch(tx, start, first.next ?? 0, 2))
+        .catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(ExportError);
+      expect((e as ExportError).code).toBe("changed_during_export");
+      const [m2, ...after] = parse(await exportLines());
       expect(m2).toMatchObject({ pending_deletions: "placeholder", upto: 10 });
+      expect(after[6]?.c?.["fields/f2/0"]).toHaveProperty("v", { value: "50", status: "applied" });
+
+      // Confirmed again and executed: removed, no longer pending.
+      await store.write(async (tx) => {
+        await appendOperation(tx, confirmed(t("06:40"), `pi_${"6".repeat(16)}`)); // 11
+        await tx.query(
+          "INSERT INTO pending_blocks (seq, path, deletion_seq) VALUES (7, 'fields/f2/0', 11)",
+        );
+      });
+      expect(parse(await exportLines())[7]?.c?.["fields/f2/0"]).toEqual({ pending_deletion: 11 });
+      await store.write(async (tx) => {
+        const op = await appendOperation(tx, tombstone(t("07:00"), `pi_${"6".repeat(16)}`, 11)); // 12
+        await clearBlocks(tx, op.op, [{ seq: 7, path: "fields/f2/0" }]);
+        await tx.query("DELETE FROM pending_blocks WHERE deletion_seq = 11");
+      });
+      const [m3, ...gone] = parse(await exportLines());
+      expect(m3).toMatchObject({ pending_deletions: "placeholder", upto: 12 });
+      expect(gone[6]?.c?.["fields/f2/0"]).toEqual({ removed_by: 12 });
     },
     T,
   );

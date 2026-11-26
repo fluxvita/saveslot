@@ -108,10 +108,6 @@ export async function exportLog(
         param: "after_seq",
       });
     }
-    // Placeholders for content pending deletion: not in this version.
-    if (e.code === "pending_deletion_unsupported") {
-      throw new OpsError("internal", e.message, { reason: "not_implemented" });
-    }
     throw e;
   };
   const start = await store
