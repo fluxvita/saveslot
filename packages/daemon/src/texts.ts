@@ -349,6 +349,9 @@ export const TEXTS = {
       "error: a saveslot server is running on this control database; stop it first, then run saveslot server restore again. Nothing was done",
     restoreControlNotReady:
       "error: the control database has no tables of this saveslot, or tables of a format it does not know; nothing was done",
+    /** A tenant's storage format upgrade failed (02-architecture §8): never the database's message. */
+    upgradeFailed: (step: string | undefined, sqlState: string | undefined) =>
+      `error: upgrading a tenant's storage format failed${step !== undefined ? ` at step ${step}` : ""}${sqlState !== undefined ? ` (SQLSTATE ${sqlState})` : ""}, and the command stopped there. That step was undone; the steps before it stay done. The database's own message is not shown, since it may quote what the store holds; its SQLSTATE says what went wrong (53100: the disk is full). Deal with that, then run the command again: the upgrade goes on from that step.`,
     restoreTenantRefused: (code: "unknown_tenant" | "tenant_not_active") =>
       code === "unknown_tenant"
         ? "error: the tenant directory has no such tenant; nothing was done"

@@ -53,11 +53,18 @@ export class PostgresStoreError extends Error {
   readonly code: ErrorCode;
   /** PostgreSQL SQLSTATE, when the error came from the database. */
   readonly sqlState: string | undefined;
+  /** With `upgrade_failed`: the step that failed, as `5->6`. */
+  readonly step: string | undefined;
 
-  constructor(code: ErrorCode, message: string, opts: { cause?: unknown; sqlState?: string } = {}) {
+  constructor(
+    code: ErrorCode,
+    message: string,
+    opts: { cause?: unknown; sqlState?: string; step?: string } = {},
+  ) {
     super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
     this.name = "PostgresStoreError";
     this.code = code;
     this.sqlState = opts.sqlState;
+    this.step = opts.step;
   }
 }

@@ -25,12 +25,9 @@ import {
   ServerRestoreError,
   type TenantId,
 } from "@fluxvita/saveslot-service";
-import {
-  type ControlDatabase,
-  openControlDatabase,
-  PostgresBackend,
-} from "@fluxvita/saveslot-store-postgres";
-import type { ServerCommandIO, ServerRestoreIO } from "./server-command-io.ts";
+import { type ControlDatabase, openControlDatabase } from "@fluxvita/saveslot-store-postgres";
+import { cellBackend } from "./run-server.ts";
+import { logLine, type ServerCommandIO, type ServerRestoreIO } from "./server-command-io.ts";
 import type { ServerConfig } from "./server-config.ts";
 import { releaseServerLock, takeServerLock } from "./server-lock.ts";
 import { openAccounts } from "./server-user-command.ts";
@@ -142,7 +139,7 @@ async function restoreHeld(
     }
     tenant = target.tenant as TenantId;
   }
-  const backend = io.backend ?? new PostgresBackend({ cells: { [config.cellName]: config.cell } });
+  const backend = io.backend ?? cellBackend(config, logLine(io), io.formatUpgrade);
   try {
     const r = await restoreTenantFromBackup({
       control,

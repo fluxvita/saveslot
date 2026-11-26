@@ -576,14 +576,20 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
     let h = await health(o.socketPath);
     if (h === undefined && o.autostart) {
       o.log(TEXTS.mcpEvent("autostart"));
+      let exit: number | undefined;
       try {
         const code = await o.startService();
-        if (code !== 0) o.log(TEXTS.mcpEvent(`autostart_exit_${code}`));
+        if (code !== 0) exit = code;
       } catch {
         // Nothing of it is said: it may hold the home's path.
         o.log(TEXTS.mcpEvent("autostart_failed"));
       }
       h = await health(o.socketPath);
+      // A start that stopped waiting because the service upgrades the store's format (exit 7,
+      // `untilUpgrading`) did not fail: it is said as `service_upgrading` below, not as an exit.
+      if (exit !== undefined && !(h?.state === "starting" && upgradeOf(h) !== undefined)) {
+        o.log(TEXTS.mcpEvent(`autostart_exit_${exit}`));
+      }
     }
     h = await untilSettled(o.socketPath, h);
     if (h === undefined) o.log(TEXTS.mcpEvent("not_running"));
