@@ -105,6 +105,15 @@ async function onStore(dataDir: string, sql: string): Promise<void> {
   }
 }
 
+/**
+ * Waits until `ok` holds, asking again every 25 ms, at most `limitMs` (a bound for a test gone
+ * wrong, not a guess at how long the thing takes).
+ */
+async function until(ok: () => boolean, limitMs = 60_000): Promise<void> {
+  const end = Date.now() + limitMs;
+  while (!ok() && Date.now() <= end) await new Promise((r) => setTimeout(r, 25));
+}
+
 /** The bytes of the files under `root` (what the space check counts). */
 function bytesOf(root: string): number {
   let total = 0;
@@ -315,7 +324,7 @@ describe("the backup before an upgrade", () => {
       },
     });
     // Held on its third file: the copy has begun and cannot end until released.
-    for (let i = 0; i < 400 && copied < 3; i++) await new Promise((r) => setTimeout(r, 25));
+    await until(() => copied >= 3);
     const seen = await health(socketFile(h), 2000);
     expect(copied).toBe(3);
     expect(seen).toMatchObject({
@@ -360,7 +369,7 @@ describe("the backup before an upgrade", () => {
         },
       },
     });
-    for (let i = 0; i < 400 && copied < 3; i++) await new Promise((r) => setTimeout(r, 25));
+    await until(() => copied >= 3);
     expect(copied).toBe(3);
     const stopping = (handle as { stop: () => Promise<void> }).stop();
     release();
