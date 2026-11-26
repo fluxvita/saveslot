@@ -7,10 +7,12 @@ The full contributor guide is [`docs/guide/12-contributing.md`](docs/guide/12-co
 ## Workflow
 
 1. Create a branch from `main`. If you cannot push branches to the repository, fork it and create the branch in your fork.
-2. Open a pull request against `main` (from your fork, if you used one) and fill in the template. Every pull request targets `main`, also a fix for a version already released: a maintainer cherry-picks it onto that version's release branch (`release/0.<minor>`) once it is merged. Its title is a Conventional Commit and becomes the squash commit's subject; CI checks the title (`feat`, `fix`, `docs`, `test`, `build`, `ci`, `chore`, `refactor`, `perf`, `revert`, `style`; scope in lower case).
-3. Once the branch is pushed, add commits at its end, so that what was reviewed stays as it was. Keep the branch linear, without merge commits: pull requests are squashed onto `main` by fast-forward, and a branch with a merge commit cannot be rebased at merge time. A branch that is only behind `main` needs nothing from you: the maintainer rebases it when merging. When it conflicts with `main`, or `pnpm check` no longer passes on top of the latest `main`, rebase it onto the latest `main` yourself, run `pnpm check` on that head, push it with `git push --force-with-lease`, and say so in the pull request (the old head, the new head, and how each conflict was resolved). That is the one case in which a pushed branch is rewritten. The maintainer does not resolve conflicts on your branch.
-4. To be merged, every check CI runs on the pull request must pass (the title, sign-off, secrets and forbidden terms, and `pnpm check`), every review thread must be resolved, and a maintainer must approve it.
-5. A maintainer merges it with squash.
+2. Open a pull request against `main` (from your fork, if you used one) and fill in the template. Every pull request targets `main`, also a fix for a version already released: a maintainer cherry-picks it onto that version's release branch (`release/0.<minor>`) once it is merged. Its title is a Conventional Commit and becomes the squash commit's subject; CI checks the title (`feat`, `fix`, `docs`, `test`, `build`, `ci`, `chore`, `refactor`, `perf`, `revert`, `style`; scope in lower case). In the description, say what changes and why, what is left out on purpose, and what you ran; when it settles an issue, write `Closes #<number>` there (not in the title, the branch name or a commit message). Assign the pull request to yourself and give it the labels that fit (`bug`, `enhancement`, `documentation`, `spec`, `research`). Open it as a draft while it is not ready to be reviewed, and mark it ready when it is.
+3. Once the branch is pushed, add commits at its end, so that what was reviewed stays as it was. Keep the branch linear, without merge commits. A branch that is only behind `main` needs nothing from you: it is squashed onto `main` as it is. When it conflicts with `main`, or `pnpm check` no longer passes on top of the latest `main`, rebase it onto the latest `main` yourself, run `pnpm check` on that head, push it with `git push --force-with-lease`, and say so in the pull request (the old head, the new head, and how each conflict was resolved). That is the one case in which a pushed branch is rewritten. The maintainer does not resolve conflicts on your branch.
+4. Answer every review thread: say in which commit a point was addressed, or why you see it otherwise. The reviewer who opened a thread resolves it, not the author. After each push, say in a line or two on the pull request what changed. A push after an approval withdraws the approval, and the pull request is reviewed again.
+5. A check that fails is read, not run again until it passes: fix it when it is your change; when you take it to be unrelated, say so on the pull request with the failing test, its seed and its assertion as printed.
+6. To be merged, every check CI runs on the pull request must pass (the title, sign-off, secrets and forbidden terms, and `pnpm check`), every review thread must be resolved, and a maintainer other than the author must approve it.
+7. A maintainer merges it with squash; the commit on `main` carries the pull request's title and its number. Do not merge your own pull request, and do not push to `main` or to a release branch: both are refused.
 
 ## Conventions
 
@@ -39,11 +41,11 @@ The full contributor guide is [`docs/guide/12-contributing.md`](docs/guide/12-co
 
 ## Where to talk
 
-- Bugs, tasks and research: Issues, using the matching template.
+- Bugs, tasks and research: Issues, using the matching template. Search for an open one on the same matter first.
 - Questions and design discussion: Discussions.
 - Security issues: see [`SECURITY.md`](SECURITY.md). Do not open a public issue.
 
-Before the project went public, its issues and changes were tracked on an internal server. Since the move to GitHub (2026-11-27) that tracker is read-only: issues, discussion and patches all come here, a patch as a pull request against `main`.
+Before the project went public, its issues and changes were tracked on an internal server. Since the move to GitHub (2026-11-26) that tracker is read-only: issues, discussion and patches all come here, a patch as a pull request against `main`.
 
 ## License
 
