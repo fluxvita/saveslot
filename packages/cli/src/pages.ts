@@ -42,7 +42,7 @@ export async function allSlots(c: Client): Promise<CatalogList["slots"]> {
 }
 
 /** Every connection instance, revoked and disabled ones too, page after page (200 a page). */
-export async function allConnections(c: Client): Promise<Connection[]> {
+export async function allConnections(c: Pick<Client, "connections">): Promise<Connection[]> {
   return everyPage(async (cursor) => {
     const page = await c.connections.list({
       include_revoked: true,

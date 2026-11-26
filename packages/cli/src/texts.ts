@@ -909,6 +909,15 @@ export const TEXTS = {
       `its saveslot entry does not show ${path}: it may run another saveslot, or one no longer there. If saveslot works in the host, leave it`,
     ),
   doctorHostFix: (remove: string) => s(`${remove}, then saveslot setup`),
+  doctorHostUnread: s(
+    "the agent in this host has not read anything through saveslot yet; if you asked it to record something and nothing was recorded, the host has most likely not allowed it to use saveslot's tools",
+  ),
+  doctorHostAllow: (host: string) =>
+    host === "claude-code"
+      ? s(
+          'allow saveslot\'s tools when Claude Code asks (it asks once, the first time it calls one); without a terminal to ask on (claude -p), add --allowedTools "mcp__saveslot"',
+        )
+      : s("confirm in the host that it may use saveslot's tools"),
   hostDisplay: (host: string) => s(HOST_NAMES.get(host) ?? host),
   hostManual: (host: string) =>
     s(

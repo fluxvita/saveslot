@@ -139,8 +139,8 @@ export interface DoctorOptions {
   readonly now?: () => number;
   /** Tests: the Node version taken for this one (`process.versions.node`). */
   readonly node?: string;
-  /** The hosts' saveslot entries, from the CLI package (the entry package hands it in). */
-  readonly hosts?: () => Promise<readonly Finding[]>;
+  /** The hosts' saveslot entries, from the CLI package (the entry package hands it in); given the home. */
+  readonly hosts?: (home: string) => Promise<readonly Finding[]>;
 }
 
 export async function findings(
@@ -339,7 +339,7 @@ export async function findings(
   }
 
   // The hosts' entries: each host's own look-up.
-  if (o.hosts !== undefined) for (const f of await o.hosts()) add(f);
+  if (o.hosts !== undefined) for (const f of await o.hosts(home)) add(f);
 
   // The reminders, from the service when it is ready.
   if (h?.state !== "ready") {

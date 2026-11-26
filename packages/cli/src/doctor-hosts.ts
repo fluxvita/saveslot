@@ -3,11 +3,15 @@
 // reading its configuration. The entry passes when it shows this saveslot's path (`entryHolds`,
 // the one reading of that output, which is never shown: it may hold the token). One that does not
 // show it is a reminder, not a failure: a host may write the path another way. A host with no
-// look-up command is "not checked". A host not installed gives no line. The daemon's `doctor`
-// writes these lines; the entry package hands this function to it.
+// look-up command is "not checked". A host not installed gives no line. A host with an entry whose
+// instances have no read but the self-check gets a reminder with how it allows saveslot's tools:
+// inferred from saveslot's own reads, not looked up (a call the host refuses never arrives). The
+// daemon's `doctor` writes these lines; the entry package hands this function to it.
 
 import { access } from "node:fs/promises";
 import { homedir } from "node:os";
+import { join } from "node:path";
+import { type Client, createClient, resolveCredential } from "@fluxvita/saveslot-client";
 import {
   entryHolds,
   entryPath,
@@ -16,7 +20,10 @@ import {
   onPath,
   removeCommand,
   SETUP_HOSTS,
+  type SetupHost,
 } from "./connect.ts";
+import { hostInstances, lastRead } from "./host-instances.ts";
+import { allConnections } from "./pages.ts";
 import { TEXTS } from "./texts.ts";
 
 export interface HostFinding {
@@ -33,9 +40,27 @@ export async function doctorHosts(o: {
   readonly platform?: NodeJS.Platform;
   readonly userHome?: string;
   readonly timeoutMs?: number;
+  /** The local service's session; none, or the service not answering: no line on reads. */
+  readonly session?: () => Promise<Pick<Client, "connections" | "readsList">>;
 }): Promise<HostFinding[]> {
   const out: HostFinding[] = [];
   const self = await entryPath(o.entry).catch(() => undefined);
+  let all: Promise<Awaited<ReturnType<typeof allConnections>> | undefined> | undefined;
+  const unread = async (host: SetupHost): Promise<boolean> => {
+    if (o.session === undefined) return false;
+    try {
+      const session = await o.session();
+      all ??= allConnections(session).catch(() => undefined);
+      const listed = await all;
+      if (listed === undefined) return false;
+      const mine = hostInstances(listed, host).like;
+      if (mine.length === 0) return false;
+      for (const c of mine) if ((await lastRead(session, c)) !== null) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  };
   for (const host of SETUP_HOSTS) {
     const info = HOST_INFO[host];
     const item = `host ${TEXTS.hostDisplay(host)}`;
@@ -76,6 +101,23 @@ export async function doctorHosts(o: {
         fix: TEXTS.doctorHostFix((removeCommand(host) ?? []).join(" ")),
       });
     }
+    if (await unread(host)) {
+      out.push({
+        verdict: "remind",
+        item,
+        says: TEXTS.doctorHostUnread,
+        fix: TEXTS.doctorHostAllow(host),
+      });
+    }
   }
   return out;
+}
+
+/** The local service's session for `doctor`'s hosts: the home's credential over its socket. */
+export async function localSession(
+  home: string,
+  env: Readonly<Record<string, string | undefined>>,
+): Promise<Client> {
+  const credential = await resolveCredential({ home, env });
+  return createClient({ socketPath: join(home, "run", "saveslot.sock"), token: credential.token });
 }

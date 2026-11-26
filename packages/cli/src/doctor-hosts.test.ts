@@ -75,3 +75,117 @@ describe("doctor: the hosts' entries", () => {
     ]);
   });
 });
+
+/** A session listing `conns`, each with its reads (`self` a self-check, `read` another). */
+function session(
+  conns: { id: string; name: string; state?: string; reads: ("self" | "read")[] }[],
+) {
+  return async () => ({
+    connections: {
+      list: async () => ({
+        connections: conns.map(({ reads: _, ...c }) => c),
+        next_cursor: undefined,
+      }),
+    },
+    readsList: async (q: { connection?: string }) => ({
+      reads: (conns.find((c) => c.id === q.connection)?.reads ?? []).map((r) => ({
+        at: "2026-11-26T08:00:00Z",
+        ...(r === "self" ? { selfcheck: true } : {}),
+      })),
+    }),
+  });
+}
+
+describe("doctor: a host not yet read through", () => {
+  const unread = (item: string, host: string) => ({
+    verdict: "remind",
+    item,
+    says: TEXTS.doctorHostUnread,
+    fix: TEXTS.doctorHostAllow(host),
+  });
+
+  it("instances of the host with only their self-check: a reminder with how the host allows the tools", async () => {
+    const h = hosts({ claude: entry, codex: entry });
+    const all = await doctorHosts({
+      env: h.env,
+      entry,
+      userHome: h.home,
+      session: session([
+        { id: "c1", name: "laptop · Claude Code", reads: ["self"] },
+        { id: "c2", name: "old-name · Claude Code 2", reads: [] },
+        { id: "c3", name: "Codex", reads: ["self"] },
+      ]) as never,
+    });
+    expect(all).toEqual([
+      { verdict: "pass", item: "host Claude Code", says: TEXTS.doctorHostOk(entry) },
+      unread("host Claude Code", "claude-code"),
+      { verdict: "pass", item: "host Codex", says: TEXTS.doctorHostOk(entry) },
+      unread("host Codex", "codex"),
+    ]);
+    expect(TEXTS.doctorHostAllow("claude-code")).toContain('--allowedTools "mcp__saveslot"');
+    expect(TEXTS.doctorHostAllow("codex")).not.toContain("allowedTools");
+  });
+
+  it("no line when one instance was read, when none is the host's, or revoked, or without an entry", async () => {
+    const h = hosts({ claude: entry, codex: 1 });
+    const all = await doctorHosts({
+      env: h.env,
+      entry,
+      userHome: h.home,
+      session: session([
+        { id: "c1", name: "laptop · Claude Code", reads: ["self"] },
+        { id: "c2", name: "laptop · Claude Code 2", reads: ["read", "self"] },
+        { id: "c3", name: "laptop · Codex", reads: [] },
+      ]) as never,
+    });
+    expect(all.filter((f) => f.says === TEXTS.doctorHostUnread)).toEqual([]);
+    for (const conns of [
+      [{ id: "c1", name: "my agent", reads: [] as ("self" | "read")[] }],
+      [
+        {
+          id: "c1",
+          name: "laptop · Claude Code",
+          state: "revoked",
+          reads: [] as ("self" | "read")[],
+        },
+      ],
+      [],
+    ]) {
+      const got = await doctorHosts({
+        env: h.env,
+        entry,
+        userHome: h.home,
+        session: session(conns) as never,
+      });
+      expect(got.filter((f) => f.says === TEXTS.doctorHostUnread)).toEqual([]);
+    }
+  });
+
+  it("the service not answering: no line, no error", async () => {
+    const h = hosts({ claude: entry });
+    const all = await doctorHosts({
+      env: h.env,
+      entry,
+      userHome: h.home,
+      session: async () => {
+        throw new Error("connect ENOENT");
+      },
+    });
+    expect(all).toEqual([
+      { verdict: "pass", item: "host Claude Code", says: TEXTS.doctorHostOk(entry) },
+    ]);
+    const unreadable = await doctorHosts({
+      env: h.env,
+      entry,
+      userHome: h.home,
+      session: async () =>
+        ({
+          connections: { list: async () => ({ connections: [{ id: "c1", name: "Claude Code" }] }) },
+          readsList: async () => {
+            throw new Error("refused");
+          },
+        }) as never,
+    });
+    expect(unreadable.filter((f) => f.says === TEXTS.doctorHostUnread)).toEqual([]);
+  });
+});

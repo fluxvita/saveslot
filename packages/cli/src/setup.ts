@@ -44,6 +44,7 @@ import {
   writes,
 } from "./connect.ts";
 import { describeError, timezoneHint } from "./errors.ts";
+import { hostInstances, lastRead } from "./host-instances.ts";
 import { allConnections } from "./pages.ts";
 import { appliedLines, connectionLine, setupShowable } from "./render/connections.ts";
 import { slotCreated } from "./render/results.ts";
@@ -231,31 +232,6 @@ function baseName(hostname: string, host: SetupHost): string {
 function freeName(base: string, taken: ReadonlySet<string>): string {
   if (!taken.has(base)) return base;
   for (let n = 2; ; n++) if (!taken.has(`${base} ${n}`)) return `${base} ${n}`;
-}
-
-/**
- * This host's instances that are not revoked or disabled, in two tiers (06 §3.3 item 7):
- * - `own`: named exactly as setup names them on this computer now ("<computer> · <host>", a number
- *   after it or not): setup's own, and the host's entry may be told by them;
- * - `like`: the others whose name is "<host>" or ends with " · <host>" (a number after it or not):
- *   made under another computer name (it changes: macOS names the computer after its network), or
- *   named so by the user. They may be the host's, but are not taken to be.
- */
-function ofHost(
-  all: readonly Connection[],
-  host: SetupHost,
-  base: string,
-): { own: Connection[]; like: Connection[] } {
-  const display = TEXTS.hostDisplay(host);
-  const own: Connection[] = [];
-  const like: Connection[] = [];
-  for (const c of all) {
-    if (c.state !== undefined) continue;
-    const n = c.name.replace(/ [0-9]+$/, "");
-    if (n === base) own.push(c);
-    else if (n === display || n.endsWith(` · ${display}`)) like.push(c);
-  }
-  return { own, like };
 }
 
 /** A host found on this computer, with what is shown of it. */
@@ -564,7 +540,10 @@ async function steps(
       continue;
     }
     if (there.kind === "yes") {
-      byHost.set(host, await existing(session, host, entry, there.out, ofHost(all, host, base)));
+      byHost.set(
+        host,
+        await existing(session, host, entry, there.out, hostInstances(all, host, base)),
+      );
       continue;
     }
     if (!setupShowable(host, entry, i.socket, exe)) {
@@ -578,7 +557,7 @@ async function steps(
     }
     const n = freeName(base, taken);
     taken.add(n);
-    const mine = ofHost(all, host, base);
+    const mine = hostInstances(all, host, base);
     todo.push({ host, exe, name: n, stale: [...mine.own, ...mine.like] });
     byHost.set(host, "todo");
   }
@@ -900,14 +879,6 @@ async function makeSlots(
       halt();
     }
   }
-}
-
-/** The last read of an instance besides its self-check: its time, or null when there is none. */
-async function lastRead(session: Client, c: Connection): Promise<string | null | undefined> {
-  const reads = await session.readsList({ connection: c.id, limit: 200 }).catch(() => undefined);
-  if (reads === undefined) return undefined;
-  const r = reads.reads.find((x) => (x as { selfcheck?: boolean }).selfcheck !== true);
-  return r !== undefined ? String((r as { at: unknown }).at) : null;
 }
 
 /**
