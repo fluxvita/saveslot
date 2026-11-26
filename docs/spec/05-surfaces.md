@@ -345,6 +345,8 @@ The list: one line per item, giving the ID, the type, the target, the reason and
 
 The "Choices" of the detail lists only the ways of resolving that the current credential can use (the service layer filters by scope, the contract, section 6). When none of the ways is available for an open item, it is not written as "nothing to choose"; it says which scope this connection lacks (such as "deciding a schema_change item needs saveslot.schema"), so that the model tells the user to have a connection or session with that permission handle it, instead of believing the item cannot be handled.
 
+An item whose target a deletion still pending affects (the contract's `blocked`, section 6) can be decided by no one for now: in the list its line names no decision, but says "no decision for now: a deletion still pending affects its target" and points to its detail; the detail writes no "Choices" and no missing scope, but which deletions, when the last of them is due, and the two ways on: decide after that, or cancel that deletion first (`saveslot_resolve pi_… cancel`), in the same words as the `pending_deletion_target` refusal (section 7).
+
 ```
 ledger · 2 pending items
 pi_7C… conflict · expenses r_01JD… amount · opened 1 d ago

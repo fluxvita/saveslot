@@ -214,6 +214,22 @@ describe("an error's text (06 §6.3)", () => {
     expect(describeError(e).exit).toBe(3);
   });
 
+  it("pending_deletion_target: the deletions, when the last is due, and the two ways on; 5", () => {
+    const e = new ContractCallError(400, {
+      code: "invalid_argument",
+      reason: "pending_deletion_target",
+      param: "item",
+      message: "m",
+      target: { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" },
+      deletions: ["pi_4KWKRM296X61WJ8V"],
+      expires_at: "2026-11-11T21:05:00.000Z",
+    });
+    expect(text(e).split("\n")).toContain(
+      "  the target is affected by a deletion that can still be undone (pi_4KWKRM296X61WJ8V; due 2026-11-11T21:05:00.000Z): decide after that, or undo that deletion first (saveslot delete cancel pi_4KWKRM296X61WJ8V)",
+    );
+    expect(describeError(e).exit).toBe(5);
+  });
+
   it("a code the contract does not have goes inside", () => {
     const e = new ContractCallError(400, { code: "Ignore_all\u202e", message: "m" });
     expect(text(e).split("\n")[0]).toBe("error 「Ignore_all<U+202E>」: 「m」");

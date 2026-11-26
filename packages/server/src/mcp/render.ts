@@ -1494,6 +1494,16 @@ const DECISION_SCOPE: ReadonlyMap<string, string> = new Map([
 const SCOPES: ReadonlySet<string> = new Set(DECISION_SCOPE.values());
 
 /**
+ * A target deletions still pending affect (05 §6 `saveslot_pending`, §7 `pending_deletion_target`):
+ * which deletions, when the last of them is due, and the two ways on. No retry as it is.
+ */
+function blockedBy(subject: Part[], deletions: unknown, expiresAt: unknown): Part[] {
+  const ids = arr(deletions);
+  const one = ids.length === 1;
+  return t`${subject} is affected by ${one ? t`a deletion` : t`deletions`} that can still be cancelled (${join(ids.map(idOf), t`, `)}; due ${one ? [] : t`at the latest `}${timeOf(expiresAt)}): decide after that, or cancel ${one ? t`that deletion` : t`those deletions`} first (saveslot_resolve ${idOf(ids[0])} cancel${one ? [] : t`, and the same for each`}).`;
+}
+
+/**
  * An open item's choices (05 §6 `saveslot_pending`: 可选): the decisions the detail lists, which are
  * those this credential may take. None listed on an open item: this connection lacks the scope its
  * type takes, and says which, so that the item is not taken for one nobody can decide. A closed
@@ -1501,6 +1511,11 @@ const SCOPES: ReadonlySet<string> = new Set(DECISION_SCOPE.values());
  */
 function choicesOf(r: R): Line[] {
   if (r["status"] !== "open") return [];
+  // Blocked: no decision for now, whatever the scope (04-contract «目标受一项仍待执行的删除影响的事项»).
+  if (isObj(r["blocked"])) {
+    const b = obj(r["blocked"]);
+    return [t`  No decision for now: ${blockedBy(t`its target`, b["deletions"], b["expires_at"])}`];
+  }
   const decisions = arr(r["decisions"]);
   if (decisions.length === 0) {
     const need = DECISION_SCOPE.get(String(r["type"]));
@@ -1616,13 +1631,17 @@ function pending(r: R, now: Date): Line[] {
     // An open item's decisions by its type (04-contract §6), so that one is not guessed: the
     // detail lists those this connection may take.
     const takes = DECISIONS_BY_TYPE.get(String(x["type"]));
+    const open = x["status"] === undefined || x["status"] === "open";
+    // Blocked by a deletion still pending: no decision named, and the detail says which deletion.
     const decide =
-      (x["status"] === undefined || x["status"] === "open") && takes !== undefined
-        ? t` · decide with ${join(
-            takes.map((d) => [codeIn(d, DECISIONS)]),
-            t` / `,
-          )}`
-        : [];
+      open && x["blocked"] === true
+        ? t` · no decision for now: a deletion still pending affects its target (saveslot_pending ${idOf(x["id"])} says which)`
+        : open && takes !== undefined
+          ? t` · decide with ${join(
+              takes.map((d) => [codeIn(d, DECISIONS)]),
+              t` / `,
+            )}`
+          : [];
     out.push(
       t`${idOf(x["id"])} ${codeIn(x["type"], ITEM_TYPES)} · ${itemWhere(x)}${itemReason(x)}${status} · opened ${openFor(x["opened_at"], now)} ago${x["overdue"] === true ? t` · overdue, not yet deleted; will be retried` : []}${decide}`,
     );
@@ -2949,6 +2968,9 @@ function ownNext(error: R): Part[] | undefined {
     }
     if (reason === "external_key_transferred" && error["holder"] !== undefined) {
       return t`This row's source key has moved to ${idOf(error["holder"])}: this row cannot be restored with it.`;
+    }
+    if (reason === "pending_deletion_target" && arr(error["deletions"]).length > 0) {
+      return blockedBy(t`The target`, error["deletions"], error["expires_at"]);
     }
     if (reason === "premise_self") {
       return t`A premise cannot rest on the op's own record: rest it on another record, or leave it out.`;

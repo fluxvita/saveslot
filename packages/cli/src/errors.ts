@@ -13,7 +13,7 @@ import {
   TransportError,
   VALIDATION_DETAIL_CODES,
 } from "@fluxvita/saveslot-client";
-import { closedLines } from "./render/pending.ts";
+import { blockedBy, closedLines } from "./render/pending.ts";
 import { periodOf, type R } from "./render/reads.ts";
 import { code, id, join, type Line, num, t, untrusted, words } from "./render/text.ts";
 import { TEXTS } from "./texts.ts";
@@ -158,6 +158,11 @@ export function describeError(
     }
     // An item closed already: how it ended, as its details say it (04-contract-types §9).
     if (e.code === "item_closed") lines.push(...closedLines(e.body as R));
+    // A target a deletion still pending affects: which, when it is due, and the two ways on (06 §5.3).
+    const deletions = Object.hasOwn(e.body, "deletions") ? e.body["deletions"] : undefined;
+    if (reason === "pending_deletion_target" && Array.isArray(deletions) && deletions.length > 0) {
+      lines.push(t`  ${blockedBy(t`the target`, deletions, e.body["expires_at"])}`);
+    }
     // The candidates to name with --candidate.
     const choices = Object.hasOwn(e.body, "candidate_choices")
       ? e.body["candidate_choices"]

@@ -65,6 +65,19 @@ export function openFor(opened: unknown, now: Date): Part[] {
 const itemTarget = (target: unknown, slot: unknown): Part[] =>
   isObj(target) ? targetOf(target) : t`slot ${name(String(slot ?? ""))}`;
 
+/**
+ * A target deletions still pending affect (06 §5.1, §5.3; 04-contract «目标受一项仍待执行的删除影响的
+ * 事项»): which deletions, when the last of them is due, and the two ways on.
+ */
+export function blockedBy(subject: Part[], deletions: unknown, expiresAt: unknown): Part[] {
+  const ids = arr(deletions);
+  const one = ids.length === 1;
+  return t`${subject} is affected by ${one ? t`a deletion` : t`deletions`} that can still be undone (${join(
+    ids.map((x) => [idOf(x)]),
+    t`, `,
+  )}; due ${one ? [] : t`at the latest `}${time(String(expiresAt ?? ""))}): decide after that, or undo ${one ? t`that deletion` : t`those deletions`} first (saveslot delete cancel ${idOf(ids[0])}${one ? [] : t`, and the same for each`})`;
+}
+
 /** `saveslot pending` (06 §4.5, §5.1): oldest first, each with how long it has been open. */
 export function pendingList(r: PendingListResult, now: Date): Line[] {
   // Its status (06 §5.1, `--status all`): an open item for how long; a closed one says so, and
@@ -83,7 +96,7 @@ export function pendingList(r: PendingListResult, now: Date): Line[] {
   const out: Line[] = [t`${num(items.length)} pending items`];
   for (const x of items) {
     out.push(
-      t`${idOf(x["id"])} ${codeOf(x["type"], TYPES)} · ${itemTarget(x["target"], x["slot"])} · ${codeOf(x["reason"], REASONS)} · ${state(x)}${x["overdue"] === true ? t` · overdue: past its time, not yet deleted` : []}`,
+      t`${idOf(x["id"])} ${codeOf(x["type"], TYPES)} · ${itemTarget(x["target"], x["slot"])} · ${codeOf(x["reason"], REASONS)} · ${state(x)}${x["overdue"] === true ? t` · overdue: past its time, not yet deleted` : []}${x["blocked"] === true ? t` · no decision for now: a deletion still pending affects its target (pending show says which)` : []}`,
     );
   }
   const next = str((r as unknown as R)["next_cursor"]);
@@ -215,6 +228,13 @@ export function pendingDetail(r: PendingDetailResult, now: Date): Line[] {
     for (const st of arr(x["states"])) out.push(t`    ${untrusted(JSON.stringify(st))}`);
   }
   out.push(...closedLines(x));
+  // Blocked: no decision for now, whatever the credential may decide (06 §5.1).
+  if (x["status"] === "open" && isObj(x["blocked"])) {
+    const b = obj(x["blocked"]);
+    out.push(
+      t`  no decision for now: ${blockedBy(t`its target`, b["deletions"], b["expires_at"])}`,
+    );
+  }
   const decisions = arr(x["decisions"]).map((d) => [codeOf(d, DECISION)]);
   if (decisions.length > 0) out.push(t`  choices: ${join(decisions, t` / `)}`);
   return [...out, ...warningsAndNotices(r)];

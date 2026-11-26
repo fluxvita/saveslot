@@ -247,5 +247,19 @@
         }
       ]
     }
+  },
+  "error-pending-deletion-target": {
+    "error": {
+      "code": "invalid_argument",
+      "message": "the request is refused: invalid_argument",
+      "reason": "pending_deletion_target",
+      "param": "item",
+      "target": {
+        "table": "plan.expenses",
+        "row": "r_FW103YV2NYWERJMC947XWH3NWH"
+      },
+      "deletions": ["pi_D3X7T10N0000AAAA"],
+      "expires_at": "2026-11-19T12:40:00.000Z"
+    }
   }
 }

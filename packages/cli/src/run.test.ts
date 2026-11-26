@@ -975,6 +975,27 @@ describe("pending resolve", () => {
     expect(r.out).toContain(`${ID} resolved: confirm · version iv_A1B2C3D4E5F6G7H8.5.0`);
   });
 
+  it("an item a deletion still pending blocks: shown, nothing asked, nothing sent; 5", async () => {
+    const blocked = {
+      ...awaiting("iv_A1B2C3D4E5F6G7H8.4.0"),
+      decisions: [],
+      blocked: {
+        reason: "pending_deletion",
+        deletions: ["pi_4KWKRM296X61WJ8V"],
+        expires_at: "2026-11-11T21:05:00.000Z",
+      },
+    };
+    queue([blocked], []);
+    seen.length = 0;
+    bodies.length = 0;
+    asked.length = 0;
+    const r = await cli(["pending", "resolve", ID, "confirm"], { answers: ["y"] });
+    expect(r.code).toBe(5);
+    expect(asked).toEqual([]);
+    expect(seen.map((x) => x.method)).toEqual(["GET"]);
+    expect(r.err).toContain("saveslot delete cancel pi_4KWKRM296X61WJ8V");
+  });
+
   it("changed between the question and the answer: shown again, asked again, sent with the new version", async () => {
     const mismatch = {
       error: {
