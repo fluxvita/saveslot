@@ -19,6 +19,11 @@ export interface QueryInput {
   readonly asOf?: number;
   /** Tests only: the whole read, never pushed down: the standard a pushed-down page is held to. */
   readonly full?: true;
+  /**
+   * Tests only: how many segments a state table over an interval is read in per statement, for a
+   * page and to count, so that a test can put the batch boundaries where it needs them.
+   */
+  readonly batches?: { readonly page?: number; readonly count?: number };
 }
 
 export interface QueryOutput {

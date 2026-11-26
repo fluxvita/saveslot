@@ -5,7 +5,12 @@
 // versions of the page (one per entity on state tables), the fingerprint of the query without any
 // value, the business time read, and the `ver` / `sv` it counts as having read for the fallback.
 
-import type { Instant, JsonValue, TableId } from "@fluxvita/saveslot-contract-core";
+import type {
+  CompiledBaseField,
+  Instant,
+  JsonValue,
+  TableId,
+} from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry, ReadRow, ReadValid } from "../audit/index.ts";
 import { get, has, isObj, type Obj } from "../request/index.ts";
@@ -14,7 +19,7 @@ import { changersOf } from "./changed-by.ts";
 import { revokedTargets } from "./dangling.ts";
 import { queryDerived } from "./derived.ts";
 import { rowDetails } from "./detail.ts";
-import { queryKeys } from "./order-sql.ts";
+import { type KeyValue, queryKeys, type SqlKey } from "./order-sql.ts";
 import { type QueryPlan, queryPlan } from "./params.ts";
 import type { QueryInput, QueryOutput } from "./query-io.ts";
 import {
@@ -23,6 +28,7 @@ import {
   encodePosition,
   type KeySpec,
   keySpecs,
+  overInterval,
   type Position,
   queryIdentity,
   rowKeys,
@@ -144,9 +150,11 @@ async function queryRowsPushed(
   plan: QueryPlan,
   specs: readonly KeySpec[],
   restore: number,
+  batches: QueryInput["batches"],
 ): Promise<PageRows | undefined> {
-  if (plan.kind === "timeless" || (plan.kind === "state" && plan.time.kind === "during"))
-    return undefined;
+  if (plan.kind === "timeless") return undefined;
+  if (plan.kind === "state" && plan.time.kind === "during")
+    return plan.order.length > 0 ? undefined : intervalPage(tx, plan, specs, restore, batches);
   const selected = await selectFirst(tx, plan, queryKeys(plan, specs), plan.limit + 1);
   const shown = selected.slice(0, plan.limit);
   return {
@@ -154,6 +162,97 @@ async function queryRowsPushed(
     total: await countRows(tx, plan),
     more: selected.length > plan.limit,
   };
+}
+
+/** Segments read per statement over an interval: for a page (n + 1 rows), and to count. */
+const pageBatch = (limit: number) => 4 * (limit + 1);
+const COUNT_BATCH = 10_000;
+
+/**
+ * A state table's segments over an interval, in the order of entity and `valid_from`, an entity
+ * at a time: each entity's segments whole (merging needs them all), with the rows shown they
+ * give (./rows.ts `overInterval`, without marks). Read in batches after the last segment read,
+ * by its primary key, which the database reads as a range of the key's index; with the values of
+ * `fields` only when given. `take` says, after each entity, whether to go on.
+ */
+async function eachEntity(
+  tx: ReadTx,
+  plan: QueryPlan,
+  keys: readonly SqlKey[],
+  batch: number,
+  take: (segments: SelectedRow[], shown: number) => boolean,
+  fields?: readonly CompiledBaseField[],
+): Promise<void> {
+  const none = () => undefined;
+  let pending: SelectedRow[] = [];
+  const flush = (): boolean => {
+    if (pending.length === 0) return true;
+    const shown = overInterval(
+      plan,
+      pending.map((r) => ({ r, marks: undefined })),
+      none,
+      none,
+    );
+    const go = take(pending, shown.length);
+    pending = [];
+    return go;
+  };
+  let after: KeyValue[] | undefined;
+  for (;;) {
+    const rows = await selectFirst(tx, plan, keys, batch, {
+      ...(after !== undefined ? { after } : {}),
+      ...(fields !== undefined ? { fields } : {}),
+    });
+    for (const r of rows) {
+      if (pending.length > 0 && (pending[0] as SelectedRow).id !== r.id && !flush()) return;
+      pending.push(r);
+    }
+    const last = rows.at(-1);
+    if (last === undefined || rows.length < batch) {
+      flush();
+      return;
+    }
+    after = [last.id, last.validFrom as string];
+  }
+}
+
+/**
+ * A first page of a state table read over an interval, in the default order (entity, then the
+ * shown row's `valid_from`): segments streamed an entity at a time until the entities complete so
+ * far give the page's rows and one more; the facts of those entities only; the rows shown from
+ * them, ordered, the page taken. The total streams every segment the same way, counting only.
+ */
+async function intervalPage(
+  tx: ReadTx,
+  plan: QueryPlan,
+  specs: readonly KeySpec[],
+  restore: number,
+  batches: QueryInput["batches"],
+): Promise<PageRows> {
+  const keys = queryKeys(plan, specs);
+  const segments: SelectedRow[] = [];
+  let shown = 0;
+  await eachEntity(tx, plan, keys, batches?.page ?? pageBatch(plan.limit), (s, n) => {
+    if (n > 0) segments.push(...s);
+    shown += n;
+    return shown <= plan.limit;
+  });
+  const rows = await shownInOrder(tx, plan, specs, restore, segments, undefined);
+  // Counted with the values the merge compares only (the fields read): the field conditions are
+  // in SQL, those on valid_from / valid_to and the clip read the interval.
+  let total = 0;
+  await eachEntity(
+    tx,
+    plan,
+    keys,
+    batches?.count ?? COUNT_BATCH,
+    (_, n) => {
+      total += n;
+      return true;
+    },
+    plan.fields,
+  );
+  return { page: rows.slice(0, plan.limit), total, more: rows.length > plan.limit };
 }
 
 export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOutput> {
@@ -187,7 +286,7 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
   const pushed =
     input.full === true || position !== undefined || asOf !== undefined
       ? undefined
-      : await queryRowsPushed(tx, plan, specs, restore);
+      : await queryRowsPushed(tx, plan, specs, restore, input.batches);
   const { page, total, more } =
     pushed ?? (await queryRowsFull(tx, plan, specs, restore, position?.keys, asOf));
   const last = page.at(-1);

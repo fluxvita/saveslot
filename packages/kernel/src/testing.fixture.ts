@@ -33,6 +33,7 @@ export {
   afterKeysSql,
   type KeyValue,
   orderBySql,
+  rowAfterSql,
   type SqlKey,
   type SqlKeyType,
 } from "./read/order-sql.ts";

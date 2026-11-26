@@ -457,10 +457,75 @@ const dayBefore = (d: string): DateStr => {
 const valueKey = (v: FieldValue | undefined) => canonicalize((v ?? null) as never);
 
 /**
+ * A state table's segments read over an interval, as shown (04-contract §4): an entity's segments
+ * (all of them the field conditions kept, not only those meeting the interval) in order, merged
+ * where adjacent with the same values read; those meeting the interval kept; the `valid_from` /
+ * `valid_to` conditions applied; then `clip`. What each segment carries along (its marks, or
+ * nothing when only the rows shown are wanted) is joined on a merge and cut on a clip.
+ */
+export function overInterval<M>(
+  plan: QueryPlan,
+  segments: readonly { readonly r: SelectedRow; readonly marks: M }[],
+  union: (a: M, b: M) => M,
+  cut: (m: M, from: string, to: string | null) => M,
+): { r: SelectedRow; marks: M }[] {
+  if (plan.time.kind !== "during") throw new ReadError("internal", "not read over an interval");
+  type Seg = { r: SelectedRow; marks: M };
+  let segs: Seg[] = [...segments];
+  segs.sort((a, b) =>
+    a.r.id === b.r.id
+      ? cmpText(a.r.validFrom as string, b.r.validFrom as string)
+      : cmpText(a.r.id, b.r.id),
+  );
+  if (plan.coalesce) {
+    // Adjacent segments of an entity with the same values read, whatever their marks: marks
+    // read at each page never change how rows are cut (04-contract §15). The merged row carries
+    // every segment's marks.
+    const merged: Seg[] = [];
+    for (const s of segs) {
+      const last = merged.at(-1);
+      if (
+        last !== undefined &&
+        last.r.id === s.r.id &&
+        last.r.validTo === s.r.validFrom &&
+        plan.fields.every((f) => valueKey(last.r.values[f.id]) === valueKey(s.r.values[f.id]))
+      ) {
+        merged[merged.length - 1] = {
+          r: { ...last.r, validTo: s.r.validTo ?? null },
+          marks: union(last.marks, s.marks),
+        };
+      } else merged.push(s);
+    }
+    segs = merged;
+  }
+  const { from: a, to: b } = plan.time;
+  segs = segs.filter((x) => {
+    const vt = x.r.validTo ?? null;
+    return (vt === null || vt > a) && (b === null || (x.r.validFrom as string) < b);
+  });
+  const onInterval = plan.where.filter((c) => typeof c.column === "string");
+  segs = segs.filter((x) => onInterval.every((c) => meetsCondition(c, x.r)));
+  if (plan.clip) {
+    const { from, to } = plan.time;
+    segs = segs.map((s) => {
+      const vf = s.r.validFrom as string;
+      const vt = s.r.validTo ?? null;
+      const validFrom = [vf, from].sort(cmpText)[1] as string;
+      const validTo = to === null ? vt : vt === null || vt > to ? to : vt;
+      // The marks' spans within the clipped row; an item no longer meeting it goes.
+      return { marks: cut(s.marks, validFrom, validTo), r: { ...s.r, validFrom, validTo } };
+    });
+  }
+  return segs;
+}
+
+/**
  * The rows shown, not yet ordered. On a state table read over an interval, in this order (04-contract
  * §4): the segments the field conditions kept (all of each entity's, not only those meeting the
- * interval) are merged where adjacent with the same values read and the same marks; those meeting
- * the interval are kept; the `valid_from` / `valid_to` conditions apply to them; then `clip`.
+ * interval) are merged where adjacent with the same values read, whatever their marks (04-contract
+ * §15: marks never change how rows are cut; the merged row carries every segment's); those
+ * meeting the interval are kept; the `valid_from` / `valid_to` conditions apply to them; then
+ * `clip`.
  */
 export function shownRows(
   plan: QueryPlan,
@@ -474,52 +539,7 @@ export function shownRows(
   type Seg = { r: SelectedRow; marks: WorkMarks | undefined };
   let segs: Seg[] = selected.map((r) => ({ r, marks: marksOf(plan, r, facts) }));
 
-  if (state && plan.time.kind === "during") {
-    segs.sort((a, b) =>
-      a.r.id === b.r.id
-        ? cmpText(a.r.validFrom as string, b.r.validFrom as string)
-        : cmpText(a.r.id, b.r.id),
-    );
-    if (plan.coalesce) {
-      // Adjacent segments of an entity with the same values read, whatever their marks: marks
-      // read at each page never change how rows are cut (04-contract §15). The merged row carries
-      // every segment's marks.
-      const merged: Seg[] = [];
-      for (const s of segs) {
-        const last = merged.at(-1);
-        if (
-          last !== undefined &&
-          last.r.id === s.r.id &&
-          last.r.validTo === s.r.validFrom &&
-          plan.fields.every((f) => valueKey(last.r.values[f.id]) === valueKey(s.r.values[f.id]))
-        ) {
-          merged[merged.length - 1] = {
-            r: { ...last.r, validTo: s.r.validTo ?? null },
-            marks: unionMarks(last.marks, s.marks),
-          };
-        } else merged.push(s);
-      }
-      segs = merged;
-    }
-    const { from: a, to: b } = plan.time;
-    segs = segs.filter((x) => {
-      const vt = x.r.validTo ?? null;
-      return (vt === null || vt > a) && (b === null || (x.r.validFrom as string) < b);
-    });
-    const onInterval = plan.where.filter((c) => typeof c.column === "string");
-    segs = segs.filter((x) => onInterval.every((c) => meetsCondition(c, x.r)));
-    if (plan.clip) {
-      const { from, to } = plan.time;
-      segs = segs.map((s) => {
-        const vf = s.r.validFrom as string;
-        const vt = s.r.validTo ?? null;
-        const validFrom = [vf, from].sort(cmpText)[1] as string;
-        const validTo = to === null ? vt : vt === null || vt > to ? to : vt;
-        // The marks' spans within the clipped row; an item no longer meeting it goes.
-        return { marks: cutMarks(s.marks, validFrom, validTo), r: { ...s.r, validFrom, validTo } };
-      });
-    }
-  }
+  if (state && plan.time.kind === "during") segs = overInterval(plan, segs, unionMarks, cutMarks);
 
   const byId = new Map(t.fields.map((f) => [f.id as string, f]));
   const date = t.time.type === "state" && t.time.granularity === "date";

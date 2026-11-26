@@ -93,6 +93,28 @@ export function afterKeysSql(
   return alternatives.length === 0 ? "FALSE" : `(${alternatives.join(" OR ")})`;
 }
 
+/**
+ * The rows whose keys come strictly after `after`, where every key is ascending and never null (a
+ * state table's primary key: the entity, then `valid_from`): one row comparison, which the
+ * database reads as a range of the key's index. `afterKeysSql` gives the same rows there, but its
+ * alternatives make the database scan the index from the start and filter.
+ */
+export function rowAfterSql(
+  keys: readonly SqlKey[],
+  after: readonly KeyValue[],
+  p: Params,
+): string {
+  if (after.length !== keys.length)
+    throw new TypeError(`${after.length} key values for ${keys.length} keys`);
+  const values = keys.map((k, i) => {
+    const v = after[i] ?? null;
+    if (k.spec.dir !== "asc" || v === null)
+      throw new TypeError("a row comparison needs keys ascending and values never null");
+    return literal(k, v, p);
+  });
+  return `ROW(${keys.map((k) => k.expr).join(", ")}) > ROW(${values.join(", ")})`;
+}
+
 /** The SQL type a field's column orders as (03-data-model/11-restricted-sql.md «类型»). */
 export function sqlKeyType(f: CompiledBaseField): SqlKeyType {
   switch (f.type) {
