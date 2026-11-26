@@ -9,7 +9,7 @@
 // replay on both sides, and none models a block a deletion's own list clears; this one works the
 // list out on its own, as the specification defines it, and is what catches rule 2 (09 §5.9).
 
-import type { Op } from "@fluxvita/saveslot-reference";
+import { evaluateLog, type Op } from "@fluxvita/saveslot-reference";
 import {
   EVENT as EVENT_SCHEMA,
   propRuns,
@@ -34,7 +34,15 @@ import { BLOCK_CASES } from "./replay-blocks.cases.fixture.ts";
 vi.setConfig({ testTimeout: 600_000 });
 
 const RUNS = propRuns(300);
-const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
+// A fixed seed by default, so that a run says the same as the last one; the soak runs
+// (`PROP_COVERAGE` set, scripts/soak-props.ts) keep fast-check's fresh random seed, `PROP_SEED`
+// replays one.
+const SEED =
+  process.env["PROP_SEED"] !== undefined
+    ? Number(process.env["PROP_SEED"])
+    : process.env["PROP_COVERAGE"] === undefined
+      ? 20261126
+      : undefined;
 
 const ref = (d: ItemRef) => `${d.event}/${d.target}/${d.k}`;
 const etOf = (d: { event: number; target: string }) => `${d.event}/${d.target}`;
@@ -66,6 +74,8 @@ class Session {
   >();
   readonly log: { kind: "confirm" | "cancel"; id: string; restated: readonly Restatement[] }[] = [];
   readonly blocks: Block[] = [];
+  /** The deletion and cancellation events in turn, by deletion: `confirm D<i>` or `cancel D<i>`. */
+  readonly trace: string[] = [];
   live: readonly OpRecord[];
 
   constructor(table: TableShape, records: readonly OpRecord[]) {
@@ -149,6 +159,7 @@ class Session {
         positions.add(blk);
     }
     this.deletions.set(id, { deleted, cancelled: false, positions });
+    this.trace.push(`confirm ${id}`);
     this.push("confirm", id, res.replay.restated);
     this.live = res.replay.records;
   }
@@ -184,6 +195,7 @@ class Session {
       NO_GRACE,
     );
     this.deletions.set(id, { ...d, cancelled: true });
+    this.trace.push(`cancel ${id}`);
     this.push("cancel", id, back.replay.restated);
     this.live = back.replay.records;
   }
@@ -415,6 +427,185 @@ describe("fixed cases", () => {
     ] as unknown as Op[];
     const s = runScript(STATE_SCHEMA, ops, [], [["S2"], ["SZ"]], [{ c: 0 }, { c: 1 }, { x: 0 }]);
     expect(s.liveItems().some((x) => x.startsWith("51/f2/0 applied"))).toBe(true);
+    expect(s.fromEmpty()).toEqual(s.liveItems());
+  });
+});
+
+/** The block model replayed from an empty store, against the reference evaluator given the same
+ * deletion and cancellation events in turn: an oracle of its own, not the kernel's blocks. */
+function againstReference(
+  schema: typeof STATE_SCHEMA,
+  ops: readonly Op[],
+  dels: readonly (readonly string[])[],
+  script: readonly Step[],
+): { fromEmpty: string[]; reference: string[] } {
+  const s = runScript(schema, ops, [], dels, script);
+  const kept = judged(schema, ops as Op[], []).steps.map((x) => x.op);
+  let op = Math.max(...kept.map((o) => Math.max(o.op, o.event)));
+  const entries: unknown[] = [...kept];
+  for (const t of s.trace) {
+    const [kind, id] = t.split(" ") as [string, string];
+    entries.push(
+      kind === "confirm"
+        ? { kind: "deletion", op: ++op, id, sources: dels[Number(id.slice(1))] }
+        : { kind: "cancel", op: ++op, id },
+    );
+  }
+  const valid = (v: unknown) => (schema.kind === "state" ? JSON.stringify(v) : "");
+  const reference = evaluateLog(schema, entries as never)
+    .final.items.filter((x) => x.status !== "dropped")
+    .map((x) => `${x.event}/${x.target}/${x.k} ${x.status} ${valid(x.valid)}`)
+    .sort();
+  const fromEmpty = s
+    .fromEmpty()
+    .map((x) => x.slice(0, x.lastIndexOf(" ")))
+    .sort();
+  return { fromEmpty, reference };
+}
+
+describe("histories around an item an earlier deletion dropped, against the reference evaluator", () => {
+  // #50 writes "1" from 11-01 to the next change, resting on #40 ("3" from 11-10 to the next
+  // change, resting on #30). A deletes S2 (#20's words) and restates #50 as dropped. Each history
+  // goes on otherwise: a later deletion whose list does not touch A's block, one that deletes #50
+  // itself, one or two that clear it, cancellations between and after, the order swapped.
+  const g = (from: string, to: string | null | "next") => ({
+    valid: {
+      from: { mode: "given", value: from },
+      to:
+        to === null
+          ? { mode: "open" }
+          : to === "next"
+            ? { mode: "next_change" }
+            : { mode: "given", value: to },
+    },
+  });
+  const OPS = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      ...g("2026-10-01", null),
+      fields: { f2: { value: "1", sources: ["S1"] } },
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      ...g("2026-11-01", null),
+      fields: { f2: { value: "2", sources: ["S2"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 20,
+      ...g("2026-11-20", null),
+      fields: { f2: { value: "9", sources: ["SZ"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 40,
+      event: 41,
+      seen: 30,
+      ...g("2026-11-10", "next"),
+      fields: { f2: { value: "3", sources: ["SY"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 50,
+      event: 51,
+      seen: 40,
+      ...g("2026-11-01", "next"),
+      fields: { f2: { value: "1", sources: ["SX"], explicit: false } },
+      acknowledge: ["overwrite"],
+    },
+  ] as unknown as Op[];
+  const HISTORIES: [string, string[][], Step[]][] = [
+    ["B's list does not touch A's dropped block", [["S2"], ["S1"]], [{ c: 0 }, { c: 1 }]],
+    [
+      "the item brought back between A and B (A cancelled, then B)",
+      [["S2"], ["SZ"]],
+      [{ c: 0 }, { x: 0 }, { c: 1 }],
+    ],
+    ["B deletes the dropped item itself", [["S2"], ["SX"]], [{ c: 0 }, { c: 1 }]],
+    ["B and C both clear it, A pending", [["S2"], ["SZ"], ["SY"]], [{ c: 0 }, { c: 1 }, { c: 2 }]],
+    [
+      "B and C both clear it, then A cancelled",
+      [["S2"], ["SZ"], ["SY"]],
+      [{ c: 0 }, { c: 1 }, { c: 2 }, { x: 0 }],
+    ],
+    [
+      "B clears it, B cancelled, then C",
+      [["S2"], ["SZ"], ["SY"]],
+      [{ c: 0 }, { c: 1 }, { x: 1 }, { c: 2 }],
+    ],
+    ["B clears it, then A cancelled", [["S2"], ["SZ"]], [{ c: 0 }, { c: 1 }, { x: 0 }]],
+    ["the order swapped: B first, then A", [["S2"], ["SZ"]], [{ c: 1 }, { c: 0 }]],
+  ];
+  for (const [name, dels, script] of HISTORIES) {
+    it(name, () => {
+      const r = againstReference(STATE_SCHEMA, OPS, dels, script);
+      expect(r.fromEmpty).toEqual(r.reference);
+    });
+  }
+});
+
+describe("a block resting on a carried item, the only deletion on the row", () => {
+  it("event table: a take's block, the item it carries restated as dropped", () => {
+    // #20 writes f2 = 5; #50, stale, writes f2 = 1 (a candidate); #53 revokes the row; #60 writes
+    // f2 = 1 (a candidate on existence); #63 takes #60's candidate: it restores the row and carries
+    // #60's f2. Deleting #20's words puts #50 into effect and restates #60 as dropped (the same
+    // value, no evidence); #63's f2 block rests on #60 by the carried item only (an event table's
+    // block has no deps), and is cleared. With no other deletion on the row the delete operation
+    // passes no list of its own (`cleared`): rule 2 alone, by the carried item, restates #63's f2.
+    // Found by the property with that branch taken away (seed 646220842), then shrunk.
+    const ops = [
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        fields: { f2: { value: "5", sources: ["S20"] } },
+        acknowledge: ["overwrite"],
+        seenCurrent: true,
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 10,
+        fields: { f2: { value: "1", sources: ["S1", "S4"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      { kind: "revoke", op: 53, event: 54, seen: 52 },
+      {
+        kind: "write",
+        op: 60,
+        event: 61,
+        seen: 50,
+        fields: { f2: { value: "1", sources: ["S6"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "resolve",
+        op: 63,
+        event: 64,
+        decision: "take_candidate",
+        candidates: [61],
+        unit: "existence",
+        take: 61,
+      },
+    ] as unknown as Op[];
+    const s = runScript(EVENT_SCHEMA, ops, [], [["S20"]], [{ c: 0 }]);
+    expect(s.deletions.size).toBe(1);
+    expect(
+      s.log[0]?.restated.map((r) => `${r.item.event}/${r.item.target}/${r.item.k} ${r.status}`),
+    ).toEqual(["51/f2/0 applied", "61/f2/0 dropped", "64/f2/0 applied"]);
     expect(s.fromEmpty()).toEqual(s.liveItems());
   });
 });

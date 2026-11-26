@@ -43,6 +43,7 @@ import {
   COMPILED_V1,
   createSlotEvents,
   type Decision,
+  DeletionSessionForTests,
   deletionReplayForTests,
   eventsOfSteps,
   judged,
@@ -400,6 +401,8 @@ const CTX_DELETE = {
   policy_version: 1,
 };
 const DELETION = `pi_${"7".repeat(16)}`;
+/** An earlier deletion of the row, still pending when the one checked is worked out. */
+const EARLIER = `pi_${"6".repeat(16)}`;
 const DUE = "2026-11-11T06:00:00.000Z";
 let newItems = 0;
 
@@ -497,6 +500,7 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     applyNotYet: 0,
     superseded: 0,
     opened: 0,
+    earlier: 0,
     refreshed: 0,
     listed: 0,
     restated: 0,
@@ -550,6 +554,68 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       );
     }
 
+    // The sources the row's writes cite, in seq order.
+    const citedNow = () =>
+      store.read(async (tx) =>
+        [
+          ...new Set(
+            (
+              await tx.query<{ body: string }>(
+                `SELECT c.body FROM events e JOIN content c ON c.seq = e.seq
+                 WHERE e.type = 'write.base' AND e.target_row = $1 AND c.path LIKE 'sources/%'`,
+                [isState ? ENTITY : ROW],
+              )
+            ).rows.flatMap((x) =>
+              (JSON.parse(x.body) as { source?: number }[]).flatMap((e) =>
+                typeof e.source === "number" ? [e.source] : [],
+              ),
+            ),
+          ),
+        ].sort((a, b) => a - b),
+      );
+    // An earlier deletion, still pending, in a third of the samples: one source the deletion
+    // checked does not delete, confirmed as the operation makes it. The model of several deletions
+    // (`DeletionSessionForTests`) replays it too.
+    const records = steps.map((x) => x.judgement.record);
+    const session = new DeletionSessionForTests(shape(schema));
+    let earlier: readonly number[] = [];
+    {
+      const all = await citedNow();
+      if ((pick >> 5) % 3 === 0 && all.length >= 2) {
+        const src = all[(pick >> 7) % all.length] as number;
+        const ok = await store.write(async (tx) => {
+          try {
+            const plan = await planDeletionOf(tx, { slot: SLOT, sources: [src] });
+            await appendDeletion(tx, plan, {
+              id: EARLIER,
+              dueAt: DUE,
+              newId: () => `pi_YY${String(++newItems).padStart(14, "0")}`,
+              actor: USER as never,
+              now: CTX_DELETE.now as never,
+            });
+            return true;
+          } catch (e) {
+            if (e instanceof JudgeError || e instanceof WriteError) return false;
+            throw e;
+          }
+        });
+        if (ok) {
+          earlier = [src];
+          const bases = await store.read((tx) => readCitations(tx, SLOT, [src]));
+          // The model's table shape does not say whether the table may be referred to: a sample
+          // it cannot replay is skipped (the kernel's replay of the same is refused there too).
+          try {
+            session.confirm(records, EARLIER, takenAway(bases, new Set([src])));
+          } catch (e) {
+            if (!(e instanceof JudgeError)) throw e;
+            seen.skipped++;
+            return;
+          }
+          seen.earlier++;
+        }
+      }
+    }
+
     // The deletion, as the `delete` operation works it out.
     const made = await store.read(async (tx) => {
       const cited = [
@@ -567,19 +633,36 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
           ),
         ),
       ].sort((a, b) => a - b);
-      if (cited.length === 0) return undefined;
+      const left = cited.filter((x) => !earlier.includes(x));
+      if (left.length === 0) return undefined;
+      cited.splice(0, cited.length, ...left);
       const first = cited[pick % cited.length] as number;
       const second = cited[(pick >> 3) % cited.length] as number;
       const sources = [...new Set(pick % 2 === 0 ? [first] : [first, second])];
       const bases = await readCitations(tx, SLOT, sources);
       const deleted = takenAway(bases, new Set(sources));
+      // The event: with the earlier deletion pending (the session's replay); the list of
+      // positions: this deletion alone.
       let replay: ReturnType<typeof deletionReplayForTests>;
+      let alone: ReturnType<typeof deletionReplayForTests>;
       try {
-        replay = deletionReplayForTests(
-          shape(schema),
-          steps.map((s) => s.judgement.record),
-          deleted,
+        alone = deletionReplayForTests(shape(schema), records, deleted);
+        // Its own list clears blocks the event restates as they are (09 §5.9 rule 2): by a dep
+        // deleted or restated alone, a carried item deleted or restated alone as dropped.
+        const byRef = new Map(
+          alone.replay.restated.map((r) => [`${r.item.event}/${r.item.target}/${r.item.k}`, r]),
         );
+        const ref = (d: { event: number; target: string; k: number }) =>
+          `${d.event}/${d.target}/${d.k}`;
+        const here = (d: { event: number; target: string }) =>
+          deleted.has(`${d.event}/${d.target}`);
+        replay =
+          earlier.length > 0
+            ? session.confirm(records, DELETION, deleted, undefined, {
+                dep: (d) => here(d) || byRef.has(ref(d)),
+                carried: (d) => here(d) || byRef.get(ref(d))?.status === "dropped",
+              })
+            : alone;
       } catch (e) {
         if (e instanceof JudgeError) return "refused" as const;
         throw e;
@@ -599,8 +682,15 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       }
       const restated = replay.replay.restated;
       const self = ((await readTail(tx))?.seq ?? 0) + 1;
-      const index = await readPositionIndex(tx, { slot: SLOT, sources, bases, deleted, restated });
-      const positions = positionsOf({ sources, deleted, restated, index, self });
+      const own = alone.replay.restated;
+      const index = await readPositionIndex(tx, {
+        slot: SLOT,
+        sources,
+        bases,
+        deleted,
+        restated: own,
+      });
+      const positions = positionsOf({ sources, deleted, restated: own, index, self });
       const r = replay.result;
       const blocks = encodeDeletion({
         id: DELETION,
@@ -659,16 +749,27 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     }
     // Each open item on the row before, with its members, read from the log's blocks: a conflict
     // item's candidates' (event, target), an awaiting item's proposal (its origin's items
-    // awaiting before). Not from the item layer under test.
+    // awaiting before). Not from the item layer under test. `ever`: those it ever had, the
+    // candidates a refresh dropped and the origin's items in any state included.
     const rowId = isState ? ENTITY : ROW;
     const membersBefore = await store.read(async (tx) => {
       const items = await tx.query<{ id: string; type: string }>(
         "SELECT id, type FROM pending_items WHERE state = 'open' AND target_row = $1",
         [rowId],
       );
-      const out = new Map<string, { type: string; members: string[] }>();
+      const out = new Map<string, { type: string; members: string[]; ever: string[] }>();
       for (const it of items.rows) {
         if (it.type === "conflict") {
+          const all = await tx.query<{ body: string }>(
+            `SELECT c.body FROM content c
+             WHERE c.path LIKE 'candidates/%' AND c.body IS NOT NULL AND c.seq IN (
+               SELECT t.seq FROM content t WHERE t.path = 'target' AND t.body LIKE $1)`,
+            [`%"item":"${it.id}"%`],
+          );
+          const ever = all.rows.flatMap((x) => {
+            const b = JSON.parse(x.body) as { event: number; items: { field?: string }[] };
+            return b.items.map((y) => `${b.event}/${y.field ?? "existence"}`);
+          });
           const c = await tx.query<{ body: string }>(
             `SELECT c.body FROM pending_entries e
              JOIN content c ON c.seq = e.content_seq AND c.path = e.content_path
@@ -679,7 +780,11 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
             const b = JSON.parse(x.body) as { event: number; items: { field?: string }[] };
             return b.items.map((y) => `${b.event}/${y.field ?? "existence"}`);
           });
-          out.set(it.id, { type: it.type, members: [...new Set(members)].sort() });
+          out.set(it.id, {
+            type: it.type,
+            members: [...new Set(members)].sort(),
+            ever: [...new Set([...members, ...ever])].sort(),
+          });
         } else if (it.type === "awaiting_confirmation") {
           const t = await tx.query<{ body: string }>(
             `SELECT c.body FROM content c JOIN events e ON e.seq = c.seq
@@ -688,10 +793,15 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
           );
           const origin = (JSON.parse(t.rows[0]?.body ?? "{}") as { origin_event?: number })
             .origin_event;
-          const members = (planned?.result.before.items ?? [])
-            .filter((x) => x.event === origin && x.status === "awaiting")
+          const mine = (planned?.result.before.items ?? []).filter((x) => x.event === origin);
+          const members = mine
+            .filter((x) => x.status === "awaiting")
             .map((x) => `${x.event}/${x.target}`);
-          out.set(it.id, { type: it.type, members: [...new Set(members)].sort() });
+          out.set(it.id, {
+            type: it.type,
+            members: [...new Set(members)].sort(),
+            ever: [...new Set(mine.map((x) => `${x.event}/${x.target}`))].sort(),
+          });
         }
       }
       return out;
@@ -747,12 +857,17 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       for (const [id, it] of membersBefore) {
         const kind = it.type === "conflict" ? "candidate" : "awaiting";
         const stays = it.members.filter((m) => pendingAs(m, kind));
+        // A member an earlier deletion took out of the item, pending of its kind again: it goes
+        // back into the item (03-deletion «因先前的删除才生效、本次将回到未决的写入»), which stays open
+        // and is refreshed. Refused in this version (`items_restored`): not reached here.
+        const back = it.ever.filter((m) => !it.members.includes(m) && pendingAs(m, kind));
         if (it.type === "conflict" && it.members.some((m) => pendingAs(m, "awaiting"))) opens++;
-        expect([id, stored.state.get(id)]).toEqual([id, stays.length > 0 ? "open" : "superseded"]);
-        if (stays.length > 0 && stays.length < it.members.length) {
+        const stillOpen = stays.length > 0 || back.length > 0;
+        expect([id, stored.state.get(id)]).toEqual([id, stillOpen ? "open" : "superseded"]);
+        if ((stays.length > 0 && stays.length < it.members.length) || back.length > 0) {
           expect([id, stored.refreshed.has(id)]).toEqual([id, true]);
         }
-        if (stays.length === 0) seen.superseded++;
+        if (!stillOpen) seen.superseded++;
         if (stored.refreshed.has(id)) seen.refreshed++;
       }
       const created = [...stored.state].filter(
@@ -813,9 +928,36 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       const pending = evs.flatMap((e) =>
         [...e.blocks].filter(([, b]) => b.state === "pending").map(([p]) => `${e.seq} ${p}`),
       );
-      expect(pending.sort()).toEqual(made.positions.map((p) => `${p.seq} ${p.path}`).sort());
-      const d = await tx.query("SELECT id, state, confirmed_seq FROM deletions");
-      expect(d.rows).toEqual([{ id: DELETION, state: "pending", confirmed_seq: made.self }]);
+      // With an earlier deletion pending, its positions are pending too.
+      const earlierRow = (
+        await tx.query<{ confirmed_seq: unknown }>(
+          "SELECT confirmed_seq FROM deletions WHERE id = $1",
+          [EARLIER],
+        )
+      ).rows[0];
+      const earlierPositions =
+        earlierRow === undefined
+          ? []
+          : (
+              JSON.parse(
+                (
+                  await tx.query<{ body: string }>(
+                    "SELECT body FROM content WHERE seq = $1 AND path = 'positions'",
+                    [Number(earlierRow.confirmed_seq)],
+                  )
+                ).rows[0]?.body ?? "[]",
+              ) as { seq: number; path: string }[]
+            ).map((p) => `${p.seq} ${p.path}`);
+      expect(pending.sort()).toEqual(
+        [
+          ...new Set([...made.positions.map((p) => `${p.seq} ${p.path}`), ...earlierPositions]),
+        ].sort(),
+      );
+      const d = await tx.query("SELECT id, state, confirmed_seq FROM deletions ORDER BY id");
+      expect(d.rows.filter((x) => (x as { id: string }).id === DELETION)).toEqual([
+        { id: DELETION, state: "pending", confirmed_seq: made.self },
+      ]);
+      expect(d.rows.length).toBe(earlier.length > 0 ? 2 : 1);
     });
     // Replayed into an empty storage: the same tables.
     await scratch.reset();
@@ -882,6 +1024,67 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       );
       expect(seen.refreshed).toBe(at + 1);
     }
+    // Built in (state table): A deletes #10's words and is pending; B deletes #20's and #30's.
+    // B's own list clears the blocks of #50 (a take carrying #41), which the replay with A leaves
+    // as they were: the event restates them as they are (09 §5.9 rule 2), or apply loses #50.
+    // Found by the property (seed -227213934).
+    if (isState) {
+      const g = (from: string, to: string | null) => ({
+        valid: {
+          from: { mode: "given", value: from },
+          to: to === null ? { mode: "open" } : { mode: "given", value: to },
+        },
+      });
+      const ops = [
+        {
+          kind: "write",
+          op: 10,
+          event: 11,
+          seen: 0,
+          ...g("2026-10-01", null),
+          fields: { f2: { value: "1", sources: ["S10"] } },
+          acknowledge: ["overwrite"],
+        },
+        {
+          kind: "write",
+          op: 20,
+          event: 21,
+          seen: 10,
+          ...g("2026-11-01", "2026-11-03"),
+          fields: { f2: { value: "2", sources: ["S20"] } },
+          acknowledge: ["overwrite"],
+        },
+        {
+          kind: "write",
+          op: 30,
+          event: 31,
+          seen: 20,
+          ...g("2026-11-07", "2026-11-09"),
+          fields: { f2: { value: "2", sources: ["S30"] } },
+          acknowledge: ["overwrite"],
+        },
+        {
+          kind: "write",
+          op: 40,
+          event: 41,
+          seen: 10,
+          ...g("2026-11-01", "2026-11-09"),
+          fields: { f2: { value: "1", sources: ["S40"], explicit: true } },
+        },
+        {
+          kind: "resolve",
+          op: 50,
+          event: 51,
+          decision: "take_candidate",
+          candidates: [41],
+          take: 41,
+          unit: "f2",
+        },
+      ] as unknown as Op[];
+      const e0 = seen.earlier;
+      await checkSample(ops, [], 1);
+      expect(seen.earlier).toBe(e0 + 1);
+    }
     expect(seen.listed).toBeGreaterThan(0);
     expect(seen.restated).toBeGreaterThan(0);
     expect(seen.superseded).toBeGreaterThan(0);
@@ -890,6 +1093,193 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       const listed = seen.listed;
       await checkSample(NO_VALUE_GONE.ops, NO_VALUE_GONE.decisions, NO_VALUE_GONE.pick);
       expect(seen.listed).toBe(listed + 1);
+    }
+    // Samples with an earlier deletion pending (a third are drawn so).
+    expect(seen.earlier).toBeGreaterThan(0);
+    // Built in (event table): #73 takes #61's candidate; the take's blocks have no interval and no
+    // deps, their value's source names #61 as carried. A deletes #10's words and is pending; B
+    // deletes #40's and #20's. Alone, B drops #61, so its own list clears #73's blocks by the
+    // carried item; with A pending #73 is as it was, and the event restates it as it is (09 §5.9
+    // rule 2), or apply loses it. Found by a search over generated logs with a pending deletion.
+    if (!isState) {
+      const v = (op: number, seen: number, value: string, source: string, ack = false) => ({
+        kind: "write",
+        op,
+        event: op + 1,
+        seen,
+        fields: { f2: { value, sources: [source] } },
+        ...(ack ? { acknowledge: ["overwrite"] } : {}),
+      });
+      const take = (op: number, candidates: number[], chosen: number) => ({
+        kind: "resolve",
+        op,
+        event: op + 1,
+        decision: "take_candidate",
+        candidates,
+        take: chosen,
+        unit: "f2",
+      });
+      const e0 = seen.earlier;
+      const s0 = seen.samples;
+      await checkSample(
+        [
+          v(10, 0, "1", "S10", true),
+          v(20, 10, "2", "S20", true),
+          v(30, 20, "3", "S30", true),
+          v(40, 10, "4", "S40"),
+          take(43, [41], 41),
+          v(50, 20, "5", "S50"),
+          {
+            kind: "write",
+            op: 60,
+            event: 61,
+            seen: 20,
+            fields: { f2: { value: "1", sources: ["S6"], explicit: false } },
+          },
+          take(73, [51, 61], 61),
+        ] as unknown as Op[],
+        [],
+        7,
+      );
+      expect([seen.earlier, seen.samples]).toEqual([e0 + 1, s0 + 1]);
+    }
+    // Built in (event table, seed -314894654): #20 and #50, stale, are candidates of one conflict
+    // item. A deletes #40's words and is pending: #50 is in effect, dropped from the item. B
+    // deletes #10's: #50 is a candidate again and goes back into the item, still open, while #20
+    // leaves it. Refused in this version (`items_restored`), not an open item with no candidate.
+    if (!isState) {
+      const w = (
+        op: number,
+        seen: number,
+        value: string,
+        source: string,
+        o: { explicit?: boolean; ack?: boolean } = {},
+      ) => ({
+        kind: "write",
+        op,
+        event: op + 1,
+        seen,
+        fields: {
+          f2: {
+            value,
+            sources: [source],
+            ...(o.explicit !== undefined ? { explicit: o.explicit } : {}),
+          },
+        },
+        ...(o.ack ? { acknowledge: ["overwrite"] } : {}),
+      });
+      const before = notYet["items_restored"] ?? 0;
+      const e0 = seen.earlier;
+      await checkSample(
+        [
+          w(10, 0, "1", "S1", { ack: true }),
+          w(20, 0, "9", "S2", { explicit: false }),
+          w(30, 20, "1", "S1", { explicit: true, ack: true }),
+          w(40, 30, "3", "S1", { explicit: false }),
+          w(50, 10, "9", "S2", { explicit: false }),
+          w(60, 50, "1", "S1", { explicit: false, ack: true }),
+        ] as unknown as Op[],
+        [],
+        278014085,
+      );
+      expect(seen.earlier).toBe(e0 + 1);
+      expect(notYet["items_restored"]).toBe(before + 1);
+    }
+    // Built in (state table, seed 1558045689): A deletes #10's words and is pending; #81, awaiting
+    // when written, is applied with A, which supersedes its item. B deletes more and #81 awaits
+    // again: an item an earlier deletion superseded comes back, refused in this version
+    // (`items_restored`), not a pending item without one.
+    if (isState) {
+      const before = notYet["items_restored"] ?? 0;
+      await checkSample(
+        [
+          {
+            kind: "write",
+            op: 10,
+            event: 11,
+            seen: 0,
+            valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+            fields: { f2: { value: "1", sources: ["S10"] } },
+            acknowledge: ["overwrite"],
+          },
+          {
+            kind: "write",
+            op: 20,
+            event: 21,
+            seen: 10,
+            valid: {
+              from: { mode: "given", value: "2026-11-03" },
+              to: { mode: "given", value: "2026-11-05" },
+            },
+            fields: { f2: { value: "2", sources: ["S20"] } },
+            acknowledge: ["overwrite"],
+          },
+          {
+            kind: "write",
+            op: 30,
+            event: 31,
+            seen: 20,
+            valid: {
+              from: { mode: "given", value: "2026-11-09" },
+              to: { mode: "given", value: "2026-11-11" },
+            },
+            fields: { f2: { value: "2", sources: ["S30"] } },
+            acknowledge: ["overwrite"],
+          },
+          {
+            kind: "write",
+            op: 40,
+            event: 41,
+            valid: {
+              from: { mode: "given", value: "2026-11-03" },
+              to: { mode: "given", value: "2026-11-11" },
+            },
+            fields: { f2: { value: "1", sources: ["S40"], explicit: true } },
+          },
+          {
+            kind: "resolve",
+            op: 50,
+            event: 51,
+            decision: "take_candidate",
+            candidates: [41],
+            take: 41,
+            unit: "f2",
+          },
+          {
+            kind: "write",
+            op: 60,
+            event: 61,
+            seen: 50,
+            valid: {
+              from: { mode: "given", value: "2026-11-01" },
+              to: { mode: "given", value: "2026-11-05" },
+            },
+            fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+          },
+          {
+            kind: "write",
+            op: 70,
+            event: 71,
+            seen: 60,
+            valid: { from: { mode: "given", value: "2026-11-05" }, to: { mode: "open" } },
+            fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+          },
+          {
+            kind: "write",
+            op: 80,
+            event: 81,
+            seen: 70,
+            valid: {
+              from: { mode: "given", value: "2026-11-03" },
+              to: { mode: "given", value: "2026-11-05" },
+            },
+            fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+          },
+        ] as unknown as Op[],
+        [],
+        13,
+      );
+      expect(notYet["items_restored"]).toBe(before + 1);
     }
   });
 });

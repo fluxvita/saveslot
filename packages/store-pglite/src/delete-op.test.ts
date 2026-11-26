@@ -26,6 +26,7 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import { openFileAnchorStore } from "@fluxvita/saveslot-kernel/anchor-file";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { cancelDeletion } from "./testing/deletion.fixture.ts";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
 const T = 120_000;
@@ -504,6 +505,241 @@ describe("the registry entry", () => {
   );
 });
 
+/** A table's compiled definition and the slot's ID, as the cancellation fixture takes them. */
+const compiledOf = (name: string) =>
+  s.store.read(async (tx) => {
+    const r = await tx.query<{ body: string; slot_id: string }>(
+      `SELECT c.body, v.slot_id FROM schema_versions v
+       JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled' WHERE v.state = 'current'`,
+    );
+    const tables = JSON.parse(r.rows[0]?.body as string).tables as Any[];
+    return { table: tables.find((t) => t.name === name), slot: r.rows[0]?.slot_id as string };
+  });
+
+describe("a row earlier deletions touched", () => {
+  it(
+    "an awaiting item the pending deletion opened, superseded by the next when its write takes effect",
+    async () => {
+      // #1 5000 from 10-01; #2 4000 on [11-10, 11-20); #3 3000 on [09-01, 12-01), having seen #1:
+      // a candidate against #2. A deletes #2's words: #3 awaits (it fills the stretch before
+      // 10-01), in an item A opens. B, with A pending, deletes #1's words: no change point is left
+      // for #3 to erase, it takes effect, and A's item is superseded.
+      const r1 = await w(
+        [{ intent: "insert", table: "budget", valid_from: "2026-10-01", set: { amount: "5000" } }],
+        "budget is 5000 from october",
+      );
+      const entity = r1.ops[0].target.entity as string;
+      const ver = r1.ops[0].ver;
+      await w(
+        [
+          {
+            intent: "update",
+            table: "budget",
+            entity,
+            ver,
+            valid_from: "2026-11-10",
+            valid_to: "2026-11-20",
+            set: { amount: "4000" },
+          },
+        ],
+        "4000 for ten days",
+      );
+      await w(
+        [
+          {
+            intent: "update",
+            table: "budget",
+            entity,
+            ver,
+            valid_from: "2026-09-01",
+            valid_to: "2026-12-01",
+            set: { amount: "3000" },
+          },
+        ],
+        "3000 from september",
+      );
+      const a = await previewDeletion(s.store, { sources: [await sourceId("4000 for ten days")] });
+      const first = await confirm(a.binding);
+      const opened = first.now_awaiting[0]?.item.id as string;
+      expect(await openItems()).toEqual([opened]);
+      const b = await previewDeletion(s.store, {
+        sources: [await sourceId("budget is 5000 from october")],
+      });
+      expect(b.preview.superseded.map((x) => x.item)).toEqual([opened]);
+      expect(b.preview.now_effective.map((x) => [x.item, x.item_becomes])).toEqual([
+        [opened, "superseded"],
+      ]);
+      await confirm(b.binding, "dc_b");
+      expect(await openItems()).toEqual([]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "deleted, the deletion cancelled, deleted again: as if only the second",
+    async () => {
+      const { row } = await lunch();
+      const second = await sourceId("lunch was 45");
+      const only = await previewDeletion(s.store, { sources: [second] });
+      const a = await previewDeletion(s.store, {
+        sources: [await sourceId("no, lunch was 35")],
+      });
+      const first = await confirm(a.binding);
+      const { table, slot } = await compiledOf("lunches");
+      await cancelDeletion(s.store, {
+        slot,
+        table,
+        row,
+        sources: [await sourceSeq("no, lunch was 35")],
+        id: first.deletion.id,
+        actor: USER,
+        now: now(),
+      });
+      const b = await previewDeletion(s.store, { sources: [second] });
+      expect(b.preview.rows).toEqual(only.preview.rows);
+      const receipt = await confirm(b.binding, "dc_b");
+      const positions = await s.store.read(async (tx) => {
+        const r = await tx.query<{ body: string }>(
+          "SELECT body FROM content WHERE seq = $1 AND path = 'positions'",
+          [receipt.seq],
+        );
+        return JSON.parse(r.rows[0]?.body ?? "[]") as { seq: number }[];
+      });
+      // Of the earlier events, only what rests on the words deleted: the cancelled deletion's
+      // result carrying #1's 45 (09 §3.5 rule 1), though its blocks count for nothing else.
+      expect(
+        positions
+          .filter((p) => p.seq >= first.seq && p.seq < receipt.seq)
+          .map((p) => [p.seq, (p as { path?: string }).path]),
+      ).toEqual([[first.seq, "results/0/fields/f1/0"]]);
+      const read = await query(s.store, ctx(), { table: "lunches" });
+      expect(read.rows.map((x: Any) => x.values.amount)).toEqual(["35"]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "a cancelled deletion's restatement as dropped does not count for the next deletion",
+    async () => {
+      // #1 45; #2 35; #3 45 again, having seen #2. A deletes #2's words: #3 a no-op, restated as
+      // dropped; cancelled: #3 back, not restated (09 §5.9 rule 3 takes interval blocks only). B
+      // deletes #1's words: #3 is as the log last gave it before A, not restated.
+      const { row, second } = await lunch();
+      const third = await w(
+        [
+          {
+            intent: "correct",
+            table: "lunches",
+            row,
+            ver: second.ops[0].ver,
+            set: { amount: "45" },
+          },
+        ],
+        "back to 45",
+      );
+      const a = await previewDeletion(s.store, {
+        sources: [await sourceId("no, lunch was 35")],
+      });
+      const first = await confirm(a.binding);
+      const thirdBase = await s.store.read(async (tx) => {
+        const r = await tx.query<{ seq: unknown }>(
+          "SELECT seq FROM events WHERE type = 'write.base' AND op = $1",
+          [third.seq],
+        );
+        return Number(r.rows[0]?.seq);
+      });
+      const restatedIn = (seq: number) =>
+        s.store.read(async (tx) =>
+          (
+            await tx.query<{ body: string }>(
+              "SELECT body FROM content WHERE seq = $1 AND path LIKE 'restated/%' AND body IS NOT NULL",
+              [seq],
+            )
+          ).rows.map((x) => JSON.parse(x.body) as { event: number; status: string }),
+        );
+      expect((await restatedIn(first.seq)).filter((x) => x.event === thirdBase)).toEqual([
+        expect.objectContaining({ event: thirdBase, status: "dropped" }),
+      ]);
+      const { table, slot } = await compiledOf("lunches");
+      await cancelDeletion(s.store, {
+        slot,
+        table,
+        row,
+        sources: [await sourceSeq("no, lunch was 35")],
+        id: first.deletion.id,
+        actor: USER,
+        now: now(),
+      });
+      const b = await previewDeletion(s.store, { sources: [await sourceId("lunch was 45")] });
+      const receipt = await confirm(b.binding, "dc_b");
+      expect((await restatedIn(receipt.seq)).filter((x) => x.event === thirdBase)).toEqual([]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "another deletion of the row cancelled since the preview: preview_outdated",
+    async () => {
+      const { row } = await lunch();
+      const a = await previewDeletion(s.store, {
+        sources: [await sourceId("no, lunch was 35")],
+      });
+      const first = await confirm(a.binding);
+      const b = await previewDeletion(s.store, { sources: [await sourceId("lunch was 45")] });
+      const { table, slot } = await compiledOf("lunches");
+      await cancelDeletion(s.store, {
+        slot,
+        table,
+        row,
+        sources: [await sourceSeq("no, lunch was 35")],
+        id: first.deletion.id,
+        actor: USER,
+        now: now(),
+      });
+      const e = await thrown(() => confirm(b.binding, "dc_b"));
+      expect(e?.code).toBe("preview_outdated");
+    },
+    T,
+  );
+
+  it(
+    "deleted again while the first is pending: the event with it, the positions without it",
+    async () => {
+      // #1 45 (lunch was 45), #2 35 (no, lunch was 35). A deletes #2's words: 45. B, with A
+      // pending, deletes #1's: nothing is left, the row deleted. B's event is worked out with A
+      // pending; its list of positions is its own: not the blocks only A's words give.
+      const { row } = await lunch();
+      const a = await previewDeletion(s.store, {
+        sources: [await sourceId("no, lunch was 35")],
+      });
+      const first = await confirm(a.binding);
+      const b = await previewDeletion(s.store, { sources: [await sourceId("lunch was 45")] });
+      expect(b.preview.rows.map((x) => [x.target, x.result])).toEqual([
+        [{ table: "lunches", row }, "deleted"],
+      ]);
+      const second = await confirm(b.binding, "dc_b");
+      const read = await query(s.store, ctx(), { table: "lunches" });
+      expect(read.rows).toEqual([]);
+      const positionsOf = (seq: number) =>
+        s.store.read(async (tx) => {
+          const r = await tx.query<{ body: string }>(
+            "SELECT body FROM content WHERE seq = $1 AND path = 'positions'",
+            [seq],
+          );
+          return JSON.parse(r.rows[0]?.body ?? "[]") as { seq: number; path: string }[];
+        });
+      const aWords = await sourceSeq("no, lunch was 35");
+      expect((await positionsOf(first.seq)).some((p) => p.seq === aWords)).toBe(true);
+      expect((await positionsOf(second.seq)).some((p) => p.seq === aWords)).toBe(false);
+      await replaysTheSame();
+    },
+    T,
+  );
+});
+
 describe("the shapes this version refuses, before anything is appended", () => {
   const refusedAs = async (sources: string[], kind: string) => {
     const at = await tail();
@@ -517,14 +753,21 @@ describe("the shapes this version refuses, before anything is appended", () => {
   };
 
   it(
-    "a row an earlier deletion touched: prior_deletion_on_row",
+    "a row written on after an earlier deletion: ops_after_deletion",
     async () => {
-      await lunch();
+      const { row } = await lunch();
       const { binding } = await previewDeletion(s.store, {
         sources: [await sourceId("no, lunch was 35")],
       });
-      await confirm(binding);
-      await refusedAs([await sourceId("lunch was 45")], "prior_deletion_on_row");
+      const first = await confirm(binding);
+      await w([{ intent: "correct", table: "lunches", row, set: { amount: "40" } }], "it was 40");
+      const src = await sourceId("lunch was 45");
+      const e = await thrown(() => previewDeletion(s.store, { sources: [src] }));
+      expect(first.seq).toBeGreaterThan(0);
+      expect([e?.detail?.reason, e?.detail?.kind]).toEqual([
+        "not_implemented",
+        "ops_after_deletion",
+      ]);
     },
     T,
   );
