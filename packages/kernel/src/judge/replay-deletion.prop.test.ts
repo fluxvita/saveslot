@@ -96,9 +96,27 @@ const itemKeys = (
     .sort();
 
 /** The blocks without those last given as dropped. */
-function withoutDropped(m: Map<string, GivenBlock[]>): Map<string, GivenBlock[]> {
+/**
+ * The blocks laid over without those last given as dropped, in judge's terms (what the replay's
+ * records give): a restatement's block is marked as one (`restatement`), and on an event or timeless
+ * table it lists its carried items in its deps only as the event writes them (`restatedDeps`); an
+ * item there has no deps of its own. A state table's block is compared as it is.
+ */
+function withoutDropped(m: Map<string, GivenBlock[]>, isState: boolean): Map<string, GivenBlock[]> {
+  const ref = (d: { event: number; target: string; k: number }) => `${d.event}/${d.target}/${d.k}`;
   return normalized(
-    new Map([...m].map(([et, bs]) => [et, bs.filter((b) => b.status !== "dropped")])),
+    new Map(
+      [...m].map(([et, bs]) => [
+        et,
+        bs
+          .filter((b) => b.status !== "dropped")
+          .map(({ restatement: _, ...b }) =>
+            isState || b.carried === undefined
+              ? b
+              : { ...b, deps: b.deps.filter((d) => !b.carried?.some((c) => ref(c) === ref(d))) },
+          ),
+      ]),
+    ),
   );
 }
 
@@ -284,7 +302,7 @@ function compare(
   // the deleted ones, give the replay's items (09 §5.9 «以最近一次为准»): nothing restated is
   // missed, nothing restated that the replay does not have.
   expect(
-    withoutDropped(overlay(givenByRecords(records), replayed.restated, gone, records)),
+    withoutDropped(overlay(givenByRecords(records), replayed.restated, gone, records), isState),
   ).toEqual(blocksOf(replayed.records));
   // No restatement names a deleted contribution, as its item, in its deps or in what it carries.
   const named = (x: { event: number; target: string }) => gone.has(`${x.event}/${x.target}`);
@@ -332,9 +350,45 @@ function compare(
           });
         }
       }
+      // Nothing the first deletion left as it is restated again (09 §5.9 rules 1 and 2): each
+      // restatement of the second, not dropped, either differs, in judge's terms, from the block
+      // the first left, or that block rests on something the second deletes or restates (a dep;
+      // a carried item deleted or dropped). The comparison above cannot see one restated more.
+      {
+        const r = (d: { event: number; target: string; k: number }) =>
+          `${d.event}/${d.target}/${d.k}`;
+        const left = withoutDropped(afterFirst, isState);
+        const byRef = new Map(then.restated.map((x) => [r(x.item), x]));
+        const goneHere = (d: { event: number; target: string; k: number }) =>
+          gone.has(`${d.event}/${d.target}`);
+        for (const x of then.restated) {
+          if (x.status === "dropped") continue;
+          const lb = left.get(`${x.item.event}/${x.item.target}`)?.find((b) => b.k === x.item.k);
+          const before = afterFirst
+            .get(`${x.item.event}/${x.item.target}`)
+            ?.find((b) => b.k === x.item.k);
+          const changed =
+            lb === undefined ||
+            lb.status !== x.status ||
+            (isState && JSON.stringify(lb.valid) !== JSON.stringify(x.valid)) ||
+            JSON.stringify(lb.deps.map(r).sort()) !== JSON.stringify(x.deps.map(r).sort()) ||
+            (x.content !== undefined && JSON.stringify(lb.content) !== JSON.stringify(x.content)) ||
+            JSON.stringify((lb.carried ?? []).map(r)) !== JSON.stringify((x.carried ?? []).map(r));
+          const rests =
+            (before?.deps ?? []).some((d) => goneHere(d) || byRef.has(r(d))) ||
+            (before?.carried ?? []).some(
+              (d) => goneHere(d) || byRef.get(r(d))?.status === "dropped",
+            );
+          expect({ restated: r(x.item), changed, rests }).not.toEqual({
+            restated: r(x.item),
+            changed: false,
+            rests: false,
+          });
+        }
+      }
       // The round trip across both: the second deletion's restatements laid over the blocks the
       // first left give its replay's items (an item back from dropped must be restated).
-      expect(withoutDropped(overlay(afterFirst, then.restated, gone, records))).toEqual(
+      expect(withoutDropped(overlay(afterFirst, then.restated, gone, records), isState)).toEqual(
         blocksOf(then.records),
       );
       const two = evaluateLog(schema, [
@@ -389,9 +443,9 @@ function compare(
           () => [],
           NO_GRACE,
         );
-        expect(withoutDropped(overlay(withoutFirst, c.replay.restated, second, records))).toEqual(
-          blocksOf(c.replay.records),
-        );
+        expect(
+          withoutDropped(overlay(withoutFirst, c.replay.restated, second, records), isState),
+        ).toEqual(blocksOf(c.replay.records));
         const cancelled = evaluateLog(schema, [
           ...kept,
           { kind: "deletion", op: last + 1, id: "pi_a", sources: [a] },
@@ -452,9 +506,9 @@ function compare(
           () => [],
           NO_GRACE,
         );
-        expect(withoutDropped(overlay(afterFirst, cB.replay.restated, first, records))).toEqual(
-          blocksOf(cB.replay.records),
-        );
+        expect(
+          withoutDropped(overlay(afterFirst, cB.replay.restated, first, records), isState),
+        ).toEqual(blocksOf(cB.replay.records));
         const del = (id: string, op: number, src: string): LogEntry => ({
           kind: "deletion",
           op,
@@ -490,9 +544,9 @@ function compare(
           () => [],
           NO_GRACE,
         );
-        expect(withoutDropped(overlay(latestBoth, cA.replay.restated, new Set(), records))).toEqual(
-          blocksOf(cA.replay.records),
-        );
+        expect(
+          withoutDropped(overlay(latestBoth, cA.replay.restated, new Set(), records), isState),
+        ).toEqual(blocksOf(cA.replay.records));
         sameAsRef(
           cA.replay.state,
           evaluateLog(schema, [

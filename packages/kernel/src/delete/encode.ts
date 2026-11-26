@@ -17,20 +17,10 @@ import type {
   ResultRow,
   ResultStretch,
 } from "../judge/index.ts";
+import { restatedDeps } from "../judge/restate.ts";
 import type { Interval, IntervalSet } from "../time/index.ts";
 
 type Blocks = Record<string, JsonValue>;
-
-/** References without repeats, in their first order. */
-function uniqueRefs(xs: readonly ItemRef[]): ItemRef[] {
-  const seen = new Set<string>();
-  return xs.filter((x) => {
-    const k = `${x.event}/${x.target}/${x.k}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-}
 
 /** Code-point order. */
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -84,8 +74,7 @@ export function restatementOut(r: Restatement): JsonValue {
   }
   // A carried item's new value names what it carries in `deps` too (§5.9, §3.5 rule 1): judge
   // gives an event or timeless table's restatement no `deps`.
-  const valued = r.item.target !== "existence" && r.content?.kind === "value";
-  const deps = valued ? uniqueRefs([...r.deps, ...(r.carried ?? [])]) : r.deps;
+  const deps = restatedDeps(r);
   if (deps.length > 0) out["deps"] = deps.map(refOut);
   if (r.item.target !== "existence" && r.content !== undefined) {
     if (r.content.kind === "value") {

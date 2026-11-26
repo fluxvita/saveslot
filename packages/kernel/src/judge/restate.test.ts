@@ -3,8 +3,8 @@
 
 import type { BizPoint, FieldId } from "@fluxvita/saveslot-contract-core";
 import { describe, expect, it } from "vitest";
-import type { ItemRef, OpRecord, RecordedItem } from "./model.ts";
-import { type GivenBlock, givenByRecords, renumber, restatements } from "./restate.ts";
+import type { ItemRef, OpRecord, RecordedItem, Restatement } from "./model.ts";
+import { type GivenBlock, givenByRecords, overlay, renumber, restatements } from "./restate.ts";
 
 const d = (md: string) => `2026-${md}` as BizPoint;
 const iv = (from: string, to: string | null) => [{ from: d(from), to: to === null ? null : d(to) }];
@@ -249,5 +249,151 @@ describe("restatements (§5.9)", () => {
     expect(restatements(replayed, latest, new Set(), false)).toEqual([
       { item: ref(21, 1), status: "applied", deps: [] },
     ]);
+  });
+});
+
+describe("overlay: the blocks last given with a deletion's restatements laid over", () => {
+  const given = new Map<string, GivenBlock[]>([
+    [
+      "21/f2",
+      [
+        {
+          k: 0,
+          status: "applied",
+          valid: iv("11-01", null),
+          deps: [ref(21)],
+          content: { kind: "value", value: "2" },
+        },
+      ],
+    ],
+  ]);
+
+  it("a carried item's new value names what it carries in its deps, as the event writes it", () => {
+    // 09 §5.9: a block with an interval lists the item its value is carried from in its deps too.
+    const r: Restatement = {
+      item: ref(21),
+      status: "applied",
+      valid: iv("11-01", null),
+      deps: [ref(31)],
+      content: { kind: "value", value: "1" },
+      carried: [ref(11), ref(31)],
+    };
+    const [b] = overlay(given, [r], new Set(), []).get("21/f2") ?? [];
+    expect(b?.deps).toEqual([ref(31), ref(11)]);
+    expect(b?.carried).toEqual([ref(11), ref(31)]);
+  });
+
+  it("a restatement carrying nothing keeps its deps as they are", () => {
+    const r: Restatement = {
+      item: ref(21),
+      status: "applied",
+      valid: iv("11-01", null),
+      deps: [ref(31)],
+      content: { kind: "value", value: "2" },
+    };
+    const [b] = overlay(given, [r], new Set(), []).get("21/f2") ?? [];
+    expect(b?.deps).toEqual([ref(31)]);
+  });
+});
+
+describe("overlay onto an index with no block of its own (numbered anew by a replay), by each way", () => {
+  // #21's only block is index 0, "2". Overlay does not know which event restates (a deletion or a
+  // cancellation): ways 2 and 3 are the same call to it, told apart by what came before.
+  const given = new Map<string, GivenBlock[]>([
+    [
+      "21/f2",
+      [
+        {
+          k: 0,
+          status: "applied",
+          valid: iv("11-01", null),
+          deps: [],
+          content: { kind: "value", value: "2" },
+        },
+      ],
+    ],
+  ]);
+  // #21 as written: its one item, "2" (what an item of the write itself holds, whatever index).
+  const WRITTEN = [write(20, [item(0, "11-01", null, { content: { kind: "value", value: "2" } })])];
+  const dropped: Restatement = { item: ref(21, 1), status: "dropped", deps: [] };
+  const inEffect: Restatement = {
+    item: ref(21, 1),
+    status: "corroborated",
+    valid: iv("11-03", "11-05"),
+    deps: [],
+  };
+  const at = (m: Map<string, GivenBlock[]>, et: string, k: number) =>
+    (m.get(et) ?? []).find((b) => b.k === k);
+
+  it("1. first given in effect, with no value: its write's content", () => {
+    expect(at(overlay(given, [inEffect], new Set(), WRITTEN), "21/f2", 1)?.content).toEqual({
+      kind: "value",
+      value: "2",
+    });
+  });
+
+  it("2. given as dropped, then a cancellation restates it in effect: its write's content", () => {
+    const afterDeletion = overlay(given, [dropped], new Set(), WRITTEN);
+    // The dropped block holds no content: the index had none of its own, and none is made up.
+    expect(at(afterDeletion, "21/f2", 1)?.content).toBeUndefined();
+    expect(at(overlay(afterDeletion, [inEffect], new Set(), WRITTEN), "21/f2", 1)?.content).toEqual(
+      {
+        kind: "value",
+        value: "2",
+      },
+    );
+  });
+
+  it("3. given as dropped by a deletion, then another deletion restates it in effect: the same", () => {
+    const afterFirst = overlay(given, [dropped], new Set(), WRITTEN);
+    const afterSecond = overlay(
+      afterFirst,
+      [{ ...inEffect, status: "applied" }],
+      new Set(),
+      WRITTEN,
+    );
+    expect([at(afterSecond, "21/f2", 1)?.status, at(afterSecond, "21/f2", 1)?.content]).toEqual([
+      "applied",
+      { kind: "value", value: "2" },
+    ]);
+  });
+
+  it("4. a carried item's new index: the content each restatement gives, kept while dropped", () => {
+    const carried = (value: string): Restatement => ({
+      ...inEffect,
+      content: { kind: "value", value },
+      carried: [ref(11)],
+    });
+    const once = overlay(given, [carried("1")], new Set(), WRITTEN);
+    expect(at(once, "21/f2", 1)?.content).toEqual({ kind: "value", value: "1" });
+    const gone = overlay(once, [dropped], new Set(), WRITTEN);
+    expect(at(gone, "21/f2", 1)?.content).toEqual({ kind: "value", value: "1" });
+    const back = overlay(gone, [carried("3")], new Set(), WRITTEN);
+    expect(at(back, "21/f2", 1)?.content).toEqual({ kind: "value", value: "3" });
+  });
+
+  it("5. a write-back first given by a restatement, then dropped: no content made up", () => {
+    // #41 writes back with no block when written (09 §5.7: first given by a deletion's
+    // `restated/<k>`); a write-back is always restated with its content.
+    const wb: Restatement = {
+      item: ref(41),
+      status: "applied",
+      valid: iv("11-01", "11-03"),
+      deps: [],
+      content: { kind: "no_value" },
+    };
+    const once = overlay(given, [wb], new Set(), WRITTEN);
+    expect(at(once, "41/f2", 0)?.content).toEqual({ kind: "no_value" });
+    // Dropped where no index of it was ever given: none known, none made up.
+    const fresh = overlay(
+      given,
+      [{ item: ref(41), status: "dropped", deps: [] }],
+      new Set(),
+      WRITTEN,
+    );
+    expect(at(fresh, "41/f2", 0)?.status).toBe("dropped");
+    expect(at(fresh, "41/f2", 0)?.content).toBeUndefined();
+    const back = overlay(fresh, [wb], new Set(), WRITTEN);
+    expect(at(back, "41/f2", 0)?.content).toEqual({ kind: "no_value" });
   });
 });

@@ -33,8 +33,34 @@ export interface GivenBlock {
    */
   readonly landing?: IntervalSet;
   readonly deps: readonly ItemRef[];
-  readonly content: ItemContent;
+  /**
+   * Absent only on a block last given as dropped whose content is not known: an index with no
+   * block before, of an (event, target) with no item when written (a write-back a deletion first
+   * gave). Such an item comes back with its content: a restatement gives a write-back's.
+   */
+  readonly content?: ItemContent;
   readonly carried?: readonly ItemRef[];
+  /**
+   * The block is a deletion's `restated/<k>`: besides its deps it rests on the item it restates
+   * (09 §3.5 rule 1; `apply/apply.ts`, the block's references), so a deletion restating that item
+   * lists it.
+   */
+  readonly restatement?: true;
+}
+
+/**
+ * The `deps` of a restatement's block as the event writes it (09 §5.9, §3.5 rule 1): a carried
+ * item's new value names what it carries there too, each reference once, in their first order.
+ */
+export function restatedDeps(r: Restatement): readonly ItemRef[] {
+  if (r.item.target === "existence" || r.content?.kind !== "value") return r.deps;
+  const seen = new Set<string>();
+  return [...r.deps, ...(r.carried ?? [])].filter((x) => {
+    const k = `${x.event}/${x.target}/${x.k}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 /** By (event, target) as `${event}/${target}`: the blocks the log last gave, one per index. */
@@ -106,6 +132,17 @@ export function renumber(
   return items.map((it, i) => ({ ...it, k: landing.get(i)?.[0] ?? back.shift() ?? next++ }));
 }
 
+/**
+ * A block's deps in judge's terms (rule 1 compares them so): an event or timeless table's item has
+ * no deps of its own, and a valued restatement's block lists its carried items there only as the
+ * event writes them (`restatedDeps`).
+ */
+function depsAsJudged(b: GivenBlock, isState: boolean): readonly ItemRef[] {
+  if (isState || b.carried === undefined) return b.deps;
+  const carried = new Set(b.carried.map((c) => `${c.event}/${c.target}/${c.k}`));
+  return b.deps.filter((d) => !carried.has(`${d.event}/${d.target}/${d.k}`));
+}
+
 const sameRefs = (a: readonly ItemRef[] = [], b: readonly ItemRef[] = []) => {
   const s = (xs: readonly ItemRef[]) =>
     xs
@@ -135,6 +172,13 @@ export function restatements(
   deleted: ReadonlySet<string>,
   isState: boolean,
   cancelled: ReadonlySet<string> = new Set(),
+  /**
+   * The blocks this deletion's own list of positions clears besides (a deletion worked out with
+   * other pending deletions lists its positions by its replay alone, 03-deletion «多项删除各自列全
+   * 位置»): by a dep, and by a carried item, of the last block. Rule 2 restates an item still a
+   * contribution whose last block is cleared so (09 §5.9 rule 2: the blocks this deletion clears).
+   */
+  cleared?: { readonly dep: (d: ItemRef) => boolean; readonly carried: (d: ItemRef) => boolean },
 ): Restatement[] {
   const now = new Map<string, { event: number; item: RecordedItem }>();
   for (const r of replayed) {
@@ -168,11 +212,11 @@ export function restatements(
       given === undefined ||
       given.status !== x.status ||
       (isState && !sameSet(given.valid, x.valid)) ||
-      !sameRefs(given.deps, x.deps) ||
+      !sameRefs(depsAsJudged(given, isState), x.deps) ||
       (x.carried !== undefined &&
         (JSON.stringify(given.content) !== JSON.stringify(x.content) ||
           !sameRefs(given.carried, x.carried))) ||
-      (x.carried === undefined && given.content.kind !== x.content.kind)
+      (x.carried === undefined && given.content?.kind !== x.content.kind)
     ) {
       restate(ref, event, x);
     }
@@ -183,8 +227,20 @@ export function restatements(
     const [ev, target] = et.split("/") as [string, Target];
     for (const b of blocks) {
       const ref = `${et}/${b.k}`;
-      // Last given as dropped already: nothing new to say.
-      if (now.has(ref) || out.has(ref) || b.status === "dropped") continue;
+      if (now.has(ref) || out.has(ref)) continue;
+      // Last given as dropped already: nothing new to say, unless this deletion's own list clears
+      // that block (an earlier deletion's restatement, resting on the item it restates, which this
+      // deletion alone restates): given again as dropped, or a replay from an empty store falls
+      // back to the item's block as written (09 §5.9 rule 2).
+      if (
+        b.status === "dropped" &&
+        !(
+          cleared !== undefined &&
+          b.restatement === true &&
+          cleared.dep({ event: Number(ev), target, k: b.k })
+        )
+      )
+        continue;
       out.set(ref, { item: { event: Number(ev), target, k: b.k }, status: "dropped", deps: [] });
     }
   }
@@ -206,7 +262,14 @@ export function restatements(
     for (const [ref, { event, item: x }] of now) {
       if (out.has(ref)) continue;
       const given = latest.get(key(event, x.target))?.find((b) => b.k === x.k);
-      if (given?.deps.some(gone) || given?.carried?.some(carriedGone)) {
+      if (
+        given?.deps.some(gone) ||
+        given?.carried?.some(carriedGone) ||
+        (cleared !== undefined &&
+          (given?.deps.some(cleared.dep) ||
+            given?.carried?.some(cleared.carried) ||
+            (given?.restatement === true && cleared.dep({ event, target: x.target, k: x.k }))))
+      ) {
         restate(ref, event, x);
         changed = true;
       }
@@ -217,5 +280,146 @@ export function restatements(
       a.item.event - b.item.event ||
       a.item.target.localeCompare(b.item.target) ||
       a.item.k - b.item.k,
+  );
+}
+
+// The blocks last given of a row (09 §5.7 «以最近一次为准») with a deletion's or a cancellation's
+// restatements laid over, in log order: what the deletion replay reads as `LatestGiven` on a row
+// earlier deletions touched.
+
+/**
+ * The blocks last given, less the deleted (event, target)s, with the restatements laid over.
+ * `written`: the records as written, where the content of an item that is not carried comes from.
+ */
+export function overlay(
+  given: ReadonlyMap<string, readonly GivenBlock[]>,
+  restated: readonly Restatement[],
+  gone: ReadonlySet<string>,
+  written: readonly OpRecord[],
+): Map<string, GivenBlock[]> {
+  const own = ownContent(written);
+  const out = new Map<string, GivenBlock[]>();
+  for (const [et, blocks] of given) if (!gone.has(et)) out.set(et, [...blocks]);
+  for (const r of restated) {
+    const et = `${r.item.event}/${r.item.target}`;
+    const rest = (out.get(et) ?? []).filter((b) => b.k !== r.item.k);
+    if (r.status === "dropped") {
+      // Last given as dropped: kept so (rule 1 compares with it), landing on the last interval
+      // given before (numbering only).
+      const before = (out.get(et) ?? []).find((b) => b.k === r.item.k);
+      const landing = before?.landing ?? before?.valid ?? [];
+      const dropped = droppedContent(own, r, before);
+      out.set(et, [
+        ...rest,
+        {
+          k: r.item.k,
+          status: "dropped",
+          valid: [],
+          ...(landing.length > 0 ? { landing } : {}),
+          deps: [],
+          ...(dropped !== undefined ? { content: dropped } : {}),
+          // A restatement's block as dropped, resting on the item it restates as any other.
+          restatement: true,
+        },
+      ]);
+      continue;
+    }
+    // The block last given for the index, for the carried references of a restatement that does
+    // not give the content.
+    const was = (given.get(et) ?? []).find((b) => b.k === r.item.k);
+    out.set(et, [
+      ...rest,
+      {
+        k: r.item.k,
+        status: r.status,
+        // A restatement without an interval is an event or timeless table's: the whole of it.
+        valid: r.valid ?? [{ from: null, to: null }],
+        // As the event writes it: the same block whether read from the log or laid over.
+        deps: restatedDeps(r),
+        content: r.content ?? contentOf(own, r),
+        // A restatement that gives the content gives the carried references with it (none for
+        // a write-back with no value or that only registers).
+        ...(r.content !== undefined
+          ? r.carried !== undefined
+            ? { carried: r.carried }
+            : {}
+          : was?.carried !== undefined
+            ? { carried: was.carried }
+            : {}),
+        restatement: true,
+      },
+    ]);
+  }
+  return normalized(out);
+}
+
+/** The content of each item as written, by `${event}/${target}/${k}` and, for any index, `${event}/${target}`. */
+function ownContent(written: readonly OpRecord[]): Map<string, ItemContent> {
+  const out = new Map<string, ItemContent>();
+  for (const r of written) {
+    if (!("items" in r)) continue;
+    for (const x of r.items) {
+      const et = `${r.event}/${x.target}`;
+      out.set(`${et}/${x.k}`, x.content);
+      if (!out.has(et)) out.set(et, x.content);
+    }
+  }
+  return out;
+}
+
+/** The content as written of a restatement's item: its own index's, else any index's of it. */
+function writtenContent(
+  own: ReadonlyMap<string, ItemContent>,
+  r: Restatement,
+): ItemContent | undefined {
+  const et = `${r.item.event}/${r.item.target}`;
+  return own.get(`${et}/${r.item.k}`) ?? own.get(et);
+}
+
+/**
+ * The content of an index restated as dropped: the block it last had, else that index's own as
+ * written. With neither (an index numbered anew, or one only a cancelled or a since-dropped
+ * deletion gave) none: nothing is made up, not even another index's (a carried write-back's
+ * indices hold values of their own), and not a kind that would be read (the deletion replay asks
+ * whether a restated item's last block only registers, `uncovered`).
+ */
+function droppedContent(
+  own: ReadonlyMap<string, ItemContent>,
+  r: Restatement,
+  before: GivenBlock | undefined,
+): ItemContent | undefined {
+  return before?.content ?? own.get(`${r.item.event}/${r.item.target}/${r.item.k}`);
+}
+
+/**
+ * The content of a restatement that does not give it (09 §5.9: `value` and `sources` only for
+ * carried items; `no_value` and `uncovered` said as such): on existence a restore exactly when it
+ * says so (`restored`), else a revoke; on a field the write's own value, fixed in the write event,
+ * whatever block a deletion gave the index since. Never another block's, never a made-up null.
+ *
+ * An (event, target) with no item when written that a deletion makes a contribution: a field judged
+ * a no-op stays one in every replay (09 §5.7 `ops/<i>/noop`, `ReplayOptions.noop`; the fixed case
+ * in replay-deletion.test.ts); a revoke's existence (a no-op on a row revoked already) is restated
+ * with `restored` as it is; a revert's write-back is carried or says `no_value` or `uncovered`, so
+ * its restatement gives the content. None reaches the records here; one that did would throw.
+ */
+function contentOf(own: ReadonlyMap<string, ItemContent>, r: Restatement): ItemContent {
+  if (r.item.target === "existence") return { kind: r.restored ? "restore" : "revoke" };
+  const c = writtenContent(own, r);
+  if (c === undefined) {
+    throw new Error(
+      `overlay: ${r.item.event}/${r.item.target} is restated without content and has no item as written`,
+    );
+  }
+  return c;
+}
+
+/** Each (event, target)'s blocks, by index; those with none left out. */
+export function normalized(m: Map<string, GivenBlock[]>): Map<string, GivenBlock[]> {
+  return new Map(
+    [...m]
+      .filter(([, bs]) => bs.length > 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([et, bs]) => [et, [...bs].sort((x, y) => x.k - y.k)]),
   );
 }

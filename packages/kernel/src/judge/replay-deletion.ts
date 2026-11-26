@@ -444,6 +444,8 @@ export function replayDeletion(
    * (03-deletion «删除结果的定义» deviation two; «撤回与宽限期»: the protection lasts).
    */
   keptEffective: ReadonlySet<string> = new Set(),
+  /** Blocks this deletion's own list of positions clears besides (`restatements`). */
+  cleared?: Parameters<typeof restatements>[5],
 ): {
   readonly state: RowState;
   readonly records: readonly OpRecord[];
@@ -711,7 +713,7 @@ export function replayDeletion(
   return {
     state,
     records: out,
-    restated: restatements(out, latest, deleted, state.isState, cancelled),
+    restated: restatements(out, latest, deleted, state.isState, cancelled, cleared),
   };
 }
 
@@ -749,6 +751,8 @@ export function deletionResult(
   latest: LatestGiven = givenByRecords(records),
   /** Kept effective by cancellations in the log (`replayDeletion`). */
   keptEffective: ReadonlySet<string> = new Set(),
+  /** Blocks this deletion's own list of positions clears besides (`restatements`). */
+  cleared?: Parameters<typeof restatements>[5],
 ): {
   readonly replay: ReturnType<typeof replayDeletion>;
   readonly before: RowState;
@@ -778,6 +782,7 @@ export function deletionResult(
     latest,
     new Set(),
     keptEffective,
+    cleared,
   );
   const changed = [...deleted].filter((k) => !pendingBefore.has(k));
   return resultOf(table, records, before, replay, changed, items, latest);
@@ -821,7 +826,7 @@ function resultOf(
     const uncovered =
       r.content?.kind === "uncovered" ||
       (latest.get(contributionKey(r.item.event, r.item.target)) ?? []).some(
-        (b) => b.k === r.item.k && b.content.kind === "uncovered",
+        (b) => b.k === r.item.k && b.content?.kind === "uncovered",
       );
     if (r.item.target !== "existence" && !uncovered) continue;
     touched.push(lastValid(r.item.event, r.item.target, r.item.k), r.valid ?? []);

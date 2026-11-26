@@ -133,6 +133,8 @@ export class DeletionSessionForTests {
     id: string,
     deleted: ReadonlySet<string>,
     external: ExternalFor = NO_EXTERNAL,
+    /** The blocks the deletion's own list of positions clears besides (`deletionResult`). */
+    cleared?: Parameters<typeof deletionResult>[8],
   ) {
     const before = this.#pending();
     const res = deletionResult(
@@ -143,6 +145,8 @@ export class DeletionSessionForTests {
       itemsByRecords(new RowState(this.table, records)),
       external,
       this.#latest(records, before),
+      new Set(),
+      cleared,
     );
     const pending = [...this.#deletions].filter(([, d]) => !d.cancelled).map(([x]) => x);
     const alone =
