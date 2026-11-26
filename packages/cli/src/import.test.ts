@@ -1,7 +1,8 @@
 // `saveslot import` (06-cli §4.8) against a stand-in service: the manifests read and checked before
 // anything is sent, the confirmation, the files' plain bytes as one body, an age file opened here,
 // and a body never sent whole when a file is found cut short. The stand-in records a body only when
-// it has it whole (its request ended), and a request cut off as such.
+// it has it whole (its request ended), and a request cut off as such. A case that checks only the
+// exit code gives the command's stderr with it: a failure says what the command said.
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -163,7 +164,7 @@ describe("import: the files' manifests, then one body", () => {
   it("a plain export, --yes: what it is said first; its bytes sent as they are; the result", async () => {
     const text = exportText({ events: 4, pending: "included" });
     const r = await cli([file(text), "--yes"]);
-    expect(r.code).toBe(0);
+    expect(r.code, r.err).toBe(0);
     expect(r.err).toContain(`${TEXTS.importFrom} tn_01JF00000000000000000000LD`);
     expect(r.err).toContain(`4 ${TEXTS.importEvents} (1 ${TEXTS.importFiles})`);
     expect(r.err).toContain(TEXTS.importWithPending);
@@ -177,20 +178,21 @@ describe("import: the files' manifests, then one body", () => {
 
   it("--json: the result as the service gave it", async () => {
     const r = await cli([file(exportText({ events: 4 })), "--yes"], { json: true });
-    expect([r.code, JSON.parse(r.out)]).toEqual([0, RESULT]);
+    expect([r.code, JSON.parse(r.out)], r.err).toEqual([0, RESULT]);
   });
 
   it("continuations: one body, in the order given", async () => {
     const a = exportText({ events: 3 });
     const b = exportText({ after: 3, events: 2 });
     const r = await cli([file(a), file(b), "--yes"]);
-    expect(r.code).toBe(0);
+    expect(r.code, r.err).toBe(0);
     expect(r.err).toContain(`5 ${TEXTS.importEvents} (2 ${TEXTS.importFiles})`);
     expect(whole.map((x) => x.toString("utf8"))).toEqual([a + b]);
   });
 
   it("asked, and yes: sent; asked, and no; or no terminal and no --yes: 8, nothing sent", async () => {
-    expect((await cli([file(exportText({ events: 1 }))], { answers: ["y"] })).code).toBe(0);
+    const yes = await cli([file(exportText({ events: 1 }))], { answers: ["y"] });
+    expect(yes.code, yes.err).toBe(0);
     expect(whole).toHaveLength(1);
     whole.length = 0;
     const no = await cli([file(exportText({ events: 1 }))], { answers: ["n"] });
@@ -236,19 +238,20 @@ describe("import: refused here, before anything is sent", () => {
     ],
   ])("%s: 2, nothing sent", async (_, texts, said) => {
     const r = await cli([...texts().map(file), "--yes"]);
-    expect([r.code, r.err.endsWith(`${TEXTS.usageError(said)}\n`)]).toEqual([2, true]);
+    expect([r.code, r.err.endsWith(`${TEXTS.usageError(said)}\n`)], r.err).toEqual([2, true]);
     expect([whole, cut]).toEqual([[], 0]);
   });
 
   it("no file; --passphrase-file with no age file: 2", async () => {
-    expect((await cli(["--yes"])).code).toBe(2);
+    const none = await cli(["--yes"]);
+    expect(none.code, none.err).toBe(2);
     const r = await cli([
       file(exportText({ events: 1 })),
       "--passphrase-file",
       passFile("p"),
       "--yes",
     ]);
-    expect([r.code, whole]).toEqual([2, []]);
+    expect([r.code, whole], r.err).toEqual([2, []]);
   });
 });
 
@@ -265,7 +268,7 @@ describe("import: an age file", () => {
       passFile(PASS),
       "--yes",
     ]);
-    expect(r.code).toBe(0);
+    expect(r.code, r.err).toBe(0);
     expect(r.err).toContain(`4 ${TEXTS.importEvents}`);
     expect(whole.map((b) => b.toString("utf8"))).toEqual([text]);
     expect(`${r.out}${r.err}`).not.toContain(PASS);
@@ -274,7 +277,10 @@ describe("import: an age file", () => {
   it("a passphrase that does not open it: 1, nothing sent", { timeout: 30_000 }, async () => {
     const f = file(await ageFile(exportText({ events: 1 }), PASS));
     const r = await cli([f, "--passphrase-file", passFile("another one entirely"), "--yes"]);
-    expect([r.code, r.err.endsWith(`${TEXTS.importPassphraseWrong(1)}\n`)]).toEqual([1, true]);
+    expect([r.code, r.err.endsWith(`${TEXTS.importPassphraseWrong(1)}\n`)], r.err).toEqual([
+      1,
+      true,
+    ]);
     expect([whole, cut]).toEqual([[], 0]);
   });
 
@@ -286,12 +292,12 @@ describe("import: an age file", () => {
     const fa = file(await ageFile(a, PASS));
     const fb = file(await ageFile(b, "the second passphrase"));
     const r = await cli([fa, fb, "--yes"], { hidden: [PASS, "the second passphrase"] });
-    expect(r.code).toBe(0);
+    expect(r.code, r.err).toBe(0);
     expect(whole.map((x) => x.toString("utf8"))).toEqual([a + b]);
     // From a file, nothing asked: the second refused, nothing sent.
     whole.length = 0;
     const f = await cli([fa, fb, "--passphrase-file", passFile(PASS), "--yes"]);
-    expect([f.code, f.err.endsWith(`${TEXTS.importPassphraseWrong(2)}\n`), whole]).toEqual([
+    expect([f.code, f.err.endsWith(`${TEXTS.importPassphraseWrong(2)}\n`), whole], f.err).toEqual([
       1,
       true,
       [],
@@ -305,7 +311,7 @@ describe("import: an age file", () => {
     const r = await cli([file(await ageFile(text, "correct horse ")), "--yes"], {
       hidden: ["correct horse "],
     });
-    expect(r.code).toBe(0);
+    expect(r.code, r.err).toBe(0);
     expect(whole.map((x) => x.toString("utf8"))).toEqual([text]);
   });
 
@@ -317,7 +323,7 @@ describe("import: an age file", () => {
     const fa = file(await ageFile(a, PASS));
     const fb = file(await ageFile(b, " the second passphrase "));
     const r = await cli([fa, fb, "--yes"], { hidden: [PASS, " the second passphrase "] });
-    expect(r.code).toBe(0);
+    expect(r.code, r.err).toBe(0);
     expect(whole.map((x) => x.toString("utf8"))).toEqual([a + b]);
   });
 
