@@ -118,7 +118,7 @@ export class DeletionSessionForTests {
     for (const e of this.#log) {
       const off = this.#deletions.get(e.id)?.cancelled === true || skip.includes(e.id);
       if (e.kind === "confirm" && off) continue;
-      m = overlay(m, e.restated, gone);
+      m = overlay(m, e.restated, gone, records);
     }
     return m;
   }

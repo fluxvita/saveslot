@@ -283,9 +283,9 @@ function compare(
   // The restatements, laid over the blocks the log last gave (here the records as written) less
   // the deleted ones, give the replay's items (09 §5.9 «以最近一次为准»): nothing restated is
   // missed, nothing restated that the replay does not have.
-  expect(withoutDropped(overlay(givenByRecords(records), replayed.restated, gone))).toEqual(
-    blocksOf(replayed.records),
-  );
+  expect(
+    withoutDropped(overlay(givenByRecords(records), replayed.restated, gone, records)),
+  ).toEqual(blocksOf(replayed.records));
   // No restatement names a deleted contribution, as its item, in its deps or in what it carries.
   const named = (x: { event: number; target: string }) => gone.has(`${x.event}/${x.target}`);
   expect(
@@ -302,7 +302,7 @@ function compare(
       graceWrite(schema, isState, table, kept, records, a, b, last);
       const first = deletedContributions(kept, new Set([a]), isState);
       const once = replayDeletion(table, records, first);
-      const afterFirst = overlay(givenByRecords(records), once.restated, first);
+      const afterFirst = overlay(givenByRecords(records), once.restated, first, records);
       const then = replayDeletion(table, records, gone, [], afterFirst);
       // The item layer across both, each deletion given the items as the one before left them:
       // nothing pending is left without an item to be in.
@@ -334,7 +334,7 @@ function compare(
       }
       // The round trip across both: the second deletion's restatements laid over the blocks the
       // first left give its replay's items (an item back from dropped must be restated).
-      expect(withoutDropped(overlay(afterFirst, then.restated, gone))).toEqual(
+      expect(withoutDropped(overlay(afterFirst, then.restated, gone, records))).toEqual(
         blocksOf(then.records),
       );
       const two = evaluateLog(schema, [
@@ -368,7 +368,7 @@ function compare(
           () => [],
         );
         const before = advance(advance(given, one.items), two.items);
-        const withoutFirst = overlay(givenByRecords(records), then.restated, second);
+        const withoutFirst = overlay(givenByRecords(records), then.restated, second, records);
         const bySecond = new Set(
           then.restated.map((r) => `${r.item.event}/${r.item.target}/${r.item.k}`),
         );
@@ -389,7 +389,7 @@ function compare(
           () => [],
           NO_GRACE,
         );
-        expect(withoutDropped(overlay(withoutFirst, c.replay.restated, second))).toEqual(
+        expect(withoutDropped(overlay(withoutFirst, c.replay.restated, second, records))).toEqual(
           blocksOf(c.replay.records),
         );
         const cancelled = evaluateLog(schema, [
@@ -452,7 +452,7 @@ function compare(
           () => [],
           NO_GRACE,
         );
-        expect(withoutDropped(overlay(afterFirst, cB.replay.restated, first))).toEqual(
+        expect(withoutDropped(overlay(afterFirst, cB.replay.restated, first, records))).toEqual(
           blocksOf(cB.replay.records),
         );
         const del = (id: string, op: number, src: string): LogEntry => ({
@@ -474,7 +474,7 @@ function compare(
           openItems(advance(given, one.items), cB.replay.state),
         );
         const afterCB = advance(before, cB.items);
-        const latestBoth = overlay(givenByRecords(records), cB.replay.restated, new Set());
+        const latestBoth = overlay(givenByRecords(records), cB.replay.restated, new Set(), records);
         const byCB = new Set(
           cB.replay.restated.map((r) => `${r.item.event}/${r.item.target}/${r.item.k}`),
         );
@@ -490,7 +490,7 @@ function compare(
           () => [],
           NO_GRACE,
         );
-        expect(withoutDropped(overlay(latestBoth, cA.replay.restated, new Set()))).toEqual(
+        expect(withoutDropped(overlay(latestBoth, cA.replay.restated, new Set(), records))).toEqual(
           blocksOf(cA.replay.records),
         );
         sameAsRef(
@@ -789,7 +789,7 @@ function graceWrite(
   try {
     const bOnly = deletedContributions(kept, new Set([b]), isState);
     // The blocks as the log has them after `a`: its restatements over the records (W's as written).
-    const afterA = overlay(givenByRecords(withW), first.replay.restated, ga);
+    const afterA = overlay(givenByRecords(withW), first.replay.restated, ga, withW);
     const probe = replayDeletion(table, withW, both, [D], afterA);
     const hit = new Set([
       ...[...bOnly].filter((k) => !ga.has(k)),
@@ -981,7 +981,7 @@ function depsComplete(
   stretches: readonly Stretch[],
   after: RowState,
 ): void {
-  const latest = overlay(givenByRecords(records), restated, gone);
+  const latest = overlay(givenByRecords(records), restated, gone, records);
   const ends = (v: IntervalSet) => v.flatMap((x) => [x.from, x.to]).filter((p) => p !== null);
   const valued = table.valued.length > 0 ? table.valued : table.fields;
   // The contributions in effect after the replay (09 §3.5: candidates and awaiting items do not
@@ -1156,6 +1156,92 @@ describe.each(both)("%s table", (_, schema, isState) => {
     hits.check();
     console.log(schema.kind, JSON.stringify(seen));
     partly.check();
+  });
+});
+
+describe("two deletions on one row, the first cancelled (a property counterexample)", () => {
+  // Seven writes of f2 and a confirmation; S1 (#31, #61) and S6 (#21) deleted in turn. The first
+  // deletion splits #51's one item into #0 and #1, the second merges them back (#1 restated as
+  // dropped); cancelling the first makes #1 an item again, restated without a value as it is not
+  // carried. Its value is #51's own ("9"), never one made up for a block it had none of.
+  it("the cancellation's restatements laid over the blocks without the first deletion's give its replay's items", () => {
+    const ops: Op[] = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "9", sources: ["S4"] } },
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: { from: { mode: "given", value: "2026-11-03" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S6"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 20,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-03" },
+        },
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "9", sources: ["S5"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 10,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-05" },
+        },
+        fields: { f2: { value: "9", sources: ["S4"], explicit: true } },
+      },
+      {
+        kind: "write",
+        op: 60,
+        event: 61,
+        seen: 50,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-05" },
+        },
+        fields: { f2: { value: "9", sources: ["S1"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 70,
+        event: 71,
+        seen: 60,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-05" },
+        },
+        fields: { f2: { value: "9", sources: ["S3"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+    ] as Op[];
+    const decisions: Decision[] = [
+      { after: 1240855324, pick: 0, kind: "confirm", flag: 0, focus: false },
+    ];
+    compare(STATE, true, ops, decisions, ["S1", "S6"]);
   });
 });
 
