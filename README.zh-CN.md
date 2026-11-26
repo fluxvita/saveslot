@@ -1,122 +1,80 @@
-# saveslot · 总览
+# saveslot
 
 [English](README.md) · 简体中文
 
-> saveslot 的方向是 **Agent Data Infra**。本页是一页总览：saveslot 是什么、几个核心概念、第一版做成什么样、文档怎么读、怎么参与开发。第一次接触 saveslot、想顺着读懂设计的人，从讲解文档 [`docs/zh-CN/guide/`](docs/zh-CN/guide/README.md) 开始。
-> 这里只做概述，规则的权威定义都在后面链接的文档里；本页与它们不一致时，以它们为准。
+[![ci](https://github.com/fluxvita/saveslot/actions/workflows/ci.yml/badge.svg)](https://github.com/fluxvita/saveslot/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@fluxvita/saveslot)](https://www.npmjs.com/package/@fluxvita/saveslot)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![node](https://img.shields.io/node/v/@fluxvita/saveslot)](https://www.npmjs.com/package/@fluxvita/saveslot)
 
-## saveslot 是什么
+**saveslot 是你所有 AI Agent 共用的数据库。** 跟一个 Agent 说你跑了 5 公里，再问另一个这周跑了多少。每个值都带着出处和历史，数据归你。
 
-saveslot 是给所有 Agent 用的数据底座：跟踪会随时间演变的事物，保留从原始依据到当前状态的完整时间线；数据归用户所有，不绑定任何一家模型或宿主。
+## 演示
 
-- **场景判据**：同时满足三条就是 saveslot 的场景——有稳定的身份（"某一样东西"，不是一句零散的话）、会变化或累积、后续有人依赖它的当前样子或历史。
-- **独特性：时间是一等公民。** 数据库存现在，Memory 存说过的话；saveslot 存一样东西的时间线——现在是什么、怎么变成这样、每一步凭什么。
-- **分工：Agent 理解，saveslot 把关。** 理解用户意图、把话变成结构化写入、把意图拆成查询，是 Agent 的事；saveslot 只做确定性的检查、记录与执行，核心路径不依赖模型。
-- **两种产品形态，同一个内核**：saveslot 服务（第一版，一个人的数据底座，他用的所有 Agent 共用）与开发者 SDK（后续版本，嵌进开发者自己的 Agent）。
+这里将放一段短录屏：对一个 Agent 说一次跑步，换另一个 Agent 问这周跑了多少，再问它怎么知道的，它给出这个数字出自哪句话。
 
-详见 [`docs/zh-CN/spec/01-positioning.md`](docs/zh-CN/spec/01-positioning.md)。
-
-## 核心概念
-
-每条一两句；括号里是权威定义所在。
-
-### 日志与分层
-
-- **日志是唯一事实来源**：每个租户（第一版 = 用户）一条只追加的日志。存储里的每项状态要么是日志事件，要么由日志经 `apply` 确定性算出，要么是写明"丢了会怎样"的本地运行状态；导出就是日志，任何后端重放出同样的状态。（architecture §3、data-model「编号」）
-- **两层数据**：源数据日志（对话片段、工具结果、导入、纠错……）之上，是按 schema 抽取的有模型数据；上层只看后者，可追溯到前者。用户纠错是一条新的源数据，不改历史。（data-model「数据分层」）
-- **slot**：一组相关的表 + 它们的源数据（如健康、记账），是 schema 版本、时区与 slot 策略的单位，也是一次隐私删除的范围和权限的粒度；每条源数据属于且只属于一个 slot。（data-model「slot 与事物的时间线」）
-
-### 内核、服务层、操作契约与外化面
-
-- **核心 = 内核 + 服务层 + 操作契约。** 内核守住不变量 K1–K14（日志是唯一事实来源、每次写入都有源数据、派生只由规则生成、确认绑定内容……），任何用法下都关不掉；身份、权限、确认的交互方式等是服务层策略。（architecture §3）
-- **操作契约**是与传输方式无关的操作形状：有哪些操作、各收什么参数、回什么结构化结果、报什么错。（[`docs/zh-CN/spec/04-contract.md`](docs/zh-CN/spec/04-contract.md)）
-- **外化面**：HTTP、MCP、CLI、App、将来的开发者 SDK 都由契约生成，地位相同；saveslot 的正确性不依赖任何外化面存在。HTTP 是网络上的基础协议，MCP 是 Agent 的基础接入面，其余是增强；第一版不做 App，人的环节由 CLI 承担。（[`docs/zh-CN/spec/05-surfaces.md`](docs/zh-CN/spec/05-surfaces.md)、[`docs/zh-CN/spec/06-cli.md`](docs/zh-CN/spec/06-cli.md)）
-
-### 写入与读取
-
-- **写入**：模型只填意图（新增 / 变更 / 纠错 / 撤销）、表、行、值、证据，并原样带回读取时拿到的版本标记 `ver` 与 schema 版本；其余由服务端补全。回执状态是 `saved` / `pending` / `job`，被拒是报错。（data-model「写入：分工与请求」）
-- **读取**：saveslot 提供详细的数据目录、简单查询与只读受限 SQL、按时刻读、历史按需展开；读取自动记进 read_log（只记版本，不记值）。saveslot 不挑选"和任务相关的数据"。（data-model「读取：数据供给」「读取记录」）
-
-### 时间：事件类表与状态类表
-
-- **两条时间线**：记录时间（saveslot 何时记下）与业务时间（现实中何时发生 / 生效）。（data-model「时间」）
-- **三种表**：schema 为每张表声明时间类型——无时间（偏好）、事件类（跑步、支出：发生时刻是普通列）、状态类（预算、目标：一行 = 一个实体在一段生效区间里的值，区间左闭右开）。
-- **写状态的默认**：不传终点时管到下一个已记录的变化为止；抹掉已记录变化点的写入是高影响，默认进待确认。
-
-### 来源与证据
-
-- **每次写入都有源数据**：写入随附的证据段存为源数据；没带证据时把请求本身（每个 op 一条）存为源数据。（data-model「不变量：每次写入都有源数据」）
-- **来源记到字段级，分两种**：值来源（数据依赖：值从哪来）与操作来源（控制依赖：谁触发、谁决定）。删除只沿值来源传播。（data-model「来源：值来源与操作来源」）
-- **来源级别与字面命中**：写入一律先收；级别（用户明确 / Agent 推断）与"值是否在证据原文里字面出现"在写入时记进事件。将来按来源级别裁决冲突时只认字面命中的级别；第一版冲突一律保持当前值。（data-model「来源级别」）
-- **数据真实性与确认委托给调用方 Agent**：saveslot 不区分确认出自人还是 Agent，不保证写入数据属实；saveslot 保证留痕、确认绑定内容、删除 24 小时内可撤回（隐私删除 0.1.0 尚未提供，见下面「删除」）。（architecture §3）
-
-### 冲突与待处理事项
-
-- **冲突是持久状态**：写入时按冲突单元检测（一个字段，或 schema 声明的一个字段组；状态类表另看业务时间区间），两次都不传终点的写入判定与到达顺序无关；读取时带出，永不阻塞——冲突期间按规则给出确定的生效值，第一版一律保持当前值。（data-model「冲突处理」）
-- **待处理事项**是统一对象：待确认、已标记、冲突、删除宽限期，持久存在、属于某个 slot，由人或 Agent 处理。**不过期**——saveslot 没有判断力，不替人裁决；靠合并与取代不堆积。处理时带回读到的事项版本，确认的就是执行的。（data-model「待处理事项：统一对象」）
-
-### 删除
-
-- **三种请求**：撤销一行（普通写入，保留历史）、删除证据（只删原文，值留下）、隐私删除（彻底忘掉）。（data-model「删除的种类」）
-- **参考语义**：隐私删除后的状态 = 假如被删源数据从未存在过、按 `seq` 重放日志得到的状态；两处有意偏离：人的决定照记录执行，已经生效过的写入保持生效。两条原则：只追数据依赖、不追控制依赖；saveslot 自己的机械判定按删除后的状态重算。（data-model「删除结果的定义」「两条原则」）
-- 删除证据与隐私删除先预览、再确认；确认后有 24 小时宽限期，可撤回，到期物理删除；恢复备份时按日志之外的删除登记补删。第一版只做撤销一行与按源数据的隐私删除。（data-model「删除」）
-- **0.1.0 尚未提供隐私删除**：预览、确认、24 小时内撤回、到期物理删除、恢复备份后的补删都在随后的版本里。0.1.0 里能做的是撤销（保留历史，可以撤回）。（[`docs/zh-CN/spec/07-scope-v1.md`](docs/zh-CN/spec/07-scope-v1.md) 第 7 节）
-
-### 完整性、派生与 schema
-
-- **完整性的目标是溯源 + 防误操作，不是防篡改**：链只串事件头（不放由用户内容算出的值），内容分块单独存放、配校验和（只用于发现损坏）。（data-model「完整性与溯源」）
-- **派生表完全由规则生成**：Agent 只写基础表；派生规则是 schema 的一部分（首版受限 SQL），派生缓存随基础写入同一事务刷新。（data-model「派生规则与派生缓存」）
-- **schema 版本演进**：版本不可变、字段用稳定 ID；迁移分只改元数据 / 确定性转换 / 重新抽取三种，后台构建、原子切换，读永不停；对外只有最新版。（data-model「schema 版本演进」）
-- **0.1.0 尚未提供需要重建表的迁移**：在写入过的表上加字段、删字段、收紧约束、改精度、换单位，草稿可以提交和预览，但还不能生效；只改数据目录的变更和从未被写入的表上的改动照常生效。（[`docs/zh-CN/spec/07-scope-v1.md`](docs/zh-CN/spec/07-scope-v1.md) 第 7 节）
-
-## 第一版部署形态
-
-- **两种运行模式，都是单节点**（一个用户的数据只在一个地方）：① 本机模式——用户在自己的电脑上启动 saveslot 服务，只供本机访问，同一台机器上的多个 Agent 共用；② 服务器模式——可以是我们运营的云服务，也可以是用户在自己的服务器上部署的同一套，任何地方的 Agent 都能远程连它。
-- **多台设备、本机与云端的 Agent 要共用数据，就都连同一个服务器模式的 saveslot。** 第一版不做的是"同一份数据同时放在本机与云端、互相同步"以及离线写入。
-- **存储与语言**：全部用 PostgreSQL——本机模式用 PGlite（嵌在 saveslot 服务进程里，用户不用自己装数据库；Agent 只经 MCP / HTTP 连 saveslot），自托管、托管用原生 PostgreSQL；内核用 TypeScript。每个用户独立存储。第一版发布为 npm 包，安装需要先有 Node。
-- **第一版只做导出**，保证用户能把数据带走；导入与迁移随多节点放到后续。
-- 不进第一版的（多节点、抽取作业、saveslot 自己调模型、防篡改、整个 slot 删除、文件存储等）见 [`docs/zh-CN/spec/01-positioning.md`](docs/zh-CN/spec/01-positioning.md)「后续规划」；第一版完整范围见 [`docs/zh-CN/spec/07-scope-v1.md`](docs/zh-CN/spec/07-scope-v1.md)。
-
-## 上手（本机模式）
+## 上手
 
 需要 Node 24.22.1 及以上（26 系列 26.12.1 及以上）。
 
 ```sh
-npm install -g @fluxvita/saveslot      # 0.1.0 发布之前：@fluxvita/saveslot@next
-saveslot setup
+npm install -g @fluxvita/saveslot
+saveslot setup      # 模板选 running；它会把 saveslot 加进 Claude Code 与 Codex
 ```
 
-`saveslot setup` 建好 `~/.saveslot`、启动服务、用模板建第一个 slot，并把 saveslot 加进本机找到的宿主（Claude Code、Codex；Cursor 与 Claude Desktop 打印配置片段，由人粘贴）。模板选 `running`，然后对 Agent 说：
+然后对 Agent 说：
 
 > 今天早上跑了 5 公里，28 分钟，挺轻松。
 
-第一次用时 Claude Code 会问是否允许 Agent 使用 saveslot 的工具，选允许。Agent 把它连同你的原话一起写进去，这一行就在了：
+第一次用时 Claude Code 会问是否允许 Agent 使用 saveslot 的工具，选允许。这次跑步就记下了，证据是你的原话：问任何一个接上的 Agent 都能答，或者执行 `saveslot query health.runs`。
 
-```sh
-saveslot query health.runs
-saveslot history health.runs r_… --sources    # r_… 取自上面的结果：这一行怎么来的，证据是你的原话
+服务器模式、别的宿主、没有终端的脚本、从源码安装，见 [`docs/zh-CN/guide/11-deployment.md`](docs/zh-CN/guide/11-deployment.md) 与 [`docs/zh-CN/spec/06-cli.md`](docs/zh-CN/spec/06-cli.md) 第 3 节（Linux 上 `npm install -g` 报 `EACCES` 也在那里）。
+
+## 它是什么
+
+- **时间是一等公民。** saveslot 存一样东西的时间线：现在是什么、怎么变成这样、每一步凭什么。
+- **Agent 理解，saveslot 把关。** Agent 把你说的话变成结构化写入；saveslot 只做确定性的检查、记录与执行，核心路径不调用模型。
+- **所有状态出自一条只追加的日志。** 其余一切都由它算出，所以导出就是这条日志，在任何后端上重放都得到同样的状态。
+
+```mermaid
+flowchart LR
+  A1["Claude Code"] -- MCP --> S
+  A2["Codex"] -- MCP --> S
+  A3["脚本、连接器"] -- HTTP --> S
+  P["你"] -- CLI --> S
+  subgraph S["saveslot"]
+    direction TB
+    L["只追加的日志：<br/>每次写入都带证据"] --> T["当前状态：<br/>表、历史、冲突"]
+  end
+  L -- "导出" --> E["你的数据，就是这条日志"]
 ```
 
-服务的日志在 `~/.saveslot/run/saveslot.log`。
+## 和别的东西有什么不同
 
-在脚本里、没有终端时，没人能回答提问：`saveslot setup` 只在终端里提问，所以把答案写成选项，`saveslot setup --yes --template running --host claude-code`。同样，`claude -p` 没法请求工具授权，要事先允许：`claude -p "…" --allowedTools "mcp__saveslot"`。
+| | 存什么 | 谁来读写 | 值为什么变了 |
+|---|---|---|---|
+| 数据库 | 当前的值 | 你写的程序 | 不记 |
+| Agent 自带的记忆 | 说过的话 | 那一个 Agent | 不记 |
+| saveslot | 每样东西的时间线 | 你所有的 Agent | 每个值都带着出处和历史 |
 
-也可以从源码检出运行：`pnpm install && pnpm build`，再 `node packages/saveslot/dist/bin.js setup`。
+## 能接什么
 
-0.1 是第一个发布版本，提供本机模式与服务器模式（账户与登录、OAuth 授权、远程 MCP、导入、`saveslot server` 的运维命令）。两种模式下尚未提供的是隐私删除（预览、确认、24 小时内撤回、到期物理删除、恢复备份后的补删）和在写入过的表上需要重建表的 schema 改动，随后的版本提供；`saveslot verify --replay`、修改 slot 策略、详细的查询输出也尚未接入。详见 [`docs/zh-CN/spec/07-scope-v1.md`](docs/zh-CN/spec/07-scope-v1.md) 第 7 节。
+| 宿主 | 怎么接上 |
+|---|---|
+| Claude Code | `saveslot setup` 自动接上 |
+| Codex | `saveslot setup` 自动接上 |
+| Cursor | `saveslot connect cursor` 打印要粘贴的配置 |
+| Claude 桌面端 | `saveslot connect claude-desktop` 打印要粘贴的配置 |
 
-Linux 上 Node 装在 `/usr/local` 时，普通用户执行 `npm install -g` 会报 `EACCES`。不要用 `sudo`，给 npm 设一个用户自己的目录：
+Agent 经 MCP 连 saveslot：本机经 `saveslot mcp`，服务器模式走远程 MCP，用 OAuth 登录授权。脚本与连接器用 HTTP；人用 `saveslot` 命令。
 
-```sh
-npm config set prefix ~/.npm-global
-echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.profile
-```
+## 状态
 
-开一个新的终端，再执行 `npm install -g`。细则见 [`docs/zh-CN/spec/06-cli.md`](docs/zh-CN/spec/06-cli.md) 第 3 节。
+**0.1** 是第一个发布版本，有本机模式和服务器模式（云托管或自部署）。saveslot 还在 1.0 之前：小版本之间接口可能变化。设计里有些部分 0.1 还没有提供，[0.1 包含什么](docs/zh-CN/spec/07-scope-v1.md)见范围文档第 7 节。
 
-## 文档怎么读
+## 文档
 
-文档都在 `docs/` 下，以中文版（`docs/zh-CN/`）为准，四个目录各管一件事。规格与讲解另有英文版，放在 `docs/` 下去掉 `zh-CN/` 的同名路径，清单见 [`docs/README.md`](docs/README.md)；过程材料与调研报告的英文版待补。
+文档都在 `docs/` 下，四个目录各管一件事。规格与讲解有中文与英文两个版本：中文版在 `docs/zh-CN/`，英文版在 `docs/` 下去掉 `zh-CN/` 的同名路径，清单见 [`docs/README.md`](docs/README.md)。两个版本语义对齐：改一个就在同一个拉取请求里改另一个，两者不一致算缺陷，请提 Issue。过程材料与调研报告目前只有中文版。
 
 | 目录 | 读什么 |
 |---|---|
@@ -127,15 +85,12 @@ echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.profile
 
 讲解与规格不一致时以规格为准。
 
-## 开发
+## 求助与参与
 
-先读[开发上手](docs/zh-CN/development.md)：搭环境、跑检查、只跑一个测试、找到改动该落在哪、演练一次小修复。代码怎么组织、为什么这样组织，见[讲解第 12 章](docs/zh-CN/guide/12-contributing.md)与[规格 `02-architecture.md`](docs/zh-CN/spec/02-architecture.md)。
+- 提问去 [Discussions](https://github.com/fluxvita/saveslot/discussions)，缺陷与任务提 [Issues](https://github.com/fluxvita/saveslot/issues)，见 [`SUPPORT.md`](SUPPORT.md)。
+- 安全问题按 [`SECURITY.zh-CN.md`](SECURITY.zh-CN.md) 私下报告。
+- 参与贡献：[`CONTRIBUTING.zh-CN.md`](CONTRIBUTING.zh-CN.md)，含怎么跑测试；代码怎么分包、工具链：[`docs/zh-CN/guide/12-contributing.md`](docs/zh-CN/guide/12-contributing.md)。谁决定什么见 [`GOVERNANCE.md`](GOVERNANCE.md)，参与者遵守[行为准则](CODE_OF_CONDUCT.md)。
 
-给 Agent：遵循 [`AGENTS.md`](AGENTS.md)。
+## 许可证
 
-## 仓库与许可证
-
-- 仓库：`fluxvita/saveslot`；网站：`saveslot.ai`；npm 包：`@fluxvita/saveslot`。
-- 许可证：[Apache-2.0](LICENSE)，代码与文档相同。名字与标识的使用见[商标政策](TRADEMARKS.zh-CN.md)。
-- 参与贡献：[`CONTRIBUTING.md`](CONTRIBUTING.zh-CN.md) 与 [`docs/zh-CN/guide/12-contributing.md`](docs/zh-CN/guide/12-contributing.md)；谁决定什么见 [`GOVERNANCE.md`](GOVERNANCE.md)，参与者遵守[行为准则](CODE_OF_CONDUCT.md)。
-- 求助：提问去 [Discussions](https://github.com/fluxvita/saveslot/discussions)，缺陷与任务提 [Issues](https://github.com/fluxvita/saveslot/issues)（[`SUPPORT.md`](SUPPORT.md)）；安全问题按 [`SECURITY.zh-CN.md`](SECURITY.zh-CN.md) 私下报告。
+[Apache-2.0](LICENSE)，代码与文档相同。名字与标识的使用见[商标政策](TRADEMARKS.zh-CN.md)。
