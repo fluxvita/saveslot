@@ -57,6 +57,7 @@ import {
   LocalAnswerTooLarge,
   LocalUnreachable,
   localRequest,
+  upgradeOf,
 } from "./local-request.ts";
 import { type CallRecord, openRecord } from "./mcp-record.ts";
 import { TEXTS } from "./texts.ts";
@@ -443,9 +444,12 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
     if (a.status === 503) {
       // `/mcp` says `starting` whenever it cannot serve; `/health` says which.
       const h = await health(o.socketPath, 2000);
+      const u = h?.state === "starting" ? upgradeOf(h) : undefined;
       return h?.state === "failed"
         ? fail("service_failed", -32000, TEXTS.mcpServiceFailed)
-        : fail("unavailable", -32000, TEXTS.mcpUnavailable);
+        : u !== undefined
+          ? fail("unavailable", -32000, TEXTS.mcpUpgrading(u.step))
+          : fail("unavailable", -32000, TEXTS.mcpUnavailable);
     }
     const ctype = String(a.headers["content-type"] ?? "").toLowerCase();
     const text = a.body.toString("utf8");
@@ -583,6 +587,8 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
     }
     h = await untilSettled(o.socketPath, h);
     if (h === undefined) o.log(TEXTS.mcpEvent("not_running"));
+    else if (h.state === "starting" && upgradeOf(h) !== undefined)
+      o.log(TEXTS.mcpEvent("service_upgrading"));
     else if (h.state !== "ready") o.log(TEXTS.mcpEvent(`service_${h.state}`));
     else if (h.version !== o.version) o.log(TEXTS.mcpVersionMismatch);
     ready = true;
@@ -593,14 +599,22 @@ export async function runBridge(o: BridgeOptions): Promise<number> {
   return done;
 }
 
-/** While the service says `starting`, asks again, up to a minute. */
+/**
+ * While the service says `starting`, asks again, up to a minute; not while it upgrades the store's
+ * format (02-architecture §8), which may take longer: its calls are answered `unavailable` then.
+ */
 async function untilSettled(
   socketPath: string,
   first: HealthBody | undefined,
 ): Promise<HealthBody | undefined> {
   let h = first;
   const until = Date.now() + READY_WAIT_MS;
-  while (h !== undefined && h.state === "starting" && Date.now() < until) {
+  while (
+    h !== undefined &&
+    h.state === "starting" &&
+    upgradeOf(h) === undefined &&
+    Date.now() < until
+  ) {
     await new Promise((r) => setTimeout(r, 200));
     h = await health(socketPath);
   }

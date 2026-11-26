@@ -206,7 +206,14 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       if (code === "control_format_mismatch") throw new ServerStartRefused("oauth", "format");
       throw e;
     });
-    const backend = o.backend ?? new PostgresBackend({ cells: { [config.cellName]: config.cell } });
+    const backend =
+      o.backend ??
+      new PostgresBackend({
+        cells: { [config.cellName]: config.cell },
+        // A tenant's storage format upgraded when it is first opened (02-architecture §8).
+        onEvent: (event, fields) =>
+          warn(event, Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v)]))),
+      });
     const identity = await openIdentity({ db, config, external, control, backend, now });
     const cursors = await CursorKeys.fromFile(config.handleKeyFile);
     pool = new TenantPool({

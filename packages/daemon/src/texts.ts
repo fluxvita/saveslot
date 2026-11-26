@@ -71,6 +71,12 @@ export const TEXTS = {
     "error: the saveslot service did not start (format_too_old): the store was made by a development version of saveslot, in a storage format this one does not open and does not migrate. Initialize a new home with this version.",
   startFormatTooNew:
     "error: the saveslot service did not start (format_too_new): the store was made by a newer saveslot. Upgrade saveslot to open it.",
+  /** The store's format upgraded at the start (02-architecture §8): each step, as it begins. */
+  startUpgrading: (from: number, to: number, step: string | undefined) =>
+    `Upgrading the store from storage format ${from} to ${to}${step !== undefined ? ` (step ${step})` : ""}; waiting for it to finish, however long it takes.`,
+  /** An upgrade that failed (02-architecture §8): what is left, and what to do. */
+  startUpgradeFailed: (step: string | undefined) =>
+    `error: the saveslot service did not start (upgrade_failed): upgrading the store's storage format failed${step !== undefined ? ` at step ${step}` : ""}. That step was undone; the steps before it stay done. The service log (run/saveslot.log under the home) gives the database's error code (53100: the disk is full). Deal with that (free disk space), then start again: the upgrade goes on from that step.`,
   startHomeUnusable: (code: string) =>
     `error: the saveslot service was not started: the home cannot be used (${code}). Check that it is a directory you can read and write, with run/ a directory in it.`,
   startTimedOut: (pid: number) =>
@@ -88,11 +94,15 @@ export const TEXTS = {
     "A saveslot service holds the home again: one was started meanwhile (an MCP host connecting starts it). See saveslot status.",
   statusNotAnswering: "saveslot service: not answering (starting, or stuck)",
   statusNotRunning: "saveslot service: not running",
-  statusLastFailure: (reason: string, at: string) =>
-    `  the last start failed: ${reason} at ${at}. The service log is in run/saveslot.log under the home.`,
+  statusLastFailure: (reason: string, at: string, step?: string) =>
+    `  the last start failed: ${reason}${step !== undefined ? ` at step ${step} of the storage format upgrade` : ""} at ${at}. The service log is in run/saveslot.log under the home.`,
   status: (s: {
     readonly state: string;
     readonly reason: string | undefined;
+    /** The upgrade of the store's format, while it runs or when it failed. */
+    readonly upgrade:
+      | { readonly from: number; readonly to: number; readonly step?: string }
+      | undefined;
     readonly version: string;
     readonly mine: string;
     readonly pid: number;
@@ -113,6 +123,15 @@ export const TEXTS = {
         ? [`eval clock: ${s.evalClock} (not the system clock: an evaluation run)`]
         : []),
       `saveslot service: ${s.state}${s.reason !== undefined ? ` (${s.reason})` : ""}`,
+      ...(s.upgrade !== undefined
+        ? [
+            `  upgrade   storage format ${s.upgrade.from} to ${s.upgrade.to}${
+              s.upgrade.step !== undefined
+                ? `, ${s.state === "failed" ? "failed at" : "at"} step ${s.upgrade.step}`
+                : ""
+            }`,
+          ]
+        : []),
       `  version   ${s.version} (this saveslot: ${s.mine})`,
       `  pid       ${s.pid}, since ${s.since}`,
       ...(s.lock ? [`  lock      the home's single-writer lock, held by pid ${s.pid}`] : []),
@@ -431,6 +450,9 @@ export const TEXTS = {
   mcpOutcomeUnknown: `The connection to the saveslot service was lost after the call was sent: ${UNKNOWN_OUTCOME} Check saveslot status if this repeats.`,
   mcpUnavailable:
     "The saveslot service is not available right now (starting or stopping). Try again shortly.",
+  /** Upgrading the store's format at its start (02-architecture §8): no timeout, a wait. */
+  mcpUpgrading: (step: string | undefined) =>
+    `The saveslot service is not available right now: it is upgrading its storage format${step !== undefined ? ` (step ${step})` : ""}, which can take minutes on a large store. Try again later; saveslot status shows how far it is.`,
   mcpServiceFailed:
     "The saveslot service failed to start. See saveslot status; the service log is in run/saveslot.log under the home.",
   mcpTimedOut: `The saveslot service did not answer in time: ${UNKNOWN_OUTCOME}`,

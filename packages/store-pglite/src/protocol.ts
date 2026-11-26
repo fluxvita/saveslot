@@ -10,7 +10,7 @@
 // issued. Only one session is open at a time (the main thread queues transactions; the worker
 // refuses a second `begin`).
 
-import type { SqlValue } from "@fluxvita/saveslot-kernel";
+import type { SqlValue, UpgradeStep } from "@fluxvita/saveslot-kernel";
 
 /** How PGlite is configured to reach stable storage. See durability.ts. */
 export type Durability = "host-fsync" | "pglite-default";
@@ -23,7 +23,15 @@ export interface OpenParams {
   readonly sessionSettings: readonly string[];
   /** Highest storage format version this kernel supports. */
   readonly supportedFormat: number;
-  readonly metaKeys: { readonly storageFormat: string; readonly ownershipEpoch: string };
+  /** The oldest format upgraded to `supportedFormat`; older ones are refused (format_too_old). */
+  readonly oldestFormat: number;
+  /** The steps of the upgrade (kernel `UPGRADE_STEPS`, or a test's). */
+  readonly upgradeSteps: readonly UpgradeStep[];
+  readonly metaKeys: {
+    readonly storageFormat: string;
+    readonly ownershipEpoch: string;
+    readonly sessionSettings: string;
+  };
   /** PGlite contrib extensions to load, by module name (diagnostics and experiments only). */
   readonly contrib: readonly string[];
   /** WAL since the last checkpoint, in bytes, past which a `checkpoint` request runs one. */
@@ -60,6 +68,7 @@ export type Request =
   | { readonly kind: "rollback" }
   | { readonly kind: "checkpoint" }
   | { readonly kind: "analyze" }
+  | { readonly kind: "upgrade" }
   | { readonly kind: "stats" }
   | { readonly kind: "close" };
 
@@ -71,6 +80,20 @@ export interface OpenResult {
    * the open: statistics are not data, and the next check finds them stale again.
    */
   readonly analyzed: AnalyzeReply | { readonly failed: string };
+  /**
+   * The store is of an older format, to be upgraded (an `upgrade` request) before it is used: from
+   * and to which format. No ANALYZE at open then: the one after the upgrade takes its place.
+   */
+  readonly upgrade?: { readonly from: number; readonly to: number };
+}
+
+/**
+ * What an `upgrade` did (its next step): the format the store is now of, and, after the last step,
+ * the ANALYZE that follows it.
+ */
+export interface UpgradeReply {
+  readonly formatVersion: number;
+  readonly analyzed?: AnalyzeReply | { readonly failed: string };
 }
 
 export interface HostSyncStats {
@@ -93,6 +116,8 @@ export type ErrorCode =
   | "not_a_store"
   | "format_too_new"
   | "format_too_old"
+  | "upgrade_failed"
+  | "session_settings_mismatch"
   | "bad_encoding"
   | "durability_not_applied"
   | "ownership_lost"

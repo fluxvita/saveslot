@@ -758,6 +758,23 @@ describe("the bridge against a stand-in service", () => {
     expect(stopping).toMatchObject({ code: -32000, message: TEXTS.mcpUnavailable });
   });
 
+  it("while the service upgrades the store's format: not waited for; each call unavailable, with the step", async () => {
+    s.answer = (_, res) => json(res, 503, { error: { code: "unavailable", reason: "starting" } });
+    // Starting without an upgrade, the bridge would wait up to a minute for it before it sent.
+    s.health = { ...s.health, state: "starting", upgrade: { from: 5, to: 6, step: "5->6" } };
+    const b = bridge();
+    const begun = Date.now();
+    b.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    b.stdin.end();
+    expect(await b.exit).toBe(0);
+    expect(Date.now() - begun).toBeLessThan(10_000);
+    expect(JSON.parse(b.lines[0] as string).error).toMatchObject({
+      code: -32000,
+      message: TEXTS.mcpUpgrading("5->6"),
+    });
+    expect(b.err.join("\n")).toContain("service_upgrading");
+  });
+
   it("a batch holding a request, on every failing path: one error with id null", async () => {
     const paths: [string, (res: ServerResponse) => void][] = [
       ["401", (res) => json(res, 401, { error: { code: "unauthenticated" } })],

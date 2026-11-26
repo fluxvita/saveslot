@@ -30,6 +30,13 @@ export interface HealthBody {
    * one: its current moment and the moment it started at. Never present in normal operation.
    */
   readonly eval_clock?: { readonly now: string; readonly started_at: string };
+  /**
+   * The upgrade of the store's storage format at the start (02-architecture §8
+   * «格式版本、导出、导入与恢复»): while it runs (`starting`), and when it failed (`failed`,
+   * `upgrade_failed`). The formats it goes from and to, and the step it is on or failed at, as
+   * `5->6` (none yet before the first). No paths, no user data.
+   */
+  readonly upgrade?: { readonly from: number; readonly to: number; readonly step?: string };
 }
 
 export interface LocalListener {

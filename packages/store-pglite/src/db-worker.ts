@@ -6,6 +6,7 @@
 
 import { parentPort } from "node:worker_threads";
 import { type Extension, PGlite } from "@electric-sql/pglite";
+import { type UpgradeStep, upgradePath } from "@fluxvita/saveslot-kernel";
 import { expectedSettings, hostSyncStats, nodeFs, startParams } from "./durability.ts";
 import type {
   AnalyzeMode,
@@ -19,14 +20,17 @@ import type {
   QueryReply,
   Reply,
   Request,
+  UpgradeReply,
   WireError,
 } from "./protocol.ts";
 
 class WorkerError extends Error {
   readonly code: ErrorCode;
-  constructor(code: ErrorCode, message: string) {
+  readonly sqlState: string | undefined;
+  constructor(code: ErrorCode, message: string, sqlState?: string) {
     super(message);
     this.code = code;
+    this.sqlState = sqlState;
   }
 }
 
@@ -118,18 +122,30 @@ async function open(p: OpenParams): Promise<OpenResult> {
     if (!Number.isInteger(formatVersion) || formatVersion < 1) {
       throw new WorkerError("not_a_store", "the storage has no valid storage format version");
     }
-    // An older format is a store from development (no data has been published in one): not
-    // migrated, refused with what to do.
-    if (formatVersion < p.supportedFormat) {
+    // Older than any released version wrote: a store from development, not upgraded, refused with
+    // what to do. From there to this kernel's format: upgraded, after the checks below.
+    if (formatVersion < p.oldestFormat) {
       throw new WorkerError(
         "format_too_old",
-        `storage format ${formatVersion} is a development format older than ${p.supportedFormat}; initialize the store anew with this version`,
+        `storage format ${formatVersion} is a development format older than ${p.oldestFormat}; initialize the store anew with this version`,
       );
     }
     if (formatVersion > p.supportedFormat) {
       throw new WorkerError(
         "format_too_new",
         `storage format ${formatVersion} is newer than the supported format ${p.supportedFormat}; upgrade saveslot`,
+      );
+    }
+
+    // The fixed session settings it was created with are the ones applied now (02-architecture
+    // §8): an upgrade's statements, and everything after, run under them.
+    const made = await pg.query<{ value: string }>("SELECT value FROM meta WHERE key = $1", [
+      p.metaKeys.sessionSettings,
+    ]);
+    if (made.rows[0]?.value !== JSON.stringify(p.sessionSettings)) {
+      throw new WorkerError(
+        "session_settings_mismatch",
+        "the storage was created with other fixed session settings than this version's",
       );
     }
 
@@ -155,6 +171,18 @@ async function open(p: OpenParams): Promise<OpenResult> {
     epochKey = p.metaKeys.ownershipEpoch;
     checkpointAfterBytes = p.checkpointAfterBytes;
     analyzeMode = p.analyze;
+    upgradeTo = p.supportedFormat;
+    upgradeSteps = p.upgradeSteps;
+    formatKey = p.metaKeys.storageFormat;
+    // An older format: upgraded by the `upgrade` request that follows, then analyzed.
+    if (formatVersion < p.supportedFormat) {
+      return {
+        formatVersion,
+        epoch,
+        analyzed: { ran: false },
+        upgrade: { from: formatVersion, to: p.supportedFormat },
+      };
+    }
     // Statistics before the store serves (02-architecture §7 «统计信息»): a failure is reported,
     // not thrown; the open goes on.
     let analyzed: OpenResult["analyzed"];
@@ -256,6 +284,58 @@ async function checkpoint(): Promise<null> {
 
 /** See OpenParams `analyze`. */
 let analyzeMode: AnalyzeMode = "stale";
+
+/** The format the open store is upgraded to, by these steps, the format kept under this key. */
+let upgradeTo = 0;
+let upgradeSteps: readonly UpgradeStep[] = [];
+let formatKey = "";
+
+/**
+ * The next step of the upgrade of the open store to `upgradeTo` (02-architecture §8
+ * «格式版本、导出、导入与恢复»), one per request, so the main thread says which step it is on: in a
+ * transaction of its own whose last statement sets the format, so a store stopped half way is of
+ * the format of its last step done, and the next open goes on from there. After the last step,
+ * ANALYZE, whatever the statistics say: new tables, columns and indexes need theirs.
+ */
+async function upgrade(): Promise<UpgradeReply> {
+  const pg = requireDb();
+  if (session) throw new Error("a transaction is open in the DB Worker");
+  const r = await pg.query<{ value: string }>("SELECT value FROM meta WHERE key = $1", [formatKey]);
+  let current = Number(r.rows[0]?.value);
+  const step = upgradePath(current, upgradeTo, upgradeSteps)[0];
+  if (step !== undefined) {
+    try {
+      await pg.transaction(async (tx) => {
+        if (step.sql.trim() !== "") await tx.exec(step.sql);
+        await tx.query("UPDATE meta SET value = $1 WHERE key = $2", [
+          String(step.from + 1),
+          formatKey,
+        ]);
+      });
+    } catch (e) {
+      const w = toWire(e);
+      throw new WorkerError(
+        "upgrade_failed",
+        `upgrading storage format ${step.from} to ${step.from + 1}: ${w.message}`,
+        w.sqlState,
+      );
+    }
+    current = step.from + 1;
+  }
+  if (current < upgradeTo) return { formatVersion: current };
+  const mode = analyzeMode;
+  analyzeMode = "always";
+  let analyzed: UpgradeReply["analyzed"];
+  try {
+    analyzed = await analyze();
+  } catch (e) {
+    const w = toWire(e);
+    analyzed = { failed: w.sqlState ?? w.code ?? "unknown" };
+  } finally {
+    analyzeMode = mode;
+  }
+  return { formatVersion: current, analyzed };
+}
 
 /**
  * The planner's statistics are stale when the log has grown past what they last counted by more
@@ -380,6 +460,8 @@ async function handle(req: Request): Promise<unknown> {
       return checkpoint();
     case "analyze":
       return analyze();
+    case "upgrade":
+      return upgrade();
     case "stats":
       return hostSyncStats();
     case "close":
@@ -388,7 +470,11 @@ async function handle(req: Request): Promise<unknown> {
 }
 
 function toWire(e: unknown): WireError {
-  if (e instanceof WorkerError) return { message: e.message, code: e.code };
+  if (e instanceof WorkerError) {
+    return e.sqlState !== undefined
+      ? { message: e.message, code: e.code, sqlState: e.sqlState }
+      : { message: e.message, code: e.code };
+  }
   if (e instanceof Error) {
     const sqlState = (e as { code?: unknown }).code;
     return typeof sqlState === "string" ? { message: e.message, sqlState } : { message: e.message };

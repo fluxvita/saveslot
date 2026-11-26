@@ -37,6 +37,7 @@
 import {
   formatV1Ddl,
   META_KEYS,
+  OLDEST_UPGRADABLE_FORMAT,
   type QueryResult,
   type ReadTx,
   SESSION_SETTINGS,
@@ -47,6 +48,9 @@ import {
   type TenantRef,
   type TenantStore,
   type Tx,
+  UPGRADE_STEPS,
+  type UpgradeStep,
+  upgradePath,
 } from "@fluxvita/saveslot-kernel";
 import { Connection, Gone, type MakeClient, type PostgresCell, Refused } from "./connection.ts";
 import { PostgresStoreError } from "./errors.ts";
@@ -55,6 +59,20 @@ import { affectedRows } from "./values.ts";
 export interface PostgresBackendOptions {
   /** The cells this backend can open tenants in, by the name a tenant reference gives. */
   readonly cells: Readonly<Record<string, PostgresCell>>;
+  /**
+   * Tests only: the format this backend takes for the kernel's, and the upgrade steps to it, in
+   * place of STORAGE_FORMAT_VERSION and UPGRADE_STEPS.
+   */
+  readonly formatUpgrade?: { readonly format: number; readonly steps: readonly UpgradeStep[] };
+  /**
+   * Where the backend reports an upgrade at open, each with the tenant's database: `upgrading`
+   * (from, to) before its first step, `upgrade_step` (from, to: the step's) before each, `upgraded`
+   * (from, to, ms) once done. The server writes them to its log.
+   */
+  readonly onEvent?: (
+    event: "upgrading" | "upgrade_step" | "upgraded",
+    fields: Readonly<Record<string, string | number>>,
+  ) => void;
 }
 
 /** The server version this backend opens (02-architecture §8: 18.x). */
@@ -136,11 +154,17 @@ function storeError(
 export class PostgresBackend implements StorageBackend {
   readonly #cells: Readonly<Record<string, PostgresCell>>;
   readonly #make: MakeClient | undefined;
+  readonly #format: number;
+  readonly #upgradeSteps: readonly UpgradeStep[];
+  readonly #onEvent: PostgresBackendOptions["onEvent"];
 
   /** `make` is for tests: the driver's client is made by it instead. */
   constructor(opts: PostgresBackendOptions, make?: MakeClient) {
     this.#cells = opts.cells;
     this.#make = make;
+    this.#format = opts.formatUpgrade?.format ?? STORAGE_FORMAT_VERSION;
+    this.#upgradeSteps = opts.formatUpgrade?.steps ?? UPGRADE_STEPS;
+    this.#onEvent = opts.onEvent;
   }
 
   async open(
@@ -193,11 +217,35 @@ export class PostgresBackend implements StorageBackend {
         if (opts.create !== true) {
           throw new PostgresStoreError("store_not_found", `the ${where} is empty`);
         }
-        await createStorage(conn);
+        await createStorage(conn, this.#format);
       }
-      const formatVersion = await checkFormat(conn);
+      let formatVersion = await checkFormat(conn, this.#format);
       await checkSessionSettings(conn);
       const epoch = await takeOwnership(conn);
+      if (formatVersion < this.#format) {
+        // An older format, upgraded now, after the epoch is taken: an older process still holding
+        // the tenant finds another epoch at its next write and gives the tenant up, rather than
+        // write with its format's code into tables of this one.
+        const db = tenant.database;
+        this.#onEvent?.("upgrading", { database: db, from: formatVersion, to: this.#format });
+        const begun = performance.now();
+        const from = formatVersion;
+        formatVersion = await upgrade(
+          conn,
+          epoch,
+          formatVersion,
+          this.#format,
+          this.#upgradeSteps,
+          (step) =>
+            this.#onEvent?.("upgrade_step", { database: db, from: step.from, to: step.from + 1 }),
+        );
+        this.#onEvent?.("upgraded", {
+          database: db,
+          from,
+          to: formatVersion,
+          ms: Math.round(performance.now() - begun),
+        });
+      }
       return new PostgresTenantStore({ conn, formatVersion, epoch, ...tenant });
     } catch (e) {
       await conn.end();
@@ -364,13 +412,13 @@ async function locked<T>(conn: Connection, f: () => Promise<T>): Promise<T> {
 }
 
 /** The kernel's tables and the first rows of `meta`, in one transaction: all of it or none. */
-async function createStorage(conn: Connection): Promise<void> {
+async function createStorage(conn: Connection, format: number): Promise<void> {
   await locked(conn, async () => {
     // Made by another opener while this one waited for the lock.
     if (await hasMeta(conn)) return;
     await conn.run(formatV1Ddl());
     for (const [k, v] of [
-      [META_KEYS.storageFormat, String(STORAGE_FORMAT_VERSION)],
+      [META_KEYS.storageFormat, String(format)],
       [META_KEYS.ownershipEpoch, "0"],
       [META_KEYS.sessionSettings, SESSION_SETTINGS_TEXT],
     ] as const) {
@@ -384,26 +432,81 @@ async function metaValue(conn: Connection, key: string): Promise<string | undefi
   return (r.rows[0] as { value: string } | undefined)?.value;
 }
 
-async function checkFormat(conn: Connection): Promise<number> {
+async function checkFormat(conn: Connection, format: number): Promise<number> {
   const formatVersion = Number(await metaValue(conn, META_KEYS.storageFormat));
   if (!Number.isInteger(formatVersion) || formatVersion < 1) {
     throw new PostgresStoreError("not_a_store", "the storage has no valid storage format version");
   }
-  // An older format is a store from development (no data has been published in one): not
-  // migrated, refused with what to do.
-  if (formatVersion < STORAGE_FORMAT_VERSION) {
+  // Older than any released version wrote: a store from development, not upgraded, refused with
+  // what to do. From there to the kernel's format: upgraded once the epoch is taken.
+  if (formatVersion < OLDEST_UPGRADABLE_FORMAT) {
     throw new PostgresStoreError(
       "format_too_old",
-      `storage format ${formatVersion} is a development format older than ${STORAGE_FORMAT_VERSION}; initialize the store anew with this version`,
+      `storage format ${formatVersion} is a development format older than ${OLDEST_UPGRADABLE_FORMAT}; initialize the store anew with this version`,
     );
   }
-  if (formatVersion > STORAGE_FORMAT_VERSION) {
+  if (formatVersion > format) {
     throw new PostgresStoreError(
       "format_too_new",
-      `storage format ${formatVersion} is newer than the supported format ${STORAGE_FORMAT_VERSION}; upgrade saveslot`,
+      `storage format ${formatVersion} is newer than the supported format ${format}; upgrade saveslot`,
     );
   }
   return formatVersion;
+}
+
+/**
+ * The upgrade of a store of format `from` to `to` (02-architecture §8 «格式版本、导出、导入与恢复»):
+ * each step a write transaction, as every write is here: the tenant's lock, the epoch this opener
+ * took still the database's (another opener since: ownership_lost), the format read again under
+ * the lock (a step another opener did already is skipped), the step's statements, the format set
+ * last. A store stopped half way is of the format of its last step done. Returns the format.
+ */
+async function upgrade(
+  conn: Connection,
+  epoch: number,
+  from: number,
+  to: number,
+  steps: readonly UpgradeStep[],
+  onStep: (step: UpgradeStep) => void,
+): Promise<number> {
+  let current = from;
+  for (const step of upgradePath(from, to, steps)) {
+    onStep(step);
+    await locked(conn, async () => {
+      const held = Number(
+        (
+          await one<{ value: string }>(conn, "SELECT value FROM meta WHERE key = $1 FOR UPDATE", [
+            META_KEYS.ownershipEpoch,
+          ])
+        ).value,
+      );
+      if (held !== epoch) {
+        throw new PostgresStoreError(
+          "ownership_lost",
+          `ownership epoch is ${held}, this store opened it as ${epoch}: another opener took over`,
+        );
+      }
+      const now = Number(await metaValue(conn, META_KEYS.storageFormat));
+      if (now > step.from) return;
+      try {
+        if (step.sql.trim() !== "") await conn.run(step.sql);
+        await conn.run("UPDATE meta SET value = $1 WHERE key = $2", [
+          String(step.from + 1),
+          META_KEYS.storageFormat,
+        ]);
+      } catch (e) {
+        if (e instanceof Gone) throw e;
+        const sqlState = e instanceof Refused ? e.sqlState : undefined;
+        throw new PostgresStoreError(
+          "upgrade_failed",
+          `upgrading storage format ${step.from} to ${step.from + 1}: ${(e as Error).message}`,
+          { cause: e, ...(sqlState !== undefined ? { sqlState } : {}) },
+        );
+      }
+    });
+    current = step.from + 1;
+  }
+  return current;
 }
 
 /** The settings the storage was created with are the ones this kernel sets (§8). */

@@ -288,9 +288,14 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       fields["reason"] !== "already_running" &&
       fields["reason"] !== "ownership_lost"
     ) {
+      const step = fields["step"];
       writeFile(
         lastFailureFile(o.home),
-        `${JSON.stringify({ at, reason: String(fields["reason"] ?? "internal") })}\n`,
+        `${JSON.stringify({
+          at,
+          reason: String(fields["reason"] ?? "internal"),
+          ...(typeof step === "string" ? { step } : {}),
+        })}\n`,
         { mode: 0o600 },
       ).catch(() => {});
     }
@@ -318,7 +323,23 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   let importRun: Promise<unknown> | undefined;
   /** Aborts the import still reading its body: a stop does not wait on a client that stalled. */
   let importAbort: AbortController | undefined;
-  const backendOptions: PgliteBackendOptions = { onEvent: (event, fields) => say(event, fields) };
+  /**
+   * The upgrade of the store's format at this start (02-architecture §8): its formats and the step
+   * it is on, for `/health`; gone once it is done, kept when it failed.
+   */
+  let upgrade: { from: number; to: number; step?: string } | undefined;
+  const backendOptions: PgliteBackendOptions = {
+    onEvent: (event, fields) => {
+      if (event === "upgrading") {
+        upgrade = { from: Number(fields["from"]), to: Number(fields["to"]) };
+      } else if (event === "upgrade_step" && upgrade !== undefined) {
+        upgrade = { ...upgrade, step: `${fields["from"]}->${fields["to"]}` };
+      } else if (event === "upgraded") {
+        upgrade = undefined;
+      }
+      say(event, fields);
+    },
+  };
   const tenantBackend = o.testing?.backend?.(backendOptions) ?? new PgliteBackend(backendOptions);
   const openTenant = o.testing?.openTenant ?? openLocalTenant;
   const leftover = (_path: string, e: unknown) =>
@@ -529,6 +550,10 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       pid: process.pid,
       since,
       ...(state === "failed" && reason !== undefined ? { reason } : {}),
+      ...(upgrade !== undefined &&
+      (state === "starting" || (state === "failed" && reason === "upgrade_failed"))
+        ? { upgrade }
+        : {}),
       // Taken above, before listening: whoever answers here holds it.
       writer_lock: "held",
       ...(evalStart !== undefined
@@ -726,7 +751,19 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
       const format =
         e instanceof PgliteStoreError &&
         (e.code === "format_too_old" || e.code === "format_too_new");
-      say("failed", { reason, ...(format ? { message: e.message } : {}) });
+      // An upgrade that failed: the step, and the database's SQLSTATE (53100: the disk is full);
+      // not its message, which may quote what the store holds.
+      const upgradeFailed = e instanceof PgliteStoreError && e.code === "upgrade_failed";
+      say("failed", {
+        reason,
+        ...(format ? { message: e.message } : {}),
+        ...(upgradeFailed
+          ? {
+              step: upgrade?.step ?? "unknown",
+              ...(e.sqlState !== undefined ? { sql_state: e.sqlState } : {}),
+            }
+          : {}),
+      });
       return;
     }
     // Gone before the service says it is ready: whoever sees it ready finds no failure kept.

@@ -66,7 +66,7 @@ import {
 } from "./config.ts";
 import { type DoctorOptions, doctor } from "./doctor.ts";
 import { initBackend } from "./init-backend.ts";
-import { health } from "./local-request.ts";
+import { health, upgradeOf } from "./local-request.ts";
 import { daemonVersion, main } from "./main.ts";
 import { runBridge } from "./mcp-bridge.ts";
 import { CLOCK_BEHIND_MS, clockBehind, looksSynced, withSession } from "./probes.ts";
@@ -91,7 +91,10 @@ export interface CommandIO {
 /** The service's log in the background (06-cli §3 «分步做»). */
 export const logFile = (home: string): string => join(runDir(home), "saveslot.log");
 
-/** How long `start` waits for ready and `stop` for the process to go, in milliseconds. */
+/**
+ * How long `start` waits for ready and `stop` for the process to go, in milliseconds. While the
+ * service says it upgrades the store's format, `start` waits on, and this wait starts again after.
+ */
 const WAIT_MS = 60_000;
 const POLL_MS = 100;
 
@@ -202,19 +205,41 @@ export async function init(
   }
 }
 
-/** Waits until `/health` says ready or failed, the process has exited, or the time is up. */
-async function waitReady(
+/**
+ * Waits until `/health` says ready or failed, the process has exited, or the time is up. While it
+ * says the store's format is being upgraded (02-architecture §8), the time is not up: it starts
+ * again at each answer, and `upgrading` is told each step once; with `untilUpgrading`, the wait
+ * ends there instead (`"upgrading"`).
+ */
+export async function waitReady(
   socket: string,
   exited: () => boolean,
   stop?: AbortSignal,
-): Promise<HealthBody | "exited" | "timeout" | "stopped"> {
-  const until = Date.now() + WAIT_MS;
+  o: {
+    readonly upgrading?: (u: { from: number; to: number; step?: string }) => void;
+    readonly untilUpgrading?: boolean;
+    readonly waitMs?: number;
+  } = {},
+): Promise<HealthBody | "exited" | "timeout" | "stopped" | "upgrading"> {
+  const waitMs = o.waitMs ?? WAIT_MS;
+  let until = Date.now() + waitMs;
+  let told: string | undefined;
   while (Date.now() < until) {
     // Asked to stop (a signal to `setup`): no longer waited for; the process is left to start.
     if (stop?.aborted === true) return "stopped";
     const h = await health(socket, 2000);
     if (h !== undefined && (h.state === "ready" || h.state === "failed")) return h;
     if (h === undefined && exited()) return "exited";
+    const u = h?.state === "starting" ? upgradeOf(h) : undefined;
+    if (u !== undefined) {
+      if (o.untilUpgrading === true) return "upgrading";
+      until = Date.now() + waitMs;
+      const at = u.step ?? "";
+      if (at !== told) {
+        told = at;
+        o.upgrading?.(u);
+      }
+    }
     await sleep(POLL_MS);
   }
   return "timeout";
@@ -235,6 +260,11 @@ export async function start(
     readonly onStarted?: () => void;
     /** `--eval-clock`: the test clock's starting moment, passed on to the service (evaluations). */
     readonly evalClock?: string;
+    /**
+     * Not waited for while the service upgrades the store's format: 7 then (the MCP bridge, which
+     * answers its calls `unavailable` meanwhile rather than hold them).
+     */
+    readonly untilUpgrading?: boolean;
   } = {},
 ): Promise<number> {
   try {
@@ -265,8 +295,14 @@ async function startService(
     readonly stop?: AbortSignal;
     readonly onStarted?: () => void;
     readonly evalClock?: string;
+    readonly untilUpgrading?: boolean;
   },
 ): Promise<number> {
+  const waiting = {
+    upgrading: (u: { from: number; to: number; step?: string }) =>
+      io.err(TEXTS.startUpgrading(u.from, u.to, u.step)),
+    ...(o.untilUpgrading === true ? { untilUpgrading: true } : {}),
+  };
   try {
     await readTenantDirectory(home);
   } catch (e) {
@@ -280,8 +316,10 @@ async function startService(
   const mine = daemonVersion();
   const running = await health(socket);
   if (running !== undefined && running.state !== "failed") {
-    const h = running.state === "ready" ? running : await waitReady(socket, () => false, o.stop);
+    const h =
+      running.state === "ready" ? running : await waitReady(socket, () => false, o.stop, waiting);
     if (h === "stopped") return 1;
+    if (h === "upgrading") return 7;
     if (typeof h === "object" && h.state === "ready") {
       if (h.version !== mine) {
         io.err(TEXTS.versionMismatch(h.version, mine));
@@ -327,15 +365,16 @@ async function startService(
   });
   child.unref();
 
-  let h = await waitReady(socket, () => exited, o.stop);
+  let h = await waitReady(socket, () => exited, o.stop, waiting);
   let other: number | undefined;
   if (h === "exited" && (await lockHeld(home))) {
     // Ours lost the home's lock to a process starting meanwhile (another start, a bridge): that
     // one is not listening yet; it is waited for as ours would have been.
     other = await readPid(home);
-    h = await waitReady(socket, () => false, o.stop);
+    h = await waitReady(socket, () => false, o.stop, waiting);
   }
   if (h === "stopped") return 1;
+  if (h === "upgrading") return 7;
   if (typeof h === "object" && h.state === "ready") {
     // Another start may have won the home's lock: then it is that process that answers.
     if (h.version !== mine) {
@@ -354,18 +393,9 @@ async function startService(
       child.kill("SIGTERM");
       await Promise.race([gone, sleep(FAILED_EXIT_WAIT_MS)]);
     }
-    io.err(
-      h.reason === "data_dir_permissions"
-        ? TEXTS.startDataDirOpen
-        : h.reason === "format_too_old"
-          ? TEXTS.startFormatTooOld
-          : h.reason === "format_too_new"
-            ? TEXTS.startFormatTooNew
-            : TEXTS.startFailed(h.reason ?? "failed"),
-    );
-    // A store of another format is refused until something is done about it (06-cli §6.2: 5);
-    // any other failure of a started service may pass on a retry (7).
-    return h.reason === "format_too_old" || h.reason === "format_too_new" ? 5 : 7;
+    const f = failedStart(h);
+    io.err(f.text);
+    return f.code;
   }
   if (h === "timeout") {
     // Not killed: it may be recovering (02-architecture §8), which takes as long as it takes.
@@ -374,6 +404,26 @@ async function startService(
   }
   io.err(TEXTS.startFailed("exited"));
   return 7;
+}
+
+/**
+ * What `start` says, and its exit code, for a service that answered `failed`. A store of another
+ * format, or one whose upgrade failed, is refused until something is done about it (06-cli §6.2:
+ * 5); any other failure of a started service may pass on a retry (7).
+ */
+export function failedStart(h: HealthBody): { readonly text: string; readonly code: number } {
+  switch (h.reason) {
+    case "data_dir_permissions":
+      return { text: TEXTS.startDataDirOpen, code: 7 };
+    case "format_too_old":
+      return { text: TEXTS.startFormatTooOld, code: 5 };
+    case "format_too_new":
+      return { text: TEXTS.startFormatTooNew, code: 5 };
+    case "upgrade_failed":
+      return { text: TEXTS.startUpgradeFailed(upgradeOf(h)?.step), code: 5 };
+    default:
+      return { text: TEXTS.startFailed(h.reason ?? "failed"), code: 7 };
+  }
 }
 
 export async function stop(home: string, io: CommandIO): Promise<number> {
@@ -434,13 +484,17 @@ async function logEndAt(home: string): Promise<string | undefined> {
 }
 
 /** The last start's failure as kept under run/, when it is of its form; undefined otherwise. */
-async function lastFailure(home: string): Promise<{ reason: string; at: string } | undefined> {
+async function lastFailure(
+  home: string,
+): Promise<{ reason: string; at: string; step?: string } | undefined> {
   try {
     const v = JSON.parse(await readFile(lastFailureFile(home), "utf8")) as Record<string, unknown>;
-    const { reason, at } = v;
+    const { reason, at, step } = v;
     if (typeof reason !== "string" || !/^[a-z0-9_]{1,64}$/.test(reason)) return undefined;
     if (typeof at !== "string" || Number.isNaN(Date.parse(at))) return undefined;
-    return { reason, at: new Date(Date.parse(at)).toISOString() };
+    // The step an upgrade failed at, when it is of its form; anything else is left out.
+    const ok = typeof step === "string" && /^[0-9]{1,6}->[0-9]{1,6}$/.test(step);
+    return { reason, at: new Date(Date.parse(at)).toISOString(), ...(ok ? { step } : {}) };
   } catch {
     return undefined;
   }
@@ -461,7 +515,7 @@ export async function status(
     io.out(TEXTS.statusNotRunning);
     // Why the last start failed, when it did (02-architecture §8): a code and a time, as kept.
     const last = await lastFailure(home);
-    if (last !== undefined) io.out(TEXTS.statusLastFailure(last.reason, last.at));
+    if (last !== undefined) io.out(TEXTS.statusLastFailure(last.reason, last.at, last.step));
     return 7;
   }
   const pending = h.state === "ready" ? await pendingCount(home) : undefined;
@@ -486,6 +540,7 @@ export async function status(
         behindMs !== undefined ? new Date(Date.parse(logEnd as string)).toISOString() : undefined,
       state: h.state,
       reason: h.reason,
+      upgrade: upgradeOf(h),
       version: h.version,
       mine: daemonVersion(),
       pid: h.pid,
@@ -741,7 +796,7 @@ export async function mcpCommand(home: string, io: CommandIO, record?: string): 
     stdout: process.stdout,
     log: io.err,
     autostart,
-    startService: () => start(home, { out: () => {}, err: () => {} }),
+    startService: () => start(home, { out: () => {}, err: () => {} }, { untilUpgrading: true }),
     version: daemonVersion(),
     socketPath: socketFile(home),
     ...(record !== undefined ? { record } : {}),
