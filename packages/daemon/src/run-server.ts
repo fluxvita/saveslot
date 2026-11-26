@@ -277,6 +277,8 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       ...(o.testing?.openWaitMs !== undefined ? { openWaitMs: o.testing.openWaitMs } : {}),
       // The tenant, and whether it waited or the database refused the connection.
       onFull: (tenant, why) => warn("tenant_pool_full", { tenant, why }),
+      // A tenant opened again for a use: its connection gone, or another database named for it.
+      onReopen: (tenant, why) => warn("tenant_reopened", { tenant, why }),
       now,
       // In the server's own log: the tenant and the step, never the error's message.
       onCloseFailure: (tenant, what, error) =>

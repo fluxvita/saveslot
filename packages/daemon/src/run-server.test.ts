@@ -33,6 +33,7 @@ import {
   type ControlDatabase,
   checkDiscard,
   openControlDatabase,
+  PostgresBackend,
 } from "@fluxvita/saveslot-store-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_KEY } from "../../service/src/external-assertion.fixture.ts";
@@ -2541,6 +2542,81 @@ describe.skipIf(TEST_BACKEND !== "postgres")(
     );
   },
 );
+
+// A tenant's connection that went away (02-architecture §7 «连接»): the next use opens the tenant
+// again instead of failing until the tenant is closed for being idle. PostgreSQL only, which can end
+// a connection from outside. The tenants' databases are the run's (named for it, dropped with it).
+describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a tenant's connection gone", () => {
+  const pg = testPostgres(cellFromEnv());
+
+  it(
+    "the next request opens the tenant again and is answered",
+    async () => {
+      const name = pg.name();
+      const db = await openControlDatabase(pg.cell, name, { create: true });
+      const cp = await initControlPlane(db);
+      await initOAuthTables(db);
+      const accounts = await initLocalAccounts(db);
+      const real = new PostgresBackend({ cells: { [CELL]: pg.cell } });
+      const named = new Map<string, string>();
+      const runs = (database: string) => {
+        let n = named.get(database);
+        if (n === undefined) {
+          n = pg.name();
+          named.set(database, n);
+        }
+        return n;
+      };
+      const backend: TenantPoolOptions["backend"] = {
+        open: (ref, opts) => {
+          if (ref.kind !== "postgres") throw new Error("a server tenant's storage is a database");
+          return real.open({ ...ref, database: runs(ref.database) }, opts);
+        },
+      };
+      const { user } = await addLocalUser(accounts, {
+        control: cp,
+        backend,
+        name: "quinn",
+        password: "correct horse battery",
+        cell: CELL,
+        cells: new Set([CELL]),
+        now: NOW,
+      });
+      const token = await db.write((tx) =>
+        writeUserSession(tx, user, { expiresAt: "2099-01-01T00:00:00.000Z" }),
+      );
+      const tenantDb = runs(databaseOf((await cp.tenantOf(user))?.id as TenantId));
+      const cfg = config();
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const warned: string[] = [];
+      const s = await runServer({
+        config: cfg,
+        version: "0.0.0-test",
+        openControl: async () => db,
+        backend,
+        now: () => NOW,
+        warn: (event, fields) => warned.push(`${event} ${JSON.stringify(fields)}`),
+      });
+      const auth = { authorization: `Bearer ${token}` };
+      try {
+        expect((await send(s, { path: "/v1/slots", headers: auth })).status).toBe(200);
+        // The tenant's connection ended from outside (a restart, a middlebox, an operator).
+        await pg.admin(
+          "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+          [tenantDb],
+        );
+        const after = await send(s, { path: "/v1/slots", headers: auth });
+        expect([after.status, after.body.slice(0, 200)]).toEqual([200, expect.any(String)]);
+        expect(
+          warned.some((w) => w.startsWith("tenant_reopened") && w.includes('"connection"')),
+        ).toBe(true);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+});
 
 // What `server start` stands on: the lock is its control database connection's. PostgreSQL only,
 // which can end a connection from outside.

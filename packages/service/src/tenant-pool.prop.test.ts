@@ -76,6 +76,8 @@ async function schedule(seed: number): Promise<string[]> {
   const trace: string[] = [];
   const errors: string[] = [];
   let ids = 0;
+  /** Uses not yet lent, and the databases named for their tenant since each started. */
+  const waiting: { tenant: string; named: Set<string> }[] = [];
   const begin = (kind: Op["kind"], tenant: string) => {
     const op: Op = {
       id: ++ids,
@@ -86,12 +88,21 @@ async function schedule(seed: number): Promise<string[]> {
       settled: false,
     };
     ops.push(op);
+    // The databases the directory names for this tenant from the use's start to its lending:
+    // the one lent must be among them (the pool reads the directory once, before it waits).
+    const named = new Set([w.databases.get(tenant) ?? tenant]);
+    const wait = { tenant, named };
+    waiting.push(wait);
     const body = async (lent?: { store: object }) => {
+      waiting.splice(waiting.indexOf(wait), 1);
       op.started = true;
       if (kind === "use") {
         const conn = w.connOf(lent?.store as object);
         if (conn?.state !== "open")
           w.violations.push(`use ${op.id} lent a ${conn?.state} connection`);
+        if (conn?.dead === true) w.violations.push(`use ${op.id} lent a connection that is gone`);
+        if (conn !== undefined && !named.has(conn.tenant))
+          w.violations.push(`use ${op.id} lent ${conn.tenant}, not a database named for ${tenant}`);
         if (conn !== undefined) w.running.set(op.id, { tenant, conn });
       } else {
         for (const c of w.live()) {
@@ -160,7 +171,17 @@ async function schedule(seed: number): Promise<string[]> {
       h?.release();
       // Released twice: the second does nothing.
       if (rnd() < 0.3) h?.release();
-    } else if (r < 0.92) {
+    } else if (r < 0.935 && w.live().some((c) => c.state === "open" && c.dead !== true)) {
+      const c = pick(w.live().filter((x) => x.state === "open" && x.dead !== true));
+      what = `connection ${c.id} gone`;
+      c.dead = true;
+    } else if (r < 0.95) {
+      const t = pick(tenants);
+      const d = `${t}_${i}`;
+      what = `${t} now in ${d}`;
+      w.databases.set(t, d);
+      for (const x of waiting) if (x.tenant === t) x.named.add(d);
+    } else if (r < 0.96) {
       w.opts.syncThrow = rnd() < 0.5 ? "53300" : "plain";
       what = "the next open throws";
     } else {

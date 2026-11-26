@@ -53,7 +53,7 @@ describe("the places of open tenants", () => {
     expect(w.pendingOpens.map((x) => x.conn.tenant)).toEqual(["tn_b"]);
     w.settleOpen(0, "ok");
     await flush();
-    expect([a.s.result, b.s.started]).toEqual(["connection_failed", true]);
+    expect([a.s.result, b.s.started]).toEqual(["open_failed", true]);
     b.release();
     await flush();
     holds(w, p, 1);
@@ -250,5 +250,161 @@ describe("a request's hold on its tenant", () => {
   it("a hold only inside a use of the tenant", () => {
     const p = poolIn(world(), { maxOpen: 1 });
     expect(() => p.hold("tn_x" as TenantId)).toThrow();
+  });
+});
+
+// An open tenant lent only while it is good (02-architecture §7 «连接»): its connection not gone, and
+// its database the one the directory names; else closed and opened again by the use.
+describe("an open tenant opened again", () => {
+  /** The connection a use was lent. */
+  async function lent(w: World, p: ReturnType<typeof poolIn>, tenant: string, entry?: object) {
+    let conn: number | undefined;
+    await p.use(
+      tenant as TenantId,
+      async (t) => {
+        conn = w.connOf(t.store as object)?.id;
+      },
+      entry === undefined ? {} : { entry: entry as never },
+    );
+    return conn;
+  }
+
+  it("its connection gone: the next use closes it and opens it again, told as connection", async () => {
+    const w = world();
+    w.opts.autoOpen = true;
+    w.opts.autoClose = true;
+    const reopened: string[] = [];
+    const p = poolIn(w, { maxOpen: 2, reopened });
+    const first = await lent(w, p, "tn_a");
+    w.kill("tn_a");
+    const second = await lent(w, p, "tn_a");
+    expect(second).not.toBe(first);
+    expect(w.conns.find((c) => c.id === first)?.closes).toBe(1);
+    expect(reopened).toEqual(["tn_a connection"]);
+    holds(w, p, 2);
+  });
+
+  it("another database named for it: opened again on that one, whether the use read the directory or was given its row", async () => {
+    const w = world();
+    w.opts.autoOpen = true;
+    w.opts.autoClose = true;
+    const reopened: string[] = [];
+    const p = poolIn(w, { maxOpen: 2, reopened });
+    await lent(w, p, "tn_a");
+    // The pool reads the directory itself.
+    w.databases.set("tn_a", "tn_a_swapped");
+    const read = await lent(w, p, "tn_a");
+    expect(w.conns.find((c) => c.id === read)?.tenant).toBe("tn_a_swapped");
+    // Given the row (a request's authentication read it): compared with what is open.
+    w.databases.set("tn_a", "tn_a_again");
+    const given = await lent(w, p, "tn_a", {
+      id: "tn_a",
+      owner: "u_00000000000000000000000001",
+      ref: { kind: "postgres", cell: "c", database: "tn_a_again" },
+      state: "active",
+    });
+    expect(w.conns.find((c) => c.id === given)?.tenant).toBe("tn_a_again");
+    expect(reopened).toEqual(["tn_a database", "tn_a database"]);
+    expect(w.live().map((c) => c.tenant)).toEqual(["tn_a_again"]);
+    holds(w, p, 2);
+  });
+
+  it("a use given the directory's row of an open tenant reads no other: one read for a request", async () => {
+    const w = world();
+    w.opts.autoOpen = true;
+    const p = poolIn(w, { maxOpen: 2 });
+    const row = {
+      id: "tn_a",
+      owner: "u_00000000000000000000000001",
+      ref: { kind: "postgres", cell: "c", database: "tn_a" },
+      state: "active",
+    };
+    // Opening reads it (what it opens is the directory's at that moment).
+    const first = await lent(w, p, "tn_a", row);
+    const before = w.reads.directory;
+    expect(await lent(w, p, "tn_a", row)).toBe(first);
+    expect(await lent(w, p, "tn_a", row)).toBe(first);
+    expect(w.reads.directory).toBe(before);
+    // Not given: the pool reads it once for the use.
+    await lent(w, p, "tn_a");
+    expect(w.reads.directory).toBe(before + 1);
+  });
+
+  it("a use still on the old connection is done first; the new use gets the new connection after it", async () => {
+    const w = world();
+    w.opts.autoOpen = true;
+    w.opts.autoClose = true;
+    const p = poolIn(w, { maxOpen: 2 });
+    const old = held(p, "tn_a");
+    await flush();
+    const oldConn = w.conns[0]?.id;
+    w.databases.set("tn_a", "tn_a_swapped");
+    let newConn: number | undefined;
+    const next = p.use("tn_a" as TenantId, async (t) => {
+      newConn = w.connOf(t.store as object)?.id;
+    });
+    await flush();
+    // Not closed under the use running on it; the new use waits.
+    expect([w.conns[0]?.state, newConn]).toEqual(["open", undefined]);
+    old.release();
+    await next;
+    expect(newConn).not.toBe(oldConn);
+    expect(w.conns.find((c) => c.id === oldConn)?.state).toBe("closed");
+    holds(w, p, 2);
+  });
+
+  it("a gone connection whose close fails is let go: no place kept, the tenant opens again", async () => {
+    const w = world();
+    w.opts.autoOpen = true;
+    const failures: string[] = [];
+    const p = poolIn(w, { maxOpen: 1, closeFailures: failures });
+    await lent(w, p, "tn_a");
+    w.kill("tn_a");
+    const next = lent(w, p, "tn_a");
+    await flush();
+    w.settleClose(0, false);
+    expect(await next).toBe(2);
+    expect(failures).toEqual(["tn_a close_failed"]);
+    expect(p.stateForTests().held).toBe(1);
+  });
+
+  it("a hold taken before the tenant is opened again still holds it after", async () => {
+    const w = world();
+    w.opts.autoOpen = true;
+    w.opts.autoClose = true;
+    const p = poolIn(w, { maxOpen: 1 });
+    let release!: () => void;
+    await p.use("tn_a" as TenantId, async () => {
+      release = p.hold("tn_a" as TenantId);
+    });
+    w.kill("tn_a");
+    await lent(w, p, "tn_a");
+    const a = () => p.stateForTests().slots.find((x) => x.tenant === "tn_a");
+    // The same record, still held: not idle, no idle timer.
+    expect([a()?.holds, a()?.idleTimer, a()?.open]).toEqual([1, false, true]);
+    release();
+    expect([a()?.holds, a()?.idleTimer]).toEqual([0, true]);
+    holds(w, p, 1);
+  });
+
+  it("opened again and the database not reached: open_failed, a retry later; one try a use, not a storm", async () => {
+    const w = world();
+    w.opts.autoOpen = true;
+    w.opts.autoClose = true;
+    const p = poolIn(w, { maxOpen: 1 });
+    await lent(w, p, "tn_a");
+    w.kill("tn_a");
+    w.opts.autoOpen = false;
+    const failing = p.use("tn_a" as TenantId, async () => {});
+    await flush();
+    w.settleOpen(0, "fail");
+    await expect(failing).rejects.toMatchObject({ code: "open_failed" });
+    // Nothing tries again on its own: one open asked for, the failed one; none waiting.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect([w.conns.length, w.pendingOpens.length]).toEqual([2, 0]);
+    // The next use tries once more, and is lent.
+    w.opts.autoOpen = true;
+    expect(await lent(w, p, "tn_a")).toBe(3);
+    holds(w, p, 1);
   });
 });

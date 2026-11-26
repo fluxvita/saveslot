@@ -950,15 +950,24 @@ describe("TenantPool: at most maxOpen tenants open", () => {
   it(
     "with every tenant in use, uses wait in line and get places in the order they came",
     async () => {
-      const [a, b, c, d] = await Promise.all([1, 2, 3, 4].map(() => tenantOf(owner())));
+      // One after another: a process creates one tenant at a time, and under load four at once
+      // wait past the creation's wait.
+      const [a, b, c, d] = [
+        await tenantOf(owner()),
+        await tenantOf(owner()),
+        await tenantOf(owner()),
+        await tenantOf(owner()),
+      ];
       const k = counted();
       const p = capped(k.backend);
       const ua = held(p, (a as TenantEntry).id);
       const ub = held(p, (b as TenantEntry).id);
       await until(() => ua.started() && ub.started());
       const uc = held(p, (c as TenantEntry).id);
-      await sleep(20);
+      // In line before the next comes (each reads the directory first).
+      await until(() => p.stateForTests().line === 1);
       const ud = held(p, (d as TenantEntry).id);
+      await until(() => p.stateForTests().line === 2);
       await sleep(100);
       expect(uc.started() || ud.started()).toBe(false);
       ub.release();

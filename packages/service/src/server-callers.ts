@@ -90,7 +90,7 @@ export function poolContractError(e: unknown): unknown {
         reason: "busy",
       });
     }
-    if (e.code === "pool_full") {
+    if (e.code === "pool_full" || e.code === "open_failed") {
       return new ContractError("unavailable", "no connection for the tenant is free yet", {
         reason: "busy",
         retry_after: BUSY_RETRY_AFTER,
@@ -163,7 +163,12 @@ export function serverCallers(o: {
       return {
         principal: caller.principal,
         tenant: caller.tenant,
-        use: (fn) => serving(() => o.pool.use(caller.tenant, (t) => fn(served(caller.tenant, t)))),
+        use: (fn) =>
+          serving(() =>
+            o.pool.use(caller.tenant, (t) => fn(served(caller.tenant, t)), {
+              ...(caller.entry !== undefined ? { entry: caller.entry } : {}),
+            }),
+          ),
         release: caller.release,
       };
     },
