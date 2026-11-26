@@ -9,9 +9,10 @@
 // (`<mode>-switch` with --switch) and must not hold a sample yet: a format's sample is made once
 // and not replaced. --switch: the history goes on with a schema switch (format-sample.fixture.ts).
 //
-// Beside the sample, `made-from.json`: the commit it was made on, the release tag before it, and
-// the files changed since that tag (a sample made on a release with a later history: only the
-// sample's own test files may be there).
+// Beside the sample, `made-from.json`: the release tag before the commit it was made on, that tag's
+// commit, and the files changed since the tag. A sample made after a release is made from the tag's
+// tree plus those files, which may only be the sample's own test files; the commit it was made on
+// is not recorded, since it need not be one the repository keeps.
 //
 // local:  `home.tar.gz`, a home's data directory with its anchor and credentials, and
 //         `expected.json`.
@@ -35,11 +36,10 @@ function git(repo: string, ...args: string[]): string {
   return r.stdout.trim();
 }
 
-/** The commit a sample is made on, the release tag before it, and what changed since the tag. */
+/** The release tag before the commit a sample is made on, its commit, and what changed since. */
 function madeFrom(repo: string) {
   const tag = git(repo, "describe", "--tags", "--abbrev=0", "--match", "v*");
   return {
-    commit: git(repo, "rev-parse", "HEAD"),
     tag,
     tag_commit: git(repo, "rev-list", "-n", "1", tag),
     changed_since_tag: git(repo, "diff", "--name-only", tag, "HEAD")
