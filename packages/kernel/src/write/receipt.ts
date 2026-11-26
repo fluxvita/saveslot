@@ -68,6 +68,7 @@ function valueIn(v: FieldValue): ValueOut {
   return valueOut(JSON.parse(canonicalize(v as never)) as FieldValue);
 }
 
+import { READABLE_CONTENT } from "../store/readable-content.ts";
 import { WriteError } from "./errors.ts";
 import { type EntityKeyText, keyFields, keyOf } from "./keys.ts";
 import { tableShape } from "./plan.ts";
@@ -500,7 +501,17 @@ export interface WriteReceipt {
     readonly skipped?: number;
   };
   /** A replay's parts the log cannot give back (04-contract §14 «重放返回什么»). */
-  readonly omitted?: readonly ("existing_keys" | "derived_values" | "unrecorded_ops")[];
+  readonly omitted?: readonly (
+    | "existing_keys"
+    | "derived_values"
+    | "unrecorded_ops"
+    | "deleted_content"
+  )[];
+  /**
+   * A replay whose original write a pending deletion lists (03-deletion «宽限期内重发»): nothing
+   * written again, nothing of it given back.
+   */
+  readonly original_deleted?: { readonly deletion: ItemId };
   readonly warnings?: readonly ReceiptWarning[];
 }
 
@@ -1261,6 +1272,40 @@ export async function readReceipt(
           ],
         }
       : {}),
+  };
+}
+
+/**
+ * The receipt of a repeated request whose original write a pending deletion lists (03-data-model/
+ * 03-deletion «宽限期内重发»; 04-contract §14 «重放返回什么»): the operation number and the schema
+ * version it was written with (its head's `request`, metadata), `replayed`, and the deletion;
+ * nothing of the write's content, its rows or its items (`omitted`: `deleted_content`).
+ */
+export async function deletedReceipt(
+  tx: ReadTx,
+  op: OpNumber,
+  deletion: string,
+): Promise<WriteReceipt> {
+  const r = await tx.query<{ body: string | null }>(
+    `SELECT body FROM ${READABLE_CONTENT} c WHERE c.seq = $1 AND c.path = 'request'`,
+    [op],
+  );
+  const body = r.rows[0]?.body;
+  if (body === undefined || body === null) {
+    throw new WriteError("internal", `the head of operation ${op} has no readable request`);
+  }
+  return {
+    status: "saved",
+    sv: (JSON.parse(body) as { sv: number }).sv,
+    seq: op,
+    ops: [],
+    derived: [],
+    derived_total: 0,
+    pending: [],
+    superseded: [],
+    replayed: true,
+    omitted: ["deleted_content"],
+    original_deleted: { deletion: deletion as ItemId },
   };
 }
 

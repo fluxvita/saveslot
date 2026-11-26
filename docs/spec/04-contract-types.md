@@ -1288,7 +1288,7 @@ interface WriteResult extends CommonResult {
    *  The caller reads them itself when needed (history / query). */
   omitted?: Array<"affected_reads" | "derived_values" | "before_values" | "skipped_spans" | "deleted_content"
                   | "unrecorded_ops" | "existing_keys" | "field_results" | "lists">;
-  original_deleted?: { deletion: ItemId };   // the original write hit by the replay has been deleted: nothing is written again, and the content is not echoed
+  original_deleted?: { deletion: ItemId };   // the original write hit by the replay has been deleted (its request key is listed by a pending deletion): nothing is written again, and the content is not echoed: ops is empty, omitted has deleted_content, only the original operation number and sv are given; when several deletions list it, the one confirmed first
   job?: JobId;                   // @later
 }
 
