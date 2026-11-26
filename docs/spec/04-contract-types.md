@@ -756,7 +756,7 @@ interface AsOfResult extends CommonResult, PageResult {
   other_reads?: Array<{ read: ReadId; seq: Seq; at: Instant }>;   // with as_of: {task}: the other reads of this target by the same task
 }
 
-/** before / after are not given when there is no value. "*": a boolean, true means exists. */
+/** before / after are not given when there is no value, nor when a contribution a deletion removed gave it (the entry then carries partially_deleted). "*": a boolean, true means exists. */
 interface ChangedField { before?: Value; after?: Value }
 
 interface ChangesResult extends CommonResult, PageResult {
@@ -771,6 +771,8 @@ interface ChangesResult extends CommonResult, PageResult {
     target: TargetRef;
     /** Lists only the fields whose value actually changed. Event tables, timeless tables: one object per field. State tables: each field is an array ordered by interval, each segment with its own interval (the same shape as TimelineField[] in timeline). "*" is whether this row / this segment exists, given when a revoke or the undo of a revoke changes it. */
     fields: Record<FieldName | "*", ChangedField | Array<ChangedField & { valid: Interval }>>;
+    /** A field's before or after came from a contribution a deletion removed (in its grace period or carried out): that side is not given (data-model "Deletion · Version table"). */
+    partially_deleted?: true;
   }>;
 }
 ```

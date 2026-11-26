@@ -39,3 +39,14 @@ export const taskOfOperation = (seq: string): string =>
  */
 export const taskKnown = (seq: string): string =>
   `NOT EXISTS (SELECT 1 FROM ${READABLE_CONTENT} k WHERE k.seq = ${seq} AND k.path = 'task' AND k.body IS NULL)`;
+
+/**
+ * SQL: the version-table cell `v` (an alias) holds a value a contribution no longer readable gave
+ * (03-data-model/03-deletion «删除后的样子是一个新版本»): the contribution's value block,
+ * `fields/<field>/<k>` of its event (09 §5.9), is pending or cleared. Such a cell's value is not
+ * read; where it was, the read marks `partially_deleted`. A cell no contribution gave (a schema
+ * constant, no value, existence) is never so.
+ */
+export const cellWithheld = (v: string): string =>
+  `(${v}.src_event IS NOT NULL AND ${v}.src_field IS NOT NULL AND EXISTS (SELECT 1 FROM ${READABLE_CONTENT} k
+     WHERE k.seq = ${v}.src_event AND k.path = 'fields/' || ${v}.src_field || '/' || ${v}.src_k AND k.body IS NULL))`;
