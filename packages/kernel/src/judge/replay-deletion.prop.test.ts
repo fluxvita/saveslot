@@ -1299,6 +1299,79 @@ describe("two deletions on one row, the first cancelled (a property counterexamp
   });
 });
 
+describe("a group value past a field's seen interval (a property counterexample)", () => {
+  // The state table with group {f2, f3}, seed -1881329432 of the property above. #61 writes f2 to
+  // the next change, its seen version taken before #41 and #51. The group value takes #61's value
+  // for a field only where that field's own seen interval reaches (09-references «冲突判据»);
+  // elsewhere V's. Taking #61's value for f2 everywhere merged a write the kernel judged a conflict.
+  it("the deletion's replay leaves what the reference evaluator gives", () => {
+    const ops = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "3", sources: ["S4"] } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-03" },
+        },
+        fields: { f3: { value: "1", sources: ["S5"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "9", sources: ["S4"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 30,
+        valid: {
+          from: { mode: "given", value: "2026-11-03" },
+          to: { mode: "given", value: "2026-11-05" },
+        },
+        fields: { f2: { value: "1", sources: ["S5"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 40,
+        valid: {
+          from: { mode: "given", value: "2026-11-01" },
+          to: { mode: "given", value: "2026-11-03" },
+        },
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 60,
+        event: 61,
+        seen: 20,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "next_change" } },
+        fields: { f2: { value: "1", sources: ["S6"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+    ] as Op[];
+    compare({ ...STATE, groups: GROUPS }, true, ops, [], 112260546, [60]);
+  });
+});
+
 /**
  * The shapes this version refuses (see replay-deletion.ts): high impact ④ judged again (and, with
  * its own kind, an undo that would then take effect on a revoked row), and a resolution whose

@@ -27,6 +27,61 @@ const w = (
   ...(ack ? { acknowledge: ["overwrite"] as const } : {}),
 });
 
+/**
+ * #11, #21 (in V, a change of `short` over [11-01, 11-05)), #31 (after V, f2 = 3 and f3 = m over
+ * [11-03, 11-09)), #61 (seen #20: f2 = 3, f3 = m from 11-01 to the next change).
+ */
+export function groupInstantOps(short: "f2" | "f3"): Op[] {
+  const span = (from: string, to?: string) => ({
+    from: { mode: "given" as const, value: d(from) },
+    to: to === undefined ? { mode: "open" as const } : { mode: "given" as const, value: d(to) },
+  });
+  return [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: span("10-01"),
+      fields: {
+        f2: { value: "1", sources: ["S10"] },
+        ...(short === "f3" ? { f3: { value: "1", sources: ["S10f3"] } } : {}),
+      },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: span("11-01", "11-05"),
+      fields: { [short]: { value: "2", sources: ["S20"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 20,
+      valid: span("11-03", "11-09"),
+      fields: { f2: { value: "3", sources: ["S30"] }, f3: { value: "m", sources: ["M30"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 60,
+      event: 61,
+      seen: 20,
+      valid: { from: { mode: "given", value: d("11-01") }, to: { mode: "next_change" } },
+      fields: {
+        f2: { value: "3", sources: ["S6"], explicit: false },
+        f3: { value: "m", sources: ["M60"] },
+      },
+      acknowledge: ["overwrite"],
+    },
+  ] as Op[];
+}
+
 export const GROUP_LOGS: Record<
   string,
   { schema: TableSchema; ops: Op[]; event: number; want: string[][] }
@@ -62,6 +117,43 @@ export const GROUP_LOGS: Record<
     ],
     event: 31,
     want: [["f2", "candidate"]],
+  },
+  // The group value instant by instant: #61 (seen #20) writes f2 = 3 and f3 = m from 11-01 to the
+  // next change. Each field's seen interval is its own: f2's stops at f2's change point in V
+  // (11-05), f3's runs on. #31, after V, wrote f2 and f3 over [11-03, 11-09). On [11-05, 11-09) only
+  // f3's interval reaches: W's group value takes f2 from V (1), not W's 3, and differs from the
+  // current (3, m): a conflict, both of #61's fields candidates.
+  "the group value: a field W wrote whose seen interval does not hold the instant takes V's value":
+    {
+      schema: GROUP,
+      ops: groupInstantOps("f2"),
+      event: 61,
+      want: [
+        ["f2", "candidate"],
+        ["f3", "candidate"],
+      ],
+    },
+  // The same, the other way round: f3's seen interval is the short one (#21 changed f3 in V), f2's
+  // runs on; on [11-05, 11-09) W's group value takes f3 from V (1).
+  "the group value: the same with f3's seen interval the short one": {
+    schema: GROUP,
+    ops: groupInstantOps("f3"),
+    event: 61,
+    want: [
+      ["f2", "candidate"],
+      ["f3", "candidate"],
+    ],
+  },
+  // Without the group, field by field: neither field's seen interval meets #31 where its value
+  // differs, both take effect (up to #31's change point, 11-03).
+  "without the group the same log takes effect": {
+    schema: { kind: "state", required: ["f2"] },
+    ops: groupInstantOps("f2"),
+    event: 61,
+    want: [
+      ["f2", "applied"],
+      ["f3", "applied"],
+    ],
   },
 };
 
