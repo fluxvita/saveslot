@@ -1,6 +1,6 @@
 {
   "name": "@fluxvita/saveslot",
-  "version": "0.1.0-rc.0",
+  "version": "0.1.0",
   "description": "saveslot: a shared data layer for all of your agents.",
   "license": "Apache-2.0",
   "repository": {
