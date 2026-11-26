@@ -1,5 +1,5 @@
 // `query`'s first page pushed down to SQL (kernel read/query.ts `queryRowsPushed`; 04-contract §10
-// `query`, «默认排序», §15): the cases query-pages.prop must not leave to chance. Each is held to
+// `query`, "默认排序", §15): the cases query-pages.prop must not leave to chance. Each is held to
 // the whole read (`full`), result and read recorded, page by page; and the pushed-down path is
 // shown to be the one taken: one statement on the business table with ORDER BY and LIMIT, and
 // none reading the table whole.
