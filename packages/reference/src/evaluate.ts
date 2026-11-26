@@ -867,10 +867,14 @@ class Replay {
       }
       return x;
     };
+    // W's side of the group value (09-references «组值»): a field W did not write takes its value
+    // in V, and where V has no value it is empty, as W's write leaves the entity there. The current
+    // side is as it is: no value there is the entity not being there, not an empty field.
+    const asGroup = (t: string) => (t === NO_VALUE ? "none" : t);
     const mine = (h: FieldId, s: Iv) => {
       if (h === f) return value;
       const w = given(h);
-      return w !== undefined && covers(seenValidOf(h), s) ? w : this.vis(h, s, seen);
+      return w !== undefined && covers(seenValidOf(h), s) ? w : asGroup(this.vis(h, s, seen));
     };
     const differs = (s: Iv, at: number) => unit.some((h) => this.vis(h, s, at) !== mine(h, s));
     let found = false;
