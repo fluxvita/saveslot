@@ -15,7 +15,7 @@ what, and how someone takes part in deciding.
 - **Ordinary changes** (fixes, features within the spec, docs, tests) are decided in the pull request.
   One maintainer's approval, every review thread resolved and every check passing are enough
   ([`CONTRIBUTING.md`](CONTRIBUTING.md)). A maintainer does not approve their own pull request.
-- **Changes to the spec** (`docs/zh-CN/spec/`) are reviewed like code, in the same pull request as the
+- **Changes to the spec** (`docs/zh-CN/spec/` and `docs/spec/`) are reviewed like code, in the same pull request as the
   behaviour they change.
 - **Incompatible changes** to the event format, the kernel invariants or the operation contract start with
   a decision record in `docs/zh-CN/process/decisions/`: the problem, the options, the choice and why.

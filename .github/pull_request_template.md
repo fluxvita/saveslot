@@ -15,7 +15,7 @@ Closes #
 
 ## Spec and docs
 
-<!-- Behaviour changes update docs/zh-CN/spec/ in this request; reader-facing changes update docs/zh-CN/guide/. Incompatible changes to the event format, the kernel invariants or the operation contract need an approved decision record first. -->
+<!-- Behaviour changes update the spec (docs/zh-CN/spec/ and docs/spec/) in this request; reader-facing changes update the guide (docs/zh-CN/guide/ and docs/guide/). Incompatible changes to the event format, the kernel invariants or the operation contract need an approved decision record first. -->
 
 - [ ] No behaviour change, or the spec is updated in this request
 - [ ] The guide is updated where readers' understanding changes

@@ -15,8 +15,8 @@ saveslot is a shared data layer for all of a person's agents: it records things 
 
 | Directory | Contents |
 |---|---|
-| `docs/zh-CN/spec/` | Specification. **Behavior is defined here.** |
-| `docs/zh-CN/guide/` | Guide for first-time readers. If it disagrees with the spec, the spec wins; fix the guide. |
+| `docs/zh-CN/spec/`, `docs/spec/` | Specification, in two editions aligned in meaning. **Behavior is defined here.** |
+| `docs/zh-CN/guide/`, `docs/guide/` | Guide for first-time readers, in two editions aligned in meaning. If it disagrees with the spec, the spec wins; fix the guide. |
 | `docs/zh-CN/process/decisions/` | Decision records: why a design is the way it is. |
 | `docs/zh-CN/process/walkthroughs/` | Step-by-step walkthroughs of the spec on concrete scenarios. |
 | `docs/zh-CN/research/` | Public technical research: data models, storage, protocols, evaluation methods and related design evidence. |
@@ -27,10 +27,10 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 
 ## Rules
 
-- **Spec first.** A change in behavior updates `docs/zh-CN/spec/` in the same pull request; changes that affect reader understanding also update `docs/zh-CN/guide/`.
+- **Spec first.** A change in behavior updates the specification (`docs/zh-CN/spec/` and `docs/spec/`) in the same pull request; changes that affect reader understanding also update the guide (`docs/zh-CN/guide/` and `docs/guide/`).
 - **Spec references.** Code comments refer to the specification by a file and a title in `«»`, as the Chinese edition has it: `05-time «挡点»`. A title is a heading, a bold item or a table row's name of that file. Quote running text in plain quotation marks, not `«»`, and only words the named file has. `pnpm docs:spec-refs` checks every reference; it does not check quotations.
 - **Incompatible changes to the event format, the kernel invariants (K1–K14) or the operation contract** start with a decision record in `docs/zh-CN/process/decisions/` that is reviewed before the spec and code change. Do not change them directly.
-- **`docs/zh-CN/spec/` and `docs/zh-CN/guide/` describe the design only.** Process information (dates, revision rounds, "it used to be X, now Y", review sources) belongs in `docs/zh-CN/process/`.
+- **The specification and the guide, in both editions, describe the design only.** Process information (dates, revision rounds, "it used to be X, now Y", review sources) belongs in `docs/zh-CN/process/`.
 - **Use the spec's terms** (slot, source data, table data, conflict unit, `ver`, …). Do not invent synonyms.
 - **Package dependency direction** follows [`docs/zh-CN/spec/02-architecture.md`](docs/zh-CN/spec/02-architecture.md) §11: the kernel does not depend on outer layers. The check scripts enforce it.
 - **Never commit** secrets, internal addresses, or unrelated personal information. Test data is fictional.

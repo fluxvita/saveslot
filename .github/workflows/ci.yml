@@ -154,7 +154,7 @@ jobs:
         part: [static, unit, prop]
         node: ${{ fromJSON(github.event_name == 'pull_request' && '["24.22.3"]' || '["24.22.3", "26.13.1"]') }}
         include:
-          # check:static dates each translated document by its last commit (docs:translations),
+          # check:static dates both editions of each document by their last commit (docs:translations),
           # which needs the whole history: a shallow clone dates every file to its one commit.
           - { part: static, script: "check:static", timeout: 15, depth: 0 }
           - { part: unit, script: "test:unit", timeout: 45, depth: 1 }
