@@ -215,7 +215,7 @@ export const TEXTS = {
   // variable, never its value: a connection URL may hold a password.
   server: {
     usage:
-      "usage: saveslot server init [--user <name> [--password-file <path>]] | start | restore --tenant <tenant> | user add|list|disable|enable|passwd",
+      "usage: saveslot server init [--user <name> [--password-file <path>]] | start | restore --tenant <tenant> | --user <name> | user add|list|disable|enable|passwd",
     userUsage:
       "usage: saveslot server user add <name> [--password-file <path>] | list | disable <name> | enable <name> | passwd <name> [--password-file <path>]",
     userTakesName: (sub: string) => `saveslot server user ${sub} takes one account name`,
@@ -316,7 +316,16 @@ export const TEXTS = {
     controlFormat:
       "error: the control database's tables are of a format this saveslot does not know; nothing was changed",
     controlReady: "The control database's tables are in place",
-    restoreTakesTenant: "saveslot server restore takes --tenant <tenant>, once",
+    restoreTakesTenant:
+      "saveslot server restore takes one of --tenant <tenant> and --user <name>, once",
+    restoreUserExternal:
+      "error: the external login manages the accounts (SAVESLOT_IDENTITY_* are set), so there are no account names here: name the tenant with --tenant <tenant>. Nothing was done",
+    restoreNoAccount: (name: string) =>
+      `error: there is no account named ${JSON.stringify(name)} (saveslot server user list gives them); nothing was done`,
+    restoreAccountTenantNotMade: (name: string) =>
+      `error: the tenant of the account ${JSON.stringify(name)} is not made yet: there is nothing to restore. To finish it, run saveslot server user add ${name} again (it sets the password anew); nothing was done`,
+    restoringAccount: (name: string, tenant: string) =>
+      `The account ${JSON.stringify(name)}'s tenant is ${tenant}`,
     restoreServerRunning:
       "error: a saveslot server is running on this control database; stop it first, then run saveslot server restore again. Nothing was done",
     restoreControlNotReady:

@@ -425,7 +425,7 @@ So a restore is not "just swap the database back"; the restore procedure must be
 
 | Mode | How it is triggered |
 |---|---|
-| Server mode | The operations command `saveslot server restore --tenant <tenant>` |
+| Server mode | The operations command `saveslot server restore --tenant <tenant>` (or `--user <account name>`) |
 | Local mode | `saveslot start --restored` |
 
 What the restore procedure does, in order: set a "restore in progress" mark in the control plane and add one to the restore count; open the tenant; append a "restore" event; re-apply deletions according to the deletion register; carry out the physical erasures that have already come due; check; clear the mark; serve outside requests.

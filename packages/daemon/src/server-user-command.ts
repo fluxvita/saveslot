@@ -40,6 +40,7 @@ import {
   openControlDatabase,
   PostgresBackend,
 } from "@fluxvita/saveslot-store-postgres";
+import type { ServerRestoreIO } from "./server-command-io.ts";
 import type { ServerConfig } from "./server-config.ts";
 import {
   openControllingTerminal,
@@ -50,7 +51,6 @@ import {
   passwordFromFile,
   passwordFromTerminal,
 } from "./server-password.ts";
-import type { ServerRestoreIO } from "./server-restore-command.ts";
 import { TEXTS } from "./texts.ts";
 
 export type UserTarget =

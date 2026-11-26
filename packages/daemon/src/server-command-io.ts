@@ -1,6 +1,7 @@
-// What a `saveslot server …` command is given (server-commands.ts, server-restore-command.ts): a
-// module of its own, so that the two import it without importing each other.
+// What a `saveslot server …` command is given (server-commands.ts, server-restore-command.ts,
+// server-user-command.ts): a module of its own, so that they import it without importing each other.
 
+import type { restoreTenantFromBackup } from "@fluxvita/saveslot-service";
 import type { ControlDatabase } from "@fluxvita/saveslot-store-postgres";
 import type { CommandIO } from "./commands.ts";
 import type { DatabaseAt } from "./server-config.ts";
@@ -18,4 +19,12 @@ export interface ServerCommandIO extends CommandIO {
    * is none.
    */
   readonly terminal?: () => PasswordTerminal | undefined;
+}
+
+/** What `restore` and the commands that make tenants are given besides (a test gives its own). */
+export interface ServerRestoreIO extends ServerCommandIO {
+  /** Opens the tenants' databases (a test gives its own backend). */
+  readonly backend?: Parameters<typeof restoreTenantFromBackup>[0]["backend"];
+  /** The clock, in `toISOString` form. */
+  readonly now?: () => string;
 }

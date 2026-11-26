@@ -1,15 +1,19 @@
 // `saveslot server restore` (06-cli §4.1 «服务器自部署的运维命令», §6.2; 02-architecture §8) on a real
 // control database and tenants, on either backend (`pnpm test:postgres` runs this file on
-// PostgreSQL): the tenant named by its ID, the flow run on it, and each refusal
-// with its exit code and nothing changed. A put-back database is a log that ends before the control
+// PostgreSQL): the tenant named by its ID or by its local account's name, the flow run on it, and
+// each refusal with its exit code and nothing changed. A put-back database is a log that ends before the control
 // plane's high water mark, as in the service's tests. Fictional IDs.
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  addLocalUser,
   createServerTenant,
+  disableLocalUser,
   initControlPlane,
+  initLocalAccounts,
+  type LocalAccounts,
   type ServerControlPlane,
   type TenantId,
 } from "@fluxvita/saveslot-service";
@@ -186,7 +190,11 @@ describe("saveslot server restore", () => {
     // Given twice: refused, not the last one taken (06 §6.2).
     [["--tenant", "tn_00000000000000000000000001", "--tenant", "tn_00000000000000000000000002"]],
     [["--tenant", ""]],
-    [["--user", "ann"]],
+    // Exactly one of --tenant and --user.
+    [["--tenant", "tn_00000000000000000000000001", "--user", "ann"]],
+    [["--user", "ann", "--user", "bo"]],
+    [["--user", ""]],
+    [["--user"]],
     [["tn_00000000000000000000000001"]],
     [["--tenant"]],
     [["--name", "ann"]],
@@ -286,6 +294,188 @@ describe("saveslot server restore", () => {
   );
 });
 
+const PASSWORD = "correct horse battery";
+
+describe("saveslot server restore --user", () => {
+  let c: Awaited<ReturnType<typeof controlDb>>;
+  let accounts: LocalAccounts;
+  beforeAll(async () => {
+    c = await controlDb();
+    accounts = await initLocalAccounts(c.store);
+  }, T);
+
+  /** `name`'s account and tenant, its database put back as `putBack` does. */
+  async function putBackAccount(name: string) {
+    const cp = c.cp as ServerControlPlane;
+    const { tenant } = await addLocalUser(accounts, {
+      control: cp,
+      backend,
+      name,
+      password: PASSWORD,
+      cell: CELL,
+      cells: new Set([CELL]),
+      now: NOW,
+    });
+    const high = (await logEnd(cp, tenant)) + 5;
+    await cp.anchors.advanceHighWater(tenant, high);
+    return { tenant, high };
+  }
+
+  it(
+    "the account's tenant is restored, and named; another account's is not touched",
+    async () => {
+      const cp = c.cp as ServerControlPlane;
+      const alex = await putBackAccount("alex");
+      const bo = await putBackAccount("bo");
+      const r = await restore(["--user", "alex"], { db: c.db });
+      expect(r.err).toBe("");
+      expect(r.code).toBe(0);
+      expect(r.out).toContain(`The account "alex"'s tenant is ${alex.tenant}`);
+      expect(r.out).toContain(`Restored tenant ${alex.tenant}`);
+      expect(await cp.anchors.read(alex.tenant)).toMatchObject({
+        restoreCount: 1,
+        highWater: alex.high + 1,
+      });
+      expect(await logEnd(cp, alex.tenant)).toBe(alex.high + 1);
+      expect(await cp.anchors.read(bo.tenant)).toMatchObject({ restoreCount: 0 });
+    },
+    T,
+  );
+
+  it(
+    "the same as --tenant: two accounts' tenants, one named each way, end alike",
+    async () => {
+      const cp = c.cp as ServerControlPlane;
+      const byName = await putBackAccount("cass");
+      const byId = await putBackAccount("dana");
+      const a = await restore(["--user", "cass"], { db: c.db });
+      const b = await restore(["--tenant", byId.tenant], { db: c.db });
+      expect([a.code, b.code]).toEqual([0, 0]);
+      for (const t of [byName, byId]) {
+        expect(await cp.anchors.read(t.tenant)).toMatchObject({
+          restoreCount: 1,
+          highWater: t.high + 1,
+        });
+        expect(await logEnd(cp, t.tenant)).toBe(t.high + 1);
+      }
+      // The lines after the account's are those --tenant gives, the tenant aside.
+      const rest = (out: string, tenant: string) =>
+        out
+          .split("\n")
+          .filter((l) => !l.startsWith("The account "))
+          .join("\n")
+          .replaceAll(tenant, "<tenant>");
+      expect(rest(a.out, byName.tenant)).toBe(rest(b.out, byId.tenant));
+    },
+    T,
+  );
+
+  it(
+    "a disabled account's tenant is restored all the same",
+    async () => {
+      const cp = c.cp as ServerControlPlane;
+      const t = await putBackAccount("eli");
+      await disableLocalUser(accounts, { name: "eli" });
+      const r = await restore(["--user", "eli"], { db: c.db });
+      expect(r.code).toBe(0);
+      expect(await cp.anchors.read(t.tenant)).toMatchObject({ restoreCount: 1 });
+    },
+    T,
+  );
+
+  let bystanders = 0;
+  it.each([
+    ["nobody"],
+    // Names no account can have: no account, as server user disable finds none.
+    ["Alex"],
+    ["a".repeat(65)],
+    [".dot"],
+  ])(
+    "no account named %j: 4, nothing done",
+    async (name) => {
+      const cp = c.cp as ServerControlPlane;
+      const t = await putBackAccount(`bystander${++bystanders}`);
+      const r = await restore(["--user", name], { db: c.db });
+      expect(r.code).toBe(4);
+      expect(r.err).toContain("there is no account named");
+      expect(await cp.anchors.read(t.tenant)).toMatchObject({ restoreCount: 0 });
+    },
+    T,
+  );
+
+  it(
+    "an account whose tenant is registered and not made (an add that stopped): 5, the add to finish it told",
+    async () => {
+      const cp = c.cp as ServerControlPlane;
+      const failing: Backend = {
+        open: () => Promise.reject(new Error("the cell is down")),
+      };
+      await expect(
+        addLocalUser(accounts, {
+          control: cp,
+          backend: failing,
+          name: "gus",
+          password: PASSWORD,
+          cell: CELL,
+          cells: new Set([CELL]),
+          now: NOW,
+        }),
+      ).rejects.toThrow();
+      const r = await restore(["--user", "gus"], { db: c.db });
+      expect(r.code).toBe(5);
+      expect(r.err).toContain("is not made yet");
+      expect(r.err).toContain("saveslot server user add gus");
+    },
+    T,
+  );
+
+  it(
+    "an account with no tenant registered at all: 5, the same",
+    async () => {
+      await c.store.write((tx) =>
+        tx.query(
+          "INSERT INTO accounts (id, name, password_hash, state) VALUES ($1, 'hal', 'x', 'active')",
+          [`u_${"9".repeat(26)}`],
+        ),
+      );
+      const r = await restore(["--user", "hal"], { db: c.db });
+      expect(r.code).toBe(5);
+      expect(r.err).toContain("is not made yet");
+    },
+    T,
+  );
+
+  it("the external login configured: 5, the control database not opened", async () => {
+    const r = await restore(["--user", "alex"], {
+      env: {
+        ...env,
+        SAVESLOT_IDENTITY_ISSUER: "https://platform.example",
+        SAVESLOT_IDENTITY_LOGIN_URL: "https://platform.example/login",
+        SAVESLOT_IDENTITY_KEYS_FILE: join(root, "platform-keys.json"),
+      },
+    });
+    expect(r.code).toBe(5);
+    expect(r.err).toContain("--tenant <tenant>");
+    expect(r.opened).toBe(0);
+  });
+
+  it(
+    "a control database without the local accounts' tables: 5, none made",
+    async () => {
+      const bare = await controlDb();
+      const r = await restore(["--user", "alex"], { db: bare.db });
+      expect(r.code).toBe(5);
+      const made = await bare.store.read(
+        async (tx) =>
+          (await tx.query<{ a: string | null }>("SELECT to_regclass('accounts')::text AS a"))
+            .rows[0]?.a ?? null,
+      );
+      expect(made).toBeNull();
+    },
+    T,
+  );
+});
+
 // PGlite has one connection to a database: another holder of the lock exists on PostgreSQL only.
 describe.skipIf(TEST_BACKEND !== "postgres")("saveslot server restore: a server running", () => {
   it(
@@ -310,6 +500,10 @@ describe.skipIf(TEST_BACKEND !== "postgres")("saveslot server restore: a server 
         expect(held.code).toBe(7);
         expect(held.err).toContain("stop it first");
         expect(await cp.anchors.read(tenant)).toMatchObject({ restoreCount: 0 });
+        // By an account's name the same: nothing looked up, nothing done.
+        const byName = await restore(["--user", "alex"], { db: c.db });
+        expect(byName.code).toBe(7);
+        expect(byName.err).toContain("stop it first");
         await unlock();
         const r = await restore(["--tenant", tenant], { db: c.db });
         expect(r.code).toBe(0);
