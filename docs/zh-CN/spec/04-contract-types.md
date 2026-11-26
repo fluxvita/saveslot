@@ -1288,7 +1288,7 @@ interface WriteResult extends CommonResult {
    *  调用方需要时自己读（history / query）。 */
   omitted?: Array<"affected_reads" | "derived_values" | "before_values" | "skipped_spans" | "deleted_content"
                   | "unrecorded_ops" | "existing_keys" | "field_results" | "lists">;
-  original_deleted?: { deletion: ItemId };   // 重放命中的原写入已被删除：没有重新写入，不回显内容
+  original_deleted?: { deletion: ItemId };   // 重放命中的原写入已被删除（它的请求键已列入待删除）：没有重新写入，不回显内容——ops 为空，omitted 带 deleted_content，只给原操作号与 sv；几项删除都列了它时取确认最早的那一项
   job?: JobId;                   // @later
 }
 

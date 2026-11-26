@@ -159,6 +159,7 @@ import {
   visibleSlotRows,
 } from "./reads.ts";
 import {
+  deletedReceipt,
   externalKeyOf,
   type FallbackOrigin,
   intervalOut,
@@ -173,7 +174,7 @@ import {
 import { decodeRecords, encodeOp, type RowContext, type StoredEvent } from "./record.ts";
 import { type Referrer, referrersOf } from "./referrers.ts";
 import { givenItems, refProblems, type StoredTargets, tableInRange } from "./refs.ts";
-import { findRequest, requestKeyOf } from "./request-key.ts";
+import { findWriteRequest, requestKeyOf } from "./request-key.ts";
 import { evidenceSource, placeEvidence } from "./sources.ts";
 
 export { WriteError };
@@ -1586,7 +1587,11 @@ async function writeIn(
   // idempotency key is used as ever.
   const byKeyOnly = req.ops.every((o) => o.target.kind === "external_key");
   const keyed = !byKeyOnly || req.requestKey.idempotencyKey !== undefined;
-  const hit = keyed ? await findRequest(tx, rk, now, input.windows) : undefined;
+  const found = keyed ? await findWriteRequest(tx, rk, now, input.windows) : undefined;
+  // The original write a pending deletion lists: not written again, nothing of it given back
+  // (03-deletion «宽限期内重发»).
+  if (found?.deletion !== undefined) return deletedReceipt(tx, found.op, found.deletion);
+  const hit = found?.op;
   if (hit !== undefined) {
     const replay = await readReceipt(tx, hit, {
       compiled: receiptNames,
