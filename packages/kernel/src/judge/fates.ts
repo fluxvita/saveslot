@@ -1,4 +1,4 @@
-// The item layer of a deletion (03-deletion «删除结果的定义» deviation two, «性质» «删除不增加未决事项»,
+// The item layer of a deletion (03-deletion «删除结果的定义» deviation two, «推论» «删除不增加未决事项»,
 // «预览与回执要写明的内容»; 09 §5.9 `superseded_items`, §5.8 `item.refreshed`, `item.created`):
 // what becomes of each (event, target) that is pending on one side of the deletion, and from that,
 // which items are superseded, restored, refreshed or opened to succeed one.

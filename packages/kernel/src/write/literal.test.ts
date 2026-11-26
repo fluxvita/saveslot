@@ -1,5 +1,5 @@
-// The literal checker `literal@1` (04-write-and-read «来源级别：声明级别与字面命中»; 10-types-and-
-// units «单位同义表»): each field type's hit, miss and not applicable, the bounds of a number token
+// The literal checker `literal@1` (04-write-and-read «来源级别：声明级别与字面命中»;
+// 10-types-and-units «单位同义表»): each field type's hit, miss and not applicable, the bounds of a number token
 // and of a date, every writing of the synonym table, and the table itself held to the spec's.
 
 import { readFileSync } from "node:fs";
@@ -336,7 +336,7 @@ describe("what literal@1 does not take", () => {
     expect(at(QTY, q("5", "d"), "11月5日")).toBe("miss");
     expect(at(QTY, q("30", "min"), "10点30分")).toBe("miss");
     expect(at(INT, "10", "10点")).toBe("miss");
-    // 点 not as a time of day takes its number all the same: taking less (04 «数字记号»).
+    // 点 not as a time of day takes its number all the same: taking less (04 "数字记号").
     expect(at(INT, "5", "给了5点建议")).toBe("miss");
     expect(at(QTY, q("30", "min"), "10时30分")).toBe("miss");
     // Not in a date or a time: as before.

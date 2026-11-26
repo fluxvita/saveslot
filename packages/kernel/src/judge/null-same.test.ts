@@ -1,5 +1,5 @@
 // An empty value written where there is none is the same value (10-types-and-units «清空字段»:
-// 新增时显式写 null 与"原来没有值"同值; the same-value table «空与空相同»; 04-write-and-read /
+// 新增时显式写 null 与"原来没有值"同值; the same-value table "空与空相同"; 04-write-and-read /
 // 05-time: the same value with no evidence pointed at is a no-op, with evidence a corroboration).
 // What is compared is what is read: no contribution and an empty one both read empty. Each case
 // against the reference evaluator.

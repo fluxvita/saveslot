@@ -152,7 +152,7 @@ function decide(state: RowState, r: ConfirmRecord | RejectRecord) {
  * A revert executed on the replay's state (03-deletion «回掉的权威定义»: R and the value position
  * as recorded, never listed again; ranges, write-backs and registrations worked out again; the
  * write-backs are applied, not judged again for high impact: deviation one for a person's undo,
- * confirmation or `take_previous`, and «高影响» «已直接生效的回掉…按偏离二保持生效»). `seen`,
+ * confirmation or `take_previous`, and «高影响» "已直接生效的回掉" … "按偏离二保持生效"). `seen`,
  * `acknowledge` and the skipped entries stay as recorded.
  */
 function revertAgain(

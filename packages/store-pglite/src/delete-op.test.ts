@@ -76,7 +76,7 @@ const DISHES = {
     { name: "meal", type: "ref", description: "its meal", ref: { table: "meals", target: "row" } },
   ],
 };
-/** Rows the same by name: a second one opens a `flagged` item (04-contract-types «duplicate_keys»). */
+/** Rows the same by name: a second one opens a `flagged` item (04-contract §6 «flagged», `duplicate_keys`). */
 const PAIRS = {
   name: "pairs",
   kind: "base",

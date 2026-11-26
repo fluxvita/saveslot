@@ -155,7 +155,7 @@ async function open(p: OpenParams): Promise<OpenResult> {
     epochKey = p.metaKeys.ownershipEpoch;
     checkpointAfterBytes = p.checkpointAfterBytes;
     analyzeMode = p.analyze;
-    // Statistics before the store serves (02-architecture §7 «本机存储»): a failure is reported,
+    // Statistics before the store serves (02-architecture §7 «统计信息»): a failure is reported,
     // not thrown; the open goes on.
     let analyzed: OpenResult["analyzed"];
     try {

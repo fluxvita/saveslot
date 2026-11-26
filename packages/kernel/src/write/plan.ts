@@ -71,7 +71,7 @@ export function writable(visibility: Visibility, slot: string, table?: string): 
   );
 }
 
-/** The date of `now` in time zone `tz`, as YYYY-MM-DD (05-time «今天»). */
+/** The date of `now` in time zone `tz`, as YYYY-MM-DD (05-time "今天"). */
 export function todayIn(now: string, tz: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: tz,

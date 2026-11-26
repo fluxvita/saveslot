@@ -140,7 +140,8 @@ jobs:
           fi
 
   # `pnpm check` (type check, lint, unit and property tests, dependency rules, doc links, JSON
-  # examples, the English documents' source lines, the claims index) as three jobs. On Node 26 LTS
+  # examples, the English documents' source lines, the claims index, the code's references to the
+  # specification, merge conflict markers) as three jobs. On Node 26 LTS
   # only on a main line, nightly and by hand. Each job first prints the CPUs and the memory it can use
   # (`ci:resources`).
   check:

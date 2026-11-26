@@ -98,7 +98,7 @@ export const NO_VALUE = "no_value";
 /**
  * A value as the same-value judgement compares it: what is read. An empty value reads as no
  * contribution does, so the two are the same (10-types-and-units «清空字段», the same-value table
- * «空与空相同»).
+ * "空与空相同").
  */
 export const valueToken = (v: FieldValue): string => (v === null ? "none" : `v:${valueText(v)}`);
 

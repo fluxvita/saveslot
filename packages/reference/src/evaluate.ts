@@ -1136,7 +1136,7 @@ class Replay {
           () => this.items.push(...applied),
           () => this.items.splice(this.items.length - applied.length, applied.length),
         );
-      // A rejection is of the whole write (01-objects «reject：提议不生效»): a target of a write a
+      // A rejection is of the whole write (01-objects, the `reject` row: "提议不生效"): a target of a write a
       // person rejected takes effect in no replay, whatever made it a candidate or awaiting then.
       const rejected = this.ops.some((x) => x.kind === "reject" && x.target === o.event);
       for (const it of applied) {
@@ -1394,7 +1394,7 @@ class Replay {
       from: null,
     };
     // High impact ②: a revoke of a row or a whole entity still referred to awaits confirmation;
-    // stale, it is a candidate first (05-time «既版本对不上、又是高影响»).
+    // stale, it is a candidate first (09-references-conflict-sync «既版本对不上、又是高影响»).
     const awaiting = !conflict && o.referenced === true && (!this.isState || o.valid === undefined);
     this.push([
       conflict
@@ -3039,7 +3039,7 @@ export function evaluateLog(
    */
   const removedAt = (key: string, at: OpNumber): boolean => {
     // Out of every item and not in effect either: one a deletion put in effect at that point is
-    // the cancellation's «保持生效» case (`kept_effective`), not this one.
+    // the cancellation's "保持生效" case (`kept_effective`), not this one.
     const before = [...steps].reverse().find((x) => !x.refused && x.entry.op < at)?.state;
     if (
       before?.items.some(

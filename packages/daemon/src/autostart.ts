@@ -108,8 +108,8 @@ export function launchdPlist(job: Job): string {
 }
 
 /**
- * One argument of `ExecStart=`, quoted (systemd.syntax «Quoting»; systemd.unit «Specifiers»,
- * systemd.service «Command lines»): `\` and `"` escaped, `%` and `$` doubled.
+ * One argument of `ExecStart=`, quoted (systemd.syntax "Quoting"; systemd.unit "Specifiers",
+ * systemd.service "Command lines"): `\` and `"` escaped, `%` and `$` doubled.
  */
 const unitArg = (s: string) =>
   `"${s.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%").replaceAll("$", "$$$$")}"`;

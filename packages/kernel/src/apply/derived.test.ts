@@ -1,5 +1,5 @@
 // planDerived: the changes of a `write.derived` and the checks against its partition recomputed
-// (09-event-format.md §5.7; 06-derived.md «行身份»). The inputs are given here as readInputs would
+// (09-event-format.md §5.7; 01-objects «行身份»). The inputs are given here as readInputs would
 // read them; recomputing on a database is tested in store-pglite (derive.prop.test.ts).
 
 import { beforeAll, describe, expect, it } from "vitest";

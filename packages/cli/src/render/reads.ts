@@ -453,7 +453,7 @@ export function timelineResult(r: TimelineResult): Line[] {
 }
 
 /**
- * The premises a timeline entry declared (05 §6 «timeline»; 04-contract-types §4.5
+ * The premises a timeline entry declared (05-surfaces §6 `timeline`; 04-contract-types §4.5
  * `TimelineEntry.premises`), one a line under it: what it rests on and the version seen, then
  * whether it changed since (and how, in which operation), or no longer holds (superseded or
  * cleared since). A target in a table this credential cannot see says only that, and its state.

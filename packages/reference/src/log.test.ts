@@ -3766,7 +3766,7 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
     ]);
   });
   it("R2-7 a revoke at or before the merge base that a deletion puts in effect does not cover the take", () => {
-    // Beside «in a replay a revoke outside O that a deletion puts in effect covers a field take»,
+    // Beside "in a replay a revoke outside O that a deletion puts in effect covers a field take",
     // where the revoke comes after the merge base: here #21 revokes at 20 and the candidate #41
     // carries version 20, the merge base. #21 is under the version the taken write saw, which its
     // value covers: it does not cover the take.
@@ -4499,7 +4499,7 @@ describe("a deletion carried out at expiry (03-deletion «到期物理删除»; 
   });
   const exec = (op: number, id: string): LogEntry => ({ kind: "execute", op, id });
   // #51 (3 from 11-01, explicit, f3 too) is cut into stretches by the writes around 11-05 and
-  // 11-07; #61 undoes it (as in «an original item lands by its write-time block»).
+  // 11-07; #61 undoes it (as in "an original item lands by its write-time block").
   const S: LogEntry[] = [
     w2(10, "3", "S1", "10-01", open, 0),
     w2(20, "1", "S3", "11-05", next, 10),
@@ -4681,8 +4681,8 @@ describe("a deletion carried out at expiry (03-deletion «到期物理删除»; 
   });
 });
 
-describe("«保持已被取代» ②: a write's change judged as it was when written", () => {
-  // Found by the property «a cancelled deletion leaves no trace». #21 (f3 = a, S3) is a
+describe("保持已被取代 ②: a write's change judged as it was when written", () => {
+  // Found by the property "a cancelled deletion leaves no trace". #21 (f3 = a, S3) is a
   // candidate; pi_30 deletes S3; #40 writes f2 in its grace period (it changes f2, not f3); pi_30
   // is cancelled at #50 and keeps nothing superseded. A later deletion A = {S1, S3} cancelled
   // with no write in its grace period must leave no trace either: #40 changed f3 nowhere when

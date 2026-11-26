@@ -1,4 +1,4 @@
-// Replay across the two backends (02-architecture §11 «测试矩阵», «重放对拍»; §8 the «对拍» column;
+// Replay across the two backends (02-architecture §11 «测试矩阵», «重放对拍»; §8 the "对拍" column;
 // K12). A random history is written through the write pipeline into a store on one backend; its
 // log is then given, from the first event, to `apply` on an empty store of the other backend; and
 // the tables §8 marks as compared must be the same row by row, with the same columns. Both ways:

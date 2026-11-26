@@ -1,5 +1,5 @@
 // Import into an empty tenant, server mode, on either backend (02-architecture §8 «格式版本、导出、导入与恢复»
-// steps ①–⑥ and «重入», §5 «租户目录», §11 «导入在每一步之后强杀再打开»; 04-contract §17 `import`).
+// steps ①–⑥ and «重入», §5 «租户目录», §11 "导入在每一步之后强杀再打开"; 04-contract §17 `import`).
 // The control plane is the real one on a test storage; a database of a cell is a storage of the
 // test backend (on PostgreSQL, a database of its own), and dropping one drops that storage (on
 // PostgreSQL, `DROP DATABASE`) and gives the next opening of that name a new, empty storage.

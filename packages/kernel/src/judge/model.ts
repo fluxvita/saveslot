@@ -324,7 +324,7 @@ export interface WriteRecord extends RecordBase, SeenVersion {
   /**
    * A write on a state table whose `ops/<i>/valid` is not there to read: removed by a deletion, or
    * a pending deletion's placeholder on import. Its corroborations then have no explicit ends
-   * (09 §5.7 «块被移除时没有端点»), never "now" in their place; and its writing being unknown, it
+   * (09 §5.7 «佐证端点»), never "now" in their place; and its writing being unknown, it
    * is judged as an explicit interval, never a default end (09-references «冲突判据»). Only from
    * decoding the log.
    */

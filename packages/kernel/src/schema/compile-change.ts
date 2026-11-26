@@ -818,7 +818,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     if (by.length > 0)
       findings.push({ path: `${m.doc.path}/time`, code: "still_referenced", referenced_by: by });
   }
-  // A field to drop that the change keeps still using (07 «删除有依赖的对象»; 04-contract
+  // A field to drop that the change keeps still using (07 «删除有依赖的对象编译失败»; 04-contract
   // «schema_draft» still_referenced): its own table's time field and keys as the draft writes them,
   // named by their positions in it, then the derived tables still reading it, by name.
   for (const [key, at] of droppedAt) {
@@ -1083,7 +1083,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
           precision?: { scale: number; rounding: "half_up" | "half_even" };
           ref?: { table: string; target: "row" | "entity" };
         };
-        // To or from `ref`: `change_ref` (07 «改动分类»), compiled as a change of type is.
+        // To or from `ref`: `change_ref` (07 «改动分类与迁移手段»), compiled as a change of type is.
         if (f.type !== cf.type)
           return {
             restructure: [
@@ -1305,7 +1305,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
           autoClass: "loosen_constraint",
         });
       }
-      // Deterministic changes (07 «改动分类»): automatic only on a table never written and unused,
+      // Deterministic changes (07 «改动分类与迁移手段»): automatic only on a table never written and unused,
       // which this version does not compute, so they wait for confirmation.
       const neverWritten = input.neverWritten(c.id as TableId);
       if (neverWritten && unitChanged) {
@@ -1371,7 +1371,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
 
   for (const t of current.tables) {
     if (!dropped.has(t.id)) continue;
-    // A derived table has no values of its own to lose, nor writes (07 «改动分类» 派生表的删表).
+    // A derived table has no values of its own to lose, nor writes (07 «改动分类与迁移手段» 派生表的删表).
     const derived = t.kind === "derived";
     record({ table: t.id }, "drop_table", "metadata", {
       compatible: derived,
@@ -1434,7 +1434,7 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
     const target = { table: c.id as TableId, field: cf["id"] as FieldId };
     const bf = m.extra.backfills[j];
     if (f.required) {
-      // A required field added: a constant fills every position in effect (07 «改动分类»).
+      // A required field added: a constant fills every position in effect (07 «改动分类与迁移手段»).
       if (bf === undefined) late.push({ path: f.path, code: "backfill_const_required" });
       else {
         const value = constOf(

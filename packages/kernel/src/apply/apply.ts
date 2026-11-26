@@ -956,7 +956,7 @@ async function readCancellation(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<
 
 /**
  * Each item of a row in effect as the log last gives it without a cancelled deletion's blocks (09
- * §5.9 `deletion.cancelled`; 03-deletion «结果怎么落进日志» «以最近一次为准»): the latest of its own
+ * §5.9 `deletion.cancelled`; 03-deletion «结果怎么落进日志»; 09-event-format «以最近一次为准»): the latest of its own
  * blocks and the `restated/<k>` of the deletion and cancellation events before this one, the
  * cancellation applied now and every cancelled deletion left out. Items not in effect so are not in the map; where an
  * item's content is, `contentGiven` says.

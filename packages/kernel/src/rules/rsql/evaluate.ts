@@ -8,7 +8,7 @@
 // - The bound text is parsed and checked again (./derived.ts checkedBoundRule) and printed from
 //   the tree for evaluation (./print.ts `evaluate`): divisors in NULLIF, guarded quotients, and for
 //   a whole aggregate the count of its input rows.
-// - The logical table (06 «规则读的是逻辑表»: the rows not revoked) is a common table expression
+// - The logical table (06 «规则读的是逻辑表，逻辑表只含未撤销的行»: the rows not revoked) is a common table expression
 //   named by the table ID, put in front: `WITH "t1" AS (SELECT row_id, "f_f1" AS "f1", … FROM
 //   "t_t1_v1" WHERE NOT revoked)`. The bound text names only that table and its columns, never an
 //   alias or a table expression of its own (this version compiles neither WITH, JOIN nor subqueries),
@@ -17,7 +17,7 @@
 //   (10-types-and-units «精度与舍入»). Quotients are computed to GUARD_SCALE places first (see
 //   there for why that rounding equals rounding the exact quotient for stored values).
 // - A whole aggregate (no group key) with no input row has no derived row: it is an emptied
-//   partition, like a group that lost its last row (06 «刷新范围»).
+//   partition, like a group that lost its last row (06 «刷新范围与写入准入»).
 //
 // - A rule computed when read (computedAtRead: it depends on today, or reads a state table with no
 //   time condition; 06 «时间依赖») is evaluated at the instant the call gives (RuleCall), never at

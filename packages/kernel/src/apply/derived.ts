@@ -1,4 +1,4 @@
-// apply of `write.derived` (docs/zh-CN/spec/09-event-format.md §5.7; 06-derived.md «行身份»,
+// apply of `write.derived` (docs/zh-CN/spec/09-event-format.md §5.7; 01-objects «行身份»; 06-derived.md
 // «派生的来源追踪»), and the physical table of a derived table (02-architecture §8).
 //
 // A derived write is applied by recomputing its partition from the current base data with the rule

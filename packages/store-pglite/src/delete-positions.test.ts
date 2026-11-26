@@ -165,7 +165,7 @@ const positionsFor = (sources: number[]) =>
 
 describe("request identifiers and an op's evidence, on logs the write path makes", () => {
   it(
-    "a resolution's's task and request_key go with the resolve's own source (§5.1, 03 «请求键…含解决请求带的证据与备注»)",
+    "a resolution's's task and request_key go with the resolve's own source (§5.1; 03-deletion \"含解决请求带的证据与备注\")",
     async () => {
       const a = await send({ sv: 1, ops: [{ intent: "insert", table: "rows", set: { b: "9" } }] });
       const row = a.ops[0].target.row;
@@ -197,7 +197,7 @@ describe("request identifiers and an op's evidence, on logs the write path makes
   );
 
   it(
-    "a reaffirming op (no write.base) with request evidence and a given premise: premise_valid goes with the evidence (§5.7 premise_valid «given: 这个 op 的全部证据»)",
+    'a reaffirming op (no write.base) with request evidence and a given premise: premise_valid goes with the evidence (§5.7 premise_valid, given: "这个 op 的全部证据")',
     async () => {
       const y = await send({
         sv: 1,

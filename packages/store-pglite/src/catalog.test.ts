@@ -368,7 +368,7 @@ const expense = (date: string) => ({
   set: { date, amount: { value: "10", unit: "CNY" } },
 });
 
-describe("profile (04-contract §10 `catalog` «概况»)", () => {
+describe('profile (04-contract §10 `catalog` "概况")', () => {
   it("counts the rows not revoked of an event table, with the range of its business time", async () => {
     const r = await w([expense("2026-11-03"), expense("2026-11-01"), expense("2026-11-09")]);
     // The latest day is revoked: it is no row, and the range ends before it.

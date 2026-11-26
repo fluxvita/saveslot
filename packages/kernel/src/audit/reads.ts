@@ -96,7 +96,7 @@ export interface ReadEntry {
   /** A source read in full. */
   readonly source?: SourceId;
   /**
-   * A derived table computed when read (02-integrity «影响查询»): the version of its rule, and the
+   * A derived table computed when read (02-integrity «纠错影响查询»): the version of its rule, and the
    * evaluation time its rows were computed at (`at`; not the entry's "now", which `at` keeps).
    */
   readonly ruleVersion?: number;

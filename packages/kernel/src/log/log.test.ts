@@ -1,5 +1,5 @@
 // The log without storage: building operations (09-event-format §1.5, §2, §3, §4.1;
-// 02-architecture §7 «记录时刻») and `verify` over stored rows (03-data-model «完整性与溯源»).
+// 02-architecture §7 «记录时刻») and `verify` over stored rows (02-integrity-and-records «完整性与溯源»).
 // Fictional IDs and data.
 
 import { createHash } from "node:crypto";
@@ -539,7 +539,7 @@ describe("verify", () => {
     expect(res.chain).toEqual({ intact: true });
   });
 
-  it("an optional block lost as a whole row is not found (03-data-model «完整性与溯源»)", () => {
+  it("an optional block lost as a whole row is not found (02-integrity-and-records «完整性与溯源»)", () => {
     const r = log();
     lose(r, 4, "fields/f2/0");
     expect(verify(r).checksum_mismatch).toEqual([]);

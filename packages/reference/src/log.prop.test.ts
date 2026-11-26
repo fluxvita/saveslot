@@ -330,7 +330,7 @@ function extend(
       });
     }
   });
-  // What the generator's later steps reach, per call (checked by «the generator reaches …»).
+  // What the generator's later steps reach, per call (checked by "the generator reaches …").
   const added = out.slice(log.length);
   counts.extended++;
   counts.revokes += added.filter((e) => e.kind === "revoke").length;

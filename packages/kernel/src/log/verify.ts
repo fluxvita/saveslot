@@ -18,7 +18,7 @@
 // - Index columns (02-architecture §8 `events`: type, actor, recorded time, operation number and
 //   slot from the header; table, row or entity and referenced event from the `target` block):
 //   events whose stored columns differ, listed apart and not counted as breaks — the derived index
-//   is what is wrong, and it can be recomputed from the header and `target` (03-data-model
+//   is what is wrong, and it can be recomputed from the header and `target` (02-integrity-and-records
 //   «完整性与溯源»). Positions only.
 // - Required blocks (09 §5: the paths every event of its type has): a missing one is a mismatch at
 //   that position. When `target` is missing the event's index columns are not checked. A missing

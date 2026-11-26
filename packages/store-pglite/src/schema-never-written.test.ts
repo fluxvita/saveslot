@@ -195,7 +195,7 @@ describe("a table never written", () => {
         await history(s.store, ctx("r"), { table: "pairs", row, mode: "as_of", as_of: now.seq }),
       ).toMatchObject({ sv: 2, rows: [{ values: { a: "x", b: "5" } }] });
       const read = await query(s.store, ctx("r"), { table: "pairs" });
-      // An integer is returned as a string (04-contract «值编码»).
+      // An integer is returned as a string (04-contract «值的编码»).
       expect(read.rows.map((x: Any) => x.values)).toEqual([{ a: "x", b: "5" }]);
       expect(await rows("SELECT row_count FROM counts WHERE table_id = $1", [id])).toEqual([
         { row_count: expect.anything() },

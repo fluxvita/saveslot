@@ -1,5 +1,5 @@
 // derivedWrites over a fake query function: which derived writes one operation's base changes give
-// (06-derived.md «刷新范围与写入准入», «行身份»; 09-event-format.md §4.2 step 6, §5.7
+// (06-derived.md «刷新范围与写入准入», 01-objects «行身份»; 09-event-format.md §4.2 step 6, §5.7
 // `write.derived`). Running the queries on a database is tested in store-pglite
 // (derive.prop.test.ts).
 

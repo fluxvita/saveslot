@@ -364,7 +364,7 @@ describe("05-time «用同样的值写»", () => {
   });
 
   it("a stale corroboration splits: the same part corroborates, the changed part is judged", () => {
-    // 05-time example «一个字段两项».
+    // 05-time example "一个字段两项".
     const { js } = run(STATE, [
       write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "5000" } }),
       write({ op: 20, seen: 10, valid: span("11-02", "11-10"), fields: { f2: "3000" }, ack: true }),

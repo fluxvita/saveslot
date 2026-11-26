@@ -883,7 +883,7 @@ export function judgeRevoke(state: RowState, r: RevokeInput, replay?: ReplayOpti
     (withOps.length > 0 || replay?.resolved?.has("existence") === true) &&
     replay?.protect.has("existence") !== true;
   // High impact ② (05-time «高影响写入»): revoking a row still referenced awaits confirmation; a
-  // stale revoke is a candidate first («既版本对不上、又是高影响»). Who refers to it is the write
+  // stale revoke is a candidate first (09-references-conflict-sync «既版本对不上、又是高影响»). Who refers to it is the write
   // path's to find (other rows); a whole revoke only on a state table. (A conflict makes it a
   // candidate below whatever this says.)
   const awaiting = r.referenced === true && (!state.isState || r.valid === undefined);

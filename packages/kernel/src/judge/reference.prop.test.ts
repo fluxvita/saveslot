@@ -10,7 +10,7 @@
 // reference puts a part of it that takes effect into a gap (05-time «无值区间»), and nothing else is
 // refused. Each next op is also judged on the state rebuilt from the records after a JSON round
 // trip, and must get the same judgement: together with the comparison this is the write path's
-// half of «写入路径与参考一致». The reference has no conflict groups and no multi-op requests; those
+// half of 02-architecture «写入路径与参考一致». The reference has no conflict groups and no multi-op requests; those
 // are covered by fixed cases (judge.test.ts), as are `deps` and the overwritten stretches.
 
 import { evaluateLog, type Op, type TableSchema } from "@fluxvita/saveslot-reference";

@@ -1,5 +1,5 @@
 // The physical table of a derived table (docs/zh-CN/spec/02-architecture.md §8; 06-derived.md
-// «行身份»): one row per non-empty partition, `d_<table>_v<n>` with `partition_id`, one column
+// 01-objects «行身份»): one row per non-empty partition, `d_<table>_v<n>` with `partition_id`, one column
 // `f_<field>` per derived field (the group key fields among them) and `ver`, the operation number
 // of the derived write that last set the row. The layout is shared by apply, which builds the table
 // from it (with its own column types) and writes it, and derive, which reads it to compare with a

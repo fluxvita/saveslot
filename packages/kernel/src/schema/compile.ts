@@ -4,7 +4,7 @@
 // Pure: the slot ID and the next free table and rule numbers come from the caller. The result is
 // the definition of version 1 and the changes (`create_slot`, then `add_table` or
 // `add_derived_table` per table); every change of a new slot applies directly, so the outcome is
-// `applied` (07 «改动分类» slot 新建 row).
+// `applied` (07 «改动分类与迁移手段» slot 新建 row).
 //
 // Derived tables (07 «文档结构» 派生表 row; 06-derived.md): each rule is compiled by the restricted
 // SQL compiler (../rules) against the slot's compiled base tables, after the document's own rules
@@ -288,7 +288,7 @@ export function compileNewSlot(input: CompileNewSlotInput): CompileResult {
 /**
  * The warnings a slot's compiled schema gives (04-contract-types §7 `Warning`, by table name), in
  * table order: a base table keyed by one field from outside, and a derived table whose group key
- * comes from free text (06 «派生行身份»: it goes with the group when deleted). A function of the
+ * comes from free text (06 «派生行身份不带分组键值»: it goes with the group when deleted). A function of the
  * compiled schema only, which the log keeps.
  */
 export function compiledWarnings(

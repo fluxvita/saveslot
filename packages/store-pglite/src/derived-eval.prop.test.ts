@@ -1,5 +1,5 @@
 // Derived rules evaluated on PGlite (03-data-model/11-restricted-sql.md «处理步骤» 7–8, «精度与
-// 舍入»; 06-derived.md «规则读的是逻辑表»). The queries evaluateRule gives run over physical tables
+// 舍入»; 06-derived.md «规则读的是逻辑表，逻辑表只含未撤销的行»). The queries evaluateRule gives run over physical tables
 // laid out as apply lays them (`t_<table>_v<n>`: row_id, revoked, `f_<field>` columns):
 //
 // A. Rewriting keeps the meaning, for every generated rule of this version's subset: the query over

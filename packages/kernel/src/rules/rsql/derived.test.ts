@@ -135,7 +135,7 @@ describe("the spec's rules compile", () => {
   });
 });
 
-describe("scope and time dependency (06 «刷新范围», «时间依赖»)", () => {
+describe("scope and time dependency (06 «刷新范围与写入准入», «时间依赖»)", () => {
   it("a whole aggregate has the tenant scope", () => {
     const r = ok(compileDerivedRule(rule("SELECT sum(amount) AS total FROM expenses", ["total"])));
     expect(r.rule.scope).toEqual({ kind: "tenant" });

@@ -1,5 +1,5 @@
-// The write pipeline on PGlite against judge and the record mapping (02-architecture §11; 04-write-
-// and-read «判定顺序», «一次写入的事件构成»). The comparison's judged scenarios (writes, revokes,
+// The write pipeline on PGlite against judge and the record mapping (02-architecture §11;
+// 04-write-and-read «判定顺序», «一次写入的事件构成»). The comparison's judged scenarios (writes, revokes,
 // undos; decisions are `resolve`, a later operation) are sent to the pipeline as write requests,
 // one request a step. Each request must append what the record mapping encodes of judge's
 // judgement of the same op on the same log: the same events at the same seqs, the same blocks.

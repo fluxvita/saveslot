@@ -1,5 +1,5 @@
 // An op's premises at the write (docs/zh-CN/spec/03-data-model/02-integrity-and-records.md «写入的
-// 前提»; 04-contract §5; 09-event-format §5.7 the premise blocks): «判定顺序» step 5, the checks on
+// 前提»; 04-contract §5; 09-event-format §5.7 the premise blocks): 04-write-and-read «判定顺序» step 5, the checks on
 // the current state, and what the head records of each declaration.
 //
 // - The target: its table's row or entity (by ID or by key), there and visible (`not_found`), not
@@ -391,7 +391,7 @@ export async function resolvePremises(
         return { code: "invalid_argument", reason: "mutually_exclusive", param: `${at}/ver` };
       ver = { op: ctx.op, restore_count: ctx.restore, basis: "same_request" };
     } else if (p.ver !== undefined) {
-      // A premise's ver as a write's (04-contract §15 «前提里的 ver 同此»).
+      // A premise's ver as a write's (04-contract §15 "前提里的 `ver` 同此").
       const read = seenOfVer(p.ver, ctx.current);
       if (read === undefined || (read.own && !versions.has(p.ver.op)))
         return { code: "not_this_target", param: `${at}/ver` };
@@ -473,7 +473,7 @@ async function stateWhenWritten(
 }
 
 /**
- * The depending row's own business time (02-integrity «状态类表上的目标不给业务时间时»), aligned to
+ * The depending row's own business time (02-integrity «状态类表上的目标不给业务时间时，范围取什么»), aligned to
  * the target's granularity: a point (an event row's time field) or a stretch (a state table's
  * interval), with `deps` when another contribution gave it. None: from now on.
  */

@@ -143,7 +143,7 @@ describe("detail: detailed, a field's literal result and level, against a model"
         // `items`: the evidence of the write giving the value now; `corroborations`: every
         // corroboration with its value. A corroboration counts while the value is its value again
         // (not reverted): the rule `delta/sources.ts` gives the 出处项, as the marks of premises
-        // take them; the spec says «当前仍作数的佐证项» and no more.
+        // take them; the spec (01-objects «出处项») says "当前仍作数的佐证项" and no more.
         const rows: {
           row: string;
           ver: string;

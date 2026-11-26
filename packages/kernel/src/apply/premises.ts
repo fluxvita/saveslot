@@ -3,7 +3,7 @@
 // state, and for each 出处项 the declaration in force on it for each premise target. apply compares
 // no values: whether a premise changed is decided once, online, and recorded in `premise.changed`.
 //
-// The cover (§5.7 «覆盖»): a declaration covers its op's own items, every item of the op's
+// The cover (§5.7 "覆盖"): a declaration covers its op's own items, every item of the op's
 // `write.base` on the target row (registered when that event is applied), and the items its op lists
 // in `premise_covers`. For one item and one premise target the latest declaration covering it is in
 // force: latest by (operation, op index), so an edge is written over only by a later one, whatever

@@ -152,7 +152,7 @@ export type CompileWarning =
       readonly path: string;
     }
   | {
-      /** A derived table's group key comes from free text: it goes with the group when deleted (06 «派生行身份»). */
+      /** A derived table's group key comes from free text: it goes with the group when deleted (06 «派生行身份不带分组键值»). */
       readonly code: "group_key_free_text";
       /** The derived table's name: what `schema_draft` gives (04-contract-types §7 `Warning`). */
       readonly table: string;
@@ -196,7 +196,7 @@ export interface CompileChangeInput {
   readonly nextTableNumber: number;
   /** The slot policy's `auto_apply` classes. */
   readonly autoApply: readonly string[];
-  /** Whether nobody but the submitter uses the table or field (07 «改名自动生效的前提»). */
+  /** Whether nobody but the submitter uses the table or field (07 «改名自动生效的前提是没有别人在用它»). */
   readonly unused: (target: ChangeTarget) => boolean;
   /**
    * Whether no `write.base` was ever logged for the table (07 «从未被写入的表上改结构»: a revoked,

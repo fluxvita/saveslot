@@ -1,4 +1,4 @@
-// Drafts whose changes rebuild a table (03-data-model/07-schema-evolution.md «改动分类», «收紧约束»;
+// Drafts whose changes rebuild a table (03-data-model/07-schema-evolution.md «改动分类与迁移手段», «收紧约束»;
 // 08-schema-migration.md «物理做法»; 04-contract «schema_draft», `resolve` 5): compiled, a tightened
 // constraint checked against the positions in effect, a field ID never used twice. Building and
 // switching come later: a draft that would apply at once is refused, and confirming one that waits

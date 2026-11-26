@@ -28,6 +28,7 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 ## Rules
 
 - **Spec first.** A change in behavior updates `docs/zh-CN/spec/` in the same pull request; changes that affect reader understanding also update `docs/zh-CN/guide/`.
+- **Spec references.** Code comments refer to the specification by a file and a title in `«»`, as the Chinese edition has it: `05-time «挡点»`. A title is a heading, a bold item or a table row's name of that file. Quote running text in plain quotation marks, not `«»`, and only words the named file has. `pnpm docs:spec-refs` checks every reference; it does not check quotations.
 - **Incompatible changes to the event format, the kernel invariants (K1–K14) or the operation contract** start with a decision record in `docs/zh-CN/process/decisions/` that is reviewed before the spec and code change. Do not change them directly.
 - **`docs/zh-CN/spec/` and `docs/zh-CN/guide/` describe the design only.** Process information (dates, revision rounds, "it used to be X, now Y", review sources) belongs in `docs/zh-CN/process/`.
 - **Use the spec's terms** (slot, source data, table data, conflict unit, `ver`, …). Do not invent synonyms.
@@ -38,7 +39,7 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 
 - Node 24.22.1 or later on the 24 line, or 26.12.1 or later (`.nvmrc` names the version CI runs; the nightly checks also run on the 26 line), TypeScript strict mode, ESM only.
 - pnpm workspace; Vitest for tests, fast-check for property tests; Biome for formatting and lint; Changesets for versioning.
-- Run `pnpm check` on the head before every push (type check, lint, tests, dependency rules, doc links, JSON examples, the English documents' source lines, the claims index); do not bypass it. CI runs it, with the quick checks, on every pull request, and must pass before a merge; on `main` it runs again after merges and nightly. A failure on the default branch is fixed with priority.
+- Run `pnpm check` on the head before every push (type check, lint, tests, dependency rules, doc links, JSON examples, the English documents' source lines, the claims index, the code's references to the specification, merge conflict markers); do not bypass it. CI runs it, with the quick checks, on every pull request, and must pass before a merge; on `main` it runs again after merges and nightly. A failure on the default branch is fixed with priority.
 
 ## Commits
 

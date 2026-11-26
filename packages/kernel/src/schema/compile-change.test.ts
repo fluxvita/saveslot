@@ -514,7 +514,7 @@ describe("the definition of the next version", () => {
   });
 });
 
-describe("changes that rebuild a table (08 «物理做法»; 07 «改动分类»)", () => {
+describe("changes that rebuild a table (08 «物理做法»; 07 «改动分类与迁移手段»)", () => {
   beforeAll(() => loadRsql());
   const on = (f: (e: Doc) => void, o: Partial<Omit<CompileChangeInput, "document">> = {}) =>
     run(

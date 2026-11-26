@@ -1,5 +1,5 @@
 // Derived writes through the write pipeline, the log and apply, on PGlite (06-derived.md «刷新范围与写入
-// 准入», «行身份»; 09-event-format.md §4.2 step 6, §5.7 `write.derived`). A slot with derived tables
+// 准入», 01-objects «行身份»; 09-event-format.md §4.2 step 6, §5.7 `write.derived`). A slot with derived tables
 // over `runs` is created by its schema events; then, step by step, a write request inserts, updates,
 // revokes or restores a row of runs, and the pipeline appends the derived writes to the same
 // operation. After each step:

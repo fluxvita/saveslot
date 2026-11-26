@@ -179,7 +179,7 @@ export interface SwitchInput {
 
 /**
  * Whether version `next` rebuilds a table of `current`: a table of both whose physical table is
- * another one (07 «改动分类»; 08 «物理做法»). Only such a version has a migration (09 §4.5).
+ * another one (07 «改动分类与迁移手段»; 08 «物理做法»). Only such a version has a migration (09 §4.5).
  */
 export function rebuilds(current: CompiledSchema, next: CompiledSchema): boolean {
   return next.tables.some((t) => {

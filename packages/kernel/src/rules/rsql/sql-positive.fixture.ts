@@ -70,7 +70,7 @@ export const DOCUMENTED: readonly Positive[] = [
     "category:text,amount:quantity:CNY",
   ),
   spec(
-    "guide 07 «时间»",
+    "guide 07 时间",
     "remaining budget this month",
     `SELECT b.category,
        b.amount - COALESCE(SUM(e.amount), 0) AS remaining

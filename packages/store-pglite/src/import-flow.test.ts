@@ -1,5 +1,5 @@
 // Import into an empty tenant, the whole flow and its re-entry (02-architecture §8 «格式版本、导出、
-// 导入与恢复» steps ①–⑥ and «重入», §4 `openTenant`, §11 «导入在每一步之后强杀再打开»; 04-contract §17
+// 导入与恢复» steps ①–⑥ and «重入», §4 `openTenant`, §11 "导入在每一步之后强杀再打开"; 04-contract §17
 // `import`). The file of a source tenant is replayed into a staging storage, the import's event
 // appended there, then steps ④–⑥ run against an empty target tenant with the file anchor store. A
 // variable plays the tenant directory: `swap` makes the staging storage the target's.

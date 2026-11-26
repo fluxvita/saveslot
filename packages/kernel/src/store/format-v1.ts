@@ -452,7 +452,7 @@ CREATE INDEX premise_edges_target ON premise_edges (target);`,
   shape ${T},                       -- structural fingerprint of the query; no user values
   valid ${T},                       -- business time condition (JCS)
   source_id ${T},                   -- a source read in full
-  -- A derived table computed when read (02-integrity «影响查询»): the version of its rule and the
+  -- A derived table computed when read (02-integrity «纠错影响查询»): the version of its rule and the
   -- evaluation time (at, which may differ from the entry's "now"). NULL on any other read.
   rule_version INTEGER,
   evaluated_at ${T}

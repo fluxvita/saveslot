@@ -210,7 +210,7 @@ const text = (p: Obj, k: string) => {
 };
 
 /**
- * The scope each item type's decisions need (04-contract §6 «处理方式»): the kernel knows only the
+ * The scope each item type's decisions need (04-contract §6 «待处理事项»): the kernel knows only the
  * visible range, the scope is the service's (02-architecture §5).
  */
 const DECISION_SCOPE: ReadonlyMap<string, Scope> = new Map([

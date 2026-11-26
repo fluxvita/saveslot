@@ -48,7 +48,7 @@ const FIELD_KEYS = [
 /** Keys a field of a type must have. */
 const NEEDS: Readonly<Record<string, string>> = { enum: "values", quantity: "unit", ref: "ref" };
 
-/** Reserved for official schemas, not in v1 (07 «文档结构» 官方 schema; «改动分类» end). */
+/** Reserved for official schemas, not in v1 (07 «文档结构» 官方 schema; «改动分类与迁移手段» end). */
 const OFFICIAL = ["extends", "compatibility"];
 
 const arr = (v: unknown): readonly unknown[] => (Array.isArray(v) ? v : []);

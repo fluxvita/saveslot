@@ -44,7 +44,7 @@ export async function logEnd(store: TenantStore, ctx: OpsContext): Promise<LogEn
 
 /**
  * How long a service streaming an export waits for its reader to take a step's lines before it
- * gives the export up and cuts the connection (02-architecture §8 «导出»).
+ * gives the export up and cuts the connection (02-architecture §8 «格式版本、导出、导入与恢复»).
  */
 export const EXPORT_STALL_MS = 30_000;
 

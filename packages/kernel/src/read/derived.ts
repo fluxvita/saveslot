@@ -1,5 +1,5 @@
 // `query` of a derived table (docs/zh-CN/spec/04-contract.md §10 `query`, §4, §15; 04-contract-types
-// §4.1, §4.3; 06-derived.md «行身份»): the rows of its physical table, read through the layout and
+// §4.1, §4.3; 01-objects «行身份»): the rows of its physical table, read through the layout and
 // decoding of rules (derivedLayout, decodeDerivedRow), filtered, ordered by the group key and paged.
 //
 // - A row is identified by its group key (`key`, `{}` for a whole aggregate); inside, by its
@@ -419,7 +419,7 @@ export async function queryDerived(
 
   const tableId = t.id as TableId;
   // A table computed when read is recorded at table level, under its own name (02-integrity
-  // «影响查询»); never under the base tables it reads.
+  // «纠错影响查询»); never under the base tables it reads.
   const readRows: ReadRow[] = atRead
     ? []
     : page.map((x) => ({

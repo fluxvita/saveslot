@@ -1,5 +1,5 @@
 // `log.reconcile` (docs/zh-CN/spec/04-contract.md, 04-contract-types §8.4 `LogReconcileResult`;
-// 02-architecture.md §7 «对拍», §8 the «对拍» column, §11 K12): the log replayed from an empty
+// 02-architecture.md §7 "对拍", §8 the "对拍" column, §11 K12): the log replayed from an empty
 // storage into a scratch one, and the tables §8 marks as compared set against the live ones.
 //
 // In three parts, as §7 has them:

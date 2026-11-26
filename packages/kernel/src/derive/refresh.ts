@@ -1,5 +1,5 @@
 // The derived refresh of one operation (docs/zh-CN/spec/03-data-model/06-derived.md «刷新范围与写入
-// 准入», «行身份»; 09-event-format.md §4.2 step 6, §5.7 `write.derived`): which derived rows changed
+// 准入», 01-objects «行身份»; 09-event-format.md §4.2 step 6, §5.7 `write.derived`): which derived rows changed
 // after this operation's base changes, as derived writes to append.
 //
 // derive does not read storage itself (02-architecture §4: it depends on rules and log only): the

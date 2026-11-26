@@ -1,4 +1,4 @@
-// A decision's scope goes by the item's type (04-contract §6 «处理方式»; 02-architecture §5: the
+// A decision's scope goes by the item's type (04-contract §6 «待处理事项»; 02-architecture §5: the
 // service decides by scope, the kernel knows only the visible range): conflict items take
 // `saveslot.write`, schema changes `saveslot.schema`. `resolve` lets any of the decision scopes in,
 // then checks the one the item needs; an item the caller does not see is refused as not there,

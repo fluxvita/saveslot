@@ -575,7 +575,7 @@ describe("an item closed for another reason, a deletion not touching it: no fate
 });
 
 describe("a successor of the same kind superseded by a deletion, pending again of its kind: restored", () => {
-  // As «two deletions in turn», the states before and after given directly: before, #30 in
+  // As "two deletions in turn", the states before and after given directly: before, #30 in
   // effect; after (S25 deleted only), awaiting. The items: its original (conflict) and the
   // successor (awaiting) both superseded by deletions, the successor the one it is in now.
   const log = [

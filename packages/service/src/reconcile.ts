@@ -1,5 +1,5 @@
 // `log.reconcile` in the service (docs/zh-CN/spec/04-contract.md, the operation table; 02-architecture.md
-// §3, §7 «对拍»): the kernel's `reconcileLog` run against a tenant's live storage and a scratch
+// §3, §7 "对拍"): the kernel's `reconcileLog` run against a tenant's live storage and a scratch
 // storage the host makes for it, one run per tenant at a time.
 //
 // One run per tenant: a second call while one runs in this process is refused at once with

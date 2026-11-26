@@ -1,5 +1,5 @@
-// The restore flow on PGlite with the file anchor store (02-architecture §8; 03-deletion
-// «恢复流程», «恢复后 seq 不复用»; 09 §5.2 `tenant.restored`): what it appends, where its `seq`
+// The restore flow on PGlite with the file anchor store (02-architecture §8 «恢复备份、快照、冷租户归档之后必须走恢复流程»;
+// 03-deletion «恢复后 seq 不复用»; 09 §5.2 `tenant.restored`): what it appends, where its `seq`
 // falls, what the anchor holds afterwards, and re-entry at each point it can stop at.
 // Fictional IDs and data.
 

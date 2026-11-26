@@ -1,7 +1,7 @@
-// Naming a row read as of a moment (08 «退役表»: by the compiled definition of the version in effect
+// Naming a row read as of a moment (08 «状态机» "已退役": by the compiled definition of the version in effect
 // then), on the definitions directly. What a version switches to on the same physical table (names,
 // texts) is named as then; a version answered by another physical table (a field added or dropped,
-// 08 «改动分类与迁移手段») is not read here yet, and says so rather than naming the rows as now.
+// 07 «改动分类与迁移手段») is not read here yet, and says so rather than naming the rows as now.
 
 import type {
   CompiledBaseTable,

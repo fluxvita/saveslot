@@ -1,4 +1,4 @@
-// The planner's statistics of a local store (02-architecture §7 «本机存储»): PGlite runs PostgreSQL
+// The planner's statistics of a local store (02-architecture §7 «统计信息»): PGlite runs PostgreSQL
 // in single-user mode, with no autovacuum, so the store gathers them itself, at open and after a
 // write, when the log has grown past what they last counted (db-worker.ts `stale`). ANALYZE
 // changes no row: a failure or an interruption is reported and nothing else.

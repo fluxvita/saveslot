@@ -6,7 +6,7 @@
 // (event, target) and index, the last judgement the log gave it — the write's own item, or a later
 // deletion's restatement, `dropped` included — skipping blocks of a cancelled deletion; and, for
 // numbering only, the last block that gave an interval, skipping restatements as dropped (09 §5.7
-// «最近一次给出的块只用于这类下标保留编号»). With none given, the records as written are the
+// "最近一次给出的块只用于这类下标保留编号"). With none given, the records as written are the
 // latest.
 
 import { canonical, type IntervalSet, isNothing, meet, startOf } from "../time/index.ts";

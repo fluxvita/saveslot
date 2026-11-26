@@ -3007,7 +3007,7 @@ async function writeIn(
     }
   }
   // Request-level evidence no op cites (an op naming none cites every segment): stored as sources
-  // all the same, the source of no value (04-write-and-read «证据»).
+  // all the same, the source of no value (04-contract §3 «证据»).
   // Cited by an op that entered an event: one cited only by ops that left nothing is unreferenced.
   const cited = new Set(
     req.ops

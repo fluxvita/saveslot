@@ -1,5 +1,5 @@
 // Who a request comes from, and the tenant it is served on (docs/zh-CN/spec/02-architecture.md §5
-// «身份», «解析流程»): the one port both surfaces go through, whatever the mode. The local mode has
+// «身份», "解析流程"): the one port both surfaces go through, whatever the mode. The local mode has
 // one tenant and its credentials file; the server mode finds the tenant from the control plane
 // and borrows it from its pool. A surface resolves the caller once per request and runs the
 // request inside `use`: the tenant is lent for that, never kept past it.
