@@ -18,7 +18,7 @@ Not in 0.1 yet, in either mode, coming in later releases: privacy deletion (prev
 
 saveslot is before 1.0: interfaces may change between minor versions.
 
-The guide and the specification are kept in two editions, English under [`docs/`](docs/README.md) and Chinese under [`docs/zh-CN/`](docs/zh-CN/). Neither is a copy of the other: a change to one changes the other in the same pull request, and a difference between them is a defect, to be reported as an issue. The decision records, walkthroughs and research notes are in Chinese only for now; the index lists them.
+The guide and the specification are kept in two editions, English under [`docs/`](docs/README.md) and Chinese under [`docs/zh-CN/`](docs/zh-CN/), aligned in meaning: a change to one changes the other in the same pull request, and a difference between them is a defect, to be reported as an issue. The decision records, walkthroughs and research notes are in Chinese only for now; the index lists them.
 
 | Where | What |
 |---|---|
