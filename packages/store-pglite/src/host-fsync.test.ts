@@ -94,12 +94,16 @@ function nodefs(o: { allocate?: boolean } = {}) {
   /** The paths each host fsync was for, in order; `fail` makes the next one throw. */
   const synced: string[] = [];
   let fail = false;
-  /** Inode numbers given to paths, and the path each descriptor was opened on. */
+  /** Inode and device numbers given to paths, and the path each descriptor was opened on. */
   const inodes = new Map<string, bigint>();
+  const devices = new Map<string, bigint>();
   const opened = new Map<number, string>();
   const given = (st: HostStat, path: string | undefined): HostStat => {
     const ino = path === undefined ? undefined : inodes.get(path);
-    return ino === undefined ? st : { dev: st.dev, ino, isDirectory: () => st.isDirectory() };
+    const dev = path === undefined ? undefined : devices.get(path);
+    return ino === undefined && dev === undefined
+      ? st
+      : { dev: dev ?? st.dev, ino: ino ?? st.ino, isDirectory: () => st.isDirectory() };
   };
   const stat: HostStats = {
     fd: (fd) => given(fstatSync(fd, { bigint: true }), opened.get(fd)),
@@ -168,6 +172,8 @@ function nodefs(o: { allocate?: boolean } = {}) {
     path: (name: string) => join(dir, name),
     /** Gives the file at `name` the inode number `ino`, as the host stat reports it. */
     inode: (name: string, ino: bigint) => inodes.set(join(dir, name), ino),
+    /** Gives the file at `name` the device number `dev`, as the host stat reports it. */
+    device: (name: string, dev: bigint) => devices.set(join(dir, name), dev),
     /** A file at `name`, made on the host (NODEFS's mknod writes an empty file). */
     make(name: string): Node {
       writeFileSync(join(dir, name), "x");
@@ -328,6 +334,25 @@ describe("the host fsync hook: which fsyncs reach the host", () => {
     fs.write(sa);
     fs.fsync(sb);
     expect(fs.fsync(sa)).toBe(true);
+  });
+
+  it("two files of one inode number on two devices are two files", () => {
+    const fs = nodefs();
+    const a = fs.make("a");
+    const b = fs.make("b");
+    fs.inode("a", 7n);
+    fs.inode("b", 7n);
+    fs.device("a", 1n);
+    fs.device("b", 2n);
+    const sa = fs.open(a);
+    const sb = fs.open(b);
+    fs.fsync(sa);
+    fs.fsync(sb);
+    // Keyed by the inode number alone they are one file: a's fsync would make b clean again, and
+    // b's write would be lost.
+    fs.write(sb);
+    fs.fsync(sa);
+    expect(fs.fsync(sb)).toBe(true);
   });
 
   it("a file created on the inode number of one removed is dirty, though that one was clean", () => {

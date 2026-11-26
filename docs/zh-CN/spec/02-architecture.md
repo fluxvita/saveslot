@@ -420,7 +420,8 @@ slot 策略的结构里为"某类操作只接受用户会话的确认"留了位�
     - `events` 放在最后单独做：事务之外的 `ANALYZE` 逐表提交，`events` 的统计行数就是「这一轮做完了」的标志，中途失败或被打断时它仍是旧的，下次检查照样算过期。
 
     统计信息不是数据，不进日志，不影响重放与对拍。失败只记一行日志（`analyze_failed`，只带错误码），不让写入或打开失败；进程在分析中途被结束时写不出这行日志，下次打开时统计信息仍算过期，重新分析。服务器模式由 PostgreSQL 的 autovacuum 收集，saveslot 不另做。
-  - 钩子依赖 PGlite 的内部结构，所以 PGlite 版本钉死到补丁号；升级 PGlite 必须重跑持久性实验步骤一（两个平台）与钩子计数的单元测试。
+  - 钩子不把这样的 fsync 传给宿主：同一个 PGlite 实例里，这个文件上次宿主 fsync 返回之后，没有任何会改它内容、长度或身份的操作碰过它（写入，含 msync 的写回；按描述符或按路径截断，含带 `O_TRUNC` 的打开；新建；改名，搬走的与被覆盖的；删除）。省下的是崩溃后启动时 PostgreSQL 对数据目录的第二遍 fsync。每个实例里每个文件的第一次 fsync、目录的每次 fsync 都传给宿主；宿主 fsync 失败过的文件从此不再跳过。持久性的保证不变。
+  - 钩子依赖 PGlite 的内部结构，所以 PGlite 版本钉死到补丁号；升级 PGlite 必须重跑持久性实验步骤一（两个平台）与钩子计数的单元测试，并核对 NODEFS 里会改文件的操作清单（上一条的跳过靠它）。
   - 能否达标由持久性实验确认（[`07-scope-v1.md`](07-scope-v1.md) 实验 1；结果报告见 [`../process/experiments/exp-1-pglite-durability.md`](../process/experiments/exp-1-pglite-durability.md)）；不达标就换成随 saveslot 打包的原生 PostgreSQL。
 
 ### 记录时刻

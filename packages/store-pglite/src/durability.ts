@@ -22,6 +22,13 @@
 // on Linux it is fsync(). The callback also covers data files and directories that PostgreSQL
 // fsyncs at checkpoints. Whether the host call is really issued before each commit is
 // acknowledged must be observed with a system call tracer (experiment 1, step 1).
+//
+// The callback does not pass on the fsync of a file that nothing has changed since its last host
+// fsync in this PGlite instance (`installHostFsync` says what counts as a change and why it is
+// safe): what that saves is the second fsync of each file when PostgreSQL starts after a crash.
+// Every file's first fsync in an instance, and every directory's, reaches the host; durability is
+// unchanged. It rests on NODEFS's list of operations that change a file: upgrading PGlite means
+// checking that list again (the test "PGlite's NODEFS, as the hook expects it").
 
 import { fstatSync, fsyncSync, lstatSync } from "node:fs";
 import { join } from "node:path";
@@ -178,7 +185,8 @@ const hostFile = (s: HostStat): HostFile => ({ key: `${s.dev}:${s.ino}`, dir: s.
  */
 export function installHostFsync(
   mod: EmscriptenModule,
-  hostFsync: (fd: number, path: string) => void = (fd) => fsyncSync(fd),
+  /** Tests only: called in place of `fs.fsyncSync`, with the host path too. */
+  hostFsync?: (fd: number, path: string) => void,
   stat: HostStats = bigintStats,
 ): void {
   const { NODEFS } = mod;
@@ -262,7 +270,9 @@ export function installHostFsync(
         stats.skipped++;
         return 0;
       }
-      hostFsync(stream.nfd, stream.node !== undefined ? NODEFS.realPath(stream.node) : "");
+      // The host path is for a test's spy only: worked out only when one is given.
+      if (hostFsync === undefined) fsyncSync(stream.nfd);
+      else hostFsync(stream.nfd, stream.node !== undefined ? NODEFS.realPath(stream.node) : "");
     } catch (cause) {
       if (file !== undefined) failed.add(file.key);
       // An error code makes fsync() fail in PostgreSQL; with data_sync_retry = off it PANICs.
