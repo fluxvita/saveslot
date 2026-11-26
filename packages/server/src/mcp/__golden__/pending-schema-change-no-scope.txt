@@ -3,6 +3,5 @@ pi_JN2N3HV0YD29R6ZB schema_change · slot diet · open · opened 2 h ago (2026-1
   Draft d_5JWJSYG6A20FMQ07 → schema v3
     meals.dish: rename_field (metadata) · writes in the earlier version still taken · loses no data · waits for confirmation
   Impact: 0 rows to change
-  The slot as this draft would make it: saveslot_catalog with level "schema" and draft d_5JWJSYG6A20FMQ07.
   Not in effect; the slot is unchanged.
   This connection cannot decide on it: deciding a schema_change item needs saveslot.schema. Tell the user; they decide with a connection or session that has it.

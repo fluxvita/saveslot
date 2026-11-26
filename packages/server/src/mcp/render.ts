@@ -2237,8 +2237,9 @@ function schemaImpactLine(x: unknown, pad: "" | "  "): Line {
 /**
  * A `schema_change` item's detail (04-contract-types §4.8 `SchemaChangeDetail`; 05 §4): its
  * draft and the version it compiles to, each change as the draft's receipt writes it, the impact
- * as estimated when the draft was submitted, how it ended, and where the slot's document as the
- * draft would make it is read. The detail gives no version the draft was written on: only the
+ * as estimated when the draft was submitted, and how it ended. Where the slot's document as the
+ * draft would make it is read is not said: that is `saveslot_catalog`'s `draft`, which MCP does not
+ * take in this version (05 §9.1). The detail gives no version the draft was written on: only the
  * version it goes to.
  */
 function schemaChangeItem(r: R, now: Date): Line[] {
@@ -2248,7 +2249,6 @@ function schemaChangeItem(r: R, now: Date): Line[] {
     t`  Draft ${idOf(r["draft"])} → schema v${count(r["target_sv"])}`,
     ...changeLines(r["changes"], open, "    "),
     schemaImpactLine(r["impact"], "  "),
-    t`  The slot as this draft would make it: saveslot_catalog with level "schema" and draft ${idOf(r["draft"])}.`,
     ...closedLines(r),
   ];
   if (open) {
@@ -2563,6 +2563,12 @@ const REASON_NEXT: ReadonlyMap<string, () => Part[]> = new Map([
     "insert_with_entity_key",
     () =>
       t`This table has an entity key: a new entity is written with intent "update" and its entity_key, which creates it; insert is not used here.`,
+  ],
+  // 05 §7: a table with a source key is written by it with update, which adds a record not there.
+  [
+    "insert_with_external_key",
+    () =>
+      t`This table has a source key: a record is written by it with intent "update" and its external_key, which adds the record when it is not there yet; insert is not used here.`,
   ],
   [
     "candidate_required",

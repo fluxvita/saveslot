@@ -601,7 +601,7 @@ The character set of names (`[A-Za-z][A-Za-z0-9_]{0,62}`, not starting with `_`)
 
 **`saveslot_sources`**: List, search or read source data (the user's words, tool results, file references), and preview the effect before a deletion (`mode: "deletion_preview"`). A preview deletes nothing. [with saveslot.delete] The preview returns the `dc_…` needed to carry out the deletion, to be handed to `saveslot_delete`.
 
-**`saveslot_pending`**: List the pending items (conflicts, awaiting confirmation, [from P2] flagged, [from P4] schema changes, [from P3] deletions that can still be cancelled), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version. Use it when a receipt or a read names a pending item, or the user asks what is waiting for them.
+**`saveslot_pending`**: List the pending items (conflicts, awaiting confirmation, [from P2] flagged, schema changes, [from P3] deletions that can still be cancelled), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version. Use it when a receipt or a read names a pending item, or the user asks what is waiting for them.
 
 **`saveslot_write`**: Write one or more records to base tables (one slot, one transaction). Use it when the user tells you a new fact that belongs to a table ("I ran 5 km today"), when something has changed, or when the user says something was recorded wrongly; not when the user is asking, supposing or chatting. The intent is one of four: `insert` a new record; `update` when something changed or more is known; `correct` when the value was recorded wrongly in the first place ([from P2] it also finds the tasks that read the wrong value); `revoke` when the record should not exist (its history is kept).
 When changing an existing row, bring back the `ver` and `sv` you read. Put the user's own words in `evidence` (`kind: user_message`); [from P2] to make the words evidence for a value that did not change, name it in `evidence_by_field`. To clear an optional field, write `null`. Write table and field names as `saveslot_catalog` gives them; [from P2] aliases are no substitute for names. Derived tables are read-only: write to their source tables. Do not write each reading a device produces (heart rate, glucose): record a summary of each activity or day.
@@ -702,7 +702,7 @@ All the parameters of the 10 tools of the first version. An empty "Required" cel
 |---|---|---|
 | `id` | | An item ID: its detail (the current value, the candidates, the ways it can be resolved, `item_ver`). Without it, the list. Look at the detail before resolving an item |
 | `slot` | | Only the items of this slot |
-| `type` | | Only one type: `conflict`, `awaiting_confirmation`, [from P2] `flagged`, [from P4] `schema_change`, [from P3] `deletion` |
+| `type` | | Only one type: `conflict`, `awaiting_confirmation`, [from P2] `flagged`, `schema_change`, [from P3] `deletion` |
 | `status` | | `open` (default, not resolved yet), `resolved`, `superseded` or `all` |
 
 **`saveslot_write`**

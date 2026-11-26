@@ -4,5 +4,4 @@ pi_PYY41QJMHG2N3515 schema_change · slot diet · superseded · opened 2 h ago (
     meals: change_description (metadata) · writes in the earlier version still taken · loses no data
     meals.food: rename_field (metadata) · writes in the earlier version still taken · loses no data
   Impact: 0 rows to change
-  The slot as this draft would make it: saveslot_catalog with level "schema" and draft d_KKRMH33TMW2VZS84.
   Superseded: draft_replaced by #10 (2026-11-18T12:04:00.000Z)

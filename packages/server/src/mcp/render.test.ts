@@ -650,6 +650,14 @@ describe("what 05 §6 asks for", () => {
       param: "ops/0/table",
     });
     expect(key).toContain('a new entity is written with intent "update" and its entity_key');
+    const external = renderError({
+      code: "invalid_argument",
+      reason: "insert_with_external_key",
+      param: "ops/0/external_key",
+    });
+    expect(external).toContain(
+      'a record is written by it with intent "update" and its external_key',
+    );
     const ex = renderError({
       code: "invalid_argument",
       reason: "malformed",

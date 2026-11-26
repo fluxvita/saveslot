@@ -533,7 +533,7 @@
   },
   {
     "name": "saveslot_pending",
-    "description": "List the pending items (conflicts, and changes awaiting confirmation), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version. Use it when a receipt or a read names a pending item, or the user asks what is waiting for them.",
+    "description": "List the pending items (conflicts, and changes awaiting confirmation), or see one item in detail: the current value, the proposal or the candidates, what would change, the ways it can be resolved and the item version. Use it when a receipt or a read names a pending item, or the user asks what is waiting for them. Schema changes awaiting confirmation are pending items too.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -553,7 +553,7 @@
             "schema_change",
             "deletion"
           ],
-          "description": "Only one type: `conflict` or `awaiting_confirmation`."
+          "description": "Only one type: `conflict` or `awaiting_confirmation`. Also `schema_change`."
         },
         "status": {
           "enum": [

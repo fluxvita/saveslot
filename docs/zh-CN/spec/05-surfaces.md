@@ -598,7 +598,7 @@ ledger: 2 张表
 
 **`saveslot_sources`**：列出、搜索、读取源数据（用户原话、工具结果、文件引用），以及删除前的影响预览（`mode: "deletion_preview"`）。预览不删任何东西。〔有 saveslot.delete〕预览返回执行删除要用的 `dc_…`，交给 `saveslot_delete`。
 
-**`saveslot_pending`**：列出待处理事项（冲突、待确认、〔P2 起〕已标记、〔P4 起〕schema 变更、〔P3 起〕可撤回的删除），或看某一项的详情：当前值、提议或候选、会改掉什么、可选的处理方式与事项版本。回执或读取结果里提到某个待处理事项、或用户问有什么在等他处理时用它。
+**`saveslot_pending`**：列出待处理事项（冲突、待确认、〔P2 起〕已标记、schema 变更、〔P3 起〕可撤回的删除），或看某一项的详情：当前值、提议或候选、会改掉什么、可选的处理方式与事项版本。回执或读取结果里提到某个待处理事项、或用户问有什么在等他处理时用它。
 
 **`saveslot_write`**：写入基础表的一条或多条记录（同一 slot，一个事务）。用户说出一件属于某张表的新事实（"今天跑了 5 公里"）、情况有了变化、或指出之前记错了时用它；用户在提问、假设或闲聊时不用。意图四选一：`insert` 新的一条；`update` 信息有了变化或补充；`correct` 原来记的值本来就是错的（〔P2 起〕会找出之前读到错值的任务）；`revoke` 这条记录不该存在（保留历史，可查）。
 改已有的行时带上读取时拿到的 `ver` 与 `sv`。把用户原话放进 `evidence`（`kind: user_message`）；〔P2 起〕重申一个没变的值、想让这句话也成为它的证据时，用 `evidence_by_field` 指明。要清空一个可选字段，把它的值写成 `null`。表名、字段名照 `saveslot_catalog` 里的名字写，〔P2 起〕别名不能代替名字。派生表只读，写入它们的来源表即可。设备连续产生的读数（心率、血糖）不逐点写，记每次活动或每天的汇总。
@@ -699,7 +699,7 @@ ledger: 2 张表
 |---|---|---|
 | `id` | | 给了就是看这一项的详情（当前值、候选、可选的处理方式、`item_ver`）；不给是列表。处理之前先看详情 |
 | `slot` | | 只列这个 slot 的事项 |
-| `type` | | 只列某一类：`conflict`、`awaiting_confirmation`、〔P2 起〕`flagged`、〔P4 起〕`schema_change`、〔P3 起〕`deletion` |
+| `type` | | 只列某一类：`conflict`、`awaiting_confirmation`、〔P2 起〕`flagged`、`schema_change`、〔P3 起〕`deletion` |
 | `status` | | `open`（默认，还没处理的）、`resolved`、`superseded` 或 `all` |
 
 **`saveslot_write`**

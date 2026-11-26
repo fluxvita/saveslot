@@ -3,7 +3,6 @@ pi_JN2N3HV0YD29R6ZB schema_change · slot diet · open · opened 2 h ago (2026-1
   Draft d_5JWJSYG6A20FMQ07 → schema v3
     slot food: rename_slot (metadata) · writes in the earlier version still taken · loses no data · waits for confirmation
   Impact: 0 rows to change
-  The slot as this draft would make it: saveslot_catalog with level "schema" and draft d_5JWJSYG6A20FMQ07.
   Not in effect; the slot is unchanged.
   Tell the user the changes above in this reply and ask them; what they said before this item appeared is not agreement to it. Once they agree: saveslot_resolve pi_JN2N3HV0YD29R6ZB confirm (or reject).
   Choices: confirm / reject

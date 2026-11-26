@@ -277,7 +277,7 @@ export const PENDING = {
     "Use it when a receipt or a read names a pending item, or the user asks what is waiting for them.",
     { text: "Records flagged as possible duplicates are pending items too.", later: "P2" },
     { text: "Deletions that can still be undone are pending items too.", later: "P3" },
-    { text: "Schema changes awaiting confirmation are pending items too.", later: "P4" },
+    "Schema changes awaiting confirmation are pending items too.",
   ],
   params: {
     id: [
@@ -288,7 +288,7 @@ export const PENDING = {
       "Only one type: `conflict` or `awaiting_confirmation`.",
       { text: "Also `flagged`.", later: "P2" },
       { text: "Also `deletion`.", later: "P3" },
-      { text: "Also `schema_change`.", later: "P4" },
+      "Also `schema_change`.",
     ],
     status: ["`open` (default, not resolved yet), `resolved`, `superseded` or `all`."],
   },
