@@ -767,7 +767,32 @@ function profileOf(tb: R): Part[] {
   return t` · ${count(p["rows"])} rows${span}${hint}`;
 }
 
-function catalog(r: R, now: Date): Line[] | { json: true; lead: Line[] } {
+/**
+ * Who a result is rendered for, as far as its text depends on it: an empty catalog's next step
+ * depends on whether the credential sees every slot and may change schemas (05 §9 «slot 清单» 4).
+ */
+export interface RenderFor {
+  /** Its slots are limited to some (a connection scoped to them). */
+  readonly scoped: boolean;
+  /** It has `saveslot.schema` (`saveslot_schema_draft` is among its tools). */
+  readonly schema: boolean;
+}
+
+/**
+ * The next step when the credential sees no slot: the sentence `instructions` has in place of the
+ * slot list (05 §9 «slot 清单» 4), word for word (reads.test.ts checks they are the same).
+ * Also in the catalog's answer, since not every host gives the model the server's instructions.
+ */
+export function noSlotsLine(who: RenderFor): Line {
+  if (who.scoped) {
+    return t`There are no slots in what this connection can see. A new slot is made by the user on the command line with saveslot slot create, or through a connection that can see every slot and change schemas.`;
+  }
+  return who.schema
+    ? t`This user has no slots yet. When they want to start recording something, draft a schema to show them, and submit it with saveslot_schema_draft only after they agree: it takes effect at once.`
+    : t`This user has no slots yet; they make one on the command line with saveslot slot create.`;
+}
+
+function catalog(r: R, now: Date, who?: RenderFor): Line[] | { json: true; lead: Line[] } {
   need(
     (r["level"] === "schema" && isObj(r["document"])) ||
       (r["level"] === "table" && Array.isArray(r["tables"])) ||
@@ -833,7 +858,8 @@ function catalog(r: R, now: Date): Line[] | { json: true; lead: Line[] } {
       );
     }
   }
-  if (out.length === 0) out.push(t`No slots yet.`);
+  // With no credential to go by, the bare fact; on MCP the credential's next step (05 §6).
+  if (out.length === 0) out.push(who === undefined ? t`No slots yet.` : noSlotsLine(who));
   return [...out, ...pageOf(r, tablesIn(r), () => t`tables`), ...remindersOf(r, now)];
 }
 
@@ -2376,7 +2402,7 @@ interface Table {
   readonly rows: readonly (readonly unknown[])[];
   readonly tail: Line[];
 }
-type Renderer = (r: R, now: Date) => Line[] | { json: true; lead: Line[] } | Table;
+type Renderer = (r: R, now: Date, who?: RenderFor) => Line[] | { json: true; lead: Line[] } | Table;
 const RENDER: ReadonlyMap<ToolName, Renderer> = new Map<ToolName, Renderer>([
   ["saveslot_catalog", catalog],
   ["saveslot_query", query],
@@ -2399,19 +2425,29 @@ function asPlain(v: unknown, otherwise: unknown): unknown {
 }
 
 /** A tool's result as text by its renderer; throws on a shape the renderer does not know. */
-export function renderStrict(tool: ToolName, result: R, now: Date = new Date()): string {
+export function renderStrict(
+  tool: ToolName,
+  result: R,
+  now: Date = new Date(),
+  who?: RenderFor,
+): string {
   const f = RENDER.get(tool);
   if (f === undefined) throw new Error("no renderer");
-  const out = f(result, now);
+  const out = f(result, now, who);
   if (Array.isArray(out)) return render(out);
   if ("table" in out) return renderTable(out.lead, out.header, out.rows, out.tail);
   return renderJson(out.lead, result);
 }
 
 /** A tool's result as text; JSON as written when its renderer cannot give it. */
-export function renderResult(tool: ToolName, result: R, now: Date = new Date()): string {
+export function renderResult(
+  tool: ToolName,
+  result: R,
+  now: Date = new Date(),
+  who?: RenderFor,
+): string {
   try {
-    return renderStrict(tool, result, now);
+    return renderStrict(tool, result, now, who);
   } catch {
     // A shape the renderer did not expect, or a renderer's fault: the whole of it inside the
     // boundary instead.

@@ -1,0 +1,1 @@
+This user has no slots yet. When they want to start recording something, draft a schema to show them, and submit it with saveslot_schema_draft only after they agree: it takes effect at once.

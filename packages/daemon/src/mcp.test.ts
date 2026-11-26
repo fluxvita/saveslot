@@ -686,3 +686,32 @@ describe("an observer of tool results that fails", () => {
     T,
   );
 });
+
+// Not every host gives the model the server's `instructions`: with no slot, the catalog's own answer
+// says what to do next, by what the credential may do (05 §6 `saveslot_catalog`, §9 «slot 清单» 4).
+describe("an empty catalog over MCP: the credential's next step", () => {
+  const s = serviceFixture("saveslot-mcp-empty-");
+
+  it("the user's session drafts a schema; a connection without saveslot.schema sends the user to the command line", async () => {
+    const catalog = async (token: string) => {
+      const c = await mcpClient(s.home, token, "legacy");
+      try {
+        return textOnly(await c.callTool({ name: "saveslot_catalog", arguments: {} }));
+      } finally {
+        await c.close();
+      }
+    };
+    expect(await catalog(s.session)).toContain(
+      "This user has no slots yet. When they want to start recording something, draft a schema to show them",
+    );
+    const issued = (await httpDriver(() => s.home)(s.session, "connections.issue", {
+      name: "reader",
+      scopes: ["saveslot.read"],
+    })) as { result: { token: string } };
+    const reader = await catalog(issued.result.token);
+    expect(reader).toContain(
+      "This user has no slots yet; they make one on the command line with saveslot slot create.",
+    );
+    expect(reader).not.toContain("saveslot_schema_draft");
+  });
+});

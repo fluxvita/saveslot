@@ -4,13 +4,15 @@
 // awaiting item with its current values by stretch; conflicts open, resolved, superseded, and on a
 // row revoked since; a schema_change item open, and one superseded; a timeline with a resolution and an undo, and one of a state table; a query
 // of a state table and of an event table; the catalog's list, and its tables of each kind; a sql
-// result with a disputed row among those it read. Update
+// result with a disputed row among those it read; the catalog's list with no slot, for each kind of
+// credential. Update
 // the golden files with `pnpm exec vitest run packages/server/src/mcp/reads.test.ts -u`.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { slotList } from "./instructions.ts";
 import type { ToolName } from "./names.ts";
-import { renderStrict } from "./render.ts";
+import { type RenderFor, renderStrict } from "./render.ts";
 
 type R = Record<string, unknown>;
 const SAMPLES = JSON.parse(
@@ -28,6 +30,37 @@ describe("reads as text (golden)", () => {
   it.each(Object.keys(SAMPLES))("%s", async (name) => {
     const { tool, result } = SAMPLES[name] as { tool: ToolName; result: R };
     await expect(`${text(tool, result)}\n`).toMatchFileSnapshot(`./__golden__/${name}.txt`);
+  });
+});
+
+describe("the catalog's list with no slot: the credential's next step (golden)", () => {
+  const empty = { level: "list", total: 0, slots: [] };
+  const CREDENTIALS: Readonly<Record<string, RenderFor>> = {
+    // The default connection instance: every slot, and saveslot.schema.
+    schema: { scoped: false, schema: true },
+    "no-schema": { scoped: false, schema: false },
+    // Scoped to some slots: with or without saveslot.schema, the same sentence.
+    scoped: { scoped: true, schema: true },
+  };
+  it.each(Object.keys(CREDENTIALS))("%s", async (kind) => {
+    const who = CREDENTIALS[kind] as RenderFor;
+    const out = fixed(renderStrict("saveslot_catalog", empty, NOW, who));
+    await expect(`${out}\n`).toMatchFileSnapshot(`./__golden__/catalog-list-empty-${kind}.txt`);
+    // The sentence `instructions` has in place of the slot list (05 §9 «slot 清单» 4), word for word.
+    expect(out).toContain(slotList([], who));
+  });
+
+  it("scoped without saveslot.schema: the scoped sentence too", () => {
+    const who = { scoped: true, schema: false };
+    expect(fixed(renderStrict("saveslot_catalog", empty, NOW, who))).toContain(slotList([], who));
+  });
+
+  it("with slots, the credential changes nothing; with no credential given, the bare fact", () => {
+    const list = sample("catalog-list");
+    expect(fixed(renderStrict("saveslot_catalog", list, NOW, CREDENTIALS["schema"]))).toBe(
+      fixed(renderStrict("saveslot_catalog", list, NOW)),
+    );
+    expect(fixed(renderStrict("saveslot_catalog", empty, NOW))).toContain("No slots yet.");
   });
 });
 

@@ -222,7 +222,7 @@ Only the rendering requirements and the elements that must appear are given here
 
 **`saveslot_catalog`**
 
-`list` (default): one paragraph per slot, giving the slot name, the schema version and the time zone; one line per table, giving the table name, base / derived and a one-sentence description, followed by "aliases: …" when the table has aliases. Only the slots and tables visible to this call are listed.
+`list` (default): one paragraph per slot, giving the slot name, the schema version and the time zone; one line per table, giving the table name, base / derived and a one-sentence description, followed by "aliases: …" when the table has aliases. Only the slots and tables visible to this call are listed. When no slot can be seen, the list is replaced by the sentence that §9 "Slot list" item 4 chooses by the credential, word for word as in `instructions`: not every host gives `instructions` to the model, so the result of an empty catalog has to state the next step itself.
 
 ```
 ledger · schema v2 · Asia/Shanghai
