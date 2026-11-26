@@ -25,6 +25,8 @@ export const SERVER_VARIABLES = [
   "SAVESLOT_IDENTITY_ISSUER",
   "SAVESLOT_IDENTITY_LOGIN_URL",
   "SAVESLOT_IDENTITY_KEYS_FILE",
+  "SAVESLOT_SHUTDOWN_DRAIN",
+  "SAVESLOT_SHUTDOWN_TIMEOUT",
 ] as const;
 export type ServerVariable = (typeof SERVER_VARIABLES)[number];
 
@@ -62,7 +64,18 @@ export interface ServerConfig {
     readonly loginUrl: string;
     readonly keysFile: string;
   };
+  /**
+   * How a stop goes (06-cli §4.1 `saveslot server start`): seconds of serving on while the load
+   * balancer takes the process out, then at most this many for the requests in progress.
+   */
+  readonly shutdown: { readonly drainSeconds: number; readonly timeoutSeconds: number };
 }
+
+/** The shutdown's defaults, in seconds (06-cli §4.1 «服务器模式的配置»). */
+export const DEFAULT_SHUTDOWN = { drainSeconds: 10, timeoutSeconds: 30 } as const;
+
+/** The longest a shutdown wait may be set to, in seconds: an hour. */
+export const MAX_SHUTDOWN_SECONDS = 3600;
 
 export type ServerConfigProblem =
   | { readonly kind: "missing"; readonly variable: ServerVariable }
@@ -248,6 +261,13 @@ const count = (text: string, min: number): number => {
   return Number(text);
 };
 
+const seconds = (text: string): number => {
+  if (!/^[0-9]{1,9}$/.test(text) || Number(text) > MAX_SHUTDOWN_SECONDS) {
+    throw new Bad(`not an integer of 0 to ${MAX_SHUTDOWN_SECONDS}`);
+  }
+  return Number(text);
+};
+
 const IDENTITY_VARIABLES = [
   "SAVESLOT_IDENTITY_ISSUER",
   "SAVESLOT_IDENTITY_LOGIN_URL",
@@ -306,6 +326,10 @@ export function readServerConfig(
             return s;
           }),
         };
+  const drainSeconds =
+    take("SAVESLOT_SHUTDOWN_DRAIN", false, seconds) ?? DEFAULT_SHUTDOWN.drainSeconds;
+  const timeoutSeconds =
+    take("SAVESLOT_SHUTDOWN_TIMEOUT", false, seconds) ?? DEFAULT_SHUTDOWN.timeoutSeconds;
   if (problems.length > 0) throw new ServerConfigInvalid(problems);
   if (control === undefined || cellAt === undefined || pub === undefined || keyFile === undefined) {
     throw new Error("unreachable: a required variable without a problem");
@@ -330,5 +354,6 @@ export function readServerConfig(
           },
         }
       : {}),
+    shutdown: { drainSeconds, timeoutSeconds },
   };
 }

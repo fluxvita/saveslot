@@ -79,6 +79,12 @@ SELECT pg_reload_conf();
 
 挂载时注意权限：saveslot 拒绝对"其他人"开放的密钥文件。Kubernetes 的 secret 卷默认是 0644，会被拒绝，要把 `defaultMode` 设成 0440（容器里的用户读不到时再配 `fsGroup`）；Docker 的 secret 照宿主机上那个文件的权限，在宿主机上把它设成 0600 或 0640。
 
+**健康检查指向 `/ready`。** 负载均衡器的健康检查、容器的就绪探针都问 `GET /ready`（不需要令牌）：进程就绪时回 200，启动中、停止中、失败时回 503。镜像自带的健康检查已经指向它。`/health` 在任何状态下都回 200，只在响应体里报状态，不适合给负载均衡器用。
+
+**停止要给够时间。** saveslot 收到终止信号之后先照常服务 `SAVESLOT_SHUTDOWN_DRAIN` 秒（缺省 10），让负载均衡器把它摘掉；再等进行中的请求做完，至多 `SAVESLOT_SHUTDOWN_TIMEOUT` 秒（缺省 30）；最后至多 10 秒关掉租户、放锁。容器的终止宽限期不要短于这三段之和：Kubernetes 默认的 `terminationGracePeriodSeconds` 是 30 秒，按缺省值要设到 50 秒以上；`docker stop` 默认只等 10 秒，用 compose 的 `stop_grace_period` 加长（[`deploy/compose.yaml`](../../../deploy/compose.yaml) 里已写）。宽限期一到，进程被强行结束，还没落盘的读取记录随之丢失。
+
+**更新时先停后起。** 一个控制面库上同时只能有一个服务进程在运行：新进程要等旧进程放掉"服务器在运行"的锁才起得来，取不到时以退出码 7 退出、由进程管理器再拉起。所以更新时先停旧的、再起新的（Kubernetes 用 `Recreate`），不要用滚动更新。
+
 ## 3. 初始化与账户
 
 ```

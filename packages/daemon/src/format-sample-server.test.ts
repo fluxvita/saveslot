@@ -52,7 +52,7 @@ const SESSION_ENDS = "2099-01-01T00:00:00.000Z";
 const OUT = process.env["SAVESLOT_FORMAT_SAMPLE_OUT"];
 const ON_POSTGRES = TEST_BACKEND === "postgres";
 const root = mkdtempSync(join(tmpdir(), "saveslot-format-sample-server-"));
-const open: { close(): Promise<void> }[] = [];
+const open: { close(): Promise<unknown> }[] = [];
 
 beforeAll(() => {
   if (OUT === undefined) useScryptForTests({ N: 2 ** 10, r: 8, p: 1 });
@@ -90,6 +90,7 @@ async function serve(store: Store, backend: TenantPoolOptions["backend"]): Promi
     listen: { host: "127.0.0.1", port: 0 },
     trustedProxies: [],
     allowedOrigins: [],
+    shutdown: { drainSeconds: 0, timeoutSeconds: 30 },
   };
   await CursorKeys.createFile(config.handleKeyFile);
   const db: ControlDatabase = {

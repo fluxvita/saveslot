@@ -82,6 +82,12 @@ It is best to supply the password in the connection string through the PostgreSQ
 
 When mounting, mind the permissions: saveslot refuses a key file that is open to "others". The secret volume of Kubernetes defaults to 0644 and is refused, so set `defaultMode` to 0440 (and configure `fsGroup` when the user inside the container cannot read it); Docker secrets follow the permissions of that file on the host, so set it to 0600 or 0640 on the host.
 
+**Point health checks at `/ready`.** The load balancer's health check and the container's readiness probe both ask `GET /ready` (no token needed): it answers 200 when the process is ready, and 503 while it is starting, stopping or has failed. The image's own health check already points at it. `/health` answers 200 in every state and reports the state only in its body, so it is not meant for a load balancer.
+
+**Give stopping enough time.** After a stop signal, saveslot first serves as usual for `SAVESLOT_SHUTDOWN_DRAIN` seconds (10 by default), so that the load balancer takes it out; then it waits for the requests in progress to finish, for at most `SAVESLOT_SHUTDOWN_TIMEOUT` seconds (30 by default); last, it takes at most 10 seconds to close the tenants and release the lock. The container's termination grace period should be no shorter than the sum of the three: Kubernetes defaults `terminationGracePeriodSeconds` to 30 seconds, so with the defaults set it to 50 or more; `docker stop` waits only 10 seconds by default, so lengthen it with compose's `stop_grace_period` (already set in [`deploy/compose.yaml`](../../deploy/compose.yaml)). When the grace period runs out the process is killed, and the read records not yet written are lost with it.
+
+**Update by stopping first, then starting.** Only one server process can run on a control database at a time: a new process cannot start until the old one has released the "server is running" lock, and when it cannot take the lock it exits with code 7, for the process manager to start it again. So update by stopping the old process before starting the new one (`Recreate` on Kubernetes), not with a rolling update.
+
 ## 3. Initialization and accounts
 
 ```

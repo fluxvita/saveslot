@@ -75,25 +75,39 @@ interface FirstUser {
 }
 
 /**
- * Resolves at the first SIGTERM or SIGINT: what a supervisor (systemd, a container) sends. `cancel`
+ * The stop signals, SIGTERM and SIGINT: what a supervisor (systemd, a container) sends. `stopped`
+ * resolves at the first. Once `whileClosing` is given its function, every later one calls it (a
+ * second signal cuts the closing short, 06-cli §4.1 `saveslot server start`) instead of Node's
+ * default, which would end the process with the lock and the tenants left as they were. `cancel`
  * stops listening for them.
  */
-function stopSignal(): { readonly stopped: Promise<void>; cancel(): void } {
-  let done!: () => void;
-  const stopped = new Promise<void>((resolve) => {
-    done = () => {
-      process.off("SIGTERM", done);
-      process.off("SIGINT", done);
-      resolve();
-    };
-  });
-  process.once("SIGTERM", done);
-  process.once("SIGINT", done);
+function stopSignal(): {
+  readonly stopped: Promise<void>;
+  whileClosing(fn: () => void): void;
+  cancel(): void;
+} {
+  const stopped = Promise.withResolvers<void>();
+  let first = true;
+  let later: (() => void) | undefined;
+  const on = () => {
+    if (first) {
+      first = false;
+      stopped.resolve();
+      return;
+    }
+    later?.();
+  };
+  process.on("SIGTERM", on);
+  process.on("SIGINT", on);
   return {
-    stopped,
+    stopped: stopped.promise,
+    whileClosing: (fn) => {
+      first = false;
+      later = fn;
+    },
     cancel: () => {
-      process.off("SIGTERM", done);
-      process.off("SIGINT", done);
+      process.off("SIGTERM", on);
+      process.off("SIGINT", on);
     },
   };
 }
@@ -332,7 +346,8 @@ async function firstAccount(
 }
 
 /**
- * `server start` (06 §4.1): in the foreground until SIGTERM or SIGINT, then closes and exits 0; or
+ * `server start` (06 §4.1): in the foreground until SIGTERM or SIGINT, then closes (in its three
+ * steps; another signal cuts them short) and exits 0; or
  * until the control database's connection goes away, then closes and exits 7. Each request is a
  * line on stdout; warnings go to stderr.
  */
@@ -371,18 +386,34 @@ async function serverStart(config: ServerConfig, io: ServerRestoreIO): Promise<n
     throw e;
   }
   io.out(TEXTS.server.listening(running.address.host, running.address.port));
+  const given = io.stopped;
   const signal =
-    io.stopped !== undefined ? { stopped: io.stopped(), cancel: () => {} } : stopSignal();
+    given !== undefined
+      ? {
+          stopped: given(),
+          whileClosing: (fn: () => void) => {
+            void io.stoppedAgain?.().then(fn);
+          },
+          cancel: () => {},
+        }
+      : stopSignal();
   const lost = await Promise.race([
     signal.stopped.then(() => false),
     running.failed.then(() => true),
   ]);
-  signal.cancel();
-  await running.close();
-  if (lost) {
-    io.err(TEXTS.server.controlLost);
-    return 7;
+  signal.whileClosing(() => running.hurry());
+  let tenantsLeft: boolean;
+  try {
+    ({ tenantsLeft } = await running.close());
+  } finally {
+    signal.cancel();
   }
-  io.out(TEXTS.server.stoppedCleanly);
-  return 0;
+  if (lost) io.err(TEXTS.server.controlLost);
+  else io.out(TEXTS.server.stoppedCleanly);
+  const code = lost ? 7 : 0;
+  // A use stuck on a tenant still holds its database connection, which would keep the process up
+  // until the supervisor kills it: it ends here instead, its transaction rolled back with the
+  // connection (its client was cut at step 2).
+  if (tenantsLeft) await io.exit?.(code);
+  return code;
 }

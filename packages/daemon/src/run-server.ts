@@ -3,7 +3,7 @@
 // tables in it checked, never made (that is `saveslot server init`'s); the handle keys are read;
 // tenants are lent by the pool; requests are taken on TCP and go, in this order, to:
 //
-//   GET /health (no token) → for /v1/, /oauth/token and /oauth/revoke, the CORS headers
+//   GET /health and GET /ready (no token) → for /v1/, /oauth/token and /oauth/revoke, the CORS headers
 //   (05-surfaces §13) → the request's source (behind trusted proxies; none: 400) → a listed
 //   origin's preflight answered → the identity provider's own paths → the authorization server
 //   (/.well-known/oauth-*, /oauth/*) → for /v1/ and /mcp, a page of another site refused (its
@@ -19,10 +19,19 @@
 // Each route is matched on the request target's parsed path, as the adapters match theirs, so an
 // absolute-form target (`GET http://host/account/login`) goes where its path does. A request's body
 // is read here only on the identity provider's paths, for its form; the authorization server reads
-// its own; every other request reaches its handler with its body unread. Closing stops taking
-// connections, lets the
-// requests in progress end, then closes the tenants (their reads written, their high water moved
-// up) and the control database. While it runs it holds the control database's "the server is
+// its own; every other request reaches its handler with its body unread.
+//
+// `/health` answers 200 in every state, the state in its body; `/ready` answers 200 only while the
+// state is `ready`, 503 otherwise: what a load balancer and a readiness probe ask. Closing goes in
+// three steps, each bounded (06-cli §4.1 `saveslot server start`): (1) the state turns `stopping`,
+// so `/ready` answers 503, while every request is still served as before, for the drain
+// (`SAVESLOT_SHUTDOWN_DRAIN`) that lets the load balancer stop sending; (2) no new connection is
+// taken and a request on one still open is refused as `stopping`, an import still reading its body
+// ends, and the requests in progress are waited for up to the timeout
+// (`SAVESLOT_SHUTDOWN_TIMEOUT`), after which the connections still open are cut; (3) the tenants
+// are closed (their reads written, their high water moved up), for at most TENANTS_CLOSE_MS, then
+// the lock is released and the control database closed. A second signal (`hurry`) skips what is
+// left of (1) and (2). While it runs it holds the control database's "the server is
 // running" lock (./server-lock.ts), taken before anything else: a second server does not start on
 // the same control database, and `server restore` does nothing while it runs. The lock is held by
 // the control database's connection: when that connection goes away (the database restarted, a
@@ -30,7 +39,7 @@
 // (health `failed`, every other request 503) and `failed` resolves: its host exits for the process
 // manager to start it again, which takes the lock anew.
 
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   type Api,
@@ -79,6 +88,9 @@ import { releaseServerLock, takeServerLock } from "./server-lock.ts";
 /** How often the authorization server's expired rows are swept. */
 export const SWEEP_MS = 10 * 60 * 1000;
 
+/** How long closing waits for the tenants to close (step 3) before it goes on without them. */
+export const TENANTS_CLOSE_MS = 10_000;
+
 /** The control plane's or the authorization server's tables `start` found missing or of another format. */
 export class ServerStartRefused extends Error {
   override readonly name = "ServerStartRefused";
@@ -122,8 +134,17 @@ export interface RunServerOptions {
   readonly onToolResult?: ApiContext["onToolResult"];
   /** Tests only: how long an import's body may give nothing (local-import.ts's default otherwise). */
   readonly importBodyIdleMs?: number;
-  /** Tests only: the sweep's interval (SWEEP_MS otherwise), and a look at each sweep. */
-  readonly testing?: { readonly sweepMs?: number; readonly onSweep?: () => void };
+  /**
+   * Tests only: the sweep's interval (SWEEP_MS otherwise), and a look at each sweep; the closing's
+   * three bounds in milliseconds (the configuration's, and TENANTS_CLOSE_MS, otherwise).
+   */
+  readonly testing?: {
+    readonly sweepMs?: number;
+    readonly onSweep?: () => void;
+    readonly drainMs?: number;
+    readonly timeoutMs?: number;
+    readonly tenantsCloseMs?: number;
+  };
   /** Tests only: the client documents' fetcher (the network's otherwise). */
   readonly fetchClient?: OAuthDeps["fetchClient"];
 }
@@ -150,8 +171,18 @@ export interface RunningServer {
    * lock with it. It serves nothing more; the host closes it and exits.
    */
   readonly failed: Promise<void>;
-  /** Stops taking requests, lets those in progress end, closes the tenants and the database. */
-  close(): Promise<void>;
+  /**
+   * Closes in the three steps above; called again, the same closing. Resolves once the lock is
+   * released and the control database closed, saying whether step 3 gave up on a tenant: a use
+   * still stuck then holds its database connection, which keeps the process up until it ends.
+   */
+  close(): Promise<{ readonly tenantsLeft: boolean }>;
+  /**
+   * A second stop signal: what is left of the drain and of the wait for the requests in progress is
+   * skipped (the connections still open are cut); the tenants are still closed and the lock
+   * released. Before close(), nothing.
+   */
+  hurry(): void;
 }
 
 /**
@@ -175,6 +206,9 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
     throw new ControlUnreachable("the control database could not be reached");
   }
   let state: HealthBody["state"] = "starting";
+  // Whether requests are served: from ready until step 2 of closing, or the control database lost.
+  // Apart from the state, which turns `stopping` at step 1 while requests are still served.
+  let serving = false;
   let lost = false;
   let fail!: () => void;
   const failed = new Promise<void>((resolve) => {
@@ -182,6 +216,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
   });
   db.onLost(() => {
     lost = true;
+    serving = false;
     state = "failed";
     warn("control_database_lost", {});
     fail();
@@ -297,7 +332,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       },
     };
     const since = new Date().toISOString();
-    const api: Api = { ready: () => (state === "ready" ? ctx : undefined), log };
+    const api: Api = { ready: () => (serving ? ctx : undefined), log };
     const mcp = createMcpAdapter({ version: () => o.version });
     const lentPool = pool;
     const oauthDeps: OAuthDeps = {
@@ -312,10 +347,23 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
     const externalOrigin = new URL(config.publicUrl).origin;
     const allowed: ReadonlySet<string> = new Set(config.allowedOrigins);
 
+    // The responses in progress, and whether closing has reached its step 2. A response finished on a
+    // keep-alive connection after `server.close()` keeps that connection open until the keep-alive
+    // timeout (Node 24: its header still says keep-alive; the connection closes 5 s later), which
+    // would hold step 2 that long for each: from step 2 a response not yet begun says
+    // `Connection: close`, and a finished one has its connection closed once it is idle.
+    const inFlight = new Set<ServerResponse>();
+    let draining = false;
     const server: Server = createServer((req, res) => {
+      inFlight.add(res);
+      if (draining) res.setHeader("connection", "close");
+      res.on("finish", () => {
+        if (draining) setImmediate(() => server.closeIdleConnections());
+      });
+      res.on("close", () => inFlight.delete(res));
       void (async () => {
         const path = new URL(req.url ?? "/", "http://local").pathname;
-        if (req.method === "GET" && path === "/health") {
+        if (req.method === "GET" && (path === "/health" || path === "/ready")) {
           const body = JSON.stringify({
             state,
             version: o.version,
@@ -323,7 +371,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
             since,
             ...(lost ? { reason: "control_database_lost" } : {}),
           });
-          res.writeHead(200, {
+          res.writeHead(path === "/health" || state === "ready" ? 200 : 503, {
             "content-type": "application/json",
             "content-length": Buffer.byteLength(body),
             "cache-control": "no-store",
@@ -349,9 +397,10 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
           res.end();
           return;
         }
-        if (state !== "ready") {
-          // On /v1/ the contract's error (05-surfaces §13): starting, or stopping (closing, or the
-          // control database lost, after which the server stops); elsewhere a bare 503.
+        if (!serving) {
+          // On /v1/ the contract's error (05-surfaces §13): starting, or stopping (closing, past
+          // its drain, or the control database lost, after which the server stops); elsewhere a
+          // bare 503.
           if (path.startsWith("/v1/")) {
             sendError(
               req,
@@ -422,26 +471,86 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
     sweep.unref();
     const at = server.address() as AddressInfo;
     const lent = pool;
-    if (!lost) state = "ready";
+    if (!lost) {
+      state = "ready";
+      serving = true;
+    }
+    const drainMs = o.testing?.drainMs ?? config.shutdown.drainSeconds * 1000;
+    const timeoutMs = o.testing?.timeoutMs ?? config.shutdown.timeoutSeconds * 1000;
+    const tenantsCloseMs = o.testing?.tenantsCloseMs ?? TENANTS_CLOSE_MS;
+    // A second signal: the drain and the wait for the requests in progress end at once.
+    const hurried = Promise.withResolvers<void>();
+    /**
+     * Runs `work` for at most `ms` (less once hurried, if `hurrying`): `true` if it ran out first.
+     * The timer is cleared either way, so nothing is left to keep the process up.
+     */
+    const bounded = async (work: Promise<unknown>, ms: number, hurrying: boolean) => {
+      let timer: NodeJS.Timeout | undefined;
+      const out = new Promise<"out">((resolve) => {
+        timer = setTimeout(() => resolve("out"), Math.max(0, ms));
+        if (hurrying) void hurried.promise.then(() => resolve("out"));
+      });
+      try {
+        return (await Promise.race([work.then(() => "done" as const), out])) === "out";
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    let closing: Promise<{ readonly tenantsLeft: boolean }> | undefined;
+    // A handler whose connection step 2 cut may still be running when step 3 closes the tenants and
+    // the lock is released: what it was doing goes on as far as it gets (a write may still commit,
+    // or roll back with its connection), its answer is lost, and the client's retry is recognised
+    // by its idempotency key or request key (02-architecture §5), not written twice.
+    const close = async () => {
+      // Step 1: out of the load balancer's rotation, still serving. A lost control database
+      // serves nothing already: no drain.
+      if (!lost) {
+        state = "stopping";
+        await bounded(new Promise<never>(() => {}), drainMs, true);
+      }
+      // Step 2: nothing new taken; the requests in progress, for at most the timeout.
+      serving = false;
+      draining = true;
+      for (const res of inFlight) if (!res.headersSent) res.setHeader("connection", "close");
+      // Before the requests in progress are waited for: an import still reading its body ends.
+      for (const a of imports) a.abort();
+      clearInterval(sweep);
+      const ended = new Promise<void>((resolve, reject) => {
+        server.close((e) => (e ? reject(e) : resolve()));
+        server.closeIdleConnections();
+      });
+      if (await bounded(ended, timeoutMs, true)) {
+        const open = await new Promise<number>((resolve) =>
+          server.getConnections((e, n) => resolve(e ? 0 : n)),
+        );
+        if (open > 0) warn("shutdown_connections_cut", { connections: String(open) });
+        server.closeAllConnections();
+      }
+      await ended;
+      await mcp.handler.close();
+      // Step 3: the tenants, for at most tenantsCloseMs: a use stuck on a tenant's lock is left.
+      const tenantsClosed = lent.closeAll();
+      const tenantsLeft = await bounded(tenantsClosed, tenantsCloseMs, false);
+      if (tenantsLeft) {
+        tenantsClosed.catch(() => {});
+        warn("shutdown_tenants_left", {});
+      }
+      // A lost connection took the lock with it: there is nothing to release, and none to close.
+      if (!lost) await releaseServerLock(db);
+      await db.close().catch((e: unknown) => {
+        if (!lost) throw e;
+      });
+      return { tenantsLeft };
+    };
     return {
       address: { host: at.address, port: at.port },
       failed,
-      close: async () => {
-        if (!lost) state = "stopping";
-        // Before the requests in progress are waited for: an import still reading its body ends.
-        for (const a of imports) a.abort();
-        clearInterval(sweep);
-        await new Promise<void>((resolve, reject) => {
-          server.close((e) => (e ? reject(e) : resolve()));
-          server.closeIdleConnections();
-        });
-        await mcp.handler.close();
-        await lent.closeAll();
-        // A lost connection took the lock with it: there is nothing to release, and none to close.
-        if (!lost) await releaseServerLock(db);
-        await db.close().catch((e: unknown) => {
-          if (!lost) throw e;
-        });
+      close: () => {
+        closing ??= close();
+        return closing;
+      },
+      hurry: () => {
+        if (closing !== undefined) hurried.resolve();
       },
     };
   } catch (e) {

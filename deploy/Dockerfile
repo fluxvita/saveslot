@@ -30,9 +30,10 @@ USER saveslot
 ENV SAVESLOT_LISTEN=0.0.0.0:8080 \
     SAVESLOT_HANDLE_KEY_FILE=/var/lib/saveslot/handle-key
 EXPOSE 8080
-# /health takes no token (05-surfaces §14). Asked at the address SAVESLOT_LISTEN gives when the
-# container runs; a wildcard address (0.0.0.0, [::]) is asked on 127.0.0.1.
+# /ready takes no token and answers 200 only while the server is ready (06-cli §4.1 `saveslot
+# server start`). Asked at the address SAVESLOT_LISTEN gives when the container runs; a wildcard
+# address (0.0.0.0, [::]) is asked on 127.0.0.1.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \
-  CMD ["node", "-e", "const l=process.env.SAVESLOT_LISTEN??'',i=l.lastIndexOf(':'),h=l.slice(0,i);fetch(`http://${['','0.0.0.0','[::]'].includes(h)?'127.0.0.1':h}:${l.slice(i+1)}/health`).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+  CMD ["node", "-e", "const l=process.env.SAVESLOT_LISTEN??'',i=l.lastIndexOf(':'),h=l.slice(0,i);fetch(`http://${['','0.0.0.0','[::]'].includes(h)?'127.0.0.1':h}:${l.slice(i+1)}/ready`).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 ENTRYPOINT ["saveslot", "server"]
 CMD ["start"]
