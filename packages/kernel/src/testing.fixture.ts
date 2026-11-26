@@ -54,4 +54,7 @@ export { tableShape } from "./write/plan.ts";
 // A write's `premise_affected` with a visibility of its own (tests pin the rows not listed).
 export { premiseAffected } from "./write/premise-affected.ts";
 export { premiseFanInLimitForTests } from "./write/premises.ts";
+// An operation's events and their blocks, as receipts read them (store-pglite receipt-blocks.test).
+export { BLOCKS_OF_EVENTS_SQL } from "./write/reads.ts";
+export { operationEvents } from "./write/receipt.ts";
 export { resolveInTx, revertEntriesOf } from "./write/resolve.ts";

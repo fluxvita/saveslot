@@ -71,7 +71,7 @@ function valueIn(v: FieldValue): ValueOut {
 import { WriteError } from "./errors.ts";
 import { type EntityKeyText, keyFields, keyOf } from "./keys.ts";
 import { tableShape } from "./plan.ts";
-import { rowEvents } from "./reads.ts";
+import { eventsAt, rowEvents } from "./reads.ts";
 import { decodeRecords, type StoredEvent } from "./record.ts";
 
 export type FieldResultCode = "applied" | "candidate" | "awaiting" | "corroborated" | "noop";
@@ -542,27 +542,12 @@ async function actorsOf(tx: ReadTx, ops: readonly number[]): Promise<Map<number,
   return new Map(r.rows.map((x) => [Number(x.seq), x.actor]));
 }
 
-/** The events of operation `op`, with their blocks. */
-async function operationEvents(tx: ReadTx, op: OpNumber): Promise<StoredEvent[]> {
-  const evs = await tx.query<{ seq: unknown; type: string; op: unknown }>(
-    "SELECT seq, type, op FROM events WHERE op = $1 ORDER BY seq",
-    [op],
-  );
-  const blocks = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-    "SELECT c.seq, c.path, c.body FROM content c JOIN events e ON e.seq = c.seq WHERE e.op = $1 AND c.body IS NOT NULL",
-    [op],
-  );
-  const by = new Map<number, Record<string, unknown>>();
-  for (const b of blocks.rows) {
-    const m = by.get(Number(b.seq)) ?? Object.create(null);
-    m[b.path] = JSON.parse(b.body as string);
-    by.set(Number(b.seq), m);
-  }
-  return evs.rows.map((e) => ({
-    header: { type: e.type, seq: Number(e.seq), op: Number(e.op) },
-    blocks: by.get(Number(e.seq)) ?? {},
-  }));
-}
+/**
+ * The events of operation `op`, with their blocks: the blocks by the events' sequence numbers
+ * (./reads.ts `BLOCKS_OF_EVENTS_SQL`), not by a join on `op`, which scans the whole of `content`.
+ */
+export const operationEvents = (tx: ReadTx, op: OpNumber): Promise<StoredEvent[]> =>
+  eventsAt(tx, "op = $1", [op]);
 
 /**
  * Who gave what a candidate met (04-contract-types `FieldResult.by`), as the item's details say it

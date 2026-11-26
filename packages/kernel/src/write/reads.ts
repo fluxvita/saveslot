@@ -80,7 +80,17 @@ export async function readSlots(tx: ReadTx): Promise<SlotRow[]> {
     }));
 }
 
-async function eventsAt(
+/**
+ * The blocks of the events given, by their sequence numbers: `content`'s primary key `(seq, path)`
+ * finds them, so the cost is the events' blocks, not the log's. (Joined with `events` on another
+ * column instead, the planner scans the whole of `content`.) Blocks a deletion cleared (`body`
+ * null) are left out.
+ */
+export const BLOCKS_OF_EVENTS_SQL =
+  "SELECT seq, path, body FROM content WHERE seq = ANY($1) AND body IS NOT NULL";
+
+/** The events `where` selects, in order, with their blocks. */
+export async function eventsAt(
   tx: ReadTx,
   where: string,
   args: readonly unknown[],
@@ -92,7 +102,7 @@ async function eventsAt(
   if (heads.rows.length === 0) return [];
   const seqs = heads.rows.map((h) => Number(h.seq));
   const blocks = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-    "SELECT seq, path, body FROM content WHERE seq = ANY($1) AND body IS NOT NULL",
+    BLOCKS_OF_EVENTS_SQL,
     [seqs] as never,
   );
   const by = new Map<number, Record<string, unknown>>();
