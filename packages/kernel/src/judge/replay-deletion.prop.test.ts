@@ -83,20 +83,17 @@ const itemKeys = (
     valid: unknown;
     content: unknown;
   }[],
-  withIndex = true,
+  withIndex: (x: { event: number; target: string; k: number }) => boolean = () => true,
 ) =>
   items
     .filter((x) => x.status !== "dropped")
     .map(
       (x) =>
         // The reference names "no value at all" noValue, the kernel no_value (09 §5.7). With the
-        // index (03-deletion «回掉的权威定义» step 6): without a cancellation the reference's
-        // clearing by ends plays no part in where indices land. After one it can: whether an index
-        // only the cancelled deletion gave survives depends on whether a later deletion gave its
-        // block again (09 §5.9 rule 2), which the kernel reads from `deps` and the reference
-        // approximates by ends (see `graceCover`). There the index is left out of the comparison
-        // (`withIndex` false); the kernel's own round trips over the restatements keep it covered.
-        `${x.event}/${x.target}${withIndex ? `#${x.k}` : ""} ${x.status} ${JSON.stringify(x.valid)} ${JSON.stringify(x.content).replace('"kind":"noValue"', '"kind":"no_value"')}`,
+        // index (03-deletion «回掉的权威定义» step 6): the reference's clearing by ends plays no
+        // part in where indices land, with one exception after a cancellation, where `withIndex`
+        // leaves an index out (see the first deletion cancelled, in `compare`).
+        `${x.event}/${x.target}${withIndex(x) ? `#${x.k}` : ""} ${x.status} ${JSON.stringify(x.valid)} ${JSON.stringify(x.content).replace('"kind":"noValue"', '"kind":"no_value"')}`,
     )
     .sort();
 
@@ -410,8 +407,7 @@ function compare(
         itemKeys(two.items),
       );
       // The first deletion cancelled, with no write between (03-deletion «撤回与宽限期»): the
-      // state is the second's alone, as the reference evaluator gives it (indices aside, see
-      // `itemKeys`); the blocks without the
+      // state is the second's alone, as the reference evaluator gives it; the blocks without the
       // first's (09 §5.7) with the cancellation's restatements laid over give its replay's items
       // (rule 3: an item whose last block was the first deletion's is restated); and the open
       // items are those after the second alone.
@@ -469,14 +465,39 @@ function compare(
             ...Object.keys(view(c.replay.state).fields),
           ]),
         ];
+        // One exception to comparing indices: an index the cancelled deletion alone gave (no
+        // block in the records as written, a block from the first deletion's restatements, none
+        // from the second's). Whether it survives depends on whether the second deletion gave its
+        // block again (09 §5.9 rule 2), which the kernel reads from `deps` and the reference
+        // approximates by ends (see `graceCover`); status, interval and value are still compared.
+        // Whether such an index counts as used when new items are numbered (09 §5.7) is open.
+        const at = (x: { event: number; target: string; k: number }) =>
+          `${x.event}/${x.target}/${x.k}`;
+        const givenAgain = new Set(
+          then.restated.filter((r) => r.status !== "dropped").map((r) => at(r.item)),
+        );
+        const written = givenByRecords(records);
+        const firstAlone = new Set(
+          once.restated
+            .filter(
+              (r) =>
+                r.status !== "dropped" &&
+                !givenAgain.has(at(r.item)) &&
+                !(written.get(`${r.item.event}/${r.item.target}`) ?? []).some(
+                  (x) => x.k === r.item.k,
+                ),
+            )
+            .map((r) => at(r.item)),
+        );
+        const indexed = (x: { event: number; target: string; k: number }) => !firstAlone.has(at(x));
         expect({
           items: itemKeys(
             c.replay.state.items.filter((x) => !proposalsC.has(x.event)),
-            false,
+            indexed,
           ),
           fields: timelines(view(c.replay.state).fields as never, namesC),
         }).toEqual({
-          items: itemKeys(cancelled.items, false),
+          items: itemKeys(cancelled.items, indexed),
           fields: timelines(cancelled.fields as never, namesC),
         });
         const alone = deletionResult(table, records, second, new Set(), given, () => []);
@@ -485,8 +506,7 @@ function compare(
         );
         // The second deletion cancelled instead (the one confirmed after): the state is the
         // first's alone, as the reference evaluator gives it; then the first cancelled too: the
-        // records' state and items, as the reference gives both cancellations (indices aside in
-        // both; the round trips over each cancellation's restatements check them).
+        // records' state and items, as the reference gives both cancellations.
         const sameAsRef = (state: RowState, ref: ReturnType<typeof evaluateLog>["final"]): void => {
           const proposals = new Set(
             state.records
@@ -497,13 +517,10 @@ function compare(
             ...new Set([...Object.keys(ref.fields), ...Object.keys(view(state).fields)]),
           ];
           expect({
-            items: itemKeys(
-              state.items.filter((x) => !proposals.has(x.event)),
-              false,
-            ),
+            items: itemKeys(state.items.filter((x) => !proposals.has(x.event))),
             fields: timelines(view(state).fields as never, names),
           }).toEqual({
-            items: itemKeys(ref.items, false),
+            items: itemKeys(ref.items),
             fields: timelines(ref.fields as never, names),
           });
         };
@@ -1489,9 +1506,10 @@ describe.each(both)("%s table, reverts", (_, schema, isState) => {
 
 describe("an undo's write-backs after two deletions, the first cancelled (a property counterexample)", () => {
   // A take, then an undo of #70 on group {f2, f3}; S1 (#61) and S4 (#71, #81) deleted in turn. Both
-  // indices of the undo's write-back on f2 were first given by the first deletion; after its
+  // indices of the undo's write-back on f2 were first given by the first deletion alone; after its
   // cancellation the kernel keeps one as #0, the reference evaluator (clearing by ends) as #1.
-  // Status, interval and value agree: compared without the index.
+  // Status, interval and value agree: those two are compared without the index, every other item
+  // with it.
   it("the state after the cancellation is the second deletion's alone, as the reference evaluator gives it", () => {
     const ops: Op[] = [
       {
