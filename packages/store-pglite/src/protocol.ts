@@ -78,6 +78,8 @@ export interface HostSyncStats {
   readonly total: number;
   /** Of these, on files under pg_wal. */
   readonly wal: number;
+  /** fsync requests not passed on: the file unchanged since its last host fsync (durability.ts). */
+  readonly skipped: number;
 }
 
 export interface QueryReply {
