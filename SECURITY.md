@@ -21,4 +21,4 @@ All `@fluxvita/saveslot-*` packages are released together at the same version as
 
 ## Scope
 
-The trust boundaries saveslot does and does not defend are described in [`docs/zh-CN/spec/02-architecture.md`](docs/zh-CN/spec/02-architecture.md) section 10. For example, a program that can read and write the data directory directly is outside the boundary in local mode; that is documented behavior, not a vulnerability.
+The trust boundaries saveslot does and does not defend are described in [`docs/spec/02-architecture.md`](docs/spec/02-architecture.md) section 10. For example, a program that can read and write the data directory directly is outside the boundary in local mode; that is documented behavior, not a vulnerability.

@@ -25,6 +25,8 @@ import {
   NOT_YET,
   sourceLine,
   sourceOf,
+  ZH_LINKS_KEPT,
+  zhLinksWithEnglish,
 } from "./check-translations.ts";
 import { ciEnv } from "./ci-env.ts";
 import { listMarkdownFiles } from "./markdown.ts";
@@ -228,6 +230,49 @@ describe("English documents", () => {
     );
     expect(lastChange(root, "docs/zh-CN/guide/01-what.md")).toBeGreaterThan(0);
     expect(lastChange(root, "docs/guide/01-what.md")).toBeUndefined(); // never committed
+  });
+
+  it("fails an English document that links the Chinese edition of a page that has an English one", () => {
+    const root = tree({
+      "docs/zh-CN/guide/README.md": "# 讲解\n",
+      "docs/zh-CN/spec/06-cli.md": "# 命令行\n",
+      "docs/zh-CN/process/README.md": "# 过程\n",
+      "docs/guide/README.md": `# Guide\n\n> ${SRC}\n`,
+      "docs/spec/06-cli.md": "# CLI\n",
+      "README.md": [
+        "# saveslot",
+        "[zh](docs/zh-CN/) is authoritative. Translated from docs/zh-CN/guide/README.md, as prose.",
+        "| [`docs/zh-CN/guide/`](docs/zh-CN/guide/README.md) | Guide |",
+        "| [`docs/zh-CN/guide/`](docs/zh-CN/guide/) | Guide, the directory |",
+        "| [`docs/zh-CN/process/`](docs/zh-CN/process/README.md) | Chinese only for now |",
+        "Steps: [cli](docs/zh-CN/spec/06-cli.md#3-入门) [en](docs/spec/06-cli.md) [web](https://x.example/docs/zh-CN/spec/06-cli.md)",
+        "```",
+        "[in code](docs/zh-CN/spec/06-cli.md)",
+        "```",
+      ].join("\n"),
+      "README.zh-CN.md": "[讲解](docs/zh-CN/guide/README.md)\n",
+      "docs/guide/02-x.md":
+        "[cli](../zh-CN/spec/06-cli.md) [process](../zh-CN/process/README.md)\n",
+      "AGENTS.md": "[spec](docs/zh-CN/spec/06-cli.md) [guide](docs/zh-CN/guide/README.md)\n",
+      "docs/README.md": "[zh](zh-CN/guide/README.md)\n",
+    });
+    const found = zhLinksWithEnglish(root, listMarkdownFiles(root)).map(
+      (p) => `${p.file}:${p.line}: ${p.reason}`,
+    );
+    const en = (zh: string, to: string) => `links ${zh}, which has an English edition: link ${to}`;
+    expect(found).toEqual([
+      `AGENTS.md:1: ${en("docs/zh-CN/guide/README.md", "docs/guide/README.md")}`,
+      `README.md:3: ${en("docs/zh-CN/guide/README.md", "docs/guide/README.md")}`,
+      `README.md:4: ${en("docs/zh-CN/guide/", "docs/guide/")}`,
+      `README.md:6: ${en("docs/zh-CN/spec/06-cli.md", "docs/spec/06-cli.md")}`,
+      `docs/guide/02-x.md:1: ${en("docs/zh-CN/spec/06-cli.md", "docs/spec/06-cli.md")}`,
+    ]);
+    // The same failures reach checkTranslations, and so `pnpm docs:translations`.
+    expect(checkTranslations(root, undefined, () => undefined).problems.map((p) => p.file)).toEqual(
+      expect.arrayContaining(["README.md:3", "README.md:4", "README.md:6"]),
+    );
+    // Each kept link says why.
+    for (const k of ZH_LINKS_KEPT) expect(k.why.length > 0).toBe(true);
   });
 
   it("passes on the repository as it is", () => {

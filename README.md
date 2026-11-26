@@ -14,19 +14,19 @@ English · [简体中文](README.zh-CN.md)
 
 The first release, **0.1**, has both modes. In **local mode** the saveslot service runs on your own computer, and the agents on it share it. In **server mode** one saveslot serves all of your devices, hosted or self-hosted, with accounts and sign-in, OAuth authorization, remote MCP, import, and the `saveslot server` operations commands. It writes (add, change, correct, revoke, with conflicts and confirmations), reads (catalog, query, SQL, history, sources), handles pending items, creates slots and changes their schema where no table has to be rebuilt, and exports, imports and verifies the log. Agents reach it through MCP; people through the `saveslot` command.
 
-Not in 0.1 yet, in either mode, coming in later releases: privacy deletion (preview, confirm, undo within 24 hours, physical deletion when due; to undo a wrong value now, revoke it, and the history stays), and schema changes that rebuild a table that has been written to (adding or dropping a field, tightening a constraint, changing precision or unit). Also not wired up yet: `saveslot verify --replay`, changing a slot's policy, and detailed query output. The details: [`docs/zh-CN/spec/07-scope-v1.md`](docs/zh-CN/spec/07-scope-v1.md) section 7.
+Not in 0.1 yet, in either mode, coming in later releases: privacy deletion (preview, confirm, undo within 24 hours, physical deletion when due; to undo a wrong value now, revoke it, and the history stays), and schema changes that rebuild a table that has been written to (adding or dropping a field, tightening a constraint, changing precision or unit). Also not wired up yet: `saveslot verify --replay`, changing a slot's policy, and detailed query output. The details: [`docs/spec/07-scope-v1.md`](docs/spec/07-scope-v1.md) section 7.
 
 saveslot is before 1.0: interfaces may change between minor versions.
 
-The design documents are written in **Simplified Chinese** under [`docs/zh-CN/`](docs/zh-CN/), and the Chinese edition is authoritative. The specification and the guide also have an English edition under `docs/`; [`docs/README.md`](docs/README.md) lists them. The English edition of the decision records, walkthroughs and research notes is pending.
+The guide and the specification are in English under [`docs/`](docs/README.md). They are translated from the Chinese edition under [`docs/zh-CN/`](docs/zh-CN/), which is authoritative: where the two differ, the Chinese one holds. The decision records, walkthroughs and research notes are in Chinese only for now.
 
 | Where | What |
 |---|---|
-| [`docs/`](docs/README.md) | The documents that have an English edition |
-| [`docs/zh-CN/guide/`](docs/zh-CN/guide/README.md) | Guide: a narrative introduction, read in order |
-| [`docs/zh-CN/spec/`](docs/zh-CN/spec/README.md) | Specification: the authoritative definition of behavior |
-| [`docs/zh-CN/process/`](docs/zh-CN/process/README.md) | Design decision records and scenario walkthroughs |
-| [`docs/zh-CN/research/`](docs/zh-CN/research/) | Background research |
+| [`docs/guide/`](docs/guide/README.md) | Guide: a narrative introduction, read in order |
+| [`docs/spec/`](docs/spec/README.md) | Specification: the authoritative definition of behavior |
+| [`docs/zh-CN/process/`](docs/zh-CN/process/README.md) | Design decision records and scenario walkthroughs (Chinese only for now) |
+| [`docs/zh-CN/research/`](docs/zh-CN/research/) | Background research (Chinese only for now) |
+| [`docs/`](docs/README.md) | Index of every document in both editions |
 
 ## Try it (local mode)
 
@@ -57,7 +57,7 @@ npm config set prefix ~/.npm-global
 echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.profile
 ```
 
-Open a new shell, then run `npm install -g` again. The steps in detail: [`docs/zh-CN/spec/06-cli.md`](docs/zh-CN/spec/06-cli.md) §3.
+Open a new shell, then run `npm install -g` again. The steps in detail: [`docs/spec/06-cli.md`](docs/spec/06-cli.md) §3.
 
 ## Getting help and contributing
 

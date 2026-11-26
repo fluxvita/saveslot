@@ -165,7 +165,7 @@ The way of property testing is: instead of writing a few fixed examples, let the
 
 One thing in there is worth saying more about: "the record agrees with recomputation". The test "replay from an empty database = live state" cannot catch a deletion that was computed wrongly, because the replay uses exactly the result recorded in the event, and a wrong result is faithfully replayed. So an independent implementation is needed to check against.
 
-The specification has two scenario walkthroughs (one for deletion, one for concurrent writes to state tables, both under `docs/zh-CN/process/walkthroughs/`), and every example in them will be written as a "consistent with the reference" case.
+The specification has two scenario walkthroughs (one for deletion, one for concurrent writes to state tables, both under `docs/zh-CN/process/walkthroughs/`, in Chinese), and every example in them will be written as a "consistent with the reference" case.
 
 ### Contract tests and renderer tests
 
@@ -300,7 +300,7 @@ Specification: [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md). Its section 3
 | `09-event-format.md` | The field-level definition of each kind of event in the log, the format of the export file | When touching `log` and `apply`, or when you need to read an exported log yourself |
 | `10-evals.md` | The executable specification of the eval tasks | After changing tool descriptions or receipt wording; when accepting a phase |
 
-The documents are all under `docs/zh-CN/` in the repository: the guide in `docs/zh-CN/guide/`, the specification in `docs/zh-CN/spec/`. There are two more directories: `docs/zh-CN/research/` is public technical research (technical choices and trade-offs on data models, storage, protocols, evaluation methods and so on); `docs/zh-CN/process/` is process material, including scenario walkthroughs (`walkthroughs/`) and the decision drafts for the design choices made before development started (`decisions/`, each stating what was chosen, why, and a minimal example).
+The documents are written in Chinese under `docs/zh-CN/` in the repository, and the Chinese edition is authoritative: the guide in `docs/zh-CN/guide/`, the specification in `docs/zh-CN/spec/`, each with an English edition at the same path under `docs/` (`docs/guide/`, `docs/spec/`). There are two more directories, in Chinese only for now: `docs/zh-CN/research/` is public technical research (technical choices and trade-offs on data models, storage, protocols, evaluation methods and so on); `docs/zh-CN/process/` is process material, including scenario walkthroughs (`walkthroughs/`) and the decision drafts for the design choices made before development started (`decisions/`, each stating what was chosen, why, and a minimal example).
 
 Competitor analysis, market and product snapshots, product positioning, pricing and commercial strategy research go in the internal repository, not in this one. When a piece of research has both kinds of content, the technical part and the commercial part are written as separate documents and maintained separately; two synchronized copies of the text are not kept. A conclusion the public design depends on must stand on its own in the specification, decision drafts or technical research of this repository, and cannot rest on internal research.
 
@@ -311,7 +311,7 @@ Existing technical research stays where it is. Before the repository is made pub
 - **A rule has only one authoritative place.** Data rules are in `03-data-model/`; what an event records is in `09-event-format.md`; the external shape is in `04-contract-types.md`. Other documents that mention the same thing are only quoting it. When several statements disagree, the authoritative place holds, and that in itself is a problem worth reporting.
 - **The contract and the surface describe the complete design.** Some of the operations and fields in them are not implemented in the first version: the type file opens with a list of "not implemented in the first version", they are marked uniformly in the text, and the scope follows `07-scope-v1.md`.
 - **The long tables in the specification are lists for implementers.** For example, the replay rules table in the deletion document and the change classification table in the schema document. On a first reading, read the sentence of definition before the table first, and look up the table itself when you need it.
-- **When you cannot understand a rule, look for the walkthroughs and the decision drafts.** `docs/zh-CN/process/walkthroughs/` has step-by-step walkthroughs of five scenarios: running, budget, deletion, concurrent state tables and nutrition records; in `docs/zh-CN/process/decisions/` you can look up why a rule was decided this way and what another approach would have done.
+- **When you cannot understand a rule, look for the walkthroughs and the decision drafts** (in Chinese). `docs/zh-CN/process/walkthroughs/` has step-by-step walkthroughs of five scenarios: running, budget, deletion, concurrent state tables and nutrition records; in `docs/zh-CN/process/decisions/` you can look up why a rule was decided this way and what another approach would have done.
 
 ### What to update together when changing the design
 

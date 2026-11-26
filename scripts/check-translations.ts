@@ -7,6 +7,11 @@
 //   docs/zh-CN/<same path>, updated in the same commit as this file.`, or that file does not exist.
 //   No commit is named: a branch's commits are gone once it is squash-merged.
 //
+// - an English document (any Markdown file outside docs/zh-CN/ that is not a `*.zh-CN.md`) links a
+//   file or directory under docs/zh-CN/ that has an English edition at the same path under docs/,
+//   outside the links listed in ZH_LINKS_KEPT: its reader should land on the English page. Links to
+//   what exists only in Chinese (process/, research/) and to docs/zh-CN/ itself pass.
+//
 // Reports without failing (drift): when git says the Chinese file was last changed after the
 // English one, and the English head does not carry a line `The Chinese edition has changed since:
 // …`. Drift is brought to nothing before a release (RELEASING.md). Dating files needs the full
@@ -14,7 +19,8 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, normalize, relative, resolve } from "node:path";
+import { extractLinks } from "./check-doc-links.ts";
 import { listMarkdownFiles } from "./markdown.ts";
 
 export interface TranslationProblem {
@@ -40,6 +46,38 @@ export const NOT_YET: readonly { dir: string; why: string; until: string }[] = [
     why: "technical research behind the spec; the spec and guide came first",
     until: "a week after 0.1.0",
   },
+];
+
+/**
+ * Links from English documents to a Chinese document that has an English edition, kept on purpose.
+ * `target` is a repository path the link resolves to, or a prefix of it ending in "/".
+ */
+export const ZH_LINKS_KEPT: readonly { file: string; target: string; why: string }[] = [
+  {
+    file: "docs/README.md",
+    target: "docs/zh-CN/",
+    why: "the index of both editions: its Chinese column links each document's Chinese source",
+  },
+  {
+    file: "docs/guide/README.md",
+    target: "docs/zh-CN/guide/README.md",
+    why: "the line saying the Chinese edition is authoritative",
+  },
+  {
+    file: "docs/spec/README.md",
+    target: "docs/zh-CN/spec/README.md",
+    why: "the line saying the Chinese edition is authoritative",
+  },
+  {
+    file: "CONTRIBUTING.md",
+    target: "docs/zh-CN/guide/12-contributing.md",
+    why: "names the Chinese edition of the contributor guide next to the English link",
+  },
+  ...["AGENTS.md", "CONTRIBUTING.md", "RELEASING.md"].map((file) => ({
+    file,
+    target: "docs/zh-CN/spec/",
+    why: "addresses contributors, who change the Chinese specification first",
+  })),
 ];
 
 /** How many lines from the top the source line may sit at (a title and a blank line come first). */
@@ -89,12 +127,61 @@ export function missingEnglish(root: string, files: readonly string[]): Translat
     .map(({ zh, en }) => ({ file: zh, reason: `no English edition (${en})` }));
 }
 
+/** Whether `file` is an English document: outside docs/zh-CN/ and not a `*.zh-CN.md`. */
+const isEnglish = (file: string): boolean =>
+  !file.startsWith("docs/zh-CN/") && !file.endsWith(".zh-CN.md");
+
+/**
+ * Links from English documents to a file or directory under docs/zh-CN/ whose English edition
+ * exists (docs/zh-CN/x → docs/x), outside ZH_LINKS_KEPT.
+ */
+export function zhLinksWithEnglish(
+  root: string,
+  files: readonly string[],
+): (TranslationProblem & { line: number })[] {
+  const out: (TranslationProblem & { line: number })[] = [];
+  for (const file of files.filter(isEnglish)) {
+    const text = readFileSync(join(root, file), "utf8");
+    for (const { line, target } of extractLinks(text)) {
+      if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("//")) continue;
+      const pathPart = target.split("#")[0] ?? "";
+      if (pathPart === "") continue;
+      const abs = normalize(resolve(dirname(join(root, file)), decodeURIComponent(pathPart)));
+      const path = relative(resolve(root), abs).split("\\").join("/");
+      if (!path.startsWith("docs/zh-CN/")) continue;
+      const rest = path.slice("docs/zh-CN/".length);
+      if (rest === "") continue;
+      if (!existsSync(join(root, "docs", rest))) continue;
+      const dir = pathPart.endsWith("/") ? "/" : "";
+      const shown = `${path}${dir}`;
+      const en = `docs/${rest}${dir}`;
+      if (
+        ZH_LINKS_KEPT.some(
+          (k) =>
+            k.file === file &&
+            (k.target.endsWith("/") ? `${path}/`.startsWith(k.target) : path === k.target),
+        )
+      ) {
+        continue;
+      }
+      out.push({ file, line, reason: `links ${shown}, which has an English edition: link ${en}` });
+    }
+  }
+  return out;
+}
+
 export function checkTranslations(
   root: string,
   files = listMarkdownFiles(root),
   changedAt: (file: string) => number | undefined = (f) => lastChange(root, f),
 ): { problems: TranslationProblem[]; drift: TranslationProblem[] } {
-  const problems = missingEnglish(root, files);
+  const problems: TranslationProblem[] = [
+    ...missingEnglish(root, files),
+    ...zhLinksWithEnglish(root, files).map((p) => ({
+      file: `${p.file}:${p.line}`,
+      reason: p.reason,
+    })),
+  ];
   const drift: TranslationProblem[] = [];
   for (const file of files) {
     if (!TRANSLATED.some((d) => file.startsWith(d))) continue;
