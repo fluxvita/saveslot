@@ -513,6 +513,27 @@ export class RowState {
       .some((f) => this.token(f, before, at) !== this.token(f, after, at));
   }
 
+  /**
+   * Of `before`, the change points of `f` this state had as of `at` (`impactPoints`), those that
+   * are no longer change points in `after` as of `afterAt` (high impact ①, 05-time «高影响写入»):
+   * a value ↔ no value boundary of a field defining "has a value" is gone only when no such field
+   * differs across it any more; any other change point is the field's own.
+   */
+  erasedOf(
+    f: FieldId,
+    before: readonly BizPoint[],
+    at: Limit,
+    after: RowState,
+    afterAt: Limit,
+  ): BizPoint[] {
+    const now = new Set(after.impactPoints(f, afterAt));
+    return before.filter((p) =>
+      this.defines(f) && this.hasValueBoundary(p, at)
+        ? !after.definingChangeAt(p, afterAt)
+        : !now.has(p),
+    );
+  }
+
   /** Event and timeless tables: the row has a revoke in effect. */
   revoked(at: Limit): boolean {
     return this.revokedBy(at).length > 0;

@@ -382,6 +382,39 @@ export const GROUP_LOGS: Record<
     event: 41,
     want: [["f2", "applied"]],
   },
+  // The same rule on an undo's write-back: #11 f2 = 1 from 10-01; #21 revokes [11-01, 11-07); #31
+  // f2 = 5 over [11-03, 11-05); #41 undoes #31 (awaiting, confirmed at #53: no value there again);
+  // #51 undoes #21 around it; #55 undoes #41, writing 5 back into the gap. At 11-03 and 11-05 f2
+  // goes 1 | 5 | 1: still changing, though f3 (never written) is empty on both sides. Not high
+  // impact: the write-back takes effect.
+  "high impact, no required field: an undo's write-back into a gap, f2 still changing": {
+    schema: { kind: "state", required: [] },
+    ops: [
+      at(10, 0, given("10-01"), { f2: "1" }),
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: given("11-01", "11-07"),
+        validSources: ["S20"],
+      } as Op,
+      at(30, 20, given("11-03", "11-05"), { f2: "5" }),
+      { kind: "undo", op: 40, event: 41, target: 30, acknowledge: ["overwrite"] } as Op,
+      {
+        kind: "undo",
+        op: 50,
+        event: 51,
+        target: 20,
+        seen: 40,
+        acknowledge: ["overwrite"],
+      } as Op,
+      { kind: "confirm", op: 53, event: 54, target: 41 } as Op,
+      { kind: "undo", op: 55, event: 56, target: 40 } as Op,
+    ],
+    event: 56,
+    want: [["f2", "applied"]],
+  },
   // Without the group, field by field: neither field's seen interval meets #31 where its value
   // differs, both take effect (up to #31's change point, 11-03).
   "without the group the same log takes effect": {

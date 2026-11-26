@@ -537,11 +537,10 @@ export function judgeRevertOf(
       if (!onlyRevokes) {
         const after = state.with(c.asWritten, c.regs);
         erased = state.table.fields
-          .map((f) => {
-            const before = state.impactPoints(f, c.cur);
-            const now = new Set(after.impactPoints(f, afterAt));
-            return { field: f, at: before.filter((p) => !now.has(p)) };
-          })
+          .map((f) => ({
+            field: f,
+            at: state.erasedOf(f, state.impactPoints(f, c.cur), c.cur, after, afterAt),
+          }))
           .filter((x) => x.at.length > 0);
         if (erased.length > 0) {
           overwritten = c.items.flatMap((d) => overwrittenBy(state, d, c.cur));

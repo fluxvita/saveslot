@@ -11,8 +11,10 @@ import {
   GROUP_TAKE_NOOP_FIELD_EVENT,
 } from "@fluxvita/saveslot-reference/testing";
 import { describe, expect, it } from "vitest";
+import { candidateImpact } from "./items.ts";
 import { view } from "./judge.ts";
 import { judged } from "./scenarios.fixture.ts";
+import { type RowState, refOf } from "./state.ts";
 
 describe("field groups, as the reference evaluator judges them", () => {
   it.each(Object.entries(GROUP_LOGS))("%s", (_, { schema, ops, event, want }) => {
@@ -70,6 +72,60 @@ describe("a value ↔ no value boundary's erasure, as listed", () => {
       "applied",
       "applied",
     ]);
+  });
+});
+
+// A candidate's impact if taken (01-objects 候选若生效会属高影响时) by the same rule: two required
+// fields; #11 (1, a) over [11-01, 11-09); #21 revokes [11-05, 11-09); #31, having seen neither,
+// writes (x, a) over [11-05, 11-09): a candidate. Taking (2, a) fills the gap with f2
+// still changing at 11-05: no impact; taking (1, a) leaves both the same on both sides: impact.
+describe("a candidate's impact at a value ↔ no value boundary", () => {
+  const d = (md: string) => `2026-${md}` as BizPoint;
+  const span = (from: string, to: string) => ({
+    from: { mode: "given", value: d(from) },
+    to: { mode: "given", value: d(to) },
+  });
+  const schema: TableSchema = { kind: "state", required: ["f2", "f3"] };
+  it.each([
+    ["f2 still changing: none", "2", false],
+    ["both the same on both sides: some", "1", true],
+  ] as const)("%s", (_, f2, some) => {
+    const ops = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: span("11-01", "11-09"),
+        fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: span("11-05", "11-09"),
+        validSources: ["S20"],
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 0,
+        valid: span("11-05", "11-09"),
+        fields: { f2: { value: f2, sources: ["S30"] }, f3: { value: "a", sources: ["S30"] } },
+      },
+    ] as Op[];
+    const { steps } = judged(schema, ops, []);
+    const state = steps.at(-1)?.state as RowState;
+    const refs = state.items.filter((x) => x.event === 31).map(refOf);
+    expect(refs.length).toBeGreaterThan(0);
+    expect(state.items.filter((x) => x.event === 31).every((x) => x.status === "candidate")).toBe(
+      true,
+    );
+    expect(candidateImpact(state, refs, { upTo: 30 as never }).length > 0).toBe(some);
   });
 });
 
