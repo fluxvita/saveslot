@@ -143,6 +143,7 @@ class MailProvider implements ConnectorProvider {
 | `entityKey` | State tables | An entity's natural key (required fields) |
 | `duplicateKeys` | No | Sets of fields that mark a suspected duplicate: an item for the user, not a refusal |
 | `together` | No | Fields that conflict as one unit |
+| `externalKey` | No | Event and timeless tables: the fields that identify a record in the system it comes from, e.g. `["origin", "external_id"]` (1–4 `text`, `enum` or `integer` fields, not in `together`). Records of the table are then written by this key; see [Writing by source key](#writing-by-source-key) |
 
 | Field | Required | |
 |---|---|---|
@@ -155,7 +156,7 @@ class MailProvider implements ConnectorProvider {
 | `min` / `max` | No | The range |
 | `ref` | `ref` | The table pointed at in the same slot: `{ table, target: "row" \| "entity" }` |
 
-Source keys (`external_key`, which make a repeated sync update rows instead of adding them) and aliases come with a later version of the service, which refuses them today; this version of the SDK leaves them out. See [Current limits](#current-limits).
+Aliases come with a later version of the service, which refuses them today; this version of the SDK leaves them out. See [Current limits](#current-limits).
 
 ### 3. Map your records
 
@@ -224,10 +225,10 @@ const result = await sdk.write(
   messages.map((m) => new MailMessage(m)),
   { key: `mail-${runId}` },
 );
-console.log(result); // { records, created, replayed, pending }
+console.log(result); // { records, created, updated, unchanged, awaiting, skipped, replayed, pending }
 ```
 
-Every record is a new row. Until source keys arrive, a connector keeps its own cursor (the last message it wrote) and writes each record once.
+In a table without a source key, as `messages` here, every record is a new row: the connector keeps its own cursor (the last message it wrote) and writes each record once. A table with a source key can take the same records again on every sync; see [Writing by source key](#writing-by-source-key).
 
 A key names one set of records. A retry with the same key must send the same records in the same order: fix the window of a run when it starts (say, the messages after the cursor, at most 1,000) and keep it, and its `runId`, until the run succeeds; only then move the cursor and start a new run with a new `runId`. Taking "new mail since last time" again on the retry gives other records under the same key: the parts already applied are replayed, then the service refuses the first part that differs, and `write` rejects with `key_reused`, whose `written` says what had been applied.
 
@@ -244,6 +245,36 @@ export async function syncInbox(runId: string) {
 ```
 
 Keep the mailbox's own credentials in your secret store, never in the slot.
+
+### Writing by source key
+
+When the system a connector reads gives each record a stable ID, declare it as the table's source key (event and timeless tables only):
+
+```ts
+schema.addSlot("rides", "Asia/Shanghai").addTable({
+  name: "rides",
+  description: "One ride taken",
+  time: { type: "none" },
+  externalKey: ["origin", "ride_id"],
+  fields: [
+    { name: "origin", type: "text", required: true, description: "The app the ride is from" },
+    { name: "ride_id", type: "text", required: true, description: "The ride's ID in that app" },
+    { name: "fare", type: "quantity", unit: "CNY", description: "What it cost" },
+  ],
+});
+```
+
+Records of that table are written by their key, and every sync can send the whole window again:
+
+- The first time a key is written, it adds a row (`created`).
+- Sent again as it was last delivered, it records nothing (`unchanged`): no event, nothing in the slot's history.
+- Sent with a field changed in the source, it updates that field (`updated`).
+- A field the user changed in saveslot since the last delivery is not overwritten: the source's change to it becomes a candidate, an item for the user to decide (counted in `pending`); fields the source did not change are left as the user set them. The record is `updated` when another of its fields took effect, and `awaiting` when none did.
+- A row the user revoked is not written back (`skipped`), nor a key held by a deletion that can still be undone.
+
+Each record must have a value for every key field and at least one other field, and one call must not hold two records with the same key in one table; `write` checks these before sending anything. Put a field naming the source system in the key (`origin` here) when more than one system writes the table: their IDs can be the same. A record whose key values are not those of any row adds a row: when the source gives a record a new ID, the row of the old one stays.
+
+A `key` on the call still makes a retry of the same records safe, but is not needed to avoid duplicate rows here: the source key does that.
 
 ## API
 
@@ -272,22 +303,26 @@ Keep the mailbox's own credentials in your secret store, never in the slot.
 1. Calls `defineSchema`.
 2. Reads the slot; this also checks the service accepts the credential.
 3. If the slot does not exist, creates it with all its tables in one schema draft.
-4. Checks each declared table is there with its declared fields; if not, rejects with `schema_mismatch` listing what is missing, and changes nothing. It compares table and field names only, not field types or whether a field is required: a field of another type in an existing slot shows at `write`, as the service's refusal.
+4. Checks each declared table is there with its declared fields and its declared source key (none when none is declared); if not, rejects with `schema_mismatch` listing what differs, and changes nothing. It compares names only, not field types or whether a field is required: a field of another type in an existing slot shows at `write`, as the service's refusal.
 
-This version cannot change a slot that exists (add a table or a field): the service refuses that until a later version. Declare what the slot has, or write to a new slot.
+This version cannot change a slot that exists (add a table, a field or a source key): the service refuses that until a later version. Declare what the slot has, or write to a new slot.
 
 Every other method rejects with `not_initialized` until `init` has succeeded.
 
 ### `write(records, { key?, task? })`
 
-Groups the records by table and writes them as inserts, at most 100 to a write. `key` names the call: the same call sent again with the same key within 24 hours is applied once, and its records come back in `replayed` instead of `created`. Each write sends `<key>.<table>.<n>` as its idempotency key, at most 256 characters; every key, the task and every record are checked before anything is sent, so keep `key` short (a UUID, or a run name).
+Groups the records by table and writes them, at most 100 to a write: as inserts, or by source key for a table that declares one. `key` names the call: the same call sent again with the same key within 24 hours is applied once, and its records come back in `replayed` instead of `created`. Each write sends `<key>.<table>.<n>` as its idempotency key, at most 256 characters; every key, the task and every record are checked before anything is sent, so keep `key` short (a UUID, or a run name).
 
-A retry with the same `key` must send the same records in the same order (see the example above). Other records under a key already used reject with `key_reused`. Any error after sending has started carries `written`, with the same fields as the result: what the call had applied before the error.
+A retry with the same `key` must send the same records in the same order (see the example above). Other records under a key already used reject with `key_reused`. Any error after sending has started carries `written`, with the same fields as the result: what the call had applied before the error. When the service refuses one of the writes and names some of its records, the error's `records` gives their indexes in the array given to `write` (`details` keeps the service's own indexes, which count within that write), and the message names them too.
 
 | Result | |
 |---|---|
-| `records` | Records given |
-| `created` | Records in writes applied by this call |
+| `records` | Records given. Each is counted once below, in `created`, `updated`, `unchanged`, `awaiting`, `skipped` or `replayed` |
+| `created` | Rows added by this call |
+| `updated` | By source key: records that changed the row their key found |
+| `unchanged` | By source key: records that brought nothing new; nothing was recorded for them |
+| `awaiting` | By source key: records none of whose fields took effect, some of them waiting for the user (a candidate, or a change to confirm); the items are in `pending` |
+| `skipped` | By source key: records not written because the user revoked their row, or a deletion that can still be undone holds the key |
 | `replayed` | Records in writes the service had already applied under the same key: not written again |
 | `pending` | Items left for the user to resolve (suspected duplicates, conflicts) |
 
@@ -311,13 +346,13 @@ Everything throws or rejects with `SaveslotError`. `code` is the service's error
 |---|---|
 | `invalid_config` | The builder was set up wrong |
 | `invalid_schema` | `defineSchema` declared something unusable |
-| `schema_mismatch` | The slot lacks a declared table or field |
+| `schema_mismatch` | The slot lacks a declared table or field, or a table's source key is not the declared one |
 | `schema_pending` | Creating the slot waits for the user's confirmation |
 | `not_built` | `ConnectorClient.with()` before `build()` |
 | `already_built` | `build()` a second time; call `ConnectorClient.reset()` first to change settings |
 | `not_initialized` | `init` has not succeeded |
 | `unknown_table` | A record for a table not declared |
-| `invalid_argument` | Without a `status`: a `task`, `key`, header value or record (a BigInt, a cycle) the SDK cannot send; nothing was sent. With a `status`, the service refused the request |
+| `invalid_argument` | Without a `status`: a `task`, `key`, header value or record the SDK cannot send (a BigInt, a cycle; a key field missing or null; only key fields; two records with the same source key); nothing was sent. With a `status`, the service refused the request |
 | `key_reused` | `write` with a `key` already used with other records; `written` says what this call had applied before |
 | `unreachable`, `bad_reply` | No answer, or an answer that is not the service's |
 
@@ -325,7 +360,6 @@ Everything throws or rejects with `SaveslotError`. `code` is the service's error
 
 Limits of today's service (07-scope-v1), and so of this version of the SDK:
 
-- **No source keys** (P2): every write adds rows; the SDK has no `externalKey`.
 - **No aliases** (P2) on tables or fields.
 - **An existing slot cannot be changed** (P4): no table or field can be added to it, none changed.
 - **Local only**: the service listens on a unix socket; server mode, OAuth and connectors on devices (iOS, Android, Flutter, React Native) come with P5.

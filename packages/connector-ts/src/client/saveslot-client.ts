@@ -167,6 +167,14 @@ export class SaveslotClient implements SaveslotApi {
     if (!isObject(reply) || (reply["status"] !== "saved" && reply["status"] !== "pending")) {
       throw new SaveslotError("bad_reply", "the write answer has no status");
     }
+    // A first receipt of a write with ops by source key counts how they ended (04-contract §5.4).
+    if (
+      reply["replayed"] !== true &&
+      request.ops.some((op) => op.external_key !== undefined) &&
+      !isSummary(reply["external_key_summary"])
+    ) {
+      throw new SaveslotError("bad_reply", "the write answer has no external_key_summary");
+    }
     return reply as unknown as WriteReceipt;
   }
 
@@ -331,7 +339,20 @@ function readTable(t: unknown): TableInfo {
     sv: t["sv"],
     kind: String(t["kind"]),
     fields: t["fields"].map((f) => (isObject(f) ? String(f["name"]) : "")),
+    ...(Array.isArray(t["external_key"])
+      ? { externalKey: t["external_key"].map((f) => String(f)) }
+      : {}),
   };
+}
+
+/** Five outcome counts, each a non-negative integer. */
+function isSummary(s: unknown): boolean {
+  return (
+    isObject(s) &&
+    ["created", "updated", "unchanged", "pending", "skipped"].every(
+      (k) => Number.isSafeInteger(s[k]) && (s[k] as number) >= 0,
+    )
+  );
 }
 
 /** Seconds, or an HTTP date; a value that is neither is ignored. */

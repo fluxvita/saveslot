@@ -1,9 +1,9 @@
 // Slot and table definitions, as a connector declares them, and their schema-document form
 // (docs/zh-CN/spec/03-data-model/07-schema-evolution.md «schema 文档格式»).
 //
-// Only what the service accepts today is here. Source keys (`external_key`) and aliases come with
-// P2, changing an existing slot with P4 (07-scope-v1); the service answers `not_in_this_version`
-// to each, so this version of the SDK does not offer them.
+// Only what the service accepts today is here. Aliases and changing an existing slot come later
+// (07-scope-v1); the service answers `not_in_this_version` to each, so this version of the SDK
+// does not offer them.
 
 /** Field types (10-types-and-units). */
 export type FieldType =
@@ -56,6 +56,13 @@ export interface TableDefinition {
   readonly duplicateKeys?: readonly (readonly string[])[];
   /** Fields that conflict as one unit. */
   readonly together?: readonly (readonly string[])[];
+  /**
+   * Event and timeless tables: the fields that identify a record in the system it comes from
+   * (1–4 `text`, `enum` or `integer` fields, none in `together`), e.g. `["origin", "external_id"]`.
+   * Records of such a table are written by this key: the first time a key is written it adds a
+   * row, after that it updates that row (04-write-and-read «按来源键写入»).
+   */
+  readonly externalKey?: readonly string[];
 }
 
 /** The schema document of a draft that creates a slot with its tables. */
@@ -82,5 +89,6 @@ function tableDocument(t: TableDefinition): Record<string, unknown> {
     ...(t.entityKey === undefined ? {} : { entity_key: t.entityKey }),
     ...(t.duplicateKeys === undefined ? {} : { duplicate_keys: t.duplicateKeys }),
     ...(t.together === undefined ? {} : { together: t.together }),
+    ...(t.externalKey === undefined ? {} : { external_key: t.externalKey }),
   };
 }

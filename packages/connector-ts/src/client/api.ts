@@ -21,6 +21,8 @@ export interface TableInfo {
   /** `base` or `derived`. */
   readonly kind: string;
   readonly fields: readonly string[];
+  /** The table's source key (`external_key`): its field names; absent when it has none. */
+  readonly externalKey?: readonly string[];
 }
 
 /** One op of a write (04-contract-types §5.1). */
@@ -30,6 +32,8 @@ export interface WriteOp {
   readonly table: string;
   readonly set?: Readonly<Record<string, unknown>>;
   readonly row?: string;
+  /** A write by source key: the value of every key field (with `update`, no `row`). */
+  readonly external_key?: Readonly<Record<string, unknown>>;
 }
 
 export interface WriteRequest {
@@ -54,6 +58,21 @@ export interface WriteReceipt {
   readonly pending: readonly unknown[];
   /** The service had already applied a write with this idempotency key: this is its receipt. */
   readonly replayed?: true;
+  /**
+   * Writes by source key: how many of the write's ops by source key ended each way (04-contract
+   * §5.4). Present when the write has such ops; `unchanged` and `skipped` can be absent only in
+   * a replayed receipt.
+   */
+  readonly external_key_summary?: ExternalKeySummary;
+}
+
+/** The outcomes of a write's ops by source key (04-contract-types §5.1 `external_key_summary`). */
+export interface ExternalKeySummary {
+  readonly created: number;
+  readonly updated: number;
+  readonly unchanged?: number;
+  readonly pending: number;
+  readonly skipped?: number;
 }
 
 /** The parts of a schema-draft receipt the SDK reads (04-contract-types §5.3 `SchemaDraftResult`). */

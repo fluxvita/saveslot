@@ -30,6 +30,13 @@ export class SaveslotError extends Error {
    * error. Writes it counts are applied, and stay applied.
    */
   readonly written: Readonly<WriteResult> | undefined;
+  /**
+   * On a refusal of a `write` part by the service that names ops of that part (by `param`, a
+   * detail, or `ops`): the indexes, in the records given to `write`, of the records those ops were
+   * made from, in ascending order. `details` keeps the service's indexes, which count within the
+   * part.
+   */
+  readonly records: readonly number[] | undefined;
   constructor(
     code: string,
     message: string,
@@ -38,6 +45,7 @@ export class SaveslotError extends Error {
       details?: Readonly<Record<string, unknown>>;
       cause?: unknown;
       written?: Readonly<WriteResult>;
+      records?: readonly number[];
     } = {},
   ) {
     super(message, o.cause === undefined ? undefined : { cause: o.cause });
@@ -45,5 +53,6 @@ export class SaveslotError extends Error {
     this.status = o.status;
     this.details = o.details;
     this.written = o.written;
+    this.records = o.records === undefined ? undefined : Object.freeze([...o.records]);
   }
 }

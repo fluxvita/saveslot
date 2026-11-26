@@ -3,7 +3,8 @@
 // `ConnectorProvider`. `build()` makes the one instance of the process; any file reaches it with
 // `ConnectorClient.with()`. It holds the internal `SaveslotClient` and does every saveslot
 // operation through it: at `init` it creates the slot the provider declares when it does not exist
-// and checks it when it does, and `write` turns the developer's `SlotRecord`s into writes.
+// and checks it when it does, and `write` turns the developer's `SlotRecord`s into writes: inserts,
+// or writes by source key for a table that declares one.
 
 import type { TableInfo, WriteOp } from "../client/api.ts";
 import {
@@ -21,6 +22,7 @@ import {
 import {
   emptyWriteResult,
   type SlotRecord,
+  toKeyedOps,
   toOps,
   type WriteResult,
 } from "../record/slot-record.ts";
@@ -82,6 +84,8 @@ export class ConnectorClient {
   readonly #client: SaveslotClient;
   /** The declared tables as the service has them, by lower-case name. */
   readonly #tables = new Map<string, TableInfo>();
+  /** The source key of each declared table that has one, as declared, by lower-case name. */
+  readonly #keys = new Map<string, readonly string[]>();
   #initialized = false;
   #initializing: Promise<void> | undefined;
 
@@ -146,10 +150,10 @@ export class ConnectorClient {
    * 2. reads the slot, which also checks that the service answers and accepts the credential;
    * 3. when the slot does not exist, creates it with all its tables in one schema draft (the
    *    credential needs `saveslot.schema` and must not be limited to other slots);
-   * 4. checks that every declared table is there with the declared fields, and rejects with
-   *    `schema_mismatch` when not, changing nothing. It compares table and field names only, not
-   *    field types or whether a field is required: a field of another type in an existing slot
-   *    shows at `write`, as the service's refusal.
+   * 4. checks that every declared table is there with the declared fields and the declared source
+   *    key (none when none is declared), and rejects with `schema_mismatch` when not, changing
+   *    nothing. It compares names only, not field types or whether a field is required: a field
+   *    of another type in an existing slot shows at `write`, as the service's refusal.
    *
    * This version cannot change a slot that exists: the service refuses such a draft
    * (`not_in_this_version`) until P4. A slot that lacks a declared table or field stays as it is;
@@ -175,23 +179,37 @@ export class ConnectorClient {
   }
 
   /**
-   * Writes records as inserts, grouped by table, at most `RECORDS_PER_WRITE` to a write. Before
-   * sending anything, rejects with `unknown_table` for a table `defineSchema` did not declare, or
+   * Writes records grouped by table, at most `RECORDS_PER_WRITE` to a write. Before sending
+   * anything, rejects with `unknown_table` for a table `defineSchema` did not declare, or
    * `invalid_argument` for a key, task or record that cannot be sent (a record with a value JSON
-   * cannot carry, such as a BigInt or a cycle). Once sending has started, an error carries
-   * `written`: what this call had applied before it (`key_reused` when the service refused a part
-   * because its key was used with other records).
+   * cannot carry, such as a BigInt or a cycle; a record of a table with a source key that lacks a
+   * key field or has it null, or has no field besides its key fields; two records of one table
+   * with the same source key). Once sending has started, an error carries `written`: what this
+   * call had applied before it (`key_reused` when the service refused a part because its key was
+   * used with other records), and, when the service's refusal names ops of the part it refused,
+   * `records`: the indexes in `records` of the records those ops were made from.
    *
-   * Every record is a new row: writing the same record again adds it again, unless the call is
-   * repeated with the same `key` within 24 hours. Updating rows by a source key comes with a later
-   * version of the service.
+   * A record of a table without a source key is a new row: writing it again adds it again, unless
+   * the call is repeated with the same `key` within 24 hours. A record of a table with a source key
+   * is written by that key: the first time it adds a row, later it updates that row with what
+   * changed since it was last delivered, and writing it again unchanged records nothing. A field
+   * the user changed in saveslot since is not overwritten: the source's change to it becomes a
+   * candidate for the user to decide. A record none of whose fields took effect, with some of them
+   * waiting for the user, is `awaiting`; one with any field in effect is `updated`. A row the user
+   * revoked is not written back (`skipped`).
    */
   async write(
     records: readonly SlotRecord[],
     options: WriteCallOptions = {},
   ): Promise<WriteResult> {
     this.#ready();
-    const byTable = new Map<TableInfo, Readonly<Record<string, unknown>>[]>();
+    /** Per table: its records' fields, and the index of each record in `records`. */
+    const byTable = new Map<
+      TableInfo,
+      { fields: Readonly<Record<string, unknown>>[]; indexes: number[] }
+    >();
+    /** Per keyed table: each source key seen in this call, and the record that had it first. */
+    const seenKeys = new Map<TableInfo, Map<string, number>>();
     for (const [index, record] of records.entries()) {
       const name = record.table();
       const info = this.#tables.get(name.toLowerCase());
@@ -200,28 +218,59 @@ export class ConnectorClient {
       }
       const fields = record.fields();
       checkSerializable(fields, name, index);
-      const list = byTable.get(info) ?? [];
-      list.push(fields);
+      const key = this.#keys.get(name.toLowerCase());
+      if (key !== undefined) {
+        const seen = seenKeys.get(info) ?? new Map<string, number>();
+        const id = keyOf(fields, key, name, index);
+        checkHasValueBesidesKey(fields, key, name, index);
+        const first = seen.get(id);
+        if (first !== undefined) {
+          throw new SaveslotError(
+            "invalid_argument",
+            `records ${first} and ${index} (table ${name}) have the same source key: send each ` +
+              "record once in a write",
+            { details: { table: name, records: [first, index] } },
+          );
+        }
+        seen.set(id, index);
+        seenKeys.set(info, seen);
+      }
+      const list = byTable.get(info) ?? { fields: [], indexes: [] };
+      list.fields.push(fields);
+      list.indexes.push(index);
       byTable.set(info, list);
     }
     const task = options.task ?? this.#manifest.id;
     checkHeaderText("X-Task-Id", task);
     // Every part and its key first, every key checked, so nothing is sent when one is unusable.
-    const parts: { info: TableInfo; ops: WriteOp[]; key: string | undefined }[] = [];
-    for (const [info, fields] of byTable) {
-      const ops = toOps(`${info.slot}.${info.table}`, fields);
+    const parts: {
+      info: TableInfo;
+      ops: WriteOp[];
+      /** The index in `records` of the record each op was made from. */
+      indexes: number[];
+      key: string | undefined;
+    }[] = [];
+    for (const [info, { fields, indexes }] of byTable) {
+      const table = `${info.slot}.${info.table}`;
+      const key = this.#keys.get(info.table.toLowerCase());
+      const ops = key === undefined ? toOps(table, fields) : toKeyedOps(table, key, fields);
       for (let from = 0; from < ops.length; from += RECORDS_PER_WRITE) {
         const key =
           options.key === undefined
             ? undefined
             : `${options.key}.${info.table}.${from / RECORDS_PER_WRITE}`;
         if (key !== undefined) checkHeaderText("Idempotency-Key", key);
-        parts.push({ info, ops: ops.slice(from, from + RECORDS_PER_WRITE), key });
+        parts.push({
+          info,
+          ops: ops.slice(from, from + RECORDS_PER_WRITE),
+          indexes: indexes.slice(from, from + RECORDS_PER_WRITE),
+          key,
+        });
       }
     }
     const result = emptyWriteResult();
     result.records = records.length;
-    for (const [n, { info, ops, key }] of parts.entries()) {
+    for (const [n, { info, ops, indexes, key }] of parts.entries()) {
       let receipt: Awaited<ReturnType<SaveslotClient["write"]>>;
       try {
         receipt = await this.#client.write(
@@ -229,10 +278,17 @@ export class ConnectorClient {
           { task, ...(key === undefined ? {} : { idempotencyKey: key }) },
         );
       } catch (e) {
-        throw partError(e, { ...result }, n, parts.length);
+        throw partError(e, { ...result }, n, parts.length, indexes);
       }
       if (receipt.replayed === true) result.replayed += ops.length;
-      else result.created += ops.length;
+      else if (receipt.external_key_summary !== undefined) {
+        const c = receipt.external_key_summary;
+        result.created += c.created;
+        result.updated += c.updated;
+        result.unchanged += c.unchanged ?? 0;
+        result.awaiting += c.pending;
+        result.skipped += c.skipped ?? 0;
+      } else result.created += ops.length;
       result.pending += receipt.pending.length;
     }
     return result;
@@ -287,17 +343,30 @@ export class ConnectorClient {
         .map((f) => f.name)
         .filter((f) => !have.has(f.toLowerCase()));
       if (missingFields.length > 0) problems.push({ table: declared.name, missingFields });
+      if (!sameFields(declared.externalKey, info.externalKey)) {
+        problems.push({
+          table: declared.name,
+          externalKey: { declared: declared.externalKey ?? null, slot: info.externalKey ?? null },
+        });
+      }
     }
     if (problems.length > 0) {
       throw new SaveslotError(
         "schema_mismatch",
-        `the slot ${schema.slot} lacks tables or fields defineSchema declares; this version cannot ` +
-          "change an existing slot: declare what the slot has, or write to a new slot",
+        `the slot ${schema.slot} lacks tables or fields defineSchema declares, or has another ` +
+          "source key; this version cannot change an existing slot: declare what the slot has, " +
+          "or write to a new slot",
         { details: { tables: problems } },
       );
     }
     this.#tables.clear();
+    this.#keys.clear();
     for (const info of infos) this.#tables.set(info.table.toLowerCase(), info);
+    for (const declared of schema.tables) {
+      if (declared.externalKey !== undefined) {
+        this.#keys.set(declared.name.toLowerCase(), declared.externalKey);
+      }
+    }
   }
 
   #ready(): void {
@@ -324,16 +393,110 @@ function checkSerializable(
   }
 }
 
+/** Whether two lists name the same fields, regardless of order and ASCII case; absent is none. */
+function sameFields(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const norm = (l: readonly string[] | undefined) =>
+    [...(l ?? [])].map((f) => f.toLowerCase()).sort();
+  const x = norm(a);
+  const y = norm(b);
+  return x.length === y.length && x.every((f, i) => f === y[i]);
+}
+
 /**
- * An error from part `n` of a write, with what the call had applied before it. A part the
- * service refused because its key was used with other records is `key_reused`.
+ * A record's source key, as one text to compare by: its key fields' values in the key's order,
+ * text in NFC (the service compares keys as it compares values: text after NFC, code point by
+ * code point). `invalid_argument` naming the record when a key field is missing or null.
  */
-function partError(e: unknown, written: WriteResult, n: number, total: number): unknown {
+function keyOf(
+  fields: Readonly<Record<string, unknown>>,
+  key: readonly string[],
+  table: string,
+  index: number,
+): string {
+  const values = key.map((field) => {
+    const value = Object.hasOwn(fields, field) ? fields[field] : undefined;
+    if (value === undefined || value === null) {
+      throw new SaveslotError(
+        "invalid_argument",
+        `record ${index} (table ${table}) has no value for ${field}, a field of the table's ` +
+          "source key: every key field needs one",
+        { details: { table, record: index, field } },
+      );
+    }
+    return typeof value === "string" ? value.normalize("NFC") : value;
+  });
+  return JSON.stringify(values);
+}
+
+/**
+ * A record of a table with a source key must have a field to write besides its key fields: its op
+ * would have an empty `set`, which the service refuses (`invalid_argument`, `malformed`) after the
+ * parts before it have taken effect. A field whose value is `undefined` is not sent, so it does
+ * not count.
+ */
+function checkHasValueBesidesKey(
+  fields: Readonly<Record<string, unknown>>,
+  key: readonly string[],
+  table: string,
+  index: number,
+): void {
+  const has = Object.entries(fields).some(([f, v]) => !key.includes(f) && v !== undefined);
+  if (has) return;
+  throw new SaveslotError(
+    "invalid_argument",
+    `record ${index} (table ${table}) has only its source key fields: give at least one other ` +
+      "field to write",
+    { details: { table, record: index } },
+  );
+}
+
+/**
+ * The ops a refusal from the service names, by their index in the write (`ops/<i>` in `param`
+ * or in a detail's `path`, a detail's `op`, the `ops` of `duplicate_external_key`;
+ * 04-contract-types §9).
+ */
+function namedOps(error: Readonly<Record<string, unknown>> | undefined): number[] {
+  if (error === undefined) return [];
+  const found: number[] = [];
+  const fromPath = (p: unknown) => {
+    const m = typeof p === "string" ? /^ops\/(\d+)(?:\/|$)/.exec(p) : null;
+    if (m !== null) found.push(Number(m[1]));
+  };
+  const fromIndex = (i: unknown) => {
+    if (Number.isSafeInteger(i)) found.push(i as number);
+  };
+  fromPath(error["param"]);
+  if (Array.isArray(error["ops"])) for (const i of error["ops"]) fromIndex(i);
+  if (Array.isArray(error["details"])) {
+    for (const d of error["details"]) {
+      if (typeof d !== "object" || d === null) continue;
+      fromIndex((d as Record<string, unknown>)["op"]);
+      fromPath((d as Record<string, unknown>)["path"]);
+    }
+  }
+  return found;
+}
+
+/**
+ * An error from part `n` of a write, with what the call had applied before it, and the records
+ * (by their index in the call) whose ops the refusal names. A part the service refused because
+ * its key was used with other records is `key_reused`.
+ */
+function partError(
+  e: unknown,
+  written: WriteResult,
+  n: number,
+  total: number,
+  indexes: readonly number[],
+): unknown {
   if (!(e instanceof SaveslotError)) return e;
+  const named = namedOps(e.details).filter((i) => i < indexes.length);
+  const records = [...new Set(named.map((i) => indexes[i] as number))].sort((a, b) => a - b);
   const o = {
     ...(e.status === undefined ? {} : { status: e.status }),
     ...(e.details === undefined ? {} : { details: e.details }),
     written,
+    ...(records.length === 0 ? {} : { records }),
   };
   if (e.code === "invalid_argument" && e.details?.["reason"] === "idempotency_key_reuse") {
     return new SaveslotError(
@@ -344,7 +507,11 @@ function partError(e: unknown, written: WriteResult, n: number, total: number): 
       { ...o, cause: e },
     );
   }
-  return new SaveslotError(e.code, e.message, { ...o, cause: e.cause ?? e });
+  const which =
+    records.length === 0
+      ? ""
+      : ` (write ${n + 1} of ${total}; record${records.length === 1 ? "" : "s"} ${records.join(", ")})`;
+  return new SaveslotError(e.code, `${e.message}${which}`, { ...o, cause: e.cause ?? e });
 }
 
 /** Table names are unique in a slot regardless of ASCII case. */
