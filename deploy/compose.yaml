@@ -24,6 +24,9 @@ services:
     secrets: [pgpass]
     volumes: [keys:/var/lib/saveslot]
     ports: ["127.0.0.1:8080:8080"]
+    # The shutdown's drain (10 s), its limit for requests in progress (30 s), and up to 10 s to
+    # close: docker stop waits 10 s by default.
+    stop_grace_period: 1m
 secrets:
   postgres-password: { file: ./postgres-password }
   saveslot-db-password: { file: ./saveslot-db-password }

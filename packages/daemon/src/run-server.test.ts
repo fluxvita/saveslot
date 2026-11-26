@@ -7,7 +7,7 @@
 // the hash's cost. The real parameters are covered by service's local-accounts.test.ts.
 
 import { mkdirSync, writeFileSync } from "node:fs";
-import { request } from "node:http";
+import { Agent, request } from "node:http";
 import { join } from "node:path";
 import {
   addLocalUser,
@@ -182,6 +182,8 @@ function config(over: Partial<ServerConfig> = {}): ServerConfig {
     listen: { host: "127.0.0.1", port: 0 },
     trustedProxies: ["127.0.0.1"],
     allowedOrigins: [],
+    // No drain: a test that closes a server does not wait for a load balancer.
+    shutdown: { drainSeconds: 0, timeoutSeconds: 30 },
     ...over,
   };
 }
@@ -298,6 +300,16 @@ describe("runServer: what answers which request", () => {
     const r = await send(s, { path: "/health" });
     expect(r.status).toBe(200);
     expect(JSON.parse(r.body)).toMatchObject({ state: "ready", version: "0.0.0-test" });
+  });
+
+  it("GET /ready takes no token, nor a trusted proxy: 200 while ready, the body /health's", async () => {
+    // From a source no proxy vouches for: /ready is answered before the request's source is read.
+    const r = await send(s, { path: "/ready", headers: { "x-forwarded-for": "not an address" } });
+    expect(r.status).toBe(200);
+    expect(r.headers["cache-control"]).toBe("no-store");
+    expect(JSON.parse(r.body)).toMatchObject({ state: "ready", version: "0.0.0-test" });
+    // GET only: another method goes where any other path does.
+    expect((await send(s, { method: "POST", path: "/ready" })).status).toBe(404);
   });
 
   it("a path nothing answers: 404 with no body", async () => {
@@ -2046,6 +2058,234 @@ describe("runServer: closing", () => {
   );
 });
 
+describe("runServer: closing in three steps", () => {
+  /** A server with one user; `gate` holds the tenant's opening back, as tenants() does. */
+  async function serverWithUser(
+    testing: NonNullable<RunServerOptions["testing"]>,
+    gate?: { opened?: () => void; release?: Promise<void> },
+  ) {
+    const c = await controlDb();
+    const t = tenants(gate);
+    const cfg = config();
+    await CursorKeys.createFile(cfg.handleKeyFile);
+    const { user } = await addLocalUser(c.accounts as NonNullable<typeof c.accounts>, {
+      control: c.cp as ServerControlPlane,
+      backend: t.backend,
+      name: "jordan",
+      password: "correct horse battery",
+      cell: CELL,
+      cells: new Set([CELL]),
+      now: NOW,
+    });
+    const token = await sessionFor(c.store, user);
+    const warned: string[] = [];
+    const s = await runServer({
+      config: cfg,
+      version: "0.0.0-test",
+      openControl: async () => c.db,
+      backend: t.backend,
+      now: () => NOW,
+      warn: (event) => warned.push(event),
+      testing,
+    });
+    return { s, token, warned, c, t };
+  }
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const state = async (s: RunningServer) =>
+    (JSON.parse((await send(s, { path: "/health" })).body) as { state: string }).state;
+
+  it(
+    "during the drain: /ready 503 and /health stopping, while /v1 and MCP are served as before; then new connections are refused",
+    async () => {
+      const { s, token } = await serverWithUser({ drainMs: 1500 });
+      const auth = { authorization: `Bearer ${token}` };
+      const t0 = performance.now();
+      const closing = s.close();
+      const ready = await send(s, { path: "/ready" });
+      expect(ready.status).toBe(503);
+      expect(ready.headers["cache-control"]).toBe("no-store");
+      expect(JSON.parse(ready.body)).toMatchObject({ state: "stopping" });
+      const health = await send(s, { path: "/health" });
+      expect(health.status).toBe(200);
+      expect(JSON.parse(health.body)).toMatchObject({ state: "stopping" });
+      expect((await send(s, { path: "/v1/slots", headers: auth })).status).toBe(200);
+      const mcp = await send(s, {
+        method: "POST",
+        path: "/mcp",
+        headers: {
+          ...auth,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: { name: "example-host", version: "1" },
+          },
+        }),
+      });
+      expect(mcp.status).toBe(200);
+      expect(performance.now() - t0).toBeLessThan(1500);
+      await closing;
+      expect(performance.now() - t0).toBeGreaterThanOrEqual(1400);
+      // Past the drain the server listens no more.
+      await expect(send(s, { path: "/ready" })).rejects.toMatchObject({ code: "ECONNREFUSED" });
+    },
+    T,
+  );
+
+  it(
+    "a request still in progress at the timeout is cut, and close() goes on: a connection counted in the warning",
+    async () => {
+      const { s, token, warned } = await serverWithUser({ drainMs: 0, timeoutMs: 300 });
+      // A body that never comes in full: the request never ends on its own.
+      let cut!: (e: Error) => void;
+      const gone = new Promise<Error>((r) => {
+        cut = r;
+      });
+      const req = request({
+        host: s.address.host,
+        port: s.address.port,
+        method: "POST",
+        path: "/v1/writes",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "content-length": 1000,
+        },
+      });
+      req.on("error", cut);
+      req.write('{"sv":1,');
+      await wait(100);
+      const t0 = performance.now();
+      await s.close();
+      const took = performance.now() - t0;
+      expect(took).toBeGreaterThanOrEqual(250);
+      expect(took).toBeLessThan(5000);
+      expect((await gone).message).toMatch(/socket hang up|ECONNRESET/);
+      expect(warned).toContain("shutdown_connections_cut");
+    },
+    T,
+  );
+
+  it(
+    "a use stuck on its tenant does not hold the closing past its bound; the lock is released",
+    async () => {
+      let opened!: () => void;
+      const reached = new Promise<void>((r) => {
+        opened = r;
+      });
+      let release!: () => void;
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      const gate: { opened?: () => void; release?: Promise<void> } = {};
+      const { s, token, warned, c } = await serverWithUser(
+        { drainMs: 0, timeoutMs: 200, tenantsCloseMs: 300 },
+        gate,
+      );
+      gate.opened = opened;
+      gate.release = held;
+      const answer = send(s, {
+        path: "/v1/slots",
+        headers: { authorization: `Bearer ${token}` },
+      }).catch((e: unknown) => e);
+      await reached;
+      const t0 = performance.now();
+      await s.close();
+      expect(performance.now() - t0).toBeLessThan(5000);
+      expect(warned).toEqual(
+        expect.arrayContaining(["shutdown_connections_cut", "shutdown_tenants_left"]),
+      );
+      // Its control database closed: the lock released with it.
+      expect(c.closes()).toBe(1);
+      expect(await answer).toBeInstanceOf(Error);
+      release();
+    },
+    T,
+  );
+
+  it(
+    "a request in progress on a keep-alive connection: answered with Connection: close, and close() does not wait out the keep-alive timeout",
+    async () => {
+      let opened!: () => void;
+      const reached = new Promise<void>((r) => {
+        opened = r;
+      });
+      let release!: () => void;
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      const gate: { opened?: () => void; release?: Promise<void> } = {};
+      const { s, token } = await serverWithUser({ drainMs: 0 }, gate);
+      gate.opened = opened;
+      gate.release = held;
+      const agent = new Agent({ keepAlive: true });
+      try {
+        const answer = new Promise<Reply>((resolve, reject) => {
+          const req = request(
+            {
+              host: s.address.host,
+              port: s.address.port,
+              path: "/v1/slots",
+              headers: { authorization: `Bearer ${token}` },
+              agent,
+            },
+            (res) => {
+              let body = "";
+              res.setEncoding("utf8").on("data", (c: string) => {
+                body += c;
+              });
+              res.on("end", () =>
+                resolve({ status: res.statusCode ?? 0, headers: res.headers, body }),
+              );
+            },
+          );
+          req.on("error", reject);
+          req.end();
+        });
+        await reached;
+        const closing = s.close();
+        await wait(50);
+        const t0 = performance.now();
+        release();
+        const r = await answer;
+        expect(r.status).toBe(200);
+        expect(r.headers["connection"]).toBe("close");
+        await closing;
+        // Well inside Node's 5 s keep-alive timeout.
+        expect(performance.now() - t0).toBeLessThan(3000);
+      } finally {
+        agent.destroy();
+      }
+    },
+    T,
+  );
+
+  it(
+    "hurry() (a second signal) cuts the drain short; before close() it does nothing",
+    async () => {
+      const { s } = await serverWithUser({ drainMs: 60_000 });
+      s.hurry();
+      expect(await state(s)).toBe("ready");
+      const t0 = performance.now();
+      const closing = s.close();
+      expect(await state(s)).toBe("stopping");
+      s.hurry();
+      await closing;
+      expect(performance.now() - t0).toBeLessThan(5000);
+      // Called again, the same closing.
+      await s.close();
+    },
+    T,
+  );
+});
+
 // PGlite has one connection to a database: another holder of the lock exists on PostgreSQL only.
 describe.skipIf(TEST_BACKEND !== "postgres")("runServer: one server a control database", () => {
   const tryLock = (c: Awaited<ReturnType<typeof secondConnection>>) =>
@@ -2207,6 +2447,7 @@ describe.skipIf(TEST_BACKEND !== "postgres")(
             state: "failed",
             reason: "control_database_lost",
           });
+          expect((await send(s, { path: "/ready" })).status).toBe(503);
           // On /v1/ the contract's error: the server is stopping (05-surfaces §13, §14).
           const v1 = await send(s, { path: "/v1/slots" });
           expect(v1.status).toBe(503);

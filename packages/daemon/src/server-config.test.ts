@@ -47,6 +47,7 @@ describe("the server mode's configuration", () => {
       listen: { host: "127.0.0.1", port: 8080 },
       trustedProxies: [],
       allowedOrigins: [],
+      shutdown: { drainSeconds: 10, timeoutSeconds: 30 },
     });
   });
 
@@ -100,6 +101,10 @@ describe("the server mode's configuration", () => {
     ["SAVESLOT_LISTEN", "0.0.0.0:0", "the port is not 1 to 65535"],
     ["SAVESLOT_RATE_LIMIT", "-1", "not an integer of 0 or more"],
     ["SAVESLOT_RATE_BURST", "0", "not a positive integer"],
+    ["SAVESLOT_SHUTDOWN_DRAIN", "-1", "not an integer of 0 to 3600"],
+    ["SAVESLOT_SHUTDOWN_DRAIN", "1.5", "not an integer of 0 to 3600"],
+    ["SAVESLOT_SHUTDOWN_DRAIN", "10s", "not an integer of 0 to 3600"],
+    ["SAVESLOT_SHUTDOWN_TIMEOUT", "3601", "not an integer of 0 to 3600"],
   ] as const)("%s = %s: %s", (variable, value, what) => {
     expect(problems({ ...GOOD, [variable]: value })).toEqual([
       { kind: "malformed", variable, what },
@@ -174,6 +179,17 @@ describe("the server mode's configuration", () => {
     expect(
       readServerConfig({ ...GOOD, SAVESLOT_RATE_LIMIT: "60", SAVESLOT_RATE_BURST: "10" }),
     ).toMatchObject({ rateLimit: { perMinute: 60, burst: 10 } });
+  });
+
+  it("the shutdown's drain and timeout: seconds, 0 to 3600, 0 meaning no wait", () => {
+    expect(
+      readServerConfig({ ...GOOD, SAVESLOT_SHUTDOWN_DRAIN: "0", SAVESLOT_SHUTDOWN_TIMEOUT: "3600" })
+        .shutdown,
+    ).toEqual({ drainSeconds: 0, timeoutSeconds: 3600 });
+    expect(readServerConfig({ ...GOOD, SAVESLOT_SHUTDOWN_TIMEOUT: "0" }).shutdown).toEqual({
+      drainSeconds: 10,
+      timeoutSeconds: 0,
+    });
   });
 
   it("trusted proxies: single addresses and CIDR ranges, each in one written form", () => {

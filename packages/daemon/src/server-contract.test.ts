@@ -174,6 +174,7 @@ function serverFixture(shape: Shape) {
       listen: { host: "127.0.0.1", port: 0 },
       trustedProxies: [],
       allowedOrigins: [],
+      shutdown: { drainSeconds: 0, timeoutSeconds: 30 },
       ...(shape.rateLimit !== undefined ? { rateLimit: shape.rateLimit } : {}),
     };
     if (shape.accounts === "external") {

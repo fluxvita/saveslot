@@ -253,11 +253,16 @@ describe("saveslot server init: the identity provider's tables", () => {
 
 describe("saveslot server start", () => {
   it(
-    "after init: listens, and on the stop signal closes and exits 0",
+    "after init: listens, and on the stop signal closes and exits 0; a second signal cuts the drain short",
     async () => {
       const db = await controlDb();
       const keyFile = join(keyDir(), "handle-key");
-      const e = { ...env(keyFile), SAVESLOT_LISTEN: `127.0.0.1:${await freePort()}` };
+      const e = {
+        ...env(keyFile),
+        SAVESLOT_LISTEN: `127.0.0.1:${await freePort()}`,
+        // Long enough that the test would time out had the second signal not cut it short.
+        SAVESLOT_SHUTDOWN_DRAIN: "3600",
+      };
       expect((await server(["init"], { env: e, openControl: db.open })).code).toBe(0);
       let stop!: () => void;
       const stopped = new Promise<void>((r) => {
@@ -271,6 +276,7 @@ describe("saveslot server start", () => {
           stop();
           return Promise.resolve();
         },
+        stoppedAgain: () => Promise.resolve(),
       });
       await stopped;
       const r = await run;

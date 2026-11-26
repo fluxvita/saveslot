@@ -15,6 +15,11 @@ export interface ServerCommandIO extends CommandIO {
   /** `server start`: resolves when the server is to stop (default: SIGTERM or SIGINT). */
   readonly stopped?: () => Promise<void>;
   /**
+   * `server start`, once closing: resolves at a stop signal that is to cut the closing short (default:
+   * SIGTERM or SIGINT again).
+   */
+  readonly stoppedAgain?: () => Promise<void>;
+  /**
    * The terminal a password is asked on (default: the controlling terminal); undefined when there
    * is none.
    */
