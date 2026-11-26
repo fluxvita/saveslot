@@ -137,7 +137,7 @@ export interface RunServiceOptions {
      */
     readonly backend?: (options: PgliteBackendOptions) => PgliteBackend;
     /** The backup before an upgrade: free space and a copy failing half way (local-backup.ts). */
-    readonly backup?: Pick<LocalBackupOptions, "freeBytes" | "afterCopy">;
+    readonly backup?: Pick<LocalBackupOptions, "freeBytes" | "afterCopy" | "beforeRename">;
     /** How long an import's body may give nothing (local-import.ts's default otherwise). */
     readonly importBodyIdleMs?: number;
     readonly onImport?: (
@@ -354,8 +354,11 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   };
   const tenantBackend = o.testing?.backend?.(backendOptions) ?? new PgliteBackend(backendOptions);
   const openTenant = o.testing?.openTenant ?? openLocalTenant;
+  /** Aborted by a stop: a backup before an upgrade halts there (local-backup.ts `signal`). */
+  const stopped = new AbortController();
   const backup = {
     ...o.testing?.backup,
+    signal: stopped.signal,
     skip: o.upgradeBackup === false,
     onEvent: (event: BackupEvent, fields: Readonly<Record<string, string | number>>) =>
       say(event, fields),
@@ -428,6 +431,7 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
 
   let stopping: Promise<void> | undefined;
   function stop(code = 0): Promise<void> {
+    stopped.abort();
     stopping ??= (async () => {
       if (state !== "failed") state = "stopping";
       say("stopping");
@@ -794,6 +798,8 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
                 ? {
                     backup: e.cause.code,
                     ...(e.cause.differs.length > 0 ? { differs: e.cause.differs.join(",") } : {}),
+                    // The error's code only (EACCES, ENOSPC, …): its message holds paths.
+                    ...(e.cause.errno !== undefined ? { code: e.cause.errno } : {}),
                   }
                 : {}),
             }

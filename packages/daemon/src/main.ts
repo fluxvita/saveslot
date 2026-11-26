@@ -44,38 +44,53 @@ export async function foregroundOptions(
   };
 }
 
+/** The foreground entry's arguments (throws on one it does not take). */
+export interface ForegroundArgs {
+  home?: string | undefined;
+  "eval-clock"?: string | undefined;
+  "no-upgrade-backup"?: boolean | undefined;
+  log?: string | undefined;
+  supervised?: boolean | undefined;
+}
+
+export function foregroundArgs(argv: readonly string[]): ForegroundArgs {
+  return parseArgs({
+    args: [...argv],
+    // `--eval-clock`: the test clock, for evaluations only (02-architecture §11).
+    // `--no-upgrade-backup`: no backup before a storage format upgrade, this start (06-cli §3).
+    // `--log`: the file the service writes its own lines to, rotating it (`saveslot start`).
+    options: {
+      home: { type: "string" },
+      "eval-clock": { type: "string" },
+      "no-upgrade-backup": { type: "boolean" },
+      log: { type: "string" },
+      supervised: { type: "boolean" },
+    },
+    strict: true,
+    allowPositionals: false,
+  }).values;
+}
+
+/** The home the arguments name. */
+export const foregroundHome = (values: ForegroundArgs): string =>
+  resolve(values.home ?? join(homedir(), ".saveslot"));
+
+/** What the foreground service runs with, from its arguments and the home's config.toml. */
+export const foregroundOptionsOf = (values: ForegroundArgs): Promise<RunServiceOptions> =>
+  foregroundOptions(foregroundHome(values), values["eval-clock"], values["no-upgrade-backup"]);
+
 /** Runs the service in the foreground; resolves with the exit code once it has stopped. */
 export async function main(argv: readonly string[]): Promise<number> {
-  let values: {
-    home?: string | undefined;
-    "eval-clock"?: string | undefined;
-    "no-upgrade-backup"?: boolean | undefined;
-    log?: string | undefined;
-    supervised?: boolean | undefined;
-  };
+  let values: ForegroundArgs;
   try {
-    ({ values } = parseArgs({
-      args: [...argv],
-      // `--eval-clock`: the test clock, for evaluations only (02-architecture §11).
-      // `--log`: the file the service writes its own lines to, rotating it (`saveslot start`).
-      options: {
-        home: { type: "string" },
-        "eval-clock": { type: "string" },
-        "no-upgrade-backup": { type: "boolean" },
-        log: { type: "string" },
-        supervised: { type: "boolean" },
-      },
-      strict: true,
-      allowPositionals: false,
-    }));
+    values = foregroundArgs(argv);
   } catch (e) {
     process.stderr.write(`${(e as Error).message}\n`);
     return 2;
   }
-  const home = resolve(values.home ?? join(homedir(), ".saveslot"));
   let options: RunServiceOptions;
   try {
-    options = await foregroundOptions(home, values["eval-clock"], values["no-upgrade-backup"]);
+    options = await foregroundOptionsOf(values);
   } catch (e) {
     if (!(e instanceof ConfigInvalid)) throw e;
     // In the background stderr is the service's log: the known keys by name, how many unknown

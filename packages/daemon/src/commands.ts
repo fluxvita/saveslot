@@ -277,6 +277,24 @@ export async function start(
   }
 }
 
+/**
+ * The arguments `start` gives the service it spawns: the home, its log, and the options of this
+ * start that are not in config.toml (`--eval-clock`, `--no-upgrade-backup`).
+ */
+export function serviceArgs(
+  home: string,
+  o: { readonly evalClock?: string; readonly noUpgradeBackup?: boolean },
+): string[] {
+  return [
+    "--home",
+    home,
+    "--log",
+    logFile(home),
+    ...(o.evalClock !== undefined ? ["--eval-clock", o.evalClock] : []),
+    ...(o.noUpgradeBackup === true ? ["--no-upgrade-backup"] : []),
+  ];
+}
+
 /** A stable code for what went wrong: a home's, a file system's, or `internal`; never a path. */
 function failureCode(e: unknown): string {
   if (e instanceof LocalTenantError) return e.code;
@@ -360,20 +378,9 @@ async function startService(
     // Run from the sources (development, tests): the workspace packages by their source entries.
     const conditions = bin.endsWith(".ts") ? ["--conditions=source"] : [];
     // A bridge runs with a connection's token; the service takes no token and keeps none.
-    const evalClock = o.evalClock !== undefined ? ["--eval-clock", o.evalClock] : [];
-    const noBackup = o.noUpgradeBackup === true ? ["--no-upgrade-backup"] : [];
     // The service writes its own lines to the log and rotates it (./log-file.ts); the descriptor
     // given as stdout and stderr keeps what Node itself writes on a crash.
-    const args = [
-      ...conditions,
-      bin,
-      "--home",
-      home,
-      "--log",
-      logFile(home),
-      ...evalClock,
-      ...noBackup,
-    ];
+    const args = [...conditions, bin, ...serviceArgs(home, o)];
     child = spawn(process.execPath, args, {
       detached: true,
       stdio: ["ignore", log, log],
