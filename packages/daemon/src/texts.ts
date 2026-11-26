@@ -29,6 +29,8 @@ export const TEXTS = {
     `Warning: ${dir} looks like a folder a sync service (iCloud Drive, Dropbox and the like) keeps; a database there can be damaged by the sync. Consider saveslot init --data-dir elsewhere.`,
   alreadyInitialized: (home: string) =>
     `error: ${home} is initialized already; nothing was changed. To replace the user session token: saveslot stop, then saveslot init --rotate-session`,
+  dataDirNotEmpty: (path: string) =>
+    `error: the data directory ${path} is not empty; nothing was changed. saveslot init makes a new home only, with a new, empty data directory. If it is another home's data directory, keep using that home (saveslot --home <that home> …). To bring that data into a new home: saveslot --home <that home> export -o <file>; init the new home with an empty data directory; then saveslot --home <new home> import <file>.`,
   serviceRunningForInit:
     "error: the saveslot service is running on this home; nothing was changed. Stop it first: saveslot stop",
   notInitialized: (home: string) => `error: ${home} is not initialized. Run: saveslot init`,

@@ -10,8 +10,8 @@
 // directory is a home fully initialized. `rotateSession` replaces the session token; the old one
 // stops working at once.
 
-import { chmod, mkdir } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { chmod, lstat, mkdir, readdir } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   createOpsContext,
   createTenant,
@@ -43,6 +43,21 @@ export const homeLockDir = (home: string): string => join(home, "run");
 export class AlreadyInitialized extends Error {
   override readonly name = "AlreadyInitialized";
   readonly code = "already_initialized";
+}
+
+/**
+ * The data directory `init` is to make holds something already (06 §3 step 2): `init` makes a new
+ * home only, and writes into no directory in use, a store of another home above all (opened, an
+ * older format would be upgraded in place, without a backup).
+ */
+export class DataDirNotEmpty extends Error {
+  override readonly name = "DataDirNotEmpty";
+  readonly code = "data_dir_not_empty";
+  readonly path: string;
+  constructor(path: string) {
+    super(`${path} is not empty`);
+    this.path = path;
+  }
 }
 
 /** The home's lock is held: a saveslot service is running on it. */
@@ -108,19 +123,25 @@ export async function initLocalHome(o: {
     throw new TypeError("the data directory must be an absolute path");
   }
   return underHomeLock(o.home, o.lock, async () => {
-    await ensureDir(controlDir(o.home));
-    await ensureDir(credentialsDir(o.home));
-    if ((await readPrivate(tenantFile(o.home))) !== undefined) {
+    // Initialized: its tenant directory is there (none without control/ at all).
+    if (
+      (await present(controlDir(o.home))) &&
+      (await readPrivate(tenantFile(o.home))) !== undefined
+    ) {
       throw new AlreadyInitialized("the home is initialized already");
     }
-    const tenant = `tn_${randomCrockford(26)}`;
-    const user = `u_${randomCrockford(26)}`;
     // Normalized, so that the default written another way (a trailing slash, `..`) is not recorded.
     const dataDir = resolve(o.dataDir ?? join(o.home, "data"));
+    // Claimed before anything is made: made here, or there and empty; otherwise refused with
+    // nothing of the home made and nothing in it opened (06 §3 step 2).
+    await claimDataDir(dataDir);
+    await ensureDir(controlDir(o.home));
+    await ensureDir(credentialsDir(o.home));
+    const tenant = `tn_${randomCrockford(26)}`;
+    const user = `u_${randomCrockford(26)}`;
     // The data directory this user's only (06 §3, §8.1), wherever it is: one put outside the home
     // is not behind the home's 0700, and the storage's files are made readable by others. Made so
-    // before the storage is; one there already (empty, or the backend refuses it) is closed too.
-    await mkdir(dataDir, { recursive: true, mode: 0o700 });
+    // before the storage is; an empty one there already is closed too.
     await chmod(dataDir, 0o700);
     const store = await o.backend.open({ kind: "pglite", dir: dataDir }, { create: true });
     try {
@@ -166,4 +187,29 @@ export async function rotateSession(home: string, lock: HomeLock): Promise<void>
     credentials.setSession(tokenHash(token));
     writePrivate(sessionFile(home), `${token}\n`);
   });
+}
+
+/**
+ * Makes the data directory (0700), its parents as needed; one there already must be empty
+ * (`DataDirNotEmpty` otherwise). Made in one call, so that what is checked is what `init` then
+ * uses: a directory that appears in between is found by the creation failing.
+ */
+async function claimDataDir(dataDir: string): Promise<void> {
+  await mkdir(dirname(dataDir), { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(dataDir, { mode: 0o700 });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    if ((await readdir(dataDir)).length > 0) throw new DataDirNotEmpty(dataDir);
+  }
+}
+
+async function present(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw e;
+  }
 }

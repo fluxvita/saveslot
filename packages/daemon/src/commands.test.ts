@@ -12,6 +12,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -178,6 +179,66 @@ describe("init", () => {
     expect(existsSync(join(h, "data"))).toBe(false);
     expect((await run("start", h)).code).toBe(0);
     expect((await run("status", h)).out).toContain(`data      ${data}\n`);
+  });
+
+  it("--data-dir onto another home's store of an older format: refused, 5, nothing changed there or in the home", async () => {
+    // The other home, its store of the kernel's format; then init with a version one format later.
+    const other = join(root, String(n++));
+    expect((await run("init", other)).code).toBe(0);
+    const data = join(other, "data");
+    const tail = async () => {
+      const st = await testBackend().open({ kind: "pglite", dir: data }, {});
+      try {
+        const r = await st.read((tx) =>
+          tx.query<{ seq: unknown; header_hash: string }>(
+            "SELECT seq, header_hash FROM events ORDER BY seq DESC LIMIT 1",
+          ),
+        );
+        return { format: st.formatVersion, end: r.rows[0] };
+      } finally {
+        await st.close();
+      }
+    };
+    const before = await tail();
+    const h = join(root, String(n++));
+    useInitBackendForTests(
+      testBackend({
+        formatUpgrade: {
+          format: before.format + 1,
+          steps: [{ from: before.format, sql: "CREATE TABLE up_x (x int);" }],
+        },
+      }),
+    );
+    let r: Awaited<ReturnType<typeof run>>;
+    try {
+      r = await run("init", h, "--data-dir", data);
+    } finally {
+      useInitBackendForTests(testBackend());
+    }
+    expect(r.code).toBe(5);
+    expect(r.err).toContain(`the data directory ${data} is not empty; nothing was changed`);
+    expect(await tail()).toEqual(before);
+    expect(existsSync(join(h, "control"))).toBe(false);
+    expect(existsSync(join(h, "credentials"))).toBe(false);
+  });
+
+  it("--data-dir onto a directory with anything in it: refused; onto an empty one: used", async () => {
+    const h = join(root, String(n++));
+    const full = join(root, `full-${n++}`);
+    mkdirSync(full);
+    writeFileSync(join(full, "notes.txt"), "mine\n");
+    expect((await run("init", h, "--data-dir", full)).code).toBe(5);
+    expect(readdirSync(full)).toEqual(["notes.txt"]);
+    const empty = join(root, `empty-${n++}`);
+    mkdirSync(empty, { mode: 0o755 });
+    expect((await run("init", h, "--data-dir", empty)).code).toBe(0);
+    expect(statSync(empty).mode & 0o777).toBe(0o700);
+    // The default one too: a home not initialized whose data/ holds something.
+    const d = join(root, String(n++));
+    mkdirSync(d, { mode: 0o700 });
+    mkdirSync(join(d, "data"), { mode: 0o700 });
+    writeFileSync(join(d, "data", "x"), "x");
+    expect((await run("init", d)).code).toBe(5);
   });
 
   it("--data-dir resolves a relative directory against the current one; the default written another way is not recorded", async () => {

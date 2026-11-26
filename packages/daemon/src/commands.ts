@@ -47,6 +47,7 @@ import type { HealthBody } from "@fluxvita/saveslot-server";
 import {
   AlreadyInitialized,
   ControlFileError,
+  DataDirNotEmpty,
   initLocalHome,
   LocalTenantError,
   readTenantDirectory,
@@ -185,6 +186,10 @@ export async function init(
     }
     if (e instanceof ServiceRunning) {
       io.err(TEXTS.serviceRunningForInit);
+      return 5;
+    }
+    if (e instanceof DataDirNotEmpty) {
+      io.err(TEXTS.dataDirNotEmpty(e.path));
       return 5;
     }
     if (rotate && (e as NodeJS.ErrnoException).code === "ENOENT") {
