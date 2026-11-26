@@ -88,4 +88,5 @@ export {
   seenOfVer,
 } from "./store/restore-point.ts";
 export { mergedSegments, type SegmentColumns, segmentColumns } from "./store/segments.ts";
+export * from "./store/upgrade.ts";
 export * from "./time/index.ts";

@@ -121,6 +121,26 @@ export function localRequest(o: {
 }
 
 /** `GET /health`, or undefined when the service cannot be reached or answers something else. */
+/**
+ * The upgrade a `/health` body reports (HealthBody `upgrade`), when it is of the form this version
+ * gives; anything else is taken as none.
+ */
+export function upgradeOf(
+  h: HealthBody | undefined,
+): { readonly from: number; readonly to: number; readonly step?: string } | undefined {
+  const u = (h as { upgrade?: unknown } | undefined)?.upgrade;
+  if (u === null || typeof u !== "object" || Array.isArray(u)) return undefined;
+  const { from, to, step } = u as Record<string, unknown>;
+  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to)) return undefined;
+  if (step !== undefined && (typeof step !== "string" || !/^[0-9]{1,6}->[0-9]{1,6}$/.test(step)))
+    return undefined;
+  return {
+    from: from as number,
+    to: to as number,
+    ...(step !== undefined ? { step: step as string } : {}),
+  };
+}
+
 export async function health(
   socketPath: string,
   timeoutMs = 5000,

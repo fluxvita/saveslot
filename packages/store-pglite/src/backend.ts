@@ -18,6 +18,7 @@ import { Worker } from "node:worker_threads";
 import {
   formatV1Ddl,
   META_KEYS,
+  OLDEST_UPGRADABLE_FORMAT,
   type QueryResult,
   type ReadTx,
   SESSION_SETTINGS,
@@ -28,6 +29,8 @@ import {
   type TenantRef,
   type TenantStore,
   type Tx,
+  UPGRADE_STEPS,
+  type UpgradeStep,
 } from "@fluxvita/saveslot-kernel";
 import { PgliteStoreError } from "./errors.ts";
 import { fsyncPath, fsyncTree } from "./fsutil.ts";
@@ -44,6 +47,7 @@ import type {
   QueryReply,
   Reply,
   Request,
+  UpgradeReply,
   WireError,
 } from "./protocol.ts";
 
@@ -72,6 +76,11 @@ export interface PgliteBackendOptions {
    */
   readonly analyze?: AnalyzeMode;
   /**
+   * Tests only: the format this backend takes for the kernel's, and the upgrade steps to it, in
+   * place of STORAGE_FORMAT_VERSION and UPGRADE_STEPS (a test's own format, steps and failures).
+   */
+  readonly formatUpgrade?: { readonly format: number; readonly steps: readonly UpgradeStep[] };
+  /**
    * Where the store reports what it does on its own, outside any call (never a path): a
    * checkpoint that failed (`checkpoint_failed`, the error's code), and the statistics gathered
    * (`analyzed`, how long, at open or after a write) or not (`analyze_failed`, the code). The
@@ -81,7 +90,13 @@ export interface PgliteBackendOptions {
 }
 
 /** See PgliteBackendOptions `onEvent`. */
-export type StoreEvent = "checkpoint_failed" | "analyzed" | "analyze_failed";
+export type StoreEvent =
+  | "checkpoint_failed"
+  | "analyzed"
+  | "analyze_failed"
+  | "upgrading"
+  | "upgrade_step"
+  | "upgraded";
 
 /** The default of `checkpointAfterBytes`: about what `max_wal_size` keeps (durability.ts). */
 export const CHECKPOINT_AFTER_BYTES = 64 * 1024 * 1024;
@@ -92,7 +107,13 @@ const WORKER_URL = new URL(
 );
 
 function fromWire(e: WireError): Error {
-  if (e.code) return new PgliteStoreError(e.code, e.message);
+  if (e.code) {
+    return new PgliteStoreError(
+      e.code,
+      e.message,
+      e.sqlState !== undefined ? { sqlState: e.sqlState } : {},
+    );
+  }
   if (e.sqlState) return new PgliteStoreError("query_failed", e.message, { sqlState: e.sqlState });
   return new Error(e.message);
 }
@@ -157,6 +178,8 @@ export class PgliteBackend implements StorageBackend {
   readonly #contrib: readonly string[];
   readonly #checkpointAfterBytes: number;
   readonly #analyze: AnalyzeMode;
+  readonly #format: number;
+  readonly #upgradeSteps: readonly UpgradeStep[];
   readonly #onEvent: PgliteBackendOptions["onEvent"];
 
   constructor(opts: PgliteBackendOptions = {}) {
@@ -165,6 +188,8 @@ export class PgliteBackend implements StorageBackend {
     this.#contrib = opts.contrib ?? [];
     this.#checkpointAfterBytes = opts.checkpointAfterBytes ?? CHECKPOINT_AFTER_BYTES;
     this.#analyze = opts.analyze ?? "stale";
+    this.#format = opts.formatUpgrade?.format ?? STORAGE_FORMAT_VERSION;
+    this.#upgradeSteps = opts.formatUpgrade?.steps ?? UPGRADE_STEPS;
     this.#onEvent = opts.onEvent;
   }
 
@@ -208,7 +233,9 @@ export class PgliteBackend implements StorageBackend {
           pgdata,
           durability: this.#durability,
           sessionSettings: SESSION_SETTINGS,
-          supportedFormat: STORAGE_FORMAT_VERSION,
+          supportedFormat: this.#format,
+          oldestFormat: OLDEST_UPGRADABLE_FORMAT,
+          upgradeSteps: this.#upgradeSteps,
           metaKeys: META_KEYS,
           contrib: this.#contrib,
           checkpointAfterBytes: this.#checkpointAfterBytes,
@@ -217,7 +244,35 @@ export class PgliteBackend implements StorageBackend {
       });
       reportAnalyzed(this.#onEvent, "open", r.analyzed);
       writeOwner(dir, { token, startedAt, epoch: r.epoch });
-      return new PgliteTenantStore({ dir, token, worker, lock, onEvent: this.#onEvent, ...r });
+      let formatVersion = r.formatVersion;
+      if (r.upgrade !== undefined) {
+        // An older format: upgraded now, before the store is returned (and the service ready).
+        // Under the directory's lock, owned: no other process writes it meanwhile.
+        this.#onEvent?.("upgrading", { from: r.upgrade.from, to: r.upgrade.to });
+        const begun = performance.now();
+        let analyzed: UpgradeReply["analyzed"];
+        while (formatVersion < r.upgrade.to) {
+          this.#onEvent?.("upgrade_step", { from: formatVersion, to: formatVersion + 1 });
+          const u = await worker.call<UpgradeReply>({ kind: "upgrade" });
+          formatVersion = u.formatVersion;
+          analyzed = u.analyzed;
+        }
+        this.#onEvent?.("upgraded", {
+          from: r.upgrade.from,
+          to: formatVersion,
+          ms: Math.round(performance.now() - begun),
+        });
+        if (analyzed !== undefined) reportAnalyzed(this.#onEvent, "upgrade", analyzed);
+      }
+      return new PgliteTenantStore({
+        dir,
+        token,
+        worker,
+        lock,
+        onEvent: this.#onEvent,
+        epoch: r.epoch,
+        formatVersion,
+      });
     } catch (e) {
       await worker?.terminate();
       await lock.release();
@@ -231,7 +286,7 @@ export class PgliteBackend implements StorageBackend {
     rmSync(creating, { recursive: true, force: true });
     await worker.call({
       kind: "create",
-      params: { pgdata: creating, ...creation(this.#durability) },
+      params: { pgdata: creating, ...creation(this.#durability, this.#format) },
     });
     // PGlite copies initdb's result into the directory without syncing it; sync it all here.
     fsyncTree(creating);
@@ -244,13 +299,16 @@ export class PgliteBackend implements StorageBackend {
  * What a new storage is made from, but for where: the same for every storage made with one
  * durability. Whatever changes what a new storage holds is in here.
  */
-export function creation(durability: Durability): Omit<CreateParams, "pgdata"> {
+export function creation(
+  durability: Durability,
+  format: number = STORAGE_FORMAT_VERSION,
+): Omit<CreateParams, "pgdata"> {
   return {
     durability,
     sessionSettings: SESSION_SETTINGS,
     ddl: formatV1Ddl(),
     metaRows: [
-      [META_KEYS.storageFormat, String(STORAGE_FORMAT_VERSION)],
+      [META_KEYS.storageFormat, String(format)],
       [META_KEYS.ownershipEpoch, "0"],
       [META_KEYS.sessionSettings, JSON.stringify(SESSION_SETTINGS)],
     ],
@@ -505,7 +563,7 @@ export class PgliteTenantStore implements TenantStore {
 /** Reports an ANALYZE (`at` open or after a write) that ran or failed; nothing when none was due. */
 function reportAnalyzed(
   onEvent: PgliteBackendOptions["onEvent"],
-  at: "open" | "write",
+  at: "open" | "write" | "upgrade",
   r: AnalyzeReply | { readonly failed: string },
 ): void {
   if ("failed" in r) onEvent?.("analyze_failed", { at, code: r.failed });

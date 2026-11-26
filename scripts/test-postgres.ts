@@ -61,6 +61,10 @@ export const EXCLUDED: readonly { readonly file: string; readonly why: string }[
     file: "packages/store-pglite/src/analyze.test.ts",
     why: "tests the planner's statistics a local store gathers itself (the DB Worker's ANALYZE at open and after a write, its events, its failures): PGlite runs PostgreSQL in single-user mode, with no autovacuum. On PostgreSQL autovacuum gathers them and the backend runs no ANALYZE of its own (02-architecture §7, PGlite and PostgreSQL), so there is nothing of this to test there.",
   },
+  {
+    file: "packages/store-pglite/src/upgrade.test.ts",
+    why: "tests PgliteBackend's upgrade at open (its `formatUpgrade` option, the DB Worker's `upgrade` request, the ANALYZE after it, its events and error class). The upgrade on PostgreSQL, under the tenant's lock and the ownership epoch, is tested in packages/store-postgres/src/upgrade.test.ts.",
+  },
 ];
 
 if (import.meta.main) {
