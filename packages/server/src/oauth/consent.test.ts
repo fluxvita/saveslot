@@ -180,7 +180,7 @@ async function shown(r: Response) {
 
 /** The pages' policy; `formSource`, where the consent page's forms may go besides this service. */
 const csp = (formSource?: string) =>
-  `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${formSource === undefined ? "" : ` ${formSource}`}; frame-ancestors 'none'; base-uri 'none'`;
+  `default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'${formSource === undefined ? "" : ` ${formSource}`}; frame-ancestors 'none'; base-uri 'none'`;
 
 /** Headers of a page; its forms go to this service only unless `formSource` is given. */
 function expectPageHeaders(r: Response, formSource?: string) {
@@ -230,7 +230,7 @@ describe("signed out", () => {
 
 describe("fetching the client document bounded: its own page, not the client's error", () => {
   it.each<[string, Partial<ClientFetchBounds>, number, string]>([
-    ["past the source's fetches", { perSource: 0 }, 429, "Too many authorization requests"],
+    ["past the source's fetches", { perSource: 0 }, 429, "Too many requests"],
     ["fetches under way at their bound", { concurrent: 0 }, 503, "saveslot is busy"],
   ])(
     "%s: %i",
@@ -297,6 +297,44 @@ describe("signed in", () => {
       expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(html).toContain('name="scope" value="saveslot.write" checked');
       expect(html).not.toContain("saveslot.delete");
+    },
+    T,
+  );
+
+  it(
+    "the client's host is shown as plainly as its name: both in bold",
+    async () => {
+      for (const lang of ["en", "zh-CN"]) {
+        const { html } = await shown(await get(query(), "s-user", lang));
+        expect(html, lang).toContain("<strong>Example &lt;Agent&gt;</strong>");
+        expect(html, lang).toContain("<strong>client.example</strong>");
+      }
+    },
+    T,
+  );
+
+  it(
+    "who answers and where the answer goes: in the form, right above its buttons, for a client and the CLI",
+    async () => {
+      const cli = query({
+        client_id: "saveslot-cli",
+        redirect_uri: "http://127.0.0.1:49152/callback",
+      });
+      for (const [q, host] of [
+        [query(), "client.example"],
+        [cli, "127.0.0.1:49152"],
+      ] as const) {
+        for (const [lang, who, back] of [
+          ["en", "Signed in as Alex &lt;Example&gt;.", `You will return to ${host}.`],
+          ["zh-CN", "当前登录：Alex &lt;Example&gt;。", `完成后回到 ${host}。`],
+        ] as const) {
+          const { html } = await shown(await get(q, "s-user", lang));
+          const form = /<form [^>]*>([\s\S]*?)<\/form>/.exec(html)?.[1] ?? "";
+          const line = /<p class="fine">([^<]*)<\/p>\n<div class="actions">/.exec(form)?.[1] ?? "";
+          expect(line, `${host} ${lang}`).toContain(who);
+          expect(line, `${host} ${lang}`).toContain(back);
+        }
+      }
     },
     T,
   );
@@ -539,7 +577,7 @@ describe("the answer", () => {
       );
       expect(again.status).toBe(200);
       const page = await shown(again);
-      expect(page.html).toContain("Another connection instance has this name");
+      expect(page.html).toContain("That name is taken");
       expect(page.token).not.toBe(second.token);
     },
     T,

@@ -182,7 +182,7 @@ describe("the flow", () => {
       const typed = d.user_code.toLowerCase().replace("-", " ");
       const r = await answer(0, typed);
       expect(r.status).toBe(200);
-      expect(await r.text()).toContain("The saveslot command line is signed in.");
+      expect(await r.text()).toContain("Signed in. You can close this page");
 
       // A poll sooner than the interval would be slow_down.
       tick(5);
@@ -202,7 +202,7 @@ describe("the flow", () => {
       const d = await startDevice();
       const r = await answer(0, d.user_code, "deny");
       expect(r.status).toBe(200);
-      expect(await r.text()).toContain("The sign-in was denied.");
+      expect(await r.text()).toContain("Sign-in denied.");
       expect(await (await poll(d.device_code)).json()).toMatchObject({ error: "access_denied" });
     },
     T,
@@ -289,7 +289,7 @@ describe("the page", () => {
       expect(r.headers.get("content-security-policy")).toContain("form-action 'self';");
       expect(r.headers.get("referrer-policy")).toBe("same-origin");
       const html = await r.text();
-      expect(html).toContain("This signs the saveslot command line in as you");
+      expect(html).toContain("This gives the command line full access to your saveslot");
       expect(html).toContain("Alex &lt;Example&gt;");
       expect(html).toContain('value="BCDF&quot;&gt;&lt;b&gt;"');
       expect(html).not.toContain("<b>");
@@ -306,6 +306,48 @@ describe("the page", () => {
         headers: { cookie: "sid=s-0", "accept-language": "zh-CN,en;q=0.5" },
       });
       expect(await r.text()).toContain("登录 saveslot 命令行");
+    },
+    T,
+  );
+
+  it(
+    "who answers: in the form, right above its buttons",
+    async () => {
+      for (const [lang, who] of [
+        ["en", "Signed in as Alex &lt;Example&gt;."],
+        ["zh-CN", "当前登录：Alex &lt;Example&gt;。"],
+      ] as const) {
+        const r = await fetch(`${base}${VERIFY}`, {
+          headers: { cookie: "sid=s-0", "accept-language": lang },
+        });
+        const form = /<form [^>]*>([\s\S]*?)<\/form>/.exec(await r.text())?.[1] ?? "";
+        expect(form, lang).toMatch(/<p class="fine">[^<]*<\/p>\n<div class="actions">/);
+        expect(/<p class="fine">([^<]*)<\/p>\n<div class="actions">/.exec(form)?.[1], lang).toBe(
+          who,
+        );
+      }
+    },
+    T,
+  );
+
+  it(
+    "the warning: full access, and approve only if you ran the login yourself and the code matches",
+    async () => {
+      // 05-surfaces §15: someone may send you their code to approve; "yourself" is what this
+      // sentence guards against, in either language.
+      for (const [lang, parts] of [
+        [
+          "en",
+          ["full access", "only if you ran saveslot login --device yourself", "the code matches"],
+        ],
+        ["zh-CN", ["完全访问", "只在你自己运行了 saveslot login --device", "代码与终端一致"]],
+      ] as const) {
+        const r = await fetch(`${base}${VERIFY}`, {
+          headers: { cookie: "sid=s-0", "accept-language": lang },
+        });
+        const note = /<p class="note">([^<]*)<\/p>/.exec(await r.text())?.[1] ?? "";
+        for (const part of parts) expect(note, lang).toContain(part);
+      }
     },
     T,
   );
@@ -358,7 +400,7 @@ describe("wrong codes", () => {
       for (let i = 0; i < 5; i++) {
         const r = await answer(0, "BCDF-GHJK");
         expect(r.status).toBe(400);
-        expect(await r.text()).toContain("This code is not one that is waiting");
+        expect(await r.text()).toContain("Code not found");
       }
       const limited = await answer(0, d.user_code);
       expect(limited.status).toBe(429);

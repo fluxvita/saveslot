@@ -14,6 +14,8 @@ export { pageLanguage as langOf } from "@fluxvita/saveslot-service";
 
 export interface OAuthTexts {
   readonly htmlLang: string;
+  /** What goes between two sentences: a space in English, nothing in Chinese. */
+  readonly gap: string;
   readonly title: string;
   readonly signedInAs: (name: string) => string;
   readonly switchAccount: string;
@@ -25,7 +27,6 @@ export interface OAuthTexts {
   readonly nameHint: string;
   readonly scopesLabel: string;
   readonly scope: Readonly<Record<Scope, string>>;
-  readonly readRequired: string;
   readonly allSlots: string;
   readonly allow: string;
   readonly allowCli: string;
@@ -62,109 +63,105 @@ export interface OAuthTexts {
 
 const EN: OAuthTexts = {
   htmlLang: "en",
+  gap: " ",
   title: "Authorize access to saveslot",
   signedInAs: (name) => `Signed in as ${name}.`,
   switchAccount: "Not you? Sign in with another account.",
-  asksAccess: (client, host) => `${client} (${host}) asks for access to your saveslot.`,
-  redirectsTo: (host) => `After you answer, you will be sent back to ${host}.`,
-  cliAsks: "The saveslot command line asks to sign in as you.",
-  nameLabel: "Name of this connection instance",
-  nameHint: "It appears in the history, in pending items and in the read audit.",
-  scopesLabel: "What it may do",
+  asksAccess: (client, host) => `${client} (${host}) wants access to your saveslot.`,
+  redirectsTo: (host) => `You will return to ${host}.`,
+  cliAsks: "The saveslot command line wants to sign in as you.",
+  nameLabel: "Connection instance name",
+  nameHint: "Shown in history, pending items and the read audit.",
+  scopesLabel: "Permissions",
   scope: {
-    "saveslot.read": "Read your records (always needed)",
+    "saveslot.read": "Read records (required)",
     "saveslot.write": "Write records",
     "saveslot.schema": "Create slots and change their structure",
     "saveslot.delete": "Delete records",
   },
-  readRequired: "Reading is always granted: writing needs it.",
-  allSlots: "It will see every slot, including slots created later.",
+  allSlots: "Applies to every slot, including new ones.",
   allow: "Authorize",
   allowCli: "Sign in",
   deny: "Deny",
-  errorTitle: "This authorization request cannot be used",
+  errorTitle: "This request can't be used",
   errors: {
-    client:
-      "The application could not be identified: its client ID is not a client document saveslot can use.",
-    clientLimited: "Too many authorization requests from here lately. Try again later.",
-    clientBusy: "saveslot is busy looking up applications. Try again in a moment.",
-    redirect:
-      "The application asked to be sent back to an address it did not register. Nothing was sent to it.",
-    tooLong: "The authorization request is too long.",
-    form: "This form has expired or was already sent. Go back to the application and start again.",
-    user: "This account cannot authorize access.",
+    client: "This app's client ID isn't one saveslot can use.",
+    clientLimited: "Too many requests. Try again later.",
+    clientBusy: "saveslot is busy. Try again in a moment.",
+    redirect: "The app asked to return to an address it didn't register. Nothing was sent.",
+    tooLong: "The request is too long.",
+    form: "This form expired or was already sent. Start again from the app.",
+    user: "This account can't authorize access.",
     tenant: "This account has no saveslot data yet.",
-    name: "Give the connection instance a name of 1 to 100 characters, without line breaks.",
-    nameTaken: "Another connection instance has this name. Choose another.",
-    scopes: "The permissions sent are not ones this request offered.",
-    internal: "Something went wrong on saveslot's side. Try again later.",
+    name: "Use a name of 1 to 100 characters, without line breaks.",
+    nameTaken: "That name is taken. Choose another.",
+    scopes: "These permissions weren't offered in this request.",
+    internal: "Something went wrong. Try again later.",
   },
   device: {
     title: "Sign in the saveslot command line",
     explain:
-      "This signs the saveslot command line in as you, with full access to your saveslot. Approve only if you started saveslot login --device yourself and the code below is the one in your terminal.",
-    codeLabel: "Code shown in your terminal",
-    codeHint: "8 letters, such as BCDF-GHJK.",
+      "This gives the command line full access to your saveslot. Approve only if you ran saveslot login --device yourself and the code matches your terminal.",
+    codeLabel: "Code from your terminal",
+    codeHint: "8 letters, e.g. BCDF-GHJK.",
     approve: "Sign in the command line",
     deny: "Deny",
-    wrongCode:
-      "This code is not one that is waiting: check it against your terminal. A code lasts 10 minutes.",
+    wrongCode: "Code not found. Check your terminal: codes last 10 minutes.",
     limited: "Too many wrong codes. Try again later.",
-    approved:
-      "The saveslot command line is signed in. You can close this page and go back to your terminal.",
-    denied: "The sign-in was denied. Nothing was signed in.",
+    approved: "Signed in. You can close this page and return to your terminal.",
+    denied: "Sign-in denied.",
   },
 };
 
 const ZH: OAuthTexts = {
   htmlLang: "zh-CN",
+  gap: "",
   title: "授权访问 saveslot",
   signedInAs: (name) => `当前登录：${name}。`,
   switchAccount: "不是你？换一个账户登录。",
   asksAccess: (client, host) => `${client}（${host}）请求访问你的 saveslot。`,
-  redirectsTo: (host) => `你作出选择后，页面会回到 ${host}。`,
+  redirectsTo: (host) => `完成后回到 ${host}。`,
   cliAsks: "saveslot 命令行请求以你的身份登录。",
-  nameLabel: "这个连接实例的名字",
-  nameHint: "它会出现在历史、待处理事项与读取审计里。",
-  scopesLabel: "它能做什么",
+  nameLabel: "连接实例名称",
+  nameHint: "会显示在历史、待处理事项和读取审计里。",
+  scopesLabel: "权限",
   scope: {
-    "saveslot.read": "读取你的记录（必需）",
+    "saveslot.read": "读取记录（必需）",
     "saveslot.write": "写入记录",
     "saveslot.schema": "新建 slot、修改结构",
     "saveslot.delete": "删除记录",
   },
-  readRequired: "读取总是授予的：写入要先读。",
-  allSlots: "它能看到全部 slot，包括以后新建的。",
+  allSlots: "适用于全部 slot，含以后新建的。",
   allow: "授权",
   allowCli: "登录",
   deny: "拒绝",
-  errorTitle: "这个授权请求不能使用",
+  errorTitle: "这个请求无法使用",
   errors: {
-    client: "无法识别这个应用：它的客户端 ID 不是 saveslot 能用的客户端文档。",
-    clientLimited: "这里最近发来的授权请求太多，请稍后再试。",
-    clientBusy: "saveslot 正忙于识别应用，请稍等片刻再试。",
-    redirect: "这个应用要求回到一个它没有登记的地址。没有向它发送任何东西。",
-    tooLong: "授权请求太长。",
-    form: "这个表单已过期或已经提交过。请回到应用里重新开始。",
+    client: "无法识别这个应用的客户端 ID。",
+    clientLimited: "请求太多，请稍后再试。",
+    clientBusy: "saveslot 正忙，请稍后再试。",
+    redirect: "应用要求回到一个未登记的地址，没有发送任何内容。",
+    tooLong: "请求太长。",
+    form: "表单已过期或已提交，请回到应用重新开始。",
     user: "这个账户不能授权访问。",
     tenant: "这个账户还没有 saveslot 数据。",
-    name: "给连接实例起一个 1 到 100 个字符的名字，不要换行。",
-    nameTaken: "已有一个连接实例叫这个名字，请换一个。",
-    scopes: "提交的权限不在这次请求提供的范围内。",
-    internal: "saveslot 这一侧出了问题，请稍后再试。",
+    name: "名字需 1 到 100 个字符，不能换行。",
+    nameTaken: "这个名字已被使用，请换一个。",
+    scopes: "提交的权限不在这次请求的范围内。",
+    internal: "出了点问题，请稍后再试。",
   },
   device: {
     title: "登录 saveslot 命令行",
     explain:
-      "这会让 saveslot 命令行以你的身份登录，可以完全访问你的 saveslot。只有当 saveslot login --device 是你自己运行的、而且下面的代码和终端里显示的一致时，才批准。",
-    codeLabel: "终端里显示的代码",
-    codeHint: "8 个字母，例如 BCDF-GHJK。",
+      "这会让命令行完全访问你的 saveslot。只在你自己运行了 saveslot login --device、且代码与终端一致时批准。",
+    codeLabel: "终端里的代码",
+    codeHint: "8 个字母，如 BCDF-GHJK。",
     approve: "登录命令行",
     deny: "拒绝",
-    wrongCode: "这个代码不在等待中：请和终端里的核对一下。代码 10 分钟内有效。",
-    limited: "错误的代码太多，请稍后再试。",
-    approved: "saveslot 命令行已登录。可以关闭这个页面，回到终端。",
-    denied: "已拒绝这次登录，没有登录任何东西。",
+    wrongCode: "代码无效。请核对终端，代码 10 分钟内有效。",
+    limited: "错误次数太多，请稍后再试。",
+    approved: "已登录。可以关闭此页，回到终端。",
+    denied: "已拒绝登录。",
   },
 };
 

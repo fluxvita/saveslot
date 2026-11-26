@@ -165,20 +165,23 @@ function verifyPage(
 ): string {
   const parts = [
     `<h1>${escapeHtml(t.device.title)}</h1>`,
-    `<p>${escapeHtml(t.signedInAs(o.userName))}</p>`,
-    `<p><strong>${escapeHtml(t.device.explain)}</strong></p>`,
+    `<p class="note">${escapeHtml(t.device.explain)}</p>`,
   ];
-  if (o.problem !== undefined) parts.push(`<p class="error">${escapeHtml(o.problem)}</p>`);
+  if (o.problem !== undefined) {
+    parts.push(`<p class="note bad" role="alert">${escapeHtml(o.problem)}</p>`);
+  }
   parts.push(
     `<form method="post" action="${DEVICE_VERIFY_PATH}">`,
     `<input type="hidden" name="form_token" value="${escapeHtml(o.form)}">`,
-    `<label>${escapeHtml(t.device.codeLabel)}<input type="text" name="user_code" maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false" required value="${escapeHtml(o.code)}"></label>`,
-    `<p class="hint">${escapeHtml(t.device.codeHint)}</p>`,
-    `<button type="submit" name="decision" value="approve">${escapeHtml(t.device.approve)}</button>`,
+    `<label class="field">${escapeHtml(t.device.codeLabel)}<input type="text" name="user_code" maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false" required value="${escapeHtml(o.code)}" aria-describedby="code-hint"></label>`,
+    `<p class="fine" id="code-hint">${escapeHtml(t.device.codeHint)}</p>`,
+    `<p class="fine">${escapeHtml(t.signedInAs(o.userName))}</p>`,
+    '<div class="actions">',
+    `<button type="submit" class="primary" name="decision" value="approve">${escapeHtml(t.device.approve)}</button>`,
     `<button type="submit" name="decision" value="deny">${escapeHtml(t.device.deny)}</button>`,
-    "</form>",
+    "</div></form>",
   );
-  return page(t, parts.join("\n"), t.device.title);
+  return page(t, parts.join("\n"), t.device.title, "CODE");
 }
 
 /** Answers `GET` and `POST /oauth/device/verify`; gives the status sent. Other methods: 405. */
@@ -291,6 +294,11 @@ export async function handleDeviceVerify(
   return sendPage(
     res,
     200,
-    page(t, `<h1>${escapeHtml(t.device.title)}</h1><p>${escapeHtml(done)}</p>`, t.device.title),
+    page(
+      t,
+      `<h1>${escapeHtml(t.device.title)}</h1><p class="sub">${escapeHtml(done)}</p>`,
+      t.device.title,
+      decision[0] === "approve" ? "OK" : "",
+    ),
   );
 }

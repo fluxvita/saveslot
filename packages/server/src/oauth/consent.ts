@@ -42,6 +42,7 @@ import {
   type TenantId,
   tokenHash,
 } from "@fluxvita/saveslot-service";
+import { HANDHELD_IMAGE } from "./handheld.ts";
 import { langOf, type OAuthTexts, oauthTexts } from "./texts.ts";
 
 /** The authorization page's path. */
@@ -91,7 +92,7 @@ export function headersOf(req: IncomingMessage): Map<string, string> {
 /** The pages' content security policy; `formSource`, a source `form-action` allows besides 'self'. */
 function contentSecurityPolicy(formSource?: string): string {
   const forms = formSource === undefined ? "'self'" : `'self' ${formSource}`;
-  return `default-src 'none'; style-src 'unsafe-inline'; form-action ${forms}; frame-ancestors 'none'; base-uri 'none'`;
+  return `default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action ${forms}; frame-ancestors 'none'; base-uri 'none'`;
 }
 
 /** Headers of every page of the authorization server. */
@@ -123,12 +124,70 @@ export function redirectSource(redirectUri: string): string | undefined {
   return /^[a-z][a-z0-9+.-]*:$/.test(u.protocol) ? u.protocol : undefined;
 }
 
-/** A page of the authorization server: `body` is HTML made by the caller, escaped where it must be. */
-export function page(t: OAuthTexts, body: string, title: string = t.title): string {
+/** The brand mark: four bars around an amber centre. */
+const MARK =
+  '<svg width="23" height="23" viewBox="0 0 23 23" aria-hidden="true"><rect width="15" height="7" rx="2" fill="#bcaaf2"/><rect x="16" width="7" height="15" rx="2" fill="#92daa8"/><rect x="8" y="8" width="7" height="7" rx="2" fill="#f2b33d"/><rect y="8" width="7" height="15" rx="2" fill="#8dcfe7"/><rect x="8" y="16" width="15" height="7" rx="2" fill="#f9806b"/></svg>';
+
+/**
+ * The pages' look: a white card on a softly lit ground, the handheld at its corner, amber for the
+ * one main button. Everything is in the page itself: it loads no font, style or image.
+ */
+const STYLE = `*{box-sizing:border-box}
+html{color-scheme:light;min-height:100%;background:#fdfbf6 radial-gradient(120% 90% at 70% 40%,#fff 0%,#fdfbf6 60%,#f9f4ea 100%) no-repeat}
+body{margin:0;min-height:100vh;display:flex;flex-direction:column;color:#161a2b;font:14.5px/1.6 Geist,"Noto Sans SC",-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}
+header{display:flex;align-items:center;gap:9px;padding:20px 24px;font-size:19px;font-weight:700;letter-spacing:-.02em}
+main{flex:1;display:grid;justify-items:center;align-items:start;padding:clamp(64px,9vh,88px) 16px 56px}
+.card{position:relative;width:min(100%,440px);display:flex;flex-direction:column;gap:16px;padding:34px;background:#fff;border-radius:20px;box-shadow:0 0 0 1px rgba(22,26,43,.1)}
+.handheld{position:absolute;right:-64px;top:-104px;width:112px;pointer-events:none}
+.screen{position:absolute;right:-48px;top:-71px;width:87px;height:56px;display:grid;place-items:center;font:700 19px/1 ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.06em;color:#f2c35a;pointer-events:none}
+h1{margin:0 36px 0 0;font-size:26px;font-weight:600;line-height:1.25;letter-spacing:-.02em;overflow-wrap:anywhere}
+p{margin:0}
+.sub{font-size:15px;color:#5b5d65;overflow-wrap:anywhere}
+.sub strong{color:#161a2b;font-weight:600}
+.fine{font-size:13px;line-height:1.55;color:#6b6b72;overflow-wrap:anywhere}
+.note{padding:12px 16px;border-radius:10px;background:#f6f4f0;font-size:14px}
+.note.bad{background:#fbe0dd}
+form{display:flex;flex-direction:column;gap:16px;margin:0}
+.field{display:grid;gap:6px;font-size:13px;font-weight:700}
+input[type=text]{width:100%;font:inherit;font-size:15px;font-weight:500;color:inherit;background:#fff;border:1px solid #e6e4df;border-radius:10px;padding:11px 14px;outline:0}
+input[type=text]:focus-visible{outline:3px solid #161a2b;outline-offset:2px}
+fieldset{margin:0;padding:0;border:0;min-width:0}
+legend{padding:0;margin-bottom:4px;font-size:13px;font-weight:700}
+.scope{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #f0ede7;cursor:pointer}
+.scope:last-child{border-bottom:0}
+.scope span{flex:1}
+input[type=checkbox]{width:18px;height:18px;margin:0;accent-color:#161a2b;flex:none}
+input[type=checkbox]:disabled+span{color:#6b6b72}
+.risk{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:999px;background:#fbe0dd;color:#b3281d;font-size:12px;font-weight:700;flex:none}
+details summary{width:fit-content;cursor:pointer;font-size:13px;color:#5b5d65}
+details .field{margin:10px 0 6px}
+.actions{display:flex;flex-direction:row-reverse;gap:10px;margin-top:4px}
+button{font:inherit;font-size:15px;font-weight:700;line-height:1.2;color:#161a2b;padding:11px 20px;border:0;border-radius:10px;background:#fff;box-shadow:inset 0 0 0 1px rgba(22,26,43,.16);cursor:pointer;transition:background .12s,box-shadow .12s}
+button:hover{box-shadow:inset 0 0 0 1px rgba(22,26,43,.28)}
+button.primary{background:#f2b33d;box-shadow:none}
+button.primary:hover{background:#dda436}
+:focus-visible{outline:3px solid #161a2b;outline-offset:3px}
+@media (max-width:760px){
+main{padding:104px 12px 32px}
+.card{padding:24px}
+.handheld{right:8px;top:-112px;width:80px}
+.screen{right:19px;top:-95px;width:62px;height:40px;font-size:14px}
+h1{margin-right:0;font-size:22px}
+.actions button{flex:1}
+}`;
+
+/**
+ * A page of the authorization server: `body` is HTML made by the caller, escaped where it must be,
+ * and goes in the card. `screen`, a few ASCII letters for the handheld's screen.
+ */
+export function page(t: OAuthTexts, body: string, title: string = t.title, screen = ""): string {
   return `<!doctype html>
 <html lang="${t.htmlLang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:2rem auto;padding:0 1rem}label{display:block;margin:.5rem 0}input[type=text]{width:100%;font:inherit;padding:.3rem}button{font:inherit;padding:.4rem 1rem;margin:.75rem .5rem 0 0}.hint{color:#555;font-size:.9em}.error{color:#a00}</style>
-</head><body>${body}</body></html>`;
+<style>${STYLE}</style>
+</head><body><header>${MARK}saveslot</header>
+<main><div class="card"><img class="handheld" src="${HANDHELD_IMAGE}" alt="">${screen === "" ? "" : `<span class="screen" aria-hidden="true">${escapeHtml(screen)}</span>`}
+${body}
+</div></main></body></html>`;
 }
 
 export function sendPage(
@@ -161,7 +220,7 @@ export function errorPage(
   return sendPage(
     res,
     status,
-    page(t, `<h1>${escapeHtml(t.errorTitle)}</h1><p>${escapeHtml(message)}</p>`),
+    page(t, `<h1>${escapeHtml(t.errorTitle)}</h1><p class="sub">${escapeHtml(message)}</p>`),
   );
 }
 
@@ -245,53 +304,68 @@ async function consentPage(
   const r = s.request;
   const action = `${OAUTH_AUTHORIZE}?${escapeHtml(s.query)}`;
   const parts: string[] = [`<h1>${escapeHtml(t.title)}</h1>`];
-  parts.push(`<p>${escapeHtml(t.signedInAs(s.userName))}</p>`);
   if (r.client.builtIn) {
-    parts.push(`<p>${escapeHtml(t.cliAsks)}</p>`);
+    parts.push(`<p class="sub">${escapeHtml(t.cliAsks)}</p>`);
   } else {
     parts.push(
-      `<p>${t.asksAccess(`<strong>${escapeHtml(r.client.name)}</strong>`, `<strong>${escapeHtml(r.client.host ?? "")}</strong>`)}</p>`,
+      // The host is the client's only identity, the name is its own claim (05 §15): the host is
+      // shown at least as plainly as the name.
+      `<p class="sub">${t.asksAccess(`<strong>${escapeHtml(r.client.name)}</strong>`, `<strong>${escapeHtml(r.client.host ?? "")}</strong>`)}</p>`,
     );
   }
-  parts.push(
-    `<p class="hint">${escapeHtml(t.redirectsTo(new URL(r.redirectUri).host || r.redirectUri))}</p>`,
-  );
-  if (s.problem !== undefined) parts.push(`<p class="error">${escapeHtml(s.problem)}</p>`);
+  if (s.problem !== undefined) {
+    parts.push(`<p class="note bad" role="alert">${escapeHtml(s.problem)}</p>`);
+  }
   parts.push(`<form method="post" action="${action}">`);
   parts.push(`<input type="hidden" name="form_token" value="${escapeHtml(form)}">`);
   if (!r.client.builtIn) {
     const offered = r.scopes ?? DEFAULT_SCOPES;
     // Shown first, ticked are the default scopes the client asked for (05 §15: read and write);
-    // making schemas and deleting are offered when asked for, never ticked for the user.
+    // making schemas and deleting are offered when asked for, never ticked for the user, and
+    // marked as the ones to think twice about.
     const ticked = s.ticked ?? offered.filter((x) => DEFAULT_SCOPES.includes(x));
-    parts.push(
-      `<label>${escapeHtml(t.nameLabel)}<input type="text" name="name" maxlength="100" required value="${escapeHtml(s.name ?? "")}"></label>`,
-      `<p class="hint">${escapeHtml(t.nameHint)}</p>`,
-      `<fieldset><legend>${escapeHtml(t.scopesLabel)}</legend>`,
-    );
+    parts.push(`<fieldset><legend>${escapeHtml(t.scopesLabel)}</legend>`);
     for (const scope of SCOPES.filter((x) => offered.includes(x))) {
       if (scope === "saveslot.read") {
         // Always granted (contract §12): shown ticked, sent as a hidden field.
         parts.push(
-          `<label><input type="checkbox" checked disabled> ${escapeHtml(t.scope[scope])}</label>`,
+          `<label class="scope"><input type="checkbox" checked disabled><span>${escapeHtml(t.scope[scope])}</span></label>`,
           `<input type="hidden" name="scope" value="saveslot.read">`,
         );
       } else {
+        const risk = DEFAULT_SCOPES.includes(scope)
+          ? ""
+          : '<b class="risk" aria-hidden="true">!</b>';
         parts.push(
-          `<label><input type="checkbox" name="scope" value="${scope}"${ticked.includes(scope) ? " checked" : ""}> ${escapeHtml(t.scope[scope])}</label>`,
+          `<label class="scope"><input type="checkbox" name="scope" value="${scope}"${ticked.includes(scope) ? " checked" : ""}><span>${escapeHtml(t.scope[scope])}</span>${risk}</label>`,
         );
       }
     }
     parts.push(
-      `</fieldset><p class="hint">${escapeHtml(t.readRequired)} ${escapeHtml(t.allSlots)}</p>`,
+      `</fieldset><p class="fine">${escapeHtml(t.allSlots)}</p>`,
+      // The name is filled in already; a problem with the one sent shows it open.
+      `<details${s.problem === undefined ? "" : " open"}><summary>${escapeHtml(t.nameLabel)}</summary>`,
+      `<label class="field"><input type="text" name="name" maxlength="100" required value="${escapeHtml(s.name ?? "")}" aria-describedby="name-hint"></label>`,
+      `<p class="fine" id="name-hint">${escapeHtml(t.nameHint)}</p></details>`,
     );
   }
   parts.push(
-    `<button type="submit" name="decision" value="allow">${escapeHtml(r.client.builtIn ? t.allowCli : t.allow)}</button>`,
+    // Who answers and where the answer goes: in the form, right above its buttons.
+    `<p class="fine">${escapeHtml(t.signedInAs(s.userName))}${t.gap}${escapeHtml(t.redirectsTo(new URL(r.redirectUri).host || r.redirectUri))}</p>`,
+    // The answer that Enter gives comes first; the row shows it on the right.
+    '<div class="actions">',
+    `<button type="submit" class="primary" name="decision" value="allow">${escapeHtml(r.client.builtIn ? t.allowCli : t.allow)}</button>`,
     `<button type="submit" name="decision" value="deny">${escapeHtml(t.deny)}</button>`,
-    "</form>",
+    "</div></form>",
   );
-  return sendPage(res, 200, page(t, parts.join("\n")), [], [], redirectSource(r.redirectUri));
+  return sendPage(
+    res,
+    200,
+    page(t, parts.join("\n"), t.title, "OK?"),
+    [],
+    [],
+    redirectSource(r.redirectUri),
+  );
 }
 
 /**
