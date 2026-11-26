@@ -145,11 +145,16 @@ const both = [
   ["event", EVENT, false],
   ["state, group {f2, f3}", { ...STATE, groups: GROUPS }, true],
   ["event, group {f2, f3}", { ...EVENT, groups: GROUPS }, false],
+  // "Has a value" defined by two fields (05-time «无值区间»): a value ↔ no value boundary is theirs
+  // together (高影响写入), and a write into a gap needs both.
+  ["state, f2 and f3 required", { ...STATE, required: ["f2", "f3"] }, true],
 ] as const;
 
 describe.each(both)("%s table", (_, schema, isState) => {
   it("every step leaves the row or entity the reference evaluator gives", () => {
-    const hits = new Hits(0.3);
+    // Two required fields: a write of one into a gap is refused, so fewer samples reach an item
+    // (about 0.3 a run at the default 1,500 samples, against well over half with one).
+    const hits = new Hits(schema.required.length > 1 ? 0.2 : 0.3);
     let takesCompared = 0;
     const seen: Record<string, number> & {
       samples: number;
@@ -464,7 +469,8 @@ describe.each(both)("%s table", (_, schema, isState) => {
       ? [
           "take",
           "takeExistence",
-          "takeManyStretches",
+          // With two required fields, about one run in 1,500 samples: not a floor there.
+          ...(schema.required.length > 1 ? [] : ["takeManyStretches"]),
           "takeRefused_required_in_gap",
           "existenceSeveralFields",
           "takeRefused_missing_required",

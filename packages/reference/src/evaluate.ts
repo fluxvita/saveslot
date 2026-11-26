@@ -1015,10 +1015,38 @@ class Replay {
         return [f, this.impactChangePoints(f, cur).filter((p) => s.has(p))];
       }),
     );
+    // A value ↔ no value boundary is a change of the fields that define "has a value" together:
+    // gone only when none of them differs across it any more (05-time «高影响写入»). Every other
+    // change point is the field's own.
+    const defines = (f: FieldId) =>
+      this.schema.required.length === 0 || this.schema.required.includes(f);
+    const sides = (p: Point): [Iv, Iv] | undefined => {
+      const segs = this.segments();
+      const i = segs.findIndex((s) => s.from === p);
+      const a = segs[i - 1];
+      const b = segs[i];
+      return a === undefined || b === undefined ? undefined : [a, b];
+    };
+    const boundary = new Set(
+      [...before.values()].flat().filter((p) => {
+        const s = sides(p);
+        return s !== undefined && this.hasValue(s[0], cur) !== this.hasValue(s[1], cur);
+      }),
+    );
     apply();
     const after = new Map(this.fieldIds.map((f) => [f, new Set(this.impactChangePoints(f, n))]));
+    const stillChanges = (p: Point) => {
+      const s = sides(p);
+      return (
+        s !== undefined &&
+        this.fieldIds.filter(defines).some((g) => this.vis(g, s[0], n) !== this.vis(g, s[1], n))
+      );
+    };
+    const gone = (f: FieldId, p: Point) =>
+      defines(f) && boundary.has(p) ? !stillChanges(p) : !after.get(f)?.has(p);
+    const out = this.fieldIds.some((f) => (before.get(f) ?? []).some((p) => gone(f, p)));
     rollback();
-    return this.fieldIds.some((f) => (before.get(f) ?? []).some((p) => !after.get(f)?.has(p)));
+    return out;
   }
 
   // -------------------------------------------------------------------------------------------

@@ -470,12 +470,19 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
     const tentative = state.with(
       asItems(numbered(applied), { op: n, index: w.index, event: w.event }),
     );
+    // A value change point of a field, by field; a value ↔ no value boundary on the fields that
+    // define "has a value" together: gone only when none of them differs across it any more, and
+    // then gone for every one of them (05-time «高影响写入»).
     erased = state.table.fields
       .map((f) => {
         const seenPoints = new Set(state.impactPoints(f, seenAt));
         const before = state.impactPoints(f, curAt).filter((p) => seenPoints.has(p));
         const after = new Set(tentative.impactPoints(f, afterAt));
-        return { field: f, at: before.filter((p) => !after.has(p)) };
+        const gone = (p: BizPoint) =>
+          state.defines(f) && state.hasValueBoundary(p, curAt)
+            ? !tentative.definingChangeAt(p, afterAt)
+            : !after.has(p);
+        return { field: f, at: before.filter(gone) };
       })
       .filter((x) => x.at.length > 0);
     if (erased.length > 0) {

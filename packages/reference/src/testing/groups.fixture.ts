@@ -137,6 +137,24 @@ function clearIntoRevoked(): Op[] {
   ];
 }
 
+/** A write as `at` gives it, not acknowledging an overwrite. */
+const unack = (o: WriteOp): WriteOp => {
+  const { acknowledge: _, ...rest } = o;
+  return rest;
+};
+
+/** #11 clears f2 over [11-05, 11-07); #21 f2 = 1 over [11-01, 11-03); #41 (seen #11) f2 = 2 over [11-07, 11-09). */
+function noRequired(): Op[] {
+  return [
+    {
+      ...at(10, 0, given("11-05", "11-07"), {}),
+      fields: { f2: { value: null, sources: ["S10f2"] } },
+    } as Op,
+    at(20, 10, given("11-01", "11-03"), { f2: "1" }),
+    at(40, 10, given("11-07", "11-09"), { f2: "2" }),
+  ];
+}
+
 export const GROUP_LOGS: Record<
   string,
   { schema: TableSchema; ops: Op[]; event: number; want: string[][] }
@@ -316,6 +334,53 @@ export const GROUP_LOGS: Record<
     ops: clearIntoRevoked(),
     event: 61,
     want: [["f2", "candidate"]],
+  },
+  // High impact ① at a value ↔ no value boundary (05-time «高影响写入»): a change of the fields
+  // that define "has a value" together, gone only when none of them differs across it.
+  // Two required fields: #11 (1, a) over [11-01, 11-05); #21 (seen #11) (2, a) over [11-05, 11-09),
+  // into the gap. At 11-05 f2 still goes from 1 to 2: the moment still changes, nothing is erased,
+  // though f3 is a on both sides. Not high impact: both take effect.
+  "high impact: a boundary still changing on one defining field is not erased": {
+    schema: { kind: "state", required: ["f2", "f3"] },
+    ops: [
+      at(10, 0, given("11-01", "11-05"), { f2: "1", f3: "a" }),
+      unack(at(20, 10, given("11-05", "11-09"), { f2: "2", f3: "a" })),
+    ],
+    event: 21,
+    want: [
+      ["f2", "applied"],
+      ["f3", "applied"],
+    ],
+  },
+  // The same with (1, a) into the gap: both defining fields the same on both sides, the boundary
+  // is gone: high impact, both awaiting.
+  "high impact: a boundary with every defining field the same on both sides is erased": {
+    schema: { kind: "state", required: ["f2", "f3"] },
+    ops: [
+      at(10, 0, given("11-01", "11-05"), { f2: "1", f3: "a" }),
+      unack(at(20, 10, given("11-05", "11-09"), { f2: "1", f3: "a" })),
+    ],
+    event: 21,
+    want: [
+      ["f2", "awaiting"],
+      ["f3", "awaiting"],
+    ],
+  },
+  // No required field ("has a value": any field written, a clearing too): #11 clears f2 over
+  // [11-05, 11-07); #21 f2 = 1 over [11-01, 11-03); #41 (seen #11) f2 = 2 over [11-07, 11-09). At
+  // 11-07 f2 goes from empty to 2: still a change, though f3 (never written) is empty on both
+  // sides. Not high impact: #41 takes effect.
+  "high impact, no required field: the boundary still changing on f2": {
+    schema: { kind: "state", required: [] },
+    ops: noRequired(),
+    event: 41,
+    want: [["f2", "applied"]],
+  },
+  "high impact, no required field, on a group: the same": {
+    schema: { kind: "state", required: [], groups: [["f2", "f3"]] },
+    ops: noRequired(),
+    event: 41,
+    want: [["f2", "applied"]],
   },
   // Without the group, field by field: neither field's seen interval meets #31 where its value
   // differs, both take effect (up to #31's change point, 11-03).
