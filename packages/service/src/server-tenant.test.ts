@@ -325,27 +325,39 @@ describe("creations of different owners in one process", () => {
   }
   const make = (b: StorageBackend, u: `u_${string}`) =>
     createServerTenant({ control: cp, backend: b, owner: u, cell: CELL, cells: CELLS, now: NOW });
+  /** A few turns of the event loop: what is queued behind a pending step has run by then. */
+  const turns = async () => {
+    for (let i = 0; i < 10; i++) await new Promise<void>((r) => setImmediate(r));
+  };
+  // No case here depends on how fast the machine is: a creation waits as long as it must (an hour),
+  // except the one a case means to see refused, which waits on a creation held until released.
+  const LONG = 3_600_000;
 
   it(
     "take turns: the second opens nothing until the first is done",
     async () => {
-      const h = heldFirst();
-      const opened: string[] = [];
-      const counting: StorageBackend = {
-        open: (ref, opts) => {
-          opened.push(ref.kind === "postgres" ? ref.database : "");
-          return h.backend.open(ref, opts);
-        },
-      };
-      const a = make(counting, owner());
-      await h.reached;
-      const b = make(counting, owner());
-      await new Promise((r) => setTimeout(r, 50));
-      expect(opened).toHaveLength(1);
-      h.release();
-      const [ea, eb] = await Promise.all([a, b]);
-      expect([ea.state, eb.state]).toEqual(["active", "active"]);
-      expect(opened).toEqual([databaseOf(ea.id), databaseOf(eb.id)]);
+      creationForTests.waitMs = LONG;
+      try {
+        const h = heldFirst();
+        const opened: string[] = [];
+        const counting: StorageBackend = {
+          open: (ref, opts) => {
+            opened.push(ref.kind === "postgres" ? ref.database : "");
+            return h.backend.open(ref, opts);
+          },
+        };
+        const a = make(counting, owner());
+        await h.reached;
+        const b = make(counting, owner());
+        await turns();
+        expect(opened).toHaveLength(1);
+        h.release();
+        const [ea, eb] = await Promise.all([a, b]);
+        expect([ea.state, eb.state]).toEqual(["active", "active"]);
+        expect(opened).toEqual([databaseOf(ea.id), databaseOf(eb.id)]);
+      } finally {
+        creationForTests.waitMs = undefined;
+      }
     },
     T,
   );
@@ -353,13 +365,18 @@ describe("creations of different owners in one process", () => {
   it(
     "one waiting past its time: busy, nothing registered; the next one after goes on",
     async () => {
-      creationForTests.waitMs = 50;
+      creationForTests.waitMs = LONG;
       try {
         const h = heldFirst();
         const a = make(h.backend, owner());
         await h.reached;
+        // a holds the turn until released: the late one is refused once its short wait is up,
+        // whatever the load.
         const late = owner();
-        const refused = await make(h.backend, late).then(
+        creationForTests.waitMs = 50;
+        const asked = make(h.backend, late);
+        creationForTests.waitMs = LONG;
+        const refused = await asked.then(
           () => undefined,
           (e: unknown) => e,
         );
