@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { META_KEYS, STORAGE_FORMAT_VERSION, type UpgradeStep } from "@fluxvita/saveslot-kernel";
 import { afterAll, describe, expect, it } from "vitest";
-import type { PgliteTenantStore, StoreEvent } from "./backend.ts";
+import type { PgliteTenantStore, StoreEvent, UpgradeAhead } from "./backend.ts";
 import { PgliteStoreError } from "./errors.ts";
 import { testBackend } from "./testing/test-backend.fixture.ts";
 
@@ -194,6 +194,108 @@ describe("an upgrade that fails leaves the store of the format of its last step 
       } finally {
         await s.close();
       }
+    },
+    T,
+  );
+});
+
+describe("before the upgrade, a caller's hook with PGlite shut down and the lock held", () => {
+  it(
+    "called once, with the directory, the formats and the ends as the store held them; then upgraded",
+    async () => {
+      const dir = await made();
+      const before = await backend([]).open(ref(dir));
+      const ends = await before.read(async (tx) => {
+        const log = await tx.query<{ seq: unknown; header_hash: string }>(
+          "SELECT seq, header_hash FROM events ORDER BY seq DESC LIMIT 1",
+        );
+        const reads = await tx.query<{ n: unknown }>("SELECT max(n) AS n FROM read_log");
+        const last = log.rows[0];
+        const n = reads.rows[0]?.n;
+        return {
+          logEnd: last === undefined ? null : { seq: Number(last.seq), hash: last.header_hash },
+          readsEnd: n === null || n === undefined ? null : Number(n),
+        };
+      });
+      await before.close();
+      const seen: Seen[] = [];
+      const called: UpgradeAhead[] = [];
+      let other = "";
+      const s = await backend(seen, F + 1, [step(F, "CREATE TABLE up_h (x int);")]).open(ref(dir), {
+        beforeUpgrade: async (ahead) => {
+          called.push(ahead);
+          // The directory's lock is held: another opener is refused.
+          other = await codeOf(backend([]).open(ref(dir)));
+        },
+      });
+      try {
+        expect(called).toEqual([{ dir, from: F, to: F + 1, marks: ends }]);
+        expect(other).toBe("store_locked");
+        expect(await formatOf(s)).toBe(F + 1);
+        expect(await tables(s)).toEqual(["up_h"]);
+      } finally {
+        await s.close();
+      }
+      expect(seen.map((x) => x.event).filter((e) => e.startsWith("upgrad"))).toEqual([
+        "upgrading",
+        "upgrade_backup",
+        "upgrade_step",
+        "upgraded",
+      ]);
+      expect(seen[1]?.fields).toEqual({ from: F, to: F + 1 });
+    },
+    T,
+  );
+
+  it(
+    "a hook that throws: upgrade_failed, its error the cause, the store of its format; the next open upgrades",
+    async () => {
+      const dir = await made();
+      const steps = [step(F, "CREATE TABLE up_i (x int);")];
+      const boom = new Error("no room for the backup");
+      const failed = await backend([], F + 1, steps)
+        .open(ref(dir), {
+          beforeUpgrade: async () => {
+            throw boom;
+          },
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+      expect(failed).toBeInstanceOf(PgliteStoreError);
+      expect((failed as PgliteStoreError).code).toBe("upgrade_failed");
+      expect((failed as PgliteStoreError).cause).toBe(boom);
+      expect((failed as PgliteStoreError).message).toContain("no room for the backup");
+      const plain = await backend([]).open(ref(dir));
+      try {
+        expect(await formatOf(plain)).toBe(F);
+        expect(await tables(plain)).toEqual([]);
+      } finally {
+        await plain.close();
+      }
+      const s = await backend([], F + 1, steps).open(ref(dir));
+      try {
+        expect(await formatOf(s)).toBe(F + 1);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "not called when there is nothing to upgrade",
+    async () => {
+      const dir = await made();
+      let calls = 0;
+      const s = await backend([]).open(ref(dir), {
+        beforeUpgrade: async () => {
+          calls++;
+        },
+      });
+      await s.close();
+      expect(calls).toBe(0);
     },
     T,
   );

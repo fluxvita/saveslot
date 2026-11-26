@@ -51,6 +51,7 @@ import { join, resolve } from "node:path";
 import type { HealthBody, LocalListener, ToolResultSeen } from "@fluxvita/saveslot-server";
 import { listenLocal } from "@fluxvita/saveslot-server";
 import {
+  type BackupEvent,
   ControlFileError,
   Credentials,
   CredentialsCorrupt,
@@ -62,6 +63,8 @@ import {
   controlDir,
   flushLocalReads,
   importLocalTenant,
+  LocalBackupError,
+  type LocalBackupOptions,
   type LocalTenant,
   LocalTenantGate,
   localCallers,
@@ -104,6 +107,11 @@ export interface RunServiceOptions {
    */
   readonly evalClock?: string;
   /**
+   * Whether the storage is backed up before its format is upgraded (02-architecture §8; default
+   * true): `upgrade.backup` in config.toml, or `--no-upgrade-backup` for one start.
+   */
+  readonly upgradeBackup?: boolean;
+  /**
    * Each MCP tool call's contract result as it ended (tests). Given only in code; never from the
    * command line, configuration or the environment.
    */
@@ -128,6 +136,8 @@ export interface RunServiceOptions {
      * from the options the service gives it (`new PgliteBackend(options)` otherwise).
      */
     readonly backend?: (options: PgliteBackendOptions) => PgliteBackend;
+    /** The backup before an upgrade: free space and a copy failing half way (local-backup.ts). */
+    readonly backup?: Pick<LocalBackupOptions, "freeBytes" | "afterCopy">;
     /** How long an import's body may give nothing (local-import.ts's default otherwise). */
     readonly importBodyIdleMs?: number;
     readonly onImport?: (
@@ -332,6 +342,8 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
     onEvent: (event, fields) => {
       if (event === "upgrading") {
         upgrade = { from: Number(fields["from"]), to: Number(fields["to"]) };
+      } else if (event === "upgrade_backup" && upgrade !== undefined) {
+        upgrade = { ...upgrade, step: "backup" };
       } else if (event === "upgrade_step" && upgrade !== undefined) {
         upgrade = { ...upgrade, step: `${fields["from"]}->${fields["to"]}` };
       } else if (event === "upgraded") {
@@ -342,6 +354,12 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   };
   const tenantBackend = o.testing?.backend?.(backendOptions) ?? new PgliteBackend(backendOptions);
   const openTenant = o.testing?.openTenant ?? openLocalTenant;
+  const backup = {
+    ...o.testing?.backup,
+    skip: o.upgradeBackup === false,
+    onEvent: (event: BackupEvent, fields: Readonly<Record<string, string | number>>) =>
+      say(event, fields),
+  };
   const leftover = (_path: string, e: unknown) =>
     say("import_leftover_not_removed", { code: codeOf(e) });
   let listener: LocalListener | undefined;
@@ -642,7 +660,12 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   /** The tenant opened again after an import; if it does not open, the service fails and stops. */
   const reopenAfterImport = async () => {
     try {
-      const r = await openTenant({ home: o.home, backend: tenantBackend, onLeftover: leftover });
+      const r = await openTenant({
+        home: o.home,
+        backend: tenantBackend,
+        backup,
+        onLeftover: leftover,
+      });
       if (!r.ok) {
         state = "failed";
         reason = r.failure;
@@ -667,7 +690,12 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
 
   opening = (async () => {
     try {
-      const r = await openTenant({ home: o.home, backend: tenantBackend, onLeftover: leftover });
+      const r = await openTenant({
+        home: o.home,
+        backend: tenantBackend,
+        backup,
+        onLeftover: leftover,
+      });
       if (stopping !== undefined) {
         // Stopped while opening: close what was opened; stop() waits for this.
         if (r.ok) {
@@ -761,6 +789,13 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
           ? {
               step: upgrade?.step ?? "unknown",
               ...(e.sqlState !== undefined ? { sql_state: e.sqlState } : {}),
+              // The backup's own reason, and what differs from a backup in place.
+              ...(e.cause instanceof LocalBackupError
+                ? {
+                    backup: e.cause.code,
+                    ...(e.cause.differs.length > 0 ? { differs: e.cause.differs.join(",") } : {}),
+                  }
+                : {}),
             }
           : {}),
       });

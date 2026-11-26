@@ -14,12 +14,7 @@
 // database's Wasm instance in a long-running process is what the process model avoids (§7).
 
 import { dirname } from "node:path";
-import type {
-  AnchorStore,
-  RestorePoint,
-  StorageBackend,
-  TenantStore,
-} from "@fluxvita/saveslot-kernel";
+import type { AnchorStore, RestorePoint, TenantStore } from "@fluxvita/saveslot-kernel";
 import {
   abortImportOnOpen,
   createOpsContext,
@@ -33,6 +28,11 @@ import {
   restorePoint,
 } from "@fluxvita/saveslot-kernel";
 import type { TenantId, UserId } from "./control-plane.ts";
+import {
+  type LocalBackupOptions,
+  type LocalStorageBackend,
+  localBackupBeforeUpgrade,
+} from "./local-backup.ts";
 import {
   LocalControlPlane,
   LocalTenantError,
@@ -89,7 +89,12 @@ export type OpenLocalTenantResult =
  */
 export async function openLocalTenant(o: {
   readonly home: string;
-  readonly backend: StorageBackend;
+  readonly backend: LocalStorageBackend;
+  /**
+   * The backup before a format upgrade (local-backup.ts): made unless `skip`; what it does goes to
+   * `onEvent`.
+   */
+  readonly backup?: Omit<LocalBackupOptions, "home">;
   /** Told when an import's leftover next to the data directory could not be removed. */
   readonly onLeftover?: (path: string, error: unknown) => void;
   /** @internal Tests only: fsyncs a directory (`fsyncDirectory` otherwise). */
@@ -107,7 +112,10 @@ export async function openLocalTenant(o: {
   const anchor = control.anchors;
   // Killed between an import's two renames: the second one finished first (local-import.ts).
   repairLocalSwap(dir.dataDir, (await anchor.read(dir.tenant)).importInProgress, fsyncDir);
-  const store = await o.backend.open({ kind: "pglite", dir: dir.dataDir }, {});
+  const store = await o.backend.open(
+    { kind: "pglite", dir: dir.dataDir },
+    { beforeUpgrade: localBackupBeforeUpgrade({ ...o.backup, home: o.home }) },
+  );
   try {
     // A `log.reconcile` scratch storage a crash left (02-architecture §3). Only once the store is
     // open, so this process holds the home's one writer: another process opening the same home is

@@ -89,6 +89,8 @@ describe("the service", () => {
       const events = lines.map((l) => l.split(" ")[1]);
       expect(events.filter((e) => e?.startsWith("upgrad"))).toEqual([
         "upgrading",
+        "upgrade_backup",
+        "upgrade_backup_made",
         "upgrade_step",
         "upgrade_step",
         "upgraded",

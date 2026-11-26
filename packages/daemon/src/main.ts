@@ -31,12 +31,15 @@ export function daemonVersion(): string {
 export async function foregroundOptions(
   home: string,
   evalClock?: string,
+  noUpgradeBackup?: boolean,
 ): Promise<RunServiceOptions> {
   const config = await readConfig(home);
   return {
     home,
     version: daemonVersion(),
     readsFlushMs: config.readsFlushSeconds * 1000,
+    // `--no-upgrade-backup` for this start, or `upgrade.backup = false` for every start.
+    upgradeBackup: config.upgradeBackup && noUpgradeBackup !== true,
     ...(evalClock !== undefined ? { evalClock } : {}),
   };
 }
@@ -46,6 +49,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   let values: {
     home?: string | undefined;
     "eval-clock"?: string | undefined;
+    "no-upgrade-backup"?: boolean | undefined;
     log?: string | undefined;
     supervised?: boolean | undefined;
   };
@@ -57,6 +61,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       options: {
         home: { type: "string" },
         "eval-clock": { type: "string" },
+        "no-upgrade-backup": { type: "boolean" },
         log: { type: "string" },
         supervised: { type: "boolean" },
       },
@@ -70,7 +75,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const home = resolve(values.home ?? join(homedir(), ".saveslot"));
   let options: RunServiceOptions;
   try {
-    options = await foregroundOptions(home, values["eval-clock"]);
+    options = await foregroundOptions(home, values["eval-clock"], values["no-upgrade-backup"]);
   } catch (e) {
     if (!(e instanceof ConfigInvalid)) throw e;
     // In the background stderr is the service's log: the known keys by name, how many unknown

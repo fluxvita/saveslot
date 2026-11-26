@@ -74,6 +74,12 @@ export const TEXTS = {
   /** The store's format upgraded at the start (02-architecture §8): each step, as it begins. */
   startUpgrading: (from: number, to: number, step: string | undefined) =>
     `Upgrading the store from storage format ${from} to ${to}${step !== undefined ? ` (step ${step})` : ""}; waiting for it to finish, however long it takes.`,
+  /** The upgrade goes on without the backup before it (02-architecture §8): said once. */
+  upgradeBackupSkipped:
+    "warning: the store is upgraded without a backup (upgrade.backup = false, or --no-upgrade-backup). Once upgraded, older versions of saveslot cannot open it, and there is no copy to go back to.",
+  /** The backup before an upgrade not made, or one in place of other data (02-architecture §8). */
+  startUpgradeBackupFailed:
+    "error: the saveslot service did not start (upgrade_failed): the backup before upgrading the store's storage format was not made, and nothing was upgraded. The service log (run/saveslot.log under the home) says why: backup=no_space (free disk space), backup=copy_failed (the copy failed; see the log), or backup=backup_differs (a backup is already next to the home, <home>.format-<n>-backup, of other data than the store now: move it away, or go back to it first). Then start again. To upgrade without a backup, start with --no-upgrade-backup.",
   /** An upgrade that failed (02-architecture §8): what is left, and what to do. */
   startUpgradeFailed: (step: string | undefined) =>
     `error: the saveslot service did not start (upgrade_failed): upgrading the store's storage format failed${step !== undefined ? ` at step ${step}` : ""}. That step was undone; the steps before it stay done. The service log (run/saveslot.log under the home) gives the database's error code (53100: the disk is full). Deal with that (free disk space), then start again: the upgrade goes on from that step.`,
@@ -150,7 +156,7 @@ export const TEXTS = {
   commandHelp: {
     init: "usage: saveslot init [--data-dir <dir>] [--rotate-session]\n  create the saveslot home (the service's files and the user session); --rotate-session issues a new session token",
     start:
-      "usage: saveslot start [--foreground]\n  start the local saveslot service in the background (--foreground: in this terminal)",
+      "usage: saveslot start [--foreground] [--no-upgrade-backup]\n  start the local saveslot service in the background (--foreground: in this terminal; --no-upgrade-backup: upgrade the store's storage format, when it needs it, without backing it up first)",
     stop: "usage: saveslot stop\n  stop the local saveslot service; an MCP host that connects again starts it again",
     status:
       "usage: saveslot status\n  whether the local saveslot service runs, its version, home, socket and open pending items",

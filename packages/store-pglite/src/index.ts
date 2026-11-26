@@ -1,9 +1,11 @@
 // PGlite storage backend for the saveslot kernel (02-architecture §7, §8).
 export {
+  type BeforeUpgrade,
   PGDATA_DIR,
   PgliteBackend,
   type PgliteBackendOptions,
   PgliteTenantStore,
+  type UpgradeAhead,
 } from "./backend.ts";
 export { type ErrorCode, PgliteStoreError } from "./errors.ts";
 export { type DirLock, type DirLockHandle, LOCK_FILE, osFileLock } from "./lock.ts";

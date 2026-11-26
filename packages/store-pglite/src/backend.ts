@@ -96,7 +96,32 @@ export type StoreEvent =
   | "analyze_failed"
   | "upgrading"
   | "upgrade_step"
+  | "upgrade_backup"
   | "upgraded";
+
+/**
+ * What a local store is, just before its format is upgraded (see `BeforeUpgrade`): its tenant
+ * directory, the formats, and the two ends of what it holds that only grow, as they are now.
+ */
+export interface UpgradeAhead {
+  readonly dir: string;
+  readonly from: number;
+  readonly to: number;
+  readonly marks: {
+    /** The log's last event: its `seq` and its header hash (null for an empty log). */
+    readonly logEnd: { readonly seq: number; readonly hash: string } | null;
+    /** The largest `n` of `read_log` (null when nothing was read). */
+    readonly readsEnd: number | null;
+  };
+}
+
+/**
+ * Called when an opened store is of an older format, before any step: with PGlite shut down and
+ * the directory's lock still held, so that the directory can be copied as it is and nobody writes
+ * it meanwhile. When it throws, the open fails with `upgrade_failed` (its error the cause) and
+ * the store stays of its format; when it returns, the store is opened again and upgraded.
+ */
+export type BeforeUpgrade = (ahead: UpgradeAhead) => Promise<void>;
 
 /** The default of `checkpointAfterBytes`: about what `max_wal_size` keeps (durability.ts). */
 export const CHECKPOINT_AFTER_BYTES = 64 * 1024 * 1024;
@@ -195,7 +220,7 @@ export class PgliteBackend implements StorageBackend {
 
   async open(
     tenant: TenantRef,
-    opts: { readonly create?: boolean } = {},
+    opts: { readonly create?: boolean; readonly beforeUpgrade?: BeforeUpgrade } = {},
   ): Promise<PgliteTenantStore> {
     if (tenant.kind !== "pglite") {
       throw new TypeError(`PgliteBackend cannot open a ${tenant.kind} tenant`);
@@ -227,21 +252,19 @@ export class PgliteBackend implements StorageBackend {
         if (!opts.create) throw new PgliteStoreError("store_not_found", `no storage at ${dir}`);
         await this.#create(worker, dir);
       }
-      const r = await worker.call<OpenResult>({
-        kind: "open",
-        params: {
-          pgdata,
-          durability: this.#durability,
-          sessionSettings: SESSION_SETTINGS,
-          supportedFormat: this.#format,
-          oldestFormat: OLDEST_UPGRADABLE_FORMAT,
-          upgradeSteps: this.#upgradeSteps,
-          metaKeys: META_KEYS,
-          contrib: this.#contrib,
-          checkpointAfterBytes: this.#checkpointAfterBytes,
-          analyze: this.#analyze,
-        },
-      });
+      const openParams = {
+        pgdata,
+        durability: this.#durability,
+        sessionSettings: SESSION_SETTINGS,
+        supportedFormat: this.#format,
+        oldestFormat: OLDEST_UPGRADABLE_FORMAT,
+        upgradeSteps: this.#upgradeSteps,
+        metaKeys: META_KEYS,
+        contrib: this.#contrib,
+        checkpointAfterBytes: this.#checkpointAfterBytes,
+        analyze: this.#analyze,
+      };
+      let r = await worker.call<OpenResult>({ kind: "open", params: openParams });
       reportAnalyzed(this.#onEvent, "open", r.analyzed);
       writeOwner(dir, { token, startedAt, epoch: r.epoch });
       let formatVersion = r.formatVersion;
@@ -249,9 +272,40 @@ export class PgliteBackend implements StorageBackend {
         // An older format: upgraded now, before the store is returned (and the service ready).
         // Under the directory's lock, owned: no other process writes it meanwhile.
         this.#onEvent?.("upgrading", { from: r.upgrade.from, to: r.upgrade.to });
+        if (opts.beforeUpgrade !== undefined) {
+          const { from, to } = r.upgrade;
+          const marks = await readMarks(worker, r.epoch);
+          // PGlite shut down cleanly (a checkpoint, nothing left in the WAL to replay), the
+          // directory's lock kept: what the caller copies is the store as it is.
+          await worker.call({ kind: "close" });
+          await worker.terminate();
+          worker = undefined;
+          this.#onEvent?.("upgrade_backup", { from, to });
+          try {
+            await opts.beforeUpgrade({ dir, from, to, marks });
+          } catch (e) {
+            throw new PgliteStoreError(
+              "upgrade_failed",
+              `before upgrading storage format ${from} to ${to}: ${(e as Error).message}`,
+              { cause: e },
+            );
+          }
+          worker = new WorkerClient();
+          r = await worker.call<OpenResult>({ kind: "open", params: openParams });
+          writeOwner(dir, { token, startedAt, epoch: r.epoch });
+          formatVersion = r.formatVersion;
+          if (r.upgrade === undefined || r.upgrade.from !== from || r.upgrade.to !== to) {
+            // Not possible under the lock held throughout; refused rather than upgraded unseen.
+            throw new PgliteStoreError(
+              "upgrade_failed",
+              `the storage changed format while it was closed for the upgrade (from ${from})`,
+            );
+          }
+        }
         const begun = performance.now();
         let analyzed: UpgradeReply["analyzed"];
-        while (formatVersion < r.upgrade.to) {
+        const target = r.upgrade.to;
+        while (formatVersion < target) {
           this.#onEvent?.("upgrade_step", { from: formatVersion, to: formatVersion + 1 });
           const u = await worker.call<UpgradeReply>({ kind: "upgrade" });
           formatVersion = u.formatVersion;
@@ -292,6 +346,32 @@ export class PgliteBackend implements StorageBackend {
     fsyncTree(creating);
     renameSync(creating, join(dir, PGDATA_DIR));
     fsyncPath(dir);
+  }
+}
+
+/** The two ends `UpgradeAhead` gives, read in one read transaction of the worker just opened. */
+async function readMarks(worker: WorkerClient, epoch: number): Promise<UpgradeAhead["marks"]> {
+  await worker.call({ kind: "begin", mode: "read", epoch });
+  try {
+    const log = await worker.call<QueryReply>({
+      kind: "query",
+      sql: "SELECT seq, header_hash FROM events ORDER BY seq DESC LIMIT 1",
+      params: [],
+    });
+    const reads = await worker.call<QueryReply>({
+      kind: "query",
+      sql: "SELECT max(n) AS n FROM read_log",
+      params: [],
+    });
+    const last = log.rows[0];
+    const n = reads.rows[0]?.["n"];
+    return {
+      logEnd:
+        last === undefined ? null : { seq: Number(last["seq"]), hash: String(last["header_hash"]) },
+      readsEnd: n === null || n === undefined ? null : Number(n),
+    };
+  } finally {
+    await worker.call({ kind: "commit" });
   }
 }
 
