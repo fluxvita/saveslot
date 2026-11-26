@@ -242,6 +242,22 @@ describe("a first page pushed down to SQL", () => {
     expect(got[0]?.result.total).toBe(7);
   });
 
+  it("breaks ties on a key asked for by the default keys, across page boundaries, both directions", async () => {
+    // Five rows share the date asked for: the default keys (the time, then the row ID) order them,
+    // and every limit here cuts through them.
+    const tied = rows.slice(0, 5).sort();
+    for (const dir of ["asc", "desc"] as const)
+      for (const limit of [1, 2, 3]) {
+        const got = await pages({ table: "spend", order: [{ field: "date", dir }], limit });
+        const order = got.flatMap(ids);
+        expect({ dir, limit, order }).toEqual({
+          dir,
+          limit,
+          order: dir === "asc" ? [rows[5], ...tied, rows[6]] : [rows[6], ...tied, rows[5]],
+        });
+      }
+  });
+
   it("gives a next position only when a row follows: limit 1, exactly the rows, one more", async () => {
     const one = await both({ table: "spend", limit: 1 });
     expect(one.pushed.result.rows).toHaveLength(1);
