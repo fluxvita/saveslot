@@ -440,13 +440,6 @@ describe.each(both)("%s table", (_, schema, isState) => {
         });
       });
     };
-    // Built in, on a field group (09-references «组值», instant by instant): a write whose two fields
-    // have seen intervals of their own, one of them stopping short of L's change. The samples
-    // reach it seldom (a default end resolved field by field, on a group).
-    if (schema.groups !== undefined && isState) {
-      for (const short of ["f2", "f3"] as const)
-        sample({ ops: groupInstantOps(short), decisions: [] });
-    }
     fc.assert(fc.property(scenario(isState), hits.track(sample)), {
       numRuns: RUNS,
       ...(SEED !== undefined ? { seed: SEED } : {}),
@@ -492,5 +485,13 @@ describe.each(both)("%s table", (_, schema, isState) => {
     }
     // Merge bases and cover sets were compared (every take_candidate judged).
     expect({ takesCompared: takesCompared > 0 }).toEqual({ takesCompared: true });
+    // Built in, on a field group (09-references «组值», instant by instant): a write whose two fields
+    // have seen intervals of their own, one of them stopping short of L's change. The samples
+    // reach it seldom (a default end resolved field by field, on a group). Run after the floors
+    // above are compared, so they count only what the generator reached.
+    if (schema.groups !== undefined && isState) {
+      for (const short of ["f2", "f3"] as const)
+        sample({ ops: groupInstantOps(short), decisions: [] });
+    }
   });
 });

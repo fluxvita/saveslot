@@ -13,18 +13,52 @@ const w = (
   seen: number,
   fields: Record<string, string>,
   from = "10-01",
-  to: "open" | "next_change" = "open",
+  /** `open`, `next_change`, or a given end (`MM-DD`). */
+  to = "open",
   ack = false,
 ): WriteOp => ({
   kind: "write",
   op,
   event: op + 1,
   seen,
-  valid: { from: { mode: "given", value: d(from) }, to: { mode: to } },
+  valid: {
+    from: { mode: "given", value: d(from) },
+    to: to === "open" || to === "next_change" ? { mode: to } : { mode: "given", value: d(to) },
+  },
   fields: Object.fromEntries(
     Object.entries(fields).map(([f, value]) => [f, { value, sources: [`S${op}${f}`] }]),
   ) as WriteOp["fields"],
   ...(ack ? { acknowledge: ["overwrite"] as const } : {}),
+});
+
+type Valid = NonNullable<WriteOp["valid"]>;
+
+/** A write acknowledging overwrite, its interval given as is (`corrected_span` with `now`). */
+const at = (
+  op: number,
+  seen: number,
+  valid: Valid,
+  fields: Record<string, string>,
+  now?: string,
+): WriteOp => ({
+  kind: "write",
+  op,
+  event: op + 1,
+  seen,
+  valid,
+  ...(now !== undefined ? { now: d(now) } : {}),
+  fields: Object.fromEntries(
+    Object.entries(fields).map(([f, value]) => [f, { value, sources: [`S${op}${f}`] }]),
+  ) as WriteOp["fields"],
+  acknowledge: ["overwrite"],
+});
+const given = (from: string, to?: string): Valid => ({
+  from: { mode: "given", value: d(from) },
+  to: to === undefined ? { mode: "open" } : { mode: "given", value: d(to) },
+});
+const toNext = (from: string): Valid => ({
+  from: { mode: "given", value: d(from) },
+  to: { mode: "next_change" },
 });
 
 /**
@@ -142,6 +176,61 @@ export const GROUP_LOGS: Record<
     want: [
       ["f2", "candidate"],
       ["f3", "candidate"],
+    ],
+  },
+  // Seen intervals resolved on V, not on the current state: #61 (seen #20) writes f2 = 3, f3 = m
+  // from 11-01 to the next change; f2's seen interval at V is [11-01, 11-05) (#21's change), f3's
+  // runs on. #31, after V, wrote the same (3, m) over [11-01, 11-09), so on the current state f2's
+  // would run to 11-09. On [11-05, 11-09) W's group value takes f2 from V (1) against the current
+  // (3, m): a conflict, both of #61's fields candidates.
+  "the group value: a seen interval is resolved on V, not on the current state": {
+    schema: GROUP,
+    ops: [
+      at(10, 0, given("10-01"), { f2: "1", f3: "a" }),
+      at(20, 10, given("11-01", "11-05"), { f2: "2" }),
+      at(30, 20, given("11-01", "11-09"), { f2: "3", f3: "m" }),
+      at(60, 20, toNext("11-01"), { f2: "3", f3: "m" }),
+    ],
+    event: 61,
+    want: [
+      ["f2", "candidate"],
+      ["f3", "candidate"],
+    ],
+  },
+  // The start of a seen interval holds: #31 sets f2 to 3 over [11-01, 11-05), #41 f3 to m from
+  // 11-01. #61 (seen #20) writes (3, m) from 11-01 to the next change: f2's seen interval is
+  // [11-01, 11-05), f3's runs on. From 11-01 W's group value is the current one at every instant
+  // (W's f2 inside f2's interval, V's after it): no conflict, both take effect.
+  "the group value: a field's seen interval holds from its start": {
+    schema: GROUP,
+    ops: [
+      at(10, 0, given("10-01"), { f2: "1", f3: "a" }),
+      at(20, 10, given("11-01", "11-05"), { f2: "2" }),
+      at(30, 20, given("11-01", "11-05"), { f2: "3" }),
+      at(40, 30, given("11-01"), { f3: "m" }),
+      at(60, 20, toNext("11-01"), { f2: "3", f3: "m" }),
+    ],
+    event: 61,
+    want: [
+      ["f2", "applied"],
+      ["f3", "applied"],
+    ],
+  },
+  // Two writes of the same values, both having seen #20, by `corrected_span` (05-time): f2's seen
+  // interval [10-01, 11-05), f3's [10-01, ∞). The second's group value is the first's at every
+  // instant of its intervals: it takes effect as the first did.
+  "the group value: a twin written on the same version takes effect too": {
+    schema: GROUP,
+    ops: [
+      at(10, 0, given("10-01"), { f2: "1", f3: "a" }),
+      at(20, 10, given("11-05"), { f2: "2" }),
+      at(30, 20, "corrected_span", { f2: "3", f3: "m" }, "11-02"),
+      at(40, 20, "corrected_span", { f2: "3", f3: "m" }, "11-02"),
+    ],
+    event: 41,
+    want: [
+      ["f2", "applied"],
+      ["f3", "applied"],
     ],
   },
   // Without the group, field by field: neither field's seen interval meets #31 where its value
