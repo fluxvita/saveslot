@@ -156,6 +156,8 @@ const TAKEN: Record<string, Sample> = (() => {
     pick(reads, "sql"),
     pick(reads, "history-timeline-premises"),
     pick(reads, "history-timeline-premises-hidden"),
+    pick(reads, "pending-list-blocked"),
+    pick(reads, "pending-awaiting-blocked-two"),
   ]);
 })();
 
@@ -194,6 +196,8 @@ const OUTSIDE = new RegExp(
     "(^|\\.)time\\.field$",
     "^id$",
     "(^|\\.)pending\\.\\d+\\.(id|item_ver)$",
+    // The deletions blocking an item, or refusing a decision on its target: the service's item IDs.
+    "(^|\\.)deletions\\.\\d+$",
     // A detail's place in the schema document: its numbers and names as they are, the rest inside.
     "^details\\.\\d+\\.path$",
   ].join("|"),

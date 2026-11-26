@@ -469,6 +469,11 @@ async function resolveCommand(
     }
     if (d["type"] !== DECISIONS_NOW.get(decision)) throw new UsageError(TEXTS.itemTypeNotYet);
     say(pendingDetail(detail, new Date()));
+    // Blocked by a deletion still pending (06 §5.2): nothing asked, nothing done; the detail said
+    // which deletion and the two ways on. 5, as the refusal `resolve` would give.
+    if (typeof d["blocked"] === "object" && d["blocked"] !== null) {
+      return { json: detail, lines: [], exit: 5 };
+    }
     if (given !== undefined && given !== d["item_ver"] && round === 0)
       say([[words(TEXTS.changedSince)]]);
     if (decision === "take_candidate" && candidate === undefined) {

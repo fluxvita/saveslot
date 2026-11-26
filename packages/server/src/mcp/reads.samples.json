@@ -2352,5 +2352,283 @@
         }
       ]
     }
+  },
+  "pending-list-blocked": {
+    "tool": "saveslot_pending",
+    "result": {
+      "total": 4,
+      "items": [
+        {
+          "id": "pi_SANGZFYX0QFX6QV0",
+          "type": "awaiting_confirmation",
+          "status": "open",
+          "slot": "plan",
+          "target": {
+            "table": "plan.budgets",
+            "entity": "e_PCNDRTPDVM2QF7B3K14H0EN3W8",
+            "unit": ["amount"],
+            "spans": [
+              {
+                "valid_from": "2026-11-03",
+                "valid_to": null
+              }
+            ]
+          },
+          "reason": "overwrites_change_point",
+          "opened_at": "2026-11-18T12:39:27.087Z",
+          "opened_by": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        },
+        {
+          "id": "pi_47G7WJXFA1PQC58N",
+          "type": "conflict",
+          "status": "open",
+          "slot": "plan",
+          "target": {
+            "table": "plan.expenses",
+            "row": "r_FW103YV2NYWERJMC947XWH3NWH",
+            "unit": ["note"]
+          },
+          "reason": "stale_write",
+          "opened_at": "2026-11-18T12:39:27.139Z",
+          "opened_by": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "blocked": true
+        },
+        {
+          "id": "pi_SAFF6RBB802V71BZ",
+          "type": "conflict",
+          "status": "open",
+          "slot": "plan",
+          "target": {
+            "table": "plan.expenses",
+            "row": "r_Q1X4BK6NR6AFD1AQQ3PHP7HCPJ",
+            "unit": ["note"]
+          },
+          "reason": "stale_write",
+          "opened_at": "2026-11-18T12:39:27.176Z",
+          "opened_by": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        },
+        {
+          "id": "pi_SYCGGKE1CVJXGB7D",
+          "type": "conflict",
+          "status": "superseded",
+          "slot": "plan",
+          "target": {
+            "table": "plan.expenses",
+            "row": "r_J89SBNGMPVP0Z6Y2SXM2PCWB9F",
+            "unit": ["note"]
+          },
+          "reason": "stale_write",
+          "opened_at": "2026-11-18T12:39:27.238Z",
+          "opened_by": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        }
+      ]
+    }
+  },
+  "pending-conflict-blocked": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_47G7WJXFA1PQC58N",
+      "type": "conflict",
+      "item_ver": "iv_47G7WJXFA1PQC58N.37.0",
+      "status": "open",
+      "slot": "plan",
+      "reason": "stale_write",
+      "opened_at": "2026-11-18T12:39:27.139Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+        "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+      },
+      "decisions": [],
+      "target": {
+        "table": "plan.expenses",
+        "row": "r_FW103YV2NYWERJMC947XWH3NWH",
+        "unit": ["note"]
+      },
+      "effective": {
+        "seq": 34,
+        "actor": {
+          "kind": "user",
+          "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+          "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+        },
+        "values": {
+          "note": "dinner"
+        },
+        "exists": true
+      },
+      "candidates": [
+        {
+          "index": 0,
+          "seq": 37,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "ver": "v31.0",
+          "values": {
+            "note": "supper"
+          },
+          "cause": "stale_write"
+        }
+      ],
+      "previous": {
+        "seq": 31,
+        "exists": true,
+        "values": {
+          "note": "lunch"
+        }
+      },
+      "reverted_by_previous": [
+        {
+          "seq": 34,
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          }
+        }
+      ],
+      "blocked": {
+        "reason": "pending_deletion",
+        "deletions": ["pi_D3X7T10N0000AAAA"],
+        "expires_at": "2026-11-19T12:40:00.000Z"
+      }
+    }
+  },
+  "pending-awaiting-blocked-two": {
+    "tool": "saveslot_pending",
+    "result": {
+      "id": "pi_SANGZFYX0QFX6QV0",
+      "type": "awaiting_confirmation",
+      "item_ver": "iv_SANGZFYX0QFX6QV0.27.0",
+      "status": "open",
+      "slot": "plan",
+      "reason": "overwrites_change_point",
+      "opened_at": "2026-11-18T12:39:27.087Z",
+      "opened_by": {
+        "kind": "user",
+        "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+        "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+      },
+      "decisions": [],
+      "target": {
+        "table": "plan.budgets",
+        "entity": "e_PCNDRTPDVM2QF7B3K14H0EN3W8",
+        "unit": ["amount"],
+        "spans": [
+          {
+            "valid_from": "2026-11-03",
+            "valid_to": null
+          }
+        ]
+      },
+      "proposal": {
+        "seq": 27,
+        "actor": {
+          "kind": "user",
+          "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+          "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+        },
+        "intent": "update",
+        "set": {
+          "amount": {
+            "unit": "CNY",
+            "value": "600"
+          }
+        },
+        "valid": {
+          "valid_from": "2026-11-03",
+          "valid_to": null
+        }
+      },
+      "current": {
+        "spans": [
+          {
+            "valid_from": "2026-11-03",
+            "valid_to": "2026-11-10",
+            "valid_to_inclusive": "2026-11-09",
+            "values": {
+              "amount": {
+                "value": "500",
+                "unit": "CNY"
+              }
+            }
+          },
+          {
+            "valid_from": "2026-11-10",
+            "valid_to": null,
+            "values": {
+              "amount": {
+                "value": "700",
+                "unit": "CNY"
+              }
+            }
+          }
+        ]
+      },
+      "impact": {
+        "overwritten": [
+          {
+            "field": "amount",
+            "valid": {
+              "valid_from": "2026-11-03",
+              "valid_to": "2026-11-10",
+              "valid_to_inclusive": "2026-11-09"
+            },
+            "value": {
+              "unit": "CNY",
+              "value": "500"
+            },
+            "seq": 21,
+            "actor": {
+              "kind": "user",
+              "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+              "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+            }
+          },
+          {
+            "field": "amount",
+            "valid": {
+              "valid_from": "2026-11-10",
+              "valid_to": null
+            },
+            "value": {
+              "unit": "CNY",
+              "value": "700"
+            },
+            "seq": 24,
+            "actor": {
+              "kind": "user",
+              "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+              "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+            }
+          }
+        ]
+      },
+      "blocked": {
+        "reason": "pending_deletion",
+        "deletions": ["pi_D3X7T10N0000AAAA", "pi_D3X7T10N0000BBBB"],
+        "expires_at": "2026-11-19T15:00:00.000Z"
+      }
+    }
   }
 }
