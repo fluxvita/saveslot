@@ -17,7 +17,7 @@ import {
   type ServerControlPlane,
   type TenantId,
 } from "@fluxvita/saveslot-service";
-import type { ControlDatabase } from "@fluxvita/saveslot-store-postgres";
+import { type ControlDatabase, PostgresStoreError } from "@fluxvita/saveslot-store-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_BACKEND, testBackend } from "../../test-backend/src/index.fixture.ts";
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
@@ -295,6 +295,43 @@ describe("saveslot server restore", () => {
 });
 
 const PASSWORD = "correct horse battery";
+
+describe("saveslot server restore: a tenant's storage format upgrade that fails", () => {
+  it(
+    "5: the step and the SQLSTATE, and what to do; never the database's message",
+    async () => {
+      const c = await controlDb();
+      const { tenant } = await putBack(c);
+      let err = "";
+      const code = await serverCommand(["restore", "--tenant", tenant], {
+        out: () => {},
+        err: (l) => {
+          err += `${l}\n`;
+        },
+        env,
+        openControl: async () => c.db,
+        // As the PostgreSQL backend fails a step: the database's message, which may quote a stored
+        // value, in its own message.
+        backend: {
+          open: async () => {
+            throw new PostgresStoreError(
+              "upgrade_failed",
+              'upgrading storage format 5 to 6: invalid input syntax for type integer: "MARK-51d0-stored"',
+              { sqlState: "22P02", step: "5->6" },
+            );
+          },
+        },
+        now: () => NOW,
+      });
+      expect(code).toBe(5);
+      expect(err).toContain("failed at step 5->6 (SQLSTATE 22P02)");
+      expect(err).toContain("run the command again");
+      expect(err).not.toContain("MARK-51d0");
+      expect(err).not.toContain("invalid input syntax");
+    },
+    T,
+  );
+});
 
 describe("saveslot server restore --user", () => {
   let c: Awaited<ReturnType<typeof controlDb>>;

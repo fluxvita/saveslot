@@ -67,10 +67,12 @@ export interface PostgresBackendOptions {
   /**
    * Where the backend reports an upgrade at open, each with the tenant's database: `upgrading`
    * (from, to) before its first step, `upgrade_step` (from, to: the step's) before each, `upgraded`
-   * (from, to, ms) once done. The server writes them to its log.
+   * (from, to, ms) once done, `upgrade_failed` (step as `5->6`, and `sql_state` when the database
+   * gave one) when a step failed; never the database's message, which may quote what the store
+   * holds. The server writes them to its log.
    */
   readonly onEvent?: (
-    event: "upgrading" | "upgrade_step" | "upgraded",
+    event: "upgrading" | "upgrade_step" | "upgraded" | "upgrade_failed",
     fields: Readonly<Record<string, string | number>>,
   ) => void;
 }
@@ -232,15 +234,26 @@ export class PostgresBackend implements StorageBackend {
         this.#onEvent?.("upgrading", { database: db, from: formatVersion, to: this.#format });
         const begun = performance.now();
         const from = formatVersion;
-        formatVersion = await upgrade(
-          conn,
-          epoch,
-          formatVersion,
-          this.#format,
-          this.#upgradeSteps,
-          (step) =>
-            this.#onEvent?.("upgrade_step", { database: db, from: step.from, to: step.from + 1 }),
-        );
+        try {
+          formatVersion = await upgrade(
+            conn,
+            epoch,
+            formatVersion,
+            this.#format,
+            this.#upgradeSteps,
+            (step) =>
+              this.#onEvent?.("upgrade_step", { database: db, from: step.from, to: step.from + 1 }),
+          );
+        } catch (e) {
+          if (e instanceof PostgresStoreError && e.code === "upgrade_failed") {
+            this.#onEvent?.("upgrade_failed", {
+              database: db,
+              step: e.step ?? "unknown",
+              ...(e.sqlState !== undefined ? { sql_state: e.sqlState } : {}),
+            });
+          }
+          throw e;
+        }
         this.#onEvent?.("upgraded", {
           database: db,
           from,
@@ -502,7 +515,11 @@ async function upgrade(
         throw new PostgresStoreError(
           "upgrade_failed",
           `upgrading storage format ${step.from} to ${step.from + 1}: ${(e as Error).message}`,
-          { cause: e, ...(sqlState !== undefined ? { sqlState } : {}) },
+          {
+            cause: e,
+            step: `${step.from}->${step.from + 1}`,
+            ...(sqlState !== undefined ? { sqlState } : {}),
+          },
         );
       }
     });

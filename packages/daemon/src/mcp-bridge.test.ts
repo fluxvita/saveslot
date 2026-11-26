@@ -775,6 +775,36 @@ describe("the bridge against a stand-in service", () => {
     expect(b.err.join("\n")).toContain("service_upgrading");
   });
 
+  it("an autostart that stops waiting because the service upgrades: said as upgrading, not as a failed start", async () => {
+    s.answer = (_, res) => json(res, 503, { error: { code: "unavailable", reason: "starting" } });
+    // Not answering yet (a /health the bridge does not take): it starts the service.
+    s.health = {};
+    const io = bridgeStreams();
+    const exit = runBridge({
+      token: UNKNOWN_TOKEN,
+      stdin: io.stdin,
+      stdout: io.stdout,
+      log: io.log,
+      autostart: true,
+      startService: async () => {
+        s.health = {
+          state: "starting",
+          version: "t",
+          pid: 1,
+          since: "2026-11-17T00:00:00Z",
+          upgrade: { from: 5, to: 6, step: "5->6" },
+        };
+        return 7;
+      },
+      version: "t",
+      socketPath: s.socketPath,
+    });
+    io.stdin.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+    expect(await exit).toBe(0);
+    expect(io.err.join("\n")).toContain("service_upgrading");
+    expect(io.err.join("\n")).not.toContain("autostart_exit");
+  });
+
   it("a batch holding a request, on every failing path: one error with id null", async () => {
     const paths: [string, (res: ServerResponse) => void][] = [
       ["401", (res) => json(res, 401, { error: { code: "unauthenticated" } })],

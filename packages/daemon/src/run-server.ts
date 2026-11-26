@@ -79,6 +79,7 @@ import {
   discardDatabase,
   openControlDatabase,
   PostgresBackend,
+  type PostgresBackendOptions,
 } from "@fluxvita/saveslot-store-postgres";
 import { identityRequest, readForm, sendIdentityResponse } from "./identity-http.ts";
 import type { DatabaseAt, ServerConfig } from "./server-config.ts";
@@ -144,6 +145,8 @@ export interface RunServerOptions {
     readonly drainMs?: number;
     readonly timeoutMs?: number;
     readonly tenantsCloseMs?: number;
+    /** The cell backend's format and upgrade steps (the kernel's otherwise). */
+    readonly formatUpgrade?: PostgresBackendOptions["formatUpgrade"];
   };
   /** Tests only: the client documents' fetcher (the network's otherwise). */
   readonly fetchClient?: OAuthDeps["fetchClient"];
@@ -161,6 +164,25 @@ export function cellDiscarder(config: ServerConfig): DiscardDatabase {
     }
     await discardDatabase(config.cell, request);
   };
+}
+
+/**
+ * The one cell's storage backend for a server command, its storage format upgrades written to `log`
+ * (02-architecture §8): `upgrading`, `upgrade_step`, `upgraded`, and `upgrade_failed` with the step
+ * and the SQLSTATE, each with the tenant's database; never the database's message. `formatUpgrade`
+ * is for tests only.
+ */
+export function cellBackend(
+  config: ServerConfig,
+  log: (event: string, fields: Readonly<Record<string, string>>) => void,
+  formatUpgrade?: PostgresBackendOptions["formatUpgrade"],
+): PostgresBackend {
+  return new PostgresBackend({
+    cells: { [config.cellName]: config.cell },
+    onEvent: (event, fields) =>
+      log(event, Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v)]))),
+    ...(formatUpgrade !== undefined ? { formatUpgrade } : {}),
+  });
 }
 
 export interface RunningServer {
@@ -241,14 +263,8 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       if (code === "control_format_mismatch") throw new ServerStartRefused("oauth", "format");
       throw e;
     });
-    const backend =
-      o.backend ??
-      new PostgresBackend({
-        cells: { [config.cellName]: config.cell },
-        // A tenant's storage format upgraded when it is first opened (02-architecture §8).
-        onEvent: (event, fields) =>
-          warn(event, Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v)]))),
-      });
+    // A tenant's storage format upgraded when it is first opened (02-architecture §8): logged.
+    const backend = o.backend ?? cellBackend(config, warn, o.testing?.formatUpgrade);
     const identity = await openIdentity({ db, config, external, control, backend, now });
     const cursors = await CursorKeys.fromFile(config.handleKeyFile);
     pool = new TenantPool({

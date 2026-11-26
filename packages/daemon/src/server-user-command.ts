@@ -35,12 +35,9 @@ import {
   type ServerControlPlane,
   setLocalPassword,
 } from "@fluxvita/saveslot-service";
-import {
-  type ControlDatabase,
-  openControlDatabase,
-  PostgresBackend,
-} from "@fluxvita/saveslot-store-postgres";
-import type { ServerRestoreIO } from "./server-command-io.ts";
+import { type ControlDatabase, openControlDatabase } from "@fluxvita/saveslot-store-postgres";
+import { cellBackend } from "./run-server.ts";
+import { logLine, type ServerRestoreIO } from "./server-command-io.ts";
 import type { ServerConfig } from "./server-config.ts";
 import {
   openControllingTerminal,
@@ -212,11 +209,11 @@ export function addUser(
   opened: { readonly control: ServerControlPlane; readonly accounts: LocalAccounts },
   name: string,
   password: string,
-  io: Pick<ServerRestoreIO, "backend" | "now">,
+  io: Pick<ServerRestoreIO, "backend" | "now" | "err" | "formatUpgrade">,
 ) {
   return addLocalUser(opened.accounts, {
     control: opened.control,
-    backend: io.backend ?? new PostgresBackend({ cells: { [config.cellName]: config.cell } }),
+    backend: io.backend ?? cellBackend(config, logLine(io), io.formatUpgrade),
     name,
     password,
     cell: config.cellName,

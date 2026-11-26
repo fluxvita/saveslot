@@ -45,6 +45,7 @@ import {
 } from "../../test-backend/src/index.fixture.ts";
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import {
+  cellBackend,
   cellDiscarder,
   type RunningServer,
   type RunServerOptions,
@@ -2392,6 +2393,45 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: one server a control da
     T,
   );
 });
+
+// The cell's backend every server command makes (`server start`, `restore`, `user`): an upgrade of a
+// tenant's storage format in its log, a failed step with its SQLSTATE and never the database's
+// message (02-architecture §8). PostgreSQL only: it is the PostgreSQL backend.
+describe.skipIf(TEST_BACKEND !== "postgres")(
+  "cellBackend: a tenant's storage format upgrade, logged",
+  () => {
+    const pg = testPostgres(cellFromEnv());
+
+    it(
+      "a step that fails: upgrading, the step, then upgrade_failed with the step and the SQLSTATE; nothing of the message",
+      async () => {
+        const db = pg.name();
+        const made = await pg.backend.open(pg.ref(db), { create: true });
+        await made.close();
+        const F = Number(
+          (await pg.sql(db, "SELECT value FROM meta WHERE key = 'storage_format'")).rows[0]?.[
+            "value"
+          ],
+        );
+        const logged: { event: string; fields: Readonly<Record<string, string>> }[] = [];
+        const b = cellBackend(
+          config({ cell: pg.cell, cellName: pg.ref(db).cell }),
+          (event, fields) => logged.push({ event, fields }),
+          { format: F + 1, steps: [{ from: F, sql: "SELECT 'MARK-8b2f-stored'::int;" }] },
+        );
+        await expect(b.open(pg.ref(db), {})).rejects.toMatchObject({ code: "upgrade_failed" });
+        expect(logged.map((l) => l.event)).toEqual(["upgrading", "upgrade_step", "upgrade_failed"]);
+        expect(logged.at(-1)?.fields).toEqual({
+          database: db,
+          step: `${F}->${F + 1}`,
+          sql_state: "22P02",
+        });
+        expect(JSON.stringify(logged)).not.toContain("MARK-8b2f");
+      },
+      T,
+    );
+  },
+);
 
 // What `server start` stands on: the lock is its control database connection's. PostgreSQL only,
 // which can end a connection from outside.

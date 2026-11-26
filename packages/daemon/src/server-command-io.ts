@@ -2,7 +2,7 @@
 // server-user-command.ts): a module of its own, so that they import it without importing each other.
 
 import type { restoreTenantFromBackup } from "@fluxvita/saveslot-service";
-import type { ControlDatabase } from "@fluxvita/saveslot-store-postgres";
+import type { ControlDatabase, PostgresBackendOptions } from "@fluxvita/saveslot-store-postgres";
 import type { CommandIO } from "./commands.ts";
 import type { DatabaseAt } from "./server-config.ts";
 import type { PasswordTerminal } from "./server-password.ts";
@@ -38,4 +38,12 @@ export interface ServerRestoreIO extends ServerCommandIO {
   readonly backend?: Parameters<typeof restoreTenantFromBackup>[0]["backend"];
   /** The clock, in `toISOString` form. */
   readonly now?: () => string;
+  /** Tests only: the cell backend's format and upgrade steps (the kernel's otherwise). */
+  readonly formatUpgrade?: PostgresBackendOptions["formatUpgrade"];
 }
+
+/** A server command's log line on stderr, as `server start` writes its warnings. */
+export const logLine =
+  (io: Pick<ServerCommandIO, "err">) =>
+  (event: string, fields: Readonly<Record<string, string>>): void =>
+    io.err(JSON.stringify({ warning: event, ...fields }));

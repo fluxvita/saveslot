@@ -151,9 +151,29 @@ export async function serverCommand(argv: readonly string[], io: ServerRestoreIO
     for (const p of e.problems) io.err(TEXTS.server.configProblem(p));
     return 5;
   }
-  if (target !== undefined) return serverRestore(config, target, io);
-  if (user !== undefined) return serverUser(config, user, io);
-  return sub === "start" ? serverStart(config, io) : serverInit(config, first, io);
+  try {
+    if (target !== undefined) return await serverRestore(config, target, io);
+    if (user !== undefined) return await serverUser(config, user, io);
+    return sub === "start" ? await serverStart(config, io) : await serverInit(config, first, io);
+  } catch (e) {
+    // A tenant's storage format upgrade that failed (02-architecture §8): the step and the
+    // SQLSTATE only, never the database's message, which may quote what the store holds.
+    const { code, step, sqlState } = (e ?? {}) as {
+      code?: unknown;
+      step?: unknown;
+      sqlState?: unknown;
+    };
+    if (code === "upgrade_failed") {
+      io.err(
+        TEXTS.server.upgradeFailed(
+          typeof step === "string" ? step : undefined,
+          typeof sqlState === "string" ? sqlState : undefined,
+        ),
+      );
+      return 5;
+    }
+    throw e;
+  }
 }
 
 /** `init`'s options; a number is the exit code of a usage error. */

@@ -117,6 +117,33 @@ describe.skipIf(cell === undefined)("against a server", () => {
 
   describe("an upgrade that fails leaves the store of the format of its last step done", () => {
     it(
+      "a step that fails is told as upgrade_failed with the step and the SQLSTATE, never the database's message",
+      async () => {
+        const db = await made();
+        const seen: Seen[] = [];
+        // The database's message quotes the value it refused: as a stored value would be quoted.
+        const failed = await backend(seen, F + 1, [step(F, "SELECT 'MARK-3c9e-stored'::int;")])
+          .open(pg.ref(db), {})
+          .then(
+            () => undefined,
+            (e: unknown) => e,
+          );
+        expect(failed).toMatchObject({
+          code: "upgrade_failed",
+          step: `${F}->${F + 1}`,
+          sqlState: "22P02",
+        });
+        expect(seen.at(-1)).toEqual({
+          event: "upgrade_failed",
+          fields: { database: db, step: `${F}->${F + 1}`, sql_state: "22P02" },
+        });
+        expect(JSON.stringify(seen)).not.toContain("MARK-3c9e");
+        expect(await formatIn(db)).toBe(F);
+      },
+      T,
+    );
+
+    it(
       "the second of two steps fails: upgrade_failed, the first stays done; the open after goes on from there",
       async () => {
         const db = await made();
