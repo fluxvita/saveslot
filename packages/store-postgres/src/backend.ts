@@ -665,6 +665,11 @@ export class PostgresTenantStore implements TenantStore {
     throw new Error("snapshot is not implemented: physical snapshots are not in v1");
   }
 
+  /** False once the connection is gone or the storage was taken over: final (TenantStore). */
+  get usable(): boolean {
+    return this.#state === "open" && !this.#conn.gone;
+  }
+
   close(): Promise<void> {
     if (this.#closed) return this.#closed;
     if (this.#state === "open") this.#state = "closing";

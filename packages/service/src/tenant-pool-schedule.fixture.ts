@@ -24,6 +24,8 @@ export interface Conn {
   readonly tenant: string;
   state: ConnState;
   closes: number;
+  /** Ended from outside (the server restarted, a middlebox): its store is no longer usable. */
+  dead?: boolean;
 }
 
 /** The fake backend's connections and the pool's uses on them, and what went wrong under them. */
@@ -48,11 +50,23 @@ export function world() {
   const tx = {
     query: async () => ({ rows: [{ seq: 1, header_hash: "h", at: "2026-11-20T10:00:00.000Z" }] }),
   };
+  /** The database the directory names for a tenant, when not its own ID. */
+  const databases = new Map<string, string>();
+  /** Every database the directory has named, and whose it is: the old ones stay. */
+  const ownerOf = new Map<string, string>();
+  /** How many times the directory's row of a tenant was read. */
+  const reads = { directory: 0 };
   const store = (conn: Conn) => {
     const s = {
+      get usable() {
+        return conn.state === "open" && conn.dead !== true;
+      },
       read: async (fn: (t: unknown) => unknown) => {
         if (conn.state !== "open" && conn.state !== "closing") {
           violations.push(`read on ${conn.state} connection ${conn.id}`);
+        }
+        if (conn.dead === true) {
+          throw Object.assign(new Error("the connection is gone"), { code: "connection_lost" });
         }
         return fn(tx);
       },
@@ -128,23 +142,39 @@ export function world() {
       x.d.reject(new Error("a close that fails"));
     }
   };
+  // A connection ended from outside holds nothing on the server any more: not live.
   const live = () =>
-    conns.filter((c) => c.state === "opening" || c.state === "open" || c.state === "closing");
+    conns.filter(
+      (c) =>
+        c.dead !== true && (c.state === "opening" || c.state === "open" || c.state === "closing"),
+    );
   const control = {
     anchors: {
       read: async () => ({ deletions: [], highWater: 0, restoreCount: 0 }),
       advanceHighWater: async () => {},
     },
-    tenant: async (id: string) => ({
-      id,
-      owner: "u_00000000000000000000000001",
-      ref: { kind: "postgres", cell: "c", database: id },
-      state: "active",
-    }),
+    tenant: async (id: string) => {
+      const database = databases.get(id) ?? id;
+      ownerOf.set(database, id);
+      reads.directory++;
+      return {
+        id,
+        owner: "u_00000000000000000000000001",
+        ref: { kind: "postgres", cell: "c", database },
+        state: "active",
+      };
+    },
     tenantOf: async () => undefined,
   };
   return {
     conns,
+    databases,
+    ownerOf,
+    reads,
+    /** Ends the open connection of `tenant`'s database from outside. */
+    kill: (database: string) => {
+      for (const c of conns) if (c.tenant === database && c.state === "open") c.dead = true;
+    },
     pendingOpens,
     pendingCloses,
     running,
@@ -170,6 +200,7 @@ export function poolIn(
     openWaitMs?: number;
     full?: string[];
     closeFailures?: string[];
+    reopened?: string[];
   } = {},
 ): TenantPool {
   const options: TenantPoolOptions = {
@@ -180,6 +211,7 @@ export function poolIn(
     openWaitMs: o.openWaitMs ?? 1000,
     onFull: (t, why) => o.full?.push(`${t} ${why}`),
     onCloseFailure: (t, what) => o.closeFailures?.push(`${t} ${what}`),
+    onReopen: (t, why) => o.reopened?.push(`${t} ${why}`),
     now: () => "2026-11-20T10:00:00.000Z",
     discardStaging: async () => {},
     discardScratch: async () => {},
@@ -238,8 +270,13 @@ export function invariants(w: World, p: TenantPool, max: number, where: string):
   if (st.held !== withPlace)
     out.push(`${where}: ${st.held} places held, ${withPlace} slots hold one`);
   if (live.length > st.held) out.push(`${where}: ${live.length} connections on ${st.held} places`);
+  // A connection's database is its tenant's ID, or a database the directory named for it.
+  const tenantOf = (database: string) => w.ownerOf.get(database) ?? database;
   const byTenant = new Map<string, number>();
-  for (const c of live) byTenant.set(c.tenant, (byTenant.get(c.tenant) ?? 0) + 1);
+  for (const c of live) {
+    const t = tenantOf(c.tenant);
+    byTenant.set(t, (byTenant.get(t) ?? 0) + 1);
+  }
   for (const [t, n] of byTenant) {
     if (n > 1) out.push(`${where}: tenant ${t} has ${n} connections`);
     if (st.slots.find((s) => s.tenant === t)?.place !== true) {

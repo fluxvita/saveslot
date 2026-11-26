@@ -52,7 +52,15 @@
 // progress, and returns once every tenant is closed.
 //
 // The pool keeps a small record for each tenant used since it started, open or not: bounded by the
-// deployment's tenants, and not worth the races of dropping one a use may be waiting on.
+// deployment's tenants, and not worth the races of dropping one a use may be waiting on. So a
+// tenant's record is the same object for as long as the pool runs, across every close and opening:
+// what holds it (`hold`) holds the tenant, however often it is opened again.
+//
+// An open tenant is lent only while it is good (02-architecture §7 «连接»): its storage still usable
+// (`usable`; a connection gone does not come back), and its database the one the directory names
+// now. Otherwise the use closes it and opens it again, as an exclusive would, the uses on the old
+// one first done; reported (`onReopen`). An opening that cannot reach the database is refused with
+// `open_failed`, a retry later; the next use tries once more, nothing tries again on its own.
 //
 // At most `maxOpen` tenants hold a database connection at once (02-architecture §7 «连接»;
 // 01-positioning «技术选型»): open, opening, closing, or kept unclosed after a close that failed. A use
@@ -76,7 +84,7 @@ import {
   type StorageBackend,
   type TenantStore,
 } from "@fluxvita/saveslot-kernel";
-import type { ControlPlane, TenantId, UserId } from "./control-plane.ts";
+import type { ControlPlane, TenantEntry, TenantId, UserId } from "./control-plane.ts";
 import { closeLocalTenant } from "./local-tenant.ts";
 
 /** A tenant lent by the pool, as the local mode's `LocalTenant`. */
@@ -94,6 +102,11 @@ export interface TenantPoolOptions {
   readonly idleMs: number;
   /** At most this many tenants hold a connection at once; absent, no bound. */
   readonly maxOpen?: number;
+  /**
+   * Told that an open tenant was closed and opened again for a use: its storage was no longer
+   * usable (`connection`), or the directory names another database (`database`). Its ID only.
+   */
+  readonly onReopen?: (tenant: TenantId, why: "connection" | "database") => void;
   /** Tests only: how long a use waits for a place (OPEN_WAIT_MS otherwise). */
   readonly openWaitMs?: number;
   /**
@@ -147,6 +160,8 @@ export type TenantPoolFailure =
   | "close_failed"
   /** The pool is closed (closeAll). */
   | "pool_closed"
+  /** The tenant's database could not be reached to open it: retry later. */
+  | "open_failed"
   /**
    * Every place is held and none came free within OPEN_WAIT_MS, or the database refused the
    * connection as too many: retry shortly.
@@ -191,6 +206,8 @@ interface Slot {
   opening?: Promise<OpenTenant> | undefined;
   /** The opening has resolved: the tenant is open. */
   open?: boolean | undefined;
+  /** The storage lent while open, and the reference it was opened by. */
+  lent?: { readonly store: TenantStore; readonly ref: TenantEntry["ref"] } | undefined;
   /** It holds one of the `maxOpen` places: from before it is opened until its connection is gone. */
   place?: boolean | undefined;
   /** A place being waited for, shared by the uses of this tenant that need it. */
@@ -258,6 +275,11 @@ export interface TenantPoolState {
     readonly idleTimer: boolean;
     readonly placing: boolean;
   }[];
+}
+
+/** Whether two references name the same storage: same kind, and same cell and database. */
+function sameRef(a: TenantEntry["ref"], b: TenantEntry["ref"]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** A use waiting in line for a place. */
@@ -329,9 +351,19 @@ export class TenantPool {
   }
 
   /** Runs `fn` with the tenant open; it is not closed while `fn` runs. */
-  async use<T>(tenant: TenantId, fn: (t: OpenTenant) => Promise<T>): Promise<T> {
+  async use<T>(
+    tenant: TenantId,
+    fn: (t: OpenTenant) => Promise<T>,
+    /**
+     * The tenant's row of the directory, when the caller has read it already (a request's
+     * authentication): compared with what is open, so that a request reads it once.
+     */
+    o: { readonly entry?: TenantEntry } = {},
+  ): Promise<T> {
     this.#refuseClosed();
     const slot = this.#slot(tenant);
+    // What the directory names now: read here only when it was not given.
+    const entry = o.entry ?? (await this.options.control.tenant(tenant));
     // An exclusive holding the tenant and a close in progress, until neither: an exclusive may begin
     // while a close is waited for, and a close may be an exclusive's. The old storage is closed
     // first: opening it again meanwhile would meet its single-writer lock.
@@ -347,7 +379,20 @@ export class TenantPool {
         if (slot.unclosed !== undefined) {
           throw new TenantPoolError("close_failed", "the tenant's storage did not close");
         }
-      } else break;
+      } else if (slot.opening !== undefined && slot.open !== true) {
+        // An open in progress read the directory before this use began: seen through first, then
+        // compared like any open tenant.
+        await slot.opening.then(
+          () => {},
+          () => {},
+        );
+      } else {
+        const why = this.#stale(slot, entry);
+        if (why === undefined) break;
+        // Closed as an exclusive closes it (the uses on it first done), then opened below.
+        this.#reportReopen(tenant, why);
+        await this.exclusive(tenant, async () => {});
+      }
     }
     this.#refuseClosed();
     if (slot.idle !== undefined) {
@@ -376,8 +421,11 @@ export class TenantPool {
         const p = this.#open(tenant);
         slot.opening = p;
         p.then(
-          () => {
-            if (slot.opening === p) slot.open = true;
+          (t) => {
+            if (slot.opening === p) {
+              slot.open = true;
+              slot.lent = { store: t.store, ref: t.ref };
+            }
           },
           // A tenant that did not open is not kept, nor its place: the next use tries again.
           () => {
@@ -430,6 +478,26 @@ export class TenantPool {
     slot.idle.unref?.();
     // Idle now: one a use in line may have the place of.
     this.#pump();
+  }
+
+  /**
+   * Why an open tenant is not to be lent as it is: its storage no longer usable, or another database
+   * named for it than the one open; none when it is good, or not open.
+   */
+  #stale(slot: Slot, entry: TenantEntry | undefined): "connection" | "database" | undefined {
+    if (slot.open !== true || slot.lent === undefined) return undefined;
+    if (slot.lent.store.usable === false) return "connection";
+    // A tenant gone from the directory is not opened again here: what refuses it is not the pool.
+    if (entry !== undefined && !sameRef(entry.ref, slot.lent.ref)) return "database";
+    return undefined;
+  }
+
+  #reportReopen(tenant: TenantId, why: "connection" | "database"): void {
+    try {
+      this.options.onReopen?.(tenant, why);
+    } catch {
+      // A report that fails is not the pool's failure.
+    }
   }
 
   /** Takes one of the `maxOpen` places: at once while one is free and no one is in line; else in line. */
@@ -657,6 +725,7 @@ export class TenantPool {
     if (opening === undefined && unclosed === undefined) return;
     slot.opening = undefined;
     slot.open = undefined;
+    slot.lent = undefined;
     slot.unclosed = undefined;
     const closing = (async () => {
       if (unclosed !== undefined) {
@@ -677,8 +746,10 @@ export class TenantPool {
           this.#report(tenant, "high_water_not_advanced", r.highWaterError);
         }
       } catch (e) {
-        slot.unclosed = t.store;
         this.#report(tenant, "close_failed", e);
+        // A storage no longer usable holds nothing to close again (its connection is gone): it is
+        // let go. Any other is kept, and closed again before the tenant is opened anew.
+        if (t.store.usable !== false) slot.unclosed = t.store;
       }
     })();
     slot.closing = closing;
@@ -688,7 +759,7 @@ export class TenantPool {
   }
 
   /** Opens the tenant as the directory routes it now, and checks that it serves. */
-  async #open(tenant: TenantId): Promise<OpenTenant> {
+  async #open(tenant: TenantId): Promise<OpenTenant & { readonly ref: TenantEntry["ref"] }> {
     const { control, backend } = this.options;
     const entry = await control.tenant(tenant);
     if (entry === undefined) throw new TenantPoolError("unknown_tenant", "no such tenant");
@@ -707,6 +778,10 @@ export class TenantPool {
       if (code === "connection_failed" && sqlState === TOO_MANY_CONNECTIONS) {
         this.#reportFull(tenant, "database");
         throw new TenantPoolError("pool_full", "the database has no connection to give");
+      }
+      // Not reached now (the database restarting, the network): a retry later, no internal error.
+      if (code === "connection_failed") {
+        throw new TenantPoolError("open_failed", "the tenant's database could not be reached");
       }
       throw e;
     });
@@ -732,7 +807,7 @@ export class TenantPool {
         throw new TenantPoolError(what, `the tenant does not serve: ${what}`);
       }
       // `openTenant` steps 4 and 5 come here with the deletion flows, as in the local mode.
-      return { tenant, owner: entry.owner, store, anchor: control.anchors };
+      return { tenant, owner: entry.owner, store, anchor: control.anchors, ref: entry.ref };
     } catch (e) {
       await store.close().catch(() => {});
       throw e;

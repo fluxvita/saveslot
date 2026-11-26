@@ -155,6 +155,8 @@ describe("authenticateServer", () => {
       });
       expect(await auth(`Bearer ${token}`)).toEqual({
         tenant: tenant.id,
+        // The directory's row read at authentication, passed on so the operation reads it no more.
+        entry: tenant,
         principal: {
           kind: "user",
           actor: tenant.owner,
@@ -176,6 +178,7 @@ describe("authenticateServer", () => {
       const caller = await auth(`Bearer ${c.token}`);
       expect(caller).toEqual({
         tenant: tenant.id,
+        entry: tenant,
         principal: {
           kind: "connection",
           actor: c.id,

@@ -65,6 +65,12 @@ export interface TenantStore {
    * timeout can only end the whole DB Worker (02-architecture §7), so the kernel sets none there.
    */
   readonly enforcesStatementTimeout?: boolean;
+  /**
+   * Whether the store can still be used. `false` is final: this store object does not come back
+   * (its connection is gone, or another opener took its storage over); it is only to be closed and
+   * the storage opened again (02-architecture §7 «连接»). Absent means usable.
+   */
+  readonly usable?: boolean;
   close(): Promise<void>;
 }
 
