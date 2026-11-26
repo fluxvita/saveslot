@@ -522,8 +522,10 @@ export function overInterval<M>(
 /**
  * The rows shown, not yet ordered. On a state table read over an interval, in this order (04-contract
  * §4): the segments the field conditions kept (all of each entity's, not only those meeting the
- * interval) are merged where adjacent with the same values read and the same marks; those meeting
- * the interval are kept; the `valid_from` / `valid_to` conditions apply to them; then `clip`.
+ * interval) are merged where adjacent with the same values read, whatever their marks (04-contract
+ * §15: marks never change how rows are cut; the merged row carries every segment's); those
+ * meeting the interval are kept; the `valid_from` / `valid_to` conditions apply to them; then
+ * `clip`.
  */
 export function shownRows(
   plan: QueryPlan,
