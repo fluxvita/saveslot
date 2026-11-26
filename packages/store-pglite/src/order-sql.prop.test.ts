@@ -4,7 +4,9 @@
 //
 // 1. `ORDER BY orderBySql(keys)` gives the rows in `cmpKeys`'s order (equal keys in either order);
 // 2. `WHERE afterKeysSql(keys, k)` keeps exactly the rows `cmpKeys` puts strictly after `k`, for
-//    `k` one of the rows' keys or keys of its own.
+//    `k` one of the rows' keys or keys of its own;
+// 3. `WHERE rowAfterSql(keys, k)`, on keys all ascending and never null (a state table's primary
+//    key), keeps the same rows.
 //
 // The values are drawn from small pools as well as wide ranges, so that keys tie: numbers equal in
 // value but written apart (`1`, `1.0`, `1.00`), text whose code point order is not its UTF-16 order
@@ -23,6 +25,7 @@ import {
   type KeyValue,
   orderBySql,
   Params,
+  rowAfterSql,
   type SqlKey,
   type SqlKeyType,
 } from "@fluxvita/saveslot-kernel/testing";
@@ -223,7 +226,39 @@ async function check(s: Sample): Promise<void> {
   expect(kept.rows.map((r) => r.i)).toEqual(expected);
 }
 
+/** Rows and keys of its own, every key ascending and never null: a state table's primary key. */
+const ascendingNoNull: fc.Arbitrary<Sample> = fc
+  .array(fc.constantFrom(...TYPES), { minLength: 1, maxLength: 3 })
+  .chain((types) =>
+    fc.record({
+      types: fc.constant(types),
+      dirs: fc.constant(types.map(() => "asc" as const)),
+      rows: fc.array(fc.tuple(...types.map((t) => CELLS[t])), { minLength: 1, maxLength: 30 }),
+      after: fc.oneof(fc.nat({ max: 29 }), fc.tuple(...types.map((t) => CELLS[t]))),
+    }),
+  );
+
+/** `WHERE rowAfterSql(keys, k)`: exactly the rows cmpKeys puts strictly after `k`. */
+async function checkRow(s: Sample): Promise<void> {
+  const after = typeof s.after === "number" ? (s.rows[s.after % s.rows.length] as Cell[]) : s.after;
+  const q = new Params();
+  const u = table(s, q);
+  const where = rowAfterSql(u.keys, keysOf(after), q);
+  const kept = await store.read((tx) =>
+    tx.query<{ i: number }>(`SELECT v.i FROM ${u.from} WHERE ${where} ORDER BY v.i`, q.list),
+  );
+  const expected = s.rows
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => cmpKeys(u.specs, keysOf(r), keysOf(after)) > 0)
+    .map(({ i }) => i);
+  expect(kept.rows.map((r) => r.i)).toEqual(expected);
+}
+
 describe("query's order in SQL is cmpKeys's", () => {
+  it("a row comparison after keys ascending and never null keeps the rows cmpKeys puts after them", async () => {
+    await fc.assert(fc.asyncProperty(ascendingNoNull, checkRow), { numRuns: RUNS, ...seeded });
+  });
+
   it("every key's direction drawn", async () => {
     await fc.assert(fc.asyncProperty(sample(DIR), check), { numRuns: RUNS, ...seeded });
   });

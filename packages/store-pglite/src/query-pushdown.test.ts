@@ -195,6 +195,7 @@ type Out = Awaited<ReturnType<typeof queryInTx>>;
 /** One page both ways: pushed down (with the statements it sent) and as the whole read. */
 async function both(
   params: Record<string, unknown>,
+  batches?: { page?: number; count?: number },
 ): Promise<{ pushed: Out; full: Out; sent: string[] }> {
   const sent: string[] = [];
   const input = (full: boolean) => ({
@@ -205,6 +206,7 @@ async function both(
     params,
     read: "rd_0000000000000000" as never,
     ...(full ? { full: true as const } : {}),
+    ...(!full && batches !== undefined ? { batches } : {}),
   });
   const pushed = await s.store.read((tx) => queryInTx(recording(tx, sent), input(false)));
   const full = await s.store.read((tx) => queryInTx(tx, input(true)));
@@ -216,14 +218,17 @@ const onTable = (sent: readonly string[], t: string) =>
   sent.filter((x) => x.includes(`FROM "${t}"`) && !x.includes("count(*)"));
 
 /** Every page of a query, both ways, each pushed-down page equal to the whole read's. */
-async function pages(params: Record<string, unknown>) {
+async function pages(params: Record<string, unknown>, batches?: { page?: number; count?: number }) {
   const out: Out[] = [];
   let position: string | undefined;
   for (let i = 0; i < 20; i++) {
-    const { pushed, full } = await both({
-      ...params,
-      ...(position !== undefined ? { position } : {}),
-    });
+    const { pushed, full } = await both(
+      {
+        ...params,
+        ...(position !== undefined ? { position } : {}),
+      },
+      batches,
+    );
     expect({ page: i, ...pushed }).toEqual({ page: i, ...full });
     out.push(pushed);
     position = pushed.result.next_position;
@@ -353,5 +358,93 @@ describe("a first page pushed down to SQL", () => {
     expect([...targets].sort()).toEqual([...shown].sort());
     // None of the rows after the page is among them.
     for (const r of rows) if (!shown.includes(r)) expect(targets).not.toContain(r);
+  });
+});
+
+// The batches a state table over an interval is streamed in, set by the test (`batches`), so that
+// where their boundaries fall does not hang on how the entity IDs sort. `budgets` here: `food` in
+// four segments that merge into two rows (into one with only `category` read), `rent` in eleven of
+// eleven values, `fun` in one.
+describe("a state table over an interval streamed at batch boundaries the test sets", () => {
+  const during = ["2026-11-01", null];
+  /** How many segments `budgets` has: every one of them meets `during`. */
+  const segments = async () =>
+    Number(
+      (
+        await s.store.read((tx) =>
+          tx.query<{ n: string }>(`SELECT count(*)::text AS n FROM "t_t2_v1"`),
+        )
+      ).rows[0]?.n,
+    );
+
+  it("merges an entity whose segments lie across batches, read in one piece", async () => {
+    // Batches of one, two and three segments: every entity of more than one crosses a boundary,
+    // and with only `category` read each merges into one row, whatever the order of the IDs.
+    for (const page of [1, 2, 3])
+      for (const limit of [1, 2, 3]) {
+        const got = await pages(
+          { table: "budgets", valid_during: during, fields: ["category"], limit },
+          { page },
+        );
+        expect({ page, limit, rows: got.flatMap(ids).length }).toEqual({ page, limit, rows: 3 });
+      }
+  });
+
+  it("reads an entity larger than a batch, and ends a stream on a full batch", async () => {
+    const n = await segments();
+    expect(n).toBeGreaterThan(11);
+    // Batches of two: `rent` (eleven segments) spans six. Batches of every segment and of one
+    // less: the stream's last batch full, the next one empty; or one segment over.
+    for (const page of [2, n, n - 1])
+      for (const limit of [1, 3, 200])
+        await pages({ table: "budgets", valid_during: during, limit }, { page });
+  });
+
+  it("gives the page's rows from the entity it stops on, the page ending within it", async () => {
+    // Only `rent`: the page and the row after it both come from the entity the stream stops on.
+    for (const limit of [1, 5, 10])
+      await pages(
+        {
+          table: "budgets",
+          valid_during: during,
+          where: [{ field: "category", op: "=", value: "rent" }],
+          limit,
+        },
+        { page: 2 },
+      );
+  });
+
+  it("counts across more than one count batch", async () => {
+    const n = await segments();
+    for (const count of [1, 2, 3, n - 1, n])
+      for (const fields of [undefined, ["category"]]) {
+        const params = {
+          table: "budgets",
+          valid_during: during,
+          ...(fields !== undefined ? { fields } : {}),
+          limit: 1,
+        };
+        const { pushed, full } = await both(params, { count });
+        expect({ count, fields, total: pushed.result.total }).toEqual({
+          count,
+          fields,
+          total: full.result.total,
+        });
+        expect(pushed).toEqual(full);
+      }
+  });
+
+  it("reads each batch after the last segment by a row comparison on the primary key", async () => {
+    const { sent } = await both({ table: "budgets", valid_during: during, limit: 1 }, { page: 1 });
+    const later = onTable(sent, "t_t2_v1").filter((x) => x.includes("ROW("));
+    expect(later.length).toBeGreaterThan(0);
+    for (const x of later) expect(x).toMatch(/ROW\(entity_id, valid_from\) > ROW\(/);
+    // The count reads the columns of the fields read only.
+    const counted = await both(
+      { table: "budgets", valid_during: during, fields: ["category"], limit: 1 },
+      { count: 2 },
+    );
+    const statements = onTable(counted.sent, "t_t2_v1").filter((x) => !x.includes("c_f2_"));
+    expect(statements.length).toBeGreaterThan(0);
   });
 });

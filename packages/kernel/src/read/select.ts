@@ -18,7 +18,7 @@ import { decodeColumns as decode } from "../request/index.ts";
 import { column, INSTANT_TEXT, physical, selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { containsPoint, pointWithin } from "../time/index.ts";
-import { afterKeysSql, type KeyValue, orderBySql, type SqlKey } from "./order-sql.ts";
+import { type KeyValue, orderBySql, rowAfterSql, type SqlKey } from "./order-sql.ts";
 import type { Condition, Literal, QueryPlan } from "./params.ts";
 import { type Actor, ReadError } from "./types.ts";
 
@@ -266,10 +266,13 @@ function selection(plan: QueryPlan, p: Params): { from: string; where: string; c
   return { from: business, where: where.join(" AND "), cols };
 }
 
-function selectedOf(plan: QueryPlan, x: Record<string, unknown>): SelectedRow {
-  const t = plan.table;
+function selectedOf(
+  plan: QueryPlan,
+  x: Record<string, unknown>,
+  fields: readonly CompiledBaseField[] = plan.table.fields,
+): SelectedRow {
   const values: Record<string, FieldValue> = Object.create(null);
-  for (const f of t.fields) {
+  for (const f of fields) {
     const n = selectOf(f).length;
     values[f.id] = decode(
       f,
@@ -297,30 +300,47 @@ export async function selectRows(tx: ReadTx, plan: QueryPlan): Promise<SelectedR
   return r.rows.map((x) => selectedOf(plan, x));
 }
 
+/** How `selectFirst` reads a batch of a state table's segments over an interval. */
+export interface Batch {
+  /** The primary key (entity, `valid_from`) of the last segment read: the batch starts after it. */
+  readonly after?: readonly KeyValue[];
+  /** The fields whose values are read; the others are left out of the row. All when not given. */
+  readonly fields?: readonly CompiledBaseField[];
+}
+
 /**
- * The first `limit` rows the plan selects in the order of `keys` (./order-sql.ts), after the keys
- * `after` when given: a first page pushed down to SQL where each selected row is a row shown, or
- * a batch of a state table's segments read in order over an interval.
+ * The first `limit` rows the plan selects in the order of `keys` (./order-sql.ts): a first page
+ * pushed down to SQL where each selected row is a row shown, or a batch of a state table's
+ * segments read in the order of its primary key over an interval (`batch`).
  */
 export async function selectFirst(
   tx: ReadTx,
   plan: QueryPlan,
   keys: readonly SqlKey[],
   limit: number,
-  after?: readonly KeyValue[],
+  batch?: Batch,
 ): Promise<SelectedRow[]> {
   const p = new Params();
   const { from, where, cols } = selection(plan, p);
   const all = [
     ...(where !== "" ? [where] : []),
-    ...(after !== undefined ? [afterKeysSql(keys, after, p)] : []),
+    ...(batch?.after !== undefined ? [rowAfterSql(keys, batch.after, p)] : []),
   ];
+  const fields = batch?.fields;
+  // The columns of the fields read only: each field's are `… AS c_<field>_<i>` (`selection`).
+  const read =
+    fields === undefined
+      ? cols
+      : cols.filter((c) => {
+          const m = / AS c_(.+)_\d+$/.exec(c);
+          return m === null || fields.some((f) => f.id === m[1]);
+        });
   const r = await tx.query<Record<string, unknown>>(
-    `SELECT ${cols.join(", ")} FROM ${from}${all.length > 0 ? ` WHERE ${all.join(" AND ")}` : ""}` +
+    `SELECT ${read.join(", ")} FROM ${from}${all.length > 0 ? ` WHERE ${all.join(" AND ")}` : ""}` +
       ` ORDER BY ${orderBySql(keys)} LIMIT ${p.add(limit, "::bigint")}`,
     p.list,
   );
-  return r.rows.map((x) => selectedOf(plan, x));
+  return r.rows.map((x) => selectedOf(plan, x, fields));
 }
 
 /** How many rows the plan selects (rows shown, under the same condition as `selectFirst`). */
