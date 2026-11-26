@@ -843,14 +843,10 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         process.env["DELETION_COUNTS"],
         `${isState ? "state" : "event"} ${JSON.stringify({ seen, notYet })}\n`,
       );
+    // The generator is not degenerate as a whole: most samples are checked.
     expect(seen.samples).toBeGreaterThan(RUNS / 4);
-    expect(seen.listed).toBeGreaterThan(0);
-    expect(seen.restated).toBeGreaterThan(0);
-    // The item layer reached: items superseded and refreshed (against a generator gone degenerate).
-    // A candidate leaving an item that stays open, and an awaiting item opened, are built in the
-    // fixed cases (delete-op.test.ts); the samples rarely reach them.
-    // Built in: two stale candidates against #20 in one item; deleting #30's source (S3, the third
-    // source cited) takes one away and the item stays open, refreshed.
+    // The rest of what the samples must reach is built in, each counted by its own case, not left
+    // to the samples hitting it.
     const from = { mode: "given", value: "2026-10-01" } as never;
     const valid = isState ? { valid: { from, to: { mode: "open" } } } : {};
     const w = (op: number, seen: number, value: string, src: string) =>
@@ -862,14 +858,34 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
         ...valid,
         fields: { f2: { value, sources: [src], explicit: false } },
       }) as unknown as Op;
-    const before = seen.refreshed;
-    await checkSample(
-      [w(10, 0, "1", "S1"), w(20, 10, "2", "S2"), w(30, 10, "3", "S3"), w(40, 10, "4", "S4")],
-      [],
-      2,
-    );
-    expect(seen.refreshed).toBeGreaterThan(before);
+    // Built in: #30, stale against #20, is the one candidate of its item. Deleting #20's source
+    // (S2, the second source cited) gives the row #30's value (listed), restates #30 as in effect
+    // (restated), and the item's only member leaves it (superseded).
+    {
+      const at = { ...seen };
+      await checkSample([w(10, 0, "1", "S1"), w(20, 10, "2", "S2"), w(30, 10, "3", "S3")], [], 4);
+      expect({
+        listed: seen.listed - at.listed,
+        restated: seen.restated - at.restated,
+        superseded: seen.superseded - at.superseded,
+      }).toEqual({ listed: 1, restated: 1, superseded: 1 });
+    }
+    // Built in: two stale candidates against #20 in one item; deleting #30's source (S3, the third
+    // source cited) takes one away and the item stays open, refreshed. An awaiting item opened is
+    // built in the fixed cases (delete-op.test.ts); the samples rarely reach it.
+    {
+      const at = seen.refreshed;
+      await checkSample(
+        [w(10, 0, "1", "S1"), w(20, 10, "2", "S2"), w(30, 10, "3", "S3"), w(40, 10, "4", "S4")],
+        [],
+        2,
+      );
+      expect(seen.refreshed).toBe(at + 1);
+    }
+    expect(seen.listed).toBeGreaterThan(0);
+    expect(seen.restated).toBeGreaterThan(0);
     expect(seen.superseded).toBeGreaterThan(0);
+    expect(seen.refreshed).toBeGreaterThan(0);
     if (isState) {
       const listed = seen.listed;
       await checkSample(NO_VALUE_GONE.ops, NO_VALUE_GONE.decisions, NO_VALUE_GONE.pick);
