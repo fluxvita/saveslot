@@ -311,6 +311,17 @@ describe("deletion events decoded into records (09 §5.9)", () => {
       42, 60,
     ]);
     expect(() => decodeRecords(STATE, [confirmed])).toThrow(/does not handle deletion.confirmed/);
+    // Refused as this version's, not as a log at odds (a row a deletion touched is not judged).
+    expect(
+      (() => {
+        try {
+          decodeRecords(STATE, [executed]);
+        } catch (e) {
+          return (e as { code?: string; detail?: { reason?: string } }).detail?.reason;
+        }
+        return undefined;
+      })(),
+    ).toBe("not_implemented");
   });
 
   it("item.refreshed re-giving candidates: each replaces the one at its index", () => {

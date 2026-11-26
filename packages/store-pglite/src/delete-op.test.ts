@@ -766,6 +766,57 @@ describe("the shapes this version refuses, before anything is appended", () => {
     return { ...l, first, ver: read.ver };
   };
 
+  it(
+    "an awaiting item a deletion opened: a decision on it, or a write on its entity, not_implemented",
+    async () => {
+      // #1 5000 from 10-01; #2 4000 on [11-10, 11-20); #3 3000 on [09-01, 12-01), having seen #1:
+      // a candidate against #2. Deleting #2's words leaves #3 awaiting, in an item the deletion
+      // opens (its item.created in the deletion's operation). Judging the entity would read the
+      // deletion's event, which this version does not: refused as such, nothing appended.
+      const r1 = await w(
+        [{ intent: "insert", table: "budget", valid_from: "2026-10-01", set: { amount: "5000" } }],
+        "budget is 5000 from october",
+      );
+      const entity = r1.ops[0].target.entity as string;
+      const ver = r1.ops[0].ver;
+      const span = (from: string, to: string, amount: string) => ({
+        intent: "update",
+        table: "budget",
+        entity,
+        ver,
+        valid_from: from,
+        valid_to: to,
+        set: { amount },
+      });
+      await w([span("2026-11-10", "2026-11-20", "4000")], "4000 for ten days");
+      await w([span("2026-09-01", "2026-12-01", "3000")], "3000 from september");
+      const { binding } = await previewDeletion(s.store, {
+        sources: [await sourceId("4000 for ten days")],
+      });
+      const receipt = await confirm(binding);
+      const opened = receipt.now_awaiting[0]?.item;
+      expect(await openItems()).toEqual([opened?.id]);
+      const refused = async (f: () => Promise<unknown>) => {
+        const at = await tail();
+        const e = await thrown(f);
+        expect([e?.code, e?.detail?.reason]).toEqual(["internal", "not_implemented"]);
+        expect(await tail()).toBe(at);
+      };
+      for (const decision of ["confirm", "reject"]) {
+        await refused(() =>
+          resolve$(s.store, ctx(), { id: opened?.id, item_ver: opened?.item_ver, decision }),
+        );
+      }
+      const [row]: Any = (await query(s.store, ctx(), { table: "budget" })).rows;
+      await refused(() =>
+        w([{ ...span("2026-12-05", "2026-12-10", "1"), ver: row?.ver }], "one in december"),
+      );
+      expect(await openItems()).toEqual([opened?.id]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
   // Any operation on the row after its earliest deletion, whatever it changes: each kind of one.
   it(
     "a row corrected after an earlier deletion: ops_after_deletion",
