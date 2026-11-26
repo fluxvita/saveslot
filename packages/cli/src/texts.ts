@@ -90,13 +90,15 @@ export const TEXTS = {
     ["unknown_table", s("See the tables with saveslot slot list.")],
     ["internal", s("The service log is in run/saveslot.log under the home.")],
   ]),
+  /** Before the path of the directory or file a `permissions` refusal is about. */
+  credentialRefusedPath: s("refused:"),
   credential: (c: CredentialError["code"]): Static =>
     ({
       not_initialized: s(
         "error: no user session here. Run saveslot init first, or set SAVESLOT_TOKEN.",
       ),
       permissions: s(
-        "error: the credentials are open to others, or not this user's; saveslot will not use them. Make the home and credentials/ 0700 and the files in it 0600.",
+        "error: saveslot's home, its credentials/ or a credentials file is open to others, or not this user's; saveslot will not use them. Make the home and credentials/ 0700 and the files in it 0600.",
       ),
       malformed: s(
         "error: SAVESLOT_TOKEN, the session file, profiles.json or a profile's credentials file does not hold what it should. Unset SAVESLOT_TOKEN to run as the user session; sign in again with saveslot login.",

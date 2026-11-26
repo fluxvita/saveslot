@@ -184,7 +184,12 @@ export function describeError(
   }
   if (e instanceof CredentialError) {
     // A profile's lock still held after its full wait: try again later, as setup's lock.
-    return { lines: [[words(TEXTS.credential(e.code))]], exit: e.code === "busy" ? 7 : 6 };
+    const lines: Line[] = [[words(TEXTS.credential(e.code))]];
+    // Which directory or file is open to others: the home, credentials/ or a file in it.
+    if (e.code === "permissions" && e.path !== undefined) {
+      lines.push(t`  ${words(TEXTS.credentialRefusedPath)} ${untrusted(e.path)}`);
+    }
+    return { lines, exit: e.code === "busy" ? 7 : 6 };
   }
   if (busyAnswer(e)) return { lines: [[words(TEXTS.busy(o.remote === true))]], exit: 7 };
   // A sign-in's renewal refused for another reason than its end (that one is `refresh_refused`).

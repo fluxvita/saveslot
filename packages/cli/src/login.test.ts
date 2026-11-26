@@ -642,6 +642,57 @@ describe("signIn before any sign-in request", () => {
   });
 
   it.each([
+    ["the home", async () => chmod(home, 0o755), () => home],
+    [
+      "credentials/",
+      async () => {
+        mkdirSync(join(home, "credentials"), { mode: 0o700 });
+        await chmod(join(home, "credentials"), 0o755);
+      },
+      () => join(home, "credentials"),
+    ],
+    [
+      "the profile's credentials file",
+      async () => {
+        mkdirSync(join(home, "credentials"), { mode: 0o700 });
+        writeFileSync(profileCredentialsFile(home, "lab"), "{}", { mode: 0o644 });
+      },
+      () => profileCredentialsFile(home, "lab"),
+    ],
+  ])(
+    "%s open to others: refused with its path before any request, no browser opened",
+    async (_, open, path) => {
+      await open();
+      const s = await stand();
+      const b = browserAt(s);
+      await expect(
+        signIn({
+          home,
+          profile: "lab",
+          server: s.origin,
+          io: capture().io,
+          testing: { openBrowser: b.open },
+        }),
+      ).rejects.toMatchObject({ name: "CredentialError", code: "permissions", path: path() });
+      expect(s.seen).toEqual([]);
+      expect(b.shown).toEqual([]);
+    },
+  );
+
+  it("a home not made yet: nothing to refuse, the sign-in goes on", async () => {
+    rmSync(home, { recursive: true });
+    const s = await stand();
+    const r = await signIn({
+      home,
+      profile: "lab",
+      server: s.origin,
+      io: capture(false).io,
+      testing: { sleep: async () => {} },
+    });
+    expect(r).toEqual({ ok: true, mode: "device" });
+  });
+
+  it.each([
     ["local", "local"],
     ["not a name", "Lab!"],
   ])("a profile %s: a usage error, nothing sent", async (_, profile) => {
@@ -885,11 +936,11 @@ describe("signIn's write", () => {
     expect(exists(profileCredentialsFile(home, "lab"))).toBe(false);
   });
 
-  it("credentials/ open to others: the permissions error, not a bad answer", async () => {
+  it("credentials/ opened to others during the sign-in: the permissions error, not a bad answer", async () => {
     const s = await stand();
     mkdirSync(join(home, "credentials"), { mode: 0o700 });
-    await chmod(join(home, "credentials"), 0o755);
-    expect(await device(s)).toEqual({
+    const opened = device(s, { sleep: async () => chmod(join(home, "credentials"), 0o755) });
+    expect(await opened).toEqual({
       ok: false,
       exit: 6,
       message: TEXTS.credential("permissions"),
@@ -1177,6 +1228,17 @@ describe("the commands", () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain("(profile my-lab)");
     expect(r.out).toContain(`${TEXTS.loginUseHint} my-lab`);
+  });
+
+  it("login with a home open to others: exit 6 before signing in, the home named", async () => {
+    await chmod(home, 0o755);
+    const s = await stand();
+    const r = await cli(["login", "--server", s.origin, "--profile", "lab"]);
+    expect(r.code).toBe(6);
+    expect(r.err).toContain(TEXTS.credential("permissions"));
+    expect(r.err).toMatch(new RegExp(`${TEXTS.credentialRefusedPath} .*${home}`));
+    expect(s.seen).toEqual([]);
+    expect((await readProfiles(home)).servers.has("lab")).toBe(false);
   });
 
   it("a sign-in that fails registers no profile", async () => {

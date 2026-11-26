@@ -26,6 +26,7 @@ import {
   ClientUsageError,
   ContractCallError,
   CredentialError,
+  checkProfileCredentialsPrivate,
   OAuthError,
   oauthPost,
   PROFILE_NAME,
@@ -466,6 +467,9 @@ async function device(
  *   wait (as setup's lock): 7; an answer not of these endpoints: 1.
  * - `stop`: 130, the listener closed, nothing written; also when it comes while the tokens are
  *   fetched (06 §6.2).
+ * - The home, `credentials/` or the profile's credentials file not private (where there): the
+ *   `CredentialError` thrown, before any request is made, with the path of the one refused (06 §2).
+ *   A sign-in is not made to be thrown away at the write.
  */
 export async function signIn(o: {
   readonly home: string;
@@ -491,6 +495,8 @@ export async function signIn(o: {
       throw new Ended(2, TEXTS.loginServerInvalid);
     }
     if (server !== o.server) throw new Ended(2, TEXTS.loginServerInvalid);
+    // What the write at the end would refuse, refused now: thrown as it is, its path said.
+    await checkProfileCredentialsPrivate(o.home, o.profile);
     const d: Deps = { server, now: t.now ?? Date.now, stop: o.stop };
     let metadata: unknown;
     try {

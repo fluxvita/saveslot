@@ -813,14 +813,23 @@ async function setupCommand(
   // `saveslot login` for the profile (06 §3.3 item 13): its progress on stderr, its message on an
   // end; stopped, setup says the signal and exits 128 + its number, as for any of its steps.
   const login = async (x: { profile: string; server: string; stop: AbortSignal }) => {
-    const r = await (io.signIn ?? signIn)({
-      home: o.home,
-      profile: x.profile,
-      server: x.server,
-      io: { ...io, boundary: boundaryFor(io.stderrIsTTY, o.tags, env) },
-      stop: x.stop,
-      ...(ownFlag(o, "device") ? { mode: "device" as const } : {}),
-    });
+    let r: Awaited<ReturnType<typeof signIn>>;
+    try {
+      r = await (io.signIn ?? signIn)({
+        home: o.home,
+        profile: x.profile,
+        server: x.server,
+        io: { ...io, boundary: boundaryFor(io.stderrIsTTY, o.tags, env) },
+        stop: x.stop,
+        ...(ownFlag(o, "device") ? { mode: "device" as const } : {}),
+      });
+    } catch (e) {
+      // The home or credentials/ not private, refused before any request: said with its path.
+      if (!(e instanceof CredentialError)) throw e;
+      const d = describeError(e, { remote: true });
+      io.err(`${render(d.lines, boundaryFor(io.stderrIsTTY, o.tags, env))}\n`);
+      return { exit: d.exit, declined: false };
+    }
     if (r.ok) return { exit: 0, declined: false };
     io.err(`${r.message}\n`);
     return { exit: r.exit, declined: r.kind === "declined" };

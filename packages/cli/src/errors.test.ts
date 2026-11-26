@@ -222,7 +222,13 @@ describe("an error's text (06 §6.3)", () => {
 
   it("no credential, an unreachable service, a usage error, anything else", () => {
     expect(describeError(new CredentialError("permissions", "m", "/home/x")).exit).toBe(6);
-    expect(text(new CredentialError("permissions", "m", "/home/x"))).not.toContain("/home/x");
+    // The path refused is said (#109), inside the untrusted boundary; the error's own message is not.
+    const refused = text(new CredentialError("permissions", "m: chmod", "/home/x"));
+    expect(refused).toContain(`${TEXTS.credentialRefusedPath} 「/home/x」`);
+    expect(refused).not.toContain("m: chmod");
+    for (const c of ["not_initialized", "malformed", "busy"] as const) {
+      expect(text(new CredentialError(c, "m", "/home/x"))).not.toContain("/home/x");
+    }
     // A profile's lock still held after its wait: try again later, as setup's lock (06 §6.2).
     for (const c of [
       "not_initialized",

@@ -3,7 +3,15 @@
 // the hosts given the remote add command, nothing issued; an entry already there for this server
 // or for something else; and what is refused before anything is done.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -308,6 +316,20 @@ describe("setup --profile: not signed in", () => {
       ["GET /.well-known/oauth-authorization-server "],
       undefined,
     ]);
+  });
+
+  it("credentials/ open to others: login refuses it before asking the server, its path said", async () => {
+    mkdirSync(join(home, "credentials"), { mode: 0o700 });
+    chmodSync(join(home, "credentials"), 0o755);
+    const r = await setup(["--host", "claude-code", "--json"], { answers: [""] });
+    expect([r.code, JSON.parse(r.out), seen, args("claude")]).toEqual([
+      6,
+      { signed_in: "failed" },
+      [],
+      undefined,
+    ]);
+    expect(r.err).toContain(TEXTS.credential("permissions"));
+    expect(r.err).toContain(join(home, "credentials"));
   });
 
   it("login fails: signed_in failed and nothing after it, its message and exit code", async () => {

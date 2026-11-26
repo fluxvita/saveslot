@@ -101,6 +101,18 @@ export async function readPrivateFile(
   }
 }
 
+/**
+ * Checks `dirs` (outermost first) and `file` as a read or a write of them would, without making
+ * or reading anything: each that exists, up to the first that does not. Refuses as `checkPrivate`
+ * does, with the path of the one refused. For a command that should know before it starts what a
+ * later write would refuse (`saveslot login`, before the sign-in it would write).
+ */
+export async function checkPrivatePaths(dirs: readonly string[], file: string): Promise<void> {
+  if (!(await directoriesThere(dirs))) return;
+  const s = await lstatOrMissing(file);
+  if (s !== undefined) checkPrivate(file, s, "file");
+}
+
 /** Syncs a directory, so that a rename or an unlink in it is on disk. */
 async function syncDirectory(dir: string): Promise<void> {
   const h = await open(dir, constants.O_RDONLY);

@@ -27,6 +27,7 @@ import {
   TOKEN_VARIABLE,
 } from "./credentials.ts";
 import {
+  checkPrivatePaths,
   privateDirectories,
   readPrivateFile,
   removePrivateFile,
@@ -155,6 +156,15 @@ export async function writeProfileCredentials(
     2,
   )}\n`;
   await writePrivateFile([home, credentialsDir(home)], fileName(profile), text);
+}
+
+/**
+ * Refuses, as `writeProfileCredentials` would, a home, `credentials/` or profile's credentials
+ * file that is not private (each where it exists): `saveslot login` asks this before it signs in,
+ * so that a sign-in is not made only to be thrown away (06-cli §2).
+ */
+export async function checkProfileCredentialsPrivate(home: string, profile: string): Promise<void> {
+  await checkPrivatePaths([home, credentialsDir(home)], profileCredentialsFile(home, profile));
 }
 
 /** Removes a profile's credentials (`saveslot logout`); false when there were none. */
