@@ -1,0 +1,12 @@
+{
+  "commit": "61b2450232da2573d27d5b6ea1362aece9543802",
+  "tag": "v0.1.0",
+  "tag_commit": "145ce7243912c1253c5e23764acdb9544bcadd06",
+  "changed_since_tag": [
+    "packages/daemon/src/format-sample-server.test.ts",
+    "packages/daemon/src/format-sample.fixture.ts",
+    "packages/daemon/src/format-sample.test.ts",
+    "scripts/make-format-sample.ts"
+  ],
+  "uncommitted": false
+}

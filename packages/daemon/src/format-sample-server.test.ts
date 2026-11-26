@@ -34,6 +34,7 @@ import {
   dumpScript,
   expectedOf,
   REPO,
+  SAMPLE_SWITCHED,
   SAMPLES_DIR,
   type ServerSampleExpected,
   sampledFormats,
@@ -141,7 +142,9 @@ async function makeSample(out: string): Promise<ServerSampleExpected> {
     if (entry === undefined || entry.ref.kind !== "postgres") {
       throw new Error("the sample's tenant has no database");
     }
-    const expected = await writeSampleHistory(server.address, session);
+    const expected = await writeSampleHistory(server.address, session, {
+      switched: SAMPLE_SWITCHED,
+    });
     tenants.push({ name, tenant, database: entry.ref.database, session, expected });
   }
   await server.close();
@@ -193,7 +196,9 @@ async function readSample(dir: string): Promise<void> {
   const server = await serve(store, d.backend);
   for (const t of sample.tenants) {
     // The session issued when the sample was made is still taken.
-    const now = await expectedOf(server.address, t.session);
+    const now = await expectedOf(server.address, t.session, {
+      switched: t.expected.switched === true,
+    });
     // Reads made since the sample was dumped are more reads, and nothing else.
     expect({ ...now, reads_at_least: t.expected.reads_at_least }).toEqual(t.expected);
     expect(now.reads_at_least).toBeGreaterThanOrEqual(t.expected.reads_at_least);
@@ -259,9 +264,9 @@ describe.skipIf(!ON_POSTGRES || KEPT.length === 0)(
   "the samples kept in the repository, server mode",
   () => {
     it.each(KEPT)(
-      "format %i: opens with this version, with the values it was dumped with",
-      async (format) => {
-        const dir = join(REPO, SAMPLES_DIR, String(format), "server");
+      "$name: opens with this version, with the values it was dumped with",
+      async ({ format, name }) => {
+        const dir = join(REPO, SAMPLES_DIR, name);
         const sample = JSON.parse(
           readFileSync(join(dir, "expected.json"), "utf8"),
         ) as ServerSampleExpected;

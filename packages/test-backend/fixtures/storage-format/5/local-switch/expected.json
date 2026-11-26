@@ -1,0 +1,30 @@
+{
+  "storage_format": 5,
+  "log_end": 80,
+  "expenses": {
+    "snack": {
+      "date": "2026-11-04",
+      "amount": 9
+    },
+    "taxi": {
+      "date": "2026-11-02",
+      "amount": 32
+    },
+    "lunch": {
+      "date": "2026-11-02",
+      "amount": 54
+    }
+  },
+  "budget": {
+    "2026-10-05": 5000,
+    "2026-11-15": 4000
+  },
+  "rides": {},
+  "open_items": {
+    "conflict": 1,
+    "awaiting_confirmation": 1,
+    "flagged": 1
+  },
+  "reads_at_least": 11,
+  "switched": true
+}

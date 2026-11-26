@@ -1,0 +1,77 @@
+{
+  "storage_format": 5,
+  "tenants": [
+    {
+      "name": "sample_one",
+      "tenant": "tn_5KTF59EVB2FQR4RJ95DASGER50",
+      "database": "tn_5ktf59evb2fqr4rj95dasger50",
+      "session": "sls_GiYkFOJKcXp5zjdT-kUNZJ8oNWaXf5eIn-Tl_Yq7dXU",
+      "expected": {
+        "storage_format": 5,
+        "log_end": 80,
+        "expenses": {
+          "snack": {
+            "date": "2026-11-04",
+            "amount": 9
+          },
+          "lunch": {
+            "date": "2026-11-02",
+            "amount": 54
+          },
+          "taxi": {
+            "date": "2026-11-02",
+            "amount": 32
+          }
+        },
+        "budget": {
+          "2026-10-05": 5000,
+          "2026-11-15": 4000
+        },
+        "rides": {},
+        "open_items": {
+          "conflict": 1,
+          "awaiting_confirmation": 1,
+          "flagged": 1
+        },
+        "reads_at_least": 11,
+        "switched": true
+      }
+    },
+    {
+      "name": "sample_two",
+      "tenant": "tn_DY578XFPQSAAXY4ZRY57TMF1DB",
+      "database": "tn_dy578xfpqsaaxy4zry57tmf1db",
+      "session": "sls_O68h6uAjZJTL8dFztcXKGdTM448lhI5oNYT2GylAlVg",
+      "expected": {
+        "storage_format": 5,
+        "log_end": 80,
+        "expenses": {
+          "snack": {
+            "date": "2026-11-04",
+            "amount": 9
+          },
+          "lunch": {
+            "date": "2026-11-02",
+            "amount": 54
+          },
+          "taxi": {
+            "date": "2026-11-02",
+            "amount": 32
+          }
+        },
+        "budget": {
+          "2026-10-05": 5000,
+          "2026-11-15": 4000
+        },
+        "rides": {},
+        "open_items": {
+          "conflict": 1,
+          "awaiting_confirmation": 1,
+          "flagged": 1
+        },
+        "reads_at_least": 11,
+        "switched": true
+      }
+    }
+  ]
+}
