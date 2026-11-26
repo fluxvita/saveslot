@@ -1,6 +1,7 @@
 // What the receipt fields, the warnings and the notices a sample does not show come out as
 // (05-surfaces §6 `saveslot_write`, §4.3): a next change without a value, one evidence segment, a
-// clock behind by seconds or hours, one pending item, a notice code this version does not give,
+// clock behind by seconds or hours, one pending item, a schema update, a notice code this version
+// does not give,
 // the warnings and notices on a catalog and a history; and every stored string among them inside
 // the boundary, a sentence in a field's name or value included. Built on the real receipts and
 // reads of receipts.samples.json and reads.samples.json. Fictional names.
@@ -141,6 +142,48 @@ describe("notices (05 §4.3)", () => {
     const s = sample(RECEIPTS, "write-clock-behind");
     s.result["notices"] = [notice(INJECTED, 2)];
     held(text(s));
+  });
+
+  const updated = (slot: unknown, changed: unknown[]) => ({
+    code: "schema_updated",
+    slot,
+    from: 1,
+    to: 3,
+    changed,
+  });
+
+  it("schema_updated: a sentence, the slot and the targets inside the boundary", () => {
+    const s = sample(RECEIPTS, "write-clock-behind");
+    s.result["notices"] = [updated("plan", ["tasks.due", "releases"])];
+    const x = text(s);
+    expect(plain(x)).toContain(
+      "Notice: the schema of plan was updated from v1 to v3; changed: tasks.due, releases (saveslot_catalog shows it)",
+    );
+    expect(inside(x)).toContain("tasks.due");
+    expect(outside(x)).not.toContain("tasks.due");
+    for (const injected of [updated(INJECTED, ["x"]), updated("plan", [INJECTED])]) {
+      s.result["notices"] = [injected];
+      held(text(s));
+    }
+  });
+
+  it("schema_updated: ten targets named, the rest counted; none, no list", () => {
+    const s = sample(RECEIPTS, "write-clock-behind");
+    s.result["notices"] = [
+      updated(
+        "plan",
+        Array.from({ length: 13 }, (_, i) => `t${i}`),
+      ),
+    ];
+    const x = plain(text(s));
+    expect(x).toContain(
+      "changed: t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 and 3 more (saveslot_catalog",
+    );
+    expect(x).not.toContain("t10");
+    s.result["notices"] = [updated("plan", [])];
+    expect(plain(text(s))).toContain(
+      "Notice: the schema of plan was updated from v1 to v3 (saveslot_catalog shows it)",
+    );
   });
 
   it("a code this version does not give: as written, inside the boundary", () => {

@@ -11,7 +11,8 @@
 // rows marked by a change and unmarked by its change back (these four taken through the kernel's
 // write path on a real store); and writes by source key, taken the same way: created and unchanged
 // in one request, every op unchanged (the request's evidence and an op's own not stored), a replay
-// with an op that entered no event, a candidate, a skip on a revoked row. Update the golden files with
+// with an op that entered no event, a candidate, a skip on a revoked row; a write on the version
+// before a schema change that took effect at once, with its schema_updated notice. Update the golden files with
 // `pnpm exec vitest run packages/server/src/mcp/receipts.test.ts -u`.
 
 import { readFileSync } from "node:fs";

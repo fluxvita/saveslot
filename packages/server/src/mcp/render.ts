@@ -586,14 +586,26 @@ function behindBy(x: unknown): Part[] {
   return t`${num(Math.round(s / 3600))} h`;
 }
 
+/** The targets a `schema_updated` notice names at most; the rest are counted. */
+const CHANGED_NAMED = 10;
+
 /**
- * A notice (05 §4.3): `pending_items` as a sentence; the codes this version does not give are
- * shown as written, inside the boundary.
+ * A notice (05 §4.3): `pending_items` and `schema_updated` as sentences; the codes this version
+ * does not give are shown as written, inside the boundary. A schema_updated notice's slot and
+ * targets (`table` or `table.field`, 04-contract-types §7) stay inside the boundary.
  */
 function noticeLine(n: R, now: Date): Line {
   if (n["code"] === "pending_items") {
     const items = int(n["count"]) === 1 ? t`1 pending item` : t`${count(n["count"])} pending items`;
     return t`Notice: ${tableOf(n["slot"])} has ${items}, the oldest open for ${openFor(n["oldest_opened_at"], now)} (saveslot_pending shows them)`;
+  }
+  if (n["code"] === "schema_updated") {
+    const changed = arr(n["changed"]);
+    const named = changed.slice(0, CHANGED_NAMED).map((c) => [untrusted(String(c))]);
+    const more =
+      changed.length > CHANGED_NAMED ? t` and ${num(changed.length - CHANGED_NAMED)} more` : [];
+    const what = changed.length > 0 ? t`; changed: ${join(named, t`, `)}${more}` : [];
+    return t`Notice: the schema of ${untrusted(String(n["slot"] ?? ""))} was updated from v${count(n["from"])} to v${count(n["to"])}${what} (saveslot_catalog shows it)`;
   }
   return t`Notice: ${untrusted(JSON.stringify(n))}`;
 }

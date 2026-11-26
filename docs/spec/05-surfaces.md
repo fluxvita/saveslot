@@ -149,7 +149,7 @@ The text of `premise_changed` says only which premise, which field, and how it c
 **`notices[]`**: at most 3 at the end of each result, in neutral wording; each kind is computed only over the range visible to this call, and a slot outside the range appears in no hint:
 
 - `ledger has 2 pending items, the oldest open for 9 days (saveslot_pending shows them)`
-- `the schema of ledger was updated from v1 to v2: expenses gained payee`
+- `the schema of ledger was updated from v1 to v2; changed: budgets, expenses.payee (saveslot_catalog shows it)`: `schema_updated` gives only the targets changed (a table or "table.field", contract-types section 7), not what changed, so only the targets are listed; the slot's name and the targets are inside the boundary; at most 10 are listed, the rest written as "and N more"; with no target, no "changed" list
 - `ledger is migrating to v2: 120 / 2300 done (saveslot_pending pi_… shows it)`
 - `ledger has a deletion that is due but not yet physically erased (pi_…)`
 

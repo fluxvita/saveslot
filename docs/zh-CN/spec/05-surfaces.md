@@ -146,7 +146,7 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
 **`notices[]`**：每个结果末尾最多 3 条，措辞中性；每一种都只按本次调用可见的范围计算，范围外的 slot 不出现在任何提示里：
 
 - `ledger slot 有 2 个待处理事项，最早一个已挂 9 天（saveslot_pending 可查看）`
-- `ledger 的 schema 已从 v1 更新到 v2：expenses 新增 payee`
+- `ledger 的 schema 已从 v1 更新到 v2，改动的有：budgets、expenses.payee（saveslot_catalog 可查看）`：`schema_updated` 只给改动的目标（表或"表.字段"，contract-types 第 7 节），不给改了什么，所以只列目标；slot 名与目标都在边界里；至多列 10 个，其余写"另有 N 个"；没有目标时不写"改动的有"
 - `ledger 正在迁移到 v2：已完成 120 / 2300（saveslot_pending pi_… 可查看）`
 - `ledger 有一项删除已到期但尚未物理删除（pi_…）`
 

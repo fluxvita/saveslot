@@ -2826,5 +2826,46 @@
         }
       ]
     }
+  },
+  "write-schema-updated": {
+    "tool": "saveslot_write",
+    "result": {
+      "status": "saved",
+      "sv": 1,
+      "seq": 12,
+      "ops": [
+        {
+          "target": {
+            "table": "diet.meals",
+            "row": "r_Z16JWY88GBEKKM6QFYABYH7SH7"
+          },
+          "intent": "insert",
+          "ver": "v12.0",
+          "fields": {
+            "date": {
+              "result": "applied",
+              "after": "2026-11-05"
+            },
+            "what": {
+              "result": "applied",
+              "after": "noodles"
+            }
+          }
+        }
+      ],
+      "derived": [],
+      "derived_total": 0,
+      "pending": [],
+      "superseded": [],
+      "notices": [
+        {
+          "code": "schema_updated",
+          "slot": "diet",
+          "from": 1,
+          "to": 2,
+          "changed": ["meals.kcal", "snacks"]
+        }
+      ]
+    }
   }
 }
