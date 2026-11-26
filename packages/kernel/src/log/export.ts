@@ -123,9 +123,13 @@ export async function exportStart(tx: ReadTx, params: ExportParams): Promise<Exp
     throw new ExportError("corrupt_log", "the log has no tenant block");
   }
   const tenantId = (JSON.parse(tenantBody) as { tenant_id: string }).tenant_id;
+  // The two types first, then the latest: not a walk of the key of `events` backwards on a wrong
+  // guess of how rare they are (store/restore-point.ts LATEST_RESTORE).
   const rc = await tx.query<{ header: string }>(
-    `SELECT header FROM events WHERE type IN ('tenant.restored', 'tenant.imported') AND seq <= $1
-     ORDER BY seq DESC LIMIT 1`,
+    `WITH r AS MATERIALIZED (
+       SELECT seq, header FROM events
+       WHERE type IN ('tenant.restored', 'tenant.imported') AND seq <= $1)
+     SELECT header FROM r ORDER BY seq DESC LIMIT 1`,
     [upto],
   );
   const restoreCount =

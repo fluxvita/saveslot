@@ -20,15 +20,27 @@ export interface RestorePoint {
 
 const NONE: RestorePoint = { restoreCount: 0, seq: null, point: null };
 
+/**
+ * The latest restore or import event (before `$1` when `before`). The two types are taken first,
+ * by `events_type`, and only then sorted: written as `… ORDER BY seq DESC LIMIT 1`, the planner may
+ * walk the whole key of `events` backwards looking for one, as soon as its statistics put the two
+ * types at more than a few rows. They are rare, so ANALYZE's sample can miss them, and the guess
+ * then goes wrong by the hundreds (at a million rows, a walk of 0.6 s for no row). MATERIALIZED
+ * keeps the planner from merging the two steps back into that walk.
+ */
+const LATEST_RESTORE = (before: boolean): string =>
+  `WITH r AS MATERIALIZED (
+     SELECT seq, header FROM events WHERE type IN ('tenant.restored', 'tenant.imported')
+       ${before ? "AND seq < $1" : ""})
+   SELECT seq, header FROM r ORDER BY seq DESC LIMIT 1`;
+
 /** The latest restore or import event, of the whole log or of the events before `before`. */
 export async function restorePoint(
   tx: ReadTx,
   o: { readonly before?: Seq } = {},
 ): Promise<RestorePoint> {
   const r = await tx.query<{ seq: unknown; header: string }>(
-    `SELECT seq, header FROM events WHERE type IN ('tenant.restored', 'tenant.imported')
-       ${o.before === undefined ? "" : "AND seq < $1"}
-     ORDER BY seq DESC LIMIT 1`,
+    LATEST_RESTORE(o.before !== undefined),
     o.before === undefined ? [] : [o.before],
   );
   const row = r.rows[0];
