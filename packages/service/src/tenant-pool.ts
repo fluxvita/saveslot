@@ -53,6 +53,16 @@
 //
 // The pool keeps a small record for each tenant used since it started, open or not: bounded by the
 // deployment's tenants, and not worth the races of dropping one a use may be waiting on.
+//
+// At most `maxOpen` tenants hold a database connection at once (02-architecture §7 «连接»;
+// 01-positioning «技术选型»): open, opening, closing, or kept unclosed after a close that failed. A use
+// that needs a tenant opened takes a place first. With none free it waits in line, first come first
+// served: the tenant unused for longest among those idle (open, no use, no exclusive, not closing)
+// is closed for it, as an idle tenant is (reads written, high water moved up); with none idle, it
+// waits until a place comes back, for at most OPEN_WAIT_MS, then is refused with `pool_full`. The
+// connections the pool does not see (a tenant being made, an import's two, the cell's maintenance
+// database) are not counted: the deployment's connection budget leaves room for them. A database
+// that refuses the connection itself as too many (SQLSTATE 53300) is refused with `pool_full` too.
 
 import {
   type AnchorStore,
@@ -82,6 +92,15 @@ export interface TenantPoolOptions {
   readonly backend: StorageBackend;
   /** How long a tenant stays open after its last use ends, in milliseconds. */
   readonly idleMs: number;
+  /** At most this many tenants hold a connection at once; absent, no bound. */
+  readonly maxOpen?: number;
+  /** Tests only: how long a use waits for a place (OPEN_WAIT_MS otherwise). */
+  readonly openWaitMs?: number;
+  /**
+   * Told that a use was refused with `pool_full`: it waited `wait`, or the database refused the
+   * connection as too many (`database`). The tenant's ID only.
+   */
+  readonly onFull?: (tenant: TenantId, why: "wait" | "database") => void;
   readonly now?: () => string;
   /**
    * Told what went wrong closing a tenant, which the pool throws at no one. By default written to
@@ -128,6 +147,11 @@ export type TenantPoolFailure =
   | "close_failed"
   /** The pool is closed (closeAll). */
   | "pool_closed"
+  /**
+   * Every place is held and none came free within OPEN_WAIT_MS, or the database refused the
+   * connection as too many: retry shortly.
+   */
+  | "pool_full"
   /** An import holds the tenant in this process (not the anchor's `import_in_progress`). */
   | "importing"
   /** A restore holds the tenant in this process (not the anchor's `restore_in_progress`). */
@@ -156,9 +180,23 @@ export class TenantPoolError extends Error {
   }
 }
 
+/** How long a use waits for a place among the `maxOpen` before it is refused with `pool_full`. */
+export const OPEN_WAIT_MS = 5_000;
+
+/** The SQLSTATE with which PostgreSQL refuses a connection past its `max_connections`. */
+const TOO_MANY_CONNECTIONS = "53300";
+
 interface Slot {
   /** The opening in progress or done; none while closed. */
   opening?: Promise<OpenTenant> | undefined;
+  /** The opening has resolved: the tenant is open. */
+  open?: boolean | undefined;
+  /** It holds one of the `maxOpen` places: from before it is opened until its connection is gone. */
+  place?: boolean | undefined;
+  /** A place being waited for, shared by the uses of this tenant that need it. */
+  placing?: Promise<void> | undefined;
+  /** When its last use ended (monotonic): the idle tenant unused for longest is closed first. */
+  lastUsed: number;
   uses: number;
   idle?: ReturnType<typeof setTimeout> | undefined;
   /** A close in progress: a use waits for it before opening the tenant again. */
@@ -190,10 +228,24 @@ const reportScratchDiscardToStderr = (tenant: TenantId, error: unknown): void =>
   console.error(`saveslot tenant pool: scratch_not_discarded for ${tenant}: ${codeOf(error)}`);
 };
 
+/** A use waiting in line for a place. */
+interface Waiter {
+  readonly tenant: TenantId;
+  readonly resolve: () => void;
+  readonly reject: (e: TenantPoolError) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
 export class TenantPool {
   readonly options: TenantPoolOptions;
   readonly #slots = new Map<TenantId, Slot>();
   #closed = false;
+  /** The places held. */
+  #held = 0;
+  /** The uses waiting for a place, in the order they came. */
+  readonly #line: Waiter[] = [];
+  /** Idle tenants being closed to free a place. */
+  #evicting = 0;
 
   constructor(o: TenantPoolOptions) {
     this.options = o;
@@ -206,7 +258,7 @@ export class TenantPool {
   #slot(tenant: TenantId): Slot {
     let s = this.#slots.get(tenant);
     if (s === undefined) {
-      s = { uses: 0 };
+      s = { uses: 0, lastUsed: 0 };
       this.#slots.set(tenant, s);
     }
     return s;
@@ -240,24 +292,134 @@ export class TenantPool {
     }
     slot.uses++;
     try {
+      if (slot.opening === undefined && !slot.place) {
+        // One place for the tenant, however many of its uses need it: the first waits, the others
+        // wait with it. Nothing closes it meanwhile: it has uses.
+        if (slot.placing === undefined) {
+          const placing = this.#takePlace(tenant).then(() => {
+            slot.place = true;
+          });
+          slot.placing = placing;
+          void placing
+            .finally(() => {
+              if (slot.placing === placing) slot.placing = undefined;
+            })
+            .catch(() => {});
+        }
+        await slot.placing;
+      }
       if (slot.opening === undefined) {
         const p = this.#open(tenant);
         slot.opening = p;
-        // A tenant that did not open is not kept: the next use tries again.
-        p.catch(() => {
-          if (slot.opening === p) slot.opening = undefined;
-        });
+        p.then(
+          () => {
+            if (slot.opening === p) slot.open = true;
+          },
+          // A tenant that did not open is not kept, nor its place: the next use tries again.
+          () => {
+            if (slot.opening === p) slot.opening = undefined;
+            this.#settle(slot);
+          },
+        );
       }
       return await fn(await slot.opening);
     } finally {
       slot.uses--;
       if (slot.uses === 0) {
+        slot.lastUsed = performance.now();
         slot.drained?.();
         if (slot.opening !== undefined && slot.gate === undefined) {
           slot.idle = setTimeout(() => void this.#close(tenant), this.options.idleMs);
           slot.idle.unref?.();
+          // Idle now: one a use in line may have the place of.
+          this.#pump();
         }
       }
+    }
+  }
+
+  /** Takes one of the `maxOpen` places: at once while one is free and no one is in line; else in line. */
+  #takePlace(tenant: TenantId): Promise<void> {
+    const max = this.options.maxOpen;
+    if (max === undefined || (this.#line.length === 0 && this.#held < max)) {
+      this.#held++;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const i = this.#line.indexOf(waiter);
+        if (i >= 0) this.#line.splice(i, 1);
+        this.#reportFull(tenant, "wait");
+        reject(new TenantPoolError("pool_full", "every place for an open tenant is held"));
+      }, this.options.openWaitMs ?? OPEN_WAIT_MS);
+      const waiter: Waiter = { tenant, resolve, reject, timer };
+      this.#line.push(waiter);
+      this.#pump();
+    });
+  }
+
+  /**
+   * Gives the places that are free to the uses in line, in order; for those still waiting, closes
+   * as many idle tenants (unused for longest first) as are not being closed already.
+   */
+  #pump(): void {
+    const max = this.options.maxOpen;
+    if (max === undefined) return;
+    while (this.#line.length > 0 && this.#held < max) {
+      const w = this.#line.shift() as Waiter;
+      clearTimeout(w.timer);
+      this.#held++;
+      w.resolve();
+    }
+    while (this.#line.length > this.#evicting) {
+      const victim = this.#idlest();
+      if (victim === undefined) return;
+      this.#evicting++;
+      void this.#close(victim).finally(() => {
+        this.#evicting--;
+        this.#pump();
+      });
+    }
+  }
+
+  /** The idle tenant unused for longest: open, no use, no exclusive, not closing, holding a place. */
+  #idlest(): TenantId | undefined {
+    let found: [TenantId, Slot] | undefined;
+    for (const [tenant, s] of this.#slots) {
+      if (
+        s.place === true &&
+        s.open === true &&
+        s.uses === 0 &&
+        s.gate === undefined &&
+        s.closing === undefined &&
+        s.unclosed === undefined &&
+        (found === undefined || s.lastUsed < found[1].lastUsed)
+      ) {
+        found = [tenant, s];
+      }
+    }
+    return found?.[0];
+  }
+
+  /** Gives the tenant's place back once it holds no connection: not open, not closing, nothing unclosed. */
+  #settle(slot: Slot): void {
+    if (
+      slot.place === true &&
+      slot.opening === undefined &&
+      slot.closing === undefined &&
+      slot.unclosed === undefined
+    ) {
+      slot.place = false;
+      this.#held--;
+      this.#pump();
+    }
+  }
+
+  #reportFull(tenant: TenantId, why: "wait" | "database"): void {
+    try {
+      this.options.onFull?.(tenant, why);
+    } catch {
+      // A report that fails is not the pool's failure.
     }
   }
 
@@ -313,6 +475,11 @@ export class TenantPool {
    */
   async closeAll(): Promise<void> {
     this.#closed = true;
+    // The uses in line get no place now.
+    for (const w of this.#line.splice(0)) {
+      clearTimeout(w.timer);
+      w.reject(new TenantPoolError("pool_closed", "the pool is closed"));
+    }
     await Promise.all(
       [...this.#slots].map(async ([tenant, slot]) => {
         while (slot.gate !== undefined) await slot.gate;
@@ -372,6 +539,7 @@ export class TenantPool {
     const unclosed = slot.unclosed;
     if (opening === undefined && unclosed === undefined) return;
     slot.opening = undefined;
+    slot.open = undefined;
     slot.unclosed = undefined;
     const closing = (async () => {
       if (unclosed !== undefined) {
@@ -399,6 +567,7 @@ export class TenantPool {
     slot.closing = closing;
     await closing;
     if (slot.closing === closing) slot.closing = undefined;
+    this.#settle(slot);
   }
 
   /** Opens the tenant as the directory routes it now, and checks that it serves. */
@@ -414,7 +583,16 @@ export class TenantPool {
       if (staging !== undefined) await this.options.discardStaging(tenant, staging);
     };
     await this.options.discardScratch(tenant).catch((e) => this.#reportScratchDiscard(tenant, e));
-    const store = await backend.open(entry.ref, {});
+    const store = await backend.open(entry.ref, {}).catch((e: unknown) => {
+      // Past the database's max_connections: as full as a pool with no place (the error carries
+      // the backend's code and SQLSTATE; this package does not depend on the backend's error class).
+      const { code, sqlState } = (e ?? {}) as { code?: unknown; sqlState?: unknown };
+      if (code === "connection_failed" && sqlState === TOO_MANY_CONNECTIONS) {
+        this.#reportFull(tenant, "database");
+        throw new TenantPoolError("pool_full", "the database has no connection to give");
+      }
+      throw e;
+    });
     try {
       const tail = await store.read((tx) => readTail(tx));
       const { decision, taken } = await takeUpImport({

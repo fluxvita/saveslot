@@ -185,6 +185,7 @@ function config(over: Partial<ServerConfig> = {}): ServerConfig {
     allowedOrigins: [],
     // No drain: a test that closes a server does not wait for a load balancer.
     shutdown: { drainSeconds: 0, timeoutSeconds: 30 },
+    tenants: { maxOpen: 50, idleSeconds: 300 },
     ...over,
   };
 }
@@ -2282,6 +2283,109 @@ describe("runServer: closing in three steps", () => {
       expect(performance.now() - t0).toBeLessThan(5000);
       // Called again, the same closing; nothing was left.
       expect(await s.close()).toEqual({ tenantsLeft: false });
+    },
+    T,
+  );
+});
+
+describe("runServer: at most SAVESLOT_TENANT_CONNECTIONS tenants open", () => {
+  /** A server allowing one open tenant, with two users; `gate` holds a tenant's opening back. */
+  async function oneTenantServer(gate: { opened?: () => void; release?: Promise<void> }) {
+    const c = await controlDb();
+    const t = tenants(gate);
+    const cfg = config({ tenants: { maxOpen: 1, idleSeconds: 300 } });
+    await CursorKeys.createFile(cfg.handleKeyFile);
+    const make = async (name: string) => {
+      const { user } = await addLocalUser(c.accounts as NonNullable<typeof c.accounts>, {
+        control: c.cp as ServerControlPlane,
+        backend: t.backend,
+        name,
+        password: "correct horse battery",
+        cell: CELL,
+        cells: new Set([CELL]),
+        now: NOW,
+      });
+      return sessionFor(c.store, user);
+    };
+    const first = await make("riley");
+    const second = await make("morgan");
+    const warned: string[] = [];
+    const s = await runServer({
+      config: cfg,
+      version: "0.0.0-test",
+      openControl: async () => c.db,
+      backend: t.backend,
+      now: () => NOW,
+      warn: (event) => warned.push(event),
+      testing: { drainMs: 0, openWaitMs: 300 },
+    });
+    return { s, first, second, warned };
+  }
+
+  it(
+    "with one place, two users' requests in turn are each answered: the idle tenant is closed for the other",
+    async () => {
+      const { s, first, second } = await oneTenantServer({});
+      for (const token of [first, second, first, second]) {
+        expect(
+          (await send(s, { path: "/v1/slots", headers: { authorization: `Bearer ${token}` } }))
+            .status,
+        ).toBe(200);
+      }
+      await s.close();
+    },
+    T,
+  );
+
+  it(
+    "every place held: a request for another tenant gets unavailable (busy) to retry; the control database still answers",
+    async () => {
+      let opened!: () => void;
+      const reached = new Promise<void>((r) => {
+        opened = r;
+      });
+      let release!: () => void;
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      const gate: { opened?: () => void; release?: Promise<void> } = {};
+      const { s, first, second, warned } = await oneTenantServer(gate);
+      gate.opened = opened;
+      gate.release = held;
+      // The first user's tenant is being opened: it holds the one place.
+      const pending = send(s, { path: "/v1/slots", headers: { authorization: `Bearer ${first}` } });
+      await reached;
+      delete gate.opened;
+      delete gate.release;
+      // What needs only the control database is answered at once: a token it does not hold.
+      const t0 = performance.now();
+      const unknown = await send(s, {
+        path: "/v1/slots",
+        headers: { authorization: `Bearer slt_${"A".repeat(43)}` },
+      });
+      expect(unknown.status).toBe(401);
+      expect(performance.now() - t0).toBeLessThan(250);
+      // The second user's tenant waits for a place, then is refused, to retry.
+      const busy = await send(s, {
+        path: "/v1/slots",
+        headers: { authorization: `Bearer ${second}` },
+      });
+      expect(busy.status).toBe(503);
+      expect(busy.headers["retry-after"]).toBe("1");
+      expect(JSON.parse(busy.body).error).toMatchObject({
+        code: "unavailable",
+        reason: "busy",
+        retry_after: 1,
+      });
+      expect(warned).toContain("tenant_pool_full");
+      release();
+      expect((await pending).status).toBe(200);
+      // The first user's tenant idle now: it is closed for the second's.
+      expect(
+        (await send(s, { path: "/v1/slots", headers: { authorization: `Bearer ${second}` } }))
+          .status,
+      ).toBe(200);
+      await s.close();
     },
     T,
   );

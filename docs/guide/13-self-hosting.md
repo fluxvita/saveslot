@@ -88,6 +88,12 @@ When mounting, mind the permissions: saveslot refuses a key file that is open to
 
 **Update by stopping first, then starting.** Only one server process can run on a control database at a time: a new process cannot start until the old one has released the "server is running" lock, and when it cannot take the lock it exits with code 7, for the process manager to start it again. So update by stopping the old process before starting the new one (`Recreate` on Kubernetes), not with a rolling update.
 
+**Make sure the database has enough connections.** Each open tenant takes one database connection; a process has at most `SAVESLOT_TENANT_CONNECTIONS` open at once (50 by default), and a tenant idle for `SAVESLOT_TENANT_IDLE` seconds (300 by default) is closed. When the limit is reached, the tenant idle for longest is closed first; with none idle, a request waits a little, and one that gets no place is answered "busy for now, retry shortly". Each process also uses 3 connections the limit does not count (the control database, creating a tenant, creating or dropping a database), and each import in progress uses 2 more. So it must hold that:
+
+`SAVESLOT_TENANT_CONNECTIONS × processes + 3 × processes + imports at the same time × 2 ≤ connections available`
+
+The connections available are PostgreSQL's `max_connections` less `superuser_reserved_connections`, `reserved_connections` and what you use for operations yourself. The default `max_connections` is 100, enough for one process with the defaults; with many users, raise `max_connections` before raising the limit.
+
 ## 3. Initialization and accounts
 
 ```

@@ -858,3 +858,292 @@ describe("TenantPool", () => {
     );
   });
 });
+
+// At most `maxOpen` tenants hold a connection (02-architecture §7 «连接»): the idle tenant unused for
+// longest is closed for a use that needs a place; with none idle, the use waits in line, first come
+// first served, and is refused with `pool_full` past its wait. Each case is built step by step:
+// uses held open by promises, closes held back or made to fail, never load.
+describe("TenantPool: at most maxOpen tenants open", () => {
+  /**
+   * A backend that keeps the databases open now (`live`), in the order they were opened (`order`);
+   * a close can be held back or made to fail as `controlled()` does; `refuse` makes the next open
+   * meet a database with no connection left (the backend's error: code and SQLSTATE).
+   */
+  function counted() {
+    const ctl = controlled();
+    const live = new Set<string>();
+    const order: string[] = [];
+    const state = { refuse: false };
+    const b: StorageBackend = {
+      open: async (ref, opts) => {
+        if (ref.kind !== "postgres") throw new Error("a server tenant's storage is a database");
+        if (state.refuse) {
+          state.refuse = false;
+          throw Object.assign(new Error("PROBE too many clients"), {
+            code: "connection_failed",
+            sqlState: "53300",
+          });
+        }
+        const s = await ctl.backend.open(ref, opts);
+        live.add(ref.database);
+        order.push(ref.database);
+        return new Proxy(s, {
+          get(target, k) {
+            if (k === "close") {
+              return async () => {
+                await target.close();
+                live.delete(ref.database);
+              };
+            }
+            return Reflect.get(target, k);
+          },
+        });
+      },
+    };
+    return { ...ctl, backend: b, live, order, state };
+  }
+
+  /** A use of `tenant` that lasts until released; `started` once its function runs. */
+  function held(p: TenantPool, tenant: TenantId) {
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let started = false;
+    const done = p.use(tenant, async () => {
+      started = true;
+      await gate;
+    });
+    return { done, release, started: () => started };
+  }
+
+  const db = (e: TenantEntry) => databaseOf(e.id);
+  const full: string[] = [];
+  const capped = (b: StorageBackend, more: Partial<TenantPoolOptions> = {}) =>
+    pool(60_000, {
+      maxOpen: 2,
+      openWaitMs: 10_000,
+      onFull: (tenant, why) => full.push(`${tenant} ${why}`),
+      ...more,
+      backend: b,
+    });
+
+  it(
+    "a use that needs a place closes the idle tenant unused for longest, its reads written as an idle close writes them",
+    async () => {
+      const [a, b, c] = [await tenantOf(owner()), await tenantOf(owner()), await tenantOf(owner())];
+      const k = counted();
+      const p = capped(k.backend);
+      await p.use(a.id, async () => {});
+      await p.use(b.id, async () => {});
+      expect([...k.live].sort()).toEqual([db(a), db(b)].sort());
+      await p.use(c.id, async () => {});
+      expect([...k.live].sort()).toEqual([db(b), db(c)].sort());
+      // b, used after a, is now the one unused for longest.
+      await p.use(a.id, async () => {});
+      expect([...k.live].sort()).toEqual([db(a), db(c)].sort());
+      await p.closeAll();
+    },
+    T,
+  );
+
+  it(
+    "with every tenant in use, uses wait in line and get places in the order they came",
+    async () => {
+      const [a, b, c, d] = await Promise.all([1, 2, 3, 4].map(() => tenantOf(owner())));
+      const k = counted();
+      const p = capped(k.backend);
+      const ua = held(p, (a as TenantEntry).id);
+      const ub = held(p, (b as TenantEntry).id);
+      await until(() => ua.started() && ub.started());
+      const uc = held(p, (c as TenantEntry).id);
+      await sleep(20);
+      const ud = held(p, (d as TenantEntry).id);
+      await sleep(100);
+      expect(uc.started() || ud.started()).toBe(false);
+      ub.release();
+      await until(() => uc.started());
+      expect(ud.started()).toBe(false);
+      ua.release();
+      await until(() => ud.started());
+      expect(k.order.slice(-2)).toEqual([db(c as TenantEntry), db(d as TenantEntry)]);
+      uc.release();
+      ud.release();
+      await Promise.all([ua.done, ub.done, uc.done, ud.done]);
+      await p.closeAll();
+    },
+    T,
+  );
+
+  it(
+    "a use that waits past its time is refused with pool_full, told as a wait; the uses holding places go on",
+    async () => {
+      const [a, b, c] = [await tenantOf(owner()), await tenantOf(owner()), await tenantOf(owner())];
+      const k = counted();
+      const p = capped(k.backend, { openWaitMs: 200 });
+      const ua = held(p, a.id);
+      const ub = held(p, b.id);
+      await until(() => ua.started() && ub.started());
+      const t0 = performance.now();
+      await expect(p.use(c.id, async () => {})).rejects.toMatchObject({ code: "pool_full" });
+      expect(performance.now() - t0).toBeGreaterThanOrEqual(150);
+      expect(full).toContain(`${c.id} wait`);
+      expect(k.live.has(db(c))).toBe(false);
+      ua.release();
+      ub.release();
+      await Promise.all([ua.done, ub.done]);
+      // Its places back, c opens.
+      await p.use(c.id, async () => {});
+      await p.closeAll();
+    },
+    T,
+  );
+
+  it(
+    "a tenant being closed still holds its place: the use waits for the close to end",
+    async () => {
+      const [a, b, c] = [await tenantOf(owner()), await tenantOf(owner()), await tenantOf(owner())];
+      const k = counted();
+      const p = capped(k.backend);
+      await p.use(a.id, async () => {});
+      const ub = held(p, b.id);
+      await until(() => ub.started());
+      k.hold();
+      const uc = held(p, c.id);
+      // a is closed for c, and the close is held back.
+      await until(() => k.c.asked === 1);
+      await sleep(100);
+      expect(uc.started()).toBe(false);
+      expect(k.live.has(db(c))).toBe(false);
+      k.release();
+      await until(() => uc.started());
+      expect(k.live.has(db(a))).toBe(false);
+      ub.release();
+      uc.release();
+      await Promise.all([ub.done, uc.done]);
+      await p.closeAll();
+    },
+    T,
+  );
+
+  it(
+    "a tenant whose close failed keeps its place: the next idle one is closed instead",
+    async () => {
+      const [a, b, c] = [await tenantOf(owner()), await tenantOf(owner()), await tenantOf(owner())];
+      const k = counted();
+      const p = capped(k.backend, { onCloseFailure: () => {} });
+      await p.use(a.id, async () => {});
+      await p.use(b.id, async () => {});
+      k.c.fails = 1;
+      await p.use(c.id, async () => {});
+      // a's close failed: it stays open, its place held; b was closed for c.
+      expect([...k.live].sort()).toEqual([db(a), db(c)].sort());
+      expect(k.c.asked).toBe(2);
+      await p.closeAll();
+    },
+    T,
+  );
+
+  it(
+    "an exclusive closes its tenant first: its place goes to a use in line while the exclusive runs",
+    async () => {
+      const [a, b] = [await tenantOf(owner()), await tenantOf(owner())];
+      const k = counted();
+      const p = capped(k.backend, { maxOpen: 1 });
+      await p.use(a.id, async () => {});
+      let inside!: () => void;
+      const entered = new Promise<void>((r) => {
+        inside = r;
+      });
+      let finish!: () => void;
+      const finished = new Promise<void>((r) => {
+        finish = r;
+      });
+      const ex = p.exclusive(a.id, async () => {
+        inside();
+        await finished;
+      });
+      await entered;
+      expect(k.live.has(db(a))).toBe(false);
+      await p.use(b.id, async () => {});
+      expect(k.live.has(db(b))).toBe(true);
+      finish();
+      await ex;
+      // a opens again: b, idle, is closed for it.
+      await p.use(a.id, async () => {});
+      expect([...k.live]).toEqual([db(a)]);
+      await p.closeAll();
+    },
+    T,
+  );
+
+  it(
+    "an opening that fails gives its place back",
+    async () => {
+      const a = await tenantOf(owner());
+      const k = counted();
+      const p = capped(k.backend, { maxOpen: 1 });
+      await expect(
+        p.use("tn_00000000000000000000000000" as TenantId, async () => {}),
+      ).rejects.toMatchObject({ code: "unknown_tenant" });
+      await p.use(a.id, async () => {});
+      expect([...k.live]).toEqual([db(a)]);
+      await p.closeAll();
+    },
+    T,
+  );
+
+  it(
+    "closeAll refuses the uses in line with pool_closed, none left waiting",
+    async () => {
+      const [a, b] = [await tenantOf(owner()), await tenantOf(owner())];
+      const k = counted();
+      const p = capped(k.backend, { maxOpen: 1 });
+      const ua = held(p, a.id);
+      await until(() => ua.started());
+      const waiting = p.use(b.id, async () => {});
+      await sleep(50);
+      const closing = p.closeAll();
+      await expect(waiting).rejects.toMatchObject({ code: "pool_closed" });
+      ua.release();
+      await ua.done;
+      await closing;
+      expect(k.live.size).toBe(0);
+    },
+    T,
+  );
+
+  it(
+    "uses of a tenant already open take no place: two at once with one place, one opening",
+    async () => {
+      const a = await tenantOf(owner());
+      const k = counted();
+      const p = capped(k.backend, { maxOpen: 1 });
+      const u1 = held(p, a.id);
+      const u2 = held(p, a.id);
+      await until(() => u1.started() && u2.started());
+      expect(k.order.filter((x) => x === db(a))).toHaveLength(1);
+      u1.release();
+      u2.release();
+      await Promise.all([u1.done, u2.done]);
+      await p.closeAll();
+    },
+    T,
+  );
+
+  it(
+    "a database with no connection left (SQLSTATE 53300) is pool_full, told as the database's; the place comes back",
+    async () => {
+      const [a, b] = [await tenantOf(owner()), await tenantOf(owner())];
+      const k = counted();
+      const p = capped(k.backend, { maxOpen: 1 });
+      k.state.refuse = true;
+      await expect(p.use(a.id, async () => {})).rejects.toMatchObject({ code: "pool_full" });
+      expect(full).toContain(`${a.id} database`);
+      await p.use(b.id, async () => {});
+      expect([...k.live]).toEqual([db(b)]);
+      await p.closeAll();
+    },
+    T,
+  );
+});

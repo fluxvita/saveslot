@@ -27,6 +27,8 @@ export const SERVER_VARIABLES = [
   "SAVESLOT_IDENTITY_KEYS_FILE",
   "SAVESLOT_SHUTDOWN_DRAIN",
   "SAVESLOT_SHUTDOWN_TIMEOUT",
+  "SAVESLOT_TENANT_CONNECTIONS",
+  "SAVESLOT_TENANT_IDLE",
 ] as const;
 export type ServerVariable = (typeof SERVER_VARIABLES)[number];
 
@@ -69,7 +71,22 @@ export interface ServerConfig {
    * balancer takes the process out, then at most this many for the requests in progress.
    */
   readonly shutdown: { readonly drainSeconds: number; readonly timeoutSeconds: number };
+  /**
+   * The open tenants of this process (02-architecture §7 «连接»): at most `maxOpen` at once, each
+   * on its own connection; one unused for `idleSeconds` is closed.
+   */
+  readonly tenants: { readonly maxOpen: number; readonly idleSeconds: number };
 }
+
+/**
+ * The open tenants' defaults (06-cli §4.1 «服务器模式的配置»): 50 leaves room, within PostgreSQL's
+ * default max_connections of 100, for the control database, imports, operators and a second process.
+ */
+export const DEFAULT_TENANTS = { maxOpen: 50, idleSeconds: 300 } as const;
+
+/** The largest values the two take. */
+export const MAX_TENANT_CONNECTIONS = 10_000;
+export const MAX_TENANT_IDLE_SECONDS = 86_400;
 
 /** The shutdown's defaults, in seconds (06-cli §4.1 «服务器模式的配置»). */
 export const DEFAULT_SHUTDOWN = { drainSeconds: 10, timeoutSeconds: 30 } as const;
@@ -268,6 +285,15 @@ const seconds = (text: string): number => {
   return Number(text);
 };
 
+const within =
+  (max: number) =>
+  (text: string): number => {
+    if (!/^[0-9]{1,9}$/.test(text) || Number(text) < 1 || Number(text) > max) {
+      throw new Bad(`not an integer of 1 to ${max}`);
+    }
+    return Number(text);
+  };
+
 const IDENTITY_VARIABLES = [
   "SAVESLOT_IDENTITY_ISSUER",
   "SAVESLOT_IDENTITY_LOGIN_URL",
@@ -330,6 +356,12 @@ export function readServerConfig(
     take("SAVESLOT_SHUTDOWN_DRAIN", false, seconds) ?? DEFAULT_SHUTDOWN.drainSeconds;
   const timeoutSeconds =
     take("SAVESLOT_SHUTDOWN_TIMEOUT", false, seconds) ?? DEFAULT_SHUTDOWN.timeoutSeconds;
+  const maxOpen =
+    take("SAVESLOT_TENANT_CONNECTIONS", false, within(MAX_TENANT_CONNECTIONS)) ??
+    DEFAULT_TENANTS.maxOpen;
+  const idleSeconds =
+    take("SAVESLOT_TENANT_IDLE", false, within(MAX_TENANT_IDLE_SECONDS)) ??
+    DEFAULT_TENANTS.idleSeconds;
   if (problems.length > 0) throw new ServerConfigInvalid(problems);
   if (control === undefined || cellAt === undefined || pub === undefined || keyFile === undefined) {
     throw new Error("unreachable: a required variable without a problem");
@@ -355,5 +387,6 @@ export function readServerConfig(
         }
       : {}),
     shutdown: { drainSeconds, timeoutSeconds },
+    tenants: { maxOpen, idleSeconds },
   };
 }

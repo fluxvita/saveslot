@@ -175,6 +175,7 @@ function serverFixture(shape: Shape) {
       trustedProxies: [],
       allowedOrigins: [],
       shutdown: { drainSeconds: 0, timeoutSeconds: 30 },
+      tenants: { maxOpen: 50, idleSeconds: 300 },
       ...(shape.rateLimit !== undefined ? { rateLimit: shape.rateLimit } : {}),
     };
     if (shape.accounts === "external") {

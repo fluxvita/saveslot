@@ -91,6 +91,7 @@ async function serve(store: Store, backend: TenantPoolOptions["backend"]): Promi
     trustedProxies: [],
     allowedOrigins: [],
     shutdown: { drainSeconds: 0, timeoutSeconds: 30 },
+    tenants: { maxOpen: 50, idleSeconds: 300 },
   };
   await CursorKeys.createFile(config.handleKeyFile);
   const db: ControlDatabase = {

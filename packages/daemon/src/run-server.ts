@@ -127,7 +127,7 @@ export interface RunServerOptions {
   /** Drops a tenant's database an import left behind (a test gives its own); `cellDiscarder`'s otherwise. */
   readonly discardDatabase?: DiscardDatabase;
   readonly now?: () => string;
-  /** How long an unused tenant stays open. */
+  /** How long an unused tenant stays open (the configuration's `tenants.idleSeconds` otherwise). */
   readonly idleMs?: number;
   readonly log?: (fields: Readonly<Record<string, string | number>>) => void;
   readonly warn?: (event: string, fields: Readonly<Record<string, string>>) => void;
@@ -147,6 +147,8 @@ export interface RunServerOptions {
     readonly tenantsCloseMs?: number;
     /** The cell backend's format and upgrade steps (the kernel's otherwise). */
     readonly formatUpgrade?: PostgresBackendOptions["formatUpgrade"];
+    /** How long a use waits for a place among the open tenants (OPEN_WAIT_MS otherwise). */
+    readonly openWaitMs?: number;
   };
   /** Tests only: the client documents' fetcher (the network's otherwise). */
   readonly fetchClient?: OAuthDeps["fetchClient"];
@@ -270,7 +272,11 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
     pool = new TenantPool({
       control,
       backend,
-      idleMs: o.idleMs ?? 5 * 60 * 1000,
+      idleMs: o.idleMs ?? config.tenants.idleSeconds * 1000,
+      maxOpen: config.tenants.maxOpen,
+      ...(o.testing?.openWaitMs !== undefined ? { openWaitMs: o.testing.openWaitMs } : {}),
+      // The tenant, and whether it waited or the database refused the connection.
+      onFull: (tenant, why) => warn("tenant_pool_full", { tenant, why }),
       now,
       // In the server's own log: the tenant and the step, never the error's message.
       onCloseFailure: (tenant, what, error) =>
