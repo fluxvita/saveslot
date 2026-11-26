@@ -34,6 +34,7 @@ import {
   kernelCall,
   type Operation,
   type Principal,
+  releaseWithResponse,
   runExport,
   runOperation,
   type ServedTenant,
@@ -658,6 +659,8 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
         finish(sendUnauthenticated(req, res, caller, ctx.resourceMetadata));
         return;
       }
+      // Its tenant held until this response ends (02-architecture §7 «连接»).
+      releaseWithResponse(caller, res);
       const who = caller.principal;
       // Counted once a request has a tenant, before anything else is done for it.
       ctx.rateLimit?.take(caller.tenant);

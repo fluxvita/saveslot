@@ -26,6 +26,7 @@ import { parseArgs } from "node:util";
 import {
   ControlPlaneError,
   CursorKeys,
+  creatingBusy,
   HandleKeyFileError,
   initControlPlane,
   initOAuthTables,
@@ -163,6 +164,12 @@ export async function serverCommand(argv: readonly string[], io: ServerRestoreIO
       step?: unknown;
       sqlState?: unknown;
     };
+    // A tenant's creation that waited past its turn in this process (02-architecture §7 «连接»):
+    // nothing more was done; a retry in a moment finishes it.
+    if (creatingBusy(e)) {
+      io.err(TEXTS.server.creatingBusy);
+      return 7;
+    }
     if (code === "upgrade_failed") {
       io.err(
         TEXTS.server.upgradeFailed(

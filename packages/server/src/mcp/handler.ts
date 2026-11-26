@@ -22,6 +22,7 @@ import {
   contractError,
   kernelCall,
   type Principal,
+  releaseWithResponse,
   runOperation,
   type ServedTenant,
   slotList,
@@ -309,6 +310,8 @@ export function handleMcp(
         finish(sendUnauthenticated(req, res, resolved, ctx.resourceMetadata));
         return;
       }
+      // Its tenant held until this response ends (02-architecture §7 «连接»).
+      releaseWithResponse(resolved, res);
       const who = resolved.principal;
       const bytes = req.method === "POST" ? await readBytes(req) : undefined;
       let parsed: unknown;

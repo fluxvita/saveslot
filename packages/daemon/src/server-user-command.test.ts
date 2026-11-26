@@ -244,6 +244,29 @@ async function login(s: RunningServer, name: string, password: string) {
 const slots = (s: RunningServer, token: string) =>
   send(s, { path: "/v1/slots", headers: { authorization: `Bearer ${token}` } });
 
+describe("saveslot server user add: its tenant waiting past its turn to be made", () => {
+  it(
+    "7, to run it again in a moment; running it again finishes the account",
+    async () => {
+      const d = await deployment();
+      // As the PostgreSQL backend refuses a database to make while another is made or dropped.
+      const busy = {
+        open: async () => {
+          throw Object.assign(new Error("busy"), { code: "maintenance_busy" });
+        },
+      };
+      const r = await d.run(["user", "add", "drew", "--password-file", passwordFile(FIRST)], {
+        backend: busy,
+      });
+      expect(r.code).toBe(7);
+      expect(r.err).toContain("run the command again in a moment");
+      const again = await d.run(["user", "add", "drew", "--password-file", passwordFile(FIRST)]);
+      expect(again.code).toBe(0);
+    },
+    T,
+  );
+});
+
 describe("saveslot server user add and list", () => {
   it(
     "add makes the account and its tenant; list gives name, state and tenant, by name",

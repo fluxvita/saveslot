@@ -53,7 +53,7 @@ import {
   writeUserSession,
 } from "./identity.ts";
 import { type ControlDb, isInstant, type ServerControlPlane } from "./server-control-plane.ts";
-import { createServerTenant, ServerTenantError } from "./server-tenant.ts";
+import { createServerTenant, creatingBusy, ServerTenantError } from "./server-tenant.ts";
 
 /** `control_meta.external_format`: the external login's tables. */
 export const EXTERNAL_FORMAT = 1;
@@ -211,7 +211,7 @@ const sameHash = (a: string, b: string): boolean =>
   a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 /** Why an assertion did not make a user: none is told to whoever sent it. */
-type ClaimRefusal = "replayed" | "disabled" | "limited";
+type ClaimRefusal = "replayed" | "disabled" | "limited" | "busy";
 
 export class ExternalIdentity implements IdentityProvider {
   readonly paths: ReadonlySet<string> = new Set([CALLBACK_PATH]);
@@ -387,6 +387,10 @@ export class ExternalIdentity implements IdentityProvider {
     const a = verifyAssertion(assertion, this.#verifying("session"));
     if ("refused" in a) return undefined;
     const claimed = await this.#claim(a, remote);
+    // Not a refusal of the assertion: a retry in a moment (the token endpoint answers it so).
+    if (claimed === "busy") {
+      throw new ServerTenantError("busy", "the account's tenant waited too long to be created");
+    }
     if (typeof claimed === "string") return undefined;
     return { user: claimed.user, session: random() };
   }
@@ -414,6 +418,9 @@ export class ExternalIdentity implements IdentityProvider {
     if ("refused" in a) return this.#failed(400);
     const claimed = await this.#claim(a, req.remote);
     if (claimed === "limited") return this.#failed(429);
+    // Its tenant waited past its turn among this process's creations (02-architecture §7 «连接»):
+    // the sign-in is answered as busy, to try again in a moment; signing in again finishes it.
+    if (claimed === "busy") return this.#failed(503, [["retry-after", "1"]]);
     if (typeof claimed === "string") return this.#failed(400);
     const cookie = random();
     await this.#db.write(async (tx) => {
@@ -514,7 +521,12 @@ export class ExternalIdentity implements IdentityProvider {
     }
     if (row.state !== "active") return "disabled";
     // Made if it is not there yet: the account's first assertion, or one after a stop half-way.
-    await this.#makeTenant(row.user, iso(now));
+    try {
+      await this.#makeTenant(row.user, iso(now));
+    } catch (e) {
+      if (creatingBusy(e)) return "busy";
+      throw e;
+    }
     return { user: row.user };
   }
 
@@ -537,12 +549,12 @@ export class ExternalIdentity implements IdentityProvider {
     return PAGE_HEADERS;
   }
 
-  #failed(status: number): IdentityResponse {
+  #failed(status: number, more: readonly (readonly [string, string])[] = []): IdentityResponse {
     return {
       kind: "page",
       status,
       html: "",
-      headers: this.#callbackHeaders(),
+      headers: [...this.#callbackHeaders(), ...more],
       cookies: [this.#cookie(this.#stateCookie, "", 0)],
     };
   }

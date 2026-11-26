@@ -48,6 +48,7 @@ describe("the server mode's configuration", () => {
       trustedProxies: [],
       allowedOrigins: [],
       shutdown: { drainSeconds: 10, timeoutSeconds: 30 },
+      tenants: { maxOpen: 50, idleSeconds: 300 },
     });
   });
 
@@ -105,6 +106,10 @@ describe("the server mode's configuration", () => {
     ["SAVESLOT_SHUTDOWN_DRAIN", "1.5", "not an integer of 0 to 3600"],
     ["SAVESLOT_SHUTDOWN_DRAIN", "10s", "not an integer of 0 to 3600"],
     ["SAVESLOT_SHUTDOWN_TIMEOUT", "3601", "not an integer of 0 to 3600"],
+    ["SAVESLOT_TENANT_CONNECTIONS", "0", "not an integer of 1 to 10000"],
+    ["SAVESLOT_TENANT_CONNECTIONS", "10001", "not an integer of 1 to 10000"],
+    ["SAVESLOT_TENANT_IDLE", "0", "not an integer of 1 to 86400"],
+    ["SAVESLOT_TENANT_IDLE", "5m", "not an integer of 1 to 86400"],
   ] as const)("%s = %s: %s", (variable, value, what) => {
     expect(problems({ ...GOOD, [variable]: value })).toEqual([
       { kind: "malformed", variable, what },
@@ -190,6 +195,13 @@ describe("the server mode's configuration", () => {
       drainSeconds: 10,
       timeoutSeconds: 0,
     });
+  });
+
+  it("the open tenants: at most SAVESLOT_TENANT_CONNECTIONS at once, closed after SAVESLOT_TENANT_IDLE seconds unused", () => {
+    expect(
+      readServerConfig({ ...GOOD, SAVESLOT_TENANT_CONNECTIONS: "200", SAVESLOT_TENANT_IDLE: "60" })
+        .tenants,
+    ).toEqual({ maxOpen: 200, idleSeconds: 60 });
   });
 
   it("trusted proxies: single addresses and CIDR ranges, each in one written form", () => {

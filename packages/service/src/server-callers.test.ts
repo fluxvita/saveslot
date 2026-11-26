@@ -55,7 +55,7 @@ describe("the server mode's callers", () => {
       now: () => "2026-11-21T08:00:00.000Z",
       authenticate: async (o) => {
         seen.push(o);
-        return { tenant: TENANT, principal };
+        return { tenant: TENANT, principal, release: () => {} };
       },
     });
     await callers.resolve("Bearer t");
@@ -96,7 +96,7 @@ describe("the server mode's callers", () => {
       pool: p,
       identity,
       now: () => "2026-11-21T08:00:00.000Z",
-      authenticate: async () => ({ tenant: TENANT, principal }),
+      authenticate: async () => ({ tenant: TENANT, principal, release: () => {} }),
     });
     const caller = await callers.resolve("Bearer t");
     if (!("principal" in caller)) throw new Error(caller.reason);
@@ -188,7 +188,7 @@ describe("the server mode's callers", () => {
         pool: { use: refused } as unknown as TenantPool,
         identity,
         now: () => "2026-11-21T08:00:00.000Z",
-        authenticate: async () => ({ tenant: TENANT, principal }),
+        authenticate: async () => ({ tenant: TENANT, principal, release: () => {} }),
       });
       const caller = await atUse.resolve("Bearer t");
       if (!("principal" in caller)) throw new Error(caller.reason);
@@ -229,7 +229,7 @@ describe("the server mode's callers", () => {
       pool: p,
       identity,
       now: () => "2026-11-21T08:00:00.000Z",
-      authenticate: async () => ({ tenant: TENANT, principal }),
+      authenticate: async () => ({ tenant: TENANT, principal, release: () => {} }),
     });
     const caller = await callers.resolve("Bearer t");
     if (!("principal" in caller)) throw new Error(caller.reason);

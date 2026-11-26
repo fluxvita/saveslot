@@ -22,6 +22,8 @@
  * - `commit_unknown`: the connection ended after COMMIT was sent and before its answer, or the
  *   server answered it by ending the session: the transaction may be committed, or not.
  * - `store_closed`: the store was closed.
+ * - `maintenance_busy`: another database was being created in this process for longer
+ *   than the wait (./maintenance.ts): nothing was done; try again shortly.
  * - `discard_refused`: a database to discard is neither the tenant's own staging database nor the
  *   one an import replaced, or it is the one the tenant's directory names now: nothing is dropped.
  */
@@ -46,7 +48,8 @@ export type ErrorCode =
   | "connection_lost"
   | "commit_unknown"
   | "store_closed"
-  | "discard_refused";
+  | "discard_refused"
+  | "maintenance_busy";
 
 /** An error raised by the PostgreSQL storage backend. `code` is stable; the message is for people. */
 export class PostgresStoreError extends Error {

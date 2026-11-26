@@ -22,7 +22,13 @@ import {
   openControlPlane,
   type ServerControlPlane,
 } from "./server-control-plane.ts";
-import { createServerTenant, databaseOf, ServerTenantError } from "./server-tenant.ts";
+import {
+  createServerTenant,
+  creatingBusy,
+  creationForTests,
+  databaseOf,
+  ServerTenantError,
+} from "./server-tenant.ts";
 
 const T = 120_000;
 const NOW = "2026-11-20T10:00:00.000Z";
@@ -289,6 +295,93 @@ describe("createServerTenant", () => {
     },
     T,
   );
+});
+
+// One creation at a time in a process, so that it holds one connection to a tenant's database
+// being made (02-architecture §7 «连接», the connection budget).
+describe("creations of different owners in one process", () => {
+  /** The backend, its first open held until released. */
+  function heldFirst() {
+    let release!: () => void;
+    const released = new Promise<void>((r) => {
+      release = r;
+    });
+    let reached!: () => void;
+    const reachedP = new Promise<void>((r) => {
+      reached = r;
+    });
+    let first = true;
+    const b: StorageBackend = {
+      open: async (ref, opts) => {
+        if (first) {
+          first = false;
+          reached();
+          await released;
+        }
+        return backend.open(ref, opts);
+      },
+    };
+    return { backend: b, release, reached: reachedP };
+  }
+  const make = (b: StorageBackend, u: `u_${string}`) =>
+    createServerTenant({ control: cp, backend: b, owner: u, cell: CELL, cells: CELLS, now: NOW });
+
+  it(
+    "take turns: the second opens nothing until the first is done",
+    async () => {
+      const h = heldFirst();
+      const opened: string[] = [];
+      const counting: StorageBackend = {
+        open: (ref, opts) => {
+          opened.push(ref.kind === "postgres" ? ref.database : "");
+          return h.backend.open(ref, opts);
+        },
+      };
+      const a = make(counting, owner());
+      await h.reached;
+      const b = make(counting, owner());
+      await new Promise((r) => setTimeout(r, 50));
+      expect(opened).toHaveLength(1);
+      h.release();
+      const [ea, eb] = await Promise.all([a, b]);
+      expect([ea.state, eb.state]).toEqual(["active", "active"]);
+      expect(opened).toEqual([databaseOf(ea.id), databaseOf(eb.id)]);
+    },
+    T,
+  );
+
+  it(
+    "one waiting past its time: busy, nothing registered; the next one after goes on",
+    async () => {
+      creationForTests.waitMs = 50;
+      try {
+        const h = heldFirst();
+        const a = make(h.backend, owner());
+        await h.reached;
+        const late = owner();
+        const refused = await make(h.backend, late).then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        expect(refused).toBeInstanceOf(ServerTenantError);
+        expect((refused as ServerTenantError).code).toBe("busy");
+        expect(creatingBusy(refused)).toBe(true);
+        expect(await cp.tenantOf(late)).toBeUndefined();
+        h.release();
+        await a;
+        expect((await make(h.backend, late)).state).toBe("active");
+      } finally {
+        creationForTests.waitMs = undefined;
+      }
+    },
+    T,
+  );
+
+  it("the PostgreSQL backend's maintenance_busy is a busy creation too; another error is not", () => {
+    expect(creatingBusy({ code: "maintenance_busy" })).toBe(true);
+    expect(creatingBusy(new ServerTenantError("unknown_cell", "m"))).toBe(false);
+    expect(creatingBusy(new Error("m"))).toBe(false);
+  });
 });
 
 describe.runIf(TEST_BACKEND === "postgres")("two processes creating one owner's tenant", () => {
