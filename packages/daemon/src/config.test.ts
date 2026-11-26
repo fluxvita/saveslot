@@ -48,6 +48,7 @@ describe("parsing config.toml", () => {
     const c = parseConfig(toml(""));
     expect(c.readsFlushSeconds).toBe(5);
     expect(c.mcpAutostart).toBe(true);
+    expect(c.upgradeBackup).toBe(true);
     expect(c.entries).toEqual([
       { key: "read_log.retention_days", value: 180, source: "default", used: false },
       { key: "read_log.flush_seconds", value: 5, source: "default", used: true },
@@ -56,6 +57,7 @@ describe("parsing config.toml", () => {
       { key: "high_water.seconds", value: 60, source: "default", used: false },
       { key: "http.loopback", value: false, source: "default", used: false },
       { key: "mcp.autostart", value: true, source: "default", used: true },
+      { key: "upgrade.backup", value: true, source: "default", used: true },
     ]);
   });
 
@@ -214,6 +216,7 @@ describe("the configuration of a home", () => {
         "high_water.seconds = 60  (default; not in use in this version)",
         "http.loopback = false  (default; not in use in this version)",
         "mcp.autostart = false  (config.toml)",
+        "upgrade.backup = true  (default)",
       ]);
       const b = io();
       expect(await configCommand(home, ["get", "mcp.autostart"], b.io)).toBe(0);

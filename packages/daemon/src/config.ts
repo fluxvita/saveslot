@@ -10,7 +10,8 @@
 // from the file.
 //
 // Used in this version: `read_log.flush_seconds` (the service's interval of writing the buffered
-// reads) and `mcp.autostart` (the MCP bridge; 06 §3 step 3).
+// reads), `mcp.autostart` (the MCP bridge; 06 §3 step 3) and `upgrade.backup` (the backup before a
+// storage format upgrade; 02-architecture §8).
 //
 // `saveslot config set` (`setConfig`) takes those two keys only: another key in the file would
 // refuse the next start. It writes the file anew from the keys it holds (a file it can write is
@@ -27,7 +28,8 @@ export type ConfigKey =
   | "high_water.events"
   | "high_water.seconds"
   | "http.loopback"
-  | "mcp.autostart";
+  | "mcp.autostart"
+  | "upgrade.backup";
 
 interface IntegerKey {
   readonly kind: "integer";
@@ -71,9 +73,10 @@ export const KEYS: ReadonlyMap<ConfigKey, KeySpec> = new Map<ConfigKey, KeySpec>
   ],
   ["http.loopback", { kind: "boolean", default: false, used: false }],
   ["mcp.autostart", { kind: "boolean", default: true, used: true }],
+  ["upgrade.backup", { kind: "boolean", default: true, used: true }],
 ]);
 
-/** The tables the keys are in: `read_log`, `high_water`, `http`, `mcp`. */
+/** The tables the keys are in: `read_log`, `high_water`, `http`, `mcp`, `upgrade`. */
 const SECTIONS: ReadonlySet<string> = new Set(
   [...KEYS.keys()].map((k) => k.slice(0, k.lastIndexOf("."))),
 );
@@ -91,6 +94,8 @@ export interface ConfigEntry {
 export interface Config {
   readonly readsFlushSeconds: number;
   readonly mcpAutostart: boolean;
+  /** Whether the local storage is backed up before its format is upgraded. */
+  readonly upgradeBackup: boolean;
   /** Every key, in `KEYS` order. */
   readonly entries: readonly ConfigEntry[];
 }
@@ -205,6 +210,7 @@ export function parseConfig(bytes: Uint8Array): Config {
   return {
     readsFlushSeconds: value("read_log.flush_seconds") as number,
     mcpAutostart: value("mcp.autostart") as boolean,
+    upgradeBackup: value("upgrade.backup") as boolean,
     entries,
   };
 }

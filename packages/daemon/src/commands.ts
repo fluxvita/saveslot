@@ -260,6 +260,8 @@ export async function start(
     readonly onStarted?: () => void;
     /** `--eval-clock`: the test clock's starting moment, passed on to the service (evaluations). */
     readonly evalClock?: string;
+    /** `--no-upgrade-backup`: this start does not back up the store before upgrading its format. */
+    readonly noUpgradeBackup?: boolean;
     /**
      * Not waited for while the service upgrades the store's format: 7 then (the MCP bridge, which
      * answers its calls `unavailable` meanwhile rather than hold them).
@@ -273,6 +275,24 @@ export async function start(
     io.err(TEXTS.startHomeUnusable(failureCode(e)));
     return 7;
   }
+}
+
+/**
+ * The arguments `start` gives the service it spawns: the home, its log, and the options of this
+ * start that are not in config.toml (`--eval-clock`, `--no-upgrade-backup`).
+ */
+export function serviceArgs(
+  home: string,
+  o: { readonly evalClock?: string; readonly noUpgradeBackup?: boolean },
+): string[] {
+  return [
+    "--home",
+    home,
+    "--log",
+    logFile(home),
+    ...(o.evalClock !== undefined ? ["--eval-clock", o.evalClock] : []),
+    ...(o.noUpgradeBackup === true ? ["--no-upgrade-backup"] : []),
+  ];
 }
 
 /** A stable code for what went wrong: a home's, a file system's, or `internal`; never a path. */
@@ -295,12 +315,21 @@ async function startService(
     readonly stop?: AbortSignal;
     readonly onStarted?: () => void;
     readonly evalClock?: string;
+    readonly noUpgradeBackup?: boolean;
     readonly untilUpgrading?: boolean;
   },
 ): Promise<number> {
+  // Known once the configuration is read, for a service this call starts.
+  let skipBackup = false;
+  let toldSkip = false;
   const waiting = {
-    upgrading: (u: { from: number; to: number; step?: string }) =>
-      io.err(TEXTS.startUpgrading(u.from, u.to, u.step)),
+    upgrading: (u: { from: number; to: number; step?: string }) => {
+      if (skipBackup && !toldSkip) {
+        toldSkip = true;
+        io.err(TEXTS.upgradeBackupSkipped);
+      }
+      io.err(TEXTS.startUpgrading(u.from, u.to, u.step));
+    },
     ...(o.untilUpgrading === true ? { untilUpgrading: true } : {}),
   };
   try {
@@ -336,7 +365,9 @@ async function startService(
   }
 
   // Refused here, before a process is spawned: the reason goes to the user, not to the log.
-  if ((await checkedConfig(home, io)) === undefined) return 5;
+  const config = await checkedConfig(home, io);
+  if (config === undefined) return 5;
+  skipBackup = o.noUpgradeBackup === true || !config.upgradeBackup;
 
   await mkdir(runDir(home), { recursive: true, mode: 0o700 });
   const log = openSync(logFile(home), "a", 0o600);
@@ -347,10 +378,9 @@ async function startService(
     // Run from the sources (development, tests): the workspace packages by their source entries.
     const conditions = bin.endsWith(".ts") ? ["--conditions=source"] : [];
     // A bridge runs with a connection's token; the service takes no token and keeps none.
-    const evalClock = o.evalClock !== undefined ? ["--eval-clock", o.evalClock] : [];
     // The service writes its own lines to the log and rotates it (./log-file.ts); the descriptor
     // given as stdout and stderr keeps what Node itself writes on a crash.
-    const args = [...conditions, bin, "--home", home, "--log", logFile(home), ...evalClock];
+    const args = [...conditions, bin, ...serviceArgs(home, o)];
     child = spawn(process.execPath, args, {
       detached: true,
       stdio: ["ignore", log, log],
@@ -420,7 +450,13 @@ export function failedStart(h: HealthBody): { readonly text: string; readonly co
     case "format_too_new":
       return { text: TEXTS.startFormatTooNew, code: 5 };
     case "upgrade_failed":
-      return { text: TEXTS.startUpgradeFailed(upgradeOf(h)?.step), code: 5 };
+      return {
+        text:
+          upgradeOf(h)?.step === "backup"
+            ? TEXTS.startUpgradeBackupFailed
+            : TEXTS.startUpgradeFailed(upgradeOf(h)?.step),
+        code: 5,
+      };
     default:
       return { text: TEXTS.startFailed(h.reason ?? "failed"), code: 7 };
   }
@@ -641,7 +677,11 @@ export async function serviceCommand(
           ? { "rotate-session": { type: "boolean" }, "data-dir": { type: "string" } }
           : {}),
         ...(name === "start"
-          ? { foreground: { type: "boolean" }, "eval-clock": { type: "string" } }
+          ? {
+              foreground: { type: "boolean" },
+              "eval-clock": { type: "string" },
+              "no-upgrade-backup": { type: "boolean" },
+            }
           : {}),
         ...(name === "mcp" ? { record: { type: "string" } } : {}),
       },
@@ -687,9 +727,13 @@ export async function serviceCommand(
         return 2;
       }
       const clock = typeof evalClock === "string" ? ["--eval-clock", evalClock] : [];
+      const noBackup = values["no-upgrade-backup"] === true;
       return values["foreground"] === true
-        ? main(["--home", home, ...clock])
-        : start(home, io, typeof evalClock === "string" ? { evalClock } : {});
+        ? main(["--home", home, ...clock, ...(noBackup ? ["--no-upgrade-backup"] : [])])
+        : start(home, io, {
+            ...(typeof evalClock === "string" ? { evalClock } : {}),
+            ...(noBackup ? { noUpgradeBackup: true } : {}),
+          });
     }
     case "stop":
       return stop(home, io);
