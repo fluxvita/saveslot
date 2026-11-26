@@ -53,6 +53,11 @@ export function candidateTargets(block: Readonly<Record<string, unknown>>): Targ
 export function itemsFromLog(
   events: readonly StoredEvent[],
   state: RowState,
+  /**
+   * The records' own state, when `state` has other pending deletions replayed: an awaiting item
+   * opened when written (one such a deletion superseded since included) has its proposal there.
+   */
+  written?: RowState,
 ): { readonly given: ItemsGiven; readonly items: ReadonlyMap<string, LogItem> } {
   type Mutable = {
     id: string;
@@ -107,7 +112,7 @@ export function itemsFromLog(
         for (const target of candidateTargets(b)) of.set(contributionKey(event, target), x.id);
       }
     } else {
-      for (const y of state.items) {
+      for (const y of [...(written?.items ?? []), ...state.items]) {
         if (y.event === x.origin && y.status === "awaiting") {
           of.set(contributionKey(y.event, y.target), x.id);
         }
@@ -215,11 +220,19 @@ export function itemEventsOf(input: {
   readonly newId: () => string;
 }): ItemEventsOut {
   const { layer, after, self } = input;
-  if (layer.restored.length > 0) {
-    throw new WriteError("internal", "a deletion restoring an item is not implemented", {
-      reason: "not_implemented",
-      kind: "items_restored",
-    });
+  // Members or candidates going back to their original item, one an earlier deletion superseded
+  // (`restored`) or one still open (`back` of a refresh: an earlier deletion dropped them, this
+  // one makes them pending again): the item events that put them back (`item.refreshed`
+  // `restored_candidates`, 09 §5.8) are not made yet. Refused, both alike.
+  if (layer.restored.length > 0 || layer.refreshed.some((r) => r.back.length > 0)) {
+    throw new WriteError(
+      "internal",
+      "a deletion putting members back into an item is not implemented",
+      {
+        reason: "not_implemented",
+        kind: "items_restored",
+      },
+    );
   }
   const at = { upTo: self as never };
   const open = new Map(
