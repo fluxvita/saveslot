@@ -219,7 +219,7 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
 
 **`saveslot_catalog`**
 
-`list`（默认）：每个 slot 一段，写 slot 名、schema 版本、时区；每张表一行，写表名、基础 / 派生、一句话说明，有别名时接着写"别名：…"。只列本次调用可见的 slot 与表。
+`list`（默认）：每个 slot 一段，写 slot 名、schema 版本、时区；每张表一行，写表名、基础 / 派生、一句话说明，有别名时接着写"别名：…"。只列本次调用可见的 slot 与表。一个 slot 也看不到时，列表换成第 9 节「slot 清单」第 4 条按凭证选的那一句，与 `instructions` 里的逐字相同：不是每个宿主都把 `instructions` 交给模型，空目录的结果自己要写出下一步。
 
 ```
 ledger · schema v2 · Asia/Shanghai

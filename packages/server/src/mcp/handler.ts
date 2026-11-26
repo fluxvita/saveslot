@@ -244,7 +244,15 @@ async function call(
   // strings a host would give the model as they are, with no boundary.
   // "Opened 5 h ago" by the service's clock (the test clock, when there is one).
   return {
-    content: [{ type: "text", text: renderResult(tool.name, outcome.result, new Date(ctx.now())) }],
+    content: [
+      {
+        type: "text",
+        text: renderResult(tool.name, outcome.result, new Date(ctx.now()), {
+          scoped: principal.visibility.kind === "scoped",
+          schema: toolsFor(principal).some((t) => t.name === "saveslot_schema_draft"),
+        }),
+      },
+    ],
   };
 }
 
