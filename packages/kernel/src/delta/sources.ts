@@ -10,6 +10,7 @@ import type {
 } from "@fluxvita/saveslot-contract-core";
 import { INSTANT_TEXT, physical, selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { READABLE_CONTENT } from "../store/readable-content.ts";
 import { sameValue } from "./same-value.ts";
 
 /** A cell of one row or entity: field, business interval, revoke, `no_value`, raw value columns. */
@@ -109,7 +110,7 @@ const SOURCE_COLUMNS = `b.row_id, b.event_seq, b.field_id, b.k, b.carried_event,
        b.carried_k, b.status, b.valid_from, b.valid_to, b.reverted, c.body`;
 const SOURCE_FROM = `FROM base_sources b
      JOIN events e ON e.seq = b.event_seq
-     LEFT JOIN content c ON c.seq = b.event_seq
+     LEFT JOIN ${READABLE_CONTENT} c ON c.seq = b.event_seq
        AND c.path = 'fields/' || b.field_id || '/' || b.k`;
 
 /** How the 出处项 are read. */

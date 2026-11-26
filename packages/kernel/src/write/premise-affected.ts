@@ -28,6 +28,7 @@ import { cellsAt, sourceItemsAt } from "../delta/index.ts";
 import { type ActorAsOf, actorsAsOf } from "../log/index.ts";
 import { decodeColumns } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { READABLE_CONTENT } from "../store/readable-content.ts";
 
 /** 04-contract-types §5.1 `PremiseAffected`. */
 export interface PremiseAffected {
@@ -72,7 +73,7 @@ async function inForceAt(tx: ReadTx, row: string, p: number): Promise<Map<string
   const cleared = new Map<string, Order>();
   for (const { op, i } of ops) {
     const blocks = await tx.query<{ path: string; body: string | null }>(
-      `SELECT path, body FROM content WHERE seq = $1
+      `SELECT path, body FROM ${READABLE_CONTENT} c WHERE seq = $1
          AND (path LIKE $2 OR path = $3 OR path = $4)`,
       [op, `ops/${i}/premises/%`, `ops/${i}/premise_covers`, `ops/${i}/premises_cleared`],
     );
@@ -171,7 +172,7 @@ export async function premiseAffected(
   },
 ): Promise<PremiseAffected | undefined> {
   const ev = await tx.query<{ path: string; body: string | null }>(
-    `SELECT c.path, c.body FROM events e JOIN content c ON c.seq = e.seq
+    `SELECT c.path, c.body FROM events e JOIN ${READABLE_CONTENT} c ON c.seq = e.seq
      WHERE e.op = $1 AND e.type = 'premise.changed'`,
     [op],
   );

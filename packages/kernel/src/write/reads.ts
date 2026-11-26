@@ -15,6 +15,7 @@ import type {
 import { SELFCHECK_TASK } from "@fluxvita/saveslot-contract-core";
 import { FieldVisibilityNotImplemented, type Visibility, visibleTables } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { READABLE_CONTENT, taskKnown, taskOfOperation } from "../store/readable-content.ts";
 import { WriteError } from "./errors.ts";
 import type { StoredEvent } from "./record.ts";
 
@@ -80,20 +81,32 @@ export async function readSlots(tx: ReadTx): Promise<SlotRow[]> {
     }));
 }
 
+/** How `rowEvents` reads the log's blocks. */
+export interface RowEventsOptions {
+  /**
+   * Read the blocks pending deletions list, as stored (default: read no more, 09 §5.9). Only a
+   * deletion's or a cancellation's replay passes it: it replays the row from every contribution,
+   * those other pending deletions list included (each deletion lists its own in full), and a
+   * cancellation those of the deletion it cancels. Every call passing it is named in
+   * content-readers.test.ts.
+   */
+  readonly includePendingDeletionBlocks?: boolean;
+}
+
 /**
- * The blocks of the events given, by their sequence numbers: `content`'s primary key `(seq, path)`
- * finds them, so the cost is the events' blocks, not the log's. (Joined with `events` on another
- * column instead, the planner scans the whole of `content`.) Blocks a deletion cleared (`body`
- * null) are left out.
+ * The blocks of the events given, by their sequence numbers, as everything but a deletion's replay
+ * reads them: `content`'s primary key `(seq, path)` finds them, so the cost is the events' blocks,
+ * not the log's. (Joined with `events` on another column instead, the planner scans the whole of
+ * `content`.) Blocks a deletion cleared, and blocks a pending deletion lists, are left out.
  */
-export const BLOCKS_OF_EVENTS_SQL =
-  "SELECT seq, path, body FROM content WHERE seq = ANY($1) AND body IS NOT NULL";
+export const BLOCKS_OF_EVENTS_SQL = `SELECT seq, path, body FROM ${READABLE_CONTENT} c WHERE seq = ANY($1) AND body IS NOT NULL`;
 
 /** The events `where` selects, in order, with their blocks. */
 export async function eventsAt(
   tx: ReadTx,
   where: string,
   args: readonly unknown[],
+  o: RowEventsOptions = {},
 ): Promise<StoredEvent[]> {
   const heads = await tx.query<{ seq: unknown; type: string; op: unknown }>(
     `SELECT seq, type, op FROM events WHERE ${where} ORDER BY seq`,
@@ -102,7 +115,9 @@ export async function eventsAt(
   if (heads.rows.length === 0) return [];
   const seqs = heads.rows.map((h) => Number(h.seq));
   const blocks = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-    BLOCKS_OF_EVENTS_SQL,
+    o.includePendingDeletionBlocks === true
+      ? "SELECT seq, path, body FROM content WHERE seq = ANY($1) AND body IS NOT NULL"
+      : BLOCKS_OF_EVENTS_SQL,
     [seqs] as never,
   );
   const by = new Map<number, Record<string, unknown>>();
@@ -127,11 +142,17 @@ export async function eventsAt(
  * the head events of those operations, and the `item.resolved` events on its items (a decision
  * that writes nothing has no event on the row).
  */
-export async function rowEvents(tx: ReadTx, table: string, row: string): Promise<StoredEvent[]> {
+export async function rowEvents(
+  tx: ReadTx,
+  table: string,
+  row: string,
+  o: RowEventsOptions = {},
+): Promise<StoredEvent[]> {
   const own = await eventsAt(
     tx,
     "target_table = $1 AND target_row = $2 AND type IN ('write.base', 'item.created')",
     [table, row],
+    o,
   );
   const items = [
     ...new Set(
@@ -150,6 +171,7 @@ export async function rowEvents(tx: ReadTx, table: string, row: string): Promise
           `type IN ('item.merged', 'item.refreshed', 'item.superseded', 'item.resolved') AND seq IN (SELECT c.seq FROM content c
              WHERE c.path = 'target' AND c.body IS NOT NULL AND (c.body::jsonb ->> 'item') = ANY($1))`,
           [items],
+          o,
         );
   const ops = [
     ...new Set(
@@ -163,7 +185,7 @@ export async function rowEvents(tx: ReadTx, table: string, row: string): Promise
         .map((e) => e.header.op),
     ),
   ];
-  const heads = ops.length === 0 ? [] : await eventsAt(tx, "seq = ANY($1)", [ops]);
+  const heads = ops.length === 0 ? [] : await eventsAt(tx, "seq = ANY($1)", [ops], o);
   const all = new Map<number, StoredEvent>();
   for (const e of [...own, ...onItems, ...heads]) all.set(e.header.seq, e);
   return [...all.values()].sort((a, b) => a.header.seq - b.header.seq);
@@ -179,7 +201,8 @@ export async function rowTable(tx: ReadTx, row: string): Promise<string | undefi
 }
 
 /** The task a head event recorded (`task`), as SQL on head event `e`: NULL when it has none. */
-const taskOf = `(SELECT t.body::jsonb #>> '{}' FROM content t WHERE t.seq = e.seq AND t.path = 'task' AND t.body IS NOT NULL)`;
+// The task of the operation `e` heads, as readable (a data block: 09 §5.1).
+const taskOf = taskOfOperation("e.seq");
 
 /**
  * The operations of `actor` under the same task as the call (04-contract «兜底»: a call with a
@@ -211,6 +234,7 @@ export async function verFromWrite(
     `SELECT v.rec_from AS v, ${taskOf} AS read_task, (${byCaller("$2", "$3")}) AS same
      FROM "${verTable}" v JOIN events e ON e.seq = v.rec_from
      WHERE v.row_id = $1 AND v.intent <> 'schema_switch' AND e.actor = $2
+       AND ${taskKnown("e.seq")}
      ORDER BY (${byCaller("$2", "$3")}) DESC, v.rec_from DESC LIMIT 1`,
     [row, actor, task],
   );
@@ -235,7 +259,9 @@ export async function svFromWrite(
   }>(
     `SELECT e.seq, c.body, ${taskOf} AS read_task, (${byCaller("$2", "$3")}) AS same
      FROM events e JOIN content c ON c.seq = e.seq AND c.path = 'request'
+     -- A write head's request is metadata no deletion lists (09 §5.9: only a source's is).
      WHERE e.type = 'write.head' AND e.slot = $1 AND e.actor = $2
+       AND ${taskKnown("e.seq")}
      ORDER BY (${byCaller("$2", "$3")}) DESC, e.seq DESC LIMIT 1`,
     [slot, actor, task],
   );

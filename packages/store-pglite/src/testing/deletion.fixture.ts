@@ -68,7 +68,8 @@ export async function confirmDeletion(store: PgliteTenantStore, input: ConfirmIn
       shape,
       granularity: "date",
     } as never;
-    const state = await judgeStateFromLog(tx, ctx);
+    // The replay of a deletion: from every contribution, those other pending deletions list included.
+    const state = await judgeStateFromLog(tx, ctx, { includePendingDeletionBlocks: true });
     const bases = await readCitations(tx, input.slot, input.sources);
     const deleted = takenAway(bases, new Set(input.sources));
     const replay = deletionReplayForTests(shape, state.records, deleted);
@@ -154,7 +155,8 @@ export async function cancelDeletion(store: PgliteTenantStore, input: ConfirmInp
       granularity: "date",
     } as never;
     // The records as written: judge reads the log without its deletion events.
-    const state = await judgeStateFromLog(tx, ctx);
+    // The replay of a cancellation: the blocks of the deletion it cancels, pending still, included.
+    const state = await judgeStateFromLog(tx, ctx, { includePendingDeletionBlocks: true });
     const bases = await readCitations(tx, input.slot, input.sources);
     const deleted = takenAway(bases, new Set(input.sources));
     const confirmed = deletionReplayForTests(shape, state.records, deleted);
@@ -232,7 +234,9 @@ export class DeletionSession {
       shape: this.#session.table,
       granularity: "date",
     } as never;
-    return (await judgeStateFromLog(tx, ctx)).records;
+    // A replay of a deletion or a cancellation: from every contribution, those other pending
+    // deletions list included.
+    return (await judgeStateFromLog(tx, ctx, { includePendingDeletionBlocks: true })).records;
   }
 
   #results(r: { listed: boolean; stretches: unknown; gaps?: unknown }, outcome: unknown) {

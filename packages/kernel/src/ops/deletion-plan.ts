@@ -382,7 +382,9 @@ export async function planDeletionOf(
       granularity: isState && table.time.type === "state" ? table.time.granularity : "date",
       restores,
     };
-    const events = await rowEvents(tx, table.id, id);
+    // The row from every contribution, those earlier pending deletions list included: the replay
+    // works out this deletion's positions as the confirmation will (each lists its own in full).
+    const events = await rowEvents(tx, table.id, id, { includePendingDeletionBlocks: true });
     // Earlier deletions on the row: the other pending ones and the blocks they and the
     // cancellations gave (./deletion-row.ts); what this version does not read, refused.
     const inputs = rowInputs(ctx, events, prior);

@@ -4,6 +4,7 @@
 // computed from the row's state elsewhere (judge); the shapes here are the blocks'.
 
 import type { ReadTx } from "../store/ports.ts";
+import { taskKnown, taskOfOperation } from "../store/readable-content.ts";
 import { restorePoint } from "../store/restore-point.ts";
 
 /** A contribution reference (§3.5). */
@@ -196,8 +197,7 @@ export async function writerHadRead(
      JOIN content t ON t.seq = c.seq AND t.path = 'target' AND t.body IS NOT NULL
      WHERE h.seq = $1 AND h.type = 'write.head' AND h.actor = $2
        AND (t.body::jsonb ->> 'item') = $3
-       AND (SELECT k.body::jsonb #>> '{}' FROM content k WHERE k.seq = h.seq AND k.path = 'task' AND k.body IS NOT NULL)
-         IS NOT DISTINCT FROM $4::text`,
+       AND ${taskKnown("h.seq")} AND ${taskOfOperation("h.seq")} IS NOT DISTINCT FROM $4::text`,
     [item.versionOp, actor, item.id, task],
   );
   return Number(r.rows[0]?.n ?? 0) > 0;

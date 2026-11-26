@@ -986,17 +986,27 @@ describe("the shapes this version refuses, before anything is appended", () => {
   );
 
   it(
-    "a write after an earlier deletion that changes nothing: ops_after_deletion",
+    "a write in the grace period giving the value the row has after the deletion: a noop, and a second deletion on the row goes through",
     async () => {
+      // 03-deletion: a write in the grace period is judged on the state after the deletion (45),
+      // so a correction to 45 changes nothing and appends nothing on the row.
       const { row, ver } = await lunchDeletedOnce();
-      await w(
+      const at = await tail();
+      const r: Any = await w(
         [{ intent: "correct", table: "lunches", row, ver, set: { amount: "45" } }],
         "yes, 45",
       );
+      expect(r.ops[0].fields.amount.result).toBe("noop");
       expect(
         (await query(s.store, ctx(), { table: "lunches" })).rows.map((x: Any) => x.values.amount),
       ).toEqual(["45"]);
-      await refusedAs([await sourceId("lunch was 45")], "ops_after_deletion");
+      const bases = await s.store.read((tx) =>
+        tx.query("SELECT 1 FROM events WHERE seq > $1 AND type = 'write.base'", [at]),
+      );
+      expect(bases.rows).toEqual([]);
+      // No operation on the row since the earlier deletion: a second one is worked out.
+      const first = await sourceId("lunch was 45");
+      expect(await thrown(() => previewDeletion(s.store, { sources: [first] }))).toBeUndefined();
     },
     T,
   );

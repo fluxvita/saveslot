@@ -14,6 +14,7 @@ import {
   type Seq,
 } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
+import { READABLE_CONTENT } from "../store/readable-content.ts";
 import {
   buildContinuation,
   buildOperation,
@@ -182,11 +183,10 @@ export async function readEvents(tx: ReadTx, from: Seq, to: Seq): Promise<Stored
     body: string | null;
     removed_by: unknown;
     pending_by: unknown;
+    held: boolean;
   }>(
-    `SELECT c.seq, c.path, c.body, c.removed_by,
-       (SELECT min(p.deletion_seq) FROM pending_blocks p WHERE p.seq = c.seq AND p.path = c.path)
-         AS pending_by
-     FROM content c WHERE c.seq BETWEEN $1 AND $2 ORDER BY c.seq, c.path COLLATE "C"`,
+    `SELECT c.seq, c.path, c.body, c.removed_by, c.pending_by, c.held
+     FROM ${READABLE_CONTENT} c WHERE c.seq BETWEEN $1 AND $2 ORDER BY c.seq, c.path COLLATE "C"`,
     [from, to],
   );
   const bySeq = new Map<number, Map<string, BlockState>>();
@@ -194,7 +194,7 @@ export async function readEvents(tx: ReadTx, from: Seq, to: Seq): Promise<Stored
     const m = bySeq.get(n(b.seq)) ?? new Map<string, BlockState>();
     bySeq.set(n(b.seq), m);
     if (b.removed_by !== null) m.set(b.path, { state: "removed", by: n(b.removed_by) });
-    else if (b.pending_by !== null && b.body !== null)
+    else if (b.pending_by !== null && b.held)
       m.set(b.path, { state: "pending", by: n(b.pending_by) });
     else if (b.body !== null)
       m.set(b.path, { state: "present", value: JSON.parse(b.body) as JsonValue });
