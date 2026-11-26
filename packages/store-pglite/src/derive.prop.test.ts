@@ -11,7 +11,7 @@
 // Each sample runs in one transaction rolled back at its end. The cases where apply refuses a
 // tampered derived write change base rows in their table directly and append by hand.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -27,6 +27,8 @@ import {
   evaluateRule,
   eventsOf,
   loadRsql,
+  memberKeys,
+  NARROWED_KEYS_MAX,
   type NewEvent,
   type Query,
   readBufferOf,
@@ -74,6 +76,22 @@ const RULES = [
   ["t12", "SELECT max(date + 2900000) AS far FROM runs", ["far"], "none"],
   // A sum of integers that overflows 64 bits on purpose (the last cases).
   ["t13", "SELECT sum(laps) AS total_laps FROM runs", ["total_laps"], "none"],
+  // Rows that enter and leave the rule as `race` changes.
+  ["t14", "SELECT route AS r, count(*) AS n FROM runs WHERE race GROUP BY 1", ["r", "n"], "none"],
+  // A group HAVING drops: members, no derived row.
+  [
+    "t15",
+    "SELECT route AS r, count(*) AS n FROM runs GROUP BY 1 HAVING count(*) > 1",
+    ["r", "n"],
+    "none",
+  ],
+  // Grouped by month.
+  [
+    "t16",
+    "SELECT date_trunc('month', date::timestamp)::date AS m, count(*) AS n FROM runs GROUP BY 1",
+    ["m", "n"],
+    "bucketed",
+  ],
 ] as const;
 type TableId = (typeof RULES)[number][0];
 
@@ -819,5 +837,222 @@ describe("apply refuses a key or partition that is not the group's", () => {
       verdict = `${e.reason}: ${e.message.replace(/^apply stopped at seq \d+: /, "")}`;
     }
     expect(verdict).toMatch(/^inconsistent: recomputing partition p_7+: database: /);
+  });
+});
+
+// --- the affected groups against every group ---------------------------------------------------
+
+/** How often each situation came up in narrowedAgainstWhole, written to DERIVE_COUNTS when set. */
+const seenCounts = new Map<string, number>();
+const seen = (what: string) => seenCounts.set(what, (seenCounts.get(what) ?? 0) + 1);
+afterAll(() => {
+  const f = process.env["DERIVE_COUNTS"];
+  if (f !== undefined && f !== "") writeFileSync(f, JSON.stringify(Object.fromEntries(seenCounts)));
+});
+
+/**
+ * Each step applied to runs directly; then the derived writes worked out two ways on the same
+ * state, with partition IDs from the same point: from the groups the changed row was in before
+ * and is in after (memberKeys before the change, as the pipeline does), and from every group
+ * (06 «分析不出»). They must be the same list. The narrowed ones are applied, and the next step
+ * goes on from there. Steps that touch no row are skipped.
+ */
+async function narrowedAgainstWhole(steps: readonly (Step | readonly Step[])[]): Promise<void> {
+  try {
+    await store.write(async (tx) => {
+      let inserted = 0;
+      let partitions = 0;
+      for (const [i, one] of steps.entries()) {
+        // One operation: one step, or several (a request of several ops, each on its row).
+        const ops = Array.isArray(one) ? (one as readonly Step[]) : [one as Step];
+        const where = `step ${i} ${JSON.stringify(one)}`;
+        const targets: string[] = [];
+        let next = inserted;
+        for (const s of ops) {
+          const target =
+            s.k === "insert" ? rowId(next++) : next === 0 ? undefined : rowId(s.row % next);
+          if (target !== undefined) targets.push(target);
+        }
+        if (targets.length === 0) continue;
+        const changes = [...new Set(targets)].map((row) => ({
+          table: "t1" as const,
+          row,
+          fields: [],
+        }));
+        const before = await memberKeys({ query: queryIn(tx), schema, changes });
+        const touched: string[] = [];
+        for (const s of ops) {
+          const row = await base(tx, s, inserted);
+          if (s.k === "insert") inserted++;
+          if (row !== undefined) touched.push(row);
+        }
+        const row = touched[0];
+        if (row === undefined) continue;
+        if (ops.length > 1) seen("one operation of several rows");
+        const opened = await appendOperation(tx, {
+          actor: USER as never,
+          now: nextNow(),
+          events: [head(row)],
+        });
+        await applyEvents(tx, eventsOf(opened));
+        const from = partitions;
+        const ids = () => {
+          let n = from;
+          return () => `p_${String(++n).padStart(16, "0")}` as const;
+        };
+        const input = { query: queryIn(tx), schema, changes, readPos: opened.op };
+        const narrowed = await derivedWrites({ ...input, before, newPartitionId: ids() });
+        const whole = await derivedWrites({ ...input, newPartitionId: ids() });
+        expect(narrowed, where).toEqual(whole);
+        // What the step was, for the counts.
+        const after = await memberKeys({ query: queryIn(tx), schema, changes });
+        for (const [t, keys] of after) {
+          const was = before.get(t);
+          if (was === undefined) continue;
+          if (new Set([...was.keys(), ...keys.keys()]).size > NARROWED_KEYS_MAX)
+            seen("past the threshold: every group");
+          const moved = [...keys.keys()].some((k) => !was.has(k)) && was.size > 0;
+          if (moved) seen(`${t} moved to another group`);
+          if (was.size > 0 && keys.size === 0) seen(`${t} left the rule`);
+          if (was.size === 0 && keys.size > 0) seen(`${t} entered the rule`);
+        }
+        for (const w of narrowed)
+          seen(w.target.emptied ? "emptied" : w.key ? "new partition" : "changed");
+        partitions += narrowed.filter((w) => w.key !== undefined).length;
+        if (narrowed.length > 0) {
+          const more = await continueOperation(tx, opened, derivedEvents(narrowed));
+          await applyEvents(tx, eventsOf(more));
+        }
+        for (const [id] of RULES) {
+          const { got, want } = await compare(tx, id);
+          expect(got, `${where} ${id}`).toEqual(want);
+        }
+      }
+      throw ROLLBACK;
+    });
+  } catch (e) {
+    if (e !== ROLLBACK) throw e;
+  }
+}
+
+const upd = (row: number, cells: Readonly<Record<string, Cell>>): Step => ({
+  k: "update",
+  row,
+  cells,
+});
+const rev = (row: number): Step => ({ k: "revoke", row });
+const res = (row: number): Step => ({ k: "restore", row });
+
+describe("the affected groups give the derived writes every group gives (06 «刷新范围与写入准入»)", () => {
+  it("random inserts, updates, revokes and restores, some operations of several rows", async () => {
+    const operation = fc.oneof(
+      { weight: 3, arbitrary: step },
+      { weight: 1, arbitrary: fc.array(step, { minLength: 2, maxLength: 3 }) },
+    );
+    await fc.assert(
+      fc.asyncProperty(fc.array(operation, { minLength: 1, maxLength: 10 }), narrowedAgainstWhole),
+      { numRuns: propRuns(40) },
+    );
+  });
+
+  it("a row moved to another week, month and route: the old group changed or emptied, the new one changed or new", async () => {
+    await narrowedAgainstWhole([
+      ins({ f1: "2026-10-28", f2: "1", f5: "park", f10: true }),
+      ins({ f1: "2026-10-28", f2: "2", f5: "park", f10: true }),
+      upd(0, { f1: "2026-12-31", f5: "river" }),
+      upd(1, { f1: "2026-12-31", f5: "river" }),
+    ]);
+  });
+
+  it("one operation moving two rows into each other's groups: both groups, before and after", async () => {
+    await narrowedAgainstWhole([
+      ins({ f1: "2026-10-28", f2: "1", f5: "park", f10: true }),
+      ins({ f1: "2026-12-31", f2: "2", f5: "river", f10: true }),
+      [upd(0, { f1: "2026-12-31", f5: "river" }), upd(1, { f1: "2026-10-28", f5: "park" })],
+      [rev(0), ins({ f1: "2026-11-05", f2: "4", f5: null }), upd(1, { f10: false })],
+    ]);
+  });
+
+  it("one operation reaching more groups than NARROWED_KEYS_MAX: every group, the same writes", async () => {
+    await narrowedAgainstWhole([
+      ins({ f1: "2026-11-02", f2: "1", f5: "park" }),
+      [
+        ins({ f1: "2026-10-28", f2: "1", f5: "river" }),
+        ins({ f1: "2026-11-09", f2: "2", f5: "park" }),
+        ins({ f1: "2026-12-31", f2: "3", f5: null }),
+      ],
+    ]);
+  });
+
+  it("a group emptied, then given a row again under its partition", async () => {
+    await narrowedAgainstWhole([
+      ins({ f1: "2026-11-02", f2: "1", f5: "park" }),
+      rev(0),
+      ins({ f1: "2026-11-02", f2: "3", f5: "park" }),
+      res(0),
+    ]);
+  });
+
+  it("HAVING: a group with members and no row, then one with a row", async () => {
+    await narrowedAgainstWhole([
+      ins({ f1: "2026-11-02", f2: "1", f5: "river" }),
+      ins({ f1: "2026-11-05", f2: "1", f5: "river" }),
+      rev(1),
+    ]);
+  });
+
+  it("a NULL key, and a row moved into it and out of it", async () => {
+    await narrowedAgainstWhole([
+      ins({ f1: "2026-11-02", f2: "1", f5: null }),
+      ins({ f1: "2026-11-02", f2: "1", f5: "park" }),
+      upd(1, { f5: null }),
+      upd(0, { f5: "river" }),
+    ]);
+  });
+
+  it("a whole aggregate down to no input row and back", async () => {
+    await narrowedAgainstWhole([ins({ f1: "2026-11-02", f2: "1", f10: true }), rev(0), res(0)]);
+  });
+
+  it("a row leaving WHERE and coming back", async () => {
+    await narrowedAgainstWhole([
+      ins({ f1: "2026-11-02", f2: "1", f5: "park", f10: true }),
+      upd(0, { f10: false }),
+      upd(0, { f10: true }),
+      upd(0, { f10: null }),
+    ]);
+  });
+
+  it("week and month boundaries: Sunday to Monday, the last day of a month to the first, across a year", async () => {
+    await narrowedAgainstWhole([
+      ins({ f1: "2026-11-01", f2: "1" }),
+      upd(0, { f1: "2026-11-02" }),
+      ins({ f1: "2026-10-28", f2: "1" }),
+      upd(1, { f1: "2026-11-01" }),
+      ins({ f1: "2026-12-31", f2: "1" }),
+      upd(2, { f1: "2026-11-09" }),
+    ]);
+  });
+});
+
+describe("which rules are narrowed", () => {
+  it("every rule over runs here is (no window function or subquery is compiled in a derived rule yet)", () => {
+    for (const [id] of RULES) expect(evaluateRule(schema, id).narrowable, id).toBe(true);
+  });
+
+  it("the keys before a change come for each narrowed table a change of runs refreshes", async () => {
+    await store
+      .write(async (tx) => {
+        const keys = await memberKeys({
+          query: queryIn(tx),
+          schema,
+          changes: [{ table: "t1", row: rowId(0), fields: [] }],
+        });
+        expect([...keys.keys()].sort()).toEqual(RULES.map(([id]) => id).sort());
+        throw ROLLBACK;
+      })
+      .catch((e) => {
+        if (e !== ROLLBACK) throw e;
+      });
   });
 });

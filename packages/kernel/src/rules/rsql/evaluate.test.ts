@@ -11,6 +11,7 @@ import { compileDerivedRule } from "./derived.ts";
 import {
   evaluateRule,
   evaluationRefusal,
+  narrowableShape,
   RuleEvaluationError,
   roundDecimalText,
   rowChecksum,
@@ -457,5 +458,56 @@ describe("a rule computed when read (06-derived «时间依赖»)", () => {
     expect(() => evaluateRule(weekly, "t9", CALL)).toThrow(
       "an instant for a rule not computed when read",
     );
+  });
+});
+
+describe("narrowableShape: the affected groups only for shapes it knows (06-derived «刷新范围与写入准入»)", () => {
+  const count = { k: "agg", name: "count", star: true, distinct: false, loc: 0 };
+  const col = (name: string) => ({ k: "col", parts: [name], loc: 0 });
+  const known = {
+    targets: [
+      { name: "d", expr: col("date"), loc: 0 },
+      { name: "n", expr: count, loc: 0 },
+    ],
+    from: { table: "runs", loc: 0 },
+    where: { k: "op", op: ">", args: [col("laps"), { k: "int", text: "0", loc: 0 }], loc: 0 },
+    groupBy: [{ k: "ordinal", n: 1, loc: 0 }],
+    having: { k: "op", op: ">", args: [count, { k: "int", text: "1", loc: 0 }], loc: 0 },
+  };
+
+  it("one event or timeless table, row expressions and aggregates: narrowed; a state table: not", () => {
+    expect(narrowableShape(known, "event")).toBe(true);
+    expect(narrowableShape(known, "none")).toBe(true);
+    expect(narrowableShape(known, "state")).toBe(false);
+  });
+
+  it("anything it does not know is recomputed whole", () => {
+    // A part of the statement it has no rule for (a join of a later version, say).
+    expect(narrowableShape({ ...known, joins: [{ table: "shoes" }] }, "event")).toBe(false);
+    // A FROM that is more than one table.
+    expect(
+      narrowableShape(
+        { ...known, from: { table: "runs", join: { table: "shoes" }, loc: 0 } },
+        "event",
+      ),
+    ).toBe(false);
+    // A window function: a row's value reaches the other rows.
+    const win = {
+      k: "win",
+      name: "rank",
+      star: false,
+      distinct: false,
+      args: [],
+      over: { k: "name", name: "w" },
+      loc: 0,
+    };
+    expect(
+      narrowableShape({ ...known, targets: [{ name: "r", expr: win, loc: 0 }] }, "event"),
+    ).toBe(false);
+    // A subquery.
+    const sub = { k: "sublink", kind: "exists", query: {}, loc: 0 };
+    expect(narrowableShape({ ...known, where: sub }, "event")).toBe(false);
+    // A node of a kind made up here, as a later version might bring.
+    expect(narrowableShape({ ...known, where: { k: "lateral", loc: 0 } }, "event")).toBe(false);
   });
 });

@@ -12,7 +12,7 @@ import type {
   FieldValue,
   PartitionId,
 } from "@fluxvita/saveslot-contract-core";
-import { decodeValue, type RuleQuery } from "./evaluate.ts";
+import { decodeValue } from "./evaluate.ts";
 
 /** The physical layout: the table's name and the column of each field. */
 export interface DerivedLayout {
@@ -40,15 +40,19 @@ export function derivedLayout(t: CompiledDerivedTable): DerivedLayout {
 }
 
 /** Every row of the derived table, values as text (decodeDerivedRow). */
-export function derivedRowsQuery(t: CompiledDerivedTable): RuleQuery {
+export function derivedRowsQuery(
+  t: CompiledDerivedTable,
+  partitions?: readonly PartitionId[],
+): { readonly sql: string; readonly params: readonly (string | readonly string[])[] } {
   const l = derivedLayout(t);
   const cols = l.fields.map(({ field: f, column }) =>
     f.type === "boolean" ? `"${column}" AS "${f.id}"` : `CAST("${column}" AS text) AS "${f.id}"`,
   );
-  return {
-    sql: `SELECT ${l.partition}, ${cols.join(", ")}, CAST(${l.ver} AS text) AS ver FROM "${l.table}"`,
-    params: [],
-  };
+  const all = `SELECT ${l.partition}, ${cols.join(", ")}, CAST(${l.ver} AS text) AS ver FROM "${l.table}"`;
+  // Only these partitions (by the key of the table), when given.
+  return partitions === undefined
+    ? { sql: all, params: [] }
+    : { sql: `${all} WHERE ${l.partition} = ANY($1)`, params: [[...partitions]] };
 }
 
 export interface StoredDerivedRow {

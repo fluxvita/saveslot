@@ -424,8 +424,8 @@ describe("a write to a table a rule reads refreshes its derived tables in the sa
   it(
     "no refusal for admission: a request of many ops into a table rules read, and many such requests, all saved",
     async () => {
-      // The refresh recomputes whole rules; its cost does not depend on the request's size, so no
-      // write is refused for admission (04-contract §5.4 «写入准入»).
+      // No write is refused for admission, whatever the request's size (04-contract §5.4 «写入准入»):
+      // past a few affected groups a rule is recomputed whole (derive/refresh.ts NARROWED_KEYS_MAX).
       for (let k = 0; k < 3; k++) {
         const ops = Array.from({ length: 200 }, (_, i) => ({
           intent: "insert",

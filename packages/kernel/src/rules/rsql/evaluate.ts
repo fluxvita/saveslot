@@ -84,6 +84,13 @@ export interface RuleEvaluation {
   /** The base table the rule reads. */
   readonly base: TableId;
   /**
+   * Whether a change to some rows of the base table can change only the groups those rows are in,
+   * before or after (06-derived «刷新范围与写入准入»: the affected groups): the rule reads one event
+   * or timeless table, a row by itself, with no window function and no subquery, so a row's value
+   * goes into its own group and no other. Otherwise every group is recomputed («分析不出»).
+   */
+  readonly narrowable: boolean;
+  /**
    * The rows as a reader embedding the rule sees them (`sql`): columns by field ID, the values of
    * the fields' types rounded to their precision as a stored row holds them; a whole aggregate
    * with no input row has no row. `place` gives the text of each of the call's values (each is
@@ -125,6 +132,74 @@ const KEY_TYPE: Readonly<Record<CompiledDerivedField["type"], string | undefined
 };
 
 /** Whether the tree calls `saveslot_date`. */
+/** The parts of a rule statement whose shape `narrowableShape` knows. */
+const NARROWABLE_STATEMENT = new Set(["targets", "from", "where", "groupBy", "having"]);
+/** The parts of its FROM: one table, named, maybe aliased; no join, no subquery. */
+const NARROWABLE_FROM = new Set(["slot", "table", "alias", "loc"]);
+/**
+ * The kinds of expression node that compute on one row, or aggregate the rows of a group: a row's
+ * value goes into its own group and no other. Not here, so not narrowed: a window function (a row's
+ * value reaches other rows), a subquery (other rows of any table), and whatever kind comes later.
+ */
+const NARROWABLE_NODES = new Set([
+  "col",
+  "int",
+  "num",
+  "str",
+  "bool",
+  "null",
+  "cast",
+  "op",
+  "distinct",
+  "not_distinct",
+  "nullif",
+  "in",
+  "like",
+  "between",
+  "and",
+  "or",
+  "not",
+  "isnull",
+  "booltest",
+  "case",
+  "coalesce",
+  "greatest",
+  "least",
+  "func",
+  "extract",
+  "agg",
+  "param",
+  "ordinal",
+]);
+
+/** Whether every node of the tree `x` that has a kind is of a kind in `kinds`. */
+function onlyNodes(x: unknown, kinds: ReadonlySet<string>): boolean {
+  if (Array.isArray(x)) return x.every((y) => onlyNodes(y, kinds));
+  if (x === null || typeof x !== "object") return true;
+  const o = x as Record<string, unknown>;
+  if (typeof o["k"] === "string" && !kinds.has(o["k"])) return false;
+  return Object.values(o).every((y) => onlyNodes(y, kinds));
+}
+
+/**
+ * Whether the affected groups are known for a rule of this shape over a table of time type `time`
+ * (RuleEvaluation `narrowable`): a list of what is known, so that a shape not known (a join, a
+ * window function, a subquery, anything later) is recomputed whole rather than narrowed wrongly.
+ * Known: an event or timeless table, read alone; targets, WHERE, GROUP BY and HAVING made of the
+ * expression nodes above.
+ */
+export function narrowableShape(stmt: unknown, time: string): boolean {
+  if (time === "state") return false;
+  if (stmt === null || typeof stmt !== "object" || Array.isArray(stmt)) return false;
+  const o = stmt as Record<string, unknown>;
+  if (!Object.keys(o).every((k) => NARROWABLE_STATEMENT.has(k))) return false;
+  const from = o["from"];
+  if (from === null || typeof from !== "object" || Array.isArray(from)) return false;
+  if (!Object.keys(from).every((k) => NARROWABLE_FROM.has(k))) return false;
+  if (typeof (from as Record<string, unknown>)["table"] !== "string") return false;
+  return ["targets", "where", "groupBy", "having"].every((k) => onlyNodes(o[k], NARROWABLE_NODES));
+}
+
 function callsSaveslotDate(x: unknown): boolean {
   if (Array.isArray(x)) return x.some(callsSaveslotDate);
   if (x === null || typeof x !== "object") return false;
@@ -626,6 +701,7 @@ export function evaluateRule(
   return {
     table,
     base: a.table.id,
+    narrowable: narrowableShape(stmt, a.table.time.type),
     rowsText(place) {
       // Embedded in a `sql` statement, whose session's search path is pg_catalog only.
       const p = printed(once(place), `"public".`);

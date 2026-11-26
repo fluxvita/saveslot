@@ -21,7 +21,7 @@ import type {
   TableId,
 } from "@fluxvita/saveslot-contract-core";
 import { applyEvents, eventsOf } from "../apply/index.ts";
-import { type BaseChange, type DerivedWrite, derivedWrites } from "../derive/index.ts";
+import { type BaseChange, type DerivedWrite, derivedWrites, memberKeys } from "../derive/index.ts";
 import {
   appendOperation,
   continueOperation,
@@ -73,12 +73,39 @@ export interface DeriveStepOutput {
  * ApplyError when an event does not fit the state (the caller's to report), WriteError
  * `validation_failed` (`rule_eval_failed`) when a rule fails on the data.
  */
+/**
+ * A rule that fails on the data, wherever derive evaluates it (the members before and after, the
+ * recomputation), fails the write the same way: `validation_failed`, `rule_eval_failed`.
+ */
+async function asWriteError<T>(step: () => Promise<T>): Promise<T> {
+  try {
+    return await step();
+  } catch (e) {
+    if (e instanceof RuleEvaluationError) {
+      throw new WriteError("validation_failed", "a derived rule failed on the data", {
+        reason: "write",
+        details: [{ code: "rule_eval_failed", sql_reason: "runtime" }],
+      });
+    }
+    throw e;
+  }
+}
+
 export async function appendWithDerived(tx: Tx, input: DeriveStepInput): Promise<DeriveStepOutput> {
   const prepared = await appendOperation(tx, {
     actor: input.actor,
     now: input.now as never,
     events: [...input.events],
   });
+  const changes = baseChanges(input.events);
+  const query = async (sql: string, params: readonly unknown[]) =>
+    tx.query<Record<string, unknown>>(sql, params as never);
+  // The groups the changed rows are in before the operation (06 «刷新范围与写入准入»): read before
+  // its base events are applied; derivedWrites reads the groups after.
+  const before =
+    changes.length === 0
+      ? undefined
+      : await asWriteError(() => memberKeys({ query, schema: input.schema, changes }));
   await applyEvents(tx, eventsOf(prepared));
   // After every base and item event, before the derived writes (09 §4.2): at most one.
   const premises = await detectPremises(
@@ -94,27 +121,18 @@ export async function appendWithDerived(tx: Tx, input: DeriveStepInput): Promise
     lastOf = await continueOperation(tx, prepared, [premises]);
     await applyEvents(tx, eventsOf(lastOf));
   }
-  const changes = baseChanges(input.events);
   if (changes.length === 0) return { prepared, derived: [] };
   const last = lastOf.events.at(-1)?.seq as Seq;
-  let derived: DerivedWrite[];
-  try {
-    derived = await derivedWrites({
-      query: async (sql, params) => tx.query<Record<string, unknown>>(sql, params as never),
+  const derived = await asWriteError(() =>
+    derivedWrites({
+      query,
       schema: input.schema,
       changes,
+      ...(before !== undefined ? { before } : {}),
       newPartitionId: input.newPartitionId,
       readPos: last,
-    });
-  } catch (e) {
-    if (e instanceof RuleEvaluationError) {
-      throw new WriteError("validation_failed", "a derived rule failed on the data", {
-        reason: "write",
-        details: [{ code: "rule_eval_failed", sql_reason: "runtime" }],
-      });
-    }
-    throw e;
-  }
+    }),
+  );
   if (derived.length === 0) return { prepared, derived };
   const more = await continueOperation(
     tx,
