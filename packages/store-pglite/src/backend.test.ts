@@ -68,9 +68,14 @@ describe("the WAL of a local home stays bounded (single-user mode has no checkpo
     "a write's commit past the threshold is followed by a checkpoint; the WAL size settings hold",
     async () => {
       const dir = tenantDir();
-      const s = await testBackend({ checkpointAfterBytes: 1024 * 1024 }).open(ref(dir), {
-        create: true,
-      });
+      // The statistics are gathered as the product does, not after every write: an ANALYZE after
+      // the checkpoint writes WAL of its own (SAVESLOT_TEST_ANALYZE=always).
+      const s = await testBackend({ checkpointAfterBytes: 1024 * 1024, analyze: "stale" }).open(
+        ref(dir),
+        {
+          create: true,
+        },
+      );
       try {
         const redo = () =>
           s.read(async (tx) => {
@@ -144,6 +149,9 @@ describe("the checkpoint after a write", () => {
         async () => {
           const s = await testBackend({
             checkpointAfterBytes: 1,
+            // Only the checkpoint's line is looked for: no ANALYZE of its own (always, in a run
+            // with SAVESLOT_TEST_ANALYZE=always) adds one.
+            analyze: "stale",
             onEvent: (event, fields) => events.push([event, fields]),
           }).open(ref(dir), { create: true });
           try {

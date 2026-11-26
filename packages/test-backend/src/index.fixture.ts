@@ -62,6 +62,22 @@ function durabilityFromEnv(): Durability {
 /** The durability tests open their stores with. */
 export const TEST_DURABILITY: Durability = durabilityFromEnv();
 
+/**
+ * When PGlite stores in tests gather statistics: as the product does ("stale", default), or after
+ * every write and at every open ("always"). Running a suite with "always" shows a query whose
+ * result depends on a plan: an order the query does not fix changes once the planner has
+ * statistics.
+ */
+function analyzeFromEnv(): "stale" | "always" {
+  const v = process.env["SAVESLOT_TEST_ANALYZE"];
+  if (v === undefined || v === "" || v === "stale") return "stale";
+  if (v === "always") return v;
+  throw new Error(`SAVESLOT_TEST_ANALYZE must be "stale" or "always", not "${v}"`);
+}
+
+/** When the stores tests open on PGlite gather statistics. */
+export const TEST_ANALYZE = analyzeFromEnv();
+
 export type TestBackendKind = "pglite" | "postgres";
 
 function kindFromEnv(): TestBackendKind {
@@ -149,7 +165,7 @@ export interface TestBackendOptions extends PgliteBackendOptions {
 export function testBackend(opts: TestBackendOptions = {}): PgliteBackend {
   if (TEST_BACKEND === "postgres") return postgresInPlaceOfPglite() as unknown as PgliteBackend;
   const { template = true, ...rest } = opts;
-  const o = { durability: TEST_DURABILITY, ...rest };
+  const o = { durability: TEST_DURABILITY, analyze: TEST_ANALYZE, ...rest };
   const root = process.env[TEMPLATES_ENV];
   if (!template || root === undefined || root === "") return new PgliteBackend(o);
   return new TemplatedPgliteBackend(o, root);

@@ -414,6 +414,12 @@ slot 策略的结构里为"某类操作只接受用户会话的确认"留了位�
   - PGlite 在 Node 上自身不落盘：默认启动参数带 `-F`；去掉之后，它的文件系统层也不把同步调用交给宿主。saveslot 的做法：去掉 `-F`，`wal_sync_method = fsync`，给 NODEFS 装一个调用宿主 `fsync` 的钩子。
   - 打开时读回这些设置并自检：打开时那次提交必须经钩子同步 `pg_wal`，不符即拒绝打开（`durability_not_applied`）。
   - **预写日志的大小**：PGlite 以单用户模式运行 PostgreSQL，没有检查点进程，预写日志写到 `max_wal_size` 也不会自己发起检查点（只有在 postmaster 之下才会），本机目录的 `pg_wal` 因此会随写入一直涨。saveslot 的做法：写事务的回复发出之后，主线程再核对一次所有者文件，然后请 DB Worker 检查：自上一个检查点以来的预写日志超过 64 MiB，就执行一次 `CHECKPOINT`；已失去所有权的实例不做检查点。`max_wal_size = 64MB`、`min_wal_size = 32MB` 限定检查点后保留复用的段，打开时一并读回核对。检查点失败时，实例可能已经坏了（检查点里的 fsync 失败会 PANIC），所以记一行日志（`checkpoint_failed`，只带错误码），结束 DB Worker，存储进入 `worker_failed`，此后与上面 DB Worker 意外退出相同：服务以非零码退出，由外部拉起；在此之前已确认的写入已经落盘，不受影响。
+  - **统计信息**：单用户模式下也没有 autovacuum，没人替这些表收集计划器的统计信息；没有统计信息时，计划器按默认估计选计划，表大到一定程度会翻成扫整个索引或整张表。所以本机模式由内核收集，时机有两个：打开存储时（对外服务之前；导入或恢复换入新存储之后的那次打开也在其中），写事务回复之后（与检查点同一处，排在它后面）。只在统计信息过期时做：日志末端的 `seq` 超过 `events` 上次统计的行数加上 50 再加一成（PostgreSQL autovacuum 的默认阈值；从没统计过的表按 0 行算）。`events` 只是代表：每次写入都往它里面追加，但一个事件带进的业务行与内容块多少不一，别的表的统计信息可能比它更早过时。做法是在任何事务之外对本库 public 下的各表执行 `ANALYZE`，有三处例外：
+    - `content` 在单独的事务里用统计目标 10（默认 100）分析：采样行数是统计目标的 300 倍，它是最大的表，`ANALYZE` 的时间几乎都花在读它的采样页上；而内核不靠它的直方图选计划——它的行按 `seq` 找，`path`、`body` 上的 `LIKE` 条件都作用在已按 `seq` 选出的行上；
+    - `content.body` 与 `events.header` 不收统计信息：这两列的高频值就是用户内容的原文，收进 `pg_statistic` 等于在库里多存一份副本，而内核对它们的条件（`body IS NOT NULL`、以通配符开头的 `body LIKE`、`body::jsonb` 上的表达式；`header` 上没有条件）都用不上这份统计；
+    - `events` 放在最后单独做：事务之外的 `ANALYZE` 逐表提交，`events` 的统计行数就是「这一轮做完了」的标志，中途失败或被打断时它仍是旧的，下次检查照样算过期。
+
+    统计信息不是数据，不进日志，不影响重放与对拍。失败只记一行日志（`analyze_failed`，只带错误码），不让写入或打开失败；进程在分析中途被结束时写不出这行日志，下次打开时统计信息仍算过期，重新分析。服务器模式由 PostgreSQL 的 autovacuum 收集，saveslot 不另做。
   - 钩子依赖 PGlite 的内部结构，所以 PGlite 版本钉死到补丁号；升级 PGlite 必须重跑持久性实验步骤一（两个平台）与钩子计数的单元测试。
   - 能否达标由持久性实验确认（[`07-scope-v1.md`](07-scope-v1.md) 实验 1；结果报告见 [`../process/experiments/exp-1-pglite-durability.md`](../process/experiments/exp-1-pglite-durability.md)）；不达标就换成随 saveslot 打包的原生 PostgreSQL。
 
@@ -470,6 +476,8 @@ slot 策略的结构里为"某类操作只接受用户会话的确认"留了位�
 4. `VACUUM FULL pg_statistic`——必须在 `ANALYZE` 之后：`ANALYZE` 会把旧的统计行（高频值就是原文）留成死行；
 5. `CHECKPOINT`，`pg_switch_wal()`，再两次 `CHECKPOINT`；
 6. 实例以 `wal_recycle = off` 运行（旧日志段不复用）。
+
+本机模式另有定期的 `ANALYZE`（§7「PGlite 与 PostgreSQL」的「统计信息」；`content.body` 与 `events.header` 不在其中），它不改变上面的步骤：它采到的样本里，删除确认之前的由残留清理自己的第 2 步换掉、旧行由第 4 步清掉；宽限期内采到的，被删的内容那时本来就在表里，由到期的物理删除一并清理。
 
 - **成功判据**：做完后 `VACUUM (VERBOSE) pg_statistic` 的报告里 "dead but not yet removable" 为 0 才算成功，不看 `n_dead_tup`。不为 0 说明有快照挡着、旧统计行还在：这次不算，进度不推进（上表"没成"一行）。
 - 语句清单固定在存储后端里，不接受外部 SQL；全部语句幂等，中途崩溃或没成都从头重做。两条语句之间插进来的写入不影响：进度按墓碑位置记，新写入里没有已删的原文。

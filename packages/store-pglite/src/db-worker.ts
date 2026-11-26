@@ -8,6 +8,8 @@ import { parentPort } from "node:worker_threads";
 import { type Extension, PGlite } from "@electric-sql/pglite";
 import { expectedSettings, hostSyncStats, nodeFs, startParams } from "./durability.ts";
 import type {
+  AnalyzeMode,
+  AnalyzeReply,
   CreateParams,
   Durability,
   Envelope,
@@ -152,7 +154,17 @@ async function open(p: OpenParams): Promise<OpenResult> {
     db = pg;
     epochKey = p.metaKeys.ownershipEpoch;
     checkpointAfterBytes = p.checkpointAfterBytes;
-    return { formatVersion, epoch };
+    analyzeMode = p.analyze;
+    // Statistics before the store serves (02-architecture §7 «本机存储»): a failure is reported,
+    // not thrown; the open goes on.
+    let analyzed: OpenResult["analyzed"];
+    try {
+      analyzed = await analyze();
+    } catch (e) {
+      const w = toWire(e);
+      analyzed = { failed: w.sqlState ?? w.code ?? "unknown" };
+    }
+    return { formatVersion, epoch, analyzed };
   } catch (e) {
     await pg.close().catch(() => {});
     throw e;
@@ -242,6 +254,83 @@ async function checkpoint(): Promise<null> {
   return null;
 }
 
+/** See OpenParams `analyze`. */
+let analyzeMode: AnalyzeMode = "stale";
+
+/**
+ * The planner's statistics are stale when the log has grown past what they last counted by more
+ * than PostgreSQL's autovacuum asks before it analyzes a table (`autovacuum_analyze_threshold` 50,
+ * `autovacuum_analyze_scale_factor` 0.1; a table never analyzed counts 0 rows). PGlite runs
+ * PostgreSQL in single-user mode, with no autovacuum: nothing else gathers them. `events` stands
+ * for the store: every write appends to it, and the other tables grow with it; its `seq` is dense,
+ * so the last one is about its number of rows. Two lookups: the catalog, and the end of a key.
+ */
+const ANALYZE_THRESHOLD = 50;
+const ANALYZE_SCALE = 0.1;
+/** The statistics target `content` is analyzed with (see `analyze`); PostgreSQL's default is 100. */
+const CONTENT_STATISTICS_TARGET = 10;
+
+async function stale(pg: PGlite): Promise<boolean> {
+  const r = await pg.query<{ counted: number; end: number | null }>(
+    `SELECT c.reltuples::float8 AS counted, (SELECT max(seq) FROM events)::float8 AS "end"
+     FROM pg_class c WHERE c.oid = 'public.events'::regclass`,
+  );
+  const counted = Math.max(0, Number(r.rows[0]?.counted ?? -1));
+  return Number(r.rows[0]?.end ?? 0) > counted + ANALYZE_THRESHOLD + ANALYZE_SCALE * counted;
+}
+
+/**
+ * ANALYZE of the store's tables, when the statistics are stale (or always, in tests). Outside any
+ * transaction, and only between requests: it changes the planner's statistics only, never a row,
+ * so it is not in the log and replay does not see it.
+ *
+ * ANALYZE commits table by table (here, outside a transaction, and `content` in one of its own),
+ * so one that fails or is stopped half way leaves the tables before it done. `events` goes last: its count is what `stale`
+ * reads, so the statistics stay stale, and are gathered again at the next check, until a run gets
+ * through to it.
+ */
+async function analyze(): Promise<AnalyzeReply> {
+  const pg = requireDb();
+  if (session) throw new Error("a transaction is open in the DB Worker");
+  if (analyzeMode === "stale" && !(await stale(pg))) return { ran: false };
+  const begun = performance.now();
+  const others = await pg.query<{ name: string }>(
+    `SELECT quote_ident(relname) AS name FROM pg_class
+     WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p')
+       AND relname NOT IN ('events', 'content')
+     ORDER BY relname`,
+  );
+  if (others.rows.length > 0) await pg.exec(`ANALYZE ${others.rows.map((r) => r.name).join(", ")}`);
+  // `content` with a sample of 3,000 rows instead of 30,000 (300 × the statistics target): it is
+  // by far the largest table and ANALYZE's time goes into reading its sampled pages, while no plan
+  // the kernel needs turns on a histogram of it (its rows are found by key; its LIKE predicates
+  // are on rows already found by key or are scans either way). In a transaction of its own, so
+  // that the setting ends with it, whether it commits or fails.
+  //
+  // Neither `content.body` nor `events.header` is analyzed: their statistics would hold samples of
+  // the user's content (the most common values are the values), a copy of it no plan needs. Every
+  // other column is (the column list leaves those two out; the row count is updated all the same).
+  const content = await columnsBut(pg, "content", "body");
+  await pg.transaction(async (tx) => {
+    await tx.exec(`SET LOCAL default_statistics_target = ${CONTENT_STATISTICS_TARGET}`);
+    await tx.exec(`ANALYZE content (${content})`);
+  });
+  await pg.exec(`ANALYZE events (${await columnsBut(pg, "events", "header")})`);
+  return { ran: true, ms: Math.round(performance.now() - begun) };
+}
+
+/** The columns of `table`, quoted and comma-separated, but `without`: for ANALYZE's column list. */
+async function columnsBut(pg: PGlite, table: string, without: string): Promise<string> {
+  const r = await pg.query<{ c: string | null }>(
+    `SELECT string_agg(quote_ident(attname), ', ' ORDER BY attnum) AS c FROM pg_attribute
+     WHERE attrelid = $1::regclass AND attnum > 0 AND NOT attisdropped AND attname <> $2`,
+    [`public.${table}`, without],
+  );
+  const c = r.rows[0]?.c;
+  if (c === null || c === undefined) throw new Error(`no columns of ${table} to analyze`);
+  return c;
+}
+
 async function rollback(): Promise<null> {
   const pg = requireDb();
   if (!session) return null;
@@ -289,6 +378,8 @@ async function handle(req: Request): Promise<unknown> {
       return rollback();
     case "checkpoint":
       return checkpoint();
+    case "analyze":
+      return analyze();
     case "stats":
       return hostSyncStats();
     case "close":

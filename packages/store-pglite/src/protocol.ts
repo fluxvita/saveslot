@@ -28,7 +28,18 @@ export interface OpenParams {
   readonly contrib: readonly string[];
   /** WAL since the last checkpoint, in bytes, past which a `checkpoint` request runs one. */
   readonly checkpointAfterBytes: number;
+  /**
+   * When an `analyze` request (and the one at open) runs ANALYZE: when the statistics are stale
+   * (db-worker.ts `stale`), or every time (tests looking for an order a query does not fix).
+   */
+  readonly analyze: AnalyzeMode;
 }
+
+/** See OpenParams `analyze`. */
+export type AnalyzeMode = "stale" | "always";
+
+/** What an `analyze` request did: nothing (the statistics are current), or ANALYZE, how long. */
+export type AnalyzeReply = { readonly ran: false } | { readonly ran: true; readonly ms: number };
 
 export interface CreateParams {
   readonly pgdata: string;
@@ -48,12 +59,18 @@ export type Request =
   | { readonly kind: "commit" }
   | { readonly kind: "rollback" }
   | { readonly kind: "checkpoint" }
+  | { readonly kind: "analyze" }
   | { readonly kind: "stats" }
   | { readonly kind: "close" };
 
 export interface OpenResult {
   readonly formatVersion: number;
   readonly epoch: number;
+  /**
+   * The ANALYZE at open: what it did, or the error it gave (`{ failed: code }`). It does not fail
+   * the open: statistics are not data, and the next check finds them stale again.
+   */
+  readonly analyzed: AnalyzeReply | { readonly failed: string };
 }
 
 export interface HostSyncStats {

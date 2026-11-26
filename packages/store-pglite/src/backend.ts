@@ -34,6 +34,8 @@ import { fsyncPath, fsyncTree } from "./fsutil.ts";
 import { type DirLock, type DirLockHandle, osFileLock } from "./lock.ts";
 import { newToken, readOwnerToken, writeOwner } from "./owner.ts";
 import type {
+  AnalyzeMode,
+  AnalyzeReply,
   CreateParams,
   Durability,
   Envelope,
@@ -65,11 +67,21 @@ export interface PgliteBackendOptions {
    */
   readonly checkpointAfterBytes?: number;
   /**
-   * Where the store reports what it does on its own, outside any call: `checkpoint_failed` with
-   * the error's code (never a path). The service writes it to its log.
+   * When the planner's statistics are gathered, at open and after each write: when they are stale
+   * (default), or every time ("always": tests looking for a query whose order is not fixed).
    */
-  readonly onEvent?: (event: "checkpoint_failed", fields: { readonly code: string }) => void;
+  readonly analyze?: AnalyzeMode;
+  /**
+   * Where the store reports what it does on its own, outside any call (never a path): a
+   * checkpoint that failed (`checkpoint_failed`, the error's code), and the statistics gathered
+   * (`analyzed`, how long, at open or after a write) or not (`analyze_failed`, the code). The
+   * service writes them to its log.
+   */
+  readonly onEvent?: (event: StoreEvent, fields: Readonly<Record<string, string | number>>) => void;
 }
+
+/** See PgliteBackendOptions `onEvent`. */
+export type StoreEvent = "checkpoint_failed" | "analyzed" | "analyze_failed";
 
 /** The default of `checkpointAfterBytes`: about what `max_wal_size` keeps (durability.ts). */
 export const CHECKPOINT_AFTER_BYTES = 64 * 1024 * 1024;
@@ -144,6 +156,7 @@ export class PgliteBackend implements StorageBackend {
   readonly #lock: DirLock;
   readonly #contrib: readonly string[];
   readonly #checkpointAfterBytes: number;
+  readonly #analyze: AnalyzeMode;
   readonly #onEvent: PgliteBackendOptions["onEvent"];
 
   constructor(opts: PgliteBackendOptions = {}) {
@@ -151,6 +164,7 @@ export class PgliteBackend implements StorageBackend {
     this.#lock = opts.lock ?? osFileLock;
     this.#contrib = opts.contrib ?? [];
     this.#checkpointAfterBytes = opts.checkpointAfterBytes ?? CHECKPOINT_AFTER_BYTES;
+    this.#analyze = opts.analyze ?? "stale";
     this.#onEvent = opts.onEvent;
   }
 
@@ -198,8 +212,10 @@ export class PgliteBackend implements StorageBackend {
           metaKeys: META_KEYS,
           contrib: this.#contrib,
           checkpointAfterBytes: this.#checkpointAfterBytes,
+          analyze: this.#analyze,
         },
       });
+      reportAnalyzed(this.#onEvent, "open", r.analyzed);
       writeOwner(dir, { token, startedAt, epoch: r.epoch });
       return new PgliteTenantStore({ dir, token, worker, lock, onEvent: this.#onEvent, ...r });
     } catch (e) {
@@ -436,8 +452,12 @@ export class PgliteTenantStore implements TenantStore {
     tx.end();
     if (mode === "write") this.#checkOwner();
     await this._call({ kind: "commit" });
-    // Queued behind this write, so the write's caller has its result before the checkpoint runs.
-    if (mode === "write") void this.#enqueue(() => this.#checkpoint()).catch(() => {});
+    // Queued behind this write, so the write's caller has its result before the checkpoint runs;
+    // then the statistics, when stale, outside any transaction.
+    if (mode === "write") {
+      void this.#enqueue(() => this.#checkpoint()).catch(() => {});
+      void this.#enqueue(() => this.#gatherStatistics()).catch(() => {});
+    }
     return result;
   }
 
@@ -460,4 +480,34 @@ export class PgliteTenantStore implements TenantStore {
       await this.#worker.terminate();
     }
   }
+
+  /**
+   * The planner's statistics after a write, when stale (db-worker.ts `analyze`). The owner is
+   * checked first, as for a checkpoint: ANALYZE writes pages. A failure, an interruption
+   * included, is reported and nothing else: the write is committed, statistics are not data, and
+   * the next check finds them stale again. A worker that died is failed by `_call`, as anywhere.
+   */
+  async #gatherStatistics(): Promise<void> {
+    if (this.#state !== "open") return;
+    this.#checkOwner();
+    let r: AnalyzeReply | { readonly failed: string };
+    try {
+      r = await this._call<AnalyzeReply>({ kind: "analyze" });
+    } catch (e) {
+      r = {
+        failed: e instanceof PgliteStoreError ? (e.sqlState ?? e.code) : "unknown",
+      };
+    }
+    reportAnalyzed(this.#onEvent, "write", r);
+  }
+}
+
+/** Reports an ANALYZE (`at` open or after a write) that ran or failed; nothing when none was due. */
+function reportAnalyzed(
+  onEvent: PgliteBackendOptions["onEvent"],
+  at: "open" | "write",
+  r: AnalyzeReply | { readonly failed: string },
+): void {
+  if ("failed" in r) onEvent?.("analyze_failed", { at, code: r.failed });
+  else if (r.ran) onEvent?.("analyzed", { at, ms: r.ms });
 }
