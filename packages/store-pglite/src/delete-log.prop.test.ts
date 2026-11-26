@@ -1138,6 +1138,34 @@ describe("fixed histories through the delete operation's entry", () => {
     );
   });
 
+  /** #4 (seen #1, evidence pointed at) a candidate against #2 and #3; #5 takes it. */
+  const takenOverTwo = (): Op[] => [
+    sv(1, 0, "1", "2026-10-01"),
+    sv(2, 1, "2", "2026-11-01", "2026-11-03"),
+    sv(3, 2, "2", "2026-11-07", "2026-11-09"),
+    sv(4, 1, "1", "2026-11-01", "2026-11-09", {
+      acknowledge: undefined,
+      fields: { f2: { value: "1", sources: ["S4"], explicit: true } },
+    } as Partial<Op>),
+    take(5, 4),
+  ];
+
+  it("a block listed for a dep the deletion alone restates (state table)", async () => {
+    // Deleting #2's words restates the take's items, which rest on #2: their blocks, as written
+    // and on the deps of others, are on the list because of what this deletion restates, not only
+    // what it deletes (rule 1's second half). Found with that half taken away, then made fixed.
+    const r = await runFixed({ schema: STATE, ops: takenOverTwo(), deletions: [[2]] });
+    const list = [...(r.model.deletions.get(r.done[0]?.id as string)?.positions ?? [])];
+    expect(list.length).toBeGreaterThan(0);
+  });
+
+  it("a block another pending deletion restates is not on this one's list (state table)", async () => {
+    // #4's words deleted first, then #1's with the first still pending: the second's list is from
+    // its replay alone. A block only the first deletion's replay restates is not on it. Found with
+    // the list worked out from the replay with the others pending, then made fixed.
+    await runFixed({ schema: STATE, ops: takenOverTwo(), deletions: [[4], [1]] });
+  });
+
   it("a deletion opening an awaiting item (state table)", async () => {
     const r = await runFixed({
       schema: STATE,
