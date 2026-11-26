@@ -48,34 +48,74 @@ function home(): string {
 
 const step = (from: number, sql: string): UpgradeStep => ({ from, sql });
 
-/** The service on home `h`, its store upgraded to `F + steps.length` by `steps`. */
-function upgradingService(h: string, steps: readonly UpgradeStep[], lines: string[]) {
+/**
+ * The service on home `h`, its store upgraded to `F + steps.length` by `steps`; `beforeStep`
+ * awaited before each step (to hold one).
+ */
+function upgradingService(
+  h: string,
+  steps: readonly UpgradeStep[],
+  lines: string[],
+  beforeStep?: (from: number) => Promise<void>,
+) {
   return runService({
     home: h,
     version: "t",
     signals: false,
     log: (l) => lines.push(l),
     testing: {
-      backend: (o) => testBackend({ ...o, formatUpgrade: { format: F + steps.length, steps } }),
+      backend: (o) =>
+        testBackend({
+          ...o,
+          formatUpgrade: {
+            format: F + steps.length,
+            steps,
+            ...(beforeStep !== undefined ? { beforeStep } : {}),
+          },
+        }),
     },
   });
+}
+
+/**
+ * Waits until `seen` gives something, asking again every 25 ms, at most `limitMs` (a bound for a
+ * test gone wrong, not a guess at how long the thing takes): what it gave, or undefined.
+ */
+async function until<T>(
+  seen: () => Promise<T | undefined>,
+  limitMs = 60_000,
+): Promise<T | undefined> {
+  const end = Date.now() + limitMs;
+  for (;;) {
+    const v = await seen();
+    if (v !== undefined) return v;
+    if (Date.now() > end) return undefined;
+    await new Promise((r) => setTimeout(r, 25));
+  }
 }
 
 describe("the service", () => {
   it("while it upgrades: /health says starting, with the upgrade and its step; then ready, without", async () => {
     const h = home();
     const lines: string[] = [];
+    // The second step held until /health has been seen at it.
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
     const running = upgradingService(
       h,
-      [step(F, "CREATE TABLE up_a (x int);"), step(F + 1, "SELECT pg_sleep(1.5);")],
+      [step(F, "CREATE TABLE up_a (x int);"), step(F + 1, "CREATE TABLE up_b (x int);")],
       lines,
+      async (from) => {
+        if (from === F + 1) await held;
+      },
     );
-    let seen: HealthBody | undefined;
-    for (let i = 0; i < 400 && seen === undefined; i++) {
+    const seen = await until(async () => {
       const b = await health(socketFile(h), 2000);
-      if (b?.upgrade?.step === `${F + 1}->${F + 2}`) seen = b;
-      else await new Promise((r) => setTimeout(r, 25));
-    }
+      return b?.upgrade?.step === `${F + 1}->${F + 2}` ? b : undefined;
+    });
+    release();
     expect(seen).toMatchObject({
       state: "starting",
       upgrade: { from: F, to: F + 2, step: `${F + 1}->${F + 2}` },
@@ -169,13 +209,17 @@ describe("start", () => {
     it("upgrading for longer than the wait: waited on, each step told once; ready after", async () => {
       body = upgrading("5->6");
       const told: (string | undefined)[] = [];
+      const begun = Date.now();
       const waited = waitReady(socket, () => false, undefined, {
         waitMs: 300,
         upgrading: (u) => told.push(u.step),
       });
-      await new Promise((r) => setTimeout(r, 700));
+      // Each step past the 300 ms wait, and told before the next: the wait goes on through it.
+      const pastWait = (n: number) => async () =>
+        told.length === n && Date.now() - begun > 300 * n + 300 ? true : undefined;
+      expect(await until(pastWait(1))).toBe(true);
       body = upgrading("6->7");
-      await new Promise((r) => setTimeout(r, 700));
+      expect(await until(pastWait(2))).toBe(true);
       body = { ...starting, state: "ready" };
       expect(await waited).toMatchObject({ state: "ready" });
       expect(told).toEqual(["5->6", "6->7"]);
