@@ -337,7 +337,7 @@ A design change is not a change in only one place. Below is a checklist:
 6. Write order dependencies as conditional sentences ("read an existing record before changing it"), not as "must call X first".
 7. Put the important words at the beginning: the first 512 characters of `instructions` are self-contained, and neither the whole text nor any tool description exceeds 4,096 characters.
 
-Text the model can see is always in plain language, with identifiers written as in the specification; the first version is in English, and the Chinese in the specification is the authoritative version of the content.
+Text the model can see is always in plain language, with identifiers written as in the specification; the first version is in English; the specification says what the text must say, and the English in the implementation is the text actually sent.
 
 Two writing conventions:
 
