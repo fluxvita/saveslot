@@ -1,0 +1,73 @@
+# The property soak (02-architecture §11): every property test file, round after round, each run
+# with a fresh random seed, for about 50 minutes (scripts/soak-props.ts). Nightly on main, and by
+# hand on any branch (before a release, on the release branch: RELEASING.md).
+#
+# A soak is a search, not a gate: it is not run on a push, and it is a workflow of its own so that
+# its failures do not turn ci.yml's badge red, nor hold a release (the release waits for ci only).
+# What it finds is reported as issues instead: when it fails, the report job opens an issue per
+# failing test, labelled `soak`, or comments on the open one of that test
+# (scripts/soak-issues.ts), with the workflow's own token. The run's artifact keeps the whole
+# output for 30 days.
+#
+# Node is the pinned one of ci.yml.
+
+name: soak
+
+on:
+  schedule:
+    - cron: "37 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # A failed run leaves its seed, replay path and counterexample in soak/failures.md and
+  # soak/failures.jsonl, and its whole output beside them, kept as the run's artifact.
+  prop-soak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SOAK_MINUTES: "50"
+      SOAK_RUN_MINUTES: "15"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:prop:soak
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: soak
+          path: soak/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # Only after a failed soak. Without the artifact (the soak stopped before it wrote one) the script
+  # still runs, and reports that the soak did not report.
+  report:
+    needs: prop-soak
+    if: failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: soak
+          path: soak
+      - run: node scripts/soak-issues.ts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOAK_DIR: soak

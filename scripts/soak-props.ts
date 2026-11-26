@@ -21,8 +21,10 @@
 // collection and teardown: what batching runs could at most save.
 //
 // A failed or stalled run's whole output goes to `<dir>/failure-<n>-<file>.log`; its seed, replay
-// path and counterexample lines to `<dir>/failures.md`; every run to `<dir>/runs.jsonl` and the
-// totals to `<dir>/summary.md`. Exits 1 when any run failed or stalled.
+// path and counterexample lines to `<dir>/failures.md`, and once per failing test (or once for the
+// run when no test is named, as for a stalled one) to `<dir>/failures.jsonl`, which
+// scripts/soak-issues.ts turns into issues; every run to `<dir>/runs.jsonl` and the totals to
+// `<dir>/summary.md`. Exits 1 when any run failed or stalled.
 //
 // What a run leaves is found with `ps`. Before the first run the soak checks that it can find a
 // process group of its own; if not, it says why and exits 2, having run nothing. If `ps` fails
@@ -54,6 +56,40 @@ export function replayLines(output: string): string[] {
     .filter((l) => keep.test(l))
     .map((l) => l.trimEnd())
     .filter((l, i, all) => all.indexOf(l) === i);
+}
+
+/** A test the output names as failed, with the replay lines of its own failure. */
+export interface FailingTest {
+  /** `describe > … > test`, as Vitest names it; undefined when the whole file failed. */
+  readonly test: string | undefined;
+  readonly lines: readonly string[];
+}
+
+/**
+ * The tests a run's output names as failed (Vitest's ` FAIL  <file> > … > <test>` headers), each
+ * with the seed and path, counterexample and failure lines of its own block: up to the next header
+ * or Vitest's `⎯` rule. The CI annotations (`::error …`) repeat the block and are left out.
+ */
+export function failingTests(output: string): FailingTest[] {
+  const header = /^\s*FAIL\s+\S+(?: > (.+?)|\s+\[ .* \])?\s*$/;
+  const keep = /\{ seed: -?\d+, path: "[^"]*"|Counterexample: |Property failed after/;
+  const found = new Map<string, { test: string | undefined; lines: string[] }>();
+  let current: { test: string | undefined; lines: string[] } | undefined;
+  for (const raw of plain(output).split("\n")) {
+    const line = raw.trimEnd();
+    const h = header.exec(line);
+    if (h) {
+      const test = h[1];
+      const k = test ?? "";
+      current = found.get(k) ?? { test, lines: [] };
+      found.set(k, current);
+      continue;
+    }
+    if (/^\s*⎯{3,}/.test(line)) current = undefined;
+    else if (current && !line.startsWith("::") && keep.test(line) && !current.lines.includes(line))
+      current.lines.push(line);
+  }
+  return [...found.values()];
 }
 
 /** A file name for a path: its last parts with separators replaced. */
@@ -258,6 +294,19 @@ export interface RunRecord {
   readonly properties: readonly Counted[];
 }
 
+/** A line of `failures.jsonl`: one failing test of one run. */
+export interface SoakFailure {
+  readonly file: string;
+  /** Undefined when the output names no failing test (a stalled run, a file that failed whole). */
+  readonly test: string | undefined;
+  readonly round: number;
+  readonly outcome: Outcome;
+  /** The run's whole output, beside `failures.jsonl`. */
+  readonly log: string;
+  /** Why the run was stopped, if it was, then its seed and path, counterexample and failure. */
+  readonly lines: readonly string[];
+}
+
 export interface SoakOptions {
   readonly files: readonly string[];
   /** The command that runs one file. */
@@ -295,6 +344,7 @@ export async function soak(o: SoakOptions): Promise<number> {
   mkdirSync(join(o.dir, "coverage"), { recursive: true });
   writeFileSync(join(o.dir, "runs.jsonl"), "");
   const deadline = Date.now() + o.budgetMs;
+  writeFileSync(join(o.dir, "failures.jsonl"), "");
   const runs: RunRecord[] = [];
   const failures: string[] = [];
   let round = 0;
@@ -349,6 +399,21 @@ export async function soak(o: SoakOptions): Promise<number> {
             "",
           ].join("\n"),
         );
+        const tests = failingTests(r.output);
+        const each = tests.length > 0 ? tests : [{ test: undefined, lines: replayLines(r.output) }];
+        for (const t of each) {
+          const failure: SoakFailure = {
+            file,
+            test: t.test,
+            round,
+            outcome,
+            log: name,
+            lines: [...(why !== undefined ? [why] : []), ...t.lines],
+          };
+          writeFileSync(join(o.dir, "failures.jsonl"), `${JSON.stringify(failure)}\n`, {
+            flag: "a",
+          });
+        }
       }
     }
   }

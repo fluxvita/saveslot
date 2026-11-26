@@ -820,9 +820,10 @@ schema 里由 Agent 写的说明与别名、写入回执里列出的已有的键
   包级与模块级（§4）的依赖规则都写进 `pnpm check`，合并前必须通过（见下「CI 只调脚本」）。
 - **包的命名**：npm 组织 `@fluxvita`。对外安装的包是 `@fluxvita/saveslot`，即上表的入口包（`bin` 是 `saveslot`）；其余各包叫 `@fluxvita/saveslot-<包名>`（`@fluxvita/saveslot-kernel`、`@fluxvita/saveslot-contract-core`……）。仓库是 `fluxvita/saveslot`。
 - **发布**：入口包与它运行时依赖的各包（共 11 个：上表除 `connector-ts`、`sdk`、`reference`、`test-backend` 之外的）都发到 npm，`npm install -g @fluxvita/saveslot` 把它们一起装上。它们是 Changesets 的一个 fixed 组，**同一个版本一起发**；互相依赖在仓库里写 `workspace:*`，发布时换成精确版本，不写范围。对外承诺的只有入口包：其余各包的 README 开头写明是内部包，接口不单独承诺稳定。各包只带 `dist`，不带测试夹具与构建缓存。发布前在本机临时 npm 源上从安装走到 `saveslot status`（`pnpm smoke:install`），通过才发。服务器模式的容器镜像（`deploy/Dockerfile`）随同一个版本发到 GitHub 的容器镜像仓库，`ghcr.io/fluxvita/saveslot:<版本>`，含 linux/amd64 与 linux/arm64；正式版另打 `latest`，预发布不打。
-- **工具链**：Node 24.22.1 及以上的 24 系，或 26.12.1 及以上（写进 `engines`；CI 日常检查固定在一个 24 系版本上，每晚另在 26 系上跑一遍）；TypeScript 严格模式，只发 ESM；pnpm workspace；测试用 Vitest，性质测试用 fast-check；格式化与 lint 用 Biome；模块依赖规则用 dependency-cruiser；构建是 `tsc -b`（项目引用）出类型与 JS，再由 `scripts/mark-bins.ts` 给可执行入口加上执行权限，不另做打包；版本与变更记录用 Changesets，1.0 之前用 0.x，事件格式版本独立于包版本。具体版本号在搭脚手架时取当时的稳定版并锁定，不写进规格。
+- **工具链**：Node 24.22.1 及以上的 24 系，或 26.12.1 及以上（写进 `engines`；CI 日常检查固定在一个 24 系版本上，推到 `main` 或发布分支后与每晚另在 26 系上跑一遍）；TypeScript 严格模式，只发 ESM；pnpm workspace；测试用 Vitest，性质测试用 fast-check；格式化与 lint 用 Biome；模块依赖规则用 dependency-cruiser；构建是 `tsc -b`（项目引用）出类型与 JS，再由 `scripts/mark-bins.ts` 给可执行入口加上执行权限，不另做打包；版本与变更记录用 Changesets，1.0 之前用 0.x，事件格式版本独立于包版本。具体版本号在搭脚手架时取当时的稳定版并锁定，不写进规格。
 - **CI 只调脚本**：检查项写成根 `package.json` 里的脚本——类型检查、lint、单测、性质测试、依赖规则、文档链接检查、文档里 JSON 例子可解析、断言索引指到的测试都在（[`11-claims.md`](11-claims.md)）——CI 配置只负责调用它们（汇总脚本叫 `check`，本地 `pnpm check` 跑的是同一组；CI 把同一组分成静态检查、单测、性质测试三个作业跑，各有各的超时，一段超时不连累另两段的结果），所以换 CI 平台不用重写检查逻辑。
-- **什么时候跑全套**：合并请求的流水线只跑快检查（标题、签名、密钥、禁用词；改到导出加密相关文件时加互通测试）。完整的 `pnpm check`（静态检查、单测、性质测试三段）由作者推之前在本地跑，合并后与每晚在 CI 上再跑一遍。Node 26 LTS 上的一组、性质测试长跑、PostgreSQL 上的测试与导出加密的互通测试在每晚与手动触发时跑。主分支变红时先修，暂停合并。
+- **什么时候跑全套**：每个拉取请求上跑快检查（标题、签名、密钥、禁用词）和完整的 `pnpm check`（静态检查、单测、性质测试三段），改到导出加密相关文件时加互通测试，全部通过才能合并；作者推之前先在本地跑一遍 `pnpm check`。推到 `main` 或发布分支后再跑一遍，另加 Node 26 LTS 上的一组、PostgreSQL 上的测试与导出加密的互通测试；每晚在 `main` 上与手动触发时跑的也是这些。主分支变红时先修，暂停合并。
+- **性质测试长跑是搜索，不是关卡**：它在单独一个工作流里，每晚在 `main` 上跑，也可以手动在任一分支上跑，推送不触发。它失败不算主分支变红，不挡合并，也不挡发布：发布只等上一条的 CI。每个失败的测试各开一个 issue，写明文件、测试、seed 与 path、反例和那次运行的链接；issue 未关时同一个测试再失败，在这个 issue 上补记，不另开。发布前在发布分支上手动跑一次，看它的结果和未关的这类 issue，未关的列进发布说明。
 
 ### 测试矩阵
 

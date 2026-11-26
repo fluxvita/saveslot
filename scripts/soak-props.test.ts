@@ -9,10 +9,12 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   cannotListGroups,
+  failingTests,
   groupPids,
   outcomeOf,
   type RunRecord,
   replayLines,
+  type SoakFailure,
   slug,
   soak,
   testsMs,
@@ -67,6 +69,51 @@ describe("replayLines", () => {
 
   it("names a file by its last parts", () => {
     expect(slug("packages/kernel/src/write/record.prop.test.ts")).toBe("src-write-record");
+  });
+});
+
+describe("failingTests", () => {
+  it("names each failed test with the replay lines of its own block, without the CI annotation", () => {
+    const two = [
+      "   × a 10ms",
+      " FAIL  packages/a.prop.test.ts > table > a",
+      "Error: Property failed after 3 tests",
+      '{ seed: 1, path: "3:0", endOnFailure: true }',
+      "Counterexample: [1]",
+      '::error file=a.prop.test.ts,title=packages/a.prop.test.ts > table > a::Error: Property failed after 3 tests%0A{ seed: 1, path: "3:0" }',
+      "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ [1/2]",
+      " FAIL  packages/a.prop.test.ts > table > b",
+      "Error: Property failed after 9 tests",
+      '{ seed: -2, path: "9:1", endOnFailure: true }',
+      "Counterexample: [2]",
+      "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ [2/2]",
+      '{ seed: 7, path: "7" }',
+    ].join("\n");
+    expect(failingTests(two)).toEqual([
+      {
+        test: "table > a",
+        lines: [
+          "Error: Property failed after 3 tests",
+          '{ seed: 1, path: "3:0", endOnFailure: true }',
+          "Counterexample: [1]",
+        ],
+      },
+      {
+        test: "table > b",
+        lines: [
+          "Error: Property failed after 9 tests",
+          '{ seed: -2, path: "9:1", endOnFailure: true }',
+          "Counterexample: [2]",
+        ],
+      },
+    ]);
+  });
+
+  it("a file that failed as a whole has no test name; a run naming none has no entries", () => {
+    expect(
+      failingTests(" FAIL  packages/a.prop.test.ts [ packages/a.prop.test.ts ]\nError: x"),
+    ).toEqual([{ test: undefined, lines: [] }]);
+    expect(failingTests("setInterval")).toEqual([]);
   });
 });
 
@@ -208,6 +255,25 @@ describe("the soak, with stand-in runs", () => {
     const log = /Full output: `(failure-1-[^`]+\.log)`/.exec(r.read("failures.md"))?.[1];
     expect(r.read(log as string)).toContain("Shrunk 5 time(s)");
     expect(r.read("summary.md")).toContain("1 failed, 0 stalled");
+    const each = r
+      .read("failures.jsonl")
+      .split("\n")
+      .filter((l) => l !== "")
+      .map((l) => JSON.parse(l) as SoakFailure);
+    expect(each).toEqual([
+      {
+        file: fail,
+        test: "state table > «撤回还原»: after a cancellation, what grace-period writes did not cover is as the forced replay",
+        round: 1,
+        outcome: "failed",
+        log,
+        lines: [
+          "Error: Property failed after 1083 tests",
+          '{ seed: 615083135, path: "1180:48:0:0:1:2", endOnFailure: true }',
+          'Counterexample: [{"st":[{"t":"cancel","back":0}]},false]',
+        ],
+      },
+    ]);
   });
 
   it("a run that does not end, nor when asked to: stalled at its limit, killed with what it started; exit 1", async () => {
@@ -222,6 +288,12 @@ describe("the soak, with stand-in runs", () => {
     expect(r.code).toBe(1);
     expect(r.runs.map((x) => x.outcome)).toEqual(["stalled"]);
     expect(r.read("failures.md")).toContain("stopped after 0 min without finishing");
+    expect(JSON.parse(r.read("failures.jsonl"))).toMatchObject({
+      file: hang,
+      outcome: "stalled",
+      lines: ["stopped after 0 min without finishing"],
+    });
+    expect(JSON.parse(r.read("failures.jsonl")).test).toBeUndefined();
     expect(alive(pid)).toBe(false);
   });
 
@@ -234,6 +306,7 @@ describe("the soak, with stand-in runs", () => {
     expect(r.read("summary.md")).toContain(
       "1 stopped at the budget's end with no failure seen (not counted as passed)",
     );
+    expect(r.read("failures.jsonl")).toBe("");
   });
 
   it("the budget's end while a failure found is being shrunk: failed, with its seed and path; exit 1", async () => {

@@ -47,7 +47,7 @@ The main points of the submission process are also written in `CONTRIBUTING.md` 
 | Build | `tsc` for each package; tsup bundles the command-line tool |
 | Versions and change log | Changesets |
 
-All checks are written as scripts in the repository, and the single `pnpm check` you run locally is the same set the automatic checks run: type check, lint, tests, dependency rules, links in the documents, whether the JSON examples in the documents parse, whether each English file names its Chinese source, and the claims index. On every pull request the automatic checks run a few quick items (title, sign-off, secrets, banned words) and the full `pnpm check`, and all of them must pass before a merge; the author runs it locally before pushing. After merges and every night they run again on `main`, adding Node 26 LTS, the long property-test runs and the tests on PostgreSQL.
+All checks are written as scripts in the repository, and the single `pnpm check` you run locally is the same set the automatic checks run: type check, lint, tests, dependency rules, links in the documents, whether the JSON examples in the documents parse, whether each English file names its Chinese source, and the claims index. On every pull request the automatic checks run a few quick items (title, sign-off, secrets, banned words) and the full `pnpm check`, and all of them must pass before a merge; the author runs it locally before pushing. After merges and every night they run again on `main`, adding Node 26 LTS and the tests on PostgreSQL. The long property-test runs run every night on their own, hold back neither merges nor releases, and open an issue for each test they find failing.
 
 ## 1. How the code is split into packages
 

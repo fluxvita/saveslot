@@ -6,10 +6,14 @@
 #                      packages/cli/src/export-crypto*, pnpm-lock.yaml or this file. All of them
 #                      are the required checks of main.
 #   push to a main line: forbidden-terms, secrets; `pnpm check` on the pinned Node and on Node 26
-#                      LTS; prop-soak, test-postgres, age-interop
+#                      LTS; test-postgres, age-interop
 #   nightly, by hand:  the same as a push to a main line but forbidden-terms and secrets, with the
 #                      tests on the host's fsync (SAVESLOT_TEST_DURABILITY,
 #                      packages/test-backend/src/index.fixture.ts)
+#
+# The property soak is not here: it is a search, not a gate, so it runs in a workflow of its own
+# (soak.yml) on a schedule and by hand, and its failures open issues rather than turn this badge
+# red or hold a release.
 #
 # The main lines are main and the release branches (`release/0.<minor>`, RELEASING.md): a commit
 # picked to a release branch is checked as a merge to main is, and the release workflow publishes
@@ -166,33 +170,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --silent ci:resources
       - run: pnpm ${{ matrix.script }}
-
-  # Every property test file, round after round, each run with a fresh random seed, for about 50
-  # minutes. A failed run leaves its seed, replay path and counterexample in soak/failures.md and
-  # its whole output beside it, kept as the run's artifact.
-  prop-soak:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      SOAK_MINUTES: "50"
-      SOAK_RUN_MINUTES: "15"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.22.3
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test:prop:soak
-      - if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: soak
-          path: soak/
-          retention-days: 30
-          if-no-files-found: ignore
 
   # The kernel's tests on a real store, the PostgreSQL backend's own and the replay across the two
   # backends, on a PostgreSQL server (02-architecture §11 «测试矩阵»: both backends). Nothing may be

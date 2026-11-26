@@ -71,8 +71,12 @@ between them are `workspace:*` in the repository and the exact version when publ
    versions that are not on npm yet with `changeset publish`, as `latest`, with provenance. Then it
    tags the commit `v<version>` and pushes the tags, and has the container image of that commit
    built and pushed as `<version>` and `latest` (see "Container image").
-4. Only a commit whose full check passed on the release branch is released: the release workflow runs
-   after `ci` on the same push and stops if it failed.
+4. Only a commit whose `ci` passed on the release branch is released: the release workflow runs after
+   `ci` on the same push and stops if it failed. The property soak is not part of `ci`: it is a
+   search, run nightly on `main` and by hand (`.github/workflows/soak.yml`), and what it finds is
+   opened as issues labelled `soak`. Before the version commit (step 2) the maintainer runs the soak
+   by hand on the release branch, reads its result and the open `soak` issues, and the release notes
+   list the ones still open.
 5. After the release the maintainer brings the release commit to `main` in a pull request (the
    versions, the changelogs, and the changesets it used up), so that the next version on `main` starts
    from the released one.
