@@ -898,10 +898,18 @@ describe("query's two paths and its pages", () => {
               });
             });
             const first = (pages[0] as { full: { result: { total: number } } }).full.result;
+            const state = params["table"] === "budgets" || params["table"] === "marks";
+            const during = params["valid_during"] !== undefined;
+            // Pushed down: event tables; state tables at a point, and over an interval when no
+            // order is asked for (segments streamed an entity at a time).
             const pushable =
-              params["table"] === "spend" ||
-              (params["valid_during"] === undefined &&
-                (params["table"] === "budgets" || params["table"] === "marks"));
+              params["table"] === "spend" || (state && (!during || params["order"] === undefined));
+            if (pushable && state && during) {
+              reach("pushed: over an interval");
+              if (first.total > limit) reach("pushed: over an interval, more pages");
+              if (params["clip"] === true) reach("pushed: over an interval, clipped");
+              if (params["coalesce"] === false) reach("pushed: over an interval, not merged");
+            }
             if (pushable) {
               reach(`${params["table"]} pushed`);
               if (first.total > limit) reach("pushed: more pages");
@@ -928,6 +936,10 @@ describe("query's two paths and its pages", () => {
       "pushed: none",
       "pushed: ordered",
       "pushed: include_revoked",
+      "pushed: over an interval",
+      "pushed: over an interval, more pages",
+      "pushed: over an interval, clipped",
+      "pushed: over an interval, not merged",
     ])
       expect({ k, reached: (reached[k] ?? 0) >= 1 }).toEqual({ k, reached: true });
   });

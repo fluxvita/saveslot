@@ -14,7 +14,7 @@ import { changersOf } from "./changed-by.ts";
 import { revokedTargets } from "./dangling.ts";
 import { queryDerived } from "./derived.ts";
 import { rowDetails } from "./detail.ts";
-import { queryKeys } from "./order-sql.ts";
+import { type KeyValue, queryKeys, type SqlKey } from "./order-sql.ts";
 import { type QueryPlan, queryPlan } from "./params.ts";
 import type { QueryInput, QueryOutput } from "./query-io.ts";
 import {
@@ -23,6 +23,7 @@ import {
   encodePosition,
   type KeySpec,
   keySpecs,
+  overInterval,
   type Position,
   queryIdentity,
   rowKeys,
@@ -145,8 +146,9 @@ async function queryRowsPushed(
   specs: readonly KeySpec[],
   restore: number,
 ): Promise<PageRows | undefined> {
-  if (plan.kind === "timeless" || (plan.kind === "state" && plan.time.kind === "during"))
-    return undefined;
+  if (plan.kind === "timeless") return undefined;
+  if (plan.kind === "state" && plan.time.kind === "during")
+    return plan.order.length > 0 ? undefined : intervalPage(tx, plan, specs, restore);
   const selected = await selectFirst(tx, plan, queryKeys(plan, specs), plan.limit + 1);
   const shown = selected.slice(0, plan.limit);
   return {
@@ -154,6 +156,82 @@ async function queryRowsPushed(
     total: await countRows(tx, plan),
     more: selected.length > plan.limit,
   };
+}
+
+/** Segments read per statement over an interval: for a page (n + 1 rows), and to count. */
+const pageBatch = (limit: number) => 4 * (limit + 1);
+const COUNT_BATCH = 10_000;
+
+/**
+ * A state table's segments over an interval, in the order of entity and `valid_from`, an entity
+ * at a time: each entity's segments whole (merging needs them all), with the rows shown they
+ * give (./rows.ts `overInterval`, without marks). Read in batches after the last segment read;
+ * `take` says, after each entity, whether to go on.
+ */
+async function eachEntity(
+  tx: ReadTx,
+  plan: QueryPlan,
+  keys: readonly SqlKey[],
+  batch: number,
+  take: (segments: SelectedRow[], shown: number) => boolean,
+): Promise<void> {
+  const none = () => undefined;
+  let pending: SelectedRow[] = [];
+  const flush = (): boolean => {
+    if (pending.length === 0) return true;
+    const shown = overInterval(
+      plan,
+      pending.map((r) => ({ r, marks: undefined })),
+      none,
+      none,
+    );
+    const go = take(pending, shown.length);
+    pending = [];
+    return go;
+  };
+  let after: KeyValue[] | undefined;
+  for (;;) {
+    const rows = await selectFirst(tx, plan, keys, batch, after);
+    for (const r of rows) {
+      if (pending.length > 0 && (pending[0] as SelectedRow).id !== r.id && !flush()) return;
+      pending.push(r);
+    }
+    const last = rows.at(-1);
+    if (last === undefined || rows.length < batch) {
+      flush();
+      return;
+    }
+    after = [last.id, last.validFrom as string];
+  }
+}
+
+/**
+ * A first page of a state table read over an interval, in the default order (entity, then the
+ * shown row's `valid_from`): segments streamed an entity at a time until the entities complete so
+ * far give the page's rows and one more; the facts of those entities only; the rows shown from
+ * them, ordered, the page taken. The total streams every segment the same way, counting only.
+ */
+async function intervalPage(
+  tx: ReadTx,
+  plan: QueryPlan,
+  specs: readonly KeySpec[],
+  restore: number,
+): Promise<PageRows> {
+  const keys = queryKeys(plan, specs);
+  const segments: SelectedRow[] = [];
+  let shown = 0;
+  await eachEntity(tx, plan, keys, pageBatch(plan.limit), (s, n) => {
+    if (n > 0) segments.push(...s);
+    shown += n;
+    return shown <= plan.limit;
+  });
+  const rows = await shownInOrder(tx, plan, specs, restore, segments, undefined);
+  let total = 0;
+  await eachEntity(tx, plan, keys, COUNT_BATCH, (_, n) => {
+    total += n;
+    return true;
+  });
+  return { page: rows.slice(0, plan.limit), total, more: rows.length > plan.limit };
 }
 
 export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOutput> {

@@ -18,7 +18,7 @@ import { decodeColumns as decode } from "../request/index.ts";
 import { column, INSTANT_TEXT, physical, selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { containsPoint, pointWithin } from "../time/index.ts";
-import { orderBySql, type SqlKey } from "./order-sql.ts";
+import { afterKeysSql, type KeyValue, orderBySql, type SqlKey } from "./order-sql.ts";
 import type { Condition, Literal, QueryPlan } from "./params.ts";
 import { type Actor, ReadError } from "./types.ts";
 
@@ -298,20 +298,25 @@ export async function selectRows(tx: ReadTx, plan: QueryPlan): Promise<SelectedR
 }
 
 /**
- * The first `limit` rows the plan selects in the order of `keys` (./order-sql.ts): a first page
- * pushed down to SQL, where each selected row is a row shown (not over a state table's interval,
- * whose segments are merged first).
+ * The first `limit` rows the plan selects in the order of `keys` (./order-sql.ts), after the keys
+ * `after` when given: a first page pushed down to SQL where each selected row is a row shown, or
+ * a batch of a state table's segments read in order over an interval.
  */
 export async function selectFirst(
   tx: ReadTx,
   plan: QueryPlan,
   keys: readonly SqlKey[],
   limit: number,
+  after?: readonly KeyValue[],
 ): Promise<SelectedRow[]> {
   const p = new Params();
   const { from, where, cols } = selection(plan, p);
+  const all = [
+    ...(where !== "" ? [where] : []),
+    ...(after !== undefined ? [afterKeysSql(keys, after, p)] : []),
+  ];
   const r = await tx.query<Record<string, unknown>>(
-    `SELECT ${cols.join(", ")} FROM ${from}${where !== "" ? ` WHERE ${where}` : ""}` +
+    `SELECT ${cols.join(", ")} FROM ${from}${all.length > 0 ? ` WHERE ${all.join(" AND ")}` : ""}` +
       ` ORDER BY ${orderBySql(keys)} LIMIT ${p.add(limit, "::bigint")}`,
     p.list,
   );

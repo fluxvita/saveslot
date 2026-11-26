@@ -132,17 +132,46 @@ beforeAll(async () => {
     rows.push((await w([{ intent: "insert", table: "spend", set }])).ops[0]?.target.row as string);
   revoked = rows[7] as string;
   await w([{ intent: "revoke", table: "spend", row: revoked }]);
+  const entity: Record<string, string> = {};
   for (const [category, amount] of [
     ["food", 100],
     ["rent", null],
     ["fun", 30],
   ] as const)
+    entity[category] = (
+      await w([
+        {
+          intent: "insert",
+          table: "budgets",
+          set: { category, ...(amount !== null ? { amount } : {}) },
+          valid_from: "2026-11-01",
+        },
+      ])
+    ).ops[0]?.target.entity as string;
+  // food: the same value written again (merged when read over an interval), then a new one twice.
+  for (const [amount, from] of [
+    [100, "2026-11-03"],
+    [150, "2026-11-05"],
+    [150, "2026-11-07"],
+  ] as const)
     await w([
       {
-        intent: "insert",
+        intent: "update",
         table: "budgets",
-        set: { category, ...(amount !== null ? { amount } : {}) },
-        valid_from: "2026-11-01",
+        entity: entity["food"],
+        set: { amount },
+        valid_from: from,
+      },
+    ]);
+  // rent: ten values in a row, none merged: more segments than a batch of a page of one.
+  for (let d = 2; d <= 11; d++)
+    await w([
+      {
+        intent: "update",
+        table: "budgets",
+        entity: entity["rent"],
+        set: { amount: d },
+        valid_from: `2026-11-${String(d).padStart(2, "0")}`,
       },
     ]);
 }, T);
@@ -223,10 +252,31 @@ describe("a first page pushed down to SQL", () => {
     }
   });
 
-  it("is not where it cannot be: a state table over an interval reads the table whole", async () => {
+  it("streams a state table over an interval an entity at a time, merged rows whole across pages", async () => {
+    const during = ["2026-11-01", null];
+    for (const params of [
+      { valid_during: during },
+      { valid_during: during, coalesce: false },
+      { valid_during: ["2026-11-04", "2026-11-08"], clip: true },
+      { valid_during: during, where: [{ field: "valid_from", op: ">=", value: "2026-11-05" }] },
+      { valid_during: during, fields: ["category"] },
+    ])
+      for (const limit of [1, 2, 3]) {
+        const got = await pages({ table: "budgets", ...params, limit });
+        expect(got.flatMap((o) => o.result.rows).length).toBe(got[0]?.result.total);
+      }
+    // Every statement on the table reads a batch in order: none reads it whole.
+    const { sent } = await both({ table: "budgets", valid_during: during, limit: 1 });
+    const reads = onTable(sent, "t_t2_v1");
+    expect(reads.length).toBeGreaterThan(1);
+    for (const x of reads) expect(x).toMatch(/ ORDER BY .* LIMIT \$\d+::bigint$/);
+  });
+
+  it("is not where it cannot be: over an interval with an order asked for, the table is read whole", async () => {
     const { pushed, full, sent } = await both({
       table: "budgets",
       valid_during: ["2026-11-01", null],
+      order: [{ field: "amount", dir: "desc" }],
       limit: 2,
     });
     expect(pushed).toEqual(full);
