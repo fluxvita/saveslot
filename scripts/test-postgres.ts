@@ -57,6 +57,10 @@ export const EXCLUDED: readonly { readonly file: string; readonly why: string }[
     file: "packages/store-pglite/src/backend.test.ts",
     why: "tests PgliteBackend itself: the lock on the data directory, the owner file, the DB Worker, host fsync, and its own error class. What answers to these on PostgreSQL is tested in packages/store-postgres/src/backend.test.ts and edges.test.ts.",
   },
+  {
+    file: "packages/store-pglite/src/analyze.test.ts",
+    why: "tests the planner's statistics a local store gathers itself (the DB Worker's ANALYZE at open and after a write, its events, its failures): PGlite runs PostgreSQL in single-user mode, with no autovacuum. On PostgreSQL autovacuum gathers them and the backend runs no ANALYZE of its own (02-architecture §7, PGlite and PostgreSQL), so there is nothing of this to test there.",
+  },
 ];
 
 if (import.meta.main) {
