@@ -2,10 +2,11 @@
 // real claude and codex are never run. Shell builtins only in the stand-ins.
 
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { doctorHosts } from "./doctor-hosts.ts";
+import { doctorHosts, localSession } from "./doctor-hosts.ts";
 import { TEXTS } from "./texts.ts";
 
 const root = mkdtempSync(join(tmpdir(), "saveslot-doctor-hosts-"));
@@ -187,5 +188,33 @@ describe("doctor: a host not yet read through", () => {
         }) as never,
     });
     expect(unreadable.filter((f) => f.says === TEXTS.doctorHostUnread)).toEqual([]);
+  });
+
+  it("a service that accepts the connection and never answers: given up after the limit, no line", async () => {
+    const h = hosts({ claude: entry });
+    const home = join(root, `service${++n}`);
+    mkdirSync(join(home, "run"), { recursive: true });
+    const held: import("node:net").Socket[] = [];
+    const hung = createServer((s) => held.push(s));
+    await new Promise<void>((r) => hung.listen(join(home, "run", "saveslot.sock"), r));
+    try {
+      const env = { ...h.env, SAVESLOT_TOKEN: `slt_${"a".repeat(43)}` };
+      const began = Date.now();
+      const all = await doctorHosts({
+        env: h.env,
+        entry,
+        userHome: h.home,
+        session: () => localSession(home, env, 300),
+      });
+      expect(Date.now() - began).toBeLessThan(5_000);
+      expect(all).toEqual([
+        { verdict: "pass", item: "host Claude Code", says: TEXTS.doctorHostOk(entry) },
+      ]);
+      // It was asked, and did not answer.
+      expect(held.length).toBeGreaterThan(0);
+    } finally {
+      for (const s of held) s.destroy();
+      await new Promise<void>((r) => hung.close(() => r()));
+    }
   });
 });

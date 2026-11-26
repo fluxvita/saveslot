@@ -40,7 +40,10 @@ export async function doctorHosts(o: {
   readonly platform?: NodeJS.Platform;
   readonly userHome?: string;
   readonly timeoutMs?: number;
-  /** The local service's session; none, or the service not answering: no line on reads. */
+  /**
+   * The local service's session, given only when the service said it is ready; none, or the
+   * service not answering: no line on reads.
+   */
   readonly session?: () => Promise<Pick<Client, "connections" | "readsList">>;
 }): Promise<HostFinding[]> {
   const out: HostFinding[] = [];
@@ -113,11 +116,25 @@ export async function doctorHosts(o: {
   return out;
 }
 
-/** The local service's session for `doctor`'s hosts: the home's credential over its socket. */
+/**
+ * How long each call for the hosts' reads may take: as long as doctor's other questions to the
+ * service. A service that accepts the connection and does not answer is what doctor is run for.
+ */
+export const SESSION_TIMEOUT_MS = 10_000;
+
+/**
+ * The local service's session for `doctor`'s hosts: the home's credential over its socket, each
+ * call given up after `timeoutMs`.
+ */
 export async function localSession(
   home: string,
   env: Readonly<Record<string, string | undefined>>,
+  timeoutMs = SESSION_TIMEOUT_MS,
 ): Promise<Client> {
   const credential = await resolveCredential({ home, env });
-  return createClient({ socketPath: join(home, "run", "saveslot.sock"), token: credential.token });
+  return createClient({
+    socketPath: join(home, "run", "saveslot.sock"),
+    token: credential.token,
+    timeoutMs,
+  });
 }
