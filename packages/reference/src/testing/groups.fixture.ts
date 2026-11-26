@@ -116,6 +116,27 @@ export function groupInstantOps(short: "f2" | "f3"): Op[] {
   ] as Op[];
 }
 
+/** #11 f2 = 1, f3 = a over [10-01, 11-10); #31 f2 = 3 over [11-10, 11-12); #41 revokes it; #61 (seen #10) clears f2 there. */
+function clearIntoRevoked(): Op[] {
+  return [
+    at(10, 0, given("10-01", "11-10"), { f2: "1", f3: "a" }),
+    at(30, 10, given("11-10", "11-12"), { f2: "3" }),
+    {
+      kind: "revoke",
+      op: 40,
+      event: 41,
+      seen: 30,
+      valid: given("11-10", "11-12"),
+      validSources: ["S40"],
+      acknowledge: ["overwrite"],
+    } as Op,
+    {
+      ...at(60, 10, given("11-10", "11-12"), {}),
+      fields: { f2: { value: null, sources: ["S60f2"] } },
+    } as Op,
+  ];
+}
+
 export const GROUP_LOGS: Record<
   string,
   { schema: TableSchema; ops: Op[]; event: number; want: string[][] }
@@ -232,6 +253,69 @@ export const GROUP_LOGS: Record<
       ["f2", "applied"],
       ["f3", "applied"],
     ],
+  },
+  // No value in V, a value now (09-references «组值»: where V has no value, a field W did not write
+  // is empty, as W's write leaves the entity there): #11 f2 = 1, f3 = a over [10-01, 11-10); #31
+  // (seen #10) f2 = 3 over [11-10, 11-12), where V had no value; #61 (seen #10) the same. On
+  // [11-10, 11-12) W's group value is (3, empty) and the current one (3, empty: f3 where #31 gave
+  // the entity a value): the same, no conflict; both of the identical writes take effect.
+  "the group value: no value in V and an empty field now are the same": {
+    schema: GROUP,
+    ops: [
+      at(10, 0, given("10-01", "11-10"), { f2: "1", f3: "a" }),
+      at(30, 10, given("11-10", "11-12"), { f2: "3" }),
+      at(60, 10, given("11-10", "11-12"), { f2: "3" }),
+    ],
+    event: 61,
+    want: [["f2", "applied"]],
+  },
+  // The same without the group.
+  "without the group, the same identical writes take effect": {
+    schema: { kind: "state", required: ["f2"] },
+    ops: [
+      at(10, 0, given("10-01", "11-10"), { f2: "1", f3: "a" }),
+      at(30, 10, given("11-10", "11-12"), { f2: "3" }),
+      at(60, 10, given("11-10", "11-12"), { f2: "3" }),
+    ],
+    event: 61,
+    want: [["f2", "applied"]],
+  },
+  // W from 11-08, across the end of the entity's life in V: the group judged as without it.
+  "the group value: a write across the end of V's value judged as without the group": {
+    schema: GROUP,
+    ops: [
+      at(10, 0, given("10-01", "11-10"), { f2: "1", f3: "a" }),
+      at(30, 10, given("11-10", "11-12"), { f2: "3" }),
+      at(60, 10, given("11-08", "11-12"), { f2: "3" }),
+    ],
+    event: 61,
+    want: [["f2", "awaiting"]],
+  },
+  "without the group, a write across the end of V's value": {
+    schema: { kind: "state", required: ["f2"] },
+    ops: [
+      at(10, 0, given("10-01", "11-10"), { f2: "1", f3: "a" }),
+      at(30, 10, given("11-10", "11-12"), { f2: "3" }),
+      at(60, 10, given("11-08", "11-12"), { f2: "3" }),
+    ],
+    event: 61,
+    want: [["f2", "awaiting"]],
+  },
+  // No value in V and none now, W clearing the field: #31 filled [11-10, 11-12), #41 revoked it
+  // again; #61 (seen #10) clears f2 there. On W's side the field is empty (W's own value); now the
+  // entity is not there, which is not an empty field: a conflict with the revoke, as without the
+  // group (a single field's write is judged the same with the group or without it).
+  "the group value: W clearing a field where neither V nor now has a value": {
+    schema: { kind: "state", required: [], groups: [["f2", "f3"]] },
+    ops: clearIntoRevoked(),
+    event: 61,
+    want: [["f2", "candidate"]],
+  },
+  "without the group, the same clearing": {
+    schema: { kind: "state", required: [] },
+    ops: clearIntoRevoked(),
+    event: 61,
+    want: [["f2", "candidate"]],
   },
   // Without the group, field by field: neither field's seen interval meets #31 where its value
   // differs, both take effect (up to #31's change point, 11-03).

@@ -577,8 +577,12 @@ function changersOf(
 
 /**
  * The group value of W on a piece (09-references-conflict-sync «冲突判据»): W's value for the
- * fields of the unit it writes there, the seen version's value for the others.
+ * fields of the unit it writes there, the seen version's value for the others; where the seen
+ * version has no value, those are empty, as W's write leaves the entity there. The current group
+ * value (`groupAt`) is as it is: no value there is the entity not being there.
  */
+const asGroup = (t: string) => (t === NO_VALUE ? "none" : t);
+
 function groupOfWrite(
   state: RowState,
   w: WriteInput,
@@ -594,7 +598,7 @@ function groupOfWrite(
       if (input !== undefined && res !== undefined && within(seg, res.valid)) {
         return valueToken(input.value);
       }
-      return state.token(g, seg, seenAt(g));
+      return asGroup(state.token(g, seg, seenAt(g)));
     })
     .join("|");
 }
