@@ -145,16 +145,11 @@ describe("English documents", () => {
     const zh = "docs/zh-CN/spec/03-data-model/05-time.md";
     expect(switchLine(en)).toBe("English · [简体中文](../../zh-CN/spec/03-data-model/05-time.md)");
     expect(switchLine(zh)).toBe("[English](../../../spec/03-data-model/05-time.md) · 简体中文");
-    expect(switchOf(en, `# T\n\n${switchLine(en)}\n`)).toBe(zh);
-    expect(switchOf(zh, `# T\n\n> ${switchLine(zh)}\n`)).toBe(en);
+    expect(switchOf(en, `# T\n\n${switchLine(en)}\n`)).toEqual({ line: 3, path: zh });
+    expect(switchOf(zh, `# T\n\n> ${switchLine(zh)}\n`)).toEqual({ line: 3, path: en });
+    expect(switchOf(en, "# T\n\nEnglish · [简体中文](%E0%A4%A.md)\n")).toBeUndefined(); // bad escape
     expect(switchOf(en, `# T\n\n${switchLine(zh)}\n`)).toBeUndefined(); // the other edition's form
     expect(switchOf(en, `${"\n".repeat(6)}${switchLine(en)}`)).toBeUndefined(); // too far down
-    expect(
-      switchOf(
-        en,
-        "# T\n\n> Translated from docs/zh-CN/a.md, updated in the same commit as this file.",
-      ),
-    ).toBe("old");
     const sw = (f: string) => `# T\n\n${switchLine(f)}\n`;
     const root = tree({
       "docs/zh-CN/guide/01-what.md": sw("docs/zh-CN/guide/01-what.md"),
@@ -165,6 +160,8 @@ describe("English documents", () => {
       "docs/zh-CN/guide/04-old.md": sw("docs/zh-CN/guide/04-old.md"),
       "docs/guide/04-old.md":
         "# 4\n\n> Translated from docs/zh-CN/guide/04-old.md, updated in the same commit as this file.\n",
+      "docs/zh-CN/guide/05-left.md": sw("docs/zh-CN/guide/05-left.md"),
+      "docs/guide/05-left.md": `${sw("docs/guide/05-left.md")}> The Chinese edition is authoritative; where the two differ, the Chinese one holds.\n`,
       "docs/zh-CN/spec/02-architecture.md": "# 2\n\n[English](../../spec/09-other.md) · 简体中文\n",
       "docs/spec/02-architecture.md": sw("docs/spec/02-architecture.md"),
       "docs/spec/09-other.md": "# 9\n",
@@ -181,6 +178,7 @@ describe("English documents", () => {
       `docs/zh-CN/guide/02-how.md: no "${switchLine("docs/zh-CN/guide/02-how.md")}" in its first 6 lines`,
       "docs/guide/03-gone.md: no Chinese edition (docs/zh-CN/guide/03-gone.md)",
       `docs/guide/04-old.md: still has the old "Translated from …" head; replace it with "${switchLine("docs/guide/04-old.md")}"`,
+      'docs/guide/05-left.md: still has a line of the old "Translated from …" head; remove it',
       "docs/zh-CN/spec/02-architecture.md: its language switch links docs/spec/09-other.md, expected docs/spec/02-architecture.md",
       `docs/spec/09-other.md: no "${switchLine("docs/spec/09-other.md")}" in its first 6 lines`,
       `docs/zh-CN/spec/09-other.md: no "${switchLine("docs/zh-CN/spec/09-other.md")}" in its first 6 lines`,
@@ -261,8 +259,11 @@ describe("English documents", () => {
       "docs/zh-CN/guide/README.md": "# 讲解\n",
       "docs/zh-CN/spec/06-cli.md": "# 命令行\n",
       "docs/zh-CN/process/README.md": "# 过程\n",
-      // Its own Chinese edition, from its language switch, passes.
       "docs/guide/README.md": "# Guide\n\nEnglish · [简体中文](../zh-CN/guide/README.md)\n",
+      // Its own Chinese edition passes from its language line (line 3), and only from there.
+      "docs/zh-CN/guide/03-own.md": "# 3\n",
+      "docs/guide/03-own.md":
+        "# 3\n\nEnglish · [简体中文](../zh-CN/guide/03-own.md)\n\nSee [it](../zh-CN/guide/03-own.md#一).\n",
       "docs/spec/06-cli.md": "# CLI\n",
       "README.md": [
         "# saveslot",
@@ -291,6 +292,7 @@ describe("English documents", () => {
       `README.md:4: ${en("docs/zh-CN/guide/", "docs/guide/")}`,
       `README.md:6: ${en("docs/zh-CN/spec/06-cli.md", "docs/spec/06-cli.md")}`,
       `docs/guide/02-x.md:1: ${en("docs/zh-CN/spec/06-cli.md", "docs/spec/06-cli.md")}`,
+      `docs/guide/03-own.md:5: ${en("docs/zh-CN/guide/03-own.md", "docs/guide/03-own.md")}`,
     ]);
     // The same failures reach checkTranslations, and so `pnpm docs:translations`.
     expect(checkTranslations(root, undefined, () => undefined).problems.map((p) => p.file)).toEqual(

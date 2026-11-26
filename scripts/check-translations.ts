@@ -12,7 +12,7 @@
 //
 // - an English document (any Markdown file outside docs/zh-CN/ that is not a `*.zh-CN.md`) links a
 //   file or directory under docs/zh-CN/ that has an English edition at the same path under docs/,
-//   outside its own language switch and the links listed in ZH_LINKS_KEPT: its reader should land
+//   outside its own language line and the links listed in ZH_LINKS_KEPT: its reader should land
 //   on the English page. Links to what exists only in Chinese (process/, research/) and to
 //   docs/zh-CN/ itself pass.
 //
@@ -70,6 +70,16 @@ export const ZH_LINKS_KEPT: readonly { file: string; target: string; why: string
     why: "the index of both editions: its Chinese column links each document's Chinese edition",
   },
   {
+    file: "docs/guide/README.md",
+    target: "docs/zh-CN/guide/README.md",
+    why: "the note under the head pointing to the Chinese edition of every chapter",
+  },
+  {
+    file: "docs/spec/README.md",
+    target: "docs/zh-CN/spec/README.md",
+    why: "the note under the head pointing to the Chinese edition of every specification document",
+  },
+  {
     file: "CONTRIBUTING.md",
     target: "docs/zh-CN/guide/12-contributing.md",
     why: "names the Chinese edition of the contributor guide next to the English link",
@@ -86,7 +96,7 @@ const HEAD_LINES = 6;
 const EN_SWITCH = /^(?:>\s*)?English · \[简体中文\]\(([^)\s]+)\)\s*$/;
 const ZH_SWITCH = /^(?:>\s*)?\[English\]\(([^)\s]+)\) · 简体中文\s*$/;
 /** The earlier head of an English file, which named its Chinese source as a translation. */
-const OLD_HEAD = /Translated from /;
+const OLD_HEAD = /Translated from |The Chinese edition is authoritative/;
 const EN_BEHIND = /The Chinese edition has changed since/;
 const ZH_BEHIND = /英文版此后有改动/;
 
@@ -126,23 +136,37 @@ export function switchLine(file: string): string {
 }
 
 /**
- * The repository path the language switch in the head of `file` links, "old" when the head still
- * has the earlier translation line instead, or undefined.
+ * The language line in the head of `file`: its line number (1-based) and the repository path it
+ * links, or undefined when there is none (or its link cannot be decoded).
  */
-export function switchOf(file: string, text: string): string | "old" | undefined {
+export function switchOf(file: string, text: string): { line: number; path: string } | undefined {
   const re = isChinese(file) ? ZH_SWITCH : EN_SWITCH;
-  let old = false;
-  for (const line of text.split("\n").slice(0, HEAD_LINES)) {
+  const head = text.split("\n").slice(0, HEAD_LINES);
+  for (const [i, line] of head.entries()) {
     const m = re.exec(line);
-    if (m?.[1] !== undefined) {
-      return normalize(join(dirname(file), decodeURIComponent(m[1])))
-        .split("\\")
-        .join("/");
+    if (m?.[1] === undefined) continue;
+    let link: string;
+    try {
+      link = decodeURIComponent(m[1]);
+    } catch {
+      return undefined;
     }
-    if (OLD_HEAD.test(line)) old = true;
+    return {
+      line: i + 1,
+      path: normalize(join(dirname(file), link))
+        .split("\\")
+        .join("/"),
+    };
   }
-  return old ? "old" : undefined;
+  return undefined;
 }
+
+/** Whether the head of `file` still has a line of the earlier translation head. */
+export const hasOldHead = (text: string): boolean =>
+  text
+    .split("\n")
+    .slice(0, HEAD_LINES)
+    .some((l) => OLD_HEAD.test(l));
 
 /** Chinese documents without an English file at the same path, outside NOT_YET. */
 export function missingEnglish(root: string, files: readonly string[]): TranslationProblem[] {
@@ -168,7 +192,7 @@ export function zhLinksWithEnglish(
   const out: (TranslationProblem & { line: number })[] = [];
   for (const file of files.filter(isEnglish)) {
     const text = readFileSync(join(root, file), "utf8");
-    const own = TRANSLATED.some((d) => file.startsWith(d)) ? counterpart(file) : undefined;
+    const own = TRANSLATED.some((d) => file.startsWith(d)) ? switchOf(file, text) : undefined;
     for (const { line, target } of extractLinks(text)) {
       if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("//")) continue;
       const pathPart = target.split("#")[0] ?? "";
@@ -179,7 +203,7 @@ export function zhLinksWithEnglish(
       const rest = path.slice("docs/zh-CN/".length);
       if (rest === "") continue;
       if (!existsSync(join(root, "docs", rest))) continue;
-      if (path === own) continue;
+      if (own !== undefined && line === own.line && path === own.path) continue;
       const dir = pathPart.endsWith("/") ? "/" : "";
       const shown = `${path}${dir}`;
       const en = `docs/${rest}${dir}`;
@@ -202,11 +226,15 @@ export function zhLinksWithEnglish(
 function switchProblem(file: string, text: string): string | undefined {
   const expected = counterpart(file);
   const found = switchOf(file, text);
-  if (found === "old") {
-    return `still has the old "Translated from …" head; replace it with "${switchLine(file)}"`;
+  if (hasOldHead(text)) {
+    return found === undefined
+      ? `still has the old "Translated from …" head; replace it with "${switchLine(file)}"`
+      : `still has a line of the old "Translated from …" head; remove it`;
   }
   if (found === undefined) return `no "${switchLine(file)}" in its first ${HEAD_LINES} lines`;
-  if (found !== expected) return `its language switch links ${found}, expected ${expected}`;
+  if (found.path !== expected) {
+    return `its language switch links ${found.path}, expected ${expected}`;
+  }
   return undefined;
 }
 
