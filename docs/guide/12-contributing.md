@@ -33,7 +33,7 @@ What you can take part in now:
 
 One rule you need to know first: **specification first.** A change in behavior updates the specification in the same pull request; a change that affects how readers understand the system also updates the guide. An incompatible change to the event format, the kernel invariants or the external interface goes further: first write a decision draft explaining why, and only after review passes change the specification and the code (section 4). These three are hard to change once settled, and stating the reasons clearly first is easier than arguing in code review.
 
-The main points of the submission process are also written in `CONTRIBUTING.md` at the root of the repository.
+The main points of the submission process are also written in `CONTRIBUTING.md` at the root of the repository. The commands for setting up, running the checks and making a first change are in [`../development.md`](../development.md).
 
 ### Toolchain
 

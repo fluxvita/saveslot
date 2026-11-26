@@ -69,6 +69,11 @@ export const ZH_LINKS_KEPT: readonly { file: string; target: string; why: string
     why: "the line saying the Chinese edition is authoritative",
   },
   {
+    file: "docs/development.md",
+    target: "docs/zh-CN/development.md",
+    why: "the language switcher at the head of the development guide",
+  },
+  {
     file: "CONTRIBUTING.md",
     target: "docs/zh-CN/guide/12-contributing.md",
     why: "names the Chinese edition of the contributor guide next to the English link",

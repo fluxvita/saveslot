@@ -1,6 +1,6 @@
 # 参与贡献
 
-完整的说明在 [`docs/zh-CN/guide/12-contributing.md`](docs/zh-CN/guide/12-contributing.md)：代码怎么分包、每种测试防什么、实现顺序、规格怎么读、改设计时同步什么。这里只列提交流程的要点。
+完整的说明在 [`docs/zh-CN/guide/12-contributing.md`](docs/zh-CN/guide/12-contributing.md)：代码怎么分包、每种测试防什么、实现顺序、规格怎么读、改设计时同步什么。这里只列提交流程的要点。搭环境、跑检查、做第一个改动，照 [`docs/zh-CN/development.md`](docs/zh-CN/development.md) 走。
 
 ## 流程
 
