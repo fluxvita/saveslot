@@ -20,6 +20,7 @@ import {
   expectedOf,
   packLocalSample,
   REPO,
+  SAMPLE_SWITCHED,
   SAMPLES_DIR,
   type SampleExpected,
   sampledFormats,
@@ -54,7 +55,7 @@ async function readSample(home: string, expected: SampleExpected): Promise<void>
   const s = await serve(home);
   try {
     const session = readFileSync(sessionFile(home), "utf8").trim();
-    const now = await expectedOf(home, session);
+    const now = await expectedOf(home, session, { switched: expected.switched === true });
     // Reads made since the sample was packed are more reads, and nothing else.
     expect({ ...now, reads_at_least: expected.reads_at_least }).toEqual(expected);
     expect(now.reads_at_least).toBeGreaterThanOrEqual(expected.reads_at_least);
@@ -86,7 +87,9 @@ describe("a sample of the current storage format, local mode", () => {
       now: new Date().toISOString(),
     });
     const s = await serve(home);
-    expected = await writeSampleHistory(home, readFileSync(sessionFile(home), "utf8").trim());
+    expected = await writeSampleHistory(home, readFileSync(sessionFile(home), "utf8").trim(), {
+      switched: SAMPLE_SWITCHED,
+    });
     await stop(s);
     packLocalSample(home, out, expected);
   }, T);
@@ -100,9 +103,10 @@ describe("a sample of the current storage format, local mode", () => {
         snack: { date: "2026-11-04", amount: 9 },
       },
       budget: { "2026-10-05": 5000, "2026-11-15": 4000 },
-      rides: { "k-1": 12, "k-2": 21 },
+      rides: SAMPLE_SWITCHED ? {} : { "k-1": 12, "k-2": 21 },
       open_items: { conflict: 1, awaiting_confirmation: 1 },
     });
+    expect(expected.switched).toBe(SAMPLE_SWITCHED ? true : undefined);
     expect(expected.expenses["coffee"]).toBeUndefined();
     expect(expected.reads_at_least).toBeGreaterThanOrEqual(6);
   });
@@ -121,10 +125,10 @@ describe("a sample of the current storage format, local mode", () => {
 const KEPT = sampledFormats("local");
 describe.skipIf(KEPT.length === 0)("the samples kept in the repository, local mode", () => {
   it.each(KEPT)(
-    "format %i: opens with this version, with the values it was packed with",
-    async (format) => {
-      const copy = join(root, `kept-${format}`);
-      const expected = unpackLocalSample(join(REPO, SAMPLES_DIR, String(format), "local"), copy);
+    "$name: opens with this version, with the values it was packed with",
+    async ({ format, name }) => {
+      const copy = join(root, `kept-${name.replace("/", "-")}`);
+      const expected = unpackLocalSample(join(REPO, SAMPLES_DIR, name), copy);
       expect(expected.storage_format).toBe(format);
       await readSample(copy, expected);
     },

@@ -6,7 +6,9 @@
 // The history has what the decision asks a sample to hold: writes on tables of every time type,
 // a correction, a revoke and its undo, a conflict left open and one resolved, a write awaiting
 // confirmation, premises (one changed since), rows by source key, a reference field, a derived
-// table, evidence, and reads of what was written.
+// table, evidence, and reads of what was written. The switch variant goes on with a schema switch
+// confirmed by the user: a timeless table that was written dropped (kept as a retired table) and
+// another table's `duplicate_keys` changed, then a write the new keys flag.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -105,6 +107,13 @@ export interface SampleExpected {
   readonly open_items: Readonly<Record<string, number>>;
   /** How many reads the read log holds at least. */
   readonly reads_at_least: number;
+  /** The switch variant: the rides table dropped (no rides read), the expenses' keys changed. */
+  readonly switched?: true;
+}
+
+/** Which history: the plain one, or the one that goes on with a schema switch. */
+export interface SampleHistoryOptions {
+  readonly switched?: boolean;
 }
 
 export class SampleError extends Error {}
@@ -138,7 +147,11 @@ interface OpReceipt {
  * Writes the sample's history on the service at `at` as the user session `session`, and returns
  * what a reader must find. The tenant must be new: the slot is created here.
  */
-export async function writeSampleHistory(at: Target, session: string): Promise<SampleExpected> {
+export async function writeSampleHistory(
+  at: Target,
+  session: string,
+  opts: SampleHistoryOptions = {},
+): Promise<SampleExpected> {
   const draft = await call(at, session, "POST", "/v1/drafts", { document: SAMPLE_SLOT });
   const sv = Number((draft["sv"] ?? 1) as number);
   const agent = String(
@@ -268,11 +281,52 @@ export async function writeSampleHistory(at: Target, session: string): Promise<S
   }
   await call(at, other, "POST", "/v1/history", { table: "household.expenses", row: rowOf(lunch) });
 
-  return expectedOf(at, session);
+  if (opts.switched === true) {
+    // The switch, one draft: the written rides table dropped, and the expenses (as the first
+    // draft came back, with its IDs) flagged when a day and a note come twice; the tables not
+    // listed stay as they are. Dropping a table waits for the user's confirmation.
+    const document = draft["document"] as Json;
+    const expenses = (document["tables"] as Json[]).find((t) => t["name"] === "expenses");
+    const changed = await call(at, session, "POST", "/v1/drafts", {
+      document: {
+        slot: document["slot"],
+        base_version: sv,
+        timezone: document["timezone"],
+        tables: [{ ...expenses, duplicate_keys: [["date", "note"]] }],
+        drop_tables: ["rides"],
+      },
+    });
+    const item = changed["item"] as { id: string; item_ver: string } | undefined;
+    if (changed["outcome"] !== "pending" || item === undefined) {
+      throw new SampleError(`the switch did not wait for confirmation: ${JSON.stringify(changed)}`);
+    }
+    await call(at, session, "POST", `/v1/pending/${item.id}/resolution`, {
+      decision: "confirm",
+      item_ver: item.item_ver,
+    });
+    // After it: the lunch on its day again, which the new keys flag.
+    await call(at, agent, "POST", "/v1/writes", {
+      sv: Number(changed["target_sv"]),
+      ops: [
+        {
+          intent: "insert",
+          table: "household.expenses",
+          set: { date: "2026-11-02", amount: 54, note: "lunch" },
+        },
+      ],
+    });
+    await call(at, agent, "POST", "/v1/query", { table: "household.expenses" });
+  }
+
+  return expectedOf(at, session, opts);
 }
 
 /** The sample's fixed values, read from the service as it is now. */
-export async function expectedOf(at: Target, session: string): Promise<SampleExpected> {
+export async function expectedOf(
+  at: Target,
+  session: string,
+  opts: SampleHistoryOptions = {},
+): Promise<SampleExpected> {
   const rows = async (table: string, extra: Json = {}): Promise<Json[]> =>
     (await call(at, session, "POST", "/v1/query", { table: `household.${table}`, ...extra }))[
       "rows"
@@ -281,13 +335,15 @@ export async function expectedOf(at: Target, session: string): Promise<SampleExp
   const expenses: Record<string, { date: string; amount: number | null }> = {};
   for (const r of await rows("expenses")) {
     const v = values(r);
+    // The switch variant's second lunch: as the first, by its note.
     expenses[String(v["note"])] = {
       date: String(v["date"]),
       amount: v["amount"] === null || v["amount"] === undefined ? null : Number(v["amount"]),
     };
   }
   const rides: Record<string, number> = {};
-  for (const r of await rows("rides")) {
+  // Dropped by the switch: a retired table, no longer read by name.
+  for (const r of opts.switched === true ? [] : await rows("rides")) {
     const v = values(r);
     rides[String(v["external_id"])] = Number(v["fare"]);
   }
@@ -312,6 +368,7 @@ export async function expectedOf(at: Target, session: string): Promise<SampleExp
     rides,
     open_items: open,
     reads_at_least: reads.length,
+    ...(opts.switched === true ? { switched: true as const } : {}),
   };
 }
 
@@ -338,16 +395,28 @@ export function unpackLocalSample(sample: string, to: string): SampleExpected {
   return JSON.parse(readFileSync(join(sample, "expected.json"), "utf8")) as SampleExpected;
 }
 
-/** The formats that have a sample of `mode` in the repository. */
-export function sampledFormats(mode: "local" | "server"): number[] {
+/** The variants of a sample: the plain history, and the one with a schema switch. */
+export const SAMPLE_VARIANTS = ["", "-switch"] as const;
+
+/**
+ * The samples of `mode` in the repository, each as `<format>/<mode>` or `<format>/<mode>-switch`
+ * (its directory under SAMPLES_DIR), with its format.
+ */
+export function sampledFormats(mode: "local" | "server"): { format: number; name: string }[] {
   const dir = join(REPO, SAMPLES_DIR);
   if (!existsSync(dir)) return [];
-  const out: number[] = [];
+  const out: { format: number; name: string }[] = [];
   for (let f = 1; f <= CURRENT_FORMAT; f++) {
-    if (existsSync(join(dir, String(f), mode, "expected.json"))) out.push(f);
+    for (const v of SAMPLE_VARIANTS) {
+      const name = `${f}/${mode}${v}`;
+      if (existsSync(join(dir, name, "expected.json"))) out.push({ format: f, name });
+    }
   }
   return out;
 }
+
+/** The history a test file writes: the switch variant when the script asks for it. */
+export const SAMPLE_SWITCHED = process.env["SAVESLOT_FORMAT_SAMPLE_SWITCH"] === "1";
 
 /** What a server sample holds beside its dumps: each tenant's user, credentials and values. */
 export interface ServerSampleExpected {
