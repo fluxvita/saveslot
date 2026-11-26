@@ -46,12 +46,19 @@ const PENDING_REPLAYS: readonly string[] = [
   // The session's confirmations and cancellations of several deletions in turn: each replays the
   // row with the others' blocks.
   "store-pglite/src/testing/deletion.fixture.ts DeletionSession",
+  // The delete operation's plan: it replays each row it touches as the confirmation will, from
+  // every contribution, those earlier pending deletions list included.
+  "kernel/src/ops/deletion-plan.ts planDeletionOf",
   // The case that the option reads what the write path does not.
   "store-pglite/src/pending-reads.test.ts the row's log as the write path reads it (rowEvents) has no pending value; a deletion's replay, asking, has it",
 ];
 
-/** SQL reading the `content` table itself. Deleting from it is not a read. */
-const RAW_READ = /(?<!DELETE\s+)\b(?:FROM|JOIN)\s+content\b/gi;
+/**
+ * SQL reading the `content` table itself, however it is written: quoted or not, qualified by its
+ * schema or not, with ONLY. Deleting from it is not a read.
+ */
+const RAW_READ =
+  /(?<!DELETE\s+)\b(?:FROM|JOIN)\s+(?:ONLY\s+)?(?:"?public"?\s*\.\s*)?"?content"?(?!\w)/gi;
 
 /** A top-level declaration: the reader a direct read belongs to is the last one before it. */
 const DECL = /^(?:export\s+)?(?:async\s+)?(?:function\*?\s+(\w+)|(?:const|let|class)\s+(\w+))/gm;
@@ -108,8 +115,16 @@ const ALLOWED: Record<string, { readonly why: string; readonly readers: Record<s
       readers: { pendingDeletions: 1, exportStart: 1, exportBatch: 1 },
     },
     "ops/deletion-plan.ts": {
-      why: "the delete operation's plan: which rows earlier deletions touched (their positions, results and restatements, pending ones included); the awaiting items whose impact names a row it touches (only open items' current entries: a deletion listing an entry gives the impact again in the same transaction, and reading one only makes the deletion refused, never shows it); else metadata (compiled)",
-      readers: { rowsWithDeletions: 1, slotVersions: 1, awaitingReferredBy: 1 },
+      why: "the delete operation's plan: the awaiting items whose impact names a row it touches (only open items' current entries: a deletion listing an entry gives the impact again in the same transaction, and reading one only makes the deletion refused, never shows it); else metadata (compiled)",
+      readers: { slotVersions: 1, awaitingReferredBy: 1 },
+    },
+    "pending/pending-targets.ts": {
+      why: "the rows pending deletions affect: their own deletion.confirmed blocks (positions, restated/*'s event, results/*/target), read as stored, which a later deletion may list",
+      readers: { readPendingTargets: 1 },
+    },
+    "ops/deletion-row.ts": {
+      why: "the slot's earlier deletions: the blocks of their own deletion.confirmed / cancelled / executed events (positions, results, restatements), which no deletion lists, read as stored",
+      readers: { priorDeletions: 1 },
     },
     "ops/deletion.ts": {
       why: "a deletion's own event read back: metadata only (target, results/*/target); a replayed receipt's count of items put in effect: the candidate and target blocks the deletion itself lists, read for their event numbers only, so the count is the first receipt's",
@@ -134,7 +149,7 @@ const ALLOWED: Record<string, { readonly why: string; readonly readers: Record<s
     "ops/slots.ts": { why: META, readers: { assertEmpty: 1, removed: 1 } },
     "pending/closing.ts": { why: META, readers: { closingOf: 1, noteOf: 2 } },
     "pending/detail.ts": { why: META, readers: { itemEntries: 1 } },
-    "pending/index.ts": { why: META, readers: { writerHadRead: 2 } },
+    "pending/index.ts": { why: META, readers: { writerHadRead: 1 } },
     "read/catalog.ts": { why: META, readers: { policyOf: 1 } },
     "read/documents.ts": { why: META, readers: { ruleTextsOf: 2, draftDocument: 3 } },
     "read/former.ts": { why: META, readers: { formerVersions: 1 } },
@@ -153,12 +168,12 @@ const ALLOWED: Record<string, { readonly why: string; readonly readers: Record<s
     "write/premises.ts": { why: META, readers: { reasonOf: 1 } },
     "write/reads.ts": {
       why: `${META}; and eventsAt's read when a deletion's or a cancellation's replay asks for pending blocks (includePendingDeletionBlocks, its callers listed below)`,
-      readers: { readSlots: 1, eventsAt: 1, rowEvents: 1, taskOf: 1, svFromWrite: 1 },
+      readers: { readSlots: 1, eventsAt: 1, rowEvents: 1, svFromWrite: 1 },
     },
     "write/receipt.ts": { why: META, readers: { readReceipt: 1 } },
     "write/resolve.ts": {
       why: META,
-      readers: { liveIndices: 3, itemEvent: 1, itemVerFromOwn: 2, readResolution: 1 },
+      readers: { liveIndices: 3, itemEvent: 1, itemVerFromOwn: 1, readResolution: 1 },
     },
   };
 
@@ -261,10 +276,18 @@ describe("the kernel reads the log's content through the one definition that hid
     expect(n("`SELECT 1 FROM events e\n JOIN content c ON c.seq = e.seq`")).toBe(1);
     expect(n("`SELECT body FROM\n  content WHERE seq = $1`")).toBe(1);
     expect(n("'select body from content'")).toBe(1);
+    // Quoted, qualified by the schema, or both, and with ONLY.
+    expect(n('`SELECT body FROM "content" c WHERE seq = $1`')).toBe(1);
+    expect(n("`SELECT body FROM public.content WHERE seq = $1`")).toBe(1);
+    expect(n('`SELECT body FROM "public"."content" c`')).toBe(1);
+    expect(n("`SELECT 1 FROM events e JOIN public . content c ON c.seq = e.seq`")).toBe(1);
+    expect(n("`SELECT body FROM ONLY content`")).toBe(1);
     // biome-ignore lint/suspicious/noTemplateCurlyInString: the source text, not a template
     expect(n("`SELECT body FROM ${READABLE_CONTENT} c`")).toBe(0);
     expect(n("`DELETE FROM content WHERE seq = $1`")).toBe(0);
     expect(n("`SELECT 1 FROM content_index`")).toBe(0);
+    expect(n('`SELECT 1 FROM "content_index"`')).toBe(0);
+    expect(n("`SELECT 1 FROM public.content_index`")).toBe(0);
     expect(n("// read from content here")).toBe(0);
     expect(
       rawReads("const a = 1;\nexport async function f() {\n  q(`SELECT 1 FROM content`);\n}"),

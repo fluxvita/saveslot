@@ -15,7 +15,7 @@ import type {
 import { SELFCHECK_TASK } from "@fluxvita/saveslot-contract-core";
 import { FieldVisibilityNotImplemented, type Visibility, visibleTables } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { READABLE_CONTENT } from "../store/readable-content.ts";
+import { READABLE_CONTENT, taskKnown, taskOfOperation } from "../store/readable-content.ts";
 import { WriteError } from "./errors.ts";
 import type { StoredEvent } from "./record.ts";
 
@@ -201,7 +201,8 @@ export async function rowTable(tx: ReadTx, row: string): Promise<string | undefi
 }
 
 /** The task a head event recorded (`task`), as SQL on head event `e`: NULL when it has none. */
-const taskOf = `(SELECT t.body::jsonb #>> '{}' FROM content t WHERE t.seq = e.seq AND t.path = 'task' AND t.body IS NOT NULL)`;
+// The task of the operation `e` heads, as readable (a data block: 09 §5.1).
+const taskOf = taskOfOperation("e.seq");
 
 /**
  * The operations of `actor` under the same task as the call (04-contract «兜底»: a call with a
@@ -233,6 +234,7 @@ export async function verFromWrite(
     `SELECT v.rec_from AS v, ${taskOf} AS read_task, (${byCaller("$2", "$3")}) AS same
      FROM "${verTable}" v JOIN events e ON e.seq = v.rec_from
      WHERE v.row_id = $1 AND v.intent <> 'schema_switch' AND e.actor = $2
+       AND ${taskKnown("e.seq")}
      ORDER BY (${byCaller("$2", "$3")}) DESC, v.rec_from DESC LIMIT 1`,
     [row, actor, task],
   );
@@ -259,6 +261,7 @@ export async function svFromWrite(
      FROM events e JOIN content c ON c.seq = e.seq AND c.path = 'request'
      -- A write head's request is metadata no deletion lists (09 §5.9: only a source's is).
      WHERE e.type = 'write.head' AND e.slot = $1 AND e.actor = $2
+       AND ${taskKnown("e.seq")}
      ORDER BY (${byCaller("$2", "$3")}) DESC, e.seq DESC LIMIT 1`,
     [slot, actor, task],
   );

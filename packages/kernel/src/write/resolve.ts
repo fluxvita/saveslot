@@ -46,6 +46,7 @@ import {
 } from "../pending/index.ts";
 import { normalizeResolve, type ResolveDecision } from "../request/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
+import { taskKnown, taskOfOperation } from "../store/readable-content.ts";
 import { restorePoint } from "../store/restore-point.ts";
 import { appendWithDerived } from "./derive-step.ts";
 import { WriteError } from "./errors.ts";
@@ -262,11 +263,11 @@ export async function itemVerFromOwn(
 > {
   const r = await tx.query<{ op: unknown; task: string | null }>(
     `SELECT h.seq AS op,
-       (SELECT k.body::jsonb #>> '{}' FROM content k WHERE k.seq = h.seq AND k.path = 'task' AND k.body IS NOT NULL) AS task
+       ${taskOfOperation("h.seq")} AS task
      FROM events h
      JOIN events c ON c.op = h.seq AND c.type = 'item.created'
      JOIN content t ON t.seq = c.seq AND t.path = 'target' AND t.body IS NOT NULL
-     WHERE h.actor = $1 AND (t.body::jsonb ->> 'item') = $2
+     WHERE h.actor = $1 AND (t.body::jsonb ->> 'item') = $2 AND ${taskKnown("h.seq")}
      ORDER BY h.seq DESC`,
     [actor, item],
   );
