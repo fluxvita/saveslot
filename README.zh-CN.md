@@ -1,4 +1,4 @@
-# saveslot
+# <img src="docs/assets/saveslot-mark.svg" width="32" height="32" alt=""> saveslot
 
 [English](README.md) · 简体中文
 
