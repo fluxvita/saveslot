@@ -37,7 +37,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
 import { serviceCommand } from "./commands.ts";
 import { LEDGER } from "./contract-suite.fixture.ts";
-import { httpDriver } from "./http-driver.fixture.ts";
+import { httpDriver, httpRequest } from "./http-driver.fixture.ts";
 import { daemonVersion, main } from "./main.ts";
 import { lastFailureFile, lockDir, pidFile, runService, socketFile } from "./service.ts";
 
@@ -346,6 +346,16 @@ describe("the service in process", () => {
     writeFileSync(join(h, "control", "tenant.json"), "{}");
     const s = await runService({ home: h, version: "t", signals: false, log: () => {} });
     expect([s.state, s.reason]).toEqual(["failed", "tenant_directory_corrupt"]);
+    // It stays failed until stopped and serves nothing: /v1 says it is not starting, and gives no
+    // time to try again (04-contract «unavailable»; 02-architecture §7).
+    const v1 = await httpRequest(h, { method: "GET", path: "/v1/slots" });
+    expect(v1.status).toBe(503);
+    expect(JSON.parse(v1.body).error).toEqual({
+      code: "unavailable",
+      reason: "stopping",
+      message: "the service is stopping",
+    });
+    expect(v1.headers["retry-after"]).toBeUndefined();
     await s.stop();
   });
 

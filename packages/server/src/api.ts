@@ -101,9 +101,20 @@ export interface ToolResultSeen {
   readonly result: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * Why a service is not ready (04-contract `unavailable`): starting, or stopping, with when to try
+ * again if it says.
+ */
+export interface NotReady {
+  readonly reason: "starting" | "stopping";
+  readonly retryAfter?: number;
+}
+
 export interface Api {
   /** The service's context, or undefined while it is not ready. */
   readonly ready: () => ApiContext | undefined;
+  /** Why it is not ready, when `ready` gives nothing; starting when this is not given. */
+  readonly notReady?: () => NotReady;
   /** One line per request: method, route name, status, milliseconds. */
   readonly log: (fields: Readonly<Record<string, string | number>>) => void;
 }
@@ -220,7 +231,10 @@ const ROUTES: readonly Route[] = [
     params: ([slot], q) => ({
       ...q,
       level: "table",
-      tables: ((q["tables"] as string[] | undefined) ?? []).map((t) => `${slot}.${t}`),
+      // Left out when the query has none, so that the kernel says it is missing (04-contract-types §9).
+      ...(q["tables"] !== undefined
+        ? { tables: (q["tables"] as string[]).map((t) => `${slot}.${t}`) }
+        : {}),
     }),
   }),
   route("GET", "/v1/slots/{}/tables/{}", "slot_table", {
@@ -602,11 +616,15 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
   void (async () => {
     const ctx = api.ready();
     if (ctx === undefined) {
+      const why = api.notReady?.() ?? { reason: "starting" };
       finish(
         sendError(
           req,
           res,
-          new ContractError("unavailable", "the service is starting", { reason: "starting" }),
+          new ContractError("unavailable", `the service is ${why.reason}`, {
+            reason: why.reason,
+            ...(why.retryAfter !== undefined ? { retry_after: why.retryAfter } : {}),
+          }),
         ),
       );
       return;

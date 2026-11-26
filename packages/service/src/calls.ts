@@ -28,6 +28,11 @@ interface OperationRule {
   readonly write?: true;
   /** Pages by `cursor`. */
   readonly paged?: true;
+  /**
+   * A management operation that a connection may call (04-contract: management operations take no
+   * task), as `user_session` ones do not take one either.
+   */
+  readonly management?: true;
 }
 
 /** The operations the local surfaces call in this version, and what each needs. */
@@ -38,7 +43,7 @@ export const OPERATIONS = {
   sql: { scope: "saveslot.read", paged: true },
   pending: { scope: "saveslot.read", paged: true },
   // A management operation that any credential with saveslot.read may call (04-contract «policy.get»).
-  "policy.get": { scope: "saveslot.read" },
+  "policy.get": { scope: "saveslot.read", management: true },
   sources: { scope: "saveslot.read", paged: true },
   write: { scope: "saveslot.write", write: true },
   // A decision's scope goes by the item's type (04-contract §6): any of the three lets the call
@@ -108,7 +113,7 @@ export function kernelCall(o: {
     if (Object.hasOwn(params, k)) throw invalid(k);
   }
   if (o.task !== undefined) {
-    if (rule.scope === "user_session") throw invalid("task");
+    if (rule.scope === "user_session" || rule.management === true) throw invalid("task");
     params["task"] = o.task;
   }
   if (o.idempotencyKey !== undefined) {

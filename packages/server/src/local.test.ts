@@ -86,3 +86,61 @@ describe("the local listener", () => {
     expect(statSync(socketPath).mode & 0o777).toBe(0o600);
   });
 });
+
+describe("the local listener, its service not ready (04-contract «unavailable»)", () => {
+  const at = join(dir, "n.sock");
+  function get(path: string): Promise<{ status: number; body: string; retryAfter?: string }> {
+    return new Promise((resolve, reject) => {
+      const req = request({ socketPath: at, method: "GET", path }, (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (c: string) => {
+          body += c;
+        });
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            body,
+            ...(res.headers["retry-after"] !== undefined
+              ? { retryAfter: String(res.headers["retry-after"]) }
+              : {}),
+          }),
+        );
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  }
+  it.each([
+    [{ reason: "stopping", retryAfter: 1 } as const, "stopping", "1"],
+    [{ reason: "stopping" } as const, "stopping", undefined],
+    [{ reason: "starting" } as const, "starting", undefined],
+    [undefined, "starting", undefined],
+  ])("%j: 503 unavailable with reason %s", async (why, reason, retryAfter) => {
+    const l = await listenLocal({
+      socketPath: at,
+      health: () => ({
+        state: "starting",
+        version: "1.2.3",
+        pid: 42,
+        since: "2026-11-14T00:00:00.000Z",
+      }),
+      api: {
+        ready: () => undefined,
+        ...(why !== undefined ? { notReady: () => why } : {}),
+        log: () => {},
+      },
+    });
+    try {
+      const r = await get("/v1/slots");
+      expect(r.status).toBe(503);
+      expect(JSON.parse(r.body).error).toMatchObject({ code: "unavailable", reason });
+      expect(r.retryAfter).toBe(retryAfter);
+      expect(JSON.parse(r.body).error["retry_after"]).toBe(
+        retryAfter === undefined ? undefined : Number(retryAfter),
+      );
+    } finally {
+      await l.close();
+    }
+  });
+});

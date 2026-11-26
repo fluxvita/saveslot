@@ -258,6 +258,50 @@ describe("HTTP's own", () => {
     expect(table.body).toContain("expenses");
   });
 
+  it("a slot's tables with none named: tables is missing, not malformed (04-contract-types §9)", async () => {
+    const none = await http({ method: "GET", path: "/v1/slots/ledger/tables", token: session });
+    expect([none.status, err(none)["code"], err(none)["reason"], err(none)["param"]]).toEqual([
+      400,
+      "invalid_argument",
+      "missing",
+      "tables",
+    ]);
+    const named = await http({
+      method: "GET",
+      path: "/v1/slots/ledger/tables?tables=expenses",
+      token: session,
+    });
+    expect(named.status).toBe(200);
+  });
+
+  it("the slot's policy is a management operation: X-Task-Id is refused there (05-surfaces §13)", async () => {
+    const withTask = await http({
+      method: "GET",
+      path: "/v1/slots/ledger/policy",
+      token: session,
+      headers: { "x-task-id": "weekly-review" },
+    });
+    expect([withTask.status, err(withTask)["code"], err(withTask)["param"]]).toEqual([
+      400,
+      "invalid_argument",
+      "task",
+    ]);
+    expect(
+      (await http({ method: "GET", path: "/v1/slots/ledger/policy", token: session })).status,
+    ).toBe(200);
+    // A read of the same slot takes it.
+    expect(
+      (
+        await http({
+          method: "GET",
+          path: "/v1/slots/ledger/schema",
+          token: session,
+          headers: { "x-task-id": "weekly-review" },
+        })
+      ).status,
+    ).toBe(200);
+  });
+
   it("a table with its slot on the one-part route: refused, with the two-part route", async () => {
     const r = await http({ method: "GET", path: "/v1/tables/ledger.expenses", token: session });
     expect([r.status, err(r)]).toEqual([

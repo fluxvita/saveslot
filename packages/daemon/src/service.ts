@@ -483,6 +483,14 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
   listener = await listenLocal({
     socketPath: bound,
     api: {
+      // Stopping: it takes no new requests (04-contract «unavailable»). Failed: it stays so until it
+      // is stopped (02-architecture §7), takes no requests either, and has no time to try again.
+      notReady: () =>
+        state === "stopping" || state === "stopped"
+          ? { reason: "stopping", retryAfter: 1 }
+          : state === "failed"
+            ? { reason: "stopping" }
+            : { reason: "starting" },
       ready: () =>
         state === "ready" &&
         (tenant !== undefined || gate.importing) &&

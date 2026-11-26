@@ -45,6 +45,7 @@ import {
   handleOAuth,
   originGuard,
   PREFLIGHT_HEADERS,
+  sendError,
 } from "@fluxvita/saveslot-server";
 import {
   ContractError,
@@ -349,6 +350,23 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
           return;
         }
         if (state !== "ready") {
+          // On /v1/ the contract's error (05-surfaces §13): starting, or stopping (closing, or the
+          // control database lost, after which the server stops); elsewhere a bare 503.
+          if (path.startsWith("/v1/")) {
+            sendError(
+              req,
+              res,
+              new ContractError(
+                "unavailable",
+                `the server is ${state === "starting" ? "starting" : "stopping"}`,
+                {
+                  reason: state === "starting" ? "starting" : "stopping",
+                  retry_after: 1,
+                },
+              ),
+            );
+            return;
+          }
           res.writeHead(503, { "content-length": 0, "retry-after": "1" });
           res.end();
           return;

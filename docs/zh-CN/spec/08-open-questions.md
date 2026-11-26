@@ -47,6 +47,7 @@
 
 - **按数据归属设中心**：哪些数据从一开始就必须"永不离开设备"？（多节点才用；slot 的"归属节点"字段已留。）
 - **社区 Schema + SKILL 的安全**：SKILL 由用户的 Agent 执行，权限声明与审核怎么做（提示注入风险）？第一版的模板随 CLI 打包，不引入远程来源。
+- **`unavailable` 缺一个"服务已失败"的原因**：本机服务失败（打开租户时核对不过等，留在失败状态直到被停止，02-architecture §7）时，`/v1` 现在回 `unavailable`、原因 `stopping`、不带 `retry_after`：契约的原因里没有"失败"，`stopping`（不再接新的请求）最接近。它不准的地方：服务并没有在停止，不会自己好起来，要人看 `saveslot status` / `saveslot doctor` 处理之后重启；MCP 对 `stopping` 的文字"saveslot is stopping; try again shortly"在这种情形下会让模型白白重试。考虑给契约加原因 `failed`（不带 `retry_after`，文字指向 `saveslot status` / `doctor`），这是操作契约的改动，要先有决定稿。
 - **连接实例的最近使用时刻**（`Connection.last_used_at`）：第一版不给。初步考虑查询时从日志与读取记录取这个连接实例最近一次操作的时刻，不在认证的路径上写任何东西。
 - **read_log 要不要像日志一样串链**（防误操作）。read_log 是本地运行状态，加不加都不动日志。
 - **数据权限的表级、字段级（后续版本）**：slot 一级已进第一版——连接实例的授权 = 动作 scope × slot 范围（全部，或一个 slot 列表），范围外的 slot 对它与不存在相同（contract 第 12 节，P5）。余下的：

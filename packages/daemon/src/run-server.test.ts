@@ -2207,7 +2207,16 @@ describe.skipIf(TEST_BACKEND !== "postgres")(
             state: "failed",
             reason: "control_database_lost",
           });
-          expect((await send(s, { path: "/v1/slots" })).status).toBe(503);
+          // On /v1/ the contract's error: the server is stopping (05-surfaces §13, §14).
+          const v1 = await send(s, { path: "/v1/slots" });
+          expect(v1.status).toBe(503);
+          expect(v1.headers["retry-after"]).toBe("1");
+          expect(JSON.parse(v1.body).error).toEqual({
+            code: "unavailable",
+            reason: "stopping",
+            retry_after: 1,
+            message: "the server is stopping",
+          });
           expect((await send(s, { path: LOGIN_PAGE })).status).toBe(503);
           expect((await send(s, { path: "/.well-known/oauth-authorization-server" })).status).toBe(
             503,
