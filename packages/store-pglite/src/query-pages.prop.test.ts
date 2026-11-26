@@ -743,6 +743,36 @@ async function bothPaths(params: Record<string, unknown>) {
   return { first: await run(false), later: await run(true) };
 }
 
+/**
+ * One query paged through with a small limit, each page both pushed down where it can be and as
+ * the whole read (`full`): the results and the reads recorded, page by page. Later pages are
+ * given the pushed-down path's position.
+ */
+async function pushedAndFull(params: Record<string, unknown>, limit: number) {
+  const pages: { pushed: unknown; full: unknown }[] = [];
+  let position: string | undefined;
+  for (let i = 0; i < 100; i++) {
+    const run = (full: boolean) =>
+      s.store.read((tx) =>
+        queryInTx(tx, {
+          actor: USER as never,
+          task: null,
+          now: NOW as never,
+          visibility: { kind: "all" },
+          params: { ...params, limit, ...(position !== undefined ? { position } : {}) },
+          read: "rd_0000000000000000" as never,
+          ...(full ? { full: true } : {}),
+        }),
+      );
+    const pushed = await run(false);
+    const full = await run(true);
+    pages.push({ pushed, full });
+    position = pushed.result.next_position;
+    if (position === undefined) break;
+  }
+  return pages;
+}
+
 /** A row with every field empty: on `marks`, a stretch whose only contribution is a clear. */
 const onlyEmpty = (r: { values?: Record<string, unknown> }) =>
   r.values !== undefined && Object.values(r.values).every((v) => v === null);
@@ -830,6 +860,74 @@ describe("query's two paths and its pages", () => {
       "notes: rows",
       "marks: rows",
       "marks: all empty",
+    ])
+      expect({ k, reached: (reached[k] ?? 0) >= 1 }).toEqual({ k, reached: true });
+  });
+
+  it("a first page pushed down to SQL is the whole read's, page by page", async () => {
+    const reached: Record<string, number> = {};
+    const reach = (k: string) => {
+      reached[k] = (reached[k] ?? 0) + 1;
+    };
+    await fc.assert(
+      fc.asyncProperty(
+        data,
+        fc.array(
+          fc.tuple(
+            fc.oneof(
+              spendQuery.map((x) => toParams.spend(x as never)),
+              budgetQuery.map((x) => toParams.budgets(x as never)),
+              notesQuery.map((x) => toParams.notes(x as never)),
+              marksQuery.map((x) => toParams.marks(x as never)),
+            ),
+            fc.constantFrom(1, 2, 3, 5),
+          ),
+          { minLength: 4, maxLength: 8 },
+        ),
+        async (d, queries) => {
+          await dataOf(d as never);
+          for (const [params, limit] of queries) {
+            if (params === undefined) continue;
+            const pages = await pushedAndFull(params, limit);
+            pages.forEach((p, i) => {
+              expect({ params, limit, page: i, ...(p.pushed as object) }).toEqual({
+                params,
+                limit,
+                page: i,
+                ...(p.full as object),
+              });
+            });
+            const first = (pages[0] as { full: { result: { total: number } } }).full.result;
+            const pushable =
+              params["table"] === "spend" ||
+              (params["valid_during"] === undefined &&
+                (params["table"] === "budgets" || params["table"] === "marks"));
+            if (pushable) {
+              reach(`${params["table"]} pushed`);
+              if (first.total > limit) reach("pushed: more pages");
+              if (first.total === limit) reach("pushed: exactly one page");
+              if (first.total === 0) reach("pushed: none");
+              if (params["order"] !== undefined && first.total > 1) reach("pushed: ordered");
+              if (params["include_revoked"] === true) reach("pushed: include_revoked");
+            }
+          }
+        },
+      ),
+      {
+        numRuns: RUNS,
+        ...seeded,
+        examples: [[EXAMPLE_DATA, EXAMPLE_QUERIES.map((q) => [q, 2])] as never],
+      },
+    );
+    if (process.env["JUDGE_STATS"]) console.log(JSON.stringify(reached));
+    for (const k of [
+      "spend pushed",
+      "budgets pushed",
+      "marks pushed",
+      "pushed: more pages",
+      "pushed: none",
+      "pushed: ordered",
+      "pushed: include_revoked",
     ])
       expect({ k, reached: (reached[k] ?? 0) >= 1 }).toEqual({ k, reached: true });
   });

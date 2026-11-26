@@ -28,9 +28,19 @@ export {
 export { cellsOf, givesVersion, seenAsVersions, versionsOf } from "./judge/versions.fixture.ts";
 // An item's entries as its events give them (tests check a detail against them).
 export { actorsNow, itemEntries } from "./pending/index.ts";
+// `query`'s order in SQL, held to `cmpKeys` (store-pglite order-sql.prop).
+export {
+  afterKeysSql,
+  type KeyValue,
+  orderBySql,
+  type SqlKey,
+  type SqlKeyType,
+} from "./read/order-sql.ts";
 // `query` in a transaction, with the hook to read the state after an operation as a later page
 // does (tests compare it with the first page's path).
 export { type QueryInput, queryInTx } from "./read/query.ts";
+export { cmpKeys, type KeySpec } from "./read/rows.ts";
+export { Params } from "./read/select.ts";
 // `sql` in a transaction, for tests that wrap the transaction to see the statements it is given.
 export { type SqlInput, type SqlOutput, sqlInTx } from "./read/sql.ts";
 export { decodeColumns } from "./request/index.ts";
