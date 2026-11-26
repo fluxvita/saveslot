@@ -90,12 +90,16 @@ saveslot setup
 
 > 今天早上跑了 5 公里，28 分钟，挺轻松。
 
-Agent 把它连同你的原话一起写进去，这一行就在了：
+第一次用时 Claude Code 会问是否允许 Agent 使用 saveslot 的工具，选允许。Agent 把它连同你的原话一起写进去，这一行就在了：
 
 ```sh
 saveslot query health.runs
-saveslot history health.runs r_…    # r_… 取自上面的结果：这一行怎么来的、证据是什么
+saveslot history health.runs r_… --sources    # r_… 取自上面的结果：这一行怎么来的，证据是你的原话
 ```
+
+服务的日志在 `~/.saveslot/run/saveslot.log`。
+
+在脚本里、没有终端时，没人能回答提问：`saveslot setup` 只在终端里提问，所以把答案写成选项，`saveslot setup --yes --template running --host claude-code`。同样，`claude -p` 没法请求工具授权，要事先允许：`claude -p "…" --allowedTools "mcp__saveslot"`。
 
 也可以从源码检出运行：`pnpm install && pnpm build`，再 `node packages/saveslot/dist/bin.js setup`。
 

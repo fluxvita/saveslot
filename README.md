@@ -41,12 +41,16 @@ saveslot setup
 
 > I ran 5 km this morning in 28 minutes, felt easy.
 
-The agent writes it with the evidence of what you said, and the row is there:
+The first time, Claude Code asks whether the agent may use saveslot's tools; allow it. The agent writes it with the evidence of what you said, and the row is there:
 
 ```sh
 saveslot query health.runs
-saveslot history health.runs r_…    # the row's id from the query: how it got there, with the evidence
+saveslot history health.runs r_… --sources    # the row's id from the query: how it got there, with your words as the evidence
 ```
+
+The service writes its log to `~/.saveslot/run/saveslot.log`.
+
+Without a terminal, in a script, nothing can answer the questions: `saveslot setup` asks them only in a terminal, so give the answers as options, `saveslot setup --yes --template running --host claude-code`. Likewise `claude -p` cannot ask for the tools, so allow them up front: `claude -p "…" --allowedTools "mcp__saveslot"`.
 
 From a source checkout instead: `pnpm install && pnpm build`, then `node packages/saveslot/dist/bin.js setup`.
 

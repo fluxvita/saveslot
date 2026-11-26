@@ -12,7 +12,12 @@ saveslot setup
 ```
 
 `saveslot setup` creates `~/.saveslot`, starts the service, offers a first slot from a template, and adds saveslot
-to the agent hosts it finds. Then ask your agent "what is in saveslot?".
+to the agent hosts it finds. Then ask your agent "what is in saveslot?". The first time, Claude Code asks whether the
+agent may use saveslot's tools; allow it. The service writes its log to `~/.saveslot/run/saveslot.log`.
+
+Without a terminal, in a script, nothing can answer the questions: `saveslot setup` asks them only in a terminal, so
+give the answers as options, `saveslot setup --yes --template running --host claude-code`. Likewise `claude -p`
+cannot ask for the tools, so allow them up front: `claude -p "…" --allowedTools "mcp__saveslot"`.
 
 On Linux, when Node is installed under `/usr/local`, `npm install -g` fails with `EACCES` for a normal user. Give
 npm a prefix of your own instead of using `sudo`:
