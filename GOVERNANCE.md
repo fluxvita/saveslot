@@ -22,7 +22,8 @@ what, and how someone takes part in deciding.
   It is reviewed in its own pull request and merged before the spec and the code change. A maintainer
   approves it; when maintainers disagree, the lead maintainer decides and the record says so.
 - **Product direction and releases** (what a version contains, when it ships) are decided by the
-  maintainers; the scope of a version is written in `docs/zh-CN/spec/07-scope-v1.md`.
+  maintainers; the scope of a version is written in `07-scope-v1.md` of the
+  specification (`docs/spec/` and `docs/zh-CN/spec/`).
 
 ## Becoming a maintainer
 

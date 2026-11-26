@@ -55,7 +55,7 @@ Read the spec sections relevant to the task before implementing. Do not implemen
 ## Tests
 
 - To fix a bug, first write a test that reproduces it.
-- Changes touching replay, deletion or revert must also pass the comparison tests against the reference evaluator (the authoritative definition is in [`docs/zh-CN/spec/03-data-model/03-deletion.md`](docs/zh-CN/spec/03-data-model/03-deletion.md)).
+- Changes touching replay, deletion or revert must also pass the comparison tests against the reference evaluator (the authoritative definition is in `03-data-model/03-deletion.md` of the specification, in both editions: [`docs/spec/`](docs/spec/03-data-model/03-deletion.md), [`docs/zh-CN/spec/`](docs/zh-CN/spec/03-data-model/03-deletion.md)).
 - Do not loosen assertions or change examples in the spec to make tests pass. When an example and the implementation disagree, find out which one is right first.
 - Cases a property test must cover are built deterministically; a minimum hit rate only guards against the generator degrading as a whole. Turn every counterexample into a fixed case.
 - Save the full output of a test run to a file before filtering it. Report a failure, even one that did not repeat, with its seed, path and counterexample; do not rerun until green.
