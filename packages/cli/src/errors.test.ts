@@ -214,7 +214,7 @@ describe("an error's text (06 §6.3)", () => {
     expect(describeError(e).exit).toBe(3);
   });
 
-  it("pending_deletion_target: the deletions, when the last is due, and the two ways on; 5", () => {
+  it("pending_deletion_target: the deletions, when the last is due, and to decide after; 5", () => {
     const e = new ContractCallError(400, {
       code: "invalid_argument",
       reason: "pending_deletion_target",
@@ -225,7 +225,7 @@ describe("an error's text (06 §6.3)", () => {
       expires_at: "2026-11-11T21:05:00.000Z",
     });
     expect(text(e).split("\n")).toContain(
-      "  the target is affected by a deletion that can still be undone (pi_4KWKRM296X61WJ8V; due 2026-11-11T21:05:00.000Z): decide after that, or undo that deletion first (saveslot delete cancel pi_4KWKRM296X61WJ8V)",
+      "  the target is affected by a deletion still pending (pi_4KWKRM296X61WJ8V; due 2026-11-11T21:05:00.000Z): decide after it has run",
     );
     expect(describeError(e).exit).toBe(5);
   });

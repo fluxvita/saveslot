@@ -61,6 +61,7 @@ import {
   time,
   untrusted,
 } from "./text.ts";
+import type { Phase } from "./texts.ts";
 
 type R = Readonly<Record<string, unknown>>;
 const isObj = (x: unknown): x is R => typeof x === "object" && x !== null && !Array.isArray(x);
@@ -1494,13 +1495,33 @@ const DECISION_SCOPE: ReadonlyMap<string, string> = new Map([
 const SCOPES: ReadonlySet<string> = new Set(DECISION_SCOPE.values());
 
 /**
+ * The phases of 07-scope-v1 whose sentences a rendered text lets in: none in this version (05 §9
+ * «这一版不出现的句子»). Tests only may let one in, to see the text read when it comes.
+ */
+export const renderPhases: { open: ReadonlySet<Phase> } = { open: new Set() };
+
+/**
  * A target deletions still pending affect (05 §6 `saveslot_pending`, §7 `pending_deletion_target`):
- * which deletions, when the last of them is due, and the two ways on. No retry as it is.
+ * which deletions, when the last of them is due, and that a decision waits until they have run.
+ * Cancelling them comes with P3: then the text says what that brings back, that it is only for the
+ * user to ask, and what it needs. No retry as it is.
  */
 function blockedBy(subject: Part[], deletions: unknown, expiresAt: unknown): Part[] {
   const ids = arr(deletions);
+  if (ids.length === 0) {
+    return t`${subject} is affected by a deletion still pending: decide after it has run.`;
+  }
   const one = ids.length === 1;
-  return t`${subject} is affected by ${one ? t`a deletion` : t`deletions`} that can still be cancelled (${join(ids.map(idOf), t`, `)}; due ${one ? [] : t`at the latest `}${timeOf(expiresAt)}): decide after that, or cancel ${one ? t`that deletion` : t`those deletions`} first (saveslot_resolve ${idOf(ids[0])} cancel${one ? [] : t`, and the same for each`}).`;
+  const which = join(ids.map(idOf), t`, `);
+  const due = t`due ${one ? [] : t`at the latest `}${timeOf(expiresAt)}`;
+  const decide = one ? t`decide after it has run.` : t`decide after they have all run.`;
+  const cancel = renderPhases.open.has("P3")
+    ? t` Cancelling ${one ? t`it` : t`them`} (${join(
+        ids.map((x) => t`saveslot_resolve ${idOf(x)} cancel`),
+        t`, `,
+      )}, which ${one ? t`needs` : t`need`} saveslot.delete) brings back what ${one ? t`it` : t`they`} removed: do it only if the user asks.`
+    : [];
+  return t`${subject} is affected by ${one ? t`a deletion` : t`deletions`} still pending (${which}; ${due}): ${decide}${cancel}`;
 }
 
 /**

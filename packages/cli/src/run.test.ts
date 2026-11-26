@@ -993,7 +993,7 @@ describe("pending resolve", () => {
     expect(r.code).toBe(5);
     expect(asked).toEqual([]);
     expect(seen.map((x) => x.method)).toEqual(["GET"]);
-    expect(r.err).toContain("saveslot delete cancel pi_4KWKRM296X61WJ8V");
+    expect(r.err).toContain("affected by a deletion still pending (pi_4KWKRM296X61WJ8V");
   });
 
   it("changed between the question and the answer: shown again, asked again, sent with the new version", async () => {

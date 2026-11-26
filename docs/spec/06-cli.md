@@ -627,7 +627,7 @@ pi_9B… awaiting confirmation · marketing.budgets promo · opened 3 h ago · v
 - **The segments that would be overwritten, the writes that would be reverted, and the rows that still reference the row** (the `impact` of the item details) are listed one by one: the write's `#seq`, the writer, the old value → the new value, the interval (with its endpoints in plain words).
 - A conflict lists the current value in effect and each candidate (the same as `saveslot_pending` in [`05-surfaces.md`](05-surfaces.md) "Key points of the text for each tool"); a schema change lists `changes[]` and the impact preview according to the draft part of the item details, and states that the impact preview is an estimate made when the draft was submitted.
 - Only the decisions available to the current credential are listed; a user session can use all of them.
-- An item whose target a deletion still pending affects (the contract's `blocked`): `saveslot pending` marks its line as not decidable for now; `saveslot pending show` lists no decision, but which deletions, when the last of them is due, and the two ways on (wait until it is due, or `saveslot delete cancel pi_…` first), in the same words as that refusal in 5.3.
+- An item whose target a deletion still pending affects (the contract's `blocked`): `saveslot pending` marks its line as not decidable for now; `saveslot pending show` lists no decision, but which deletions, when the last of them is due, and to decide after they have run; [from P3] it adds cancelling (each `saveslot delete cancel pi_…` written out; cancelling brings back what was removed). That refusal says the same.
 
 ### 5.2 Resolving: how a confirmation is bound to its content
 

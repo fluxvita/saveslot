@@ -9,7 +9,7 @@ import type {
 } from "@fluxvita/saveslot-client";
 import { describe, expect, it } from "vitest";
 import { logVerified, readsList, verifyFound } from "./render/admin.ts";
-import { openFor, pendingDetail, pendingList, resolveResult } from "./render/pending.ts";
+import { cliPhases, openFor, pendingDetail, pendingList, resolveResult } from "./render/pending.ts";
 import { type Boundary, type Line, render } from "./render/text.ts";
 
 const cp = (...points: number[]) => String.fromCodePoint(...points);
@@ -323,7 +323,7 @@ describe("pending (06 §5.1)", () => {
     );
   });
 
-  it("an item a deletion still pending blocks: marked in the list; the detail names the deletions and the two ways on, no choices", () => {
+  it("an item a deletion still pending blocks: marked in the list; the detail names the deletions and when to decide, no choices", () => {
     const items = (LIST as unknown as { items: Record<string, unknown>[] }).items;
     const listed = { ...LIST, items: [{ ...items[0], blocked: true }, items[1]] };
     const list = render(pendingList(listed as never, NOW), terminal).split("\n");
@@ -342,7 +342,7 @@ describe("pending (06 §5.1)", () => {
     };
     const lines = render(pendingDetail(one as never, NOW), terminal).split("\n");
     expect(lines.at(-1)).toBe(
-      "  no decision for now: its target is affected by a deletion that can still be undone (pi_4KWKRM296X61WJ8V; due 2026-11-11T21:05:00.000Z): decide after that, or undo that deletion first (saveslot delete cancel pi_4KWKRM296X61WJ8V)",
+      "  no decision for now: its target is affected by a deletion still pending (pi_4KWKRM296X61WJ8V; due 2026-11-11T21:05:00.000Z): decide after it has run",
     );
     expect(lines.some((l) => l.startsWith("  choices"))).toBe(false);
     const two = {
@@ -354,8 +354,21 @@ describe("pending (06 §5.1)", () => {
         .split("\n")
         .at(-1),
     ).toBe(
-      "  no decision for now: its target is affected by deletions that can still be undone (pi_4KWKRM296X61WJ8V, pi_5KWKRM296X61WJ8V; due at the latest 2026-11-11T21:05:00.000Z): decide after that, or undo those deletions first (saveslot delete cancel pi_4KWKRM296X61WJ8V, and the same for each)",
+      "  no decision for now: its target is affected by deletions still pending (pi_4KWKRM296X61WJ8V, pi_5KWKRM296X61WJ8V; due at the latest 2026-11-11T21:05:00.000Z): decide after they have all run",
     );
+    // Cancelling comes with P3 (`saveslot delete`): then each is named.
+    cliPhases.open = new Set(["P3"]);
+    try {
+      expect(
+        render(pendingDetail(two as never, NOW), terminal)
+          .split("\n")
+          .at(-1),
+      ).toBe(
+        "  no decision for now: its target is affected by deletions still pending (pi_4KWKRM296X61WJ8V, pi_5KWKRM296X61WJ8V; due at the latest 2026-11-11T21:05:00.000Z): decide after they have all run; cancelling them (saveslot delete cancel pi_4KWKRM296X61WJ8V, saveslot delete cancel pi_5KWKRM296X61WJ8V) brings back what they removed",
+      );
+    } finally {
+      cliPhases.open = new Set();
+    }
   });
 
   it("resolved and superseded items say how they closed; no choices left", () => {

@@ -9,10 +9,10 @@
 // the golden files with `pnpm exec vitest run packages/server/src/mcp/reads.test.ts -u`.
 
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { slotList } from "./instructions.ts";
 import type { ToolName } from "./names.ts";
-import { type RenderFor, renderStrict } from "./render.ts";
+import { type RenderFor, renderError, renderPhases, renderStrict } from "./render.ts";
 
 type R = Record<string, unknown>;
 const SAMPLES = JSON.parse(
@@ -67,6 +67,57 @@ describe("the catalog's list with no slot: the credential's next step (golden)",
 const ACTOR = { kind: "user", id: "u_YGEAVZA4KGXYZJZ2M8F93HZGJ4", name: "Me" };
 const B = "<untrusted-data-N>";
 const E = "</untrusted-data-N>";
+
+describe("an item a deletion still pending blocks: cancelling it comes with P3 (05 §9 «这一版不出现的句子»)", () => {
+  afterEach(() => {
+    renderPhases.open = new Set();
+  });
+  const B = "<untrusted-data-N>";
+  const blocked = (deletions: string[]) => ({
+    ...sample("pending-conflict-blocked"),
+    blocked: { reason: "pending_deletion", deletions, expires_at: "2026-11-19T12:40:00.000Z" },
+  });
+  const last = (r: Record<string, unknown>) =>
+    text("saveslot_pending", r).split("\n").at(-1) as string;
+
+  it("in this version: which deletions, when due, decide after; nothing of cancelling", () => {
+    const line = last(blocked(["pi_D3X7T10N0000AAAA"]));
+    expect(line).not.toContain("cancel");
+    expect(line).not.toContain("saveslot_resolve");
+  });
+
+  it("with P3 let in: cancelling each by name, what it brings back, only if the user asks, and the scope it needs", () => {
+    renderPhases.open = new Set(["P3"]);
+    expect(last(blocked(["pi_D3X7T10N0000AAAA"]))).toBe(
+      "  No decision for now: its target is affected by a deletion still pending (pi_D3X7T10N0000AAAA; due 2026-11-19T12:40:00.000Z): decide after it has run. Cancelling it (saveslot_resolve pi_D3X7T10N0000AAAA cancel, which needs saveslot.delete) brings back what it removed: do it only if the user asks.",
+    );
+    expect(last(blocked(["pi_D3X7T10N0000AAAA", "pi_D3X7T10N0000BBBB"]))).toBe(
+      "  No decision for now: its target is affected by deletions still pending (pi_D3X7T10N0000AAAA, pi_D3X7T10N0000BBBB; due at the latest 2026-11-19T12:40:00.000Z): decide after they have all run. Cancelling them (saveslot_resolve pi_D3X7T10N0000AAAA cancel, saveslot_resolve pi_D3X7T10N0000BBBB cancel, which need saveslot.delete) brings back what they removed: do it only if the user asks.",
+    );
+    const refusal = fixed(
+      renderError(
+        {
+          code: "invalid_argument",
+          reason: "pending_deletion_target",
+          message: "m",
+          deletions: ["pi_D3X7T10N0000AAAA"],
+          expires_at: "2026-11-19T12:40:00.000Z",
+        },
+        NOW,
+      ),
+    );
+    expect(refusal).toContain("do it only if the user asks.");
+  });
+
+  it("no deletion named (the contract never sends one so): no empty list, no call", () => {
+    renderPhases.open = new Set(["P3"]);
+    const line = last(blocked([]));
+    expect(line).toBe(
+      "  No decision for now: its target is affected by a deletion still pending: decide after it has run.",
+    );
+    expect(line).not.toContain(B);
+  });
+});
 
 describe("reads as text: what the samples do not show", () => {
   it("sql: the whole table inside one boundary; a cell's line break, bar and quote written as JSON; null as null", () => {

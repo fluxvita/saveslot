@@ -398,13 +398,17 @@ export const RESOLVE = {
   description: [
     "Resolve one pending item (a conflict, or a change awaiting confirmation).",
     { text: "Flagged records are resolved here too.", later: "P2" },
-    { text: "Undoing a deletion is done here too.", later: "P3" },
+    { text: "Cancelling a deletion is done here too.", later: "P3" },
     "Schema changes awaiting confirmation are resolved here too.",
     {
       text: "The ways an item can be resolved are given in its detail from saveslot_pending and in the receipts.",
       needs: "saveslot_pending",
     },
     "Before a resolution with a large effect (confirming a change), tell the user the detail and ask them; resolve it only after they say yes to that. What they said before the item appeared is not agreement to it.",
+    {
+      text: "Cancelling a deletion brings back what it removed: do it only when the user asks for it.",
+      later: "P3",
+    },
     "Returns the item with the decision taken and its new version, and the writes the decision made, each row with its new `ver`.",
   ],
   params: {
@@ -412,7 +416,7 @@ export const RESOLVE = {
     decision: [
       "How to resolve it, only one of those its detail lists: a conflict `keep_effective` / `take_candidate` / `take_previous`; a change awaiting confirmation `confirm` / `reject`.",
       { text: "A flagged record `keep` / `revoke`.", later: "P2" },
-      { text: "Undoing a deletion `cancel`.", later: "P3" },
+      { text: "Cancelling a deletion `cancel`.", later: "P3" },
       "A schema change `confirm` / `reject`.",
     ],
     item_ver: [

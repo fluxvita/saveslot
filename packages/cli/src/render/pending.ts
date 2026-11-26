@@ -66,16 +66,31 @@ const itemTarget = (target: unknown, slot: unknown): Part[] =>
   isObj(target) ? targetOf(target) : t`slot ${name(String(slot ?? ""))}`;
 
 /**
+ * The phases of 07-scope-v1 whose sentences this text lets in: none in this version (06 §5.1;
+ * 05 §9 «这一版不出现的句子»). Tests only may let one in, to see the text read when it comes.
+ */
+export const cliPhases: { open: ReadonlySet<"P2" | "P3" | "P4"> } = { open: new Set() };
+
+/**
  * A target deletions still pending affect (06 §5.1, §5.3; 04-contract «目标受一项仍待执行的删除影响的
- * 事项»): which deletions, when the last of them is due, and the two ways on.
+ * 事项»): which deletions, when the last of them is due, and that a decision waits until they have
+ * run. Cancelling them, with `saveslot delete cancel`, comes with P3.
  */
 export function blockedBy(subject: Part[], deletions: unknown, expiresAt: unknown): Part[] {
   const ids = arr(deletions);
+  if (ids.length === 0)
+    return t`${subject} is affected by a deletion still pending: decide after it has run`;
   const one = ids.length === 1;
-  return t`${subject} is affected by ${one ? t`a deletion` : t`deletions`} that can still be undone (${join(
+  const cancel = cliPhases.open.has("P3")
+    ? t`; cancelling ${one ? t`it` : t`them`} (${join(
+        ids.map((x) => t`saveslot delete cancel ${idOf(x)}`),
+        t`, `,
+      )}) brings back what ${one ? t`it` : t`they`} removed`
+    : [];
+  return t`${subject} is affected by ${one ? t`a deletion` : t`deletions`} still pending (${join(
     ids.map((x) => [idOf(x)]),
     t`, `,
-  )}; due ${one ? [] : t`at the latest `}${time(String(expiresAt ?? ""))}): decide after that, or undo ${one ? t`that deletion` : t`those deletions`} first (saveslot delete cancel ${idOf(ids[0])}${one ? [] : t`, and the same for each`})`;
+  )}; due ${one ? [] : t`at the latest `}${time(String(expiresAt ?? ""))}): decide after ${one ? t`it has run` : t`they have all run`}${cancel}`;
 }
 
 /** `saveslot pending` (06 §4.5, §5.1): oldest first, each with how long it has been open. */

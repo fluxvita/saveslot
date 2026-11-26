@@ -624,7 +624,7 @@ pi_9B… 待确认 · marketing.budgets 推广 · 已挂 3 小时 · 版本 iv_7
 - **会被覆盖的段、会被回掉的写入、仍引用该行的行**（事项详情的 `impact`）逐条列出：写入 `#seq`、写入者、原值 → 新值、区间（含端点的人话）。
 - 冲突列出当前生效值与每个候选（同 [`05-surfaces.md`](05-surfaces.md)「各工具的文本要点」的 `saveslot_pending`）；schema 变更按事项详情里的草稿部分列出 `changes[]` 与影响预览，并写明影响预览是草稿提交时的估计。
 - 只列当前凭证可用的处理方式；用户会话全都可用。
-- 目标受一项仍待执行的删除影响的事项（契约的 `blocked`）：`saveslot pending` 在这一行标明此刻不能处理；`saveslot pending show` 不列处理方式，写明是哪几项删除、最晚何时到期，以及两条路（等到期，或先 `saveslot delete cancel pi_…`），说法同 5.3 这类报错。
+- 目标受一项仍待执行的删除影响的事项（契约的 `blocked`）：`saveslot pending` 在这一行标明此刻不能处理；`saveslot pending show` 不列处理方式，写明是哪几项删除、最晚何时到期，以及等它们执行之后再处理；〔P3 起〕另写撤回（逐项写出 `saveslot delete cancel pi_…`，撤回会把删掉的东西放回来）。这类报错的说法相同。
 
 ### 5.2 处理：怎么绑定内容
 
