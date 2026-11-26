@@ -46,6 +46,14 @@ export function dispatch(
       out: (l) => io.out(`${l}\n`),
       err: (l) => io.err(`${l}\n`),
       env,
+      // `server start` closed with a tenant's use given up on (06 §4.1): what holds it would keep
+      // the process up, so it ends once stdout and stderr are written out.
+      exit: async (code) => {
+        for (const s of [process.stdout, process.stderr]) {
+          await new Promise<void>((done) => s.write("", () => done()));
+        }
+        process.exit(code);
+      },
     });
   }
   if (first !== undefined && SERVICE.has(first as ServiceName)) {

@@ -173,9 +173,10 @@ export interface RunningServer {
   readonly failed: Promise<void>;
   /**
    * Closes in the three steps above; called again, the same closing. Resolves once the lock is
-   * released and the control database closed.
+   * released and the control database closed, saying whether step 3 gave up on a tenant: a use
+   * still stuck then holds its database connection, which keeps the process up until it ends.
    */
-  close(): Promise<void>;
+  close(): Promise<{ readonly tenantsLeft: boolean }>;
   /**
    * A second stop signal: what is left of the drain and of the wait for the requests in progress is
    * skipped (the connections still open are cut); the tenants are still closed and the lock
@@ -495,7 +496,11 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         clearTimeout(timer);
       }
     };
-    let closing: Promise<void> | undefined;
+    let closing: Promise<{ readonly tenantsLeft: boolean }> | undefined;
+    // A handler whose connection step 2 cut may still be running when step 3 closes the tenants and
+    // the lock is released: what it was doing goes on as far as it gets (a write may still commit,
+    // or roll back with its connection), its answer is lost, and the client's retry is recognised
+    // by its idempotency key or request key (02-architecture §5), not written twice.
     const close = async () => {
       // Step 1: out of the load balancer's rotation, still serving. A lost control database
       // serves nothing already: no drain.
@@ -525,7 +530,8 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       await mcp.handler.close();
       // Step 3: the tenants, for at most tenantsCloseMs: a use stuck on a tenant's lock is left.
       const tenantsClosed = lent.closeAll();
-      if (await bounded(tenantsClosed, tenantsCloseMs, false)) {
+      const tenantsLeft = await bounded(tenantsClosed, tenantsCloseMs, false);
+      if (tenantsLeft) {
         tenantsClosed.catch(() => {});
         warn("shutdown_tenants_left", {});
       }
@@ -534,6 +540,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       await db.close().catch((e: unknown) => {
         if (!lost) throw e;
       });
+      return { tenantsLeft };
     };
     return {
       address: { host: at.address, port: at.port },

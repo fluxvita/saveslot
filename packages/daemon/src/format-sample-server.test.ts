@@ -51,7 +51,7 @@ const SESSION_ENDS = "2099-01-01T00:00:00.000Z";
 const OUT = process.env["SAVESLOT_FORMAT_SAMPLE_OUT"];
 const ON_POSTGRES = TEST_BACKEND === "postgres";
 const root = mkdtempSync(join(tmpdir(), "saveslot-format-sample-server-"));
-const open: { close(): Promise<void> }[] = [];
+const open: { close(): Promise<unknown> }[] = [];
 
 beforeAll(() => {
   if (OUT === undefined) useScryptForTests({ N: 2 ** 10, r: 8, p: 1 });

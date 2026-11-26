@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterAll, expect } from "vitest";
 
 interface Closable {
-  close(): Promise<void>;
+  close(): Promise<unknown>;
 }
 
 /** How long after the removal the directory is looked for again. */
@@ -45,7 +45,8 @@ export function testRoot(prefix: string, timeoutMs: number) {
       return Object.assign(x, {
         close: async () => {
           try {
-            await close();
+            // What it closed with, given back as it was.
+            return await close();
           } finally {
             open.delete(x);
           }

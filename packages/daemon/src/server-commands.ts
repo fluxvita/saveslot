@@ -402,15 +402,18 @@ async function serverStart(config: ServerConfig, io: ServerRestoreIO): Promise<n
     running.failed.then(() => true),
   ]);
   signal.whileClosing(() => running.hurry());
+  let tenantsLeft: boolean;
   try {
-    await running.close();
+    ({ tenantsLeft } = await running.close());
   } finally {
     signal.cancel();
   }
-  if (lost) {
-    io.err(TEXTS.server.controlLost);
-    return 7;
-  }
-  io.out(TEXTS.server.stoppedCleanly);
-  return 0;
+  if (lost) io.err(TEXTS.server.controlLost);
+  else io.out(TEXTS.server.stoppedCleanly);
+  const code = lost ? 7 : 0;
+  // A use stuck on a tenant still holds its database connection, which would keep the process up
+  // until the supervisor kills it: it ends here instead, its transaction rolled back with the
+  // connection (its client was cut at step 2).
+  if (tenantsLeft) await io.exit?.(code);
+  return code;
 }

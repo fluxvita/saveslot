@@ -20,6 +20,12 @@ export interface ServerCommandIO extends CommandIO {
    */
   readonly stoppedAgain?: () => Promise<void>;
   /**
+   * `server start`, once closed with a tenant's use given up on (06-cli §4.1): ends the process with
+   * this code once what was written is out. Absent (tests), the command returns, and the process
+   * ends when what the use holds lets it.
+   */
+  readonly exit?: (code: number) => Promise<void>;
+  /**
    * The terminal a password is asked on (default: the controlling terminal); undefined when there
    * is none.
    */

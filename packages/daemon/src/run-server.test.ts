@@ -2197,7 +2197,7 @@ describe("runServer: closing in three steps", () => {
       }).catch((e: unknown) => e);
       await reached;
       const t0 = performance.now();
-      await s.close();
+      expect(await s.close()).toEqual({ tenantsLeft: true });
       expect(performance.now() - t0).toBeLessThan(5000);
       expect(warned).toEqual(
         expect.arrayContaining(["shutdown_connections_cut", "shutdown_tenants_left"]),
@@ -2279,8 +2279,8 @@ describe("runServer: closing in three steps", () => {
       s.hurry();
       await closing;
       expect(performance.now() - t0).toBeLessThan(5000);
-      // Called again, the same closing.
-      await s.close();
+      // Called again, the same closing; nothing was left.
+      expect(await s.close()).toEqual({ tenantsLeft: false });
     },
     T,
   );
