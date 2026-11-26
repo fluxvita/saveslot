@@ -809,7 +809,11 @@ function graceWrite(
   };
   for (const f of fields) {
     const c = (isState ? cuts : [{ from: null, to: null }]).filter(
-      (s) => tokenAt(before, f, s) !== tokenAt(after, f, s) || before.exists !== after.exists,
+      // On a state table a gap is a token of its own: where the entity gained or lost a value is
+      // where it changed. Only an event or timeless table's row exists over the whole time.
+      (s) =>
+        tokenAt(before, f, s) !== tokenAt(after, f, s) ||
+        (!isState && before.exists !== after.exists),
     );
     if (c.length > 0) changed.set(f as FieldId, canonical(c as never));
   }
@@ -1399,6 +1403,54 @@ describe("a group value past a field's seen interval (a property counterexample)
       },
     ] as Op[];
     compare({ ...STATE, groups: GROUPS }, true, ops, [], 112260546, [60]);
+  });
+});
+
+describe("a write in a deletion's grace period, the deletion giving the entity a value on part of its time (a property counterexample)", () => {
+  // State table. #10 f2 = 1 from 10-01; #20 and #30 revoke the entity (#30 a candidate, taken);
+  // #40 f2 = 1 from 11-01; #50 f2 = 1 over [10-01, 11-01), awaiting behind #40. Deleting #40's words
+  // gives the entity a value over [10-01, 11-01) only: the deletion's L there, not over the whole
+  // time. A write in its grace period from 11-02 does not meet it and takes effect, as the
+  // reference evaluator gives it (09-references «冲突判据», L's interval). Seed -1057634552.
+  it("the write's judgement as the reference evaluator gives it", () => {
+    const ops = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S10"] } },
+        acknowledge: ["overwrite"],
+      },
+      { kind: "revoke", op: 20, event: 21, seen: 10 },
+      { kind: "revoke", op: 30, event: 31, seen: 10 },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 30,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S5"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 40,
+        valid: {
+          from: { mode: "given", value: "2026-10-01" },
+          to: { mode: "given", value: "2026-11-01" },
+        },
+        fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+    ] as Op[];
+    const decisions: Decision[] = [
+      { after: 954842038, pick: 0, kind: "take", flag: 0, focus: false },
+    ];
+    compare(STATE, true, ops, decisions, 23);
   });
 });
 
