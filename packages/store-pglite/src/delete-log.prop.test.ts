@@ -52,6 +52,7 @@ import {
   createSlotEvents,
   deletedContributions,
   eventsOfSteps,
+  itemEntries,
   judged,
   SLOT,
   scenario,
@@ -256,9 +257,15 @@ function joined(xs: { from: string | null; to: string | null }[]) {
 }
 
 /** The row or entity as the version table holds it as of operation `at` (open cells if none). */
-async function fromCells(tx: ReadTx, isState: boolean, ids: readonly string[], at?: number) {
+async function fromCells(
+  tx: ReadTx,
+  isState: boolean,
+  ids: readonly string[],
+  at?: number,
+  row?: string,
+) {
   const table = isState ? "t_t2_v1__ver" : "t_t1_v1__ver";
-  const id = isState ? ENTITY : ROW;
+  const id = row ?? (isState ? ENTITY : ROW);
   const when =
     at === undefined
       ? "rec_to IS NULL"
@@ -331,14 +338,6 @@ const readable = (v: { exists: boolean; gaps: unknown; fields: object }) => {
 const plain = (v: { exists: boolean; gaps: unknown; fields: object }) =>
   JSON.parse(JSON.stringify({ exists: v.exists, gaps: v.gaps, fields: v.fields })) as View;
 
-/**
- * Event table: #30 a candidate against #20, taken (#50); #60 a candidate against that, taken too
- * (the generator's decision, op 63, carrying #60's value). Deleting #20's words makes #60 a no-op,
- * restated as dropped; the take's item stays in effect, carrying it, and its sources without an
- * interval are on the list (09 §3.5 rule 1): restated as it is. Found by the property (seed
-
-const item = (x: { event: number; target: string; k: number }) => `${x.event}/${x.target}/${x.k}`;
-
 /** The source table's items in effect: status and interval, by item. */
 async function storedItems(tx: ReadTx, id: string) {
   const r = await tx.query<{
@@ -380,19 +379,20 @@ let newItems = 0;
  * (write/log.fixture.ts `eventsOfSteps`: every field of a write cites the write's own number, and
  * so does its interval when one is given).
  */
-function bySourceOfOp(o: Op): Op {
+function bySourceOfOp(o: Op, split = false): Op {
   const s = [`S${o.op}`];
+  const v = split ? [`S${o.op - 1}`] : s;
   if (o.kind === "write") {
     const { validSources: _, ...rest } = o;
     const fields = Object.fromEntries(
       Object.entries(o.fields).map(([f, x]) => [f, x === undefined ? x : { ...x, sources: s }]),
     );
     const interval = o.valid !== undefined && o.valid !== "corrected_span";
-    return { ...rest, fields, ...(interval ? { validSources: s } : {}) } as Op;
+    return { ...rest, fields, ...(interval ? { validSources: v } : {}) } as Op;
   }
   if (o.kind === "revoke") {
     const { validSources: _, ...rest } = o;
-    return { ...rest, ...(o.valid !== undefined ? { validSources: s } : {}) } as Op;
+    return { ...rest, ...(o.valid !== undefined ? { validSources: v } : {}) } as Op;
   }
   return o;
 }
@@ -405,17 +405,70 @@ const citedOf = (store: PgliteTenantStore, isState: boolean) =>
         (
           await tx.query<{ body: string }>(
             `SELECT c.body FROM events e JOIN content c ON c.seq = e.seq
-             WHERE e.type = 'write.base' AND e.target_row = $1 AND c.path LIKE 'sources/%'`,
+             WHERE e.type = 'write.base' AND e.target_row = $1
+               AND (c.path LIKE 'sources/%' OR c.path = 'valid_sources')`,
             [isState ? ENTITY : ROW],
           )
         ).rows.flatMap((x) =>
-          (JSON.parse(x.body) as { source?: number }[]).flatMap((e) =>
-            typeof e.source === "number" ? [e.source] : [],
+          // A value's sources are `{ source }` objects; an interval's (`valid_sources`) bare seqs.
+          (JSON.parse(x.body) as (number | { source?: number })[]).flatMap((e) =>
+            typeof e === "number" ? [e] : typeof e.source === "number" ? [e.source] : [],
           ),
         ),
       ),
     ].sort((a, b) => a - b),
   );
+
+/**
+ * The row's open items by what they hold: each open conflict item's candidates, by (event, field or
+ * "existence"); each open awaiting item's origin event, an undo's or take_previous's proposal left
+ * out (the reference evaluator does not list those).
+ */
+async function itemsHeld(tx: ReadTx, row: string) {
+  const open = (
+    await tx.query<{ id: string; type: string }>(
+      "SELECT id, type FROM pending_items WHERE state = 'open' AND target_row = $1",
+      [row],
+    )
+  ).rows;
+  const entries = await itemEntries(
+    tx,
+    open.map((x) => x.id),
+  );
+  const candidates = new Set<string>();
+  const awaiting = new Set<number>();
+  for (const x of open) {
+    const e = entries.get(x.id);
+    if (e === undefined) continue;
+    // The candidates as apply holds them (its entries table), not as the events give them.
+    if (x.type === "conflict") {
+      const held = await tx.query<{ body: string }>(
+        `SELECT c.body FROM pending_entries p JOIN content c
+           ON c.seq = p.content_seq AND c.path = p.content_path
+         WHERE p.item_id = $1 AND p.content_path LIKE 'candidates/%' AND c.body IS NOT NULL`,
+        [x.id],
+      );
+      for (const r of held.rows) {
+        const block = JSON.parse(r.body) as {
+          event: number;
+          items: { field?: string; existence?: number }[];
+        };
+        for (const it of block.items) candidates.add(`${block.event}/${it.field ?? "existence"}`);
+      }
+    }
+    if (x.type === "awaiting_confirmation" && e.originEvent !== undefined) {
+      const revert = await tx.query(
+        "SELECT 1 FROM content WHERE seq = $1 AND path = 'revert' AND body IS NOT NULL",
+        [e.originEvent],
+      );
+      if (revert.rows.length === 0) awaiting.add(e.originEvent);
+    }
+  }
+  return {
+    candidates: [...candidates].sort(),
+    awaiting: [...awaiting].sort((a, b) => a - b),
+  };
+}
 
 /** The open pending items and their entries, as a read of them gives. */
 async function openItemsOf(tx: ReadTx) {
@@ -578,13 +631,64 @@ function compareOn(schema: TableSchema, unknownPaths: Set<string>): Compare {
         view: readable(await fromCells(tx, isState, ids)),
         items: await storedItems(tx, id),
         open: await openItemsOf(tx),
+        held: await itemsHeld(tx, id),
       }));
     const live = await read(store);
     expect({ view: live.view, items: live.items }).toEqual({ view: refView, items: refItems });
+    // The items as the reference evaluator holds them: an open conflict item's candidates are its
+    // candidates not closed; an open awaiting item's origin, its awaiting writes not closed.
+    const open = ref.items.filter((x) => (x as { closed?: true }).closed !== true);
+    expect(live.held).toEqual({
+      candidates: [
+        ...new Set(
+          open.filter((x) => x.status === "candidate").map((x) => `${x.event}/${x.target}`),
+        ),
+      ].sort(),
+      awaiting: [
+        ...new Set(open.filter((x) => x.status === "awaiting").map((x) => x.event as number)),
+      ].sort((a, b) => a - b),
+    });
     await scratch.reset();
     const r = await reconcileLog({ live: store, scratch: scratch.store });
     expect(r.mismatches).toEqual([]);
     expect(await read(scratch.store)).toEqual(live);
+    // Each confirmed deletion's list is what apply marks pending (09 §5.9 `pending_blocks`), live
+    // and replayed alike.
+    for (const d of done) {
+      const marked = (s: PgliteTenantStore) =>
+        s.read(async (tx) =>
+          (
+            await tx.query<{ seq: unknown; path: string }>(
+              "SELECT seq, path FROM pending_blocks WHERE deletion_seq = $1",
+              [d.seq],
+            )
+          ).rows
+            .map((x) => `${Number(x.seq)} ${x.path}`)
+            .sort(),
+        );
+      const listed = await store.read(async (tx) =>
+        (
+          JSON.parse(
+            (
+              await tx.query<{ body: string }>(
+                "SELECT body FROM content WHERE seq = $1 AND path = 'positions'",
+                [d.seq],
+              )
+            ).rows[0]?.body ?? "[]",
+          ) as { seq: number; path: string }[]
+        )
+          .map((x) => `${x.seq} ${x.path}`)
+          .sort(),
+      );
+      expect({ deletion: d.id, pending: await marked(store) }).toEqual({
+        deletion: d.id,
+        pending: listed,
+      });
+      expect({ deletion: d.id, pending: await marked(scratch.store) }).toEqual({
+        deletion: d.id,
+        pending: listed,
+      });
+    }
     // Rule 1, apart from the delete operation's code: each deletion's list as the block model has it.
     const idOfSeq = new Map(done.map((d) => [d.seq, d.id]));
     for (const d of done) {
@@ -603,7 +707,16 @@ function compareOn(schema: TableSchema, unknownPaths: Set<string>): Compare {
 }
 
 describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
-  const seen = { samples: 0, compared: 0, deletions: 0, skipped: 0, referenced: 0 };
+  const seen = {
+    samples: 0,
+    compared: 0,
+    deletions: 0,
+    skipped: 0,
+    referenced: 0,
+    /** Deletions of an interval's own source (a split write's, or a revoke's). */
+    intervalSource: 0,
+    revokeInterval: 0,
+  };
   const refused: Record<string, number> = {};
   const unknownPaths = new Set<string>();
 
@@ -613,9 +726,35 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     raw: readonly Op[],
     decisions: readonly import("@fluxvita/saveslot-kernel/testing").Decision[],
     picks: readonly number[],
+    mask = 0,
   ) => {
     seen.samples++;
-    const ops = raw.map(bySourceOfOp).map(asWritten);
+    // Which ops' intervals cite a source of their own (recorded just before the op, at op - 1):
+    // those the mask names and that have room for it, the layout taken from the ops unsplit (a
+    // source's name does not change where events land).
+    const wanted = (op: number) => ((mask >>> (Math.floor(op / 10) % 30)) & 1) === 1;
+    const layout = eventsOfSteps(
+      {
+        table: (isState ? "t2" : "t1") as never,
+        target: isState ? { entity: ENTITY as never } : { row: ROW as never },
+        shape: shape(schema),
+        granularity: "date" as const,
+      },
+      judged(schema, raw.map((o) => bySourceOfOp(o)).map(asWritten), decisions).steps,
+      (after, n) => after + 1 + n,
+    );
+    const room = new Set(
+      layout.flatMap((evs, k) => {
+        const head = evs[0]?.seq as number;
+        // Not the first op (the slot and the decoy row come before it); after that, a filler head
+        // and the source after it need two numbers free before the op.
+        if (k === 0) return [];
+        const before = layout[k - 1]?.at(-1)?.seq ?? 0;
+        return before < head - 2 ? [head] : [];
+      }),
+    );
+    const split = (op: number) => wanted(op) && room.has(op);
+    const ops = raw.map((o) => bySourceOfOp(o, split(o.op))).map(asWritten);
     const { steps } = judged(schema, ops, decisions);
     const ctx = {
       table: (isState ? "t2" : "t1") as never,
@@ -632,7 +771,12 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       seen.referenced++;
       return;
     }
-    const perStep = eventsOfSteps(ctx, steps, (after, n) => after + 1 + n);
+    const perStep = eventsOfSteps(
+      ctx,
+      steps,
+      (after, n) => after + 1 + n,
+      (op) => (split(op) ? [op - 1] : [op]),
+    );
     const collides = perStep.some((evs, k) => {
       const next = perStep[k + 1]?.[0]?.seq;
       return next !== undefined && (evs.at(-1)?.seq ?? 0) >= next;
@@ -662,9 +806,28 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
     await run(store, decoy(isState));
     for (const evs of perStep) {
       const head = evs[0]?.seq as number;
-      for (let tail = (await store.read(readTail))?.seq ?? 0; tail < head - 1; tail++) {
+      const own = split(head);
+      for (let tail = (await store.read(readTail))?.seq ?? 0; tail < head - (own ? 3 : 1); tail++) {
         await run(store, [filler]);
       }
+      // The interval's own source, recorded just before the op (after a filler head: a source is
+      // not an operation's first event).
+      if (own)
+        await run(store, [
+          filler,
+          {
+            type: "source.recorded",
+            slot: SLOT,
+            blocks: {
+              target: {
+                source_id: `s_${String(head - 1).padStart(16, "0")}`,
+                kind: "agent_note",
+                level: "agent_inferred",
+              },
+              text: { text: `the interval of #${head}` },
+            },
+          } as NewEvent,
+        ]);
       await run(
         store,
         evs.map((e) => ({ type: e.type as never, slot: SLOT, blocks: e.blocks as never })),
@@ -717,6 +880,21 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       entries.push({ kind: "deletion", op: out.seq as never, id, sources: [`S${src}`] });
       done.push({ id, seq: out.seq });
       seen.deletions++;
+      // Whose interval the deleted source was: a split write's (its own source) or a revoke's.
+      const interval = kept.filter(
+        (o) => (o.kind === "write" || o.kind === "revoke") && o.validSources?.includes(`S${src}`),
+      );
+      if (
+        interval.some(
+          (o) =>
+            o.kind === "revoke" ||
+            !Object.values(
+              (o as unknown as { fields: Record<string, { sources?: string[] }> }).fields,
+            ).some((x) => x?.sources?.includes(`S${src}`)),
+        )
+      )
+        seen.intervalSource++;
+      if (interval.some((o) => o.kind === "revoke")) seen.revokeInterval++;
       await compare(store, entries, model, done);
     }
     if (done.length > 0) seen.compared++;
@@ -727,7 +905,9 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       fc.asyncProperty(
         scenario(isState),
         fc.array(fc.nat(), { minLength: 1, maxLength: 3 }),
-        async ({ ops, decisions }, picks) => checkSample(ops, decisions, picks),
+        // Which ops' intervals cite a source of their own, apart from their values'.
+        fc.nat(),
+        async ({ ops, decisions }, picks, mask) => checkSample(ops, decisions, picks, mask),
       ),
       {
         numRuns: RUNS,
@@ -743,6 +923,13 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       compared: true,
       counts,
     });
+    // An interval's own source deleted, a revoke's among them (state tables have intervals): at the
+    // default 60 runs about a third of the deletions, eight a revoke's.
+    if (isState && RUNS >= 60)
+      expect({ reached: seen.intervalSource > 0 && seen.revokeInterval > 0, counts }).toEqual({
+        reached: true,
+        counts,
+      });
   });
 });
 
@@ -762,10 +949,11 @@ function asSent(o: Op, i: number): Op {
   const op = x.op * 10;
   const event = op + 2;
   const seen = "seen" in x && x.seen !== undefined ? x.seen * 10 : undefined;
-  if (x.kind === "write" || x.kind === "revoke")
-    return bySourceOfOp(
-      i === 0 ? ({ ...x, op, event } as Op) : ({ ...x, op, event, seen: seen ?? op - 1 } as Op),
-    );
+  if (x.kind === "write" || x.kind === "revoke") {
+    const sent =
+      i === 0 ? ({ ...x, op, event } as Op) : ({ ...x, op, event, seen: seen ?? op - 1 } as Op);
+    return (o as { keepSources?: true }).keepSources ? sent : bySourceOfOp(sent);
+  }
   if (x.kind === "undo")
     return {
       ...x,
@@ -778,6 +966,9 @@ function asSent(o: Op, i: number): Op {
 }
 
 /** The write request of an op as sent (write-items.prop.test.ts). */
+/** Source names a fixed history's requests recorded, by name: the source ID and the request's op. */
+const recorded = new Map<string, { id: string; op: number }>();
+
 function requestOf(o: Op, first: boolean, isState: boolean): Record<string, unknown> {
   const table = isState ? "entities" : "rows";
   const target = first ? {} : isState ? { entity: ENTITY } : { row: ROW };
@@ -815,6 +1006,42 @@ function requestOf(o: Op, first: boolean, isState: boolean): Record<string, unkn
       .filter(([f, x]) => x !== undefined && !o.noop?.includes(f as never))
       .map(([f, x]) => [NAME[f] as string, x?.value ?? null]),
   );
+  if ((o as { keepSources?: true }).keepSources) {
+    // Its own sources: one evidence segment each, a source an earlier request recorded cited by
+    // `source_ref`; each field and the interval (`valid`) pointed at theirs (04-contract «按字段指明»).
+    const names = [
+      ...new Set([
+        ...Object.values(o.fields).flatMap((x) => [...(x?.sources ?? [])]),
+        ...(o.validSources ?? []),
+      ]),
+    ];
+    const at = (xs: readonly string[]) => xs.map((n) => names.indexOf(n));
+    return {
+      sv: 1,
+      evidence: names.map((n) =>
+        recorded.has(n)
+          ? { kind: "source_ref", id: recorded.get(n)?.id }
+          : { kind: "agent_note", text: `evidence ${n}` },
+      ),
+      ops: [
+        {
+          intent: first ? "insert" : correct ? "correct" : "update",
+          table,
+          ...target,
+          ...ver,
+          ...ack,
+          ...valid,
+          set,
+          evidence_by_field: {
+            ...Object.fromEntries(
+              Object.entries(o.fields).map(([f, x]) => [NAME[f] as string, at(x?.sources ?? [])]),
+            ),
+            ...(o.validSources !== undefined ? { valid: at(o.validSources) } : {}),
+          },
+        },
+      ],
+    };
+  }
   const explicit = Object.entries(o.fields)
     .filter(([, x]) => x?.explicit === true)
     .map(([f]) => NAME[f] as string);
@@ -845,13 +1072,31 @@ interface Fixed {
   readonly schema: TableSchema;
   readonly ops: readonly Op[];
   /** The deletions in turn, each by the scenario ops whose sources it deletes. */
-  readonly deletions: readonly (readonly number[])[];
+  /** Each by op (its own source, `S<op>`) or by a source's name (an op that keeps its sources). */
+  readonly deletions: readonly (readonly (number | string)[])[];
 }
 
 /** A fixed history sent, then deleted from step by step; returns what the checks need after. */
 async function runFixed(f: Fixed) {
   const isState = f.schema.kind === "state";
-  const sent = f.ops.map(asSent);
+  // A request records one source per new evidence segment before its base event: an op keeping its
+  // own sources has its event after all of them (a `source_ref` records none).
+  const seenNames = new Set<string>();
+  const sent = f.ops.map(asSent).map((o) => {
+    if (!(o as { keepSources?: true }).keepSources || (o.kind !== "write" && o.kind !== "revoke"))
+      return o;
+    const names = [
+      ...new Set([
+        ...(o.kind === "write"
+          ? Object.values(o.fields).flatMap((x) => [...(x?.sources ?? [])])
+          : []),
+        ...(o.validSources ?? []),
+      ]),
+    ];
+    const fresh = names.filter((n) => !seenNames.has(n));
+    for (const n of names) seenNames.add(n);
+    return { ...o, event: o.op + 1 + fresh.length } as Op;
+  });
   const ops = seenAsVersions(sent, (x) => judged(f.schema, x, []).steps);
   if (ops === undefined) throw new Error("a fixed history's versions are not the scenario's");
   const { steps } = judged(f.schema, ops, []);
@@ -876,6 +1121,7 @@ async function runFixed(f: Fixed) {
   await run(store, createSlotEvents({ compiled: COMPILED as never, changes: CHANGES as never }));
   let items = 0;
   let fillers = 9_000_000;
+  recorded.clear();
   for (const [k, step] of steps.entries()) {
     const o = step.op;
     const tail = (await store.read(readTail))?.seq ?? 0;
@@ -917,6 +1163,19 @@ async function runFixed(f: Fixed) {
       });
       continue;
     }
+    // The request's new sources, in its evidence's order (a `source_ref` records none).
+    const fresh = (o as { keepSources?: true }).keepSources
+      ? [
+          ...new Set([
+            ...Object.values(
+              (o as { fields?: Record<string, { sources?: string[] }> }).fields ?? {},
+            ).flatMap((x) => x?.sources ?? []),
+            ...((o as { validSources?: string[] }).validSources ?? []),
+          ]),
+        ].filter((n) => !recorded.has(n))
+      : [];
+    let nth = 0;
+    const params = { ...requestOf(o, k === 0, isState), idempotency_key: `step-${k}` };
     await store.write((tx) =>
       writeInTx(tx, {
         actor: USER as never,
@@ -924,7 +1183,7 @@ async function runFixed(f: Fixed) {
         now: `${now}T04:00:00.000Z`,
         windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
         visibility: { kind: "all" },
-        params: { ...requestOf(o, k === 0, isState), idempotency_key: `step-${k}` },
+        params,
         reads: readBufferOf(store),
         newId: (kind) =>
           kind === "row"
@@ -933,7 +1192,14 @@ async function runFixed(f: Fixed) {
               ? ENTITY
               : kind === "item"
                 ? `pi_${String(++items).padStart(16, "0")}`
-                : sourceIdOf(o.op),
+                : fresh.length > 0
+                  ? (() => {
+                      const name = fresh[nth] as string;
+                      const id = `s_${String(o.op * 10 + nth++).padStart(16, "0")}`;
+                      recorded.set(name, { id, op: o.op });
+                      return id;
+                    })()
+                  : sourceIdOf(o.op),
       }),
     );
   }
@@ -950,10 +1216,14 @@ async function runFixed(f: Fixed) {
   const anchor = openFileAnchorStore(join(dir, "anchor.json"));
   try {
     for (const [n, del] of f.deletions.entries()) {
-      const names = del.map((o) => `S${o * 10}`);
-      const { binding } = await previewDeletion(store, {
-        sources: del.map((o) => sourceIdOf(o * 10)),
-      });
+      const names = del.map((o) => (typeof o === "number" ? `S${o * 10}` : o));
+      const sourceIds = del.map((o) =>
+        typeof o === "number" ? sourceIdOf(o * 10) : (recorded.get(o)?.id as string),
+      );
+      const heads = del.map((o) =>
+        typeof o === "number" ? o * 10 : (recorded.get(o)?.op as number),
+      );
+      const { binding } = await previewDeletion(store, { sources: sourceIds });
       const receipt = await confirmDeletion(store, anchor, deleteCtx(), {
         binding,
         handle: `dc_fixed_${n}`,
@@ -970,7 +1240,6 @@ async function runFixed(f: Fixed) {
       // The deleted operations' identity blocks (09 §5.1 `task`, `request_key`, `idempotency`) are
       // on the list (§5.9): each one the head has.
       const ids = await store.read(async (tx) => {
-        const heads = del.map((o) => o * 10);
         const has = (
           await tx.query<{ seq: unknown; path: string }>(
             `SELECT seq, path FROM content WHERE seq = ANY($1) AND body IS NOT NULL
@@ -990,6 +1259,19 @@ async function runFixed(f: Fixed) {
       });
       expect(ids.has.length).toBeGreaterThan(0);
       expect(ids.has.filter((x) => !ids.listed.includes(x))).toEqual([]);
+      // The deleted sources' own blocks (its text or request: everything but the source's
+      // `target`) are on the list too (09 §3.5).
+      const own = await store.read(async (tx) =>
+        (
+          await tx.query<{ seq: unknown; path: string }>(
+            `SELECT c.seq, c.path FROM content c JOIN sources s ON s.seq = c.seq
+             WHERE s.source_id = ANY($1) AND c.path <> 'target' AND c.body IS NOT NULL`,
+            [sourceIds] as never,
+          )
+        ).rows.map((x) => `${Number(x.seq)} ${x.path}`),
+      );
+      expect(own.length).toBeGreaterThan(0);
+      expect(own.filter((x) => !ids.listed.includes(x))).toEqual([]);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -1150,20 +1432,118 @@ describe("fixed histories through the delete operation's entry", () => {
     take(5, 4),
   ];
 
+  /** Deletion `n`'s list as written, as (giver, item). */
+  const listOf = (r: Awaited<ReturnType<typeof runFixed>>, n: number) => {
+    const ids = new Map(r.done.map((d) => [d.seq, d.id]));
+    return r.store.read(async (tx) => (await listedOf(tx, r.done[n]?.seq as number, ids)).listed);
+  };
+
   it("a block listed for a dep the deletion alone restates (state table)", async () => {
-    // Deleting #2's words restates the take's items, which rest on #2: their blocks, as written
-    // and on the deps of others, are on the list because of what this deletion restates, not only
-    // what it deletes (rule 1's second half). Found with that half taken away, then made fixed.
+    // Deleting #2's words restates the take (#5) on #4's candidate, which rests on #2: the take's
+    // blocks as written are on the list because this deletion alone restates their dep, not
+    // because it deletes one (rule 1's second half). Shrunk from the property's sample that caught
+    // a list leaving that half out.
     const r = await runFixed({ schema: STATE, ops: takenOverTwo(), deletions: [[2]] });
-    const list = [...(r.model.deletions.get(r.done[0]?.id as string)?.positions ?? [])];
-    expect(list.length).toBeGreaterThan(0);
+    expect(await listOf(r, 0)).toEqual(
+      expect.arrayContaining(["written 52/f2/0", "written 52/f2/1"]),
+    );
   });
 
-  it("a block another pending deletion restates is not on this one's list (state table)", async () => {
-    // #4's words deleted first, then #1's with the first still pending: the second's list is from
-    // its replay alone. A block only the first deletion's replay restates is not on it. Found with
-    // the list worked out from the replay with the others pending, then made fixed.
-    await runFixed({ schema: STATE, ops: takenOverTwo(), deletions: [[4], [1]] });
+  it("the second of two pending deletions lists from its replay alone (state table)", async () => {
+    // #4's words deleted, then #1's with the first still pending. The second's list is from its
+    // replay alone: the take's blocks as written, and the first deletion's restatements of them
+    // (their deps restated by it alone), whatever the first deletion's replay did. Shrunk from the
+    // property's sample that caught a list worked out with the other pending deletions.
+    const r = await runFixed({ schema: STATE, ops: takenOverTwo(), deletions: [[4], [1]] });
+    const first = r.done[0]?.id as string;
+    expect(await listOf(r, 1)).toEqual(
+      expect.arrayContaining([
+        "written 52/f2/0",
+        "written 52/f2/1",
+        `${first} 52/f2/0`,
+        `${first} 52/f2/1`,
+      ]),
+    );
+  });
+
+  /** A write keeping its own sources (`S…` names), value and interval apart. */
+  const own = (
+    op: number,
+    seen: number,
+    f2: string,
+    sources: string[],
+    validSources: string[],
+    from: string,
+    to?: string,
+  ): Op =>
+    ({
+      kind: "write",
+      op,
+      event: op + 1,
+      seen,
+      ...span(from, to),
+      fields: { f2: { value: f2, sources } },
+      validSources,
+      acknowledge: ["overwrite"],
+      keepSources: true,
+    }) as unknown as Op;
+
+  it("the source of a revoke's interval deleted: the revoke goes, the value is back (state table)", async () => {
+    // 03-deletion «区间参数»: a revoke over an interval has its interval as its only content.
+    const r = await runFixed({
+      schema: STATE,
+      ops: [
+        sv(1, 0, "1", "2026-10-01"),
+        { kind: "revoke", op: 2, event: 3, seen: 1, ...span("2026-11-01", "2026-11-05") } as Op,
+      ],
+      deletions: [[2]],
+    });
+    expect(await listOf(r, 0)).toEqual(expect.arrayContaining(["written 22/existence/0"]));
+    const [cells] = [await r.store.read((tx) => fromCells(tx, true, ["f2"]))];
+    expect(cells.gaps).toEqual([{ from: null, to: "2026-10-01" }]);
+  });
+
+  it("a correction's default interval resting on what is deleted (state table)", async () => {
+    // #3 corrects the value at its time (`corrected_span`), the item #2 gave there; deleting #2's
+    // words leaves #1's item there, and #3's interval is worked out again on it.
+    await runFixed({
+      schema: STATE,
+      ops: [
+        sv(1, 0, "1", "2026-10-01"),
+        sv(2, 1, "2", "2026-11-01"),
+        w(3, 2, "3", { valid: "corrected_span", now: "2026-11-05" } as Partial<Op>),
+      ],
+      deletions: [[2]],
+    });
+  });
+
+  it("the source of an interval alone deleted, not the value's: the write goes (state table)", async () => {
+    // 03-deletion «区间参数»: the interval's source deleted, the write has no contribution on the
+    // entity at all, though its value's source is still there.
+    const r = await runFixed({
+      schema: STATE,
+      ops: [
+        sv(1, 0, "1", "2026-10-01"),
+        own(2, 1, "2", ["S2v"], ["S2i"], "2026-11-01", "2026-11-05"),
+      ],
+      deletions: [["S2i"]],
+    });
+    const [cells] = [await r.store.read((tx) => fromCells(tx, true, ["f2"]))];
+    expect(cells.fields["f2"]?.map((x) => x.value)).toEqual(["1"]);
+  });
+
+  it("a field citing two sources, one of them cited by a later write too (state table)", async () => {
+    // #2's f2 cites S2a and S2b (one field's sources are needed together); #3 cites S2b again by
+    // `source_ref`. Deleting S2b takes #2's f2 and the whole of #3 away.
+    await runFixed({
+      schema: STATE,
+      ops: [
+        sv(1, 0, "1", "2026-10-01"),
+        own(2, 1, "2", ["S2a", "S2b"], ["S2a"], "2026-11-01", "2026-11-05"),
+        own(3, 2, "3", ["S2b"], ["S2b"], "2026-11-05", "2026-11-09"),
+      ],
+      deletions: [["S2b"]],
+    });
   });
 
   it("a deletion opening an awaiting item (state table)", async () => {
@@ -1177,6 +1557,24 @@ describe("fixed histories through the delete operation's entry", () => {
       deletions: [[2]],
     });
     expect(await eventsOf$(r.store, r.done[0]?.seq as number)).toContain("item.created");
+    // The item it opens has the entries an awaiting item has (09 §5.8): its target, the interval
+    // it covers, what is in effect now, the proposal and what taking it would change.
+    const entries = await r.store.read(async (tx) => {
+      const x = await tx.query<{ path: string; body: string }>(
+        `SELECT c.path, c.body FROM events e JOIN content c ON c.seq = e.seq
+         WHERE e.type = 'item.created' AND e.op = $1 AND c.body IS NOT NULL ORDER BY c.path`,
+        [r.done[0]?.seq as number],
+      );
+      return x.rows;
+    });
+    const groups = [...new Set(entries.map((x) => x.path.replace(/\/\d+$/, "")))].sort();
+    expect(groups).toEqual(["current", "impact", "proposed", "scope_valid", "target"]);
+    const target = JSON.parse(entries.find((x) => x.path === "target")?.body ?? "{}");
+    expect(target).toMatchObject({
+      type: "awaiting_confirmation",
+      origin_event: 32,
+      unit: ["f2"],
+    });
   });
 
   it("a conflict's cause deleted: its item superseded (event table)", async () => {
@@ -1208,9 +1606,40 @@ describe("fixed histories through the delete operation's entry", () => {
       }),
     );
     expect(((await r.store.read(readTail))?.seq ?? 0) > (before?.seq ?? 0)).toBe(true);
+    // The row deleted from: as before the write (the three ways, the replay over the whole store).
     const unknown = new Set<string>();
     await compareOn(EVENT, unknown)(r.store, r.entries, r.model, r.done);
     expect([...unknown]).toEqual([]);
+    // The row written: in effect as the reference evaluator gives that write alone.
+    const base = await r.store.read(async (tx) => {
+      const x = await tx.query<{ seq: unknown; op: unknown }>(
+        "SELECT seq, op FROM events WHERE type = 'write.base' AND target_row = $1",
+        [OTHER_ROW],
+      );
+      return { seq: Number(x.rows[0]?.seq), op: Number(x.rows[0]?.op) };
+    });
+    const ref = evaluateLog(EVENT, [
+      {
+        kind: "write",
+        op: base.op,
+        event: base.seq,
+        seen: 0,
+        fields: { f2: { value: "12", sources: ["S"] } },
+      } as Op,
+    ]).final;
+    expect(
+      readable(
+        await r.store.read((tx) => fromCells(tx, false, ["f2", "f3"], undefined, OTHER_ROW)),
+      ),
+    ).toEqual(
+      readable({
+        exists: ref.exists,
+        gaps: ref.gaps,
+        fields: Object.fromEntries(
+          ["f2", "f3"].map((f) => [f, (ref.fields as Record<string, unknown>)[f] ?? []]),
+        ),
+      }),
+    );
   });
 
   it("in the grace period, on the row the deletion affects: no decision, no undo, no write; nothing appended", async () => {
