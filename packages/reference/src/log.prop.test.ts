@@ -33,7 +33,14 @@ import { stateWithoutIndices, timeline } from "./views.ts";
 // An explicit time limit; on a failure (including running out of time) fast-check reports the
 // seed and path that reproduce it: `fc.assert(..., { seed, path, endOnFailure: true })`.
 vi.setConfig({ testTimeout: 30_000 });
-fc.configureGlobal({ interruptAfterTimeLimit: 25_000, markInterruptAsFailure: true });
+// `PROP_SEED` and `PROP_PATH` replay a failure, as in the other property files.
+const SEED = process.env["PROP_SEED"] === undefined ? undefined : Number(process.env["PROP_SEED"]);
+fc.configureGlobal({
+  interruptAfterTimeLimit: 25_000,
+  markInterruptAsFailure: true,
+  ...(SEED !== undefined ? { seed: SEED } : {}),
+  ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
+});
 
 const STATE: TableSchema = { kind: "state", required: ["f2"] };
 const EVENT: TableSchema = { kind: "event", required: ["f2"] };
@@ -786,7 +793,22 @@ const counts = {
   revokes: 0,
   twoFieldWrites: 0,
   resolvesOnExistence: 0,
+  /** Cancellations of a deletion keeping something in effect or superseded (not compared). */
+  cancelKeeps: 0,
 };
+
+/**
+ * Whether the cancellation of deletion `id` in `log` keeps a write in effect or an item superseded
+ * (03-deletion «撤回与宽限期»): then it leaves a trace by the spec.
+ */
+function cancelKeeps(schema: TableSchema, log: readonly LogEntry[], id: string): boolean {
+  return evaluateLog(schema, log).steps.some(
+    (x) =>
+      x.entry.kind === "cancel" &&
+      x.entry.id === id &&
+      ((x.keptSuperseded?.length ?? 0) > 0 || (x.keptEffective?.length ?? 0) > 0),
+  );
+}
 
 /**
  * No segment endpoint comes from a deleted source: every endpoint of the final state is a date
@@ -1305,6 +1327,11 @@ describe.each(both)("%s table", (_, schema, state) => {
     // 03-deletion «撤回与宽限期»: a cancelled deletion no longer counts as deleted, so it must not
     // change what a later deletion gives, including how items are numbered (step 6). No grace-period
     // writes in between: nothing is kept in effect.
+    // Unless the cancellation keeps an item superseded, which a write made while a candidate was
+    // taken out by any pending deletion can cause, an earlier one in the log too, cancelled since:
+    // "结果只取决于被删集合"只在宽限期内没有写入、撤回没有留下保持生效与保持已被取代时成立
+    // (03-deletion «撤回与宽限期»). Such an order is not compared, and counted (`cancelKeeps`); the
+    // fixed case below holds one.
     // Measured share of hits: about 0.66 (state) and 0.64 (event).
     const hits = new Hits(0.35);
     fc.assert(
@@ -1321,20 +1348,24 @@ describe.each(both)("%s table", (_, schema, state) => {
           const run = (entries: LogEntry[]) =>
             stateWithoutIndices(evaluateLog(schema, [...log, ...entries]).final);
           const onlyB = run([{ kind: "deletion", op: last + 1, id: "pi_b", sources: b }]);
-          expect(
-            run([
+          for (const entries of [
+            [
               { kind: "deletion", op: last + 1, id: "pi_a", sources: a },
               { kind: "cancel", op: last + 2, id: "pi_a" },
               { kind: "deletion", op: last + 3, id: "pi_b", sources: b },
-            ]),
-          ).toEqual(onlyB);
-          expect(
-            run([
+            ],
+            [
               { kind: "deletion", op: last + 1, id: "pi_a", sources: a },
               { kind: "deletion", op: last + 2, id: "pi_b", sources: b },
               { kind: "cancel", op: last + 3, id: "pi_a" },
-            ]),
-          ).toEqual(onlyB);
+            ],
+          ] as LogEntry[][]) {
+            if (cancelKeeps(schema, [...log, ...entries], "pi_a")) {
+              counts.cancelKeeps++;
+              continue;
+            }
+            expect(run(entries)).toEqual(onlyB);
+          }
         }),
       ),
       { numRuns: RUNS },
@@ -3854,5 +3885,89 @@ describe("state table: a cancelled deletion leaves no trace, by what a later one
     ] as LogEntry[][]) {
       expect(stateWithoutIndices(run(entries))).toEqual(stateWithoutIndices(onlyB));
     }
+  });
+});
+
+describe("a cancellation keeping an item superseded through a write in an earlier deletion's grace period (a property counterexample)", () => {
+  // State table, seed 2080978230 of "a cancelled deletion leaves no trace". #21 (revoke from 11-07,
+  // S4) and #31 (revoke from 11-01, S1) conflict on existence. pi_40 deletes S4, taking #21 out;
+  // in its grace period #61 keeps the effective value against #31, and #81 revokes from 11-07 over
+  // #21's interval. #90 cancels pi_40: #21 is a candidate again. Deleting S1 then takes #31 away,
+  // so #21 takes effect and its item is superseded; cancelling that deletion keeps it superseded:
+  // without it #21 is pending (①), and #81 changed existence where #21 lies while a pending
+  // deletion had taken #21 out, whichever deletion that was (②, 03-deletion «撤回与宽限期»). So
+  // deleting S1 and cancelling it is not the same as never deleting it here, as the spec says.
+  const given = (v: string) => ({ mode: "given", value: v });
+  const log = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: { from: given("2026-10-01"), to: { mode: "open" } },
+      fields: { f2: { value: "1", sources: ["S1"], explicit: false } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "revoke",
+      op: 20,
+      event: 21,
+      seen: 0,
+      valid: { from: given("2026-11-07"), to: { mode: "open" } },
+      validSources: ["S4"],
+    },
+    {
+      kind: "revoke",
+      op: 30,
+      event: 31,
+      seen: 0,
+      valid: { from: given("2026-11-01"), to: { mode: "open" } },
+      validSources: ["S1"],
+    },
+    { kind: "deletion", op: 40, id: "pi_40", sources: ["S4", "S5"] },
+    {
+      kind: "write",
+      op: 50,
+      event: 51,
+      seen: 20,
+      valid: { from: given("2026-11-01"), to: given("2026-11-05") },
+      fields: { f3: { value: "2", sources: ["S3"], explicit: false } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "resolve",
+      op: 60,
+      event: 61,
+      decision: "keep_effective",
+      candidates: [31],
+      unit: "existence",
+    },
+    {
+      kind: "revoke",
+      op: 80,
+      event: 81,
+      seen: 60,
+      valid: { from: given("2026-11-07"), to: { mode: "open" } },
+      validSources: ["S3"],
+    },
+    { kind: "cancel", op: 90, id: "pi_40" },
+  ] as LogEntry[];
+  const deleteAndCancel = [
+    ...log,
+    { kind: "deletion", op: 91, id: "pi_a", sources: ["S1"] },
+    { kind: "cancel", op: 92, id: "pi_a" },
+  ] as LogEntry[];
+  const item21 = (entries: readonly LogEntry[]) =>
+    evaluateLog(STATE, entries).final.items.find((x) => x.event === 21);
+
+  it("never deleted: #21 a candidate, its item open", () => {
+    expect(item21(log)).toMatchObject({ status: "candidate" });
+    expect(item21(log)?.closed).toBeUndefined();
+  });
+
+  it("deleted and cancelled: the cancellation keeps #21's item superseded", () => {
+    const steps = evaluateLog(STATE, deleteAndCancel).steps;
+    expect(steps.at(-1)?.keptSuperseded).toEqual([21]);
+    expect(item21(deleteAndCancel)).toMatchObject({ status: "candidate", closed: true });
   });
 });
