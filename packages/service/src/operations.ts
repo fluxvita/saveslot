@@ -4,8 +4,10 @@
 // by ID.
 
 import {
+  type CallEffect,
   type ConnectionRecord,
   catalog,
+  effectOf,
   exportLog,
   type Fit,
   history,
@@ -299,6 +301,11 @@ export async function runOperation(o: {
    * (`result_budget`), with nothing recorded.
    */
   readonly fit?: (result: unknown) => number | undefined;
+  /**
+   * Told, when the call is answered, what its operation did to the tenant's log (an operation that
+   * appends: appended, replayed or none, with the operation and restore count), for its record.
+   */
+  readonly onEffect?: (effect: CallEffect) => void;
 }): Promise<unknown> {
   const { ctx, params } = o.call;
   const store = o.tenant.store;
@@ -311,6 +318,13 @@ export async function runOperation(o: {
       : (r) => caller(contractResult(r, o.cursors, ctx.actor, ctx.now));
   // Whether the operation itself is done (a write committed): what follows only reads for the answer.
   let done = false;
+  // What it did to the log (log/effect.ts), told once it is answered: kept from the kernel's
+  // result before that is turned into the contract's.
+  let effect: CallEffect | undefined;
+  const noted = <T>(r: T): T => {
+    effect = effectOf(r);
+    return r;
+  };
   try {
     const result = await (async (): Promise<unknown> => {
       switch (o.operation) {
@@ -334,12 +348,12 @@ export async function runOperation(o: {
         case "sources":
           return sources(store, ctx, params, fit);
         case "write":
-          return write(store, ctx, params);
+          return noted(await write(store, ctx, params));
         case "resolve":
           await checkDecisionScope({ store, call: o.call });
-          return resolve(store, ctx, params);
+          return noted(await resolve(store, ctx, params));
         case "schema_draft":
-          return schemaDraft(store, ctx, params);
+          return noted(await schemaDraft(store, ctx, params));
         case "reads.list":
           return readsList(store, ctx, params);
         case "log.verify":
@@ -393,6 +407,7 @@ export async function runOperation(o: {
             ...(params["scopes"] !== undefined ? { scopes: params["scopes"] as never } : {}),
             ...(slots !== undefined ? { slots: slots as never } : {}),
           });
+          noted(r.connection);
           return {
             ...connectionOut(r.connection, (await slotNames(o.tenant)).name),
             token: r.token,
@@ -402,27 +417,29 @@ export async function runOperation(o: {
           keysOnly(params, ["id", "name"]);
           text(params, "id");
           text(params, "name");
-          const c = await renameConnection(store, ctx, params as never);
+          const c = noted(await renameConnection(store, ctx, params as never));
           return connectionOut(c, (await slotNames(o.tenant)).name);
         }
         case "slots.remove":
           keysOnly(params, ["slot_id"]);
-          return removeSlot(store, ctx, params as never);
+          return noted(await removeSlot(store, ctx, params as never));
         case "connections.revoke": {
           keysOnly(params, ["id"]);
           text(params, "id");
-          const c = await o.tenant.connections.revoke(ctx, params["id"] as never);
+          const c = noted(await o.tenant.connections.revoke(ctx, params["id"] as never));
           return connectionOut(c, (await slotNames(o.tenant)).name);
         }
       }
     })();
     done = true;
-    return contractResult(
+    const answer = contractResult(
       await withNotices(o.tenant, ctx, o.operation, params, result),
       o.cursors,
       ctx.actor,
       ctx.now,
     );
+    if (effect !== undefined) o.onEffect?.(effect);
+    return answer;
   } catch (e) {
     if (e instanceof NothingKept) {
       throw new ContractError("too_large", "the result is larger than a result may be", {

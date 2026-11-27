@@ -641,7 +641,7 @@ describe("runServer: origins a deployment lists", () => {
       expect(corsOf(r)).toEqual({
         "access-control-allow-origin": CONSOLE,
         vary: "Origin",
-        "access-control-expose-headers": "Retry-After, WWW-Authenticate",
+        "access-control-expose-headers": "Retry-After, WWW-Authenticate, Saveslot-Call",
         "access-control-allow-methods": "GET, POST, PATCH, DELETE",
         "access-control-allow-headers": "Authorization, Content-Type, Idempotency-Key, X-Task-Id",
       });
@@ -677,7 +677,7 @@ describe("runServer: origins a deployment lists", () => {
         expect(corsOf(r)).toEqual({
           "access-control-allow-origin": CONSOLE,
           vary: "Origin",
-          "access-control-expose-headers": "Retry-After, WWW-Authenticate",
+          "access-control-expose-headers": "Retry-After, WWW-Authenticate, Saveslot-Call",
         });
       }
     },

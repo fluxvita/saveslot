@@ -183,6 +183,7 @@ export function serverCallers(o: {
       return {
         principal: caller.principal,
         tenant: caller.tenant,
+        ...(caller.source !== undefined ? { source: caller.source } : {}),
         use: async (fn) => {
           const lend = (retryOnLost: boolean) =>
             serving(() =>
