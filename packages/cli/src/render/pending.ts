@@ -215,6 +215,11 @@ export function pendingDetail(r: PendingDetailResult, now: Date): Line[] {
     }
     const prev = obj(x["previous"]);
     out.push(t`  before both: ${sideOf(prev)} (${op(prev["seq"])})`);
+    // Part of the merge base a deletion has since removed: not "no value then".
+    if (prev["partially_deleted"] === true)
+      out.push(
+        t`    part of it has since been deleted and is left out; take_previous writes back what is there after the deletion`,
+      );
     const reverted = arr(x["reverted_by_previous"]);
     if (reverted.length > 0) {
       out.push(t`  take_previous would undo: ${join(reverted.map(revertedWrite), t`; `)}`);

@@ -377,6 +377,8 @@ pi_7C… 冲突 · runs r_01JC… distance · 已挂 1 天 · 版本 iv_4f…
   可选：keep_effective（保持 5 km）/ take_candidate candidate=0 或 1 / take_previous（回到 #41 时的 15 km，会回掉 #57）
 ```
 
+`previous` 带 `partially_deleted` 时，在合并基那一行与 `take_previous` 的说明里写明"其中一部分之后被删除了、没有列出，take_previous 写回的是删除之后那里的状态"，不让缺着的字段看起来像"当时没有值"。
+
 待确认事项的详情必须写出 `impact`（会被覆盖的段 / 会被填掉的空洞 / 会被回掉的写入 / 仍引用该行的行），与写入回执给的一样多：
 
 ```

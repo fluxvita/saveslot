@@ -24,14 +24,19 @@ import {
 import type { ReadTx } from "../store/ports.ts";
 import { decode, selectOf } from "./select.ts";
 
-/** The cells of one row or entity in effect after operation `s` (that operation included). */
+/**
+ * The cells of one row or entity in effect after operation `s` (that operation included).
+ * `withheld`: read whether each cell's value a deletion removed, for a past operation (the merge
+ * base): such a cell's field is then left out of the values (03-data-model/03-deletion «版本表»).
+ */
 export function rowCellsAsOf(
   tx: ReadTx,
   t: CompiledBaseTable,
   id: string,
   s: number,
+  o: { readonly withheld?: boolean } = {},
 ): Promise<RowCell[]> {
-  return rowCellsAt(tx, t, id, s);
+  return rowCellsAt(tx, t, id, s, o);
 }
 
 const cellValue = (f: CompiledBaseField, c: RowCell): FieldValue =>
@@ -46,6 +51,8 @@ export interface Piece {
   readonly to: string | null;
   readonly values: Readonly<Record<string, FieldValue>> | null;
   readonly op?: number;
+  /** A field's value here a deletion removed: left out of `values`. */
+  readonly withheld?: true;
 }
 
 /** The fields a unit reads: its own, or every field for "existence". */
@@ -53,7 +60,10 @@ function fieldsOf(t: CompiledBaseTable, unit: readonly string[]): CompiledBaseFi
   return unit.includes("existence") ? [...t.fields] : t.fields.filter((f) => unit.includes(f.id));
 }
 
-/** The values of `fields` from `cells` (by name), or null when none of them has a cell. */
+/**
+ * The values of `fields` from `cells` (by name), or null when none of them has a cell. A field
+ * whose cell is withheld is left out (not null, which reads as empty).
+ */
 function valuesFrom(
   fields: readonly CompiledBaseField[],
   cells: readonly RowCell[],
@@ -63,10 +73,15 @@ function valuesFrom(
   const values: Record<string, FieldValue> = Object.create(null);
   for (const f of fields) {
     const c = mine.find((x) => x.field_id === f.id);
+    if (c?.withheld === true) continue;
     values[f.name] = c === undefined ? null : cellValue(f, c);
   }
   return values;
 }
+
+/** Whether any of `fields` has a withheld cell among `cells`. */
+const withheldIn = (fields: readonly CompiledBaseField[], cells: readonly RowCell[]): boolean =>
+  cells.some((c) => c.withheld === true && fields.some((f) => f.id === c.field_id));
 
 /** A state entity's pieces over `spans`: pieces with the same values and write run together. */
 export function piecesOver(
@@ -79,17 +94,20 @@ export function piecesOver(
   const out: Piece[] = [];
   for (const s of stretchesOver(t, cells, spans, unit)) {
     const op = s.giver === undefined ? undefined : opOfCell(s.giver);
+    const valued = !(s.revoked || s.noValue);
     const piece: Piece = {
       from: s.from,
       to: s.to,
-      values: s.revoked || s.noValue ? null : valuesFrom(fields, s.cells),
+      values: valued ? valuesFrom(fields, s.cells) : null,
       ...(op !== undefined ? { op } : {}),
+      ...(valued && withheldIn(fields, s.cells) ? { withheld: true as const } : {}),
     };
     const last = out.at(-1);
     if (
       last !== undefined &&
       last.to === piece.from &&
       last.op === piece.op &&
+      last.withheld === piece.withheld &&
       JSON.stringify(last.values) === JSON.stringify(piece.values)
     )
       out[out.length - 1] = { ...last, to: piece.to };
@@ -103,15 +121,17 @@ export function rowOf(
   t: CompiledBaseTable,
   cells: readonly RowCell[],
   unit: readonly string[],
-): { exists: boolean; values?: Record<string, FieldValue>; op?: number } {
+): { exists: boolean; values?: Record<string, FieldValue>; op?: number; withheld?: true } {
   const row = rowStateOf(cells, unit);
   const op = row.giver === undefined ? undefined : opOfCell(row.giver);
   if (row.revoked) return { exists: false, ...(op !== undefined ? { op } : {}) };
   if (cells.length === 0) return { exists: false };
-  const values = valuesFrom(fieldsOf(t, unit), cells);
+  const fields = fieldsOf(t, unit);
+  const values = valuesFrom(fields, cells);
   return {
     exists: true,
     ...(values !== null ? { values } : {}),
     ...(op !== undefined ? { op } : {}),
+    ...(withheldIn(fields, cells) ? { withheld: true as const } : {}),
   };
 }
