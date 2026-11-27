@@ -2,7 +2,7 @@
 
 English · [简体中文](CONTRIBUTING.zh-CN.md)
 
-The full contributor guide is [`docs/guide/12-contributing.md`](docs/guide/12-contributing.md) ([中文](docs/zh-CN/guide/12-contributing.md)). This page lists the essentials.
+The full contributor guide is [`docs/guide/12-contributing.md`](docs/guide/12-contributing.md) ([中文](docs/zh-CN/guide/12-contributing.md)). This page lists the essentials. To set up, run the checks and make a first change, follow [`docs/development.md`](docs/development.md).
 
 ## Workflow
 
