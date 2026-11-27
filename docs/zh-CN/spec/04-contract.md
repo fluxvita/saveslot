@@ -733,6 +733,7 @@
 - **`warnings[]`**：与本次调用的某个部分有关的结构化提醒；码表见 types 第 7 节。
 - **`notices[]`**：与本次调用相关的提示，最多 3 条；码表见 types 第 7 节。几种提示的次序是 `deletion_overdue`、`migration_progress`、`schema_updated`、`pending_items`，同一种之内按各自的次序；合起来超过 3 条时按这个次序截断。每一种提示都只按可见范围计算，范围外的 slot 不出现在任何提示里。"相关"指本次调用涉及的 slot：`catalog` 列出或点到的 slot、`query` / `history` 读的表所在的 slot、`write` 写的表所在的 slot、`resolve` 处理的事项所在的 slot、`schema_draft` 新建的 slot。提示按此刻的状态算，计算本身不记进读取记录；报错的结果不带提示。
 - **`replayed`**：幂等重放时为 true。
+- **调用 ID**（服务器模式）：每次契约调用有一个 ID（`call_` 加 32 位十六进制）。HTTP 面用应答头 `Saveslot-Call` 把它回给调用方（[`05-surfaces.md`](05-surfaces.md)「HTTP」），与部署方开启的调用记录里那一条的 `call` 相同（architecture §9「调用记录」）。它不在结果里；MCP 上不给。只增不改：不认识这个头的客户端不受影响。
 
 ## 14. 幂等
 

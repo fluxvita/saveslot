@@ -733,6 +733,7 @@ For the shape of the error object, the fields each error code carries, and which
 - **`warnings[]`**: structured warnings tied to some part of this call; for the code table see types section 7.
 - **`notices[]`**: notices relevant to this call, at most 3; for the code table see types section 7. The order of the kinds of notice is `deletion_overdue`, `migration_progress`, `schema_updated`, `pending_items`, and within one kind by that kind's own order; when together they exceed 3, they are cut off in this order. Every kind of notice is computed only over the visible range, and a slot out of range appears in no notice. "Relevant" means the slots this call involves: the slots that `catalog` lists or points to, the slot of the tables `query` / `history` reads, the slot of the tables `write` writes, the slot of the item `resolve` handles, the slot `schema_draft` creates. Notices are computed from the state at this moment, and the computation itself is not recorded in the read record; an error result carries no notices.
 - **`replayed`**: true on an idempotent replay.
+- **Call ID** (server mode): each contract call has an ID (`call_` and 32 hexadecimal characters). The HTTP surface gives it back to the caller in the response header `Saveslot-Call` ([`05-surfaces.md`](05-surfaces.md) "HTTP"), the same as the `call` of its record in the call records the deployer turns on (architecture §9 "Call records"). It is not in the result; not on MCP. Additive only: a client that does not know the header is not affected.
 
 ## 14. Idempotency
 
