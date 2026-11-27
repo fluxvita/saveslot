@@ -27,6 +27,13 @@ export interface TenantEntry {
    * until that is dropped (server mode; 02-architecture §5, §8).
    */
   readonly staging?: string;
+  /**
+   * The import holding the tenant (server mode, 02-architecture §5 `tenants`): written before the
+   * import's first step under its holder lock, cleared last. Present and the lock held by another
+   * session: the tenant is being imported into; present and the lock free: the import's process
+   * ended, and the finder finishes it (§8).
+   */
+  readonly importHolder?: string;
 }
 
 /** What a token's hash stands for. The scopes and the slot range are not here: they are the log's. */

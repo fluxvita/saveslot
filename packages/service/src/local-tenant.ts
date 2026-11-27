@@ -261,6 +261,14 @@ export async function closeLocalTenant(
   // No data directory or restore point: a server tenant is closed here too (tenant-pool.ts).
   t: Pick<LocalTenant, "tenant" | "user" | "store" | "anchor">,
   now: string = new Date().toISOString(),
+  o: {
+    /**
+     * False for a storage that is no longer the tenant's (the server mode: the database an
+     * import's swap replaced): its log's end is not the tenant's, and the high water is not pushed
+     * by it (02-architecture §8 «格式版本、导出、导入与恢复»).
+     */
+    readonly advanceHighWater?: boolean;
+  } = {},
 ): Promise<{ readsError?: unknown; highWaterError?: unknown }> {
   let readsError: unknown;
   try {
@@ -270,8 +278,10 @@ export async function closeLocalTenant(
   }
   let highWaterError: unknown;
   try {
-    const tail = await t.store.read((tx) => readTail(tx));
-    if (tail !== undefined) await t.anchor.advanceHighWater(t.tenant, tail.seq);
+    if (o.advanceHighWater !== false) {
+      const tail = await t.store.read((tx) => readTail(tx));
+      if (tail !== undefined) await t.anchor.advanceHighWater(t.tenant, tail.seq);
+    }
   } catch (e) {
     highWaterError = e;
   }

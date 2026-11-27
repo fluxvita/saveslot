@@ -14,6 +14,7 @@ export * from "./cursor.ts";
 export * from "./external-config.ts";
 export * from "./external-identity.ts";
 export * from "./identity.ts";
+export * from "./import-holders.ts";
 export * from "./local-accounts.ts";
 export * from "./local-backup.ts";
 export * from "./local-connections.ts";

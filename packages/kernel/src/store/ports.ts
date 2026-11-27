@@ -65,6 +65,17 @@ export interface TenantStore {
    * (the server mode, PostgreSQL); absent: it is kept in the read buffer (the local mode, PGlite).
    */
   recordReads?<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
+  /**
+   * Step ④ of an import, the server mode's (PostgreSQL; 02-architecture §8 «格式版本、导出、导入与恢复»):
+   * one write transaction that takes the tenant's lock, checks the log holds the genesis event
+   * only, and records the seal in `meta`. From its commit every write of the tenant is refused, in
+   * any process, until the swap replaces the storage or `unseal` lifts it. `not_empty` when the log
+   * holds more: nothing written. Absent (PGlite): the local mode has one process, and ④ checks the
+   * log with a read.
+   */
+  seal?(importId: string): Promise<"sealed" | "not_empty">;
+  /** Lifts the seal (an import rolled back before its swap); nothing when there is none. */
+  unseal?(): Promise<void>;
   /** Read transaction; on PGlite it goes through the same queue as writes. */
   read<T>(fn: (tx: ReadTx) => Promise<T>): Promise<T>;
   /** Removes plaintext residue after a physical deletion. Each backend's method is set by experiment 7. */

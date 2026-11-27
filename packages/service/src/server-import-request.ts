@@ -45,6 +45,7 @@ export async function importServerRequest(
       body: bodyWithin(o.body, o.bodyIdleMs ?? IMPORT_BODY_IDLE_MS, o.signal),
       now: o.now,
       ...(o.onDiscardFailure !== undefined ? { onDiscardFailure: o.onDiscardFailure } : {}),
+      ...(o.holders !== undefined ? { holders: o.holders } : {}),
     });
     return r.contract;
   } catch (e) {

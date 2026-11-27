@@ -65,6 +65,7 @@ import {
   CursorKeys,
   checkAudience,
   checkConfigFingerprint,
+  controlImportHolders,
   type DiscardDatabase,
   type FingerprintDifference,
   fingerprintOf,
@@ -423,7 +424,12 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         items: checked.differences.map((d) => d.item).join(","),
       });
     }
+    // The imports' holders across processes (02-architecture §8 «格式版本、导出、导入与恢复»): a
+    // connection of the control database of each import's own, its lock released with it.
+    const openControl = o.openControl ?? ((at) => openControlDatabase(at.cell, at.database));
+    const holders = controlImportHolders({ db, open: () => openControl(config.control) });
     pool = new TenantPool({
+      holders,
       control,
       backend,
       idleMs: o.idleMs ?? config.tenants.idleSeconds * 1000,
@@ -512,6 +518,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
             signal: abort.signal,
             ...(o.importBodyIdleMs !== undefined ? { bodyIdleMs: o.importBodyIdleMs } : {}),
             onDiscardFailure: (tenant) => warn("tenant_staging_left", { tenant }),
+            holders,
           });
         } finally {
           imports.delete(abort);
