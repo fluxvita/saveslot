@@ -546,7 +546,8 @@ export function changesResult(r: ChangesResult): Line[] {
       join(
         (Array.isArray(v) ? v : [v]).map((c0) => {
           const c = obj(c0);
-          const period = isObj(c["valid"]) ? t` (${periodOf(c["valid"])})` : [];
+          // An end left out (from content a deletion removed) is "(deleted)", not open.
+          const period = isObj(c["valid"]) ? t` (${rowPeriodOf(obj(c["valid"]))})` : [];
           if (f === "*") return t`${c["before"] === true ? t`revoked` : t`restored`}${period}`;
           const change =
             Object.hasOwn(c, "before") || (deleted && x["intent"] !== "insert")

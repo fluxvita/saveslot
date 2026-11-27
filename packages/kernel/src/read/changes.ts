@@ -31,8 +31,9 @@ import { stateFromCells, targetDelta } from "../delta/index.ts";
 import { actorsNow } from "../pending/index.ts";
 import { get, has, isJsonNumber, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { cellWithheld, withholdingIn } from "../store/readable-content.ts";
+import { cellEnds, cellWithheld, withholdingIn } from "../store/readable-content.ts";
 import { type ValueOut, valueOut } from "../time/index.ts";
+import { type CellEnds, targetEndWithheld } from "./ends.ts";
 import {
   type HistoryInput,
   type HistoryOutput,
@@ -49,6 +50,7 @@ import {
   type Actor,
   type ChangedField,
   type ChangeEntry,
+  type ChangeInterval,
   type ChangesResult,
   type Interval,
   invalid,
@@ -61,6 +63,8 @@ type Cell = RowCell & {
   rec_to: unknown;
   intent: string;
   src_event: unknown;
+  /** Where its ends came from (`cellEnds`): null when nothing is withheld, or not a state table. */
+  ends: CellEnds | null;
 };
 
 /**
@@ -255,6 +259,7 @@ export async function changesInTx(
   // any point of it.
   const byRow = new Map<string, Cell[]>();
   if (until > since) {
+    const withholding = await withholdingIn(tx);
     const only = target.id === undefined ? "" : " AND row_id = $3";
     const touched = await tx.query<{ row_id: string }>(
       `SELECT DISTINCT row_id FROM ${versions}
@@ -264,7 +269,8 @@ export async function changesInTx(
     if (touched.rows.length > 0) {
       const r = await tx.query<Cell>(
         `SELECT row_id, field_id, ${interval}, rec_from, rec_to, intent, src_event, revoked, no_value,
-           ${cellWithheld("v", await withholdingIn(tx))} AS withheld, ${columns.join(", ")}
+           ${cellWithheld("v", withholding)} AS withheld,
+           ${state ? cellEnds("v", withholding) : "NULL"} AS ends, ${columns.join(", ")}
          FROM ${versions} v
          WHERE row_id = ANY($3) AND rec_from <= $2 AND (rec_to IS NULL OR rec_to > $1)`,
         [since, until, touched.rows.map((x) => x.row_id)] as never,
@@ -278,12 +284,39 @@ export async function changesInTx(
     v === "-infinity" || v === "infinity" ? null : v;
   const valid = (from: string | null, to: string | null): Interval =>
     intervalOf(open(from), open(to), byDate);
+  /**
+   * A stretch's interval with an end left out where it came from content a deletion still
+   * pending removed, judged on the target's cells after the operation, else before it (the
+   * decision on interval ends, §3): the entry is marked then.
+   */
+  const validOf = (
+    sides: readonly (readonly Cell[])[],
+    target: string,
+    from: string | null,
+    to: string | null,
+  ): ChangeInterval => {
+    const whole = valid(from, to);
+    const fromGone = from !== null && targetEndWithheld(sides, target, from, true);
+    const toGone = targetEndWithheld(sides, target, open(to), false);
+    if (!fromGone && !toGone) return whole;
+    partial = true;
+    const { valid_from, valid_to, valid_to_inclusive, ...rest } = whole as Interval & {
+      valid_to_inclusive?: string;
+    };
+    return {
+      ...rest,
+      ...(fromGone ? {} : { valid_from }),
+      ...(toGone
+        ? {}
+        : { valid_to, ...(valid_to_inclusive !== undefined ? { valid_to_inclusive } : {}) }),
+    } as ChangeInterval;
+  };
 
   interface Change {
     readonly op: number;
     readonly row: string;
     readonly intent: string;
-    readonly fields: Record<string, ChangedField | (ChangedField & { valid: Interval })[]>;
+    readonly fields: Record<string, ChangedField | (ChangedField & { valid: ChangeInterval })[]>;
     readonly partial?: true;
   }
   const found: Change[] = [];
@@ -316,9 +349,13 @@ export async function changesInTx(
       const options = { decode: decodeOrPlaceholder } as const;
       // `delta` counts existence (a revoke, or its taking back) and the fields apart.
       const delta = new Map(
-        targetDelta(stateFromCells(t, before, options), stateFromCells(t, after, options)).flatMap(
-          (d) => (d.comparable ? [[d.field, d] as const] : []),
-        ),
+        targetDelta(
+          stateFromCells(t, before, options),
+          stateFromCells(t, after, options),
+          // Two withheld values run together: a cut only inside removed content is not one
+          // (the decision on interval ends, §3); a change is still judged by each its own.
+          (x, y) => isPlaceholder(x) && isPlaceholder(y),
+        ).flatMap((d) => (d.comparable ? [[d.field, d] as const] : [])),
       );
       const existence = delta.get("existence");
       if (!state) {
@@ -357,14 +394,14 @@ export async function changesInTx(
           fields["*"] = gone.map((p) => ({
             before: p.before,
             after: p.after,
-            valid: valid(p.from, p.to),
+            valid: validOf([after, before], "existence", p.from, p.to),
           }));
         for (const f of t.fields) {
           const stretches = delta.get(f.id)?.stretches;
           if (stretches !== undefined && stretches.length > 0)
             fields[f.name] = stretches.map((p) => ({
               ...changed(p.before ?? null, p.after ?? null),
-              valid: valid(p.from, p.to),
+              valid: validOf([after, before], f.id, p.from, p.to),
             }));
         }
       }

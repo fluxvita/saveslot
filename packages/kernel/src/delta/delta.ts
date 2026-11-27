@@ -34,9 +34,17 @@ function judge(b: Side, a: Side): Change {
   return !sameValue(b.value, a.value) ? "value" : b.source !== a.source ? "source_only" : "none";
 }
 
-/** Whether two sides of a stretch hold the same: both without a value, or both with the same one. */
-const sameSide = (x: FieldValue | undefined, y: FieldValue | undefined): boolean =>
-  x === undefined || y === undefined ? x === y : sameValue(x, y);
+/**
+ * Whether two sides of a stretch hold the same: both without a value, or both with the same one;
+ * or two values `alike` says read the same (`changes`: two values a deletion withheld, which say
+ * nothing of themselves, so a cut between them is not a change of what is read).
+ */
+const sameSide = (
+  x: FieldValue | undefined,
+  y: FieldValue | undefined,
+  alike?: (a: FieldValue, b: FieldValue) => boolean,
+): boolean =>
+  x === undefined || y === undefined ? x === y : sameValue(x, y) || alike?.(x, y) === true;
 
 /** The members of `v` that are there: `{ before }` is not given for a side with no value. */
 const given = (before: Side, after: Side) => ({
@@ -66,6 +74,7 @@ function stretchesOf(
   before: readonly EntitySegment[],
   after: readonly EntitySegment[],
   points: readonly BizTime[],
+  alike?: (a: FieldValue, b: FieldValue) => boolean,
 ): Stretch[] {
   const side = (segs: readonly EntitySegment[], p: BizTime): Side => {
     const s = segmentAt(segs, p);
@@ -86,8 +95,8 @@ function stretchesOf(
       last !== undefined &&
       last.to === from &&
       last.change === change &&
-      sameSide(last.before, b?.value) &&
-      sameSide(last.after, a?.value)
+      sameSide(last.before, b?.value, alike) &&
+      sameSide(last.after, a?.value, alike)
     )
       out[out.length - 1] = { ...last, to };
     else out.push({ from, to, change: change as Stretch["change"], ...given(b, a) });
@@ -173,7 +182,12 @@ function existenceStretches(
  * `comparable: false` is for a position whose content is deleted or pending deletion (P3); this
  * version never gives it.
  */
-export function targetDelta(before: TargetState, after: TargetState): FieldDelta[] {
+export function targetDelta(
+  before: TargetState,
+  after: TargetState,
+  /** Values that read the same when stretches run together, not when a change is judged. */
+  alike?: (a: FieldValue, b: FieldValue) => boolean,
+): FieldDelta[] {
   if (before.kind === "row" && after.kind === "row") {
     const [bp, ap] = [before.presence, after.presence];
     if (ap === "absent" && bp !== "absent")
@@ -217,7 +231,7 @@ export function targetDelta(before: TargetState, after: TargetState): FieldDelta
       ...new Set([...before.segments, ...after.segments].flatMap((s) => Object.keys(s.values))),
     ].sort(byName) as FieldId[];
     for (const f of ids) {
-      const stretches = stretchesOf(f, before.segments, after.segments, points);
+      const stretches = stretchesOf(f, before.segments, after.segments, points, alike);
       if (stretches.length === 0) continue;
       out.push({
         comparable: true,

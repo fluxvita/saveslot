@@ -81,6 +81,18 @@ export interface Interval {
   valid_to_inclusive?: DateStr;
 }
 
+/**
+ * 04-contract-types §1.3 `ChangeInterval`: a `history` `changes` entry's interval. As `Interval`,
+ * but an end that came from content a deletion still pending removed is left out (left out is not
+ * `null`, which is open; `valid_to_inclusive` goes with `valid_to`), the entry then marked
+ * `partially_deleted`.
+ */
+export interface ChangeInterval {
+  valid_from?: BizTime | null;
+  valid_to?: BizTime | null;
+  valid_to_inclusive?: DateStr;
+}
+
 // ---------------------------------------------------------------------------------------------
 // §1.4 Values
 
