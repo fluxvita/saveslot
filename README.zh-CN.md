@@ -86,6 +86,8 @@ Agent 经 MCP 连 saveslot：本机经 `saveslot mcp`，服务器模式走远程
 
 讲解与规格不一致时以规格为准。
 
+要把 Agent 或程序接到 saveslot 上，从[接入指南](docs/zh-CN/integration/README.md)开始。
+
 ## 求助与参与
 
 - 提问去 [Discussions](https://github.com/fluxvita/saveslot/discussions)，缺陷与任务提 [Issues](https://github.com/fluxvita/saveslot/issues)，见 [`SUPPORT.md`](SUPPORT.md)。

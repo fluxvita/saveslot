@@ -39,6 +39,7 @@ const TRANSLATED = [
   "docs/guide/",
   "docs/process/",
   "docs/research/",
+  "docs/integration/",
   "docs/development.md",
 ];
 

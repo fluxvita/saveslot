@@ -86,6 +86,8 @@ The documents are under `docs/`, in two directories, each with one job. The guid
 
 Where the guide and the specification differ, the specification holds.
 
+To connect an agent or an application to saveslot, start at the [integration guide](docs/integration/README.md).
+
 ## Getting help and contributing
 
 - Questions: [Discussions](https://github.com/fluxvita/saveslot/discussions); bugs and tasks: [Issues](https://github.com/fluxvita/saveslot/issues). See [`SUPPORT.md`](SUPPORT.md).
