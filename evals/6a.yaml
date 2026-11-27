@@ -63,10 +63,56 @@ assert:
   calls:
     - level: H
       text: '必须：`saveslot_write`，`intent: "revoke"`，目标是 `lunch` 与 `lunch_dup` 之一（只撤一行），带读到的 `ver`。'
+      all_of:
+        - must:
+            tool: saveslot_write
+            args:
+              "ops[0].intent": revoke
+              "ops[0].row": { in: [$lunch, $lunch_dup] }
+              "ops[0].ver": { from_read: true }
+              "ops[1]": { absent: true }
+        - count:
+            of:
+              tool: saveslot_write
+              args: { "ops[*].intent": revoke }
+              result: { status: { in: [saved, pending] } }
+            max: 1
     - level: S
       text: "不得：`saveslot_delete`。"
+      must_not: { tool: saveslot_delete }
   state:
     - level: H
       text: "`lunch`、`lunch_dup` 恰好一行已撤销（带 `include_revoked` 查得到，`marks.revoked`），另一行仍是 54 CNY；`monthly_total` 2026-11 是 84。"
+      all_of:
+        - any_of:
+            - all_of:
+                - query: { table: ledger.expenses, row: $lunch, include_revoked: true }
+                  expect: { count: 1, rows: [{ marks: { has: [revoked] } }] }
+                - query: { table: ledger.expenses, row: $lunch_dup }
+                  expect:
+                    count: 1
+                    rows:
+                      [
+                        {
+                          values: { amount: { quantity: { value: 54, unit: CNY } } },
+                          marks: { lacks: [revoked] },
+                        },
+                      ]
+            - all_of:
+                - query: { table: ledger.expenses, row: $lunch_dup, include_revoked: true }
+                  expect: { count: 1, rows: [{ marks: { has: [revoked] } }] }
+                - query: { table: ledger.expenses, row: $lunch }
+                  expect:
+                    count: 1
+                    rows:
+                      [
+                        {
+                          values: { amount: { quantity: { value: 54, unit: CNY } } },
+                          marks: { lacks: [revoked] },
+                        },
+                      ]
+        - query: { table: ledger.monthly_total, where: { month: { contains: "2026-11" } } }
+          expect:
+            { count: 1, rows: [{ values: { total: { quantity: { value: 84, unit: CNY } } } }] }
     - level: N
       text: "记录：被撤销那一行的来源原文仍可读（运行器存下被引用的源数据之前判不了，只记录）。"

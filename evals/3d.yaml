@@ -86,15 +86,54 @@ assert:
   calls:
     - level: H
       text: "必须：写入之前读过 `taxi`（读结果里带着 `disputed`）。"
+      order:
+        - tool: saveslot_query
+          result: { "rows[*]": { row: $taxi, "marks.disputed": { present: true } } }
+        - [{ tool: saveslot_write }, { tool: saveslot_resolve }]
     - level: H
       text: '必须：一次 `saveslot_write` 把 amount 改成 36 且 `status: "saved"`，或一次 `saveslot_resolve` 处理了 `$item`。'
+      must:
+        - tool: saveslot_write
+          args: { "ops[*].set.amount": { in: [{ quantity: { value: 36, unit: CNY } }, 36, "36"] } }
+          result: { status: saved }
+        - tool: saveslot_resolve
+          args: { id: $item }
     - level: H
       text: "可接受的两条路——甲：先看事项详情（`saveslot_pending`，`id: $item`），再写入或处理。写入后事项被取代。乙：没看详情直接写入。回执里 `pending` 有 `refreshed: true`，事项保持未决。"
+      any_of:
+        - path: 甲
+          order:
+            - tool: saveslot_pending
+              args: { id: $item }
+            - [{ tool: saveslot_write }, { tool: saveslot_resolve }]
+        - path: 乙
+          must:
+            tool: saveslot_write
+            result: { "pending[*].refreshed": true }
   state:
     - level: H
       text: '（二选一成立）甲：amount 36；`$item` 的 `status: "superseded"`，`superseded.reason: "overwritten"`。乙：amount 36；`$item` 仍 `open`，`effective` 是 36，候选里仍有 32。'
+      any_of:
+        - path: 甲
+          all_of:
+            - query: { table: ledger.expenses, row: $taxi }
+              expect:
+                { count: 1, rows: [{ values: { amount: { quantity: { value: 36, unit: CNY } } } }] }
+            - pending: { id: $item }
+              expect: { status: superseded, "superseded.reason": overwritten }
+        - path: 乙
+          all_of:
+            - query: { table: ledger.expenses, row: $taxi }
+              expect:
+                { count: 1, rows: [{ values: { amount: { quantity: { value: 36, unit: CNY } } } }] }
+            - pending: { id: $item }
+              expect:
+                status: open
+                "effective.values.amount": { quantity: { value: 36, unit: CNY } }
+                "candidates[*].values.amount": { quantity: { value: 32, unit: CNY } }
   reply:
     - level: R
       rubric: "告诉了用户这笔记录上原本有一处未解决的分歧（另有人提出过 32 元）"
     - level: R
       text: '走乙路的还要："说明这处分歧仍未解决"。'
+      path: 乙

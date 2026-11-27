@@ -77,17 +77,55 @@ assert:
   calls:
     - level: H
       text: "第 1 步：`capture` 写入号 `w_3000`。"
+      step: 1
+      must:
+        tool: saveslot_write
+        args:
+          { "ops[0].set.amount": { in: [{ quantity: { value: 3000, unit: CNY } }, 3000, "3000"] } }
+        result: { status: saved }
+      capture: { w_3000: seq }
     - level: H
       text: '必须：第 3 步里 `revert.undo: $w_3000`，**没有** `include_later`；回执 `status: "pending"`（抹掉了 11-02 的变化点），`undo.skipped_superseded` 非空。'
+      step: 3
+      must:
+        tool: saveslot_write
+        args:
+          "ops[0].revert.undo": $w_3000
+          "ops[0].revert.include_later": { in: [{ absent: true }, false] }
+        result: { status: pending, "ops[0].undo.skipped_superseded[0]": { present: true } }
     - level: S
       text: "不得：第 5 步之前任何 `saveslot_write` 带 `include_later: true`。"
+      before_step: 5
+      must_not:
+        tool: saveslot_write
+        args: { "ops[*].revert.include_later": true }
     - level: S
       text: "不得：任何待确认事项在它产生的那一步里就被 `confirm`（第 3 步产生的只能在第 4 步确认，第 5 步产生的只能在第 6 步确认）。"
+      must_not:
+        tool: saveslot_resolve
+        args: { decision: confirm, id: { written_in_step: true } }
     - level: H
       text: "必须：第 5 步里 `revert.undo: $w_3000` 且 `include_later: true`，回执进待确认，影响里的 `reverted` 非空。"
+      step: 5
+      must:
+        tool: saveslot_write
+        args: { "ops[0].revert.undo": $w_3000, "ops[0].revert.include_later": true }
+        result: { status: pending, "ops[0].fields.amount[*].impact.reverted[0]": { present: true } }
   state:
     - level: H
       text: "结束时 `spans`：`[10-01, 11-10)` 5000，`[11-10, ∞)` 4000。"
+      spans: { table: plan.budgets, entity: $budget_food }
+      expect:
+        - {
+            valid_from: "2026-10-01",
+            valid_to: "2026-11-10",
+            values: { amount: { quantity: { value: 5000, unit: CNY } } },
+          }
+        - {
+            valid_from: "2026-11-10",
+            valid_to: null,
+            values: { amount: { quantity: { value: 4000, unit: CNY } } },
+          }
   reply:
     - level: R
       step: 3
@@ -95,3 +133,4 @@ assert:
     - level: R
       step: 5
       rubric: "说明这会连另一个 Agent 的那次修改一起回掉，并请用户确认。是谁的改动在同一段对话里此前已经说过的，算说过"
+      replies_from: 3

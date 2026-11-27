@@ -1,6 +1,7 @@
 // Each assertion's level (docs/zh-CN/spec/10-evals.md §2.4): S, H and R are judged and count
-// towards the pass line; N is only recorded. The runner judges none of them, but a level written
-// wrong would be judged wrong later, so a variant with another value, or none, is refused.
+// towards the pass line; N is only recorded. The fixture runner judges none of them (./judge.ts
+// does, from the kept run), but a level written wrong would be judged wrong, so a variant with
+// another value, or none, is refused.
 
 export const LEVELS = ["S", "H", "R", "N"] as const;
 

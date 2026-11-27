@@ -77,15 +77,29 @@ assert:
   calls:
     - level: H
       text: "必须：至少一次 `saveslot_catalog`，且它早于第一次 `saveslot_query` / `saveslot_sql`。"
+      order:
+        - { tool: saveslot_catalog }
+        - { tool: { in: [saveslot_query, saveslot_sql] } }
     - level: H
       text: "必须：至少一次 `saveslot_query` 或 `saveslot_sql`，目标是 `runs` 或 `weekly_mileage`。"
+      must:
+        - tool: saveslot_query
+          args: { table: { in: [health.runs, health.weekly_mileage, runs, weekly_mileage] } }
+        - tool: saveslot_sql
+          args: { sql: { in: [{ contains: runs }, { contains: weekly_mileage }] } }
     - level: H
       text: "不得：任何 `saveslot_write`、`saveslot_resolve`、`saveslot_schema_draft`、`saveslot_delete`。"
+      must_not:
+        tool: { in: [saveslot_write, saveslot_resolve, saveslot_schema_draft, saveslot_delete] }
   state:
     - level: H
       text: "`ops_since_seed`：没有新操作。"
+      ops_since_seed: {}
+      expect: { total: 0 }
     - level: H
       text: "`reads`：连接实例 A 有 `catalog` 与 `query` 或 `sql` 的读取记录。"
+      reads: { connection: A }
+      expect: { operations: [catalog, { in: [query, sql] }] }
   reply:
     - level: R
       mentions: [{ value: 39, unit: [km, 公里] }]

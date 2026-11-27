@@ -77,8 +77,21 @@ assert:
   calls:
     - level: H
       text: "必须：最终有一次成功的 `saveslot_write`，带的 `ver` 是读到的。"
+      must:
+        tool: saveslot_write
+        args: { "ops[0].ver": { from_read: true } }
+        result: { status: saved }
     - level: N
       text: "记录：是否出现过 `read_first`，出现后几次调用内恢复。"
+      must:
+        tool: saveslot_write
+        result: { "error.code": read_first }
   state:
     - level: H
       text: "`run_1105` 的 distance 是 7 km；恰好一次写入生效。"
+      all_of:
+        - query: { table: health.runs, row: $run_1105 }
+          expect:
+            { count: 1, rows: [{ values: { distance: { quantity: { value: 7, unit: km } } } }] }
+        - ops_since_seed: {}
+          expect: { total: 1 }

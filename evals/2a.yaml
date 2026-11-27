@@ -92,8 +92,17 @@ assert:
         args: { "ops[*].intent": { in: [insert, revoke] } }
     - level: H
       text: "必须：写入之前有一次返回了 `run_1103` 的逐行读（`saveslot_query`，或 `saveslot_history` 的时间线）。"
+      order:
+        - - tool: saveslot_query
+            result: { "rows[*].row": $run_1103 }
+          - tool: saveslot_history
+            result: { "target.row": $run_1103 }
+        - { tool: saveslot_write }
     - level: H
       text: '必须：`saveslot_write` 的证据里有一段 `user_message`，文本包含"5 公里"。'
+      must:
+        tool: saveslot_write
+        args: { "evidence[*]": { kind: user_message, text: { contains: "5 公里" } } }
   state:
     - level: H
       query: { table: health.runs, where: { date: "@week-6" } }
@@ -115,6 +124,8 @@ assert:
       expect: { rows: [{ values: { total_distance: { quantity: { value: 21, unit: km } } } }] }
     - level: H
       text: "`ops_since_seed`：恰好一次写入，意图 `correct`。"
+      ops_since_seed: {}
+      expect: { total: 1, intents: { correct: 1 } }
   reply:
     - level: R
       mentions: [{ value: 5, unit: [km, 公里, 千米] }]
