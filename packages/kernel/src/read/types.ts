@@ -280,7 +280,7 @@ export interface SourceRef {
 /** §4.5 `TimelineField`. */
 export interface TimelineField {
   /** §5.1 `TimelineResultCode`. */
-  readonly result: FieldStatus | "dropped";
+  readonly result: FieldStatus | "dropped" | "removed";
   readonly no_value?: true;
   readonly uncovered?: true;
   readonly before?: ValueOut;

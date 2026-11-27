@@ -732,7 +732,7 @@ interface TimelineField {
     uncovered?: true;            // 这一项（回退、回到合并基）只是让被回掉的写入在这一段不再生效，不给值：这一段回到撤销造成的空洞
     before?: Value; after?: Value;
     valid?: Interval;            // 状态类表：这一项解析出的区间（以最近一次给出的为准：写入时，或之后被隐私删除重新解析的）
-    removed?: true;              // 内容已按删除移除
+    removed?: true;              // 内容已按删除移除；此时 result 是 removed
     /** schema_const：这个值出自第 sv 版 schema 切换时的常量 backfill（没有源数据，不随隐私删除清除）。 */
     sources?: { value: SourceRef[]; operation: SourceRef[]; schema_const?: { sv: Sv } };
 }
@@ -1348,8 +1348,11 @@ type FieldResultCode = "applied" | "candidate" | "awaiting" | "corroborated" | "
 
 /** timeline 里一项贡献的结果码。比写入回执多一个 dropped：这一项经一次隐私删除的重放后不再是贡献
  *  （与前面的值相同而当初没指证据；它回掉的那次写入已不在；或它的区间并进了同一字段的另一项）。只出现在 timeline。
- *  不含 noop：无操作不产生版本，timeline 不列无操作的字段。 */
-type TimelineResultCode = Exclude<FieldResultCode, "noop"> | "dropped";
+ *  不含 noop：无操作不产生版本，timeline 不列无操作的字段。
+ *  removed：这一项的内容已按删除移除（宽限期内或已执行），条目同时带 removed: true，两者要么都有要么都没有。
+ *  它与 dropped 不同：dropped 是重放后不再是贡献的上述三种，内容还在；removed 是来源被删、内容读不到，
+ *  被拿走的生效项与证据被删的候选、待确认项都是它。撤回删除之后回到原来的结果码。 */
+type TimelineResultCode = Exclude<FieldResultCode, "noop"> | "dropped" | "removed";
 
 type FieldResult =
   | { result: "applied";
