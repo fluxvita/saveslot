@@ -447,4 +447,35 @@ describe("a state table over an interval streamed at batch boundaries the test s
     const statements = onTable(counted.sent, "t_t2_v1").filter((x) => !x.includes("c_f2_"));
     expect(statements.length).toBeGreaterThan(0);
   });
+
+  // Last in the file: it writes into the shared data.
+  it("gives the marks of the entity the stream stops on, as the whole read does", async () => {
+    // Only `rent`: the entity the stream stops on, and the last of the page. One page holds all
+    // its rows, so that the rows with a mark are on the page read streamed (a later page is read
+    // whole).
+    const params = {
+      table: "budgets",
+      valid_during: during,
+      where: [{ field: "category", op: "=", value: "rent" }],
+      limit: 20,
+    };
+    const rent = ids((await both(params)).full)[0] as string;
+    // A correction of a stretch `rent` has, written without reading it: an item waits on it, and
+    // its rows there carry the item's mark, which the facts give.
+    await w([
+      {
+        intent: "correct",
+        table: "budgets",
+        entity: rent,
+        set: { amount: 77 },
+        valid_from: "2026-11-06",
+        valid_to: "2026-11-08",
+      },
+    ]);
+    for (const page of [2, 4, 200]) {
+      const got = await pages(params, { page });
+      expect(got).toHaveLength(1);
+      expect(got[0]?.result.rows.some((r) => r.marks !== undefined)).toBe(true);
+    }
+  });
 });
