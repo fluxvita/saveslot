@@ -14,6 +14,7 @@ import { type Settled, type SettleItem, settle } from "../apply/settle.ts";
 import { view } from "../judge/judge.ts";
 import { judged, scenario } from "../judge/scenarios.fixture.ts";
 import { EVERYTHING, type RowState } from "../judge/state.ts";
+import { givesVersion } from "../judge/versions.ts";
 import { canonical, type IntervalSet, meet, minus, WHOLE } from "../time/index.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -108,6 +109,23 @@ function merged(xs: readonly Stretch[]): Stretch[] {
 const plain = (v: { exists: boolean; gaps: IntervalSet; fields: object }) =>
   JSON.parse(JSON.stringify({ exists: v.exists, gaps: v.gaps, fields: v.fields })) as unknown;
 
+/** The version-table cells of a settled row/entity, keyed as write-base.ts compares them. */
+const cellKeys = (s: Settled): string =>
+  JSON.stringify(
+    s.cells
+      .map((c) =>
+        JSON.stringify([
+          c.field,
+          c.valid?.from ?? null,
+          c.valid?.to ?? null,
+          c.by === null ? null : [c.by.event, c.by.target, c.by.k],
+          c.noValue === true,
+          c.revoked === true,
+        ]),
+      )
+      .sort(),
+  );
+
 const both = [
   ["state", STATE, true],
   ["event", EVENT, false],
@@ -124,6 +142,7 @@ describe.each(both)("%s table", (_, schema, isState) => {
           const { table, steps } = judged(schema, ops, decisions);
           seen.samples++;
           const sample = { registered: false, revoked: false, gaps: false, uncovered: false };
+          let prevCells: string | undefined;
           steps.forEach((step, n) => {
             const items = settleItems(step.state);
             if (items.some((x) => x.reverted.length > 0)) sample.registered = true;
@@ -132,6 +151,17 @@ describe.each(both)("%s table", (_, schema, isState) => {
               { kind: table.kind, fields: table.fields, required: table.valued },
               items,
             );
+            const nowCells = cellKeys(settled);
+            if (n > 0) {
+              expect({
+                step: n,
+                gives: givesVersion(steps[n - 1]?.state, step),
+              }).toEqual({
+                step: n,
+                gives: nowCells !== prevCells,
+              });
+            }
+            prevCells = nowCells;
             const v = view(step.state);
             const fields = Object.keys(v.fields).sort() as FieldId[];
             if (!v.exists && !isState && settled.rows.length > 0) sample.revoked = true;
