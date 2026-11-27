@@ -1318,9 +1318,9 @@ interface OpResult {
   deletion?: ItemId;             // pending_deletion: the deletion that freezes this key; when several items freeze it at once, the earliest confirmed one is given
   ref_op?: number;               // ref_skipped: the index of the op that the temporary name belongs to
   created_entity?: true;
-  /** When created_entity: the entity keys that already exist in the table, at most 10. Similar keys first, the rest by most recent write. */
+  /** When created_entity: the entity keys that already exist in the table, at most 10. Similar keys first, the rest by most recent write (the entity's latest version, the newest first; "Similar keys" in the data model). */
   existing_keys?: EntityKeyText[];
-  /** When created_entity: existing keys written similarly to the new key, at most 5, ordered by level (fold, affix, edit), edit distance, most recent write, entity ID; not given when there are none.
+  /** When created_entity: existing keys written similarly to the new key, at most 5, ordered by level (fold, affix, edit), edit distance, most recent write (the entity's latest version), entity ID; not given when there are none.
    *  Criterion keymatch@1 ("Similar keys" in the data model). revoked: at the moment of the write this entity has no value at any point in time (revoked as a whole, or interval revokes cover all periods that had values). All of them appear at the start of existing_keys. */
   similar_keys?: Array<{ key: EntityKeyText; match: "fold" | "affix" | "edit"; revoked?: true }>;
   /** Results per field. For revoke, and when the target is "existence", the key is "*". The parts skipped by an undo are not here; they are in undo.skipped_superseded.
