@@ -28,8 +28,17 @@ export interface TranslationProblem {
   reason: string;
 }
 
-/** Directories whose English files are translations of the same path under docs/zh-CN/. */
-const TRANSLATED = ["docs/spec/", "docs/guide/", "docs/process/", "docs/research/"];
+/**
+ * Directories, and single files, whose English files are translations of the same path under
+ * docs/zh-CN/.
+ */
+const TRANSLATED = [
+  "docs/spec/",
+  "docs/guide/",
+  "docs/process/",
+  "docs/research/",
+  "docs/development.md",
+];
 
 /**
  * Chinese directories whose English edition is not required yet. Each entry says why and until

@@ -6,7 +6,7 @@
 
 提交改动的规矩（分支、拉取请求、签名、借助 AI 完成的改动）在 [`CONTRIBUTING.zh-CN.md`](../../CONTRIBUTING.zh-CN.md)，这里不重复。
 
-> **支持的开发环境**：macOS 与 Linux，Node 版本见[搭环境](#搭环境)。搭环境、各项检查、[只跑一个测试](#只跑一个测试)里的命令和演练，最近一次是在 `main` 的 `7285a7c` 之上跑的：macOS（arm64），Node 26.13.1，pnpm 12.14.0；[常见失败](#常见失败)里的各项是在更早的提交 `4d7d334` 上复现的。Linux 上，项目的 CI 在 `node:24` 与 `node:latest` 镜像里跑同一条 `pnpm check`。Windows 没有试过。
+> **支持的开发环境**：macOS 与 Linux，Node 版本见[搭环境](#搭环境)。搭环境、各项检查、[只跑一个测试](#只跑一个测试)里的命令和演练，是在 macOS（arm64）、Node 26.13.1、pnpm 12.14.0 上跑的，[常见失败](#常见失败)里的各项也是。Linux 上，项目的 CI 在 `node:24` 与 `node:latest` 镜像里跑同一条 `pnpm check`。Windows 没有试过。
 
 ## 现在能运行什么
 
@@ -79,7 +79,7 @@ Claims OK: 28 rows, 34 test references (4 to cases that run only under a conditi
 
 ## 各项检查
 
-`pnpm check` 依次跑九步，遇到第一个失败就停。每一步也是一条单独的脚本：
+`pnpm check` 依次跑十一步，遇到第一个失败就停。每一步也是一条单独的脚本：
 
 | 命令 | 验证什么 |
 |---|---|
@@ -92,6 +92,8 @@ Claims OK: 28 rows, 34 test references (4 to cases that run only under a conditi
 | `pnpm docs:json` | Markdown 文件里每个 `json` 代码块都能解析 |
 | `pnpm docs:translations` | 讲解与规格的每份文档都有英文版，英文版写明它的中文来源；英文文档链到的页面有英文版时，链英文版。英文版比中文来源旧的只报告，不算失败 |
 | `pnpm docs:claims` | 断言索引（`docs/zh-CN/spec/11-claims.md`）的每一行都链回规格，写到的每个测试都存在、没有被跳过 |
+| `pnpm docs:spec-refs` | 代码注释里对规格的每一处引用（文件加 `«»` 里的标题，见 [`CONTRIBUTING.zh-CN.md`](../../CONTRIBUTING.zh-CN.md)）写到的文件和标题都存在 |
+| `pnpm conflict-markers` | 受版本管理的文本文件里没有合并冲突留下的行（以 `<<<<<<< ` 或 `>>>>>>> ` 开头） |
 
 它们都不需要数据库，也不需要网络。
 
@@ -242,7 +244,13 @@ Error: Property failed after 4944 tests
 Counterexample: ["00"]
 ```
 
-把这个对象作为选项传给失败的那条性质的 `fc.assert(...)`（和已有的 `numRuns` 写在一起），运行就会直接走到那个样本。提交之前把它去掉。报告这次失败时，把 seed、path 和反例写进 Issue 或拉取请求。
+很多性质测试文件从 `PROP_SEED` 读 seed，其中一部分还从 `PROP_PATH` 读 path，读不读看文件开头。这样的文件不用改测试，直接重放那个样本：
+
+```sh
+PROP_SEED=<seed> PROP_PATH="<path>" pnpm vitest run <the failing *.prop.test.ts>
+```
+
+不读这两个变量的文件要改测试：把这个对象作为选项传给失败的那条性质的 `fc.assert(...)`（和已有的 `numRuns` 写在一起），运行就会直接走到那个样本。提交之前把它去掉。报告这次失败时，把 seed、path 和反例写进 Issue 或拉取请求。
 
 **多跑一些样本。** 性质测试把 `PROP_RUNS` 当作样本数：
 

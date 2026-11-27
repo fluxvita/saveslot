@@ -1,12 +1,14 @@
 # Development guide
 
+> Translated from docs/zh-CN/development.md, updated in the same commit as this file.
+
 English · [简体中文](zh-CN/development.md)
 
 This page takes you from a fresh clone to a validated change: set up, run the checks, find where a change belongs, rehearse one small fix, debug a failure. It is for people who change this repository. To use saveslot with an agent instead, start from [Try it](../README.md#try-it-local-mode) in the README.
 
 The rules for submitting a change (branches, pull requests, sign-off, AI-assisted work) are in [`CONTRIBUTING.md`](../CONTRIBUTING.md). This page does not repeat them.
 
-> **Supported for development:** macOS and Linux, with the Node versions in [Set up](#set-up). The setup, the checks, the commands under [Run one test](#run-one-test) and the walkthrough were last run on top of `main` at `7285a7c` on macOS (arm64) with Node 26.13.1 and pnpm 12.14.0; the failures in [Common failures](#common-failures) were reproduced at the earlier commit `4d7d334`. On Linux, the project's CI runs the same `pnpm check` in the `node:24` and `node:latest` images. Windows has not been tried.
+> **Supported for development:** macOS and Linux, with the Node versions in [Set up](#set-up). The setup, the checks, the commands under [Run one test](#run-one-test) and the walkthrough were run on macOS (arm64) with Node 26.13.1 and pnpm 12.14.0, and so were the failures in [Common failures](#common-failures). On Linux, the project's CI runs the same `pnpm check` in the `node:24` and `node:latest` images. Windows has not been tried.
 
 ## What runs today
 
@@ -79,7 +81,7 @@ The counts grow as the code does; what matters is that every step passes and the
 
 ## The checks
 
-`pnpm check` runs nine steps in order and stops at the first failure. Each is also a script of its own:
+`pnpm check` runs eleven steps in order and stops at the first failure. Each is also a script of its own:
 
 | Command | What it verifies |
 |---|---|
@@ -92,6 +94,8 @@ The counts grow as the code does; what matters is that every step passes and the
 | `pnpm docs:json` | Every `json` code block in a Markdown file parses |
 | `pnpm docs:translations` | Every guide and spec document has its English edition, which names its Chinese source, and an English document links the English edition of a page where one exists. An English edition older than its Chinese source is reported without failing |
 | `pnpm docs:claims` | Every row of the claims index (`docs/zh-CN/spec/11-claims.md`) links back to the spec, and every test it names exists and is not skipped |
+| `pnpm docs:spec-refs` | Every reference to the specification in a code comment (a file and a title in `«»`, see [`CONTRIBUTING.md`](../CONTRIBUTING.md)) names a file and a title that exist |
+| `pnpm conflict-markers` | No tracked text file keeps a line a merge conflict leaves behind (one starting with `<<<<<<< ` or `>>>>>>> `) |
 
 None of them needs a database or the network.
 
@@ -242,7 +246,13 @@ Error: Property failed after 4944 tests
 Counterexample: ["00"]
 ```
 
-Pass that object to the failing property's `fc.assert(...)` as its options (next to any `numRuns` already there) and the run goes straight to that sample. Remove it before you commit. Put the seed, the path and the counterexample in the issue or pull request when you report the failure.
+Many property files read the seed from `PROP_SEED`, and some the path from `PROP_PATH` as well; the head of the file says which. For those, replay the sample without editing the test:
+
+```sh
+PROP_SEED=<seed> PROP_PATH="<path>" pnpm vitest run <the failing *.prop.test.ts>
+```
+
+A file that does not read them needs the edit: pass that object to the failing property's `fc.assert(...)` as its options (next to any `numRuns` already there) and the run goes straight to that sample. Remove it before you commit. Put the seed, the path and the counterexample in the issue or pull request when you report the failure.
 
 **Run more samples.** The property tests read `PROP_RUNS` as their sample count:
 
