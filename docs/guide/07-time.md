@@ -1,7 +1,6 @@
 # 07 · Time
 
-> Translated from docs/zh-CN/guide/07-time.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/07-time.md)
 
 Chapter 3 introduced two basic ideas: two timelines and three kinds of table. This chapter goes into them, with the focus on state tables: how the value of a thing over a period of time is written and read, and what happens by default to existing records when you write.
 

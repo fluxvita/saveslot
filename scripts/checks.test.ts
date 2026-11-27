@@ -23,8 +23,8 @@ import {
   lastChange,
   missingEnglish,
   NOT_YET,
-  sourceLine,
-  sourceOf,
+  switchLine,
+  switchOf,
   ZH_LINKS_KEPT,
   zhLinksWithEnglish,
 } from "./check-translations.ts";
@@ -105,8 +105,7 @@ describe("doc links", () => {
 });
 
 describe("English documents", () => {
-  const SRC =
-    "Translated from docs/zh-CN/guide/01-what.md, updated in the same commit as this file.";
+  const SRC = "English · [简体中文](../zh-CN/guide/01-what.md)";
 
   it("checks links within the English tree, to the Chinese tree, and English heading anchors", () => {
     const root = tree({
@@ -116,7 +115,7 @@ describe("English documents", () => {
       "docs/guide/01-what.md": [
         "# 1. What it is",
         "",
-        `> ${SRC}`,
+        SRC,
         "## 1.1 One log per user, the `ver` of a row",
         "[self](#11-one-log-per-user-the-ver-of-a-row) [ok](#1-what-it-is) [bad](#11-一条日志)",
         "[untranslated](../zh-CN/guide/02-how.md) [zh anchor](../zh-CN/guide/01-what.md#11-一条日志)",
@@ -141,54 +140,77 @@ describe("English documents", () => {
     expect(json.map((p) => `${p.file}:${p.line}`)).toEqual(["docs/guide/01-what.md:13"]);
   });
 
-  it("requires each English spec and guide file to name its Chinese source near the top", () => {
-    expect(sourceOf(`# T\n\n<!-- ${SRC} -->\n`)).toBe("docs/zh-CN/guide/01-what.md");
-    expect(
-      sourceOf(
-        "# T\n\nTranslated from `docs/zh-CN/a.md`, updated in the same commit as this file.",
-      ),
-    ).toBe("docs/zh-CN/a.md");
-    expect(sourceOf("# T\nTranslated from 535b4e4b of docs/zh-CN/a.md")).toBe("old");
-    expect(sourceOf("# T\nTranslated from docs/zh-CN/a.md")).toBeUndefined(); // the sentence is cut
-    expect(sourceOf(`${"\n".repeat(6)}${SRC}`)).toBeUndefined(); // too far down
+  it("requires both files of a pair to link each other near the top", () => {
+    const en = "docs/spec/03-data-model/05-time.md";
+    const zh = "docs/zh-CN/spec/03-data-model/05-time.md";
+    expect(switchLine(en)).toBe("English · [简体中文](../../zh-CN/spec/03-data-model/05-time.md)");
+    expect(switchLine(zh)).toBe("[English](../../../spec/03-data-model/05-time.md) · 简体中文");
+    expect(switchOf(en, `# T\n\n${switchLine(en)}\n`)).toEqual({ line: 3, path: zh });
+    expect(switchOf(zh, `# T\n\n> ${switchLine(zh)}\n`)).toEqual({ line: 3, path: en });
+    expect(switchOf(en, "# T\n\nEnglish · [简体中文](%E0%A4%A.md)\n")).toBeUndefined(); // bad escape
+    expect(switchOf(en, `# T\n\n${switchLine(zh)}\n`)).toBeUndefined(); // the other edition's form
+    expect(switchOf(en, `${"\n".repeat(6)}${switchLine(en)}`)).toBeUndefined(); // too far down
+    const sw = (f: string) => `# T\n\n${switchLine(f)}\n`;
     const root = tree({
-      "docs/zh-CN/guide/01-what.md": "# 1\n",
-      "docs/zh-CN/guide/02-how.md": "# 2\n",
-      "docs/zh-CN/guide/04-old.md": "# 4\n",
-      "docs/zh-CN/spec/02-architecture.md": "# 2\n",
-      "docs/guide/01-what.md": `# 1\n\n> ${SRC}\n> The Chinese edition has changed since: section 1.2.\n`,
-      "docs/guide/02-how.md": "# 2\n\nNo source line.\n",
-      "docs/guide/03-gone.md":
-        "# 3\n\nTranslated from docs/zh-CN/guide/03-gone.md, updated in the same commit as this file.\n",
-      "docs/guide/04-old.md": "# 4\n\nTranslated from 535b4e4b of docs/zh-CN/guide/04-old.md\n",
-      "docs/spec/02-architecture.md":
-        "# 2\n\nTranslated from docs/zh-CN/spec/09-other.md, updated in the same commit as this file.\n",
-      "docs/README.md": "# Not a translation\n",
-      "README.md": "# Not a translation\n",
+      "docs/zh-CN/guide/01-what.md": sw("docs/zh-CN/guide/01-what.md"),
+      "docs/guide/01-what.md": sw("docs/guide/01-what.md"),
+      "docs/zh-CN/guide/02-how.md": "# 2\n\n没有切换行。\n",
+      "docs/guide/02-how.md": "# 2\n\nNo switch.\n",
+      "docs/guide/03-gone.md": sw("docs/guide/03-gone.md"),
+      "docs/zh-CN/guide/04-old.md": sw("docs/zh-CN/guide/04-old.md"),
+      "docs/guide/04-old.md":
+        "# 4\n\n> Translated from docs/zh-CN/guide/04-old.md, updated in the same commit as this file.\n",
+      "docs/zh-CN/guide/05-left.md": sw("docs/zh-CN/guide/05-left.md"),
+      "docs/guide/05-left.md": `${sw("docs/guide/05-left.md")}> The Chinese edition is authoritative; where the two differ, the Chinese one holds.\n`,
+      "docs/zh-CN/spec/02-architecture.md": "# 2\n\n[English](../../spec/09-other.md) · 简体中文\n",
+      "docs/spec/02-architecture.md": sw("docs/spec/02-architecture.md"),
+      "docs/spec/09-other.md": "# 9\n",
+      "docs/zh-CN/spec/09-other.md": "# 9\n",
+      "docs/README.md": "# Not one of a pair\n",
+      "README.md": "# Not one of a pair\n",
     });
-    expect(checkTranslations(root).problems.map((p) => `${p.file}: ${p.reason}`)).toEqual([
-      `docs/guide/02-how.md: no "${sourceLine("docs/zh-CN/guide/02-how.md")}" in its first 6 lines`,
-      "docs/guide/03-gone.md: its source docs/zh-CN/guide/03-gone.md does not exist",
-      `docs/guide/04-old.md: names a commit, which squash merges lose; write "${sourceLine("docs/zh-CN/guide/04-old.md")}"`,
-      "docs/spec/02-architecture.md: says it is translated from docs/zh-CN/spec/09-other.md, expected docs/zh-CN/spec/02-architecture.md",
+    expect(
+      checkTranslations(root, undefined, () => undefined).problems.map(
+        (p) => `${p.file}: ${p.reason}`,
+      ),
+    ).toEqual([
+      `docs/guide/02-how.md: no "${switchLine("docs/guide/02-how.md")}" in its first 6 lines`,
+      `docs/zh-CN/guide/02-how.md: no "${switchLine("docs/zh-CN/guide/02-how.md")}" in its first 6 lines`,
+      "docs/guide/03-gone.md: no Chinese edition (docs/zh-CN/guide/03-gone.md)",
+      `docs/guide/04-old.md: still has the old "Translated from …" head; replace it with "${switchLine("docs/guide/04-old.md")}"`,
+      'docs/guide/05-left.md: still has a line of the old "Translated from …" head; remove it',
+      "docs/zh-CN/spec/02-architecture.md: its language switch links docs/spec/09-other.md, expected docs/spec/02-architecture.md",
+      `docs/spec/09-other.md: no "${switchLine("docs/spec/09-other.md")}" in its first 6 lines`,
+      `docs/zh-CN/spec/09-other.md: no "${switchLine("docs/zh-CN/spec/09-other.md")}" in its first 6 lines`,
     ]);
   });
 
-  it("lists a translation the Chinese file has moved past as drift, not as a problem", () => {
+  it("lists the file of a pair the other one has moved past as drift, not as a problem", () => {
     const zh = "docs/zh-CN/guide/01-what.md";
     const en = "docs/guide/01-what.md";
-    const root = tree({ [zh]: "# 1\n", [en]: `# 1\n\n> ${SRC}\n` });
-    const at: Record<string, number> = { [zh]: 2_000_000_000, [en]: 1_999_000_000 };
-    const { problems, drift } = checkTranslations(root, undefined, (f) => at[f]);
-    expect(problems).toEqual([]);
-    expect(drift.map((p) => p.reason)).toEqual([
-      `${zh} changed after it (2033-05-18, translation 2033-05-06); update it, or add "The Chinese edition has changed since: …" under the source line`,
+    const head = (f: string, extra = "") => `# 1\n\n${switchLine(f)}\n${extra}`;
+    const root = tree({ [zh]: head(zh), [en]: head(en) });
+    const run = (at: Record<string, number>) => checkTranslations(root, undefined, (f) => at[f]);
+    const zhLater = { [zh]: 2_000_000_000, [en]: 1_999_000_000 };
+    const enLater = { [zh]: 1_999_000_000, [en]: 2_000_000_000 };
+    expect(run(zhLater).problems).toEqual([]);
+    expect(run(zhLater).drift).toEqual([
+      {
+        file: en,
+        reason: `${zh} changed after it (2033-05-18, this file 2033-05-06); bring it in line, or add "The Chinese edition has changed since: …" under the language switch`,
+      },
     ]);
-    writeFileSync(
-      join(root, en),
-      `# 1\n\n> ${SRC}\n> The Chinese edition has changed since: 1.2.\n`,
-    );
-    expect(checkTranslations(root, undefined, (f) => at[f]).drift).toEqual([]);
+    expect(run(enLater).drift).toEqual([
+      {
+        file: zh,
+        reason: `${en} changed after it (2033-05-18, this file 2033-05-06); bring it in line, or add "英文版此后有改动：…" under the language switch`,
+      },
+    ]);
+    expect(run({ [zh]: 2_000_000_000, [en]: 2_000_000_000 }).drift).toEqual([]); // one commit
+    writeFileSync(join(root, en), head(en, "> The Chinese edition has changed since: 1.2.\n"));
+    writeFileSync(join(root, zh), head(zh, "> 英文版此后有改动：1.2。\n"));
+    expect(run(zhLater).drift).toEqual([]);
+    expect(run(enLater).drift).toEqual([]);
     expect(checkTranslations(root, undefined, () => undefined).drift).toEqual([]); // outside git
   });
 
@@ -199,7 +221,7 @@ describe("English documents", () => {
       "docs/zh-CN/spec/03-data-model/01-objects.md": "# 3.1\n",
       "docs/zh-CN/process/decisions/a.md": "# a\n",
       "docs/zh-CN/research/b.md": "# b\n",
-      "docs/guide/01-what.md": `# 1\n\n> ${SRC}\n`,
+      "docs/guide/01-what.md": `# 1\n\n${SRC}\n`,
     });
     expect(missingEnglish(root, listMarkdownFiles(root))).toEqual([
       { file: "docs/zh-CN/guide/02-how.md", reason: "no English edition (docs/guide/02-how.md)" },
@@ -237,11 +259,15 @@ describe("English documents", () => {
       "docs/zh-CN/guide/README.md": "# 讲解\n",
       "docs/zh-CN/spec/06-cli.md": "# 命令行\n",
       "docs/zh-CN/process/README.md": "# 过程\n",
-      "docs/guide/README.md": `# Guide\n\n> ${SRC}\n`,
+      "docs/guide/README.md": "# Guide\n\nEnglish · [简体中文](../zh-CN/guide/README.md)\n",
+      // Its own Chinese edition passes from its language line (line 3), and only from there.
+      "docs/zh-CN/guide/03-own.md": "# 3\n",
+      "docs/guide/03-own.md":
+        "# 3\n\nEnglish · [简体中文](../zh-CN/guide/03-own.md)\n\nSee [it](../zh-CN/guide/03-own.md#一).\n",
       "docs/spec/06-cli.md": "# CLI\n",
       "README.md": [
         "# saveslot",
-        "[zh](docs/zh-CN/) is authoritative. Translated from docs/zh-CN/guide/README.md, as prose.",
+        "[zh](docs/zh-CN/) is the Chinese edition; docs/zh-CN/guide/README.md, as prose.",
         "| [`docs/zh-CN/guide/`](docs/zh-CN/guide/README.md) | Guide |",
         "| [`docs/zh-CN/guide/`](docs/zh-CN/guide/) | Guide, the directory |",
         "| [`docs/zh-CN/process/`](docs/zh-CN/process/README.md) | Chinese only for now |",
@@ -266,6 +292,7 @@ describe("English documents", () => {
       `README.md:4: ${en("docs/zh-CN/guide/", "docs/guide/")}`,
       `README.md:6: ${en("docs/zh-CN/spec/06-cli.md", "docs/spec/06-cli.md")}`,
       `docs/guide/02-x.md:1: ${en("docs/zh-CN/spec/06-cli.md", "docs/spec/06-cli.md")}`,
+      `docs/guide/03-own.md:5: ${en("docs/zh-CN/guide/03-own.md", "docs/guide/03-own.md")}`,
     ]);
     // The same failures reach checkTranslations, and so `pnpm docs:translations`.
     expect(checkTranslations(root, undefined, () => undefined).problems.map((p) => p.file)).toEqual(

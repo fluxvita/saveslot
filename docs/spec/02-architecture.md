@@ -1,7 +1,6 @@
 # saveslot · Engineering architecture
 
-> Translated from docs/zh-CN/spec/02-architecture.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/02-architecture.md)
 
 > The core of saveslot is the **kernel + the service layer + the operation contract**; this document describes their engineering architecture.
 > For positioning and product forms see [`01-positioning.md`](01-positioning.md); for the data mechanisms see [`03-data-model/`](03-data-model/README.md); for the operation contract see [`04-contract.md`](04-contract.md); for the surfaces see [`05-surfaces.md`](05-surfaces.md) (MCP, HTTP) and [`06-cli.md`](06-cli.md) (CLI); for the field-level definition of events see [`09-event-format.md`](09-event-format.md).

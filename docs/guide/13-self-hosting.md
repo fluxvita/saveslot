@@ -1,7 +1,6 @@
 # 13 · Self-hosting
 
-> Translated from docs/zh-CN/guide/13-self-hosting.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/13-self-hosting.md)
 
 This chapter is for people who run saveslot server mode on their own servers: what to prepare, how to start it, how to create accounts, how agents connect, and what to watch for in backup and restore. Self-hosting and our cloud service are the same code and the same set of configuration items; the differences are in chapter 11, section 1.
 

@@ -1,7 +1,6 @@
 # 11 · Deployment and integration
 
-> Translated from docs/zh-CN/guide/11-deployment.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/11-deployment.md)
 
 This chapter answers the practical questions: where saveslot is installed, how an agent connects to it, how a person operates it, how credentials are managed, how data is taken away, and what to watch for after a backup is restored.
 

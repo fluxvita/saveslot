@@ -1,5 +1,7 @@
 # saveslot · 工程架构
 
+[English](../../spec/02-architecture.md) · 简体中文
+
 > saveslot 的核心是**内核 + 服务层 + 操作契约**；本文写它们的工程架构。
 > 定位与产品形态见 [`01-positioning.md`](01-positioning.md)，数据机制见 [`03-data-model/`](03-data-model/README.md)，操作契约见 [`04-contract.md`](04-contract.md)，外化面见 [`05-surfaces.md`](05-surfaces.md)（MCP、HTTP）与 [`06-cli.md`](06-cli.md)（CLI），事件的字段级定义见 [`09-event-format.md`](09-event-format.md)。
 > 待定项统一记在 [`08-open-questions.md`](08-open-questions.md)。

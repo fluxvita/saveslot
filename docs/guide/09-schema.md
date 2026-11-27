@@ -1,7 +1,6 @@
 # 09 · Schema evolution
 
-> Translated from docs/zh-CN/guide/09-schema.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/09-schema.md)
 
 In the earlier chapters, which fields `expenses` has and how `monthly_total` is computed were simply given. This chapter explains where they come from: what a schema is, who writes it, how the data follows when a schema changes, and how the rules of derived tables are executed.
 

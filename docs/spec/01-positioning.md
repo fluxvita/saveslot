@@ -1,7 +1,6 @@
 # saveslot · Positioning
 
-> Translated from docs/zh-CN/spec/01-positioning.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/01-positioning.md)
 
 > saveslot's direction is **Agent Data Infra**. The research behind it is under [`../zh-CN/research/`](../zh-CN/research/) (Chinese).
 >

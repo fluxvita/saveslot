@@ -1,7 +1,6 @@
 # 03 · Core concepts
 
-> Translated from docs/zh-CN/guide/03-concepts.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/03-concepts.md)
 
 The previous chapter's example introduced a number of concepts. This chapter explains them one by one: what each concept is, why it exists, and where it is most easily misunderstood. The examples continue with the same ledger.
 

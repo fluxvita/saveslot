@@ -1,5 +1,7 @@
 # saveslot · 第一版范围
 
+[English](../../spec/07-scope-v1.md) · 简体中文
+
 > 本文只定"第一版做什么、做到哪、按什么顺序做"；机制本身的定义以 positioning、architecture、data-model、contract、surfaces 为准，未定项见 [`08-open-questions.md`](08-open-questions.md)。
 
 ## 1. 结论

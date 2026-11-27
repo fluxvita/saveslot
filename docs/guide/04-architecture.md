@@ -1,7 +1,6 @@
 # 04 · Architecture
 
-> Translated from docs/zh-CN/guide/04-architecture.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/04-architecture.md)
 
 The first three chapters covered the data inside saveslot: the log, tables, provenance, items. This chapter covers what the program that holds this data looks like: how many layers it has, what each layer is responsible for, how a call travels from an agent to the log, what an event looks like in storage, and how the process runs.
 

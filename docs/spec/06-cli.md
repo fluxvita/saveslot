@@ -1,7 +1,6 @@
 # saveslot · The surfaces: the CLI and the getting-started flow
 
-> Translated from docs/zh-CN/spec/06-cli.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/06-cli.md)
 
 > This document describes the first version's CLI: who uses it, how it connects to saveslot, the getting-started flow from zero to the first working Agent, the command list, the interaction for human confirmation, output conventions and security.
 > The CLI is, alongside the MCP and HTTP in [`05-surfaces.md`](05-surfaces.md), one more surface of the contract: the shape of operations is defined by [`04-contract.md`](04-contract.md) and the kernel rules by [`03-data-model/`](03-data-model/README.md); undecided numeric items are in [`08-open-questions.md`](08-open-questions.md).

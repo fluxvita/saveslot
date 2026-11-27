@@ -1,5 +1,7 @@
 # saveslot · 外化面：CLI 与上手流程
 
+[English](../../spec/06-cli.md) · 简体中文
+
 > 本文写第一版 CLI：谁用、怎么连 saveslot、从零到第一个 Agent 能用的上手流程、命令清单、人工确认的交互、输出约定与安全。
 > CLI 与 [`05-surfaces.md`](05-surfaces.md) 里的 MCP、HTTP 并列，是契约的又一个外化面：操作形状以 [`04-contract.md`](04-contract.md) 为准，内核规则以 [`03-data-model/`](03-data-model/README.md) 为准；数值类的待定见 [`08-open-questions.md`](08-open-questions.md)。
 

@@ -1,7 +1,6 @@
 # 10 · Guarantees and boundaries
 
-> Translated from docs/zh-CN/guide/10-guarantees.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/10-guarantees.md)
 
 Before using a data foundation, the two things most worth asking are what it guarantees and what it explicitly does not guarantee. This chapter lays out both sides.
 

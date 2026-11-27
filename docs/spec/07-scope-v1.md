@@ -1,7 +1,6 @@
 # saveslot · Scope of the first version
 
-> Translated from docs/zh-CN/spec/07-scope-v1.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/07-scope-v1.md)
 
 > This document fixes only "what the first version does, how far it goes, and in what order it is built". The definitions of the mechanisms themselves are in positioning, architecture, data-model, contract and surfaces; undecided items are in [`08-open-questions.md`](08-open-questions.md).
 

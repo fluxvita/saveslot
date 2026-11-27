@@ -1,7 +1,5 @@
 # Development guide
 
-> Translated from docs/zh-CN/development.md, updated in the same commit as this file.
-
 English · [简体中文](zh-CN/development.md)
 
 This page takes you from a fresh clone to a validated change: set up, run the checks, find where a change belongs, rehearse one small fix, debug a failure. It is for people who change this repository. To use saveslot with an agent instead, start from [Try it](../README.md#try-it-local-mode) in the README.

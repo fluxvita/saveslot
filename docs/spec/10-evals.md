@@ -1,7 +1,6 @@
 # saveslot · Eval specification
 
-> Translated from docs/zh-CN/spec/10-evals.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/10-evals.md)
 
 > Each phase of the first version is accepted by "which evals can run through" ([`07-scope-v1.md`](07-scope-v1.md) section 4). This document writes the evals as executable specifications: for each task, the fixtures, the conversation script, the assertions on tool calls and on stored state, the requirements on the reply, and the pass line.
 > Operation names, parameter names, enum values and error codes follow [`04-contract-types.md`](04-contract-types.md); the MCP tools and the text rendering are in [`05-surfaces.md`](05-surfaces.md); the rules are in [`03-data-model/`](03-data-model/README.md). Where this document disagrees with them, they hold, and this document is revised.

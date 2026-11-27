@@ -1,5 +1,7 @@
 # saveslot · 操作契约的类型定义
 
+[English](../../spec/04-contract-types.md) · 简体中文
+
 > 本文是操作契约的**结构**：每个操作的参数、结果、错误与全部枚举，写成 TypeScript 类型。规则与说明（什么时候返回什么、为什么）在 [`04-contract.md`](04-contract.md)；内核规则在 [`03-data-model/`](03-data-model/README.md)；MCP 与 HTTP 怎么承载在 [`05-surfaces.md`](05-surfaces.md)。
 > **字段名、嵌套结构与枚举值以本文为准。** 实现里的 `contract-core` / `contract` 两个包与本文逐项对应；OpenAPI 由它们生成，MCP 的 `inputSchema` 由本文件的类型按 [`05-surfaces.md`](05-surfaces.md) 第 1 节的映射表组合生成。MCP 参数的 `description` 是写给模型看的措辞，原文在 [`05-surfaces.md`](05-surfaces.md) 9.1；本文参数上的注释说明类型与约束。
 
