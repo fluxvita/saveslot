@@ -815,8 +815,10 @@ interface SourcesParams extends CommonParams, PageParams {
   id?: SourceId;                      // get：必填
 }
 
-interface SourcesListResult extends CommonResult, PageResult {
+interface SourcesListResult extends CommonResult, Omit<PageResult, "total"> {
   mode: "list" | "search";
+  /** list 总是给。search 只在满足过滤条件的源数据一次调用就能扫完时给（全部命中）；扫不完时不给，靠 next_cursor 表示还有（04-contract sources）。 */
+  total?: number;
   sources: Array<{
     id: SourceId; kind: SourceKind; slot: SlotName;
     recorded_at: Instant; stated_at?: Instant; actor: Actor;

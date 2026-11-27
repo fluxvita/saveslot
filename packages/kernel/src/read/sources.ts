@@ -14,6 +14,10 @@
 //   folded (A–Z only, as names are compared), on copies: what is stored is not changed. Scanned
 //   in batches by `seq`, at most `SEARCH_SCAN` sources a call: a page may hold fewer than `limit`
 //   and still give `next_position`.
+// - `total`: a list's is every source the filters take, a source pending deletion too. A search's
+//   is every match, given only when every source the filters take fits in one call's scan: then
+//   all are looked at on every page, and the total is the same on each. Otherwise none, and
+//   `next_position` alone says more may follow.
 // - `api_call` has no text: its request block is. `get` gives that block's JCS text as `text`, a
 //   list its first 200 characters as `excerpt`.
 // - `correction`: the source is a value source of a write whose intent is `correct`
@@ -97,6 +101,11 @@ export interface SourceDeletion {
 
 export interface SourcesListResult {
   readonly mode: "list" | "search";
+  /**
+   * `list`: every source the filters take, pending deletion or not, as of the first page; always.
+   * `search`: every match, when every source the filters take fits in one call's scan; else none.
+   */
+  readonly total?: number;
   readonly sources: readonly SourcesListItem[];
   /** The next page's position, unsigned (the service layer wraps it as `next_cursor`). */
   readonly next_position?: string;
@@ -372,8 +381,8 @@ export async function sourcesInTx(
   const slotIds =
     slot !== undefined ? (bySlot.has(slot.slot) ? [slot.slot] : []) : whole.map((s) => s.slot);
 
-  /** The sources after `before`, newest first, `n` of them, as the filters say. */
-  const batch = async (before: number | undefined, n: number): Promise<SourceRow[]> => {
+  /** The filters as SQL, and the sources after `before` when given. */
+  const filtered = (before: number | undefined) => {
     const args: unknown[] = [slotIds, upTo];
     const where = ["s.slot_id = ANY($1)", "e.op <= $2"];
     if (before !== undefined) {
@@ -392,11 +401,16 @@ export async function sourcesInTx(
       args.push(to);
       where.push(`e.at < $${args.length}`);
     }
+    return { args, where: where.join(" AND ") };
+  };
+  /** The sources after `before`, newest first, `n` of them, as the filters say. */
+  const batch = async (before: number | undefined, n: number): Promise<SourceRow[]> => {
+    const { args, where } = filtered(before);
     args.push(n);
     const r = await tx.query<Record<string, unknown>>(
       `SELECT s.seq, e.op, s.source_id, s.kind, s.level, s.slot_id, s.deletion_state, e.at, e.actor
        FROM sources s JOIN events e ON e.seq = s.seq
-       WHERE ${where.join(" AND ")} ORDER BY s.seq DESC LIMIT $${args.length}`,
+       WHERE ${where} ORDER BY s.seq DESC LIMIT $${args.length}`,
       args as never,
     );
     return r.rows.map((x) => ({
@@ -416,6 +430,25 @@ export async function sourcesInTx(
   const taken: { row: SourceRow; blocks: Map<string, string> | undefined }[] = [];
   let scannedTo: number | undefined = after;
   let more = false;
+  let total: number | undefined;
+  // Every source the filters take, pending deletion or not, as of the first page's operation.
+  const { args: countArgs, where: countWhere } = filtered(undefined);
+  const counted = await tx.query<{ n: unknown }>(
+    `SELECT count(*) AS n FROM sources s JOIN events e ON e.seq = s.seq WHERE ${countWhere}`,
+    countArgs as never,
+  );
+  const candidates = Number(counted.rows[0]?.n ?? 0);
+  /** Whether a source matches the search: by its own blocks, only while it is present. */
+  const matches = (row: SourceRow, b: Map<string, string> | undefined): boolean => {
+    if (row.state !== "present") return false;
+    const f = fileOf(b);
+    const haystacks = [
+      textOf(row.kind, b),
+      typeof f?.["name"] === "string" ? f["name"] : undefined,
+      typeof f?.["excerpt"] === "string" ? f["excerpt"] : undefined,
+    ];
+    return haystacks.some((h) => h !== undefined && searchForm(h).includes(needle as string));
+  };
   if (needle === undefined) {
     const rows = await batch(after, limit + 1);
     const blocks = await contentOf(
@@ -427,6 +460,30 @@ export async function sourcesInTx(
     }
     more = taken.length > limit;
     taken.splice(limit);
+    total = candidates;
+  } else if (candidates <= scanLimit) {
+    // Every source the filters take fits in one scan: all of them looked at, from the newest, so
+    // the total is every match, the same on every page; the page is the matches after `after`.
+    const found: { row: SourceRow; blocks: Map<string, string> | undefined }[] = [];
+    let before: number | undefined;
+    for (;;) {
+      const rows = await batch(before, BATCH);
+      if (rows.length === 0) break;
+      const blocks = await contentOf(
+        tx,
+        rows.map((x) => x.seq),
+      );
+      for (const row of rows) {
+        const b = row.state === "present" ? blocks.get(row.seq) : undefined;
+        if (matches(row, b)) found.push({ row, blocks: b });
+      }
+      before = (rows.at(-1) as SourceRow).seq;
+      if (rows.length < BATCH) break;
+    }
+    total = found.length;
+    const rest = after === undefined ? found : found.filter((x) => x.row.seq < after);
+    taken.push(...rest.slice(0, limit));
+    more = rest.length > limit;
   } else {
     let scanned = 0;
     for (;;) {
@@ -440,13 +497,7 @@ export async function sourcesInTx(
       for (const row of rows) {
         // A source not present is never searched by its content, whatever its blocks say.
         const b = row.state === "present" ? blocks.get(row.seq) : undefined;
-        const f = fileOf(b);
-        const haystacks = [
-          textOf(row.kind, b),
-          typeof f?.["name"] === "string" ? f["name"] : undefined,
-          typeof f?.["excerpt"] === "string" ? f["excerpt"] : undefined,
-        ];
-        if (haystacks.some((h) => h !== undefined && searchForm(h).includes(needle as string))) {
+        if (matches(row, b)) {
           if (taken.length === limit) {
             // One more match: the page is full, and the next one starts after the last given.
             more = true;
@@ -508,7 +559,12 @@ export async function sourcesInTx(
       ? encodePosition(identity, { seq: upTo, at, restoreCount: restore, keys: [lastKey] })
       : undefined;
   return {
-    result: { mode, sources, ...(next !== undefined ? { next_position: next } : {}) },
+    result: {
+      mode,
+      ...(total !== undefined ? { total } : {}),
+      sources,
+      ...(next !== undefined ? { next_position: next } : {}),
+    },
     entry: entryOf({ pos: upTo, ...(slot !== undefined ? { slot: slot.slot } : {}) }),
   };
 }

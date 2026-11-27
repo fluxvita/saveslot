@@ -817,8 +817,10 @@ interface SourcesParams extends CommonParams, PageParams {
   id?: SourceId;                      // get: required
 }
 
-interface SourcesListResult extends CommonResult, PageResult {
+interface SourcesListResult extends CommonResult, Omit<PageResult, "total"> {
   mode: "list" | "search";
+  /** Always for list. For search, only when the source data the filters take can be scanned in full by one call (all the matches); otherwise not given, and next_cursor says more may follow (04-contract sources). */
+  total?: number;
   sources: Array<{
     id: SourceId; kind: SourceKind; slot: SlotName;
     recorded_at: Instant; stated_at?: Instant; actor: Actor;
