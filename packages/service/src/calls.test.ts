@@ -315,14 +315,50 @@ describe("contractError", () => {
 
   it("a read whose record could not be written: unavailable (busy), told by the cause's name and code only", () => {
     warnings.length = 0;
-    const cause = Object.assign(new Error("connection to db.example.internal ended"), {
-      code: "connection_lost",
+    const cause = Object.assign(new Error("disk full on db.example.internal"), {
+      code: "io_failed",
     });
     const e = contractError(new ReadNotRecorded(cause), warn);
     expect([e.code, e.detail]).toEqual(["unavailable", { reason: "busy", retry_after: 1 }]);
     expect(e.message).not.toContain("example");
+    expect(warnings).toEqual([["read_not_recorded", { cause: "Error", cause_code: "io_failed" }]]);
+  });
+
+  it("a read whose record met the connection gone, committed or not: unavailable (busy), told as the connection lost with its code", () => {
+    warnings.length = 0;
+    const gone = (code: string) =>
+      Object.assign(new Error("connection to db.example.internal ended"), { code });
+    for (const code of ["connection_lost", "commit_unknown"]) {
+      const e = contractError(new ReadNotRecorded(gone(code)), warn, { tenant: "tn_x" });
+      expect([code, e.code, e.detail]).toEqual([
+        code,
+        "unavailable",
+        { reason: "busy", retry_after: 1 },
+      ]);
+    }
     expect(warnings).toEqual([
-      ["read_not_recorded", { cause: "Error", cause_code: "connection_lost" }],
+      ["tenant_connection_lost", { tenant: "tn_x", code: "connection_lost" }],
+      ["tenant_connection_lost", { tenant: "tn_x", code: "commit_unknown" }],
+    ]);
+  });
+
+  it("a tenant's connection gone under a use: certainly not committed is unavailable (busy); maybe committed stays internal", () => {
+    warnings.length = 0;
+    const gone = (code: string) =>
+      Object.assign(new Error("connection to db.example.internal ended"), { code });
+    const lost = contractError(gone("connection_lost"), warn, { tenant: "tn_x" });
+    expect([lost.code, lost.detail]).toEqual(["unavailable", { reason: "busy", retry_after: 1 }]);
+    expect(lost.message).not.toContain("example");
+    // Raised over another: the same.
+    const over = new Error("over", { cause: gone("connection_lost") });
+    expect(contractError(over, warn).code).toBe("unavailable");
+    const unknown = contractError(gone("commit_unknown"), warn, { tenant: "tn_x" });
+    expect(unknown.code).toBe("internal");
+    expect(warnings).toEqual([
+      ["tenant_connection_lost", { tenant: "tn_x", code: "connection_lost" }],
+      ["tenant_connection_lost", { code: "connection_lost" }],
+      ["tenant_connection_lost", { tenant: "tn_x", code: "commit_unknown" }],
+      ["internal", expect.objectContaining({ incident: unknown.detail["incident"] })],
     ]);
   });
 

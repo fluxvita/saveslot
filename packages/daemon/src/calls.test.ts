@@ -21,6 +21,7 @@ import {
   type Operation,
   openLocalTenant,
   type Principal,
+  READ_ONLY_OPERATIONS,
   runOperation,
   sessionFile,
 } from "@fluxvita/saveslot-service";
@@ -28,6 +29,7 @@ import { recordTestRead } from "@fluxvita/saveslot-service/testing";
 import { osFileLock } from "@fluxvita/saveslot-store-pglite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testBackend } from "../../store-pglite/src/testing/test-backend.fixture.ts";
+import { SAMPLE_SLOT } from "./format-sample.fixture.ts";
 
 const T = 60_000;
 const root = mkdtempSync(join(tmpdir(), "saveslot-calls-"));
@@ -340,5 +342,48 @@ describe("a statement the database refuses as it runs", () => {
     expect(JSON.stringify(refused)).not.toContain("SECRET-7f3a");
     expect(written.join("\n")).not.toContain("SECRET-7f3a");
     expect(seen).toEqual([{ event: "sql_database_error", fields: { code: "22P02" } }]);
+  });
+});
+
+// What the server mode runs once more on the tenant opened again when it meets the connection gone
+// (02-architecture §7 «连接»): only operations that append nothing to the log. Each is run here
+// with parameters it takes, and the log's end is the same after it; an operation added to the
+// list without a case here fails the first check.
+describe("the operations run once more on a lost connection", () => {
+  const PARAMS: Readonly<Record<string, Record<string, unknown>>> = {
+    catalog: {},
+    query: { table: "household.expenses" },
+    history: { mode: "changes", table: "household.expenses", since: 0 },
+    sql: { sql: "SELECT note FROM household.expenses" },
+    pending: {},
+    "policy.get": { slot: "household" },
+    sources: {},
+    "connections.list": {},
+    "reads.list": {},
+    "log.verify": {},
+    "log.end": {},
+  };
+
+  it("each has a case here, and none appends to the log", async () => {
+    expect([...READ_ONLY_OPERATIONS].sort()).toEqual(Object.keys(PARAMS).sort());
+    await call(user, "schema_draft", { document: SAMPLE_SLOT });
+    await call(user, "write", {
+      sv: 1,
+      ops: [
+        {
+          intent: "insert",
+          table: "household.expenses",
+          set: { date: "2026-11-02", amount: 45, note: "lunch" },
+        },
+      ],
+    });
+    const end = async () => (await call(user, "log.end", {}))["seq"];
+    const before = await end();
+    expect(before).toEqual(expect.any(Number));
+    for (const operation of READ_ONLY_OPERATIONS) {
+      const r = await call(user, operation, PARAMS[operation]);
+      expect([operation, r["refused"]]).toEqual([operation, undefined]);
+      expect([operation, await end()]).toEqual([operation, before]);
+    }
   });
 });

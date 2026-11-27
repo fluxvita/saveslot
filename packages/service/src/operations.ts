@@ -33,7 +33,13 @@ import {
 import type { Scope } from "./auth.ts";
 import type { ServedTenant } from "./callers.ts";
 import { contractResult, type KernelCall, type Operation } from "./calls.ts";
-import { ContractError, contractError } from "./contract-error.ts";
+import {
+  ContractError,
+  contractError,
+  internalError,
+  lostConnectionOf,
+  RetryOnLostConnection,
+} from "./contract-error.ts";
 import type { CursorKeys } from "./cursor.ts";
 
 type Obj = Readonly<Record<string, unknown>>;
@@ -260,6 +266,25 @@ async function checkDecisionScope(o: {
 }
 
 /** Runs `call` as `operation`; resolves with the contract result, rejects with a ContractError. */
+/**
+ * The operations that only read: run once more on the tenant opened again when they meet its
+ * connection gone with nothing given yet (02-architecture §7 «连接»). No operation that appends to
+ * the log may be here; operations.test.ts holds that.
+ */
+export const READ_ONLY_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
+  "catalog",
+  "query",
+  "history",
+  "sql",
+  "pending",
+  "policy.get",
+  "sources",
+  "connections.list",
+  "reads.list",
+  "log.verify",
+  "log.end",
+]);
+
 export async function runOperation(o: {
   /** The caller's tenant, lent for this call. */
   readonly tenant: ServedTenant;
@@ -284,6 +309,8 @@ export async function runOperation(o: {
     caller === undefined
       ? undefined
       : (r) => caller(contractResult(r, o.cursors, ctx.actor, ctx.now));
+  // Whether the operation itself is done (a write committed): what follows only reads for the answer.
+  let done = false;
   try {
     const result = await (async (): Promise<unknown> => {
       switch (o.operation) {
@@ -389,6 +416,7 @@ export async function runOperation(o: {
         }
       }
     })();
+    done = true;
     return contractResult(
       await withNotices(o.tenant, ctx, o.operation, params, result),
       o.cursors,
@@ -402,7 +430,25 @@ export async function runOperation(o: {
         narrow_by: [],
       });
     }
-    const c = contractError(e, o.warn);
+    // A call that may have taken effect (its operation done, not a read), its answer not made for
+    // the connection gone: not `busy`, which says nothing was recorded. Internal, as a COMMIT
+    // unanswered is: the caller reads the state before sending it again.
+    const gone = lostConnectionOf(e);
+    if (done && !READ_ONLY_OPERATIONS.has(o.operation) && gone !== undefined) {
+      o.warn("tenant_connection_lost", { tenant: o.tenant.tenant, code: gone, after: "effect" });
+      throw internalError(e, o.warn);
+    }
+    // A read meeting its tenant's connection gone, nothing given yet: once more, opened again.
+    if (
+      o.tenant.retryOnLost === true &&
+      READ_ONLY_OPERATIONS.has(o.operation) &&
+      lostConnectionOf(e) === "connection_lost"
+    ) {
+      // This try given up: logged here, whether or not the next one is answered.
+      o.warn("tenant_connection_lost", { tenant: o.tenant.tenant, code: "connection_lost" });
+      throw new RetryOnLostConnection();
+    }
+    const c = contractError(e, o.warn, { tenant: o.tenant.tenant });
     // The item as it is now, with the decisions this credential may take.
     if (c.code === "confirmation_mismatch" && c.detail["current"] !== undefined)
       throw new ContractError(c.code, c.message, {

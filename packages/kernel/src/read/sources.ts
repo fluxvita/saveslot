@@ -14,21 +14,26 @@
 //   folded (A–Z only, as names are compared), on copies: what is stored is not changed. Scanned
 //   in batches by `seq`, at most `SEARCH_SCAN` sources a call: a page may hold fewer than `limit`
 //   and still give `next_position`.
+// - `total`: a list's is every source the filters take, a source pending deletion too. A search's
+//   is every match, given only when every source the filters take fits in one call's scan: then
+//   all are looked at on every page, and the total is the same on each. Otherwise none, and
+//   `next_position` alone says more may follow.
 // - `api_call` has no text: its request block is. `get` gives that block's JCS text as `text`, a
 //   list its first 200 characters as `excerpt`.
 // - `correction`: the source is a value source of a write whose intent is `correct`
 //   (`isCorrection`, as `history`'s timeline marks it).
-// - Deletion: a source pending deletion or removed gives none of its content. Where that state
-//   comes from (the deletion's item and expiry, the removal's time and reason) is not in this
-//   version of the kernel: such a source in a slot the caller sees fails the whole call
-//   (`internal`, `not_implemented`), whatever the mode, the filters or the page, before anything
-//   is looked at, rather than being shown as present or left out.
+// - Deletion (04-contract-types `SourceDeletion`): a source pending deletion is listed and got as
+//   ever by what is not its content (ID, kind, level, slot, recorded time, actor, `correction`),
+//   with `deletion: { state: "pending", item, expires_at }`; its own blocks (`text`, `file`,
+//   `request`, `stated_at`) are read through READABLE_CONTENT and so not given, nor what it
+//   produced. A search, by those blocks, never finds it. A removed one (a carried-out deletion,
+//   not applied in this version) fails the call that reads it (`internal`, `not_implemented`).
 // - A slot the caller sees only in part (some of its tables): none of its sources, in any mode,
 //   as if there were none (`get`: `not_found`, as above). A source's text may name any table.
 // - Recorded in the read log as `sources`: the mode and the opaque IDs (the slot filtered by, the
 //   source read); never the search text (04-write-and-read «读取记录里记什么形状»).
 
-import type { SlotId, SourceId } from "@fluxvita/saveslot-contract-core";
+import type { ItemId, SlotId, SourceId } from "@fluxvita/saveslot-contract-core";
 import { canonicalize, SOURCE_KINDS } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry } from "../audit/index.ts";
 import { actorsNow } from "../pending/index.ts";
@@ -84,10 +89,23 @@ export interface SourcesListItem {
   readonly correction?: true;
   readonly excerpt?: string;
   readonly file?: FileOut;
+  readonly deletion?: SourceDeletion;
+}
+
+/** 04-contract-types `SourceDeletion`: only `pending` in this version. */
+export interface SourceDeletion {
+  readonly state: "pending";
+  readonly item: ItemId;
+  readonly expires_at: string;
 }
 
 export interface SourcesListResult {
   readonly mode: "list" | "search";
+  /**
+   * `list`: every source the filters take, pending deletion or not, as of the first page; always.
+   * `search`: every match, when every source the filters take fits in one call's scan; else none.
+   */
+  readonly total?: number;
   readonly sources: readonly SourcesListItem[];
   /** The next page's position, unsigned (the service layer wraps it as `next_cursor`). */
   readonly next_position?: string;
@@ -115,6 +133,7 @@ export interface SourcesGetResult {
     readonly fields: readonly string[];
     readonly role: "value" | "operation" | "interval";
   }[];
+  readonly deletion?: SourceDeletion;
 }
 
 export type SourcesResult = SourcesListResult | SourcesGetResult;
@@ -182,6 +201,51 @@ export const searchForm = (s: string): string =>
 /** The first `EXCERPT` code points. */
 const excerptOf = (s: string): string => Array.from(s).slice(0, EXCERPT).join("");
 
+/** A removed source: not in this version (its removal's time and reason come with execution). */
+function refuseRemoved(row: { readonly state: string }): void {
+  if (row.state === "removed") throw notImplemented("sources", "a removed source");
+}
+
+/** A source pending deletion with no deletion listing its blocks: the store disagrees with itself. */
+function pendingKnown(
+  row: { readonly state: string; readonly seq: number },
+  pendingBy: ReadonlyMap<number, unknown>,
+): void {
+  if (row.state === "pending_deletion" && !pendingBy.has(row.seq)) {
+    throw new ReadError("internal", "a source pending deletion that no pending deletion lists");
+  }
+}
+
+/**
+ * The pending deletion of each of these sources pending deletion: the one listing its blocks, the
+ * one confirmed first when several do; its ID and when it falls due.
+ */
+async function pendingDeletions(
+  tx: ReadTx,
+  seqs: readonly number[],
+): Promise<Map<number, { item: string; expiresAt: string }>> {
+  const out = new Map<number, { item: string; expiresAt: string }>();
+  if (seqs.length === 0) return out;
+  const r = await tx.query<{ seq: unknown; id: string; due_at: string }>(
+    `SELECT DISTINCT ON (p.seq) p.seq, d.id, d.due_at FROM pending_blocks p
+     JOIN deletions d ON d.confirmed_seq = p.deletion_seq
+     WHERE p.seq = ANY($1) ORDER BY p.seq, p.deletion_seq`,
+    [[...seqs]] as never,
+  );
+  for (const x of r.rows) out.set(Number(x.seq), { item: x.id, expiresAt: x.due_at });
+  return out;
+}
+
+const deletionOf = (
+  pendingBy: ReadonlyMap<number, { item: string; expiresAt: string }>,
+  seq: number,
+): { deletion?: SourceDeletion } => {
+  const d = pendingBy.get(seq);
+  return d === undefined
+    ? {}
+    : { deletion: { state: "pending", item: d.item as ItemId, expires_at: d.expiresAt } };
+};
+
 /** Which of these sources a write whose intent is `correct` took a value from. */
 async function corrections(tx: ReadTx, seqs: readonly number[]): Promise<Set<number>> {
   const out = new Set<number>();
@@ -236,15 +300,6 @@ export async function sourcesInTx(
   // in part has no sources for the caller (08-open-questions).
   const whole = slots.filter((s) => seesWhole(input.visibility, s.slot));
   const bySlot = new Map<string, VisibleSlot>(whole.map((s) => [s.slot, s]));
-  // A source not present in those slots fails the whole call, before anything else is looked at:
-  // whatever the mode, filters or page (this version cannot say what such a source is).
-  const absent = await tx.query<{ n: unknown }>(
-    `SELECT 1 AS n FROM sources WHERE slot_id = ANY($1) AND deletion_state <> 'present' LIMIT 1`,
-    [whole.map((s) => s.slot)] as never,
-  );
-  if (absent.rows.length > 0) {
-    throw notImplemented("sources", "a source pending deletion or removed");
-  }
   const latest = await logPosition(tx);
   const entryOf = (o: { pos: number; slot?: SlotId; source?: SourceId }): ReadEntry => ({
     read: input.read as never,
@@ -326,8 +381,8 @@ export async function sourcesInTx(
   const slotIds =
     slot !== undefined ? (bySlot.has(slot.slot) ? [slot.slot] : []) : whole.map((s) => s.slot);
 
-  /** The sources after `before`, newest first, `n` of them, as the filters say. */
-  const batch = async (before: number | undefined, n: number): Promise<SourceRow[]> => {
+  /** The filters as SQL, and the sources after `before` when given. */
+  const filtered = (before: number | undefined) => {
     const args: unknown[] = [slotIds, upTo];
     const where = ["s.slot_id = ANY($1)", "e.op <= $2"];
     if (before !== undefined) {
@@ -346,11 +401,16 @@ export async function sourcesInTx(
       args.push(to);
       where.push(`e.at < $${args.length}`);
     }
+    return { args, where: where.join(" AND ") };
+  };
+  /** The sources after `before`, newest first, `n` of them, as the filters say. */
+  const batch = async (before: number | undefined, n: number): Promise<SourceRow[]> => {
+    const { args, where } = filtered(before);
     args.push(n);
     const r = await tx.query<Record<string, unknown>>(
       `SELECT s.seq, e.op, s.source_id, s.kind, s.level, s.slot_id, s.deletion_state, e.at, e.actor
        FROM sources s JOIN events e ON e.seq = s.seq
-       WHERE ${where.join(" AND ")} ORDER BY s.seq DESC LIMIT $${args.length}`,
+       WHERE ${where} ORDER BY s.seq DESC LIMIT $${args.length}`,
       args as never,
     );
     return r.rows.map((x) => ({
@@ -370,15 +430,60 @@ export async function sourcesInTx(
   const taken: { row: SourceRow; blocks: Map<string, string> | undefined }[] = [];
   let scannedTo: number | undefined = after;
   let more = false;
+  let total: number | undefined;
+  // Every source the filters take, pending deletion or not, as of the first page's operation.
+  const { args: countArgs, where: countWhere } = filtered(undefined);
+  const counted = await tx.query<{ n: unknown }>(
+    `SELECT count(*) AS n FROM sources s JOIN events e ON e.seq = s.seq WHERE ${countWhere}`,
+    countArgs as never,
+  );
+  const candidates = Number(counted.rows[0]?.n ?? 0);
+  /** Whether a source matches the search: by its own blocks, only while it is present. */
+  const matches = (row: SourceRow, b: Map<string, string> | undefined): boolean => {
+    if (row.state !== "present") return false;
+    const f = fileOf(b);
+    const haystacks = [
+      textOf(row.kind, b),
+      typeof f?.["name"] === "string" ? f["name"] : undefined,
+      typeof f?.["excerpt"] === "string" ? f["excerpt"] : undefined,
+    ];
+    return haystacks.some((h) => h !== undefined && searchForm(h).includes(needle as string));
+  };
   if (needle === undefined) {
     const rows = await batch(after, limit + 1);
     const blocks = await contentOf(
       tx,
       rows.map((x) => x.seq),
     );
-    for (const row of rows) taken.push({ row, blocks: blocks.get(row.seq) });
+    for (const row of rows) {
+      taken.push({ row, blocks: row.state === "present" ? blocks.get(row.seq) : undefined });
+    }
     more = taken.length > limit;
     taken.splice(limit);
+    total = candidates;
+  } else if (candidates <= scanLimit) {
+    // Every source the filters take fits in one scan: all of them looked at, from the newest, so
+    // the total is every match, the same on every page; the page is the matches after `after`.
+    const found: { row: SourceRow; blocks: Map<string, string> | undefined }[] = [];
+    let before: number | undefined;
+    for (;;) {
+      const rows = await batch(before, BATCH);
+      if (rows.length === 0) break;
+      const blocks = await contentOf(
+        tx,
+        rows.map((x) => x.seq),
+      );
+      for (const row of rows) {
+        const b = row.state === "present" ? blocks.get(row.seq) : undefined;
+        if (matches(row, b)) found.push({ row, blocks: b });
+      }
+      before = (rows.at(-1) as SourceRow).seq;
+      if (rows.length < BATCH) break;
+    }
+    total = found.length;
+    const rest = after === undefined ? found : found.filter((x) => x.row.seq < after);
+    taken.push(...rest.slice(0, limit));
+    more = rest.length > limit;
   } else {
     let scanned = 0;
     for (;;) {
@@ -390,14 +495,9 @@ export async function sourcesInTx(
       );
       let full = false;
       for (const row of rows) {
-        const b = blocks.get(row.seq);
-        const f = fileOf(b);
-        const haystacks = [
-          textOf(row.kind, b),
-          typeof f?.["name"] === "string" ? f["name"] : undefined,
-          typeof f?.["excerpt"] === "string" ? f["excerpt"] : undefined,
-        ];
-        if (haystacks.some((h) => h !== undefined && searchForm(h).includes(needle as string))) {
+        // A source not present is never searched by its content, whatever its blocks say.
+        const b = row.state === "present" ? blocks.get(row.seq) : undefined;
+        if (matches(row, b)) {
           if (taken.length === limit) {
             // One more match: the page is full, and the next one starts after the last given.
             more = true;
@@ -419,6 +519,12 @@ export async function sourcesInTx(
     }
   }
 
+  for (const { row } of taken) refuseRemoved(row);
+  const pendingBy = await pendingDeletions(
+    tx,
+    taken.map((x) => x.row.seq),
+  );
+  for (const { row } of taken) pendingKnown(row, pendingBy);
   const fixes = await corrections(
     tx,
     taken.map((x) => x.row.seq),
@@ -443,6 +549,7 @@ export async function sourcesInTx(
       ...(f !== undefined
         ? { file: { name: String(f["name"]), mime: String(f["mime"]), size: Number(f["size"]) } }
         : {}),
+      ...deletionOf(pendingBy, row.seq),
     };
   });
   // The next page starts after the last given; a search cut by its scan, after the last looked at.
@@ -452,7 +559,12 @@ export async function sourcesInTx(
       ? encodePosition(identity, { seq: upTo, at, restoreCount: restore, keys: [lastKey] })
       : undefined;
   return {
-    result: { mode, sources, ...(next !== undefined ? { next_position: next } : {}) },
+    result: {
+      mode,
+      ...(total !== undefined ? { total } : {}),
+      sources,
+      ...(next !== undefined ? { next_position: next } : {}),
+    },
     entry: entryOf({ pos: upTo, ...(slot !== undefined ? { slot: slot.slot } : {}) }),
   };
 }
@@ -491,7 +603,12 @@ async function getOne(
   };
   const slot = bySlot.get(row.slot);
   if (slot === undefined) throw notFound();
-  const blocks = (await contentOf(tx, [row.seq])).get(row.seq);
+  refuseRemoved(row);
+  const pendingBy = await pendingDeletions(tx, [row.seq]);
+  pendingKnown(row, pendingBy);
+  // A source not present gives none of its own blocks, whatever they say.
+  const blocks =
+    row.state === "present" ? (await contentOf(tx, [row.seq])).get(row.seq) : undefined;
   const t = textOf(row.kind, blocks);
   const f = fileOf(blocks);
   const stated = statedOf(blocks);
@@ -572,7 +689,9 @@ async function getOne(
           },
         }
       : {}),
-    ...(groups.size > 0 ? { produced: [...groups.values()] } : {}),
+    // A source pending deletion: what it produced is not given either (04-contract-types).
+    ...(groups.size > 0 && !pendingBy.has(row.seq) ? { produced: [...groups.values()] } : {}),
+    ...deletionOf(pendingBy, row.seq),
   };
   return { result, entry: entryOf({ pos: latest, slot: slot.slot, source: row.id as SourceId }) };
 }

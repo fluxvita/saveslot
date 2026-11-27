@@ -1,6 +1,6 @@
 // `sources` against a stored tenant (04-contract «sources»; 04-contract-types §4.6): what a source
 // produced in the tables the caller sees only; `correction` on a source a correction took a value
-// from; a source pending deletion or removed failing the whole call, its content given nowhere; a
+// from; a removed source failing the call that reads it, its content given nowhere; a
 // search that looks at a bounded number of sources a call and pages on; and the read record, which
 // keeps the mode and IDs but never the search text.
 
@@ -207,49 +207,61 @@ describe("a correction's sources", () => {
   );
 });
 
-describe("a source pending deletion or removed", () => {
-  for (const state of ["pending_deletion", "removed"]) {
-    it(
-      `${state}: every call fails, whatever its mode, filters or page, and gives none of its text`,
-      async () => {
-        const text = "do not show this line";
-        await said(text, [{ intent: "insert", table: "ledger.lunch", set: { note: "x" } }]);
-        const id = (await list({ limit: 1 })).sources[0]?.id as string;
-        await s.store.write((tx) =>
-          tx.query("UPDATE sources SET deletion_state = $1 WHERE source_id = $2", [
-            state,
-            id,
-          ] as never),
-        );
-        // A newer source, present: first in a list of one, and the one a get may name.
-        await said("another line", [
-          { intent: "insert", table: "ledger.lunch", set: { note: "y" } },
-        ]);
-        const shown = (
-          (await s.store.read((tx) =>
-            tx.query("SELECT source_id FROM sources WHERE source_id <> $1", [id] as never),
-          )) as { rows: { source_id: string }[] }
-        ).rows.map((x) => x.source_id);
-        // Whatever the mode, the filters or the page: the one not present need not be among what
-        // would be given.
-        for (const params of [
-          { mode: "get", id },
-          ...shown.map((x) => ({ mode: "get", id: x })),
-          {},
-          { limit: 1 },
-          { kind: "file_ref" },
-          { to: "2000-01-01T00:00:00Z" },
-          { mode: "search", q: "line" },
-          { mode: "search", q: "nothing matches this" },
-        ]) {
-          const e = await refusal(() => sources(s.store, ctx(), params));
-          expect(e).toMatchObject({ code: "internal", reason: "not_implemented" });
-          expect(JSON.stringify(e)).not.toContain(text);
-        }
-      },
-      T,
-    );
-  }
+// A source pending deletion through a real deletion: sources-pending.test.ts.
+describe("a removed source", () => {
+  it(
+    "fails only the call that reads it (not in this version); the others read as ever, its text nowhere",
+    async () => {
+      const text = "do not show this line";
+      await said(text, [{ intent: "insert", table: "ledger.lunch", set: { note: "x" } }]);
+      const id = (await list({ limit: 1 })).sources[0]?.id as string;
+      // Set by hand: this version carries no deletion out.
+      await s.store.write((tx) =>
+        tx.query("UPDATE sources SET deletion_state = 'removed' WHERE source_id = $1", [
+          id,
+        ] as never),
+      );
+      await said("another line", [{ intent: "insert", table: "ledger.lunch", set: { note: "y" } }]);
+      // Reading it: refused, nothing of it given.
+      for (const params of [{ mode: "get", id }, {}, { to: "2100-01-01T00:00:00Z" }]) {
+        const e = await refusal(() => sources(s.store, ctx(), params));
+        expect(e).toMatchObject({ code: "internal", reason: "not_implemented" });
+        expect(JSON.stringify(e)).not.toContain(text);
+      }
+      // Not reading it: as ever. A list of one (the newer source), and a search by its words.
+      const one = await list({ limit: 1 });
+      expect(one.sources.map((x: { id: string }) => x.id)).not.toContain(id);
+      const found = (await sources(s.store, ctx(), { mode: "search", q: "line" })) as unknown as {
+        sources: { id: string; excerpt?: string }[];
+      };
+      expect(found.sources.map((x) => x.excerpt)).toEqual(["another line"]);
+      expect(JSON.stringify(found)).not.toContain(text);
+    },
+    T,
+  );
+
+  it(
+    "pending by its state but listed by no pending deletion: internal, nothing of it given",
+    async () => {
+      const text = "do not show this either";
+      await said(text, [{ intent: "insert", table: "ledger.lunch", set: { note: "x" } }]);
+      const id = (await list({ limit: 1 })).sources[0]?.id as string;
+      await s.store.write((tx) =>
+        tx.query("UPDATE sources SET deletion_state = 'pending_deletion' WHERE source_id = $1", [
+          id,
+        ] as never),
+      );
+      for (const params of [{ mode: "get", id }, {}]) {
+        const e = await refusal(() => sources(s.store, ctx(), params));
+        expect(e).toMatchObject({ code: "internal" });
+        expect(JSON.stringify(e)).not.toContain(text);
+      }
+      expect(
+        JSON.stringify(await sources(s.store, ctx(), { mode: "search", q: "either" })),
+      ).not.toContain(text);
+    },
+    T,
+  );
 });
 
 describe("a search looks at a bounded number of sources a call", () => {
@@ -284,11 +296,67 @@ describe("a search looks at a bounded number of sources a call", () => {
         seen.push(...result.sources.map((x) => x.excerpt as string));
         // At most 3 looked at: never all three matches on one page.
         expect(result.sources.length).toBeLessThan(3);
+        // More sources than one scan looks at: no total, on any page.
+        expect(result).not.toHaveProperty("total");
         position = result.next_position;
         pages += 1;
       } while (position !== undefined && pages < 10);
       expect(seen).toEqual(["match 5", "match 3", "match 1"]);
       expect(pages).toBeGreaterThan(1);
+    },
+    T,
+  );
+});
+
+describe("total", () => {
+  it(
+    "list: every source the filters take, on each page as of the first page's operation",
+    async () => {
+      for (const [i, text] of ["one", "two", "three"].entries()) {
+        await said(text, [{ intent: "insert", table: "ledger.lunch", set: { note: `n${i}` } }]);
+      }
+      const all = (await list({})) as Listed & { total: number };
+      expect(all.total).toBe(all.sources.length);
+      const first = (await list({ limit: 1 })) as Listed & { total: number };
+      expect(first.total).toBe(all.total);
+      expect(first.sources).toHaveLength(1);
+      const messages = (await list({ kind: "user_message" })) as Listed & { total: number };
+      expect(messages.total).toBe(3);
+      // A source recorded between the pages is not on the next page, nor in its total.
+      await said("four", [{ intent: "insert", table: "ledger.lunch", set: { note: "n3" } }]);
+      const page1 = (await list({ kind: "user_message", limit: 2 })) as Listed & { total: number };
+      expect(page1.total).toBe(4);
+      await said("five", [{ intent: "insert", table: "ledger.lunch", set: { note: "n4" } }]);
+      const page2 = (await list({
+        kind: "user_message",
+        limit: 2,
+        position: page1.next_position,
+      })) as Listed & { total: number };
+      expect(page2.total).toBe(4);
+      expect(page2.sources).toHaveLength(2);
+      expect(page2.next_position).toBeUndefined();
+    },
+    T,
+  );
+
+  it(
+    "search: every match, the same on each page, when every source fits in one scan",
+    async () => {
+      for (const [i, text] of ["match 1", "other 2", "match 3", "other 4", "match 5"].entries()) {
+        await said(text, [{ intent: "insert", table: "ledger.lunch", set: { note: `n${i}` } }]);
+      }
+      const search = (more: Record<string, unknown>) =>
+        list({ mode: "search", q: "match", ...more }) as Promise<Listed & { total?: number }>;
+      const one = await search({ limit: 1 });
+      expect(one.total).toBe(3);
+      expect(one.sources.map((x) => x.excerpt)).toEqual(["match 5"]);
+      const two = await search({ limit: 1, position: one.next_position });
+      expect(two.total).toBe(3);
+      expect(two.sources.map((x) => x.excerpt)).toEqual(["match 3"]);
+      const three = await search({ limit: 1, position: two.next_position });
+      expect(three.sources.map((x) => x.excerpt)).toEqual(["match 1"]);
+      expect(three.next_position).toBeUndefined();
+      expect((await search({ q: "nothing like it" })).total).toBe(0);
     },
     T,
   );

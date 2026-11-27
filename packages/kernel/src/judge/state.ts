@@ -497,6 +497,43 @@ export class RowState {
     return this.hasValue(before, at) !== this.hasValue(after, at);
   }
 
+  /**
+   * Whether the entity still changes at `p` on the fields that define "has a value" (05-time
+   * «高影响写入»): some one of them differs across it, "no value" a value of its own. A value ↔ no
+   * value boundary is a change of all of them together: it is gone only when none differs.
+   */
+  definingChangeAt(p: BizPoint, at: Limit): boolean {
+    const segs = this.pieces([[{ from: p, to: null }]]);
+    const i = segs.findIndex((s) => s.from === p);
+    const before = segs[i - 1];
+    const after = segs[i];
+    if (before === undefined || after === undefined) return false;
+    return this.table.fields
+      .filter((f) => this.defines(f))
+      .some((f) => this.token(f, before, at) !== this.token(f, after, at));
+  }
+
+  /**
+   * Of `before`, the change points of `f` this state had as of `at` (`impactPoints`), those that
+   * are no longer change points in `after` as of `afterAt` (high impact ①, 05-time «高影响写入»):
+   * a value ↔ no value boundary of a field defining "has a value" is gone only when no such field
+   * differs across it any more; any other change point is the field's own.
+   */
+  erasedOf(
+    f: FieldId,
+    before: readonly BizPoint[],
+    at: Limit,
+    after: RowState,
+    afterAt: Limit,
+  ): BizPoint[] {
+    const now = new Set(after.impactPoints(f, afterAt));
+    return before.filter((p) =>
+      this.defines(f) && this.hasValueBoundary(p, at)
+        ? !after.definingChangeAt(p, afterAt)
+        : !now.has(p),
+    );
+  }
+
   /** Event and timeless tables: the row has a revoke in effect. */
   revoked(at: Limit): boolean {
     return this.revokedBy(at).length > 0;

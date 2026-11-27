@@ -732,7 +732,7 @@ interface TimelineField {
     uncovered?: true;            // 这一项（回退、回到合并基）只是让被回掉的写入在这一段不再生效，不给值：这一段回到撤销造成的空洞
     before?: Value; after?: Value;
     valid?: Interval;            // 状态类表：这一项解析出的区间（以最近一次给出的为准：写入时，或之后被隐私删除重新解析的）
-    removed?: true;              // 内容已按删除移除
+    removed?: true;              // 内容已按删除移除；此时 result 是 removed
     /** schema_const：这个值出自第 sv 版 schema 切换时的常量 backfill（没有源数据，不随隐私删除清除）。 */
     sources?: { value: SourceRef[]; operation: SourceRef[]; schema_const?: { sv: Sv } };
 }
@@ -754,7 +754,7 @@ interface AsOfResult extends CommonResult, PageResult {
   other_reads?: Array<{ read: ReadId; seq: Seq; at: Instant }>;   // as_of: {task} 时：同一任务对这个目标的其余读取
 }
 
-/** before / after 没有值时不给。"*"：布尔，true 表示存在。 */
+/** before / after 没有值时不给，出自已被删除去掉的贡献时也不给（这一条带 partially_deleted）。"*"：布尔，true 表示存在。 */
 interface ChangedField { before?: Value; after?: Value }
 
 interface ChangesResult extends CommonResult, PageResult {
@@ -769,6 +769,8 @@ interface ChangesResult extends CommonResult, PageResult {
     target: TargetRef;
     /** 只列值实际变了的字段。事件类表、无时间表：每个字段一个对象。状态类表：每个字段是按区间排好的数组，每段各有区间（与 timeline 的 TimelineField[] 同形）。"*" 是这一行 / 这一段是否存在，撤销或撤销的撤回改变它时给。 */
     fields: Record<FieldName | "*", ChangedField | Array<ChangedField & { valid: Interval }>>;
+    /** 某个字段的 before 或 after 出自一项已被删除去掉的贡献（宽限期内或已执行）：那一侧不给（data-model「删除 · 版本表」）。 */
+    partially_deleted?: true;
   }>;
 }
 ```
@@ -815,8 +817,10 @@ interface SourcesParams extends CommonParams, PageParams {
   id?: SourceId;                      // get：必填
 }
 
-interface SourcesListResult extends CommonResult, PageResult {
+interface SourcesListResult extends CommonResult, Omit<PageResult, "total"> {
   mode: "list" | "search";
+  /** list 总是给。search 只在满足过滤条件的源数据一次调用就能扫完时给（全部命中）；扫不完时不给，靠 next_cursor 表示还有（04-contract sources）。 */
+  total?: number;
   sources: Array<{
     id: SourceId; kind: SourceKind; slot: SlotName;
     recorded_at: Instant; stated_at?: Instant; actor: Actor;
@@ -1348,8 +1352,11 @@ type FieldResultCode = "applied" | "candidate" | "awaiting" | "corroborated" | "
 
 /** timeline 里一项贡献的结果码。比写入回执多一个 dropped：这一项经一次隐私删除的重放后不再是贡献
  *  （与前面的值相同而当初没指证据；它回掉的那次写入已不在；或它的区间并进了同一字段的另一项）。只出现在 timeline。
- *  不含 noop：无操作不产生版本，timeline 不列无操作的字段。 */
-type TimelineResultCode = Exclude<FieldResultCode, "noop"> | "dropped";
+ *  不含 noop：无操作不产生版本，timeline 不列无操作的字段。
+ *  removed：这一项的内容已按删除移除（宽限期内或已执行），条目同时带 removed: true，两者要么都有要么都没有。
+ *  它与 dropped 不同：dropped 是重放后不再是贡献的上述三种，内容还在；removed 是来源被删、内容读不到，
+ *  被拿走的生效项与证据被删的候选、待确认项都是它。撤回删除之后回到原来的结果码。 */
+type TimelineResultCode = Exclude<FieldResultCode, "noop"> | "dropped" | "removed";
 
 type FieldResult =
   | { result: "applied";

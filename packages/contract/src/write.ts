@@ -115,8 +115,12 @@ export interface EvidenceOnOp {
 /** 04-contract-types §5.1 `FieldResultCode`: the event format's statuses plus `noop`. */
 export type FieldResultCode = FieldStatus | "noop";
 
-/** 04-contract-types §5.1 `TimelineResultCode`: a contribution's result code in `timeline`. */
-export type TimelineResultCode = Exclude<FieldResultCode, "noop"> | "dropped";
+/**
+ * 04-contract-types §5.1 `TimelineResultCode`: a contribution's result code in `timeline`.
+ * `dropped`: no longer a contribution after a deletion's replay; `removed`: its content was removed
+ * by a deletion (pending or carried out), with `removed: true` on the same entry.
+ */
+export type TimelineResultCode = Exclude<FieldResultCode, "noop"> | "dropped" | "removed";
 
 /** 04-contract-types §5.1 `FieldResult`: a field's result in a write receipt. */
 export type FieldResult =

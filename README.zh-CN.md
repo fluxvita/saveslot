@@ -2,7 +2,7 @@
 
 [English](README.md) · 简体中文
 
-> saveslot 的方向是 **Agent Data Infra**。本页是一页总览：saveslot 是什么、几个核心概念、第一版做成什么样、文档怎么读。第一次接触 saveslot、想顺着读懂设计的人，从讲解文档 [`docs/zh-CN/guide/`](docs/zh-CN/guide/README.md) 开始。
+> saveslot 的方向是 **Agent Data Infra**。本页是一页总览：saveslot 是什么、几个核心概念、第一版做成什么样、文档怎么读、怎么参与开发。第一次接触 saveslot、想顺着读懂设计的人，从讲解文档 [`docs/zh-CN/guide/`](docs/zh-CN/guide/README.md) 开始。
 > 这里只做概述，规则的权威定义都在后面链接的文档里；本页与它们不一致时，以它们为准。
 
 ## saveslot 是什么
@@ -126,6 +126,12 @@ echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.profile
 | [`docs/zh-CN/research/`](docs/zh-CN/research/) | 调研报告 |
 
 讲解与规格不一致时以规格为准。
+
+## 开发
+
+先读[开发上手](docs/zh-CN/development.md)：搭环境、跑检查、只跑一个测试、找到改动该落在哪、演练一次小修复。代码怎么组织、为什么这样组织，见[讲解第 12 章](docs/zh-CN/guide/12-contributing.md)与[规格 `02-architecture.md`](docs/zh-CN/spec/02-architecture.md)。
+
+给 Agent：遵循 [`AGENTS.md`](AGENTS.md)。
 
 ## 仓库与许可证
 

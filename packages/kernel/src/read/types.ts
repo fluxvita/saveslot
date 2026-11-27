@@ -116,6 +116,11 @@ export interface Marks {
   }[];
   readonly revoked?: { readonly seq: Seq };
   /**
+   * Read by record time: part of the data then has been deleted (03-data-model/03-deletion
+   * «版本表»): a value a removed contribution gave is not given.
+   */
+  readonly partially_deleted?: true;
+  /**
    * The premises of the values read changed (04-contract §7): at most 10, the latest `since`
    * first; `premise_changed_total` when there are more.
    */
@@ -280,7 +285,7 @@ export interface SourceRef {
 /** §4.5 `TimelineField`. */
 export interface TimelineField {
   /** §5.1 `TimelineResultCode`. */
-  readonly result: FieldStatus | "dropped";
+  readonly result: FieldStatus | "dropped" | "removed";
   readonly no_value?: true;
   readonly uncovered?: true;
   readonly before?: ValueOut;
@@ -376,6 +381,11 @@ export interface ChangeEntry {
   readonly fields: Readonly<
     Record<string, ChangedField | readonly (ChangedField & { readonly valid: Interval })[]>
   >;
+  /**
+   * A side of a field here was given by a contribution a deletion removed (03-data-model/
+   * 03-deletion «版本表»): that side is not given.
+   */
+  readonly partially_deleted?: true;
 }
 
 /** §4.5 `ChangesResult`. */

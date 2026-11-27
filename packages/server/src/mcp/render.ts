@@ -1066,12 +1066,13 @@ function sql(r: R, now: Date): Table {
 /** A version's intent (04-contract-types §5.1 `VersionIntent`). */
 const INTENTS: ReadonlySet<string> = new Set<string>(VERSION_INTENTS);
 
-const RESULT = textsBy<FieldResultCode>({
+const RESULT = textsBy<FieldResultCode | "removed">({
   applied: () => t``,
   candidate: () => t` (candidate, not in effect)`,
   awaiting: () => t` (awaiting confirmation, not in effect)`,
   corroborated: () => t` (unchanged; added as evidence)`,
   noop: () => t` (unchanged)`,
+  removed: () => t` (removed by a deletion)`,
 });
 const resultOf = (x: unknown): Part[] =>
   said(RESULT, x ?? "applied") ?? t` (${untrusted(String(x))})`;

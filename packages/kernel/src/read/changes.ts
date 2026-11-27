@@ -31,7 +31,8 @@ import { stateFromCells, targetDelta } from "../delta/index.ts";
 import { actorsNow } from "../pending/index.ts";
 import { get, has, isJsonNumber, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { valueOut } from "../time/index.ts";
+import { cellWithheld, withholdingIn } from "../store/readable-content.ts";
+import { type ValueOut, valueOut } from "../time/index.ts";
 import {
   type HistoryInput,
   type HistoryOutput,
@@ -53,7 +54,7 @@ import {
   invalid,
   ReadError,
 } from "./types.ts";
-import type { RowCell } from "./versions.ts";
+import { type RowCell, readableCell } from "./versions.ts";
 
 type Cell = RowCell & {
   row_id: string;
@@ -61,6 +62,25 @@ type Cell = RowCell & {
   intent: string;
   src_event: unknown;
 };
+
+/**
+ * A withheld cell's value (./versions.ts `readableCell`), as `delta` compares it: a placeholder of
+ * its own, unlike any value and any other withheld cell's, so that a change to or from it is still
+ * one. Never given: the side it is on is left out.
+ */
+const PLACEHOLDER = "\u0000withheld/";
+function withheldAsPlaceholder(c: Cell): Cell {
+  if (c.withheld !== true) return c;
+  const out: Record<string, unknown> = { ...readableCell(c) };
+  out[`c_${c.field_id}_0`] = `${PLACEHOLDER}${String(c.rec_from)}/${c.vf ?? ""}`;
+  return out as Cell;
+}
+const isPlaceholder = (v: FieldValue | undefined): boolean =>
+  typeof v === "string" && v.startsWith(PLACEHOLDER);
+const decodeOrPlaceholder: typeof decode = (f, raw) =>
+  typeof raw[0] === "string" && raw[0].startsWith(PLACEHOLDER)
+    ? (raw[0] as FieldValue)
+    : decode(f, raw);
 
 const effective = (c: Cell, s: number): boolean =>
   Number(c.rec_from) <= s && (c.rec_to === null || Number(c.rec_to) > s);
@@ -244,12 +264,13 @@ export async function changesInTx(
     if (touched.rows.length > 0) {
       const r = await tx.query<Cell>(
         `SELECT row_id, field_id, ${interval}, rec_from, rec_to, intent, src_event, revoked, no_value,
-           ${columns.join(", ")}
-         FROM ${versions}
+           ${cellWithheld("v", await withholdingIn(tx))} AS withheld, ${columns.join(", ")}
+         FROM ${versions} v
          WHERE row_id = ANY($3) AND rec_from <= $2 AND (rec_to IS NULL OR rec_to > $1)`,
         [since, until, touched.rows.map((x) => x.row_id)] as never,
       );
-      for (const c of r.rows) byRow.set(c.row_id, [...(byRow.get(c.row_id) ?? []), c]);
+      for (const c of r.rows.map(withheldAsPlaceholder))
+        byRow.set(c.row_id, [...(byRow.get(c.row_id) ?? []), c]);
     }
   }
 
@@ -263,12 +284,22 @@ export async function changesInTx(
     readonly row: string;
     readonly intent: string;
     readonly fields: Record<string, ChangedField | (ChangedField & { valid: Interval })[]>;
+    readonly partial?: true;
   }
   const found: Change[] = [];
-  const changed = (before: FieldValue, after: FieldValue): ChangedField => ({
-    ...(before !== null ? { before: valueOut(before) } : {}),
-    ...(after !== null ? { after: valueOut(after) } : {}),
-  });
+  // A side a withheld cell gave is not given; the entry is marked (03-deletion «版本表»).
+  let partial = false;
+  const side = (v: FieldValue): ValueOut | undefined => {
+    if (isPlaceholder(v)) {
+      partial = true;
+      return undefined;
+    }
+    return v === null ? undefined : valueOut(v);
+  };
+  const changed = (before: FieldValue, after: FieldValue): ChangedField => {
+    const [b, a] = [side(before), side(after)];
+    return { ...(b !== undefined ? { before: b } : {}), ...(a !== undefined ? { after: a } : {}) };
+  };
 
   for (const [row, cells] of byRow) {
     const ops = new Set<number>();
@@ -279,9 +310,10 @@ export async function changesInTx(
     }
     for (const op of [...ops].sort((a, b) => a - b)) {
       const fields: Change["fields"] = Object.create(null);
+      partial = false;
       const asOf = (s: number) => cells.filter((c) => effective(c, s));
       const [before, after] = [asOf(op - 1), asOf(op)];
-      const options = { decode } as const;
+      const options = { decode: decodeOrPlaceholder } as const;
       // `delta` counts existence (a revoke, or its taking back) and the fields apart.
       const delta = new Map(
         targetDelta(stateFromCells(t, before, options), stateFromCells(t, after, options)).flatMap(
@@ -341,7 +373,13 @@ export async function changesInTx(
       const opened = cells
         .filter((c) => Number(c.rec_from) === op)
         .sort((x, y) => Number(y.src_event ?? 0) - Number(x.src_event ?? 0));
-      found.push({ op, row, intent: opened[0]?.intent ?? "update", fields });
+      found.push({
+        op,
+        row,
+        intent: opened[0]?.intent ?? "update",
+        fields,
+        ...(partial ? { partial: true } : {}),
+      });
     }
   }
 
@@ -374,6 +412,7 @@ export async function changesInTx(
           ...(state ? { entity: c.row as never } : { row: c.row as never }),
         },
         fields: c.fields,
+        ...(c.partial === true ? { partially_deleted: true as const } : {}),
       };
       return { item: entry, keys: [c.op, c.row] };
     });

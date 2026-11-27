@@ -79,7 +79,12 @@ export interface PgliteBackendOptions {
    * Tests only: the format this backend takes for the kernel's, and the upgrade steps to it, in
    * place of STORAGE_FORMAT_VERSION and UPGRADE_STEPS (a test's own format, steps and failures).
    */
-  readonly formatUpgrade?: { readonly format: number; readonly steps: readonly UpgradeStep[] };
+  readonly formatUpgrade?: {
+    readonly format: number;
+    readonly steps: readonly UpgradeStep[];
+    /** Awaited before each step, once `upgrade_step` is told: holds a step where a test wants it. */
+    readonly beforeStep?: (from: number) => Promise<void>;
+  };
   /**
    * Where the store reports what it does on its own, outside any call (never a path): a
    * checkpoint that failed (`checkpoint_failed`, the error's code), and the statistics gathered
@@ -205,6 +210,7 @@ export class PgliteBackend implements StorageBackend {
   readonly #analyze: AnalyzeMode;
   readonly #format: number;
   readonly #upgradeSteps: readonly UpgradeStep[];
+  readonly #beforeStep: ((from: number) => Promise<void>) | undefined;
   readonly #onEvent: PgliteBackendOptions["onEvent"];
 
   constructor(opts: PgliteBackendOptions = {}) {
@@ -215,6 +221,7 @@ export class PgliteBackend implements StorageBackend {
     this.#analyze = opts.analyze ?? "stale";
     this.#format = opts.formatUpgrade?.format ?? STORAGE_FORMAT_VERSION;
     this.#upgradeSteps = opts.formatUpgrade?.steps ?? UPGRADE_STEPS;
+    this.#beforeStep = opts.formatUpgrade?.beforeStep;
     this.#onEvent = opts.onEvent;
   }
 
@@ -307,6 +314,7 @@ export class PgliteBackend implements StorageBackend {
         const target = r.upgrade.to;
         while (formatVersion < target) {
           this.#onEvent?.("upgrade_step", { from: formatVersion, to: formatVersion + 1 });
+          await this.#beforeStep?.(formatVersion);
           const u = await worker.call<UpgradeReply>({ kind: "upgrade" });
           formatVersion = u.formatVersion;
           analyzed = u.analyzed;
