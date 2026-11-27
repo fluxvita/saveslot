@@ -6,10 +6,13 @@
 //   the login. The pages may not be framed, and are English unless the browser's first language is
 //   Chinese.
 // - The form carries a token of its own, bound to a browser: an HMAC of the form cookie
-//   (`SameSite=Strict`) the page set and the token's expiry, under a key made at random by this
-//   process. It is good until it expires and only together with that cookie, so a token someone
-//   fetched for themselves cannot sign another browser in to their account; it takes no memory, and
-//   a restart expires the forms already out. A post, to sign in or out, whose `Origin` is not this
+//   (`SameSite=Strict`) the page set and the token's expiry, under a key derived from the handle
+//   key file (02-architecture §5 «句柄签名密钥»), shared by every process of the deployment: a form
+//   one process gave is taken by another. The token names the key it was made with; a key of the
+//   file verifies, the current one signs, so a key added to the file and made current leaves the
+//   forms already out good. It is good until it expires and only together with that cookie, so a
+//   token someone fetched for themselves cannot sign another browser in to their account; it takes
+//   no memory. A post, to sign in or out, whose `Origin` is not this
 //   service's is refused too.
 // - Login attempts are counted twice over 15 minutes: by source and name (5 refuse that name from
 //   that source), by source alone (20 refuse the source). An attempt is counted before its password
@@ -30,6 +33,7 @@
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { UserId } from "./control-plane.ts";
+import type { DerivedKeys } from "./cursor.ts";
 import { Counts } from "./expiring.ts";
 import {
   type CurrentUser,
@@ -65,6 +69,9 @@ const PER_SOURCE = 20;
 /** Attempts from one IPv6 /48 in a window, whatever its /64s (an initial value). */
 export const PER_WIDE_SOURCE = 100;
 const FORM_TOKEN_MS = 30 * 60_000;
+
+/** The handle keys' purpose the login form's keys are derived for (`CursorKeys.derive`). */
+export const LOGIN_FORM_PURPOSE = "login-form";
 
 const TEXT = {
   en: {
@@ -102,8 +109,8 @@ export class LocalIdentity implements IdentityProvider {
   readonly #origin: string;
   readonly #secure: boolean;
   readonly #formCookie: string;
-  /** What form tokens are made with: this process's alone. */
-  readonly #formKey = randomBytes(32);
+  /** What form tokens are made with: derived from the handle key file, by key ID. */
+  readonly #formKeys: DerivedKeys;
   readonly #byName: Counts;
   readonly #bySource: Counts;
   readonly #byWide: Counts;
@@ -118,6 +125,8 @@ export class LocalIdentity implements IdentityProvider {
      * cookies are `Secure` and the form cookie `__Host-`.
      */
     readonly origin: string;
+    /** The form tokens' keys: the handle keys' `derive(LOGIN_FORM_PURPOSE)`. */
+    readonly formKeys: DerivedKeys;
     readonly now?: () => number;
     /** Tests only: how many entries each count table holds at most. */
     readonly countCapForTests?: number;
@@ -131,6 +140,10 @@ export class LocalIdentity implements IdentityProvider {
     this.#secure = this.#origin.startsWith("https://");
     this.#formCookie = this.#secure ? `__Host-${FORM_COOKIE}` : FORM_COOKIE;
     this.#now = o.now ?? Date.now;
+    if (!o.formKeys.byId.has(o.formKeys.current)) {
+      throw new TypeError("the form keys have no key of their current ID");
+    }
+    this.#formKeys = o.formKeys;
   }
 
   async currentUser(req: IdentityRequest): Promise<CurrentUser | undefined> {
@@ -313,20 +326,29 @@ export class LocalIdentity implements IdentityProvider {
     return { kind: "page", status, html: "", headers: PAGE_HEADERS };
   }
 
-  /** A form token: its expiry, and an HMAC of the form cookie with that expiry. */
-  #token(binding: string, until: number): string {
-    const mac = createHmac("sha256", this.#formKey).update(`${binding}.${until}`).digest();
-    return `${until}.${mac.toString("base64url")}`;
+  /**
+   * A form token: its expiry, the ID of the key it was made with (`current` unless given), and an
+   * HMAC under that key of the ID, the form cookie and the expiry.
+   */
+  #token(binding: string, until: number, id = this.#formKeys.current): string {
+    const key = this.#formKeys.byId.get(id) as Buffer;
+    const mac = createHmac("sha256", key).update(`${id}.${binding}.${until}`).digest();
+    return `${until}.${id}.${mac.toString("base64url")}`;
   }
 
-  /** Whether `token` is one this process made for the form cookie `binding`, and not expired. */
+  /**
+   * Whether `token` is one a process of this deployment made for the form cookie `binding`, under
+   * a key the handle key file still holds, and not expired.
+   */
   #tokenGood(token: string | undefined, binding: string | undefined, now: number): boolean {
     if (token === undefined || binding === undefined) return false;
-    const m = /^(\d{1,15})\.([A-Za-z0-9_-]{43})$/.exec(token);
+    const m = /^(\d{1,15})\.(k[0-9a-f]{16})\.([A-Za-z0-9_-]{43})$/.exec(token);
     if (m === null) return false;
     const until = Number(m[1]);
+    const id = m[2] as string;
     if (until <= now || until > now + FORM_TOKEN_MS) return false;
-    const want = Buffer.from(this.#token(binding, until));
+    if (!this.#formKeys.byId.has(id)) return false;
+    const want = Buffer.from(this.#token(binding, until, id));
     const got = Buffer.from(token);
     return got.length === want.length && timingSafeEqual(got, want);
   }

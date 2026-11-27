@@ -5,7 +5,8 @@
 // locks taken in the order every change of the account keeps.
 // Fictional names and passwords.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHmac } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { validateHeaderValue } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_BACKEND, testBackend } from "../../test-backend/src/index.fixture.ts";
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import type { TenantId } from "./control-plane.ts";
+import { CursorKeys, type DerivedKeys } from "./cursor.ts";
 import { type IdentityRequest, type IdentityResponse, UserSessionError } from "./identity.ts";
 import {
   disableLocalUser,
@@ -22,7 +24,13 @@ import {
   LocalAccounts,
   setLocalPassword,
 } from "./local-accounts.ts";
-import { FORM_COOKIE, LOGIN_COOKIE, LocalIdentity, PER_WIDE_SOURCE } from "./local-identity.ts";
+import {
+  FORM_COOKIE,
+  LOGIN_COOKIE,
+  LOGIN_FORM_PURPOSE,
+  LocalIdentity,
+  PER_WIDE_SOURCE,
+} from "./local-identity.ts";
 import {
   hashPassword,
   PasswordChecksBusy,
@@ -47,6 +55,9 @@ afterAll(() => rmSync(root, { recursive: true, force: true }), T);
 
 let db: TenantStore;
 let cp: ServerControlPlane;
+// The deployment's handle key file, and the form keys every process derives from it.
+const KEY_FILE = join(root, "handle-keys.json");
+let FORM_KEYS: DerivedKeys;
 let accounts: LocalAccounts;
 let clock = Date.parse(NOW);
 const id = () =>
@@ -54,9 +65,12 @@ const id = () =>
     accounts,
     loginMs: 60 * 60_000,
     origin: ORIGIN,
+    formKeys: FORM_KEYS,
     now: () => clock,
   });
 beforeAll(async () => {
+  await CursorKeys.createFile(KEY_FILE);
+  FORM_KEYS = (await CursorKeys.fromFile(KEY_FILE)).derive(LOGIN_FORM_PURPOSE);
   useScryptForTests({ N: 2 ** 10, r: 8, p: 1 });
   db = await testBackend().open({ kind: "pglite", dir: join(root, "control") }, { create: true });
   cp = await initControlPlane(db);
@@ -153,6 +167,7 @@ const over = (db: ControlDb) =>
     accounts: LocalAccounts.over(db),
     loginMs: 60 * 60_000,
     origin: ORIGIN,
+    formKeys: FORM_KEYS,
     now: () => clock,
   });
 const loginsOf = async (user: string) =>
@@ -226,7 +241,58 @@ describe("the local accounts' login", () => {
   );
 
   it(
-    "takes a form token with its cookie until it expires, not after, and not from before a restart",
+    "a key added to the file and made current: forms made before still taken, new ones under it; a handle key's own MAC is not a form token",
+    async () => {
+      const a = await account();
+      const before = id();
+      const old = await formToken(before);
+      // The file with a second key, made current, the first kept (the first step of a change).
+      const file = JSON.parse(readFileSync(KEY_FILE, "utf8")) as {
+        current: string;
+        keys: { id: string; secret: string }[];
+      };
+      const added = { id: `k${"7".repeat(16)}`, secret: "ab".repeat(32) };
+      const both = join(root, `both-keys-${clock}.json`);
+      writeFileSync(
+        both,
+        `${JSON.stringify({ format: 1, current: added.id, keys: [...file.keys, added] })}\n`,
+        { mode: 0o600 },
+      );
+      const after = new LocalIdentity({
+        accounts,
+        loginMs: 60 * 60_000,
+        origin: ORIGIN,
+        formKeys: (await CursorKeys.fromFile(both)).derive(LOGIN_FORM_PURPOSE),
+        now: () => clock,
+      });
+      const wrong = { return_to: TO, name: a.name, password: "wrong one here" };
+      expect(status(await post(after, { ...wrong, form_token: old }))).toBe(401);
+      const made = await formToken(after);
+      expect(made.split(".")[1]).toBe(added.id);
+      // The process still on the first file does not know the new key yet.
+      expect(status(await post(before, { ...wrong, form_token: made, password: PASSWORD }))).toBe(
+        400,
+      );
+      // The derived key is not the handle key: an HMAC under the key itself is refused.
+      const [until] = made.split(".") as [string];
+      const binding = browsers.get(made) as string;
+      const raw = createHmac("sha256", Buffer.from(added.secret, "hex"))
+        .update(`${added.id}.${binding}.${until}`)
+        .digest("base64url");
+      const forged = `${until}.${added.id}.${raw}`;
+      browsers.set(forged, binding);
+      expect(status(await post(after, { ...wrong, form_token: forged, password: PASSWORD }))).toBe(
+        400,
+      );
+      expect(FORM_KEYS.byId.get(file.current)?.toString("hex")).not.toBe(
+        file.keys.find((k) => k.id === file.current)?.secret,
+      );
+    },
+    T,
+  );
+
+  it(
+    "takes a form token with its cookie until it expires, not after, and not under another key file",
     async () => {
       const a = await account();
       const p = id();
@@ -241,16 +307,37 @@ describe("the local accounts' login", () => {
       } finally {
         clock -= 30 * 60_000;
       }
-      // Another process (or this one restarted) has another key.
+      // Another process of the deployment (or this one restarted) reads the same key file: taken.
       const fresh = await formToken(p);
-      expect(status(await post(id(), { ...wrong, form_token: fresh, password: PASSWORD }))).toBe(
-        400,
-      );
-      // A token changed by a character, or one whose expiry was moved, is not taken.
-      const [until, mac] = fresh.split(".") as [string, string];
-      const flipped = `${until}.${mac.slice(0, -1)}${mac.endsWith("A") ? "B" : "A"}`;
-      const later = `${Number(until) + 1000}.${mac}`;
-      for (const t of [flipped, later]) {
+      const other = new LocalIdentity({
+        accounts,
+        loginMs: 60 * 60_000,
+        origin: ORIGIN,
+        formKeys: (await CursorKeys.fromFile(KEY_FILE)).derive(LOGIN_FORM_PURPOSE),
+        now: () => clock,
+      });
+      expect(status(await post(other, { ...wrong, form_token: fresh }))).toBe(401);
+      // One with another key file: not taken.
+      const elsewhere = join(root, `other-keys-${clock}.json`);
+      await CursorKeys.createFile(elsewhere);
+      const stranger = new LocalIdentity({
+        accounts,
+        loginMs: 60 * 60_000,
+        origin: ORIGIN,
+        formKeys: (await CursorKeys.fromFile(elsewhere)).derive(LOGIN_FORM_PURPOSE),
+        now: () => clock,
+      });
+      expect(
+        status(await post(stranger, { ...wrong, form_token: fresh, password: PASSWORD })),
+      ).toBe(400);
+      // A token changed by a character, one whose expiry was moved, one naming another key, or one
+      // of the earlier form (no key ID), is not taken.
+      const [until, kid, mac] = fresh.split(".") as [string, string, string];
+      const flipped = `${until}.${kid}.${mac.slice(0, -1)}${mac.endsWith("A") ? "B" : "A"}`;
+      const later = `${Number(until) + 1000}.${kid}.${mac}`;
+      const unknown = `${until}.k${"0".repeat(16)}.${mac}`;
+      const earlier = `${until}.${mac}`;
+      for (const t of [flipped, later, unknown, earlier]) {
         browsers.set(t, browsers.get(fresh) as string);
         expect(status(await post(p, { ...wrong, form_token: t, password: PASSWORD }))).toBe(400);
       }
@@ -404,6 +491,7 @@ describe("the local accounts' login", () => {
         accounts,
         loginMs: 60 * 60_000,
         origin: "https://saveslot.example:443/",
+        formKeys: FORM_KEYS,
         now: () => clock,
       });
       const r = await post(
@@ -605,6 +693,7 @@ describe("the local accounts' login", () => {
         accounts,
         loginMs: 60 * 60_000,
         origin: ORIGIN,
+        formKeys: FORM_KEYS,
         now: () => clock,
         countCapForTests: 2,
       });

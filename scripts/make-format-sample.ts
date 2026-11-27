@@ -6,11 +6,13 @@
 // Usage: node scripts/make-format-sample.ts <local|server> [--switch] [output directory]
 //
 // The output directory defaults to packages/test-backend/fixtures/storage-format/<format>/<mode>
-// (`<mode>-switch` with --switch) and must not hold a sample yet: a format's sample is made once
-// and not replaced. --switch: the history goes on with a schema switch (format-sample.fixture.ts).
+// (`<mode>-switch` with --switch; a server sample of a control database past format 1 is
+// `server-control-<control format>`, 02-architecture §8 «控制面库的升级») and must not hold a sample
+// yet: a format's sample is made once and not replaced. --switch: the history goes on with a schema switch (format-sample.fixture.ts).
 //
 // Beside the sample, `made-from.json`: the release tag before the commit it was made on, that tag's
-// commit, and the files changed since the tag. A sample made after a release is made from the tag's
+// commit, the files changed since the tag, and the formats it holds (`storage_format`, and for a
+// server sample `control_format`). A sample made after a release is made from the tag's
 // tree plus those files, which may only be the sample's own test files; the commit it was made on
 // is not recorded, since it need not be one the repository keeps.
 //
@@ -26,7 +28,12 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { CURRENT_FORMAT, SAMPLES_DIR } from "../packages/daemon/src/format-sample-paths.fixture.ts";
+import {
+  CURRENT_CONTROL_FORMAT,
+  CURRENT_FORMAT,
+  SAMPLES_DIR,
+  serverSampleName,
+} from "../packages/daemon/src/format-sample-paths.fixture.ts";
 
 const MODES = { local: "format-sample.test.ts", server: "format-sample-server.test.ts" } as const;
 
@@ -60,7 +67,9 @@ if (import.meta.main) {
     process.exit(2);
   }
   const repo = resolve(import.meta.dirname, "..");
-  const name = `${mode}${switched ? "-switch" : ""}`;
+  // A server sample is filed by the control database's format too, once past 1.
+  const base = mode === "server" ? serverSampleName(CURRENT_CONTROL_FORMAT) : mode;
+  const name = `${base}${switched ? "-switch" : ""}`;
   const out = resolve(given ?? resolve(repo, SAMPLES_DIR, String(CURRENT_FORMAT), name));
   if (existsSync(resolve(out, "expected.json"))) {
     console.error(`${out} already holds a sample: a format's sample is not replaced.`);
@@ -90,7 +99,14 @@ if (import.meta.main) {
     },
   );
   if (r.status === 0) {
-    writeFileSync(resolve(out, "made-from.json"), `${JSON.stringify(madeFrom(repo), null, 2)}\n`);
+    const formats = {
+      storage_format: CURRENT_FORMAT,
+      ...(mode === "server" ? { control_format: CURRENT_CONTROL_FORMAT } : {}),
+    };
+    writeFileSync(
+      resolve(out, "made-from.json"),
+      `${JSON.stringify({ ...madeFrom(repo), ...formats }, null, 2)}\n`,
+    );
     console.log(`the format ${CURRENT_FORMAT} sample, ${name}: ${out}`);
   }
   process.exit(r.status ?? 1);

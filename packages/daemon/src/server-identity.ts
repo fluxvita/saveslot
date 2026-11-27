@@ -5,6 +5,7 @@
 // `server init` run again with the new settings.
 
 import {
+  type DerivedKeys,
   ExternalIdentity,
   type ExternalLoginConfig,
   ExternalLoginError,
@@ -78,6 +79,8 @@ export async function openIdentity(o: {
   readonly control: ServerControlPlane;
   readonly backend: TenantPoolOptions["backend"];
   readonly now: () => string;
+  /** The local accounts' login form keys (`CursorKeys.derive(LOGIN_FORM_PURPOSE)`). */
+  readonly formKeys: DerivedKeys;
 }): Promise<IdentityProvider> {
   try {
     if (o.external !== undefined) {
@@ -95,6 +98,7 @@ export async function openIdentity(o: {
       accounts: await openLocalAccounts(o.db),
       loginMs: LOCAL_LOGIN_MS,
       origin: o.config.publicUrl,
+      formKeys: o.formKeys,
       now: () => Date.parse(o.now()),
     });
   } catch (e) {

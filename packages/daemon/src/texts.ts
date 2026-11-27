@@ -15,6 +15,17 @@ import type { ServerConfigProblem } from "./server-config.ts";
 const UNKNOWN_OUTCOME =
   "whether the call was carried out is not known. Sending the same call again, as it was, is safe: a write already carried out is answered as a replay, not done twice. If the call had an idempotency_key, send it with that same value; do not make up a new one.";
 
+/** The settings of the deployment's fingerprint, as a refusal names them (06-cli §4.1). */
+const FINGERPRINT_SETTING = {
+  trusted_proxies: "SAVESLOT_TRUSTED_PROXIES",
+  public_url: "SAVESLOT_PUBLIC_URL",
+  allowed_origins: "SAVESLOT_ALLOWED_ORIGINS",
+  identity:
+    "the login (SAVESLOT_IDENTITY_*: set or not, the issuer, the login address, the key IDs)",
+  handle_keys: "the key IDs in SAVESLOT_HANDLE_KEY_FILE",
+  cell: "the database server of SAVESLOT_CELL_DATABASE_URL",
+} as const;
+
 export const TEXTS = {
   initDone: (home: string) =>
     [
@@ -343,6 +354,29 @@ export const TEXTS = {
     controlFormat:
       "error: the control database's tables are of a format this saveslot does not know; nothing was changed",
     controlReady: "The control database's tables are in place",
+    controlUpgraded: (from: number, to: number) =>
+      `Upgraded the control database from format ${from} to ${to}`,
+    controlUpgradeNeedsAlone:
+      "error: the control database is of an older format, upgraded only while no saveslot server runs on it: stop every server, then run saveslot server start or saveslot server init. Nothing was changed",
+    controlUpgradeFailed: (step: string, sqlState: string | undefined) =>
+      `error: step ${step} of the control database's upgrade failed${sqlState !== undefined ? ` (SQLSTATE ${sqlState})` : ""}; the database is left at the format of its last step done, and the next start goes on from there`,
+    cellUnreachable:
+      "error: the database server of SAVESLOT_CELL_DATABASE_URL could not be reached to tell which it is",
+    configDiffers: (
+      differences: readonly {
+        readonly item: string;
+        readonly ways?: { readonly recorded: string; readonly here: string };
+      }[],
+    ) =>
+      `error: this server's settings differ from the other servers' of this deployment: ${differences
+        .map((d) =>
+          d.ways === undefined
+            ? FINGERPRINT_SETTING[d.item as keyof typeof FINGERPRINT_SETTING]
+            : `${FINGERPRINT_SETTING.cell} (told apart by ${d.ways.here} here, by ${d.ways.recorded} for the others: give this server's database role what the others' has, or the same)`,
+        )
+        .join(
+          "; ",
+        )}. Settings every server must share are changed with every server stopped. Nothing was changed`,
     restoreTakesTenant:
       "saveslot server restore takes one of --tenant <tenant> and --user <name>, once",
     restoreUserExternal:
@@ -357,6 +391,8 @@ export const TEXTS = {
       "error: a saveslot server is running on this control database; stop it first, then run saveslot server restore again. Nothing was done",
     restoreControlNotReady:
       "error: the control database has no tables of this saveslot, or tables of a format it does not know; nothing was done",
+    restoreControlOld:
+      "error: the control database is of an older format: run saveslot server start or saveslot server init first, which upgrade it. Nothing was done",
     /** A tenant's creation that waited past its turn (02-architecture §7 «连接»). */
     creatingBusy:
       "error: another tenant was being created by this process, and this one waited too long for its turn. Nothing more was done; run the command again in a moment: it finishes what was begun.",

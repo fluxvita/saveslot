@@ -515,6 +515,124 @@ describe("runServer: what answers which request", () => {
   );
 });
 
+// One control database, servers one after another (06-cli §4.1 `server start`): the control
+// database upgraded by the server that holds the lock alone; the settings every server shares
+// recorded, a change logged; a login form one server gave taken by the next, the key file shared.
+describe("runServer: servers one after another on one control database", () => {
+  const start = async (
+    c: Awaited<ReturnType<typeof controlDb>>,
+    cfg: ServerConfig,
+    warned: [string, Readonly<Record<string, string>>][],
+  ) =>
+    runServer({
+      config: cfg,
+      version: "0.0.0-test",
+      openControl: async () => c.db,
+      backend: tenants().backend,
+      warn: (event, fields) => warned.push([event, fields]),
+    });
+
+  it(
+    "a control database of format 1 is upgraded at start, each step logged",
+    async () => {
+      const c = await controlDb();
+      await c.store.write((tx) =>
+        tx.exec(
+          "ALTER TABLE tenants DROP COLUMN import_holder; UPDATE control_meta SET value = '1' WHERE key = 'format'",
+        ),
+      );
+      const cfg = config();
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const warned: [string, Readonly<Record<string, string>>][] = [];
+      const s = await start(c, cfg, warned);
+      await s.close();
+      expect(warned.filter(([e]) => e.startsWith("control_upgrad"))).toEqual([
+        ["control_upgrading", { from: "1", to: "2" }],
+        ["control_upgrade_step", { step: "1->2" }],
+        ["control_upgraded", { from: "1", to: "2" }],
+      ]);
+      const f = await c.store.read((tx) =>
+        tx.query<{ value: string }>("SELECT value FROM control_meta WHERE key = 'format'"),
+      );
+      expect(f.rows[0]?.value).toBe("2");
+    },
+    T,
+  );
+
+  it(
+    "the settings recorded at the first start; one changed is logged at the next, by name only",
+    async () => {
+      const c = await controlDb();
+      const cfg = config();
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const warned: [string, Readonly<Record<string, string>>][] = [];
+      await (await start(c, cfg, warned)).close();
+      const recorded = async () =>
+        (
+          await c.store.read((tx) =>
+            tx.query<{ value: string }>(
+              "SELECT value FROM control_meta WHERE key = 'config_fingerprint'",
+            ),
+          )
+        ).rows[0]?.value;
+      const first = await recorded();
+      expect(first).toBeDefined();
+      await (await start(c, cfg, warned)).close();
+      expect(await recorded()).toBe(first);
+      expect(warned.map(([e]) => e)).not.toContain("config_fingerprint_changed");
+      await (await start(c, { ...cfg, allowedOrigins: ["https://app.example"] }, warned)).close();
+      expect(warned.filter(([e]) => e === "config_fingerprint_changed")).toEqual([
+        ["config_fingerprint_changed", { items: "allowed_origins" }],
+      ]);
+      expect(await recorded()).not.toBe(first);
+      expect(await recorded()).not.toContain("app.example");
+    },
+    T,
+  );
+
+  it(
+    "a login form one server gave is taken by the next; under another key file it is not",
+    async () => {
+      const c = await controlDb();
+      const cfg = config();
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const warned: [string, Readonly<Record<string, string>>][] = [];
+      const one = await start(c, cfg, warned);
+      const f = await loginForm(one, "203.0.113.20");
+      await one.close();
+      const post = (s: RunningServer) =>
+        send(s, {
+          method: "POST",
+          path: "/account/login",
+          headers: { ...FORM, cookie: f.cookie, "x-forwarded-for": "203.0.113.20" },
+          body: new URLSearchParams({
+            form_token: f.token,
+            return_to: "/oauth/",
+            name: "nobody-here",
+            password: "not-the-password",
+          }).toString(),
+        });
+      // The form taken: the login itself fails (no such account), not the form.
+      const two = await start(c, cfg, warned);
+      try {
+        expect((await post(two)).status).toBe(401);
+      } finally {
+        await two.close();
+      }
+      // Another key file (a deployment that changed it, every server stopped): the form is not.
+      const other = config();
+      await CursorKeys.createFile(other.handleKeyFile);
+      const three = await start(c, { ...cfg, handleKeyFile: other.handleKeyFile }, warned);
+      try {
+        expect((await post(three)).status).toBe(400);
+      } finally {
+        await three.close();
+      }
+    },
+    T,
+  );
+});
+
 describe("runServer: no trusted proxy", () => {
   it(
     "X-Forwarded-For counts for nothing: every request's source is its connection's",

@@ -423,3 +423,32 @@ describe("opening, where a server cannot be made to show it", () => {
     expect(client.sent).toEqual([]);
   });
 });
+
+// The cluster a cell is on, for the configuration fingerprint (06-cli §4.1 «各进程相同的配置»).
+describe("telling a cell's cluster apart", () => {
+  it("by its system identifier; by its address when the role may not read it (42501), and only then", async () => {
+    const client = new StandIn();
+    const backend = new PostgresBackend(
+      { cells: { here: { host: "db.example", port: 6432, user: "u", password: "not-this" } } },
+      () => client,
+    );
+    client.script = (sql) =>
+      sql.startsWith("SELECT system_identifier")
+        ? { rows: [{ id: "7712000000000000001" }] }
+        : undefined;
+    expect(await backend.clusterIdentity("here")).toEqual({
+      by: "system_identifier",
+      value: "7712000000000000001",
+    });
+    client.script = (sql) =>
+      sql.startsWith("SELECT system_identifier") ? serverError("ERROR", "42501") : undefined;
+    const byUrl = await backend.clusterIdentity("here");
+    expect(byUrl).toEqual({ by: "url", value: "db.example:6432/postgres" });
+    expect(JSON.stringify(byUrl)).not.toContain("not-this");
+    // Any other refusal is not taken for a missing permission.
+    client.script = (sql) =>
+      sql.startsWith("SELECT system_identifier") ? serverError("ERROR", "XX000") : undefined;
+    expect(await codeOf(backend.clusterIdentity("here"))).toBe("query_failed");
+    expect(await codeOf(backend.clusterIdentity("elsewhere"))).toBe("unknown_cell");
+  });
+});

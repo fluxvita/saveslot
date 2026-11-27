@@ -49,8 +49,30 @@ export interface ControlDb {
   write<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
 }
 
-/** The control database's format: `control_meta`'s `format`. */
-export const CONTROL_FORMAT = 1;
+/**
+ * The control database's format: `control_meta`'s `format`. 2 adds `tenants.import_holder` (the
+ * import holding the tenant, §8) and `control_meta`'s `config_fingerprint` row (§9).
+ */
+export const CONTROL_FORMAT = 2;
+
+/** The oldest control format this version upgrades: 1, the first, made by 0.1.0. */
+export const OLDEST_CONTROL_FORMAT = 1;
+
+/**
+ * A step of the control database's upgrade: from format `from` to `from + 1`, its statements run
+ * in one transaction whose last statement sets the format (02-architecture §8 «控制面库的升级»).
+ * A step only adds: it changes and drops nothing an older version reads, and rewrites no table.
+ */
+export interface ControlUpgradeStep {
+  readonly from: number;
+  readonly sql: string;
+}
+
+/** The steps, in order: the `n`th takes format `OLDEST_CONTROL_FORMAT + n` to the next. */
+export const CONTROL_UPGRADE_STEPS: readonly ControlUpgradeStep[] = [
+  // No default: the column is added without rewriting the table; no row holds an import yet.
+  { from: 1, sql: "ALTER TABLE tenants ADD COLUMN import_holder text" },
+];
 
 const DDL = `
 CREATE TABLE control_meta (
@@ -64,6 +86,7 @@ CREATE TABLE tenants (
   database text NOT NULL,
   state text NOT NULL CHECK (state IN ('creating', 'active')),
   staging_database text,
+  import_holder text,
   UNIQUE (cell, database),
   UNIQUE (cell, staging_database)
 );
@@ -92,7 +115,12 @@ CREATE TABLE anchor_deletions (
 
 /**
  * Why the control plane refused. Stable codes; messages carry no stored content.
- * - `control_format_mismatch`: the control database is of another format.
+ * - `control_format_mismatch`: the control database is of a format this version does not take: newer
+ *   than its, or older than it upgrades.
+ * - `control_format_old`: the control database is of an older format this version upgrades, and is
+ *   to be upgraded first (`server start` or `server init`, with no other server running).
+ * - `control_upgrade_failed`: a step of that upgrade failed; the database is of the format of its
+ *   last step done. The error carries the step and the SQLSTATE, not the database's message.
  * - `control_not_initialized`: it has no control plane's tables.
  * - `invalid_credential`: a credential not of its form (a hash not 64 lower-case hex digits, an
  *   expiry not a canonical instant).
@@ -106,6 +134,8 @@ CREATE TABLE anchor_deletions (
  */
 export type ControlPlaneErrorCode =
   | "control_format_mismatch"
+  | "control_format_old"
+  | "control_upgrade_failed"
   | "control_not_initialized"
   | "oauth_not_initialized"
   | "invalid_credential"
@@ -118,9 +148,18 @@ export type ControlPlaneErrorCode =
 export class ControlPlaneError extends Error {
   override readonly name = "ControlPlaneError";
   readonly code: ControlPlaneErrorCode;
-  constructor(code: ControlPlaneErrorCode, message: string) {
+  /** `control_upgrade_failed`: the step (`1->2`) and the database's SQLSTATE, when it gave one. */
+  readonly step?: string;
+  readonly sqlState?: string;
+  constructor(
+    code: ControlPlaneErrorCode,
+    message: string,
+    o: { readonly step?: string; readonly sqlState?: string } = {},
+  ) {
     super(message);
     this.code = code;
+    if (o.step !== undefined) this.step = o.step;
+    if (o.sqlState !== undefined) this.sqlState = o.sqlState;
   }
 }
 
@@ -177,16 +216,92 @@ export const isInstant = (v: string): boolean =>
 const sqlStateOf = (e: unknown): string | undefined =>
   (e as { sqlState?: unknown })?.sqlState as string | undefined;
 
-async function checkFormat(tx: ReadTx): Promise<void> {
+/** The control database's format, as `control_meta` records it; undefined when not a number. */
+async function formatOf(tx: ReadTx): Promise<number | undefined> {
   const f = await tx.query<{ value: string }>(
     "SELECT value FROM control_meta WHERE key = 'format'",
   );
-  if (f.rows[0]?.value !== String(CONTROL_FORMAT)) {
+  const v = f.rows[0]?.value;
+  return v !== undefined && /^[1-9][0-9]{0,8}$/.test(v) ? Number(v) : undefined;
+}
+
+/** Refuses a format other than this version's: an older one it upgrades as `control_format_old`. */
+function refuseFormat(format: number | undefined): void {
+  if (format === CONTROL_FORMAT) return;
+  if (format !== undefined && format >= OLDEST_CONTROL_FORMAT && format < CONTROL_FORMAT) {
     throw new ControlPlaneError(
-      "control_format_mismatch",
-      `the control database's format is not ${CONTROL_FORMAT}`,
+      "control_format_old",
+      `the control database's format ${format} is to be upgraded to ${CONTROL_FORMAT} first`,
     );
   }
+  throw new ControlPlaneError(
+    "control_format_mismatch",
+    `the control database's format is not ${CONTROL_FORMAT}`,
+  );
+}
+
+async function checkFormat(tx: ReadTx): Promise<void> {
+  refuseFormat(await formatOf(tx));
+}
+
+/** What an upgrade of the control database tells as it goes (02-architecture §8 «控制面库的升级»). */
+export type ControlUpgradeEvent =
+  | { readonly event: "control_upgrading"; readonly from: number; readonly to: number }
+  | { readonly event: "control_upgrade_step"; readonly step: string }
+  | { readonly event: "control_upgraded"; readonly from: number; readonly to: number };
+
+/**
+ * Upgrades a control database of an older format to this version's, step by step: each step one
+ * transaction under `INIT_LOCK`, the format read again under it first (a step another process did
+ * is skipped), the format set by its last statement. A step that fails leaves the format of the
+ * last step done; the next run goes on from there. The caller holds the server lock alone
+ * (06-cli §4.1): no server of an older version runs meanwhile. Nothing to do: nothing told.
+ */
+export async function upgradeControlPlane(
+  db: ControlDb,
+  onEvent: (e: ControlUpgradeEvent) => void = () => {},
+): Promise<void> {
+  const start = await db.read(async (tx) => ((await hasControlMeta(tx)) ? formatOf(tx) : null));
+  // No tables, or this version's format, or one not upgraded here: left to the check that follows.
+  if (
+    start === null ||
+    start === undefined ||
+    start === CONTROL_FORMAT ||
+    start < OLDEST_CONTROL_FORMAT ||
+    start > CONTROL_FORMAT
+  ) {
+    return;
+  }
+  onEvent({ event: "control_upgrading", from: start, to: CONTROL_FORMAT });
+  for (const step of CONTROL_UPGRADE_STEPS) {
+    if (step.from < start) continue;
+    const name = `${step.from}->${step.from + 1}`;
+    onEvent({ event: "control_upgrade_step", step: name });
+    try {
+      await db.write(async (tx) => {
+        await tx.query("SELECT pg_advisory_xact_lock($1)", [INIT_LOCK]);
+        const now = await formatOf(tx);
+        if (now !== step.from) {
+          // Done by another meanwhile; anything else is not this step's to judge.
+          if (now !== undefined && now > step.from && now <= CONTROL_FORMAT) return;
+          refuseFormat(now);
+        }
+        await tx.exec(step.sql);
+        await tx.query("UPDATE control_meta SET value = $1 WHERE key = 'format'", [
+          String(step.from + 1),
+        ]);
+      });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) throw e;
+      const sqlState = sqlStateOf(e);
+      throw new ControlPlaneError(
+        "control_upgrade_failed",
+        `step ${name} of the control database's upgrade failed${sqlState !== undefined ? ` (SQLSTATE ${sqlState})` : ""}`,
+        { step: name, ...(sqlState !== undefined ? { sqlState } : {}) },
+      );
+    }
+  }
+  onEvent({ event: "control_upgraded", from: start, to: CONTROL_FORMAT });
 }
 
 /**
@@ -209,9 +324,18 @@ async function hasControlMeta(tx: ReadTx): Promise<boolean> {
 /**
  * Makes the control database's tables and records its format; on a database that has them, checks
  * the format and does nothing more, so that running it again is safe, and two processes running it
- * at once take turns. Gives the control plane over it.
+ * at once take turns. With `upgrade` (the caller holds the server lock alone), a control database
+ * of an older format is upgraded first; without, it is refused (`control_format_old`). Gives the
+ * control plane over it.
  */
-export async function initControlPlane(db: ControlDb): Promise<ServerControlPlane> {
+export async function initControlPlane(
+  db: ControlDb,
+  o: {
+    readonly upgrade?: boolean;
+    readonly onEvent?: (e: ControlUpgradeEvent) => void;
+  } = {},
+): Promise<ServerControlPlane> {
+  if (o.upgrade === true) await upgradeControlPlane(db, o.onEvent);
   await db.write(async (tx) => {
     await tx.query("SELECT pg_advisory_xact_lock($1)", [INIT_LOCK]);
     if (!(await hasControlMeta(tx))) {

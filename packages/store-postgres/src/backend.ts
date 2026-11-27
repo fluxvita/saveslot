@@ -173,6 +173,42 @@ export class PostgresBackend implements StorageBackend {
     this.#onEvent = opts.onEvent;
   }
 
+  /**
+   * The cluster a cell is on, for the deployment's configuration fingerprint (06-cli §4.1
+   * «各进程相同的配置»): its system identifier (`pg_control_system()`), the same whatever host
+   * name reaches it; when this role may not read it (42501), the cell's address without its
+   * credentials (`host:port/maintenance database`). Asked on a connection to the maintenance
+   * database of its own, closed before it answers. A cell that cannot be reached fails as opening
+   * would (`connection_failed`).
+   */
+  async clusterIdentity(
+    cellName: string,
+  ): Promise<{ readonly by: "system_identifier" | "url"; readonly value: string }> {
+    const cell = Object.hasOwn(this.#cells, cellName) ? this.#cells[cellName] : undefined;
+    if (cell === undefined) {
+      throw new PostgresStoreError("unknown_cell", "no cell of that name in this backend");
+    }
+    const maintenance = cell.maintenanceDatabase ?? "postgres";
+    const url = `${cell.host}:${cell.port ?? 5432}/${maintenance}`;
+    let conn: Connection;
+    try {
+      conn = await Connection.connect(cell, maintenance, this.#make);
+    } catch (e) {
+      throw storeError(e, "connection_failed");
+    }
+    try {
+      const r = await conn.run("SELECT system_identifier::text AS id FROM pg_control_system()");
+      const id = (r.rows[0] as { id?: unknown } | undefined)?.id;
+      if (typeof id !== "string" || id === "") throw new Error("no system identifier");
+      return { by: "system_identifier", value: id };
+    } catch (e) {
+      if (e instanceof Refused && e.sqlState === "42501") return { by: "url", value: url };
+      throw storeError(e, "connection_lost");
+    } finally {
+      await conn.end().catch(() => {});
+    }
+  }
+
   async open(
     tenant: TenantRef,
     opts: { readonly create?: boolean } = {},

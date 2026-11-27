@@ -65,6 +65,12 @@ const HANDLE_KEY_FILE_PROBLEM: Readonly<Record<SecretFileError["code"], string>>
   unreadable: "the handle key file cannot be read",
 };
 
+/** Keys derived for one use (`CursorKeys.derive`): by key ID, `current` the one to sign with. */
+export interface DerivedKeys {
+  readonly current: string;
+  readonly byId: ReadonlyMap<string, Buffer>;
+}
+
 interface Key {
   readonly id: string;
   readonly secret: string;
@@ -231,6 +237,25 @@ export class CursorKeys {
   /** The key IDs held: the current one and those retired in the last hour. */
   keyIds(): string[] {
     return [...this.#keys.keys()];
+  }
+
+  /**
+   * Keys for a use other than handles, `purpose` naming it: one for each key held, under the same
+   * ID, derived as HMAC-SHA256(key, `saveslot.<purpose>.v1`), so that no MAC of one use is a MAC
+   * of another, and the keys themselves never leave this class. A signer signs with `current`'s;
+   * a verifier takes any of them (02-architecture §5 «句柄签名密钥»).
+   */
+  derive(purpose: string): DerivedKeys {
+    const byId = new Map<string, Buffer>();
+    for (const k of this.#keys.values()) {
+      byId.set(
+        k.id,
+        createHmac("sha256", Buffer.from(k.secret, "hex"))
+          .update(`saveslot.${purpose}.v1`, "utf8")
+          .digest(),
+      );
+    }
+    return { current: this.#current, byId };
   }
 
   /** The handle of a kernel position for `principal`, good for an hour from `now`. */

@@ -77,7 +77,15 @@ Self-hosting logs in with the built-in local accounts, and the three variables `
 
 It is best to supply the password in the connection string through the PostgreSQL password file (`.pgpass`) or a container secret, rather than writing it into the variable itself.
 
-**The handle signing key** is written by `server init` to the location that `SAVESLOT_HANDLE_KEY_FILE` points to (that directory must already exist), and after that saveslot only reads it, so it can be mounted read-only. saveslot does not rotate it by itself; to change it, replace the file and restart, and the handles issued before the change, such as paging handles and deletion confirmations, become invalid with it; callers only need to fetch them again.
+**The handle signing key** is written by `server init` to the location that `SAVESLOT_HANDLE_KEY_FILE` points to (that directory must already exist), and after that saveslot only reads it, so it can be mounted read-only. The forms of the local accounts' login page are signed with a key derived from it too, so a login form one process gave is taken by another. saveslot does not rotate it by itself. The simplest change is to replace the whole file at once and restart, at the cost that the paging handles, deletion confirmations and login forms not yet submitted that were given before the change become invalid; callers only need to fetch them again.
+
+To keep what was already given valid, change it in two steps. Which keys the file holds is one of the settings every process must share (see "Settings every process must share" below), so each step stops every process and starts them again:
+1. Add a new key to the file and point `current` at it, keeping the old one. What is signed from then on uses the new key, and what was signed before the first step still verifies.
+2. After an hour (a paging handle's validity; a login form's is only 30 minutes), remove the old one.
+
+**Settings every process must share.** These must be the same in every process: `SAVESLOT_TRUSTED_PROXIES`, `SAVESLOT_PUBLIC_URL`, `SAVESLOT_ALLOWED_ORIGINS`, the login (the external login's issuer, login address and public keys), which keys the handle signing key file holds, and which PostgreSQL server holds the tenants' databases. saveslot records their hashes in the control database and compares them at start. A deployment runs one process for now: when one of them changes, the next start records the new ones and writes `config_fingerprint_changed` in the service log, with the names of the settings that changed only.
+
+**Upgrading to a version that changes the control database's format stops every process.** The control database's format does not change in a rolling update: stop the service, take a snapshot of the control database, then run the new version's `server start` (or `server init`), which upgrades the control database first, writing `control_upgrading`, `control_upgrade_step` and `control_upgraded` in the service log step by step.
 
 When mounting, mind the permissions: saveslot refuses a key file that is open to "others". The secret volume of Kubernetes defaults to 0644 and is refused, so set `defaultMode` to 0440 (and configure `fsGroup` when the user inside the container cannot read it); Docker secrets follow the permissions of that file on the host, so set it to 0600 or 0640 on the host.
 

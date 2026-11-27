@@ -13,10 +13,16 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CURRENT_FORMAT, REPO, SAMPLES_DIR } from "./format-sample-paths.fixture.ts";
+import {
+  CURRENT_CONTROL_FORMAT,
+  CURRENT_FORMAT,
+  REPO,
+  SAMPLES_DIR,
+  serverSampleName,
+} from "./format-sample-paths.fixture.ts";
 import { httpRequest, type Target } from "./http-driver.fixture.ts";
 
-export { CURRENT_FORMAT, REPO, SAMPLES_DIR };
+export { CURRENT_CONTROL_FORMAT, CURRENT_FORMAT, REPO, SAMPLES_DIR, serverSampleName };
 
 /** The sample's slot: an event table, a state table, a timeless one by source key, a reference. */
 export const SAMPLE_SLOT = {
@@ -400,16 +406,33 @@ export const SAMPLE_VARIANTS = ["", "-switch"] as const;
 
 /**
  * The samples of `mode` in the repository, each as `<format>/<mode>` or `<format>/<mode>-switch`
- * (its directory under SAMPLES_DIR), with its format.
+ * (its directory under SAMPLES_DIR), with its format; a server sample of a control database past
+ * format 1 as `<format>/server-control-<control format>`, with that control format.
  */
-export function sampledFormats(mode: "local" | "server"): { format: number; name: string }[] {
+export function sampledFormats(
+  mode: "local" | "server",
+): { format: number; name: string; controlFormat?: number }[] {
   const dir = join(REPO, SAMPLES_DIR);
   if (!existsSync(dir)) return [];
-  const out: { format: number; name: string }[] = [];
+  const out: { format: number; name: string; controlFormat?: number }[] = [];
+  const bases: { base: string; controlFormat?: number }[] =
+    mode === "local"
+      ? [{ base: "local" }]
+      : [
+          { base: "server" },
+          ...Array.from({ length: Math.max(0, CURRENT_CONTROL_FORMAT - 1) }, (_, i) => ({
+            base: serverSampleName(i + 2),
+            controlFormat: i + 2,
+          })),
+        ];
   for (let f = 1; f <= CURRENT_FORMAT; f++) {
-    for (const v of SAMPLE_VARIANTS) {
-      const name = `${f}/${mode}${v}`;
-      if (existsSync(join(dir, name, "expected.json"))) out.push({ format: f, name });
+    for (const { base, controlFormat } of bases) {
+      for (const v of SAMPLE_VARIANTS) {
+        const name = `${f}/${base}${v}`;
+        if (existsSync(join(dir, name, "expected.json"))) {
+          out.push({ format: f, name, ...(controlFormat !== undefined ? { controlFormat } : {}) });
+        }
+      }
     }
   }
   return out;
@@ -421,6 +444,8 @@ export const SAMPLE_SWITCHED = process.env["SAVESLOT_FORMAT_SAMPLE_SWITCH"] === 
 /** What a server sample holds beside its dumps: each tenant's user, credentials and values. */
 export interface ServerSampleExpected {
   readonly storage_format: number;
+  /** The control database's format it was made with; absent: 1, made before the field. */
+  readonly control_format?: number;
   readonly tenants: readonly {
     /** The local account's name. */
     readonly name: string;
