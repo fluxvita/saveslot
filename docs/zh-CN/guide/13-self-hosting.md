@@ -83,7 +83,7 @@ SELECT pg_reload_conf();
 1. 往文件里加一把新密钥，把 `current` 指向它，旧的留着。之后签发用新的，第一步之前签发的照样验得过。
 2. 等一小时（翻页句柄的有效期，登录表单只有 30 分钟），去掉旧的。
 
-**各进程必须一致的设置。** 这几项各进程必须相同：`SAVESLOT_TRUSTED_PROXIES`、`SAVESLOT_PUBLIC_URL`、`SAVESLOT_ALLOWED_ORIGINS`、登录方式（外部登录的签发方、登录地址与公钥）、句柄签名密钥文件里有哪几把密钥、租户库在哪台 PostgreSQL 上。saveslot 把它们的哈希记在控制面库里，启动时比对。现在一个部署只跑一个进程，改了其中一项，下一次启动会记下新的，并在服务日志里写一条 `config_fingerprint_changed`，只带改了的项名。
+**各进程必须一致的设置。** 这几项各进程必须相同：`SAVESLOT_TRUSTED_PROXIES`、`SAVESLOT_PUBLIC_URL`、`SAVESLOT_ALLOWED_ORIGINS`、登录方式（外部登录的签发方、登录地址与公钥）、句柄签名密钥文件里有哪几把密钥、租户库在哪台 PostgreSQL 上。saveslot 把它们的哈希记在控制面库里，启动时比对。租户库的那台服务器按它的系统标识认；从生产集群克隆出来的集群（物理备库、`pg_basebackup` 的副本）标识与生产的相同，所以指纹分不出一个指向克隆的进程和指向生产的进程，测试环境别用生产的克隆接生产的控制面库。现在一个部署只跑一个进程，改了其中一项，下一次启动会记下新的，并在服务日志里写一条 `config_fingerprint_changed`，只带改了的项名。
 
 **升级到改了控制面库格式的版本时，要停下所有进程。** 控制面库的格式不随滚动更新改：先停服务、给控制面库做一份快照，再用新版本 `server start`（或 `server init`），它会先把控制面库升上来，服务日志里逐步记 `control_upgrading`、`control_upgrade_step`、`control_upgraded`。
 
