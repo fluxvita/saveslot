@@ -24,6 +24,31 @@ export const newCallId = (): string => `call_${randomBytes(16).toString("hex")}`
 /** The header that gives a `/v1` call's ID back (05-surfaces «HTTP»). */
 export const CALL_HEADER = "Saveslot-Call";
 
+/** Every field a call record may have, as 02-architecture §9's table lists them, in its order. */
+export const CALL_RECORD_FIELDS = [
+  "record",
+  "v",
+  "call",
+  "at",
+  "ms",
+  "tenant",
+  "actor",
+  "via",
+  "registration",
+  "client",
+  "surface",
+  "operation",
+  "route",
+  "outcome",
+  "reason",
+  "incident",
+  "effect",
+  "status",
+  "seq",
+  "restores",
+  "complete",
+] as const satisfies readonly (keyof CallRecord)[];
+
 /** One call record, as written. Every field is in 02-architecture §9's table; no other. */
 export interface CallRecord {
   readonly record: "call";
