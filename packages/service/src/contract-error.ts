@@ -131,6 +131,16 @@ export function lostConnectionOf(e: unknown): "connection_lost" | "commit_unknow
   return undefined;
 }
 
+/** A tenant's connection gone, raised over the store's error with the tenant it was met on. */
+export class LostConnectionOf extends Error {
+  override readonly name = "LostConnectionOf";
+  readonly tenant: string;
+  constructor(tenant: string, cause: unknown) {
+    super("the tenant's connection was gone", { cause });
+    this.tenant = tenant;
+  }
+}
+
 /**
  * A read-only operation that met its tenant's connection gone, nothing given yet: the caller's use
  * lends the tenant once more (opened again) and runs it again, once (server-callers.ts).
@@ -159,12 +169,17 @@ export function contractError(
   o: { readonly tenant?: string } = {},
 ): ContractError {
   if (e instanceof ContractError) return e;
-  const lost = e instanceof RetryOnLostConnection ? "connection_lost" : lostConnectionOf(e);
-  if (lost !== undefined) {
-    warn("tenant_connection_lost", {
-      ...(o.tenant !== undefined ? { tenant: o.tenant } : {}),
-      code: lost,
+  // Logged where it was thrown (the try given up), once: answered as `connection_lost` is.
+  if (e instanceof RetryOnLostConnection) {
+    return new ContractError("unavailable", "the tenant's connection was gone; try again", {
+      reason: "busy",
+      retry_after: LOST_RETRY_AFTER,
     });
+  }
+  const lost = lostConnectionOf(e);
+  if (lost !== undefined) {
+    const tenant = o.tenant ?? (e instanceof LostConnectionOf ? e.tenant : undefined);
+    warn("tenant_connection_lost", { ...(tenant !== undefined ? { tenant } : {}), code: lost });
     // Certainly not committed: nothing was recorded, and to retry is the answer (04-contract
     // `unavailable`). Maybe committed is not that: internal, below.
     if (lost === "connection_lost") {
@@ -190,6 +205,14 @@ export function contractError(
     }
     if (e.code !== "internal") return new ContractError(e.code as ErrorCode, e.message, detail);
   }
+  return internalError(e, warn);
+}
+
+/** `internal`, with a new incident told to `warn` by the error's name and code, never its text. */
+export function internalError(
+  e: unknown,
+  warn: (event: string, fields: Readonly<Record<string, string>>) => void,
+): ContractError {
   const incident = newIncident();
   // The error it was caused by, if any: by name and code too (an internal error raised over
   // another, e.g. a detail that could not be read for a mismatch).

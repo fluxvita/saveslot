@@ -317,6 +317,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         checkCredential: checkAudience(oauth, config.publicUrl),
         oauth,
         now,
+        warn,
       }),
       resourceMetadata: `${config.publicUrl}/.well-known/oauth-protected-resource`,
       ...(config.rateLimit !== undefined

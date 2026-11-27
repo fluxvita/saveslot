@@ -2658,6 +2658,10 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
       writesOnly: false,
       /** Transactions let through before `failNext` is taken (a request's authentication). */
       passFirst: 0,
+      /** `failNext` set to `connection_lost` once a write transaction has committed. */
+      afterWrite: false,
+      /** Only a read transaction takes `failNext`. */
+      readsOnly: false,
       failEveryOpened: false,
     };
     type Store = Awaited<ReturnType<TenantPoolOptions["backend"]["open"]>>;
@@ -2665,7 +2669,9 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
       let failed = false;
       let failFirst = k.failEveryOpened;
       const run = async <T>(go: () => Promise<T>, write: boolean): Promise<T> => {
-        let armed = k.failNext !== undefined && (write || !k.writesOnly);
+        // Failed is final, as the store's own failed state is: every call after it refused.
+        if (failed) throw lost("connection_lost");
+        let armed = k.failNext !== undefined && (write ? !k.readsOnly : !k.writesOnly);
         if (armed && k.passFirst > 0) {
           k.passFirst--;
           armed = false;
@@ -2678,6 +2684,11 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
         }
         try {
           const r = await go();
+          if (write && k.afterWrite) {
+            k.afterWrite = false;
+            k.readsOnly = true;
+            k.failNext = "connection_lost";
+          }
           if (armed && k.failNext === "commit_unknown") {
             k.failNext = undefined;
             failed = true;
@@ -2753,7 +2764,22 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
         body: JSON.stringify(body),
       });
     const reopened = () => warned.filter((w) => w.startsWith("tenant_reopened")).length;
-    return { s, k, auth, warned, terminate, json, reopened };
+    /** The connections met gone, as logged: one line each, whether the call then succeeded. */
+    const lostLines = () => warned.filter((w) => w.startsWith("tenant_connection_lost"));
+    /** An MCP POST of `body` as it is: one message, or an array of them. */
+    const mcpBody = (body: unknown) =>
+      send(s, {
+        method: "POST",
+        path: "/mcp",
+        headers: {
+          ...auth,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: JSON.stringify(body),
+      });
+    return { s, k, auth, warned, terminate, json, reopened, lostLines, mcpBody };
   }
 
   const INSERT = {
@@ -2785,6 +2811,9 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
         expect([after.status, after.body.slice(0, 200)]).toEqual([200, expect.any(String)]);
         expect(x.k.opened).toBe(opened + 1);
         expect(x.reopened()).toBe(1);
+        expect(x.lostLines()).toEqual([
+          expect.stringMatching(/"tenant":"tn_.*"code":"connection_lost"/),
+        ]);
         expect(x.warned.some((w) => w.startsWith("internal"))).toBe(false);
       } finally {
         await x.s.close();
@@ -2806,6 +2835,7 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
         expect([after.status, after.body.slice(0, 200)]).toEqual([200, expect.any(String)]);
         expect(x.k.opened).toBe(opened + 1);
         expect(x.reopened()).toBe(1);
+        expect(x.lostLines()).toHaveLength(1);
       } finally {
         await x.s.close();
       }
@@ -2827,12 +2857,28 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
         expect(JSON.parse(refused.body)).toMatchObject({
           error: { code: "unavailable", reason: "busy", retry_after: 1 },
         });
-        expect(
-          x.warned.some(
-            (w) => w.startsWith("tenant_connection_lost") && w.includes("connection_lost"),
-          ),
-        ).toBe(true);
+        expect(x.lostLines()).toEqual([expect.stringContaining('"code":"connection_lost"')]);
         expect((await x.json("POST", "/v1/writes", INSERT)).status).toBe(200);
+        expect(await rows(x)).toBe(1);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a write that committed, its answer's reads meeting it: internal, not busy; in the log once",
+    async () => {
+      const x = await lostServer();
+      try {
+        expect((await x.json("POST", "/v1/drafts", { document: SAMPLE_SLOT })).status).toBe(200);
+        // Every read after the write's commit meets it: the notices its answer reads.
+        x.k.afterWrite = true;
+        const r = await x.json("POST", "/v1/writes", INSERT);
+        expect(r.status).toBe(500);
+        expect(JSON.parse(r.body)).toMatchObject({ error: { code: "internal" } });
+        expect(x.lostLines()).toEqual([expect.stringContaining('"after":"effect"')]);
         expect(await rows(x)).toBe(1);
       } finally {
         await x.s.close();
@@ -2854,11 +2900,7 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
         const unknown = await x.json("POST", "/v1/writes", INSERT, key);
         expect(unknown.status).toBe(500);
         expect(JSON.parse(unknown.body)).toMatchObject({ error: { code: "internal" } });
-        expect(
-          x.warned.some(
-            (w) => w.startsWith("tenant_connection_lost") && w.includes("commit_unknown"),
-          ),
-        ).toBe(true);
+        expect(x.lostLines()).toEqual([expect.stringContaining('"code":"commit_unknown"')]);
         const again = await x.json("POST", "/v1/writes", INSERT, key);
         expect(again.status).toBe(200);
         expect(await rows(x)).toBe(1);
@@ -2884,6 +2926,8 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
           error: { code: "unavailable", reason: "busy", retry_after: 1 },
         });
         expect(x.k.opened).toBe(opened + 1);
+        // Met twice, told twice.
+        expect(x.lostLines()).toHaveLength(2);
       } finally {
         await x.s.close();
       }
@@ -2916,6 +2960,60 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
         expect(r.status).toBe(200);
         expect(r.body).not.toContain('"isError":true');
         expect(x.k.opened).toBe(opened + 1);
+        expect(x.lostLines()).toHaveLength(1);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "an MCP request of a write and a read, meeting it after the write committed: not made again; the write once, answered by its first run",
+    async () => {
+      const x = await lostServer();
+      try {
+        expect((await x.json("POST", "/v1/drafts", { document: SAMPLE_SLOT })).status).toBe(200);
+        const opened = x.k.opened;
+        x.k.afterWrite = true;
+        const r = await x.mcpBody([
+          {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "saveslot_write", arguments: INSERT },
+          },
+          {
+            jsonrpc: "2.0",
+            id: 2,
+            method: "tools/call",
+            params: { name: "saveslot_catalog", arguments: {} },
+          },
+        ]);
+        const said = `${r.status} ${r.body}`;
+        // Not made once more: the tenant not opened again within the request, the write in the
+        // log once. Met twice (the write's answer, after it committed; the read), told twice.
+        expect(x.k.opened).toBe(opened);
+        expect(await rows(x)).toBe(1);
+        expect(x.lostLines()).toHaveLength(2);
+        // Answered by its first and only run: the write internal (it took effect, its answer was
+        // not made), the read busy.
+        expect(r.status).toBe(200);
+        const answers = said
+          .split("\n")
+          .filter((l) => l.startsWith("data:"))
+          .map(
+            (l) =>
+              JSON.parse(l.slice(5)) as {
+                id: number;
+                result: { isError?: boolean; content: { text: string }[] };
+              },
+          );
+        const byId = new Map(answers.map((a) => [a.id, a.result]));
+        expect(byId.get(1)?.isError).toBe(true);
+        expect(byId.get(1)?.content[0]?.text).toContain("internal");
+        expect(byId.get(2)?.isError).toBe(true);
+        expect(byId.get(2)?.content[0]?.text).toContain("busy");
       } finally {
         await x.s.close();
       }
@@ -2960,6 +3058,7 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
         expect(r.status).toBe(200);
         expect(r.body).not.toContain('"isError":true');
         expect(x.k.opened).toBe(opened + 1);
+        expect(x.lostLines()).toHaveLength(1);
       } finally {
         await x.s.close();
       }

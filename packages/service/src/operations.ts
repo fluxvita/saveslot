@@ -36,6 +36,7 @@ import { contractResult, type KernelCall, type Operation } from "./calls.ts";
 import {
   ContractError,
   contractError,
+  internalError,
   lostConnectionOf,
   RetryOnLostConnection,
 } from "./contract-error.ts";
@@ -308,6 +309,8 @@ export async function runOperation(o: {
     caller === undefined
       ? undefined
       : (r) => caller(contractResult(r, o.cursors, ctx.actor, ctx.now));
+  // Whether the operation itself is done (a write committed): what follows only reads for the answer.
+  let done = false;
   try {
     const result = await (async (): Promise<unknown> => {
       switch (o.operation) {
@@ -413,6 +416,7 @@ export async function runOperation(o: {
         }
       }
     })();
+    done = true;
     return contractResult(
       await withNotices(o.tenant, ctx, o.operation, params, result),
       o.cursors,
@@ -426,12 +430,25 @@ export async function runOperation(o: {
         narrow_by: [],
       });
     }
+    // A call that may have taken effect (its operation done, not a read), its answer not made for
+    // the connection gone: not `busy`, which says nothing was recorded. Internal, as a COMMIT
+    // unanswered is: the caller reads the state before sending it again.
+    if (done && !READ_ONLY_OPERATIONS.has(o.operation) && lostConnectionOf(e) !== undefined) {
+      o.warn("tenant_connection_lost", {
+        tenant: o.tenant.tenant,
+        code: "connection_lost",
+        after: "effect",
+      });
+      throw internalError(e, o.warn);
+    }
     // A read meeting its tenant's connection gone, nothing given yet: once more, opened again.
     if (
       o.tenant.retryOnLost === true &&
       READ_ONLY_OPERATIONS.has(o.operation) &&
       lostConnectionOf(e) === "connection_lost"
     ) {
+      // This try given up: logged here, whether or not the next one is answered.
+      o.warn("tenant_connection_lost", { tenant: o.tenant.tenant, code: "connection_lost" });
       throw new RetryOnLostConnection();
     }
     const c = contractError(e, o.warn, { tenant: o.tenant.tenant });

@@ -83,11 +83,23 @@ interface Caller {
    * Set when a read-only tool met the tenant's connection gone with nothing given yet: the
    * request is made once more on the tenant opened again (the use throws RetryOnLostConnection).
    */
-  readonly lost: { hit: boolean };
+  readonly lost: { hit: boolean; readonly retryable: boolean };
 }
 
 /** The methods whose results carry `instructions` (05 §11). */
 const HANDSHAKES: ReadonlySet<unknown> = new Set(["initialize", "server/discover"]);
+
+/**
+ * Whether a request body holds exactly one `tools/call`: only then is a request whose call met the
+ * tenant's connection gone made once more (no other call of it may have done anything).
+ */
+export function singleToolCall(body: unknown): boolean {
+  return (
+    (Array.isArray(body) ? body : [body]).filter(
+      (m) => (m as { method?: unknown } | null | undefined)?.method === "tools/call",
+    ).length === 1
+  );
+}
 
 /** Whether a request body is, or holds, a message of a method that gives `instructions`. */
 export function isHandshake(body: unknown): boolean {
@@ -229,8 +241,9 @@ async function call(
       })) as Record<string, unknown>;
     outcome = { result: budget.finish(plain(await run(params))) };
   } catch (e) {
-    if (e instanceof RetryOnLostConnection) {
-      // Made once more by the use: this try is not told, nor answered.
+    // Made once more by the use, when this call is the request's only one (no other call of it
+    // has done anything): this try is not told, nor answered. Else answered busy, as a write is.
+    if (e instanceof RetryOnLostConnection && lost.retryable) {
       lost.hit = true;
       return { isError: true, content: [] };
     }
@@ -361,7 +374,7 @@ export function handleMcp(
       const headers = sdkHeaders(req.headers);
       // The whole response is made while the tenant is lent: its body is read before it goes back.
       const { response, body } = await resolved.use(async (tenant) => {
-        const lost = { hit: false };
+        const lost = { hit: false, retryable: singleToolCall(parsed) };
         const response = await adapter.handler.fetch(
           new Request("http://local/mcp", {
             method: req.method ?? "GET",

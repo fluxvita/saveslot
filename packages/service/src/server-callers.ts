@@ -6,7 +6,12 @@
 
 import type { AuthFailure } from "./auth.ts";
 import type { CallerResolver, ServedTenant } from "./callers.ts";
-import { ContractError, lostConnectionOf, RetryOnLostConnection } from "./contract-error.ts";
+import {
+  ContractError,
+  LostConnectionOf,
+  lostConnectionOf,
+  RetryOnLostConnection,
+} from "./contract-error.ts";
 import type { ControlPlane, TenantId, UserId } from "./control-plane.ts";
 import { authenticateServer, type Caller, type CheckCredential } from "./server-auth.ts";
 import {
@@ -127,6 +132,8 @@ export function serverCallers(o: {
   /** The request's time, as `toISOString` writes it (`authenticateServer` refuses any other). */
   readonly now: () => string;
   readonly authenticate?: AuthenticateServer;
+  /** Where a try given up for its tenant's connection gone is told (`tenant_connection_lost`). */
+  readonly warn?: (event: string, fields: Readonly<Record<string, string>>) => void;
 }): CallerResolver {
   const authenticate = o.authenticate ?? authenticateServer;
   const oauth: RevokedOAuth = o.oauth ?? { dropRefreshTokens: async () => 0 };
@@ -165,6 +172,11 @@ export function serverCallers(o: {
       // made once more on the tenant opened again, as a read-only operation is.
       const caller = await once().catch((e: unknown) => {
         if (lostConnectionOf(e) !== "connection_lost") throw e;
+        // This try given up: logged here, whether or not the next one is answered.
+        o.warn?.("tenant_connection_lost", {
+          ...(e instanceof LostConnectionOf ? { tenant: e.tenant } : {}),
+          code: "connection_lost",
+        });
         return once();
       });
       if (!("principal" in caller)) return caller;
