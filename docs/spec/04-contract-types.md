@@ -26,7 +26,7 @@ English · [简体中文](../zh-CN/spec/04-contract-types.md)
 
 ### 0.2 Not implemented in the first version
 
-This document writes out the complete design. Parameters, values and operations that the first version does not implement are all marked `@later`. **Calling anything the first version does not implement always reports `not_in_this_version`** (section 9), and the schema generated for the first version does not contain them. The table below lists what the first version does not implement; 0.1.0 has further parts that are not provided yet, listed after the table.
+This document writes out the complete design. Parameters, values and operations that the first version does not implement are all marked `@later`. **Calling anything the first version does not implement always reports `not_in_this_version`** (section 9), and the schema generated for the first version does not contain them. The table below lists what the first version does not implement; 0.2.0 has further parts that are not provided yet, listed after the table.
 
 | Where | What the first version does not implement |
 |---|---|
@@ -46,7 +46,7 @@ This document writes out the complete design. Parameters, values and operations 
 | Slot policy | arbitration by source level during a conflict (the first version has only `keep_current`); extra high-impact tables / fields; the switch "a kind of handling accepts confirmation only from a user session" |
 | Profile | In the first version the table profile of `catalog` has only the row count and the valid-time range, the size hint `scale`, and the most recent K distinct values of each field; there is no "time of the most recent write". The `table` level carries `profile` (row count, valid-time range, size hint); the `examples` and `described_by` of each field are not provided in the first version |
 
-**Not provided in 0.1.0 yet (part of the first version)**: 0.1.0 is the first version released publicly and provides only a part of the first version ([`07-scope-v1.md`](07-scope-v1.md) section 7). The items below are within the design scope of the first version and are written out in this document as they are; calling them in 0.1.0 reports `not_in_this_version`. This is separate from the table above: the table above lists what the first version does not do, and the table below lists what the first version does and 0.1.0 does not provide yet.
+**Not provided in 0.2.0 yet (part of the first version)**: 0.2.0 is the current version released publicly and provides only a part of the first version ([`07-scope-v1.md`](07-scope-v1.md) section 7). The items below are within the design scope of the first version and are written out in this document as they are; calling them in 0.2.0 reports `not_in_this_version`. This is separate from the table above: the table above lists what the first version does not do, and the table below lists what the first version does and 0.2.0 does not provide yet.
 
 | Which part | What it includes | Where the types are |
 |---|---|---|
@@ -1680,7 +1680,7 @@ interface SchemaImpact {
   rows_affected: number;
   derived_changed: Array<{ table: TableName; rows: number }>;
   /** Callers that most recently read or wrote a renamed / dropped field under its old name (inferred from the read and write records). */
-  consumers?: Array<{ actor: Actor; field: string; last_used: Instant; used_for: "read" | "write" }>;  // 0.1.0 does not compute consumers when changing an existing slot and does not give it (a new slot gives an empty list: nobody has used a slot that was just created)
+  consumers?: Array<{ actor: Actor; field: string; last_used: Instant; used_for: "read" | "write" }>;  // 0.2.0 does not compute consumers when changing an existing slot and does not give it (a new slot gives an empty list: nobody has used a slot that was just created)
   /** A trial run of migrate / backfill. */
   trial?: { rows: number; failed: number; samples: Array<{ target: TargetRef; error: ValidationDetailCode }> };
   /** Derivation rules whose group key comes from a free-text field. */
@@ -2211,7 +2211,7 @@ The accompanying fields of each error code:
 | `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"` (`all_slots`: this operation needs a credential whose scope is all slots, as when a credential limited to some slots creates a slot. Reported only for visible targets and does not reveal anything outside the visible range) |
 | `rate_limited` | `quota` / `busy` (the same tenant already has a reconcile or an import running) | `retry_after` |
 | `handle_expired` | `expired` / `restored` / `executed` / `derived_changed` (a derived table was refreshed during paging; re-read from the first page) / `deletion_changed` (a deletion was confirmed or cancelled after the first page; re-read from the first page) | `deletion?: ItemId` (the `dc_` that has already been executed) |
-| `not_in_this_version` | `parameter` / `value` / `operation` / `table_written` (a change allowed only on a table never written is used on a table that has been written) / `not_implemented` (a case that the implementation of 0.1.0 cannot reach yet: the parameter itself is valid, and it is not a parameter reserved for a later version) | `param?`, `value?` (carried when `reason` is `value` and that value is one of the fixed values of the parameter in the contract; a string the caller wrote casually is not carried), `operation?` |
+| `not_in_this_version` | `parameter` / `value` / `operation` / `table_written` (a change allowed only on a table never written is used on a table that has been written) / `not_implemented` (a case that the implementation of 0.2.0 cannot reach yet: the parameter itself is valid, and it is not a parameter reserved for a later version) | `param?`, `value?` (carried when `reason` is `value` and that value is one of the fixed values of the parameter in the contract; a string the caller wrote casually is not carried), `operation?` |
 | `unavailable` | `busy` / `restoring` / `importing` / `reconciling` / `starting` / `stopping` | `retry_after?` |
 | `internal` | — | `incident: string` (a number for troubleshooting, with no content) |
 | `import_rejected` | `unsupported_format` / `not_from_start` / `segment_order` / `chain_broken` / `checksum_mismatch` / `incomplete` / `replay_failed` | `seq?`, `path?` (positions only, no content echoed) |

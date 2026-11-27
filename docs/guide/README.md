@@ -7,7 +7,7 @@ English · [简体中文](../zh-CN/guide/README.md)
 
 > Every chapter has a Chinese edition ([`docs/zh-CN/guide/`](../zh-CN/guide/README.md)), aligned in meaning with this one; a difference between them is a defect, to be reported as an issue.
 
-> **The guide describes the complete design.** The first released version, 0.1.0, does not provide two parts of it yet: privacy deletion (preview, confirmation, cancellation within 24 hours, physical erasure when it comes due, re-applying deletions after a backup is restored), and schema migrations that need to rebuild a physical table. The chapters that discuss them (mainly chapter 2, step 4; chapter 8; chapter 9, section 5; and the parts of chapters 10 and 11 that concern deletion) are marked at the beginning. What 0.1.0 provides is in section 7 of [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md).
+> **The guide describes the complete design.** The current version, 0.2.0, does not provide two parts of it yet: privacy deletion (preview, confirmation, cancellation within 24 hours, physical erasure when it comes due, re-applying deletions after a backup is restored), and schema migrations that need to rebuild a physical table. The chapters that discuss them (mainly chapter 2, step 4; chapter 8; chapter 9, section 5; and the parts of chapters 10 and 11 that concern deletion) are marked at the beginning. What 0.2.0 provides is in section 7 of [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md).
 
 ## How the guide and the specification divide the work
 

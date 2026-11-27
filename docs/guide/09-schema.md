@@ -263,7 +263,7 @@ The cost is that a table that has had a single piece of test data written can on
 
 ## 5. The migration process: reads never stop
 
-> **0.1.0 does not yet provide migrations that need a physical table rebuilt**: drafts that add a field, delete a field, tighten a constraint, change precision or change a unit on a table that has been written can be submitted and previewed, but cannot yet take effect, and confirmation reports `not_in_this_version`. Changes that touch only the catalog, and changes to a table that has never been written, take effect as usual in 0.1.0 ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md), section 7). The background build and switch described in this section are the design of such migrations.
+> **0.2.0 does not yet provide migrations that need a physical table rebuilt**: drafts that add a field, delete a field, tighten a constraint, change precision or change a unit on a table that has been written can be submitted and previewed, but cannot yet take effect, and confirmation reports `not_in_this_version`. Changes that touch only the catalog, and changes to a table that has never been written, take effect as usual in 0.2.0 ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md), section 7). The background build and switch described in this section are the design of such migrations.
 
 After a change is confirmed, how does the data go from the old structure to the new? saveslot's way is: **build the new version in the background, catch up, then switch once.** Throughout the process reads do not stop, and writes pause only for the instant of the switch.
 

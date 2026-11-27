@@ -6,7 +6,7 @@
 > **本文写规则与说明；参数、结果、错误的结构与全部枚举在 [`04-contract-types.md`](04-contract-types.md)，字段名与取值以它为准。**
 > 两份文档写的都是完整设计。第一版不实现的部分在类型文件里标 `@later`，清单见它的 0.2 节；范围以 [`07-scope-v1.md`](07-scope-v1.md) 为准。待定项统一记在 [`08-open-questions.md`](08-open-questions.md)。
 >
-> **"第一版"与 0.1.0**：本文的"第一版"指第一版的设计范围；0.1.0 是第一个对外发布的版本，只提供第一版的一部分。0.1.0 尚未提供：隐私删除（`deletion_preview`、`delete`、撤回删除，以及只因它们而有的字段、标记、事项类型与错误）；需要重建物理表的迁移（在写入过的表上加字段、删字段、收紧约束、改精度、换单位）；`log.reconcile`。`policy.set`、字段上的 `migrate` 与表达式形式的 `backfill` 在第一版之后。尚未提供的操作与参数报 `not_in_this_version`。0.1.0 提供什么见 [`07-scope-v1.md`](07-scope-v1.md) 第 7 节；本文与类型文件里讲这些的各节写的是设计。
+> **"第一版"与 0.2.0**：本文的"第一版"指第一版的设计范围；0.2.0 是目前对外发布的版本，只提供第一版的一部分。0.2.0 尚未提供：隐私删除（`deletion_preview`、`delete`、撤回删除，以及只因它们而有的字段、标记、事项类型与错误）；需要重建物理表的迁移（在写入过的表上加字段、删字段、收紧约束、改精度、换单位）；`log.reconcile`。`policy.set`、字段上的 `migrate` 与表达式形式的 `backfill` 在第一版之后。尚未提供的操作与参数报 `not_in_this_version`。0.2.0 提供什么见 [`07-scope-v1.md`](07-scope-v1.md) 第 7 节；本文与类型文件里讲这些的各节写的是设计。
 
 ## 本文是什么
 
@@ -37,7 +37,7 @@
 
 ¹ `policy.get` 例外：任何有 `saveslot.read` 的凭证都可以调用。
 
-"第一版"一列写的是第一版的设计范围。0.1.0 尚未提供其中的 `deletion_preview` 与 `delete`，以及管理类里的对拍 `log.reconcile`，这几项报 `not_in_this_version`；`policy.set` 在第一版之后。
+"第一版"一列写的是第一版的设计范围。0.2.0 尚未提供其中的 `deletion_preview` 与 `delete`，以及管理类里的对拍 `log.reconcile`，这几项报 `not_in_this_version`；`policy.set` 在第一版之后。
 
 ## 读与写怎么配合
 
@@ -488,7 +488,7 @@
 
 ### `deletion_preview`
 
-0.1.0 尚未提供：`deletion_preview`（含 `dc_` 句柄）报 `not_in_this_version`；本节是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。
+0.2.0 尚未提供：`deletion_preview`（含 `dc_` 句柄）报 `not_in_this_version`；本节是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。
 
 **不删任何东西。** 两种调用：给 `{kind, sources}` 出预览；或只给 `{confirm}`，按已有的 `dc_` 绑定的目标重新给出预览（返回的仍是同一个 `dc_`，有效期不变）。
 
@@ -532,12 +532,12 @@
 
 ### `schema_draft`
 
-0.1.0 尚未提供：需要重建物理表的迁移（在写入过的表上加字段、删字段、收紧约束、改精度、换单位）报 `not_in_this_version`，迁移的进度（`migration`、`migration_progress`）也随之只在设计里；本节这些部分是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节），0.1.0 的现状见「不收的改动（第一版与 0.1.0）」。
+0.2.0 尚未提供：需要重建物理表的迁移（在写入过的表上加字段、删字段、收紧约束、改精度、换单位）报 `not_in_this_version`，迁移的进度（`migration`、`migration_progress`）也随之只在设计里；本节这些部分是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节），0.2.0 的现状见「不收的改动（第一版与 0.2.0）」。
 
 #### 返回与结果
 
 - 参数是 schema 文档（data-model「schema 文档格式」）；新建 slot 时 `base_version: null`。新提交的草稿取代该 slot 尚未确认的旧草稿（旧草稿的 `schema_change` 事项标已被取代，原因 `draft_replaced`）。
-- **一次调用同时返回编译结果与影响预览**：回填了 ID 与推断结果的文档、逐项改动（改动码 `change`、类别、对旧版写入是否兼容、是否破坏性、是否可自动生效）、影响（受影响行数、派生值变化、按旧名字使用它的调用方、`migrate` / `backfill` 的试跑结果）。**0.1.0 不计算使用方，一律按在用处理（进待确认）**：改已有 slot 的回执不给 `consumers`（给空列表就成了"没有使用方"的结论），"没人在用"也一律按在用处理。所以改名（`rename_unused`）一律要确认，`restructure_unused` 这一类也不会自动生效，这些改动都进待确认。
+- **一次调用同时返回编译结果与影响预览**：回填了 ID 与推断结果的文档、逐项改动（改动码 `change`、类别、对旧版写入是否兼容、是否破坏性、是否可自动生效）、影响（受影响行数、派生值变化、按旧名字使用它的调用方、`migrate` / `backfill` 的试跑结果）。**0.2.0 不计算使用方，一律按在用处理（进待确认）**：改已有 slot 的回执不给 `consumers`（给空列表就成了"没有使用方"的结论），"没人在用"也一律按在用处理。所以改名（`rename_unused`）一律要确认，`restructure_unused` 这一类也不会自动生效，这些改动都进待确认。
 - 草稿与当前版本相比没有任何改动，报 `invalid_argument`（`no_change`，`param` 为 `document`），不产生任何事件、不占版本号。只相对于当前版本判：与待确认的那份内容完全相同的草稿（不在幂等窗口内，或换了 `task`）照常取代它、拿新的版本号。
 - 改已有 slot 时的报错次序：slot 找不到或不在范围 → `base_version` 的写法 → 草稿过时（`draft_outdated`，`base_version`）→ 迁移进行中（`draft_outdated`，`migrating`，带 `current_sv` 与 `migration`）→ 其余。
 
@@ -551,13 +551,13 @@
 #### 从未被写入的表
 
 - **从未被写入的表**（日志里没有任何一条以这张表为目标的基础写入；写过、行已全部撤销或内容已全部删除的都不算）上，下面这些改动放开：改表的时间类型（`change_time_type`）、增删改 `entity_key`（`change_entity_key`）、改 `granularity`（`change_granularity`）、`base` 改 `derived`（`change_table_kind`；反方向仍不支持）、字段与 `ref` 互转或改 `ref` 的目标（`change_ref`）、加 / 去掉 / 换来源键（`add_external_key` / `drop_external_key` / `change_external_key`）。表 ID 与字段 ID 不变。
-  - 这张表最近 30 天也没有提交者以外的连接实例按名字读写过时，这些改动，连同同一张表上的 `drop_field`、`change_type`、`change_dimension`、`change_unit`、`change_precision`、`tighten_constraint`，`add_required_field`、`change_time_field`，都归入 `restructure_unused`，自动生效：没有值可丢，`class` 记 `metadata`，`destructive` 是 `false`，`migrate` 不必给。新增必填字段与可选改必填仍须给常量形式的 `backfill`。有别人读写过时要确认，影响的 `consumers` 列出他们。0.1.0 不计算使用方，见「返回与结果」。
+  - 这张表最近 30 天也没有提交者以外的连接实例按名字读写过时，这些改动，连同同一张表上的 `drop_field`、`change_type`、`change_dimension`、`change_unit`、`change_precision`、`tighten_constraint`，`add_required_field`、`change_time_field`，都归入 `restructure_unused`，自动生效：没有值可丢，`class` 记 `metadata`，`destructive` 是 `false`，`migrate` 不必给。新增必填字段与可选改必填仍须给常量形式的 `backfill`。有别人读写过时要确认，影响的 `consumers` 列出他们。0.2.0 不计算使用方，见「返回与结果」。
   - 依赖这张表的派生规则在同一次编译里按新定义重新编译；规则的输出没变的不另列改动。
   - 经 `restructure_unused` 生效的任何改动之后，带旧 `sv` 写这张表的写入一律被拒：`schema_incompatible`，`changed_fields` 给一项 `{field: "*", change: <改动码>}`，`"*"` 表示整张表。表被删（`drop_table`）之后，带删除之前的 `sv` 写它同样如此，`change` 是 `drop_table`。
   - 草稿等确认期间这张表被写入了：草稿里凡按"从未被写入"编译的改动都不再成立，确认时一律报 `draft_outdated`（`table_written`，见 `resolve`）。
-#### 不收的改动（第一版与 0.1.0）
+#### 不收的改动（第一版与 0.2.0）
 
-- **0.1.0 尚未提供的改动**：需要重建物理表的迁移。在写入过的表上加字段、删字段、收紧约束、改精度、同量纲换单位这类改动，草稿可以提交、可以预览；0.1.0 里会自动生效的草稿在提交时就报 `not_in_this_version`（`reason` 是 `table_written`），要确认的草稿在确认时报 `not_in_this_version`，草稿留着。表从未被写入时这些改动照常生效（新表是空的，不需要迁移）。`migrate` 与表达式形式的 `backfill` 见下面最后一条。
+- **0.2.0 尚未提供的改动**：需要重建物理表的迁移。在写入过的表上加字段、删字段、收紧约束、改精度、同量纲换单位这类改动，草稿可以提交、可以预览；0.2.0 里会自动生效的草稿在提交时就报 `not_in_this_version`（`reason` 是 `table_written`），要确认的草稿在确认时报 `not_in_this_version`，草稿留着。表从未被写入时这些改动照常生效（新表是空的，不需要迁移）。`migrate` 与表达式形式的 `backfill` 见下面最后一条。
 - **第一版不支持的键或改动**：`reextract`、`extends`、`compatibility`、`derived` 改 `base`；在写入过的表上改时间类型、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 互转与改目标、换一组来源键（`change_external_key`）、改来源键字段的类型或收紧它的约束。写入过的表上仍可以加来源键（键字段须是同一份草稿新增的字段）或去掉它，都要确认。草稿里出现时整份报 `not_in_this_version`，`param` 指到那个键，不产生任何事件；因为表已被写入而不支持的，`reason` 是 `table_written`。
 - **第一版建 slot 时不收的派生规则**：用到 `saveslot_date` 的、分组键是 `decimal` / `quantity` 且小数位上界可能超出推断精度的（算法见 [`03-data-model/11-restricted-sql.md`](03-data-model/11-restricted-sql.md)「小数分组键」）。都报 `not_in_this_version`，`param` 指到那张派生表的规则（`tables/<i>/rule`），不产生任何事件。派生规则读读时计算的派生表，第一版同样报 `not_in_this_version`，`param` 是 `tables/<i>/rule/sql`。
 - 字段上的 `migrate` 与表达式形式的 `backfill` 在第一版之后：第一版里草稿带它们，在任何表上都报 `not_in_this_version`（`param` 指到那个键），常量形式的 `backfill` 照做。设计上它们只能引用本字段的旧值与常量，只对带值的位置求值，空值原样带过去。
@@ -596,7 +596,7 @@
 
 ### `delete`
 
-0.1.0 尚未提供：`delete` 与撤回删除（`resolve` 的 `deletion` · `cancel`）报 `not_in_this_version`；本节是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。
+0.2.0 尚未提供：`delete` 与撤回删除（`resolve` 的 `deletion` · `cancel`）报 `not_in_this_version`；本节是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。
 
 - 参数只有 `confirm`（`deletion_preview` 返回的 `dc_`）。只执行，不预览。
 - **判定顺序**：这个 `dc_` 已经执行过 → 返回原结果，`replayed: true`；签名过期或恢复次数对不上 → `handle_expired`；影响范围内有晚于预览的写入 → `preview_outdated`（附新预览与新的 `dc_`）。
@@ -784,12 +784,12 @@
 | `insufficient_scope` | 凭证没有所需 scope（含 `resolve` 用了当前凭证不可用的处理方式）；连接实例调用只给用户会话的管理类操作（`required_scope: "user_session"`）；限定了 slot 范围的凭证新建 slot（`required_scope: "all_slots"`，见第 12 节） |
 | `rate_limited` | 限流或配额（`quota`）；同一租户已有一次对拍或导入在跑（`busy`） |
 | `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`）、首页之后有删除被确认或撤回（`deletion_changed`） |
-| `not_in_this_version` | 调用了第一版不实现、或 0.1.0 尚未提供的参数、取值或操作。`reason` 说明是哪一种，附是哪个；schema 草稿里只对从未被写入的表放开的改动用在写入过的表上时，`reason` 是 `table_written` |
+| `not_in_this_version` | 调用了第一版不实现、或 0.2.0 尚未提供的参数、取值或操作。`reason` 说明是哪一种，附是哪个；schema 草稿里只对从未被写入的表放开的改动用在写入过的表上时，`reason` 是 `table_written` |
 | `unavailable` | 暂时不能处理：租户被占用或此刻打不开——写入排队、加锁超时、它的存储还没释放；或服务器模式下这次使用撞上租户的连接已断开、确定没有提交，或一次读的读取记录没能在应答之前写进去、这次读不交出内容（`busy`）；租户正在走恢复流程（`restoring`）；租户正在导入（`importing`；服务器模式下也来自导入换入期间写入撞上租户的封存标记）；对拍进入比较阶段而排队超时（`reconciling`）；服务刚启动还在补跑到期任务（`starting`）；服务正在停止，不再接新的请求，或服务器模式下这个进程比租户存储的格式旧、该被换下（`stopping`）。可重试时附 `retry_after` |
 | `internal` | 服务端内部错误。附 `incident`（供排查的编号，不含用户内容） |
 | `import_rejected` | 导入的文件不合格：格式不认识（`unsupported_format`）、不是从头开始（`not_from_start`）、续传的几段顺序不对（`segment_order`）、事件头链断裂（`chain_broken`）、内容校验和不符（`checksum_mismatch`）、条数或末尾对不上、清单与内容对不上（`incomplete`，如清单里的恢复次数不是导入的日志自己的）、重放失败（`replay_failed`）。只给位置（`seq`、`path`），不回显内容 |
 
-- **第一版不实现的东西与 0.1.0 尚未提供的东西一律报 `not_in_this_version`，不静默忽略**：生成的 schema 里不出现这些参数与取值，但服务端认得完整设计里的名字，收到时给出这个明确的错误，而不是笼统的 `invalid_argument`。
+- **第一版不实现的东西与 0.2.0 尚未提供的东西一律报 `not_in_this_version`，不静默忽略**：生成的 schema 里不出现这些参数与取值，但服务端认得完整设计里的名字，收到时给出这个明确的错误，而不是笼统的 `invalid_argument`。
 - `item_closed` 与 `preview_outdated` 在第 11 节：由内核判断。签名本身过期才是这里的 `handle_expired`。
 
 ## 17. 管理类操作
@@ -806,7 +806,7 @@
 | `reads.list` | 读取审计：哪个连接实例在什么时候读了哪些数据（含对源数据原文的读取）。只给版本，不给值；每条带 `task`；结果写明读取记录保留到哪一刻（没有清理时是租户创建的时刻）。`since` 含、`until` 不含；`slot` 不存在报 `not_found`（`slot`），`table` 不存在报 `unknown_table`（同别处按名字指表：带 `name` 与 `nearest`，给的是 `slot.table` 就列带 slot 的名字，只给表名就列表名）。一次读取在某张表上读到的行版本数超过阈值（初值 1,000，多见于受限 SQL 的聚合）时，这张表不逐行列，列在 `coarse` 里：只有表与这次读取所见状态的位置（data-model「读取记录」） |
 | `log.verify` | 校验日志：事件总数、事件头链完整与否（或自哪一条起断裂）、内容校验和不符的位置、索引列与事件头不符的位置（不算断裂）、已按删除移除的数量、恢复留下的序号空档（不算断裂） |
 | `log.end` | 日志末端：最新一条事件的 `seq` 与记录时刻（日志为空时为 null）。只读、不带参数；`saveslot status` 用它对照本机时钟 |
-| `log.reconcile` | 0.1.0 尚未提供：`log.reconcile` 报 `not_in_this_version`；本行是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。对拍：把日志从空存储重放到一份临时存储，与线上的逻辑表逐表比较（范围见 architecture §11）。同步返回，日志大时耗时长；只有最后的比较阶段让该租户的写入排队，PostgreSQL 上它在一个读快照里完成，不必让写入排队（architecture §7）。同一租户同时只跑一个，再次调用报 `rate_limited`（`busy`）。结果只给表 / 行 / 字段的 ID，不回显值。**它查不出 `delete` 自己算错的结果**（architecture §11「记录与重算一致」） |
+| `log.reconcile` | 0.2.0 尚未提供：`log.reconcile` 报 `not_in_this_version`；本行是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。对拍：把日志从空存储重放到一份临时存储，与线上的逻辑表逐表比较（范围见 architecture §11）。同步返回，日志大时耗时长；只有最后的比较阶段让该租户的写入排队，PostgreSQL 上它在一个读快照里完成，不必让写入排队（architecture §7）。同一租户同时只跑一个，再次调用报 `rate_limited`（`busy`）。结果只给表 / 行 / 字段的 ID，不回显值。**它查不出 `delete` 自己算错的结果**（architecture §11「记录与重算一致」） |
 | `export` | 导出全部日志事件，NDJSON：第一行是清单，之后每行一条事件，形状以 [`09-event-format.md`](09-event-format.md) 第 8 节为准，可在任何后端经 `apply` 重放。宽限期内待删除的内容默认换成占位，`include_pending_deletion: true` 才包含；`after_seq` 从某个位置之后续传（清单里记为 `after`）。读取记录不在导出里 |
 | `import` | 导入到空租户：把一份导出装进一个空租户（日志里只有创世事件，锚点里没有删除登记、恢复记录与进行中的恢复或导入）。逐事件原样追加并交给 `apply` 重放，追加一条 `tenant.imported`，恢复次数加 1；导入前登记的、仍有效的主体一律停用（已吊销的保持吊销，第 12 节），凭证由用户在目标处重新签发。整体要么完成、要么目标租户保持为空；期间这个租户的其他请求报 `unavailable`（`importing`）。导出里待删除内容的占位在导入时立即补墓碑，那些删除在目标处不可撤回。读取记录、控制面的内容（凭证、授权、签名密钥、源头的删除登记）、外部文件带不过来，结果如实列出。错误：`invalid_argument`（`tenant_not_empty`）、`import_rejected`、`rate_limited`（`busy`）、`too_large`（`import_line`：文件的一行超过上限，09 §8）。合并导入、迁移流程不在第一版 |
 

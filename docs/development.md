@@ -10,7 +10,7 @@ The rules for submitting a change (branches, pull requests, sign-off, AI-assiste
 
 ## What runs today
 
-The first release, 0.1, is implemented: the service in local and server mode, its HTTP and MCP interfaces, and the `saveslot` command. What 0.1 does not do yet is listed under [Status](../README.md#status) in the README.
+The current version, 0.2, is implemented: the service in local and server mode, its HTTP and MCP interfaces, and the `saveslot` command. What 0.2 does not do yet is listed under [Status](../README.md#status) in the README.
 
 Besides the build, the tests and the repository checks, you can run the service you built: after `pnpm build`, `node packages/saveslot/dist/bin.js setup` sets it up and starts it, as `saveslot setup` does in [Get started](../README.md#get-started) in the README.
 

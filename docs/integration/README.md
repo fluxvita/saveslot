@@ -11,9 +11,9 @@ There are two ways to connect to saveslot. Choose by what you are connecting:
 
 Both reach the same saveslot service and the same data. Three later sections apply to both: [Credentials and permissions](#3-credentials-and-permissions), [Results and errors](#4-results-and-errors), [Data and upgrades](#5-data-and-upgrades).
 
-## What 0.1.0 has and does not have yet
+## What 0.2.0 has and does not have yet
 
-0.1.0 is the first public release, with both local mode and server mode. The full list is in [spec `07-scope-v1.md` §7](../spec/07-scope-v1.md#7-what-010-provides).
+0.2.0 is the current public release (the first was 0.1.0), with both local mode and server mode. The full list is in [spec `07-scope-v1.md` §7](../spec/07-scope-v1.md#7-what-020-provides).
 
 **It has:**
 
@@ -25,11 +25,11 @@ Both reach the same saveslot service and the same data. Three later sections app
 
 **It does not have yet:**
 
-- **Privacy deletion:** there is no delete command, MCP has no delete tool, and `POST /v1/deletions/preview` and `POST /v1/deletions` return `not_in_this_version`. The `saveslot.delete` permission can be issued, but no operation uses it yet. Data written by mistake can be **undone** (an ordinary write that keeps the history and can itself be reverted); making content disappear for good is not possible in 0.1.0.
+- **Privacy deletion:** there is no delete command, MCP has no delete tool, and `POST /v1/deletions/preview` and `POST /v1/deletions` return `not_in_this_version`. The `saveslot.delete` permission can be issued, but no operation uses it yet. Data written by mistake can be **undone** (an ordinary write that keeps the history and can itself be reverted); making content disappear for good is not possible in 0.2.0.
 - **Structure changes on a table that has been written to** (adding or removing a field, tightening a constraint, changing precision or unit): such a draft can be submitted and previewed, and then returns `not_in_this_version`: at submission when it would take effect by itself, at confirmation when it needs confirming (it is accepted as a pending item first). A table never written to can still be changed.
 - **The recovery flow after restoring from a backup, in local mode:** server mode has it (`saveslot server restore --tenant <id>`); local mode does not have `saveslot start --restored` yet (see [Data and upgrades](#5-data-and-upgrades)).
-- **Hosts that can register only by dynamic client registration** cannot connect to server mode: 0.1.0 identifies a client by a client ID metadata document only.
-- Also not connected yet: the replay comparison (`saveslot verify --replay`; `POST /v1/log/reconcile` returns `not_in_this_version`) and changing a slot's policy (`PUT /v1/slots/{slot}/policy` returns it too). Read records are not pruned in 0.1.0; they only grow.
+- **Hosts that can register only by dynamic client registration** cannot connect to server mode: 0.2.0 identifies a client by a client ID metadata document only.
+- Also not connected yet: the replay comparison (`saveslot verify --replay`; `POST /v1/log/reconcile` returns `not_in_this_version`) and changing a slot's policy (`PUT /v1/slots/{slot}/policy` returns it too). Read records are not pruned in 0.2.0; they only grow.
 
 An operation or parameter this version does not have returns `not_in_this_version` (status 501).
 
@@ -235,7 +235,7 @@ Give every agent and every program its own credential (a connection), so that wh
 | `saveslot.read` | Every read operation | Required | Required |
 | `saveslot.write` | Writing, and resolving items that concern writes | Given | Preselected |
 | `saveslot.schema` | Creating slots, changing table structure | Given | Listed only when the host requested it; not preselected |
-| `saveslot.delete` | Deleting (0.1.0 has no deletion yet, so this permission has no use for now) | Not given | Listed only when the host requested it; not preselected |
+| `saveslot.delete` | Deleting (0.2.0 has no deletion yet, so this permission has no use for now) | Not given | Listed only when the host requested it; not preselected |
 
 The authorization page lists what the host requested, and read and write when it requested none.
 
@@ -294,7 +294,7 @@ Rules: [spec `04-contract.md` §12](../spec/04-contract.md#12-callers-credential
 | 413 | `too_large` | The request body is over 1 MiB, or the write carries more than a limit allows (`reason` says which); split the request |
 | 422 | `validation_failed` | Fix each entry in `details` |
 | 429, 503 | `rate_limited`, `unavailable` | Wait for `Retry-After`, then retry |
-| 501 | `not_in_this_version` | This version does not have the operation or parameter yet (deletion, for example); see [What 0.1.0 has and does not have yet](#what-010-has-and-does-not-have-yet) |
+| 501 | `not_in_this_version` | This version does not have the operation or parameter yet (deletion, for example); see [What 0.2.0 has and does not have yet](#what-020-has-and-does-not-have-yet) |
 
 **Retries:** a write with an `Idempotency-Key` header is safe to send again: the same key runs only once within 24 hours, and a repeat returns the original result with `replayed: true`. Without a key, the server derives a request key from the content, valid for 10 minutes only: the same request sent again within 10 minutes is not written twice, and after that it is a new write. The same key with different content returns `invalid_argument`. Rejected requests are not deduplicated, so a corrected request can reuse the key. A request made only of writes by external key gets no server request key: the external key is what makes it safe to repeat, at any time, and the same content sent again returns `unchanged`.
 
@@ -316,9 +316,9 @@ saveslot export --encrypt -o saveslot-export.ndjson.age
 
 Only the person's own session can export; a connection token cannot. The HTTP endpoint is `GET /v1/export`.
 
-**Backup and recovery:** in local mode saveslot makes no backups itself; system-level backups cover the data directory. After a store is put back from a backup, a recovery flow has to run before it serves again. In 0.1.0 server mode has it (`saveslot server restore --tenant <id>`); local mode does not (`saveslot start --restored` is not in 0.1.0). The part of the flow that deletes again what had been deleted has nothing to do in 0.1.0, which has no deletion, so restoring a backup brings no deleted content back.
+**Backup and recovery:** in local mode saveslot makes no backups itself; system-level backups cover the data directory. After a store is put back from a backup, a recovery flow has to run before it serves again. In 0.2.0 server mode has it (`saveslot server restore --tenant <id>`); local mode does not (`saveslot start --restored` is not in 0.2.0). The part of the flow that deletes again what had been deleted has nothing to do in 0.2.0, which has no deletion, so restoring a backup brings no deleted content back.
 
-What 0.1.0 notices by itself is a store put back to an older copy, when the end of the log is below the highest operation number saveslot recorded outside the log. In local mode `saveslot start` then fails with the reason `log_behind_high_water`, and 0.1.0 has no command to go past it; in server mode that tenant is not served until `saveslot server restore --tenant <id>` has run. It does not notice when that record went back together with the data: in the default local layout both are under `~/.saveslot/`, so after a restore of the whole directory the service starts as if nothing had happened, and a `ver` or a cursor read before the restore is not known to be stale. The design is in [guide chapter 11, section 6](../guide/11-deployment.md#6-export-backup-and-restore); it says local mode recovers by itself, which 0.1.0 does not do.
+What 0.2.0 notices by itself is a store put back to an older copy, when the end of the log is below the highest operation number saveslot recorded outside the log. In local mode `saveslot start` then fails with the reason `log_behind_high_water`, and 0.2.0 has no command to go past it; in server mode that tenant is not served until `saveslot server restore --tenant <id>` has run. It does not notice when that record went back together with the data: in the default local layout both are under `~/.saveslot/`, so after a restore of the whole directory the service starts as if nothing had happened, and a `ver` or a cursor read before the restore is not known to be stale. The design is in [guide chapter 11, section 6](../guide/11-deployment.md#6-export-backup-and-restore); it says local mode recovers by itself, which 0.2.0 does not do.
 
 **Upgrades:** a newer version reads data written by an older one. After a newer version has written the data, an older version refuses to open it. Data from development before 0.1.0 is outside this promise and needs a fresh `saveslot init`.
 
@@ -326,4 +326,4 @@ Sources: [guide chapter 11, section 6](../guide/11-deployment.md#6-export-backup
 
 ## Operating saveslot yourself
 
-Resolving pending items and reading history are done by a person on the command line, which is a separate path (deletion is not in 0.1.0 yet): [guide chapter 11, section 3](../guide/11-deployment.md#3-how-people-use-it-the-command-line).
+Resolving pending items and reading history are done by a person on the command line, which is a separate path (deletion is not in 0.2.0 yet): [guide chapter 11, section 3](../guide/11-deployment.md#3-how-people-use-it-the-command-line).
