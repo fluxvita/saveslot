@@ -267,10 +267,9 @@ export function candidateImpact(
   const after = (at.upTo + 1) as OpNumber;
   return [...byCandidate.values()].flatMap((items) => {
     const taken = state.with(items.map((x) => ({ ...x, op: after, status: "applied" as const })));
-    const erases = state.table.fields.some((f) => {
-      const left = new Set(taken.impactPoints(f, { upTo: after }));
-      return state.impactPoints(f, at).some((p) => !left.has(p));
-    });
+    const erases = state.table.fields.some(
+      (f) => state.erasedOf(f, state.impactPoints(f, at), at, taken, { upTo: after }).length > 0,
+    );
     if (!erases) return [];
     // Each stretch names the candidate item that would overwrite it among its deps, so a reader
     // tells which candidate's impact it is (04-contract-types `candidate_impact`).
