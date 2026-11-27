@@ -421,6 +421,9 @@ export async function changesInTx(
     identity,
     position,
     seq: until,
+    // `until` can be a record point before the first page: the log position then, which a
+    // deletion changed since is compared with (04-contract §15).
+    logAt: position?.logAt ?? latest,
     at: position?.at ?? input.now,
     restoreCount: restore,
     limit: limitOf(params),

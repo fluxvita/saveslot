@@ -419,6 +419,51 @@ describe("what the deletion itself gave, and the other reads by record time", ()
   );
 
   it(
+    "as_of paged after a deletion confirmed before its first page: the pages are the whole read, withheld and marked",
+    async () => {
+      // The deletion is before the first page, so the position is not expired, and the stretch
+      // the removed write gave is read page by page: as the whole read gives it.
+      const a = await w("budget is 5000 from october", [
+        { intent: "insert", table: "budget", valid_from: "2026-10-01", set: { amount: "5000" } },
+      ]);
+      const entity = a.ops[0].target.entity as string;
+      const b = await w("DELETED-WORDS: 4000 for ten days", [
+        {
+          intent: "update",
+          table: "budget",
+          entity,
+          ver: a.ops[0].ver,
+          valid_from: "2026-11-10",
+          valid_to: "2026-11-20",
+          set: { amount: "SECRET-4000" },
+        },
+      ]);
+      await deleteSource("DELETED-WORDS");
+      const params = { table: "budget", entity, mode: "as_of", as_of: b.seq };
+      const whole: Any = await history(s.store, ctx(), params);
+      const rows: Any[] = [];
+      let position: string | undefined;
+      for (let i = 0; i < 10; i++) {
+        const p: Any = await history(s.store, ctx(), {
+          ...params,
+          limit: 1,
+          ...(position !== undefined ? { position } : {}),
+        });
+        rows.push(...p.rows);
+        position = p.next_position;
+        if (position === undefined) break;
+      }
+      const shape = (r: Any[]) =>
+        r.map((x: Any) => [x.valid_from, x.valid_to, x.values, x.marks?.partially_deleted ?? null]);
+      expect(rows.length).toBeGreaterThan(1);
+      expect(text(rows)).not.toContain("SECRET-4000");
+      expect(shape(rows)).toEqual(shape(whole.rows));
+      expect(rows.some((x: Any) => x.marks?.partially_deleted === true)).toBe(true);
+    },
+    T,
+  );
+
+  it(
     "timeline: an operation's value before, when a removed contribution gave it, is not given",
     async () => {
       const { row } = await lunchCorrected();

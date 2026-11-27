@@ -776,7 +776,12 @@ export function queryIdentity(plan: QueryPlan, given: { at: boolean }): string {
 }
 
 export interface Position {
-  /** The first page's operation number: later pages read the state after it. */
+  /**
+   * The first page's operation number: later pages read the state after it. For a read whose point
+   * can be earlier than its first page (a record point: `history` `as_of`, and `changes` with an
+   * `until`), the position also carries `logAt`, the log position at the first page, which a
+   * deletion changed since is compared with; a read with such a point carries it.
+   */
   readonly seq: number;
   /** The first page's evaluation time. */
   readonly at: string;
@@ -794,8 +799,8 @@ export interface Position {
    */
   readonly since?: number;
   /**
-   * `history` `as_of`: the log position when the first page was read, where `seq` is the record
-   * point read (an earlier operation). A deletion confirmed or cancelled is compared with this, so
+   * `history` `as_of` and `changes`: the log position when the first page was read, where `seq`
+   * is the record point read (an earlier operation). A deletion confirmed or cancelled is compared with this, so
    * that one between the record point and the first page does not expire the position. Absent from
    * a position made before it was carried, when `seq` is compared instead (expiring it more often,
    * never less).
@@ -866,7 +871,7 @@ export function decodePosition(
   const shape = isObj(o)
     ? [...keysOf(o)]
         .filter((x) => !(x === "n" && check.total === true))
-        .filter((x) => !(x === "l" && check.condition === true))
+        .filter((x) => !(x === "l" && (check.condition === true || check.since === true)))
         .sort()
         .join(",")
     : "";

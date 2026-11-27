@@ -295,6 +295,25 @@ describe("the reads that decode a position", () => {
     expect(callers).toEqual(ENTRIES.map((e) => e.file).sort());
     expect(callers).toHaveLength(11);
   });
+
+  it("and every file that takes the position parameter is one of them, or names it for one", () => {
+    // The other way round: a read taking `position` with a decoder of its own under another name,
+    // or through an aliased import, is not found by the calls above, but it names the parameter.
+    // Files that only list it among a read's parameters stand for that read (params.ts: query;
+    // history.ts also for timeline and changes). Blind spot left: a paging token under another
+    // parameter name.
+    const root = join(import.meta.dirname, "..", "..", "kernel", "src");
+    const naming = (readdirSync(root, { recursive: true }) as string[])
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith(".fixture.ts"))
+      .map((f) => f.split(sep).join("/"))
+      // page.ts reads it for every caller of positionOf; rsql names a SQL function `position`.
+      .filter((f) => f !== "read/page.ts" && !f.startsWith("rules/rsql/"))
+      .filter((f) => readFileSync(join(root, f), "utf8").includes('"position"'))
+      .sort();
+    const NAMED_FOR = new Map([["read/params.ts", "read/query.ts"]]);
+    const covered = new Set(ENTRIES.map((e) => e.file));
+    expect(naming.filter((f) => !covered.has(NAMED_FOR.get(f) ?? f))).toEqual([]);
+  });
 });
 
 describe("a position after a deletion confirmed since its first page", () => {
@@ -325,6 +344,28 @@ describe("a position after a deletion confirmed before its first page", () => {
       const first = (await e.read(params)) as { next_position?: string };
       expect(first.next_position).toEqual(expect.any(String));
       expect(await outcome(e.read({ ...params, position: first.next_position }))).toBe("given");
+    },
+    T,
+  );
+});
+
+describe("a read whose point is earlier than its first page", () => {
+  it(
+    "history changes with an until in the past: a deletion between the until and the first page leaves the position alone, one after it expires it",
+    async () => {
+      // The position's point is the until; the log position at the first page (`l`) is what a
+      // deletion is compared with, or the read could never be paged once one happened after it.
+      const params = { table: "spend", mode: "changes", since: 0, until: asOf, limit: 1 };
+      await standIn("deletion.confirmed");
+      const first = (await history(s.store, ctx(), params)) as { next_position?: string };
+      expect(first.next_position).toEqual(expect.any(String));
+      const next = { ...params, position: first.next_position };
+      expect(await outcome(history(s.store, ctx(), next))).toBe("given");
+      await standIn("deletion.confirmed");
+      expect(await outcome(history(s.store, ctx(), next))).toEqual([
+        "handle_expired",
+        "deletion_changed",
+      ]);
     },
     T,
   );
