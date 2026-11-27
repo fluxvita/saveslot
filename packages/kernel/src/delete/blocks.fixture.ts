@@ -208,7 +208,6 @@ export class BlockModel {
             (e) => e.kind === "confirm" && (e.id === id || this.deletions.get(e.id)?.cancelled),
           )
           .flatMap((e) => e.restated),
-        others,
       ),
       from,
       () => [],

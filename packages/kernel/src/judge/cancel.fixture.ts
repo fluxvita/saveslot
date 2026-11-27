@@ -96,7 +96,7 @@ export function cancelBoth(
     ga,
     gb,
     g2,
-    onlyCancelledGave(afterA, delB.replay.restated, ga),
+    onlyCancelledGave(afterA, delB.replay.restated),
     new Set(interval(delB.replay.restated)),
     () => [],
     NO_GRACE,

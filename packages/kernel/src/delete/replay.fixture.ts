@@ -67,7 +67,7 @@ export const cancellationReplayForTests = (
     others,
     deleted,
     itemsByRecords(new RowState(table, records)),
-    onlyCancelledGave(givenByRecords(records), restated, others),
+    onlyCancelledGave(givenByRecords(records), restated),
     new Set(
       restated
         .filter((r) => r.status !== "dropped")
@@ -200,7 +200,7 @@ export class DeletionSessionForTests {
       others,
       d.deleted,
       itemsByRecords(new RowState(this.table, records)),
-      onlyCancelledGave(this.#latest(records, others, [id]), this.#cancelledGave(id), others),
+      onlyCancelledGave(this.#latest(records, others, [id]), this.#cancelledGave(id)),
       from,
       external,
       NO_GRACE,

@@ -101,22 +101,21 @@ export function givenByRecords(records: readonly OpRecord[]): Map<string, GivenB
 /**
  * The blocks last given without the cancelled deletions' (09 §5.7), for a cancellation's replay,
  * with each index only cancelled deletions gave laid over as dropped and still to be said
- * (`unsaid`): an index of an (event, target) still there (not in `gone`), not written by the
- * operation itself (every index as written stays in `latest`), that `cancelledGave` gives an
- * interval and no block counted gives at all. One a block counted last gave as dropped (a pending
- * deletion's) is not said again: that block keeps its number already. `cancelledGave`: the restatements of the deletion
- * cancelled and of those cancelled before it.
+ * (`unsaid`): an index not written by the operation itself (every index as written stays in
+ * `latest`), that `cancelledGave` gives an interval and no block counted gives at all. One a block
+ * counted last gave as dropped (a pending deletion's) is not said again: that block keeps its
+ * number already. On an (event, target) a deletion still pending removes whole it is not said
+ * either: the restatement step skips what is deleted (`restatements`). `cancelledGave`: the
+ * restatements of the deletion cancelled and of those cancelled before it.
  */
 export function onlyCancelledGave(
   latest: LatestGiven,
   cancelledGave: readonly Restatement[],
-  gone: ReadonlySet<string> = new Set(),
 ): Map<string, GivenBlock[]> {
   const out = new Map<string, GivenBlock[]>([...latest].map(([et, bs]) => [et, [...bs]]));
   for (const r of cancelledGave) {
     if (r.status === "dropped") continue;
     const et = key(r.item.event, r.item.target);
-    if (gone.has(et)) continue;
     const blocks = out.get(et) ?? [];
     // Any block counted gives it already (an interval, or a restatement as dropped that keeps
     // its number): nothing to say.

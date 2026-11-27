@@ -460,7 +460,7 @@ describe("a cancellation laid over the blocks: an index a deletion numbered anew
       second,
       first,
       before,
-      onlyCancelledGave(withoutFirst, once.restated, second),
+      onlyCancelledGave(withoutFirst, once.restated),
       fromFirst,
       () => [],
       NO_GRACE,
