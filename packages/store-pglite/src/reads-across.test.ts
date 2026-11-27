@@ -99,6 +99,28 @@ describe.skipIf(TEST_BACKEND !== "postgres")("a read on one store, a write on an
   );
 });
 
+describe.skipIf(TEST_BACKEND !== "postgres")("two stores recording reads of the same rows", () => {
+  it(
+    "read in opposite orders at once, again and again: every read answered (no deadlock between the records)",
+    async () => {
+      const { dir, store } = await tenant("saveslot-reads-order-");
+      const other = await reopen(dir);
+      const refused: string[] = [];
+      for (let i = 0; i < 40; i++) {
+        const both = await Promise.allSettled([
+          query(store, ctx("order"), { table: "spend", order: [{ field: "note", dir: "asc" }] }),
+          query(other, ctx("order"), { table: "spend", order: [{ field: "note", dir: "desc" }] }),
+        ]);
+        for (const r of both) {
+          if (r.status === "rejected") refused.push(String((r.reason as Error).name));
+        }
+      }
+      expect(refused).toEqual([]);
+    },
+    T,
+  );
+});
+
 describe("after a restore from a backup", () => {
   it(
     "reads the backup lacked are gone; my_last_read and the version last read are the reads after the restore",

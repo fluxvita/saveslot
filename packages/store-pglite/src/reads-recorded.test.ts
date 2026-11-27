@@ -7,6 +7,7 @@
 
 import {
   createOpsContext,
+  flushReads,
   history,
   newReadId,
   query,
@@ -190,6 +191,37 @@ describe("reads recorded out of the order they were made", () => {
     },
     T,
   );
+});
+
+describe("my_last_read after a later read at an earlier position", () => {
+  for (const flushed of [false, true]) {
+    it(
+      `is the read of the greatest position, the buffer ${flushed ? "written out" : "not written out"} in between`,
+      async () => {
+        const t = `greatest-${flushed}-${++task}`;
+        const a = (await insert(`${t}-w`, "a")).seq;
+        await query(s.store, ctx(t), { table: "spend" });
+        // A write: the buffer (where there is one) written out.
+        const b = (await insert(`${t}-w`, "b")).seq;
+        await query(s.store, ctx(t), { table: "spend" });
+        // Made after the read at b, at position a: a whole-table changes ending at a.
+        await history(s.store, ctx(t), { mode: "changes", table: "spend", since: 1, until: a });
+        if (flushed) {
+          await flushReads(
+            s.store,
+            createOpsContext({ ...ctx(t), actor: "system", trigger: "flushReads" }),
+          );
+        }
+        const r = (await history(s.store, ctx(t), {
+          mode: "changes",
+          table: "spend",
+          since: "my_last_read",
+        })) as unknown as { since: number };
+        expect(r.since).toBe(b);
+      },
+      T,
+    );
+  }
 });
 
 describe.skipIf(TEST_BACKEND !== "postgres")("on PostgreSQL (the server mode)", () => {

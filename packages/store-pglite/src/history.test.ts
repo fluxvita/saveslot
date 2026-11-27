@@ -16,7 +16,7 @@ import {
   write,
 } from "@fluxvita/saveslot-kernel";
 import { COMPILED_V1, createSlotEvents, DRAFT, SLOT } from "@fluxvita/saveslot-kernel/testing";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
 const T = 120_000;
@@ -113,11 +113,15 @@ let entity: string;
 const ops: Record<string, number> = {};
 
 beforeAll(async () => {
-  s = await openReusable("saveslot-history-", { buffered: true });
+  s = await openReusable("saveslot-history-");
 }, T);
 afterAll(async () => {
   await s?.close();
 }, T);
+// The cases that look into the read buffer keep their reads in it; the others run as the backend does.
+afterEach(() => {
+  s.buffered(false);
+});
 beforeEach(async () => {
   await s.reset();
   readBufferOf(s.store).take();
@@ -332,6 +336,7 @@ describe("timeline", () => {
   });
 
   it("lists the reads of the row's versions, and counts as reading it", async () => {
+    s.buffered(true);
     await query(s.store, ctx({ actor: OTHER, task: "t1" }), {
       table: "spend",
       include_revoked: true,
@@ -420,6 +425,7 @@ describe("as_of", () => {
   });
 
   it("goes back to what a read saw, and to a task's last read with the others listed", async () => {
+    s.buffered(true);
     const seen = await query(s.store, ctx({ actor: OTHER, task: "plan" }), {
       table: "budgets",
       at: "2026-11-15T04:00:00Z",
@@ -492,6 +498,7 @@ describe("as_of", () => {
   });
 
   it("is a read recorded without a version to fall back to", async () => {
+    s.buffered(true);
     await h({ table: "spend", row, mode: "as_of", as_of: ops["update"] });
     expect(readBufferOf(s.store).entries().at(-1)).toMatchObject({
       operation: "history",
@@ -583,6 +590,7 @@ describe("pages fixed to the first page", () => {
   });
 
   it("timeline lists only reads of its own target, buffered ones too", async () => {
+    s.buffered(true);
     // Another entity of the same table, read alone (the read stays in the buffer).
     await w({
       ops: [
@@ -611,6 +619,7 @@ describe("record points of reads", () => {
     ]);
 
   it("a later query page is recorded at the first page's operation: {read} gives what it saw", async () => {
+    s.buffered(true);
     const extra = await w({
       ops: [
         {
@@ -654,6 +663,7 @@ describe("record points of reads", () => {
   });
 
   it("an as_of read is recorded at its record point: {read} of it gives that state", async () => {
+    s.buffered(true);
     await h({ table: "budgets", entity, mode: "as_of", as_of: ops["budget"] });
     const read = readBufferOf(s.store).entries().at(-1);
     expect(read).toMatchObject({ pos: ops["budget"], historical: true, lastRead: [] });
@@ -768,6 +778,7 @@ describe("record points of reads", () => {
   });
 
   it("{read} carries its business time only for the same table; a read out of the visible range is not_found", async () => {
+    s.buffered(true);
     await query(s.store, ctx({ actor: OTHER }), {
       table: "budgets",
       valid_during: ["2026-11-12", "2026-11-15"],
@@ -855,6 +866,7 @@ describe("reads as of a point are not reads of a version", () => {
   ];
 
   it("{task} skips the task's as_of reads, buffered and written; other_reads leaves them out", async () => {
+    s.buffered(true);
     await query(s.store, ctx(T1), {
       table: "budgets",
       valid_during: ["2026-11-01", null],
@@ -893,6 +905,7 @@ describe("reads as of a point are not reads of a version", () => {
   });
 
   it("records a later timeline page at the first page's operation", async () => {
+    s.buffered(true);
     const p1 = await h({ table: "budgets", entity, limit: 1 });
     const first = readBufferOf(s.store).entries().at(-1)?.pos;
     const moved = await write(175);
@@ -902,6 +915,7 @@ describe("reads as of a point are not reads of a version", () => {
   });
 
   it("carries {read}'s business time condition to the later pages", async () => {
+    s.buffered(true);
     await query(s.store, ctx({ actor: OTHER }), {
       table: "budgets",
       valid_during: ["2026-11-01", "2026-11-15"],
@@ -928,6 +942,7 @@ describe("reads as of a point are not reads of a version", () => {
   });
 
   it("{read} of a visible table in another slot, or of no table, gives its position only", async () => {
+    s.buffered(true);
     // A second slot, visible: the same schema under other IDs and names (table IDs are the
     // tenant's).
     const OTHER_SLOT = `sl_${"5".repeat(16)}`;
@@ -1143,6 +1158,7 @@ describe("timeline details", () => {
   });
 
   it("gives the reads on the first page only, and registers no version read on later pages", async () => {
+    s.buffered(true);
     await query(s.store, ctx({ actor: OTHER }), { table: "budgets" });
     const p1 = await h({ table: "budgets", entity, limit: 1 }, { actor: OTHER });
     expect(p1["reads"]).toBeDefined();

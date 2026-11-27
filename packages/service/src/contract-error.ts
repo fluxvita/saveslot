@@ -121,13 +121,14 @@ export const structuralPath = (path: string): string =>
 /** A new incident reference: random, no user content. */
 export const newIncident = (): string => `inc_${randomBytes(8).toString("hex")}`;
 
+/** Seconds a read refused for its record not written is tried again after. */
+const READ_RETRY_AFTER = 1;
+
 /**
  * The contract error of anything an operation threw. `warn` hears of every path not implemented
  * (by its reason) and every internal error (by its incident and the error's own name and code,
  * never its message or detail, which may echo request content).
  */
-/** Seconds a read refused for its record not written is tried again after. */
-const READ_RETRY_AFTER = 1;
 
 export function contractError(
   e: unknown,

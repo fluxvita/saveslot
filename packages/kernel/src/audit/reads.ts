@@ -148,17 +148,19 @@ export class ReadBuffer {
   }
 
   /** The latest buffered read of the target, if any. */
+  /** Of the buffered reads, the version of the latest position (restore count, then operation). */
   lastRead(q: LastReadQuery): LastRead | undefined {
-    for (let i = this.#entries.length - 1; i >= 0; i--) {
-      const e = this.#entries[i] as ReadEntry;
+    let found: LastRead | undefined;
+    for (const e of this.#entries) {
       if (e.actor !== q.actor || e.task !== q.task) continue;
-      for (let j = e.lastRead.length - 1; j >= 0; j--) {
-        const x = e.lastRead[j] as LastReadEntry;
-        if (x.kind === q.kind && x.target === q.target)
-          return { op: x.op, restoreCount: x.restoreCount, read: e.read };
+      for (const x of e.lastRead) {
+        if (x.kind !== q.kind || x.target !== q.target) continue;
+        const v = { op: x.op, restoreCount: x.restoreCount, read: e.read };
+        // Of the same version, the later recorded.
+        if (found === undefined || !later(found, v)) found = v;
       }
     }
-    return undefined;
+    return found;
   }
 
   /** The buffered reads, in the order recorded. */
@@ -187,7 +189,20 @@ export function readBufferOf(store: object): ReadBuffer {
 /** Rows per INSERT statement: 6 parameters each, well below PostgreSQL's 65,535. */
 const ROWS_PER_INSERT = 1000;
 
-/** Writes reads into `read_log`, `read_log_rows` and `last_read`, in the order given. */
+/** Ordered by code unit, element by element: the order the versions last read are written in. */
+const compareKeys = (a: readonly string[], b: readonly string[]): number => {
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i] as string;
+    const y = b[i] as string;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+};
+
+/**
+ * Writes reads into `read_log` and `read_log_rows`, in the order given, then their versions last
+ * read into `last_read`, in the order of their keys.
+ */
 export async function writeReads(tx: Tx, entries: readonly ReadEntry[]): Promise<void> {
   for (const e of entries) {
     await tx.query(
@@ -239,20 +254,27 @@ export async function writeReads(tx: Tx, entries: readonly ReadEntry[]): Promise
         params,
       );
     }
-    // Only forward: reads recorded by several processes may come in an order not theirs, so the
-    // version last read is the one of the latest position (the restore count, then the operation),
-    // not of the latest record (02-architecture §7 «read_log 的持久性»).
-    for (const x of e.lastRead) {
-      await tx.query(
-        `INSERT INTO last_read (actor, task, target, kind, op, restore_count, read_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (actor, task, target, kind)
-         DO UPDATE SET op = EXCLUDED.op, restore_count = EXCLUDED.restore_count,
-           read_id = EXCLUDED.read_id
-         WHERE (last_read.restore_count, last_read.op) <= (EXCLUDED.restore_count, EXCLUDED.op)`,
-        [e.actor, e.task ?? "", x.target, x.kind, x.op, x.restoreCount, e.read],
-      );
-    }
+  }
+  // The versions last read, in one order whatever the reads' (actor, task, kind, target): two
+  // connections recording reads of the same rows lock them in the same order, never in opposite
+  // ones (a deadlock). Only forward: reads recorded by several processes may come in an order not
+  // theirs, so the version last read is the one of the latest position (the restore count, then the
+  // operation), not of the latest record (02-architecture §7 «read_log 的持久性»).
+  const last = entries
+    .flatMap((e) =>
+      e.lastRead.map((x) => ({ e, x, key: [e.actor, e.task ?? "", x.kind, x.target] })),
+    )
+    .sort((a, b) => compareKeys(a.key, b.key));
+  for (const { e, x } of last) {
+    await tx.query(
+      `INSERT INTO last_read (actor, task, target, kind, op, restore_count, read_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (actor, task, target, kind)
+       DO UPDATE SET op = EXCLUDED.op, restore_count = EXCLUDED.restore_count,
+         read_id = EXCLUDED.read_id
+       WHERE (last_read.restore_count, last_read.op) <= (EXCLUDED.restore_count, EXCLUDED.op)`,
+      [e.actor, e.task ?? "", x.target, x.kind, x.op, x.restoreCount, e.read],
+    );
   }
 }
 
@@ -271,20 +293,30 @@ export async function flushBuffer(tx: Tx, buffer: ReadBuffer): Promise<ReadEntry
   return taken;
 }
 
-/** The version the actor last read of the target: the buffer's latest, else the stored one. */
+/** Whether `a` is of a later position than `b`: its restore count, then its operation. */
+const later = (a: LastRead, b: LastRead): boolean =>
+  a.restoreCount !== b.restoreCount ? a.restoreCount > b.restoreCount : Number(a.op) > Number(b.op);
+
+/**
+ * The version the actor last read of the target: of the buffered and the stored, the one of the
+ * latest position (02-architecture §7 «read_log 的持久性»); of the same, the buffered.
+ */
 export async function lastRead(
   tx: ReadTx,
   buffer: ReadBuffer,
   q: LastReadQuery,
 ): Promise<LastRead | undefined> {
   const buffered = buffer.lastRead(q);
-  if (buffered !== undefined) return buffered;
   const r = await tx.query<{ op: string | number; restore_count: number; read_id: string }>(
     `SELECT op, restore_count, read_id FROM last_read
      WHERE actor = $1 AND task = $2 AND kind = $3 AND target = $4`,
     [q.actor, q.task ?? "", q.kind, q.target],
   );
   const [row] = r.rows;
-  if (row === undefined) return undefined;
-  return { op: Number(row.op), restoreCount: row.restore_count, read: row.read_id as ReadId };
+  const stored =
+    row === undefined
+      ? undefined
+      : { op: Number(row.op), restoreCount: row.restore_count, read: row.read_id as ReadId };
+  if (buffered === undefined) return stored;
+  return stored !== undefined && later(stored, buffered) ? stored : buffered;
 }

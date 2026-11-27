@@ -94,6 +94,11 @@ export interface Reusable<S extends TenantStore> {
   reset(): Promise<void>;
   /** The state it was opened in (every table's rows). */
   readonly blank: Record<string, string[]>;
+  /**
+   * On: the store keeps its reads' records in the read buffer, as PGlite's does (PostgreSQL's
+   * `recordReads` hidden), for a case that looks into the buffer. Off: as the backend gives it.
+   */
+  buffered(on: boolean): void;
 }
 
 export interface ReusableStore extends Reusable<PgliteTenantStore> {
@@ -128,16 +133,21 @@ export async function reusable<S extends TenantStore>(
   const read = store.read.bind(store);
   const write = store.write.bind(store);
   const recordReads = store.recordReads?.bind(store);
+  const tracked =
+    recordReads === undefined
+      ? undefined
+      : <T>(fn: (tx: Tx) => Promise<T>) => track(recordReads(fn));
   Object.assign(store, {
     read: <T>(fn: (tx: ReadTx) => Promise<T>) => track(read(fn)),
     write: <T>(fn: (tx: Tx) => Promise<T>) => track(write(fn)),
-    ...(recordReads !== undefined
-      ? { recordReads: <T>(fn: (tx: Tx) => Promise<T>) => track(recordReads(fn)) }
-      : {}),
+    ...(tracked !== undefined ? { recordReads: tracked } : {}),
   });
   return {
     store,
     blank,
+    buffered: (on) => {
+      if (tracked !== undefined) Object.assign(store, { recordReads: on ? undefined : tracked });
+    },
     reset: async () => {
       const left = running.size;
       if (left > 0) {
@@ -196,9 +206,10 @@ export async function openReusable(
   const root = mkdtempSync(join(tmpdir(), prefix));
   const dir = join(root, "tenant");
   const store = await testBackend().open({ kind: "pglite", dir }, { create: true });
-  if (o.buffered === true) Object.assign(store, { recordReads: undefined });
+  const r = await reusable(store);
+  if (o.buffered === true) r.buffered(true);
   return {
-    ...(await reusable(store)),
+    ...r,
     dir,
     close: async () => {
       await store.close();

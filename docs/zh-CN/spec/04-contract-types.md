@@ -676,7 +676,7 @@ interface ChangesParams extends CommonParams, PageParams {
   mode: "changes";
   table: TableName;              // 基础表。派生表报 invalid_argument（derived_table）
   row?: RowId; entity?: EntityId; entity_key?: Record<FieldName, Value>;   // 不给目标 = 整张表
-  /** 不含。必填。"my_last_read" = 本连接实例（带 task 时只认同一任务）上次读过的位置，按读取覆盖的范围认（整张表的调用只认覆盖这张表的读取）；没读过报 read_first（no_read），只在别的 task 下读过报 read_first（task_mismatch）。0 是从头看起。 */
+  /** 不含。必填。"my_last_read" = 本连接实例（带 task 时只认同一任务）读过的位置里最靠后的一个，按读取覆盖的范围认（整张表的调用只认覆盖这张表的读取）；没读过报 read_first（no_read），只在别的 task 下读过报 read_first（task_mismatch）。0 是从头看起。 */
   since: RecordPoint | "my_last_read";
   /** 含。默认最新。 */
   until?: RecordPoint;
